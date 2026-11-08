@@ -41,3 +41,33 @@ export async function githubCall(api: string, path: string, options: { method?: 
   } catch {}
   return { status: res.status, json };
 }
+
+/** An installation token of the App `appId` (its private key `pem`) for one repository: `target.installation`, or the
+ *  installation GitHub says covers `target.repo` (GET /repos/{owner}/{repo}/installation, asked with the App's JWT); then
+ *  POST /app/installations/{id}/access_tokens narrowed to that one repository, with the App's permissions. Pure apart
+ *  from the calls to GitHub at `api`: serve's launch path mints with it today, and a runner can tomorrow; the run never
+ *  sees the key. `expires_at` in ms. */
+export async function mintInstallationToken(api: string, appId: string, pem: string, target: { installation?: number; repo: string }, nowMs?: number): Promise<{ ok: true; token: string; expires_at: number } | { ok: false; reason: "not_installed" | "no_repo" | "github_failed"; message: string }> {
+  const [owner, name, extra] = target.repo.split("/");
+  if (!owner || !name || extra !== undefined || !/^[A-Za-z0-9-]{1,39}$/.test(owner) || !/^[A-Za-z0-9._-]{1,100}$/.test(name)) return { ok: false, reason: "no_repo", message: "No GitHub repository was named for this run: a GitHub event's run has one; another run names it in its input as https://github.com/<owner>/<repo>." };
+  const notInstalled = { ok: false as const, reason: "not_installed" as const, message: `The GitHub App isn't installed on ${owner}/${name}: install it there (or add the repository to its installation), then run again.` };
+  const jwt = appJwt(appId, pem, nowMs ?? Date.now());
+  try {
+    let installation = target.installation;
+    if (installation === undefined) {
+      const found = await githubCall(api, `/repos/${owner}/${name}/installation`, { jwt });
+      const id = typeof found.json === "object" && found.json !== null ? (found.json as { id?: unknown }).id : undefined;
+      if (found.status === 404) return notInstalled;
+      if (found.status !== 200 || !Number.isSafeInteger(id)) return { ok: false, reason: "github_failed", message: `GitHub did not say which installation covers ${owner}/${name} (HTTP ${found.status}).` };
+      installation = id as number;
+    }
+    const answer = await githubCall(api, `/app/installations/${installation}/access_tokens`, { method: "POST", jwt, body: { repositories: [name] } });
+    const minted = (typeof answer.json === "object" && answer.json !== null ? answer.json : {}) as { token?: unknown; expires_at?: unknown };
+    if (answer.status === 404 || answer.status === 422) return notInstalled;
+    const expires = typeof minted.expires_at === "string" ? Date.parse(minted.expires_at) : NaN;
+    if (answer.status !== 201 || typeof minted.token !== "string" || !Number.isFinite(expires)) return { ok: false, reason: "github_failed", message: `GitHub gave no token for ${owner}/${name} (HTTP ${answer.status}).` };
+    return { ok: true, token: minted.token, expires_at: expires };
+  } catch (error) {
+    return { ok: false, reason: "github_failed", message: `GitHub did not give this run a token: ${(error as Error).message}.` };
+  }
+}

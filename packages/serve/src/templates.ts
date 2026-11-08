@@ -9,6 +9,7 @@ import { basename, join } from "node:path";
 import { fileURLToPath } from "node:url";
 import { parseDocument } from "yaml";
 import { type InputIssue, invalid } from "./errors.js";
+import type { GitHubConnectionView } from "./github-connection.js";
 import { HARNESSES } from "./harness.js";
 import { TOOL_KEY_ROWS } from "./key-words.js";
 import { MCP_SERVER_NAME } from "./mcp-servers.js";
@@ -20,6 +21,10 @@ import { triggerBodyIssues } from "./triggers.js";
 import { definitionBodyIssues, isObject, type Json, MODEL_REF, unknownFields } from "./validate.js";
 
 /** The packages this server ships. */
+/** What applying a template reads of the server beyond its package (server.ts wires it): the GitHub connection, the
+ *  App's id, slug and installations (github-connection.ts), never a secret; undefined when GitHub is not connected. */
+export type TemplatesDeps = { githubConnection: () => GitHubConnectionView | undefined };
+
 export const TEMPLATES_DIR = fileURLToPath(new URL("../templates/", import.meta.url));
 export const MANIFEST = "agent.md";
 
@@ -385,7 +390,7 @@ export async function packageModel(env: NodeJS.ProcessEnv, model: Package["model
  *  every `${parameters.x}` filled. `mcp`: the package's MCP servers this server has saved, whose tools are granted beside
  *  the package's tools (or, when it names none, `defaultTools`, those this server gives a new agent), each at the
  *  owner's own setting; `grants`, the owner's answer at apply, alone are set to allow. */
-export function compiled(p: Package, parameters: Json, chosen: { harness?: string; model?: string; mcp: McpNeed[]; defaultTools: readonly string[]; grants: readonly string[] }): { agent: Json; triggers: Json[] } {
+export function compiled(p: Package, parameters: Json, chosen: { harness?: string; model?: string; mcp: McpNeed[]; defaultTools: readonly string[]; grants: readonly string[] }, _deps?: TemplatesDeps): { agent: Json; triggers: Json[] } {
   const skills = Object.keys(p.skills).filter((path) => /^[^/]+\/SKILL\.md$/.test(path)).map((path) => path.slice(0, -"/SKILL.md".length));
   const granted = chosen.mcp.flatMap(({ server, tools }) => tools.map((tool) => mcpToolName(server, tool)));
   const allowed = chosen.grants.filter((tool) => granted.includes(tool));

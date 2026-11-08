@@ -81,7 +81,7 @@ import { webhook } from "./trigger-webhook.js";
 import { SCHEME_NAMES } from "./trigger-signatures.js";
 import { permissionFrom } from "./tool-gate.js";
 import { CATCHUP_WINDOW_S, FAILURES_TO_PAUSE, HISTORY_KEPT, MIN_EVERY_S, PAYLOAD_KEPT_BYTES, type RunTrigger, SOURCE_KINDS, TARGET_KINDS, type TriggerClock, Triggers } from "./triggers.js";
-import { applyBodyOf, compiled, type Package, packageModel, packageView, readPackages } from "./templates.js";
+import { applyBodyOf, compiled, type Package, packageModel, packageView, readPackages, type TemplatesDeps } from "./templates.js";
 import { checkDefinitionBody, DEFAULT_INPUT_SCHEMA, definitionBodyIssues, ID, IDEMPOTENCY_TTL_S, inputIssues, isObject, type Json, stable, unknownFields } from "./validate.js";
 import { agentTools, browserKeyRow, isUnavailable, recheckPlane, settingsIssues, ToolSettings, type ToolSettingsMap, whyUnavailable, withDefaults } from "./tool-plane.js";
 import { MAX_FILES_PER_RUN, MAX_UPLOAD_BYTES, Uploads, UPLOADS_DIR } from "./uploads.js";
@@ -787,7 +787,7 @@ async function startHolding(options: ServeOptions, data: string, lock: ServerLoc
   const mcpServers = new McpServers(data, withSecrets(base, "own"), VERSION);
   /** Each run's GitHub token for a github_app MCP server, by run and server, minted at its launch (mcpSource.mint): in
    *  this process's memory only, handed to the run over its pipe, and listed among the server's secrets while it lives. */
-  const runTokens = new Map<string, ({ token: string } | { unusable: string }) & { at: number }>();
+  const runTokens = new Map<string, ({ token: string; expiresAt: number } | { unusable: string }) & { at: number }>();
   // What a run's grants are checked against, its pin made from and its credentials read from (runs.ts, runnable.ts).
   const mcpSource: McpServerSource = {
     server: (name) => {
@@ -804,14 +804,14 @@ async function startHolding(options: ServeOptions, data: string, lock: ServerLoc
       // A github_app server: its static headers as written, with the token minted for this run's launch.
       const minted = runTokens.get(`${runId}\n${name}`);
       if (!minted) return { unopened: "no GitHub token was minted for this run's launch; it is minted again when the run resumes" };
-      return "unusable" in minted ? { unopened: minted.unusable } : { headers: { ...saved.headers, authorization: `Bearer ${minted.token}` } };
+      return "unusable" in minted ? { unopened: minted.unusable } : { headers: { ...saved.headers, authorization: `Bearer ${minted.token}` }, expires_at: minted.expiresAt };
     },
     refresh: (name) => mcpServers.headersForRun(name).then(() => undefined, () => undefined),
     async mint(name, runId, input) {
       if (!mcpServers.takesAppToken(name)) return;
       const now = Date.now();
       for (const [key, kept] of runTokens) if (kept.at + 2 * 60 * 60_000 < now) runTokens.delete(key);
-      const minted = await githubConnect.tokenFor(githubTargetOf(input), stopping.signal).catch((error: Error) => ({ unusable: `GitHub did not give this run a token: ${error.message}.` }));
+      const minted = await githubConnect.tokenFor(githubTargetOf(input)).catch((error: Error) => ({ unusable: `GitHub did not give this run a token: ${error.message}.` }));
       runTokens.set(`${runId}\n${name}`, { ...minted, at: now });
     },
   };
@@ -1118,6 +1118,8 @@ async function startHolding(options: ServeOptions, data: string, lock: ServerLoc
   const githubConnect = new GitHubConnect(github, { ...(options.publicUrl ? { publicUrl: options.publicUrl.replace(/\/+$/, "") } : {}), api: options.githubApi ?? GITHUB_API, say: (fields) => log?.(logLine("github", fields)) });
   /** The connection a GitHub template or the console reads: the App's id, slug and installations, never a secret. */
   const githubConnection = () => github.view();
+  /** What applying a template reads of the server (templates.ts TemplatesDeps). */
+  const templateDeps: TemplatesDeps = { githubConnection };
   // A github_app MCP server lists its tools with an installation token of the App, and every token minted is one of the
   // server's secrets while it may be in use.
   mcpServers.appToken = (signal) => githubConnect.tokenForListing(signal);
@@ -1453,7 +1455,7 @@ async function startHolding(options: ServeOptions, data: string, lock: ServerLoc
     const server = settings.get() as Parameters<typeof permissionFrom>[1];
     const denied = grants.filter((tool) => { const set = permissionFrom(tool, server); return set.from === "server" && set.permission === "deny"; });
     const kept: InputIssue[] = denied.map((tool) => ({ field: `grants.${tool}`, reason: "not_allowed", message: `${tool} is denied on this server (Settings → Tools), so the agent was not allowed it: its runs are refused it until the owner changes that setting.` }));
-    const made = compiled(pkg, parameters, { ...(harness ? { harness } : {}), ...(model ? { model } : {}), mcp: saved, defaultTools, grants: grants.filter((tool) => !denied.includes(tool)) });
+    const made = compiled(pkg, parameters, { ...(harness ? { harness } : {}), ...(model ? { model } : {}), mcp: saved, defaultTools, grants: grants.filter((tool) => !denied.includes(tool)) }, templateDeps);
     // POST /agents' and POST /triggers' own body limit: parameters filled in more than once can grow a package past it.
     for (const one of [made.agent, ...made.triggers]) if (Buffer.byteLength(JSON.stringify(one)) > MAX_BODY) throw new ApiError("payload_too_large", `the ${pkg.name} template, its parameters filled in, makes a body over ${MAX_BODY} bytes`, { details: { limit: "max_body_bytes" } });
     const { entry, warnings } = await createAgentOf(made.agent);

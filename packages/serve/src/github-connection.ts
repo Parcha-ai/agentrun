@@ -5,7 +5,7 @@
 // then again once the App is installed (installed). Every github trigger, and every GitHub template, uses this one App.
 import { createHash, randomBytes, timingSafeEqual } from "node:crypto";
 import { ApiError, invalid } from "./errors.js";
-import { appJwt, GITHUB_WEB, githubCall } from "./github.js";
+import { appJwt, GITHUB_WEB, githubCall, mintInstallationToken } from "./github.js";
 import type { SealedSettings } from "./sealed-settings.js";
 import { isObject, type Json } from "./validate.js";
 
@@ -22,6 +22,8 @@ export const FIELDS = { appId: "app_id", slug: "slug", clientId: "client_id", se
 export const CONNECTED_PAGE = "/#/settings/github?github=connected";
 export type LegFailure = "state_invalid" | "conversion_failed" | "installation_unverified";
 const failedPage = (reason: LegFailure) => `/#/settings/github?github=error&reason=${reason}`;
+/** A page of the console at this server's public address (where GitHub sends the browser back), else at its own. */
+const consoleAt = (base: string | undefined, page: string) => `${base ?? ""}${page}`;
 /** A GitHub login (a user or an organization), as GitHub allows one. */
 const LOGIN = /^[A-Za-z0-9](?:[A-Za-z0-9]|-(?=[A-Za-z0-9])){0,38}$/;
 const SCOPE = "server";
@@ -177,7 +179,7 @@ export class GitHubConnect {
   /** Where a browser leg that did not finish sends the browser, said once (with no secret): the console, with why. */
   failed(reason: LegFailure, detail: string): string {
     this.options.say({ condition: "github_connect_failed", reason, detail });
-    return failedPage(reason);
+    return consoleAt(this.options.publicUrl, failedPage(reason));
   }
 
   /** GET /integrations/github/callback, its state checked (the server checks the browser's cookie first): the code
@@ -225,7 +227,7 @@ export class GitHubConnect {
     if (answer.status !== 200 || String(found.id) !== installationId || !account) return this.failed("installation_unverified", `GitHub does not know installation ${installationId} as this App's (HTTP ${answer.status})`);
     this.connection.addInstallation({ id: Number(installationId), account });
     this.options.say({ condition: "github_installed", installation: installationId, account });
-    return CONNECTED_PAGE;
+    return consoleAt(this.options.publicUrl, CONNECTED_PAGE);
   }
 
   /** The App's installation tokens minted and not yet long past their hour, by token: every one is a secret this server
@@ -239,26 +241,17 @@ export class GitHubConnect {
     return [...this.live.keys()];
   }
 
-  /** An installation token for one run: narrowed to the one repository `target` names (its installation given, or asked
-   *  of GitHub with the App's JWT), its permissions the App's; or why there is none, in words its calls answer. */
-  async tokenFor(target: { installation?: number; repo: string } | undefined, signal?: AbortSignal): Promise<{ token: string; expiresAt: number } | { unusable: string }> {
+  /** An installation token for one run, narrowed to the one repository `target` names (github.ts
+   *  mintInstallationToken), kept among the live tokens; or why there is none, in words its calls answer. */
+  async tokenFor(target: { installation?: number; repo: string } | undefined): Promise<{ token: string; expiresAt: number } | { unusable: string }> {
     if (!target) return { unusable: "No GitHub repository was named for this run: a GitHub event's run has one; another run names it in its input as https://github.com/<owner>/<repo>." };
     const credentials = this.connection.credentials();
     if (!credentials || !this.connection.view()) return { unusable: "This server has no GitHub App: Connect GitHub in Settings." };
-    const jwt = appJwt(credentials.appId, credentials.pem, this.options.now?.() ?? Date.now());
-    const notInstalled = { unusable: `The GitHub App isn't installed on ${target.repo}: install it there (or add the repository to its installation), then run again.` };
-    try {
-      let installation = target.installation;
-      if (installation === undefined) {
-        const found = await githubCall(this.options.api, `/repos/${target.repo}/installation`, { jwt, ...(signal ? { signal } : {}) });
-        const id = isObject(found.json) ? found.json.id : undefined;
-        if (found.status !== 200 || !Number.isSafeInteger(id)) return notInstalled;
-        installation = id as number;
-      }
-      return await this.mint(installation, jwt, [target.repo.split("/")[1]!], notInstalled, signal);
-    } catch (error) {
-      return { unusable: `GitHub did not give this run a token: ${(error as Error).message}.` };
-    }
+    const minted = await mintInstallationToken(this.options.api, credentials.appId, credentials.pem, target, this.options.now?.() ?? Date.now());
+    if (!minted.ok) return { unusable: minted.message };
+    this.live.set(minted.token, minted.expires_at);
+    this.options.say({ condition: "github_token_minted", repository: target.repo });
+    return { token: minted.token, expiresAt: minted.expires_at };
   }
 
   /** An installation token for listing an MCP server's tools as it is saved: the App's first installation, every

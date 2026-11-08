@@ -49,7 +49,7 @@ export const CONNECT_MS = 30_000;
 /** Each pinned server: its URL then, the granted tools as it listed them, and the prices its owner declared for them. */
 export type McpPin = Record<string, { url: string; tools: McpTool[]; prices?: Record<string, number> }>;
 /** The pipe's entry: each granted server's URL now, and its credential's headers when that URL is the pinned one. */
-export type McpCredentials = Record<string, { url: string; headers?: Record<string, string>; /** Why its saved credential did not open: its calls are refused unsent. */ unopened?: string }>;
+export type McpCredentials = Record<string, { url: string; headers?: Record<string, string>; /** Why its saved credential did not open: its calls are refused unsent. */ unopened?: string; /** When its credential ends (ms): a token minted for the run's launch (a github_app server's), whose calls past it are refused unsent, in words. */ expires_at?: number }>;
 
 /** The servers saved on this server (mcp-servers.ts), as a launch reads them. */
 export interface McpServerSource {
@@ -57,7 +57,7 @@ export interface McpServerSource {
   /** The server's credential, opened now: its headers, or why it does not open, each under its own tag; undefined when
    *  it has none. With `runId`, for that run's launch: a github_app server's static headers with the token minted for
    *  the run (mint), or why it has none. */
-  headers(name: string, runId?: string): { headers: Record<string, string> } | { unopened: string } | undefined;
+  headers(name: string, runId?: string): { headers: Record<string, string>; expires_at?: number } | { unopened: string } | undefined;
   /** Before a launch: an OAuth access token near its expiry refreshed (mcp-servers.ts headersForRun). Never throws. */
   refresh?(name: string): Promise<void>;
   /** Before a launch: a github_app server's installation token minted for run `runId`, narrowed to the one repository
@@ -164,7 +164,7 @@ export function mcpCredentialsOf(pin: McpPin, source: McpServerSource, runId?: s
     const saved = source.server(name);
     if (!saved) continue;
     const credential = saved.url === pinned.url ? source.headers(name, runId) : undefined;
-    out[name] = { url: saved.url, ...(credential && "unopened" in credential ? { unopened: credential.unopened } : credential ? { headers: credential.headers } : {}) };
+    out[name] = { url: saved.url, ...(credential && "unopened" in credential ? { unopened: credential.unopened } : credential ? { headers: credential.headers, ...(credential.expires_at !== undefined ? { expires_at: credential.expires_at } : {}) } : {}) };
   }
   return out;
 }
@@ -343,6 +343,8 @@ export function mcpGateway(options: McpGatewayOptions): McpGateway {
     // A credential that does not open is never a call without it.
     // The reason carries its own remedy (mcp-servers.ts UNUSABLE): nothing is added to it here.
     if (now.unopened !== undefined) return `The MCP server ${server}'s credential can't be used right now: ${now.unopened}.`;
+    // A token minted for this run's launch is not renewed while it runs: past its end, said, never sent to be refused.
+    if (now.expires_at !== undefined && Date.now() >= now.expires_at) return `The GitHub token for this run expired: it is minted again when the run resumes. Nothing was sent to the MCP server ${server}.`;
     return undefined;
   };
 
