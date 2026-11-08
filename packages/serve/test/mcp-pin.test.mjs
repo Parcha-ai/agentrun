@@ -7,7 +7,11 @@ import assert from "node:assert/strict";
 import { randomBytes } from "node:crypto";
 import { test } from "node:test";
 import { startFakeMcp } from "./fixtures/fake-mcp-server.mjs";
+import { AGENT_LAYER_PINS } from "../dist/tool-plane.js";
 import { agent, call, cookieOf, follow, serve, withEnv } from "./support.mjs";
+
+/** An agent's own pin is kept from the store cutover on (tool-plane.ts AGENT_LAYER_PINS): its tests run from then. */
+const AGENT_PINS = AGENT_LAYER_PINS ? {} : { skip: "an agent's own pin waits for the store cutover (AGENT_LAYER_PINS)" };
 
 const FAUX_MCP = new URL("./fixtures/faux-mcp.mjs", import.meta.url).pathname;
 const PHRASE = "the owner signs in with this phrase";
@@ -44,7 +48,7 @@ async function setup(t) {
 const answerOf = async (api, runId) => (await api("GET", `/runs/${runId}`)).body.result?.final_answer ?? "";
 const REFUSAL = /mcp:fake\/send_message may only be called with channel_id = C0123: its destination is fixed by the agent's settings\. It was not run: nothing was sent and nothing was charged\./;
 
-test("an allowed send pinned to one channel sends there, and a call to another is refused, never reaching the MCP server", { timeout: 240_000 }, async (t) => {
+test("an allowed send pinned to one channel sends there, and a call to another is refused, never reaching the MCP server", { timeout: 240_000, ...AGENT_PINS }, async (t) => {
   const { api, sends, make, send } = await setup(t);
   await make("pinned", { permission: "allow", pin: { channel_id: "C0123" } });
   assert.deepEqual((await api("GET", "/agents/pinned")).body.definition.tool_settings, { [SEND]: { permission: "allow", pin: { channel_id: "C0123" } } }, "the agent keeps its pin");
@@ -65,7 +69,7 @@ test("an allowed send pinned to one channel sends there, and a call to another i
   assert.match(result.summary, /failed/);
 });
 
-test("under ask, a call not as pinned is refused and never asks; one as pinned asks, and the owner's allow sends it", { timeout: 240_000 }, async (t) => {
+test("under ask, a call not as pinned is refused and never asks; one as pinned asks, and the owner's allow sends it", { timeout: 240_000, ...AGENT_PINS }, async (t) => {
   const { api, sends, make, send, answer } = await setup(t);
   await make("asks", { pin: { channel_id: "C0123" } });
 
@@ -114,9 +118,16 @@ test("the server's pin alone binds an allowed send, kept and served; a pin that 
   const onRead = await api("POST", "/agents", agent("read-pin", { tools: ["read"], tool_settings: { read: { pin: { path: "x" } } } }));
   assert.equal(onRead.status, 422, JSON.stringify(onRead.body));
   assert.deepEqual(fields(onRead), [["definition.tool_settings.read.pin", "not_allowed"]]);
+  // Until the store cutover an agent's own pin is refused at the door, naming the server's setting that holds it meanwhile.
+  if (!AGENT_LAYER_PINS) {
+    const own = await api("POST", "/agents", agent("own-pin", { tools: [SEND], tool_settings: { [SEND]: { permission: "allow", pin: { channel_id: "C0123" } } } }));
+    assert.equal(own.status, 422, JSON.stringify(own.body));
+    assert.deepEqual(fields(own), [[`definition.tool_settings.${SEND}.pin`, "not_set_up_here"]]);
+    assert.match(own.body.error.fields[0].message, /PUT \/v2\/settings\/tools/);
+  }
 });
 
-test("an agent's pin and the server's that fix one argument differently refuse every call, saying so", { timeout: 240_000 }, async (t) => {
+test("an agent's pin and the server's that fix one argument differently refuse every call, saying so", { timeout: 240_000, ...AGENT_PINS }, async (t) => {
   const { api, sends, make, send } = await setup(t);
   await make("pinned", { permission: "allow", pin: { channel_id: "C0123" } });
   assert.equal((await api("PUT", "/settings/tools", { [SEND]: { pin: { channel_id: "C0999" } } })).status, 200);

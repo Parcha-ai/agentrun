@@ -146,7 +146,8 @@ you make.
    (`side: RIGHT`, `subjectType: LINE`; a comment refused goes in the body instead); then `pull_request_review_write`
    with `method: submit_pending`, `event: COMMENT` and a body with the summary, the pre-existing findings and what
    you skipped. If `create` fails because a pending review exists, `delete_pending` once and try once more. Never
-   `APPROVE` or `REQUEST_CHANGES`.
+   `APPROVE` or `REQUEST_CHANGES`, and never `resolve_thread`: the server's settings may refuse any other method or
+   event, and a refused call is not retried another way.
 4. **Defuse** everything you post: put U+2060 (word joiner) right after the `@` of every `@user` and `@org/team`, and
    write a ```` ```suggestion ```` fence as ```` ```text ````.
 5. Then return the findings JSON as step 7 says.
