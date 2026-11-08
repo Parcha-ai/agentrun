@@ -90,7 +90,11 @@ export function container({ name, labels = {}, network = "none", running = true,
  * What Docker 29 inspect reports for a computer's egress proxy container, made as DockerProvider.create makes one.
  * Self-contained: the fake docker program runs a copy of it for each docker run of a proxy.
  */
-export function proxyReport({ id, name, image = "node:22.23.4-bookworm-slim", labels = {}, entrypoint = ["node"], cmd, user = "1000:1000", running = true, exitCode = 0, network = "bridge", capDrop = ["ALL"], securityOpt = ["no-new-privileges"], readonlyRootfs = true, privileged = false, mounts = [], logs = "" }) {
+export function proxyReport({
+	id, name, image = "node:22.23.4-bookworm-slim", labels = {}, entrypoint = ["node"], cmd, user = "1000:1000", running = true, exitCode = 0, network = "bridge", capDrop = ["ALL"], securityOpt = ["no-new-privileges"],
+	readonlyRootfs = true, privileged = false, mounts = [], logs = "", memory = 256 * 1024 * 1024, swap = memory, pids = 64, ipc = "private", cgroupns = "private",
+	logConfig = { Type: "json-file", Config: { "max-file": "2", "max-size": "1m" } },
+}) {
 	return {
 		Id: id,
 		Name: `/${name}`,
@@ -98,7 +102,8 @@ export function proxyReport({ id, name, image = "node:22.23.4-bookworm-slim", la
 		Config: { User: user, Image: image, Entrypoint: entrypoint, Cmd: cmd, Labels: labels, Env: ["PATH=/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin", "NODE_VERSION=22.23.4"] },
 		HostConfig: {
 			NetworkMode: network, CapDrop: capDrop, CapAdd: null, Privileged: privileged, SecurityOpt: securityOpt, ReadonlyRootfs: readonlyRootfs, PortBindings: {}, PublishAllPorts: false,
-			Binds: null, VolumesFrom: null, Devices: [], PidMode: "", UsernsMode: "", IpcMode: "private", CgroupnsMode: "private", RestartPolicy: { Name: "no", MaximumRetryCount: 0 },
+			Binds: null, VolumesFrom: null, Devices: [], PidMode: "", UsernsMode: "", IpcMode: ipc, CgroupnsMode: cgroupns, RestartPolicy: { Name: "no", MaximumRetryCount: 0 },
+			Memory: memory, MemorySwap: swap, PidsLimit: pids, LogConfig: logConfig,
 			Mounts: mounts.map((m) => ({ Type: m.type, Source: m.src, Target: m.dst, ...(m.readonly ? { ReadOnly: true } : {}) })),
 		},
 		Mounts: mounts.map((m) =>
@@ -148,9 +153,10 @@ export function allowed({ name, allow, deadline = new Date(Date.now() + 600_000)
  * binds it read-only), or "drop" makes none: a Docker that does not bind what it was asked to.
  * `volumes` are there from the start ({ Name, Labels }); `egress` is what a new egress proxy does: "ready" (it logs its
  * ready line), "never" (it runs and never says it is ready) or "exits" (it ends at once, saying why); `proxyPatch` is
- * merged over each new proxy's report; `egressOptions` is the provider's egress option.
+ * merged over each new proxy's report; `egressOptions` is the provider's egress option. `endpoint` is the daemon
+ * `docker context inspect` names (a local unix socket by default), or null when it fails.
  */
-export function fakeDocker({ running = true, gone = false, containers = [], patch = {}, hello = {}, arch = "x86_64", info = {}, vanish = [], noDaemon = false, user, hold = [], desktop, display = "up", binds = {}, volumes = [], egress = "ready", proxyPatch = {}, egressOptions } = {}) {
+export function fakeDocker({ running = true, gone = false, containers = [], patch = {}, hello = {}, arch = "x86_64", info = {}, vanish = [], noDaemon = false, user, hold = [], desktop, display = "up", binds = {}, volumes = [], egress = "ready", proxyPatch = {}, egressOptions, endpoint = "unix:///var/run/docker.sock" } = {}) {
 	const dir = mkdtempSync(join(tmpdir(), "computer-fake-docker-"));
 	dirs.push(dir);
 	const log = join(dir, "calls.jsonl");
@@ -162,7 +168,7 @@ export function fakeDocker({ running = true, gone = false, containers = [], patc
 	writeFileSync(daemonPath, "not a real daemon");
 	chmodSync(daemonPath, 0o755);
 	const program = join(dir, "docker");
-	const config = JSON.stringify({ dir, log, state, volumeState, running, gone, patch, binds, egress, proxyPatch, hello: { ...HELLO, ...hello },
+	const config = JSON.stringify({ dir, log, state, volumeState, running, gone, patch, binds, egress, proxyPatch, endpoint, hello: { ...HELLO, ...hello },
 		info: { Architecture: arch, SecurityOptions: ["name=seccomp,profile=builtin", "name=cgroupns"], MemoryLimit: true, SwapLimit: true, PidsLimit: true, CPUCfsQuota: true, CPUCfsPeriod: true, ...info },
 		vanish, noDaemon, hold, display, desktopHello: { ...HELLO, ...hello, kind: "desktop", groups: [...HELLO.groups, "screen", "input.pointer", "input.keys"] } });
 	writeFileSync(
@@ -217,6 +223,9 @@ switch (args[0]) {
 				id: createHash("sha256").update(name).digest("hex"), name, image: args[i], labels, entrypoint: ["node"], cmd: args.slice(i + 1), user: flags["--user"]?.[0] ?? "",
 				running: !ends, exitCode: ends ? 2 : 0, network: flags["--network"]?.[0] ?? "default", capDrop: flags["--cap-drop"], securityOpt: flags["--security-opt"], readonlyRootfs: "--read-only" in flags,
 				mounts: parsed.map((m) => ({ type: m.type, src: m.src, dst: m.dst, readonly: "readonly" in m })),
+				memory: Number.parseInt(flags["--memory"]?.[0] ?? "0", 10) * 1024 * 1024, swap: Number.parseInt(flags["--memory-swap"]?.[0] ?? "0", 10) * 1024 * 1024,
+				pids: Number(flags["--pids-limit"]?.[0] ?? 0), ipc: flags["--ipc"]?.[0] ?? "", cgroupns: flags["--cgroupns"]?.[0] ?? "",
+				logConfig: { Type: flags["--log-driver"]?.[0] ?? "json-file", Config: Object.fromEntries((flags["--log-opt"] ?? []).map((o) => [o.slice(0, o.indexOf("=")), o.slice(o.indexOf("=") + 1)])) },
 				logs: config.egress === "ready" ? "egress ready allow=" + args[args.indexOf("--allow") + 1] + "\\n" : ends ? "egress: no host list, so the proxy does not start\\n" : "",
 			});
 			save([...load(), merge(made, config.proxyPatch)]);
@@ -275,6 +284,12 @@ switch (args[0]) {
 		break;
 	}
 	case "info": held("info", () => process.stdout.write(args[1] === "--format" ? render(args[2], config.info) + "\\n" : JSON.stringify(config.info) + "\\n")); break;
+	case "context": {
+		if (args[1] !== "inspect") { process.stderr.write("unexpected docker context call\\n"); process.exit(2); }
+		if (config.endpoint === null) { process.stderr.write("context \\"elsewhere\\": context not found\\n"); process.exit(1); }
+		process.stdout.write(JSON.stringify(config.endpoint) + "\\n");
+		break;
+	}
 	case "logs": {
 		const found = find(load(), args.at(-1));
 		if (!found) noSuch(args.at(-1));

@@ -1,7 +1,7 @@
 // DockerProvider's network "allow" against the fake docker in test/fake-docker.mjs: the egress proxy container and its
 // volume, made, read back, held to the computer and removed with it. No Docker and no network are needed.
 import assert from "node:assert/strict";
-import { chmodSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
+import { chmodSync, mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { networkInterfaces, tmpdir } from "node:os";
 import { join } from "node:path";
 import test from "node:test";
@@ -67,7 +67,8 @@ test("create() with an allowlist makes the volume, starts the proxy and waits fo
 	assert.equal(made.ok, true, JSON.stringify(made));
 	const { name } = made.value;
 	const volume = `${name}-egress`;
-	assert.deepEqual(calls().map((args) => args.slice(0, 2).join(" ")), ["info --format", "volume create", "run --detach", `logs ${volume}`, "run --detach", "inspect --type", "inspect --type", "exec -i"]);
+	assert.deepEqual(calls().map((args) => args.slice(0, 2).join(" ")), ["info --format", "context inspect", "volume create", "run --detach", `logs ${volume}`, "run --detach", "inspect --type", "inspect --type", "exec -i"]);
+	assert.deepEqual(calls()[1], ["context", "inspect", "--format", "{{json .Endpoints.docker.Host}}"], "where the docker CLI's daemon is, as the CLI itself resolves it");
 	const [uid, gid] = DEFAULT_USER.split(":");
 	assert.deepEqual(calls()[1], ["volume", "create", "--driver", "local", "--opt", "type=tmpfs", "--opt", "device=tmpfs", "--opt", `o=size=1m,uid=${uid},gid=${gid},mode=0700`, "--label", `agentrun.computer.egress=${name}`, volume]);
 	const computer = computerRunOf(calls());
@@ -120,7 +121,7 @@ test("the egress option: another image for the proxy, a hint after its refusal's
 	const proxy = proxyRunOf(calls());
 	assert.equal(proxy[proxy.indexOf("--entrypoint") + 2], "node:22.23.4-bookworm-slim");
 	assert.deepEqual(proxy.slice(-2), ["--hint", "ask the operator to add it"]);
-	for (const egress of [{ hint: "add it\r\nx: y" }, { hint: "café" }, { image: "" }, { image: "-x" }, { readyMs: 0 }, { readyMs: 2 ** 31 }]) {
+	for (const egress of [{ hint: "add it\r\nx: y" }, { hint: "café" }, { image: "" }, { image: "-x" }, { readyMs: 0 }, { readyMs: 2 ** 31 }, { hostAddresses: "93.184.215.20" }, { hostAddresses: ["not-an-address"] }, { hostAddresses: ["93.184.215.0/24"] }, { hostAddresses: [7] }]) {
 		assert.throws(() => new DockerProvider({ daemonPath: "/nonexistent", egress }), /egress/, JSON.stringify(egress));
 	}
 });
@@ -166,6 +167,55 @@ test("an allowlist on a host that remaps user ids is refused in words before any
 		assert.deepEqual(provider.check(SPEC).map((r) => r.field), ["network"], remap);
 		assert.deepEqual(provider.check({ ...SPEC, network: "none" }), [], `${remap}: network none`);
 		assert.equal((await provider.create({ ...SPEC, network: "open" })).ok, true, `${remap}: network open is made as before`);
+	}
+});
+
+test("an allowlist whose Docker host is not where this provider runs (a daemon that is not a local unix socket) is refused in words before anything is made, unless egress.hostAddresses names the host's addresses", async () => {
+	for (const [endpoint, said] of [["tcp://docker.example.com:2376", /talks to a Docker daemon at tcp:\/\/docker\.example\.com:2376, not a local unix socket/], ["ssh://builder@docker.example.com", /not a local unix socket/], [null, /could not say where its Docker daemon is/]]) {
+		const { provider, calls, names, volumeNames } = fakeDocker({ endpoint });
+		const refused = await provider.create(SPEC);
+		assert.equal(refused.ok, false, `${endpoint}: ${JSON.stringify(refused)}`);
+		assert.equal(refused.error.code, "refused");
+		assert.match(refused.error.message, said, String(endpoint));
+		assert.match(refused.error.message, /^network: .*so this provider's own interfaces are not the Docker host's, and the egress proxy could not refuse the host's own addresses: pass them as egress\.hostAddresses, or ask for network none or open$/, String(endpoint));
+		assert.deepEqual(calls().map((args) => args[0]), ["info", "context"], `${endpoint}: nothing is made`);
+		assert.deepEqual([names(), volumeNames()], [[], []]);
+		// Once it is known, check() says so too, for an allowlist alone; none and open are made as before.
+		assert.deepEqual(provider.check(SPEC).map((r) => r.field), ["network"], String(endpoint));
+		assert.deepEqual(provider.check({ ...SPEC, network: "none" }), []);
+		assert.equal((await provider.create({ ...SPEC, network: "open" })).ok, true, `${endpoint}: network open`);
+	}
+	const HOST = ["93.184.215.20", "2606:4700::20"];
+	const given = fakeDocker({ endpoint: "tcp://docker.example.com:2376", egressOptions: { hostAddresses: HOST } });
+	const made = await given.provider.create(SPEC);
+	assert.equal(made.ok, true, JSON.stringify(made));
+	assert.ok(!given.calls().some((args) => args[0] === "context"), "with the host's addresses given, where the daemon is does not matter");
+	const proxy = proxyRunOf(given.calls());
+	const local = proxy[proxy.indexOf("--local") + 1]?.split(",");
+	for (const address of HOST) assert.ok(local?.includes(address), `${address} reaches the proxy's --local: ${proxy.join(" ")}`);
+});
+
+test("containerSigns() names what shows this provider runs in a container: /.dockerenv, /run/.containerenv, or a container's cgroup; a plain host shows none", async () => {
+	const { containerSigns } = await import("../dist/docker/egress.js");
+	const root = mkdtempSync(join(tmpdir(), "computer-container-signs-"));
+	try {
+		mkdirSync(join(root, "proc", "self"), { recursive: true });
+		mkdirSync(join(root, "run"), { recursive: true });
+		writeFileSync(join(root, "proc", "self", "cgroup"), "0::/user.slice/user-1000.slice/session-3.scope\n");
+		assert.equal(containerSigns(root), undefined, "a host's cgroup");
+		writeFileSync(join(root, "proc", "self", "cgroup"), "0::/\n");
+		assert.equal(containerSigns(root), undefined, "a cgroup namespace's root is not evidence");
+		for (const cgroup of ["0::/system.slice/docker-0123456789abcdef.scope\n", "12:pids:/docker/0123456789abcdef\n", "0::/kubepods/besteffort/pod1/abc\n", "0::/machine.slice/libpod-0123.scope\n"]) {
+			writeFileSync(join(root, "proc", "self", "cgroup"), cgroup);
+			assert.match(containerSigns(root) ?? "", /a container's cgroup/, cgroup);
+		}
+		writeFileSync(join(root, "proc", "self", "cgroup"), "0::/\n");
+		writeFileSync(join(root, "run", ".containerenv"), "");
+		assert.match(containerSigns(root) ?? "", /\/run\/\.containerenv/);
+		writeFileSync(join(root, ".dockerenv"), "");
+		assert.match(containerSigns(root) ?? "", /\/\.dockerenv/);
+	} finally {
+		rmSync(root, { recursive: true, force: true });
 	}
 });
 
@@ -285,6 +335,18 @@ test("a proxy that is gone, or that is not as create makes one, reads back other
 		[{ Config: { Entrypoint: ["sh"] } }, /entrypoint/],
 		[{ Config: { Cmd: ["/code/docker/egress-main.js", "--socket", "/egress/egress.sock"] } }, /no host list/],
 		[{ Mounts: [] }, /mounts/],
+		// The bounds create sets: memory, swap, pids, its own IPC and cgroup namespaces, and a bounded json-file log.
+		[{ HostConfig: { Memory: 0 } }, /memory 0, not 268435456/],
+		[{ HostConfig: { Memory: 512 * 1024 * 1024 } }, /memory 536870912, not 268435456/],
+		[{ HostConfig: { MemorySwap: -1 } }, /memory swap -1, not 268435456/],
+		[{ HostConfig: { PidsLimit: 0 } }, /pids limit 0, not 64/],
+		[{ HostConfig: { PidsLimit: null } }, /pids limit null, not 64/],
+		[{ HostConfig: { IpcMode: "host" } }, /IPC mode "host", not "private"/],
+		[{ HostConfig: { IpcMode: "shareable" } }, /IPC mode "shareable", not "private"/],
+		[{ HostConfig: { CgroupnsMode: "host" } }, /cgroup namespace "host", not "private"/],
+		[{ HostConfig: { LogConfig: { Type: "json-file", Config: {} } } }, /log .*not json-file with max-size 1m and max-file 2/],
+		[{ HostConfig: { LogConfig: { Type: "json-file", Config: { "max-size": "1g", "max-file": "2" } } } }, /log .*not json-file with max-size 1m and max-file 2/],
+		[{ HostConfig: { LogConfig: { Type: "syslog", Config: { "max-size": "1m", "max-file": "2" } } } }, /log .*not json-file/],
 	];
 	for (const [proxy, words] of cases) {
 		const seeded = allowed({ name: A, allow: ALLOW, proxy: proxy === null ? null : {} });
