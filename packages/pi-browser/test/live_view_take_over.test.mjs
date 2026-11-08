@@ -118,21 +118,25 @@ test("a call that waited for the person says how long in its result's details (w
   assert.deepEqual(free.details, { own: true }, "no wait, nothing said of one");
 });
 
-test("a call stopped while it waits for the person does nothing and says so", async () => {
+test("a call stopped while it waits for the person does nothing and says so; its result claims no wait-then-act (no waited_for_person_ms), so its timeline row never reads as the agent acting after the hand-back", async () => {
   const gates = createDrivingGates();
   const tag = "ar-run-to-3-1";
   let ran = 0;
+  let clock = 0;
   const port = { session: async () => ({ tag, driver: { close: async () => {} }, notice: null }), relaunch: async () => ({ tag }), release: async () => ({ released: true, sessionId: null }) };
-  const tool = drivingGuard(async (_a, p) => { try { await p.session(); ran += 1; return { content: [{ type: "text", text: "ran" }] }; } catch (error) { return { content: [{ type: "text", text: JSON.stringify(error.failure) }], isError: true }; } }, gates);
+  const tool = drivingGuard(async (_a, p) => { try { await p.session(); ran += 1; return { content: [{ type: "text", text: "ran" }] }; } catch (error) { return { content: [{ type: "text", text: JSON.stringify(error.failure) }], isError: true, details: { own: true } }; } }, gates, { now: () => clock });
   gates(tag).take();
   const stop = new AbortController();
+  clock = 1_000;
   const running = tool({}, port, { signal: stop.signal });
-  await wait(50);
+  await Promise.resolve();
+  clock = 6_000;
   stop.abort();
   const out = await running;
   assert.equal(out.isError, true);
   assert.equal(JSON.parse(out.content[0].text).code, "aborted");
   assert.equal(ran, 0);
+  assert.deepEqual(out.details, { own: true }, "stopped while it waited: the tool's own details, and no wait beside them");
   gates(tag).give();
 });
 

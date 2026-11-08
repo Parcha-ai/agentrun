@@ -60,3 +60,20 @@ test("a phase with no time of its own keeps the time of the log before it; a cal
   assert.match(calls[0], /^Waited for you 400 ms, then opened www\.bundesarchiv\.de/);
   assert.match(calls[1], /^Opened www\.bundesarchiv\.de/);
 });
+
+test("a call that waited for the person and then failed never reads as having acted: no 'then opened', the wait said and the failure after it; a call stopped while it waited carries no wait and reads as the failure it is", () => {
+  const failed = JSON.stringify({ code: "navigation_failed", message: "The page did not load." });
+  const stopped = JSON.stringify({ code: "aborted", message: "The call was stopped while it waited for the person to hand the browser back; nothing was done." });
+  const rows = timelineOf([
+    assistant([call("f1", "run", goto)], 1),
+    result("f1", "run", failed, 13, { isError: true, details: { waited_for_person_ms: 11_000 } }),
+    assistant([call("s1", "run", goto)], 14),
+    result("s1", "run", stopped, 20, { isError: true }),
+  ], { settled: true });
+  const of = (id) => rows.filter((row) => row.tool_use_id === id).map((row) => row.summary);
+  for (const summary of [...of("f1"), ...of("s1")]) assert.doesNotMatch(summary, /then opened/, summary);
+  const [use, back] = of("f1");
+  assert.match(use, /^Waited for you 11 s: Opened www\.bundesarchiv\.de/, "the wait said, the call's own label after it");
+  assert.match(back, /^Waited for you 11 s: Opened www\.bundesarchiv\.de\S* failed: /, "and its failure");
+  assert.ok(of("s1").every((summary) => !summary.startsWith("Waited")), "a stopped wait claims no wait");
+});

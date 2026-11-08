@@ -91,8 +91,10 @@ export function drivingGuard<D extends BrowserDriver, A = unknown>(impl: ToolImp
   const now = options.now ?? Date.now;
   return async (args: A, port: CustodyPort<D>, call: ToolCall): Promise<ToolOutput> => {
     let held: { tag: string; release(): void; gate: DrivingGate; epoch: number } | null = null;
-    /** How long this call waited for the person, all told (ms). */
+    /** How long this call waited for the person, all told (ms), and whether it was stopped while it waited: then nothing
+     *  was done, and its result claims no wait that ended in an act. */
     let waitedMs = 0;
+    let stopped = false;
     /** Takes the tag's gate for the model, first waiting (inside the call, never failing it) while the person holds the browser; `drove` when a person
      *  has driven that session since the model's last call, `waited` when this call waited for the person to hand it back. */
     const enter = async (tag: string): Promise<{ drove: boolean; waited: boolean }> => {
@@ -104,7 +106,7 @@ export function drivingGuard<D extends BrowserDriver, A = unknown>(impl: ToolImp
         if (isHeld(gate) || isSettling(gate)) {
           waited = true;
           const from = now();
-          try { await gate.untilFree?.(call?.signal); } catch { throw STOPPED_WAITING(); } finally { waitedMs += Math.max(0, now() - from); }
+          try { await gate.untilFree?.(call?.signal); } catch { stopped = true; throw STOPPED_WAITING(); } finally { waitedMs += Math.max(0, now() - from); }
           continue;
         }
         const entered = gate.model();
@@ -135,7 +137,7 @@ export function drivingGuard<D extends BrowserDriver, A = unknown>(impl: ToolImp
       // A tool that ends the session (release, relaunch) does not ask for it first: the gate is taken for the session that is attached now.
       if (options.early) { const tag = await port.current?.(); if (tag) await enter(tag); }
       const out = await impl(args, guarded, call);
-      return waitedMs > 0 ? { ...out, details: { ...out.details, [WAITED_FOR_PERSON]: Math.round(waitedMs) } } : out;
+      return waitedMs > 0 && !stopped ? { ...out, details: { ...out.details, [WAITED_FOR_PERSON]: Math.round(waitedMs) } } : out;
     } finally {
       (held as { release(): void } | null)?.release();
     }
