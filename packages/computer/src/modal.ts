@@ -912,7 +912,7 @@ export class ModalProvider implements ComputerProvider {
 		const uploaded = daemon === undefined ? ok(undefined) : await this.#upload(sandbox, name, daemon, signal);
 		// The run's folder, after the daemon is in place (serve runs it) and before init starts (the gate).
 		const root = this.#root(sandbox, name);
-		const mounted = uploaded.ok && archil !== undefined ? await this.#mountArchil(root, archil, signal) : uploaded;
+		const mounted = uploaded.ok && archil !== undefined ? await this.#mountArchil(root, ref, archil, signal) : uploaded;
 		const checked = mounted.ok ? await this.#checkCreated(sandbox, ref, tags, recorded, signal) : mounted;
 		// A folder mounted for a computer create gives up on is let go before the terminate, never signalled.
 		const letGo = async () => {
@@ -1002,9 +1002,9 @@ export class ModalProvider implements ComputerProvider {
 	}
 
 	/** The shared Archil steps (archilMount) through root, with the takeover of this provider's lower epochs; then the gate. */
-	async #mountArchil(root: ArchilRoot, { mount, run, epoch }: { mount: ArchilMount; run: string; epoch: number }, signal?: AbortSignal): Promise<Result<void>> {
+	async #mountArchil(root: ArchilRoot, computer: ComputerRef, { mount, run, epoch }: { mount: ArchilMount; run: string; epoch: number }, signal?: AbortSignal): Promise<Result<void>> {
 		const { mountMs, callMs } = this.#timeouts;
-		const made = await archilMount({ root, mount, releaseOlder: () => releaseOlder(this, run, epoch, signal ? { signal } : {}), timeoutMs: mountMs, ...(signal ? { signal } : {}) });
+		const made = await archilMount({ root, mount, self: computer, releaseOlder: () => releaseOlder(this, run, epoch, signal ? { signal } : {}), timeoutMs: mountMs, ...(signal ? { signal } : {}) });
 		if (!made.ok) return made;
 		const gate = await root.run(["touch", ARCHIL_GATE], { timeoutMs: callMs, ...(signal ? { signal } : {}) });
 		if (!gate.ok) return fail(gate.error.code, `the gate init waits for could not be made: ${gate.error.message}`);

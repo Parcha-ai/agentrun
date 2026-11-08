@@ -823,6 +823,7 @@ export class DaytonaProvider implements ComputerProvider {
 			const mounted = await archilMount({
 				root: this.#root(toolbox.value),
 				mount: archil,
+				self: ref,
 				releaseOlder: () => releaseOlder(this, run, epoch as number, signal ? { signal } : {}),
 				timeoutMs: this.#timeouts.execMs,
 				...(signal ? { signal } : {}),
