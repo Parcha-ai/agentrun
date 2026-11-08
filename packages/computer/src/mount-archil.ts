@@ -205,8 +205,22 @@ export async function archilMount({ root, mount, self: computer, releaseOlder, t
 	}
 	const older = await releaseOlder();
 	if (!older.ok) return fail(older.error.code, `the takeover could not release the run's lower epochs, so nothing was revoked or mounted: ${older.error.message}`);
-	const twins = older.value.kept.filter((ref) => ref.id !== computer.id).map((ref) => ref.name);
+	const twinsOf = (kept: ComputerRef[]) => kept.filter((ref) => ref.id !== computer.id).map((ref) => ref.name);
+	const twins = twinsOf(older.value.kept);
+	// Right before any force, the run's listing is read again: a higher epoch made since (two creates of one run
+	// interleaving, this one lagging) fences it, and a twin made since stops it, so nothing is revoked from either.
+	const beforeForce = async (): Promise<Result<void>> => {
+		const again = await releaseOlder();
+		if (!again.ok) return fail(again.error.code, `the run's computers, listed again right before the force, stop it, so nothing was revoked: ${again.error.message}`);
+		const late = twinsOf(again.value.kept);
+		if (late.length > 0) return fail("refused", `the run has ${late.join(", ")} at this claim's same epoch, listed right before the force: a create never forces off a computer of its own epoch, so nothing was revoked`);
+		return ok(undefined);
+	};
 	const force = twins.length === 0 && (older.value.released.length > 0 || older.value.unproven.length > 0);
+	if (force) {
+		const checked = await beforeForce();
+		if (!checked.ok) return checked;
+	}
 	let verb: "mount" | "revoke" = force ? "revoke" : "mount";
 	let took = await step(helper(verb, mount), verb, `${mount.token}\n`);
 	if (!took.ok) return took;
@@ -214,6 +228,8 @@ export async function archilMount({ root, mount, self: computer, releaseOlder, t
 		return fail("refused", `the run's folder is held, and the run has ${twins.join(", ")} at this claim's same epoch: a create never forces off a computer of its own epoch, so nothing was revoked; release that computer, or attach to it`);
 	}
 	if (verb === "mount" && took.value.exitCode !== 0 && took.value.output.includes(HELD)) {
+		const checked = await beforeForce();
+		if (!checked.ok) return checked;
 		verb = "revoke";
 		took = await step(helper(verb, mount), verb, `${mount.token}\n`);
 		if (!took.ok) return took;

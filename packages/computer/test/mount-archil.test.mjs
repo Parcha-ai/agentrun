@@ -108,8 +108,9 @@ test("archilMount: a takeover releases the lower epochs before any mount; releas
 		return ok({ released: [{ id: "old", name: "old" }], kept: [], unproven: [] });
 	};
 	assert.deepEqual(await archilMount({ root: wrapped, mount: MOUNT, releaseOlder: releasing, timeoutMs: 1000 }), ok(undefined));
-	// The computer is proven as the image makes it before any older one is destroyed for it.
-	assert.deepEqual(order, ["preflight", "releaseOlder", "revoke", "serve"]);
+	// The computer is proven as the image makes it before any older one is destroyed for it; the run's computers are listed
+	// again right before the force.
+	assert.deepEqual(order, ["preflight", "releaseOlder", "releaseOlder", "revoke", "serve"]);
 	assert.equal(root.calls.find(({ argv }) => argv[1] === "revoke").stdin, `${TOKEN}\n`);
 
 	const held = fakeRoot({ mount: { exitCode: 1, output: "mount failed: dsk:/agents/a1/runs/r1/work has an outstanding delegation" } });
