@@ -1,0 +1,12 @@
+---
+packages: @parcha/agentrun-computer
+kind: fix
+---
+phone-harness, from its first live run and the second read of #2000:
+
+- It takes the phone harness's own unlock code (`ph_` and base32 letters), which it refused, failing every connect.
+- No spawned adb's argv holds the phone's endpoint or unlock code, which `/proc` shows to every user of the host. The endpoint goes to the local adb server over its socket protocol, the code through the stdin of `adb shell -T`, and every spawned adb names the phone by its transport id. The `adb` option is now a transport, `{ run(args, { input }), server(service) }`, or the CLI's path.
+- A phone made while both a create's answer and its recovery were lost is found: create puts the Idempotency-Key in the ledger before its POST, and `list()` takes the account session whose `request_key` is exactly that key.
+- The conformance module's file ledger writes one at a time, across processes too (a lock file beside it), so no entry is lost.
+- A ledger that fails is a result in words from every call, never a throw, and create rents no phone it cannot record.
+- A connect that fails after adb reached the phone lets the transport go.

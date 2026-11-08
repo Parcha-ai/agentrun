@@ -616,24 +616,32 @@ export class PhoneHarnessProvider implements ComputerProvider {
 		const endpoint = `${host}:${port}`;
 		const server = (service: string) => this.#adb.server(service, { timeoutMs: ADB_TIMEOUT_MS });
 		const connected = await server(`host:connect:${endpoint}`);
-		if (!connected.ok) return connected;
+		// From the connect request on, every failure lets the adb server drop the phone's transport before it answers.
+		const letGo = async <T>(failed: Result<T>): Promise<Result<T>> => {
+			await server(`host:disconnect:${endpoint}`).catch(() => undefined);
+			return failed;
+		};
+		if (!connected.ok) return letGo(connected);
 		const said = connected.value.trim();
-		if (!said.includes("connected") || /cannot|failed|unable/i.test(said)) return fail("phone", `adb could not reach the phone of ${ref.id}: ${said.split("\n")[0]}`);
+		if (!said.includes("connected") || /cannot|failed|unable/i.test(said)) return letGo(fail("phone", `adb could not reach the phone of ${ref.id}: ${said.split("\n")[0]}`));
 		const transport = await this.#transportOf(endpoint);
-		if (!transport.ok) return transport;
+		if (!transport.ok) return letGo(transport);
 		const id = transport.value;
 		const adb: AdbRun = (args, timeoutMs = ADB_TIMEOUT_MS, input) => this.#adb.run(["-t", id, ...args], { timeoutMs, ...(input === undefined ? {} : { input }) });
 		const unlocked = await adb(["shell", "-T"], ADB_TIMEOUT_MS, `unlock ${code}\nexit\n`);
-		if (!unlocked.ok) return unlocked;
+		if (!unlocked.ok) return letGo(unlocked);
 		const probe = await adb(["shell", "echo ph-ok"]);
-		if (!probe.ok) return probe;
-		if (!probe.value.stdout.toString("utf8").includes("ph-ok")) return fail("phone", `the phone of ${ref.id} stayed locked after its unlock code`);
+		if (!probe.ok) return letGo(probe);
+		if (!probe.value.stdout.toString("utf8").includes("ph-ok")) return letGo(fail("phone", `the phone of ${ref.id} stayed locked after its unlock code`));
 		const client = new AdbClient(id, adb, () => server(`host:disconnect:${endpoint}`), this.#sleep);
 		const opened = await client.open(this.#daemonVersion);
-		if (!opened.ok) return opened;
+		if (!opened.ok) {
+			await client.closed();
+			return opened;
+		}
 		const hello = opened.value;
 		if (hello.version !== this.version) {
-			client.close();
+			await client.closed();
 			return fail("refused", `hello: the daemon reports version ${hello.version}, expected ${this.version}`);
 		}
 		return ok({ client, hello, close: () => client.closed() });
