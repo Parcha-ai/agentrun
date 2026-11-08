@@ -16,7 +16,7 @@ import { BACKGROUND_CONTEXT, withAbortSignal } from "@earendil-works/chord/conte
 import type { Models } from "@earendil-works/pi-ai";
 import { createModels } from "@earendil-works/pi-ai/models";
 import { type Conversation, type ConversationId, createRegistry, Harness, LiveDoc } from "@earendil-works/pi-durable";
-import { type AdapterSession, type AgentAdapter, type BeforeRequest, type HostTool, modelPortFor, type SessionSpec } from "@parcha/agentrun-kernel";
+import { type AdapterSession, type AgentAdapter, type BeforeRequest, type HostTool, modelPortFor, runBooking, type SessionSpec } from "@parcha/agentrun-kernel";
 import type { KernelHooks, ToolCall } from "./conformance/subject.js";
 import { type AnswerData, type AskData, type EndData, KINDS } from "./journal-kinds.js";
 import type { Claim, Command, CommandOutcome, Loop, LoopDeps, LoopEnd, LoopFactory, StopReason } from "./loop-contract.js";
@@ -121,7 +121,9 @@ function adapterLoop(specOf: (claim: Claim, run: AdapterRun) => AdapterRunSpec |
         const booking = await modelPortFor(writer, {
           key: spec.session.key,
           label: spec.session.label,
-          ...(spec.beforeRequest ? { beforeRequest: spec.beforeRequest } : {}),
+          // The host's check is asked with the run's totals, every session of the run summed (the run's one booking), never
+          // this session's alone: a cap is the run's.
+          ...(spec.beforeRequest ? { beforeRequest: runBooking(sessions, spec.beforeRequest) } : {}),
           onEvent: async (event) => {
             if (event.type === "request_start") await deps.flush();
           },
