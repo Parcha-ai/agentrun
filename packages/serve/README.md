@@ -1659,7 +1659,10 @@ its App to `...&reason=already_connected` (the first App stays), and an installa
 checked while GitHub was disconnected or connected again, to `...&reason=installation_unverified`; nothing is kept. The
 App's `installation` events keep the list current, each taken only in its own shape (the installation, its account and
 this App's id) and as GitHub, asked with the App's JWT, bears it out: `X-GitHub-Event` is not signed, so another
-event's signed body sent as one changes nothing.
+event's signed body sent as one changes nothing. GitHub out of reach when an event is checked answers it `503`, so
+GitHub shows the delivery failed and it can be sent again; and the list is repaired from GitHub's own installations at
+the server's start and when `GET /v2/integrations/github` is read (at most once a minute), by the same rule: none left
+turns the github triggers off, one dropped only shrinks it.
 `GET /v2/integrations/github` shows `{app_id, slug, installations}`, never a secret.
 
 A trigger with `source: {kind: "github", accept: [...]}` takes the App's events its `accept` names (the same rules as a
