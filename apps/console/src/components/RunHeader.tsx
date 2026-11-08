@@ -63,8 +63,8 @@ export function RunHeader({ run, agentName, actions = {}, costText }: { run: Run
             {archived && <Chip tone="muted">Archived</Chip>}
             <span className="font-mono">{run.kind} · rev {run.agent_version}{ranIn && ` · ${ranIn}`}</span>
             <span className="font-mono">{when(run.created_at)}</span>
-            {/* A workflow run's cost is its graph's totals (`costText`), the same the totals bar shows. */}
-            {costText !== undefined ? <span className="font-mono" title="The run's decisions and model calls, as the providers priced them">{costText}</span>
+            {/* A workflow run's cost is its graph's totals (`costText`), the same the totals bar shows, with its served cap. */}
+            {costText !== undefined ? <span className="font-mono" title="The run's decisions and model calls, as the providers priced them">{capped ? `${costText} · ${capWords(cap!)} cap` : costText}</span>
               : <span className="font-mono" title={costTitle(run.cost)} data-run-cost>{costWords}</span>}
             <LearningChips run={run} link />
             <ScheduleChip run={run} />

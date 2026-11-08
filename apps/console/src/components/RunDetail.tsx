@@ -134,6 +134,14 @@ export function RunDetail({ run, agentName, messages, harnessSteers, rows, files
   // A story or a deep link can open a file on first render.
   useEffect(() => { if (openFile && readFile) void show(openFile); }, [openFile]); // eslint-disable-line react-hooks/exhaustive-deps
 
+  // Paused at its cap: the banner and the one raise (the header offers none), above the pause's cap, else the run's served
+  // cap. One element, shown on whichever tab is open, the Graph tab included.
+  const budgetBanner = budget && (
+    <>
+      <BudgetPaused pending={budget} />
+      {bannerCap !== null && actions?.onRaiseCap && <RaiseCap key={`${run.run_id}:${budget.at}`} cap={bannerCap} suggested={suggestedCap(budget)} paused onRaise={actions.onRaiseCap} />}
+    </>
+  );
   const tabs: [Tab, string][] = [...(graphView ? [["graph", "Graph"] as [Tab, string]] : []), ["report", "Report"], ["timeline", "Timeline"], ["files", `Files ${files.length}`], ...(browser ? [["browser", browser.state === "live" ? "Watch live" : "Browser"] as [Tab, string]] : [])];
   return (
     <div className="flex h-full min-h-0 flex-col">
@@ -146,7 +154,13 @@ export function RunDetail({ run, agentName, messages, harnessSteers, rows, files
           </button>
         ))}
       </div>
-      {tab === "graph" ? <div className="min-h-0 flex-1">{graphView}</div> : <div className="min-h-0 flex-1 overflow-auto">
+      {tab === "graph" ? (
+        // A workflow run opens here: paused at its cap, its banner and the one raise show above the graph too.
+        <div className="flex min-h-0 flex-1 flex-col">
+          {view.needsYou && budget && !approval && <div className="space-y-3 border-b px-5 py-4 md:px-8">{budgetBanner}</div>}
+          <div className="min-h-0 flex-1">{graphView}</div>
+        </div>
+      ) : <div className="min-h-0 flex-1 overflow-auto">
         <div className="mx-auto max-w-4xl space-y-6 px-5 py-8 md:px-8">
           {run.status === "failed" && run.error && <RunError error={run.error} title={isEscalated(run.status, run.error) ? "The run escalated" : undefined} />}
           {run.status === "cancelled" && (
@@ -160,9 +174,7 @@ export function RunDetail({ run, agentName, messages, harnessSteers, rows, files
           )}
           {refused && refused.id !== approval?.id && <p className="border border-destructive/50 px-4 py-2.5 font-mono text-[12px] text-destructive-text" role="alert">Your answer wasn't taken: {refused.text}</p>}
           {approval ? <ApprovalCard key={approval.id} pending={approval} onAnswer={(decision, note) => approve(approval.id, decision, note)} />
-            : view.needsYou && (budget ? <BudgetPaused pending={budget} /> : <NeedsYou waiting={waiting} />)}
-          {/* The one raise while paused (the header offers none): above the pause's cap, else the run's served cap. */}
-          {view.needsYou && budget && bannerCap !== null && actions?.onRaiseCap && <RaiseCap key={`${run.run_id}:${budget.at}`} cap={bannerCap} suggested={suggestedCap(budget)} paused onRaise={actions.onRaiseCap} />}
+            : view.needsYou && (budget ? budgetBanner : <NeedsYou waiting={waiting} />)}
           {tab === "report" && <RunResult run={run} rows={rows} files={files} onOpen={show} />}
           {tab === "report" && !run.result && !view.final && <Working {...beforeAnswer(run, view)} />}
           {tab === "report" && view.final && !run.result?.final_answer && !run.result?.output && !rows.some((r) => r.kind === "final_answer") && run.status !== "failed" && run.status !== "cancelled" && !run.review && (
