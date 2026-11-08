@@ -279,6 +279,9 @@ function workflowLoop(specOf: (claim: Claim) => WorkflowRunSpec | Promise<Workfl
     // fresh journal of the same claim (the Harness closed its own).
     await closeHarness();
     const endJournal = deps.journal(claim);
+    // A person cancelled: the run ends stopped whatever the workflow's own outcome (its last node may have completed as the
+    // cancel landed, since the engine cancels by aborting the task), with the stop row taken in the end commit.
+    if (stopReason?.kind === "command") return await writeEnd(endJournal, context, { state: "stopped", summary: "stopped by a person" });
     const carry = await workflowCarry({ runId: claim.runId, storage: endJournal, revision }, outcome, { context });
     return await writeEnd(endJournal, context, carry);
   }
