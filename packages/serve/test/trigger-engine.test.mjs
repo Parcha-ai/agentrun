@@ -560,3 +560,31 @@ test("the keys kept for the day are in the triggers file: after a restart, an ev
   await sleep(50);
   assert.equal(runs, before, "no run for it after the restart");
 });
+
+test("a trigger's run cap counts every run it started that still works, however many firings came since: a long run pushed out of the history still holds its place", async (t) => {
+  const working = new Set();
+  let runs = 0;
+  const { triggers } = await engine(t, {
+    settings: keeps,
+    statusOf: async (id) => (working.has(id) ? "working" : "completed"),
+    // run-1 and every run after run-251 keep working; the 250 between end at once.
+    start: async () => {
+      const id = `run-${++runs}`;
+      if (runs === 1 || runs > 251) working.add(id);
+      return { run_id: id };
+    },
+  });
+  const hook = await triggers.create({ ...hookBody, source: { kind: "webhook", accept: [{ event: "push" }] }, max_active_runs: 2 });
+  triggers.receive(hook.id, "evt-long", "{}");
+  await until(() => runs === 1, "the long run started");
+  await flood(triggers, hook.id, 250);
+  assert.ok(!triggers.firings(hook.id).firings.some((f) => f.run_id === "run-1"), "the long run's firing left the history");
+  triggers.receive(hook.id, "evt-second", "{}");
+  await until(() => runs === 252, "a second run alongside the long one");
+  triggers.receive(hook.id, "evt-third", "{}");
+  await until(() => triggers.firings(hook.id).firings[0].attempts >= 1, "the third waits");
+  const [third] = triggers.firings(hook.id).firings;
+  assert.deepEqual([third.status, runs], ["due", 252], JSON.stringify(third));
+  assert.match(third.reason, /max_active_runs/);
+  working.delete("run-1");
+});

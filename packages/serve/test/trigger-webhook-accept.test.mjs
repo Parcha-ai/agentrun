@@ -352,3 +352,17 @@ test("a trigger with accept may cap its own active runs (max_active_runs): at th
   await writeFile(gate, "");
   for (const runId of [first.run_id, second.run_id]) await follow(api, runId, ["completed"]);
 });
+
+test("X-GitHub-Event is not signed: a delivery its accept ignored, sent again under an event it takes, is the same body and starts no run", { timeout: 120_000 }, async (t) => {
+  withEnv(t, SEAL);
+  const { api, baseUrl } = await serve(t);
+  await made(api, "review");
+  const { id, secret } = await trigger(api, hooked("review", { signature: "github", accept: [{ event: "pull_request" }] }));
+  const body = JSON.stringify({ action: "created", comment: { body: "nit" } });
+  const ignored = await deliver(baseUrl, id, "pull_request_review_comment", body, { secret });
+  assert.deepEqual([ignored.status, ignored.body], [200, { ok: "ignored" }]);
+  const relabeled = await deliver(baseUrl, id, "pull_request", body, { secret });
+  assert.deepEqual([relabeled.status, relabeled.body], [200, { ok: "duplicate" }], JSON.stringify(relabeled.body));
+  assert.deepEqual((await api("GET", `/triggers/${id}/firings`)).body.firings, [], "nothing fired");
+  assert.equal((await api("GET", "/agents/review/runs")).body.runs.length, 0, "no run");
+});
