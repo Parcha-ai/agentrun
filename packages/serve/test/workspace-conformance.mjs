@@ -27,7 +27,9 @@ async function refused(promise, code, label) {
 
 const text = (bytes) => Buffer.from(bytes).toString("utf8");
 
-export function suite(name, make) {
+/** `options.skip` names cases a backend cannot have, each with the reason: `symlinks` (no symbolic link can be made
+ *  where the suite plants them). */
+export function suite(name, make, options = {}) {
   /** A fresh workspace, with a sentinel file outside its root. */
   async function fresh() {
     const made = await make();
@@ -183,7 +185,7 @@ export function suite(name, make) {
       untouched(outside);
     });
 
-    test("a symbolic link in the root that points outside is ESCAPE: for a read, a write, exec's cwd, and as the last part", async () => {
+    test("a symbolic link in the root that points outside is ESCAPE: for a read, a write, exec's cwd, and as the last part", { skip: options.skip?.symlinks }, async () => {
       const { workspace, root, outside } = await fresh();
       symlinkSync(outside, join(root, "dirlink"));
       symlinkSync(join(outside, "sentinel"), join(root, "filelink"));
