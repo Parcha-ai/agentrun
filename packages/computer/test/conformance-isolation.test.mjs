@@ -61,6 +61,22 @@ test("it fails where a program sees another interface than its own loopback, and
 	assert.match(reasons(report)[ID], /eth0/);
 });
 
+test("it fails where a program connects to a path unix socket that is not the computer's own, naming it; the computer's own sockets pass, and are recorded", async () => {
+	// Review (#1994, P2-2): a network namespace does not cut a path socket, so a vendor's agent listening on one is
+	// reached from inside; the computer's own (computerd's, the Archil sync socket's) are the only ones allowed.
+	const own = ["/run/agentrun/computerd.sock", "/run/agentrun-archil/archil.sock"];
+	const passing = await run({ vendorAgentPorts: [2280], pathSockets: own });
+	assert.deepEqual(statuses(passing), { [ID]: "pass" }, reasons(passing)[ID]);
+	assert.ok(passing.results[0].observed.some((line) => line.includes("/run/agentrun/computerd.sock")), JSON.stringify(passing.results[0].observed));
+	const vendor = await run({ vendorAgentPorts: [2280], pathSockets: [...own, "/run/vendor/agent.sock"] });
+	assert.equal(statuses(vendor)[ID], "fail");
+	assert.match(reasons(vendor)[ID], /\/run\/vendor\/agent\.sock/);
+	// An image with no python3 cannot list them: recorded in words, not failed.
+	const unlisted = await run({ vendorAgentPorts: [2280], pathSockets: "no python3" });
+	assert.deepEqual(statuses(unlisted), { [ID]: "pass" }, reasons(unlisted)[ID]);
+	assert.ok(unlisted.results[0].observed.some((line) => /no python3/.test(line)));
+});
+
 test("it is skipped in words where nothing is declared (Docker), and fails Core for a child daemon that declares nothing", async () => {
 	const docker = await run({});
 	assert.equal(statuses(docker)[ID], "skip");

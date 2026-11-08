@@ -55,7 +55,7 @@ function catOf(argv, cwd, computer) {
 const UNPRIVILEGED = { CapInh: NO_CAPABILITIES, CapPrm: NO_CAPABILITIES, CapEff: NO_CAPABILITIES, CapBnd: NO_CAPABILITIES, CapAmb: NO_CAPABILITIES, NoNewPrivs: "1" };
 
 /** What exec.run of argv prints in a computer whose user is uid, as `user` (a name in users, or a uid) when given. */
-function output(argv, { uid, status, users, user, probe }) {
+function output(argv, { uid, status, users, user, probe, pathSockets = [] }) {
 	const who = user === undefined ? uid : String(users[user] ?? user);
 	if (argv[0] === "id" && argv[1] === "-u") return `${who}\n`;
 	if (argv[0] === "/opt/agentrun/computerd" && argv[1] === "probe") {
@@ -71,6 +71,8 @@ function output(argv, { uid, status, users, user, probe }) {
 		return `Uid:\t${who}\n${lines.map(([field, value]) => `${field}:\t${value}\n`).join("")}`;
 	}
 	if (argv[0] === "env") return "PATH=/usr/bin:/bin\nHOME=/home/fake\n";
+	// The isolation check's listing of path unix sockets (a python3 walk): each the computer's user connects to.
+	if (argv[0] === "sh" && argv[2]?.includes("S_ISSOCK")) return pathSockets === "no python3" ? "no python3\n" : pathSockets.map((path) => `connects ${path}\n`).join("");
 	if (argv[0] === "sh" && argv[2]?.includes('echo ok > "$HOME/x"')) return "ok\n";
 	return `${argv.slice(1).join(" ")}\n`;
 }
@@ -240,6 +242,7 @@ export function fakeComputers({
 	probeInterfaces = ["lo"],
 	agentAnswers = [],
 	toolCannotWrite = false,
+	pathSockets = [],
 } = {}) {
 	/** The mount as attach and list read it back: its kind and source, never the token unless broken so. An Archil mount
 	 *  is exclusive, under the epoch of the computer's agentrun.epoch label; with no such label it is a mount in words. */
@@ -310,6 +313,7 @@ export function fakeComputers({
 					filesPage,
 					bound: folderOf(spec.mount),
 					toolCannotWrite,
+					pathSockets,
 					probe: { interfaces: probeInterfaces, answers: agentAnswers },
 				},
 			};
