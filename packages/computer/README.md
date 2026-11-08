@@ -1728,8 +1728,10 @@ Core and Full follow the Kubernetes agent-sandbox conformance levels (KEP-539.2)
   vendor's own agent declares that agent's TCP ports, its own fact, as `capabilities().vendorAgentPorts` (Daytona
   `[2280]`, E2B `[49983]`, Modal `[]`); a child daemon must (`coreGroups` holds `vendor-agent` for daemon `child`).
   The case runs `computerd probe` through `exec.run`, as the computer's user, against each port on `127.0.0.1` and
-  `[::1]`: every target must read `refused`, and the probe's `interfaces` must be `["lo"]`. A provider that declares
-  nothing (Docker: no agent inside) skips it in words.
+  `[::1]`, and against the outside (`OUTSIDE_TARGETS`: `1.1.1.1:443`, a public IP literal, and `example.com:443`, a
+  DNS name): every target must read `refused`, and the probe's `interfaces` must be `["lo"]`. So it proves, per
+  provider, that a tool reaches neither the vendor's agent nor any address. A provider that declares nothing (Docker:
+  no agent inside) skips it in words.
 - **Core by kind.** `coreGroups(kind, daemon)` is what a computer of its kind must declare (the table in
   [The protocol extension](#the-protocol-extension-kind-daemon-modes-screen-input-apps-lifetime)): exec, files,
   processes and network `none` wherever computerd runs, screen and keyboard and pointer on a desktop, screen and touch
@@ -1886,7 +1888,8 @@ thread of init and its own status with all five sets zero and `NoNewPrivs` 1; `-
 and so does a root container without CAP_SETPCAP, in words. `test/docker/loopback-block.docker.test.mjs` starts init
 as Daytona, E2B and Modal start it, in an Alpine root container beside a stand-in agent (BusyBox `nc` as root on 2280
 and 49983, on every interface): root reaches the stand-in, and a program of the computer's user, through `exec.run`,
-finds every port refused on both loopbacks and the container's own address, sees `lo` alone, and still reaches a
+finds every port refused on both loopbacks and the container's own address, and `1.1.1.1:443` and `example.com:443`
+refused though the container itself has Docker's bridge, sees `lo` alone, and still reaches a
 listener of its own; a root without CAP_SYS_ADMIN, and a container where another process holds the computer's uid,
 have init refuse to start in words. The Daytona and E2B command tests give their containers the same two
 capabilities.
