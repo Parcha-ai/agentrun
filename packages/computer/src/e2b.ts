@@ -448,16 +448,23 @@ function createdEnd({ metadata, startedAt }: { metadata: Record<string, string>;
 }
 
 /**
- * When a computer ends: the deadline create wrote, or E2B's own end once extend has moved it past where create set it.
- * E2B keeps no metadata change (it has no call for one), so the vendor's end, read back, stands for a moved deadline.
+ * When a computer ends: the deadline create wrote, or, once extend has moved E2B's end past where create set it, that
+ * end up to the most the computer may live, which is what extend gave init. E2B keeps no metadata change (it has no call
+ * for one), so the vendor's end, read back, stands for a moved deadline. An end within END_SLACK_MS of create's is
+ * create's own, rounded: extend never leaves E2B's end there (clearOf).
  */
 function deadlineOf(sb: { metadata: Record<string, string>; startedAt: Date; endAt: Date }): Date | undefined {
 	const written = isoOf(sb.metadata[DEADLINE_LABEL]);
 	if (written === undefined) return undefined;
 	const end = sb.endAt instanceof Date ? sb.endAt.getTime() : Number.NaN;
 	const created = createdEnd(sb);
-	return !Number.isNaN(end) && created !== undefined && end > created + END_SLACK_MS ? new Date(end) : written;
+	if (Number.isNaN(end) || created === undefined || end <= created + END_SLACK_MS) return written;
+	const most = isoOf(sb.metadata[MAX_LABEL]);
+	return new Date(most === undefined ? end : Math.min(end, most.getTime()));
 }
+
+/** The earliest end extend gives E2B: a second past create's end and its rounding, so deadlineOf reads it as moved. */
+const clearOf = (created: number) => created + END_SLACK_MS + 1_000;
 
 /**
  * A sandbox's network as E2B reports it. None is no internet access (E2B: the same as denyOut 0.0.0.0/0,
@@ -551,6 +558,8 @@ export class E2BProvider implements ComputerProvider {
 	readonly #publicStream: boolean;
 	readonly #timeouts: E2BTimeouts;
 	readonly #probeTargets: string[];
+	/** Each computer's last extend, by sandbox id, while one runs: the next waits for it. */
+	readonly #extending = new Map<string, Promise<void>>();
 
 	constructor({
 		apiKey,
@@ -1257,13 +1266,31 @@ export class E2BProvider implements ComputerProvider {
 
 	/**
 	 * Moves E2B's timer to now + ttlMs (setTimeout, index.mjs:5529-5541), then init's own deadline to the end E2B reads
-	 * back; never earlier than the current end, never past create's time plus the cap, which init was given as its
-	 * maximum. There is no label to move: E2B has no call that changes metadata, and list() reads the vendor's end.
+	 * back, and returns the deadline init took; never earlier than the current end, never past create's time plus the
+	 * cap, which init was given as its maximum. There is no label to move: E2B has no call that changes metadata, and
+	 * list() reads the vendor's end. A provider runs one extend of a computer at a time, each reading the deadline the one
+	 * before it left, so a slow, shorter extend never pulls E2B's timer under a longer one's.
 	 */
 	async extend(ref: ComputerRef, ttlMs: number, { signal }: CallContext = {}): Promise<Result<{ deadline: Date }>> {
 		const problem = refProblem(ref);
 		if (problem) return fail("invalid", problem);
 		if (!isWhole(ttlMs) || ttlMs <= 0) return fail("invalid", "extend takes ttlMs, a whole number of milliseconds above 0");
+		const before = this.#extending.get(ref.id) ?? Promise.resolve();
+		const mine = before.then(() => this.#extend(ref, ttlMs, signal));
+		const done = mine.then(
+			() => {},
+			() => {},
+		);
+		this.#extending.set(ref.id, done);
+		try {
+			return await mine;
+		} finally {
+			if (this.#extending.get(ref.id) === done) this.#extending.delete(ref.id);
+		}
+	}
+
+	/** One extend, run when the one before it on the same computer has ended: see extend. */
+	async #extend(ref: ComputerRef, ttlMs: number, signal?: AbortSignal): Promise<Result<{ deadline: Date }>> {
 		const found = await this.#own(ref, signal);
 		if (!found.ok) return found;
 		const info = found.value;
@@ -1271,13 +1298,25 @@ export class E2BProvider implements ComputerProvider {
 		const most = isoOf(info.metadata[MAX_LABEL]);
 		if (most === undefined) return fail("refused", `${ref.name}'s label ${MAX_LABEL} reads ${show(info.metadata[MAX_LABEL])}, so the most it may live is unknown`);
 		const current = deadlineOf(info) ?? info.endAt;
-		const target = Date.now() + ttlMs;
+		const now = Date.now();
+		const target = now + ttlMs;
 		if (target > most.getTime()) {
 			return fail("limit", `${new Date(target).toISOString()} is past ${most.toISOString()}, the most this computer may live: create's time plus this provider's ${seconds(this.#maxLifetimeMs)} cap`);
 		}
 		if (target <= current.getTime()) return ok({ deadline: current });
+		// E2B takes whole seconds (index.mjs:502-504): up to clear create's end, so list() reads the move (deadlineOf), and
+		// down at the most this computer may live, so E2B's timer never passes it by this machine's clock.
+		const created = createdEnd(info);
+		const want = created === undefined ? target : Math.max(target, clearOf(created));
+		const timerMs = Math.min(Math.ceil((want - now) / 1000) * 1000, Math.floor((most.getTime() - now) / 1000) * 1000);
+		if (created !== undefined && now + timerMs < clearOf(created)) {
+			return fail(
+				"limit",
+				`${new Date(target).toISOString()} is within E2B's rounding of the end create gave ${ref.name}, and moving E2B's end clear of it would pass ${most.toISOString()}, the most this computer may live`,
+			);
+		}
 		const { requestMs } = this.#timeouts;
-		const moved = await call(`Sandbox.setTimeout of ${ref.name}`, () => this.#Sandbox.setTimeout(ref.id, ttlMs, this.#api(requestMs, signal)), requestMs + CALL_SLACK_MS, signal);
+		const moved = await call(`Sandbox.setTimeout of ${ref.name}`, () => this.#Sandbox.setTimeout(ref.id, timerMs, this.#api(requestMs, signal)), requestMs + CALL_SLACK_MS, signal);
 		if (!moved.ok) return fail(moved.error.code, `E2B's timer did not move, so nothing did: ${moved.error.message}`);
 		const after = await this.#info(ref.id, signal);
 		if (!after.ok) return fail(after.error.code, `E2B's timer was asked to move, and reading it back failed: ${after.error.message}; init's deadline did not move`);
@@ -1285,15 +1324,18 @@ export class E2BProvider implements ComputerProvider {
 		const sandbox = await this.#connected(after.value, signal);
 		const opened = sandbox.ok ? await this.#open(sandbox.value, ref.name, signal) : sandbox;
 		if (!opened.ok) return fail(opened.error.code, `E2B's timer moved to ${end.toISOString()}, and init's deadline did not: ${opened.error.message}`);
+		let took: Date;
 		try {
-			// E2B's end is its clock and whole seconds: init's never goes past the maximum it was given.
+			// E2B's end is its clock, and the setTimeout's own transit adds to it: init's never goes past the maximum it was given.
 			const at = new Date(Math.min(end.getTime(), most.getTime())).toISOString();
 			const extended = await opened.value.client.call("deadline.extend", { at }, { signal: this.#bounded(this.#timeouts.helloMs, signal) });
-			if (!extended.ok) return fail(extended.error.code === "limit" ? "limit" : extended.error.code, `E2B's timer moved to ${end.toISOString()}, and init's deadline did not: ${extended.error.message}`);
+			if (!extended.ok) return fail(extended.error.code, `E2B's timer moved to ${end.toISOString()}, and init's deadline did not: ${extended.error.message}`);
+			const answered = Date.parse(extended.value.at);
+			took = new Date(Number.isNaN(answered) ? at : answered);
 		} finally {
 			await opened.value.close();
 		}
-		return ok({ deadline: end });
+		return ok({ deadline: took });
 	}
 
 	/**
