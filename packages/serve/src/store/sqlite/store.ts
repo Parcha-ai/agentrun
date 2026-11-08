@@ -309,7 +309,9 @@ class SqliteStore implements Store {
     const ending = state !== undefined && FINAL_STATES.includes(state);
     await this.#db.write([fenced(
       claim,
-      `UPDATE runs SET runner = NULL, claimed_until = NULL, wake_at = ?, backoff_until = ?, state = coalesce(?, state)${ending ? ", ended_at = coalesce(ended_at, ?)" : ""} WHERE id = ? AND epoch = ? AND runner = ?`,
+      // The epoch moves on at a release: the released claim is dead everywhere (its journal, its run updates, its takes),
+      // never live until the next claim.
+      `UPDATE runs SET epoch = epoch + 1, runner = NULL, claimed_until = NULL, wake_at = ?, backoff_until = ?, state = coalesce(?, state)${ending ? ", ended_at = coalesce(ended_at, ?)" : ""} WHERE id = ? AND epoch = ? AND runner = ?`,
       [wakeAt, backoffUntil, state ?? null, ...(ending ? [this.#now()] : []), claim.runId, claim.epoch, claim.runner],
     )], { full: true });
   }

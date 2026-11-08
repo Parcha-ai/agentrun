@@ -315,6 +315,14 @@ export class StoreClosed extends Error {
   }
 }
 
+/** The store's worker thread failed or exited: every call after it is refused in these words, never left waiting. */
+export class StoreWorkerLost extends Error {
+  constructor(why: string) {
+    super(`the store's worker ${why}: the store takes no more calls in this process`);
+    this.name = "StoreWorkerLost";
+  }
+}
+
 /** A second server on a store another server holds (one server per store). */
 export class StoreOwned extends Error {
   constructor(message: string) {

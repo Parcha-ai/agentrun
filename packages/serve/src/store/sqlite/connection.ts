@@ -4,7 +4,7 @@
 // queue: a call starts when the one before it has answered, and a transaction holds every other call until it commits or
 // rolls back. Errors come back typed: Fenced, RunFinal, StoreBusy, StoreConstraint, StoreClosed, StoreOwned.
 import { Worker } from "node:worker_threads";
-import { Fenced, RunFinal, StoreBusy, StoreClosed, StoreConstraint, StoreDeadline, StoreOwned } from "../store.js";
+import { Fenced, RunFinal, StoreBusy, StoreClosed, StoreConstraint, StoreDeadline, StoreOwned, StoreWorkerLost } from "../store.js";
 import type { Mode, Params, Reply, Request, Statement, StatementResult, WorkerError } from "./worker.js";
 
 export type { Params, Statement, StatementResult } from "./worker.js";
@@ -57,6 +57,10 @@ export class Connection implements SqliteDatabase {
   /** The tail of the queue: each call chains on it. */
   #tail: Promise<unknown> = Promise.resolve();
   #closed = false;
+  /** Set when the store itself ends the worker (close), so its exit is no loss. */
+  #closing = false;
+  /** The worker's failure or exit: every call after it is refused with it. */
+  #lost: StoreWorkerLost | undefined;
 
   private constructor(worker: Worker) {
     this.#worker = worker;
@@ -68,10 +72,16 @@ export class Connection implements SqliteDatabase {
       if (reply.ok) waiter.resolve(reply.value);
       else waiter.reject(typed(reply.error));
     });
-    worker.on("error", (error) => {
-      for (const waiter of this.#waiting.values()) waiter.reject(new Error(`the store's worker failed: ${error.message}`));
+    // A worker that fails or exits answers nothing more: every call waiting is refused, and so is every call after it,
+    // never posted to a dead worker to wait forever.
+    const lost = (why: string) => {
+      if (this.#lost || this.#closing) return;
+      this.#lost = new StoreWorkerLost(why);
+      for (const waiter of this.#waiting.values()) waiter.reject(this.#lost);
       this.#waiting.clear();
-    });
+    };
+    worker.on("error", (error) => lost(`failed: ${error.message}`));
+    worker.on("exit", (code) => lost(`exited (code ${code})`));
     // An idle worker never holds the process open by itself (the runner's own work does); a call waiting for its answer
     // does, so a process whose only work is the store's does not end with that work in flight.
     worker.unref();
@@ -97,6 +107,7 @@ export class Connection implements SqliteDatabase {
 
   /** A message straight to the worker, outside the queue: only the queue's own steps call it. */
   #send(request: Request): Promise<unknown> {
+    if (this.#lost) return Promise.reject(this.#lost);
     const id = this.#next++;
     return new Promise((resolve, reject) => {
       this.#waiting.set(id, { resolve, reject });
@@ -107,6 +118,7 @@ export class Connection implements SqliteDatabase {
 
   /** Runs `work` when every call queued before it has answered. */
   #queued<T>(work: () => Promise<T>): Promise<T> {
+    if (this.#lost) return Promise.reject(this.#lost);
     if (this.#closed) return Promise.reject(new StoreClosed());
     const run = this.#tail.then(work, work);
     this.#tail = run.catch(() => undefined);
@@ -196,11 +208,17 @@ export class Connection implements SqliteDatabase {
   /** Waits for every call queued before it, closes the connection (and the owner lock) and ends the worker. */
   async close(): Promise<void> {
     if (this.#closed) return;
+    // A worker already lost has nothing left to close.
+    if (this.#lost) {
+      this.#closed = true;
+      return;
+    }
     const last = this.#queued(async () => this.#send({ op: "close" }));
     this.#closed = true;
     try {
       await last;
     } finally {
+      this.#closing = true;
       await this.#worker.terminate();
     }
   }

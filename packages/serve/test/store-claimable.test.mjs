@@ -14,7 +14,7 @@ test("a parked run is not claimable until a command row lands, and then it is", 
   const command = await store.command("run-1", { kind: "approve", body: { approval: "a1" } });
   assert.deepEqual(await store.runs.claimable(), ["run-1"], "an untaken command makes it claimable");
   const again = await store.claim("run-1", "runner-b", { leaseMs: 30_000 });
-  assert.equal(again?.epoch, 2);
+  assert.equal(again?.epoch, 3, "the release moved the epoch on, and the claim once more");
   await store.take(again, command.id);
   await store.release(again, { state: "parked" });
   assert.deepEqual(await store.runs.claimable(), [], "the command taken: parked again, not claimable");
@@ -41,7 +41,7 @@ test("a running run its runner released without ending it (a runner's shutdown) 
   assert.deepEqual([run.state, run.runner, run.claimedUntil], ["running", null, null], "it started: it never goes back to queued");
   assert.deepEqual(await store.runs.claimable(), ["run-1"], "claimable with no wait for the lease it gave up");
   const next = await store.claim("run-1", "runner-b", { leaseMs: 60_000 });
-  assert.deepEqual([next?.epoch, next?.runner], [2, "runner-b"]);
+  assert.deepEqual([next?.epoch, next?.runner], [3, "runner-b"], "the release moved the epoch to 2; the next claim takes 3");
 });
 
 test("queued runs and running runs whose claim ran out are claimable, oldest first, within the limit; live claims and final runs are not", async (t) => {

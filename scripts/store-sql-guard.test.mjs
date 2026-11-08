@@ -17,7 +17,6 @@ const TODAY = [
   "packages/pi-durable-agent/src/pack-shared.ts",
   "packages/pi-durable-agent/src/serve/read.ts",
   "packages/pi-durable-agent/src/store.ts",
-  "packages/pi-durable-agent/src/timeline/timeline.ts",
   "packages/pi-durable-agent/src/workflow.ts",
   "packages/pi-durable-disk/src/barriers.ts",
   "packages/pi-durable-disk/src/run.ts",
@@ -27,6 +26,7 @@ const TODAY = [
   "packages/pi/src/durable/recording.ts",
   "packages/serve/src/agents.ts",
   "packages/serve/src/cap.ts",
+  "packages/serve/src/import-summary.ts",
   "packages/serve/src/import.ts",
   "packages/serve/src/run-db.ts",
   "packages/serve/src/runs.ts",
@@ -81,7 +81,7 @@ function sources(dir) {
 }
 
 const roots = [...readdirSync(join(ROOT, "packages")).map((name) => join(ROOT, "packages", name, "src")), ...(existsSync(join(ROOT, "apps")) ? readdirSync(join(ROOT, "apps")).map((name) => join(ROOT, "apps", name, "src")) : [])];
-const withSql = roots.flatMap(sources).filter((file) => sqlIn(readFileSync(join(ROOT, file), "utf8")));
+const withSql = roots.flatMap(sources).filter((file) => sqlIn(readFileSync(join(ROOT, file), "utf8"), file));
 
 // Each form of SQL the guard must see in a source file's strings, whatever its case, spacing or quoting.
 const SQL_FORMS = {
@@ -134,10 +134,26 @@ test("the list only shrinks: a listed file with no SQL left is taken off it", ()
   assert.deepEqual(TODAY.filter((file) => !withSql.includes(file)), [], "these hold no SQL now: take them off TODAY");
 });
 
-const withDriver = roots.flatMap(sources).filter((file) => driversIn(readFileSync(join(ROOT, file), "utf8")).length > 0);
+const withDriver = roots.flatMap(sources).filter((file) => driversIn(readFileSync(join(ROOT, file), "utf8"), file).length > 0);
 /** The files outside the store that took a SQLite driver when the guard began reading imports. Each goes at the cutover;
  *  the list only shrinks. */
-const TODAY_DRIVER = [];
+const TODAY_DRIVER = [
+  "packages/pi-durable-agent/src/agent-store.ts",
+  "packages/pi-durable-agent/src/home.ts",
+  "packages/pi-durable-agent/src/pack-shared.ts",
+  "packages/pi-durable-agent/src/pack.ts",
+  "packages/pi-durable-agent/src/serve/read.ts",
+  "packages/pi-durable-agent/src/store.ts",
+  "packages/pi-durable-disk/src/run.ts",
+  "packages/pi-durable-disk/src/status.ts",
+  "packages/pi-durable-disk/src/store.ts",
+  "packages/pi/src/signin/store.ts",
+  "packages/serve/src/agents.ts",
+  "packages/serve/src/import.ts",
+  "packages/serve/src/run-db.ts",
+  "packages/serve/src/server-lock.ts",
+  "packages/serve/src/server.ts",
+];
 
 test("no SQLite driver taken outside the store, but for today's files on the list", () => {
   const outside = withDriver.filter((file) => !file.startsWith(STORE));

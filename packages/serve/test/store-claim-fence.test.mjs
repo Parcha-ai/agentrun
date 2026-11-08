@@ -109,11 +109,11 @@ test("a release at a park gives the run back with its state and wake_at; an ende
   const claim = await store.claim("run-1", "runner-a", { leaseMs: 30_000 });
   await store.release(claim, { state: "parked", wakeAt: clock.now + 60_000 });
   const run = await store.runs.get("run-1");
-  assert.deepEqual([run.state, run.runner, run.claimedUntil, run.wakeAt, run.epoch], ["parked", null, null, clock.now + 60_000, 1]);
+  assert.deepEqual([run.state, run.runner, run.claimedUntil, run.wakeAt, run.epoch], ["parked", null, null, clock.now + 60_000, 2], "the release moved the epoch on");
   assert.equal(await store.claim("run-1", "runner-b", { leaseMs: 30_000 }), null, "parked with nothing to wake it: not claimable");
   clock.now += 60_000;
   const again = await store.claim("run-1", "runner-b", { leaseMs: 30_000 });
-  assert.deepEqual([again?.epoch, (await store.runs.get("run-1")).state], [2, "running"], "its wake_at passed: claimed, running");
+  assert.deepEqual([again?.epoch, (await store.runs.get("run-1")).state], [3, "running"], "its wake_at passed: claimed, running");
   await store.release(again, { state: "ended" });
   assert.deepEqual(await store.runs.get("run-1").then((r) => [r.state, r.wakeAt, r.endedAt]), ["ended", null, clock.now], "a release with no wakeAt clears it");
   assert.equal(await store.claim("run-1", "runner-c", { leaseMs: 30_000 }), null, "an ended run is final");

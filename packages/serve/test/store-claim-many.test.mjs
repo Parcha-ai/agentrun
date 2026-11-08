@@ -17,7 +17,7 @@ test("claimMany claims up to k claimable runs, oldest first, in one transaction,
   const claims = await store.runs.claimMany("runner-a", 3, { leaseMs: 30_000 });
   assert.deepEqual(claims.map((c) => [c.runId, c.epoch, c.from, c.runner, c.until]), [
     ["run-a", 1, "queued", "runner-a", clock.now + 30_000],
-    ["run-b", 2, "running", "runner-a", clock.now + 30_000],
+    ["run-b", 3, "running", "runner-a", clock.now + 30_000],
     ["run-c", 1, "queued", "runner-a", clock.now + 30_000],
   ]);
   assert.deepEqual(await store.runs.claimable(), ["run-d"], "the rest stays claimable");
