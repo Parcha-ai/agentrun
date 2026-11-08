@@ -10,7 +10,7 @@ import { runLabel, when } from "@/lib/format";
 import { keeper, uuid } from "@/lib/idempotency";
 import { type Problem, problem } from "@/lib/problem";
 import type { Tone } from "@/lib/runState";
-import { atLeast, bodyOf, capOf, dollars, FIRED_BY, HOOK_URL_HINT, hookUrlOf, isScheduleTrigger, isWebhookTrigger, SIGNATURE_WORDS, utcWhen, type Draft, draftOf, type Schedule, type WebhookTrigger, emptyDraft, FIRING_LABEL, firingWords, instantKept, issuesOf, patchOf, whenWords, emptyWebhook, type WebhookDraft, webhookBodyOf } from "@/lib/schedules";
+import { atLeast, bodyOf, capOf, dollars, acceptWords, FIRED_BY, HOOK_URL_HINT, hookUrlOf, hookWhen, isScheduleTrigger, isWebhookTrigger, SIGNATURE_WORDS, utcWhen, type Draft, draftOf, type Schedule, type WebhookTrigger, emptyDraft, FIRING_LABEL, firingWords, instantKept, issuesOf, patchOf, whenWords, emptyWebhook, type WebhookDraft, webhookBodyOf } from "@/lib/schedules";
 import type { Firing, Trigger, TriggerCreate, TriggerMade } from "@/lib/v2";
 
 /** Which triggers page: the list (no `trigger`), a new one (`trigger` null, of `kind`), one trigger, or a schedule's editor
@@ -106,7 +106,7 @@ function ScheduleList({ v2, go, agentName, every }: PageProps & { every: number 
 /** A trigger's when and what, in one line: a schedule's times or a webhook's signed requests, then the agent it starts or
  *  the run it messages. */
 function whatWords(t: Trigger, agentName: (id: string) => string): string {
-  const when = t.source.kind === "schedule" ? whenWords(t.source) : "On each signed request";
+  const when = t.source.kind === "schedule" ? whenWords(t.source) : hookWhen(t.source);
   return `${when} · ${t.target.kind === "start_run" ? agentName(t.target.agent_id) || t.target.agent_id : `messages run ${runLabel(t.target.run_id)}`}`;
 }
 
@@ -206,7 +206,7 @@ function ScheduleDetail({ v2, go, agentName, id, every }: PageProps & { id: stri
       <div className="mt-3 flex flex-col items-start gap-x-6 gap-y-3 sm:flex-row">
         <div className="min-w-0 flex-1 self-stretch">
           <h1 className="flex flex-wrap items-center gap-2 break-words text-2xl font-semibold leading-tight">{trigger.name}{!trigger.enabled && <Chip tone="muted">Paused</Chip>}</h1>
-          <p className="mt-2 break-words font-mono text-[12px] text-muted-foreground">{hook ? `Webhook · on each signed request` : `${whenWords(runs.source as Schedule["source"])} · ${trigger.next_at ? `next ${at(trigger.next_at)}` : "no next time"}`}</p>
+          <p className="mt-2 break-words font-mono text-[12px] text-muted-foreground">{hook ? `Webhook · ${hookWhen(hook.source)}` : `${whenWords(runs.source as Schedule["source"])} · ${trigger.next_at ? `next ${at(trigger.next_at)}` : "no next time"}`}</p>
         </div>
         <div className="flex flex-wrap items-center gap-2">
           <Button size="sm" variant="solid" onClick={() => void runNow()} disabled={busy === "fire"}><Zap aria-hidden /> {busy === "fire" ? "Starting" : "Run now"}</Button>
@@ -237,6 +237,8 @@ function ScheduleDetail({ v2, go, agentName, id, every }: PageProps & { id: stri
         {hook ? <>
           <dt className="caps text-[11px] text-muted-foreground">URL</dt><dd className="flex min-w-0 flex-wrap items-center gap-2"><code className="min-w-0 break-all font-mono text-[12px]">{hookUrlOf(hook)}</code><CopyButton text={hookUrlOf(hook)} label="Copy URL" /><span className="basis-full text-[12px] text-muted-foreground">{HOOK_URL_HINT}</span></dd>
           <dt className="caps text-[11px] text-muted-foreground">Signature</dt><dd>{SIGNATURE_WORDS[hook.source.signature ?? "standard"]}</dd>
+          <dt className="caps text-[11px] text-muted-foreground">Accepts</dt>
+          <dd className="min-w-0 break-words">{hook.source.accept?.length ? <ul className="space-y-1 font-mono text-[12px]">{hook.source.accept.map((a, i) => <li key={i}>{acceptWords(a)}</li>)}</ul> : "Every signed request"}</dd>
         </> : <>
           <dt className="caps text-[11px] text-muted-foreground">While a run is going</dt><dd>The next time is skipped.</dd>
         </>}
@@ -495,7 +497,7 @@ function WebhookForm({ v2, go }: { v2: Client; go: (hash: string) => void }) {
       <div className="max-w-2xl p-5 md:p-8">
         {back}
         <h1 className="mt-3 flex items-center gap-2 text-2xl font-semibold"><Webhook className="size-5 text-primary" aria-hidden />{made.name}</h1>
-        <p className="mt-2 text-[13px] text-muted-foreground">Send each request to this URL, signed with this secret ({SIGNATURE_WORDS[draft.signature]}). Each one starts a run.</p>
+        <p className="mt-2 text-[13px] text-muted-foreground">Send each request to this URL, signed with this secret ({SIGNATURE_WORDS[made.source.kind === "webhook" ? made.source.signature ?? "standard" : "standard"]}). Each one starts a run.</p>
         {made.secret ? <SecretOnce label="The webhook's URL and secret" url={hookUrlOf(made)} secret={made.secret} /> : (
           <section aria-label="The webhook's URL and secret" className="mt-4 space-y-3 border p-4 text-[13px]">
             <Copyable title="URL" text={hookUrlOf(made)} label="Copy URL" hint={HOOK_URL_HINT} />

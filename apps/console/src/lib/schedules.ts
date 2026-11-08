@@ -66,6 +66,25 @@ export const HOOK_URL_HINT = "This server's address as this page sees it: behind
 /** What a webhook's signature check takes, in words. */
 export const SIGNATURE_WORDS: Record<"standard" | "github", string> = { standard: "Standard Webhooks (webhook-signature)", github: "GitHub's (X-Hub-Signature-256)" };
 /** A firing's cause, in words: its schedule, a Run now, or a signed request to a webhook. */
+type HookSource = Extract<TriggerSource, { kind: "webhook" }>;
+type Accept = NonNullable<HookSource["accept"]>[number];
+type Where = NonNullable<Accept["where"]>[number];
+
+/** One `where` condition of a webhook's filter, in words: the JSON pointer into the request's body and what it must be. */
+const whereWords = (w: Where): string =>
+  "in" in w ? `${w.pointer} is one of ${w.in.map((v) => JSON.stringify(v)).join(", ")}`
+  : "exists" in w ? `${w.pointer} ${w.exists ? "is there" : "is absent"}`
+  : `${w.pointer} starts with ${JSON.stringify(w.prefix)}`;
+
+/** One accepted event: its name, its actions, and its conditions when it has them. */
+export const acceptWords = (a: Accept, conditions = true): string =>
+  `${a.event}${a.actions?.length ? ` (${a.actions.join(", ")})` : ""}${conditions && a.where?.length ? ` where ${a.where.map(whereWords).join(" and ")}` : ""}`;
+
+/** When a webhook fires, in one line: every signed request, or (with `accept`) only the ones its filter takes; a request
+ *  the filter doesn't take is answered and starts nothing. */
+export const hookWhen = (source: HookSource): string =>
+  source.accept?.length ? `Only signed requests for ${source.accept.map((a) => acceptWords(a, false)).join(" or ")}` : "On each signed request";
+
 export const FIRED_BY: Record<Firing["by"], string> = { schedule: "On schedule", manual: "Run now", webhook: "On a request" };
 
 /** What came of a firing. A started one's run is linked beside it. */
