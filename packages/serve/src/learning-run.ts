@@ -360,8 +360,8 @@ export class LearningRuns {
 
   /** A start whose seed copy threw out of its pin (runs.ts start): its learning, in its own words, as a copy that failed
    *  says it; the copy taken back. */
-  async copyThrew(started: Pick<StartedRun, "runId" | "dir" | "workspace">, at: string, error: Error): Promise<Learning> {
-    warn(started.runId, `starts with nothing learned: ${error.message}`);
+  async copyThrew(started: Pick<StartedRun, "runId" | "dir" | "workspace">, at: string, error: unknown): Promise<Learning> {
+    warn(started.runId, `starts with nothing learned: ${error instanceof Error ? error.message : String(error)}`);
     await dropSeed(started.dir, started.workspace).catch(() => undefined);
     return { state: "dropped", reason: "seed_failed", detail: said.stopped(STOPPED.notCopied), at };
   }
