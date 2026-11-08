@@ -186,7 +186,7 @@ Its whole tree ends when the program ends or is signalled to its end. Ids are `p
 | `process.start` | `argv, cwd?, env?, user?, pty?: {cols, rows}, stdin?` | `{id, pid}`: `pid` is the program's. `cwd`, `env` and `user` are as for `exec.run`. Without `stdin` (and without a pty) stdin is /dev/null |
 | `process.read` | `id, stream, offset, maxBytes?, waitMs?` | `{data, nextOffset, dropped, exited}`: `stream` is `stdout` or `stderr`, or `pty`; at most 512 KiB a call (more is `limit`) |
 | `process.write` | `id, data?, close?` | `{}`: to stdin, or the terminal; `close` closes stdin after the data |
-| `process.signal` | `id, signal` | `{}`: `TERM`, `INT`, `KILL` or `HUP`, to the program's process group; to a process that has ended it does nothing |
+| `process.signal` | `id, signal` | `{}`: `TERM`, `INT`, `KILL` or `HUP`, to the program's process group, except `INT` with a pty (below); to a process that has ended it does nothing |
 | `process.resize` | `id, cols, rows` | `{}`: the terminal's new size; the program gets SIGWINCH |
 | `process.list` | `from?` | `{processes, truncated, next}`: `processes` are `{id, pid, argv, argvClipped, pty, running, exitCode, signal, startedAt, endedAt}` in start order, times in milliseconds since the epoch; at most 768 KiB a reply: when `truncated`, list again with `from` set to `next`. Pages follow start order, not places in the table, so a process dropped between two pages makes the next skip none |
 | `process.wait` | `id, timeoutMs` | `{running, exitCode, signal}`: waits up to `timeoutMs` (0 to a day) for the end; `running` is true on timeout |
@@ -202,6 +202,14 @@ Its whole tree ends when the program ends or is signalled to its end. Ids are `p
 - With `pty`, stdout and stderr are one `pty` stream, and the program runs in a session of its own with the terminal
   as its controlling terminal (setsid and TIOCSCTTY in the guard). A terminal has no stdin to close: write `"\x04"`
   for the end of input, or signal `HUP`.
+- `INT` to a process with a pty is ^C: it goes to the terminal's foreground process group, as the terminal driver
+  sends it, so it ends the job a shell runs in the foreground and the shell reads on. The daemon reads that group on
+  the terminal it holds (TIOCGPGRP) and has the guard signal it only when it is in the program's own session (and so
+  under the guard); a terminal the program handed to another session is refused as `denied`, and nothing is
+  signalled. The group can end between that check and the signal, and its id go to a group in another session, so the
+  guard checks again right before it signals: a group with no process left in the program's session is not signalled,
+  and the reply says `INT` was not sent: `{note}`. A terminal with no foreground group left (the program let go of it, or is ending) has `INT` go to the
+  program's group, and the reply says so: `{note}`. `TERM`, `KILL` and `HUP` always go to the program's group.
 - Starts take turns. A `process.start` cancelled while it waits for its turn, or before its program runs, is `aborted`,
   and nothing it started is left.
 - Writes to one process take turns. A write waits at most 10 s, its turn included, for the program to read; the rest is
@@ -319,7 +327,7 @@ provider declares, either way.
 
 | group | methods |
 | --- | --- |
-| `screen` | `screen.shot({ region? })`: a PNG, its first `MAX_CHUNK_BYTES` in `data`, with `width`, `height` (the image's pixels, the input coordinate space, never downscaled), `scale` and `cursor?`; `screen.read({ id, offset })` for the rest. One shot is held, until its eof or the next shot. |
+| `screen` | `screen.shot({ region? })`: a PNG (8-bit, non-interlaced), its first `MAX_CHUNK_BYTES` in `data`, with `width`, `height` (the image's pixels, the input coordinate space, never downscaled), `scale` and `cursor?`; `screen.read({ id, offset })` for the rest. One shot is held, until its eof or the next shot. |
 | `input.pointer` | `input.actions`: `move`, `down`, `up`, `click` (`count` 1-3, held `keys`), `drag` (a path of 2 or more points), `scroll` (`unit` clicks or px) |
 | `input.keys` | `input.actions`: `key` (one key pressed, or a combo released in reverse; `repeat`), `hold` (`ms`), `type` |
 | `input.touch` | `input.actions`: `tap`, `long_press`, `swipe`, `pinch` (`scale` above 1 apart, below together), `button` (back, home, app_switch) |
@@ -345,9 +353,10 @@ does.
 **Lifetime.** `capabilities().maxLifetimeMs` is the vendor's hard cap for the provider instance (Docker: 30 days).
 `checkLifetime(lifetimeMs, capabilities)` is the one rule every `check()` shares: a whole number of milliseconds above
 0, at most the cap, refused in words with no vendor call. A provider may offer `extend(ref, ttlMs)`, which sets the
-deadline to now + ttlMs (never earlier than the current deadline, never past create + maxLifetimeMs) by moving the
-vendor's timer, the deadline label and init's own deadline (`deadline.extend`, up to the `--max-deadline` the provider
-gave init at start), and `stream(ref)`, the vendor's live screen URL. Docker
+deadline to now + ttlMs (never earlier than the current deadline, never past create + maxLifetimeMs: either is refused
+in words with the deadline unchanged, so an extend never shortens a computer's life) by moving the vendor's timer, the
+deadline label and init's own deadline (`deadline.extend`, up to the `--max-deadline` the provider gave init at start),
+and `stream(ref)`, the vendor's live screen URL. Docker
 has neither: its deadline is a container label, which cannot change after create, so ask for the whole lifetime at
 create. The janitor counts a deadline more than maxLifetimeMs (and a minute of clock skew) past now as unreadable, and
 deletes it.
@@ -359,8 +368,16 @@ hands" placement.
 
 computerd drives the X display named by `DISPLAY` when init started, in pure Go (`daemon/internal/x11`, written against
 the X protocol with no cgo and no dependency, so the daemon stays one static binary): pixels from `GetImage` on the
-root window, input from the XTEST extension's `FakeInput`. A batch of actions is one write and one round trip, with no
-program started for any action. The image needs only an X server.
+root window, input from the XTEST extension's `FakeInput`, with no program started for any action. The image needs
+only an X server. Only a display in this computer is driven: the unix socket, or TCP to a loopback address; any other
+`DISPLAY` is refused before anything is sent to it, so this host's cookie never goes elsewhere. Neither the X server
+nor the Xauthority file is trusted (any program of the computer's user can replace either): the cookie is read from
+`$XAUTHORITY` or `~/.Xauthority` only when that is a regular file of at most 64 KiB, and a symbolic link, a FIFO or a
+device there is refused in words without being read; a setup with a scanline pad other than 8, 16 or 32, or keycodes
+that are not a range from 8 up, is refused; and each reply is bounded by what its request can get back (a `GetImage`
+by its rectangle), so a longer one ends the connection before anything is allocated for it. A `screen.shot` or
+`input.actions` waiting for another to finish with the display waits no longer than its own request, then answers
+`aborted`.
 
 - The display is reached when it is first asked for, and again after it goes: hello declares `screen`,
   `input.pointer` and `input.keys`, and kind `desktop`, only while the display answers with XTEST. So a provider may
@@ -374,11 +391,17 @@ program started for any action. The image needs only an X server.
 - `input.actions` checks the whole batch first, as `checkActions` does, and on X11 also refuses: a touch action
   (`unsupported`: X11 has no touch), a pixel scroll (`unsupported`: the wheel turns in clicks), a point or click count
   that is not whole (`invalid`), an unknown field, and text with a character no key types (a control character other
-  than newline and tab, `invalid`). Its own bounds are `limit`: 64 Ki characters a `type`, `repeat` 1000, 10,000
-  clicks a scroll, 1000 points a drag, 16 keys at once. Then the batch runs; a point off the display stops it there
-  (`invalid`, naming the display's size), and an X error from the server stops it at the action that sent it.
+  than newline and tab, `invalid`). Its own bounds are `limit`: 64 Ki characters a `type`, 10,000 clicks a scroll,
+  1000 points a drag, 16 keys at once; and `repeat` is at most 100 (`MAX_KEY_REPEAT`), checked after the action's
+  group as `checkActions` does. Then the batch runs; a point off the display stops it there
+  (`invalid`, naming the display's size), and an X error from the server stops it at the action that sent it: the
+  batch waits for the server (one round trip) after each action with a button, a key or a keyboard map change, so no
+  later action runs, and `done` and `failed` say what did. A cancel stops it at the next key, click or point, releases
+  what the batch held, and answers `aborted`.
 - Scroll: `dy` above 0 turns down, below 0 up, `dx` right and left, one wheel click each, vertical first. A key or
-  character that needs shift gets it, pressed before and released after.
+  character that needs shift gets it, pressed before and released after. `type` gives exactly its text whatever
+  Caps Lock is: when it is on, it is turned off for the typing and back on after, as xdotool does. A `key` action
+  presses keys as a keyboard does, so Caps Lock applies to it.
 - Typing a character the keyboard map has no key for (é on a US map, any CJK character, an emoji) uses the keysym remap
   xdotool does: the character is bound to a keycode with no keysym (`ChangeKeyboardMapping`), then typed with it.
   Unlike xdotool the binding is not undone, which would race a client still reading the map; it stays, so the
@@ -613,9 +636,10 @@ const made = await modal.create({ image: "debian:bookworm-slim", lifetimeMs: 600
 (apps, images, sandboxes and five methods of a sandbox). It has not yet run against real Modal: every test uses a fake
 of that slice, and the live conformance file waits for a key (below).
 
-- **Capabilities.** Kind `linux`, daemon `pid1`, groups `exec`, `files` and `processes`, and `maxLifetimeMs` the
-  instance's cap (24 hours, or less with the `maxLifetimeMs` option). Daemon `pid1` because init is the sandbox's main
-  process and its exit ends the computer (next item); no `extend` or `stream`.
+- **Capabilities.** Kind `linux`, daemon `pid1`, groups `exec`, `files` and `processes`, `maxLifetimeMs` the
+  instance's cap (24 hours, or less with the `maxLifetimeMs` option), and user `uid` only, never `root` (below). Daemon
+  `pid1` because init is the sandbox's main process and its exit ends the computer (next item); no `extend` or
+  `stream`.
 - **The daemon is uploaded at create.** The sandbox's command is a small POSIX sh entrypoint (BusyBox and coreutils
   alike): it waits for `/opt/agentrun/computerd` to be there and executable, then `exec`s `computerd init --deadline
   <iso> --user <uid:gid>` with `HOME=/work`. Modal runs the command as the sandbox's main process and finishes the
@@ -650,12 +674,27 @@ of that slice, and the live conformance file waits for a key (below).
   its daemon.
 - **The daemon becomes the computer's user.** Modal containers always run as root and ignore an image's `USER`, so
   `--user` is how a Modal computer gets the non-root default the protocol asks for (`1000:1000`, or the `user` option),
-  or root when the spec asks for `"0"`. Either way init leaves itself and every program no capability in any set (see
-  Init, above): Modal starts the container with every one, and a live run read `CapEff` `000001ffffffffff` from a root
-  computer before the daemon dropped them itself.
+  or the uid its spec asks for. Init leaves itself and every program no capability in any set (see Init, above): Modal
+  starts the container with every one, and a live run read `CapEff` `000001ffffffffff` from a root computer before the
+  daemon dropped them itself.
+- **A Modal computer never runs as root.** `check()` and `create()` refuse a spec whose `user` is root (`"0"`,
+  `"0:<gid>"`, `"root"`, `"root:<gid>"`) in words, before any Modal call, and `connect`, `attach` and `network`
+  refuse a computer whose spec tag records root before they run anything in it. Every connection is Modal's own exec
+  of `/opt/agentrun/computerd stdio`, outside the daemon, with Modal's root capabilities. A computer's user without
+  root cannot touch that path: after the upload `/opt/agentrun/computerd` is `0:0 755` (the part file is `chmod
+  0755` by the root upload, then renamed into place), `/opt/agentrun` is made by the root upload's `mkdir -p`, `0:0
+  755`, and `/` and `/opt` are the image's, `0:0 755` in Debian and Alpine; with `daemonImage`, `COPY --from` makes
+  `/opt/agentrun` and the daemon owned by root (COPY's default; the daemon keeps its mode from the daemon image), not
+  yet read back on Modal. Root with no capability still owns every one of them, so it could rename another program over
+  the daemon and the next connection would run it with Modal's capabilities; no file mode closes that for the owner
+  of every directory above the path. The Docker-gated `modal-commands` test shows both sides: uid 1000 cannot write
+  the daemon, `/opt/agentrun`, `/opt` or `/`; uid 0 with `CapEff` 0 replaces the daemon, and the next exec of the
+  bridge runs the replacement with the container's capabilities.
 - **The stream** is `computerd stdio` through `sandbox.exec([...], { mode: "binary" })`: its stdin and stdout are the
   `DaemonClient`'s stream. Modal has no kill for an exec, so `close()` ends the bridge's stdin and waits up to 5 s for
-  it to exit.
+  it to exit. One deadline, `helloMs`, covers the exec's start (at most `callMs` of it) and the hello after it, so a
+  connection fails at `helloMs` in all. An exec given up on (past its bound, or on the caller's abort) goes on at
+  Modal; a bridge that lands after that has its stdin closed as it lands, so it ends.
 - **Lifetime is Modal's.** Every sandbox's `timeoutMs` is its lifetime, rounded up to whole seconds, so Modal ends it
   then whatever runs in it. The longest is 24 hours, or less with the `maxLifetimeMs` option, declared as
   `capabilities().maxLifetimeMs`; `check` refuses a longer one with `checkLifetime`, the rule every provider shares. The daemon's deadline ends it first. `sweep` refuses a Modal provider.
@@ -696,7 +735,7 @@ of that slice, and the live conformance file waits for a key (below).
   terminate is a sandbox's only end, and Modal has no stopped state. `release`, `connect` and
   `network` act only on a sandbox whose tags name it as this provider's, with the ref's name.
 - **Every call is bounded** (`timeouts`: create 10 min, which covers the layer's build and scheduling; the upload 5
-  min; other calls 60 s; hello and the probe 30 s; a whole list 120 s; release's wait 120 s) and takes the caller's
+  min; other calls 60 s; a connection, from the bridge's exec to hello, and the probe 30 s; a whole list 120 s; release's wait 120 s) and takes the caller's
   signal. A create that gives up has its
   sandbox terminated if one lands later. A create that refuses its sandbox (drift, an abort, a failed upload)
   terminates it and waits as release does, within `releaseMs`, so nothing is left listed when it returns. The terminate
@@ -801,12 +840,14 @@ AGENTRUN_COMPUTER_LIVE_MODAL=1 npm run test:modal -w @parcha/agentrun-computer
 node packages/computer/dist/conformance/modal-sweep.js --after /tmp/modal-before.json
 ```
 
-`--before` records the id of every sandbox in the app carrying `agentrun.computer=1` (`sandboxes.list({ appId, tags
-})`, which lists running sandboxes only, so a finished one needs no sweep). `--after` terminates every such sandbox
-not in that file, reads each back through `sandboxes.fromId` and `poll()` until it reports an exit code or Modal no
+`--before` records the app, the server (`COMPUTER_MODAL_SERVER_URL`, else the SDK's default) and the id of every
+sandbox in the app carrying `agentrun.computer=1` (`sandboxes.list({ appId, tags })`, which lists running sandboxes
+only, so a finished one needs no sweep). `--after` refuses, exit 2, before it lists anything, a file whose app or
+server is not the one the environment names now, or that names none: every computer of another app would read as
+new. Otherwise it terminates every such sandbox not in that file, reads each back through `sandboxes.fromId` and `poll()` until it reports an exit code or Modal no
 longer knows it (up to 60 s each), and prints one line, `{"swept":n,"gone":m,"stillThere":[ids]}`. It exits 0 when
-every swept sandbox has finished, 1 when one still runs, and 2 on a usage error, an unreadable before file, a
-missing token or app, or a listing Modal refused, having terminated nothing. A sandbox in the before file is never
+every swept sandbox has finished, 1 when one still runs, and 2 on a usage error, an unreadable before file or one of
+another app or server, a missing token or app, or a listing Modal refused, having terminated nothing. A sandbox in the before file is never
 named by any call.
 
 ## Daytona
@@ -853,17 +894,24 @@ So the provider pushes it in at create and starts it as a long-lived command, an
 2. Install it with `/process/execute` (the command is piped to the sandbox's shell): root-owned, mode 755, at
    `/opt/agentrun/computerd`, and make `/work` (its home) and `/run/agentrun` (its socket's directory). As root, or
    through passwordless `sudo`; a sandbox with neither is refused in the script's words. The script prints the
-   installed binary's sha256 (`sha256sum`, BusyBox's or coreutils'), which must be the uploaded one's.
+   installed binary's sha256 (`sha256sum`, BusyBox's or coreutils'), which must be the uploaded one's. It makes
+   `/opt/agentrun` root's, mode 755, even when the snapshot already had it, removes whatever was at the daemon's path
+   first, and then holds the whole path to one rule: the binary, `/opt/agentrun`, `/opt` and `/` each owned by root
+   and writable by no group and no other user (read with `ls -ldn`, so a symbolic link or an ACL on the way fails it).
+   A path that fails is refused in words, with nothing installed. Only root can change an owner or a mode, so the
+   rule, once it holds, holds until root changes it.
 3. Start `computerd init --deadline <time> --user 1000:1000` (the `daemonUser` option) as a session command
    (`runAsync`) in the session `agentrun-computerd`, as root (through `sudo -n` when the session's user is not root),
    in a clean environment and with `/work` as its directory. Init drops itself: it gives `/work` and `/run/agentrun`
    to the daemon's user (mode 700, never through a symbolic link), sets `no_new_privs` and empties the capability
    bounding set on every thread, so a setuid program such as `sudo` cannot raise it, then becomes uid and gid 1000
    with no supplementary groups and empties the inheritable set. The provider relies on no privilege tool of the
-   snapshot's: Daytona's default snapshot has BusyBox's `setpriv`, which has no `--reuid`. The provider never deletes
+   snapshot's: the first live start failed on the snapshot's `setpriv`, and the daemon's own drop replaced it. The provider never deletes
    that session: deleting it ends init.
 4. `connect()` starts `computerd stdio` as root the same way, in a session of its own, to reach a socket in a
-   directory that is the daemon's user's alone; it only carries bytes. Its stdin is the command's input
+   directory that is the daemon's user's alone; it only carries bytes. Init and the bridge each check the daemon's
+   path against the same rule before they run it as root, and refuse in words when it fails, so a binary a user
+   other than root could have swapped is never run, even on a computer attached from an older install. Its stdin is the command's input
    (`POST .../input`, whole lines, one call after another), and its stdout is the command's log stream, a WebSocket
    with `follow=true`, in which Daytona prefixes each stdout line with `01 01 01` and each stderr line with `02 02 02`
    (split output, asked for with `X-Daytona-Split-Output: true`). Input is sent with `suppressInputEcho`; a line that
@@ -876,8 +924,29 @@ needs. The PTY WebSocket is one duplex stream, but a terminal: echo and line dis
 the shell before the bridge starts, and the PTY starts a shell, not a command. Daytona's V2 API (alpha) adds argv
 processes with `writeStdin` and replayable logs, which would replace the two halves when it is GA.
 
-Daytona's container class runs code as root, and the open runner runs it privileged. The provider's daemon runs as
-1000:1000 with no capabilities, but the toolbox does not: anyone with the API key can run a command as root through it.
+### Security
+
+The sandbox is the only boundary. A program in a Daytona computer can become root inside its sandbox, whatever user
+the daemon runs it as:
+
+- Daytona's toolbox daemon, the sandbox's first process, listens on port 2280 on every interface and checks no
+  credential: its only middlewares are recovery, tracing, logging and errors, and its token is sent only with its
+  telemetry. Its `/process/execute` runs any command as the toolbox's user. That user in the default snapshot has
+  passwordless `sudo` for every command (`daytona ALL=(ALL) NOPASSWD:ALL`). So any workload in the sandbox can ask
+  the toolbox to run a command through `sudo`, and reach root inside the sandbox.
+- The provider depends on the same thing: it installs and starts the daemon through that toolbox, as root or through
+  passwordless `sudo`, and refuses a sandbox with neither. Every sandbox it accepts has this way to root.
+- The daemon's user (1000:1000, no capabilities, `no_new_privs` on every thread) is hygiene, not a boundary. It stops
+  a program from raising itself through `sudo` or a setuid file, not from asking the toolbox. The rule that keeps the
+  daemon's path root's alone is hygiene too.
+- `networkBlockAll` limits egress only. Daytona drops what leaves the sandbox on the host, and the toolbox on the
+  sandbox's loopback stays reachable from inside it.
+- From outside, anyone with the API key can run a command as root in the sandbox through the same toolbox.
+
+Daytona's container class runs code as root, and the open runner runs it privileged.
+
+What a Daytona computer cannot do: reach a network its policy blocks, or outlive its TTL. Anything else in its sandbox,
+root included, it can.
 
 ### Capabilities
 
@@ -1010,14 +1079,13 @@ name is not this provider's: release refuses it, and it is reported still there.
 
 ### Not yet known
 
-Two live runs reached the default snapshot. In the first the install passed (its toolbox user is root or has
-passwordless sudo, and its `sha256sum` read back the uploaded binary), and the start failed on BusyBox's `setpriv`,
-which init's own drop now replaces. The second, with that drop, passed Core 48 of 52: every health, exec, files and
-process case, and create's drift check, the start and the bridge with them. Of the four Core cases it failed, three
-(`provider.create-release`, `provider.stop`, `drift.version`), and the computer its cleanup found still listed, met a
-delete or a stop Daytona had answered but not yet done, which release now waits for; the fourth, `provider.attach`,
-reported the resolved snapshot as the image, which the image label now answers. Neither fix has run live yet. These
-need a live probe:
+Four live runs reached the default snapshot. The first failed at the start, in the privilege tool init's own drop now
+replaces; the second passed Core 48 of 52, its failures a delete or a stop Daytona had answered but not done (release
+now waits for both) and the resolved snapshot reported as the image (the image label now answers it); the third passed
+Core 52/52. The fourth, after the re-stack, passed Core 53/53 with the 9 optional cases of groups a linux computer does
+not declare skipped, Full 4/10, and the sweep after it found nothing to delete. Since then the report files those 9
+under `optional` (a wording change), and the daemon's path is held root's alone (above), which has not run live: a
+default snapshot whose `/opt` another user can write would now be refused at create. These need a live probe:
 
 - whether the production toolbox honors `suppressInputEcho` and `X-Daytona-Split-Output`, and keeps a session's
   command running between calls;
@@ -1077,6 +1145,10 @@ repository's main; the docs were read on 2026-11-05.
 | Tier 1 and 2 cannot override the network per sandbox | https://www.daytona.io/docs/en/network-limits.md#tier-based-network-restrictions |
 | a change: block-all clears both lists, `false` alone clears both, an empty list clears one | https://www.daytona.io/docs/en/network-limits.md#update-network-settings-while-a-sandbox-is-running |
 | the container class runs code as root; classes `linux-vm`, `container`, `windows` | https://www.daytona.io/docs/en/isolation.md#runtime-isolation; `daytona/clients@8006f63e:openapi-specs/api.json:10473` |
+| the toolbox listens on `:2280`, every interface; its middlewares are recovery, tracing, logging and errors; `/process/execute` | `daytonaio/daytona@b5a5d9e7:apps/daemon/pkg/toolbox/server.go:136-158`, `daytonaio/daytona@b5a5d9e7:apps/daemon/pkg/toolbox/server.go:199-203`, `daytonaio/daytona@b5a5d9e7:apps/daemon/pkg/toolbox/server.go:374-388`, `daytonaio/daytona@b5a5d9e7:apps/daemon/pkg/toolbox/config/config.go:6`; `apps/daemon/pkg/toolbox/middlewares/` holds only `error.go` |
+| the toolbox's token is set by `/init` and sent only as a telemetry header | `daytonaio/daytona@b5a5d9e7:apps/daemon/pkg/toolbox/controller.go:33`, `daytonaio/daytona@b5a5d9e7:apps/daemon/pkg/toolbox/telemetry.go:46` |
+| the default snapshot's user `daytona` has `NOPASSWD:ALL` sudo | `daytonaio/daytona@b5a5d9e7:images/sandbox/Dockerfile:78`, `daytonaio/daytona@b5a5d9e7:images/sandbox/Dockerfile:96`, `daytonaio/daytona@b5a5d9e7:images/sandbox/README.md:3`; the same `RUN` line in the history of `daytonaio/sandbox:0.11.0` (config `sha256:f6b4fc1ac093`), the snapshot a create with none resolved to in a live run |
+| `networkBlockAll` drops the sandbox's outgoing packets on the host (`DOCKER-USER`, by source address) | `daytonaio/daytona@b5a5d9e7:apps/runner/pkg/docker/create.go:242-248`, `daytonaio/daytona@b5a5d9e7:apps/runner/pkg/netrules/set.go:40-49` |
 | non-GPU containers run privileged in the open runner | `daytonaio/daytona@b5a5d9e7:apps/runner/pkg/docker/container_configs.go:200-206` |
 | memory in GiB | https://www.daytona.io/docs/en/sandboxes.md#resources |
 | a snapshot's size is its own; delete with retries and a forced stop; the listing trails a create; no redirect followed; three tries with backoff | `agentrun@7907382ed:packages/pi-transport/src/box/daytona.ts:913`, `agentrun@7907382ed:packages/pi-transport/src/box/daytona.ts:799-817`, `agentrun@7907382ed:packages/pi-transport/src/box/daytona.ts:819-824`, `agentrun@7907382ed:packages/pi-transport/src/box/daytona.ts:343`, `agentrun@7907382ed:packages/pi-transport/src/box/daytona.ts:35-36` |
@@ -1324,12 +1396,12 @@ core health    hello ping unknown-method kind-consistent    ✓ 4
 core exec      argv streams exit-code cwd env timeout abort ✓ 11
                truncation setsid-escapee unprivileged user
 ...
-core screen    screenshot-size                              - 1
-  - screen.screenshot-size: the provider does not declare screen
-...
 full lifetime  extend                                       - 1
   - lifetime.extend: the provider has no extend()
-core PASS 53/53 · 9 Core cases skipped, not declared · full 5/10 · network:allow screen stream input.pointer input.keys input.touch apps.install apps apps.ui_tree extend not declared
+optional screen screenshot-size                              - 1
+  - screen.screenshot-size: the provider does not declare screen
+...
+core PASS 54/54 · 9 optional cases skipped, not declared · full 5/10 · network:allow screen stream input.pointer input.keys input.touch apps.install apps apps.ui_tree extend not declared
 ```
 
 An id is resolved through the provider registry, and only there; the usage lists every id it holds. A module path is
@@ -1344,7 +1416,7 @@ report prints each as `note <computer>: <words>` above the verdict, so a run tha
 
 `--only` that leaves any Core case out is a partial run: `core` is `"partial"` when every case that ran passed (a
 skipped Core case is not a pass) and nothing was left behind, else `"fail"`; `coreNotRun` names the Core cases that did
-not run, the text report lists them on a `core not run` line, and the verdict reads `core PARTIAL 11/11 · 51 Core cases
+not run, the text report lists them on a `core not run` line, and the verdict reads `core PARTIAL 11/11 · 52 Core cases
 not run` (on Docker, `--only health,provider`), never PASS. A partial run exits 3, so a script that checks for 0 never takes a subset for a Core pass. An
 `--only` that names every Core case is a whole run, and can pass.
 
@@ -1378,13 +1450,14 @@ Core and Full follow the Kubernetes agent-sandbox conformance levels (KEP-539.2)
   processes and network `none` wherever computerd runs, screen and keyboard and pointer on a desktop, screen and touch
   on a phone. `health.kind-consistent` checks the kind, os and daemon pair, that hello's kind and groups are the
   provider's, and that kind's Core groups are declared; `provider.check-refuses` also asks `check` for
-  `maxLifetimeMs + 1`. Where the kind makes them Core: `screen.screenshot-size` (the PNG decodes, its IHDR size is
-  `width` x `height`, `scale` is above 0, a region shot has the region's size, and on a desktop the fixture's four
-  colors are where it paints them), `input.click-lands` (a single and a double click show in the fixture's log at their
+  `maxLifetimeMs + 1`. Where the kind makes them Core: `screen.screenshot-size` (every pixel of the PNG decodes, its
+  IHDR size is `width` x `height`, `scale` is above 0, a region shot decodes and has the region's size, and on a
+  desktop the fixture's four colors are where it paints them; the suite reads 8-bit, non-interlaced PNGs of at most
+  16384 pixels a side and 2^25 pixels, and inflates no more than their IHDR gives), `input.click-lands` (a single and a double click show in the fixture's log at their
   point, with their count), `input.type-text` (`Hello, agentrun! 123` arrives exactly),
   `input.key-table-refuses-unknown` (a batch whose second action names `Hyper_Q` gives `done` 0, `failed.index` 1,
-  kind `invalid`, and runs nothing), `input.actions-stops-at-first-failure` (click, move off the screen, click: `done`
-  1, only the first click, and a later click lands, so nothing was left held), `touch.tap` and `touch.swipe` (the
+  kind `invalid`, and runs nothing), `input.actions-stops-at-first-failure` (move, left button down, move off the screen,
+  click: `done` 2, the press released where it was, no click, and a later click lands, so nothing was left held), `touch.tap` and `touch.swipe` (the
   fixture app logs the tap at its point, and the swipe's start and end), `apps.install-launch` (installed, listed, in
   front when launched and not when terminated) and `apps.ui-tree-shape` (every node typed as the protocol says, inside
   the screenshot, with the fixture's button found by its id and text).
@@ -1395,15 +1468,18 @@ Core and Full follow the Kubernetes agent-sandbox conformance levels (KEP-539.2)
   asks for root (`user:root`, from `capabilities().user` holding `"root"`) or another uid (`user:uid`), still with no
   capability in any set and `no_new_privs`, read as in Core; and from the extension `touch.pinch` (two fingers logged
   moving apart), `lifetime.extend` (`extend`: made with 45 s and extended to 120 s, at 60 s it answers ping with a
-  process started earlier still running and `list()` shows the new deadline; an extend past the cap is refused with the
-  deadline unchanged) and `screen.stream` (`stream`: an https URL that answers 200; only its origin is ever reported).
+  process started earlier still running and `list()` shows the new deadline; three extends are refused with the
+  deadline unchanged: to an earlier deadline, to maxLifetimeMs + 1, and, 60 s after create, to maxLifetimeMs less 30 s,
+  within the cap on its own but past create + maxLifetimeMs; a cap under 3 min skips it) and `screen.stream`
+  (`stream`: an https URL that answers 200; only its origin is ever reported).
 
 A case needs groups (declared by both `capabilities().groups` and hello), networks, the janitor, a user, or an optional
 provider method (`extend`, `stream`, declared by being there). When a Core case needs what its kind requires and the
 provider or the computer lacks it, the case fails in words: `a desktop computer with daemon pid1 must declare screen:
 the provider does not declare screen`. Any other need that is not declared skips the case with the reason, never
-fails it, and names it in `undeclared`; a Core case skipped so is out of Core's count, and the verdict says how many
-(`9 Core cases skipped, not declared`). Any other skip of a Core case (no fixture given, no way to observe a touch)
+fails it, and names it in `undeclared`; a Core case skipped so is not Core for this kind of computer: the report lists
+it under `optional`, never under `core`, it is out of Core's count, and the verdict says how many (`9 optional cases
+skipped, not declared`). Any other skip of a Core case (no fixture given, no way to observe a touch)
 is not a pass, so Core does not pass.
 
 The cases that check what input did read a fixture's own log, with no model. `--fixture <path>` (`fixture` from code)
@@ -1414,7 +1490,7 @@ installed with `apps.install` and launched, logging to its files directory, with
 `ai.agentrun.fixture:id/button` that reads `agentrun fixture`). Each event is one JSON line (`ready`, `down`/`up` with
 button and point, `wheel`, `key`, `text`, `touch` with finger and phase); `src/conformance/fixture.ts` is the
 contract. A case that needs it and was given none skips, so Core cannot pass on a desktop or phone without it. The
-fixture is stopped when its case ends. A phone that declares neither files nor `apps.ui_tree` skips the touch cases:
+fixture is stopped when its case ends, once launched, even when it never logged ready. A phone that declares neither files nor `apps.ui_tree` skips the touch cases:
 `no way to observe the effect: declare files or apps.ui_tree`.
 
 The suite makes every computer with the label `agentrun.conformance=<run id>`, image `--image`, a 30-minute lifetime

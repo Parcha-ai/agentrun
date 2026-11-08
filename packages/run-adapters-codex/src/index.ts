@@ -1,4 +1,6 @@
 export { CODEX_TOOL_OUTPUT_TOKENS, codexAdapter } from "./adapter.js";
+/** The policy a Codex session's model proxy applies, for a host that serves the same route itself (a faux harness's). */
+export { codexPolicy } from "./host/policy.js";
 /** The check the adapter runs on the host's skills when it is made: @parcha/agentrun-kernel' own, as the Claude adapter's. */
 export { skillProblems } from "@parcha/agentrun-kernel";
 export type { HostSkill } from "@parcha/agentrun-kernel";

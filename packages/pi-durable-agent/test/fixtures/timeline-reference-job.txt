@@ -1,5 +1,5 @@
 20:01:40  You: {"company":"Acme Ltd","urls":["http://registry.example/companies/01234567","http://news.example/acme-opens-a-second-plant"]}
-20:01:40  Opened a live browser session
+20:01:40  A live browser session started
 20:01:40  Opened registry.example/companies/01234567                  ok
 20:01:41  Read the page "Acme Ltd - Company register"                 ok
 20:01:41  Read filing.png                                             ok

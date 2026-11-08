@@ -48,8 +48,8 @@ func tcpServer(t *testing.T, serve func(net.Conn)) string {
 	return listener.Addr().String()
 }
 
-// silent accepts and says nothing until the test ends: what a firewall that accepts first looks like.
-func silent(t *testing.T) string {
+// silentServer accepts and says nothing until the test ends: what a firewall that accepts first looks like.
+func silentServer(t *testing.T) string {
 	t.Helper()
 	done := make(chan struct{})
 	t.Cleanup(func() { close(done) })
@@ -115,8 +115,8 @@ func sniOf(hello []byte) string {
 	return ""
 }
 
-// serverHello is the start of a TLS record carrying a ServerHello, as a TLS server answers a ClientHello.
-var serverHello = []byte{0x16, 0x03, 0x03, 0x00, 0x04, 0x02, 0x00, 0x00, 0x00}
+// diagnoseServerHello is the start of a TLS record carrying a ServerHello, as a TLS server answers a ClientHello.
+var diagnoseServerHello = []byte{0x16, 0x03, 0x03, 0x00, 0x04, 0x02, 0x00, 0x00, 0x00}
 
 // udpServer answers each datagram with what answer makes of it (nothing when it gives nil); it ends with the test.
 func udpServer(t *testing.T, answer func([]byte) []byte) string {
@@ -176,7 +176,7 @@ func TestDiagnoseTLSIsAnsweredByAServerHelloOrAnAlert(t *testing.T) {
 	answering := tcpServer(t, func(conn net.Conn) {
 		if _, sni, ok := clientHello(conn); ok {
 			sawSNI <- sni
-			_, _ = conn.Write(serverHello)
+			_, _ = conn.Write(diagnoseServerHello)
 		}
 	})
 	got := only(t, probe.Diagnose([]probe.Check{{Probe: "tls", Address: answering, Name: "one.one.one.one"}}, short))
@@ -241,7 +241,7 @@ func TestDiagnoseWithNoNameSendsNoSNI(t *testing.T) {
 	answering := tcpServer(t, func(conn net.Conn) {
 		if _, sni, ok := clientHello(conn); ok {
 			sawSNI <- sni
-			_, _ = conn.Write(serverHello)
+			_, _ = conn.Write(diagnoseServerHello)
 		}
 	})
 	got := only(t, probe.Diagnose([]probe.Check{{Probe: "tls", Address: answering}}, short))
@@ -288,7 +288,7 @@ func TestDiagnoseHTTPIsAnsweredByAStatusLineOrAnyOtherBytes(t *testing.T) {
 }
 
 func TestDiagnoseATCPAcceptWithNoAnswerIsAccepted(t *testing.T) {
-	quiet, hangsUp := silent(t), tcpServer(t, func(net.Conn) {})
+	quiet, hangsUp := silentServer(t), tcpServer(t, func(net.Conn) {})
 	start := time.Now()
 	diagnosis := probe.Diagnose([]probe.Check{{Probe: "tls", Address: quiet}, {Probe: "http", Address: hangsUp}}, short)
 	if took := time.Since(start); took > 3*time.Second {
@@ -352,10 +352,10 @@ func TestDiagnoseDNSIsAnsweredByAnyReply(t *testing.T) {
 func TestDiagnoseIsAnsweredWhenAnyCheckIsAndKeepsTheOrderGiven(t *testing.T) {
 	answering := tcpServer(t, func(conn net.Conn) {
 		if _, _, ok := clientHello(conn); ok {
-			_, _ = conn.Write(serverHello)
+			_, _ = conn.Write(diagnoseServerHello)
 		}
 	})
-	checks := []probe.Check{{Probe: "tls", Address: closedTCP(t)}, {Probe: "http", Address: silent(t)}, {Probe: "tls", Address: answering}}
+	checks := []probe.Check{{Probe: "tls", Address: closedTCP(t)}, {Probe: "http", Address: silentServer(t)}, {Probe: "tls", Address: answering}}
 	diagnosis := probe.Diagnose(checks, short)
 	outcomes := []string{}
 	for i, got := range diagnosis.Results {
@@ -373,7 +373,7 @@ func TestDiagnoseIsAnsweredWhenAnyCheckIsAndKeepsTheOrderGiven(t *testing.T) {
 func TestDiagnoseIsBoundedAsAWhole(t *testing.T) {
 	bounds := probe.Bounds{Connect: 5 * time.Second, Read: 5 * time.Second, Whole: 500 * time.Millisecond, MaxRead: 4096}
 	start := time.Now()
-	diagnosis := probe.Diagnose([]probe.Check{{Probe: "tls", Address: silent(t)}, {Probe: "dns", Address: udpServer(t, func([]byte) []byte { return nil })}}, bounds)
+	diagnosis := probe.Diagnose([]probe.Check{{Probe: "tls", Address: silentServer(t)}, {Probe: "dns", Address: udpServer(t, func([]byte) []byte { return nil })}}, bounds)
 	if took := time.Since(start); took > 2*time.Second {
 		t.Fatalf("took %v; the whole diagnosis is bounded at %v", took, bounds.Whole)
 	}

@@ -38,7 +38,15 @@
 // fits the cap, and whenever the spend is unknown; paid calls go one at a time, so each check sees the charge before
 // it. A call sent holds its figure until its charge joins the spend (paidHolds), so a model request judged meanwhile, on
 // pi or on another harness, counts it beside the spend, as a paid call's check counts the model requests in flight.
+//
+// A workflow run (app.ts) is capped by the same checks: its model nodes' requests and its `llm` calls through capModels,
+// its paid tools through paidCall, and its decisions through holdPaid (decision-cap.ts). Where an agentic run's turn ends
+// on a refusal for room and waits for a raise without its process, a workflow's refused step waits where it stands
+// (RunSpend.wait, budget.ts): a model node's request before it is sent, a call node's call and a decision before they are
+// admitted again. A refusal inside a call node's effect is told to the call (capRefusals), never only to the model.
 import { readRunDbSync } from "./run-db.js";
+import { durableDecisions } from "@parcha/agentrun-pi/durable";
+import { AsyncLocalStorage } from "node:async_hooks";
 import { existsSync } from "node:fs";
 import { providerInputOverhead } from "@parcha/agentrun-kernel/host";
 import { bookRequest, type Ended, isConnectCode, isGatewayTimeout, rejectionCode } from "@parcha/agentrun-kernel";
@@ -115,6 +123,10 @@ export function expectedInput(bound: number, previous: Previous | undefined, now
 }
 /** The wrap-up's trigger (wrapUpDue): what is left of a cap under this many times a priced request's typical cost. */
 export const WRAP_UP_FACTOR = 3;
+/** The wrap-up's other trigger: what is left under this many times the next request's least admission (its least output
+ *  at its price: what the cap refuses it below), room for about one more request, so a run whose requests need far more
+ *  than they cost (a reasoning model's least, Codex's at "high") is told before the cap refuses it. */
+export const WRAP_UP_LEAST_FACTOR = 2;
 /** The output a request is counted at as the wrap-up's typical cost while nothing is priced (step 0): its input bound and
  *  this many output tokens at the model's price, never its whole output allowance (the hold), which no turn uses and which
  *  made every cap under about $3 on Sonnet 4.5 hear the wrap-up before the run had done anything. The lead's ruling (d),
@@ -133,10 +145,14 @@ export function typicalCost(costs: readonly unknown[], nextExpected: number): nu
   return warm.length % 2 ? warm[mid]! : (warm[mid - 1]! + warm[mid]!) / 2;
 }
 /** Whether a run near its cap is due its wrap-up: what is left (`cap` less `spent` and `held`, as admission counts it)
- *  is under WRAP_UP_FACTOR times `typical`. The same rule under strict. */
-export function wrapUpDue(cap: number, spent: number, held: number, typical: number): { leftUsd: number } | undefined {
+ *  is under WRAP_UP_FACTOR times `typical`, or under WRAP_UP_LEAST_FACTOR times `leastUsd`, the next request's least
+ *  admission as the cap prices it (CapGuard.leastUsd, Judged.least), when known. The same rule under strict. */
+export function wrapUpDue(cap: number, spent: number, held: number, typical: number, leastUsd?: number): { leftUsd: number } | undefined {
   const leftUsd = cap - spent - held;
-  return Number.isFinite(leftUsd) && Number.isFinite(typical) && leftUsd < WRAP_UP_FACTOR * typical ? { leftUsd } : undefined;
+  if (!Number.isFinite(leftUsd)) return undefined;
+  const byTypical = Number.isFinite(typical) && leftUsd < WRAP_UP_FACTOR * typical;
+  const byLeast = leastUsd !== undefined && Number.isFinite(leastUsd) && leftUsd < WRAP_UP_LEAST_FACTOR * leastUsd;
+  return byTypical || byLeast ? { leftUsd } : undefined;
 }
 /** The wrap-up's words, what is left to the cent. `nonePriced`: the run's own model has no priced request yet, so its
  *  typical cost is the next request's expected cost and the note can come before the run has done anything (step 0):
@@ -398,10 +414,8 @@ function openFigures(entries: readonly EntryLike[]): { generation: Figure[]; com
  *  end mark holds (HELD_FIELD), and one a crash cut (marked as sent, no answer, no end) at the figure its start mark
  *  holds (openFigures), each the worst case the cap held for it; without that figure either stays cut, at an unknown
  *  cost. A paid call settled at a charge it did not say, like one a crash cut, counts at the figure its mark holds. And
- *  this cap's refusals are left out, as none left. Unknown is null, which a cap never reads as $0. `sides`: only the
- *  run's side requests (each marked with a label: a learned workflow's, a hosted search's), what a run on another
- *  harness spent beside its harness's own requests and its paid tools, which that harness's booking does not hold. */
-export function spentIn(storeFile: string, { sides = false }: { sides?: boolean } = {}): number | null {
+ *  this cap's refusals are left out, as none left. Unknown is null, which a cap never reads as $0. */
+export function spentIn(storeFile: string): number | null {
   if (!existsSync(storeFile)) return 0;
   // Fresh, read-only and lock-free (run-db.ts): its process may hold it.
   const entries: EntryLike[] = [];
@@ -414,7 +428,7 @@ export function spentIn(storeFile: string, { sides = false }: { sides?: boolean 
     rows.length = 0;
     for (const row of db.prepare("SELECT record FROM entries ORDER BY rowid").iterate()) {
       const entry = JSON.parse(String((row as { record: string }).record)) as EntryLike;
-      if (!sides || ([REQUEST_STARTED, REQUEST_ENDED, REQUEST_COST, REQUEST_COST_LATE].includes(entry.kind) && typeof (entry.data as { request?: unknown } | undefined)?.request === "string")) rows.push(entry);
+      rows.push(entry);
     }
   });
   // pi's error entry for a request that ended on an error after its response began is left out, as an aborted one is: its
@@ -521,6 +535,68 @@ export function spentIn(storeFile: string, { sides = false }: { sides?: boolean 
   if (usage === undefined) return 0;
   if (typeof usage.usd !== "number" || !Number.isFinite(usage.usd)) return null;
   return entries.reduce((sum, entry) => sum + costOf(entry), 0);
+}
+
+/** A workflow decision's charge as the cap counted it (decision-cap.ts): `call` names the request, `usd` what it charged,
+ *  or its hold when it said none. The run's shown cost reads its decisions from their receipts; this is the cap's own
+ *  reading, kept so a later process counts each decision as this one did. costOf counts none, so nothing counts twice. */
+export const DECISION_COST = "agentrun.decision_cost";
+/** A decision request's hold, kept before it is sent (decision-cap.ts): with no DECISION_COST after it, its process died
+ *  while it was out, and it counts at this figure. */
+export const DECISION_HOLD = "agentrun.decision_hold";
+
+/** What a workflow run's decisions cost, in its store: what the next process adds to spentIn's reading. Per decision
+ *  (its id):
+ *  - booked (DECISION_COST entries, at its charge, its hold, or $0 for nothing charged): the larger of what was booked,
+ *    with any hold no booking ended, and what its receipts say it cost (the costs the timeline's decision rows sum);
+ *  - else, with a receipt that names its charge: that charge (its booking lost after the receipt);
+ *  - else, with a hold (DECISION_HOLD, kept once the driver admitted the request, right before its send): that hold, the
+ *    figure the live process held, since the request may have been out when its process died; never $0;
+ *  - else nothing: no hold is kept before the admission, so a request never sent is never counted.
+ *  A booking with no decision id is counted as it is. */
+export function decisionSpentIn(storeFile: string): number {
+  const booked = new Map<string, number>();
+  /** The decisions with any booking, a $0 one included. */
+  const ended = new Set<string>();
+  /** Each decision's holds kept and not yet followed by a booking, in order. */
+  const open = new Map<string, number[]>();
+  let loose = 0;
+  for (const entry of entriesIn(storeFile)) {
+    if (entry.kind !== DECISION_COST && entry.kind !== DECISION_HOLD) continue;
+    const data = entry.data as { usd?: unknown; decision?: unknown } | undefined;
+    const usd = figureOf(data?.usd);
+    const id = typeof data?.decision === "string" ? data.decision : undefined;
+    if (entry.kind === DECISION_HOLD) {
+      if (id !== undefined && usd !== undefined) open.set(id, [...(open.get(id) ?? []), usd]);
+      continue;
+    }
+    // A booking ends its decision's oldest hold still open, whatever it charged ($0 for nothing sent).
+    if (id !== undefined) {
+      ended.add(id);
+      open.get(id)?.shift();
+    }
+    if (usd === undefined || !(usd > 0)) continue;
+    if (id !== undefined) booked.set(id, (booked.get(id) ?? 0) + usd);
+    else loose += usd;
+  }
+  const receipted = new Map<string, number>();
+  let receipts: Array<Record<string, unknown>> = [];
+  // Receipts that cannot be read leave the bookings alone to say it.
+  if (existsSync(storeFile)) try { receipts = durableDecisions(storeFile, { unlocked: true }); } catch { receipts = []; }
+  for (const receipt of receipts) {
+    const usd = figureOf(receipt.cost_usd);
+    // A stored receipt row names its decision `decision_id` (agentrun-pi decision-recovery.ts rowOf).
+    const id = typeof receipt.decision_id === "string" ? receipt.decision_id : typeof receipt.id === "string" ? receipt.id : undefined;
+    if (id !== undefined && usd !== undefined && usd > 0) receipted.set(id, (receipted.get(id) ?? 0) + usd);
+  }
+  let sum = loose;
+  for (const id of new Set([...ended, ...booked.keys(), ...receipted.keys(), ...open.keys()])) {
+    const held = (open.get(id) ?? []).reduce((total, usd) => total + (usd > 0 ? usd : 0), 0);
+    if (ended.has(id)) sum += Math.max((booked.get(id) ?? 0) + held, receipted.get(id) ?? 0);
+    else if (receipted.has(id)) sum += receipted.get(id)!;
+    else sum += held;
+  }
+  return sum;
 }
 
 /** The entries of the run's store, in order (none when it has no store yet). */
@@ -630,24 +706,40 @@ export function holdsInFlight() {
  *  model requests in flight are held at, at their worst case (`held`, read once `spent` is in; absent: none apart from
  *  `spent`), and the charge a call adds (`add`). Set by the run's cap, on pi (capModels) and on another harness
  *  (harness-app.ts); none without a cap. A run is one process, so one is set per process. `now`: the whole figure read at
- *  once, held requests included, with no wait for a cost still coming in; another harness sets it, for the run's own
- *  model requests beside the harness's (capModels' `joined`). */
-export type RunSpend = { cap: number; spent(): number | null | Promise<number | null>; held?(): number; add(usd: number | null): void; now?(): number | null };
+ *  once, held requests included, with no wait for a cost still coming in (another harness sets it). */
+export type RunSpend = {
+  cap: number; spent(): number | null | Promise<number | null>; held?(): number; add(usd: number | null): void; now?(): number | null;
+  /** Raises the cap this process keeps to `to` (a raise of the run's cap, read by budget.ts): from the next check on. */
+  raise?(to: number): void;
+  /** A workflow run's wait for a raise (budget.ts), set once its run opens: a request refused for room waits on it before
+   *  it is sent, and is judged again once it resolves true (the cap was raised); false (a cancel, its signal) refuses it
+   *  as before. Absent on an agentic run, whose turn ends on the refusal instead. */
+  wait?(refusal: CapRefusal, signal?: AbortSignal): Promise<boolean>;
+  /** A workflow run's record of a refusal no raise fixes (budget.ts), which its run ends on, in the cap's words. */
+  stopped?(refusal: CapRefusal): void;
+};
+/** A refusal of the cap, as a call that was refused is told it: its words (after the code, as a pause serves them),
+ *  whether a higher cap would send it (`room`; not so for no price, no ceiling or an unknown spend), the cap that refused
+ *  it, and its figures when it was refused for room. */
+export type CapRefusal = { words: string; room: boolean; capUsd: number; figures?: RefusalFigures };
+/** Where a refusal of the cap inside a workflow call node's effect is told (app.ts runEffect): the call ends on it and
+ *  waits for a raise, never handed back as the tool's own failure, which a collecting map would take as the item's. A
+ *  paid call refused there leaves no refusal for a model's next request (takePaidRefusal): no model turn follows it. */
+export const capRefusals = new AsyncLocalStorage<(refusal: CapRefusal) => void>();
 let runSpend: RunSpend | undefined;
 let paying: Promise<unknown> = Promise.resolve();
+/** The run's spend this process counts, when it has a cap: for a workflow run's waits and decisions (app.ts). */
+export const runSpendNow = (): RunSpend | undefined => runSpend;
 export const useSpend = (spend: RunSpend | undefined): void => {
   runSpend = spend;
   // A paid call's refusal is its own spend's (its run's): another spend starts with none.
   paidRoomRefusal = undefined;
 };
 
-/** Each paid call sent under the cap and not settled, at what it is held at; on another harness, each of the run's own
- *  model requests in flight too (capModels' `joined`). */
+/** Each paid call sent under the cap and not settled, at what it is held at. */
 const paidOpen = new Set<{ usd: number }>();
 /** What the paid calls under way are held at, together (0 when none is): the one figure every check of the run's cap
- *  adds to what the run has spent, a model request's (capModels, capBefore) and a paid call's (paidCall). On another
- *  harness the run's own model requests in flight (a learned workflow's, a hosted search's) are held here too, so the
- *  harness's check sees them. */
+ *  adds to what the run has spent, a model request's (capModels, capBefore) and a paid call's (paidCall). */
 export const paidHolds = (): number => [...paidOpen].reduce((sum, { usd }) => sum + usd, 0);
 
 /** A paid hold that outlives the paidCall that took it (a browser session's, browser-cost.ts), counted in paidHolds as a
@@ -662,11 +754,6 @@ export const keepHold = (usd: number): { usd: number; drop(): void } => {
 export const addSpend = (usd: number | null): void => runSpend?.add(usd);
 /** The run's cap, when it has one. */
 export const runCap = (): number | undefined => runSpend?.cap;
-/** On another harness, what the run's own model requests (capModels' `joined`) have cost: those of earlier processes
- *  (spentIn's `sides`) and this one's; null once one is unknown. 0 on pi, where the run's one capModels counts them. */
-let sidesSpent: number | null = 0;
-/** What sidesSpent says: the harness's check adds it to what its booking says the run spent (harness-app.ts). */
-export const sideSpend = (): number | null => sidesSpent;
 
 /** `call`, a paid tool's (`name`), under the run's cap, by the rule a model request keeps: refused, in words that name
  *  its price and the cap and never calling it, unless what the run has spent plus what the call is held at (`hold`: its
@@ -695,7 +782,11 @@ export async function paidCall<T>(name: string, call: () => Promise<T>, charge: 
   if (!spend) return { result: await call() };
   const turn = paying.then(async () => {
     const read = await spend.spent();
-    if (read === null) return { refused: `${SPEND_CAP_REACHED}: ${name} was not sent. What the run has spent is unknown, so its cap of ${money(spend.cap)} cannot be kept: the run is out of budget.` };
+    if (read === null) {
+      const text = `${SPEND_CAP_REACHED}: ${name} was not sent. What the run has spent is unknown, so its cap of ${money(spend.cap)} cannot be kept: the run is out of budget.`;
+      capRefusals.getStore()?.({ words: text.slice(`${SPEND_CAP_REACHED}: `.length), room: false, capUsd: spend.cap });
+      return { refused: text };
+    }
     // What is held for requests and calls still answering, apart from what was spent, as a model request's refusal says it.
     const holding = (spend.held?.() ?? 0) + paidHolds();
     // Written so that a figure that is not a number refuses.
@@ -703,7 +794,11 @@ export async function paidCall<T>(name: string, call: () => Promise<T>, charge: 
       // Refused for room: a raise would send it, so the run pauses at the model's next request (takePaidRefusal). Its
       // words and the least cap that sends it (leastCapUsd) are one figure, which the pause carries to its mark and serves.
       const refusal = paidRefusal(spend.cap, read, holding, name, hold);
-      paidRoomRefusal = { owner: spend, words: refusal.text.slice(`${SPEND_CAP_REACHED}: `.length), figures: { spentUsd: read + holding, needsUsd: hold.usd, leastCapUsd: refusal.leastCapUsd } };
+      const room = { words: refusal.text.slice(`${SPEND_CAP_REACHED}: `.length), figures: { spentUsd: read + holding, needsUsd: hold.usd, leastCapUsd: refusal.leastCapUsd } };
+      // Inside a workflow's call node: the call is told, and ends on it. Else the model's next request is refused in its words.
+      const told = capRefusals.getStore();
+      if (told) told({ ...room, room: true, capUsd: spend.cap });
+      else paidRoomRefusal = { owner: spend, ...room };
       return { refused: refusal.text, leastCapUsd: refusal.leastCapUsd };
     }
     // Held from here; settled into the spend in the same step that lets the hold go, so no check between sees neither.
@@ -723,6 +818,42 @@ export async function paidCall<T>(name: string, call: () => Promise<T>, charge: 
   });
   paying = turn.catch(() => undefined);
   return turn;
+}
+
+/** A paid call's hold, taken ahead of the call by the rule paidCall keeps (a workflow's decision, decision-cap.ts, which
+ *  must wait for a raise before its request is admitted, never after): refused unless what the run has spent plus what
+ *  is held plus `hold` fits the cap, and whenever the spend is unknown; else held (paidHolds) until the ticket settles it
+ *  at the charge the call reports (null: at its hold, as paidCall counts a charge not said) or drops it (nothing was
+ *  sent). The check takes its turn with paidCall's, but the call it holds for goes beside other calls: each check sees the
+ *  holds of those under way. A refusal for room waits on the run's wait (RunSpend.wait) when it has one and is checked
+ *  again once the cap is raised. With no cap it holds nothing. */
+export type PaidTicket = { settle(usd: number | null): void; drop(): void };
+export async function holdPaid(name: string, hold: { usd: number; basis: string }, signal?: AbortSignal): Promise<{ refused: CapRefusal } | { ticket: PaidTicket }> {
+  for (;;) {
+    const spend = runSpend;
+    if (!spend) return { ticket: { settle: () => undefined, drop: () => undefined } };
+    const turn = paying.then(async (): Promise<{ refused: CapRefusal } | { ticket: PaidTicket }> => {
+      const read = await spend.spent();
+      if (read === null) return { refused: { words: `${name} was not sent. What the run has spent is unknown, so its cap of ${money(spend.cap)} cannot be kept: the run is out of budget.`, room: false, capUsd: spend.cap } };
+      const holding = (spend.held?.() ?? 0) + paidHolds();
+      if (!(read + holding + hold.usd <= spend.cap + FIT_TOLERANCE)) {
+        const refusal = paidRefusal(spend.cap, read, holding, name, hold);
+        return { refused: { words: refusal.text.slice(`${SPEND_CAP_REACHED}: `.length), room: true, capUsd: spend.cap, figures: { spentUsd: read + holding, needsUsd: hold.usd, leastCapUsd: refusal.leastCapUsd } } };
+      }
+      // Held from here, in the same step as the check, so no other check between sees neither.
+      const open = { usd: hold.usd };
+      paidOpen.add(open);
+      let done = false;
+      return { ticket: {
+        settle: (usd) => { if (done) return; done = true; spend.add(usd ?? hold.usd); paidOpen.delete(open); },
+        drop: () => { if (done) return; done = true; paidOpen.delete(open); },
+      } };
+    });
+    paying = turn.catch(() => undefined);
+    const held = await turn;
+    if (!("refused" in held) || !held.refused.room || !spend.wait || signal?.aborted) return held;
+    if (!(await spend.wait(held.refused, signal))) return held;
+  }
 }
 
 /** The most output tokens one request may take: the model's ceiling, else its context window. A thinking budget can
@@ -879,6 +1010,14 @@ export function leastOutput(model: Pick<Model<Api>, "api" | "reasoning">, thinki
  *  previous request on the same model, as its usage reported it (`previous`, harness-app.ts). */
 export interface CapGuard {
   beforeRequest(request: GuardRequest): ({ refuse: string } & Partial<RefusalFigures>) | Admitted;
+  /** A request's least admission (its input and least output at its price, under `previous`), the figure beforeRequest
+   *  refuses it below, priced by the same code: the wrap-up's other trigger reads it for the next request (wrapUpDue).
+   *  Undefined for an input that cannot be measured, and on a guard that refuses everything. */
+  leastUsd?(request: Pick<GuardRequest, "inputTokensMax" | "outputTokensAsked" | "outputTokensLeast" | "previous">): number | undefined;
+  /** A request's step-0 figure (its input and WRAP_UP_STEP0_ANSWER_TOKENS of output, at most what it asks, under
+   *  `previous`), priced by the same code: the wrap-up's typical cost while nothing is priced, judged on the request taking
+   *  the note itself, as pi's judge does (wrapUpDue). Undefined for an input that cannot be measured. */
+  typicalUsd?(request: Pick<GuardRequest, "inputTokensMax" | "outputTokensAsked" | "outputTokensLeast" | "previous">): number | undefined;
 }
 /** A request this guard admitted: the most output it may be sent with (none for a model whose output is free and has no
  *  ceiling), what it is held at (`holdUsd`: its expected cost at that output, its worst case under strict), which the
@@ -886,15 +1025,15 @@ export interface CapGuard {
  *  (`boundUsd`, BOUND_USD), and what it counts at if its client stops it part way having streamed that many tokens (one a
  *  byte): its input and those tokens plus STOP_ALLOWANCE_TOKENS of output, at most its output limit, never more than its
  *  hold. */
-/** `typicalUsd`: the request at its input and WRAP_UP_STEP0_ANSWER_TOKENS of output (at most what it asked), the wrap-up's
- *  typical cost while nothing is priced. */
-export type Admitted = { outputTokensMax?: number; holdUsd: number; boundUsd: number; stoppedUsd(streamed: number): number; typicalUsd?: number };
+export type Admitted = { outputTokensMax?: number; holdUsd: number; boundUsd: number; stoppedUsd(streamed: number): number };
 export type GuardRequest = {
   spentUsd: number | null;
   /** The requests in flight, each held at what it was admitted at (`holdUsd`), else at its worst case at the output limit
    *  it was admitted with. */
   inFlight: readonly { inputTokensMax?: number; outputTokensMax?: number; holdUsd?: number }[];
   inputTokensMax?: number; outputTokensAsked?: number; outputTokensLeast?: number;
+  /** A request the run sends beside the harness's, on the session's route (ModelRequest.host): judged by the same rule. */
+  host?: string;
   /** The session's previous request on this model (Previous); none, the whole input uncached. */
   previous?: Previous;
 };
@@ -916,7 +1055,25 @@ export async function capBefore(cap: number | undefined, model: Model<Api> | und
   if (output === undefined) return { beforeRequest: () => ({ refuse: noCeiling(cap) }) };
   const price = priceOf((await import("@earendil-works/pi-ai")).calculateCost, model);
   const held = (request: GuardRequest["inFlight"][number]) => request.holdUsd ?? price({ cached: 0, fresh: request.inputTokensMax! }, request.outputTokensMax ?? output);
+  /** A request priced by the one rule (requestPrice): its cost at an output, and the output it asks, needs at least, and
+   *  is typically answered in at step 0 (WRAP_UP_STEP0_ANSWER_TOKENS, at most what it asks). */
+  const pricedOf = ({ inputTokensMax, outputTokensAsked, outputTokensLeast, previous }: Pick<GuardRequest, "inputTokensMax" | "outputTokensAsked" | "outputTokensLeast" | "previous">) => {
+    const priced = requestPrice(price, inputTokensMax!, previous, now(), mode);
+    const asked = Math.min(outputTokensAsked ?? output, output);
+    return { priced, asked, least: Math.min(outputTokensLeast ?? ANSWER_TOKENS_LEAST, asked), step0: Math.min(WRAP_UP_STEP0_ANSWER_TOKENS, asked) };
+  };
+  const measured = (request: { inputTokensMax?: number }) => typeof request.inputTokensMax === "number" && Number.isFinite(request.inputTokensMax);
   return {
+    leastUsd(request) {
+      if (!measured(request)) return undefined;
+      const { priced, least } = pricedOf(request);
+      return priced.cost(output === 0 ? 0 : least);
+    },
+    typicalUsd(request) {
+      if (!measured(request)) return undefined;
+      const { priced, step0 } = pricedOf(request);
+      return priced.cost(output === 0 ? 0 : step0);
+    },
     beforeRequest({ spentUsd, inFlight, inputTokensMax, outputTokensAsked, outputTokensLeast, previous }) {
       if (spentUsd === null) return { refuse: unknownSpend(cap) };
       const inputs = [inputTokensMax, ...inFlight.map((request) => request.inputTokensMax)];
@@ -924,18 +1081,15 @@ export async function capBefore(cap: number | undefined, model: Model<Api> | und
       // Its requests in flight at what each was admitted at, and its paid calls under way at what they are held at.
       const holding = inFlight.reduce((sum, request) => sum + held(request), paidHolds());
       const left = cap - spentUsd - holding;
-      const priced = requestPrice(price, inputTokensMax!, previous, now(), mode);
+      const { priced, asked, least } = pricedOf({ inputTokensMax, outputTokensAsked, outputTokensLeast, previous });
       const cost = priced.cost;
       const bound = (tokens: number) => Math.max(0, priced.worst(tokens) - cost(tokens));
       const boundOf = (tokens: number) => (bound(tokens) > 0 ? { boundUsd: bound(tokens) } : {});
-      const admitted = (limit: number, typicalUsd = cost(limit)): Admitted => ({ ...(output === 0 ? {} : { outputTokensMax: limit }), holdUsd: cost(limit), boundUsd: bound(limit), stoppedUsd: stoppedPriceOf(cost, limit), typicalUsd });
+      const admitted = (limit: number): Admitted => ({ ...(output === 0 ? {} : { outputTokensMax: limit }), holdUsd: cost(limit), boundUsd: bound(limit), stoppedUsd: stoppedPriceOf(cost, limit) });
       // A model whose output costs nothing and names no ceiling: nothing to limit, only its input to fit.
       if (output === 0) return cost(0) <= left + FIT_TOLERANCE ? admitted(0) : { ...refuseFor(capRefusal(cap, spentUsd, holding, cost(0))), ...boundOf(0) };
-      const asked = Math.min(outputTokensAsked ?? output, output);
-      const typical = cost(Math.min(WRAP_UP_STEP0_ANSWER_TOKENS, asked));
-      const least = Math.min(outputTokensLeast ?? ANSWER_TOKENS_LEAST, asked);
       const most = mostOutput(cost, least, asked, left);
-      return most === undefined ? { ...refuseFor(capRefusal(cap, spentUsd, holding, cost(least))), ...boundOf(least) } : admitted(most, typical);
+      return most === undefined ? { ...refuseFor(capRefusal(cap, spentUsd, holding, cost(least))), ...boundOf(least) } : admitted(most);
     },
   };
 }
@@ -955,7 +1109,9 @@ export function requestParts(overhead: (model: Model<Api>, context: Context) => 
 /** The wrap-up on pi (capModels' `wrapUp`): the run's own model (`model`, its id), that model's priced requests so far
  *  (`costs`, earlier processes' from the store, costsIn; capModels adds each one it books), whether it was told under this
  *  cap already (`sent`, wrapUpSentIn), and `record`, which writes its row (request-start.ts, CAP_WRAPUP). */
-export type WrapUp = { model: string; costs: number[]; sent: boolean; record(data: { capUsd: number; leftUsd: number; words: string }): void };
+/** The wrap-up's state on pi. `sent`: told, in an answered request, once per cap. `pending`: a request carries the note
+ *  and has not ended: no other request takes it until that one is answered (told) or not (re-armed). */
+export type WrapUp = { model: string; costs: number[]; sent: boolean; pending?: boolean; record(data: { capUsd: number; leftUsd: number; words: string }): void };
 
 /** `models`, each request limited to the output tokens what is left of `cap` after `spent` USD (and what requests in flight
  *  hold) can buy, at most what it asks for, thinking included (CLAMP on its marks when that is less), and refused when that
@@ -969,13 +1125,9 @@ export type WrapUp = { model: string; costs: number[]; sent: boolean; record(dat
  *  by previousIn; its end as `now` read it when it settled here, else its own timestamp, which is when it began). Each
  *  request sent carries what it is held at (HELD_USD) and its bound (BOUND_USD) to the marks below, and one stopped
  *  before its end counts at most its hold.
- *  `refused` (markRequests') writes the start mark of a refused model request before pi writes its error entry.
- *  `joined`: the run is on another harness, whose spend is the run's one total, and these are the run's own requests
- *  beside the harness's (a learned workflow's, a hosted search's). Each is judged against that total as the harness
- *  sets it when its run opens (RunSpend.now: its booked requests, its paid tools' charges and its requests in flight,
- *  with sideSpend), unknown until then; held where the harness's check sees it (paidHolds); and its cost added to
- *  sideSpend, which starts at `spent` (what these cost in earlier processes: spentIn's `sides`). */
-export async function capModels<M extends Models>(models: M, cap: number, spent: number | null, { unpriced = new Set<string>(), overhead = piOverhead, refused: markRefused, joined = false, mode = "expected", now = Date.now, wrapUp }: { unpriced?: ReadonlySet<string>; overhead?: (model: Model<Api>, context: Context) => number | undefined; refused?: (figures?: RefusalFigures) => Promise<void>; joined?: boolean; mode?: CapMode; now?: () => number; wrapUp?: WrapUp } = {}): Promise<M> {
+ *  `refused` (markRequests') writes the start mark of a refused model request before pi writes its error entry. On
+ *  another harness the run has no models of its own: every request goes through its session's proxy (port-models.ts). */
+export async function capModels<M extends Models>(models: M, cap: number, spent: number | null, { unpriced = new Set<string>(), overhead = piOverhead, refused: markRefused, mode = "expected", now = Date.now, wrapUp }: { unpriced?: ReadonlySet<string>; overhead?: (model: Model<Api>, context: Context) => number | undefined; refused?: (figures?: RefusalFigures) => Promise<void>; mode?: CapMode; now?: () => number; wrapUp?: WrapUp } = {}): Promise<M> {
   const [{ calculateCost, createAssistantMessageEventStream }, simple] = await Promise.all([import("@earendil-works/pi-ai"), import("@earendil-works/pi-ai/api/simple-options")]);
   const partsOf = requestParts(overhead);
   /** When each answer settled here, by its timestamp (an answer keeps it when the run's store gives it back), the newest
@@ -999,38 +1151,52 @@ export async function capModels<M extends Models>(models: M, cap: number, spent:
     return previousOf(answer.usage, before?.input, ended.get(answer.timestamp) ?? answer.timestamp);
   };
   let held = 0;
-  if (joined) sidesSpent = spent;
-  /** What the run has spent, as this request's check reads it: on another harness the run's one total (`joined`). */
-  const spentNow = (): number | null => (joined ? (runSpend?.now?.() ?? null) : spent);
+  /** What the run has spent, as this request's check reads it. */
+  const spentNow = (): number | null => spent;
   // The run's spend as a paid tool's check reads it (installed below, useSpend): the requests in flight held at their
   // worst case apart from it (it adds the paid holds itself), and its charge joins the spend.
-  const own: RunSpend = { cap, spent: () => spent, held: () => held, add: (usd) => void (spent = spent !== null && typeof usd === "number" && Number.isFinite(usd) ? spent + usd : null) };
+  // `cap` moves only by a raise (raise: a workflow run's, budget.ts), read at each check from then on.
+  const own: RunSpend = {
+    get cap() { return cap; }, spent: () => spent, held: () => held, add: (usd) => void (spent = spent !== null && typeof usd === "number" && Number.isFinite(usd) ? spent + usd : null),
+    raise: (to) => void (to > cap && (cap = to)),
+  };
   type Options = { maxTokens?: number; reasoning?: string; thinkingBudgets?: Record<string, number> } & Record<PropertyKey, unknown>;
   /** What a request is held at (its expected cost, its worst case under strict), its bound, and the options it goes with
    *  (limited to what is left of the cap, when that is less than it asks for), or why the cap refuses it. `simpleCall`:
    *  through streamSimple or completeSimple, whose thinking pi-ai turns into a budget or an effort; a direct call sends
    *  its maxTokens as is. */
-  type Judged = { hold: number; bound: number; stopped: Stopped; options?: Options; context?: Context; typical?: number };
+  type Judged = { hold: number; bound: number; stopped: Stopped; options?: Options; context?: Context; typical?: number; least?: number; told?: { capUsd: number; leftUsd: number; words: string } };
   /** `judgeOne`, and near the cap the wrap-up (wrapUpDue), once: a turn's request on the run's own model is sent with the
    *  words after everything its context holds (`context`), its bytes admitted with it. Only in this one request: pi's
    *  transcript never holds the note, and no input is queued, so the run spends nothing after the model answers. */
   const judge = (model: Model<Api>, context: Context, options: Options | undefined, simpleCall: boolean, turn: boolean): Judged | { why: string; figures?: RefusalFigures } => {
     const judged = judgeOne(model, context, options, simpleCall, turn);
-    if (!("hold" in judged) || !wrapUp || wrapUp.sent || joined || !turn || model.id !== wrapUp.model) return judged;
+    if (!("hold" in judged) || !wrapUp || wrapUp.sent || wrapUp.pending || !turn || model.id !== wrapUp.model) return judged;
     const spentUsd = spentNow();
     // What is left as admission counted it: what was spent, and what requests and paid calls in flight are held at.
     // Nothing priced yet: the request at its input and a typical answer (WRAP_UP_STEP0_ANSWER_TOKENS), never its hold.
-    const due = spentUsd === null ? undefined : wrapUpDue(cap, spentUsd, held + paidHolds(), typicalCost(wrapUp.costs, judged.typical ?? judged.hold));
+    const due = spentUsd === null ? undefined : wrapUpDue(cap, spentUsd, held + paidHolds(), typicalCost(wrapUp.costs, judged.typical ?? judged.hold), judged.least);
     if (!due) return judged;
     const words = wrapUpWords(due.leftUsd, wrapUp.costs.length === 0);
     const noted = { ...context, messages: [...context.messages, { role: "user", content: `<system-reminder>${words}</system-reminder>`, timestamp: now() }] } as Context;
     const again = judgeOne(model, noted, options, simpleCall, turn);
     // The note's own bytes do not fit: the request goes as it came, and the note waits for one they do.
     if (!("hold" in again)) return judged;
-    wrapUp.sent = true;
-    wrapUp.record({ capUsd: cap, leftUsd: due.leftUsd, words });
-    return { ...again, context: noted };
+    // Pending until this request ends: told (recorded) only if it ends answered, else left for the next request.
+    wrapUp.pending = true;
+    return { ...again, context: noted, told: { capUsd: cap, leftUsd: due.leftUsd, words } };
   };
+  /** Settles a note `answer` carried: told when it ended answered (not an error, not aborted), else re-armed. */
+  const settleNote = (answer: Promise<AssistantMessage>, told: { capUsd: number; leftUsd: number; words: string }) =>
+    void answer.then(
+      (message) => {
+        wrapUp!.pending = false;
+        if (message.stopReason === "error" || message.stopReason === "aborted") return;
+        wrapUp!.sent = true;
+        wrapUp!.record(told);
+      },
+      () => void (wrapUp!.pending = false),
+    );
   const judgeOne = (model: Model<Api>, context: Context, options: Options | undefined, simpleCall: boolean, turn: boolean): Judged | { why: string; figures?: RefusalFigures } => {
     if (unpriced.has(model.id)) return { why: noPrice(cap) };
     const ceiling = outputBound(model);
@@ -1060,8 +1226,9 @@ export async function capModels<M extends Models>(models: M, cap: number, spent:
     // each paid call under way at what it is held at.
     const holding = held + paidHolds();
     const left = cap - spentUsd - holding;
-    // A model whose output costs nothing and names no ceiling: nothing to limit, only its input and fee to fit.
-    if (ceiling === 0) return cost(0) <= left + FIT_TOLERANCE ? { hold: cost(0), bound: bound(0), stopped: () => cost(0) } : refusedAt(holding, 0);
+    // A model whose output costs nothing and names no ceiling: nothing to limit, only its input and fee to fit. Its least
+    // admission is that figure, its input at its price after the previous request, and no output (the wrap-up's least).
+    if (ceiling === 0) return cost(0) <= left + FIT_TOLERANCE ? { hold: cost(0), bound: bound(0), stopped: () => cost(0), least: cost(0) } : refusedAt(holding, 0);
     // What the request would send as it stands, thinking included: pi-ai clamps its maxTokens (or the model's) to what its
     // context leaves, and on an API whose thinking takes a budget adds the budget to it.
     const transcript = context as unknown as Parameters<typeof simple.clampMaxTokensToContext>[1];
@@ -1095,14 +1262,16 @@ export async function capModels<M extends Models>(models: M, cap: number, spent:
     const stoppedAt = (limit: number): Stopped => (message) => stoppedFigure(cost, limit, cost(limit), streamedBytes(message) + Math.max(0, hiddenOf(limit) - reasoningBytes(message)));
     // The wrap-up's typical cost while nothing is priced: its input and a typical answer, at most what it asks.
     const typical = cost(Math.min(WRAP_UP_STEP0_ANSWER_TOKENS, asked));
-    if (most === asked) return { hold: cost(asked), bound: bound(asked), stopped: stoppedAt(asked), typical };
+    // The figure admission refuses it below (`least` output at its price): the wrap-up's other trigger (wrapUpDue).
+    const leastUsd = cost(least);
+    if (most === asked) return { hold: cost(asked), bound: bound(asked), stopped: stoppedAt(asked), typical, least: leastUsd };
     // Limited: sent with `most` tokens at most, thinking included. On a budget API the budget is squeezed first, keeping
     // the answer's 1,024, and maxTokens is what is left of `most` beside it, so pi-ai's sum is `most`.
     const clamp = { tokens: most, leftUsd: Math.round(left * 1e6) / 1e6, capUsd: cap };
-    if (!budgeted) return { hold: cost(most), bound: bound(most), stopped: stoppedAt(most), typical, options: { ...options, maxTokens: most, [CLAMP]: clamp } };
+    if (!budgeted) return { hold: cost(most), bound: bound(most), stopped: stoppedAt(most), typical, least: leastUsd, options: { ...options, maxTokens: most, [CLAMP]: clamp } };
     const level = simple.clampReasoning(thinking)!;
     const budget = Math.min(simple.thinkingBudgetForLevel(thinking, options?.thinkingBudgets), most - ANSWER_TOKENS_LEAST);
-    return { hold: cost(most), bound: bound(most), stopped: stoppedAt(most), typical, options: { ...options, maxTokens: most - budget, thinkingBudgets: { ...options?.thinkingBudgets, [level]: budget }, [CLAMP]: clamp } };
+    return { hold: cost(most), bound: bound(most), stopped: stoppedAt(most), typical, least: leastUsd, options: { ...options, maxTokens: most - budget, thinkingBudgets: { ...options?.thinkingBudgets, [level]: budget }, [CLAMP]: clamp } };
   };
   const refusal = (model: Model<Api>, why: string): AssistantMessage => ({
     role: "assistant", content: [], api: model.api, provider: model.provider, model: model.id, stopReason: "error", timestamp: Date.now(),
@@ -1118,7 +1287,7 @@ export async function capModels<M extends Models>(models: M, cap: number, spent:
    *  response) it is unknown, as is a cost that is not a number, from then on. */
   const count = (answer: Promise<AssistantMessage>, turn: boolean, worst?: number, stopped?: Stopped, attempts?: readonly Attempt[]) => {
     const plus = (sum: number | null, cost: unknown) => (sum !== null && typeof cost === "number" && Number.isFinite(cost) ? sum + cost : null);
-    const add = (cost: unknown) => void (joined ? (sidesSpent = plus(sidesSpent, cost)) : (spent = plus(spent, cost)));
+    const add = (cost: unknown) => void (spent = plus(spent, cost));
     // One rule (bookRequest), from how the request ended (piEnded) as its marks read it too.
     const at = (message: AssistantMessage) => message.stopReason === "aborted" ? (stopped && !anyAttemptLost(attempts) ? stopped(message) : worst)
       : bookRequest(piEnded(message, responseBegan.has(message), attempts), worst === undefined ? {} : { hold: worst }).usd;
@@ -1131,13 +1300,10 @@ export async function capModels<M extends Models>(models: M, cap: number, spent:
     };
     return answer.then((message) => (endedNow(message), priced(message), add(at(message))), () => add(worst));
   };
-  /** Sends a request judged to fit at `worst` (its hold), holding that until `answer` settles: here, or on another harness
-   *  where its check sees it (`joined`: paidHolds). */
+  /** Sends a request judged to fit at `worst` (its hold), holding that until `answer` settles. */
   const admit = (turn: boolean, worst: number, stopped: Stopped, answer: () => Promise<AssistantMessage>, attempts?: readonly Attempt[]): Promise<AssistantMessage> => {
-    const hold = { usd: worst };
-    if (joined) paidOpen.add(hold);
-    else held += worst;
-    const release = () => void (joined ? paidOpen.delete(hold) : (held -= worst));
+    held += worst;
+    const release = () => void (held -= worst);
     let answered: Promise<AssistantMessage>;
     try {
       answered = answer();
@@ -1151,7 +1317,7 @@ export async function capModels<M extends Models>(models: M, cap: number, spent:
   // A paid tool's check reads the spend, and the requests in flight held at their worst case apart from it (it adds the
   // paid holds itself), and its charge joins the spend. On another harness, the harness sets it as its run opens
   // (harness-app.ts).
-  if (!joined) useSpend(own);
+  useSpend(own);
   /** `options` with what the request is held at, its bound, its figure if it is stopped, and its attempts' record, for
    *  its marks: on an API the cap can watch, a fetch that records each attempt (`attempts`, undefined on one it cannot). */
   const carrying = <O>(options: O, { hold, bound, stopped }: Judged, attempts: Attempt[] | undefined): O => ({
@@ -1166,9 +1332,42 @@ export async function capModels<M extends Models>(models: M, cap: number, spent:
       if ("hold" in judged) {
         let events: AssistantMessageEventStream | undefined;
         const attempts = attemptsFor(model);
-        admit(true, judged.hold, judged.stopped, () => (events = send(model, judged.context ?? context, carrying(judged.options ?? options, judged, attempts))).result(), attempts);
+        let answered: Promise<AssistantMessage>;
+        try {
+          answered = admit(true, judged.hold, judged.stopped, () => (events = send(model, judged.context ?? context, carrying(judged.options ?? options, judged, attempts))).result(), attempts);
+        } catch (error) {
+          // Never sent (its send threw as it was made): a note it carried waits for the next request.
+          if (judged.told) wrapUp!.pending = false;
+          throw error;
+        }
+        if (judged.told) settleNote(answered, judged.told);
         return events!;
       }
+      // A workflow run's turn request refused for room waits for a raise, unsent, and is judged again (RunSpend.wait):
+      // its node stands where it is. Its events then come from the request sent, or from the refusal if none is.
+      const room = roomRefusal(judged.why);
+      if (room !== undefined && own.wait) {
+        const waited = createAssistantMessageEventStream();
+        const signal = (options as { signal?: AbortSignal } | undefined)?.signal;
+        void own.wait({ words: room, room: true, capUsd: cap, ...(judged.figures ? { figures: judged.figures } : {}) }, signal).then(
+          (raised) => raised ? stream(send, simpleCall)(model, context, options) : refusedStream(model, judged),
+          () => refusedStream(model, judged),
+        ).then(async (events) => {
+          for await (const event of events) waited.push(event);
+          waited.end(await events.result());
+        }).catch((error: unknown) => {
+          const failed = refusal(model, `${SPEND_CAP_REACHED}: Not sent: the wait for a raise failed (${String((error as Error)?.message ?? error).slice(0, 200)})`);
+          waited.push({ type: "error", reason: "error", error: failed });
+          waited.end(failed);
+        });
+        return waited;
+      }
+      // A refusal no raise fixes ends a workflow's run in its words (budget.ts): the node fails on the refusal.
+      if (room === undefined) own.stopped?.({ words: judged.why.replace(CAP_REFUSAL_PREFIX, ""), room: false, capUsd: cap });
+      return refusedStream(model, judged);
+    };
+  /** The refusal's own stream: its start mark first, then pi's error for it. */
+  const refusedStream = (model: Model<Api>, judged: { why: string; figures?: RefusalFigures }): AssistantMessageEventStream => {
       const refused = createAssistantMessageEventStream();
       const message = refusal(model, judged.why);
       // Its own start mark first, so pi's error entry for it answers that mark, never an earlier request a stop or a crash
@@ -1185,7 +1384,12 @@ export async function capModels<M extends Models>(models: M, cap: number, spent:
   const complete = (send: (model: Model<Api>, context: Context, options?: Options) => Promise<AssistantMessage>, simpleCall: boolean) =>
     (model: Model<Api>, context: Context, options?: Options): Promise<AssistantMessage> => {
       const judged = judge(model, context, options, simpleCall, false);
-      if (!("hold" in judged)) return Promise.resolve(refusal(model, judged.why));
+      if (!("hold" in judged)) {
+        // Inside a workflow's call node (the `llm` tool): the call is told, and ends on it (app.ts runEffect).
+        const room = roomRefusal(judged.why);
+        capRefusals.getStore()?.({ words: room ?? judged.why.replace(CAP_REFUSAL_PREFIX, ""), room: room !== undefined, capUsd: cap, ...(judged.figures ? { figures: judged.figures } : {}) });
+        return Promise.resolve(refusal(model, judged.why));
+      }
       const attempts = attemptsFor(model);
       return admit(false, judged.hold, judged.stopped, () => send(model, judged.context ?? context, carrying(judged.options ?? options, judged, attempts)), attempts);
     };

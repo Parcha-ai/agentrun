@@ -58,7 +58,7 @@ describe("runAs: commands", () => {
     });
   });
 
-  it("refuse uid 0: the agent's commands would run as root, the owner of run.json, the store and the daemon's /proc", async () => {
+  it("refuse uid 0: the agent's commands would run as root, the owner of the run's store", async () => {
     await withRun(async ({ root, work }) => {
       for (const runAs of [{ uid: 0, gid: 0 }, { uid: 0, gid: 1000 }]) {
         assert.throws(() => archilEnv({ root, work }, { runAs }), (e: unknown) => e instanceof EnvError && e.code === "INVALID_RUN_AS" && /root/.test((e as Error).message));

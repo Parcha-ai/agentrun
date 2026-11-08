@@ -35,8 +35,8 @@ const MODEL_VARS = ["AGENT_MODEL_BASE_URL", "AGENT_MODEL_API_KEY", "AGENT_MODEL"
 const ENV = { PATH: process.env.PATH, ...Object.fromEntries(MODEL_VARS.flatMap((name) => (process.env[name] ? [[name, process.env[name]]] : []))) };
 const root = fileURLToPath(new URL("../../../", import.meta.url));
 const mod = (path) => import(pathToFileURL(join(root, path)).href);
-const [{ judgeProposal }, { runModels, thinkingOf }, adapters, { authContextOf }, learn, { builtinModels }] = await Promise.all([
-  mod("packages/serve/dist/grade.js"), mod("packages/serve/dist/model.js"), mod("packages/serve/dist/adapters.js"), mod("packages/serve/dist/secrets.js"),
+const [{ judgeProposal }, { runModels, thinkingOf }, { modelOn, providerFor }, { authContextOf }, learn, { builtinModels }] = await Promise.all([
+  mod("packages/serve/dist/grade.js"), mod("packages/serve/dist/model.js"), mod("packages/serve/dist/provider.js"), mod("packages/serve/dist/secrets.js"),
   mod("packages/serve/dist/learn/index.js"), mod("node_modules/@earendil-works/pi-ai/dist/providers/all.js"),
 ]);
 const PROFILES = { default: { harness: "pi", model: undefined }, claude: { harness: "claude-agent", model: opts["claude-model"] } };
@@ -44,10 +44,10 @@ const PROFILES = { default: { harness: "pi", model: undefined }, claude: { harne
 /** A profile's model, picked as the server picks an agent's own (grade.ts), for a completion with tools. */
 async function modelOf(profile) {
   if (profile.harness === "claude-agent") {
-    const choice = adapters.claudeModel(ENV, profile.model);
+    const choice = await modelOn("anthropic-messages", ENV, profile.model, "claude-agent");
     if ("why" in choice) throw new Error(choice.why);
     const catalog = builtinModels({ authContext: authContextOf(ENV) });
-    return { models: catalog, model: { ...catalog.getModel(choice.model.provider, choice.model.modelId), baseUrl: adapters.claudeProvider(ENV, choice.model).origin } };
+    return { models: catalog, model: { ...catalog.getModel(choice.model.provider, choice.model.modelId), baseUrl: providerFor("anthropic-messages", ENV, choice.model, "claude-agent").origin } };
   }
   const chosen = await runModels(ENV, profile.model);
   return { models: chosen.models, model: chosen.models.getModel(chosen.model.provider, chosen.model.modelId) };

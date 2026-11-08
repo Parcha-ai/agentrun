@@ -26,7 +26,8 @@ type ActionsResult struct {
 var buttonOf = map[string]byte{"left": 1, "middle": 2, "right": 3}
 
 const (
-	shiftSym = 0xffe1
+	shiftSym    = 0xffe1
+	capsLockSym = 0xffe5
 	// Wheel buttons: up, down, left, right.
 	wheelUp, wheelDown, wheelLeft, wheelRight = 4, 5, 6, 7
 )
@@ -45,7 +46,13 @@ func stopf(kind rpc.Kind, format string, args ...any) error {
 
 // actions checks the whole batch, then runs it in order until the first failure. A failure releases every button and
 // key the batch pressed and did not release; success keeps them, so a down with no up stays down into the next batch.
-// A cancel stops before the next action, releases the same way, and answers aborted.
+// A cancel stops at the next key, click or point of the action running, or before the next action, releases the same
+// way, and answers aborted.
+//
+// The server answers a request with no reply only when it refuses one, so the batch waits for it (a Sync) after each
+// action that sent one the server may refuse: a button or key, or a keyboard map change. A refused action stops the
+// batch before the next one runs, and done and failed say what ran. Motions, which it checks itself, are confirmed with
+// the next such action, or once at the end.
 func (d *Display) actions(ctx context.Context, raw json.RawMessage) (any, error) {
 	var params actionsParams
 	if err := strict(raw, &params); err != nil {
@@ -61,8 +68,10 @@ func (d *Display) actions(ctx context.Context, raw json.RawMessage) (any, error)
 	if len(actions) == 0 {
 		return ActionsResult{}, nil
 	}
-	d.use.Lock()
-	defer d.use.Unlock()
+	if err := d.hold(ctx, "input.actions"); err != nil {
+		return nil, err
+	}
+	defer d.letGo()
 	c, err := d.connection()
 	if err != nil {
 		return nil, err
@@ -75,13 +84,36 @@ func (d *Display) actions(ctx context.Context, raw json.RawMessage) (any, error)
 	if b.width, b.height, err = c.RootSize(); err != nil {
 		return nil, d.gone(c, err)
 	}
-	start := c.Seq()
+	// from is the first action the server has not confirmed, and start the sequence number before its requests; ends
+	// is the last sequence number of each action's requests.
+	from, start := 0, c.Seq()
 	ends := make([]uint16, 0, len(actions))
+	confirm := func(last int) *ActionsResult {
+		errs, err := c.Sync()
+		if err != nil {
+			return &ActionsResult{Done: last, Failed: &Failure{last, rpc.KindUnsupported, fmt.Sprintf("the round trip after action %d (%s): %v", last, actions[last].Type, d.gone(c, err))}}
+		}
+		if len(errs) > 0 {
+			// An X error names its request; the action that sent it is the first whose requests reach it.
+			at := last
+			for i := from; i <= last; i++ {
+				if errs[0].Seq-start <= ends[i]-start {
+					at = i
+					break
+				}
+			}
+			b.release()
+			return &ActionsResult{Done: at, Failed: &Failure{at, rpc.KindInvalid, fmt.Sprintf("action %d (%s): %v", at, actions[at].Type, errs[0])}}
+		}
+		from, start = last+1, c.Seq()
+		return nil
+	}
 	for i, a := range actions {
 		if ctx.Err() != nil {
 			b.release()
 			return nil, rpc.Errorf(rpc.KindAborted, "input.actions was cancelled before action %d; what the batch held was released", i)
 		}
+		b.refusable = false
 		if err := b.run(ctx, a); err != nil {
 			b.release()
 			var s *stop
@@ -95,29 +127,26 @@ func (d *Display) actions(ctx context.Context, raw json.RawMessage) (any, error)
 			}
 		}
 		ends = append(ends, c.Seq())
-	}
-	errs, err := c.Sync()
-	if err != nil {
-		at := max(len(actions)-1, 0)
-		return ActionsResult{Done: at, Failed: &Failure{at, rpc.KindUnsupported, fmt.Sprintf("the batch's last round trip: %v", d.gone(c, err))}}, nil
-	}
-	if len(errs) > 0 {
-		// An X error names its request; the action that sent it is the first whose requests reach it.
-		at := len(actions) - 1
-		for i, end := range ends {
-			if errs[0].Seq-start <= end-start {
-				at = i
-				break
+		if b.refusable {
+			if failed := confirm(i); failed != nil {
+				return *failed, nil
 			}
 		}
+	}
+	if ctx.Err() != nil {
 		b.release()
-		return ActionsResult{Done: at, Failed: &Failure{at, rpc.KindInvalid, fmt.Sprintf("action %d (%s): %v", at, actions[at].Type, errs[0])}}, nil
+		return nil, rpc.Errorf(rpc.KindAborted, "input.actions was cancelled after its last action; what the batch held was released")
+	}
+	if c.Seq() != start {
+		if failed := confirm(len(actions) - 1); failed != nil {
+			return *failed, nil
+		}
 	}
 	return ActionsResult{Done: len(actions)}, nil
 }
 
-// batch is one input.actions run: the display's size at its start, its keyboard map once a key needs it, and what it
-// pressed and has not released.
+// batch is one input.actions run: the display's size at its start, its keyboard map once a key needs it, what it
+// pressed and has not released, and whether the action running sent a request the server may refuse.
 type batch struct {
 	ctx           context.Context
 	d             *Display
@@ -126,9 +155,16 @@ type batch struct {
 	keymap        *x11.Keymap
 	buttons       []byte
 	keys          []byte
+	refusable     bool
 }
 
+// live is the batch's cancel, checked at each key, click and point of a long action.
+func (b *batch) live() error { return b.ctx.Err() }
+
 func (b *batch) input(kind, detail byte, x, y int) error {
+	if kind != x11.MotionNotify {
+		b.refusable = true
+	}
 	switch kind {
 	case x11.ButtonPress:
 		b.buttons = append(b.buttons, detail)
@@ -206,6 +242,9 @@ func (b *batch) run(ctx context.Context, a action) error {
 				}
 			}
 			for range a.Count {
+				if err := b.live(); err != nil {
+					return err
+				}
 				if err := b.press(buttonOf[a.Button]); err != nil {
 					return err
 				}
@@ -226,6 +265,9 @@ func (b *batch) run(ctx context.Context, a action) error {
 				return err
 			}
 			for _, p := range a.Path[1:] {
+				if err := b.live(); err != nil {
+					return err
+				}
 				if err := b.move(p); err != nil {
 					return err
 				}
@@ -253,6 +295,9 @@ func (b *batch) run(ctx context.Context, a action) error {
 					button, n = turn.negative, -n
 				}
 				for range n {
+					if err := b.live(); err != nil {
+						return err
+					}
 					if err := b.press(button); err != nil {
 						return err
 					}
@@ -262,6 +307,9 @@ func (b *batch) run(ctx context.Context, a action) error {
 		})
 	case "key":
 		for range a.Repeat {
+			if err := b.live(); err != nil {
+				return err
+			}
 			if err := b.holding(a.Keys, func() error { return nil }); err != nil {
 				return err
 			}
@@ -329,7 +377,8 @@ func (b *batch) holding(names []string, then func() error) error {
 }
 
 // typeText types each character: its key, with shift when the key needs it. A character no key gives gets one
-// through the keysym remap.
+// through the keysym remap. Caps Lock, when on, is turned off for the typing and back on after it, as xdotool does, so
+// the text typed is exactly the text asked.
 func (b *batch) typeText(text string) error {
 	busy := map[uint32]bool{}
 	for _, r := range text {
@@ -343,7 +392,57 @@ func (b *batch) typeText(text string) error {
 	if err := b.d.remap.room(b.keymap, busy); err != nil {
 		return err
 	}
+	restore, err := b.capsOff()
+	if err != nil {
+		return err
+	}
+	err = b.typeRunes(text, busy)
+	if again := restore(); err == nil {
+		err = again
+	}
+	return err
+}
+
+// capsOff turns Caps Lock off, when it is on, by tapping the key that gives Caps_Lock, and gives what taps it again.
+// Caps Lock that the tap does not turn off (a Lock that another key holds, or Shift Lock) is refused in words, with the
+// tap undone.
+func (b *batch) capsOff() (restore func() error, err error) {
+	none := func() error { return nil }
+	state, err := b.c.State()
+	if err != nil || state&x11.LockMask == 0 {
+		return none, err
+	}
+	code, shift, ok := b.keymap.Find(capsLockSym)
+	if !ok || shift {
+		return nil, stopf(rpc.KindUnsupported, "Caps Lock is on, and no key gives Caps_Lock to turn it off for the typing: turn it off first")
+	}
+	tap := func() error {
+		if err := b.input(x11.KeyPress, code, 0, 0); err != nil {
+			return err
+		}
+		return b.input(x11.KeyRelease, code, 0, 0)
+	}
+	if err := tap(); err != nil {
+		return nil, err
+	}
+	if state, err = b.c.State(); err != nil {
+		return nil, err
+	}
+	if state&x11.LockMask != 0 {
+		if err := tap(); err != nil {
+			return nil, err
+		}
+		return nil, stopf(rpc.KindUnsupported, "Caps Lock is on, and tapping Caps_Lock does not turn it off for the typing: turn it off first")
+	}
+	return tap, nil
+}
+
+// typeRunes types text, each character's keys pressed and released, until a cancel.
+func (b *batch) typeRunes(text string, busy map[uint32]bool) error {
 	for _, r := range text {
+		if err := b.live(); err != nil {
+			return err
+		}
 		sym, _ := keys.ForRune(r)
 		code, shift, err := b.codeFor(sym, busy)
 		if err != nil {
@@ -383,11 +482,13 @@ func (b *batch) codeFor(sym uint32, busy map[uint32]bool) (byte, bool, error) {
 		b.d.remap.use(sym)
 		return code, shift, nil
 	}
+	b.refusable = true
 	code, err := b.d.remap.bind(b.ctx, b.c, b.keymap, sym, busy)
 	return code, false, err
 }
 
-// loadKeymap reads the keyboard map once a batch: another client may have changed it since the last.
+// loadKeymap reads the keyboard map once a batch: another client may have changed it since the last, and a keycode
+// the remap bound that it rebound is the remap's no longer.
 func (b *batch) loadKeymap() error {
 	if b.keymap != nil {
 		return nil
@@ -397,5 +498,6 @@ func (b *batch) loadKeymap() error {
 		return err
 	}
 	b.keymap = km
+	b.d.remap.forget(km)
 	return nil
 }

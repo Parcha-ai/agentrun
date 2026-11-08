@@ -559,3 +559,21 @@ func TestOnXvfbTheKeysymRemapMovesItsKeycodesAndRefusesTooManyAtOnce(t *testing.
 		t.Fatalf("typed %q, the fixture got %q", string(many[:60]), got)
 	}
 }
+
+// Caps Lock on does not change typed text, and is still on after it: type gives exactly the text asked, while a key
+// action, as a keyboard does, gives the locked case.
+func TestOnXvfbTypedTextIgnoresCapsLockAndLeavesItOn(t *testing.T) {
+	k := onXvfb(t)
+	before := len(k.events())
+	k.allRan(map[string]any{"type": "key", "keys": []string{"capslock"}})
+	k.allRan(map[string]any{"type": "type", "text": "aB1 é"})
+	events := k.since(before, func(e []event) bool { return len([]rune(text(e))) >= 5 }, "five characters")
+	if got := text(events); got != "aB1 é" {
+		t.Errorf("typed %q with Caps Lock on, the fixture got %q", "aB1 é", got)
+	}
+	from := len(k.events())
+	k.allRan(map[string]any{"type": "key", "keys": []string{"a"}})
+	if got := text(k.since(from, func(e []event) bool { return text(e) != "" }, "a key")); got != "A" {
+		t.Errorf("after the type, a key a gave %q; want A, with Caps Lock still on", got)
+	}
+}

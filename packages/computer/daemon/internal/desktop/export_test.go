@@ -6,3 +6,10 @@ func SetChunkForTest(n int) func() {
 	chunk = n
 	return func() { chunk = was }
 }
+
+// SetDuringShotForTest runs f while each screen.shot holds the display, and returns what puts it back.
+func SetDuringShotForTest(f func()) func() {
+	was := duringShot
+	duringShot = f
+	return func() { duringShot = was }
+}

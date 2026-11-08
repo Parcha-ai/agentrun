@@ -48,13 +48,22 @@ export interface DoorHook {
   /** Resolves when the input is TAKEN, not when the turn ends; the turn runs after, reported through `ctx.emit` and the conversation's entries. */
   submit(input: DoorInput, ctx: DoorContext): Promise<{ accepted: true } | { accepted: false; reason: "busy" }>;
   abort(ctx: DoorContext): Promise<"aborted" | "idle">;
+  /** Called once as the instance stops (a drain, a park, a release, a fence), busy or idle: on a drain after the abort,
+   *  on a fence alongside the kill, bounded by the abort's bound. What the hook runs outside any turn (a harness's own
+   *  processes) stops here, so none outlives the instance. A hook with nothing of its own resolves at once. */
+  close(): Promise<void>;
   busy(): boolean;
+  /** Its harness's id, named in the door's log lines (a close that fails or overruns its bound). */
+  readonly harness: string;
   /** Called once as the door opens, with its emit: a turn the hook starts itself, with no submit (a recovery after a
    *  restart), reports its start and end through it as a submit's turn does. */
   attach?(emit: (event: DoorEvent) => void): void;
 }
 
 export type DoorRecord = { readonly status: DoorStatus; readonly message?: string };
+
+/** Where the door says what went wrong outside any call: an event's name and its detail (cli.ts log). */
+export type DoorLog = (event: string, detail: Record<string, unknown>) => void;
 
 export interface DoorTimeouts {
   /** How long `hook.submit` may take to take an input before its outcome is UNKNOWN; default 30 s. */
@@ -153,16 +162,16 @@ export interface Door {
   /** Receive the door's run events; returns the unsubscribe. */
   watch(listener: (event: DoorRunEvent) => void): () => void;
   /** When the instance ends (a drain, a fence, a park): abort the hook (bounded), pair an open run_start, kill every adopted child's process group.
-   *  `now` (a fence: the lease is gone): the children are killed at once, and the hook's abort is not awaited. */
+   *  `now` (a fence: the run is fenced): the children are killed at once, and the hook's abort is not awaited. */
   stop(options?: { now?: boolean }): Promise<void>;
 }
 
 export { TIMEOUT as DOOR_TIMEOUT };
 
 /** What an ADMITTED record answers when no call in this process carries it: no later outcome can come for it. */
-const ORPHANED: DoorRecord = { status: "UNKNOWN", message: "admitted by an earlier instance, or before the lease was lost: whether the hook took it is unknown" };
+const ORPHANED: DoorRecord = { status: "UNKNOWN", message: "admitted by an earlier instance, or before the run was fenced: whether the hook took it is unknown" };
 
-export function openDoor(hook: DoorHook, run: DurableRun, base: Context, timeouts: DoorTimeouts = {}): Door {
+export function openDoor(hook: DoorHook, run: DurableRun, base: Context, timeouts: DoorTimeouts & { readonly log?: DoorLog } = {}): Door {
   const submitMs = timeouts.submitMs ?? 30_000;
   const abortMs = timeouts.abortMs ?? 5_000;
   const listeners = new Set<(event: DoorRunEvent) => void>();
@@ -175,7 +184,7 @@ export function openDoor(hook: DoorHook, run: DurableRun, base: Context, timeout
   let stopped: Promise<void> | undefined;
   let pending = 0;
   // The requestIds this process admitted and is still carrying to an outcome. ADMITTED means one of these: any other
-  // ADMITTED record was admitted by an earlier instance, or before the lease was lost, and its outcome is unknown.
+  // ADMITTED record was admitted by an earlier instance, or before the run was fenced, and its outcome is unknown.
   const live = new Set<string>();
   const send = (type: DoorRunEvent["type"]) => {
     for (const listener of listeners) listener({ type, inputs: [] });
@@ -214,6 +223,19 @@ export function openDoor(hook: DoorHook, run: DurableRun, base: Context, timeout
       abortMs,
     ).finally(() => stop.abort());
   };
+  /** The hook's close, once, however the instance stops: its failure or overrun is the hook's, never the stop's. */
+  let closing: Promise<void> | undefined;
+  const say = (event: string, detail: Record<string, unknown>) => {
+    try {
+      timeouts.log?.(event, detail);
+    } catch {
+      // A log line that cannot be written stops nothing.
+    }
+  };
+  const closeHook = () => (closing ??= within(Promise.resolve().then(() => hook.close()), abortMs).then(
+    (result) => void (result === TIMEOUT && say("door close timed out", { harness: hook.harness, error: `close() did not settle within ${abortMs} ms` })),
+    (error: unknown) => say("door close failed", { harness: hook.harness, error: String((error as Error)?.message ?? error) }),
+  ));
   /** The hook's abort, then the open turn ended when it left the hook idle: POST /abort and a submit's timeout alike. */
   const abortTurn = async () => {
     const result = await abortHook("request");
@@ -223,11 +245,11 @@ export function openDoor(hook: DoorHook, run: DurableRun, base: Context, timeout
 
   /** hook.submit for a record this process just admitted under key `at`, bounded; its outcome settles the record. */
   const dispatch = async (root: ConversationId, input: DoorInput, at: number): Promise<DoorRecord> => {
-    // Nothing reaches the hook once the lease is gone. The record ends UNKNOWN: at once when the commit can still land,
+    // Nothing reaches the hook once the run is fenced. The record ends UNKNOWN: at once when the commit can still land,
     // otherwise as no live call serves it, and in the store at the next open.
     if (run.fenced || run.releasing) {
       await settle(root, input.requestId, at + 1, ORPHANED).catch(() => undefined);
-      throw new Error("the run lost its lease after the admission");
+      throw new Error("the run was fenced after the admission");
     }
     pending++;
     const stop = new AbortController();
@@ -255,7 +277,7 @@ export function openDoor(hook: DoorHook, run: DurableRun, base: Context, timeout
     await abortTurn().catch(() => undefined);
     const unknown: DoorRecord = { status: "UNKNOWN", message: `the hook did not take the input in ${submitMs} ms; its outcome is unknown` };
     const written = settle(root, input.requestId, at + 1, unknown);
-    // A late outcome is never dropped: it settles the same record, unless the lease is gone (the fenced commit fails).
+    // A late outcome is never dropped: it settles the same record, unless the run is fenced (the fenced commit fails).
     void written.then(() => taken.then((late) => settle(root, input.requestId, at + 2, late))).catch(() => undefined);
     await written;
     return unknown;
@@ -345,11 +367,12 @@ export function openDoor(hook: DoorHook, run: DurableRun, base: Context, timeout
       // A fence kills at once, also while a drain's stop still waits on the hook's abort.
       if (now) {
         closeTurn();
-        return killAdopted();
+        return Promise.all([killAdopted(), closeHook()]).then(() => undefined);
       }
       stopped ??= (async () => {
         if (pending > 0 || hook.busy()) await abortHook("stop").catch(() => undefined);
         closeTurn();
+        await closeHook();
         await killAdopted();
       })();
       return stopped;

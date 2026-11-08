@@ -22,9 +22,13 @@ export function formatReport(report: ConformanceReport): string {
 	const answers = report.daemonMode === "none" ? "the provider" : "computerd";
 	const reached = daemon ? `${answers} ${daemon.version} ${daemon.os}/${daemon.arch}` : report.daemonMode === "none" ? "no computer reached" : "no daemon reached";
 	const lines = [`computer conformance · ${report.provider} · ${report.kind}, daemon ${report.daemonMode} · ${reached}`];
-	for (const level of ["core", "full"] as const) {
+	// A Core case skipped for an optional group the computer does not declare is not Core for this kind of computer (a
+	// linux computer is never held to screen): it is listed as optional, out of Core's lines and count.
+	const optional = (r: CaseResult) => r.status === "skip" && r.undeclared !== undefined;
+	const levelOf = (r: CaseResult) => (r.level === "core" && optional(r) ? "optional" : r.level);
+	for (const level of ["core", "full", "optional"] as const) {
 		for (const group of GROUPS) {
-			const here = results.filter((r) => r.level === level && r.group === group);
+			const here = results.filter((r) => levelOf(r) === level && r.group === group);
 			if (here.length === 0) continue;
 			const count = (status: CaseResult["status"]) => here.filter((r) => r.status === status).length;
 			const counts = [
@@ -51,15 +55,13 @@ export function formatReport(report: ConformanceReport): string {
 	}
 	for (const note of report.notes ?? []) lines.push(`note: ${note}`);
 	for (const { computer, note } of report.computerNotes ?? []) lines.push(`note ${computer}: ${note}`);
-	// A Core case skipped for an optional group the computer does not declare is out of Core's count, and named apart.
-	const optional = (r: CaseResult) => r.status === "skip" && r.undeclared !== undefined;
-	const core = results.filter((r) => r.level === "core" && !optional(r));
-	const notDeclared = results.filter((r) => r.level === "core" && optional(r)).length;
+	const core = results.filter((r) => levelOf(r) === "core");
+	const notDeclared = results.filter((r) => levelOf(r) === "optional").length;
 	const full = results.filter((r) => r.level === "full");
 	const passed = (rs: CaseResult[]) => rs.filter((r) => r.status === "pass").length;
 	// A run that left Core cases out has no Core verdict: PARTIAL, never PASS.
 	let verdict = `core ${report.core.toUpperCase()} ${passed(core)}/${core.length}`;
-	if (notDeclared > 0) verdict += ` · ${notDeclared} Core ${notDeclared === 1 ? "case" : "cases"} skipped, not declared`;
+	if (notDeclared > 0) verdict += ` · ${notDeclared} optional ${notDeclared === 1 ? "case" : "cases"} skipped, not declared`;
 	if (notRun.length > 0) verdict += ` · ${notRun.length} Core ${notRun.length === 1 ? "case" : "cases"} not run`;
 	verdict += full.length > 0 ? ` · full ${passed(full)}/${full.length}` : " · full: none run";
 	if (report.undeclared.length > 0) verdict += ` · ${report.undeclared.join(" ")} not declared`;

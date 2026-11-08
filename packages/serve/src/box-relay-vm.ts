@@ -29,6 +29,11 @@ const MAX_BUFFERED_BYTES = 16 * 2 ** 20;
  *  - else EXEC_KEEP_MS after its exit: an exit or an output not read yet is still the caller's to read.
  *  A program still running holds its slot until it exits or the run ends. */
 const EXEC_KEEP_MS = 10 * 60_000;
+/** The most programs let go after their exit that the relay remembers as ended, oldest first out. A call the run's
+ *  process makes of one after it was let go (its input's close, sent apart from its exit's read, can land after it) is
+ *  answered as already ended, not as no such program. A count, not a clock: the late call comes within moments of the
+ *  exit, and a count bounds what is held however fast programs end, at about 100 bytes each. */
+const ENDED_MAX = 4096;
 /** The most sandboxes the relay remembers the run of; past it, it asks the provider again. */
 const KNOWN_MAX = 1024;
 
@@ -98,8 +103,8 @@ function pump(source: AsyncIterable<Uint8Array>): Pump {
 }
 
 /** `read`: the streams whose read began (each is read once); `finished`: those whose reply ended, whole or broken (a
- *  stream that failed has nothing more to give). */
-type Held = { run: string; process: VmProcess; streams: Record<"stdout" | "stderr", Pump>; exited?: number; waited: boolean; read: Set<"stdout" | "stderr">; finished: Set<"stdout" | "stderr">; timer?: NodeJS.Timeout };
+ *  stream that failed has nothing more to give); `lost`: why its exit could not be read (`exited` is then -1, no code). */
+type Held = { run: string; process: VmProcess; streams: Record<"stdout" | "stderr", Pump>; exited?: number; lost?: unknown; waited: boolean; read: Set<"stdout" | "stderr">; finished: Set<"stdout" | "stderr">; timer?: NodeJS.Timeout };
 
 /** The relay's handler of a run's VM calls, over the server's client `sdk`: `handle(runId, path, req, res)` answers the
  *  call at `path` (what follows `/runs/<id>/vm/`), the caller's token already checked. `drop(runId)` lets go of the run's
@@ -107,6 +112,9 @@ type Held = { run: string; process: VmProcess; streams: Record<"stdout" | "stder
 export function vmRelay(sdk: VmSdk, secrets: () => readonly string[] = () => []): { handle(runId: string, path: string, req: IncomingMessage, res: ServerResponse): Promise<void>; drop(runId: string): void; footprint(): { programs: number; starting: number } } {
   const known = new Map<string, { sandbox: VmSandbox; run: string | undefined }>();
   const execs = new Map<string, Held>();
+  /** The programs let go after their exit (forget), by id: their run and their exit code, or why it could not be read,
+   *  up to ENDED_MAX. */
+  const ended = new Map<string, { run: string; code: number; lost?: Failure }>();
   /** The program starts each run has under way, from the moment its request is taken (before the sandbox's lookup): each
    *  counts toward the run's limit, and one its run's end (drop) marks is let go as it lands, never held. A run is here
    *  only while it has one, so an ended run leaves nothing behind. */
@@ -149,6 +157,9 @@ export function vmRelay(sdk: VmSdk, secrets: () => readonly string[] = () => [])
     held?.streams.stdout.cancel();
     held?.streams.stderr.cancel();
     execs.delete(id);
+    if (held?.exited === undefined) return;
+    ended.set(id, { run: held.run, code: held.exited, ...(held.lost === undefined ? {} : { lost: failureOf(held.lost, secrets()) }) });
+    if (ended.size > ENDED_MAX) ended.delete(ended.keys().next().value!);
   };
   /** A program is let go once its exit was read and both its streams' replies ended (delivered whole, or broken because
    *  the stream failed), or EXEC_KEEP_MS after its exit. */
@@ -202,7 +213,8 @@ export function vmRelay(sdk: VmSdk, secrets: () => readonly string[] = () => [])
             process.wait().then((code) => {
               held.exited = code;
               settle(exec);
-            }, () => {
+            }, (error) => {
+              held.lost ??= error ?? new Error("the program's exit could not be read");
               held.exited = -1;
               settle(exec);
             });
@@ -219,6 +231,16 @@ export function vmRelay(sdk: VmSdk, secrets: () => readonly string[] = () => [])
     if (!onExec) return refused(res, path);
     const id = decodeURIComponent(onExec[1]!);
     const held = execs.get(id);
+    const over = held ? undefined : ended.get(id);
+    // A program of this run let go after its exit: its input takes nothing more, and its exit is still its exit (an exit
+    // that could not be read still fails). Its output is not held any more, and a read of it fails rather than come back
+    // short.
+    if (over?.run === runId) {
+      req.resume();
+      if (onExec[2] === "stdout" || onExec[2] === "stderr") return answer(res, 410, { message: `the program ended and was let go: its ${onExec[2]} is no longer held` });
+      if (onExec[2] === "wait") return over.lost ? answer(res, 502, { failure: over.lost }) : answer(res, 200, { code: over.code, ended: true });
+      return answer(res, 200, { ended: true });
+    }
     // Another run's program is not there for this one.
     if (!held || held.run !== runId) return answer(res, 404, { message: "no such program" });
     try {
@@ -240,6 +262,7 @@ export function vmRelay(sdk: VmSdk, secrets: () => readonly string[] = () => [])
             code = await held.process.wait();
           } catch (error) {
             held.waited = true;
+            held.lost ??= error ?? new Error("the program's exit could not be read");
             held.exited ??= -1;
             failed(res, error);
             return settle(id);

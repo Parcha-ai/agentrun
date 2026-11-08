@@ -9,9 +9,10 @@ import { readFile } from "node:fs/promises";
 import { join } from "node:path";
 import { test } from "node:test";
 import { agent, call, cookieOf, follow, runDir, serve, withEnv } from "./support.mjs";
+import { fauxTable } from "./fixtures/faux-table.mjs";
 
 const fixture = (name) => new URL(`./fixtures/${name}`, import.meta.url).pathname;
-const GATE = { faux: fixture("faux-gate.mjs"), fauxHarness: fixture("faux-gate.mjs"), fauxWeb: fixture("faux-gate-web.mjs"), accounts: true, openSetup: true };
+const GATE = { faux: fixture("faux-gate.mjs"), harnessTable: fauxTable(fixture("faux-gate.mjs")), fauxWeb: fixture("faux-gate-web.mjs"), accounts: true, openSetup: true };
 const json = { "content-type": "application/json" };
 const SIGN_IN_PHRASE = "the owner signs in with this phrase";
 const HELD = ["not-a-secret", "saved-held-key", randomBytes(6).toString("hex")].join("-");
@@ -67,7 +68,7 @@ test("a parked write shows no Saved row while it waits, none after a deny (and n
     const resume = rows.filter((r) => r.origin === "server" && /^AgentRun: write /.test(r.summary ?? ""));
     assert.equal(resume.length, 1, `${at}: one resume row: ${JSON.stringify(rows.map((r) => r.summary))}`);
     if (run.decision === "allow") {
-      assert.equal(resume[0].summary, "AgentRun: write ran once you allowed it", at);
+      assert.equal(resume[0].summary, "AgentRun: write ran once you allowed it; its result went to the agent", at);
       assert.equal(await readFile(file, "utf8"), "hello", `${at}: the file was written`);
       assert.deepEqual(savedRows(rows).map((r) => r.summary), [], `${at}: the parked call's own Saved row is gone; the resume row says it ran`);
       continue;

@@ -68,6 +68,20 @@ func TestCheckIsCheckActionsOnX11(t *testing.T) {
 	refused(t, `[{"type":"move","at":[1,"2"]}]`, x11Groups, 0, rpc.KindInvalid)
 	refused(t, `[{"type":"teleport"}]`, x11Groups, 0, rpc.KindInvalid)
 	refused(t, `[null]`, x11Groups, 0, rpc.KindInvalid)
+	// A null is a value checkActions reads as given (has is !== undefined), and no number, point, list or name.
+	refused(t, `[{"type":"click","at":[1,1]},{"type":"move","at":[null,20]}]`, x11Groups, 1, rpc.KindInvalid)
+	refused(t, `[{"type":"move","at":null}]`, x11Groups, 0, rpc.KindInvalid)
+	refused(t, `[{"type":"click","at":null}]`, x11Groups, 0, rpc.KindInvalid)
+	refused(t, `[{"type":"wait","ms":null}]`, x11Groups, 0, rpc.KindInvalid)
+	refused(t, `[{"type":"hold","keys":["shift"],"ms":null}]`, x11Groups, 0, rpc.KindInvalid)
+	refused(t, `[{"type":"key","keys":["a"],"repeat":null}]`, x11Groups, 0, rpc.KindInvalid)
+	refused(t, `[{"type":"down","button":null}]`, x11Groups, 0, rpc.KindInvalid)
+	refused(t, `[{"type":"click","count":null}]`, x11Groups, 0, rpc.KindInvalid)
+	refused(t, `[{"type":"click","keys":null}]`, x11Groups, 0, rpc.KindInvalid)
+	refused(t, `[{"type":"drag","path":[[0,0],[null,1]]}]`, x11Groups, 0, rpc.KindInvalid)
+	refused(t, `[{"type":"scroll","dy":null,"unit":"clicks"}]`, x11Groups, 0, rpc.KindInvalid)
+	refused(t, `[{"type":"scroll","dx":null,"unit":"clicks"}]`, x11Groups, 0, rpc.KindInvalid)
+	refused(t, `[{"type":"type","text":null}]`, x11Groups, 0, rpc.KindInvalid)
 	refused(t, `[{"type":"wait","ms":1},{"type":"tap","at":[1,1]}]`, []string{"input.pointer"}, 1, rpc.KindUnsupported)
 	refused(t, `[{"type":"wait","ms":1}]`, nil, 0, rpc.KindUnsupported)
 	refused(t, `[{"type":"scroll","dy":10,"unit":"px"}]`, x11Groups, 0, rpc.KindUnsupported)
@@ -90,8 +104,20 @@ func TestCheckOnX11RefusesWhatX11CannotDo(t *testing.T) {
 	refused(t, `[{"type":"wait","ms":1},{"type":"type","text":"bell \u0007"}]`, x11Groups, 1, rpc.KindInvalid)
 	refused(t, `[{"type":"type","text":"a\r\n"}]`, x11Groups, 0, rpc.KindInvalid)
 	refused(t, `[{"type":"type","text":`+fmt.Sprintf("%q", strings.Repeat("a", desktop.MaxTypeRunes+1))+`}]`, x11Groups, 0, rpc.KindLimit)
-	refused(t, `[{"type":"key","keys":["a"],"repeat":1001}]`, x11Groups, 0, rpc.KindLimit)
+	// MAX_KEY_REPEAT (protocol.ts) is 100: 101 is refused, 100 runs.
+	refused(t, `[{"type":"key","keys":["a"],"repeat":101}]`, x11Groups, 0, rpc.KindLimit)
+	if f := check(t, `[{"type":"key","keys":["a"],"repeat":100}]`, x11Groups); f != nil {
+		t.Fatalf("repeat 100: %+v", f)
+	}
 	refused(t, `[{"type":"scroll","dy":10001,"unit":"clicks"}]`, x11Groups, 0, rpc.KindLimit)
+	// As checkActions orders it: a key's group before its repeat, so a key on a computer without input.keys is
+	// unsupported whatever its repeat; and a repeat that is a safe integer is a shape checkActions accepts, so one past
+	// MAX_KEY_REPEAT is limit however large, and one past 2^53 - 1 is invalid.
+	refused(t, `[{"type":"key","keys":["a"],"repeat":101}]`, []string{"screen", "input.pointer"}, 0, rpc.KindUnsupported)
+	refused(t, `[{"type":"key","keys":["a"],"repeat":1e10}]`, x11Groups, 0, rpc.KindLimit)
+	refused(t, `[{"type":"key","keys":["a"],"repeat":9007199254740991}]`, x11Groups, 0, rpc.KindLimit)
+	refused(t, `[{"type":"key","keys":["a"],"repeat":9007199254740992}]`, x11Groups, 0, rpc.KindInvalid)
+	refused(t, `[{"type":"key","keys":["a"],"repeat":2.5}]`, x11Groups, 0, rpc.KindInvalid)
 	refused(t, `[{"type":"wait","ms":-1}]`, x11Groups, 0, rpc.KindInvalid)
 	for _, ok := range []string{
 		`[{"type":"type","text":"line one\nline two\ttabbed, 日本語 and € too"}]`,

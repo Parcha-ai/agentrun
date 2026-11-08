@@ -84,7 +84,8 @@ export function container({ name, labels = {}, network = "none", running = true,
  * makes exec fail as when the daemon is missing; `user` is the provider's user option; `hold` names steps ("inspect",
  * "info", "hello") that wait, once called, until `proceed(step)`. `desktop` is the provider's desktop option; `display`
  * is what the daemon's display does once process.start runs its X server: "up" (hello reports kind desktop and the
- * display's groups from then on), "exits" (the server ends at once, saying why on stderr) or "never".
+ * display's groups from then on), "exits" (the server ends at once, saying why on stderr), "never", or "stalls" (the
+ * daemon answers nothing once the server is started, as one stuck in the X connection setup, or stopped, does).
  */
 export function fakeDocker({ running = true, gone = false, containers = [], patch = {}, hello = {}, arch = "x86_64", info = {}, vanish = [], noDaemon = false, user, hold = [], desktop, display = "up" } = {}) {
 	const dir = mkdtempSync(join(tmpdir(), "computer-fake-docker-"));
@@ -196,6 +197,7 @@ switch (args[0]) {
 				const request = JSON.parse(buffered.slice(0, at));
 				buffered = buffered.slice(at + 1);
 				const answer = (result) => process.stdout.write(JSON.stringify({ jsonrpc: "2.0", id: request.id, result }) + "\\n");
+				if (config.display === "stalls" && existsSync(config.dir + "/started.jsonl")) continue;
 				const up = existsSync(config.dir + "/display-up");
 				if (request.method === "hello") held("hello", () => answer(up ? config.desktopHello : config.hello));
 				if (request.method === "ping") answer({});

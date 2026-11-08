@@ -568,10 +568,33 @@ test("desktop: create() deletes a computer whose X server ends, with the server'
 	assert.deepEqual(names(), []);
 });
 
+test("desktop: create() keeps to its bound when the daemon stops answering once the X server starts", async () => {
+	const { provider, names } = fakeDocker({ desktop: { timeoutMs: 300 }, display: "stalls" });
+	// The test's own bound: a create that outwaits the desktop's is aborted at 20 s, so it fails here instead of hanging.
+	const controller = new AbortController();
+	const stop = setTimeout(() => controller.abort(), 20_000);
+	const began = Date.now();
+	const result = await provider.create(SPEC, { signal: controller.signal });
+	clearTimeout(stop);
+	assert.equal(result.ok, false);
+	assert.equal(result.error.code, "timeout", result.error.message);
+	assert.match(result.error.message, /display :0 .*not up within 0\.3 s/);
+	assert.ok(Date.now() - began < 10_000, `create took ${Date.now() - began} ms on a 300 ms bound`);
+	assert.deepEqual(names(), []);
+});
+
 test("desktop: create() deletes a computer whose display never comes up, after its bound", async () => {
 	const { provider, names } = fakeDocker({ desktop: { timeoutMs: 300 }, display: "never" });
 	const result = await provider.create(SPEC);
 	assert.equal(result.ok, false);
 	assert.match(result.error.message, /display :0 .*not up within 0\.3 s/);
 	assert.deepEqual(names(), []);
+});
+
+test("desktop: a timeoutMs a timer cannot hold is refused when the provider is made, before any computer exists", () => {
+	const daemonPath = fakeDocker().daemonPath;
+	for (const timeoutMs of [2 ** 31, 2 ** 32, Number.MAX_SAFE_INTEGER]) {
+		assert.throws(() => new DockerProvider({ daemonPath, desktop: { timeoutMs } }), /the desktop's timeoutMs must be .* at most 2147483647/, String(timeoutMs));
+	}
+	assert.doesNotThrow(() => new DockerProvider({ daemonPath, desktop: { timeoutMs: 2 ** 31 - 1 } }));
 });

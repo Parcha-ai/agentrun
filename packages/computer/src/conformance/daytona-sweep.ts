@@ -9,10 +9,10 @@
 // every sandbox it found that was not there before, and notFound + stillThere.length = swept. A sandbox in <file> is
 // never touched: no call names it. Exit 0 when every swept sandbox reads back 404, 1 when one is still there, 2 on a
 // usage error, a before file it cannot read, a missing key or a listing Daytona refused (nothing is deleted then).
-import { readFileSync, realpathSync, writeFileSync } from "node:fs";
-import { pathToFileURL } from "node:url";
+import { readFileSync, writeFileSync } from "node:fs";
 import type { DaytonaProviderOptions } from "../daytona.js";
 import { COMPUTER_LABEL } from "../drift.js";
+import { isCommand } from "../entry.js";
 import { waitUntil } from "../wait.js";
 import { createProvider } from "./daytona.js";
 
@@ -133,6 +133,6 @@ export async function main(argv: string[], io: SweepIo = {}): Promise<number> {
 	return stillThere.length === 0 ? 0 : 1;
 }
 
-if (process.argv[1] !== undefined && import.meta.url === pathToFileURL(realpathSync(process.argv[1])).href) {
+if (isCommand(import.meta)) {
 	process.exitCode = await main(process.argv.slice(2));
 }

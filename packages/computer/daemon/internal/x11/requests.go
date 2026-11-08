@@ -39,7 +39,7 @@ func (c *Conn) QueryExtension(name string) (Extension, error) {
 	body := le.AppendUint16(nil, uint16(len(name)))
 	body = append(body, 0, 0)
 	body = append(body, name...)
-	r, err := c.call(opQueryExtension, 0, body)
+	r, err := c.call(opQueryExtension, 0, body, smallReply)
 	if err != nil {
 		return Extension{}, err
 	}
@@ -57,7 +57,7 @@ func (c *Conn) InitXTest() error {
 	}
 	body := []byte{2, 0}
 	body = le.AppendUint16(body, 2)
-	r, err := c.call(ext.Major, xtestGetVersion, body)
+	r, err := c.call(ext.Major, xtestGetVersion, body, smallReply)
 	if err != nil {
 		return fmt.Errorf("XTEST's GetVersion: %w", err)
 	}
@@ -86,13 +86,13 @@ func (c *Conn) FakeInput(kind, detail byte, x, y int) error {
 	body = le.AppendUint16(body, uint16(int16(y)))
 	body = append(body, make([]byte, 7)...)
 	body = append(body, 0) // deviceid: the core devices
-	_, err := c.buffer(c.xtest, xtestFakeInput, body, false)
+	_, err := c.buffer(c.xtest, xtestFakeInput, body, noReply)
 	return err
 }
 
 // RootSize is the root window's size now, which a RandR change may have moved since the setup.
 func (c *Conn) RootSize() (width, height int, err error) {
-	r, err := c.call(opGetGeometry, 0, le.AppendUint32(nil, c.screen.Root))
+	r, err := c.call(opGetGeometry, 0, le.AppendUint32(nil, c.screen.Root), smallReply)
 	if err != nil {
 		return 0, 0, err
 	}
@@ -101,22 +101,38 @@ func (c *Conn) RootSize() (width, height int, err error) {
 
 // QueryPointer is where the pointer is on the root window.
 func (c *Conn) QueryPointer() (x, y int, err error) {
-	r, err := c.call(opQueryPointer, 0, le.AppendUint32(nil, c.screen.Root))
+	r, err := c.call(opQueryPointer, 0, le.AppendUint32(nil, c.screen.Root), smallReply)
 	if err != nil {
 		return 0, 0, err
 	}
 	return int(int16(le.Uint16(r[16:]))), int(int16(le.Uint16(r[18:]))), nil
 }
 
+// LockMask is the Lock modifier's bit in State: Caps Lock, on.
+const LockMask = 0x2
+
+// State is the core keyboard and pointer state now: which modifiers are on, and which buttons are down (QueryPointer's
+// mask).
+func (c *Conn) State() (uint16, error) {
+	r, err := c.call(opQueryPointer, 0, le.AppendUint32(nil, c.screen.Root), smallReply)
+	if err != nil {
+		return 0, err
+	}
+	return le.Uint16(r[24:]), nil
+}
+
 // GetImage reads a rectangle of the root window as ZPixmap and converts it to RGBA through the visual's masks.
 func (c *Conn) GetImage(x, y, width, height int) (*image.RGBA, error) {
+	if width*height > MaxImagePixels {
+		return nil, fmt.Errorf("a %dx%d image is over the %d pixels one GetImage reads", width, height, MaxImagePixels)
+	}
 	body := le.AppendUint32(nil, c.screen.Root)
 	body = le.AppendUint16(body, uint16(int16(x)))
 	body = le.AppendUint16(body, uint16(int16(y)))
 	body = le.AppendUint16(body, uint16(width))
 	body = le.AppendUint16(body, uint16(height))
 	body = le.AppendUint32(body, 0xffffffff)
-	r, err := c.call(opGetImage, 2, body)
+	r, err := c.call(opGetImage, 2, body, width*height*4)
 	if err != nil {
 		return nil, err
 	}
@@ -200,7 +216,7 @@ type Keymap struct {
 // KeyboardMapping reads the keyboard map of every keycode.
 func (c *Conn) KeyboardMapping() (*Keymap, error) {
 	count := int(c.maxKey) - int(c.minKey) + 1
-	r, err := c.call(opGetKeyboardMapping, 0, []byte{c.minKey, byte(count), 0, 0})
+	r, err := c.call(opGetKeyboardMapping, 0, []byte{c.minKey, byte(count), 0, 0}, count*255*4)
 	if err != nil {
 		return nil, err
 	}
@@ -294,7 +310,7 @@ func (c *Conn) ChangeKeyboardMapping(first byte, perCode int, syms []uint32) err
 	for _, sym := range syms {
 		body = le.AppendUint32(body, sym)
 	}
-	_, err := c.buffer(opChangeKeyboardMapping, byte(len(syms)/perCode), body, false)
+	_, err := c.buffer(opChangeKeyboardMapping, byte(len(syms)/perCode), body, noReply)
 	return err
 }
 
@@ -341,20 +357,20 @@ func (c *Conn) CreateWindow(id uint32, x, y, width, height int, mask uint32, val
 	for _, v := range values {
 		body = le.AppendUint32(body, v)
 	}
-	_, err := c.buffer(opCreateWindow, 0, body, false)
+	_, err := c.buffer(opCreateWindow, 0, body, noReply)
 	return err
 }
 
 // MapWindow buffers mapping the window, and raising it to the top of the stack.
 func (c *Conn) MapWindow(id uint32) error {
-	if _, err := c.buffer(opMapWindow, 0, le.AppendUint32(nil, id), false); err != nil {
+	if _, err := c.buffer(opMapWindow, 0, le.AppendUint32(nil, id), noReply); err != nil {
 		return err
 	}
 	body := le.AppendUint32(nil, id)
 	body = le.AppendUint16(body, 0x40) // stack-mode
 	body = append(body, 0, 0)
 	body = le.AppendUint32(body, 0) // Above
-	_, err := c.buffer(opConfigureWindow, 0, body, false)
+	_, err := c.buffer(opConfigureWindow, 0, body, noReply)
 	return err
 }
 
@@ -363,7 +379,7 @@ func (c *Conn) CreateGC(id, drawable uint32) error {
 	body := le.AppendUint32(nil, id)
 	body = le.AppendUint32(body, drawable)
 	body = le.AppendUint32(body, 0)
-	_, err := c.buffer(opCreateGC, 0, body, false)
+	_, err := c.buffer(opCreateGC, 0, body, noReply)
 	return err
 }
 
@@ -372,7 +388,7 @@ func (c *Conn) FillRectangle(drawable, gc, pixel uint32, x, y, width, height int
 	body := le.AppendUint32(nil, gc)
 	body = le.AppendUint32(body, 0x4) // foreground
 	body = le.AppendUint32(body, pixel)
-	if _, err := c.buffer(opChangeGC, 0, body, false); err != nil {
+	if _, err := c.buffer(opChangeGC, 0, body, noReply); err != nil {
 		return err
 	}
 	body = le.AppendUint32(nil, drawable)
@@ -381,7 +397,7 @@ func (c *Conn) FillRectangle(drawable, gc, pixel uint32, x, y, width, height int
 	body = le.AppendUint16(body, uint16(int16(y)))
 	body = le.AppendUint16(body, uint16(width))
 	body = le.AppendUint16(body, uint16(height))
-	_, err := c.buffer(opPolyFillRectangle, 0, body, false)
+	_, err := c.buffer(opPolyFillRectangle, 0, body, noReply)
 	return err
 }
 
@@ -389,7 +405,7 @@ func (c *Conn) FillRectangle(drawable, gc, pixel uint32, x, y, width, height int
 func (c *Conn) SetInputFocus(id uint32) error {
 	body := le.AppendUint32(nil, id)
 	body = le.AppendUint32(body, 0) // CurrentTime
-	_, err := c.buffer(opSetInputFocus, 1, body, false)
+	_, err := c.buffer(opSetInputFocus, 1, body, noReply)
 	return err
 }
 

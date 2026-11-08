@@ -1,17 +1,14 @@
 {
   "name": "@parcha/pi-durable-disk",
   "version": "0.1.0-beta.31",
-  "description": "The agent is the workspace: its conversation and its files live together in one directory on a disk. Mount it on any Linux host or container, release it, and mount it elsewhere: the agent carries on.",
+  "description": "A durable run journal and CLI for one host, with places served by agentrun-serve.",
   "keywords": [
     "pi",
     "pi-durable",
-    "archil",
     "disk",
     "durable",
     "agent",
-    "fence",
-    "lease",
-    "supervisor"
+    "fence"
   ],
   "type": "module",
   "license": "Apache-2.0",
@@ -26,10 +23,6 @@
       "types": "./dist/index.d.ts",
       "default": "./dist/index.js"
     },
-    "./lease": {
-      "types": "./dist/lease.d.ts",
-      "default": "./dist/lease.js"
-    },
     "./internals": {
       "types": "./dist/internals.d.ts",
       "default": "./dist/internals.js"
@@ -38,7 +31,6 @@
       "types": "./dist/secret-name.d.ts",
       "default": "./dist/secret-name.js"
     },
-    "./bin/archil-scoped": "./bin/archil-scoped",
     "./package.json": "./package.json"
   },
   "bin": {
@@ -46,7 +38,6 @@
   },
   "files": [
     "dist",
-    "bin/archil-scoped",
     "README.md",
     "CHANGELOG.md",
     "LICENSE",
@@ -58,25 +49,11 @@
     "prepack": "npm run build",
     "typecheck": "tsc --noEmit && tsc --noEmit -p examples",
     "test": "node --test --test-timeout=240000 'test/*.test.ts' 'test/examples/*.test.ts'",
-    "test:acceptance": "node --test --test-concurrency=1 'test/acceptance/*.test.ts'",
-    "test:live": "node --test --test-concurrency=1 'test/live/*.test.ts'",
-    "test:live:claim": "node --test --test-concurrency=1 test/live/claim.live.test.ts test/live/record-home.live.test.ts",
-    "test:live:env": "node --test --test-concurrency=1 test/live/env.live.test.ts",
-    "test:live:lifecycle": "node --test --test-concurrency=1 test/live/lifecycle.live.test.ts",
-    "test:live:run": "node --test --test-concurrency=1 test/live/run.live.test.ts",
-    "test:live:store": "node --test --test-concurrency=1 test/live/store.live.test.ts",
-    "test:live:supervise": "node --test --test-concurrency=1 test/live/supervise.live.test.ts",
-    "test:live:supervise-slow": "node --test --test-concurrency=1 test/live/supervise-slow.live.test.ts",
-    "test:live:with-claim": "node --test --test-concurrency=1 test/live/with-claim.live.test.ts",
-    "test:live:docker": "PDA_LIVE_DOCKER=1 node --test --test-concurrency=1 test/live/docker.live.test.ts test/live/docker-park.live.test.ts",
     "verify:tarball": "node scripts/verify-tarball.mjs"
   },
   "peerDependencies": {
     "@earendil-works/chord": ">=1.0.4 <1.4.0",
     "@earendil-works/pi-durable": ">=1.0.4 <1.4.0"
-  },
-  "dependencies": {
-    "disk": "1.12.0"
   },
   "devDependencies": {
     "@earendil-works/chord": "1.1.0",

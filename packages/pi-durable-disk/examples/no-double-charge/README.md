@@ -62,5 +62,4 @@ and exits 1.
 - **A real model.** The faux model is scripted not to retry. A real model decides for itself, so its instructions should
   say what to do with an `interrupted` charge.
 - **Two machines.** A run on a local directory has no fence and guards one machine only: the kill and the second process
-  are on the same host. On a network disk, the run's fence also stops the first host from writing once another host has
-  taken over. Example 02 (`../02-paid-effect/`) shows that version, with Archil.
+  are on the same host.

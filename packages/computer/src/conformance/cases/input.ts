@@ -1,6 +1,6 @@
 // Input on a desktop, checked against the fixture's own log with no model: a click lands where and as often as asked,
-// typed text arrives exactly, a batch with an unknown key runs nothing, and a batch stops at its first failure with
-// nothing left held.
+// typed text arrives exactly, a batch with an unknown key runs nothing, and a batch stops at its first failure and
+// releases the button it pressed.
 import type { Group, InputAction, InputActionsResult, Point } from "../../protocol.js";
 import type { FixtureEvent, StartedFixture } from "../fixture.js";
 import type { Case, CaseContext } from "../types.js";
@@ -85,17 +85,19 @@ export const inputCases: Case[] = [
 		const b = pointIn(fixture, 0.75, 0.75);
 		const c = pointIn(fixture, 0.5, 0.5);
 		const before = (await fixture.events()).length;
-		const stopped = await act(t, [{ type: "click", at: a }, { type: "move", at: OFF_SCREEN }, { type: "click", at: b }]);
-		t.equal(stopped.done, 1, `done, for [click ${a}, move off-screen to ${OFF_SCREEN}, click ${b}]`);
-		t.equal(stopped.failed?.index, 1, "failed.index");
+		// The left button is down when the move off-screen fails: the failure must release it, where the cursor still is.
+		const stopped = await act(t, [{ type: "move", at: a }, { type: "down", button: "left" }, { type: "move", at: OFF_SCREEN }, { type: "click", at: b }]);
+		t.equal(stopped.done, 2, `done, for [move to ${a}, left down, move off-screen to ${OFF_SCREEN}, click ${b}]`);
+		t.equal(stopped.failed?.index, 2, "failed.index");
 		t.assert(typeof stopped.failed?.message === "string" && stopped.failed.message !== "", "the failure is in words");
+		await logged(t, fixture, before, (events) => ups(events, a) >= 1, `the left button the stopped batch pressed at ${a}, released in the fixture's log`);
 		// A later click lands normally: nothing the stopped batch did was left held.
 		allRan(t, await act(t, [{ type: "click", at: c }]), 1, `a click at ${c} after it`);
 		const events = await logged(t, fixture, before, (events) => ups(events, c) >= 1, `the click at ${c} in the fixture's log`);
 		t.deepEqual(
 			pointer(events),
 			[["down", "left", ...a], ["up", "left", ...a], ["down", "left", ...c], ["up", "left", ...c]],
-			`the fixture's log: the click at ${a} and the later one at ${c}, and none at ${b}`,
+			`the fixture's log: the press at ${a} released, the later click at ${c}, and none at ${b}`,
 		);
 	}),
 ];

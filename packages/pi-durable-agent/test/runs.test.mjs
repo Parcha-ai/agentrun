@@ -89,7 +89,7 @@ test("a run is a pi-durable-disk run: pi-durable-disk opens its directory, and c
   } finally {
     await durable.release();
   }
-  for (const name of ["run.json", "tmp", "store/run.sqlite", "work/.agents/skills/cite/SKILL.md"]) assert.ok(existsSync(path.join(run.dir, name)), `${name} is in the run directory`);
+  for (const name of ["tmp", "store/run.sqlite", "work/.agents/skills/cite/SKILL.md"]) assert.ok(existsSync(path.join(run.dir, name)), `${name} is in the run directory`);
   assert.deepEqual(await carryBack(home, run, { outcome: "completed" }), { changed: true, profiles: ["acme"], released: [] });
   assert.deepEqual((await readAgentHome(home)).profiles, { acme: { provider: "browserbase", ref: "ctx_disk", state: "ready" } });
   assert.equal(make.calls, 1);

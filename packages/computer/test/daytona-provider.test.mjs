@@ -101,6 +101,8 @@ test("the constructor refuses what it cannot run with, in words", () => {
 	assert.throws(make({ apiUrl: "http://api.daytona.test/api" }), /must be https/);
 	assert.throws(make({ daemonUser: "0:0" }), /root/);
 	assert.throws(make({ daemonUser: "1000:0" }), /root's group/);
+	// Root in any spelling: the number is held to zero, not the text to "0".
+	for (const daemonUser of ["00:1000", "000:000", "1000:00", "0:01000"]) assert.throws(make({ daemonUser }), /root or in root's group/, daemonUser);
 	assert.throws(make({ daemonUser: "daytona" }), /uid:gid in numbers/);
 	assert.throws(make({ sandboxClass: "windows" }), /container or linux-vm/);
 });
@@ -465,7 +467,7 @@ const DRIFT = [
 	["a missing label of the spec", { readBack: (sb) => ({ labels: { ...sb.labels, team: undefined } }) }, /label team: declared "a", read back nothing/],
 	["a VM class", { readBack: () => ({ sandboxClass: "linux-vm" }) }, /sandboxClass: declared "container", read back "linux-vm"/],
 	["a public preview", { readBack: () => ({ public: true }) }, /public: declared false, read back true/],
-	["an outbound proxy", { readBack: () => ({ outboundProxyUrl: "http://user:secret@proxy.example.com:3128" }) }, /an outbound proxy is set on it/],
+	["an outbound proxy", { readBack: () => ({ outboundProxyUrl: "http://proxy.example.com:3128" }) }, /an outbound proxy is set on it/],
 	["a volume", { readBack: () => ({ volumes: [{ volumeId: "v", mountPath: "/data" }] }) }, /volumes: declared \[\]/],
 	["a linked sandbox", { readBack: () => ({ linkedSandboxId: "other-sandbox" }) }, /linkedSandboxId/],
 	["KVM", { readBack: () => ({ kvm: true }) }, /kvm: declared false, read back true/],
@@ -496,7 +498,7 @@ for (const [what, knobs, words] of DRIFT) {
 		assert.match(made.error.message, /computer-[0-9a-f]{12} was deleted/);
 		assert.equal(deleted(fake).length, 1);
 		assert.equal(fake.sandboxes.size, 0);
-		assert.doesNotMatch(made.error.message, /secret/, "an outbound proxy's credentials are never repeated");
+		assert.doesNotMatch(made.error.message, /proxy\.example\.com/, "an outbound proxy's URL, credentials and all, is never repeated");
 	});
 }
 
@@ -780,6 +782,54 @@ test("network(): a change Daytona applies otherwise is never left wider: it is p
 	assert.match(blocked.error.message, /was blocked \(none\)/);
 	fake.knobs.readBack = undefined;
 	assert.deepEqual(await provider.network(ref), { ok: true, value: "none" });
+});
+
+test("network(): the fallback block is read back; a computer whose network cannot be made safe is deleted", async () => {
+	const { provider, fake } = setup();
+	const made = await provider.create({ ...SPEC, network: { allow: ["example.com"] } });
+	const ref = made.value;
+	// Every change after this one reads back wider, the block included: Daytona answers each POST and applies none.
+	const changes = of(fake, "POST", /network-settings$/).length;
+	fake.knobs.readBack = () => (of(fake, "POST", /network-settings$/).length > changes ? { networkBlockAll: false, domainAllowList: "example.org,example.net", networkAllowList: "" } : {});
+	const unsafe = await provider.network(ref, { allow: ["example.org"] });
+	assert.equal(unsafe.error.code, "refused");
+	assert.doesNotMatch(unsafe.error.message, /was blocked \(none\)/, "a block that is not read back is never reported as one");
+	assert.match(unsafe.error.message, /could not be made safe: blocking it \(none\) read back .*example\.net.*, so it was deleted/);
+	assert.equal(of(fake, "POST", /network-settings$/).at(-1).body.networkBlockAll, true, "the block was asked for");
+	assert.equal(fake.sandboxes.has(ref.id), false, "the computer is gone");
+});
+
+test("network(): a change whose read-back fails is made safe: blocked and read back none, or deleted", async () => {
+	const fake = fakeDaytona();
+	// Reads fail from the moment the change's POST is answered: network() reads the sandbox once before it, and that
+	// read must succeed.
+	let failAfterChange = 0;
+	const fetch = async (url, init) => {
+		const answer = await fake.fetch(url, init);
+		if (failAfterChange > 0 && init?.method === "POST" && /\/network-settings$/.test(new URL(url).pathname)) {
+			fake.knobs.fail = [{ method: "GET", path: /^\/api\/sandbox\/[^/]+$/, status: 503, times: failAfterChange }];
+			failAfterChange = 0;
+		}
+		return answer;
+	};
+	const provider = new DaytonaProvider({ apiKey: KEY, apiUrl: API, daemonPath: DAEMON, fetch, webSocket: fake.webSocket, timeouts: FAST });
+	const made = await provider.create({ ...SPEC, network: "open" });
+	const ref = made.value;
+	// The change answers; every try of the read after it fails (3), so what the network is now is not known.
+	failAfterChange = 3;
+	const unknown = await provider.network(ref, { allow: ["example.com"] });
+	assert.equal(unknown.ok, false);
+	assert.match(unknown.error.message, /network \{"allow":\["example\.com"\]\} could not be read back after the change: .*503.*, so .* was blocked \(none\) and read back none/);
+	assert.equal(of(fake, "POST", /network-settings$/).at(-1).body.networkBlockAll, true);
+	assert.deepEqual(await provider.network(ref), { ok: true, value: "none" });
+	// When the block cannot be read back either, the computer is deleted.
+	const second = (await provider.create({ ...SPEC, network: "open" })).value;
+	// The read after the change (3 tries) and the read after the block (3 tries) both fail.
+	failAfterChange = 6;
+	const lost = await provider.network(second, { allow: ["example.com"] });
+	assert.equal(lost.ok, false);
+	assert.match(lost.error.message, /could not be made safe: blocking it \(none\) could not be read back: .*503.*, so it was deleted/);
+	assert.equal(fake.sandboxes.has(second.id), false, "the computer is gone");
 });
 
 test("release(): delete and stop are idempotent, retried where the prior art retries, and never touch another's sandbox", async () => {
