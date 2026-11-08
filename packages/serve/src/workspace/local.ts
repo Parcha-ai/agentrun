@@ -24,7 +24,7 @@
 import { spawn } from "node:child_process";
 import { randomBytes } from "node:crypto";
 import { constants, type Stats } from "node:fs";
-import { type FileHandle, lstat, mkdir as makeDir, open, readdir, realpath, rename, rmdir, unlink } from "node:fs/promises";
+import { access, type FileHandle, lstat, mkdir as makeDir, open, readdir, realpath, rename, rmdir, unlink } from "node:fs/promises";
 import { join } from "node:path";
 import { Worker } from "node:worker_threads";
 import type { MountSpec } from "@parcha/agentrun-computer";
@@ -322,9 +322,11 @@ class LocalWorkspace implements Workspace {
       try {
         const entries = await Promise.all((await readdir(held.self)).map(async (name): Promise<Entry | undefined> => {
           const stats = await lstatOrNot(held.at(name));
-          if (stats?.isDirectory()) return { name, kind: "dir", size: 0 };
-          if (stats?.isFile()) return { name, kind: "file", size: stats.size };
-          return undefined;
+          if (stats?.isDirectory()) return { name, kind: "dir", size: 0, mtimeMs: stats.mtimeMs };
+          if (!stats?.isFile()) return undefined;
+          // Only a flag for the listing: the read itself is what refuses (REFUSED, permission denied).
+          const readable = await access(held.at(name), constants.R_OK).then(() => true, () => false);
+          return { name, kind: "file", size: stats.size, mtimeMs: stats.mtimeMs, ...(readable ? {} : { unreadable: true as const }) };
         }));
         return entries.filter((entry): entry is Entry => entry !== undefined).sort((a, b) => byName(a.name, b.name));
       } catch (error) {
@@ -567,3 +569,7 @@ class LocalWorkspace implements Workspace {
 
 /** A Workspace on folder `root` of this machine. The folder must be there when it is first used (else UNAVAILABLE). */
 export const localWorkspace = (root: string): Workspace => new LocalWorkspace(root);
+
+/** `work` as a Workspace: a folder of this machine, by its path, becomes its LocalWorkspace. For the callers that still
+ *  hand a run's folder by its path (the run's start and its process), until they hand the run's Workspace. */
+export const workspaceAt = (work: string | Workspace): Workspace => (typeof work === "string" ? localWorkspace(work) : work);

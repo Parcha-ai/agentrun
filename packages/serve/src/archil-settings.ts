@@ -7,9 +7,9 @@ import type { Settings } from "./store/index.js";
 /** The settings key the Archil disk's configuration lives under in store.settings. */
 export const ARCHIL_SETTINGS_KEY = "archil";
 /** The sealed-key name of the Archil account key (the file API and exec), saved through server-keys.ts. */
-export const ARCHIL_API_KEY = "archil.api_key";
+export const ARCHIL_API_KEY_ROW = "archil.api_key";
 /** The sealed-key name of the Archil disk's token user (the mount), saved through server-keys.ts. */
-export const ARCHIL_DISK_TOKEN = "archil.disk_token";
+export const ARCHIL_DISK_TOKEN_ROW = "archil.disk_token";
 
 export interface ArchilSettings {
   readonly diskId: string;

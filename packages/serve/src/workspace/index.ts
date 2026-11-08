@@ -7,12 +7,13 @@ export {
   type Processes,
 } from "./attach.js";
 export {
-  agentDirName, agentFolder, agentLearningFolder, COMPUTER_ROOT, DISK_DIR, learningKey, portPath, relativePath, relativeSegments,
-  runFolder, runKey,
+  agentDirName, agentFolder, agentHomeFolder, agentLearningFolder, COMPUTER_ROOT, DISK_DIR, homeKey, learningKey, portPath,
+  relativePath, relativeSegments, runFolder, runKey, scratchFolder,
 } from "./paths.js";
 export { type Available, type Place, type Registry, type Resolved, resolvePlace } from "./place.js";
-export { localWorkspace } from "./local.js";
+export { localWorkspace, workspaceAt } from "./local.js";
 export { archilWorkspace, type ArchilWorkspaceOptions } from "./archil.js";
 export { archilDisk, type ArchilDisk, type ArchilDiskOptions, type ArchilImage } from "./archil-disk.js";
 export { ARCHIL_MAX_EXEC_S, type Hands, handsOf, MAX_EXEC_S, processesOf, shellEnv } from "./hands.js";
 export { type RunComputer, runTools, type RunTools } from "./run-tools.js";
+export { layRevisionSkills, RUN_SKILLS_DIR } from "./revision-skills.js";
