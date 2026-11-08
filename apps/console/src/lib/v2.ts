@@ -83,6 +83,13 @@ export type WebhookAttempt = Answer<"listWebhookDeliveries">["attempts"][number]
 /** `capabilities.features.webhooks`. */
 export type WebhooksFeature = NonNullable<components["Features"]["webhooks"]>;
 
+/** This server's GitHub App (GET /v2/integrations/github; 404 when none is connected): never a secret. */
+export type GitHubConnection = Answer<"getGitHubConnection">;
+/** POST /v2/integrations/github/connect's answer: where the browser posts the App's manifest (`action` carries ?state=). */
+export type GitHubConnectStart = Answer<"connectGitHub">;
+/** DELETE /v2/integrations/github's answer: how many GitHub triggers went off, and what to delete on GitHub. */
+export type GitHubDisconnected = Answer<"disconnectGitHub">;
+
 /** PATCH /v2/runs/{id} {max_cost_usd}'s answer: the cap now. */
 export type RaiseAnswer = Answer<"raiseRunCap">;
 
