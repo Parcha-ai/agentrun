@@ -33,7 +33,7 @@ const ROW = 64;
 const ADB_CODE = "424242";
 
 /** A clock whose sleep() moves time on at once: no test waits on the wall clock. */
-export function fakeClock(start = Date.UTC(2026, 10, 8, 12)) {
+export function fakeClock(start = Date.now()) {
 	let now = start;
 	return {
 		now: () => now,

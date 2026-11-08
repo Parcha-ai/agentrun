@@ -131,13 +131,16 @@ test("create rents a cloud Android for the lifetime, waits until it is ready, an
 	assert.deepEqual((await provider.list({ run: "r1" })).value, []);
 });
 
-test("a session the service ended is gone from list, and the ledger forgets it", async () => {
+test("a session the service ended is gone to attach and list, and the ledger forgets it", async () => {
 	const { provider, fake, ledger } = await setup();
 	const created = await provider.create({ ...SPEC, labels: { run: "r1" } });
+	const other = await provider.create({ ...SPEC, labels: { run: "r1" } });
 	fake.sessions.delete(created.value.id);
-	assert.deepEqual((await provider.list({ run: "r1" })).value, []);
-	assert.deepEqual(await ledger.list(), []);
+	fake.sessions.delete(other.value.id);
 	assert.equal((await provider.attach({ id: created.value.id })).error.code, "gone");
+	assert.deepEqual((await ledger.list()).map((e) => e.id), [other.value.id], "attach forgot the one it found gone");
+	assert.deepEqual((await provider.list({ run: "r1" })).value, []);
+	assert.deepEqual(await ledger.list(), [], "and list the other");
 });
 
 test("the service's refusals are words with a code, and never the key", async () => {
@@ -303,7 +306,7 @@ test("the client answers the phone groups over adb: a screenshot, touch, keys, b
 	for (const [action, kind, words] of [
 		[{ type: "key", keys: ["Hyper_Q"] }, "invalid", /"Hyper_Q" is not a key/],
 		[{ type: "pinch", at: [10, 10], scale: 2 }, "unsupported", /pinch: a cloud Android takes one finger through adb/],
-		[{ type: "click", at: [10, 10] }, "unsupported", /click is input\.pointer, which a phone does not offer/],
+		[{ type: "click", at: [10, 10] }, "unsupported", /\(click\) needs input\.pointer, which this computer does not declare/],
 		[{ type: "key", keys: ["ctrl", "a"] }, "unsupported", /a combo of keys/],
 		[{ type: "hold", keys: ["shift"], ms: 100 }, "unsupported", /hold/],
 	]) {
@@ -380,10 +383,11 @@ test("the conformance module reads its own COMPUTER_PHONE_* names, never PHONE_H
 	assert.deepEqual(await conformance.fileLedger(path).list(), []);
 
 	const fake = fakePhoneHarness({ clock: fakeClock() });
-	const built = await conformance.createProvider({ env: { COMPUTER_PHONE_API_KEY: KEY, AGENTRUN_COMPUTER_LIVE_PHONE: "1", COMPUTER_PHONE_LEDGER: path }, fetch: fake.fetch, adb: fake.adb });
+	const through = { fetch: fake.fetch, adb: fake.adb, now: fake.clock.now, sleep: fake.clock.sleep };
+	const built = await conformance.createProvider({ env: { COMPUTER_PHONE_API_KEY: KEY, AGENTRUN_COMPUTER_LIVE_PHONE: "1", COMPUTER_PHONE_LEDGER: path }, ...through });
 	assert.equal(built.id, "phone-harness");
 	assert.equal(built.capabilities().maxLifetimeMs, 10 * 60_000, "a conformance run's phones live at most 10 min");
-	const drifted = await conformance.createDriftedProvider({ env: { COMPUTER_PHONE_API_KEY: KEY, AGENTRUN_COMPUTER_LIVE_PHONE: "1", COMPUTER_PHONE_LEDGER: path }, fetch: fake.fetch, adb: fake.adb });
+	const drifted = await conformance.createDriftedProvider({ env: { COMPUTER_PHONE_API_KEY: KEY, AGENTRUN_COMPUTER_LIVE_PHONE: "1", COMPUTER_PHONE_LEDGER: path }, ...through });
 	assert.equal(drifted.version, built.version, "the twin is the same provider; only its phone's hello reports another version");
 	const twin = (await drifted.create(SPEC)).value;
 	assert.match((await drifted.connect(twin)).error.message, /hello: the daemon reports version \S+, expected /);
