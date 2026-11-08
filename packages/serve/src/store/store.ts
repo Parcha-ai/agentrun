@@ -9,7 +9,7 @@
 // run (its row, its journal commits, a command taken) carries the epoch it holds. A write under a lower epoch than the
 // run's is refused (Fenced) and writes nothing.
 import type { Context } from "@earendil-works/chord";
-import type { Storage } from "@earendil-works/pi-durable";
+import type { Storage, StorageWrite } from "@earendil-works/pi-durable";
 import type { JournalPage } from "./journal/storage.js";
 
 /** A run's state. queued: a row, no runner yet. running: a runner holds the claim. parked: waiting for a person (an
@@ -147,6 +147,26 @@ export interface RunLaunchRow {
   readonly body: unknown;
   readonly sealed: Uint8Array | null;
   readonly createdAt: number;
+}
+
+/** A run imported from another harness's session: an ended run with where it came from, its launch (built from the
+ *  session), its cost and metrics, and its transcript as journal batches — the whole thing written in one transaction.
+ *  `transcript` is the session as pi-durable write batches (a root conversation and its entries), each batch a commit. */
+export interface ImportRunInput {
+  readonly id: string;
+  readonly agentId: string;
+  readonly revisionId: string;
+  readonly importedFrom: ImportedFrom;
+  readonly launch: RunLaunchInput;
+  /** How the imported run ended (default 'ended'); `outcome` an ended run's (completed is the default). */
+  readonly state?: "ended" | "failed" | "stopped";
+  readonly outcome?: RunOutcome | null;
+  readonly costUsd?: number | null;
+  readonly summary?: string | null;
+  readonly metrics?: unknown;
+  readonly startedAt: number;
+  readonly endedAt?: number;
+  readonly transcript: readonly (readonly StorageWrite[])[];
 }
 
 /** Rows written in the same commit as a run's update (runs.update, or a journal commit's staged patch): a channel post the
@@ -523,6 +543,11 @@ export interface Store {
   /** The run started under origin `key` (runs.create's origin), with the fingerprint recorded then; undefined when no run
    *  was started under it. The one read a retry under a key makes to find the run its first request started. */
   runOfOrigin(key: string): Promise<{ runId: string; fingerprint: string | null } | undefined>;
+  /** Imports a run that has already ended: its row (ended, imported_from, cost, summary, metrics, outcome), its launch row
+   *  and its transcript's journal, all in one transaction — the server's own writer, no second writer and no throwaway
+   *  database. The run is created at epoch 0 in the same transaction, so the journal's fence passes; a crash mid-import
+   *  leaves nothing. StoreConstraint on a duplicate run id or import (source, session). */
+  importRun(run: ImportRunInput): Promise<RunRow>;
   /** One durable commit: every commit before it, of every run, is on the disk when it resolves. Before a call that must
    *  not run twice, at a run's end and when a claim is released. */
   flush(): Promise<void>;
