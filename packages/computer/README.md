@@ -1381,7 +1381,11 @@ the daemon (the ports and paths are E2B Desktop's own: `@e2b/desktop@2.5.0` `dis
 `https://6080-<id>.<domain>/vnc.html?autoconnect=true&resize=scale&password=<password>`. The password is the URL's
 only secret beyond the sandbox's id, a bearer token: it is never logged and never in an error (a unit test holds that).
 VNC authentication reads 8 characters at most (it keys DES with them), so it is 8 random letters and digits. Each call
-starts the stream anew, so an earlier URL stops working; `viewOnly` starts x11vnc with `-viewonly`. E2B's own SDK
+starts the stream anew, so an earlier URL stops working: it reads every page of the process table, kills the running
+x11vnc and noVNC it finds, waits up to 10 s for each to end (a signal is only sent, and an old server holds its port
+until it ends), then starts the new pair, and returns the URL only once both new servers still run and ports 5900 and
+6080 both listen; a new server that ended first is an error with its last lines of stderr. `viewOnly` starts x11vnc
+with `-viewonly`. E2B's own SDK
 leaves x11vnc listening on every interface (`dist/index.mjs:502`); this provider does not.
 
 ### What the provider does

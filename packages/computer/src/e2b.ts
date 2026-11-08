@@ -14,7 +14,8 @@ import { DaemonClient } from "./client.js";
 import { DESKTOP_GROUPS, type DesktopOptions, desktopOf, startDisplay } from "./desktop.js";
 import { COMPUTER_LABEL, DAEMON_IN_COMPUTER, DEADLINE_LABEL, helloDrift, type ProbeReport, probeNetworkDrift, probeNotes, probeReportOf, WORK } from "./drift.js";
 import type { MountKind } from "./mount.js";
-import type { HelloResult } from "./protocol.js";
+import { listProcesses } from "./processes.js";
+import type { HelloResult, ProcessExit } from "./protocol.js";
 import {
 	type AttachedComputer,
 	type CallContext,
@@ -334,6 +335,11 @@ const VNC_PORT = 5900;
 const STREAM_PORT = 6080;
 const STREAM_PASSWORD_FILE = `${WORK}/.agentrun-stream-password`;
 const STREAM_WAIT_MS = 30_000;
+/** How long stream() waits for an old stream server to end after its kill. */
+const STREAM_STOP_MS = 10_000;
+const NOVNC = "/opt/noVNC/utils/novnc_proxy";
+/** The programs a stream runs, which the next stream() stops first. */
+const STREAM_PROGRAMS = ["x11vnc", NOVNC];
 const ALNUM = "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789";
 const SPEC_FIELDS = new Set(["image", "lifetimeMs", "network", "labels"]);
 const NUL = "a NUL byte cannot be sent to E2B";
@@ -1451,26 +1457,45 @@ export class E2BProvider implements ComputerProvider {
 		// RFB's password check uses its first 8 characters only (VNC authentication is DES keyed by them).
 		const password = Array.from({ length: 8 }, () => ALNUM[randomInt(ALNUM.length)]).join("");
 		try {
-			const listed = await client.call("process.list", {}, { signal: bound() });
+			// Every page of the process table: the old servers may be past the first.
+			const listed = await listProcesses(client, { signal: bound() });
 			if (!listed.ok) return fail(listed.error.code, `listing the computer's processes: ${listed.error.message}`);
-			for (const one of listed.value.processes) {
-				if (one.running && (one.argv[0] === "x11vnc" || one.argv[0] === "/opt/noVNC/utils/novnc_proxy")) await client.call("process.signal", { id: one.id, signal: "KILL" }, { signal: bound() });
+			const old = listed.value.filter((one) => one.running && STREAM_PROGRAMS.includes(one.argv[0] as string));
+			for (const one of old) {
+				const killed = await client.call("process.signal", { id: one.id, signal: "KILL" }, { signal: bound() });
+				if (!killed.ok) return fail(killed.error.code, `stopping the old stream's ${one.argv[0]} (${one.id}): ${killed.error.message}`);
+			}
+			// A signal is only sent: an old server holds its port until it has ended, and a new one could not bind it.
+			for (const one of old) {
+				const ended = await client.call("process.wait", { id: one.id, timeoutMs: STREAM_STOP_MS }, { signal: this.#bounded(STREAM_STOP_MS + CALL_SLACK_MS, signal) });
+				if (!ended.ok) return fail(ended.error.code, `waiting for the old stream's ${one.argv[0]} (${one.id}) to end: ${ended.error.message}`);
+				if (ended.value.running) return fail("timeout", `the old stream's ${one.argv[0]} (${one.id}) did not end within ${seconds(STREAM_STOP_MS)} of its kill`);
 			}
 			const written = await client.call("files.write", { path: STREAM_PASSWORD_FILE, data: Buffer.from(`${password}\n`).toString("base64"), mode: 0o600 }, { signal: bound() });
 			if (!written.ok) return fail(written.error.code, `writing the stream's password file: ${written.error.message}`);
 			// x11vnc listens on the computer's own loopback, IPv4 alone, and noVNC reaches it there.
 			const listen = "localhost"; // key-gate: loopback-rule the VNC server listens inside the computer only
 			const vnc = ["x11vnc", "-display", desktop.display, "-forever", "-shared", "-listen", listen, "-noipv6", "-rfbport", String(VNC_PORT), "-passwdfile", STREAM_PASSWORD_FILE, ...(viewOnly ? ["-viewonly"] : [])];
-			const novnc = ["/opt/noVNC/utils/novnc_proxy", "--vnc", `${listen}:${VNC_PORT}`, "--listen", String(STREAM_PORT), "--web", "/opt/noVNC"];
+			const novnc = [NOVNC, "--vnc", `${listen}:${VNC_PORT}`, "--listen", String(STREAM_PORT), "--web", "/opt/noVNC"];
+			const servers: Array<{ id: string; program: string }> = [];
 			for (const argv of [vnc, novnc]) {
 				const started = await client.call("process.start", { argv, cwd: "/opt/noVNC/utils" }, { signal: bound() });
 				if (!started.ok) return fail(started.error.code, `starting ${argv[0]}: ${started.error.message}`);
+				servers.push({ id: started.value.id, program: argv[0] as string });
 			}
+			// Ready is both new servers running and both ports listening: with the old servers ended, the listeners are theirs.
 			const until = Date.now() + STREAM_WAIT_MS;
+			const ports = `netstat -tln 2>/dev/null | grep -q ':${VNC_PORT} ' && netstat -tln 2>/dev/null | grep -q ':${STREAM_PORT} '`;
 			for (;;) {
-				const up = await client.call("exec.run", { argv: ["sh", "-c", `netstat -tln 2>/dev/null | grep -q ':${STREAM_PORT} '`], timeoutMs: 5_000 }, { signal: bound() });
+				const up = await client.call("exec.run", { argv: ["sh", "-c", ports], timeoutMs: 5_000 }, { signal: bound() });
+				for (const server of servers) {
+					const state = await client.call("process.wait", { id: server.id, timeoutMs: 0 }, { signal: bound() });
+					if (!state.ok) return fail(state.error.code, `reading the new ${server.program} (${server.id}): ${state.error.message}`);
+					// Awaited here, inside the try: the finally closes the connection its read goes over.
+					if (!state.value.running) return await this.#serverEnded(client, server, state.value, bound());
+				}
 				if (up.ok && up.value.exitCode === 0) break;
-				if (Date.now() >= until) return fail("timeout", `the stream did not listen on port ${STREAM_PORT} within ${seconds(STREAM_WAIT_MS)}`);
+				if (Date.now() >= until) return fail("timeout", `the stream did not listen on ports ${VNC_PORT} and ${STREAM_PORT} within ${seconds(STREAM_WAIT_MS)}`);
 				await pause(250, signal);
 				if (signal?.aborted) return fail("aborted", "stream was aborted");
 			}
@@ -1483,5 +1508,13 @@ export class E2BProvider implements ComputerProvider {
 		if (viewOnly) url.searchParams.set("view_only", "true");
 		url.searchParams.set("password", password);
 		return ok({ url: url.href });
+	}
+
+	/** A new stream server that ended before the stream was up, in words, with its last lines of stderr. */
+	async #serverEnded(client: ComputerConnection["client"], server: { id: string; program: string }, exit: ProcessExit, signal: AbortSignal): Promise<Result<never>> {
+		const read = await client.call("process.read", { id: server.id, stream: "stderr", offset: 0 }, { signal });
+		const said = read.ok ? Buffer.from(read.value.data, "base64").toString("utf8").trim().split("\n").slice(-3).join("; ") : "";
+		const how = exit.signal ? `signal ${exit.signal}` : `exit code ${exit.exitCode}`;
+		return fail("e2b", `the stream's new ${server.program} ended with ${how} before the stream was up${said ? `: ${said}` : ""}`);
 	}
 }
