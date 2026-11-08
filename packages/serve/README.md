@@ -193,7 +193,9 @@ every route but `GET /v2/capabilities` and `GET /v2/health` still needs the toke
 `render.yaml`'s `healthCheckPath` are `GET /v2/health`.
 
 `render.yaml` at the repository's root is a Render blueprint for the same image: one web service with a 1 GB disk at
-`/data`. Render generates `AGENTRUN_TOKEN`, which scripts and the CLI read in the service's Environment tab. With no
+`/data`. Render generates `AGENTRUN_TOKEN`, which scripts and the CLI read in the service's Environment tab, and
+`AGENTRUN_SEAL_KEY`, which seals the keys, MCP server credentials and webhook trigger secrets the server saves (keep a
+copy: a service that loses it loses them). With no
 `AGENTRUN_PUBLIC_URL` the server takes Render's own `RENDER_EXTERNAL_URL` as its public address, so setup takes the
 code the start prints in the service's log (`Set up this server: ...`). On another host, set `AGENTRUN_PUBLIC_URL` to
 the address people open before the first start; without it, whoever opens the console first sets the password. Set
