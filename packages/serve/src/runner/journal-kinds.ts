@@ -24,7 +24,19 @@ export const KINDS = {
   /** The loop's end commit: how the run ended (ended, stopped, failed). Its commit carries the run row's patch and any
    *  command it takes; neither a call nor a message, so the reader passes over it. */
   end: "agentrun.end",
+  /** A run parked at its cap: the cap refused a request for room (a raise would let it fit). Its data is the pending
+   *  budget the run waits on a raise with; its commit carries the run parked, in the cap's words. Neither a call nor a
+   *  message, so the reader passes over it. */
+  budget: "agentrun.budget",
 } as const;
+
+/** What a run parked at its cap waits on (the kernel cap's parkOf): its cap, what the cap counted as taken, the least the
+ *  refused request needs, the least cap that sends it and the raise offered, in the run's money units (dollars). */
+export interface BudgetData {
+  readonly pending: { readonly kind: "budget"; readonly cap_usd: number; readonly spent_usd: number; readonly needs_usd: number; readonly least_cap_usd: number; readonly suggested_cap_usd: number };
+  /** The cap's words, as the run row's summary says them. */
+  readonly words: string;
+}
 
 export interface CallStartData {
   readonly callId: string;

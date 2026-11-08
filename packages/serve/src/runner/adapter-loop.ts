@@ -16,9 +16,9 @@ import { BACKGROUND_CONTEXT, withAbortSignal } from "@earendil-works/chord/conte
 import type { Models } from "@earendil-works/pi-ai";
 import { createModels } from "@earendil-works/pi-ai/models";
 import { type Conversation, type ConversationId, createRegistry, Harness, LiveDoc } from "@earendil-works/pi-durable";
-import { type AdapterSession, type AgentAdapter, type BeforeRequest, type HostTool, modelPortFor, runBooking, type SessionSpec } from "@parcha/agentrun-kernel";
+import { type AdapterSession, type AgentAdapter, type BeforeRequest, type HostTool, modelPortFor, type Refusal, runBooking, type SessionSpec } from "@parcha/agentrun-kernel";
 import type { KernelHooks, ToolCall } from "./conformance/subject.js";
-import { type AnswerData, type AskData, type EndData, KINDS } from "./journal-kinds.js";
+import { type AnswerData, type AskData, type BudgetData, type EndData, KINDS } from "./journal-kinds.js";
 import type { Claim, Command, CommandOutcome, Loop, LoopDeps, LoopEnd, LoopFactory, StopReason } from "./loop-contract.js";
 import { approvalOf, CLOSE_MS, STOP_SETTLE_MS, commandRequest, DEFAULT_RESTART_LIMIT, entriesOf, findData, Gate, heldReporter, Interrupted, KernelFault, Parked, quiet, restartLimited, writesEntry, writesSubmission } from "./loop.js";
 import type { PiRun, PiSessionIO, PreIntentAnswer, PreIntentCall } from "./adapters/pi.js";
@@ -36,6 +36,12 @@ export interface AdapterRunSpec {
   readonly gate?: (call: ToolCall) => "allow" | "ask" | "deny";
   /** The host's check before each paid request (the spend cap). */
   readonly beforeRequest?: BeforeRequest;
+  /** The run's cap, when it has one (filled from the run's launch): its figure, and what a refusal does to the run (the
+   *  kernel cap's parkOf: parked with a pending budget for a refusal a raise could fix, else failed in its words). */
+  readonly cap?: {
+    readonly capUsd: number;
+    park(refusal: { message: string; forGood: boolean; figures?: Refusal["figures"] }): { outcome: "parked"; pending: BudgetData["pending"]; words: string } | { outcome: "failed"; error: string };
+  };
   /** How long a person's stop waits for the turn to settle before the run is failed in words (a tool call that ignores
    *  its abort). Default STOP_SETTLE_MS. */
   readonly stopSettleMs?: number;
@@ -132,10 +138,10 @@ function adapterLoop(specOf: (claim: Claim, run: AdapterRun) => AdapterRunSpec |
         // The host's check is asked with the run's totals, every session of the run summed (the run's one booking), never
         // this session's alone: a cap is the run's. Its last refusal is kept: a turn it ended ends the run in its words.
         const hostCheck = spec.beforeRequest ? runBooking(sessions, spec.beforeRequest) : undefined;
-        let refused: string | undefined;
+        let refused: Refusal | undefined;
         const beforeRequest: BeforeRequest | undefined = hostCheck && (async (request) => {
           const answer = await hostCheck(request);
-          if (answer && "refuse" in answer) refused = answer.refuse;
+          if (answer && "refuse" in answer) refused = answer;
           return answer;
         });
         // The rule before a side effect for every paid model request, on the path every adapter's requests take: the
@@ -213,8 +219,15 @@ function adapterLoop(specOf: (claim: Claim, run: AdapterRun) => AdapterRunSpec |
         await harness.waitForIdle(context);
         const cutOff = restartLimited(await entriesOf(gate.journal, root.id, context));
         if (cutOff) return await writeEnd(harness, root, gate, { state: "failed", summary: `a tool call faulted on every restart: ${cutOff}` }, []);
-        // A turn the host's check refused ends the run in the check's own words (the cap's), never as a run with no answer.
-        return await writeEnd(harness, root, gate, outcome.status === "completed" ? { state: "ended" } : { state: "failed", summary: refused ?? `the run gave no answer (${outcome.status})` }, []);
+        if (outcome.status !== "completed" && refused) {
+          // A turn the host's check refused: what that does to the run is the cap's rule (parkOf), as on main. A refusal a
+          // raise could fix parks the run on a raise; one no raise could fix (or a check with no cap) fails it, in the
+          // check's own words, never as a run with no answer.
+          const park = spec.cap?.park({ message: refused.refuse, forGood: refused.forGood ?? true, ...(refused.figures ? { figures: refused.figures } : {}) });
+          if (park?.outcome === "parked") return await parkAtCap(harness, root, gate, { pending: park.pending, words: park.words });
+          return await writeEnd(harness, root, gate, { state: "failed", summary: park?.outcome === "failed" ? park.error : refused.refuse }, []);
+        }
+        return await writeEnd(harness, root, gate, outcome.status === "completed" ? { state: "ended" } : { state: "failed", summary: `the run gave no answer (${outcome.status})` }, []);
       }
     } catch (error) {
       if (gate?.sealed || deps.signal.aborted) return await interrupted("its claim's signal aborted");
@@ -349,6 +362,21 @@ function adapterLoop(specOf: (claim: Claim, run: AdapterRun) => AdapterRunSpec |
     await Promise.race([closing, new Promise<void>((resolve) => (timer = setTimeout(resolve, CLOSE_MS)))]);
     clearTimeout(timer);
     session = undefined;
+  }
+
+  /** The run parked at its cap: its pending budget as an agentrun.budget entry, in one commit with the run parked in the
+   *  cap's words (as the ask park's entry and state), and the loop ends parked: a raise row wakes it. */
+  async function parkAtCap(on: Harness, conversation: Conversation, theGate: Gate, data: BudgetData): Promise<LoopEnd> {
+    const parkedAt = theGate.expect(writesEntry(KINDS.budget), { run: { state: "parked", summary: data.words } });
+    try {
+      await on.commit((tx) => tx.appendEntry(conversation.id, { kind: KINDS.budget, data: data as unknown as JsonValue }), context);
+    } catch (error) {
+      parkedAt.catch(() => undefined);
+      throw error;
+    }
+    await parkedAt;
+    theGate.seal(new Parked());
+    return { state: "parked" };
   }
 
   async function writeEnd(on: Harness, conversation: Conversation, theGate: Gate, data: EndData, take: readonly number[]): Promise<LoopEnd> {

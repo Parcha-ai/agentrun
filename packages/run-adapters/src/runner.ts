@@ -70,7 +70,12 @@ export type BeforeRequest = (request: {
    *  (`holdUsd`): a budget holds each one until it answers, since `spentUsd` counts answered requests only. Requests are
    *  admitted one at a time, so each check sees every request admitted before it. */
   inFlight: readonly InFlight[];
-}) => void | { refuse: string } | Admission | Promise<void | { refuse: string } | Admission>;
+}) => void | Refusal | Admission | Promise<void | Refusal | Admission>;
+
+/** A host's refusal of a request: its words, and, from a spend cap, whether no raise could send it (`forGood`) and, for
+ *  one a raise could, its figures (what the cap counted as taken, what the request needs at the least, the least cap that
+ *  sends it): what the run's end is decided from (the kernel cap's parkOf). */
+export type Refusal = { refuse: string; forGood?: boolean; figures?: { spentUsd: number; needsUsd: number; leastCapUsd: number; boundUsd?: number } };
 
 /** A request admitted and not yet answered, as a budget holds it: at what its host held for it (`holdUsd`), when it held
  *  one. */
