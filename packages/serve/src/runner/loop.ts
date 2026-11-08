@@ -218,9 +218,10 @@ class KernelFault extends Error {
   }
 }
 
-/** Where each pi.live value the loop observes goes: `live`, as the run's held state. */
+/** Where each pi.live value the loop observes goes: `live`, as a reader of the run's held state, computed only when the
+ *  ticker reads it (once per tick), so an advance costs the same however long the partial answer has grown. */
 export function heldReporter(live: NonNullable<LoopDeps["live"]>): (value: unknown) => void {
-  return (value) => live(heldStateOf(value));
+  return (value) => live(() => heldStateOf(value));
 }
 
 /** A run's held state from its pi.live document: the tools running now and the answer streaming so far. */
@@ -481,7 +482,7 @@ function piLoop(specOf: (claim: Claim) => PiRunSpec | Promise<PiRunSpec>, deps: 
     } finally {
       deps.signal.removeEventListener("abort", signalAbort);
       held?.detach();
-      deps.live?.(undefined);
+      deps.live?.(() => undefined);
       if (gate && harness) await closeBehindSeal(gate, harness);
     }
   }
@@ -500,7 +501,7 @@ function piLoop(specOf: (claim: Claim) => PiRunSpec | Promise<PiRunSpec>, deps: 
         try {
           if (call.kind === "value") report(call.retired ? undefined : call.value);
         } catch {
-          deps.live?.(undefined);
+          deps.live?.(() => undefined);
         }
       },
       end: () => undefined,
