@@ -129,6 +129,9 @@ jobs:
       - name: undici in this install is at or above its floor
         if: matrix.shard == 'checks'
         run: node scripts/check-undici.mjs
+      - name: Imports follow the layer direction
+        if: matrix.shard == 'checks'
+        run: npm run check:direction
       - if: matrix.shard == 'checks'
         run: node scripts/generate-schema.mjs --check
       - if: matrix.shard == 'checks'
@@ -542,7 +545,7 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        spec: [agentrun-dsl, agentrun-jev, agentrun-pi, pi-durable-disk, pi-browser, pi-vision, pi-transport, pi-transport-docker, pi-durable-agent, pi-git-remote, pi-agent-learn, agentrun-kernel, agentrun-harness-claude, agentrun-harness-codex, agentrun-harness, agentrun-serve]
+        spec: [agentrun-dsl, agentrun-jev, agentrun-pi, pi-durable-disk, pi-browser, pi-vision, pi-transport, pi-transport-docker, pi-durable-agent, agentrun-kernel, agentrun-harness-claude, agentrun-harness-codex, agentrun-harness, agentrun-serve]
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-node@v4

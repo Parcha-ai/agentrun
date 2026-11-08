@@ -46,6 +46,9 @@ const VERSION: string = JSON.parse(readFileSync(new URL("../../package.json", im
 /** The SDK's default server (modal-client@64880502:js/src/config.ts:143). */
 const MODAL_DEFAULT_SERVER_URL = "https://api.modal.com:443";
 
+/** The server the key goes to: COMPUTER_MODAL_SERVER_URL, else the SDK's default. */
+export const modalServerUrl = (env: Record<string, string | undefined> = process.env): string => env[MODAL_ENV.serverUrl] || MODAL_DEFAULT_SERVER_URL;
+
 /** What this module gives the SDK's ModalClient: the token, explicitly, so the SDK fills none of it in. */
 export interface ModalClientParams {
 	tokenId: string;
@@ -99,7 +102,7 @@ export async function modalClient({ env = process.env, ModalClient }: Pick<Modal
 				`Unset it, and name the server in ${MODAL_ENV.serverUrl} if it is not ${MODAL_DEFAULT_SERVER_URL}`,
 		);
 	}
-	const serverUrl = env[MODAL_ENV.serverUrl] || MODAL_DEFAULT_SERVER_URL;
+	const serverUrl = modalServerUrl(env);
 	const Client = ModalClient ?? ((await import(MODAL_PACKAGE)) as { ModalClient: new (params: ModalClientParams) => unknown }).ModalClient;
 	// getProfile reads MODAL_SERVER_URL from process.env when the client is constructed (client.ts:123), and the
 	// control-plane client is made then (client.ts:175); afterwards process.env is as it was.

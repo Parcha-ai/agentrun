@@ -10,12 +10,12 @@ import { parseArgs, type ParseArgsConfig } from "node:util";
 import type { JsonValue as Json } from "@earendil-works/chord";
 import type { Claim, RunRef } from "./claim.ts";
 import { archilEnv } from "./env.ts";
-import { BoxUnavailableError, exitCodeFor, FencedError, PdaError } from "./errors.ts";
+import { BoxUnavailableError, exitCodeFor, FencedError, HeldError, PdaError } from "./errors.ts";
 import { drain, recordWake, watchParking, type BusyState, type Parking } from "./park.ts";
 import { isLoopback, readServeToken, serveRun, type RunServer } from "./serve.ts";
 import { processTable, thisBoot } from "./process-table.ts";
 import { localRun } from "./local-run.ts";
-import { BOX_MODES, type BoxMode, parseRunRecord, RUN_JSON } from "./status.ts";
+import { BOX_MODES, readLocalRunStatus, type BoxMode, type RunRecord } from "./status.ts";
 import { exitFenced, openDurableRun, type DurableRun } from "./run.ts";
 import { AppError, loadApp, type AppOptions } from "./app.ts";
 
@@ -26,54 +26,17 @@ class UsageError extends PdaError {
 }
 
 const USAGE = `usage:
-  pi-durable-disk run --dir PATH --app MODULE [--id ID] [--epoch N] [--door-nonce-fd N]
-                        [--heartbeat-ms N] [--lease-expiry-ms N] [--lease-margin-ms N] [--on-sigterm resume|pause]
+  pi-durable-disk run --dir PATH --epoch N --app MODULE [--id ID] [--door-nonce-fd N] [--on-sigterm resume|pause]
                         [--run-as USER] [--serve PORT] [--serve-host H] [--serve-url URL]
                         [--serve-token-file F] [--park-threshold 60s] [--park-idle 60s] [--drain-timeout 25s]
                         [--box-mode bwrap|seatbelt|provider|unsandboxed|unavailable]
   pi-durable-disk status --dir PATH
-durations take a unit (500ms, 30s, 1.5m, 1h); flags named -ms take bare milliseconds; a bare 0 turns off
---park-threshold`;
-
-/**
- * Whether the lease watchdog may kill every other process in the instance's cgroup: only inside its own systemd unit,
- * whose cgroup holds nothing but the instance and its commands. Elsewhere the cgroup may be shared (a login session, an
- * agent host's service), so the watchdog kills only the instance's own command groups.
- *
- * The holder handle only claims a unit (`mode: "systemd"`, `unit`), and it arrives in an environment variable that any
- * child inherits, so /proc decides: this process's cgroup v2 path must end in `/<unit>.service`, and its parent's cgroup
- * must be another (a process that merely inherited the handle shares its parent's cgroup). When the handle claims a
- * unit that /proc does not confirm, `warning` says why, for one log line.
- */
-export function watchdogOwnsCgroup(
-  holder: Record<string, unknown>,
-  options: { proc?: string; ppid?: number } = {},
-): { owns: boolean; warning?: string } {
-  if (holder.mode !== "systemd") return { owns: false };
-  const proc = options.proc ?? "/proc";
-  const cgroupOf = (pid: string): string | undefined => {
-    try {
-      return readFileSync(join(proc, pid, "cgroup"), "utf8").split("\n").find((line) => line.startsWith("0::"))?.slice(3);
-    } catch {
-      return undefined;
-    }
-  };
-  const refuse = (why: string) => ({ owns: false, warning: `the watchdog will not kill the cgroup: ${why}` });
-  const unit = holder.unit;
-  if (typeof unit !== "string" || unit === "") return refuse("the holder names no unit");
-  const own = cgroupOf("self");
-  if (own === undefined) return refuse("this process has no cgroup v2 path");
-  if (!own.endsWith(`/${unit}.service`)) return refuse(`this process's cgroup ${own} is not ${unit}.service`);
-  const parent = cgroupOf(String(options.ppid ?? process.ppid));
-  if (parent === undefined) return refuse("the parent's cgroup cannot be read");
-  if (parent === own) return refuse(`the parent shares cgroup ${own}, so this process only inherited the handle`);
-  return { owns: true };
-}
+durations take a unit (500ms, 30s, 1.5m, 1h); a bare 0 turns off --park-threshold`;
 
 /**
  * A duration: a number and its unit, `ms`, `s`, `m` or `h` ("500ms", "30s", "1.5m", "1h"). A bare number is refused with
- * a hint, so "90" is never silently 90 ms. A flag whose name carries its unit (`bareMs`, the `-ms` flags) takes a bare
- * number as milliseconds; a flag whose 0 turns its feature off (`zeroOff`) also takes a bare `0`.
+ * a hint, so "90" is never silently 90 ms. A flag whose name carries its unit (`bareMs`) takes a bare number as
+ * milliseconds; a flag whose 0 turns its feature off (`zeroOff`) also takes a bare `0`.
  */
 export function parseDuration(text: string, rule: DurationRule = {}): number {
   const t = text.trim();
@@ -90,11 +53,8 @@ export function parseDuration(text: string, rule: DurationRule = {}): number {
 /** How a duration flag reads a bare number: as milliseconds (`bareMs`), or a bare `0` as off (`zeroOff`); otherwise never. */
 export type DurationRule = { readonly bareMs?: boolean; readonly zeroOff?: boolean };
 
-/** Every duration flag, with its rule. The `-ms` flags carry their unit in their name. A bare `0` turns off parking (`--park-threshold`). */
+/** Every duration flag, with its rule. A bare `0` turns off parking (`--park-threshold`). */
 const DURATION_FLAGS: Readonly<Record<string, DurationRule>> = {
-  "heartbeat-ms": { bareMs: true },
-  "lease-expiry-ms": { bareMs: true },
-  "lease-margin-ms": { bareMs: true },
   "park-threshold": { zeroOff: true },
   "park-idle": {},
   "drain-timeout": {},
@@ -145,15 +105,15 @@ const emit = (line: Record<string, unknown>) => process.stdout.write(`${JSON.str
 // ---- run ---------------------------------------------------------------------------------------------------------------
 
 /**
- * The instance its host starts: openDurableRun on the local directory `--dir` with the app module's Harness options
- * (src/app.ts), the host's handle as run.json's holder, and the lease periods. The app's factory runs once the claim is
+ * The instance its host starts: openDurableRun on the local directory `--dir` under the host's epoch (`--epoch`), with the
+ * app module's Harness options (src/app.ts) and the host's handle as the record's holder. The app's factory runs once the claim is
  * held (`afterClaim`, so `ctx.root` is the live directory) and the Harness opens with what it returns; a missing or throwing module, or a failed `onOpen`, is AppError (exit 1,
- * so the unit retries within systemd's start limit; a restart in place reuses the claim). A fence of any kind kills the
+ * which its host may retry). A fence of any kind kills the
  * run's commands and exits 75 inside openDurableRun.
  *
- * `--serve` listens before the run opens and writes its address into the holder, so a client finds it in run.json; an
- * address that is not loopback needs `--serve-token-file` (a 0600 file holding the bearer token), and a wildcard bind
- * (0.0.0.0, ::) needs `--serve-url`, the address clients reach, which is what run.json then carries. `--park-threshold`
+ * `--serve` listens before the run opens, writes its address into the holder, and prints it to its host as the first line
+ * on stdout; an address that is not loopback needs `--serve-token-file` (a 0600 file holding the bearer token), and a
+ * wildcard bind (0.0.0.0, ::) needs `--serve-url`, the address clients reach, which is what the line then carries. `--park-threshold`
  * parks the run when its work only waits longer than that, and with `--serve` an idle run parks too after `--park-idle`
  * (default the threshold), since a request can wake it. `--drain-timeout` bounds the drain on SIGTERM. What happens
  * between the open and the exit is `serveUntilDone`.
@@ -164,27 +124,26 @@ async function runInstance(values: Record<string, unknown>): Promise<number> {
   // processes (/proc/<pid>/environ, ps -E) whatever it deletes, and every child inherits what it keeps.
   const doorNonce = readDoorNonce(values["door-nonce-fd"]);
   need(values, "dir", "app");
+  // The host that starts the run holds its claim and hands it its epoch: the record's generation.
+  const epochFlag = str(values.epoch);
+  if (epochFlag === undefined) throw new UsageError("--epoch is required: the host that starts a run holds its claim and hands it its epoch (run --dir PATH --epoch N)");
+  if (!/^\d{1,15}$/.test(epochFlag)) throw new UsageError("--epoch takes a whole number");
+  const epoch = Number(epochFlag);
   const dir = resolve(str(values.dir)!);
   const ref: RunRef = { disk: "local", region: "local", id: str(values.id) ?? basename(dir) };
   const runAs = typeof values["run-as"] === "string" ? runUser(values["run-as"]) : undefined;
   if (runAs && process.getuid?.() !== 0) throw new UsageError("--run-as needs an instance that runs as root (inside a container); elsewhere run the instance as the run user");
   const onSigterm = str(values["on-sigterm"], "resume");
   if (onSigterm !== "resume" && onSigterm !== "pause") throw new UsageError("--on-sigterm is resume or pause");
-  // The box this launch runs in, as the host resolved it: recorded in run.json as given (`boxMode`), never probed here.
+  // The box this launch runs in, as the host resolved it: recorded in the run's record as given (`boxMode`), never probed here.
   const boxMode = str(values["box-mode"]);
   if (boxMode !== undefined && !(BOX_MODES as readonly string[]).includes(boxMode)) throw new UsageError(`--box-mode is one of ${BOX_MODES.join(", ")}`);
   // No box to run in: refused by name (exit 78) before anything here starts, as openDurableRun refuses it.
   if (boxMode === "unavailable") throw new BoxUnavailableError();
-  // A host that holds the run's claim on a record of its own (agentrun-serve's run row) hands its epoch: a local
-  // directory's run then takes no owner lock and writes no run.json (openDurableRun's `epoch`).
-  const epochFlag = str(values.epoch);
-  if (epochFlag !== undefined && !/^\d{1,15}$/.test(epochFlag)) throw new UsageError("--epoch takes a whole number");
-  const epoch = epochFlag === undefined ? undefined : Number(epochFlag);
-  // Under a host's epoch stdout is the host's pipe: one that closed (its host went) loses a line (EPIPE), never the run,
-  // whose next host reads its door from the record it keeps in its store.
-  if (epoch !== undefined) process.stdout.on("error", () => {});
+  // Stdout is the host's pipe: one that closed (its host went) loses a line (EPIPE), never the run, whose next host reads
+  // its door from the record it keeps in its store.
+  process.stdout.on("error", () => {});
   const ms = (name: string) => durationFlag(values, name);
-  const lease = { heartbeatMs: ms("heartbeat-ms"), expiryMs: ms("lease-expiry-ms"), marginMs: ms("lease-margin-ms") };
   const parkMs = ms("park-threshold") || undefined;
   const drainMs = ms("drain-timeout") ?? 0;
   const servePort = str(values.serve);
@@ -199,21 +158,18 @@ async function runInstance(values: Record<string, unknown>): Promise<number> {
   let app: AppOptions | undefined;
   const rootOptions: NonNullable<AppOptions["root"]> = {};
   const holder = JSON.parse(process.env.PDA_HOLDER ?? "{}") as Record<string, Json>;
-  // On a local directory nothing else knows this instance: its start ticks go into the holder, so `status --dir` tells it
-  // from a later process that reuses its pid (a driver's handle already carries them).
+  // Its start ticks go into the holder, so `status --dir` tells it from a later process that reuses its pid.
   if (typeof holder.startTicks !== "number") holder.startTicks = startOf(process.pid) ?? null;
-  const cgroup = watchdogOwnsCgroup(holder);
-  if (cgroup.warning) log("cgroup not owned", { warning: cgroup.warning });
   // The server is up before the run opens (its address goes into the holder); parking starts after.
   let parking: Parking | undefined;
   let server: RunServer | undefined;
   if (servePort !== undefined) {
     const url = str(values["serve-url"]);
-    server = await serveRun({ port: Number(servePort), host: serveHost, ...(url ? { url } : {}), token: serveToken, ...(doorNonce ? { proof: doorNonce } : {}), root: rootOptions, onIdle: () => parking?.check() });
+    server = await serveRun({ port: Number(servePort), host: serveHost, ...(url ? { url } : {}), token: serveToken, ...(doorNonce ? { proof: doorNonce } : {}), root: rootOptions, onIdle: () => parking?.check(), log: (event, detail) => log(event, detail as Record<string, unknown>) });
     holder.serve = server.url;
-    // Under a host's epoch, where it serves goes to its host as the first line on stdout, before any harness or agent
-    // code runs; the host proves it with the nonce (POST /door-proof) and reads no later line.
-    if (epoch !== undefined) process.stdout.write(`${JSON.stringify({ event: "door", run: ref.id, epoch, pid: process.pid, serve: server.url })}\n`, () => {});
+    // Where it serves goes to its host as the first line on stdout, before any harness or agent code runs; the host
+    // proves it with the nonce (POST /door-proof) and reads no later line.
+    process.stdout.write(`${JSON.stringify({ event: "door", run: ref.id, epoch, pid: process.pid, serve: server.url })}\n`, () => {});
   }
   const idleMs = ms("park-idle") ?? (server ? parkMs : undefined);
   const steps: Record<string, number> = {};
@@ -223,7 +179,7 @@ async function runInstance(values: Record<string, unknown>): Promise<number> {
       // This process ends by process.exit (main, below), so its store's close checkpoints nothing: the WAL stays, and
       // whoever takes the run back next checkpoints it.
       keepWal: true,
-      ...(epoch === undefined ? {} : { epoch }),
+      epoch,
       ...(boxMode === undefined ? {} : { boxMode: boxMode as BoxMode }),
       // A local directory is its own claim.
       ...localRun(dir),
@@ -237,12 +193,9 @@ async function runInstance(values: Record<string, unknown>): Promise<number> {
         ? { env: (c: Claim) => archilEnv(c, { runAs: { uid: runAs.uid, gid: runAs.gid }, shellEnv: { HOME: runAs.home, USER: runAs.name, LOGNAME: runAs.name } }) }
         : {}),
       holder,
-      // The door's harness children die before the exit 75: another instance may take the run, and a child left alive
-      // would act on without the lease.
-      // The lease is gone: the harness children die now, without waiting on the hook's abort.
+      // The door's harness children die before the exit 75, without waiting on the hook's abort: another instance may take
+      // the run, and a child left alive would act on without it.
       onFenced: (error) => (server ? server.stopDoor({ now: true }).catch(() => undefined).then(() => exitFenced(error)) : exitFenced(error)),
-      ownCgroup: cgroup.owns,
-      lease: Object.fromEntries(Object.entries(lease).filter(([, v]) => v !== undefined)),
       onStep: (step, t) => void (steps[step] = Math.round(t)),
     });
   } catch (err) {
@@ -287,7 +240,7 @@ export interface InstanceLife {
   readonly park?: { readonly thresholdMs: number; readonly idleMs?: number };
   /** The serve front: its open requests keep the instance up, and a park or a drain stops its submissions. */
   readonly server?: RunServer;
-  /** The app's wake hook; default run.json `sleeping` with `wakeAt`. */
+  /** The app's wake hook; default the record's `sleeping` with `wakeAt`. */
   readonly wake?: (run: DurableRun, at: number | null) => Promise<void>;
   /** Handed the parking watch once it runs. */
   readonly onParking?: (parking: Parking) => void;
@@ -300,7 +253,7 @@ export interface InstanceLife {
  * killed) and waits up to `life.drainMs` for running work; with `resume` it then writes the run
  * sleeping with its wake (the deadline its work waits for, null when idle and idle parking is on, otherwise now), so
  * the supervisor starts it again and a deploy never strands it; a wake hook that refuses falls back to a due wake.
- * `pause` seals it paused. An app that released the run itself (`run.release()`, in `onOpen` or after it) has nothing left to
+ * `pause` records it paused. An app that released the run itself (`run.release()`, in `onOpen` or after it) has nothing left to
  * serve: the instance exits 0 when `onOpen` returns, and a stop after that exits 0 without a drain, since the Harness is
  * closed and the run's status final. A rejection of `onOpen` is the app failing (exit 1), except once a drain or a park's release
  * began: closing the Harness under the app makes its work reject ("Session is closed"), and ending the process there
@@ -318,8 +271,8 @@ export function serveUntilDone(
   const durable = run as DurableRun;
   const drainMs = life.drainMs ?? 0;
   return new Promise<number>((settle) => {
-    // The run's heartbeat and lease timers are unref'd (a library caller's process may end); an instance stays up, with or
-    // without work, until it parks, drains or fails, so an ended event loop never exits it without a release.
+    // An instance stays up, with or without work, until it parks, drains or fails, so an ended event loop never exits it
+    // without a release.
     const keepAlive = setInterval(() => {}, 2 ** 31 - 1);
     const done = (code: number) => {
       clearInterval(keepAlive);
@@ -415,23 +368,28 @@ export function serveUntilDone(
 
 async function status(values: Record<string, unknown>): Promise<number> {
   need(values, "dir");
-  return localStatus(resolve(str(values.dir)!));
+  return await localStatus(resolve(str(values.dir)!));
 }
 
 /**
- * `status --dir PATH`: `run.json` read from the directory, and whether its holder is still the process that claimed it:
- * `running` when it is this boot's and its pid is alive with the start ticks the holder recorded (a later process that
- * reuses the pid has others), `stopped` when it is not, `gone` from another boot, and `unknown` when the holder recorded no
- * start ticks (a run opened by a library caller) and its pid is alive.
+ * `status --dir PATH`: the run's record, read from its store once no process holds it, and whether its holder is still
+ * the process that claimed it: `running` when it is this boot's and its pid is alive with the start ticks the holder
+ * recorded (a later process that reuses the pid has others), `stopped` when it is not, `gone` from another boot, and
+ * `unknown` when the holder recorded no start ticks and its pid is alive. While a process holds the store its record is
+ * not read: `record` is null and `holderStatus` is `running`.
  */
-function localStatus(dir: string): number {
-  let text: string;
+async function localStatus(dir: string): Promise<number> {
+  let run: RunRecord | null;
   try {
-    text = readFileSync(join(dir, RUN_JSON), "utf8");
+    run = await readLocalRunStatus(dir);
   } catch (err) {
-    throw new UsageError(`no run in ${dir}: ${(err as Error).message}`);
+    if (err instanceof HeldError && err.holder === "store") {
+      emit({ dir, record: null, holderStatus: "running" });
+      return 0;
+    }
+    throw err;
   }
-  const run = parseRunRecord(text);
+  if (run === null) throw new UsageError(`no run in ${dir}: it has no record yet`);
   let holderStatus: string | null = null;
   const holder = run.holder;
   if (holder) {
@@ -444,7 +402,7 @@ function localStatus(dir: string): number {
     else if (typeof holder.startTicks === "number") holderStatus = ticks === holder.startTicks ? "running" : "stopped";
     else holderStatus = ticks === null ? "stopped" : "unknown";
   }
-  emit({ run: run.run, dir, runJson: run as unknown as Json, holderStatus });
+  emit({ run: run.run, dir, record: run as unknown as Json, holderStatus });
   return 0;
 }
 
@@ -472,9 +430,6 @@ export async function main(argv: string[]): Promise<number> {
             id: { type: "string" },
             dir: { type: "string" },
             app: { type: "string" },
-            "heartbeat-ms": { type: "string" },
-            "lease-expiry-ms": { type: "string" },
-            "lease-margin-ms": { type: "string" },
             "on-sigterm": { type: "string" },
             serve: { type: "string" },
             "serve-host": { type: "string" },

@@ -14,6 +14,11 @@ const CHANNELS: Record<number, number> = { 0: 1, 2: 3, 3: 1, 4: 2, 6: 4 };
  */
 const MAX_SIDE = 16_384;
 const MAX_PIXELS = 2 ** 25;
+/**
+ * The most bytes a PNG this reader accepts may take: every pixel as RGBA with a filter byte per row, stored with no
+ * compression, plus 4 MiB for zlib's and the chunks' framing. A reader of a shot stops there.
+ */
+export const MAX_PNG_BYTES = MAX_PIXELS * 4 + MAX_SIDE + 4 * 1024 * 1024;
 
 export interface Png {
 	width: number;

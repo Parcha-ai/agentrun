@@ -1,4 +1,23 @@
 {
   "about": "Flaky tests skipped on CI: each a flake id, its owner lane and an expiry at most 24 h on, at most 3 at once. scripts/quarantine.mjs --add writes an entry and prints the test's skip; --check (and scripts/quarantine.test.mjs, on every pull request) fails once one expires.",
-  "tests": []
+  "tests": [
+    {
+      "id": "F39",
+      "file": "packages/serve/test/tool-gate.test.mjs",
+      "name": "web_fetch set to ask on pi, claude-agent and codex at once: each run parks with its pending approval; answered more than a minute later by the owner's session, allow runs the call once and resumes with one message naming it, deny with a note resumes with the refusal; a token is 403; a second, conflicting answer is 409",
+      "owner": "tl-tools",
+      "since": "2026-11-08T00:07Z",
+      "expires": "2026-11-09T00:07Z",
+      "why": "2nd sighting of the empty-Saw class (1st: #1856 f07626bf1, job 128224311250; 2nd: tool-gate-replayed-relaunch:61, #1754 job 128568478144). faux-gate.mjs answers \"Saw: <the very last message>\", so an extra or reordered model request under CI load reads a bare \"Saw:\". Fix (tl-tools): answer from the last message with text, print the request roles on failure, and assert the model-request count separately."
+    },
+    {
+      "id": "F40",
+      "file": "packages/serve/test/tool-gate-replayed-relaunch.test.mjs",
+      "name": "a pi run whose process died during a web_fetch it let through, relaunched with web_fetch denied, tells the model whether the call took effect is not known",
+      "owner": "tl-tools",
+      "since": "2026-11-08T00:07Z",
+      "expires": "2026-11-09T00:07Z",
+      "why": "the empty-Saw class, 2nd sighting (#1754 run 42427259572, job 128568478144; 1st: tool-gate:216). faux-gate.mjs answers \"Saw: <the very last message>\", so an extra or reordered model request under CI load reads a bare \"Saw:\". Fix (tl-tools): answer from the last message with text, print the request roles on failure, and assert the model-request count separately."
+    }
+  ]
 }

@@ -543,7 +543,7 @@ test("modelPortFor, alone (a chat run's session): the runner's records and event
   await third.bookCut();
   const cuts = (await store.read(key)).filter((r) => r.kind === RUNNER_RECORDS.turn && r.data.cut === true).map((r) => r.data);
   assert.deepEqual(cuts, [{ usd: null, cut: true, turn: 2 }], 'booked once, across processes');
-  assert.deepEqual(events, [{ type: 'request_end', turn: 2, usage: { input: 0, output: 0, cacheRead: 0, usd: null, estimated: true, cut: true }, key, label: key }], "the host is told once, with the session's key and the request's turn");
+  assert.deepEqual(events, [{ type: 'request_end', turn: 2, usage: { input: 0, output: 0, cacheRead: 0, usd: null, estimated: true, cut: true }, ended: { end: 'lost', label: 'cut' }, key, label: key }], "the host is told once, with the session's key and the request's turn, and how it ended (cut)");
 
   // The turn limit counts the cut request; the host's beforeRequest saw the session's key, its turn and the spend.
   await third.models.beforeRequest({ model: 'm' });
@@ -656,6 +656,40 @@ test("modelPortFor with no stop of its own: a paid request whose cost can't be r
   const ticket = await booking.models.beforeRequest({ model: 'm' });
   await assert.rejects(booking.models.afterRequest({ input: 1, output: 1, cacheRead: 0, usd: 0.1 }, ticket), /disk full/);
   await assert.rejects(booking.models.beforeRequest({ model: 'm' }), (e) => e instanceof HarnessRunError && e.reason === 'model_error' && /could not be recorded/.test(e.message), 'the next paid request is refused');
+  assert.equal((await inner.read()).filter((r) => r.kind === RUNNER_RECORDS.request).length, 1, 'no second request was admitted');
+});
+
+test("a host's own request whose cost can't be recorded stops the booking while the harness's own are held (a parked turn whose call was allowed): no later request is admitted, the host's own included", async () => {
+  const inner = await memorySessionStore().open('chat:hostcostfail');
+  let failTurn = true;
+  const writer = { key: inner.key, sync: () => inner.sync(), read: () => inner.read(), append: async (records) => { if (failTurn && records.some((r) => r.kind === RUNNER_RECORDS.turn)) { failTurn = false; throw new Error('disk full'); } await inner.append(records); } };
+  // The host's stop as a parked turn's allow leaves it (serve's harness-app): the harness's own requests held, the
+  // host's own (a request with a host label: the approved call's node) admitted.
+  const parked = new Error("the turn ended: a tool call waits for a person's approval");
+  const booking = await modelPortFor(writer, { key: 'chat:hostcostfail', stopped: (request) => (request.host === undefined ? parked : undefined) });
+  const ticket = await booking.models.beforeRequest({ model: 'm', host: 'learned_workflow' });
+  await assert.rejects(booking.models.afterRequest({ input: 1, output: 1, cacheRead: 0, usd: 0.1 }, ticket), /disk full/);
+  await assert.rejects(booking.models.beforeRequest({ model: 'm', host: 'learned_workflow' }), (e) => e instanceof HarnessRunError && e.reason === 'model_error' && /could not be recorded/.test(e.message), "the host's next request is refused: its cost would go uncounted");
+  assert.equal((await inner.read()).filter((r) => r.kind === RUNNER_RECORDS.request).length, 1, 'no second request was admitted');
+});
+
+test("a turn parked on a call's approval is no stop of the booking: a request of the harness's own whose cost can't be recorded while it is parked still stops the booking, and once the park lets go the next request is refused", async () => {
+  const kernel = await import('@parcha/agentrun-kernel');
+  const TurnParked = kernel.TurnParked ?? class extends Error {};
+  const inner = await memorySessionStore().open('chat:parkedfail');
+  let failTurn = true;
+  const writer = { key: inner.key, sync: () => inner.sync(), read: () => inner.read(), append: async (records) => { if (failTurn && records.some((r) => r.kind === RUNNER_RECORDS.turn)) { failTurn = false; throw new Error('disk full'); } await inner.append(records); } };
+  // The host's stops: a park while a call waits on a person (it ends the turn, not the booking), and the stop it is asked for.
+  let parked;
+  const stops = [];
+  const booking = await modelPortFor(writer, { key: 'chat:parkedfail', stopped: () => parked, stop: (reason, message) => (stops.push(reason), new HarnessRunError(reason, 1, 0, { message })) });
+  const ticket = await booking.models.beforeRequest({ model: 'm' });
+  // The proxy ends the client's answer before it books, so the turn can park between the two.
+  parked = new TurnParked("the turn ended: a tool call waits for a person's approval");
+  await assert.rejects(booking.models.afterRequest({ input: 1, output: 1, cacheRead: 0, usd: 0.1 }, ticket), /disk full/);
+  assert.deepEqual(stops, ['model_error'], 'the booking is stopped though the turn is parked');
+  parked = undefined;
+  await assert.rejects(booking.models.beforeRequest({ model: 'm' }), (e) => /could not be recorded/.test(e.message), 'once the park lets go, the next paid request is refused');
   assert.equal((await inner.read()).filter((r) => r.kind === RUNNER_RECORDS.request).length, 1, 'no second request was admitted');
 });
 

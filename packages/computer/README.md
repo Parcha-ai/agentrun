@@ -121,7 +121,7 @@ Its whole tree ends when the program ends or is signalled to its end. Ids are `p
 | `process.start` | `argv, cwd?, env?, user?, pty?: {cols, rows}, stdin?` | `{id, pid}`: `pid` is the program's. `cwd`, `env` and `user` are as for `exec.run`. Without `stdin` (and without a pty) stdin is /dev/null |
 | `process.read` | `id, stream, offset, maxBytes?, waitMs?` | `{data, nextOffset, dropped, exited}`: `stream` is `stdout` or `stderr`, or `pty`; at most 512 KiB a call (more is `limit`) |
 | `process.write` | `id, data?, close?` | `{}`: to stdin, or the terminal; `close` closes stdin after the data |
-| `process.signal` | `id, signal` | `{}`: `TERM`, `INT`, `KILL` or `HUP`, to the program's process group; to a process that has ended it does nothing |
+| `process.signal` | `id, signal` | `{}`: `TERM`, `INT`, `KILL` or `HUP`, to the program's process group, except `INT` with a pty (below); to a process that has ended it does nothing |
 | `process.resize` | `id, cols, rows` | `{}`: the terminal's new size; the program gets SIGWINCH |
 | `process.list` | `from?` | `{processes, truncated, next}`: `processes` are `{id, pid, argv, argvClipped, pty, running, exitCode, signal, startedAt, endedAt}` in start order, times in milliseconds since the epoch; at most 768 KiB a reply: when `truncated`, list again with `from` set to `next`. Pages follow start order, not places in the table, so a process dropped between two pages makes the next skip none |
 | `process.wait` | `id, timeoutMs` | `{running, exitCode, signal}`: waits up to `timeoutMs` (0 to a day) for the end; `running` is true on timeout |
@@ -137,6 +137,14 @@ Its whole tree ends when the program ends or is signalled to its end. Ids are `p
 - With `pty`, stdout and stderr are one `pty` stream, and the program runs in a session of its own with the terminal
   as its controlling terminal (setsid and TIOCSCTTY in the guard). A terminal has no stdin to close: write `"\x04"`
   for the end of input, or signal `HUP`.
+- `INT` to a process with a pty is ^C: it goes to the terminal's foreground process group, as the terminal driver
+  sends it, so it ends the job a shell runs in the foreground and the shell reads on. The daemon reads that group on
+  the terminal it holds (TIOCGPGRP) and has the guard signal it only when it is in the program's own session (and so
+  under the guard); a terminal the program handed to another session is refused as `denied`, and nothing is
+  signalled. The group can end between that check and the signal, and its id go to a group in another session, so the
+  guard checks again right before it signals: a group with no process left in the program's session is not signalled,
+  and the reply says `INT` was not sent: `{note}`. A terminal with no foreground group left (the program let go of it, or is ending) has `INT` go to the
+  program's group, and the reply says so: `{note}`. `TERM`, `KILL` and `HUP` always go to the program's group.
 - Starts take turns. A `process.start` cancelled while it waits for its turn, or before its program runs, is `aborted`,
   and nothing it started is left.
 - Writes to one process take turns. A write waits at most 10 s, its turn included, for the program to read; the rest is
@@ -509,9 +517,10 @@ const made = await modal.create({ image: "debian:bookworm-slim", lifetimeMs: 600
 (apps, images, sandboxes and five methods of a sandbox). It has not yet run against real Modal: every test uses a fake
 of that slice, and the live conformance file waits for a key (below).
 
-- **Capabilities.** Kind `linux`, daemon `pid1`, groups `exec`, `files` and `processes`, and `maxLifetimeMs` the
-  instance's cap (24 hours, or less with the `maxLifetimeMs` option). Daemon `pid1` because init is the sandbox's main
-  process and its exit ends the computer (next item); no `extend` or `stream`.
+- **Capabilities.** Kind `linux`, daemon `pid1`, groups `exec`, `files` and `processes`, `maxLifetimeMs` the
+  instance's cap (24 hours, or less with the `maxLifetimeMs` option), and user `uid` only, never `root` (below). Daemon
+  `pid1` because init is the sandbox's main process and its exit ends the computer (next item); no `extend` or
+  `stream`.
 - **The daemon is uploaded at create.** The sandbox's command is a small POSIX sh entrypoint (BusyBox and coreutils
   alike): it waits for `/opt/agentrun/computerd` to be there and executable, then `exec`s `computerd init --deadline
   <iso> --user <uid:gid>` with `HOME=/work`. Modal runs the command as the sandbox's main process and finishes the
@@ -546,12 +555,27 @@ of that slice, and the live conformance file waits for a key (below).
   its daemon.
 - **The daemon becomes the computer's user.** Modal containers always run as root and ignore an image's `USER`, so
   `--user` is how a Modal computer gets the non-root default the protocol asks for (`1000:1000`, or the `user` option),
-  or root when the spec asks for `"0"`. Either way init leaves itself and every program no capability in any set (see
-  Init, above): Modal starts the container with every one, and a live run read `CapEff` `000001ffffffffff` from a root
-  computer before the daemon dropped them itself.
+  or the uid its spec asks for. Init leaves itself and every program no capability in any set (see Init, above): Modal
+  starts the container with every one, and a live run read `CapEff` `000001ffffffffff` from a root computer before the
+  daemon dropped them itself.
+- **A Modal computer never runs as root.** `check()` and `create()` refuse a spec whose `user` is root (`"0"`,
+  `"0:<gid>"`, `"root"`, `"root:<gid>"`) in words, before any Modal call, and `connect`, `attach` and `network`
+  refuse a computer whose spec tag records root before they run anything in it. Every connection is Modal's own exec
+  of `/opt/agentrun/computerd stdio`, outside the daemon, with Modal's root capabilities. A computer's user without
+  root cannot touch that path: after the upload `/opt/agentrun/computerd` is `0:0 755` (the part file is `chmod
+  0755` by the root upload, then renamed into place), `/opt/agentrun` is made by the root upload's `mkdir -p`, `0:0
+  755`, and `/` and `/opt` are the image's, `0:0 755` in Debian and Alpine; with `daemonImage`, `COPY --from` makes
+  `/opt/agentrun` and the daemon owned by root (COPY's default; the daemon keeps its mode from the daemon image), not
+  yet read back on Modal. Root with no capability still owns every one of them, so it could rename another program over
+  the daemon and the next connection would run it with Modal's capabilities; no file mode closes that for the owner
+  of every directory above the path. The Docker-gated `modal-commands` test shows both sides: uid 1000 cannot write
+  the daemon, `/opt/agentrun`, `/opt` or `/`; uid 0 with `CapEff` 0 replaces the daemon, and the next exec of the
+  bridge runs the replacement with the container's capabilities.
 - **The stream** is `computerd stdio` through `sandbox.exec([...], { mode: "binary" })`: its stdin and stdout are the
   `DaemonClient`'s stream. Modal has no kill for an exec, so `close()` ends the bridge's stdin and waits up to 5 s for
-  it to exit.
+  it to exit. One deadline, `helloMs`, covers the exec's start (at most `callMs` of it) and the hello after it, so a
+  connection fails at `helloMs` in all. An exec given up on (past its bound, or on the caller's abort) goes on at
+  Modal; a bridge that lands after that has its stdin closed as it lands, so it ends.
 - **Lifetime is Modal's.** Every sandbox's `timeoutMs` is its lifetime, rounded up to whole seconds, so Modal ends it
   then whatever runs in it. The longest is 24 hours, or less with the `maxLifetimeMs` option, declared as
   `capabilities().maxLifetimeMs`; `check` refuses a longer one with `checkLifetime`, the rule every provider shares. The daemon's deadline ends it first. `sweep` refuses a Modal provider.
@@ -589,7 +613,7 @@ of that slice, and the live conformance file waits for a key (below).
   terminate is a sandbox's only end, and Modal has no stopped state. `release`, `connect` and
   `network` act only on a sandbox whose tags name it as this provider's, with the ref's name.
 - **Every call is bounded** (`timeouts`: create 10 min, which covers the layer's build and scheduling; the upload 5
-  min; other calls 60 s; hello and the probe 30 s; a whole list 120 s; release's wait 120 s) and takes the caller's
+  min; other calls 60 s; a connection, from the bridge's exec to hello, and the probe 30 s; a whole list 120 s; release's wait 120 s) and takes the caller's
   signal. A create that gives up has its
   sandbox terminated if one lands later. A create that refuses its sandbox (drift, an abort, a failed upload)
   terminates it and waits as release does, within `releaseMs`, so nothing is left listed when it returns. The terminate
@@ -692,12 +716,14 @@ AGENTRUN_COMPUTER_LIVE_MODAL=1 npm run test:modal -w @parcha/agentrun-computer
 node packages/computer/dist/conformance/modal-sweep.js --after /tmp/modal-before.json
 ```
 
-`--before` records the id of every sandbox in the app carrying `agentrun.computer=1` (`sandboxes.list({ appId, tags
-})`, which lists running sandboxes only, so a finished one needs no sweep). `--after` terminates every such sandbox
-not in that file, reads each back through `sandboxes.fromId` and `poll()` until it reports an exit code or Modal no
+`--before` records the app, the server (`COMPUTER_MODAL_SERVER_URL`, else the SDK's default) and the id of every
+sandbox in the app carrying `agentrun.computer=1` (`sandboxes.list({ appId, tags })`, which lists running sandboxes
+only, so a finished one needs no sweep). `--after` refuses, exit 2, before it lists anything, a file whose app or
+server is not the one the environment names now, or that names none: every computer of another app would read as
+new. Otherwise it terminates every such sandbox not in that file, reads each back through `sandboxes.fromId` and `poll()` until it reports an exit code or Modal no
 longer knows it (up to 60 s each), and prints one line, `{"swept":n,"gone":m,"stillThere":[ids]}`. It exits 0 when
-every swept sandbox has finished, 1 when one still runs, and 2 on a usage error, an unreadable before file, a
-missing token or app, or a listing Modal refused, having terminated nothing. A sandbox in the before file is never
+every swept sandbox has finished, 1 when one still runs, and 2 on a usage error, an unreadable before file or one of
+another app or server, a missing token or app, or a listing Modal refused, having terminated nothing. A sandbox in the before file is never
 named by any call.
 
 ## Daytona
@@ -1026,7 +1052,7 @@ full lifetime  extend                                       - 1
 optional screen screenshot-size                              - 1
   - screen.screenshot-size: the provider does not declare screen
 ...
-core PASS 53/53 · 9 optional cases skipped, not declared · full 5/10 · network:allow screen stream input.pointer input.keys input.touch apps.install apps apps.ui_tree extend not declared
+core PASS 54/54 · 9 optional cases skipped, not declared · full 5/10 · network:allow screen stream input.pointer input.keys input.touch apps.install apps apps.ui_tree extend not declared
 ```
 
 A module path is resolved from the directory npm was run in. It exits 0 when Core passes, 1 when it fails, 2 on a
@@ -1036,7 +1062,7 @@ undeclared? }], core, undeclared, cleanup }`). A failure is listed under its lin
 
 `--only` that leaves any Core case out is a partial run: `core` is `"partial"` when every case that ran passed (a
 skipped Core case is not a pass) and nothing was left behind, else `"fail"`; `coreNotRun` names the Core cases that did
-not run, the text report lists them on a `core not run` line, and the verdict reads `core PARTIAL 11/11 · 51 Core cases
+not run, the text report lists them on a `core not run` line, and the verdict reads `core PARTIAL 11/11 · 52 Core cases
 not run` (on Docker, `--only health,provider`), never PASS. A partial run exits 3, so a script that checks for 0 never takes a subset for a Core pass. An
 `--only` that names every Core case is a whole run, and can pass.
 
