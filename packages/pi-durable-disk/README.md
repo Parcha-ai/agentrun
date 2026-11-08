@@ -196,10 +196,18 @@ interface DoorHook {
   /** Resolves when the input is TAKEN, not when the turn ends; the turn runs after, reported through ctx.emit and the conversation's entries. */
   submit(input: { requestId: string; content: UserInput; whenBusy: "steer" | "followUp" | "reject" }, ctx: DoorContext): Promise<{ accepted: true } | { accepted: false; reason: "busy" }>;
   abort(ctx: DoorContext): Promise<"aborted" | "idle">;
+  /** Called once as the instance stops (a drain, a park, a release, a fence), busy or idle: on a drain after the abort, on a
+   *  fence alongside the kill, bounded by the abort's bound. What the hook runs outside any turn stops here. It never fails a stop. */
+  close(): Promise<void>;
   busy(): boolean;
+  /** Its harness's id, named in the door's log lines (a close that fails or overruns its bound). */
+  readonly harness: string;
 }
 type DoorContext = { run: DurableRun; signal: AbortSignal; emit(event: { type: "run_start" } | { type: "run_end" }): void; adopt(pid: number): void };
 ```
+
+A hook's `close()` that throws, rejects or overruns the abort's bound is logged through `serveRun`'s optional `log`
+(`"door close failed"` / `"door close timed out"`, with the hook's `harness` and the error); the run CLI passes its own log.
 
 A submit with `answers: false` and `asks` (tool names) may not answer a question the conversation waits on: pi's root
 refuses it with 409 `WAITING` when its last model message is the result of a tool in `asks`, and both pi and a hook admit
