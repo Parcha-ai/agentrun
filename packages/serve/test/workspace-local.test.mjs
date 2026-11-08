@@ -10,7 +10,7 @@ import { after, test } from "node:test";
 import { runDirIn } from "@parcha/pi-durable-agent";
 import { learningRepo } from "../dist/learning.js";
 import { ID } from "../dist/validate.js";
-import { agentLearningFolder, localWorkspace, relativePath, relativeSegments, runFolder } from "../dist/workspace/index.js";
+import { agentLearningFolder, EXEC_OUTPUT_MAX, localWorkspace, relativePath, relativeSegments, runFolder } from "../dist/workspace/index.js";
 import { suite } from "./workspace-conformance.mjs";
 
 const SHIM = new URL("../../pi-durable-disk/test/fixtures/fsync-snapshot/shim.c", import.meta.url).pathname;
@@ -99,6 +99,14 @@ test("local: a root that is not there is UNAVAILABLE; attach is REFUSED until th
   await refused(gone.exec(["true"], { env: {}, timeoutMs: 1_000 }), "UNAVAILABLE");
   const { root } = scratch();
   await assert.rejects(localWorkspace(root).attach({}), (error) => error.code === "REFUSED" && /computer mount/.test(error.message));
+});
+
+test("local: exec's default output cap keeps 16 MiB whole (a learning seed's git cat-file --batch)", async () => {
+  const { root } = scratch();
+  const out = await localWorkspace(root).exec(["head", "-c", String(16 * 1024 * 1024), "/dev/zero"], { env: { PATH: "/usr/bin:/bin" }, timeoutMs: 30_000 });
+  assert.equal(out.stdout.length, 16 * 1024 * 1024);
+  assert.equal(out.truncated, false);
+  assert.equal(EXEC_OUTPUT_MAX, 16 * 1024 * 1024);
 });
 
 test("local: a read past READ_MAX is TOO_LARGE", async () => {

@@ -98,7 +98,7 @@ export const GREP_FILE_MAX = 8 * 1024 * 1024;
 /** The most characters of one matching line grep returns. */
 export const GREP_LINE_MAX = 500;
 /** exec's default cap on stdout, and on stderr, each. */
-export const EXEC_OUTPUT_MAX = 10 * 1024 * 1024;
+export const EXEC_OUTPUT_MAX = 16 * 1024 * 1024;
 
 /** A run's folder, or an agent's learning folder: every path is relative to its root. */
 export interface Workspace {
@@ -107,7 +107,9 @@ export interface Workspace {
   /** File `path` replaced by `data` (a string is UTF-8), atomically and durably; its parent directories made. An
    *  existing file keeps its mode. */
   write(path: string, data: Uint8Array | string): Promise<void>;
-  /** `data` added at the end of file `path`, durably; the file and its parents made when absent. */
+  /** `data` added at the end of file `path`, durably; the file and its parents made when absent. A backend may split
+   *  a large append into several (a disk API that takes a bounded size per call), so a reader during it can see part
+   *  of `data` at the end; once it returns, all of it is there, in order. */
   append(path: string, data: Uint8Array | string): Promise<void>;
   /** The files and directories in directory `dir` ("" or "." for the root), sorted by name. */
   list(dir: string): Promise<Entry[]>;
