@@ -13,7 +13,7 @@ import {
   DEFAULT_DOCKER_IMAGE,
   type MountReadBack,
   type MountSpec,
-  providerFromEnv,
+  providerFor,
   readBackOf,
   type Result,
   runLabels,
@@ -63,7 +63,7 @@ export function dockerSpec(options: DockerComputerOptions, mount: MountSpec): Co
 export async function dockerComputer(
   workspace: Workspace,
   options: DockerComputerOptions,
-  makeProvider: () => Promise<ComputerProvider> = () => providerFromEnv("docker"),
+  makeProvider: () => Promise<ComputerProvider> = () => providerFor("docker", {}),
 ): Promise<RunComputerHandle> {
   const provider = await makeProvider();
   const spec = dockerSpec(options, await workspace.mountSpec());
