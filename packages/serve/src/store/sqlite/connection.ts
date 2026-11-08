@@ -77,6 +77,11 @@ export class Connection implements SqliteDatabase {
     worker.unref();
   }
 
+  /** The worker thread under `connection`: for tests that play a worker crash. */
+  static workerOf(connection: Connection): Worker {
+    return connection.#worker;
+  }
+
   /** Starts the worker and opens `file` in it; `owner` takes the store's owner lock too (StoreOwned when another holds it). */
   static async open(file: string, { busyTimeoutMs = 10_000, owner = false }: { busyTimeoutMs?: number; owner?: boolean } = {}): Promise<Connection> {
     const worker = new Worker(new URL("./worker.js", import.meta.url));

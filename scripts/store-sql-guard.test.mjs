@@ -7,11 +7,10 @@ import { existsSync, readdirSync, readFileSync, statSync } from "node:fs";
 import { join, relative } from "node:path";
 import { fileURLToPath } from "node:url";
 import { test } from "node:test";
+import { driversIn, sqlIn } from "./store-guard.mjs";
 
 const ROOT = fileURLToPath(new URL("..", import.meta.url));
 const STORE = "packages/serve/src/store/";
-/** SQL as a statement, not as a word in prose: a keyword with what makes it a statement after it. */
-const SQL = /\bPRAGMA\b|\bSELECT\b[^'"`]{0,80}\bFROM\b|\bINSERT (?:OR \w+ )?INTO\b|\bUPDATE [a-z_]+ SET\b|\bDELETE FROM\b|\bCREATE (?:TABLE|INDEX|UNIQUE INDEX)\b/;
 /** The files outside the store that held SQL when the store landed. Each goes at the cutover. */
 const TODAY = [
   "packages/pi-durable-agent/src/agent-store.ts",
@@ -82,7 +81,44 @@ function sources(dir) {
 }
 
 const roots = [...readdirSync(join(ROOT, "packages")).map((name) => join(ROOT, "packages", name, "src")), ...(existsSync(join(ROOT, "apps")) ? readdirSync(join(ROOT, "apps")).map((name) => join(ROOT, "apps", name, "src")) : [])];
-const withSql = roots.flatMap(sources).filter((file) => SQL.test(readFileSync(join(ROOT, file), "utf8")));
+const withSql = roots.flatMap(sources).filter((file) => sqlIn(readFileSync(join(ROOT, file), "utf8")));
+
+// Each form of SQL the guard must see in a source file's strings, whatever its case, spacing or quoting.
+const SQL_FORMS = {
+  "lowercase": `const q = "select id from runs";`,
+  "a template-literal table name": "const q = `UPDATE ${T.runs} SET state = ?`;",
+  "a quoted table name": `const q = 'UPDATE "runs" SET state = ?';`,
+  "a statement over two lines": "const q = `UPDATE runs\n  SET state = ?`;",
+  "two spaces": `const q = "INSERT  INTO runs (id) VALUES (?)";`,
+  "REPLACE INTO": `const q = "REPLACE INTO runs (id) VALUES (?)";`,
+  "ALTER TABLE": `const q = "ALTER TABLE runs ADD COLUMN x TEXT";`,
+  "DROP TABLE": `const q = "DROP TABLE runs";`,
+  "a quote before FROM": `const q = "SELECT json_extract(body, '$.a') FROM runs";`,
+};
+for (const [form, source] of Object.entries(SQL_FORMS)) {
+  test(`the guard sees SQL written with ${form}`, () => {
+    assert.equal(sqlIn(source), true, source);
+  });
+}
+
+test("the guard reads strings, not comments: prose that says select or update in a comment is no SQL", () => {
+  assert.equal(sqlIn("// select a model from the list, then update the run's settings\nconst x = 1;"), false);
+});
+
+// Each way a file can take a SQLite driver, which only the store may.
+const DRIVER_FORMS = {
+  "node:sqlite": [`import { DatabaseSync } from "node:sqlite";`, "node:sqlite"],
+  "better-sqlite3": [`import Database from "better-sqlite3";`, "better-sqlite3"],
+  "chord's sqlite": [`import { openNodeSqliteDatabase } from "@earendil-works/chord/sqlite";`, "@earendil-works/chord/sqlite"],
+  "pi's SqliteStorage": [`import { SqliteStorage } from "@earendil-works/pi-durable";`, "@earendil-works/pi-durable SqliteStorage"],
+  "a dynamic import": [`const { DatabaseSync } = await import("node:sqlite");`, "node:sqlite"],
+  "a require": [`const Database = require("better-sqlite3");`, "better-sqlite3"],
+};
+for (const [form, [source, driver]] of Object.entries(DRIVER_FORMS)) {
+  test(`the guard sees a SQLite driver taken by ${form}`, () => {
+    assert.deepEqual(driversIn(source), [driver], source);
+  });
+}
 
 test("the store holds the SQL: its SQLite adapter and its schema", () => {
   const inStore = withSql.filter((file) => file.startsWith(STORE));
@@ -96,6 +132,20 @@ test("no SQL or PRAGMA outside the store, but for today's files on the list", ()
 
 test("the list only shrinks: a listed file with no SQL left is taken off it", () => {
   assert.deepEqual(TODAY.filter((file) => !withSql.includes(file)), [], "these hold no SQL now: take them off TODAY");
+});
+
+const withDriver = roots.flatMap(sources).filter((file) => driversIn(readFileSync(join(ROOT, file), "utf8")).length > 0);
+/** The files outside the store that took a SQLite driver when the guard began reading imports. Each goes at the cutover;
+ *  the list only shrinks. */
+const TODAY_DRIVER = [];
+
+test("no SQLite driver taken outside the store, but for today's files on the list", () => {
+  const outside = withDriver.filter((file) => !file.startsWith(STORE));
+  assert.deepEqual(outside.filter((file) => !TODAY_DRIVER.includes(file)), [], "a SQLite driver taken outside packages/serve/src/store/: go through the Store interface");
+});
+
+test("the driver list only shrinks: a listed file that takes no driver is taken off it", () => {
+  assert.deepEqual(TODAY_DRIVER.filter((file) => !withDriver.includes(file)), [], "these take no driver now: take them off TODAY_DRIVER");
 });
 
 const withFile = roots.flatMap(sources).filter((file) => SQLITE_FILE.test(readFileSync(join(ROOT, file), "utf8")));

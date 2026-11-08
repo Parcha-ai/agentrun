@@ -68,6 +68,22 @@ test("every other call waits for an open transaction, and its handle takes nothi
   await assert.rejects(handle.run("INSERT INTO notes (text) VALUES (?)", "late"), /transaction is over/);
 });
 
+test("a worker that exits leaves every later call rejected in words within 2 s, and close() resolves within 2 s, never hanging", async (t) => {
+  // Its own connection, closed by the test itself under the same bound: no cleanup that could wait on a dead worker.
+  const dir = mkdtempSync(join(tmpdir(), "store-connection-lost-"));
+  t.after(() => rmSync(dir, { recursive: true, force: true }));
+  const db = await Connection.open(join(dir, "c.sqlite"));
+  await db.exec("CREATE TABLE notes (id INTEGER PRIMARY KEY, text TEXT NOT NULL)");
+  await Connection.workerOf(db).terminate();
+  /** `promise`'s outcome, or "still waiting after 2 s". */
+  const within2s = (promise) => Promise.race([promise.then(() => "resolved", (error) => error), new Promise((resolve) => setTimeout(() => resolve("still waiting after 2 s"), 2_000))]);
+  for (const [name, call] of [["a read", () => db.get("SELECT 1 AS one")], ["a write", () => db.run("INSERT INTO notes (text) VALUES (?)", "late")], ["a transaction", () => db.transaction(async (tx) => tx.run("INSERT INTO notes (text) VALUES (?)", "late"))]]) {
+    const outcome = await within2s(call());
+    assert.ok(outcome instanceof Error && outcome.name === "StoreWorkerLost" && /the store's worker (exited|failed)/.test(outcome.message), `${name} rejected within 2 s with StoreWorkerLost: ${String(outcome)}`);
+  }
+  assert.equal(await within2s(db.close()), "resolved", "close() resolved within 2 s");
+});
+
 test("a commit that fails (a deferred foreign key) is rolled back, and the next write goes", async (t) => {
   const db = await connected(t);
   await db.exec("CREATE TABLE parent (id INTEGER PRIMARY KEY); CREATE TABLE child (id INTEGER PRIMARY KEY, parent_id INTEGER NOT NULL REFERENCES parent (id))");

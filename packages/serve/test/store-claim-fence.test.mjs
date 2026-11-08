@@ -5,6 +5,8 @@
 import assert from "node:assert/strict";
 import { test } from "node:test";
 import { DatabaseSync } from "node:sqlite";
+import { BACKGROUND_CONTEXT } from "@earendil-works/chord/context";
+import { commitWrites } from "@earendil-works/pi-durable/testing";
 import { Fenced } from "../dist/store/store.js";
 import { queued, storeOn } from "./store-helpers.mjs";
 
@@ -18,6 +20,22 @@ function holdWriter(file, clock, ms) {
     other.close();
   }, 200);
 }
+
+test("a released claim writes nothing more: after release, its journal commit, run update, take and retry are each Fenced and the store is as the release left it", async (t) => {
+  const { store } = await storeOn(t);
+  await queued(store);
+  const command = await store.command("run-1", { kind: "raise", body: { usd: 5 } });
+  const claim = await store.claim("run-1", "runner-a", { leaseMs: 30_000 });
+  await store.release(claim, { state: "parked" });
+  const parked = await store.runs.get("run-1");
+  const journal = store.journal(claim);
+  await assert.rejects(commitWrites(journal, [{ type: "conversation", value: { id: 1 } }], BACKGROUND_CONTEXT), Fenced, "its journal's commit");
+  await assert.rejects(store.runs.update(claim, { state: "ended" }), Fenced, "its run update");
+  await assert.rejects(store.take(claim, command.id), Fenced, "its take");
+  await assert.rejects(store.retry(claim, command.id), Fenced, "its retry");
+  assert.deepEqual(await store.runs.get("run-1"), parked, "the run is as the release left it: parked, no runner");
+  assert.deepEqual((await store.commands("run-1", 0)).map((c) => [c.takenAt, c.tries]), [[null, 0]], "the command untaken, no try counted");
+});
 
 test("a claim and a renew that wait for the writer lock run their lease from when they hold it, never come back expired", async (t) => {
   const { store, clock, file } = await storeOn(t);
