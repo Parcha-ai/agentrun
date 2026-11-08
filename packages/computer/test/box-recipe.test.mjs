@@ -59,6 +59,14 @@ test("no sudo: the image installs none and has no sudoers file, its user is root
   assert.ok(DOCKERFILE.includes("! command -v sudo >/dev/null 2>&1 || { echo \"the image has sudo\" >&2; exit 1; };"), "the build fails if a base brings sudo");
   assert.ok(DOCKERFILE.includes("[ ! -e /etc/sudoers ] && [ ! -e /etc/sudoers.d ] || { echo \"the image has a sudoers file\" >&2; exit 1; };"), "and if a base brings sudoers");
   assert.ok(!HELPER.includes("NOPASSWD") && !HELPER.includes("sudoers"), "the helper's words grant nothing through sudo");
+  // The E2B live run: E2B's template builder adds sudo to the base before the recipe's steps, and the guard refused the
+  // build. The recipe takes away any sudo a base brought (the package where apt has it, and every sudoers file), then
+  // the guard checks that none is left, for any provider's base.
+  const purge = DOCKERFILE.indexOf("apt-get purge -y -qq sudo");
+  const sudoers = DOCKERFILE.indexOf("rm -rf /etc/sudoers /etc/sudoers.d");
+  const guard = DOCKERFILE.indexOf("! command -v sudo >/dev/null 2>&1");
+  assert.ok(purge > 0 && sudoers > 0 && purge < guard && sudoers < guard, "sudo and sudoers are taken away before the guard checks there are none");
+  assert.ok(DOCKERFILE.includes("dpkg -s sudo >/dev/null 2>&1"), "the package is purged only where it is installed");
   assert.equal(INSTRUCTIONS.at(-1), 'CMD ["sleep", "infinity"]');
 });
 
