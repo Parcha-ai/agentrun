@@ -31,14 +31,15 @@ export interface CliIo {
 	progress?: boolean;
 	/**
 	 * Given to the module's createProvider(), createDriftedProvider() and conformanceImage(), which may ignore them; its env
-	 * is where a provider file's fromEnv() reads. A test gives a fake SDK or a shorter bound through it.
+	 * is where a conformance module reads its settings (default process.env). A provider file with no conformance module
+	 * is given them, but the env, as create()'s options. A test gives a fake SDK or a shorter bound through it.
 	 */
 	providerOptions?: { env?: ProviderEnv } & Record<string, unknown>;
 }
 
 const USAGE = `usage: npm run conformance -w @parcha/agentrun-computer -- --provider ${providerIds.join("|")}|<module.js> [--image <image>] [--only <group|case>,...] [--fixture <path>] [--json]
   --provider  a computer in the registry (${providerIds.join(", ")}), or a module path: a provider file that exports
-              fromEnv(), or a conformance module that exports createProvider() (and, for the drift case,
+              create(options), or a conformance module that exports createProvider() (and, for the drift case,
               createDriftedProvider(); for the mount cases, mountFor(kind), a fresh run folder for that mount kind)
   --image     the image every computer starts from (default the module's conformanceImage(), else debian:bookworm-slim)
   --only      run only these groups (health, exec, files, process, provider, drift, mount, screen, input, touch,
@@ -115,9 +116,10 @@ const BARE = /^[A-Za-z][A-Za-z0-9-]*$/;
 
 /**
  * The conformance module for --provider: a registry id's provider file, or the module at a path. A provider file's
- * conformance() module is run when it has one, else its fromEnv() alone, with no drifted twin.
+ * conformance() module is run when it has one, else its create() alone, given the CLI's options but the env (a provider
+ * reads no environment), with no drifted twin.
  */
-async function conformanceModule(name: string, cwd: string, env: ProviderEnv | undefined): Promise<{ label: string; module: Partial<ConformanceModule> }> {
+async function conformanceModule(name: string, cwd: string): Promise<{ label: string; module: Partial<ConformanceModule> }> {
 	let label = name;
 	let module: Record<string, unknown>;
 	if (isProviderId(name)) {
@@ -133,9 +135,17 @@ async function conformanceModule(name: string, cwd: string, env: ProviderEnv | u
 		}
 	}
 	if (typeof module.conformance === "function") return { label, module: await module.conformance() };
-	if (typeof module.createProvider !== "function" && typeof module.fromEnv === "function") {
-		const fromEnv = module.fromEnv as (env?: ProviderEnv) => ComputerProvider | Promise<ComputerProvider>;
-		return { label, module: { createProvider: () => fromEnv(env ?? process.env) } };
+	if (typeof module.createProvider !== "function" && typeof module.create === "function") {
+		const create = module.create as (options: object) => ComputerProvider | Promise<ComputerProvider>;
+		return {
+			label,
+			module: {
+				createProvider: (options: object = {}) => {
+					const { env: _env, ...rest } = options as { env?: ProviderEnv };
+					return create(rest);
+				},
+			},
+		};
 	}
 	return { label, module: module as Partial<ConformanceModule> };
 }
@@ -146,7 +156,7 @@ async function conformanceModule(name: string, cwd: string, env: ProviderEnv | u
  */
 async function load(label: string, module: Partial<ConformanceModule>, options: object): Promise<Target> {
 	const { createProvider, createDriftedProvider, conformanceImage, mountFor } = module;
-	if (typeof createProvider !== "function") throw new Usage(`${label} does not export createProvider() or fromEnv()`);
+	if (typeof createProvider !== "function") throw new Usage(`${label} does not export createProvider() or create()`);
 	const provider = (await createProvider(options)) as ComputerProvider;
 	const lacks = PROVIDER_METHODS.filter((name) => typeof provider?.[name] !== "function");
 	if (lacks.length > 0 || typeof provider.id !== "string") {
@@ -187,7 +197,7 @@ export async function main(argv: string[], io: CliIo = {}): Promise<number> {
 	const options = { ...(io.providerOptions ?? {}), onNote: (note: { computer: string; note: string }) => providerNotes.push({ computer: note.computer, note: note.note }) };
 	let target: Target;
 	try {
-		const { label, module } = await conformanceModule(args.provider, cwd, options.env);
+		const { label, module } = await conformanceModule(args.provider, cwd);
 		target = await load(label, module, options);
 	} catch (error) {
 		await write(stderr, `${(error as Error).message}\n`);

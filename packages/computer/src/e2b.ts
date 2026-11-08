@@ -218,27 +218,10 @@ export interface E2BProviderOptions {
 }
 
 /**
- * The environment fromEnv reads, by name. Never E2B_API_KEY: a host may hold another team's key under that name, and the
- * SDK reads it on its own when it is given none (index.mjs:1140, 1189-1191), so the key is always given explicitly.
+ * What create() takes: the provider's options, the SDK's Sandbox class optional (default the host's e2b package's).
+ * Not E2BCreateOptions, which is the SDK's own Sandbox.create options.
  */
-export const ENV = {
-	/** Required: the E2B API key. */
-	key: "COMPUTER_E2B_API_KEY",
-	/** E2B's domain; default e2b.app. */
-	domain: "COMPUTER_E2B_DOMAIN",
-	/** The daemon binary; default this package's dist/computerd-linux-amd64. */
-	daemon: "COMPUTER_E2B_DAEMON",
-	/** desktop (default) or linux. */
-	kind: "COMPUTER_E2B_KIND",
-	/** The cap, in ms: 3600000 (Hobby, default) up to 86400000 (Pro). */
-	maxLifetimeMs: "COMPUTER_E2B_MAX_LIFETIME_MS",
-	/** uid:gid the daemon runs as; default 2510:2510. */
-	user: "COMPUTER_E2B_USER",
-	/** 1: computers take public traffic and stream() gives a URL; refused for now (publicStream). */
-	publicStream: "COMPUTER_E2B_PUBLIC_STREAM",
-} as const;
-
-export interface E2BFromEnvOptions extends Partial<Omit<E2BProviderOptions, "apiKey" | "Sandbox">> {
+export interface E2BOptions extends Omit<E2BProviderOptions, "Sandbox"> {
 	/** The SDK's Sandbox class; imported from the host's e2b package by default. */
 	Sandbox?: E2BSandboxClass;
 }
@@ -256,47 +239,29 @@ export function connectionOptions({ apiKey, domain }: { apiKey: string; domain: 
 /**
  * The SDK takes sandboxUrl from E2B_SANDBOX_URL when it is given none (index.mjs:1152, 1183-1185), and no option can
  * clear it: it would send every envd call (the upload, commands, the bridge) there. So the provider refuses to start
- * while it is set, in process.env, which the SDK reads, or in the environment fromEnv was given.
+ * while it is set in process.env, which the SDK reads. This read is a guard and not a setting, one of the library's two
+ * touches of the environment (README, Settings); it only reads, and writes nothing.
  */
-function ambientProblem(env: Record<string, string | undefined> = {}): string | undefined {
-	if (process.env.E2B_SANDBOX_URL || env.E2B_SANDBOX_URL) {
+function ambientProblem(): string | undefined {
+	if (process.env.E2B_SANDBOX_URL) {
 		return "the E2B provider refuses to start while E2B_SANDBOX_URL is set: the SDK would send every call into a sandbox there. Unset it";
 	}
 	return undefined;
 }
 
 /**
- * An E2BProvider from COMPUTER_E2B_* alone: the key from COMPUTER_E2B_API_KEY and nowhere else, and the SDK's Sandbox
- * class from the host's e2b package unless given. Options win over the environment, but never give the key.
+ * An E2BProvider from its options alone; it reads no environment but the guard ambientProblem keeps. The key is
+ * options.apiKey and nowhere else (serve passes its E2B_API_KEY, the conformance module the key it reads), and the
+ * SDK's Sandbox class is the host's e2b package's unless given. Throws in words when an option is missing or wrong,
+ * never echoing the key.
  */
-export async function fromEnv(env: Record<string, string | undefined> = process.env, options: E2BFromEnvOptions = {}): Promise<E2BProvider> {
-	const apiKey = env[ENV.key];
-	if (apiKey === undefined || apiKey === "") throw new Error(`set ${ENV.key} to an E2B API key: the E2B provider reads it there and nowhere else, never from E2B_API_KEY`);
-	const ambient = ambientProblem(env);
+export async function create(options: E2BOptions): Promise<E2BProvider> {
+	const { apiKey, Sandbox: given, ...rest } = options ?? ({} as E2BOptions);
+	if (typeof apiKey !== "string" || apiKey === "") throw new Error("options.apiKey, the E2B API key, is required: the provider reads no environment, so the caller passes it");
+	const ambient = ambientProblem();
 	if (ambient) throw new Error(ambient);
-	const domain = options.domain ?? (env[ENV.domain] || DEFAULT_DOMAIN);
-	if (!DOMAIN.test(domain)) throw new Error(`${ENV.domain} is E2B's domain, a host name such as ${DEFAULT_DOMAIN}, not ${JSON.stringify(domain)}`);
-	const kind = options.kind ?? (env[ENV.kind] || "desktop");
-	if (kind !== "desktop" && kind !== "linux") throw new Error(`${ENV.kind} is desktop or linux, not ${kind}`);
-	let maxLifetimeMs = options.maxLifetimeMs;
-	if (maxLifetimeMs === undefined && env[ENV.maxLifetimeMs]) {
-		maxLifetimeMs = Number(env[ENV.maxLifetimeMs]);
-		if (!/^\d+$/.test(env[ENV.maxLifetimeMs] as string)) throw new Error(`${ENV.maxLifetimeMs} is a whole number of milliseconds, such as 3600000 (Hobby) or 86400000 (Pro)`);
-	}
-	const stream = env[ENV.publicStream] ?? "";
-	if (stream !== "" && stream !== "0" && stream !== "1") throw new Error(`${ENV.publicStream} is 1 or unset, not ${JSON.stringify(stream)}`);
-	const Sandbox = options.Sandbox ?? ((await import(E2B_PACKAGE)) as { Sandbox: E2BSandboxClass }).Sandbox;
-	return new E2BProvider({
-		...(env[ENV.daemon] ? { daemonPath: env[ENV.daemon] } : {}),
-		...(env[ENV.user] ? { daemonUser: env[ENV.user] } : {}),
-		...(stream === "1" ? { publicStream: true } : {}),
-		...options,
-		...(maxLifetimeMs === undefined ? {} : { maxLifetimeMs }),
-		apiKey,
-		Sandbox,
-		domain,
-		kind,
-	});
+	const Sandbox = given ?? ((await import(E2B_PACKAGE)) as { Sandbox: E2BSandboxClass }).Sandbox;
+	return new E2BProvider({ ...rest, apiKey, Sandbox });
 }
 
 /** The conformance CLI's module for E2B: its live switch, the run's 30-minute cap, its template and the drifted twin. */

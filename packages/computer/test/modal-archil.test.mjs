@@ -349,16 +349,15 @@ test("Modal attach: an Archil computer's mount is read back from inside, fuse.ar
 });
 
 test("the Modal conformance module: mountFor(\"archil\") gives a fresh run folder on the disk COMPUTER_ARCHIL_* name, read and written outside through the disk's object API", async () => {
-	const { MODAL_ENV, mountFor, settingsFromEnv } = await import("../dist/conformance/modal.js");
-	assert.equal(MODAL_ENV.archilDisk, "COMPUTER_ARCHIL_DISK");
-	assert.equal(MODAL_ENV.archilRegion, "COMPUTER_ARCHIL_REGION");
-	assert.equal(MODAL_ENV.archilToken, "COMPUTER_ARCHIL_TOKEN");
-	assert.equal(MODAL_ENV.archilApiKey, "COMPUTER_ARCHIL_API_KEY");
-	assert.equal(MODAL_ENV.archilS3Url, "COMPUTER_ARCHIL_S3_URL");
+	const { ARCHIL_ENV, MODAL_ENV, mountFor } = await import("../dist/conformance/modal.js");
+	assert.equal(ARCHIL_ENV.archilDisk, "COMPUTER_ARCHIL_DISK");
+	assert.equal(ARCHIL_ENV.archilRegion, "COMPUTER_ARCHIL_REGION");
+	assert.equal(ARCHIL_ENV.archilToken, "COMPUTER_ARCHIL_TOKEN");
+	assert.equal(ARCHIL_ENV.archilApiKey, "COMPUTER_ARCHIL_API_KEY");
+	assert.equal(ARCHIL_ENV.archilS3Url, "COMPUTER_ARCHIL_S3_URL");
+	assert.equal(Object.values(MODAL_ENV).some((name) => name.startsWith("COMPUTER_ARCHIL_")), false, "the provider's settings name no Archil setting");
 	const env = { AGENTRUN_COMPUTER_LIVE_MODAL: "1", ...ARCHIL_SETTINGS };
-	assert.equal(settingsFromEnv({}), undefined, "no disk named: no Archil run folder");
-	assert.deepEqual(settingsFromEnv(env), { disk: MOUNT.disk, region: MOUNT.region, token: TOKEN, apiKey: ARCHIL_SETTINGS.COMPUTER_ARCHIL_API_KEY, s3BaseUrl: ARCHIL_SETTINGS.COMPUTER_ARCHIL_S3_URL });
-	assert.throws(() => settingsFromEnv({ COMPUTER_ARCHIL_DISK: MOUNT.disk }), (error) => /COMPUTER_ARCHIL_REGION/.test(error.message) && /COMPUTER_ARCHIL_TOKEN/.test(error.message));
+	await assert.rejects(mountFor("archil", { env: { COMPUTER_ARCHIL_DISK: MOUNT.disk } }), (error) => /COMPUTER_ARCHIL_REGION/.test(error.message) && /COMPUTER_ARCHIL_TOKEN/.test(error.message));
 
 	assert.equal(await mountFor("bind", { env }), undefined, "a Modal computer takes no bind");
 	assert.equal(await mountFor("archil", { env: {} }), undefined, "no disk named: the case is skipped");

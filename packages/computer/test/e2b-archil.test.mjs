@@ -314,12 +314,13 @@ test("E2B attach: an Archil computer's mount is read back from inside, exclusive
 });
 
 test("the E2B conformance module: mountFor(\"archil\") gives a fresh run folder on the disk COMPUTER_ARCHIL_* name, read and written outside through the disk's object API", async () => {
-	const { E2B_ENV, mountFor, settingsFromEnv } = await import("../dist/conformance/e2b.js");
-	assert.equal(E2B_ENV.archilDisk, "COMPUTER_ARCHIL_DISK");
-	assert.equal(E2B_ENV.archilRegion, "COMPUTER_ARCHIL_REGION");
-	assert.equal(E2B_ENV.archilToken, "COMPUTER_ARCHIL_TOKEN");
-	assert.equal(E2B_ENV.archilApiKey, "COMPUTER_ARCHIL_API_KEY");
-	assert.equal(E2B_ENV.archilS3Url, "COMPUTER_ARCHIL_S3_URL");
+	const { ARCHIL_ENV, E2B_ENV, mountFor } = await import("../dist/conformance/e2b.js");
+	assert.equal(ARCHIL_ENV.archilDisk, "COMPUTER_ARCHIL_DISK");
+	assert.equal(ARCHIL_ENV.archilRegion, "COMPUTER_ARCHIL_REGION");
+	assert.equal(ARCHIL_ENV.archilToken, "COMPUTER_ARCHIL_TOKEN");
+	assert.equal(ARCHIL_ENV.archilApiKey, "COMPUTER_ARCHIL_API_KEY");
+	assert.equal(ARCHIL_ENV.archilS3Url, "COMPUTER_ARCHIL_S3_URL");
+	assert.equal(Object.values(E2B_ENV).some((name) => name.startsWith("COMPUTER_ARCHIL_")), false, "the provider's settings name no Archil setting");
 	const settings = {
 		COMPUTER_ARCHIL_DISK: MOUNT.disk,
 		COMPUTER_ARCHIL_REGION: MOUNT.region,
@@ -328,9 +329,7 @@ test("the E2B conformance module: mountFor(\"archil\") gives a fresh run folder 
 		COMPUTER_ARCHIL_S3_URL: "https://s3.green.us-east-1.aws.prod.archil.com",
 	};
 	const env = { AGENTRUN_COMPUTER_LIVE_E2B: "1", ...settings };
-	assert.equal(settingsFromEnv({}), undefined);
-	assert.deepEqual(settingsFromEnv(env), { disk: MOUNT.disk, region: MOUNT.region, token: TOKEN, apiKey: settings.COMPUTER_ARCHIL_API_KEY, s3BaseUrl: settings.COMPUTER_ARCHIL_S3_URL });
-	assert.throws(() => settingsFromEnv({ COMPUTER_ARCHIL_TOKEN: TOKEN }), (error) => /COMPUTER_ARCHIL_DISK/.test(error.message) && !error.message.includes(TOKEN));
+	await assert.rejects(mountFor("archil", { env: { COMPUTER_ARCHIL_TOKEN: TOKEN } }), (error) => /COMPUTER_ARCHIL_DISK/.test(error.message) && !error.message.includes(TOKEN));
 	assert.equal(await mountFor("bind", { env }), undefined);
 	assert.equal(await mountFor("archil", { env: {} }), undefined);
 	await assert.rejects(mountFor("archil", { env: { ...env, AGENTRUN_COMPUTER_LIVE_E2B: undefined }, archil: { objects: fakeObjects() } }), /AGENTRUN_COMPUTER_LIVE_E2B/);
