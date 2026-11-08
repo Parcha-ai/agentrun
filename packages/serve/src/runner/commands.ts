@@ -1,9 +1,11 @@
 // Commands as rows (design: "Commands from the console are rows, not files or doors"). The server inserts one through
 // sendCommand; a runner reads them with store.commands(run, after) and hands each to the run's loop. A command's
 // taken_at is set once: by the loop's journal commit that applies it, or by the runner's refusal with a reason.
+import { originOf } from "@parcha/pi-durable-agent/timeline";
 import type { Command } from "./loop-contract.js";
 
-export const COMMAND_KINDS: ReadonlySet<string> = new Set(["stop", "steer", "approve", "deny", "raise"]);
+/** stop and cancel both end the run, stopped: a cancel's end says it was cancelled, as main's cancel ends a run for good. */
+export const COMMAND_KINDS: ReadonlySet<string> = new Set(["stop", "cancel", "steer", "approve", "deny", "raise"]);
 
 export interface CommandInput {
   readonly kind: string;
@@ -21,12 +23,16 @@ const text = (value: unknown): value is string => typeof value === "string" && v
 function bodyProblem(kind: string, body: Record<string, unknown>): string | undefined {
   switch (kind) {
     case "stop":
-      return body.reason === undefined || typeof body.reason === "string" ? undefined : "a stop's reason is text";
+    case "cancel":
+      return body.reason === undefined || typeof body.reason === "string" ? undefined : `a ${kind}'s reason is text`;
     case "steer":
-      return text(body.text) ? undefined : "a steer needs its text";
+      if (!text(body.text)) return "a steer needs its text";
+      // A trigger's message names who wrote it, as the Timeline shows it (pi-durable-agent's originOf): never a person's.
+      return body.origin === undefined || originOf(body.origin) !== undefined ? undefined : "a steer's origin is a message origin (a trigger's, or the server's)";
     case "approve":
     case "deny":
-      return text(body.approval) ? undefined : `${kind === "approve" ? "an approve" : "a deny"} names its approval`;
+      if (!text(body.approval)) return `${kind === "approve" ? "an approve" : "a deny"} names its approval`;
+      return body.note === undefined || typeof body.note === "string" ? undefined : `${kind === "approve" ? "an approve" : "a deny"}'s note is text`;
     case "raise":
       return typeof body.capUsd === "number" && Number.isFinite(body.capUsd) && body.capUsd > 0
         ? undefined
@@ -48,8 +54,6 @@ export async function sendCommand(store: CommandSink, runId: string, input: Comm
   return store.command(runId, { kind: input.kind, body });
 }
 
-/** The reason a runner gives for a command still untaken when its run ended. */
-export function endedReason(state: "ended" | "stopped" | "failed"): string {
-  const how = state === "ended" ? "ended" : state === "stopped" ? "was stopped" : "failed";
-  return `the run ${how} before this command was taken`;
-}
+/** The reason a command still untaken when its run ended is refused with: the store's own words (the write that makes a
+ *  run final refuses such rows itself). */
+export { endedReason } from "../store/store.js";
