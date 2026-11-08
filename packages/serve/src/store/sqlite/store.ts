@@ -2,6 +2,8 @@
 // The only code with SQL in it, besides the schema and the run patch. The file is on local disk, never on Archil: one
 // connection per process, and SQLite's one writer lock serializes the server's and every runner's commits. A unit of work
 // with more than one statement is one transaction (connection.transaction, BEGIN IMMEDIATE): all of it or none of it.
+import { existsSync, mkdirSync } from "node:fs";
+import { join } from "node:path";
 import { RunStorage } from "../journal/storage.js";
 import { DDL, SCHEMA_VERSION } from "../schema.js";
 import {
@@ -16,9 +18,15 @@ import { applyRunPatch, RUN_COLUMNS, runOf, type RunRecord } from "./run-patch.j
 /** A claim's length when the caller names none. */
 export const DEFAULT_LEASE_MS = 30_000;
 
-export type SqliteStoreOptions = {
-  /** The store's file. */
-  file: string;
+/** The store's file in its data directory: only the store names it. */
+export const STORE_FILE = "store.sqlite";
+
+export type SqliteStoreOptions = (
+  /** The data directory (the server's and every runner's): the store's file is STORE_FILE in it. */
+  | { dataDir: string; file?: never }
+  /** A store file named outright: the store's own tests. */
+  | { file: string; dataDir?: never }
+) & {
   /** Who opens it (StoreRole): the server sets the schema up and holds the owner lock; a runner only checks the version. */
   role?: StoreRole;
   /** The store's clock, in ms (Date.now): claimed_until and every row's time. */
@@ -60,19 +68,30 @@ async function versionOf(db: Connection): Promise<number | null> {
   return (await db.get<{ schema_version: number }>("SELECT schema_version FROM store_meta WHERE singleton = 1"))?.schema_version ?? null;
 }
 
-/** Opens the store at `file`. As the server (the default): takes the owner lock (StoreOwned when another server holds it)
- *  and, on a store with no schema yet, sets schema SCHEMA_VERSION up in one durable commit. As a runner: sets nothing up.
- *  Either refuses a schema version this build does not know (SchemaVersionUnknown); a runner refuses no schema too. */
+/** Opens the store in `dataDir` (its file is STORE_FILE there), or at `file` (the store's own tests). As the server (the
+ *  default): makes the data directory, takes the owner lock (StoreOwned when another server holds it) and, on a store with
+ *  no schema yet, sets schema SCHEMA_VERSION up in one durable commit. As a runner: makes and sets up nothing. Either
+ *  refuses a schema version this build does not know (SchemaVersionUnknown); a runner refuses no schema (or no data
+ *  directory) too. */
 export async function openSqliteStore(options: SqliteStoreOptions): Promise<Store> {
   const role = options.role ?? "server";
-  const connection = await Connection.open(options.file, { owner: role === "server", ...(options.busyTimeoutMs === undefined ? {} : { busyTimeoutMs: options.busyTimeoutMs }) });
+  let file: string;
+  if (options.dataDir !== undefined) {
+    // The server makes its data directory; a runner opens only one that is there.
+    if (role === "server") mkdirSync(options.dataDir, { recursive: true });
+    else if (!existsSync(options.dataDir)) throw new SchemaVersionUnknown(join(options.dataDir, STORE_FILE), null, SCHEMA_VERSION);
+    file = join(options.dataDir, STORE_FILE);
+  } else {
+    file = options.file;
+  }
+  const connection = await Connection.open(file, { owner: role === "server", ...(options.busyTimeoutMs === undefined ? {} : { busyTimeoutMs: options.busyTimeoutMs }) });
   try {
     let found = await versionOf(connection);
     if (found === null && role === "server") {
       await connection.write([...DDL.map((sql) => ({ sql })), { sql: "INSERT INTO store_meta (singleton, schema_version) VALUES (1, ?) ON CONFLICT (singleton) DO NOTHING", params: [SCHEMA_VERSION] }], { full: true });
       found = await versionOf(connection);
     }
-    if (found !== SCHEMA_VERSION) throw new SchemaVersionUnknown(options.file, found, SCHEMA_VERSION);
+    if (found !== SCHEMA_VERSION) throw new SchemaVersionUnknown(file, found, SCHEMA_VERSION);
   } catch (error) {
     await connection.close().catch(() => undefined);
     throw error;
