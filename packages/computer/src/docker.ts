@@ -170,9 +170,12 @@ export class DockerProvider implements ComputerProvider {
 		};
 	}
 
-	/** The spec's refusals, and the host's once create, attach or host() has read it. */
+	/** The spec's refusals, and the host's once create, attach or host() has read it: its problems, and a bind on a host
+	 *  that remaps user ids. */
 	check(spec: ComputerSpec): Refusal[] {
-		return [...this.#checkSpec(spec), ...(this.#host?.problems ?? []).map((message) => ({ field: "host", message }))];
+		const host = this.#host;
+		const remapped = host?.remap !== undefined && spec?.mount?.kind === "bind" ? [{ field: "mount", message: remapWords(host.remap, String(spec.mount.path)) }] : [];
+		return [...this.#checkSpec(spec), ...remapped, ...(host?.problems ?? []).map((message) => ({ field: "host", message }))];
 	}
 
 	#checkSpec(spec: ComputerSpec): Refusal[] {
@@ -218,12 +221,7 @@ export class DockerProvider implements ComputerProvider {
 		const refusals = this.check(spec);
 		if (refusals.length > 0) return fail("refused", refusals.map(({ field, message }) => `${field}: ${message}`).join("; "));
 		const user = userOf(spec.user) ?? this.#user;
-		// The run folder is bound as it is: the computer's user, with no capabilities, must be able to write it.
 		const bound = spec.mount?.kind === "bind" ? spec.mount.path : undefined;
-		if (bound !== undefined) {
-			const unwritable = folderProblem(bound, user);
-			if (unwritable !== undefined) return fail("refused", `mount: ${unwritable}`);
-		}
 		const mode = fileMode(this.#daemonPath);
 		if (mode === undefined) {
 			return fail("not_found", `no daemon binary at ${this.#daemonPath}: run npm run build:daemon -w @parcha/agentrun-computer`);
@@ -237,6 +235,13 @@ export class DockerProvider implements ComputerProvider {
 		const host = await this.host({ signal });
 		if (!host.ok) return host;
 		if (host.value.problems.length > 0) return fail("refused", `host: ${host.value.problems.join("; ")}`);
+		if (bound !== undefined) {
+			// Under remapped ids the folder's owner on the host is not the computer's user: refuse, never guess the mapping.
+			if (host.value.remap !== undefined) return fail("refused", `mount: ${remapWords(host.value.remap, bound)}`);
+			// The run folder is bound as it is: the computer's user, with no capabilities, must be able to write it.
+			const unwritable = folderProblem(bound, user);
+			if (unwritable !== undefined) return fail("refused", `mount: ${unwritable}`);
+		}
 		if (signal?.aborted) return fail("aborted", "create was aborted before docker run");
 		const name = `computer-${randomBytes(6).toString("hex")}`;
 		const deadline = new Date(Date.now() + spec.lifetimeMs).toISOString();
@@ -629,6 +634,19 @@ function infoOf(report: DockerInspect): ComputerInfo {
 	const state = report.State?.Running === true ? "running" : "stopped";
 	const mount: MountReadBack | undefined = mountOf(report);
 	return { ref: { id: report.Id ?? "", name: nameOf(report) }, labels, deadline, state, network: networkOf(report), ...(mount === undefined ? {} : { mount }) };
+}
+
+/**
+ * Why a bind is refused on a host that remaps user ids. The computer's uid is then another uid on the host (one Docker
+ * picks from /etc/subuid), so the folder's owner and mode say nothing about whether the computer can write it; the
+ * provider does not guess the mapping, and never changes the folder.
+ */
+function remapWords(remap: "userns" | "rootless", path: string): string {
+	return (
+		`this Docker host remaps user ids (${remap === "userns" ? "userns-remap" : "rootless Docker"}), so the run folder's owner on the host is not the ` +
+		`computer's user, and the provider cannot tell whether the computer can write ${path}; it never changes the folder: ` +
+		"bind the run folder on a Docker host that does not remap ids"
+	);
 }
 
 /**

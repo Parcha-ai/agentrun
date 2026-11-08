@@ -478,11 +478,20 @@ const made = await docker.create({ image: "debian:bookworm-slim", lifetimeMs: 60
   refused by `check`.
 - **The run folder must be writable by the computer's user.** The provider binds the folder as it is and never chowns
   or chmods it: whoever makes the run folder gives it that user, the spec's `user` or the provider's (`docker.user`,
-  this process's uid:gid by default). `create` checks it before any Docker call, as the kernel will: the owner's,
-  the group's or others' bits of the folder's mode, by the user's uid and gid, must allow write and search; else it
-  refuses in words (`the run folder /data/runs/r1/work is not writable by the computer's user 1000:1000: it is owned by
-  0:0 with mode 0755; ...`). A computer's user has no capabilities, root included, so no other way in. On an SELinux
-  host the folder needs a label containers may use; the provider does not relabel it.
+  this process's uid:gid by default). `create` checks it after reading the host (`docker info`) and before
+  `docker run`, as the kernel will: the owner's, the group's or others' bits of the folder's mode, by the user's uid
+  and gid, must allow write and search; else it refuses in words (`the run folder /data/runs/r1/work is not writable
+  by the computer's user 1000:1000: it is owned by 0:0 with mode 0755; ...`). A computer's user has no capabilities,
+  root included, so no other way in. On an SELinux host the folder needs a label containers may use; the provider
+  does not relabel it.
+- **No bind on a host that remaps user ids.** Under userns-remap or rootless Docker (`docker info`'s
+  `SecurityOptions` holds `name=userns` or `name=rootless`; `host().remap`), a computer's uid is another uid on the
+  host, so the folder's owner says nothing about whether the computer can write it. The provider does not guess the
+  mapping from `/etc/subuid`: `create` with a bind on such a host is refused in words before any `docker run`
+  (`this Docker host remaps user ids (rootless Docker), so the run folder's owner on the host is not the computer's
+  user, ...`), and `check` refuses it too once the host is read. A computer with no mount is made there as before.
+  The conformance case `mount.run-folder-bind` fails on such a host, in those words: the provider declares a bind this
+  host cannot give.
 - `attach` and `list` read the mount back from `docker inspect` (`mountOf(inspected)`): a read-write bind at
   `/workspace` is `{ kind: "bind", path }`; a read-only one, a volume or two mounts there is `{ other }`, and `attach`
   refuses such a computer. The drift check (below) holds a computer to the mount it was asked for: the bind there, from
