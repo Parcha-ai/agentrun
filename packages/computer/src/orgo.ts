@@ -160,11 +160,25 @@ const PORTS_SCRIPT = [
 	"for f in /proc/net/tcp /proc/net/tcp6; do [ -r \"$f\" ] && awk 'NR > 1 && $4 == \"0A\" { n = split($2, a, \":\"); print a[n] }' \"$f\"; done | sort -u | while read -r h; do printf '%d\\n' \"0x$h\"; done",
 ].join("\n");
 /**
- * The ports Orgo's own agent is known to listen on in a computer, which its tools must never reach: provisional (VNC and
- * its websockify) until a live run's notes name them, since Orgo documents only the host's side. create reads every
- * port root listens on beside these and holds the tools to none of them either.
+ * The ports Orgo's own agent listens on in a computer, which its tools must never reach: its VNC (5999), websockify
+ * (6080) and desktop API (8080), as live run 4's notes read them (Orgo documents only the host's side). create reads
+ * every port root listens on beside these and holds the tools to none of them either.
  */
-const ORGO_AGENT_PORTS = [5900, 6080];
+const ORGO_AGENT_PORTS = [5999, 6080, 8080];
+/**
+ * Every path unix socket of Orgo's desktop made root's alone (owner root, mode 0600), but the display's own ($1) and
+ * computerd's, before any tool runs: the tools reach the X server through that one and nothing else (live run 4 found
+ * root's D-Bus buses connectable by the tool user). Prints `locked <path>` for each. Orgo's desktop runs as root, so
+ * nothing of its own loses a socket.
+ */
+const LOCKDOWN_SCRIPT = [
+	"# agentrun-computer: orgo-lockdown",
+	"x=$1",
+	"find /tmp /run /var/run /dev/shm -type s 2>/dev/null | sort -u | while read -r s; do",
+	'\tcase "$s" in "$x" | /run/agentrun/* | /run/agentrun-archil/*) continue ;; esac',
+	'\tchown 0:0 "$s" && chmod 0600 "$s" && echo "locked $s"',
+	"done",
+].join("\n");
 
 /** What the labels file holds. */
 interface LabelsFile {
@@ -453,6 +467,9 @@ export class OrgoProvider implements ComputerProvider {
 		// Every port root listens on in Orgo's own network, read before init starts in a network of its own.
 		const ports = await this.#rootPorts(ref, signal);
 		if (!ports.ok) return ports;
+		// Every path socket of Orgo's desktop root's alone but the display's own, before any tool runs.
+		const locked = await this.#lockDown(ref, socket, signal);
+		if (!locked.ok) return locked;
 		const started = await this.#channel.start(ref.id, ["sh", "-c", commands.init], { how: this.#start, timeoutMs: execMs, ...(signal ? { signal } : {}) });
 		if (!started.ok) return fail(started.error.code, `starting the daemon in ${ref.name} failed: ${started.error.message}`);
 		const opened = await this.#openWhenListening(ref, signal);
@@ -463,10 +480,22 @@ export class OrgoProvider implements ComputerProvider {
 		try {
 			const inside = await this.#checkInside(opened.value, ref.name, ports.value, signal);
 			if (!inside.ok) return inside;
-			return ok([...inside.value, `Orgo's own network listens on ${ports.value.join(", ") || "no TCP port"} (TCP, as root reads it); the tools' probe was refused at each and at ${ORGO_AGENT_PORTS.join(", ")}, on both loopbacks`]);
+			return ok([
+				...inside.value,
+				`Orgo's own network listens on ${ports.value.join(", ") || "no TCP port"} (TCP, as root reads it); the tools' probe was refused at each and at ${ORGO_AGENT_PORTS.join(", ")}, on both loopbacks`,
+				`Orgo's desktop sockets made root's alone: ${locked.value.join(", ") || "none"} (the display's own, ${socket}, left to the tools)`,
+			]);
 		} finally {
 			await opened.value.close();
 		}
+	}
+
+	/** Every path socket of Orgo's desktop made root's alone but the display's own (LOCKDOWN_SCRIPT): the paths it locked. */
+	async #lockDown(ref: ComputerRef, display: string, signal?: AbortSignal): Promise<Result<string[]>> {
+		const ran = await this.#channel.run(ref.id, ["sh", "-c", LOCKDOWN_SCRIPT, "sh", display], { timeoutMs: this.#timeouts.execMs, ...(signal ? { signal } : {}) });
+		if (!ran.ok) return ran;
+		if (ran.value.exitCode !== 0) return fail("refused", `making Orgo's desktop sockets root's alone in ${ref.name} failed (exit ${ran.value.exitCode}): ${ran.value.output.trim().slice(0, 200)}`);
+		return ok(ran.value.output.split("\n").flatMap((line) => (line.startsWith("locked ") ? [line.slice("locked ".length).trim()] : [])));
 	}
 
 	/** The TCP ports root listens on in Orgo's own network, sorted, read through the channel. */
@@ -857,7 +886,9 @@ export class OrgoProvider implements ComputerProvider {
 		const current = Date.parse(file.value.deadline);
 		const target = Date.now() + ttlMs;
 		if (Number.isNaN(most) || target > most) return fail("limit", `${new Date(target).toISOString()} is past ${file.value.maxDeadline}, the most this computer may live`);
-		if (target <= current) return ok({ deadline: new Date(current) });
+		// An extend never shortens a computer's life: one that would is refused in words, and nothing moves.
+		if (target < current) return fail("refused", `${new Date(target).toISOString()} is earlier than ${ref.name}'s deadline ${file.value.deadline}: an extend never moves it earlier; nothing moved`);
+		if (target === current) return ok({ deadline: new Date(current) });
 		const end = typeof found.value.ends_at === "string" ? Date.parse(found.value.ends_at) : Number.NaN;
 		if (!Number.isNaN(end) && end < target) {
 			const hours = Math.ceil((target - end) / HOUR);
