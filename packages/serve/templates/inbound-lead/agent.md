@@ -28,7 +28,10 @@ budget: { per_run_usd: 0.40 }
 learning: true
 triggers:
   - name: inbound-lead-webhook
-    source: { kind: webhook }
+    # Each lead is its own run (accept), never skipped while another is researched: the sender signs Standard Webhooks
+    # bodies of type lead.submitted ({"type": "lead.submitted", "data": {...the form's fields}}). At most 3 at once.
+    source: { kind: webhook, accept: [{ event: lead.submitted }] }
+    max_active_runs: 3
     target:
       kind: start_run
       input:

@@ -12,6 +12,7 @@ The server ships five template packages, none needing a sandbox: `code-review`, 
 - **`inbound-lead`**, a webhook trigger for form or CRM submissions:
   - it researches the person and the company, and scores the lead against the owner's ICP with evidence for each criterion;
   - it writes back to HubSpot only onto the contact whose email matches the lead, or posts to one Slack channel ID.
+  - each lead is its own run: the trigger takes Standard Webhooks bodies of type `lead.submitted` (`accept`), at most 3 at once, so a lead that arrives while another is researched is never skipped.
 - **`release-notes`** turns the PRs merged since the last release into user-facing notes and leaves them as a draft issue to edit. No MCP tool makes a draft release. It never publishes. With no GitHub server saved, it works from a list of PRs in the message.
 - **`code-review`** reads through the GitHub tools when it has no shell (never cloning), and reads its rules with `read`. It gains a `focus` parameter and six eval cases.
 

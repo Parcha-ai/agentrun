@@ -39,7 +39,7 @@ the owner grants a write, text the agent read could try to copy what that read r
 | `code-review` | Reviews a pull request for real bugs and posts one comment review | a run naming a PR, or a GitHub webhook trigger the owner adds | the GitHub MCP server `github` to read and post; with none, a diff in the message |
 | `kyb` | Business due diligence: identity, owners, sanctions against the lists themselves, adverse media, a verdict, every claim cited | a run naming a company | nothing; web tools only |
 | `market-monitor` | A weekly digest of what changed at the companies you watch, posted to one Slack channel or address | a weekly schedule (its `cron` and `timezone` parameters, Monday 08:00 UTC by default), or a run | optional: Slack (`slack`) or Gmail (`gmail`) MCP, to send |
-| `inbound-lead` | Researches a form or CRM lead, scores it against your ICP, writes back to HubSpot or posts to Slack | a webhook (needs the seal key), or a run | optional: HubSpot (`hubspot`) or Slack (`slack`) MCP |
+| `inbound-lead` | Researches a form or CRM lead, scores it against your ICP, writes back to HubSpot or posts to Slack | a webhook (needs the seal key): your form tool or relay signs Standard Webhooks bodies of type `lead.submitted`, each lead its own run (3 at once); or a run | optional: HubSpot (`hubspot`) or Slack (`slack`) MCP |
 | `release-notes` | Turns the merged PRs since the last release into user-facing notes, as a draft issue to edit (no MCP tool makes a draft release) | a run naming the release or tag | the GitHub MCP server `github`; with none, a list of PRs in the message |
 
 ## Eval cases
