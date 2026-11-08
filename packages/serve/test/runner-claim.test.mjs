@@ -58,6 +58,28 @@ test("the holder is killed: the other reclaims after claimed_until with epoch 2,
   dead.halted = true;
 });
 
+test("a runner that closes stops its loop where it can resume and releases the run, still running; the other claims it at once", async (t) => {
+  const store = storeDouble();
+  const faux = fauxLoops({ turns: 1_000, turnMs: 20 });
+  await store.runs.create("run-1");
+  const [a, b] = runners(t, store, faux.createLoop);
+
+  const first = await until(() => store.claims[0], "a claim");
+  const holder = first.runner === a.name ? a : b;
+  const other = holder === a ? b : a;
+  const leaseEnd = (await store.runs.get("run-1")).claimedUntil;
+  await holder.close();
+  const closedAt = Date.now();
+
+  assert.equal(faux.loops[0].stopCalls[0]?.kind, "shutdown", "the loop is stopped for a shutdown");
+  const released = await store.runs.get("run-1");
+  assert.deepEqual([released.state, released.runner, released.epoch], ["running", null, 1], "released, still running");
+  assert.match(store.ops.join(" | "), /flush \| release run-1/, "flushed, then released");
+  const second = await until(() => store.claims[1], "the other runner's claim", LEASE_MS * 10);
+  assert.deepEqual([second.runner, second.epoch], [other.name, 2]);
+  assert.ok(second.at < leaseEnd, `claimed ${second.at - closedAt} ms after the close, before the old lease would have run out`);
+});
+
 test("a run that ends is flushed and released, and never claimed again", async (t) => {
   const store = storeDouble();
   const faux = fauxLoops({ turns: 2, turnMs: 10 });
