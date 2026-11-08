@@ -397,7 +397,7 @@ describe("App, the agents' names", () => {
    *  a create adds the recorded create's agent, and a start of it answers `started` and lists it. `archivedFails`: its read
    *  of the archived agents answers 503. */
   function server({ active = [...agentsList()], archived = [] as Agent[], runs = [] as Run[], archivedFails = false } = {}) {
-    const page = (r: Run): TimelinePage => ({ run_id: r.run_id, status: r.status, state: r.state, rows: [], drop: [], reset: true, unchanged: false, final: true, has_more: false, next_after: 1 });
+    const page = (r: Run): TimelinePage => ({ cost: { usd: null, basis: "estimate", charge_state: null, cap_usd: null }, run_id: r.run_id, status: r.status, state: r.state, rows: [], drop: [], reset: true, unchanged: false, final: true, has_more: false, next_after: 1 });
     vi.stubGlobal("fetch", async (url: string, init?: RequestInit) => {
       const u = new URL(url, "http://serve.test");
       const method = init?.method ?? "GET";
