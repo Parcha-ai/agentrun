@@ -198,7 +198,7 @@ export default function reply(context, faux) {
 
 test("an image sent to a run on claude-agent or codex is read by pi's read tool as a host tool: an image read asks the calling agent for its model, which a host tool's api answers", { timeout: 180_000 }, async (t) => {
   // pi 1.5's read, on an image, reads the calling agent's model for its image limits (api.agent(), api.models).
-  const server = await served(t, { fauxHarness: FAUX_HARNESS });
+  const server = await served(t, { harnessTable: fauxTable(FAUX_HARNESS) });
   const { api } = server;
   const png = Buffer.from("iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mNkYAAAAAYAAjCB0C8AAAAASUVORK5CYII=", "base64");
   const file = (await sendFile(server, { path: "brief/pixel.png" }, png)).json.file;
