@@ -109,6 +109,20 @@ test("a take lands only in the commit that stores its effect: a commit without t
   assert.equal(await takenAt(db, 12), NOW, "and the take with it");
 });
 
+test("a take whose effect is a document change, or a document retire, is taken by the commit that stores it", async (t) => {
+  const { db, storage } = await setUp(t, "run-docs");
+  await commandRow(db, 14, "run-docs");
+  await commandRow(db, 15, "run-docs");
+  const doc = await storage.mintId();
+  await commitWrites(storage, [{ type: "document.create", record: { id: doc, kind: "test.notes", scope: { kind: "conversation", conversationId: ROOT }, history: "rewindable", fork: "asOf" }, content: { kind: "base", version: 1, value: { n: 1 } } }], context);
+  storage.stage({ take: [{ command: 14, effect: doc }] });
+  await commitWrites(storage, [{ type: "document.change", id: doc, content: { kind: "base", version: 1, value: { n: 2 } } }], context);
+  assert.equal(await takenAt(db, 14), NOW, "taken with the document's change");
+  storage.stage({ take: [{ command: 15, effect: doc }] });
+  await commitWrites(storage, [{ type: "document.retire", id: doc }], context);
+  assert.equal(await takenAt(db, 15), NOW, "taken with the document's retire");
+});
+
 test("a later stage keeps the takes still waiting for their effects", async (t) => {
   const { db, storage } = await setUp(t, "run-restage");
   await commandRow(db, 13, "run-restage");

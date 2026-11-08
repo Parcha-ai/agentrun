@@ -27,6 +27,23 @@ test("two store.journal(claim) calls on one claim mint no id twice, and a task c
   assert.deepEqual(marks, ["a", "b"], "two tasks, neither overwritten");
 });
 
+test("the store keeps no journal it no longer hands out: none once a journal is closed, none once its claim is released; an open one is shared", async (t) => {
+  const { store } = await storeOn(t);
+  await queued(store, "run-1");
+  const claim = await store.claim("run-1", "runner-a", { leaseMs: 30_000 });
+  const journal = store.journal(claim);
+  assert.equal(store.journal(claim), journal, "two calls while it is open give the same journal");
+  assert.equal(store.openJournals, 1, "one kept while open");
+  await journal.close(context);
+  assert.equal(store.openJournals, 0, "none kept once it is closed");
+  await queued(store, "run-2");
+  const other = await store.claim("run-2", "runner-a", { leaseMs: 30_000 });
+  store.journal(other);
+  assert.equal(store.openJournals, 1);
+  await store.release(other);
+  assert.equal(store.openJournals, 0, "none kept once its claim is released");
+});
+
 test("two runs' journals stay apart, and a closed journal is not handed out again", async (t) => {
   const { store } = await storeOn(t);
   await queued(store, "run-1");
