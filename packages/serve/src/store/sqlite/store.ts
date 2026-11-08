@@ -106,6 +106,9 @@ export async function openSqliteStore(options: SqliteStoreOptions): Promise<Stor
   return new SqliteStore(connection, options.now ?? Date.now);
 }
 
+/** The key of a claim's one journal: its run and epoch. */
+const journalKey = (claim: Pick<Claim, "runId" | "epoch">): string => `${claim.runId}\u0000${claim.epoch}`;
+
 /** A statement under `claim`: one that changes no row means the run's epoch moved on, and the transaction rolls back. */
 function fenced(claim: Claim, sql: string, params: readonly SqliteValue[]): Statement {
   return { sql, params, expect: { kind: "fenced", runId: claim.runId, epoch: claim.epoch } };
@@ -316,17 +319,27 @@ class SqliteStore implements Store {
       `UPDATE runs SET epoch = epoch + 1, runner = NULL, claimed_until = NULL, wake_at = ?, backoff_until = ?, state = coalesce(?, state)${ending ? ", ended_at = coalesce(ended_at, ?)" : ""} WHERE id = ? AND epoch = ? AND runner = ?`,
       [wakeAt, backoffUntil, state ?? null, ...(ending ? [this.#now()] : []), claim.runId, claim.epoch, claim.runner],
     )], { full: true });
+    // The released claim's journal is dead (its epoch moved on): the store keeps it no longer.
+    this.#journals.delete(journalKey(claim));
   }
 
-  /** The claim's one journal (pi assumes one Storage per owner): asked again for the same claim, the same journal, so two
-   *  callers never mint the same ids; a new one once it is closed. */
+  /** The claim's one journal (pi assumes one Storage per owner): asked again for the same claim while it is open, the same
+   *  journal, so two callers never mint the same ids. The store keeps it only while it is open and its claim held: its
+   *  close, or its claim's release, drops it, so a long-lived runner keeps no journal of a finished claim. */
   journal(claim: Claim): Journal {
-    const key = `${claim.runId}\u0000${claim.epoch}`;
+    const key = journalKey(claim);
     const open = this.#journals.get(key);
     if (open && !open.closed) return open;
-    const journal = new RunStorage(this.#db, claim, this.#now);
+    const journal: RunStorage = new RunStorage(this.#db, claim, this.#now, () => {
+      if (this.#journals.get(key) === journal) this.#journals.delete(key);
+    });
     this.#journals.set(key, journal);
     return journal;
+  }
+
+  /** How many journals the store keeps (open, of a claim not released). */
+  get openJournals(): number {
+    return this.#journals.size;
   }
 
   async flush(): Promise<void> {

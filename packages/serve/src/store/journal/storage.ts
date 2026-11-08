@@ -157,6 +157,17 @@ const writeId = (write: StorageWrite): number | undefined => {
       return undefined;
   }
 };
+/** The record a write stores, for matching a staged effect: every write's (a document change or retire names its document
+ *  too), unlike writeId, which names only the ids a write newly allocates. */
+const effectId = (write: StorageWrite): number | undefined => {
+  switch (write.type) {
+    case "document.change":
+    case "document.retire":
+      return write.id as unknown as number;
+    default:
+      return writeId(write);
+  }
+};
 
 /** `executor`, noting in `calls.failed` when one of its calls throws: then a failing check is the database's. */
 function watchCalls(executor: SqliteExecutor, calls: { failed: boolean }): SqliteExecutor {
@@ -198,13 +209,17 @@ export class RunStorage implements Journal {
 
   /** The journal of `claim`'s run on `db` (the store's connection, its schema in place). Its id namespace is read, and made
    *  on first use, by its first commit or mintId. `now`: the store's clock (epoch ms). */
-  constructor(db: JournalConnection, claim: JournalClaim, now: () => number = Date.now) {
+  constructor(db: JournalConnection, claim: JournalClaim, now: () => number = Date.now, onClose?: () => void) {
     this.#db = db;
     this.#read = readsOf(db);
     this.#runId = claim.runId;
     this.#epoch = claim.epoch;
     this.#now = now;
+    this.#onClose = onClose;
   }
+
+  /** Told when this journal closes (the store drops it from the journals it hands out). */
+  readonly #onClose: (() => void) | undefined;
 
   /** The journal of `claim`'s run on `db`, its id namespace read (and made on first use). */
   static async open(db: JournalConnection, claim: JournalClaim, now: () => number = Date.now): Promise<RunStorage> {
@@ -317,7 +332,7 @@ export class RunStorage implements Journal {
         seqs.push(seq);
         candidateNextId = Math.max(candidateNextId, this.#candidateNextId(writes));
         // A take whose effect this stored batch writes is this commit's.
-        const written = new Set(writes.map(writeId).filter((id): id is number => id !== undefined));
+        const written = new Set(writes.map(effectId).filter((id): id is number => id !== undefined));
         for (const [command, effect] of this.#takes) if (written.has(effect) && !taking.includes(command)) taking.push(command);
       }
       if (seqs.length > 0) {
@@ -602,6 +617,7 @@ export class RunStorage implements Journal {
   close(_context: Context): Promise<void> {
     if (this.#closing === undefined) {
       this.#closed = true;
+      this.#onClose?.();
       const reads = this.#admittedReads > 0 ? new Promise<void>((resolve) => (this.#readsDrained = resolve)) : Promise.resolve();
       const commits = [...this.#pending].map((commit) => commit.then(() => undefined, () => undefined));
       this.#closing = Promise.all([reads, ...commits]).then(() => undefined);
