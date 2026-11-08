@@ -23,7 +23,9 @@ export function signInProblem(e: ClientError): string {
   if (e.status === 401) return "That is not the password.";
   if (e.status === 429) return "Too many sign-ins from here. Try again in 15 minutes.";
   if (e.status === 403 && /has its owner/.test(e.message)) return "This server has its owner already: sign in.";
-  if (e.status === 403 && /setup code/.test(e.message)) return "That setup code is not the one in the server's log, or it has expired.";
+  if (e.status === 403 && /a new one is in the server's log/.test(e.message)) return "That setup code expired or was voided after too many wrong tries: a new one is in the server's log (on Render, the Logs tab).";
+  if (e.status === 403 && /takes the setup code/.test(e.message)) return "Enter the setup code from the server's log.";
+  if (e.status === 403 && /setup code/.test(e.message)) return "That setup code is not the one in the server's log.";
   return e.fields?.[0]?.message ?? e.message;
 }
 

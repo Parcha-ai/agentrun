@@ -118,7 +118,20 @@ export function App() {
   const v2 = useMemo(() => createClient({ fetch: connection.fetch }), [connection]);
   const [auth, setAuth] = useState<AuthMode | null>(null);
   // The setup code, taken from the address once and removed from it (and from the history entry).
-  const [setupCode] = useState(setupCodeOnce);
+  const [setupCode, setSetupCode] = useState(setupCodeOnce);
+  // A setup link opened in this same tab once the page is up changes only the address's fragment: its code is taken
+  // then too, and removed from the address and its history entry, as at load.
+  useEffect(() => {
+    if (auth !== "setup") return;
+    const take = () => {
+      const { code, rest } = takeSetupCode(location.hash);
+      if (code === null) return;
+      history.replaceState(null, "", `${location.pathname}${location.search}${rest}`);
+      setSetupCode(code);
+    };
+    window.addEventListener("hashchange", take);
+    return () => window.removeEventListener("hashchange", take);
+  }, [auth]);
   // Whether setup takes the server's printed code (its session read says so), so the form asks for it with no link.
   const [codeNeeded, setCodeNeeded] = useState(false);
   const readSession = async () => {

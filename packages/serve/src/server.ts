@@ -1877,7 +1877,9 @@ async function startHolding(options: ServeOptions, data: string, lock: ServerLoc
         const along = body.import === true ? { keep: () => writeDurable(importAsked, ""), drop: () => rm(importAsked, { force: true }) } : undefined;
         const made = await me.setFirst(password, body.code, byToken, along);
         if (made === "exists") throw new ApiError("forbidden", "this server has its owner, or is being set up: sign in");
-        if (made === "code") throw new ApiError("forbidden", "that is not the setup code in the server's log, or it has expired");
+        if (made === "missing") throw new ApiError("forbidden", "this server's setup takes the setup code in its log: send it as code");
+        if (made === "wrong") throw new ApiError("forbidden", "that is not the setup code in the server's log");
+        if (made === "new") throw new ApiError("forbidden", "that setup code expired, or five wrong tries voided it: a new one is in the server's log");
         // A new password ends every session from before (a reset in another process cleared the old one).
         viewers.recheck();
         // The count is for the offer, now answered: it stops.

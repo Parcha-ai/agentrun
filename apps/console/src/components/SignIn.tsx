@@ -1,5 +1,5 @@
 import { ChevronRight, KeyRound } from "lucide-react";
-import { useState } from "react";
+import { useEffect, useState } from "react";
 import type { AuthMode } from "@/lib/auth";
 import type { ImportOffer } from "@/lib/client";
 import { cn } from "@/lib/utils";
@@ -39,16 +39,21 @@ export function SignIn({ mode, code = null, codeNeeded = false, onSubmit, proble
   const [importSessions, setImportSessions] = useState(false);
   const [again, setAgain] = useState("");
   const [setupCode, setSetupCode] = useState(code ?? "");
+  // A setup link opened in this same tab after the page loaded: its code fills the field, the passwords typed stay.
+  useEffect(() => { if (code !== null) setSetupCode(code); }, [code]);
   const [problem, setProblem] = useState<string | null>(initialProblem);
   const [busy, setBusy] = useState(false);
   const setup = mode === "setup";
   // A count of none has nothing to offer; counting, or a count unknown, still does.
   const offered = setup && offer !== null && !("sessions" in offer && offer.sessions === 0);
-  const ready = mode !== "token_link" && password.length > 0 && (!setup || (password === again && password.length >= 12));
+  // The server takes a code at setup (its session read says so, or the link carried one): never sent without it.
+  const asksCode = setup && (codeNeeded || code !== null);
+  const ready = mode !== "token_link" && password.length > 0 && (!setup || (password === again && password.length >= 12)) && (!asksCode || setupCode.trim() !== "");
   const submit = async () => {
     if (!ready || !onSubmit) return;
     setBusy(true);
-    const p = await onSubmit(password, setup && setupCode ? setupCode : undefined, setup && offered && importSessions);
+    // The code as the log printed it: base64url, so whitespace around a paste is none of it.
+    const p = await onSubmit(password, asksCode && setupCode.trim() ? setupCode.trim() : undefined, setup && offered && importSessions);
     setBusy(false); setProblem(p);
   };
   return (
@@ -59,7 +64,7 @@ export function SignIn({ mode, code = null, codeNeeded = false, onSubmit, proble
         <p className="mb-6 text-[15px] leading-relaxed text-[#aaa]">{COPY[mode].body}</p>
         {mode !== "token_link" && (
           <form className="space-y-5" onSubmit={(e) => { e.preventDefault(); void submit(); }}>
-            {setup && (codeNeeded || code !== null) && (
+            {asksCode && (
               <Field label="Setup code" note="Find the setup code in the server's log (on Render, the Logs tab), or open the link the log prints.">
                 <input value={setupCode} onChange={(e) => setSetupCode(e.target.value)} autoComplete="off" spellCheck={false} className={input} />
               </Field>
