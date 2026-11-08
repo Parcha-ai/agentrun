@@ -72,6 +72,21 @@ test("the turn is asked with the server's prompt, its origin reflect, within its
   assert.deepEqual(calls.asked[0].opts, { origin: "reflect", deadlineMs: 5 * 60_000 });
 });
 
+test("the learning run a proposal queues names the grade model the hook is given (gradeModelOf, as main's server resolves it), and none when it is given none", async () => {
+  const deps = (extra = {}) => ({
+    facts: async () => ({ learns: true, costUsd: 0.01 }),
+    promptFacts: async () => ({ active: 0, tools: [] }),
+    asked: async () => ({ asked: ["Find the bug."] }),
+    check: async () => ({ state: "proposed", notes: 1, skills: 0, workflows: 0, proposal: { notes: [{ file: "a.md", text: "x" }] } }),
+    newRunId: () => "run-learn-1",
+    ...extra,
+  });
+  const input = { runId: "run-1", agentId: "agent-1", claim, outcome: "completed", signal: new AbortController().signal, ask: async () => ({ ended: true, answer: "```note a.md\nx\n```" }) };
+  const queued = async (extra) => (await createReflectHook(deps(extra))(input)).also.find((row) => row.table === "learning_run")?.row;
+  assert.deepEqual(await queued({ gradeModel: "claude-sonnet-4-5" }), { id: "run-learn-1", model: "claude-sonnet-4-5" }, "the grade model, on the learning run");
+  assert.deepEqual(await queued(), { id: "run-learn-1" }, "none given: none named, and the agent's own grades it");
+});
+
 test("a proposal keeps the turn and queues one learning run beside the end", async () => {
   const { hook, input, calls } = hookWith();
   const rows = await hook(input("failed"));
