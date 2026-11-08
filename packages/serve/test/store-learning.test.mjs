@@ -36,6 +36,18 @@ test("the run's end writes its kept proposal and a queued learning run of the sa
   assert.deepEqual([launch.body.harness, launch.body.input], ["learning", { runId: "run-1" }]);
 });
 
+test("the kept proposal names the learning run queued with it, whichever order the end lists them in; a drop names none", async (t) => {
+  const { store } = await storeOn(t);
+  await store.runs.update(await claimedRun(store, "run-a"), { state: "ended" }, { also: [kept(), learningRun("run-a-learning")] });
+  await store.runs.update(await claimedRun(store, "run-b"), { state: "ended" }, { also: [learningRun("run-b-learning"), kept()] });
+  await store.runs.update(await claimedRun(store, "run-c"), { state: "ended" }, { also: [kept(TURN, { state: "dropped", reason: "empty" })] });
+  assert.deepEqual(
+    await Promise.all(["run-a", "run-b", "run-c"].map(async (id) => (await store.learning.proposal(id))?.learningRunId)),
+    ["run-a-learning", "run-b-learning", undefined],
+  );
+  assert.deepEqual((await store.learning.proposals("agent-1")).map((one) => [one.runId, one.learningRunId]).sort(), [["run-a", "run-a-learning"], ["run-b", "run-b-learning"], ["run-c", undefined]]);
+});
+
 test("a fenced end writes neither the proposal nor the learning run", async (t) => {
   const { store } = await storeOn(t);
   const stale = await claimedRun(store);
