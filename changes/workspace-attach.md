@@ -1,0 +1,5 @@
+---
+packages: @parcha/agentrun-serve
+kind: feature
+---
+serve's Workspace port gains attach, the background surface, output streaming and place resolution, still unused until the cutover. A Workspace says what a computer mounts at /workspace to hold its folder (`mountSpec`: a bind of the run's folder for the local Docker computer, or the run's folder on the owner's disk). `attach(computer)` checks the computer's read-back of that mount and hands back an attached Workspace whose file calls and exec go to the computer, and whose `process` is the computer's background processes. With no computer, every background call is refused in words: "Background programs need a computer: run this agent with place sandbox (Docker in Mode 1, or a remote computer in Mode 2)." exec takes `onOutput`, which gets the output as it comes (or once per stream, from a backend that cannot stream). `resolvePlace` turns an agent's place into a computer or none: an absent place is Docker where it answers in Mode 1, else the runner; a workflow always gets the runner; Mode 1 refuses every remote computer; a provider with no key is refused.

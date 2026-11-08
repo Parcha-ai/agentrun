@@ -17,6 +17,9 @@
 // grep runs in a worker thread (grep-worker.ts), terminated at its deadline: a regex that backtracks without end
 // costs that thread, never this one.
 //
+// A computer reaches this folder as a bind at /workspace (mountSpec, the local Docker computer only); attach checks
+// that read-back and hands back the attached Workspace (attach.ts). With no computer, `process` refuses in words.
+//
 // No locks: two calls on one path race as two processes would (workspace.ts).
 import { spawn } from "node:child_process";
 import { randomBytes } from "node:crypto";
@@ -24,6 +27,7 @@ import { constants, type Stats } from "node:fs";
 import { type FileHandle, lstat, mkdir as makeDir, open, readdir, realpath, rename, rmdir, unlink } from "node:fs/promises";
 import { join } from "node:path";
 import { Worker } from "node:worker_threads";
+import { attachedWorkspace, checkMount, type Computer, type MountSpec, noProcesses } from "./attach.js";
 import type { GrepJob } from "./grep-worker.js";
 import { relativeSegments } from "./paths.js";
 import {
@@ -442,6 +446,9 @@ class LocalWorkspace implements Workspace {
         const part = chunk.length > room ? chunk.subarray(0, room) : chunk;
         into.push(part);
         kept[which] += part.length;
+        if (options.onOutput) {
+          try { options.onOutput({ stream: which === "out" ? "stdout" : "stderr", data: part }); } catch { /* the caller's callback; its error is not the call's */ }
+        }
       };
       const finish = (): void => {
         if (settled || exit === undefined) return;
@@ -478,8 +485,19 @@ class LocalWorkspace implements Workspace {
     }), { notDir: "REFUSED" });
   }
 
-  async attach(_computer: unknown): Promise<unknown> {
-    throw new WorkspaceError("REFUSED", "attach comes with the computer mount");
+  /** No computer: every background call is refused in words. */
+  readonly process = noProcesses;
+
+  /** A bind of the run's folder (its real path) at /workspace: the local Docker computer's mount. */
+  async mountSpec(): Promise<MountSpec> {
+    const root = await this.#openRoot();
+    await root.handle.close();
+    return { kind: "bind", path: root.abs };
+  }
+
+  async attach(computer: Computer): Promise<Workspace> {
+    await checkMount(computer, await this.mountSpec());
+    return attachedWorkspace(this, computer);
   }
 }
 

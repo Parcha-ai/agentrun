@@ -91,14 +91,13 @@ test("local: list leaves out links and pipes; a read of a directory or a pipe is
   await refused(workspace.append("pipe", "x"), "REFUSED");
 });
 
-test("local: a root that is not there is UNAVAILABLE; attach is REFUSED until the computer mount", async () => {
+test("local: a root that is not there is UNAVAILABLE, for its mount too", async () => {
   const { dir } = scratch();
   const gone = localWorkspace(join(dir, "never-made"));
   await refused(gone.read("x"), "UNAVAILABLE");
   await refused(gone.write("x", "y"), "UNAVAILABLE");
   await refused(gone.exec(["true"], { env: {}, timeoutMs: 1_000 }), "UNAVAILABLE");
-  const { root } = scratch();
-  await assert.rejects(localWorkspace(root).attach({}), (error) => error.code === "REFUSED" && /computer mount/.test(error.message));
+  await refused(gone.mountSpec(), "UNAVAILABLE");
 });
 
 test("local: exec's default output cap keeps 16 MiB whole (a learning seed's git cat-file --batch)", async () => {
