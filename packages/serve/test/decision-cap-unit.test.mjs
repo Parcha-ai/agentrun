@@ -198,6 +198,36 @@ test("two map items whose verify decisions both wait, one run in the other's con
   assert.equal(gone, 1, "both items wait at their decisions, every step in flight: let go once the hold had passed");
 });
 
+test("a model request of a known session waits for its own node whatever its async context says: item 1's request, run in item 0's context, counts for item 1 and the pause names item 1", { timeout: 30_000 }, async (t) => {
+  const root = mkdtempSync(join(process.env.TMPDIR ?? tmpdir(), "session-wait-"));
+  t.after(() => rmSync(root, { recursive: true, force: true }));
+  let gone = 0;
+  const waits = budgetWaits(root, { cap: 1, spent: () => 0, add: () => undefined }, { holdMs: 100, letGo: () => void (gone += 1) });
+  const refusal = { words: "Not sent: the request could cost up to $2. Raise the cap to at least $2 to continue.", room: true, capUsd: 1 };
+  const stop = new AbortController();
+  const [zero, one] = ["/root/steps/0/items/0/body", "/root/steps/0/items/1/body"];
+  // Each item's node conversation is told by its provider session (app.ts, the node runner's onNodeOpen).
+  waits.session?.("session-1", { label: "item 1", path: one });
+  let drainOfZero;
+  const kicked = new Promise((resolve) => (drainOfZero = resolve));
+  const node = waits.step(async (params) => {
+    if (params.executionPath === zero) {
+      // Item 0's context runs the drain; item 0 then waits at its own decision.
+      drainOfZero(AsyncResource.bind((fn) => fn()));
+      await new Promise((resolve) => setTimeout(resolve, 100));
+      return waits.wait(refusal, stop.signal, { label: "item 0 (verify)", path: zero });
+    }
+    // Item 1's model request, run by the drain item 0 kicked: what the context says is item 0's step, the session item 1's.
+    return (await kicked)(() => waits.wait(refusal, stop.signal, { label: "item 0", path: zero }, "session-1"));
+  }, pathOf);
+  const both = [node({ executionPath: zero }), node({ executionPath: one })];
+  for (const end = Date.now() + 2_000; gone === 0 && Date.now() < end; ) await new Promise((resolve) => setTimeout(resolve, 50));
+  const mark = budgetPausedIn(root);
+  stop.abort();
+  await Promise.all(both);
+  assert.deepEqual([mark?.node, mark?.path, gone], ["item 1", one, 1], "the first wait was item 1's request: the pause names it, and with both items waiting the process lets go");
+});
+
 test("a wait whose pause's mark cannot be written throws and counts nothing as waiting: a later pause beside its step, still working, never lets the process go", { timeout: 30_000 }, async (t) => {
   const root = mkdtempSync(join(process.env.TMPDIR ?? tmpdir(), "mark-unwritten-"));
   t.after(() => rmSync(root, { recursive: true, force: true }));
