@@ -258,7 +258,8 @@ const picked = (name: Pickable, settings: ToolSettingsMap, overrides: ToolSettin
  *  its search asks (the one the resolution read). */
 export type Plane = Partial<Record<Pickable, Resolution>> & { model?: string };
 /** The facts of a pinned revision its run's tools resolve from. */
-export type Tooling = { harness?: string; tools: readonly string[]; model?: string; overrides?: ToolSettingsMap; workflow?: true };
+/** `approvals`: the revision's, kept only when "never" (the agent runs unattended: an ask is an allow, never over a deny). */
+export type Tooling = { harness?: string; tools: readonly string[]; model?: string; overrides?: ToolSettingsMap; workflow?: true; approvals?: "never" };
 
 /** The run's process's description of its tools' providers: JSON of its Plane. */
 export const TOOL_PLANE_ENV = "AGENTRUN_SERVE_TOOL_PLANE";
@@ -460,7 +461,7 @@ export function agentTools(env: NodeJS.ProcessEnv, settings: ToolSettingsMap, ag
   const plane = planeFor(env, agent, settings);
   const rank = (name: string) => order.indexOf(name);
   return [...new Set(agent.tools)].sort((a, b) => rank(a) - rank(b)).map((name) => {
-    const { permission, from } = permissionFrom(name, settings as never, (agent.overrides ?? {}) as never);
+    const { permission, from } = permissionFrom(name, settings as never, (agent.overrides ?? {}) as never, agent.approvals ?? "ask");
     const gate = { permission, permission_from: from, default_permission: permissionOf(name, settings as never), permissions: [...permissionsOf(name)] };
     // One short line for people (tool-blurbs.ts), as capabilities serves it.
     const blurb = blurbOf(name);

@@ -18,6 +18,7 @@ import { BOUND_TOOLS } from "./tools.js";
 import { TRIGGER_ADAPTERS } from "./trigger-adapters.js";
 import { triggerBodyIssues } from "./triggers.js";
 import { DEFAULT_INPUT_SCHEMA, definitionBodyIssues, inputIssues, isObject, type Json, MODEL_REF, unknownFields } from "./validate.js";
+import { APPROVALS, type Approvals } from "./approvals.js";
 
 /** The packages this server ships. */
 export const TEMPLATES_DIR = fileURLToPath(new URL("../templates/", import.meta.url));
@@ -27,7 +28,7 @@ export const MANIFEST = "agent.md";
 export const MODEL_TIERS: Readonly<Record<string, Tier>> = { fast: "fast", balanced: "default", strong: "strong" };
 export const PARAMETER_TYPES = ["string", "number", "integer", "boolean"] as const;
 export const GRADER_TYPES = ["llm", "regex", "tool_used", "file_exists", "schema"] as const;
-const FIELDS = ["name", "display_name", "version", "description", "license", "author", "repository", "harness", "model", "effort", "tools", "mcp", "computer", "parameters", "secrets", "budget", "learning", "triggers", "output", "checks"];
+const FIELDS = ["name", "display_name", "version", "description", "license", "author", "repository", "harness", "model", "effort", "tools", "mcp", "computer", "parameters", "secrets", "budget", "learning", "approvals", "triggers", "output", "checks"];
 const NAME = /^[a-z0-9]+(?:-[a-z0-9]+)*$/;
 const PARAMETER = /^[a-z][a-z0-9_]{0,63}$/;
 /** The keys a package may need: those Settings saves (a tool's or a model provider's), each one a run is handed. */
@@ -85,6 +86,8 @@ export type Package = {
   secrets: string[];
   budget?: { per_run_usd: number };
   learning?: boolean;
+  /** Whether its agent asks a person (ask, the default) or runs unattended (never): definition.approvals. */
+  approvals?: Approvals;
   /** POST /v2/triggers bodies, placeholders unfilled, each target a start_run with no agent_id. */
   triggers: Json[];
   output?: { schema: string };
@@ -227,6 +230,7 @@ export function readPackage(dir: string): Package {
   for (const secret of secrets.filter((name) => !PACKAGE_SECRETS.includes(name))) bad(MANIFEST, `secrets names ${secret}, a key this server cannot hold: a package needs the keys Settings saves and a run is handed (${PACKAGE_SECRETS.join(", ")})`);
   if (f.budget !== undefined && !(isObject(f.budget) && !unknownFields(f.budget, ["per_run_usd"]).length && typeof f.budget.per_run_usd === "number" && Number.isFinite(f.budget.per_run_usd) && f.budget.per_run_usd > 0)) bad(MANIFEST, "budget is {per_run_usd: a number above 0}");
   if (f.learning !== undefined && typeof f.learning !== "boolean") bad(MANIFEST, "learning is true or false");
+  if (f.approvals !== undefined && !(APPROVALS as readonly unknown[]).includes(f.approvals)) bad(MANIFEST, `approvals is one of ${APPROVALS.join(", ")}: ask waits for a person where a tool is set to ask; never runs the agent unattended, while a deny still refuses`);
   const triggers = f.triggers === undefined ? [] : Array.isArray(f.triggers) ? (f.triggers as unknown[]) : (bad(MANIFEST, "triggers is a list of POST /v2/triggers bodies"), []);
   const triggerNames = new Set<string>();
   triggers.forEach((trigger, i) => {
@@ -340,7 +344,7 @@ export function readPackage(dir: string): Package {
     name, ...(typeof f.display_name === "string" ? { displayName: f.display_name } : {}), version: f.version as string, description: f.description as string,
     ...(typeof f.license === "string" ? { license: f.license } : {}), ...(isObject(f.author) ? { author: f.author } : {}), ...(typeof f.repository === "string" ? { repository: f.repository } : {}),
     ...(harness ? { harness } : {}), ...(isObject(f.model) ? { model: f.model as { tier: string; prefer?: string } } : {}), ...(typeof f.effort === "string" ? { effort: f.effort } : {}),
-    ...(tools ? { tools } : {}), mcp, parameters, secrets, ...(isObject(f.budget) ? { budget: { per_run_usd: f.budget.per_run_usd as number } } : {}), ...(typeof f.learning === "boolean" ? { learning: f.learning } : {}),
+    ...(tools ? { tools } : {}), mcp, parameters, secrets, ...(isObject(f.budget) ? { budget: { per_run_usd: f.budget.per_run_usd as number } } : {}), ...(typeof f.learning === "boolean" ? { learning: f.learning } : {}), ...(f.approvals === "never" || f.approvals === "ask" ? { approvals: f.approvals } : {}),
     triggers: triggers as Json[], ...(isObject(f.output) ? { output: { schema: f.output.schema as string } } : {}), checks, instructions, skills, evals,
   };
   // What an apply makes, made here with each parameter's default, else a sample of its type, and checked as POST
@@ -379,14 +383,14 @@ export function packageView(p: Package) {
     name: p.name, display_name: p.displayName ?? null, version: p.version, description: p.description, license: p.license ?? null, repository: p.repository ?? null,
     harness: p.harness ?? null, model: p.model ?? null, effort: p.effort ?? null, tools: p.tools ?? null,
     mcp: p.mcp.map(({ server, tools, required, allow }) => ({ server, required, tools: tools.map((name) => ({ name, tool: mcpToolName(server, name), asks: allow.includes(name) ? "allow" : "ask" })) })), parameters: p.parameters, secrets: p.secrets,
-    budget: p.budget ?? null, learning: p.learning ?? false, triggers: p.triggers, skills: Object.keys(p.skills).filter((path) => /^[^/]+\/SKILL\.md$/.test(path)).map((path) => path.slice(0, -"/SKILL.md".length)), evals: p.evals,
+    budget: p.budget ?? null, learning: p.learning ?? false, approvals: p.approvals ?? "ask", triggers: p.triggers, skills: Object.keys(p.skills).filter((path) => /^[^/]+\/SKILL\.md$/.test(path)).map((path) => path.slice(0, -"/SKILL.md".length)), evals: p.evals,
   };
 }
 
 /** POST /v2/templates/{name}/apply's body (`{parameters, grants?, overrides?: {model}}`), checked against the package:
  *  the parameters as given, the MCP tools the owner allows (each one the package lists, by its gate name), and the model
  *  asked for in place of the package's. 422 naming every field that is wrong. */
-export function applyBodyOf(p: Package, body: Json): { parameters: Record<string, string | number | boolean>; grants: string[]; model?: string } {
+export function applyBodyOf(p: Package, body: Json): { parameters: Record<string, string | number | boolean>; grants: string[]; model?: string; approvals?: Approvals } {
   const issues: InputIssue[] = unknownFields(body, ["parameters", "grants", "overrides"]);
   const listed = p.mcp.flatMap(({ server, tools }) => tools.map((tool) => mcpToolName(server, tool)));
   const grants: string[] = [];
@@ -412,13 +416,14 @@ export function applyBodyOf(p: Package, body: Json): { parameters: Record<string
     else if (absent && spec.default !== undefined) parameters[key] = spec.default;
   }
   const overrides = body.overrides ?? {};
-  if (!isObject(overrides)) issues.push({ field: "overrides", reason: "wrong_type", message: "overrides is an object: {model?}" });
+  if (!isObject(overrides)) issues.push({ field: "overrides", reason: "wrong_type", message: "overrides is an object: {model?, approvals?}" });
   else {
-    issues.push(...unknownFields(overrides, ["model"]).map((i) => ({ ...i, field: `overrides.${i.field}`, message: "An apply overrides the model alone." })));
+    issues.push(...unknownFields(overrides, ["model", "approvals"]).map((i) => ({ ...i, field: `overrides.${i.field}`, message: "An apply overrides the model and the approvals alone." })));
+    if (overrides.approvals !== undefined && !(APPROVALS as readonly unknown[]).includes(overrides.approvals)) issues.push({ field: "overrides.approvals", reason: "not_an_option", message: `overrides.approvals is one of ${APPROVALS.join(", ")}: never runs the agent unattended, while a deny still refuses` });
     if (overrides.model !== undefined && !(typeof overrides.model === "string" && MODEL_REF.test(overrides.model))) issues.push({ field: "overrides.model", reason: "bad_format", message: 'overrides.model is "provider/model-id"' });
   }
   if (issues.length) throw invalid(issues);
-  return { parameters, grants, ...(isObject(overrides) && typeof overrides.model === "string" ? { model: overrides.model } : {}) };
+  return { parameters, grants, ...(isObject(overrides) && typeof overrides.model === "string" ? { model: overrides.model } : {}), ...(isObject(overrides) && (overrides.approvals === "ask" || overrides.approvals === "never") ? { approvals: overrides.approvals } : {}) };
 }
 
 /** The model a package's agent gets here: its `prefer` when this server runs it on `harness` (a key for its provider, or
@@ -435,7 +440,7 @@ export async function packageModel(env: NodeJS.ProcessEnv, model: Package["model
  *  every `${parameters.x}` filled. `mcp`: the package's MCP servers this server has saved, whose tools are granted beside
  *  the package's tools (or, when it names none, `defaultTools`, those this server gives a new agent), each at the
  *  owner's own setting; `grants`, the owner's answer at apply, alone are set to allow. */
-export function compiled(p: Package, parameters: Json, chosen: { harness?: string; model?: string; mcp: McpNeed[]; defaultTools: readonly string[]; grants: readonly string[] }): { agent: Json; triggers: Json[] } {
+export function compiled(p: Package, parameters: Json, chosen: { harness?: string; model?: string; mcp: McpNeed[]; defaultTools: readonly string[]; grants: readonly string[]; approvals?: Approvals }): { agent: Json; triggers: Json[] } {
   const skills = Object.keys(p.skills).filter((path) => /^[^/]+\/SKILL\.md$/.test(path)).map((path) => path.slice(0, -"/SKILL.md".length));
   const granted = chosen.mcp.flatMap(({ server, tools }) => tools.map((tool) => mcpToolName(server, tool)));
   const allowed = chosen.grants.filter((tool) => granted.includes(tool));
@@ -445,6 +450,8 @@ export function compiled(p: Package, parameters: Json, chosen: { harness?: strin
     ...(chosen.harness ? { harness: chosen.harness } : {}), ...(chosen.model ? { model: chosen.model } : {}), ...(p.effort ? { thinking: p.effort } : {}),
     ...(tools ? { tools } : {}), ...(allowed.length ? { tool_settings: Object.fromEntries(allowed.map((tool) => [tool, { permission: "allow" }])) } : {}),
     ...(p.learning !== undefined ? { learning: p.learning } : {}), ...(p.budget ? { max_cost_usd: p.budget.per_run_usd } : {}), skills,
+    // The apply's choice, else the package's: unattended only when one of them says never.
+    ...((chosen.approvals ?? p.approvals) === "never" ? { approvals: "never" } : {}),
   };
   return { agent: { definition, skills: { ...p.skills } }, triggers: p.triggers.map((trigger) => filled(trigger, parameters) as Json) };
 }
