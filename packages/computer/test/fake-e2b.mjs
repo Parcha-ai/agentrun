@@ -100,7 +100,9 @@ const newId = () => `i${String(++counter).padStart(19, "0")}`;
  *  - templates: alias → template id (default desktop → tpl-desktop, base → tpl-base);
  *  - info: fields a new sandbox's getInfo reports over what create gave (allowInternetAccess, network, lifecycle, ...);
  *  - create: "ok", "fail" (InvalidArgumentError, nothing made), "auth" (AuthenticationError), "hold" (settles only
- *    when fake.release() is called), "lost" (makes the sandbox, then throws TimeoutError: its id never comes back);
+ *    when fake.release() is called), "lost" (makes the sandbox, then throws TimeoutError: its id never comes back),
+ *    "broken" (makes the sandbox, then throws a plain error, as a 5xx whose sandbox was made anyway);
+ *  - unlisted: how many listings a sandbox create makes is left out of before list shows it (default 0);
  *  - sha: "ok" or "lie" (install prints a sha256 that is not the file's);
  *  - install: exit code of the install script (default 0);
  *  - initFails: words init writes to stderr before it exits 1 (no daemon listens);
@@ -138,6 +140,7 @@ export function fakeE2B({
 	onStep = () => {},
 	processPage = 8,
 	killMs = 30,
+	unlisted = 0,
 } = {}) {
 	const calls = [];
 	const sandboxes = new Map();
@@ -463,20 +466,25 @@ export function fakeE2B({
 			await step("Sandbox.create", opts);
 			if (create === "fail") throw new InvalidArgumentError("400: template not found");
 			if (create === "auth") throw new AuthenticationError("401: Invalid API key");
-			const make = () =>
-				connected(
-					add({
-						template,
-						metadata: opts.metadata,
-						timeoutMs: opts.timeoutMs,
-						allowInternetAccess: opts.allowInternetAccess,
-						network: opts.network,
-						lifecycle: opts.lifecycle,
-					}),
-				);
+			const make = () => {
+				const sb = add({
+					template,
+					metadata: opts.metadata,
+					timeoutMs: opts.timeoutMs,
+					allowInternetAccess: opts.allowInternetAccess,
+					network: opts.network,
+					lifecycle: opts.lifecycle,
+				});
+				sb.hiddenLists = unlisted;
+				return connected(sb);
+			};
 			if (create === "lost") {
 				make();
 				throw new TimeoutError("Request timed out: the sandbox may have been made, its id never came back");
+			}
+			if (create === "broken") {
+				make();
+				throw new Error("502: Bad Gateway");
 			}
 			if (create === "hold") {
 				const wait = deferred();
@@ -532,10 +540,9 @@ export function fakeE2B({
 					record("paginator.nextItems", pageOpts);
 					await step("Sandbox.list", pageOpts);
 					pages++;
-					const listed = [...sandboxes.values()].filter((sb) => {
-						const shown = !sb.killed || sb.lingering?.lists > 0;
-						return shown && Object.entries(wanted).every(([k, v]) => sb.metadata[k] === v);
-					});
+					const matched = [...sandboxes.values()].filter((sb) => Object.entries(wanted).every(([k, v]) => sb.metadata[k] === v));
+					const listed = matched.filter((sb) => (!sb.killed || sb.lingering?.lists > 0) && !(sb.hiddenLists > 0));
+					for (const sb of matched) if (sb.hiddenLists > 0) sb.hiddenLists--;
 					for (const sb of listed) if (sb.killed && sb.lingering?.lists > 0) sb.lingering.lists--;
 					return listed.map((sb) => ({ sandboxId: sb.id, templateId: sb.templateId, metadata: { ...sb.metadata }, startedAt: sb.startedAt, endAt: sb.endAt, state: sb.state, cpuCount: 2, memoryMB: 2048, envdVersion: "0.6.4", volumeMounts: [] }));
 				},

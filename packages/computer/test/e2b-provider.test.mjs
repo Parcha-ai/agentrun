@@ -414,6 +414,32 @@ test("a create whose answer never comes is swept by its name label: the sandbox 
 	assert.deepEqual(query, { [COMPUTER]: "1", [NAME]: sb.metadata[NAME] }, "found by the name create gave it, and nothing else");
 });
 
+test("a create whose answer is lost is swept by its name even when the listing shows the sandbox late, and it is read back gone", async () => {
+	for (const create of ["lost", "broken"]) {
+		const { provider, fake } = setup({}, { create, unlisted: 2 });
+		const made = await provider.create(SPEC);
+		assert.equal(made.ok, false, create);
+		for (let i = 0; i < 100 && fake.kills.length === 0; i++) await sleep(10);
+		const sb = only(fake);
+		assert.deepEqual(fake.kills, [sb.id], `${create}: the sandbox was killed once the listing showed it`);
+		assert.ok(fake.calls.filter(([name]) => name === "Sandbox.list").length >= 3, `${create}: the listing was read until it showed the name`);
+		if (create === "broken") {
+			assert.equal(made.error.code, "e2b");
+			assert.match(made.error.message, new RegExp(`${sb.id} was killed and read back gone`));
+			const lastKill = fake.calls.findLastIndex(([name]) => name === "Sandbox.kill");
+			assert.ok(fake.calls.slice(lastKill).some(([name, id]) => name === "Sandbox.getInfo" && id === sb.id), "it was read back after the kill");
+		}
+	}
+});
+
+test("a create whose answer is lost and whose sandbox never lists says so, after polling within listedMs", async () => {
+	const { provider, fake } = setup({}, { create: "broken", unlisted: 10_000 });
+	const made = await provider.create(SPEC);
+	assert.equal(made.ok, false);
+	assert.match(made.error.message, /no sandbox named computer-[0-9a-f]{12} was listed within 0\.5 s/);
+	assert.deepEqual(fake.kills, []);
+});
+
 test("an abort at each step of create kills the sandbox, and create returns aborted", async () => {
 	const steps = ["Sandbox.getInfo", "files.write", "commands.run install", "commands.run init", "hello", "process.start", "files.read", "exec.run", "Sandbox.list"];
 	for (const at of steps) {
