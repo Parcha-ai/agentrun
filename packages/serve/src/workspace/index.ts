@@ -6,6 +6,8 @@ export {
   type AttachableComputer, attachedWorkspace, checkReadBack, COMPUTER_CHUNK, type MountCheck, NO_COMPUTER, noProcesses,
   type Processes,
 } from "./attach.js";
-export { agentDirName, agentFolder, agentLearningFolder, DISK_DIR, relativePath, relativeSegments, runFolder } from "./paths.js";
+export {
+  agentDirName, agentFolder, agentHomeFolder, agentLearningFolder, DISK_DIR, relativePath, relativeSegments, runFolder, scratchFolder,
+} from "./paths.js";
 export { type Available, type Place, type Registry, type Resolved, resolvePlace } from "./place.js";
 export { localWorkspace, workspaceAt } from "./local.js";
