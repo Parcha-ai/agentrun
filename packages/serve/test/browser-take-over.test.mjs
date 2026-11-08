@@ -360,3 +360,22 @@ test("an answer the owner gives after the run's process died, before the server 
   const answered = await until(async () => /Hand-off:/.test((await w.view()).pending?.question ?? "") && (await w.view()).pending.question, 30_000);
   assert.match(answered || "", /"outcome":"done"/, "the agent's call returned done");
 });
+
+test("the owner's Hand back in the viewer answers the agent's open ask on that session done: the agent hears done at once, and a later Done from the console is that answer, not a second", { timeout: 180_000 }, async (t) => {
+  const w = await watched(t, { faux: BROWSE_HANDOFF });
+  const { ws } = await w.viewer();
+  ws.sendJson({ type: "take" });
+  assert.deepEqual(await w.next(ws, "hold"), { type: "hold", held: true });
+  await w.typed(ws, "my own password");
+  ws.sendJson({ type: "give" });
+  assert.deepEqual(await w.next(ws, "hold"), { type: "hold", held: false, reason: "given" });
+  // Within a few seconds, not at the ask's 15-minute expiry.
+  const question = await until(async () => /Hand-off:/.test((await w.view()).pending?.question ?? "") && (await w.view()).pending.question, 15_000);
+  assert.match(question || "", /"outcome":"done"/, `the agent heard done: ${JSON.stringify({ question, rows: summaries(await w.rows()) })}`);
+  const later = await w.handBack("done");
+  assert.deepEqual([later.status, later.json], [200, { outcome: "done" }], "the same answer again is that answer");
+  const other = await w.handBack("cancelled");
+  assert.deepEqual([other.status, other.json.error.code, other.json.error.details], [409, "handoff_answered", { outcome: "done" }]);
+  assert.equal((await w.rows()).filter((row) => row.kind === "tool_result" && row.tool_name === "browser_request_handoff" && row.tool_result_size_bytes !== null).length, 1, "one result for the ask");
+  ws.destroy();
+});

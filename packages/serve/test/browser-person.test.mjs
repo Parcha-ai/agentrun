@@ -592,3 +592,34 @@ test("a process that takes up an ask already past its expiry holds none of the p
   await sleep(5);
   assert.deepEqual(seconds, [], "nothing held at or past its expiry");
 });
+
+test("a take-over the person hands back (given) answers the open ask on its session done, once; one that ends idle, away or at the cap leaves it open; another session's ask is never answered", async (t) => {
+  for (const why of ["idle", "away", "cap", "released"]) {
+    const root = await scratch(t);
+    const { person } = hands(root);
+    const asked = await person.handoff.request(ask(31, "ar-run-31-1"));
+    const take = await person.take("ar-run-31-1");
+    take.started();
+    take.end(why);
+    assert.equal(await person.handoff.outcome(asked.interactionId), "pending", `ended ${why}: the ask stays open`);
+    assert.equal(openAsk(root)?.id, asked.interactionId, why);
+    person.close();
+  }
+  const root = await scratch(t);
+  const { person, held } = hands(root);
+  t.after(() => person.close());
+  const a = await person.handoff.request(ask(32, "ar-run-32-a"));
+  await sleep(5);
+  const b = await person.handoff.request(ask(33, "ar-run-32-b"));
+  const take = await person.take("ar-run-32-a");
+  take.started();
+  take.end("given");
+  assert.equal(await person.handoff.outcome(a.interactionId), "done", "handed back: its session's ask is done");
+  assert.equal(await person.handoff.outcome(b.interactionId), "pending", "the other session's ask is not answered");
+  assert.equal(openAsk(root)?.id, b.interactionId);
+  assert.equal(held.dropped, 1, "the given session's hold dropped once (the take's and the ask's are one)");
+  // The console's Done after it answers the newest ask still waiting (b's), never a's twice.
+  assert.deepEqual(answerAsk(root, "done"), { outcome: "done", first: true });
+  assert.equal(await person.handoff.outcome(b.interactionId), "done");
+  assert.deepEqual(answerAsk(root, "cancelled"), { outcome: "done", first: false }, "nothing waiting: the newest's answer, written no more");
+});

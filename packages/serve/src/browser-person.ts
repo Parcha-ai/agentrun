@@ -401,6 +401,16 @@ export function personHands(options: {
     settle(id);
   };
 
+  /** Session `tag`'s newest ask still waiting (unanswered, unexpired), answered done: the person handed that session's
+   *  browser back. Its hold goes with it (settle), and another session's ask is never touched. */
+  const givenDone = (tag: string): void => {
+    const dir = askDir(options.root);
+    const waiting = dir ? asksIn(options.root).find(({ ask, answer }) => !answer && ask.tag === tag && Date.parse(ask.expires_at) > Date.now())?.ask : undefined;
+    if (!dir || !waiting || settled.has(waiting.id)) return;
+    answerOnce(dir, waiting.id, "done");
+    settle(waiting.id);
+  };
+
   /** Ask `id` as its record on disk has it, taken up by this process: one an earlier process of the run made, whose wait
    *  this process resumes (pi-browser polls `outcome` again, or reruns `request`). Its time is no longer held (that process
    *  is gone, and its holds with it). Undefined when there is no such record. */
@@ -500,6 +510,10 @@ export function personHands(options: {
           if (!live) return;
           if (why === "cap") void note(HOST_PHASE, { summary: `${CAPPED}${words ? `: ${words}` : ""}` });
           else if (why !== "answered") void note(HOST_PHASE, { summary: TAKE_ENDED[why] });
+          // Handed back by the person (the viewer's Hand back): their word that they are done, so the agent's open ask on
+          // this session is answered done, as the hand-back route would answer it (first answer wins). Never on any other
+          // end (cap, idle, away, released, answered): the person did not say they were done.
+          if (why === "given") givenDone(tag);
         },
       };
     },
