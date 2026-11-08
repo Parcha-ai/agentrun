@@ -112,6 +112,17 @@ describe("AgentPage", () => {
     expect(page.went).toEqual(["#/agents/invoice-checker/edit"]);
   });
 
+  it("says Unattended in its head when the agent never asks, and nothing when it asks", async () => {
+    const chip = (host: HTMLElement) => [...host.querySelectorAll("*")].find((e) => e.children.length === 0 && e.textContent === "Unattended");
+    const a = agentFixture("invoice-checker");
+    const page = await open({ ...a, definition: { ...a.definition, approvals: "never" } });
+    expect(chip(page.host)).toBeTruthy();
+    expect(chip(page.host)!.getAttribute("title")).toContain("never waits for you");
+  });
+  it("says nothing of approvals for an agent that asks", async () => {
+    const page = await open(agentFixture("invoice-checker"));
+    expect([...page.host.querySelectorAll("*")].some((e) => e.children.length === 0 && e.textContent === "Unattended")).toBe(false);
+  });
   it("names a model the revision sets as it is", async () => {
     const a = agentFixture("invoice-checker");
     const page = await open({ ...a, definition: { ...a.definition, model: "openrouter/some-model" } });

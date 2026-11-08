@@ -1,0 +1,74 @@
+import { act, createElement } from "react";
+import { createRoot } from "react-dom/client";
+import { afterEach, describe, expect, it } from "vitest";
+import { AgentEditor } from "./AgentEditor";
+import { type Agent, createBody, editBody, toolOffers } from "@/lib/agentForm";
+import { toolGates } from "@/lib/toolSettings";
+
+// An agent's approvals (definition.approvals): "ask", the default, parks a call its tool gate says ask for the owner's
+// answer; "never" runs it unattended, every tool it has granted (deny and pins still apply). The editor's Tools step sets
+// it, and a tool row whose permission is ask says it runs without asking while Never ask is on.
+(globalThis as { IS_REACT_ACT_ENVIRONMENT?: boolean }).IS_REACT_ACT_ENVIRONMENT = true;
+let root: ReturnType<typeof createRoot> | undefined;
+afterEach(() => { act(() => root?.unmount()); document.body.innerHTML = ""; });
+
+const NEVER_LINE = "Never ask: every tool this agent has runs without waiting for you. A tool set to deny, and a template's pins, still hold.";
+const caps = { harnesses: [{ id: "pi", available: true }], thinking: ["low"], tools: toolOffers([{ name: "read", available: true }, { name: "bash", available: true }]) };
+const gates = toolGates([{ name: "bash", permission: "ask", default_permission: "ask", permissions: ["allow", "ask", "deny"] }]);
+const agentWith = (approvals?: "ask" | "never"): Agent => ({ agent_id: "a1", kind: "agentic", revision: "rv1", revisions: 1, archived_at: null,
+  definition: { version: 1, name: "Mine", instructions: "Do it.", harness: "pi", skills: [], tools: ["read", "bash"], ...(approvals ? { approvals } : {}) } });
+
+function mount(agent: Agent | null) {
+  let saved: Record<string, unknown> | undefined;
+  const host = document.body.appendChild(document.createElement("div"));
+  root = createRoot(host);
+  act(() => root!.render(createElement(AgentEditor, { agent, caps, permissionGates: gates, step: "tools", onSave: async (f: Record<string, unknown>) => { saved = f; return null; } } as never)));
+  const radio = (label: RegExp) => [...host.querySelectorAll<HTMLInputElement>('fieldset[aria-label="Approvals"] input[type="radio"]')].find((r) => label.test(r.closest("label")?.textContent ?? ""));
+  const click = (el: Element | null | undefined) => act(() => { (el as HTMLElement).click(); });
+  const save = async () => { await act(async () => { [...host.querySelectorAll("button")].find((b) => /^(Create|Save revision)$/.test(b.textContent?.trim() ?? ""))!.click(); }); return saved; };
+  const set = (sel: string, value: string) => act(() => {
+    const el = host.querySelector(sel) as HTMLInputElement;
+    Object.getOwnPropertyDescriptor(HTMLInputElement.prototype, "value")!.set!.call(el, value);
+    el.dispatchEvent(new Event("input", { bubbles: true }));
+  });
+  return { host, radio, click, save, set };
+}
+
+describe("AgentEditor, the agent's approvals", () => {
+  it("a new agent asks by default; Never ask says what it grants and is sent as the agent's approvals", async () => {
+    const t = mount(null);
+    expect(t.radio(/^Ask me/)!.checked).toBe(true);
+    expect(t.radio(/^Never ask/)!.checked).toBe(false);
+    expect(t.host.textContent).not.toContain(NEVER_LINE);
+    t.click(t.radio(/^Never ask/));
+    expect(t.host.textContent).toContain(NEVER_LINE);
+    t.click([...t.host.querySelectorAll("main ol button, ol button")].find((b) => /Context/.test(b.textContent ?? "")));
+    t.set("#agent-name", "Unattended one");
+    const sent = await t.save();
+    expect(sent?.approvals).toBe("never");
+  });
+
+  it("an agent set to never reads Never ask; Ask me again saves its approvals as ask", async () => {
+    const t = mount(agentWith("never"));
+    expect(t.radio(/^Never ask/)!.checked).toBe(true);
+    t.click(t.radio(/^Ask me/));
+    const sent = await t.save();
+    expect(sent?.approvals).toBe("ask");
+  });
+
+  it("while Never ask is on, a tool whose permission is ask says it runs without asking", () => {
+    const t = mount(agentWith("never"));
+    const row = () => t.host.querySelector('tr[data-tool="bash"]')!.textContent ?? "";
+    expect(row()).toContain("Runs without asking: Never ask is on.");
+    t.click(t.radio(/^Ask me/));
+    expect(row()).not.toContain("Runs without asking");
+  });
+
+  it("is sent as the definition's approvals: a new agent's only when it never asks, an edit's as chosen", () => {
+    const base = { name: "N", description: "", instructions: "I", harness: "pi", tools: [] };
+    expect(createBody({ ...base, approvals: "never" }).definition.approvals).toBe("never");
+    expect("approvals" in createBody(base).definition).toBe(false);
+    expect(editBody(agentWith("never"), { approvals: "ask" }, "").definition.approvals).toBe("ask");
+    expect(editBody(agentWith(), { approvals: "never" }, "").definition.approvals).toBe("never");
+  });
+});
