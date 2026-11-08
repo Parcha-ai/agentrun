@@ -45,12 +45,15 @@ export function expectedInput(bound: number, previous: Previous | undefined, now
 }
 
 /** A request priced under `mode`: `cost(output)`, what it is held at (its expected input, never more than uncached), and
- *  `worst(output)`, its input uncached; each with its hosted tools' most fee. */
-export function requestPrice(pricing: Pricing, bound: number, previous: Previous | undefined, now: number, mode: CapMode, model: string, feeUsd = 0): { cost(output: number): number; worst(output: number): number } {
-  const worst = (output: number) => pricing({ cached: 0, fresh: bound }, output) + feeUsd;
+ *  `worst(output)`, its input uncached; each with its hosted tools' most fee. `input(output)`: the input parts `cost`
+ *  priced it with (the expected ones, or all of it uncached), which a refusal's words name. */
+export function requestPrice(pricing: Pricing, bound: number, previous: Previous | undefined, now: number, mode: CapMode, model: string, feeUsd = 0): { cost(output: number): number; worst(output: number): number; input(output: number): InputParts } {
+  const all: InputParts = { cached: 0, fresh: bound };
+  const worst = (output: number) => pricing(all, output) + feeUsd;
   const parts = mode === "strict" ? undefined : expectedInput(bound, previous, now, model);
-  if (!parts) return { cost: worst, worst };
-  return { cost: (output) => Math.min(pricing(parts, output) + feeUsd, worst(output)), worst };
+  if (!parts) return { cost: worst, worst, input: () => all };
+  const expected = (output: number) => pricing(parts, output) + feeUsd;
+  return { cost: (output) => Math.min(expected(output), worst(output)), worst, input: (output) => (expected(output) <= worst(output) ? parts : all) };
 }
 
 /** A request's whole input bound: its measured bytes, what its provider adds for what it carries, and what its hosted tools

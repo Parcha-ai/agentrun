@@ -23,14 +23,15 @@ export const isFigure = (usd: unknown): usd is number => typeof usd === "number"
  *  thinking budget, and what it counts at if stopped having streamed that many tokens (within its hold). */
 export type Judged = { heldUsd: number; boundUsd: number; worstUsd: number; outputTokensMax?: number; thinkingBudget?: number; stoppedUsd(streamedTokens: number): number };
 
-/** A model request priced: its output asked and least, and its cost and worst case at an output. */
+/** A model request priced: its output asked and least, its input's bound, and its cost and worst case at an output (with
+ *  the input parts the cost priced, `input`). */
 export function priced(request: ModelCapRequest, mode: CapMode, now: number) {
   const bound = inputBound(request);
   const price = request.model.price;
   if (bound === undefined || price === null) return undefined;
   const asked = outputAsked(request);
-  const { cost, worst } = requestPrice(pricingOf(price), bound, request.previous, now, mode, request.model.id, request.feeUsd ?? 0);
-  return { asked, cost, worst, least: asked === undefined ? 0 : outputLeast(request, asked) };
+  const { cost, worst, input } = requestPrice(pricingOf(price), bound, request.previous, now, mode, request.model.id, request.feeUsd ?? 0);
+  return { asked, bound, cost, worst, input, least: asked === undefined ? 0 : outputLeast(request, asked) };
 }
 
 function judgeModel(request: ModelCapRequest, { capUsd, spentUsd: spent, heldUsd: held, mode, now }: Known): Judged {
@@ -41,7 +42,9 @@ function judgeModel(request: ModelCapRequest, { capUsd, spentUsd: spent, heldUsd
   const p = priced(request, mode, now)!;
   const output = mostOutput(p.cost, p.least, p.asked ?? 0, capUsd - spent - held);
   if (output === undefined) {
-    const { text, figures } = roomRefusal(capUsd, spent, held, p.cost(p.least), p.worst(p.least) - p.cost(p.least));
+    // What the least is for, said beside it: the input's bound, what of it the cache reads, and the least answer.
+    const parts = { inputTokens: p.bound, cachedTokens: p.input(p.least).cached, answerTokens: p.least };
+    const { text, figures } = roomRefusal(capUsd, spent, held, p.cost(p.least), p.worst(p.least) - p.cost(p.least), parts);
     throw new CapRefused(text, { forGood: false, spentUsd: spent, figures });
   }
   const heldUsd = p.cost(output);
