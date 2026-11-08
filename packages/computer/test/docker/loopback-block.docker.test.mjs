@@ -25,6 +25,8 @@ const STAGING = "/tmp/agentrun-computerd-0123456789abcdef";
 const DAEMON = "/opt/agentrun/computerd";
 const NAMESPACE_CAPS = ["--cap-add", "SYS_ADMIN", "--cap-add", "NET_ADMIN"];
 const AGENT_PORTS = [2280, 49983];
+/** The outside isolation.vendor-agent probes too: a public IP literal on 443 and a DNS name. */
+const OUTSIDE = ["1.1.1.1:443", "example.com:443"];
 const TOOL = "2510:2510";
 
 function daemonBytes() {
@@ -113,13 +115,16 @@ describe("the loopback block: a program of the computer's user reaches no port o
 		return { name, commands, address };
 	}
 
-	/** What a program of the computer's user reaches of the stand-in: nothing, and its own loopback still works. */
+	/**
+	 * What a program of the computer's user reaches of the stand-in and of the outside (a public IP literal on 443, a DNS
+	 * name; the container itself has Docker's bridge): nothing, and its own loopback still works.
+	 */
 	async function checkCutOff(client, address) {
-		const targets = [...AGENT_PORTS.flatMap((port) => [`127.0.0.1:${port}`, `[::1]:${port}`]), ...AGENT_PORTS.map((port) => `${address}:${port}`)];
+		const targets = [...AGENT_PORTS.flatMap((port) => [`127.0.0.1:${port}`, `[::1]:${port}`]), ...AGENT_PORTS.map((port) => `${address}:${port}`), ...OUTSIDE];
 		const report = await probe(client, targets);
 		assert.deepEqual(report.interfaces, ["lo"], "a program of the computer's user sees its own loopback alone");
 		assert.equal(`${report.uid}:${report.gid}`, TOOL);
-		assert.deepEqual(outcomes(report), Object.fromEntries(targets.map((target) => [target, "refused"])), "every port of the stand-in, on every address, refused");
+		assert.deepEqual(outcomes(report), Object.fromEntries(targets.map((target) => [target, "refused"])), "every port of the stand-in, on every address, and the outside, refused");
 		// Its own loopback still works: a listener of its own, reached from inside.
 		const ran = await client.call("exec.run", { argv: ["sh", "-c", "nc -l -p 4000 -e /bin/echo own & sleep 0.3; nc 127.0.0.1 4000 </dev/null"], timeoutMs: 10_000 });
 		assert.equal(Buffer.from(ran.value.stdout, "base64").toString(), "own\n", "a program's own loopback listener answers it");

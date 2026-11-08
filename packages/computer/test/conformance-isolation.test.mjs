@@ -1,6 +1,7 @@
 // The conformance case isolation.vendor-agent against fake computers: a program the computer's user runs reaches no
-// port of the vendor's own agent, on either loopback, and sees its own loopback alone. Its ports are each provider's own
-// declaration (capabilities().vendorAgentPorts), never the case's. No Docker, no daemon, no vendor.
+// port of the vendor's own agent, on either loopback, and no outside address (a public IP literal on 443, a DNS name),
+// and sees its own loopback alone. The agent's ports are each provider's own declaration
+// (capabilities().vendorAgentPorts), never the case's. No Docker, no daemon, no vendor.
 import assert from "node:assert/strict";
 import test from "node:test";
 import { conformanceCases, coreGroups, runConformance } from "../dist/index.js";
@@ -31,9 +32,19 @@ test("it passes where the probe of each declared port on both loopbacks is refus
 	assert.deepEqual(statuses(report), { [ID]: "pass" }, reasons(report)[ID]);
 });
 
-test("it passes with no ports declared (a vendor with no agent inside), on the interfaces alone", async () => {
+test("it passes with no ports declared (a vendor with no agent inside), on the outside and the interfaces alone", async () => {
 	const report = await run({ vendorAgentPorts: [] });
 	assert.deepEqual(statuses(report), { [ID]: "pass" }, reasons(report)[ID]);
+});
+
+test("it fails where a program reaches an outside address, by a public IP literal on 443 or by a DNS name, with or without agent ports", async () => {
+	for (const vendorAgentPorts of [[2280], []]) {
+		for (const target of ["1.1.1.1:443", "example.com:443"]) {
+			const report = await run({ vendorAgentPorts, agentAnswers: [target] });
+			assert.equal(statuses(report)[ID], "fail", `${target} with ports ${JSON.stringify(vendorAgentPorts)}`);
+			assert.ok(reasons(report)[ID].includes(target), reasons(report)[ID]);
+		}
+	}
 });
 
 test("it fails where a program reaches the vendor's agent on a loopback, and names the target", async () => {
