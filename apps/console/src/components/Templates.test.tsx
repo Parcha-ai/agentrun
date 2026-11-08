@@ -123,6 +123,9 @@ describe("applying a template", () => {
     expect(box.checked).toBe(false);
     await t.click(t.button(/^Apply/));
     expect(t.sent[0].body.parameters).toEqual({ repo: "acme/web", strict: false });
+    await t.click(box);
+    await t.click(t.button(/^Apply/));
+    expect(t.sent[1].body.parameters).toEqual({ repo: "acme/web", strict: true });
   });
 
   it("places a 422's issues at their fields: a parameter under its input, a grant at its tool", async () => {
