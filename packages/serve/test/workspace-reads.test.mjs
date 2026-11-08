@@ -10,6 +10,7 @@ import { test } from "node:test";
 import { confineTestHooks as confineHooks } from "@parcha/pi-durable-disk/internals";
 import { promptOf } from "../dist/app.js";
 import { assertHardlinkProtection, openWorkFile, walkWork, workspaceTestHooks } from "../dist/workspace.js";
+import { localWorkspace } from "../dist/workspace/index.js";
 import { agent, follow, runDir, scratch, serve } from "./support.mjs";
 
 const CANARY = `not-a-secret-canary-${process.pid}`;
@@ -87,17 +88,15 @@ test("a skill's SKILL.md is read through no link: a skill directory linked out o
   await writeFile(join(outside, "SKILL.md"), CANARY);
   await mkdir(join(server.work, ".agents", "skills"), { recursive: true });
   await symlink(outside, join(server.work, ".agents", "skills", "linked"));
-  await assert.rejects(promptOf("Answer.", ["linked/SKILL.md"], server.work), (error) => !String(error?.message).includes(CANARY));
+  await assert.rejects(promptOf("Answer.", ["linked/SKILL.md"], localWorkspace(server.work)), (error) => error?.code === "ESCAPE" && !String(error?.message).includes(CANARY));
 });
 
-test("a skill's SKILL.md swapped for a link after its check is refused", async (t) => {
+test("a skill's SKILL.md that is itself a link to the server's file is refused, and none of its text reaches the prompt", async (t) => {
   const server = await unserved(t);
   const dir = join(server.work, ".agents", "skills", "s");
   await mkdir(dir, { recursive: true });
-  await writeFile(join(dir, "SKILL.md"), "Be brief.");
-  const fired = swapOnCheck(t, server.work, ".agents/skills/s/SKILL.md", server.secret);
-  await assert.rejects(promptOf("Answer.", ["s/SKILL.md"], server.work), (error) => !String(error?.message).includes(CANARY));
-  assert.equal(fired(), 1, "the read was checked by the confinement");
+  await symlink(server.secret, join(dir, "SKILL.md"));
+  await assert.rejects(promptOf("Answer.", ["s/SKILL.md"], localWorkspace(server.work)), (error) => error?.code === "ESCAPE" && !String(error?.message).includes(CANARY));
 });
 
 test("serve can require that the kernel refuses hard links to files the linker cannot write", () => {

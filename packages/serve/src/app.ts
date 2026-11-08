@@ -49,6 +49,7 @@ import { EnvironmentLine, environmentLine } from "./environment.js";
 import { effortGuidance } from "./effort-guidance.js";
 import { isObject } from "./validate.js";
 import { mirrorWrites } from "./workspace.js";
+import { localWorkspace } from "./workspace/index.js";
 import { deniedText, runGate } from "./tool-gate.js";
 
 /** The workflow adapters this host gives every run: model nodes, and calls `via: "tool"` to the table's tools. Typed
@@ -199,7 +200,7 @@ export default async function app(where: AppContext): Promise<AppOptions> {
     // names each skill and its file when the run reads its files (it reads the SKILL.md when it fits), else keeps every
     // skill whole (skills.ts).
     const check = await entry.skillCheck?.();
-    const { system: instructions, native } = await systemOf(learned.instructions, learned.skills, where.work, check, { onDemand: readsFiles(revision.body.tools) });
+    const { system: instructions, native } = await systemOf(learned.instructions, learned.skills, localWorkspace(where.work), check, { onDemand: readsFiles(revision.body.tools) });
     // The session's system prompt starts with the line, made as this process opens it: a run resumed on a later day is
     // opened with that day.
     const spec = { key: `run:${run.id}`, label: run.agent, system: [environmentLine(), instructions, guidance].filter((text): text is string => Boolean(text)), context: "fresh" as const, thinking: thinkingFor(facts, thinkingLevel), ...(gateway ? { mcp: gateway } : {}) };
@@ -277,7 +278,7 @@ export default async function app(where: AppContext): Promise<AppOptions> {
     }
     registry.install(toolGate.extension(tools));
     // Each skill named with its file when the run reads its files (it reads the SKILL.md when it fits), else whole.
-    const instructions = [await promptOf(learned.instructions, learned.skills, where.work, { onDemand: readsFiles(revision.body.tools) }), guidance].filter(Boolean).join("\n\n");
+    const instructions = [await promptOf(learned.instructions, learned.skills, localWorkspace(where.work), { onDemand: readsFiles(revision.body.tools) }), guidance].filter(Boolean).join("\n\n");
     // The calls that wait for a person's approval are read as the run opens, and their answers acted on from then.
     const onOpen = async (durable: DurableRun) => {
       runHarness = durable.harness;

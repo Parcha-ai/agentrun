@@ -15,6 +15,7 @@ import { agentFolderOf } from "../dist/files.js";
 // One namespace, so each test reads what it needs of it as it runs.
 import * as learning from "../dist/learning.js";
 import { systemOf } from "../dist/skills.js";
+import { localWorkspace } from "../dist/workspace/index.js";
 import { ended, git } from "./learn-support.mjs";
 import { agent, follow, runDir, scratch, serve, withEnv } from "./support.mjs";
 import { fauxTable } from "./fixtures/faux-table.mjs";
@@ -96,7 +97,7 @@ test("with claude-agent's own check: 900 KiB of the revision's skills and a 200 
   const check = await builtinHarness("claude-agent").skillCheck();
   assert.ok(check, "the installed claude-agent adapter's own check");
   const learned = await withLearned(runDir, work, "Answer.", Object.keys(revision));
-  const { system, native } = await systemOf(learned.instructions, learned.skills, work, check);
+  const { system, native } = await systemOf(learned.instructions, learned.skills, localWorkspace(work), check);
   assert.deepEqual(native.map(({ name }) => name), ["check-units", "cite"], "the revision's and the learned one that fit are the adapter's own");
   assert.deepEqual(inlined(system), [], "none is in the prompt");
   // A run with a pin learns, so it is told so under # Learned (#1542), here with nothing learned yet but its skills.
@@ -111,7 +112,7 @@ test("with claude-agent's own check: 900 KiB of the revision's skills and a 200 
   // revision's among them, goes back in the prompt.
   mkdirSync(join(skillsDir(work), "big-notes"));
   writeFileSync(join(skillsDir(work), "big-notes", "SKILL.md"), big);
-  const unbudgeted = await systemOf("Answer.", [...learned.skills, "big-notes/SKILL.md"], work, check);
+  const unbudgeted = await systemOf("Answer.", [...learned.skills, "big-notes/SKILL.md"], localWorkspace(work), check);
   assert.deepEqual([unbudgeted.native, inlined(unbudgeted.system)], [[], ["big-notes", "check-units", "cite"]]);
 });
 
@@ -269,7 +270,7 @@ test("a learned skill the run's work no longer holds whole is left out of what i
   symlinkSync(outside, join(skillsDir(work), "keep-dates", "SKILL.md"));
   const learned = await withLearned(runDir, work, "Answer.", ["cite/SKILL.md"]);
   assert.deepEqual(learned.skills, ["cite/SKILL.md"], "the revision's alone");
-  const { system } = await systemOf(learned.instructions, learned.skills, work);
+  const { system } = await systemOf(learned.instructions, learned.skills, localWorkspace(work));
   assert.deepEqual(inlined(system), ["cite"]);
   assert.ok(!system.includes(CANARY));
 });
