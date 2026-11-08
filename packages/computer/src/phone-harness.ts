@@ -421,7 +421,9 @@ export class PhoneHarnessProvider implements ComputerProvider {
 			link = asked.value.json as Session["adb"];
 		}
 		const { host, port, code } = link ?? {};
-		if (typeof host !== "string" || !/^[A-Za-z0-9.:-]+$/.test(host) || !Number.isSafeInteger(port) || typeof code !== "string" || !/^[A-Za-z0-9]+$/.test(code)) {
+		// The vendor's shapes (OpenAPI SessionAdb): a DNS name, a port, and a code ph_ and base32 letters. Anything outside
+		// these characters is refused rather than passed to adb.
+		if (typeof host !== "string" || !/^[A-Za-z0-9.:-]+$/.test(host) || !Number.isSafeInteger(port) || typeof code !== "string" || !/^[A-Za-z0-9_-]{1,128}$/.test(code)) {
 			return fail("phone", `the phone harness gave ${ref.id} no adb link this provider can use (a host, a port and an unlock code)`);
 		}
 		const serial = `${host}:${port}`;
