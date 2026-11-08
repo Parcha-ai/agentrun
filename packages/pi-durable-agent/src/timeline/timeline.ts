@@ -469,6 +469,17 @@ function diagnosticOf(text: string): string | undefined {
   return first ? (first[2] ?? "") : (inner[0] ?? "");
 }
 
+/** A browser call that waited for the person to hand the browser back (pi-browser's `waited_for_person_ms` in its
+ *  result's details) says so first, and for how long: its row spans the person's take-over, and without it the call
+ *  reads as the agent acting while the person had the browser. */
+const WAITED_FOR_PERSON = "waited_for_person_ms";
+const waitedFirst = (tool: string, result: ToolResultView | undefined, said: string): string => {
+  const ms = obj(result?.details)?.[WAITED_FOR_PERSON];
+  if (!BROWSER_STEPS.has(tool) || typeof ms !== "number" || !Number.isFinite(ms) || ms <= 0) return said;
+  const long = ms < 1000 ? `${Math.round(ms)} ms` : `${Math.round(ms / 1000)} s`;
+  return `Waited for you ${long}, then ${said.charAt(0).toLowerCase()}${said.slice(1)}`;
+};
+
 /** One place turns entries into rows, whether they come from a released store or from live events. */
 function createProjector(options: TimelineOptions) {
   const redactedWhy = redactOf(options);
@@ -479,7 +490,7 @@ function createProjector(options: TimelineOptions) {
     const named = (value: unknown) => (typeof value === "string" && value ? options.path!(value) : value);
     return "path" in args || "file_path" in args ? { ...args, ...("path" in args ? { path: named(args.path) } : {}), ...("file_path" in args ? { file_path: named(args.file_path) } : {}) } : args;
   };
-  const label = (tool: string, args: Obj, result?: ToolResultView) => labelOf(tool, shown(args), result, options.labels);
+  const label = (tool: string, args: Obj, result?: ToolResultView) => waitedFirst(tool, result, labelOf(tool, shown(args), result, options.labels));
   const seen = new Set<string>();
   const calls = new Map<string, OpenCall>();
   // Results stored before their call (a harness bridge once wrote a result before the answer holding its call), by

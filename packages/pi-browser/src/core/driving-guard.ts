@@ -80,12 +80,19 @@ function epochFenced<D extends BrowserDriver>(driver: D, gate: DrivingGate, epoc
 /** The abort of a call that waited for the person and was stopped meanwhile: nothing was done. */
 const STOPPED_WAITING = () => new BrowserFailureError(browserFailure("aborted", "The call was stopped while it waited for the person to hand the browser back; nothing was done."));
 
+/** How long a call waited for the person to hand the browser back, in its result's details: a host's timeline says the
+ *  call waited, and for how long, so a call row that spans a take-over does not read as the agent acting meanwhile. */
+export const WAITED_FOR_PERSON = "waited_for_person_ms";
+
 /** One browser tool as a model call on its session's driving gate: it is refused, typed and before it has done anything, while a person drives that session
  *  through the live view, and it holds the gate for as long as it runs, so the viewer's input is held meanwhile. The session is known when the tool first
  *  asks its port for it (`session()` or `relaunch()`), which is every tool's first act on the browser. */
-export function drivingGuard<D extends BrowserDriver, A = unknown>(impl: ToolImpl<D, A>, gates: DrivingGates = drivingGates, options: { early?: boolean } = {}): ToolImpl<D, A> {
+export function drivingGuard<D extends BrowserDriver, A = unknown>(impl: ToolImpl<D, A>, gates: DrivingGates = drivingGates, options: { early?: boolean; now?: () => number } = {}): ToolImpl<D, A> {
+  const now = options.now ?? Date.now;
   return async (args: A, port: CustodyPort<D>, call: ToolCall): Promise<ToolOutput> => {
     let held: { tag: string; release(): void; gate: DrivingGate; epoch: number } | null = null;
+    /** How long this call waited for the person, all told (ms). */
+    let waitedMs = 0;
     /** Takes the tag's gate for the model, first waiting (inside the call, never failing it) while the person holds the browser; `drove` when a person
      *  has driven that session since the model's last call, `waited` when this call waited for the person to hand it back. */
     const enter = async (tag: string): Promise<{ drove: boolean; waited: boolean }> => {
@@ -96,7 +103,8 @@ export function drivingGuard<D extends BrowserDriver, A = unknown>(impl: ToolImp
         // Held, or handed back with the person's last command still settling: the call waits for both.
         if (isHeld(gate) || isSettling(gate)) {
           waited = true;
-          try { await gate.untilFree?.(call?.signal); } catch { throw STOPPED_WAITING(); }
+          const from = now();
+          try { await gate.untilFree?.(call?.signal); } catch { throw STOPPED_WAITING(); } finally { waitedMs += Math.max(0, now() - from); }
           continue;
         }
         const entered = gate.model();
@@ -126,7 +134,8 @@ export function drivingGuard<D extends BrowserDriver, A = unknown>(impl: ToolImp
     try {
       // A tool that ends the session (release, relaunch) does not ask for it first: the gate is taken for the session that is attached now.
       if (options.early) { const tag = await port.current?.(); if (tag) await enter(tag); }
-      return await impl(args, guarded, call);
+      const out = await impl(args, guarded, call);
+      return waitedMs > 0 ? { ...out, details: { ...out.details, [WAITED_FOR_PERSON]: Math.round(waitedMs) } } : out;
     } finally {
       (held as { release(): void } | null)?.release();
     }
