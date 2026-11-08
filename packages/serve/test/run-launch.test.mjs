@@ -34,7 +34,7 @@ test("a launch body round-trips every field a run's spec is built from", () => {
     plane: { model: "a-model" },
     approvers: true,
     documents: "/docs",
-    boxAllow: ["example.com", "10.0.0.0/8"],
+    boxAllow: ["example.com", "8.8.8.0/24"],
     followUp: true,
   };
   assert.deepEqual(readLaunchBody(launchBody(launch)), launch);
