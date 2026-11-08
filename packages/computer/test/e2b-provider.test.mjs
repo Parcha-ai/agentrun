@@ -796,6 +796,35 @@ test("release honours the caller's signal while it waits, and is bounded by gone
 	assert.match(timedOut.error.message, /running/);
 });
 
+test("release still reads and kills the computer when the caller's signal aborted before it or during the read: the signal ends only the wait", async () => {
+	const before = setup();
+	const one = seeded(before.fake);
+	const already = await before.provider.release(one.ref, "delete", { signal: AbortSignal.abort() });
+	assert.deepEqual(before.fake.kills, [one.ref.id], "a release after an abort still kills the computer");
+	assert.equal(already.ok, false);
+	assert.equal(already.error.code, "aborted");
+	assert.match(already.error.message, /after its kill/);
+
+	const controller = new AbortController();
+	let first = true;
+	const onStep = (step) => {
+		if (step !== "Sandbox.getInfo" || !first) return;
+		first = false;
+		controller.abort();
+	};
+	const during = setup({}, { onStep });
+	const two = seeded(during.fake);
+	const aborted = await during.provider.release(two.ref, "delete", { signal: controller.signal });
+	assert.deepEqual(during.fake.kills, [two.ref.id], "an abort during the ownership read still kills the computer");
+	assert.equal(aborted.error.code, "aborted");
+
+	const theirs = setup();
+	const other = theirs.fake.add({ metadata: { other: "1" } });
+	const left = await theirs.provider.release({ id: other.id, name: "computer-0123456789ab" }, "delete", { signal: AbortSignal.abort() });
+	assert.equal(left.error.code, "not_found", "a sandbox not this provider's is left as it is, signal or not");
+	assert.deepEqual(theirs.fake.kills, []);
+});
+
 test("release stop is refused in words, and a sandbox not this provider's is left as it is", async () => {
 	const { provider, fake } = setup();
 	const { ref } = seeded(fake);
