@@ -74,7 +74,9 @@ So:
 3. **Sources: the fetch plan, per company.** In this order, within the context budget:
    1. **Changelog** (`max_chars: 3000`): the changelog, release notes or product blog (`/changelog`, `/releases`,
       `/blog`, `/news`). Entries are dated: keep those inside the window. Unknown URL: fetch the home page once at
-      offset 0 with `max_chars: 1000` for its links, which counts as this fetch's place.
+      offset 0 with `max_chars: 1000` for its links, then read the changelog it links with this step's fetch. That
+      costs one fetch more, so this run skips the pricing baseline (fetch 3) for that company and says so in
+      `unreachable`; the discovered URL goes in a learned note, so next week starts from it.
    2. **Pricing** (`max_chars: 6000`): the pricing page's plan table. It carries no dates, so it needs a baseline: a
       price the previous digest quoted, else fetch 3.
    3. **Pricing baseline** (`max_chars: 6000`): the archive copy from before the window,

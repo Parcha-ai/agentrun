@@ -149,6 +149,9 @@ Screen the company **and** each named person against the OFAC SDN, OFAC consolid
 following `SANCTIONS.md`: its methods in order (rows in the input first, then a list owner's record), its match rules,
 and its rule for what to say when a list could not be reached.
 
+- How many: every entity and person this step names gets its own entry in `sanctions.subjects` (the schema holds 32:
+  the company, its parents, its former and trading names and up to 10 people fit). Past 32, screen the rest too and name
+  them in `limitations` with their results in one line each; never drop a screening to fit.
 - Who to screen: the subject only. When it is unresolved, that is the applicant's name as given and the people its own
   material names; never a rejected candidate or its officers. Then: the company under its legal name and every former
   or trading name you found; every beneficial owner
