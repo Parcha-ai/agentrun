@@ -16,6 +16,8 @@ import { chromium } from "playwright-core";
 
 /** The one address the servers here listen on, and the pages open: nothing leaves loopback. */
 export const LOOPBACK = "127.0.0.1"; // key-gate: loopback-rule the e2e servers listen on loopback only
+/** The same loopback by name: another origin for the same server (a page opened at another address than its own). */
+export const LOOPBACK_NAME = "localhost"; // key-gate: loopback-rule the same e2e server by its loopback name
 
 /** The checkout these tests are in: the default target. */
 export const ROOT = join(dirname(fileURLToPath(import.meta.url)), "../../..");
