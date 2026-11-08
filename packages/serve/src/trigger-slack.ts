@@ -149,12 +149,12 @@ export const slack: TriggerAdapter = {
       const doc = jsonOf(body);
       return isObject(doc) && doc.type === "url_verification" && typeof doc.challenge === "string" ? { status: 200, body: { challenge: doc.challenge } } : undefined;
     },
-    parse(_headers, body, own) {
+    parse(_headers, body, _source, own) {
       const doc = jsonOf(body);
-      const team_id = own("team_id");
-      const bot_user_id = own("bot_user_id");
+      const team_id = own?.("team_id");
+      const bot_user_id = own?.("bot_user_id");
       if (!isObject(doc) || doc.type !== "event_callback" || !team_id || !bot_user_id) return [];
-      const app_id = own("app_id");
+      const app_id = own?.("app_id");
       const message = slackMessageOf(doc, { team_id, bot_user_id, ...(app_id ? { app_id } : {}) });
       return "ignored" in message ? [] : [slackEvent(message)];
     },

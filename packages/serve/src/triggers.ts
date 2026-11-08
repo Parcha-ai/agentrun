@@ -438,7 +438,7 @@ export class Triggers {
    *  and its run. Keyed by the sender's own id for it, so a retry is one firing; recorded due, with its conversation,
    *  in one write, and driven after the answer in its trigger's turn; refused (429) while the trigger holds DUE_KEPT
    *  firings due. Undefined: nothing to act on. `created` false: that id's firing, as it stands. */
-  receiveEvent(id: string, event: PushEvent): { created: boolean; firing: ReturnType<typeof firingView> } | undefined {
+  receiveEvent(id: string, event: PushEvent): { created: boolean; firing: ReturnType<typeof firingView> | { ok: "duplicate" } } | undefined {
     const trigger = this.need(id);
     const by = trigger.source.kind;
     const trust = this.adapter(trigger.source).trust ?? SENDER_STARTS;
@@ -803,7 +803,7 @@ export class Triggers {
   }
 
   private started(triggerId: string, key: string, runId: string): void {
-    this.settle(triggerId, key, { status: "started", run_id: runId }, (t) => {
+    this.settle(triggerId, key, { status: "started", run_id: runId }, (t, firing) => {
       t.failures_in_a_row = 0;
       // A conversation's start: its run, which its later events message.
       const conversation = firing.conversation === undefined ? undefined : t.conversations?.[firing.conversation];
