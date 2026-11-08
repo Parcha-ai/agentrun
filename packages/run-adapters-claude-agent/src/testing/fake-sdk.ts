@@ -70,7 +70,13 @@ export interface FakeSdkOptions {
    * Commands, one per user message the fake consumes, in place of the message's text: a runner sends its own prompts
    * (the node's, then a nudge), so a test scripts what the "model" does instead. Past the end, the message's text.
    */
-  script?: readonly string[];
+  script?: readonly string[] | ((text: string) => string | undefined);
+  /**
+   * What the "model" says after a `call` returns, in place of `<tool> returned: <result>`: given the tool, its result and
+   * the steers folded into the turn. Said as text events too (as with `remoteModel`), so a host's record of what the
+   * model said carries it.
+   */
+  reply?: (call: { name: string; result: string; steers: readonly string[] }) => string;
   /** Each `PreToolUse` decision a built-in got (with the input the hook rewrote, if it did). */
   onDecision?: (call: { id: string; name: string; decision: string; updatedInput?: Record<string, unknown>; reason?: string }) => void;
 }
@@ -360,7 +366,10 @@ export function fakeSdk(fake: FakeSdkOptions = {}): FakeSdk {
           parent = u.uuid;
           await mirror([{ type: 'queue-operation', operation: 'enqueue' }, u]);
           // A note the harness put before the message (the sandbox's: a lost Drive) is not part of the command.
-          const command = fake.script && scripted < fake.script.length ? fake.script[scripted++]! : text.replace(/^(?!(?:builtin|exit-during-builtin|exit-during|call) )[^\n]*\n\n/, '');
+          // A script as a function decides by the message's own text (a resumed CLI is handed the same words again), a
+          // list by how many messages this fake consumed.
+          const scriptedCommand = typeof fake.script === 'function' ? fake.script(text) : fake.script && scripted < fake.script.length ? fake.script[scripted++] : undefined;
+          const command = scriptedCommand ?? text.replace(/^(?!(?:builtin|exit-during-builtin|exit-during|call) )[^\n]*\n\n/, '');
           const builtin = /^(builtin|exit-during-builtin) (\S+) (.*)$/s.exec(command);
           if (builtin) {
             const id = `toolu_${randomUUID().slice(0, 8)}_${++calls}`;
@@ -415,9 +424,11 @@ export function fakeSdk(fake: FakeSdkOptions = {}): FakeSdk {
             await mirror([r]);
             yield { type: 'user', parent_tool_use_id: null, message: r.message };
             // A steer sent while the call ran is folded into this turn.
+            const steers: string[] = [];
             for (let i = inbox.findIndex((x) => x.priority === 'next'); i >= 0; i = inbox.findIndex((x) => x.priority === 'next')) {
               const s = inbox.splice(i, 1)[0];
               consumed.push(s.uuid);
+              steers.push(s.message.content);
               fake.onMessage?.({ uuid: s.uuid, text: s.message.content, priority: s.priority });
               // As the CLI does: a message taken in mid-turn is a queued_command attachment naming it, not a user entry.
               await mirror([
@@ -425,8 +436,10 @@ export function fakeSdk(fake: FakeSdkOptions = {}): FakeSdk {
                 entry('attachment', { attachment: { type: 'queued_command', prompt: s.message.content, source_uuid: s.uuid } }),
               ]);
             }
-            const reply = `${name} returned: ${result.content[0]?.text}${consumed.length > 1 ? ' (and I read your steer)' : ''}`;
-            if (fake.remoteModel) yield* speak(reply);
+            const reply = fake.reply
+              ? fake.reply({ name, result: String(result.content[0]?.text ?? ''), steers })
+              : `${name} returned: ${result.content[0]?.text}${consumed.length > 1 ? ' (and I read your steer)' : ''}`;
+            if (fake.remoteModel || fake.reply) yield* speak(reply);
             const b = entry('assistant', { message: { role: 'assistant', content: [{ type: 'text', text: reply }] } });
             await mirror([b]);
             yield { type: 'assistant', parent_tool_use_id: null, uuid: b.uuid, session_id: sessionId, message: b.message };

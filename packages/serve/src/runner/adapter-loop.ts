@@ -18,7 +18,7 @@ import { createModels } from "@earendil-works/pi-ai/models";
 import { type Conversation, type ConversationId, createRegistry, Harness, LiveDoc } from "@earendil-works/pi-durable";
 import { type AdapterSession, type AgentAdapter, type BeforeRequest, type HostTool, modelPortFor, type Refusal, runBooking, type SessionSpec } from "@parcha/agentrun-kernel";
 import type { KernelHooks, ToolCall } from "./conformance/subject.js";
-import { type AnswerData, type AskData, type BudgetData, type EndData, KINDS, type RaiseData } from "./journal-kinds.js";
+import { type AnswerData, type AskData, type BudgetData, type CallEndData, type CallStartData, type CallStatus, type EndData, KINDS, type MessageData, type RaiseData } from "./journal-kinds.js";
 import type { Claim, Command, CommandOutcome, Loop, LoopDeps, LoopEnd, LoopFactory, StopReason } from "./loop-contract.js";
 import { approvalOf, CLOSE_MS, STOP_SETTLE_MS, commandRequest, DEFAULT_RESTART_LIMIT, entriesOf, findData, Gate, heldReporter, Interrupted, KernelFault, Parked, quiet, restartLimited, writesEntry, writesSubmission } from "./loop.js";
 import type { PiRun, PiSessionIO, PreIntentAnswer, PreIntentCall } from "./adapters/pi.js";
@@ -40,6 +40,11 @@ export interface AdapterRunSpec {
   readonly session: SessionSpec;
   /** The person's first message, sent once, on the run's first claim. */
   readonly input: string;
+  /** Who keeps the run's visible record (its calls and messages, as the one reader reads them). Absent: the adapter
+   *  (pi's own tasks and entries). "loop": a harness whose records are resume log only (a CLI's session): the loop writes
+   *  the person's input, each host-tool call's start (after the gate, before the call) and end, and what the model said
+   *  (its text events, at each call and turn boundary), and ends interrupted a call a crash or a fault left open. */
+  readonly record?: "loop";
   readonly hooks?: KernelHooks;
   /** The gate's answer for a call, before its intent: run it, refuse it, or ask a person (the run parks). */
   readonly gate?: (call: ToolCall) => "allow" | "ask" | "deny";
@@ -68,6 +73,83 @@ export interface AdapterLoopOptions {
   /** How many times pi restarts a call's task cut off without progress before it ends it (restart_limit); finite.
    *  Default DEFAULT_RESTART_LIMIT. */
   readonly restartLimit?: number;
+}
+
+/** The run's visible record, as the loop keeps it for a harness whose own records are resume log only (record: "loop"):
+ *  the KINDS entries the one reader reads, on the run's root conversation, each its own commit through the run's Harness
+ *  (so the claim fences it like every journal write). */
+interface CliRecord {
+  /** The adapter's event: text accumulates; a call's start and the turn's end write what was said so far. */
+  onEvent(event: Parameters<PiSessionIO["onEvent"]>[0]): void;
+  /** What the model said since the last boundary, written now. */
+  flushText(): Promise<void>;
+  /** The person's input, written once for the run (a resumed claim that finds it writes it again never). */
+  person(text: string): Promise<void>;
+  /** A call's start, before it runs (once per call id). */
+  start(callId: string, tool: string, input: unknown, replaySafe: boolean): Promise<void>;
+  /** A started call's end (once). */
+  end(callId: string, status: CallStatus, output?: string): Promise<void>;
+}
+
+/** The record on `root` of the run's Harness: what the journal holds already read once, and every call a crash or a
+ *  fault left with a start and no end ended interrupted (the CLI never runs it again: its own resume says so). */
+async function openCliRecord(harness: Harness, journal: Gate["journal"], context: Context): Promise<CliRecord> {
+  const root = await harness.root(context);
+  const append = async (kind: string, data: CallStartData | CallEndData | MessageData): Promise<void> => {
+    await harness.commit((tx) => tx.appendEntry(root.id, { kind, data: data as unknown as JsonValue }), context);
+  };
+  // Each call started on the record: whether it has its end.
+  const started = new Map<string, boolean>();
+  let personWritten = false;
+  for (const entry of await entriesOf(journal, root.id, context)) {
+    const data = (entry.data ?? {}) as { callId?: unknown; role?: unknown };
+    if (entry.kind === KINDS.callStart && typeof data.callId === "string") started.set(data.callId, started.get(data.callId) ?? false);
+    else if (entry.kind === KINDS.callEnd && typeof data.callId === "string") started.set(data.callId, true);
+    else if (entry.kind === KINDS.message && data.role === "person") personWritten = true;
+  }
+  for (const [callId, ended] of started) {
+    if (ended) continue;
+    await append(KINDS.callEnd, { callId, status: "interrupted" });
+    started.set(callId, true);
+  }
+  let text = "";
+  // One write at a time, in the order they were asked for, a failed one never stopping the next.
+  let chain: Promise<void> = Promise.resolve();
+  const inTurn = (work: () => Promise<void>): Promise<void> => (chain = chain.then(work, work));
+  const flushText = () =>
+    inTurn(async () => {
+      if (text === "") return;
+      const said = text;
+      text = "";
+      await append(KINDS.message, { role: "model", text: said });
+    });
+  return {
+    onEvent(event) {
+      if (event.type === "text") text += event.delta;
+      else if (event.type === "tool_start" || event.type === "turn_end") void flushText().catch(() => undefined);
+    },
+    flushText,
+    person: (input) =>
+      inTurn(async () => {
+        if (personWritten) return;
+        await append(KINDS.message, { role: "person", text: input });
+        personWritten = true;
+      }),
+    async start(callId, tool, input, replaySafe) {
+      await flushText();
+      await inTurn(async () => {
+        if (started.has(callId)) return;
+        await append(KINDS.callStart, { callId, tool, input, replaySafe });
+        started.set(callId, false);
+      });
+    },
+    end: (callId, status, output) =>
+      inTurn(async () => {
+        if (started.get(callId) !== false) return;
+        await append(KINDS.callEnd, { callId, status, ...(output === undefined ? {} : { output }) });
+        started.set(callId, true);
+      }),
+  };
 }
 
 /** Loops for runs on the adapter contract: `spec(claim, run)` gives each Session what it runs. */
@@ -231,30 +313,44 @@ function adapterLoop(specOf: (claim: Claim, run: AdapterRun) => AdapterRunSpec |
           },
         });
         const gateOf = preIntentGate(spec, hooks);
+        // A CLI's run: the loop keeps its visible record (record: "loop"), every call a crash or a fault left open ended.
+        const record = spec.record === "loop" ? await openCliRecord(harness, gate.journal, context) : undefined;
         const tools: HostTool[] = spec.session.tools.map((tool) => ({
           ...tool,
           // The rule before a side effect, on the host-tool path every adapter's calls take: after the call's intent, a
           // flush unless the tool is replay-safe, the call, then the beforeResult point. A throw there is the kernel's own
           // fault: the journal is sealed before the harness's result commit, so the Session fails with the call before
-          // its result, and the loop restarts it.
-          call: (args, toolContext) =>
-            sideEffect({
-              replaySafe: tool.replay === "safe",
-              flush: () => deps.flush(),
-              route: () => tool.call(args, toolContext),
-              beforeResult: async (answer) => {
-                const call: ToolCall = { callId: toolContext.callId, tool: tool.name as never, args: (args ?? {}) as Record<string, unknown> };
-                try {
-                  await hooks.beforeResult(call, answer.text);
-                } catch (error) {
-                  fault = new KernelFault(call, error);
-                  gate!.seal(fault);
-                  throw fault;
-                }
-              },
-            }),
+          // its result, and the loop restarts it. A CLI's call reaches here only once the gate allowed it (its tool
+          // bridge asks first), so its record's start is written here, before the flush and the call, and its end after.
+          call: async (args, toolContext) => {
+            if (record) await record.start(toolContext.callId, tool.name, args ?? {}, tool.replay === "safe");
+            try {
+              const answer = await sideEffect({
+                replaySafe: tool.replay === "safe",
+                flush: () => deps.flush(),
+                route: () => tool.call(args, toolContext),
+                beforeResult: async (answer) => {
+                  const call: ToolCall = { callId: toolContext.callId, tool: tool.name as never, args: (args ?? {}) as Record<string, unknown> };
+                  try {
+                    await hooks.beforeResult(call, answer.text);
+                  } catch (error) {
+                    fault = new KernelFault(call, error);
+                    gate!.seal(fault);
+                    throw fault;
+                  }
+                },
+              });
+              if (record) await record.end(toolContext.callId, answer.isError ? "failed" : "done", answer.text);
+              return answer;
+            } catch (error) {
+              // A call its stop or its signal cut off ends interrupted; a fault leaves its end to the next open (the
+              // journal is sealed now), which ends it interrupted.
+              if (record && !(error instanceof KernelFault) && !gate!.sealed) await record.end(toolContext.callId, "interrupted").catch(() => undefined);
+              throw error;
+            }
+          },
         }));
-        const io: PiSessionIO = { writer, models: booking.models, signal: deps.signal, onEvent: () => {}, gate: gateOf };
+        const io: PiSessionIO = { writer, models: booking.models, signal: deps.signal, onEvent: record ? (event) => record.onEvent(event) : () => {}, gate: gateOf };
         session = await spec.adapter.open({ ...spec.session, tools }, io);
         root = await harness.root(context);
         // A run brought back from a park: the raises its claim has are taken together, once its delivery is done.
@@ -295,11 +391,17 @@ function adapterLoop(specOf: (claim: Claim, run: AdapterRun) => AdapterRunSpec |
             followedUp = true;
           }
         }
+        // A claim that starts a turn (the input, a recovery, a follow-up) waits for that turn's end: state is the session as
+        // open found it, and a CLI adapter reads idle once its turn is sent, so state read after a send says nothing.
+        const placed = followedUp || session!.state !== "idle";
         if (followedUp) {
           // The follow-up is the turn this claim runs.
-        } else if (session!.state === "new") await session!.send(spec.input);
+        } else if (session!.state === "new") {
+          await record?.person(spec.input);
+          await session!.send(spec.input);
+        }
         else if (session!.state === "open_turn") await session!.recover();
-        const turn = session!.state === "idle" ? Promise.resolve({ status: "completed" as const }) : session!.turnEnd();
+        const turn = placed ? session!.turnEnd() : Promise.resolve({ status: "completed" as const });
         const end = await Promise.race([turn.then(() => "answered" as const), parking.then(() => "parked" as const), stopping.then(() => "stop" as const), harness.closed.then(() => "closed" as const)]);
         if (end === "parked") {
           gate.seal(new Parked());
@@ -326,6 +428,8 @@ function adapterLoop(specOf: (claim: Claim, run: AdapterRun) => AdapterRunSpec |
           return await writeEnd(harness, root, gate, { state: "stopped", summary: "stopped by a person" }, [stopReason.commandId]);
         }
         const outcome = await turn;
+        // What the model said last, on the record before the run's end.
+        await record?.flushText();
         await harness.waitForIdle(context);
         const cutOff = restartLimited(await entriesOf(gate.journal, root.id, context));
         if (cutOff) return await writeEnd(harness, root, gate, { state: "failed", summary: `a tool call faulted on every restart: ${cutOff}` }, []);
