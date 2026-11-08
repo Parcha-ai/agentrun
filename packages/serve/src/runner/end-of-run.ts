@@ -33,9 +33,14 @@ export function underLearning(work: string | undefined, args: unknown): boolean 
 /** The tools whose write the end-of-run turn is refused under work/.learning/. */
 export const WRITES = new Set(["write", "edit"]);
 
-/** The text of an answer entry's message (pi's assistant message record): its text parts, joined. */
-export function answerText(data: unknown): string {
-  const record = (data ?? {}) as { content?: unknown; message?: { content?: unknown } };
-  const content = Array.isArray(record.content) ? record.content : Array.isArray(record.message?.content) ? record.message.content : [];
-  return (content as { type?: string; text?: string }[]).map((part) => (part?.type === "text" ? part.text ?? "" : "")).join("");
+/** The text an answer entry gave (pi's assistant entry): the text parts of the messages it adds to the model's context,
+ *  joined. */
+export function answerText(entry: { readonly model?: readonly unknown[] } | undefined): string {
+  return (entry?.model ?? [])
+    .flatMap((message) => {
+      const content = (message as { content?: unknown } | null)?.content;
+      return typeof content === "string" ? [{ type: "text", text: content }] : Array.isArray(content) ? (content as { type?: string; text?: string }[]) : [];
+    })
+    .map((part) => (part?.type === "text" ? part.text ?? "" : ""))
+    .join("");
 }
