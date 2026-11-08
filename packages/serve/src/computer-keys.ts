@@ -73,17 +73,24 @@ export interface TestableProvider {
 /** A provider module's create(), by provider id: the computer package's, or a test's stand-in. */
 export type ProviderFactories = Readonly<Partial<Record<string, (options: Record<string, string>) => TestableProvider | Promise<TestableProvider>>>>;
 
+/** The table the map reads: each provider's keys and its name in words. Serve's own (KEY_TABLE), or --faux's. */
+export interface KeyTable {
+  readonly keys: Readonly<Record<string, readonly ProviderKey[]>>;
+  readonly labels: Readonly<Record<string, string>>;
+}
+export const KEY_TABLE: KeyTable = { keys: PROVIDER_KEYS, labels: LABELS };
+
 const has = (record: object, key: string): boolean => Object.prototype.hasOwnProperty.call(record, key);
-const labelOf = (providerId: string): string => (has(LABELS, providerId) ? LABELS[providerId]! : providerId);
+const labelOf = (providerId: string, table: KeyTable): string => (has(table.labels, providerId) ? table.labels[providerId]! : providerId);
 const refused = (code: string, message: string): { ok: false; error: { code: string; message: string } } => ({ ok: false, error: { code, message } });
 
 /** Provider `providerId`'s create() options from its saved keys (by the registry's names) and the server's settings. */
-export function providerOptions(providerId: string, keys: Readonly<Record<string, string>>, settings: ProviderSettings = {}): OptionsAnswer {
-  if (!has(PROVIDER_KEYS, providerId)) return refused("unsupported", `${providerId} is not a computer provider: ${Object.keys(PROVIDER_KEYS).join(", ")}`);
-  const label = labelOf(providerId);
+export function providerOptions(providerId: string, keys: Readonly<Record<string, string>>, settings: ProviderSettings = {}, table: KeyTable = KEY_TABLE): OptionsAnswer {
+  if (!has(table.keys, providerId)) return refused("unsupported", `${providerId} is not a computer provider: ${Object.keys(table.keys).join(", ")}`);
+  const label = labelOf(providerId, table);
   const options: Record<string, string> = {};
   const missing: string[] = [];
-  for (const key of PROVIDER_KEYS[providerId]!) {
+  for (const key of table.keys[providerId]!) {
     const value = has(keys, key.name) ? keys[key.name] : undefined;
     if (typeof value === "string" && value.trim() !== "") options[key.option] = value;
     else if (key.required) missing.push(key.name);
@@ -103,9 +110,9 @@ function scrub(text: string, values: readonly string[]): string {
 }
 
 /** A coded error of a provider's test in plain words: what happened, what to do, and the vendor's own words after. */
-function wordsFor(code: string, providerId: string, said: string): string {
-  const label = labelOf(providerId);
-  const names = (PROVIDER_KEYS[providerId] ?? []).filter((key) => key.required).map((key) => key.name).join(" and ");
+function wordsFor(code: string, providerId: string, said: string, table: KeyTable): string {
+  const label = labelOf(providerId, table);
+  const names = (table.keys[providerId] ?? []).filter((key) => key.required).map((key) => key.name).join(" and ");
   const vendor = said.trim() === "" ? "" : ` (the vendor said: ${said.trim()})`;
   switch (code) {
     case "unauthorized":
@@ -149,10 +156,11 @@ export async function testConnection(
   { keys, signal }: { keys: Readonly<Record<string, string>>; signal?: AbortSignal },
   factories: ProviderFactories,
   settings: ProviderSettings = {},
+  table: KeyTable = KEY_TABLE,
 ): Promise<TestAnswer> {
-  const made = providerOptions(providerId, keys, settings);
+  const made = providerOptions(providerId, keys, settings, table);
   if (!made.ok) return made;
-  const label = labelOf(providerId);
+  const label = labelOf(providerId, table);
   const values = Object.values(keys).filter((value): value is string => typeof value === "string");
   const create = has(factories, providerId) ? factories[providerId] : undefined;
   if (typeof create !== "function") return refused("unsupported", `${label}'s connection test isn't available on this server yet.`);
@@ -160,16 +168,16 @@ export async function testConnection(
   try {
     provider = await create(made.options);
   } catch (error) {
-    return refused("invalid", wordsFor("invalid", providerId, scrub(messageOf(error), values)));
+    return refused("invalid", wordsFor("invalid", providerId, scrub(messageOf(error), values), table));
   }
   if (typeof provider?.testConnection !== "function") return refused("unsupported", `${label}'s connection test isn't available on this server yet.`);
   let answer: KeyResult<{ detail: string }>;
   try {
     answer = await provider.testConnection(signal ? { signal } : {});
   } catch (error) {
-    return refused("unreachable", wordsFor("unreachable", providerId, scrub(messageOf(error), values)));
+    return refused("unreachable", wordsFor("unreachable", providerId, scrub(messageOf(error), values), table));
   }
   if (answer?.ok === true) return { ok: true, value: { detail: scrub(String(answer.value?.detail ?? ""), values) } };
   const code = typeof answer?.error?.code === "string" ? answer.error.code : "error";
-  return refused(code, wordsFor(code, providerId, scrub(String(answer?.error?.message ?? ""), values)));
+  return refused(code, wordsFor(code, providerId, scrub(String(answer?.error?.message ?? ""), values), table));
 }

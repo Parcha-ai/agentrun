@@ -6,7 +6,7 @@
 // their names only: a provider declares them, Settings takes only those, and the store keeps each sealed under the
 // server's seal key (server-keys.ts); a provider is handed its keys only at the claim, or for its test, both through
 // computer-keys.ts (providerOptions, testConnection), which maps a key's name onto the option it fills.
-import { type OptionsAnswer, type ProviderFactories, type ProviderSettings, providerOptions, testConnection } from "./computer-keys.js";
+import { KEY_TABLE, type KeyTable, type OptionsAnswer, type ProviderFactories, type ProviderSettings, providerOptions, testConnection } from "./computer-keys.js";
 import { COMPUTER_KINDS, type ComputerKind, type ComputerSetting } from "./computer-setting.js";
 import { getSealedKey, putSealedKey, removeSealedKey, sealedKeyNames } from "./server-keys.js";
 import type { Store } from "./store/index.js";
@@ -53,6 +53,8 @@ export interface ComputerRoutesOptions {
   readonly factories: ProviderFactories;
   /** The server's settings that go to a provider's options but are no key (the Modal app). */
   readonly settings?: ProviderSettings;
+  /** The map from a provider's key names to its options: serve's own unless given (--faux gives its own). */
+  readonly keyTable?: KeyTable;
   /** The model-visible tools a kind brings (the kernel registry's capabilityToolDefs), by name. */
   readonly tools: (kind: ComputerKind) => readonly string[];
   readonly mode: FolderMode;
@@ -99,7 +101,7 @@ const keysWhy = (provider: ProviderEntry, missing: readonly string[]): string =>
 /** The routes' work over the server's store: GET /v2/computers (view), PUT /v2/computers/{provider}/keys (saveKeys), POST
  *  /v2/computers/{provider}/test (test), and the claim's refusal (claimRefusal). */
 export function createComputerRoutes(options: ComputerRoutesOptions) {
-  const { store, sealKey, kinds, factories, settings = {}, tools, mode } = options;
+  const { store, sealKey, kinds, factories, settings = {}, keyTable = KEY_TABLE, tools, mode } = options;
   const providerOf = (id: string) => kinds.PROVIDERS.find((one) => one.id === id);
 
   /** Each kind, whether this server offers it and why not, the capability groups and tools it brings, and each provider
@@ -159,7 +161,7 @@ export function createComputerRoutes(options: ComputerRoutesOptions) {
     const keys = await keysOf(provider);
     const missing = missingKeys(provider, new Set(Object.keys(keys)));
     if (missing.length) return { ok: false, why: keysWhy(provider, missing) };
-    const answer = await testConnection(providerId, { keys, ...(signal ? { signal } : {}) }, factories, settings);
+    const answer = await testConnection(providerId, { keys, ...(signal ? { signal } : {}) }, factories, settings, keyTable);
     return answer.ok ? { ok: true, detail: answer.value.detail } : { ok: false, why: answer.error.message };
   }
 
@@ -187,7 +189,7 @@ export function createComputerRoutes(options: ComputerRoutesOptions) {
     if (computer.kind === "none") return undefined;
     const why = await claimRefusal(computer);
     if (why) return { ok: false, error: { code: COMPUTER_UNAVAILABLE, message: why } };
-    return providerOptions(computer.provider, await keysOf(providerOf(computer.provider)!), settings);
+    return providerOptions(computer.provider, await keysOf(providerOf(computer.provider)!), settings, keyTable);
   }
 
   return { view, saveKeys, test, claimRefusal, claimOptions };
