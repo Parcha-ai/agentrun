@@ -1583,7 +1583,9 @@ checked before the body is read.
 ```
 
 A rule's `event` is the event as the trigger's scheme reads it: GitHub's `X-GitHub-Event`, or a Standard Webhooks
-body's top-level `type`; `actions`, when given,
+body's top-level `type`. GitHub signs the body, not `X-GitHub-Event`: a delivery a trigger ignored keeps its key for
+the day, so the same body sent again under another event answers `{"ok": "duplicate"}`, and where it matters a rule
+should also test a field only that event's body has (`/pull_request`, `/comment`, `/issue/pull_request`); `actions`, when given,
 lists the values the body's top-level `action` may take; each of `where`'s conditions is a JSON pointer (RFC 6901) into
 the body with one test: `in` (the value there equals one of the JSON values listed, an object's fields in any order),
 `exists` (`true`, the pointer names a value, `null` included; `false`, it names none) or `prefix` (the value is a string
@@ -1601,8 +1603,10 @@ again after a `429`, a later one can start first.
 
 Such a trigger can take every run this server has room for, starving other triggers and the runs people start. Give it
 `max_active_runs` (1 to 100; `null` clears it): past that many of its runs active, a firing waits due and is tried
-again, as at a full server, and is never skipped. Only a trigger whose firings each start a run takes it (`422`
-otherwise). On a public repository, a rule for `issue_comment` or `issues` events needs a condition on
+again, as at a full server, and is never skipped. It counts the runs this trigger started while they work, kept apart
+from its history (so a long run counts however many firings follow it) and read again at each check; a run a person
+opens again after it ended is that person's follow-up, not counted. Only a trigger whose firings each start a run
+takes it (`422` otherwise). On a public repository, a rule for `issue_comment` or `issues` events needs a condition on
 `/comment/author_association` or `/issue/author_association` (`in: ["OWNER", "MEMBER", "COLLABORATOR"]`): without one,
 anyone who can comment starts runs.
 
