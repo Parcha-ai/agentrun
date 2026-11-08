@@ -543,6 +543,15 @@ export interface DeadlineExtendResult {
 	at: string;
 }
 
+/**
+ * mount.sync: asks the computer's resident Archil sync server (its socket, ARCHIL_SYNC_SOCKET) for one sync of
+ * /workspace, coalesced with any in flight, and answers its exit code: 0 is every write so far durable. A computer with
+ * no Archil mount has no server: not_found.
+ */
+export interface MountSyncResult {
+	exitCode: number;
+}
+
 /** Every method the daemon answers: its params and its result. */
 export interface DaemonMethods {
 	hello: { params: HelloParams; result: HelloResult };
@@ -578,6 +587,7 @@ export interface DaemonMethods {
 	"apps.terminate": { params: AppsLaunchParams; result: Empty };
 	"apps.ui_tree": { params: Empty; result: UiTreeResult };
 	"deadline.extend": { params: DeadlineExtendParams; result: DeadlineExtendResult };
+	"mount.sync": { params: Empty; result: MountSyncResult };
 }
 
 export type DaemonMethod = keyof DaemonMethods;

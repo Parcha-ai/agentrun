@@ -238,7 +238,7 @@ test("archilReadBack: fuse.archil at /workspace with the asked source, under the
 	assert.deepEqual(read(`${MOUNT.disk}:/${MOUNT.folder} /workspace fuse.archil rw 0 0`), computer.readBackOf(MOUNT, 3), "no region in the source: the recorded one");
 	assert.equal(read(""), undefined, "nothing at /workspace");
 	assert.match(read("tmpfs /workspace tmpfs rw 0 0").other, /tmpfs/);
-	assert.match(read(line, { epoch: undefined }).other, /no epoch/);
+	assert.match(archilReadBack({ mounts: `${line}\n`, epoch: undefined, served: true }).other, /no epoch/);
 	noToken(read(line), "the read-back");
 });
 
