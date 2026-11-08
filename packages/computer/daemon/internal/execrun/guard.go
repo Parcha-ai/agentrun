@@ -174,17 +174,24 @@ func (r run) members() []int {
 	return in
 }
 
-// signal sends a command's signal to the run: the program's group while its leader is unreaped (so the group id is
-// still the program's), and with waitGroup every member by pid too (the group's id may be gone with its leader, and on
-// a terminal the session's other groups are the run's).
+// signal sends a command's signal to the run, once to each process group: the program's while its leader is unreaped
+// (so the group id is still the program's), and with waitGroup the group of every member, each once (the program's
+// group too once its leader is gone, while a member keeps its id; on a terminal, the session's other groups). A group
+// is signalled by its id, never its processes one by one, so no process gets one signal twice.
 func (r run) signal(exited bool, sig syscall.Signal) {
+	groups := map[int]bool{}
 	if !exited {
-		_ = syscall.Kill(-r.pid, sig)
+		groups[r.pid] = true
 	}
 	if r.waitGroup {
 		for _, m := range r.members() {
-			_ = syscall.Kill(m, sig)
+			if pgid, err := syscall.Getpgid(m); err == nil {
+				groups[pgid] = true
+			}
 		}
+	}
+	for group := range groups {
+		_ = syscall.Kill(-group, sig)
 	}
 }
 
