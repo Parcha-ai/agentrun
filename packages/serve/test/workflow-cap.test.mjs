@@ -12,7 +12,7 @@ import { readFile, writeFile } from "node:fs/promises";
 import { join } from "node:path";
 import { DatabaseSync } from "node:sqlite";
 import { test } from "node:test";
-import { REQUEST_COST } from "@parcha/pi-durable-agent/timeline";
+import { REQUEST_COST, REQUEST_STARTED } from "@parcha/pi-durable-agent/timeline";
 import { CANARY as PARALLEL_CANARY } from "./fixtures/faux-parallel.mjs";
 import { decisionSpentIn } from "../dist/cap.js";
 import { startServe } from "../dist/index.js";
@@ -22,7 +22,7 @@ import { client, flowAgent, follow, letGo, runDir, runRecordOf, scratch, serve, 
  *  while its least, $0.1024, fits what is left of the cap. */
 const PRICED = new URL("./fixtures/faux-workflow-priced.mjs", import.meta.url).pathname;
 const FAUX_PARALLEL = new URL("./fixtures/faux-parallel.mjs", import.meta.url).pathname;
-const KEYS = ["TYPESAFE_API_KEY", "OPENROUTER_API_KEY", "PARALLEL_API_KEY", "AGENT_MODEL_BASE_URL", "AGENT_MODEL_API_KEY", "ANTHROPIC_BASE_URL", "ANTHROPIC_API_KEY", "AGENTRUN_TEST_FAUX_PARALLEL_CALLS", "AGENTRUN_FAUX_SYSTEM_ONE_DELAY_MS", "AGENTRUN_SERVE_BUDGET_HOLD_MS"];
+const KEYS = ["TYPESAFE_API_KEY", "OPENROUTER_API_KEY", "PARALLEL_API_KEY", "AGENT_MODEL_BASE_URL", "AGENT_MODEL_API_KEY", "ANTHROPIC_BASE_URL", "ANTHROPIC_API_KEY", "AGENTRUN_TEST_FAUX_PARALLEL_CALLS", "AGENTRUN_FAUX_SYSTEM_ONE_DELAY_MS", "AGENTRUN_SERVE_BUDGET_HOLD_MS", "AGENTRUN_TEST_FAUX_GATE"];
 const SETTLED = ["input_required", "completed", "failed", "cancelled"];
 const ENDED = ["completed", "failed", "cancelled"];
 const view = async (api, runId) => (await api("GET", `/runs/${runId}`)).body;
@@ -524,4 +524,26 @@ test("a decision whose booking was lost and whose receipt names its charge count
     db.close();
   }
   assert.equal(decisionSpentIn(store), 0.001, "the receipt's charge, not the hold");
+});
+
+test("a cap raised while a capped workflow is working holds from its next paid request: the next model node's request is judged under the raised cap, never clamped to what the old one left", { timeout: 180_000 }, async (t) => {
+  const gate = join(await scratch(t), "gate");
+  withEnv(t, { AGENTRUN_TEST_FAUX_GATE: gate }, KEYS);
+  const { api, data } = await serve(t, { faux: new URL("./fixtures/faux-workflow-priced-gated.mjs", import.meta.url).pathname });
+  assert.equal((await api("POST", "/agents", flowAgent("raised-midway", twoNodes()))).status, 201);
+  // $0.20: the first node's request is held at what $0.20 buys; the second, after $0.04 spent, at what $0.16 buys (1,600
+  // output tokens, under the model's 16,384). Raised to $10 while the first runs, the second is held at its own 16,384.
+  const started = await api("POST", "/agents/raised-midway/runs", { input: { question: "What is six times seven?" }, max_cost_usd: 0.2 });
+  assert.equal(started.status, 202, JSON.stringify(started.body));
+  const runId = started.body.run_id;
+  for (const end = Date.now() + 60_000; !existsSync(`${gate}.waiting`); await new Promise((resolve) => setTimeout(resolve, 50))) assert.ok(Date.now() < end, "the first node's request reaches the model");
+  const raised = await api("PATCH", `/runs/${runId}`, { max_cost_usd: 10 });
+  assert.deepEqual([raised.status, raised.body.max_cost_usd], [200, 10], JSON.stringify(raised.body));
+  writeFileSync(gate, "");
+  await follow(api, runId, ENDED, { deadlineMs: 60_000 });
+  assert.equal((await view(api, runId)).status, "completed");
+  await letGo(data, runId);
+  const starts = entriesOf(data, runId).filter((entry) => entry.kind === REQUEST_STARTED).map((entry) => entry.data ?? {});
+  assert.equal(starts.length, 2, JSON.stringify(starts));
+  assert.deepEqual(starts[1].clamp ?? null, null, `the second node's request is not clamped to the old cap: ${JSON.stringify(starts[1])}`);
 });
