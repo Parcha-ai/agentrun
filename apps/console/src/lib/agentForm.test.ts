@@ -338,3 +338,14 @@ describe("places in the definition", () => {
     expect(toolOffers([{ name: "bash", available: false, sandbox_only: true, reason: "fixture: no box" }])).toEqual([{ name: "bash", available: false, sandbox_only: true, reason: "fixture: no box" }]);
   });
 });
+
+// serve's place.ts NEW_AGENT_TOOLS (a new agent in the default box gets bash and the five background tools): the console's
+// own default for a new agent on a sandbox place keeps all six, so a console-made agent gets what the server's default does.
+describe("defaultTools on a sandbox place keeps serve's NEW_AGENT_TOOLS (place.ts)", () => {
+  it("includes bash and the five background tools", () => {
+    const SIX = ["bash", "bash_background", "bash_output", "bash_input", "bash_signal", "bash_list"];
+    const offers = toolOffers(SIX.map((name) => ({ name, available: true, sandbox_only: true, harnesses: ["pi"] })));
+    expect(defaultTools("pi", offers, { mode: "sandbox", box: "docker" } as never)).toEqual(SIX);
+  });
+});
+

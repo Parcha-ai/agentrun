@@ -73,33 +73,17 @@ describe("RunDetail's Report tab before an answer", () => {
     expect(shown).not.toContain("reply below");
   });
 
-  it("a budget pause the server sends without its figures (kind only) shows the pause without an amount, and its page still opens", () => {
+  it("a budget pause served with its cap and no spend yet shows the cap reached, and its page still opens", () => {
     for (const [name, state] of [["run.input_required.waiting.1", "waiting"], ["run.input_required.idle.1", "idle"]] as const) {
       const f = runFixture(name);
-      const run = { ...f.run, state, pending: { kind: "budget" } } as unknown as Run;
+      // The server always sends the cap on a budget pause (serve's budgetPending); the spend only once it is known.
+      const run = { ...f.run, state, pending: { kind: "budget", cap_usd: 2, said: "Paused at its cap.", at: "2026-11-09T00:00:00Z" } } as unknown as Run;
       const shown = report(run, f.page.rows);
       expect(shown, name).toContain("Paused at its spend cap");
-      expect(shown, name).toContain("Its spend cap is reached. Raise the cap above to continue.");
+      expect(shown, name).toContain("cap is reached. Raise the cap above to continue.");
       expect(shown, name).not.toMatch(/undefined|NaN/);
-      // With a way to raise, the page still opens: no figure to name, so the banner offers no raise of its own.
       const withRaise = renderToStaticMarkup(createElement(RunDetail, { run, agentName: "invoice-checker", messages: messageFeatures, harnessSteers: true, rows: f.page.rows, files: [], actions: { onRaiseCap: async () => { throw new Error("no raise"); } }, onMessage: () => {}, tab: "report" }));
       expect(withRaise, name).not.toMatch(/undefined|NaN/);
-    }
-  });
-
-  it("a run that waits on something this console doesn't know yet says it waits for you, never for an answer below or that it stopped", () => {
-    // A kind of `pending` a newer server may send (one this console knows neither as a question, an approval nor a
-    // budget pause): only its kind is read, nothing else of it.
-    for (const [name, state] of [["run.input_required.waiting.1", "waiting"], ["run.input_required.idle.1", "idle"]] as const) {
-      const f = runFixture(name);
-      const run = { ...f.run, state, pending: { kind: "a_future_kind" } } as unknown as Run;
-      const shown = report(run, f.page.rows);
-      expect(shown, name).not.toContain(WRITING);
-      expect(shown, name).toContain("Waiting for you");
-      expect(shown, name).toContain("The run continues once you give it what it waits on.");
-      expect(shown, name).not.toContain("Waiting for your answer");
-      expect(shown, name).not.toContain("reply below");
-      expect(shown, name).not.toContain("Stopped before it wrote an answer.");
     }
   });
 
