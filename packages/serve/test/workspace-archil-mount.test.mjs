@@ -1,8 +1,8 @@
 // An Archil Workspace in a computer: mountSpec() names exactly the disk, region and run folder (runKey) that the
 // computer module's read-back gives back for it, held exclusively under the claim's epoch, so the two compare equal.
 // attach() goes through the shared attach path (attach.ts checkReadBack and attachedWorkspace) with the check the claim
-// builds, check = (spec) => readBackOf(spec, claimEpoch); the read-back's own refusals are that path's. The disk token
-// is never asked for by attach and never in an error.
+// builds, { readBackOf, epoch: claim.epoch }: only that exact read-back is taken, held exclusively and under the claim's
+// own epoch. The disk token is never asked for by attach and never in an error.
 import assert from "node:assert/strict";
 import { test } from "node:test";
 import { archilWorkspace, learningKey, openRunWorkspace, runKey, WorkspaceError } from "../dist/workspace/index.js";
@@ -14,8 +14,8 @@ const RUN = "r1";
 const REGION = "aws-us-east-1";
 const TOKEN = "fake-test-key-disk-token-0001";
 const EPOCH = 7;
-/** The check the claim builds: the computer module's read-back under the claim's epoch. */
-const CHECK = { readBackOf: (spec) => readBackOf(spec, EPOCH) };
+/** The check the claim builds: the computer module's read-back, and the claim's epoch. */
+const CHECK = { readBackOf, epoch: EPOCH };
 
 const mounted = (disk, extra = {}) => {
   let asked = 0;
@@ -73,6 +73,26 @@ test("archil attach: a read-back of another folder, region or disk, or a mount i
     await assert.rejects(
       workspace.attach(computerWith(back), CHECK),
       (error) => error instanceof WorkspaceError && error.code === "REFUSED" && !error.message.includes(TOKEN),
+      JSON.stringify(back),
+    );
+  }
+});
+
+test("archil attach: a read-back not held exclusively, under any other epoch than the claim's, or with no hold or epoch, is refused in words without the token", async () => {
+  const disk = new FakeArchilDisk();
+  const { workspace } = mounted(disk);
+  const exact = { kind: "archil", disk: disk.id, region: REGION, folder: runKey(AGENT, RUN), exclusive: true, epoch: EPOCH };
+  const { exclusive: _exclusive, epoch: _epoch, ...bare } = exact;
+  const cases = [
+    [{ ...exact, exclusive: false }, /not exclusive/],
+    [{ ...exact, epoch: EPOCH - 1 }, new RegExp(`under epoch ${EPOCH - 1}`)],
+    [{ ...exact, epoch: EPOCH + 1 }, new RegExp(`under epoch ${EPOCH + 1}`)],
+    [bare, new RegExp(`not ${disk.id}:/${runKey(AGENT, RUN)} in ${REGION}, exclusive under epoch ${EPOCH}`)],
+  ];
+  for (const [back, words] of cases) {
+    await assert.rejects(
+      workspace.attach(computerWith(back), CHECK),
+      (error) => error instanceof WorkspaceError && error.code === "REFUSED" && words.test(error.message) && !error.message.includes(TOKEN),
       JSON.stringify(back),
     );
   }
