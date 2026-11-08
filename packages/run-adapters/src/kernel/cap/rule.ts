@@ -4,7 +4,7 @@
 // (the CLI harnesses, on the runner's booking). capRule.judge is called through the object, once per decision, so a test
 // can see that no path decides without it.
 import { CapRefused } from "./errors.js";
-import { FIT_TOLERANCE, inputBound, mostOutput, outputAsked, outputLeast, pricingOf, requestPrice, STOP_ALLOWANCE_TOKENS, thinkingWithin } from "./price.js";
+import { FIT_TOLERANCE, inputBound, mostOutput, outputAsked, outputLeast, pricingOf, requestPrice, STOP_ALLOWANCE_TOKENS, thinkingLeast, thinkingWithin } from "./price.js";
 import { typicalCost, WRAP_UP_STEP0_ANSWER_TOKENS, wrapUpDue, wrapUpWords } from "./wrap-up.js";
 import { noCeiling, noPrice, noToolPrice, paidRefusal, roomRefusal, unknownHeld, unknownSpend, unmeasured } from "./words.js";
 import type { CapMode, ModelCapRequest, ToolCapRequest } from "./types.js";
@@ -42,8 +42,10 @@ function judgeModel(request: ModelCapRequest, { capUsd, spentUsd: spent, heldUsd
   const p = priced(request, mode, now)!;
   const output = mostOutput(p.cost, p.least, p.asked ?? 0, capUsd - spent - held);
   if (output === undefined) {
-    // What the least is for, said beside it: the input's bound, what of it the cache reads, and the least answer.
-    const parts = { inputTokens: p.bound, cachedTokens: p.input(p.least).cached, answerTokens: p.least };
+    // What the least is for, said beside it: the input's bound, what of it the cache reads, and the least output, its
+    // answer and its thinking apart where the cap knows the split.
+    const thinking = thinkingLeast(request, p.least);
+    const parts = { inputTokens: p.bound, cachedTokens: p.input(p.least).cached, ...(thinking === undefined ? { outputTokens: p.least } : { answerTokens: p.least - thinking, thinkingTokens: thinking }) };
     const { text, figures } = roomRefusal(capUsd, spent, held, p.cost(p.least), p.worst(p.least) - p.cost(p.least), parts);
     throw new CapRefused(text, { forGood: false, spentUsd: spent, figures });
   }

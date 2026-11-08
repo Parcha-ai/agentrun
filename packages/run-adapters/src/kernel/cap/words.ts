@@ -54,14 +54,17 @@ const spentOf = (spent: number, held: number, cap: number): string =>
   Math.round(held * 100) >= 1 ? `spent ${centsMoney(spent)} and holds ${centsMoney(held)} for steps still running, of its ${money(cap)} cap` : `spent ${centsMoney(spent)} of its ${money(cap)} cap`;
 
 /** What a model request's least is for, as a person reads it: its input's bound (counted at a token per byte, the most a
- *  byte-level tokenizer makes of it), what of it the cache reads, and the least answer it keeps. */
-export type NeedParts = { readonly inputTokens: number; readonly cachedTokens: number; readonly answerTokens: number };
+ *  byte-level tokenizer makes of it), what of it the cache reads, and its least output: the answer and the thinking apart
+ *  where the cap knows them (`answerTokens`, `thinkingTokens`), else the whole (`outputTokens`, a least its request names). */
+export type NeedParts = { readonly inputTokens: number; readonly cachedTokens: number; readonly answerTokens?: number; readonly thinkingTokens?: number; readonly outputTokens?: number };
 const count = (tokens: number): string => Math.round(tokens).toLocaleString("en-US");
 const partsOf = (parts: NeedParts | undefined): string => {
   if (!parts) return "";
   const said: string[] = [];
   if (parts.inputTokens > 0) said.push(`its input, up to ${count(parts.inputTokens)} tokens counted at a token per byte, ${parts.cachedTokens > 0 ? `${count(parts.cachedTokens)} of them read from the cache` : "none of it read from the cache"}`);
-  if (parts.answerTokens > 0) said.push(`an answer of at least ${count(parts.answerTokens)} tokens`);
+  const thinking = parts.thinkingTokens ? ` and ${count(parts.thinkingTokens)} tokens of thinking` : "";
+  if (parts.answerTokens) said.push(`an answer of at least ${count(parts.answerTokens)} tokens${thinking}`);
+  else if (parts.outputTokens) said.push(`an output of at least ${count(parts.outputTokens)} tokens`);
   return said.length ? ` (${said.join(", and ")})` : "";
 };
 

@@ -83,6 +83,17 @@ export function outputLeast(request: ModelCapRequest, asked: number): number {
   return Math.min(least, asked);
 }
 
+/** The thinking a request's least `least` holds (outputLeast's own sum): the thinking's least where thinking takes a
+ *  budget, else its whole budget, which then shares the limit; never more than the least leaves past the answer's 1,024
+ *  tokens. None for a request that does not think. Undefined for one that thinks and names its own least (its body's),
+ *  whose parts the cap does not know. */
+export function thinkingLeast(request: ModelCapRequest, least: number): number | undefined {
+  if (!thinks(request)) return 0;
+  if (request.outputTokensLeast !== undefined) return undefined;
+  const thinking = BUDGET_APIS.has(request.model.api) ? THINKING_BUDGET_LEAST : request.thinkingBudget!;
+  return Math.max(0, Math.min(thinking, least - ANSWER_TOKENS_LEAST));
+}
+
 const thinks = (request: ModelCapRequest): boolean => typeof request.thinkingBudget === "number" && request.thinkingBudget > 0;
 
 /** The thinking budget a request limited to `output` keeps: its own, squeezed so the answer keeps its 1,024 tokens. */
