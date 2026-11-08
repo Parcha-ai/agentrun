@@ -324,6 +324,19 @@ test("an inspect that fails, not for want of the image, builds and pulls nothing
 	assert.deepEqual(failure(await ensureImage({ recipe: RECIPE }, { docker: "/nonexistent/docker" })), { code: "docker", message: "the docker CLI (/nonexistent/docker) was not found" });
 });
 
+test("a build or pull that fails, and whose second inspect the bound stops, fails as the timeout, not as the build's or pull's failure", async () => {
+	for (const [source, step, tag] of [
+		[{ recipe: RECIPE }, "build", TAG],
+		[{ image: IMAGE }, "pull", IMAGE],
+	]) {
+		const fake = fakeImageDocker({ [`${step}-fail`]: `odd ${RAW}`, "then-inspect-hold": "" });
+		assert.deepEqual(failure(await ensureImage(source, { docker: fake.docker, timeoutMs: 1_000 })), {
+			code: "timeout",
+			message: `docker image inspect ${tag} did not answer within 1 s, so it was stopped: call again`,
+		}, step);
+	}
+});
+
 test("a source that is neither a recipe nor an image name, or a bound that is not one, is refused before Docker is called", async () => {
 	const fake = fakeImageDocker();
 	const SOURCE = "an image source is { recipe } or { image }, one of them";

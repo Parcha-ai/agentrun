@@ -3,6 +3,7 @@
 // Marks are files in its state directory, made with mark(name, text) and removed with clear(name):
 //   build-hold, pull-hold, inspect-hold   the step waits, once called, while the mark is there (at most a minute)
 //   build-fail, pull-fail, inspect-fail   the step fails with exit 1, the mark's text on stderr
+//   then-inspect-hold                     a build or pull that fails marks inspect-hold, so the inspect after it waits
 //   podman-words                          a missing image is Podman's `image not known`, not Docker's `No such image`
 //   build-race, pull-race                 another process tags the image first: it is there, and this step fails as
 //                                         Docker 29's image store says it (`already exists`)
@@ -33,6 +34,7 @@ const failed = (step) => {
 	if (!marked(step + "-fail")) return false;
 	process.stderr.write(readFileSync(join(state, step + "-fail"), "utf8") + "\\n");
 	process.exitCode = 1;
+	if (step !== "inspect" && marked("then-inspect-hold")) writeFileSync(join(state, "inspect-hold"), "");
 	return true;
 };
 const raced = (name, labels) => {
