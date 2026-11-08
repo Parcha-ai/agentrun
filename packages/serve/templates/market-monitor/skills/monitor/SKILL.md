@@ -37,15 +37,17 @@ have proven and list what you didn't read in `unreachable`.
 
 ## Steps
 
-1. **Window.** `to` is today; `from` is today minus the lookback (7 days when blank), both inclusive. An event is a
-   candidate only when it **happened** inside the window: the launch shipped, the price changed, the hire was made, the
+1. **Window.** `to` is today; `from` is today minus the lookback (7 days when blank). The window is half-open: an
+   event on `from` belongs to the previous digest, one on `to` to this one (`from` < date <= `to`), so two runs a
+   lookback apart never share a day. An event is a candidate only when it **happened** inside the window: the launch shipped, the price changed, the hire was made, the
    round closed. The date that counts is the event's, never the article's: a story published this week about a launch
    from before `from` is old news, a repeat.
 
 2. **Previous digest, when you have one.** Only from the run's input: a digest handed to you there. Write down each
    change it reported: company, category, what, date, and any price it quoted. Those are the **reported** list
-   (step 5) and a **baseline** for pages with no dates (step 3). With none, the window alone keeps repeats out (the
-   schedule's gap is the lookback, so last week's events are before `from`); end the digest with the footer line
+   (step 5) and a **baseline** for pages with no dates (step 3). With none, the window alone keeps repeats out, as long as the
+   lookback equals the schedule's gap (a weekly schedule and 7 days, a daily one and 1): last time's events are then
+   on or before `from`; end the digest with the footer line
    `_Repeats checked by date: no previous digest given._`
 
 3. **Sources, per company.** Read what the company says first, then what others say. Per company:
@@ -113,7 +115,7 @@ have proven and list what you didn't read in `unreachable`.
    - Never post twice. A post that fails: don't retry it more than once, set `delivery.status` to `failed` with the
      error, and still return the digest.
 
-8. **Answer** with exactly one fenced `json` block matching `digest.schema.json`, and nothing after it:
+8. **Answer** with exactly one fenced `json` block matching `digest.schema.json` (beside this SKILL.md: read it before you answer), and nothing after it:
 
 ```json
 {

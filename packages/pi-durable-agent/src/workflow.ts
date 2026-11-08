@@ -3,6 +3,8 @@
 // @parcha/agentrun-dsl and @parcha/agentrun-pi only inside the functions that need them, so a store with no workflow
 // revision never loads either.
 import { existsSync } from "node:fs";
+import type { Context } from "@earendil-works/chord";
+import type { Storage } from "@earendil-works/pi-durable";
 import type { Workflow } from "@parcha/agentrun-dsl";
 import type { GraphDiff, NodeState, WorkflowGraph } from "@parcha/agentrun-dsl/graph";
 import type { createWorkflowExtension, WorkflowCaller, WorkflowOutcome } from "@parcha/agentrun-pi/durable";
@@ -13,10 +15,19 @@ export type { GraphDiff, NodeState, WorkflowGraph, WorkflowOutcome };
 /** A workflow revision's body, as a store keeps it: the workflow, the tools it may call, and its skills by path. */
 export type WorkflowBody = { workflow: Workflow; tools?: string[]; skills?: Record<string, string> };
 
-/** A started run of a workflow revision: the part of the store's `startRun` result this module reads. */
+/** The reads a workflow run's view needs from where its durable state lives, as a pi `Storage` serves them (the run's
+ *  journal in the one store is one, read with no claim; the old path read a per-run store file instead). `readWorkflowRun`
+ *  takes one of these in place of a `storePath`, so a run whose state is in the one store is read the same way a file one
+ *  was, the run view's logic unchanged. */
+export type WorkflowStorage = Pick<Storage, "findDocument" | "document" | "task">;
+
+/** A started run of a workflow revision: the part of the store's `startRun` result this module reads. `storePath` names a
+ *  per-run store file; `storage` a pi Storage (the run's journal in the one store). The durable runner
+ *  (`startWorkflowRevision`) reads neither; only `readWorkflowRun`/`workflowCarry` do, through one or the other. */
 export type WorkflowRunStart = {
   runId: string;
-  storePath: string;
+  storePath?: string;
+  storage?: WorkflowStorage;
   agentId: string;
   revision: { id: string; kind: "workflow"; body: WorkflowBody };
 };
@@ -139,7 +150,7 @@ export async function startWorkflowRevision(options: RunOptions): Promise<Workfl
  * `readWorkflowRun` (with `options`, its `unlocked`), so with none no other connection may hold the store file
  * exclusively: call it once the run is released.
  */
-export async function workflowCarry(run: Pick<WorkflowRunStart, "runId" | "storePath" | "revision">, outcome: Pick<WorkflowOutcome, "status"> & { code?: string; message?: string }, options: { unlocked?: boolean } = {}): Promise<{ state: RunState; summary: string }> {
+export async function workflowCarry(run: Pick<WorkflowRunStart, "runId" | "storePath" | "storage" | "revision">, outcome: Pick<WorkflowOutcome, "status"> & { code?: string; message?: string }, options: { unlocked?: boolean; context?: Context } = {}): Promise<{ state: RunState; summary: string }> {
   if (outcome.status === "refused" && outcome.code !== undefined && BEFORE_ANY_TASK.has(outcome.code)) return { state: "failed", summary: `refused: ${outcome.message ?? outcome.code}` };
   const view = await readWorkflowRun(run, options);
   // The nodes that completed (chains, pure sequence, aside), then each deepest node that failed (a container failed only
@@ -154,6 +165,15 @@ export async function workflowCarry(run: Pick<WorkflowRunStart, "runId" | "store
 }
 
 const text = (value: unknown): string | null => (typeof value === "string" ? value : null);
+
+/** A session document's value from a pi Storage: the current incarnation of `kind`'s member `key`, materialized
+ *  (findDocument, then document), or undefined when there is none. The run view reads the run's task and its driver journal
+ *  from the one store this way, as the per-run file readers (`durableDoc`, `readJournal`) read them from a store file. */
+async function sessionDoc(storage: WorkflowStorage, kind: string, key: string, context: Context): Promise<Record<string, unknown> | undefined> {
+  const record = await storage.findDocument({ kind, scope: { kind: "session" }, key }, "current", context);
+  if (!record) return undefined;
+  return (await storage.document(record.id, "current", context))?.value as Record<string, unknown> | undefined;
+}
 
 /** A node's state in a run: the DSL's, and `stopped` for a node an ended run interrupted. */
 export type RunNodeState = NodeState | "stopped";
@@ -182,22 +202,37 @@ export async function revisionGraph(revision: { body: WorkflowBody }, parent?: {
  * exclusive lock (a server's run), read as agentrun-pi's unlocked reads read it: no lock, nothing made beside the store,
  * and its write-ahead log opened only once it holds a commit.
  */
-export async function readWorkflowRun(run: Pick<WorkflowRunStart, "runId" | "storePath" | "revision"> & { state?: RunState | "running" }, options: { unlocked?: boolean } = {}): Promise<WorkflowRunView> {
-  const [{ graphNodeOf, nodeStatus, workflowGraph }, { durableDoc, readJournal, withDurableFile }] = await Promise.all([import("@parcha/agentrun-dsl/graph"), import("@parcha/agentrun-pi/durable")]);
+export async function readWorkflowRun(run: Pick<WorkflowRunStart, "runId" | "storePath" | "storage" | "revision"> & { state?: RunState | "running" }, options: { unlocked?: boolean; context?: Context } = {}): Promise<WorkflowRunView> {
+  const { graphNodeOf, nodeStatus, workflowGraph } = await import("@parcha/agentrun-dsl/graph");
   const graph = workflowGraph(run.revision.body.workflow);
-  const how = options.unlocked ? { unlocked: true } : { immutable: run.state !== undefined && run.state !== "running" && !existsSync(`${run.storePath}-wal`) };
-  // The run's task holds how it ended: its id is on the run's entry, its record in pi-durable's task table. The task is
-  // read before the journal, so a task found terminal means the journal read after it is final.
-  const task = durableDoc<{ task?: unknown }>(run.storePath, "agentrun.task", run.runId, how)?.task;
+  // The run's task holds how it ended, and the driver's journal holds each node's frame. Both come from the per-run store
+  // file (`storePath`) or from a pi Storage (`storage`: the run's journal in the one store), the same two reads either way:
+  // the task is read before the journal, so a task found terminal means the journal read after it is final.
   let ended: { status?: string; result?: { status?: string; output?: unknown; escalation?: { executionPath?: unknown; kind?: unknown; label?: unknown; summary?: unknown } } } | undefined;
-  if (typeof task === "number") {
-    const row = withDurableFile(run.storePath, (db) => db.prepare("SELECT record FROM tasks WHERE id = ?").get(task) as { record: string } | undefined, how);
-    const state = row && (JSON.parse(row.record) as { state?: { status?: string; outcome?: typeof ended } }).state;
-    if (state?.status === "terminal") ended = state.outcome;
+  let state: { schema?: unknown; pin?: object } | null | undefined;
+  if (run.storage) {
+    const context = options.context;
+    if (!context) throw new AgentHomeError("invalid", "reading a workflow run from a store needs a context");
+    const task = (await sessionDoc(run.storage, "agentrun.task", run.runId, context))?.task;
+    if (typeof task === "number") {
+      const record = await run.storage.task(task as never, context);
+      const taskState = record?.state as { status?: string; outcome?: typeof ended } | undefined;
+      if (taskState?.status === "terminal") ended = taskState.outcome;
+    }
+    state = (await sessionDoc(run.storage, "agentrun.driver", run.runId, context))?.state as typeof state;
+  } else {
+    const { durableDoc, readJournal, withDurableFile } = await import("@parcha/agentrun-pi/durable");
+    const how = options.unlocked ? { unlocked: true } : { immutable: run.state !== undefined && run.state !== "running" && !existsSync(`${run.storePath}-wal`) };
+    const task = durableDoc<{ task?: unknown }>(run.storePath!, "agentrun.task", run.runId, how)?.task;
+    if (typeof task === "number") {
+      const row = withDurableFile(run.storePath!, (db) => db.prepare("SELECT record FROM tasks WHERE id = ?").get(task) as { record: string } | undefined, how);
+      const taskState = row && (JSON.parse(row.record) as { state?: { status?: string; outcome?: typeof ended } }).state;
+      if (taskState?.status === "terminal") ended = taskState.outcome;
+    }
+    state = readJournal(run.storePath!, run.runId, how)?.state as typeof state;
   }
   // A completed task holds the run's result (complete or escalated); an aborted one was cancelled; any other failed.
   const result = ended?.status === "completed" ? ended.result : undefined;
-  const state = readJournal(run.storePath, run.runId, how)?.state as { schema?: unknown; pin?: object } | null | undefined;
   if (state?.schema === "agentrun.frozen_run.v4") throw new AgentHomeError("format", "a run in the keyed layout is not read here");
   const status: Record<string, RunNodeState> = nodeStatus(graph, { pin: state?.pin ?? {}, result: result ?? null });
   const outcome = ended && (result ? stateOf(result as Pick<WorkflowOutcome, "status">) : ended.status === "aborted" ? "stopped" : "failed");
