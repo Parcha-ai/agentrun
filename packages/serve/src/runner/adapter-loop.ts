@@ -20,7 +20,7 @@ import { type AdapterSession, type AgentAdapter, type BeforeRequest, type HostTo
 import type { KernelHooks, ToolCall } from "./conformance/subject.js";
 import { type AnswerData, type AskData, type EndData, KINDS } from "./journal-kinds.js";
 import type { Claim, Command, CommandOutcome, Loop, LoopDeps, LoopEnd, LoopFactory, StopReason } from "./loop-contract.js";
-import { CLOSE_MS, commandRequest, DEFAULT_RESTART_LIMIT, entriesOf, findData, Gate, heldReporter, Interrupted, KernelFault, Parked, quiet, restartLimited, writesEntry, writesSubmission } from "./loop.js";
+import { approvalOf, CLOSE_MS, commandRequest, DEFAULT_RESTART_LIMIT, entriesOf, findData, Gate, heldReporter, Interrupted, KernelFault, Parked, quiet, restartLimited, writesEntry, writesSubmission } from "./loop.js";
 import type { PiRun, PiSessionIO, PreIntentAnswer, PreIntentCall } from "./adapters/pi.js";
 import { journalSessions } from "./sessions.js";
 import { sideEffect } from "./side-effects.js";
@@ -68,6 +68,11 @@ function adapterLoop(specOf: (claim: Claim, run: AdapterRun) => AdapterRunSpec |
   let session: AdapterSession | undefined;
   let context: Context = BACKGROUND_CONTEXT;
   const early: Command[] = [];
+  /** Approve or deny rows refused because they named no call waiting for its answer. */
+  let refusals = 0;
+  /** Resolved once the claim's Harness is open and its root known: a command's check reads the journal through it. */
+  let opened: () => void = () => {};
+  const ready = new Promise<void>((resolve) => (opened = resolve));
   let held: { detach(): void } | undefined;
 
   const steer = async (command: Command): Promise<CommandOutcome> => {
@@ -145,6 +150,7 @@ function adapterLoop(specOf: (claim: Claim, run: AdapterRun) => AdapterRunSpec |
         const io: PiSessionIO = { writer, models: booking.models, signal: deps.signal, onEvent: () => {}, gate: gateOf };
         session = await spec.adapter.open({ ...spec.session, tools }, io);
         root = await harness.root(context);
+        opened();
         await reportHeld(harness, root.id);
         for (const command of early.splice(0)) void steer(command);
         if (restarts > restartLimit + 1) {
@@ -218,7 +224,7 @@ function adapterLoop(specOf: (claim: Claim, run: AdapterRun) => AdapterRunSpec |
       return "park";
     }
     for (;;) {
-      const row = inbox.find((command) => command.kind === "approve" || command.kind === "deny");
+      const row = inbox.find((command) => (command.kind === "approve" || command.kind === "deny") && approvalOf(command) === call.callId);
       if (row) {
         inbox.splice(inbox.indexOf(row), 1);
         const data: AnswerData = { callId: call.callId, approved: row.kind === "approve" };
@@ -228,8 +234,29 @@ function adapterLoop(specOf: (claim: Claim, run: AdapterRun) => AdapterRunSpec |
         return data;
       }
       if (stopReason) return "park";
+      // The row that woke this run named no waiting call and was refused: the call is asked again and the run parks on
+      // it, so a refused approval neither answers it nor keeps the run claimed.
+      if (refusals > 0) {
+        const data: AskData = { callId: call.callId, tool: call.tool };
+        const asked = gate!.expect(writesEntry(KINDS.ask, (entry) => entry.callId === call.callId), { run: { state: "parked" } });
+        await harness!.commit((tx) => tx.appendEntry(conversation.id, { kind: KINDS.ask, data: data as unknown as JsonValue }), context);
+        await asked;
+        parked();
+        return "park";
+      }
       await new Promise<void>((resolve) => (wakeInbox = resolve));
     }
+  }
+
+  /** Whether a call of this run waits for the answer `approval` names: asked, and not answered yet. */
+  async function waitsFor(approval: string | undefined): Promise<boolean> {
+    if (approval === undefined) return false;
+    await Promise.race([ready, (finished ?? new Promise<never>(() => {})).then(() => undefined, () => undefined)]);
+    if (!gate || !harness) return false;
+    const conversation = await harness.root(context);
+    const entries = await entriesOf(gate.journal, conversation.id, context);
+    const asked = findData<AskData>(entries, KINDS.ask, (data) => data.callId === approval) !== undefined;
+    return asked && findData<AnswerData>(entries, KINDS.answer, (data) => data.callId === approval) === undefined;
   }
 
   async function reportHeld(session: Harness, conversationId: ConversationId): Promise<void> {
@@ -290,6 +317,14 @@ function adapterLoop(specOf: (claim: Claim, run: AdapterRun) => AdapterRunSpec |
     async command(command) {
       if (command.kind === "steer") return steer(command);
       if (command.kind === "approve" || command.kind === "deny") {
+        // An answer names its approval: the asked call's id. One that names no call waiting for its answer (an old
+        // approval, another run's) is refused, never applied to the call that waits now.
+        const approval = approvalOf(command);
+        if (!(await waitsFor(approval))) {
+          refusals += 1;
+          wakeInbox();
+          return { refused: `no call of this run waits for approval ${JSON.stringify(approval ?? "")}` };
+        }
         inbox.push(command);
         wakeInbox();
         return { taken: true };
