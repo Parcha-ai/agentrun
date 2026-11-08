@@ -24,8 +24,8 @@ export const fixture = (name, checkout = ROOT) => join(checkout, "packages/serve
  *  server whose owner is already set. */
 export const PASSWORD = process.env.E2E_PASSWORD || ["e2e", "not", "a", "real", "password"].join("-");
 
-/** What a server's output may hold that must never be shown: its API key and any ar_ key. */
-const redact = (line) => line.replace(/(AGENTRUN_API_KEY=)\S+/g, "$1<redacted>").replace(/\bar_[A-Za-z0-9_-]+/g, "ar_<redacted>");
+/** What a server's output may hold that must never be shown: its API key, any ar_ key, and its setup code. */
+const redact = (line) => line.replace(/(AGENTRUN_API_KEY=)\S+/g, "$1<redacted>").replace(/\bar_[A-Za-z0-9_-]+/g, "ar_<redacted>").replace(/([#?&]code=)[^&\s]+/g, "$1<redacted>");
 
 /** Starts the built server from `checkout` on 127.0.0.1, port chosen by the system, with a data dir and home of its own.
  *  Its environment holds only PATH, HOME, TMPDIR and `env` (e.g. AGENTRUN_PUBLIC_URL), so nothing of this machine reaches
@@ -75,8 +75,8 @@ export async function startServer({ env = {}, faux = "faux-model.mjs", args = []
   try {
     const [, baseUrl] = await line(/^agentrun-serve on (http:\/\/127\.0\.0\.1:\d+\/v2)\b/);
     const server = { baseUrl, origin: baseUrl.replace(/\/v2$/, ""), line, log: () => lines.map(redact).join("\n"), stop };
-    // The server's token is the setup code it takes at a public URL; kept in memory, never printed.
-    if (env.AGENTRUN_PUBLIC_URL) server.setupCode = () => tokenOf(server);
+    // At a public URL, setup takes the code in the link the server prints; kept in memory, never shown.
+    if (env.AGENTRUN_PUBLIC_URL) server.setupCode = async () => (await line(/\/setup#code=([^&\s]+)/))[1];
     return server;
   } catch (error) {
     await stop();
