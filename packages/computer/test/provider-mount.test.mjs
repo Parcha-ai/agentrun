@@ -41,8 +41,8 @@ test("Daytona: MOUNT is [] until D6, what its provider declares", () => {
 	assert.deepEqual([...daytona.MOUNT], declared(provider));
 });
 
-test("E2B: MOUNT is [] until D6, what its provider declares", () => {
+test("E2B: MOUNT is [\"archil\"], what its provider declares", () => {
 	const provider = new e2b.E2BProvider({ apiKey: E2B_KEY, Sandbox: fakeE2B().Sandbox, daemonPath: DAEMON });
-	assert.deepEqual([...e2b.MOUNT], []);
+	assert.deepEqual([...e2b.MOUNT], ["archil"]);
 	assert.deepEqual([...e2b.MOUNT], declared(provider));
 });
