@@ -3,7 +3,7 @@
 // writer onto it.
 export * from "./workspace.js";
 export {
-  type AttachableComputer, attachedWorkspace, checkMount, COMPUTER_CHUNK, MOUNT_AT, type MountReadBack, type MountSpec, NO_COMPUTER, noProcesses,
+  type AttachableComputer, attachedWorkspace, checkReadBack, COMPUTER_CHUNK, type MountCheck, NO_COMPUTER, noProcesses,
   type Processes,
 } from "./attach.js";
 export { agentDirName, agentFolder, agentLearningFolder, DISK_DIR, relativePath, relativeSegments, runFolder } from "./paths.js";

@@ -6,6 +6,7 @@
 //   workspace-durable-writer.mjs <port|attached|plain>-remove <root>   removes gone.txt, sub/gone.txt and the tree tree/
 import { appendFile, mkdir, rm, unlink, writeFile } from "node:fs/promises";
 import { dirname, join } from "node:path";
+import { readBackOf } from "@parcha/agentrun-computer";
 import { localWorkspace } from "../../dist/workspace/index.js";
 import { fakeComputer } from "../workspace-fake-computer.mjs";
 
@@ -13,7 +14,7 @@ const [how, root] = process.argv.slice(2);
 const FILE = "deep/er/file.bin";
 const bytes = Buffer.alloc(1024 * 1024 + 3);
 for (let i = 0; i < bytes.length; i++) bytes[i] = (i * 31 + 7) & 0xff;
-const workspaceFor = async (kind) => (kind === "attached" ? localWorkspace(root).attach(fakeComputer(root)) : localWorkspace(root));
+const workspaceFor = async (kind) => (kind === "attached" ? localWorkspace(root).attach(fakeComputer(root), { readBackOf }) : localWorkspace(root));
 
 if (how === "port" || how === "attached") {
   const workspace = await workspaceFor(how);

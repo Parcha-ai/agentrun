@@ -11,7 +11,8 @@
 // - The port does not serialize. Two calls on one path race as two processes would; callers own their ordering (the
 //   learning queue keeps one per agent, with git's update-ref compare-and-swap as its fence).
 
-import type { AttachableComputer, MountSpec, Processes } from "./attach.js";
+import type { MountSpec } from "@parcha/agentrun-computer";
+import type { AttachableComputer, MountCheck, Processes } from "./attach.js";
 
 /** Why a workspace call failed. */
 export type WorkspaceErrorCode =
@@ -141,5 +142,5 @@ export interface Workspace {
   mountSpec(): Promise<MountSpec>;
   /** This Workspace inside `computer`, once the computer's read-back shows it mounts mountSpec() at /workspace: file
    *  calls and exec go to its computerd client, and `process` is the computer's (attach.ts). */
-  attach(computer: AttachableComputer): Promise<Workspace>;
+  attach(computer: AttachableComputer, check: MountCheck): Promise<Workspace>;
 }

@@ -49,7 +49,9 @@
 // turned into /workspace/<path>, and passes the computer's process calls through (`process`, start's cwd and log taken
 // relative to the run's folder): the background tools call those, through the Workspace. A Workspace with no computer
 // refuses every process call with WorkspaceError REFUSED, cause NO_COMPUTER ("no-computer"); the words a person reads
-// are the background tool's. Every computerd type here is D's (@parcha/agentrun-computer), imported, never copied.
+// are the background tool's. Every computerd and mount type here is D's (@parcha/agentrun-computer), imported as a type,
+// never copied; nothing of D runs here. What C needs to run of D (the read-back a mount gives, readBackOf; each
+// provider's mounts) is passed in, and the cutover passes D's own.
 //
 // In the computer, the mount is the boundary: a path is still checked by the relative-path rule (no absolute path, no
 // "..", no empty segment), but a link inside /workspace is the computer's to follow, as its own programs do. grep is
@@ -62,9 +64,9 @@
 // writes are not covered, the same as with no computer.
 import { randomBytes } from "node:crypto";
 import type {
-  ComputerClient, DaemonMethod, DaemonMethods, Empty, FileStat, ProcessExit, ProcessListParams, ProcessListResult, ProcessReadParams,
-  ProcessReadResult, ProcessSignalParams, ProcessSignalResult, ProcessStartParams, ProcessStartResult, ProcessWaitParams, ProcessWriteParams,
-  Result,
+  ComputerClient, DaemonMethod, DaemonMethods, Empty, FileStat, MountReadBack, MountSpec, ProcessExit, ProcessListParams, ProcessListResult,
+  ProcessReadParams, ProcessReadResult, ProcessSignalParams, ProcessSignalResult, ProcessStartParams, ProcessStartResult, ProcessWaitParams,
+  ProcessWriteParams, Result, WORKSPACE,
 } from "@parcha/agentrun-computer";
 import { relativeSegments } from "./paths.js";
 import {
@@ -72,19 +74,11 @@ import {
   type WorkspaceErrorCode,
 } from "./workspace.js";
 
-/** Where every computer mounts a run's folder. */
-export const MOUNT_AT = "/workspace";
+/** Where every computer mounts a run's folder: D's WORKSPACE, checked against its type, so a change there fails here. */
+const MOUNT_AT: typeof WORKSPACE = "/workspace";
 
-// MountSpec and MountReadBack are D's (its mount module): these two stand in until that lands, then go.
-/** What a computer mounts at /workspace: the run's folder on this host (a local computer only), or the
- *  run's folder on the owner's disk. The token goes to D's root helper on fd 0 and nowhere else. */
-export type MountSpec =
-  | { readonly kind: "bind"; readonly path: string }
-  | { readonly kind: "archil"; readonly disk: string; readonly region: string; readonly folder: string; readonly token: string };
-/** What D reads back of a computer's /workspace mount; never the token. */
-export type MountReadBack =
-  | { readonly kind: "bind"; readonly path: string }
-  | { readonly kind: "archil"; readonly disk: string; readonly region: string; readonly folder: string };
+/** What attach runs of D, passed in (the cutover passes D's own): the read-back a mount made as `spec` asks gives. */
+export type MountCheck = { readonly readBackOf: (spec: MountSpec) => MountReadBack };
 
 /** A computer as attach takes it: its ref, its computerd client, and D's read-back of what it mounts at /workspace. */
 export interface AttachableComputer {
@@ -195,7 +189,9 @@ export function attachedWorkspace(base: Workspace, computer: AttachableComputer,
       }
       if (length !== undefined && length > READ_MAX) throw new WorkspaceError("TOO_LARGE", `a read returns at most ${READ_MAX} bytes`, { path: rel });
       // One computerd read is one version of the file. A read of more chunks than one checks the file's size and time
-      // before and after, and starts again when a write replaced it in between, so it never joins two versions.
+      // before and after, and starts again when a write replaced it in between, so it never joins two versions. The
+      // limit: computerd's stat has no inode or ctime, so a replacement of the same size within the same millisecond
+      // of mtime goes unseen.
       for (let attempt = 1; ; attempt++) {
         const before = await statOf(abs, rel);
         noLink(before, rel);
@@ -228,19 +224,21 @@ export function attachedWorkspace(base: Workspace, computer: AttachableComputer,
       noLink(existing, rel);
       if (existing !== undefined && existing.type !== "file") throw new WorkspaceError("REFUSED", `${JSON.stringify(rel)} is not a file`, { path: rel });
       // computerd replaces a file in place: the bytes go to a temporary file beside it, which a move puts in its place.
-      // The temporary file stays writable until its last chunk, which also sets the target's mode (a read-only file
-      // replaced in many chunks would refuse the next one). On a bind, its bytes are synced before the move, so the
-      // name never points at bytes a crash could lose.
+      // Replacing a file, the temporary file is its owner's alone (0600) and writable until its last chunk, which sets
+      // the target's mode: a private file's new bytes are never readable by others on the way, and a read-only file
+      // replaced in many chunks takes every one. On a bind, its bytes are synced before the move, so the name never
+      // points at bytes a crash could lose.
       const tempRel = [...segments.slice(0, -1), `.workspace-${randomBytes(8).toString("hex")}.tmp`].join("/");
       const temp = `${MOUNT_AT}/${tempRel}`;
       const mode = existing === undefined ? {} : { mode: existing.mode & 0o777 };
+      const firstMode = existing === undefined ? {} : { mode: 0o600 };
       try {
         const parts = chunks(bytes);
         let written = 0;
         for (const [i, part] of parts.entries()) {
           const last = i === parts.length - 1;
           await value(i === 0
-            ? call("files.write", { path: temp, data: base64(part), parents: true, ...(last ? mode : {}) })
+            ? call("files.write", { path: temp, data: base64(part), parents: true, ...(last ? mode : firstMode) })
             : call("files.write", last && existing !== undefined ? { path: temp, data: base64(part), offset: written, ...mode } : { path: temp, data: base64(part), append: true }), rel);
           written += part.length;
         }
@@ -325,19 +323,19 @@ export function attachedWorkspace(base: Workspace, computer: AttachableComputer,
   };
 }
 
-/** `computer`'s read-back checked against `spec`, the mount the Workspace asked for: anything else is REFUSED in words
- *  (never with the token). */
-export async function checkMount(computer: AttachableComputer, spec: MountSpec): Promise<void> {
+/** A read-back in words, never with the token (D's read-backs hold none). */
+const shown = (back: MountReadBack): string =>
+  "other" in back ? back.other : back.kind === "bind" ? `a bind of ${back.path}` : `${back.disk}:/${back.folder} in ${back.region}`;
+const keyOf = (back: MountReadBack): string => ("other" in back ? `other ${back.other}` : `${back.kind} ${shown(back)}`);
+
+/** `computer`'s read-back checked against the one a mount made as `spec` asks gives (`check.readBackOf`, D's): anything
+ *  else, a mount D never makes ("other") included, is REFUSED in words, never with the token.
+ *  TODO(D6): D6 adds exclusive and epoch to the disk's read-back; check them here then. */
+export async function checkReadBack(computer: AttachableComputer, spec: MountSpec, check: MountCheck): Promise<void> {
   const read = await computer.readBack();
   if (!read.ok) throw new WorkspaceError("UNAVAILABLE", `the computer ${computer.id} did not say what it mounts at ${MOUNT_AT}: ${read.error.message}`);
-  const got = read.value;
-  const refuse = (why: string): never => { throw new WorkspaceError("REFUSED", `the computer ${computer.id} does not hold this run's folder at ${MOUNT_AT}: ${why}`); };
-  if (spec.kind === "bind") {
-    if (got.kind !== "bind") refuse(`it mounts ${got.kind}, not a bind of the run's folder`);
-    else if (got.path !== spec.path) refuse(`it binds ${got.path}, not ${spec.path}`);
-    return;
+  const want = check.readBackOf(spec);
+  if (keyOf(read.value) !== keyOf(want)) {
+    throw new WorkspaceError("REFUSED", `the computer ${computer.id} does not hold this run's folder at ${MOUNT_AT}: it mounts ${shown(read.value)}, not ${shown(want)}`);
   }
-  if (got.kind !== "archil") return refuse(`it mounts ${got.kind}, not the run's folder on the disk`);
-  const want = `${spec.disk}:/${spec.folder} in ${spec.region}`;
-  if (`${got.disk}:/${got.folder} in ${got.region}` !== want) refuse(`it mounts ${got.disk}:/${got.folder} in ${got.region}, not ${want}`);
 }

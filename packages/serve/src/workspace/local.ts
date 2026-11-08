@@ -27,7 +27,8 @@ import { constants, type Stats } from "node:fs";
 import { type FileHandle, lstat, mkdir as makeDir, open, readdir, realpath, rename, rmdir, unlink } from "node:fs/promises";
 import { join } from "node:path";
 import { Worker } from "node:worker_threads";
-import { type AttachableComputer, attachedWorkspace, checkMount, type MountSpec, noProcesses } from "./attach.js";
+import type { MountSpec } from "@parcha/agentrun-computer";
+import { type AttachableComputer, attachedWorkspace, checkReadBack, type MountCheck, noProcesses } from "./attach.js";
 import type { GrepJob } from "./grep-worker.js";
 import { relativeSegments } from "./paths.js";
 import {
@@ -495,8 +496,8 @@ class LocalWorkspace implements Workspace {
     return { kind: "bind", path: root.abs };
   }
 
-  async attach(computer: AttachableComputer): Promise<Workspace> {
-    await checkMount(computer, await this.mountSpec());
+  async attach(computer: AttachableComputer, check: MountCheck): Promise<Workspace> {
+    await checkReadBack(computer, await this.mountSpec(), check);
     return attachedWorkspace(this, computer, { synced: (path, only) => this.#syncUp(path, only) });
   }
 

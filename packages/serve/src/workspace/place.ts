@@ -7,12 +7,14 @@
 // owner's disk) the runner. A workflow always gets the runner. Mode 1 allows only a local provider: a remote computer
 // cannot reach a folder on this machine. Mode 2 refuses a local provider: the run's folder is on the disk, which the
 // server never mounts. Every mode refuses a remote provider with no key, and a local one that does not answer.
+// The registry is passed in: the cutover passes D's providerIds and each provider module's MOUNT.
+import type { MountKind } from "@parcha/agentrun-computer";
 
 /** The v2 place, as an agent's definition holds it. */
 export type Place = { readonly mode: "runner" } | { readonly mode: "sandbox"; readonly box: string };
 
 /** Module D's registry, as place needs it: the provider ids, in its order, and each one's mount kinds. */
-export type Registry = { readonly ids: readonly string[]; mounts(id: string): Promise<readonly string[]> };
+export type Registry = { readonly ids: readonly string[]; mounts(id: string): Promise<readonly MountKind[]> };
 
 /** What the server has: the local providers that answer on this machine, and the remote ones it holds a key for. */
 export type Available = { readonly answering: ReadonlySet<string>; readonly keyed: ReadonlySet<string> };

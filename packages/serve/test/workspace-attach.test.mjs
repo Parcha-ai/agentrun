@@ -7,7 +7,8 @@ import { chmodSync, mkdirSync, mkdtempSync, readFileSync, realpathSync, renameSy
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { after, test } from "node:test";
-import { attachedWorkspace, checkMount, COMPUTER_CHUNK, localWorkspace, NO_COMPUTER } from "../dist/workspace/index.js";
+import { readBackOf } from "@parcha/agentrun-computer";
+import { attachedWorkspace, checkReadBack, COMPUTER_CHUNK, localWorkspace, NO_COMPUTER } from "../dist/workspace/index.js";
 import { fakeComputer } from "./workspace-fake-computer.mjs";
 
 const dirs = [];
@@ -32,7 +33,7 @@ async function attached(options = {}) {
   const root = scratch();
   const base = localWorkspace(root);
   const computer = fakeComputer(root, options);
-  const workspace = await base.attach(computer);
+  const workspace = await base.attach(computer, { readBackOf });
   computer.clear();
   return { root, base, computer, workspace };
 }
@@ -52,24 +53,31 @@ test("a local Workspace asks for a bind of its folder's real path; with no compu
   }
 });
 
-test("attach checks the computer's read-back: anything but this run's folder is refused, and nothing else is called", async () => {
+test("attach checks the computer's read-back against readBackOf(mountSpec()) (the computer module's, passed in): anything else is refused, and nothing else is called", async () => {
   const root = scratch();
   const base = localWorkspace(root);
   const cases = [
-    [{ kind: "bind", path: "/somewhere/else" }, "REFUSED", /binds \/somewhere\/else, not /],
-    [{ kind: "archil", disk: "dsk", region: "r1", folder: "agents/a/runs/r/work" }, "REFUSED", /mounts archil, not a bind/],
+    [{ kind: "bind", path: "/somewhere/else" }, "REFUSED", /it mounts a bind of \/somewhere\/else, not a bind of /],
+    [{ kind: "archil", disk: "dsk", region: "r1", folder: "agents/a/runs/r/work" }, "REFUSED", /it mounts dsk:\/agents\/a\/runs\/r\/work in r1, not a bind of /],
+    [{ other: "a read-only volume at /workspace" }, "REFUSED", /it mounts a read-only volume at \/workspace, not a bind of /],
     [{ ok: false, error: { code: "gone", message: "the computer went away" } }, "UNAVAILABLE", /did not say what it mounts at \/workspace: the computer went away/],
   ];
   for (const [readBack, code, words] of cases) {
     const computer = fakeComputer(root, { readBack });
-    await refused(base.attach(computer), code, words);
+    await refused(base.attach(computer, { readBackOf }), code, words);
     assert.deepEqual(computer.methods(), ["readBack"], "only the read-back was asked for");
   }
+  // The check is what is passed in: the Workspace keeps no rule of its own for what a mount reads back as.
+  const asked = [];
+  const passed = { readBackOf: (spec) => { asked.push(spec); return { kind: "bind", path: "/where/the/check/says" }; } };
+  await base.attach(fakeComputer(root, { readBack: { kind: "bind", path: "/where/the/check/says" } }), passed);
+  assert.deepEqual(asked, [{ kind: "bind", path: root }], "it asked the passed-in check, with its own mount");
+  // The disk's mount: never with the token in a refusal.
   const archil = { kind: "archil", disk: "dsk", region: "r1", folder: "agents/a/runs/r/work", token: "secret-token" };
-  await refused(checkMount(fakeComputer(root, { readBack: { kind: "archil", disk: "dsk", region: "r1", folder: "agents/b/runs/r/work" } }), archil), "REFUSED", /not dsk:\/agents\/a\/runs\/r\/work in r1/);
-  await refused(checkMount(fakeComputer(root, { readBack: { kind: "archil", disk: "dsk", region: "r2", folder: "agents/a/runs/r/work" } }), archil), "REFUSED", /in r2, not/);
-  await checkMount(fakeComputer(root, { readBack: { kind: "archil", disk: "dsk", region: "r1", folder: "agents/a/runs/r/work" } }), archil);
-  await assert.rejects(checkMount(fakeComputer(root, { readBack: { kind: "bind", path: "/x" } }), archil), (error) => !error.message.includes("secret-token"), "a refusal never carries the token");
+  await refused(checkReadBack(fakeComputer(root, { readBack: { kind: "archil", disk: "dsk", region: "r1", folder: "agents/b/runs/r/work" } }), archil, { readBackOf }), "REFUSED", /not dsk:\/agents\/a\/runs\/r\/work in r1/);
+  await refused(checkReadBack(fakeComputer(root, { readBack: { kind: "archil", disk: "dsk", region: "r2", folder: "agents/a/runs/r/work" } }), archil, { readBackOf }), "REFUSED", /in r2, not/);
+  await checkReadBack(fakeComputer(root, { readBack: { kind: "archil", disk: "dsk", region: "r1", folder: "agents/a/runs/r/work" } }), archil, { readBackOf });
+  await assert.rejects(checkReadBack(fakeComputer(root, { readBack: { kind: "bind", path: "/x" } }), archil, { readBackOf }), (error) => !error.message.includes("secret-token"), "a refusal never carries the token");
 });
 
 test("attached: a write goes to a temporary file beside the target, then a move; a big one in chunks, the kept mode on the last", async () => {
@@ -89,10 +97,10 @@ test("attached: a write goes to a temporary file beside the target, then a move;
   await workspace.write("notes/a.md", big);
   const writes = computer.calls.filter(([method]) => method === "files.write").map(([, p]) => ({ append: p.append, offset: p.offset, mode: p.mode, bytes: Buffer.from(p.data, "base64").length }));
   assert.deepEqual(writes, [
-    { append: undefined, offset: undefined, mode: undefined, bytes: COMPUTER_CHUNK },
+    { append: undefined, offset: undefined, mode: 0o600, bytes: COMPUTER_CHUNK },
     { append: true, offset: undefined, mode: undefined, bytes: COMPUTER_CHUNK },
     { append: undefined, offset: COMPUTER_CHUNK * 2, mode: 0o640, bytes: 5 },
-  ], "the temporary file stays writable; the last chunk, at its offset, sets the kept mode");
+  ], "the temporary file is its owner's alone (0600) and writable; the last chunk, at its offset, sets the kept mode");
   assert.equal(statSync(join(root, "notes/a.md")).mode & 0o777, 0o640);
   assert.ok(Buffer.from(await workspace.read("notes/a.md")).equals(big), "it reads back whole, across chunks");
 });
@@ -210,7 +218,7 @@ test("attached: a read of many chunks never joins two versions: a file replaced 
       renameSync(join(root, "big.new"), join(root, "big"));
     },
   });
-  const workspace = await localWorkspace(root).attach(computer);
+  const workspace = await localWorkspace(root).attach(computer, { readBackOf });
   const got = Buffer.from(await workspace.read("big"));
   assert.equal(got.length, size);
   assert.ok(got.every((byte) => byte === got[0]), "one version, never the start of one and the end of another");
@@ -234,4 +242,22 @@ test("attached on a bind: a write's temporary file is synced on the host before 
   await workspace.write("notes/a.md", "hello");
   const order = computer.calls.map(([method, params]) => (method === "synced" ? `synced ${params.path.replace(/\.workspace-[0-9a-f]+\.tmp$/, "<temp>")} ${params.only ?? "up"}` : method));
   assert.deepEqual(order, ["files.stat", "files.write", "synced notes/<temp> file", "files.move", "synced notes/a.md up"]);
+});
+
+test("attached: a private file replaced in many chunks is never readable by others on the way", async () => {
+  const { root, computer, workspace } = await attached();
+  writeFileSync(join(root, "secret.txt"), "old");
+  chmodSync(join(root, "secret.txt"), 0o600);
+  // After each call that writes the temporary file, what others could do with it on the host.
+  const seen = [];
+  const call = computer.client.call;
+  computer.client.call = async (method, params) => {
+    const result = await call(method, params);
+    if (method === "files.write" && params.path.includes(".workspace-")) seen.push(statSync(join(root, params.path.slice("/workspace".length))).mode & 0o777);
+    return result;
+  };
+  await workspace.write("secret.txt", Buffer.alloc(COMPUTER_CHUNK * 2 + 3, 1));
+  assert.equal(seen.length, 3);
+  assert.ok(seen.every((mode) => (mode & 0o077) === 0), `the temporary file was never open to others: ${seen.map((m) => m.toString(8)).join(", ")}`);
+  assert.equal(statSync(join(root, "secret.txt")).mode & 0o777, 0o600);
 });
