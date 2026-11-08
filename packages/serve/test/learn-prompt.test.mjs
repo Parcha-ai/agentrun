@@ -13,9 +13,9 @@ const ABSOLUTE = /(?:^|[\s`'"(\[])\/[^\s/]/m;
 /** A note's block, as the prompt asks for one. */
 const block = (file, text = note(), fence = "```") => `${fence}note ${file}\n${text}${text.endsWith("\n") ? "" : "\n"}${fence}`;
 
-test("the prompt says a rule for every reply is a note, which every later run reads, and a skill is the steps of one kind of job, read only when that job comes", () => {
+test("the prompt says a rule for every reply applies whatever the job is and is kept as a note, and steps or a format for one kind of job, named by when it applies, are a skill", () => {
   const prompt = reflectPrompt({ dir: ".learning", active: 0, tools: ["read"] }).replace(/\s+/g, " ");
-  assert.ok(prompt.includes("A rule for every reply (its format, its tone, what it always includes) is a note, which every later run reads; a skill is the steps of one kind of job, read only when that job comes."), prompt);
+  assert.ok(prompt.includes("A rule for every reply applies whatever the job is. Keep it as a note, which every later run reads. Steps or a format for one kind of job, named by when it applies (\"whenever I ask for a weekly summary\", \"when you open a PR\"), are a skill."), prompt);
   // Beside it, a skill's job still needs no note.
   assert.ok(prompt.includes("A job you keep a skill for needs no note beside it."));
 });
