@@ -299,7 +299,12 @@ export function fakePhoneHarness({ readyAfter = 1, start = "ok", loseAnswer = fa
 	/** What a locked connection answers every shell, in the vendor's words (phone probe 1, 2026-11-08). */
 	const LOCKED = "locked: run `adb shell unlock <code>` first\n";
 
+	/**
+	 * The adb server's one TCP transport per endpoint: a second connect reuses it, with its lock state, as the live run
+	 * showed ("already connected to …"). The vendor's lock is per TCP connection, so a reused transport is still unlocked.
+	 */
 	function connectTo(endpoint) {
+		if (phone.connected.has(endpoint)) return `already connected to ${endpoint}`;
 		phone.connected.add(endpoint);
 		if (!transports.has(endpoint)) transports.set(endpoint, String(++nextTransport));
 		return `connected to ${endpoint}`;
@@ -318,6 +323,9 @@ export function fakePhoneHarness({ readyAfter = 1, start = "ok", loseAnswer = fa
 	function shellOn(serial, command) {
 		ran.push(command);
 		if (!phone.unlocked.has(serial) && !/^unlock /.test(command)) return result(LOCKED);
+		// Once unlocked, the vendor's endpoint passes every shell through, `unlock` included, to the phone's own sh, which
+		// has no such command (live run 4).
+		if (phone.unlocked.has(serial) && /^unlock /.test(command)) return result("/system/bin/sh: unlock: inaccessible or not found\n", 127);
 		const out = shell(command);
 		if (phone.unlockedNow) {
 			phone.unlocked.add(serial);

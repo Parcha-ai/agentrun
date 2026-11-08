@@ -244,6 +244,37 @@ test("connect reaches the phone over adb with its unlock code, which no result o
 	assert.equal(armHello.arch, "arm64");
 });
 
+test("two connections to one phone share its adb transport: the second does not unlock again, and closing one leaves the other working", async () => {
+	// Live run 4: a second connect reused the adb server's transport, already unlocked; its `unlock` reached the phone's
+	// own sh ("not found"), and the disconnect after that failure dropped the transport the first connection used.
+	const { provider, fake } = await setup();
+	const { value: ref } = await provider.create(SPEC);
+	const first = await provider.connect(ref);
+	assert.equal(first.ok, true, JSON.stringify(first));
+	const second = await provider.connect(ref);
+	assert.equal(second.ok, true, JSON.stringify(second));
+	assert.deepEqual(
+		fake.shells().filter((command) => /^unlock /.test(command)),
+		[`unlock ${ADB_CODE}`],
+		"the transport is unlocked once: the second connection finds it unlocked",
+	);
+	for (const connection of [first.value, second.value]) assert.equal((await connection.client.call("apps.list", {})).ok, true);
+	const endpoint = `${ADB_HOST}:${22220 + 1}`;
+	const disconnects = () => fake.serverCalls().filter((call) => call === `host:disconnect:${endpoint}`).length;
+	await first.value.close();
+	assert.equal(disconnects(), 0, "the second connection still holds the transport");
+	const still = await second.value.client.call("apps.list", {});
+	assert.equal(still.ok, true, JSON.stringify(still));
+	await second.value.close();
+	assert.equal(disconnects(), 1, "the last holder lets it go, once");
+	assert.equal(fake.phone.connected.size, 0);
+	// A connection made after that connects and unlocks afresh: the vendor's lock is per connection.
+	const third = await provider.connect(ref);
+	assert.equal(third.ok, true, JSON.stringify(third));
+	assert.equal(fake.shells().filter((command) => /^unlock /.test(command)).length, 2);
+	await third.value.close();
+});
+
 test("no spawned adb's argv holds the unlock code or the phone's endpoint, which /proc shows to every user of the host", async () => {
 	const { provider, fake } = await setup();
 	const { value: ref } = await provider.create(SPEC);
