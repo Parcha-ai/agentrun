@@ -24,6 +24,14 @@ export const KINDS = {
   /** The loop's end commit: how the run ended (ended, stopped, failed). Its commit carries the run row's patch and any
    *  command it takes; neither a call nor a message, so the reader passes over it. */
   end: "agentrun.end",
+  /** A learning run's grade: the verdict and what it spent, written before its merge (a resumed run never asks again). */
+  learningGraded: "agentrun.learning.graded",
+  /** A learning run's merge: the new main and its commit, with the run's end. */
+  learningMerged: "agentrun.learning.merged",
+  /** Why a learning run merged nothing, with the run's end. */
+  learningDropped: "agentrun.learning.dropped",
+  /** The learning folder could not be reached: the run parks and tries again after a backoff. */
+  learningUnavailable: "agentrun.learning.unavailable",
 } as const;
 
 export interface CallStartData {

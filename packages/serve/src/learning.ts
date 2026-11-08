@@ -330,9 +330,9 @@ const statusOf = (text: string | undefined): string | undefined => {
 /** A file main holds over this is not read: a note is short, and the index is read only so far (loadedIndex). */
 const FILE_CAP = 1 << 20;
 const IDENTITY = { name: "agentrun-serve", email: "serve@agentrun.invalid" };
-/** The floor of git this server's learning needs: the one the repository's other learning packages test on. Its own
- *  calls need 2.32 (GIT_CONFIG_GLOBAL). */
-const MIN_GIT = [2, 40] as const;
+/** The floor of git this server's learning needs: what its own calls need, 2.32 (GIT_CONFIG_GLOBAL, which every call
+ *  sets to keep a host's global config out). A stock serverless exec image has 2.34. */
+const MIN_GIT = [2, 32] as const;
 /** How long one git call may take before it is killed: a hung call would hold its agent's queue. */
 const GIT_TIMEOUT_MS = 60_000;
 

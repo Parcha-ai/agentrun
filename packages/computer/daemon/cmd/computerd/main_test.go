@@ -256,6 +256,26 @@ func TestInitWithAUserMustStartAsRoot(t *testing.T) {
 	}
 }
 
+// --egress takes the egress proxy's socket, one absolute path, once. That init then relays its loopback port to it is
+// internal/daemon's TestInitWithAnEgressSocketRelaysItsLoopbackToItAndSaysWhere, and the Docker live tests'.
+func TestInitRefusesAnEgressSocketThatIsNotOneAbsolutePath(t *testing.T) {
+	deadline := time.Now().Add(time.Hour).UTC().Format(time.RFC3339)
+	for _, args := range [][]string{
+		{"init", "--deadline", deadline, "--egress"},
+		{"init", "--deadline", deadline, "--egress", ""},
+		{"init", "--deadline", deadline, "--egress", "egress.sock"},
+		{"init", "--deadline", deadline, "--egress", "/opt/agentrun/egress/egress.sock", "--egress", "/tmp/other.sock"},
+	} {
+		code, stderr := computerd(t, 30*time.Second, args...)
+		if code != 2 {
+			t.Errorf("computerd %q: exit %d; want 2, a refusal", args, code)
+		}
+		if !strings.Contains(stderr, "--egress") || !strings.Contains(stderr, "absolute path") {
+			t.Errorf("computerd %q: stderr does not say why in words: %q", args, stderr)
+		}
+	}
+}
+
 // probeListener listens on the IPv4 loopback and runs answer on each connection, closing it after.
 func probeListener(t *testing.T, answer func(net.Conn)) string {
 	t.Helper()
@@ -351,6 +371,23 @@ func TestProbeRefusesATargetThatIsNotHostAndPort(t *testing.T) {
 		code, _, stderr := computerdOut(t, 30*time.Second, args...)
 		if code != 2 || !strings.Contains(stderr, "host:port") {
 			t.Errorf("computerd %q: exit %d, stderr %q; want exit 2 and a refusal in words", args, code, stderr)
+		}
+	}
+}
+
+// probe --diagnose tries its own fixed public targets and nothing else, so it is never run here (no test reaches past
+// this machine); its checks are tested in internal/probe against this machine's own listeners. Here: it takes no other
+// argument, and --connect beside it is refused.
+func TestProbeDiagnoseTakesNoOtherArgument(t *testing.T) {
+	for _, args := range [][]string{
+		{"probe", "--diagnose", "--connect", "example.com:443"},
+		{"probe", "--connect", "example.com:443", "--diagnose"},
+		{"probe", "--diagnose", "example.com:443"},
+		{"probe", "--diagnose", "--diagnose"},
+	} {
+		code, stdout, stderr := computerdOut(t, 30*time.Second, args...)
+		if code != 2 || stdout != "" || !strings.Contains(stderr, "--diagnose") {
+			t.Errorf("computerd %q: exit %d, stdout %q, stderr %q; want exit 2, nothing on stdout and a refusal that names --diagnose", args, code, stdout, stderr)
 		}
 	}
 }

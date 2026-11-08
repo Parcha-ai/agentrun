@@ -9,7 +9,9 @@
 // - A path is relative, normalized, and never leaves the root: an absolute path, "..", ".", an empty segment, a NUL or a
 //   backslash is ESCAPE, and so is a symbolic link anywhere on the way, the last part included. Nothing is followed.
 // - The port does not serialize. Two calls on one path race as two processes would; callers own their ordering (the
-//   learning queue keeps one per agent, with git's update-ref compare-and-swap as its fence).
+//   learning queue keeps one per agent, with git's update-ref compare-and-swap as its fence). A backend serializes only
+//   what its service requires (Archil: an exec's checkout of the folder blocks writes, so execs run one at a time and
+//   writes wait for them); callers' queues still own their own ordering.
 
 import type { MountSpec } from "@parcha/agentrun-computer";
 import type { AttachableComputer, MountCheck, Processes } from "./attach.js";
@@ -44,11 +46,21 @@ export class WorkspaceError extends Error {
   }
 }
 
-export const isWorkspaceError = (error: unknown, code?: WorkspaceErrorCode): error is WorkspaceError =>
+/** What an exec whose signal aborted rejects with: the signal's reason, or an AbortError. */
+export const abortError = (signal: AbortSignal | undefined): unknown =>
+  signal?.reason ?? new DOMException("This operation was aborted", "AbortError");
+
+export const isWorkspaceError =(error: unknown, code?: WorkspaceErrorCode): error is WorkspaceError =>
   error instanceof WorkspaceError && (code === undefined || error.code === code);
 
-/** One entry of a directory. Only files and directories are listed: a symbolic link, a pipe or a socket is left out. */
+/** One entry of a directory. Only files and directories are listed: a pipe or a socket is left out. A symbolic link is
+ *  left out by a backend that can tell (Local); a backend that can't tell a link from a file (Archil's file API) lists
+ *  it as a file, and reading it fails UNAVAILABLE. */
 export type Entry = { readonly name: string; readonly kind: "file" | "dir"; readonly size: number };
+
+/** What is at a path, never following it: a symbolic link is "link"; a pipe, a socket or a device is "other". A
+ *  folder's size is 0, as list says. A backend that cannot tell a link from a file (a disk's file API) says "file". */
+export type Stat = { readonly kind: "file" | "dir" | "link" | "other"; readonly size: number; readonly mtimeMs: number };
 
 /** One line grep found. `line` counts from 1; `text` is the line, cut at GREP_LINE_MAX characters. */
 export type GrepMatch = { readonly path: string; readonly line: number; readonly text: string };
@@ -81,10 +93,13 @@ export type ExecOptions = {
   /** The most bytes kept of stdout, and of stderr, each (default EXEC_OUTPUT_MAX). Past it the rest is read and
    *  dropped, and `truncated` is true. */
   readonly maxOutput?: number;
-  /** Each piece of output as it comes, within the cap: what it is given, joined per stream, is the result's stdout
-   *  and stderr. A backend that cannot stream calls it once per stream, at the end, with everything. An error it
-   *  throws is ignored. */
+  /** Each piece of output as it comes, ALL of it, past maxOutput too (a caller can keep the end of a long output from
+   *  it): the first maxOutput bytes of what it is given, joined per stream, are the result's stdout and stderr. A
+   *  backend that cannot stream calls it once per stream, at the end, with everything. An error it throws is ignored. */
   readonly onOutput?: (chunk: { readonly stream: "stdout" | "stderr"; readonly data: Uint8Array }) => void;
+  /** Ends the call: the whole process group is killed, and exec rejects with the signal's reason (an AbortError). A
+   *  signal already aborted runs nothing. */
+  readonly signal?: AbortSignal;
 };
 
 export type ExecResult = {
@@ -92,6 +107,9 @@ export type ExecResult = {
   readonly stderr: string;
   /** Its exit code, or null when a signal ended it (the deadline's kill included). */
   readonly code: number | null;
+  /** The signal that ended it, in Node's naming ("SIGTERM", "SIGSEGV"), or null when it exited on its own. At the
+   *  deadline (`timedOut`) it is whatever signal ended the program. */
+  readonly signal: string | null;
   readonly timedOut: boolean;
   /** stdout or stderr went past `maxOutput`, and was cut. */
   readonly truncated: boolean;
@@ -121,6 +139,9 @@ export interface Workspace {
    *  a large append into several (a disk API that takes a bounded size per call), so a reader during it can see part
    *  of `data` at the end; once it returns, all of it is there, in order. */
   append(path: string, data: Uint8Array | string): Promise<void>;
+  /** What is at `path`, never following it (a link as its last part is "link"; one on the way is ESCAPE), or undefined
+   *  when nothing is there (a folder on the way not there, or a file in its place, included). "" is the root. */
+  stat(path: string): Promise<Stat | undefined>;
   /** The files and directories in directory `dir` ("" or "." for the root), sorted by name. */
   list(dir: string): Promise<Entry[]>;
   /** Directory `dir` made, with its parents (mkdir -p); one already there is fine. */

@@ -423,3 +423,35 @@ test("a server that can't be reached reads so, at its address with a short reaso
   assert.equal(textOf(said), `The MCP server fake could not be reached at ${new URL(url).origin} (the connection was reset); nothing was sent.`);
   assert.doesNotMatch(textOf(said), /Version negotiation|fetch failed/);
 });
+
+test("today's construction copies the credentials: a header changed after connect, an entry replaced or one removed is not seen; with liveCredentials each is", async (t) => {
+  const fake = await startFakeMcp({ token: TOKEN });
+  t.after(() => fake.close());
+  const work = await mkdtemp(join(tmpdir(), "mcp-gateway-live-"));
+  t.after(() => rm(work, { recursive: true, force: true }));
+  const WRONG = `not-a-secret-${"replaced-token-0123"}`;
+  const built = (extra = {}) => {
+    const credentials = { fake: { url: fake.url, headers: { authorization: `Bearer ${TOKEN}` } } };
+    return { credentials, gateway: mcpGateway({ pin: { fake: { url: fake.url, tools } }, credentials, work: () => work, ...extra }) };
+  };
+  const add = (gateway) => gateway.call("fake", "add", { a: 1, b: 1 }, { signal: signal() }).then(textOf);
+  const refused = "The MCP server fake refused its credential (its sign-in expired or was revoked, or its key changed): sign in again in Settings → MCP servers, or update its credential there.";
+  // Today's construction (app.ts passes no liveCredentials): what it was built with, whatever changes after.
+  const today = built();
+  assert.equal(await add(today.gateway), "2", "connected with the token it was built with");
+  today.credentials.fake.headers = { authorization: `Bearer ${WRONG}` };
+  assert.equal(await add(today.gateway), "2", "a header changed after connect is not sent: the client sends the one it connected with");
+  today.credentials.fake = { url: fake.url, headers: { authorization: `Bearer ${WRONG}` } };
+  assert.equal(await add(today.gateway), "2", "an entry replaced after construction is not seen");
+  delete today.credentials.fake;
+  assert.equal(await add(today.gateway), "2", "nor one removed");
+  // liveCredentials (the runner's claim step only): each change reaches the next call, through the client already connected.
+  const live = built({ liveCredentials: true });
+  assert.equal(await add(live.gateway), "2");
+  live.credentials.fake.headers = { authorization: `Bearer ${WRONG}` };
+  assert.equal(await add(live.gateway), refused, "a header changed after connect is sent at the next request");
+  live.credentials.fake = { url: fake.url, headers: { authorization: `Bearer ${TOKEN}` } };
+  assert.equal(await add(live.gateway), "2", "an entry replaced is used");
+  delete live.credentials.fake;
+  assert.equal(await add(live.gateway), "The MCP server fake is no longer saved on this server; nothing was sent.", "an entry removed is refused unsent");
+});
