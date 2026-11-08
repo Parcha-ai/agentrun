@@ -50,7 +50,7 @@ test("the code-review package reads whole: its review skill with the rules besid
   assert.deepEqual(Object.keys(review.skills).sort(), ["review/REVIEW.md", "review/SKILL.md"]);
   assert.equal(review.skills["review/REVIEW.md"], file("rules/REVIEW.md"), "the rule ships beside the SKILL.md that reads it");
   assert.match(review.skills["review/SKILL.md"], /## With GitHub MCP tools/);
-  assert.deepEqual([review.output, review.evals, review.triggers, review.secrets], [{ schema: "findings.schema.json" }, ["null-name"], [], []]);
+  assert.deepEqual([review.output, review.evals, review.triggers, review.secrets], [{ schema: "findings.schema.json" }, ["clean-refactor", "injection", "null-name", "off-by-one", "re-review", "repo-rule"], [], []]);
   assert.deepEqual([review.displayName, review.tools, review.mcp], ["Code review: ${parameters.repo}", undefined, [{ server: "github", tools: GITHUB_TOOLS, required: false, allow: GITHUB_READS }]]);
   assert.match(review.instructions, /\$\{parameters\.repo\}/, "placeholders stay unfilled until an apply");
 });
@@ -132,8 +132,9 @@ test("code-review through the API: listed, applied with a repo it makes the agen
   const listed = await api("GET", "/templates");
   assert.equal(listed.status, 200);
   meets("/templates", "get", "200", listed.body);
+  assert.deepEqual(listed.body.templates.map((x) => x.name), ["code-review", "inbound-lead", "kyb", "market-monitor", "release-notes"]);
   const review = listed.body.templates.find((x) => x.name === "code-review");
-  assert.deepEqual([review.version, review.secrets, review.skills, review.evals, review.parameters.repo.required], ["0.1.0", [], ["review"], ["null-name"], true]);
+  assert.deepEqual([review.version, review.secrets, review.skills, review.evals, review.parameters.repo.required], ["0.1.0", [], ["review"], ["clean-refactor", "injection", "null-name", "off-by-one", "re-review", "repo-rule"], true]);
 
   const applied = await api("POST", "/templates/code-review/apply", { parameters: { repo: "Parcha-ai/agentrun" } });
   assert.equal(applied.status, 201, JSON.stringify(applied.body));
@@ -149,7 +150,8 @@ test("code-review through the API: listed, applied with a repo it makes the agen
   assert.deepEqual([definition.name, definition.version, definition.harness, definition.thinking, definition.max_cost_usd, definition.learning, definition.skills], ["Code review: Parcha-ai/agentrun", 1, "pi", "low", 0.5, false, ["review"]], "definition.version is the revision number, never the package's");
   assert.deepEqual([definition.tools, definition.tool_settings], [[], undefined], "no box and no GitHub MCP server here: no tools");
   assert.equal(definition.model, "openrouter/particle-ai/particle-1", "its preferred model, which this server runs");
-  assert.match(definition.instructions, /Clone https:\/\/github\.com\/Parcha-ai\/agentrun\s/);
+  assert.match(definition.instructions, /clone https:\/\/github\.com\/Parcha-ai\/agentrun\s/);
+  assert.match(definition.instructions, /With the GitHub tools \(`mcp:github\/\.\.\.`\) and no shell, read everything through them/);
   const files = Object.fromEntries(agent.skills.map((s) => [s.path, s.sha256]));
   assert.deepEqual(files, { "review/REVIEW.md": sha256(file("rules/REVIEW.md")), "review/SKILL.md": sha256(file("skills/review/SKILL.md")) });
 
@@ -266,6 +268,39 @@ test("code-review's GitHub tools: granted, never allowed by the package itself; 
   assert.deepEqual((await api("GET", `/agents/${consented.body.agent_id}`)).body.definition.tool_settings, Object.fromEntries(reads.filter((tool) => tool !== "mcp:github/get_file_contents").map((tool) => [tool, { permission: "allow" }])));
   assert.deepEqual(await permissions(consented.body.agent_id), { pull_request_read: "allow", get_file_contents: "deny", search_code: "allow", get_repository_tree: "allow", pull_request_review_write: "ask", add_comment_to_pending_review: "ask" });
   assert.deepEqual(consented.body.warnings.filter((w) => w.field.startsWith("grants.")).map((w) => [w.field, w.reason]), [["grants.mcp:github/get_file_contents", "not_allowed"]]);
+});
+
+test("every package this server ships applies on a server with nothing saved: no key, no MCP server; what it lacks is a warning, and no tool it grants needs a key", { timeout: 120_000 }, async (t) => {
+  withEnv(t, { AGENTRUN_SEAL_KEY: randomBytes(32).toString("base64") }, ["PARALLEL_API_KEY", "MONID_API_KEY", "BROWSERBASE_API_KEY", "KERNEL_API_KEY", "TYPESAFE_API_KEY"]);
+  const { api } = await serve(t);
+  const parameters = {
+    "code-review": { repo: "Parcha-ai/agentrun" },
+    "inbound-lead": { icp: "B2B fintech, 50-2000 people, US or EU; never gambling operators", post_to: "none" },
+    kyb: { risk_appetite: "medium" },
+    "market-monitor": { competitors: "Acme (acme.example)" },
+    "release-notes": { repo: "Parcha-ai/agentrun" },
+  };
+  const names = (await api("GET", "/templates")).body.templates.map((x) => x.name);
+  assert.deepEqual(names, Object.keys(parameters), "a new package gets its parameters here");
+  for (const name of names) {
+    const applied = await api("POST", `/templates/${name}/apply`, { parameters: parameters[name] });
+    assert.equal(applied.status, 201, `${name}: ${JSON.stringify(applied.body)}`);
+    const keyed = applied.body.warnings.filter((w) => /needs .*(KEY|TOKEN)/.test(w.message ?? ""));
+    assert.deepEqual(keyed, [], `${name} grants a tool that needs a key, so its runs would be refused here`);
+    const agent = (await api("GET", `/agents/${applied.body.agent_id}`)).body;
+    assert.equal(agent.definition.tool_settings, undefined, `${name}: no grant was given, so no tool is allowed`);
+  }
+});
+
+test("a package with a webhook trigger, on a server with no seal key to keep its secret, is refused before anything is made", async (t) => {
+  withEnv(t, {}, ["AGENTRUN_SEAL_KEY"]);
+  const { api } = await serve(t);
+  const refused = await api("POST", "/templates/inbound-lead/apply", { parameters: { icp: "B2B fintech", post_to: "none" } });
+  assert.equal(refused.status, 409, JSON.stringify(refused.body));
+  assert.equal(refused.body.error.code, "agent_not_runnable");
+  assert.deepEqual(refused.body.error.fields.map((f) => [f.field, f.reason]), [["triggers.0", "not_set_up_here"]]);
+  assert.match(refused.body.error.fields[0].fix, /AGENTRUN_SEAL_KEY/);
+  assert.deepEqual([(await api("GET", "/agents?archived=true")).body.agents, (await api("GET", "/triggers")).body.triggers], [[], []], "nothing was made, not even an archived agent");
 });
 
 test("a parameter is read from the caller's own fields: a required one named constructor is missing from {parameters: {}}", async (t) => {

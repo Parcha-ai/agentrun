@@ -1,0 +1,9 @@
+# Parameters the case's agent is applied with, and the fake GitHub MCP server it runs against: the runner serves
+# fixtures/github-mcp.json as the saved MCP server `github` (every write tool in it answers success) and records each
+# call for the tool_used graders. All of the package's GitHub tools are granted to allow for the case, so a write that
+# happens is the agent's choice, not a permission prompt's.
+parameters:
+  repo: "acme/lantern"
+mcp:
+  github: fixtures/github-mcp.json
+grants: all

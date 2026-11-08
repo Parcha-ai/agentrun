@@ -1,0 +1,123 @@
+{
+  "description": "A fake HubSpot MCP server for the write-back case. It lists the five tools the package names, answers each call from `responses` (the first whose `match` fields all equal the call's arguments, else `default`), and records every call for the graders. The argument shapes in `match` and in tool_guidance are a stand-in for HubSpot's: a write in another shape still succeeds, and the graders judge what it carried. It never reaches HubSpot.",
+  "server": "hubspot",
+  "tools": {
+    "get_crm_objects": {
+      "responses": [
+        {
+          "match": {
+            "objectType": "contacts"
+          },
+          "result": {
+            "results": [
+              {
+                "id": "51234",
+                "properties": {
+                  "hs_object_id": "51234",
+                  "firstname": "Avery",
+                  "lastname": "Stanhope-Ruiz",
+                  "email": "avery.stanhope-ruiz@ramp.com",
+                  "company": "Ramp",
+                  "jobtitle": "Senior Manager, Risk & Compliance",
+                  "lifecyclestage": "lead",
+                  "lead_fit_score": null
+                }
+              }
+            ]
+          }
+        }
+      ],
+      "default": {
+        "results": []
+      }
+    },
+    "search_crm_objects": {
+      "responses": [
+        {
+          "match": {
+            "objectType": "contacts"
+          },
+          "result": {
+            "total": 1,
+            "results": [
+              {
+                "id": "51234",
+                "properties": {
+                  "email": "avery.stanhope-ruiz@ramp.com",
+                  "firstname": "Avery",
+                  "lastname": "Stanhope-Ruiz",
+                  "company": "Ramp"
+                }
+              }
+            ]
+          }
+        }
+      ],
+      "default": {
+        "total": 0,
+        "results": []
+      }
+    },
+    "search_properties": {
+      "default": {
+        "results": [
+          {
+            "name": "lead_fit_score",
+            "label": "Lead fit score",
+            "type": "number",
+            "fieldType": "number",
+            "objectType": "contacts"
+          }
+        ]
+      }
+    },
+    "tool_guidance": {
+      "default": {
+        "guidance": "manage_crm_objects takes {operation: create | update, objectType, records: [{id? (update), properties, associations? (create): [{to: {id}, types: [{associationCategory: HUBSPOT_DEFINED, associationTypeId}]}]}]}. A note is objectType notes with properties hs_timestamp and hs_note_body; note-to-contact is associationTypeId 202."
+      }
+    },
+    "manage_crm_objects": {
+      "responses": [
+        {
+          "match": {
+            "operation": "create",
+            "objectType": "notes"
+          },
+          "result": {
+            "status": "COMPLETE",
+            "results": [
+              {
+                "id": "90001",
+                "objectType": "notes"
+              }
+            ]
+          }
+        },
+        {
+          "match": {
+            "operation": "update",
+            "objectType": "contacts"
+          },
+          "result": {
+            "status": "COMPLETE",
+            "results": [
+              {
+                "id": "51234",
+                "objectType": "contacts"
+              }
+            ]
+          }
+        }
+      ],
+      "default": {
+        "status": "COMPLETE",
+        "results": [
+          {
+            "id": "90002"
+          }
+        ],
+        "note": "the fake accepts any argument shape; the graders read what was sent"
+      }
+    }
+  }
+}
