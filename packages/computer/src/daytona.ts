@@ -729,7 +729,8 @@ export class DaytonaProvider implements ComputerProvider {
 		if (sandboxClass !== "container" && sandboxClass !== "linux-vm") throw new Error(`sandboxClass is container or linux-vm, not ${String(sandboxClass)}`);
 		const user = USER.exec(daemonUser);
 		if (user === null || Number(user[1]) > MAX_ID || Number(user[2]) > MAX_ID) throw new Error(`the daemon user ${daemonUser} must be uid:gid in numbers, such as 1000:1000`);
-		if (user[1] === "0" || user[2] === "0") throw new Error(`the daemon user ${daemonUser} is root or in root's group; a Daytona computer's daemon runs as neither`);
+		// The numbers, not the text: "00" is root as much as "0" is.
+		if (Number(user[1]) === 0 || Number(user[2]) === 0) throw new Error(`the daemon user ${daemonUser} is root or in root's group; a Daytona computer's daemon runs as neither`);
 		const minutes = (name: string, value: unknown) => {
 			if (!isWhole(value) || value < 0) throw new Error(`${name} is a whole number of minutes, 0 or more, not ${String(value)}`);
 		};
@@ -1241,7 +1242,11 @@ export class DaytonaProvider implements ComputerProvider {
 		// Read back whatever the change's answer: one that timed out may still have been applied. Never signalled, so an
 		// aborted change is still checked.
 		const after = await this.#own(ref);
-		if (!after.ok) return changed.ok ? after : this.#refusedChange(policy, changed.error);
+		// What the network is now is not known, whatever the change answered: it is made safe.
+		if (!after.ok) {
+			const answered = changed.ok ? "" : ` (the change itself answered: ${changed.error.message})`;
+			return this.#makeSafe(ref, after.error.code, `network ${policyWords(policy)} could not be read back after the change: ${after.error.message}${answered}`);
+		}
 		const read = networkOf(after.value);
 		if (samePolicy(read, policy)) return ok(read);
 		if (!(typeof current === "object" && "other" in current) && samePolicy(read, current)) {
@@ -1255,8 +1260,25 @@ export class DaytonaProvider implements ComputerProvider {
 				return fail("refused", `Daytona did not apply network ${policyWords(policy)} (it read back ${policyWords(read)}), so ${ref.name} is back on ${policyWords(current)}`);
 			}
 		}
+		return this.#makeSafe(ref, "refused", `Daytona did not apply network ${policyWords(policy)} (it read back ${policyWords(read)})`);
+	}
+
+	/**
+	 * A computer whose network is wider than asked, or not known, is blocked (none), and the block read back: Daytona may
+	 * answer a POST it does not apply. One that does not read back none is deleted. Never signalled, as every step after a
+	 * change is, so an aborted call still leaves the computer safe. Always a failure, in words: why, then what was done.
+	 */
+	async #makeSafe(ref: ComputerRef, code: ComputerErrorCode, why: string): Promise<Result<never>> {
 		const blocked = await this.#setNetwork(ref, "none");
-		return fail("refused", `Daytona did not apply network ${policyWords(policy)} (it read back ${policyWords(read)}), so ${ref.name}'s network ${blocked.ok ? "was blocked (none)" : `could not be blocked either: ${blocked.error.message}`}`);
+		const again = blocked.ok ? await this.#own(ref) : undefined;
+		if (again?.ok && samePolicy(networkOf(again.value), "none")) return fail(code, `${why}, so ${ref.name}'s network was blocked (none) and read back none`);
+		const how = !blocked.ok
+			? `blocking it (none) failed: ${blocked.error.message}`
+			: again !== undefined && !again.ok
+				? `blocking it (none) could not be read back: ${again.error.message}`
+				: `blocking it (none) read back ${policyWords(networkOf((again as { value: Sandbox }).value))}`;
+		const removed = await this.release(ref, "delete");
+		return fail(code, `${why}; ${ref.name}'s network could not be made safe: ${how}, so ${removed.ok ? "it was deleted" : `it could not be deleted either: ${removed.error.message}`}`);
 	}
 
 	#refusedChange(policy: NetworkSpec, error: ComputerError): Result<never> {
