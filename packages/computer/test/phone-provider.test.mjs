@@ -217,6 +217,27 @@ test("connect reaches the phone over adb with its unlock code, which no result o
 	assert.equal(armHello.arch, "arm64");
 });
 
+test("no spawned adb's argv holds the unlock code or the phone's endpoint, which /proc shows to every user of the host", async () => {
+	const { provider, fake } = await setup();
+	const { value: ref } = await provider.create(SPEC);
+	const connected = await provider.connect(ref);
+	assert.equal(connected.ok, true, JSON.stringify(connected));
+	const { client } = connected.value;
+	assert.equal((await client.call("screen.shot", {})).ok, true);
+	assert.equal((await client.call("input.actions", { actions: [{ type: "tap", at: [10, 10] }] })).ok, true);
+	assert.equal((await client.call("apps.ui_tree", {})).ok, true);
+	await connected.value.close();
+	const port = String(22220 + 1);
+	for (const argv of fake.adbCalls()) {
+		for (const arg of argv) {
+			assert.ok(!arg.includes(ADB_CODE) && !arg.includes("ph_"), `an adb argv holds the unlock code: ${JSON.stringify(argv).replace(ADB_CODE, "[code]")}`);
+			assert.ok(!arg.includes(ADB_HOST) && arg !== port && !arg.endsWith(`:${port}`), `an adb argv holds the phone's endpoint: ${JSON.stringify(argv)}`);
+		}
+	}
+	assert.ok(fake.shells().includes(`unlock ${ADB_CODE}`), "the phone was unlocked all the same");
+	assert.deepEqual(fake.phone.connected.size, 0, "and close let the transport go");
+});
+
 test("without adb on this machine, connect says what to install", async () => {
 	const fake = fakePhoneHarness();
 	const provider = await create({ apiKey: KEY, fetch: fake.fetch, adb: adbCli(join(dir, "no-such-adb")), now: fake.clock.now, sleep: fake.clock.sleep });
