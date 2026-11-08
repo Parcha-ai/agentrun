@@ -1768,7 +1768,9 @@ through `apps.ui_tree` (`src/conformance/cases/settings.ts`):
 - `touch.tap`: a tap on a row opens its page, which shows the row's title, and back comes back;
 - `touch.swipe`: a swipe up moves the list up;
 - `input.type-text` and `input.key-table-refuses-unknown`: the text read back from the search field;
-- `apps.launch-terminate`: Settings is listed, in front once launched, and not once terminated;
+- `apps.launch-terminate`, which needs the apps group alone: Settings is listed; once launched it is in front, and
+  shown, in `apps.ui_tree` when the phone has one, else in a screenshot other than the one before; once terminated it
+  is not in front;
 - `apps.ui-tree-shape`: the tree's shape, on Settings.
 
 `touch.pinch` skips in the provider's own refusal.
