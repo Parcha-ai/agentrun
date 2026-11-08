@@ -4,7 +4,7 @@
 // then its triggers, or nothing that stays: parameters that do not check and a secret the server lacks make nothing, and
 // a trigger the server refuses deletes the triggers made before it and archives the agent.
 import assert from "node:assert/strict";
-import { createHash } from "node:crypto";
+import { createHash, randomBytes } from "node:crypto";
 import { cpSync, mkdirSync, readFileSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { test } from "node:test";
@@ -93,6 +93,9 @@ test("the validator refuses a malformed package, naming each problem", async (t)
   await refused(({ edit }) => trigger("{ kind: schedule, cron: every morning }")(edit), /triggers\[0\]\.source\.cron: cron is five fields/);
   await refused(({ edit }) => trigger('{ kind: schedule, cron: "0 9 * * *" }', "\n    colour: red")(edit), /triggers\[0\]\.colour: /);
   await refused(({ edit }) => trigger("{ kind: schedule, at: next tuesday }")(edit), /triggers\[0\]\.source\.at: at is an RFC 3339 date-time/);
+  // A trigger's input is the run's input: the package's agent takes {content: text}, so another one is refused here.
+  await refused(({ edit }) => edit("learning: false", "learning: false\ntriggers:\n  - name: nightly\n    source: { kind: schedule, cron: \"0 9 * * *\" }\n    target: { kind: start_run, input: { content: 5 } }"), /triggers\[0\]\.target\.input\.content: /);
+  await refused(({ edit }) => edit("learning: false", "learning: false\ntriggers:\n  - name: nightly\n    source: { kind: schedule, cron: \"0 9 * * *\" }\n    target: { kind: start_run, input: { text: Go. } }"), /triggers\[0\]\.target\.input\.content: /);
   // A date is checked for its form alone: one that has passed stops no server's start; an apply refuses it.
   assert.deepEqual(await problemsOf(t, ({ edit }) => trigger('{ kind: schedule, at: "2020-01-01T00:00:00Z" }')(edit)), [], "a date that has passed still reads");
   await refused(({ edit }) => trigger('{ kind: schedule, cron: "${parameters.repo}" }')(edit), /triggers\[0\]\.source holds \$\{parameters\.repo\}: a placeholder goes in display_name, the instructions or a trigger's target\.input/);
@@ -223,7 +226,7 @@ test("a package's triggers are made on its agent, placeholders filled; a trigger
 
   const broken = await api("POST", "/templates/broken/apply", { parameters: {} });
   assert.equal(broken.status, 422, JSON.stringify(broken.body));
-  assert.ok(broken.body.error.fields.length && broken.body.error.fields.every((f) => f.field.startsWith("triggers.1.target.input")), JSON.stringify(broken.body.error.fields));
+  assert.deepEqual(broken.body.error.fields.map((f) => [f.field, f.message]), [["triggers.1.source.at", "at is in the past"]]);
   assert.deepEqual((await api("GET", "/triggers")).body.triggers.map((x) => x.id), [id], "the broken package's first trigger is gone");
   assert.deepEqual((await api("GET", "/agents")).body.agents.map((a) => a.agent_id), [applied.body.agent_id], "its agent is not among the active ones");
   const archived = (await api("GET", "/agents?archived=true")).body.agents;
@@ -280,10 +283,17 @@ test("every package this server ships applies on a server with nothing saved: no
     "market-monitor": { competitors: "Acme (acme.example)" },
     "release-notes": { repo: "Parcha-ai/agentrun" },
   };
-  const names = (await api("GET", "/templates")).body.templates.map((x) => x.name);
-  assert.deepEqual(names, Object.keys(parameters), "a new package gets its parameters here");
-  for (const name of names) {
+  const listed = (await api("GET", "/templates")).body.templates;
+  assert.deepEqual(listed.map((x) => x.name), Object.keys(parameters), "a new package gets its parameters here");
+  for (const { name, mcp } of listed) {
     const applied = await api("POST", `/templates/${name}/apply`, { parameters: parameters[name] });
+    // An MCP server a package cannot work without is the one refusal: 409 naming it, nothing made.
+    const required = mcp.filter((need) => need.required).map((need) => `mcp.${need.server}`);
+    if (required.length) {
+      assert.equal(applied.status, 409, `${name}: ${JSON.stringify(applied.body)}`);
+      assert.deepEqual(applied.body.error.fields.map((f) => f.field), required);
+      continue;
+    }
     assert.equal(applied.status, 201, `${name}: ${JSON.stringify(applied.body)}`);
     const keyed = applied.body.warnings.filter((w) => /needs .*(KEY|TOKEN)/.test(w.message ?? ""));
     assert.deepEqual(keyed, [], `${name} grants a tool that needs a key, so its runs would be refused here`);
@@ -301,6 +311,43 @@ test("a package with a webhook trigger, on a server with no seal key to keep its
   assert.deepEqual(refused.body.error.fields.map((f) => [f.field, f.reason]), [["triggers.0", "not_set_up_here"]]);
   assert.match(refused.body.error.fields[0].fix, /AGENTRUN_SEAL_KEY/);
   assert.deepEqual([(await api("GET", "/agents?archived=true")).body.agents, (await api("GET", "/triggers")).body.triggers], [[], []], "nothing was made, not even an archived agent");
+});
+
+test("a server-wide deny of every tool of an MCP server (mcp:<server>/*) keeps each grant of it denied", async (t) => {
+  const { api } = await serve(t);
+  const github = await startFakeMcp({ name: "github" });
+  t.after(() => github.close());
+  for (const name of GITHUB_TOOLS) github.tools[name] = { description: `GitHub's ${name}.`, input: { type: "object", properties: {}, additionalProperties: true }, run: () => ({ content: [{ type: "text", text: "{}" }] }) };
+  assert.equal((await api("PUT", "/settings/mcp-servers/github", { url: github.url, auth: { type: "none" } })).status, 200);
+  assert.equal((await api("PUT", "/settings/tools", { "mcp:github/*": { permission: "deny" } })).status, 200);
+  const granted = GITHUB_TOOLS.map((name) => `mcp:github/${name}`);
+  const applied = await api("POST", "/templates/code-review/apply", { parameters: { repo: "Parcha-ai/agentrun" }, grants: granted });
+  assert.equal(applied.status, 201, JSON.stringify(applied.body));
+  const agent = (await api("GET", `/agents/${applied.body.agent_id}`)).body;
+  assert.equal(agent.definition.tool_settings, undefined, "no grant is written over the wildcard deny");
+  assert.deepEqual(agent.tools.filter((x) => granted.includes(x.name)).map((x) => [x.name, x.permission]), granted.map((tool) => [tool, "deny"]));
+  assert.deepEqual(applied.body.warnings.filter((w) => w.field.startsWith("grants.")).map((w) => w.field), granted.map((tool) => `grants.${tool}`));
+});
+
+test("a key the owner saved in Settings, not set where the server starts, is a package's secret", async (t) => {
+  withEnv(t, { AGENTRUN_SEAL_KEY: randomBytes(32).toString("base64") }, [KEY]);
+  const { api } = await serve(t, { templates: FIXTURES });
+  const body = { parameters: { topic: "solar" } };
+  assert.equal((await api("POST", "/templates/nightly/apply", body)).status, 409, "not set, not saved");
+  assert.equal((await api("PUT", "/settings/tool-keys/parallel", { values: { [KEY]: "fake-test-key" } })).status, 204);
+  const applied = await api("POST", "/templates/nightly/apply", body);
+  assert.equal(applied.status, 201, JSON.stringify(applied.body));
+});
+
+test("an apply whose parameters, filled in, make a body over POST /v2/agents' 1 MiB limit is 413, and makes nothing", async (t) => {
+  const dir = join(await scratch(t), "templates");
+  mkdirSync(join(dir, "echo"), { recursive: true });
+  writeFileSync(join(dir, "echo", "agent.md"), "---\nname: echo\nversion: 1.0.0\ndescription: Repeats its text.\nparameters:\n  text: { type: string, required: true, description: the text }\n---\n${parameters.text}\n\n${parameters.text}\n");
+  const { api } = await serve(t, { templates: dir });
+  const answer = await api("POST", "/templates/echo/apply", { parameters: { text: "x".repeat(600 * 1024) } });
+  assert.equal(answer.status, 413, JSON.stringify(answer.body).slice(0, 300));
+  assert.equal(answer.body.error.code, "payload_too_large");
+  assert.deepEqual((await api("GET", "/agents")).body.agents, [], "nothing was made");
 });
 
 test("a parameter is read from the caller's own fields: a required one named constructor is missing from {parameters: {}}", async (t) => {

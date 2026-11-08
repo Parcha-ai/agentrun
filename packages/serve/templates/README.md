@@ -20,6 +20,36 @@ code-review/
 Links and other special files are refused anywhere in the folder, and its only folders are `skills/`, `rules/` and
 `evals/`. Evals are checked for their layout only: no eval runs here.
 
+## The packages this server ships
+
+None needs a sandbox: each reads and writes through web tools and MCP servers the owner saves.
+
+| Package | What it does | Started by | Needs |
+|---|---|---|---|
+| `code-review` | Reviews a pull request for real bugs and posts one comment review | a run naming a PR, or a GitHub webhook trigger the owner adds | the GitHub MCP server `github` |
+| `kyb` | Business due diligence: identity, owners, sanctions against the lists themselves, adverse media, a verdict, every claim cited | a run naming a company | nothing; web tools only |
+| `market-monitor` | A weekly digest of what changed at the companies you watch, posted to Slack or email | a weekly schedule, or a run | optional: Slack (`slack`) or Gmail (`gmail`) MCP |
+| `inbound-lead` | Researches a form or CRM lead, scores it against your ICP, writes back to HubSpot or posts to Slack | a webhook (needs the seal key), or a run | optional: HubSpot (`hubspot`) or Slack (`slack`) MCP |
+| `release-notes` | Turns the merged PRs since the last release into user-facing notes, as a draft issue to edit | a run naming the release or tag | the GitHub MCP server `github` |
+
+## Eval cases
+
+Each `evals/<case>/` is one test of the package's agent. No eval runs on the server; a runner reads this layout.
+
+- `prompt.md`: its body is the run's input, written as the agent receives it (a webhook case as the trigger delivers
+  it: the trigger's words, then the body in `<trigger-payload ... untrusted>`). Front matter: `description`, `runs`
+  (how many times; the case passes when every run passes), `max_cost_usd` (each run's cap).
+- `case.yaml`, optional: `parameters` (the apply's parameters), `grants` (the tools the apply allows), `mcp` (a server's
+  name to a fixture file in the case that fakes it), `learning` (a folder of notes in the case the agent starts with).
+- `fixtures/`: what the case's fakes and notes read.
+- `graders/*.md`, each one check of every run, by its front matter's `type`:
+  - `llm`: the body is the rubric a blind grader applies to the answer (or to `target`, one field of the answer's JSON).
+  - `regex`: `pattern` over the answer (or `target`), with `flags` and `expect: match` (the default) or `no_match`.
+  - `tool_used`: `tool` (or `tools`, a list), `expect: called` (the default) or `not_called`, and optionally `count` and
+    `args` (the arguments a call must carry).
+  - `file_exists`: `path` in the run's work folder.
+  - `schema`: `schema`, a JSON Schema file in the package, which the answer's last fenced `json` block meets.
+
 ## agent.md
 
 | Field | |
@@ -66,3 +96,7 @@ apply. A trigger's date is checked for its form only: one that has passed is ref
    `triggers.<i>`. A webhook trigger's secret is not in the answer: `POST /v2/triggers/{id}/secret` makes one.
 
 Each apply makes a new agent. The same `Idempotency-Key` and body answers the first apply again and makes nothing.
+
+A grant is written as the agent's own tool setting (`definition.tool_settings`), and an agent's setting outranks the
+server's, as it does for any agent: a server-wide deny the owner sets after the apply does not reach that agent. To take
+a grant back, edit the agent's `tool_settings`.

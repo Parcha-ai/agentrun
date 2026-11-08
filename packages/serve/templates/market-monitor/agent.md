@@ -1,6 +1,6 @@
 ---
 name: market-monitor
-display_name: "Market monitor: ${parameters.competitors}"
+display_name: Market monitor
 version: 0.1.0
 description: Every Monday, a short digest of what changed at the companies you watch (launches, pricing, notable hires, funding and news), each item dated, linked and with a line on why it matters, nothing repeated from last week. Posted to Slack or email when a server for it is saved, else returned.
 license: Apache-2.0
