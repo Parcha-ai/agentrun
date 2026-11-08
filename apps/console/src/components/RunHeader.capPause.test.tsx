@@ -16,7 +16,7 @@ const roots: (() => void)[] = [];
 afterEach(() => { roots.splice(0).forEach((u) => u()); document.body.innerHTML = ""; });
 
 const CEILING = "A cap is a ceiling: the run is charged only for what it uses.";
-const base = (extra: Partial<Run> = {}): Run => ({
+const base = (extra: Partial<Run> = {}): Run => ({ sha: null, updated_at: "2026-11-05T00:00:00Z", poll_after_ms: 0,
   run_id: "r1", agent_id: "calc", agent_version: 1, revision: "rv1", kind: "agentic", status: "working", state: "working", title: "Write one.md",
   created_at: "2026-11-05T00:00:00Z", ended_at: null, result: null, error: null, archived_at: null,
   cost: { usd: 0.52, basis: "estimate", charge_state: null, cap_usd: 0.6 }, ...extra,
