@@ -268,12 +268,12 @@ test("code-review's GitHub tools: granted, never allowed by the package itself; 
   assert.equal(plain.body.warnings.find((w) => w.field === "mcp.github"), undefined, "nothing skipped");
   const agent = (await api("GET", `/agents/${plain.body.agent_id}`)).body;
   assert.deepEqual(agent.definition.tools, ["read", ...granted], "its read, for the skill's rules, and the GitHub tools; no box here, so no shell");
-  assert.equal(agent.definition.tool_settings, AGENT_LAYER_PINS ? { "mcp:github/pull_request_review_write": { pin: REVIEW_PIN } } : undefined, "the package sets no permission");
+  assert.deepEqual(agent.definition.tool_settings, AGENT_LAYER_PINS ? { "mcp:github/pull_request_review_write": { pin: { event: [null, "COMMENT"], method: ["create", "delete_pending", "submit_pending"] } } } : undefined, "the package sets no permission");
   // Its review write is bounded to COMMENT reviews even once granted; until the store cutover the apply says how.
   if (!AGENT_LAYER_PINS) {
     const pinned = plain.body.warnings.filter((w) => w.field.startsWith("pins."));
     assert.deepEqual(pinned.map((w) => [w.field, w.reason]), [["pins.mcp:github/pull_request_review_write", "not_set_up_here"]]);
-    assert.match(pinned[0].message, /^mcp:github\/pull_request_review_write is not pinned to method in \(create \| submit_pending \| delete_pending\), event in \(absent \| COMMENT\) for this agent yet/);
+    assert.match(pinned[0].message, /^mcp:github\/pull_request_review_write is not pinned to event in \(absent \| COMMENT\), method in \(create \| delete_pending \| submit_pending\) for this agent yet/);
   }
   assert.deepEqual(await permissions(plain.body.agent_id), Object.fromEntries(GITHUB_TOOLS.map((name) => [name, "ask"])));
 
@@ -470,7 +470,7 @@ test("an mcp entry's pin is checked: each tool one of the entry's, 1 to 8 argume
   }
   // A one-of list is filled item by item, in its order; an item whose parameter is missing denies as a scalar's does.
   const { p: listed } = await pinProblems(t, '    pin: { slack_send_message: { channel_id: [C0GENERAL1, "${parameters.channel}"], limit: [null, "${parameters.count}"] } }');
-  assert.deepEqual(compiled(listed, { channel: "C0123", count: 3 }, { mcp: listed.mcp, defaultTools: [], grants: [], pins: true }).agent.definition.tool_settings, { [SEND]: { pin: { channel_id: ["C0GENERAL1", "C0123"], limit: [null, 3] } } });
+  assert.deepEqual(compiled(listed, { channel: "C0123", count: 3 }, { mcp: listed.mcp, defaultTools: [], grants: [], pins: true }).agent.definition.tool_settings, { [SEND]: { pin: { channel_id: ["C0123", "C0GENERAL1"], limit: [null, 3] } } }, "in its one form");
   assert.deepEqual(compiled(listed, { count: 3 }, { mcp: listed.mcp, defaultTools: [], grants: [], pins: true }).unpinned, [{ tool: SEND, parameters: ["channel"] }]);
   const refused = async (entry, pattern) => {
     const { problems } = await pinProblems(t, entry);

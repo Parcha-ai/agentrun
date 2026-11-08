@@ -32,7 +32,7 @@ import { builtinHarness, harnessOf } from "./harness-table.js";
 import { viaOpenRouter, WIRES } from "./provider.js";
 import { savedIn } from "./secrets.js";
 import { hostModel } from "./model.js";
-import { defaultPermission, isCatalogTool, isMcpTool, MAX_PIN_ARGS, MAX_PIN_CHOICES, type Permission, PERMISSIONS, permissionFrom, permissionOf, type Pin, SHELL_FAMILY } from "./tool-gate.js";
+import { canonicalPin, defaultPermission, isCatalogTool, isMcpTool, MAX_PIN_ARGS, MAX_PIN_CHOICES, type Permission, PERMISSIONS, permissionFrom, permissionOf, type Pin, SHELL_FAMILY } from "./tool-gate.js";
 
 /**
  * The capabilities a pack or a revision may grant, by name: the tools the kernel gives a run, bound from serve's closed
@@ -90,7 +90,8 @@ const PIN_ARG = /^[A-Za-z_][A-Za-z0-9_.-]{0,127}$/;
 /** The one check of a pin, every place that takes one calls it (the server's settings, an agent's, a template's mcp
  *  entry, the store's revision bodies at the cutover): `pin` under `at`, an object of 1 to MAX_PIN_ARGS of a tool's
  *  top-level arguments (PIN_ARG), each to a JSON scalar (a string of at most MAX_PIN_TEXT characters, a finite number,
- *  true or false, or null: left out) or a list of 1 to MAX_PIN_CHOICES of them, the argument one of the list. With
+ *  true or false, or null: left out) or a list of 1 to MAX_PIN_CHOICES of them, the argument one of the list (sortedPin
+ *  is its one form). With
  *  `key`, the settings key it is set on, which is one MCP tool's own (`mcp:<server>/<tool>`), never a server's wildcard,
  *  whose tools take other arguments, nor any other tool's. */
 export function pinIssues(pin: unknown, at: string, key?: string): InputIssue[] {
@@ -105,9 +106,9 @@ export function pinIssues(pin: unknown, at: string, key?: string): InputIssue[] 
   });
 }
 
-/** `pin` with its arguments sorted, a one-of list's order kept as written (the author's, which the refusal shows): the
- *  one form a pin takes in a revision's body, so the same pin is the same text. */
-export const sortedPin = (pin: Pin): Pin => Object.fromEntries(Object.keys(pin).sort().map((arg) => [arg, pin[arg]!]));
+/** `pin` in the one form a revision's body keeps (tool-gate.ts canonicalPin): its arguments sorted, each one-of list
+ *  de-duplicated and sorted, null first, then by each value's JSON text. Equal meanings are one text, so one revision. */
+export const sortedPin = (pin: Pin): Pin => canonicalPin(pin);
 /** The tools' settings, the server's (`/v2/settings/tools`) and an agent's own (`definition.tool_settings`), one shape:
  *  by settings key. */
 export type ToolSettingsMap = Partial<Record<string, ToolSetting>>;

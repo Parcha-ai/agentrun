@@ -29,7 +29,7 @@ test("the gate's decision: a call carrying every pinned argument as pinned passe
   assert.equal(pinRefusal("mcp:gmail/GMAIL_SEND_EMAIL", { recipient_email: "owner@example.com", body: "x" }, {}, mail), undefined);
   assert.equal(pinRefusal("mcp:gmail/GMAIL_SEND_EMAIL", { recipient_email: "owner@example.com", bcc: null }, {}, mail), undefined);
   const bcc = pinRefusal("mcp:gmail/GMAIL_SEND_EMAIL", { recipient_email: "owner@example.com", bcc: ["thief@example.net"] }, {}, mail);
-  assert.match(bcc.text, /may only be called with recipient_email = owner@example\.com, bcc absent:/);
+  assert.match(bcc.text, /may only be called with bcc absent, recipient_email = owner@example\.com:/);
   assert.ok(pinRefusal("mcp:gmail/GMAIL_SEND_EMAIL", { recipient_email: "owner@example.com", bcc: [] }, {}, mail));
   // No pin, another tool, or a tool that is no MCP tool: nothing to refuse.
   assert.equal(pinRefusal("mcp:slack/slack_search", { channel_id: "C0EVIL" }, {}, agent), undefined);
@@ -142,7 +142,10 @@ test("a one-of pin: the argument must equal one of its list (null: left out), sa
   const agent = { [REVIEW]: { permission: "allow", pin: { method: ["create", "submit_pending", "delete_pending"], event: [null, "COMMENT"] } } };
   for (const args of [{ method: "create", commitID: "abc" }, { method: "submit_pending", event: "COMMENT", body: "x" }, { method: "delete_pending", event: null }]) assert.equal(pinRefusal(REVIEW, args, {}, agent), undefined, JSON.stringify(args));
   const approve = pinRefusal(REVIEW, { method: "submit_pending", event: "APPROVE" }, {}, agent);
-  assert.equal(approve.text, "mcp:github/pull_request_review_write may only be called with method in (create | submit_pending | delete_pending), event in (absent | COMMENT): its destination is fixed by the agent's settings. It was not run: nothing was sent and nothing was charged.");
+  assert.equal(approve.text, "mcp:github/pull_request_review_write may only be called with event in (absent | COMMENT), method in (create | delete_pending | submit_pending): its destination is fixed by the agent's settings. It was not run: nothing was sent and nothing was charged.");
+  // The words are the pin's one form, whatever order it was written in, a value given twice said once.
+  const shuffled = { [REVIEW]: { pin: { method: ["submit_pending", "delete_pending", "create", "create"], event: ["COMMENT", null] } } };
+  assert.equal(pinRefusal(REVIEW, { method: "submit_pending", event: "APPROVE" }, {}, shuffled).text, approve.text);
   assert.deepEqual(approve.mismatched, ["event"]);
   assert.deepEqual(pinRefusal(REVIEW, { method: "resolve_thread", threadId: "t1" }, {}, agent).mismatched, ["method"]);
   assert.deepEqual(pinRefusal(REVIEW, { method: "submit_pending", event: "comment" }, {}, agent).mismatched, ["event"], "strict equality per item");
@@ -162,11 +165,11 @@ test("two layers' pins of one argument both hold: what holds both, and the clash
   assert.match(pinRefusal(REVIEW, { method: "create" }, agent, { [REVIEW]: { pin: { method: "submit_pending" } } }).text, /may only be called with method = submit_pending:/, "either layer's scalar");
   // Nothing in both: every call is refused, with the clash text.
   const clash = pinRefusal(REVIEW, { method: "create" }, { [REVIEW]: { pin: { method: ["merge", "resolve_thread"] } } }, agent);
-  assert.equal(clash.text, "mcp:github/pull_request_review_write can't be called: this agent's settings fix method in (create | submit_pending | delete_pending) and this server's fix method in (merge | resolve_thread), so no call can satisfy both. It was not run: nothing was sent and nothing was charged. Don't retry it: the owner makes the two agree.");
+  assert.equal(clash.text, "mcp:github/pull_request_review_write can't be called: this agent's settings fix method in (create | delete_pending | submit_pending) and this server's fix method in (merge | resolve_thread), so no call can satisfy both. It was not run: nothing was sent and nothing was charged. Don't retry it: the owner makes the two agree.");
   assert.ok(pinRefusal(REVIEW, { method: "create" }, { [REVIEW]: { pin: { method: "merge" } } }, agent).text.includes("so no call can satisfy both"));
 });
 
-test("the one pin rule (pinIssues) and its one form (sortedPin): a one-of list is 1 to 16 scalars, kept in its order", () => {
+test("the one pin rule (pinIssues) and its one form (sortedPin): a one-of list is 1 to 16 scalars, each once, null first, then by its JSON text", () => {
   assert.deepEqual(pinIssues({ method: ["create", "submit_pending"], event: [null, "COMMENT"], n: 1 }, "pin"), []);
   assert.deepEqual(pinIssues({ method: ["create"] }, "pin", "mcp:github/pull_request_review_write"), []);
   const reasons = (pin, key) => pinIssues(pin, "pin", key).map((issue) => [issue.field, issue.reason]);
@@ -180,7 +183,11 @@ test("the one pin rule (pinIssues) and its one form (sortedPin): a one-of list i
   assert.deepEqual(reasons({ method: "create" }, "read"), [["pin", "not_allowed"]]);
   // Through the settings' check, the same rule, under the tool's key.
   assert.deepEqual(settingsIssues({ [REVIEW]: { pin: { method: [] } } }).map((issue) => [issue.field, issue.reason]), [[`${REVIEW}.pin.method`, "wrong_type"]]);
-  // Arguments sorted, a list's order the author's.
-  assert.equal(JSON.stringify(sortedPin({ method: ["submit_pending", "create"], event: [null, "COMMENT"] })), JSON.stringify({ event: [null, "COMMENT"], method: ["submit_pending", "create"] }));
-  assert.equal(JSON.stringify(canonicalToolSettings({ [REVIEW]: { pin: { method: ["submit_pending", "create"], event: ["COMMENT", null] } } })), JSON.stringify({ [REVIEW]: { pin: { event: ["COMMENT", null], method: ["submit_pending", "create"] } } }));
+  // Arguments sorted; a list once each, null first, then by JSON text (so "2" and 2 are two values, and "2" sorts first, its quote before any digit).
+  assert.equal(JSON.stringify(sortedPin({ method: ["submit_pending", "create", "submit_pending"], event: ["COMMENT", null] })), JSON.stringify({ event: [null, "COMMENT"], method: ["create", "submit_pending"] }));
+  assert.equal(JSON.stringify(sortedPin({ page: ["2", 10, 2, null, true, null] })), JSON.stringify({ page: [null, "2", 10, 2, true] }));
+  const a = canonicalToolSettings({ [REVIEW]: { pin: { method: ["submit_pending", "create"], event: ["COMMENT", null] } } });
+  const b = canonicalToolSettings({ [REVIEW]: { pin: { event: [null, "COMMENT", "COMMENT"], method: ["create", "submit_pending"] } } });
+  assert.equal(JSON.stringify(a), JSON.stringify(b), "equal meanings, one text");
+  assert.equal(JSON.stringify(a), JSON.stringify({ [REVIEW]: { pin: { event: [null, "COMMENT"], method: ["create", "submit_pending"] } } }));
 });

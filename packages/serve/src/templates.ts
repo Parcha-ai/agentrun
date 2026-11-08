@@ -14,7 +14,7 @@ import { TOOL_KEY_ROWS } from "./key-words.js";
 import { MCP_SERVER_NAME } from "./mcp-servers.js";
 import { chooseModel, harnessRuns, hostModel, MODEL_KEYS, THINKING_LEVELS, type Tier } from "./model.js";
 import { mcpToolName, type PinScalar, type PinValue } from "./tool-gate.js";
-import { AGENT_LAYER_PINS, pinIssues } from "./tool-plane.js";
+import { AGENT_LAYER_PINS, pinIssues, sortedPin } from "./tool-plane.js";
 import { BOUND_TOOLS } from "./tools.js";
 import { TRIGGER_ADAPTERS } from "./trigger-adapters.js";
 import { triggerBodyIssues } from "./triggers.js";
@@ -503,7 +503,7 @@ export function compiled(p: Package, parameters: Json, chosen: { harness?: strin
         unpinned.push({ tool: name, parameters: empty });
       } else {
         const filledPin = Object.fromEntries(each.map(([arg, one]) => [arg, one.value]));
-        if (chosen.pins ?? AGENT_LAYER_PINS) settings[name] = { ...settings[name], pin: filledPin };
+        if (chosen.pins ?? AGENT_LAYER_PINS) settings[name] = { ...settings[name], pin: sortedPin(filledPin) as Record<string, PinValue> };
         else unkept.push({ tool: name, pin: filledPin });
       }
     }
