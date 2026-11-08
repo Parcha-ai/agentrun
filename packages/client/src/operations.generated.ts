@@ -1160,17 +1160,6 @@ export type ListMcpServersResponse = {
 /** This server's OAuth client metadata document (GET /settings/mcp-servers/oauth/client.json). */
 export type McpOAuthClientResponse = Record<string, unknown>;
 
-/** Start signing in to an MCP server with OAuth: the page the owner opens (POST /settings/mcp-servers/{name}/oauth/start). Its body's string values are secrets: each copy is cut from the answer, and a refusal keeps only its code. */
-export type StartMcpOAuthBody = {
-  url: string;
-  scopes?: Array<string>;
-  client_id?: string;
-  client_secret?: string;
-};
-export type StartMcpOAuthResponse = {
-  authorization_url: string;
-};
-
 /** Connect to a remote MCP server and list its tools, storing nothing (POST /settings/mcp-servers/preview). Its body's string values are secrets: each copy is cut from the answer, and a refusal keeps only its code. */
 export type PreviewMcpServerBody = {
   url: string;
@@ -2303,7 +2292,6 @@ export const OPERATIONS: Readonly<Record<string, Operation>> = {
   getMcpServer: {"method":"GET","path":"/settings/mcp-servers/{name}","pathParams":["name"],"multiSegment":[],"query":[],"headers":[],"body":null,"answer":"json","secret":false,"publicFields":[],"tagged":false},
   listMcpServers: {"method":"GET","path":"/settings/mcp-servers","pathParams":[],"multiSegment":[],"query":[],"headers":[],"body":null,"answer":"json","secret":false,"publicFields":[],"tagged":false},
   mcpOAuthClient: {"method":"GET","path":"/settings/mcp-servers/oauth/client.json","pathParams":[],"multiSegment":[],"query":[],"headers":[],"body":null,"answer":"json","secret":false,"publicFields":[],"tagged":false},
-  startMcpOAuth: {"method":"POST","path":"/settings/mcp-servers/{name}/oauth/start","pathParams":["name"],"multiSegment":[],"query":[],"headers":[],"body":{"required":true,"types":["application/json"]},"answer":"json","secret":true,"publicFields":["url","scopes.[]","client_id"],"tagged":false},
   previewMcpServer: {"method":"POST","path":"/settings/mcp-servers/preview","pathParams":[],"multiSegment":[],"query":[],"headers":[],"body":{"required":true,"types":["application/json"]},"answer":"json","secret":true,"publicFields":["url","auth.type","name"],"tagged":false},
   refreshMcpServer: {"method":"POST","path":"/settings/mcp-servers/{name}/refresh","pathParams":["name"],"multiSegment":[],"query":[],"headers":[],"body":null,"answer":"json","secret":false,"publicFields":[],"tagged":false},
   saveMcpServer: {"method":"PUT","path":"/settings/mcp-servers/{name}","pathParams":["name"],"multiSegment":[],"query":[],"headers":[],"body":{"required":true,"types":["application/json"]},"answer":"json","secret":true,"publicFields":["url","auth.type"],"tagged":false},
@@ -2420,8 +2408,6 @@ export function resources(call: Call) {
       list: (options?: RequestOptions): Promise<ListMcpServersResponse> => call("listMcpServers", [], undefined, undefined, options),
       /** This server's OAuth client metadata document (GET /settings/mcp-servers/oauth/client.json). */
       oauthClient: (options?: RequestOptions): Promise<McpOAuthClientResponse> => call("mcpOAuthClient", [], undefined, undefined, options),
-      /** Start signing in to an MCP server with OAuth: the page the owner opens (POST /settings/mcp-servers/{name}/oauth/start). */
-      oauthStart: (name: string, body: StartMcpOAuthBody, options?: RequestOptions): Promise<StartMcpOAuthResponse> => call("startMcpOAuth", [name], body, undefined, options),
       /** Connect to a remote MCP server and list its tools, storing nothing (POST /settings/mcp-servers/preview). */
       preview: (body: PreviewMcpServerBody, options?: RequestOptions): Promise<PreviewMcpServerResponse> => call("previewMcpServer", [], body, undefined, options),
       /** List a saved MCP server's tools again, keep them, and say what changed (POST /settings/mcp-servers/{name}/refresh). */

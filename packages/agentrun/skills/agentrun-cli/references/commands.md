@@ -245,15 +245,6 @@ This server's OAuth client metadata document.
 
 Route: `GET /settings/mcp-servers/oauth/client.json`.
 
-### `agentrun mcp-servers oauth-start NAME`
-
-Start signing in to an MCP server with OAuth: the page the owner opens.
-
-Route: `POST /settings/mcp-servers/{name}/oauth/start`.
-
-- `--body JSON|@FILE|-` (application/json, required): The body, from stdin (-) or a file only: it holds a secret.
-- `--body-type TYPE` (string): The body's type, one of application/json; any other than JSON is sent as given.
-
 ### `agentrun mcp-servers preview`
 
 Connect to a remote MCP server and list its tools, storing nothing.

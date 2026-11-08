@@ -807,35 +807,6 @@ export const COMMANDS = [
   {
     "command": [
       "mcp-servers",
-      "oauth-start"
-    ],
-    "operationId": "startMcpOAuth",
-    "method": "POST",
-    "path": "/settings/mcp-servers/{name}/oauth/start",
-    "pathParams": [
-      "name"
-    ],
-    "multiSegment": [],
-    "publicFields": [
-      "url",
-      "scopes.[]",
-      "client_id"
-    ],
-    "query": [],
-    "headers": [],
-    "bodyFlags": [],
-    "hasBody": true,
-    "bodyRequired": true,
-    "bodyTypes": [
-      "application/json"
-    ],
-    "secretBody": true,
-    "raw": false,
-    "summary": "Start signing in to an MCP server with OAuth: the page the owner opens"
-  },
-  {
-    "command": [
-      "mcp-servers",
       "preview"
     ],
     "operationId": "previewMcpServer",
@@ -2187,5 +2158,45 @@ export const COMMANDS = [
     "secretBody": false,
     "raw": false,
     "summary": "Check a workflow definition without saving it"
+  }
+];
+
+// Every route whose body carries a secret, a command's or one with no command (omitted): a raw `api` call to one never
+// takes its body from the command line, and what it prints has the body's values cut, its public fields kept.
+export const SECRET_ROUTES = [
+  {
+    "operationId": "previewMcpServer",
+    "method": "POST",
+    "path": "/settings/mcp-servers/preview",
+    "publicFields": [
+      "url",
+      "auth.type",
+      "name"
+    ]
+  },
+  {
+    "operationId": "saveMcpServer",
+    "method": "PUT",
+    "path": "/settings/mcp-servers/{name}",
+    "publicFields": [
+      "url",
+      "auth.type"
+    ]
+  },
+  {
+    "operationId": "saveToolKey",
+    "method": "PUT",
+    "path": "/settings/tool-keys/{key_id}",
+    "publicFields": []
+  },
+  {
+    "operationId": "startMcpOAuth",
+    "method": "POST",
+    "path": "/settings/mcp-servers/{name}/oauth/start",
+    "publicFields": [
+      "url",
+      "scopes.[]",
+      "client_id"
+    ]
   }
 ];

@@ -117,7 +117,7 @@ A tool call waiting for approval (`pending.kind` `approval`) is answered by the 
 - `agentrun learning`: get, log, notes, read, retire, write
 - `agentrun login`: Check a server's token, read from stdin, and keep it with the server's address in the config file
 - `agentrun logout`: Remove the config file login wrote, its address and token
-- `agentrun mcp-servers`: delete, get, list, oauth-client, oauth-start, preview, refresh, save
+- `agentrun mcp-servers`: delete, get, list, oauth-client, preview, refresh, save
 - `agentrun revisions`: list, set-current
 - `agentrun runs`: archive, cancel, files, get, graph, learning, learning-diff, list, message, pause, raise-cap, read-file, resume, start, stop, timeline, unarchive, wait
 - `agentrun server`: capabilities, health, mcp, openapi
