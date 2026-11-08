@@ -40,6 +40,11 @@ test("the words, the amount to the cent", () => {
   assert.equal(wrapUpWords(0.2349), "About $0.23 left of this run's budget: finish now with your answer.");
 });
 
+test("a budget under a cent is said to four places, never about $0: a $0.0024 cap is about $0.0024", () => {
+  assert.equal(wrapUpWords(0.0024, true), "This run's budget is about $0.0024, enough for little work: answer as soon as you can.");
+  assert.equal(wrapUpWords(0.00004), "About $0 left of this run's budget: finish now with your answer.", "under a ten-thousandth, nothing to say but $0");
+});
+
 test("with no priced request the words say the budget, not a finish, at step 0", async () => {
   const { cap } = capWith(0.1);
   const note = cap.note(modelRequest(SONNET45, 10_000, 32_000));

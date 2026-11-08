@@ -18,10 +18,41 @@ const refusalOf = async (promise) => {
   assert.fail("not refused");
 };
 
-test("after spending: spent of the cap, what the next step needs, the cap to raise to", async () => {
+test("after spending: spent of the cap, what the next step needs and what of it, the cap to raise to", async () => {
   const { cap } = capOn(0.3, { spentUsd: 0.25 });
   const refusal = await refusalOf(cap.admit(modelRequest(LUNA, 0, 4_096, { outputTokensLeast: 3_072 })));
-  assert.equal(refusal.message, "spend_cap_reached (out of budget): Not sent: this run has spent $0.25 of its $0.30 cap, and the next step needs at least $0.31. Raise the cap to at least $0.56 to continue.");
+  assert.equal(refusal.message, "spend_cap_reached (out of budget): Not sent: this run has spent $0.25 of its $0.30 cap, and the next step needs at least $0.31 (an answer of at least 3,072 tokens). Raise the cap to at least $0.56 to continue.");
+});
+
+// The market-monitor run that parked at $0.065 of its $1 cap (autoqa H1): ten fetched pages, about 309 KB, after its
+// fourth request. A request's input is bounded at a token per byte (the most a byte-level tokenizer can make of it): the
+// previous request's cache is read at its price, and what the run took in since is counted fresh at that bound. That is
+// the worst case the cap holds to, so its words say its parts: why a step can need far more than the run spent so far.
+const SOL = Object.freeze({ id: "gpt-6-sol", api: "openai-responses", price: { input: 2, output: 10, cacheRead: 0.2, cacheWrite: 2.5 }, outputCeiling: 128_000 });
+const T0 = Date.parse("2026-11-08T06:00:00Z");
+
+test("a step after many fetched pages needs its input at a token per byte: the words say its input's bound, what of it the cache reads, and the answer it keeps", async () => {
+  const previous = { model: SOL.id, cachedTokens: 30_000, inputTokens: 2_000, boundTokens: 140_000, endedAt: T0 - 8_000 };
+  const refusal = await refusalOf(capOn(0.5, { spentUsd: 0.065 }).cap.admit(modelRequest(SOL, 442_374, 128_000, { previous })));
+  // 30,000 cached at $0.20 a million, 2,000 + 302,374 fresh at $2.50 (the dearer of input and cache write), 1,024 out at $10.
+  assert.equal(refusal.figures.needsUsd.toFixed(6), "0.777175");
+  assert.equal(refusal.message, "spend_cap_reached (out of budget): Not sent: this run has spent $0.07 of its $0.50 cap, and the next step needs at least $0.78 (its input, up to 442,374 tokens counted at a token per byte, 30,000 of them read from the cache, and an answer of at least 1,024 tokens). Raise the cap to at least $0.85 to continue.");
+});
+
+test("a step none of whose input the cache reads says so", async () => {
+  const refusal = await refusalOf(capOn(0.1, { mode: "strict" }).cap.admit(modelRequest(SOL, 100_000, 4_096)));
+  // 100,000 fresh at $2.50 a million and 1,024 out at $10: $0.26024, rounded up to the cent.
+  assert.match(refusal.message, /needs at least \$0\.27 \(its input, up to 100,000 tokens counted at a token per byte, none of it read from the cache, and an answer of at least 1,024 tokens\), and this run's cap is \$0\.10\./);
+});
+
+test("amounts under a cent are said to four places, a need rounded up there and never past it: $0.0024 is enough, never $0.01", async () => {
+  // 240 tokens out at $10 a million: $0.0024.
+  const TINY = Object.freeze({ id: "tiny", api: "openai-responses", price: { input: 0, output: 10 }, outputCeiling: 8_192 });
+  const refusal = await refusalOf(capOn(0.002, { spentUsd: 0.0012 }).cap.admit(modelRequest(TINY, 0, 240, { outputTokensLeast: 240 })));
+  assert.equal(refusal.message, "spend_cap_reached (out of budget): Not sent: this run has spent $0.0012 of its $0.002 cap, and the next step needs at least $0.0024 (an answer of at least 240 tokens). Raise the cap to at least $0.01 to continue.");
+  assert.equal(leastMoney(0.0024), "$0.0024");
+  assert.equal(leastMoney(0.00241), "$0.0025", "rounded up at the fourth place, so it is enough");
+  assert.equal(leastMoney(0.000001), "$0.0001", "never $0 for a need");
 });
 
 test("a paid tool's refusal: the next step is the tool, what it could cost and why", async () => {
@@ -33,7 +64,7 @@ test("a paid tool's refusal: the next step is the tool, what it could cost and w
 test("after a fraction of a cent: spent in cents, next step at least $0.05, raise at least $0.08", async () => {
   const { cap } = capOn(0.05, { spentUsd: 0.0237416 });
   const refusal = await refusalOf(cap.admit(modelRequest(LUNA, 0, 4_096, { outputTokensLeast: 500 })));
-  assert.equal(refusal.message, "spend_cap_reached (out of budget): Not sent: this run has spent $0.02 of its $0.05 cap, and the next step needs at least $0.05. Raise the cap to at least $0.08 to continue.");
+  assert.equal(refusal.message, "spend_cap_reached (out of budget): Not sent: this run has spent $0.02 of its $0.05 cap, and the next step needs at least $0.05 (an answer of at least 500 tokens). Raise the cap to at least $0.08 to continue.");
   assert.equal(refusal.figures.spentUsd, 0.0237416, "the figures beside the words keep it whole");
 });
 
@@ -107,6 +138,12 @@ test("least_cap_usd under each mode admits the refused request at it, and a cent
     await capOn(refusal.figures.leastCapUsd, { mode }).cap.admit(ask());
     await assert.rejects(capOn(refusal.figures.leastCapUsd - 0.01, { mode }).cap.admit(ask()), CapRefused, mode);
   }
+});
+
+test("the suggested raise scales from the need: under a dollar, spent + 10x least to the cent, never a dollar for a $0.0002 cap", () => {
+  assert.equal(suggestedRaise(0.0002, 0, 0.0024), 0.03, "$0.024 to the cent above");
+  assert.equal(suggestedRaise(0.05, 0.0237416, 0.04), 0.43);
+  assert.ok(suggestedRaise(0.03, 0.03, 0) > 0.03 + 1e-9, "above the cap, by a cent at least");
 });
 
 test("the suggested raise is spent + 10x least, a whole dollar above the cap; a float just past a dollar stays that dollar", () => {

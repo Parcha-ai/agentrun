@@ -42,7 +42,7 @@ test("what is left is the cap less spent and held: beside one holding the rest a
 
 test("spent down under 1,024 tokens' worth: refused saying what was spent and what the next request needs", async () => {
   const { cap } = capOn(0.1, { mode: "strict", spentUsd: 0.09 });
-  await assert.rejects(cap.admit(modelRequest(SONNET, 10_000, 4_096)), (error) => error instanceof CapRefused && /this run has spent \$0\.09 of its \$0\.10 cap, and the next step needs at least \$0\.06\./.test(error.message));
+  await assert.rejects(cap.admit(modelRequest(SONNET, 10_000, 4_096)), (error) => error instanceof CapRefused && /this run has spent \$0\.09 of its \$0\.10 cap, and the next step needs at least \$0\.06 \(its input, up to 10,000 tokens counted at a token per byte, none of it read from the cache, and an answer of at least /.test(error.message));
 });
 
 test("with thinking, max_tokens is what is left buys and the thinking budget fits under it with 1,024 for the answer", async () => {

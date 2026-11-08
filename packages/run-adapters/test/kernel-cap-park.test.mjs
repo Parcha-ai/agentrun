@@ -15,7 +15,8 @@ test("a refusal for room parks the run unsent, with pending (least, raise) in th
   const park = parkOf(refusal, 0.05);
   assert.equal(park.outcome, "parked");
   assert.equal(park.error, undefined);
-  assert.deepEqual(park.pending, { kind: "budget", cap_usd: 0.05, spent_usd: 0.01, needs_usd: 0.05286, least_cap_usd: 0.07, suggested_cap_usd: 1 });
+  // The raise offered scales from the need: $0.01 taken and 10 x $0.05286, to the cent, never a whole dollar for a $0.05 cap.
+  assert.deepEqual(park.pending, { kind: "budget", cap_usd: 0.05, spent_usd: 0.01, needs_usd: 0.05286, least_cap_usd: 0.07, suggested_cap_usd: 0.54 });
   assert.equal(park.words, refusal.message.replace(/^spend_cap_reached \(out of budget\): /, ""));
 });
 
