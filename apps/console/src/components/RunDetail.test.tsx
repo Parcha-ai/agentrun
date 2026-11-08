@@ -73,6 +73,20 @@ describe("RunDetail's Report tab before an answer", () => {
     expect(shown).not.toContain("reply below");
   });
 
+  it("a run waiting on the person in the browser says so with the served instruction, never that a reply below answers it", () => {
+    for (const [name, state] of [["run.input_required.waiting.1", "waiting"], ["run.input_required.idle.1", "idle"]] as const) {
+      const f = runFixture(name);
+      // The browser hand-over the server sends (pending.kind "browser"): a message in the box below doesn't answer it.
+      const run = { ...f.run, state, pending: { kind: "browser", instruction: "Sign in to the store with your account.", completion_condition: "The account page shows.", asked_at: "2026-11-09T00:00:00Z", expires_at: "2026-11-09T00:30:00Z" } } as unknown as Run;
+      const shown = report(run, f.page.rows);
+      expect(shown, name).toContain("Waiting for you in the browser");
+      expect(shown, name).toContain("Sign in to the store with your account.");
+      expect(shown, name).not.toContain("Waiting for your answer");
+      expect(shown, name).not.toContain("reply below");
+      expect(shown, name).not.toContain("Stopped before it wrote an answer.");
+    }
+  });
+
   it("a budget pause served with its cap and no spend yet shows the cap reached, and its page still opens", () => {
     for (const [name, state] of [["run.input_required.waiting.1", "waiting"], ["run.input_required.idle.1", "idle"]] as const) {
       const f = runFixture(name);
