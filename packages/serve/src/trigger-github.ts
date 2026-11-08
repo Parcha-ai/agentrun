@@ -77,6 +77,7 @@ export const github: TriggerAdapter = {
         ...(delivery !== undefined ? { delivery: cut(delivery) } : {}),
         ...(installation !== undefined ? { installation } : {}),
         ...(repo !== undefined ? { repo: cut(repo) } : {}),
+        ...scheme.attrsOf?.(doc),
       };
       return [{ key: scheme.firingKeyOf(headers, body), text, attrs, ...(event !== undefined ? { event } : {}), body: doc }];
     },

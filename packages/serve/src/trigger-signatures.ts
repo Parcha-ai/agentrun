@@ -25,6 +25,9 @@ export type Scheme = {
   deliveryIdOf?(headers: Headers): string;
   /** The delivery's event, from its headers or its body (`json`, undefined when the body is not JSON). */
   eventOf(headers: Headers, json: unknown): string | undefined;
+  /** What else the payload's tag names, read from the signed body (`json`) so the payload's cut never loses it, each of a
+   *  checked shape; none when the body has none. */
+  attrsOf?(json: unknown): Record<string, string>;
 };
 
 /** An event's name in a header: printable ASCII with no space (`pull_request`, `ping`). */
@@ -70,6 +73,19 @@ export const SIGNATURE_SCHEMES = {
     firingKeyOf: (_headers, body) => `sha256:${createHash("sha256").update(body).digest("hex")}`,
     deliveryIdOf: (headers) => headers["x-github-delivery"] as string,
     eventOf: (headers) => headers["x-github-event"] as string,
+    // The pull request or issue's number (an issue_comment on a pull request is its issue's), and a pull request's head
+    // sha, which a long description pushes past the payload's cut. A comment event has no head: none is guessed.
+    attrsOf(json) {
+      const doc = isObject(json) ? json : {};
+      const pr = isObject(doc.pull_request) ? doc.pull_request : undefined;
+      const issue = isObject(doc.issue) ? doc.issue : undefined;
+      const number = pr?.number ?? issue?.number;
+      const sha = isObject(pr?.head) ? pr.head.sha : undefined;
+      return {
+        ...(Number.isSafeInteger(number) && (number as number) > 0 ? { number: String(number) } : {}),
+        ...(typeof sha === "string" && /^[0-9a-f]{40}$/.test(sha) ? { head_sha: sha } : {}),
+      };
+    },
   },
 } satisfies Record<string, Scheme>;
 
