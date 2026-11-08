@@ -106,7 +106,8 @@ export interface DockerProviderOptions {
 	daemonPath: string;
 	/** The directory the provider copies the daemon into, the copy each computer binds: computerd-<sha256 of its bytes>,
 	 *  mode 0755. Made 0700 when missing; refused in words when it is a link, another user's, open to other users, or
-	 *  under a directory another user may write. Default agentrun-computer under XDG_CACHE_HOME, else ~/.cache. */
+	 *  under a directory another user may write. Default ~/.cache/agentrun-computer; the provider reads no
+	 *  environment, XDG_CACHE_HOME included. */
 	daemonCache?: string;
 	/** The egress proxy of a computer whose network is an allowlist. */
 	egress?: DockerEgressOptions;
@@ -123,19 +124,12 @@ export interface DockerProviderOptions {
 	image?: ImageSource;
 }
 
-/** The environment fromEnv reads, by name. */
-export const ENV = {
-	/** The daemon binary for Docker's architecture; default this package's dist/computerd-linux-<arch>. */
-	daemon: "COMPUTER_DOCKER_DAEMON",
-	/** Who a computer runs as when its spec does not say, uid or uid:gid in numbers; see DockerProviderOptions.user. */
-	user: "COMPUTER_DOCKER_USER",
-} as const;
-
 /** The mount kinds a Docker computer takes, as capabilities().mount declares them: a bind of a folder on this host. */
 export const MOUNT: readonly MountKind[] = ["bind"];
 
-export interface DockerFromEnvOptions extends Partial<DockerProviderOptions> {
-	/** The longest `docker version` may take, when fromEnv asks Docker its architecture; default 30 s. */
+/** What create() takes: the provider's options, the daemon optional. */
+export interface DockerCreateOptions extends Partial<DockerProviderOptions> {
+	/** The longest `docker version` may take, when create asks Docker its architecture; default 30 s. */
 	timeoutMs?: number;
 }
 
@@ -143,7 +137,7 @@ export interface DockerFromEnvOptions extends Partial<DockerProviderOptions> {
  * Docker's architecture as `docker version` reports it (amd64, arm64), within timeoutMs, or an error in words. The docker
  * CLI runs with this process's environment, as every call of the provider does, so it asks the Docker the provider uses.
  */
-export function dockerArch({ docker = "docker", timeoutMs = 30_000 }: Pick<DockerFromEnvOptions, "docker" | "timeoutMs"> = {}): Promise<string> {
+export function dockerArch({ docker = "docker", timeoutMs = 30_000 }: Pick<DockerCreateOptions, "docker" | "timeoutMs"> = {}): Promise<string> {
 	return new Promise((resolve, reject) => {
 		execFile(docker, ["version", "--format", "{{.Server.Arch}}"], { encoding: "utf8", timeout: timeoutMs, killSignal: "SIGKILL" }, (error, stdout, stderr) => {
 			if (!error) return resolve(stdout.trim());
@@ -155,20 +149,19 @@ export function dockerArch({ docker = "docker", timeoutMs = 30_000 }: Pick<Docke
 }
 
 /**
- * A DockerProvider from COMPUTER_DOCKER_* alone. Without COMPUTER_DOCKER_DAEMON it asks Docker its architecture and takes
- * this package's daemon for it, and says when that daemon is not built. Options win over the environment. The image is
- * an option only (default the provider's own recipe): no image name is read from the environment.
+ * A DockerProvider from its options alone; it reads no environment. Without options.daemonPath it asks Docker its
+ * architecture and takes this package's daemon for it, and says when that daemon is not built. The image is an option
+ * too (default the provider's own recipe): no image name is read from the environment.
  */
-export async function fromEnv(env: Record<string, string | undefined> = process.env, options: DockerFromEnvOptions = {}): Promise<DockerProvider> {
+export async function create(options: DockerCreateOptions = {}): Promise<DockerProvider> {
 	const { timeoutMs, ...given } = options;
-	const user = env[ENV.user] || undefined;
-	let daemonPath = given.daemonPath ?? (env[ENV.daemon] || undefined);
+	let daemonPath = given.daemonPath || undefined;
 	if (daemonPath === undefined) {
 		const arch = await dockerArch({ ...(given.docker ? { docker: given.docker } : {}), ...(timeoutMs === undefined ? {} : { timeoutMs }) });
 		daemonPath = fileURLToPath(new URL(`./computerd-linux-${arch}`, import.meta.url));
 		if (fileMode(daemonPath) === undefined) throw new Error(`no daemon for Docker's ${arch} at ${daemonPath}: run npm run build:daemon -w @parcha/agentrun-computer`);
 	}
-	return new DockerProvider({ ...(user === undefined ? {} : { user }), ...given, daemonPath });
+	return new DockerProvider({ ...given, daemonPath });
 }
 
 /** The conformance CLI's module for Docker: the drifted twin. */
@@ -390,7 +383,9 @@ export class DockerProvider implements ComputerProvider {
 		}
 		if (signal?.aborted) return fail("aborted", "create was aborted before docker run");
 		const name = `computer-${randomBytes(6).toString("hex")}`;
-		const deadline = new Date(Date.now() + spec.lifetimeMs).toISOString();
+		// The lifetime counts from here: what the proxy and docker run take comes out of it.
+		const lifetimeFrom = Date.now();
+		const deadline = new Date(lifetimeFrom + spec.lifetimeMs).toISOString();
 		if (allow !== undefined) {
 			// The proxy first, ready before the computer exists: a computer never runs with an allowlist it cannot reach.
 			const started = await this.#startEgress(name, user, deadline, allow, spec.labels ?? {}, signal);
@@ -427,6 +422,7 @@ export class DockerProvider implements ComputerProvider {
 		args.push(spec.image, "init", "--deadline", deadline, ...(allow === undefined ? [] : [RELAY_FLAG, EGRESS_SOCKET]));
 
 		const started = await this.#run(args, signal);
+		const ranMs = Date.now() - lifetimeFrom;
 		if (!started.ok || started.value.exitCode !== 0) {
 			// A run that failed or was aborted may still have made the container; an allowlist's proxy and volume go with it.
 			await this.release({ id: name, name }, "delete");
@@ -440,6 +436,10 @@ export class DockerProvider implements ComputerProvider {
 		const state = report?.State;
 		if (state?.Running !== true) {
 			await this.release(ref, "delete");
+			// Init exits 0 at its deadline: one that passed before docker run finished is a lifetime the host's start ate.
+			if (state?.ExitCode === 0 && Date.now() >= lifetimeFrom + spec.lifetimeMs) {
+				return fail("timeout", `the computer ${name}'s lifetime of ${spec.lifetimeMs / 1000} s ended before docker run finished (it took ${Math.round(ranMs / 100) / 10} s), so init ended it and it was removed`);
+			}
 			const why = state ? `status ${state.Status}, exit code ${state.ExitCode}${state.Error ? `: ${state.Error}` : ""}` : "it could not be inspected";
 			return fail("docker", `the computer ${name} was not running after its start (${why}), so it was removed`);
 		}

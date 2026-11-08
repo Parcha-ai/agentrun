@@ -194,3 +194,43 @@ test("a CLI request in flight is held at the limit it was admitted with: a secon
   const second = await before({ model: SONNET.id, spentUsd: 0, inFlight: [{ turn: 1, model: SONNET.id, inputTokensMax: 10_000, outputTokensMax: first.outputTokensMax, holdUsd: first.holdUsd }], inputTokensMax: 10_000, outputTokensAsked: 2_000, turn: 2, maxTurns: null, key: "k", label: "k" });
   assert.match(second.refuse ?? "", /holds \$0\.07 for steps still running/);
 });
+
+/** The session's previous request on Sonnet, a second ago: 90,000 of its 100,000 input tokens cached. */
+const WARM = { model: SONNET.id, cachedTokens: 90_000, inputTokens: 10_000, boundTokens: 100_000, endedAt: T0 - 1_000 };
+const BIG_ASK = { ...ASK, inputTokensMax: 100_000, outputTokensAsked: 1_024, outputTokensLeast: 1_024 };
+
+test("a request the host sends beside the harness's own (a learned workflow's node) is priced as a cache miss: the session's previous request never stands for it", async () => {
+  const warm = beforeRequestOf({ capUsd: () => 1, modelOf: () => SONNET, now: () => T0, previousOf: () => WARM });
+  const cold = beforeRequestOf({ capUsd: () => 1, modelOf: () => SONNET, now: () => T0 });
+  const own = await warm(BIG_ASK);
+  const host = await warm({ ...BIG_ASK, host: "workflow-node" });
+  const uncached = await cold(BIG_ASK);
+  assert.ok(own.holdUsd < uncached.holdUsd, `the harness's own request is priced from its cache: ${own.holdUsd} < ${uncached.holdUsd}`);
+  assert.equal(host.holdUsd, uncached.holdUsd, "the host's request is held as uncached");
+});
+
+// A request carrying the wrap-up's note is judged as its client sent it first (inputTokensMaxWithoutNote): refused so, it
+// is refused; admitted so, it goes with the note when the note's bytes fit too, and otherwise without it (withoutNote).
+// The note never refuses what fits. 10,000 tokens without the note, 20,000 with it, each priced at Sonnet's cache write
+// ($3.75 a million) and the least answer's 1,024 tokens: at least $0.05286 and $0.09036.
+const NOTED = { ...ASK, inputTokensMax: 20_000, inputTokensMaxWithoutNote: 10_000, outputTokensAsked: 1_024, outputTokensLeast: 1_024, noted: true };
+
+test("a request that fits only without the note is sent without it (withoutNote), held as its client sent it, never refused for the note", async () => {
+  const before = beforeRequestOf({ capUsd: () => 0.07, modelOf: () => SONNET, now: () => T0 });
+  const answer = await before(NOTED);
+  const plain = await before({ ...ASK, inputTokensMax: 10_000, outputTokensAsked: 1_024, outputTokensLeast: 1_024 });
+  assert.equal(answer.refuse, undefined, `admitted: ${JSON.stringify(answer)}`);
+  assert.equal(answer.withoutNote, true, "without the note");
+  assert.equal(answer.holdUsd, plain.holdUsd, "held as its client sent it");
+});
+
+test("a request that fits with the note goes with it, held at what it sends; one that fits neither way is refused in the words for its client's own body", async () => {
+  const roomy = beforeRequestOf({ capUsd: () => 1, modelOf: () => SONNET, now: () => T0 });
+  const withNote = await roomy(NOTED);
+  assert.equal(withNote.withoutNote, undefined, "the note goes");
+  assert.equal(withNote.holdUsd, (await roomy({ ...NOTED, noted: undefined, inputTokensMaxWithoutNote: undefined })).holdUsd, "held at the body with the note");
+  const tight = beforeRequestOf({ capUsd: () => 0.04, modelOf: () => SONNET, now: () => T0 });
+  const refused = await tight(NOTED);
+  const plain = await tight({ ...ASK, inputTokensMax: 10_000, outputTokensAsked: 1_024, outputTokensLeast: 1_024 });
+  assert.equal(refused.refuse, plain.refuse, "refused as its client's body is");
+});

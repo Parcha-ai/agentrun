@@ -4,6 +4,7 @@
 // given. A pending run (its end on the caller's way, not yet in the store) is counted at the state its end will have, in
 // the totals alone; its metrics, cost and effort wait for its end. No journal is read: the figures are the row's.
 import type { RunRow, Store } from "../store/store.js";
+import { DEFAULT_HARNESS } from "../harness.js";
 import { runReadState } from "./runs.js";
 
 export type ImportSource = "claude-code" | "codex" | "pi";
@@ -72,7 +73,7 @@ export async function analytics(store: Store, filter: AnalyticsFilter = {}): Pro
     if (toMs !== null && !(run.startedAt < toMs)) continue;
     if (!harnessOf.has(run.revisionId)) {
       const revision = await store.agents.revision(run.revisionId);
-      harnessOf.set(run.revisionId, revision?.kind === "workflow" ? "workflow" : ((revision?.body as { harness?: string } | null)?.harness ?? "pi"));
+      harnessOf.set(run.revisionId, revision?.kind === "workflow" ? "workflow" : ((revision?.body as { harness?: string } | null)?.harness ?? DEFAULT_HARNESS));
     }
     const running = runReadState(run) === "running";
     const isPending = running && pending[run.id] !== undefined;

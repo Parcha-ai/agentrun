@@ -81,7 +81,8 @@ every later turn.
    - `fingerprint`: `path` (whitespace replaced with `_`) + the enclosing symbol + a short kind (`null-deref`,
      `missing-await`, `authz`, ...), lowercased, joined with `:`. It must stay the same when lines move.
    - `confidence`: your probability, 0 to 1, that a maintainer agrees it's a real problem.
-7. **Return** exactly one fenced `json` block, and nothing after it:
+7. **Return** exactly one fenced `json` block that meets `findings.schema.json` (beside this SKILL.md), and nothing after
+   it:
 
 ```json
 {
@@ -132,9 +133,14 @@ you make.
    `action`, and the event from its shape (a `pull_request` object is a pull request event; a `comment` with an
    `issue` that has `pull_request` is a comment on a pull request). The payload may be cut at 16 KiB, so a field it
    no longer holds is not a reason to stop when the trigger's own words (before the tag) say its filter checked it. On any other event,
-   end at once with one line: no tool calls, no post. Take the pull request's number from the payload, then read it
-   with `pull_request_read` `get`, and skip a draft, a PR from a fork, and one labelled `no-review`. A direct
-   request from the person running you ("review PR 123") is not a webhook event: skip this gate and review that PR.
+   end at once with one line: no tool calls, no post. Take the pull request's number from the tag's `number` when it
+   has one, else from the payload (`number`, or `issue.number` on a comment). Then always read the PR with
+   `pull_request_read` `get`, for its head too: the head may have moved since the event, so never take a head sha from
+   the payload or the tag. Skip a draft and one labelled `no-review`. Skip a PR from a fork on a pull request event,
+   but review one when a writer's `@<bot> review` comment asks: read its head through this repository's PR
+   (`get_diff`, and `get_file_contents` at the head sha here), never by cloning the fork. A direct request from the
+   person running you ("review https://github.com/owner/repo/pull/123") is not a webhook event: skip this gate and
+   review that PR.
 2. **Read.** `pull_request_read` with `get` (base and head sha), then `get_diff` once. There is no compare tool, so
    your scope is the whole PR diff. `get_review_comments` gives your previous findings (the comments your own login
    wrote); never post a fingerprint again. Read code at the head with `get_file_contents(path, sha: <head_sha>)`, and
@@ -143,8 +149,8 @@ you make.
 3. **Post.** Build the findings JSON of step 7 first. Then `pull_request_review_write` with `method: create` and
    `commitID: <head_sha>` (a pending review); `add_comment_to_pending_review` once per finding on a line of the diff
    (`side: RIGHT`, `subjectType: LINE`; a comment refused goes in the body instead); then `pull_request_review_write`
-   with `method: submit_pending`, `event: COMMENT` and a body with the summary, the pre-existing findings and what
-   you skipped. If `create` fails because a pending review exists, `delete_pending` once and try once more. Never
+   with `method: submit_pending`, `event: COMMENT` and a body with the summary, the pre-existing findings, what
+   you skipped, and "Fixed since the last review:" with each fingerprint your answer's `resolve` lists. If `create` fails because a pending review exists, `delete_pending` once and try once more. Never
    `APPROVE` or `REQUEST_CHANGES`, and never `resolve_thread`: the server's settings may refuse any other method or
    event, and a refused call is not retried another way.
 4. **Defuse** everything you post: put U+2060 (word joiner) right after the `@` of every `@user` and `@org/team`, and

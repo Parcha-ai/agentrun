@@ -3,14 +3,14 @@
 // ends stopped and its stop row is taken, never refused as "the run failed before this command was taken". A parked run
 // brought back by an approve whose resume hits the failure stays parked with a backoff, its approve kept for one more try.
 import assert from "node:assert/strict";
-import { test } from "node:test";
+import { after, test } from "node:test";
 import { BACKGROUND_CONTEXT } from "@earendil-works/chord/context";
-import { piSpec } from "./conformance-pi.mjs";
+import { closeOpenSessions, piAdapterSubject } from "./conformance-pi-adapter.mjs";
 import { commandRow, observed, queue, recorder, sleep, stores, until } from "./runner-support.mjs";
 
 const { startRunner } = await import("../dist/runner/runner.js");
 const { sendCommand } = await import("../dist/runner/commands.js");
-const { createPiLoop } = await import("../dist/runner/loop.js");
+after(closeOpenSessions);
 const { suiteTools } = await import("../dist/runner/conformance/harness.js");
 const TIMING = { leaseMs: 600, renewEveryMs: 150, stopMarginMs: 200, pollMs: 20, commandPollMs: 30 };
 const quiet = { beforeIntent: async () => {}, beforeResult: async () => {} };
@@ -25,10 +25,11 @@ const unreadable = (journal) =>
     },
   });
 
-/** A pi loop playing `script`, whose journal cannot be read on the claims `failing(n)` names (n counts from 1). */
+/** pi through the adapter loop playing `script`, whose journal cannot be read on the claims `failing(n)` names (n counts
+ *  from 1). */
 function loops(script, failing) {
   const { tools, ran } = suiteTools();
-  const inner = createPiLoop(piSpec({ script, tools, hooks: quiet }));
+  const inner = piAdapterSubject.createLoop({ script, tools, hooks: quiet });
   let claims = 0;
   const createLoop = (deps) => {
     const n = ++claims;

@@ -19,9 +19,11 @@
 // The snapshot's shape is SNAPSHOT.md's, v1 (tl-learning, 2026-11-09): what the learning routes and a run's seed read.
 import { createHash, randomBytes } from "node:crypto";
 import { readFileSync } from "node:fs";
-import { lstat, mkdir } from "node:fs/promises";
-import { dirname, join } from "node:path";
-import { agentLearningFolder, DISK_DIR, isWorkspaceError, localWorkspace, type Workspace, WorkspaceError } from "../workspace/index.js";
+import { join } from "node:path";
+import {
+  isWorkspaceError, type LearningPlace as OneLearningPlace, type LearningWorkspace as OneLearningWorkspace,
+  learningWorkspace as oneLearningWorkspace, type Workspace, WorkspaceError,
+} from "../workspace/index.js";
 import { INDEX_FILE, type LearnedNote, NOTE_FILE, parseNoteFile } from "./notes.js";
 import { learnedFront, learnedName, learnedPlace, learnedStatus, SKILLS_DIR, WORKFLOWS_DIR } from "./skills.js";
 
@@ -72,6 +74,10 @@ export type SnapLearned = {
   oid: string; bytes: number;
   order: number;
   history: SnapHistory;
+  /** Past SNAPSHOT.md v1, additive, present only when there are some: the paths of the tracked symbolic links (git mode
+   *  120000) in the item's folder. A seed never lays such a skill (seed-check.ts readSeed's `refused`); `files` names
+   *  regular files alone. */
+  links?: string[];
 };
 export type SnapChange = { commit: string; at: string; by: { run: string } | { user: true; via?: string }; reason: string; files: string[] };
 export type Snapshot = {
@@ -255,7 +261,7 @@ export function snapshotOfRead(read: ReturnType<typeof parseRead>): Snapshot | u
   const historyOf = (path: string) => history.get(path) ?? { at };
   const index = tree.find((entry) => entry.path === INDEX_FILE && regular(entry));
   const notes: SnapNote[] = [];
-  const folders = new Map<string, { kind: "skill" | "workflow"; name: string; files: SnapFile[] }>();
+  const folders = new Map<string, { kind: "skill" | "workflow"; name: string; files: SnapFile[]; links: string[] }>();
   for (const entry of tree) {
     if (!entry.path.includes("/")) {
       const text = regular(entry) && entry.bytes <= FILE_CAP ? textOf(blobs.get(entry.oid)) : undefined;
@@ -264,14 +270,16 @@ export function snapshotOfRead(read: ReturnType<typeof parseRead>): Snapshot | u
       continue;
     }
     const folder = folderOf(entry.path);
-    if (!folder || entry.type !== "blob" || (entry.mode !== "100644" && entry.mode !== "100755")) continue;
+    if (!folder || entry.type !== "blob") continue;
     const key = `${folder.kind}/${folder.name}`;
-    (folders.get(key) ?? folders.set(key, { ...folder, files: [] }).get(key)!).files.push({ path: entry.path, oid: entry.oid, bytes: entry.bytes });
+    const known = folders.get(key) ?? folders.set(key, { ...folder, files: [], links: [] }).get(key)!;
+    if (entry.mode === "120000") known.links.push(entry.path);
+    else if (entry.mode === "100644" || entry.mode === "100755") known.files.push({ path: entry.path, oid: entry.oid, bytes: entry.bytes });
   }
   const skills: SnapLearned[] = [];
   const workflows: SnapLearned[] = [];
-  for (const { kind, name, files } of folders.values()) {
-    const item = learnedItem(kind, name, files, (path) => {
+  for (const { kind, name, files, links } of folders.values()) {
+    const item = learnedItem(kind, name, files, links, (path) => {
       const entry = tree.find((one) => one.path === path);
       return entry && regular(entry) && entry.bytes <= FILE_CAP ? textOf(blobs.get(entry.oid)) : undefined;
     }, {
@@ -287,7 +295,7 @@ export function snapshotOfRead(read: ReturnType<typeof parseRead>): Snapshot | u
 /** A learned item from its folder's files: listed when its folder is well named, its key file (SKILL.md, a draft's
  *  README.md) is there and reads, and a draft has its workflow.json too, each of those a regular file under FILE_CAP
  *  (only those are given their texts by `text`). */
-function learnedItem(kind: "skill" | "workflow", name: string, files: SnapFile[], text: (path: string) => string | undefined, at: { order: number; history: SnapHistory; run: string | null }, said?: { description: string; status: SnapLearned["status"] }): SnapLearned | undefined {
+function learnedItem(kind: "skill" | "workflow", name: string, files: SnapFile[], links: readonly string[], text: (path: string) => string | undefined, at: { order: number; history: SnapHistory; run: string | null }, said?: { description: string; status: SnapLearned["status"] }): SnapLearned | undefined {
   if (!learnedName(kind, name)) return undefined;
   const key = files.find(({ path }) => path === keyFile(kind, name));
   const shown = files.find(({ path }) => path === viewFile(kind, name));
@@ -298,7 +306,7 @@ function learnedItem(kind: "skill" | "workflow", name: string, files: SnapFile[]
     if (body === undefined) return undefined;
     fields = { description: learnedFront(body)?.description ?? "", status: learnedStatus(body) };
   }
-  return { name, file: key.path, description: fields.description, status: fields.status, run: at.run, files: [...files].sort((a, b) => byBytes(a.path, b.path)), oid: key.oid, bytes: key.bytes, order: at.order, history: at.history };
+  return { name, file: key.path, description: fields.description, status: fields.status, run: at.run, files: [...files].sort((a, b) => byBytes(a.path, b.path)), oid: key.oid, bytes: key.bytes, order: at.order, history: at.history, ...(links.length ? { links: [...links].sort(byBytes) } : {}) };
 }
 
 // ---------------------------------------------------------------------------------------------------------------------
@@ -382,7 +390,9 @@ export function nextSnapshot(before: Snapshot | undefined, change: Omit<FolderCh
       }
       const key = keyFile(kind, name);
       const keyText = writes.get(key)?.text;
-      const item = learnedItem(kind, name, [...files.values()], (path) => writes.get(path)?.text, {
+      // A link the change writes a file over, or deletes, is a link no more.
+      const links = (old?.links ?? []).filter((path) => !writes.has(path) && !deletes.has(path));
+      const item = learnedItem(kind, name, [...files.values()], links, (path) => writes.get(path)?.text, {
         order: 0,
         history: touched.has(key) ? foldNewer(old?.history, commit, key) : (old?.history ?? { at: commit.at }),
         run: runId && touched.has(viewFile(kind, name)) ? runId : (old?.run ?? null),
@@ -406,59 +416,21 @@ export function nextSnapshot(before: Snapshot | undefined, change: Omit<FolderCh
 const withMain = (snapshot: Snapshot, main: string): Snapshot => JSON.parse(JSON.stringify(snapshot).replaceAll(ESCAPED_PLACEHOLDER, main)) as Snapshot;
 
 // ---------------------------------------------------------------------------------------------------------------------
-// The folder's Workspace: the seam ws-c3's learningWorkspace (E4c) replaces, with its signature and return value.
+// The folder's Workspace is the one learningWorkspace (workspace/learning-workspace.ts): the local folder under the
+// data directory, made by the first write (a read makes nothing: a folder not made reads as no main yet, NOT_FOUND),
+// each level on the way checked, a link there refused as ESCAPE naming it (folderFailure reads it as a link); or the
+// claim's Archil disk at learningKey, whose end() sweeps the exec spill. folderTestHooks.workspace stands in for it in
+// tests.
 
-/** Where an agent's learning folder is: Mode 1's local folder under the data directory (Mode 2's Archil disk is ws-c3's). */
-export type LearningPlace = { readonly mode: "local"; readonly agentId: string; readonly data: string; readonly log?: (line: string) => void };
+/** Where an agent's learning folder is: the local folder under the data directory, or the claim's Archil disk. */
+export type LearningPlace = OneLearningPlace;
 /** The folder's Workspace, and its end: called in a finally after every use (on Archil it sweeps the exec spill). */
-export type LearningFolder = { readonly workspace: Workspace; end(): Promise<void> };
+export type LearningFolder = OneLearningWorkspace;
 
-/** `dir` made where absent by a plain mkdir (never recursive, which would follow a link on the way), then checked by
- *  lstat: a symbolic link there, or anything but a folder, refuses the folder whole. */
-async function folderLevel(data: string, dir: string, make: boolean): Promise<void> {
-  if (make) await mkdir(dir, { mode: 0o700 }).catch((error: NodeJS.ErrnoException) => { if (error.code !== "EEXIST") throw error; });
-  const stats = await lstat(dir).catch((error: NodeJS.ErrnoException) => (error.code === "ENOENT" && !make ? undefined : Promise.reject(error)));
-  if (stats?.isSymbolicLink()) throw new FolderUnreadable(true, `a link in the learning folder at ${dir.slice(data.length + 1)} can't be followed, so nothing learned is read or written; remove the link`);
-  if (stats && !stats.isDirectory()) throw new FolderUnreadable(false, `the learning folder's ${dir.slice(data.length + 1)} is not a folder`);
-}
-
-/**
- * Agent `agentId`'s learning folder as a Workspace (Mode 1: `<data>/disk/agents/<agent>/learning`), made by the first
- * write (a read makes nothing: a folder not made reads as no main yet), each level on the way checked, so a link there
- * refuses it (the Local Workspace trusts its root and refuses a link
- * anywhere below it). TODO(tl-places, ws-c3 E4c): their learningWorkspace({ mode, agentId, log, data | archil }) replaces
- * this function, same signature, same return value; folderTestHooks.workspace stands in for it in tests.
- */
+/** Agent `place.agentId`'s learning folder as a Workspace: the one learningWorkspace, or the test's stand-in. */
 export function learningWorkspace(place: LearningPlace): LearningFolder {
   if (folderTestHooks.workspace) return folderTestHooks.workspace(place);
-  const root = agentLearningFolder(place.data, place.agentId);
-  const levels: string[] = [];
-  for (let dir = root; dir.length > place.data.length && dir !== join(place.data, DISK_DIR, ".."); dir = dirname(dir)) levels.unshift(dir);
-  let made: Promise<Workspace> | undefined;
-  // A write makes the folder, each level checked; a read makes nothing: a level missing is NOT_FOUND (no main yet).
-  const open = async (make: boolean): Promise<Workspace> => {
-    if (make) {
-      return (made ??= (async () => {
-        for (const dir of levels) await folderLevel(place.data, dir, true);
-        await folderLevel(place.data, join(root, ".git"), false);
-        return localWorkspace(root);
-      })().catch((error: unknown) => { made = undefined; throw error; }));
-    }
-    if (made) return made;
-    for (const dir of levels) {
-      if (!(await lstat(dir).then(() => true, () => false))) throw new WorkspaceError("NOT_FOUND", "the learning folder is not made yet", { path: "" });
-      await folderLevel(place.data, dir, false);
-    }
-    return localWorkspace(root);
-  };
-  const READS = new Set(["read", "stat", "list", "grep", "mountSpec"]);
-  const call = <K extends "read" | "write" | "append" | "stat" | "list" | "mkdir" | "grep" | "remove" | "exec" | "mountSpec" | "attach">(name: K) =>
-    (async (...args: unknown[]) => ((await open(!READS.has(name)))[name] as (...a: unknown[]) => unknown)(...args)) as unknown as Workspace[K];
-  const workspace: Workspace = {
-    read: call("read"), write: call("write"), append: call("append"), stat: call("stat"), list: call("list"), mkdir: call("mkdir"), grep: call("grep"), remove: call("remove"), exec: call("exec"), mountSpec: call("mountSpec"), attach: call("attach"),
-    get process() { return localWorkspace(root).process; },
-  };
-  return { workspace, end: async () => undefined };
+  return oneLearningWorkspace(place);
 }
 
 /** A learning folder this server cannot read or write: a link in it (`link`, its words naming it), or a backend that
