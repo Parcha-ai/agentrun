@@ -86,14 +86,8 @@ test("pi through the adapter: a claim lost at the renew deadline mid-turn ends t
 test("pi through the adapter: a claim fenced mid-turn (another runner took it) ends the session with interrupt then close, and writes nothing after", async (t) => {
   // The runner claims at its start and polls no more: the jumped clock must not let it claim the run again itself.
   const world = await midTurn(t, { pollMs: 60_000 });
-  // The clock jumps past the lease; a renewal on the jumped clock may land before the other runner's claim and hold the run
-  // a lease past it, so the clock jumps again past each such renewal (one reaches at most a lease ahead) until the claim
-  // lands. Whatever renews meanwhile, the claim lands at epoch 2 and every renewal after it is fenced.
-  let taken;
-  for (let jumps = 1; !taken && jumps <= 5; jumps++) {
-    world.clock.skewMs = TIMING.leaseMs * 2 * jumps;
-    taken = await world.server.claim("run-1", "runner-z", { leaseMs: 60_000 });
-  }
+  world.clock.skewMs = TIMING.leaseMs * 2;
+  const taken = await world.server.claim("run-1", "runner-z", { leaseMs: 60_000 });
   assert.equal(taken?.epoch, 2, "the other runner's claim: the run was claimable");
   await until(() => world.stops.some((each) => each.kind === "claim-lost"), "the runner stops the loop", TIMING.renewEveryMs * 6);
   await until(() => world.calls.filter((call) => call.epoch === 1).length >= 2, "the session ended", 5_000).catch(() => undefined);
