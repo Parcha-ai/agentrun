@@ -85,12 +85,10 @@ export function definitionIssues(definition: unknown, { at = "definition", creat
   // an edit that leaves it out keeps the agent's (agents.ts), so leaving a field out never removes a spend limit.
   if (d.max_cost_usd !== undefined) {
     if (!(typeof d.max_cost_usd === "number" && Number.isFinite(d.max_cost_usd) && d.max_cost_usd >= 0)) out.push(issue(`${at}.max_cost_usd`, "wrong_type", `${at}.max_cost_usd is a number of at least 0, in US dollars: above 0 sets the agent's default cap, 0 clears it`));
-    else if (d.workflow !== undefined && d.max_cost_usd > 0) out.push(issue(`${at}.max_cost_usd`, "not_allowed", "A workflow run's spend is not capped here, so a workflow revision keeps no max_cost_usd.", `Remove ${at}.max_cost_usd.`));
   }
   // How a run's cap prices its requests (cap.ts CapMode): kept, as the default cap is, by an edit that leaves it out.
   if (d.cap_mode !== undefined) {
     if (!(CAP_MODES as readonly unknown[]).includes(d.cap_mode)) out.push(issue(`${at}.cap_mode`, "not_an_option", `${at}.cap_mode is one of ${CAP_MODES.join(", ")}: expected prices a request's input from the previous request's cache, strict prices all of it uncached`));
-    else if (d.workflow !== undefined) out.push(issue(`${at}.cap_mode`, "not_allowed", "A workflow run's spend is not capped here, so a workflow revision keeps no cap_mode.", `Remove ${at}.cap_mode.`));
   }
   return out;
 }

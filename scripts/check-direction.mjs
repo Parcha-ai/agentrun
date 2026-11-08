@@ -24,11 +24,11 @@ export const LAYERS = {
   'plug-in': ['packages/run-adapters-claude-agent', 'packages/run-adapters-codex', 'packages/computer', 'packages/decisions', 'packages/jev'],
   // Libraries to be folded into the kernel, a plug-in or the server. packages/dsl is the workflow language and its engine.
   subsystem: [
-    'packages/dsl', 'packages/harness', 'packages/pi', 'packages/pi-browser',
-    'packages/pi-durable-agent', 'packages/pi-durable-disk', 'packages/pi-transport', 'packages/pi-vision',
+    'packages/dsl', 'packages/pi', 'packages/pi-browser',
+    'packages/pi-durable-agent', 'packages/pi-durable-disk', 'packages/pi-transport',
   ],
   server: ['packages/serve'],
-  surface: ['apps/console', 'apps/viewer', 'packages/agentrun', 'packages/client'],
+  surface: ['apps/console', 'packages/agentrun', 'packages/client'],
 };
 
 /** The layers each layer may reach, besides its own package. */
