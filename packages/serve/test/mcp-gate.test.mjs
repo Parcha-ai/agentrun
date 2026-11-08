@@ -16,6 +16,7 @@ import { join } from "node:path";
 import { test } from "node:test";
 import { fakeAnthropic } from "@parcha/agentrun-harness-claude/testing";
 import { startFakeMcp } from "./fixtures/fake-mcp-server.mjs";
+import { REQUESTS_ENV, requestsOf, rolesOf } from "./fixtures/faux-requests.mjs";
 import { noApproverText } from "../dist/tool-gate.js";
 import { schemaProblems } from "./schema-support.mjs";
 import { copyStandIn } from "../../run-adapters-codex/test/stand-in.mjs";
@@ -124,6 +125,9 @@ test("pi: on a server with accounts off no one can approve, so an MCP tool's ask
 });
 
 test("pi: allowed by the agent's exact key, or by the server's mcp:fake/*, the call runs once with no person asked", { timeout: 120_000 }, async (t) => {
+  // Each request pi's faux model is asked, by run: counted below, and shown with the server's calls when a count is wrong.
+  const requests = join(await scratch(t), "requests.jsonl");
+  withEnv(t, { [REQUESTS_ENV]: requests });
   const { api } = await serve(t);
   const fake = await addFake(t, api);
   const exact = await started(api, "exact", ["mcp:fake/add"], ADD, { extra: { tool_settings: { "mcp:fake/add": { permission: "allow" } } } });
@@ -133,7 +137,11 @@ test("pi: allowed by the agent's exact key, or by the server's mcp:fake/*, the c
   const wide = await started(api, "wide", ["mcp:fake/add"], ADD);
   await follow(api, wide, ["completed"], { deadlineMs: 60_000 });
   assert.equal(await answerOf(api, wide), "The tool said: 5");
-  assert.equal(calls(fake, "add").length, 2, "one call each");
+  // Each run asked its model twice: the message (the call), then the call's result (the answer). A third request is a
+  // real extra one, whatever the faux model made of it.
+  for (const runId of [exact, wide]) assert.equal(requestsOf(requests, runId).length, 2, `${runId === exact ? "exact" : "wide"}: one request for the call, one for its answer: ${rolesOf(requestsOf(requests, runId))}`);
+  const seen = `exact ${rolesOf(requestsOf(requests, exact))}; wide ${rolesOf(requestsOf(requests, wide))}; the server's calls ${JSON.stringify(calls(fake, "add").map((entry) => ({ id: entry.id, at: entry.at })))}`;
+  assert.equal(calls(fake, "add").length, 2, `one call each: ${seen}`);
 });
 
 test("pi: with no setting an MCP tool asks once (exactly one approval): the call parks and the turn ends, the run reads input_required with the approval (the tool, its arguments, its price) and the server saw nothing; a token cannot answer; the owner's allow runs it once and resumes the run with its result", { timeout: 120_000 }, async (t) => {
