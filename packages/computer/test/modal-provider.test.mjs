@@ -1136,6 +1136,9 @@ test("no real Modal client: the provider and the conformance module import nothi
 		app: "COMPUTER_MODAL_APP",
 		daemonImage: "COMPUTER_MODAL_DAEMON_IMAGE",
 		serverUrl: "COMPUTER_MODAL_SERVER_URL",
+		archilDisk: "COMPUTER_ARCHIL_DISK",
+		archilRegion: "COMPUTER_ARCHIL_REGION",
+		archilToken: "COMPUTER_ARCHIL_TOKEN",
 	});
 	assert.equal(module.CONFORMANCE_MAX_LIFETIME_MS, 30 * 60_000);
 });
@@ -1270,8 +1273,9 @@ test("the conformance module refuses an ambient MODAL_SERVER_URL in words, befor
 test("the provider's fromEnv() reads the COMPUTER_MODAL_ names without the live switch, which stays the conformance module's, and keeps Modal's 24-hour cap", async () => {
 	const modalModule = await import("../dist/modal.js");
 	const conformance = await import("../dist/conformance/modal.js");
-	const { live, ...providerNames } = conformance.MODAL_ENV;
+	const { live, archilDisk, archilRegion, archilToken, ...providerNames } = conformance.MODAL_ENV;
 	assert.deepEqual(modalModule.ENV, providerNames);
+	assert.deepEqual([archilDisk, archilRegion, archilToken], ["COMPUTER_ARCHIL_DISK", "COMPUTER_ARCHIL_REGION", "COMPUTER_ARCHIL_TOKEN"], "the mount cases' disk is the module's to read, never the provider's");
 	assert.equal(live, "AGENTRUN_COMPUTER_LIVE_MODAL");
 	const env = { ...DEV_TOKEN, COMPUTER_MODAL_APP: APP };
 	const refused = fakeClient();
