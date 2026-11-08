@@ -10,10 +10,10 @@ import { API, fakeOrgoApi, fakeTerminal, KEY, VNC, WORKSPACE } from "./fake-orgo
 
 const { MAX_UPLOAD_BYTES, orgoRest, orgoTerminalChannel } = await import("../dist/orgo-channel.js");
 
-function setup({ api: apiOptions = {}, onExec } = {}) {
+function setup({ api: apiOptions = {}, onExec, frames } = {}) {
 	const api = fakeOrgoApi(apiOptions);
 	const computer = api.add({ name: "computer-0123456789ab" });
-	const terminal = fakeTerminal({ onExec });
+	const terminal = fakeTerminal({ onExec, ...(frames ? { frames } : {}) });
 	const rest = orgoRest({ apiKey: KEY, apiUrl: API, fetch: api.fetch });
 	const channel = orgoTerminalChannel({ rest, workspaceId: WORKSPACE, webSocket: terminal.factory });
 	return { api, terminal, channel, id: computer.id };
@@ -97,6 +97,38 @@ test("stdio: the root terminal made raw, everything before the marker dropped (t
 	await opened.value.close();
 	assert.equal(socket.closed, true);
 	secretless(opened.value.said?.() ?? "", "the bridge's words");
+});
+
+test("stdio: output that comes as plain text frames or as binary frames carries the bytes as the JSON frames do", async () => {
+	for (const frames of ["text", "binary"]) {
+		const { channel, id } = setup({
+			frames,
+			onExec: (command, io) => {
+				io.input = (data) => io.write(data);
+				io.write('{"hello":1}\n');
+			},
+		});
+		const opened = await channel.stdio(id, ["/opt/agentrun/computerd", "stdio"], { timeoutMs: 1000 });
+		assert.equal(opened.ok, true, `${frames}: ${JSON.stringify(opened)}`);
+		const chunks = [];
+		opened.value.readable.on("data", (chunk) => chunks.push(chunk.toString("utf8")));
+		opened.value.writable.write('{"ping":2}\n');
+		await new Promise((done) => setImmediate(done));
+		await new Promise((done) => setImmediate(done));
+		assert.equal(chunks.join(""), '{"hello":1}\n{"ping":2}\n', frames);
+		await opened.value.close();
+	}
+});
+
+test("stdio: a marker that never comes is a timeout that says what the terminal sent before it, by kind and its last bytes, never the password", async () => {
+	const { channel, id } = setup({ frames: "deaf" });
+	const opened = await channel.stdio(id, ["/opt/agentrun/computerd", "stdio"], { timeoutMs: 50 });
+	assert.equal(opened.ok, false);
+	assert.equal(opened.error.code, "timeout");
+	assert.match(opened.error.message, /1 frame \(1 output\)/);
+	assert.match(opened.error.message, /root@orgo:~\/Desktop# /);
+	assert.match(opened.error.message, /\\u001b\[\?2004h/, "control characters escaped, never raw");
+	secretless(opened, "the timeout");
 });
 
 test("stdio: the program's exit ends the stream; a socket closed before the marker is an error in words that hold no secret", async () => {

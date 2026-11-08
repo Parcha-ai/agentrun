@@ -128,10 +128,13 @@ export function markOf(argv) {
  *  - box: what each daemon reports over the defaults (hello patch, uid/gid patch, reached, kernel, display: false for
  *    a daemon that does not reach the display);
  *  - notListening: how many stdio bridges find no daemon listening before one does;
- *  - startFails: words the start of init fails with.
+ *  - startFails: words the start of init fails with;
+ *  - bridge: "ok" (default), or "timeout": every stdio fails as the terminal channel does when its marker never comes;
+ *  - initDies: init is gone once the start's call returns (as when bash's end takes it), and its log says why.
+ * The status script answers what the computer holds: init running or not, its socket, its log's tail.
  * channel.calls holds every call, { op, computer, argv | path, how }; channel.boxes each computer's state.
  */
-export function fakeOrgoChannel({ install = 0, sha = "ok", x11 = true, box: boxPatch = {}, notListening = 0, startFails } = {}) {
+export function fakeOrgoChannel({ install = 0, sha = "ok", x11 = true, box: boxPatch = {}, notListening = 0, startFails, bridge = "ok", initDies = false } = {}) {
 	const boxes = new Map();
 	const calls = [];
 	let waiting = notListening;
@@ -168,6 +171,10 @@ export function fakeOrgoChannel({ install = 0, sha = "ok", x11 = true, box: boxP
 				return done(0);
 			}
 			if (mark?.kind === "orgo-labels-read") return box.labels === undefined ? done(1, `cat: ${mark.args[0]}: No such file or directory`) : done(0, box.labels);
+			if (mark?.kind === "orgo-status") {
+				const up = box.init !== undefined;
+				return done(0, [`init ${up ? "running" : "not running"}`, `socket ${up ? "present" : "absent"}`, `log ${box.log ?? (up ? "computerd: init: listening" : "")}`].join("\n"));
+			}
 			return done(127, `the fake runs only the provider's scripts, not ${argv.join(" ")}`);
 		},
 		async start(computer, argv, { how }) {
@@ -178,12 +185,14 @@ export function fakeOrgoChannel({ install = 0, sha = "ok", x11 = true, box: boxP
 			if (mark?.kind !== "init" || box.daemon === undefined) return { ok: true, value: undefined };
 			const [, deadline, user, , , display = "", max = ""] = mark.args;
 			const [uid, gid] = user.split(":").map(Number);
-			box.init = { deadline, user, uid, gid, display, max };
+			if (initDies) box.log = "computerd: init: terminated by signal 15 (SIGTERM)";
+			else box.init = { deadline, user, uid, gid, display, max };
 			return { ok: true, value: undefined };
 		},
 		async stdio(computer, argv) {
 			const mark = markOf(argv);
 			calls.push({ op: "stdio", computer, argv: [...argv], kind: mark?.kind });
+			if (bridge === "timeout") return { ok: false, error: { code: "timeout", message: `computerd's bridge in ${computer} did not start within 0.5 s` } };
 			const box = boxOf(computer);
 			const readable = new PassThrough();
 			const listening = box.init !== undefined && !(waiting > 0);
@@ -250,9 +259,11 @@ function answer(box, { method, params }, patch) {
  * Typed input is echoed until `stty raw -echo` runs; the shell prints a prompt first. A line that runs the provider's
  * marker printf prints the marker; `exec <...>` then hands the PTY to `onExec(command, io)`, where io.write sends output
  * and io.input receives what the client types from then on. A socket whose URL carries a session= name is recorded.
- * terminal.sockets holds every socket, with its url, the frames it sent, and closed.
+ * terminal.sockets holds every socket, with its url, the frames it sent, and closed. `frames` is how output comes:
+ * "json" ({ type: "output", data } text frames, as the docs say), "text" (the bytes as plain text frames), "binary" (the
+ * bytes as ArrayBuffer frames), or "deaf" (the prompt, then nothing: typed input is never run).
  */
-export function fakeTerminal({ onExec = () => {} } = {}) {
+export function fakeTerminal({ onExec = () => {}, frames = "json" } = {}) {
 	const sockets = [];
 	const factory = (url) => {
 		const listeners = { open: [], message: [], close: [], error: [] };
@@ -269,7 +280,7 @@ export function fakeTerminal({ onExec = () => {} } = {}) {
 			send(text) {
 				socket.sent.push(text);
 				const frame = JSON.parse(text);
-				if (frame.type !== "input") return;
+				if (frame.type !== "input" || frames === "deaf") return;
 				if (execd) return execd(frame.data);
 				if (!raw) emit({ type: "output", data: frame.data.replace(/\r/g, "\r\n") });
 				const line = frame.data.replace(/\r$/, "");
@@ -298,8 +309,14 @@ export function fakeTerminal({ onExec = () => {} } = {}) {
 				for (const fn of listeners.close) fn({ code: 1000 });
 			},
 		};
+		const encode = (frame) => {
+			if (frame.type !== "output" || frames === "json" || frames === "deaf") return JSON.stringify(frame);
+			if (frames === "text") return frame.data;
+			const bytes = Buffer.from(frame.data, "utf8");
+			return bytes.buffer.slice(bytes.byteOffset, bytes.byteOffset + bytes.byteLength);
+		};
 		const emit = (frame) => queueMicrotask(() => {
-			if (!socket.closed) for (const fn of listeners.message) fn({ data: JSON.stringify(frame) });
+			if (!socket.closed) for (const fn of listeners.message) fn({ data: encode(frame) });
 		});
 		sockets.push(socket);
 		queueMicrotask(() => {

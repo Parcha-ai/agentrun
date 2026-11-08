@@ -193,6 +193,22 @@ test("Orgo create: init not yet listening is tried again within helloMs; one tha
 	assert.equal(only(never.api).deleted, true);
 });
 
+test("Orgo create: a daemon that does not answer is refused with what the computer holds: whether init runs, its socket, its log", async () => {
+	for (const [channelOptions, words] of [
+		[{ bridge: "timeout" }, /init running; socket present; log computerd: init: listening/],
+		[{ initDies: true }, /init not running; socket absent; log computerd: init: terminated by signal 15/],
+	]) {
+		const { provider, api, channel } = setup({}, { channel: channelOptions });
+		const created = await provider.create(SPEC);
+		assert.equal(created.ok, false);
+		assert.match(created.error.message, /the daemon did not answer/);
+		assert.match(created.error.message, words);
+		assert.ok(channel.calls.some((call) => call.kind === "orgo-status"), "the status read through the channel");
+		assert.equal(only(api).deleted, true);
+		secretless(created, "the refusal");
+	}
+});
+
 test("Orgo list: this workspace's computers by name, the run and epoch filtered by the name with nothing run inside; any other label read from the labels file", async () => {
 	const fakes = setup();
 	const mine = seeded(fakes);
