@@ -1304,6 +1304,16 @@ test("the conformance module reads COMPUTER_MODAL_APP and passes it as options.a
 	}
 });
 
+test("the provider's create() given both daemonImage and daemonPath takes the image: the daemon is copied from it, and nothing is uploaded", async () => {
+	const modalModule = await import("../dist/modal.js");
+	const fake = fakeModal();
+	const provider = await modalModule.create({ ...TOKEN_OPTIONS, app: APP, daemonImage: DAEMON_IMAGE, daemonPath: BINARY_PATH, ModalClient: clientOf(fake) });
+	assert.equal(provider.id, "modal");
+	assert.equal((await provider.create(SPEC)).ok, true);
+	assert.deepEqual(fake.calls.find(([name]) => name === "image.dockerfileCommands")[1][0], `COPY --from=${DAEMON_IMAGE} /computerd ${DAEMON}`);
+	assert.deepEqual(fake.uploads, [], "no upload: the image wins");
+});
+
 test("the provider's create() refuses without options.app in words naming the option, before any client: COMPUTER_MODAL_APP or AGENTRUN_BOX_APP in the environment is never read", async () => {
 	const modalModule = await import("../dist/modal.js");
 	await withProcessEnv({ COMPUTER_MODAL_APP: APP, AGENTRUN_BOX_APP: APP }, async () => {

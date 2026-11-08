@@ -81,31 +81,59 @@ test("every provider file under src/ has its registry line, under the id its pro
 	assert.equal(lines.length, files.length, "and no line names a file that is not a provider");
 });
 
-test("every id resolves to a module of the registry's shape: create(options), MOUNT, an optional conformance module, and no ENV or fromEnv", async () => {
-	for (const id of providerIds) {
-		const module = await providerModule(id);
-		assert.equal(typeof module.create, "function", `${id} exports create(options)`);
-		assert.equal(module.ENV, undefined, `${id} exports no ENV: the library names no environment variable`);
-		assert.equal(module.fromEnv, undefined, `${id} exports no fromEnv: every setting is an option`);
-		if (module.conformance !== undefined) {
-			assert.equal(typeof module.conformance, "function", `${id}'s conformance is () => import(...)`);
-			const conformance = await module.conformance();
-			assert.equal(typeof conformance.createProvider, "function", `${id}'s conformance module exports createProvider()`);
-			assert.equal(typeof conformance.settingsFromEnv, "function", `${id}'s conformance module exports settingsFromEnv(env), its reading of the COMPUTER_ names`);
-		}
+/**
+ * The shared checks every provider module meets, whatever it is: create(options) and MOUNT, no ENV or fromEnv, and an
+ * optional conformance module. A conformance module that reads the environment (settingsFromEnv) lists what it reads in
+ * its ENV, each name COMPUTER_<ID>_* or its live switch; one without conformance() has nothing more to meet. Nothing
+ * here names a provider, so a new one is its file and its registry line, with no edit to this test.
+ */
+async function checkProviderModule(id, module) {
+	assert.equal(typeof module.create, "function", `${id} exports create(options)`);
+	assert.ok(Array.isArray(module.MOUNT), `${id} exports MOUNT, an array`);
+	assert.equal(module.ENV, undefined, `${id} exports no ENV: the library names no environment variable`);
+	assert.equal(module.fromEnv, undefined, `${id} exports no fromEnv: every setting is an option`);
+	if (module.conformance === undefined) return;
+	assert.equal(typeof module.conformance, "function", `${id}'s conformance is () => import(...)`);
+	const conformance = await module.conformance();
+	assert.equal(typeof conformance.createProvider, "function", `${id}'s conformance module exports createProvider()`);
+	if (conformance.settingsFromEnv === undefined) return;
+	assert.equal(typeof conformance.settingsFromEnv, "function", `${id}'s settingsFromEnv is a function`);
+	const names = Object.values(conformance.ENV ?? {});
+	assert.ok(names.length > 0, `${id}'s conformance module reads the environment (settingsFromEnv), so it exports ENV, the names it reads`);
+	const prefix = `COMPUTER_${id.toUpperCase().replace(/-/g, "_")}_`;
+	for (const name of names) {
+		assert.match(name, new RegExp(`^(${prefix}[A-Z0-9_]+|AGENTRUN_COMPUTER_LIVE_${id.toUpperCase().replace(/-/g, "_")})$`), `${id} reads ${name}: every name is ${prefix}*, never a vendor's bare variable`);
 	}
+}
+
+test("every id resolves to a module of the registry's shape, and only the conformance side names COMPUTER_ variables, listed in its ENV", async () => {
+	for (const id of providerIds) await checkProviderModule(id, await providerModule(id));
 });
 
-test("only the conformance side names COMPUTER_ variables: each conformance module's names are COMPUTER_<ID>_* or its live switch", async () => {
-	const tables = { docker: "DOCKER_ENV", daytona: "DAYTONA_ENV", modal: "MODAL_ENV", e2b: "E2B_ENV" };
+test("a provider module with no conformance() meets the shared checks: conformance is optional, and no test names a provider", async () => {
+	const module = await import("./fixtures/options-provider.mjs");
+	assert.equal(module.conformance, undefined);
+	await checkProviderModule("options-module", module);
+});
+
+test("each in-tree conformance module's ENV is the names its settingsFromEnv reads", async () => {
 	for (const id of providerIds) {
 		const conformance = await (await providerModule(id)).conformance();
-		const names = Object.values(conformance[tables[id]] ?? {});
-		assert.ok(names.length > 0, `${id}'s conformance module exports ${tables[id]}, the names it reads`);
-		const prefix = `COMPUTER_${id.toUpperCase().replace(/-/g, "_")}_`;
-		for (const name of names) {
-			assert.match(name, new RegExp(`^(${prefix}[A-Z0-9_]+|AGENTRUN_COMPUTER_LIVE_${id.toUpperCase()})$`), `${id} reads ${name}: every name is ${prefix}*, never a vendor's bare variable`);
+		const env = Object.fromEntries(Object.values(conformance.ENV ?? {}).map((name) => [name, undefined]));
+		assert.ok(Object.keys(env).length > 0, `${id}'s conformance module exports ENV`);
+		// Every name settingsFromEnv looks up is one of ENV's: a Proxy records the lookups.
+		const read = new Set();
+		const recording = new Proxy({}, { get: (_target, name) => (typeof name === "string" && read.add(name), undefined) });
+		try {
+			conformance.settingsFromEnv(recording);
+		} catch {
+			// Without a key it refuses, having read the key's name first; the rest is read with every name set below.
 		}
+		const full = Object.fromEntries(Object.keys(env).map((name) => [name, name.endsWith("STREAM") ? "1" : /LIFETIME/.test(name) ? "60000" : "x"]));
+		const reading = new Proxy(full, { get: (target, name) => (typeof name === "string" && read.add(name), target[name]) });
+		conformance.settingsFromEnv(reading);
+		const outside = [...read].filter((name) => !Object.hasOwn(env, name) && /^COMPUTER_/.test(name));
+		assert.deepEqual(outside, [], `${id}'s settingsFromEnv reads a COMPUTER_ name its ENV does not list`);
 	}
 });
 
