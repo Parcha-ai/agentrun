@@ -12,6 +12,7 @@ import { existsSync } from "node:fs";
 import { fileURLToPath } from "node:url";
 import { after, before, describe, it } from "node:test";
 import { DockerProvider } from "../../dist/index.js";
+import { createForDeadline } from "./deadline.mjs";
 
 const LIVE = process.env.AGENTRUN_COMPUTER_LIVE_DOCKER === "1";
 const IMAGE = "debian:bookworm-slim";
@@ -167,19 +168,23 @@ describe("a Docker computer, as Docker shows it", { skip: LIVE ? false : "set AG
 		assert.deepEqual(await provider.release(created.value, "delete"), { ok: true, value: undefined });
 	});
 
-	it("ends itself at its deadline: PID 1 exits 0 with no janitor", async () => {
-		// Long enough for create's checks while other files make computers on a loaded host; the test asserts the end.
-		const created = await provider.create({ image: IMAGE, lifetimeMs: 45_000, network: "none", labels: { "agentrun.test": "run-command" } });
+	it("ends itself at its deadline: PID 1 exits 0 with no janitor", async (t) => {
+		// 45 s, or longer on a host slow to start it (createForDeadline); the test asserts the end, not its timing.
+		const got = await createForDeadline(t, (lifetimeMs) => provider.create({ image: IMAGE, lifetimeMs, network: "none", labels: { "agentrun.test": "run-command" } }), {
+			lifetimeMs: 45_000,
+			keep: (name) => made.push(name),
+		});
+		if (got === undefined) return;
+		const { result: created, lifetimeMs, from } = got;
 		assert.equal(created.ok, true, JSON.stringify(created));
-		made.push(created.value.name);
-		const bound = Date.now() + 120_000;
+		const bound = from + lifetimeMs + 120_000;
 		let state;
 		do {
 			[{ State: state }] = JSON.parse(docker("inspect", created.value.name));
 			if (!state.Running) break;
 			await new Promise((resolve) => setTimeout(resolve, 500));
 		} while (Date.now() < bound);
-		assert.equal(state.Running, false, "still running 120 s after a 45 s lifetime");
+		assert.equal(state.Running, false, `still running 120 s after a ${lifetimeMs / 1000} s lifetime`);
 		assert.equal(state.ExitCode, 0);
 		assert.deepEqual(await provider.release(created.value, "delete"), { ok: true, value: undefined });
 	});

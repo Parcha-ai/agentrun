@@ -383,7 +383,9 @@ export class DockerProvider implements ComputerProvider {
 		}
 		if (signal?.aborted) return fail("aborted", "create was aborted before docker run");
 		const name = `computer-${randomBytes(6).toString("hex")}`;
-		const deadline = new Date(Date.now() + spec.lifetimeMs).toISOString();
+		// The lifetime counts from here: what the proxy and docker run take comes out of it.
+		const lifetimeFrom = Date.now();
+		const deadline = new Date(lifetimeFrom + spec.lifetimeMs).toISOString();
 		if (allow !== undefined) {
 			// The proxy first, ready before the computer exists: a computer never runs with an allowlist it cannot reach.
 			const started = await this.#startEgress(name, user, deadline, allow, spec.labels ?? {}, signal);
@@ -420,6 +422,7 @@ export class DockerProvider implements ComputerProvider {
 		args.push(spec.image, "init", "--deadline", deadline, ...(allow === undefined ? [] : [RELAY_FLAG, EGRESS_SOCKET]));
 
 		const started = await this.#run(args, signal);
+		const ranMs = Date.now() - lifetimeFrom;
 		if (!started.ok || started.value.exitCode !== 0) {
 			// A run that failed or was aborted may still have made the container; an allowlist's proxy and volume go with it.
 			await this.release({ id: name, name }, "delete");
@@ -433,6 +436,10 @@ export class DockerProvider implements ComputerProvider {
 		const state = report?.State;
 		if (state?.Running !== true) {
 			await this.release(ref, "delete");
+			// Init exits 0 at its deadline: one that passed before docker run finished is a lifetime the host's start ate.
+			if (state?.ExitCode === 0 && Date.now() >= lifetimeFrom + spec.lifetimeMs) {
+				return fail("timeout", `the computer ${name}'s lifetime of ${spec.lifetimeMs / 1000} s ended before docker run finished (it took ${Math.round(ranMs / 100) / 10} s), so init ended it and it was removed`);
+			}
 			const why = state ? `status ${state.Status}, exit code ${state.ExitCode}${state.Error ? `: ${state.Error}` : ""}` : "it could not be inspected";
 			return fail("docker", `the computer ${name} was not running after its start (${why}), so it was removed`);
 		}

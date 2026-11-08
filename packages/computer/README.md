@@ -512,7 +512,10 @@ await docker.release(made.value, "delete");
   `agentrun.computer.deadline` holds the time `lifetimeMs` ends, and init gets the same time: then it ends every
   process as on SIGTERM (below) and exits 0, which stops the container. Init refuses to start with no deadline.
   Deleting a stopped computer is the janitor's (`lifetime: "janitor"`). A container that is not running after its
-  start is removed.
+  start is removed. The lifetime counts from just before the proxy (for an allowlist) and `docker run`, so a Docker host
+  that holds the start eats into it: a computer whose init exited 0 because its deadline passed before `docker run`
+  finished fails `create` as `timeout`, with the lifetime and how long the start took ("its lifetime of 45 s ended
+  before docker run finished (it took 101.2 s)").
 - **A computer binds the provider's own copy of the daemon, never `daemonPath`.** `daemonPath` may have any mode this
   process can read (npm installs it 0700 under `umask 077`). `create` copies it to `computerd-<sha256 of its bytes>`,
   mode 0755, in `daemonCache` (default `~/.cache/agentrun-computer`; `XDG_CACHE_HOME` is not read), so every computer
