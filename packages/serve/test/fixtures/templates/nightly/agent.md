@@ -6,7 +6,7 @@ model: { tier: strong }
 parameters:
   topic: { type: string, required: true, description: what the brief is about }
   words: { type: integer, description: how long the brief is }
-secrets: [BRIEF_FEED_KEY]
+secrets: [PARALLEL_API_KEY]
 budget: { per_run_usd: 0.25 }
 triggers:
   - name: Morning brief

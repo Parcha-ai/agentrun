@@ -17,8 +17,9 @@ import { follow, scratch, serve, withEnv } from "./support.mjs";
 const REVIEW = new URL("../templates/code-review/", import.meta.url).pathname;
 const FIXTURES = new URL("./fixtures/templates/", import.meta.url).pathname;
 const REVIEW_FAUX = new URL("./fixtures/faux-review.mjs", import.meta.url).pathname;
-const KEY = "BRIEF_FEED_KEY";
-const GITHUB_TOOLS = ["pull_request_read", "get_file_contents", "search_code", "get_repository_tree", "pull_request_review_write", "add_comment_to_pending_review"];
+const KEY = "PARALLEL_API_KEY";
+const GITHUB_READS = ["pull_request_read", "get_file_contents", "search_code", "get_repository_tree"];
+const GITHUB_TOOLS = [...GITHUB_READS, "pull_request_review_write", "add_comment_to_pending_review"];
 const sha256 = (text) => createHash("sha256").update(text).digest("hex");
 const file = (path) => readFileSync(join(REVIEW, path), "utf8");
 
@@ -50,7 +51,7 @@ test("the code-review package reads whole: its review skill with the rules besid
   assert.equal(review.skills["review/REVIEW.md"], file("rules/REVIEW.md"), "the rule ships beside the SKILL.md that reads it");
   assert.match(review.skills["review/SKILL.md"], /## With GitHub MCP tools/);
   assert.deepEqual([review.output, review.evals, review.triggers, review.secrets], [{ schema: "findings.schema.json" }, ["null-name"], [], []]);
-  assert.deepEqual([review.displayName, review.tools, review.mcp], ["Code review: ${parameters.repo}", undefined, [{ server: "github", tools: GITHUB_TOOLS, required: false }]]);
+  assert.deepEqual([review.displayName, review.tools, review.mcp], ["Code review: ${parameters.repo}", undefined, [{ server: "github", tools: GITHUB_TOOLS, required: false, allow: GITHUB_READS }]]);
   assert.match(review.instructions, /\$\{parameters\.repo\}/, "placeholders stay unfilled until an apply");
 });
 
@@ -85,6 +86,22 @@ test("the validator refuses a malformed package, naming each problem", async (t)
   await refused(({ edit }) => edit(/tools: \[pull_request_read.*\]/, "tools: []"), /mcp\[0\] is /);
   await refused(({ edit }) => edit("learning: false", "learning: false\ntools: [bash, mcp:github/search_code]"), /tools grants no MCP tool: mcp lists them/);
   await refused(({ edit }) => edit('display_name: "Code review: ${parameters.repo}"', 'display_name: "Review of ${parameters.repository}"'), /\$\{parameters\.repository\} names no parameter/);
+  // The keys a package needs are keys this server can hold: Settings saves them, and a run is handed them.
+  await refused(({ edit }) => edit("learning: false", "learning: false\nsecrets: [BRIEF_FEED_KEY]"), /secrets names BRIEF_FEED_KEY, a key this server cannot hold/);
+  // What an apply would refuse is refused here: a trigger's body, a tool this server does not bind, a skill file's path.
+  const trigger = (source, rest = "") => edit => edit("learning: false", `learning: false\ntriggers:\n  - name: nightly\n    source: ${source}\n    target: { kind: start_run, input: { content: Go. } }${rest}`);
+  await refused(({ edit }) => trigger("{ kind: schedule, cron: every morning }")(edit), /triggers\[0\]\.source\.cron: cron is five fields/);
+  await refused(({ edit }) => trigger('{ kind: schedule, cron: "0 9 * * *" }', "\n    colour: red")(edit), /triggers\[0\]\.colour: /);
+  await refused(({ edit }) => trigger('{ kind: schedule, cron: "${parameters.repo}" }')(edit), /triggers\[0\]\.source holds \$\{parameters\.repo\}: a placeholder goes in display_name, the instructions or a trigger's target\.input/);
+  await refused(({ edit }) => edit("learning: false", "learning: false\ntools: [bassh]"), /tools: bassh is not a tool this server binds/);
+  await refused(({ dir }) => writeFileSync(join(dir, "skills", "review", "a\\b.md"), "x"), /skills\/review\/a\\b\.md: the skill path/);
+  // An MCP tool is one tool by its name: `*`, the server's wildcard, is none; and a package asks allow only of its own.
+  await refused(({ edit }) => edit("tools: [pull_request_read,", "tools: ['*', pull_request_read,"), /mcp\[0\] is /);
+  await refused(({ edit }) => edit("allow: [pull_request_read,", "allow: [create_repository, pull_request_read,"), /mcp\[0\] is .*allow\?: the tools of its tools it asks the owner to allow/);
+  // Bounded: a file, the whole package, and its number of files.
+  await refused(({ dir }) => writeFileSync(join(dir, "skills", "review", "big.md"), "x".repeat(256 * 1024 + 1)), /skills\/review\/big\.md: is over 262144 bytes/);
+  await refused(({ dir }) => { for (let i = 0; i < 5; i++) writeFileSync(join(dir, "skills", "review", `part-${i}.md`), "x".repeat(250 * 1024)); }, /the package's files are over 1048576 bytes together/);
+  await refused(({ dir }) => { mkdirSync(join(dir, "evals", "null-name", "fixtures")); for (let i = 0; i < 260; i++) writeFileSync(join(dir, "evals", "null-name", "fixtures", `${i}.txt`), "x"); }, /the package holds over 256 files/);
   assert.deepEqual(await problemsOf(t, () => {}), [], "the copy itself is valid");
 
   // A broken package the server ships stops its start.
@@ -157,7 +174,7 @@ test("apply makes nothing when a secret is missing, its parameters do not check,
   const refused = await api("POST", "/templates/nightly/apply", { parameters: { topic: "solar" } });
   assert.equal(refused.status, 409, JSON.stringify(refused.body));
   assert.equal(refused.body.error.code, "agent_not_runnable");
-  assert.match(refused.body.error.message, /needs BRIEF_FEED_KEY.*Nothing was created/);
+  assert.match(refused.body.error.message, /needs PARALLEL_API_KEY.*Nothing was created/);
   assert.deepEqual(refused.body.error.fields.map((f) => [f.field, f.reason]), [[`secrets.${KEY}`, "not_set_up_here"]]);
 
   const field = async (body, name, reason) => {
@@ -201,7 +218,7 @@ test("a package's triggers are made on its agent, placeholders filled; a trigger
 
   const broken = await api("POST", "/templates/broken/apply", { parameters: {} });
   assert.equal(broken.status, 422, JSON.stringify(broken.body));
-  assert.deepEqual(broken.body.error.fields.map((f) => f.field), ["triggers.1.source.cron"]);
+  assert.ok(broken.body.error.fields.length && broken.body.error.fields.every((f) => f.field.startsWith("triggers.1.target.input")), JSON.stringify(broken.body.error.fields));
   assert.deepEqual((await api("GET", "/triggers")).body.triggers.map((x) => x.id), [id], "the broken package's first trigger is gone");
   assert.deepEqual((await api("GET", "/agents")).body.agents.map((a) => a.agent_id), [applied.body.agent_id], "its agent is not among the active ones");
   const archived = (await api("GET", "/agents?archived=true")).body.agents;
@@ -209,21 +226,43 @@ test("a package's triggers are made on its agent, placeholders filled; a trigger
   assert.equal((await api("GET", `/triggers`)).body.triggers.some((x) => x.target.agent_id === archived[0].agent_id), false, "with no trigger left on it");
 });
 
-test("code-review on a server with a GitHub MCP server saved: its tools are granted and set to allow, beside the server's own", async (t) => {
+test("code-review's GitHub tools: granted, never allowed by the package itself; only the owner's grants at apply become allow, and a deny the owner set stays", async (t) => {
   const { api } = await serve(t);
   const github = await startFakeMcp({ name: "github" });
   t.after(() => github.close());
   for (const name of GITHUB_TOOLS) github.tools[name] = { description: `GitHub's ${name}.`, input: { type: "object", properties: {}, additionalProperties: true }, run: () => ({ content: [{ type: "text", text: "{}" }] }) };
   assert.equal((await api("PUT", "/settings/mcp-servers/github", { url: github.url, auth: { type: "none" } })).status, 200);
-
-  const applied = await api("POST", "/templates/code-review/apply", { parameters: { repo: "Parcha-ai/agentrun" } });
-  assert.equal(applied.status, 201, JSON.stringify(applied.body));
-  assert.equal(applied.body.warnings.find((w) => w.field === "mcp.github"), undefined, "nothing skipped");
-  const agent = (await api("GET", `/agents/${applied.body.agent_id}`)).body;
   const granted = GITHUB_TOOLS.map((name) => `mcp:github/${name}`);
+  const permissions = async (id) => Object.fromEntries((await api("GET", `/agents/${id}`)).body.tools.filter((x) => granted.includes(x.name)).map((x) => [x.name.slice("mcp:github/".length), x.permission]));
+
+  // What a consent screen shows: each tool, and the permission the package asks for it.
+  const listed = (await api("GET", "/templates")).body.templates.find((x) => x.name === "code-review");
+  assert.deepEqual(listed.mcp, [{ server: "github", required: false, tools: GITHUB_TOOLS.map((name) => ({ name, tool: `mcp:github/${name}`, asks: GITHUB_READS.includes(name) ? "allow" : "ask" })) }]);
+
+  // No grants: the tools are the agent's, each at the owner's own setting (here the default, ask).
+  const plain = await api("POST", "/templates/code-review/apply", { parameters: { repo: "Parcha-ai/agentrun" } });
+  assert.equal(plain.status, 201, JSON.stringify(plain.body));
+  assert.equal(plain.body.warnings.find((w) => w.field === "mcp.github"), undefined, "nothing skipped");
+  const agent = (await api("GET", `/agents/${plain.body.agent_id}`)).body;
   assert.deepEqual(agent.definition.tools, granted, "no box here, so the GitHub tools alone");
-  assert.deepEqual(agent.definition.tool_settings, Object.fromEntries(granted.map((tool) => [tool, { permission: "allow" }])), "allowed, so a triggered run never waits on an ask");
-  for (const tool of granted) assert.equal(agent.tools.find((x) => x.name === tool)?.permission, "allow", tool);
+  assert.equal(agent.definition.tool_settings, undefined, "the package sets no permission");
+  assert.deepEqual(await permissions(plain.body.agent_id), Object.fromEntries(GITHUB_TOOLS.map((name) => [name, "ask"])));
+
+  // The owner's grants, and only those, become allow; one the package does not list is refused, and nothing is made.
+  const reads = GITHUB_READS.map((name) => `mcp:github/${name}`);
+  const before = (await api("GET", "/agents")).body.agents.length;
+  const stranger = await api("POST", "/templates/code-review/apply", { parameters: { repo: "Parcha-ai/agentrun" }, grants: [...reads, "mcp:github/create_repository", "mcp:github/*"] });
+  assert.equal(stranger.status, 422, JSON.stringify(stranger.body));
+  assert.deepEqual(stranger.body.error.fields.map((f) => [f.field, f.reason]), [["grants.4", "not_allowed"], ["grants.5", "not_allowed"]]);
+  assert.equal((await api("GET", "/agents")).body.agents.length, before, "nothing was made");
+
+  // A deny the owner set on this server is never lifted by a grant: the agent's runs stay refused the tool, and the apply says so.
+  assert.equal((await api("PUT", "/settings/tools", { "mcp:github/get_file_contents": { permission: "deny" } })).status, 200);
+  const consented = await api("POST", "/templates/code-review/apply", { parameters: { repo: "Parcha-ai/agentrun" }, grants: reads });
+  assert.equal(consented.status, 201, JSON.stringify(consented.body));
+  assert.deepEqual((await api("GET", `/agents/${consented.body.agent_id}`)).body.definition.tool_settings, Object.fromEntries(reads.filter((tool) => tool !== "mcp:github/get_file_contents").map((tool) => [tool, { permission: "allow" }])));
+  assert.deepEqual(await permissions(consented.body.agent_id), { pull_request_read: "allow", get_file_contents: "deny", search_code: "allow", get_repository_tree: "allow", pull_request_review_write: "ask", add_comment_to_pending_review: "ask" });
+  assert.deepEqual(consented.body.warnings.filter((w) => w.field.startsWith("grants.")).map((w) => [w.field, w.reason]), [["grants.mcp:github/get_file_contents", "not_allowed"]]);
 });
 
 test("a parameter is read from the caller's own fields: a required one named constructor is missing from {parameters: {}}", async (t) => {

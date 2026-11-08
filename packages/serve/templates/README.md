@@ -33,24 +33,32 @@ Links and other special files are refused anywhere in the folder, and its only f
 | `model` | `{tier: fast \| balanced \| strong, prefer?: "provider/model-id"}`. Apply uses `prefer` when this server runs it on the chosen harness (it has the provider's key, or a gateway); otherwise the server's model for the tier: `AGENT_MODEL_FAST`, `AGENT_MODEL` (balanced) or `AGENT_MODEL_STRONG`, each else the default of a model key the server holds. `overrides.model` in the apply wins over both. Absent: the server's default. |
 | `effort` | The thinking level: `low`, `medium`, `high`, `xhigh` or `max`. |
 | `tools` | The tools the agent is granted, never an MCP tool (`mcp` grants those). Absent: those the server gives a new agent (its box's shell, where it has a box). |
-| `mcp` | `[{server, tools, required?}]`: MCP servers by the name a server saves them under (Settings → MCP servers), and the tools of each the agent uses. Where the server has one saved, apply grants `mcp:<server>/<tool>` for each, beside the other tools, and sets each to `allow` in the agent's tool settings, so a triggered run never waits on an ask. Where it has none, apply skips it with a warning (`mcp.<server>`), or, when `required` is true, refuses with `409 agent_not_runnable` and makes nothing. |
+| `mcp` | `[{server, tools, required?, allow?}]`: MCP servers by the name a server saves them under (Settings → MCP servers), the tools of each the agent uses (each one tool by its name, `A-Z a-z 0-9 _ . -`; never `*`), and `allow`, those of its tools the package asks the owner to allow (`GET /v2/templates` shows each tool with `asks: allow` or `ask`, for a consent screen). Where the server has one saved, apply grants `mcp:<server>/<tool>` for each, beside the other tools, at the owner's own setting: a package never sets a permission. Only the apply's `grants`, the owner's answer, are set to `allow`. Where it has none, apply skips it with a warning (`mcp.<server>`), or, when `required` is true, refuses with `409 agent_not_runnable` and makes nothing. |
 | `computer` | `default` only, for now: the agent runs where this server puts a new one. |
-| `parameters` | By name: `{type: string \| number \| integer \| boolean, required?, pattern? (strings), description}`. Apply takes them in `parameters`; the body and the triggers name them as `${parameters.<name>}`. |
-| `secrets` | Variable names (never values) the server must hold, set where it starts or saved as a key. Apply refuses with `409 agent_not_runnable`, making nothing, when one is missing. |
+| `parameters` | By name: `{type: string \| number \| integer \| boolean, required?, pattern? (strings), description}`. Apply takes them in `parameters`; `display_name`, the body and a trigger's `target.input` name them as `${parameters.<name>}` (nowhere else: a trigger's schedule is the package's own). |
+| `secrets` | Variable names (never values) the server must hold: a model or tool key Settings saves (`OPENROUTER_API_KEY`, `PARALLEL_API_KEY`, ...), set where it starts or saved there. Any other name is refused: the server could neither save it nor hand it to a run. Apply refuses with `409 agent_not_runnable`, making nothing, when one is missing. |
 | `budget` | `{per_run_usd}`: each run's cap (the agent's `max_cost_usd`). Required when the package has triggers. |
 | `learning` | `true` or `false`: whether the agent's runs learn. |
 | `triggers` | `POST /v2/triggers` bodies with no `agent_id` (the target is a `start_run`), each with a `name`, unique in the package: the key an upgrade will match triggers by. |
 | `output` | `{schema: <file>}`: the JSON Schema of the agent's answer, a file in the package. |
 | `checks` | Names of structural checks of a run's answer; none runs yet. |
 
+The check is whole: the package is compiled with a sample of each parameter, and the agent body and each trigger body are
+checked as `POST /v2/agents` and `POST /v2/triggers` check theirs (all but the agent a trigger names, which apply makes).
+A tool the server does not bind, a trigger field or schedule it refuses, or a skill file's path is refused here, not at
+apply. A package holds at most 256 files, each at most 256 KiB, and 1 MiB together (`POST /v2/agents`' own body limit).
+
 ## Apply
 
-`POST /v2/templates/{name}/apply` with `{parameters, overrides?: {model}}`:
+`POST /v2/templates/{name}/apply` with `{parameters, grants?, overrides?: {model}}`:
 
-1. The parameters are checked against the package (`422` naming each field), then its secrets and required MCP servers
-   (`409`). Nothing is made yet.
+1. The parameters and `grants` are checked against the package (`422` naming each field: a grant is one of the
+   package's MCP tools by its gate name, `mcp:<server>/<tool>`), then its secrets and required MCP servers (`409`).
+   Nothing is made yet.
 2. The agent is made through `POST /v2/agents`' own function: named by `display_name` (else the package's name),
-   described as the package, its MCP tools granted and allowed where their server is saved, its instructions
+   described as the package, its MCP tools granted where their server is saved, each at the owner's setting (a
+   third-party tool asks by default) and those in `grants` set to `allow`, never one the owner denies on this server
+   (it stays denied, with a `grants.<tool>` warning), its body held to `POST /v2/agents`' 1 MiB limit (`413`), its instructions
    the body with the parameters filled in, its skills and rules as its skill files, its harness and model chosen as
    above, `thinking` from `effort`, `max_cost_usd` from `budget`.
 3. Each trigger is made on the agent through `POST /v2/triggers`' own function. One the server refuses undoes the

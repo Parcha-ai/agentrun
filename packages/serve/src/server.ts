@@ -69,6 +69,7 @@ import { MCP_SETTINGS_PAGE, signInCookie, startedHere } from "./mcp-oauth.js";
 import type { McpServerSource } from "./mcp-gateway.js";
 import { WEBHOOK_EVENTS, Webhooks } from "./webhooks.js";
 import { HOOK_TOLERANCE_S, hookHeadersRefusal, hookRefusal, TriggerSecrets } from "./trigger-secrets.js";
+import { permissionFrom } from "./tool-gate.js";
 import { CATCHUP_WINDOW_S, FAILURES_TO_PAUSE, HISTORY_KEPT, MIN_EVERY_S, PAYLOAD_KEPT_BYTES, type RunTrigger, SOURCE_KINDS, TARGET_KINDS, type TriggerClock, Triggers } from "./triggers.js";
 import { applyBodyOf, compiled, type Package, packageModel, packageView, readPackages } from "./templates.js";
 import { checkDefinitionBody, DEFAULT_INPUT_SCHEMA, definitionBodyIssues, ID, IDEMPOTENCY_TTL_S, inputIssues, isObject, type Json, stable, unknownFields } from "./validate.js";
@@ -1387,15 +1388,16 @@ async function startHolding(options: ServeOptions, data: string, lock: ServerLoc
     return { entry, warnings };
   }
 
-  /** A template package applied: its parameters checked (422), then the secrets and required MCP servers it names (409,
-   *  nothing made; an MCP server it can do without is skipped, with a warning), then its
-   *  agent made as POST /agents makes one, on the first harness of its list this server runs and the model packageModel
+  /** A template package applied: its parameters and the owner's grants checked (422), then the secrets and required MCP
+   *  servers it names (409, nothing made; an MCP server it can do without is skipped, with a warning), then its
+   *  agent made as POST /agents makes one, its MCP tools at the owner's own settings save those granted, set to allow (a
+   *  deny the owner set on this server stays, with a warning), its body held to POST /agents' limit (413), on the first harness of its list this server runs and the model packageModel
    *  picks, then each trigger on it as POST /triggers makes one. A trigger refused undoes the apply: the triggers made
    *  before it are deleted and the agent is archived (an agent store keeps every agent), and the refusal is the answer, a 422's fields under `triggers.<i>`. A webhook
    *  trigger's secret is not in the answer (the Idempotency-Key record would keep it): POST /triggers/{id}/secret makes one. */
   async function applyTemplate(pkg: Package, body: Json) {
-    const { parameters, model: override } = applyBodyOf(pkg, body);
-    const missing = pkg.secrets.filter((name) => !env[name]);
+    const { parameters, grants, model: override } = applyBodyOf(pkg, body);
+    const missing = pkg.secrets.filter((name) => !secret(name, storedKeys));
     const saved = pkg.mcp.filter((need) => mcpSource.server(need.server));
     const unsaved = pkg.mcp.filter((need) => !saved.includes(need));
     const needed = unsaved.filter((need) => need.required);
@@ -1409,7 +1411,13 @@ async function startHolding(options: ServeOptions, data: string, lock: ServerLoc
     const harness = pkg.harness && (pkg.harness.find((id) => offers.some((offer) => offer.id === id && offer.available)) ?? pkg.harness[0]);
     const model = override ?? (await packageModel(env, pkg.model, harness ?? DEFAULT_HARNESS));
     const defaultTools = "place" in newAgentPlace(boxOffers) ? NEW_AGENT_TOOLS : [];
-    const made = compiled(pkg, parameters, { ...(harness ? { harness } : {}), ...(model ? { model } : {}), mcp: saved, defaultTools });
+    // A grant never lifts a deny the owner set on this server: that tool keeps it, and the answer says so.
+    const server = settings.get() as Parameters<typeof permissionFrom>[1];
+    const denied = grants.filter((tool) => { const set = permissionFrom(tool, server); return set.from === "server" && set.permission === "deny"; });
+    const kept: InputIssue[] = denied.map((tool) => ({ field: `grants.${tool}`, reason: "not_allowed", message: `${tool} is denied on this server (Settings → Tools), so the agent was not allowed it: its runs are refused it until the owner changes that setting.` }));
+    const made = compiled(pkg, parameters, { ...(harness ? { harness } : {}), ...(model ? { model } : {}), mcp: saved, defaultTools, grants: grants.filter((tool) => !denied.includes(tool)) });
+    // POST /agents' and POST /triggers' own body limit: parameters filled in more than once can grow a package past it.
+    for (const one of [made.agent, ...made.triggers]) if (Buffer.byteLength(JSON.stringify(one)) > MAX_BODY) throw new ApiError("payload_too_large", `the ${pkg.name} template, its parameters filled in, makes a body over ${MAX_BODY} bytes`, { details: { limit: "max_body_bytes" } });
     const { entry, warnings } = await createAgentOf(made.agent);
     const ids: string[] = [];
     try {
@@ -1432,7 +1440,7 @@ async function startHolding(options: ServeOptions, data: string, lock: ServerLoc
       await agents.setArchived("agent", entry.agent.id, true).catch((undo: Error) => log?.(logLine("template_undo_failed", { template: pkg.name, agent: entry.agent.id, message: undo.message })));
       throw error;
     }
-    return { template: pkg.name, version: pkg.version, agent_id: entry.agent.id, trigger_ids: ids, warnings: [...skipped, ...warnings] };
+    return { template: pkg.name, version: pkg.version, agent_id: entry.agent.id, trigger_ids: ids, warnings: [...skipped, ...kept, ...warnings] };
   }
 
   /** A run create's issues told from the input this server checks (explain.ts): an agentic run's `{content: string}`,
