@@ -22,9 +22,11 @@
 //   stops early its matches are a sample, not the first ones.
 // - exec: Archil.exec({ disks, command, baseImage | imageId }) runs one shell line in a fresh container with each disk
 //   mounted at /mnt/archil/<name>. A mount with `subdirectory` exposes that folder only, and with `queueMs` (and no
-//   checkoutPaths) it holds that folder for the line, waiting up to queueMs for another client's hold. It answers once
-//   the line ended, with stdout and stderr as text and the exit code. The SDK retries it only when the connection failed,
-//   so a line never runs twice. With no image, Archil's default exec image (measured live: git 2.34.1).
+//   checkoutPaths) it holds that folder for the line, waiting up to queueMs for another client's hold. `disks` is a map
+//   from mount name to a mount, so one disk can be mounted twice, each a different folder (the types allow it; the docs
+//   neither promise nor forbid it). It answers once the line ended, with stdout and stderr as text (cut by Archil
+//   somewhere below 14 MB, measured live) and the exit code. The SDK retries it only when the connection failed, so a
+//   line never runs twice. With no image, Archil's default exec image (measured live: git 2.34.1).
 import type { Archil as ArchilClient, Disk as SdkDisk } from "disk";
 
 /** One object of a listing: its whole key, and its size in bytes. */
@@ -61,11 +63,12 @@ export function pinnedImage(image: unknown): ArchilImage {
   if (typeof imageId !== "string" || !/^[0-9a-f]{64}$/.test(imageId) || typeof digest !== "string" || !DIGEST.test(digest)) return refuse();
   return { imageId, digest };
 }
-/** One exec: `command` runs with folder `subdirectory` of the disk (and nothing else of it) at /mnt/archil/<mount>,
- *  held for the line (waiting up to queueMs for another client's hold), in `image` or Archil's default. */
+
+/** One exec: `command` runs with each folder of `mounts` (mount name → folder of the disk), and nothing else of the
+ *  disk, at /mnt/archil/<name>, each held for the line (waiting up to queueMs for another client's hold), in `image` or
+ *  Archil's default. */
 export type ArchilExecRequest = {
-  readonly mount: string;
-  readonly subdirectory: string;
+  readonly mounts: Readonly<Record<string, string>>;
   readonly queueMs: number;
   readonly command: string;
   readonly image?: ArchilImage;
@@ -276,7 +279,7 @@ class SdkArchilDisk implements ArchilDisk {
     const answer = await client.exec({
       ...(image === undefined ? {} : "baseImage" in image ? { baseImage: image.baseImage } : { imageId: image.imageId }),
       command: request.command,
-      disks: { [request.mount]: { disk: this.id, subdirectory: request.subdirectory, queueMs: request.queueMs } },
+      disks: Object.fromEntries(Object.entries(request.mounts).map(([name, subdirectory]) => [name, { disk: this.id, subdirectory, queueMs: request.queueMs }])),
     });
     return { exitCode: answer.exitCode, stdout: answer.stdout, stderr: answer.stderr };
   }

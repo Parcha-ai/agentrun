@@ -2,8 +2,11 @@
 // exec (archil-disk.ts, archil-exec.ts). Nothing is mounted on the server or a runner, and no program runs here.
 //
 // Keys. The workspace's root is a folder of the disk (paths.ts runKey or learningKey); every key, prefix, directory
-// and exec mount it sends is the root or under it, built from paths paths.ts has checked. An exec mounts the root
-// folder alone (the mount's subdirectory): the rest of the owner's disk is not in its container.
+// and exec mount it sends is the root or under it, or its exec spill folder beside it (spillFolderOf: a run's
+// "exec-out"), built from paths paths.ts has checked. An exec mounts those two folders alone (each a mount's
+// subdirectory): the rest of the owner's disk is not in its container. The spill folder holds an exec's stdin and its
+// output while the exec runs (archil-exec.ts); the workspace's own calls are rooted at the root, so they never meet it,
+// each exec's files are deleted on every path, and sweep() clears what a killed exec left.
 //
 // Durability. Archil commits a put, an append or a delete before it answers 200, so each call returns once the API
 // has answered. A write is one put. The API has no rename, so there is no temporary key; that a reader sees the old
@@ -32,10 +35,9 @@
 // Not yet: mountSpec and attach (an Archil folder in a computer is mounted by the computer's helper, module D6, with a
 // disk mount token this workspace has no way to make), and background programs, which need a computer (`process`
 // refuses every call, cause no-computer, as with any workspace that has none).
-import { randomBytes } from "node:crypto";
 import type { MountSpec } from "@parcha/agentrun-computer";
 import { type ArchilDisk, type ArchilImage, type ArchilListPage, pinnedImage } from "./archil-disk.js";
-import { archilExec, COMMAND_MAX_MS, DEFAULT_QUEUE_MS, MAX_EXEC_MS, STDIN_PREFIX } from "./archil-exec.js";
+import { archilExec, COMMAND_MAX_MS, DEFAULT_QUEUE_MS, MAX_EXEC_MS, spillKeys, spillName } from "./archil-exec.js";
 import { type AttachableComputer, type MountCheck, noProcesses } from "./attach.js";
 import { globRegex } from "./glob.js";
 import { relativeSegments } from "./paths.js";
@@ -97,12 +99,18 @@ const literalGlob = (name: string): string => name.replace(/[\\*?[\]{}!]/g, "\\$
  *  (`[…]` classes, `{a,b}` alternatives, a leading `!`, a backslash) is taken as itself. */
 const ripgrepGlob = (glob: string): string => glob.replace(/[\\[\]{}!]/g, "\\$&");
 
+/** A workspace's exec spill folder: beside its root, never inside it, so the workspace's own calls never meet it. A
+ *  run's ".../runs/<run>/work" spills to ".../runs/<run>/exec-out"; any other root to "<root>.exec-out". */
+export const spillFolderOf = (root: string): string => (root.endsWith("/work") ? `${root.slice(0, -"/work".length)}/exec-out` : `${root}.exec-out`);
+
 /** A JavaScript regex that ripgrep's engine cannot run: lookaround or a backreference. */
 const NOT_RIPGREP = /\(\?<?[=!]|\\[1-9]|\\k</;
 
 class ArchilWorkspace implements Workspace {
   readonly #disk: ArchilDisk;
   readonly #root: string;
+  /** The exec spill folder, beside the root (spillFolderOf). */
+  readonly #spill: string;
   readonly #queueMs: number;
   readonly #image: ArchilImage | undefined;
   /** The last exec asked for, settled either way: the next exec, and every write, starts after it. */
@@ -120,6 +128,7 @@ class ArchilWorkspace implements Workspace {
     }
     this.#disk = disk;
     this.#root = root;
+    this.#spill = spillFolderOf(root);
     this.#queueMs = options.queueMs ?? DEFAULT_QUEUE_MS;
     this.#image = image;
   }
@@ -499,15 +508,17 @@ class ArchilWorkspace implements Workspace {
     const cwd = relativeSegments(options.cwd ?? "");
     const run = async (): Promise<ExecResult> => {
       if (!this.#rooted) await this.#makeRoot();
-      const stdinName = options.stdin === undefined ? undefined : `${STDIN_PREFIX}${randomBytes(8).toString("hex")}`;
+      // This exec's files in the spill folder, beside the workspace's folder: stdin, and the output read back.
+      const name = spillName();
+      const files = spillKeys(this.#spill, name);
       try {
-        if (stdinName !== undefined) {
-          const stdin = options.stdin!;
-          await this.#settle("", () => this.#disk.putObject(this.#key(stdinName), stdin)).catch((error: unknown) => { throw failed(error, "", "exec's stdin"); });
+        if (options.stdin !== undefined) {
+          const stdin = options.stdin;
+          await this.#settle("", () => this.#disk.putObject(files.in, stdin)).catch((error: unknown) => { throw failed(error, "", "exec's stdin"); });
         }
         const result = await archilExec(this.#disk, {
-          root: this.#root, cwd, argv, env, timeoutMs, maxOutput, queueMs: this.#queueMs,
-          ...(stdinName === undefined ? {} : { stdinName }), ...(this.#image === undefined ? {} : { image: this.#image }),
+          root: this.#root, spill: this.#spill, name, cwd, argv, env, timeoutMs, maxOutput, queueMs: this.#queueMs,
+          stdin: options.stdin !== undefined, ...(this.#image === undefined ? {} : { image: this.#image }),
         });
         // Archil answers once the command has ended: each stream once, whole (and capped). An error the caller's
         // callback throws is not the call's.
@@ -516,8 +527,8 @@ class ArchilWorkspace implements Workspace {
         }
         return result;
       } finally {
-        // The line moves it into the container first; this is for a line that never ran.
-        if (stdinName !== undefined) await this.#disk.deleteObject(this.#key(stdinName)).catch(() => undefined);
+        // Every path (done, timed out, failed): this exec's files go. What a killed exec leaves, sweep() takes.
+        await this.#disk.deleteObjects([files.in, files.out, files.err]).catch(() => undefined);
       }
     };
     const done = this.#execs.then(run, run);
@@ -525,11 +536,30 @@ class ArchilWorkspace implements Workspace {
     return done;
   }
 
-  /** The root made on the disk: an exec checks it out, so it has to be there. Called inside the exec queue, so it does
-   *  not wait for it. */
+  /** The root and its spill folder made on the disk: an exec mounts both, so they have to be there. Called inside the
+   *  exec queue, so it does not wait for it. */
   async #makeRoot(): Promise<void> {
-    await this.#settle("", () => this.#disk.putObject(`${this.#root}/`, new Uint8Array(0))).catch((error: unknown) => { throw failed(error, "", "mkdir"); });
+    for (const folder of [this.#root, this.#spill]) {
+      await this.#settle("", () => this.#disk.putObject(`${folder}/`, new Uint8Array(0))).catch((error: unknown) => { throw failed(error, "", "mkdir"); });
+    }
     this.#rooted = true;
+  }
+
+  /** What a killed exec, or a crash, left in the spill folder, removed: for the run's start and its end. It waits for
+   *  this workspace's execs, and touches nothing in the workspace's folder. */
+  async sweep(): Promise<void> {
+    await this.#execs;
+    const prefix = `${this.#spill}/`;
+    const left: string[] = [];
+    try {
+      for await (const page of this.#pages(prefix, true)) for (const { key } of page.objects) if (key !== prefix && !key.endsWith("/")) left.push(key);
+      if (left.length > 0) {
+        const errors = await this.#disk.deleteObjects(left);
+        if (errors.length > 0) throw new Error(`${errors.length} of ${left.length} were not removed: ${errors[0]!.key}`);
+      }
+    } catch (error) {
+      throw failed(error, "", "sweep of the exec spill folder");
+    }
   }
 
   /** No computer: every background call is REFUSED, cause no-computer. */

@@ -15,14 +15,15 @@
 // - grep runs the pattern (JavaScript's regex standing in for ripgrep's) in a worker, stops at maxResults
 //   ("max_results") or at maxDurationSeconds ("deadline"), skips binary files and links, reads globs as ripgrep does,
 //   and returns its matches in no useful order (reversed here), as the real one returns a sample;
-// - exec mounts ONLY its subdirectory: it runs the command line with /bin/sh as a local child, in its own process group,
-//   killed when the line ends (the container's end), on a temporary folder holding just the subdirectory's keys at the
-//   place /mnt/archil/<mount> names; what that folder holds afterwards replaces the subdirectory (files, folders and
-//   links), and nothing else on the disk changes. The subdirectory must be a folder; while an exec holds it, a put, an
-//   append or a delete under it is refused with 409, as the service refuses a write to a path another client holds.
-//   `banner` (a test's) is printed before the command's own stdout, as a platform's message would be.
-// Every call is recorded in `calls`: { op, key | prefix | directory | subdirectory, ... }; every exec's materialized
-// file keys (relative to its subdirectory) in `materialized`.
+// - exec mounts ONLY its subdirectories (`mounts`: name → folder of the disk): it runs the command line with /bin/sh as a
+//   local child, in its own process group, killed when the line ends (the container's end), on one temporary folder per
+//   mount holding just that folder's keys, at the place /mnt/archil/<name> names; what each holds afterwards replaces
+//   its folder (files, folders and links), and nothing else on the disk changes. Each must be a folder; while an exec
+//   holds them, a put, an append or a delete under one is refused with 409, as the service refuses a write to a path
+//   another client holds. `banner` (a test's) is printed before the command's own stdout, as a platform's message
+//   would be, and `answerLimit` cuts the answer's stdout, as a platform's limit on an answer would.
+// Every call is recorded in `calls`: { op, key | prefix | directory | mounts, ... }; every exec's materialized file keys
+// (per mount, relative to its folder) in `materialized`.
 import { spawn } from "node:child_process";
 import { lstatSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, readlinkSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
@@ -97,11 +98,13 @@ export class FakeArchilDisk {
   hold = undefined;
   /** Printed before every exec's own stdout, when set. */
   banner = undefined;
+  /** The most characters of stdout an exec's answer carries, when set (as a platform's answer limit would cut it). */
+  answerLimit = undefined;
   /** The paths each running exec holds. */
   #held = new Set();
   /** What exec spawned: [file, args]. */
   spawned = [];
-  /** Each exec's materialized file keys, relative to its subdirectory. */
+  /** Each exec's materialized file keys, per mount name, relative to that mount's subdirectory. */
   materialized = [];
 
   #record(call) { this.calls.push(call); }
@@ -312,16 +315,20 @@ export class FakeArchilDisk {
   }
 
   async exec(request) {
-    this.#record({ op: "exec", mount: request.mount, subdirectory: request.subdirectory, checkoutPaths: request.checkoutPaths, queueMs: request.queueMs, image: request.image, command: request.command });
-    const sub = request.subdirectory;
-    if (typeof sub !== "string" || sub === "") throw new FakeDiskError(400, "ValidationError", "this fake mounts a subdirectory only");
-    if (!this.dirs.has(sub)) throw new FakeDiskError(400, "ValidationError", `mount of ${sub}: no such directory`);
-    if (this.#isHeld(sub)) throw new FakeDiskError(400, "ValidationError", `mount of ${sub}: delegation queue expired`);
-    this.#held.add(sub);
-    const mount = mkdtempSync(join(process.env.TMPDIR ?? tmpdir(), "archil-fake-mnt-"));
+    this.#record({ op: "exec", mounts: { ...request.mounts }, checkoutPaths: request.checkoutPaths, queueMs: request.queueMs, image: request.image, command: request.command });
+    const mounts = Object.entries(request.mounts ?? {});
+    if (mounts.length === 0) throw new FakeDiskError(400, "ValidationError", "an exec mounts at least one folder");
+    for (const [, sub] of mounts) {
+      if (typeof sub !== "string" || sub === "") throw new FakeDiskError(400, "ValidationError", "this fake mounts a subdirectory only");
+      if (!this.dirs.has(sub)) throw new FakeDiskError(400, "ValidationError", `mount of ${sub}: no such directory`);
+      if (this.#isHeld(sub)) throw new FakeDiskError(400, "ValidationError", `mount of ${sub}: delegation queue expired`);
+    }
+    for (const [, sub] of mounts) this.#held.add(sub);
+    const places = mounts.map(([name, sub]) => ({ name, sub, dir: mkdtempSync(join(process.env.TMPDIR ?? tmpdir(), `archil-fake-mnt-${name}-`)) }));
     try {
-      this.materialized.push(this.#materialize(mount, sub));
-      const line = request.command.replaceAll(`/mnt/archil/${request.mount}`, mount);
+      this.materialized.push(Object.fromEntries(places.map(({ name, sub, dir }) => [name, this.#materialize(dir, sub)])));
+      let line = request.command;
+      for (const { name, dir } of places) line = line.replaceAll(`/mnt/archil/${name}`, dir);
       const args = ["-c", line];
       this.spawned.push(["/bin/sh", args]);
       const answer = await new Promise((resolve, reject) => {
@@ -333,14 +340,17 @@ export class FakeArchilDisk {
         child.on("error", reject);
         child.on("close", (code) => {
           try { process.kill(-child.pid, "SIGKILL"); } catch { /* the group is gone */ }
-          resolve({ exitCode: code ?? 137, stdout: (this.banner ?? "") + Buffer.concat(out).toString("utf8"), stderr: Buffer.concat(err).toString("utf8") });
+          const stdout = (this.banner ?? "") + Buffer.concat(out).toString("utf8");
+          resolve({ exitCode: code ?? 137, stdout: this.answerLimit === undefined ? stdout : stdout.slice(0, this.answerLimit), stderr: Buffer.concat(err).toString("utf8") });
         });
       });
-      this.#absorb(mount, sub);
+      for (const { sub, dir } of places) this.#absorb(dir, sub);
       return answer;
     } finally {
-      this.#held.delete(sub);
-      rmSync(mount, { recursive: true, force: true });
+      for (const { sub, dir } of places) {
+        this.#held.delete(sub);
+        rmSync(dir, { recursive: true, force: true });
+      }
     }
   }
 }
