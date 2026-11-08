@@ -82,8 +82,11 @@ async function ready(t: CaseContext, events: () => Promise<FixtureEvent[]>, what
 	await t.until(async () => (await events()).some((e) => e.event === "ready"), `${what} logged ready`);
 }
 
-/** Puts the fixture at path (on this machine) in the case's computer and starts it, by the computer's kind. */
-export async function startFixture(t: CaseContext, path: string): Promise<StartedFixture> {
+/**
+ * Puts the fixture at path (on this machine) in the case's computer and starts it, by the computer's kind. launched gets
+ * the fixture's stop as soon as it is launched, before it logs ready, so a fixture that never does is stopped too.
+ */
+export async function startFixture(t: CaseContext, path: string, launched: (stop: () => Promise<void>) => void): Promise<StartedFixture> {
 	const { kind } = t.provider.capabilities();
 	if (kind === "desktop") {
 		needs(t, ["exec", "files", "processes"], "the desktop fixture");
@@ -96,6 +99,7 @@ export async function startFixture(t: CaseContext, path: string): Promise<Starte
 		const stop = async () => {
 			await t.client.call("process.signal", { id: started.id, signal: "KILL" });
 		};
+		launched(stop);
 		await ready(t, events, "the desktop fixture");
 		return { bounds: FIXTURE_WINDOW, events, stop };
 	}
@@ -112,6 +116,7 @@ export async function startFixture(t: CaseContext, path: string): Promise<Starte
 		const stop = async () => {
 			await t.client.call("apps.terminate", { id: app.id });
 		};
+		launched(stop);
 		await ready(t, events, "the fixture app");
 		const shot = await t.call("screen.shot", {});
 		return { bounds: [0, 0, shot.width, shot.height], app: app.id, events, stop };

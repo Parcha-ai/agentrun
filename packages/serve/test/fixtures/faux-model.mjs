@@ -208,11 +208,11 @@ export default function reply(context, faux) {
     if (results >= paths.length) return faux.message("Read them.");
     return reads[1] && results === 0 ? untilExists(reads[1]).then(call) : call();
   }
-  // Fetches each URL its first message lists with fetch_page (or the tool it names), one per turn, then says so.
+  // Fetches each URL its first message lists with web_fetch (or the tool it names), one per turn, then says so.
   const fetches = /^Fetch these pages(?: with (\w+))?: (.*)$/s.exec(first);
   if (fetches) {
     const urls = JSON.parse(fetches[2]);
-    return results < urls.length ? faux.message(faux.toolCall(fetches[1] ?? "fetch_page", { url: urls[results] }), { stopReason: "toolUse" }) : faux.message("Fetched.");
+    return results < urls.length ? faux.message(faux.toolCall(fetches[1] ?? "web_fetch", { url: urls[results] }), { stopReason: "toolUse" }) : faux.message("Fetched.");
   }
   // Researches: web_search, then web_fetch of the public page, then report.md citing the page it read, then says so.
   const topic = /^Research (.+) on the web and write report\.md\.$/s.exec(first)?.[1];
@@ -341,7 +341,7 @@ export default function reply(context, faux) {
   }
   // A long tool phase on pi: two fetches, each held until its file exists (faux-web-hold.mjs), then the answer.
   const gated = /Fetch the pages held until (\S+) and (\S+)\./.exec(first);
-  if (gated) return results < 2 ? faux.message(faux.toolCall("fetch_page", { url: `http://public.example/hold?until=${encodeURIComponent(gated[results + 1])}` }), { stopReason: "toolUse" }) : faux.message("Fetched both.");
+  if (gated) return results < 2 ? faux.message(faux.toolCall("web_fetch", { url: `http://public.example/hold?until=${encodeURIComponent(gated[results + 1])}` }), { stopReason: "toolUse" }) : faux.message("Fetched both.");
   if (first.includes("Fail")) return faux.message("", { stopReason: "error", errorMessage: "the faux model failed on purpose" });
   if (first.includes("as JSON")) return faux.message(first.includes("wrongly") ? '{"answer": "forty-two"}' : '```json\n{"answer": 42}\n```');
   // Asked at a learning run's end what to keep (learn/reflect.ts reflectPrompt): nothing.

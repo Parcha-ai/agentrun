@@ -9,6 +9,7 @@ import type { IncomingMessage, ServerResponse } from "node:http";
 import { Readable, Writable } from "node:stream";
 import { homeBusy, storeBusy } from "./agents.js";
 import { ApiError, invalid } from "./errors.js";
+import { DEFAULT_HARNESS, HARNESSES } from "./harness.js";
 import { isJson, ownOrigin } from "./page.js";
 import { isObject, type Json } from "./validate.js";
 
@@ -67,7 +68,7 @@ const AGENT_ID = { type: "string", description: "The agent's id." };
 const RUN_ID = { type: "string", description: "The run's id." };
 const DEFINITION = {
   instructions: { type: "string", description: "What the agent does and how: its system prompt." },
-  harness: { type: "string", enum: ["pi", "claude-agent", "codex", "opencode"], description: "What runs it (default pi). whoami says which this server runs." },
+  harness: { type: "string", enum: [...HARNESSES], description: `What runs it (default ${DEFAULT_HARNESS}). whoami says which this server runs.` },
   model: { type: ["string", "null"], description: "provider/model-id. Absent, this server's default (whoami names it)." },
   thinking: { type: ["string", "null"], description: "How hard the model thinks: one of whoami's thinking levels. Absent, the model's own." },
   tools: { type: "array", items: { type: "string" }, description: "The tools it may use, by name (whoami lists them); [] for none. It writes files only with a tool like write." },

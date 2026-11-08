@@ -1,7 +1,7 @@
 // The batch check of input.actions: the shape, the length, every key against KEYS, each action's group against what is
 // declared, and the summed wait and hold. The implementer runs it before any action; a caller can run it early; the
 // in-process clients of daemon none use it as their check.
-import { type Group, type InputAction, type InputActionsResult, KEYS, MAX_ACTIONS, MAX_BATCH_WAIT_MS } from "./protocol.js";
+import { type Group, type InputAction, type InputActionsResult, KEYS, MAX_ACTIONS, MAX_BATCH_WAIT_MS, MAX_KEY_REPEAT } from "./protocol.js";
 
 export type ActionFailure = NonNullable<InputActionsResult["failed"]>;
 
@@ -32,6 +32,9 @@ const GROUP_OF: Record<InputAction["type"], Group | "input"> = {
 	button: "input.touch",
 	wait: "input",
 };
+
+/** The actions whose ms is a duration, checked by shapeOf and summed toward MAX_BATCH_WAIT_MS. */
+const TIMED: ReadonlySet<InputAction["type"]> = new Set(["wait", "hold", "long_press", "swipe", "pinch"]);
 
 /** Whether key is a name in KEYS or one printable ASCII character (0x21-0x7e). */
 export function isKey(key: unknown): boolean {
@@ -98,7 +101,7 @@ function shapeOf(action: Record<string, unknown>): string | undefined {
  * The first reason the whole batch must not run, with its index, or undefined when it may. Nothing runs on a failure:
  * the reply is { done: 0, failed }. The batch's shape and length come first, then each action in order: its shape
  * (`invalid`), its keys (`invalid`), its group against groups (`unsupported`), a pixel scroll where there is none
- * (`unsupported`), and the summed wait and hold (`limit`).
+ * (`unsupported`), a key's repeat over MAX_KEY_REPEAT (`limit`), and the summed durations (`limit`).
  */
 export function checkActions(actions: unknown, groups: readonly Group[], { pixelScroll = true }: CheckActionsOptions = {}): ActionFailure | undefined {
 	if (!Array.isArray(actions)) return { index: 0, kind: "invalid", message: "actions is not a list" };
@@ -110,9 +113,11 @@ export function checkActions(actions: unknown, groups: readonly Group[], { pixel
 		const given = action as Record<string, unknown>;
 		const shape = shapeOf(given);
 		if (shape !== undefined) return { index, kind: "invalid", message: `action ${index} (${show(given.type)}): ${shape}` };
-		const bad = (Array.isArray(given.keys) ? given.keys : []).find((key) => !isKey(key));
-		if (bad !== undefined) {
-			return { index, kind: "invalid", message: `action ${index}: ${show(bad)} is not a key: a key is a name in KEYS or one printable ASCII character` };
+		// By index, not by value: the bad key may itself be undefined.
+		const keys: unknown[] = Array.isArray(given.keys) ? given.keys : [];
+		const bad = keys.findIndex((key) => !isKey(key));
+		if (bad !== -1) {
+			return { index, kind: "invalid", message: `action ${index}: ${show(keys[bad])} is not a key: a key is a name in KEYS or one printable ASCII character` };
 		}
 		const type = given.type as InputAction["type"];
 		const group = GROUP_OF[type];
@@ -122,9 +127,14 @@ export function checkActions(actions: unknown, groups: readonly Group[], { pixel
 		if (type === "scroll" && given.unit === "px" && !pixelScroll) {
 			return { index, kind: "unsupported", message: `action ${index}: this computer scrolls by clicks, not pixels` };
 		}
-		if (type === "wait" || type === "hold") {
+		if (type === "key" && (given.repeat as number | undefined) !== undefined && (given.repeat as number) > MAX_KEY_REPEAT) {
+			return { index, kind: "limit", message: `action ${index}: repeat ${given.repeat} is over ${MAX_KEY_REPEAT}` };
+		}
+		// Every duration counts: wait and hold, and the ms of a long press, a swipe or a pinch. Only these five: shapeOf
+		// checks ms on them alone, so an ms on any other action (which may be negative) never enters the sum.
+		if (TIMED.has(type) && given.ms !== undefined) {
 			waited += given.ms as number;
-			if (waited > MAX_BATCH_WAIT_MS) return { index, kind: "limit", message: `the batch's wait and hold reach ${waited} ms at action ${index}, over ${MAX_BATCH_WAIT_MS} ms` };
+			if (waited > MAX_BATCH_WAIT_MS) return { index, kind: "limit", message: `the batch's durations reach ${waited} ms at action ${index}, over ${MAX_BATCH_WAIT_MS} ms` };
 		}
 	}
 	return undefined;

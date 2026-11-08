@@ -2,7 +2,7 @@
 
 `seed` writes what a new run starts with before anything can see it: its store file (a SQLite database the Harness then
 opens, saved sign-in profiles for example) and files in its workspace (`work/`). It runs once, on the open that finds no
-`run.json`, and never again, so what the agent changed since stays. This example seeds a table and a notes file, lets the
+record in the store, and never again, so what the agent changed since stays. This example seeds a table and a notes file, lets the
 run change the file, opens the run a second time, and checks that the seed did not run again and the change is still there.
 
 No disk, no key: `localRun` is a directory of this machine. It needs `@parcha/pi-durable-disk` 0.1.0-beta.15 or later (`seed`
@@ -14,7 +14,7 @@ It is `main.ts`, below, and a test keeps this copy identical to the file:
 
 ```ts
 // Seed a run: what a new run starts with, written before anything sees it. `seed` writes the run's store file (a SQLite
-// database the Harness then opens) and files in its workspace, once, on the open that finds no run.json. The next open
+// database the Harness then opens) and files in its workspace, once, on the open that finds no record in its store. The next open
 // does not seed again, so what the agent changed since stays. No disk, no key: `localRun` is a directory of this machine.
 import { appendFileSync, readFileSync, rmSync } from "node:fs";
 import { writeFile } from "node:fs/promises";
@@ -107,18 +107,17 @@ ok: the seed ran once, on the new run: the store and the workspace started with 
 
 ## How it works
 
-- `seed({ storePath, workDir })` is an option of `openDurableRun`. It runs inside the run's first claim, with the owner lock
-  held, after `store/` and `work/` exist and before `run.json` is written and the store opens. A connection it opens on
+- `seed({ storePath, workDir })` is an option of `openDurableRun`. It runs inside the run's first claim, with the store
+  free, after `store/` and `work/` exist and before the store opens. A connection it opens on
   `storePath` is closed before it returns, because the store opens that file next.
-- What it wrote is durable before `run.json` publishes the run. A seed that throws fails the open and publishes nothing, so the
+- What it wrote is durable before the run's record publishes the run. A seed that throws fails the open and publishes nothing, so the
   next open seeds again: a seed overwrites what an earlier attempt wrote.
-- It never runs for a run that has a `run.json`, whatever its generation, which is why the second open does not seed.
+- It never runs for a run that has a record, whatever its generation, which is why the second open does not seed.
 - The example reads the store with `node:sqlite` after the first release, the workspace with `fs`, and the run's record with
   `readLocalRunStatus`.
 
 ## What it does not show
 
-A seed on an Archil disk is the same call with `mountToken` instead of `localRun`; a factory that runs on the claimed directory
-can also give the run its seed (`afterClaim` returning `seed`). pi-durable-agent seeds a run with an agent's definition and
-sign-ins this way. The [README](../../docs/reference.md#seeding-a-new-run) describes the timing and the supervisor's start grace for a
-long seed.
+A factory that runs on the claimed directory can also give the run its seed (`afterClaim` returning `seed`). pi-durable-agent
+seeds a run with an agent's definition and sign-ins this way. The [reference](../../docs/reference.md#seeding-a-new-run) describes
+the timing.

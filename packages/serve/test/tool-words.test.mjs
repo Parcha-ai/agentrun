@@ -6,6 +6,7 @@ import { randomBytes } from "node:crypto";
 import { test } from "node:test";
 import { KEY as BB_KEY } from "./fixtures/faux-browserbase-check.mjs";
 import { agent, follow, serve, withEnv } from "./support.mjs";
+import { fauxTable } from "./fixtures/faux-table.mjs";
 
 const TOOLS = new URL("./fixtures/faux-tools.mjs", import.meta.url).pathname;
 const FAUX_BROWSER = new URL("./fixtures/faux-browser.mjs", import.meta.url).pathname;
@@ -52,7 +53,7 @@ test("a run handed its agent's saved sign-in: the browser says it keeps this age
 for (const harness of ["claude-agent", "codex"]) {
   test(`on ${harness}, web_fetch's description, as the harness's session is handed it, says it reads one page cold`, { timeout: 120_000 }, async (t) => {
     withEnv(t, {}, KEYS);
-    const { api } = await serve(t, { faux: TOOLS, fauxHarness: TOOLS });
+    const { api } = await serve(t, { faux: TOOLS, harnessTable: fauxTable(TOOLS) });
     const tools = await offered(api, `cold-${harness}`, { tools: ["web_fetch"], harness });
     assert.ok(tools.get("web_fetch")?.startsWith(`Read one web page from a public host, a part at a time. ${COLD}`), JSON.stringify([...tools]));
   });

@@ -1,43 +1,17 @@
 // Sleep parking: an instance whose live work is only sleeping releases its claim instead of holding a host through the
 // wait, and a deploy drains before it stops. After every commit the run's tasks are classified; when every task that
-// could run is in a retry or poll wait longer than the threshold, the wake is recorded (run.json `sleeping` with
-// `wakeAt`) and only then is the run released. The supervisor starts a sleeping run at its `wakeAt` (`ensureRunning`)
+// could run is in a retry or poll wait longer than the threshold, the wake is recorded (the record's `sleeping` with
+// `wakeAt`) and only then is the run released. Its host starts a sleeping run again at its `wakeAt`,
 // and pi's own timer sleeps whatever is left of the wait. A run with no live work parks idle (`wakeAt` null) when the
 // deployment has a waker for it (a request through serve). The lifecycle follows Rivet's pi actor, written for a claim.
 import type { Context, JsonValue } from "@earendil-works/chord";
 import { BACKGROUND_CONTEXT } from "@earendil-works/chord/context";
 import type { Harness, HarnessInspection } from "@earendil-works/pi-durable";
 import { FencedError } from "./errors.ts";
-import type { DurableRun, RunLease } from "./run.ts";
+import type { DurableRun } from "./run.ts";
 
-/**
- * What parking and drain need of a run: its Harness, and the lease's status write and release. A `DurableRun` is one;
- * a host that owns its Harness over `openRunLease` gets one from `leaseParkTarget`.
- */
+/** What parking and drain need of a run: its Harness, its status write and its release. A `DurableRun` is one. */
 export type ParkTarget = Pick<DurableRun, "harness" | "fenced" | "setStatus" | "release">;
-
-/**
- * The park target of a Harness the host opened over `lease`: the wake goes through `lease.setStatus`, and the release
- * closes the Harness (running work is aborted with no outcome recorded) and then releases the lease. A rejecting close
- * is a fence, as in `DurableRun.release`.
- */
-export function leaseParkTarget(lease: RunLease, harness: Harness, context: Context = BACKGROUND_CONTEXT): ParkTarget {
-  return {
-    harness,
-    get fenced() {
-      return lease.fenced;
-    },
-    setStatus: (status, detail, options) => lease.setStatus(status, detail, options),
-    async release() {
-      try {
-        await harness.close(context);
-      } catch (error) {
-        throw lease.fence(error instanceof FencedError ? error : new FencedError("closing the Harness failed, so the claim cannot be trusted", { cause: error }));
-      }
-      await lease.release();
-    },
-  };
-}
 
 /** localHost's threshold, far above twice its start (about 1.5 s); Cloudflare and Rivet park pi after 60 s too. */
 export const LOCAL_PARK_THRESHOLD_MS = 60_000;
@@ -85,7 +59,7 @@ export function busyState(inspection: HarnessInspection, now: number, thresholdM
   return { kind: "idle" };
 }
 
-/** The default wake: run.json `sleeping` with `wakeAt` (null: idle, started on demand), written durably. */
+/** The default wake: the record's `sleeping` with `wakeAt` (null: idle, started on demand), written durably. */
 export function recordWake(run: Pick<ParkTarget, "setStatus">, at: number | null): Promise<void> {
   return run.setStatus("sleeping", { reason: at === null ? "idle" : "waiting" }, { wakeAt: at === null ? null : new Date(at).toISOString() });
 }
@@ -97,8 +71,8 @@ export interface ParkOptions {
   readonly idleMs?: number;
   /**
    * Record the wake before the release; default `recordWake`. A rejection that is not a fence keeps the instance up
-   * and pi's own timer ends the wait. A failed run.json write is a fence, as every error writing the claim's own files
-   * is: the instance exits 75 and the supervisor resumes the run after the lease.
+   * and pi's own timer ends the wait. A failed write of the record is a fence: the instance exits 75 and its host starts
+   * the run again.
    */
   readonly wake?: (run: ParkTarget, at: number | null) => Promise<void>;
   /** Something outside pi needs the instance (an open request): it never parks while this returns true. */

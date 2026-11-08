@@ -21,11 +21,11 @@ import { writeInWork } from "./workspace.js";
 import type { TSchema } from "typebox";
 import { defineExtension, defineTool, ROOT_CONVERSATION_ID, type ToolExecutionApi, type ToolRegistration } from "@earendil-works/pi-durable";
 import type { Context } from "@earendil-works/chord";
-import { registerLabel, TOOL_COST, TOOL_STARTED } from "@parcha/pi-durable-agent/timeline";
+import { registerLabel, TOOL_COST } from "@parcha/pi-durable-agent/timeline";
 import { paidCall } from "./cap.js";
 import { wireName } from "./catalog.js";
 import { fauxFetch } from "./decisions.js";
-import { settleOnRoot } from "./paid-calls.js";
+import { holdRefusal, settleOnRoot, writeHold } from "./paid-calls.js";
 import { forModel } from "./result.js";
 import type { ToolEntry } from "./tools.js";
 import { isObject, type Json } from "./validate.js";
@@ -239,9 +239,9 @@ export function monidRegistration(kind: Kind, env: NodeJS.ProcessEnv, work: () =
       const basis = quote !== undefined ? `the price ${INSPECT} quoted` : `no price was quoted for it in this run, so it counts at the $${MONID_RUN_ALLOWANCE_USD} allowance; ${INSPECT} gives its price`;
       const send = async (): Promise<MonidAnswer> => {
         try {
-          await record(api, TOOL_STARTED, { ...label, heldUsd: held }, context);
+          await writeHold((kind, data) => record(api, kind, data, context), { ...label, heldUsd: held });
         } catch (error) {
-          return uncharged({ error: `${RUN} was not sent: its mark could not be written (${String((error as Error)?.message ?? error).slice(0, 200)})` });
+          return uncharged({ error: holdRefusal(RUN, error) });
         }
         const answer = await call();
         // Settled at what it charged: $0 only when monid charged nothing, null (unknown) when it may have and did not say.

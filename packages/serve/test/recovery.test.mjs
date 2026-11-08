@@ -16,6 +16,7 @@ import { stable } from "../dist/validate.js";
 import { ledgerOf, reflectRows } from "./learn-support.mjs";
 import { agent, client, FAUX, flowAgent, follow, runDir, runRecordOf, scratch, startRun, storeRun } from "./support.mjs";
 import { processTable } from "@parcha/pi-durable-disk/internals";
+import { fauxTable } from "./fixtures/faux-table.mjs";
 
 const CLI = new URL("../dist/cli.js", import.meta.url).pathname;
 // A hang guard far beyond a measured start (median 7.4 s locally; slowest CI test 17.4 s), not a start budget.
@@ -311,7 +312,7 @@ test("a run whose live process the next server adopts holds its harness's memory
   const was = process.constrainedMemory;
   process.constrainedMemory = () => 384 * 2 ** 20;
   t.after(() => void (process.constrainedMemory = was));
-  const api = await adopting(t, data, runId, { fauxHarness: new URL("./fixtures/faux-harness.mjs", import.meta.url).pathname, drainTimeout: "5s" });
+  const api = await adopting(t, data, runId, { harnessTable: fauxTable(new URL("./fixtures/faux-harness.mjs", import.meta.url).pathname), drainTimeout: "5s" });
   await untilState(api, runId, ["working", "working"]);
   assert.equal((await api("POST", "/agents", agent("mid", { harness: "codex" }))).status, 201);
   const refused = await api("POST", "/agents/mid/runs", { input: { content: "hi" } });

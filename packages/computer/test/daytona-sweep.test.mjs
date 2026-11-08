@@ -124,14 +124,14 @@ test("the sweep refuses in words, exit 2, with no request: no mode, both modes, 
 		[["--frobnicate"], ENV, /unknown option --frobnicate/],
 		[["--after", missing], ENV, /cannot read the before file/],
 		[["--after", bad], ENV, /not a before file/],
-		[["--before", join(dir, "y.json")], { DAYTONA_API_KEY: "prod-key-must-not-be-used", COMPUTER_DAYTONA_API_URL: API }, /set COMPUTER_DAYTONA_API_KEY/],
+		[["--before", join(dir, "y.json")], { DAYTONA_API_KEY: "fake-test-key", COMPUTER_DAYTONA_API_URL: API }, /set COMPUTER_DAYTONA_API_KEY/],
 	]) {
 		const fake = fakeDaytona();
 		fake.seed({ name: "computer-0000000000d1", labels: OURS });
 		const ran = await run(argv, fake, { env });
 		assert.equal(ran.code, 2, JSON.stringify(argv));
 		assert.match(ran.stderr, words, JSON.stringify(argv));
-		assert.doesNotMatch(ran.stderr, /prod-key-must-not-be-used/);
+		assert.doesNotMatch(ran.stderr, /fake-test-key/);
 		assert.deepEqual(fake.requests, [], `${JSON.stringify(argv)}: no request`);
 		assert.equal(fake.sandboxes.size, 1);
 	}

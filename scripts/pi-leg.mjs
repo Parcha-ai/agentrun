@@ -20,6 +20,7 @@
 import { spawnSync } from 'node:child_process';
 import { existsSync, mkdirSync, readFileSync, readdirSync, realpathSync, writeFileSync } from 'node:fs';
 import { dirname, join, resolve } from 'node:path';
+import { fileURLToPath } from 'node:url';
 import { checkCover, commandsOf, plan as planShards, readConfig, readSuites, unitsOf } from './ci-plan.mjs';
 import { isMain } from './is-main.mjs';
 
@@ -104,7 +105,7 @@ export function legShard(root, workspaces, tested, k, n, { config, timings } = r
   return { suites, ...parts[k - 1] };
 }
 
-/** The workspaces a leg builds, in workspace order: the leg's and every workspace they use. A workspace outside the leg
+/** The workspaces a leg builds (build-workspaces.mjs builds them in dependency order): the leg's and every workspace they use. A workspace outside the leg
  *  that uses one in it is not built: it would load the leg's pi family through that one and its own copies beside it. */
 export function buildOf(workspaces, leg) {
   const byName = new Map(workspaces.map((w) => [w.name, w]));
@@ -143,7 +144,7 @@ export function resolvedFrom(dir, name) {
 /** The @earendil-works packages the installed `names` depend on that are not among `names`, as `<name>`s: pi-coding-agent
  *  imports pi-codemode and pi-mcp, which are released with it and change their exports in a minor, so a leg that installs the
  *  coding agent at a version installs them at that version too, not at whatever the lockfile holds. A family package no leg
- *  workspace declares (pi-codemode, unless pi-vision is in the leg) is one of them: the family pins only what is declared. */
+ *  workspace declares (pi-codemode) is one of them: the family pins only what is declared. */
 export function companionDependencies(dir, names) {
   const found = new Set();
   for (const name of names) {
@@ -214,8 +215,10 @@ function argsOf(argv) {
   return args;
 }
 
-function run(command, args, options) {
-  const [bin, ...pre] = command.split(/\s+/).filter(Boolean);
+/** Runs `command` with `args` and prints it first; its exit status (1 for none). `command` as text splits into its words
+ *  (`--npm "npx --yes npm@11.21.0"`); as an array it is taken whole, so an executable path with a space in it stays one. */
+export function run(command, args, options) {
+  const [bin, ...pre] = Array.isArray(command) ? command : command.split(/\s+/).filter(Boolean);
   console.log(`$ ${[bin, ...pre, ...args].join(' ')}`);
   return spawnSync(bin, [...pre, ...args], { stdio: 'inherit', ...options }).status ?? 1;
 }
@@ -280,12 +283,13 @@ function main() {
   if (failed) { write(); process.exit(1); }
   const env = { ...process.env, PI_EXPECT_VERSION: args.pi };
   report.built = buildOf(workspaces, plan.leg);
-  const build = run('npm', ['run', 'build', '--if-present', ...report.built.flatMap((name) => ['-w', name])], { cwd: args.root, env });
+  // In dependency order (build-workspaces.mjs): no package's build builds what it imports.
+  const build = run([process.execPath], [fileURLToPath(new URL('./build-workspaces.mjs', import.meta.url)), '--root', args.root, '--only', report.built.join(',')], { cwd: args.root, env });
   report.steps.push({ step: 'build', rc: build });
   if (build !== 0) { write(); process.exit(1); }
   if (part) {
     for (const { suite, command } of commandsOf(part.suites, part.units)) {
-      const rc = run(command[0], command.slice(1), { cwd: args.root, env });
+      const rc = run([command[0]], command.slice(1), { cwd: args.root, env });
       const typecheck = suite.startsWith('typecheck:');
       report.steps.push({ workspace: typecheck ? suite.slice('typecheck:'.length) : suite, step: typecheck ? 'typecheck' : `test (${part.units.filter((unit) => unit.suite === suite).length} of its files)`, rc });
       if (rc !== 0) failed = true;

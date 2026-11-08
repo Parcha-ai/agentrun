@@ -8,12 +8,13 @@ import { test } from "node:test";
 import { REQUEST_COST_LATE, REQUEST_STARTED } from "@parcha/pi-durable-agent/timeline";
 import { RequestBounds } from "../dist/bounds.js";
 import { agent, follow, letGo, runDir, scratch, serve } from "./support.mjs";
+import { fauxTable } from "./fixtures/faux-table.mjs";
 
 const FAUX_HARNESS = new URL("./fixtures/faux-harness.mjs", import.meta.url).pathname;
 const SONNET_PRICED = new URL("./fixtures/faux-sonnet-priced.mjs", import.meta.url).pathname;
 
 test("a request booked before its cost, its process gone: the next open writes its late entry (usd null) before any new request, and the bounds read it out of flight", { timeout: 180_000 }, async (t) => {
-  const { api, data } = await serve(t, { fauxHarness: FAUX_HARNESS, faux: SONNET_PRICED });
+  const { api, data } = await serve(t, { harnessTable: fauxTable(FAUX_HARNESS), faux: SONNET_PRICED });
   const never = join(await scratch(t), "never");
   assert.equal((await api("POST", "/agents", agent("late", { harness: "claude-agent", instructions: `Grow, then answer with its cost booked when ${never} exists.` }))).status, 201);
   const run = (await api("POST", "/agents/late/runs", { input: { content: "go" }, max_cost_usd: 5 })).body;

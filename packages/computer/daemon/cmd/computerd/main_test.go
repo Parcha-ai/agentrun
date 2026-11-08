@@ -218,6 +218,33 @@ func TestInitRefusesAUserThatIsNotUidAndGidInNumbers(t *testing.T) {
 	}
 }
 
+func TestInitTakesTheMostItsDeadlineMayMoveTo(t *testing.T) {
+	past := time.Now().Add(-time.Second).UTC().Format("2006-01-02T15:04:05.000Z")
+	later := time.Now().Add(time.Hour).UTC().Format("2006-01-02T15:04:05.000Z")
+	code, stderr := computerd(t, 30*time.Second, "init", "--deadline", past, "--max-deadline", later)
+	if drops, why := dropsHere(t); !drops {
+		// It took both times, and refused to start only for the bounding set.
+		refusedToStart(t, why, code, stderr)
+	} else if code != 0 {
+		t.Fatalf("exit code %d with --max-deadline, want 0 at a deadline already past; stderr: %s", code, stderr)
+	}
+	for _, args := range [][]string{
+		{"init", "--deadline", later, "--max-deadline"},
+		{"init", "--deadline", later, "--max-deadline", "never"},
+		{"init", "--deadline", later, "--max-deadline", past},
+		{"init", "--max-deadline", later, "--deadline", later, "extra"},
+		{"init", "--deadline", later, "--max-deadline", later, "--max-deadline", later},
+	} {
+		code, stderr := computerd(t, 30*time.Second, args...)
+		if code == 0 {
+			t.Errorf("computerd %q exited 0; want a refusal", args)
+		}
+		if !strings.Contains(stderr, "--max-deadline") {
+			t.Errorf("computerd %q: stderr does not say why in words: %q", args, stderr)
+		}
+	}
+}
+
 func TestInitWithAUserMustStartAsRoot(t *testing.T) {
 	if os.Geteuid() == 0 {
 		t.Skip("runs as root: init would drop this test's privileges; the drop is a live case")

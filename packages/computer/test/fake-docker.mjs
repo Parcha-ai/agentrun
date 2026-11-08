@@ -82,9 +82,12 @@ export function container({ name, labels = {}, network = "none", running = true,
  * daemon's hello; `arch` is the architecture docker info reports, and `info` is merged over the rest of what it reports
  * (every limit enforced, seccomp builtin, no AppArmor); `vanish` names are listed by ps but gone by inspect; `noDaemon`
  * makes exec fail as when the daemon is missing; `user` is the provider's user option; `hold` names steps ("inspect",
- * "info", "hello") that wait, once called, until `proceed(step)`.
+ * "info", "hello") that wait, once called, until `proceed(step)`. `desktop` is the provider's desktop option; `display`
+ * is what the daemon's display does once process.start runs its X server: "up" (hello reports kind desktop and the
+ * display's groups from then on), "exits" (the server ends at once, saying why on stderr), "never", or "stalls" (the
+ * daemon answers nothing once the server is started, as one stuck in the X connection setup, or stopped, does).
  */
-export function fakeDocker({ running = true, gone = false, containers = [], patch = {}, hello = {}, arch = "x86_64", info = {}, vanish = [], noDaemon = false, user, hold = [] } = {}) {
+export function fakeDocker({ running = true, gone = false, containers = [], patch = {}, hello = {}, arch = "x86_64", info = {}, vanish = [], noDaemon = false, user, hold = [], desktop, display = "up" } = {}) {
 	const dir = mkdtempSync(join(tmpdir(), "computer-fake-docker-"));
 	dirs.push(dir);
 	const log = join(dir, "calls.jsonl");
@@ -96,7 +99,7 @@ export function fakeDocker({ running = true, gone = false, containers = [], patc
 	const program = join(dir, "docker");
 	const config = JSON.stringify({ dir, log, state, running, gone, patch, hello: { ...HELLO, ...hello },
 		info: { Architecture: arch, SecurityOptions: ["name=seccomp,profile=builtin", "name=cgroupns"], MemoryLimit: true, SwapLimit: true, PidsLimit: true, CPUCfsQuota: true, CPUCfsPeriod: true, ...info },
-		vanish, noDaemon, hold });
+		vanish, noDaemon, hold, display, desktopHello: { ...HELLO, ...hello, kind: "desktop", groups: [...HELLO.groups, "screen", "input.pointer", "input.keys"] } });
 	writeFileSync(
 		program,
 		`#!${process.execPath}
@@ -193,8 +196,23 @@ switch (args[0]) {
 			while ((at = buffered.indexOf("\\n")) >= 0) {
 				const request = JSON.parse(buffered.slice(0, at));
 				buffered = buffered.slice(at + 1);
-				if (request.method === "hello") held("hello", () => process.stdout.write(JSON.stringify({ jsonrpc: "2.0", id: request.id, result: config.hello }) + "\\n"));
-				if (request.method === "ping") process.stdout.write(JSON.stringify({ jsonrpc: "2.0", id: request.id, result: {} }) + "\\n");
+				const answer = (result) => process.stdout.write(JSON.stringify({ jsonrpc: "2.0", id: request.id, result }) + "\\n");
+				if (config.display === "stalls" && existsSync(config.dir + "/started.jsonl")) continue;
+				const up = existsSync(config.dir + "/display-up");
+				if (request.method === "hello") held("hello", () => answer(up ? config.desktopHello : config.hello));
+				if (request.method === "ping") answer({});
+				// The X server: process.start records its argv; the display is up from then on when config.display is "up".
+				if (request.method === "process.start") {
+					appendFileSync(config.dir + "/started.jsonl", JSON.stringify(request.params) + "\\n");
+					if (config.display === "up") writeFileSync(config.dir + "/display-up", "");
+					answer({ id: "p1", pid: 42 });
+				}
+				const exited = config.display === "exits";
+				if (request.method === "process.wait") answer({ running: !exited, exitCode: exited ? 1 : null, signal: null });
+				if (request.method === "process.read") {
+					const data = exited && request.params.offset === 0 ? Buffer.from("(EE) Fatal server error:\\n(EE) no screens found\\n").toString("base64") : "";
+					answer({ data, nextOffset: Buffer.from(data, "base64").length, dropped: 0, exited });
+				}
 			}
 		});
 		process.stdin.on("end", () => process.exit(0));
@@ -208,7 +226,9 @@ switch (args[0]) {
 	const calls = () => (existsSync(log) ? readFileSync(log, "utf8").trim().split("\n").filter(Boolean).map((line) => JSON.parse(line)) : []);
 	const names = () => JSON.parse(readFileSync(state, "utf8")).map((c) => c.Name.slice(1));
 	const proceed = (step) => writeFileSync(join(dir, `proceed-${step}`), "");
-	return { provider: new DockerProvider({ daemonPath, docker: program, ...(user === undefined ? {} : { user }) }), calls, names, daemonPath, proceed };
+	const started = () => (existsSync(join(dir, "started.jsonl")) ? readFileSync(join(dir, "started.jsonl"), "utf8").trim().split("\n").map((line) => JSON.parse(line)) : []);
+	const options = { daemonPath, docker: program, ...(user === undefined ? {} : { user }), ...(desktop === undefined ? {} : { desktop }) };
+	return { provider: new DockerProvider(options), calls, names, daemonPath, proceed, started };
 }
 
 /** The value after each occurrence of a flag. */

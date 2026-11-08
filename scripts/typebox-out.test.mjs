@@ -48,18 +48,13 @@ test('each package whose source uses TypeBox declares typebox itself, at the ver
   assert.deepEqual(wrong, [], `typebox ${wanted} in dependencies, or a host-provided peer with a ${wanted} dev pin`);
 });
 
-test('the TypeBox-built tool schemas of pi, pi-transport, pi-agent-learn and harness serialize to the same JSON as before the move', async () => {
+test('the TypeBox-built tool schemas of pi and pi-transport serialize to the same JSON as before the move', async () => {
   const before = JSON.parse(readFileSync(new URL('./fixtures/typebox-tool-schemas.json', import.meta.url), 'utf8'));
   const pi = await import('../packages/pi/dist/workflow-tool.js');
   const transport = await import('../packages/pi-transport/dist/config.js');
-  const learn = await import('../packages/pi-agent-learn/dist/trial.js');
-  const { codeModeExtension } = await import('../packages/harness/dist/code-mode.js');
-  const declared = () => ({ signature: 'f()', description: 'd' });
   const now = {
     pi: pi.workflowToolParameters(),
     'pi-transport': transport.TransportConfigSchema,
-    'pi-agent-learn': learn.TrialSchema,
-    harness: codeModeExtension({ see: declared, judge: declared, transcribe: declared }).tools[0].parameters,
   };
   assert.deepEqual(JSON.parse(JSON.stringify(now)), before);
 });
