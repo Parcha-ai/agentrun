@@ -26,6 +26,7 @@ import {
 
 /** The label every computer of a run carries, with the run's id. */
 export const RUN_LABEL = "agentrun.conformance";
+/** The lifetime a run's computers ask for, at most the provider's own cap: a metered phone's cap is its hard stop. */
 const LIFETIME_MS = 30 * 60_000;
 const GROUP_NAMES: ReadonlySet<string> = new Set(GROUPS);
 const CLOSE_MS = 10_000;
@@ -141,7 +142,7 @@ export async function runConformance(provider: ComputerProvider, options: Confor
 	const network = required.has("network:none") || capabilities.network.includes("none") ? "none" : "open";
 	const spec = (extra: Partial<ComputerSpec> = {}): ComputerSpec => ({
 		image,
-		lifetimeMs: LIFETIME_MS,
+		lifetimeMs: Number.isSafeInteger(capabilities.maxLifetimeMs) && capabilities.maxLifetimeMs > 0 ? Math.min(LIFETIME_MS, capabilities.maxLifetimeMs) : LIFETIME_MS,
 		network,
 		...extra,
 		labels: { ...extra.labels, ...runLabels },

@@ -22,7 +22,9 @@ export type ComputerErrorCode =
 	| "modal"
 	| "e2b"
 	| "browserbase"
-	| "kernel";
+	| "kernel"
+	| "phone"
+	| "orgo";
 
 export interface ComputerError {
 	code: ComputerErrorCode;
