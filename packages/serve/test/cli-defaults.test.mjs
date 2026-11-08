@@ -2,7 +2,7 @@
 // taken by another process at the same moment is passed over) and, with --open, the browser on the console's address
 // where there is one to open. Its default model is the server's (model.ts' hostModel), never one the CLI fixes at start.
 import assert from "node:assert/strict";
-import { spawn } from "node:child_process";
+import { spawn, spawnSync } from "node:child_process";
 import { randomBytes } from "node:crypto";
 import { chmodSync, existsSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { createServer as createHttpServer } from "node:http";
@@ -67,6 +67,14 @@ async function heldFirstFree(t, from = 7340) {
   throw new Error(`no free port from ${from}`);
 }
 const MODEL_KEYS = ["ANTHROPIC_API_KEY", "OPENAI_API_KEY", "OPENROUTER_API_KEY", "AGENT_MODEL", "AGENT_MODEL_FAST", "AGENT_MODEL_STRONG", "AGENT_MODEL_BASE_URL", "AGENT_MODEL_API_KEY", "AGENTRUN_TOKEN", "CI", "DISPLAY", "WAYLAND_DISPLAY"];
+
+test("--faux-browser goes with --faux alone: given without it, the server does not start", () => {
+  const home = mkdtempSync(join(tmpdir(), "serve-defaults-"));
+  const out = spawnSync(process.execPath, [CLI, "--data", join(home, "agents"), "--faux-browser", FAUX], { env: { PATH: process.env.PATH ?? "", HOME: home }, encoding: "utf8", timeout: 30_000 });
+  rmSync(home, { recursive: true, force: true });
+  assert.equal(out.status, 2, out.stderr);
+  assert.match(out.stderr, /--faux-browser goes with --faux/);
+});
 
 test("--open opens a browser unless in CI or on a Linux with no display", () => {
   assert.deepEqual([host.canOpen?.({}, "darwin"), host.canOpen?.({ CI: "1" }, "darwin"), host.canOpen?.({}, "linux"), host.canOpen?.({ DISPLAY: ":0" }, "linux"), host.canOpen?.({ WAYLAND_DISPLAY: "w" }, "freebsd")], [true, false, false, true, true]);
