@@ -78,6 +78,25 @@ export interface RevisionRow {
   readonly createdAt: number;
 }
 
+/** How an ended run (state 'ended') ended apart from being done: 'escalated' (it finished its work and waits for a person,
+ *  which the v2 status reads as completed with a review) or 'completed'. A failed or stopped run says so in its state. */
+export type RunOutcome = "completed" | "escalated";
+
+/** The harness an imported run came from. */
+export type ImportSource = "claude-code" | "codex" | "pi";
+/** Where an imported run came from: the harness that ran it, and its own session id. */
+export interface ImportedFrom {
+  readonly source: ImportSource;
+  readonly session: string;
+}
+
+/** What a run was started under: `key`, the caller's name for it (a create's idempotency key, a trigger's firing key),
+ *  which starts one run only, and `fingerprint`, what was asked, kept to tell a retry from another request under the key. */
+export interface RunOrigin {
+  readonly key: string;
+  readonly fingerprint?: string | null;
+}
+
 export interface RunRow {
   readonly id: string;
   readonly agentId: string;
@@ -92,6 +111,12 @@ export interface RunRow {
   readonly costUsd: number | null;
   readonly metrics: unknown;
   readonly summary: string | null;
+  /** An ended run's outcome (RunOutcome), null for a plain completion or a run not ended this way. */
+  readonly outcome: RunOutcome | null;
+  /** When the run itself was archived (its agent's archive is read apart); null when it is not. */
+  readonly archivedAt: number | null;
+  /** The session an imported run came from; null for a run started here. */
+  readonly importedFrom: ImportedFrom | null;
   readonly startedAt: number;
   readonly endedAt: number | null;
 }
@@ -102,6 +127,8 @@ export interface RunPatch {
   readonly costUsd?: number | null;
   readonly metrics?: unknown;
   readonly summary?: string | null;
+  /** An ended run's outcome, set in its end commit; null clears it. */
+  readonly outcome?: RunOutcome | null;
   readonly endedAt?: number | null;
 }
 
@@ -140,6 +167,16 @@ export interface Journal extends Storage {
   /** The run's commits after `afterSeq`, at most `limit`, each with only what it wrote (store/journal JournalPage). */
   commitsAfter(afterSeq: number, limit: number, context: Context): Promise<JournalPage>;
 }
+
+/** A run's journal opened for reading only: the read half of its Storage — its scans and lookups and commitsAfter, with no
+ *  commit, stage or mintId, and no claim. The server reads a run this way (its timeline, the records analytics sums), where
+ *  it holds no claim; a writer uses journal(claim) instead. A read never fences (only a commit does), so the view needs no
+ *  epoch; a run with no journal yet reads as empty. close() lets its admitted reads drain, and leaves the store's
+ *  connection open: the store owns it. */
+export type JournalReads = Pick<
+  Journal,
+  "runId" | "conversation" | "scanConversations" | "entry" | "findLatestHeadMarker" | "scanEntries" | "task" | "scanTasks" | "submission" | "scanSubmissions" | "submissionByRequest" | "findDocument" | "document" | "scanDocuments" | "commitsAfter" | "close"
+>;
 
 export interface ChannelPost {
   readonly id: string;
@@ -223,11 +260,16 @@ export interface Triggers {
 }
 
 export interface Runs {
-  /** A queued run of `revisionId`, its row's only writer until a runner claims it. */
-  create(run: { id: string; agentId: string; revisionId: string }): Promise<RunRow>;
+  /** A queued run of `revisionId`, its row's only writer until a runner claims it. With `origin`, the origin row is written
+   *  in the same transaction, so a retry under the same key finds this run (runOfOrigin); a key already used is refused
+   *  (StoreConstraint), and nothing is written. */
+  create(run: { id: string; agentId: string; revisionId: string; origin?: RunOrigin }): Promise<RunRow>;
   get(id: string): Promise<RunRow | undefined>;
-  /** Newest first, at most `limit` (no limit: all). */
-  list(filter: { agentId?: string; revisionId?: string; state?: RunState; limit?: number }): Promise<RunRow[]>;
+  /** Newest first, at most `limit` (no limit: all). `archived` filters on the run's own archive time (true: archived,
+   *  false: not); its agent's archive is read apart. */
+  list(filter: { agentId?: string; revisionId?: string; state?: RunState; archived?: boolean; limit?: number }): Promise<RunRow[]>;
+  /** Archives the run (its own archive time), or unarchives it: idempotent. */
+  archive(runId: string, archived: boolean): Promise<void>;
   /** The runs a runner may claim, oldest first: queued; parked with an untaken command or its wake_at passed; running with
    *  no runner (released at a runner's shutdown: it stays running, a run that started keeps that fact) or its claim run
    *  out. */
@@ -425,6 +467,12 @@ export interface Store {
   /** The run's journal: pi-durable's Storage for this one run, every commit fenced by the claim (store/journal). Its commit
    *  holds the store's one connection while it runs, so it awaits nothing but its own statements, under a deadline. */
   journal(claim: Claim): Journal;
+  /** A run's journal opened for reading only (JournalReads): the server's reads of a run, which hold no claim. Its reads
+   *  alone, never a commit; a read never fences, so it needs no claim. A run with no journal yet reads as empty. */
+  readJournal(runId: string): JournalReads;
+  /** The run started under origin `key` (runs.create's origin), with the fingerprint recorded then; undefined when no run
+   *  was started under it. The one read a retry under a key makes to find the run its first request started. */
+  runOfOrigin(key: string): Promise<{ runId: string; fingerprint: string | null } | undefined>;
   /** One durable commit: every commit before it, of every run, is on the disk when it resolves. Before a call that must
    *  not run twice, at a run's end and when a claim is released. */
   flush(): Promise<void>;

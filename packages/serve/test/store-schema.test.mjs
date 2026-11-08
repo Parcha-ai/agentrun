@@ -10,7 +10,7 @@ import { queued, storeOn } from "./store-helpers.mjs";
 
 const TABLES = [
   "agents", "channel_posts", "channel_told", "commands", "idempotency", "learning", "mcp_oauth_pending", "mcp_pins", "mcp_servers", "review_ledger",
-  "revisions", "run_live", "runs", "sealed_keys", "settings", "store_meta", "trigger_conversations", "trigger_firings", "trigger_scopes", "trigger_settings", "triggers",
+  "revisions", "run_live", "run_origins", "runs", "sealed_keys", "settings", "store_meta", "trigger_conversations", "trigger_firings", "trigger_scopes", "trigger_settings", "triggers",
 ];
 
 test("schema v1 has every table, and every time column is an INTEGER", async (t) => {
