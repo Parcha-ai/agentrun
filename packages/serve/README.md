@@ -1415,16 +1415,20 @@ asked by default.
   sends the call once and resumes with its result; denied, it resumes with the refusal. A restart while a call is
   parked loses nothing.
 - **Pins.** An MCP tool's own key (`mcp:<server>/<tool>`, never the wildcard) may also carry `pin`, 1 to 8 of the
-  tool's top-level arguments, each to the one JSON scalar its calls must carry (`null`: the argument left out):
-  `{"mcp:slack/slack_send_message": {"permission": "allow", "pin": {"channel_id": "C0123"}}}`. The gate checks a pinned
+  tool's top-level arguments, each to the one JSON scalar its calls must carry (`null`: the argument left out), or a
+  list of 1 to 16 of them, the argument one of the list, compared strictly:
+  `{"mcp:slack/slack_send_message": {"permission": "allow", "pin": {"channel_id": "C0123"}}}`,
+  `{"mcp:github/pull_request_review_write": {"pin": {"method": ["create", "submit_pending"], "event": [null, "COMMENT"]}}}`. The gate checks a pinned
   tool's call before it runs or asks anyone, whatever the permission (an allow, an ask, a grant): a call whose arguments
   are not as pinned is refused, never sent and never asked about, and the model reads "mcp:slack/slack_send_message may
   only be called with channel_id = C0123: its destination is fixed by the agent's settings". The run's process logs a
   line naming the tool, the call and the arguments that did not hold, and its Timeline row is a failed call, as any
   refusal's. A call approved under ask is checked again before it is sent. A pin adds to a setting and is never a
-  permission: the agent's pin and the server's both hold, and two that fix one argument to different values refuse
-  every call, saying so. A template pins its sends' destinations to its parameters ([Templates](#templates)). A pin in
-  `tool-settings.json` that does not read refuses every call of its tool until a `PUT` sets it again.
+  permission: the agent's pin and the server's both hold (an argument both pin takes what holds both), and where
+  nothing holds both every call is refused, saying so. A template pins its sends' destinations to its parameters ([Templates](#templates)). A pin in
+  `tool-settings.json` that does not read refuses every call of its tool until a `PUT` sets it again. Until the agent
+  store's cutover an agent's own pin (`definition.tool_settings.<tool>.pin`) is refused, `422 not_set_up_here`: the
+  store this server writes today keeps no pin, so set it on the server meanwhile.
 - **Prices.** `PUT /v2/settings/mcp-servers/{name}` takes `prices`, each tool's price in USD a call
   (`{"prices": {"search": 0.01}}`; a finite number, 0 or more, for a tool the server lists; else `422`). A priced call
   is held at its price under the run's `max_cost_usd`, refused unsent when the cap cannot take it, and booked as the

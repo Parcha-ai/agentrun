@@ -4,10 +4,10 @@
 // tools (app.ts), the kernel's host tools on claude-agent and codex (host-tools.ts), and the MCP gateway, which takes
 // the same park (harness-app.ts) and registers an executor for its approved calls.
 //
-// An MCP tool's setting may also carry a pin (pinRefusal): top-level arguments its calls must carry, each one JSON scalar.
-// A pin adds to a setting and is never a permission: the gate checks it after a deny and before an allow or an ask, so an
-// allowed call not as pinned is refused unsent, and one under ask is refused before anyone is asked; an approved call is
-// checked again before it runs. The agent's pin and the server's both hold.
+// An MCP tool's setting may also carry a pin (pinRefusal): top-level arguments its calls must carry, each a JSON scalar
+// or one of a list. A pin adds to a setting and is never a permission: the gate checks it after a deny and before an
+// allow or an ask, so an allowed call not as pinned is refused unsent, and one under ask is refused before anyone is
+// asked; an approved call is checked again before it runs. The agent's pin and the server's both hold.
 //
 // An ask has one way to wait, every tool's alike (the owner's ruling of 11-04): it PARKS. The gated call answers at once
 // with waitingText and the turn ends, as ask_person's does; the run goes needs_input with the pending approval. On an
@@ -125,26 +125,46 @@ export function settingsKeyOf(harness: string, name: string, mcpServers: readonl
   return alias && mcpServers.includes(alias[1]!) ? mcpToolName(alias[1]!, alias[2]!) : undefined;
 }
 
-/** A pinned argument's value: a JSON scalar. `null` holds for a call that leaves the argument out (or gives null). */
-export type PinValue = string | number | boolean | null;
-/** A setting's `pin`: an MCP tool's top-level arguments, by name, each fixed to one value. */
+/** A pinned argument's scalar: `null` holds for a call that leaves the argument out (or gives null). */
+export type PinScalar = string | number | boolean | null;
+/** A pinned argument's value: one scalar the call must carry, or a list of 1 to MAX_PIN_CHOICES ("one of"), whose order
+ *  is the author's and shows in the refusal. */
+export type PinValue = PinScalar | readonly PinScalar[];
+/** A setting's `pin`: an MCP tool's top-level arguments, by name, each fixed to one value or one of a list. */
 export type Pin = Readonly<Record<string, PinValue>>;
-/** The most arguments one setting pins. */
+/** The most arguments one setting pins, and the most values a one-of list holds. */
 export const MAX_PIN_ARGS = 8;
+export const MAX_PIN_CHOICES = 16;
 
 /** A layer of tool settings (the server's, PUT /v2/settings/tools, or an agent's own, definition.tool_settings) as the
  *  gate reads it: a permission by settings key, and an MCP tool's pin. */
 export type PermissionSettings = Readonly<Record<string, { permission?: Permission; /** Not as written: a value not offered, read as its fail-closed stand-in (tool-plane.ts readToolSettings). Never shown. */ fallback?: true; pin?: Pin; /** A pin in the server's file that does not read (tool-plane.ts readToolSettings): every call of the tool is refused. Never shown. */ brokenPin?: true } | undefined>>;
 
-/** Whether a call's argument `given` holds pinned `value`: the same JSON scalar, or, for null, left out or null. */
-const holds = (given: unknown, value: PinValue): boolean => (value === null ? given === undefined || given === null : given === value);
-/** A pin in words, as the refusal says it: `channel_id = C0123`, and `cc absent` for a null. */
-const pinWords = (pin: Pin): string => Object.entries(pin).map(([arg, value]) => (value === null ? `${arg} absent` : `${arg} = ${typeof value === "string" ? value : JSON.stringify(value)}`)).join(", ");
+/** Whether a call's argument `given` is the pinned scalar `one`: the same JSON scalar (strict equality), or, for null,
+ *  left out or null. */
+const isOne = (given: unknown, one: PinScalar): boolean => (one === null ? given === undefined || given === null : given === one);
+/** Whether `given` holds pinned `value`: its scalar, or one of its list. */
+const holds = (given: unknown, value: PinValue): boolean => (Array.isArray(value) ? value.some((one) => isOne(given, one)) : isOne(given, value as PinScalar));
+/** A scalar in a refusal's words: text as it is, null as `absent`, any other as JSON. */
+const scalarWords = (one: PinScalar): string => (one === null ? "absent" : typeof one === "string" ? one : JSON.stringify(one));
+/** A pin in words, as the refusal says it: `channel_id = C0123`, `cc absent` for a null, `event in (absent | COMMENT)`
+ *  for a list, in its order. */
+export const pinWords = (pin: Pin): string => Object.entries(pin).map(([arg, value]) => (Array.isArray(value) ? `${arg} in (${value.map(scalarWords).join(" | ")})` : value === null ? `${arg} absent` : `${arg} = ${scalarWords(value as PinScalar)}`)).join(", ");
+/** What holds both of two layers' pins of one argument (`own`, the agent's, and `theirs`, the server's): a scalar where
+ *  either is one and the other holds it, else the agent's list kept to the server's, in the agent's order; undefined when
+ *  nothing holds both. */
+function bothOf(own: PinValue, theirs: PinValue): PinValue | undefined {
+  const list = (value: PinValue): readonly PinScalar[] => (Array.isArray(value) ? value : [value as PinScalar]);
+  if (!Array.isArray(own)) return list(theirs).some((one) => one === own) ? own : undefined;
+  if (!Array.isArray(theirs)) return own.some((one) => one === theirs) ? theirs : undefined;
+  const kept = own.filter((one) => theirs.some((other) => other === one));
+  return kept.length ? kept : undefined;
+}
 
 /** Why the call of MCP tool `name` with `args` is refused by a pin, or undefined when no pin refuses it. A pin is an
  *  addition to a setting, never a permission: each layer's pin on the tool's own key holds (the agent's and the
- *  server's both, whatever the permission), and a call must carry every pinned argument as pinned. Two layers that pin
- *  one argument to different values refuse every call, which can satisfy only one. `ran`: whether an earlier attempt of
+ *  server's both, whatever the permission), and a call must carry every pinned argument as pinned: its value, or one of
+ *  its list. An argument both layers pin takes what holds both; where nothing does, every call is refused. `ran`: whether an earlier attempt of
  *  the call may have been sent (deniedText's). `mismatched`: the arguments that do not hold, for the gate's log line. */
 export function pinRefusal(name: string, args: unknown, server: PermissionSettings, agent: PermissionSettings = {}, ran: "no" | "unknown" = "no"): { text: string; mismatched: string[] } | undefined {
   if (!isMcpTool(name)) return undefined;
@@ -152,9 +172,10 @@ export function pinRefusal(name: string, args: unknown, server: PermissionSettin
   if (server[name]?.brokenPin) return { text: `${name} can't be called: its pin in this server's tool settings does not read, so no call is let through until the owner sets it again (Settings → Tools). ${what}`, mismatched: [] };
   const own = agent[name]?.pin ?? {};
   const theirs = server[name]?.pin ?? {};
-  const clash = Object.keys(own).filter((arg) => Object.hasOwn(theirs, arg) && own[arg] !== theirs[arg]);
+  // Both layers hold: an argument both pin takes what holds both (bothOf), and one where nothing does refuses every call.
+  const clash = Object.keys(own).filter((arg) => Object.hasOwn(theirs, arg) && bothOf(own[arg]!, theirs[arg]!) === undefined);
   if (clash.length) return { text: `${name} can't be called: this agent's settings fix ${pinWords(Object.fromEntries(clash.map((arg) => [arg, own[arg]!])))} and this server's fix ${pinWords(Object.fromEntries(clash.map((arg) => [arg, theirs[arg]!])))}, so no call can satisfy both. ${what} Don't retry it: the owner makes the two agree.`, mismatched: clash };
-  const pin: Pin = { ...theirs, ...own };
+  const pin: Pin = { ...theirs, ...Object.fromEntries(Object.entries(own).map(([arg, value]) => [arg, Object.hasOwn(theirs, arg) ? bothOf(value, theirs[arg]!)! : value])) };
   const given = typeof args === "object" && args !== null && !Array.isArray(args) ? (args as Record<string, unknown>) : {};
   const mismatched = Object.keys(pin).filter((arg) => !holds(Object.hasOwn(given, arg) ? given[arg] : undefined, pin[arg]!));
   if (!mismatched.length) return undefined;

@@ -25,7 +25,7 @@ import { CATCHUP_WINDOW_S, DUE_KEPT, MAX_ACTIVE_RUNS, SEEN_KEPT, FAILURES_TO_PAU
 import { DEFINITION_FIELDS, MODEL_REF, NOT_KEPT } from "./validate.js";
 import { GRADER_TYPES, MODEL_TIERS, PARAMETER_TYPES } from "./templates.js";
 import { NOT_SET_UP } from "./runnable.js";
-import { APPROVAL_ROW, ARGS_PREVIEW_BYTES, MAX_PIN_ARGS, PERMISSIONS } from "./tool-gate.js";
+import { APPROVAL_ROW, ARGS_PREVIEW_BYTES, MAX_PIN_ARGS, MAX_PIN_CHOICES, PERMISSIONS } from "./tool-gate.js";
 import { MAX_PIN_TEXT, permissionsOf, type Pickable, PICKABLE, PROVIDERS, TABLE_TOOLS } from "./tool-plane.js";
 
 type Json = Record<string, unknown>;
@@ -283,11 +283,13 @@ const PERMISSION = {
 const SETTINGS_TOOLS = TABLE_TOOLS;
 /** A catalog tool's settings key, or an MCP server's wildcard, which sets each of its tools. */
 const CATALOG_KEY = { type: "string", pattern: "^(monid\\.[^/]+|mcp:[^/]+/.+)$" };
+/** A pinned scalar. */
+const PIN_SCALAR = [{ type: "string", maxLength: MAX_PIN_TEXT }, { type: "number" }, { type: "boolean" }, { type: "null" }];
 /** pins/1: an MCP tool's pin (tool-gate.ts pinRefusal), the top-level arguments its calls must carry. */
 const PIN = {
   type: "object", minProperties: 1, maxProperties: MAX_PIN_ARGS, propertyNames: { pattern: "^[A-Za-z_][A-Za-z0-9_.-]{0,127}$" },
-  additionalProperties: { anyOf: [{ type: "string", maxLength: MAX_PIN_TEXT }, { type: "number" }, { type: "boolean" }, { type: "null" }] },
-  description: `On an MCP tool's own key (mcp:<server>/<tool>) only, never a server's wildcard: 1 to ${MAX_PIN_ARGS} of the tool's top-level arguments, each to the one JSON scalar its calls must carry (null: the argument left out, or null). The tool gate refuses a call whose arguments are not as pinned before it runs or asks anyone, whatever the tool's permission, and the model reads the values it may use. A pin adds to a setting and is never a permission: the agent's pin and the server's both hold, and two that fix one argument to different values refuse every call.`,
+  additionalProperties: { anyOf: [...PIN_SCALAR, { type: "array", minItems: 1, maxItems: MAX_PIN_CHOICES, items: { anyOf: PIN_SCALAR } }] },
+  description: `On an MCP tool's own key (mcp:<server>/<tool>) only, never a server's wildcard: 1 to ${MAX_PIN_ARGS} of the tool's top-level arguments, each to the one JSON scalar its calls must carry (null: the argument left out, or null), or a list of 1 to ${MAX_PIN_CHOICES} of them, the argument one of the list (strict equality; the list's order is the author's, kept). The tool gate refuses a call whose arguments are not as pinned before it runs or asks anyone, whatever the tool's permission, and the model reads the values it may use. A pin adds to a setting and is never a permission: the agent's pin and the server's both hold, an argument both pin takes what holds both, and one where nothing does refuses every call. Until the agent store's cutover an agent's own pin (definition.tool_settings) is 422 not_set_up_here: set it on the server.`,
   "x-agentrun-serve": "pins/1",
 };
 /** The tool settings map (tool-plane.ts): the server's (/settings/tools) and an agent's own (definition.tool_settings),
@@ -643,7 +645,7 @@ const TEMPLATE = closed({
     items: closed({
       server: { type: "string" },
       required: { type: "boolean" },
-      tools: { type: "array", items: closedWith({ name: { type: "string" }, tool: { type: "string", description: "Its gate name, `mcp:<server>/<tool>`: what apply's `grants` and the tool settings name." }, asks: { enum: ["allow", "ask"], description: "The permission the package asks the owner for: a consent screen shows it, and only the owner's `grants` at apply set it." } }, { pin: { type: "object", additionalProperties: { type: ["string", "number", "boolean", "null"] }, description: "The arguments each call of the tool must carry, `${parameters.<name>}` unfilled: apply writes them, filled, as the tool's pin in the agent's tool_settings, so the tool gate refuses a call with any other (a send goes only to the destination the owner sets). A pin whose parameter apply is not given sets the tool to deny instead, with a `pins.<tool>` warning.", "x-agentrun-serve": "pins/1" } }) },
+      tools: { type: "array", items: closedWith({ name: { type: "string" }, tool: { type: "string", description: "Its gate name, `mcp:<server>/<tool>`: what apply's `grants` and the tool settings name." }, asks: { enum: ["allow", "ask"], description: "The permission the package asks the owner for: a consent screen shows it, and only the owner's `grants` at apply set it." } }, { pin: { type: "object", additionalProperties: { anyOf: [{ type: ["string", "number", "boolean", "null"] }, { type: "array", items: { type: ["string", "number", "boolean", "null"] } }] }, description: "The arguments (each a value, or a list one of which) each call of the tool must carry, `${parameters.<name>}` unfilled: apply writes them, filled, as the tool's pin in the agent's tool_settings, so the tool gate refuses a call with any other (a send goes only to the destination the owner sets). A pin whose parameter apply is not given sets the tool to deny instead, with a `pins.<tool>` warning. Until the agent store's cutover apply writes no pin and warns `pins.<tool>` with the pin to set on the server.", "x-agentrun-serve": "pins/1" } }) },
     }),
     description: "The MCP servers it uses, by the name this server saves them under, and the tools of each it grants: apply grants them when the server is saved here, each at the owner's own setting (a third-party tool asks by default), and sets to allow only those the apply's `grants` name; one not saved is skipped with a warning, or, `required`, refuses the apply (409, nothing made).",
   },

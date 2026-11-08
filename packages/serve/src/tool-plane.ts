@@ -32,7 +32,7 @@ import { builtinHarness, harnessOf } from "./harness-table.js";
 import { viaOpenRouter, WIRES } from "./provider.js";
 import { savedIn } from "./secrets.js";
 import { hostModel } from "./model.js";
-import { defaultPermission, isCatalogTool, isMcpTool, MAX_PIN_ARGS, type Permission, PERMISSIONS, permissionFrom, permissionOf, type Pin, SHELL_FAMILY } from "./tool-gate.js";
+import { defaultPermission, isCatalogTool, isMcpTool, MAX_PIN_ARGS, MAX_PIN_CHOICES, type Permission, PERMISSIONS, permissionFrom, permissionOf, type Pin, SHELL_FAMILY } from "./tool-gate.js";
 
 /**
  * The capabilities a pack or a revision may grant, by name: the tools the kernel gives a run, bound from serve's closed
@@ -75,23 +75,39 @@ const isSettingsKey = (name: string): boolean => isToolSettingsKey(name) && (TAB
 /** One tool's settings: its provider (a capability that has a choice), its permission, and an MCP tool's pin (the
  *  arguments its calls must carry, tool-gate.ts pinRefusal). */
 export type ToolSetting = { provider?: string; permission?: Permission; pin?: Pin; /** Read as a stand-in for a value not offered (readToolSettings); never shown or written. */ fallback?: true; /** The stand-in's value as written in the file, which a save that keeps the stand-in writes back (ToolSettings.put). Never shown. */ raw?: unknown; /** A pin in the file that does not read (readToolSettings): the gate refuses every call of the tool. Never shown or written. */ brokenPin?: true };
+/** Whether an agent's own settings (definition.tool_settings) keep a pin. Not yet: the agent store this server writes
+ *  today keeps a setting's values as names only, and refuses a pin; the store of the rewrite (store/, module A) keeps it
+ *  as given, and this is true from its cutover on. Until then a pin is set on the server (PUT /v2/settings/tools), which
+ *  the gate holds every run to; the gate reads an agent's pin wherever a revision carries one. */
+export const AGENT_LAYER_PINS: boolean = false;
+/** Why an agent's own pin is refused while AGENT_LAYER_PINS is false. */
+export const AGENT_PIN_LATER = "An agent's own pin is kept once this server's agent store takes it (the store cutover). Until then set the pin on this server, PUT /v2/settings/tools (Settings → Tools), which the tool gate holds every run to.";
 /** The longest pinned string. */
 export const MAX_PIN_TEXT = 1024;
 /** A pinned argument's name: a top-level argument of the tool, as MCP tools name theirs. */
 const PIN_ARG = /^[A-Za-z_][A-Za-z0-9_.-]{0,127}$/;
 
-/** The issues of `pin`, a setting of `name` under `at`: on an MCP tool's own key only (never a server's wildcard, whose
- *  tools take other arguments), an object of 1 to MAX_PIN_ARGS top-level arguments, each a JSON scalar. */
-export function pinIssues(name: string, pin: unknown, at: string): InputIssue[] {
-  if (!isMcpTool(name) || /\/\*$/.test(name)) return [{ field: at, reason: "not_allowed", message: `A pin is set on one MCP tool's own key (mcp:<server>/<tool>), never on ${name}.` }];
+/** The one check of a pin, every place that takes one calls it (the server's settings, an agent's, a template's mcp
+ *  entry, the store's revision bodies at the cutover): `pin` under `at`, an object of 1 to MAX_PIN_ARGS of a tool's
+ *  top-level arguments (PIN_ARG), each to a JSON scalar (a string of at most MAX_PIN_TEXT characters, a finite number,
+ *  true or false, or null: left out) or a list of 1 to MAX_PIN_CHOICES of them, the argument one of the list. With
+ *  `key`, the settings key it is set on, which is one MCP tool's own (`mcp:<server>/<tool>`), never a server's wildcard,
+ *  whose tools take other arguments, nor any other tool's. */
+export function pinIssues(pin: unknown, at: string, key?: string): InputIssue[] {
+  if (key !== undefined && (!isMcpTool(key) || /\/\*$/.test(key))) return [{ field: at, reason: "not_allowed", message: `A pin is set on one MCP tool's own key (mcp:<server>/<tool>), never on ${key}.` }];
   const entries = typeof pin === "object" && pin !== null && !Array.isArray(pin) ? Object.entries(pin) : undefined;
-  if (!entries || !entries.length || entries.length > MAX_PIN_ARGS) return [{ field: at, reason: "wrong_type", message: `${at} is an object of 1 to ${MAX_PIN_ARGS} of the tool's top-level arguments, each to the one value its calls must carry` }];
+  if (!entries || !entries.length || entries.length > MAX_PIN_ARGS) return [{ field: at, reason: "wrong_type", message: `${at} is an object of 1 to ${MAX_PIN_ARGS} of the tool's top-level arguments, each to the value its calls must carry or a list of the values one of which they must` }];
+  const scalar = (value: unknown) => value === null || typeof value === "boolean" || (typeof value === "number" && Number.isFinite(value)) || (typeof value === "string" && value.length <= MAX_PIN_TEXT);
   return entries.flatMap(([arg, value]): InputIssue[] => {
     if (!PIN_ARG.test(arg)) return [{ field: `${at}.${arg}`, reason: "bad_format", message: `${at} names a top-level argument of the tool (${PIN_ARG.source}); ${JSON.stringify(arg).slice(0, 60)} is none` }];
-    const scalar = value === null || typeof value === "boolean" || (typeof value === "number" && Number.isFinite(value)) || (typeof value === "string" && value.length <= MAX_PIN_TEXT);
-    return scalar ? [] : [{ field: `${at}.${arg}`, reason: "wrong_type", message: `${at}.${arg} is a JSON scalar: a string of at most ${MAX_PIN_TEXT} characters, a number, true or false, or null (the argument left out)` }];
+    const held = Array.isArray(value) ? value.length >= 1 && value.length <= MAX_PIN_CHOICES && value.every(scalar) : scalar(value);
+    return held ? [] : [{ field: `${at}.${arg}`, reason: "wrong_type", message: `${at}.${arg} is a JSON scalar (a string of at most ${MAX_PIN_TEXT} characters, a number, true or false, or null: the argument left out) or a list of 1 to ${MAX_PIN_CHOICES} of them, the argument one of the list` }];
   });
 }
+
+/** `pin` with its arguments sorted, a one-of list's order kept as written (the author's, which the refusal shows): the
+ *  one form a pin takes in a revision's body, so the same pin is the same text. */
+export const sortedPin = (pin: Pin): Pin => Object.fromEntries(Object.keys(pin).sort().map((arg) => [arg, pin[arg]!]));
 /** The tools' settings, the server's (`/v2/settings/tools`) and an agent's own (`definition.tool_settings`), one shape:
  *  by settings key. */
 export type ToolSettingsMap = Partial<Record<string, ToolSetting>>;
@@ -373,7 +389,7 @@ export function settingsIssues(value: unknown, at = ""): InputIssue[] {
     if (!isSettingsKey(name)) return [{ field: field(name), reason: "not_allowed", message: `Tool settings are kept for this server's tools (${[...TABLE_TOOLS, ...SERVE_OWN_TOOLS].join(", ")}), catalog tools (monid.<tool>, mcp:<server>/<tool>) and an MCP server's tools (mcp:<server>/*); ${name} is none of them.` }];
     if (!isPlain(setting)) return [{ field: field(name), reason: "wrong_type", message: `${field(name)} is an object, {${pickable ? "provider, " : ""}permission${isMcpTool(name) ? ", pin" : ""}}` }];
     return Object.entries(setting).flatMap(([key, given]): InputIssue[] => {
-      if (key === "pin") return pinIssues(name, given, field(name, key));
+      if (key === "pin") return pinIssues(given, field(name, key), name);
       if (key === "permission") {
         // A wildcard sets each tool of its server's: a catalog tool's permissions.
         const offered = permissionsOf(isMcpTool(name) ? name : name.replace(/\/\*$/, "/_"));
@@ -384,6 +400,19 @@ export function settingsIssues(value: unknown, at = ""): InputIssue[] {
       return offered.includes(given as string) ? [] : [{ field: field(name, key), reason: "not_an_option", message: `${field(name, key)} is one of ${offered.join(", ")}` }];
     });
   });
+}
+
+/** `map` as a revision body keeps it: each tool's provider, permission and pin as written (never a stand-in's internal
+ *  marks), tools, fields and a pin's arguments sorted, and a tool with none of them gone. The one form, so two
+ *  revisions whose settings say the same (a pin's arguments in another order) are the same text, and so one revision
+ *  where its id is the body's digest (the store keeps the body as given: store/sqlite/store.ts). */
+export function canonicalToolSettings(map: ToolSettingsMap): ToolSettingsMap {
+  const sorted = <T>(record: Readonly<Record<string, T>>): Record<string, T> => Object.fromEntries(Object.keys(record).sort().map((key) => [key, record[key]!]));
+  return sorted(Object.fromEntries(Object.entries(map).flatMap(([name, setting]) => {
+    if (!setting) return [];
+    const kept: ToolSetting = sorted({ ...(setting.permission ? { permission: setting.permission } : {}), ...(setting.pin ? { pin: sortedPin(setting.pin) } : {}), ...(setting.provider ? { provider: setting.provider } : {}) });
+    return Object.keys(kept).length ? [[name, kept]] : [];
+  })));
 }
 
 /** `map` with each capability's provider, its default where none is picked; a permission where one is set. */
@@ -427,7 +456,7 @@ export function readToolSettings(dir: string): { settings: ToolSettingsMap; prob
     // A pin that does not read is never dropped to nothing, which would let every call through: the gate refuses the
     // tool's calls until a save sets it again.
     if (setting.pin !== undefined) {
-      if (pinIssues(name, setting.pin, "pin").length) kept.brokenPin = true;
+      if (pinIssues(setting.pin, "pin", name).length) kept.brokenPin = true;
       else kept.pin = setting.pin as Pin;
     }
     if (setting.permission !== undefined) {

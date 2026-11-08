@@ -13,8 +13,8 @@ import { HARNESSES } from "./harness.js";
 import { TOOL_KEY_ROWS } from "./key-words.js";
 import { MCP_SERVER_NAME } from "./mcp-servers.js";
 import { chooseModel, harnessRuns, hostModel, MODEL_KEYS, THINKING_LEVELS, type Tier } from "./model.js";
-import { MAX_PIN_ARGS, mcpToolName, type PinValue } from "./tool-gate.js";
-import { MAX_PIN_TEXT } from "./tool-plane.js";
+import { mcpToolName, type PinScalar, type PinValue } from "./tool-gate.js";
+import { AGENT_LAYER_PINS, pinIssues } from "./tool-plane.js";
 import { BOUND_TOOLS } from "./tools.js";
 import { TRIGGER_ADAPTERS } from "./trigger-adapters.js";
 import { triggerBodyIssues } from "./triggers.js";
@@ -116,38 +116,28 @@ const filled = (value: unknown, given: Record<string, unknown>): unknown =>
   : isObject(value) ? Object.fromEntries(Object.entries(value).map(([key, item]) => [key, filled(item, given)]))
   : value;
 
-/** An mcp entry's `pin` read: by tool, each one of the entry's `tools`, its arguments (1 to MAX_PIN_ARGS, top-level) to a
- *  JSON scalar or text that may hold `${parameters.<name>}` (checked with the other placeholders). Each problem is told
- *  through `bad`; what reads is kept. */
-function pinOf(pin: unknown, tools: readonly string[], at: string, bad: (message: string) => void): Record<string, Record<string, PinValue>> {
+/** An mcp entry's `pin` read: by tool, each one of the entry's `tools`, its arguments checked by the one rule every pin
+ *  is (tool-plane.ts pinIssues, on the tool's gate name), text in it may hold `${parameters.<name>}` (checked with the
+ *  other placeholders). Each problem is told through `bad`; a tool whose pin reads is kept. */
+function pinOf(pin: unknown, server: string, tools: readonly string[], at: string, bad: (message: string) => void): Record<string, Record<string, PinValue>> {
   const out: Record<string, Record<string, PinValue>> = {};
-  if (!isObject(pin)) return bad(`${at} is {<tool>: {<argument>: <value or \${parameters.<name>}>}}, by the entry's tools`), out;
+  if (!isObject(pin)) return bad(`${at} is {<tool>: {<argument>: <value or \${parameters.<name>}, or a list of them>}}, by the entry's tools`), out;
   for (const [tool, args] of Object.entries(pin)) {
     if (!tools.includes(tool)) {
       bad(`${at}.${tool}: ${tool} is not one of this entry's tools (${tools.join(", ")}): a pin fixes the arguments of a tool the package lists`);
       continue;
     }
-    const entries = isObject(args) ? Object.entries(args) : [];
-    if (!entries.length || entries.length > MAX_PIN_ARGS) {
-      bad(`${at}.${tool} is an object of 1 to ${MAX_PIN_ARGS} of the tool's top-level arguments, each to its value`);
-      continue;
-    }
-    const kept: Record<string, PinValue> = {};
-    for (const [arg, value] of entries) {
-      const scalar = value === null || typeof value === "boolean" || (typeof value === "number" && Number.isFinite(value)) || (typeof value === "string" && value.length <= MAX_PIN_TEXT);
-      if (!/^[A-Za-z_][A-Za-z0-9_.-]{0,127}$/.test(arg)) bad(`${at}.${tool}: ${JSON.stringify(arg).slice(0, 60)} is not an argument's name`);
-      else if (!scalar) bad(`${at}.${tool}.${arg} is a scalar: text (it may hold \${parameters.<name>}), a number, true or false, or null (the argument left out)`);
-      else kept[arg] = value as PinValue;
-    }
-    out[tool] = kept;
+    const issues = pinIssues(args, `${at}.${tool}`, mcpToolName(server, tool));
+    for (const issue of issues) bad(issue.message);
+    if (!issues.length) out[tool] = args as Record<string, PinValue>;
   }
   return out;
 }
 
-/** A pin's `value` filled from the apply's `given` parameters: text that is one placeholder alone takes the parameter's
+/** A pin's scalar filled from the apply's `given` parameters: text that is one placeholder alone takes the parameter's
  *  value as given (its type kept: an integer pins an integer); other text is filled as text. `empty`: the parameters its
  *  placeholders name that were given no value (absent, or ""), so the pin cannot hold what the owner meant. */
-function pinFilled(value: PinValue, given: Record<string, unknown>): { value: PinValue; empty: string[] } {
+function scalarFilled(value: PinScalar, given: Record<string, unknown>): { value: PinScalar; empty: string[] } {
   if (typeof value !== "string") return { value, empty: [] };
   const named = [...value.matchAll(PLACEHOLDER)].map((match) => match[1]!);
   const empty = named.filter((name) => !Object.hasOwn(given, name) || given[name] === undefined || given[name] === null || given[name] === "");
@@ -157,6 +147,12 @@ function pinFilled(value: PinValue, given: Record<string, unknown>): { value: Pi
     if (typeof one === "string" || typeof one === "number" || typeof one === "boolean") return { value: one, empty };
   }
   return { value: filled(value, given) as string, empty };
+}
+/** A pin's value filled (scalarFilled), each of a one-of list's in its order. */
+function pinFilled(value: PinValue, given: Record<string, unknown>): { value: PinValue; empty: string[] } {
+  if (!Array.isArray(value)) return scalarFilled(value as PinScalar, given);
+  const each = value.map((one) => scalarFilled(one, given));
+  return { value: each.map((one) => one.value), empty: each.flatMap((one) => one.empty) };
 }
 
 /** Reads `dir` checked whole: a valid package, or PackageError with every problem found. */
@@ -248,7 +244,7 @@ export function readPackage(dir: string): Package {
     if (!ok) bad(MANIFEST, `mcp[${i}] is {server: an MCP server's name (${MCP_SERVER_NAME.source}), tools: its tool names (${MCP_TOOL.source}), none twice, required?: true or false, allow?: the tools of its tools it asks the owner to allow, pin?: {<tool>: {<argument>: <value>}}}`);
     else if (mcp.some((m) => m.server === need.server)) bad(MANIFEST, `mcp[${i}]: the server ${need.server as string} is listed twice`);
     else {
-      const pinned = pinOf(pin, names as string[], `mcp[${i}].pin`, (message) => bad(MANIFEST, message));
+      const pinned = pinOf(pin, need.server as string, names as string[], `mcp[${i}].pin`, (message) => bad(MANIFEST, message));
       mcp.push({ server: need.server as string, tools: names as string[], required: need.required === true, allow: allow as string[], pin: pinned });
     }
   }
@@ -480,14 +476,16 @@ export async function packageModel(env: NodeJS.ProcessEnv, model: Package["model
  *  owner's own setting; `grants`, the owner's answer at apply, alone are set to allow. A tool the package pins gets its
  *  pin, filled, in the agent's tool settings, whatever its permission; one whose pin fills empty (its parameter not
  *  given) is set to deny instead, granted or not, and named in `unpinned` (by gate name, with the parameters not given):
- *  a send with no destination set never runs. */
-export function compiled(p: Package, parameters: Json, chosen: { harness?: string; model?: string; mcp: McpNeed[]; defaultTools: readonly string[]; grants: readonly string[] }): { agent: Json; triggers: Json[]; unpinned: { tool: string; parameters: string[] }[] } {
+ *  a send with no destination set never runs. While an agent's own settings keep no pin (`pins`, AGENT_LAYER_PINS by
+ *  default) a filled pin is not written: it is named in `unkept`, with its values, for the server's settings. */
+export function compiled(p: Package, parameters: Json, chosen: { harness?: string; model?: string; mcp: McpNeed[]; defaultTools: readonly string[]; grants: readonly string[]; pins?: boolean }): { agent: Json; triggers: Json[]; unpinned: { tool: string; parameters: string[] }[]; unkept: { tool: string; pin: Record<string, PinValue> }[] } {
   const skills = Object.keys(p.skills).filter((path) => /^[^/]+\/SKILL\.md$/.test(path)).map((path) => path.slice(0, -"/SKILL.md".length));
   const granted = chosen.mcp.flatMap(({ server, tools }) => tools.map((tool) => mcpToolName(server, tool)));
   const allowed = chosen.grants.filter((tool) => granted.includes(tool));
   const tools = granted.length ? [...(p.tools ?? chosen.defaultTools), ...granted] : p.tools;
   const settings: Record<string, { permission?: "allow" | "deny"; pin?: Record<string, PinValue> }> = Object.fromEntries(allowed.map((tool) => [tool, { permission: "allow" as const }]));
   const unpinned: { tool: string; parameters: string[] }[] = [];
+  const unkept: { tool: string; pin: Record<string, PinValue> }[] = [];
   for (const { server, pin } of chosen.mcp) {
     for (const [tool, args] of Object.entries(pin)) {
       const name = mcpToolName(server, tool);
@@ -496,7 +494,11 @@ export function compiled(p: Package, parameters: Json, chosen: { harness?: strin
       if (empty.length) {
         settings[name] = { permission: "deny" };
         unpinned.push({ tool: name, parameters: empty });
-      } else settings[name] = { ...settings[name], pin: Object.fromEntries(each.map(([arg, one]) => [arg, one.value])) };
+      } else {
+        const filledPin = Object.fromEntries(each.map(([arg, one]) => [arg, one.value]));
+        if (chosen.pins ?? AGENT_LAYER_PINS) settings[name] = { ...settings[name], pin: filledPin };
+        else unkept.push({ tool: name, pin: filledPin });
+      }
     }
   }
   const definition = {
@@ -505,5 +507,5 @@ export function compiled(p: Package, parameters: Json, chosen: { harness?: strin
     ...(tools ? { tools } : {}), ...(Object.keys(settings).length ? { tool_settings: settings } : {}),
     ...(p.learning !== undefined ? { learning: p.learning } : {}), ...(p.budget ? { max_cost_usd: p.budget.per_run_usd } : {}), skills,
   };
-  return { agent: { definition, skills: { ...p.skills } }, triggers: p.triggers.map((trigger) => filled(trigger, parameters) as Json), unpinned };
+  return { agent: { definition, skills: { ...p.skills } }, triggers: p.triggers.map((trigger) => filled(trigger, parameters) as Json), unpinned, unkept };
 }
