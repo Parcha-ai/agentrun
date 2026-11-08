@@ -243,13 +243,17 @@ test("E2B release of an Archil computer: the final sync, then checkin as root, t
 	assert.ok(sync >= 0 && sync < checkin && checkin < kill, JSON.stringify(eventsOf(fake, ref.id)));
 	assert.deepEqual(fake.rootRuns.find((run) => run.verb === "checkin").argv, [ARCHIL_HELPER, "checkin"]);
 
-	const failing = setup({}, { archil: { checkin: { exitCode: 1, output: "archil: checkin failed: server unreachable" } } });
+	// The ruling: release succeeds once the computer is gone. A folder not let go cleanly loses nothing (every call that
+	// changed it synced, and the next claim revokes a hold left behind), so it is said as a note, never a failed release.
+	const notes = [];
+	const failing = setup({ onNote: (note) => notes.push(note) }, { archil: { checkin: { exitCode: 1, output: "archil: checkin failed: server unreachable" } } });
 	const seededOne = seededArchil(failing.fake);
-	const released = await failing.provider.release(seededOne.ref, "delete");
-	assert.equal(released.ok, false);
-	assert.match(released.error.message, /not let go/);
-	assert.match(released.error.message, /server unreachable/);
+	assert.deepEqual(await failing.provider.release(seededOne.ref, "delete"), { ok: true, value: undefined });
 	assert.ok(failing.fake.kills.includes(seededOne.ref.id), "killed whatever checkin said");
+	assert.equal(notes.length, 1, JSON.stringify(notes));
+	assert.equal(notes[0].computer, seededOne.ref.name);
+	assert.match(notes[0].note, /not let go/);
+	assert.match(notes[0].note, /server unreachable/);
 
 	// A paused computer runs no command: there is nothing to let go, and release kills it as before.
 	const paused = setup();

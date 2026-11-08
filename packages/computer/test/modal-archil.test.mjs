@@ -273,7 +273,7 @@ test("Modal connect: an Archil computer's client syncs after each call that may 
 	await other.value.close();
 });
 
-test("Modal release of an Archil computer: the final sync, then checkin as root, then the terminate; a failed checkin still terminates, and says so", async () => {
+test("Modal release of an Archil computer: the final sync, then checkin as root, then the terminate; a failed checkin still terminates, and says so", async (t) => {
 	const { provider, fake } = setup({}, { sandboxes: [seededArchil()] });
 	const ref = refOf(fake);
 	assert.deepEqual(await provider.release(ref, "delete"), { ok: true, value: undefined });
@@ -284,13 +284,17 @@ test("Modal release of an Archil computer: the final sync, then checkin as root,
 	assert.deepEqual(fake.rootRuns.find((run) => run.verb === "checkin").argv, [ARCHIL_HELPER, "checkin"]);
 	assert.equal(fake.sandboxes.get(ref.id).running, false);
 
-	const failing = setup({}, { sandboxes: [seededArchil()], archil: { checkin: { exitCode: 1, output: "archil: checkin failed: server unreachable" } } });
+	// The ruling: release succeeds once the computer is gone. A folder not let go cleanly loses nothing (every call that
+	// changed it synced, and the next claim revokes a hold left behind), so it is said as a note, never a failed release.
+	const notes = [];
+	const failing = setup({ onNote: (note) => notes.push(note) }, { sandboxes: [seededArchil()], archil: { checkin: { exitCode: 1, output: "archil: checkin failed: server unreachable" } } });
 	const failingRef = refOf(failing.fake);
-	const released = await failing.provider.release(failingRef, "delete");
-	assert.equal(released.ok, false);
-	assert.match(released.error.message, /not let go/);
-	assert.match(released.error.message, /server unreachable/);
+	assert.deepEqual(await failing.provider.release(failingRef, "delete"), { ok: true, value: undefined });
 	assert.equal(failing.fake.sandboxes.get(failingRef.id).running, false, "terminated whatever checkin said");
+	assert.equal(notes.length, 1, JSON.stringify(notes));
+	assert.equal(notes[0].computer, failingRef.name);
+	assert.match(notes[0].note, /not let go/);
+	assert.match(notes[0].note, /server unreachable/);
 
 	// A sandbox that has finished runs nothing more: there is nothing to let go, and release is done.
 	const done = setup({}, { sandboxes: [seededArchil({ running: false })] });

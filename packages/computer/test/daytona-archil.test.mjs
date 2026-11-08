@@ -184,3 +184,17 @@ test("release: a final sync, then checkin as root, then the delete", async () =>
 	assert.equal((box.syncs ?? 0) - syncs, 1, "the final sync");
 	assert.equal(fake.sandboxes.has(made.value.id), false);
 });
+
+test("release: a checkin that fails is a note, never a failed release, and the takeover goes on (the ruling, as Modal and E2B)", async () => {
+	const notes = [];
+	const { fake, provider } = setup({}, { onNote: (note) => notes.push(note) });
+	const old = await provider.create({ ...SPEC, labels: { ...LABELS, [EPOCH_LABEL]: "2" } });
+	assert.equal(old.ok, true);
+	fake.knobs.archil = { checkin: { exitCode: 1, output: "archil: checkin failed: server unreachable" } };
+	assert.deepEqual(await provider.release(old.value, "delete"), { ok: true, value: undefined });
+	assert.equal(fake.sandboxes.has(old.value.id), false, "deleted whatever checkin said");
+	assert.equal(notes.length, 1, JSON.stringify(notes));
+	assert.equal(notes[0].computer, old.value.name);
+	assert.match(notes[0].note, /not let go/);
+	assert.match(notes[0].note, /server unreachable/);
+});
