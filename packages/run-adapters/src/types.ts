@@ -316,6 +316,10 @@ export interface AdapterFacts {
   readonly wire: Wire;
   /** Whether it takes a message mid-turn (else a message waits for the turn's end). */
   readonly steer: boolean;
+  /** False when a tool call that started is never run again by a restart, replay-safe or not: the harness's own process
+   *  holds the turn, and only its model calls again (a CLI). Absent: a restart reruns a replay-safe call, by the
+   *  kernel's rule. */
+  readonly rerunsStarted?: false;
   /** What one run of it holds in memory, in MiB: the host admits runs by it. */
   readonly runMib: number;
   /** Whether it binds a session's remote MCP servers (its own MCP client, at the session's gateway). */

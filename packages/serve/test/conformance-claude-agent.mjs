@@ -9,6 +9,7 @@
 import { mkdtempSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
+import { facts } from "@parcha/agentrun-harness-claude/facts";
 import { fakeSdk } from "@parcha/agentrun-harness-claude/testing";
 
 const { createAdapterLoop } = await import("../dist/runner/adapter-loop.js");
@@ -89,8 +90,9 @@ export const claudeAgentSubject = {
   name: "claude-agent through the runner",
   process: { module: import.meta.url, export: "claudeAgentSubject" },
   createLoop: (setup) => createAdapterLoop(claudeAgentSpec(setup), { restartLimit: MAX_RESTARTS }),
+  // What its adapter declares (steer false, rerunsStarted false): the suite derives the cases those rule out.
+  facts,
   unsupported: {
-    "steer-mid-turn": "Claude Agent takes no message mid-turn (its adapter's facts: steer false; its session has no steer()), so the loop refuses a steer for it in words",
     // The suite's crash child runs outside the test runner (it drops NODE_TEST_CONTEXT), where the package's stand-in CLI
     // is refused by its own guard; the in-process crash cases cover the same points.
     "crash-before-intent-process": "the stand-in Claude Agent CLI runs only under the test runner (its guard), and the suite's crash child runs outside it",
