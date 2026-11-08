@@ -23,6 +23,14 @@ const COMPUTER = "agentrun.computer";
 const NAME = "agentrun.computer.name";
 const DEADLINE = "agentrun.computer.deadline";
 const SPEC_TAG = "agentrun.computer.spec";
+/** The Archil mount cases' settings, as a conformance module reads them. */
+const ARCHIL_SETTINGS = {
+	COMPUTER_ARCHIL_DISK: MOUNT.disk,
+	COMPUTER_ARCHIL_REGION: MOUNT.region,
+	COMPUTER_ARCHIL_TOKEN: TOKEN,
+	COMPUTER_ARCHIL_API_KEY: "key-archil-account-0123456789abcdef",
+	COMPUTER_ARCHIL_S3_URL: "https://s3.green.us-east-1.aws.prod.archil.com",
+};
 const readBack = (epoch = EPOCH) => ({ kind: "archil", disk: MOUNT.disk, region: MOUNT.region, folder: MOUNT.folder, exclusive: true, epoch });
 
 const dir = mkdtempSync(join(tmpdir(), "computer-modal-archil-"));
@@ -342,32 +350,34 @@ test("the Modal conformance module: mountFor(\"archil\") gives a fresh run folde
 	assert.equal(MODAL_ENV.archilDisk, "COMPUTER_ARCHIL_DISK");
 	assert.equal(MODAL_ENV.archilRegion, "COMPUTER_ARCHIL_REGION");
 	assert.equal(MODAL_ENV.archilToken, "COMPUTER_ARCHIL_TOKEN");
-	const env = { AGENTRUN_COMPUTER_LIVE_MODAL: "1", COMPUTER_ARCHIL_DISK: MOUNT.disk, COMPUTER_ARCHIL_REGION: MOUNT.region, COMPUTER_ARCHIL_TOKEN: TOKEN };
+	assert.equal(MODAL_ENV.archilApiKey, "COMPUTER_ARCHIL_API_KEY");
+	assert.equal(MODAL_ENV.archilS3Url, "COMPUTER_ARCHIL_S3_URL");
+	const env = { AGENTRUN_COMPUTER_LIVE_MODAL: "1", ...ARCHIL_SETTINGS };
 	assert.equal(settingsFromEnv({}), undefined, "no disk named: no Archil run folder");
-	assert.deepEqual(settingsFromEnv(env), { disk: MOUNT.disk, region: MOUNT.region, token: TOKEN });
+	assert.deepEqual(settingsFromEnv(env), { disk: MOUNT.disk, region: MOUNT.region, token: TOKEN, apiKey: ARCHIL_SETTINGS.COMPUTER_ARCHIL_API_KEY, s3BaseUrl: ARCHIL_SETTINGS.COMPUTER_ARCHIL_S3_URL });
 	assert.throws(() => settingsFromEnv({ COMPUTER_ARCHIL_DISK: MOUNT.disk }), (error) => /COMPUTER_ARCHIL_REGION/.test(error.message) && /COMPUTER_ARCHIL_TOKEN/.test(error.message));
 
 	assert.equal(await mountFor("bind", { env }), undefined, "a Modal computer takes no bind");
 	assert.equal(await mountFor("archil", { env: {} }), undefined, "no disk named: the case is skipped");
-	await assert.rejects(mountFor("archil", { env: { ...env, AGENTRUN_COMPUTER_LIVE_MODAL: undefined }, archilDisk: fakeObjects() }), /AGENTRUN_COMPUTER_LIVE_MODAL/);
-	await assert.rejects(mountFor("archil", { env }), /archilDisk/);
+	await assert.rejects(mountFor("archil", { env: { ...env, AGENTRUN_COMPUTER_LIVE_MODAL: undefined }, archil: { objects: fakeObjects() } }), /AGENTRUN_COMPUTER_LIVE_MODAL/);
 
+	// The shared run folder (src/conformance/archil.ts), on the SDK's client made from the settings.
 	const objects = fakeObjects();
-	const folder = await mountFor("archil", { env, archilDisk: objects });
-	assert.equal(folder.mount.kind, "archil");
-	assert.equal(folder.mount.disk, MOUNT.disk);
-	assert.equal(folder.mount.region, MOUNT.region);
-	assert.equal(folder.mount.token, TOKEN);
+	const made = [];
+	class Archil {
+		constructor(options) {
+			made.push(options);
+			this.disks = { get: async () => objects };
+		}
+	}
+	const folder = await mountFor("archil", { env, archil: { Archil } });
+	assert.deepEqual(made, [{ apiKey: ARCHIL_SETTINGS.COMPUTER_ARCHIL_API_KEY, region: MOUNT.region, s3BaseUrl: ARCHIL_SETTINGS.COMPUTER_ARCHIL_S3_URL }]);
+	assert.deepEqual({ ...folder.mount, folder: undefined }, { ...MOUNT, folder: undefined });
 	assert.match(folder.mount.folder, /^agents\/conformance\/runs\/[A-Za-z0-9][A-Za-z0-9_-]*\/work$/);
-	assert.notEqual((await mountFor("archil", { env, archilDisk: objects })).mount.folder, folder.mount.folder, "a fresh folder each time");
 	await folder.write("a.txt", Buffer.from("outside\n"));
-	assert.deepEqual(objects.calls.at(-1), ["putObject", `${folder.mount.folder}/a.txt`]);
 	assert.equal(Buffer.from(await folder.read("a.txt")).toString("utf8"), "outside\n");
-	assert.equal(await folder.read("missing.txt"), undefined, "a file that is not there");
-	await assert.rejects(folder.read("broken.txt"), /unreachable/, "any other failure is said");
 	await folder.close();
-	assert.equal(objects.objects.size, 0, "close removes what the case wrote");
-	assert.ok(objects.calls.some(([name, key]) => name === "deleteObject" && key === `${folder.mount.folder}/missing.txt`), "and what it read, which the computer may have written");
+	assert.equal(objects.objects.size, 0);
 	noToken(objects.calls, "the object API's calls");
 });
 

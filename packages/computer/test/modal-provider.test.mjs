@@ -1139,6 +1139,8 @@ test("no real Modal client: the provider and the conformance module import nothi
 		archilDisk: "COMPUTER_ARCHIL_DISK",
 		archilRegion: "COMPUTER_ARCHIL_REGION",
 		archilToken: "COMPUTER_ARCHIL_TOKEN",
+		archilApiKey: "COMPUTER_ARCHIL_API_KEY",
+		archilS3Url: "COMPUTER_ARCHIL_S3_URL",
 	});
 	assert.equal(module.CONFORMANCE_MAX_LIFETIME_MS, 30 * 60_000);
 });
@@ -1273,9 +1275,13 @@ test("the conformance module refuses an ambient MODAL_SERVER_URL in words, befor
 test("the provider's fromEnv() reads the COMPUTER_MODAL_ names without the live switch, which stays the conformance module's, and keeps Modal's 24-hour cap", async () => {
 	const modalModule = await import("../dist/modal.js");
 	const conformance = await import("../dist/conformance/modal.js");
-	const { live, archilDisk, archilRegion, archilToken, ...providerNames } = conformance.MODAL_ENV;
+	const { live, archilDisk, archilRegion, archilToken, archilApiKey, archilS3Url, ...providerNames } = conformance.MODAL_ENV;
 	assert.deepEqual(modalModule.ENV, providerNames);
-	assert.deepEqual([archilDisk, archilRegion, archilToken], ["COMPUTER_ARCHIL_DISK", "COMPUTER_ARCHIL_REGION", "COMPUTER_ARCHIL_TOKEN"], "the mount cases' disk is the module's to read, never the provider's");
+	assert.deepEqual(
+		[archilDisk, archilRegion, archilToken, archilApiKey, archilS3Url],
+		["COMPUTER_ARCHIL_DISK", "COMPUTER_ARCHIL_REGION", "COMPUTER_ARCHIL_TOKEN", "COMPUTER_ARCHIL_API_KEY", "COMPUTER_ARCHIL_S3_URL"],
+		"the mount cases' disk is the module's to read, never the provider's",
+	);
 	assert.equal(live, "AGENTRUN_COMPUTER_LIVE_MODAL");
 	const env = { ...DEV_TOKEN, COMPUTER_MODAL_APP: APP };
 	const refused = fakeClient();

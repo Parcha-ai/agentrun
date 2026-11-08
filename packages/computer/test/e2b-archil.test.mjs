@@ -314,16 +314,25 @@ test("the E2B conformance module: mountFor(\"archil\") gives a fresh run folder 
 	assert.equal(E2B_ENV.archilDisk, "COMPUTER_ARCHIL_DISK");
 	assert.equal(E2B_ENV.archilRegion, "COMPUTER_ARCHIL_REGION");
 	assert.equal(E2B_ENV.archilToken, "COMPUTER_ARCHIL_TOKEN");
-	const env = { AGENTRUN_COMPUTER_LIVE_E2B: "1", COMPUTER_ARCHIL_DISK: MOUNT.disk, COMPUTER_ARCHIL_REGION: MOUNT.region, COMPUTER_ARCHIL_TOKEN: TOKEN };
+	assert.equal(E2B_ENV.archilApiKey, "COMPUTER_ARCHIL_API_KEY");
+	assert.equal(E2B_ENV.archilS3Url, "COMPUTER_ARCHIL_S3_URL");
+	const settings = {
+		COMPUTER_ARCHIL_DISK: MOUNT.disk,
+		COMPUTER_ARCHIL_REGION: MOUNT.region,
+		COMPUTER_ARCHIL_TOKEN: TOKEN,
+		COMPUTER_ARCHIL_API_KEY: "key-archil-account-0123456789abcdef",
+		COMPUTER_ARCHIL_S3_URL: "https://s3.green.us-east-1.aws.prod.archil.com",
+	};
+	const env = { AGENTRUN_COMPUTER_LIVE_E2B: "1", ...settings };
 	assert.equal(settingsFromEnv({}), undefined);
-	assert.deepEqual(settingsFromEnv(env), { disk: MOUNT.disk, region: MOUNT.region, token: TOKEN });
+	assert.deepEqual(settingsFromEnv(env), { disk: MOUNT.disk, region: MOUNT.region, token: TOKEN, apiKey: settings.COMPUTER_ARCHIL_API_KEY, s3BaseUrl: settings.COMPUTER_ARCHIL_S3_URL });
 	assert.throws(() => settingsFromEnv({ COMPUTER_ARCHIL_TOKEN: TOKEN }), (error) => /COMPUTER_ARCHIL_DISK/.test(error.message) && !error.message.includes(TOKEN));
 	assert.equal(await mountFor("bind", { env }), undefined);
 	assert.equal(await mountFor("archil", { env: {} }), undefined);
-	await assert.rejects(mountFor("archil", { env: { ...env, AGENTRUN_COMPUTER_LIVE_E2B: undefined }, archilDisk: fakeObjects() }), /AGENTRUN_COMPUTER_LIVE_E2B/);
-	await assert.rejects(mountFor("archil", { env }), /archilDisk/);
+	await assert.rejects(mountFor("archil", { env: { ...env, AGENTRUN_COMPUTER_LIVE_E2B: undefined }, archil: { objects: fakeObjects() } }), /AGENTRUN_COMPUTER_LIVE_E2B/);
+	// The shared run folder (src/conformance/archil.ts), on an object API given.
 	const objects = fakeObjects();
-	const folder = await mountFor("archil", { env, archilDisk: objects });
+	const folder = await mountFor("archil", { env, archil: { objects } });
 	assert.deepEqual({ ...folder.mount, folder: undefined }, { ...MOUNT, folder: undefined });
 	assert.match(folder.mount.folder, /^agents\/conformance\/runs\/[A-Za-z0-9][A-Za-z0-9_-]*\/work$/);
 	await folder.write("b.txt", Buffer.from("outside\n"));
