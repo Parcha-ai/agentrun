@@ -85,8 +85,13 @@ describe("bash and the background tools on a Docker computer", { skip: LIVE ? fa
 	it("demo: starts `echo started; sleep 30; echo done`, lists it, signals it and sees it gone, at once", async () => {
 		client = await fresh();
 		const begun = Date.now();
-		const id = await background("echo started; sleep 30; echo done");
+		const started = answer(await bashBackground(client, { command: "echo started; sleep 30; echo done" }, AT));
+		const { id } = started.details;
+		assert.equal(id, "1", "the run's first background process");
+		assert.equal(started.text, `Started background process 1 (process group ${started.details.pid}). Its output goes to background/1/output.log in work/: read it with bash_output {"id": "1"}, write its stdin with bash_input, end it with bash_signal.`);
 		await until(id, /started\n$/);
+		// computerd writes the log in the run's folder, a file of its own.
+		assert.equal(answer(await bash(client, { command: "cat background/1/output.log; stat -c '%a %F' background/1/output.log", ...AT })).output, "started\n644 regular file\n");
 		assert.match(answer(await bashList(client)).text, new RegExp(`^1 of at most 8 running\\.\\n${id}: is running; 8 bytes of output; started \\d{4}-\\d\\d-\\d\\dT[\\d:]+Z; "echo started; sleep 30; echo done"$`));
 		assert.equal(answer(await bashSignal(client, { id, signal: "TERM" })).text, `Sent TERM to background process ${id}: it ended by signal TERM (exit code 143).`);
 		assert.match(answer(await bashList(client)).text, new RegExp(`^0 of at most 8 running\\.\\n${id}: ended by signal TERM \\(exit code 143\\); 8 bytes of output;`));
@@ -114,8 +119,18 @@ describe("bash and the background tools on a Docker computer", { skip: LIVE ? fa
 		assert.match(answer(await bashList(client)).text, new RegExp(`\\n${id}: is running;`));
 		const child = Number(answer(await bash(client, { command: "cat child.pid", ...AT })).output.trim());
 		assert.equal(await alive(child), true);
-		assert.match(answer(await bashSignal(client, { id, signal: "TERM" })).text, new RegExp(`^Sent TERM to background process ${id}: it ended by signal TERM \\(exit code 143\\)\\.$`));
+		// The shell itself exited 0; its job ended with the TERM, and only then is the process done.
+		assert.equal(answer(await bashSignal(client, { id, signal: "TERM" })).text, `Sent TERM to background process ${id}: it exited with code 0.`);
 		assert.equal(await alive(child), false, "the job is gone with it");
+	});
+
+	it("a child that leaves the command's group (its own session, a daemon) is not tracked, and runs on to the computer's end", async () => {
+		const id = await background("setsid sleep 300 >/dev/null 2>&1 </dev/null & echo $! > daemon.pid; echo started");
+		assert.match(await until(id, /exited/), new RegExp(`^Background process ${id} exited with code 0\\.`));
+		const daemon = Number(answer(await bash(client, { command: "cat daemon.pid", ...AT })).output.trim());
+		await sleep(500);
+		assert.equal(await alive(daemon), true, "the daemon runs on after its process ended");
+		answer(await bash(client, { command: `kill ${daemon}`, ...AT }));
 	});
 
 	it("stdin reaches a `read` loop, line by line; close: true ends its input", async () => {
@@ -168,14 +183,18 @@ describe("bash and the background tools on a Docker computer", { skip: LIVE ? fa
 		assert.match(answer(await bashList(client)).text, new RegExp(`\\n${tty}: exited with code 0;[^\\n]*\\(tty\\)`));
 	});
 
-	it("a log keeps its last 8 MiB, and says what it dropped", async () => {
-		const id = await background("head -c 9000000 /dev/zero | tr '\\0' x; echo; echo after the cap >&2; exit 4");
+	it("a log keeps its first 16 MiB, and the process runs on past the cap", async () => {
+		const LOG = 16 * 1024 * 1024;
+		const id = await background(`head -c ${LOG + 4096} /dev/zero | tr '\\0' x; echo; echo after the cap >&2; exit 4`);
 		await until(id, /exited with code 4/, 60_000);
-		const read = answer(await bashOutput(client, { id }));
-		assert.equal(read.details.size, 9_000_015);
-		assert.equal(read.details.dropped, 9_000_015 - 8 * 1024 * 1024);
-		assert.match(read.text, new RegExp(`^Background process ${id} exited with code 4\\. Output bytes 611,407 to 660,559 of 9,000,015; call again with offset 660559 for the next part\\. The log keeps the last 8 MiB of output: bytes 0 to 611,407 were dropped before they were read\\.\\n\\nx+$`));
-		assert.match(answer(await bashOutput(client, { id, offset: 8_999_999 })).text, /the end\.\n\nx\nafter the cap\n$/);
+		assert.equal(answer(await bashOutput(client, { id, offset: LOG - 3 })).text, `Background process ${id} exited with code 4. Output bytes 16,777,213 to 16,777,216 of 16,777,216, the end. Its log reached the 16 MiB cap, so later output was dropped.\n\nxxx`);
+		assert.equal(answer(await bash(client, { command: `stat -c %s background/${id}/output.log`, ...AT })).output, `${LOG}\n`);
+	});
+
+	it("a link at work/background starts nothing, and nothing is written where it points", async () => {
+		answer(await bash(client, { command: "mkdir -p linked elsewhere && ln -s ../elsewhere linked/background", ...AT }));
+		refused(await bashBackground(client, { command: "echo ran > ran" }, { cwd: "/tmp/linked" }), "invalid", /^work\/background is a link, so no background process starts/);
+		assert.equal(answer(await bash(client, { command: "ls -A elsewhere; ls linked", ...AT })).output, "background\n");
 	});
 
 	it("the per-run cap refuses a ninth in words; endBackground ends every one, a TERM-proof one by KILL", async () => {

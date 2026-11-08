@@ -56,6 +56,7 @@ function handleOf(entry) {
 		write(text) {
 			if (!entry.running) return;
 			entry.output = Buffer.concat([entry.output, Buffer.from(text)]);
+			if (entry.log) entry.computer.contents.set(entry.log, entry.output.subarray(0, entry.computer.logBytes));
 			notify(entry);
 		},
 		end({ exitCode = null, signal = null } = {}) {
@@ -71,15 +72,31 @@ function handleOf(entry) {
  * returns for its argv: `{ refuse: [kind, message] }` refuses the start; else `start(handle)`, `input(text, handle)`
  * and `signal(name, handle)` (true keeps it running; KILL always ends it) run it. With no program, echo ends at once and
  * anything else runs until a signal ends it. Output goes to one stream, stdout (or pty), kept whole but read as a ring of
- * the computer's ringBytes: a read before the ring's start begins at its start and says how much it dropped.
+ * the computer's ringBytes: a read before the ring's start begins at its start and says how much it dropped. A start
+ * with a log makes the file in the tree (refused through a "symlink" entry at it or a parent, or where one is), keeps
+ * the first logBytes of the output in `contents` at it, and reads them as the "log" stream.
  */
 async function processes(computer, method, params) {
 	const table = computer.processes;
 	if (method === "process.start") {
+		if (params.log !== undefined) {
+			const parts = params.log.split("/");
+			for (let i = 2; i <= parts.length; i++) {
+				const at = parts.slice(0, i).join("/");
+				if (computer.tree.get(at) === "symlink") throw refusal("denied", `${at} is a link: a log is never written through one`);
+			}
+			if (computer.tree.has(params.log)) throw refusal("exists", `${params.log} exists: a log is a new file`);
+		}
 		const program = computer.programs?.(params.argv, params);
 		if (program?.refuse) throw refusal(...program.refuse);
+		if (params.log !== undefined) {
+			const parts = params.log.split("/");
+			for (let i = 2; i < parts.length; i++) computer.tree.set(parts.slice(0, i).join("/"), "dir");
+			computer.tree.set(params.log, "file");
+			computer.contents.set(params.log, Buffer.alloc(0));
+		}
 		const pty = params.pty !== undefined;
-		const entry = { id: `p${table.length + 1}`, pid: 100 + table.length, argv: params.argv, pty, startedAt: Date.now(), program, stdin: pty || params.stdin === true, closed: false, output: Buffer.alloc(0), waiters: [] };
+		const entry = { id: `p${table.length + 1}`, pid: 100 + table.length, argv: params.argv, pty, startedAt: Date.now(), program, stdin: pty || params.stdin === true, closed: false, output: Buffer.alloc(0), waiters: [], log: params.log, computer };
 		Object.assign(entry, program === undefined && params.argv[0] === "echo" ? { running: false, exitCode: 0, signal: null, endedAt: Date.now() } : { running: true, exitCode: null, signal: null, endedAt: null });
 		table.push(entry);
 		program?.start?.(handleOf(entry));
@@ -93,6 +110,16 @@ async function processes(computer, method, params) {
 	}
 	const entry = table.find((one) => one.id === params.id);
 	if (entry === undefined) throw refusal("not_found", `no process ${params.id}`);
+	if (method === "process.read" && params.stream === "log") {
+		if (!entry.log) throw refusal("invalid", `process ${entry.id} has no log`);
+		const head = () => entry.output.subarray(0, computer.logBytes);
+		if (params.offset > head().length) throw refusal("invalid", `offset ${params.offset} is past the end of ${entry.id}'s log, ${head().length} bytes so far`);
+		if (params.offset === head().length && entry.running && (params.waitMs ?? 0) > 0) await changed(entry, params.waitMs);
+		const now = head();
+		const data = now.subarray(params.offset, Math.min(now.length, params.offset + (params.maxBytes ?? MAX_READ)));
+		const nextOffset = params.offset + data.length;
+		return { data: data.toString("base64"), nextOffset, dropped: 0, exited: !entry.running && nextOffset === now.length, size: now.length, ...(entry.output.length > computer.logBytes ? { capped: true } : {}) };
+	}
 	if (method === "process.read") {
 		const stream = entry.pty ? "pty" : "stdout";
 		if (params.stream !== stream && !(params.stream === "stderr" && !entry.pty)) throw refusal("invalid", `process ${entry.id} has no stream ${params.stream}`);
@@ -181,6 +208,10 @@ function fakeDaemon(hello, computer) {
 			else if (request.method === "exec.run") {
 				const stdout = output(request.params.argv, { ...computer, user: request.params.user });
 				reply({ result: { exitCode: 0, stdout: b64(stdout), stderr: "", timedOut: false, truncated: false } });
+			} else if (request.method === "files.stat") {
+				const type = computer.tree.get(request.params.path);
+				if (type === undefined) reply({ error: { code: -32000, message: `${request.params.path} does not exist`, data: { kind: "not_found" } } });
+				else reply({ result: { type, size: 0, mode: 0o755, mtimeMs: 0, uid: 1000, gid: 1000 } });
 			} else if (["files.mkdir", "files.write", "files.list"].includes(request.method)) reply({ result: files(computer, request.method, request.params) });
 			else if (["process.start", "process.read", "process.write", "process.wait", "process.signal", "process.list"].includes(request.method)) {
 				processes(computer, request.method, request.params).then(
@@ -208,7 +239,8 @@ function fakeDaemon(hello, computer) {
  * - `kind`, `mode` (capabilities().daemon), `groups`, `maxLifetimeMs`: what capabilities() declares; check() refuses a
  *   lifetime past maxLifetimeMs. `hello` is merged over the hello the daemon gives.
  * - `programs(argv, params)`: what each process.start runs (see processes); `ringBytes`: how much of a process's output
- *   a read reaches, its last bytes.
+ *   a read reaches, its last bytes; `logBytes`: how much of it a log keeps, its first bytes. The tree's paths hold
+ *   "dir", "file" or "symlink" (files.stat answers its type).
  * `daemon(name)` is computer `name`'s daemon record: its `requests` ([method, params] of every request), `processes`,
  * `signals` and `inputs` ([id, signal] and [id, text, close] of each one sent), and `contents` (written files' bytes).
  */
@@ -240,6 +272,7 @@ export function fakeComputers({
 	filesPage = 100,
 	programs,
 	ringBytes = 8 * 1024 * 1024,
+	logBytes = 16 * 1024 * 1024,
 } = {}) {
 	const computers = new Map();
 	const made = [];
@@ -284,6 +317,7 @@ export function fakeComputers({
 					filesPage,
 					programs,
 					ringBytes,
+					logBytes,
 					requests: [],
 					signals: [],
 					inputs: [],
