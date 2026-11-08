@@ -1,13 +1,15 @@
 #!/bin/sh
 # agentrun-archil: the root helper of a remote computer, which keeps one run's work folder on the owner's Archil disk
-# at /workspace. It does four things and nothing else, each with fixed arguments to the archil client or to computerd:
+# at /workspace. It does four things and nothing else, each with fixed arguments to the archil client, to chown or to
+# computerd:
 #
 #   mount  <disk> <region> agents/<agent>/runs/<run>/work   the disk token as one line on fd 0
 #   revoke <disk> <region> agents/<agent>/runs/<run>/work   the disk token as one line on fd 0
 #   serve
 #   checkin
 #
-# mount   archil mount <disk>:/<path> /workspace --region <region>: exclusive, so no other client writes the folder.
+# mount   archil mount <disk>:/<path> /workspace --region <region>: exclusive, so no other client writes the folder;
+#         then the folder's top (alone) is given to agentrun-tool, whatever owner the disk's object API made it with.
 # revoke  the same with --force: takes the folder back from a computer that is gone and left its delegation behind.
 # serve   becomes `computerd sync-serve`, resident, holding no token: on its socket it takes one fixed byte and answers
 #         the exit code of `archil sync /workspace` (every write so far durable), coalesced; it exits when the mount
@@ -28,8 +30,9 @@
 # or extra segment), a mountpoint that is a link or not empty, or a token of any other shape exits 2 and runs nothing.
 # A serve or checkin with nothing mounted exits 3 and runs nothing. A mount or revoke in a computer whose /proc lets a
 # user see another's processes (no hidepid=2 or invisible) exits 4 and runs nothing; each first remounts /proc with
-# hidepid=2, which a computer whose root may not remount leaves as it was. A serve whose computerd is not root's alone
-# exits 4.
+# hidepid=2, which a computer whose root may not remount leaves as it was. A mount the client refuses answers the
+# client's exit code; a mount whose top cannot then be given to agentrun-tool exits 4. A serve whose computerd is not
+# root's alone exits 4.
 set -eu
 umask 077
 PATH=/usr/sbin:/usr/bin:/sbin:/bin
@@ -43,6 +46,7 @@ ARCHIL=/usr/bin/archil
 MP=/workspace
 MOUNTS=/proc/self/mounts
 MOUNT=/usr/bin/mount
+CHOWN=/usr/bin/chown
 TOOL=agentrun-tool
 COMPUTERD=/opt/agentrun/computerd
 SOCK=/run/agentrun-archil/archil.sock
@@ -96,11 +100,18 @@ take() {
   IFS= read -r token || [ -n "$token" ] || refuse "no token on fd 0"
   [ "${#token}" -ge 16 ] && [ "${#token}" -le 4096 ] || refuse "the token is not a disk token"
   case "$token" in *[!A-Za-z0-9._~+/=-]*) refuse "the token is not a disk token" ;; esac
-  # In the environment of archil's exec alone (this shell's own was fixed at its start and never holds it), and archil
-  # runs as root, so no other user reads it there.
-  ARCHIL_MOUNT_TOKEN=$token
-  export ARCHIL_MOUNT_TOKEN
-  exec "$ARCHIL" mount $force "$disk:/$folder" "$MP" --region "$region"
+  # In the environment of archil's command alone (an assignment before the command, never exported to this shell's own,
+  # which was fixed at its start), and archil runs as root, so no other user reads it there.
+  rc=0
+  ARCHIL_MOUNT_TOKEN=$token "$ARCHIL" mount $force "$disk:/$folder" "$MP" --region "$region" || rc=$?
+  token=
+  [ "$rc" -eq 0 ] || exit "$rc"
+  # The folder's top, whatever owner the disk's object API made it with, is the tool user's: the tools write the run's
+  # folder. Its top alone: what is in it keeps the owners it has.
+  "$CHOWN" "$TOOL:$TOOL" "$MP" || {
+    printf 'agentrun-archil: %s is mounted, but this computer cannot give %s to %s, so the tools could not write it\n' "$MP" "$MP" "$TOOL" >&2
+    exit 4
+  }
 }
 
 # serve and checkin act on the archil mount at $MP; with none there (a computer whose mount went), nothing is held, and
