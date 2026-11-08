@@ -19,14 +19,14 @@ const names = (list: readonly string[]) => (list.length < 2 ? list.join("") : `$
  *  key, refused with 409 sign_in_held while a run holds any of them; it keeps them all under `default`): on the row when
  *  one vendor is under the key, once for the group when several are, its confirm naming each. A run holding any of a
  *  key's sign-ins is named on its row, and the key's Forget waits for it to end; one that takes it meanwhile is said from
- *  the 409. Each vendor's result is named: a delete it didn't confirm, with its message. Nothing on a server that serves
- *  no `sign_ins`; with none saved, a line only for an agent whose browser is a vendor's (its `tools` entry resolves to one). */
+ *  the 409. Each vendor's result is named: a delete it didn't confirm, with its message. With none saved, a line only for an
+ *  agent whose browser is a vendor's (its `tools` entry resolves to one). */
 export function SignIns({ agent, v2, onAgent }: { agent: Agent; v2: Pick<Client, "forgetSignIn" | "getAgent">; onAgent: (agent: Agent) => void }) {
   const [asking, setAsking] = useState<string | null>(null);
   const [busy, setBusy] = useState(false);
   const [said, setSaid] = useState<{ text: string; run?: string; tone: "warn" | "error" } | null>(null);
-  const list = agent.sign_ins;
-  if (!list) return null;
+  // The server always serves the list (GET /v2/agents/{id}); an agent read without one has none saved.
+  const list = agent.sign_ins ?? [];
   const resolved = agent.tools?.find((t) => t.name === "browser")?.resolved;
   if (!list.length && resolved !== "browserbase" && resolved !== "kernel") return null;
   const groups = [...new Set(list.map((s) => s.key))].map((key) => ({ key, items: list.filter((s) => s.key === key) }));
