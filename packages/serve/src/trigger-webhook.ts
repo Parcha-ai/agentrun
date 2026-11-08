@@ -7,8 +7,9 @@ import { MIN_KEY_BYTES } from "./standard-webhooks.js";
 import { ACCEPT_SCHEMA, acceptOf, acceptRefusal, type Rule } from "./trigger-accept.js";
 import { closedSchema, type Source, type TriggerAdapter, unknownSourceFields } from "./trigger-adapter.js";
 import { DEFAULT_SCHEME, SCHEME_NAMES, SIGNATURE_SCHEMES, schemeOf } from "./trigger-signatures.js";
+import { isObject } from "./validate.js";
 
-/** The longest of a sender's event names a log line keeps. */
+/** The longest of a sender's words a payload's attrs keep (its event, its action). */
 const ATTR_CHARS = 200;
 
 /** The scheme a trigger's source takes. */
@@ -72,20 +73,20 @@ export const webhook: TriggerAdapter = {
       // The trigger's scheme is checked after the signature, so a request of another scheme costs what any refusal does.
       return refusal ?? (source && schemeName(source) !== asked.name ? "other_scheme" : undefined);
     },
-    // The request is the firing: its delivery id keys it, and its body, whatever it holds, is what the run is given. A
-    // trigger with `accept` takes only the events it names, the event as its scheme reads it.
+    // The request is the firing: its delivery id keys it, and its body, whatever it holds, is what the run is given, with
+    // its scheme, event and action named on the payload's tag. A trigger with `accept` takes only the events it names.
     parse(headers, body, source) {
       const asked = schemeOf(headers);
       if ("refusal" in asked) return [];
       const text = body.toString("utf8");
+      const doc = jsonOf(text);
+      const event = asked.scheme.eventOf(headers, doc);
+      const action = isObject(doc) && typeof doc.action === "string" ? doc.action : undefined;
       const rules = source?.accept as Rule[] | undefined;
-      if (rules) {
-        const doc = jsonOf(text);
-        const event = asked.scheme.eventOf(headers, doc);
-        const ignored = acceptRefusal(rules, event, doc);
-        if (ignored) return { ignored, ...(event !== undefined ? { event: event.slice(0, ATTR_CHARS) } : {}) };
-      }
-      return [{ key: asked.scheme.deliveryIdOf(headers), text }];
+      const ignored = rules && acceptRefusal(rules, event, doc);
+      if (ignored) return { ignored, ...(event !== undefined ? { event: event.slice(0, ATTR_CHARS) } : {}) };
+      const attrs = { scheme: asked.name, ...(event !== undefined ? { event: event.slice(0, ATTR_CHARS) } : {}), ...(action !== undefined ? { action: action.slice(0, ATTR_CHARS) } : {}) };
+      return [{ key: asked.scheme.deliveryIdOf(headers), text, attrs }];
     },
   },
 };

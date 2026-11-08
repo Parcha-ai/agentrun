@@ -57,8 +57,8 @@ export type PushDeps = {
   adapters: readonly TriggerAdapter[];
   /** The source of trigger `id`, when it is a trigger of the pushed source `kind` that is on. */
   hooked(id: string, kind: string): Source | undefined;
-  /** Its firing for the event, recorded (triggers.ts receive). */
-  receive(id: string, eventId: string, payload: string): { created: boolean; firing: unknown };
+  /** Its firing for the event, recorded (triggers.ts receive), with what the source says of it (`attrs`). */
+  receive(id: string, eventId: string, payload: string, attrs?: Record<string, string>): { created: boolean; firing: unknown };
   /** The triggers of the pushed source `kind`, on, that listen on `scope` (its adapter's scopeOf). */
   scoped(kind: string, scope: string): string[];
   /** A source's sealed setting (sealed-settings.ts): its key, for a scope. */
@@ -107,7 +107,7 @@ export async function receivePush(deps: PushDeps, req: IncomingMessage, segment:
   }
   // A trigger's own path: its one event is its firing, answered as the firing.
   if (pathTrigger) {
-    const { created, firing } = deps.receive(pathTrigger, events[0]!.key, events[0]!.text);
+    const { created, firing } = deps.receive(pathTrigger, events[0]!.key, events[0]!.text, events[0]!.attrs);
     return { status: created ? 202 : 200, body: firing, ...(created ? {} : { headers: { "idempotent-replayed": "true" } }) };
   }
   // A server-wide source's: each event fires the one trigger that listens on its scope (a scope belongs to one trigger:
@@ -116,7 +116,7 @@ export async function receivePush(deps: PushDeps, req: IncomingMessage, segment:
   const fired: { created: boolean; firing: unknown }[] = [];
   for (const event of events) {
     const ids = event.scope === undefined ? [] : deps.scoped(adapter.id, event.scope);
-    if (ids.length === 1) fired.push(deps.receive(ids[0]!, event.key, event.text));
+    if (ids.length === 1) fired.push(deps.receive(ids[0]!, event.key, event.text, event.attrs));
     else if (!ids.length) deps.say({ condition: "hook_no_trigger", source: adapter.id, route, scope: String(event.scope ?? "") });
     else deps.say({ condition: "hook_scope_ambiguous", source: adapter.id, route, scope: String(event.scope), triggers: ids.join(",") });
   }

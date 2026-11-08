@@ -100,6 +100,8 @@ type Firing = {
   paused?: boolean;
   /** A webhook firing's payload, cut to PAYLOAD_KEPT_BYTES, kept while it is due: what its run is given. */
   payload?: string;
+  /** What its source says of the payload (a webhook's scheme, event and action), kept with it: named on its tag. */
+  attrs?: Record<string, string>;
 };
 type Trigger = {
   id: string; name: string; enabled: boolean; source: Source; target: Target; created_at: string; updated_at: string; next_at: string | null; firings: Firing[];
@@ -348,7 +350,7 @@ export class Triggers {
   /** A delivered request for trigger `id` (its pushed source's checks passed, server.ts): its firing, keyed by the
    *  sender's own id for it (a webhook's `webhook-id`), recorded due in one write and driven after the answer. `created`
    *  false: that id's firing, as it stands. */
-  receive(id: string, eventId: string, payload: string): { created: boolean; firing: ReturnType<typeof firingView> } {
+  receive(id: string, eventId: string, payload: string, attrs?: Record<string, string>): { created: boolean; firing: ReturnType<typeof firingView> } {
     const trigger = this.need(id);
     const by = trigger.source.kind;
     const key = firingKey(by, id, eventId);
@@ -356,7 +358,7 @@ export class Triggers {
     if (known) return { created: false, firing: firingView(known) };
     this.roomFor(trigger);
     const now = this.clock.now();
-    const firing: Firing = { key, by, nominal_at: second(now), status: "due", at: iso(now), payload: cut(payload) };
+    const firing: Firing = { key, by, nominal_at: second(now), status: "due", at: iso(now), payload: cut(payload), ...(attrs && Object.keys(attrs).length ? { attrs } : {}) };
     this.commit(() => this.record(trigger, firing));
     void this.inTurn(id, key);
     return { created: true, firing: firingView(firing) };
@@ -652,7 +654,10 @@ export class Triggers {
         if (!found) return;
         // Out of due, a firing keeps no retry, nor the reason the last try gave.
         Object.assign(found.firing, change.status === "due" || change.status === undefined ? change : { reason: undefined, attempts: undefined, retry_at: undefined, ...change });
-        if (change.status !== undefined && change.status !== "due") delete found.firing.payload;
+        if (change.status !== undefined && change.status !== "due") {
+          delete found.firing.payload;
+          delete found.firing.attrs;
+        }
         // Run ids are UUIDv7s, which sort by when the run started: a firing that finds an older run (a run now's key
         // retried past its day) never takes the place of a later one.
         const last = found.trigger.last_run_id;
@@ -804,15 +809,15 @@ export class Triggers {
     return { kind: "trigger", trigger_id: trigger.id, source: trigger.source.kind as Extract<MessageOrigin, { kind: "trigger" }>["source"], owner: this.adapter(trigger.source).owner };
   }
 
-  /** The run's input: the trigger's, then a pushed firing's payload marked untrusted (tagged with its source), then a
-   *  line saying what fired it and when, in the trigger's zone. */
+  /** The run's input: the trigger's, then a pushed firing's payload marked untrusted (tagged with its source and what the
+   *  source says of it), then a line saying what fired it and when, in the trigger's zone. */
   private inputOf(trigger: Trigger, firing: Firing): Json {
     const adapter = this.adapter(trigger.source);
     const when = local(Date.parse(firing.nominal_at), adapter.zone?.(trigger.source) ?? "UTC");
     const what = `the ${adapter.label} "${trigger.name}"`;
     const line = firing.by === "manual" ? `(Started by hand from ${what} at ${when}.)` : adapterIn(this.adapters, firing.by)?.delivery === "push" ? `(From ${what}, received at ${when}.)` : `(Started by ${what} for ${when}.)`;
     // The payload is whatever its sender wrote: an instruction in it is data, and its closing tag cannot end the block.
-    const payload = firing.payload === undefined ? "" : `\n\n<trigger-payload source="${firing.by}" untrusted>\n${firing.payload.replaceAll("</trigger-payload", "<\\/trigger-payload")}\n</trigger-payload>`;
+    const payload = firing.payload === undefined ? "" : `\n\n<trigger-payload source="${firing.by}"${tagAttrs(firing.attrs)} untrusted>\n${firing.payload.replaceAll("</trigger-payload", "<\\/trigger-payload")}\n</trigger-payload>`;
     const { input } = trigger.target;
     return typeof input.content === "string" ? { ...input, content: `${input.content}${payload}\n\n${line}` } : input;
   }
@@ -827,6 +832,14 @@ const DATE_MAX_MS = 8.64e15;
 
 function firingView(firing: Firing) {
   return { key: firing.key, by: firing.by, nominal_at: firing.nominal_at, status: firing.status, at: firing.at, run_id: firing.run_id ?? null, reason: firing.reason ?? null, error: firing.error ?? null, ...(firing.count !== undefined ? { count: firing.count } : {}), ...(firing.catch_up ? { catch_up: true } : {}), ...(firing.retry_at ? { attempts: firing.attempts ?? 0, retry_at: firing.retry_at } : {}) };
+}
+
+/** A payload tag's attributes from its source's `attrs`, each ` name="value"`: a name of lowercase letters, digits, `_` and
+ *  `-` (never one the tag sets itself), a value cut to 200 characters with `&`, `<`, `>`, `"` escaped and line breaks
+ *  made spaces, so a sender's words cannot end the tag or open another. */
+function tagAttrs(attrs: Record<string, string> | undefined): string {
+  const escape = (value: string) => value.slice(0, 200).replace(/[&<>"]/g, (c) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;" })[c]!).replace(/[\r\n\t]/g, " ");
+  return Object.entries(attrs ?? {}).filter(([name, value]) => /^[a-z][a-z0-9_-]{0,31}$/.test(name) && name !== "source" && name !== "untrusted" && typeof value === "string").map(([name, value]) => ` ${name}="${escape(value)}"`).join("");
 }
 
 /** `text` cut to PAYLOAD_KEPT_BYTES of UTF-8 at a character's start, and said to be cut. */
