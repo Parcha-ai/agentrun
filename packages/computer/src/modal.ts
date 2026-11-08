@@ -108,7 +108,8 @@ export interface ModalSandbox {
 /** The part of the SDK's ModalClient this provider calls. The host passes its own client. */
 export interface ModalSdk {
 	readonly apps: { fromName(name: string, params: { createIfMissing: true }): Promise<ModalApp> };
-	readonly images: { fromRegistry(tag: string): ModalImage };
+	/** fromId opens an image Modal already holds (im-..., as box/build-modal.py prints it); a spec naming one needs it. */
+	readonly images: { fromRegistry(tag: string): ModalImage; fromId?(id: string): Promise<ModalImage> };
 	readonly sandboxes: {
 		create(app: ModalApp, image: ModalImage, params: ModalCreateParams): Promise<ModalSandbox>;
 		fromId(id: string): Promise<ModalSandbox>;
@@ -272,6 +273,8 @@ const VERSION: string = JSON.parse(readFileSync(new URL("../package.json", impor
 const NAME = /^computer-[0-9a-f]{12}$/;
 /** A sandbox id as the SDK takes one; ownership is decided by its tags, never by its shape. */
 const SANDBOX_ID = /^[A-Za-z0-9][A-Za-z0-9_-]{0,127}$/;
+/** An image Modal already holds, by its id, as box/build-modal.py prints it: opened with images.fromId, never pulled. */
+const MODAL_IMAGE_ID = /^im-[A-Za-z0-9]+$/;
 const NAME_TAG = `${COMPUTER_LABEL}.name`;
 const SPEC_TAG = `${COMPUTER_LABEL}.spec`;
 /** "A Sandbox can carry up to 10 tags" (guide/sandboxes#tagging); the provider uses four. */
@@ -865,7 +868,17 @@ export class ModalProvider implements ComputerProvider {
 		// connection runs it as root through Modal's exec, so a path a non-root computer user could change fails the build.
 		const copy =
 			this.#daemonImage === undefined ? [] : [`COPY --from=${this.#daemonImage} /computerd ${DAEMON_IN_COMPUTER}`, `RUN ${JSON.stringify(modalCommands().hold)}`];
-		const image = this.#sdk.images.fromRegistry(spec.image).dockerfileCommands([...copy, `ENV HOME=${WORK}`, `WORKDIR ${workdir}`]);
+		// An im-... image is one Modal already holds (box/build-modal.py's Archil image): opened by its id. Anything else is a
+		// registry tag.
+		let base: ModalImage;
+		if (MODAL_IMAGE_ID.test(spec.image)) {
+			const fromId = this.#sdk.images.fromId;
+			if (typeof fromId !== "function") return fail("invalid", `the image ${spec.image} is a Modal image id, and options.sdk has no images.fromId to open it: pass the SDK's own ModalClient`);
+			const opened = await call(`images.fromId(${spec.image})`, () => fromId.call(this.#sdk.images, spec.image), this.#timeouts.callMs, signal);
+			if (!opened.ok) return opened;
+			base = opened.value;
+		} else base = this.#sdk.images.fromRegistry(spec.image);
+		const image = base.dockerfileCommands([...copy, `ENV HOME=${WORK}`, `WORKDIR ${workdir}`]);
 		const { uploadMs, callMs } = this.#timeouts;
 		// An Archil computer's command is always the entrypoint, which waits for the gate as well as the daemon: init, and
 		// so every tool, starts only once the run's folder is mounted.
