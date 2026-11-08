@@ -81,13 +81,15 @@ export const STOPPED_BY_YOU = "Stopped by you";
 /** What a call a person's stop cut says, in its result. */
 export const CUT_BY_YOU = "stopped by you";
 
-/** The message of a result that is only pi's diagnostics block (`<harness>`, then `[error] …` lines): its first error's,
- *  else its first line's, without the severity or the markup. Undefined for any other text. */
+/** The message of a result that is only pi's diagnostics block (`<harness>`, then `[error] …` lines, then `</harness>`
+ *  and nothing after it): its first error's, else its first line's, without the severity or the markup. Undefined for any
+ *  other text, a tool's own output after such a block included: that is kept whole. */
 function diagnosticOf(text: string): string | undefined {
   const lines = text.trim().split("\n").map((line) => line.trim());
   if (lines[0] !== "<harness>") return undefined;
   const end = lines.indexOf("</harness>");
-  const inner = lines.slice(1, end < 0 ? undefined : end).filter(Boolean);
+  if (end !== lines.length - 1) return undefined;
+  const inner = lines.slice(1, end).filter(Boolean);
   const said = inner.map((line) => /^\[(\w+)\]\s*(.*)$/.exec(line)).filter((match): match is RegExpExecArray => match !== null);
   const first = said.find((match) => match[1] === "error") ?? said[0];
   return first ? (first[2] ?? "") : (inner[0] ?? "");
@@ -133,9 +135,10 @@ export function translate(state: LiveState, commit: JournalCommit): LiveEvent[] 
   for (const entry of commit.entries) if (entry.kind === KINDS.sessionKey) state.sessions.add(Number(dataOf<SessionKeyData>(entry).conversation));
   const own = <T extends { conversationId?: unknown }>(record: T) => !state.sessions.has(Number(record.conversationId));
   const input = commit.submissions.find((record) => record.type === "input" && own(record));
-  // A run record the kernel writes: a call, a message, or a takeover's note (a run taken over before its first call or
-  // message has no other record yet, and its note is no root set-up to fold into the snapshot).
-  const kernelEntry = commit.entries.find((entry) => own(entry) && (entry.kind === KINDS.callStart || entry.kind === KINDS.callEnd || entry.kind === KINDS.message || entry.kind === RUN_RESUMED));
+  // A run record the kernel writes: a call, a message, a takeover's note or the loop's end. A run taken over, or stopped,
+  // before its first call or message has no other record yet (a stop waiting when the loop could not open writes its end
+  // first), and neither is root set-up to fold into the snapshot.
+  const kernelEntry = commit.entries.find((entry) => own(entry) && (entry.kind === KINDS.callStart || entry.kind === KINDS.callEnd || entry.kind === KINDS.message || entry.kind === RUN_RESUMED || entry.kind === KINDS.end));
   state.root ??= input ? Number(input.conversationId) : kernelEntry ? Number(kernelEntry.conversationId) : undefined;
   const mine = <T extends { conversationId?: unknown }>(record: T) => own(record) && state.root !== undefined && Number(record.conversationId) === state.root;
 
