@@ -83,7 +83,7 @@ export interface CustodyPort<D extends BrowserDriver = BrowserDriver> {
   unreachable(): Promise<{ released: boolean; lastUrl: string | null; kept?: "held" | "viewing" | "person_driving" }>;
   /** Holds the session, asks the host's handoff port for a person, and waits for its answer; a rerun waits on the same
    *  request. */
-  handoff(ask: { requestId: string; instruction: string; completionCondition: string }, signal?: AbortSignal): Promise<{ outcome: HandoffOutcome } | { refused: string }>;
+  handoff(ask: { requestId: string; instruction: string; completionCondition: string }, signal?: AbortSignal): Promise<{ outcome: HandoffOutcome; reason?: string } | { refused: string }>;
 }
 
 /** `details` reach the host's UI and wraps, never the model; `usage` is pi's, for the call's spend. */
@@ -281,7 +281,7 @@ export const custodyTools = {
       const answer = await port.handoff({ requestId: args.request_id, instruction: args.instruction, completionCondition: args.completion_condition }, call?.signal);
       if ("refused" in answer) return text(browserFailure("refused", `No person could take the browser: ${answer.refused}. Your session is unchanged; go on without the handoff.`), true);
       const next = answer.outcome === "done" ? "Take a snapshot and verify the completion condition on the page before acting." : "The person did not finish. Take a snapshot to see the page before deciding what to do next.";
-      return text({ ok: true, outcome: answer.outcome, completion_condition: args.completion_condition, next });
+      return text({ ok: true, outcome: answer.outcome, ...(answer.reason ? { reason: answer.reason } : {}), completion_condition: args.completion_condition, next });
     } catch (error) { return failed(error); }
   },
 };

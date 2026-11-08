@@ -431,7 +431,7 @@ class LocalWorkspace implements Workspace {
       const kept = { out: 0, err: 0 };
       let truncated = false;
       let timedOut = false;
-      let exit: { code: number | null } | undefined;
+      let exit: { code: number | null; signal: string | undefined } | undefined;
       let settled = false;
       let grace: NodeJS.Timeout | undefined;
 
@@ -456,7 +456,7 @@ class LocalWorkspace implements Workspace {
         settled = true;
         clearTimeout(timer);
         clearTimeout(grace);
-        resolve({ stdout: Buffer.concat(out), stderr: Buffer.concat(err).toString("utf8"), code: exit.code, timedOut, truncated });
+        resolve({ stdout: Buffer.concat(out), stderr: Buffer.concat(err).toString("utf8"), code: exit.code, ...(exit.signal === undefined ? {} : { signal: exit.signal }), timedOut, truncated });
       };
       const timer = setTimeout(() => { timedOut = true; killGroup(); }, timeoutMs);
 
@@ -472,8 +472,8 @@ class LocalWorkspace implements Workspace {
           : code === "EACCES" ? new WorkspaceError("REFUSED", `${JSON.stringify(argv[0])} is not executable`, { cause: error })
             : new WorkspaceError("UNAVAILABLE", `exec of ${JSON.stringify(argv[0])} failed: ${error.message}`, { cause: error }));
       });
-      child.on("exit", (code) => {
-        exit = { code: timedOut ? null : code };
+      child.on("exit", (code, signal) => {
+        exit = { code: timedOut ? null : code, signal: timedOut || signal === null ? undefined : signal };
         clearTimeout(timer);
         killGroup();
         grace = setTimeout(() => { child.stdout!.destroy(); child.stderr!.destroy(); finish(); }, PIPE_GRACE_MS);
