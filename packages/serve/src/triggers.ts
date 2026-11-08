@@ -24,7 +24,7 @@ import { createHash, randomBytes } from "node:crypto";
 import type { MessageOrigin } from "@parcha/pi-durable-agent/timeline";
 import { ApiError, type InputIssue, invalid } from "./errors.js";
 import { EFFORTS } from "./model.js";
-import { type FiringRow, type NewFiring, type Store, TriggerFull, type TriggerPatch, type TriggerRow } from "./store/index.js";
+import { type FiringRow, type NewFiring, type Store, StoreConstraint, TriggerFull, type TriggerPatch, type TriggerRow } from "./store/index.js";
 import { second, type Source, type TriggerAdapter, validZone } from "./trigger-adapter.js";
 import { TRIGGER_ADAPTERS } from "./trigger-adapters.js";
 import { MAX_EVERY_S } from "./trigger-schedule.js";
@@ -66,6 +66,8 @@ const MAX_NAME = 200;
 const DAY_MS = IDEMPOTENCY_TTL_S * 1000;
 const ENDED = new Set(["completed", "failed", "cancelled"]);
 const LOST_AT_SETUP = "The server stopped while setting up the run.";
+/** Why a message_run trigger turned itself off: the run it messages is gone. */
+const RUN_DELETED = "its run was deleted";
 
 /** `max_cost_usd`: each run's cap; absent, the agent's default as it stands when the firing starts (one of the two is
  *  required: server.ts targetIssues and start). */
@@ -86,9 +88,10 @@ export type TriggerDeps = {
   /** Starts the target's run with `input`, as POST /agents/{id}/runs would, under `origin`; its first message is the
    *  trigger's (`from`, never the person's); ApiError when refused. */
   start(target: Extract<Target, { kind: "start_run" }>, input: Json, origin: RunTrigger, from: MessageOrigin): Promise<{ run_id: string }>;
-  /** Sends `input` to the target's run, as POST /runs/{id}/messages would, under `key` (the run's store takes a message
-   *  once per key), as the trigger's (`from`); ApiError when refused (details.reason "working": the run is mid-turn). */
-  message(target: Extract<Target, { kind: "message_run" }>, input: Json, key: string, from: MessageOrigin): Promise<void | { skipped: string }>;
+  /** Queues `input` for the target's run as a command row (answers false) under `key`, as the trigger's (`from`), within
+   *  `bound` (store.triggers.message: at most `max` of this trigger's rows untaken for the run, else skipped with
+   *  `reason`); ApiError when refused. */
+  message(target: Extract<Target, { kind: "message_run" }>, input: Json, key: string, from: MessageOrigin, bound: { max: number; reason: string }): Promise<void | { skipped: string }>;
   /** An adapter's sealed settings (sealed-settings.ts): a trigger's minted secret made (at its create or a rotation)
    *  and shown once; a trigger's settings removed with it. Undefined for an adapter that keeps none. */
   settings(adapterId: string): { mint(scope: string, field: string): string; remove(scope: string): void } | undefined;
@@ -184,6 +187,10 @@ function readBody(adapters: readonly TriggerAdapter[], body: Json, now: number) 
  *  agent or run its target names: a template package's triggers are checked with it before any apply (templates.ts). */
 export const triggerBodyIssues = (adapters: readonly TriggerAdapter[], body: Json, now: number): InputIssue[] => readBody(adapters, body, now).issues;
 
+/** A trigger is named once per agent (the store's UNIQUE (agent_id, name)): a second of the same name, at a create or a
+ *  rename, is `409 name_taken`; any other error as it is. */
+const nameTaken = (error: unknown, name: string): unknown =>
+  error instanceof StoreConstraint && /triggers\.agent_id, triggers\.name/.test(error.message) ? new ApiError("name_taken", `This agent already has a trigger named ${name}.`) : error;
 /** Why a try failed, as its firing keeps it: an ApiError's code, else internal. */
 const errorOf = (error: unknown) => ({ code: error instanceof ApiError ? error.code : "internal", message: String((error as Error)?.message ?? error) });
 
@@ -249,7 +256,13 @@ export class Triggers {
     const enabled = body.enabled !== false;
     // Its secrets are kept before the trigger is: one that cannot be kept (no seal key) makes none.
     const minted = this.mint(source, id);
-    const row = await this.store.triggers.create({ id, agentId, name: typeof body.name === "string" ? body.name.trim() : id, enabled, source, target, nextAt: enabled ? nextAfter(this.adapter(source), source, now) : null, catchupWindowS: settings.catchup_window_s ?? CATCHUP_WINDOW_S });
+    const name = typeof body.name === "string" ? body.name.trim() : id;
+    let row: TriggerRow;
+    try {
+      row = await this.store.triggers.create({ id, agentId, name, enabled, source, target, nextAt: enabled ? nextAfter(this.adapter(source), source, now) : null, catchupWindowS: settings.catchup_window_s ?? CATCHUP_WINDOW_S });
+    } catch (error) {
+      throw nameTaken(error, name);
+    }
     void this.arm();
     // What it minted, shown this once, by field: a webhook's `secret`.
     return { ...(await this.view(asTrigger(row))), ...(minted as { secret?: string }) };
@@ -310,7 +323,9 @@ export class Triggers {
       ...(typeof body.name === "string" ? { name: body.name.trim() } : {}), ...(source ? { source } : {}), ...(target ? { target } : {}),
       ...(settings.catchup_window_s !== undefined ? { catchupWindowS: settings.catchup_window_s } : {}), ...again, enabled, nextAt: next,
     };
-    const row = await this.store.triggers.update(id, patch);
+    const row = await this.store.triggers.update(id, patch).catch((error: unknown) => {
+      throw nameTaken(error, patch.name ?? trigger.name);
+    });
     if (!row) throw new ApiError("not_found", `no trigger ${id}`);
     void this.arm();
     return this.view(asTrigger(row));
@@ -475,14 +490,23 @@ export class Triggers {
     }
   }
 
-  /** A message_run firing: its message to the target's run, under its key. The run takes it at its next safe point (a
-   *  command row); one whose own state says no (waiting on a person) skips it. */
+  /** A message_run firing: its message to the target's run, under its key, queued as a command row the run takes at its
+   *  next safe point, within the bound per (trigger, run): a clock's firings coalesce to one waiting message, a pushed
+   *  source's or a run now's keep each, up to DUE_KEPT; past it the firing is skipped in words. A target run that is gone
+   *  turns the trigger off. */
   private async send(trigger: Trigger, firing: FiringRow): Promise<void> {
     if (trigger.target.kind !== "message_run") return;
     const { target } = trigger;
+    if (!(await this.store.runs.get(target.run_id))) {
+      await this.store.triggers.update(trigger.id, { enabled: false, nextAt: null, disabled: { at: iso(this.clock.now()), reason: "source_unreadable", detail: RUN_DELETED } });
+      await this.store.triggers.settle(trigger.id, firing.key, { status: "skipped", reason: RUN_DELETED });
+      this.deps.say({ condition: "trigger_source_unreadable", trigger: trigger.id, error: RUN_DELETED });
+      return;
+    }
+    const bound = adapterIn(this.adapters, firing.by)?.delivery === "clock" ? { max: 1, reason: "A message from this trigger is already waiting." } : { max: DUE_KEPT, reason: `${DUE_KEPT} messages from this trigger are already waiting for its run.` };
     let skipped: string | undefined;
     try {
-      skipped = (await this.deps.message(target, this.inputOf(trigger, firing), firing.key, this.originOf(trigger)))?.skipped;
+      skipped = (await this.deps.message(target, this.inputOf(trigger, firing), firing.key, this.originOf(trigger), bound))?.skipped;
     } catch (error) {
       if (this.closed) return;
       return this.answered(trigger.id, firing.key, error, target.run_id);

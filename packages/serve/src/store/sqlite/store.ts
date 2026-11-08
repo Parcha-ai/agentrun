@@ -413,6 +413,24 @@ class SqliteStore implements Store {
         }),
       pending: async () =>
         (await db.all<FiringRecord>(`SELECT ${FIRING_COLUMNS} FROM trigger_firings WHERE status = 'due' OR (status = 'failed' AND (notified IS NULL OR notified = 0)) ORDER BY at, rowid`)).map(firingOf),
+      message: async ({ triggerId, key }, runId, command, bound) =>
+        db.transaction(async (tx) => {
+          const at = now();
+          const firing = await tx.get<{ status: string }>("SELECT status FROM trigger_firings WHERE trigger_id = ? AND key = ?", triggerId, key);
+          if (!firing || firing.status !== "due") return undefined;
+          const waiting = (await tx.get<{ n: number }>(
+            "SELECT COUNT(*) AS n FROM commands WHERE run_id = ? AND taken_at IS NULL AND json_extract(body, '$.origin.trigger_id') = ?", runId, triggerId,
+          ))!.n;
+          const clear = "retry_at = NULL, waits_on = NULL, payload = NULL, attempts = 0";
+          if (waiting >= bound.max) {
+            await tx.run(`UPDATE trigger_firings SET status = 'skipped', reason = ?, ${clear} WHERE trigger_id = ? AND key = ?`, bound.reason, triggerId, key);
+            return { skipped: bound.reason };
+          }
+          const row = await tx.get<{ id: number }>("INSERT INTO commands (run_id, kind, body, created_at) VALUES (?, ?, ?, ?) RETURNING id", runId, command.kind, json(command.body), at);
+          await tx.run(`UPDATE trigger_firings SET status = 'sent', run_id = ?, reason = NULL, ${clear} WHERE trigger_id = ? AND key = ?`, runId, triggerId, key);
+          await tx.run("UPDATE triggers SET failures_in_a_row = 0, updated_at = ? WHERE id = ?", at, triggerId);
+          return { sent: true as const, commandId: row!.id };
+        }),
       waiting: async () =>
         (await db.all<FiringRecord & { free: number }>(
           `SELECT ${FIRING_COLUMNS.split(", ").map((c) => `f.${c}`).join(", ")},

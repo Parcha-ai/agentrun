@@ -318,6 +318,11 @@ export interface Triggers {
   settle(triggerId: string, key: string, change: FiringChange, streak?: FiringStreak): Promise<{ firing: FiringRow; paused: boolean } | undefined>;
   /** Every due firing, and every failed one whose trigger.failed is not marked queued, oldest first. */
   pending(): Promise<FiringRow[]>;
+  /** A message_run firing's message queued for run `runId` as a command row (its body's origin names the trigger), with
+   *  the firing marked sent and the trigger's streak reset, in one transaction; unless the run already holds `bound.max`
+   *  untaken command rows from this trigger, read in that same transaction: then the firing is skipped with
+   *  `bound.reason` and nothing is queued. Undefined when the firing is gone or no longer due. */
+  message(firing: { triggerId: string; key: string }, runId: string, command: { kind: string; body: unknown }, bound: { max: number; reason: string }): Promise<{ sent: true; commandId: number } | { skipped: string } | undefined>;
   /** Every due firing waiting for its trigger's room (waits_on), oldest first, each with whether the room is there now
    *  (fewer of its trigger's started runs not ended than its max_active_runs): one read for all of them. */
   waiting(): Promise<(FiringRow & { readonly free: boolean })[]>;
