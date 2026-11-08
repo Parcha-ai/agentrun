@@ -603,6 +603,17 @@ test("a judge's and a route's decisions are timeline rows: the judge's node, pro
   assert.equal(usage.usage.requests, 3, "the branch's model node request and the two decisions'");
 });
 
+test("a workflow followed live through its end: the usage row its cursor last reads says the run's cost, never \"so far\"", async (t) => {
+  await withCanary(t);
+  const { api } = await serve(t, { fauxJev: FAUX_JEV });
+  const runId = await startFlow(api, [judge, probe()]);
+  // Followed as a client follows a run: every page after the last one's cursor, until a final page.
+  const { rows, last } = await follow(api, runId, ["completed", "failed"]);
+  assert.deepEqual([last.status, last.final], ["completed", true]);
+  const usage = rows.findLast((row) => row.kind === "usage");
+  assert.match(usage?.summary ?? "", /^Cost: /, `the followed usage row: ${JSON.stringify(usage)}`);
+});
+
 test("a decision whose cost the provider reports is on its row, and the run's total counts it once", async (t) => {
   await withCanary(t);
   process.env.AGENTRUN_TEST_FAUX_JEV_COST = "0.00003";
