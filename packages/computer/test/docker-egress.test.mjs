@@ -70,7 +70,7 @@ test("create() with an allowlist makes the volume, starts the proxy and waits fo
 	assert.deepEqual(calls().map((args) => args.slice(0, 2).join(" ")), ["info --format", "context inspect", "volume create", "run --detach", `logs ${volume}`, "run --detach", "inspect --type", "inspect --type", "exec -i"]);
 	assert.deepEqual(calls()[1], ["context", "inspect", "--format", "{{json .Endpoints.docker.Host}}"], "where the docker CLI's daemon is, as the CLI itself resolves it");
 	const [uid, gid] = DEFAULT_USER.split(":");
-	assert.deepEqual(calls()[1], ["volume", "create", "--driver", "local", "--opt", "type=tmpfs", "--opt", "device=tmpfs", "--opt", `o=size=1m,uid=${uid},gid=${gid},mode=0700`, "--label", `agentrun.computer.egress=${name}`, volume]);
+	assert.deepEqual(calls()[2], ["volume", "create", "--driver", "local", "--opt", "type=tmpfs", "--opt", "device=tmpfs", "--opt", `o=size=1m,uid=${uid},gid=${gid},mode=0700`, "--label", `agentrun.computer.egress=${name}`, volume]);
 	const computer = computerRunOf(calls());
 	const deadline = valuesOf(computer, "--label").find((label) => label.startsWith("agentrun.computer.deadline="))?.split("=")[1];
 	assert.deepEqual(proxyRunOf(calls()), [
