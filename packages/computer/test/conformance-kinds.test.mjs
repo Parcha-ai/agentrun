@@ -22,15 +22,16 @@ test("kindCases: sandbox runs the shell, file and process cases and those that n
 	for (const c of kindCases("sandbox")) assert.ok(conformanceCases.includes(c), "the suite's own cases");
 });
 
-test("kindCases: desktop adds the screen and input cases; phone runs screen, touch, keys and apps, and no shell case; none and browser run none", () => {
+test("kindCases: desktop runs the screen and input cases and its optional shell; phone runs screen, touch, keys and apps, and no shell case; browser no-group and its groups' cases; none runs none", () => {
 	const desktop = ids(kindCases("desktop"));
 	for (const id of ["exec.argv", "screen.screenshot-size", "input.click-lands", "input.type-text"]) assert.ok(desktop.includes(id), id);
 	assert.ok(!desktop.includes("touch.tap"));
 	const phone = ids(kindCases("phone"));
 	for (const id of ["screen.screenshot-size", "touch.tap", "input.type-text", "apps.ui-tree-shape", "health.hello"]) assert.ok(phone.includes(id), id);
 	for (const id of ["exec.argv", "input.click-lands", "apps.install-launch"]) assert.ok(!phone.includes(id), `${id}: it needs a group phone neither requires nor allows`);
+	const browser = ids(kindCases("browser"));
+	assert.ok(browser.includes("health.hello") && !browser.includes("exec.argv") && !browser.includes("screen.screenshot-size"), browser.join(" "));
 	assert.deepEqual(kindCases("none"), []);
-	assert.deepEqual(kindCases("browser"), []);
 });
 
 /** A sandbox run over stand-in cases, one per required group unless told otherwise. */
@@ -69,14 +70,16 @@ test("a case skipped for an optional group the computer does not declare does no
 	assert.ok(skipped.verdict.reasons.some((r) => r.includes("process.skip")), skipped.verdict.reasons.join("; "));
 });
 
-test("runConformance refuses kind and only together, and a kind with no computerd cases, in words", async () => {
+test("runConformance refuses kind and only together, and kind none, in words; browser fails until a cdp case passes", async () => {
 	const { provider } = fakeComputers();
 	await assert.rejects(runConformance(provider, { image: IMAGE, kind: "sandbox", only: ["exec"] }), /kind and only/);
-	await assert.rejects(runConformance(provider, { image: IMAGE, kind: "browser" }), /browser.*CDP/);
 	await assert.rejects(runConformance(provider, { image: IMAGE, kind: "none" }), /none.*no computer/);
+	const browser = await runConformance(provider, { image: IMAGE, kind: "browser", cases: [pass("health.ok", [])] });
+	assert.equal(browser.kindVerdict.verdict, "fail");
+	assert.ok(browser.kindVerdict.reasons.some((r) => /no case of cdp passed/.test(r)), browser.kindVerdict.reasons.join("; "));
 });
 
-test("the CLI's --kind runs the kind and exits 0 only on its pass; it refuses an unknown kind, browser and none, and --only beside it", async () => {
+test("the CLI's --kind runs the kind and exits 0 only on its pass; it refuses an unknown kind, none, and --only beside it", async () => {
 	const cases = [pass("exec.ok", ["exec"]), pass("files.ok", ["files"]), pass("process.ok", ["processes"])];
 	const out = sink();
 	assert.equal(await main(["--provider", "./fixtures/fake-provider.mjs", "--kind", "sandbox"], { stdout: out, stderr: sink(), cwd: new URL(".", import.meta.url).pathname, cases }), 0);
@@ -85,7 +88,6 @@ test("the CLI's --kind runs the kind and exits 0 only on its pass; it refuses an
 	assert.equal(await main(["--provider", "./fixtures/fake-provider.mjs", "--kind", "sandbox"], { stdout: sink(), stderr: sink(), cwd: new URL(".", import.meta.url).pathname, cases: failing }), 1);
 	for (const [argv, words] of [
 		[["--kind", "laptop"], /--kind: "laptop" is not a kind/],
-		[["--kind", "browser"], /--kind browser/],
 		[["--kind", "none"], /--kind none/],
 		[["--kind", "sandbox", "--only", "exec"], /--kind and --only/],
 	]) {
