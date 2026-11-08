@@ -1,6 +1,7 @@
 // A fake provider whose computers are records in memory, each with a fake daemon on an in-memory stream: hello, ping,
-// files.mkdir, files.write and files.list over paths in memory, and exec.run, which answers id -u, cat /proc/self/status, env and a write to $HOME as a computer would
-// and echoes any other argv. Every other method is unsupported. No Docker, no daemon.
+// files.mkdir, files.write and files.list over paths in memory, exec.run, which answers id -u, cat /proc/self/status, env and a write to $HOME as a computer would
+// and echoes any other argv, and process.start, read, write, wait, signal and list over a table of programs the test
+// gives. Every other method is unsupported. No Docker, no daemon.
 import { PassThrough } from "node:stream";
 import { DaemonClient } from "../dist/index.js";
 
@@ -21,33 +22,133 @@ function output(argv, { uid, caps, users, user }) {
 	return `${argv.slice(1).join(" ")}\n`;
 }
 
-/** process.start, wait, signal and list over a computer's table: echo ends at once, anything else runs until a signal. */
-function processes(computer, method, params) {
-	const table = computer.processes;
-	if (method === "process.start") {
-		const entry = { id: `p${table.length + 1}`, pid: 100 + table.length, argv: params.argv, argvClipped: false, pty: params.pty !== undefined, startedAt: Date.now() };
-		Object.assign(entry, params.argv[0] === "echo" ? { running: false, exitCode: 0, signal: null, endedAt: Date.now() } : { running: true, exitCode: null, signal: null, endedAt: null });
-		table.push(entry);
-		return { id: entry.id, pid: entry.pid };
-	}
-	const entry = table.find((one) => one.id === params.id);
-	if (method === "process.list") {
-		const from = params.from ?? 0;
-		const page = table.slice(from, from + computer.listPage);
-		return { processes: page, truncated: from + page.length < table.length, next: from + page.length };
-	}
-	if (entry === undefined) return undefined;
-	if (method === "process.signal") Object.assign(entry, entry.running ? { running: false, signal: params.signal, endedAt: Date.now() } : {});
-	if (method === "process.signal") return {};
-	return { running: entry.running, exitCode: entry.exitCode, signal: entry.signal };
+/** A refusal as the daemon gives one: its kind and its words. */
+const refusal = (kind, message) => Object.assign(new Error(message), { kind });
+
+/** The most bytes one process.read returns, as computerd's. */
+const MAX_READ = 512 * 1024;
+
+/** A process's end, as wait and list report it. */
+const exitOf = (entry) => ({ running: entry.running, exitCode: entry.exitCode, signal: entry.signal });
+/** A process as process.list reports it. */
+const infoOf = (entry) => ({ id: entry.id, pid: entry.pid, argv: entry.argv, argvClipped: false, pty: entry.pty, ...exitOf(entry), startedAt: entry.startedAt, endedAt: entry.endedAt });
+
+/** Waits until `entry` changes (output or its end), or ms pass. */
+const changed = (entry, ms) =>
+	new Promise((resolve) => {
+		const timer = setTimeout(resolve, ms);
+		entry.waiters.push(() => {
+			clearTimeout(timer);
+			resolve();
+		});
+	});
+const notify = (entry) => {
+	for (const wake of entry.waiters.splice(0)) wake();
+};
+
+/**
+ * The handle a program gets on its own process: `write(text)` to its output (stdout, or the terminal's), `end({ exitCode,
+ * signal })`, and `entry`, the process as the table holds it.
+ */
+function handleOf(entry) {
+	return {
+		entry,
+		write(text) {
+			if (!entry.running) return;
+			entry.output = Buffer.concat([entry.output, Buffer.from(text)]);
+			notify(entry);
+		},
+		end({ exitCode = null, signal = null } = {}) {
+			if (!entry.running) return;
+			Object.assign(entry, { running: false, exitCode, signal, endedAt: Date.now() });
+			notify(entry);
+		},
+	};
 }
 
-/** files.mkdir, files.write and files.list over a computer's tree of paths; list pages hold filesPage entries. */
+/**
+ * process.start, read, write, wait, signal and list over a computer's table. A program is what `programs(argv, params)`
+ * returns for its argv: `{ refuse: [kind, message] }` refuses the start; else `start(handle)`, `input(text, handle)`
+ * and `signal(name, handle)` (true keeps it running; KILL always ends it) run it. With no program, echo ends at once and
+ * anything else runs until a signal ends it. Output goes to one stream, stdout (or pty), kept whole but read as a ring of
+ * the computer's ringBytes: a read before the ring's start begins at its start and says how much it dropped.
+ */
+async function processes(computer, method, params) {
+	const table = computer.processes;
+	if (method === "process.start") {
+		const program = computer.programs?.(params.argv, params);
+		if (program?.refuse) throw refusal(...program.refuse);
+		const pty = params.pty !== undefined;
+		const entry = { id: `p${table.length + 1}`, pid: 100 + table.length, argv: params.argv, pty, startedAt: Date.now(), program, stdin: pty || params.stdin === true, closed: false, output: Buffer.alloc(0), waiters: [] };
+		Object.assign(entry, program === undefined && params.argv[0] === "echo" ? { running: false, exitCode: 0, signal: null, endedAt: Date.now() } : { running: true, exitCode: null, signal: null, endedAt: null });
+		table.push(entry);
+		program?.start?.(handleOf(entry));
+		return { id: entry.id, pid: entry.pid };
+	}
+	if (method === "process.list") {
+		const from = params.from ?? 0;
+		const page = table.filter((one) => Number(one.id.slice(1)) >= from).slice(0, computer.listPage);
+		const next = page.length > 0 ? Number(page.at(-1).id.slice(1)) + 1 : from;
+		return { processes: page.map(infoOf), truncated: table.some((one) => Number(one.id.slice(1)) >= next), next };
+	}
+	const entry = table.find((one) => one.id === params.id);
+	if (entry === undefined) throw refusal("not_found", `no process ${params.id}`);
+	if (method === "process.read") {
+		const stream = entry.pty ? "pty" : "stdout";
+		if (params.stream !== stream && !(params.stream === "stderr" && !entry.pty)) throw refusal("invalid", `process ${entry.id} has no stream ${params.stream}`);
+		const maxBytes = params.maxBytes ?? MAX_READ;
+		if (maxBytes > MAX_READ) throw refusal("limit", `maxBytes ${maxBytes} is over ${MAX_READ}`);
+		const bytes = params.stream === "stderr" ? Buffer.alloc(0) : entry.output;
+		if (params.offset > bytes.length) throw refusal("invalid", `offset ${params.offset} is past the end of ${entry.id}'s ${params.stream}, ${bytes.length} bytes so far`);
+		if (params.offset === bytes.length && entry.running && (params.waitMs ?? 0) > 0) await changed(entry, params.waitMs);
+		const now = params.stream === "stderr" ? Buffer.alloc(0) : entry.output;
+		const first = Math.max(0, now.length - computer.ringBytes);
+		const from = Math.max(params.offset, first);
+		const data = now.subarray(from, Math.min(now.length, from + maxBytes));
+		const nextOffset = from + data.length;
+		return { data: data.toString("base64"), nextOffset, dropped: from - params.offset, exited: !entry.running && nextOffset === now.length, size: now.length };
+	}
+	if (method === "process.write") {
+		if (entry.pty && params.close) throw refusal("invalid", 'a terminal has no stdin to close: write "\\x04" for the end of input, or signal HUP');
+		if (!entry.stdin) throw refusal("invalid", `process ${entry.id} was started without stdin`);
+		if (!entry.running) throw refusal("invalid", `process ${entry.id} has ended`);
+		if (entry.closed) throw refusal("invalid", `process ${entry.id}'s stdin is closed`);
+		if (entry.program?.stuck) throw refusal("timeout", `process ${entry.id} did not read its input: 0 of ${Buffer.from(params.data ?? "", "base64").length} bytes were written in 10s`);
+		const text = Buffer.from(params.data ?? "", "base64").toString();
+		computer.inputs.push([entry.id, text, params.close === true]);
+		if (params.close) entry.closed = true;
+		entry.program?.input?.(text, handleOf(entry), params.close === true);
+		return {};
+	}
+	if (method === "process.signal") {
+		if (!entry.running) return {};
+		computer.signals.push([entry.id, params.signal]);
+		const keep = params.signal !== "KILL" && entry.program?.signal?.(params.signal, handleOf(entry)) === true;
+		if (!keep) handleOf(entry).end({ signal: params.signal });
+		return entry.program?.note ? { note: entry.program.note } : {};
+	}
+	if (method === "process.wait") {
+		if (entry.running && params.timeoutMs > 0) {
+			const by = Date.now() + params.timeoutMs;
+			while (entry.running && Date.now() < by) await changed(entry, by - Date.now());
+		}
+		return exitOf(entry);
+	}
+	throw refusal("invalid", `${method} is not a process method`);
+}
+
+/** files.mkdir, files.write and files.list over a computer's tree of paths; list pages hold filesPage entries. A write's
+ *  bytes are kept in `contents`, replaced or appended to. */
 function files(computer, method, params) {
 	const tree = computer.tree;
 	if (method === "files.mkdir") tree.set(params.path, "dir");
-	if (method === "files.write") tree.set(params.path, "file");
-	if (method === "files.write") return { size: Buffer.from(params.data, "base64").length };
+	if (method === "files.write") {
+		tree.set(params.path, "file");
+		const data = Buffer.from(params.data, "base64");
+		const had = params.append ? (computer.contents.get(params.path) ?? Buffer.alloc(0)) : Buffer.alloc(0);
+		computer.contents.set(params.path, Buffer.concat([had, data]));
+		return { size: had.length + data.length };
+	}
 	if (method !== "files.list") return {};
 	const depth = params.depth ?? 1;
 	const walk = (dir, level) =>
@@ -74,16 +175,18 @@ function fakeDaemon(hello, computer) {
 			buffered = buffered.slice(at + 1);
 			if (typeof request.id !== "number") continue;
 			const reply = (body) => fromDaemon.write(`${JSON.stringify({ jsonrpc: "2.0", id: request.id, ...body })}\n`);
+			computer.requests.push([request.method, request.params]);
 			if (request.method === "hello") reply({ result: hello });
 			else if (request.method === "ping") reply({ result: {} });
 			else if (request.method === "exec.run") {
 				const stdout = output(request.params.argv, { ...computer, user: request.params.user });
 				reply({ result: { exitCode: 0, stdout: b64(stdout), stderr: "", timedOut: false, truncated: false } });
 			} else if (["files.mkdir", "files.write", "files.list"].includes(request.method)) reply({ result: files(computer, request.method, request.params) });
-			else if (["process.start", "process.wait", "process.signal", "process.list"].includes(request.method)) {
-				const result = processes(computer, request.method, request.params);
-				if (result === undefined) reply({ error: { code: -32000, message: `no process ${request.params.id}`, data: { kind: "not_found" } } });
-				else reply({ result });
+			else if (["process.start", "process.read", "process.write", "process.wait", "process.signal", "process.list"].includes(request.method)) {
+				processes(computer, request.method, request.params).then(
+					(result) => reply({ result }),
+					(error) => reply({ error: { code: -32000, message: error.message, data: { kind: error.kind ?? "invalid" } } }),
+				);
 			}
 			else reply({ error: { code: -32601, message: `${request.method} is not a method` } });
 		}
@@ -104,6 +207,10 @@ function fakeDaemon(hello, computer) {
  * - `attachSpec`: merged over the spec attach reports (null: attach reports none).
  * - `kind`, `mode` (capabilities().daemon), `groups`, `maxLifetimeMs`: what capabilities() declares; check() refuses a
  *   lifetime past maxLifetimeMs. `hello` is merged over the hello the daemon gives.
+ * - `programs(argv, params)`: what each process.start runs (see processes); `ringBytes`: how much of a process's output
+ *   a read reaches, its last bytes.
+ * `daemon(name)` is computer `name`'s daemon record: its `requests` ([method, params] of every request), `processes`,
+ * `signals` and `inputs` ([id, signal] and [id, text, close] of each one sent), and `contents` (written files' bytes).
  */
 export function fakeComputers({
 	id = "fake",
@@ -131,6 +238,8 @@ export function fakeComputers({
 	networkSwitches = false,
 	attachSpec = {},
 	filesPage = 100,
+	programs,
+	ringBytes = 8 * 1024 * 1024,
 } = {}) {
 	const computers = new Map();
 	const made = [];
@@ -173,6 +282,12 @@ export function fakeComputers({
 					listPage,
 					tree: new Map(),
 					filesPage,
+					programs,
+					ringBytes,
+					requests: [],
+					signals: [],
+					inputs: [],
+					contents: new Map(),
 				},
 			};
 			computers.set(name, record);
@@ -228,5 +343,5 @@ export function fakeComputers({
 			return ok(undefined);
 		},
 	};
-	return { provider, made, calls, alive: () => [...computers.keys()], open: () => connections };
+	return { provider, made, calls, alive: () => [...computers.keys()], open: () => connections, daemon: (name) => computers.get(name)?.daemon };
 }
