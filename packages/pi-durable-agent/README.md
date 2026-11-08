@@ -790,8 +790,9 @@ It loads `@parcha/agentrun-dsl` and `@parcha/agentrun-pi` only when one of its f
 | `revisionGraph(revision, parent?)` | The revision's graph (the DSL's `workflowGraph`), and the DSL's `graphDiff` from its parent when the parent is a workflow revision; an agentic parent, or none, gives no diff |
 
 Its types: `WorkflowBody`, `WorkflowIssue`, `WorkflowRunStart` (the part of a store's started run it reads), `WorkflowRunView`,
-`RunState`, `RunNodeState` (the DSL's `NodeState` and `stopped`), and the DSL's `WorkflowGraph`, `GraphDiff`, `NodeState`
-and `WorkflowOutcome`.
+`WorkflowStorage` (the pi Storage — a run's journal in the one store — `readWorkflowRun` and `workflowCarry` read a run from,
+in place of a store file), `RunState`, `RunNodeState` (the DSL's `NodeState` and `stopped`), and the DSL's `WorkflowGraph`,
+`GraphDiff`, `NodeState` and `WorkflowOutcome`.
 
 ### Errors
 
