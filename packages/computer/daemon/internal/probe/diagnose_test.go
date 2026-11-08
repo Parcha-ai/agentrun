@@ -16,6 +16,7 @@ import (
 	"reflect"
 	"strconv"
 	"strings"
+	"syscall"
 	"testing"
 	"time"
 
@@ -59,16 +60,23 @@ func silentServer(t *testing.T) string {
 	})
 }
 
-// closedTCP is a TCP port nothing listens on any more.
+// closedTCP is a TCP port nothing listens on, for the whole test: a socket bound to it that never listens holds it, so
+// no other socket can take it (that socket has no SO_REUSEADDR), and the kernel refuses every connection to it.
 func closedTCP(t *testing.T) string {
 	t.Helper()
-	listener, err := net.Listen("tcp", "127.0.0.1:0")
+	fd, err := syscall.Socket(syscall.AF_INET, syscall.SOCK_STREAM|syscall.SOCK_CLOEXEC, 0)
 	if err != nil {
 		t.Fatal(err)
 	}
-	address := listener.Addr().String()
-	_ = listener.Close()
-	return address
+	t.Cleanup(func() { _ = syscall.Close(fd) })
+	if err := syscall.Bind(fd, &syscall.SockaddrInet4{Addr: [4]byte{127, 0, 0, 1}}); err != nil {
+		t.Fatal(err)
+	}
+	bound, err := syscall.Getsockname(fd)
+	if err != nil {
+		t.Fatal(err)
+	}
+	return net.JoinHostPort("127.0.0.1", strconv.Itoa(bound.(*syscall.SockaddrInet4).Port))
 }
 
 // A refused address must stay refused for the whole test: another test's server (any package's, go test runs them at
