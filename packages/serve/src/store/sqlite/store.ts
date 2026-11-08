@@ -88,9 +88,14 @@ async function versionOf(db: Connection): Promise<number | null> {
   return (await db.get<{ schema_version: number }>("SELECT schema_version FROM store_meta WHERE singleton = 1"))?.schema_version ?? null;
 }
 
+/** The settings files an earlier version kept at a data directory's top: its MCP servers, triggers, tool keys, trigger
+ *  secrets, webhook and its outbox, kept idempotency answers and learning's usage ledger. */
+const EARLIER_ROOT_FILES = ["mcp-servers.json", "triggers.json", "tool-keys.json", "trigger-secrets.json", "webhook.json", "webhook-outbox.json", ".idempotency.json", "learning-usage.jsonl"];
+
 /** The files an earlier version kept in a data directory, relative to it: its store (a STORE_FILE with tables and no
  *  store_meta row), agent homes (<agent>/agent.sqlite, agents/<agent>/agent.sqlite), run databases (runs/<run>/run.sqlite,
- *  disk/agents/<agent>/runs/<run>/run.sqlite) and its settings files. Read only: nothing is opened for writing or made. */
+ *  disk/agents/<agent>/runs/<run>/run.sqlite), its settings files (EARLIER_ROOT_FILES) and its homes' sign-ins
+ *  (homes/<home>/sign-ins/sign-ins.json). Read only: nothing is opened for writing or made. */
 function earlierVersionIn(dataDir: string): string[] {
   if (!existsSync(dataDir)) return [];
   const found: string[] = [];
@@ -98,7 +103,11 @@ function earlierVersionIn(dataDir: string): string[] {
   const dirsIn = (path: string) => (statSync(path, { throwIfNoEntry: false })?.isDirectory() ? readdirSync(path, { withFileTypes: true }).filter((e) => e.isDirectory()).map((e) => e.name) : []);
   const store = join(dataDir, STORE_FILE);
   if (isFile(store) && !isThisVersionsStore(store)) found.push(STORE_FILE);
-  for (const name of ["mcp-servers.json", "triggers.json"]) if (isFile(join(dataDir, name))) found.push(name);
+  for (const name of EARLIER_ROOT_FILES) if (isFile(join(dataDir, name))) found.push(name);
+  for (const home of dirsIn(join(dataDir, "homes"))) {
+    const signIns = join("homes", home, "sign-ins", "sign-ins.json");
+    if (isFile(join(dataDir, signIns))) found.push(signIns);
+  }
   for (const agent of dirsIn(dataDir)) if (isFile(join(dataDir, agent, "agent.sqlite"))) found.push(join(agent, "agent.sqlite"));
   for (const agent of dirsIn(join(dataDir, "agents"))) if (isFile(join(dataDir, "agents", agent, "agent.sqlite"))) found.push(join("agents", agent, "agent.sqlite"));
   for (const run of dirsIn(join(dataDir, "runs"))) if (isFile(join(dataDir, "runs", run, "run.sqlite"))) found.push(join("runs", run, "run.sqlite"));
