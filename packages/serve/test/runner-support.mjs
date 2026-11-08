@@ -80,6 +80,11 @@ export function recorder() {
     blockRenew: new Set(),
     /** The size of each batch a runner claimed (claimMany), in order. */
     batches: [],
+    /** Every call the runner made of its store for a run, as it was made: { op, runId, order }. */
+    calls: [],
+    /** When set (a promise), the next renews wait for it before they reach the store; renewsHeld counts them. */
+    holdRenew: undefined,
+    renewsHeld: 0,
   };
 }
 
@@ -89,10 +94,12 @@ export function observed(store, record) {
   const alive = () => {
     if (record.dead) throw new Error("the runner process died");
   };
+  const called = (op, runId) => record.calls.push({ op, runId, order: nextOrder() });
   return {
     runs: {
       async update(claim, patch, rows) {
         alive();
+        called("update", claim.runId);
         const row = await store.runs.update(claim, patch, rows);
         if (record.dieAfterStopped && patch.state === "stopped") record.dead = true;
         return row;
@@ -113,10 +120,16 @@ export function observed(store, record) {
     },
     async renew(claim, options) {
       if (record.blockRenew.has(claim.runner)) throw Object.assign(new Error("the store stayed locked past its busy timeout"), { name: "StoreBusy" });
+      if (record.holdRenew) {
+        record.renewsHeld += 1;
+        await record.holdRenew;
+      }
+      called("renew", claim.runId);
       return store.renew(claim, options);
     },
     async release(claim, options) {
       alive();
+      called("release", claim.runId);
       await store.release(claim, options);
       record.ops.push(`release ${claim.runId}`);
     },
@@ -152,12 +165,13 @@ export function observed(store, record) {
     },
     async flush() {
       alive();
+      called("flush");
       await store.flush();
       record.ops.push("flush");
     },
-    commands: (runId, after) => store.commands(runId, after),
-    take: async (claim, id, outcome, reason) => (alive(), store.take(claim, id, outcome, reason)),
-    retry: async (claim, id) => (alive(), store.retry(claim, id)),
+    commands: (runId, after) => (called("commands", runId), store.commands(runId, after)),
+    take: async (claim, id, outcome, reason) => (alive(), called("take", claim.runId), store.take(claim, id, outcome, reason)),
+    retry: async (claim, id) => (alive(), called("retry", claim.runId), store.retry(claim, id)),
   };
 }
 
