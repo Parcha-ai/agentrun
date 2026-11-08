@@ -553,7 +553,21 @@ export function personHands(options: {
         watch();
         options.afterRecord?.();
         // The record is in place before the row: the row's commit is what makes the server read the run's status again.
-        await note("agent.handover", { state: "waiting", reason: record.instruction, session: ask.sessionTag });
+        // The row is what shows the person the ask (askShown): one that cannot be written fails the request, plainly, and
+        // leaves nothing behind (its hold, its open entry, its record), so the agent's next request makes it afresh.
+        try {
+          await options.note("agent.handover", { state: "waiting", reason: record.instruction, session: ask.sessionTag });
+        } catch {
+          if (open.get(id)?.drop) open.get(id)!.drop();
+          open.delete(id);
+          if (!open.size && poll) (clearInterval(poll), (poll = undefined));
+          try {
+            unlinkSync(join(dir, `${id}.json`));
+          } catch {
+            // gone already
+          }
+          return { refused: "the hand-over could not be shown to the person (its request was not written to the run's timeline): nothing is held for it, and it can be asked again" };
+        }
         return { interactionId: id };
       },
       async outcome(interactionId: string): Promise<"pending" | AskOutcome | { outcome: AskOutcome; reason: string }> {

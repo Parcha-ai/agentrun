@@ -651,3 +651,29 @@ test("one hand-back, one row: a give that answers the session's open ask writes 
   assert.equal(await routed.person.handoff.outcome(other.interactionId), "done");
   assert.equal(rows(routed.held), 1, JSON.stringify(routed.held.notes));
 });
+
+test("an ask whose waiting row cannot be written fails, and says so: nothing is held or left open, and asking again shows it", async (t) => {
+  const root = await scratch(t);
+  let failRow = true;
+  const held = { taken: 0, dropped: 0, notes: [] };
+  const person = personHands({
+    root, gates: () => ({ give: () => false }), pollMs: 60_000,
+    personTime: async () => (held.taken += 1, { drop: () => { held.dropped += 1; } }),
+    note: async (kind, data) => {
+      if (kind === "agent.handover" && failRow) throw new Error("the run's store refused the row");
+      held.notes.push(data.summary ?? data.reason);
+    },
+  });
+  t.after(() => person.close());
+  const first = await person.handoff.request(ask(51, "ar-run-51-1"));
+  assert.ok("refused" in first, `the request says it failed: ${JSON.stringify(first)}`);
+  assert.match(first.refused, /could not be shown/);
+  assert.deepEqual([held.taken, held.dropped], [1, 1], "its hold dropped");
+  assert.equal(openAsk(root), undefined, "nothing left waiting");
+  failRow = false;
+  const second = await person.handoff.request(ask(51, "ar-run-51-1"));
+  assert.ok("interactionId" in second, JSON.stringify(second));
+  assert.equal(openAsk(root)?.id, second.interactionId, "asked again: it waits");
+  assert.deepEqual(held.notes, ["Do thing 51"], "its waiting row written");
+  assert.equal(askShown(root, [{ kind: "waiting", session: "ar-run-51-1" }])?.id, second.interactionId, "the owner sees it");
+});
