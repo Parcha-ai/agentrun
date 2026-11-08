@@ -36,6 +36,7 @@ import {
   type StorageWrite,
   ToolTask,
 } from "@earendil-works/pi-durable";
+import { RUN_RESUMED } from "@parcha/pi-durable-agent/timeline";
 import type { KernelHooks, ToolCall } from "./conformance/subject.js";
 import { type AnswerData, type AskData, type EndData, KINDS } from "./journal-kinds.js";
 import type { Claim, Command, CommandOutcome, HeldState, Journal, Loop, LoopDeps, LoopEnd, LoopFactory, StopReason } from "./loop-contract.js";
@@ -439,6 +440,8 @@ function piLoop(specOf: (claim: Claim) => PiRunSpec | Promise<PiRunSpec>, deps: 
         if (deps.signal.aborted) gate.seal(new Interrupted("its claim's signal aborted"));
         harness = await Harness.open(gate.journal, { models: spec.models, registry, settings: { restartLimit }, onReport: () => {} }, context);
         root = await harness.root(context, { agent: { model: spec.model, extensions: [kernel] } as never });
+        // Taken over from a runner whose lease ran out mid-run: said on the run's timeline once, at this claim's first pass.
+        if (restarts === 0 && claim.lost) await noteTakenOver(harness, root, claim.lost.runner);
         await reportHeld(harness, root.id);
         opened();
         if (restarts > restartLimit + 1) {
@@ -541,6 +544,17 @@ function piLoop(specOf: (claim: Claim) => PiRunSpec | Promise<PiRunSpec>, deps: 
     let timer: NodeJS.Timeout | undefined;
     await Promise.race([closing, new Promise<void>((resolve) => (timer = setTimeout(resolve, CLOSE_MS)))]);
     clearTimeout(timer);
+  }
+
+  /** The run's timeline says it went on after its runner was lost (RUN_RESUMED, `after: runner_lost`): one root entry,
+   *  no run patch. A journal sealed meanwhile (the claim lost again, a shutdown) refuses it, and the loop goes on as it
+   *  would: the next claim says it. */
+  async function noteTakenOver(session: Harness, conversation: Conversation, runner: string): Promise<void> {
+    try {
+      await session.commit((tx) => tx.appendEntry(conversation.id, { kind: RUN_RESUMED, data: { after: "runner_lost", runner, at: Date.now() } }), context);
+    } catch (error) {
+      if (!gate?.sealed) throw error;
+    }
   }
 
   /** The end commit: an `agentrun.end` entry carrying the run row's final patch and the rows it takes. */

@@ -14,7 +14,8 @@
 // submission's placement the commit that placed it. A call that never ran ends with no start, as the door says it.
 import type { JsonValue } from "@earendil-works/chord";
 import { AgentDoc, type EntryRecord, type SubmissionRecord, UsageDoc } from "@earendil-works/pi-durable";
-import { type CallEndData, type CallStartData, KINDS, type MessageData, type SessionKeyData } from "../runner/journal-kinds.js";
+import { HOST_PHASE, RUN_RESUMED } from "@parcha/pi-durable-agent/timeline";
+import { type CallEndData, type CallStartData, type EndData, KINDS, type MessageData, type SessionKeyData } from "../runner/journal-kinds.js";
 import type { JournalCommit } from "../store/journal/storage.js";
 
 export type LiveEvent = { readonly type: string } & Record<string, unknown>;
@@ -74,6 +75,39 @@ const ROLE: Record<string, string> = { person: "user", steer: "user", model: "as
 
 const dataOf = <T>(entry: EntryRecord): T => entry.data as unknown as T;
 const modelOf = (entry: EntryRecord) => (entry as { model?: { role?: string; content?: unknown; toolCallId?: string }[] }).model?.[0];
+
+/** The one row a person's stop gives, the same on every harness: from the loop's end entry, stopped. */
+export const STOPPED_BY_YOU = "Stopped by you";
+/** What a call a person's stop cut says, in its result. */
+export const CUT_BY_YOU = "stopped by you";
+
+/** The message of a result that is only pi's diagnostics block (`<harness>`, then `[error] …` lines): its first error's,
+ *  else its first line's, without the severity or the markup. Undefined for any other text. */
+function diagnosticOf(text: string): string | undefined {
+  const lines = text.trim().split("\n").map((line) => line.trim());
+  if (lines[0] !== "<harness>") return undefined;
+  const end = lines.indexOf("</harness>");
+  const inner = lines.slice(1, end < 0 ? undefined : end).filter(Boolean);
+  const said = inner.map((line) => /^\[(\w+)\]\s*(.*)$/.exec(line)).filter((match): match is RegExpExecArray => match !== null);
+  const first = said.find((match) => match[1] === "error") ?? said[0];
+  return first ? (first[2] ?? "") : (inner[0] ?? "");
+}
+
+/** A tool result as a person reads it. One an abort cut says CUT_BY_YOU: on the kernel's journal only a person's stop
+ *  writes one (a lost claim or a shutdown seals the journal before its abort). One that is only pi's diagnostics block
+ *  says that block's message. Neither ever shows the block's markup. Any other entry as it is. */
+function shownResult(entry: EntryRecord): EntryRecord {
+  const message = modelOf(entry);
+  if (message?.role !== "toolResult") return entry;
+  const diagnostics = (entry.data as { diagnostics?: unknown } | undefined)?.diagnostics;
+  const aborted = Array.isArray(diagnostics) && diagnostics.some((diagnostic) => (diagnostic as { code?: unknown } | null)?.code === "aborted");
+  const blocks = Array.isArray(message.content) ? (message.content as { type?: string; text?: unknown }[]) : [];
+  const text = typeof message.content === "string" ? message.content : blocks.filter((block) => block?.type === "text" && typeof block.text === "string").map((block) => block.text as string).join("\n");
+  const said = aborted ? CUT_BY_YOU : diagnosticOf(text);
+  if (said === undefined) return entry;
+  const model = (entry as unknown as { model: unknown[] }).model;
+  return { ...entry, model: [{ ...message, content: [{ type: "text", text: said }] }, ...model.slice(1)] } as unknown as EntryRecord;
+}
 const doc = (state: LiveState, kind: string) => (state.root === undefined ? undefined : state.docs.get(state.root)?.get(kind));
 
 /** The run as the snapshot gives it: the entries so far, the calls running now and the documents' values. */
@@ -99,7 +133,9 @@ export function translate(state: LiveState, commit: JournalCommit): LiveEvent[] 
   for (const entry of commit.entries) if (entry.kind === KINDS.sessionKey) state.sessions.add(Number(dataOf<SessionKeyData>(entry).conversation));
   const own = <T extends { conversationId?: unknown }>(record: T) => !state.sessions.has(Number(record.conversationId));
   const input = commit.submissions.find((record) => record.type === "input" && own(record));
-  const kernelEntry = commit.entries.find((entry) => own(entry) && (entry.kind === KINDS.callStart || entry.kind === KINDS.callEnd || entry.kind === KINDS.message));
+  // A run record the kernel writes: a call, a message, or a takeover's note (a run taken over before its first call or
+  // message has no other record yet, and its note is no root set-up to fold into the snapshot).
+  const kernelEntry = commit.entries.find((entry) => own(entry) && (entry.kind === KINDS.callStart || entry.kind === KINDS.callEnd || entry.kind === KINDS.message || entry.kind === RUN_RESUMED));
   state.root ??= input ? Number(input.conversationId) : kernelEntry ? Number(kernelEntry.conversationId) : undefined;
   const mine = <T extends { conversationId?: unknown }>(record: T) => own(record) && state.root !== undefined && Number(record.conversationId) === state.root;
 
@@ -179,18 +215,29 @@ export function translate(state: LiveState, commit: JournalCommit): LiveEvent[] 
       events.push({ type: "message_start", message }, { type: "message_end", entry: synthetic });
       continue;
     }
-    if (KERNEL.has(entry.kind)) continue;
-    state.entries.push(entry);
-    const message = modelOf(entry);
-    if (message === undefined) {
-      events.push({ type: "entry_appended", entry });
+    if (entry.kind === KINDS.end) {
+      // A person's stop (the only stop a loop ends a run on: a lost claim or a shutdown writes no end): one phase row,
+      // worded the same on every harness, from the loop's own end entry.
+      if (dataOf<EndData>(entry).state === "stopped") {
+        const stopped = { ...entry, kind: HOST_PHASE, data: { summary: STOPPED_BY_YOU } } as unknown as EntryRecord;
+        state.entries.push(stopped);
+        events.push({ type: "entry_appended", entry: stopped });
+      }
       continue;
     }
-    if (message.role === "toolResult" && message.toolCallId) endCall(message.toolCallId, entry);
+    if (KERNEL.has(entry.kind)) continue;
+    const shown = shownResult(entry);
+    state.entries.push(shown);
+    const message = modelOf(shown);
+    if (message === undefined) {
+      events.push({ type: "entry_appended", entry: shown });
+      continue;
+    }
+    if (message.role === "toolResult" && message.toolCallId) endCall(message.toolCallId, shown);
     const streamed = message.role === "assistant" && state.partial;
     if (message.role === "assistant") state.partial = false;
     if (!streamed) events.push({ type: "message_start", message });
-    events.push({ type: "message_end", entry });
+    events.push({ type: "message_end", entry: shown });
   }
 
   // Calls that ended without a result entry (aborted, cut off): their end.

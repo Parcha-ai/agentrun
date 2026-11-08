@@ -34,6 +34,9 @@ export interface Claim {
   readonly epoch: number;
   readonly until: number;
   readonly from: RunState;
+  /** The runner that held the run when this claim took it over: its lease ran out with the run still running (that
+   *  runner was lost, or lost its claim). Its loop says so on the run's timeline. Absent for any other claim. */
+  readonly lost?: { readonly runner: string };
 }
 
 /** A command the server wrote for a run (stop, steer, approve, deny, raise): one row, read by the run's runner in id order
