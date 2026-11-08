@@ -19,9 +19,9 @@ import { TOOL_KEYS, UNREADABLE } from "./tool-keys.js";
 import { MCP_AUTH_TYPES, MCP_SERVER_NAME } from "./mcp-servers.js";
 import { MCP_SETTINGS_PAGE } from "./mcp-oauth.js";
 import { ATTEMPTS_KEPT, MESSAGE_TYPES, WEBHOOK_EVENTS } from "./webhooks.js";
-import { HOOK_TOLERANCE_S } from "./standard-webhooks.js";
+import { DEFAULT_SCHEME, SCHEME_NAMES, SIGNATURE_SCHEMES } from "./trigger-signatures.js";
 import { HOOK_BODY_MS } from "./push-handler.js";
-import { CATCHUP_WINDOW_S, DUE_KEPT, FAILURES_TO_PAUSE, FIRING_STATUSES, PAYLOAD_KEPT_BYTES, HISTORY_KEPT, MAX_EVERY_S, SOURCE_KINDS, TARGET_KINDS } from "./triggers.js";
+import { CATCHUP_WINDOW_S, DUE_KEPT, MAX_ACTIVE_RUNS, SEEN_KEPT, FAILURES_TO_PAUSE, FIRING_STATUSES, PAYLOAD_KEPT_BYTES, HISTORY_KEPT, MAX_EVERY_S, SOURCE_KINDS, TARGET_KINDS } from "./triggers.js";
 import { DEFINITION_FIELDS, MODEL_REF, NOT_KEPT } from "./validate.js";
 import { GRADER_TYPES, MODEL_TIERS, PARAMETER_TYPES } from "./templates.js";
 import { NOT_SET_UP } from "./runnable.js";
@@ -539,10 +539,11 @@ const sourceSchemaOf = (adapters: readonly TriggerAdapter[]) => ({
   description: `When it fires: ${adapters.map((a) => a.fires).join(", or ")}. Each next time is reckoned from the last nominal one, never from when the timer woke. Times missed while the server was down, or more than a minute late, are one \`missed\` firing with their count, and the schedule goes on from now.`,
 });
 const TRIGGER_SOURCE = sourceSchemaOf(TRIGGER_ADAPTERS);
-/** A trigger's source as the server holds and sends it (triggers.ts Schedule): a cron line's zone and an interval's
- *  start always set, to UTC and to when it was written when the write left them out. */
-const sentOf = (sources: ReturnType<typeof sourceSchemaOf>) => ({ ...sources, oneOf: sources.oneOf.map((source) => ({ ...source, required: Object.keys(source.properties) })) });
-const TRIGGER_SOURCE_SENT = sentOf(TRIGGER_SOURCE);
+/** A trigger's source as the server holds and sends it: each adapter's sent shapes (a cron line's zone and an interval's
+ *  start always set, to UTC and to when it was written when the write left them out), else its own (a webhook's
+ *  signature and accept, absent when the write left them out). */
+const sentOf = (adapters: readonly TriggerAdapter[]) => ({ ...sourceSchemaOf(adapters), oneOf: adapters.flatMap((a) => a.sent ?? a.schemas) });
+const TRIGGER_SOURCE_SENT = sentOf(TRIGGER_ADAPTERS);
 const START_RUN = closedWith(
   {
     kind: { const: "start_run" },
@@ -586,27 +587,34 @@ const TRIGGER = closed({
   source: TRIGGER_SOURCE_SENT,
   target: TRIGGER_TARGET,
   catchup_window_s: { type: "integer", minimum: 0, maximum: MAX_EVERY_S, description: `How late a missed time may still fire, once: of the times that came while the server was down (or its timer was late), the latest fires if it is this recent, under its own key, and the rest are one \`missed\` firing. 0: a missed time never fires. Default ${CATCHUP_WINDOW_S}.` },
+  max_active_runs: { type: ["integer", "null"], minimum: 1, maximum: MAX_ACTIVE_RUNS, description: `For a trigger whose firings each start a run (a webhook with \`accept\`): the most of its runs active at once. A firing past it waits due (\`retry_at\`) and is tried again, never skipped. Null: none, so such a trigger can take every run this server has room for. Any other trigger is 422 with it set.` },
   failures_in_a_row: { type: "integer", minimum: 0, description: `Failed firings since the last that started a run; at ${FAILURES_TO_PAUSE} the trigger turns itself off (\`disabled\`). Turned on again, it counts from 0.` },
   disabled: { oneOf: [closed({ at: DATE_TIME, reason: { const: "auto_paused" } }), closed({ at: DATE_TIME, reason: { const: "source_unreadable" }, detail: { type: "string", description: "Why the source no longer reads." } }), { type: "null" }], description: `Why it is off, when the server turned it off: \`auto_paused\`, ${FAILURES_TO_PAUSE} failed firings in a row; \`source_unreadable\`, its cron line or zone no longer reads here (a newer cron library or time zone data refuses it), found at a start or when it came due, and only this trigger is turned off. Null once it is on again, which for \`source_unreadable\` takes a new source.` },
   next_at: { type: ["string", "null"], format: "date-time", description: "When it fires next; null while it is off." },
-  last_run_id: { type: ["string", "null"], description: "The run its last firing that started one started; while that run is active (working, or waiting on a person), each firing is skipped. Null until one starts." },
+  last_run_id: { type: ["string", "null"], description: "The run its last firing that started one started; while that run is active (working, or waiting on a person), each firing is skipped, unless the trigger is a webhook with `accept`. Null until one starts." },
   created_at: DATE_TIME,
   updated_at: DATE_TIME,
   last_firing: { oneOf: [TRIGGER_FIRING, { type: "null" }] },
-}, "A trigger. A firing while its last run is active (working, or waiting on a person) is skipped, and recorded as a skipped firing with why: never queued, since a firing queued behind a run parked on a person would wait as long as the person does.");
+}, "A trigger. A firing while its last run is active (working, or waiting on a person) is skipped, and recorded as a skipped firing with why: never queued, since a firing queued behind a run parked on a person would wait as long as the person does. A webhook trigger with `accept` is the exception: each event it takes starts its own run.");
 const TRIGGER_WRITE = {
   name: { type: "string", minLength: 1, maxLength: 200, description: "Default the trigger's id." },
   enabled: { type: "boolean", default: true, description: "Off, it fires nothing; on again, it goes on from now: the time it was off is skipped, never caught up." },
   source: TRIGGER_SOURCE,
   target: TRIGGER_TARGET,
   catchup_window_s: { type: "integer", minimum: 0, maximum: MAX_EVERY_S, default: CATCHUP_WINDOW_S },
+  max_active_runs: { type: ["integer", "null"], minimum: 1, maximum: MAX_ACTIVE_RUNS, description: `For a trigger whose firings each start a run (a webhook with \`accept\`): the most of its runs active at once. A firing past it waits due (\`retry_at\`) and is tried again, never skipped. Null: none, so such a trigger can take every run this server has room for. Any other trigger is 422 with it set. A PATCH with null clears it.` },
 };
 const TRIGGER_ID = { name: "trigger_id", in: "path", required: true, schema: { type: "string" } };
 /** A hook whose body did not arrive in time (push-handler.ts readCapped): answered, then its socket closed. */
 const HOOK_TIMEOUT = { description: `\`request_timeout\`: the body did not arrive, whole, within ${HOOK_BODY_MS / 1000} s; the socket is closed after this answer.`, headers: { "X-Request-Id": ref("headers/RequestId") }, content: { "application/json": { schema: ref("schemas/Error") } } };
-/** What a pushed request made: one firing for each event it held that a trigger takes, in order; none for a request
- *  with no event, or whose events no trigger takes. */
-const hookFiringsOf = (adapters: readonly TriggerAdapter[]) => closed({ firings: { type: "array", items: { ...TRIGGER_FIRING, properties: { ...TRIGGER_FIRING.properties, by: firedByOf(adapters) } } } });
+/** A verified request whose firing key was seen within its day, its firing no longer kept: nothing fired. */
+const HOOK_DUPLICATE = closed({ ok: { const: "duplicate" } }, "A firing key seen within its day whose firing is no longer kept: nothing fired for it.");
+/** A verified request its trigger's or its source's own filter (a webhook's accept) does not take: nothing fired. */
+const HOOK_IGNORED = closed({ ok: { const: "ignored" } }, "Verified, and not an event the trigger's `accept` (or its source's own filter) takes: nothing fired.");
+/** What a pushed request made: one firing for each event it held that a trigger takes, in order (a key seen within its
+ *  day whose firing is no longer kept, `{ok: "duplicate"}`); none for a request with no event, or whose events no
+ *  trigger takes. Its firings' `by` names the sources `adapters` give. */
+const hookFiringsOf = (adapters: readonly TriggerAdapter[]) => closed({ firings: { type: "array", items: { oneOf: [{ ...TRIGGER_FIRING, properties: { ...TRIGGER_FIRING.properties, by: firedByOf(adapters) } }, HOOK_DUPLICATE] } } });
 const TRIGGER_SECRET = { type: "string", pattern: "^whsec_[A-Za-z0-9+/]+={0,2}$", description: "A webhook trigger's signing secret, shown this once: `whsec_` and 32 random bytes in base64, as the Standard Webhooks spec gives it. Never in any GET; kept sealed under the seal key. Sign each request to /hooks/{trigger_id} with it." };
 /** templates/1: template packages, listed and applied (templates.ts; the format is templates/README.md). */
 const TEMPLATE_MARK = { "x-agentrun-serve": "templates/1" };
@@ -1235,7 +1243,7 @@ const EXTENSIONS: Record<string, Record<string, Json>> = {
     },
     post: {
       operationId: "createTrigger", tags: ["local"], summary: "Make a trigger: a schedule or a signed webhook that starts a capped run of an agent, or messages a run",
-      description: `Each firing starts one run of \`target.agent_id\` with \`target.input\` and its \`max_cost_usd\` (else the agent's default), as POST /agents/{agent_id}/runs would, and the run's \`trigger\` names it. A firing starts its run once, across retries and restarts. While the trigger's last run is active (working, or waiting on a person: a question, an approval, its cap), a firing is skipped. The last ${HISTORY_KEPT} firings are kept. A \`webhook\` source fires on each request to /hooks/{trigger_id} signed by its secret, which this answer holds (\`secret\`) this once: a retry under the same Idempotency-Key answers the same trigger with a \`note\` in its place, as the key's record never keeps a secret. A \`message_run\` target sends each firing's input to one run, under the firing's key, which the run's store takes once. 422 for another source kind, a start_run target with no max_cost_usd whose agent has no default one, an agent that is a workflow or does not take the input, or a run that is a workflow's; 409 no_sealing_key for a webhook trigger on a server handed no seal key.`,
+      description: `Each firing starts one run of \`target.agent_id\` with \`target.input\` and its \`max_cost_usd\` (else the agent's default), as POST /agents/{agent_id}/runs would, and the run's \`trigger\` names it. A firing starts its run once, across retries and restarts. While the trigger's last run is active (working, or waiting on a person: a question, an approval, its cap), a firing is skipped; a webhook trigger with \`accept\` starts a run for each event it takes instead (the server's run limit still holds: a start it refuses is tried again). The last ${HISTORY_KEPT} firings are kept. A \`webhook\` source fires on each request to /hooks/{trigger_id} signed by its secret, which this answer holds (\`secret\`) this once: a retry under the same Idempotency-Key answers the same trigger with a \`note\` in its place, as the key's record never keeps a secret. A \`message_run\` target sends each firing's input to one run, under the firing's key, which the run's store takes once. 422 for another source kind, a start_run target with no max_cost_usd whose agent has no default one, an agent that is a workflow or does not take the input, or a run that is a workflow's; 409 no_sealing_key for a webhook trigger on a server handed no seal key.`,
       parameters: [ref("parameters/IdempotencyKey")],
       requestBody: { required: true, content: { "application/json": { schema: { type: "object", additionalProperties: false, required: ["source", "target"], properties: TRIGGER_WRITE } } } },
       responses: { "201": json({ ...TRIGGER, properties: { ...TRIGGER.properties, secret: TRIGGER_SECRET, note: { type: "string", description: "On a retry under the same Idempotency-Key, in place of a webhook trigger's secret: it was shown once, and POST /triggers/{trigger_id}/secret makes a new one." } } }, "Made; a webhook trigger's first answer holds its `secret`, this once."), ...errors(400, 401, 409, 415, 422, 429, 500) },
@@ -1285,11 +1293,11 @@ const EXTENSIONS: Record<string, Record<string, Json>> = {
   "/hooks/{trigger_id}": {
     post: {
       operationId: "receiveHook", tags: ["local"], summary: "Fire a webhook trigger: a request signed by its secret, no token",
-      description: `This server's one route with no token: the request's signature is its credential, checked on the raw body before anything else. It follows the Standard Webhooks spec, so a sender signs with any of its libraries: \`webhook-id\` (1 to 255 printable ASCII characters, no space; the firing's idempotency key), \`webhook-timestamp\` (Unix seconds, within ${HOOK_TOLERANCE_S} s of this server's clock either way) and \`webhook-signature\`, space-separated \`v1,<base64 HMAC-SHA256 of "{webhook-id}.{webhook-timestamp}.{body}">\` under the secret's 32 bytes (at most 2048 characters in all), any one of which may match. The body's bytes are signed as sent, whatever its content type. The body is any text, at most 256 KiB (413 past it), arriving whole within ${HOOK_BODY_MS / 1000} s (408 past that); its first ${PAYLOAD_KEPT_BYTES / 1024} KiB reach the agent inside \`<trigger-payload source="webhook" untrusted>\`. A bad or missing signature, a stale or future timestamp, an unknown trigger, one that is off and one that is not a webhook's all answer the same 401. The first request with a webhook-id answers 202 once its firing is recorded, and its run starts after; the same webhook-id again, for a day after, answers 200 with that firing and starts nothing. A trigger holds at most ${DUE_KEPT} firings due (a message_run firing waits while its run works): past them a new webhook-id answers 429 \`rate_limited\` with Retry-After and records nothing, so the sender sends it again later.`,
+      description: `This server's one route with no token: the request's signature is its credential, checked on the raw body before anything else. A webhook trigger's \`signature\` names the scheme its requests are signed under (default \`${DEFAULT_SCHEME}\`), and a request is checked by the one scheme whose signature header it carries (${SCHEME_NAMES.map((name) => `\`${SIGNATURE_SCHEMES[name].signatureHeader}\` for \`${name}\``).join(", ")}): ${SCHEME_NAMES.map((name) => SIGNATURE_SCHEMES[name].describe).join(" ")} The body's bytes are signed as sent, whatever its content type. The body is any text, at most 256 KiB (413 past it), arriving whole within ${HOOK_BODY_MS / 1000} s (408 past that); its first ${PAYLOAD_KEPT_BYTES / 1024} KiB reach the agent inside \`<trigger-payload source="webhook" scheme="..." event="..." action="..." delivery="..." untrusted>\`, the event as the scheme reads it, the action the JSON body's top-level \`action\` and the delivery the unsigned delivery id (GitHub's X-GitHub-Delivery), each when there is one. A bad or missing signature, a stale or future timestamp, no scheme's signature header or more than one, a scheme other than the trigger's, an unknown trigger, one that is off and one that is not a webhook's all answer the same 401. A verified request its trigger's \`accept\` does not take (GitHub's \`ping\` among them, when no rule names it) answers 200 \`{"ok": "ignored"}\`, fires nothing and is said in the log. The first request with a firing key (as its scheme reads it: the signed \`webhook-id\`, or the SHA-256 of a GitHub body) answers 202 once its firing is recorded, and its run starts after; the same key again, for a day after, answers 200 with that firing (or \`{"ok": "duplicate"}\` once the firing has left the trigger's kept history; each trigger keeps up to ${SEEN_KEPT} keys for their day, the oldest let go first past that) and starts nothing. A trigger holds at most ${DUE_KEPT} firings due (a message_run firing waits while its run works): past them a new delivery answers 429 \`rate_limited\` with Retry-After and records nothing, so the sender sends it again later.`,
       security: [],
       parameters: [TRIGGER_ID],
       requestBody: { required: true, content: { "*/*": { schema: {} } } },
-      responses: { "202": json(TRIGGER_FIRING, "Recorded: its run starts (or its message goes) after this answer."), "200": json(TRIGGER_FIRING, "This webhook-id's firing, as it stands."), "408": HOOK_TIMEOUT, ...errors(401, 413, 429, 500) },
+      responses: { "202": json(TRIGGER_FIRING, "Recorded: its run starts (or its message goes) after this answer."), "200": json({ oneOf: [TRIGGER_FIRING, HOOK_IGNORED, HOOK_DUPLICATE] }, "This firing key's firing, as it stands; `{ok: \"ignored\"}`; or `{ok: \"duplicate\"}`."), "408": HOOK_TIMEOUT, ...errors(401, 413, 429, 500) },
       ...TRIGGER_MARK,
     },
   },
@@ -1722,7 +1730,7 @@ const FIELD_EXTENSIONS: Record<string, Record<string, Json>> = {
       "x-agentrun-serve": "webhook/1",
     },
     triggers: {
-      ...closed({ routes: { type: "boolean" }, sources: { type: "array", items: { enum: [...SOURCE_KINDS] } }, targets: { type: "array", items: { enum: [...TARGET_KINDS] } }, min_every_s: { type: "integer" }, history_kept: { type: "integer" }, catchup_window_s: { type: "integer" }, failures_to_pause: { type: "integer" }, webhook: closed({ signing: { const: "standard-webhooks/v1" }, tolerance_s: { type: "integer" }, max_body_bytes: { type: "integer" }, payload_kept_bytes: { type: "integer" }, at_rest: { enum: ["sealed", "unavailable"] } }) }),
+      ...closed({ routes: { type: "boolean" }, sources: { type: "array", items: { enum: [...SOURCE_KINDS] } }, targets: { type: "array", items: { enum: [...TARGET_KINDS] } }, min_every_s: { type: "integer" }, history_kept: { type: "integer" }, catchup_window_s: { type: "integer" }, failures_to_pause: { type: "integer" }, webhook: closed({ signing: { const: "standard-webhooks/v1" }, signatures: { type: "array", items: { enum: [...SCHEME_NAMES] }, description: "The signature schemes a webhook trigger's `signature` may name." }, tolerance_s: { type: "integer" }, max_body_bytes: { type: "integer" }, payload_kept_bytes: { type: "integer" }, at_rest: { enum: ["sealed", "unavailable"] } }) }),
       description: "/triggers: schedules and signed webhooks that start an agent's capped runs or message a run: the source and target kinds this server takes, the shortest interval, how many firings each trigger keeps, the default catch-up window, and how many failed firings in a row turn a trigger off.",
       ...TRIGGER_MARK,
     },
@@ -1804,7 +1812,7 @@ function withAdapters(doc: Json, adapters: readonly TriggerAdapter[]): void {
     if (!value || typeof value !== "object") return value;
     const text = JSON.stringify(value);
     if (text === source) return sourceSchemaOf(adapters);
-    if (text === sent) return sentOf(sourceSchemaOf(adapters));
+    if (text === sent) return sentOf(adapters);
     if (text === by) return firedByOf(adapters);
     return Object.fromEntries(Object.entries(value).map(([k, v]) => [k, walk(v)]));
   };
@@ -1827,8 +1835,9 @@ function serverHooks(adapters: readonly TriggerAdapter[]): Record<string, Json> 
         description: `A pushed source's own route, with no token: the request is checked by the source's own check against its settings' \`${push.key}\` (the server's, PUT through its settings), on the raw body before anything else. The body is at most ${push.maxBodyBytes} bytes (413 at once past it, the socket closed) and arrives within ${HOOK_BODY_MS / 1000} s (408). Every refusal is the same 401. Each event the request holds fires the one trigger of this source that listens where it happened; an event no trigger takes, and a request with none, is answered 200 with no firing for it, and said in the server's log.${handshake}`,
         security: [],
         requestBody: { required: true, content: { "*/*": { schema: {} } } },
-        // A handshake's answer is any object but a firings one, so each answer is exactly one of the 200's shapes.
-        responses: { "202": json(made, "Recorded: each firing's run starts (or its message goes) after this answer."), "200": json(push.handshake ? { oneOf: [made, { type: "object", not: { required: ["firings"] }, description: "The source's handshake answer." }] } : made, "Nothing new: each event's firing as it stands, or none."), "408": HOOK_TIMEOUT, ...errors(401, 413, 429, 500) },
+        // A handshake's answer is any object but a firings one or the ignored answer, so each answer is exactly one of the
+        // 200's shapes, and a handshake of the source's own, {ok: true} say, is one.
+        responses: { "202": json(made, "Recorded: each firing's run starts (or its message goes) after this answer."), "200": json(push.handshake ? { oneOf: [made, HOOK_IGNORED, { type: "object", not: { anyOf: [{ required: ["firings"] }, HOOK_IGNORED] }, description: "The source's handshake answer." }] } : { oneOf: [made, HOOK_IGNORED] }, "Nothing new: each event's firing as it stands (a key seen within its day whose firing is no longer kept, `{ok: \"duplicate\"}`), or none; or `{ok: \"ignored\"}`, a request the source's own filter does not take."), "408": HOOK_TIMEOUT, ...errors(401, 413, 429, 500) },
         ...TRIGGER_MARK,
       },
     };
