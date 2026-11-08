@@ -9,6 +9,17 @@ import { capOn, modelRequest, SONNET, toolRequest, usd } from "./kernel-cap-supp
 
 const near = (actual, expected, message) => assert.ok(Math.abs(actual - expected) < 1e-12, `${message ?? ""} ${actual} vs ${expected}`);
 
+test("a tool hold that is not a number, or below 0, is refused for good, and the cap is never passed after it: under $1, NaN, then $50, then $500, all refused", async () => {
+  const { cap } = capOn(1);
+  await assert.rejects(cap.admit(toolRequest("fetch", Number.NaN)), (error) => error instanceof CapRefused && error.forGood);
+  await assert.rejects(cap.admit(toolRequest("fetch", 50)), (error) => error instanceof CapRefused && !error.forGood);
+  await assert.rejects(cap.admit(toolRequest("fetch", 500)), CapRefused);
+  await assert.rejects(cap.admit(toolRequest("fetch", -5)), (error) => error instanceof CapRefused && error.forGood, "a negative hold frees no room");
+  await assert.rejects(cap.admit(toolRequest("fetch", Number.POSITIVE_INFINITY)), (error) => error instanceof CapRefused && error.forGood);
+  assert.equal(cap.heldUsd(), 0);
+  assert.equal(cap.spentUsd(), 0, "the spend stays a number");
+});
+
 test("an unmeasured input is refused under a cap, never read as none", async () => {
   await assert.rejects(capOn(10).cap.admit(modelRequest(SONNET, undefined)), (error) => error instanceof CapRefused && error.forGood && /size of the next model request's input is unknown/.test(error.message));
   await capOn(undefined).cap.admit(modelRequest(SONNET, undefined));

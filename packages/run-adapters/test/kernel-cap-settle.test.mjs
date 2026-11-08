@@ -185,6 +185,26 @@ test("a settle whose end mark fails, then retried, books the step exactly once, 
   assert.ok(Math.abs(reopened.spentUsd() - 0.02) < 1e-12, `a reopen reads the same: ${reopened.spentUsd()}`);
 });
 
+test("a step id used again after its step settled is a step of its own: both are booked, no hold leaks, and a reopen reads the total", async () => {
+  const { cap, marks } = marked(1);
+  const call = toolRequest("search", 0.2, { id: "x" });
+  await cap.admit(call);
+  assert.equal(await cap.settle("x", { end: "charged", usd: 0.2 }), 0.2);
+  await cap.admit({ ...call, holdUsd: 0.3 });
+  assert.equal(await cap.settle("x", { end: "charged", usd: 0.3 }), 0.3, "the second use books its own charge");
+  assert.ok(Math.abs(cap.spentUsd() - 0.5) < 1e-12, `both booked: ${cap.spentUsd()}`);
+  assert.equal(cap.heldUsd(), 0, "no hold left behind");
+  const reopened = await openCap({ capUsd: () => 1, marks });
+  assert.ok(Math.abs(reopened.spentUsd() - 0.5) < 1e-12, `a reopen reads both: ${reopened.spentUsd()}`);
+});
+
+test("a settle of an id the cap never held is refused, and books nothing", async () => {
+  const { cap } = capOn(1);
+  await assert.rejects(cap.settle("never-held", { end: "lost", label: "cut" }), /holds no step never-held/);
+  assert.equal(cap.spentUsd(), 0, "the spend stays known");
+  await cap.admit(toolRequest("fetch", 0.1));
+});
+
 test("a zero-dollar priced tool settles as a known $0, and the next paid step is admitted", async () => {
   const { cap } = capOn(1);
   const free = toolRequest("parallel_extract", 0, { basis: "a later part of the same page" });

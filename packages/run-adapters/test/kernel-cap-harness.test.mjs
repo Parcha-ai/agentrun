@@ -73,6 +73,36 @@ for (const [harness, shape] of Object.entries(SHAPES)) {
   });
 }
 
+for (const [harness, shape] of Object.entries(SHAPES)) {
+  test(`${harness}: with a priced tool in play, a request sees the tool's hold and then its charge, as pi's does: the same refusal, then the same admission`, async () => {
+    const capUsd = 0.1;
+    const ask = { kind: "model", model: SONNET, inputTokens: 10_000, outputAsked: shape.outputTokensAsked, outputTokensLeast: shape.outputTokensLeast };
+    // pi: the tool and the request on createCap's one ledger.
+    const pi = createCap({ capUsd: () => capUsd, now: () => T0 });
+    await pi.admit({ kind: "tool", id: "tool-1", name: "monid_run", holdUsd: 0.06, basis: "its quote" });
+    const piRefused = await pi.admit({ ...ask, id: "pi-1" }).catch((error) => error);
+    await pi.settle("tool-1", { end: "charged", usd: 0.01 });
+    const piAdmitted = await pi.admit({ ...ask, id: "pi-2" });
+    // The CLI harness: the runner's model spend, and the host's tool charges and holds passed in.
+    const tools = { spent: 0, held: 0.06 };
+    const before = beforeRequestOf({ capUsd: () => capUsd, modelOf: () => SONNET, now: () => T0, spentUsd: () => tools.spent, heldUsd: () => tools.held });
+    const request = { key: "k", label: "k", model: SONNET.id, turn: 1, maxTurns: null, spentUsd: 0, inFlight: [], inputTokensMax: 10_000, ...shape };
+    const refused = await before(request);
+    assert.equal(refused.refuse, piRefused.message, "the same refusal while the tool holds");
+    Object.assign(tools, { spent: 0.01, held: 0 });
+    const admitted = await before(request);
+    assert.equal(admitted.outputTokensMax, piAdmitted.outputTokensMax, "the same admission once it is charged");
+    assert.ok(Math.abs(admitted.holdUsd - piAdmitted.heldUsd) < 1e-12);
+  });
+}
+
+test("a CLI request beside one in flight with no hold and no measured input is refused for good as unmeasured, never held at Infinity", async () => {
+  const before = beforeRequestOf({ capUsd: () => 1, modelOf: () => SONNET, now: () => T0 });
+  const answer = await before({ key: "k", label: "k", model: SONNET.id, turn: 2, maxTurns: null, spentUsd: 0, inFlight: [{ turn: 1, model: SONNET.id }], inputTokensMax: 10, outputTokensAsked: 1_024 });
+  assert.equal(answer.refuse, "spend_cap_reached: Not sent: the size of the next model request's input is unknown, so the run's cap of $1 cannot be kept: the run is out of budget.");
+  assert.doesNotMatch(answer.refuse, /Infinity/);
+});
+
 test("pi and every CLI harness under the same $0.10, the first request due at step 0: the same note, in the same words, in request 1", () => {
   const ask = (shape) => ({ kind: "model", id: "r", model: SONNET, inputTokens: 10_000, outputAsked: shape.outputTokensAsked, outputTokensLeast: shape.outputTokensLeast });
   const pi = createCap({ capUsd: () => 0.1, now: () => T0 }).note(ask(SHAPES["claude-agent"]));

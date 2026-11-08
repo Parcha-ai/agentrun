@@ -66,10 +66,16 @@ test("a raise's resume, a step's end or its stop landing while its wait's mark i
     else if (during === "done") steps.done("node-1");
     else steps.stop("node-1", new CapRefused("spend_cap_reached: Not sent", { forGood: true, spentUsd: 0 }));
     land();
-    await waiting;
+    assert.equal(await waiting, false, `${during} during the write: the wait says it was dropped`);
     assert.deepEqual(steps.waitingFor(), [], `${during} during the write`);
     if (during === "resume") assert.equal(steps.allWaiting(), false, "the resumed step is not parked again");
   }
+});
+
+test("a wait that is registered says so", async () => {
+  const steps = createStepWaits();
+  steps.working("node-1");
+  assert.equal(await steps.wait("node-1", refusal()), true);
 });
 
 test("a refusal for good is kept by its step's path, and its failure is a CapStop no collecting map takes for an item's", () => {
