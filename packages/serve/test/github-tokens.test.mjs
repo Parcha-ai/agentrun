@@ -32,6 +32,8 @@ async function withGitHubMcp(t) {
   assert.equal(saved.body.auth.type, "github_app");
   return { server, fake, seen };
 }
+/** The tokens minted for runs, each narrowed to its repository: the save's own, to list the tools, covers the installation. */
+const runTokens = (server) => server.github.tokens.filter((entry) => entry.repositories);
 
 const files = async (dir) => Promise.all((await readdir(dir, { recursive: true, withFileTypes: true })).filter((e) => e.isFile()).map(async (e) => ({ path: join(e.parentPath, e.name), text: await readFile(join(e.parentPath, e.name), "utf8").catch(() => "") })));
 
@@ -45,7 +47,8 @@ test("demo: a github trigger's run calls the MCP server with an installation tok
   const { last } = await follow(server.api, fired.run_id, ["completed", "failed"], { deadlineMs: 60_000 });
   assert.equal(last.status, "completed");
   assert.equal((await server.api("GET", `/runs/${fired.run_id}`)).body.result?.final_answer, "The tool said: 5");
-  const mints = server.github.tokens;
+  assert.deepEqual(server.github.tokens.filter((entry) => !entry.repositories).length, 1, "the save listed the tools with one token of the installation");
+  const mints = runTokens(server);
   assert.equal(mints.length, 1, "one token, for this run's launch");
   assert.deepEqual([mints[0].installation, mints[0].repositories], [777, ["widgets"]], "the event's installation, narrowed to its one repository");
   const calls = seen.filter((request) => request.authorization === `Bearer ${mints[0].token}`);
@@ -67,12 +70,12 @@ test("a run with no GitHub event mints by the repository its input names: the Ap
   };
   assert.equal(await run('Call mcp__gh__add with {"a":1,"b":1}\nLook at https://github.com/acme/widgets/pull/12'), "The tool said: 2");
   assert.ok(server.github.requests.some((r) => r.method === "GET" && r.url === "/repos/acme/widgets/installation" && /^Bearer [\w-]+\.[\w-]+\.[\w-]+$/.test(String(r.headers.authorization))), "asked GitHub which installation covers it, with the App's JWT");
-  assert.deepEqual(server.github.tokens.map((m) => m.repositories), [["widgets"]]);
+  assert.deepEqual(runTokens(server).map((m) => m.repositories), [["widgets"]]);
   const uncovered = await run('Call mcp__gh__add with {"a":1,"b":1}\nLook at https://github.com/acme/private');
   assert.match(uncovered, /The GitHub App isn't installed on acme\/private/, "in words, not a crash");
   const none = await run('Call mcp__gh__add with {"a":1,"b":1}');
   assert.match(none, /No GitHub repository/, "a run that names none is told so");
-  assert.equal(server.github.tokens.length, 1, "no token for either");
+  assert.equal(runTokens(server).length, 1, "no token for either");
 });
 
 test("a run that resumes gets a token minted again; what a run shows is cut of every live token", { timeout: 120_000 }, async (t) => {
@@ -81,14 +84,14 @@ test("a run that resumes gets a token minted again; what a run shows is cut of e
   const started = await server.api("POST", "/agents/echo/runs", { input: { content: "Call mcp__gh__whoami with {}\nhttps://github.com/acme/widgets" } });
   const runId = started.body.run_id;
   await follow(server.api, runId, ["completed"], { deadlineMs: 60_000 });
-  const first = server.github.tokens.at(-1).token;
+  const first = runTokens(server).at(-1).token;
   const shown = (await server.api("GET", `/runs/${runId}`)).body.result?.final_answer;
   assert.ok(shown.startsWith("The tool said:") && !shown.includes(first), `the run shows no live token: ${shown}`);
   // A follow-up opens the completed run again: a new launch, a new token.
   assert.equal((await server.api("POST", `/runs/${runId}/messages`, { content: 'Call mcp__gh__add with {"a":3,"b":4}' })).status, 202);
   for (const end = Date.now() + 60_000; (await server.api("GET", `/runs/${runId}`)).body.result?.final_answer !== "The tool said: 7"; await new Promise((resolve) => setTimeout(resolve, 200))) assert.ok(Date.now() < end, "the follow-up was answered");
-  assert.equal(server.github.tokens.length, 2, "minted again at the resume");
-  const second = server.github.tokens.at(-1).token;
+  assert.equal(runTokens(server).length, 2, "minted again at the resume");
+  const second = runTokens(server).at(-1).token;
   assert.notEqual(second, first);
   assert.equal(seen.at(-1).authorization, `Bearer ${second}`, "the resumed run calls with the new one");
 });
