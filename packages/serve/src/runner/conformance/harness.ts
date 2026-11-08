@@ -469,15 +469,27 @@ const CASES: readonly Case[] = [
   },
 ];
 
-/** Registers the six cases for `subject` with `test` (node:test). A case the subject cannot model is skipped with its
- *  reason, never passed. */
+const CLI_NEVER_RERUNS = "a CLI never reruns a call that started; only the model calls again (its adapter's facts: rerunsStarted false)";
+
+/** The cases a harness's declared facts rule out, each with why: what it does by design, not what it cannot model yet. */
+export function factsRuleOut(facts: ConformanceSubject["facts"]): Partial<Record<ConformanceCase, string>> {
+  if (!facts) return {};
+  return {
+    ...(facts.steer ? {} : { "steer-mid-turn": `${facts.id} takes no message mid-turn (its adapter's facts: steer false), so the loop refuses a steer for it in words` }),
+    ...(facts.rerunsStarted === false ? { "replay-safe-rerun": CLI_NEVER_RERUNS, "fault-restarts-bounded": CLI_NEVER_RERUNS } : {}),
+  };
+}
+
+/** Registers the cases for `subject` with `test` (node:test). A case its facts rule out, or one it cannot model yet, is
+ *  skipped with its reason, never passed. */
 export function registerHarnessConformance(subject: ConformanceSubject, { test }: { test: TestFunction }): void {
+  const ruledOut = factsRuleOut(subject.facts);
   for (const entry of CASES) {
     const processCase = entry.id.endsWith("-process");
-    const skip = subject.unsupported?.[entry.id] ?? (processCase && !subject.process ? "it names no module a runner process can load (subject.process)" : undefined);
-    test(`${subject.name}: ${entry.title}`, { timeout: CASE_TIMEOUT_MS, ...(skip ? { skip: `${subject.name} cannot model this yet: ${skip}` } : {}) }, (t) =>
-      entry.body(subject, t),
-    );
+    const byFacts = ruledOut[entry.id];
+    const notYet = subject.unsupported?.[entry.id] ?? (processCase && !subject.process ? "it names no module a runner process can load (subject.process)" : undefined);
+    const skip = byFacts ? `${subject.name} does not do this by design: ${byFacts}` : notYet ? `${subject.name} cannot model this yet: ${notYet}` : undefined;
+    test(`${subject.name}: ${entry.title}`, { timeout: CASE_TIMEOUT_MS, ...(skip ? { skip } : {}) }, (t) => entry.body(subject, t));
   }
 }
 
