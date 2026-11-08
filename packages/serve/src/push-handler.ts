@@ -138,8 +138,9 @@ export async function receivePush(deps: PushDeps, req: IncomingMessage, segment:
   }
   // A server-wide source whose triggers choose their own events: each event fires every trigger that takes it, each its
   // own firing under its own key; every other trigger keeps the event's key for its day (as an ignored request's), so
-  // the same request relabeled is a duplicate there too. One no trigger takes is answered ignored, and said. A trigger
-  // holding too many firings due is passed over, and said, and the rest still fire.
+  // the same request relabeled is a duplicate there too. One no trigger takes is answered ignored, and said. When a trigger
+  // that takes it holds too many firings due, the request is refused (429, Retry-After) though the rest recorded theirs:
+  // the sender's retry records it there once it has room, and is the others' duplicate.
   if (adapter.takes) {
     const fired: { created: boolean; firing: unknown }[] = [];
     let refused: unknown;
@@ -163,7 +164,7 @@ export async function receivePush(deps: PushDeps, req: IncomingMessage, segment:
       deps.say({ condition: "hook_ignored", source: adapter.id, route, reason: "no_trigger_takes_it", ...(events[0]?.event ? { event: events[0].event } : {}) });
       return { status: 200, body: { ok: "ignored" } };
     }
-    if (!fired.length && refused) throw refused;
+    if (refused) throw refused;
     return { status: fired.some((f) => f.created) ? 202 : 200, body: { firings: fired.map((f) => f.firing) } };
   }
   // A server-wide source's: each event fires the one trigger that listens on its scope (a scope belongs to one trigger:
