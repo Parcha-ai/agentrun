@@ -39,8 +39,6 @@ const SQLITE_FILE = /\.sqlite\b/;
 /** The files outside the store that named a .sqlite file when the store took its data directory. Each goes at the
  *  cutover; the list only shrinks. */
 const TODAY_FILE = [
-  "packages/harness/src/assemble.ts",
-  "packages/harness/src/demo.ts",
   "packages/pi-durable-agent/src/agent-store.ts",
   "packages/pi-durable-agent/src/home.ts",
   "packages/pi-durable-agent/src/pack-shared.ts",
