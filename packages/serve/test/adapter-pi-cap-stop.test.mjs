@@ -140,6 +140,17 @@ test("a stopped request whose upstream ends late still counts what it streamed a
   assert.equal(spent, eight((14 + ALLOWANCE) * PER_TOKEN), `the stop's booking ($0.1038) is in the records, never the $${held} held`);
 });
 
+test("a stopped request whose booking never lands is counted at its hold and bound, never nothing: the end waits its bound and is written", async (t) => {
+  // The provider's stream never ends on the stop's abort, so the session's proxy never books the request: the loop's
+  // wait for its bookings runs out (CLOSE_MS), the run's end is written, and the request reads back unanswered, at the
+  // worst it can have cost (its hold and bound), never at nothing.
+  const { row, asked, spent } = await stoppedRun(t, { capUsd: 1, text: "Half of one.md", abortAfter: () => new Promise(() => {}) });
+  assert.equal(row.state, "stopped", "the run still ends, past the bound");
+  const { holdUsd, boundUsd = 0 } = asked[0]?.answer ?? {};
+  assert.ok(holdUsd > 0.5, `the request was held at most of the cap: ${JSON.stringify(asked[0]?.answer)}`);
+  assert.equal(spent, eight(holdUsd + boundUsd), `unbooked, it counts at its hold and bound ($${holdUsd} + $${boundUsd}), never $0`);
+});
+
 test("QA 7.4: under a $1 cap with $0.004 spent, a clamped request stopped before it streamed counts 1,024 tokens, $0.1024, never the rest of the cap", async (t) => {
   const { sent, spent } = await stoppedRun(t, { capUsd: 1, spentUsd: 0.004, text: "" });
   assert.equal(sent[0].max_tokens, 9_960, "clamped to what $0.996 buys");
