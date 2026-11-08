@@ -176,7 +176,7 @@ async function readSpill(disk: ArchilDisk, key: string, cap: number): Promise<Ui
   try {
     const answer = await disk.getRange(key, `bytes=0-${cap}`);
     if (answer.status === 416) return new Uint8Array(0);
-    return answer.status === 200 ? answer.body.subarray(0, cap + 1) : answer.body;
+    return answer.body;
   } catch (error) {
     if ((error as { status?: unknown })?.status === 404) return new Uint8Array(0);
     throw error;

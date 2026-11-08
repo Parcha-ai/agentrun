@@ -580,6 +580,10 @@ test("archil-disk: the SDK seam takes its key and S3 endpoint as options (no env
         response.writeHead(200, { "content-length": String(4 * 1024 * 1024) });
         return response.end(Buffer.alloc(4 * 1024 * 1024, "w"));
       }
+      if (request.url === "/dsk-0000000000000001/agents/a/runs/r/work/small.txt") {
+        response.writeHead(206, { "content-range": "bytes 0-4/5" });
+        return response.end("hello");
+      }
       if (request.url === "/dsk-0000000000000001/agents/a/runs/r/work/shifted.txt") {
         response.writeHead(206, { "content-range": "bytes 5-9/10" });
         return response.end("56789");
@@ -621,10 +625,20 @@ test("archil-disk: the SDK seam takes its key and S3 endpoint as options (no env
     const before = seen.length;
     await assert.rejects(disk.getRange("agents/a/runs/r/work/moved.txt", "bytes=0-1"));
     assert.deepEqual(seen.slice(before).map((r) => r.url), ["/dsk-0000000000000001/agents/a/runs/r/work/moved.txt"], "the redirect was not followed");
+    // A gateway that ignores Range (whole.bin, 4 MiB), asked for a slice 1 TiB past the end: nothing, and no
+    // allocation of the offset.
+    const past = await disk.getRange("agents/a/runs/r/work/whole.bin", `bytes=${2 ** 40}-${2 ** 40 + 64 * 1024 * 1024}`);
+    assert.deepEqual([past.status, past.body.length], [200, 0]);
     // A gateway that ignores Range is read no further than the range's end; one that answers other bytes is refused.
     const whole = await disk.getRange("agents/a/runs/r/work/whole.bin", "bytes=0-9");
     assert.deepEqual([whole.status, whole.body.length], [200, 10]);
     await assert.rejects(disk.getRange("agents/a/runs/r/work/shifted.txt", "bytes=0-4"), /Content-Range/);
+    // A read holds only the bytes it got, never a buffer the size of what it asked for.
+    const small = await disk.getRange("agents/a/runs/r/work/small.txt", `bytes=0-${64 * 1024 * 1024}`);
+    assert.deepEqual([small.status, text(small.body), small.body.buffer.byteLength], [206, "hello", 5]);
+    // A 200 that ignored Range: the asked slice, the bytes before it dropped as they stream.
+    const slice = await disk.getRange("agents/a/runs/r/work/whole.bin", "bytes=5-9");
+    assert.deepEqual([slice.status, text(slice.body), slice.body.buffer.byteLength], [200, "wwwww", 5]);
     const started = Date.now();
     await assert.rejects(archilDisk({ ...options, readTimeoutMs: 200 }).getRange("agents/a/runs/r/work/stalls.txt", "bytes=0-1"));
     assert.ok(Date.now() - started < 5_000, `a stalled read gave up (${Date.now() - started} ms)`);

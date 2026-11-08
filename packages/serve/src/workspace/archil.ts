@@ -245,8 +245,8 @@ class ArchilWorkspace implements Workspace {
       throw failed(error, rel, "read");
     }
     if (answer.status === 416) return new Uint8Array(0);
-    // A gateway that ignored the range sent the whole object.
-    let body = answer.status === 200 ? answer.body.subarray(offset, last + 1) : answer.body;
+    // The asked bytes, whether the gateway honoured the range (206) or not (200; the seam took the slice).
+    let body = answer.body;
     if (length === undefined && body.length > READ_MAX) {
       throw new WorkspaceError("TOO_LARGE", `${show(rel)} is more than ${READ_MAX} bytes from ${offset}; a read returns at most that (read it in ranges)`, { path: rel });
     }
