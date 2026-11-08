@@ -127,12 +127,12 @@ test("readBackOf: what a provider reads back of a mount is its kind and source, 
 	assert.deepEqual(computer.readBackOf(ARCHIL, 0), { ...read, epoch: 0 }, "epoch 0 is an epoch");
 });
 
-test("readBackOf: an Archil mount is read back under the computer's claim epoch, so one with no epoch, or none that is one, is a caller's mistake", () => {
+test("readBackOf: an Archil mount is read back under the computer's claim epoch; with no epoch, or none that is one, it is a mount in words, never a guess, a throw or the token", () => {
 	for (const epoch of [undefined, -1, 1.5, Number.NaN, Number.MAX_SAFE_INTEGER + 1, "7"]) {
-		assert.throws(
-			() => computer.readBackOf(ARCHIL, epoch),
-			(error) => error instanceof TypeError && /epoch/.test(error.message) && !error.message.includes(TOKEN),
-			`epoch ${String(epoch)}`,
-		);
+		const read = computer.readBackOf(ARCHIL, epoch);
+		assert.deepEqual(Object.keys(read), ["other"], `epoch ${String(epoch)}: ${JSON.stringify(read)}`);
+		assert.match(read.other, /no epoch/, `epoch ${String(epoch)}`);
+		assert.match(read.other, /dsk-runs:\/agents\/a1\/runs\/r1\/work/, "it names the mount it reads back");
+		assert.ok(!read.other.includes(TOKEN), `epoch ${String(epoch)}: the token`);
 	}
 });
