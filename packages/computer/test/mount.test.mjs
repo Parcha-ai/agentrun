@@ -72,7 +72,7 @@ test("checkMount's bind rule: an absolute path to an existing directory, canonic
 		[link, new RegExp(`mount\\.path .*a-link" is not canonical: it resolves to "${dir}"`)],
 		[`${dir}/`, /is not canonical/],
 		[`${root}/./run`, /is not canonical/],
-		[`${root}/x/../run`, /is not canonical/],
+		[`${root}/run/../run`, /is not canonical/],
 	]) {
 		const found = refusals({ kind: "bind", path }, ["bind"]);
 		assert.deepEqual(found.map((r) => r.field), ["mount"], `${JSON.stringify(path)}: ${JSON.stringify(found)}`);

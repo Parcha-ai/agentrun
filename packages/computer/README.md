@@ -325,8 +325,8 @@ if (connected.ok) {
 await docker.release(made.value, "delete");
 ```
 
-- `capabilities()` declares kind `linux`, daemon `pid1`, groups `exec`, `files` and `processes`, and `maxLifetimeMs`
-  of 30 days; there is no `extend()` or `stream()`, and init gets no `--max-deadline`.
+- `capabilities()` declares kind `linux`, daemon `pid1`, groups `exec`, `files` and `processes`, `maxLifetimeMs`
+  of 30 days, and `mount: ["bind"]` (below); there is no `extend()` or `stream()`, and init gets no `--max-deadline`.
 - `new DockerProvider({ daemonPath, desktop: {} })` makes desktops: kind `desktop`, with `screen`, `input.pointer` and
   `input.keys` too, on an image with an X server (`test/fixtures/desktop/Dockerfile` is Alpine and Xvfb, 48 MB).
   `create` gives the daemon `DISPLAY` (`display`, default `:0`), then starts the X server through it with
@@ -363,7 +363,7 @@ await docker.release(made.value, "delete");
   computer's user, mode 700, the one place a non-root user can surely write. It is memory: what it holds counts against
   the memory limit, and it does not survive a stop. So it holds at most half of `memoryMb` (`size=2048m` by default): a
   full `/work` fails a write with "No space left on device" instead of letting the memory limit OOM-kill a process,
-  PID 1 included. Storage that lasts is the agent disk's job, not this package's.
+  PID 1 included. What lasts is the run's folder, bound at `/workspace` when the spec asks (below).
 - `create` ends with the drift check (below): a computer that is not what was declared is deleted, and `create`
   refuses with every mismatch in words.
 - `create(spec, { signal })` passes the signal to every step: `docker info` before `docker run` (an abort there makes
@@ -380,12 +380,14 @@ await docker.release(made.value, "delete");
   when the computer runs, its daemon's hello. A computer that drifts is refused (`refused`) with every mismatch, and
   left as it is: attach did not make it, so it does not delete it. A stopped computer is checked by inspect alone. A
   computer that passes is returned as its ref with `spec`, the spec read back (`{ image, user, network, cpus,
-  memoryMb, pids, workdir, deadline }`), so a caller sees what it attached to: `user` is `uid:gid` (`"0:0"` for a
-  computer whose spec asked for root) and `network` the policy read back. `list` keeps its own shape (`ComputerInfo`).
+  memoryMb, pids, workdir, deadline, mount? }`), so a caller sees what it attached to: `user` is `uid:gid` (`"0:0"` for a
+  computer whose spec asked for root), `network` the policy read back, and `mount` the run's folder bound at
+  `/workspace`, when one is. `list` keeps its own shape (`ComputerInfo`).
 - `list(labels)` runs `docker ps -a --filter label=agentrun.computer=1 --filter label=k=v ...`, then inspects the
   matches 50 at a time, reading only the fields it reports, so any number of computers is listed (a computer gone
   between the two is left out). It returns each computer's `ref`, `labels`, `deadline` (a `Date`, or `undefined` when the label is missing or is not
-  the ISO time the provider writes), `state` (`running` or `stopped`) and `network` as read back.
+  the ISO time the provider writes), `state` (`running` or `stopped`), `network` as read back, and `mount` when
+  something is mounted at `/workspace`.
 - `network(ref)` reads the network back: `none` (network mode none, on no network but Docker's own `none`), `open`
   (the default bridge alone), or `{ other: "<words>" }` for anything else, which is never reported as a policy.
   `network(ref, policy)` returns the policy when it is the computer's; any change is refused: a Docker computer's
@@ -398,6 +400,49 @@ Expected failures are results (`{ ok: false, error: { code, message } }`), not t
 
 What a Docker computer cannot do: run as root or in root's group unless its spec asks, switch users, gain a capability, reach any network
 when asked for `none`, write the daemon, or run past its deadline.
+
+### Mounting the run's folder
+
+A computer mounts the run's folder; tools then run inside it. The spec has one field for it, `mount`, and every
+computer has the folder at one path, `/workspace` (`WORKSPACE`). `HOME` stays where the provider puts it (`/work` on
+Docker): `/workspace` is only the mount.
+
+```ts
+import { DockerProvider, WORKSPACE } from "@parcha/agentrun-computer";
+
+const docker = new DockerProvider({ daemonPath: "dist/computerd-linux-amd64" });
+// The run folder must exist, by its canonical path, and be writable by docker.user (below).
+const made = await docker.create({ image: "debian:bookworm-slim", lifetimeMs: 600_000, network: "none", mount: { kind: "bind", path: "/data/runs/r1/work" } });
+// In the computer: files.read({ path: `${WORKSPACE}/notes.md` }), exec.run({ argv: ["make"], cwd: WORKSPACE, ... })
+```
+
+- `ComputerSpec.mount` is `{ kind: "bind", path }`, a folder on the provider's host bound in (the local Docker
+  computer), or `{ kind: "archil", disk, folder, token }`, the run's folder inside an Archil disk, mounted in a remote
+  computer. `capabilities().mount` lists the kinds a provider takes; absent, it takes none.
+- `checkMount(mount, declared)` (`src/mount.ts`) is the one rule every provider's `check` runs, with no vendor call: a
+  kind the provider does not declare is refused in words (`this provider does not take a mount of kind archil; it takes
+  bind`); a bind's `path` is absolute, canonical (its own realpath, so what is read back is what is bound: Docker
+  reports a bind's source as given, a symlink included), an existing directory on the host, with no NUL; an Archil
+  mount's `disk`, `folder` and `token` are non-empty strings with no NUL, the `folder` relative to the disk's root and
+  with no `..` part. A field the kind does not have is refused.
+- **The token is a secret.** No refusal names an Archil field's value (a token put in the wrong field is not echoed),
+  and what a provider reads back of a mount, `MountReadBack` (`readBackOf(mount)`), is its kind and source alone:
+  `{ kind: "bind", path }` or `{ kind: "archil", disk, folder }`, or `{ other: "<words>" }` for a mount at
+  `/workspace` the provider never makes. The token is never in a label, a read-back or an error.
+- **Docker takes a bind.** `create` adds `--mount type=bind,src=<path>,dst=/workspace` after the daemon's mount:
+  read-write, propagation `rprivate`. A path Docker's `--mount` cannot hold (a comma, a double quote, a line break) is
+  refused by `check`.
+- **The run folder must be writable by the computer's user.** The provider binds the folder as it is and never chowns
+  or chmods it: whoever makes the run folder gives it that user, the spec's `user` or the provider's (`docker.user`,
+  this process's uid:gid by default). `create` checks it before any Docker call, as the kernel will: the owner's,
+  the group's or others' bits of the folder's mode, by the user's uid and gid, must allow write and search; else it
+  refuses in words (`the run folder /data/runs/r1/work is not writable by the computer's user 1000:1000: it is owned by
+  0:0 with mode 0755; ...`). A computer's user has no capabilities, root included, so no other way in. On an SELinux
+  host the folder needs a label containers may use; the provider does not relabel it.
+- `attach` and `list` read the mount back from `docker inspect` (`mountOf(inspected)`): a read-write bind at
+  `/workspace` is `{ kind: "bind", path }`; a read-only one, a volume or two mounts there is `{ other }`, and `attach`
+  refuses such a computer. The drift check (below) holds a computer to the mount it was asked for: the bind there, from
+  that path, read-write, `rprivate`, and no other mount.
 
 ### The drift check
 
@@ -422,7 +467,7 @@ From `docker inspect`, what create asks for:
 | `HostConfig.Memory`, `MemorySwap` | both `memoryMb` MiB, or 4096 MiB |
 | `HostConfig.CpuPeriod`, `CpuQuota` | 100000, and `cpus` (or 2) times 100000 |
 | `HostConfig.Tmpfs` | exactly `/work` and `/run/agentrun`, each with that uid and gid, `mode=0700`, `nosuid` and `nodev` (`/work` `exec` and `size=` half of `memoryMb` in MiB, `/run/agentrun` `noexec` and `size=1m`); options in any order; a missing or other size, or another tmpfs, is drift |
-| `HostConfig.Mounts`, `Mounts` | the provider's daemon binary bound read-only at `/opt/agentrun/computerd` (propagation `rprivate`), and no other mount of any type: an image's `VOLUME` is drift too, so an image that declares one is refused |
+| `HostConfig.Mounts`, `Mounts` | the provider's daemon binary bound read-only at `/opt/agentrun/computerd` (propagation `rprivate`); when the spec has a `mount`, then the run's folder bound read-write at `/workspace` from exactly that path (propagation `rprivate`); and no other mount of any type: an image's `VOLUME` is drift too, so an image that declares one is refused |
 | `Config.User` | the uid:gid asked for: the spec's, the provider's, or the default |
 | `Config.Image`, `WorkingDir` | the spec's image; its `workdir`, or `/work` |
 | `Config.Env` | one `HOME`, `HOME=/work`; the image's other variables are its own |
@@ -508,7 +553,7 @@ if (swept.ok) console.log(`deleted ${swept.value.deleted.join(", ") || "none"}; 
 
 A provider for another vendor passes the same suite as Docker's, with one command. The suite is data: each case in
 `src/conformance/cases/` names its level, its group (`health`, `exec`, `files`, `process`, `provider`, `drift`,
-`screen`, `input`, `touch`, `apps`, `lifetime`) and the capabilities it needs, and uses only `ComputerProvider`,
+`mount`, `screen`, `input`, `touch`, `apps`, `lifetime`) and the capabilities it needs, and uses only `ComputerProvider`,
 `ComputerClient` and the suite's assertion helpers, so the same cases run against a provider with daemon `none`.
 
 ```sh
@@ -549,6 +594,11 @@ What a provider module implements:
 - `export function createDriftedProvider()`, for the drift case: the same provider with a daemon that reports a version
   other than `version`. A computer of that daemon must never be handed out: `create` refuses it (and deletes it), or
   `connect` refuses it. Without this export the case is skipped, so Core does not pass.
+- `export function mountFor(kind)`, for the mount cases: a fresh run folder for a mount kind the provider declares
+  (`RunFolder`: `{ mount, read(path), write(path, data), close() }`), with its outside, where no computer runs: the
+  folder on the host for a bind, the disk's file API for Archil. `undefined` for a kind it cannot make. The runner
+  closes each folder when its case ends. `--provider docker` gives a bind of a new folder under the temp directory,
+  owned by the provider's user. Without this export the mount cases skip in words.
 
 Core and Full follow the Kubernetes agent-sandbox conformance levels (KEP-539.2):
 
@@ -587,8 +637,16 @@ Core and Full follow the Kubernetes agent-sandbox conformance levels (KEP-539.2)
   deadline, to maxLifetimeMs + 1, and, 60 s after create, to maxLifetimeMs less 30 s, within the cap on its own but past
   create + maxLifetimeMs; a cap under 3 min skips it) and `screen.stream`
   (`stream`: an https URL that answers 200; only its origin is ever reported).
+- **The mount group is Full**, optional for every kind until the cutover decides. "Mounts the run's folder",
+  `mount.run-folder-bind` and `mount.run-folder-archil` (`mount:bind`, `mount:archil`, from `capabilities().mount`):
+  on a computer of its own made with the run folder `mountFor(kind)` gives, `check` takes the spec, `attach` and `list`
+  read the mount back as asked (`readBackOf`), a file written outside is read at `/workspace` with `files.read`, one
+  `files.write` makes there is read outside, and `cat <file>` run through `exec.run` with `cwd: "/workspace"` prints
+  it. For Archil, no read-back holds the token. `mount.undeclared-kind`: each kind the provider does not declare is
+  refused by `check` with `field: "mount"` in words, and by `create` with `check`'s words, before any vendor call, with
+  the token in no refusal; a provider that declares every kind skips it.
 
-A case needs groups (declared by both `capabilities().groups` and hello), networks, the janitor, a user, or an optional
+A case needs groups (declared by both `capabilities().groups` and hello), networks, the janitor, a user, a mount kind, or an optional
 provider method (`extend`, `stream`, declared by being there). When a Core case needs what its kind requires and the
 provider or the computer lacks it, the case fails in words: `a desktop computer with daemon pid1 must declare screen:
 the provider does not declare screen`. Any other need that is not declared skips the case with the reason, never
@@ -625,8 +683,8 @@ is out. Cases do not assume root: the suite assumes only that the
 computer's `HOME`, which the provider sets, is a directory its user can write, and works under
 `$HOME/agentrun-conformance-<run id>`.
 
-From code: `runConformance(provider, { image, only?, signal?, drifted?, caseTimeoutMs?, cleanupTimeoutMs?, fixture?,
-fetch? })` returns the report, and `formatReport(report)` the text above.
+From code: `runConformance(provider, { image, only?, signal?, drifted?, mountFor?, caseTimeoutMs?, cleanupTimeoutMs?,
+fixture?, fetch? })` returns the report, and `formatReport(report)` the text above.
 
 ## Build
 

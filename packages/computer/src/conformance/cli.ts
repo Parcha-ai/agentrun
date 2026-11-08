@@ -9,7 +9,14 @@ import { conformanceCases } from "./cases/index.js";
 import { dockerConformance } from "./docker.js";
 import { formatReport } from "./report.js";
 import { runConformance } from "./runner.js";
-import type { Case, CaseResult } from "./types.js";
+import type { Case, CaseResult, ConformanceOptions } from "./types.js";
+
+/** What a run is given from the provider's side: the provider, its drifted twin and run folders when it has them. */
+interface Target {
+	provider: ComputerProvider;
+	drifted?: () => Promise<ComputerProvider>;
+	mountFor?: ConformanceOptions["mountFor"];
+}
 
 /** A stream as main writes to it: done is called once the text is handed on, as Writable.write's callback is. */
 export interface Writer {
@@ -33,10 +40,11 @@ export interface CliIo {
 }
 
 const USAGE = `usage: npm run conformance -w @parcha/agentrun-computer -- --provider docker|<module.js> [--image <image>] [--only <group|case>,...] [--fixture <path>] [--json]
-  --provider  docker, or a module that exports createProvider() (and, for the drift case, createDriftedProvider())
+  --provider  docker, or a module that exports createProvider() (and, for the drift case, createDriftedProvider();
+              for the mount cases, mountFor(kind), a fresh run folder for that mount kind)
   --image     the image every computer starts from (default debian:bookworm-slim)
-  --only      run only these groups (health, exec, files, process, provider, drift, screen, input, touch, apps,
-              lifetime) or case ids; a run that leaves Core cases out is partial: no Core verdict, and exit 3 when
+  --only      run only these groups (health, exec, files, process, provider, drift, mount, screen, input, touch,
+              apps, lifetime) or case ids; a run that leaves Core cases out is partial: no Core verdict, and exit 3 when
               every case that ran passed
   --fixture   the fixture the screen, input, touch and apps cases check effects with: computerd-fixture for a
               desktop, the fixture APK for an Android phone
@@ -90,23 +98,26 @@ function parse(argv: string[], cases: Case[]): Args {
 	};
 }
 
-/** The provider a module makes, and its drifted twin when it offers one. */
-async function load(path: string): Promise<{ provider: ComputerProvider; drifted?: () => Promise<ComputerProvider> }> {
-	let module: { createProvider?: unknown; createDriftedProvider?: unknown };
+/** The provider a module makes, its drifted twin and its run folders (mountFor) when it offers them. */
+async function load(path: string): Promise<Target> {
+	let module: { createProvider?: unknown; createDriftedProvider?: unknown; mountFor?: unknown };
 	try {
 		module = await import(pathToFileURL(path).href);
 	} catch (error) {
 		throw new Usage(`cannot load the provider module ${path}: ${(error as Error).message.split("\n")[0]}`);
 	}
-	const { createProvider, createDriftedProvider } = module;
+	const { createProvider, createDriftedProvider, mountFor } = module;
 	if (typeof createProvider !== "function") throw new Usage(`${path} does not export createProvider()`);
 	const provider = (await createProvider()) as ComputerProvider;
 	const lacks = PROVIDER_METHODS.filter((name) => typeof provider?.[name] !== "function");
 	if (lacks.length > 0 || typeof provider.id !== "string") {
 		throw new Usage(`${path}: createProvider() did not return a ComputerProvider: it lacks ${[...lacks, ...(typeof provider?.id === "string" ? [] : ["id"])].join(", ")}`);
 	}
-	if (typeof createDriftedProvider !== "function") return { provider };
-	return { provider, drifted: async () => (await createDriftedProvider()) as ComputerProvider };
+	return {
+		provider,
+		...(typeof createDriftedProvider === "function" ? { drifted: async () => (await createDriftedProvider()) as ComputerProvider } : {}),
+		...(typeof mountFor === "function" ? { mountFor: mountFor as NonNullable<ConformanceOptions["mountFor"]> } : {}),
+	};
 }
 
 export async function main(argv: string[], io: CliIo = {}): Promise<number> {
@@ -123,7 +134,7 @@ export async function main(argv: string[], io: CliIo = {}): Promise<number> {
 		return 0;
 	}
 	let close = () => {};
-	let target: { provider: ComputerProvider; drifted?: () => Promise<ComputerProvider> };
+	let target: Target;
 	try {
 		if (args.provider === "docker") {
 			const docker = dockerConformance(io.dockerTimeoutMs === undefined ? {} : { timeoutMs: io.dockerTimeoutMs });
@@ -149,6 +160,7 @@ export async function main(argv: string[], io: CliIo = {}): Promise<number> {
 			...(args.fixture ? { fixture: resolve(io.cwd ?? process.env.INIT_CWD ?? process.cwd(), args.fixture) } : {}),
 			...(signal ? { signal } : {}),
 			...(target.drifted ? { drifted: target.drifted } : {}),
+			...(target.mountFor ? { mountFor: target.mountFor } : {}),
 			...(onResult ? { onResult } : {}),
 		});
 		await write(stdout, args.json ? `${JSON.stringify(report, null, 2)}\n` : formatReport(report));

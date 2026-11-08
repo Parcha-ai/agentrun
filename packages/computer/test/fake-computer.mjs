@@ -302,7 +302,9 @@ export function fakeComputers({
  * written from outside the computer. `closed()` names each folder's mount once the runner has closed it.
  */
 export function fakeRunFolders() {
-	const disk = mkdtempSync(join(tmpdir(), "computer-fake-disk-"));
+	// Made on the first Archil folder only, so a run of bind folders leaves no disk behind.
+	let made;
+	const diskDir = () => (made ??= mkdtempSync(join(tmpdir(), "computer-fake-disk-")));
 	const closed = [];
 	const at = (dir, mount) => ({
 		mount,
@@ -326,8 +328,16 @@ export function fakeRunFolders() {
 		}
 		if (kind !== "archil") return undefined;
 		const folder = `runs/${randomBytes(4).toString("hex")}`;
-		mkdirSync(join(disk, folder), { recursive: true });
-		return at(join(disk, folder), { kind: "archil", disk: "fake-disk", folder, token: `archil-token-${randomBytes(8).toString("hex")}` });
+		mkdirSync(join(diskDir(), folder), { recursive: true });
+		return at(join(diskDir(), folder), { kind: "archil", disk: "fake-disk", folder, token: `archil-token-${randomBytes(8).toString("hex")}` });
 	};
-	return { mountFor, disks: { "fake-disk": disk }, closed: () => closed, remove: () => rmSync(disk, { recursive: true, force: true }) };
+	const disks = {
+		get "fake-disk"() {
+			return diskDir();
+		},
+	};
+	const remove = () => {
+		if (made !== undefined) rmSync(made, { recursive: true, force: true });
+	};
+	return { mountFor, disks, closed: () => closed, remove };
 }

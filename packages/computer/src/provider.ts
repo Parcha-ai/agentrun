@@ -1,4 +1,5 @@
 // The provisioner: one per vendor. It makes, finds and ends computers; the daemon inside does the work.
+import type { MountKind, MountReadBack, MountSpec } from "./mount.js";
 import type { ComputerClient, ComputerKind, ComputerOs, Group, HelloResult } from "./protocol.js";
 import type { Result } from "./result.js";
 
@@ -16,6 +17,11 @@ export interface ComputerSpec {
 	workdir?: string;
 	/** uid or uid:gid, in numbers. Unset, the provider's non-root default; root ("0") only when asked here. */
 	user?: string;
+	/**
+	 * The run's folder, mounted read-write at /workspace (WORKSPACE), of a kind capabilities().mount declares; check()
+	 * refuses any other kind before a vendor call. An Archil token is never in a label, a read-back or an error.
+	 */
+	mount?: MountSpec;
 }
 
 /**
@@ -40,6 +46,8 @@ export interface ComputerCapabilities {
 	maxLifetimeMs: number;
 	/** What spec.user may ask for instead of the non-root default: root ("0"), another uid. Absent: neither. */
 	user?: Array<"root" | "uid">;
+	/** The kinds of spec.mount this provider takes: bind (a host folder), archil (a folder of an Archil disk). Absent: none. */
+	mount?: MountKind[];
 }
 
 /** The os and daemon modes each kind may have; no other pair is valid. */
@@ -107,6 +115,8 @@ export interface ReadBackSpec {
 	deadline?: Date;
 	/** What the computer says it is, from its hello; absent when it could not be asked (a stopped computer). */
 	kind?: ComputerKind;
+	/** What is mounted at /workspace, never a token; absent when nothing is. */
+	mount?: MountReadBack;
 }
 
 /** A computer attach found: its ref, and the spec read back from it, so a caller sees what it attached to (root, open). */
@@ -122,6 +132,8 @@ export interface ComputerInfo {
 	deadline: Date | undefined;
 	state: "running" | "stopped";
 	network: NetworkPolicy;
+	/** What is mounted at /workspace, read back, never a token; absent when nothing is. */
+	mount?: MountReadBack;
 }
 
 export interface CallContext {
