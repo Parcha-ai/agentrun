@@ -126,6 +126,30 @@ test("archilMount: a takeover releases the lower epochs before any mount; releas
 	}
 });
 
+test("archilMount: another computer of the run at the claim's own epoch is never forced off: a held folder then refuses in words, and a takeover of lower epochs mounts without force", async () => {
+	const SELF = { id: "c-new", name: "c-new" };
+	const twin = { id: "c-twin", name: "c-twin" };
+	const keeping = (released = []) => async () => ok({ released, kept: [SELF, twin], unproven: [] });
+
+	const held = fakeRoot({ mount: { exitCode: 1, output: "mount failed: dsk:/agents/a1/runs/r1/work has an outstanding delegation" } });
+	const refused = await archilMount({ root: held, mount: MOUNT, self: SELF, releaseOlder: keeping(), timeoutMs: 1000 });
+	assert.equal(refused.ok, false);
+	assert.equal(refused.error.code, "refused");
+	assert.match(refused.error.message, /c-twin/);
+	assert.match(refused.error.message, /same epoch|epoch 3/);
+	noToken(refused, "the refusal");
+	assert.deepEqual(held.verbs(), ["preflight", "mount"], "no revoke, no serve");
+
+	const takeover = fakeRoot();
+	assert.deepEqual(await archilMount({ root: takeover, mount: MOUNT, self: SELF, releaseOlder: keeping([{ id: "old", name: "old" }]), timeoutMs: 1000 }), ok(undefined));
+	assert.deepEqual(takeover.verbs(), ["preflight", "mount", "serve"], "lower epochs released, but a twin is listed: mount, never revoke");
+
+	// The computer itself, listed at its own epoch, is no twin.
+	const alone = fakeRoot({ mount: { exitCode: 1, output: "mount failed: dsk:/agents/a1/runs/r1/work has an outstanding delegation" } });
+	assert.deepEqual(await archilMount({ root: alone, mount: MOUNT, self: SELF, releaseOlder: async () => ok({ released: [], kept: [SELF], unproven: [] }), timeoutMs: 1000 }), ok(undefined));
+	assert.deepEqual(alone.verbs(), ["preflight", "mount", "revoke", "serve"]);
+});
+
 test("archilMount: a preflight that differs from the image refuses before anything else, naming each difference", async () => {
 	const wrong = ["uid 1000", "helper 0000 -rwxrwxrwx 1000 1000", "archil Archil Client: v0.10.0-1792692895", "tool 1000:1000", "sudo /usr/bin/sudo"].join("\n");
 	const root = fakeRoot({ preflight: { exitCode: 0, output: wrong } });
