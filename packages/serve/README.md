@@ -61,7 +61,7 @@ An edit is a new revision: `PUT $AGENTRUN_BASE_URL/agents/calc/definition` with
 
 | Flag | Default | What |
 | --- | --- | --- |
-| `--data DIR` | `~/.local/share/agentrun/agents` | The agent store (`DIR/store.sqlite`) and its runs (`DIR/disk/agents/<agent>/runs/<id>/`). The token is `DIR/.token`, mode 0600, made once and kept, unless `AGENTRUN_TOKEN` gives it. |
+| `--data DIR` | `~/.local/share/agentrun/agents` | The agent store (`DIR/store.sqlite`) and its runs (`DIR/disk/agents/<agent>/runs/<id>/`). The token is `DIR/.token`, mode 0600, made once and kept, unless `AGENTRUN_TOKEN` gives it: then a `DIR/.token` from an earlier start is removed. |
 | `--listen ADDR` | `127.0.0.1` | The address to listen on. On any other, every `Host` name is served and the token is the only lock: put TLS in front of it. |
 | `--port N` | the first free port from `7340` | The port. `0` is any free port. |
 | `--open` | off | Open the console in this machine's browser once the server listens; not in CI, nor on Linux with no display. |
