@@ -240,6 +240,9 @@ export interface McpServerRow {
   readonly tools: unknown;
   readonly prices: unknown;
   readonly sealed: Uint8Array | null;
+  /** A refresh in flight: its holder and the lease's end (ms), or null. */
+  readonly refreshHolder: string | null;
+  readonly refreshUntil: number | null;
   readonly createdAt: number;
   readonly updatedAt: number;
 }
@@ -264,10 +267,16 @@ export interface Mcp {
    *  pin as stored: never rewritten, so a second call (or a later claim's) reads the first. Fenced, writing nothing, on a
    *  stale claim. */
   pinOnce(claim: Claim, body: unknown): Promise<McpPinRow>;
-  /** A refreshed credential (`sealed`), written only when the row is as it was read (`seen`: its updatedAt then): one
-   *  write that re-reads the row. When another claim refreshed it first, nothing is written and the newer row comes back
-   *  (refreshed false). StoreConstraint when the server is no longer saved. */
-  refreshToken(name: string, update: { seen: number; sealed: Uint8Array }): Promise<{ refreshed: boolean; row: McpServerRow }>;
+  /** One refresh at a time per server (a provider that rotates refresh tokens spends the old one at each refresh): the lease
+   *  is granted to `holder` for `ms` only while the credential is still the one it read (`seen`: the sealed bytes, null for
+   *  none) and no live lease is held. Not granted: the current row comes back, and the caller waits for the holder's set
+   *  (re-reading) or the lease's end. A lease whose holder died runs out; the next claim may take it. */
+  leaseRefresh(name: string, lease: { seen: Uint8Array | null; holder: string; ms: number }): Promise<{ leased: boolean; row: McpServerRow }>;
+  /** The lease holder's refreshed credential: written, and the lease cleared, in one transaction. RefreshLeaseLost (nothing
+   *  written) when `holder` no longer holds the lease (it ran out and another claim took it, or the server was removed). */
+  refreshToken(name: string, refresh: { holder: string; sealed: Uint8Array }): Promise<McpServerRow>;
+  /** Gives the lease back without a new credential (the refresh failed or got no answer), so the next claim may try at once. */
+  releaseRefresh(name: string, holder: string): Promise<void>;
 }
 
 /** Who opens the store. The server sets the schema up at its start and holds the store's owner lock (one server per
@@ -376,6 +385,18 @@ export class StoreOwned extends Error {
   constructor(message: string) {
     super(message);
     this.name = "StoreOwned";
+  }
+}
+
+/** A refreshed MCP credential from a claim that no longer holds the server's refresh lease: nothing is written. */
+export class RefreshLeaseLost extends Error {
+  readonly server: string;
+  readonly holder: string;
+  constructor(server: string, holder: string) {
+    super(`the MCP server ${server}'s refresh lease is not ${holder}'s any more: its token set is not written`);
+    this.name = "RefreshLeaseLost";
+    this.server = server;
+    this.holder = holder;
   }
 }
 

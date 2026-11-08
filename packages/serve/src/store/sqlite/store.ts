@@ -8,7 +8,7 @@ import { DatabaseSync } from "node:sqlite";
 import { RunStorage } from "../journal/storage.js";
 import { DDL, SCHEMA_VERSION } from "../schema.js";
 import {
-  SchemaVersionUnknown, StoreConstraint, StoreFromEarlierVersion,
+  RefreshLeaseLost, SchemaVersionUnknown, StoreConstraint, StoreFromEarlierVersion,
   type AgentRow, type Agents, type AlsoRow, type Claim, type Command, type Journal, type NewRevision, type RevisionRow, type RunPatch, type RunRow, type Runs,
   type RunState, type Store, type StoreRole, type TemplatePackage, type Templates, type TriggerDef, type TriggerRow, type Triggers, type TriggerScope,
   FINAL_STATES, type Mcp, type McpPinRow, type McpServerRow,
@@ -69,12 +69,15 @@ const triggerOf = (r: TriggerRecord): TriggerRow => ({
 });
 const json = (value: unknown): string => JSON.stringify(value ?? null);
 
-type McpServerRecord = { name: string; url: string; auth: string; protocol: string | null; tools: string; prices: string; sealed: Uint8Array | null; created_at: number; updated_at: number };
+type McpServerRecord = {
+  name: string; url: string; auth: string; protocol: string | null; tools: string; prices: string; sealed: Uint8Array | null;
+  refresh_holder: string | null; refresh_until: number | null; created_at: number; updated_at: number;
+};
 type McpPinRecord = { run_id: string; body: string; pinned_at: number };
-const MCP_SERVER_COLUMNS = "name, url, auth, protocol, tools, prices, sealed, created_at, updated_at";
+const MCP_SERVER_COLUMNS = "name, url, auth, protocol, tools, prices, sealed, refresh_holder, refresh_until, created_at, updated_at";
 const mcpServerOf = (r: McpServerRecord): McpServerRow => ({
   name: r.name, url: r.url, auth: r.auth, protocol: r.protocol, tools: JSON.parse(r.tools), prices: JSON.parse(r.prices),
-  sealed: r.sealed === null ? null : Uint8Array.from(r.sealed), createdAt: r.created_at, updatedAt: r.updated_at,
+  sealed: r.sealed === null ? null : Uint8Array.from(r.sealed), refreshHolder: r.refresh_holder, refreshUntil: r.refresh_until, createdAt: r.created_at, updatedAt: r.updated_at,
 });
 const mcpPinOf = (r: McpPinRecord): McpPinRow => ({ runId: r.run_id, body: JSON.parse(r.body), pinnedAt: r.pinned_at });
 
@@ -332,7 +335,7 @@ class SqliteStore implements Store {
       put: async ({ name, url, auth, protocol = null, tools, prices = null, sealed = null }) => {
         const at = now();
         const [result] = await db.write([{
-          sql: `INSERT INTO mcp_servers (${MCP_SERVER_COLUMNS}) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+          sql: `INSERT INTO mcp_servers (name, url, auth, protocol, tools, prices, sealed, created_at, updated_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
             ON CONFLICT (name) DO UPDATE SET url = excluded.url, auth = excluded.auth, protocol = excluded.protocol, tools = excluded.tools,
               prices = excluded.prices, sealed = excluded.sealed, updated_at = excluded.updated_at
             RETURNING ${MCP_SERVER_COLUMNS}`,
@@ -355,13 +358,31 @@ class SqliteStore implements Store {
           await tx.run("INSERT INTO mcp_pins (run_id, body, pinned_at) VALUES (?, ?, ?) ON CONFLICT (run_id) DO NOTHING", claim.runId, json(body), now());
           return mcpPinOf((await tx.get<McpPinRecord>("SELECT run_id, body, pinned_at FROM mcp_pins WHERE run_id = ?", claim.runId))!);
         }),
-      refreshToken: (name, { seen, sealed }) =>
+      // The credential as read is compared by its bytes (`sealed IS ?`, NULL included): updated_at can repeat within a ms.
+      leaseRefresh: (name, { seen, holder, ms }) =>
         db.transaction(async (tx) => {
-          const changed = await tx.runCounted("UPDATE mcp_servers SET sealed = ?, updated_at = ? WHERE name = ? AND updated_at = ?", sealed, Math.max(now(), seen + 1), name, seen);
+          const at = now();
+          const granted = await tx.runCounted(
+            "UPDATE mcp_servers SET refresh_holder = ?, refresh_until = ? WHERE name = ? AND sealed IS ? AND (refresh_until IS NULL OR refresh_until < ?)",
+            holder, at + ms, name, seen, at,
+          );
           const row = await server(tx, name);
           if (!row) throw new StoreConstraint(`no MCP server ${name}: it is no longer saved`);
-          return { refreshed: changed === 1, row };
+          return { leased: granted === 1, row };
         }),
+      refreshToken: (name, { holder, sealed }) =>
+        db.transaction(async (tx) => {
+          const at = now();
+          const written = await tx.runCounted(
+            "UPDATE mcp_servers SET sealed = ?, refresh_holder = NULL, refresh_until = NULL, updated_at = max(?, updated_at + 1) WHERE name = ? AND refresh_holder = ?",
+            sealed, at, name, holder,
+          );
+          if (written === 0) throw new RefreshLeaseLost(name, holder);
+          return (await server(tx, name))!;
+        }),
+      releaseRefresh: async (name, holder) => {
+        await db.write([{ sql: "UPDATE mcp_servers SET refresh_holder = NULL, refresh_until = NULL WHERE name = ? AND refresh_holder = ?", params: [name, holder] }]);
+      },
     };
   }
 

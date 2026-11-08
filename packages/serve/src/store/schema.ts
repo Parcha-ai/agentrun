@@ -217,6 +217,8 @@ export const STORE_DDL: readonly string[] = [
     ${json("tools")},
     ${json("prices")},
     sealed BLOB,
+    refresh_holder TEXT,
+    refresh_until INTEGER,
     created_at INTEGER NOT NULL,
     updated_at INTEGER NOT NULL
   ) STRICT`,
