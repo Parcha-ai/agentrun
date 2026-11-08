@@ -4,9 +4,11 @@
 // A recipe is a Dockerfile with no build context, built with `docker build -` (the recipe on stdin), tagged
 // `agentrun-computer:<the first 12 hex digits of its sha256>` and labelled with the whole sha256 (RECIPE_LABEL). It is
 // built only when Docker has no image under the tag, or has one of another recipe. Same recipe, same tag, same label: a
-// build is idempotent. Two processes that both miss the tag both build; on one Docker daemon BuildKit shares the steps and
-// their cache, each `--tag` lands on an image of this recipe, and the last one wins; a computer already made from the
-// other keeps it, as Docker holds an image by its id. An image by name is pulled when Docker has none, and never built.
+// build is idempotent. Two processes that both miss the tag both build, BuildKit sharing its cache. With Docker 29's
+// containerd image store the first to tag wins and the others fail with "already exists"; with the classic store the
+// last one wins. Either way a build or pull that fails asks Docker once more, and the tag on an image of this recipe is
+// the answer. A computer made from an image that lost its tag keeps it, as Docker holds an image by its id. An image by
+// name is pulled when Docker has none, and never built.
 //
 // In one process, concurrent callers share one flight per docker CLI and recipe (or image): the first starts it, the rest
 // wait on it. A flight is forgotten once it settles, so a later call asks Docker again, and a failure is never kept: the
@@ -26,8 +28,8 @@ export const RECIPE_LABEL = "agentrun.computer.recipe";
 export const DOCKER_IMAGE_ENV = "COMPUTER_DOCKER_IMAGE";
 /** How long a flight, inspect and build or pull, may take before its docker is killed: 10 minutes. */
 export const IMAGE_TIMEOUT_MS = 10 * 60_000;
-/** What the default image has, in words. */
-export const DOCKER_RECIPE_HAS = "python, git, curl, node, npm, rg, socat";
+/** What the default image has, in words: serve's, for the timeline row a run shows while it is built. */
+export const DOCKER_RECIPE_HAS = "python, git, curl, node, npm, rg";
 /** The base the default image builds from: `python:3.12-slim`, pinned to the multi-arch index digest Docker Hub served
  *  for that tag on 2026-11-03, so a build gets the same base wherever it runs. To move it, read the tag's index digest
  *  again (an anonymous pull token from auth.docker.io for `repository:library/python:pull`, then a HEAD of
@@ -54,7 +56,13 @@ export interface EnsureImageOptions {
 	signal?: AbortSignal;
 	/** The flight's bound, when this call starts it; default IMAGE_TIMEOUT_MS. */
 	timeoutMs?: number;
+	/** Told once, before this caller waits on a build or pull, its own or one it joined; never when Docker has the image.
+	 *  A throw from it is ignored. */
+	onWait?: (making: Making, tag: string) => void;
 }
+
+/** What a flight does when Docker has no image of its source. */
+export type Making = "build" | "pull";
 
 export const recipeHash = (recipe: string): string => createHash("sha256").update(recipe).digest("hex");
 /** The tag a recipe's image has: the repository and the first 12 hex digits of the recipe's sha256. */
@@ -97,6 +105,9 @@ interface Flight {
 	result: Promise<Result<string>>;
 	controller: AbortController;
 	waiting: number;
+	/** Set once the flight builds or pulls; until then, the callers to tell when it does. */
+	making?: Making;
+	toTell: Set<() => void>;
 }
 
 /** One flight per docker CLI and source, for as long as it runs. */
@@ -132,7 +143,7 @@ function sourceOf(source: unknown): Source | string {
  * The image ready in Docker: its tag, for create's spec.image. A recipe is built when Docker has no image of it under its
  * tag; an image by name is pulled when Docker has none. Concurrent callers share one flight; see the top of this file.
  */
-export async function ensureImage(source: ImageSource, { docker = "docker", signal, timeoutMs = IMAGE_TIMEOUT_MS }: EnsureImageOptions = {}): Promise<Result<string>> {
+export async function ensureImage(source: ImageSource, { docker = "docker", signal, timeoutMs = IMAGE_TIMEOUT_MS, onWait }: EnsureImageOptions = {}): Promise<Result<string>> {
 	const checked = sourceOf(source);
 	if (typeof checked === "string") return fail("invalid", checked);
 	if (!Number.isSafeInteger(timeoutMs) || timeoutMs <= 0 || timeoutMs > MAX_TIMER_MS) {
@@ -143,8 +154,8 @@ export async function ensureImage(source: ImageSource, { docker = "docker", sign
 	let flight = flights.get(key);
 	// A flight every caller left is stopping: a new caller starts its own.
 	if (flight === undefined || flight.controller.signal.aborted) {
-		const controller = new AbortController();
-		const started: Flight = { controller, waiting: 0, result: fly(docker, checked, timeoutMs, controller) };
+		const crew = { controller: new AbortController(), waiting: 0, toTell: new Set<() => void>() };
+		const started: Flight = Object.assign(crew, { result: fly(docker, checked, timeoutMs, crew) });
 		flight = started;
 		flights.set(key, started);
 		void started.result.finally(() => {
@@ -153,9 +164,21 @@ export async function ensureImage(source: ImageSource, { docker = "docker", sign
 	}
 	const joined = flight;
 	joined.waiting += 1;
+	const tell = () => {
+		try {
+			if (joined.making !== undefined) onWait?.(joined.making, checked.tag);
+		} catch {
+			// The caller's listener is its own: a throw changes nothing here.
+		}
+	};
+	if (onWait !== undefined) {
+		if (joined.making !== undefined) tell();
+		else joined.toTell.add(tell);
+	}
 	if (signal === undefined) return joined.result;
 	return new Promise<Result<string>>((resolve) => {
 		const leave = () => {
+			joined.toTell.delete(tell);
 			joined.waiting -= 1;
 			const making = checked.kind === "recipe" ? "build" : "pull";
 			if (joined.waiting > 0) return resolve(fail("aborted", `the wait for ${checked.tag} was aborted; the ${making} goes on for the other callers waiting on it`));
@@ -170,24 +193,34 @@ export async function ensureImage(source: ImageSource, { docker = "docker", sign
 	});
 }
 
-/** The flight: inspect, then build or pull when Docker has no image of the source, all within timeoutMs. */
-async function fly(docker: string, source: Source, timeoutMs: number, controller: AbortController): Promise<Result<string>> {
+/**
+ * The flight: inspect, then build or pull when Docker has no image of the source, all within timeoutMs. A build or pull
+ * that fails asks Docker once more: another process may have tagged the image first (Docker 29's containerd image store
+ * fails the loser of that race with "already exists"), and an image of this source under the tag is the answer.
+ */
+async function fly(docker: string, source: Source, timeoutMs: number, flight: Omit<Flight, "result">): Promise<Result<string>> {
+	const { controller } = flight;
 	let late = false;
 	const timer = setTimeout(() => {
 		late = true;
 		controller.abort();
 	}, timeoutMs);
 	const call = (args: string[], input?: string) => run(docker, args, controller.signal, () => late, input);
+	const inspect = () => call(["image", "inspect", "--format", "{{json .Config.Labels}}", source.tag]);
+	const ready = (answer: Answer) => answer.code === 0 && (source.kind === "image" || labelsOf(answer.stdout)[RECIPE_LABEL] === source.hash);
 	try {
-		const inspected = await call(["image", "inspect", "--format", "{{json .Config.Labels}}", source.tag]);
-		if (inspected.code === 0 && (source.kind === "image" || labelsOf(inspected.stdout)[RECIPE_LABEL] === source.hash)) return ok(source.tag);
+		const inspected = await inspect();
+		if (ready(inspected)) return ok(source.tag);
 		if (inspected.code !== 0 && !MISSING.test(inspected.stderr)) return inspectFailure(docker, source.tag, inspected, timeoutMs);
-		if (source.kind === "image") {
-			const pulled = await call(["pull", "--quiet", source.tag]);
-			return pulled.code === 0 ? ok(source.tag) : pullFailure(docker, source.tag, pulled, timeoutMs);
-		}
-		const built = await call(["build", "--quiet", "--label", `${RECIPE_LABEL}=${source.hash}`, "--tag", source.tag, "-"], source.recipe);
-		return built.code === 0 ? ok(source.tag) : buildFailure(docker, source, built, timeoutMs);
+		flight.making = source.kind === "image" ? "pull" : "build";
+		for (const tell of flight.toTell) tell();
+		flight.toTell.clear();
+		const made =
+			source.kind === "image"
+				? await call(["pull", "--quiet", source.tag])
+				: await call(["build", "--quiet", "--label", `${RECIPE_LABEL}=${source.hash}`, "--tag", source.tag, "-"], source.recipe);
+		if (made.code === 0 || (typeof made.code === "number" && ready(await inspect()))) return ok(source.tag);
+		return source.kind === "image" ? pullFailure(docker, source.tag, made, timeoutMs) : buildFailure(docker, source, made, timeoutMs);
 	} finally {
 		clearTimeout(timer);
 	}

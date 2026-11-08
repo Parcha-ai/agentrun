@@ -25,7 +25,7 @@ import {
 	tmpfsOf,
 	WORK,
 } from "./drift.js";
-import { DOCKER_RECIPE, ensureImage, type ImageSource, imageSourceProblem } from "./docker/image.js";
+import { DOCKER_RECIPE, type EnsureImageOptions, ensureImage, type ImageSource, imageSourceProblem } from "./docker/image.js";
 import { checkMount, type MountReadBack, WORKSPACE } from "./mount.js";
 import {
 	type AttachedComputer,
@@ -182,8 +182,8 @@ export class DockerProvider implements ComputerProvider {
 	 * The provider's image ready in Docker, and its tag for create's spec.image: built from its recipe, or pulled, when
 	 * Docker has none; one inspect when it has. Concurrent calls in one process share one build (ensureImage).
 	 */
-	image({ signal, timeoutMs }: CallContext & { timeoutMs?: number } = {}): Promise<Result<string>> {
-		return ensureImage(this.#image, { docker: this.#docker, ...(signal ? { signal } : {}), ...(timeoutMs === undefined ? {} : { timeoutMs }) });
+	image(options: CallContext & Pick<EnsureImageOptions, "timeoutMs" | "onWait"> = {}): Promise<Result<string>> {
+		return ensureImage(this.#image, { ...options, docker: this.#docker });
 	}
 
 	/** The spec's refusals, and the host's once create, attach or host() has read it. */

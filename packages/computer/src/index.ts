@@ -20,6 +20,7 @@ export {
 	type ImageSource,
 	imageSourceOf,
 	imageSourceProblem,
+	type Making,
 	RECIPE_LABEL,
 	recipeHash,
 	recipeTag,
