@@ -22,6 +22,7 @@ import {
 	archilMount,
 	archilRefusals,
 	archilRelease,
+	mountDrift,
 	type ProviderNote,
 	readArchilMount,
 	recordedMount,
@@ -1175,9 +1176,8 @@ export class DaytonaProvider implements ComputerProvider {
 			if (mountRead !== undefined) {
 				if (!mountRead.ok) return mountRead;
 				mount = mountRead.value;
-				if (mount === undefined || !("kind" in mount) || mount.kind !== "archil" || mount.disk !== recorded?.disk || mount.folder !== recorded.folder || mount.region !== recorded.region) {
-					found.push(`mount: labelled ${show(recorded)}, read back ${show(mount ?? "nothing")}`);
-				}
+				// Held to the whole read-back the label and the epoch make (exclusive included), as Modal and E2B hold it.
+				if (recorded !== undefined) found.push(...mountDrift(readBackOf({ ...recorded, token: "" }, claim.ok ? claim.value : undefined), mount));
 			}
 		}
 		if (found.length > 0) return fail("refused", `the computer ${ref.name} does not match this provider, so attach refuses it and it is left as it is: ${found.join("; ")}`);
