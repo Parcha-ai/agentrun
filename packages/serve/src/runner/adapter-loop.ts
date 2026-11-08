@@ -166,7 +166,10 @@ function adapterLoop(specOf: (claim: Claim, run: AdapterRun) => AdapterRunSpec |
       }
     } catch (error) {
       if (gate?.sealed || deps.signal.aborted) return await interrupted("its claim's signal aborted");
-      return { state: "failed", error: { code: "adapter-loop", message: (error as Error).message } };
+      // A failure with no end written (pi's Harness could not open, a read failed): thrown, so the runner stores the run
+      // failed with why (a parked run brought back stays parked and is tried again after a backoff). Returning "failed"
+      // would leave it running, released and claimed again at once.
+      throw error;
     } finally {
       deps.signal.removeEventListener("abort", signalAbort);
       held?.detach();
