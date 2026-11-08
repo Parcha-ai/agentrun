@@ -36,6 +36,7 @@ import { Hearing } from "./heard.js";
 import { labelled, LearningRuns, type Reflect, reflecting, reflects, type TurnOrigin, withLearning } from "./learning-run.js";
 import { type BoxHost, type Quarantine, settleBox, sweepBoxes } from "./box/sweep.js";
 import { rowPaths } from "./workspace-paths.js";
+import { localWorkspace } from "./workspace/index.js";
 import { ASK_TOOL, toolingOf, workflowTools } from "./tools.js";
 import { withDecisions } from "./decision-rows.js";
 import { DECISION_KEY_FD_ENV, decisionKeysFor, providersNamed } from "./decisions.js";
@@ -3079,7 +3080,7 @@ export class Runs {
     run.submitted = 1;
     this.refresh(run);
     // As it was first sent: the run never took it, so its work/inputs/ is as its start left it.
-    void firstMessage(first, join(run.dir, "work")).then((content) => this.submit(run, content, "followUp", `first-${run.id}`, READY_TIMEOUT_MS, originOf(run.meta.input_origin))).catch((error: Error) => warn(run.id, `its first message did not land again: ${error.message}`));
+    void firstMessage(first, localWorkspace(join(run.dir, "work"))).then((content) => this.submit(run, content, "followUp", `first-${run.id}`, READY_TIMEOUT_MS, originOf(run.meta.input_origin))).catch((error: Error) => warn(run.id, `its first message did not land again: ${error.message}`));
   }
 
   /** After the run's process exited, or was found gone: its rows from its released store, then, when it is over, its
@@ -3533,7 +3534,7 @@ export class Runs {
     this.launch(run);
     if (revision.kind === "workflow") return run;
     // The first message names the files given to the run (run-manifest.ts), on every harness.
-    void firstMessage(options.input.content as string, started.workspace).then((content) => this.submit(run, content, "followUp", `first-${run.id}`, READY_TIMEOUT_MS, options.from)).catch((error: Error) => {
+    void firstMessage(options.input.content as string, localWorkspace(started.workspace)).then((content) => this.submit(run, content, "followUp", `first-${run.id}`, READY_TIMEOUT_MS, options.from)).catch((error: Error) => {
       run.submitted = 0;
       // The run ended before its first message reached it (a process that crashed at its start): how it ended stands.
       if (run.outcome || run.finishing || run.cancel) return;

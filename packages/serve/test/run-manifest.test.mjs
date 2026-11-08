@@ -8,6 +8,7 @@ import { join } from "node:path";
 import { test } from "node:test";
 import { filesLine, FIRST_MESSAGE_BYTES, firstMessage, inputFiles, MANIFEST_ENTRIES, sizeOf } from "../dist/run-manifest.js";
 import { uploadTestHooks } from "../dist/uploads.js";
+import { localWorkspace } from "../dist/workspace/index.js";
 import { agent, follow, runDir, scratch, serve } from "./support.mjs";
 import { fauxTable } from "./fixtures/faux-table.mjs";
 
@@ -96,21 +97,25 @@ test("the line never takes the first message past what the run's door takes: few
   const work = await scratch(t);
   await mkdir(join(work, "inputs"), { recursive: true });
   for (const name of ["a.txt", "b.txt", "c.txt"]) await writeFile(join(work, "inputs", name), "x");
+  // Read through the run's Workspace: only inputs/, a dot-name left out.
+  await writeFile(join(work, "inputs", ".hidden"), "x");
+  await writeFile(join(work, "report.md"), "not an input");
+  const workspace = localWorkspace(work);
   const content = "Read them.";
   const sent = (text) => Buffer.byteLength(JSON.stringify(text));
   const all = `${content}\n\nFiles for this run: "inputs/a.txt" (1 B), "inputs/b.txt" (1 B), "inputs/c.txt" (1 B).`;
   const two = `${content}\n\nFiles for this run: "inputs/a.txt" (1 B), "inputs/b.txt" (1 B), and 1 more.`;
   const one = `${content}\n\nFiles for this run: "inputs/a.txt" (1 B), and 2 more.`;
   const count = `${content}\n\nFiles for this run: 3 files.`;
-  assert.equal(await firstMessage(content, work), all);
-  assert.equal(await firstMessage(content, work, sent(all)), all);
-  assert.equal(await firstMessage(content, work, sent(all) - 1), two);
-  assert.equal(await firstMessage(content, work, sent(one)), one);
-  assert.equal(await firstMessage(content, work, sent(one) - 1), count);
-  assert.equal(await firstMessage(content, work, sent(count) - 1), content, "no room: the content alone, as it was taken");
+  assert.equal(await firstMessage(content, workspace), all);
+  assert.equal(await firstMessage(content, workspace, sent(all)), all);
+  assert.equal(await firstMessage(content, workspace, sent(all) - 1), two);
+  assert.equal(await firstMessage(content, workspace, sent(one)), one);
+  assert.equal(await firstMessage(content, workspace, sent(one) - 1), count);
+  assert.equal(await firstMessage(content, workspace, sent(count) - 1), content, "no room: the content alone, as it was taken");
   // A message the run took near the door's limit stays within it with its line.
   const big = "y".repeat(FIRST_MESSAGE_BYTES - 40);
-  assert.ok(sent(await firstMessage(big, work)) <= FIRST_MESSAGE_BYTES);
+  assert.ok(sent(await firstMessage(big, workspace)) <= FIRST_MESSAGE_BYTES);
   assert.ok(FIRST_MESSAGE_BYTES < 1 << 20, "below the door's 1 MiB body, with room for the request's other fields");
 });
 
@@ -136,7 +141,13 @@ test("only work/'s own inputs/ is read: a link at work/inputs lists nothing from
   // On the unit: a work/ whose inputs is a link lists nothing.
   const work = await scratch(t);
   await symlink(elsewhere, join(work, "inputs"));
-  assert.deepEqual(await inputFiles(work), []);
+  assert.deepEqual(await inputFiles(localWorkspace(work)), []);
+  // A folder below inputs/ is walked; a link below it is not.
+  const deep = await scratch(t);
+  await mkdir(join(deep, "inputs", "docs", "more"), { recursive: true });
+  await writeFile(join(deep, "inputs", "docs", "more", "x.md"), "xy");
+  await symlink(elsewhere, join(deep, "inputs", "docs", "out"));
+  assert.deepEqual(await inputFiles(localWorkspace(deep)), [{ path: "inputs/docs/more/x.md", size: 2 }]);
   // Through the API: the link planted before the run's files are copied. The copy goes through the run's Workspace,
   // which follows no link: the run ends failed, saying why, and nothing lands where the link points.
   const server = await serve(t);

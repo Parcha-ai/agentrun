@@ -4,7 +4,7 @@
 // MANIFEST_ENTRIES files, then how many more, and never past what the door takes in one message (FIRST_MESSAGE_BYTES):
 // a message that fits at the run's creation still fits with its line.
 import { INPUTS_DIR } from "./uploads.js";
-import { walkWork } from "./workspace.js";
+import type { Entry, Workspace } from "./workspace/index.js";
 
 /** The most files the line names; the rest are counted. */
 export const MANIFEST_ENTRIES = 20;
@@ -46,23 +46,28 @@ const sentBytes = (text: string): number => Buffer.byteLength(JSON.stringify(tex
  *  and inputs/ is one more. */
 const INPUTS_DEPTH = 513;
 
-/** The regular files under the run's work/inputs/, by their path from work/, in order, as deep as an upload's path
- *  goes: walked from work/ as the run's file list is (workspace.ts walkWork), entering inputs/ alone, so a link at
- *  inputs/ or anywhere below it is never followed; a dot-name left out. None when there is no inputs/ or it cannot be
- *  read. */
-export async function inputFiles(work: string): Promise<ManifestFile[]> {
+/** The files under the run's inputs/, by their path from its root, in order, as deep as an upload's path goes: walked
+ *  through the run's Workspace listing, which follows no link, so a link at inputs/ or anywhere below it is never
+ *  entered; a dot-name left out. None when there is no inputs/ or a folder of it cannot be read. */
+export async function inputFiles(work: Workspace): Promise<ManifestFile[]> {
   const files: ManifestFile[] = [];
-  await walkWork(work, (path, stats) => void (stats.isFile() && files.push({ path, size: stats.size })), {
-    skip: (name, path) => name.startsWith(".") || (path === name && name !== INPUTS_DIR),
-    depth: INPUTS_DEPTH,
-  }).catch(() => undefined);
+  const into = async (dir: string, depth: number): Promise<void> => {
+    const entries: Entry[] = await work.list(dir).catch(() => []);
+    for (const entry of entries) {
+      if (entry.name.startsWith(".")) continue;
+      const path = `${dir}/${entry.name}`;
+      if (entry.kind === "file") files.push({ path, size: entry.size });
+      else if (depth < INPUTS_DEPTH) await into(path, depth + 1);
+    }
+  };
+  await into(INPUTS_DIR, 1);
   return files.sort((a, b) => (a.path < b.path ? -1 : a.path > b.path ? 1 : 0));
 }
 
 /** The run's first message: `content`, then, after a blank line, the files given to it, when it has any: as many named
  *  as keep the message within `budget` (FIRST_MESSAGE_BYTES), else only how many, else no line at all, so the line never
  *  turns a message the run took into one its door refuses. */
-export async function firstMessage(content: string, work: string, budget = FIRST_MESSAGE_BYTES): Promise<string> {
+export async function firstMessage(content: string, work: Workspace, budget = FIRST_MESSAGE_BYTES): Promise<string> {
   const files = await inputFiles(work);
   for (let entries = Math.min(files.length, MANIFEST_ENTRIES); entries >= 0 && files.length > 0; entries--) {
     const message = `${content}\n\n${filesLine("Files for this run", files, entries)}`;
