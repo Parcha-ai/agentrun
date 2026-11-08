@@ -35,7 +35,7 @@ test("no computer: the registry's runner list (read, write, edit, bash), no proc
   assert.equal((await call(tools, "write", { path: "a.txt", content: "hi" })).text, "Successfully wrote to a.txt");
   assert.deepEqual(await call(tools, "bash", { command: "cat a.txt" }), { text: "hi", isError: false });
   const refused = await run.registry.invoke("bash_background", { command: "sleep 9" }, { hands: run.hands });
-  assert.match(refused.error, /^bash_background needs a computer/);
+  assert.equal(refused.error, "Background programs need a computer: run this agent with place sandbox (Docker in Mode 1, or a remote computer in Mode 2).");
   await run.end();
   assert.ok(!existsSync(join(root, ".agentrun", "tmp")), "the end swept TMPDIR");
 });
