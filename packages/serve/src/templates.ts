@@ -55,7 +55,19 @@ const FRONT = /^---\r?\n([\s\S]*?)\r?\n---[ \t]*(?:\r?\n|$)/;
 /** An MCP server a package uses: its tools, granted to the agent, and `allow`, those of them the package asks the owner to
  *  allow (a consent screen shows it). The package sets no permission itself: an apply's `grants`, the owner's answer, do. */
 export type McpNeed = { server: string; tools: string[]; required: boolean; allow: string[] };
-type Parameter = { type: (typeof PARAMETER_TYPES)[number]; required: boolean; description: string; pattern?: string };
+type Parameter = { type: (typeof PARAMETER_TYPES)[number]; required: boolean; description: string; pattern?: string; default?: string | number | boolean };
+/** Whether `value` is of the parameter type `type`. */
+const ofType = (type: Parameter["type"], value: unknown): boolean => (type === "integer" ? Number.isSafeInteger(value) : type === "number" ? typeof value === "number" && Number.isFinite(value) : typeof value === type);
+/** Whether `text` matches `pattern`; a pattern that does not compile matches nothing (it is reported on its own). */
+const safeTest = (pattern: string, text: string): boolean => {
+  try {
+    return new RegExp(pattern, "u").test(text);
+  } catch {
+    return false;
+  }
+};
+/** A schedule's fields a parameter may fill: its time, read by the server as the schedule, and checked at apply. */
+const SCHEDULE_FIELDS = ["cron", "timezone"];
 export type Package = {
   name: string;
   /** The agent's name, placeholders unfilled; absent, the package's name. */
@@ -199,9 +211,9 @@ export function readPackage(dir: string): Package {
   if (f.computer !== undefined && f.computer !== "default") bad(MANIFEST, "computer is default (this server's own place): no other computer is known yet");
   const parameters: Record<string, Parameter> = {};
   for (const [key, p] of Object.entries(f.parameters === undefined ? {} : isObject(f.parameters) ? f.parameters : (bad(MANIFEST, "parameters is a mapping of names"), {}))) {
-    const ok = PARAMETER.test(key) && isObject(p) && !unknownFields(p, ["type", "required", "pattern", "description"]).length && (PARAMETER_TYPES as readonly unknown[]).includes(p.type) && (p.required === undefined || typeof p.required === "boolean") && typeof p.description === "string" && p.description.trim() !== "" && (p.pattern === undefined || (p.type === "string" && typeof p.pattern === "string"));
+    const ok = PARAMETER.test(key) && isObject(p) && !unknownFields(p, ["type", "required", "pattern", "description", "default"]).length && (PARAMETER_TYPES as readonly unknown[]).includes(p.type) && (p.required === undefined || typeof p.required === "boolean") && typeof p.description === "string" && p.description.trim() !== "" && (p.pattern === undefined || (p.type === "string" && typeof p.pattern === "string"));
     if (!ok) {
-      bad(MANIFEST, `parameters.${key} is {type: ${PARAMETER_TYPES.join(" | ")}, required?, pattern? (strings), description}, its name lowercase`);
+      bad(MANIFEST, `parameters.${key} is {type: ${PARAMETER_TYPES.join(" | ")}, required?, pattern? (strings), default?, description}, its name lowercase`);
       continue;
     }
     try {
@@ -209,7 +221,12 @@ export function readPackage(dir: string): Package {
     } catch {
       bad(MANIFEST, `parameters.${key}.pattern is not a regular expression`);
     }
-    parameters[key] = { type: p.type as Parameter["type"], required: p.required === true, description: p.description as string, ...(typeof p.pattern === "string" ? { pattern: p.pattern } : {}) };
+    if (p.default !== undefined) {
+      if (!ofType(p.type as Parameter["type"], p.default)) bad(MANIFEST, `parameters.${key}.default is a ${p.type as string}, as the parameter is`);
+      else if (typeof p.pattern === "string" && typeof p.default === "string" && !safeTest(p.pattern, p.default)) bad(MANIFEST, `parameters.${key}.default does not match its pattern`);
+      if (p.required === true) bad(MANIFEST, `parameters.${key} is required and has a default: a default is for a parameter apply may leave out`);
+    }
+    parameters[key] = { type: p.type as Parameter["type"], required: p.required === true, description: p.description as string, ...(typeof p.pattern === "string" ? { pattern: p.pattern } : {}), ...(p.default !== undefined && ofType(p.type as Parameter["type"], p.default) ? { default: p.default as string | number | boolean } : {}) };
   }
   const secrets = list(f.secrets, "secrets", (secret) => /^[A-Z][A-Z0-9_]{0,127}$/.test(secret));
   for (const secret of secrets.filter((name) => !PACKAGE_SECRETS.includes(name))) bad(MANIFEST, `secrets names ${secret}, a key this server cannot hold: a package needs the keys Settings saves and a run is handed (${PACKAGE_SECRETS.join(", ")})`);
@@ -241,11 +258,23 @@ export function readPackage(dir: string): Package {
   for (const value of strings([instructions, triggers, f.display_name])) {
     for (const [, used] of value.matchAll(PLACEHOLDER)) if (!Object.hasOwn(parameters, used!)) bad(MANIFEST, `\${parameters.${used}} names no parameter`);
   }
-  // A placeholder fills text a run reads; a trigger's schedule and its other settings are the package's own, checked here.
+  // A placeholder fills text a run reads, and a schedule's time (its cron and timezone, read as the schedule at apply);
+  // a trigger's other settings are the package's own, checked here. A parameter that sets a time has a default, so the
+  // schedule the package ships is checked here too.
   triggers.forEach((trigger, i) => {
     if (!isObject(trigger)) return;
-    const fixed = Object.entries(trigger).flatMap(([key, value]) => (key === "target" && isObject(value) ? Object.entries(value).filter(([k]) => k !== "input").map(([k, v]) => [`target.${k}`, v] as const) : [[key, value] as const]));
-    for (const [at, value] of fixed) for (const [used] of strings(value).flatMap((text) => [...text.matchAll(PLACEHOLDER)])) bad(MANIFEST, `triggers[${i}].${at} holds ${used}: a placeholder goes in display_name, the instructions or a trigger's target.input`);
+    const timed = isObject(trigger.source) && trigger.source.kind === "schedule";
+    const fixed = Object.entries(trigger).flatMap(([key, value]) =>
+      key === "target" && isObject(value) ? Object.entries(value).filter(([k]) => k !== "input").map(([k, v]) => [`target.${k}`, v] as const)
+      : key === "source" && timed && isObject(value) ? Object.entries(value).filter(([k]) => !SCHEDULE_FIELDS.includes(k)).map(([k, v]) => [`source.${k}`, v] as const)
+      : [[key, value] as const]);
+    for (const [at, value] of fixed) for (const [used] of strings(value).flatMap((text) => [...text.matchAll(PLACEHOLDER)])) bad(MANIFEST, `triggers[${i}].${at} holds ${used}: a placeholder goes in display_name, the instructions, a trigger's target.input or a schedule's cron and timezone`);
+    if (!timed) return;
+    for (const field of SCHEDULE_FIELDS) {
+      for (const [, used] of strings((trigger.source as Json)[field]).flatMap((text) => [...text.matchAll(PLACEHOLDER)])) {
+        if (Object.hasOwn(parameters, used!) && parameters[used!]!.default === undefined) bad(MANIFEST, `parameters.${used} is used in triggers[${i}].source.${field}, so it needs a default: the schedule the package ships is checked with it`);
+      }
+    }
   });
 
   // skills/<name>/SKILL.md, each named as its folder and described, as Agent Skills are; rules/*.md beside each.
@@ -277,6 +306,13 @@ export function readPackage(dir: string): Package {
       if (Object.hasOwn(skills, path)) bad(`rules/${entry.name}`, `skills/${path} has the same name, and a rule ships beside each SKILL.md`);
       else skills[path] = text(`rules/${entry.name}`);
     }
+  }
+  // The answer's schema ships beside each SKILL.md too, as a rule does: the agent reads it there, and the skill names it.
+  const schemaFile = isObject(f.output) && inside(f.output.schema) ? (f.output.schema as string) : undefined;
+  for (const skill of schemaFile ? skillDirs.filter((d) => d.isDirectory()) : []) {
+    const path = `${skill.name}/${basename(schemaFile!)}`;
+    if (Object.hasOwn(skills, path)) bad(schemaFile!, `skills/${path} has the same name, and the answer's schema ships beside each SKILL.md`);
+    else skills[path] = text(schemaFile!);
   }
 
   // evals/<case>/: prompt.md (the run's input), graders/*.md (each its type in its front matter), case.yaml and
@@ -312,21 +348,29 @@ export function readPackage(dir: string): Package {
     ...(tools ? { tools } : {}), mcp, parameters, secrets, ...(isObject(f.budget) ? { budget: { per_run_usd: f.budget.per_run_usd as number } } : {}), ...(typeof f.learning === "boolean" ? { learning: f.learning } : {}),
     triggers: triggers as Json[], ...(isObject(f.output) ? { output: { schema: f.output.schema as string } } : {}), checks, instructions, skills, evals,
   };
-  // What an apply makes, made here with a sample of each parameter and checked as POST /v2/agents and POST /v2/triggers
-  // check their bodies (all but the agent the trigger names, which an apply makes). A trigger's times are read as of the
-  // epoch, so its form is checked here and a date that has passed is the apply's refusal, never a server's start.
-  const samples = Object.fromEntries(Object.entries(parameters).map(([key, spec]) => [key, SAMPLES[spec.type]]));
+  // What an apply makes, made here with each parameter's default, else a sample of its type, and checked as POST
+  // /v2/agents and POST /v2/triggers check their bodies (all but the agent the trigger names, which an apply makes). A
+  // trigger's times are read as of the epoch, so its form is checked here and a date that has passed is the apply's
+  // refusal, never a server's start.
+  const samples = Object.fromEntries(Object.entries(parameters).map(([key, spec]) => [key, spec.default ?? SAMPLES[spec.type]]));
   const made = compiled(p, samples, { ...(harness ? { harness: harness[0]! } : {}), ...(p.model?.prefer ? { model: p.model.prefer } : {}), mcp, defaultTools: [], grants: [] });
   for (const issue of definitionBodyIssues(made.agent)) bad(issue.field.startsWith("skills.") ? `skills/${issue.field.slice("skills.".length)}` : MANIFEST, `${issue.field.startsWith("skills.") ? "" : `the agent it makes: ${issue.field}: `}${issue.message}`);
-  // A trigger's input is its runs' input: the agent a package makes is agentic, so it takes DEFAULT_INPUT_SCHEMA's.
-  made.triggers.forEach((trigger, i) => {
-    const issues = triggerBodyIssues(TRIGGER_ADAPTERS, { ...trigger, target: { ...(trigger.target as Json), agent_id: SAMPLE_AGENT } }, 0);
-    const input = isObject(trigger.target) ? trigger.target.input : undefined;
-    if (isObject(input)) issues.push(...inputIssues(input, DEFAULT_INPUT_SCHEMA, "target.input"));
-    for (const issue of issues) bad(MANIFEST, `triggers[${i}].${issue.field}: ${issue.message}`);
-  });
+  for (const issue of madeTriggerIssues(made.triggers, 0)) bad(MANIFEST, `${issue.field.replace(/^triggers\.(\d+)\./, "triggers[$1].")}: ${issue.message}`);
   if (problems.length) throw new PackageError(dir, [...new Set(problems)]);
   return p;
+}
+
+/** What is wrong with the trigger bodies an apply makes (compiled's `triggers`), as POST /v2/triggers checks a body, all
+ *  but the agent each names (the one the apply makes), as of `now`, each field under `triggers.<i>`. A trigger's input is
+ *  its runs' input, and a package's agent is agentic, so each input is checked against DEFAULT_INPUT_SCHEMA too. The
+ *  validator runs it as of the epoch (a time's form only); an apply runs it before it makes anything. */
+export function madeTriggerIssues(made: Json[], now: number): InputIssue[] {
+  return made.flatMap((trigger, i) => {
+    const issues = triggerBodyIssues(TRIGGER_ADAPTERS, { ...trigger, target: { ...(trigger.target as Json), agent_id: SAMPLE_AGENT } }, now);
+    const input = isObject(trigger.target) ? trigger.target.input : undefined;
+    if (isObject(input)) issues.push(...inputIssues(input, DEFAULT_INPUT_SCHEMA, "target.input"));
+    return issues.map((issue) => ({ ...issue, field: `triggers.${i}.${issue.field}` }));
+  });
 }
 
 /** Every package in `dir`: each folder in it, by name. One that does not check throws, so a broken one never serves. */
@@ -361,14 +405,16 @@ export function applyBodyOf(p: Package, body: Json): { parameters: Record<string
   const parameters: Record<string, string | number | boolean> = {};
   for (const [key, value] of Object.entries(isObject(given) ? given : {})) {
     const spec = Object.hasOwn(p.parameters, key) ? p.parameters[key] : undefined;
-    const typed = spec && (spec.type === "integer" ? Number.isSafeInteger(value) : spec.type === "number" ? typeof value === "number" && Number.isFinite(value) : typeof value === spec.type);
+    const typed = spec && ofType(spec.type, value);
     if (!spec) issues.push({ field: `parameters.${key}`, reason: "not_allowed", message: `The package ${p.name} takes no parameter ${key}.` });
     else if (!typed) issues.push({ field: `parameters.${key}`, reason: "wrong_type", message: `parameters.${key} is a ${spec.type}: ${spec.description}` });
     else if (spec.pattern && !new RegExp(spec.pattern, "u").test(value as string)) issues.push({ field: `parameters.${key}`, reason: "bad_format", message: `parameters.${key} is ${spec.description}` });
     else parameters[key] = value as string | number | boolean;
   }
   for (const [key, spec] of Object.entries(p.parameters)) {
-    if (spec.required && isObject(given) && (!Object.hasOwn(given, key) || given[key] === undefined || given[key] === "")) issues.push({ field: `parameters.${key}`, reason: "missing", message: `parameters.${key} is required: ${spec.description}` });
+    const absent = isObject(given) && (!Object.hasOwn(given, key) || given[key] === undefined || given[key] === "");
+    if (spec.required && absent) issues.push({ field: `parameters.${key}`, reason: "missing", message: `parameters.${key} is required: ${spec.description}` });
+    else if (absent && spec.default !== undefined) parameters[key] = spec.default;
   }
   const overrides = body.overrides ?? {};
   if (!isObject(overrides)) issues.push({ field: "overrides", reason: "wrong_type", message: "overrides is an object: {model?}" });
