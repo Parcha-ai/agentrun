@@ -8,7 +8,8 @@ full VM, a machine. The protocol has two layers:
 - **A daemon in every computer.** `computerd` is one small static Go program (Linux, amd64 and arm64, no cgo). It speaks
   JSON-RPC 2.0, one JSON object per line, over stdin and stdout, so it works in a computer with no network.
 - **One provisioner per vendor.** A provisioner makes, finds and ends computers, and opens a stream to the daemon
-  inside. It never runs commands itself: the daemon does. This package has three: Docker, Modal's VM runtime, and Daytona.
+  inside. It never runs commands itself: the daemon does. This package has three: Docker, Modal's VM runtime, and Daytona,
+  each one line of the provider registry (see [Adding a computer](#adding-a-computer)).
 
 ## What it does today
 
@@ -771,15 +772,17 @@ Nothing here has run against Modal. Once the lead OKs a key by name, `AGENTRUN_C
 Core `provider.stop` expects Modal's refusal (it declares no stop), and the Full `provider.janitor` case is skipped
 (`lifetime:janitor`, `release:stop`).
 
-`createProvider()` in `dist/conformance/modal.js` builds a real client, and only with `AGENTRUN_COMPUTER_LIVE_MODAL=1`,
-`COMPUTER_MODAL_TOKEN_ID` and `COMPUTER_MODAL_TOKEN_SECRET` set. It passes that pair to `ModalClient` explicitly, and
-never uses `MODAL_TOKEN_ID` or `MODAL_TOKEN_SECRET`: a host may hold a production token under those names, and with
-only them set it refuses, naming the `COMPUTER_MODAL_` pair. The key goes only to `COMPUTER_MODAL_SERVER_URL`, else
-the SDK's default `https://api.modal.com:443`: since the client cannot take a server, the module refuses while
-`MODAL_SERVER_URL` is set, and sets it to its choice only while it constructs the client, so neither `MODAL_PROFILE`
-nor a profile in `MODAL_CONFIG_PATH` or `~/.modal.toml` can redirect the key. It also reads `COMPUTER_MODAL_APP`,
-and, if set, `COMPUTER_MODAL_DAEMON_IMAGE`; without it the daemon is uploaded from `dist/computerd-linux-amd64`, so a run
-publishes nothing. `createDriftedProvider()` uploads a daemon it builds with Go as version `<version>-drift` into a
+`fromEnv(env, options?)` in `dist/modal.js` builds a real client from `COMPUTER_MODAL_TOKEN_ID` and
+`COMPUTER_MODAL_TOKEN_SECRET`. It passes that pair to `ModalClient` explicitly, and never uses `MODAL_TOKEN_ID` or
+`MODAL_TOKEN_SECRET`: a host may hold a production token under those names, and with only them set it refuses, naming
+the `COMPUTER_MODAL_` pair. The key goes only to `COMPUTER_MODAL_SERVER_URL`, else the SDK's default
+`https://api.modal.com:443`: since the client cannot take a server, it refuses while `MODAL_SERVER_URL` is set, and
+sets it to its choice only while it constructs the client, so neither `MODAL_PROFILE` nor a profile in
+`MODAL_CONFIG_PATH` or `~/.modal.toml` can redirect the key. It also reads `COMPUTER_MODAL_APP`, and, if set,
+`COMPUTER_MODAL_DAEMON_IMAGE`; without it the daemon is uploaded from `dist/computerd-linux-amd64`, so a run publishes
+nothing. The conformance module, `dist/conformance/modal.js` (`--provider modal`), builds its provider through
+`fromEnv`, and only with `AGENTRUN_COMPUTER_LIVE_MODAL=1` set, checked before anything else. Its
+`createDriftedProvider()` uploads a daemon it builds with Go as version `<version>-drift` into a
 temporary directory, so Go must be on PATH. Every computer of a run gets `maxLifetimeMs` 30 minutes: Modal's timeout
 is its lifetime, and a longer one is refused in words. The modal package is the host's; it is imported only when a
 provider is made.
@@ -993,11 +996,12 @@ capability), `/proc/self/status` (Uid and Gid the daemon user's four times, no g
 
 ### Conformance on Daytona
 
-`dist/conformance/daytona.js` exports `createProvider()` and `createDriftedProvider()` (which builds a daemon of
-another version with Go). It reads these variables, by name, when it runs: `COMPUTER_DAYTONA_API_KEY` (required),
-`COMPUTER_DAYTONA_API_URL`, `COMPUTER_DAYTONA_DAEMON`, `COMPUTER_DAYTONA_ARCH` (`amd64` or `arm64`),
-`COMPUTER_DAYTONA_TARGET`, `COMPUTER_DAYTONA_CLASS` (`container` or `linux-vm`), `COMPUTER_DAYTONA_USER` and
-`COMPUTER_DAYTONA_SNAPSHOT` (the run's image; unset, `"default"`, Daytona's default snapshot). It never reads
+`fromEnv(env, options?)` in `dist/daytona.js` builds the provider from these variables, by name, read when it runs:
+`COMPUTER_DAYTONA_API_KEY` (required), `COMPUTER_DAYTONA_API_URL`, `COMPUTER_DAYTONA_DAEMON`, `COMPUTER_DAYTONA_ARCH`
+(`amd64` or `arm64`), `COMPUTER_DAYTONA_TARGET`, `COMPUTER_DAYTONA_CLASS` (`container` or `linux-vm`) and
+`COMPUTER_DAYTONA_USER`. The conformance module, `dist/conformance/daytona.js` (`--provider daytona`), exports
+`createProvider()` and `createDriftedProvider()` (which builds a daemon of another version with Go) over the same
+names, and reads `COMPUTER_DAYTONA_SNAPSHOT` (the run's image; unset, `"default"`, Daytona's default snapshot). Neither reads
 `DAYTONA_API_KEY` or `DAYTONA_API_URL`, not even as a fallback: on a host that runs other Daytona work they may hold
 another organization's key.
 
@@ -1009,7 +1013,7 @@ listed nor attachable. Full `provider.janitor`, which needs a stopped computer k
 image from it when `--image` names none, and prints the note above the verdict (`notes` in `--json`).
 
 ```sh
-npm run conformance -w @parcha/agentrun-computer -- --provider packages/computer/dist/conformance/daytona.js [--image <snapshot>]
+npm run conformance -w @parcha/agentrun-computer -- --provider daytona [--image <snapshot>]
 ```
 
 ### The sweep around a live run
@@ -1115,7 +1119,7 @@ A provider for another vendor passes the same suite as Docker's, with one comman
 `ComputerClient` and the suite's assertion helpers, so the same cases run against a provider with daemon `none`.
 
 ```sh
-npm run conformance -w @parcha/agentrun-computer -- --provider docker
+npm run conformance -w @parcha/agentrun-computer -- --provider docker            # or modal, daytona: any registry id
 npm run conformance -w @parcha/agentrun-computer -- --provider ./my-provider.js [--image debian:bookworm-slim] [--only exec,files] [--fixture <path>] [--json]
 ```
 
@@ -1133,7 +1137,8 @@ optional screen screenshot-size                              - 1
 core PASS 54/54 · 9 optional cases skipped, not declared · full 5/10 · network:allow screen stream input.pointer input.keys input.touch apps.install apps apps.ui_tree extend not declared
 ```
 
-A module path is resolved from the directory npm was run in. It exits 0 when Core passes, 1 when it fails, 2 on a
+An id is resolved through the provider registry, and only there; the usage lists every id it holds. A module path is
+resolved from the directory npm was run in. It exits 0 when Core passes, 1 when it fails, 2 on a
 usage error, and 3 on a partial run; `--json` prints the report object (`{ provider, providerVersion, kind,
 daemonMode, image, daemon: { version, os, arch }, only?, coreNotRun?, results: [{ id, level, group, status, reason?,
 undeclared? }], core, undeclared, cleanup }`). A failure is listed under its line with what the case found.
@@ -1144,7 +1149,8 @@ not run, the text report lists them on a `core not run` line, and the verdict re
 not run` (on Docker, `--only health,provider`), never PASS. A partial run exits 3, so a script that checks for 0 never takes a subset for a Core pass. An
 `--only` that names every Core case is a whole run, and can pass.
 
-What a provider module implements:
+What a module given by path implements: either a provider file's `fromEnv()` (see
+[Adding a computer](#adding-a-computer)), run with no drifted provider, or a conformance module's:
 
 - `export function createProvider()` returning a `ComputerProvider` (sync or async): `id`, `version`,
   `capabilities()`, `check`, `create`, `attach`, `list`, `network`, `connect` and `release`, as in `src/provider.ts`.
@@ -1227,14 +1233,52 @@ create a case started, a refused one included, so a late computer is deleted bef
 pending when that bound (a minute) runs out is named in `cleanup.errors`, since what it makes may be left, and Core
 fails, as it does for a computer left behind. A case calls
 `t.create(extra)` for a computer it needs, or `t.attempt(spec, by?)` for create's result as it is (a refusal it
-expects, or the drifted provider's computer). With `--provider docker`, a `docker
-version` that does not answer within 30 s is killed and the run fails, naming the call. The CLI exits once the report
+expects, or the drifted provider's computer). With `--provider docker` and no
+`COMPUTER_DOCKER_DAEMON`, a `docker version` that does not answer within 30 s is killed and the run fails, naming the call. The CLI exits once the report
 is out. Cases do not assume root: the suite assumes only that the
 computer's `HOME`, which the provider sets, is a directory its user can write, and works under
 `$HOME/agentrun-conformance-<run id>`.
 
 From code: `runConformance(provider, { image, only?, signal?, drifted?, caseTimeoutMs?, cleanupTimeoutMs?, fixture?,
 fetch? })` returns the report, and `formatReport(report)` the text above.
+
+## Adding a computer
+
+A new computer is one provider file and one registry line. The conformance CLI (and serve, once wired) resolves
+providers through the registry, `src/providers.ts`, and nothing else, so neither needs an edit:
+
+```ts
+export const providers = {
+	docker: () => import("./docker.js"),
+	modal: () => import("./modal.js"),
+	daytona: () => import("./daytona.js"),
+	e2b: () => import("./e2b.js"), // the new line
+} satisfies Record<string, () => Promise<ProviderModule>>;
+```
+
+Each import is lazy: loading the registry loads no provider and no vendor SDK. `providerFromEnv(id, env?)` builds a
+provider by id and refuses an id it does not hold, naming the ones it does. The provider file, `src/<vendor>.ts`,
+exports what a `ProviderModule` is:
+
+- the provider class, which implements `ComputerProvider` and reports the registry id as its `id`;
+- `ENV`, every variable it reads by role, each named `COMPUTER_<ID>_*`: never a vendor's bare variable such as
+  `DAYTONA_API_KEY`, which on a shared host may hold another account's key, not even as a fallback;
+- `fromEnv(env = process.env, options?)`, the provider built from those variables alone, the key read only then, and
+  refused in words when one is missing or wrong;
+- optionally `conformance`, `() => import("./conformance/<vendor>.js")`: a module that bounds a conformance run's
+  computers and makes the drifted provider (`createProvider()`, `createDriftedProvider()`, `conformanceImage()`,
+  `conformanceNotes`), building them through `fromEnv`. Without it the CLI runs `fromEnv`'s provider, and the drift
+  case skips, so Core does not pass.
+
+Docker reads `COMPUTER_DOCKER_DAEMON` (default this package's daemon for Docker's architecture, from `docker version`)
+and `COMPUTER_DOCKER_USER`; Modal and Daytona read the names in their sections. `test/providers.test.mjs` holds every
+provider file to its registry line and its line to this shape, and checks that the CLI's usage names every id. Run the
+suite on the new computer, by path before its line exists and by id after:
+
+```sh
+npm run conformance -w @parcha/agentrun-computer -- --provider ./packages/computer/dist/e2b.js
+npm run conformance -w @parcha/agentrun-computer -- --provider e2b
+```
 
 ## Build
 
