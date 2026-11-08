@@ -28,7 +28,7 @@ export const LAYERS = {
     'packages/pi-durable-agent', 'packages/pi-durable-disk', 'packages/pi-transport',
   ],
   server: ['packages/serve'],
-  surface: ['apps/console', 'packages/agentrun'],
+  surface: ['apps/console', 'packages/agentrun', 'packages/client'],
 };
 
 /** The layers each layer may reach, besides its own package. */

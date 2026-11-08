@@ -14,10 +14,10 @@ import { isMain } from './is-main.mjs';
 
 const exec = promisify(execFile);
 // The packages a release may publish, by directory, in publication order: dependencies first (dsl, then jev and pi, which use it), the
-// packages after them that depend on none of them or, as pi-durable-agent's ./workflow subpath does, on dsl and pi alone, serve (@parcha/agentrun-serve), which uses dsl, pi, pi-durable-disk and pi-durable-agent,
+// packages after them that depend on none of them (the TypeScript client, client, depends on no package at all) or, as pi-durable-agent's ./workflow subpath does, on dsl and pi alone, serve (@parcha/agentrun-serve), which uses dsl, pi, pi-durable-disk and pi-durable-agent,
 // and agentrun (`npx @parcha/agentrun`, on its own version line), which depends on serve at its exact version, last. This list is the gate for a new package: a workspace package that is not private and not
 // named here fails the preflight, so a package is never published (or half-released, on a missing trusted publisher) by accident.
-export const releasePackageNames = { dsl: '@parcha/agentrun-dsl', jev: '@parcha/agentrun-jev', pi: '@parcha/agentrun-pi', 'pi-durable-disk': '@parcha/pi-durable-disk', 'pi-browser': '@parcha/pi-browser', 'pi-transport': '@parcha/pi-transport', 'pi-durable-agent': '@parcha/pi-durable-agent', decisions: '@parcha/agentrun-decisions', computer: '@parcha/agentrun-computer', 'run-adapters': '@parcha/agentrun-kernel', 'run-adapters-claude-agent': '@parcha/agentrun-harness-claude', 'run-adapters-codex': '@parcha/agentrun-harness-codex', serve: '@parcha/agentrun-serve', agentrun: '@parcha/agentrun' };
+export const releasePackageNames = { dsl: '@parcha/agentrun-dsl', jev: '@parcha/agentrun-jev', pi: '@parcha/agentrun-pi', 'pi-durable-disk': '@parcha/pi-durable-disk', 'pi-browser': '@parcha/pi-browser', 'pi-transport': '@parcha/pi-transport', 'pi-durable-agent': '@parcha/pi-durable-agent', decisions: '@parcha/agentrun-decisions', computer: '@parcha/agentrun-computer', client: '@parcha/agentrun-client', 'run-adapters': '@parcha/agentrun-kernel', 'run-adapters-claude-agent': '@parcha/agentrun-harness-claude', 'run-adapters-codex': '@parcha/agentrun-harness-codex', serve: '@parcha/agentrun-serve', agentrun: '@parcha/agentrun' };
 export const listedPackages = Object.keys(releasePackageNames);
 // The packages on a version line of their own (changes.mjs says why), checked and named at their manifest's version.
 export { ownVersionPackages };

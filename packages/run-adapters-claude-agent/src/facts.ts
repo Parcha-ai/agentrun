@@ -25,6 +25,8 @@ export const facts: AdapterFacts = Object.freeze<AdapterFacts>({
   install: Object.freeze({ npmLine: CLAUDE_AGENT_SDK_INSTALL, spec: `@anthropic-ai/claude-agent-sdk@${CLAUDE_AGENT_SDK_VERSION}`, codes: Object.freeze({ install: "CLAUDE_AGENT_NOT_INSTALLED", pins: "CLAUDE_AGENT_PIN_MISMATCH" }) }),
   // The CLI drops a tool whose schema fails the kernel's check, or whose root holds anyOf, allOf or oneOf (measured on
   // the pinned CLI), without a word.
+  // The CLI's own tools, each the host's table tool it is.
+  nativeTools: Object.freeze({ WebSearch: "web_search", WebFetch: "web_fetch", Bash: "bash", Read: "read", Write: "write", Edit: "edit" }),
   schemaProblems: (tool: string, schema: Record<string, unknown>) => [...toolSchemaProblems(tool, schema), ...["anyOf", "allOf", "oneOf"].filter((key) => key in schema).map((key) => `/${key}: the Claude Agent CLI drops a tool whose root has ${key}`)],
   policy: (options) => anthropicPolicy({ model: options.model, tools: options.tools, ...(options.auth ? { auth: options.auth } : {}), ...(options.webSearch === true ? { webSearch: true, ...(options.webSearchAllowance ? { webSearchAllowance: options.webSearchAllowance } : {}) } : {}), ...(options.maxOutputTokens ? { maxOutputTokens: options.maxOutputTokens } : {}) }),
 });

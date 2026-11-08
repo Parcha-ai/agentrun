@@ -270,9 +270,9 @@ export function nativeOptions(facts: AdapterFacts, env: NodeJS.ProcessEnv): { we
 /** claude-agent's adapter, from `load` (the package; a test gives its own), on the Agent SDK, its CLI and the MCP library
  *  `sdkOf` loads (by default from the data's harnesses directory, where a first use installed them, and from nowhere
  *  else: harness-install.ts). Not installed there, it says the command that installs it by hand. */
-export async function claudeOf(env: NodeJS.ProcessEnv, needs: AdapterNeeds, load: () => Promise<unknown> = loadClaude, sdkOf: (version: string, platform: string) => Promise<LoadedSdk> = (version, platform) => loadSdk(installDirOf(dataOf(env), "claude-agent"), { version, platform })): Promise<AgentAdapter> {
+export async function claudeOf(env: NodeJS.ProcessEnv, needs: AdapterNeeds, load: () => Promise<unknown> = loadClaude, sdkOf: (version: string, platform: string) => Promise<LoadedSdk> = (version, platform) => loadSdk(installDirOf(dataOf(env), claudeFacts.id), { version, platform })): Promise<AgentAdapter> {
   const claude = (await load()) as ClaudePackage;
-  const dir = installDirOf(dataOf(env), "claude-agent");
+  const dir = installDirOf(dataOf(env), claudeFacts.id);
   const line = installLine(dir, harnessOf(env, claudeFacts.id)!.installs!.lock);
   const version = claude.CLAUDE_AGENT_SDK_VERSION;
   const sdk = await sdkOf(version, claude.claudeAgentPlatform()).catch((error: Error) => {

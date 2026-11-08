@@ -31,9 +31,9 @@ describe("RunHeader's cost", () => {
 
 describe("RunHeader's cost when some charges have no price", () => {
   const unknown = { usd: null, basis: "estimate" as const, charge_state: null, cap_usd: null };
-  it("says what the priced charges cost so far and how many have no price, in place of Unknown, and why it is not the whole cost", () => {
+  it("an ended run says what the priced charges cost and how many have no price, in place of Unknown, and why it is not the whole cost", () => {
     const html = renderToStaticMarkup(createElement(RunHeader, { run: runWith({ ...unknown, so_far_usd: 0.0421, unpriced: 2 }), agentName: "Calc" }));
-    expect(html).toContain("so far $0.0421 est. · 2 not priced");
+    expect(html).toContain("$0.0421 est. known · 2 not priced");
     expect(html).toContain("not the whole cost");
     expect(html).not.toContain("Unknown");
   });

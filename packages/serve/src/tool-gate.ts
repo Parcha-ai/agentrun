@@ -46,6 +46,7 @@ import { BOX_WORK } from "./place.js";
 import type { TurnOrigin } from "./learning-run.js";
 import { forModel } from "./result.js";
 import { builtinHarness } from "./harness-table.js";
+import { DEFAULT_HARNESS } from "./harness.js";
 import { durableSessions } from "./sessions.js";
 import { SHELL_TOOLS } from "./background.js";
 import { readToolSettings, SERVE_OWN_TOOLS, TABLE_TOOLS } from "./tool-plane.js";
@@ -90,11 +91,6 @@ export function permissionKeys(name: string): string[] {
 /** The browser's registrations on pi (pi-browser's BROWSER_TOOL_NAMES, which a test holds this list to): each is a call
  *  of the table's `browser`. */
 const BROWSER_REGISTRATIONS: readonly string[] = ["snapshot", "run", "screenshot", "browser_read", "browser_release", "browser_relaunch", "browser_request_handoff", "browser_downloads", "browser_upload"];
-/** A CLI's own tools, by harness, and the table's tool each one is. */
-const NATIVE_TOOLS: Readonly<Record<string, Readonly<Record<string, string>>>> = {
-  "claude-agent": { WebSearch: "web_search", WebFetch: "web_fetch", Bash: "bash", Read: "read", Write: "write", Edit: "edit" },
-  codex: { web_search: "web_search", shell: "bash" },
-};
 /** The MCP server through which claude-agent calls the kernel's host tools (`mcp__hands__<wire name>`). */
 const HOST_TOOLS_SERVER = "hands";
 
@@ -110,7 +106,9 @@ export function settingsKeyOf(harness: string, name: string, mcpServers: readonl
   // A tool that runs a command in the box (bash_background and the rest) is held to bash's key: before the table's own names.
   if (Object.hasOwn(SHELL_FAMILY, name)) return SHELL_FAMILY[name];
   if (TABLE_TOOLS.includes(name) || SERVE_OWN_TOOLS.includes(name) || isCatalogTool(name)) return name;
-  const native = NATIVE_TOOLS[harness]?.[name];
+  // A CLI's own tool, the table's tool it is (its facts' nativeTools), by an own name only.
+  const nativeTools = builtinHarness(harness)?.facts?.nativeTools;
+  const native = nativeTools && Object.hasOwn(nativeTools, name) ? nativeTools[name] : undefined;
   if (native) return native;
   const mcp = /^mcp__([a-z][a-z0-9-]*)__(.+)$/.exec(name);
   if (mcp) return mcp[1] === HOST_TOOLS_SERVER ? settingsKeyOf(harness, mcp[2]!, mcpServers) : mcpToolName(mcp[1]!, mcp[2]!);
@@ -343,7 +341,7 @@ export function resumeText(request: Pick<ApprovalRequest, "tool" | "call_id">, s
 /** The gate of the run `runId` at `where` (its directory, under the data directory's runs/), on its pinned revision:
  *  an agentic run's parks an asked call; a workflow's model node cannot. */
 export function runGate(where: { root: string; work: string }, runId: string, revision: { kind: string; body: { toolSettings?: unknown; harness?: string } }): RunGate {
-  return new RunGate({ root: where.root, work: where.work, data: dataOfRun(where.root), runId, harness: revision.body.harness ?? "pi" }, (revision.body.toolSettings ?? {}) as PermissionSettings, revision.kind === "agentic", process.env[NO_APPROVER_ENV] !== "1");
+  return new RunGate({ root: where.root, work: where.work, data: dataOfRun(where.root), runId, harness: revision.body.harness ?? DEFAULT_HARNESS }, (revision.body.toolSettings ?? {}) as PermissionSettings, revision.kind === "agentic", process.env[NO_APPROVER_ENV] !== "1");
 }
 
 /** The gate in a run's process, park mode: its policy, the turn's origin, the calls that wait, and the answers acted on. */
@@ -378,7 +376,7 @@ export class RunGate {
   /** Where the permission `policy` gives `tool` was set: the agent's own tool settings, the server's, or the default. */
   readonly denyFrom = (tool: string): SettingFrom => this.setting(tool).from;
   private setting(tool: string): { permission: Permission; from: SettingFrom } {
-    const key = settingsKeyOf(this.where.harness ?? "pi", tool, this.where.mcpServers);
+    const key = settingsKeyOf(this.where.harness ?? DEFAULT_HARNESS, tool, this.where.mcpServers);
     // A name nothing maps fails closed: it asks (refused where no one can approve), never allows.
     if (key === undefined) return { permission: "ask", from: "default" };
     const server = this.serverSettings();
@@ -423,7 +421,7 @@ export class RunGate {
   async enter(name: string, args: unknown, callId: string, park: Park, options: EnterOptions = {}): Promise<Entered> {
     // Held to its settings key (settingsKeyOf), the name its request, a refusal and the approved call give; a shell tool
     // held to bash's (SHELL_FAMILY) keeps its own name, so an approved bash_background runs bash_background, never bash.
-    const key = settingsKeyOf(this.where.harness ?? "pi", name, this.where.mcpServers) ?? name;
+    const key = settingsKeyOf(this.where.harness ?? DEFAULT_HARNESS, name, this.where.mcpServers) ?? name;
     const tool = shellToolOf(name) ?? key;
     // The end-of-run turn writes no file under work/.learning/, whatever the tool's permission: its notes are kept only
     // from its answer (NOTE_ONLY_TEXT). Any other turn's write there follows its permission, as anywhere.
@@ -469,7 +467,7 @@ export class RunGate {
 
   private wrap(tool: ToolRegistration): ToolRegistration {
     const gate = this;
-    const billed = tool.replay === "safe" && BILLED_REPLAYS.has(settingsKeyOf(this.where.harness ?? "pi", tool.name, this.where.mcpServers) ?? "");
+    const billed = tool.replay === "safe" && BILLED_REPLAYS.has(settingsKeyOf(this.where.harness ?? DEFAULT_HARNESS, tool.name, this.where.mcpServers) ?? "");
     return {
       ...tool,
       async execute(args, api, context) {
@@ -677,7 +675,7 @@ export class RunGate {
     const drive = await this.journal();
     const key = `approval:${held.id}`;
     if (drive.isMemoized(key)) return this.run(held);
-    const heldTo = settingsKeyOf(this.where.harness ?? "pi", held.tool, this.where.mcpServers);
+    const heldTo = settingsKeyOf(this.where.harness ?? DEFAULT_HARNESS, held.tool, this.where.mcpServers);
     return { text: deniedText(held.tool, heldTo, this.denyFrom(held.tool), held.replayed || drive.state().effects.has(key) ? "unknown" : "no"), isError: true };
   }
 

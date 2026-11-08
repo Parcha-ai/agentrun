@@ -68,7 +68,7 @@ test("a parked write shows no Saved row while it waits, none after a deny (and n
     const resume = rows.filter((r) => r.origin === "server" && /^AgentRun: write /.test(r.summary ?? ""));
     assert.equal(resume.length, 1, `${at}: one resume row: ${JSON.stringify(rows.map((r) => r.summary))}`);
     if (run.decision === "allow") {
-      assert.equal(resume[0].summary, "AgentRun: write ran once you allowed it", at);
+      assert.equal(resume[0].summary, "AgentRun: write ran once you allowed it; its result went to the agent", at);
       assert.equal(await readFile(file, "utf8"), "hello", `${at}: the file was written`);
       assert.deepEqual(savedRows(rows).map((r) => r.summary), [], `${at}: the parked call's own Saved row is gone; the resume row says it ran`);
       continue;

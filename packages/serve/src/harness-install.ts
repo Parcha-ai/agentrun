@@ -25,6 +25,8 @@ import { chmod, copyFile, lstat, mkdir, mkdtemp, readdir, readFile, rename, rm }
 import { createRequire } from "node:module";
 import { basename, dirname, join, sep } from "node:path";
 import { fileURLToPath, pathToFileURL } from "node:url";
+import { facts as claudeFacts } from "@parcha/agentrun-harness-claude/facts";
+import { facts as codexFacts } from "@parcha/agentrun-harness-codex/facts";
 import { withoutSecrets } from "./secrets.js";
 
 /** The data's directory the first-use installs go into, one directory each. */
@@ -114,7 +116,7 @@ export function installedSdk(dir: string, version: string): { entry: string } | 
 }
 
 const CLAUDE: HarnessInstallEntry = {
-  id: "claude-agent",
+  id: claudeFacts.id,
   label: "Claude Code",
   package: CLAUDE_SDK,
   lock: fileURLToPath(new URL("../harnesses/claude-agent/package-lock.json", import.meta.url)),
@@ -143,7 +145,7 @@ export const CODEX_PACKAGE = "@openai/codex";
 const codexPlatform = (platform: string): string => `${CODEX_PACKAGE}-${platform}`;
 
 const CODEX: HarnessInstallEntry = {
-  id: "codex",
+  id: codexFacts.id,
   label: "Codex",
   package: CODEX_PACKAGE,
   lock: fileURLToPath(new URL("../harnesses/codex/package-lock.json", import.meta.url)),

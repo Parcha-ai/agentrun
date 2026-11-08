@@ -317,6 +317,9 @@ export interface AdapterFacts {
   schemaProblems?(tool: string, schema: Record<string, unknown>): string[];
   /** A name its client calls a session's MCP tool by beside `mcp__<server>__<tool>` (OpenCode's `<server>_<tool>`). */
   readonly toolAlias?: RegExp;
+  /** Its CLI's own tools, by the name a call reaches the host by, each with the host's table tool it is (Claude's
+   *  `Bash` is `bash`): a host holds such a call to that tool's setting. None: its CLI calls only the host's tools. */
+  readonly nativeTools?: Readonly<Record<string, string>>;
   /** The policy its model proxy applies, for a host that serves the same route itself (a test's faux harness). */
   policy(options: { model: string; tools: readonly string[]; auth?: "bearer" | "x-api-key"; webSearch?: true | "live"; webSearchAllowance?: number; maxOutputTokens?: number }): ProviderPolicy;
 }
