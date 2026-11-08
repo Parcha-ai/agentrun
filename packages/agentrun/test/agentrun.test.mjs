@@ -572,7 +572,7 @@ test("the server's refusals and ignored webhook deliveries reach the person in p
   const flood = start.tellerOf();
   const said = Array.from({ length: start.TOLD_MAX + 5 }, (_, i) => flood(`at=x event=auth_failed route=/v2/runs/r${i} reason=wrong_token`)).filter(Boolean);
   assert.equal(said.length, start.TOLD_MAX + 1);
-  assert.equal(said.at(-1), "AgentRun refuses more requests than it says here; the server's log has each one.");
+  assert.equal(said.at(-1), "AgentRun refuses more requests than this terminal shows; it says no more of them here.");
 });
 
 test("started, the bin says a refused request on stderr; stdout stays the one running line", { timeout: 120_000 }, async (t) => {

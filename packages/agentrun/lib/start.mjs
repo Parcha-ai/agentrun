@@ -122,7 +122,7 @@ export const serverArgs = (argv) => (argv.includes("--no-open") ? argv.filter((a
 export const SERVER_COMMANDS = ["import", "reset-password", "validate-template"];
 
 /** How many of the server's refusals and ignored deliveries a start says, each route and reason once, before one line
- *  that says the rest are not. */
+ *  that says the rest are not: under this command the server's log goes nowhere else (its stdout is read here and dropped). */
 export const TOLD_MAX = 20;
 
 /** Why a request was refused, in words, by the server's reason; any other reason is said as the server names it. */
@@ -161,7 +161,7 @@ export function tellerOf() {
       words = `AgentRun ignored a webhook delivery to ${fields.route} (${fields.source}${hookEvent ? `, event ${hookEvent}` : ""}): ${fields.reason}.`;
     } else return undefined;
     if (said.has(key) || full) return undefined;
-    if (said.size >= TOLD_MAX) return (full = true), "AgentRun refuses more requests than it says here; the server's log has each one.";
+    if (said.size >= TOLD_MAX) return (full = true), "AgentRun refuses more requests than this terminal shows; it says no more of them here.";
     said.add(key);
     return said.size === 1 ? `${words} (Each route and reason is said once.)` : words;
   };
