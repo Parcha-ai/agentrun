@@ -203,7 +203,7 @@ export function fakeOrgoChannel({ install = 0, sha = "ok", x11 = true, box: boxP
 					callback();
 				},
 			});
-			const stream = { readable, writable, close: async () => void readable.end() };
+			const stream = { readable, writable, close: async () => void readable.end(), said: () => (listening ? "" : "computerd stdio: no daemon listens at /run/agentrun/computerd.sock") };
 			box.streams.push(stream);
 			if (!listening) queueMicrotask(() => readable.end());
 			return { ok: true, value: stream };
@@ -274,7 +274,7 @@ export function fakeTerminal({ onExec = () => {} } = {}) {
 				if (!raw) emit({ type: "output", data: frame.data.replace(/\r/g, "\r\n") });
 				const line = frame.data.replace(/\r$/, "");
 				if (/stty raw -echo/.test(line)) raw = true;
-				const printed = /printf '%s%s\\n' (\S+) (\S+)/.exec(line);
+				const printed = /printf '%s%s\\n' ([^\s;]+) ([^\s;]+)/.exec(line);
 				if (printed) emit({ type: "output", data: `${printed[1]}${printed[2]}\n` });
 				const exec = /exec (.*)$/.exec(line);
 				if (exec) {
@@ -282,7 +282,8 @@ export function fakeTerminal({ onExec = () => {} } = {}) {
 						write: (data) => emit({ type: "output", data }),
 						exit: (code) => {
 							emit({ type: "exit", code });
-							socket.close();
+							// The server closes after the frames it sent before.
+							queueMicrotask(() => queueMicrotask(() => socket.close()));
 						},
 						input: () => {},
 					};

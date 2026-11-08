@@ -107,8 +107,8 @@ export const KIND_SPECS: Readonly<Record<Kind, KindSpec>> = {
 export const KIND_PROVIDERS: Readonly<Record<Kind, readonly ProviderId[]>> = {
 	none: [],
 	sandbox: ["docker", "e2b", "daytona", "modal"],
-	// Docker with its desktop option, E2B with kind desktop (its default).
-	desktop: ["docker", "e2b"],
+	// Docker with its desktop option, E2B with kind desktop (its default), Orgo (desktops only).
+	desktop: ["docker", "e2b", "orgo"],
 	phone: [],
 	browser: [],
 };

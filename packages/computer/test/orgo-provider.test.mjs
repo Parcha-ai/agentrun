@@ -183,8 +183,9 @@ test("Orgo create: each refusal deletes the computer and says why, never with th
 });
 
 test("Orgo create: init not yet listening is tried again within helloMs; one that never listens is refused and deleted", async () => {
-	const patient = setup({}, { channel: { notListening: 2 } });
+	const patient = setup({ timeouts: { ...TIMEOUTS, helloMs: 5_000 } }, { channel: { notListening: 2 } });
 	assert.equal((await patient.provider.create(SPEC)).ok, true);
+	assert.equal(patient.channel.calls.filter((call) => call.op === "stdio").length, 3, "two bridges found no daemon, the third did");
 	const never = setup({}, { channel: { startFails: "the terminal closed with 4503" } });
 	const refused = await never.provider.create(SPEC);
 	assert.equal(refused.ok, false);
@@ -208,7 +209,8 @@ test("Orgo list: this workspace's computers by name, the run and epoch filtered 
 	const runOnly = await fakes.provider.list({ "agentrun.run": RUN });
 	assert.equal(runOnly.value.length, 2);
 	const byTeam = await fakes.provider.list({ team: "a" });
-	assert.equal(byTeam.value.length, 3, "every computer whose labels file says team a");
+	assert.deepEqual(byTeam.value.map((info) => info.ref.id), [mine.ref.id], "the one computer whose labels file says team a");
+	assert.equal(fakes.channel.calls.length, 3, "each running computer's labels file read once");
 	assert.ok(fakes.channel.calls.every((call) => call.kind === "orgo-labels-read"));
 	assert.deepEqual(byTeam.value.find((info) => info.ref.id === mine.ref.id).labels, SPEC.labels);
 	const all = await fakes.provider.list({});

@@ -17,7 +17,8 @@ export type ComputerErrorCode =
 	| "docker"
 	| "daytona"
 	| "modal"
-	| "e2b";
+	| "e2b"
+	| "orgo";
 
 export interface ComputerError {
 	code: ComputerErrorCode;
