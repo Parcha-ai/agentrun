@@ -72,6 +72,8 @@ import { WEBHOOK_EVENTS, Webhooks } from "./webhooks.js";
 import { type SealedSettings } from "./sealed-settings.js";
 import { openServerSecrets, type ServerSecrets } from "./server-secrets.js";
 import { HOOK_TOLERANCE_S } from "./standard-webhooks.js";
+import { GitHubConnect, GitHubConnection, startedHere as gitHubStartedHere, stateCookie } from "./github-connection.js";
+import { GITHUB_API } from "./github.js";
 import { HookCut, receivePush } from "./push-handler.js";
 import type { TriggerAdapter } from "./trigger-adapter.js";
 import { TRIGGER_ADAPTERS } from "./trigger-adapters.js";
@@ -284,6 +286,9 @@ export type ServeOptions = {
   triggerClock?: TriggerClock;
   /** A test's seam: the trigger sources this server has (default the registry, trigger-adapters.ts). */
   triggerAdapters?: readonly TriggerAdapter[];
+  /** A test's seam: GitHub's API, which Connect GitHub converts its code with and asks of the App's installations
+   *  (default https://api.github.com: github.ts GITHUB_API). */
+  githubApi?: string;
   /** A test's seam: the folder the template packages are read from, in place of the package's own (templates.ts). */
   templates?: string;
   /** The waits before each try again of a webhook delivery (default 5 s, 5 min, 30 min, 2 h, 5 h and 10 h: webhooks.ts RETRY_MS). */
@@ -423,6 +428,11 @@ export const ROUTES: readonly Route[] = [
   { method: "POST", pattern: /^\/templates\/([^/]+)\/apply$/, name: "applyTemplate" },
   // Answered before the bearer check: the request's signature is its credential.
   { method: "POST", pattern: /^\/hooks\/([^/]+)$/, name: "receiveHook" },
+  { method: "GET", pattern: /^\/integrations\/github$/, name: "getGitHubConnection" },
+  { method: "DELETE", pattern: /^\/integrations\/github$/, name: "disconnectGitHub" },
+  { method: "POST", pattern: /^\/integrations\/github\/connect$/, name: "connectGitHub" },
+  { method: "GET", pattern: /^\/integrations\/github\/callback$/, name: "gitHubCallback" },
+  { method: "GET", pattern: /^\/integrations\/github\/installed$/, name: "gitHubInstalled" },
   // Answered before routing (mcp.ts), with the token only: listed here for the document.
   { method: "POST", pattern: /^\/mcp$/, name: "callMcp" },
   { method: "GET", pattern: /^\/agents\/([^/]+)\/learning$/, name: "getAgentLearning" },
@@ -1084,9 +1094,15 @@ async function startHolding(options: ServeOptions, data: string, lock: ServerLoc
 
   // Schedules: each firing starts its run as POST /agents/{id}/runs does, capped, under the firing's key (triggers.ts).
   // Firings an earlier server left due are driven again now, beside the recovery above.
+  // Connect GitHub: the server's one GitHub App, in the github source's sealed settings (github-connection.ts).
+  const github = new GitHubConnection(triggerSettings.get("github"));
+  const githubConnect = new GitHubConnect(github, { ...(options.publicUrl ? { publicUrl: options.publicUrl.replace(/\/+$/, "") } : {}), api: options.githubApi ?? GITHUB_API, say: (fields) => log?.(logLine("github", fields)) });
+  /** The connection a GitHub template or the console reads: the App's id, slug and installations, never a secret. */
+  const githubConnection = () => github.view();
   const triggers: Triggers = new Triggers(data, {
     clock: options.triggerClock,
     adapters,
+    unavailable: (kind) => (kind === "github" && !githubConnection() ? "This server has no GitHub App: Connect GitHub in Settings first, then make the trigger (or turn it on)." : undefined),
     say: (fields) => (log ? log(logLine("trigger", fields)) : void process.stderr.write(`agentrun-serve: ${logLine("trigger", fields)}\n`)),
     async targetIssues(target) {
       if (target.kind === "message_run") {
@@ -1980,7 +1996,7 @@ async function startHolding(options: ServeOptions, data: string, lock: ServerLoc
     // read (push-handler.ts).
     if (found.name === "receiveHook") {
       // A body cut at its cap or its time is answered, then its socket closed: never read to its end.
-      const answer = await receivePush({ adapters, hooked: (id, kind) => triggers.hookSource(id, kind), ignored: (id, eventId) => triggers.ignored(id, eventId), receive: (id, eventId, payload, attrs) => triggers.receive(id, eventId, payload, attrs), scoped: (kind, scope) => triggers.scoped(kind, scope), setting: (adapterId, scope, field) => triggerSettings.get(adapterId)?.get(scope, field), refused: authFailed, say: (fields) => (log ? log(logLine("trigger", fields)) : void process.stderr.write(`agentrun-serve: ${logLine("trigger", fields)}\n`)) }, req, /^\/hooks\/([^/]+)$/.exec(path)![1]!);
+      const answer = await receivePush({ adapters, hooked: (id, kind) => triggers.hookSource(id, kind), ignored: (id, eventId) => triggers.ignored(id, eventId), listening: (kind) => triggers.listening(kind), setSetting: (adapterId, scope, field, value) => triggerSettings.get(adapterId)?.set(scope, field, value), turnOff: (kind, detail) => triggers.turnOff(kind, detail), receive: (id, eventId, payload, attrs) => triggers.receive(id, eventId, payload, attrs), scoped: (kind, scope) => triggers.scoped(kind, scope), setting: (adapterId, scope, field) => triggerSettings.get(adapterId)?.get(scope, field), refused: authFailed, say: (fields) => (log ? log(logLine("trigger", fields)) : void process.stderr.write(`agentrun-serve: ${logLine("trigger", fields)}\n`)) }, req, /^\/hooks\/([^/]+)$/.exec(path)![1]!);
       return send(res, answer.status, answer.body, answer.headers ?? {});
     }
     // An MCP server's OAuth sign-in: the browser coming back from its authorization server carries no token (the state
@@ -1994,6 +2010,19 @@ async function startHolding(options: ServeOptions, data: string, lock: ServerLoc
       return void res.writeHead(302, { location, "cache-control": "no-store", "set-cookie": signInCookie(req.socket.localPort, state!, overHttps(req), 0) }).end();
     }
     if (found.name === "mcpOAuthClient") return send(res, 200, mcpServers.clientDocument(), { "cache-control": "public, max-age=3600" });
+    // Connect GitHub's two steps back from GitHub: the owner's browser, which carries no token. The callback's state is
+    // its check, with the cookie its start set in that browser; an installation is kept only as GitHub, asked with the
+    // App's own JWT, says it is the App's.
+    if (found.name === "gitHubCallback") {
+      const state = url.searchParams.get("state") ?? "";
+      if (!state || !gitHubStartedHere(req.headers.cookie, req.socket.localPort, state)) throw new ApiError("bad_request", "This Connect GitHub was started in another browser, or is not one this server started: start it again from the console, in this browser.");
+      const location = await githubConnect.callback(url.searchParams.get("code"), state, stopping.signal);
+      return void res.writeHead(302, { location, "cache-control": "no-store", "set-cookie": stateCookie(req.socket.localPort, state, overHttps(req), 0) }).end();
+    }
+    if (found.name === "gitHubInstalled") {
+      const location = await githubConnect.installed(url.searchParams.get("installation_id"), stopping.signal);
+      return void res.writeHead(302, { location, "cache-control": "no-store" }).end();
+    }
     if (found.name === "getHealth") {
       const health = await healthOf(data, minFreeBytes);
       return send(res, health.status === "ok" ? 200 : 503, health);
@@ -2371,6 +2400,25 @@ async function startHolding(options: ServeOptions, data: string, lock: ServerLoc
         const started = await mcpServers.oauthStart(id, await bodyOf(req));
         const state = new URL(started.authorization_url).searchParams.get("state") ?? "";
         return send(res, 200, started, { "set-cookie": signInCookie(req.socket.localPort, state, overHttps(req)) });
+      }
+      case "connectGitHub": {
+        const started = githubConnect.start(await bodyOf(req));
+        // The callback finishes only in this browser: the cookie it brings back names this state.
+        return send(res, 200, started, { "set-cookie": stateCookie(req.socket.localPort, started.state, overHttps(req)) });
+      }
+      case "getGitHubConnection": {
+        const view = githubConnection();
+        if (!view) throw new ApiError("not_found", "No GitHub App is connected to this server: Connect GitHub in Settings.");
+        return send(res, 200, view);
+      }
+      case "disconnectGitHub": {
+        const view = githubConnection();
+        if (!view) throw new ApiError("not_found", "No GitHub App is connected to this server.");
+        github.remove();
+        // Kept, and off: an agent keeps its triggers, which go on again once GitHub is connected again.
+        const off = triggers.turnOff("github", "GitHub was disconnected from this server: connect it again in Settings, then turn the trigger on.");
+        log?.(logLine("github", { condition: "github_disconnected", app_id: view.app_id, triggers_off: off }));
+        return send(res, 200, { disconnected: true, app_id: view.app_id, slug: view.slug, triggers_off: off, note: `The App itself is still on GitHub: delete the App on GitHub (its settings, under Developer settings → GitHub Apps → ${view.slug}) to remove it there.` });
       }
       case "deleteMcpServer":
         mcpServers.remove(id);
