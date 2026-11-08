@@ -358,8 +358,57 @@ func RunSync(archil, mountpoint string, timeout time.Duration) func(context.Cont
 	}
 }
 
-// Ask asks the server at socket for one sync and returns its exit code. With no server there it is not_found, in words.
-func Ask(ctx context.Context, socket string) (int, error) {
+// Owner is who a trusted sync server's folder and socket belong to: root, and the tool user's group (the daemon's own).
+type Owner struct{ UID, GID int }
+
+// trusted says why the socket at path is not one to trust an answer from, or nil: its folder must be a real folder (no
+// link), owner's UID, owner's GID, mode 0750, and the socket owner's UID. A tool user could otherwise put a server of
+// its own there that answers every sync with 0. A folder or socket that is not there is not_found.
+func trusted(socket string, owner Owner) error {
+	missing := func() error {
+		return rpc.Errorf(rpc.KindNotFound, "no Archil sync server answers at %s: this computer has no Archil mount, or it was let go", socket)
+	}
+	dir := filepath.Dir(socket)
+	info, err := os.Lstat(dir)
+	if errors.Is(err, os.ErrNotExist) {
+		return missing()
+	}
+	if err != nil {
+		return rpc.Errorf(rpc.KindDenied, "the Archil sync folder %s cannot be read: %v", dir, err)
+	}
+	st, ok := info.Sys().(*syscall.Stat_t)
+	switch {
+	case info.Mode()&os.ModeSymlink != 0:
+		return rpc.Errorf(rpc.KindDenied, "the Archil sync folder %s is a link, so its answer is not trusted", dir)
+	case !info.IsDir() || !ok:
+		return rpc.Errorf(rpc.KindDenied, "the Archil sync folder %s is not a folder, so its answer is not trusted", dir)
+	case int(st.Uid) != owner.UID:
+		return rpc.Errorf(rpc.KindDenied, "the Archil sync folder %s is not root's (uid %d), so its answer is not trusted", dir, st.Uid)
+	case int(st.Gid) != owner.GID:
+		return rpc.Errorf(rpc.KindDenied, "the Archil sync folder %s is not the tool user's group %d (it is %d), so its answer is not trusted", dir, owner.GID, st.Gid)
+	case info.Mode().Perm() != 0o750:
+		return rpc.Errorf(rpc.KindDenied, "the Archil sync folder %s is %#o, not 0750, so its answer is not trusted", dir, info.Mode().Perm())
+	}
+	sock, err := os.Lstat(socket)
+	if errors.Is(err, os.ErrNotExist) {
+		return missing()
+	}
+	if err != nil {
+		return rpc.Errorf(rpc.KindDenied, "the Archil sync socket %s cannot be read: %v", socket, err)
+	}
+	if s, ok := sock.Sys().(*syscall.Stat_t); !ok || sock.Mode()&os.ModeSocket == 0 || int(s.Uid) != owner.UID {
+		return rpc.Errorf(rpc.KindDenied, "the Archil sync socket %s is not a socket of root's, so its answer is not trusted", socket)
+	}
+	return nil
+}
+
+// Ask asks the server at socket for one sync and returns its exit code, once its folder and socket are owner's (root's
+// and the tool user's group) as Listen makes them; else denied, in words, and nothing is sent. With no server there it
+// is not_found, in words.
+func Ask(ctx context.Context, socket string, owner Owner) (int, error) {
+	if err := trusted(socket, owner); err != nil {
+		return 0, err
+	}
 	var dialer net.Dialer
 	conn, err := dialer.DialContext(ctx, "unix", socket)
 	if err != nil {
