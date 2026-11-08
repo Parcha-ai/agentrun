@@ -10,7 +10,7 @@ import { runLabel, when } from "@/lib/format";
 import { keeper, uuid } from "@/lib/idempotency";
 import { type Problem, problem } from "@/lib/problem";
 import type { Tone } from "@/lib/runState";
-import { atLeast, bodyOf, capOf, dollars, FIRED_BY, hookUrlOf, isScheduleTrigger, isWebhookTrigger, SIGNATURE_WORDS, utcWhen, type Draft, draftOf, type Schedule, type WebhookTrigger, emptyDraft, FIRING_LABEL, firingWords, instantKept, issuesOf, patchOf, whenWords, emptyWebhook, type WebhookDraft, webhookBodyOf } from "@/lib/schedules";
+import { atLeast, bodyOf, capOf, dollars, FIRED_BY, HOOK_URL_HINT, hookUrlOf, isScheduleTrigger, isWebhookTrigger, SIGNATURE_WORDS, utcWhen, type Draft, draftOf, type Schedule, type WebhookTrigger, emptyDraft, FIRING_LABEL, firingWords, instantKept, issuesOf, patchOf, whenWords, emptyWebhook, type WebhookDraft, webhookBodyOf } from "@/lib/schedules";
 import type { Firing, Trigger, TriggerCreate, TriggerMade } from "@/lib/v2";
 
 /** Which triggers page: the list (no `trigger`), a new one (`trigger` null, of `kind`), one trigger, or a schedule's editor
@@ -235,7 +235,7 @@ function ScheduleDetail({ v2, go, agentName, id, every }: PageProps & { id: stri
         <dt className="caps text-[11px] text-muted-foreground">Each run is asked</dt><dd className="min-w-0 whitespace-pre-wrap break-words">{content ?? JSON.stringify(runs.target.input)}</dd>
         <dt className="caps text-[11px] text-muted-foreground">Cost cap</dt><dd className="font-mono">{capOf(runs.target.max_cost_usd, agentCap)}</dd>
         {hook ? <>
-          <dt className="caps text-[11px] text-muted-foreground">URL</dt><dd className="flex min-w-0 flex-wrap items-center gap-2"><code className="min-w-0 break-all font-mono text-[12px]">{hookUrlOf(hook)}</code><CopyButton text={hookUrlOf(hook)} label="Copy URL" /></dd>
+          <dt className="caps text-[11px] text-muted-foreground">URL</dt><dd className="flex min-w-0 flex-wrap items-center gap-2"><code className="min-w-0 break-all font-mono text-[12px]">{hookUrlOf(hook)}</code><CopyButton text={hookUrlOf(hook)} label="Copy URL" /><span className="basis-full text-[12px] text-muted-foreground">{HOOK_URL_HINT}</span></dd>
           <dt className="caps text-[11px] text-muted-foreground">Signature</dt><dd>{SIGNATURE_WORDS[hook.source.signature ?? "standard"]}</dd>
         </> : <>
           <dt className="caps text-[11px] text-muted-foreground">While a run is going</dt><dd>The next time is skipped.</dd>
@@ -436,18 +436,19 @@ function CopyButton({ text, label }: { text: string; label: string }) {
 function SecretOnce({ label, secret, url }: { label: string; secret: string; url?: string }) {
   return (
     <section aria-label={label} className="mt-4 space-y-3 border border-primary/50 p-4 text-[13px]">
-      {url && <Copyable title="URL" text={url} label="Copy URL" />}
+      {url && <Copyable title="URL" text={url} label="Copy URL" hint={HOOK_URL_HINT} />}
       <Copyable title="Signing secret" text={secret} label="Copy secret" />
       <p className="text-warning-text" role="note">You won't see this secret again.</p>
     </section>
   );
 }
 
-function Copyable({ title, text, label }: { title: string; text: string; label: string }) {
+function Copyable({ title, text, label, hint }: { title: string; text: string; label: string; hint?: string }) {
   return (
     <div className="min-w-0">
       <span className="caps text-[11px] text-muted-foreground">{title}</span>
       <div className="mt-1 flex min-w-0 flex-wrap items-center gap-2"><code className="min-w-0 break-all border bg-muted/40 px-2 py-1 font-mono text-[12px]">{text}</code><CopyButton text={text} label={label} /></div>
+      {hint && <p className="mt-1 text-[12px] text-muted-foreground">{hint}</p>}
     </div>
   );
 }
@@ -497,7 +498,7 @@ function WebhookForm({ v2, go }: { v2: Client; go: (hash: string) => void }) {
         <p className="mt-2 text-[13px] text-muted-foreground">Send each request to this URL, signed with this secret ({SIGNATURE_WORDS[draft.signature]}). Each one starts a run.</p>
         {made.secret ? <SecretOnce label="The webhook's URL and secret" url={hookUrlOf(made)} secret={made.secret} /> : (
           <section aria-label="The webhook's URL and secret" className="mt-4 space-y-3 border p-4 text-[13px]">
-            <Copyable title="URL" text={hookUrlOf(made)} label="Copy URL" />
+            <Copyable title="URL" text={hookUrlOf(made)} label="Copy URL" hint={HOOK_URL_HINT} />
             {made.note && <p role="note">{made.note}</p>}
           </section>
         )}

@@ -61,6 +61,8 @@ export const isWebhookTrigger = (t: Trigger): t is WebhookTrigger => t.source.ki
 /** The URL a webhook trigger's requests go to: the documented path, POST /v2/hooks/{trigger_id}, on this server's address
  *  as the page has it. */
 export const hookUrlOf = (t: Pick<Trigger, "id">): string => `${location.origin}/v2/hooks/${encodeURIComponent(t.id)}`;
+/** Said beside a URL hookUrlOf built: the server's own public address may differ from the one this page was opened at. */
+export const HOOK_URL_HINT = "This server's address as this page sees it: behind a proxy, use its public address.";
 /** What a webhook's signature check takes, in words. */
 export const SIGNATURE_WORDS: Record<"standard" | "github", string> = { standard: "Standard Webhooks (webhook-signature)", github: "GitHub's (X-Hub-Signature-256)" };
 /** A firing's cause, in words: its schedule, a Run now, or a signed request to a webhook. */
