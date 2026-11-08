@@ -116,5 +116,6 @@ export const openCodeSubject = {
   unsupported: {
     "crash-before-intent-process": "the OpenCode stand-in runs only under a test runner, and the conformance runner process is none (the in-process crash case covers the point)",
     "crash-after-intent-process": "the OpenCode stand-in runs only under a test runner, and the conformance runner process is none (the in-process crash case covers the point)",
+    "stalled-past-lease-process": "the OpenCode stand-in runs only under a test runner, and the conformance runner process is none",
   },
 };
