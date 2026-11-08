@@ -4,7 +4,7 @@
 // the console's page or the viewer's: the console's CSP (page.ts, default-src 'self') lets it frame its own origin, and
 // the viewer's (browser-live.ts LIVE_CSP) lets only that origin frame it. Once the run ends, the tab says the browser
 // closed with it, with no frame left. The viewer's link holds its token: it is never read out, printed or compared as text.
-import { check, fixture } from "../harness.mjs";
+import { check } from "../harness.mjs";
 
 /** Every CSP violation in every frame of the page (the console's and the viewer's), as a console error the flow fails on. */
 const reportViolations = () => {
@@ -17,7 +17,7 @@ export default {
   signedIn: true,
   server: {
     faux: "faux-browse-ask.mjs",
-    args: ["--faux-browser", fixture("faux-browser.mjs")],
+    fauxBrowser: "faux-browser.mjs",
     // The browser tool is offered when its vendor's keys are set; the fake browser never sends them anywhere.
     env: { BROWSERBASE_API_KEY: "fake-test-key", BROWSERBASE_PROJECT_ID: "fake-project" },
   },

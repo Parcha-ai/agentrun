@@ -20,8 +20,7 @@ export const LOOPBACK = "127.0.0.1"; // key-gate: loopback-rule the e2e servers 
 export const LOOPBACK_NAME = "localhost"; // key-gate: loopback-rule the same e2e server by its loopback name
 
 /** The checkout these tests are in: the default target. */
-const HERE = dirname(fileURLToPath(import.meta.url));
-export const ROOT = join(HERE, "../../..");
+export const ROOT = join(dirname(fileURLToPath(import.meta.url)), "../../..");
 
 /** A serve test fixture by its file name (packages/serve/test/fixtures), e.g. the faux model. */
 export const fixture = (name, checkout = ROOT) => join(checkout, "packages/serve/test/fixtures", name);
@@ -35,18 +34,15 @@ const redact = (line) => line.replace(/(AGENTRUN_API_KEY=)\S+/g, "$1<redacted>")
 
 /** Starts the built server from `checkout` on loopback (LOOPBACK), port chosen by the system, with a data dir and home of its own.
  *  Its environment holds only PATH, HOME, TMPDIR and `env` (e.g. AGENTRUN_PUBLIC_URL), so nothing of this machine reaches
- *  it. `faux`: the model fixture (the faux model by default). Resolves once its banner names its URL. Its output stays in
+ *  it. `faux`: the model fixture (the faux model by default); `fauxBrowser`: the browser tool's fake (a fixture, e.g.
+ *  faux-browser.mjs), with `faux` only. Resolves once its banner names its URL. Its output stays in
  *  memory: `log()` gives it with keys redacted, `line(re)` waits for a line. With a public URL, `setupCode()` reads the
  *  code setup asks for from that output. */
-export async function startServer({ env = {}, faux = "faux-model.mjs", fakes, args = [], port = 0, checkout = ROOT, timeoutMs = 30_000 } = {}) {
+export async function startServer({ env = {}, faux = "faux-model.mjs", fauxBrowser, args = [], port = 0, checkout = ROOT, timeoutMs = 30_000 } = {}) {
   const dir = mkdtempSync(join(tmpdir(), "agentrun-e2e-"));
   const home = join(dir, "home");
   mkdirSync(home, { recursive: true });
-  // `fakes` (startServe's test switches, e.g. { fauxBrowser: "faux-browser.mjs" }, each a fixture): the CLI has no switch
-  // for them, so serve-faux.mjs starts the same built server with them, printing the lines read here.
-  const command = fakes
-    ? [join(HERE, "serve-faux.mjs"), checkout, JSON.stringify({ data: join(dir, "data"), port, ...(faux ? { faux: fixture(faux, checkout) } : {}), ...Object.fromEntries(Object.entries(fakes).map(([k, v]) => [k, fixture(v, checkout)])) })]
-    : [join(checkout, "packages/serve/dist/cli.js"), "--data", join(dir, "data"), "--port", String(port), "--listen", LOOPBACK, ...(faux ? ["--faux", fixture(faux, checkout)] : []), ...args];
+  const command = [join(checkout, "packages/serve/dist/cli.js"), "--data", join(dir, "data"), "--port", String(port), "--listen", LOOPBACK, ...(faux ? ["--faux", fixture(faux, checkout)] : []), ...(fauxBrowser ? ["--faux-browser", fixture(fauxBrowser, checkout)] : []), ...args];
   const child = spawn(process.execPath, command, {
     env: { PATH: process.env.PATH ?? "", HOME: home, TMPDIR: tmpdir(), ...env },
     stdio: ["ignore", "pipe", "pipe"],

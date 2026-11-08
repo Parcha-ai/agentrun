@@ -1,5 +1,5 @@
 // Take over the agent's browser and hand it back, in the viewer the run page frames (Watch live). The run's browser is
-// pi-browser's fake backend (the serve tests' fauxBrowser), and its model asks for the person in the browser
+// pi-browser's fake backend (the serve tests' faux-browser.mjs, through --faux-browser), and its model asks for the person in the browser
 // (faux-browse-handoff: a snapshot, then browser_request_handoff, then a question naming the hand-off's result). In the
 // framed viewer, Take over holds the browser for the owner, and Hand back gives it back; with the agent's ask pending,
 // handing back answers it "done", so the run goes on to its question. The timeline says who had the browser.
@@ -12,7 +12,7 @@ export default {
   signedIn: true,
   server: {
     faux: "faux-browse-handoff.mjs",
-    fakes: { fauxBrowser: "faux-browser.mjs" },
+    fauxBrowser: "faux-browser.mjs",
     // The browser tool is offered with a vendor's variables set; the fake backend never reads their values.
     env: { BROWSERBASE_API_KEY: "not-a-secret", BROWSERBASE_PROJECT_ID: "e2e-project" },
   },
