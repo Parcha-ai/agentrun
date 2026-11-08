@@ -4,6 +4,8 @@
 //   build-hold, pull-hold, inspect-hold   the step waits, once called, while the mark is there (at most a minute)
 //   build-fail, pull-fail, inspect-fail   the step fails with exit 1, the mark's text on stderr
 //   podman-words                          a missing image is Podman's `image not known`, not Docker's `No such image`
+//   build-race, pull-race                 another process tags the image first: it is there, and this step fails as
+//                                         Docker 29's image store says it (`already exists`)
 import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
@@ -33,6 +35,13 @@ const failed = (step) => {
 	process.exitCode = 1;
 	return true;
 };
+const raced = (name, labels) => {
+	if (!marked((args[0] === "build" ? "build" : "pull") + "-race")) return false;
+	writeFileSync(file(name), JSON.stringify({ labels }));
+	process.stderr.write('ERROR: failed to build: failed to solve: image "docker.io/library/' + name + '": already exists\\n');
+	process.exitCode = 1;
+	return true;
+};
 const missing = (name) => {
 	process.stderr.write(marked("podman-words") ? "Error: " + name + ": image not known\\n" : "Error response from daemon: No such image: " + name + "\\n");
 	process.exitCode = 1;
@@ -54,6 +63,7 @@ if (args[0] === "image" && args[1] === "inspect") {
 	}
 	appendFileSync(join(state, "builds.jsonl"), JSON.stringify({ tag, labels, recipe, context: args[args.length - 1], pid: process.pid }) + "\\n");
 	held("build", () => {
+		if (raced(tag, labels)) return;
 		if (failed("build")) return;
 		writeFileSync(file(tag), JSON.stringify({ labels }));
 		process.stdout.write("sha256:" + "0".repeat(64) + "\\n");
@@ -62,6 +72,7 @@ if (args[0] === "image" && args[1] === "inspect") {
 	const name = args[args.length - 1];
 	appendFileSync(join(state, "pulls.jsonl"), JSON.stringify({ name, pid: process.pid }) + "\\n");
 	held("pull", () => {
+		if (raced(name, {})) return;
 		if (failed("pull")) return;
 		writeFileSync(file(name), JSON.stringify({ labels: {} }));
 		process.stdout.write(name + "\\n");

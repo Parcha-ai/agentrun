@@ -10,6 +10,7 @@ import {
 	DEFAULT_DOCKER_IMAGE,
 	DOCKER_IMAGE_ENV,
 	DOCKER_RECIPE,
+	DOCKER_RECIPE_HAS,
 	DockerProvider,
 	ensureImage,
 	IMAGE_REPOSITORY,
@@ -51,6 +52,7 @@ test("the default recipe is serve's box recipe, moved: python:3.12-slim pinned b
 	assert.match(DOCKER_RECIPE, /^FROM python:3\.12-slim@sha256:[0-9a-f]{64}\n/, "the base pinned by its digest");
 	assert.equal([...DOCKER_RECIPE.matchAll(/^FROM /gm)].length, 1, "one FROM");
 	assert.match(DOCKER_RECIPE, /apt-get install -y --no-install-recommends git curl ca-certificates nodejs npm ripgrep socat \\\n && rm -rf \/var\/lib\/apt\/lists\/\*\n$/);
+	assert.equal(DOCKER_RECIPE_HAS, "python, git, curl, node, npm, rg", "serve's words for it, unchanged");
 	assert.equal(DEFAULT_DOCKER_IMAGE, recipeTag(DOCKER_RECIPE));
 	assert.match(DEFAULT_DOCKER_IMAGE, /^agentrun-computer:[0-9a-f]{12}$/);
 });
@@ -192,6 +194,45 @@ test("a build that fails says why and the next step, with none of Docker's outpu
 	assert.equal(fake.builds().length, 10, "every call built again: no failure is kept");
 	fake.clear("build-fail");
 	assert.deepEqual(await ensureImage({ recipe: RECIPE }, { docker: fake.docker }), { ok: true, value: TAG });
+});
+
+test("a build or pull that fails because another process tagged the image first asks Docker again: the tag on this recipe's image, or the image by name, is ready", async () => {
+	const fake = fakeImageDocker({ "build-race": "" });
+	assert.deepEqual(await ensureImage({ recipe: RECIPE }, { docker: fake.docker }), { ok: true, value: TAG });
+	assert.deepEqual(fake.calls(), [[...INSPECT, TAG], BUILD(TAG, HASH), [...INSPECT, TAG]], "the build lost the race to the tag; one inspect more finds the winner's");
+	fake.clear("build-race");
+	fake.mark("pull-race");
+	assert.deepEqual(await ensureImage({ image: IMAGE }, { docker: fake.docker }), { ok: true, value: IMAGE });
+	assert.deepEqual(fake.calls().slice(3), [[...INSPECT, IMAGE], ["pull", "--quiet", IMAGE], [...INSPECT, IMAGE]]);
+	// A failed build whose tag holds another recipe's image after it is still a failure, in its own words.
+	const other = "FROM alpine:3.20\nRUN echo four > /four\n";
+	fake.mark("build-fail", `E: Unable to locate package nosuch ${RAW}`);
+	fake.keep(recipeTag(other), { [RECIPE_LABEL]: "f".repeat(64) });
+	assert.match(failure(await ensureImage({ recipe: other }, { docker: fake.docker })).message, /names a package its base's package manager could not install/);
+	assert.deepEqual(fake.calls().slice(6), [[...INSPECT, recipeTag(other)], BUILD(recipeTag(other), recipeHash(other)), [...INSPECT, recipeTag(other)]]);
+});
+
+test("onWait is told once, before a caller waits on a build or pull, its own or one it joined; never when Docker has the image; a throw from it changes nothing", async () => {
+	const fake = fakeImageDocker({ "build-hold": "" });
+	const told = [];
+	const first = ensureImage({ recipe: RECIPE }, { docker: fake.docker, onWait: (making, tag) => told.push(["first", making, tag]) });
+	await until(() => fake.builds().length === 1, "the build");
+	assert.deepEqual(told, [["first", "build", TAG]]);
+	const joined = ensureImage({ recipe: RECIPE }, { docker: fake.docker, onWait: (making, tag) => told.push(["joined", making, tag]) });
+	await until(() => told.length === 2, "the joiner told");
+	assert.deepEqual(told[1], ["joined", "build", TAG], "a caller that joins a build under way is told at once");
+	fake.clear("build-hold");
+	assert.deepEqual([await first, await joined], [{ ok: true, value: TAG }, { ok: true, value: TAG }]);
+	assert.deepEqual(await ensureImage({ recipe: RECIPE }, { docker: fake.docker, onWait: () => told.push(["found"]) }), { ok: true, value: TAG });
+	assert.equal(told.length, 2, "not told when Docker has the image");
+	assert.deepEqual(await ensureImage({ image: IMAGE }, { docker: fake.docker, onWait: (making, tag) => told.push([making, tag]) }), { ok: true, value: IMAGE });
+	assert.deepEqual(told[2], ["pull", IMAGE]);
+	const other = "FROM alpine:3.20\nRUN echo five > /five\n";
+	assert.deepEqual(await ensureImage({ recipe: other }, { docker: fake.docker, onWait: () => { throw new Error("a broken listener"); } }), { ok: true, value: recipeTag(other) });
+	const provider = new DockerProvider({ daemonPath: fake.docker, docker: fake.docker, image: { recipe: "FROM alpine:3.20\nRUN echo six > /six\n" } });
+	const byProvider = [];
+	assert.equal((await provider.image({ onWait: (making) => byProvider.push(making) })).ok, true);
+	assert.deepEqual(byProvider, ["build"], "image() passes onWait on");
 });
 
 test("an image by name: one Docker has is ready with one inspect, nothing pulled or built; one it has not is pulled once, never built; concurrent callers share the pull", async () => {

@@ -1,6 +1,6 @@
 // The Docker provider's image on real Docker (AGENTRUN_COMPUTER_LIVE_DOCKER=1 only): a small recipe on alpine:3.20 is
-// built once, its tag reused on the next call, one build shared by concurrent callers in one process, and two processes
-// building it at once both end with the tag on this recipe's image; a broken recipe is refused in words. Needs
+// built once, its tag reused on the next call, one build shared by concurrent callers in one process, and three
+// processes building it at once all end with the tag on this recipe's image; a broken recipe is refused in words. Needs
 // `npm run build` and alpine:3.20 pulled. Each recipe carries a fresh nonce, so its tag is new to this Docker; the after
 // hook removes every tag the file made, by its exact name.
 import assert from "node:assert/strict";
@@ -65,14 +65,16 @@ describe("the provider's image on real Docker", { skip: LIVE ? false : "set AGEN
 		assert.equal(builds().length, 1, "nor through the provider");
 	});
 
-	it("two processes building one new recipe at once both end with its tag on this recipe's image", async () => {
+	// Docker 29's containerd image store lets one tag be created once at a time: the builds that lose fail with "already
+	// exists", having built the same recipe, and ask Docker again.
+	it("three processes building one new recipe at once all end with its tag on this recipe's image", async () => {
 		const nonce = randomBytes(8).toString("hex");
 		const text = recipe(`RUN echo ${nonce} > /made && sleep 2`);
 		const tag = recipeTag(text);
 		made.add(tag);
 		const script = `const { ensureImage } = await import(${JSON.stringify(INDEX)}); process.stdout.write(JSON.stringify(await ensureImage({ recipe: ${JSON.stringify(text)} })));`;
-		const both = await Promise.all([1, 2].map(() => run(process.execPath, ["--input-type=module", "-e", script], { encoding: "utf8", timeout: 600_000 })));
-		for (const { stdout } of both) assert.deepEqual(JSON.parse(stdout), { ok: true, value: tag });
+		const all = await Promise.all([1, 2, 3].map(() => run(process.execPath, ["--input-type=module", "-e", script], { encoding: "utf8", timeout: 600_000 })));
+		for (const { stdout } of all) assert.deepEqual(JSON.parse(stdout), { ok: true, value: tag });
 		assert.equal(labelOf(tag), recipeHash(text));
 		assert.equal(docker("run", "--rm", "--network", "none", tag, "cat", "/made").trim(), nonce);
 	});
