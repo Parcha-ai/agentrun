@@ -22,16 +22,28 @@ async function run(options = {}, { mountFor = folders.mountFor, ids = MOUNT_CASE
 	return runConformance(provider, { image: IMAGE, cases: conformanceCases.filter((c) => ids.includes(c.id)), ...(mountFor ? { mountFor } : {}) });
 }
 
-test("the mount group: one case per mount kind and one for the kinds a provider does not declare, every one Full", () => {
+test("the mount group: one case per mount kind, the Archil contract's three, and one for the kinds a provider does not declare, every one Full", () => {
 	const mount = conformanceCases.filter((c) => c.group === "mount");
 	assert.deepEqual(
 		mount.map((c) => [c.id, c.level, c.needs]),
 		[
 			["mount.run-folder-bind", "full", ["mount:bind", "exec", "files"]],
 			["mount.run-folder-archil", "full", ["mount:archil", "exec", "files"]],
+			["mount.archil-durable", "full", ["mount:archil", "exec", "files"]],
+			["mount.archil-takeover", "full", ["mount:archil", "exec", "files"]],
+			["mount.archil-token", "full", ["mount:archil", "exec"]],
 			["mount.undeclared-kind", "full", []],
 		],
 	);
+});
+
+test("the run-folder Archil case records both directions while the computer holds the folder, and asserts neither", async () => {
+	const report = await run({ mount: ["archil"] }, { ids: ["mount.run-folder-archil"] });
+	const [result] = report.results;
+	assert.equal(result.status, "pass", result.reason);
+	assert.equal(result.observed.length, 2);
+	assert.match(result.observed[0], /^outside in, while held: a file the file API wrote is read at \/workspace as written$/);
+	assert.match(result.observed[1], /^inside out, while held: a file files\.write made \(synced before it answered\) is read through the file API as written$/);
 });
 
 test("mount.run-folder-bind passes a fake that binds the run's folder at /workspace; the Archil case skips in words", async () => {
@@ -128,6 +140,10 @@ test("the CLI passes a provider module's mountFor to the run: --only mount runs 
 	const stdout = { write: (chunk, done) => ((text += chunk), done?.(), true) };
 	const code = await main(["--provider", "./fixtures/mount-provider.mjs", "--only", "mount", "--json"], { stdout, cwd: HERE });
 	const report = JSON.parse(text);
-	assert.deepEqual(statuses(report), { "mount.run-folder-bind": "pass", "mount.run-folder-archil": "skip", "mount.undeclared-kind": "pass" }, JSON.stringify(reasons(report)));
+	assert.deepEqual(
+		statuses(report),
+		{ "mount.run-folder-bind": "pass", "mount.run-folder-archil": "skip", "mount.archil-durable": "skip", "mount.archil-takeover": "skip", "mount.archil-token": "skip", "mount.undeclared-kind": "pass" },
+		JSON.stringify(reasons(report)),
+	);
 	assert.equal(code, 3, "a run of the mount group alone leaves Core out: partial");
 });

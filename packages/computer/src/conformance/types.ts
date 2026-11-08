@@ -36,6 +36,9 @@ export type Capability =
  */
 export interface RunFolder {
 	mount: MountSpec;
+	/** The run whose folder it is, for a mount made for a run (Archil: agents/<agent>/runs/<run>/work): a computer that
+	 *  mounts it is labelled agentrun.run with it. */
+	run?: string;
 	/** A file of the folder, by its path relative to the folder, read from outside; undefined when there is none. */
 	read(path: string): Promise<Uint8Array | undefined>;
 	/** Writes a file of the folder from outside, by its path relative to the folder. */
@@ -137,6 +140,8 @@ export interface CaseContext {
 	until<T>(fn: () => Promise<T | undefined | false>, what: string, ms?: number): Promise<T>;
 	/** Ends the case as a skip, with the reason. */
 	skip(reason: string): never;
+	/** Records what the case saw without asserting it (its result's observed), for a fact not yet known either way. */
+	observe(words: string): void;
 }
 
 export interface Case {
@@ -163,6 +168,8 @@ export interface CaseResult {
 	 * these does not fail Core; any other skip of a Core case does.
 	 */
 	undeclared?: Capability[];
+	/** What the case saw and recorded without asserting it (CaseContext.observe); absent when nothing. */
+	observed?: string[];
 }
 
 export interface ConformanceReport {

@@ -4,7 +4,23 @@
 // minutes with no outside activity and deletes it as soon as it stops, so a stop deletes, and the provider declares it
 // (stopDeletes; see conformanceNotes).
 import { DAYTONA_DEFAULT_SNAPSHOT, DaytonaProvider, type DaytonaProviderOptions, ENV, optionsFromEnv } from "../daytona.js";
+import type { MountKind } from "../mount.js";
+import { archilFolder, archilSettingsFromEnv } from "./archil.js";
 import { buildDriftDaemon, DRIFT_VERSION } from "./drift-daemon.js";
+import type { RunFolder } from "./types.js";
+
+/** The Archil disk's settings for the mount cases, by name (COMPUTER_ARCHIL_*: all five, or none). */
+export { ARCHIL_ENV } from "./archil.js";
+
+/**
+ * A fresh run folder for the mount cases: an Archil one when the disk's settings are given (the run's snapshot is then
+ * one of box/Dockerfile, and COMPUTER_DAYTONA_USER is 2510:2510); none for a bind, which a remote computer cannot take.
+ */
+export async function mountFor(kind: MountKind, { env = process.env }: { env?: Record<string, string | undefined> } = {}): Promise<RunFolder | undefined> {
+	if (kind !== "archil") return undefined;
+	const settings = archilSettingsFromEnv(env);
+	return settings === undefined ? undefined : archilFolder(settings);
+}
 
 /** The environment variables this module reads, by name: the provider's, and the run's snapshot. */
 export const DAYTONA_ENV = {
