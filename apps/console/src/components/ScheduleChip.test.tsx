@@ -6,9 +6,9 @@ import { RunsList } from "./RunsList";
 import { ScheduleNames } from "./ScheduleChip";
 import type { Run } from "@/lib/v2";
 
-// A run a schedule started names the schedule, in the runs list and on the run's page, and links to it. A schedule deleted
-// since is absent from the server's list of triggers (GET /v2/triggers, the whole list): its runs say it was deleted and
-// link nowhere. Until that list is read, the chip names the id and links to it, as before. Read from the DOM.
+// A run a schedule started names the schedule, in the runs list and on the run's page, and links to it. A schedule the
+// names lack is asked about (the app reads the whole list again): until that read answers, the chip names the id and
+// links to it; one the fresh read did not find either (`gone`, deleted since) says so and links nowhere. Read from the DOM.
 (globalThis as { IS_REACT_ACT_ENVIRONMENT?: boolean }).IS_REACT_ACT_ENVIRONMENT = true;
 let root: ReturnType<typeof createRoot> | undefined;
 afterEach(() => { act(() => root?.unmount()); document.body.innerHTML = ""; });
@@ -18,10 +18,12 @@ const run = (over: Partial<Run> = {}): Run => ({
   title: "Triage last night's issues.", created_at: "2026-11-05T09:30:01Z", ended_at: "2026-11-05T09:31:00Z", result: null, error: null, cost: null, archived_at: null, ...over,
 } as Run);
 const names = new Map([["trg_1", "nightly triage"]]);
-const show = (el: ReturnType<typeof createElement>, value: ReadonlyMap<string, string> | null = names) => {
+let asked: string[] = [];
+const show = (el: ReturnType<typeof createElement>, gone: string[] = []) => {
+  asked = [];
   const host = document.body.appendChild(document.createElement("div"));
   root = createRoot(host);
-  act(() => root!.render(createElement(ScheduleNames.Provider, { value }, el)));
+  act(() => root!.render(createElement(ScheduleNames.Provider, { value: { names, gone: new Set(gone), ask: (id: string) => { asked.push(id); } } }, el)));
   return host;
 };
 const links = (host: HTMLElement) => [...host.querySelectorAll("a[href^='#/schedules/']")].map((a) => a.getAttribute("href"));
@@ -39,20 +41,24 @@ describe("a run a schedule started", () => {
     expect(host.textContent).toContain("Schedule: nightly triage");
     expect(links(host)).toEqual(["#/schedules/trg_1"]);
   });
-  it("a schedule deleted since (absent from the server's list): says so, and links nowhere", () => {
+  it("a schedule a fresh read did not find (deleted since): says so, links nowhere, and asks nothing more", () => {
     for (const el of [createElement(RunHeader, { run: run({ trigger: { id: "trg_gone", firing_key: "fir_1" } }), agentName: "Triage" }),
       createElement(RunsList, { runs: [run({ trigger: { id: "trg_gone", firing_key: "fir_1" } })], agentName: (id: string) => id, onOpen: () => {} })]) {
-      const host = show(el);
+      const host = show(el, ["trg_gone"]);
       expect(host.textContent).toContain("Schedule deleted");
       expect(host.textContent).not.toContain("trg_gone");
       expect(links(host)).toEqual([]);
+      expect(asked).toEqual([]);
       act(() => root?.unmount()); root = undefined; document.body.innerHTML = "";
     }
   });
-  it("until the list is read, names the schedule by its id and links to it", () => {
-    const host = show(createElement(RunHeader, { run: run({ trigger: { id: "trg_gone", firing_key: "fir_1" } }), agentName: "Triage" }), null);
-    expect(host.textContent).toContain("Schedule: trg_gone");
-    expect(links(host)).toEqual(["#/schedules/trg_gone"]);
+  // A schedule made in another tab since the list was read: never taken for a deleted one before a fresh read.
+  it("a schedule the names lack: asks for a fresh read, and meanwhile names the id and links to it", () => {
+    const host = show(createElement(RunHeader, { run: run({ trigger: { id: "trg_new", firing_key: "fir_1" } }), agentName: "Triage" }));
+    expect(asked).toEqual(["trg_new"]);
+    expect(host.textContent).toContain("Schedule: trg_new");
+    expect(host.textContent).not.toContain("Schedule deleted");
+    expect(links(host)).toEqual(["#/schedules/trg_new"]);
   });
   it("says nothing on a run a caller started", () => {
     const host = show(createElement(RunHeader, { run: run(), agentName: "Triage" }));
