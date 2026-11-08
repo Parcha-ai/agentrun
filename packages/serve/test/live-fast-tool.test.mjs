@@ -21,6 +21,8 @@ test("a tool that starts and ends between two polls streams its start then its e
   await until(() => settled(got.types()), "the run's end on the stream", 20_000);
   const types = shape(got.events());
   const start = types.indexOf("tool_execution_start");
-  assert.ok(start >= 0 && start < types.indexOf("tool_execution_end"), `the read's start, then its end: ${JSON.stringify(types)}`);
+  // An end carries its result entry, so its shape has the entry's role (tool_execution_end:toolResult).
+  const end = types.findIndex((type) => type.startsWith("tool_execution_end"));
+  assert.ok(start >= 0 && end > start, `the read's start, then its end: ${JSON.stringify(types)}`);
   assert.deepEqual(types, shape(door.events), "the same events as the door's stream");
 });
