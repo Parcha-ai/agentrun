@@ -10,7 +10,6 @@ import { tmpdir, userInfo } from "node:os";
 import { join } from "node:path";
 import { test } from "node:test";
 import { fileURLToPath } from "node:url";
-import { fakeConnect, fakeGetent, fakeInet6, fakeIptables, fakeStatus } from "./fixtures/fake-iptables.mjs";
 
 /** A fresh scratch directory, removed when the test ends. */
 async function scratch(t) {
@@ -56,7 +55,7 @@ async function box(t, { root = true } = {}) {
   writeFileSync(mount, `#!/bin/sh\nprintf '%s\\n' "$*" >> '${remounts}'\n[ -e '${remountable}' ] || { echo 'mount: /proc: permission denied.' >&2; exit 32; }\n[ "$*" = '-o remount,hidepid=2 /proc' ] || exit 1\nsed -i 's#^proc /proc proc \\([^ ]*\\) #proc /proc proc \\1,hidepid=invisible #' '${mounts}'\n`);
   chmodSync(mount, 0o755);
   const source = readFileSync(HELPER, "utf8");
-  const fixed = { ARCHIL: ["/usr/bin/archil", archil], MP: ["/workspace", mp], MOUNTS: ["/proc/self/mounts", mounts], MOUNT: ["/usr/bin/mount", mount], IPTABLES: ["/usr/sbin/iptables", fakeIptables(dir, "iptables")], IP6TABLES: ["/usr/sbin/ip6tables", fakeIptables(dir, "ip6tables")], GETENT: ["/usr/bin/getent", fakeGetent(dir)], STATUS: ["/proc/self/status", fakeStatus(dir)], IF_INET6: ["/proc/net/if_inet6", fakeInet6(dir)], TOOL: ["agentrun-tool", userInfo().username], ROOT_UID: ["0", String(root ? process.getuid() : process.getuid() + 1)], COMPUTERD: ["/opt/agentrun/computerd", computerd], HELD_TOP: ["/", dir], SOCK: ["/run/agentrun-archil/archil.sock", join(dir, "run", "archil.sock")] };
+  const fixed = { ARCHIL: ["/usr/bin/archil", archil], MP: ["/workspace", mp], MOUNTS: ["/proc/self/mounts", mounts], MOUNT: ["/usr/bin/mount", mount], TOOL: ["agentrun-tool", userInfo().username], ROOT_UID: ["0", String(root ? process.getuid() : process.getuid() + 1)], COMPUTERD: ["/opt/agentrun/computerd", computerd], HELD_TOP: ["/", dir], SOCK: ["/run/agentrun-archil/archil.sock", join(dir, "run", "archil.sock")] };
   let copy = source;
   for (const [name, [shipped, here]] of Object.entries(fixed)) {
     assert.ok(source.includes(`\n${name}=${shipped}\n`), `the helper fixes ${name}=${shipped}`);
@@ -105,7 +104,7 @@ test("sync is no verb of the helper's: the resident serve syncs; a sync exits 2 
     if (mounted) b.mounted();
     const ran = b.run(["sync"], "");
     assert.equal(ran.status, 2, ran.stderr);
-    assert.match(ran.stderr, /^agentrun-archil: say netlock, mount, revoke, serve or checkin\n$/);
+    assert.match(ran.stderr, /^agentrun-archil: say mount, revoke, serve or checkin\n$/);
     assert.deepEqual(ran.calls, []);
   }
 });
@@ -113,13 +112,12 @@ test("sync is no verb of the helper's: the resident serve syncs; a sync exits 2 
 test("run by anyone but root, every verb exits 2 and runs nothing: the provider runs it as root through its own exec, never through sudo", async (t) => {
   const b = await box(t, { root: false });
   b.mounted();
-  for (const args of [["netlock", REGION], ["mount", DISK, REGION, FOLDER], ["revoke", DISK, REGION, FOLDER], ["serve"], ["checkin"]]) {
+  for (const args of [["mount", DISK, REGION, FOLDER], ["revoke", DISK, REGION, FOLDER], ["serve"], ["checkin"]]) {
     const ran = b.run(args);
     assert.equal(ran.status, 2, `${args[0]}: ${ran.stderr}`);
     assert.match(ran.stderr, /^agentrun-archil: run it as root, through the provider's own exec\n$/, args[0]);
     assert.deepEqual(ran.calls, [], args[0]);
     assert.deepEqual(b.remounts(), [], `${args[0]}: no remount`);
-    assert.equal(existsSync(join(b.dir, "iptables.OUTPUT")), false, `${args[0]}: no rule`);
   }
 });
 
@@ -304,99 +302,17 @@ test("a mount or revoke first remounts /proc with hidepid=2: a box whose root ca
   }
 });
 
-const CHAIN_RULES = (uid, address, prefix) => [
-  "-N AGENTRUN-NET",
-  `-A AGENTRUN-NET -m owner --uid-owner ${uid} -j DROP`,
-  "-A AGENTRUN-NET -o lo -j ACCEPT",
-  "-A AGENTRUN-NET -m conntrack --ctstate RELATED,ESTABLISHED -j ACCEPT",
-  "-A AGENTRUN-NET -p udp -m owner --uid-owner 0 -m udp --dport 53 -j ACCEPT",
-  "-A AGENTRUN-NET -p tcp -m owner --uid-owner 0 -m tcp --dport 53 -j ACCEPT",
-  `-A AGENTRUN-NET -d ${address}/${prefix} -p tcp -m owner --uid-owner 0 -m tcp --dport 8100 -j ACCEPT`,
-  "-A AGENTRUN-NET -p tcp -m owner --uid-owner 0 -m tcp --dport 32050 -j ACCEPT",
-  "-A AGENTRUN-NET -m owner --uid-owner 0 -j DROP",
-];
-
-test("netlock: the tool user sends nothing, root reaches the region's mount endpoint on 8100 and 32050 alone, for IPv4 and IPv6, in a chain jumped to first, read back whole; again, the same", async (t) => {
-  const b = await box(t);
-  const uid = process.getuid();
-  for (const round of [1, 2]) {
-    const ran = b.run(["netlock", REGION], "");
-    assert.equal(ran.status, 0, `round ${round}: ${ran.stderr}`);
-    assert.match(ran.stderr, /root reaches mount\.green\.us-east-1\.aws\.prod\.archil\.com on 8100/);
-    assert.deepEqual(readFileSync(join(b.dir, "iptables.chain.AGENTRUN-NET"), "utf8").split("\n").filter(Boolean), CHAIN_RULES(uid, "203.0.113.10", 32).slice(1));
-    assert.deepEqual(readFileSync(join(b.dir, "ip6tables.chain.AGENTRUN-NET"), "utf8").split("\n").filter(Boolean), CHAIN_RULES(uid, "2001:db8::10", 128).slice(1));
-    for (const name of ["iptables", "ip6tables"]) assert.deepEqual(readFileSync(join(b.dir, `${name}.OUTPUT`), "utf8").split("\n").filter(Boolean), ["-A OUTPUT -j AGENTRUN-NET"], `${name}: one jump, first`);
-  }
-  assert.deepEqual(b.run([]).calls, [], "archil is never run");
-});
-
-const NETLOCK_REFUSED = [
-  ["no CAP_NET_ADMIN", (b) => writeFileSync(join(b.dir, "status"), "CapEff:\t000001ffffffefff\n"), /no CAP_NET_ADMIN/],
-  ["no ip6tables in a box with IPv6", (b) => rmSync(join(b.dir, "ip6tables")), /the box has IPv6, and ip6tables is not installed/],
-  ["no iptables", (b) => rmSync(join(b.dir, "iptables")), /iptables is not installed/],
-  ["an ip6tables that answers yes to everything", (b) => writeFileSync(join(b.dir, "ip6tables"), "#!/bin/sh\nexit 0\n"), /cannot move its jump|reads back other rules/],
-  ["a read-back that differs", (b) => writeFileSync(join(b.dir, "iptables.tamper"), ""), /reads back other rules than it was given/],
-  ["no address for the endpoint", (b) => writeFileSync(join(b.dir, "getent"), "#!/bin/sh\nexit 2\n"), /has no address/],
-];
-for (const [what, spoil, said] of NETLOCK_REFUSED) {
-  test(`netlock refuses, exit 4, with ${what}`, async (t) => {
-    const b = await box(t);
-    spoil(b);
-    const ran = b.run(["netlock", REGION], "");
-    assert.equal(ran.status, 4, ran.stderr);
-    assert.match(ran.stderr, said);
-  });
-}
-
-test("netlock: the tool user's drop is the chain's first rule, so a tool reaches no loopback port either (the provider's daemon on 2280 included), for IPv4 and IPv6", async (t) => {
-  const b = await box(t);
-  const ran = b.run(["netlock", REGION], "");
-  assert.equal(ran.status, 0, ran.stderr);
-  const uid = process.getuid();
-  for (const name of ["iptables", "ip6tables"]) {
-    const [first] = readFileSync(join(b.dir, `${name}.chain.AGENTRUN-NET`), "utf8").split("\n");
-    assert.equal(first, `-A AGENTRUN-NET -m owner --uid-owner ${uid} -j DROP`, `${name}: before loopback and replies pass`);
-  }
-  const connect = fakeConnect(b.dir, join(b.dir, "iptables.chain.AGENTRUN-NET"), uid, join(b.dir, "ip6tables.chain.AGENTRUN-NET"));
-  for (const [host, port] of [["127.0.0.1", "2280"], ["::1", "2280"], ["127.0.0.1", "8080"], ["203.0.113.10", "8100"]]) {
-    const tried = spawnSync(connect, [host, port], { encoding: "utf8" });
-    assert.equal(tried.status, 1, `${host}:${port} is refused the tool: ${tried.stdout}`);
-  }
-});
-
-test("netlock again on a locked box: the tool user stays refused while the chain is flushed and refilled; the guard goes once the read-back passes, and stays when it fails", async (t) => {
-  const b = await box(t);
-  const uid = process.getuid();
-  assert.equal(b.run(["netlock", REGION], "").status, 0);
-  const connect = fakeConnect(b.dir, join(b.dir, "iptables.chain.AGENTRUN-NET"), uid, join(b.dir, "ip6tables.chain.AGENTRUN-NET"));
-  // What a tool program left running meets right after each flush, for IPv4 and IPv6.
-  for (const [name, host] of [["iptables", "127.0.0.1"], ["ip6tables", "::1"]]) writeFileSync(join(b.dir, `${name}.probe`), `'${connect}' ${host} 2280 >/dev/null 2>&1 && echo "${host} reached" || echo "${host} refused"\n`);
-  const again = b.run(["netlock", REGION], "");
-  assert.equal(again.status, 0, again.stderr);
-  for (const [name, host] of [["iptables", "127.0.0.1"], ["ip6tables", "::1"]]) assert.deepEqual(readFileSync(join(b.dir, `${name}.probe.log`), "utf8").split("\n").filter(Boolean), [`${host} refused`], `${name}: refused in the flush`);
-  for (const name of ["iptables", "ip6tables"]) assert.deepEqual(readFileSync(join(b.dir, `${name}.OUTPUT`), "utf8").split("\n").filter(Boolean), ["-A OUTPUT -j AGENTRUN-NET"], `${name}: the guard is lifted`);
-  // A lock whose read-back differs fails, and keeps the tool user's guard: closed.
-  writeFileSync(join(b.dir, "iptables.tamper"), "");
-  assert.equal(b.run(["netlock", REGION], "").status, 4);
-  assert.ok(readFileSync(join(b.dir, "iptables.OUTPUT"), "utf8").split("\n").includes(`-A OUTPUT -m owner --uid-owner ${uid} -j DROP`), "the guard stays");
-});
-
-test("netlock in a box with no IPv6: the IPv4 rules alone, and no ip6tables needed", async (t) => {
-  const b = await box(t);
-  writeFileSync(join(b.dir, "if_inet6"), "");
-  rmSync(join(b.dir, "ip6tables"));
-  const ran = b.run(["netlock", REGION], "");
-  assert.equal(ran.status, 0, ran.stderr);
-  assert.match(ran.stderr, /the box has no IPv6, so there are no IPv6 rules to lock/);
-  assert.deepEqual(readFileSync(join(b.dir, "iptables.chain.AGENTRUN-NET"), "utf8").split("\n").filter(Boolean), CHAIN_RULES(process.getuid(), "203.0.113.10", 32).slice(1));
-  assert.equal(existsSync(join(b.dir, "ip6tables.chain.AGENTRUN-NET")), false);
-});
-
-test("netlock takes the region alone, of its shape: anything else exits 2 and touches no rule", async (t) => {
-  for (const args of [["netlock"], ["netlock", REGION, "extra"], ["netlock", "us"], ["netlock", "aws-us east"], ["netlock", "aws-us-east-1;id"], ["netlock", `${REGION}\naws-x-1`]]) {
+test("netlock is no verb of the helper's: the tools' network is init's own namespace; it exits 2 and runs nothing", async (t) => {
+  for (const args of [["netlock"], ["netlock", REGION]]) {
     const b = await box(t);
     const ran = b.run(args, "");
     assert.equal(ran.status, 2, `${JSON.stringify(args)}: ${ran.stderr}`);
-    assert.equal(existsSync(join(b.dir, "iptables.OUTPUT")), false, JSON.stringify(args));
+    assert.match(ran.stderr, /^agentrun-archil: say mount, revoke, serve or checkin\n$/);
+    assert.deepEqual(ran.calls, []);
   }
+});
+
+test("the helper runs no firewall program and names none", () => {
+  const source = readFileSync(HELPER, "utf8");
+  for (const word of ["iptables", "ip6tables", "getent", "CAP_NET_ADMIN", "netlock"]) assert.ok(!source.includes(word), `the helper names ${word}`);
 });

@@ -1,6 +1,6 @@
 // The Archil mount's shared part (src/mount-archil.ts), with a fake root channel and a fake computerd client: no vendor,
 // no archil, no root. Every provider's Archil computer goes through it: the spec rule, the steps at create (preflight,
-// netlock, takeover, mount or revoke, serve) through the provider's own root exec, the syncing client, the read-back and
+// takeover, mount or revoke, serve) through the provider's own root exec, the syncing client, the read-back and
 // the release. The token reaches the helper's stdin alone, and no refusal, error, argv or label holds it.
 import assert from "node:assert/strict";
 import { createHash } from "node:crypto";
@@ -79,19 +79,19 @@ test("archilRefusals: an Archil spec takes network none, the run and epoch label
 	assert.deepEqual(archilRefusals({ ...SPEC, mount: { kind: "bind", path: "/x" } }), [], "a bind is not this rule's");
 });
 
-test("archilMount: preflight, netlock, the takeover, mount, then serve, each as root through the provider's own exec; the token on the mount's stdin alone", async () => {
+test("archilMount: preflight, the takeover, mount, then serve, each as root through the provider's own exec (no netlock: the tools' network is init's own namespace); the token on the mount's stdin alone", async () => {
 	const root = fakeRoot();
 	const done = await archilMount({ root, mount: MOUNT, releaseOlder: released(), timeoutMs: 1000 });
 	assert.deepEqual(done, ok(undefined));
-	assert.deepEqual(root.verbs(), ["preflight", "netlock", "mount", "serve"]);
-	assert.deepEqual(root.calls[1].argv, [ARCHIL_HELPER, "netlock", MOUNT.region]);
-	assert.deepEqual(root.calls[2].argv, [ARCHIL_HELPER, "mount", MOUNT.disk, MOUNT.region, MOUNT.folder]);
-	assert.equal(root.calls[2].stdin, `${TOKEN}\n`);
-	assert.deepEqual(root.calls[3].argv, [ARCHIL_HELPER, "serve"]);
+	assert.deepEqual(root.verbs(), ["preflight", "mount", "serve"]);
+	assert.deepEqual(root.calls[1].argv, [ARCHIL_HELPER, "mount", MOUNT.disk, MOUNT.region, MOUNT.folder]);
+	assert.equal(root.calls[1].stdin, `${TOKEN}\n`);
+	assert.deepEqual(root.calls[2].argv, [ARCHIL_HELPER, "serve"]);
 	for (const [at, call] of root.calls.entries()) {
 		noToken(call.argv, `call ${at}'s argv`);
-		if (at !== 2) assert.equal(call.stdin, undefined, `call ${at} gets no stdin`);
+		if (at !== 1) assert.equal(call.stdin, undefined, `call ${at} gets no stdin`);
 	}
+	assert.equal(computer.archilNetwork, undefined, "no netlock read-back");
 });
 
 test("archilMount: a takeover releases the lower epochs before any mount; released any, or the folder held, it revokes; a failed release revokes nothing", async () => {
@@ -108,13 +108,13 @@ test("archilMount: a takeover releases the lower epochs before any mount; releas
 		return ok({ released: [{ id: "old", name: "old" }], kept: [], unproven: [] });
 	};
 	assert.deepEqual(await archilMount({ root: wrapped, mount: MOUNT, releaseOlder: releasing, timeoutMs: 1000 }), ok(undefined));
-	// The computer is proven as the image makes it, and locked, before any older one is destroyed for it.
-	assert.deepEqual(order, ["preflight", "netlock", "releaseOlder", "revoke", "serve"]);
+	// The computer is proven as the image makes it before any older one is destroyed for it.
+	assert.deepEqual(order, ["preflight", "releaseOlder", "revoke", "serve"]);
 	assert.equal(root.calls.find(({ argv }) => argv[1] === "revoke").stdin, `${TOKEN}\n`);
 
 	const held = fakeRoot({ mount: { exitCode: 1, output: "mount failed: dsk:/agents/a1/runs/r1/work has an outstanding delegation" } });
 	assert.deepEqual(await archilMount({ root: held, mount: MOUNT, releaseOlder: released(), timeoutMs: 1000 }), ok(undefined));
-	assert.deepEqual(held.verbs(), ["preflight", "netlock", "mount", "revoke", "serve"], "held by a client no listing shows: revoke, then serve");
+	assert.deepEqual(held.verbs(), ["preflight", "mount", "revoke", "serve"], "held by a client no listing shows: revoke, then serve");
 
 	for (const failed of [fail("refused", "fenced: run r1 has c at epoch 4, above this claim's epoch 3"), fail("daytona", "could not release old")]) {
 		const nothing = fakeRoot();
@@ -122,11 +122,11 @@ test("archilMount: a takeover releases the lower epochs before any mount; releas
 		assert.equal(result.ok, false);
 		assert.match(result.error.message, /takeover/);
 		assert.ok(result.error.message.includes(failed.error.message));
-		assert.deepEqual(nothing.verbs(), ["preflight", "netlock"], "no mount, no revoke");
+		assert.deepEqual(nothing.verbs(), ["preflight"], "no mount, no revoke");
 	}
 });
 
-test("archilMount: a preflight that differs from the image refuses before netlock, naming each difference", async () => {
+test("archilMount: a preflight that differs from the image refuses before anything else, naming each difference", async () => {
 	const wrong = ["uid 1000", "helper 0000 -rwxrwxrwx 1000 1000", "archil Archil Client: v0.10.0-1792692895", "tool 1000:1000", "sudo /usr/bin/sudo"].join("\n");
 	const root = fakeRoot({ preflight: { exitCode: 0, output: wrong } });
 	const result = await archilMount({ root, mount: MOUNT, releaseOlder: released(), timeoutMs: 1000 });
@@ -138,7 +138,6 @@ test("archilMount: a preflight that differs from the image refuses before netloc
 
 test("archilMount: each step's failure stops the next, in words that never hold the token, even when the computer printed it", async () => {
 	for (const [verb, answer, words] of [
-		["netlock", { exitCode: 4, output: "agentrun-archil: the box cannot lock its tools' network: root has no CAP_NET_ADMIN here" }, /netlock.*CAP_NET_ADMIN/],
 		["mount", { exitCode: 4, output: "agentrun-archil: /proc is not mounted with hidepid=2" }, /hidepid/],
 		["mount", { exitCode: 1, output: `archil: bad token ${TOKEN}` }, /mount.*exit 1/],
 		["serve", { exitCode: 4, output: "agentrun-archil: computerd at /opt/agentrun/computerd is not root's alone" }, /serve.*root's alone/],
@@ -266,22 +265,6 @@ test("archilRelease: a final sync through computerd, then checkin as root; nothi
 	assert.equal(result.ok, false);
 	assert.match(result.error.message, /final sync/);
 	assert.deepEqual(failing.verbs(), ["checkin"], "checkin ran anyway");
-});
-
-test("archilNetwork: none only when netlock's rules read back, for IPv4 and for IPv6 where the computer has it; anything else in words", async () => {
-	const { archilNetwork } = computer;
-	const locked = ["iptables jump -A OUTPUT -j AGENTRUN-NET", "iptables first -A AGENTRUN-NET -m owner --uid-owner 2510 -j DROP"];
-	const v6 = ["ip6tables jump -A OUTPUT -j AGENTRUN-NET", "ip6tables first -A AGENTRUN-NET -m owner --uid-owner 2510 -j DROP"];
-	const read = async (lines) => archilNetwork({ root: fakeRoot({ preflight: { exitCode: 0, output: lines.join("\n") } }), timeoutMs: 1000 });
-	assert.deepEqual(await read([...locked, ...v6]), ok("none"));
-	assert.deepEqual(await read([...locked, "ip6tables none"]), ok("none"), "no IPv6 to lock");
-	for (const lines of [[], [locked[0], ...v6], [locked[0], "iptables first -A AGENTRUN-NET -o lo -j ACCEPT", ...v6], [...locked, "ip6tables jump ", "ip6tables first "]]) {
-		const result = await read(lines);
-		assert.equal(result.ok, true);
-		assert.match(result.value.other, /netlock/, JSON.stringify(lines));
-	}
-	const failed = await archilNetwork({ root: fakeRoot({ preflight: fail("daytona", "the exec failed") }), timeoutMs: 1000 });
-	assert.equal(failed.ok, false);
 });
 
 test("helperSha256 is the shipped helper's", () => {

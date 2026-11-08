@@ -9,7 +9,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { after, before, test } from "node:test";
 import { ARCHIL_MOUNT_LABEL, DaytonaProvider, EPOCH_LABEL, readBackOf, RUN_LABEL } from "../dist/index.js";
-import { API, ARCHIL_HELPER, fakeDaytona, KEY, statusText } from "./fake-daytona.mjs";
+import { API, ARCHIL_HELPER, fakeDaytona, KEY, scriptOf, statusText } from "./fake-daytona.mjs";
 
 const FAST = { requestMs: 2000, createMs: 2000, startMs: 300, deleteMs: 2000, stopMs: 500, goneMs: 500, uploadMs: 2000, execMs: 2000, helloMs: 1000, pollMs: 1, retryMs: 1, listedMs: 2000, listedStableMs: 0 };
 const TOKEN = "tok-daytona-archil-0123456789abcdef";
@@ -67,25 +67,33 @@ test("capabilities declare the Archil mount; check takes an Archil spec of the r
 	}
 });
 
-test("create: preflight, netlock, mount (the token on its stdin alone), serve, each as root in the toolbox, before init; Daytona's network open for root, the mount labelled without the token", async () => {
+test("create: preflight, mount (the token on its stdin alone), serve, each as root in the toolbox, before init, never through computerd; Daytona's network open for root, the mount labelled without the token", async () => {
 	const { fake, provider } = setup();
 	const made = await provider.create(SPEC);
 	assert.equal(made.ok, true, made.ok ? "" : made.error.message);
 	const sb = fake.sandboxes.get(made.value.id);
 	const box = fake.inside(made.value.id);
-	assert.deepEqual(box.order.filter((step) => step !== "stdio"), ["preflight", "netlock", "mount", "serve", "init"]);
+	assert.deepEqual(box.order.filter((step) => step !== "stdio"), ["preflight", "mount", "serve", "init"]);
 	const mount = box.archil.calls.find(({ verb }) => verb === "mount");
 	assert.deepEqual(mount.argv, [ARCHIL_HELPER, "mount", MOUNT.disk, MOUNT.region, MOUNT.folder]);
 	assert.deepEqual(mount.stdin, [`${TOKEN}\n`]);
 	for (const call of box.archil.calls.filter(({ verb }) => verb !== "mount")) assert.deepEqual(call.stdin, [], `${call.verb} gets no stdin`);
-	assert.equal(sb.networkBlockAll, false, "root reaches Archil: netlock holds the tools to none");
+	// Every request that names the helper is a root command of its own session (the toolbox, as root), never a line to
+	// computerd through a bridge: the archil client and serve run outside init's namespace, with root's network.
+	const naming = fake.requests.filter((request) => JSON.stringify(request.body ?? null).includes(ARCHIL_HELPER));
+	assert.ok(naming.length >= 2, "mount and serve were asked for");
+	for (const request of naming) {
+		assert.match(request.path, /\/process\/session\/agentrun-archil-[0-9a-f]{16}\/exec$/, `${request.method} ${request.path}`);
+		assert.equal(scriptOf(request.body.command).kind, "root");
+	}
+	assert.equal(sb.networkBlockAll, false, "root reaches Archil; init's own namespace holds the tools to lo alone");
 	assert.deepEqual(JSON.parse(sb.labels[ARCHIL_MOUNT_LABEL]), { kind: "archil", disk: MOUNT.disk, region: MOUNT.region, folder: MOUNT.folder });
 	tokenOnlyOnStdin(fake);
 	const exec = fake.requests.filter((r) => /\/exec$/.test(r.path));
 	assert.ok(exec.every((r) => r.body.suppressInputEcho === true), "no command echoes its input");
 });
 
-test("attach and list read the mount back under the epoch label, exclusive; network() reads none from netlock's rules, and refuses any other", async () => {
+test("attach and list read the mount back under the epoch label, exclusive; network() says the tools' network is init's own namespace, and refuses any policy but none", async () => {
 	const { provider } = setup();
 	const made = await provider.create(SPEC);
 	assert.equal(made.ok, true, made.ok ? "" : made.error.message);
@@ -97,7 +105,12 @@ test("attach and list read the mount back under the epoch label, exclusive; netw
 	assert.equal(listed.ok, true);
 	assert.deepEqual(listed.value[0].mount, readBackOf(MOUNT, 3));
 	assert.ok(!JSON.stringify([attached, listed]).includes(TOKEN));
-	assert.deepEqual(await provider.network(made.value), { ok: true, value: "none" });
+	// The tools' network is init's own namespace (computerd init --own-network), which the daemon reads back; until that
+	// lands, network() says so in words, and attach does not refuse the computer for it. It takes no policy but none.
+	const read = await provider.network(made.value);
+	assert.equal(read.ok, true);
+	assert.match(read.value.other, /own-network/);
+	assert.deepEqual(attached.value.spec.network, read.value);
 	const opened = await provider.network(made.value, "open");
 	assert.equal(opened.ok, false);
 	assert.match(opened.error.message, /Archil/);
@@ -110,7 +123,7 @@ test("the takeover: the run's lower epochs are deleted before any mount, then th
 	const made = await provider.create(SPEC);
 	assert.equal(made.ok, true, made.ok ? "" : made.error.message);
 	assert.equal(fake.sandboxes.has(old.value.id), false, "the epoch 2 computer is gone");
-	assert.deepEqual(fake.inside(made.value.id).order.filter((step) => step !== "stdio"), ["preflight", "netlock", "revoke", "serve", "init"]);
+	assert.deepEqual(fake.inside(made.value.id).order.filter((step) => step !== "stdio"), ["preflight", "revoke", "serve", "init"]);
 
 	const again = setup();
 	const older = await again.provider.create({ ...SPEC, labels: { ...LABELS, [EPOCH_LABEL]: "2" } });
@@ -128,10 +141,10 @@ test("a mount that finds the folder held by a client no listing shows is revoked
 	const { fake, provider } = setup({ archil: { mount: { exitCode: 1, output: "mount failed: has an outstanding delegation" } } });
 	const made = await provider.create(SPEC);
 	assert.equal(made.ok, true, made.ok ? "" : made.error.message);
-	assert.deepEqual(fake.inside(made.value.id).order.filter((step) => step !== "stdio"), ["preflight", "netlock", "mount", "revoke", "serve", "init"]);
+	assert.deepEqual(fake.inside(made.value.id).order.filter((step) => step !== "stdio"), ["preflight", "mount", "revoke", "serve", "init"]);
 });
 
-test("an image that is not the recipe's is refused before netlock, and the sandbox deleted", async () => {
+test("an image that is not the recipe's is refused before the takeover, and the sandbox deleted", async () => {
 	const { fake, provider } = setup({ archil: { preflight: { exitCode: 0, output: "uid 0\nhelper 00 -rwxr-xr-x 0 0\narchil v0.10.0\ntool 2510:2510\nsudo /usr/bin/sudo" } } });
 	const made = await provider.create(SPEC);
 	assert.equal(made.ok, false);

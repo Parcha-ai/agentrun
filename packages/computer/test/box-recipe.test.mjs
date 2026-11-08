@@ -41,7 +41,7 @@ test("the helper is installed root:root 0755 at the path the provider runs it fr
   assert.ok(HELPER.includes(`Install it root:root 0755 at ${ARCHIL_HELPER}`), "the helper's own words name the same path");
 });
 
-test("the tool user is agentrun-tool, uid and gid 2510, and the helper's netlock and serve name the same user", () => {
+test("the tool user is agentrun-tool, uid and gid 2510, and the helper's serve names the same user", () => {
   assert.equal(ARCHIL_TOOL_USER, "agentrun-tool");
   assert.equal(ARCHIL_TOOL_UID, 2510);
   assert.equal(fixed("TOOL"), ARCHIL_TOOL_USER);
@@ -63,12 +63,14 @@ test("no sudo: the image installs none and has no sudoers file, its user is root
 });
 
 test("the image has every program the helper runs, at the helper's paths, and an empty /workspace; the sync socket's folder is serve's own", () => {
-  for (const name of ["ARCHIL", "MOUNT", "IPTABLES", "IP6TABLES", "GETENT"]) {
+  for (const name of ["ARCHIL", "MOUNT"]) {
     const path = fixed(name);
     assert.ok(path, `the helper fixes ${name}`);
     assert.match(DOCKERFILE, new RegExp(`for x in [^;]*${path.replace(/\//g, "\\/")}[ ;]`), `the build checks ${path}`);
   }
-  for (const pkg of ["iptables", "fuse3"]) assert.match(DOCKERFILE, new RegExp(`apt-get install [^;]* ${pkg}[ ;>]`));
+  assert.match(DOCKERFILE, /apt-get install [^;]* fuse3[ ;>]/);
+  // No firewall: the tools' network is init's own namespace (computerd init --own-network), not the image's rules.
+  assert.ok(!/iptables|ip6tables/.test(INSTRUCTIONS.join("\n")), "the image installs and checks no iptables");
   assert.equal(fixed("MP"), "/workspace");
   assert.ok(DOCKERFILE.includes("install -d -o root -g root -m 0755 /workspace"));
   assert.equal(fixed("COMPUTERD"), DAEMON_IN_COMPUTER, "serve runs the daemon the provider installs");
