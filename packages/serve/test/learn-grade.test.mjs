@@ -467,8 +467,10 @@ test("GET /v2/usage books a run's tool charge as tools and a grade as learning, 
   assert.deepEqual(Object.fromEntries(byAgent.lines.map((line) => [line.group, line.usd])), { learner: round(learnerRun + grade), enrich: enrichRun });
   assert.equal(byAgent.total_usd, byMeter.total_usd);
   const byDay = await usage("day");
-  assert.equal(byDay.lines.length, 1, "one day");
-  assert.equal(byDay.lines[0].usd, byMeter.total_usd);
+  // One day, or two in a row when the runs straddle UTC midnight: the day lines still sum to the same total.
+  const days = byDay.lines.map((line) => line.group).sort();
+  assert.ok(days.length === 1 || (days.length === 2 && Date.parse(days[1]) - Date.parse(days[0]) === 86_400_000), `one day, or two in a row: ${days.join(", ")}`);
+  assert.equal(sum(byDay), byMeter.total_usd, "the day lines sum to the total");
   assert.equal(byDay.total_usd, byMeter.total_usd);
   for (const body of [byMeter, byAgent, byDay]) assert.equal(body.unpriced_runs, 0);
   const caps = (await api("GET", "/capabilities")).body;

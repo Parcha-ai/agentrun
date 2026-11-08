@@ -712,7 +712,7 @@ function createProjector(options: TimelineOptions) {
           const args = argsOf(obj(block.arguments) ?? {});
           if (BROWSER_OPENERS.has(name) && !browsers.has(conv)) {
             browsers.add(conv);
-            add(make("phase", conv, `${base}:${index}:session`, { summary: "Opened a live browser session" }));
+            add(make("phase", conv, `${base}:${index}:session`, { summary: "A live browser session started" }));
           }
           const use = useRow(conv, `${base}:${index}`, id, name, args, { round });
           const before = early.get(`${conv}:${id}`);

@@ -12,8 +12,11 @@ full VM, a machine. The protocol has two layers:
 
 ## What it does today
 
-The daemon answers `hello`, `ping`, `exec.run`, the `files.*` methods, `tar.*` and the `process.*` methods; hello
-reports kind `linux` and groups `["exec", "files", "processes"]` (see [The protocol extension](#the-protocol-extension-kind-daemon-modes-screen-input-apps-lifetime)).
+The daemon answers `hello`, `ping`, `exec.run`, the `files.*` methods, `tar.*`, the `process.*` methods and
+`deadline.extend`; hello reports kind `linux` and groups `["exec", "files", "processes"]` (see [The protocol
+extension](#the-protocol-extension-kind-daemon-modes-screen-input-apps-lifetime)). With an X display it also answers
+`screen.shot`, `screen.read` and `input.actions`, and reports kind `desktop` with `screen`, `input.pointer` and
+`input.keys` (see [The X11 shim](#the-x11-shim)).
 
 ```text
 → {"jsonrpc":"2.0","id":1,"method":"hello","params":{"client":"me"}}
@@ -47,7 +50,7 @@ reports kind `linux` and groups `["exec", "files", "processes"]` (see [The proto
 
 ### Init, the socket and the bridge
 
-- `computerd init --deadline <time>` is the computer's first process. It listens on a unix socket,
+- `computerd init --deadline <time> [--max-deadline <time>]` is the computer's first process. It listens on a unix socket,
   `/run/agentrun/computerd.sock` (or `AGENTRUN_COMPUTERD_SOCKET`); the socket is 0600, so only the daemon's user can
   connect. Init does not make the socket's directory, since a non-root init cannot write under `/run`: the provider
   gives it, the daemon's user's alone (mode 0700). Init exits 1, saying why, when the directory is missing, is not the
@@ -109,6 +112,10 @@ reports kind `linux` and groups `["exec", "files", "processes"]` (see [The proto
   and init exits 0. So every program that started gets SIGTERM before any SIGKILL. Connections stay open until init
   exits, so reads, waits and lists still answer. One shutdown serves all three.
 - A guard also ends its program when its control pipe from the daemon closes, so no program outlives the daemon.
+- `deadline.extend({ at })` moves init's deadline to `at` (an ISO time) and answers `{ at }`, the deadline it holds
+  after. It refuses in words an earlier time (`invalid`), one past `--max-deadline`, the most the provider allowed at
+  start (`limit`), and any move when init got no `--max-deadline` (`unsupported`); a refusal moves nothing. Init
+  refuses to start with a maximum before its deadline.
 
 ### Processes
 
@@ -232,9 +239,9 @@ params and results of `files.*` and `tar.*` sit beside their code in `daemon/int
 ## The protocol extension: kind, daemon modes, screen, input, apps, lifetime
 
 The types and the conformance cases for computers past a Linux shell: desktops, Android and iOS phones. This package
-has the types and the cases; the daemon's screen and input (an X11 shim), the desktop fixture, a desktop provider and a
-phone provider come in later changes. Docker declares `linux` with computerd as PID 1, so every new case skips on it
-in words.
+has the types, the cases, the daemon's screen and input on X11 ([The X11 shim](#the-x11-shim)), the desktop fixture and
+a Docker desktop; a phone provider comes in a later change. Docker declares `linux` with computerd as PID 1 unless it is
+made a desktop, so on a plain Docker computer every new case skips in words.
 
 **Kind.** `capabilities().kind` is `"linux" | "desktop" | "android" | "ios"`, and hello repeats it. `os` stays: it names
 the platform the key table and exec need; kind names the shape the tools need. Only these pairs are valid
@@ -270,7 +277,8 @@ provider declares, either way.
 
 Points are `[x, y]` in the full screenshot's pixels, origin top left; a region shot never changes that space. A key is a
 name in `KEYS` (enter, tab, space, backspace, delete, escape, insert, the arrows, home, end, pageup, pagedown, f1-f12,
-shift, ctrl, alt, super, capslock) or one printable ASCII character (0x21-0x7e); the daemon's Go table will mirror it.
+shift, ctrl, alt, super, capslock) or one printable ASCII character (0x21-0x7e); the daemon's Go table
+(`daemon/internal/keys`) mirrors it, and a Go test keeps the two equal.
 Model vocabularies (Anthropic's `Return` or `ctrl+s`, OpenAI's keypress) are mapped to these by a tool adapter on the
 server, once per model family, never per vendor.
 
@@ -287,15 +295,60 @@ does.
 `checkLifetime(lifetimeMs, capabilities)` is the one rule every `check()` shares: a whole number of milliseconds above
 0, at most the cap, refused in words with no vendor call. A provider may offer `extend(ref, ttlMs)`, which sets the
 deadline to now + ttlMs (never earlier than the current deadline, never past create + maxLifetimeMs: either is refused
-in words with the deadline unchanged, so an extend never shortens a computer's life) by moving the
-vendor's timer, the deadline label and init's own deadline (`deadline.extend`, typed in `protocol.ts`; init answers it
-from the X11 shim's change on, and is `unsupported` until then), and `stream(ref)`, the vendor's live screen URL. Docker
+in words with the deadline unchanged, so an extend never shortens a computer's life) by moving the vendor's timer, the
+deadline label and init's own deadline (`deadline.extend`, up to the `--max-deadline` the provider gave init at start),
+and `stream(ref)`, the vendor's live screen URL. Docker
 has neither: its deadline is a container label, which cannot change after create, so ask for the whole lifetime at
 create. The janitor counts a deadline more than maxLifetimeMs (and a minute of clock skew) past now as unreadable, and
 deletes it.
 
 Brains never run inside the computer: a computer only takes tool calls. There is no duplex group and no "brain and
 hands" placement.
+
+### The X11 shim
+
+computerd drives the X display named by `DISPLAY` when init started, in pure Go (`daemon/internal/x11`, written against
+the X protocol with no cgo and no dependency, so the daemon stays one static binary): pixels from `GetImage` on the
+root window, input from the XTEST extension's `FakeInput`, with no program started for any action. The image needs
+only an X server. Only a display in this computer is driven: the unix socket, or TCP to a loopback address; any other
+`DISPLAY` is refused before anything is sent to it, so this host's cookie never goes elsewhere. Neither the X server
+nor the Xauthority file is trusted (any program of the computer's user can replace either): the cookie is read from
+`$XAUTHORITY` or `~/.Xauthority` only when that is a regular file of at most 64 KiB, and a symbolic link, a FIFO or a
+device there is refused in words without being read; a setup with a scanline pad other than 8, 16 or 32, or keycodes
+that are not a range from 8 up, is refused; and each reply is bounded by what its request can get back (a `GetImage`
+by its rectangle), so a longer one ends the connection before anything is allocated for it. A `screen.shot` or
+`input.actions` waiting for another to finish with the display waits no longer than its own request, then answers
+`aborted`.
+
+- The display is reached when it is first asked for, and again after it goes: hello declares `screen`,
+  `input.pointer` and `input.keys`, and kind `desktop`, only while the display answers with XTEST. So a provider may
+  start its X server through `process.start` after init is up. With no display (`DISPLAY` unset, nothing answering, no
+  XTEST) nothing is declared, and each method is `unsupported`, saying why.
+- Programs get no `DISPLAY` from the daemon (exec and process environments stay minimal): one that should show on the
+  display is given it in `env`.
+- `screen.shot` is a PNG of the root window or a region inside it (one outside is `invalid`), with `scale` 1 and
+  `cursor` from `QueryPointer`. A connection holds one shot, until it is read to its end or the next shot; a
+  `screen.read` of another id is `not_found`.
+- `input.actions` checks the whole batch first, as `checkActions` does, and on X11 also refuses: a touch action
+  (`unsupported`: X11 has no touch), a pixel scroll (`unsupported`: the wheel turns in clicks), a point or click count
+  that is not whole (`invalid`), an unknown field, and text with a character no key types (a control character other
+  than newline and tab, `invalid`). Its own bounds are `limit`: 64 Ki characters a `type`, 10,000 clicks a scroll,
+  1000 points a drag, 16 keys at once; and `repeat` is at most 100 (`MAX_KEY_REPEAT`), checked after the action's
+  group as `checkActions` does. Then the batch runs; a point off the display stops it there
+  (`invalid`, naming the display's size), and an X error from the server stops it at the action that sent it: the
+  batch waits for the server (one round trip) after each action with a button, a key or a keyboard map change, so no
+  later action runs, and `done` and `failed` say what did. A cancel stops it at the next key, click or point, releases
+  what the batch held, and answers `aborted`.
+- Scroll: `dy` above 0 turns down, below 0 up, `dx` right and left, one wheel click each, vertical first. A key or
+  character that needs shift gets it, pressed before and released after. `type` gives exactly its text whatever
+  Caps Lock is: when it is on, it is turned off for the typing and back on after, as xdotool does. A `key` action
+  presses keys as a keyboard does, so Caps Lock applies to it.
+- Typing a character the keyboard map has no key for (é on a US map, any CJK character, an emoji) uses the keysym remap
+  xdotool does: the character is bound to a keycode with no keysym (`ChangeKeyboardMapping`), then typed with it.
+  Unlike xdotool the binding is not undone, which would race a client still reading the map; it stays, so the
+  character has a key from then on. When no keycode is free, the binding used longest ago is moved once it has
+  settled (250 ms after its last key, so clients have read the events bound to it). A `type` needing more keycodes at
+  once than the map can give is refused as `limit`, before any key, saying to type it in parts.
 
 ## Docker
 
@@ -314,7 +367,15 @@ await docker.release(made.value, "delete");
 ```
 
 - `capabilities()` declares kind `linux`, daemon `pid1`, groups `exec`, `files` and `processes`, and `maxLifetimeMs`
-  of 30 days; there is no `extend()` or `stream()`.
+  of 30 days; there is no `extend()` or `stream()`, and init gets no `--max-deadline`.
+- `new DockerProvider({ daemonPath, desktop: {} })` makes desktops: kind `desktop`, with `screen`, `input.pointer` and
+  `input.keys` too, on an image with an X server (`test/fixtures/desktop/Dockerfile` is Alpine and Xvfb, 48 MB).
+  `create` gives the daemon `DISPLAY` (`display`, default `:0`), then starts the X server through it with
+  `process.start` (`server`, default `Xvfb :0 -screen 0 1280x800x24 -nolisten tcp`), as the computer's user and as any
+  program: computerd stays PID 1 and starts nothing itself, and the server is one process in its table that ends with
+  the computer. `create` waits (`timeoutMs`, default 30 s) until hello declares the display, then runs the drift check;
+  a server that ends first, with its last words on stderr, or a display that is not up in time deletes the computer in
+  words.
 - `check(spec)` refuses in words, with no Docker call: no image, no or a bad `lifetimeMs` (`checkLifetime`: at most
   30 days), a network
   allowlist (Docker cannot enforce one yet: ask for `none` or `open`), a NUL byte in any string, and any field Docker
@@ -867,7 +928,12 @@ AGENTRUN_COMPUTER_LIVE_DOCKER=1 npm run test:docker -w @parcha/agentrun-computer
 AGENTRUN_COMPUTER_LIVE_MODAL=1 npm run test:modal -w @parcha/agentrun-computer   # also needs COMPUTER_MODAL_TOKEN_ID/SECRET, a key the lead OKed
 ```
 
-The live tests run the conformance suite on Docker, one test per case, and the CLI against `alpine:3.20`; the rest of
+Where Xvfb is on PATH, the Go tests also run the X client, and screen and input against the fixture, on a real X
+server; elsewhere those tests skip in words and the fake X server's tests still run.
+
+The live tests run the conformance suite on Docker, one test per case, on a plain computer and on a desktop built from
+`test/fixtures/desktop/Dockerfile` with `computerd-fixture` built from `daemon/cmd/fixture`, and the CLI against
+`alpine:3.20`; the rest of
 them check what only Docker shows (the user, sizes, tmpfs mounts and hardening flags in `docker inspect`, the daemon
 mount, the socket directory, hello's arch against Docker's, `/work` as the user's home, the daemon's exit 0 on `docker
 stop` and at its deadline, attach by a container's name). They need Docker, `debian:bookworm-slim`

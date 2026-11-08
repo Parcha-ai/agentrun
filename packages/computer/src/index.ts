@@ -5,7 +5,7 @@ export { type CallOptions, DaemonClient, type DaemonStream } from "./client.js";
 export { type ActionFailure, type CheckActionsOptions, checkActions, isKey } from "./actions.js";
 export { pullTar, pullTarStream, pushTar, readFile, writeFile, type PulledTar } from "./files.js";
 export { listProcesses, readAll, type ReadAllResult } from "./processes.js";
-export { DockerProvider, type DockerProviderOptions } from "./docker.js";
+export { type DockerDesktopOptions, DockerProvider, type DockerProviderOptions } from "./docker.js";
 export {
 	ModalProvider,
 	type ModalApp,
