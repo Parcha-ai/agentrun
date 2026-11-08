@@ -18,7 +18,7 @@ export { ARCHIL_MAX_EXEC_S, type Hands, handsOf, MAX_EXEC_S, processesOf, shellE
 export { type RunBrowser, type RunComputer, runTools, type RunTools } from "./run-tools.js";
 export { inputOf, phoneOf, screenOf } from "./computer-ports.js";
 export {
-  type ClaimSide, type ComputerSetting, type KindRegistry, type LaunchedComputer, type Port, type ProviderEntry, resolveComputer, type ResolvedComputer,
-  type SettingKind, type StartedComputer,
+  type ClaimSide, type ComputerSetting, type ComputerSettingKind, type KindCapabilities, type KindRegistry, type LaunchedComputer, type Port,
+  type ProviderEntry, resolveComputer, type ResolvedComputer, type StartedComputer,
 } from "./resolve-computer.js";
 export { layRevisionSkills, RUN_SKILLS_DIR } from "./revision-skills.js";

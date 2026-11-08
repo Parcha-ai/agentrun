@@ -17,28 +17,34 @@ import type { MountCheck } from "./attach.js";
 import type { RunComputer } from "./run-tools.js";
 import type { Workspace } from "./workspace.js";
 
-/** The setting kinds, as the agent's computer setting names them. */
-export type SettingKind = "none" | "sandbox" | "desktop" | "phone" | "browser";
-const SETTING_KINDS: readonly SettingKind[] = ["none", "sandbox", "desktop", "phone", "browser"];
+/** The setting kind: what an agent is given (the computer module's ComputerSettingKind). Not the machine kind, a
+ *  computer's capabilities().kind. */
+export type ComputerSettingKind = "none" | "sandbox" | "desktop" | "phone" | "browser";
 
 /** An agent's computer setting. */
 export type ComputerSetting = { readonly kind: string; readonly provider?: string | null };
 
-/** One provider of the kind registry, as the claim reads it: its id and label, the key names it declares (Settings →
- *  Computers saves them), the mounts it takes, its static capabilities, and the setting kinds they serve. */
+/** A machine's kind and groups, as the module's KindCapabilities gives what servingRefusals reads. */
+export type KindCapabilities = { readonly kind: ComputerKind | string; readonly groups: readonly (Group | string)[] };
+
+/** One provider of the kind registry (the module's ProviderEntry), as the claim reads it: its id and label, the setting
+ *  kinds it serves, the key names it declares (Settings → Computers saves them), the mounts it takes ([] none), and its
+ *  static capabilities, one per configuration. */
 export type ProviderEntry = {
   readonly id: string;
   readonly label: string;
+  readonly kinds: readonly ComputerSettingKind[];
   readonly keys: readonly { readonly name: string; readonly required: boolean }[];
   readonly mounts: readonly MountKind[];
-  readonly capabilities: readonly { readonly kind: ComputerKind | string; readonly groups: readonly (Group | string)[] }[];
-  readonly kinds: readonly SettingKind[];
+  readonly capabilities: readonly KindCapabilities[];
 };
 
-/** The computer module's kind registry, as the claim reads it: each setting kind's machine kinds, and the providers. */
+/** The computer module's kind registry (src/kinds.ts), by its own names: the setting kinds, why a machine does not serve
+ *  one (servingRefusals, whose words a refusal here carries), and the providers. */
 export type KindRegistry = {
-  readonly settingKinds: Readonly<Record<SettingKind, { readonly machineKinds: readonly string[] }>>;
-  readonly providers: readonly ProviderEntry[];
+  readonly SETTING_KINDS: Readonly<Record<ComputerSettingKind, unknown>>;
+  servingRefusals(capabilities: KindCapabilities, kind: ComputerSettingKind): string[];
+  readonly PROVIDERS: readonly ProviderEntry[];
 };
 
 /** A computer a provider started for the run: its ref, its computerd client and what it offers (sandbox, desktop,
@@ -56,7 +62,7 @@ export type LaunchedComputer = {
  *  computer of the kind, with the run's folder as its mount when it mounts it. A launch that fails throws its words. */
 export type ClaimSide = {
   keysOf(provider: string): Promise<Readonly<Record<string, string>>>;
-  launch(entry: ProviderEntry, spec: { readonly kind: SettingKind; readonly keys: Readonly<Record<string, string>>; readonly mount?: MountSpec; readonly signal?: AbortSignal }): Promise<LaunchedComputer>;
+  launch(entry: ProviderEntry, spec: { readonly kind: ComputerSettingKind; readonly keys: Readonly<Record<string, string>>; readonly mount?: MountSpec; readonly signal?: AbortSignal }): Promise<LaunchedComputer>;
 };
 
 /** A narrow port of the kernel's hands a computer fills: files, exec and processes where the folder is mounted; a
@@ -68,7 +74,7 @@ export type StartedComputer = { readonly computer: RunComputer | undefined; rele
 
 /** A setting resolved: its kind and provider, whether the run's folder is mounted, the ports, and how to start it. */
 export type ResolvedComputer = {
-  readonly kind: SettingKind;
+  readonly kind: ComputerSettingKind;
   readonly provider: string | null;
   readonly mounts: boolean;
   readonly ports: readonly Port[];
@@ -85,22 +91,29 @@ const nothing = async (): Promise<void> => {};
 
 /** The setting resolved for `mode`, or a refusal in words that name the setting. */
 export async function resolveComputer(setting: ComputerSetting, mode: 1 | 2, registry: KindRegistry, side: ClaimSide): Promise<ResolvedComputer | { readonly refused: string }> {
-  const kind = setting.kind as SettingKind;
-  if (!SETTING_KINDS.includes(kind)) return { refused: `This agent's computer kind ${JSON.stringify(setting.kind)} is not one of ${SETTING_KINDS.join(", ")}: set it in ${SETTINGS}.` };
+  const kind = setting.kind as ComputerSettingKind;
+  if (!Object.hasOwn(registry.SETTING_KINDS, kind)) {
+    const [why] = registry.servingRefusals({ kind: "linux", groups: [] }, kind);
+    return { refused: `This agent's computer: ${why}. Set it in ${SETTINGS}.` };
+  }
   if (kind === "none") return { kind, provider: null, mounts: false, ports: [], start: async () => ({ computer: undefined, release: nothing }) };
 
-  const offered = registry.providers.filter((entry) => entry.kinds.includes(kind));
-  const pick = `pick one of ${offered.map((entry) => entry.label).join(", ")} for this agent's computer in ${SETTINGS}.`;
+  const offered = registry.PROVIDERS.filter((entry) => entry.kinds.includes(kind));
+  const pick = `one of ${offered.map((entry) => entry.label).join(", ")} for this agent's computer in ${SETTINGS}.`;
   if (offered.length === 0) return { refused: `No provider gives a ${kind} computer on this server: pick another kind for this agent's computer in ${SETTINGS}.` };
-  if (!setting.provider) return { refused: `A ${kind} computer needs a provider: ${pick}` };
-  const entry = registry.providers.find((one) => one.id === setting.provider);
-  if (!entry) return { refused: `${JSON.stringify(setting.provider)} is no computer provider this server knows: ${pick}` };
-  if (!entry.kinds.includes(kind)) return { refused: `${entry.label} gives no ${kind} computer: ${pick}` };
+  if (!setting.provider) return { refused: `A ${kind} computer needs a provider: pick ${pick}` };
+  const entry = registry.PROVIDERS.find((one) => one.id === setting.provider);
+  if (!entry) return { refused: `${JSON.stringify(setting.provider)} is no computer provider this server knows: pick ${pick}` };
+  // The configurations of the provider that serve the kind; none, and the registry says why, by its closest one.
+  const serving = entry.capabilities.filter((one) => registry.servingRefusals(one, kind).length === 0);
+  if (serving.length === 0) {
+    const why = entry.capabilities.map((one) => registry.servingRefusals(one, kind)).sort((a, b) => a.length - b.length)[0] ?? [];
+    return { refused: `${entry.label} gives no ${kind} computer${why.length > 0 ? `: ${why.join("; ")}` : ""}. Pick ${pick}` };
+  }
 
   // The run's folder: mounted where the kind has files and exec and the provider mounts the mode's folder.
   const folder: MountKind = mode === 1 ? "bind" : "archil";
-  const machines = registry.settingKinds[kind].machineKinds;
-  const shell = entry.capabilities.some((one) => machines.includes(one.kind) && one.groups.includes("files") && one.groups.includes("exec"));
+  const shell = serving.some((one) => one.groups.includes("files") && one.groups.includes("exec"));
   const mounts = (kind === "sandbox" || kind === "desktop") && shell && entry.mounts.includes(folder);
   if (kind === "sandbox" && !mounts) {
     if (mode === 1) return { refused: `Mode 1 runs a sandbox only on Docker: a ${entry.label} sandbox can't reach the run's folder on this machine. Pick Docker for this agent's computer in ${SETTINGS}, or another kind of computer.` };
@@ -145,7 +158,7 @@ export async function resolveComputer(setting: ComputerSetting, mode: 1 | 2, reg
 }
 
 /** The started computer as runTools takes it, or what it lacks, in words. */
-function runComputerOf(kind: Exclude<SettingKind, "none">, launched: LaunchedComputer, check: MountCheck | undefined): RunComputer | string {
+function runComputerOf(kind: Exclude<ComputerSettingKind, "none">, launched: LaunchedComputer, check: MountCheck | undefined): RunComputer | string {
   const groups = launched.groups as readonly Group[];
   if (kind === "browser") return launched.connect ? { kind, connect: () => launched.connect!() } : "it gave no CDP connection";
   const { client } = launched;

@@ -13,7 +13,7 @@ import { BACKGROUND_CONTEXT as ctx } from "@earendil-works/chord/context";
 import { readBackOf } from "@parcha/agentrun-computer";
 import { localWorkspace, resolveComputer, runTools } from "../dist/workspace/index.js";
 import { fakeComputer } from "./workspace-fake-computer.mjs";
-import { KIND_REGISTRY } from "./workspace-kinds-fixture.mjs";
+import { ARCHIL_KINDS, KINDS } from "./workspace-kinds-fixture.mjs";
 
 const dirs = [];
 after(() => { for (const dir of dirs) rmSync(dir, { recursive: true, force: true }); });
@@ -41,7 +41,10 @@ function claim(root, saved = SAVED) {
     },
   };
 }
-const resolve = (setting, mode, root = scratch(), saved) => resolveComputer(setting, mode, KIND_REGISTRY, claim(root, saved));
+/** Resolved against the registry once the remote sandboxes mount from Archil (KINDS is today's table, where they mount
+ *  nothing). */
+const resolve = (setting, mode, root = scratch(), saved, kinds = ARCHIL_KINDS) => resolveComputer(setting, mode, kinds, claim(root, saved));
+const KIND_REGISTRY = ARCHIL_KINDS;
 const shape = (resolved) => ("refused" in resolved ? resolved : { kind: resolved.kind, provider: resolved.provider, mounts: resolved.mounts, ports: resolved.ports });
 
 test("kind none is no computer: nothing to start, nothing mounted", async () => {
@@ -73,10 +76,19 @@ test("Mode 2: Docker's sandbox is refused; a remote sandbox mounts from Archil; 
   assert.deepEqual(shape(await resolve({ kind: "desktop", provider: "orgo" }, 2)), { kind: "desktop", provider: "orgo", mounts: false, ports: ["screen", "input"] });
 });
 
-test("a setting the registry does not give is refused in words that name the setting", async () => {
-  assert.deepEqual(await resolve({ kind: "laptop", provider: "docker" }, 1), { refused: "This agent's computer kind \"laptop\" is not one of none, sandbox, desktop, phone, browser: set it in Settings → Computers." });
+test("today's table, where no remote sandbox mounts yet: Mode 2 refuses each sandbox in words, and an E2B desktop runs unmounted", async () => {
+  assert.deepEqual(await resolve({ kind: "sandbox", provider: "daytona" }, 2, scratch(), SAVED, KINDS), {
+    refused: "A Daytona sandbox can't mount the run's folder from Archil: pick another sandbox for this agent's computer in Settings → Computers.",
+  });
+  assert.equal((await resolve({ kind: "desktop", provider: "e2b" }, 2, scratch(), SAVED, KINDS)).mounts, false);
+});
+
+test("a setting the registry does not give is refused in words that name the setting, the registry's own reasons in them", async () => {
+  assert.deepEqual(await resolve({ kind: "laptop", provider: "docker" }, 1), { refused: "This agent's computer: \"laptop\" is not a setting kind: none, sandbox, desktop, phone, browser. Set it in Settings → Computers." });
   assert.deepEqual(await resolve({ kind: "desktop" }, 1), { refused: "A desktop computer needs a provider: pick one of Docker, E2B, Orgo for this agent's computer in Settings → Computers." });
-  assert.deepEqual(await resolve({ kind: "desktop", provider: "daytona" }, 2), { refused: "Daytona gives no desktop computer: pick one of Docker, E2B, Orgo for this agent's computer in Settings → Computers." });
+  assert.deepEqual(await resolve({ kind: "desktop", provider: "daytona" }, 2), {
+    refused: "Daytona gives no desktop computer: kind desktop is a desktop machine, not a linux one; kind desktop needs groups screen, input.pointer, input.keys, which the provider does not declare. Pick one of Docker, E2B, Orgo for this agent's computer in Settings → Computers.",
+  });
   assert.deepEqual(await resolve({ kind: "phone", provider: "nokia" }, 2), { refused: "\"nokia\" is no computer provider this server knows: pick one of Phone harness for this agent's computer in Settings → Computers." });
 });
 
