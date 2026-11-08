@@ -520,6 +520,8 @@ test("a pushed source declares who may start a run and who may steer one, and th
   await until(() => triggers.conversationOf("run-2")?.conversation === "c9", "its run");
   assert.equal(triggers.receiveEvent(feedId, { key: "f2", text: "more", conversation: "c9", actor: "sender" }), undefined, "no steer");
   assert.equal(messages.length, 1);
+});
+
 const hookBody = { name: "inbox", source: { kind: "webhook" }, target: { kind: "start_run", agent_id: "a", input: { content: "Hi." }, max_cost_usd: 0.5 } };
 const keeps = () => ({ mint: () => "unused", remove: () => {} });
 /** `n` events to `id`, each a new key, waiting for each batch to settle so none is refused for too many due. */
