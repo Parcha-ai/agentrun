@@ -267,7 +267,11 @@ describe("the Modal provider's upload commands in a root container with no netwo
 			// The upload's checks after its rename (each `ls` once the daemon is in place) are held 2 s, so the entrypoint,
 			// which polls every 0.2 s, starts init and init ends the container while the upload still runs, every time.
 			docker("exec", name, "sh", "-c", 'printf \'#!/bin/sh\\n[ -e /opt/agentrun/computerd ] && sleep 2\\nexec /bin/ls "$@"\\n\' > /usr/local/bin/ls && chmod 0755 /usr/local/bin/ls');
-			upload(name);
+			// So the upload's own exit is not this case's to require: the container's end cuts it. What it wrote, it
+			// checked before the rename, and the daemon it moved into place is the one that refused.
+			const { bytes, sha } = daemon();
+			const uploaded = spawnSync("docker", ["exec", "-i", name, ...modalCommands({ sha256: sha }).upload], { input: bytes, encoding: "utf8" });
+			assert.equal(uploaded.stdout, `sha256 ${sha}\n`, `the upload printed the sha256 of what it wrote before the rename: ${uploaded.status} ${uploaded.stderr}`);
 			const code = execFileSync("docker", ["wait", name], { encoding: "utf8", timeout: 30_000 }).trim();
 			assert.equal(code, "1");
 			const logs = spawnSync("docker", ["logs", name], { encoding: "utf8" });
