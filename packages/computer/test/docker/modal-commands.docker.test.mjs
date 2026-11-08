@@ -19,6 +19,16 @@ import * as modal from "../../dist/modal.js";
 const LIVE = process.env.AGENTRUN_COMPUTER_LIVE_DOCKER === "1";
 const VERSION = JSON.parse(readFileSync(new URL("../../package.json", import.meta.url), "utf8")).version;
 const docker = (...args) => execFileSync("docker", args, { encoding: "utf8" });
+/**
+ * The exit code of a container this test expects to end, by `docker wait`, which blocks until it does: no polling, no
+ * sleep. The bound is a hang's, not a speed's: 30 s timed out twice on a loaded host while the container was still on
+ * its way to the end the case checks, so it is 10 minutes, and its failure says the container never ended.
+ */
+const exitCodeOf = (name) => {
+	const waited = spawnSync("docker", ["wait", name], { encoding: "utf8", timeout: 600_000 });
+	assert.equal(waited.error, undefined, `the container ${name} did not end within 10 minutes: ${waited.error?.message}`);
+	return waited.stdout.trim();
+};
 const IMAGES = ["debian:bookworm-slim", "alpine:3.20"];
 const ZERO = "0000000000000000";
 /** What init --own-network needs of root: to make a network namespace and bring its loopback up. */
@@ -258,7 +268,7 @@ describe("the Modal provider's upload commands in a root container with no netwo
 
 			const { name } = sandbox(image, { user: "0:0" });
 			upload(name);
-			const code = execFileSync("docker", ["wait", name], { encoding: "utf8", timeout: 30_000 }).trim();
+			const code = exitCodeOf(name);
 			assert.equal(code, "1", "init refused to start, and the container ended");
 			assert.match(spawnSync("docker", ["logs", name], { encoding: "utf8" }).stderr, /init refuses to start: --own-network refuses uid 0 for init's programs/);
 		});
@@ -273,7 +283,7 @@ describe("the Modal provider's upload commands in a root container with no netwo
 			const { bytes, sha } = daemon();
 			const uploaded = spawnSync("docker", ["exec", "-i", name, ...modalCommands({ sha256: sha }).upload], { input: bytes, encoding: "utf8" });
 			assert.equal(uploaded.stdout, `sha256 ${sha}\n`, `the upload printed the sha256 of what it wrote before the rename: ${uploaded.status} ${uploaded.stderr}`);
-			const code = execFileSync("docker", ["wait", name], { encoding: "utf8", timeout: 30_000 }).trim();
+			const code = exitCodeOf(name);
 			assert.equal(code, "1");
 			const logs = spawnSync("docker", ["logs", name], { encoding: "utf8" });
 			assert.match(logs.stderr, /refuses to start/);
@@ -291,7 +301,7 @@ describe("the Modal provider's upload commands in a root container with no netwo
 
 		it(`${image}: with no upload, the entrypoint's bounded wait ends the container nonzero, in words`, () => {
 			const { name } = sandbox(image, { waitSeconds: 2 });
-			const code = execFileSync("docker", ["wait", name], { encoding: "utf8", timeout: 30_000 }).trim();
+			const code = exitCodeOf(name);
 			assert.equal(code, "3");
 			const logs = spawnSync("docker", ["logs", name], { encoding: "utf8" });
 			assert.match(logs.stderr, /the daemon did not arrive at \/opt\/agentrun\/computerd within 2 s/);
