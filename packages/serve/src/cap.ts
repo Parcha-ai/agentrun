@@ -418,10 +418,6 @@ function openFigures(entries: readonly EntryLike[]): { generation: Figure[]; com
 export function spentIn(storeFile: string): number | null {
   if (!existsSync(storeFile)) return 0;
   // Fresh, read-only and lock-free (run-db.ts): its process may hold it.
-  const entries: EntryLike[] = [];
-  // The store's own entries, as read (without the answers written below for a stopped request): openFigures reads them.
-  const read: EntryLike[] = [];
-  let marked = false;
   const rows: EntryLike[] = [];
   readRunDbSync(storeFile, false, (db) => {
     // A read made again (its file changed during it) starts from none.
@@ -431,6 +427,20 @@ export function spentIn(storeFile: string): number | null {
       rows.push(entry);
     }
   });
+  return spentFrom(rows);
+}
+
+/** What the run's model requests cost, from its entries in log order: the one computation, shared by spentIn (reading a
+ *  settled run's own database) and the one-store reader (store-reads, reading A's journal). These readings are the cap's
+ *  own, on its copy of the entries (the run's shown cost is the timeline's, unchanged): a request stopped before its end
+ *  counts at the figure its end mark holds (HELD_FIELD), and one a crash cut (marked as sent, no answer, no end) at the
+ *  figure its start mark holds (openFigures), each the worst case the cap held for it; without that figure either stays
+ *  cut, at an unknown cost. This cap's refusals are left out, as none left. Unknown is null, which a cap never reads as $0. */
+export function spentFrom(rows: readonly EntryLike[]): number | null {
+  // The store's own entries, as read (without the answers written below for a stopped request): openFigures reads them.
+  const entries: EntryLike[] = [];
+  const read: EntryLike[] = [];
+  let marked = false;
   // pi's error entry for a request that ended on an error after its response began is left out, as an aborted one is: its
   // end mark (`error`) counts it at its hold. pi writes the entry as the mark is written, before it or after, so each such
   // mark takes the nearest error entry not yet taken among those after the earliest start holding its figure (a request's

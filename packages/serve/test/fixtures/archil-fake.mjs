@@ -84,10 +84,17 @@ for (const file of workerData.files) {
 parentPort.postMessage({ done: true });
 `;
 
+/** A Map that keeps the time each key was last set: a file's S3 lastModified, as a listing gives it. */
+class StampedMap extends Map {
+  times = new Map();
+  set(key, value) { this.times?.set(key, Date.now()); return super.set(key, value); }
+  delete(key) { this.times.delete(key); return super.delete(key); }
+}
+
 export class FakeArchilDisk {
   id = "dsk-00000000000fake0";
-  /** key -> bytes */
-  files = new Map();
+  /** key -> bytes, each with its last set's time (`files.times`) */
+  files = new StampedMap();
   /** directory keys (no trailing "/") */
   dirs = new Set();
   /** key -> link target */
@@ -239,7 +246,7 @@ export class FakeArchilDisk {
     const page = entries.slice(start, start + this.pageSize);
     const next = start + this.pageSize < entries.length ? String(start + this.pageSize) : undefined;
     return {
-      objects: page.filter((e) => e.key !== undefined).map(({ key, size }) => ({ key, size })),
+      objects: page.filter((e) => e.key !== undefined).map(({ key, size }) => ({ key, size, ...(this.files.times.has(key) ? { mtimeMs: this.files.times.get(key) } : {}) })),
       commonPrefixes: page.filter((e) => e.prefix !== undefined).map((e) => e.prefix),
       ...(next === undefined ? {} : { next }),
     };

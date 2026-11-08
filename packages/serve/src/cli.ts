@@ -9,7 +9,7 @@ import { parseArgs } from "node:util";
 import { spawn } from "node:child_process";
 import { chmodSync } from "node:fs";
 import { join, resolve } from "node:path";
-import { defaultData, removeOwnRecord, SERVER_FILE, writeDurableSync } from "./files.js";
+import { defaultData, removeOwnRecord, SERVER_FILE, writeDurableSync } from "./server-fs.js";
 import { startedWith } from "./adapters.js";
 import { stopOnSignals } from "./stop-signals.js";
 import { canOpen } from "./host.js";

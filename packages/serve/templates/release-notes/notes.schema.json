@@ -1,0 +1,144 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "notes.schema.json",
+  "title": "Release notes",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["repo", "tag", "previous_tag", "range", "can_do_now", "fixed", "upgrading", "pull_requests", "skipped", "questions", "draft_markdown", "draft"],
+  "$defs": {
+    "prs": {
+      "type": "array",
+      "minItems": 1,
+      "uniqueItems": true,
+      "items": { "type": "integer", "minimum": 1 },
+      "description": "the PRs a line comes from; each is in pull_requests"
+    },
+    "line": { "type": "string", "minLength": 1, "maxLength": 1000, "not": { "pattern": "#[0-9]+" }, "description": "a top-section line: no PR or issue numbers" },
+    "group": { "type": "string", "minLength": 1, "maxLength": 80 }
+  },
+  "properties": {
+    "repo": { "type": "string", "pattern": "^[A-Za-z0-9][A-Za-z0-9-]*/[A-Za-z0-9._-]+$" },
+    "tag": { "type": ["string", "null"], "minLength": 1, "maxLength": 100, "description": "the new release's tag; null for unreleased changes" },
+    "previous_tag": { "type": ["string", "null"], "minLength": 1, "maxLength": 100, "description": "the release the range starts after; null for a first release or a PR list with none" },
+    "range": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["method"],
+      "properties": {
+        "method": { "enum": ["commits", "merged_date", "input"], "description": "commits: walked from to back to from; merged_date: the fallback by merge date; input: the PRs came in the message" },
+        "from": { "type": ["string", "null"] },
+        "to": { "type": "string", "minLength": 1 },
+        "from_sha": { "type": "string", "pattern": "^[0-9a-f]{7,40}$" },
+        "to_sha": { "type": "string", "pattern": "^[0-9a-f]{7,40}$" },
+        "from_date": { "type": "string", "format": "date-time" },
+        "to_date": { "type": "string", "format": "date-time" }
+      }
+    },
+    "can_do_now": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": ["group", "items"],
+        "properties": {
+          "group": { "$ref": "#/$defs/group" },
+          "items": {
+            "type": "array",
+            "minItems": 1,
+            "items": {
+              "type": "object",
+              "additionalProperties": false,
+              "required": ["kind", "text", "prs"],
+              "properties": {
+                "kind": { "enum": ["new", "improved"] },
+                "text": { "$ref": "#/$defs/line" },
+                "prs": { "$ref": "#/$defs/prs" }
+              }
+            }
+          }
+        }
+      }
+    },
+    "fixed": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": ["group", "text", "prs"],
+        "properties": {
+          "group": { "$ref": "#/$defs/group" },
+          "text": { "$ref": "#/$defs/line" },
+          "prs": { "$ref": "#/$defs/prs" }
+        }
+      }
+    },
+    "upgrading": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": ["breaking", "text", "prs"],
+        "properties": {
+          "breaking": { "type": "boolean" },
+          "text": { "$ref": "#/$defs/line", "description": "what changed and what a user must do" },
+          "prs": { "$ref": "#/$defs/prs" }
+        }
+      }
+    },
+    "pull_requests": {
+      "type": "array",
+      "description": "every PR in the range, once each: the draft's table",
+      "items": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": ["number", "title", "summary", "group", "placed_in"],
+        "properties": {
+          "number": { "type": "integer", "minimum": 1 },
+          "title": { "type": "string", "maxLength": 300, "description": "the PR's title as GitHub has it" },
+          "summary": { "type": "string", "minLength": 1, "maxLength": 400, "description": "the table's one line, in the user's words" },
+          "group": { "$ref": "#/$defs/group", "description": "a group name, or Internal, Reverted or Unclear" },
+          "placed_in": {
+            "type": "array",
+            "minItems": 1,
+            "uniqueItems": true,
+            "items": { "enum": ["can_do_now", "fixed", "upgrading", "internal", "reverted", "unclear"] }
+          },
+          "author": { "type": "string", "maxLength": 100, "description": "the author's login, when the repo credits authors" },
+          "fragment": { "type": "string", "maxLength": 300, "description": "the change fragment's file name, or none" }
+        }
+      }
+    },
+    "skipped": {
+      "type": "array",
+      "description": "each PR in no top section, with why",
+      "items": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": ["pr", "reason"],
+        "properties": {
+          "pr": { "type": "integer", "minimum": 1 },
+          "reason": { "enum": ["ci", "build", "tests", "refactor", "internal-docs", "dependencies", "formatting", "reverted", "unclear", "unreadable", "budget", "other"] },
+          "detail": { "type": "string", "maxLength": 300 }
+        }
+      }
+    },
+    "questions": {
+      "type": "array",
+      "maxItems": 30,
+      "description": "what a person must decide or check before shipping",
+      "items": { "type": "string", "minLength": 1, "maxLength": 500 }
+    },
+    "draft_markdown": { "type": "string", "minLength": 1, "maxLength": 60000, "description": "the draft as posted, from its # title to the end of the table" },
+    "draft": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["destination", "action"],
+      "properties": {
+        "destination": { "enum": ["issue", "answer"] },
+        "action": { "enum": ["created", "updated", "exists", "none"] },
+        "issue_number": { "type": "integer", "minimum": 1 },
+        "url": { "type": "string", "pattern": "^https://github\\.com/" }
+      }
+    }
+  }
+}
