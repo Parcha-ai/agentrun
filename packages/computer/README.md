@@ -97,9 +97,11 @@ extension](#the-protocol-extension-kind-daemon-modes-screen-input-apps-lifetime)
   (`test/docker/modal-commands.docker.test.mjs`: root containers with Docker's default capabilities and `--cap-add
   ALL`, as 0:0 and 1000:1000, and the refusal without CAP_SETPCAP), and computerd's end at its deadline with the
   Docker live tests. The test binaries (`CGO_ENABLED=0 go test -c`) also run as root in a container by hand.
-- `computerd probe [--connect <host:port>]...` prints one JSON line: the uid and gid it runs as, the kernel's release,
-  and which addresses a TCP connection reached, each tried for at most 3 s. A provider whose vendor reads nothing back
-  runs it through `exec.run` (below, Modal).
+- `computerd probe [--connect <host:port>[/udp]]...` prints one JSON line: the uid and gid it runs as, the kernel's
+  release, `reached` (the targets that answered), `accepted` (the targets that accepted a TCP connection and sent nothing back)
+  and `results`, each target's `protocol`, `outcome` (`refused`, `accepted` or `answered`), `bytes` and `detail` in
+  words. A provider whose vendor reads nothing back runs it through `exec.run` (below, Modal), under the rule in
+  [Network none, read from inside](#network-none-read-from-inside-nothing-answers).
 - `computerd stdio` is a thin bridge: it connects to the socket (waiting up to 3 s for a computer that has just
   started) and copies bytes both ways until either side ends. With no daemon to reach it says so on stderr and exits 1;
   it never serves on its own.
@@ -118,6 +120,55 @@ extension](#the-protocol-extension-kind-daemon-modes-screen-input-apps-lifetime)
   after. It refuses in words an earlier time (`invalid`), one past `--max-deadline`, the most the provider allowed at
   start (`limit`), and any move when init got no `--max-deadline` (`unsupported`); a refusal moves nothing. Init
   refuses to start with a maximum before its deadline.
+
+### Network none, read from inside: nothing answers
+
+Where a vendor reads no network policy back, `computerd probe` stands for one, and network none holds only when
+**nothing answers within 10 s**: a target counts as reached only when bytes come back from it. One rule for every
+provider.
+
+- **Targets.** `host:port` is tried over TCP; `host:port/udp` (the `/udp` suffix, on `--connect` and in a provider's
+  `probeTargets`) is sent a DNS query over UDP. Modal's defaults are TCP to `1.1.1.1:443`, `8.8.8.8:443` and
+  `[2606:4700:4700::1111]:443`, and DNS over UDP to `1.1.1.1:53/udp` and `[2606:4700:4700::1111]:53/udp`: DNS over UDP
+  is the classic path out of a sandbox that drops TCP.
+- **Each TCP target gets a request by its port**, so a server that waits for its client speaks: 443 a TLS 1.2
+  ClientHello, 80 an HTTP/1.0 `HEAD /`, 53 a DNS query for example.com (behind its 2-byte length), and any other port
+  an HTTP `HEAD /` (the most common protocol where the client speaks first; a server that speaks first, as SSH and SMTP
+  do, answers whatever is sent). The ClientHello names the server (SNI) only when the target's host is a name: an IP
+  literal is no server name (RFC 6066, section 3), so `1.1.1.1:443` gets none. The HTTP request's `Host` is the
+  target's host. **A UDP target**, whatever its port, gets one datagram: a recursive DNS query for example.com's A
+  records with a random id.
+- **Bounds:** 10 s to connect, 10 s from the request to the answer, at most 4 KiB read per target, every target at once.
+  The probe runs once per create (and per attach and `network(ref)`), so its window is wide: a transparent proxy that
+  connects onward lazily, under load, still answers within it. Modal's 30 s bound on the probe's `exec.run` covers the
+  longest a probe can take (20 s).
+- **Outcomes.** `refused`: no connection, or for UDP no reply (UDP has no accept, so a datagram that brings nothing back
+  is refused, as is one the far side's ICMP port-unreachable answers). `answered`: any byte came back, whatever it is: a
+  ServerHello, a TLS alert (a server that will not serve the hello still spoke), an HTTP status line, a DNS response
+  with the query's id and the response bit, a banner, or bytes of no expected protocol (the detail says which; over UDP
+  a datagram that is not the DNS response still came back, and is an answer). Only `answered` is `reached`, and a
+  provider refuses network none on any. `accepted`: a TCP connection, then nothing back within the bound, closed or
+  held open.
+- **An accepted-but-silent connection is recorded, never refused and never hidden.** Some firewalls accept every
+  outbound connection first and decide after, closing a denied one with nothing sent back (E2B documents exactly this).
+  Such a connection shows that nothing came back, so it is not counted as reached. The provider keeps the computer and
+  names the targets in its read-back's words: `notes` on what `create` returns and on what `attach` finds, such as
+  `network: none; accepted with no answer (no bytes came back): 1.1.1.1:443, 8.8.8.8:443`. `network(ref)` reads back
+  none. The conformance report carries create's notes too, each naming its computer (see
+  [Conformance](#conformance)).
+- **What the rule can and cannot detect.** It detects a TCP or UDP path that carries bytes back within 10 s on a probed
+  host:port. It cannot detect:
+  - a one-way leak: a path that forwards outbound bytes and drops every reply reads accepted or refused, never answered;
+  - a port that is not probed: the probe shows its own targets are blocked, not every address;
+  - a client-first server that silently drops what it is sent: a TCP target whose server waits for its own protocol and
+    drops a first message it cannot parse (an HTTP `HEAD` sent to a port that speaks something else) reads `accepted`.
+    The defaults never meet this (443 gets TLS, 53 DNS); only an operator's own `probeTargets` can.
+- **What it changes.** Only a provider that probes, on a vendor whose firewall accepts first, reads differently. Docker
+  reads its network back from `docker inspect` (`--network none` leaves no interface but `lo`, so a TCP connection is
+  refused outright and a UDP datagram has no route, which `test/docker/modal-commands.docker.test.mjs` pins with the
+  probe itself, every default target refused); Daytona reads `networkBlockAll` back from its API and runs no probe;
+  Modal's live run with `blockNetwork` read back no TCP accept at any target under the earlier accept-counts rule, so
+  nothing it accepted is newly let through. The UDP targets have not yet run live on Modal.
 
 ### Processes
 
@@ -385,8 +436,8 @@ if (connected.ok) {
 await docker.release(made.value, "delete");
 ```
 
-- `capabilities()` declares kind `linux`, daemon `pid1`, groups `exec`, `files` and `processes`, and `maxLifetimeMs`
-  of 30 days; there is no `extend()` or `stream()`, and init gets no `--max-deadline`.
+- `capabilities()` declares kind `linux`, daemon `pid1`, groups `exec`, `files` and `processes`, `maxLifetimeMs`
+  of 30 days, and `mount: ["bind"]` (below); there is no `extend()` or `stream()`, and init gets no `--max-deadline`.
 - `new DockerProvider({ daemonPath, desktop: {} })` makes desktops: kind `desktop`, with `screen`, `input.pointer` and
   `input.keys` too, on an image with an X server (`test/fixtures/desktop/Dockerfile` is Alpine and Xvfb, 48 MB).
   `create` gives the daemon `DISPLAY` (`display`, default `:0`), then starts the X server through it with
@@ -423,7 +474,7 @@ await docker.release(made.value, "delete");
   computer's user, mode 700, the one place a non-root user can surely write. It is memory: what it holds counts against
   the memory limit, and it does not survive a stop. So it holds at most half of `memoryMb` (`size=2048m` by default): a
   full `/work` fails a write with "No space left on device" instead of letting the memory limit OOM-kill a process,
-  PID 1 included. Storage that lasts is the agent disk's job, not this package's.
+  PID 1 included. What lasts is the run's folder, bound at `/workspace` when the spec asks (below).
 - `create` ends with the drift check (below): a computer that is not what was declared is deleted, and `create`
   refuses with every mismatch in words.
 - `create(spec, { signal })` passes the signal to every step: `docker info` before `docker run` (an abort there makes
@@ -440,12 +491,14 @@ await docker.release(made.value, "delete");
   when the computer runs, its daemon's hello. A computer that drifts is refused (`refused`) with every mismatch, and
   left as it is: attach did not make it, so it does not delete it. A stopped computer is checked by inspect alone. A
   computer that passes is returned as its ref with `spec`, the spec read back (`{ image, user, network, cpus,
-  memoryMb, pids, workdir, deadline }`), so a caller sees what it attached to: `user` is `uid:gid` (`"0:0"` for a
-  computer whose spec asked for root) and `network` the policy read back. `list` keeps its own shape (`ComputerInfo`).
+  memoryMb, pids, workdir, deadline, mount? }`), so a caller sees what it attached to: `user` is `uid:gid` (`"0:0"` for a
+  computer whose spec asked for root), `network` the policy read back, and `mount` the run's folder bound at
+  `/workspace`, when one is. `list` keeps its own shape (`ComputerInfo`).
 - `list(labels)` runs `docker ps -a --filter label=agentrun.computer=1 --filter label=k=v ...`, then inspects the
   matches 50 at a time, reading only the fields it reports, so any number of computers is listed (a computer gone
   between the two is left out). It returns each computer's `ref`, `labels`, `deadline` (a `Date`, or `undefined` when the label is missing or is not
-  the ISO time the provider writes), `state` (`running` or `stopped`) and `network` as read back.
+  the ISO time the provider writes), `state` (`running` or `stopped`), `network` as read back, and `mount` when
+  something is mounted at `/workspace`.
 - `network(ref)` reads the network back: `none` (network mode none, on no network but Docker's own `none`), `open`
   (the default bridge alone), or `{ other: "<words>" }` for anything else, which is never reported as a policy.
   `network(ref, policy)` returns the policy when it is the computer's; any change is refused: a Docker computer's
@@ -460,6 +513,61 @@ Expected failures are results (`{ ok: false, error: { code, message } }`), not t
 
 What a Docker computer cannot do: run as root or in root's group unless its spec asks, switch users, gain a capability, reach any network
 when asked for `none`, write the daemon, or run past its deadline.
+
+### Mounting the run's folder
+
+A computer mounts the run's folder; tools then run inside it. The spec has one field for it, `mount`, and every
+computer has the folder at one path, `/workspace` (`WORKSPACE`). `HOME` stays where the provider puts it (`/work` on
+Docker): `/workspace` is only the mount.
+
+```ts
+import { DockerProvider, WORKSPACE } from "@parcha/agentrun-computer";
+
+const docker = new DockerProvider({ daemonPath: "dist/computerd-linux-amd64" });
+// The run folder must exist, by its canonical path, and be writable by docker.user (below).
+const made = await docker.create({ image: "debian:bookworm-slim", lifetimeMs: 600_000, network: "none", mount: { kind: "bind", path: "/data/runs/r1/work" } });
+// In the computer: files.read({ path: `${WORKSPACE}/notes.md` }), exec.run({ argv: ["make"], cwd: WORKSPACE, ... })
+```
+
+- `ComputerSpec.mount` is `{ kind: "bind", path }`, a folder on the provider's host bound in (the local Docker
+  computer), or `{ kind: "archil", disk, region, folder, token }`, the run's folder (such as
+  `agents/<a>/runs/<r>/work`) inside an Archil disk in its region, mounted in a remote computer.
+  `capabilities().mount` lists the kinds a provider takes; absent, it takes none. Each provider file also exports
+  `MOUNT` beside its `ENV`, the same kinds (Docker `["bind"]`; Modal and Daytona `[]` for now), so a caller tells which
+  provider binds a local folder from the registry (`providerModule(id)`) without building one.
+- `checkMount(mount, declared)` (`src/mount.ts`) is the one rule every provider's `check` runs, with no vendor call: a
+  kind the provider does not declare is refused in words (`this provider does not take a mount of kind archil; it takes
+  bind`); a bind's `path` is absolute, canonical (its own realpath, so what is read back is what is bound: Docker
+  reports a bind's source as given, a symlink included), an existing directory on the host, with no NUL; an Archil
+  mount's `disk`, `region`, `folder` and `token` are non-empty strings with no NUL, the `folder` relative to the disk's root and
+  with no `..` part. A field the kind does not have is refused.
+- **The token is a secret.** No refusal names an Archil field's value (a token put in the wrong field is not echoed),
+  and what a provider reads back of a mount, `MountReadBack` (`readBackOf(mount)`), is its kind and source alone:
+  `{ kind: "bind", path }` or `{ kind: "archil", disk, region, folder }`, or `{ other: "<words>" }` for a mount at
+  `/workspace` the provider never makes. The token is never in a label, a read-back or an error.
+- **Docker takes a bind.** `create` adds `--mount type=bind,src=<path>,dst=/workspace` after the daemon's mount:
+  read-write, propagation `rprivate`. A path Docker's `--mount` cannot hold (a comma, a double quote, a line break) is
+  refused by `check`.
+- **The run folder must be writable by the computer's user.** The provider binds the folder as it is and never chowns
+  or chmods it: whoever makes the run folder gives it that user, the spec's `user` or the provider's (`docker.user`,
+  this process's uid:gid by default). `create` checks it after reading the host (`docker info`) and before
+  `docker run`, as the kernel will: the owner's, the group's or others' bits of the folder's mode, by the user's uid
+  and gid, must allow write and search; else it refuses in words (`the run folder /data/runs/r1/work is not writable
+  by the computer's user 1000:1000: it is owned by 0:0 with mode 0755; ...`). A computer's user has no capabilities,
+  root included, so no other way in. On an SELinux host the folder needs a label containers may use; the provider
+  does not relabel it.
+- **No bind on a host that remaps user ids.** Under userns-remap or rootless Docker (`docker info`'s
+  `SecurityOptions` holds `name=userns` or `name=rootless`; `host().remap`), a computer's uid is another uid on the
+  host, so the folder's owner says nothing about whether the computer can write it. The provider does not guess the
+  mapping from `/etc/subuid`: `create` with a bind on such a host is refused in words before any `docker run`
+  (`this Docker host remaps user ids (rootless Docker), so the run folder's owner on the host is not the computer's
+  user, ...`), and `check` refuses it too once the host is read. A computer with no mount is made there as before.
+  The conformance case `mount.run-folder-bind` fails on such a host, in those words: the provider declares a bind this
+  host cannot give.
+- `attach` and `list` read the mount back from `docker inspect` (`mountOf(inspected)`): a read-write bind at
+  `/workspace` is `{ kind: "bind", path }`; a read-only one, a volume or two mounts there is `{ other }`, and `attach`
+  refuses such a computer. The drift check (below) holds a computer to the mount it was asked for: the bind there, from
+  that path, read-write, `rprivate`, and no other mount.
 
 ### The drift check
 
@@ -484,7 +592,7 @@ From `docker inspect`, what create asks for:
 | `HostConfig.Memory`, `MemorySwap` | both `memoryMb` MiB, or 4096 MiB |
 | `HostConfig.CpuPeriod`, `CpuQuota` | 100000, and `cpus` (or 2) times 100000 |
 | `HostConfig.Tmpfs` | exactly `/work` and `/run/agentrun`, each with that uid and gid, `mode=0700`, `nosuid` and `nodev` (`/work` `exec` and `size=` half of `memoryMb` in MiB, `/run/agentrun` `noexec` and `size=1m`); options in any order; a missing or other size, or another tmpfs, is drift |
-| `HostConfig.Mounts`, `Mounts` | the provider's daemon binary bound read-only at `/opt/agentrun/computerd` (propagation `rprivate`), and no other mount of any type: an image's `VOLUME` is drift too, so an image that declares one is refused |
+| `HostConfig.Mounts`, `Mounts` | the provider's daemon binary bound read-only at `/opt/agentrun/computerd` (propagation `rprivate`); when the spec has a `mount`, then the run's folder bound read-write at `/workspace` from exactly that path (propagation `rprivate`); and no other mount of any type: an image's `VOLUME` is drift too, so an image that declares one is refused |
 | `Config.User` | the uid:gid asked for: the spec's, the provider's, or the default |
 | `Config.Image`, `WorkingDir` | the spec's image; its `workdir`, or `/work` |
 | `Config.Env` | one `HOME`, `HOME=/work`; the image's other variables are its own |
@@ -661,15 +769,18 @@ of that slice, and the live conformance file waits for a key (below).
 - **Network.** `none` is `blockNetwork: true`; `open` passes no network field. Modal has no read-back of a sandbox's
   policy, so `networkReadBack` is false and the daemon's probe stands for one: `create`, `attach` and `network(ref)` run
   `computerd probe` through `exec.run`, as the computer's user, against public addresses (`1.1.1.1:443`,
-  `8.8.8.8:443`, `[2606:4700:4700::1111]:443`, or the `probeTargets` option). A computer with network none that
-  reaches any of them is terminated at create, refused by attach, and reads back as another network in words. This
-  shows those addresses are blocked, not every one. An allowlist is refused: Modal's CIDR allowlist (any protocol,
+  `8.8.8.8:443`, `[2606:4700:4700::1111]:443`, and DNS over UDP to `1.1.1.1:53/udp` and
+  `[2606:4700:4700::1111]:53/udp`, or the `probeTargets` option). A computer with network none that any of
+  them answers is terminated at create, refused by attach, and reads back as another network in words; one that only
+  accepted, sending nothing back, is kept, the targets named in `notes` (see
+  [Network none, read from inside](#network-none-read-from-inside-nothing-answers)). This shows those addresses are
+  blocked, not every one. An allowlist is refused: Modal's CIDR allowlist (any protocol,
   every port) and its domain allowlist (beta, TLS on 443 by SNI only) cannot be read back, so per ruling 9 an
   allowlist counts only once the live bypass cases pass. A change of network is refused: blockNetwork cannot be
   updated, and an allowlist only if one was set at create.
 - **The drift check** after create: `poll()` is null (it runs), `getTags()` reads back exactly the tags given, hello's
   version, os, arch (`amd64`), kind (`linux`) and exact groups match, and the probe's uid:gid is the computer's user, its kernel is
-  not gVisor's (`4.19.0-gvisor`), and with network none it reached nothing. A mismatch, an abort or a timeout
+  not gVisor's (`4.19.0-gvisor`), and with network none none of its targets answered. A mismatch, an abort or a timeout
   terminates the sandbox and refuses in words. The SDK reads back no runtime, image or size: the probe's kernel is the
   only runtime read-back, and image and sizes are what create recorded in a tag only the host's token writes.
 - **Sizes are limits**, as in Docker: `cpus` (at least 0.25) becomes `cpuLimit` in physical cores (2 CPUs each) and
@@ -1115,7 +1226,7 @@ repository's main; the docs were read on 2026-11-05.
 
 A provider for another vendor passes the same suite as Docker's, with one command. The suite is data: each case in
 `src/conformance/cases/` names its level, its group (`health`, `exec`, `files`, `process`, `provider`, `drift`,
-`screen`, `input`, `touch`, `apps`, `lifetime`) and the capabilities it needs, and uses only `ComputerProvider`,
+`mount`, `screen`, `input`, `touch`, `apps`, `lifetime`) and the capabilities it needs, and uses only `ComputerProvider`,
 `ComputerClient` and the suite's assertion helpers, so the same cases run against a provider with daemon `none`.
 
 ```sh
@@ -1134,14 +1245,18 @@ full lifetime  extend                                       - 1
 optional screen screenshot-size                              - 1
   - screen.screenshot-size: the provider does not declare screen
 ...
-core PASS 54/54 · 9 optional cases skipped, not declared · full 5/10 · network:allow screen stream input.pointer input.keys input.touch apps.install apps apps.ui_tree extend not declared
+core PASS 54/54 · 9 optional cases skipped, not declared · full 7/13 · network:allow mount:archil screen stream input.pointer input.keys input.touch apps.install apps apps.ui_tree extend not declared
 ```
 
 An id is resolved through the provider registry, and only there; the usage lists every id it holds. A module path is
 resolved from the directory npm was run in. It exits 0 when Core passes, 1 when it fails, 2 on a
 usage error, and 3 on a partial run; `--json` prints the report object (`{ provider, providerVersion, kind,
 daemonMode, image, daemon: { version, os, arch }, only?, coreNotRun?, results: [{ id, level, group, status, reason?,
-undeclared? }], core, undeclared, cleanup }`). A failure is listed under its line with what the case found.
+undeclared? }], core, undeclared, cleanup, notes?, computerNotes? }`). A failure is listed under its line with what the
+case found. `computerNotes` (`[{ computer, note }]`, absent when empty) holds every note a `create` returned beside its
+ref, such as a probe target that accepted and sent nothing back, naming the computer, in the order they came; the text
+report prints each as `note <computer>: <words>` above the verdict, so a run that passes Core never hides one. Notes an
+`attach` returns are not carried: cases call `attach` on the provider directly, so the runner never sees them.
 
 `--only` that leaves any Core case out is a partial run: `core` is `"partial"` when every case that ran passed (a
 skipped Core case is not a pass) and nothing was left behind, else `"fail"`; `coreNotRun` names the Core cases that did
@@ -1158,6 +1273,11 @@ What a module given by path implements: either a provider file's `fromEnv()` (se
 - `export function createDriftedProvider()`, for the drift case: the same provider with a daemon that reports a version
   other than `version`. A computer of that daemon must never be handed out: `create` refuses it (and deletes it), or
   `connect` refuses it. Without this export the case is skipped, so Core does not pass.
+- `export function mountFor(kind)`, for the mount cases: a fresh run folder for a mount kind the provider declares
+  (`RunFolder`: `{ mount, read(path), write(path, data), close() }`), with its outside, where no computer runs: the
+  folder on the host for a bind, the disk's file API for Archil. `undefined` for a kind it cannot make. The runner
+  closes each folder when its case ends. `--provider docker` gives a bind of a new folder under the temp directory,
+  owned by the provider's user. Without this export the mount cases skip in words.
 
 Core and Full follow the Kubernetes agent-sandbox conformance levels (KEP-539.2):
 
@@ -1201,8 +1321,16 @@ Core and Full follow the Kubernetes agent-sandbox conformance levels (KEP-539.2)
   deadline unchanged: to an earlier deadline, to maxLifetimeMs + 1, and, 60 s after create, to maxLifetimeMs less 30 s,
   within the cap on its own but past create + maxLifetimeMs; a cap under 3 min skips it) and `screen.stream`
   (`stream`: an https URL that answers 200; only its origin is ever reported).
+- **The mount group is Full**, optional for every kind until the cutover decides. "Mounts the run's folder",
+  `mount.run-folder-bind` and `mount.run-folder-archil` (`mount:bind`, `mount:archil`, from `capabilities().mount`):
+  on a computer of its own made with the run folder `mountFor(kind)` gives, `check` takes the spec, `attach` and `list`
+  read the mount back as asked (`readBackOf`), a file written outside is read at `/workspace` with `files.read`, one
+  `files.write` makes there is read outside, and `cat <file>` run through `exec.run` with `cwd: "/workspace"` prints
+  it. For Archil, no read-back holds the token. `mount.undeclared-kind`: each kind the provider does not declare is
+  refused by `check` with `field: "mount"` in words, and by `create` with `check`'s words, before any vendor call, with
+  the token in no refusal; a provider that declares every kind skips it.
 
-A case needs groups (declared by both `capabilities().groups` and hello), networks, the janitor, a user, or an optional
+A case needs groups (declared by both `capabilities().groups` and hello), networks, the janitor, a user, a mount kind, or an optional
 provider method (`extend`, `stream`, declared by being there). When a Core case needs what its kind requires and the
 provider or the computer lacks it, the case fails in words: `a desktop computer with daemon pid1 must declare screen:
 the provider does not declare screen`. Any other need that is not declared skips the case with the reason, never
@@ -1239,8 +1367,8 @@ is out. Cases do not assume root: the suite assumes only that the
 computer's `HOME`, which the provider sets, is a directory its user can write, and works under
 `$HOME/agentrun-conformance-<run id>`.
 
-From code: `runConformance(provider, { image, only?, signal?, drifted?, caseTimeoutMs?, cleanupTimeoutMs?, fixture?,
-fetch? })` returns the report, and `formatReport(report)` the text above.
+From code: `runConformance(provider, { image, only?, signal?, drifted?, mountFor?, caseTimeoutMs?, cleanupTimeoutMs?,
+fixture?, fetch? })` returns the report, and `formatReport(report)` the text above.
 
 ## Adding a computer
 

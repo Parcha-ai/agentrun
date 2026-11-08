@@ -14,9 +14,11 @@ import { fakeComputers } from "./fake-computer.mjs";
 const IMAGE = "debian:bookworm-slim";
 const HERE = fileURLToPath(new URL(".", import.meta.url));
 const CLI = fileURLToPath(new URL("../dist/conformance/cli.js", import.meta.url));
-const GROUPS = ["health", "exec", "files", "process", "provider", "drift", "screen", "input", "touch", "apps", "lifetime"];
+const GROUPS = ["health", "exec", "files", "process", "provider", "drift", "mount", "screen", "input", "touch", "apps", "lifetime"];
 const PROTOCOL_GROUPS = ["exec", "files", "processes", "screen", "input.pointer", "input.keys", "input.touch", "apps", "apps.install", "apps.ui_tree"];
-const CAPABILITIES = [...PROTOCOL_GROUPS, "network:none", "network:open", "network:allow", "lifetime:janitor", "user:root", "user:uid", "release:stop", "extend", "stream"];
+const CAPABILITIES = [...PROTOCOL_GROUPS, "network:none", "network:open", "network:allow", "lifetime:janitor", "user:root", "user:uid", "release:stop", "extend", "stream", "mount:bind", "mount:archil"];
+/** Groups with no Core case: lifetime's extend and the mount of the run's folder are optional for every kind. */
+const OPTIONAL_GROUPS = ["lifetime", "mount"];
 
 const pass = (id, extra = {}) => ({ id, level: "core", group: id.split(".")[0], needs: [], run: async () => {}, ...extra });
 const statuses = (report) => Object.fromEntries(report.results.map((r) => [r.id, r.status]));
@@ -343,9 +345,12 @@ test("each case of the suite is data: a unique id in its group, a level, and nee
 		if (c.level === "core") assert.ok(c.needs.every((need) => [...PROTOCOL_GROUPS, "network:none"].includes(need)), `${c.id}: a Core case needs only groups and network:none`);
 		assert.equal(typeof c.run, "function");
 	}
-	// lifetime's one case is Full: extend is optional for every kind.
-	for (const group of GROUPS.filter((g) => g !== "lifetime")) assert.ok(conformanceCases.some((c) => c.group === group && c.level === "core"), `a Core case in ${group}`);
-	assert.ok(conformanceCases.some((c) => c.group === "lifetime"), "a case in lifetime");
+	// lifetime's one case is Full: extend is optional for every kind. So is every mount case, until the cutover decides.
+	for (const group of GROUPS.filter((g) => !OPTIONAL_GROUPS.includes(g))) assert.ok(conformanceCases.some((c) => c.group === group && c.level === "core"), `a Core case in ${group}`);
+	for (const group of OPTIONAL_GROUPS) {
+		assert.ok(conformanceCases.some((c) => c.group === group), `a case in ${group}`);
+		assert.deepEqual(conformanceCases.filter((c) => c.group === group && c.level !== "full").map((c) => c.id), [], `every ${group} case is Full`);
+	}
 });
 
 const byId = (...ids) => conformanceCases.filter((c) => ids.includes(c.id));
@@ -804,6 +809,44 @@ test("files.list passes a daemon whose pages hold one entry each", async () => {
 		const report = await runConformance(fake.provider, { image: IMAGE, cases: byId("files.list") });
 		assert.equal(statuses(report)["files.list"], "pass", `pages of ${filesPage}: ${reasons(report)["files.list"]}`);
 	}
+});
+
+test("the provider cases compare a computer by its id and name, so a create that also returns notes still passes", async () => {
+	const notes = ["network: none; accepted with no answer (no bytes came back): 1.1.1.1:443"];
+	const report = await runConformance(fakeComputers({ notes }).provider, { image: IMAGE, cases: byId("provider.attach", "provider.list", "provider.janitor") });
+	assert.deepEqual(statuses(report), { "provider.attach": "pass", "provider.list": "pass", "provider.janitor": "pass" }, JSON.stringify(reasons(report)));
+});
+
+test("the notes create returns are in the report, each naming its computer, and the text report prints every one", async () => {
+	const note = "network: none; accepted with no answer (no bytes came back): 1.1.1.1:443";
+	const { provider, made } = fakeComputers({ notes: [note] });
+	const report = await runConformance(provider, {
+		image: IMAGE,
+		cases: [pass("health.ping"), pass("provider.fresh", { computer: "none", run: async (t) => void (await t.create()) })],
+	});
+	assert.equal(report.core, "pass", JSON.stringify(reasons(report)));
+	assert.equal(made.length, 2, "the run's computer and the case's");
+	const names = made.map(({ name }) => name);
+	assert.deepEqual(report.computerNotes, names.map((computer) => ({ computer, note })), "one entry per note, naming the computer that recorded it");
+	assert.deepEqual(JSON.parse(JSON.stringify(report)).computerNotes, report.computerNotes, "the same in --json's report object");
+	const lines = formatReport(report).trimEnd().split("\n");
+	for (const computer of names) assert.ok(lines.includes(`note ${computer}: ${note}`), `${computer}'s note in:\n${lines.join("\n")}`);
+	assert.match(lines.at(-1), /^core PASS 2\/2/, "the verdict stays last");
+	const quiet = await runConformance(fakeComputers().provider, { image: IMAGE, cases: [pass("health.ping")] });
+	assert.equal(Object.hasOwn(quiet, "computerNotes"), false, "no notes, no field");
+	assert.doesNotMatch(formatReport(quiet), /^note /m);
+});
+
+test("the CLI's --json carries the notes create returned", async () => {
+	const out = sink();
+	assert.equal(await main(["--provider", "./fixtures/accept-first-provider.mjs", "--json"], { stdout: out, cwd: HERE, cases: [pass("health.ping")] }), 0);
+	const report = JSON.parse(out.text());
+	assert.equal(report.computerNotes?.length, 1, out.text());
+	assert.match(report.computerNotes[0].computer, /./);
+	assert.equal(report.computerNotes[0].note, "network: none; accepted with no answer (no bytes came back): 1.1.1.1:443");
+	const text = sink();
+	assert.equal(await main(["--provider", "./fixtures/accept-first-provider.mjs"], { stdout: text, cwd: HERE, cases: [pass("health.ping")] }), 0);
+	assert.match(text.text(), /^note \S+: network: none; accepted with no answer \(no bytes came back\): 1\.1\.1\.1:443$/m);
 });
 
 test("drift.version passes only on a refusal that is the version drift, never on a create or connect refused for another reason", async () => {

@@ -2,7 +2,7 @@
 // and the inspect reading follow pi-transport's Docker box.
 import { execFile, spawn } from "node:child_process";
 import { randomBytes } from "node:crypto";
-import { readFileSync, statSync } from "node:fs";
+import { readFileSync, type Stats, statSync } from "node:fs";
 import { resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 import { setTimeout as sleep } from "node:timers/promises";
@@ -21,10 +21,12 @@ import {
 	helloDrift,
 	hostOf,
 	inspectDrift,
+	mountOf,
 	networkOf,
 	tmpfsOf,
 	WORK,
 } from "./drift.js";
+import { checkMount, type MountKind, type MountReadBack, WORKSPACE } from "./mount.js";
 import {
 	type AttachedComputer,
 	type CallContext,
@@ -77,6 +79,9 @@ export const ENV = {
 	/** Who a computer runs as when its spec does not say, uid or uid:gid in numbers; see DockerProviderOptions.user. */
 	user: "COMPUTER_DOCKER_USER",
 } as const;
+
+/** The mount kinds a Docker computer takes, as capabilities().mount declares them: a bind of a folder on this host. */
+export const MOUNT: readonly MountKind[] = ["bind"];
 
 export interface DockerFromEnvOptions extends Partial<DockerProviderOptions> {
 	/** The longest `docker version` may take, when fromEnv asks Docker its architecture; default 30 s. */
@@ -140,12 +145,14 @@ const INSPECT_BATCH = 50;
  *  output is capped. */
 const LIST_FORMAT =
 	'{"Id":{{json .Id}},"Name":{{json .Name}},"State":{"Running":{{json .State.Running}}},"Config":{"Labels":{{json .Config.Labels}}},' +
-	'"HostConfig":{"NetworkMode":{{json .HostConfig.NetworkMode}}},"NetworkSettings":{"Networks":{{json .NetworkSettings.Networks}}}}';
+	'"HostConfig":{"NetworkMode":{{json .HostConfig.NetworkMode}}},"NetworkSettings":{"Networks":{{json .NetworkSettings.Networks}}},"Mounts":{{json .Mounts}}}';
 /** The longest lifetime: 30 days. A computer meant to live longer is asked for again. No extend(): the deadline is a
  *  container label, and a label cannot change after create. */
 const MAX_LIFETIME_MS = 30 * 24 * 60 * 60 * 1000;
-const SPEC_FIELDS = new Set(["image", "lifetimeMs", "network", "cpus", "memoryMb", "pids", "labels", "workdir", "user"]);
+const SPEC_FIELDS = new Set(["image", "lifetimeMs", "network", "cpus", "memoryMb", "pids", "labels", "workdir", "user", "mount"]);
 const NUL = "a NUL byte cannot be passed to docker run";
+/** What --mount's comma-separated fields cannot hold in a source path. */
+const MOUNT_UNSAFE = /[,"\r\n]/;
 const ALLOWLIST = "a Docker computer cannot enforce an allowlist yet; ask for network none or open";
 /** Docker cannot move a container with no network onto one, nor take one off a network without a restart. */
 const FIXED = "a Docker computer's network is fixed at create; create a new computer";
@@ -191,6 +198,11 @@ export class DockerProvider implements ComputerProvider {
 		this.#user = given;
 	}
 
+	/** The uid:gid a computer runs as when its spec names no user: the user a bound run folder must be writable by. */
+	get user(): string {
+		return this.#user;
+	}
+
 	capabilities(): ComputerCapabilities {
 		return {
 			kind: this.#desktop ? "desktop" : "linux",
@@ -205,19 +217,23 @@ export class DockerProvider implements ComputerProvider {
 			user: ["root", "uid"],
 			release: ["stop", "delete"],
 			stopDeletes: false,
+			mount: [...MOUNT],
 		};
 	}
 
-	/** The spec's refusals, and the host's once create, attach or host() has read it. */
+	/** The spec's refusals, and the host's once create, attach or host() has read it: its problems, and a bind on a host
+	 *  that remaps user ids. */
 	check(spec: ComputerSpec): Refusal[] {
-		return [...this.#checkSpec(spec), ...(this.#host?.problems ?? []).map((message) => ({ field: "host", message }))];
+		const host = this.#host;
+		const remapped = host?.remap !== undefined && spec?.mount?.kind === "bind" ? [{ field: "mount", message: remapWords(host.remap, String(spec.mount.path)) }] : [];
+		return [...this.#checkSpec(spec), ...remapped, ...(host?.problems ?? []).map((message) => ({ field: "host", message }))];
 	}
 
 	#checkSpec(spec: ComputerSpec): Refusal[] {
 		const refusals: Refusal[] = [];
 		const refuse = (field: string, message: string) => refusals.push({ field, message });
 		const given = spec as unknown as Record<string, unknown>;
-		const { image, lifetimeMs, network, cpus, memoryMb, pids, labels, workdir, user } = given;
+		const { image, lifetimeMs, network, cpus, memoryMb, pids, labels, workdir, user, mount } = given;
 		if (typeof image !== "string" || image.trim() === "" || image.startsWith("-")) {
 			refuse("image", "an image is required, such as debian:bookworm-slim");
 		} else if (image.includes("\0")) refuse("image", NUL);
@@ -240,6 +256,12 @@ export class DockerProvider implements ComputerProvider {
 			refuse("workdir", "workdir must be an absolute path in the computer");
 		} else if (workdir?.includes("\0")) refuse("workdir", NUL);
 		if (user !== undefined && userOf(user) === undefined) refuse("user", `user must be ${USER_FORM}`);
+		const mounts = checkMount(mount, this.capabilities().mount);
+		refusals.push(...mounts);
+		const path = (mount as { path?: unknown } | undefined)?.path;
+		if (mounts.length === 0 && typeof path === "string" && MOUNT_UNSAFE.test(path)) {
+			refuse("mount", `mount.path ${JSON.stringify(path)}: a Docker mount cannot hold a comma, a double quote or a line break in its path`);
+		}
 		for (const [field, value] of Object.entries(given)) {
 			if (!SPEC_FIELDS.has(field) && value !== undefined) refuse(field, `a Docker computer does not support ${field}`);
 		}
@@ -249,6 +271,8 @@ export class DockerProvider implements ComputerProvider {
 	async create(spec: ComputerSpec, { signal }: { signal?: AbortSignal } = {}): Promise<Result<ComputerRef>> {
 		const refusals = this.check(spec);
 		if (refusals.length > 0) return fail("refused", refusals.map(({ field, message }) => `${field}: ${message}`).join("; "));
+		const user = userOf(spec.user) ?? this.#user;
+		const bound = spec.mount?.kind === "bind" ? spec.mount.path : undefined;
 		const mode = fileMode(this.#daemonPath);
 		if (mode === undefined) {
 			return fail("not_found", `no daemon binary at ${this.#daemonPath}: run npm run build:daemon -w @parcha/agentrun-computer`);
@@ -262,12 +286,18 @@ export class DockerProvider implements ComputerProvider {
 		const host = await this.host({ signal });
 		if (!host.ok) return host;
 		if (host.value.problems.length > 0) return fail("refused", `host: ${host.value.problems.join("; ")}`);
+		if (bound !== undefined) {
+			// Under remapped ids the folder's owner on the host is not the computer's user: refuse, never guess the mapping.
+			if (host.value.remap !== undefined) return fail("refused", `mount: ${remapWords(host.value.remap, bound)}`);
+			// The run folder is bound as it is: the computer's user, with no capabilities, must be able to write it.
+			const unwritable = folderProblem(bound, user);
+			if (unwritable !== undefined) return fail("refused", `mount: ${unwritable}`);
+		}
 		if (signal?.aborted) return fail("aborted", "create was aborted before docker run");
 		const name = `computer-${randomBytes(6).toString("hex")}`;
 		const deadline = new Date(Date.now() + spec.lifetimeMs).toISOString();
 		const args = ["run", "--detach", "--name", name, "--label", `${COMPUTER_LABEL}=1`, "--label", `${DEADLINE_LABEL}=${deadline}`];
 		for (const [key, value] of Object.entries(spec.labels ?? {})) args.push("--label", `${key}=${value}`);
-		const user = userOf(spec.user) ?? this.#user;
 		const memoryMb = spec.memoryMb ?? DEFAULT_MEMORY_MB;
 		args.push("--user", user, "--env", `HOME=${WORK}`);
 		if (this.#desktop) args.push("--env", `DISPLAY=${this.#desktop.display}`);
@@ -281,6 +311,8 @@ export class DockerProvider implements ComputerProvider {
 		const memory = `${memoryMb}m`;
 		args.push("--memory", memory, "--memory-swap", memory);
 		args.push("--mount", `type=bind,src=${this.#daemonPath},dst=${DAEMON_IN_COMPUTER},readonly`, "--entrypoint", DAEMON_IN_COMPUTER);
+		// The run's folder, read-write at /workspace; HOME and the default workdir stay /work.
+		if (bound !== undefined) args.push("--mount", `type=bind,src=${bound},dst=${WORKSPACE}`);
 		args.push("--workdir", spec.workdir ?? WORK);
 		// PID 1 ends the computer at the deadline the label holds, so a computer the janitor misses still stops.
 		args.push(spec.image, "init", "--deadline", deadline);
@@ -420,6 +452,10 @@ export class DockerProvider implements ComputerProvider {
 		if (Number.isNaN(at) || new Date(at).toISOString() !== deadline) {
 			found.push(`deadline: the label ${DEADLINE_LABEL} reads ${JSON.stringify(deadline)}, not the ISO time create writes`);
 		} else if (at > Date.now() + this.capabilities().maxLifetimeMs + 60_000) found.push(`deadline: ${deadline} is past the 30 days create allows`);
+		// The run's folder as the computer has it. The folder on the host is not checked again: it is what is bound.
+		const mount = mountOf(report);
+		if (mount !== undefined && "other" in mount) found.push(`mount: ${mount.other}, which this provider never makes`);
+		const bind = mount !== undefined && "kind" in mount && mount.kind === "bind" ? mount : undefined;
 		const spec = {
 			image: config.Image,
 			lifetimeMs: 1,
@@ -429,8 +465,9 @@ export class DockerProvider implements ComputerProvider {
 			pids: limits.PidsLimit,
 			workdir: config.WorkingDir,
 			user: config.User,
+			...(bind === undefined ? {} : { mount: bind }),
 		} as ComputerSpec;
-		found.push(...this.#checkSpec(spec).map(({ field, message }) => `${field}: ${message}, read back from the computer`));
+		found.push(...this.#checkSpec({ ...spec, mount: undefined }).map(({ field, message }) => `${field}: ${message}, read back from the computer`));
 		const user = userOf(config.User) ?? String(config.User);
 		const expected = this.#expected(host.value, deadline, user);
 		found.push(...inspectDrift(spec, report, expected).filter((line) => typeof network === "string" || !line.startsWith("network:")));
@@ -446,7 +483,8 @@ export class DockerProvider implements ComputerProvider {
 			return fail("refused", `the computer ${ref.name} does not match this provider, so attach refuses it and it is left as it is: ${found.join("; ")}`);
 		}
 		const { image, network: read, cpus, memoryMb, pids, workdir } = spec;
-		return ok({ ...ref, spec: { image, user, network: read, cpus, memoryMb, pids, workdir, deadline: new Date(at), ...(kind === undefined ? {} : { kind }) } });
+		const readBack = { image, user, network: read, cpus, memoryMb, pids, workdir, deadline: new Date(at), ...(kind === undefined ? {} : { kind }), ...(bind === undefined ? {} : { mount: bind }) };
+		return ok({ ...ref, spec: readBack });
 	}
 
 	async connect(ref: ComputerRef): Promise<Result<ComputerConnection>> {
@@ -645,7 +683,43 @@ function infoOf(report: DockerInspect): ComputerInfo {
 	const at = written === undefined ? Number.NaN : Date.parse(written);
 	const deadline = Number.isNaN(at) || new Date(at).toISOString() !== written ? undefined : new Date(at);
 	const state = report.State?.Running === true ? "running" : "stopped";
-	return { ref: { id: report.Id ?? "", name: nameOf(report) }, labels, deadline, state, network: networkOf(report) };
+	const mount: MountReadBack | undefined = mountOf(report);
+	return { ref: { id: report.Id ?? "", name: nameOf(report) }, labels, deadline, state, network: networkOf(report), ...(mount === undefined ? {} : { mount }) };
+}
+
+/**
+ * Why a bind is refused on a host that remaps user ids. The computer's uid is then another uid on the host (one Docker
+ * picks from /etc/subuid), so the folder's owner and mode say nothing about whether the computer can write it; the
+ * provider does not guess the mapping, and never changes the folder.
+ */
+function remapWords(remap: "userns" | "rootless", path: string): string {
+	return (
+		`this Docker host remaps user ids (${remap === "userns" ? "userns-remap" : "rootless Docker"}), so the run folder's owner on the host is not the ` +
+		`computer's user, and the provider cannot tell whether the computer can write ${path}; it never changes the folder: ` +
+		"bind the run folder on a Docker host that does not remap ids"
+	);
+}
+
+/**
+ * Why the computer's user cannot write the run folder it would bind, or undefined when it can. The kernel picks one
+ * class of the mode, the owner's, the group's or others', by the user's uid and gid; that class must allow write and
+ * search. A user with no capabilities, root included, has no other way in. The provider never chowns or chmods it.
+ */
+function folderProblem(path: string, user: string): string | undefined {
+	let stat: Stats;
+	try {
+		stat = statSync(path);
+	} catch (error) {
+		return `the run folder ${path} cannot be read: ${(error as Error).message}`;
+	}
+	const [uid, gid] = user.split(":").map(Number);
+	const bits = stat.uid === uid ? (stat.mode >> 6) & 7 : stat.gid === gid ? (stat.mode >> 3) & 7 : stat.mode & 7;
+	if ((bits & 3) === 3) return undefined;
+	const mode = (stat.mode & 0o7777).toString(8).padStart(4, "0");
+	return (
+		`the run folder ${path} is not writable by the computer's user ${user}: it is owned by ${stat.uid}:${stat.gid} with mode ${mode}; ` +
+		`the provider never changes it: chown it to ${user}, or give that user write and search permission`
+	);
 }
 
 /** "uid:gid" for a user in numbers (a uid alone is its own gid, never root's group 0), or undefined when it is not one. */

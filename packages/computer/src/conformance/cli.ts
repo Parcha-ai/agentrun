@@ -10,7 +10,7 @@ import { type ConformanceModule, isProviderId, type ProviderEnv, providerIds, pr
 import { conformanceCases } from "./cases/index.js";
 import { formatReport } from "./report.js";
 import { runConformance } from "./runner.js";
-import type { Case, CaseResult } from "./types.js";
+import type { Case, CaseResult, ConformanceOptions } from "./types.js";
 
 /** A stream as main writes to it: done is called once the text is handed on, as Writable.write's callback is. */
 export interface Writer {
@@ -39,10 +39,10 @@ export interface CliIo {
 const USAGE = `usage: npm run conformance -w @parcha/agentrun-computer -- --provider ${providerIds.join("|")}|<module.js> [--image <image>] [--only <group|case>,...] [--fixture <path>] [--json]
   --provider  a computer in the registry (${providerIds.join(", ")}), or a module path: a provider file that exports
               fromEnv(), or a conformance module that exports createProvider() (and, for the drift case,
-              createDriftedProvider())
+              createDriftedProvider(); for the mount cases, mountFor(kind), a fresh run folder for that mount kind)
   --image     the image every computer starts from (default the module's conformanceImage(), else debian:bookworm-slim)
-  --only      run only these groups (health, exec, files, process, provider, drift, screen, input, touch, apps,
-              lifetime) or case ids; a run that leaves Core cases out is partial: no Core verdict, and exit 3 when
+  --only      run only these groups (health, exec, files, process, provider, drift, mount, screen, input, touch,
+              apps, lifetime) or case ids; a run that leaves Core cases out is partial: no Core verdict, and exit 3 when
               every case that ran passed
   --fixture   the fixture the screen, input, touch and apps cases check effects with: computerd-fixture for a
               desktop, the fixture APK for an Android phone
@@ -101,6 +101,8 @@ const DEFAULT_IMAGE = "debian:bookworm-slim";
 interface Target {
 	provider: ComputerProvider;
 	drifted?: () => Promise<ComputerProvider>;
+	/** The module's run folders for the mount cases: mountFor(kind). */
+	mountFor?: ConformanceOptions["mountFor"];
 	/** The module's image for a run that names none. */
 	image?: string;
 	/** The module's notes for the report. */
@@ -139,11 +141,11 @@ async function conformanceModule(name: string, cwd: string, env: ProviderEnv | u
 }
 
 /**
- * The provider a conformance module makes, its drifted twin when it offers one, and what it says of its run:
- * conformanceImage(), the image when --image names none, and conformanceNotes, strings for the report.
+ * The provider a conformance module makes, its drifted twin and its run folders (mountFor) when it offers them, and what
+ * it says of its run: conformanceImage(), the image when --image names none, and conformanceNotes, strings for the report.
  */
 async function load(label: string, module: Partial<ConformanceModule>, options: object): Promise<Target> {
-	const { createProvider, createDriftedProvider, conformanceImage } = module;
+	const { createProvider, createDriftedProvider, conformanceImage, mountFor } = module;
 	if (typeof createProvider !== "function") throw new Usage(`${label} does not export createProvider() or fromEnv()`);
 	const provider = (await createProvider(options)) as ComputerProvider;
 	const lacks = PROVIDER_METHODS.filter((name) => typeof provider?.[name] !== "function");
@@ -152,6 +154,7 @@ async function load(label: string, module: Partial<ConformanceModule>, options: 
 	}
 	const target: Target = { provider };
 	if (typeof createDriftedProvider === "function") target.drifted = async () => (await createDriftedProvider(options)) as ComputerProvider;
+	if (typeof mountFor === "function") target.mountFor = (kind) => mountFor(kind, options);
 	if (conformanceImage !== undefined) {
 		const image = typeof conformanceImage === "function" ? await conformanceImage(options) : undefined;
 		if (typeof image !== "string" || image === "") throw new Usage(`${label}: conformanceImage() did not return an image`);
@@ -201,6 +204,7 @@ export async function main(argv: string[], io: CliIo = {}): Promise<number> {
 		...(args.fixture ? { fixture: resolve(cwd, args.fixture) } : {}),
 		...(signal ? { signal } : {}),
 		...(target.drifted ? { drifted: target.drifted } : {}),
+		...(target.mountFor ? { mountFor: target.mountFor } : {}),
 		...(onResult ? { onResult } : {}),
 	});
 	await write(stdout, args.json ? `${JSON.stringify(report, null, 2)}\n` : formatReport(report));
