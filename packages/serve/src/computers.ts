@@ -6,6 +6,7 @@
 // their names only: a provider declares them, Settings takes only those, and the store keeps each sealed under the
 // server's seal key (server-keys.ts); a provider is handed its keys only at the claim, or for its test, both through
 // computer-keys.ts (providerOptions, testConnection), which maps a key's name onto the option it fills.
+import type { KindCapabilities, ProviderEntry, SettingKindSpec } from "@parcha/agentrun-computer";
 import { KEY_TABLE, type KeyTable, type OptionsAnswer, type ProviderFactories, type ProviderSettings, providerOptions, testConnection } from "./computer-keys.js";
 import { COMPUTER_KINDS, type ComputerKind, type ComputerSetting } from "./computer-setting.js";
 import { inArchilMode } from "./archil-settings.js";
@@ -14,29 +15,9 @@ import { type KeyEnv, type KeyMeta, keyMetaOf, envValue } from "./key-meta.js";
 import { getSealedKey, putSealedKey, removeSealedKey, sealedKeyNames } from "./server-keys.js";
 import type { Store } from "./store/index.js";
 
-/** A setting kind as the kind registry's SETTING_KINDS gives it. */
-export interface SettingKindSpec {
-  readonly machineKinds: readonly string[];
-  readonly required: readonly string[];
-  readonly optional: readonly string[];
-}
+export type { KindCapabilities, ProviderEntry, SettingKindSpec };
 
-/** A provider configuration's machine kind and groups, as the kind registry gives them. */
-export type KindCapabilities = { readonly kind: string; readonly groups: readonly string[] };
-
-/** A provider as the kind registry's PROVIDERS gives it. */
-export interface ProviderEntry {
-  readonly id: string;
-  readonly label: string;
-  readonly kinds: readonly ComputerKind[];
-  readonly keys: readonly { readonly name: string; readonly required: boolean }[];
-  /** The mounts its computers take; none means it cannot mount the run's folder. */
-  readonly mounts: readonly string[];
-  readonly metered: boolean;
-  readonly capabilities: readonly KindCapabilities[];
-}
-
-/** The kind registry, by its own names. */
+/** The kind registry, by its own names: the computer package's module (SETTING_KINDS, PROVIDERS, servingRefusals). */
 export interface KindRegistry {
   readonly SETTING_KINDS: Readonly<Record<ComputerKind, SettingKindSpec>>;
   readonly PROVIDERS: readonly ProviderEntry[];

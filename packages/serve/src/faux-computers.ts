@@ -10,33 +10,14 @@
 //   (each action done, none performed). Its live view is a page serve itself answers on its own address, view-only or
 //   driving, so the run's take-over and hand-back have a viewer to open; after the release the page is gone.
 import { crc32, deflateSync } from "node:zlib";
+import { SETTING_KIND_NAMES, SETTING_KINDS, servingRefusals } from "@parcha/agentrun-computer";
 import type { KeyTable, ProviderFactories } from "./computer-keys.js";
 import type { ComputerKind } from "./computer-setting.js";
-import type { KindCapabilities, KindRegistry, ProviderEntry, SettingKindSpec } from "./computers.js";
+import type { KindCapabilities, KindRegistry, ProviderEntry } from "./computers.js";
 import type { ComputerSettingKind, LaunchedComputer } from "./workspace/resolve-computer.js";
 
-// The computer package's setting kinds and servingRefusals, as its kinds.ts gives them (the swap to its exports
-// replaces these two with the package's own).
-const SETTING_KINDS: Readonly<Record<ComputerKind, SettingKindSpec>> = {
-  none: { machineKinds: [], required: [], optional: [] },
-  sandbox: { machineKinds: ["linux"], required: ["exec", "files", "processes"], optional: [] },
-  desktop: { machineKinds: ["desktop"], required: ["screen", "input.pointer", "input.keys"], optional: ["exec", "files", "processes", "apps", "stream"] },
-  phone: { machineKinds: ["android", "ios"], required: ["screen", "input.touch", "apps"], optional: ["input.keys", "apps.install", "apps.ui_tree", "stream"] },
-  browser: { machineKinds: ["browser"], required: ["cdp"], optional: ["stream", "downloads"] },
-} as unknown as Readonly<Record<ComputerKind, SettingKindSpec>>;
-const KIND_NAMES = Object.keys(SETTING_KINDS) as ComputerKind[];
-
-function servingRefusals(capabilities: KindCapabilities, kind: ComputerKind): string[] {
-  const spec = Object.hasOwn(SETTING_KINDS, kind) ? SETTING_KINDS[kind] : undefined;
-  if (spec === undefined) return [`${JSON.stringify(kind)} is not a setting kind: ${KIND_NAMES.join(", ")}`];
-  if (spec.machineKinds.length === 0) return [`kind ${kind} is no computer: no provider serves it`];
-  const refusals: string[] = [];
-  if (!(spec.machineKinds as readonly string[]).includes(capabilities.kind)) refusals.push(`kind ${kind} is a ${spec.machineKinds.join(" or ")} machine, not a ${capabilities.kind} one`);
-  const groups = (Array.isArray(capabilities.groups) ? capabilities.groups : []) as readonly string[];
-  const missing = (spec.required as readonly string[]).filter((group) => !groups.includes(group));
-  if (missing.length > 0) refusals.push(`kind ${kind} needs groups ${missing.join(", ")}, which the provider does not declare`);
-  return refusals;
-}
+// The computer package's own setting kinds and servingRefusals; only the providers are faux.
+const KIND_NAMES = SETTING_KIND_NAMES as readonly ComputerKind[];
 
 const SANDBOX = { kind: "linux", groups: ["exec", "files", "processes"] } as unknown as KindCapabilities;
 const DESKTOP_GROUPS = ["screen", "input.pointer", "input.keys"] as const;
