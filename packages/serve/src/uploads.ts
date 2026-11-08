@@ -11,9 +11,9 @@ import { DISK_DIR } from "@parcha/pi-durable-agent";
 import { dirname, join } from "node:path";
 import { pipeline } from "node:stream/promises";
 import { ApiError, type InputIssue, invalid } from "./errors.js";
+import { typeOf } from "./file-types.js";
 import { readJson, serialBy, tempOf, writeDurable } from "./files.js";
 import { ID, type Json, unknownFields } from "./validate.js";
-import { typeOf } from "./workspace.js";
 
 /** `limits.max_upload_bytes`: the largest file a reservation names and a PUT sends. */
 export const MAX_UPLOAD_BYTES = 50 * 2 ** 20;

@@ -79,7 +79,10 @@ import { applyBodyOf, compiled, type Package, packageModel, packageView, readPac
 import { checkDefinitionBody, DEFAULT_INPUT_SCHEMA, definitionBodyIssues, ID, IDEMPOTENCY_TTL_S, inputIssues, isObject, type Json, stable, unknownFields } from "./validate.js";
 import { agentTools, browserKeyRow, isUnavailable, recheckPlane, settingsIssues, ToolSettings, type ToolSettingsMap, whyUnavailable, withDefaults } from "./tool-plane.js";
 import { MAX_FILES_PER_RUN, MAX_UPLOAD_BYTES, Uploads, UPLOADS_DIR } from "./uploads.js";
-import { INLINE_TYPES, openWorkFile, removeWorkFile, typeOf, WALK_DEPTH, walkWork, WorkRefused, writesHeld, writeWorkFile } from "./workspace.js";
+import { INLINE_TYPES, typeOf } from "./file-types.js";
+import { FILE_CSP, listFiles, sendFile as sendWorkspaceFile } from "./run-files.js";
+import { openWorkFile, removeWorkFile, WALK_DEPTH, walkWork, WorkRefused, writesHeld, writeWorkFile } from "./workspace.js";
+import { localWorkspace, runFolder, type Workspace } from "./workspace/index.js";
 import { markRunning, markStopping, type ServerLock, takeServerLockAfterStop } from "./server-lock.js";
 
 export const CONTRACT = "agentrun.v2/0";
@@ -115,7 +118,6 @@ const noticeOf = (options: Pick<ServeOptions, "notice">) => (line: string): void
 };
 /** Why a home's PUT or DELETE is 501 where `capabilities.home.writes` is false (workspace.ts writesHeld). */
 const HOME_WRITES_OFF = "This server can't write a home's files safely here: a write needs /proc/self/fd, as on Linux, which this platform lacks. Reads and the list still work.";
-const FILE_CSP = "default-src 'none'; style-src 'unsafe-inline'; img-src data:; sandbox; form-action 'none'";
 
 export type ServeOptions = {
   /** The data directory: the agent store (`store.sqlite`) and its runs (`runs/<id>/`). */
@@ -1673,6 +1675,13 @@ async function startHolding(options: ServeOptions, data: string, lock: ServerLoc
     return { files: out, deep, owned };
   }
 
+  /** Run `run`'s Workspace, which its files' list and reads go through: null while the run has no folder (an imported
+   *  run never has one), which lists nothing. */
+  async function runWorkspace(run: Pick<Run, "agentId" | "id">): Promise<Workspace | null> {
+    const root = runFolder(data, run.agentId, run.id);
+    return (await lstat(root).catch(() => null))?.isDirectory() ? localWorkspace(root) : null;
+  }
+
   /** The file `rel` under `root`, raw; `unreadable` says why one this server cannot read is private. */
   async function sendFile(req: IncomingMessage, res: ServerResponse, url: URL, root: string, rel: string, unreadable: string): Promise<void> {
     if (!(await lstat(root).catch(() => null))?.isDirectory()) throw new ApiError("not_found", "no such file");
@@ -2225,7 +2234,8 @@ async function startHolding(options: ServeOptions, data: string, lock: ServerLoc
         filesShown(run);
         // A remote box's turn just ended: its pull lands first, so the list shows what the box wrote.
         await runs.pulled(run.id);
-        const { files, deep } = await walk(join(run.dir, "work"));
+        const workspace = await runWorkspace(run);
+        const { files, deep } = workspace ? await listFiles(workspace, FILE_LIST_CAP) : { files: [], deep: false };
         files.sort((a, b) => a.path.localeCompare(b.path));
         return send(res, 200, { run_id: run.id, files: files.slice(0, FILE_LIST_CAP), complete: true, truncated: deep || files.length > FILE_LIST_CAP });
       }
@@ -2297,7 +2307,10 @@ async function startHolding(options: ServeOptions, data: string, lock: ServerLoc
         const run = await needRun(id);
         filesShown(run);
         await runs.pulled(run.id);
-        return sendFile(req, res, url, join(run.dir, "work"), checkedPath(decodedPath(second!), "the run's own, not a file it wrote"), "a tool in the run's box");
+        const rel = checkedPath(decodedPath(second!), "the run's own, not a file it wrote");
+        const workspace = await runWorkspace(run);
+        if (!workspace) throw new ApiError("not_found", "no such file");
+        return sendWorkspaceFile(req, res, url, workspace, rel, "a tool in the run's box");
       }
       case "createFile": {
         // A `path` in the query, or a body that is not JSON: the file sent in one call, its bytes the body. Else the
