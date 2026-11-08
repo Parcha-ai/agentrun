@@ -653,8 +653,9 @@ export class RunStorage implements Journal {
    */
   async commitsAfter(afterSeq: number, limit: number, _context: Context): Promise<JournalPage> {
     this.#assertOpen();
+    // One snapshot in a deferred read transaction: a reader never takes the writer's lock.
     return this.#admitRead(() =>
-      this.#transaction(async (tx) => {
+      this.#db.transaction(async (tx) => {
         const metadata = await this.#readMetadata(tx);
         const last = Number(metadata.next_seq) - 1;
         const from = Math.max(0, Math.floor(Number(afterSeq) || 0));
@@ -662,7 +663,7 @@ export class RunStorage implements Journal {
         const commits: JournalCommit[] = [];
         for (let seq = from + 1; seq <= upto; seq++) commits.push(await this.#commitAt(tx, seq));
         return upto < last && commits.length > 0 ? { commits, next: upto } : { commits };
-      }),
+      }, { read: true }),
     );
   }
 

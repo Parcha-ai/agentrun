@@ -91,15 +91,24 @@ export function createPiLoop(spec: (claim: Claim) => PiRunSpec | Promise<PiRunSp
   return (deps) => piLoop(spec, deps);
 }
 
+/** Where a commit's batches hold what an expectation waits for: the batch's index and the matched record's id. */
+type Matched = { readonly index: number; readonly id: number };
+/** Finds the record an expectation waits for in a commit's batches. */
+type Match = (batches: readonly (readonly StorageWrite[])[]) => Matched | undefined;
+/** What an expectation stages: the run patch and rows, and the commands it takes (by id; each keyed to the matched record). */
+type Expected = { readonly run?: Staged["run"]; readonly also?: Staged["also"]; readonly take?: readonly number[] };
+
 /**
  * The run's journal with the loop's staging matched to commits. stage() replaces what was staged, so the loop never
- * calls it directly: `expect(match, staged)` stages `staged` on the first commit whose batches `match`, merged with any
- * other match of that commit, and resolves once that commit stored a batch. seal() refuses every later commit.
+ * calls it directly: `expect(match, expected)` stages `expected` on the first commit whose batches `match`, merged with
+ * any other match of that commit, its takes keyed to the matched record (the store writes a take only with that
+ * record's batch, so a command is taken with its effect or not at all), and resolves once that batch is stored. seal()
+ * refuses every later commit.
  */
 class Gate {
   readonly journal: Journal;
   #sealed: Error | undefined;
-  #pending: { match: (batches: readonly (readonly StorageWrite[])[]) => boolean; staged: Staged; landed: () => void; failed: (error: unknown) => void }[] = [];
+  #pending: { match: Match; expected: Expected; landed: () => void; failed: (error: unknown) => void }[] = [];
 
   constructor(inner: Journal) {
     const gate = this;
@@ -117,16 +126,20 @@ class Gate {
 
   async #commit(target: Journal, batches: readonly (readonly StorageWrite[])[], receive: (index: number, seq: never) => void, context: Context): Promise<CommitResult> {
     if (this.#sealed) throw this.#sealed;
-    const hits = this.#pending.filter((pending) => pending.match(batches));
-    if (hits.length > 0) target.stage(merge(hits.map((hit) => hit.staged)));
+    const hits = this.#pending.flatMap((pending) => {
+      const at = pending.match(batches);
+      return at ? [{ pending, at }] : [];
+    });
+    if (hits.length > 0) target.stage(merge(hits.map((hit) => ({ expected: hit.pending.expected, at: hit.at }))));
     let result: CommitResult;
     try {
       result = await target.commit(batches, receive as never, context);
     } catch (error) {
-      for (const hit of hits) this.#drop(hit).failed(error);
+      for (const hit of hits) this.#drop(hit.pending).failed(error);
       throw error;
     }
-    if (result.stored > 0) for (const hit of hits) this.#drop(hit).landed();
+    // Landed when its own batch was stored; one refused (or after a refused one) waits for a later commit.
+    for (const hit of hits) if (result.stored > hit.at.index) this.#drop(hit.pending).landed();
     return result;
   }
 
@@ -135,9 +148,9 @@ class Gate {
     return pending;
   }
 
-  /** Stages `staged` on the first commit whose batches `match`; resolves when that commit stored a batch. */
-  expect(match: (batches: readonly (readonly StorageWrite[])[]) => boolean, staged: Staged): Promise<void> {
-    return new Promise((landed, failed) => this.#pending.push({ match, staged, landed, failed }));
+  /** Stages `expected` on the first commit whose batches `match`; resolves when the matched batch is stored. */
+  expect(match: Match, expected: Expected): Promise<void> {
+    return new Promise((landed, failed) => this.#pending.push({ match, expected, landed, failed }));
   }
 
   /** Every later commit is refused with `error`; a pending expectation fails with it. */
@@ -151,19 +164,28 @@ class Gate {
   }
 }
 
-function merge(all: readonly Staged[]): Staged {
-  const run = all.reduce<Staged["run"]>((patch, each) => (each.run ? { ...patch, ...each.run } : patch), undefined);
-  const also = all.flatMap((each) => each.also ?? []);
-  const take = all.flatMap((each) => each.take ?? []);
+function merge(all: readonly { expected: Expected; at: Matched }[]): Staged {
+  const run = all.reduce<Staged["run"]>((patch, { expected }) => (expected.run ? { ...patch, ...expected.run } : patch), undefined);
+  const also = all.flatMap(({ expected }) => expected.also ?? []);
+  // Each take keyed to the record its expectation matched: the store writes it only with that record's batch.
+  const take = all.flatMap(({ expected, at }) => (expected.take ?? []).map((command) => ({ command, effect: at.id })));
   return { ...(run ? { run } : {}), ...(also.length ? { also } : {}), ...(take.length ? { take } : {}) };
 }
 
 /** Whether `batches` write an entry of `kind` whose data `test` accepts. */
-const writesEntry = (kind: string, test: (data: Record<string, unknown>) => boolean = () => true) => (batches: readonly (readonly StorageWrite[])[]) =>
-  batches.some((batch) => batch.some((write) => write.type === "entry" && write.value.kind === kind && test((write.value.data ?? {}) as Record<string, unknown>)));
-/** Whether `batches` write the submission with request id `requestId`. */
-const writesSubmission = (requestId: string) => (batches: readonly (readonly StorageWrite[])[]) =>
-  batches.some((batch) => batch.some((write) => write.type === "submission" && write.value.requestId === requestId));
+const writesEntry = (kind: string, test: (data: Record<string, unknown>) => boolean = () => true): Match => (batches) =>
+  firstMatch(batches, (write) => write.type === "entry" && write.value.kind === kind && test((write.value.data ?? {}) as Record<string, unknown>));
+/** Where `batches` write the submission with request id `requestId`. */
+const writesSubmission = (requestId: string): Match => (batches) => firstMatch(batches, (write) => write.type === "submission" && write.value.requestId === requestId);
+/** The first write of `batches` that `test` takes: its batch's index and its record's id. */
+function firstMatch(batches: readonly (readonly StorageWrite[])[], test: (write: StorageWrite) => boolean): Matched | undefined {
+  for (const [index, batch] of batches.entries()) {
+    for (const write of batch) {
+      if (test(write) && (write.type === "entry" || write.type === "submission")) return { index, id: write.value.id as unknown as number };
+    }
+  }
+  return undefined;
+}
 
 class Parked extends Error {
   constructor() {

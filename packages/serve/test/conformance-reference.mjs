@@ -38,8 +38,10 @@ function referenceLoop({ script, tools, hooks }, deps) {
   const append = async (kind, data, staged) => {
     const writes = [];
     if (!rooted && !(await journal.conversation(ROOT, context))) writes.push({ type: "conversation", value: { id: ROOT } });
-    writes.push({ type: "entry", value: { id: await journal.mintId(), conversationId: ROOT, kind, data } });
-    if (staged) journal.stage(staged);
+    const id = await journal.mintId();
+    writes.push({ type: "entry", value: { id, conversationId: ROOT, kind, data } });
+    // A take is keyed to its effect: this commit's entry.
+    if (staged) journal.stage({ ...staged, ...(staged.take ? { take: staged.take.map((command) => ({ command, effect: id })) } : {}) });
     await commitWrites(journal, writes, context);
     rooted = true;
   };
