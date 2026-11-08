@@ -9,6 +9,7 @@ import { commitWrites } from "@earendil-works/pi-durable/testing";
 import { calls, messages } from "../dist/runner/journal-reader.js";
 import { KINDS } from "../dist/runner/journal-kinds.js";
 import { queue, stores } from "./runner-support.mjs";
+import { piCalls, piConversation, recovered, running } from "./fixtures/pi-journal.mjs";
 
 const context = BACKGROUND_CONTEXT;
 const ROOT = 1;
@@ -50,6 +51,35 @@ test("a CLI run's session log is never read as calls or messages: only the run's
 
   assert.deepEqual((await calls(journal, context)).map((call) => [call.callId, call.tool, call.status]), [["c1", "host:fs/write", "done"]]);
   assert.deepEqual((await messages(journal, context)).map((message) => [message.role, message.text]), [["person", "Book the room."], ["model", "Booked."]]);
+});
+
+/** A journal holding `records` (a pi run's tasks and entries) as committed: tasks first, so an entry's task is there. */
+async function piJournal(records) {
+  const { journal } = await runJournal();
+  await commitWrites(journal, [
+    { type: "conversation", value: piConversation },
+    ...records.tasks.map((value) => ({ type: "task", value })),
+    ...records.entries.map((value) => ({ type: "entry", value })),
+  ], context);
+  return journal;
+}
+
+test("a pi run is read from pi's own records: its tool tasks as calls (an interrupted one by its result's diagnostic), its entries as messages, a mid-run user entry as a steer", async () => {
+  const journal = await piJournal(recovered);
+  assert.deepEqual((await calls(journal, context)).map((call) => [call.callId, call.tool, call.status]), [
+    [piCalls.effect, "effect", "interrupted"],
+    [piCalls.reader, "reader", "done"],
+  ]);
+  assert.deepEqual((await messages(journal, context)).map((message) => [message.role, message.text]), [
+    ["person", "do the two things"],
+    ["steer", "steer: use notes2.txt"],
+    ["model", "answer; last user said: steer: use notes2.txt"],
+  ]);
+});
+
+test("a pi run's tool tasks still running read pending, with their replay flag", async () => {
+  const journal = await piJournal(running);
+  assert.deepEqual((await calls(journal, context)).map((call) => [call.tool, call.status, call.replaySafe]), [["effect", "pending", false], ["reader", "pending", true]]);
 });
 
 test("a call started and not ended reads pending; ended, its status", async () => {
