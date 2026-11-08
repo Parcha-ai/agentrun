@@ -10,7 +10,7 @@ import { test } from "node:test";
 import { wireName } from "../dist/catalog.js";
 import { capBefore, capToolSpend, holdsInFlight, paidCall, spentIn, useSpend } from "../dist/cap.js";
 import { chargeOf, CLIP, monidClient, monidText } from "../dist/monid.js";
-import { localWorkspace } from "../dist/workspace/index.js";
+import { localWorkspace, WORKSPACE_ERRORS } from "../dist/workspace/index.js";
 import fakeMonid, { calls, KEY } from "./fixtures/faux-monid.mjs";
 import { agent, client, follow, runDir, scratch, serve, withEnv } from "./support.mjs";
 import { fauxTable } from "./fixtures/faux-table.mjs";
@@ -256,8 +256,11 @@ test("a cut answer whose whole copy cannot be filed still answers, cut and sayin
   const huge = await monid().run({ provider: "faux", endpoint: "/huge" });
   const text = await monidText(huge, localWorkspace(work), "run");
   assert.equal(text.indexOf("\n[cut at"), CLIP);
-  // The Workspace's code, never its message (which names paths).
-  assert.match(text, /the whole answer could not be saved \((EXISTS|NOT_FOUND|REFUSED)\)\]$/);
+  // The Workspace's code and the port's own line for it, never the error's message (which names paths).
+  const said = /the whole answer could not be saved \(([A-Z_]+): ([^)]+)\)\]$/.exec(text);
+  assert.ok(said, text.slice(-200));
+  assert.equal(said[2], WORKSPACE_ERRORS[said[1]], "the port's line for its code");
+  assert.ok(!said[2].includes(work), "no path of the server's");
 });
 
 test("a run's answer over 60,000 characters is cut, the whole of it filed as evidence/monid/<run id>.json", async (t) => {

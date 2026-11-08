@@ -15,7 +15,7 @@
 // under a cap a run is refused before it is sent unless the run's spend plus what it is held at fits. discover and
 // inspect cost nothing, and are never refused.
 import { randomUUID } from "node:crypto";
-import { localWorkspace, type Workspace } from "./workspace/index.js";
+import { localWorkspace, type Workspace, workspaceErrorWords } from "./workspace/index.js";
 import type { TSchema } from "typebox";
 import { defineExtension, defineTool, ROOT_CONVERSATION_ID, type ToolExecutionApi, type ToolRegistration } from "@earendil-works/pi-durable";
 import type { Context } from "@earendil-works/chord";
@@ -167,8 +167,8 @@ export async function monidText(answer: MonidAnswer, work: Workspace, label: str
   try {
     await work.write(`evidence/monid/${name}`, text);
   } catch (error) {
-    // The error's code only (ESCAPE, UNAVAILABLE): its message names paths.
-    return `${cut}the whole answer could not be saved (${(error as { code?: string })?.code ?? "write failed"})]`;
+    // The Workspace's code and the port's line for it, never the error's message, which names paths.
+    return `${cut}the whole answer could not be saved (${workspaceErrorWords(error) ?? (error as { code?: string })?.code ?? "write failed"})]`;
   }
   return `${cut}the whole answer is in the run's files at evidence/monid/${name}]`;
 }

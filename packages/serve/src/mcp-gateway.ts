@@ -30,7 +30,7 @@ import { metaToolOf } from "./mcp-meta.js";
 import { SIGN_IN_AGAIN } from "./mcp-oauth.js";
 import { type Gate, GATED_BY_GATEWAY, mcpToolName, type Park } from "./tool-gate.js";
 import { forModel } from "./result.js";
-import { type Workspace, workspaceAt } from "./workspace/index.js";
+import { type Workspace, workspaceAt, workspaceErrorWords } from "./workspace/index.js";
 
 /** The run's pinned MCP tools, in its directory: written once, at its first launch. */
 export const MCP_PIN = "mcp-tools.json";
@@ -285,7 +285,8 @@ export function mcpGateway(options: McpGatewayOptions): McpGateway {
     try {
       await workspaceAt(options.work()).write(`evidence/mcp/${server}/${name}`, scrub(JSON.stringify(result), headers));
     } catch (error) {
-      return `${head}the whole answer could not be saved (${(error as { code?: string })?.code ?? "write failed"})]`;
+      // The Workspace's code and the port's line for it, never the error's message, which names paths.
+      return `${head}the whole answer could not be saved (${workspaceErrorWords(error) ?? (error as { code?: string })?.code ?? "write failed"})]`;
     }
     return `${head}the whole answer is in the run's files at evidence/mcp/${server}/${name}]`;
   };

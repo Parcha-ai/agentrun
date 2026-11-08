@@ -47,6 +47,23 @@ export class WorkspaceError extends Error {
 export const isWorkspaceError = (error: unknown, code?: WorkspaceErrorCode): error is WorkspaceError =>
   error instanceof WorkspaceError && (code === undefined || error.code === code);
 
+/** Each code's one line, as the code's own words above say it, naming no path: what a person or a model reads after
+ *  the code (workspaceErrorWords). */
+export const WORKSPACE_ERRORS: Readonly<Record<WorkspaceErrorCode, string>> = {
+  NOT_FOUND: "the path is not there",
+  ESCAPE: "the path would leave the root: absolute, \"..\", a bad segment, or a symbolic link on the way",
+  TOO_LARGE: "more than the call allows",
+  TIMEOUT: "the call ran past its deadline",
+  UNAVAILABLE: "the backend cannot answer: the root is gone, the disk is full or read-only, an I/O error",
+  REFUSED: "the call is not allowed on what is there",
+  EXISTS: "something is in the way: a file where a directory has to be made",
+};
+
+/** A failed call as words that name no path: a WorkspaceError's code and its line ("ESCAPE: the path would leave the
+ *  root: …"), else undefined. */
+export const workspaceErrorWords = (error: unknown): string | undefined =>
+  isWorkspaceError(error) ? `${error.code}: ${WORKSPACE_ERRORS[error.code]}` : undefined;
+
 /** One entry of a directory. Only files and directories are listed: a symbolic link, a pipe or a socket is left out.
  *  `mtimeMs`: when it last changed, in milliseconds since the epoch. `unreadable`: a file this backend sees but
  *  cannot read (another user on this machine made it private), so a read of it is REFUSED. */

@@ -603,21 +603,22 @@ test("fake docker: the start's sweep destroys the box of a run that has ended, a
 test("a link a box's command plants in work/ never turns the server's own writes there: monid's and the browser's evidence are refused through it, and written beside it", async (t) => {
   const { monidText, CLIP } = await import("../dist/monid.js");
   const { evidenceIn } = await import("../dist/tools.js");
-  const { localWorkspace } = await import("../dist/workspace/index.js");
+  const { localWorkspace, WORKSPACE_ERRORS } = await import("../dist/workspace/index.js");
+  const escaped = `could not be saved (ESCAPE: ${WORKSPACE_ERRORS.ESCAPE})]`;
   const work = realpathSync(await scratch(t));
   const ws = localWorkspace(work);
   const outside = realpathSync(await scratch(t));
   const huge = { runId: "run_1", output: "x".repeat(CLIP + 10) };
   // evidence/ itself a link out: the whole answer is not filed, and nothing lands outside.
   await symlink(outside, join(work, "evidence"));
-  assert.match(await monidText(huge, ws, "run"), /the whole answer could not be saved \(ESCAPE\)\]$/);
+  assert.ok((await monidText(huge, ws, "run")).endsWith(`the whole answer ${escaped}`));
   await assert.rejects(evidenceIn(ws).file("page", { tool: "browser_read", facts: {}, body: "text" }), (error) => error.code === "ESCAPE");
   assert.deepEqual(await readdir(outside), []);
   // evidence/ real, evidence/monid a link out: refused the same.
   await rm(join(work, "evidence"));
   await mkdir(join(work, "evidence"));
   await symlink(outside, join(work, "evidence", "monid"));
-  assert.match(await monidText(huge, ws, "run"), /could not be saved \(ESCAPE\)\]$/);
+  assert.ok((await monidText(huge, ws, "run")).endsWith(escaped));
   assert.deepEqual(await readdir(outside), []);
   // A file's own name a link out: never written through; evidence takes the next name.
   await writeFile(join(outside, "target.md"), "kept");
@@ -635,7 +636,7 @@ test("a link a box's command plants in work/ never turns the server's own writes
   const other = { runId: "run_2", output: "y".repeat(CLIP + 10) };
   await symlink(join(outside, "target.md"), join(work, "evidence", "monid", "run_2.json"));
   const linked = await monidText(other, ws, "run");
-  assert.match(linked, /the whole answer could not be saved \(ESCAPE\)\]$/);
+  assert.ok(linked.endsWith(`the whole answer ${escaped}`), linked.slice(-200));
   assert.doesNotMatch(linked, /evidence\/monid\/run_2\.json/);
   assert.equal(readFileSync(join(outside, "target.md"), "utf8"), "kept");
 });
