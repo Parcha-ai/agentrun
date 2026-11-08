@@ -2,7 +2,7 @@
 // request whose error text holds a status it retries on ("429", "502") unless the text says the run is out of budget
 // (pi-ai's isRetryableAssistantError): the cap's refusal for room begins "spend_cap_reached (out of budget): ", and one
 // for good is final too. A cap of $0.0004295 puts "429" in the words: one ask, nothing sent, never asked again, and no
-// retry backoff. And one ledger (R11): the run's requests are judged by beforeRequestOf alone, through the one rule, and
+// retry backoff. And one ledger: the run's requests are judged by beforeRequestOf alone, through the one rule, and
 // createCap's own ledger books nothing for a pi run.
 import assert from "node:assert/strict";
 import { after, test } from "node:test";
