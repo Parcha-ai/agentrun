@@ -58,6 +58,8 @@ Save it in the console (Settings → Tool keys → Model keys), which takes effe
    then set `OPENROUTER_API_KEY` in the service's Environment (or another provider's key, or a gateway's
    `AGENT_MODEL_BASE_URL` and `AGENT_MODEL_API_KEY` with its model in `AGENT_MODEL`). Render generates the token,
    `AGENTRUN_TOKEN`: open `https://<your service>.onrender.com/?token=<it>`.
+   On a public address (Render's, from `RENDER_EXTERNAL_URL`), the first visit asks for a setup code. It's in the service's
+   Logs tab on the line `Set up this server: https://<your service>.onrender.com/setup#code=<code>`, and opening that link fills it in.
 
 Then **New agent**, **Start a run**, and **All runs**. [AgentRun Server](packages/serve/README.md) has the API, the models, what
 a run may reach, and the container.
