@@ -33,6 +33,19 @@ test("a run parked while its runner still holds the claim is not claimable, even
   assert.deepEqual(await store.runs.claimable(), ["run-1"], "once the held claim runs out, the command row wakes it");
 });
 
+test("a run parked on a person is not woken by a row that cannot answer it (answers: false, a trigger's follow-up message); an approve wakes it, and both rows are there for its loop", async (t) => {
+  const { store } = await storeOn(t);
+  await queued(store);
+  const claim = await store.claim("run-1", "runner-a", { leaseMs: 30_000 });
+  await store.release(claim, { state: "parked" });
+  const followUp = await store.command("run-1", { kind: "steer", body: { text: "the next item from the trigger", answers: false } });
+  assert.deepEqual(await store.runs.claimable(), [], "a follow-up that answers nothing leaves it parked");
+  assert.equal(await store.claim("run-1", "runner-b", { leaseMs: 30_000 }), null, "and unclaimed");
+  const approve = await store.command("run-1", { kind: "approve", body: { approval: "a1" } });
+  assert.deepEqual(await store.runs.claimable(), ["run-1"], "the person's answer wakes it");
+  assert.deepEqual((await store.commands("run-1", 0)).filter((row) => row.takenAt === null).map((row) => row.id), [followUp.id, approve.id], "both rows wait for its loop, the follow-up untaken");
+});
+
 test("a running run released with a backoff is not claimable until the backoff passes", async (t) => {
   const { store, clock } = await storeOn(t);
   await queued(store);
