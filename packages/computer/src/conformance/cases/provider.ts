@@ -1,8 +1,10 @@
 // The provider: check refuses in words and makes nothing (past maxLifetimeMs too), create, attach, list and release do
 // what they say, the network reads back as asked, a change to a network the provider does not declare is refused
 // (Core) and one it does declare is refused or applied truthfully (Full), a computer does not run past its deadline,
-// and the janitor ends only the expired, stopped or running.
-import { sweep } from "../../janitor.js";
+// the janitor ends only the expired, stopped or running, and a takeover releases the run's lower epochs by label (Full).
+import { randomBytes } from "node:crypto";
+import { releaseOlder, sweep } from "../../janitor.js";
+import { EPOCH_LABEL, RUN_LABEL, runLabels } from "../../labels.js";
 import type { ComputerRef, ComputerSpec, NetworkSpec } from "../../provider.js";
 import type { Case, CaseContext } from "../types.js";
 import { CASE_LABEL, delay } from "./util.js";
@@ -16,6 +18,7 @@ const names = async (t: CaseContext, labels: Record<string, string>) =>
 		.sort();
 /** A computer as the cases compare it: its id and name alone, so what else create or attach returns (notes) is not compared. */
 const refOf = ({ id, name }: ComputerRef): ComputerRef => ({ id, name });
+const byName = (a: ComputerRef, b: ComputerRef) => (a.name < b.name ? -1 : a.name > b.name ? 1 : 0);
 const kindOf = (policy: NetworkSpec) => (typeof policy === "string" ? policy : "allow");
 const POLICIES: NetworkSpec[] = ["none", "open", { allow: ["example.com"] }];
 
@@ -279,8 +282,53 @@ export const providerCases: Case[] = [
 			);
 			t.deepEqual(await names(t, labels), [long.name], "left after the sweep");
 			t.deepEqual(refOf(t.ok(await t.provider.attach({ id: t.ref.id }), "attach to the run's computer")), refOf(t.ref), "a computer outside the swept labels");
-			t.deepEqual(t.ok(await sweep(t.provider, { labels }), "a second sweep"), { deleted: [], kept: 1 }, "a second sweep, now");
+			// The computers only: a provider that also sweeps its own leftovers (Docker's egress proxies) reports them beside.
+			const again = t.ok(await sweep(t.provider, { labels }), "a second sweep");
+			t.deepEqual({ deleted: again.deleted, kept: again.kept }, { deleted: [], kept: 1 }, "a second sweep, now");
 		},
 		{ level: "full", needs: ["lifetime:janitor", "release:stop"], computer: "shared" },
+	),
+	// A takeover by label: computers of one run at epochs 1, 2 and 3 and one of another run at epoch 1; a claim at epoch 3
+	// releases 1 and 2 and keeps 3 and the other run's, and a claim at epoch 2 after it is fenced and releases nothing.
+	// Full: it needs only list, labels and release delete, but the run and epoch labels are the cutover's, not yet Core.
+	provider(
+		"release-older",
+		async (t) => {
+			const labels = own(t, "release-older");
+			const nonce = randomBytes(6).toString("hex");
+			const run = `conformance-${nonce}`;
+			const other = `conformance-other-${nonce}`;
+			// Compared by id and name: create may return notes beside the ref (a provider's probe records what it found).
+			const [e1, e2, e3, o1] = (
+				await Promise.all(
+					[runLabels(run, 1), runLabels(run, 2), runLabels(run, 3), runLabels(other, 1)].map((epochs) => t.create({ labels: { ...labels, ...epochs } })),
+				)
+			).map(refOf);
+			// The provider carries both labels and reads them back.
+			const read = t.ok(await t.provider.list({ [RUN_LABEL]: run }), `list by ${RUN_LABEL}`);
+			for (const [ref, of, epoch] of [[e1, run, "1"], [e2, run, "2"], [e3, run, "3"]] as const) {
+				const info = t.present(read.find((one) => one.ref.name === ref.name), `${ref.name} is listed by ${RUN_LABEL}`);
+				t.deepEqual([info.labels[RUN_LABEL], info.labels[EPOCH_LABEL]], [of, epoch], `${ref.name}: its ${RUN_LABEL} and ${EPOCH_LABEL} labels, read back`);
+			}
+
+			const done = t.ok(await releaseOlder(t.provider, run, 3, { signal: t.signal }), "releaseOlder at epoch 3");
+			t.deepEqual(done.released.map(refOf).sort(byName), [e1, e2].sort(byName), "releaseOlder at epoch 3: the computers it released");
+			t.deepEqual(done.kept.map(refOf), [e3], "releaseOlder at epoch 3: the computers it kept");
+			t.deepEqual(done.unproven, [], "releaseOlder at epoch 3: computers with no epoch it could read");
+			// By id first, which no label filter decides: 1 and 2 are gone, 3 and the other run's are there.
+			for (const gone of [e1, e2]) t.refused(await t.provider.attach({ id: gone.id }), `attach to ${gone.name}, released`, ["not_found"]);
+			for (const left of [e3, o1]) t.deepEqual(refOf(t.ok(await t.provider.attach({ id: left.id }), `attach to ${left.name}`)), left, `attach to ${left.name}, kept`);
+			// Then by label: list holds to the run's label.
+			t.deepEqual(await names(t, { [RUN_LABEL]: run }), [e3.name], "the run's computers after releaseOlder at epoch 3");
+			t.deepEqual(await names(t, { [RUN_LABEL]: other }), [o1.name], "the other run's computers after releaseOlder at epoch 3");
+
+			const fenced = t.refused(await releaseOlder(t.provider, run, 2, { signal: t.signal }), "releaseOlder at epoch 2, with epoch 3 there", ["refused"]);
+			t.match(fenced.message, /^fenced: /, "releaseOlder at epoch 2, with epoch 3 there: its refusal");
+			t.deepEqual(await names(t, { [RUN_LABEL]: run }), [e3.name], "the run's computers after the fenced releaseOlder");
+
+			for (const ref of [e3, o1]) t.ok(await t.provider.release(ref, "delete"), `release ${ref.name}`);
+			t.deepEqual(await names(t, labels), [], "the case's computers after it");
+		},
+		{ level: "full", timeoutMs: 300_000 },
 	),
 ];

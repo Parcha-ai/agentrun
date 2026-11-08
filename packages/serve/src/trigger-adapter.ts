@@ -3,6 +3,7 @@
 // the OpenAPI document read every list of sources from the registry (trigger-adapters.ts), so a new source is one
 // adapter file and one line there.
 import type { InputIssue } from "./errors.js";
+import type { SettingsSpec } from "./sealed-settings.js";
 import { unknownFields } from "./validate.js";
 
 type Json = Record<string, unknown>;
@@ -30,8 +31,9 @@ export type TriggerAdapter = {
   /** Whether its words are its owner's (a run's message origin `owner`): true only when the owner wrote them as they set
    *  it up; never for words that come from outside. */
   owner: boolean;
-  /** Whether each trigger of it gets a signing secret, made at its create (and a rotation), shown once. */
-  secret: boolean;
+  /** What it keeps sealed (sealed-settings.ts), for the server or for each trigger: a field it mints (a signing secret)
+   *  is made at a trigger's create and at a rotation, shown once, and goes with the trigger. */
+  settings?: SettingsSpec;
   /** Its shapes as a create's error names them: `{kind: "..."}` with its fields. */
   describe: string;
   /** When it fires, for the OpenAPI document's source description. */
@@ -40,6 +42,9 @@ export type TriggerAdapter = {
   firedBy?: string;
   /** Its shapes as JSON Schema, each a closed object with `kind` its id: the OpenAPI document's source oneOf. */
   schemas: ObjectSchema[];
+  /** Its shapes as a trigger's view sends them, when the server fills in fields a write may leave out (a schedule's zone
+   *  and start). Default `schemas`: a field the write left out stays out. */
+  sent?: ObjectSchema[];
   /** A source given at a create or a PATCH (`value.kind` is its id), checked: each issue added through `bad`, with its
    *  field under `source`. Undefined when it does not read. */
   parse(value: Json, now: number, bad: (field: string, reason: string, message: string) => void, issues: InputIssue[]): Source | undefined;
@@ -51,8 +56,45 @@ export type TriggerAdapter = {
   clock?(source: Source): Clock;
   /** Why a source kept in the file no longer reads on this server, if it does not: its trigger is turned off, alone. */
   problem?(source: Source): string | undefined;
+  /** A pushed source's requests (push-handler.ts), served at /v2/hooks/{trigger_id} when its settings are a trigger's,
+   *  else at /v2/hooks/{its id}, with no token: the request's check is its credential. */
+  push?: Push;
+  /** For a pushed source whose settings are the server's: the scope a trigger of it listens on, matched to each event's
+   *  `scope` to find the triggers it fires. */
+  scopeOf?(source: Source): string;
+  /** Whether each firing of a trigger of `source` starts its own run, its last run active or not (a webhook that takes
+   *  only the events it names). Default false: a firing while the last run is active is skipped. */
+  concurrent?(source: Source): boolean;
 };
 
+/** Request headers, as Node gives them. */
+export type Headers = Record<string, string | string[] | undefined>;
+/** How a pushed source's requests are taken, in this order: its headers, its body (at most maxBodyBytes), its check
+ *  against its settings' `key`, its handshake, its parse. Every refusal is the one 401. `source`: on a trigger's own path,
+ *  the trigger's source when it names one of this kind that is on; else undefined. */
+export type Push = {
+  maxBodyBytes: number;
+  /** The settings field it checks a request with. */
+  key: string;
+  /** Why the headers alone are refused, before a byte of the body is read. */
+  headers?(headers: Headers, nowMs: number): string | undefined;
+  /** Why the request is not the sender's under `key`, or undefined when it is (and fits `source`, when given). */
+  verify(key: string, headers: Headers, body: Buffer, nowMs: number, source?: Source): string | undefined;
+  /** An answer of its own, after the check and before the parse (a sender's URL check), or undefined. */
+  handshake?(headers: Headers, body: Buffer): { status: number; body: Json } | undefined;
+  /** The events the request holds, none or more: none is a request this source takes nothing from (answered 200, and
+   *  said). `ignored`: a request `source` does not take (its trigger's own filter), with why: answered 200
+   *  `{ok: "ignored"}`, and said. */
+  parse(headers: Headers, body: Buffer, source?: Source): PushEvent[] | PushIgnored;
+};
+/** A verified request its trigger's source does not take: why (`ignored`), the event it was, when it names one, and its
+ *  key (`key`, as its event would be keyed), which its trigger keeps for its day: the same request sent again under
+ *  another label (an unsigned event header) is then a duplicate, never a firing. */
+export type PushIgnored = { ignored: string; event?: string; key?: string };
+/** One event a pushed source delivers: `key`, its id (the sender's, which a retry repeats: one event delivered twice is
+ *  one firing); `text`, what its run is given; `scope`, for a source whose settings are the server's, where it happened
+ *  (a channel, a repository), matched to each trigger's scopeOf; `attrs`, what else the source says of it. */
+export type PushEvent = { key: string; text: string; scope?: string; attrs?: Record<string, string> };
 /** A closed object's JSON Schema: its fields, each by its own schema, and the ones it always holds. */
 export type ObjectSchema = { type: "object"; additionalProperties: false; required: string[]; properties: Record<string, Json> };
 

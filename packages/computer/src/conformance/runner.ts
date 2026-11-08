@@ -49,18 +49,29 @@ async function bounded<T>(promise: Promise<T>, ms: number): Promise<T | undefine
 	}
 }
 
-/** Settles with promise, or rejects in words when it has not answered within ms. */
-async function within<T>(promise: Promise<T>, ms: number, what: string): Promise<T> {
+/** Settles with promise, or rejects in words when it has not answered within ms, or at once when signal aborts. */
+async function within<T>(promise: Promise<T>, ms: number, what: string, signal?: AbortSignal): Promise<T> {
 	const stop = new AbortController();
+	// The abort's listener goes when this settles, so a later abort rejects nothing left unhandled.
+	let off = () => {};
+	const aborted = new Promise<never>((_, reject) => {
+		if (signal === undefined) return;
+		const fail = () => reject(signal.reason instanceof Error ? signal.reason : new Error(`${what}: the run was aborted`));
+		if (signal.aborted) return fail();
+		signal.addEventListener("abort", fail, { once: true });
+		off = () => signal.removeEventListener("abort", fail);
+	});
 	try {
 		return await Promise.race([
 			promise,
 			sleep(ms, undefined, { signal: stop.signal }).then(() => {
 				throw new Error(`${what} did not answer within ${ms / 1000} s`);
 			}),
+			aborted,
 		]);
 	} finally {
 		stop.abort();
+		off();
 	}
 }
 
@@ -167,11 +178,13 @@ export async function runConformance(provider: ComputerProvider, options: Confor
 	let sharedRef: ComputerRef | undefined;
 	const getShared = () =>
 		(shared ??= (async () => {
+			// The run's signal ends the wait at once (Ctrl-C during setup) and reaches the create; a computer that arrives
+			// after it is deleted as it lands (lateCreate).
 			const stop = new AbortController();
-			const creating = provider.create(spec(), { signal: stop.signal });
+			const creating = provider.create(spec(), { signal: signal ? AbortSignal.any([signal, stop.signal]) : stop.signal });
 			let created: Result<CreatedComputer>;
 			try {
-				created = await within(creating, caseTimeoutMs, "create");
+				created = await within(creating, caseTimeoutMs, "create", signal);
 			} catch (error) {
 				stop.abort();
 				lateCreate(creating, "create (the run's computer)");
@@ -183,7 +196,7 @@ export async function runConformance(provider: ComputerProvider, options: Confor
 			const connecting = provider.connect(created.value);
 			let connected: Result<ComputerConnection>;
 			try {
-				connected = await within(connecting, caseTimeoutMs, "connect");
+				connected = await within(connecting, caseTimeoutMs, "connect", signal);
 			} catch (error) {
 				keep(
 					connecting.then((late) => (late.ok ? bounded(late.value.close(), CLOSE_MS) : undefined), () => {}),

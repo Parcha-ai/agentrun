@@ -17,6 +17,9 @@
 // grep runs in a worker thread (grep-worker.ts), terminated at its deadline: a regex that backtracks without end
 // costs that thread, never this one.
 //
+// A computer reaches this folder as a bind at /workspace (mountSpec, the local Docker computer only); attach checks
+// that read-back and hands back the attached Workspace (attach.ts). With no computer, `process` refuses in words.
+//
 // No locks: two calls on one path race as two processes would (workspace.ts).
 import { spawn } from "node:child_process";
 import { randomBytes } from "node:crypto";
@@ -24,6 +27,8 @@ import { constants, type Stats } from "node:fs";
 import { type FileHandle, lstat, mkdir as makeDir, open, readdir, realpath, rename, rmdir, unlink } from "node:fs/promises";
 import { join } from "node:path";
 import { Worker } from "node:worker_threads";
+import type { MountSpec } from "@parcha/agentrun-computer";
+import { type AttachableComputer, attachedWorkspace, checkReadBack, type MountCheck, noProcesses } from "./attach.js";
 import type { GrepJob } from "./grep-worker.js";
 import { relativeSegments } from "./paths.js";
 import {
@@ -31,7 +36,7 @@ import {
   type GrepMatch, type GrepOptions, type GrepResult, READ_MAX, type Workspace, WorkspaceError, type WorkspaceErrorCode,
 } from "./workspace.js";
 
-const { O_APPEND, O_CREAT, O_DIRECTORY, O_EXCL, O_NOFOLLOW, O_NONBLOCK, O_RDONLY, O_RDWR } = constants;
+const { O_APPEND, O_CREAT, O_DIRECTORY, O_EXCL, O_NOFOLLOW, O_NONBLOCK, O_RDONLY, O_RDWR, O_WRONLY } = constants;
 const LINUX = process.platform === "linux";
 /** How a folder on the way is opened: as a folder, never through a link (a link there fails ENOTDIR or ELOOP). */
 const DIR_FLAGS = O_RDONLY | O_DIRECTORY | O_NOFOLLOW;
@@ -426,7 +431,7 @@ class LocalWorkspace implements Workspace {
       const kept = { out: 0, err: 0 };
       let truncated = false;
       let timedOut = false;
-      let exit: { code: number | null } | undefined;
+      let exit: { code: number | null; signal: string | undefined } | undefined;
       let settled = false;
       let grace: NodeJS.Timeout | undefined;
 
@@ -442,13 +447,16 @@ class LocalWorkspace implements Workspace {
         const part = chunk.length > room ? chunk.subarray(0, room) : chunk;
         into.push(part);
         kept[which] += part.length;
+        if (options.onOutput) {
+          try { options.onOutput({ stream: which === "out" ? "stdout" : "stderr", data: part }); } catch { /* the caller's callback; its error is not the call's */ }
+        }
       };
       const finish = (): void => {
         if (settled || exit === undefined) return;
         settled = true;
         clearTimeout(timer);
         clearTimeout(grace);
-        resolve({ stdout: Buffer.concat(out), stderr: Buffer.concat(err).toString("utf8"), code: exit.code, timedOut, truncated });
+        resolve({ stdout: Buffer.concat(out), stderr: Buffer.concat(err).toString("utf8"), code: exit.code, ...(exit.signal === undefined ? {} : { signal: exit.signal }), timedOut, truncated });
       };
       const timer = setTimeout(() => { timedOut = true; killGroup(); }, timeoutMs);
 
@@ -464,8 +472,8 @@ class LocalWorkspace implements Workspace {
           : code === "EACCES" ? new WorkspaceError("REFUSED", `${JSON.stringify(argv[0])} is not executable`, { cause: error })
             : new WorkspaceError("UNAVAILABLE", `exec of ${JSON.stringify(argv[0])} failed: ${error.message}`, { cause: error }));
       });
-      child.on("exit", (code) => {
-        exit = { code: timedOut ? null : code };
+      child.on("exit", (code, signal) => {
+        exit = { code: timedOut ? null : code, signal: timedOut || signal === null ? undefined : signal };
         clearTimeout(timer);
         killGroup();
         grace = setTimeout(() => { child.stdout!.destroy(); child.stderr!.destroy(); finish(); }, PIPE_GRACE_MS);
@@ -478,8 +486,46 @@ class LocalWorkspace implements Workspace {
     }), { notDir: "REFUSED" });
   }
 
-  async attach(_computer: unknown): Promise<unknown> {
-    throw new WorkspaceError("REFUSED", "attach comes with the computer mount");
+  /** No computer: every background call is refused in words. */
+  readonly process = noProcesses;
+
+  /** A bind of the run's folder (its real path) at /workspace: the local Docker computer's mount. */
+  async mountSpec(): Promise<MountSpec> {
+    const root = await this.#openRoot();
+    await root.handle.close();
+    return { kind: "bind", path: root.abs };
+  }
+
+  async attach(computer: AttachableComputer, check: MountCheck): Promise<Workspace> {
+    await checkReadBack(computer, await this.mountSpec(), check);
+    return attachedWorkspace(this, computer, { synced: (path, only) => this.#syncUp(path, only) });
+  }
+
+  /** What a computer changed at `path` in this folder made durable on the host: the entry itself when it is there (a
+   *  file or a folder, never through a link), then, unless `only` is "file", every folder from its own up to the root.
+   *  A file this process may not read is synced through a write-only open. One it may neither read nor write (another
+   *  account's private file, such as the computer's) cannot be synced from here: false says so, and the caller has the
+   *  computer sync it; true is that the entry is synced, or gone. */
+  async #syncUp(path: string, only?: "file"): Promise<boolean> {
+    const segments = relativeSegments(path);
+    const entry = await this.#in(path, segments, segments.length - 1, async (dir) => {
+      const at = dir.at(segments.at(-1)!);
+      for (const flags of [O_RDONLY, O_WRONLY]) {
+        let handle: FileHandle;
+        try {
+          handle = await open(at, flags | O_NOFOLLOW | O_NONBLOCK);
+        } catch (error) {
+          if (errno(error) === "ENOENT" || errno(error) === "ELOOP") return true;
+          if (errno(error) !== "EACCES") throw failed(error, path);
+          continue;
+        }
+        try { await handle.sync(); } finally { await handle.close(); }
+        return true;
+      }
+      return false;
+    });
+    if (only !== "file") for (let count = segments.length - 1; count >= 0; count--) await this.#in(path, segments, count, (dir) => dir.handle.sync());
+    return entry;
   }
 }
 

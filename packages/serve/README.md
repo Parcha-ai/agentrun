@@ -1503,7 +1503,8 @@ A firing starts its run once. Its key comes from the trigger and its nominal tim
 a restart drives again finds its run. A firing's key stays bound to that run: when the server stopped while setting the
 run up, the firing reads `failed` ("The server stopped while setting up the run.") with that run's id, it never fires
 again, the next firing goes ahead, and `POST /v2/triggers/{id}/fire` is how a person tries it again. While the trigger's last run is active (working, or waiting on a person), a firing
-is `skipped`, with why; a full server (`429`) keeps it due and tries again. Times missed while the server was down are
+is `skipped`, with why (a webhook trigger with `accept` is the exception: [each event it takes](#webhook-triggers)
+starts its own run); a full server (`429`) keeps it due and tries again. Times missed while the server was down are
 one `missed` firing with their count, and the schedule goes on from now; the latest of them still fires, once, when it is
 no older than the trigger's `catchup_window_s` (default an hour; 0, never), marked `catch_up`. A
 firing while the last run is active (working, or parked waiting on a person) is skipped with why, never queued,
@@ -1533,17 +1534,81 @@ anything else. A bad signature, a stale timestamp, an unknown trigger, one that 
 answer the same `401`, so no trigger id can be found by asking; a body past 256 KiB is `413`.
 
 The secret, `whsec_` and 32 random bytes in base64, is made with the trigger and shown in the `201` once; no `GET`
-shows it. It is kept sealed under `AGENTRUN_SEAL_KEY` in `DIR/trigger-secrets.json`, so with no seal key no webhook
-trigger is made (`409 no_sealing_key`). `POST /v2/triggers/{id}/secret` makes a new one, shown once, and the old one
-signs nothing from then on. An import cuts these secrets out of what it keeps, and no learning text shows one. A
-`trigger-secrets.json` that does not read is never written over: until it is fixed or moved away, no webhook trigger is
-made or rotated (`409 store_unreadable`) and none fires.
+shows it. It is kept sealed under `AGENTRUN_SEAL_KEY` in `DIR/trigger-settings-webhook.json` (each trigger source's
+sealed settings have a file of their own), so with no seal key no webhook trigger is made (`409 no_sealing_key`).
+`POST /v2/triggers/{id}/secret` makes a new one, shown once, and the old one signs nothing from then on. Like every
+secret this server keeps (its tokens, its outbound webhook's secret), it is cut from what a run shows, from what an
+import keeps and from every learning text. A secret that does not open under the seal key the server starts with is
+said in its log (`condition=trigger_setting_unopened`, naming the trigger), and its trigger is refused until a new
+secret is made. A `trigger-settings-webhook.json` that does not read is never written over: until it is fixed or moved
+away, no webhook trigger is made or rotated (`409 store_unreadable`) and none fires.
 
-The request's `webhook-id` is its firing's key: the first answers `202` once the firing is recorded, and its run starts
-after; the same `webhook-id` again, for a day after (even once the firing has left the history of 200), answers `200` with that
-firing and starts nothing. The agent gets the trigger's input,
-then the body, cut at 16 KiB, inside `<trigger-payload source="webhook" untrusted>...</trigger-payload>`: whatever the
-sender wrote is data, not an instruction.
+The request's `webhook-id`, which its signature covers, is its firing's key: the first answers `202` once the firing is
+recorded, and its run starts after; the same `webhook-id` again, for a day after, answers `200` with that firing and
+starts nothing (`{"ok": "duplicate"}` once the firing has left the trigger's history of 200 and the 1,000 it keeps past
+it). Each trigger keeps the keys of its last day's pushed firings in `triggers.json`, at most 5,000, the oldest let go
+first past that, which the log says once (`condition=trigger_seen_full`). The agent gets the trigger's input,
+then the body, cut at 16 KiB, inside `<trigger-payload source="webhook" scheme="standard" untrusted>...</trigger-payload>`:
+whatever the sender wrote is data, not an instruction. The tag names the signature scheme, the event as that scheme
+reads it (`event="..."`), the JSON body's top-level `action` (`action="..."`) and an unsigned delivery id
+(`delivery="..."`, GitHub's `X-GitHub-Delivery`), each when there is one, so an agent's instructions can read what it
+was given; a sender's words there are cut to 200 characters, their quotes and brackets escaped, and a closing tag in
+the body, in any case, is defused.
+
+A webhook trigger's `signature` names its scheme, one of a table of them: `standard` (the default, above) or `github`,
+for a GitHub repository or organization webhook. A request is checked by the one scheme whose signature header it
+carries (`webhook-signature`, `X-Hub-Signature-256`), and the scheme gives its firing key, from what its signature
+covers, and its event. With `github`, paste the trigger's whole `whsec_...` secret, as it is, into the GitHub webhook's
+Secret (content type `application/json`): each delivery is checked by `X-Hub-Signature-256: sha256=<hex HMAC-SHA256 of
+the raw body>`, keyed by the UTF-8 bytes of that string. GitHub signs the body alone, not `X-GitHub-Delivery` nor a
+time, so the firing's key is the SHA-256 of the raw body: a redelivery from GitHub's page sends the same body and
+answers its firing, and so does a captured delivery sent again within the key's day under any delivery id. After the
+day it would fire again (over TLS, a risk taken); there is no 5-minute window. Two real deliveries never share a body,
+since GitHub's carry their own ids and times. `X-GitHub-Delivery` (1 to 255 printable ASCII characters) only names the
+delivery on the payload's tag, for tracing. A request that carries no scheme's signature header, or more than
+one, or is signed under a scheme other than its trigger's, is the same `401` as a bad signature, and the headers are
+checked before the body is read.
+
+`accept` makes a trigger take only the events it names, from the delivery alone:
+
+```json
+{ "kind": "webhook", "signature": "github",
+  "accept": [
+    { "event": "pull_request", "actions": ["opened", "synchronize", "ready_for_review"],
+      "where": [ { "pointer": "/pull_request/draft", "in": [false] } ] },
+    { "event": "issue_comment", "actions": ["created"],
+      "where": [ { "pointer": "/issue/pull_request", "exists": true },
+                 { "pointer": "/comment/author_association", "in": ["OWNER", "MEMBER", "COLLABORATOR"] },
+                 { "pointer": "/comment/body", "prefix": "@reviewer review" } ] } ] }
+```
+
+A rule's `event` is the event as the trigger's scheme reads it: GitHub's `X-GitHub-Event`, or a Standard Webhooks
+body's top-level `type`. GitHub signs the body, not `X-GitHub-Event`: a delivery a trigger ignored keeps its key for
+the day, so the same body sent again under another event answers `{"ok": "duplicate"}`, and where it matters a rule
+should also test a field only that event's body has (`/pull_request`, `/comment`, `/issue/pull_request`); `actions`, when given,
+lists the values the body's top-level `action` may take; each of `where`'s conditions is a JSON pointer (RFC 6901) into
+the body with one test: `in` (the value there equals one of the JSON values listed, an object's fields in any order),
+`exists` (`true`, the pointer names a value, `null` included; `false`, it names none) or `prefix` (the value is a string
+whose first line, trimmed, starts with it, ignoring case). A delivery fires when any rule takes it, with all its
+conditions holding. A verified delivery no rule takes (GitHub's `ping` among them, a body that is not JSON too) answers
+`200 {"ok": "ignored"}`, fires nothing, and is one log line (`condition=hook_ignored`, with the trigger and why). Without
+`accept`, every verified request fires, as before. A trigger holds at most 20 rules, each at most 20 conditions and 20
+actions; an `in` lists at most 20 values of at most 1024 characters of JSON each, a pointer is at most 512 characters,
+and an event, an action or a prefix at most 200. A trigger with `accept` starts a run for each event it takes, its last
+run active or not, since the events it takes are each their own work (a review per pull request); the server's run
+limit still holds: a start it refuses (`429`) keeps the firing due and tries it again, and past 20 firings due a new
+delivery answers `429`. This holds for every firing of such a trigger, a run now (`POST /v2/triggers/{id}/fire`)
+included. Runs start in the order their events came while the server has room; while one firing waits to be tried
+again after a `429`, a later one can start first.
+
+Such a trigger can take every run this server has room for, starving other triggers and the runs people start. Give it
+`max_active_runs` (1 to 100; `null` clears it): past that many of its runs active, a firing waits due and is tried
+again, as at a full server, and is never skipped. It counts the runs this trigger started while they work, kept apart
+from its history (so a long run counts however many firings follow it) and read again at each check; a run a person
+opens again after it ended is that person's follow-up, not counted. Only a trigger whose firings each start a run
+takes it (`422` otherwise). On a public repository, a rule for `issue_comment` or `issues` events needs a condition on
+`/comment/author_association` or `/issue/author_association` (`in: ["OWNER", "MEMBER", "COLLABORATOR"]`): without one,
+anyone who can comment starts runs.
 
 A trigger's input, a started run's first message or a firing's message, is the trigger's, never the person's: it carries
 the origin `{kind: "trigger", trigger_id, source, owner}`, `owner` decided by the trigger's definition as it fires and
@@ -2087,7 +2152,7 @@ Each run of an agent that learns starts from `main` as it is when the run is mad
 The server reads the commit with git plumbing, never the working tree. What it holds that is not a regular UTF-8 file of
 1 MiB or less, or a note out of shape, is not read, and the server's stderr names it. A learning fault never blocks a
 run: when the folder cannot be made or read, or its notes copied, the run starts with nothing learned. A host without
-git 2.40 or later is one such fault, said once on stderr.
+git 2.32 or later (what learning's own git calls need) is one such fault, said once on stderr.
 
 ### What a run learns
 
