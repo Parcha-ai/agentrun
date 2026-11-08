@@ -26,7 +26,7 @@ import {
 	tmpfsOf,
 	WORK,
 } from "./drift.js";
-import { DOCKER_IMAGE_ENV, DOCKER_RECIPE, type EnsureImageOptions, ensureImage, type ImageSource, imageSourceOf, imageSourceProblem } from "./docker/image.js";
+import { DOCKER_RECIPE, type EnsureImageOptions, ensureImage, type ImageSource, imageSourceProblem } from "./docker/image.js";
 import { checkMount, type MountKind, type MountReadBack, WORKSPACE } from "./mount.js";
 import {
 	type AttachedComputer,
@@ -82,8 +82,6 @@ export const ENV = {
 	daemon: "COMPUTER_DOCKER_DAEMON",
 	/** Who a computer runs as when its spec does not say, uid or uid:gid in numbers; see DockerProviderOptions.user. */
 	user: "COMPUTER_DOCKER_USER",
-	/** Another image for the provider's computers than its own recipe's, pulled when Docker has none; see image(). */
-	image: DOCKER_IMAGE_ENV,
 } as const;
 
 /** The mount kinds a Docker computer takes, as capabilities().mount declares them: a bind of a folder on this host. */
@@ -111,22 +109,19 @@ export function dockerArch({ docker = "docker", timeoutMs = 30_000 }: Pick<Docke
 
 /**
  * A DockerProvider from COMPUTER_DOCKER_* alone. Without COMPUTER_DOCKER_DAEMON it asks Docker its architecture and takes
- * this package's daemon for it, and says when that daemon is not built. Options win over the environment.
+ * this package's daemon for it, and says when that daemon is not built. Options win over the environment. The image is
+ * an option only (default the provider's own recipe): no image name is read from the environment.
  */
 export async function fromEnv(env: Record<string, string | undefined> = process.env, options: DockerFromEnvOptions = {}): Promise<DockerProvider> {
 	const { timeoutMs, ...given } = options;
 	const user = env[ENV.user] || undefined;
-	// An image option is the constructor's to check; one from the environment is refused naming its variable.
-	const image = given.image ?? imageSourceOf(env);
-	const unusable = given.image === undefined ? imageSourceProblem(image) : undefined;
-	if (unusable !== undefined) throw new Error(`${ENV.image}: ${unusable}`);
 	let daemonPath = given.daemonPath ?? (env[ENV.daemon] || undefined);
 	if (daemonPath === undefined) {
 		const arch = await dockerArch({ ...(given.docker ? { docker: given.docker } : {}), ...(timeoutMs === undefined ? {} : { timeoutMs }) });
 		daemonPath = fileURLToPath(new URL(`./computerd-linux-${arch}`, import.meta.url));
 		if (fileMode(daemonPath) === undefined) throw new Error(`no daemon for Docker's ${arch} at ${daemonPath}: run npm run build:daemon -w @parcha/agentrun-computer`);
 	}
-	return new DockerProvider({ ...(user === undefined ? {} : { user }), ...given, daemonPath, image });
+	return new DockerProvider({ ...(user === undefined ? {} : { user }), ...given, daemonPath });
 }
 
 /** The conformance CLI's module for Docker: the drifted twin. */

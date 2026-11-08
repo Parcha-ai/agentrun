@@ -10,7 +10,6 @@ export { type DockerDesktopOptions, DockerProvider, type DockerProviderOptions }
 export {
 	DEFAULT_DOCKER_IMAGE,
 	DOCKER_BASE,
-	DOCKER_IMAGE_ENV,
 	DOCKER_RECIPE,
 	DOCKER_RECIPE_HAS,
 	ensureImage,
@@ -18,7 +17,6 @@ export {
 	IMAGE_REPOSITORY,
 	IMAGE_TIMEOUT_MS,
 	type ImageSource,
-	imageSourceOf,
 	imageSourceProblem,
 	type Making,
 	RECIPE_LABEL,

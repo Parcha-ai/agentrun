@@ -544,9 +544,10 @@ const made = await docker.create({ image: image.value, lifetimeMs: 600_000, netw
   image (`DEFAULT_DOCKER_IMAGE`): `python:3.12-slim` pinned by its index digest (`DOCKER_BASE`), with git, curl,
   nodejs, npm, ripgrep and socat from apt. `docker.image({ signal?, timeoutMs?, onWait? })` is `ensureImage` of it with the
   provider's docker CLI. A source that is neither throws at construction, in words.
-- `COMPUTER_DOCKER_IMAGE` (`ENV.image`, `DOCKER_IMAGE_ENV`) names another image instead: `fromEnv` gives the provider
-  `{ image }` for it (`imageSourceOf(env)`), and the default recipe when it is unset or empty. An `image` option wins
-  over the environment; a value that is not an image name is refused, naming the variable.
+- **The image is an option only; there is no env name for it.** Another image is named with the `image` option, to
+  `new DockerProvider(...)` or to `fromEnv(env, { image: { image: "..." } })`; `fromEnv` reads no image name from the
+  environment, and a `COMPUTER_DOCKER_IMAGE` there is ignored. serve keeps its own setting, `AGENTRUN_DOCKER_IMAGE`,
+  and at the cutover passes it in as the `image` option, so there is one name and the owner's setting keeps working.
 - **One build per process.** Concurrent callers share one flight per docker CLI and recipe (or image): the first starts
   it, the rest wait on it and ask Docker nothing. A flight is forgotten once it settles, so the next call inspects
   again, and a failure is never kept: the next call tries again.
@@ -1430,8 +1431,9 @@ exports what a `ProviderModule` is:
   `conformanceNotes`), building them through `fromEnv`. Without it the CLI runs `fromEnv`'s provider, and the drift
   case skips, so Core does not pass.
 
-Docker reads `COMPUTER_DOCKER_DAEMON` (default this package's daemon for Docker's architecture, from `docker version`),
-`COMPUTER_DOCKER_USER` and `COMPUTER_DOCKER_IMAGE` (default the provider's own recipe; see "The image"); Modal and Daytona read the names in their sections. `test/providers.test.mjs` holds every
+Docker reads `COMPUTER_DOCKER_DAEMON` (default this package's daemon for Docker's architecture, from `docker version`)
+and `COMPUTER_DOCKER_USER`; its image is an option only (see "The image"); Modal and Daytona read the names in their
+sections. `test/providers.test.mjs` holds every
 provider file to its registry line and its line to this shape, and checks that the CLI's usage names every id. Run the
 suite on the new computer, by path before its line exists and by id after:
 

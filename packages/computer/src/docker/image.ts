@@ -24,8 +24,6 @@ import { fail, ok, type Result } from "../result.js";
 export const IMAGE_REPOSITORY = "agentrun-computer";
 /** The label a recipe's image carries: the recipe's whole sha256. A computer made from the image carries it too. */
 export const RECIPE_LABEL = "agentrun.computer.recipe";
-/** The setting that names another image for the provider's computers than its own recipe's. */
-export const DOCKER_IMAGE_ENV = "COMPUTER_DOCKER_IMAGE";
 /** How long a flight, inspect and build or pull, may take before its docker is killed: 10 minutes. */
 export const IMAGE_TIMEOUT_MS = 10 * 60_000;
 /** What the default image has, in words: serve's, for the timeline row a run shows while it is built. */
@@ -69,12 +67,6 @@ export const recipeHash = (recipe: string): string => createHash("sha256").updat
 export const recipeTag = (recipe: string): string => `${IMAGE_REPOSITORY}:${recipeHash(recipe).slice(0, 12)}`;
 /** The default image: the provider's own, built from DOCKER_RECIPE. */
 export const DEFAULT_DOCKER_IMAGE = recipeTag(DOCKER_RECIPE);
-
-/** The image a provider's computers start from, by env: COMPUTER_DOCKER_IMAGE's image, else the default recipe. */
-export const imageSourceOf = (env: Readonly<Record<string, string | undefined>>): ImageSource => {
-	const named = env[DOCKER_IMAGE_ENV];
-	return named ? { image: named } : { recipe: DOCKER_RECIPE };
-};
 
 /** The longest delay Node's timers hold: 2^31 - 1 ms. */
 const MAX_TIMER_MS = 2_147_483_647;
@@ -293,7 +285,7 @@ function pullFailure(docker: string, image: string, answer: Answer, timeoutMs: n
 	if (shared) return shared;
 	const said = answer.stderr;
 	if (DENIED.test(said)) return fail("docker", `the registry refused the pull of ${image} (no such repository, or it needs a docker login): ${see}`);
-	if (NO_MANIFEST.test(said)) return fail("docker", `the registry has no ${image}: name an image it has (${DOCKER_IMAGE_ENV})`);
+	if (NO_MANIFEST.test(said)) return fail("docker", `the registry has no ${image}: name an image it has`);
 	if (UNREACHABLE.test(said)) return fail("docker", `the registry could not be reached to pull ${image}: ${see}`);
 	return fail("docker", `docker pull ${image} failed (${exitOf(answer)}): ${see}`);
 }
