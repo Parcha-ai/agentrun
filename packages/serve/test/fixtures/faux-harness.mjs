@@ -7,6 +7,26 @@ export function opened(harness, options) {
   if (process.env.AGENTRUN_TEST_FAUX_HARNESS_OPENED) appendFileSync(process.env.AGENTRUN_TEST_FAUX_HARNESS_OPENED, `${JSON.stringify({ harness, options })}\n`);
 }
 
+/** Told each session the adapter closed (its key), filed for a test to see: the harness's process stops with its run. */
+export function closed(key) {
+  if (process.env.AGENTRUN_TEST_FAUX_HARNESS_CLOSED) appendFileSync(process.env.AGENTRUN_TEST_FAUX_HARNESS_CLOSED, `${key}\n`);
+}
+
+/** How long the faux adapter's open takes (FauxOptions.openDelayMs), from the test's environment: a slow harness start. */
+export function openDelayMs() {
+  return Number(process.env.AGENTRUN_TEST_FAUX_HARNESS_OPEN_DELAY_MS ?? 0);
+}
+
+/** How long the faux adapter's close takes (FauxOptions.closeDelayMs), from the test's environment: a slow harness stop. */
+export function closeDelayMs() {
+  return Number(process.env.AGENTRUN_TEST_FAUX_HARNESS_CLOSE_DELAY_MS ?? 0);
+}
+
+/** The words the faux adapter's close fails with (FauxOptions.closeError), from the test's environment: a harness whose stop fails. */
+export function closeError() {
+  return process.env.AGENTRUN_TEST_FAUX_HARNESS_CLOSE_ERROR || undefined;
+}
+
 /** An answer of 3,000 characters, longer than the 2,000 a run's summary keeps; its end says it was not cut. */
 export const LONG_ANSWER = `${"The long answer goes on. ".repeat(119)}The end.`;
 

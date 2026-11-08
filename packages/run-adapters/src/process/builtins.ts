@@ -1,6 +1,6 @@
 // Copyright 2026 Vercel Inc. Licensed under the Apache License, Version 2.0; see LICENSE in this package.
 // From github.com/vercel-labs/durable-harness, packages/harness-process/src/builtins.ts at ea8aa4060c (UPSTREAM.json records its blob and sha256).
-// Changed by Parcha, imports rewritten for AgentRun; patches: 001-begin-reservation, 002-message-prefix, 003-comments-name-this-host
+// Changed by Parcha, and AgentRun's own since the port from upstream froze on 2026-11-07.
 import { type DriveContext, EffectFailure, EffectInterrupted, Fatal, type HostToolIO, hostToolIO, type ReplayPolicy } from '../kernel/index.js';
 import { clip, failureText, toolKey, type ToolResult } from './tools.js';
 
