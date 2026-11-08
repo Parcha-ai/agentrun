@@ -191,6 +191,27 @@ test("a create whose answer was lost is recovered by its Idempotency-Key, never 
 	assert.equal(fake.sessions.size, 1);
 });
 
+test("a create whose answer and whose recovery were both lost leaves no orphan: list finds the phone by its Idempotency-Key, and release ends it", async () => {
+	const { provider, fake, ledger } = await setup({ loseAnswer: true, loseRecovery: true });
+	// Another session on the account, under another request key: never adopted.
+	fake.sessions.set("sess_other", { id: "sess_other", state: "ready", platform: "android", kind: "emulator", expires_at: fake.clock.now() / 1000 + 600, request_key: "b".repeat(32) });
+	const created = await provider.create({ ...SPEC, labels: { run: "r1" } });
+	assert.equal(created.ok, false, "the create could not be told about");
+	const [made] = [...fake.sessions.values()].filter((s) => s.id !== "sess_other");
+	assert.ok(made, "the phone harness made the phone all the same");
+	const posted = fake.requests().find((r) => r.method === "POST" && r.path === "/sessions");
+	assert.equal(made.request_key, posted.headers["idempotency-key"]);
+
+	// The sweep's view: list finds it under the run's labels, by the key the ledger kept before the POST.
+	const listed = await provider.list({ run: "r1" });
+	assert.equal(listed.ok, true, JSON.stringify(listed));
+	assert.deepEqual(listed.value.map((info) => info.ref.id), [made.id]);
+	assert.deepEqual((await ledger.list()).map((entry) => entry.id), [made.id], "the ledger now names the phone by its id");
+	assert.deepEqual(await provider.release(listed.value[0].ref, "delete"), { ok: true, value: undefined });
+	assert.deepEqual([...fake.sessions.keys()], ["sess_other"], "the orphan is ended; the other session is untouched");
+	assert.deepEqual(await ledger.list(), []);
+});
+
 test("connect reaches the phone over adb with its unlock code, which no result or error ever holds; hello is the provider's", async () => {
 	const { provider, fake } = await setup();
 	const { value: ref } = await provider.create(SPEC);

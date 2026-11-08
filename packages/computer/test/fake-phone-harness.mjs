@@ -51,10 +51,11 @@ const json = (status, body, headers = {}) => new Response(JSON.stringify(body), 
  * The fake. Options: `readyAfter`, how many GETs a new session stays provisioning (default 1); `start`, what a create
  * meets ("ok", "busy", "limit", "credit", "error": the session fails while provisioning); `loseAnswer`, the POST is
  * admitted and then its answer is lost (fetch rejects); `others`, sessions on the account this provider never made;
+ * `loseRecovery`, the GET that recovers a create by its key is lost too;
  * `code`, the unlock code the phone takes (default the one the API gives); `abi`, what getprop reports; `launchHidden`,
  * a launched app is reported in front (dumpsys) while the screen and the tree still show the launcher.
  */
-export function fakePhoneHarness({ readyAfter = 1, start = "ok", loseAnswer = false, others = [], code, abi = "x86_64", launchHidden = false, clock = fakeClock() } = {}) {
+export function fakePhoneHarness({ readyAfter = 1, start = "ok", loseAnswer = false, loseRecovery = false, others = [], code, abi = "x86_64", launchHidden = false, clock = fakeClock() } = {}) {
 	const requests = [];
 	const adbCalls = [];
 	const sessions = new Map(others.map((s) => [s.id, { ...s }]));
@@ -94,6 +95,7 @@ export function fakePhoneHarness({ readyAfter = 1, start = "ok", loseAnswer = fa
 		if (method === "GET" && path === "/sessions") return json(200, [...sessions.values()].map(view));
 		const byKey = /^\/sessions\/requests\/([^/]+)$/.exec(path);
 		if (method === "GET" && byKey) {
+			if (loseRecovery) throw new TypeError("fetch failed: the connection was reset");
 			const found = [...sessions.values()].find((s) => s.request_key === byKey[1]);
 			return found ? json(200, view(found)) : json(404, { error: "no such request" });
 		}
