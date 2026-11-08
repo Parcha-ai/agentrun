@@ -230,7 +230,8 @@ test("an aborted run ends what it made and reports the cases it did not run as f
 	assert.deepEqual(fake.alive(), []);
 });
 
-test("an abort while the run's shared computer is still being made ends the wait at once, not at the case timeout", async () => {
+// Its own timeout: a regression fails here in 10 s, not after the 180 s case timeout it guards against.
+test("an abort while the run's shared computer is still being made ends the wait at once, not at the case timeout", { timeout: 10_000 }, async () => {
 	// Ctrl-C during setup: the provider's create never answers, so only the run's signal can end the wait.
 	const fake = fakeComputers({ createHangs: true });
 	const controller = new AbortController();
