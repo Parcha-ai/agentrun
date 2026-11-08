@@ -21,6 +21,17 @@ export class StepNotHeld extends Error {
   }
 }
 
+/** An admit of an id whose last step's end mark (or told mark) is not written yet: refused, nothing held or marked. Its
+ *  settle must be retried first, else that retry would settle the new step at the old step's figure. */
+export class StepNotSettled extends Error {
+  readonly id: string;
+  constructor(id: string) {
+    super(`the cap's last step ${id} has not finished settling (its end mark is not written): retry its settle before ${id} is used again`);
+    this.name = "StepNotSettled";
+    this.id = id;
+  }
+}
+
 export class Ledger {
   #spent: number | null;
   readonly #holds = new Map<string, Hold>();

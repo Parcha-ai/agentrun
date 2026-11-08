@@ -10,5 +10,6 @@ export { WRAP_UP_FACTOR, WRAP_UP_LEAST_FACTOR, WRAP_UP_STEP0_ANSWER_TOKENS, typi
 export { CapStop, createStepWaits, type StepWaits } from "./steps.js";
 export { memoryMarks, type CapMark, type CapMarks, type EndMark, type StartMark, type ToldMark, type WaitMark } from "./marks.js";
 export { ownCostsOf, spendOf, toldIn, type Spend } from "./recover.js";
+export { StepNotHeld, StepNotSettled } from "./ledger.js";
 export { reasoningBytes, stoppedTokens, streamedBytes } from "./stopped.js";
 export type { Admission, Cap, CapMode, CapModel, CapOptions, CapRequest, DecisionCapRequest, ModelCapRequest, ModelPrice, Previous, RefusalFigures, Settled, ToolCapRequest } from "./types.js";

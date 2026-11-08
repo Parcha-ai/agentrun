@@ -1,7 +1,13 @@
 // The spend a reopened run reads from its marks. Each step's marks are keyed by its id: a step with an end counts at the
 // end's figure; one with only its start (a crash cut it) at what its start held; one whose start holds no figure is
-// unknown; a refused step, and one whose end says it never left, count nothing. Each step is counted once, whatever order
-// its marks fall in, in full precision.
+// unknown; a refused step, and one whose end says it never left, count nothing. Each step is counted once, in full
+// precision.
+// The marks are read in the order they were written (CapMarks keeps that order), and that order is trusted: an id's end
+// closes the step under way under it. createCap does not start an id again until its last end mark is written
+// (StepNotSettled), so an end lands after the next start of its id only if a write that timed out lands later still. Marks
+// written out of that order
+// (an end late past the next start of its id, or an end with no start followed by a real later step of its id) are
+// read as written, and can close the wrong step.
 import type { CapMark, StartMark } from "./marks.js";
 
 /** What the marks say: the cap's spend (null: unknown), the run's reported cost (null once any step's own cost is unknown,

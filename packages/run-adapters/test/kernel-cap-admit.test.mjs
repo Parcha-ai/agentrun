@@ -31,6 +31,14 @@ test("an unknown spend refuses every request unsent", async () => {
   await assert.rejects(cap.admit(toolRequest("monid_run", 0)), CapRefused);
 });
 
+test("a spend that is not a finite figure of 0 or more (NaN, Infinity, below 0) is refused as an unknown spend, in words with no NaN", async () => {
+  for (const spentUsd of [Number.NaN, Number.POSITIVE_INFINITY, -1]) {
+    const { cap } = capOn(1, { spentUsd });
+    await assert.rejects(cap.admit(toolRequest("fetch", 0.1)), (error) => error instanceof CapRefused && error.forGood && error.message === "spend_cap_reached: Not sent: what the run has spent is unknown, so its cap of $1 cannot be kept: the run is out of budget.", `spent ${spentUsd}`);
+    await assert.rejects(cap.admit(modelRequest(SONNET, 10)), (error) => error instanceof CapRefused && !/NaN/.test(error.message), `spent ${spentUsd}, a model request`);
+  }
+});
+
 test("a refusal for good says the run's spend, never sent", async () => {
   const { cap } = capOn(10, { spentUsd: 0.25 });
   const refusal = await cap.admit(modelRequest({ ...SONNET, id: "unbounded", outputCeiling: null }, 10)).catch((error) => error);
