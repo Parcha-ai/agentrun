@@ -195,6 +195,28 @@ test("pi: a run asked for an effort (its guidance in the prompt) measures no flo
   assert.equal(plain.status, 202, `the asked run's guidance is not counted in a run asked for none: ${JSON.stringify(plain.body)}`);
 });
 
+test("pi: a run asked for no effort sets no floor for a run asked for one, the dearer prompt: that run is priced at its own measurement, or not at all", { timeout: 120_000 }, async (t) => {
+  withEnv(t, {}, ["AGENT_THINKING"]);
+  const { api } = await serve(t, { faux: FLOOR_PRICED });
+  assert.equal((await api("POST", "/agents", agent("floor-plain"))).status, 201);
+  const plain = await api("POST", "/agents/floor-plain/runs", { input: { content: "Write one.md" }, max_cost_usd: 0.02 });
+  assert.equal(plain.status, 202, JSON.stringify(plain.body));
+  await follow(api, plain.body.run_id, SETTLED);
+  const plainNeeds = (await api("GET", `/runs/${plain.body.run_id}`)).body.pending?.needs_usd;
+  assert.ok(plainNeeds > 0.1024, String(plainNeeds));
+  // Asked for medium, unmeasured: never refused on the plain run's figure, so it starts, pauses at step 0 and measures.
+  const cap = Math.round((plainNeeds - 0.0005) * 1e6) / 1e6;
+  const first = await api("POST", "/agents/floor-plain/runs", { input: { content: "Write one.md" }, effort: "medium", max_cost_usd: cap });
+  assert.equal(first.status, 202, `not refused on the plain run's figure: ${JSON.stringify(first.body)}`);
+  await follow(api, first.body.run_id, SETTLED);
+  const askedNeeds = (await api("GET", `/runs/${first.body.run_id}`)).body.pending?.needs_usd;
+  assert.ok(askedNeeds > plainNeeds, `its guidance makes its first request dearer: ${askedNeeds} vs ${plainNeeds}`);
+  // The next run asked for medium is priced at its own measurement.
+  const again = await api("POST", "/agents/floor-plain/runs", { input: { content: "Write one.md" }, effort: "medium", max_cost_usd: cap });
+  assert.equal(again.status, 422, JSON.stringify(again.body));
+  near(again.body.error.details.least_usd, askedNeeds, 1e-6, "its own least, not the plain run's");
+});
+
 test("pi: only a fresh conversation's first request has a floor: a request after an answer (a follow-up in a later process) has none", async () => {
   const floorOf = await piFloor({ effort: "medium" });
   const model = { id: "floor-1", name: "floor-1", api: "openai-responses", provider: "p", maxTokens: 64_000, contextWindow: 400_000, cost: { input: 10, output: 100, cacheRead: 0, cacheWrite: 0 } };
