@@ -58,7 +58,7 @@ import { REFLECT_REQUEST, Turns } from "./turns.js";
 import { DECISION_KEYS, handover, handoverSignIn, mcpHandover, mcpSecretValues, secret, SECRET_NAMES, SECRETS_FD_ENV, SECRETS_LEN_ENV, type StoredKeys, withoutSecrets, withSecrets } from "./secrets.js";
 import { type HandedSignIn, pointerHash, type SignIns } from "./sign-ins.js";
 import { MIN_SECRET } from "./learn/secrets.js";
-import { cutStrings, keyRefusal, redacted, redactedAnswer, redactedLive, redactedOutput, runKeyOf, withoutLoopback } from "./key-refusal.js";
+import { cutStrings, keyRefusal, redacted, redactedAnswer, redactedLive, redactedOutput, runKeyOf } from "./key-refusal.js";
 import { GRAPH_CACHE_BYTES, PartCache, type PartKind, servedPart } from "./graph-served.js";
 import { CONTENT_FILTER_WORDS, contentFiltered, MODERATED } from "./content-filter.js";
 import { BOX_KEYS, VM_PROVIDER } from "./boxes.js";
@@ -68,10 +68,10 @@ import { removeEgressDir, RUN_BOX_ALLOW_ENV } from "./box-egress.js";
 import { BehindReadError, checkpointRunDb, MonotonicReads, readRunDb } from "./run-db.js";
 import { holderLives, holderOfClaim, holderOfProcess, holderState, killHolder, LAUNCH_HOLDER, RUN_EPOCH_ENV, RUN_LAUNCH_ENV, type RunHolder, signal } from "./run-holder.js";
 import { firstDoorLine, untilOpened, verifyDoor } from "./door-line.js";
-import { BUDGET_PAUSED, type Approval, type ApprovalAnswer, actingOn, approvalOf, browserPending, budgetPending, cents, centsUp, continuationOf, costOf, costView, knownToolCostOf, meaningful, micro, microUp, overByMiss, pauseOf, pausedAt, type Pending, pendingOf, raisedToGo, type SoFar, soFarOf, type State, type Status, statusOf as statusOfView, stopped, stoppedAt, SUGGESTED_RAISE_FACTOR, suggestedCap, shownArgs, toolCostOf, usersOf, waitingApproval, withdrawn, withOverCap, withPaused } from "./run-view.js";
-// The cost reads, the served row transforms and the status and pending views kept their import path here for the server
-// routes and tests that read them from this module.
-export { costOf, costView, knownToolCostOf, soFarOf, type SoFar, toolCostOf, withOverCap, withPaused, stoppedAt, suggestedCap, SUGGESTED_RAISE_FACTOR, type State, type Status };
+import { BUDGET_PAUSED, type Approval, type ApprovalAnswer, actingOn, approvalOf, browserPending, budgetPending, cents, centsUp, continuationOf, costOf, costView, type Handed, handedPointers as handedPointersOf, knownToolCostOf, MALFORMED, meaningful, micro, microUp, overByMiss, pauseOf, pausedAt, type Pending, pendingOf, raisedToGo, redactorOf, refusedValuesOf, rowShown as rowShownOf, servedReviewWith, servedRunErrorWith, shownOf, type SoFar, soFarOf, type State, type Status, statusOf as statusOfView, stopped, stoppedAt, SUGGESTED_RAISE_FACTOR, suggestedCap, shownArgs, toolCostOf, usersOf, waitingApproval, WITHHELD_SIGN_IN, withdrawn, withOverCap, withPaused } from "./run-view.js";
+// The cost reads, the served row transforms, the status and pending views and the redaction choke point kept their import
+// path here for the server routes and tests that read them from this module.
+export { costOf, costView, knownToolCostOf, soFarOf, type SoFar, toolCostOf, withOverCap, withPaused, stoppedAt, suggestedCap, SUGGESTED_RAISE_FACTOR, type State, type Status, WITHHELD_SIGN_IN };
 
 /** `holder` with this launch's door nonce, which the row keeps so a next server can prove the door too. */
 const withNonce = (holder: RunHolder | undefined, nonce: string): RunHolder | undefined => holder && { ...holder, nonce };
@@ -107,12 +107,7 @@ const QUIET = /:run:(start|end)$/;
 const RETRY_CODES = ["OPENING", "PARKING", "RELEASED"];
 /** How often one server opens a run again whose process went before the run ended, before it fails the run. */
 const MAX_RELAUNCHES = 3;
-/** What a `sign_in_handed` the server did not write (anything but a non-empty array of SHA-256 hashes: a `true` or one
- *  hash an older build wrote, or a damaged value) reads as: some pointer was handed, which one is not known, so the run is
- *  hidden or withheld, never served uncut, and forget waits for it while it goes. */
-const MALFORMED = "malformed";
-type Handed = string[] | typeof MALFORMED;
-
+// MALFORMED and the Handed type move to run-view.ts (the run's served view), imported above.
 /** A run's `sign_in_handed` as read from its serve.json: undefined when absent (never handed one); the hashes it names;
  *  MALFORMED for any other value. */
 function handedMark(value: unknown): Handed | undefined {
@@ -149,8 +144,7 @@ export const UNREADABLE_SIGN_IN = "This server can't read the run's browser sign
 /** Why a run going when its server started was stopped: its serve.json is there but can't be read or parsed, and with it
  *  went which browser it ran on and whether it was handed its agent's sign-in, so its text can't be cut of the pointer. */
 export const UNREADABLE_RUN_META = "This server can't read the run's record (its serve.json is damaged or can't be read), so it can't tell whether the run was handed its agent's browser sign-in: the run was stopped, so nothing it says can show it.";
-/** An ended run's words, withheld while this server can't read the sign-in it was handed (load). */
-export const WITHHELD_SIGN_IN = "This server can't read the run's browser sign-in (its seal key changed or is missing, or the sign-in is damaged), so nothing the run said is shown.";
+// WITHHELD_SIGN_IN moves to run-view.ts (the run's served view), re-exported above.
 /** How soon a launch whose claim was refused tries again, at its first tries: a store another writer holds is let go of
  *  within moments, and a run waits on its launch. Past these, every settle retry. */
 const CLAIM_RETRY_MS = [50, 100, 200, 400, 800, 1_600];
@@ -875,7 +869,7 @@ export type StartOptions = { input: Json; title: string; place: Place; effort?: 
  *  tried again; `readyTimeoutMs`: how long a request to a run waits for its door (a run's first message, sent by its
  *  start, always waits READY_TIMEOUT_MS); `openTimeoutMs`: how long a launched process has to open its run (READY_TIMEOUT_MS,
  *  the first message's wait, by default; never the request's wait); `log` takes a run's start and end (print.ts). */
-export type RunsOptions = { /** The installs of the harnesses that install on first use (harness-install.ts HarnessInstall), by harness: a run on one waits for its install before it launches. Absent, none is waited for. */ installs?: Readonly<Record<string, { readonly installed: boolean; readonly installingWords: string; needed(): Promise<boolean>; ensure(): Promise<void> }>>; /** What a run's Docker box reaches, as the server resolved it (run-box.ts boxNetworkOf): the list, or none. Absent, none. */ dockerAllow?: readonly string[] | "none"; /** On a Mac, the server's proxy container's volume a run's Docker box mounts (box-egress-vm.ts). */ dockerVolume?: string; /** A server in a container: where its Docker has the data directory (box-paths.ts), which a run's Docker box mounts from. Absent on a host. */ dockerPaths?: BoxPaths; agents: Agents; token: string; /** The server's saved tool keys, read by name for its runs alone (secrets.ts). */ storedKeys?: StoredKeys; /** The server's saved MCP servers (mcp-servers.ts): a run's pin and its credentials come from them at each launch. */ mcpServers?: McpServerSource; documents?: string; doorTokenFile: string; doorToken: string; /** The test switches a run's process gets (server.ts fauxEnvOf): empty outside tests. */ fauxEnv?: NodeJS.ProcessEnv; runBoxes?: BoxProvider; /** The server's Daytona provider, with its key: remote boxes are made, seeded, pulled and destroyed with it, here alone (box-relay.ts). */ remoteBoxes?: BoxProvider; /** Daytona's API and the same key, for what the provider does not do: a kept box's idle stop, and its wake at a start (daytona-api.ts). */ remoteApi?: DaytonaApi; /** The server's VM box provider, with its client: a VM run's box is made, seeded, pulled and ended with it, here alone, as a Daytona one is (box-relay-vm.ts); it has no network. */ vmBoxes?: BoxProvider; /** A VM box's limits (run-box.ts RemoteLimits), from the box settings. */ vmLimits?: RemoteLimits; /** The relay's VM half, which lets go of a run's programs at its end. */ vmRelay?: { drop(runId: string): void }; /** The hosts a remote box may reach (run-box.ts boxAllowOf); `none`, or absent, for none. */ boxAllow?: readonly string[] | "none"; /** Called once, with the provider's refusal's code and words, when it cannot keep that list here: from then on each remote box is made with no network. */ onNoBoxList?: (code: string, message: string) => void; toolSettings?: () => ToolSettingsMap; /** Whether anyone can answer a tool call's approval here (accounts on); false, the run's gate refuses each ask (tool-gate.ts). */ approvers?: boolean; drainTimeout?: string; carryBackRetry?: CarryBackRetry; maxRuns?: number; box?: { host: BoxHost; quarantine: Quarantine }; settleRetryMs?: number; readyTimeoutMs?: number; openTimeoutMs?: number; /** Under --faux only (server.ts): the nonce handed to each run's process in place of its launch's. */ fauxHandedNonce?: string; reflectTimeoutMs?: number; gradeTimeoutMs?: number; /** The grader's model (`--grade-model`), before AGENTRUN_SERVE_GRADE_MODEL and the strong tier (grade.ts gradeModelOf). */ gradeModel?: string; /** How much of what a run learned its instructions hold, in bytes (`--learning-budget`, learning.ts learnedOf). */ learningBudget?: number; log?: (event: string, fields: Record<string, string | number>) => void; notify?: RunNotify; learning?: LearningMode; /** Each agent's saved sign-ins (sign-ins.ts): absent, no run gets one. */ signIns?: SignIns; /** Every secret this server never shows (server.ts serverSecrets), read at each call, so one made or rotated is cut at once: the host's and the keys saved on it, read through `stored` when given (learning's view keeps the saved keys it read), its tokens, and each it holds (server-secrets.ts). What a run shows, its title among it, and what its learning keeps are cut of it. */ serverSecrets: (stored?: StoredKeys) => string[] };
+export type RunsOptions = { /** The installs of the harnesses that install on first use (harness-install.ts HarnessInstall), by harness: a run on one waits for its install before it launches. Absent, none is waited for. */ installs?: Readonly<Record<string, { readonly installed: boolean; readonly installingWords: string; needed(): Promise<boolean>; ensure(): Promise<void> }>>; /** What a run's Docker box reaches, as the server resolved it (run-box.ts boxNetworkOf): the list, or none. Absent, none. */ dockerAllow?: readonly string[] | "none"; /** On a Mac, the server's proxy container's volume a run's Docker box mounts (box-egress-vm.ts). */ dockerVolume?: string; /** A server in a container: where its Docker has the data directory (box-paths.ts), which a run's Docker box mounts from. Absent on a host. */ dockerPaths?: BoxPaths; agents: Agents; token: string; /** The server's saved tool keys, read by name for its runs alone (secrets.ts). */ storedKeys?: StoredKeys; /** The server's saved MCP servers (mcp-servers.ts): a run's pin and its credentials come from them at each launch. */ mcpServers?: McpServerSource; documents?: string; doorTokenFile: string; doorToken: string; /** The test switches a run's process gets (server.ts fauxEnvOf): empty outside tests. */ fauxEnv?: NodeJS.ProcessEnv; runBoxes?: BoxProvider; /** The server's Daytona provider, with its key: remote boxes are made, seeded, pulled and destroyed with it, here alone (box-relay.ts). */ remoteBoxes?: BoxProvider; /** Daytona's API and the same key, for what the provider does not do: a kept box's idle stop, and its wake at a start (daytona-api.ts). */ remoteApi?: DaytonaApi; /** The server's VM box provider, with its client: a VM run's box is made, seeded, pulled and ended with it, here alone, as a Daytona one is (box-relay-vm.ts); it has no network. */ vmBoxes?: BoxProvider; /** A VM box's limits (run-box.ts RemoteLimits), from the box settings. */ vmLimits?: RemoteLimits; /** The relay's VM half, which lets go of a run's programs at its end. */ vmRelay?: { drop(runId: string): void }; /** The hosts a remote box may reach (run-box.ts boxAllowOf); `none`, or absent, for none. */ boxAllow?: readonly string[] | "none"; /** Called once, with the provider's refusal's code and words, when it cannot keep that list here: from then on each remote box is made with no network. */ onNoBoxList?: (code: string, message: string) => void; toolSettings?: () => ToolSettingsMap; /** Whether anyone can answer a tool call's approval here (accounts on); false, the run's gate refuses each ask (tool-gate.ts). */ approvers?: boolean; drainTimeout?: string; carryBackRetry?: CarryBackRetry; maxRuns?: number; box?: { host: BoxHost; quarantine: Quarantine }; settleRetryMs?: number; readyTimeoutMs?: number; openTimeoutMs?: number; /** Under --faux only (server.ts): the nonce handed to each run's process in place of its launch's. */ fauxHandedNonce?: string; reflectTimeoutMs?: number; /** How much of what a run learned its instructions hold, in bytes (`--learning-budget`, learning.ts learnedOf). */ learningBudget?: number; log?: (event: string, fields: Record<string, string | number>) => void; notify?: RunNotify; learning?: LearningMode; /** Each agent's saved sign-ins (sign-ins.ts): absent, no run gets one. */ signIns?: SignIns; /** Every secret this server never shows (server.ts serverSecrets), read at each call, so one made or rotated is cut at once: the host's and the keys saved on it, read through `stored` when given (learning's view keeps the saved keys it read), its tokens, and each it holds (server-secrets.ts). What a run shows, its title among it, and what its learning keeps are cut of it. */ serverSecrets: (stored?: StoredKeys) => string[] };
 /** Told of a run's moment each time it is seen (webhooks.ts' emit, which queues each one once): a wait it reached, and an
  *  end once the agent store has it. `marker` names the moment (the person's turn it waits at, the end's time), the same
  *  when another server sees it again. It says what came of it: `unsaved`, not in the outbox on disk yet. */
@@ -1568,21 +1562,20 @@ export class Runs {
     return { ...row, ...(row.summary ? { summary: this.shown(run, row.summary) } : {}), ...(row.text ? { text: this.shown(run, row.text) } : {}) };
   }
 
-  /** What serve shows of a run's error text, for every run kind: no held secret (redacted, key-refusal.ts' one rule) and
-   *  no loopback address. */
+  /** What serve shows of a run's error text, for every run kind (run-view.ts shownOf): no held secret and no loopback. */
   private shown(run: Run, text: string): string {
-    return withoutLoopback(redacted(text, this.refusedValues(run)));
+    return shownOf(this.refusedValues(run))(text);
   }
 
-  /** A run's error as its view and the run lists serve it: its message in shown()'s terms. */
+  /** A run's error as its view and the run lists serve it (run-view.ts servedRunErrorWith): its message in shown()'s terms. */
   private servedRunError<E extends { message: string; details?: unknown }>(run: Run, error: E): E {
-    return { ...error, message: this.shown(run, error.message), ...(error.details !== undefined ? { details: cutStrings(error.details, (text) => this.shown(run, text)) } : {}) };
+    return servedRunErrorWith((text) => this.shown(run, text), error);
   }
 
-  /** A run's review as its view serves it: its reason (an escalation's own words) in shown()'s terms, or withheld as its
-   *  other words are while the run is hidden (meta.unshown), as a list row read from disk withholds it. */
+  /** A run's review as its view serves it (run-view.ts servedReviewWith): its reason in shown()'s terms, or withheld while
+   *  the run is hidden (meta.unshown). */
   private servedReview(run: Run, review: RunReview | null): RunReview | null {
-    return review && { ...review, reason: run.meta.unshown ? WITHHELD_SIGN_IN : this.shown(run, review.reason) };
+    return servedReviewWith((text) => this.shown(run, text), run.meta.unshown, review);
   }
 
   /** The pointers a run was handed, read back to cut them (sign-ins.ts peek and forgotten), by its serve.json's
@@ -1592,30 +1585,19 @@ export class Runs {
    *  pointer that opens (one under another seal key or none, one forgotten and dropped past MAX_FORGOTTEN, the sign-ins
    *  file gone). Fails closed: a marked run is cut of every pointer it was handed, or withheld, never served uncut. Read
    *  anew at each load: nothing caches this verdict, so a run withheld while its key was missing is shown once it opens. */
-  private async handedPointers(agentId: string, browser: string | undefined, handed: Handed | undefined): Promise<{ refs: string[] } | "unreadable"> {
-    const signIns = this.options.signIns;
-    if (handed === undefined) return { refs: [] };
-    if (handed === MALFORMED || !signIns || !browser) return "unreadable";
-    const live = await signIns.peek(agentId, browser).catch(() => "unreadable" as const);
-    const gone = await signIns.forgotten(agentId, browser).catch(() => "unreadable" as const);
-    if (gone === "unreadable") return "unreadable";
-    const kept = [...(typeof live === "object" ? [live.ref] : []), ...gone.refs];
-    const refs = handed.map((hash) => kept.find((ref) => pointerHash(ref) === hash));
-    return refs.every((ref) => ref !== undefined) ? { refs: refs as string[] } : "unreadable";
+  private handedPointers(agentId: string, browser: string | undefined, handed: Handed | undefined): Promise<{ refs: string[] } | "unreadable"> {
+    return handedPointersOf(this.options.signIns, agentId, browser, handed);
   }
 
-  /** shown() for a run this server holds no Run for (an ended one a list reads from its row and serve.json alone): cut of
-   *  every secret this server never shows (serverSecrets) and of what the run was handed of its agent's sign-in (handedPointers); `withheld`
-   *  when that can't be read back here, as a load would hide the run. */
-  private async rowShown(agentId: string, meta: Partial<RunMeta> | null, damaged = false): Promise<((text: string) => string) | "withheld"> {
+  /** shown() for a run this server holds no Run for (an ended one a list reads from its row and serve.json alone, the
+   *  summary choke point: run-view.ts rowShown): cut of every secret this server never shows (serverSecrets) and of what
+   *  the run was handed of its agent's sign-in (handedPointers); `withheld` when that can't be read back here, as a load
+   *  would hide the run. */
+  private rowShown(agentId: string, meta: Partial<RunMeta> | null, damaged = false): Promise<((text: string) => string) | "withheld"> {
     // Its serve.json there but unreadable: what it was handed went with it (load hides such a run, its revision granting
     // the browser; a list row, which reads no revision, withholds it whatever its revision).
-    if (damaged) return "withheld";
     const browser = isObject(meta?.tool_plane) ? keptVendor(meta.tool_plane as Plane).browser : undefined;
-    const pointers = await this.handedPointers(agentId, browser, handedMark(meta?.sign_in_handed));
-    if (pointers === "unreadable") return "withheld";
-    const values = [...this.options.serverSecrets(), ...pointers.refs.filter((ref) => ref.length >= MIN_SECRET)];
-    return (text) => withoutLoopback(redacted(text, values));
+    return rowShownOf({ serverSecrets: this.options.serverSecrets, signIns: this.options.signIns }, agentId, browser, handedMark(meta?.sign_in_handed), damaged);
   }
 
   /** A run's answer as serve serves it: no held secret, never cut (redactedAnswer). Loopback addresses stay: an answer is
@@ -1673,7 +1655,7 @@ export class Runs {
   }
 
   private redactor(run: Run): (text: string) => string {
-    return (text) => redacted(text, this.refusedValues(run));
+    return redactorOf(this.refusedValues(run));
   }
 
   /** The last line of the run process's log (lastLogLine) for a failure's message, with every value its errors never
@@ -1685,7 +1667,7 @@ export class Runs {
   /** Every secret value `run`'s errors never show, as learning's checker holds them (learning-run.ts refused): every one
    *  this server never shows (serverSecrets, read now, so one rotated is cut at once) and what each launch handed the run. */
   private refusedValues(run: Run): string[] {
-    return [...this.options.serverSecrets(), ...(run.handed ?? [])];
+    return refusedValuesOf(this.options.serverSecrets, run.handed);
   }
 
   /** A run's model error in a person's words when its provider refused the run's key (key-refusal.ts): the key its

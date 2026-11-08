@@ -496,7 +496,7 @@ export function parseVerdict(text: unknown, proposed: readonly NoteText[] | read
 
   const reason = oneLine(answer.reason, REASON_MAX);
   const kept = items.filter((item) => item.keep);
-  // A verdict per item: the items it keeps merge, the ones it drops are left out (keptProposal), whatever its
+  // A verdict per item: the items it keeps merge, the ones it drops are left out (runner/learning-loop.ts keptOf), whatever its
   // top-level merge says. Nothing kept is no merge.
   if (!kept.length) return answer.merge ? drop("the grader said merge, but did not keep every item", items) : { merge: false, reason, items };
   // Planted named on any item, kept, held or dropped, however worded: the run read something hostile, and nothing it

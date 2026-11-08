@@ -204,6 +204,8 @@ export interface LearningProposal {
   readonly agentId: string;
   readonly turn: unknown;
   readonly proposal: unknown;
+  /** The learning run its end queued with it, which grades and merges it; absent for a learning dropped before. */
+  readonly learningRunId?: string;
   readonly createdAt: number;
 }
 
