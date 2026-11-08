@@ -7,6 +7,13 @@ import { NOTE_ONLY_TEXT, underLearning as gateUnderLearning } from "../dist/tool
 import { REFLECT_REQUEST } from "../dist/turns.js";
 import { REFLECT_NOTE_ONLY, reflectRequestId, underLearning } from "../dist/runner/end-of-run.js";
 
+test("a turn the cap refused is read by the cap's own words, and the turn's deadline is the server's", async () => {
+  const { CAP_REFUSAL_PREFIX } = await import("../dist/cap.js");
+  const { CAP_REFUSAL, REFLECT_TIMEOUT_MS } = await import("../dist/runner/reflect-hook.js");
+  assert.equal(CAP_REFUSAL.source, CAP_REFUSAL_PREFIX.source);
+  assert.equal(REFLECT_TIMEOUT_MS, 5 * 60_000);
+});
+
 test("the refusal's words are the gate's", () => {
   assert.equal(REFLECT_NOTE_ONLY, NOTE_ONLY_TEXT);
 });
