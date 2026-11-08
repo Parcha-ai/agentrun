@@ -758,8 +758,12 @@ export function codexHarness(options: CodexHarnessOptions = {}): Harness {
           case 'item/tool/call': {
             const callId = String(p.callId ?? '');
             const tool = bridge.get(String(p.tool));
-            // A `never` tool's call: its own line in the log first (the barrier), else it is declined, never run.
-            if (tool?.replay === 'never' && callId && !ctx.isMemoized(toolKey(callId)) && !(await barrier(callId))) {
+            // A `never` tool's call: its own line in the log first (the barrier), else it is declined, never run. With the
+            // host's gate, every fresh call's line goes in first too: a park seals the run's log, and a resume settles a
+            // parked call only from its line (a replay-safe call whose line lags is still asked, as before).
+            const fresh = Boolean(callId) && !ctx.isMemoized(toolKey(callId));
+            const inLog = fresh && (tool?.replay === 'never' || options.gate) ? await barrier(callId) : true;
+            if (tool?.replay === 'never' && !inLog) {
               return { contentItems: [{ type: 'inputText', text: LAGGING_RESULT }], success: false };
             }
             mirror();

@@ -20,7 +20,7 @@ const scratch = () => mkdtempSync(join(ROOT, `t${n++}-`));
 const lookupStarts = (records) => records.filter((record) => record.kind === 'kernel.start' && JSON.stringify(record.data).includes('tool.lookup'));
 
 /** One turn of a session whose "model" calls `lookup` once, with `gate` as the host's gate. */
-async function turnWithGate(t, gate) {
+async function turnWithGate(t, gate, replay = 'never') {
   const dir = scratch();
   const file = join(dir, 'script.json');
   writeFileSync(file, JSON.stringify(['call lookup {"q":"x"}']));
@@ -32,7 +32,7 @@ async function turnWithGate(t, gate) {
     standIn: { command: process.execPath, args: [FAKE], env: { FAKE_CODEX_SCRIPT: file } },
   });
   const ran = [];
-  const lookup = { name: 'lookup', description: 'Look a thing up.', inputSchema: { type: 'object', properties: { q: { type: 'string' } } }, replay: 'never', call: async (args) => { ran.push(args); return { text: 'found' }; } };
+  const lookup = { name: 'lookup', description: 'Look a thing up.', inputSchema: { type: 'object', properties: { q: { type: 'string' } } }, replay, call: async (args) => { ran.push(args); return { text: 'found' }; } };
   const store = memorySessionStore();
   const events = [];
   // The gate is handed the session's records as they stand when it is asked.
@@ -72,3 +72,17 @@ test('allow: the call runs, after the gate saw it with no intent written yet', a
   assert.deepEqual(ran, [{ q: 'x' }]);
   assert.equal(lookupStarts(records).length, 1, 'its intent, once allowed');
 });
+
+// A park seals the run's log at once: a call's line that was not in it when the gate was asked is lost, the resume finds
+// nothing dangling, and the model calls again under a new id, parked again. So every call's line, a replay-safe tool's
+// too, is in the session's records before its gate is asked.
+for (const replay of ['never', 'safe']) {
+  test(`a ${replay} tool's call: its line is in the session's records when the gate is asked`, async (t) => {
+    let inLog;
+    await turnWithGate(t, async (call, recordsNow) => {
+      inLog = JSON.stringify(recordsNow).includes(call.callId);
+      return 'allow';
+    }, replay);
+    assert.equal(inLog, true, "Codex's line for the call was in the log before the gate");
+  });
+}
