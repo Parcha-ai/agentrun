@@ -71,6 +71,9 @@ const bytesOf = (data: Uint8Array | string): Uint8Array => {
 
 /** A grep glob as ripgrep reads it, every special character taken as itself. */
 const literalGlob = (name: string): string => name.replace(/[\\*?[\]{}!]/g, "\\$&");
+/** The port's glob as ripgrep reads it: `*`, `**` and `?` keep their meaning, and what only ripgrep reads specially
+ *  (`[…]` classes, `{a,b}` alternatives, a leading `!`, a backslash) is taken as itself. */
+const ripgrepGlob = (glob: string): string => glob.replace(/[\\[\]{}!]/g, "\\$&");
 
 /** A JavaScript regex that ripgrep's engine cannot run: lookaround or a backreference. */
 const NOT_RIPGREP = /\(\?<?[=!]|\\[1-9]|\\k</;
@@ -299,7 +302,7 @@ class ArchilWorkspace implements Workspace {
       recursive = false;
       only = (path) => path === from;
     } else if (options.glob !== undefined) {
-      if (!options.glob.includes("/") || from === "") globs = [options.glob];
+      if (!options.glob.includes("/") || from === "") globs = [ripgrepGlob(options.glob)];
       else {
         const regex = globRegex(options.glob);
         only = (path) => regex.test(path);

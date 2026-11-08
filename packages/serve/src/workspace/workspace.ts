@@ -9,7 +9,8 @@
 // - A path is relative, normalized, and never leaves the root: an absolute path, "..", ".", an empty segment, a NUL or a
 //   backslash is ESCAPE, and so is a symbolic link anywhere on the way, the last part included. Nothing is followed.
 // - The port does not serialize. Two calls on one path race as two processes would; callers own their ordering (the
-//   learning queue keeps one per agent, with git's update-ref compare-and-swap as its fence).
+//   learning queue keeps one per agent, with git's update-ref compare-and-swap as its fence). A backend may serialize
+//   what its service requires (Archil's exec queue: one exec at a time, and writes after it).
 
 import type { MountSpec } from "@parcha/agentrun-computer";
 import type { AttachableComputer, MountCheck, Processes } from "./attach.js";

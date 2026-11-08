@@ -170,6 +170,29 @@ test("archil: exec calls onOutput once per stream, with everything, when the com
   assert.deepEqual([text(thrown.stdout), thrown.code], ["fine\n", 0], "an error the callback throws is not the call's");
 });
 
+test("archil: exec maps a signal to code null and an exit of 139 to 139, keeps a deadline under a millisecond, and drains output past the cap", async () => {
+  const { workspace } = fresh();
+  const crashed = await workspace.exec(["bash", "-c", "kill -SEGV $$"], { env: ENV, timeoutMs: 10_000 });
+  assert.deepEqual([crashed.code, crashed.timedOut], [null, false], "a program a signal ended has no exit code");
+  const exited = await workspace.exec(["bash", "-c", "exit 139"], { env: ENV, timeoutMs: 10_000 });
+  assert.deepEqual([exited.code, exited.timedOut], [139, false], "a program that exits 139 by itself keeps it");
+  const started = Date.now();
+  const tiny = await workspace.exec(["sleep", "5"], { env: ENV, timeoutMs: 0.4 });
+  assert.deepEqual([tiny.timedOut, tiny.code], [true, null], "a deadline under a millisecond is still a deadline");
+  assert.ok(Date.now() - started < 4_000, `it returned at its deadline (${Date.now() - started} ms)`);
+  const noisy = await workspace.exec(["bash", "-c", "head -c 20000000 /dev/zero; head -c 20000000 /dev/zero >&2; echo done"], { env: ENV, maxOutput: 10, timeoutMs: 30_000 });
+  assert.deepEqual([noisy.stdout.length, noisy.stderr.length, noisy.truncated, noisy.code], [10, 10, true, 0], "both streams are read to the end and cut, and the program is not killed for it");
+});
+
+test("archil: a glob is the port's (*, ** and ?), not ripgrep's: brackets, braces and a leading ! are themselves", async () => {
+  const { disk, workspace } = fresh();
+  for (const name of ["src/[ab].ts", "src/a.ts", "src/b.ts", "lit{a,b}.md", "lita.md", "!x.md", "x.md"]) await workspace.write(name, "needle\n");
+  assert.deepEqual((await workspace.grep("needle", { glob: "src/[ab].ts" })).matches.map((m) => m.path), ["src/[ab].ts"]);
+  assert.deepEqual((await workspace.grep("needle", { glob: "lit{a,b}.md" })).matches.map((m) => m.path), ["lit{a,b}.md"]);
+  assert.deepEqual((await workspace.grep("needle", { glob: "!x.md" })).matches.map((m) => m.path), ["!x.md"]);
+  assert.deepEqual(disk.calls.filter((call) => call.op === "grep").map((call) => call.globs), [["src/\\[ab\\].ts"], ["lit\\{a,b\\}.md"], ["\\!x.md"]]);
+});
+
 test("archil: a symbolic link made by exec is ESCAPE as a later exec's cwd", async () => {
   const { workspace } = fresh();
   await workspace.mkdir("sub");
@@ -223,7 +246,7 @@ test("archil: mountSpec and attach are refused in words until the computer's hel
   assert.deepEqual(disk.calls, []);
 });
 
-test("archil-disk: the SDK seam reads its key by name, sends a ranged read as a Range header and exec with the checkout, to a loopback server only", async () => {
+test("archil-disk: the SDK seam takes its key and S3 endpoint as options (no environment), sends a ranged read as a Range header and exec with the checkout, to a loopback server only", async () => {
   const seen = [];
   const server = createServer((request, response) => {
     const chunks = [];
@@ -247,20 +270,31 @@ test("archil-disk: the SDK seam reads its key by name, sends a ranged read as a 
   });
   await new Promise((resolve) => server.listen(0, "127.0.0.1", resolve));
   const base = `http://127.0.0.1:${server.address().port}`;
+  // The environment says something else for every Archil setting the SDK would fall back to: none of it may be used.
+  const planted = { ARCHIL_API_KEY: "fake-test-key", ARCHIL_S3_BASE_URL: "http://127.0.0.1:9/", ARCHIL_REGION: "gcp-us-central1" };
+  const saved = Object.fromEntries(Object.keys(planted).map((name) => [name, process.env[name]]));
+  Object.assign(process.env, planted);
+  // Every name read from the environment while the seam runs.
+  const realEnv = process.env;
+  const readNames = [];
+  process.env = new Proxy(realEnv, { get: (target, name) => { if (typeof name === "string") readNames.push(name); return Reflect.get(target, name); } });
   try {
-    delete process.env.AGENTRUN_TEST_ARCHIL_KEY;
-    const options = { disk: "dsk-0000000000000001", region: "aws-us-east-1", keyEnv: "AGENTRUN_TEST_ARCHIL_KEY", baseUrl: base, s3BaseUrl: `${base}/` };
+    let keyCalls = 0;
+    const options = { disk: "dsk-0000000000000001", region: "aws-us-east-1", key: async () => { keyCalls++; return "loopback-dummy"; }, baseUrl: base, s3BaseUrl: `${base}/` };
     assert.throws(() => archilDisk({ ...options, s3BaseUrl: undefined }), /S3 endpoint \(AGENTRUN_ARCHIL_S3_URL\)/);
-    await assert.rejects(archilDisk(options).getRange("agents/a/runs/r/work/x.txt", "bytes=2-5"), /AGENTRUN_TEST_ARCHIL_KEY is not set/);
-    await assert.rejects(archilDisk(options).ready(), /AGENTRUN_TEST_ARCHIL_KEY is not set/);
+    assert.throws(() => archilDisk({ ...options, key: undefined }), /Archil API key is given as a function/);
+    const keyless = archilDisk({ ...options, key: () => "" });
+    await assert.rejects(keyless.getRange("agents/a/runs/r/work/x.txt", "bytes=2-5"), /no Archil API key was given/);
+    await assert.rejects(keyless.ready(), /no Archil API key was given/);
     assert.deepEqual(seen, [], "no call without a key");
-    process.env.AGENTRUN_TEST_ARCHIL_KEY = "loopback-dummy";
     const disk = archilDisk(options);
     await disk.ready();
     const got = await disk.getRange("agents/a/runs/r/work/x.txt", "bytes=2-5");
     assert.deepEqual([got.status, text(got.body)], [206, "2345"]);
     const ran = await disk.exec({ mount: "work", checkoutPaths: ["agents/a/runs/r/work"], queueMs: 1_000, command: "true" });
     assert.deepEqual(ran, { exitCode: 0, stdout: "ok", stderr: "" });
+    assert.equal(keyCalls, 3, "the key is asked for on every call, never kept from an earlier one");
+    assert.deepEqual(readNames.filter((name) => /ARCHIL|AGENTRUN/i.test(name)), [], "the seam reads no Archil setting from the environment");
     assert.deepEqual(seen.map((r) => [r.method, r.url, r.range ?? null]), [
       ["GET", "/api/disks/dsk-0000000000000001", null],
       ["GET", "/dsk-0000000000000001/agents/a/runs/r/work/x.txt", "bytes=2-5"],
@@ -271,12 +305,19 @@ test("archil-disk: the SDK seam reads its key by name, sends a ranged read as a 
     assert.doesNotMatch(seen[1].agent ?? "", /archil-js/, "the ranged read is this module's own fetch, not the SDK's request");
     const source = readFileSync(new URL("../dist/workspace/archil-disk.js", import.meta.url), "utf8");
     assert.doesNotMatch(source, /\._[a-zA-Z]/, "no private field of the SDK is used");
+    for (const file of ["archil.js", "archil-disk.js", "archil-exec.js"]) {
+      assert.doesNotMatch(readFileSync(new URL(`../dist/workspace/${file}`, import.meta.url), "utf8"), /process\.env/, `${file} reads no environment`);
+    }
     assert.deepEqual(JSON.parse(seen[2].body), {
       disks: { work: { disk: "dsk-0000000000000001", readOnly: false, conditional: false, queueMs: 1_000, checkoutPaths: ["agents/a/runs/r/work"] } },
       command: "true",
     });
   } finally {
-    delete process.env.AGENTRUN_TEST_ARCHIL_KEY;
+    process.env = realEnv;
+    for (const [name, value] of Object.entries(saved)) {
+      if (value === undefined) delete process.env[name];
+      else process.env[name] = value;
+    }
     server.closeAllConnections();
     await new Promise((resolve) => server.close(resolve));
   }

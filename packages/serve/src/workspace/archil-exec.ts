@@ -13,8 +13,11 @@
 //   because a call's command line has a length limit and stdin has none;
 // - runs the program as `env -i -- NAME=value… argv…` under GNU timeout, so nothing of the container's environment
 //   leaks in, in timeout's process group, which is killed when the program ends or at its deadline;
-// - answers a status line, then stdout as base64 (cut one byte past the cap, so a cut is seen), and the program's
-//   stderr, cut the same way, as the call's stderr.
+// - drains stdout and stderr through FIFOs, keeping one byte past the cap of each (so a cut is seen) and discarding
+//   the rest as it comes, so a noisy program never fills the container's temporary disk;
+// - runs the program from a few lines of perl (perl-base is in every Debian and Ubuntu image) that write its raw wait
+//   status, because through timeout a program killed by a signal and one that exits 128+n look the same;
+// - answers a status line, then stdout as base64, and the program's stderr as the call's stderr.
 // A backend without streaming: onOutput gets each stream once, whole, when the line has ended.
 import type { ArchilDisk } from "./archil-disk.js";
 import { type ExecResult, WorkspaceError } from "./workspace.js";
@@ -51,15 +54,27 @@ export type ExecJob = {
   readonly queueMs: number;
 };
 
-/** The shell line one exec call runs (POSIX sh; GNU timeout, base64, head and mktemp in the image). */
+/** The program's runner: stderr to the file in its first argument, the program run, its raw wait status written to the
+ *  file in its second, and the same exit a shell would give. No single quote in it: it rides in one. */
+const RUNNER = [
+  `open(STDERR, ">", shift) or exit 126;`,
+  `my $s = shift;`,
+  `system { $ARGV[0] } @ARGV;`,
+  `my $w = $? == -1 ? 127 << 8 : $?;`,
+  `if (open(my $f, ">", $s)) { print $f $w; close $f; }`,
+  `exit($w & 127 ? 128 + ($w & 127) : $w >> 8);`,
+].join(" ");
+
+/** The shell line one exec call runs (POSIX sh; GNU timeout, perl, mkfifo, base64, head and mktemp in the image). */
 export function execLine(job: ExecJob): string {
   const dir = `/mnt/archil/${EXEC_MOUNT}/${job.root}`;
   const cap = job.maxOutput + 1;
-  const seconds = (Math.min(job.timeoutMs, COMMAND_MAX_MS) / 1000).toFixed(3);
+  // At least a millisecond: timeout reads 0 as no deadline at all.
+  const seconds = (Math.max(1, Math.ceil(Math.min(job.timeoutMs, COMMAND_MAX_MS))) / 1000).toFixed(3);
   const lines = [
     `d=$(mktemp -d 2>/dev/null) || { echo '${MARK} notmp'; exit 0; }`,
     `s() { echo "${MARK} $1"; rm -rf -- "$d"; exit 0; }`,
-    `{ command -v timeout && command -v base64 && command -v head; } >/dev/null 2>&1 || s notools`,
+    `{ command -v timeout && command -v perl && command -v mkfifo && command -v base64 && command -v head; } >/dev/null 2>&1 || s notools`,
     `cd -- ${quote(dir)} 2>/dev/null || s noroot`,
   ];
   for (const segment of job.cwd) {
@@ -74,28 +89,37 @@ export function execLine(job: ExecJob): string {
   const path = job.env.PATH;
   lines.push(`( ${path === undefined ? "unset PATH" : `PATH=${quote(path)}`}; command -v -- ${quote(job.argv[0]!)} ) >/dev/null 2>&1 || s noprog`);
   const assignments = Object.entries(job.env).map(([name, value]) => quote(`${name}=${value}`));
-  // timeout leads its own process group; the inner sh only sends the program's stderr to its own file, so timeout's
-  // notice that it sent a signal ("why") tells a deadline from a program that exits 124 by itself.
+  // The drains first: each keeps cap+1 bytes and reads the rest away. timeout leads its own process group; the runner
+  // sends the program's stderr to its FIFO, so timeout's notice that it sent a signal ("why") tells a deadline from a
+  // program that exits 124 by itself, and the raw status ("status") tells a signal from an exit of 128+n.
   lines.push(
-    `LC_ALL=C timeout --verbose -k 1 ${seconds} sh -c 'exec env -i -- "$@" 2>"$0"' "$d/err" ${[...assignments, ...job.argv.map(quote)].join(" ")} <${input} >"$d/out" 2>"$d/why" &`,
+    `mkfifo "$d/o" "$d/e" 2>/dev/null || s notmp`,
+    `{ head -c ${cap} >"$d/out"; cat >/dev/null; } <"$d/o" & r1=$!`,
+    `{ head -c ${cap} >"$d/err"; cat >/dev/null; } <"$d/e" & r2=$!`,
+    `LC_ALL=C timeout --verbose -k 1 ${seconds} perl -e '${RUNNER}' "$d/e" "$d/status" env -i -- ${[...assignments, ...job.argv.map(quote)].join(" ")} <${input} >"$d/o" 2>"$d/why" &`,
     `p=$!`,
     `wait "$p"; c=$?`,
     `kill -s KILL -- "-$p" 2>/dev/null`,
+    // A drain still open after 2 s is held by something that left the group, or by a runner that never opened its FIFO.
+    `( sleep 2; kill -s KILL $r1 $r2 ) >/dev/null 2>&1 & k=$!`,
+    `wait $r1 $r2 2>/dev/null; kill -s KILL $k 2>/dev/null`,
     `t=0; grep -q 'sending signal' "$d/why" 2>/dev/null && t=1`,
-    `echo "${MARK} ran $c $t"`,
-    `head -c ${cap} "$d/out" | base64 | tr -d '\\n'`,
+    `w=-; [ -s "$d/status" ] && w=$(cat "$d/status")`,
+    `echo "${MARK} ran $c $t $w"`,
+    `base64 <"$d/out" | tr -d '\\n'`,
     `echo`,
-    `head -c ${cap} "$d/err" >&2`,
+    `cat "$d/err" >&2`,
     `rm -rf -- "$d"`,
   );
   return lines.join("\n");
 }
 
 type Status = "ran" | "noroot" | "link" | "notdir" | "nocwd" | "nostdin" | "noprog" | "notmp" | "notools";
-const STATUS = new RegExp(`^${MARK} (ran|noroot|link|notdir|nocwd|nostdin|noprog|notmp|notools)(?: (\\d+) ([01]))?$`);
+const STATUS = new RegExp(`^${MARK} (ran|noroot|link|notdir|nocwd|nostdin|noprog|notmp|notools)(?: (\\d+) ([01]) (-|\\d+))?$`);
 
-/** What the line answered, or undefined when it is not one of its answers. */
-export function parseExec(stdout: string): { readonly status: Exclude<Status, "ran"> } | { readonly status: "ran"; readonly code: number; readonly timedOut: boolean; readonly out: Uint8Array } | undefined {
+/** What the line answered, or undefined when it is not one of its answers. `signaled`: a signal ended the program
+ *  (its raw wait status says so; with no status, the runner itself was killed, which only the deadline does). */
+export function parseExec(stdout: string): { readonly status: Exclude<Status, "ran"> } | { readonly status: "ran"; readonly code: number; readonly timedOut: boolean; readonly signaled: boolean; readonly out: Uint8Array } | undefined {
   const newline = stdout.indexOf("\n");
   const head = STATUS.exec(newline === -1 ? stdout : stdout.slice(0, newline));
   if (head === null) return undefined;
@@ -104,7 +128,8 @@ export function parseExec(stdout: string): { readonly status: Exclude<Status, "r
   if (head[2] === undefined || newline === -1) return undefined;
   const encoded = stdout.slice(newline + 1).replace(/\n$/, "");
   if (!/^[A-Za-z0-9+/]*={0,2}$/.test(encoded)) return undefined;
-  return { status, code: Number(head[2]), timedOut: head[3] === "1", out: Buffer.from(encoded, "base64") };
+  const raw = head[4] === "-" ? undefined : Number(head[4]);
+  return { status, code: Number(head[2]), timedOut: head[3] === "1", signaled: raw !== undefined && (raw & 127) !== 0, out: Buffer.from(encoded, "base64") };
 }
 
 const show = (segments: readonly string[]): string => JSON.stringify(segments.length === 0 ? "." : segments.join("/"));
@@ -142,7 +167,8 @@ export async function archilExec(disk: ArchilDisk, job: ExecJob): Promise<ExecRe
       return {
         stdout: parsed.out.subarray(0, job.maxOutput),
         stderr: err.subarray(0, job.maxOutput).toString("utf8"),
-        code: parsed.timedOut ? null : parsed.code,
+        // null whenever a signal ended it: its own crash, or the deadline's kill.
+        code: parsed.timedOut || parsed.signaled ? null : parsed.code,
         timedOut: parsed.timedOut,
         truncated,
       };

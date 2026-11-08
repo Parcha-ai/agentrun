@@ -39,9 +39,11 @@ const parentsOf = (key) => {
 };
 
 /** ripgrep's -g rule, as far as these tests need it: a glob with no "/" is matched against the file's name, one with a
- *  "/" against its path from the directory searched. */
+ *  "/" against its path from the directory searched; `[…]` is a class, `{a,b}` alternatives, and a backslash takes the
+ *  next character as itself. */
 function globMatches(glob, rel) {
   let out = "";
+  let braces = 0;
   for (let i = 0; i < glob.length; i++) {
     const c = glob[i];
     if (c === "*" && glob[i + 1] === "*") {
@@ -50,6 +52,13 @@ function globMatches(glob, rel) {
     } else if (c === "*") out += "[^/]*";
     else if (c === "?") out += "[^/]";
     else if (c === "\\" && i + 1 < glob.length) out += glob[++i].replace(/[.+^${}()|[\]\\*?]/g, "\\$&");
+    else if (c === "[" && glob.indexOf("]", i + 1) !== -1) {
+      const end = glob.indexOf("]", i + 1);
+      out += `[${glob.slice(i + 1, end).replace(/\\/g, "\\\\")}]`;
+      i = end;
+    } else if (c === "{") { braces++; out += "(?:"; }
+    else if (c === "}" && braces > 0) { braces--; out += ")"; }
+    else if (c === "," && braces > 0) out += "|";
     else out += c.replace(/[.+^${}()|[\]\\]/g, "\\$&");
   }
   const regex = new RegExp(`^${out}$`);

@@ -2,8 +2,9 @@
 // so the workspace is tested against a fake (test/fixtures/archil-fake.mjs) and runs on Archil's Node SDK, the npm
 // package `disk`, pinned at 1.12.0. What the SDK does, read from its shipped types and source:
 // - Credentials: one account API key, sent as `Authorization: Bearer <key>` both to the control plane (disks.get, grep,
-//   exec) and to the disk's S3-compatible endpoint (objects). The key is read here from the environment by its
-//   variable's NAME, when the first call is made; it is never logged, returned or put in an error.
+//   exec) and to the disk's S3-compatible endpoint (objects). The key is an option, a function asked on every call
+//   (serve keeps keys in its sealed store); nothing here reads the environment, and every setting is passed to the SDK
+//   so it reads none of its own either. The key is never logged, returned or put in an error.
 // - Endpoints: the region names the control plane. The S3 endpoint is given here explicitly (the setting
 //   AGENTRUN_ARCHIL_S3_URL), because no public part of the SDK says which it is: the same URL goes to the SDK's public
 //   `s3BaseUrl` option and to the ranged read below, so both talk to one endpoint.
@@ -68,8 +69,9 @@ export type ArchilDiskOptions = {
   readonly disk: string;
   /** Its region, e.g. aws-us-east-1: it names the control plane. */
   readonly region: string;
-  /** The NAME of the environment variable that holds the account API key. */
-  readonly keyEnv: string;
+  /** The account API key, asked for on every call (serve gives it from its sealed store; nothing here reads the
+   *  environment). A new key is taken up by the next call. */
+  readonly key: () => string | Promise<string>;
   /** The disk's S3-compatible endpoint (the setting AGENTRUN_ARCHIL_S3_URL), e.g. https://s3.<…>.archil.com. */
   readonly s3BaseUrl: string;
   /** Another control plane than the region's (a test's loopback server). */
@@ -98,36 +100,41 @@ class SdkArchilDisk implements ArchilDisk {
   readonly #options: ArchilDiskOptions;
   readonly #s3: string;
   #ready: Promise<{ readonly client: ArchilClient; readonly disk: SdkDisk }> | undefined;
+  /** The key #ready was made with: a different one from `key()` makes a new client. */
+  #readyKey: string | undefined;
 
   constructor(options: ArchilDiskOptions) {
     if (typeof options.s3BaseUrl !== "string" || !/^https?:\/\/[^/]+/.test(options.s3BaseUrl)) {
       throw new Error("an Archil disk needs its S3 endpoint (AGENTRUN_ARCHIL_S3_URL), an http(s) URL");
     }
+    if (typeof options.key !== "function") throw new Error("the Archil API key is given as a function that returns it");
     this.#options = options;
     this.#s3 = options.s3BaseUrl.replace(/\/+$/, "");
     this.id = options.disk;
   }
 
-  /** The key, read from the variable named keyEnv. */
-  #key(): string {
-    const apiKey = process.env[this.#options.keyEnv];
-    if (apiKey === undefined || apiKey === "") throw new Error(`the Archil API key's variable ${this.#options.keyEnv} is not set`);
+  /** The key, asked for now. */
+  async #key(): Promise<string> {
+    const apiKey = await this.#options.key();
+    if (typeof apiKey !== "string" || apiKey === "") throw new Error("no Archil API key was given");
     return apiKey;
   }
 
-  /** The client and the disk, made once: the disk looked up once (disks.get). */
-  #sdk(): Promise<{ readonly client: ArchilClient; readonly disk: SdkDisk }> {
-    if (this.#ready !== undefined) return this.#ready;
+  /** The client and the disk for the key asked for now: made again only when the key changed (one disks.get). Every
+   *  setting is passed to the SDK, so it reads none of its own from the environment. */
+  async #sdk(): Promise<{ readonly client: ArchilClient; readonly disk: SdkDisk }> {
+    const apiKey = await this.#key();
+    if (this.#ready !== undefined && this.#readyKey === apiKey) return this.#ready;
     const ready = (async () => {
-      const apiKey = this.#key();
       const { region, baseUrl } = this.#options;
       const { Archil } = await import("disk");
       const client = new Archil({ apiKey, region, s3BaseUrl: this.#s3, ...(baseUrl === undefined ? {} : { baseUrl }) });
       return { client, disk: await client.disks.get(this.id) };
     })();
-    // A failed start (no key, the key refused, the disk not found) is tried again by the next call.
-    ready.catch(() => { if (this.#ready === ready) this.#ready = undefined; });
+    // A failed start (the key refused, the disk not found) is tried again by the next call.
+    ready.catch(() => { if (this.#ready === ready) { this.#ready = undefined; this.#readyKey = undefined; } });
     this.#ready = ready;
+    this.#readyKey = apiKey;
     return ready;
   }
 
@@ -138,7 +145,7 @@ class SdkArchilDisk implements ArchilDisk {
 
   async getRange(key: string, range: string): Promise<{ readonly status: number; readonly body: Uint8Array }> {
     const url = `${this.#s3}/${encodeURIComponent(this.id)}/${key.replace(/^\//, "").split("/").map(encodeURIComponent).join("/")}`;
-    const headers = { Authorization: `Bearer ${this.#key()}`, Range: range };
+    const headers = { Authorization: `Bearer ${await this.#key()}`, Range: range };
     for (let attempt = 1; ; attempt++) {
       let response: Response;
       try {
