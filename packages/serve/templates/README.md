@@ -66,3 +66,7 @@ apply. A trigger's date is checked for its form only: one that has passed is ref
    `triggers.<i>`. A webhook trigger's secret is not in the answer: `POST /v2/triggers/{id}/secret` makes one.
 
 Each apply makes a new agent. The same `Idempotency-Key` and body answers the first apply again and makes nothing.
+
+A grant is written as the agent's own tool setting (`definition.tool_settings`), and an agent's setting outranks the
+server's, as it does for any agent: a server-wide deny the owner sets after the apply does not reach that agent. To take
+a grant back, edit the agent's `tool_settings`.
