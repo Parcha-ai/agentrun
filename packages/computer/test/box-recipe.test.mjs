@@ -63,7 +63,7 @@ test("no sudo: the image installs none and has no sudoers file, its user is root
 });
 
 test("the image has every program the helper runs, at the helper's paths, and an empty /workspace; the sync socket's folder is serve's own", () => {
-  for (const name of ["ARCHIL", "MOUNT"]) {
+  for (const name of ["ARCHIL", "MOUNT", "CHOWN"]) {
     const path = fixed(name);
     assert.ok(path, `the helper fixes ${name}`);
     assert.match(DOCKERFILE, new RegExp(`for x in [^;]*${path.replace(/\//g, "\\/")}[ ;]`), `the build checks ${path}`);

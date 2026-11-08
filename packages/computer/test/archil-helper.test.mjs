@@ -45,8 +45,12 @@ async function box(t, { root = true } = {}) {
   writeFileSync(mounts, PROC);
   const calls = join(dir, "calls");
   const archil = join(dir, "archil");
-  writeFileSync(archil, `#!/bin/sh\n{ printf 'argv %s\\n' "$*"; [ "\${ARCHIL_MOUNT_TOKEN-}" = '${TOKEN}' ] && echo 'env token'; ps -eo args | awk 'index($0, ENVIRON["ARCHIL_MOUNT_TOKEN"]) { n++ } END { print "ps " n + 0 }'; } >> '${calls}'\n`);
+  writeFileSync(archil, `#!/bin/sh\n{ printf 'argv %s\\n' "$*"; [ "\${ARCHIL_MOUNT_TOKEN-}" = '${TOKEN}' ] && echo 'env token'; ps -eo args | awk 'index($0, ENVIRON["ARCHIL_MOUNT_TOKEN"]) { n++ } END { print "ps " n + 0 }'; } >> '${calls}'\n[ ! -e '${join(dir, "archil-fails")}' ] || { echo 'archil: mount failed' >&2; exit 1; }\n`);
   chmodSync(archil, 0o755);
+  // The computer's chown: it records its arguments, and whether the token reached its environment (it must not).
+  const chown = join(dir, "chown");
+  writeFileSync(chown, `#!/bin/sh\n{ printf 'chown %s\\n' "$*"; [ -z "\${ARCHIL_MOUNT_TOKEN-}" ] || echo 'chown env token'; } >> '${calls}'\n[ ! -e '${join(dir, "chown-fails")}' ] || exit 1\n`);
+  chmodSync(chown, 0o755);
   // The box's `mount`: it records each call; it remounts /proc with hidepid (in the mount table) only in a box made
   // `remountable`, as root with CAP_SYS_ADMIN can, and refuses as a box without it does.
   const remounts = join(dir, "remounts");
@@ -55,7 +59,7 @@ async function box(t, { root = true } = {}) {
   writeFileSync(mount, `#!/bin/sh\nprintf '%s\\n' "$*" >> '${remounts}'\n[ -e '${remountable}' ] || { echo 'mount: /proc: permission denied.' >&2; exit 32; }\n[ "$*" = '-o remount,hidepid=2 /proc' ] || exit 1\nsed -i 's#^proc /proc proc \\([^ ]*\\) #proc /proc proc \\1,hidepid=invisible #' '${mounts}'\n`);
   chmodSync(mount, 0o755);
   const source = readFileSync(HELPER, "utf8");
-  const fixed = { ARCHIL: ["/usr/bin/archil", archil], MP: ["/workspace", mp], MOUNTS: ["/proc/self/mounts", mounts], MOUNT: ["/usr/bin/mount", mount], TOOL: ["agentrun-tool", userInfo().username], ROOT_UID: ["0", String(root ? process.getuid() : process.getuid() + 1)], COMPUTERD: ["/opt/agentrun/computerd", computerd], HELD_TOP: ["/", dir], SOCK: ["/run/agentrun-archil/archil.sock", join(dir, "run", "archil.sock")] };
+  const fixed = { ARCHIL: ["/usr/bin/archil", archil], MP: ["/workspace", mp], MOUNTS: ["/proc/self/mounts", mounts], MOUNT: ["/usr/bin/mount", mount], CHOWN: ["/usr/bin/chown", chown], TOOL: ["agentrun-tool", userInfo().username], ROOT_UID: ["0", String(root ? process.getuid() : process.getuid() + 1)], COMPUTERD: ["/opt/agentrun/computerd", computerd], HELD_TOP: ["/", dir], SOCK: ["/run/agentrun-archil/archil.sock", join(dir, "run", "archil.sock")] };
   let copy = source;
   for (const [name, [shipped, here]] of Object.entries(fixed)) {
     assert.ok(source.includes(`\n${name}=${shipped}\n`), `the helper fixes ${name}=${shipped}`);
@@ -71,18 +75,37 @@ async function box(t, { root = true } = {}) {
   return { dir, mp, mounts, run, computerd, sock: join(dir, "run", "archil.sock"), remounts: () => (existsSync(remounts) ? readFileSync(remounts, "utf8").split("\n").filter(Boolean) : []), remountable: () => writeFileSync(remountable, ""), mounted: (folder = FOLDER) => writeFileSync(mounts, `${PROC}${DISK}:/${folder}[${REGION}] ${mp} fuse.archil rw 0 0\n`) };
 }
 
-test("mount: the client alone, with fixed arguments; the token in its environment, never an argument any process shows", async (t) => {
+/** The chown a mount ends with: the mount's top folder given to the tool user (here, this user), in no token's company. */
+const chowned = (b) => `chown ${userInfo().username}:${userInfo().username} ${b.mp}`;
+
+test("mount: the client alone, with fixed arguments; the token in its environment, never an argument any process shows; then the folder's top given to the tool user", async (t) => {
   const b = await box(t);
   const ran = b.run(["mount", DISK, REGION, FOLDER]);
   assert.equal(ran.status, 0, ran.stderr);
-  assert.deepEqual(ran.calls, [`argv mount ${DISK}:/${FOLDER} ${b.mp} --region ${REGION}`, "env token", "ps 0"]);
+  assert.deepEqual(ran.calls, [`argv mount ${DISK}:/${FOLDER} ${b.mp} --region ${REGION}`, "env token", "ps 0", chowned(b)]);
 });
 
-test("revoke: the same mount with --force, which takes the folder back from a box that is gone", async (t) => {
+test("revoke: the same mount with --force, which takes the folder back from a box that is gone; then the same chown", async (t) => {
   const b = await box(t);
   const ran = b.run(["revoke", DISK, REGION, FOLDER]);
   assert.equal(ran.status, 0, ran.stderr);
-  assert.deepEqual(ran.calls, [`argv mount --force ${DISK}:/${FOLDER} ${b.mp} --region ${REGION}`, "env token", "ps 0"]);
+  assert.deepEqual(ran.calls, [`argv mount --force ${DISK}:/${FOLDER} ${b.mp} --region ${REGION}`, "env token", "ps 0", chowned(b)]);
+});
+
+test("a mount the client refuses gives nothing away: its exit code, and no chown", async (t) => {
+  const b = await box(t);
+  writeFileSync(join(b.dir, "archil-fails"), "");
+  const ran = b.run(["mount", DISK, REGION, FOLDER]);
+  assert.equal(ran.status, 1, ran.stderr);
+  assert.ok(!ran.calls.some((line) => line.startsWith("chown")), JSON.stringify(ran.calls));
+});
+
+test("a mount whose top folder cannot be given to the tool user exits 4, in words: the tools could not write the run's folder", async (t) => {
+  const b = await box(t);
+  writeFileSync(join(b.dir, "chown-fails"), "");
+  const ran = b.run(["mount", DISK, REGION, FOLDER]);
+  assert.equal(ran.status, 4, ran.stderr);
+  assert.match(ran.stderr, /cannot give .* to /);
 });
 
 test("an owner-qualified disk name is a disk too", async (t) => {
@@ -291,7 +314,7 @@ test("a mount or revoke first remounts /proc with hidepid=2: a box whose root ca
     assert.equal(ran.status, 0, ran.stderr);
     assert.deepEqual(b.remounts(), ["-o remount,hidepid=2 /proc"]);
     assert.match(readFileSync(b.mounts, "utf8"), /^proc \/proc proc rw,nosuid,nodev,noexec,relatime,hidepid=invisible /);
-    assert.deepEqual(ran.calls, [`argv mount ${force}${DISK}:/${FOLDER} ${b.mp} --region ${REGION}`, "env token", "ps 0"]);
+    assert.deepEqual(ran.calls, [`argv mount ${force}${DISK}:/${FOLDER} ${b.mp} --region ${REGION}`, "env token", "ps 0", chowned(b)]);
     const stuck = await box(t);
     writeFileSync(stuck.mounts, bare);
     const refused = stuck.run([verb, DISK, REGION, FOLDER]);
