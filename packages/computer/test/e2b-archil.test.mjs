@@ -357,4 +357,11 @@ test("E2B network(): an Archil computer's network none is its tools', read from 
 	const read = await reaching.provider.network(one.ref);
 	assert.equal(read.ok, true, JSON.stringify(read));
 	assert.ok(typeof read.value === "object" && /8\.8\.8\.8/.test(read.value.other), JSON.stringify(read.value));
+	// The daemon's own network must be lo alone: one that reads back another interface is not none, though no probe
+	// target answered.
+	const wider = setup();
+	const two = seededArchil(wider.fake, { box: { interfaces: ["lo", "eth0"] } });
+	const readWider = await wider.provider.network(two.ref);
+	assert.equal(readWider.ok, true, JSON.stringify(readWider));
+	assert.ok(typeof readWider.value === "object" && /eth0/.test(readWider.value.other), JSON.stringify(readWider.value));
 });
