@@ -205,6 +205,25 @@ test("the end-of-run turn's write under work/.learning/ is refused; the job's ow
   assert.deepEqual(answer, { ended: true, answer: "a note" });
 });
 
+test("a person's stop during the job: the stopped end carries the step's rows for a cut run, and nothing is asked", async (t) => {
+  const { server, start, until, toldRows } = await setup(t);
+  const calls = [];
+  const endOfRun = async (input) => {
+    calls.push(input.cut);
+    if (input.cut) return { also: [told(`cut:${input.cut}`)] };
+    await input.ask("What did you learn?", { origin: "reflect", deadlineMs: 10_000 });
+    return { also: [told("asked")] };
+  };
+  const slow = { name: "slow", replaySafe: true, ask: false, run: (_args, signal) => new Promise((resolve) => signal.addEventListener("abort", () => resolve("cut"), { once: true })) };
+  await start(loopWith(piSpec({ script: [{ call: "slow" }, { say: "done" }], tools: { slow }, hooks: quiet }), endOfRun), "runner-a");
+  await until((row) => row.state === "running" && row.runner !== null, "the run did not start");
+  await new Promise((resolve) => setTimeout(resolve, 300));
+  await server.command("run-1", { kind: "stop" });
+  await until((row) => row.state === "stopped" && row.runner === null, "the run did not stop");
+  assert.deepEqual(calls, ["stopped"], "the step asked once, told the run was cut by a stop");
+  assert.deepEqual(toldRows(), [{ channel: "learning:test", run_id: "run-1", marker: "cut:stopped" }], "its rows stored with the stopped end");
+});
+
 test("an end-of-run turn past its deadline is aborted and answers timedOut; the run still ends", async (t) => {
   const { start, until, endEntries } = await setup(t);
   let answer;
