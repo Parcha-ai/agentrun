@@ -151,6 +151,22 @@ test("the contract's operations are as vendored; this server's own are added and
       for (const code of Object.keys(original.responses)) assert.deepEqual(op.responses[code], original.responses[code], code);
       continue;
     }
+    if (op.operationId === "getAgent") {
+      // agenttools/1: this route always sends the agent's tools, so its 200 is the contract's Agent with `tools` required
+      // (the same schema as Agent.tools); its headers, its other answers and the rest as vendored.
+      assert.deepEqual(changes, { responses: "agenttools/1" });
+      const vendoredOk = original.responses["200"];
+      assert.deepEqual(op.responses["200"].content["application/json"].schema, { allOf: [vendoredOk.content["application/json"].schema, { type: "object", required: ["tools"], properties: { tools: doc.components.schemas.Agent.properties.tools } }] });
+      const { content: _a, ...ok } = op.responses["200"];
+      const { content: _b, ...okVendored } = vendoredOk;
+      assert.deepEqual(ok, okVendored);
+      assert.deepEqual(Object.keys(op.responses), Object.keys(original.responses));
+      for (const code of Object.keys(original.responses).filter((code) => code !== "200")) assert.deepEqual(op.responses[code], original.responses[code], code);
+      const { responses: _c, ...same } = rest;
+      const { responses: _d, ...vendoredSame } = original;
+      assert.ok(isDeepStrictEqual(same, vendoredSame), "getAgent is the contract's but for its 200's tools");
+      continue;
+    }
     if (op.operationId === "cancelRun" || op.operationId === "createRun") {
       // What a cancel's 202 reads here, and how long a run create's key replays: the contract's description, then this
       // server's own reading of it.
@@ -616,7 +632,7 @@ test("the not-metered counts are this server's own fields: TimelineUsage.not_met
   assert.equal(doc.components.schemas.UsageLine.properties.unpriced_runs?.type, "integer");
 });
 
-test("what this server always sends is required in the document: a run's revision, kind and archived_at, on a run and in a list, and a trigger's zone and interval start, which a write may leave out", { timeout: 60_000 }, async (t) => {
+test("what this server always sends is required in the document: a run's revision, kind and archived_at, on a run and in a list, an agent's tools on its own route, and a trigger's zone and interval start, which a write may leave out", { timeout: 60_000 }, async (t) => {
   const { api, baseUrl } = await serve(t, { triggerClock: fakeClock("2026-10-31T12:00:00Z") });
   const doc = await (await fetch(`${baseUrl}/openapi.json`)).json();
   for (const name of ["Run", "RunSummary"]) for (const field of RUN_FIELDS_SENT) assert.ok(doc.components.schemas[name].required.includes(field), `${name}.${field} is required`);
@@ -625,6 +641,14 @@ test("what this server always sends is required in the document: a run's revisio
   const run = (await api("GET", `/runs/${runId}`)).body;
   const listed = (await api("GET", "/runs")).body.runs.find((r) => r.run_id === runId);
   for (const [what, value] of [["a run", run], ["a list's run", listed]]) for (const field of RUN_FIELDS_SENT) assert.ok(value && field in value, `${what} holds ${field}`);
+
+  // GET /agents/{agent_id} always holds the agent's tools, so its answer requires them; an answer without is not the document's.
+  const agentAnswer = doc.paths["/agents/{agent_id}"].get.responses["200"].content["application/json"].schema;
+  const agentRead = (await api("GET", "/agents/nightly")).body;
+  assert.ok(Array.isArray(agentRead.tools), "an agent holds its tools");
+  assert.deepEqual(schemaProblems(doc, agentAnswer, agentRead), [], JSON.stringify(agentRead));
+  const { tools: _tools, ...toolless } = agentRead;
+  assert.notDeepEqual(schemaProblems(doc, agentAnswer, toolless), [], "an agent without tools is not the document's");
 
   const answer = doc.paths["/triggers/{trigger_id}"].get.responses["200"].content["application/json"].schema;
   const write = doc.paths["/triggers"].post.requestBody.content["application/json"].schema;

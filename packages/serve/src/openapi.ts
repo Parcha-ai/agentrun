@@ -1794,6 +1794,13 @@ export function openapiDocument(capabilityOf: (operationId: string) => string | 
   timeline.parameters = [...(timeline.parameters as Json[]), { name: "limit", in: "query", required: false, description: "At most this many rows in a page (1 to 500, default 500); has_more says when another waits.", schema: { type: "integer", minimum: 1, maximum: 500, default: 500 } }];
   timeline["x-agentrun-serve-changed"] = { limit: "timelinelimit/1" };
   changed.push("GET /runs/{run_id}/timeline");
+  // GET /agents/{agent_id} always sends the agent's `tools` (server.ts getAgent; [] before it has a revision), which the
+  // agent in a list, a create or a save does not: its 200 is the contract's Agent with `tools` required.
+  const getAgent = (doc.paths["/agents/{agent_id}"] as Json).get as Json & { responses: Record<string, Json & { content: Record<string, Json> }> };
+  const agentAnswer = getAgent.responses["200"]!.content["application/json"]!;
+  agentAnswer.schema = { allOf: [agentAnswer.schema as Json, { type: "object", required: ["tools"], properties: { tools: AGENT_TOOLS } }] };
+  getAgent["x-agentrun-serve-changed"] = { responses: "agenttools/1" };
+  changed.push("GET /agents/{agent_id}");
   // upload/2: POST /files also takes a file's bytes in one call (`path` in the query, the bytes the body), answered as
   // a reservation is with the file ready; and `upload.url` is a path from the server's root, `/v2/files/{file_id}`.
   const createFile = (doc.paths["/files"] as Json).post as Json & { requestBody: Json & { content: Record<string, Json> }; parameters: Json[]; responses: Record<string, Json> };
