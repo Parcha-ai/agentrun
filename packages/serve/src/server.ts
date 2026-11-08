@@ -1923,8 +1923,12 @@ async function startHolding(options: ServeOptions, data: string, lock: ServerLoc
         viewers.recheck();
         return send(res, 200, { signed_out: true }, { "set-cookie": ownerCookie(req, "", 0) });
       }
-      case "/auth/session":
-        return send(res, 200, { password_set: me.hasPassword(), signed_in: signedIn(req, me) });
+      case "/auth/session": {
+        // Before the owner's password is set: whether setup takes the printed code (a server at a public address), so
+        // the page asks for it when opened with no link. Never the code itself.
+        const set = me.hasPassword();
+        return send(res, 200, { password_set: set, signed_in: signedIn(req, me), ...(set ? {} : { setup_code: !me.openSetup }) });
+      }
     }
     throw new ApiError("not_found", `no route /v2${path}`);
   }

@@ -36,7 +36,7 @@ test("the first visit sets the password and signs in: the printed link lands on 
   const session = async (cookie) => (await call(server.port, { path: "/v2/auth/session", headers: cookie ? { cookie } : {} })).json;
   assert.deepEqual((await call(server.port, { path: "/setup" })).headers.location, "/", "the printed link sends the browser to the console, its #code kept");
   assert.equal((await call(server.port, { path: "/" })).status, 200);
-  assert.deepEqual(await session(), { password_set: false, signed_in: false }, "the console asks for the first password");
+  assert.deepEqual(await session(), { password_set: false, signed_in: false, setup_code: false }, "the console asks for the first password, with no code on an open setup");
   const made = await setup(server, { password: PASSWORD });
   assert.deepEqual([made.status, made.json.signed_in], [201, true], made.text);
   assert.equal((await agents(server, cookieOf(made))).status, 200, "the 201 carries the owner's session");

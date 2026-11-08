@@ -8,6 +8,8 @@ export type SignInProps = {
   mode: Exclude<AuthMode, "signed_in">;
   /** The setup code from the link the server printed (`#code=`), when setup needs one. */
   code?: string | null;
+  /** Whether setup takes the server's printed code (its session read's `setup_code`): the field shows with no link too. */
+  codeNeeded?: boolean;
   /** Signs in, or sets the first password (`importSessions`: setup's box, ticked); resolves with the refusal to show, or
    *  null. */
   onSubmit?: (password: string, code?: string, importSessions?: boolean) => Promise<string | null>;
@@ -31,7 +33,7 @@ const COPY = {
 
 /** The hosted console's sign-in card, over AgentRun Server's own: the owner's password (or its first setting), with the
  *  server's HttpOnly session cookie as the result. Nothing is kept in the page. */
-export function SignIn({ mode, code = null, onSubmit, problem: initialProblem = null, offer = null }: SignInProps) {
+export function SignIn({ mode, code = null, codeNeeded = false, onSubmit, problem: initialProblem = null, offer = null }: SignInProps) {
   const [password, setPassword] = useState("");
   // Never ticked for the owner: their own click asks for the import.
   const [importSessions, setImportSessions] = useState(false);
@@ -57,8 +59,8 @@ export function SignIn({ mode, code = null, onSubmit, problem: initialProblem = 
         <p className="mb-6 text-[15px] leading-relaxed text-[#aaa]">{COPY[mode].body}</p>
         {mode !== "token_link" && (
           <form className="space-y-5" onSubmit={(e) => { e.preventDefault(); void submit(); }}>
-            {setup && code !== null && (
-              <Field label="Setup code" note="From the link or the server's log.">
+            {setup && (codeNeeded || code !== null) && (
+              <Field label="Setup code" note="Find the setup code in the server's log (on Render, the Logs tab), or open the link the log prints.">
                 <input value={setupCode} onChange={(e) => setSetupCode(e.target.value)} autoComplete="off" spellCheck={false} className={input} />
               </Field>
             )}
