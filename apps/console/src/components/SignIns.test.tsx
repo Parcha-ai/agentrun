@@ -129,6 +129,29 @@ describe("the agent page's sign-ins", () => {
     expect(p.section()?.textContent).toContain("Forgotten.");
   });
 
+  it("a read that fails after a forget keeps the agent the page holds now (a change saved meanwhile), minus the forgotten key", async () => {
+    let finish!: () => void;
+    const forget = (_id: string, key: string) => new Promise<Removed>((r) => { finish = () => r({ key, removed: [{ provider: "browserbase", at_vendor: "deleted" }] }); });
+    const v2 = { forgetSignIn: forget, getAgent: async () => { throw new ClientError(500, "internal", "the read failed", true); } };
+    const host = document.body.appendChild(document.createElement("div"));
+    root = createRoot(host);
+    const handed: Agent[] = [];
+    const render = (a: Agent) => root!.render(createElement(SignIns, { agent: a, v2: v2 as never, onAgent: (next: Agent) => { handed.push(next); render(next); } }));
+    const first = agentWith([bb]);
+    await act(async () => { render(first); });
+    const forgetButton = [...host.querySelectorAll("button")].find((b) => /^Forget/.test(b.getAttribute("aria-label") ?? ""))!;
+    await act(async () => { forgetButton.click(); });
+    const yes = [...host.querySelectorAll("button")].find((b) => /^Yes, forget/.test((b.textContent ?? "").trim()))!;
+    await act(async () => { yes.click(); });
+    // Meanwhile the page saved a new revision (the Learning switch): the agent it holds now.
+    const newer = { ...first, revision: "r2", definition: { ...first.definition, version: 2 } } as Agent;
+    await act(async () => { render(newer); });
+    await act(async () => { finish(); });
+    for (let i = 0; i < 6; i++) await act(async () => { await new Promise((r) => setTimeout(r, 0)); });
+    expect(handed.at(-1)?.revision).toBe("r2");
+    expect(handed.at(-1)?.sign_ins).toEqual([]);
+  });
+
   it("is not there with none saved for an agent with no vendor browser", async () => {
     expect((await show(agentWith([], "unavailable: no browser key"))).section()).toBeNull();
   });
