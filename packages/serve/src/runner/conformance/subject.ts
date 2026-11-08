@@ -30,7 +30,9 @@ export interface ToolCall {
   readonly args: Record<string, unknown>;
 }
 
-/** The kernel's two points in the rule every edge follows (intent, flush, route, result). Both are awaited. */
+/** The kernel's two points in the rule every edge follows (intent, flush, route, result). Both are awaited. A hook that
+ *  throws is a fault in the task (the process lives on): the kernel's restart rule decides what happens next, and a
+ *  call that is not replay-safe never runs again. */
 export interface KernelHooks {
   /** Just before journal.intent(call). */
   beforeIntent(call: ToolCall): Promise<void>;
@@ -52,7 +54,9 @@ export type ConformanceCase =
   | "replay-safe-rerun"
   | "steer-mid-turn"
   | "stop-ends-turn"
-  | "park-on-ask";
+  | "park-on-ask"
+  | "fault-effects-once"
+  | "fault-restarts-bounded";
 
 export interface ConformanceSubject {
   /** The harness's name, as the suite's tests are titled. */

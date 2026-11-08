@@ -25,6 +25,8 @@ import type { ConformanceCase, ConformanceSetup, ConformanceSubject, KernelHooks
 export type TestFunction = (name: string, options: { skip?: string | boolean; timeout?: number }, fn: (t: { after(fn: () => unknown): void }) => Promise<void>) => unknown;
 
 const TIMING = { leaseMs: 600, renewEveryMs: 150, stopMarginMs: 200, pollMs: 20, commandPollMs: 30 };
+/** The most times a kernel restarts a faulting task before the run fails: every harness's bound is at most this. */
+export const MAX_RESTARTS = 5;
 /** The suite's runner timing, for its runner process too (child.ts). */
 export const CONFORMANCE_TIMING = TIMING;
 const RUN = "run-1";
@@ -232,6 +234,55 @@ const CASES: readonly Case[] = [
       const { calls, ran } = await processCrashThenResume(subject, t, "effect", "beforeResult");
       assert.equal(ran.effect, 1, "the effect ran once, never again after the crash");
       assert.deepEqual(calls.map((call) => [call.tool, call.status]), [["effect", "interrupted"]]);
+    },
+  },
+  {
+    // #1933's read: a task restart re-ran a node's effects (pi's restartLimit masked it). A fault after the effect ran
+    // (the process alive) restarts the task under the kernel's rule, and the effect never runs twice.
+    id: "fault-effects-once",
+    title: "a task that faults after its effect ran is restarted without running the effect again",
+    async body(subject, t) {
+      const w = await world(subject, t);
+      const { tools, ran } = suiteTools();
+      let faults = 0;
+      const hooks: KernelHooks = {
+        beforeIntent: async () => {},
+        beforeResult: async () => {
+          if (faults++ === 0) throw new Error("a fault in the task after its effect ran");
+        },
+      };
+      await w.start("runner-a", { script: [{ call: "effect" }, { say: "done" }], tools, hooks });
+      const row = await until(async () => {
+        const now = await w.run();
+        return ["ended", "failed"].includes(now.state) && now.runner === null && now;
+      }, "the run ends after the fault");
+      assert.equal(ran.effect, 1, "the effect ran once, never again on the restart");
+      const { calls } = await w.read();
+      const effect = calls.filter((call) => call.tool === "effect");
+      assert.equal(effect.length, 1, `one call of the effect: ${JSON.stringify(calls)}`);
+      assert.ok(effect[0]!.status === "interrupted" || effect[0]!.status === "failed", `the faulted call is not done: ${effect[0]!.status}`);
+      assert.equal(row.state, "ended", "the run goes on past the fault and ends");
+    },
+  },
+  {
+    // The restart rule by name: a task that faults every time is restarted a bounded number of times, never forever, and
+    // the run fails saying so. Removing the bound (or the rule that replaces pi's restartLimit) turns this red.
+    id: "fault-restarts-bounded",
+    title: "a task that faults every time is restarted a bounded number of times, then the run fails",
+    async body(subject, t) {
+      const w = await world(subject, t);
+      const { tools, ran } = suiteTools();
+      const hooks: KernelHooks = {
+        beforeIntent: async () => {},
+        beforeResult: async () => {
+          throw new Error("a fault in the task, every time");
+        },
+      };
+      await w.start("runner-a", { script: [{ call: "read" }, { say: "done" }], tools, hooks });
+      const row = await w.ended("failed");
+      assert.ok(ran.read >= 2, `restarted at least once (a replay-safe call runs again): ran ${ran.read}`);
+      assert.ok(ran.read <= MAX_RESTARTS + 1, `restarted at most ${MAX_RESTARTS} times: ran ${ran.read}`);
+      assert.match(row.summary ?? "", /fault|restart/i, `the run says why it failed: ${JSON.stringify(row.summary)}`);
     },
   },
   {
