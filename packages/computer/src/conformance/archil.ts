@@ -21,7 +21,7 @@ export const ARCHIL_ENV = {
 	/** A disk token, which the mount in the computer takes. */
 	archilToken: "COMPUTER_ARCHIL_TOKEN",
 	/** The account API key, which the object API outside takes. */
-	archilApiKey: "COMPUTER_ARCHIL_API_KEY",
+	archilKey: "COMPUTER_ARCHIL_API_KEY",
 	/** The disk's S3-compatible endpoint, https on an Archil host of the region: the key goes to it. */
 	archilS3Url: "COMPUTER_ARCHIL_S3_URL",
 } as const;
@@ -97,7 +97,7 @@ export function archilSettings(env: Record<string, string | undefined>): Require
 	const missing = names.filter((name) => !env[name]);
 	if (missing.length > 0) throw new Error(`the Archil mount cases need ${names.join(", ")} together: ${missing.join(", ")} is not set`);
 	const read = (name: string) => env[name] as string;
-	const [disk, region, token, apiKey, s3BaseUrl] = [read(ARCHIL_ENV.archilDisk), read(ARCHIL_ENV.archilRegion), read(ARCHIL_ENV.archilToken), read(ARCHIL_ENV.archilApiKey), read(ARCHIL_ENV.archilS3Url)];
+	const [disk, region, token, apiKey, s3BaseUrl] = [read(ARCHIL_ENV.archilDisk), read(ARCHIL_ENV.archilRegion), read(ARCHIL_ENV.archilToken), read(ARCHIL_ENV.archilKey), read(ARCHIL_ENV.archilS3Url)];
 	if (!DISK.test(disk)) throw new Error(`${ARCHIL_ENV.archilDisk} is a disk id (dsk- and 16 hex digits) or owner/name`);
 	if (!REGION.test(region)) throw new Error(`${ARCHIL_ENV.archilRegion} is a provider, a dash and its region, such as aws-us-east-1`);
 	const s3 = s3Problem(s3BaseUrl, region);
@@ -114,7 +114,7 @@ function failure(what: string, error: unknown, apiKey: string): Error {
 
 /** The disk's object API from the SDK's client: every setting given, the disk looked up once. */
 async function sdkObjects({ disk, region, apiKey, s3BaseUrl, baseUrl, Archil, sdkPackage = ARCHIL_PACKAGE }: ArchilRunFolderOptions): Promise<ArchilObjects> {
-	if (!apiKey || !s3BaseUrl) throw new Error(`the Archil run folder reaches its disk through the object API: give objects, or apiKey and s3BaseUrl (${ARCHIL_ENV.archilApiKey}, ${ARCHIL_ENV.archilS3Url})`);
+	if (!apiKey || !s3BaseUrl) throw new Error(`the Archil run folder reaches its disk through the object API: give objects, or apiKey and s3BaseUrl (${ARCHIL_ENV.archilKey}, ${ARCHIL_ENV.archilS3Url})`);
 	let Client = Archil;
 	if (Client === undefined) {
 		try {
