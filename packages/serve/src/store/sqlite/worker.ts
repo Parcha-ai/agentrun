@@ -2,18 +2,21 @@
 // the disk (a flush at FULL, or a write behind another process's lock) waits here, never on the event loop the runner's
 // loops share. WAL with synchronous=NORMAL: a commit is durable against a process crash at once, and against a lost box
 // only after the next FULL commit (flush). Every write starts BEGIN IMMEDIATE, so a write never upgrades a read lock and
-// deadlocks another writer; busy_timeout covers another process's write in flight.
+// deadlocks another writer; busy_timeout covers another process's write in flight. Foreign keys are on.
 //
 // The messages (connection.ts sends them one at a time, in order):
-//   open {file, busyTimeoutMs}            the connection and its pragmas
-//   read {sql, params, all}               one statement outside a transaction: its rows (all) or its first row
+//   open {file, busyTimeoutMs, owner}     the connection and its pragmas; `owner` also takes the store's owner lock (one
+//                                         server per store file): an exclusive lock on `<file>.owner`, held until close,
+//                                         let go by the OS when the process dies
+//   exec {sql}                            SQL text, maybe several statements, no bindings
+//   stmt {statement, mode}                one statement: run, count (its changes), get (first row) or all. Outside a
+//                                         transaction, a run or count is its own BEGIN IMMEDIATE transaction
 //   write {statements, full}              one transaction: BEGIN IMMEDIATE, each statement in order, COMMIT; `full` makes it
 //                                         a FULL commit (flush). A statement's `expect` checks it changed a row; a miss
 //                                         rolls the whole transaction back with its `miss` (fenced, or a final run)
-//   begin {full} / step {sql, params} / commit / rollback
-//                                         an interactive transaction, for a caller that decides its next statement from
-//                                         the last one's rows (the journal's publishing). connection.ts holds every other
-//                                         call until it ends.
+//   begin {full} / commit / rollback      an interactive transaction (connection.ts transaction()), its statements sent
+//                                         as stmt, or as step (one statement, its changes and rows, its `expect` checked)
+//                                         in between
 //   close
 import { parentPort } from "node:worker_threads";
 import { DatabaseSync, type SQLInputValue } from "node:sqlite";
@@ -24,18 +27,20 @@ export type Params = readonly SQLInputValue[];
 export type Miss = { kind: "fenced"; runId: string; epoch: number } | { kind: "final"; runId: string };
 export type Statement = { sql: string; params?: Params; expect?: Miss };
 export type StatementResult = { changes: number; rows: Record<string, unknown>[] };
+export type Mode = "run" | "count" | "get" | "all";
 export type Request =
-  | { op: "open"; file: string; busyTimeoutMs: number }
-  | { op: "read"; sql: string; params?: Params; all: boolean }
+  | { op: "open"; file: string; busyTimeoutMs: number; owner: boolean }
+  | { op: "exec"; sql: string }
+  | { op: "stmt"; statement: Statement; mode: Mode }
   | { op: "write"; statements: readonly Statement[]; full?: boolean }
   | { op: "begin"; full?: boolean }
   | { op: "step"; statement: Statement }
   | { op: "commit" }
   | { op: "rollback" }
   | { op: "close" };
-/** An error as the worker reports it: busy (the lock outlasted busy_timeout), constraint, miss (an expectation), closed,
- *  or sql (anything else). */
-export type WorkerError = { kind: "busy" | "constraint" | "sql" | "closed"; message: string } | { kind: "miss"; message: string; miss: Miss };
+/** An error as the worker reports it: busy (the lock outlasted busy_timeout), constraint, miss (an expectation), owned
+ *  (another server holds the store), closed, or sql (anything else). */
+export type WorkerError = { kind: "busy" | "constraint" | "sql" | "closed" | "owned"; message: string } | { kind: "miss"; message: string; miss: Miss };
 export type Reply = { id: number; ok: true; value: unknown } | { id: number; ok: false; error: WorkerError };
 
 /** A statement's expectation failed: carried out of the transaction, which is rolled back. */
@@ -46,21 +51,23 @@ class MissError extends Error {
     this.miss = miss;
   }
 }
+class OwnedError extends Error {}
+class ClosedError extends Error {}
 
 let db: DatabaseSync | undefined;
-/** The synchronous level a FULL transaction restores at its end. */
+let owner: DatabaseSync | undefined;
 const NORMAL = "PRAGMA synchronous = NORMAL";
 const FULL = "PRAGMA synchronous = FULL";
 let inTx = false;
 let txFull = false;
 
 const opened = (): DatabaseSync => {
-  if (!db) throw Object.assign(new Error("the store is closed"), { closed: true });
+  if (!db) throw new ClosedError("the store is closed");
   return db;
 };
 
 /** Whether `sql` returns rows (a SELECT, or a write with RETURNING). */
-const returnsRows = (sql: string): boolean => /^\s*(?:SELECT|WITH)\b/i.test(sql) || /\bRETURNING\b/i.test(sql);
+const returnsRows = (sql: string): boolean => /^\s*(?:SELECT|WITH|PRAGMA)\b/i.test(sql) || /\bRETURNING\b/i.test(sql);
 
 function step(statement: Statement): StatementResult {
   const prepared = opened().prepare(statement.sql);
@@ -101,31 +108,70 @@ function end(commit: boolean): void {
   }
 }
 
+/** `work` inside its own BEGIN IMMEDIATE transaction when none is open; inside the open one otherwise. */
+function written<T>(work: () => T): T {
+  if (inTx) return work();
+  begin(false);
+  try {
+    const value = work();
+    end(true);
+    return value;
+  } catch (error) {
+    if (inTx) end(false);
+    throw error;
+  }
+}
+
 function errorOf(error: unknown): WorkerError {
   if (error instanceof MissError) return { kind: "miss", message: error.message, miss: error.miss };
-  const e = error as { closed?: boolean; errcode?: number; message?: string };
+  if (error instanceof OwnedError) return { kind: "owned", message: error.message };
+  if (error instanceof ClosedError) return { kind: "closed", message: error.message };
+  const e = error as { errcode?: number; message?: string };
   const message = String(e?.message ?? error);
-  if (e?.closed) return { kind: "closed", message };
-  // SQLITE_BUSY (5) and SQLITE_LOCKED (6), with their extended codes in the low byte.
+  // SQLITE_BUSY (5) and SQLITE_LOCKED (6), with their extended codes in the high bytes.
   if (typeof e?.errcode === "number" && ((e.errcode & 0xff) === 5 || (e.errcode & 0xff) === 6)) return { kind: "busy", message };
   // SQLITE_CONSTRAINT (19).
   if (typeof e?.errcode === "number" && (e.errcode & 0xff) === 19) return { kind: "constraint", message };
   return { kind: "sql", message };
 }
 
+/** The store's owner lock: an exclusive lock on `<file>.owner` that a second owner cannot take. */
+function takeOwnerLock(file: string): void {
+  const lock = new DatabaseSync(`${file}.owner`);
+  try {
+    lock.exec("PRAGMA busy_timeout = 0");
+    lock.exec("PRAGMA locking_mode = EXCLUSIVE");
+    lock.exec("BEGIN EXCLUSIVE");
+  } catch (error) {
+    lock.close();
+    const e = error as { errcode?: number };
+    if (typeof e?.errcode === "number" && ((e.errcode & 0xff) === 5 || (e.errcode & 0xff) === 6)) throw new OwnedError(`another server holds the store at ${file}`);
+    throw error;
+  }
+  owner = lock;
+}
+
 function handle(request: Request): unknown {
   switch (request.op) {
     case "open": {
+      if (request.owner) takeOwnerLock(request.file);
       db = new DatabaseSync(request.file);
+      db.exec(`PRAGMA busy_timeout = ${Math.max(0, Math.floor(request.busyTimeoutMs))}`);
       db.exec("PRAGMA journal_mode = WAL");
       db.exec(NORMAL);
-      db.exec(`PRAGMA busy_timeout = ${Math.max(0, Math.floor(request.busyTimeoutMs))}`);
       db.exec("PRAGMA foreign_keys = ON");
       return null;
     }
-    case "read": {
-      const prepared = opened().prepare(request.sql);
-      return request.all ? prepared.all(...(request.params ?? [])) : (prepared.get(...(request.params ?? [])) ?? null);
+    case "exec":
+      opened().exec(request.sql);
+      return null;
+    case "stmt": {
+      const { statement, mode } = request;
+      if (mode === "get" || mode === "all") {
+        const prepared = opened().prepare(statement.sql);
+        return mode === "all" ? prepared.all(...(statement.params ?? [])) : (prepared.get(...(statement.params ?? [])) ?? null);
+      }
+      return written(() => step(statement).changes);
     }
     case "write": {
       begin(request.full === true);
@@ -142,13 +188,8 @@ function handle(request: Request): unknown {
       begin(request.full === true);
       return null;
     case "step":
-      try {
-        return step(request.statement);
-      } catch (error) {
-        // A miss or an error inside an interactive transaction ends it: nothing of it is kept.
-        if (inTx) end(false);
-        throw error;
-      }
+      if (!inTx) throw new Error("a step outside a transaction");
+      return step(request.statement);
     case "commit":
       end(true);
       return null;
@@ -159,6 +200,8 @@ function handle(request: Request): unknown {
       if (inTx) end(false);
       db?.close();
       db = undefined;
+      owner?.close();
+      owner = undefined;
       return null;
     }
   }
