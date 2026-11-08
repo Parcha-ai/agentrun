@@ -66,14 +66,26 @@ export interface NewRevision {
   readonly id: string;
   readonly kind: string;
   readonly body: unknown;
+  /** The revision's skill files, a JSON object keyed by the skill's path to its text, or none. The body's own `skills`
+   *  map keeps each path to its text's SHA-256; this is the texts, kept on the revision's row (store schema `revisions`). */
+  readonly skills?: unknown;
+  /** The optional note the revision is committed with (the v2 note), or none. */
+  readonly note?: string;
   readonly package?: TemplatePackage;
 }
 
 export interface RevisionRow {
   readonly id: string;
   readonly agentId: string;
+  /** The revision that was the agent's current one when this one was committed (null for its first): the v2 revisions
+   *  view's parent. */
+  readonly parent: string | null;
   readonly kind: string;
   readonly body: unknown;
+  /** The revision's skill files as it was written (path to text), or null for a revision with none. */
+  readonly skills: unknown;
+  /** The note the revision was committed with, or null. */
+  readonly note: string | null;
   readonly package: TemplatePackage | null;
   readonly createdAt: number;
 }
@@ -117,6 +129,9 @@ export interface RunRow {
   readonly archivedAt: number | null;
   /** The session an imported run came from; null for a run started here. */
   readonly importedFrom: ImportedFrom | null;
+  /** The SHA-256 hashes of the browser sign-in pointers handed to the run at its launch (never the pointers), or null when
+   *  it was handed none. A sign-in whose pointer hashes to one of these cannot be forgotten while the run runs. */
+  readonly signInHanded: readonly string[] | null;
   readonly startedAt: number;
   readonly endedAt: number | null;
 }
@@ -129,6 +144,9 @@ export interface RunPatch {
   readonly summary?: string | null;
   /** An ended run's outcome, set in its end commit; null clears it. */
   readonly outcome?: RunOutcome | null;
+  /** The SHA-256 hashes of the sign-in pointers handed to the run, which the runner writes at its claim (under the epoch
+   *  fence); null clears them. While the run runs, a sign-in hashing to one of these cannot be forgotten (sign-ins-store.ts). */
+  readonly signInHanded?: readonly string[] | null;
   readonly endedAt?: number | null;
 }
 
@@ -292,6 +310,8 @@ export interface Agents {
   archive(id: string, archived: boolean): Promise<void>;
   /** Adds a revision and makes it the agent's current one, in one commit. */
   addRevision(revision: NewRevision & { agentId: string }): Promise<void>;
+  /** Makes `revisionId`, one of the agent's own, its current one. StoreConstraint when it is not a revision of `agentId`. */
+  setCurrent(agentId: string, revisionId: string): Promise<void>;
   revision(id: string): Promise<RevisionRow | undefined>;
   revisions(agentId: string): Promise<RevisionRow[]>;
 }
@@ -485,6 +505,53 @@ export interface McpOauth {
   sweepExpired(now: number): Promise<number>;
 }
 
+/** A saved browser sign-in as the store holds it (store schema `sign_ins`): one live row per agent and provider, its
+ *  pointer sealed (store/seal.ts, AAD sign_ins|<agent>:<provider>|pointer), which the store never opens. `name` is the
+ *  owner's label for it ("default"). */
+export interface SignInRow {
+  readonly agentId: string;
+  readonly provider: string;
+  readonly name: string;
+  readonly pointerSealed: Uint8Array;
+  readonly savedAt: number;
+}
+
+/** A forgotten sign-in's pointer, kept sealed byte for byte as its live row held it (so it still opens under the same
+ *  binding), only so a server started later can cut it from what a run it was handed shows. */
+export interface SignInTombstoneRow {
+  readonly agentId: string;
+  readonly provider: string;
+  readonly pointerSealed: Uint8Array;
+  readonly forgottenAt: number;
+}
+
+/** How many forgotten pointers an agent keeps per store, the oldest dropped first. */
+export const SIGN_IN_TOMBSTONES_KEPT = 32;
+
+export interface SignIns {
+  /** Saves the one live sign-in for the agent and provider, its pointer already sealed by the caller: inserted, or replaced
+   *  in place when one is saved already (one per agent and provider). */
+  save(signIn: { agentId: string; provider: string; name: string; pointerSealed: Uint8Array }): Promise<SignInRow>;
+  /** The agent's live sign-ins, by provider (their pointers stay sealed). */
+  list(agentId: string): Promise<SignInRow[]>;
+  /** The agent's live sign-in for the provider, or undefined. */
+  get(agentId: string, provider: string): Promise<SignInRow | undefined>;
+  /** The agent's forgotten pointers for the provider, newest first (kept sealed, never opened here). */
+  tombstones(agentId: string, provider: string): Promise<SignInTombstoneRow[]>;
+  /** Forgets the agent's live sign-in for the provider, in the one transaction a launch shares as its lock: when a running
+   *  run holds `hash` in its sign_in_handed (or, with `heldUnreadable`, when any running run was handed a sign-in at all),
+   *  the forget is refused (SignInHandedTo, naming the run) and nothing is written; otherwise the live row's sealed pointer
+   *  moves to a tombstone (the newest SIGN_IN_TOMBSTONES_KEPT kept) and the live row goes. SignInMissing when the agent has
+   *  no live sign-in for the provider. */
+  forget(agentId: string, provider: string, held: { hash?: string; heldUnreadable?: boolean }): Promise<SignInTombstoneRow>;
+  /** The id of a running run whose sign_in_handed holds `hash`, if one does; undefined otherwise. The check the runner
+   *  makes before it serves a run's output, and forget makes before it removes a sign-in. */
+  handedHolder(hash: string): Promise<string | undefined>;
+  /** The id of a running run that was handed any sign-in (a non-empty sign_in_handed), if one was: for a pointer that does
+   *  not open here, which any such run may hold. */
+  handedAny(): Promise<string | undefined>;
+}
+
 /** A running run's live view as the store keeps it: `state` is JSON (the tool it runs now, its partial text). */
 export interface LiveRow {
   readonly runId: string;
@@ -523,6 +590,9 @@ export interface Store {
   readonly triggerSettings: TriggerSettings;
   /** MCP OAuth sign-ins in flight (design 2.1): one row per pending sign-in, its verifier sealed. */
   readonly mcpOauth: McpOauth;
+  /** Each agent's saved browser sign-ins (design 2.1): one live row per agent and provider, its pointer sealed, with the
+   *  forgotten pointers kept as tombstones. */
+  readonly signIns: SignIns;
   /** Claims the run for `runner` until now + `leaseMs`: the run's epoch + 1 when it is claimable (runs.claimable); null when
    *  another claim holds it, or it is final, or parked with nothing to wake it. A queued or parked run becomes running. */
   claim(runId: string, runner: string, options?: { leaseMs?: number }): Promise<Claim | null>;
@@ -703,5 +773,23 @@ export class StoreConstraint extends Error {
   constructor(message: string) {
     super(message);
     this.name = "StoreConstraint";
+  }
+}
+
+/** Forgetting a sign-in a running run was handed: refused, nothing written. `runId` is the run that holds it. */
+export class SignInHandedTo extends Error {
+  readonly runId: string;
+  constructor(runId: string) {
+    super(`a running run (${runId}) was handed this sign-in, so it is not forgotten while that run runs`);
+    this.name = "SignInHandedTo";
+    this.runId = runId;
+  }
+}
+
+/** Forgetting a sign-in the agent does not have for the provider. */
+export class SignInMissing extends Error {
+  constructor(agentId: string, provider: string) {
+    super(`the agent ${agentId} has no ${provider} sign-in to forget`);
+    this.name = "SignInMissing";
   }
 }
