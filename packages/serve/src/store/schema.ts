@@ -235,6 +235,18 @@ export const STORE_DDL: readonly string[] = [
     pinned_at INTEGER NOT NULL
   ) STRICT`,
 
+  // A run's launch record: the one body the server writes when it starts a run (start = INSERT run), read by the runner at
+  // its claim to build the run's spec. It replaces the per-run serve.json the old per-run process read: one row per run,
+  // written in the same transaction as the queued run, never after. `body` is the launch JSON (run-launch.ts: the first
+  // input, title, place, effort, cap, and the trigger and origin that started it); `sealed` holds any secret sealed with
+  // the server's key outside the store (AAD run_launch|<run_id>|sealed), or null when the launch holds none.
+  `CREATE TABLE IF NOT EXISTS run_launch (
+    run_id TEXT PRIMARY KEY REFERENCES runs (id),
+    ${json("body")},
+    sealed BLOB,
+    created_at INTEGER NOT NULL
+  ) STRICT`,
+
   // A running run's live view (the tool it runs now, its partial text): one row, outside the journal, overwritten in place
   // by its runner's tick and dropped at its end.
   `CREATE TABLE IF NOT EXISTS run_live (

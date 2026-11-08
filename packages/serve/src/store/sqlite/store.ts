@@ -15,6 +15,7 @@ import {
 } from "../store.js";
 import { Connection, type SqliteExecutor, type SqliteValue, type Statement } from "./connection.js";
 import { applyRunPatch, RUN_COLUMNS, runOf, type RunRecord } from "./run-patch.js";
+import { readLaunch, writeLaunch } from "./run-launch.js";
 
 /** A claim's length when the caller names none. */
 export const DEFAULT_LEASE_MS = 30_000;
@@ -310,14 +311,23 @@ class SqliteStore implements Store {
     };
 
     this.runs = {
-      create: async ({ id, agentId, revisionId }) => {
-        const [result] = await db.write([{ sql: `INSERT INTO runs (id, agent_id, revision_id, state, epoch, started_at) VALUES (?, ?, ?, 'queued', 0, ?) RETURNING ${RUN_COLUMNS}`, params: [id, agentId, revisionId, now()] }]);
-        return runOf(result!.rows[0] as RunRecord);
+      create: async ({ id, agentId, revisionId }, launch) => {
+        if (!launch) {
+          const [result] = await db.write([{ sql: `INSERT INTO runs (id, agent_id, revision_id, state, epoch, started_at) VALUES (?, ?, ?, 'queued', 0, ?) RETURNING ${RUN_COLUMNS}`, params: [id, agentId, revisionId, now()] }]);
+          return runOf(result!.rows[0] as RunRecord);
+        }
+        return db.transaction(async (tx) => {
+          const at = now();
+          const row = await tx.get<RunRecord>(`INSERT INTO runs (id, agent_id, revision_id, state, epoch, started_at) VALUES (?, ?, ?, 'queued', 0, ?) RETURNING ${RUN_COLUMNS}`, id, agentId, revisionId, at);
+          await writeLaunch(tx, id, launch, at);
+          return runOf(row!);
+        });
       },
       get: async (id) => {
         const row = await db.get<RunRecord>(`SELECT ${RUN_COLUMNS} FROM runs WHERE id = ?`, id);
         return row && runOf(row);
       },
+      launch: (runId) => readLaunch(db, runId),
       list: async ({ agentId, revisionId, state, limit }) => {
         const where: string[] = [];
         const params: SqliteValue[] = [];

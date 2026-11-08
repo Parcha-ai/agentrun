@@ -105,6 +105,23 @@ export interface RunPatch {
   readonly endedAt?: number | null;
 }
 
+/** A run's launch, as the server writes it at start: its JSON `body` (run-launch.ts: the first input, title, place, effort,
+ *  cap, trigger and origin), and `sealed` ciphertext for any secret it carries (sealed with the server's key outside the
+ *  store, AAD `run_launch|<run_id>|sealed`), or none. Written once, in the same transaction as the queued run. */
+export interface RunLaunchInput {
+  readonly body: unknown;
+  readonly sealed?: Uint8Array | null;
+}
+
+/** A run's launch as the store holds it: the body the runner reads at its claim, and its sealed bytes, which the store never
+ *  opens. */
+export interface RunLaunchRow {
+  readonly runId: string;
+  readonly body: unknown;
+  readonly sealed: Uint8Array | null;
+  readonly createdAt: number;
+}
+
 /** Rows written in the same commit as a run's update (runs.update, or a journal commit's staged patch): a channel post the
  *  run's moment owes (the outbox), what a channel was told. A command consumed is Staged.take, refused when not untaken. */
 export type AlsoRow =
@@ -214,14 +231,19 @@ export interface Triggers {
   /** Disables the trigger (with why, JSON) and deletes its scope rows, in one transaction. */
   disable(triggerId: string, why?: unknown): Promise<void>;
   /** The firing starts a run: the queued run, the `started` firing that names it and the trigger's last_run_id, in one
-   *  transaction. */
+   *  transaction. The run's launch row is written in that same transaction when the firing carries one (route-1's fire
+   *  calls the store's writeLaunch). */
   fire(firing: Firing, run: { id: string; agentId: string; revisionId: string }): Promise<RunRow>;
 }
 
 export interface Runs {
-  /** A queued run of `revisionId`, its row's only writer until a runner claims it. */
-  create(run: { id: string; agentId: string; revisionId: string }): Promise<RunRow>;
+  /** A queued run of `revisionId`, its row's only writer until a runner claims it. With `launch`, its launch row is written
+   *  in the same transaction (both or neither). */
+  create(run: { id: string; agentId: string; revisionId: string }, launch?: RunLaunchInput): Promise<RunRow>;
   get(id: string): Promise<RunRow | undefined>;
+  /** The run's launch row (the runner reads it at its claim; the server for views). StoreLaunchMissing when the run has
+   *  none (it was not started with one), never a default. */
+  launch(runId: string): Promise<RunLaunchRow>;
   /** Newest first, at most `limit` (no limit: all). */
   list(filter: { agentId?: string; revisionId?: string; state?: RunState; limit?: number }): Promise<RunRow[]>;
   /** The runs a runner may claim, oldest first: queued; parked with an untaken command or its wake_at passed; running with
@@ -465,6 +487,17 @@ export class RunFinal extends Error {
   constructor(runId: string) {
     super(`run ${runId} is not running (it ended, or there is no such run): it takes no command`);
     this.name = "RunFinal";
+    this.runId = runId;
+  }
+}
+
+/** A run with no launch row: it was not started with one (an unknown run reads the same way). The runner's claim needs it to
+ *  build the run's spec, so its absence is this named refusal, never a default. */
+export class StoreLaunchMissing extends Error {
+  readonly runId: string;
+  constructor(runId: string) {
+    super(`run ${runId} has no launch record: it was not started with one, or there is no such run`);
+    this.name = "StoreLaunchMissing";
     this.runId = runId;
   }
 }
