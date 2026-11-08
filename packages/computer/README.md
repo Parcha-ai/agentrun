@@ -469,6 +469,10 @@ key.
   port, and runs as the computer's uid:gid with a read-only root, `--cap-drop ALL`, `no-new-privileges`, 256 MiB, 64
   pids and a bounded log. Its argv holds the list, the computer's deadline (it ends itself then), this machine's own
   public addresses (refused as `this-host`), and `egress.hint`, the words a refusal adds (printable ASCII).
+  `EGRESS_IMAGE` is the one place its digest is written. Docker pulls it at the first allow computer when the host
+  lacks it, so a host with no registry access pulls it ahead, reading the name from this package:
+  `docker pull "$(node --input-type=module -e 'import { EGRESS_IMAGE } from "@parcha/agentrun-computer"; console.log(EGRESS_IMAGE)')"`
+  (in this repository, from `packages/computer` after a build: `node -e 'import("./dist/index.js").then((m) => console.log(m.EGRESS_IMAGE))'`).
 - **The computer**: init gets `--egress /opt/agentrun/egress/egress.sock`, listens on port 3128 of its own loopback,
   carries each connection to the socket, and gives every program it starts `HTTP_PROXY` and `HTTPS_PROXY` (and their
   lowercase forms) naming that port, with `NO_PROXY` naming the loopback itself. A program that ignores them reaches
