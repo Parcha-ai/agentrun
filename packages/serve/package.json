@@ -30,6 +30,7 @@
   },
   "files": [
     "dist",
+    "!dist/workspace",
     "launcher",
     "harnesses",
     "skills",
@@ -64,6 +65,7 @@
     "@secretlint/profiler": "13.1.0",
     "@secretlint/secretlint-rule-preset-recommend": "13.1.0",
     "croner": "11.0.0",
+    "disk": "1.12.0",
     "typebox": "1.3.27",
     "undici": "^8.12.2",
     "yaml": "2.9.0"
@@ -84,6 +86,7 @@
     "@earendil-works/pi-ai": "1.5.0",
     "@earendil-works/pi-durable": "1.5.0",
     "@modelcontextprotocol/server": "2.4.0",
+    "@parcha/agentrun-computer": "0.1.0-beta.30",
     "opencode-ai": "1.19.5"
   },
   "repository": {

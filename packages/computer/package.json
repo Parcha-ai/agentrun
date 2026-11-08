@@ -40,6 +40,7 @@
     "test:docker": "node --test --test-timeout=900000 test/docker/*.test.mjs",
     "test:daytona": "node --test --test-timeout=1800000 test/daytona/*.test.mjs",
     "test:modal": "node --test --test-timeout=1800000 test/modal/*.test.mjs",
+    "test:e2b": "node --test --test-timeout=1800000 test/e2b/*.test.mjs",
     "conformance": "node dist/conformance/cli.js",
     "daytona:sweep": "node dist/conformance/daytona-sweep.js"
   },

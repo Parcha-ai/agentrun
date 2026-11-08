@@ -2,7 +2,7 @@
 // --only left out, the verdict last.
 import type { CaseGroup, CaseResult, ConformanceReport } from "./types.js";
 
-const GROUPS: CaseGroup[] = ["health", "exec", "files", "process", "provider", "drift", "screen", "input", "touch", "apps", "lifetime"];
+const GROUPS: CaseGroup[] = ["health", "exec", "files", "process", "provider", "drift", "mount", "screen", "input", "touch", "apps", "lifetime"];
 const NAMES_WIDTH = 44;
 const INDENT = " ".repeat("core ".length + "provider ".length + 1);
 
@@ -54,6 +54,7 @@ export function formatReport(report: ConformanceReport): string {
 		lines.push(`core ${"not run".padEnd(9)} ${first}`, ...rest.map((more) => `${INDENT}${more}`));
 	}
 	for (const note of report.notes ?? []) lines.push(`note: ${note}`);
+	for (const { computer, note } of report.computerNotes ?? []) lines.push(`note ${computer}: ${note}`);
 	const core = results.filter((r) => levelOf(r) === "core");
 	const notDeclared = results.filter((r) => levelOf(r) === "optional").length;
 	const full = results.filter((r) => r.level === "full");

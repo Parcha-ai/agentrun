@@ -15,6 +15,7 @@ import { MCP_SERVER_NAME } from "./mcp-servers.js";
 import { chooseModel, harnessRuns, hostModel, MODEL_KEYS, THINKING_LEVELS, type Tier } from "./model.js";
 import { mcpToolName } from "./tool-gate.js";
 import { BOUND_TOOLS } from "./tools.js";
+import { TRIGGER_ADAPTERS } from "./trigger-adapters.js";
 import { triggerBodyIssues } from "./triggers.js";
 import { DEFAULT_INPUT_SCHEMA, definitionBodyIssues, inputIssues, isObject, type Json, MODEL_REF, unknownFields } from "./validate.js";
 
@@ -314,7 +315,7 @@ export function readPackage(dir: string): Package {
   for (const issue of definitionBodyIssues(made.agent)) bad(issue.field.startsWith("skills.") ? `skills/${issue.field.slice("skills.".length)}` : MANIFEST, `${issue.field.startsWith("skills.") ? "" : `the agent it makes: ${issue.field}: `}${issue.message}`);
   // A trigger's input is its runs' input: the agent a package makes is agentic, so it takes DEFAULT_INPUT_SCHEMA's.
   made.triggers.forEach((trigger, i) => {
-    const issues = triggerBodyIssues({ ...trigger, target: { ...(trigger.target as Json), agent_id: SAMPLE_AGENT } }, 0);
+    const issues = triggerBodyIssues(TRIGGER_ADAPTERS, { ...trigger, target: { ...(trigger.target as Json), agent_id: SAMPLE_AGENT } }, 0);
     const input = isObject(trigger.target) ? trigger.target.input : undefined;
     if (isObject(input)) issues.push(...inputIssues(input, DEFAULT_INPUT_SCHEMA, "target.input"));
     for (const issue of issues) bad(MANIFEST, `triggers[${i}].${issue.field}: ${issue.message}`);

@@ -27,7 +27,9 @@ async function refused(promise, code, label) {
 
 const text = (bytes) => Buffer.from(bytes).toString("utf8");
 
-export function suite(name, make) {
+/** `options.skip` names cases a backend cannot have, each with the reason: `symlinks` (no symbolic link can be made
+ *  where the suite plants them), `linksListed` (the backend cannot tell a link from a file, so list shows it as one). */
+export function suite(name, make, options = {}) {
   /** A fresh workspace, with a sentinel file outside its root. */
   async function fresh() {
     const made = await make();
@@ -183,7 +185,7 @@ export function suite(name, make) {
       untouched(outside);
     });
 
-    test("a symbolic link in the root that points outside is ESCAPE: for a read, a write, exec's cwd, and as the last part", async () => {
+    test("a symbolic link in the root that points outside is ESCAPE: for a read, a write, exec's cwd, and as the last part", { skip: options.skip?.symlinks }, async () => {
       const { workspace, root, outside } = await fresh();
       symlinkSync(outside, join(root, "dirlink"));
       symlinkSync(join(outside, "sentinel"), join(root, "filelink"));
@@ -269,6 +271,15 @@ export function suite(name, make) {
       await refused(workspace.read("left"), "NOT_FOUND", "the grandchild of an exec that exited was killed");
     });
 
+    test("a symbolic link an exec makes is left out of list", { skip: options.skip?.linksListed }, async () => {
+      const { workspace } = await fresh();
+      await workspace.write("f", "x");
+      await workspace.mkdir("d");
+      await workspace.exec(["ln", "-s", "f", "lf"], { env: ENV, timeoutMs: 10_000 });
+      await workspace.exec(["ln", "-s", "d", "ld"], { env: ENV, timeoutMs: 10_000 });
+      assert.deepEqual((await workspace.list("")).map((e) => [e.name, e.kind]), [["d", "dir"], ["f", "file"]]);
+    });
+
     test("exec: output past the cap is cut and flagged", async () => {
       const { workspace } = await fresh();
       const out = await workspace.exec(["head", "-c", "300000", "/dev/zero"], { env: ENV, maxOutput: 1000, timeoutMs: 10_000 });
@@ -278,6 +289,34 @@ export function suite(name, make) {
       const err = await workspace.exec(["bash", "-c", "head -c 5000 /dev/zero | tr '\\0' e >&2"], { env: ENV, maxOutput: 100, timeoutMs: 10_000 });
       assert.equal(err.stderr, "e".repeat(100));
       assert.equal(err.truncated, true);
+    });
+
+    test("exec: onOutput gets the output, joined per stream it is the result's (capped), and it comes as it is made", async () => {
+      const { workspace } = await fresh();
+      const seen = { stdout: [], stderr: [] };
+      let firstAt;
+      const started = Date.now();
+      const script = "printf one; sleep 1; printf two; printf err >&2; head -c 5000 /dev/zero";
+      const out = await workspace.exec(["bash", "-c", script], { env: ENV, maxOutput: 1000, timeoutMs: 10_000, onOutput: ({ stream, data }) => {
+        firstAt ??= Date.now() - started;
+        seen[stream].push(Buffer.from(data));
+      } });
+      assert.ok(Buffer.concat(seen.stdout).equals(Buffer.from(out.stdout)), "stdout's pieces join to the result's stdout");
+      assert.equal(Buffer.concat(seen.stderr).toString("utf8"), out.stderr, "stderr's pieces join to the result's stderr");
+      assert.equal(out.stdout.length, 1000, "both are cut at the cap");
+      assert.equal(Buffer.from(out.stdout).subarray(0, 6).toString(), "onetwo");
+      // A backend that streams gives the first piece before the program ends; one that cannot gives each stream once.
+      const streams = seen.stdout.length > 1 || seen.stderr.length > 1;
+      if (streams) assert.ok(firstAt < 900, `the first piece came as it was made (${firstAt} ms)`);
+      else assert.deepEqual([seen.stdout.length, seen.stderr.length], [1, 1], "a backend that cannot stream calls it once per stream");
+    });
+
+    test("with no computer, every background call is REFUSED, cause no-computer", async () => {
+      const { workspace } = await fresh();
+      for (const call of ["start", "read", "write", "signal", "wait", "list"]) {
+        await refused(workspace.process[call]({ id: "p1", argv: ["sleep", "1"] }), "REFUSED", `process.${call}`);
+        await assert.rejects(workspace.process[call]({ id: "p1" }), (error) => error.cause === "no-computer", `process.${call}: cause no-computer`);
+      }
     });
   });
 }

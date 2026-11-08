@@ -9,7 +9,12 @@
 // - A path is relative, normalized, and never leaves the root: an absolute path, "..", ".", an empty segment, a NUL or a
 //   backslash is ESCAPE, and so is a symbolic link anywhere on the way, the last part included. Nothing is followed.
 // - The port does not serialize. Two calls on one path race as two processes would; callers own their ordering (the
-//   learning queue keeps one per agent, with git's update-ref compare-and-swap as its fence).
+//   learning queue keeps one per agent, with git's update-ref compare-and-swap as its fence). A backend serializes only
+//   what its service requires (Archil: an exec's checkout of the folder blocks writes, so execs run one at a time and
+//   writes wait for them); callers' queues still own their own ordering.
+
+import type { MountSpec } from "@parcha/agentrun-computer";
+import type { AttachableComputer, MountCheck, Processes } from "./attach.js";
 
 /** Why a workspace call failed. */
 export type WorkspaceErrorCode =
@@ -44,7 +49,9 @@ export class WorkspaceError extends Error {
 export const isWorkspaceError = (error: unknown, code?: WorkspaceErrorCode): error is WorkspaceError =>
   error instanceof WorkspaceError && (code === undefined || error.code === code);
 
-/** One entry of a directory. Only files and directories are listed: a symbolic link, a pipe or a socket is left out. */
+/** One entry of a directory. Only files and directories are listed: a pipe or a socket is left out. A symbolic link is
+ *  left out by a backend that can tell (Local); a backend that can't tell a link from a file (Archil's file API) lists
+ *  it as a file, and reading it fails UNAVAILABLE. */
 export type Entry = { readonly name: string; readonly kind: "file" | "dir"; readonly size: number };
 
 /** One line grep found. `line` counts from 1; `text` is the line, cut at GREP_LINE_MAX characters. */
@@ -78,6 +85,10 @@ export type ExecOptions = {
   /** The most bytes kept of stdout, and of stderr, each (default EXEC_OUTPUT_MAX). Past it the rest is read and
    *  dropped, and `truncated` is true. */
   readonly maxOutput?: number;
+  /** Each piece of output as it comes, within the cap: what it is given, joined per stream, is the result's stdout
+   *  and stderr. A backend that cannot stream calls it once per stream, at the end, with everything. An error it
+   *  throws is ignored. */
+  readonly onOutput?: (chunk: { readonly stream: "stdout" | "stderr"; readonly data: Uint8Array }) => void;
 };
 
 export type ExecResult = {
@@ -85,6 +96,8 @@ export type ExecResult = {
   readonly stderr: string;
   /** Its exit code, or null when a signal ended it (the deadline's kill included). */
   readonly code: number | null;
+  /** The signal that ended it, when one did and it was not the deadline's kill (e.g. "SIGSEGV"). */
+  readonly signal?: string;
   readonly timedOut: boolean;
   /** stdout or stderr went past `maxOutput`, and was cut. */
   readonly truncated: boolean;
@@ -127,7 +140,13 @@ export interface Workspace {
    *  group, stdin and stdout as bytes. Nothing it starts outlives it: when it exits, or at the deadline, the group is
    *  killed. A nonzero exit is a result, not an error; a program that is not there is NOT_FOUND. */
   exec(argv: readonly string[], options: ExecOptions): Promise<ExecResult>;
-  /** The workspace made reachable inside `computer`. Typed and built with the computer mount; every backend refuses it
-   *  (REFUSED) until then. */
-  attach(computer: unknown): Promise<unknown>;
+  /** Background programs: the computer's process calls, which the background tools make through the Workspace. With
+   *  no computer attached, every call is REFUSED with cause "no-computer" (attach.ts NO_COMPUTER); the words a person
+   *  reads are the background tool's. */
+  readonly process: Processes;
+  /** What a computer mounts at /workspace to hold this Workspace's folder: the caller puts it in the computer's spec. */
+  mountSpec(): Promise<MountSpec>;
+  /** This Workspace inside `computer`, once the computer's read-back shows it mounts mountSpec() at /workspace: file
+   *  calls and exec go to its computerd client, and `process` is the computer's (attach.ts). */
+  attach(computer: AttachableComputer, check: MountCheck): Promise<Workspace>;
 }
