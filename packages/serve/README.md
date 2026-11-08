@@ -911,7 +911,8 @@ default). An agent's `definition.tool_settings` has the same shape and is over t
 for its capability (`auto`, `native`, `exa-keyless` or `parallel` for `web_search`; `kernel` or `parallel` for `web_fetch`;
 `auto`, `browserbase`, `kernel` or `chrome` for `browser`, [below](#tools)); an
 unknown capability or provider is `422`. Any tool's settings also take a `permission`, `allow`, `ask` or `deny`, which the
-tool gate holds every call to (an ask parks the run for the owner's approval); a workflow's call node, which cannot wait
+tool gate holds every call to (an ask parks the run for the owner's approval), and an MCP tool's a `pin`, the arguments
+its calls must carry ([MCP servers](#mcp-servers), `422` for one that is not one); a workflow's call node, which cannot wait
 for an approval, refuses its run when its tool is set to ask or deny (`409`, `details.asks` or `details.denied`). The
 settings are kept in the data directory
 (`tool-settings.json`, 0600, written whole and durably), not a secret, and read by every run launched from then on.
@@ -1413,6 +1414,17 @@ asked by default.
   until the owner answers `POST /v2/runs/{id}/approvals/{approval_id}` from their password session. Allowed, the run
   sends the call once and resumes with its result; denied, it resumes with the refusal. A restart while a call is
   parked loses nothing.
+- **Pins.** An MCP tool's own key (`mcp:<server>/<tool>`, never the wildcard) may also carry `pin`, 1 to 8 of the
+  tool's top-level arguments, each to the one JSON scalar its calls must carry (`null`: the argument left out):
+  `{"mcp:slack/slack_send_message": {"permission": "allow", "pin": {"channel_id": "C0123"}}}`. The gate checks a pinned
+  tool's call before it runs or asks anyone, whatever the permission (an allow, an ask, a grant): a call whose arguments
+  are not as pinned is refused, never sent and never asked about, and the model reads "mcp:slack/slack_send_message may
+  only be called with channel_id = C0123: its destination is fixed by the agent's settings". The run's process logs a
+  line naming the tool, the call and the arguments that did not hold, and its Timeline row is a failed call, as any
+  refusal's. A call approved under ask is checked again before it is sent. A pin adds to a setting and is never a
+  permission: the agent's pin and the server's both hold, and two that fix one argument to different values refuse
+  every call, saying so. A template pins its sends' destinations to its parameters ([Templates](#templates)). A pin in
+  `tool-settings.json` that does not read refuses every call of its tool until a `PUT` sets it again.
 - **Prices.** `PUT /v2/settings/mcp-servers/{name}` takes `prices`, each tool's price in USD a call
   (`{"prices": {"search": 0.01}}`; a finite number, 0 or more, for a tool the server lists; else `422`). A priced call
   is held at its price under the run's `max_cost_usd`, refused unsent when the cap cannot take it, and booked as the
