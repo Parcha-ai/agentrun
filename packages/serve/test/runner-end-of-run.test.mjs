@@ -116,6 +116,39 @@ test("the learning hook on a pi run: its turn and proposal kept with the end, an
   assert.deepEqual(learning && [learning.agentId, learning.revisionId], ["agent-1", "rev-1"], "one learning run of the run's agent and revision");
 });
 
+/** A journal that refuses every commit after the one that wrote the run's end: the fault between two commits. */
+function refusingAfterEnd(journal) {
+  let ended = false;
+  return new Proxy(journal, {
+    get(target, key, receiver) {
+      if (key === "commit") {
+        return async (batches, receive, context) => {
+          if (ended) throw new Error("the store refused a commit after the run's end");
+          const result = await target.commit(batches, receive, context);
+          if (batches.some((batch) => batch.some((write) => write.type === "entry" && write.value.kind === "agentrun.end"))) ended = true;
+          return result;
+        };
+      }
+      const value = Reflect.get(target, key, receiver);
+      return typeof value === "function" ? value.bind(target) : value;
+    },
+  });
+}
+
+test("the end and the step's rows land together or not at all, even when a commit after the end is refused", async (t) => {
+  const { start, until, toldRows, endEntries } = await setup(t);
+  const endOfRun = async (input) => {
+    await input.ask("What did you learn?", { origin: "reflect", deadlineMs: 10_000 });
+    return { also: [told("kept")] };
+  };
+  const inner = createPiLoop(async (claim) => ({ ...(await piSpec({ script: [{ say: "done" }, { say: "a note" }], tools: {}, hooks: quiet })(claim)), agentId: "agent-1" }));
+  const createLoop = (deps) => inner({ ...deps, endOfRun, journal: (claim) => refusingAfterEnd(deps.journal(claim)) });
+  await start(createLoop, "runner-a");
+  await until((row) => row.state === "ended" && row.runner === null, "the run did not end");
+  assert.equal(endEntries(), 1, "the end is stored");
+  assert.deepEqual(toldRows().map((row) => row.marker), ["kept"], "the step's rows are stored with the end, in its one commit");
+});
+
 test("a run whose step returns nothing stores no row beside its end", async (t) => {
   const { start, until, toldRows } = await setup(t);
   await start(loopWith(piSpec({ script: [{ say: "done" }, { say: "" }], tools: {}, hooks: quiet }), async () => undefined), "runner-a");
