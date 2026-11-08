@@ -549,6 +549,25 @@ class Rules(unittest.TestCase):
         self.assertLess(time.monotonic() - began, 2.0)
         self.assertIsInstance(self.thrown(client.agents.list, timeout=0), AgentRunUsage)
 
+    def test_a_try_ends_at_its_timeout_even_while_its_body_trickles_in_and_a_body_with_no_length_is_then_a_timeout_never_a_short_answer(self) -> None:
+        def answer(request: Request, reply: Reply) -> Any:
+            reply.head(200, {"content-type": "application/octet-stream"})
+            for _ in range(100):
+                try:
+                    reply.write(b"x")
+                except OSError:
+                    return None
+                reply.wait(0.05)
+            return None
+
+        server = Listener(self, answer)
+        client = AgentRun(base_url=server.base, api_key=KEY)
+        began = time.monotonic()
+        late = self.thrown(client.runs.read_file, "r1", "all.bin", timeout=0.3)
+        assert isinstance(late, AgentRunUnreachable), repr(late)
+        self.assertEqual((late.cause, len(server.requests)), ("timeout", 1))
+        self.assertLess(time.monotonic() - began, 2.0, "the try's whole time, not each read's")
+
     def test_an_answer_with_an_etag_comes_back_tagged_with_it(self) -> None:
         server = Listener(self, lambda request, reply: json_answer(200, {"agent_id": "a"}, {"etag": '"v1"'}))
         client = AgentRun(base_url=server.base, api_key=KEY)

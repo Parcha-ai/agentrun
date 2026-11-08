@@ -1,4 +1,4 @@
-"""The wire: one try of one request over http.client, with its whole-try deadline, plus what the client and its live
+"""The wire: one try of one request over http.client, every read and write of it under the try's deadline, plus what the client and its live
 calls (_live.py) share: the request they hand to the client's `send`, backoff, the check of a path argument, and a
 failure's code. http.client follows no redirect and reads no proxy from the environment, so the key goes to the base
 URL's own origin and nowhere else; the client follows a redirect itself, only where it may."""
@@ -7,15 +7,16 @@ from __future__ import annotations
 
 import errno
 import http.client
+import io
+import math
 import re
 import socket
 import ssl
-import threading
 import time
 from dataclasses import dataclass, field
 from email.message import Message
 from email.utils import parsedate_to_datetime
-from typing import Iterator, Mapping, Optional, Sequence, Tuple, Type
+from typing import Any, Iterator, Mapping, Optional, Sequence, Tuple, Type, cast
 from urllib.parse import quote
 
 from ._errors import AgentRunUsage
@@ -131,37 +132,88 @@ def _code(value: object, fallback: str) -> str:
     return value if isinstance(value, str) and re.fullmatch(r"[A-Z0-9_]+", value) else fallback
 
 
-class _Watchdog:
-    """Ends a try at its deadline: shuts its socket down, so a read blocked on a silent server returns at once."""
+class _Clock:
+    """The time a try may still take: an end, on time.monotonic(), that every read and write of its socket checks, and a
+    cap on each one (a stream's idle timeout). A server that sends a byte now and then cannot stretch a try past it."""
 
-    def __init__(self, seconds: float, connection: http.client.HTTPConnection) -> None:
-        self.fired = False
-        self._connection = connection
-        self._timer = threading.Timer(max(0.0, seconds), self._fire)
-        self._timer.daemon = True
-        self._timer.start()
+    def __init__(self, end: float) -> None:
+        self.end = end
+        self.each: Optional[float] = None
+        self.expired = False
 
-    def _fire(self) -> None:
-        self.fired = True
-        sock = self._connection.sock
-        if sock is not None:
-            try:
-                sock.shutdown(socket.SHUT_RDWR)
-            except OSError:
-                pass
+    def left(self) -> float:
+        left = self.end - time.monotonic()
+        if left <= 0:
+            self.expired = True
+            raise socket.timeout("timed out")
+        return left if self.each is None else min(left, self.each)
 
-    def cancel(self) -> None:
-        self._timer.cancel()
+
+class _Reader(io.RawIOBase):
+    """The socket's bytes as http.client reads them, each read under the try's clock."""
+
+    def __init__(self, owner: _Socket) -> None:
+        super().__init__()
+        self._owner = owner
+
+    def readable(self) -> bool:
+        return True
+
+    def readinto(self, buffer: Any) -> int:
+        sock = self._owner.sock
+        sock.settimeout(self._owner.clock.left())
+        try:
+            return sock.recv_into(buffer)
+        except socket.timeout:
+            if self._owner.clock.each is None:
+                self._owner.clock.expired = True
+            raise
+
+    def close(self) -> None:
+        if not self.closed:
+            self._owner.release()
+        super().close()
+
+
+class _Socket:
+    """A connected socket as http.client uses it (sendall, makefile, close), its every read and write under the try's
+    clock. Closed once the connection and every reader of it are."""
+
+    def __init__(self, sock: socket.socket, clock: _Clock) -> None:
+        self.sock = sock
+        self.clock = clock
+        self._readers = 0
+        self._closed = False
+
+    def sendall(self, data: Any) -> None:
+        self.sock.settimeout(self.clock.left())
+        self.sock.sendall(data)
+
+    def makefile(self, mode: str = "rb", *args: Any, **kwargs: Any) -> io.BufferedReader:
+        self._readers += 1
+        return io.BufferedReader(_Reader(self))
+
+    def release(self) -> None:
+        self._readers -= 1
+        self._shut()
+
+    def close(self) -> None:
+        self._closed = True
+        self._shut()
+
+    def _shut(self) -> None:
+        if self._closed and self._readers <= 0:
+            self.sock.close()
 
 
 class Response:
     """One answer, its head read: the status, the headers and, once read, the body. It holds its connection until it is
     read whole or closed."""
 
-    def __init__(self, connection: http.client.HTTPConnection, answer: http.client.HTTPResponse, watchdog: _Watchdog) -> None:
+    def __init__(self, connection: http.client.HTTPConnection, answer: http.client.HTTPResponse, clock: _Clock) -> None:
         self._connection = connection
         self._answer = answer
-        self._watchdog = watchdog
+        self._clock = clock
         self.status = answer.status
         self.headers: Message = answer.headers
         self.data: Optional[bytes] = None
@@ -172,29 +224,25 @@ class Response:
 
     @property
     def timed_out(self) -> bool:
-        return self._watchdog.fired
+        """The try's time ran out while this answer was read."""
+        return self._clock.expired
 
     def read(self) -> bytes:
-        """The body, read whole: a body cut midway, or one the try's deadline ended, raises."""
+        """The body, read whole within the try's time: a body cut midway, or one that does not come in time, raises."""
         if self.data is None:
             try:
-                data = b"" if self.status in (204, 205, 304) else self._answer.read()
-                if self._watchdog.fired:
-                    raise socket.timeout("timed out")
+                self.data = b"" if self.status in (204, 205, 304) else self._answer.read()
             finally:
                 self.close()
-            self.data = data
         return self.data
 
     def stream(self, timeout: Optional[float]) -> StreamedResponse:
-        """The body left to the caller: the try's deadline is off, and each read waits at most `timeout`."""
-        self._watchdog.cancel()
-        if self._connection.sock is not None:
-            self._connection.sock.settimeout(timeout)
+        """The body left to the caller: the try's end is off, and each read waits at most `timeout`."""
+        self._clock.end = math.inf
+        self._clock.each = timeout
         return StreamedResponse(self._connection, self._answer)
 
     def close(self) -> None:
-        self._watchdog.cancel()
         self._answer.close()
         self._connection.close()
 
@@ -263,14 +311,17 @@ class Failure(Exception):
         self.late = late
 
 
-def attempt(origin: Origin, method: str, target: str, headers: Sequence[Tuple[str, str]], body: Optional[bytes], seconds: float, context: Optional[ssl.SSLContext]) -> Response:
-    """One request on a connection of its own, ended at `seconds` from now: its answer with the head read, or Failure."""
-    connection = origin.connect(max(seconds, 0.001), context)
-    watchdog = _Watchdog(seconds, connection)
+def attempt(origin: Origin, method: str, target: str, headers: Sequence[Tuple[str, str]], body: Optional[bytes], end: float, context: Optional[ssl.SSLContext]) -> Response:
+    """One request on a connection of its own, ended at `end` (on time.monotonic()): its answer with the head read, or
+    Failure."""
+    clock = _Clock(end)
+    connection = origin.connect(max(end - time.monotonic(), 0.001), context)
     connected = False
     try:
         connection.connect()
         connected = True
+        if connection.sock is not None:
+            connection.sock = cast(Any, _Socket(connection.sock, clock))
         connection.putrequest(method, target)
         for name, value in headers:
             connection.putheader(name, value)
@@ -279,8 +330,7 @@ def attempt(origin: Origin, method: str, target: str, headers: Sequence[Tuple[st
         connection.endheaders(body)
         answer = connection.getresponse()
     except (OSError, http.client.HTTPException) as error:
-        watchdog.cancel()
         connection.close()
-        cause = ("timeout" if connected else "connect_timeout") if watchdog.fired else cause_of(error, connected)
-        raise Failure(cause, connected, watchdog.fired) from None
-    return Response(connection, answer, watchdog)
+        late = clock.expired or isinstance(error, (socket.timeout, TimeoutError))
+        raise Failure(cause_of(error, connected), connected, late) from None
+    return Response(connection, answer, clock)

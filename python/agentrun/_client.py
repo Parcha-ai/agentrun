@@ -328,7 +328,7 @@ class AgentRun(Resources):
         headers["authorization"] = f"Bearer {self._key.value}"
         target = f"{self._base_path}{x.path}"
         for hops in itertools.count():
-            response = attempt(self._origin, x.method, target, list(headers.items()), x.body, end - time.monotonic(), self._context)
+            response = attempt(self._origin, x.method, target, list(headers.items()), x.body, end, self._context)
             if response.status not in REDIRECT:
                 return response
             response.close()
