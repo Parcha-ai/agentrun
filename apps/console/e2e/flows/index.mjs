@@ -13,6 +13,7 @@
 //   pending                                                  what the flow waits on; it doesn't run until then
 import setupOpen from "./setup-open.mjs";
 import signIn from "./sign-in.mjs";
+import takeOver from "./take-over.mjs";
 
 export const flows = [
   setupOpen,
@@ -21,5 +22,5 @@ export const flows = [
   { name: "connect-github", pending: "waits on #1980 (Connect GitHub, its CSP form-action fix)" },
   { name: "template-apply", pending: "waits on #1975 (the Templates page and its Apply screen)" },
   { name: "run-to-end", pending: "to come: a run with the faux model, followed to its end" },
-  { name: "take-over", pending: "waits on #1987 (the browser ask) and the run view that opens viewer.url in a new tab, never framed" },
+  takeOver,
 ];
