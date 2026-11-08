@@ -94,8 +94,9 @@ export class Agents {
     return out;
   }
 
-  /** The revision a checked definition makes; `files` are its skill files by path. */
-  private revisionOf(definition: Json, files: Record<string, string>, note: string | undefined): NewRevision {
+  /** The revision a checked definition makes; `files` are its skill files by path, `pkg` the template package it was
+   *  applied from (templates.ts packageRecord), which no definition names. */
+  private revisionOf(definition: Json, files: Record<string, string>, note: string | undefined, pkg?: Json): NewRevision {
     const issues = skillIssues(definition.skills, Object.keys(files));
     if (issues.length) throw invalid(issues);
     // The default harness is never stored: naming pi and naming none are one revision.
@@ -105,7 +106,7 @@ export class Agents {
     // A capability with nothing set is none: `{web_search: {}}` and no settings are one revision.
     const kept = Object.entries(isObject(definition.tool_settings) ? definition.tool_settings : {}).filter(([, setting]) => isObject(setting) && Object.keys(setting).length);
     const set = kept.length ? { toolSettings: Object.fromEntries(kept) as Record<string, Record<string, string>> } : {};
-    const common = { skills: files, tools: (definition.tools as string[] | undefined) ?? [], ...harness, ...place, ...set, ...(note !== undefined ? { note } : {}) };
+    const common = { skills: files, tools: (definition.tools as string[] | undefined) ?? [], ...harness, ...place, ...set, ...(pkg ? { package: pkg as never } : {}), ...(note !== undefined ? { note } : {}) };
     if (isObject(definition.workflow)) return { kind: "workflow", workflow: definition.workflow as never, ...common };
     // The learning switch is kept whenever a definition sets it, false included; a definition that leaves it out keeps
     // none, and its revision id is the one it had before the switch.
@@ -129,12 +130,12 @@ export class Agents {
    *  revision before anything is written, and may refuse it. */
   /** `fresh`: the place a new agent that names none is saved with, and the tools it gets when it names none (place.ts
    *  newAgentPlace); an agentic definition alone takes them, and only where it leaves them out. */
-  async create({ definition, skills = {}, note }: DefinitionBody, check?: (revision: NewRevision) => Promise<void>, fresh?: { place: RevisionPlace; tools: readonly string[] }): Promise<AgentEntry> {
+  async create({ definition, skills = {}, note }: DefinitionBody, check?: (revision: NewRevision) => Promise<void>, fresh?: { place: RevisionPlace; tools: readonly string[] }, pkg?: Json): Promise<AgentEntry> {
     const given = typeof definition.id === "string" ? definition.id : undefined;
     if (given !== undefined && (await this.request(() => this.store.readAgent(given)))) throw new ApiError("agent_exists", `an agent ${given} exists here`);
     // Stamped on the revision now, never resolved at run time: an agent saved with no place keeps running on the runner.
     const stamped = fresh && definition.place === undefined && !isObject(definition.workflow) ? { place: fresh.place, ...(definition.tools === undefined ? { tools: [...fresh.tools] } : {}) } : {};
-    const revision = this.revisionOf({ ...definition, ...stamped }, skills, note);
+    const revision = this.revisionOf({ ...definition, ...stamped }, skills, note, pkg);
     this.checkVersion(definition, 1);
     await this.checked(revision);
     await check?.(revision);
@@ -191,7 +192,8 @@ export class Agents {
       const cap = entry.revision?.kind === "agentic" && !isObject(definition.workflow) ? entry.revision.body.maxCostUsd : undefined;
       // And how that cap prices a request, as the cap itself is kept.
       const capMode = entry.revision?.kind === "agentic" && !isObject(definition.workflow) ? entry.revision.body.capMode : undefined;
-      const revision = this.revisionOf({ ...definition, ...(definition.harness === undefined && harness ? { harness } : {}), ...(definition.place === undefined && place ? { place } : {}), ...(definition.learning === undefined && learning !== undefined ? { learning } : {}), ...(definition.max_cost_usd === undefined && cap !== undefined ? { max_cost_usd: cap } : {}), ...(definition.cap_mode === undefined && capMode !== undefined ? { cap_mode: capMode } : {}) }, files, note);
+      // And the package it was applied from: an edit by hand is still that package's agent.
+      const revision = this.revisionOf({ ...definition, ...(definition.harness === undefined && harness ? { harness } : {}), ...(definition.place === undefined && place ? { place } : {}), ...(definition.learning === undefined && learning !== undefined ? { learning } : {}), ...(definition.max_cost_usd === undefined && cap !== undefined ? { max_cost_usd: cap } : {}), ...(definition.cap_mode === undefined && capMode !== undefined ? { cap_mode: capMode } : {}) }, files, note, entry.revision?.body.package);
       await this.checked(revision);
       await check?.(revision);
       const base = entry.revision?.id ?? null;
@@ -220,6 +222,11 @@ export class Agents {
   async setCurrent(entry: AgentEntry, revision: string): Promise<AgentEntry> {
     await this.request(() => this.store.setCurrent(entry.agent.id, revision)).catch((error) => storeError(error, "revision"));
     return (await this.get(entry.agent.id))!;
+  }
+
+  /** Deletes an agent with no history (AgentStore.deleteAgent): a create undone. */
+  async remove(id: string): Promise<void> {
+    await this.request(() => this.store.deleteAgent(id)).catch((error) => storeError(error));
   }
 
   /** Archives or unarchives an agent or a run. */
@@ -299,6 +306,7 @@ export function agentView(entry: AgentEntry, origin: string, signIns: readonly S
     revision: revision?.id ?? null,
     revisions: entry.revisions,
     source: null,
+    package: revision?.body.package ?? null,
     skills: Object.entries(revision?.body.skills ?? {}).map(([path, sha]) => ({ path, sha256: sha, size_bytes: entry.sizes.get(sha) ?? null })),
     sign_ins: signIns,
     runs: entry.runs,

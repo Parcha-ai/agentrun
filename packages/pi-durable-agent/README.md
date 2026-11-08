@@ -550,7 +550,8 @@ An agent or a run is archived, never deleted: `store.setArchived("agent" | "run"
 once, like revisions: the database refuses an `UPDATE` or a `DELETE`. An item's state is its newest row; the reads carry
 `archivedAt` while it is archived, and a run's is its own, else its agent's. The table came without a new store version: a store an
 earlier version wrote opens and reads with nothing archived, gets the table from the first `openStore`, and an earlier version still
-opens a store that has it and ignores it.
+opens a store that has it and ignores it. The one deletion is a create undone: `store.deleteAgent(id)` removes an agent with
+no run that was never archived, with its revisions, and refuses any other (`invalid`).
 
 `store.stats()` counts the whole store in one read: agents, runs by state and in all, each agent (by name, then id) with
 its run count, the cost summed over the runs that ended with one (`usd`, null when none did, never 0) beside how many runs

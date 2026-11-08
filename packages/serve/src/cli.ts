@@ -21,6 +21,7 @@ import { DEFAULT_PORT, type Serve, startServe } from "./server.js";
 
 const USAGE = `usage: agentrun-serve [--data DIR] [--listen ADDR] [--port N] [--open] [--faux MODULE] [--allow-host NAME ...] [--max-runs N] [--drain-timeout D] [--documents DIR] [--allow-code-nodes] [--learning on|off] [--learning-budget BYTES] [--grade-model MODEL]
        agentrun-serve reset-password [--data DIR]
+       agentrun-serve validate-template DIR
        agentrun-serve import [--data DIR] [--from claude-code,codex,pi] [--dry-run] [--include-deleted] [--all] [--verbose] [--port N]
 
   --data DIR        the agent store and its runs (default ~/.local/share/agentrun/agents); the token is DIR/.token, mode 0600
@@ -82,6 +83,26 @@ if (process.argv[2] === "reset-password") {
   resetPassword(target);
   console.log(`The password is cleared and every browser is signed out (${target}). The next visit to the page sets a new one.`);
   process.exit(0);
+}
+
+// A template package folder checked by the one validator the server runs on the packages it ships (templates.ts): what
+// it holds as one JSON line and 0, or each problem and 1. Nothing in the package runs.
+if (process.argv[2] === "validate-template") {
+  const { PackageError, readPackage } = await import("./templates.js");
+  const { positionals } = parseArgs({ args: process.argv.slice(3), options: { data: { type: "string" } }, allowPositionals: true });
+  if (positionals.length !== 1) {
+    console.error(`agentrun-serve validate-template takes one folder.\n\n${USAGE}`);
+    process.exit(2);
+  }
+  try {
+    const { name, version, skills, evals } = readPackage(resolve(positionals[0]!));
+    console.log(JSON.stringify({ valid: true, name, version, skills: Object.keys(skills).filter((path) => /^[^/]+\/SKILL\.md$/.test(path)).map((path) => path.split("/")[0]), evals }));
+    process.exit(0);
+  } catch (error) {
+    if (!(error instanceof PackageError)) throw error;
+    console.error(error.message);
+    process.exit(1);
+  }
 }
 
 if (process.argv[2] === "import") {

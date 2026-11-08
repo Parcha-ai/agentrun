@@ -56,7 +56,7 @@ import { vmRelay, type VmSdk } from "./box-relay-vm.js";
 import { memoryMbOf } from "./run-box.js";
 import { DOCUMENTS_ENV } from "./pdf-pages.js";
 import { CAP_MODES, type CapMode, meterFiguresIn } from "./cap.js";
-import { type Blocker, blockersOf, CODE_NODES_ENV, issueOf, MCP_HARNESSES, type RevisionShape } from "./runnable.js";
+import { type Blocker, blockersOf, CODE_NODES_ENV, issueOf, MCP_HARNESSES, NOT_SET_UP, type RevisionShape } from "./runnable.js";
 import { hostSecrets, SECRET_NAMES, secret, type StoredKeys, withSecrets } from "./secrets.js";
 import { redactedOutput } from "./key-refusal.js";
 import { analyticsFilter, analyticsView, pendingOf, statsView } from "./stats.js";
@@ -70,6 +70,7 @@ import type { McpServerSource } from "./mcp-gateway.js";
 import { WEBHOOK_EVENTS, Webhooks } from "./webhooks.js";
 import { HOOK_TOLERANCE_S, hookHeadersRefusal, hookRefusal, TriggerSecrets } from "./trigger-secrets.js";
 import { CATCHUP_WINDOW_S, FAILURES_TO_PAUSE, HISTORY_KEPT, MIN_EVERY_S, PAYLOAD_KEPT_BYTES, type RunTrigger, SOURCE_KINDS, TARGET_KINDS, type TriggerClock, Triggers } from "./triggers.js";
+import { applyBodyOf, compiled, type Package, packageModel, packageRecord, packageView, readPackages } from "./templates.js";
 import { checkDefinitionBody, DEFAULT_INPUT_SCHEMA, definitionBodyIssues, ID, IDEMPOTENCY_TTL_S, inputIssues, isObject, type Json, stable, unknownFields } from "./validate.js";
 import { agentTools, browserKeyRow, isUnavailable, recheckPlane, settingsIssues, ToolSettings, type ToolSettingsMap, whyUnavailable, withDefaults } from "./tool-plane.js";
 import { MAX_FILES_PER_RUN, MAX_UPLOAD_BYTES, Uploads, UPLOADS_DIR } from "./uploads.js";
@@ -266,6 +267,8 @@ export type ServeOptions = {
   learningBudget?: number;
   /** A test's seam: the triggers' clock and timer (triggers.ts), in place of Date.now and setTimeout. */
   triggerClock?: TriggerClock;
+  /** A test's seam: the folder the template packages are read from, in place of the package's own (templates.ts). */
+  templates?: string;
   /** The waits before each try again of a webhook delivery (default 5 s, 5 min, 30 min, 2 h, 5 h and 10 h: webhooks.ts RETRY_MS). */
   webhookRetryMs?: readonly number[];
   /** The box runs' harnesses run in (4a's Box: its reap; on a shared server its run cgroups): the boxes runs leave are
@@ -401,6 +404,8 @@ export const ROUTES: readonly Route[] = [
   { method: "POST", pattern: /^\/triggers\/([^/]+)\/fire$/, name: "fireTrigger" },
   { method: "GET", pattern: /^\/triggers\/([^/]+)\/firings$/, name: "listTriggerFirings" },
   { method: "POST", pattern: /^\/triggers\/([^/]+)\/secret$/, name: "rotateTriggerSecret" },
+  { method: "GET", pattern: /^\/templates$/, name: "listTemplates" },
+  { method: "POST", pattern: /^\/templates\/([^/]+)\/apply$/, name: "applyTemplate" },
   // Answered before the bearer check: the request's signature is its credential.
   { method: "POST", pattern: /^\/hooks\/([^/]+)$/, name: "receiveHook" },
   // Answered before routing (mcp.ts), with the token only: listed here for the document.
@@ -681,6 +686,8 @@ export async function startServe(options: ServeOptions): Promise<Serve> {
   const minFreeMib = process.env.AGENTRUN_MIN_FREE_MB ? Number(process.env.AGENTRUN_MIN_FREE_MB) : MIN_FREE_MIB;
   if (!(Number.isFinite(minFreeMib) && minFreeMib >= 0)) throw new Error("AGENTRUN_MIN_FREE_MB is a number of MiB, 0 or more");
   const minFreeBytes = options.minFreeBytes ?? minFreeMib * 2 ** 20;
+  // The template packages, each checked whole (templates.ts readPackage): a broken one stops the start.
+  const templates = readPackages(options.templates);
   // Then one server per data root, before anything writes it: a refused second server writes no token, opens no store,
   // adopts or sweeps no run, binds no port and prints no address (server-lock.ts). A failed start releases the lock and
   // leaves the file, which the next server reuses: unlinking it would race a server that opens it meanwhile. A server
@@ -694,7 +701,7 @@ export async function startServe(options: ServeOptions): Promise<Serve> {
   try {
     // The server's record, which its stop rewrites in place (server-lock.ts): made now, so the stop makes nothing.
     markRunning(data);
-    return await startHolding(options, data, lock, { maxRuns, minFreeBytes, learning, learningBudget, boxAllow }, stops);
+    return await startHolding(options, data, lock, { maxRuns, minFreeBytes, learning, learningBudget, boxAllow, templates }, stops);
   } catch (error) {
     for (const stop of stops) await stop().catch(() => undefined);
     lock.release();
@@ -702,8 +709,8 @@ export async function startServe(options: ServeOptions): Promise<Serve> {
   }
 }
 
-async function startHolding(options: ServeOptions, data: string, lock: ServerLock, checked: { maxRuns: number; minFreeBytes: number; learning: LearningMode; learningBudget: number; boxAllow: readonly string[] | "none" }, stops: Array<() => Promise<void>>): Promise<Serve> {
-  const { maxRuns, minFreeBytes, learning, learningBudget, boxAllow } = checked;
+async function startHolding(options: ServeOptions, data: string, lock: ServerLock, checked: { maxRuns: number; minFreeBytes: number; learning: LearningMode; learningBudget: number; boxAllow: readonly string[] | "none"; templates: Package[] }, stops: Array<() => Promise<void>>): Promise<Serve> {
+  const { maxRuns, minFreeBytes, learning, learningBudget, boxAllow, templates } = checked;
   /** What an agent's view says of its learning: how many learned items wait for its owner's OK, for an agent that learns
    *  on this server (learning on, its current revision `learning: true`); none for another, or when the count cannot be
    *  read (the view never fails for it). */
@@ -1347,6 +1354,58 @@ async function startHolding(options: ServeOptions, data: string, lock: ServerLoc
     return blockers.map(issueOf);
   }
 
+  /** POST /agents' body made into its agent, as that route makes one, with what this host still lacks for it. A new agent
+   *  that names no place is given this server's box (place.ts newAgentPlace), stamped on its revision; one that names a
+   *  tool the box refuses (browser) keeps the runner. `pkg`: the template package an apply makes it from. */
+  async function createAgentOf(body: Json, pkg?: Json): Promise<{ entry: AgentEntry; warnings: InputIssue[] }> {
+    let warnings: InputIssue[] = [];
+    const definition = checkDefinitionBody(body);
+    const named = Array.isArray(definition.definition.tools) ? definition.definition.tools : [];
+    const fresh = named.some((tool) => typeof tool === "string" && toolOf(tool)?.runnerOnly) ? { reason: "" } : newAgentPlace(boxOffers);
+    const entry = await agents.create(definition, async (revision) => void (warnings = await saveable(revision)), "place" in fresh ? { place: fresh.place, tools: NEW_AGENT_TOOLS } : undefined, pkg);
+    return { entry, warnings };
+  }
+
+  /** A template package applied: its parameters checked (422), then the secrets it names (409, nothing made), then its
+   *  agent made as POST /agents makes one, on the first harness of its list this server runs and the model packageModel
+   *  picks, then each trigger on it as POST /triggers makes one. A trigger refused undoes the apply: the triggers made
+   *  before it and the agent are deleted, and the refusal is the answer, a 422's fields under `triggers.<i>`. A webhook
+   *  trigger's secret is not in the answer (the Idempotency-Key record would keep it): POST /triggers/{id}/secret makes one. */
+  async function applyTemplate(pkg: Package, body: Json) {
+    const { parameters, model: override } = applyBodyOf(pkg, body);
+    const missing = pkg.secrets.filter((name) => !env[name]);
+    if (missing.length) {
+      const fix = "Add it in Settings → Model keys or Settings → Tool keys, or set it where AgentRun starts, then apply the template again.";
+      throw new ApiError("agent_not_runnable", `The ${pkg.name} template needs ${missing.join(" and ")}, which this server does not have. Nothing was created.`, { fields: missing.map((name) => ({ field: `secrets.${name}`, reason: NOT_SET_UP, message: `${name} is not set on this server.`, fix })) });
+    }
+    const harness = pkg.harness && (pkg.harness.find((id) => offers.some((offer) => offer.id === id && offer.available)) ?? pkg.harness[0]);
+    const model = override ?? (await packageModel(env, pkg.model, harness ?? DEFAULT_HARNESS));
+    const made = compiled(pkg, parameters, { ...(harness ? { harness } : {}), ...(model ? { model } : {}) });
+    const { entry, warnings } = await createAgentOf(made.agent, packageRecord(pkg, parameters));
+    const ids: string[] = [];
+    try {
+      for (const [i, trigger] of made.triggers.entries()) {
+        try {
+          ids.push((await triggers.create({ ...trigger, target: { ...(trigger.target as Json), agent_id: entry.agent.id } })).id);
+        } catch (error) {
+          if (error instanceof ApiError && error.code === "input_invalid" && error.extra.fields) throw told(new ApiError("input_invalid", error.message, { ...error.extra, fields: error.extra.fields.map((f) => ({ ...f, field: `triggers.${i}.${f.field}` })) }));
+          throw error;
+        }
+      }
+    } catch (error) {
+      for (const id of ids.reverse()) {
+        try {
+          triggers.remove(id);
+        } catch (undo) {
+          log?.(logLine("template_undo_failed", { template: pkg.name, trigger: id, message: (undo as Error).message }));
+        }
+      }
+      await agents.remove(entry.agent.id).catch((undo: Error) => log?.(logLine("template_undo_failed", { template: pkg.name, agent: entry.agent.id, message: undo.message })));
+      throw error;
+    }
+    return { template: pkg.name, version: pkg.version, agent_id: entry.agent.id, trigger_ids: ids, warnings };
+  }
+
   /** A run create's issues told from the input this server checks (explain.ts): an agentic run's `{content: string}`,
    *  with the documented run bodies; a workflow run's its workflow's input schema, never the agentic example. Each value
    *  suggested must pass this route's own checks of the body, the workflow's input check among them. */
@@ -1936,13 +1995,7 @@ async function startHolding(options: ServeOptions, data: string, lock: ServerLoc
       case "createAgent": {
         const body = await bodyOf(req);
         const answer = await idempotent(req, "/agents", body, async () => {
-          let warnings: InputIssue[] = [];
-          // A new agent that names no place is given this server's box (place.ts newAgentPlace), stamped on its revision;
-          // one that names a tool the box refuses (browser) keeps the runner, as before.
-          const definition = checkDefinitionBody(body);
-          const named = Array.isArray(definition.definition.tools) ? definition.definition.tools : [];
-          const fresh = named.some((tool) => typeof tool === "string" && toolOf(tool)?.runnerOnly) ? { reason: "" } : newAgentPlace(boxOffers);
-          const entry = await agents.create(definition, async (revision) => void (warnings = await saveable(revision)), "place" in fresh ? { place: fresh.place, tools: NEW_AGENT_TOOLS } : undefined);
+          const { entry, warnings } = await createAgentOf(body);
           return { status: 201, body: { ...agentView(entry, linkOrigin(req), await signIns.view(entry.agent.id), await learningOfAgent(entry)), warnings }, headers: { location: `/v2/agents/${entry.agent.id}`, etag: etagOf(entry) } };
         });
         return send(res, answer.status, answer.body, answer.headers);
@@ -2366,6 +2419,18 @@ async function startHolding(options: ServeOptions, data: string, lock: ServerLoc
         const replayed = answer.headers?.["idempotent-replayed"] === "true";
         const { note: _, ...first } = answer.body as Json;
         return send(res, answer.status, secret && !replayed ? { ...first, secret } : answer.body, answer.headers);
+      }
+      case "listTemplates":
+        return send(res, 200, { templates: templates.map(packageView) });
+      case "applyTemplate": {
+        const pkg = templates.find((t) => t.name === id);
+        if (!pkg) throw new ApiError("not_found", `no template ${id}: GET /v2/templates lists them`);
+        const body = await bodyOf(req);
+        const answer = await idempotent(req, `/templates/${pkg.name}/apply`, body, async () => {
+          const applied = await applyTemplate(pkg, body);
+          return { status: 201, body: applied, headers: { location: `/v2/agents/${applied.agent_id}` } };
+        });
+        return send(res, answer.status, answer.body, answer.headers);
       }
       case "rotateTriggerSecret":
         return send(res, 200, triggers.rotate(id));

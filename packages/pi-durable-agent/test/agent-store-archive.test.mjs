@@ -83,3 +83,31 @@ test("nothing is deleted: an unarchive appends a row, and the database refuses a
   db.close();
 });
 
+
+test("deleteAgent undoes a create: an agent with no run that was never archived goes with its revisions, and any other is refused", async () => {
+  const { store } = await seeded();
+  const fresh = store.createAgent({ name: "Fresh", id: "fresh" });
+  await store.commitRevision(fresh.id, A, { setCurrent: true });
+  await store.commitRevision(fresh.id, { ...A, instructions: "Answer briefly." }, { setCurrent: true });
+  store.deleteAgent("fresh");
+  assert.equal(store.readAgent("fresh"), undefined);
+  assert.deepEqual(store.listAgents().map((a) => a.id), ["calc"]);
+  assert.throws(() => store.deleteAgent("fresh"), refused("missing"));
+  assert.throws(() => store.deleteAgent("calc"), refused("invalid"), "an agent with a run is archived, never deleted");
+  const shelved = store.createAgent({ name: "Shelved", id: "shelved" });
+  store.setArchived("agent", shelved.id, true);
+  store.setArchived("agent", shelved.id, false);
+  assert.throws(() => store.deleteAgent("shelved"), refused("invalid"), "an agent once archived keeps its archive rows, so it stays");
+  assert.ok(store.readAgent("calc") && store.readAgent("shelved"));
+  store.close();
+});
+
+test("a revision keeps the package it was applied from, as part of what makes it that revision", async () => {
+  const { store } = await seeded();
+  const record = { name: "brief", version: "1.0.0", source: "builtin", ref: null, sha: null, parameters: { topic: "solar" } };
+  const applied = await store.commitRevision("calc", { ...A, package: record }, { setCurrent: true });
+  assert.deepEqual(applied.body.package, record);
+  assert.notEqual(applied.id, (await store.commitRevision("calc", A)).id, "the same body without it is another revision");
+  await assert.rejects(store.commitRevision("calc", { ...A, package: "brief" }), refused("invalid"));
+  store.close();
+});
