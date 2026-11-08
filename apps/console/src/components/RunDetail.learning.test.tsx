@@ -23,11 +23,11 @@ const ROWS: TimelineRow[] = [
   row("l5", 7, { kind: "text_block", agent_label: "learning", summary: "Reflected.", text: "Reflected." }),
   row("learning", 8, { kind: "learning", agent_label: "learning", summary: "Learned 2 notes: Refund limit; Answer shape", text: "Learned 2 notes: Refund limit; Answer shape", learning: { state: "merged", reason: null, detail: "Learned 2 notes: Refund limit; Answer shape" } }),
 ];
-const run = (learning: Run["learning"]): Run => ({
+const run = (learning: Run["learning"]): Run => ({ sha: null, updated_at: "2026-11-04T00:00:00Z", poll_after_ms: 0,
   run_id: "run-b", agent_id: "refunds", agent_version: 1, revision: "rv1", kind: "agentic", status: "completed", state: "idle", title: "brooklinen.com",
-  created_at: "2026-11-03T18:50:00Z", ended_at: "2026-11-03T18:50:09Z", result: null, error: null, cost: null, archived_at: null, learning,
+  created_at: "2026-11-03T18:50:00Z", ended_at: "2026-11-03T18:50:09Z", result: null, error: null, cost: { usd: null, basis: "estimate", charge_state: null, cap_usd: null }, archived_at: null, learning,
 });
-const MERGED: Run["learning"] = { state: "merged", reason: null, learned: [{ file: "refund-limit.md", name: "Refund limit", supersedes: [] }, { file: "answer-shape.md", name: "Answer shape", supersedes: [] }] };
+const MERGED: Run["learning"] = { detail: null, at: "2026-11-03T16:52:09Z", state: "merged", reason: null, learned: [{ file: "refund-limit.md", name: "Refund limit", supersedes: [] }, { file: "answer-shape.md", name: "Answer shape", supersedes: [] }] };
 
 function show(r: Run, rows: TimelineRow[]) {
   const host = document.body.appendChild(document.createElement("div"));
@@ -64,11 +64,11 @@ describe("a run's timeline, its look-back", () => {
   });
   it("one that kept nothing new says so", () => {
     const rows = [...ROWS.slice(0, 7), row("learning", 8, { kind: "learning", agent_label: "learning", summary: "Nothing new to remember from this run.", text: "Nothing new to remember from this run." })];
-    expect(show(run({ state: "dropped", reason: "empty" }), rows).steps().join("\n")).toContain("Looked back: nothing new to keep");
+    expect(show(run({ detail: null, at: "2026-11-03T16:52:09Z", state: "dropped", reason: "empty" }), rows).steps().join("\n")).toContain("Looked back: nothing new to keep");
   });
   it("a run that skipped looking back keeps its one row, labelled Learning, in the server's words", () => {
     const rows = [...ROWS.slice(0, 2), row("learning", 3, { kind: "learning", agent_label: "learning", summary: "Skipped: no budget left in this run to look back." })];
-    const steps = show(run({ state: "dropped", reason: "no_budget" }), rows).steps();
+    const steps = show(run({ detail: null, at: "2026-11-03T16:52:09Z", state: "dropped", reason: "no_budget" }), rows).steps();
     expect(steps).toHaveLength(3);
     expect(steps[2]).toContain("Learning");
     expect(steps[2]).toContain("Skipped: no budget left in this run to look back.");

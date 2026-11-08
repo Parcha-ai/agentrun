@@ -3,7 +3,7 @@ import { Button } from "@/components/ui/button";
 import { HARNESS_ORDER, issuesFor, providerHelp, providerLabel, resolution, type ToolChoice, type ToolGate, withPermission, withProvider } from "@/lib/toolSettings";
 import { cn } from "@/lib/utils";
 import type { Agent } from "@/lib/agentForm";
-import type { Permission, ToolSettings } from "@/lib/v2";
+import type { Permission, ToolSetting, ToolSettings } from "@/lib/v2";
 
 /** One row of a tools table: a tool, with its provider choice (`choice`) where it has one and its permission (`gate`)
  *  where the server offers one. */
@@ -61,7 +61,7 @@ export function ToolTable({ label, rows, settings, fallbackOf, permissionFallbac
               const own = settings[name]?.provider;
               const set = t !== undefined && own !== undefined && own !== fallback;
               const provider = set ? own : fallback;
-              const pick = (next: string | undefined) => onEdit((current) => withProvider(current, name, next, fallback));
+              const pick = (next: ToolSetting["provider"]) => onEdit((current) => withProvider(current, name, next, fallback));
               const gateFallback = gate ? permissionFallbackOf(gate) : "allow";
               const ownPermission = settings[name]?.permission;
               const permissionSet = gate !== undefined && ownPermission !== undefined && ownPermission !== gateFallback;
@@ -82,7 +82,7 @@ export function ToolTable({ label, rows, settings, fallbackOf, permissionFallbac
                     </td>}
                     {providers && <td className="px-3 py-2">
                       {t ? <>
-                        <select aria-label={`${name} provider`} value={provider} disabled={busy} onChange={(e) => pick(e.target.value)}
+                        <select aria-label={`${name} provider`} value={provider} disabled={busy} onChange={(e) => pick(e.target.value as ToolSetting["provider"])}
                           className={cn("border bg-background px-2 py-1.5 font-mono text-[12px] outline-none focus:border-border-strong disabled:opacity-60", set && "border-primary text-primary")}>
                           {t.providers.map((p) => <option key={p} value={p}>{providerLabel(p, name)}{p === fallback ? " (default)" : ""}</option>)}
                         </select>

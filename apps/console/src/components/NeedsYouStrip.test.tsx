@@ -7,15 +7,15 @@ import type { Run } from "@/lib/v2";
 
 (globalThis as { IS_REACT_ACT_ENVIRONMENT?: boolean }).IS_REACT_ACT_ENVIRONMENT = true;
 const NOW = Date.parse("2026-11-03T16:20:00Z");
-const run = (id: string, agent: string, over: Partial<Run>): Run => ({
+const run = (id: string, agent: string, over: Partial<Run>): Run => ({ sha: null, updated_at: "2026-11-04T00:00:00Z", poll_after_ms: 0,
   run_id: id, agent_id: agent, agent_version: 1, revision: "r1", kind: "agentic", status: "completed", state: "idle", title: `Run ${id}`,
-  created_at: "2026-11-03T16:08:00Z", ended_at: null, result: null, error: null, cost: null, archived_at: null, ...over,
+  created_at: "2026-11-03T16:08:00Z", ended_at: null, result: null, error: null, cost: { usd: null, basis: "estimate", charge_state: null, cap_usd: null }, archived_at: null, ...over,
 });
 const asking = [
   run("q1", "invoice", { status: "input_required", state: "waiting", title: "Check invoice INV-2310 from Contoso Freight, a new vendor.", pending: { kind: "question", question: "Which approval limit applies: the $5,000 standard or the $25,000 preferred tier?", asked_at: "2026-11-03T16:11:00Z" } }),
   run("q2", "triage", { status: "input_required", state: "waiting", title: "Triage ticket #4427", pending: { kind: "question", question: "Which product or plan was charged twice?", asked_at: "2026-11-03T16:19:30Z" } }),
 ];
-const overloaded = { code: "run_failed", message: "529 overloaded: the provider is over capacity", retryable: false };
+const overloaded = { code: "run_failed" as const, message: "529 overloaded: the provider is over capacity", retryable: false };
 const failed = [
   run("f1", "invoice", { status: "failed", error: overloaded, ended_at: "2026-11-03T16:10:00Z" }),
   run("f2", "triage", { status: "failed", error: overloaded, ended_at: "2026-11-03T16:09:00Z" }),
@@ -160,8 +160,8 @@ describe("NeedsYouStrip, keeping track of what started and what is asked", () =>
     expect(card().querySelector("input")).not.toBeNull();
   });
   it("says a live run's cost is not known yet, never that nothing was spent, unless it is an explicit zero", () => {
-    expect(html({ live: [{ ...live[0]!, cost: null }] })).toContain("cost not known yet");
-    expect(html({ live: [{ ...live[0]!, cost: null }] })).not.toContain("nothing spent yet");
+    expect(html({ live: [{ ...live[0]!, cost: { usd: null, basis: "estimate", charge_state: null, cap_usd: null } }] })).toContain("cost not known yet");
+    expect(html({ live: [{ ...live[0]!, cost: { usd: null, basis: "estimate", charge_state: null, cap_usd: null } }] })).not.toContain("nothing spent yet");
   });
   it("says a live run's cost so far and how many charges have no price yet, when the server says them", () => {
     const h = html({ live: [{ ...live[0]!, cost: { usd: null, basis: "estimate", charge_state: null, cap_usd: null, so_far_usd: 0.0123, unpriced: 1 } }] });

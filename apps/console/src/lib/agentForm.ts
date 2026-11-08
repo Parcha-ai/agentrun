@@ -72,6 +72,10 @@ export function decisionProvider(workflows: { adapters?: string[]; decisions?: {
   return STARTER_PROVIDERS.find((id) => providers.some((p) => p.id === id && p.available));
 }
 
+/** A new agent's instructions until the person writes their own: the field is required, so the form opens with these
+ *  to edit, never empty. Harness-neutral, one sentence. */
+export const DEFAULT_INSTRUCTIONS = "You are a helpful agent. Do the task you're given and report what you found.";
+
 /** The body that creates an agent: its first revision, with what the form names and no skills yet. A starter choice
  *  (Decision, Workflow) makes a workflow agent from that starter (Decision's on the server's decision provider), with no
  *  instructions, harness, thinking, model or tools: a workflow revision keeps none of those beside its workflow. */

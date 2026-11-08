@@ -74,7 +74,6 @@ const bare = new Map([
   ['scripts/is-main.test.mjs', 'names it in comments and checks that this runtime sets it'],
   ['scripts/check-node.mjs', 'names it in a comment, on why it refuses Node 23 and 24.0-24.1'],
   ['apps/viewer/build.mjs', 'deploys from apps/viewer alone (vercel.json, wrangler.json), so imports nothing outside it; its .ts imports already fail loudly on Node 20'],
-  ['examples/agent-learn/demo.mjs', copiedOut],
   ['examples/decision-demos/build.mjs', copiedOut],
   ['examples/hero/run.ts', copiedOut],
   ['examples/issue-triage/session.ts', copiedOut],
