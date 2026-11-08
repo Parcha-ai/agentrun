@@ -324,7 +324,6 @@ class Origin:
         connection = http.client.HTTPSConnection(self.host, self.port) if self.scheme == "https" else http.client.HTTPConnection(self.host, self.port)
         sock = _connect(_resolve(self.host, self.port, clock), clock)
         try:
-            sock.setsockopt(socket.IPPROTO_TCP, socket.TCP_NODELAY, 1)
             if self.scheme == "https":
                 sock.settimeout(clock.left())
                 sock = (context or ssl.create_default_context()).wrap_socket(sock, server_hostname=self.host)
@@ -361,22 +360,29 @@ def _resolve(host: str, port: int, clock: _Clock) -> List[Tuple[Any, ...]]:
 
 
 def _connect(addresses: Sequence[Tuple[Any, ...]], clock: _Clock) -> socket.socket:
-    """A TCP connection to the first of `addresses` that takes one, each tried with what the try has left."""
+    """A TCP connection to the first of `addresses` that takes one, each tried with what the try has left. An address
+    the host cannot even make a socket for (an IPv6 one on a host with no IPv6) is passed over like one that refuses;
+    when none takes a connection, the last one's failure is the try's."""
     failed: Optional[BaseException] = None
     for family, kind, proto, _, address in addresses:
-        sock = socket.socket(family, kind, proto)
+        left = clock.left()  # past the try's end this raises: the try is a timeout
+        sock: Optional[socket.socket] = None
         try:
-            sock.settimeout(clock.left())
+            sock = socket.socket(family, kind, proto)
+            sock.setsockopt(socket.IPPROTO_TCP, socket.TCP_NODELAY, 1)
+            sock.settimeout(left)
             sock.connect(address)
             return sock
         except (socket.timeout, TimeoutError):
-            sock.close()
+            if sock is not None:
+                sock.close()
             if clock.end - time.monotonic() <= 0:
                 clock.expired = True
                 raise
             failed = socket.timeout("timed out")
         except OSError as error:
-            sock.close()
+            if sock is not None:
+                sock.close()
             failed = error
     raise failed or socket.gaierror(socket.EAI_NONAME, "no address")
 
