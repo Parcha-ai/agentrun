@@ -102,7 +102,10 @@ function earlierVersionIn(dataDir: string): string[] {
   if (!existsSync(dataDir)) return [];
   const found: string[] = [];
   const isFile = (path: string) => statSync(path, { throwIfNoEntry: false })?.isFile() === true;
-  const dirsIn = (path: string) => (statSync(path, { throwIfNoEntry: false })?.isDirectory() ? readdirSync(path, { withFileTypes: true }).filter((e) => e.isDirectory()).map((e) => e.name) : []);
+  // A directory linked in counts as one (stat follows the link), as the server's check of old homes reads them: an
+  // earlier version's home or run kept elsewhere and linked in is still the earlier version's.
+  const isDir = (path: string) => statSync(path, { throwIfNoEntry: false })?.isDirectory() === true;
+  const dirsIn = (path: string) => (isDir(path) ? readdirSync(path).filter((name) => isDir(join(path, name))) : []);
   const store = join(dataDir, STORE_FILE);
   if (isFile(store) && !isThisVersionsStore(store)) found.push(STORE_FILE);
   for (const name of EARLIER_ROOT_FILES) if (isFile(join(dataDir, name))) found.push(name);
