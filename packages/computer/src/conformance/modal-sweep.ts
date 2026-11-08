@@ -16,13 +16,15 @@
 // runs, 2 on a usage error, a before file it cannot read or of another app or server, a missing token or app, or a
 // listing Modal refused (nothing is terminated then).
 //
-// It reads COMPUTER_MODAL_TOKEN_ID, COMPUTER_MODAL_TOKEN_SECRET, COMPUTER_MODAL_APP and COMPUTER_MODAL_SERVER_URL, and
-// builds its client as the provider's fromEnv does (modalClient): the token passed explicitly, the server pinned, an
-// ambient MODAL_SERVER_URL refused. It needs no AGENTRUN_COMPUTER_LIVE_MODAL: it makes nothing.
+// It reads COMPUTER_MODAL_TOKEN_ID, COMPUTER_MODAL_TOKEN_SECRET, COMPUTER_MODAL_APP and COMPUTER_MODAL_SERVER_URL as the
+// conformance module does (settingsFromEnv in ./modal.ts), and builds its client as the provider does (modalClient): the
+// token passed explicitly, the server pinned, an ambient MODAL_SERVER_URL refused. It needs no
+// AGENTRUN_COMPUTER_LIVE_MODAL: it makes nothing.
 import { readFileSync, writeFileSync } from "node:fs";
 import { COMPUTER_LABEL } from "../drift.js";
 import { isCommand } from "../entry.js";
-import { ENV as MODAL_ENV, type ModalClientConstructor, type ModalSandbox, type ModalSdk, modalClient, modalServerUrl, untilFinished } from "../modal.js";
+import { MODAL_DEFAULT_SERVER_URL, type ModalClientConstructor, type ModalSandbox, type ModalSdk, modalClient, untilFinished } from "../modal.js";
+import { MODAL_ENV, settingsFromEnv } from "./modal.js";
 
 /** A stream as main writes to it: done is called once the text is handed on. */
 export interface Writer {
@@ -53,7 +55,7 @@ const USAGE = `usage: node packages/computer/dist/conformance/modal-sweep.js --b
                    in the app whose id is not in <file>,
                    read each back until it has finished (up to 60 s each), and print {"swept":n,"gone":m,"stillThere":[ids]}
   settings: ${MODAL_ENV.tokenId} and ${MODAL_ENV.tokenSecret} (required), ${MODAL_ENV.app} (required) and
-            ${MODAL_ENV.serverUrl}, as the provider reads them; never MODAL_TOKEN_ID or MODAL_TOKEN_SECRET
+            ${MODAL_ENV.serverUrl}, as the conformance module reads them; never MODAL_TOKEN_ID or MODAL_TOKEN_SECRET
 exit: 0 every swept sandbox has finished, 1 one still runs, 2 usage error, unreadable before file or one of another app
       or server, no token or app, or a refused listing`;
 
@@ -160,14 +162,14 @@ export async function main(argv: string[], io: SweepIo = {}): Promise<number> {
 	let before: Set<string> | undefined;
 	let app: string;
 	let sdk: ModalSdk;
-	const serverUrl = modalServerUrl(env);
+	let serverUrl: string;
 	try {
 		args = parse(argv);
 		const recorded = args.mode === "after" ? readBefore(args.file) : undefined;
-		const named = env[MODAL_ENV.app];
-		if (named === undefined || named === "") throw new Error(`the sweep needs ${MODAL_ENV.app} in the environment: the app the run's sandboxes are in`);
-		app = named;
-		sdk = await modalClient({ env, ...(io.ModalClient ? { ModalClient: io.ModalClient } : {}) });
+		const settings = settingsFromEnv(env);
+		app = settings.app;
+		serverUrl = settings.serverUrl ?? MODAL_DEFAULT_SERVER_URL;
+		sdk = await modalClient({ tokenId: settings.tokenId, tokenSecret: settings.tokenSecret, serverUrl, ...(io.ModalClient ? { ModalClient: io.ModalClient } : {}) });
 		if (recorded !== undefined) {
 			const other = otherPlace(args.file, recorded, app, serverUrl);
 			if (other !== undefined) throw new Error(other);

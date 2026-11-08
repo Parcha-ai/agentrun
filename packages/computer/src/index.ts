@@ -41,5 +41,16 @@ export { drift, helloDrift, hostOf, inspectDrift, mountOf, networkOf, type Docke
 export { type ReleasedOlder, releaseOlder, sweep, type SweepOptions, type Swept } from "./janitor.js";
 export { EPOCH_LABEL, epochOf, epochProblem, RUN_LABEL, runLabels, runProblem } from "./labels.js";
 export { waitUntil, type WaitOptions } from "./wait.js";
-export { type ConformanceModule, isProviderId, type ProviderEnv, type ProviderId, providerFromEnv, providerIds, type ProviderModule, providerModule, providers } from "./providers.js";
+export {
+	type ConformanceModule,
+	isProviderId,
+	type ProviderEnv,
+	providerFor,
+	type ProviderId,
+	providerIds,
+	type ProviderModule,
+	providerModule,
+	type ProviderOptions,
+	providers,
+} from "./providers.js";
 export * from "./conformance/index.js";
