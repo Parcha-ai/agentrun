@@ -3,6 +3,7 @@ package desktop
 import (
 	"bytes"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"math"
 	"slices"
@@ -141,7 +142,7 @@ func parse(raw json.RawMessage) (a action, kind rpc.Kind, why string) {
 	if err := json.Unmarshal(raw, &fields); err != nil || fields == nil {
 		return a, rpc.KindInvalid, "it is not an object"
 	}
-	if err := json.Unmarshal(fields["type"], &a.Type); err != nil || fieldsOf[a.Type] == nil {
+	if err := decode(fields["type"], &a.Type); err != nil || fieldsOf[a.Type] == nil {
 		return a, rpc.KindInvalid, fmt.Sprintf("type %s is not an input action", show(fields["type"]))
 	}
 	for name := range fields {
@@ -149,7 +150,9 @@ func parse(raw json.RawMessage) (a action, kind rpc.Kind, why string) {
 			return a, rpc.KindInvalid, fmt.Sprintf("%s takes no field %q", a.Type, name)
 		}
 	}
-	has := func(name string) bool { _, ok := fields[name]; return ok && string(fields[name]) != "null" }
+	// A field is given when it is there at all, null too, as checkActions' has (!== undefined) reads it; decode then
+	// refuses a null where a value is wanted.
+	has := func(name string) bool { _, ok := fields[name]; return ok }
 	invalid := func(format string, args ...any) (action, rpc.Kind, string) {
 		return a, rpc.KindInvalid, fmt.Sprintf(format, args...)
 	}
@@ -164,7 +167,7 @@ func parse(raw json.RawMessage) (a action, kind rpc.Kind, why string) {
 	}
 	a.Button = "left"
 	if has("button") {
-		if json.Unmarshal(fields["button"], &a.Button) != nil || (a.Button != "left" && a.Button != "right" && a.Button != "middle") {
+		if decode(fields["button"], &a.Button) != nil || (a.Button != "left" && a.Button != "right" && a.Button != "middle") {
 			return invalid("button %s is not left, right or middle", show(fields["button"]))
 		}
 	}
@@ -182,7 +185,7 @@ func parse(raw json.RawMessage) (a action, kind rpc.Kind, why string) {
 	}
 	required := a.Type == "key" || a.Type == "hold"
 	if has("keys") || required {
-		if json.Unmarshal(fields["keys"], &a.Keys) != nil || a.Keys == nil && has("keys") || required && len(a.Keys) == 0 {
+		if decode(fields["keys"], &a.Keys) != nil || required && len(a.Keys) == 0 {
 			return invalid("keys %s is not a list of keys", show(fields["keys"]))
 		}
 		if len(a.Keys) > maxKeys {
@@ -191,7 +194,7 @@ func parse(raw json.RawMessage) (a action, kind rpc.Kind, why string) {
 	}
 	if a.Type == "drag" || a.Type == "swipe" {
 		var points []json.RawMessage
-		if json.Unmarshal(fields["path"], &points) != nil || len(points) < 2 {
+		if decode(fields["path"], &points) != nil || len(points) < 2 {
 			return invalid("path is not a list of 2 or more points")
 		}
 		if len(points) > maxPath {
@@ -206,7 +209,7 @@ func parse(raw json.RawMessage) (a action, kind rpc.Kind, why string) {
 		}
 	}
 	if a.Type == "scroll" {
-		if json.Unmarshal(fields["unit"], &a.Unit) != nil || (a.Unit != "clicks" && a.Unit != "px") {
+		if decode(fields["unit"], &a.Unit) != nil || (a.Unit != "clicks" && a.Unit != "px") {
 			return invalid("unit %s is not clicks or px", show(fields["unit"]))
 		}
 		for _, d := range []struct {
@@ -217,7 +220,7 @@ func parse(raw json.RawMessage) (a action, kind rpc.Kind, why string) {
 				continue
 			}
 			var n float64
-			if json.Unmarshal(fields[d.name], &n) != nil {
+			if decode(fields[d.name], &n) != nil {
 				return invalid("dx and dy are numbers")
 			}
 			if a.Unit == "clicks" {
@@ -237,7 +240,7 @@ func parse(raw json.RawMessage) (a action, kind rpc.Kind, why string) {
 			// Any safe integer above 0 is a repeat's shape, as checkActions reads it; one over maxRepeat is limit, checked
 			// after the action's group.
 			var n float64
-			if json.Unmarshal(fields["repeat"], &n) != nil || n != math.Trunc(n) || n < 1 || n > maxSafeInteger {
+			if decode(fields["repeat"], &n) != nil || n != math.Trunc(n) || n < 1 || n > maxSafeInteger {
 				return invalid("repeat %s is not a whole number above 0", show(fields["repeat"]))
 			}
 			a.Repeat = int(n)
@@ -251,7 +254,7 @@ func parse(raw json.RawMessage) (a action, kind rpc.Kind, why string) {
 		a.MS = n
 	}
 	if a.Type == "type" {
-		if json.Unmarshal(fields["text"], &a.Text) != nil || !has("text") {
+		if decode(fields["text"], &a.Text) != nil {
 			return invalid("text is not a string")
 		}
 		if n := utf8.RuneCountInString(a.Text); n > MaxTypeRunes {
@@ -267,13 +270,13 @@ func parse(raw json.RawMessage) (a action, kind rpc.Kind, why string) {
 	}
 	if a.Type == "pinch" {
 		var scale float64
-		if json.Unmarshal(fields["scale"], &scale) != nil || !(scale > 0) {
+		if decode(fields["scale"], &scale) != nil || !(scale > 0) {
 			return invalid("scale %s is not a number above 0", show(fields["scale"]))
 		}
 	}
 	if a.Type == "button" {
 		var name string
-		if json.Unmarshal(fields["name"], &name) != nil || (name != "back" && name != "home" && name != "app_switch") {
+		if decode(fields["name"], &name) != nil || (name != "back" && name != "home" && name != "app_switch") {
 			return invalid("name %s is not back, home or app_switch", show(fields["name"]))
 		}
 	}
@@ -283,7 +286,7 @@ func parse(raw json.RawMessage) (a action, kind rpc.Kind, why string) {
 // pointOf reads [x, y] in whole pixels.
 func pointOf(raw json.RawMessage) (point, bool) {
 	var xy []json.RawMessage
-	if json.Unmarshal(raw, &xy) != nil || len(xy) != 2 {
+	if decode(raw, &xy) != nil || len(xy) != 2 {
 		return point{}, false
 	}
 	var p point
@@ -300,10 +303,19 @@ func pointOf(raw json.RawMessage) (point, bool) {
 // whole reads a JSON number that is a whole number in int32's range.
 func whole(raw json.RawMessage) (int, bool) {
 	var f float64
-	if json.Unmarshal(raw, &f) != nil || f != math.Trunc(f) || math.Abs(f) > math.MaxInt32 {
+	if decode(raw, &f) != nil || f != math.Trunc(f) || math.Abs(f) > math.MaxInt32 {
 		return 0, false
 	}
 	return int(f), true
+}
+
+// decode reads one field's value into v. A null, which encoding/json leaves v as it was for, is no value; nor is a field
+// that is not there.
+func decode(raw json.RawMessage, v any) error {
+	if bytes.Equal(bytes.TrimSpace(raw), []byte("null")) {
+		return errors.New("null is not a value")
+	}
+	return json.Unmarshal(raw, v)
 }
 
 func show(raw json.RawMessage) string {
