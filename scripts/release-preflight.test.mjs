@@ -464,7 +464,8 @@ test('the agent-home package is published: listed, not held, a release manifest 
 }));
 
 test('the computer package is published: listed, not held, a release manifest at the workspace version, in the first layer, and in the plan after decisions', () => fixture(async root => {
-  // agentrun-serve imports its mount rule at runtime, so `npm i @parcha/agentrun-serve` installs it from the registry.
+  // agentrun-serve uses it at build time only: a devDependency, imported with `import type`, so its published archive
+  // needs nothing of it. Published now so a later runtime import, moved to serve's dependencies, installs it from the registry.
   assert.ok(releasePackages.includes('computer') && !heldPackages.includes('computer'), 'published from this checkout');
   // A release manifest at the workspace version, the one every package shares.
   const workspace = JSON.parse(readFileSync(new URL('../package.json', import.meta.url), 'utf8'));
