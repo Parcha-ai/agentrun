@@ -25,7 +25,7 @@ import type { Workflow } from "@parcha/agentrun-dsl";
 import { createWorkflowExtension, type WorkflowTaskHost } from "@parcha/agentrun-pi/durable";
 import { startWorkflowRevision, workflowCarry } from "@parcha/pi-durable-agent/workflow";
 import { type BudgetData, type EndData, KINDS, type RaiseData } from "./journal-kinds.js";
-import type { Claim, Command, CommandOutcome, Journal, Loop, LoopDeps, LoopEnd, LoopFactory, StopReason } from "./loop-contract.js";
+import { type Claim, type Command, type CommandOutcome, endedBy, type Journal, type Loop, type LoopDeps, type LoopEnd, type LoopFactory, type StopReason } from "./loop-contract.js";
 import type { RunOutcome, RunPatch } from "../store/store.js";
 
 /** The most the end's patch (cost and metrics) may take before the end is written without it (the pi loop's CUT_STEP_MS). */
@@ -279,9 +279,10 @@ function workflowLoop(specOf: (claim: Claim) => WorkflowRunSpec | Promise<Workfl
     // fresh journal of the same claim (the Harness closed its own).
     await closeHarness();
     const endJournal = deps.journal(claim);
-    // A person cancelled: the run ends stopped whatever the workflow's own outcome (its last node may have completed as the
-    // cancel landed, since the engine cancels by aborting the task), with the stop row taken in the end commit.
-    if (stopReason?.kind === "command") return await writeEnd(endJournal, context, { state: "stopped", summary: "stopped by a person" });
+    // A person stopped or cancelled: the run ends stopped whatever the workflow's own outcome (its last node may have
+    // completed as the stop landed, since the engine cancels by aborting the task), in the words that say which (endedBy),
+    // with the stop row taken in the end commit.
+    if (stopReason?.kind === "command") return await writeEnd(endJournal, context, { state: "stopped", summary: endedBy(stopReason.cancel) });
     const carry = await workflowCarry({ runId: claim.runId, storage: endJournal, revision }, outcome, { context });
     return await writeEnd(endJournal, context, carry);
   }

@@ -133,18 +133,35 @@ test("a workflow run runs to its end through the loop: the run ends completed, i
   assert.equal(run.outcome, null, "a run that did not escalate has no outcome (reads completed)");
 });
 
-test("a cancel ends the run stopped, taking the stop row in the end commit", async (t) => {
+test("a cancel ends the run stopped (cancelled in words), taking the cancel row in the end commit", async (t) => {
   const { store, claim, workflow } = await claimedWorkflow(t);
   let nodeStarted;
   const startedP = new Promise((resolve) => (nodeStarted = resolve));
   const loop = heldNodeLoop(store, workflow, { question: "What is six times seven?" }, { started: nodeStarted });
   const started = loop.start(claim);
   await startedP; // the node is running (an event, not a poll)
+  const cancel = await store.command("run-1", { kind: "cancel", body: {} });
+  await loop.stop({ kind: "command", commandId: cancel.id, cancel: true });
+  assert.deepEqual(await started, { state: "stopped" });
+  const run = await store.runs.get("run-1");
+  assert.equal(run.state, "stopped");
+  assert.equal(run.summary, "cancelled", "a cancel's words say which");
+  // The cancel row was taken in the end commit, not left untaken.
+  const rows = await store.commands("run-1", 0);
+  assert.equal(rows.find((row) => row.id === cancel.id).takenAt !== null, true, "the cancel row is taken");
+});
+
+test("a plain stop ends the run stopped, in the person's words", async (t) => {
+  const { store, claim, workflow } = await claimedWorkflow(t);
+  let nodeStarted;
+  const startedP = new Promise((resolve) => (nodeStarted = resolve));
+  const loop = heldNodeLoop(store, workflow, { question: "What is six times seven?" }, { started: nodeStarted });
+  const started = loop.start(claim);
+  await startedP;
   const stop = await store.command("run-1", { kind: "stop", body: {} });
   await loop.stop({ kind: "command", commandId: stop.id });
   assert.deepEqual(await started, { state: "stopped" });
-  assert.equal((await store.runs.get("run-1")).state, "stopped");
-  // The stop row was taken in the end commit, not left untaken.
+  assert.equal((await store.runs.get("run-1")).summary, "stopped by a person");
   const rows = await store.commands("run-1", 0);
   assert.equal(rows.find((row) => row.id === stop.id).takenAt !== null, true, "the stop row is taken");
 });

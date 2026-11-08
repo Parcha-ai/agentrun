@@ -87,7 +87,8 @@ export function workflowSubject() {
       "crash-before-intent": crash, "crash-after-intent": crash, "crash-before-intent-process": crash, "crash-after-intent-process": crash,
       "stalled-past-lease-process": "the workflow subject runs in-process; it names no runner-process module",
       "fault-effects-once": crash, "fault-restarts-bounded": crash, "replay-safe-rerun": crash,
-      "steer-mid-turn": person, "park-on-ask": person, "approval-names-its-call": person, "approval-double-click": person, "message-never-answers": person,
+      "steer-mid-turn": person, "steer-origin": person, "deny-note": person, "park-on-ask": person, "cancel-parked": person,
+      "approval-names-its-call": person, "approval-double-click": person, "message-never-answers": person,
     },
     readCalls,
   };
