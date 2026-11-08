@@ -2,6 +2,7 @@ import { act, createElement } from "react";
 import { createRoot } from "react-dom/client";
 import { afterEach, describe, expect, it } from "vitest";
 import { LiveRun } from "./LiveRun";
+import { cost } from "@/lib/format";
 import type { Run, TimelinePage } from "@/lib/v2";
 
 // Archive's answer can describe the run as it was before a newer read landed: the page keeps the newer state and takes
@@ -142,5 +143,37 @@ describe("LiveRun, a run paused at its spend cap", () => {
     expect(reads).toBeGreaterThan(before);
     expect(host.textContent).not.toContain("Paused at its $0.05 spend cap");
     expect(host.querySelector('input[aria-label="New cap in dollars"]')).toBeNull();
+  });
+});
+
+// A working run's cost moves with each priced request: every timeline page carries the run's cost as it stands, and the
+// header follows the newest page's, never the first read's (made before any priced request) until the run ends.
+describe("LiveRun, a working run's cost", () => {
+  it("the header reads the newest timeline page's cost while the run works, not the first read's $0", async () => {
+    const zero = { usd: 0, basis: "estimate", charge_state: null, cap_usd: null };
+    const priced = { usd: 0.0126, basis: "estimate", charge_state: null, cap_usd: null };
+    let pages = 0;
+    const v2 = {
+      // Every read of the run says working; the first one was made before any priced request, so it says $0.
+      getRun: async () => ({ ...at("working", false), cost: zero }),
+      listFiles: async () => ({ run_id: "r1", files: [], complete: true, truncated: false }),
+      // The first page carries the cost as it stands now; the follow-up read then waits, as a long poll does.
+      getTimeline: async (_id: string, o: { signal?: AbortSignal }) => (++pages === 1
+        ? { cost: priced, run_id: "r1", status: "working", state: "working", rows: [], drop: [], reset: true, unchanged: false, final: false, has_more: false, next_after: 0 } as unknown as TimelinePage
+        : new Promise<TimelinePage>((_, reject) => o.signal?.addEventListener("abort", () => reject(new Error("aborted")), { once: true }))),
+      listRevisions: async () => ({ revisions: [], next_cursor: null }),
+    };
+    const host = document.body.appendChild(document.createElement("div"));
+    root = createRoot(host);
+    act(() => root!.render(createElement(LiveRun, { v2: v2 as never, runId: "r1", caps: null, agentName: () => "Calc" })));
+    const settle = async () => { for (let i = 0; i < 10; i++) await act(async () => { await new Promise((r) => setTimeout(r, 0)); }); };
+    await settle();
+    const header = () => host.querySelector("header")?.textContent ?? "";
+    expect(header()).toContain("Working");
+    expect(pages).toBeGreaterThanOrEqual(1);
+    // In the header's own words for each figure: the page's $0.0126, never the first read's $0.
+    expect(cost(priced as Run["cost"])).not.toBe(cost(zero as Run["cost"]));
+    expect(header()).toContain(cost(priced as Run["cost"]));
+    expect(header()).not.toContain(cost(zero as Run["cost"]));
   });
 });
