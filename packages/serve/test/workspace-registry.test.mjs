@@ -10,6 +10,7 @@ import { join } from "node:path";
 import { after, test } from "node:test";
 import { BACKGROUND_CONTEXT as ctx } from "@earendil-works/chord/context";
 import { readBackOf } from "@parcha/agentrun-computer";
+import { NEEDS_A_COMPUTER } from "@parcha/agentrun-kernel/kernel";
 import { localWorkspace, processesOf, runTools } from "../dist/workspace/index.js";
 import { fakeComputer } from "./workspace-fake-computer.mjs";
 import { realProcesses } from "./workspace-fake-processes.mjs";
@@ -35,7 +36,7 @@ test("no computer: the registry's runner list (read, write, edit, bash), no proc
   assert.equal((await call(tools, "write", { path: "a.txt", content: "hi" })).text, "Successfully wrote to a.txt");
   assert.deepEqual(await call(tools, "bash", { command: "cat a.txt" }), { text: "hi", isError: false });
   const refused = await run.registry.invoke("bash_background", { command: "sleep 9" }, { hands: run.hands });
-  assert.equal(refused.error, "Background programs need a computer: run this agent with place sandbox (Docker in Mode 1, or a remote computer in Mode 2).");
+  assert.equal(refused.error, NEEDS_A_COMPUTER, "the registry's own words for it");
   await run.end();
   assert.ok(!existsSync(join(root, ".agentrun", "tmp")), "the end swept TMPDIR");
 });

@@ -416,9 +416,9 @@ export interface Triggers {
   /** How many of the trigger's started runs have not ended (a run reopened later does not count). */
   activeRuns(triggerId: string): Promise<number>;
   /** The history kept to `history` shown firings: older ones a sender's key names (manual, pushed) are kept for their day
-   *  (shown 0), others removed; shown-0 rows past `dayMs` removed. Never a due firing, a failure not yet told, nor a
-   *  started firing whose run has not ended. */
-  prune(triggerId: string, options: { history: number; dayMs: number; keepByKey: (by: string) => boolean }): Promise<void>;
+   *  (shown 0), others removed; shown-0 rows past `dayMs` removed, then the oldest past `kept` of them. Never a due
+   *  firing, a failure not yet told, nor a started firing whose run has not ended. Answers how many went past `kept`. */
+  prune(triggerId: string, options: { history: number; dayMs: number; keepByKey: (by: string) => boolean; kept?: number }): Promise<number>;
 }
 
 export interface Runs {
@@ -630,6 +630,9 @@ export interface Store {
   claim(runId: string, runner: string, options?: { leaseMs?: number }): Promise<Claim | null>;
   /** Moves the claim's end to now + `leaseMs`. Fenced when the run's epoch moved on. */
   renew(claim: Claim, options?: { leaseMs?: number }): Promise<Claim>;
+  /** Renews every claim in one transaction, each to now + `leaseMs`: a runner's renew of all it holds. Each answer is the
+   *  renewed claim, or Fenced for one whose epoch moved on (nothing written to it; the others renew). */
+  renewMany(claims: readonly Claim[], options?: { leaseMs?: number }): Promise<(Claim | Fenced)[]>;
   /** Gives the run back (no runner, no claimed_until; `state` when given; `wakeAt` and `backoffUntil` or none), in a
    *  durable commit (as flush). Fenced when the epoch moved on. */
   release(claim: Claim, options?: { state?: RunState; wakeAt?: number | null; backoffUntil?: number | null }): Promise<void>;
@@ -649,6 +652,9 @@ export interface Store {
   command(runId: string, command: { kind: string; body?: unknown }): Promise<Command>;
   /** The run's commands with an id above `after`, in id order. */
   commands(runId: string, after: number): Promise<Command[]>;
+  /** Every run's commands with an id above its own cursor, in id order, in one read: a runner's poll of all it holds. A run
+   *  with none is absent from the map. */
+  commandsOf(cursors: readonly { runId: string; after: number }[]): Promise<Map<string, Command[]>>;
   /** Marks the command taken (or refused, with `reason`) under the claim, once: a command already taken stays as it was.
    *  Fenced on a stale claim. */
   take(claim: Claim, commandId: number, outcome?: "taken" | "refused", reason?: string): Promise<void>;

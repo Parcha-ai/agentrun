@@ -10,7 +10,7 @@ import { after, test } from "node:test";
 import { runDirIn } from "@parcha/pi-durable-agent";
 import { learningRepo } from "../dist/learning.js";
 import { ID } from "../dist/validate.js";
-import { agentLearningFolder, COMPUTER_ROOT, EXEC_OUTPUT_MAX, localWorkspace, portPath, relativePath, relativeSegments, runFolder } from "../dist/workspace/index.js";
+import { agentHomeFolder, agentLearningFolder, COMPUTER_ROOT, DISK_DIR, EXEC_OUTPUT_MAX, localWorkspace, portPath, relativePath, relativeSegments, runFolder, scratchFolder } from "../dist/workspace/index.js";
 import { suite } from "./workspace-conformance.mjs";
 
 const SHIM = new URL("../../pi-durable-disk/test/fixtures/fsync-snapshot/shim.c", import.meta.url).pathname;
@@ -42,6 +42,19 @@ test("paths: a run's folder and an agent's learning folder are where today's cod
   }
   assert.match(runFolder("/data", "acme", "r1"), /^\/data\/disk\/agents\/acme-[0-9a-f]{16}\/runs\/r1\/work$/);
   assert.notEqual(runFolder("/data", "Acme", "r"), runFolder("/data", "acme", "r"), "ids that differ in case never share a folder");
+});
+
+test("paths: an agent's home is beside its learning folder; a run's scratch folder is on this machine's disk, outside every Workspace", () => {
+  assert.match(agentHomeFolder("/data", "acme"), /^\/data\/disk\/agents\/acme-[0-9a-f]{16}\/home$/);
+  assert.equal(dirname(agentHomeFolder("/data", "acme")), dirname(agentLearningFolder("/data", "acme")), "the agent's folder holds both");
+  const scratch = scratchFolder("/data", "acme", "run-1");
+  assert.match(scratch, /^\/data\/scratch\/acme-[0-9a-f]{16}\/run-1$/);
+  assert.ok(!scratch.startsWith(`/data/${DISK_DIR}/`), "never on the disk the Workspaces hold (the owner's, in Mode 2)");
+  assert.notEqual(scratchFolder("/data", "Acme", "r"), scratchFolder("/data", "acme", "r"));
+  for (const bad of ["../x", "a/b", ""]) {
+    assert.throws(() => scratchFolder("/data", "acme", bad), /run id/, bad);
+    assert.throws(() => agentHomeFolder("/data", bad), /agent id/, bad);
+  }
 });
 
 test("paths: ids follow the API's id rule; a bad one is refused", () => {
@@ -103,6 +116,19 @@ test("local: list leaves out links and pipes; a read of a directory or a pipe is
   await refused(workspace.read("pipe"), "REFUSED");
   await refused(workspace.write("dir", "x"), "REFUSED");
   await refused(workspace.append("pipe", "x"), "REFUSED");
+});
+
+test("local: a file this server cannot read (made private by another user) lists as unreadable, and its read is REFUSED", { skip: process.getuid?.() === 0 && "root reads every file" }, async () => {
+  const { root } = scratch();
+  const workspace = localWorkspace(root);
+  await workspace.write("open.txt", "x");
+  await workspace.write("private.txt", "secret");
+  chmodSync(join(root, "private.txt"), 0o000);
+  const listed = await workspace.list("");
+  assert.deepEqual(listed.map(({ name, unreadable }) => [name, unreadable]), [["open.txt", undefined], ["private.txt", true]]);
+  assert.equal(listed[1].size, 6, "its size is still listed");
+  await refused(workspace.read("private.txt"), "REFUSED");
+  chmodSync(join(root, "private.txt"), 0o600);
 });
 
 test("local: a root that is not there is UNAVAILABLE, for its mount too", async () => {

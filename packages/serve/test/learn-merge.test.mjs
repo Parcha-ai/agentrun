@@ -11,8 +11,9 @@ import { randomBytes } from "node:crypto";
 import { join } from "node:path";
 import { test } from "node:test";
 import { note } from "./fixtures/faux-learn.mjs";
-import { copyOf, ended, git, LEARN, learner, made, mergesOf, objects, onMain, reflectRows, repoOf, savedOf, settled, sleep, started } from "./learn-support.mjs";
+import { copyOf, ended, git, LEARN, learner, made, mergesOf, objects, onMain, reflectRows, repoOf, resnap, savedOf, settled, sleep, started } from "./learn-support.mjs";
 import { client, runDir, scratch, serve, withEnv } from "./support.mjs";
+import { folderTestHooks } from "../dist/learn/folder.js";
 import { learningTestHooks } from "../dist/learning.js";
 
 const LAUNCHER = new URL("../launcher/agentrun-serve", import.meta.url).pathname;
@@ -29,6 +30,7 @@ async function seeded(t, id, files, extra = {}) {
   for (const [file, text] of Object.entries(files)) writeFileSync(join(repo, file), text);
   git(repo, ["add", "--", ...Object.keys(files)]);
   git(repo, ["commit", "-q", "-m", "seeded"]);
+  await resnap(server.data, id);
   return { ...server, repo };
 }
 const INDEX = "- [Prefers tables](prefers-tables.md) — The user reads results as tables\n- [Refunds path](refunds.md) — Refunds live under /help/\n";
@@ -167,31 +169,24 @@ test("two runs at once that add different notes both merge, and the index has bo
 });
 
 test("a commit that lands on main between the merge's read of main and its move is never written over: the merge is made again on the main that won", { timeout: 150_000 }, async (t) => {
-  const root = await scratch(t);
-  // git for this server: at the merge's commit, once, another writer's commit lands on main first (as a person's would).
-  const bin = join(root, "bin");
-  mkdirSync(bin);
-  const real = spawnSync("sh", ["-c", "command -v git"], { encoding: "utf8" }).stdout.trim();
-  const once = join(root, "landed");
-  writeFileSync(join(bin, "git"), [
-    "#!/bin/sh",
-    `for arg in "$@"; do case $arg in *": merged") if [ ! -e ${once} ]; then`,
-    `  main=$(${real} rev-parse refs/heads/main) && tree=$(${real} rev-parse "$main^{tree}")`,
-    `  other=$(${real} commit-tree "$tree" -p "$main" -m "another writer") && ${real} update-ref refs/heads/main "$other" "$main" && echo "$other" > ${once}`,
-    "fi ;; esac; done",
-    `exec ${real} "$@"`,
-  ].join("\n"), { mode: 0o755 });
+  // At the merge's one exec of the learning script, once, another writer's commit lands on main first (as a person's
+  // would, by hand: the folder's snapshot is not its main then).
+  let other;
   const { api, data } = await serve(t, { learning: "on", faux: LEARN });
   await made(api, learner("raced", { plan: [["alpha.md", note("Alpha", "A rule merged after a race")]] }));
-  const path = process.env.PATH;
-  process.env.PATH = `${bin}:${path}`;
-  t.after(() => void (process.env.PATH = path));
+  folderTestHooks.exec = (argv) => {
+    if (other || argv[2] !== "commit" || argv.length !== 5) return;
+    const repo = repoOf(data, "raced");
+    const main = git(repo, ["rev-parse", "refs/heads/main"]);
+    other = git(repo, ["commit-tree", git(repo, ["rev-parse", `${main}^{tree}`]), "-p", main, "-m", "another writer"]);
+    git(repo, ["update-ref", "refs/heads/main", other, main]);
+  };
+  t.after(() => void (folderTestHooks.exec = undefined));
   const runId = await started(api, "raced");
   const { view, rows } = await ended(api, runId);
-  process.env.PATH = path;
   settled(view, rows, "merged");
   const repo = repoOf(data, "raced");
-  const other = readFileSync(once, "utf8").trim();
+  assert.ok(other, "the other writer's commit landed at the merge's exec");
   const main = git(repo, ["rev-parse", "main"]);
   const seed = JSON.parse(readFileSync(join(runDir(data, runId), "learning.json"), "utf8")).seed;
   assert.equal((await savedOf(data, runId)).learning.merged, main);

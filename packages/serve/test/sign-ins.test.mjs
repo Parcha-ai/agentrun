@@ -257,7 +257,8 @@ test("through the API: an agent's first run holds the sign-in and saves; one sta
     assert.ok(!body.includes(handed.ref) && !body.includes(beta[0].ref), body);
     assert.ok(!JSON.stringify((await api("GET", "/agents")).body).includes(handed.ref));
     const listed = (await api("GET", `/agents/${id}/home/files`)).body.files;
-    assert.deepEqual(listed.filter((file) => file.host_owned).map((file) => file.path), ["sign-ins"]);
+    // Sign-ins are store rows: nothing of them sits in the home, so it lists no host-owned entry (the name stays reserved).
+    assert.deepEqual(listed.filter((file) => file.host_owned).map((file) => file.path), []);
     const signInsFile = [`/agents/${id}`, "home", "files", "sign-ins", "sign-ins.json"].join("/");
     const read = await api("GET", signInsFile);
     assert.deepEqual([read.status, read.body.error.details.reason], [403, "host_owned"]);
@@ -1348,7 +1349,7 @@ test("a forgotten sign-in is never a sign-in: GET /agents/{id} lists none, nothi
   const kept = JSON.parse(onDisk);
   assert.deepEqual([kept.sign_ins, kept.forgotten.map((gone) => [gone.key, gone.provider])], [[], [["default", "browserbase"]]]);
   assert.ok(!onDisk.includes(ref));
-  assert.deepEqual((await api("GET", "/agents/alpha/home/files")).body.files.filter((file) => file.host_owned).map((file) => file.path), ["sign-ins"]);
+  assert.deepEqual((await api("GET", "/agents/alpha/home/files")).body.files.filter((file) => file.host_owned).map((file) => file.path), []);
   assert.equal((await api("GET", ["/agents/alpha", "home", "files", "sign-ins", "sign-ins.json"].join("/"))).status, 403);
   assert.equal((await api("DELETE", "/agents/alpha/sign-ins/default")).status, 404, "nothing to forget");
   // The next run is handed a new sign-in, never the forgotten one; and that one, forgotten, is kept beside it.

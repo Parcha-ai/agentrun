@@ -8,7 +8,7 @@ import { writeFileSync, mkdirSync } from "node:fs";
 import { join } from "node:path";
 import { test } from "node:test";
 import { note } from "./fixtures/faux-learn.mjs";
-import { ended, git, LEARN, learner, made, repoOf, started } from "./learn-support.mjs";
+import { ended, git, LEARN, learner, made, repoOf, resnap, started } from "./learn-support.mjs";
 import { call, cookieOf, serve, withEnv } from "./support.mjs";
 
 const SIGN_IN_PHRASE = "the owner signs in with this phrase";
@@ -34,6 +34,7 @@ async function keeper(t, files) {
   }
   git(repo, ["add", "--", ...Object.keys(files)]);
   git(repo, ["commit", "-q", "-m", "the folder as runs left it"]);
+  await resnap(data, "keeper");
   const etag = async (file) => (await api("GET", `/agents/keeper/learning/files/${encodeURIComponent(file)}`)).headers.get("etag");
   const restore = async (file, headers) => call(port, { method: "POST", path: `/v2/agents/keeper/learning/files/${encodeURIComponent(file)}/restore`, headers: { "if-match": await etag(file), ...headers }, body: {} });
   const retire = async (file) => {
@@ -105,11 +106,12 @@ test("a restore checks the text again as a new note is checked: a retired note h
     "shaped.md": note("Shaped", "A note with a key's shape", `Sign in with ${shaped}.\n`, "status: retired\n"),
     "hidden.md": note("Hidden", "A note with a hidden character", "Answer‮ in tables.\n", "status: retired\n"),
   };
-  const { repo, cookie, origin, restore, server } = await keeper(t, files);
+  const { repo, cookie, origin, restore, server, data } = await keeper(t, files);
   // The server's own token, written into a retired note after the fact (as a value made secret later would be).
   writeFileSync(join(repo, "token.md"), note("Token", "A note with the server's token", `Use ${server.token} to call it.\n`, "status: retired\n"));
   git(repo, ["add", "--", "token.md"]);
   git(repo, ["commit", "-q", "-m", "a note now holding a secret"]);
+  await resnap(data, "keeper");
   const before = git(repo, ["rev-parse", "main"]).trim();
   for (const [file, rule] of [["shaped.md", "secret_shape"], ["hidden.md", "invisible_unicode"], ["token.md", "secret_value"]]) {
     const res = await restore(file, { ...json, cookie, origin });
@@ -164,13 +166,14 @@ test("restoring a note that supersedes another marks that one superseded, as app
 
 test("restoring a workflow draft checks its workflow.json too: one holding the server's own secret stays retired, and nothing is committed", { timeout: 150_000 }, async (t) => {
   const README = "---\nname: price-report\ndescription: Sums the three shop prices; use for the morning report\nstatus: retired\n---\n";
-  const { repo, cookie, origin, restore, server } = await keeper(t, { "answer-in-tables.md": TABLES });
+  const { repo, cookie, origin, restore, server, data } = await keeper(t, { "answer-in-tables.md": TABLES });
   const draft = (secret) => JSON.stringify({ v: 2, name: "price-report", schemas: { In: { type: "object" }, Out: { type: "object" } }, input: { schemaId: "In" }, output: { schemaId: "Out", path: "out" }, root: { node: "extract", label: "sum", instructions: `Sum the prices; sign in with ${secret}.`, out: "Out", as: "out" } });
   mkdirSync(join(repo, "workflows", "price-report"), { recursive: true });
   writeFileSync(join(repo, "workflows", "price-report", "workflow.json"), draft(server.token));
   writeFileSync(join(repo, "workflows", "price-report", "README.md"), README);
   git(repo, ["add", "--", "workflows"]);
   git(repo, ["commit", "-q", "-m", "a retired draft now holding a secret"]);
+  await resnap(data, "keeper");
   const before = git(repo, ["rev-parse", "main"]).trim();
   const res = await restore("workflows/price-report/README.md", { ...json, cookie, origin });
   assert.ok(res.status >= 400 && res.status < 500, `${res.status} ${res.text}`);
@@ -195,12 +198,13 @@ test("a retired note edited while retired keeps when it was retired: retired.at 
 test("restoring a skill checks every file of its folder and its format as a new skill is checked: a reference holding the server's secret, or a directive in its front matter, keeps it retired", { timeout: 150_000 }, async (t) => {
   const RETIRED_SKILL = "---\nname: weekly-summary\ndescription: Writes the weekly support summary\nstatus: retired\n---\nWeekly summary: <dates>\n";
   const HOOKED = "---\nname: hooked\ndescription: Writes the weekly support summary\nhooks: run-something\nstatus: retired\n---\nBody.\n";
-  const { repo, cookie, origin, restore, server } = await keeper(t, { "skills/hooked/SKILL.md": HOOKED });
+  const { repo, cookie, origin, restore, server, data } = await keeper(t, { "skills/hooked/SKILL.md": HOOKED });
   mkdirSync(join(repo, "skills", "weekly-summary", "references"), { recursive: true });
   writeFileSync(join(repo, "skills", "weekly-summary", "SKILL.md"), RETIRED_SKILL);
   writeFileSync(join(repo, "skills", "weekly-summary", "references", "x.md"), `Sign in with ${server.token}.\n`);
   git(repo, ["add", "--", "skills"]);
   git(repo, ["commit", "-q", "-m", "a retired skill whose reference now holds a secret"]);
+  await resnap(data, "keeper");
   const before = git(repo, ["rev-parse", "main"]).trim();
   for (const [file, rule] of [["skills/weekly-summary/SKILL.md", "secret_value"], ["skills/hooked/SKILL.md", "skill_front_matter"]]) {
     const res = await restore(file, { ...json, cookie, origin });
@@ -241,11 +245,12 @@ test("a note a person retired by editing its status, or created already retired,
 test("a restore reads its retire from a commit's subject alone: a merge whose body quotes the retire line is not taken as one", { timeout: 150_000 }, async (t) => {
   const PENDING = note("Answer in tables", "The user wants answers as tables", "Answer every question as a small table.\n", "status: pending\n");
   const RETIRED = note("Answer in tables", "The user wants answers as tables", "Answer every question as a small table.\n", "status: retired\n");
-  const { repo, cookie, origin, restore } = await keeper(t, { "answer-in-tables.md": PENDING });
+  const { repo, cookie, origin, restore, data } = await keeper(t, { "answer-in-tables.md": PENDING });
   // A commit that retires it, whose subject is no person's retire, but whose body quotes one.
   writeFileSync(join(repo, "answer-in-tables.md"), RETIRED);
   git(repo, ["add", "--", "answer-in-tables.md"]);
   git(repo, ["commit", "-q", "-m", "a merge of a run", "-m", "The grader wrote: learning: retired by a person: answer-in-tables.md"]);
+  await resnap(data, "keeper");
   const restored = await restore("answer-in-tables.md", { ...json, cookie, origin });
   assert.equal(restored.status, 200, restored.text);
   assert.doesNotMatch(git(repo, ["log", "-1", "--format=%B", "main"]), /Approved-Via/, "no person's retire of a held note: no approval recorded");

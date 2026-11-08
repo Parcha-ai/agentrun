@@ -81,16 +81,19 @@ const REVISION_COLUMNS = "id, agent_id, kind, body, package, created_at";
 const COMMAND_COLUMNS = "id, run_id, kind, body, created_at, taken_at, refused, tries";
 const TRIGGER_COLUMNS = "id, agent_id, name, enabled, source, target, next_at, last_run_id, catchup_window_s, failures_in_a_row, disabled, max_active_runs, created_at, updated_at";
 const FINAL = FINAL_STATES.map((state) => `'${state}'`).join(", ");
-/** The runs a runner may claim, at a time bound three times (CLAIMABLE_AT): queued; running with no runner (released) or
- *  its claim run out; parked with its wake_at passed, an untaken stop, or an untaken command once its backoff (a failed
- *  resume's) has passed. */
+/** The runs a runner may claim, at a time bound five times (CLAIMABLE_AT): queued; running with no runner (released) or
+ *  its claim run out, once its backoff (an interrupted run's) has passed; parked, once no claim holds it (a run parks
+ *  under its claim and is released a few seconds later), with its wake_at passed, an untaken stop, or an untaken command
+ *  that can answer it once its backoff (a failed resume's) has passed. A row marked `answers: false` (a trigger's
+ *  follow-up message) answers no park: it waits, untaken, and its loop gets it after the person's answer wakes the run. */
 const CLAIMABLE = `(state = 'queued'
-  OR (state = 'running' AND (runner IS NULL OR claimed_until < ?))
-  OR (state = 'parked' AND (
+  OR (state = 'running' AND (runner IS NULL OR claimed_until < ?) AND (backoff_until IS NULL OR backoff_until <= ?))
+  OR (state = 'parked' AND (runner IS NULL OR claimed_until < ?) AND (
     (wake_at IS NOT NULL AND wake_at <= ?)
     OR EXISTS (SELECT 1 FROM commands WHERE commands.run_id = runs.id AND commands.taken_at IS NULL AND commands.kind = 'stop')
-    OR ((backoff_until IS NULL OR backoff_until <= ?) AND EXISTS (SELECT 1 FROM commands WHERE commands.run_id = runs.id AND commands.taken_at IS NULL)))))`;
-const CLAIMABLE_AT = (at: number): number[] => [at, at, at];
+    OR ((backoff_until IS NULL OR backoff_until <= ?) AND EXISTS (SELECT 1 FROM commands WHERE commands.run_id = runs.id AND commands.taken_at IS NULL
+      AND json_extract(commands.body, '$.answers') IS NOT 0)))))`;
+const CLAIMABLE_AT = (at: number): number[] => [at, at, at, at, at];
 /** What a claim sets: the next epoch, the runner and its lease, running, no backoff. */
 const CLAIM_SET = "epoch = epoch + 1, runner = ?, claimed_until = ?, state = 'running', backoff_until = NULL";
 
@@ -408,10 +411,10 @@ class SqliteStore implements Store {
           const was = await tx.get<FiringRecord>(`SELECT ${FIRING_COLUMNS} FROM trigger_firings WHERE trigger_id = ? AND key = ?`, triggerId, key);
           if (!was) return undefined;
           const settled = change.status !== undefined && change.status !== "due";
-          // Out of due, a firing keeps no retry, wait or payload, nor the reason its last try gave (unless it gives one).
+          // Out of due, a firing keeps no retry, wait, payload or attrs, nor the reason its last try gave (unless it gives one).
           const set: [string, SqliteValue][] = [];
           if (change.status !== undefined) set.push(["status", change.status]);
-          if (settled) set.push(["retry_at", null], ["waits_on", null], ["payload", null], ["reason", change.reason ?? null], ["attempts", change.attempts ?? 0]);
+          if (settled) set.push(["retry_at", null], ["waits_on", null], ["payload", null], ["attrs", null], ["reason", change.reason ?? null], ["attempts", change.attempts ?? 0]);
           else if (change.reason !== undefined) set.push(["reason", change.reason]);
           if (change.runId !== undefined) set.push(["run_id", change.runId]);
           if (change.error !== undefined) set.push(["error", json(change.error)]);
@@ -458,7 +461,7 @@ class SqliteStore implements Store {
           const waiting = (await tx.get<{ n: number }>(
             "SELECT COUNT(*) AS n FROM commands WHERE run_id = ? AND taken_at IS NULL AND json_extract(body, '$.origin.trigger_id') = ?", runId, triggerId,
           ))!.n;
-          const clear = "retry_at = NULL, waits_on = NULL, payload = NULL, attempts = 0";
+          const clear = "retry_at = NULL, waits_on = NULL, payload = NULL, attrs = NULL, attempts = 0";
           if (waiting >= bound.max) {
             await tx.run(`UPDATE trigger_firings SET status = 'skipped', reason = ?, ${clear} WHERE trigger_id = ? AND key = ?`, bound.reason, triggerId, key);
             return { skipped: bound.reason };
@@ -481,8 +484,8 @@ class SqliteStore implements Store {
         (await db.get<{ n: number }>(
           `SELECT COUNT(*) AS n FROM trigger_firings f JOIN runs r ON r.id = f.run_id WHERE f.trigger_id = ? AND f.status = 'started' AND r.state NOT IN (${FINAL})`, triggerId,
         ))!.n,
-      prune: async (triggerId, { history, dayMs, keepByKey }) => {
-        await db.transaction(async (tx) => {
+      prune: async (triggerId, { history, dayMs, keepByKey, kept }) =>
+        db.transaction(async (tx) => {
           const at = now();
           // Past the newest `history` shown firings: never a due one, a failure not yet told, or a started one whose run
           // has not ended. The rest leave the history: kept for their key's day when a sender's key names them, else gone.
@@ -494,7 +497,7 @@ class SqliteStore implements Store {
             triggerId, triggerId, history,
           );
           for (const { key, by } of old) {
-            if (keepByKey(by ?? "manual")) await tx.run("UPDATE trigger_firings SET shown = 0, payload = NULL WHERE trigger_id = ? AND key = ?", triggerId, key);
+            if (keepByKey(by ?? "manual")) await tx.run("UPDATE trigger_firings SET shown = 0, payload = NULL, attrs = NULL WHERE trigger_id = ? AND key = ?", triggerId, key);
             else await tx.run("DELETE FROM trigger_firings WHERE trigger_id = ? AND key = ?", triggerId, key);
           }
           await tx.run(
@@ -502,8 +505,16 @@ class SqliteStore implements Store {
                AND NOT (status = 'started' AND run_id IN (SELECT id FROM runs WHERE state NOT IN (${FINAL})))`,
             triggerId, at - dayMs,
           );
-        });
-      },
+          if (kept === undefined) return 0;
+          // Past `kept` keys for the day, the oldest go first (a key's row, not its run: a started one's run has ended).
+          return tx.runCounted(
+            `DELETE FROM trigger_firings WHERE trigger_id = ? AND key IN (
+               SELECT key FROM trigger_firings WHERE trigger_id = ? AND shown = 0 AND status != 'due'
+                 AND NOT (status = 'started' AND run_id IN (SELECT id FROM runs WHERE state NOT IN (${FINAL})))
+               ORDER BY at DESC, rowid DESC LIMIT -1 OFFSET ?)`,
+            triggerId, triggerId, kept,
+          );
+        }),
       enable: async (triggerId, scopes) => {
         await db.transaction(async (tx) => {
           if ((await tx.runCounted("UPDATE triggers SET enabled = 1, disabled = NULL, updated_at = ? WHERE id = ?", now(), triggerId)) === 0) throw new StoreConstraint(`no trigger ${triggerId}`);
@@ -527,7 +538,7 @@ class SqliteStore implements Store {
           // The due firing the engine recorded becomes started; one not recorded yet is recorded started. A firing already
           // past due (started, or settled otherwise) is refused, and its run with it.
           const moved = await tx.runCounted(
-            "UPDATE trigger_firings SET status = 'started', run_id = ?, retry_at = NULL, waits_on = NULL, payload = NULL, reason = NULL, attempts = 0 WHERE trigger_id = ? AND key = ? AND status = 'due'",
+            "UPDATE trigger_firings SET status = 'started', run_id = ?, retry_at = NULL, waits_on = NULL, payload = NULL, attrs = NULL, reason = NULL, attempts = 0 WHERE trigger_id = ? AND key = ? AND status = 'due'",
             run.id, firing.triggerId, firing.key,
           );
           if (moved === 0) {
@@ -810,6 +821,21 @@ class SqliteStore implements Store {
     return { ...claim, until };
   }
 
+  async renewMany(claims: readonly Claim[], { leaseMs = DEFAULT_LEASE_MS }: { leaseMs?: number } = {}): Promise<(Claim | Fenced)[]> {
+    if (claims.length === 0) return [];
+    // One transaction for every claim, each update on its own: a claim another runner took changes no row and is answered
+    // Fenced, never rolling the others back.
+    return this.#db.transaction(async (tx) => {
+      const until = this.#now() + leaseMs;
+      const out: (Claim | Fenced)[] = [];
+      for (const claim of claims) {
+        const renewed = await tx.all<{ id: string }>("UPDATE runs SET claimed_until = ? WHERE id = ? AND epoch = ? AND runner = ? RETURNING id", until, claim.runId, claim.epoch, claim.runner);
+        out.push(renewed.length > 0 ? { ...claim, until } : new Fenced(claim.runId, claim.epoch));
+      }
+      return out;
+    });
+  }
+
   async release(claim: Claim, { state, wakeAt = null, backoffUntil = null }: { state?: RunState; wakeAt?: number | null; backoffUntil?: number | null } = {}): Promise<void> {
     const ending = state !== undefined && FINAL_STATES.includes(state);
     await this.#db.write([fenced(
@@ -875,6 +901,22 @@ class SqliteStore implements Store {
   async runOfOrigin(key: string): Promise<{ runId: string; fingerprint: string | null } | undefined> {
     const row = await this.#db.get<{ run_id: string; fingerprint: string | null }>("SELECT run_id, fingerprint FROM run_origins WHERE key = ?", key);
     return row && { runId: row.run_id, fingerprint: row.fingerprint };
+  }
+
+  async commandsOf(cursors: readonly { runId: string; after: number }[]): Promise<Map<string, Command[]>> {
+    const out = new Map<string, Command[]>();
+    if (cursors.length === 0) return out;
+    // One read for every run: each cursor a (run_id, after) row of a VALUES list joined against the commands.
+    const rows = await this.#db.all<CommandRecord>(
+      `WITH cursors(run_id, after) AS (VALUES ${cursors.map(() => "(?, ?)").join(", ")})
+       SELECT ${COMMAND_COLUMNS.split(", ").map((column) => `commands.${column}`).join(", ")} FROM commands JOIN cursors ON commands.run_id = cursors.run_id AND commands.id > cursors.after ORDER BY commands.id`,
+      ...cursors.flatMap((cursor) => [cursor.runId, cursor.after]),
+    );
+    for (const row of rows) {
+      const command = commandOf(row);
+      out.set(command.runId, [...(out.get(command.runId) ?? []), command]);
+    }
+    return out;
   }
 
   async take(claim: Claim, commandId: number, outcome: "taken" | "refused" = "taken", reason?: string): Promise<void> {
