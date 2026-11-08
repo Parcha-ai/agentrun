@@ -20,7 +20,10 @@ const { startRunner } = await import("../dist/runner/runner.js");
 const { createPiLoop } = await import("../dist/runner/loop.js");
 const { journalRecords } = await import("../dist/runner/journal-reader.js");
 const quiet = { beforeIntent: async () => {}, beforeResult: async () => {} };
-const TIMING = { leaseMs: 600, renewEveryMs: 150, stopMarginMs: 200, pollMs: 20, commandPollMs: 30 };
+// A lease no stall of a loaded machine outlasts: a claim lost while a request is out is retaken and the unanswered
+// request asked again (after a flush of its own), which these tests do not read. The runs end themselves, so nothing
+// here waits on the lease.
+const TIMING = { leaseMs: 60_000, renewEveryMs: 1_000, stopMarginMs: 5_000, pollMs: 20, commandPollMs: 30 };
 const STUB_MODEL = "claude-sonnet-4-5";
 
 /** The answer of a step: the model's words, or a call. */
