@@ -297,6 +297,18 @@ test("a module's conformanceImage() is the run's image unless --image names one,
 	assert.equal(Object.hasOwn(JSON.parse(plain.text()), "notes"), false, "no notes, no field");
 });
 
+test("what a provider says through its onNote option, the CLI gives it, and puts in the report's providerNotes", async () => {
+	const out = sink();
+	assert.equal(await main(["--provider", "./fixtures/release-note-provider.mjs", "--json"], { stdout: out, cwd: HERE, cases: [pass("health.ping")] }), 0);
+	const report = JSON.parse(out.text());
+	assert.ok(report.providerNotes.length >= 1, JSON.stringify(report.providerNotes));
+	assert.match(report.providerNotes[0].computer, /./);
+	assert.match(report.providerNotes[0].note, /not let go cleanly/);
+	const plain = sink();
+	assert.equal(await main(["--provider", "./fixtures/fake-provider.mjs", "--json"], { stdout: plain, cwd: HERE, cases: [pass("health.ping")] }), 0);
+	assert.equal(Object.hasOwn(JSON.parse(plain.text()), "providerNotes"), false, "no note, no field");
+});
+
 test("the CLI's --json prints the report object; a Core failure exits 1", async () => {
 	const out = sink();
 	const cases = [pass("health.ping"), pass("exec.argv", { run: async (t) => t.equal(1, 2, "one and two") })];
