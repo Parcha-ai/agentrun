@@ -89,6 +89,20 @@ test("a stop sent while a raised run waits out its backoff is taken at once, and
   assert.equal(record.claims.length, 3, "claimed for the park, the failed try and the stop");
 });
 
+test("a runner that dies right after ending a run stopped leaves the stop row taken with it, never a stopped run with its stop untaken", async (t) => {
+  const faux = failingResumes(100);
+  const { server, record } = await parkedRun(t, faux, { resumeBackoffMs: 30_000 });
+  const raise = await sendCommand(server, "run-1", RAISE);
+  await until(async () => (await commandRow(server, "run-1", raise.id)).tries === 1, "the first try fails, and the backoff starts");
+  // The runner process dies the moment its store has written the stopped run: no later write of its lands.
+  record.dieAfterStopped = true;
+  const stop = await sendCommand(server, "run-1", { kind: "stop" });
+  await until(async () => (await server.runs.get("run-1")).state === "stopped", "the stop ends the run", 3_000);
+  await sleep(200);
+  assert.ok(record.dead, "the runner died after the stopped write");
+  assert.ok((await commandRow(server, "run-1", stop.id)).takenAt !== null, "the stop row is taken with the run's end, in its one write");
+});
+
 test("a raised run whose resume keeps throwing ends its tries still parked, its raise refused saying why; a new raise brings it back", async (t) => {
   const faux = failingResumes(TRIES);
   const { server, record } = await parkedRun(t, faux);

@@ -80,9 +80,18 @@ export function recorder() {
 
 /** `store` (the runner's part of it), recording into `record`. */
 export function observed(store, record) {
+  // A runner that died (record.dieAfterStopped: right after its store wrote a stopped run) writes nothing more.
+  const alive = () => {
+    if (record.dead) throw new Error("the runner process died");
+  };
   return {
     runs: {
-      update: (claim, patch, also) => store.runs.update(claim, patch, also),
+      async update(claim, patch, also) {
+        alive();
+        const row = await store.runs.update(claim, patch, also);
+        if (record.dieAfterStopped && patch.state === "stopped") record.dead = true;
+        return row;
+      },
       claimable: (options) => store.runs.claimable(options),
       async claimMany(runner, k, options) {
         const claims = await store.runs.claimMany(runner, k, options);
@@ -102,6 +111,7 @@ export function observed(store, record) {
       return store.renew(claim, options);
     },
     async release(claim, options) {
+      alive();
       await store.release(claim, options);
       record.ops.push(`release ${claim.runId}`);
     },
@@ -135,12 +145,13 @@ export function observed(store, record) {
       });
     },
     async flush() {
+      alive();
       await store.flush();
       record.ops.push("flush");
     },
     commands: (runId, after) => store.commands(runId, after),
-    take: (claim, id, outcome, reason) => store.take(claim, id, outcome, reason),
-    retry: (claim, id) => store.retry(claim, id),
+    take: async (claim, id, outcome, reason) => (alive(), store.take(claim, id, outcome, reason)),
+    retry: async (claim, id) => (alive(), store.retry(claim, id)),
   };
 }
 
