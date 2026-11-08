@@ -29,13 +29,16 @@ import {
   costView,
   soFarOf,
 } from "./run-view.js";
+import { reflects, type Reflect } from "./learning-run.js";
+import { journalRecords, recordOf } from "./runner/journal-reader.js";
 import { runLearningEnd } from "./store-reads/learning.js";
-import { runTimeline } from "./store-reads/journal.js";
+import { runReflect, runTimeline } from "./store-reads/journal.js";
 import { type RunReadState, readRun } from "./store-reads/runs.js";
 import { keptVendor, type Plane } from "./tool-plane.js";
+import { Turns } from "./turns.js";
 import { harnessOfBody } from "./harness.js";
 import type { SignIns } from "./sign-ins.js";
-import type { RunRow, Store } from "./store/store.js";
+import { FINAL_STATES, type RunRow, type Store } from "./store/store.js";
 
 /** What the store-backed view needs beside the store: where its console lives, every secret it never shows (read now, so
  *  one rotated is cut at once), and the agents' saved sign-ins (for the handed-pointer cut). The server passes the same it
@@ -44,6 +47,9 @@ export interface ViewDeps {
   readonly origin: string;
   readonly serverSecrets: () => string[];
   readonly signIns?: SignIns;
+  /** The server's clock (ms), for the claim-lease check that decides a run is live; defaults to Date.now. The server
+   *  passes the same clock the store uses, so a test on a moved clock reads a fresh claim as live. */
+  readonly now?: () => number;
 }
 
 /** A run that has ended reads one of these (the old RunRow state → the v2 status: an escalation is a completion with a
@@ -85,6 +91,20 @@ interface StoreRun {
   readonly unshown: boolean;
   /** The values every served text is cut of (serverSecrets + the handed pointers that open). */
   readonly values: string[];
+  /** A runner holds the run's claim now (not final, a runner named, its lease unexpired). */
+  readonly live: boolean;
+  /** The run's updated_at (ms): its latest change in the store — the runner's live tick while it runs, its end once ended,
+   *  its start before either. */
+  readonly updatedAtMs: number;
+  /** When the turn of a message still open last wrote (the live tick), as ISO; null when none is open. */
+  readonly lastProgressAt: string | null;
+}
+
+/** A runner holds the run's claim now: it is not in a final state, a runner is named on its row, and its lease has not run
+ *  out (claimed_until >= now, the predicate the claimable query's `claimed_until < ?` is the negation of). `now` is the
+ *  server's clock, so a test on a moved clock reads a fresh claim as live. */
+function liveOf(runRow: RunRow, now: number): boolean {
+  return !FINAL_STATES.includes(runRow.state) && runRow.runner !== null && runRow.claimedUntil !== null && runRow.claimedUntil >= now;
 }
 
 /** The run's launch body read back, or undefined when it has none (an old run, or one not started with one). */
@@ -116,6 +136,24 @@ async function storeRunOf(store: Store, runId: string, deps: ViewDeps): Promise<
   const version = revisions.findIndex((r) => r.id === row.revision) + 1;
   const learningEnd = await runLearningEnd(store, runId);
 
+  // Whether a runner holds the run now, and the time of its latest change: the live tick while it runs (store.live, the
+  // runner's own tick), its end once ended, its start before either.
+  const [liveRow] = await store.live.read([runId]);
+  const live = liveOf(runRow, deps.now?.() ?? Date.now());
+  const updatedAtMs = liveRow?.updatedAt ?? runRow.endedAt ?? runRow.startedAt;
+
+  // The turns the run took, rebuilt from the journal the same way the file path's noteTurns fed Turns: the root's records
+  // (a CLI session's own conversation skipped) and the input submissions, with the end-of-run turn's entries left out
+  // (runReflect). progressAt reads the latest tick, so a working run's last_progress_at advances as today.
+  const records = await journalRecords(store.readJournal(runId), context);
+  const reflectRange = (await runReflect(store, runId, context)) as Reflect | undefined;
+  const skip = reflectRange ? (id: number) => reflects(reflectRange, id) : undefined;
+  const turns = new Turns();
+  turns.note(recordOf(records.entries), records.submissions ?? [], skip, liveRow?.updatedAt ?? deps.now?.() ?? Date.now());
+  const working = live && turns.open > 0;
+  const progress = terminal || row.kind === "workflow" ? undefined : turns.progressAt();
+  const lastProgressAt = progress === undefined ? null : iso(progress);
+
   // The sign-in cut: the pointers the run was handed read back, so a run whose words could repeat one is cut of it, or
   // withheld when this server cannot read back what it was handed (rowShown's choke point). A run with no mark is cut of
   // the server's secrets alone.
@@ -135,14 +173,14 @@ async function storeRunOf(store: Store, runId: string, deps: ViewDeps): Promise<
     ...(outcome ? { outcome } : {}),
     // The store's "stopped" state is a cancellation; its moment reads cancelled.
     cancel: row.state === "stopped",
-    working: false,
+    working,
     submitted: 0,
-    updatedAt: iso(runRow.startedAt),
+    updatedAt: iso(updatedAtMs),
     rows,
-    turns: { end: () => undefined, open: 0 },
+    turns,
     meta,
   };
-  return { row, runRow, launch, rows, version, harness, learningEnd, view, unshown, values };
+  return { row, runRow, launch, rows, version, harness, learningEnd, view, unshown, values, live, updatedAtMs, lastProgressAt };
 }
 
 /** A run's learning as the view shows it: its end from the store, in a person's words cut of the host's secrets now, and,
@@ -204,7 +242,7 @@ export async function viewOverStore(store: Store, runId: string, deps: ViewDeps)
     place: launch?.place ?? { mode: "runner" },
     ...(launch?.effort ? { effort: launch.effort } : {}),
     created_at: iso(runRow.startedAt),
-    updated_at: iso(runRow.startedAt),
+    updated_at: iso(run.updatedAtMs),
     ended_at: endedAtMs === null ? null : iso(endedAtMs),
     result,
     error,
@@ -217,7 +255,7 @@ export async function viewOverStore(store: Store, runId: string, deps: ViewDeps)
     trigger: launch?.trigger ?? null,
     learning: learningViewOf(run.learningEnd, secretsShown(deps.serverSecrets()), terminal && settled),
     poll_after_ms: terminal && settled ? 0 : 1000,
-    last_progress_at: null,
+    last_progress_at: run.lastProgressAt,
   };
 }
 
@@ -239,15 +277,7 @@ export async function summaryOverStore(store: Store, runId: string, deps: ViewDe
 export async function momentOverStore(store: Store, runId: string, deps: ViewDeps = { origin: "", serverSecrets: () => [] }): Promise<RunMoment | undefined> {
   const run = await storeRunOf(store, runId, deps);
   if (!run) return undefined;
-  const live = liveOf(run.runRow);
-  return momentOf(run.view, terminalFacts, live);
-}
-
-/** Whether a runner holds the run's claim now: a running run with a runner named on its row. An ended run (or one released
- *  at a runner's shutdown) holds none. */
-const FINAL = new Set<RunRow["state"]>(["ended", "stopped", "failed"]);
-function liveOf(runRow: RunRow): boolean {
-  return !FINAL.has(runRow.state) && runRow.runner !== null;
+  return momentOf(run.view, terminalFacts, run.live);
 }
 
 /** Re-export so a caller need not reach into run-view for the type. */
