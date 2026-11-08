@@ -14,10 +14,10 @@
 //    response's usage once it completes (`afterRequest`). Every paid request forwarded is booked exactly once: a response
 //    cut short, or one that says no usage, is booked at an unknown cost.
 // Model spend is accounted only there, by the runner: the proxy keeps no ledger of its own.
-import { createHash, timingSafeEqual } from "node:crypto";
+import { createHash, randomBytes, timingSafeEqual } from "node:crypto";
 import { createServer, type IncomingHttpHeaders, type IncomingMessage, type ServerResponse } from "node:http";
-import type { McpHandler } from "./mcp-route.js";
-import { CONTENT_FILTERED } from "../types.js";
+import { type McpHandler, mcpRoute } from "./mcp-route.js";
+import { CONTENT_FILTERED, type McpClient, type NoteRequest, type SessionMcp } from "../types.js";
 import { type Ended, isConnectCode, isGatewayTimeout, rejectionCode } from "../booking.js";
 
 /** A route a policy admits: its method, its exact path, and the request headers forwarded with it. */
@@ -53,8 +53,10 @@ export interface ProviderPolicy {
   /** A listed request header's value as forwarded, or undefined to drop it; a `ProxyRefusal` refuses the request before
    *  the runner is asked (a beta the policy does not know). Default: as sent. */
   header?(name: string, value: string): string | undefined;
-  /** The body the provider gets for a request on `route`: throw a `ProxyRefusal` to refuse it. */
-  apply(body: unknown, route: ProxyRoute): Record<string, unknown>;
+  /** The body the provider gets for a request on `route`: throw a `ProxyRefusal` to refuse it. `context.host`: the
+   *  request is the host's own, beside the harness's (ModelProxy.sideKey), whose tools are its own client-side ones, not
+   *  the session's. */
+  apply(body: unknown, route: ProxyRoute, context?: ProxyRequestContext): Record<string, unknown>;
   /** The usage a completed response reports, if it reports one: from its whole text, or, for a long one, its first and
    *  last 64 KiB (a provider may report input tokens as a stream starts and output tokens as it ends). */
   usageOf(text: string): ProxyUsage | undefined;
@@ -107,6 +109,10 @@ export interface ProviderPolicy {
    *  can buy): never more than it asked for, and never longer as sent, since its input bound was measured on it. A host
    *  that limits a request's output needs it: without it such a request is refused, never sent unlimited. */
   limitOutput?(body: Record<string, unknown>, max: number): Record<string, unknown>;
+  /** `body` with `text` added as a note the provider reads after everything the client sent (the spend cap's wrap-up),
+   *  carrying no cache marker of its own, so the prefix the client built, and cached, stays byte for byte as sent. Absent:
+   *  the policy cannot place one, and a note waits for a request whose policy can. */
+  addNote?(body: Record<string, unknown>, text: string): Record<string, unknown>;
   /** The status a request the runner refused gets: one the client does not retry. Default 400. */
   readonly refusedStatus?: number;
 }
@@ -181,6 +187,13 @@ export interface ProxyRequest {
   outputTokensAsked?: number;
   /** The least output it may be limited to and still answer (the policy's `outputLeast`). */
   outputTokensLeast?: number;
+  /** A side call, never its turn's own: on another model than the session's (a client's small-model call: a title, a
+   *  summary), or the host's own request beside the harness's (`host`). */
+  side?: true;
+  /** It carries the host's note (`ModelProxyHooks.note`), placed in its body: the host's to record once it is admitted. */
+  noted?: true;
+  /** The label of the side key it came under (ModelProxy.sideKey): the host's own request, beside the harness's. */
+  host?: string;
 }
 
 export interface ModelProxyHooks {
@@ -194,6 +207,10 @@ export interface ModelProxyHooks {
   /** When a paid request's response headers arrive, before its body: the ids they give it (`providerIdsOf`), so a
    *  request a crash cuts off after this point is known to have reached the provider, under those ids. */
   responded?(ids: Record<string, string>, ticket?: unknown): Promise<void>;
+  /** A note the host has for the session's next main-model request (the spend cap's wrap-up), taken by this call: the
+   *  proxy asks only for a paid request on the session's model whose policy can place one (`addNote`), with that request
+   *  as its client sent it (NoteRequest: its input bound and output asks, measured before the note is placed). */
+  note?(model: string, request?: NoteRequest): string | undefined;
 }
 
 export interface ModelProxyOptions {
@@ -217,8 +234,10 @@ export interface ModelProxyOptions {
    *  after the client's, so the client can neither set nor override them, and before the credential's. Checked when the
    *  proxy starts (`hostHeaderProblems`). */
   headers?: Readonly<Record<string, string>>;
-  /** The session's remote MCP servers (mcp-route.ts), each at `/mcp/<server>` behind the session's key. */
-  mcp?: McpHandler;
+  /** The session's remote MCP servers, each mounted here at `/mcp/<server>` behind the session's key (mcp-route.ts),
+   *  for the harness's own MCP client as its adapter declares it (`client`, AdapterCapabilities.mcpClient). One mount for
+   *  every harness: an adapter hands the session's MCP, never a route of its own. */
+  mcp?: { session: SessionMcp; client: McpClient; keepaliveMs?: number };
   /** For tests: the fetch the proxy forwards with. */
   fetch?: typeof fetch;
   /** Told, with CONTENT_FILTERED, once an answer the provider stopped on its content filter has been passed and booked
@@ -248,7 +267,20 @@ export interface ModelProxy {
   readonly url: string;
   /** The key the harness sends, which the proxy admits. */
   readonly key: string;
+  /** A key of the host's own for the requests it sends beside the harness's on this session's route (a learned
+   *  workflow's model node, `label` "learned_workflow"): one per label, random, minted here and never handed to the
+   *  harness. A request under it goes through the same policy, origin, credential, price and hooks as the harness's;
+   *  its admission names the label (ModelRequest.host), the policy applies it as the host's (`ProxyRequestContext`),
+   *  it is never the turn's answer request (a content-filter stop on it never halts the turn) and never watched. It opens
+   *  the model routes only: the session's MCP door stays behind the session's key. */
+  sideKey(label: string): string;
   close(): Promise<void>;
+}
+
+/** What a policy is told of the request it applies: the label of the side key it came under (ModelProxy.sideKey), when
+ *  it is the host's own request. */
+export interface ProxyRequestContext {
+  readonly host?: string;
 }
 
 /** A server's endpoint, `/mcp/<server>`, with no query. */
@@ -442,6 +474,14 @@ export async function startModelProxy(options: ModelProxyOptions, key: string): 
   const draining = new Map<AbortController, Promise<void>>();
   /** Set by close(): nothing is admitted or sent after it. */
   let closing = false;
+  /** The side keys minted (sideKey), each with its label. */
+  const sideKeys = new Map<string, string>();
+  /** The label of the side key `sent`, compared in constant time against each minted one; undefined for any other. */
+  const sideOf = (sent: string): string | undefined => {
+    let found: string | undefined;
+    for (const [label, minted] of sideKeys) if (sameKey(sent, minted)) found = label;
+    return found;
+  };
 
   /** The host's log, which must never break a request (a throw from it is dropped). */
   const say = (message: string, detail?: Record<string, unknown>) => {
@@ -459,6 +499,9 @@ export async function startModelProxy(options: ModelProxyOptions, key: string): 
     res.end(JSON.stringify({ error: { message, type: "agentrun_proxy" } }));
   };
 
+  // The session's MCP door, mounted once here for whichever harness's client calls it (the call id from its fact).
+  const mcpDoor: McpHandler | undefined = options.mcp && mcpRoute(options.mcp.session, { callIdMeta: options.mcp.client.callIdMeta, ...(options.mcp.keepaliveMs !== undefined ? { keepaliveMs: options.mcp.keepaliveMs } : {}) });
+
   const serve = async (req: IncomingMessage, res: ServerResponse) => {
     // A request refused before its body is read is drained, so its client gets the answer instead of a reset.
     res.once("finish", () => { if (!req.complete) req.resume(); });
@@ -467,11 +510,11 @@ export async function startModelProxy(options: ModelProxyOptions, key: string): 
       res.writeHead(404, { "content-length": "0" });
       return res.end();
     }
-    const mcp = options.mcp ? MCP_PATH.exec(path) : null;
+    const mcp = mcpDoor ? MCP_PATH.exec(path) : null;
     if (mcp) {
       if (!sameKey(policy.keyOf(req.headers), key)) return refuse(res, 401, "this session's key is required", req);
       if (closing) return refuse(res, 503, "the model proxy is closing", req);
-      return options.mcp!(mcp[1]!, req, res);
+      return mcpDoor!(mcp[1]!, req, res);
     }
     let route: ProxyRoute;
     let query: string;
@@ -487,7 +530,10 @@ export async function startModelProxy(options: ModelProxyOptions, key: string): 
       res.writeHead(route.local, { "content-length": "0" });
       return res.end();
     }
-    if (!sameKey(policy.keyOf(req.headers), key)) return refuse(res, 401, "this session's key is required", req);
+    // The session's key (the harness's requests), or a side key the host holds (its own, labelled).
+    const sentKey = policy.keyOf(req.headers);
+    const host = sameKey(sentKey, key) ? undefined : sideOf(sentKey);
+    if (host === undefined && !sameKey(sentKey, key)) return refuse(res, 401, "this session's key is required", req);
     const chunks: Buffer[] = [];
     let size = 0;
     for await (const chunk of req) {
@@ -498,7 +544,7 @@ export async function startModelProxy(options: ModelProxyOptions, key: string): 
     let body: Record<string, unknown>;
     const headers: Record<string, string> = { "content-type": "application/json" };
     try {
-      body = policy.apply(parseStrict(new TextDecoder("utf-8", { fatal: true }).decode(Buffer.concat(chunks))), route);
+      body = policy.apply(parseStrict(new TextDecoder("utf-8", { fatal: true }).decode(Buffer.concat(chunks))), route, host === undefined ? {} : { host });
       // The listed headers, as the policy keeps them (or refuses them), before the runner is asked.
       for (const name of route.headers ?? []) {
         const value = req.headers[name.toLowerCase()];
@@ -518,6 +564,40 @@ export async function startModelProxy(options: ModelProxyOptions, key: string): 
     } catch (error) {
       say(`model proxy (${policy.id}): the policy could not name the request's model; it is booked as the session's`, { error: String((error as Error)?.message ?? error).slice(0, 200) });
     }
+    // A note the host has for the session's next main-model request (the spend cap's wrap-up): a paid request on the
+    // session's model whose policy can place it takes it, once, before the body is measured, so the cap admits its bytes.
+    // Only the turn's own request (ProviderPolicy.answers): a side call on the session's model (a title, a summary, when
+    // the client has no small model) takes none. One the policy fails to place is dropped, said once; the request goes as
+    // the client sent it. The body as the client sent it is kept (`plain`): a request the cap admits only without the
+    // note's bytes goes as that (ModelTicket.noteDropped).
+    let noted = false;
+    let plain: Record<string, unknown> | undefined;
+    // Never on the host's own request (`host`): the note is for the harness's model, in its own conversation, so a host
+    // request is neither measured for it nor noted.
+    if (!route.free && asked === model && host === undefined && (policy.answers ? policy.answers(body) : true) && policy.addNote && hooks.note) {
+      // The request as its client sent it, measured first, so the host prices it as its admission will (the wrap-up's least).
+      let request: NoteRequest = {};
+      try {
+        const measured = inputTokensMaxOf(policy, body, JSON.stringify(body), say);
+        const askedOut = policy.outputAsked?.(body);
+        const leastOut = policy.outputLeast?.(body);
+        const count = (value: unknown) => (typeof value === "number" && Number.isFinite(value) && value >= 0 ? value : undefined);
+        request = { ...(count(measured) === undefined ? {} : { inputTokensMax: measured as number }), ...(count(askedOut) === undefined ? {} : { outputTokensAsked: askedOut as number }), ...(count(leastOut) === undefined ? {} : { outputTokensLeast: leastOut as number }) };
+      } catch {
+        request = {};
+      }
+      const note = hooks.note(asked, request);
+      if (note) {
+        try {
+          const without = body;
+          body = policy.addNote(body, note);
+          plain = without;
+          noted = true;
+        } catch (error) {
+          say(`model proxy (${policy.id}): the host's note could not be placed; the request goes without it`, { error: String((error as Error)?.message ?? error).slice(0, 200) });
+        }
+      }
+    }
     // The body as it is sent, and the most input tokens it can be billed for, measured before the runner is asked.
     let sent: string;
     try {
@@ -527,6 +607,17 @@ export async function startModelProxy(options: ModelProxyOptions, key: string): 
       return refuse(res, 500, "the body could not be serialized", req);
     }
     let inputTokensMax = inputTokensMaxOf(policy, body, sent, say);
+    // The same, of the body as the client sent it, when a note was placed: the cap checks the request without the note.
+    let plainSent: string | undefined;
+    let inputTokensMaxWithoutNote: number | undefined;
+    if (plain) {
+      try {
+        plainSent = JSON.stringify(plain);
+        inputTokensMaxWithoutNote = inputTokensMaxOf(policy, plain, plainSent, say);
+      } catch {
+        plainSent = undefined;
+      }
+    }
     // What the body asks for at most, and the least it may be limited to, as the policy reads them. One the policy cannot
     // read leaves the request's worst case unknown: its input is unmeasured.
     const figure = (value: unknown): number | undefined => (typeof value === "number" && Number.isFinite(value) && value >= 0 ? value : undefined);
@@ -572,9 +663,12 @@ export async function startModelProxy(options: ModelProxyOptions, key: string): 
     let ticket: unknown;
     try {
       if (!route.free) ticket = await hooks.beforeRequest({
-        model: asked, inputTokensMax,
+        // A side call: on another model than the session's, or the host's own (it counts toward no typical request).
+        model: asked, inputTokensMax, ...(asked !== model || host !== undefined ? { side: true as const } : {}),
+        ...(noted ? { noted: true as const, ...(inputTokensMaxWithoutNote === undefined ? {} : { inputTokensMaxWithoutNote }) } : {}),
         ...(outputTokensAsked === undefined ? {} : { outputTokensAsked }),
         ...(outputTokensLeast === undefined ? {} : { outputTokensLeast }),
+        ...(host === undefined ? {} : { host }),
       });
     } catch (error) {
       // Not 429: clients retry that, and the runner already refused this request (a turn cap, the host's budget).
@@ -586,7 +680,7 @@ export async function startModelProxy(options: ModelProxyOptions, key: string): 
       refuse(res, status, message, req);
       if (!route.free) {
         try {
-          await hooks.afterRequest({ input: 0, output: 0, cacheRead: 0, usd: 0 }, ticket);
+          await hooks.afterRequest({ input: 0, output: 0, cacheRead: 0, usd: 0 }, ticket, { end: "nothing", label: "never_left" });
         } catch (error) {
           say(`model proxy (${policy.id}): afterRequest threw; the request was not sent and not booked`, { error: String((error as Error)?.message ?? error).slice(0, 200) });
         }
@@ -594,6 +688,12 @@ export async function startModelProxy(options: ModelProxyOptions, key: string): 
     };
     // Admitted while the proxy was closing, and never sent.
     if (closing) return release(503, "the model proxy is closing");
+    // Admitted only without the note (its bytes did not fit what is left of the cap): the body as the client sent it.
+    if (typeof ticket === "object" && ticket !== null && (ticket as { noteDropped?: unknown }).noteDropped === true) {
+      if (!plain || plainSent === undefined) return release(500, "the request was admitted without its note, which this proxy cannot take back out");
+      body = plain;
+      sent = plainSent;
+    }
     // Admitted with an output limit (what is left of a spend cap can buy): written into the body, which is never sent
     // unlimited, nor longer than the body its input bound was measured on.
     const limit = typeof ticket === "object" && ticket !== null ? (ticket as { outputTokensMax?: unknown }).outputTokensMax : undefined;
@@ -641,9 +741,9 @@ export async function startModelProxy(options: ModelProxyOptions, key: string): 
     /** Whether the provider's content-filter stop was read (once an answer). */
     let filteredTold = false;
     /** Whether this request is the turn's answer request (`ProviderPolicy.answers`): a side call's stop ends nothing. */
-    let answering = true;
+    let answering = host === undefined;
     try {
-      answering = policy.answers ? policy.answers(body) : true;
+      if (host === undefined) answering = policy.answers ? policy.answers(body) : true;
     } catch (error) {
       say(`model proxy (${policy.id}): whether the request is the turn's could not be read; taken as the turn's`, { error: String((error as Error)?.message ?? error).slice(0, 200) });
     }
@@ -709,7 +809,8 @@ export async function startModelProxy(options: ModelProxyOptions, key: string): 
       const decoder = new TextDecoder();
       let watcher: { chunk(text: string): void; failed?(): void; end?(): void } | undefined;
       try {
-        watcher = policy.watch?.();
+        // The host's own side requests are never the harness's to watch.
+        watcher = host === undefined ? policy.watch?.() : undefined;
         watchEnd = watcher?.end?.bind(watcher);
       } catch (error) {
         say(`model proxy (${policy.id}): the response watcher could not start`, { error: String((error as Error)?.message ?? error).slice(0, 200) });
@@ -869,6 +970,12 @@ export async function startModelProxy(options: ModelProxyOptions, key: string): 
   return {
     url: `http://127.0.0.1:${address.port}`,
     key,
+    sideKey: (label: string) => {
+      if (!label) throw new Error("agentrun-kernel: a side key needs a label");
+      let minted = sideKeys.get(label);
+      if (!minted) sideKeys.set(label, (minted = randomBytes(32).toString("base64url")));
+      return minted;
+    },
     close: async () => {
       closing = true;
       for (const c of inflight) if (!draining.has(c)) c.abort();

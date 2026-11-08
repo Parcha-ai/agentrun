@@ -12,7 +12,8 @@ import { openStoreReader } from "@parcha/pi-durable-agent";
 import { durableDecisions } from "@parcha/agentrun-pi/durable";
 import { CANARY } from "./fixtures/faux-jev.mjs";
 import { startServe } from "../dist/index.js";
-import { agent, answerFlow, client, FAUX, flowAgent, follow, printed, scratch, serve, startRun, storeRun, withEnv } from "./support.mjs";
+import { agent, answerFlow, client, FAUX, flowAgent, follow, printed, runDir, runRecordOf, scratch, serve, startRun, storeRun, withEnv } from "./support.mjs";
+import { fauxTable } from "./fixtures/faux-table.mjs";
 
 const FAUX_HARNESS = new URL("./fixtures/faux-harness.mjs", import.meta.url).pathname;
 const FAUX_JEV = new URL("./fixtures/faux-jev.mjs", import.meta.url).pathname;
@@ -32,7 +33,7 @@ function metricsOf(data, runId) {
 
 /** The run's store entries, each with its conversation. */
 function entriesOf(data, runId) {
-  const db = new DatabaseSync(join(data, "runs", runId, "store", "run.sqlite"), { readOnly: true, timeout: 2_000 });
+  const db = new DatabaseSync(join(runDir(data, runId), "store", "run.sqlite"), { readOnly: true, timeout: 2_000 });
   try {
     return db.prepare("SELECT conversation_id, record FROM entries ORDER BY id").all().map((row) => ({ conversation: row.conversation_id, ...JSON.parse(String(row.record)) }));
   } finally {
@@ -92,19 +93,19 @@ test("a run its server's successor ends keeps the effort its process ran at, not
   }
   first.kill("SIGKILL");
   await new Promise((resolve) => first.once("exit", resolve));
-  const { holder } = JSON.parse(await readFile(join(data, "runs", runId, "run.json"), "utf8"));
+  const { holder } = runRecordOf(data, runId);
   t.after(() => processAlive(holder.pid) && process.kill(holder.pid, "SIGKILL"));
   const next = await startServe({ data, port: 0, faux: FAUX, drainTimeout: "5s" });
   t.after(() => next.close());
   await writeFile(go, "");
   await follow(client(next.baseUrl, next.token), runId, ["completed"]);
-  assert.equal(JSON.parse(await readFile(join(data, "runs", runId, "run.json"), "utf8")).generation, 1, "the first process finished it");
+  assert.equal(runRecordOf(data, runId).generation, 1, "the first process finished it");
   assert.equal(metricsOf(data, runId).effort, "high");
 });
 
 test("a run on the claude-agent or codex harness ends with metrics: its model the revision's, its effort the harness's", { timeout: 90_000 }, async (t) => {
   withEnv(t, {}, EFFORT_NAMES);
-  const { api, data } = await serve(t, { fauxHarness: FAUX_HARNESS });
+  const { api, data } = await serve(t, { harnessTable: fauxTable(FAUX_HARNESS) });
   const claude = await started(api, "claude", { harness: "claude-agent", model: "anthropic/claude-opus-5-5", instructions: "Make three requests." }, { input: { content: "hi" } });
   await follow(api, claude, ["completed"], { deadlineMs: 55_000 });
   const m = metricsOf(data, claude);
@@ -151,7 +152,7 @@ test("a run whose process died before it released the run gets its metrics from 
   assert.deepEqual([m.requests, m.unmetered], [2, 1]);
   assert.deepEqual([m.input, m.output], [answered[0].model[0].usage.input, answered[0].model[0].usage.output]);
   assert.deepEqual(m.tools, { write: { calls: 1, errors: 0 } });
-  assert.equal(JSON.parse(await readFile(join(data, "runs", runId, "run.json"), "utf8")).generation, 1, "never opened again");
+  assert.equal(runRecordOf(data, runId).generation, 1, "never opened again");
 });
 
 test("a workflow run's metrics count every model node's conversation", async (t) => {
@@ -204,7 +205,7 @@ test("demo: a faux workflow run with one judge whose receipt carries usage count
     return body.run_id;
   };
   const runId = await ask();
-  const [row] = durableDecisions(join(data, "runs", runId, "store", "run.sqlite"));
+  const [row] = durableDecisions(join(runDir(data, runId), "store", "run.sqlite"));
   assert.deepEqual(row.usage, { input_tokens: 120, output_tokens: 0 }, "the receipt carries the judge's usage");
   const m = metricsOf(data, runId);
   assert.deepEqual([m.input, m.output, m.requests, m.unmetered], [120, 0, 1, 0], "its one request is the judge's, with its tokens");

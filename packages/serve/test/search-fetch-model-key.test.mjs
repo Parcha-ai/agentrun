@@ -12,10 +12,11 @@ import { readFile } from "node:fs/promises";
 import { join } from "node:path";
 import { test } from "node:test";
 import { CANARY as PARALLEL_CANARY } from "./fixtures/faux-parallel.mjs";
-import { agent, follow, scratch, serve, withEnv } from "./support.mjs";
+import { agent, follow, runDir, scratch, serve, withEnv } from "./support.mjs";
+import { fauxTable } from "./fixtures/faux-table.mjs";
 
 const fixture = (name) => new URL(`./fixtures/${name}`, import.meta.url).pathname;
-const FAUX = { fauxHarness: fixture("faux-harness.mjs"), fauxWeb: fixture("faux-web.mjs"), fauxParallel: fixture("faux-parallel.mjs"), fauxUpstream: fixture("faux-upstream.mjs"), fauxExa: fixture("faux-exa.mjs") };
+const FAUX = { harnessTable: fauxTable(fixture("faux-harness.mjs")), fauxWeb: fixture("faux-web.mjs"), fauxParallel: fixture("faux-parallel.mjs"), fauxUpstream: fixture("faux-upstream.mjs"), fauxExa: fixture("faux-exa.mjs") };
 const PAGE = "http://public.example/";
 const ANTHROPIC_TOOL = { type: "web_search_20250305", name: "web_search", max_uses: 5 };
 // OpenCode has no native search: picked, it is unavailable there; on auto it takes the server's Parallel key.
@@ -87,7 +88,7 @@ test("with only model keys: native search on pi, claude-agent and codex, and the
   assert.match(openai.results.web_search, /"results":\[\{"url":"http:\/\/public\.example\/","title":"Public page","snippet":"The public page says the answer is forty-two\."\},\{"url":"https:\/\/result\.example\/2"/);
   assert.match(openai.report, /http:\/\/public\.example\//);
   sent = (await seen()).upstream.slice(1);
-  assert.deepEqual(sent.map((call) => [call.path, call.body.tools, call.body.include, call.body.max_tool_calls]), [["/v1/responses", [{ type: "web_search" }], ["web_search_call.action.sources"], 5]], "its calls capped at the 5 its fee is reserved for");
+  assert.deepEqual(sent.map((call) => [call.path, call.body.tools, call.body.include, call.body.max_tool_calls]), [["/v1/responses", [{ type: "web_search", external_web_access: true }], ["web_search_call.action.sources"], 5]], "its calls capped at the 5 its fee is reserved for");
   assert.equal(sent[0].key, "Bearer not-a-secret");
   // gpt-5's 20,000 and 40 tokens at $1.25 and $10 per million, and one call at $0.01.
   assert.deepEqual(openai.usage, { usd: 0.0354, requests: 5 });
@@ -174,7 +175,7 @@ test("a capped pi run whose auto search is Parallel, under a cap just short of o
   const run = await research(api, "auto-capped", {}, { max_cost_usd: 0.0009 }, ["input_required", "completed"]);
   const paused = (await api("GET", `/runs/${run.runId}`)).body;
   assert.deepEqual([paused.status, paused.state, paused.pending?.kind, paused.pending?.needs_usd], ["input_required", "waiting", "budget", 0.001], JSON.stringify(paused));
-  assert.equal(run.results.web_search, JSON.stringify({ error: "spend_cap_reached: Not sent: the run has spent $0 of its $0.0009 cap, and Parallel's search could cost up to $0.001 (Parallel's list price for a fast search). Raise the cap to at least $0.01 to run it." }));
+  assert.equal(run.results.web_search, JSON.stringify({ error: "spend_cap_reached: Not sent: this run has spent $0 of its $0.0009 cap, and the next step, Parallel's search, could cost up to $0.001 (Parallel's list price for a fast search). Raise the cap to at least $0.01 to continue." }));
   const calls = await seen();
   assert.deepEqual([calls.parallel.slice(checked), calls.exa], [[], []], "nothing sent to Parallel, nor to Exa instead");
 });
@@ -182,7 +183,7 @@ test("a capped pi run whose auto search is Parallel, under a cap just short of o
 test("a capped claude-agent run on auto never sends Claude's own search: it resolves to Parallel where the server holds the key, else to keyless Exa, and its adapter is opened with no WebSearch, web_search a host tool", { timeout: 120_000 }, async (t) => {
   const { seen } = await setting(t, { PARALLEL_API_KEY: PARALLEL_CANARY });
   const { api, data } = await serve(t, FAUX);
-  const planeOf = async (runId) => JSON.parse(await readFile(join(data, "runs", runId, "serve.json"), "utf8")).tool_plane;
+  const planeOf = async (runId) => JSON.parse(await readFile(join(runDir(data, runId), "serve.json"), "utf8")).tool_plane;
   for (const [id, keyed] of [["capped-claude-keyed", true], ["capped-claude-keyless", false]]) {
     if (!keyed) delete process.env.PARALLEL_API_KEY;
     const before = (await seen()).opened.length;

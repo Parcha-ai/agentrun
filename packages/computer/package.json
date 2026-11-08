@@ -1,0 +1,56 @@
+{
+  "name": "@parcha/agentrun-computer",
+  "version": "0.1.0-beta.30",
+  "private": true,
+  "description": "The open platform's computer protocol: a daemon in every computer, and one provisioner per vendor, starting with Docker.",
+  "keywords": [
+    "agentrun",
+    "computer",
+    "sandbox",
+    "docker"
+  ],
+  "type": "module",
+  "license": "Apache-2.0",
+  "author": "Parcha Labs, Inc.",
+  "engines": {
+    "node": ">=22.19.0"
+  },
+  "main": "./dist/index.js",
+  "types": "./dist/index.d.ts",
+  "exports": {
+    ".": {
+      "types": "./dist/index.d.ts",
+      "default": "./dist/index.js"
+    },
+    "./package.json": "./package.json"
+  },
+  "files": [
+    "dist",
+    "README.md",
+    "LICENSE",
+    "NOTICE"
+  ],
+  "sideEffects": false,
+  "scripts": {
+    "build": "tsc -p tsconfig.json",
+    "build:daemon": "node scripts/build-daemon.mjs",
+    "typecheck": "tsc -p tsconfig.json --noEmit",
+    "test": "node --test test/*.test.mjs",
+    "test:docker": "node --test --test-timeout=900000 test/docker/*.test.mjs",
+    "test:modal": "node --test --test-timeout=1800000 test/modal/*.test.mjs",
+    "conformance": "node dist/conformance/cli.js"
+  },
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/Parcha-ai/agentrun.git",
+    "directory": "packages/computer"
+  },
+  "bugs": {
+    "url": "https://github.com/Parcha-ai/agentrun/issues"
+  },
+  "homepage": "https://agentrun.ai",
+  "publishConfig": {
+    "access": "public",
+    "tag": "beta"
+  }
+}

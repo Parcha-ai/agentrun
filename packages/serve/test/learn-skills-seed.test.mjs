@@ -10,13 +10,14 @@ import { existsSync, lstatSync, mkdirSync, readdirSync, readFileSync, rmSync, sy
 import { dirname, join } from "node:path";
 import { test } from "node:test";
 import { fakeAnthropic } from "@parcha/agentrun-harness-claude/testing";
-import { claudeSkillCheck } from "../dist/adapters.js";
-import { homeOf } from "../dist/files.js";
+import { builtinHarness } from "../dist/harness-table.js";
+import { agentFolderOf } from "../dist/files.js";
 // One namespace, so each test reads what it needs of it as it runs.
 import * as learning from "../dist/learning.js";
 import { systemOf } from "../dist/skills.js";
 import { ended, git } from "./learn-support.mjs";
-import { agent, follow, scratch, serve, withEnv } from "./support.mjs";
+import { agent, follow, runDir, scratch, serve, withEnv } from "./support.mjs";
+import { fauxTable } from "./fixtures/faux-table.mjs";
 
 const SYSTEM = new URL("./fixtures/faux-system.mjs", import.meta.url).pathname;
 const KIB = 1024;
@@ -39,7 +40,7 @@ const asLearned = (skills) => Object.fromEntries(Object.entries(skills).flatMap(
 async function folderWith(data, id, files, links = {}) {
   mkdirSync(data, { recursive: true });
   await seedOf(data, id);
-  const repo = join(homeOf(data, id), "learning");
+  const repo = join(agentFolderOf(data, id), "learning");
   for (const [path, text] of Object.entries(files)) {
     mkdirSync(dirname(join(repo, path)), { recursive: true });
     writeFileSync(join(repo, path), text);
@@ -66,8 +67,8 @@ async function runWith(t, files) {
 }
 
 const skillsDir = (work) => join(work, ".agents", "skills");
-const pinOf = (data, runId) => JSON.parse(readFileSync(join(data, "runs", runId, "learning.json"), "utf8"));
-const workOf = (data, runId) => join(data, "runs", runId, "work");
+const pinOf = (data, runId) => JSON.parse(readFileSync(join(runDir(data, runId), "learning.json"), "utf8"));
+const workOf = (data, runId) => join(runDir(data, runId), "work");
 const inlined = (prompt) => [...prompt.matchAll(/<skill name="([^"]+)">/g)].map((match) => match[1]);
 /** A model request's system prompt, as text. */
 const systemText = (body) => (typeof body?.system === "string" ? body.system : (body?.system ?? []).map((block) => block?.text ?? "").join("\n"));
@@ -92,7 +93,7 @@ test("with claude-agent's own check: 900 KiB of the revision's skills and a 200 
   const revision = { "cite/SKILL.md": CITE, "cite/reference/data.md": filler(900 * KIB) };
   const { runDir, work } = await runWith(t, revision);
   const pin = await pinSeed(runDir, work, seed, { ...PLAIN, own: Object.keys(revision) });
-  const check = await claudeSkillCheck();
+  const check = await builtinHarness("claude-agent").skillCheck();
   assert.ok(check, "the installed claude-agent adapter's own check");
   const learned = await withLearned(runDir, work, "Answer.", Object.keys(revision));
   const { system, native } = await systemOf(learned.instructions, learned.skills, work, check);
@@ -146,7 +147,7 @@ test("the learned skills' budget is 256 KiB, whatever room the revision's leave:
 });
 
 test("a learned skill named like one of the revision's is the revision's: its SKILL.md and files stay, in the prompt and the work, and the pin names only the others", { timeout: 120_000 }, async (t) => {
-  const { api, data } = await serve(t, { faux: SYSTEM, fauxHarness: SYSTEM });
+  const { api, data } = await serve(t, { faux: SYSTEM, harnessTable: fauxTable(SYSTEM) });
   const sha = await folderWith(data, "same", asLearned({ cite: { "SKILL.md": skillMd("cite", CANARY), "extra.md": CANARY }, "check-units": { "SKILL.md": UNITS } }));
   const { runId, prompt } = await ranWithCite(api, "same", "pi");
   assert.ok(!prompt.includes(CANARY), prompt);
@@ -159,7 +160,7 @@ test("a learned skill named like one of the revision's is the revision's: its SK
 
 for (const harness of ["pi", "codex"]) {
   test(`a ${harness} run gets the skills its agent learned beside its revision's: each SKILL.md in its prompt, every file in work/.agents/skills/, named in its pin; one held for its owner's OK is not served`, { timeout: 120_000 }, async (t) => {
-    const { api, data } = await serve(t, { faux: SYSTEM, fauxHarness: SYSTEM });
+    const { api, data } = await serve(t, { faux: SYSTEM, harnessTable: fauxTable(SYSTEM) });
     const id = `skilled-${harness}`;
     const waiting = `---\nname: waiting-skill\ndescription: ${CANARY}\nstatus: pending\n---\nNot approved yet.\n`;
     const sha = await folderWith(data, id, asLearned({ "check-units": { "SKILL.md": UNITS, "reference/units.md": UNITS_TABLE }, "waiting-skill": { "SKILL.md": waiting } }));
@@ -179,7 +180,7 @@ for (const harness of ["pi", "codex"]) {
 
 for (const harness of ["pi", "codex"]) {
   test(`a ${harness} run that reads its files gets its skills on demand: each one's name, what it is for and its SKILL.md's path, the revision's and the learned ones alike, no skill's text; the file is there to read`, { timeout: 120_000 }, async (t) => {
-    const { api, data } = await serve(t, { faux: SYSTEM, fauxHarness: SYSTEM });
+    const { api, data } = await serve(t, { faux: SYSTEM, harnessTable: fauxTable(SYSTEM) });
     const id = `ondemand-${harness}`;
     await folderWith(data, id, asLearned({ "check-units": { "SKILL.md": UNITS, "reference/units.md": UNITS_TABLE } }));
     const { runId, prompt } = await ranWithCite(api, id, harness, ["read"]);
@@ -202,7 +203,7 @@ for (const [where, links] of [["a SKILL.md", { "skills/evil/SKILL.md": "OUTSIDE"
     await folderWith(data, id, where === "the skills folder" ? {} : asLearned({ "check-units": { "SKILL.md": UNITS } }), Object.fromEntries(Object.entries(links).map(([path, target]) => [path, targets[target]])));
     const { runId, prompt, view } = await ranWithCite(api, id, "pi");
     assert.deepEqual([view.learning?.state, view.learning?.reason], ["dropped", "seed_failed"], JSON.stringify(view.learning));
-    assert.equal(existsSync(join(data, "runs", runId, "learning.json")), false, "no pin");
+    assert.equal(existsSync(join(runDir(data, runId), "learning.json")), false, "no pin");
     assert.ok(!prompt.includes(CANARY) && !prompt.includes("# Learned"), prompt);
     assert.deepEqual(inlined(prompt), ["cite"], "the revision's skill alone");
     assert.deepEqual(readdirSync(skillsDir(workOf(data, runId))), ["cite"]);

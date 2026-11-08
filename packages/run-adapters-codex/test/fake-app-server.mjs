@@ -1,7 +1,7 @@
 #!/usr/bin/env node
 // Copyright 2026 Vercel Inc. Licensed under the Apache License, Version 2.0; see LICENSE in this package.
 // From github.com/vercel-labs/durable-harness, packages/harness-codex/test/fake-app-server.mjs at ea8aa4060c (UPSTREAM.json records its blob and sha256).
-// Changed by Parcha, patches: 005-fake-app-server-script, 006-comments, 014-fake-app-server-start-ms, 015-fake-app-server-sse-event-lines, 016-fake-app-server-record-ms
+// Changed by Parcha, and AgentRun's own since the port from upstream froze on 2026-11-07.
 /**
  * A fake `codex app-server --stdio`, for the tests that need no network. It
  * speaks the subset of the protocol the harness uses and keeps a rollout
@@ -79,6 +79,7 @@ import { randomUUID } from 'node:crypto';
 import { appendFileSync, existsSync, mkdirSync, readdirSync, readFileSync, statSync, writeFileSync } from 'node:fs';
 import { dirname, join } from 'node:path';
 import { createInterface } from 'node:readline';
+import { mcpDown, mcpTurn } from './fake-app-server-mcp.js';
 
 const home = process.env.CODEX_HOME;
 if (home && process.argv[2] === 'sandbox') {
@@ -265,6 +266,9 @@ async function runTurn(turnId, clientId, text) {
     await sleep(300);
     last = 'tampered';
     await say(turnId, last);
+  } else if (trimmed === 'outputs' || /^mcp\s/.test(trimmed)) {
+    last = await mcpTurn(trimmed, turnId, { thread, write, notify, say, table });
+    await say(turnId, last);
   } else if (trimmed === 'recall') {
     const said = thread.lines.map((l) => JSON.stringify(l.payload ?? {})).join('\n');
     const word = /code word is (\w+)/.exec(said)?.[1];
@@ -400,6 +404,8 @@ async function handle(m) {
     case 'thread/start': {
       const id = randomUUID();
       const path = join(home, 'sessions', '2026', '10', '06', `rollout-2026-10-06T00-00-00-${id}.jsonl`);
+      const down = await mcpDown({ config, table });
+      if (down) return fail(-32603, down);
       thread = { id, path, cwd: p.cwd, dynamicTools: p.dynamicTools ?? [], lines: [], planted: projectConfig(p.cwd) };
       return reply({ thread: { id, path }, approvalPolicy: p.approvalPolicy, sandbox: { type: 'readOnly' } });
     }

@@ -10,6 +10,8 @@ export type ActionPolicy = "allow" | "deny" | "ask";
 export type EffectRow = SentEffect;
 export type EffectDecision = { allow: boolean; verdict: EffectVerdict | null };
 export type EffectDecider = (request: EffectRequest) => Promise<EffectDecision>;
+/** A request the browser lost before it was sent: the same fields a journal row holds, never a body, header or query. */
+export type LostEffect = { requestId: string; method: string; origin: string; path: string };
 
 const SAFE = new Set(["GET", "HEAD", "OPTIONS"]);
 const SESSIONS = new Set(["page", "iframe", "worker", "service_worker", "shared_worker"]);
@@ -18,15 +20,30 @@ const REFUSED: EffectDecision = { allow: false, verdict: null };
 const EXTENSION = "chrome-extension://";
 /** The run code's own words in `trigger`, so a host asked about the request knows where it came from. */
 const RUN_CODE = "run code";
+/** How often the network service's pid is asked for while a request waits for its pause. */
+const SERVICE_POLL_MS = 250;
+/** How long a browser that never named a network service may go on naming none before it is taken to have none of its own. */
+const NO_SERVICE_MS = 2_000;
+/** How long a known network service may be missing, its successor not yet shown, before what it carried is told lost. */
+const SERVICE_GONE_MS = 10_000;
+/** How long one question about the network service may go unanswered: a timeout is no answer, never a restart. */
+const ASK_MS = 1_000;
+/** Unanswered questions in a row after which the watch waits for a new held request before it asks again. */
+const UNANSWERED_STALL = 3;
+/** The least time between two questions: requests announced meanwhile share the next one. */
+const ASK_GAP_MS = 50;
+/** `frameId`: a Document request's frame, so a form lost by its intent and by its request is told once. */
+/** `sent`: a redirect hop, whose first hop went out, so it is never told "not sent". */
+type Announced = { sessionId: string; seq: number; method: string; url: string; frameId?: string; sent?: boolean };
+
+/** A journal row's id: the request's own for its first hop, and one per redirect hop after it, so a hop never replaces the row before it. */
+const rowId = (id: string, hop: number): string => (hop > 1 ? `${id}#${hop}` : id);
 
 /** An extension's pages (its offscreen document, its wake page) send nothing a model chose; its service worker is where
  *  run code executes, and is watched like a page. */
 const ownsExtensionPage = (type: string, url: string): boolean => url.startsWith(EXTENSION) && type !== "service_worker";
-/** Where Stagehand's trace exporter, which cannot be turned off, is pointed: a closed loopback port, so a request to it
- *  arrives nowhere and is neither held nor journaled. */
-export const INERT_TRACE_ENDPOINT = "http://127.0.0.1:9/v1/traces";
-/** A request to an extension's own files, or to the closed trace port, goes nowhere a model chose. */
-const isOwnTraffic = (url: string): boolean => url.startsWith(EXTENSION) || url === INERT_TRACE_ENDPOINT;
+/** A request to an extension's own files goes nowhere a model chose. */
+const isOwnTraffic = (url: string): boolean => url.startsWith(EXTENSION);
 
 /** Judgments are memoized per request shape, so a page that beacons every second costs one question; `ask` approvals
  *  are not. No judge, a null answer or a failure leaves the request judged irreversible. */
@@ -71,7 +88,49 @@ export class EffectObserver {
   private readonly inflight = new Set<Promise<unknown>>();
   /** Announced by `Network.requestWillBeSent` (in order with page commands) but not yet paused by `Fetch.requestPaused`
    *  (which can lag). A holding session journals only at the pause, so `flush` waits for these. */
-  private readonly announced = new Map<string, { sessionId: string; seq: number }>();
+  private readonly announced = new Map<string, Announced>();
+  /** By network id, how many times a holding session paused a non-GET request (once per redirect hop), so a late
+   *  announcement of a hop already paused is never taken for a request still on its way. */
+  private readonly pauses = new Map<string, number>();
+  /** By network id, how many hops of a non-GET request were announced: a redirect announces the same id again. */
+  private readonly hops = new Map<string, number>();
+  /** Allowed requests, continued and not yet answered: until the response's head says whether the request redirects (its
+   *  next hop is then announced) or ends, a flush waits for them, so a redirect's next hop is decided under the same call. */
+  private readonly responding = new Map<string, { sessionId: string; seq: number; hop: number }>();
+  private respondSeq = 0;
+  private lastAskAt = 0;
+  /** Chrome's network service runs in a process of its own. When it dies, Chrome starts another, and a request the dead one
+   *  carried before its pause is gone: it was never sent (a holding session sends nothing it has not paused), and the page
+   *  may never hear of it. While an announced request waits for its pause, the service's pid is asked for (never when
+   *  nothing waits); a new pid means the requests announced before the old one was last seen, and still unpaused, were lost
+   *  with it. `confirmedSeq`: how far `announceSeq` had got when the old pid was last asked for. */
+  private servicePid: number | null = null;
+  private confirmedSeq = 0;
+  /** How far `announceSeq` had got when the service was last asked, whatever it answered. */
+  private askedSeq = 0;
+  private watching = false;
+  /** Questions in a row left unanswered; `UNANSWERED_STALL` of them stall the watch until a new held request. */
+  private unanswered = 0;
+  private stalled = false;
+  /** The browser refused `SystemInfo.getProcessInfo` (a provider's endpoint may), or kept answering without a network
+   *  service of its own (one in-process) for `NO_SERVICE_MS`: it is not asked again. */
+  private noService = false;
+  /** Since when the answers have named no network service. In a browser that never named one, `NO_SERVICE_MS` of that
+   *  means it has none of its own (in-process). After a known one, it is a restart whose new service is slow to show:
+   *  `SERVICE_GONE_MS` of that and the old one's waiting requests are told lost. */
+  private missingSince: number | null = null;
+  /** A network service was named at least once in this observer's life. */
+  private seenService = false;
+  /** Ends the watch's wait between questions early: a request just announced is asked about at once, so a service that dies
+   *  a moment after it is found to have died with it. */
+  private nudge: (() => void) | null = null;
+  private checking: Promise<"same" | "restarted" | "unknown"> = Promise.resolve("unknown");
+  /** Requests that ended unpaused (`loadingFailed`) since the service was last asked for: one that failed because the
+   *  service died is lost too. */
+  private readonly endedUnpaused = new Map<string, Announced>();
+  /** Lost requests the call was told were not sent: a pause of one that comes after all is refused, never sent. */
+  private readonly lost = new Set<string>();
+  private lostListener: ((request: LostEffect) => unknown) | null = null;
   private announceSeq = 0;
   private announcedWaiters: Array<() => void> = [];
   closed = false;
@@ -114,11 +173,13 @@ export class EffectObserver {
     }
   }
 
-  /** Journal every effect from now on (a held one before it is sent); returns the stop. Lifts the previous call's cut. */
-  record(listener: (row: EffectRow) => unknown): () => void {
+  /** Journal every effect from now on (a held one before it is sent); returns the stop. Lifts the previous call's cut.
+   *  `lost` hears of each request the browser lost before it was sent (see `servicePid`), while this call records. */
+  record(listener: (row: EffectRow) => unknown, lost?: (request: LostEffect) => unknown): () => void {
     if (this.isCut) this.arm();
     this.listener = listener;
-    return () => { if (this.listener === listener) this.listener = null; };
+    this.lostListener = lost ?? null;
+    return () => { if (this.listener === listener) { this.listener = null; this.lostListener = null; } };
   }
 
   /** Resolves once everything the page started before this call is journaled. */
@@ -128,7 +189,9 @@ export class EffectObserver {
     const cut = () => { this.isCut = true; this.cut(); };
     if (signal?.aborted) cut(); else signal?.addEventListener("abort", cut, { once: true });
     try {
-      await this.announcedSettled(timeoutMs);
+      await this.announcedSettled(timeoutMs, signal);
+      // A request that ended unpaused during the call may be one a dead network service took: asked now, while the call can be told.
+      if (this.endedUnpaused.size) await this.conclusiveCheck(timeoutMs, signal);
       while (this.inflight.size) await Promise.allSettled([...this.inflight]);
     } finally { signal?.removeEventListener("abort", cut); }
   }
@@ -136,6 +199,16 @@ export class EffectObserver {
   close(): void { try { this.ws.close(); } catch {} }
 
   private arm(): void { this.isCut = false; this.cutoff = new Promise((resolve) => { this.cut = () => resolve(REFUSED); }); }
+
+  /** `send`, whose question is forgotten when it goes unanswered for `ms`: "late", and nothing kept pending for it. */
+  private sendWithin(method: string, ms: number): Promise<any> {
+    const id = this.next++;
+    return new Promise((resolve, reject) => {
+      const timer = setTimeout(() => { this.pending.delete(id); resolve("late"); }, ms);
+      this.pending.set(id, { resolve: (value) => { clearTimeout(timer); resolve(value); }, reject: (error) => { clearTimeout(timer); reject(error); } });
+      try { this.ws.send(JSON.stringify({ id, method, params: {} })); } catch (error) { clearTimeout(timer); this.pending.delete(id); reject(error as Error); }
+    });
+  }
 
   private send(method: string, params: object = {}, sessionId?: string): Promise<any> {
     const id = this.next++;
@@ -153,36 +226,226 @@ export class EffectObserver {
       return;
     }
     if (m.method === "Target.attachedToTarget") this.setup(m.params).catch(() => {});
-    else if (m.method === "Target.detachedFromTarget") { this.sessions.delete(m.params.sessionId); for (const [id, entry] of [...this.announced]) if (entry.sessionId === m.params.sessionId) this.unannounce(id); }
-    else if (m.method === "Network.requestWillBeSent") { this.announce(m.sessionId!, m.params); this.track(this.sent(m.sessionId!, m.params)); }
+    else if (m.method === "Target.detachedFromTarget") {
+      this.sessions.delete(m.params.sessionId);
+      for (const [id, entry] of [...this.announced]) if (entry.sessionId === m.params.sessionId) this.unannounce(id);
+      for (const [id, entry] of [...this.responding]) if (entry.sessionId === m.params.sessionId) this.answered(id);
+    }
+    else if (m.method === "Network.requestWillBeSent") {
+      const hop = this.hopOf(m.params);
+      this.announce(m.sessionId!, m.params, hop);
+      // A redirect is the previous hop's answer; its next hop, just announced, is waited for in its place. A next hop
+      // already paused (its pause came before this announcement) stays waited for.
+      if (m.params.redirectResponse && (this.responding.get(m.params.requestId)?.hop ?? 0) < hop) this.answered(m.params.requestId);
+      this.track(this.sent(m.sessionId!, m.params, hop));
+    }
+    else if (m.method === "Network.responseReceived") this.answered(m.params.requestId);
     else if (m.method === "Fetch.requestPaused") {
-      this.track(this.paused(m.sessionId!, m.params));
       // A preflight (OPTIONS) is paused first and says nothing about the request it precedes.
-      if (!SAFE.has(m.params.request.method)) {
-        this.unannounce(m.params.networkId ?? m.params.requestId);
+      const id = m.params.networkId ?? m.params.requestId;
+      const hop = SAFE.has(m.params.request.method) ? 0 : (this.pauses.get(id) ?? 0) + 1;
+      // A held request is waited for from its pause, through its decision, to its answer (paused() lets it go when it is
+      // refused): it is covered before it stops being announced, so a flush never sees a gap between the two.
+      if (hop && this.decide && !isOwnTraffic(m.params.request.url)) this.responding.set(id, { sessionId: m.sessionId!, seq: (this.respondSeq += 1), hop });
+      this.track(this.paused(m.sessionId!, m.params, hop));
+      if (hop) {
+        this.pauses.set(id, hop);
+        this.unannounce(id);
         if (m.params.resourceType === "Document") this.unannounce(`navigation:${m.params.frameId}`);
       }
     }
-    else if (m.method === "Network.loadingFailed" || m.method === "Network.loadingFinished") this.unannounce(m.params.requestId);
+    else if (m.method === "Network.loadingFailed") {
+      const entry = this.announced.get(m.params.requestId);
+      if (entry) { this.endedUnpaused.set(m.params.requestId, entry); this.watch(); }
+      this.unannounce(m.params.requestId);
+      this.answered(m.params.requestId);
+    }
+    else if (m.method === "Network.loadingFinished") { this.unannounce(m.params.requestId); this.answered(m.params.requestId); }
     else if (m.method === "Network.webSocketCreated") this.track(this.socket(m.sessionId!, m.params));
-    else if (m.method === "Page.frameRequestedNavigation" && m.params.reason === "formSubmissionPost" && this.sessions.get(m.sessionId!)?.holds) this.announced.set(`navigation:${m.params.frameId}`, { sessionId: m.sessionId!, seq: (this.announceSeq += 1) });
+    else if (m.method === "Page.frameRequestedNavigation" && m.params.reason === "formSubmissionPost" && this.sessions.get(m.sessionId!)?.holds) {
+      // A new intent in the frame is a new form: an earlier one told lost no longer refuses it, and it is asked about.
+      this.lost.delete(`navigation:${m.params.frameId}`);
+      this.stalled = false;
+      this.announced.set(`navigation:${m.params.frameId}`, { sessionId: m.sessionId!, seq: (this.announceSeq += 1), method: "POST", url: m.params.url });
+      this.watch();
+    }
   }
 
-  private announce(sessionId: string, p: { requestId: string; request: { method: string } }): void {
-    if (this.sessions.get(sessionId)?.holds && !SAFE.has(p.request.method)) this.announced.set(p.requestId, { sessionId, seq: (this.announceSeq += 1) });
+  /** Which hop of its request a non-GET announcement is: 1, then one more for each redirect; 0 for a GET. */
+  private hopOf(p: { requestId: string; redirectResponse?: unknown; request: { method: string } }): number {
+    if (SAFE.has(p.request.method)) return 0;
+    const hop = p.redirectResponse ? (this.hops.get(p.requestId) ?? 1) + 1 : 1;
+    this.hops.set(p.requestId, hop);
+    return hop;
+  }
+
+  /** A redirect announces its next hop under the same id; it is waited for as the first was, unless already paused. */
+  private announce(sessionId: string, p: { requestId: string; type?: string; frameId?: string; request: { method: string; url: string } }, hop: number): void {
+    if (!hop || !this.sessions.get(sessionId)?.holds || (this.pauses.get(p.requestId) ?? 0) >= hop) return;
+    // A new held request is asked about even after a browser left questions unanswered.
+    this.stalled = false;
+    this.announced.set(p.requestId, { sessionId, seq: (this.announceSeq += 1), method: p.request.method, url: p.request.url, ...(p.type === "Document" && p.frameId ? { frameId: p.frameId } : {}), ...(hop > 1 ? { sent: true } : {}) });
+    this.watch();
+  }
+
+  /** Asks for the network service's pid while a request waits for its pause or one ended unpaused, and never otherwise:
+   *  at once for a request just announced, then every `SERVICE_POLL_MS` while it waits. */
+  private watch(): void {
+    if (this.watching) { this.nudge?.(); return; }
+    if (this.closed || !this.decide || this.noService || this.stalled) return;
+    this.watching = true;
+    void (async () => {
+      try {
+        while (!this.closed && !this.noService && !this.stalled && (this.announced.size || this.endedUnpaused.size)) {
+          if ((await this.checkService()) !== "unknown" && this.announceSeq > this.askedSeq) continue;
+          await new Promise<void>((resolve) => {
+            const timer = setTimeout(() => { this.nudge = null; resolve(); }, SERVICE_POLL_MS);
+            this.nudge = () => { clearTimeout(timer); this.nudge = null; resolve(); };
+          });
+        }
+      } finally { this.watching = false; this.nudge = null; }
+    })().catch(() => undefined);
+  }
+
+  /** One question about the network service at a time, so one restart is found once. */
+  private checkService(): Promise<"same" | "restarted" | "unknown"> {
+    this.checking = this.checking.then(() => this.askService(), () => this.askService());
+    return this.checking;
+  }
+
+  /** Asks until the answer says whether the service restarted, within `ms`, or the call's `signal` ends. A browser that
+   *  never named a network service (one in-process, or a refused question) is asked once. While a known service is missing
+   *  the wait runs to the end of its window (`SERVICE_GONE_MS`), so a successor slow to show still has the call told what
+   *  the old one took; the call's own end ends it sooner. */
+  private async conclusiveCheck(ms: number, signal?: AbortSignal): Promise<void> {
+    if (this.noService || !this.decide) return;
+    const end = Date.now() + ms;
+    for (;;) {
+      if ((await this.checkService()) !== "unknown" || this.servicePid === null || this.noService || this.stalled || this.closed || signal?.aborted) return;
+      const until = this.seenService && this.missingSince !== null ? Math.max(end, this.missingSince + SERVICE_GONE_MS + SERVICE_POLL_MS) : end;
+      if (Date.now() >= until) return;
+      await new Promise<void>((resolve) => {
+        const timer = setTimeout(finish, Math.min(SERVICE_POLL_MS, 100));
+        function finish() { clearTimeout(timer); signal?.removeEventListener("abort", finish); resolve(); }
+        signal?.addEventListener("abort", finish, { once: true });
+      });
+    }
+  }
+
+  private async askService(): Promise<"same" | "restarted" | "unknown"> {
+    // At most one question per `ASK_GAP_MS`; what is announced before it goes is covered by its answer.
+    const wait = this.lastAskAt + ASK_GAP_MS - Date.now();
+    if (wait > 0) await new Promise((r) => setTimeout(r, wait));
+    this.lastAskAt = Date.now();
+    const covered = this.announceSeq;
+    // An unanswered question, one answered with no result, or one that failed is no answer. A browser that gives no answer
+    // three times in a row is not asked again until a new held request is announced: what waits now is left to the
+    // flush's own bound, never called lost.
+    const noAnswer = (): "unknown" => {
+      this.unanswered += 1;
+      if (this.unanswered >= UNANSWERED_STALL) { this.stalled = true; this.endedUnpaused.clear(); }
+      return "unknown";
+    };
+    let pid: number | null = null;
+    try {
+      const answer = await this.sendWithin("SystemInfo.getProcessInfo", ASK_MS) as { processInfo?: Array<{ type?: unknown; id?: unknown }> } | "late" | undefined;
+      if (answer === "late" || answer === null || typeof answer !== "object") return noAnswer();
+      const service = Array.isArray(answer.processInfo) ? answer.processInfo.find((p) => typeof p?.type === "string" && p.type.includes("NetworkService")) : undefined;
+      pid = typeof service?.id === "number" ? service.id : null;
+      this.unanswered = 0;
+    } catch (error) {
+      if (observerFailure(error) === "cdp_error") { this.noService = true; return "unknown"; }
+      return noAnswer();
+    }
+    this.askedSeq = Math.max(this.askedSeq, covered);
+    // No pid: Chrome has not started the new service yet, or runs none of its own (see `missingSince`).
+    if (pid === null) {
+      this.missingSince ??= Date.now();
+      const missing = Date.now() - this.missingSince;
+      if (!this.seenService) {
+        if (missing >= NO_SERVICE_MS) { this.noService = true; this.endedUnpaused.clear(); }
+        return "unknown";
+      }
+      if (this.servicePid === null || missing < SERVICE_GONE_MS) return "unknown";
+      // The known service has been gone too long to wait for its successor: what it carried is lost, and the next pid
+      // named is learned afresh.
+      this.missingSince = null;
+      await this.lose(covered, null);
+      return "restarted";
+    }
+    this.missingSince = null;
+    this.seenService = true;
+    if (this.servicePid === null || pid === this.servicePid) {
+      this.servicePid = pid;
+      this.confirmedSeq = covered;
+      this.endedUnpaused.clear();
+      return "same";
+    }
+    await this.lose(covered, pid);
+    return "restarted";
+  }
+
+  /** The service last seen died: the requests seen waiting while it was alive, and still unpaused, are lost and told; one
+   *  announced since may be the new service's, on its way. Not paused means never sent, and a later pause of one is refused. */
+  private async lose(covered: number, pid: number | null): Promise<void> {
+    const gone: Array<[string, Announced]> = [...this.announced, ...this.endedUnpaused].filter(([id, entry]) => entry.seq <= this.confirmedSeq && !entry.sent && !this.pauses.has(id));
+    this.servicePid = pid;
+    this.confirmedSeq = covered;
+    this.endedUnpaused.clear();
+    // Both keys of a form refuse a late pause, but the call is told of the form once: by its Document request when that was seen.
+    const forms = new Set(gone.flatMap(([, entry]) => (entry.frameId ? [`navigation:${entry.frameId}`] : [])));
+    const told = gone.filter(([id]) => !forms.has(id));
+    // The call is told of every loss before a flush that was waiting for these requests returns: the telling is in flight
+    // before they stop being waited for, and to the call recording when they were found.
+    const listener = this.lostListener;
+    const telling = (async () => {
+      for (const [id, entry] of told) {
+        let request: EffectRequest;
+        try { request = describeRequest(entry.method, entry.url); } catch { continue; }
+        try { await listener?.({ requestId: id, method: request.method, origin: request.origin, path: request.path }); } catch { /* a listener's failure is its own */ }
+      }
+    })();
+    this.track(telling);
+    for (const [id] of gone) { this.lost.add(id); this.unannounce(id); }
+    await telling;
   }
 
   private unannounce(requestId: string): void {
-    if (this.announced.delete(requestId) && this.announced.size === 0) for (const wake of this.announcedWaiters.splice(0)) wake();
+    if (this.announced.delete(requestId)) this.wakeIfSettled();
   }
 
-  /** Bounded: a request the browser never pauses (it ended some other way) must not hold a flush forever. */
-  private announcedSettled(ms: number): Promise<void> {
-    if (this.announced.size === 0) return Promise.resolve();
+  private answered(requestId: string): void {
+    if (this.responding.delete(requestId)) this.wakeIfSettled();
+  }
+
+  private wakeIfSettled(): void {
+    if (this.announced.size === 0 && this.responding.size === 0) for (const wake of this.announcedWaiters.splice(0)) wake();
+  }
+
+  /** Bounded: a request the browser never pauses (it ended some other way) must not hold a flush forever. One still waiting
+   *  when the wait ends may be one a dead network service took: the service is asked about it, while the call can be told,
+   *  before it is given up. */
+  private announcedSettled(ms: number, signal?: AbortSignal): Promise<void> {
+    // A cancelled call does not wait for an allowed request's answer: nothing it could still be told depends on it.
+    const stopResponding = () => { for (const id of [...this.responding.keys()]) this.answered(id); };
+    if (signal?.aborted) stopResponding();
+    if (this.announced.size === 0 && this.responding.size === 0) return Promise.resolve();
     return new Promise<void>((resolve) => {
-      const done = () => { clearTimeout(timer); this.announcedWaiters = this.announcedWaiters.filter((w) => w !== done); resolve(); };
+      const done = () => { clearTimeout(timer); signal?.removeEventListener("abort", stopResponding); this.announcedWaiters = this.announcedWaiters.filter((w) => w !== done); resolve(); };
+      signal?.addEventListener("abort", stopResponding, { once: true });
       const covered = this.announceSeq;
-      const timer = setTimeout(() => { for (const [id, entry] of [...this.announced]) if (entry.seq <= covered) this.unannounce(id); done(); }, ms);
+      const coveredResponses = this.respondSeq;
+      const timer = setTimeout(() => {
+        void (async () => {
+          try {
+            if ([...this.announced.values()].some((entry) => entry.seq <= covered)) await this.conclusiveCheck(ms, signal);
+          } finally {
+            for (const [id, entry] of [...this.announced]) if (entry.seq <= covered) this.unannounce(id);
+            for (const [id, entry] of [...this.responding]) if (entry.seq <= coveredResponses) this.answered(id);
+            done();
+          }
+        })().catch(() => undefined);
+      }, ms);
       this.announcedWaiters.push(done);
     });
   }
@@ -217,10 +480,10 @@ export class EffectObserver {
     try { await this.listener?.(row); return true; } catch { return false; }
   }
 
-  private async sent(sessionId: string, p: { requestId: string; request: { method: string; url: string } }): Promise<void> {
+  private async sent(sessionId: string, p: { requestId: string; request: { method: string; url: string } }, hop: number): Promise<void> {
     const session = this.sessions.get(sessionId);
     if (SAFE.has(p.request.method) || !session || ownsExtensionPage(session.type, session.url) || isOwnTraffic(p.request.url) || session.holds) return;
-    await this.journal(p.requestId, describeRequest(p.request.method, p.request.url), null, null);
+    await this.journal(rowId(p.requestId, hop), describeRequest(p.request.method, p.request.url), null, null);
   }
 
   /** A socket cannot be held (Fetch does not see it), so it is journaled when it is created and never decided, whoever opens
@@ -237,25 +500,46 @@ export class EffectObserver {
     try { return this.endpoints.includes(new URL(url).href); } catch { return false; }
   }
 
-  private async paused(sessionId: string, p: { requestId: string; networkId?: string; request: { method: string; url: string; postData?: string; headers?: Record<string, string> } }): Promise<void> {
+  /** A held request stays in `responding` (set at its pause) only once it is let go: refused, or not decided at all, it
+   *  is not waited for. */
+  private async paused(sessionId: string, p: { requestId: string; networkId?: string; frameId?: string; resourceType?: string; request: { method: string; url: string; postData?: string; headers?: Record<string, string> } }, hop: number): Promise<void> {
+    const id = p.networkId ?? p.requestId;
+    let continued = false;
+    try {
+      continued = await this.decidePaused(sessionId, p, hop, id);
+    } finally {
+      if (!continued) this.answered(id);
+    }
+  }
+
+  /** True when the held request was continued (allowed and recorded). */
+  private async decidePaused(sessionId: string, p: { requestId: string; networkId?: string; frameId?: string; resourceType?: string; request: { method: string; url: string; postData?: string; headers?: Record<string, string> } }, hop: number, id: string): Promise<boolean> {
     const { method, url, postData, headers } = p.request;
-    if (SAFE.has(method) || !this.decide || isOwnTraffic(url)) return this.send("Fetch.continueRequest", { requestId: p.requestId }, sessionId);
+    if (SAFE.has(method) || !this.decide || isOwnTraffic(url)) { await this.send("Fetch.continueRequest", { requestId: p.requestId }, sessionId); return false; }
     let request: EffectRequest;
     // A request the observer cannot describe cannot be judged or journaled, and a held request nobody answers waits forever: refuse it.
-    try { request = describeRequest(method, url, postData, headers); } catch { return this.send("Fetch.failRequest", { requestId: p.requestId, errorReason: "BlockedByClient" }, sessionId); }
+    try { request = describeRequest(method, url, postData, headers); } catch { await this.send("Fetch.failRequest", { requestId: p.requestId, errorReason: "BlockedByClient" }, sessionId); return false; }
     // Only the extension's own worker runs the model's code: a website's worker sends what the website sent.
     const session = this.sessions.get(sessionId);
     if (session?.type === "service_worker" && session.url.startsWith(EXTENSION)) request = { ...request, trigger: RUN_CODE };
     const cutoff = this.cutoff;
     // Journaled `pending` and committed before deciding: a process that dies mid-decision loses the hold and the
     // request goes, so the journal must already name it. A request whose row could not be saved never leaves.
-    const id = p.networkId ?? p.requestId;
-    const saved = await this.journal(id, request, "pending", null);
+    const row = rowId(id, hop);
+    const saved = await this.journal(row, request, "pending", null);
     let timer: ReturnType<typeof setTimeout> | undefined;
     const limit = new Promise<EffectDecision>((resolve) => { timer = setTimeout(() => resolve(REFUSED), this.decideMs); });
-    const { allow, verdict } = saved ? await Promise.race([this.decide(request), cutoff, limit]).finally(() => clearTimeout(timer)) : REFUSED;
-    const recorded = await this.journal(id, request, allow ? "allowed" : "denied", verdict);
-    if (allow && !recorded) return this.send("Fetch.failRequest", { requestId: p.requestId, errorReason: "BlockedByClient" }, sessionId);
+    // A request the call was told the browser lost, and so was not sent, stays not sent: by its own id, or for a form's
+    // Document by its frame's intent, which is what the call was told of when the form's request did not exist yet.
+    const intent = p.resourceType === "Document" && p.frameId ? `navigation:${p.frameId}` : null;
+    // The intent is used up whether or not the id matched too, so it never refuses a later Document in the frame.
+    const intentLost = intent !== null && this.lost.delete(intent);
+    const told = this.lost.has(id) || intentLost;
+    const { allow, verdict } = saved && !told ? await Promise.race([this.decide(request), cutoff, limit]).finally(() => clearTimeout(timer)) : REFUSED;
+    clearTimeout(timer);
+    const recorded = await this.journal(row, request, allow ? "allowed" : "denied", verdict);
+    if (allow && !recorded) { await this.send("Fetch.failRequest", { requestId: p.requestId, errorReason: "BlockedByClient" }, sessionId); return false; }
     await this.send(allow ? "Fetch.continueRequest" : "Fetch.failRequest", allow ? { requestId: p.requestId } : { requestId: p.requestId, errorReason: "BlockedByClient" }, sessionId);
+    return allow;
   }
 }

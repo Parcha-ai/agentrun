@@ -77,8 +77,8 @@ test("a place of the wrong shape is a 422 whose fix is the place to copy, and th
 test("bash on a runner, the browser in a sandbox and a workflow in one are 422s that say what to do, each with a fix that saves", async (t) => {
   const { api } = await serve(t);
   const cases = [
-    [agent("shell", { tools: ["read", "bash"] }).definition, "definition.tools[1]", "bash runs only in a box, and this agent names no place, so it runs on the runner, which has no shell: give it a sandbox place.", DOCKER_PLACE],
-    [agent("shell-runner", { tools: ["read", "bash"], place: { mode: "runner" } }).definition, "definition.tools[1]", "bash runs only in a box, and this agent's place is the runner, which has no shell: give it a sandbox place.", DOCKER_PLACE],
+    [agent("shell", { tools: ["read", "bash"] }).definition, "definition.tools[1]", "bash runs only in a box, and this agent names no place, so it runs on the runner, which has no shell, and new agents run on the runner, because the docker box is unavailable here: not enabled on this server: start AgentRun with AGENTRUN_BOXES=docker. Do that, or keep this agent on the runner: name \"place\": {\"mode\": \"runner\"} and remove \"bash\" from definition.tools.", 'Remove "bash" from definition.tools.'],
+    [agent("shell-runner", { tools: ["read", "bash"], place: { mode: "runner" } }).definition, "definition.tools[1]", "bash runs only in a box, and this agent's place is the runner, which has no shell, and new agents run on the runner, because the docker box is unavailable here: not enabled on this server: start AgentRun with AGENTRUN_BOXES=docker. Do that, or keep this agent on the runner: name \"place\": {\"mode\": \"runner\"} and remove \"bash\" from definition.tools.", 'Remove "bash" from definition.tools.'],
     [agent("browsing", { tools: ["bash", "browser"], place: { mode: "sandbox", box: "docker" } }).definition, "definition.tools[1]", "browser does not run in a sandbox place yet: it saves files into the run's work/ from this server, outside the box, and a command in the box could point those writes elsewhere on this server. Give it to an agent whose place is the runner.", 'Remove "browser" from definition.tools.'],
     [flowAgent("flow", undefined, { place: { mode: "sandbox", box: "docker" } }).definition, "definition.place", "A workflow runs on the runner here: its place is runner (or none), not sandbox on docker.", '"place": {"mode": "runner"}'],
   ];
@@ -117,7 +117,7 @@ test("a box this server does not enable names the setting that enables it: in ca
   ]);
   const bash = tools.find((tool) => tool.name === "bash");
   assert.deepEqual([bash.available, bash.reason, bash.sandbox_only], [false, NO_BOX, true], JSON.stringify(bash));
-  assert.equal(bash.summary, "Run a bash command in the run's box, from its work/, never on this server itself: only an agent whose place is a sandbox names it. Its output's tail; 300 s unless the call names a timeout.");
+  assert.equal(bash.summary, "Run a bash command in the run's box, from its work/, never on this server itself: only an agent whose place is a sandbox names it. Its output's tail; 120 s unless the call names a timeout, at most 600 s (longer work: bash_background).");
   assert.deepEqual(tools.filter((tool) => tool.reason?.startsWith("no box")).map((tool) => tool.name), ["bash", "bash_background", "bash_output", "bash_input", "bash_signal", "bash_list"], "only the sandbox-only tools (bash and the background tools) are unavailable for want of a box");
   // The web tools keep how they resolve, and why, on a server with no box.
   const web = tools.filter((tool) => tool.resolves);

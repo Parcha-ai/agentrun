@@ -11,19 +11,20 @@ import { join } from "node:path";
 import { test } from "node:test";
 import { DatabaseSync } from "node:sqlite";
 import { startServe } from "../dist/index.js";
-import { agent, client, FAUX, follow, scratch, serve, withEnv } from "./support.mjs";
+import { agent, client, FAUX, follow, runDir, runRecordOf, scratch, serve, withEnv, writtenJson } from "./support.mjs";
+import { fauxTable } from "./fixtures/faux-table.mjs";
 
 const FAUX_HARNESS = new URL("./fixtures/faux-harness.mjs", import.meta.url).pathname;
 const CUT = new URL("./fixtures/faux-harness-turn-end-cut.mjs", import.meta.url).pathname;
 const sleep = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
-const recordOf = (data, runId) => { try { return JSON.parse(readFileSync(join(data, "runs", runId, "run.json"), "utf8")); } catch { return null; } };
+const recordOf = (data, runId) => { try { return runRecordOf(data, runId); } catch { return null; } };
 const gone = (pid) => { try { process.kill(pid, 0); return false; } catch { return true; } };
 const shown = (rows) => rows.map((r) => [r.kind, r.summary]);
 
 /** The run's store entries, read once its process lets go of the store; a read that finds it held tries again. */
 function storeEntries(data, runId) {
   for (let tries = 0; ; tries++) {
-    const db = new DatabaseSync(join(data, "runs", runId, "store", "run.sqlite"), { readOnly: true, timeout: 2_000 });
+    const db = new DatabaseSync(join(runDir(data, runId), "store", "run.sqlite"), { readOnly: true, timeout: 2_000 });
     try {
       return db.prepare("SELECT record FROM entries ORDER BY id").all().map((row) => JSON.parse(String(row.record)));
     } catch (error) {
@@ -39,7 +40,7 @@ const savedAnswer = (data, runId) => storeEntries(data, runId).find((e) => e.kin
 
 for (const harness of ["claude-agent", "codex"]) {
   test(`${harness} (A): a drain that cuts a turn after its answer entry, the turn still open in the session: the next open resumes it`, { timeout: 180_000 }, async (t) => {
-    const { api, data } = await serve(t, { fauxHarness: FAUX_HARNESS, drainTimeout: "1s" });
+    const { api, data } = await serve(t, { harnessTable: fauxTable(FAUX_HARNESS), drainTimeout: "1s" });
     const dir = await scratch(t);
     const [go, held] = [join(dir, "go"), join(dir, "held")];
     assert.equal((await api("POST", "/agents", agent(`drained-${harness}`, { harness, instructions: `Answer, then hold until ${go} (signal ${held}), then end showing nothing.` }))).status, 201);
@@ -79,7 +80,7 @@ test("claude-agent (B): a server drain that cuts only the root's turn end, the s
   // SIGKILL past the drain) ends it there.
   await writeFile(arm, "0");
   await writeFile(go, "");
-  const options = { data, port: 0, faux: FAUX, fauxHarness: CUT, drainTimeout: "1s" };
+  const options = { data, port: 0, faux: FAUX, harnessTable: fauxTable(CUT), drainTimeout: "1s" };
   const one = await startServe(options);
   let closed = false;
   t.after(() => (closed ? undefined : one.close()));
@@ -87,7 +88,7 @@ test("claude-agent (B): a server drain that cuts only the root's turn end, the s
   assert.equal((await api("POST", "/agents", agent("ended", { harness: "claude-agent", instructions: `Answer, then hold until ${go} (signal ${signal}), then end showing nothing.` }))).status, 201);
   const runId = (await api("POST", "/agents/ended/runs", { input: { content: "hi" } })).body.run_id;
   let hold = null;
-  for (const end = Date.now() + 55_000; !(hold = JSON.parse(await readFile(held, "utf8").catch(() => "null"))); await sleep(50)) assert.ok(Date.now() < end, "the turn reaches the write of its end");
+  hold = await writtenJson(held, "the turn reaches the write of its end");
   const before = hold.since.join(", ");
   assert.ok(hold.since.includes("faux.turn_end"), `the session ended the turn before the root's end: ${before}`);
   const rowsBefore = (await api("GET", `/runs/${runId}/timeline`)).body.rows ?? [];

@@ -7,11 +7,12 @@ import assert from "node:assert/strict";
 import { readFileSync } from "node:fs";
 import { join } from "node:path";
 import { test } from "node:test";
-import { agent, follow, serve } from "./support.mjs";
+import { agent, follow, runDir, runRecordOf, serve } from "./support.mjs";
+import { fauxTable } from "./fixtures/faux-table.mjs";
 
 const sleep = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
 const resumedRows = (rows) => rows.filter((r) => r.kind === "phase" && r.summary.startsWith("Resumed")).map((r) => r.summary);
-const recordOf = (data, runId) => { try { return JSON.parse(readFileSync(join(data, "runs", runId, "run.json"), "utf8")); } catch { return null; } };
+const recordOf = (data, runId) => { try { return runRecordOf(data, runId); } catch { return null; } };
 const shown = (rows) => JSON.stringify(rows.map((r) => [r.kind, r.summary]));
 
 /** Waits for `check`, up to `ms`; fails naming `what`. */
@@ -22,7 +23,7 @@ async function until(what, check, ms = 60_000) {
 for (const harness of ["pi", "claude-agent"]) {
   test(`${harness}: a run that answered, then is followed up, shows no "Resumed" phase: its server let it go, nothing stopped or crashed`, { timeout: 240_000 }, async (t) => {
     const fauxHarness = new URL("./fixtures/faux-harness.mjs", import.meta.url).pathname;
-    const { api, data } = await serve(t, harness === "pi" ? {} : { fauxHarness });
+    const { api, data } = await serve(t, harness === "pi" ? {} : { harnessTable: fauxTable(fauxHarness) });
     const id = `answered-${harness}`;
     assert.equal((await api("POST", "/agents", harness === "pi" ? agent(id, {}) : agent(id, { harness, instructions: "Make three requests." }))).status, 201);
     const runId = (await api("POST", `/agents/${id}/runs`, { input: { content: "hi" } })).body.run_id;
@@ -32,7 +33,7 @@ for (const harness of ["pi", "claude-agent"]) {
     const let_go = recordOf(data, runId);
     assert.equal((await api("POST", `/runs/${runId}/messages`, { content: "Go on." })).status, 202);
     const { rows } = await follow(api, runId, ["completed"], { deadlineMs: 120_000 });
-    assert.deepEqual(resumedRows(rows), [], `the run answered and was let go, then followed up: no "Resumed" phase (run.json was ${JSON.stringify({ status: let_go?.status, detail: let_go?.detail })}): ${shown(rows)}`);
+    assert.deepEqual(resumedRows(rows), [], `the run answered and was let go, then followed up: no "Resumed" phase (its record was ${JSON.stringify({ status: let_go?.status, detail: let_go?.detail })}): ${shown(rows)}`);
   });
 }
 

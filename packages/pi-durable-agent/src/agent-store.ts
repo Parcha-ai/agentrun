@@ -1,10 +1,10 @@
 import type { JsonObject } from "@earendil-works/pi-durable";
 import type { Workflow } from "@parcha/agentrun-dsl"; // a type only: a store that never holds a workflow loads nothing of the DSL
-import { chmodSync, existsSync, mkdirSync, rmSync } from "node:fs";
+import { chmodSync, existsSync, lstatSync, mkdirSync, rmSync } from "node:fs";
 import { rm } from "node:fs/promises";
 import path from "node:path";
 import { DatabaseSync } from "node:sqlite";
-import { ID_PATTERN, isSkillPath, openAgentHome, readAgentHome, runStoreIn, sha256, uuidv7 } from "./home.js";
+import { ID_PATTERN, isSkillPath, openAgentHome, readAgentHome, runDirIn, runStoreIn, sha256, uuidv7 } from "./home.js";
 import type { PromptVariant } from "./kinds.js";
 import { canonical } from "./kinds.js";
 import { seedRun } from "./runs.js";
@@ -21,11 +21,12 @@ export type RevisionKind = "agentic" | "workflow";
  *  agentic revision's runs learn, kept when a definition says so either way (absent: the host's default).
  *  `toolSettings`: the revision's own settings of a tool its host lets a user set (the tool, or a catalog's tool or an
  *  MCP server's wildcard, to its settings, such as its provider or its permission: names and values its host checks;
- *  absent: the host's own). `maxCostUsd`: an agentic revision's default spend cap for each run, in US dollars, that a
- *  run started with none of its own takes (absent: none). */
+ *  absent: the host's own). `maxCostUsd`: a revision's default spend cap for each run, agentic or workflow, in US dollars,
+ *  that a run started with none of its own takes (absent: none). `capMode`: how such a cap prices a request, a name its host
+ *  knows (absent: the host's default). */
 export type RevisionPlace = { mode: string; box?: string };
-export type AgenticBody = { instructions: string; skills: Record<string, string>; tools: string[]; model?: string; thinking?: string; prompts?: Record<string, PromptVariant>; harness?: string; place?: RevisionPlace; learning?: boolean; toolSettings?: Record<string, Record<string, string>>; maxCostUsd?: number };
-export type WorkflowBody = { workflow: Workflow; skills: Record<string, string>; tools: string[]; harness?: string; place?: RevisionPlace; toolSettings?: Record<string, Record<string, string>> };
+export type AgenticBody = { instructions: string; skills: Record<string, string>; tools: string[]; model?: string; thinking?: string; prompts?: Record<string, PromptVariant>; harness?: string; place?: RevisionPlace; learning?: boolean; toolSettings?: Record<string, Record<string, string>>; maxCostUsd?: number; capMode?: string };
+export type WorkflowBody = { workflow: Workflow; skills: Record<string, string>; tools: string[]; harness?: string; place?: RevisionPlace; toolSettings?: Record<string, Record<string, string>>; maxCostUsd?: number; capMode?: string };
 /** Written once, never edited. `id` is the SHA-256 of the canonical JSON of `{ agent, parent, kind, body }`; `body.skills` maps a skill path to the SHA-256 of its text. */
 export type Revision = { id: string; agent: string; parent: string | null; createdAt: string; note?: string } & ({ kind: "agentic"; body: AgenticBody } | { kind: "workflow"; body: WorkflowBody });
 /** `archivedAt`: when it was archived, while it is: hidden from lists, kept with its history. */
@@ -96,8 +97,8 @@ export type PendingEnd = "completed" | "escalated" | "failed" | "stopped";
 export type AnalyticsFilter = { from?: string; to?: string; agent?: string; pending?: Readonly<Record<string, PendingEnd>> };
 const PENDING_ENDS: ReadonlySet<string> = new Set<PendingEnd>(["completed", "escalated", "failed", "stopped"]);
 export type NewRevision =
-  | { kind: "agentic"; instructions: string; skills?: Record<string, string>; tools?: string[]; model?: string; thinking?: string; prompts?: Record<string, PromptVariant>; harness?: string; place?: RevisionPlace; learning?: boolean; toolSettings?: Record<string, Record<string, string>>; maxCostUsd?: number; note?: string }
-  | { kind: "workflow"; workflow: Workflow; skills?: Record<string, string>; tools?: string[]; harness?: string; place?: RevisionPlace; toolSettings?: Record<string, Record<string, string>>; note?: string };
+  | { kind: "agentic"; instructions: string; skills?: Record<string, string>; tools?: string[]; model?: string; thinking?: string; prompts?: Record<string, PromptVariant>; harness?: string; place?: RevisionPlace; learning?: boolean; toolSettings?: Record<string, Record<string, string>>; maxCostUsd?: number; capMode?: string; note?: string }
+  | { kind: "workflow"; workflow: Workflow; skills?: Record<string, string>; tools?: string[]; harness?: string; place?: RevisionPlace; toolSettings?: Record<string, Record<string, string>>; maxCostUsd?: number; capMode?: string; note?: string };
 /** What starts a run: `key`, the caller's name for it (1 to 256 characters), which starts one run only, and `fingerprint`
  *  (at most 256 characters), what was asked, kept to tell a retry from another request under the same key. */
 export type RunOrigin = { key: string; fingerprint?: string };
@@ -135,7 +136,9 @@ CREATE TABLE IF NOT EXISTS runs (
   started_at  TEXT NOT NULL,
   ended_at    TEXT,
   cost_usd    REAL,
-  summary     TEXT
+  summary     TEXT,
+  claim_epoch  INTEGER NOT NULL DEFAULT 0,
+  claim_holder TEXT
 );
 CREATE INDEX IF NOT EXISTS runs_by_agent ON runs(agent_id, started_at);
 CREATE INDEX IF NOT EXISTS runs_by_state ON runs(state);
@@ -201,15 +204,52 @@ BEGIN SELECT RAISE(ABORT, 'an origin is written once'); END;`;
 // archive_changes, runs_by_state, run_imports, run_metrics, run_tool_metrics and run_origins came after version 1 without
 // a new version: an earlier version opens the file and ignores them. run_imports' trigger on runs is in the file, so that
 // version still cannot change an imported run.
-const STORE_VERSION = 1;
+// Version 2: each run lives on the disk (<data>/disk/agents/<agent>/runs/<run>), and its row holds its claim
+// (claim_epoch, claim_holder). A version 1 store's runs are under <data>/runs/, which this version does not read: it is
+// refused, with no migration.
+const STORE_VERSION = 2;
 const SQLITE_READONLY_ROLLBACK = 776;
 const SQLITE_CONSTRAINT = 19;
 /** Fail closed on a file a newer version wrote. */
 function checkVersion(db: DatabaseSync): void {
-  if ((db.prepare("PRAGMA user_version").get() as { user_version: number }).user_version > STORE_VERSION) throw new AgentHomeError("format", "this store was written by a newer version");
+  const version = (db.prepare("PRAGMA user_version").get() as { user_version: number }).user_version;
+  if (version > STORE_VERSION) throw new AgentHomeError("format", "this store was written by a newer version");
+  if (version > 0 && version < STORE_VERSION) throw new AgentHomeError("format", `this store was written by a version that kept its runs outside the disk (store version ${version}), which this version does not read`);
 }
 
 const invalid = (message: string) => new AgentHomeError("invalid", message);
+/** A claim's holder: a non-empty name (the run's process, as its host describes it, or the server) of at most 1,024 characters. */
+function checkHolder(holder: unknown): asserts holder is string {
+  if (typeof holder !== "string" || holder === "" || holder.length > 1024) throw invalid("a claim's holder is a non-empty name of at most 1,024 characters");
+}
+/** Refuses a run's folder `dir` below `base` (the data directory) when any level of it there now is a symbolic link or not
+ *  a directory: a run's files are never made or written where a link points. The disk's one link rule, as the learning
+ *  folder's (serve learning.ts). */
+function refuseLinks(base: string, dir: string): void {
+  let at = base;
+  for (const part of path.relative(base, dir).split(path.sep).filter(Boolean)) {
+    at = path.join(at, part);
+    let stats;
+    try {
+      stats = lstatSync(at);
+    } catch {
+      return;
+    }
+    if (stats.isSymbolicLink()) throw invalid(`${path.relative(base, at)} is a symbolic link, and a run's folder is never made through one`);
+    if (!stats.isDirectory()) throw invalid(`${path.relative(base, at)} is not a directory`);
+  }
+}
+/** Makes each folder from `base` down to `dir` that is missing, 0700, each mode set after its mkdir, so no umask loosens it. */
+function ownedDirs(base: string, dir: string): void {
+  const below = path.relative(base, dir);
+  let at = base;
+  for (const part of below.split(path.sep).filter(Boolean)) {
+    at = path.join(at, part);
+    if (existsSync(at)) continue;
+    mkdirSync(at, { mode: 0o700 });
+    chmodSync(at, 0o700);
+  }
+}
 const isObject = (value: unknown): value is Record<string, unknown> => typeof value === "object" && value !== null && !Array.isArray(value);
 const checkId = (id: unknown, what: string): string => {
   if (typeof id !== "string" || !ID_PATTERN.test(id)) throw invalid(`the ${what} id is not letters, digits, ".", "_" or "-" (at most 128)`);
@@ -296,16 +336,19 @@ function bodyOf(input: NewRevision): { body: AgenticBody | WorkflowBody; texts: 
   // Sorted, and none when empty: two revisions with the same settings are one.
   const sorted = (value: Record<string, unknown>) => Object.fromEntries(Object.entries(value).sort(([a], [b]) => (a < b ? -1 : 1)));
   const host = { ...(input.harness !== undefined ? { harness: input.harness } : {}), ...(input.place !== undefined ? { place: placeOf(input.place) } : {}), ...(set && Object.keys(set).length ? { toolSettings: Object.fromEntries(Object.entries(sorted(set)).map(([name, setting]) => [name, sorted(setting as Record<string, unknown>)])) as Record<string, Record<string, string>> } : {}) };
+  // A default spend cap, and how it prices a request, for a revision of either kind.
+  if (input.maxCostUsd !== undefined && !(typeof input.maxCostUsd === "number" && Number.isFinite(input.maxCostUsd) && input.maxCostUsd > 0)) throw invalid("the maxCostUsd is not a number above 0");
+  if (input.capMode !== undefined && (typeof input.capMode !== "string" || input.capMode === "")) throw invalid("the capMode is not a non-empty string");
+  const capped = { ...(input.maxCostUsd !== undefined ? { maxCostUsd: input.maxCostUsd } : {}), ...(input.capMode !== undefined ? { capMode: input.capMode } : {}) };
   if (input.kind === "agentic") {
     if (typeof input.instructions !== "string") throw invalid("an agentic revision needs instructions (its prompt, possibly empty)");
     for (const field of ["model", "thinking"] as const) if (input[field] !== undefined && (typeof input[field] !== "string" || input[field] === "")) throw invalid(`the ${field} is not a non-empty string`);
     if (input.learning !== undefined && typeof input.learning !== "boolean") throw invalid("learning is not true or false");
-    if (input.maxCostUsd !== undefined && !(typeof input.maxCostUsd === "number" && Number.isFinite(input.maxCostUsd) && input.maxCostUsd > 0)) throw invalid("the maxCostUsd is not a number above 0");
-    return { body: { instructions: input.instructions, skills, tools: [...tools], ...(input.model !== undefined ? { model: input.model } : {}), ...(input.thinking !== undefined ? { thinking: input.thinking } : {}), ...(input.prompts !== undefined ? { prompts: structuredClone(input.prompts) } : {}), ...host, ...(input.learning !== undefined ? { learning: input.learning } : {}), ...(input.maxCostUsd !== undefined ? { maxCostUsd: input.maxCostUsd } : {}) }, texts };
+    return { body: { instructions: input.instructions, skills, tools: [...tools], ...(input.model !== undefined ? { model: input.model } : {}), ...(input.thinking !== undefined ? { thinking: input.thinking } : {}), ...(input.prompts !== undefined ? { prompts: structuredClone(input.prompts) } : {}), ...host, ...(input.learning !== undefined ? { learning: input.learning } : {}), ...capped }, texts };
   }
   if (input.kind !== "workflow") throw invalid("the revision kind is not agentic or workflow");
   if (!isObject(input.workflow)) throw invalid("a workflow revision needs a workflow (a JSON object)");
-  return { body: { workflow: structuredClone(input.workflow), skills, tools: [...tools], ...host }, texts };
+  return { body: { workflow: structuredClone(input.workflow), skills, tools: [...tools], ...host, ...capped }, texts };
 }
 
 /** The reads: plain SQL over the one file, on a read-only handle. `openStoreReader` reads `store.sqlite` in place: it writes nothing and makes no copy, and a store with an unfinished write is named, not rolled back. */
@@ -493,8 +536,31 @@ export class AgentStoreReader {
     const revisions = rows.filter((r) => r.id !== null).map((r) => ({ ...revisionOf({ ...r, agent_id: r.agent_id }), current: r.id === first.current_revision }));
     return { agent, revisions };
   }
-  /** `<dir>/runs/<run id>/store/run.sqlite`, for a run's timeline. It does not check that the file exists. */
-  runStorePath(runId: string): string { return runStoreIn(path.join(this.dir, "runs", checkId(runId, "run"))); }
+  /** Run `runId`'s folder on the disk, `<dir>/disk/agents/<agent>/runs/<run id>`, by its row's agent. It does not check
+   *  that the folder exists; an unknown run is AgentHomeError `missing`. */
+  runDir(runId: string): string {
+    const row = this.db.prepare("SELECT agent_id FROM runs WHERE id = ?").get(checkId(runId, "run")) as { agent_id: string } | undefined;
+    if (!row) throw new AgentHomeError("missing", "that run is unknown");
+    return runDirIn(this.dir, row.agent_id, runId);
+  }
+  /** `<run's folder>/store/run.sqlite`, for a run's timeline. It does not check that the file exists. */
+  runStorePath(runId: string): string { return runStoreIn(this.runDir(runId)); }
+  /** Run `runId`'s folder and its store folder, made where missing (0700, each mode set after its mkdir), for a write into
+   *  them (an import's transcript, finished): a link or a non-directory at any level of them below the data directory is
+   *  AgentHomeError `invalid`, before anything is made or written there. */
+  runFolders(runId: string): { runId: string; dir: string; storePath: string } {
+    const dir = this.runDir(runId);
+    const storePath = runStoreIn(dir);
+    refuseLinks(this.dir, path.dirname(storePath));
+    ownedDirs(this.dir, path.dirname(storePath));
+    return { runId, dir, storePath };
+  }
+  /** Run `runId`'s claim, as its row holds it: the epoch, bumped at each claim, and who holds it (null before the first). */
+  runClaim(runId: string): { epoch: number; holder: string | null } {
+    const row = this.db.prepare("SELECT claim_epoch, claim_holder FROM runs WHERE id = ?").get(checkId(runId, "run")) as { claim_epoch: number; claim_holder: string | null } | undefined;
+    if (!row) throw new AgentHomeError("missing", "that run is unknown");
+    return { epoch: Number(row.claim_epoch), holder: row.claim_holder };
+  }
 }
 
 export class AgentStore extends AgentStoreReader {
@@ -590,7 +656,8 @@ export class AgentStore extends AgentStoreReader {
       if (text === undefined || sha256(text) !== sha) throw new AgentHomeError("format", "a skill of the revision is missing or does not match its hash");
       return [file, text];
     }));
-    const dir = path.join(this.dir, "runs", runId);
+    const dir = runDirIn(this.dir, agent, runId);
+    refuseLinks(this.dir, dir);
     const run: StartedRun = { runId, dir, storePath: runStoreIn(dir), workspace: path.join(dir, "work"), agentId: agent, revision };
     // The directory first, then the row: a seed that fails throws and nothing is written; a hard kill between the two leaves a directory no query shows.
     try {
@@ -615,11 +682,38 @@ export class AgentStore extends AgentStoreReader {
     return run;
   }
 
+  /** Claims run `runId` for `holder` from epoch `from`, the one its claimer read (runClaim): the epoch is bumped and the
+   *  holder recorded in one statement, only while the row still holds `from`. The new epoch, which the holder carries; a
+   *  holder of a lower one is fenced. Two claimers from the same epoch: one claims, the other is `stale` and writes
+   *  nothing. A take-back is a claim by the server. */
+  claimRun(runId: string, holder: string, from: number): number {
+    checkHolder(holder);
+    if (!Number.isSafeInteger(from) || from < 0) throw invalid("a claim names the epoch it claims from, a whole number of at least 0");
+    const row = this.db.prepare("UPDATE runs SET claim_epoch = claim_epoch + 1, claim_holder = ? WHERE id = ? AND claim_epoch = ? RETURNING claim_epoch").get(holder, checkId(runId, "run"), from) as { claim_epoch: number } | undefined;
+    if (!row) throw this.lostClaim(runId, from);
+    return Number(row.claim_epoch);
+  }
+
+  /** Names `holder` for run `runId`'s claim at `epoch` (its door, once it serves), only while the row still holds that
+   *  epoch: a claim that moved on is `stale`, and nothing is written. */
+  setRunHolder(runId: string, epoch: number, holder: string): void {
+    checkHolder(holder);
+    const changed = this.db.prepare("UPDATE runs SET claim_holder = ? WHERE id = ? AND claim_epoch = ?").run(holder, checkId(runId, "run"), epoch).changes;
+    if (Number(changed) === 0) throw this.lostClaim(runId, epoch);
+  }
+
+  /** Why a claim's statement changed no row: no such run, or its epoch is no longer `epoch`. */
+  private lostClaim(runId: string, epoch: number): AgentHomeError {
+    const now = this.db.prepare("SELECT claim_epoch FROM runs WHERE id = ?").get(runId) as { claim_epoch: number } | undefined;
+    if (!now) return new AgentHomeError("missing", "that run is unknown");
+    return new AgentHomeError("stale", `the run's claim is at epoch ${Number(now.claim_epoch)}, not ${epoch}`);
+  }
+
   /** The run `key` started (startRun's `origin`), as startRun returns it with `existing`; undefined when it started none. */
   runOfOrigin(key: string): StartedRun | undefined {
     const row = this.db.prepare("SELECT o.run_id, o.fingerprint, r.agent_id, r.revision_id FROM run_origins o JOIN runs r ON r.id = o.run_id WHERE o.key = ?").get(key) as Record<string, string | null> | undefined;
     if (!row) return undefined;
-    const dir = path.join(this.dir, "runs", row.run_id!);
+    const dir = runDirIn(this.dir, row.agent_id!, row.run_id!);
     return { runId: row.run_id!, dir, storePath: runStoreIn(dir), workspace: path.join(dir, "work"), agentId: row.agent_id!, revision: this.readRevision(row.revision_id!), existing: row.fingerprint === null ? {} : { fingerprint: row.fingerprint! } };
   }
 
@@ -686,12 +780,13 @@ export class AgentStore extends AgentStoreReader {
     if (input.summary !== undefined && (typeof input.summary !== "string" || input.summary === "")) throw invalid("the summary is not non-empty text");
     const metrics = input.metrics === undefined ? undefined : checkMetrics(input.metrics);
     const runId = uuidv7();
-    const dir = path.join(this.dir, "runs", runId);
+    const dir = runDirIn(this.dir, agent, runId);
     const storePath = runStoreIn(dir);
     // The directory first, then the rows (startRun's order); each mode set after its mkdir, so no umask loosens it.
-    // runs/ made here (a first import, before any run) is the owner's too: a umask that strips the owner's write bit
-    // would leave it unwritable, and this run's directory never made.
-    if (mkdirSync(path.dirname(dir), { recursive: true }) !== undefined) chmodSync(path.dirname(dir), 0o700);
+    // The folders above it made here (a first import, before any run) are the owner's too: a umask that strips the
+    // owner's write bit would leave them unwritable, and this run's directory never made.
+    refuseLinks(this.dir, dir);
+    ownedDirs(this.dir, path.dirname(dir));
     try {
       for (const made of [dir, path.dirname(storePath)]) {
         mkdirSync(made, { mode: 0o700 });

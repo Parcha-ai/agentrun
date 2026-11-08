@@ -5,8 +5,10 @@ import { createHash } from "node:crypto";
 import { join } from "node:path";
 import { DatabaseSync } from "node:sqlite";
 import { type Agent, AgentHomeError, type AgentStore, type NewRevision, openStore, type Revision, type RevisionPlace, type RevisionRow, type RunRow, STORE_FILE } from "@parcha/pi-durable-agent";
+import { agentLink } from "./console-links.js";
 import { ApiError, invalid } from "./errors.js";
-import { DEFAULT_HARNESS, harnessOfBody } from "./harness.js";
+import { harnessOfBody } from "./harness.js";
+import { storedHarness } from "./harness-table.js";
 import { type DefinitionBody, isObject, type Json, skillIssues, skillNames, stable } from "./validate.js";
 import type { SignInView } from "./sign-ins.js";
 
@@ -98,18 +100,21 @@ export class Agents {
     const issues = skillIssues(definition.skills, Object.keys(files));
     if (issues.length) throw invalid(issues);
     // The default harness is never stored: naming pi and naming none are one revision.
-    const harness = typeof definition.harness === "string" && definition.harness !== DEFAULT_HARNESS ? { harness: definition.harness } : {};
+    const stored = typeof definition.harness === "string" ? storedHarness(definition.harness) : undefined;
+    const harness = stored ? { harness: stored } : {};
     // Unlike the harness, a place is kept when it is runner: the default is the host's, so naming runner says something.
     const place = isObject(definition.place) ? { place: definition.place as RevisionPlace } : {};
     // A capability with nothing set is none: `{web_search: {}}` and no settings are one revision.
     const kept = Object.entries(isObject(definition.tool_settings) ? definition.tool_settings : {}).filter(([, setting]) => isObject(setting) && Object.keys(setting).length);
     const set = kept.length ? { toolSettings: Object.fromEntries(kept) as Record<string, Record<string, string>> } : {};
     const common = { skills: files, tools: (definition.tools as string[] | undefined) ?? [], ...harness, ...place, ...set, ...(note !== undefined ? { note } : {}) };
-    if (isObject(definition.workflow)) return { kind: "workflow", workflow: definition.workflow as never, ...common };
+    // A default spend cap for each run, and how it prices a request: an agentic revision's or a workflow's.
+    const capped = { ...(typeof definition.max_cost_usd === "number" && definition.max_cost_usd > 0 ? { maxCostUsd: definition.max_cost_usd } : {}), ...(typeof definition.cap_mode === "string" ? { capMode: definition.cap_mode } : {}) };
+    if (isObject(definition.workflow)) return { kind: "workflow", workflow: definition.workflow as never, ...common, ...capped };
     // The learning switch is kept whenever a definition sets it, false included; a definition that leaves it out keeps
     // none, and its revision id is the one it had before the switch.
     const learning = typeof definition.learning === "boolean" ? { learning: definition.learning } : {};
-    return { kind: "agentic", instructions: definition.instructions as string, ...(typeof definition.model === "string" ? { model: definition.model } : {}), ...(typeof definition.thinking === "string" ? { thinking: definition.thinking } : {}), ...common, ...learning, ...(typeof definition.max_cost_usd === "number" && definition.max_cost_usd > 0 ? { maxCostUsd: definition.max_cost_usd } : {}) };
+    return { kind: "agentic", instructions: definition.instructions as string, ...(typeof definition.model === "string" ? { model: definition.model } : {}), ...(typeof definition.thinking === "string" ? { thinking: definition.thinking } : {}), ...common, ...learning, ...capped };
   }
 
   /** `definition.version`, when given, is the number of the revision the request leaves current. */
@@ -186,9 +191,11 @@ export class Agents {
       const harness = entry.revision?.body.harness;
       const place = entry.revision?.body.place;
       const learning = entry.revision?.kind === "agentic" && !isObject(definition.workflow) ? entry.revision.body.learning : undefined;
-      // And its default cap: leaving it out never removes a spend limit; only 0 clears it.
-      const cap = entry.revision?.kind === "agentic" && !isObject(definition.workflow) ? entry.revision.body.maxCostUsd : undefined;
-      const revision = this.revisionOf({ ...definition, ...(definition.harness === undefined && harness ? { harness } : {}), ...(definition.place === undefined && place ? { place } : {}), ...(definition.learning === undefined && learning !== undefined ? { learning } : {}), ...(definition.max_cost_usd === undefined && cap !== undefined ? { max_cost_usd: cap } : {}) }, files, note);
+      // And its default cap, whichever kind it was or becomes: leaving it out never removes a spend limit; only 0 clears it.
+      const cap = entry.revision?.body.maxCostUsd;
+      // And how that cap prices a request, as the cap itself is kept.
+      const capMode = entry.revision?.body.capMode;
+      const revision = this.revisionOf({ ...definition, ...(definition.harness === undefined && harness ? { harness } : {}), ...(definition.place === undefined && place ? { place } : {}), ...(definition.learning === undefined && learning !== undefined ? { learning } : {}), ...(definition.max_cost_usd === undefined && cap !== undefined ? { max_cost_usd: cap } : {}), ...(definition.cap_mode === undefined && capMode !== undefined ? { cap_mode: capMode } : {}) }, files, note);
       await this.checked(revision);
       await check?.(revision);
       const base = entry.revision?.id ?? null;
@@ -280,13 +287,14 @@ export const etagOf = (entry: AgentEntry) => `"${entry.revision?.id ?? "none"}"`
 /** A revision as a definition, as `POST /agents` takes one, numbered. */
 export function definitionOf(agent: Agent, revision: Revision, version: number): Json {
   const body = revision.kind === "agentic"
-    ? { instructions: revision.body.instructions, ...(revision.body.model ? { model: revision.body.model } : {}), ...(revision.body.thinking ? { thinking: revision.body.thinking } : {}), ...(revision.body.learning !== undefined ? { learning: revision.body.learning } : {}), ...(revision.body.maxCostUsd !== undefined ? { max_cost_usd: revision.body.maxCostUsd } : {}) }
-    : { workflow: revision.body.workflow };
+    ? { instructions: revision.body.instructions, ...(revision.body.model ? { model: revision.body.model } : {}), ...(revision.body.thinking ? { thinking: revision.body.thinking } : {}), ...(revision.body.learning !== undefined ? { learning: revision.body.learning } : {}), ...(revision.body.maxCostUsd !== undefined ? { max_cost_usd: revision.body.maxCostUsd } : {}), ...(revision.body.capMode !== undefined ? { cap_mode: revision.body.capMode } : {}) }
+    : { workflow: revision.body.workflow, ...(revision.body.maxCostUsd !== undefined ? { max_cost_usd: revision.body.maxCostUsd } : {}), ...(revision.body.capMode !== undefined ? { cap_mode: revision.body.capMode } : {}) };
   return { id: agent.id, version, name: agent.name, ...(agent.description !== undefined ? { description: agent.description } : {}), ...body, harness: harnessOfBody(revision.body), ...(revision.body.place ? { place: revision.body.place } : {}), skills: skillNames(Object.keys(revision.body.skills)), tools: revision.body.tools, ...(revision.body.toolSettings ? { tool_settings: revision.body.toolSettings } : {}) };
 }
 
-/** `Agent` as the contract shows it, with its current revision and its saved sign-ins (sign-ins.ts view: never a ref). */
-export function agentView(entry: AgentEntry, signIns: readonly SignInView[] = [], learning?: { pending: number }) {
+/** `Agent` as the contract shows it, with its current revision and its saved sign-ins (sign-ins.ts view: never a ref).
+ *  `origin`: where its console page is (console-links.ts). */
+export function agentView(entry: AgentEntry, origin: string, signIns: readonly SignInView[] = [], learning?: { pending: number }) {
   const { agent, revision } = entry;
   return {
     agent_id: agent.id,
@@ -301,6 +309,7 @@ export function agentView(entry: AgentEntry, signIns: readonly SignInView[] = []
     region: "local",
     home_etag: etagOf(entry),
     archived_at: agent.archivedAt ?? null,
+    console_url: agentLink(origin, agent.id),
     // How many of its learned items wait for its owner's OK (learning-routes.ts pendingCount): only for an agent that
     // learns on a server whose learning is on.
     ...(learning ? { learning } : {}),

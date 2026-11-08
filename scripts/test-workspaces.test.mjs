@@ -22,15 +22,15 @@ const barrier = Number(opt('--barrier') ?? 0);
 while (readFileSync(log, 'utf8').split('\\n').filter((line) => line.startsWith('start ')).length < barrier) await sleep(20);
 for (let i = 0; i < Number(opt('--lines') ?? 0); i += 1) { console.log('line ' + name + ' ' + i); await sleep(2); }
 await sleep(Number(opt('--hold') ?? 0));
+// A --hang step takes SIGTERM before it says its pid: the test stops the runner once every pid is said, and a SIGTERM in
+// between would end the step unlogged.
+if (flags.includes('--hang')) process.on('SIGTERM', () => { appendFileSync(log, 'term ' + name + '\\n'); process.exit(143); });
 if (flags.includes('--orphan') || flags.includes('--hang') || flags.includes('--escape')) {
   const child = spawn(process.execPath, ['-e', 'setInterval(() => {}, 1e9)'], { stdio: 'inherit', detached: flags.includes('--escape') });
   child.unref();
   appendFileSync(new URL('./pids', import.meta.url), name + ' ' + process.pid + ' ' + child.pid + '\\n');
 }
-if (flags.includes('--hang')) {
-  process.on('SIGTERM', () => { appendFileSync(log, 'term ' + name + '\\n'); process.exit(143); });
-  setInterval(() => {}, 1e9);
-}
+if (flags.includes('--hang')) setInterval(() => {}, 1e9);
 else { appendFileSync(log, 'end ' + name + '\\n'); process.exitCode = Number(opt('--exit') ?? 0); }
 `;
 

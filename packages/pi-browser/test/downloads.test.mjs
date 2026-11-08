@@ -1,7 +1,7 @@
 import assert from "node:assert/strict";
 import { createHash } from "node:crypto";
 import { existsSync } from "node:fs";
-import { cp as fs_cp, mkdir, readFile, readdir, rm, symlink, writeFile } from "node:fs/promises";
+import { cp as fs_cp, mkdir, readFile, readdir, rename, rm, symlink, writeFile } from "node:fs/promises";
 import http from "node:http";
 import path from "node:path";
 import test from "node:test";
@@ -9,7 +9,7 @@ import { createRedactor, DOWNLOADS_MANIFEST, fetchDownloads, recordingHandle, sa
 import { browserbaseProvider } from "../dist/providers/browserbase.js";
 import { cdpProvider } from "../dist/providers/cdp.js";
 import { fakeBrowserbase } from "./fixtures/fake-browserbase.mjs";
-import { CHROME, LOCAL_TELEMETRY, NO_CHROME, skipIncapable } from "./fixtures/local-chrome.mjs";
+import { CHROME, NO_CHROME, skipIncapable } from "./fixtures/local-chrome.mjs";
 import { scratch } from "./fixtures/scratch.mjs";
 
 const sha = (bytes) => createHash("sha256").update(bytes).digest("hex");
@@ -221,14 +221,16 @@ test("a real Chrome downloads a file; the cdp provider lists it once finished, a
     let browser;
     try {
       const attached = await provider.attach(ref);
-      browser = await localBrowser.connect({ cdpUrl: attached.sdkCdpUrl, ...(attached.extensionId ? { extensionId: attached.extensionId } : {}) });
-      stagehand = await Stagehand.create({ browser, logging: { level: "off" }, telemetry: LOCAL_TELEMETRY });
+      browser = await localBrowser.connect({ cdpUrl: attached.sdkCdpUrl });
+      stagehand = await Stagehand.create({ browser, logging: { level: "off" } });
     } catch (error) { if (skipIncapable(t, error)) return; throw error; }
     const [page] = await browser.context.pages();
     await page.goto(`http://127.0.0.1:${server.address().port}/`);
     await page.evaluate(() => document.getElementById("d").click());
     let listed = [];
-    for (const deadline = Date.now() + 20_000; !listed.length && Date.now() < deadline; ) { listed = await provider.downloads.list(ref); if (!listed.length) await new Promise((r) => setTimeout(r, 200)); }
+    // Until it is listed and nothing is still downloading: a file Chrome is writing is listed as downloading.
+    const settled = (rows) => rows.length > 0 && rows.every((f) => !f.downloading);
+    for (const deadline = Date.now() + 20_000; !settled(listed) && Date.now() < deadline; ) { listed = await provider.downloads.list(ref); if (!settled(listed)) await new Promise((r) => setTimeout(r, 200)); }
     assert.deepEqual(listed.map((f) => [f.name, f.sizeBytes]), [["fixture.bin", payload.length]], "the finished file, never a .crdownload");
     const first = await fetchDownloads({ provider, ref, session: "local", workspace });
     assert.deepEqual(first.fetched.map((f) => [f.path, f.sizeBytes, f.sha256]), [["downloads/fixture.bin", payload.length, sha(payload)]]);
@@ -242,6 +244,59 @@ test("a real Chrome downloads a file; the cdp provider lists it once finished, a
     server.close();
     await rm(root, { recursive: true, force: true }); await rm(workspace, { recursive: true, force: true });
   }
+});
+
+/** A local lease's downloads folder, as the cdp provider keeps it beside the lease's profile, filled by the test. */
+async function localFolder(t, tag) {
+  const root = await scratch(t, "cdp-dl-dir-");
+  const dir = `${path.join(root, tag)}.downloads`;
+  await mkdir(dir, { recursive: true });
+  return { provider: cdpProvider({ chrome: { executablePath: "x", profileRoot: root } }), ref: { id: `local:1:${tag}`, tag }, dir };
+}
+const STILL = "still downloading; call browser_downloads again";
+
+test("a download Chrome is still writing is told as still downloading, never filed: its empty final name beside a .crdownload, and the .crdownload itself; the next call files it with its SHA-256", async (t) => {
+  const { provider, ref, dir } = await localFolder(t, "dl-settling");
+  const workspace = await scratch(t, "dl-settling-ws-");
+  const payload = Buffer.from(Array.from({ length: 5000 }, (_, i) => (i * 7) % 256));
+  // As Chrome (sandboxed, under load) leaves it for a moment at the end: the final name created empty, the bytes still in
+  // the temporary file.
+  await writeFile(path.join(dir, "fixture.bin"), "");
+  await writeFile(path.join(dir, "Unconfirmed 33290.crdownload"), payload);
+  assert.deepEqual((await provider.downloads.list(ref)).map((f) => [f.name, f.sizeBytes, f.downloading ?? false]), [["fixture.bin", 0, true], ["Unconfirmed 33290", 5000, true]]);
+  const first = await fetchDownloads({ provider, ref, session: "local", workspace });
+  assert.deepEqual(first.fetched, [], "nothing filed while the browser writes");
+  assert.deepEqual(first.skipped, [{ name: "fixture.bin", reason: STILL }, { name: "Unconfirmed 33290", reason: STILL }], "the model is told each is still downloading");
+  // A .crdownload named for the final name is the same download, listed once.
+  await writeFile(path.join(dir, "fixture.bin.crdownload"), payload.subarray(0, 100));
+  assert.deepEqual((await provider.downloads.list(ref)).map((f) => [f.name, f.downloading ?? false]), [["fixture.bin", true], ["Unconfirmed 33290", true]]);
+  await rm(path.join(dir, "fixture.bin.crdownload"));
+  // Chrome renames the temporary file over the final name.
+  await rename(path.join(dir, "Unconfirmed 33290.crdownload"), path.join(dir, "fixture.bin"));
+  const second = await fetchDownloads({ provider, ref, session: "local", workspace });
+  assert.deepEqual(second.fetched.map((f) => [f.path, f.sizeBytes, f.sha256]), [["downloads/fixture.bin", 5000, sha(payload)]]);
+  assert.deepEqual(second.skipped, []);
+  assert.deepEqual(await readFile(path.join(workspace, "downloads", "fixture.bin")), payload);
+});
+
+test("a file replaced while it is read is not filed: the call says it is still downloading, and the next call files the file that stayed", async (t) => {
+  const { provider, ref, dir } = await localFolder(t, "dl-replaced");
+  const workspace = await scratch(t, "dl-replaced-ws-");
+  const early = Buffer.from("early bytes");
+  const final = Buffer.from("the bytes that stayed, longer than the early ones");
+  await writeFile(path.join(dir, "report.pdf"), early);
+  let swapped = false;
+  // The file is replaced once its read has opened it: the read streams the old file whole, and only a check after it can tell.
+  const racing = { list: provider.downloads.list, read: async (r, name, max) => {
+    const stream = await provider.downloads.read(r, name, max);
+    if (!swapped) { swapped = true; await writeFile(path.join(dir, ".swap"), final); await rename(path.join(dir, ".swap"), path.join(dir, "report.pdf")); }
+    return stream;
+  } };
+  const first = await fetchDownloads({ provider: { downloads: racing }, ref, session: "local", workspace });
+  assert.deepEqual([first.fetched, first.skipped], [[], [{ name: "report.pdf", reason: STILL }]]);
+  assert.deepEqual((await readdir(path.join(workspace, "downloads"))).filter((n) => n !== "manifest.json"), [], "no part of the old file is left");
+  const second = await fetchDownloads({ provider: { downloads: racing }, ref, session: "local", workspace });
+  assert.deepEqual(second.fetched.map((f) => [f.path, f.sizeBytes, f.sha256]), [["downloads/report.pdf", final.length, sha(final)]]);
 });
 
 // A read error's message is a provider's text; the run's secrets leave the whole message before the 200-character cut.

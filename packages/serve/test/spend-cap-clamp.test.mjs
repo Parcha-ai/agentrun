@@ -8,7 +8,8 @@ import assert from "node:assert/strict";
 import { join } from "node:path";
 import { DatabaseSync } from "node:sqlite";
 import { test } from "node:test";
-import { agent, follow, responsesEndpoint, serve, withEnv } from "./support.mjs";
+import { agent, follow, responsesEndpoint, runDir, serve, withEnv } from "./support.mjs";
+import { fauxTable } from "./fixtures/faux-table.mjs";
 
 const GATEWAY_VARS = ["AGENT_MODEL_BASE_URL", "AGENT_MODEL", "AGENT_MODEL_PRICE", "AGENT_MODEL_API_KEY"];
 /** The gateway models' max output tokens (model.ts), which a request is sent with as max_output_tokens uncapped. */
@@ -43,7 +44,7 @@ function noPhantomRequest(rows) {
 /** The run's store records of `kind`, read once its process has let it go. */
 function records(data, runId, kind) {
   for (let tries = 0; ; tries++) {
-    const db = new DatabaseSync(join(data, "runs", runId, "store", "run.sqlite"), { readOnly: true, timeout: 2_000 });
+    const db = new DatabaseSync(join(runDir(data, runId), "store", "run.sqlite"), { readOnly: true, timeout: 2_000 });
     try {
       return db.prepare("SELECT record FROM entries").all().map((row) => JSON.parse(String(row.record))).filter((entry) => entry.kind === kind);
     } catch (error) {
@@ -76,7 +77,7 @@ test("pi: a cap that cannot buy its first request's least is refused before anyt
   const { api, posts } = await gateway(t, "0,1");
   const { run, rows } = await ended(api, (await start(api, "tiny", "What is six times seven?", { max_cost_usd: 0.0005 })).run_id);
   assert.deepEqual([run.status, run.state, run.error, run.pending?.kind, posts()], ["input_required", "waiting", null, "budget", 0], JSON.stringify(run));
-  assert.match(run.pending.said, /^Not sent: this run's cap of \$0\.0005 can't cover one \S+ request \(at least \$0\.01\)\. Raise the cap to at least \$0\.01 to run it\.$/);
+  assert.match(run.pending.said, /^Not sent: the next step needs at least \$0\.01, and this run's cap is \$0\.0005\. Raise the cap to at least \$0\.01 to continue\.$/);
   assert.equal(run.cost.usd, 0);
   noPhantomRequest(rows);
 });
@@ -84,7 +85,7 @@ test("pi: a cap that cannot buy its first request's least is refused before anyt
 for (const harness of ["claude-agent", "codex"]) {
   test(`${harness}: a cap under one request's worst case at the ceiling runs, each request admitted with the output what is left buys`, { timeout: 90_000 }, async (t) => {
     // At its ceiling a faux request could cost $1.6384; $0.50 buys about 5,000 tokens, less what each answer cost.
-    const { api, data } = await serve(t, { fauxHarness: FAUX_HARNESS, faux: OUTPUT_PRICED });
+    const { api, data } = await serve(t, { harnessTable: fauxTable(FAUX_HARNESS), faux: OUTPUT_PRICED });
     const { run_id } = await start(api, `clamp-${harness}`, "go", { max_cost_usd: 0.5 }, { harness, instructions: "Make three requests." });
     const { run } = await ended(api, run_id);
     assert.equal(run.status, "completed", JSON.stringify(run.error));
@@ -96,12 +97,12 @@ for (const harness of ["claude-agent", "codex"]) {
   });
 
   test(`${harness}: a cap that cannot buy its first request's least is refused before anything is sent, in plain words, the run made no request, and it pauses at its cap`, { timeout: 90_000 }, async (t) => {
-    const { api, data } = await serve(t, { fauxHarness: FAUX_HARNESS, faux: OUTPUT_PRICED });
+    const { api, data } = await serve(t, { harnessTable: fauxTable(FAUX_HARNESS), faux: OUTPUT_PRICED });
     const { run_id } = await start(api, `tiny-${harness}`, "go", { max_cost_usd: 0.05 }, { harness, instructions: "Make three requests." });
     const { run, rows } = await ended(api, run_id);
     assert.deepEqual([run.status, run.state, run.error, run.pending?.kind], ["input_required", "waiting", null, "budget"], JSON.stringify(run));
     // 1,024 tokens at $0.0001 are $0.1024: the least cap is $0.11 in the words.
-    assert.match(run.pending.said, /^Not sent: this run's cap of \$0\.05 can't cover one \S+ request \(at least \$0\.11\)\. Raise the cap to at least \$0\.11 to run it\.$/);
+    assert.match(run.pending.said, /^Not sent: the next step needs at least \$0\.11, and this run's cap is \$0\.05\. Raise the cap to at least \$0\.11 to continue\.$/);
     assert.equal(records(data, run_id, "faux.request").length, 0, "nothing was sent");
     noPhantomRequest(rows);
   });
@@ -109,12 +110,12 @@ for (const harness of ["claude-agent", "codex"]) {
   test(`${harness}: a run that spends its cap down is refused once what is left cannot buy 1,024 tokens, saying so, the refused request counts as none, and the run pauses at its cap`, { timeout: 90_000 }, async (t) => {
     // $0.105 passes the least ($0.1024). The first request is admitted with 1,050 tokens and costs $0.001, the second with
     // 1,040 and costs $0.002; then $0.102 is left, 1,020 tokens: the third is refused.
-    const { api, data } = await serve(t, { fauxHarness: FAUX_HARNESS, faux: OUTPUT_PRICED });
+    const { api, data } = await serve(t, { harnessTable: fauxTable(FAUX_HARNESS), faux: OUTPUT_PRICED });
     const { run_id } = await start(api, `down-${harness}`, "go", { max_cost_usd: 0.105 }, { harness, instructions: "Make three requests." });
     const { run, rows } = await ended(api, run_id);
     assert.deepEqual([run.status, run.state, run.error, run.pending?.kind], ["input_required", "waiting", null, "budget"], JSON.stringify(run));
     // To run it the cap would have to be what was spent and the next request's least: $0.003 + $0.1024, $0.11 up to the cent.
-    assert.match(run.pending.said, /^Not sent: the run has spent \$0\.003 of its \$0\.105 cap, and its next \S+ request needs at least \$0\.11\. Raise the cap to at least \$0\.11 to run it\.$/);
+    assert.match(run.pending.said, /^Not sent: this run has spent \$0 of its \$0\.105 cap, and the next step needs at least \$0\.11\. Raise the cap to at least \$0\.11 to continue\.$/);
     assert.equal(records(data, run_id, "faux.request").length, 2, "two were sent");
     const usage = rows.findLast((r) => r.kind === "usage")?.usage;
     assert.equal(usage?.requests, 2, JSON.stringify(usage));

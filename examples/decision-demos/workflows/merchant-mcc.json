@@ -176,7 +176,7 @@
         "node": "call",
         "label": "fetch_site",
         "via": "tool",
-        "tool": "fetch_page",
+        "tool": "web_fetch",
         "args": {
           "url": "{url}"
         },

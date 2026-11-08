@@ -1,14 +1,12 @@
 #!/bin/sh
 # The image serves: a container of <image>, published on a loopback port only, answers GET /v2/health with 200 and
 # status ok, and GET /v2/capabilities with the contract. Where capabilities list the harnesses, pi is available;
-# claude-agent, whose SDK the image does not carry (image-check.sh), is never available: it is unavailable as not
-# installed, with the one line that installs it, or as a harness this server does not run yet (a serve without its
-# Claude wiring); and any other harness is available, or unavailable with a reason a person can act on, not an import
-# error (a reason that says it is not installed gives the line that installs it). Codex is listed, and since the image
-# carries its pinned CLI (image-check.sh) it is never unavailable as not installed or not the pinned build: it is
-# available, or unavailable for a setting its reason names (no OPENAI_API_KEY, say). With IMAGE_SMOKE_CODEX=available
-# (a run given a model key) it must be available. The container is stopped and removed
-# by its own name, its anonymous /data volume with it. Needs docker and node. Arguments after the image go to
+# claude-agent and codex, whose CLIs the image does not carry (image-check.sh), each say they install on first use
+# (`installs`: on_first_use), available or unavailable for a model key their reason names, or they are a harness this
+# server does not run yet (a serve without their wiring); and any other harness is available, or unavailable with a reason
+# a person can act on, not an import error (a reason that says it is not installed gives the line that installs it). Codex
+# is listed. With IMAGE_SMOKE_CODEX=available (a run given a model key) it must be available. The container is stopped and
+# removed by its own name, its anonymous /data volume with it. Needs docker and node. Arguments after the image go to
 # `docker run` (`-e AGENT_MODEL=...`, say), so a model can be configured and each adapter's own install check is reached.
 #   image-smoke.sh <image> [docker run arguments...]    (IMAGE_SMOKE_WAIT_S: how long health may take, default 60;
 #                                                         IMAGE_SMOKE_CODEX=available: codex must be available)
@@ -59,14 +57,16 @@ if (Array.isArray(caps.harnesses)) {
       const reason = String(h.reason ?? "");
       if (!reason) fail(`${h.id} is unavailable with no reason`);
       if (/ERR_MODULE_NOT_FOUND|Cannot find (?:module|package)|ERR_PACKAGE_PATH|SyntaxError|TypeError/.test(reason)) fail(`${h.id}'s reason is an error, not words a person can act on: ${reason}`);
-      if (h.id === "claude-agent" && !/not installed/i.test(reason) && !/does not run claude-agent yet/.test(reason)) fail(`claude-agent is unavailable, but neither as not installed nor as a harness this server does not run yet: ${reason}`);
-      if (/not installed/i.test(reason) && !/npm install (?:--?[A-Za-z][A-Za-z-]* )*@/.test(reason)) fail(`${h.id} says it is not installed but gives no install line: ${reason}`);
-      if (h.id === "codex" && /not installed|not the pinned build/i.test(reason)) fail(`codex is unavailable as not installed or not the pinned build, but the image carries the pinned Codex CLI (image-check.sh): ${reason}`);
-      // Reads the setting codex's reason names, which is serve's wording (codexProvider in src/adapters.ts, pinned by
+      if (h.id === "claude-agent" && !/does not run claude-agent yet/.test(reason) && !/\b(?:ANTHROPIC_[A-Z_]*|OPENROUTER_API_KEY)\b|\bkey\b/i.test(reason)) fail(`claude-agent is unavailable, but neither for a model key nor as a harness this server does not run yet: ${reason}`);
+      // Reads the setting codex's reason names, which is serve's wording (providerFor in src/provider.ts, pinned by
       // test/codex-offer.test.mjs): when that message changes, this check changes with it.
-      if (h.id === "codex" && !/\b(?:OPENAI_API_KEY|AGENT_MODEL[A-Z_]*)\b/.test(reason)) fail(`codex is unavailable for a reason that names no setting to change: ${reason}`);
-    } else if (h.id === "claude-agent") fail("claude-agent is available, but the image carries no Claude Agent SDK");
-    lines.push(`${h.id}: ${h.available ? "available" : `unavailable (${h.reason})`}`);
+      if (h.id === "codex" && !/does not run codex yet/.test(reason) && !/\b(?:OPENAI_API_KEY|AGENT_MODEL[A-Z_]*)\b/.test(reason)) fail(`codex is unavailable, but neither for a model key nor as a harness this server does not run yet: ${reason}`);
+      if (/not installed/i.test(reason) && !/npm install (?:--?[A-Za-z][A-Za-z-]* )*@/.test(reason)) fail(`${h.id} says it is not installed but gives no install line: ${reason}`);
+    }
+    for (const [id, cli] of [["claude-agent", "Claude Agent SDK"], ["codex", "Codex CLI"]]) {
+      if (h.id === id && h.installs !== "on_first_use" && !new RegExp(`does not run ${id} yet`).test(String(h.reason ?? ""))) fail(`${id} does not say it installs on first use, but the image carries no ${cli}: ${JSON.stringify(h)}`);
+    }
+    lines.push(`${h.id}: ${h.available ? "available" : `unavailable (${h.reason})`}${h.installs ? `, installs ${h.installs.replaceAll("_", " ")}` : ""}`);
   }
   const codex = caps.harnesses.find((h) => h?.id === "codex");
   if (!codex) fail("capabilities list harnesses, but not codex");

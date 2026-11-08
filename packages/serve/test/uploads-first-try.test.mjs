@@ -9,7 +9,8 @@ import { join } from "node:path";
 import { test } from "node:test";
 import { MAX_UPLOAD_BYTES, Uploads, uploadTestHooks } from "../dist/uploads.js";
 import { schemaProblems } from "./schema-support.mjs";
-import { agent, call, cookieOf, follow, scratch, serve } from "./support.mjs";
+import { agent, call, cookieOf, follow, runDir, scratch, serve } from "./support.mjs";
+import { fauxTable } from "./fixtures/faux-table.mjs";
 
 const FAUX_HARNESS = new URL("./fixtures/faux-harness.mjs", import.meta.url).pathname;
 const sha = (bytes) => createHash("sha256").update(bytes).digest("hex");
@@ -157,7 +158,7 @@ test("GET /v2/files lists the server's uploads newest first a page at a time, GE
   assert.equal((await api("GET", `/files/${sent.file_id}`)).status, 404);
   assert.equal((await send(server.port, "DELETE", `/v2/files/${sent.file_id}`, undefined, bearer(server))).status, 404, "deleted once");
   assert.equal(await stat(join(server.data, "files", sent.file_id)).catch(() => null), null, "its bytes are gone");
-  assert.equal(await readFile(join(server.data, "runs", run.body.run_id, "work", "inputs", "kept.txt"), "utf8"), "kept bytes", "the run's copy stays");
+  assert.equal(await readFile(join(runDir(server.data, run.body.run_id), "work", "inputs", "kept.txt"), "utf8"), "kept bytes", "the run's copy stays");
   await follow(api, run.body.run_id, ["completed"]);
   // A run started after names it in vain; a pending one deleted takes no bytes.
   const late = await api("POST", "/agents/keeper/runs", { input: { content: "Hello." }, file_ids: [sent.file_id] });
@@ -178,7 +179,7 @@ export default function reply(context, faux) {
   return faux.message(faux.toolCall("read", { path }), { stopReason: "toolUse" });
 }
 `);
-  const server = await served(t, { faux: reader, fauxHarness: FAUX_HARNESS });
+  const server = await served(t, { faux: reader, harnessTable: fauxTable(FAUX_HARNESS) });
   const { api } = server;
   const words = "The upload reached the run.\n";
   const file = (await sendFile(server, { path: "brief/notes.txt" }, Buffer.from(words))).json.file;

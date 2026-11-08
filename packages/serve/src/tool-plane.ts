@@ -19,6 +19,7 @@
 // harness's own search (inside its CLI, where no call can wait for a person) gives way to the kernel's. A run is never
 // told a deny: its Plane resolves a denied capability as under ask, and the gate, which reads the permission at each
 // call, is the one place that refuses it, so a deny lifted mid-run is lifted at the next call.
+import { blurbOf } from "./tool-blurbs.js";
 import { readFileSync } from "node:fs";
 import { isToolSettingsKey } from "@parcha/pi-durable-agent";
 import { join } from "node:path";
@@ -27,15 +28,16 @@ import { keyNeeded } from "./key-words.js";
 import type { InputIssue } from "./errors.js";
 import { writeDurableSync } from "./files.js";
 import { DEFAULT_HARNESS, HARNESSES, type HarnessId } from "./harness.js";
+import { builtinHarness, harnessOf } from "./harness-table.js";
+import { viaOpenRouter, WIRES } from "./provider.js";
 import { savedIn } from "./secrets.js";
-import { hostModel, viaOpenRouter } from "./model.js";
+import { hostModel } from "./model.js";
 import { defaultPermission, isCatalogTool, isMcpTool, type Permission, PERMISSIONS, permissionFrom, permissionOf, SHELL_FAMILY } from "./tool-gate.js";
 
 /**
  * The capabilities a pack or a revision may grant, by name: the tools the kernel gives a run, bound from serve's closed
  * table (tools.ts) and named the same on every harness that runs them. `web_search` and `web_fetch` resolve to a
- * provider (PROVIDERS); the rest are the kernel's own. Not capabilities: `fetch_page` (legacy: web_fetch's guarded fetch
- * with no provider behind it), the workflow call nodes' `pdf_pages` and `llm` (a workflow's call node names them, a grant
+ * provider (PROVIDERS); the rest are the kernel's own. Not capabilities: the workflow call nodes' `pdf_pages` and `llm` (a workflow's call node names them, a grant
  * never does), and a catalog's tools (`monid.*`, `mcp:<server>/<tool>`: catalog tools, which their catalog grants).
  */
 export const CAPABILITIES = ["read", "write", "edit", "web_search", "web_fetch", "browser", "ask_person"] as const;
@@ -51,27 +53,25 @@ export type Capability = (typeof CAPABILITIES)[number];
 export const PROVIDERS = Object.freeze({ web_search: ["auto", "native", "exa-keyless", "parallel", "off"], web_fetch: ["kernel", "parallel"], browser: ["auto", "browserbase", "kernel", "chrome"] } as const);
 export type Pickable = keyof typeof PROVIDERS;
 export const PICKABLE = Object.keys(PROVIDERS) as Pickable[];
-/** Older names a revision may still grant, and the capability each one is: `fetch_page` runs web_fetch, under its own
- *  name, and resolves as web_fetch does. */
-export const LEGACY_NAMES: Readonly<Record<string, Pickable>> = Object.freeze({ fetch_page: "web_fetch" });
-/** The capability a granted name runs: its legacy target, else itself. */
-export const capabilityOf = (name: string): string => LEGACY_NAMES[name] ?? name;
-/** Every tool of serve's table (tools.ts) and its legacy names, by name, so this module needs no import of it: a test
- *  holds the two as one. */
-export const TABLE_TOOLS: readonly string[] = ["read", "write", "edit", "bash", "ask_person", "fetch_page", "web_fetch", "web_search", "browser", "pdf_pages", "llm"];
+/** Every tool of serve's table (tools.ts), by name, so this module needs no import of it: a test holds the two as one. */
+export const TABLE_TOOLS: readonly string[] = ["read", "write", "edit", "bash", "ask_person", "web_fetch", "web_search", "browser", "pdf_pages", "llm"];
 /** The tools whose approved call the kernel runs itself, outside the model's turn (host-tools.ts's REPLAY): ask is
  *  offered for these and for catalog tools. Any other (browser, ask_person, the call-only ones) is allow or deny. The
  *  run's learned_workflow is one (tool-gate.ts runs an approved call of it on the run's own tools). */
-export const ASKABLE: readonly string[] = ["read", "write", "edit", "bash", "fetch_page", "web_fetch", "web_search", "learned_workflow"];
+export const ASKABLE: readonly string[] = ["read", "write", "edit", "bash", "web_fetch", "web_search", "learned_workflow"];
 /** The permissions `name` may be set to. */
 export const permissionsOf = (name: string): readonly Permission[] => (Object.hasOwn(SHELL_FAMILY, name) && SHELL_FAMILY[name] !== name ? permissionsOf(SHELL_FAMILY[name]!) : ASKABLE.includes(name) || isCatalogTool(name) ? PERMISSIONS : ["allow", "deny"]);
+/** A tool's permission as this server applies it to an agent that sets none, as capabilities and an MCP server's read
+ *  give it: the one in force under the server's settings (`permission`), the owner's default (`default_permission`) and
+ *  those it may be set to. An agent's read gives the same, the agent's own layer over it (agentTools). */
+export const serverGate = (name: string, settings: ToolSettingsMap) => ({ permission: permissionOf(name, settings as never), default_permission: defaultPermission(name), permissions: [...permissionsOf(name)] });
 /** The run's own tools beyond the table, each its own settings key, allowed by default like a table tool: the learned
  *  workflow a run's pin names runs as `learned_workflow` (learned-workflow.ts LEARNED_WORKFLOW_TOOL). */
 export const SERVE_OWN_TOOLS: readonly string[] = ["learned_workflow"];
 
 /** A settings key: a tool of the table, one of the run's own tools (SERVE_OWN_TOOLS), a catalog tool (`monid.<tool>`,
  *  `mcp:<server>/<tool>`), or an MCP server's wildcard (`mcp:<server>/*`), which sets each of its tools. */
-const isSettingsKey = (name: string): boolean => isToolSettingsKey(name) && ((TABLE_TOOLS.includes(name) && !Object.hasOwn(LEGACY_NAMES, name)) || SERVE_OWN_TOOLS.includes(name) || isCatalogTool(name) || /^mcp:[^/]+\/\*$/.test(name));
+const isSettingsKey = (name: string): boolean => isToolSettingsKey(name) && (TABLE_TOOLS.includes(name) || SERVE_OWN_TOOLS.includes(name) || isCatalogTool(name) || /^mcp:[^/]+\/\*$/.test(name));
 /** One tool's settings: its provider (a capability that has a choice) and its permission. */
 export type ToolSetting = { provider?: string; permission?: Permission; /** Read as a stand-in for a value not offered (readToolSettings); never shown or written. */ fallback?: true; /** The stand-in's value as written in the file, which a save that keeps the stand-in writes back (ToolSettings.put). Never shown. */ raw?: unknown };
 /** The tools' settings, the server's (`/v2/settings/tools`) and an agent's own (`definition.tool_settings`), one shape:
@@ -107,40 +107,58 @@ export type ResolveInput = {
   browserKeys?: Record<BrowserVendor, boolean>;
   /** The run has a spend cap: Codex's own search sends a request with no input bound, which a cap cannot admit. */
   capped?: boolean;
-  /** The harness's model requests go through OpenRouter (model.ts' viaOpenRouter), where its own search does not run. */
+  /** The harness's model requests go through OpenRouter (provider.ts' viaOpenRouter), where its own search does not run. */
   openRouter?: boolean;
   /** Its permission in force (tool-gate.ts); absent, allow. */
   permission?: Permission;
 };
 
-/** Why claude-agent has no native search under a spend cap, and what works there instead. */
-const CLAUDE_CAPPED = "claude-agent under a spend cap: Claude's own search has per-use fees a spend cap cannot reserve yet, so web_search works under a cap through the default provider, auto";
+/** Whether a harness's own search, `native` in its facts (the provider's search tool, through its proxy), has per-use fees
+ *  a spend cap cannot reserve yet; `live` (the harness's own, booked per call) sends a request with no input bound. */
+const cappedOwn = (id: string, label: string, mode: "native" | "live"): { id: string; why: string } =>
+  mode === "native"
+    ? { id: `${id} under a spend cap: ${label}'s own search has per-use fees a spend cap cannot reserve yet, so web_search works under a cap through the default provider, auto`, why: `under a spend cap ${label}'s own search is not offered, since a cap cannot reserve its per-use fees yet` }
+    : { id: `${id} under a spend cap`, why: `under a spend cap ${label}'s own search is not offered, since its request has no input bound` };
+
+/** The facts of the adapter `harness` runs on (none for pi): its own search, its wire. A stand-in keeps the facts of the
+ *  harness it stands in for (harness-table.ts). */
+const factsOf = (harness: string) => builtinHarness(harness)?.facts;
+
+/** Whether a run on `harness` sends through OpenRouter, where a harness's own search does not run: false for one with
+ *  none (and for pi, whose hosted search is asked of the model's provider). */
+export const ownSearchViaOpenRouter = (env: NodeJS.ProcessEnv, harness: string, model?: string): boolean => {
+  const facts = harnessOf(env, harness)?.facts;
+  return facts?.webSearch ? viaOpenRouter(facts.wire, env, model) : false;
+};
 
 /** Why a run of `input` has no native search, where it has none: `id`, as the unavailable text names it, and `why`, the
  *  same in a sentence (capabilities' `why`). */
 function noNative(input: ResolveInput): { id: string; why: string } | undefined {
-  // Native, where there is one. Claude's model goes to Anthropic's Messages API (or its own ANTHROPIC_BASE_URL), never
-  // through the other harnesses' gateway; Codex's own search goes to OpenAI with its request, except behind a gateway
-  // (no known hosted search), on OpenRouter (which runs neither harness's own search, nor counts its searches) or
-  // under a spend cap (its request has no input bound, which a cap cannot admit); pi asks
-  // Anthropic's or OpenAI's. Under a spend cap Claude's own search is not offered either: each search has a per-use fee
-  // the cap cannot reserve yet (its request's bound holds the pages' input tokens, not the fees). Where there is none,
-  // `native` is unavailable, and `auto` goes to Parallel on the server's key (its fee booked and held by a cap, paid-calls.ts),
-  // else to keyless Exa.
+  // Native, where there is one: a harness's own (its facts' webSearch), else pi's, which asks Anthropic's or OpenAI's. A
+  // harness's own search goes with its request on its wire, except on OpenRouter (which runs no harness's own search, nor
+  // counts its searches), behind serve's gateway on the wire it serves (no known hosted search), or under a spend cap
+  // (cappedOwn: per-use fees the cap cannot reserve yet, its request's bound holding the pages' input tokens, not the
+  // fees; or a request with no input bound). A harness with none (OpenCode, whose proxy policy refuses a
+  // provider-hosted tool) has none at all. Where there is none, `native` is unavailable, and `auto` goes to Parallel on
+  // the server's key (its fee booked and held by a cap, paid-calls.ts), else to keyless Exa.
   const vendor = input.model?.slice(0, Math.max(0, input.model.indexOf("/")));
-  if ((input.harness === "claude-agent" || input.harness === "codex") && input.openRouter) return { id: `${input.harness} on OpenRouter`, why: `through OpenRouter ${input.harness === "codex" ? "Codex" : "Claude"}'s own search is not run, and its searches are not counted to price` };
-  if (input.harness === "claude-agent") return input.capped ? { id: CLAUDE_CAPPED, why: "under a spend cap Claude's own search is not offered, since a cap cannot reserve its per-use fees yet" } : undefined;
-  if (input.harness === "codex") return input.gateway ? { id: "codex behind a gateway", why: "behind a gateway Codex has no own search" } : input.capped ? { id: "codex under a spend cap", why: "under a spend cap Codex's own search is not offered, since its request has no input bound" } : undefined;
-  // OpenCode has none: its model requests carry no provider-hosted tool (its proxy policy refuses one).
-  if (input.harness === "opencode") return { id: "opencode, whose model requests carry no provider-hosted tool", why: "OpenCode's model requests carry no provider-hosted tool" };
+  const facts = factsOf(input.harness);
+  if (facts) {
+    if (!facts.webSearch) return { id: `${input.harness}, whose model requests carry no provider-hosted tool`, why: `${facts.label}'s model requests carry no provider-hosted tool` };
+    if (input.openRouter) return { id: `${input.harness} on OpenRouter`, why: `through OpenRouter ${facts.label}'s own search is not run, and its searches are not counted to price` };
+    if (input.gateway && WIRES[facts.wire].gateway) return { id: `${input.harness} behind a gateway`, why: `behind a gateway ${facts.label} has no own search` };
+    return input.capped ? cappedOwn(input.harness, facts.label, facts.webSearch) : undefined;
+  }
   if (input.gateway) return { id: `${input.harness} behind a gateway`, why: `behind a gateway ${input.harness} has no hosted search` };
   if (vendor && HOSTED_SEARCH_PROVIDERS.includes(vendor)) return undefined;
   return input.model ? { id: input.model, why: `${input.model} has no hosted search here` } : { id: "a model with none named", why: "no model is named, so there is no hosted search" };
 }
 
 /** The native search of a run that has one, in a sentence. */
-const nativeWhy = (input: ResolveInput): string =>
-  input.harness === "claude-agent" ? "Claude's own search" : input.harness === "codex" ? "Codex's own search" : `${input.model?.startsWith("openai/") ? "OpenAI" : "Anthropic"}'s hosted search, for ${input.model}`;
+const nativeWhy = (input: ResolveInput): string => {
+  const facts = factsOf(input.harness);
+  return facts?.webSearch ? `${facts.label}'s own search` : `${input.model?.startsWith("openai/") ? "OpenAI" : "Anthropic"}'s hosted search, for ${input.model}`;
+};
 
 /** What `capability` resolves to on a run of `input`, and why in a plain sentence (capabilities' `why`): one rule, so
  *  the two never disagree. */
@@ -156,14 +174,15 @@ export function explainCapability(capability: Pickable, input: ResolveInput): { 
   if (chosen === "exa-keyless") return { resolves: "exa-keyless", why: `keyless Exa, ${picked}: Exa's free search, no key` };
   // Under ask, a harness's own search runs inside its CLI, where no call can wait for a person: none on claude-agent or
   // codex then, and the kernel's search, which the gate holds, in its place. pi's is a tool of the run's, which it holds.
-  const asks = input.permission === "ask" && input.harness !== DEFAULT_HARNESS;
+  const asks = input.permission === "ask" && factsOf(input.harness) !== undefined;
   const without = noNative(input);
   if (chosen === "native" && asks && without === undefined) return { resolves: NATIVE_ASKS, why: "native search cannot wait for an approval: it runs inside the harness's CLI" };
   const none = without ?? (asks ? { id: input.harness, why: "under ask the harness's own search cannot wait for a person's approval" } : undefined);
   if (chosen === "native") return none === undefined ? { resolves: "native", why: nativeWhy(input) } : { resolves: `unavailable: no native search for ${none.id}`, why: `no native search for ${none.id}` };
-  // On claude-agent `auto` skips Claude's own search, an explicit pick (`native`): Parallel on the server's key, else
-  // keyless Exa.
-  if (input.harness === "claude-agent") return input.parallelKey ? { resolves: "parallel", why: key } : { resolves: "exa-keyless", why: "Exa's free keyless search, no key; Claude's own search is an explicit pick" };
+  // `auto` skips a harness's own search that has per-use fees (its facts' `native`: the provider's search tool), an
+  // explicit pick (`native`): Parallel on the server's key, else keyless Exa.
+  const facts = factsOf(input.harness);
+  if (facts?.webSearch === "native") return input.parallelKey ? { resolves: "parallel", why: key } : { resolves: "exa-keyless", why: `Exa's free keyless search, no key; ${facts.label}'s own search is an explicit pick` };
   if (none === undefined) return { resolves: "native", why: nativeWhy(input) };
   return input.parallelKey ? { resolves: "parallel", why: `${none.why}; ${key}` } : { resolves: "exa-keyless", why: `${none.why}; Exa's free keyless search, no key` };
 }
@@ -223,7 +242,7 @@ export function explainsView(env: NodeJS.ProcessEnv, settings: ToolSettingsMap, 
     const input = { ...served(env), ...picked(name, settings, overrides) };
     const each = HARNESSES.map((harness) => {
       const on = model ?? hostModel(env, "default", harness);
-      return [harness, explainCapability(name, { ...input, ...(on ? { model: on } : {}), harness, openRouter: viaOpenRouter(env, harness, on) })] as const;
+      return [harness, explainCapability(name, { ...input, ...(on ? { model: on } : {}), harness, openRouter: ownSearchViaOpenRouter(env, harness, on) })] as const;
     });
     return [name, { resolves: Object.fromEntries(each.map(([harness, said]) => [harness, said.resolves])), why: Object.fromEntries(each.map(([harness, said]) => [harness, said.why])) }];
   })) as Record<Pickable, { resolves: Record<HarnessId, Resolution>; why: Record<HarnessId, string> }>;
@@ -255,11 +274,11 @@ export function planeFor(env: NodeJS.ProcessEnv, tooling: Tooling, settings: Too
   // it runs is set), so its search resolves on that one.
   const model = tooling.workflow ? undefined : (tooling.model ?? hostModel(env, "default", harness));
   const plane: Plane = {};
-  const granted = tooling.tools.map(capabilityOf);
+  const granted = tooling.tools;
   for (const name of PICKABLE) {
     if (!granted.includes(name)) continue;
     const chosen = picked(name, settings, tooling.overrides);
-    plane[name] = resolveCapability(name, { ...served(env), harness, capped, openRouter: viaOpenRouter(env, harness, model), ...(model ? { model } : {}), ...chosen, ...(run && chosen.permission === "deny" ? { permission: "ask" as const } : {}) });
+    plane[name] = resolveCapability(name, { ...served(env), harness, capped, openRouter: ownSearchViaOpenRouter(env, harness, model), ...(model ? { model } : {}), ...chosen, ...(run && chosen.permission === "deny" ? { permission: "ask" as const } : {}) });
   }
   // The model a search through its provider's hosted search asks (hosted-search.ts): pi's own web_search, and on
   // another harness, whose agent searches with its own tool, a learned workflow's call node (learned-workflow.ts).
@@ -439,15 +458,17 @@ export class ToolSettings {
  *  it resolves to on the agent's harness and model. */
 export function agentTools(env: NodeJS.ProcessEnv, settings: ToolSettingsMap, agent: Tooling, order: readonly string[]) {
   const plane = planeFor(env, agent, settings);
-  const rank = (name: string) => order.indexOf(capabilityOf(name)) + (name in LEGACY_NAMES ? 0.5 : 0);
+  const rank = (name: string) => order.indexOf(name);
   return [...new Set(agent.tools)].sort((a, b) => rank(a) - rank(b)).map((name) => {
-    const capability = capabilityOf(name);
     const { permission, from } = permissionFrom(name, settings as never, (agent.overrides ?? {}) as never);
     const gate = { permission, permission_from: from, default_permission: permissionOf(name, settings as never), permissions: [...permissionsOf(name)] };
-    if (!Object.hasOwn(PROVIDERS, capability)) return { name, ...gate };
-    const pick = capability as Pickable;
+    // One short line for people (tool-blurbs.ts), as capabilities serves it.
+    const blurb = blurbOf(name);
+    const shown = { name, ...(blurb ? { blurb } : {}) };
+    if (!Object.hasOwn(PROVIDERS, name)) return { ...shown, ...gate };
+    const pick = name as Pickable;
     const own = agent.overrides?.[pick]?.provider;
     const server = settings[pick]?.provider;
-    return { name, ...gate, provider: own ?? server ?? PROVIDERS[pick][0], provider_from: own ? "agent" : server ? "server" : "default", default_provider: server ?? PROVIDERS[pick][0], resolved: plane[pick]! };
+    return { ...shown, ...gate, provider: own ?? server ?? PROVIDERS[pick][0], provider_from: own ? "agent" : server ? "server" : "default", default_provider: server ?? PROVIDERS[pick][0], resolved: plane[pick]! };
   });
 }

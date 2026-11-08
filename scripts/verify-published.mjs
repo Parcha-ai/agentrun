@@ -94,7 +94,10 @@ export async function installRegistryConsumer(consumer, { requested, root, regis
   return lock;
 }
 
-export async function verifyPublished(root, selected, { allowAbsent = false, fetchImpl = fetch, wait, now } = {}) {
+// A canary from main, published under npm's `canary` dist-tag: <core>-canary.<run>.g<sha7>, one suffix on every package of the plan.
+const CANARY = /^\d+\.\d+\.\d+(-canary\.\d+\.g[0-9a-f]{7,40})$/;
+
+export async function verifyPublished(root, selected, { allowAbsent = false, canary = false, fetchImpl = fetch, wait, now } = {}) {
   assert.ok([...releasePackages, 'all'].includes(selected));
   assert.ok(!allowAbsent || selected !== 'all', 'Absence probes select exactly one package');
   const receiptPath = join(root, `.release/published-${selected}.json`);
@@ -106,12 +109,20 @@ export async function verifyPublished(root, selected, { allowAbsent = false, fet
     assert.equal(plan.status, 'passed');
     assert.equal(plan.registry, 'https://registry.npmjs.org/');
     assert.deepEqual(plan.packages.map(pkg => pkg.directory), releasePackages);
+    const suffixes = new Set();
     for (const pkg of plan.packages) {
       assert.equal(pkg.name, releasePackageNames[pkg.directory]);
+      if (canary) {
+        const match = CANARY.exec(pkg.version);
+        assert.ok(match, `${pkg.name}@${pkg.version} is not a canary (x.y.z-canary.<run>.g<sha>)`);
+        suffixes.add(match[1]);
+        continue;
+      }
       // A package on its own version line (@parcha/agentrun) carries a plain version; every other one the workspace's beta.
       const own = ownVersionPackages.includes(pkg.directory);
       assert.match(pkg.version, own ? /^\d+\.\d+\.\d+$/ : /^\d+\.\d+\.\d+-beta\.\d+$/, `${pkg.name}@${pkg.version} is not on its version line (${own ? 'x.y.z' : 'x.y.z-beta.N'})`);
     }
+    assert.ok(suffixes.size <= 1, `a canary plan has one canary suffix on every package, not ${[...suffixes].join(', ')}`);
     const results = [];
     for (const pkg of plan.packages.filter(pkg => selected === 'all' || selected === pkg.directory)) {
       const metadataResponse = await registryResponse(`${plan.registry}${encodeURIComponent(pkg.name)}/${pkg.version}`, { fetchImpl, wait, now, retryNotFound: !allowAbsent });
@@ -167,13 +178,20 @@ export async function verifyPublished(root, selected, { allowAbsent = false, fet
   }
 }
 
+/** The command's arguments (`argv` as process.argv): `--package <directory|all>`, then `--allow-absent` and `--canary` in any
+ *  order, each at most once (--canary: the plan is a canary from main, not a release). Anything else throws the usage line. */
+export function commandArgs(argv) {
+  const usage = 'Usage: node scripts/verify-published.mjs --package dsl|jev|pi|pi-durable-disk|all [--allow-absent] [--canary]';
+  const flags = argv.slice(4);
+  assert.ok(argv[2] === '--package' && argv.length >= 4 && flags.every(flag => ['--allow-absent', '--canary'].includes(flag)) && new Set(flags).size === flags.length, usage);
+  return { selected: argv[3], allowAbsent: flags.includes('--allow-absent'), canary: flags.includes('--canary') };
+}
+
 if (isMain(import.meta)) {
-  assert.equal(process.argv[2], '--package', 'Usage: node scripts/verify-published.mjs --package dsl|jev|pi|pi-durable-disk|all [--allow-absent]');
-  assert.ok(process.argv.length === 4 || (process.argv.length === 5 && process.argv[4] === '--allow-absent'));
-  const selected = process.argv[3];
+  const { selected, allowAbsent, canary } = commandArgs(process.argv);
   const root = resolve(dirname(fileURLToPath(import.meta.url)), '..');
   try {
-    const result = await verifyPublished(root, selected, { allowAbsent: process.argv[4] === '--allow-absent' });
+    const result = await verifyPublished(root, selected, { allowAbsent, canary });
     if (result.status === 'absent') {
       console.log(`Registry confirms ${selected} is absent at the release version.`);
       process.exitCode = 3;

@@ -8,12 +8,13 @@ import { readdirSync, readFileSync } from "node:fs";
 import { join } from "node:path";
 import { test } from "node:test";
 import { builtinModels } from "@earendil-works/pi-ai/providers/all";
-import { claudeModel, harnessModelKeys } from "../dist/adapters.js";
+import { harnessModelKeys } from "../dist/adapters.js";
 import { chooseModel, harnessRuns, hostModel, MODEL_KEYS } from "../dist/model.js";
 import { readingOf } from "../dist/server.js";
 import { agent, client, FAUX, follow, printed, responsesEndpoint, scratch, serve, withEnv } from "./support.mjs";
 import { fileURLToPath } from "node:url";
 import { startFauxGateway } from "./fixtures/faux-gateway.mjs";
+import { modelOn, providerFor } from "../dist/provider.js";
 /** A fake key, made at runtime: distinct per name, and no credential-shaped literal for the source export to flag. */
 const fakeKey = (name) => ["not-a-secret", name].join("-");
 
@@ -23,7 +24,8 @@ const made = () => `not-a-secret-${randomBytes(12).toString("hex")}`;
 /** Each form a value could plausibly leak in: as text, base64, base64url and hex, and its random part's first 8. */
 const formsOf = (value) => [value, ...["base64", "base64url", "hex"].map((code) => Buffer.from(value).toString(code)), value.slice(13, 21)];
 const holdsNone = (bytes, forms, where) => { for (const form of forms) assert.ok(!Buffer.from(bytes).includes(form), `${where} holds the key`); };
-const filesUnder = (dir) => readdirSync(dir, { withFileTypes: true }).flatMap((entry) => (entry.isDirectory() ? filesUnder(join(dir, entry.name)) : [join(dir, entry.name)]));
+// Files only: the Claude Code a first use installs (linked here from this repository: support.mjs linkHarnesses) is not the server's writing.
+const filesUnder = (dir) => readdirSync(dir, { withFileTypes: true }).flatMap((entry) => (entry.isDirectory() ? filesUnder(join(dir, entry.name)) : entry.isFile() ? [join(dir, entry.name)] : []));
 const keyed = (...ids) => Object.fromEntries(MODEL_KEYS.filter((row) => ids.includes(row.id)).map((row) => [row.field, made()]));
 
 test("with no AGENT_MODEL a provider's key gives the default: anthropic, then openai, then openrouter; a harness takes only a key it runs on; AGENT_MODEL wins", () => {
@@ -71,7 +73,7 @@ test("behind a gateway, codex takes AGENT_MODEL as the gateway's own string, wha
 });
 
 test("opencode runs the models codex runs, OpenAI's, OpenRouter's or the gateway's: an OpenAI key gives it its default, and another provider's model is skipped for it", () => {
-  // OpenCode's model requests go where codex's do (adapters.ts' codexProvider): OpenAI with its key, OpenRouter with its
+  // OpenCode's model requests go where codex's do (provider.ts' providerFor): OpenAI with its key, OpenRouter with its
   // key, or the gateway.
   assert.equal(hostModel(keyed("anthropic", "openai"), "default", "opencode"), "openai/gpt-6.1-sol", "an OpenAI key's default");
   assert.equal(hostModel(keyed("anthropic", "openrouter"), "default", "opencode"), "openai/gpt-6-sol", "OpenRouter's key alone: codex's route");
@@ -97,8 +99,8 @@ test("with no model here, the refusal says what a person does: a model key in Se
   assert.equal((await chooseModel({}, undefined)).why, none);
   assert.equal((await chooseModel({}, undefined, "fast")).why, none.replace("No model yet:", "No model yet for this workflow's fast tier:"));
   assert.equal((await chooseModel({}, "openai/gpt-5")).why, "No OpenAI key here for openai/gpt-5: add one in Settings → Model keys, or set OPENAI_API_KEY where AgentRun starts.");
-  assert.equal(claudeModel({}, undefined).why, "No model yet for claude-agent: add an OpenRouter or Anthropic key in Settings → Model keys, or set OPENROUTER_API_KEY or ANTHROPIC_API_KEY where AgentRun starts.");
-  for (const why of [(await chooseModel({}, undefined)).why, (await chooseModel({}, "openai/gpt-5")).why, claudeModel({}, undefined).why]) assert.doesNotMatch(why, /--faux|AGENT_MODEL|agentrun-serve/);
+  assert.equal((await modelOn("anthropic-messages", {}, undefined, "claude-agent")).why, "No model yet for claude-agent: add an OpenRouter or Anthropic key in Settings → Model keys, or set OPENROUTER_API_KEY or ANTHROPIC_API_KEY where AgentRun starts.");
+  for (const why of [(await chooseModel({}, undefined)).why, (await chooseModel({}, "openai/gpt-5")).why, (await modelOn("anthropic-messages", {}, undefined, "claude-agent")).why]) assert.doesNotMatch(why, /--faux|AGENT_MODEL|agentrun-serve/);
   const unknown = await chooseModel({ OPENAI_API_KEY: made() }, "openai/no-such-model");
   assert.deepEqual([unknown.needs, /no-such-model/.test(unknown.why)], ["model", true], "a model no catalog knows is named");
 });
@@ -200,7 +202,7 @@ test("a model key saved with no restart: a server with none says no model runs a
   const lines = [];
   const { api, data } = await serve(t, { faux: undefined, log: (line) => lines.push(line) });
   const models = async () => (await api("GET", "/capabilities")).body.models;
-  assert.deepEqual(await models(), { source: "gateway", route_prefix: "agent-model", fast: null, default: null, strong: null, ready: false, needs: "key" });
+  assert.deepEqual(await models(), { source: "gateway", route_prefix: "agent-model", fast: null, default: null, strong: null, ready: false, needs: "key", priced: null });
   assert.equal((await api("POST", "/agents", agent("plain"))).status, 201);
   const refused = await api("POST", "/agents/plain/runs", { input: { content: "hi" } });
   assert.deepEqual([refused.status, refused.body.error.code], [409, "agent_not_runnable"]);
@@ -209,7 +211,7 @@ test("a model key saved with no restart: a server with none says no model runs a
   // OpenAI's key: a save does not check it with its provider (key-check.ts' NOT_CHECKED), so this reaches no network.
   assert.equal((await api("PUT", "/settings/tool-keys/openai", { values: { OPENAI_API_KEY: value } })).status, 204);
   const model = "openai/gpt-6.1-sol";
-  assert.deepEqual(await models(), { source: "gateway", route_prefix: "agent-model", fast: `agent-model/${model}`, default: `agent-model/${model}`, strong: `agent-model/${model}`, ready: true, needs: null }, "no restart");
+  assert.deepEqual(await models(), { source: "gateway", route_prefix: "agent-model", fast: `agent-model/${model}`, default: `agent-model/${model}`, strong: `agent-model/${model}`, ready: true, needs: null, priced: true }, "no restart");
   const offered = (await api("GET", "/capabilities")).body.harnesses.filter((harness) => harness.available).map((harness) => harness.id);
   const row = (await api("GET", "/settings/tool-keys")).body.keys.find((key) => key.id === "openai");
   assert.deepEqual([row.kind, row.unlocks, row.harnesses, row.fields], ["model", [], ["pi", "codex", "opencode"].filter((id) => offered.includes(id)), [{ name: "OPENAI_API_KEY", set: true, source: "stored" }]]);
@@ -225,7 +227,7 @@ test("a model key saved with no restart: a server with none says no model runs a
   for (const file of filesUnder(data)) holdsNone(readFileSync(file), formsOf(value), file);
 
   assert.equal((await api("DELETE", "/settings/tool-keys/openai")).status, 204);
-  assert.deepEqual(await models(), { source: "gateway", route_prefix: "agent-model", fast: null, default: null, strong: null, ready: false, needs: "key" }, "deleted, none again");
+  assert.deepEqual(await models(), { source: "gateway", route_prefix: "agent-model", fast: null, default: null, strong: null, ready: false, needs: "key", priced: null }, "deleted, none again");
 });
 
 // Behind a gateway, AGENT_MODEL is the gateway's own string, for codex as for pi (#1571: no provider is read out of a

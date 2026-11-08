@@ -2,12 +2,11 @@
 
 **Experimental.** The API changes without notice between releases.
 
-> **Deprecated, removed in 0.1.0-beta.31:** the session home (`./home`); the launcher (`./launch`, `Box.launcher` and
-> `BoxLauncher`); the placer (`./place`, and from the root `jevPlacer`, `jevClassifier`, `environmentFacts`,
-> `PlacementsDoc`, `writePlacement`, `isPlacementRecord`, `PlacementError` and the `Placement*` and `Placer` types); the
-> move, restore, store and replay checks of `./testing` (`registerMoveConformance`, `registerRestoreConformance`,
-> `registerStoreConformance`, `replayClassifier` and what they take) and its `FakeLaunch`; and the `home`, `auto` and
-> `purpose` config keys, which from 0.1.0-beta.31 fail to parse. To run an agent in a box, use `@parcha/agentrun-serve`:
+> **Removed:** the session home (`./home`), the box place (`./place`), and the move, restore and store checks of
+> `./testing`. **Deprecated, to be removed:** the launcher (`./launch`, `Box.launcher` and `BoxLauncher`); the placer
+> (from the root `jevPlacer`, `jevClassifier`, `environmentFacts`, `PlacementsDoc`, `writePlacement`,
+> `isPlacementRecord`, `PlacementError` and the `Placement*` and `Placer` types); `./testing`'s `replayClassifier` and
+> its `FakeLaunch`; and the `home`, `auto` and `purpose` config keys. To run an agent in a box, use `@parcha/agentrun-serve`:
 > it uses this package's boxes, `./hands` and `./sync`, which stay.
 
 A pi agent's tool calls go to Daytona and Modal sandboxes, and Jev places each one on the sandbox that fits it. [Jev](https://docs.typesafe.ai/) is TypeSafe's typed-decision model: it answers a question about a step with a choice and a probability, and writes no prose.
@@ -33,11 +32,9 @@ The placer is deprecated and removed in 0.1.0-beta.31.
 
 The reference below takes each part in turn: [a box](#a-box), [tools in a box](#hands-tools-run-in-a-box),
 [where tools run](#where-tools-run-is-a-line-of-config),
-[a store and a workspace](#moving-a-home-a-store-and-a-workspace),
-[a home](#a-home-the-session-runs-somewhere-and-can-stop-without-a-cut), [Jev's placement](#where-a-session-runs-the-placer),
-[ownership](#ownership-one-writer-per-session), [the box place](#a-sessions-place-in-a-box-place),
-[receipts](#what-a-box-cost-receipts), [a program kept alive in a box](#home-a-program-kept-alive-in-a-box) and
-[writing a provider](#writing-a-provider).
+[a box's archive](#a-boxs-archive-unpacked-on-this-machine-sync), [a run's files](#a-runs-files-between-this-machine-and-a-box-sync),
+[Jev's placement](#where-a-session-runs-the-placer), [receipts](#what-a-box-cost-receipts),
+[a program kept alive in a box](#launch-a-program-kept-alive-in-a-box) and [writing a provider](#writing-a-provider).
 
 ## A box
 
@@ -240,8 +237,7 @@ restart and a box can be ended while a command runs in it. These are the limits,
 a typed error:
 
 - **One request per command.** `facts().liveProcesses` is `false`: no program keeps running between calls, and a
-  command's output arrives after it ended. A box like this never serves as a home: the box place refuses it with
-  `MoveError` code `no_live_processes`. Use it for tools.
+  command's output arrives after it ended. Use it for tools.
 - **A 300 s limit.** `facts().maxExecMs` is 300 000. A `timeoutMs` above it is refused with `invalid`; a command with
   none still gets a deadline of 295 s of its own inside the container, so nothing runs past the point where the
   platform cuts a call and loses its later writes. A command ended by its deadline is a `timeout` error; an exit code
@@ -454,60 +450,6 @@ npm package; from a checkout, in `packages/pi-transport`:
 node --experimental-strip-types examples/01-hands.ts examples/hands.local.json 'hostname; pwd'
 ```
 
-## Moving a home: a store and a workspace
-
-> **Deprecated:** `@parcha/pi-transport/home`, with these movers, is removed in 0.1.0-beta.31. To run an agent in a box,
-> use `@parcha/agentrun-serve`: it uses this package's boxes, `./hands` and `./sync`, which stay.
-
-`@parcha/pi-transport/home` holds the two movers a session needs when there is no disk the boxes share. They know
-nothing of sessions beyond "a SQLite file and a directory". Node only.
-
-- **A store.** `sealStore(path)` returns a `Seal` (head, SHA-256, size) of a store its owner has closed; a store with a
-  write-ahead log that holds content is refused with `not_sealed`. `checkpointStore(path, to)` takes a consistent copy
-  of a store that is still open, with `VACUUM INTO` through a second read-only connection; the copy appears whole or
-  not at all. `verifyStore(path, seal)` checks size, hash, the schema, SQLite's quick check and the head, in that order.
-  The head is one read of `durable_metadata.next_seq`; the schema is compared with the one pi-durable makes, read from
-  pi-durable itself, never a copy kept here.
-- **A store from a box.** A store a host verifies or replays into is a file a box made, and a box is not trusted, so this
-  package opens one only one way (`verifyStore`, `replayCommits`), following SQLite's guidance for a database file another
-  security domain could have written. A regular file of at most `DEFAULT_MAX_STORE_BYTES` (1 GiB; `{ maxBytes }` sets
-  another) has its main file copied, without following a link, into a directory the host makes, so no journal or
-  write-ahead log the box left beside it is read; the size and hash checked are the copy's. The copy is opened
-  `immutable` and read-only, with no extension loading, `trusted_schema` off, `cell_size_check` on and `mmap_size` 0,
-  all of which Node 22's `node:sqlite` accepts. The schema must be pi-durable's, object for object and text for text,
-  before the quick check runs: a trigger, a view, a virtual table or a table of the file's own is `refused`, so nothing
-  the file defines is ever compiled, and a store of another pi-durable schema version is refused too. No SQL comes from
-  the box, only the file: the statements are this package's own. `replayCommits` never opens the file to write: the rows
-  of pi-durable's tables are read into a store pi-durable makes on the host, which takes the file's place, and the
-  commits go into that one.
-- **A file.** `moveFile(from, path, to, path, seal)` copies one file between boxes through this process and checks it by
-  hash on the way and on the target; it appears at its path whole or not at all.
-- **A directory.** `manifestOf(box, root, { exclude })` lists a directory in the box: every path with its kind, size,
-  mode, link target and, for files, SHA-256. `moveWorkspace(from, to, { fromRoot, toRoot, exclude, maxBytes })` copies it
-  as a `tar` stream, relayed a chunk at a time with no temporary file, then checks the target against the source:
-  `too_large` and `unsupported_entry` (a socket, device or pipe, named) are decided from the listing before a byte
-  moves; `changed` says the source changed during the copy; `mismatch` names the first path where the target differs.
-  The receipt has bytes, files, the time of each part, MB per second and which side the relay waited on more.
-
-Kept: file contents, permission bits, symbolic links as links, empty directories, modification times in whole
-seconds, names with any bytes. Not kept: owners and groups, extended attributes, ACLs, and the access times. A target
-that already holds other files fails the check. The boxes need `tar`, `find`, `xargs`, `split` and `sha256sum` from GNU
-coreutils and findutils, as `boxEnv` does.
-
-**How the bytes travel.** Each side of a move decides for itself by its box's `facts().bulk`: `stream` moves the
-archive through the streams of `exec`, and is what `localBoxes` and `dockerBoxes` say; anything else, including a box
-that says nothing, moves it as files through `upload` and `download`, because a remote provider's streams can be far
-slower than its file calls (measured: Daytona's at 0.1 to 2.8 MB/s against 25 to 40 MB/s for files, a Modal sandbox's
-at 2 MB/s against 31 to 35). Out of Docker into Daytona the archive streams out and arrives as files. A host can
-override either side in the options (`fromPipe`, `toPipe`) and set the size of the parts (`chunkBytes`, default
-32 MiB). With files, the archive is cut into parts in a directory of its own under the box's temporary directory
-(`TMPDIR`, else `/tmp`); every part is hashed where it is made and checked where it lands, so a part that is missing,
-short or flipped is `mismatch`; the directories are removed on success, on failure and on abort.
-
-**Disk a move needs.** A side that moves files holds the archive once more: the source box needs free space for the
-archive next to the tree it is packing (about the size of the files), and the target box for the archive next to the
-tree it unpacks (the same again). A side that streams needs none. The host holds one part in memory at a time.
-
 ## A box's archive, unpacked on this machine (`./sync`)
 
 A box is not trusted, so neither is a byte of a tar archive it makes. The host never unpacks one with `tar`:
@@ -567,9 +509,9 @@ after each turn. `@parcha/pi-transport/sync` does both through any `Box`, with t
 import { pullAgentHome, pullDir, seedAgentHome, seedDir } from "@parcha/pi-transport/sync";
 
 await seedAgentHome(box, { from: "/data/homes/a1", to: "/run/agentrun/home" }, ctx); // learning/ goes read-only
-const seeded = await seedDir(box, { from: "/data/runs/r1/work", to: "/run/agentrun/run/work" }, ctx);
+const seeded = await seedDir(box, { from: "/data/runs/r1/work", to: "/workspace" }, ctx);
 let mark = seeded.ok ? seeded.value.mark : undefined; // the box's listing, with the SHA-256 of each file sent
-const pulled = await pullDir(box, { from: "/run/agentrun/run/work", to: "/data/runs/r1/work", since: mark, mirrorDeletes: true }, ctx);
+const pulled = await pullDir(box, { from: "/workspace", to: "/data/runs/r1/work", since: mark, mirrorDeletes: true }, ctx);
 if (pulled.ok) mark = pulled.value.mark; // kept for the next pull
 ```
 
@@ -599,304 +541,7 @@ if (pulled.ok) mark = pulled.value.mark; // kept for the next pull
 The box needs `sh`, GNU `tar` and `find`, and `split`, `sha256sum`, `cut`, `wc` and `cat` when it moves files, as the
 movers do. No name is ever put in a shell string: the box reads the list on its standard input.
 
-## A home: the session runs somewhere, and can stop without a cut
-
-> **Deprecated:** `@parcha/pi-transport/home`, with everything in this section, is removed in 0.1.0-beta.31. To run an
-> agent in a box, use `@parcha/agentrun-serve`: it uses this package's boxes, `./hands` and `./sync`, which stay.
-
-A session can live in a box too: it moves between boxes, and comes back from a killed process or a lost box.
-
-`openHome(options)` is one place a session can run: its store, its workspace and pi's Harness over them. It does
-nothing by itself. A host gives it orders, in its own process today and over a link later:
-
-```ts
-import { BACKGROUND_CONTEXT } from "@earendil-works/chord/context";
-import { openHome } from "@parcha/pi-transport/home";
-
-const home = await openHome({ app, session, store, workspace, where, models });
-if (!home.ok) throw home.error;
-await home.value.resume({ epoch: 1 }, BACKGROUND_CONTEXT); // a session that starts here
-// ... later, to move it:
-const drained = await home.value.drain({ timeoutMs: 60_000 }, BACKGROUND_CONTEXT);
-const seal = drained.ok ? await home.value.seal(BACKGROUND_CONTEXT) : undefined;
-```
-
-- **The app.** `app` is `(ctx) => options`: pi's Harness options without `env` and without `models`, plus `root` (how
-  the root conversation is made), `onOpen` and `onResumed`. The home adds the store, the models it was given and the
-  environment, the same way wherever it runs, so one module serves every place. `ctx.workspace` is the only absolute
-  path an app may build on; `ctx.root` is its parent, `ctx.epoch` the lease's epoch the home opened at, and `ctx.env`
-  the session's environment from the host's resume order (`ResumeOrder.env`: over the link, never in argv; a box
-  inherits none of the host's). `onOpen` runs before the session resumes, and the order that opened it waits for it;
-  `onResumed` runs once it has resumed, and the order does not wait: work the app drives for the session (a job) runs
-  there. `loadApp(path)` takes the default export of a module file.
-- **The gate.** A drain holds new work at three hooks of the home's own extension (installed as `transport`): a tool
-  call before its intent is written, a model request before it is sent, a compaction before it selects. A held task
-  has written nothing, so the close leaves no outcome for it and the next home runs it from the start. Work of a
-  conversation whose owner task is running is let through: a tool that waits for its child conversation can only
-  finish when the child does. The drain is done when two reads in a row find every running task held.
-- **Never a cut.** A drain that does not complete in `timeoutMs` opens the gate again, the session works on where it
-  is, and the `DrainError` names what held it: the kinds and counts of the tasks that were running and not held.
-- **Tasks of your own that never end** can never be held. By default the drain waits for them, so it times out.
-  `closeable: ["my.kind"]` leaves a kind out: the close stops such a task as a crash would and the next home resumes
-  it from its checkpoint, so it must make its own effect safe to repeat.
-- **A store is opened only when a seal vouches for it.** `resume({ epoch, seal, move })` verifies the store against
-  the seal, writes a marker beside it, opens it, points every conversation at this home's workspace, admits the
-  move's notice (a `transport.move` entry, request id `transport.move:<move id>`) and resumes. Each step is safe to
-  repeat after a crash: the marker lets a home open again the store it already opened in this epoch, the rewrite is
-  recorded with the move's id, and pi admits a request id once.
-- **A home that sealed stays closed.** After `seal()` it takes only `reopen({ epoch })`, when the move was given up
-  and the lease still names it, or `retire({ epoch })`, when a later epoch names another home: it then stops what
-  runs, if anything, deletes its copy and keeps a note of the epoch, so no order at it or before opens a store here
-  again. Orders that open, close or delete run one at a time. It never reopens by itself, in the same process or a new one: it cannot
-  tell a host that went away before the session was taken elsewhere from one that went away after. If no host
-  returns, the session stays sealed and safe, not running.
-- An order for an epoch the home has left behind is refused with `stale_epoch`.
-- **Where a home's tools run.** A home on this machine may send its tools to any environment (`hands`). A home in a
-  box runs its tools in its own box in this release: `checkHomeHands(config, home)` refuses a config whose `hands`
-  names another environment with `unsupported`. Tools in another box than a boxed home's come later.
-
-Not covered: a tool call that sleeps between retries inside pi has no hook, so a drain waits for it or times out;
-programs the agent left running in the background do not move.
-
-### A home in a box: the link
-
-A home in a box is a runner program, driven by the host over the box's own `exec`: frames are JSON lines on the
-runner's input and output. Nothing listens in the box and nothing dials in. The customer bundles the runner with
-their app into one file:
-
-```ts
-import { runMain } from "@parcha/pi-transport/home";
-import app from "./app.ts";
-
-await runMain(app);
-```
-
-The host starts it with `Box.exec` and holds it with `connectHome(processLink(process), { models, epoch })`, which
-says hello with the host's model catalog, gives orders (`resume`, `drain`, `seal`, `reopen`, `retire`, `submit`,
-`idle`, `status`) and answers the runner's model requests. `createRunner` and `connectHome` over `linkPair()` do the
-same in one process.
-
-- **No key in the box.** The runner's models mirror the host's catalog without `headers` or `baseUrl`, with an auth
-  that holds nothing. A model request is one frame with the request's whole transcript, its system message (the
-  instructions and the tools) included; the host makes the call with its own credentials and sends the answer
-  back as pi-ai's compact frames, which the runner turns into the same events. A request's `apiKey`, `env`,
-  functions and signal never cross; an abort is a frame of its own. The host does not trust the frame either: only
-  plain values of a short list of knobs (`HOST_REQUEST_OPTIONS`: temperature, token and reasoning limits, tool choice,
-  sampling, session id, cache retention, metadata) reach its models; a credential, an endpoint, a header, the
-  provider's environment and the host's retry limits never come from a box. `serveModels(models, { allow })` replaces
-  that list; a host widens it with `[...HOST_REQUEST_OPTIONS, "name"]`. The exported list is frozen. The answers the host acts on (the ready
-  state, a seal, a status) are checked for their shape, and a bad one is `invalid`.
-- **A link that drops in the middle of an answer.** The runner keeps the request open for `resumeWithinMs` (30 s by
-  default) and asks for the frames it missed when a host comes back; the host kept them, so the answer goes on and the
-  host pays once. The rest of the answer goes only to the link the runner resumed it on, after what it missed. That
-  takes one server for every link to the runner: `const server = serveModels(models)`, then
-  `connectHome(link, { models, epoch, server })` for each; a handle closes only a server it made. A request still open
-  after that ends with an error pi retries.
-- **Orders and their contexts.** An order whose context ended already is not sent. An order the host gives up on is
-  cancelled in the runner too, as in the host's own process: a drain given up opens the gate again. The runner says
-  ready only with its home open; a home it could not open is tried again at the next host's hello.
-- **A long line closes the link.** A line longer than `maxLineLength` characters, finished or not, closes it, so what
-  a box writes cannot fill the host's memory. `linkPair`, `streamLink` and `processLink` take `{ maxLineLength }`; the
-  default is `MAX_LINE_LENGTH`, 64 Mi, above the request size of the providers we know.
-- **Writes are coalesced.** One write to the runner's input is in flight at a time and every frame sent meanwhile goes
-  in the next one, so a box whose input is a slow buffered call carries an answer at the pace it is made.
-- **The fence.** Every frame from the runner carries the epoch it runs at. The host refuses a model request from any
-  epoch but the lease's; the runner then closes its session without sealing and exits with `75` (`EXIT_REFUSED`), and
-  its launcher must not start it again. A home the lease left behind has no model. This does not stop a command that
-  was already running in a box that was cut off and is still alive: its effects outside the box are not fenced.
-- **A lost link** gives up a drain that was under way: held work goes on. A home that sealed stays sealed. The runner
-  program speaks over the `exec` that started it, so when that link closes it closes its session in order and exits;
-  a runner started again opens nothing until a host says so. `runMain` writes nothing but frames on its output: the
-  app's `console.log` goes to the error output. It refuses a Node below 22.19.
-
-Not covered: in this release a home in a box runs its tools in its own box, and there are no box frames on the link.
-
-### Moving a home
-
-`moveHome(options)` moves a session's home from one box to another with no disk the two share, in seven steps:
-
-1. **Prepare.** Start the runner in the target box: check its Node (none, or one below 22.19, is `no_runtime`),
-   upload the runner file by its SHA-256 unless the box holds it (`boxRunner({ program: { file } })`), start it with
-   `Box.exec`. The session keeps working.
-2. **Drain** the source: the gate holds it still. A drain that does not complete gives the move up (`drain`, with
-   what held it) and the session works on.
-3. **Seal** the source's store.
-4. **Ship** the store and the workspace (`moveFile`, `moveWorkspace`), each checked on the target, one retry.
-5. **Take** the lease (`Ownership`, below): one conditional write, from epoch `e` to `e + 1`, with the seal and the
-   move's id in the record. **The point of no return.** It is tried only with a target that still answers. A take
-   whose answer was lost is read back: a record with this move's id is this move's.
-6. **Resume** the target at `e + 1`: it verifies the copy, points the conversations' directories at its own
-   workspace and admits the notice once. The store records the workspace it last ran in, so no root travels with
-   the order and a second resume rewrites nothing.
-7. **Retire** the source: it stops and deletes its copy. A source that does not answer is fenced by the epoch.
-   The boxes are the host's: it made them and passes them in each `Place`, and it ends or keeps the source's box
-   after the move.
-
-Before the take, a failure leaves the session where it was: the source is told to run again (`seal`, `ship`,
-`target`): a sealed source opens its store again, and one whose seal failed after it closed its store resumes at its
-own epoch; the error says whether it runs. A lost take (`lost`) means another host acted: this host deletes the copy it
-shipped, unless the lease names the target's own place (then the copy is that host's too), and does nothing more;
-the error's `lease` says where the session is. A session can move back to a place it left: that place's note refuses
-orders only at its epoch or before, and its workspace, the copy the session left behind, is emptied before anything
-lands. Only for a place whose note is this session's, and only the workspace's entries (links as links; never the
-directory above it or the store): a workspace that is not an absolute path in normal form, is a directory of the
-system, holds the store, or is the box's home, a directory above it or a link, is refused and nothing is removed.
-
-After the take, a failure is the target's to finish: `recoverHome(options)` reads the lease, starts the runner where
-it says and makes that home run. A target that never resumed, or a sealed home the lease names at a later epoch, is
-told to resume with the lease's seal and move id, and the `notice` the recovering host passes. A home sealed at the
-lease's epoch may be the source of a move that is about to take the next epoch for another place, so the lease
-decides: recovery takes that next epoch for the same place, with the seal the home reports, and resumes the home
-there; when the move took it first, the take is `lost`, recovery opens nothing, and its error's `lease` says where the
-session is. **Recovering a sealed home moves the epoch.** A host that starts again calls it. Never two runners on one
-store: a home holds its store alone (an exclusive SQLite lock on `<store>.lock`, which the system drops with the
-process), and a second runner at the same place is refused with `busy`; before `recoverHome` starts a runner it stops
-one that still runs there (`stopRunner`: the process its `<store>.pid` names, and only when that process's command
-line names this store), and a call that runner had in flight is cut, at most once. A runner names itself in
-`<store>.pid` when it starts, unless the file names another live runner of the store, and again whenever it takes the
-store into its hold, so a runner refused with `busy` never hides the one that holds it. A host whose runners a
-launcher keeps passes the launcher's stop as `stop`.
-
-Each move leaves a durable record in the session's store, so a recording proves the hop from durable lines: the
-document `transport.moves`, keyed by the move id, written once by the target in the first commit it makes when it
-opens the moved store (`MoveRecord`: `kind`, `epoch`, `head`, `from` and `to` as `{ environment, provider, box }`,
-`drainMs`, `shipMs`, `takeMs`, `bytes`, `stopped`, and a move's `seal`, a restore's `checkpoint` or `replayed`).
-`head` is the store's next commit at open: a move's `seal.head`, a restore's `replayed.to + 1` or its checkpoint's
-head. The record's commit is `head`, or `head + 1` when pi committed once as it opened the store (a generation was
-running, and pi recovers it first). The host sends what only it knows in `ResumeOrder.move.record` (`MoveFacts`); `moveHome` does. A place names
-its box by its `label` (the host's `box-1`), never the provider's id; a place with no label is named by the id. An
-order that carries no record writes none, and an open after the first finds the record and writes nothing.
-
-`registerMoveConformance(runner, name, withPair)` (`./testing`) runs the handoff on two places of a provider: a move
-with nothing cut, a move given up at the drain and at the ship, a move there and back, a take whose answer was lost,
-a take another host won (to another place, and to the same place), a kill of the host,
-the source or the target just before each of the seven steps, and a kill of the target inside its own resume (after
-its marker, after the conversations point at it, between a tool's effect and its result), each followed by a
-recovery. Every case counts the move's notice in what the model is sent: once when the session moved, never when it
-stayed. Every round's effect is there once when the kill came while the session was held still (after the drain,
-before the target ran it). A kill while it ran (the host or the source before the drain held it, the host or the
-target once the target ran it) may cut the round that ran: pi does not run a call twice that was running when its
-process died, and tells the model it was interrupted. The suite accepts a missing effect only for such a round. Its lease is `leaseIn(dirStore(...))` in a temporary directory. The runner it needs is `runMain(moveConformanceApp)` bundled into
-one file.
-
-What a kill loses, in these words: a host, a source or a target process that dies loses nothing; the session
-finishes with every effect once when the kill came after the drain held it, and at most once when it came while
-the session ran. A box that dies with its disk loses the work since the last checkpoint, and the next section
-says what the host keeps so that it loses no more.
-
-### A checkpoint, and a box that is gone
-
-`pullCheckpoint({ session, place, home, epoch, vault, ... })` takes one moment of a session off its box. It holds the
-session (a short drain), makes a sealed copy of the store in the box (`checkpointStore`), takes the workspace manifest,
-pulls the store (`moveFile`) and the content of the files that changed since the previous checkpoint into the vault,
-checks all of it, and lets the session go. The session is held through the pull because a file it writes meanwhile
-would no longer match the manifest. `holdMs` bounds the hold (120 s by default): every phase of the pull draws on the same clock, and a pull that outruns it is skipped (`failed`) and lets the session go. A checkpoint exists only when the
-store and the files are both on the host and verified; a store without its files is never kept. The vault
-(`localVault(directory)`: put `begin`/`commit`, `latest`, `get`, `prune`, and `holds`/`keep`/`content` for file contents)
-is the host's disk, a generation per checkpoint, and the newest 3 are kept (`keep`).
-A pull that does not complete is skipped, never half kept: `busy` (the session did not come to rest, with what held
-it), `changed` (a file moved on), `too_large` (`workspace.maxBytes`) or `failed`; the previous checkpoint stays the
-latest. `checkpointStats()` counts the checkpoints taken and the skips by reason, for a panel that says "checkpoint
-skipped: still running".
-
-A box is not trusted, and a checkpoint is what a box made, so the host never unpacks it. The box sends the bytes of the
-files the pull asks for, end to end, never names or an archive; the vault keeps each file's content once, as a plain
-file named by its SHA-256 and checked against it, so a generation costs its delta. The tree is the record's manifest:
-directories, symbolic links, hard links (`ManifestEntry.link`), named pipes (`kind: "fifo"`), modes (setuid included)
-and times are data the host never makes into anything. A listing with a path outside the tree (absolute, `..`, or
-through a link) is refused before a byte moves (`failed`). A restore writes a tar stream from the record and the
-contents, and the new box's own `tar` makes the tree, links included, there and nowhere else; the tree is then listed
-and hashed in the box against the record. A generation an earlier version kept as a tree the host unpacked is
-`refused` (`VaultError`, named in `no_checkpoint`): it is never read, unpacked or restored, a pull after it takes the
-workspace afresh, and `prune` removes it.
-
-`recoverHome` gains `vault` and `replace(place, context)`. When the lease's box is **gone** (`Box.status` says
-`ended`, or the provider no longer has it; a timeout or an error is never gone), the host's `replace` makes a box for
-the same environment, the newest checkpoint that still checks out (its store and every content read again; an older
-generation when it does not) is made in it and verified, the lease is taken at the next epoch (move id `restore-<epoch>`, the checkpoint's seal) and the home
-resumes there. `recoverHome` never makes boxes. With no usable checkpoint it fails with `no_checkpoint` and changes
-nothing. The resume order's `move` says `kind: "restore"` and carries the checkpoint's `head` (`Seal.head`): commits of
-the lost box at or after it are gone and their sequence numbers are taken again, so whoever records the session's
-moves and commits drops that branch. The model is told once (request id `transport.move:restore-<epoch>`) when the
-checkpoint was taken and which calls ran since: those that may have had an effect and are not run again, and those
-safe to run again. The host knows the calls from `call` frames the runner sends (`onCall`; the tool name and the
-replay flag, never the arguments), kept in the host's memory (`HomeHandle.calls()`, the last 1000): a host that dies
-with the box loses that list, and the notice then names no calls.
-
-A workspace that holds what the session downloads again (a media cache) is left out of the checkpoint:
-`pullCheckpoint({ workspace: { exclude: ["media"] } })` takes patterns as `WorkspaceOptions.exclude` does (a name at any
-depth, or an anchored path; `*`, `**`, `?`). An excluded path is never listed for hashing, never pulled and not
-counted, however large; the record names what was left out (`Checkpoint.excluded`: patterns, the top-most entries,
-file count and bytes), and the restore notice says so: "Not restored: media (1 file, N bytes) are left out of checkpoints.
-Fetch them again if you need them." so that a replay-safe download tool runs again. Two budgets: `workspace.maxBytes` is
-the most the workspace may hold (excluded paths not counted), and `maxPullBytes` the most one pull may move (the store
-copy and every file the pull copies, also one whose time or mode changed with the same content); a pull over either is skipped as `too_large` before a file moves. The pause of a pull
-is `CheckpointStats.last.heldMs`.
-
-The commits between two checkpoints are kept too, on the record stream: a host that gives `connectHome` (or `boxRunner`) a
-`records` sink receives each commit's exact `StorageWrite` batch (`record { commit, writes }`), acknowledged after the sink
-has it. `recordSink(vault, session, context)` is that sink for the vault: `held` is where the vault's log is (`vault.through`),
-`append` keeps a commit on disk in order (`vault.appendLog`: ignores a repeat, refuses a gap with `through`, keeps nothing the
-latest checkpoint covers), and a checkpoint's `prune` cuts the log below the oldest generation kept. A restore takes the
-checkpoint's store, applies the unbroken run of commits from its head (`replayCommits`: the checkpoint's rows read into a
-store pi-durable makes on the host, then the commits through that store's own `Storage`, before any Harness opens it),
-seals the result, and gives the lease and the resume order that
-seal. The order's `move` says `replayed: { from, to }` and `head: to + 1`; the notice says the history was brought up to
-date. So a call the lost box admitted after the checkpoint is in the history the new box opens, and is settled by pi's
-recovery, not run again. A log that does not start where the checkpoint ends is not used: the restore is the checkpoint, as
-before.
-
-A session that never rests (a workflow job) never takes a checkpoint, and its commits are all in the host's log from the first.
-`recoverHome({ ..., restoreFromLog: true })` restores it from that log alone when no checkpoint checks out: an empty store
-with every shipped commit replayed into it, an empty workspace in the new box, the lease taken at the next epoch with that
-seal, and a notice that says no checkpoint existed and no file came back. It needs a log whole from commit 1 (any other log is
-`no_checkpoint`), and it is off by default: a host that needs the files keeps the error. The result has `restored` undefined and
-`replayed { from: 1, to, count }`.
-
-A model call paid between two checkpoints is not paid twice: `boxRunner` serves every runner it starts with one `serveModels` server (pass your own as `server`, and give it to `pullCheckpoint({ answers })`), so a replacement runner finds the answers already kept. A restore that did not replay every shipped commit drops the rest from the host's log (`dropLogAbove`), so a runner at the new epoch is not told the host holds commits it no longer has. A request can carry a `key` and a `position` (the store's
-next sequence number; `proxyModels({ keyOf })` makes them, the key must not change across a restore). `serveModels`
-keeps a completed answer by its key, not for `keepMs`, until `covered(head)`: a repeat from a rebuilt runner gets the
-kept frames (or joins the call still streaming) and `server.paid` does not move. A failure is not kept, so a retry
-pays. `pullCheckpoint({ answers: server })` lets go of the answers below the oldest generation it keeps.
-
-`registerRestoreConformance` (`./testing`) kills the whole box of the source or the target before each of the seven
-steps of a move and recovers; the suite runs on local boxes and on Docker.
-
-### The record stream: the host keeps the session's log
-
-A host that keeps a session's log holds its runners with `connectHome(link, { models, epoch, records })` (or
-`boxRunner({ ..., records })`), where `records` is a `RecordSink`: `held()` says where its log is,
-`{ after, linesAfter }` (`{ after: 0, linesAfter: 0 }` for a new session: a store's first commit is 1), `append(commit,
-writes)` keeps a commit's writes and settles once they are synced, and `lines(commit, lines, snapshot)` keeps what the
-runner's recorder made. Its hello says so, and the runner then:
-
-- **Puts each commit in an outbox before the store has it.** The writes go to `<store>.outbox.jsonl` beside the store,
-  synced, then to the store, then to the host (`record`); the recorder's lines for the commit follow (`lines`), on the
-  disk before the recorder's write returns, so a process that dies loses at most the lines of the commit in flight.
-  The host acknowledges writes and lines apart, and an acknowledged entry leaves the outbox. The file is written again
-  once acknowledged rows far outnumber pending ones, so its size follows the work in flight, not the session's length.
-- **Sends what the host lacks, from where the host is.** On every connect the host says where its log is
-  (`resend-after`), and the runner sends what it holds from there, in order, before anything new; a process that died
-  left its backlog in the outbox, and the next one sends it when it opens the store. A process's snapshot is the state
-  once pi has opened the store, after what pi commits in opening it (what it recovers from a process that died); its
-  lines go after those commits, once on each link, until the host acknowledges them.
-- **Starts no effect the host's log lacks.** A commit that admits an effect (pi's tool intent by default, `admitsTool`;
-  `RunnerOptions.admits` adds an app's own) returns only once the host acknowledged it. Past `resumeWithinMs` the
-  commit fails, pi stops the session, and the effect never ran.
-- **Seals only what the host holds.** A seal waits until the host has every commit and line, and fails as
-  `not_shipped` when it does not in time: the sealed store and the host's log end at the same commit.
-- **Keys each model request.** A model frame carries `key`, the SHA-256 of the session, the `pi.generation` task that
-  asks, the model and the request (its messages, the system message with the instructions and the tools among them,
-  and its options), and `position`, the store's next sequence. The same generation asking again, after a dropped link
-  or in a new process, asks under the same key; a new ask is a new generation and a new key.
-
-The host handles a link's frames one after another: a commit is in its log before any later frame is acted on, so a
-commit's lines are never written before the commit. Record frames are fenced by epoch like model frames: a home the
-lease left behind writes nothing to the log. The host's log alone rebuilds the store, row for row. The recorder runs in
-the runner's process: `runMain(app, { recording })`, with `@parcha/agentrun-pi/durable`'s `snapshotLines` and
-`recordCommits`. `registerMoveConformance(..., { records: true })` runs the move suite with the stream on.
-
-### Where a session runs: the placer
+## Where a session runs: the placer
 
 > **Deprecated:** The placer, with the `auto` and `purpose` config keys, is removed in 0.1.0-beta.31. To run an agent in
 > a box, use `@parcha/agentrun-serve`: it uses this package's boxes, `./hands` and `./sync`, which stay.
@@ -924,100 +569,12 @@ structure: the judgment is Jev's.
 - **On the key you have.** `jevClassifier(process.env)` picks the classifier as serve's decisions do: TypeSafe's own
   API when `TYPESAFE_API_KEY` is set, else Jev through OpenRouter when `OPENROUTER_API_KEY` is, else `undefined`. The
   host's `Models` holds pi-ai's `typesafeProvider()` and `openrouterProvider()`.
-- **Kept with the session.** `HomeHandle.recordPlacement(record)` writes the decision into the session's store
-  (`transport.placements`, keyed by its id) in a commit of its runner: it travels with the session, and with the
-  record stream it reaches the host's log. A record whose `by` is anything else is refused (`invalid`).
 - **Cost.** A decision's usage counts tokens; `costUsd` is `null` when the classifier has no price (pi-ai's catalog
   gives TypeSafe's own API none, and prices Jev through OpenRouter): unknown, not 0.
 
 `./testing` has `replayClassifier`, TypeSafe as a replay set keyed by the canonical question (an unknown question is
 an error, never an answer), and `recordingClassifications` to record one. This package's set, 40 decisions recorded
 against Jev, replays in its tests offline.
-
-## Ownership: one writer per session
-
-> **Deprecated:** `@parcha/pi-transport/home`, with its lease, is removed in 0.1.0-beta.31. To run an agent in a box,
-> use `@parcha/agentrun-serve`: it uses this package's boxes, `./hands` and `./sync`, which stay.
-
-`@parcha/pi-transport/home` holds the lease that says which home may write a session. It is a numbered epoch, not a
-timer: the epoch changes only when a host takes, so a slow home is never taken over because a clock ran out.
-
-```ts
-import { mkdtempSync } from "node:fs";
-import { tmpdir } from "node:os";
-import { join } from "node:path";
-import { BACKGROUND_CONTEXT } from "@earendil-works/chord/context";
-import { dirStore, leaseIn } from "@parcha/pi-transport/home";
-
-// Any directory on a file system with hard links; hosts that share leases share this directory.
-const lease = leaseIn(dirStore(mkdtempSync(join(tmpdir(), "leases-"))));
-const taken = await lease.take("session-1", { environment: "gpu", provider: "modal", box: "sb-1", host: "h1" }, 0, undefined, BACKGROUND_CONTEXT);
-```
-
-- `take(session, holder, expected, details, context)` succeeds only when the session's epoch is `expected` (0 for a
-  session nobody took); the new epoch is `expected + 1`. Anything else, including another host that took first, is
-  `lost`. `details.move` makes a retried take of the same move return the record it made instead of losing to itself;
-  `details.seal` records the sealed store. `current(session)` reads the newest record.
-- `leaseIn(store)` works over any `ConditionalStore`: `get`, and `put` with `{ absent: true }` or `{ version }`, which
-  must lose with `conflict` when the key is not as the caller saw it. An object store's conditional write, a database
-  row or a key with a compare-and-set fits.
-- `dirStore(directory)` is that store in a directory, for one machine or a directory several hosts share. A key is a
-  directory of numbered files; a write is made whole in a temp file, synced, and linked to the next number with
-  `link(2)`, so two writers race for one name and exactly one wins, and a name never holds half a value. The file
-  system must support hard links. Old versions are kept. A writer that dies between the temp file and the link leaves
-  a `.tmp-` file that nothing reads.
-- `registerStoreConformance` (`./testing`) runs the cases every `ConditionalStore` must pass: absent and versioned
-  writes, 50 takers of one version with one winner in each of 20 epochs, no read of half a value while takers write,
-  every byte value, any text as a key, and, when the store gives a writer that dies, a kill between writing and
-  making the value current.
-
-## A session's place in a box (`./place`)
-
-> **Deprecated:** `@parcha/pi-transport/place` is removed in 0.1.0-beta.31. To run an agent in a box, use
-> `@parcha/agentrun-serve`: it uses this package's boxes, `./hands` and `./sync`, which stay.
-
-`boxPlace({ session, provider, spec, environment, ownership, program, models, vault, ... })` is where one session
-lives in a box, for a supervisor that starts, kills and restarts it: the place a reference entry's `demo()` drives.
-It makes the box, and
-
-- `start(order)` takes the lease at epoch 1, starts the runner in the box (`boxRunner`) and resumes it with the order's
-  environment (`ResumeOrder.env`). `exited` resolves with the exit as the box saw it and the outcome the runner printed
-  as one line `{"outcome":{...}}`; that line ends the runner in order (the link closes, the home closes, exit 0).
-- `kill(runner, "process")` kills the runner as a crash would (`killRunner`: KILL first, the store as the last commit
-  left it); `kill(runner, "box")` destroys the box. `recover(last, "process", order)` starts the next runner in the
-  same box where the store left off (`recoverHome`, same epoch); `recover(last, "box", order)` makes a new box, restores
-  the newest checkpoint into it and replays the shipped commits (`recoverHome` with `vault` and `replace`), at the next
-  epoch, and says what it restored. Before any checkpoint it rebuilds the store from the vault's log alone
-  (`restoreFromLog`), in an empty workspace: `restored` is undefined and `replayed` starts at commit 1. A box kill
-  needs no checkpoint at rest; a checkpoint brings the workspace's files along. `checkpoint()` takes one at rest (`pullCheckpoint`, tried again while the session
-  is busy) and announces `transport.checkpoint.taken`; a call while one is being taken gets that one, so the session
-  is held once. The hold admits no new tool call or model request and waits for the ones in flight up to
-  `checkpoint.drain.timeoutMs` (10 s by default): a session whose effects run longer than that is skipped as busy.
-- Every runner of the session ships its commits into `vault`'s log (`recordSink`) and asks one model server: the log a
-  lost box is restored from is always the one the runners wrote, and a runner that comes back is answered what was
-  paid for, not charged again. The host passes only where the recorder's lines go (`recorder`).
-- `recordPlacement(record)` keeps a placement decision the host made (`jevPlacer`, on the host where Jev's key is) in
-  the session's store, through the runner that runs it now (`HomeHandle.recordPlacement`): the app reads it there
-  (`PlacementsDoc`, keyed by the record's id), and it reaches the vault's log with the session's commits.
-- A box is named by its label everywhere the place names one, never by its provider's id: the status record's
-  `holder.host`, a crossing's `info.box`, and the place's own live lines, source `transport`, that it hands the host's
-  `lines`: `box.created`, `box.killed` before a box kill, `box.ended`, `lease` at each epoch, and `restore` from the lost
-  box to the new one (with its `checkpoint` or `replayed`), so a panel draws the home's lane and its hop. With the
-  host's receipts ledger (`receipts`), the place makes its boxes through it: each has its receipt and its label in the
-  ledger's numbering, the same as the pool's boxes. Without one, the place labels its boxes `box-1`, `box-2` itself.
-- `signals(attempt)` reads the runner's kill request from `requestFile(attempt)` in the box, with the nonce it wrote,
-  and passes on the transport's crossings; its iterator's `return()` ends a pending `next()`. `status()` is the run's
-  record: `run`, the epoch as `generation`, the box in `holder.host`, the home's state, and `sealedSeq` when sealed.
-- `carry` names host files an order's environment holds that the runner writes (a crossings log): each is given a path
-  in the box, and the file comes back whole when the runner exits.
-- `recording` names the order's recording directory. The runner writes the recording in `recordHome.dir(attempt)` in
-  the box, and the supervisor brings it home with `recordHome.bringHome(into, { final })`: the blobs not yet home
-  (hash-checked against their names, written to a temporary name, synced, renamed), then the new bytes of every
-  `.spool/*.jsonl` up to its last whole line. It throws an error with a `code`: `BOX_GONE` (the box the runner ran in is
-  gone), `CARRY_FAILED` (a read failed in a box that is still there), `BLOB_MISMATCH` (a blob whose bytes are not its
-  name: the rest comes home first). `clockSkewMs` is how far the box's clock may be from the host's, measured when the
-  box is made.
-- `release()` closes the link and destroys every box the place made.
 
 ## What a box cost: receipts
 
@@ -1057,8 +614,7 @@ for display only. A call refused before it is made is not counted. A box another
 
 A box has no init system, and a host's `exec` ends when the host goes away. `launch` keeps one program running in a box
 whatever happens to the host. It uploads a small `sh` supervisor and starts it in its own session, so the program
-outlives the call, the `exec` and the host process. The launcher is `@parcha/pi-transport/launch`; `./home` exports the
-same names.
+outlives the call, the `exec` and the host process. The launcher is `@parcha/pi-transport/launch`.
 
 ```ts
 import { BACKGROUND_CONTEXT } from "@earendil-works/chord/context";

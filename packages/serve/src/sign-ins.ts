@@ -11,7 +11,7 @@
 // a run started while another holds it starts from the same sign-in and saves nothing. The lease ends when its run
 // ends, or lets go cleanly to wait for its person (runs.ts); a relaunch or a restart keeps it, since a session the run
 // opened before its process went may still write back. One whose run has ended since (a server down first) is stale.
-import { randomBytes } from "node:crypto";
+import { createHash, randomBytes } from "node:crypto";
 import { lstat, mkdir, readFile, rm } from "node:fs/promises";
 import { join } from "node:path";
 import { seal, unseal } from "@parcha/pi-durable-agent";
@@ -50,7 +50,22 @@ export const BROWSERBASE_SETTLE_MS = 10_000;
  *  sessionTimeoutS, 1800 s), which every session a run opens is created under, so none it opened before its process
  *  went can still write back after it. A holder that comes back (its relaunch) holds the lease again from then on. */
 export const GONE_LEASE_MS = 1_800_000;
-type Stored = { format: typeof FORMAT; sign_ins: Entry[] };
+/** A forgotten sign-in's pointer (forget), kept sealed as it was, under the same binding (agent, key, vendor): never
+ *  served, never handed to a run, never counted as a sign-in. It is kept only so a server started later can still cut
+ *  it from what a run handed it says (runs.ts peekSignIn), though the run ended or the sign-in was replaced since. */
+type Forgotten = { key: string; provider: Vendor; ref: string; forgotten_at: string };
+/** How many forgotten pointers an agent keeps, the oldest dropped first. A run handed one dropped since is withheld, as
+ *  one whose sign-in does not open is (runs.ts): its pointer could no longer be cut. */
+export const MAX_FORGOTTEN = 32;
+type Stored = { format: typeof FORMAT; sign_ins: Entry[]; forgotten?: Forgotten[] };
+
+/** What a run's serve.json keeps of the sign-in pointer it was handed (runs.ts `sign_in_handed`), and what forget asks
+ *  after: its SHA-256, never the pointer. */
+export const pointerHash = (ref: string): string => createHash("sha256").update(ref, "utf8").digest("hex");
+
+/** Which run still going was handed the sign-in whose pointer hashes to `hash` (runs.ts handedTo), if one was; `hash`
+ *  undefined for a pointer that does not open here, which any run handed a sign-in may hold. */
+export type HandedTo = (agentId: string, hash: string | undefined) => Promise<string | undefined>;
 
 /** The vendor a run's browser resolves to (its plane's `browser`) keeps a sign-in for: Browserbase's and Kernel's; local
  *  Chrome is refused by name; an unavailable browser has none. */
@@ -63,16 +78,22 @@ export function vendorOf(resolution: string): Vendor | undefined {
 const aad = (agentId: string, entry: Pick<Entry, "key" | "provider">) => `${FORMAT}|${agentId}|${entry.key}|${entry.provider}`;
 
 export class SignIns {
-  /** One read-modify-write at a time per agent; an agent's queue goes once it is empty. */
+  /** One read-modify-write at a time per agent; an agent's queue goes once it is empty. In this process alone: it, and
+   *  forget's ordering against a launch handing a pointer (forRun's keep), assume one server per data directory, which
+   *  the data directory's lock holds (server-lock.ts). */
   private readonly chains = new Map<string, Promise<unknown>>();
 
   private readonly now: () => number;
   private readonly writeFile: (path: string, text: string) => Promise<unknown>;
   private readonly sleep: (ms: number) => Promise<void>;
 
-  /** `holds(run)`: whether that run has not ended, so a lease it names still holds; `now` and `sleep`, the clock, and
-   *  `write`, the durable write (writeDurable), the tests'. */
-  constructor(private readonly data: string, private readonly key: Buffer | undefined, private readonly vendors: Vendors, private readonly holds: (runId: string) => Promise<boolean>, options: { now?: () => number; sleep?: (ms: number) => Promise<void>; write?: (path: string, text: string) => Promise<unknown> } = {}) {
+  private readonly handedTo: HandedTo | undefined;
+
+  /** `holds(run)`: whether that run has not ended, so a lease it names still holds; `handedTo`, which run still going
+   *  was handed a pointer (runs.ts), so forget waits for it; `now` and `sleep`, the clock, and `write`, the durable
+   *  write (writeDurable), the tests'. */
+  constructor(private readonly data: string, private readonly key: Buffer | undefined, private readonly vendors: Vendors, private readonly holds: (runId: string) => Promise<boolean>, options: { handedTo?: HandedTo; now?: () => number; sleep?: (ms: number) => Promise<void>; write?: (path: string, text: string) => Promise<unknown> } = {}) {
+    this.handedTo = options.handedTo;
     this.now = options.now ?? Date.now;
     this.sleep = options.sleep ?? ((ms) => new Promise((done) => setTimeout(done, ms)));
     this.writeFile = options.write ?? writeDurable;
@@ -87,21 +108,28 @@ export class SignIns {
     return join(homeOf(this.data, agentId), SIGN_INS_DIR, FILE);
   }
 
-  private async read(agentId: string): Promise<Entry[]> {
+  private async stored(agentId: string): Promise<{ sign_ins: Entry[]; forgotten: Forgotten[] }> {
     const text = await readFile(this.file(agentId), "utf8").catch((error: NodeJS.ErrnoException) => (error.code === "ENOENT" ? null : Promise.reject(error)));
-    if (text === null) return [];
+    if (text === null) return { sign_ins: [], forgotten: [] };
     const stored = JSON.parse(text) as Stored;
-    if (stored?.format !== FORMAT || !Array.isArray(stored.sign_ins)) throw new Error(`${FILE} is not a ${FORMAT} file, so it was left as it is`);
-    return stored.sign_ins;
+    if (stored?.format !== FORMAT || !Array.isArray(stored.sign_ins) || (stored.forgotten !== undefined && !Array.isArray(stored.forgotten))) throw new Error(`${FILE} is not a ${FORMAT} file, so it was left as it is`);
+    return { sign_ins: stored.sign_ins, forgotten: stored.forgotten ?? [] };
   }
 
-  private async write(agentId: string, entries: Entry[]): Promise<void> {
+  private async read(agentId: string): Promise<Entry[]> {
+    return (await this.stored(agentId)).sign_ins;
+  }
+
+  /** `forgotten`: the agent's forgotten pointers as they are to be kept; absent, those the file keeps now (every write is
+   *  under the agent's lock, so none comes between). */
+  private async write(agentId: string, entries: Entry[], forgotten?: Forgotten[]): Promise<void> {
     const dir = join(homeOf(this.data, agentId), SIGN_INS_DIR);
-    if (!entries.length) return void (await rm(this.file(agentId), { force: true }));
+    const kept = forgotten ?? (await this.stored(agentId)).forgotten;
+    if (!entries.length && !kept.length) return void (await rm(this.file(agentId), { force: true }));
     await mkdir(dir, { recursive: true, mode: 0o700 });
     if ((await lstat(dir)).isSymbolicLink()) throw new Error(`${SIGN_INS_DIR}/ is a link, which this server never follows`);
     // Synced before it answers: a pointer to a vendor object just made survives a crash of the machine.
-    await this.writeFile(this.file(agentId), `${JSON.stringify({ format: FORMAT, sign_ins: entries } satisfies Stored)}\n`);
+    await this.writeFile(this.file(agentId), `${JSON.stringify({ format: FORMAT, sign_ins: entries, ...(kept.length ? { forgotten: kept } : {}) } satisfies Stored)}\n`);
   }
 
   private locked<T>(agentId: string, work: () => Promise<T>): Promise<T> {
@@ -122,8 +150,9 @@ export class SignIns {
     return this.holds(entry.held_by).catch(() => true);
   }
 
-  /** `entry`'s pointer, opened under this server's seal key; undefined when it does not open (none now, or another). */
-  private open(agentId: string, entry: Entry): string | undefined {
+  /** `entry`'s pointer, opened under this server's seal key; undefined when it does not open (none now, or another). A
+   *  forgotten one opens under the same binding, read only by `forgotten`, never as a sign-in. */
+  private open(agentId: string, entry: Pick<Entry, "key" | "provider" | "ref">): string | undefined {
     if (!this.key) return undefined;
     try {
       return unseal(this.key, Buffer.from(entry.ref, "base64"), aad(agentId, entry)).toString("utf8");
@@ -143,10 +172,40 @@ export class SignIns {
     }));
   }
 
+  /** The pointer of `agentId`'s sign-in for `resolution`, read only: no lease taken, nothing made or written. For a run
+   *  this server loads (after a restart), whose rows, errors and answers must never show it: `{ ref }`; `unreadable`
+   *  when the agent keeps one that does not open under this server's seal key (none now, or another), or its sign-ins
+   *  file cannot be read or parsed, told apart from none at all (undefined: no file, or no entry for the vendor). */
+  async peek(agentId: string, resolution: string): Promise<{ ref: string } | "unreadable" | undefined> {
+    const vendor = (() => { try { return vendorOf(resolution); } catch { return undefined; } })();
+    if (!vendor) return undefined;
+    // Only a file that is not there means none: one this server may not read, or that does not parse, is unreadable.
+    const entries = await this.read(agentId).catch(() => null);
+    if (entries === null) return "unreadable";
+    const entry = entries.find((e) => e.key === SIGN_IN_KEY && e.provider === vendor);
+    if (!entry) return undefined;
+    const ref = this.open(agentId, entry);
+    return ref === undefined ? "unreadable" : { ref };
+  }
+
+  /** The pointers of `agentId`'s forgotten sign-ins for `resolution`'s vendor, read only, for a run this server loads that
+   *  may have been handed one (runs.ts peekSignIn): never a sign-in. `refs`, each that opens under this server's seal
+   *  key; `unreadable`, whether one does not (none now, or another). `unreadable` alone when the sign-ins file can't be
+   *  read or parsed. */
+  async forgotten(agentId: string, resolution: string): Promise<{ refs: string[]; unreadable: boolean } | "unreadable"> {
+    const vendor = (() => { try { return vendorOf(resolution); } catch { return undefined; } })();
+    if (!vendor) return { refs: [], unreadable: false };
+    const stored = await this.stored(agentId).catch(() => null);
+    if (stored === null) return "unreadable";
+    const opened = stored.forgotten.filter((gone) => gone.provider === vendor).map((gone) => this.open(agentId, gone));
+    return { refs: opened.filter((ref): ref is string => ref !== undefined), unreadable: opened.some((ref) => ref === undefined) };
+  }
+
   /** The sign-in run `runId` of `agentId` starts from on `resolution` (its plane's browser): made at the vendor when the
    *  agent has none, then leased to this run to save, unless another run of the agent holds the lease. None for a
-   *  browser that keeps none, or with no seal key. */
-  async forRun(agentId: string, runId: string, resolution: string): Promise<HandedSignIn | undefined> {
+   *  browser that keeps none, or with no seal key. `keep`: the run keeps that it was handed it (its serve.json), before
+   *  any forget of the agent's can look (forget's handedTo, under the same lock); one it could not keep is handed none. */
+  async forRun(agentId: string, runId: string, resolution: string, keep?: (handed: HandedSignIn) => Promise<boolean>): Promise<HandedSignIn | undefined> {
     const vendor = vendorOf(resolution);
     if (!vendor || !this.key) return undefined;
     const key = this.key;
@@ -183,7 +242,8 @@ export class SignIns {
         if (made && !kept) await this.vendors.remove(vendor, ref).catch(() => undefined);
         throw error;
       }
-      return { provider: vendor, ref, save };
+      const handed = { provider: vendor, ref, save };
+      return !keep || (await keep(handed)) ? handed : undefined;
     });
   }
 
@@ -221,20 +281,32 @@ export class SignIns {
   }
 
   /** DELETE /agents/{id}/sign-ins/{key}: each vendor's object deleted (best effort: what failed is said), then the
-   *  pointer. 404 for a key the agent has none of; 409 while a run holds it. */
+   *  pointer. 404 for a key the agent has none of; 409 while a run holds its lease, or while a run it was handed is still
+   *  going (handedTo), its lease let go or not: what that run says could repeat the pointer, and a server started after
+   *  the pointer is gone could no longer read it back to cut it (runs.ts peekSignIn). */
   forget(agentId: string, signInKey: string): Promise<{ key: string; removed: Array<{ provider: Vendor; at_vendor: "deleted" | "not_deleted"; message?: string }> }> {
     return this.locked(agentId, async () => {
       const entries = await this.read(agentId);
       const named = entries.filter((entry) => entry.key === signInKey);
       if (!named.length) throw new ApiError("not_found", `The agent ${agentId} has no sign-in ${signInKey}.`);
       for (const entry of named) if (await this.held(entry)) throw new ApiError("sign_in_held", `The sign-in ${signInKey} is held by the run ${entry.held_by}, which may still save to it: forget it once that run ends.`, { details: { held_by: entry.held_by } });
+      // Asked under the lock a launch hands a pointer under (forRun's keep): a run handed it now is one this sees.
+      for (const entry of named) {
+        const ref = this.open(agentId, entry);
+        const runId = await this.handedTo?.(agentId, ref === undefined ? undefined : pointerHash(ref));
+        if (runId) throw new ApiError("sign_in_held", `The sign-in ${signInKey} was handed to the run ${runId}, which is still going: what it says could repeat it, and once it is forgotten a restarted server could no longer cut it from what that run shows. Forget it once that run ends.`, { details: { handed_to: runId } });
+      }
       const removed = [];
       for (const entry of named) {
         const ref = this.open(agentId, entry);
         const gone = ref === undefined ? new Error("its pointer does not open under this server's seal key") : await this.vendors.remove(entry.provider, ref).then(() => undefined, (error: Error) => error);
         removed.push({ provider: entry.provider, at_vendor: gone ? "not_deleted" as const : "deleted" as const, ...(gone ? { message: `Not deleted at ${entry.provider}: ${gone.message}. This server no longer points to it.` } : {}) });
       }
-      await this.write(agentId, entries.filter((entry) => entry.key !== signInKey));
+      // Each forgotten pointer is kept sealed as it was, for cutting alone (Forgotten), the newest MAX_FORGOTTEN of them.
+      const { forgotten } = await this.stored(agentId);
+      const at = new Date(this.now()).toISOString();
+      const kept = [...forgotten, ...named.map((entry) => ({ key: entry.key, provider: entry.provider, ref: entry.ref, forgotten_at: at }))].slice(-MAX_FORGOTTEN);
+      await this.write(agentId, entries.filter((entry) => entry.key !== signInKey), kept);
       return { key: signInKey, removed };
     });
   }

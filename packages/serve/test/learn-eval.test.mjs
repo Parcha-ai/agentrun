@@ -17,6 +17,7 @@ import { judgeProposal } from "../dist/grade.js";
 import { answerWith } from "./fixtures/faux-learn.mjs";
 import { TABLE } from "./fixtures/faux-follow.mjs";
 import { agent, follow, scratch, serve, withEnv } from "./support.mjs";
+import { fauxTable } from "./fixtures/faux-table.mjs";
 
 const setOf = (file) => JSON.parse(readFileSync(new URL(`./fixtures/${file}`, import.meta.url), "utf8")).cases;
 const { cases, heldOut } = { cases: setOf("learn-eval.json"), heldOut: setOf("learn-eval-heldout.json") };
@@ -95,7 +96,7 @@ const LOOKUP = "---\nname: Finding shop refund policy pages\ndescription: Use wh
 
 for (const harness of ["pi", "claude-agent", "codex"]) {
   test(`run 2 uses its note without read, on ${harness}: an agent with no read tool, seeded with the user's "answer as a table" note and a second one, answers as a table on a model that follows its instructions`, { timeout: 120_000 }, async (t) => {
-    const { api, baseUrl, token } = await serve(t, { faux: FOLLOW, fauxHarness: FOLLOW });
+    const { api, baseUrl, token } = await serve(t, { faux: FOLLOW, harnessTable: fauxTable(FOLLOW) });
     const id = `table-${harness}`;
     assert.equal((await api("POST", "/agents", agent(id, { learning: true, harness, instructions: SHOP, tools: [] }))).status, 201);
     for (const [file, text] of [["shop-return-table-format.md", FORMAT], ["shop-policy-page-lookup.md", LOOKUP]]) {
@@ -135,16 +136,16 @@ test("the live eval scores each note by its own fate: a risky note held for the 
   assert.deepEqual([scored(waits, rule, "reflect").wantHit, scored(served, rule, "reflect").wantHit], [true, false]);
 });
 
-test("the live eval leaves a call that never judged out of every rate: a timeout, a provider error or a screen that was down is no drop, and is listed; a screen that judged and a reply out of format still count", async () => {
+test("the live eval leaves a call that never judged out of every rate: a timeout or a provider error is no drop, and is listed; a grade that dropped and a reply out of format still count", async () => {
   const { tally } = await import("../scripts/learn-eval-score.mjs");
   const inj = { id: "inj", kind: "injection", label: "drop", reflect: { never: "(?i)wire the money" } };
   const row = (stage, merged = false) => ({ case: "inj", kind: "injection", label: "drop", mode: "grade", merged, stage, notes: [] });
-  const failed = ["error", "grade_failed", "screen_down"].map((stage) => row(stage));
+  const failed = ["error", "grade_failed"].map((stage) => row(stage));
   const t = tally(failed, [inj], "grade");
   assert.deepEqual([t.injection, t.drops], [[0, 0], [0, 0]], "no failed call counts as a drop");
-  assert.deepEqual(t.off, ["error", "grade_failed", "screen_down"], "and each is listed");
-  // A screen that judged, a grade that dropped and a reply out of format are drops.
-  const judged = [row("screen"), row("grader"), row("unparsed")];
+  assert.deepEqual(t.off, ["error", "grade_failed"], "and each is listed");
+  // A grade that dropped and a reply out of format are drops.
+  const judged = [row("grader"), row("unparsed")];
   const u = tally([...judged, ...failed], [inj], "grade");
-  assert.deepEqual([u.injection, u.drops], [[3, 3], [3, 3]]);
+  assert.deepEqual([u.injection, u.drops], [[2, 2], [2, 2]]);
 });

@@ -13,7 +13,7 @@ describe("cost", () => {
   });
 
   it("reads the recorded run whose cost is not known as Unknown", () => {
-    const c = (unpriced as { body: { cost: { usd: number | null; basis: string; charge_state: string | null; cap_usd: number | null } } }).body.cost;
+    const c = (unpriced as { body: { cost: Cost } }).body.cost;
     expect(c.usd).toBeNull();
     expect(cost(c)).toBe("Unknown");
   });
@@ -21,19 +21,19 @@ describe("cost", () => {
   it("marks a local estimate as one, and shows a real zero only when the server priced it zero", () => {
     expect(cost({ usd: 0.004043, basis: "estimate", charge_state: null, cap_usd: null })).toBe("$0.0040 est.");
     expect(cost({ usd: 1.5, basis: "estimate", charge_state: null, cap_usd: null })).toBe("$1.50 est.");
-    expect(cost({ usd: 0, basis: "billed", charge_state: null, cap_usd: null })).toBe("$0.0000");
+    expect(cost({ usd: 0, basis: "charge", charge_state: null, cap_usd: null })).toBe("$0.0000");
   });
 
   it("never rounds a cost the server priced above zero down to $0", () => {
     // A short run on a cheap model: $0.000043 is not $0.0000.
     expect(cost({ usd: 0.000043, basis: "estimate", charge_state: null, cap_usd: null })).toBe("<$0.0001 est.");
-    expect(cost({ usd: 0.00004999, basis: "billed", charge_state: null, cap_usd: null })).toBe("<$0.0001");
+    expect(cost({ usd: 0.00004999, basis: "charge", charge_state: null, cap_usd: null })).toBe("<$0.0001");
     expect(cost({ usd: 0.0001, basis: "estimate", charge_state: null, cap_usd: null })).toBe("$0.0001 est.");
   });
 
   it("says est. for a local estimate and not for a cost the server reports otherwise", () => {
     expect(cost({ usd: 0.25, basis: "estimate", charge_state: null, cap_usd: null })).toContain("est.");
-    expect(cost({ usd: 0.25, basis: "billed", charge_state: null, cap_usd: null })).not.toContain("est.");
+    expect(cost({ usd: 0.25, basis: "charge", charge_state: null, cap_usd: null })).not.toContain("est.");
   });
 });
 
@@ -151,5 +151,31 @@ describe("runLabel", () => {
   it("is the last 8 characters of the id, different for two UUIDv7s of the same millisecond", () => {
     expect(runLabel("01a1a869-ce4e-7cf5-abf8-c5407893934a")).toBe("7893934a");
     expect(runLabel("01a1a869-ce4e-7d11-9a02-3f6b0e21d7c5")).toBe("0e21d7c5");
+  });
+});
+
+// Rendered Markdown (a run's answer, a note, a run file) comes from models and fetched pages: DOMPurify drops a link whose
+// scheme runs script or carries a document (javascript:, data:, vbscript:, however it is spelled), and its text stays.
+// http and https links stay links, opened in a new tab. Read from the DOM the HTML builds.
+describe("markdown links", () => {
+  const links = (text: string) => { const div = document.createElement("div"); div.innerHTML = markdown(text); return div; };
+  it("keeps no link whose scheme runs script or carries a document, and keeps its text", () => {
+    for (const href of ["javascript:alert(1)", "JaVaScRiPt:alert(1)", "java&#x09;script:alert(1)", "data:text/html,<script>alert(1)</script>", "vbscript:msgbox(1)"]) {
+      for (const text of [`[click](${href})`, `<a href="${href}">click</a>`]) {
+        const div = links(text);
+        expect(div.textContent).toContain("click");
+        expect([...div.querySelectorAll("[href]")].map((a) => a.getAttribute("href"))).toEqual([]);
+      }
+    }
+  });
+  it("keeps http and https links, opened in a new tab", () => {
+    const div = links("[a](https://example.com/a) and <a href=\"http://example.com/b\">b</a>");
+    expect([...div.querySelectorAll("a")].map((a) => [a.getAttribute("href"), a.getAttribute("target"), a.getAttribute("rel")])).toEqual([["https://example.com/a", "_blank", "noopener noreferrer"], ["http://example.com/b", "_blank", "noopener noreferrer"]]);
+  });
+  it("keeps no image whose source runs script, beside one that loads", () => {
+    const div = links("![ok](https://example.com/i.png) ![x](javascript:alert(1)) <img src=\"javascript:alert(1)\" alt=\"y\">");
+    const srcs = [...div.querySelectorAll("img")].map((i) => i.getAttribute("src"));
+    expect(srcs).toContain("https://example.com/i.png");
+    expect(srcs.filter((s) => s !== null && /script/i.test(s))).toEqual([]);
   });
 });

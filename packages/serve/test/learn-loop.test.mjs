@@ -12,7 +12,8 @@ import { join } from "node:path";
 import { test } from "node:test";
 import { answerWith, note } from "./fixtures/faux-learn.mjs";
 import { copyOf, ended, git, KEEPS, LEARN, learnedIn, learner, NOTHING_YET, onMain, learningRows, made, mergesOf, reflectRows, repoOf, savedOf, settled, started, turnOf, wholeIn } from "./learn-support.mjs";
-import { scratch, serve } from "./support.mjs";
+import { runDir, scratch, serve } from "./support.mjs";
+import { fauxTable } from "./fixtures/faux-table.mjs";
 
 const FILE = "check-units.md";
 const NOTE = note("Check units", "Convert every amount to one unit before comparing", "Amounts in one answer came in cents and in dollars.\n");
@@ -28,7 +29,7 @@ const readsOf = (rows, path) => {
 for (const harness of ["pi", "claude-agent", "codex"]) {
   test(`on ${harness}, with no write tool, run 1 learns and run 2 knows, on a data directory whose path holds a space: the end-of-run turn, which names .learning/ relative to the run's work, answers with a note that is checked, graded and merged, MEMORY.md on main lists it, and run 2 reads it whole under # Learned and finds it in .learning/`, { timeout: 180_000 }, async (t) => {
     const data = join(await scratch(t), "learning data", "agents");
-    const { api } = await serve(t, { learning: "on", faux: LEARN, fauxHarness: LEARN, data });
+    const { api } = await serve(t, { learning: "on", faux: LEARN, harnessTable: fauxTable(LEARN), data });
     const id = `loop-${harness}`;
     await made(api, learner(id, { harness, tools: ["read"], instructions: `Say your prompt.\nRead: ${JSON.stringify(READS)}`, plan: [[FILE, NOTE]], once: true }));
 
@@ -47,9 +48,10 @@ for (const harness of ["pi", "claude-agent", "codex"]) {
     const learned = [{ file: FILE, name: "Check units", supersedes: [] }];
     assert.deepEqual(readsOf(first.rows, READS[0]), ["failed"], "run 1's read of the note failed");
     assert.deepEqual(first.view.learning.learned, learned);
-    assert.equal("used" in first.view.learning, false, "run 1 used no note");
+    assert.equal("read" in first.view.learning, false, "run 1 read no note");
+    assert.equal("given" in first.view.learning, false, "run 1 started with nothing learned");
     const whole1 = (await api("GET", `/runs/${one}/learning`)).body;
-    assert.deepEqual([whole1.learned, "used" in whole1, whole1.detail], [learned, false, "Learned: Check units"], "the run's learning whole says the same");
+    assert.deepEqual([whole1.learned, "read" in whole1, "given" in whole1, whole1.detail], [learned, false, false, "Learned: Check units"], "the run's learning whole says the same");
     for (const path of ["/runs", `/agents/${id}/runs`]) assert.deepEqual((await api("GET", path)).body.runs.find((run) => run.run_id === one).learning, { state: "merged", reason: null, detail: "Learned: Check units", learned }, path);
     // The turn's rows are labelled learning: its message, and its answer, with the note, which is no answer of the run's.
     const turn = reflectRows(first.rows);
@@ -91,21 +93,22 @@ for (const harness of ["pi", "claude-agent", "codex"]) {
     assert.ok(section.includes("## Check units (check-units.md)\n\nConvert every amount to one unit before comparing\n\nAmounts in one answer came in cents and in dollars."), section);
     assert.ok(!section.includes(LINE), "every note is whole, so the index adds nothing");
     assert.equal(readFileSync(join(copyOf(data, two), FILE), "utf8"), onMain(NOTE), "the note was in run 2's .learning/");
-    assert.equal(JSON.parse(readFileSync(join(data, "runs", two, "learning.json"), "utf8")).seed, main);
+    assert.equal(JSON.parse(readFileSync(join(runDir(data, two), "learning.json"), "utf8")).seed, main);
     // It used the note, read as the job's first call: the note by its name, MEMORY.md (read too) no note at all. In its
     // view, and in every list, as serve.json keeps it.
     assert.deepEqual([readsOf(second.rows, READS[0]), readsOf(second.rows, READS[1])], [["success"], ["success"]], "run 2 read both");
-    const used = [{ file: FILE, name: "Check units" }];
-    assert.deepEqual(second.view.learning.used, used);
+    const read = [{ file: FILE, name: "Check units" }];
+    assert.deepEqual(second.view.learning.read, read);
+    assert.deepEqual(second.view.learning.given, read, "run 2 started with the note");
     const whole2 = (await api("GET", `/runs/${two}/learning`)).body;
-    assert.deepEqual([whole2.used, "learned" in whole2], [used, false], "the run's learning whole says the same");
-    for (const path of ["/runs", `/agents/${id}/runs`]) assert.deepEqual((await api("GET", path)).body.runs.find((run) => run.run_id === two).learning, { state: "dropped", reason: "empty", detail: "Nothing new to remember from this run.", used }, path);
-    assert.deepEqual((await savedOf(data, two)).learning.used, used, "kept in serve.json as the run settled");
+    assert.deepEqual([whole2.read, whole2.given, "learned" in whole2], [read, read, false], "the run's learning whole says the same");
+    for (const path of ["/runs", `/agents/${id}/runs`]) assert.deepEqual((await api("GET", path)).body.runs.find((run) => run.run_id === two).learning, { state: "dropped", reason: "empty", detail: "Nothing new to remember from this run.", given: read, read }, path);
+    assert.deepEqual([(await savedOf(data, two)).learning.read, (await savedOf(data, two)).learning.given], [read, read], "kept in serve.json as the run settled");
     // It learned nothing new: its turn added nothing, and main did not move.
     settled(second.view, second.rows, "dropped", "empty");
     assert.equal("learned" in second.view.learning, false, "run 2 learned nothing");
     assert.equal(git(repo, ["rev-parse", "main"]), main);
     assert.equal(learningRows(second.rows).length, 1);
-    assert.equal(existsSync(join(data, "runs", two, "learning-proposal.json")), false, "nothing was proposed");
+    assert.equal(existsSync(join(runDir(data, two), "learning-proposal.json")), false, "nothing was proposed");
   });
 }

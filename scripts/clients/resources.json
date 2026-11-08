@@ -1,5 +1,10 @@
 {
-  "secretBody": ["saveToolKey", "saveMcpServer", "previewMcpServer"],
+  "secretBody": ["saveToolKey", "saveMcpServer", "previewMcpServer", "startMcpOAuth"],
+  "publicFields": {
+    "saveMcpServer": ["url", "auth.type"],
+    "previewMcpServer": ["url", "auth.type", "name"],
+    "startMcpOAuth": ["url", "scopes.[]", "client_id"]
+  },
   "multiSegment": {
     "readRunFile": "path",
     "readHomeFile": "path",
@@ -7,10 +12,13 @@
     "deleteHomeFile": "path"
   },
   "omit": {
+    "startMcpOAuth": "The sign-in's cookie, which the callback requires, is set on the answer to whoever starts it, so it must start in the owner's browser: use the console's MCP page.",
     "approveLearningFile": "It takes the owner's password session in the console; the server refuses every token on it.",
     "answerApproval": "Only the owner's password session answers a tool call's approval, on the console's own origin; the server refuses every token on it.",
+    "getRunBrowser": "A run's live browser view is a full-control credential for its session; only the owner's password session reads it, in the console. The server refuses every token on it.",
     "receiveHook": "A sender fires it with a request signed by the trigger's secret and no token; the CLI sends the server's token, so it has no command.",
-    "restoreLearningFile": "Restoring a retired learning file takes the owner's password session in the console, as an approval does; the server refuses every token on it."
+    "restoreLearningFile": "Restoring a retired learning file takes the owner's password session in the console, as an approval does; the server refuses every token on it.",
+    "mcpOAuthCallback": "The owner's browser reaches it, sent back by the authorization server with the cookie the start set there; it takes no token, and the CLI has no such cookie, so it has no command."
   },
   "commands": {
     "getCapabilities": ["server", "capabilities"],
@@ -79,6 +87,7 @@
     "saveMcpServer": ["mcp-servers", "save"],
     "deleteMcpServer": ["mcp-servers", "delete"],
     "refreshMcpServer": ["mcp-servers", "refresh"],
+    "mcpOAuthClient": ["mcp-servers", "oauth-client"],
     "getToolSettings": ["tool-settings", "get"],
     "putToolSettings": ["tool-settings", "save"],
     "getWebhook": ["webhook", "get"],
