@@ -16,6 +16,7 @@
 // ' or \ is refused too, since list's query quotes it.
 import { readFileSync } from "node:fs";
 import {
+	cdpUrlProblem,
 	BROWSER_IMAGE,
 	type BrowserStream,
 	browserClient,
@@ -59,6 +60,9 @@ import { connectionError } from "./test-connection.js";
 const VERSION: string = JSON.parse(readFileSync(new URL("../package.json", import.meta.url), "utf8")).version;
 const NAME = "Browserbase";
 export const BROWSERBASE_API_URL = "https://api.browserbase.com";
+/** The domain a Browserbase CDP URL is on (wss://connect.browserbase.com, read live 11-08): cdpUrlProblem holds it there. */
+export const BROWSERBASE_CDP_DOMAIN = "browserbase.com";
+const CDP_DOMAIN = BROWSERBASE_CDP_DOMAIN;
 /** Browserbase's longest session: a timeout of 21,600 s. */
 export const BROWSERBASE_MAX_LIFETIME_MS = 6 * 60 * 60_000;
 /** Browserbase's shortest session timeout: 60 s. */
@@ -265,10 +269,14 @@ export class BrowserbaseProvider implements ComputerProvider {
 		} catch (error) {
 			return vendorFailure("browserbase", NAME, "POST /v1/sessions", error);
 		}
-		if (idProblem(made?.id, NAME) !== undefined || typeof made.connectUrl !== "string" || made.connectUrl === "") {
-			return fail("browserbase", "Browserbase POST /v1/sessions answered with no session to connect to");
+		if (idProblem(made?.id, NAME) !== undefined) return fail("browserbase", "Browserbase POST /v1/sessions answered with no session id, so there is no session to connect to or release");
+		const unusable = cdpUrlProblem(made.connectUrl, NAME, CDP_DOMAIN);
+		if (unusable !== undefined) {
+			// The session is made and billed (keepAlive, up to its timeout): released here, not left to a later sweep.
+			const released = await this.release(refOf(made), "delete");
+			return fail("browserbase", `Browserbase POST /v1/sessions made a session with no CDP URL to hand over: ${unusable}; ${released.ok ? "the session was released" : `the session was not released (${released.error.code}), and its labels let a sweep find it`}`);
 		}
-		this.#urls.set(made.id, made.connectUrl);
+		this.#urls.set(made.id, made.connectUrl as string);
 		return ok(refOf(made));
 	}
 
@@ -380,8 +388,11 @@ export class BrowserbaseProvider implements ComputerProvider {
 			if (!found.ok) return found;
 			if (typeof found.value.connectUrl !== "string" || found.value.connectUrl === "") return fail("not_found", `the Browserbase session ${id} is not available for connection`);
 			url = found.value.connectUrl;
-			this.#urls.set(id, url);
 		}
+		// Whatever held it (create, a read, a host's url store), a URL a driver would dial is wss: on Browserbase's own domain.
+		const unusable = cdpUrlProblem(url, NAME, CDP_DOMAIN);
+		if (unusable !== undefined) return fail("browserbase", `the Browserbase session ${id} is not handed over: ${unusable}`);
+		this.#urls.set(id, url);
 		const hello = browserHello(VERSION, this.capabilities().groups);
 		const client = browserClient(hello, (signal) => this.#alive(id, signal));
 		return ok({ client, hello, cdp: { url }, close: async () => client.close() });

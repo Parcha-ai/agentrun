@@ -12,6 +12,7 @@
 // largest idle timeout (72 h), and list reads no deadline.
 import { readFileSync } from "node:fs";
 import {
+	cdpUrlProblem,
 	BROWSER_IMAGE,
 	type BrowserStream,
 	browserClient,
@@ -56,6 +57,9 @@ import { connectionError } from "./test-connection.js";
 const VERSION: string = JSON.parse(readFileSync(new URL("../package.json", import.meta.url), "utf8")).version;
 const NAME = "Kernel";
 export const KERNEL_API_URL = "https://api.onkernel.com";
+/** The domain a Kernel CDP URL is on (wss://<host>.kernel.sh:8443, read live 11-08; its API is onkernel.com): cdpUrlProblem holds it there. */
+export const KERNEL_CDP_DOMAIN = "kernel.sh";
+const CDP_DOMAIN = KERNEL_CDP_DOMAIN;
 /** Kernel's shortest and longest idle timeout. */
 export const KERNEL_MIN_LIFETIME_MS = 10_000;
 export const KERNEL_MAX_LIFETIME_MS = 259_200_000;
@@ -176,8 +180,14 @@ export class KernelProvider implements ComputerProvider {
 		const browser = (made.json ?? {}) as KernelBrowser;
 		const id = text(browser.session_id);
 		const url = text(browser.cdp_ws_url);
-		if (made.status === 404 || idProblem(id, NAME) !== undefined || url === "") {
+		if (made.status === 404 || idProblem(id, NAME) !== undefined) {
 			return vendorFailure("kernel", NAME, "POST /browsers", new BrowserVendorError(NAME, "POST /browsers", made.status, "no_session"));
+		}
+		const unusable = cdpUrlProblem(url, NAME, CDP_DOMAIN);
+		if (unusable !== undefined) {
+			// The browser is made and billed until its idle timeout: deleted here, not left to a later sweep.
+			const released = await this.release(refOf(id), "delete");
+			return fail("kernel", `Kernel POST /browsers made a browser with no CDP URL to hand over: ${unusable}; ${released.ok ? "the browser was released" : `the browser was not released (${released.error.code}), and its tags let a sweep find it`}`);
 		}
 		this.#urls.set(id, url);
 		const live = text(browser.browser_live_view_url);
@@ -313,8 +323,11 @@ export class KernelProvider implements ComputerProvider {
 			if (!found.ok) return found;
 			url = text(found.value.cdp_ws_url);
 			if (url === "") return fail("not_found", `the Kernel browser ${id} is not available for connection`);
-			this.#urls.set(id, url);
 		}
+		// Whatever held it (create, a read, a host's url store), a URL a driver would dial is wss: on Kernel's own domain.
+		const unusable = cdpUrlProblem(url, NAME, CDP_DOMAIN);
+		if (unusable !== undefined) return fail("kernel", `the Kernel browser ${id} is not handed over: ${unusable}`);
+		this.#urls.set(id, url);
 		const hello = browserHello(VERSION, this.capabilities().groups);
 		const client = browserClient(hello, (signal) => this.#alive(id, signal));
 		return ok({ client, hello, cdp: { url }, close: async () => client.close() });
