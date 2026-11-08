@@ -13,7 +13,7 @@ import { test } from "node:test";
 import { fakeAnthropic } from "@parcha/agentrun-harness-claude/testing";
 import { agentFolderOf, homeKey } from "../dist/files.js";
 import { learningTestHooks } from "../dist/learning.js";
-import { KEEPS, learnedIn, NOTHING_YET, wholeIn } from "./learn-support.mjs";
+import { KEEPS, learnedIn, NOTHING_YET, resnapSync, wholeIn } from "./learn-support.mjs";
 import { agent, follow, runDir, scratch, serve, withEnv } from "./support.mjs";
 import { fauxTable } from "./fixtures/faux-table.mjs";
 
@@ -51,14 +51,16 @@ const pinOf = (data, runId) => JSON.parse(readFileSync(join(runDir(data, runId),
 const learnedDir = (data, runId) => join(runDir(data, runId), "work", ".learning");
 const answer = async (api, runId) => (await api("GET", `/runs/${runId}`)).body.result?.final_answer ?? "";
 
-/** Commits `files` on main, in the folder's working tree, as a merge into main would leave it. Its commit. */
-function commitToMain(repo, files, message = "learned") {
+/** Commits `files` on main, in the folder's working tree, as a merge into main would leave it, and (`snap`) the folder's
+ *  snapshot rebuilt from it. Its commit. */
+function commitToMain(repo, files, message = "learned", snap = true) {
   for (const [path, text] of Object.entries(files)) {
     mkdirSync(dirname(join(repo, path)), { recursive: true });
     writeFileSync(join(repo, path), text);
   }
   git(repo, ["add", "--", ...Object.keys(files)]);
   git(repo, ["commit", "-q", "-m", message]);
+  if (snap) resnapSync(repo);
   return git(repo, ["rev-parse", "main"]);
 }
 
@@ -232,7 +234,8 @@ test("an index naming notes main does not hold whole: the run reads its first 20
 function tenNotes(repo) {
   const notes = Array.from({ length: 10 }, (_, i) => String(i + 1).padStart(2, "0")).map((n) => [`note-${n}.md`, note(`Note ${n}`, `Rule ${n} of ten`, "user", "", `Rule ${n}: ${Array(4).fill("keep this in mind").join(" ")}.\n`)]);
   const lines = notes.map(([file]) => `- [Note ${file.slice(5, 7)}](${file}) — Rule ${file.slice(5, 7)} of ten`);
-  notes.forEach(([file, text], i) => commitToMain(repo, { [file]: text, "MEMORY.md": `${lines.slice(0, i + 1).join("\n")}\n` }, `learned ${file}`));
+  notes.forEach(([file, text], i) => commitToMain(repo, { [file]: text, "MEMORY.md": `${lines.slice(0, i + 1).join("\n")}\n` }, `learned ${file}`, false));
+  resnapSync(repo);
   return { notes, lines };
 }
 const bytes = (text) => Buffer.byteLength(text);
