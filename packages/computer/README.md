@@ -1717,13 +1717,13 @@ A live run must show:
 ## Phone harness (the phone kind)
 
 ```ts
-import { create } from "@parcha/agentrun-computer/dist/phone.js";
+import { providerFor } from "@parcha/agentrun-computer";
 
-const phones = await create({ apiKey }); // serve passes PHONE_HARNESS_API_KEY
+const phones = await providerFor("phone-harness", { apiKey }); // serve passes PHONE_HARNESS_API_KEY
 const made = await phones.create({ image: "android", lifetimeMs: 10 * 60_000, network: "open", labels: { run } });
 ```
 
-`src/phone.ts`, provider id `phone-harness`, rents a temporary cloud Android emulator from the phone harness
+`src/phone-harness.ts`, provider id `phone-harness`, rents a temporary cloud Android emulator from the phone harness
 (phone-harness.com). The phone harness bills it at 5 cents a minute from the account's credit. A cloud iPhone (driven by
 the API's control URL) is a later change: `platform: "ios"` is refused in words.
 
@@ -1757,8 +1757,9 @@ the API's control URL) is a later change: `platform: "ios"` is refused in words.
 - **adb** is an option too: a runner (tests give a fake), or the path of the `adb` CLI (Android platform-tools; default
   `adb` on PATH). Without it, connect says so in words.
 
-Conformance (`src/conformance/phone.ts`) reads `COMPUTER_PHONE_API_KEY`, `COMPUTER_PHONE_PLATFORM`,
-`COMPUTER_PHONE_ADB`, `COMPUTER_PHONE_LEDGER` and `AGENTRUN_COMPUTER_LIVE_PHONE`, never the bare
+Conformance (`src/conformance/phone-harness.ts`) reads `COMPUTER_PHONE_HARNESS_API_KEY`,
+`COMPUTER_PHONE_HARNESS_PLATFORM`, `COMPUTER_PHONE_HARNESS_ADB`, `COMPUTER_PHONE_HARNESS_LEDGER` and
+`AGENTRUN_COMPUTER_LIVE_PHONE_HARNESS`, never the bare
 `PHONE_HARNESS_API_KEY`. A run's phones live at most 10 min, and the run's computers ask for at most the provider's
 `maxLifetimeMs`.
 

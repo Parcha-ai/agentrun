@@ -1,26 +1,27 @@
 // The phone harness for the conformance CLI and the live harness (`--provider phone-harness`): the provider as create()
-// builds it from the settings this module reads (COMPUTER_PHONE_*), with its ledger in a JSON file so a sweep in another
-// process sees the run's phones, and its drifted twin, whose phone's hello reports another version. A phone is rented
-// by the minute, so nothing is built without AGENTRUN_COMPUTER_LIVE_PHONE=1, and a run's phones live at most 10 min.
+// builds it from the settings this module reads (COMPUTER_PHONE_HARNESS_*), with its ledger in a JSON file so a sweep in
+// another process sees the run's phones, and its drifted twin, whose phone's hello reports another version. A phone is
+// rented by the minute, so nothing is built without AGENTRUN_COMPUTER_LIVE_PHONE_HARNESS=1, and a run's phones live at
+// most 10 min.
 // The provider reads no environment: this module reads these names and passes them in as options.
 import { randomBytes } from "node:crypto";
 import { mkdirSync, readFileSync, renameSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
-import { type AdbRunner, create, type PhoneHarnessProvider, type PhoneLedger, type PhoneLedgerEntry, type PhoneProviderOptions } from "../phone.js";
+import { type AdbRunner, create, type PhoneHarnessProvider, type PhoneLedger, type PhoneLedgerEntry, type PhoneProviderOptions } from "../phone-harness.js";
 
 /** The environment this module reads, by name. */
 export const PHONE_ENV = {
 	/** The phone harness API key: this module's own name, never the bare PHONE_HARNESS_API_KEY. */
-	key: "COMPUTER_PHONE_API_KEY",
+	key: "COMPUTER_PHONE_HARNESS_API_KEY",
 	/** android (the default); ios is refused until it is built. */
-	platform: "COMPUTER_PHONE_PLATFORM",
+	platform: "COMPUTER_PHONE_HARNESS_PLATFORM",
 	/** The adb CLI's path; default adb on PATH. */
-	adb: "COMPUTER_PHONE_ADB",
+	adb: "COMPUTER_PHONE_HARNESS_ADB",
 	/** The ledger's JSON file; default agentrun-phone-ledger.json in the temp dir. */
-	ledger: "COMPUTER_PHONE_LEDGER",
+	ledger: "COMPUTER_PHONE_HARNESS_LEDGER",
 	/** 1 to rent phones at all: each one is billed by the minute. */
-	live: "AGENTRUN_COMPUTER_LIVE_PHONE",
+	live: "AGENTRUN_COMPUTER_LIVE_PHONE_HARNESS",
 } as const;
 
 /** The names this module reads, under the conformance modules' common name. */

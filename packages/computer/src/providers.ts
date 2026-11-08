@@ -56,6 +56,7 @@ export const providers = {
 	modal: () => import("./modal.js"),
 	daytona: () => import("./daytona.js"),
 	e2b: () => import("./e2b.js"),
+	"phone-harness": () => import("./phone-harness.js"),
 } satisfies Record<string, () => Promise<ProviderModule>>;
 
 export type ProviderId = keyof typeof providers;

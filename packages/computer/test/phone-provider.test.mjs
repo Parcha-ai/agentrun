@@ -9,9 +9,9 @@ import test, { after } from "node:test";
 import { kindRefusals } from "../dist/index.js";
 import { fakeClock, fakePhoneHarness, ITEMS, KEY, SCREEN, SEARCH_FIELD, SETTINGS } from "./fake-phone-harness.mjs";
 
-const phone = await import("../dist/phone.js");
+const phone = await import("../dist/phone-harness.js");
 const { create, MOUNT, memoryLedger, adbCli, PHONE_GROUPS } = phone;
-const conformance = await import("../dist/conformance/phone.js");
+const conformance = await import("../dist/conformance/phone-harness.js");
 
 const dir = mkdtempSync(join(tmpdir(), "computer-phone-"));
 after(() => rmSync(dir, { recursive: true, force: true }));
@@ -355,24 +355,24 @@ test("a drifted twin's phone is refused at connect, in the drift check's words",
 	assert.match(refused.error.message, new RegExp(`hello: the daemon reports version 0\\.0\\.0-drift, expected ${provider.version.replaceAll(".", "\\.")}`));
 });
 
-test("the conformance module reads its own COMPUTER_PHONE_* names, never PHONE_HARNESS_API_KEY, and keeps its ledger in a file", async () => {
+test("the conformance module reads its own COMPUTER_PHONE_HARNESS_* names, never PHONE_HARNESS_API_KEY, and keeps its ledger in a file", async () => {
 	assert.deepEqual(conformance.PHONE_ENV, {
-		key: "COMPUTER_PHONE_API_KEY",
-		platform: "COMPUTER_PHONE_PLATFORM",
-		adb: "COMPUTER_PHONE_ADB",
-		ledger: "COMPUTER_PHONE_LEDGER",
-		live: "AGENTRUN_COMPUTER_LIVE_PHONE",
+		key: "COMPUTER_PHONE_HARNESS_API_KEY",
+		platform: "COMPUTER_PHONE_HARNESS_PLATFORM",
+		adb: "COMPUTER_PHONE_HARNESS_ADB",
+		ledger: "COMPUTER_PHONE_HARNESS_LEDGER",
+		live: "AGENTRUN_COMPUTER_LIVE_PHONE_HARNESS",
 	});
 	assert.equal(conformance.ENV, conformance.PHONE_ENV);
 	assert.deepEqual(conformance.settingsFromEnv({ PHONE_HARNESS_API_KEY: KEY }), {}, "the bare vendor name is not read");
 	const path = join(dir, "ledger.json");
-	assert.deepEqual(conformance.settingsFromEnv({ COMPUTER_PHONE_API_KEY: KEY, COMPUTER_PHONE_PLATFORM: "android", COMPUTER_PHONE_ADB: "/opt/adb", COMPUTER_PHONE_LEDGER: path }), {
+	assert.deepEqual(conformance.settingsFromEnv({ COMPUTER_PHONE_HARNESS_API_KEY: KEY, COMPUTER_PHONE_HARNESS_PLATFORM: "android", COMPUTER_PHONE_HARNESS_ADB: "/opt/adb", COMPUTER_PHONE_HARNESS_LEDGER: path }), {
 		apiKey: KEY,
 		platform: "android",
 		adb: "/opt/adb",
 		ledgerPath: path,
 	});
-	await assert.rejects(conformance.createProvider({ env: { COMPUTER_PHONE_API_KEY: KEY } }), /set AGENTRUN_COMPUTER_LIVE_PHONE=1/);
+	await assert.rejects(conformance.createProvider({ env: { COMPUTER_PHONE_HARNESS_API_KEY: KEY } }), /set AGENTRUN_COMPUTER_LIVE_PHONE_HARNESS=1/);
 
 	const ledger = conformance.fileLedger(path);
 	await ledger.put({ id: "sess_1", labels: { run: "r" }, image: "android", deadline: "2026-11-08T12:10:00.000Z" });
@@ -384,10 +384,10 @@ test("the conformance module reads its own COMPUTER_PHONE_* names, never PHONE_H
 
 	const fake = fakePhoneHarness({ clock: fakeClock() });
 	const through = { fetch: fake.fetch, adb: fake.adb, now: fake.clock.now, sleep: fake.clock.sleep };
-	const built = await conformance.createProvider({ env: { COMPUTER_PHONE_API_KEY: KEY, AGENTRUN_COMPUTER_LIVE_PHONE: "1", COMPUTER_PHONE_LEDGER: path }, ...through });
+	const built = await conformance.createProvider({ env: { COMPUTER_PHONE_HARNESS_API_KEY: KEY, AGENTRUN_COMPUTER_LIVE_PHONE_HARNESS: "1", COMPUTER_PHONE_HARNESS_LEDGER: path }, ...through });
 	assert.equal(built.id, "phone-harness");
 	assert.equal(built.capabilities().maxLifetimeMs, 10 * 60_000, "a conformance run's phones live at most 10 min");
-	const drifted = await conformance.createDriftedProvider({ env: { COMPUTER_PHONE_API_KEY: KEY, AGENTRUN_COMPUTER_LIVE_PHONE: "1", COMPUTER_PHONE_LEDGER: path }, ...through });
+	const drifted = await conformance.createDriftedProvider({ env: { COMPUTER_PHONE_HARNESS_API_KEY: KEY, AGENTRUN_COMPUTER_LIVE_PHONE_HARNESS: "1", COMPUTER_PHONE_HARNESS_LEDGER: path }, ...through });
 	assert.equal(drifted.version, built.version, "the twin is the same provider; only its phone's hello reports another version");
 	const twin = (await drifted.create(SPEC)).value;
 	assert.match((await drifted.connect(twin)).error.message, /hello: the daemon reports version \S+, expected /);

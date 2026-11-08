@@ -39,7 +39,8 @@ const sink = () => {
 
 /** The registry lines in source, as written: id, and the provider file it imports. */
 function linesOf(source) {
-	return [...source.matchAll(/^\s*([a-z][a-z0-9-]*):\s*\(\)\s*=>\s*import\("\.\/([a-z][a-z0-9-]*)\.js"\),?$/gm)].map(([, id, file]) => ({ id, file }));
+	// The id bare, or quoted with one kind of quote on both sides: a hyphenated id is no JavaScript name.
+	return [...source.matchAll(/^\s*(?:(["'])([a-z][a-z0-9-]*)\1|([a-z][a-z0-9]*)):\s*\(\)\s*=>\s*import\("\.\/([a-z][a-z0-9-]*)\.js"\),?$/gm)].map(([, , quoted, bare, file]) => ({ id: quoted ?? bare, file }));
 }
 
 /** Every registry line of the built registry. */

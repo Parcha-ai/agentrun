@@ -6,7 +6,7 @@ import test from "node:test";
 import { conformanceCases, formatReport, runConformance } from "../dist/index.js";
 import { fakePhoneHarness, KEY } from "./fake-phone-harness.mjs";
 
-const { create, memoryLedger } = await import("../dist/phone.js");
+const { create, memoryLedger } = await import("../dist/phone-harness.js");
 
 const statuses = (report) => Object.fromEntries(report.results.map((r) => [r.id, r.status]));
 const reasonOf = (report, id) => report.results.find((r) => r.id === id)?.reason ?? "";

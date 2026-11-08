@@ -154,7 +154,7 @@ export async function create(options: PhoneProviderOptions): Promise<PhoneHarnes
 }
 
 /** The conformance CLI's module for the phone harness. */
-export const conformance = () => import("./conformance/phone.js");
+export const conformance = () => import("./conformance/phone-harness.js");
 
 const show = (value: unknown) => JSON.stringify(value) ?? String(value);
 /** One argument for the phone's sh: single-quoted. */
