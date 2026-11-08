@@ -68,6 +68,10 @@ const MAX_TIMEOUT_MS = 2 ** 31 - 1;
 const MAX_NAME = 200;
 /** The most firings each trigger keeps past its history for their key's day: a bound on the file (commit()). */
 const KEPT_FIRINGS = 1_000;
+/** The most keys of pushed firings each trigger keeps for their day (`seen`), past the firings it keeps: a sender's
+ *  event sent again within its day starts nothing, however many came between. About 50 bytes each in the file. Past it
+ *  the oldest go first, and the log says so. */
+export const SEEN_KEPT = 5_000;
 const ENDED = new Set(["completed", "failed", "cancelled"]);
 const dueOf = (trigger: { firings: readonly { status: string }[] }) => trigger.firings.filter((f) => f.status === "due").length;
 const LOST_AT_SETUP = "The server stopped while setting up the run.";
@@ -111,6 +115,9 @@ type Trigger = {
   /** Firings keyed by a caller's id (run now's Idempotency-Key, a webhook's webhook-id) that left the history, kept for
    *  their key's day (IDEMPOTENCY_TTL_S), so a sender's retry answers its firing and never fires again. */
   kept_firings?: Firing[];
+  /** The key of each pushed firing of the last day, with when it was recorded (Unix seconds), oldest first: what answers
+   *  a sender's event sent again once its firing has left both lists above. At most SEEN_KEPT. */
+  seen?: Record<string, number>;
   catchup_window_s: number; failures_in_a_row: number;
   /** Why it is off, when a failure streak turned it off; null once it is on again. */
   disabled: { at: string; reason: "auto_paused" } | { at: string; reason: "source_unreadable"; detail: string } | null;
@@ -145,6 +152,8 @@ export type TriggerDeps = {
   clock?: TriggerClock;
   /** The sources this engine reads: the registry's (trigger-adapters.ts), unless a test gives its own. */
   adapters?: readonly TriggerAdapter[];
+  /** SEEN_KEPT, unless a test gives its own. */
+  seenKept?: number;
 };
 
 const REAL_CLOCK: TriggerClock = {
@@ -220,7 +229,8 @@ function wellFormed(adapters: readonly TriggerAdapter[], t: unknown): t is Trigg
   if (!timed || !aimed) return false;
   const firing = (f: unknown) => isObject(f) && typeof f.key === "string" && (FIRING_STATUSES as readonly unknown[]).includes(f.status) && typeof f.by === "string" && (f.by === "manual" || adapterIn(adapters, f.by) !== undefined) && instantOf(f.nominal_at) !== undefined && typeof f.at === "string";
   const list = (value: unknown) => value === undefined || (Array.isArray(value) && value.every(firing));
-  return Array.isArray(t.firings) && t.firings.every(firing) && list(t.kept_firings);
+  const seen = t.seen === undefined || (isObject(t.seen) && Object.values(t.seen).every((at) => Number.isSafeInteger(at)));
+  return Array.isArray(t.firings) && t.firings.every(firing) && list(t.kept_firings) && seen;
 }
 
 export class Triggers {
@@ -239,6 +249,8 @@ export class Triggers {
   /** Each trigger's firings, driven one after another in the order asked: a firing's overlap check reads what the one
    *  before it settled to (a firing a crash left due settles to its run before the next start's own is checked). */
   private readonly turns = new Map<string, Promise<void>>();
+  /** The triggers whose seen keys are at their cap, said once until they are under it again. */
+  private readonly seenFull = new Set<string>();
   private closed = false;
 
   constructor(data: string, private readonly deps: TriggerDeps) {
@@ -349,13 +361,16 @@ export class Triggers {
 
   /** A delivered request for trigger `id` (its pushed source's checks passed, server.ts): its firing, keyed by the
    *  sender's own id for it (a webhook's `webhook-id`), recorded due in one write and driven after the answer. `created`
-   *  false: that id's firing, as it stands. */
-  receive(id: string, eventId: string, payload: string, attrs?: Record<string, string>): { created: boolean; firing: ReturnType<typeof firingView> } {
+   *  false: that id's firing, as it stands, or `{ok: "duplicate"}` for one seen within its day whose firing is no longer
+   *  kept. */
+  receive(id: string, eventId: string, payload: string, attrs?: Record<string, string>): { created: boolean; firing: ReturnType<typeof firingView> | { ok: "duplicate" } } {
     const trigger = this.need(id);
     const by = trigger.source.kind;
     const key = firingKey(by, id, eventId);
     const known = this.known(trigger, key);
     if (known) return { created: false, firing: firingView(known) };
+    const seenAt = trigger.seen?.[key];
+    if (seenAt !== undefined && this.clock.now() - seenAt * 1000 <= IDEMPOTENCY_TTL_S * 1000) return { created: false, firing: { ok: "duplicate" } };
     this.roomFor(trigger);
     const now = this.clock.now();
     const firing: Firing = { key, by, nominal_at: second(now), status: "due", at: iso(now), payload: cut(payload), ...(attrs && Object.keys(attrs).length ? { attrs } : {}) };
@@ -684,6 +699,27 @@ export class Triggers {
     const kept = [...(trigger.kept_firings ?? []), ...gone.filter((f) => f.by === "manual" || adapterIn(this.adapters, f.by)?.delivery === "push")].filter((f) => this.inDay(f)).slice(-KEPT_FIRINGS);
     if (kept.length) trigger.kept_firings = kept;
     else delete trigger.kept_firings;
+    if (adapterIn(this.adapters, firing.by)?.delivery === "push") this.see(trigger, firing.key);
+  }
+
+  /** `key` kept in `trigger.seen` for its day: keys past their day dropped, then the oldest past the cap, said. */
+  private see(trigger: Trigger, key: string): void {
+    const now = Math.floor(this.clock.now() / 1000);
+    const seen = trigger.seen ?? {};
+    for (const [old, at] of Object.entries(seen)) {
+      if (now - at <= IDEMPOTENCY_TTL_S) break;
+      delete seen[old];
+    }
+    seen[key] = now;
+    const cap = this.deps.seenKept ?? SEEN_KEPT;
+    const over = Object.keys(seen).length - cap;
+    if (over > 0) {
+      for (const old of Object.keys(seen).slice(0, over)) delete seen[old];
+      // Said once each time the cap is reached, not for every event past it.
+      if (!this.seenFull.has(trigger.id)) this.deps.say({ condition: "trigger_seen_full", trigger: trigger.id, kept: cap });
+      this.seenFull.add(trigger.id);
+    } else this.seenFull.delete(trigger.id);
+    trigger.seen = seen;
   }
 
   /** A new firing's room: refused (429, retryable, nothing written) while the trigger holds DUE_KEPT firings due. */
@@ -754,7 +790,7 @@ export class Triggers {
   }
 
   private view(trigger: Trigger) {
-    const { firings, kept_firings: _, ...rest } = trigger;
+    const { firings, kept_firings: _, seen: __, ...rest } = trigger;
     return { ...rest, last_run_id: trigger.last_run_id ?? null, last_firing: firings.length ? firingView(firings.at(-1)!) : null };
   }
 
