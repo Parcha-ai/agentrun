@@ -1,6 +1,6 @@
 import { act, createElement } from "react";
 import { createRoot } from "react-dom/client";
-import { afterEach, describe, expect, it } from "vitest";
+import { afterEach, describe, expect, it, vi } from "vitest";
 import { LiveRun } from "./LiveRun";
 import { cost } from "@/lib/format";
 import type { Run, TimelinePage } from "@/lib/v2";
@@ -9,7 +9,7 @@ import type { Run, TimelinePage } from "@/lib/v2";
 // only archived_at from the answer, then reads the run again.
 (globalThis as { IS_REACT_ACT_ENVIRONMENT?: boolean }).IS_REACT_ACT_ENVIRONMENT = true;
 let root: ReturnType<typeof createRoot> | undefined;
-afterEach(() => { act(() => root?.unmount()); document.body.innerHTML = ""; });
+afterEach(() => { act(() => root?.unmount()); document.body.innerHTML = ""; vi.useRealTimers(); });
 
 const at = (status: Run["status"], archived: boolean): Run => ({ sha: null, updated_at: "2026-11-04T00:00:00Z", poll_after_ms: 0,
   run_id: "r1", agent_id: "calc", agent_version: 1, revision: "rv1", kind: "agentic", status, state: status === "working" ? "working" : "idle", title: "What is two and two?",
@@ -177,6 +177,8 @@ describe("LiveRun, a working run's cost", () => {
     expect(header()).not.toContain(cost(zero as Run["cost"]));
   });
   it("follows each later page's cost while the run works, then the run's own read once it ends", async () => {
+    // Fake timers: the follow loop's pause between reads is stepped through, never waited for.
+    vi.useFakeTimers();
     const at$ = (usd: number) => ({ usd, basis: "estimate", charge_state: null, cap_usd: null });
     const page = (usd: number, status: Run["status"]) => ({ cost: at$(usd), run_id: "r1", status, state: status === "working" ? "working" : "idle", rows: [], drop: [], reset: false, unchanged: false, final: status !== "working", has_more: false, next_after: 0 }) as unknown as TimelinePage;
     // The pages, one per read: the test hands each out in turn.
@@ -191,13 +193,14 @@ describe("LiveRun, a working run's cost", () => {
     const host = document.body.appendChild(document.createElement("div"));
     root = createRoot(host);
     act(() => root!.render(createElement(LiveRun, { v2: v2 as never, runId: "r1", caps: null, agentName: () => "Calc" })));
-    const settle = async () => { for (let i = 0; i < 10; i++) await act(async () => { await new Promise((r) => setTimeout(r, 0)); }); };
+    const step = async (ms: number) => { await act(async () => { await vi.advanceTimersByTimeAsync(ms); }); };
     const header = () => host.querySelector("header")?.textContent ?? "";
-    // The follow loop keeps a short pause between reads: wait until it asks for the next page, then hand that one out.
+    // The follow loop keeps a short pause between reads: step past it until it asks for the next page, then hand that one out.
     const hand = async (p: TimelinePage) => {
-      for (const end = Date.now() + 3000; !waiting.length && Date.now() < end; ) await act(async () => { await new Promise((r) => setTimeout(r, 25)); });
+      for (let i = 0; i < 20 && !waiting.length; i++) await step(50);
       expect(waiting.length).toBeGreaterThan(0);
-      waiting.shift()!(p); await settle();
+      waiting.shift()!(p);
+      for (let i = 0; i < 5; i++) await step(0);
     };
     await hand(page(0.0126, "working"));
     expect(header()).toContain(cost(at$(0.0126) as Run["cost"]));
