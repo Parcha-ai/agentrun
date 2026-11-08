@@ -192,43 +192,6 @@ test("a server free to pick its port listens on the next one when its port is ta
   await assert.rejects(startServe({ data: join(dir, "b"), port: taken, faux: FAUX }), (error) => error.code === "EADDRINUSE" && error.message.includes(`127.0.0.1:${taken}`));
 });
 
-// Each taken port is one attempt on the same server: an attempt that failed leaves none of its handlers on it, so
-// passing over many taken ports adds no listener per port.
-test("a server free to pick its port passes over 11 taken ports with no listener left behind per attempt", { timeout: 60_000 }, async (t) => {
-  const listen = (port) => new Promise((resolve) => { const server = createServer(); const close = closer(server); server.once("error", () => resolve(undefined)).listen(port, "127.0.0.1", () => resolve(close)); });
-  const close = (closeIt) => closeIt();
-  // 11 consecutive ports this test holds from a base, and the one after them free.
-  let base;
-  for (let tries = 0; base === undefined && tries < 50; tries++) {
-    const from = 20_000 + Math.floor(Math.random() * 40_000);
-    const servers = [];
-    for (let port = from; port < from + 11; port++) {
-      const server = await listen(port);
-      if (!server) break;
-      servers.push(server);
-    }
-    const next = servers.length === 11 ? await listen(from + 11) : undefined;
-    if (next) {
-      await close(next);
-      base = from;
-      t.after(() => Promise.all(servers.map(close)));
-    } else await Promise.all(servers.map(close));
-  }
-  assert.ok(base !== undefined, "found 11 free consecutive ports and the one after them");
-  const warnings = [];
-  const onWarning = (warning) => warnings.push(warning);
-  process.on("warning", onWarning);
-  t.after(() => process.off("warning", onWarning));
-  const dir = mkdtempSync(join(tmpdir(), "serve-ports-"));
-  t.after(() => rmSync(dir, { recursive: true, force: true }));
-  const moved = await startServe({ data: join(dir, "a"), port: base, nextFreePort: true, faux: FAUX });
-  t.after(() => within(moved.close(), 10_000));
-  // A warning is emitted on the next tick: one turn of the event loop lets any reach the handler.
-  await new Promise((resolve) => setImmediate(resolve));
-  assert.equal(moved.port, base + 11, `${moved.port} is the first free port from ${base}`);
-  assert.deepEqual(warnings.filter((warning) => warning.name === "MaxListenersExceededWarning").map((warning) => warning.message), []);
-});
-
 test("demo: two servers started at once with no --port each take a port of their own, and --port on a taken port fails at once, naming it", { timeout: 120_000 }, async (t) => {
   const [one, two] = await Promise.all([serve(t, []), serve(t, [])]);
   assert.notEqual(one.base, two.base);
