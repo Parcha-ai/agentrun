@@ -1,11 +1,13 @@
-// An agent's learning Workspace (workspace/learning-workspace.ts): its learning folder from paths.ts's one agent layout,
-// on the local disk (Mode 1) or the Archil disk at learningKey (Mode 2). Learning's grade and merge run as one script
-// through it: the script is written into .agentrun, listed, and run with exec at the folder's root, its exit code and
-// its stdin passed through whole; the server reads the snapshot back with read and list. Mode 2's end() sweeps the
+// An agent's learning Workspace (workspace/learning-workspace.ts), the one learningWorkspace: its learning folder from
+// paths.ts's one agent layout, on the local disk ({ mode: "local", data }) or the Archil disk at learningKey
+// ({ mode: "archil", archil }). It is given synchronously; the local folder is made by the first write, level by level,
+// and a read makes nothing (a folder not made yet is NOT_FOUND: no main yet). Learning's grade and merge run as one
+// script through it: written into .agentrun, checked with stat, run with exec at the folder's root, its exit code and
+// stdin passed through whole; the server reads the snapshot back with read and list. The Archil end() sweeps the
 // learning folder's exec spill folder.
 import assert from "node:assert/strict";
 import { randomBytes } from "node:crypto";
-import { existsSync, mkdirSync, mkdtempSync, rmSync, symlinkSync } from "node:fs";
+import { existsSync, mkdirSync, mkdtempSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { after, test } from "node:test";
@@ -30,10 +32,10 @@ const dataDir = () => {
 const claimOf = (disk) => ({ disk, region: "aws-us-east-1", image: undefined, token: async () => "unused", secrets: new Set(), release() {} });
 
 const BACKENDS = {
-  local: async (log) => ({ learning: await learningWorkspace({ mode: 1, data: dataDir(), agentId: AGENT, log }) }),
-  archil: async (log) => {
+  local: (log) => ({ learning: learningWorkspace({ mode: "local", data: dataDir(), agentId: AGENT, log }) }),
+  archil: (log) => {
     const disk = new FakeArchilDisk();
-    return { learning: await learningWorkspace({ mode: 2, archil: claimOf(disk), agentId: AGENT, log }), disk };
+    return { learning: learningWorkspace({ mode: "archil", archil: claimOf(disk), agentId: AGENT, log }), disk };
   },
 };
 
@@ -50,10 +52,10 @@ const SCRIPT_BODY = [
 
 for (const [name, open] of Object.entries(BACKENDS)) {
   test(`learning workspace (${name}): a script written into .agentrun runs at the folder's root, its exit 3 comes back as 3, and 2 MB of stdin arrives byte for byte`, async () => {
-    const { learning, disk } = await open(() => {});
+    const { learning, disk } = open(() => {});
     const ws = learning.workspace;
     await ws.write(SCRIPT, SCRIPT_BODY);
-    assert.ok((await ws.list(".agentrun")).some((entry) => entry.name === "learning-0123abcd.sh"), "the script is there before it runs");
+    assert.equal((await ws.stat(SCRIPT))?.kind, "file", "the script is there before it runs");
     const stdin = randomBytes(2 * 1024 * 1024);
     const ran = await ws.exec(["sh", SCRIPT, "merge", "abc1234"], { env: ENV, stdin, timeoutMs: 60_000 });
     // No signal ended it: the port says so as an absent or null signal.
@@ -71,9 +73,46 @@ for (const [name, open] of Object.entries(BACKENDS)) {
   });
 }
 
+test("learning workspace (local): a read makes nothing, and a folder not made yet is NOT_FOUND; the first write makes it from the agent's folder", async () => {
+  const data = dataDir();
+  const { workspace, end } = learningWorkspace({ mode: "local", data, agentId: AGENT });
+  for (const read of [() => workspace.read(".agentrun/snapshot.json"), () => workspace.list(""), () => workspace.stat(".agentrun/snapshot.json"), () => workspace.grep("x")]) {
+    await assert.rejects(read(), (error) => error instanceof WorkspaceError && error.code === "NOT_FOUND" && /the learning folder is not made yet/.test(error.message));
+  }
+  assert.ok(!existsSync(join(data, "disk")), "no read made a level");
+  await workspace.write(".agentrun/x.txt", "x");
+  assert.ok(existsSync(join(agentLearningFolder(data, AGENT), ".agentrun", "x.txt")), "the write made it");
+  assert.equal(agentLearningFolder(data, AGENT), join(agentFolder(data, AGENT), "learning"), "one layout: the agent's folder, then learning");
+  assert.equal(text(await workspace.read(".agentrun/x.txt")), "x", "a read after it reads");
+  await end();
+  assert.ok(existsSync(join(agentLearningFolder(data, AGENT), ".agentrun", "x.txt")), "the local end() leaves the folder as it is");
+});
+
+test("learning workspace (local): a symbolic link on the way, or at .git, is refused as ESCAPE naming it, and nothing is made through it", async () => {
+  const data = dataDir();
+  const elsewhere = dataDir();
+  mkdirSync(join(data, "disk", "agents"), { recursive: true });
+  symlinkSync(elsewhere, agentFolder(data, AGENT));
+  const { workspace } = learningWorkspace({ mode: "local", data, agentId: AGENT });
+  for (const call of [() => workspace.write("a.txt", "x"), () => workspace.read("a.txt")]) {
+    await assert.rejects(call(), (error) => error instanceof WorkspaceError && error.code === "ESCAPE" && /symbolic link/.test(error.message));
+  }
+  assert.ok(!existsSync(join(elsewhere, "learning")), "nothing made where the link points");
+
+  const data2 = dataDir();
+  mkdirSync(agentLearningFolder(data2, AGENT), { recursive: true });
+  symlinkSync(elsewhere, join(agentLearningFolder(data2, AGENT), ".git"));
+  await assert.rejects(learningWorkspace({ mode: "local", data: data2, agentId: AGENT }).workspace.write("a.txt", "x"), (error) => error instanceof WorkspaceError && error.code === "ESCAPE" && /\.git/.test(error.message));
+
+  const data3 = dataDir();
+  mkdirSync(join(data3, "disk", "agents"), { recursive: true });
+  writeFileSync(agentFolder(data3, AGENT), "not a folder");
+  await assert.rejects(learningWorkspace({ mode: "local", data: data3, agentId: AGENT }).workspace.write("a.txt", "x"), (error) => error instanceof WorkspaceError && error.code === "UNAVAILABLE" && /not a folder/.test(error.message));
+});
+
 test("learning workspace (archil): end() sweeps the learning folder's spill folder, once; a sweep that fails is logged, not thrown", async () => {
   const logged = [];
-  const { learning, disk } = await BACKENDS.archil((message) => logged.push(message));
+  const { learning, disk } = BACKENDS.archil((message) => logged.push(message));
   await learning.workspace.write("notes.md", "kept");
   disk.files.set(`${SPILL}/killed.out`, Buffer.from("left"));
   disk.dirs.add(SPILL);
@@ -84,32 +123,13 @@ test("learning workspace (archil): end() sweeps the learning folder's spill fold
   await learning.end();
   assert.equal(disk.calls.length, calls, "a second end() does nothing");
 
-  const failing = await BACKENDS.archil((message) => logged.push(message));
+  const failing = BACKENDS.archil((message) => logged.push(message));
   failing.disk.listPage = async () => { throw Object.assign(new Error("listing down"), { status: 503 }); };
   await failing.learning.end();
   assert.equal(logged.length, 1);
   assert.match(logged[0], /learning folder's exec spill folder.*listing down/);
 });
 
-test("learning workspace (local): the folder is made where absent, from the agent's folder, and end() does nothing", async () => {
-  const data = dataDir();
-  const learning = await learningWorkspace({ mode: 1, data, agentId: AGENT, log: () => assert.fail("nothing to log") });
-  assert.ok(existsSync(agentLearningFolder(data, AGENT)), "made");
-  assert.equal(agentLearningFolder(data, AGENT), join(agentFolder(data, AGENT), "learning"), "one layout: the agent's folder, then learning");
-  await learning.workspace.write("a.txt", "x");
-  await learning.end();
-  assert.ok(existsSync(join(agentLearningFolder(data, AGENT), "a.txt")));
-});
-
-test("learning workspace (local): a symbolic link on the way to the folder is refused, and nothing is made through it", async () => {
-  const data = dataDir();
-  const elsewhere = dataDir();
-  mkdirSync(join(data, "disk", "agents"), { recursive: true });
-  symlinkSync(elsewhere, agentFolder(data, AGENT));
-  await assert.rejects(learningWorkspace({ mode: 1, data, agentId: AGENT, log: () => {} }), (error) => error instanceof WorkspaceError && error.code === "REFUSED" && /symbolic link/.test(error.message));
-  assert.ok(!existsSync(join(elsewhere, "learning")), "nothing made where the link points");
-});
-
-test("learning workspace (archil): no claim is refused in words", async () => {
-  await assert.rejects(learningWorkspace({ mode: 2, agentId: AGENT, log: () => {} }), /Archil claim/);
+test("learning workspace (archil): no claim is refused in words", () => {
+  assert.throws(() => learningWorkspace({ mode: "archil", agentId: AGENT }), /Archil claim/);
 });
