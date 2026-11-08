@@ -31,10 +31,14 @@ export const ARCHIL_MAX_EXEC_S = 295;
 /** The programs' folders a command finds: the usual ones, and Homebrew's on a Mac. */
 const SHELL_PATH = ["/usr/local/sbin", "/usr/local/bin", "/usr/sbin", "/usr/bin", "/sbin", "/bin", ...(process.platform === "darwin" ? ["/opt/homebrew/bin", "/opt/homebrew/sbin"] : [])].join(":");
 
-/** The run's shell environment, fixed: PATH, a UTF-8 locale and a dumb terminal, and HOME where one is given (the run's
- *  folder on this machine; a computer gives its own). Never a variable of this process's. */
-export function shellEnv(options: { readonly home?: string } = {}): Readonly<Record<string, string>> {
-  return { PATH: SHELL_PATH, LANG: "C.UTF-8", LC_ALL: "C.UTF-8", TERM: "dumb", ...(options.home === undefined ? {} : { HOME: options.home }) };
+/** The run's shell environment, fixed: PATH, a UTF-8 locale and a dumb terminal; TMPDIR, a folder in the run's own
+ *  folder (never this machine's /tmp), where one is given; and HOME where one is given (the run's folder on this machine;
+ *  a computer gives its own). Never a variable of this process's. */
+export function shellEnv(options: { readonly home?: string; readonly tmpdir?: string } = {}): Readonly<Record<string, string>> {
+  return {
+    PATH: SHELL_PATH, LANG: "C.UTF-8", LC_ALL: "C.UTF-8", TERM: "dumb",
+    ...(options.tmpdir === undefined ? {} : { TMPDIR: options.tmpdir }), ...(options.home === undefined ? {} : { HOME: options.home }),
+  };
 }
 
 const kindOf = (stat: Stat): "file" | "dir" | "link" => (stat.kind === "dir" ? "dir" : stat.kind === "link" ? "link" : "file");

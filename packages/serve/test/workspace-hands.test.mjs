@@ -24,6 +24,7 @@ test("the run's shell environment is fixed: PATH, a UTF-8 locale, a dumb termina
   assert.deepEqual(Object.keys(env).sort(), ["LANG", "LC_ALL", "PATH", "TERM"]);
   assert.match(env.PATH, /^\/usr\/local\/sbin:\/usr\/local\/bin:\/usr\/sbin:\/usr\/bin:\/sbin:\/bin/);
   assert.equal(shellEnv({ home: "/x" }).HOME, "/x");
+  assert.equal(shellEnv({ tmpdir: "/x/.agentrun/tmp" }).TMPDIR, "/x/.agentrun/tmp");
 });
 
 test("hands.exec: bash -c in the run's folder, with only the run's environment; output as it comes, decoded per stream, a character split across chunks whole", async () => {
