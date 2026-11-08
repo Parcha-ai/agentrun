@@ -770,3 +770,31 @@ test("two newcomers on a refused ledger in one tick re-hold the person's time on
   const reholds = calls.slice(before).filter((call) => call.seconds > 0);
   assert.equal(reholds.length, 1, `the refused ledger is re-held once for both newcomers: ${JSON.stringify(calls.slice(before))}`);
 });
+
+test("a refusal-path re-hold while coverage still runs past now holds from where it ends, so [now, until] is not held twice", async (t) => {
+  const root = await scratch(t);
+  const clock = fakeClock();
+  const holdMs = 15 * 60_000;
+  const { person, calls, state } = recordingHands(root, { timers: clock.timers, now: clock.now, holdMs });
+  t.after(() => person.close());
+  const tag = "ar-run-rehold-4";
+  // The take holds [0, holdMs]; its again() timer is set to fire at holdMs.
+  await person.take(tag);
+  // Five minutes in, an ask extends coverage to now + holdMs (1,200,000), past where the again() timer fires.
+  await clock.tick(5 * 60_000); // now = 300,000
+  await person.handoff.request(ask(4, tag)); // reach 1,200,000 > until 900,000: until becomes 1,200,000
+  // The again() timer fires at 900,000 with coverage still reaching to 1,200,000; its re-hold of the tail is refused, so the
+  // ledger is marked refused while until (1,200,000) is still ahead of now (900,000).
+  state.refuse = "spend_cap_reached: no room";
+  await clock.tick(10 * 60_000); // now = 900,000; again() fires and is refused
+  state.refuse = null;
+  const before = calls.length;
+  // A newcomer joins the refused ledger while coverage still runs past now.
+  await person.take(tag);
+  const rehold = calls.slice(before).find((call) => call.seconds > 0);
+  assert.ok(rehold, `a re-hold happened: ${JSON.stringify(calls.slice(before))}`);
+  // Held from where coverage ends (until), not from now, for now + holdMs - until seconds: the already-covered gap
+  // [now, until] is never held a second time.
+  assert.equal(rehold.from, 1_200_000, "from where coverage ends (until), not from now");
+  assert.equal(rehold.seconds, (clock.now() + holdMs - 1_200_000) / 1000, "for now + holdMs - until seconds");
+});
