@@ -10,7 +10,7 @@ import { join } from "node:path";
 import test from "node:test";
 import { checkLifetime, kindRefusals } from "../dist/index.js";
 import * as registry from "../dist/providers.js";
-import { DAEMON, DESKTOP_GROUPS, fakeE2B, KEY, LINUX_GROUPS, VERSION } from "./fake-e2b.mjs";
+import { DAEMON, DESKTOP_GROUPS, fakeE2B, KEY, LINUX_GROUPS, TimeoutError, VERSION } from "./fake-e2b.mjs";
 
 const e2b = await import("../dist/e2b.js");
 const { E2BProvider, create } = e2b;
@@ -602,6 +602,58 @@ test("list() keeps every page and every read-back inside listMs, however slow ea
 	assert.ok(took < 900, `list() took ${took} ms with a listMs of 500`);
 	const reads = fake.calls.filter(([name]) => name === "Sandbox.getInfo").map(([, , opts]) => opts.requestTimeoutMs);
 	assert.ok(reads.every((ms) => ms <= 500), `every read-back's own request bound fits the listing's: ${reads.join(", ")}`);
+});
+
+/**
+ * Runs fn with Date.now reading lagMs behind the real clock from the first time hold(step) is reached: a timer then
+ * fires while Date.now still reads short of the time it was set for, as a timer can, so the read's own bound always
+ * ends before the list's deadline reads as passed.
+ */
+async function withLaggingClock(lagMs, hold, fn) {
+	const real = Date.now;
+	let lag = 0;
+	Date.now = () => real() - lag;
+	try {
+		return await fn(async (step) => {
+			if (!hold(step)) return;
+			lag = lagMs;
+			await sleep(2_000);
+		});
+	} finally {
+		Date.now = real;
+	}
+}
+
+test("a read-back or a page held past the remainder of listMs fails as the list's deadline, whichever timer reads first", async () => {
+	for (const step of ["Sandbox.getInfo", "Sandbox.list"]) {
+		const listed = await withLaggingClock(
+			50,
+			(at) => at === step,
+			async (onStep) => {
+				const { provider, fake } = setup({ timeouts: { ...TIMEOUTS, listMs: 300 } }, { onStep });
+				seeded(fake);
+				return provider.list({});
+			},
+		);
+		assert.equal(listed.ok, false, step);
+		assert.equal(listed.error.code, "timeout", step);
+		assert.match(listed.error.message, /^list did not finish within 0\.3 s/, `${step}: ${listed.error.message}`);
+	}
+});
+
+test("a read-back that times out on its own requestMs, with list time left, keeps its own words", async () => {
+	const onStep = async (step) => {
+		if (step !== "Sandbox.getInfo") return;
+		await sleep(100);
+		throw new TimeoutError("Request timed out");
+	};
+	const { provider, fake } = setup({ timeouts: { ...TIMEOUTS, requestMs: 100, listMs: 5_000 } }, { onStep });
+	const { ref } = seeded(fake);
+	const listed = await provider.list({});
+	assert.equal(listed.ok, false);
+	assert.equal(listed.error.code, "timeout");
+	assert.match(listed.error.message, new RegExp(`^Sandbox\\.getInfo of ${ref.id} failed: TimeoutError`));
+	assert.doesNotMatch(listed.error.message, /list did not finish/);
 });
 
 test("attach() by id or by labels reads the spec back and checks the daemon; one that drifted is refused and left running", async () => {
