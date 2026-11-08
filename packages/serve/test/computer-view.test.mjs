@@ -105,14 +105,14 @@ test("a token is refused; a run with no desktop or phone is off (the browser kee
   }
   assert.match((await answer(routes.GET, runId, { ...TOKEN, accounts: false })).message, /no accounts \(AGENTRUN_ACCOUNTS=0\)/);
 
-  assert.deepEqual(await answer(routes.GET, runId), { status: 200, body: { kind: null, state: "off", taken_over: false, viewer: null } });
+  assert.deepEqual(await answer(routes.GET, runId), { status: 200, body: { kind: null, state: "off", taken_over: false, viewer: null, why: "this run has no desktop or phone computer (a browser is watched at /v2/runs/{run_id}/browser)" } }, "off, in the server's words");
   assert.equal((await answer(routes["take-over"], runId)).status, 404);
   assert.equal((await answer(routes["hand-back"], runId)).status, 404);
 
   const desktop = fakeDesktop();
   const letGo = registerRunComputer(runId, desktop.computer);
   desktop.end();
-  assert.deepEqual(await answer(routes.GET, runId), { status: 200, body: { kind: "desktop", state: "none", taken_over: false, viewer: null } });
+  assert.deepEqual(await answer(routes.GET, runId), { status: 200, body: { kind: "desktop", state: "none", taken_over: false, viewer: null, why: "this run's desktop is not up now" } }, "none, in the server's words");
   const notLive = await answer(routes["take-over"], runId);
   assert.deepEqual([notLive.status, notLive.code], [409, "computer_not_live"]);
   const extra = await answer(routes["take-over"], runId, { ...OWNER, body: { why: "x" } });

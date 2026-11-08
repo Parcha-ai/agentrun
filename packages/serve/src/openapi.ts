@@ -543,6 +543,7 @@ const COMPUTER_VIEW = closedWith({
   viewer: { oneOf: [{ type: "null" }, closed({ url: { type: "string", description: "The provider's own live stream of the screen: view-only, or one that drives while the owner holds it." } })], description: "The live view, while the computer is up and its provider streams its screen; null otherwise." },
 }, {
   taken_until: { type: "string", format: "date-time", description: "When an owner's take-over goes back to the agent on its own, without a hand-back." },
+  why: { type: "string", description: "Why there is nothing to watch, in the server's words: with state `off` (the run has no desktop or phone) and `none` (it is not up now)." },
 });
 /** trigger/1: triggers, a schedule or a signed webhook, that start an agent's capped runs or message a run (triggers.ts). */
 const TRIGGER_MARK = { "x-agentrun-serve": "trigger/1" };

@@ -37,6 +37,8 @@ export type ComputerView = {
   readonly taken_over: boolean;
   readonly taken_until?: string;
   readonly viewer: { readonly url: string } | null;
+  /** Why there is nothing to watch, in the server's words: for state off and none. */
+  readonly why?: string;
 };
 
 const computers = new Map<string, RunComputer>();
@@ -101,7 +103,9 @@ const viewerOf = async (computer: RunComputer, viewOnly: boolean): Promise<{ url
 export async function readComputer(runId: string, hasComputer: { readonly kind: ViewedKind } | undefined): Promise<ComputerView> {
   const computer = computers.get(runId);
   if (!computer || !computer.live()) {
-    return { kind: computer?.kind ?? hasComputer?.kind ?? null, state: computer || hasComputer ? "none" : "off", taken_over: false, viewer: null };
+    const kind = computer?.kind ?? hasComputer?.kind;
+    if (kind === undefined) return { kind: null, state: "off", taken_over: false, viewer: null, why: "this run has no desktop or phone computer (a browser is watched at /v2/runs/{run_id}/browser)" };
+    return { kind, state: "none", taken_over: false, viewer: null, why: `this run's ${kind} is not up now` };
   }
   const held = computer.hold.state();
   return {
