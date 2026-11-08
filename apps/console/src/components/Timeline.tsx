@@ -108,7 +108,10 @@ function Row({ step, last, waitingChip }: { step: Step; last: boolean; waitingCh
 export function Timeline({ rows, live, fold = 6, asking, waitingOn }: { rows: TimelineRow[]; live: boolean; fold?: number; asking?: string;
   /** What the run waits on now (its `pending.kind`): the newest waiting row's chip says so. */
   waitingOn?: string }) {
-  const current = waitingOn ? rows.findLast((r) => r.kind === "waiting")?.id : undefined;
+  // The cap's own waiting row: the newest after the server's newest pause row (`paused`), so while the pages still arrive
+  // an earlier question, answered, never takes the cap's chip. Only a cap pause has a chip of its own (WAITING_CHIP).
+  const pauseAt = waitingOn === "budget" ? rows.findLastIndex((r) => r.paused === true) : -1;
+  const current = pauseAt >= 0 ? rows.slice(pauseAt + 1).findLast((r) => r.kind === "waiting")?.id : undefined;
   const [all, setAll] = useState(false);
   const told = steps(rows).map((s) => (asking && s.row.id === asking ? { ...s, above: true } : s));
   const hidden = all ? 0 : Math.max(0, told.length - fold);
