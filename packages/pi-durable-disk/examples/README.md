@@ -7,13 +7,13 @@ change, and each one ends with a single `ok: ...` line naming what it showed.
 | Example | What it shows | Needs | Since | CI |
 |---|---|---|---|---|
 | [pick-up-a-run](pick-up-a-run/) | A run is a directory: three processes, one after another, open the same run, answer one question of one chat and release it, and the last still knows the first question; the run's record is read from outside | Linux, Node 22.19 or later | 0.1.0-beta.15 | yes |
-| [seed-a-run](seed-a-run/) | What a new run starts with: `seed` writes its store file and workspace files once, on the open that finds no `run.json`, and the next open keeps what the run changed since | Linux, Node 22.19 or later | 0.1.0-beta.15 | yes |
+| [seed-a-run](seed-a-run/) | What a new run starts with: `seed` writes its store file and workspace files once, on the open that finds no record in its store, and the next open keeps what the run changed since | Linux, Node 22.19 or later | 0.1.0-beta.15 | yes |
 | [place-outcome](place-outcome/) | How a run ended, in the run's own words: through `localPlace`, a run that delivers is `complete` with its record, one that gives up is `failed` with its code and message, and both name the models they used | Linux, Node 22.19 or later | 0.1.0-beta.16 | yes |
 | [01-durable-chat/on-a-directory.mjs](01-durable-chat/on-a-directory.mjs) | The no-key quickstart: the same chat on a directory of this machine, killed after its third answer and finished by a second process | Linux or macOS, Node 22.19 or later | 0.1.0-beta.13 | yes |
 | [no-double-charge](no-double-charge/) | A paid call cut by `kill -9` is never sent twice: the next process gets it back `interrupted`, and the payment server has one charge per invoice | Linux or macOS, Node 22.19 or later | 0.1.0-beta.13 | yes |
 | [audit-across-crashes](audit-across-crashes/) | A run killed twice mid-call is accounted for from its store alone: a recorder in `beforeResume` snapshots every task, document and entry at each incarnation's head, and the account names the cut calls and who settled them | Linux or macOS, Node 22.19 or later | 0.1.0-beta.13 | yes |
 | [kill-9](kill-9/) | A coding agent survives `kill -9` in the middle of a long bash command: its files are intact, the cut command comes back `interrupted` and is never run again, its file tools stay in `work/`, and it finishes | Linux or macOS, Node 22.19 or later | 0.1.0-beta.13 | yes |
-| [serve-and-park](serve-and-park/) | An idle agent holds no process: a run that only waits on a long retry parks (the wake in `run.json`, the claim released, exit 0), a restart at `wakeAt` finishes it, and a repeated `requestId` is answered, not run again | Linux or macOS, Node 22.19 or later | 0.1.0-beta.15 | yes |
+| [serve-and-park](serve-and-park/) | An idle agent holds no process: a run that only waits on a long retry parks (the wake in its record, the claim released, exit 0), a restart at `wakeAt` finishes it, and a repeated `requestId` is answered, not run again | Linux or macOS, Node 22.19 or later | 0.1.0-beta.15 | yes |
 
 ## Run one
 

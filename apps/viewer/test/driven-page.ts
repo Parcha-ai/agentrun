@@ -20,10 +20,13 @@ const sleep = (ms: number) => new Promise<void>((resolve) => setTimeout(resolve,
 const running = (pid: number) => { try { process.kill(pid, 0); return true; } catch { return false; } };
 const signal = (pid: number, name: NodeJS.Signals) => { try { process.kill(pid, name); } catch { /* already ended */ } };
 
-/** `promise`, or a failure that names `what` once `ms` have passed. */
+/** What `within` fails with once its bound passes: nothing answered, which a poll reads as "not yet". */
+export class Late extends Error {}
+
+/** `promise`, or a failure (Late) that names `what` once `ms` have passed. */
 export function within<T>(ms: number, what: string, promise: Promise<T>): Promise<T> {
   let timer: NodeJS.Timeout | undefined;
-  const late = new Promise<never>((_, reject) => { timer = setTimeout(() => reject(new Error(`${what}: nothing after ${ms / 1000} s`)), ms); });
+  const late = new Promise<never>((_, reject) => { timer = setTimeout(() => reject(new Late(`${what}: nothing after ${ms / 1000} s`)), ms); });
   return Promise.race([promise, late]).finally(() => clearTimeout(timer));
 }
 
@@ -139,10 +142,13 @@ async function startedPage(url: string, profile: string, { launchMs = LAUNCH_MS,
         opened.send(JSON.stringify({ id: mine, method: 'Runtime.evaluate', params: { expression, awaitPromise: true, returnByValue: true } }));
       })).finally(() => waiting.delete(mine));
     };
-    /** Until `expression` is true on the page, polled, within `ms`; then the value of `read`. */
+    /** Until `expression` is true on the page, polled, within `ms`; then the value of `read`. A poll Chrome does not answer
+     *  within `requestMs` (one sent as a navigation tears the old document down can go unanswered) is a "not yet", asked
+     *  again: the wait is on the page's state and fails at its own bound. A browser gone fails it at once. */
     const once = async (expression: string, read: string, ms: number, what: string) => {
       for (const until = Date.now() + ms; Date.now() < until && !aborted?.aborted;) {
-        if (await evaluate(expression)) return evaluate(read);
+        const now = await evaluate(expression).catch((error: unknown) => { if (error instanceof Late) return false; throw error; });
+        if (now) return evaluate(read);
         await sleep(100);
       }
       throw new Error(`${what}: not so after ${ms / 1000} s`);

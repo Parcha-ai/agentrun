@@ -3,13 +3,16 @@
 // The stream, where a provider offers one, is an https URL that answers.
 import { MAX_CHUNK_BYTES, type Rect, type ScreenShotResult } from "../../protocol.js";
 import { FIXTURE_COLORS } from "../fixture.js";
-import { type Png, readPng } from "../png.js";
+import { MAX_PNG_BYTES, type Png, readPng } from "../png.js";
 import type { Case, CaseContext } from "../types.js";
 
 /** A whole screenshot: screen.shot, then screen.read from each offset until eof, then every pixel decoded. */
 export async function shoot(t: CaseContext, region?: Rect): Promise<{ shot: ScreenShotResult; image: Png }> {
 	const what = region ? `the shot of region ${JSON.stringify(region)}` : "the shot";
 	const shot = await t.call("screen.shot", region ? { region } : {});
+	// No accepted PNG is larger than MAX_PNG_BYTES: a shot that says it is is refused before it is read, and the loop below
+	// reads no further than the size it says, so no more than MAX_PNG_BYTES is ever held.
+	t.assert(shot.size <= MAX_PNG_BYTES, `${what}: screen.shot says ${shot.size} bytes, more than ${MAX_PNG_BYTES} bytes, the largest PNG the suite reads`);
 	const first = Buffer.from(shot.data, "base64");
 	t.assert(first.length <= MAX_CHUNK_BYTES, `${what}: screen.shot gave ${first.length} bytes, over MAX_CHUNK_BYTES`);
 	const parts = [first];

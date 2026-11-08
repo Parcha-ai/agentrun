@@ -137,12 +137,17 @@ export interface ModelRequest {
   /** The least output it may be limited to and still answer: its answer's 1,024 tokens, plus the least thinking its
    *  provider takes when it thinks (the proxy's policy says). Absent: 1,024. */
   outputTokensLeast?: number;
-  /** On another model than the session's: a client's side call (a title, a summary), never its turn's own. */
+  /** A side call, never its turn's own: on another model than the session's (a client's title, a summary), or the
+   *  host's own request beside the harness's (`host`). */
   side?: true;
   /** It carries the host's note (ModelPort.note) in its body: the note is delivered once this request is admitted.
    *  `inputTokensMaxWithoutNote`: its input measured as its client sent it, before the note was placed. */
   noted?: true;
   inputTokensMaxWithoutNote?: number;
+  /** A request the host sent beside the harness's own, on the session's own route (its model proxy, under a side key
+   *  the proxy minted for this label: ModelProxy.sideKey): a learned workflow's model node, say. The harness's own
+   *  requests carry none, and it cannot send one that does: it holds only the session's key. */
+  host?: string;
 }
 
 /** What a paid request cost, once it completed. */
@@ -187,9 +192,14 @@ export interface ModelPort {
   /** Records the ids a paid request's response gave it, as its headers arrive and before its answer is read. */
   responded?(ids: Record<string, string>, ticket?: ModelTicket): Promise<void>;
   /** A note its host has for the session's next main-model request (the spend cap's wrap-up), taken by this call; the
-   *  session's model proxy adds it to that request's body (ModelProxyHooks.note). */
-  note?(model: string): string | undefined;
+   *  session's model proxy adds it to that request's body (ModelProxyHooks.note). `request`: that request as its client
+   *  sent it, measured before the note is placed (NoteRequest), so the host can price it as its admission will. */
+  note?(model: string, request?: NoteRequest): string | undefined;
 }
+
+/** A request about to take its host's note, as its client sent it: its input bound and the output it asks for and needs
+ *  at least, as the model proxy reads them (ModelRequest's figures, without the note). */
+export type NoteRequest = { inputTokensMax?: number; outputTokensAsked?: number; outputTokensLeast?: number };
 
 /** A paid request's admission: the turn it was admitted as, which its answer is booked under. */
 export interface ModelTicket {
@@ -231,7 +241,7 @@ export type AdapterEvent =
 /** An event as a host receives it: the adapter's, the runner's own, and the node each belongs to. */
 export type HarnessEvent = (AdapterEvent
   | { type: "request_start"; turn: number; model: string }
-  | { type: "request_end"; turn: number; usage: ModelUsage }) & { key: string; label: string; executionPath?: string };
+  | { type: "request_end"; turn: number; usage: ModelUsage; ended?: Ended }) & { key: string; label: string; executionPath?: string };
 
 export type TurnStatus = "completed" | "interrupted" | "failed";
 
@@ -261,11 +271,26 @@ export interface AdapterSession {
   interrupt(options?: { drainMs?: number }): Promise<void>;
   /** Stop the harness's processes and let go of the session. */
   close(): Promise<void>;
+  /** The session's own model route, for a request the host sends beside the harness's own (a learned workflow's model
+   *  node): its model proxy's address with a side key minted for `label` (ModelProxy.sideKey), the model its policy
+   *  takes and the API it speaks. Undefined while no proxy is up (no turn has attached one yet). Every model request of
+   *  a session goes through that one proxy: the same policy, origin, credential, price and booking. */
+  port?(label: string): SessionPort | undefined;
+}
+
+/** A session's model proxy, as the host reaches it for its own requests beside the harness's (AdapterSession.port). */
+export interface SessionPort {
+  /** The proxy's origin, on the loopback interface with a port of its own (ModelProxy.url). */
+  url: string;
+  /** The side key the request presents, as a bearer token. */
+  key: string;
+  /** The model the session's policy takes (its own id, as the harness sends it). */
+  model: string;
+  /** The API the proxy serves: Anthropic's Messages (claude-agent) or OpenAI's Responses (codex, opencode). */
+  api: "anthropic-messages" | "openai-responses";
 }
 
 export interface AdapterCapabilities {
-  /** Whether the adapter can start a session from another's transcript. */
-  fork: boolean;
   /** Its harness's own MCP client, when it has one: it calls `spec.mcp`'s servers at the session proxy's `/mcp/<server>`,
    *  which the kernel's model proxy mounts from the session's MCP and this fact (ModelProxyOptions.mcp). */
   mcpClient?: McpClient;
@@ -280,8 +305,6 @@ export interface McpClient {
 
 export interface AgentAdapter {
   readonly id: string;
-  /** The harness version the adapter is pinned to. */
-  readonly version: string;
   capabilities(): AdapterCapabilities;
   /** Problems with a session before anything is spent; an empty list opens it. */
   check(spec: SessionSpec): string[];

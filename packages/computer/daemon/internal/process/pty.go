@@ -1,6 +1,7 @@
 package process
 
 import (
+	"errors"
 	"fmt"
 	"os"
 	"strconv"
@@ -57,6 +58,34 @@ func setSize(master *os.File, size Size) error {
 	}
 	return nil
 }
+
+// foreground is the terminal's foreground process group, read on its master (TIOCGPGRP), and the session that group is
+// in: its leader's, or the terminal's own (TIOCGSID) once the leader has ended, since the kernel keeps a terminal's
+// foreground group in the terminal's session. A terminal whose session let go of it has none: errNoForeground.
+func foreground(master *os.File) (group, session int, err error) {
+	var pgrp, sid int32
+	conn, err := master.SyscallConn()
+	if err != nil {
+		return 0, 0, err
+	}
+	var ioErr error
+	if err := conn.Control(func(fd uintptr) {
+		if ioErr = ioctl(fd, syscall.TIOCGPGRP, unsafe.Pointer(&pgrp)); ioErr == nil {
+			ioErr = ioctl(fd, syscall.TIOCGSID, unsafe.Pointer(&sid))
+		}
+	}); err != nil {
+		return 0, 0, err
+	}
+	if ioErr != nil || pgrp <= 0 {
+		return 0, 0, errNoForeground
+	}
+	if leader, _, errno := syscall.RawSyscall(syscall.SYS_GETSID, uintptr(pgrp), 0, 0); errno == 0 {
+		sid = int32(leader)
+	}
+	return int(pgrp), int(sid), nil
+}
+
+var errNoForeground = errors.New("the terminal has no foreground process group: the program let go of it, or is ending")
 
 func ioctl(fd, request uintptr, arg unsafe.Pointer) error {
 	if _, _, errno := syscall.Syscall(syscall.SYS_IOCTL, fd, request, uintptr(arg)); errno != 0 {

@@ -31,7 +31,9 @@ export default async function app(_where: AppContext): Promise<AppOptions> {
         return { accepted: true };
       },
       abort: () => (process.env.PDA_DOOR_ABORT === "stuck" ? new Promise(() => {}) : Promise.resolve("aborted")),
+      close: async () => undefined,
       busy: () => busy,
+      harness: "door-app",
     },
   };
 }

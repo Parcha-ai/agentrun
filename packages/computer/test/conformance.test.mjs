@@ -744,3 +744,57 @@ test("files.list passes a daemon whose pages hold one entry each", async () => {
 		assert.equal(statuses(report)["files.list"], "pass", `pages of ${filesPage}: ${reasons(report)["files.list"]}`);
 	}
 });
+
+test("drift.version passes only on a refusal that is the version drift, never on a create or connect refused for another reason", async () => {
+	const DRIFT = "it did not match its spec: hello: the daemon reports version 0.9.0, expected 1.0.0";
+	const run = async (other) => {
+		const report = await runConformance(fakeComputers().provider, { image: IMAGE, cases: byId("drift.version"), drifted: () => other.provider });
+		return [statuses(report)["drift.version"], reasons(report)["drift.version"] ?? ""];
+	};
+	// A create refused for a reason that is not the version drift fails the case, whatever its words.
+	for (const words of [
+		"it did not match its spec: network: declared none, read back a connection from inside that reached 1.1.1.1:443",
+		"the vendor's API version 2 is not supported here",
+	]) {
+		const [status, reason] = await run(fakeComputers({ version: "0.9.0", failCreate: words }));
+		assert.equal(status, "fail", words);
+		assert.match(reason, /the refusal is the version drift/, words);
+	}
+	// The version drift at create passes, and with another mismatch beside it too.
+	assert.deepEqual(await run(fakeComputers({ version: "0.9.0", failCreate: DRIFT })), ["pass", ""]);
+	assert.deepEqual(await run(fakeComputers({ version: "0.9.0", failCreate: `${DRIFT}; network: declared none, read back open` })), ["pass", ""]);
+	// A connect refused for another reason fails; one refused for the version drift passes.
+	const refusing = (message) => {
+		const other = fakeComputers({ version: "0.9.0" });
+		other.provider.connect = async () => ({ ok: false, error: { code: "refused", message } });
+		return other;
+	};
+	const [status, reason] = await run(refusing("the daemon did not answer hello within 30 s"));
+	assert.equal(status, "fail");
+	assert.match(reason, /the refusal is the version drift/);
+	assert.deepEqual(await run(refusing(DRIFT)), ["pass", ""]);
+});
+
+test("refusal-side provider cases pass only on the refusal they test: check's words, gone or not_found, invalid for an ambiguous attach", async () => {
+	// A create refused for another reason than what check() refuses fails provider.check-refuses.
+	const busy = await runConformance(fakeComputers({ failCreate: "no capacity in this region" }).provider, { image: IMAGE, cases: byId("provider.check-refuses") });
+	assert.equal(statuses(busy)["provider.check-refuses"], "fail");
+	assert.match(reasons(busy)["provider.check-refuses"], /create's refusal names what check\(\) refused/);
+	// A connect to a deleted computer that fails for another reason (a timeout) fails provider.create-release.
+	const slow = fakeComputers();
+	const connect = slow.provider.connect.bind(slow.provider);
+	slow.provider.connect = async (ref, ...rest) => (slow.alive().includes(ref.name) ? connect(ref, ...rest) : { ok: false, error: { code: "timeout", message: "connect timed out" } });
+	const released = await runConformance(slow.provider, { image: IMAGE, cases: byId("provider.create-release") });
+	assert.equal(statuses(released)["provider.create-release"], "fail");
+	assert.match(reasons(released)["provider.create-release"], /connect to a deleted computer: expected gone or not_found, got timeout/);
+	// An attach by labels two computers match that fails for another reason fails provider.attach.
+	const flaky = fakeComputers();
+	const attach = flaky.provider.attach.bind(flaky.provider);
+	flaky.provider.attach = async (ref) => ("labels" in ref && ref.labels.role === undefined ? { ok: false, error: { code: "timeout", message: "list timed out" } } : attach(ref));
+	const attached = await runConformance(flaky.provider, { image: IMAGE, cases: byId("provider.attach") });
+	assert.equal(statuses(attached)["provider.attach"], "fail");
+	assert.match(reasons(attached)["provider.attach"], /attach by labels two computers match: expected invalid, got timeout/);
+	// The good fake still passes all three.
+	const good = await runConformance(fakeComputers().provider, { image: IMAGE, cases: byId("provider.check-refuses", "provider.create-release", "provider.attach") });
+	assert.deepEqual(statuses(good), { "provider.check-refuses": "pass", "provider.create-release": "pass", "provider.attach": "pass" }, JSON.stringify(reasons(good)));
+});

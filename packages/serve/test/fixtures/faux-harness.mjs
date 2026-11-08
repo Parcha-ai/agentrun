@@ -7,6 +7,26 @@ export function opened(harness, options) {
   if (process.env.AGENTRUN_TEST_FAUX_HARNESS_OPENED) appendFileSync(process.env.AGENTRUN_TEST_FAUX_HARNESS_OPENED, `${JSON.stringify({ harness, options })}\n`);
 }
 
+/** Told each session the adapter closed (its key), filed for a test to see: the harness's process stops with its run. */
+export function closed(key) {
+  if (process.env.AGENTRUN_TEST_FAUX_HARNESS_CLOSED) appendFileSync(process.env.AGENTRUN_TEST_FAUX_HARNESS_CLOSED, `${key}\n`);
+}
+
+/** How long the faux adapter's open takes (FauxOptions.openDelayMs), from the test's environment: a slow harness start. */
+export function openDelayMs() {
+  return Number(process.env.AGENTRUN_TEST_FAUX_HARNESS_OPEN_DELAY_MS ?? 0);
+}
+
+/** How long the faux adapter's close takes (FauxOptions.closeDelayMs), from the test's environment: a slow harness stop. */
+export function closeDelayMs() {
+  return Number(process.env.AGENTRUN_TEST_FAUX_HARNESS_CLOSE_DELAY_MS ?? 0);
+}
+
+/** The words the faux adapter's close fails with (FauxOptions.closeError), from the test's environment: a harness whose stop fails. */
+export function closeError() {
+  return process.env.AGENTRUN_TEST_FAUX_HARNESS_CLOSE_ERROR || undefined;
+}
+
 /** An answer of 3,000 characters, longer than the 2,000 a run's summary keeps; its end says it was not cut. */
 export const LONG_ANSWER = `${"The long answer goes on. ".repeat(119)}The end.`;
 
@@ -44,7 +64,25 @@ export function grown(k, { miss = false } = {}) {
 
 export function script(spec) {
   const text = spec.system.join("\n");
-  if (process.env.AGENTRUN_TEST_FAUX_HARNESS_OPENED) appendFileSync(process.env.AGENTRUN_TEST_FAUX_HARNESS_OPENED, `${JSON.stringify({ tools: spec.tools.map((tool) => tool.name) })}\n`);
+  // The learned_workflow tool as the harness is given it (its description and input schema), when it is.
+  const given = spec.tools.find((tool) => tool.name === "learned_workflow");
+  if (process.env.AGENTRUN_TEST_FAUX_HARNESS_OPENED) appendFileSync(process.env.AGENTRUN_TEST_FAUX_HARNESS_OPENED, `${JSON.stringify({ tools: spec.tools.map((tool) => tool.name), ...(given ? { learned: { description: given.description, inputSchema: given.inputSchema } } : {}) })}\n`);
+  // The spend cap's wrap-up due once a $0.40 request whose answer runs the learned workflow <name> on <question> is booked:
+  // the workflow's node request comes next on the session's model, then the harness's own closing answer.
+  const wrapAround = /Wrap up around the learned workflow (\S+) on (.+?)\./.exec(text);
+  if (wrapAround) return [{ call: "learned_workflow", args: { name: wrapAround[1], input: { question: wrapAround[2] } }, usd: 0.4 }, { say: "Done.", usd: 0.01 }];
+  // Three requests of a growing conversation (grown), the second's answer calling the learned workflow <name> on
+  // <question> when the line names one: the harness's third request comes after the workflow's node request.
+  const thrice = /Grow three requests(?:, the second running the learned workflow (\S+) on (.+?))?\./.exec(text);
+  if (thrice) return [grown(0), thrice[1] ? { ...grown(1), call: "learned_workflow", args: { name: thrice[1], input: { question: thrice[2] } } } : grown(1), grown(2), { say: "Grown.", usd: 0.001 }];
+  // "Use the learned workflow <name> on <question>, and write note.md in the same answer.": one answer that asks for the
+  // run's learned_workflow and a write, run in turn, then a closing answer.
+  const beside = /Use the learned workflow (\S+) on (.+?), and write note\.md in the same answer\./.exec(text);
+  if (beside) return [{ calls: [{ call: "learned_workflow", args: { name: beside[1], input: { question: beside[2] } } }, { call: "write", args: { path: "note.md", content: "noted" } }], usd: 0.001 }, { say: "Ran the learned workflow and wrote note.md.", usd: 0.001 }];
+  // "Use the learned workflow <name> on <question>, its result held until <file>.": the run's learned_workflow, whose
+  // result the harness tells only once <file> exists (as a CLI still recording it would); then an answer; then another.
+  const heldResult = /Use the learned workflow (\S+) on (.+?), its result held until (\S+)\./.exec(text);
+  if (heldResult) return [{ call: "learned_workflow", args: { name: heldResult[1], input: { question: heldResult[2] } }, usd: 0.001, resultWhen: heldResult[3] }, { say: "Answered after the approval.", usd: 0.001 }, { say: "Answered twice.", usd: 0.001 }];
   // "Use the learned workflow <name> on <question>.": the run's learned_workflow, then a closing answer.
   const learned = /Use the learned workflow (\S+) on (.+?)\./.exec(text);
   if (learned) return [{ call: "learned_workflow", args: { name: learned[1], input: { question: learned[2] } }, usd: 0.001 }, { say: "Ran the learned workflow.", usd: 0.001 }];
@@ -78,25 +116,63 @@ export function script(spec) {
   if (/Write two files while answering\./.test(text)) return [{ calls: [{ call: "write", args: { path: "a.md", content: "alpha" } }, { call: "write", args: { path: "b.md", content: "beta" } }], usd: 0.001, bookAfter: true }, { say: "Wrote a.md and b.md.", usd: 0.002 }];
   // The spend cap's wrap-up across a crash: a request at $0.30, then the turn holds (writing `<file>.held`) with no
   // request open until `<file>` exists, then answers. A process opened once `<file>` exists answers at once.
+  // The wrap-up scripts below that test a note due by the run's measured spend ask few output tokens in their first
+  // request, so its step-0 figure (judged on that request itself, as pi's) is not due first: 1,024 on the output-priced
+  // faux model, 512 on Sonnet 4.5's prices, whose 5,000-token input alone is $0.019 at the cache write's price.
   const crashAt = /Wrap up across a crash at (\S+)\./.exec(text)?.[1];
-  if (crashAt) return [{ call: "read", args: { path: "a.txt" }, usd: 0.3 }, ...(existsSync(crashAt) ? [] : [hangSignalled(`${crashAt}.held`)]), { say: "Done.", usd: 0.01 }];
+  if (crashAt) return [{ call: "read", args: { path: "a.txt" }, usd: 0.3, outputTokensAsked: 1_024 }, ...(existsSync(crashAt) ? [] : [hangSignalled(`${crashAt}.held`)]), { say: "Done.", usd: 0.01 }];
   // Claude Code on Sonnet 4.5 (faux-sonnet45.mjs): each request asks the CLI's own max_tokens, 32,000. "at its start": a
   // 25,000-token first prompt, then one more request. "on a small cap": a 5,000-token prompt, a $0.01 request and one more.
   // "restarts before the note at <file>": a 5,000-token prompt, a $0.04 request, then a hold (writing `<file>.held`) with
   // no request open until `<file>` exists, then one more request.
   const cc = (inputTokensMax, usd, say) => ({ say, inputTokensMax, outputTokensAsked: 32_000, usd });
   if (/Claude Code at its start\./.test(text)) return [cc(25_000, 0.03, "Working."), cc(26_000, 0.03, "Done.")];
-  if (/Claude Code on a small cap\./.test(text)) return [cc(5_000, 0.01, "Working."), cc(5_200, 0.01, "Done.")];
+  // "makes five cent calls": five $0.01 tool calls on a 5,000-token prompt, then a $0.01 answer. "... across a restart at
+  // <file>": a hold after the first call (writing `<file>.held`) until `<file>` exists. "its first cost booked when <file>
+  // exists": a $0.01 call asking 1,024 tokens whose cost comes in only then, and the answer. "spends four cents first": a $0.04 call, then
+  // the answer.
+  const centCall = (k, extra = {}) => ({ call: "read", args: { path: "a.txt" }, inputTokensMax: 5_000 + 200 * k, outputTokensAsked: 32_000, usd: 0.01, ...extra });
+  const centRestart = /Claude Code makes five cent calls(?: across a restart at (\S+))?\./.exec(text);
+  if (centRestart) {
+    const [, restart] = centRestart;
+    const held = restart && !existsSync(restart) ? [hangSignalled(`${restart}.held`)] : [];
+    return [centCall(0), ...held, ...[1, 2, 3, 4].map((k) => centCall(k)), cc(6_000, 0.01, "Done.")];
+  }
+  const bookedLate = /Claude Code on a small cap, its first cost booked when (\S+) exists\./.exec(text)?.[1];
+  // Its first request asks 1,024 tokens, so its hold ($0.03), in flight until its cost comes in, leaves request 2 room.
+  if (bookedLate) return [centCall(0, { bookWhen: bookedLate, outputTokensAsked: 1_024 }), cc(5_200, 0.01, "Done.")];
+  if (/Claude Code spends four cents first\./.test(text)) return [centCall(0, { usd: 0.04, outputTokensAsked: 512 }), cc(5_200, 0.01, "Done.")];
+  // Codex-shaped: each request needs at least 10,240 output tokens, far more than it costs (half a cent): sixty of them,
+  // then the answer. A Codex body's least, as the proxy reads it, is 1,024 tokens for the answer plus its effort's
+  // reasoning: 9,216 in all at "medium" (8,192 of reasoning), 17,408 at "high" (16,384).
+  if (/Make sixty half-cent calls that each need 10,240 output tokens at least\./.test(text)) {
+    return [...Array.from({ length: 60 }, (_, k) => centCall(k % 10, { usd: 0.005, outputTokensAsked: 64_000, outputTokensLeast: 10_240 })), cc(7_000, 0.005, "Done.")];
+  }
   const restartAt = /Claude Code restarts before the note at (\S+)\./.exec(text)?.[1];
-  if (restartAt) return [cc(5_000, 0.04, "Working."), ...(existsSync(restartAt) ? [] : [hangSignalled(`${restartAt}.held`)]), cc(5_200, 0.01, "Done.")];
+  if (restartAt) return [{ ...cc(5_000, 0.04, "Working."), outputTokensAsked: 512 }, ...(existsSync(restartAt) ? [] : [hangSignalled(`${restartAt}.held`)]), cc(5_200, 0.01, "Done.")];
   // The wrap-up due after a $0.40 request, then an answer whose input (5,990 tokens, $0.599 on input-priced faux) fits
   // what is left of a $1 cap only without the note's bytes.
   if (/Wrap up with no room for the note\./.test(text)) return [{ call: "read", args: { path: "a.txt" }, usd: 0.4 }, { say: "Answered.", inputTokensMax: 5_990, usd: 0.01 }];
   // The wrap-up due after a $0.40 request; the next request, which takes the note, has a side call admitted and answered
   // between that take and its own admission; then one request more.
-  if (/Wrap up with a side call in between\./.test(text)) return [{ call: "read", args: { path: "a.txt" }, usd: 0.4 }, { call: "read", args: { path: "b.txt" }, usd: 0.01, sideAfterNote: { usd: 0.0001 } }, { say: "Done.", usd: 0.01 }];
+  if (/Wrap up with a side call in between\./.test(text)) return [{ call: "read", args: { path: "a.txt" }, usd: 0.4, outputTokensAsked: 1_024 }, { call: "read", args: { path: "b.txt" }, usd: 0.01, sideAfterNote: { usd: 0.0001 } }, { say: "Done.", usd: 0.01 }];
+  // One request of 1,000 input tokens, due at step 0 under a small cap so it carries the note, then the answer.
+  if (/Hold the request that carries the note\./.test(text)) return [{ say: "Done.", inputTokensMax: 1_000, usd: 0.01 }];
+  // A request of 1,000 input tokens, due at step 0 under a small cap so it carries the note, that the provider does not
+  // answer (<how>: an error status, our stop after it streamed, a lost connection); the client sends it again, answered.
+  const carrierUnanswered = /Wrap up with the carrier unanswered \((status|stopped|lost)\)\./.exec(text)?.[1];
+  if (carrierUnanswered) return [{ unanswered: carrierUnanswered, inputTokensMax: 1_000 }, { say: "Answered.", inputTokensMax: 1_000, usd: 0.01 }];
+  // A request of 1,000 input tokens, due at step 0 under a small cap so it carries the note, that its host refuses (its
+  // start mark fails, under the tests' START_MARK_FAIL_ENV); the client sends another, answered.
+  if (/Wrap up with the carrier refused\./.test(text)) return [{ say: "First.", inputTokensMax: 1_000, usd: 0.01, onRefused: "next" }, { say: "Answered.", inputTokensMax: 1_000, usd: 0.01 }];
+  // A turn whose one request (1,000 input tokens, due at step 0 under a small cap) carries the note and is answered; then
+  // a follow-up turn whose request (1,500 input tokens) is due by its least.
+  if (/Wrap up, then a follow-up due by its least\./.test(text)) return [{ end: true, inputTokensMax: 1_000, usd: 0.01 }, { say: "Second.", inputTokensMax: 1_500, usd: 0.01 }];
+  // A side call (the harness's own title request, 100 tokens) admitted and paid ($0.0005) before the session's first
+  // request, whose input is 1,000 tokens; then one request more.
+  if (/Wrap up after a side call comes first\./.test(text)) return [{ call: "read", args: { path: "a.txt" }, inputTokensMax: 1_000, usd: 0.01, sideFirst: { usd: 0.0005, say: "Titled." } }, { say: "Done.", usd: 0.01 }];
   // The wrap-up due only after a turn's one request ($0.40): the next turn's first request is the first that can take it.
-  if (/Wrap up in the next turn\./.test(text)) return [{ end: true, usd: 0.4 }, { say: "Second.", usd: 0.01 }];
+  if (/Wrap up in the next turn\./.test(text)) return [{ end: true, usd: 0.4, outputTokensAsked: 1_024 }, { say: "Second.", usd: 0.01 }];
   // One call that ends before its answer is paid, on a store slow to write (the tests' ROOT_WRITE_DELAY_ENV).
   if (/Write once on a slow store\./.test(text)) return [{ calls: [{ say: "Writing a.md.", call: "write", args: { path: "a.md", content: "alpha" } }], usd: 0.001, bookAfter: true }, { end: true, usd: 0.002 }];
   // One answer that writes, calls, writes again and calls again, both calls ending before it is paid (Claude Code's
@@ -228,6 +304,21 @@ export function script(spec) {
   // A growing conversation whose requests read the cache (grown), 80 of them: a cap pauses it on the way. "..., missing
   // the cache at request N until F.": request N finds no cache and is held in flight until the file F exists. "..., cut
   // at request 1 until F.": a crash cuts request 1 until F exists; then an answer as large as request 2's.
+  // Two requests that each need and ask 10,240 output tokens, the first's cost booked only once <file> exists: the
+  // second is taken and admitted with nothing priced and no previous request in hand.
+  const tenK = /Two requests needing 10,240 output tokens, the first booked when (\S+) exists\./.exec(text)?.[1];
+  if (tenK) return [{ call: "read", args: { path: "a.txt" }, outputTokensAsked: 10_240, outputTokensLeast: 10_240, usd: 0.01, bookWhen: tenK }, { say: "Done.", outputTokensAsked: 10_240, outputTokensLeast: 10_240, usd: 0.01 }];
+  // A growing conversation that reads the cache (grown): request 0 asks 1,024 output tokens and writes the cache; the
+  // later ones each need 10,240 at least, so a request's least is its input, read from the cache after request 0 or else
+  // uncached, and 10,240 tokens of output. Four, then the answer.
+  if (/Grow a cached context briefly\./.test(text)) {
+    const answer = grown(4);
+    const least = { outputTokensLeast: 10_240 };
+    return [{ ...grown(0), outputTokensAsked: 1_024 }, ...[1, 2, 3].map((k) => ({ ...grown(k), ...least })), { say: "Done growing.", inputTokensMax: answer.inputTokensMax, tokens: answer.tokens, usd: answer.usd, ...least }];
+  }
+  // Two requests that each need and ask 10,240 output tokens ($1.024 on OUTPUT_PRICED), a cent each: a cap under that
+  // pauses the run at its first, and a raise lets it go on in the process the raise opens.
+  if (/Make two requests needing 10,240 output tokens\./.test(text)) return [{ call: "read", args: { path: "a.txt" }, outputTokensAsked: 10_240, outputTokensLeast: 10_240, usd: 0.01 }, { say: "Done.", outputTokensAsked: 10_240, outputTokensLeast: 10_240, usd: 0.01 }];
   const growing = /Grow a cached context(?:, missing the cache at request (\d+) until (\S+)|, cut at request 1 until (\S+))?\./.exec(text);
   if (growing) {
     const [, missAt, missUntil, cutUntil] = growing;

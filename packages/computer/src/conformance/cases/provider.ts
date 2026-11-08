@@ -19,9 +19,19 @@ const refOf = ({ id, name }: ComputerRef): ComputerRef => ({ id, name });
 const kindOf = (policy: NetworkSpec) => (typeof policy === "string" ? policy : "allow");
 const POLICIES: NetworkSpec[] = ["none", "open", { allow: ["example.com"] }];
 
-/** Asserts create refuses spec; a computer it makes anyway, even after the case ended, is deleted by the runner. */
+/**
+ * Asserts create refuses spec for what check() refuses in it: the refusal carries check()'s own words, so a create
+ * refused for another reason (no capacity, a network mismatch) does not pass. A computer create makes anyway, even
+ * after the case ended, is deleted by the runner.
+ */
 async function refusedCreate(t: CaseContext, spec: ComputerSpec, what: string) {
-	t.refused(await t.attempt(spec), what, ["refused"]);
+	const checked = t.provider.check(spec);
+	t.assert(checked.length > 0, `${what}: check() refuses it`);
+	const error = t.refused(await t.attempt(spec), what, ["refused"]);
+	t.assert(
+		checked.some(({ message }) => error.message.includes(message)),
+		`${what}: create's refusal names what check() refused (${checked.map(({ field, message }) => `${field}: ${message}`).join("; ")}), not: ${error.message}`,
+	);
 }
 
 const provider = (name: string, run: Case["run"], extra: Partial<Case> = {}): Case => ({
@@ -105,7 +115,7 @@ export const providerCases: Case[] = [
 		t.ok(await t.provider.release(ref, "delete"), "release delete");
 		t.ok(await t.provider.release(ref, "delete"), "a second delete of the same computer");
 		t.deepEqual(await names(t, labels), [], "listed after delete");
-		t.refused(await t.provider.connect(ref), "connect to a deleted computer");
+		t.refused(await t.provider.connect(ref), "connect to a deleted computer", ["gone", "not_found"]);
 	}),
 	provider("attach", async (t) => {
 		const labels = own(t, "attach");
@@ -125,7 +135,7 @@ export const providerCases: Case[] = [
 			t.match(read.user, /^\d+:\d+$/, `attach ${how}: the user it reports, as uid:gid`);
 			t.assert(!read.user.startsWith("0:"), `attach ${how} reports user ${read.user}, root, though create asked for no user`);
 		}
-		const both = t.refused(await t.provider.attach({ labels }), "attach by labels two computers match");
+		const both = t.refused(await t.provider.attach({ labels }), "attach by labels two computers match", ["invalid"]);
 		t.assert(both.message !== "", "the refusal is in words");
 		t.refused(await t.provider.attach({ labels: { ...labels, role: "c" } }), "attach by labels no computer has", ["not_found"]);
 		const connected = await t.connect(byLabels);
@@ -239,7 +249,7 @@ export const providerCases: Case[] = [
 				"the computer past its deadline, with a process that ignores TERM, stopped or gone",
 				120_000,
 			);
-			t.refused(await t.provider.connect(ref), "connect to a computer past its deadline");
+			t.refused(await t.provider.connect(ref), "connect to a computer past its deadline", ["gone", "not_found"]);
 		},
 		{ needs: ["processes"], timeoutMs: 300_000 },
 	),

@@ -18,10 +18,17 @@ import (
 	"github.com/Parcha-ai/agentrun/packages/computer/daemon/internal/rpc"
 )
 
-// TestMain runs the guard when a start runs this test binary as one, as computerd does.
+// TestMain runs the guard when a start runs this test binary as one, as computerd does, and the terminal test's
+// program (terminal_test.go) when a test starts this binary as that.
 func TestMain(m *testing.M) {
 	if len(os.Args) == 2 && os.Args[1] == execrun.GuardCommand {
 		os.Exit(execrun.Guard())
+	}
+	if len(os.Args) >= 2 && os.Args[1] == dropTerminalCommand {
+		os.Exit(dropTerminal(os.Args[2:]))
+	}
+	if len(os.Args) == 2 && os.Args[1] == staleForegroundCommand {
+		os.Exit(staleForeground())
 	}
 	os.Exit(m.Run())
 }
@@ -380,8 +387,8 @@ func TestEachSignalReachesTheProgramsGroup(t *testing.T) {
 		// The shell traps the signal; its child sleep does not, so only a signal to the group ends the sleep.
 		p := start(t, tbl, process.StartParams{Argv: []string{"sh", "-c", `trap "echo trapped" TERM INT HUP; sleep 300; echo "child=$?"`}})
 		sleep := childNamed(t, p.Pid, "sleep")
-		if _, err := tbl.Signal(process.SignalParams{ID: p.ID, Signal: c.signal}); err != nil {
-			t.Fatal(err)
+		if res, err := tbl.Signal(process.SignalParams{ID: p.ID, Signal: c.signal}); err != nil || len(reply(t, res)) != 0 {
+			t.Fatalf("%s: %v, %v", c.signal, reply(t, res), err)
 		}
 		res := wait(t, tbl, p.ID)
 		if res.ExitCode == nil || *res.ExitCode != 0 || res.Signal != nil {

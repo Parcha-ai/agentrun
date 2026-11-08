@@ -19,12 +19,24 @@ function held() {
   return { promise, resolve, reject };
 }
 
+/** The engines started on each data directory engine() made (a restart's, `{ data: first.data }`), by that directory: its
+ *  owner's after-hook closes them before it removes the directory, as support.mjs serve() does for servers. */
+const sharing = new Map();
+
 async function engine(t, deps, { data, at = "2026-06-01T00:00:00Z" } = {}) {
+  const owner = data === undefined;
   data ??= await mkdtemp(join(process.env.TMPDIR ?? tmpdir(), "triggers-"));
   const clock = fakeClock(at);
   const triggers = new Triggers(data, { targetIssues: async () => [], start: async () => ({ run_id: "run-1" }), statusOf: async () => null, runOf: async () => null, say: () => {}, clock, ...deps });
+  if (owner) sharing.set(data, new Set());
+  else sharing.get(data)?.add(triggers);
+  // Only the engine that made the directory removes it, after every engine on it is closed: node:test runs after-hooks in
+  // the order they were added, so the owner's runs first.
   t.after(async () => {
     triggers.close();
+    if (!owner) return;
+    for (const other of sharing.get(data) ?? []) other.close();
+    sharing.delete(data);
     await rm(data, { recursive: true, force: true });
   });
   triggers.start();
