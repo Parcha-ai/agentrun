@@ -1440,7 +1440,8 @@ A firing starts its run once. Its key comes from the trigger and its nominal tim
 a restart drives again finds its run. A firing's key stays bound to that run: when the server stopped while setting the
 run up, the firing reads `failed` ("The server stopped while setting up the run.") with that run's id, it never fires
 again, the next firing goes ahead, and `POST /v2/triggers/{id}/fire` is how a person tries it again. While the trigger's last run is active (working, or waiting on a person), a firing
-is `skipped`, with why; a full server (`429`) keeps it due and tries again. Times missed while the server was down are
+is `skipped`, with why (a webhook trigger with `accept` is the exception: [each event it takes](#webhook-triggers)
+starts its own run); a full server (`429`) keeps it due and tries again. Times missed while the server was down are
 one `missed` firing with their count, and the schedule goes on from now; the latest of them still fires, once, when it is
 no older than the trigger's `catchup_window_s` (default an hour; 0, never), marked `catch_up`. A
 firing while the last run is active (working, or parked waiting on a person) is skipped with why, never queued,
@@ -1482,8 +1483,50 @@ away, no webhook trigger is made or rotated (`409 store_unreadable`) and none fi
 The request's `webhook-id` is its firing's key: the first answers `202` once the firing is recorded, and its run starts
 after; the same `webhook-id` again, for a day after (even once the firing has left the history of 200), answers `200` with that
 firing and starts nothing. The agent gets the trigger's input,
-then the body, cut at 16 KiB, inside `<trigger-payload source="webhook" untrusted>...</trigger-payload>`: whatever the
-sender wrote is data, not an instruction.
+then the body, cut at 16 KiB, inside `<trigger-payload source="webhook" scheme="standard" untrusted>...</trigger-payload>`:
+whatever the sender wrote is data, not an instruction. The tag names the signature scheme, the event as that scheme
+reads it (`event="..."`) and the JSON body's top-level `action` (`action="..."`), each when there is one, so an agent's
+instructions can read what it was given; a sender's words there are cut to 200 characters, their quotes and brackets
+escaped.
+
+A webhook trigger's `signature` names its scheme, one of a table of them: `standard` (the default, above) or `github`,
+for a GitHub repository or organization webhook. A request is checked by the one scheme whose signature header it
+carries (`webhook-signature`, `X-Hub-Signature-256`), and the scheme gives its delivery id and its event. With `github`, paste the trigger's whole `whsec_...` secret, as it is, into the GitHub webhook's
+Secret (content type `application/json`): each delivery is checked by `X-Hub-Signature-256: sha256=<hex HMAC-SHA256 of
+the raw body>`, keyed by the UTF-8 bytes of that string, and `X-GitHub-Delivery` (1 to 255 printable ASCII characters)
+is its firing's key, so a redelivery from GitHub's page answers its firing and starts nothing. GitHub signs no
+timestamp, so there is no 5-minute window: a captured delivery sent again within a day is the same firing, and after a
+day it would fire again (over TLS, a risk taken). A request that carries no scheme's signature header, or more than
+one, or is signed under a scheme other than its trigger's, is the same `401` as a bad signature, and the headers are
+checked before the body is read.
+
+`accept` makes a trigger take only the events it names, from the delivery alone:
+
+```json
+{ "kind": "webhook", "signature": "github",
+  "accept": [
+    { "event": "pull_request", "actions": ["opened", "synchronize", "ready_for_review"],
+      "where": [ { "pointer": "/pull_request/draft", "in": [false] } ] },
+    { "event": "issue_comment", "actions": ["created"],
+      "where": [ { "pointer": "/issue/pull_request", "exists": true },
+                 { "pointer": "/comment/author_association", "in": ["OWNER", "MEMBER", "COLLABORATOR"] },
+                 { "pointer": "/comment/body", "prefix": "@reviewer review" } ] } ] }
+```
+
+A rule's `event` is the event as the trigger's scheme reads it: GitHub's `X-GitHub-Event`, or a Standard Webhooks
+body's top-level `type`; `actions`, when given,
+lists the values the body's top-level `action` may take; each of `where`'s conditions is a JSON pointer (RFC 6901) into
+the body with one test: `in` (the value there equals one of the JSON values listed, an object's fields in any order),
+`exists` (`true`, the pointer names a value, `null` included; `false`, it names none) or `prefix` (the value is a string
+whose first line, trimmed, starts with it, ignoring case). A delivery fires when any rule takes it, with all its
+conditions holding. A verified delivery no rule takes (GitHub's `ping` among them, a body that is not JSON too) answers
+`200 {"ok": "ignored"}`, fires nothing, and is one log line (`condition=hook_ignored`, with the trigger and why). Without
+`accept`, every verified request fires, as before. A trigger holds at most 20 rules, each at most 20 conditions and 20
+actions; an `in` lists at most 20 values of at most 1024 characters of JSON each, a pointer is at most 512 characters,
+and an event, an action or a prefix at most 200. A trigger with `accept` starts a run for each event it takes, its last
+run active or not, since the events it takes are each their own work (a review per pull request); the server's run
+limit still holds: a start it refuses (`429`) keeps the firing due and tries it again, and past 20 firings due a new
+delivery answers `429`.
 
 A trigger's input, a started run's first message or a firing's message, is the trigger's, never the person's: it carries
 the origin `{kind: "trigger", trigger_id, source, owner}`, `owner` decided by the trigger's definition as it fires and
