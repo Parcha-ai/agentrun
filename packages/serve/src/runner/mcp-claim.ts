@@ -26,6 +26,7 @@ import { randomUUID } from "node:crypto";
 import { REFRESH_REQUEST_MS, refreshed, refused, systemNetwork, type OAuthNetwork, type TokenSet } from "../mcp-oauth.js";
 import { type McpCredentials, type McpPin, mcpPinOf } from "../mcp-gateway.js";
 import { META_REASON, metaToolOf } from "../mcp-meta.js";
+import { type GithubAppAccess, type GithubTimer, githubTokens } from "./mcp-github.js";
 import { REFRESH_MARGIN_MS, UNKNOWN_EXPIRY_MS, UNUSABLE } from "../mcp-servers.js";
 import { openMcpCredential, sealMcpCredential, type McpCredential } from "../store/seal.js";
 import { type Claim, Fenced, MCP_REFRESH_CALL_MS, MCP_REFRESH_LEASE_MS, type McpServerRow, RefreshLeaseLost, type Store } from "../store/index.js";
@@ -50,6 +51,11 @@ export interface McpClaimOptions {
   now?: () => number;
   /** The authorization servers' network (mcp-oauth.ts). */
   network?: OAuthNetwork;
+  /** For a github_app server (auth github_app, nothing sealed): the server's GitHub App mint and the run's repository
+   *  (runner/mcp-github.ts). None: such a server's calls are refused in words. */
+  githubApp?: GithubAppAccess;
+  /** For tests: the timer a github_app token's refresh and expiry are armed on. */
+  githubTimer?: GithubTimer;
 }
 
 export interface McpClaimStep {
@@ -88,9 +94,13 @@ export async function mcpClaim(options: McpClaimOptions): Promise<McpClaimStep> 
   const behind = new AbortController();
   let released = false;
 
+  // A github_app server's installation token: minted at each claim, refreshed mid-run, held here only.
+  const github = githubTokens(options.githubApp, { now, ...(options.githubTimer ? { arm: options.githubTimer } : {}) });
+
   const release = () => {
     released = true;
     behind.abort();
+    github.release();
     for (const name of Object.keys(credentials)) delete credentials[name];
     secrets.clear();
   };
@@ -152,6 +162,9 @@ export async function mcpClaim(options: McpClaimOptions): Promise<McpClaimStep> 
       credentials[name] = { url: row.url, ...(extra.unopened ? { unopened: extra.unopened } : extra.headers && row.url === pinnedUrl ? { headers: extra.headers } : {}) };
       for (const value of Object.values(extra.headers ?? {})) secrets.add(value);
     };
+    // A GitHub App's server keeps no credential: its token is minted for this run (awaited, so the claim is confirmed
+    // after it), kept fresh mid-run, and never stored.
+    if (row.auth === "github_app") return await github.open(name, entry), { awaited: true };
     if (row.sealed === null) return entry({}), { awaited: false };
     // A seal problem first: no refresh is ever sent for a credential this runner cannot open.
     if (!sealKey) return entry({ unopened: UNUSABLE.noSealKey }), { awaited: false };
