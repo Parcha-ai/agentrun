@@ -264,6 +264,24 @@ test("no spawned adb's argv holds the unlock code or the phone's endpoint, which
 	assert.deepEqual(fake.phone.connected.size, 0, "and close let the transport go");
 });
 
+test("a connect that fails once adb reached the phone lets the transport go: the adb server keeps nothing of it", async () => {
+	// A phone that stays locked: the unlock code it takes is another.
+	const { provider, fake } = await setup({ code: "ph_aaaaaaaaaaaaaaaaaaaaaaaaaa" });
+	const { value: ref } = await provider.create(SPEC);
+	const refused = await provider.connect(ref);
+	assert.equal(refused.ok, false);
+	assert.match(refused.error.message, /stayed locked after its unlock code/);
+	assert.equal(fake.phone.connected.size, 0, "no transport is left on the adb server");
+	assert.equal(fake.serverCalls().at(-1), `host:disconnect:${ADB_HOST}:${22220 + 1}`);
+	// A drifted phone, unlocked and then refused after its hello, lets it go too.
+	const other = fakePhoneHarness();
+	const drifted = await create({ apiKey: KEY, fetch: other.fetch, adb: other.adb, now: other.clock.now, sleep: other.clock.sleep, daemonVersion: "0.0.0-drift" });
+	const twin = (await drifted.create(SPEC)).value;
+	const refusedTwin = await drifted.connect(twin);
+	assert.equal(refusedTwin.error.code, "refused");
+	assert.equal(other.phone.connected.size, 0);
+});
+
 test("the adb server's answers are read as its socket protocol frames them: OKAY or FAIL, then a hex length and the message", () => {
 	const frame = (status, message) => Buffer.from(`${status}${Buffer.byteLength(message).toString(16).padStart(4, "0")}${message}`);
 	assert.deepEqual(phone.adbAnswer(frame("OKAY", "connected to live.phone-harness.test:22221"), "host:connect"), { ok: true, value: "connected to live.phone-harness.test:22221" });
