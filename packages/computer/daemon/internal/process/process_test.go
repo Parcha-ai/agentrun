@@ -30,6 +30,9 @@ func TestMain(m *testing.M) {
 	if len(os.Args) == 2 && os.Args[1] == staleForegroundCommand {
 		os.Exit(staleForeground())
 	}
+	if len(os.Args) >= 3 && os.Args[1] == countSignalsCommand {
+		os.Exit(countSignals(os.Args[2:]))
+	}
 	os.Exit(m.Run())
 }
 
