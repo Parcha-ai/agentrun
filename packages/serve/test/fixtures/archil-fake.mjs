@@ -7,8 +7,8 @@
 //   a test can keep pending), and only then are they committed, at once, and the call resolves;
 // - a ranged read takes the Range header itself ("bytes=a-b"): 206 with the slice, 416 past the end;
 // - an append takes at most 1 MiB a call (400 EntityTooLarge above it);
-// - a listing comes in pages of `pageSize` entries: one level under a "/" delimiter, or, recursive, every FILE key
-//   flat, with no directory in it (so a folder holding nothing is not seen that way);
+// - a listing comes in pages of `pageSize` entries: one level under a "/" delimiter, or, recursive, every key flat,
+//   folders included as "<key>/" markers (as the live run showed: an exec's empty folders were listed);
 // - symbolic links (only an exec can make one), as the live run showed: a link lists as an object (a file), a GET of
 //   it answers 501 NotImplemented, a GET through a linked folder 404, a put or an append through one 409 ("an existing
 //   object blocks the path"), and nothing is listed under one; a DELETE of a link removes the link only;
@@ -218,10 +218,8 @@ export class FakeArchilDisk {
   async listPage(prefix, { recursive = false, token } = {}) {
     this.#record({ op: "listPage", prefix, recursive, token });
     const byBytes = (a, b) => Buffer.compare(Buffer.from(a), Buffer.from(b));
-    // A link is an object; a folder is a "<key>/" entry one level down. A recursive listing is every file key, flat.
-    const keys = recursive
-      ? [...this.files.keys(), ...this.links.keys()].sort(byBytes)
-      : [...this.files.keys(), ...this.links.keys(), ...[...this.dirs].map((d) => `${d}/`)].sort(byBytes);
+    // A link is an object; a folder is a "<key>/" entry (one level down, or every one, flat, when recursive).
+    const keys = [...this.files.keys(), ...this.links.keys(), ...[...this.dirs].map((d) => `${d}/`)].sort(byBytes);
     const entries = [];
     const seen = new Set();
     for (const key of keys) {

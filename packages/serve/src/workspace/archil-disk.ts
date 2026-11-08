@@ -43,8 +43,24 @@ export type ArchilGrepAnswer = {
   readonly matches: readonly { readonly file: string; readonly line: number; readonly text: string }[];
   readonly stoppedReason: string;
 };
-/** The image an exec runs in: a public OCI reference (pin it by digest), or an image built through Archil's images API. */
-export type ArchilImage = { readonly baseImage: string } | { readonly imageId: string };
+/** The image an exec runs in, pinned by digest: a public OCI reference `<name>@sha256:<64 hex>`, or an image built
+ *  through Archil's images API with the digest it was built at (checked against Archil before the first exec). */
+export type ArchilImage = { readonly baseImage: string } | { readonly imageId: string; readonly digest: string };
+
+const DIGEST = /^sha256:[0-9a-f]{64}$/;
+
+/** `image` checked as an ArchilImage pinned by digest, and copied: only its own fields, nothing else it carries. */
+export function pinnedImage(image: unknown): ArchilImage {
+  const refuse = (): never => { throw new Error("an Archil exec image is pinned by digest: { baseImage: \"<name>@sha256:<64 hex>\" } or { imageId: \"<64 hex>\", digest: \"sha256:<64 hex>\" }"); };
+  if (typeof image !== "object" || image === null) return refuse();
+  const { baseImage, imageId, digest } = image as Record<string, unknown>;
+  if (baseImage !== undefined) {
+    if (imageId !== undefined || digest !== undefined || typeof baseImage !== "string" || !/^[^\s@]+@sha256:[0-9a-f]{64}$/.test(baseImage)) return refuse();
+    return { baseImage };
+  }
+  if (typeof imageId !== "string" || !/^[0-9a-f]{64}$/.test(imageId) || typeof digest !== "string" || !DIGEST.test(digest)) return refuse();
+  return { imageId, digest };
+}
 /** One exec: `command` runs with folder `subdirectory` of the disk (and nothing else of it) at /mnt/archil/<mount>,
  *  held for the line (waiting up to queueMs for another client's hold), in `image` or Archil's default. */
 export type ArchilExecRequest = {
@@ -146,6 +162,8 @@ class SdkArchilDisk implements ArchilDisk {
   #ready: Promise<{ readonly client: ArchilClient; readonly disk: SdkDisk }> | undefined;
   /** The key #ready was made with: a different one from `key()` makes a new client. */
   #readyKey: string | undefined;
+  /** Built images already checked to be at their pinned digest ("<imageId> <digest>"). */
+  readonly #checkedImages = new Set<string>();
 
   constructor(options: ArchilDiskOptions) {
     const url = checkS3Url(options.s3BaseUrl, options.region, options.baseUrl);
@@ -242,10 +260,23 @@ class SdkArchilDisk implements ArchilDisk {
 
   async exec(request: ArchilExecRequest): Promise<ArchilExecAnswer> {
     const { client } = await this.#sdk();
+    // The image's own fields, picked by name; the command and the folder mount are set last, so nothing an image
+    // object carries can replace them.
+    const image = request.image === undefined ? undefined : pinnedImage(request.image);
+    if (image !== undefined && "imageId" in image) {
+      const pin = `${image.imageId} ${image.digest}`;
+      if (!this.#checkedImages.has(pin)) {
+        const built = await client.images.get(image.imageId);
+        if (built.status !== "ready" || built.digest !== image.digest) {
+          throw new Error(`the Archil exec image ${image.imageId} is ${built.status} at digest ${built.digest ?? "(none)"}, not at its pinned digest ${image.digest}: nothing was run`);
+        }
+        this.#checkedImages.add(pin);
+      }
+    }
     const answer = await client.exec({
-      disks: { [request.mount]: { disk: this.id, subdirectory: request.subdirectory, queueMs: request.queueMs } },
+      ...(image === undefined ? {} : "baseImage" in image ? { baseImage: image.baseImage } : { imageId: image.imageId }),
       command: request.command,
-      ...request.image,
+      disks: { [request.mount]: { disk: this.id, subdirectory: request.subdirectory, queueMs: request.queueMs } },
     });
     return { exitCode: answer.exitCode, stdout: answer.stdout, stderr: answer.stderr };
   }

@@ -10,11 +10,13 @@
 // file or the new one, never a mix, rests on Archil's S3 gateway publishing an object when its put completes (a
 // multipart one, above 16 MiB, when it is assembled). It was observed live (no read during a put over an 8 MiB file
 // saw a mix) but Archil's docs do not promise it: a known limit. An append is cut into calls of at most 1 MiB, made in
-// order; a reader during it can see part of it (the port allows that), and once it returns all of it is there. One
-// that fails partway says how many bytes landed, so a retry appends only the rest.
+// order, each after any exec of this workspace; a reader during it can see part of it (the port allows that), and
+// once it returns all of it is there. One that fails says only what is known: the bytes appended, read back from the
+// file's size, or else the bytes acknowledged and that the failed chunk's outcome is unknown (a chunk can commit and
+// lose its answer), so the file must be re-read before a retry.
 //
-// Modes. The port says an existing file keeps its mode on a write. The file API shows no mode, so this backend cannot
-// read one to keep it; whether Archil keeps it across a put is not documented, and the next live check measures it.
+// Modes, a known limit. The port says an existing file keeps its mode on a write. The file API shows no mode, so this
+// backend cannot read one to keep it, and a put does not keep it: measured live, a 0755 file is 0644 after a put.
 //
 // Links, as a live run on a dev disk showed. The file API cannot make a symbolic link, but an exec can, and the API
 // never follows one: it lists a link as a file (it cannot tell them apart, so this backend lists it as one, and the
@@ -32,7 +34,7 @@
 // refuses every call, cause no-computer, as with any workspace that has none).
 import { randomBytes } from "node:crypto";
 import type { MountSpec } from "@parcha/agentrun-computer";
-import type { ArchilDisk, ArchilImage, ArchilListPage } from "./archil-disk.js";
+import { type ArchilDisk, type ArchilImage, type ArchilListPage, pinnedImage } from "./archil-disk.js";
 import { archilExec, COMMAND_MAX_MS, DEFAULT_QUEUE_MS, MAX_EXEC_MS, STDIN_PREFIX } from "./archil-exec.js";
 import { type AttachableComputer, type MountCheck, noProcesses } from "./attach.js";
 import { globRegex } from "./glob.js";
@@ -50,9 +52,10 @@ const GREP_CALL_GRACE_MS = 2_000;
 export type ArchilWorkspaceOptions = {
   /** How long a call waits for another client's hold on the folder (default 60 s). */
   readonly queueMs?: number;
-  /** The image every exec runs in, the same for every workspace serve makes (a run's or a learning folder's): a public
-   *  image pinned by digest, or one built through Archil's images API. With none, Archil's default exec image, whose git
-   *  (2.34.1, measured) is older than learning's floor. */
+  /** The image every exec runs in, the same for every workspace serve makes (a run's or a learning folder's), pinned by
+   *  digest (an image given without one is refused): a public image `<name>@sha256:…`, or one built through Archil's
+   *  images API with its digest. With none, Archil's default exec image, whose git (2.34.1, measured) is older than
+   *  learning's floor. */
   readonly image?: ArchilImage;
 };
 
@@ -66,6 +69,9 @@ const statusOf = (error: unknown): number | undefined => {
 };
 const describe = (error: unknown): string => String((error as Error)?.message ?? error).replace(/\s+/g, " ").slice(0, 300);
 const pause = (ms: number): Promise<void> => new Promise((resolve) => setTimeout(resolve, ms));
+/** `promise` as is, with its failure also handled, so one that loses a race to a deadline and fails later is not an
+ *  unhandled rejection. */
+const quiet = <T>(promise: Promise<T>): Promise<T> => { promise.catch(() => undefined); return promise; };
 const byName = (a: string, b: string): number => (a < b ? -1 : a > b ? 1 : 0);
 
 /** A disk API failure as a WorkspaceError. */
@@ -105,12 +111,12 @@ class ArchilWorkspace implements Workspace {
 
   constructor(disk: ArchilDisk, root: string, options: ArchilWorkspaceOptions = {}) {
     if (relativeSegments(root).length === 0) throw new WorkspaceError("REFUSED", "an Archil workspace's root is a folder of the disk, not its root");
-    const image = options.image;
-    if (image !== undefined) {
-      const [field, value] = Object.entries(image)[0] ?? [];
-      if (Object.keys(image).length !== 1 || (field !== "baseImage" && field !== "imageId") || typeof value !== "string" || value === "") {
-        throw new WorkspaceError("REFUSED", "an Archil workspace's image is { baseImage } or { imageId }, a non-empty string");
-      }
+    let image: ArchilImage | undefined;
+    try {
+      // A copy of its own fields: the caller's object, changed later, changes nothing here.
+      image = options.image === undefined ? undefined : pinnedImage(options.image);
+    } catch (error) {
+      throw new WorkspaceError("REFUSED", (error as Error).message, { cause: error });
     }
     this.#disk = disk;
     this.#root = root;
@@ -247,21 +253,47 @@ class ArchilWorkspace implements Workspace {
   async append(path: string, data: Uint8Array | string): Promise<void> {
     const bytes = bytesOf(data);
     const rel = ArchilWorkspace.#below(path, "a file").join("/");
+    const chunks = Math.max(1, Math.ceil(bytes.length / APPEND_MAX));
     let landed = 0;
+    let before: number | undefined;
     try {
-      await this.#execs;
-      // An empty append still makes the file. Each call is acknowledged before the next is made, so they land in order.
+      // More than one call: the file's size first, so a failure partway can say exactly how much landed.
+      if (chunks > 1) before = await this.#sizeOf(rel).catch(() => undefined);
+      // An empty append still makes the file. Each call waits for any exec of this workspace (an exec started between
+      // two chunks would hold the folder against the next one), and is acknowledged before the next is made, so they
+      // land in order.
       for (let at = 0; at === 0 || at < bytes.length; at += APPEND_MAX) {
         const part = bytes.subarray(at, at + APPEND_MAX);
-        await this.#settle(rel, () => this.#disk.appendObject(this.#key(rel), part));
+        await this.#write(rel, () => this.#disk.appendObject(this.#key(rel), part));
         landed += part.length;
       }
     } catch (error) {
       const why = await this.#writeFailed(error, rel, "file", "append");
-      if (landed === 0) throw why;
-      // Part of it is on the disk: say how much, so a retry appends only the rest (never the whole again).
-      throw new WorkspaceError(why.code, `${landed} of ${bytes.length} bytes were appended to ${show(rel)} before it failed (append only the rest): ${why.message}`, { path: rel, cause: error });
+      const status = statusOf(error);
+      const refused = status !== undefined && status >= 400 && status < 500;
+      if (chunks === 1) {
+        // A refusal (4xx) applied nothing; any other failure may have come after the bytes were committed.
+        if (refused) throw why;
+        throw new WorkspaceError(why.code, `the append to ${show(rel)} may also have landed: unknown, re-read the file before retrying: ${why.message}`, { path: rel, cause: error });
+      }
+      // Part of it may be on the disk. Only what is known is said: the size read back, or else what was acknowledged,
+      // with the failed chunk's outcome unknown. A chunk may commit and lose its answer, so a count is never a guess.
+      const after = before === undefined ? undefined : await this.#sizeOf(rel).catch(() => undefined);
+      const known = before !== undefined && after !== undefined && after - before >= landed && after - before <= bytes.length
+        ? `${after - before} of ${bytes.length} bytes were appended (read back from the file: ${after} bytes now, ${before} before)`
+        : `at least ${landed} of ${bytes.length} bytes were appended; the failed chunk may also have landed: unknown, re-read the file before retrying`;
+      throw new WorkspaceError(why.code, `${known} to ${show(rel)} before it failed: ${why.message}`, { path: rel, cause: error });
     }
+  }
+
+  /** The size of file `rel` from its folder's listing (0 when it is not there yet). */
+  async #sizeOf(rel: string): Promise<number> {
+    const key = this.#key(rel);
+    for await (const page of this.#pages(key, false)) {
+      const found = page.objects.find((o) => o.key === key);
+      if (found !== undefined) return found.size;
+    }
+    return 0;
   }
 
   async list(dir: string): Promise<Entry[]> {
@@ -317,7 +349,20 @@ class ArchilWorkspace implements Workspace {
     const timeMs = options.timeMs ?? GREP_TIME_MS;
     if (!Number.isFinite(timeMs) || timeMs <= 0) throw new WorkspaceError("REFUSED", "grep's timeMs is a number above 0");
     const from = relativeSegments(options.path ?? "").join("/");
-    const kind = await this.#kind(from).catch((error: unknown) => { throw failed(error, from, "grep"); });
+    // ONE deadline for all of it, from now: the path's check, the disk's grep, and the size checks' listings. Past it,
+    // grep returns what it has (truncated "time"), whatever the disk is still doing.
+    let timer: NodeJS.Timeout | undefined;
+    const late = new Promise<"late">((resolve) => { timer = setTimeout(() => resolve("late"), Math.min(timeMs, GREP_TIME_MS) + GREP_CALL_GRACE_MS); });
+    try {
+      return await this.#grep(pattern, options, from, max, timeMs, late);
+    } finally {
+      clearTimeout(timer);
+    }
+  }
+
+  async #grep(pattern: string, options: GrepOptions, from: string, max: number, timeMs: number, late: Promise<"late">): Promise<GrepResult> {
+    const kind = await Promise.race([quiet(this.#kind(from)), late]).catch((error: unknown) => { throw failed(error, from, "grep"); });
+    if (kind === "late") return { matches: [], truncated: "time" };
     if (kind === undefined) throw new WorkspaceError("NOT_FOUND", `${show(from)} is not there`, { path: from });
     const limit = Math.min(max, GREP_MAX);
     // ripgrep matches a glob with no "/" against a file's name, and one with a "/" against its path from the directory
@@ -342,23 +387,19 @@ class ArchilWorkspace implements Workspace {
         only = (path) => regex.test(path);
       }
     }
-    // The disk's deadline is in whole seconds; this side stops waiting a little after it, whatever the disk does.
+    // The disk's deadline is in whole seconds, at least one.
     const seconds = Math.max(1, Math.ceil(Math.min(timeMs, GREP_TIME_MS) / 1000));
     let answer;
-    let timer: NodeJS.Timeout | undefined;
     try {
-      const late = new Promise<"late">((resolve) => { timer = setTimeout(() => resolve("late"), seconds * 1000 + GREP_CALL_GRACE_MS); });
-      answer = await Promise.race([this.#disk.grep({
+      answer = await Promise.race([quiet(this.#disk.grep({
         directory, pattern, recursive,
         maxResults: only === undefined || kind === "file" ? limit : GREP_MAX,
         maxDurationSeconds: seconds,
         ...(globs === undefined ? {} : { globs }),
-      }), late]);
+      })), late]);
     } catch (error) {
       if (statusOf(error) === 400) throw new WorkspaceError("REFUSED", `the disk's grep refused ${JSON.stringify(pattern)}: ${describe(error)}`, { path: from, cause: error });
       throw failed(error, from, "grep");
-    } finally {
-      clearTimeout(timer);
     }
     if (answer === "late") return { matches: [], truncated: "time" };
     const truncatedBy = answer.stoppedReason === "completed" ? false : answer.stoppedReason === "max_results" ? "max" : answer.stoppedReason === "deadline" ? "time" : undefined;
@@ -368,23 +409,24 @@ class ArchilWorkspace implements Workspace {
     const base = `${this.#root}/`;
     const found = answer.matches.filter(({ file }) => file.startsWith(base));
     // A file over GREP_FILE_MAX is skipped, as Local skips it: the disk's grep has no size option, so the sizes of the
-    // files it matched in are read from their folders' listings (one listing per folder that matched).
+    // files it matched in are read from their folders' listings (one per folder that matched, all at once, under the
+    // same deadline). A match whose folder was not listed by then is left out, and the answer is truncated "time".
+    const folderOf = (file: string): string => file.slice(0, file.lastIndexOf("/") + 1);
     const tooBig = new Set<string>();
-    const folders = new Set(found.map(({ file }) => file.slice(0, file.lastIndexOf("/") + 1)));
-    try {
-      for (const folder of folders) {
-        for await (const page of this.#pages(folder, false)) for (const { key, size } of page.objects) if (size > GREP_FILE_MAX) tooBig.add(key);
-      }
-    } catch (error) {
-      throw failed(error, from, "grep");
-    }
+    const listed = new Set<string>();
+    const listings = Promise.all([...new Set(found.map(({ file }) => folderOf(file)))].map(async (folder) => {
+      for await (const page of this.#pages(folder, false)) for (const { key, size } of page.objects) if (size > GREP_FILE_MAX) tooBig.add(key);
+      listed.add(folder);
+    }));
+    const done = await Promise.race([quiet(listings), late]).catch((error: unknown) => { throw failed(error, from, "grep"); });
     const matches: GrepMatch[] = [];
     for (const { file, line, text } of found) {
       const path = file.slice(base.length);
-      if (tooBig.has(file) || (only !== undefined && !only(path))) continue;
+      if (!listed.has(folderOf(file)) || tooBig.has(file) || (only !== undefined && !only(path))) continue;
       matches.push({ path, line, text: text.replace(/\r?\n$/, "").slice(0, GREP_LINE_MAX) });
     }
     matches.sort((a, b) => byName(a.path, b.path) || a.line - b.line);
+    if (done === "late") return { matches: matches.slice(0, max), truncated: "time" };
     if (matches.length > max) return { matches: matches.slice(0, max), truncated: "max" };
     return { matches, truncated: truncatedBy };
   }
