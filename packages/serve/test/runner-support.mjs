@@ -128,6 +128,7 @@ export function observed(store, record) {
     },
     commands: (runId, after) => store.commands(runId, after),
     take: (claim, id, outcome, reason) => store.take(claim, id, outcome, reason),
+    retry: (claim, id) => store.retry(claim, id),
   };
 }
 
