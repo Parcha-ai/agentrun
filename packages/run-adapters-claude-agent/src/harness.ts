@@ -6,6 +6,7 @@ import { randomUUID } from 'node:crypto';
 import { mkdtemp, rm } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { dirname, join, posix } from 'node:path';
+import type { GateAnswer, GateCall } from '@parcha/agentrun-kernel';
 import { type DriveContext, type Harness, type HostTool, type ReplayPolicy, Restart, type SessionState, type Submission, Unavailable } from './host/kernel.js';
 import {
   BuiltinCalls,
@@ -256,6 +257,8 @@ export interface ClaudeCodeHarnessOptions {
   unsandboxedCommands?: boolean;
   /** Called with the child's stderr tail when it exits mid-turn, the gateway's refusals, and SDK diagnostics. */
   log?: (message: string, fields?: Record<string, unknown>) => void;
+  /** The host's gate (SessionIO.gate), asked by the tool bridge about each call of `tools` before its intent. */
+  gate?: (call: GateCall) => Promise<GateAnswer>;
 }
 
 /** The default model. */
@@ -536,6 +539,8 @@ export function claudeCodeHarness(options: ClaudeCodeHarnessOptions = {}): Harne
           },
         });
         const bridge = toolBridge(ctx, tools, {
+          // The host's gate first: before the barrier and the intent, so a refused or parked call leaves nothing written.
+          ...(options.gate ? { gate: options.gate } : {}),
           // A `never` tool runs only once the assistant entry that asked for it is in the log.
           beforeNever: ({ callId }) => store.barrier(callId, barrierMs),
         });
