@@ -1,7 +1,8 @@
 // The runner's dispatch loop (runner/dispatch.ts): at the claim it reads the run's launch, picks the harness its body
 // names, and runs the run on that harness's loop. Commands and a stop handed over before the inner loop is chosen are
 // buffered and replayed through it; a launch whose harness this runner does not run, or whose body cannot be read, fails
-// the run in words. Tested with fake inner loops, so the dispatch's own behaviour is read apart from any harness.
+// the run in words. Tested with fake inner loops, so the dispatch's own behaviour is read apart from any harness. No
+// sleeps: the fake loop signals when its start() is called, so the ordering is read from that, not from the clock.
 import assert from "node:assert/strict";
 import { test } from "node:test";
 import { createDispatchLoop } from "../dist/runner/dispatch.js";
@@ -15,16 +16,18 @@ const defer = () => {
   return { promise, resolve };
 };
 
-/** A fake inner loop that records what it was handed, and ends on command. */
+/** A fake inner loop that records what it was handed. `whenStarted` resolves once its start() has been called (and, with
+ *  it, the commands buffered before it were replayed); `finish()` resolves its start()'s promise. */
 function fakeLoop(end = { state: "ended" }) {
   const log = [];
-  let finish;
-  const started = new Promise((resolve) => (finish = resolve));
+  const done = defer();
+  const startCalled = defer();
   let gotDeps;
   const loop = {
     start(claim) {
       log.push(["start", claim.runId]);
-      return started.then(() => end);
+      startCalled.resolve();
+      return done.promise.then(() => end);
     },
     async command(command) {
       log.push(["command", command.id, command.kind]);
@@ -32,10 +35,10 @@ function fakeLoop(end = { state: "ended" }) {
     },
     async stop(reason) {
       log.push(["stop", reason.kind]);
-      finish(end);
+      done.resolve();
     },
   };
-  return { factory: (d) => ((gotDeps = d), loop), log, finish: () => finish(end), depsOf: () => gotDeps };
+  return { factory: (d) => ((gotDeps = d), loop), log, finish: () => done.resolve(), whenStarted: startCalled.promise, depsOf: () => gotDeps };
 }
 
 test("dispatch picks the harness the launch names and runs the run on its loop", async () => {
@@ -77,7 +80,8 @@ test("a command handed over before the inner loop is chosen is buffered and repl
   assert.deepEqual(await dispatch.command({ id: 7, kind: "steer", body: { text: "hi" } }), { taken: true });
   assert.deepEqual(inner.log, []);
   gate.resolve();
-  await new Promise((r) => setTimeout(r, 10));
+  // Once start() has been called, the buffered command has been replayed through the inner loop (same step).
+  await inner.whenStarted;
   inner.finish();
   await run;
   assert.deepEqual(inner.log, [["start", "run-1"], ["command", 7, "steer"]]);
@@ -102,7 +106,7 @@ test("a command after the inner loop is chosen goes straight to it", async () =>
   const inner = fakeLoop();
   const dispatch = createDispatchLoop({ launchOf: async () => ({ body: piBody }), resolve: () => inner.factory })(deps);
   const run = dispatch.start(CLAIM);
-  await new Promise((r) => setTimeout(r, 5));
+  await inner.whenStarted;
   await dispatch.command({ id: 3, kind: "steer", body: {} });
   inner.finish();
   await run;
