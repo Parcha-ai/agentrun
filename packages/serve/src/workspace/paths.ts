@@ -8,9 +8,11 @@
 //
 // A Workspace takes paths relative to its root only. relativeSegments is the rule both backends check them by. A tool
 // call's path (absolute, or relative to the folder's name the model knows) becomes one by portPath: the one mapping
-// from a model's path to the port's, for the tools (pi-env.ts) and the tool gate alike.
+// from a model's path to the port's, for the tools (pi-env.ts) and the tool gate alike. A text a person or a model
+// reads names the folder relative to itself, never by this server's data directory (workspaceRelative).
 import { createHash } from "node:crypto";
-import { join, posix } from "node:path";
+import { realpathSync } from "node:fs";
+import { dirname, join, posix } from "node:path";
 import { ID } from "../validate.js";
 import { WorkspaceError } from "./workspace.js";
 
@@ -58,6 +60,42 @@ export function relativeSegments(path: string): string[] {
 
 /** `path` checked by relativeSegments and joined again: "" for the root. */
 export const relativePath = (path: string): string => relativeSegments(path).join("/");
+
+/**
+ * `text` with the folder's absolute names taken out: `<work>/notes/a.md` reads `notes/a.md`, the folder itself `.`, a
+ * path beside it `../x` (pi's tools resolve a relative path before they refuse it), and pi's refusal ("<path>: outside
+ * the workspace <work>") names no directory. `works` are the folder's names (as the environment names it and as the
+ * kernel resolves it: they differ under a symlinked directory). For a refusal, an error, and a write's or edit's result;
+ * a read's result is the file's own text and is never changed.
+ */
+export function workspaceRelative(text: string, works: readonly string[]): string {
+  const escape = (path: string) => path.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+  // A name counts only where a path starts (not inside a longer one), and, unless a "/" follows, where it ends (a quote, a
+  // space, a separator or the text's end).
+  const start = "(?<![\\w./~-])";
+  const end = "(?![^'\"\\s,;:)\\]])";
+  let out = text;
+  // Longest first, so a name inside another is taken out before the outer one could take its prefix.
+  for (const work of [...new Set(works)].filter((w) => w.length > 1).sort((a, b) => b.length - a.length)) {
+    const name = `${start}${escape(work)}`;
+    out = out
+      .replace(new RegExp(`outside the workspace ${name}${end}`, "g"), "outside the workspace")
+      .replace(new RegExp(`${name}/`, "g"), "")
+      .replace(new RegExp(`${name}${end}`, "g"), ".");
+    const parent = dirname(work);
+    if (parent.length > 1) out = out.replace(new RegExp(`${start}${escape(parent)}/`, "g"), "../").replace(new RegExp(`${start}${escape(parent)}${end}`, "g"), "..");
+  }
+  return out;
+}
+
+/** `path` as the kernel resolves it, or itself when it cannot be resolved. */
+export const realOf = (path: string): string => {
+  try {
+    return realpathSync(path);
+  } catch {
+    return path;
+  }
+};
 
 /** Where every computer mounts a run's folder, and so the name a model in one knows it by. */
 export const COMPUTER_ROOT = "/workspace";

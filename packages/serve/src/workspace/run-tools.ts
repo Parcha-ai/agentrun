@@ -17,10 +17,12 @@
 // The registry itself joins here (runTools) once the kernel's registry is in the base; until then runHands gives what it
 // binds.
 import type { Context } from "@earendil-works/chord";
+import type { HostTool } from "@parcha/agentrun-kernel";
+import type { Park, RunGate } from "../tool-gate.js";
 import type { AttachableComputer, MountCheck } from "./attach.js";
-import { piExecutor, type PiExecutor } from "./executors.js";
+import { answerText, type PiAnswer, piExecutor, type PiExecutor } from "./executors.js";
 import { ARCHIL_MAX_EXEC_S, type Hands, handsOf, MAX_EXEC_S, shellEnv } from "./hands.js";
-import { COMPUTER_ROOT } from "./paths.js";
+import { COMPUTER_ROOT, realOf, workspaceRelative } from "./paths.js";
 import { bashTool, fileTools, OUTPUT_DIR, piEnv, readAnywhereInComputer } from "./pi-env.js";
 import type { Workspace } from "./workspace.js";
 
@@ -40,6 +42,8 @@ export type RunHands = {
   readonly maxExecS: number;
   /** The name the model knows the run's folder by: /workspace in a computer, the folder's own path otherwise. */
   readonly cwd: string;
+  /** Every absolute name of the run's folder a text may hold: cwd, its path here, the aliases given. */
+  readonly names: readonly string[];
   /** The registry's host executors: pi's read, write and edit, and pi's bash as bash's own run. */
   readonly executors: { readonly read: PiExecutor; readonly write: PiExecutor; readonly edit: PiExecutor; readonly bash: PiExecutor };
   /** The run's end, after its background processes are ended and before the computer is let go: bash's full outputs
@@ -69,10 +73,67 @@ export async function runHands(workspace: Workspace, computer: RunComputer | und
     shell: computer === undefined ? "local" : "computer",
     maxExecS,
     cwd,
+    names,
     executors: { read: executor(read), write: executor(tools.write!), edit: executor(tools.edit!), bash: executor(tools.bash!) },
     async sweep() {
       // Through the run's own Workspace, not the computer's: the sweep holds whether or not the computer still answers.
       for (const dir of [OUTPUT_DIR, TMP_DIR]) await workspace.remove(dir, { recursive: true, force: true });
     },
   };
+}
+
+/** A tool as the kernel's registry lists it: what bindTools reads of its ToolDef. */
+export type RegistryDef = { readonly name: string; readonly description: string; readonly parameters: object; readonly replaySafe: boolean };
+/** The kernel's registry, as bindTools calls it (run-adapters kernel/registry Registry). */
+export type RunRegistry = {
+  list(): readonly RegistryDef[];
+  invoke(name: string, args: unknown, call: { readonly hands: Hands; readonly signal?: AbortSignal; output?(chunk: string): void }): Promise<PiAnswer>;
+};
+/** One call's answer, kept by its call id for the run's timeline (an adapter's tool_end carries none). */
+export type ToolResults = Map<string, { text: string; isError: boolean }>;
+
+/** The tools whose answer is pi's own words about a path (`Successfully wrote to <path>`), never a file's text. */
+const SAYS_PATH: ReadonlySet<string> = new Set(["write", "edit"]);
+
+/**
+ * `registry`'s tools that `names` names, in that order, bound to `run`: each as the kernel's HostTool, which an adapter's
+ * session takes. A call passes the run's gate first (`gated`: the gate and the park it takes; none for the gate's own
+ * run of an approved call): a refused one runs nothing, a parked one says it waits. Then the registry runs it on the
+ * run's hands, and its answer is the text a model reads (executors.ts answerText): the output, the failure's words, the
+ * diagnostics; in a failure, a write's or an edit's answer a path in the run's folder is named relative to it. A
+ * failure the registry throws is the answer's text. `results` keeps each answer by its call id.
+ */
+export function bindTools(run: RunHands, registry: RunRegistry, names: readonly string[], options: { readonly gated?: { readonly gate: RunGate; readonly park: Park }; readonly results?: ToolResults } = {}): HostTool[] {
+  const defs = new Map(registry.list().map((def) => [def.name, def] as const));
+  const works = [...new Set(run.names.flatMap((name) => [name, realOf(name)]))];
+  return names.flatMap((name): HostTool[] => {
+    const def = defs.get(name);
+    if (!def) return [];
+    return [{
+      name: def.name,
+      description: def.description,
+      inputSchema: def.parameters as Record<string, unknown>,
+      replay: def.replaySafe ? "safe" : "never",
+      async call(args, { callId, signal, attempt }) {
+        // A replay (the kernel's attempt above 0) may follow an attempt that was sent: the gate's refusal then says so.
+        const refused = await options.gated?.gate.enter(name, args, callId, options.gated.park, (attempt ?? 0) > 0 ? { replayed: true } : {});
+        if (refused) {
+          const answer = { text: refused.text, isError: refused.isError === true };
+          options.results?.set(callId, answer);
+          return refused.parked ? { ...answer, parked: true as const } : answer;
+        }
+        let given: PiAnswer;
+        try {
+          given = await registry.invoke(name, args, { hands: run.hands, signal });
+        } catch (error) {
+          given = { text: "", isError: true, error: (error as Error)?.message ?? String(error) };
+        }
+        const said = answerText(given);
+        const isError = given.isError === true;
+        const answer = { text: isError || SAYS_PATH.has(name) ? workspaceRelative(said, works) : said, isError };
+        options.results?.set(callId, answer);
+        return given.images?.length ? { ...answer, images: given.images } : answer;
+      },
+    }];
+  });
 }
