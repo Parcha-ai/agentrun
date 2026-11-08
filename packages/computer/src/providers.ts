@@ -27,6 +27,11 @@ export interface ProviderModule {
 	/** Every variable fromEnv reads, by role: each named COMPUTER_<ID>_*, never a vendor's bare variable. */
 	readonly ENV: Readonly<Record<string, string>>;
 	/**
+	 * The mount kinds its computers take, the same as its provider's capabilities().mount (none: []): a caller tells which
+	 * provider binds a local folder from the registry alone, without building one.
+	 */
+	readonly MOUNT: readonly MountKind[];
+	/**
 	 * The provider, built from those variables alone; it throws in words when one is missing or wrong. A key is read here,
 	 * when the provider is built, and never when the module loads.
 	 */

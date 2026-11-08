@@ -481,7 +481,9 @@ const made = await docker.create({ image: "debian:bookworm-slim", lifetimeMs: 60
 - `ComputerSpec.mount` is `{ kind: "bind", path }`, a folder on the provider's host bound in (the local Docker
   computer), or `{ kind: "archil", disk, region, folder, token }`, the run's folder (such as
   `agents/<a>/runs/<r>/work`) inside an Archil disk in its region, mounted in a remote computer.
-  `capabilities().mount` lists the kinds a provider takes; absent, it takes none.
+  `capabilities().mount` lists the kinds a provider takes; absent, it takes none. Each provider file also exports
+  `MOUNT` beside its `ENV`, the same kinds (Docker `["bind"]`; Modal and Daytona `[]` for now), so a caller tells which
+  provider binds a local folder from the registry (`providerModule(id)`) without building one.
 - `checkMount(mount, declared)` (`src/mount.ts`) is the one rule every provider's `check` runs, with no vendor call: a
   kind the provider does not declare is refused in words (`this provider does not take a mount of kind archil; it takes
   bind`); a bind's `path` is absolute, canonical (its own realpath, so what is read back is what is bound: Docker

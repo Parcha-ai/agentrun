@@ -26,7 +26,7 @@ import {
 	tmpfsOf,
 	WORK,
 } from "./drift.js";
-import { checkMount, type MountReadBack, WORKSPACE } from "./mount.js";
+import { checkMount, type MountKind, type MountReadBack, WORKSPACE } from "./mount.js";
 import {
 	type AttachedComputer,
 	type CallContext,
@@ -79,6 +79,9 @@ export const ENV = {
 	/** Who a computer runs as when its spec does not say, uid or uid:gid in numbers; see DockerProviderOptions.user. */
 	user: "COMPUTER_DOCKER_USER",
 } as const;
+
+/** The mount kinds a Docker computer takes, as capabilities().mount declares them: a bind of a folder on this host. */
+export const MOUNT: readonly MountKind[] = ["bind"];
 
 export interface DockerFromEnvOptions extends Partial<DockerProviderOptions> {
 	/** The longest `docker version` may take, when fromEnv asks Docker its architecture; default 30 s. */
@@ -214,7 +217,7 @@ export class DockerProvider implements ComputerProvider {
 			user: ["root", "uid"],
 			release: ["stop", "delete"],
 			stopDeletes: false,
-			mount: ["bind"],
+			mount: [...MOUNT],
 		};
 	}
 
