@@ -47,8 +47,11 @@ RUN set -eu; \
 COPY agentrun-archil /usr/local/sbin/agentrun-archil
 
 # What the helper runs, where it runs it from: an image that lacks one fails here, not at a run's first mount. And no
-# way to root for the tool user: no sudo, no sudoers.
+# way to root for the tool user: no sudo, no sudoers. A provider's builder may add sudo to the base before these steps
+# (E2B's does): it is taken away first, the package where it is installed and every sudoers file, then checked gone.
 RUN set -eu; \
+    if dpkg -s sudo >/dev/null 2>&1; then SUDO_FORCE_REMOVE=yes DEBIAN_FRONTEND=noninteractive apt-get purge -y -qq sudo >/dev/null; fi; \
+    rm -rf /etc/sudoers /etc/sudoers.d; \
     chown root:root /usr/local/sbin/agentrun-archil; \
     chmod 0755 /usr/local/sbin/agentrun-archil; \
     for x in /usr/bin/archil /usr/bin/awk /usr/bin/realpath /usr/bin/mount /usr/bin/chown /usr/bin/find /usr/bin/id /usr/bin/ls; do \
