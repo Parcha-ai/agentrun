@@ -53,10 +53,35 @@ export const abortError = (signal: AbortSignal | undefined): unknown =>
 export const isWorkspaceError =(error: unknown, code?: WorkspaceErrorCode): error is WorkspaceError =>
   error instanceof WorkspaceError && (code === undefined || error.code === code);
 
+/** Each code's one line, as the code's own words above say it, naming no path: what a person or a model reads after
+ *  the code (workspaceErrorWords). */
+export const WORKSPACE_ERRORS: Readonly<Record<WorkspaceErrorCode, string>> = {
+  NOT_FOUND: "the path is not there",
+  ESCAPE: "the path would leave the root: absolute, \"..\", a bad segment, or a symbolic link on the way",
+  TOO_LARGE: "more than the call allows",
+  TIMEOUT: "the call ran past its deadline",
+  UNAVAILABLE: "the backend cannot answer: the root is gone, the disk is full or read-only, an I/O error",
+  REFUSED: "the call is not allowed on what is there",
+  EXISTS: "something is in the way: a file where a directory has to be made",
+};
+
+/** A failed call as words that name no path: a WorkspaceError's code and its line ("ESCAPE: the path would leave the
+ *  root: …"), else undefined. */
+export const workspaceErrorWords = (error: unknown): string | undefined =>
+  isWorkspaceError(error) ? `${error.code}: ${WORKSPACE_ERRORS[error.code]}` : undefined;
+
 /** One entry of a directory. Only files and directories are listed: a pipe or a socket is left out. A symbolic link is
  *  left out by a backend that can tell (Local); a backend that can't tell a link from a file (Archil's file API) lists
- *  it as a file, and reading it fails UNAVAILABLE. */
-export type Entry = { readonly name: string; readonly kind: "file" | "dir"; readonly size: number };
+ *  it as a file, and reading it fails UNAVAILABLE. `mtimeMs`: when it last changed, in milliseconds since the epoch, as
+ *  Stat's. `unreadable`: a file this backend sees but cannot read (another user on this machine made it private), so a
+ *  read of it is REFUSED; a backend with no such files (Archil's) never sets it. */
+export type Entry = {
+  readonly name: string;
+  readonly kind: "file" | "dir";
+  readonly size: number;
+  readonly mtimeMs: number;
+  readonly unreadable?: true;
+};
 
 /** What is at a path, never following it: a symbolic link is "link"; a pipe, a socket or a device is "other". A
  *  folder's size is 0, as list says. A backend that cannot tell a link from a file (a disk's file API) says "file". */

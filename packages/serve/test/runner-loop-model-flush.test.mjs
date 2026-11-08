@@ -1,5 +1,5 @@
 // The kernel's rule before a side effect holds for a pi run's model requests as for its tool calls (the storeIntentFlush
-// barrier: "a tool call, a model request"): every paid request leaves only after a flush made the records before it
+// barrier: a tool call that is not replay-safe, and each model-request attempt): every paid request leaves only after a flush made the records before it
 // durable (pi committed them, at synchronous=NORMAL not yet on disk), so a machine lost after the send never loses the
 // record that the request was asked and sends it again. Read from the order the loop's flush and the model's requests
 // happen in, on a real store and runner, for a run that only talks (no tool call flushes for it): on pi-ai's faux

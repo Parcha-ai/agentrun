@@ -61,7 +61,7 @@ test("demo: a body the spec's library signs fires once, with no token; the same 
   assert.equal(again.body.run_id, fired.run_id, "the same firing, its same run");
   assert.equal((await api("GET", "/agents/triage/runs")).body.runs.length, 1, "one run");
   const meta = JSON.parse(await readFile(join(runDir(data, fired.run_id), "serve.json"), "utf8"));
-  assert.match(meta.input.content, new RegExp(`^Triage this event\\.\\n\\n<trigger-payload source="webhook" untrusted>\\n${payload.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")}\\n</trigger-payload>\\n\\n\\(From the webhook trigger "on push", received at .+ UTC\\.\\)$`));
+  assert.match(meta.input.content, new RegExp(`^Triage this event\\.\\n\\n<trigger-payload source="webhook" scheme="standard" untrusted>\\n${payload.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")}\\n</trigger-payload>\\n\\n\\(From the webhook trigger "on push", received at .+ UTC\\.\\)$`));
   assert.deepEqual((await api("GET", `/runs/${fired.run_id}`)).body.trigger, { id, firing_key: fired.key });
   await follow(api, fired.run_id, ["completed"]);
 });
@@ -141,7 +141,7 @@ test("a message_run trigger sends each firing to its run, which takes it once: a
   const { rows } = await follow(api, run.body.run_id, ["completed"]);
   const messages = rows.filter(isMessageRow).map((row) => row.text);
   assert.equal(messages.length, 2, JSON.stringify(messages));
-  assert.match(messages[1], /^A new event came in\.\n\n<trigger-payload source="webhook" untrusted>\n\{"ticket":42\}\n<\/trigger-payload>/);
+  assert.match(messages[1], /^A new event came in\.\n\n<trigger-payload source="webhook" scheme="standard" untrusted>\n\{"ticket":42\}\n<\/trigger-payload>/);
   assert.equal((await api("GET", "/agents/chat/runs")).body.runs.length, 1, "no run started");
   const missing = await api("POST", "/triggers", { source: { kind: "webhook" }, target: { kind: "message_run", run_id: "nope", input: { content: "Hi." } } });
   assert.deepEqual([missing.status, missing.body.error.fields.map((f) => f.field)], [422, ["target.run_id"]]);

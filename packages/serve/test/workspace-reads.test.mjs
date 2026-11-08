@@ -1,14 +1,16 @@
 // What this server reads out of a run's work/ (the console's file view and listing, a skill's SKILL.md) never goes
-// through a link, and never reads a file hard-linked in: a link the agent plants, or one swapped in between a check and
-// the open, cannot hand it this server's own files. Each forced swap goes in through the confinement's test seam, after
-// the path is checked and before it is opened.
+// through a link: a link the agent plants, or one swapped in between a check and the open, cannot hand it this server's
+// own files. The file view reads through the run's Workspace, whose own swap race is in workspace-local.test.mjs; the
+// module's reads take each forced swap through the confinement's test seam, after the path is checked and before it is
+// opened.
 import assert from "node:assert/strict";
-import { link, mkdir, rename, symlink, writeFile } from "node:fs/promises";
+import { link, mkdir, rename, symlink, unlink, writeFile } from "node:fs/promises";
 import { join } from "node:path";
 import { test } from "node:test";
 import { confineTestHooks as confineHooks } from "@parcha/pi-durable-disk/internals";
 import { promptOf } from "../dist/app.js";
 import { assertHardlinkProtection, openWorkFile, walkWork, workspaceTestHooks } from "../dist/workspace.js";
+import { localWorkspace } from "../dist/workspace/index.js";
 import { agent, follow, runDir, scratch, serve } from "./support.mjs";
 
 const CANARY = `not-a-secret-canary-${process.pid}`;
@@ -52,35 +54,31 @@ function swapOnCheck(t, work, name, target) {
   return () => fired;
 }
 
-test("the file view refuses a file hard-linked into work/, and does not list it", { timeout: 60_000 }, async (t) => {
-  const server = await served(t);
-  await link(server.secret, join(server.work, "h"));
-  const res = await get(server, "/h");
-  assert.equal(res.status, 404);
-  assert.ok(!holds(res));
-  assert.deepEqual((await get(server, "")).body.files.map((f) => f.path), []);
-});
-
-test("the file view reads through the confinement: a file swapped for a link after its check is refused, never followed", { timeout: 60_000 }, async (t) => {
-  const server = await served(t);
-  await writeFile(join(server.work, "a.txt"), "hello");
-  const fired = swapOnCheck(t, server.work, "a.txt", server.secret);
-  const res = await get(server, "/a.txt");
-  assert.equal(fired(), 1, "the read was checked by the confinement");
-  assert.equal(res.status, 404);
-  assert.ok(!holds(res));
-});
-
-test("the file listing walks through the confinement: a directory swapped for a link after its check is not entered, and nothing under it is listed", { timeout: 60_000 }, async (t) => {
+test("the run's file view goes through its Workspace: a folder swapped for a link to the server's files, over and over, never lists or serves them", { skip: process.platform !== "linux" && "the swap race is shown on Linux, where the Workspace's calls go through held folders", timeout: 60_000 }, async (t) => {
   const server = await served(t);
   await mkdir(join(server.work, "sub"));
-  await writeFile(join(server.work, "sub", "f.txt"), "under");
-  const fired = swapOnCheck(t, server.work, "sub", server.data);
-  const list = await get(server, "");
-  assert.ok(fired() >= 1, "the walk was checked by the confinement");
-  const paths = list.body.files.map((f) => f.path);
-  assert.ok(!paths.some((p) => p.startsWith("sub/")), `nothing under the swapped name: ${paths}`);
-  assert.ok(!paths.some((p) => p.includes("server-own")), "none of the server's files");
+  // The same name in the folder and beside the server's own file: a read that followed the link would serve the canary.
+  await writeFile(join(server.work, "sub", "server-own.txt"), "the run's own");
+  let swapping = true;
+  const swapper = (async () => {
+    while (swapping) {
+      await rename(join(server.work, "sub"), join(server.work, "sub.kept"));
+      await symlink(server.data, join(server.work, "sub"));
+      await new Promise((resolve) => setImmediate(resolve));
+      await unlink(join(server.work, "sub"));
+      await rename(join(server.work, "sub.kept"), join(server.work, "sub"));
+    }
+  })();
+  try {
+    for (let round = 0; round < 60; round++) {
+      const [list, read] = await Promise.all([get(server, ""), get(server, "/sub/server-own.txt")]);
+      assert.ok(!holds(list) && !holds(read), `round ${round}: none of the server's files`);
+      assert.ok(!list.body.files.some((f) => f.path.includes("agents") || f.path === "sub/server-own.txt" && f.size_bytes === CANARY.length), `round ${round}: nothing listed from where the link points`);
+    }
+  } finally {
+    swapping = false;
+    await swapper;
+  }
 });
 
 test("a skill's SKILL.md is read through no link: a skill directory linked out of work/ is refused, and none of its text reaches the prompt", async (t) => {
@@ -90,17 +88,15 @@ test("a skill's SKILL.md is read through no link: a skill directory linked out o
   await writeFile(join(outside, "SKILL.md"), CANARY);
   await mkdir(join(server.work, ".agents", "skills"), { recursive: true });
   await symlink(outside, join(server.work, ".agents", "skills", "linked"));
-  await assert.rejects(promptOf("Answer.", ["linked/SKILL.md"], server.work), (error) => !String(error?.message).includes(CANARY));
+  await assert.rejects(promptOf("Answer.", ["linked/SKILL.md"], localWorkspace(server.work)), (error) => error?.code === "ESCAPE" && !String(error?.message).includes(CANARY));
 });
 
-test("a skill's SKILL.md swapped for a link after its check is refused", async (t) => {
+test("a skill's SKILL.md that is itself a link to the server's file is refused, and none of its text reaches the prompt", async (t) => {
   const server = await unserved(t);
   const dir = join(server.work, ".agents", "skills", "s");
   await mkdir(dir, { recursive: true });
-  await writeFile(join(dir, "SKILL.md"), "Be brief.");
-  const fired = swapOnCheck(t, server.work, ".agents/skills/s/SKILL.md", server.secret);
-  await assert.rejects(promptOf("Answer.", ["s/SKILL.md"], server.work), (error) => !String(error?.message).includes(CANARY));
-  assert.equal(fired(), 1, "the read was checked by the confinement");
+  await symlink(server.secret, join(dir, "SKILL.md"));
+  await assert.rejects(promptOf("Answer.", ["s/SKILL.md"], localWorkspace(server.work)), (error) => error?.code === "ESCAPE" && !String(error?.message).includes(CANARY));
 });
 
 test("serve can require that the kernel refuses hard links to files the linker cannot write", () => {

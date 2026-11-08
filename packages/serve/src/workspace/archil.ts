@@ -350,13 +350,14 @@ class ArchilWorkspace implements Workspace {
       for await (const page of this.#pages(prefix, false)) {
         for (const common of page.commonPrefixes) {
           const name = common.slice(prefix.length).replace(/\/$/, "");
-          if (name !== "" && !name.includes("/")) entries.set(name, { name, kind: "dir", size: 0 });
+          // A folder of the file API has no time of its own: 0, as stat says.
+          if (name !== "" && !name.includes("/")) entries.set(name, { name, kind: "dir", size: 0, mtimeMs: 0 });
         }
-        for (const { key, size } of page.objects) {
+        for (const { key, size, mtimeMs } of page.objects) {
           if (!key.startsWith(prefix) || key === prefix) continue;
           const rest = key.slice(prefix.length);
-          if (rest.endsWith("/")) entries.set(rest.slice(0, -1), { name: rest.slice(0, -1), kind: "dir", size: 0 });
-          else if (!rest.includes("/")) entries.set(rest, { name: rest, kind: "file", size });
+          if (rest.endsWith("/")) entries.set(rest.slice(0, -1), { name: rest.slice(0, -1), kind: "dir", size: 0, mtimeMs: mtimeMs ?? 0 });
+          else if (!rest.includes("/")) entries.set(rest, { name: rest, kind: "file", size, mtimeMs: mtimeMs ?? 0 });
         }
       }
     } catch (error) {

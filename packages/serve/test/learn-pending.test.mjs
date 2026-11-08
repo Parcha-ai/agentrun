@@ -13,7 +13,7 @@ import { CAPS } from "../dist/learn/check.js";
 import { currentLearning } from "../dist/learning.js";
 import { pendingTestHooks } from "../dist/learning-routes.js";
 import { note } from "./fixtures/faux-learn.mjs";
-import { copyOf, ended, git, LEARN, learner, made, repoOf, savedOf, settled, sleep, started } from "./learn-support.mjs";
+import { copyOf, ended, git, LEARN, learner, made, repoOf, resnap, savedOf, settled, sleep, started } from "./learn-support.mjs";
 import { schemaProblems } from "./schema-support.mjs";
 import { call, cookieOf, runDir, runRecordOf, serve, withEnv } from "./support.mjs";
 
@@ -230,6 +230,7 @@ test("a held note that replaces an older one keeps saying so once approved: the 
   writeFileSync(join(repo, "MEMORY.md"), "- [Answer in tables](answer-in-tables.md) — The user wants answers as tables");
   git(repo, ["add", "--", "answer-in-tables.md", "MEMORY.md"]);
   git(repo, ["commit", "-q", "-m", "an older note"]);
+  await resnap(data, "replacer");
   const runId = await started(api, "replacer");
   const { view, rows } = await ended(api, runId);
   settled(view, rows, "merged");
@@ -338,6 +339,7 @@ test("approving a pending note that supersedes one marks it as a merge would, in
   for (const [file, text] of Object.entries(files)) writeFileSync(join(repo, file), text);
   git(repo, ["add", "--", ...Object.keys(files)]);
   git(repo, ["commit", "-q", "-m", "merged and retired"]);
+  await resnap(data, "keeper");
   const approve = async (file) => {
     const etag = (await api("GET", `/agents/keeper/learning/files/${file}`)).headers.get("etag");
     const res = await call(port, { method: "POST", path: `/v2/agents/keeper/learning/files/${file}/approve`, headers: { ...json, cookie, origin, "if-match": etag }, body: {} });

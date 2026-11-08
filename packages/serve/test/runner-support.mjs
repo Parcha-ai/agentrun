@@ -127,6 +127,16 @@ export function observed(store, record) {
       called("renew", claim.runId);
       return store.renew(claim, options);
     },
+    // The runner's renew of all it holds, in one transaction: the same hooks as renew's, the hold once for the batch.
+    async renewMany(claims, options) {
+      if (claims.some((claim) => record.blockRenew.has(claim.runner))) throw Object.assign(new Error("the store stayed locked past its busy timeout"), { name: "StoreBusy" });
+      if (record.holdRenew) {
+        record.renewsHeld += 1;
+        await record.holdRenew;
+      }
+      for (const claim of claims) called("renew", claim.runId);
+      return store.renewMany(claims, options);
+    },
     async release(claim, options) {
       alive();
       called("release", claim.runId);
@@ -147,6 +157,7 @@ export function observed(store, record) {
           }
           if (property === "commit") {
             return async (...args) => {
+              alive();
               const startedAt = Date.now();
               const startedOrder = nextOrder();
               const result = await value.apply(target, args);
@@ -154,6 +165,8 @@ export function observed(store, record) {
                 record.commits.push({ runId: claim.runId, epoch: claim.epoch, runner: claim.runner, startedAt, startedOrder, at: Date.now() });
                 const state = staged?.run?.state;
                 if (state && state !== "running") record.ops.push(`${state} ${claim.runId}`);
+                // The runner's own end commit of a stopped run (endRun) counts as its stopped write, as runs.update does.
+                if (record.dieAfterStopped && state === "stopped") record.dead = true;
                 staged = undefined;
               }
               return result;
@@ -170,6 +183,10 @@ export function observed(store, record) {
       record.ops.push("flush");
     },
     commands: (runId, after) => (called("commands", runId), store.commands(runId, after)),
+    commandsOf: (cursors) => {
+      for (const cursor of cursors) called("commands", cursor.runId);
+      return store.commandsOf(cursors);
+    },
     take: async (claim, id, outcome, reason) => (alive(), called("take", claim.runId), store.take(claim, id, outcome, reason)),
     retry: async (claim, id) => (alive(), called("retry", claim.runId), store.retry(claim, id)),
   };
