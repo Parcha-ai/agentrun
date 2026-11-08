@@ -25,7 +25,7 @@ const NOTE_URL = "https://github.com/settings/apps/agentrun-acme/advanced";
 
 type Call = { method: string; path: string; body: unknown };
 const json = (status: number, body: unknown) => new Response(JSON.stringify(body), { status, headers: { "content-type": "application/json" } });
-const refusal = (status: number, code: string, message: string) => json(status, { error: { code, message, retryable: false } });
+const refusal = (status: number, code: string, message: string, details?: Record<string, unknown>) => json(status, { error: { code, message, retryable: false, ...(details ? { details } : {}) } });
 /** A server with GitHub `state.connection` (null: not connected). `connect` and `disconnect` answer those routes. */
 function server(state: { connection: typeof CONNECTED | null }, { connect = () => json(200, { action: ACTION, manifest: MANIFEST, state: "st_0123456789abcdef" }), disconnect }: { connect?: () => Response; disconnect?: () => Response } = {}) {
   const calls: Call[] = [];
@@ -121,6 +121,36 @@ describe("Settings → GitHub", () => {
     });
   }
 
+  const WRONG_ORIGIN = "Connect GitHub from this server's public URL: GitHub sends you back there.";
+  it("a wrong-origin refusal says the server's words and links the public URL it serves (details.public_url)", async () => {
+    const { v2 } = server({ connection: null }, { connect: () => refusal(409, "github_wrong_origin", WRONG_ORIGIN, { public_url: "https://agentrun.example.test" }) });
+    const p = await page(v2);
+    await p.click(/^Connect GitHub$/);
+    const alert = p.host.querySelector('[role="alert"]') as HTMLElement;
+    expect(alert.textContent).toContain(WRONG_ORIGIN);
+    const link = alert.querySelector("a") as HTMLAnchorElement;
+    expect(link.getAttribute("href")).toBe("https://agentrun.example.test/");
+    expect(link.closest("p")?.textContent).toBe("Open this server at https://agentrun.example.test/ to connect GitHub.");
+    expect(submits).toBe(0);
+  });
+
+  it("a wrong-origin refusal with no public URL served says the words alone, no link (never one read from the text)", async () => {
+    const { v2 } = server({ connection: null }, { connect: () => refusal(409, "github_wrong_origin", `${WRONG_ORIGIN} It is https://agentrun.example.test.`) });
+    const p = await page(v2);
+    await p.click(/^Connect GitHub$/);
+    const alert = p.host.querySelector('[role="alert"]') as HTMLElement;
+    expect(alert.textContent).toContain(WRONG_ORIGIN);
+    expect(alert.querySelector("a")).toBeNull();
+  });
+
+  it("a wrong-origin refusal whose public URL is no http(s) URL links nothing", async () => {
+    const { v2 } = server({ connection: null }, { connect: () => refusal(409, "github_wrong_origin", WRONG_ORIGIN, { public_url: "javascript:alert(1)" }) });
+    const p = await page(v2);
+    await p.click(/^Connect GitHub$/);
+    expect(p.host.querySelector('[role="alert"] a')).toBeNull();
+    expect(p.host.innerHTML).not.toContain("javascript:alert(1)");
+  });
+
   it("already connected (409): the server's words, then the App this server has", async () => {
     const state = { connection: null as typeof CONNECTED | null };
     const { v2 } = server(state, { connect: () => { state.connection = CONNECTED; return refusal(409, "github_already_connected", "This server already has a GitHub App. Disconnect it first."); } });
@@ -182,6 +212,17 @@ describe("Settings → GitHub", () => {
     expect(note.textContent).toContain("Delete the App itself on GitHub: javascript:alert(1)");
   });
 
+  it("a disconnect answered 404 (another tab disconnected it first) reads the status again: not connected, no error", async () => {
+    const state = { connection: CONNECTED as typeof CONNECTED | null };
+    // As the server answers it: 404 not_found (server.ts disconnectGitHub).
+    const { v2 } = server(state, { disconnect: () => { state.connection = null; return refusal(404, "not_found", "No GitHub App is connected to this server."); } });
+    const p = await page(v2);
+    await p.click(/^Disconnect$/);
+    await p.click(/^Disconnect GitHub$/);
+    expect(p.button(/^Connect GitHub$/)).toBeTruthy();
+    expect(p.host.querySelector('[role="alert"]')).toBeNull();
+  });
+
   it("a disconnect refused as not connected (409) reads the status again: not connected", async () => {
     const state = { connection: CONNECTED as typeof CONNECTED | null };
     const { v2 } = server(state, { disconnect: () => { state.connection = null; return refusal(409, "github_not_connected", "GitHub is not connected."); } });
@@ -206,6 +247,7 @@ describe("the way back from GitHub (#/settings/github?github=…)", () => {
     ["github=error&reason=state_invalid", "That connection was started elsewhere or has expired. Start again."],
     ["github=error&reason=conversion_failed", "GitHub didn't hand back the App. Try connecting again."],
     ["github=error&reason=installation_unverified", "The App's install couldn't be confirmed. Install it again from GitHub."],
+    ["github=error&reason=already_connected", "Another GitHub App was connected while this one was being created. Delete the new App on GitHub."],
     ["github=error&reason=a_future_reason", "The connection didn't finish. Try again."],
     ["github=error", "The connection didn't finish. Try again."],
   ] as const) {
@@ -214,7 +256,7 @@ describe("the way back from GitHub (#/settings/github?github=…)", () => {
       const { v2, calls } = server({ connection: query === "github=connected" ? CONNECTED : null });
       const p = await page(v2, query);
       expect(p.host.querySelector('[aria-label="From GitHub"]')?.textContent).toContain(words);
-      for (const raw of ["state_invalid", "conversion_failed", "installation_unverified", "a_future_reason"]) expect(p.host.textContent).not.toContain(raw);
+      for (const raw of ["state_invalid", "conversion_failed", "installation_unverified", "already_connected", "a_future_reason"]) expect(p.host.textContent).not.toContain(raw);
       expect(calls.some((c) => c.method === "GET" && c.path === "/v2/integrations/github")).toBe(true);
       expect(replace).toHaveBeenCalledWith(null, "", `${location.pathname}${location.search}#/settings/github`);
     });
