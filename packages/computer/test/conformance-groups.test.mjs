@@ -350,6 +350,15 @@ test("lifetime.extend passes a provider whose extend moves the deadline: the com
 	assert.deepEqual(statuses(report), { "lifetime.extend": "pass" }, reasons(report)["lifetime.extend"]);
 });
 
+test("apps.launch-terminate needs apps alone: a phone with no UI tree and no files is seen launching Settings in its screenshot", async () => {
+	const groups = ["screen", "input.touch", "apps"];
+	const seen = await run(fakeDevices({ kind: "android", groups }).provider, ["apps.launch-terminate"]);
+	assert.deepEqual(statuses(seen), { "apps.launch-terminate": "pass" }, reasons(seen)["apps.launch-terminate"]);
+	const hidden = await run(fakeDevices({ kind: "android", groups, broken: "launch-hidden" }).provider, ["apps.launch-terminate"]);
+	assert.deepEqual(statuses(hidden), { "apps.launch-terminate": "fail" });
+	assert.match(reasons(hidden)["apps.launch-terminate"], /^com\.android\.settings shown after apps\.launch: a screenshot other than the one before it/);
+});
+
 /** The lifetimes provider.deadline asked for, in order: the run's shared computer is not the case's. */
 const deadlineLifetimes = (made) => made.filter(({ spec }) => spec.labels?.["agentrun.conformance.case"] === "deadline").map(({ spec }) => spec.lifetimeMs);
 

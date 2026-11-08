@@ -44,3 +44,12 @@ test("a cloud Android with no fixture passes Core through Settings: tap, swipe, 
 	assert.deepEqual(report.cleanup.left, []);
 	assert.equal(fake.sessions.size, 0, "every phone the run rented is ended");
 });
+
+test("apps.launch-terminate fails a phone whose apps.list says Settings is in front while its tree still shows the launcher", { timeout: 60_000 }, async () => {
+	const fake = fakePhoneHarness({ launchHidden: true });
+	const provider = await create({ apiKey: KEY, fetch: fake.fetch, adb: fake.adb, ledger: memoryLedger(), now: fake.clock.now, sleep: fake.clock.sleep, maxLifetimeMs: 10 * 60_000 });
+	const report = await runConformance(provider, { image: "android", patience: 1000, cases: conformanceCases.filter((c) => c.id === "apps.launch-terminate") });
+	assert.equal(statuses(report)["apps.launch-terminate"], "fail");
+	assert.match(reasonOf(report, "apps.launch-terminate"), /^com\.android\.settings shown after apps\.launch: Settings' list in apps\.ui_tree, not the screen before it/);
+	assert.equal(fake.sessions.size, 0);
+});

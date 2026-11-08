@@ -49,9 +49,10 @@ const json = (status, body, headers = {}) => new Response(JSON.stringify(body), 
  * The fake. Options: `readyAfter`, how many GETs a new session stays provisioning (default 1); `start`, what a create
  * meets ("ok", "busy", "limit", "credit", "error": the session fails while provisioning); `loseAnswer`, the POST is
  * admitted and then its answer is lost (fetch rejects); `others`, sessions on the account this provider never made;
- * `code`, the unlock code the phone takes (default the one the API gives); `abi`, what getprop reports.
+ * `code`, the unlock code the phone takes (default the one the API gives); `abi`, what getprop reports; `launchHidden`,
+ * a launched app is reported in front (dumpsys) while the screen and the tree still show the launcher.
  */
-export function fakePhoneHarness({ readyAfter = 1, start = "ok", loseAnswer = false, others = [], code, abi = "x86_64", clock = fakeClock() } = {}) {
+export function fakePhoneHarness({ readyAfter = 1, start = "ok", loseAnswer = false, others = [], code, abi = "x86_64", launchHidden = false, clock = fakeClock() } = {}) {
 	const requests = [];
 	const adbCalls = [];
 	const sessions = new Map(others.map((s) => [s.id, { ...s }]));
@@ -136,7 +137,7 @@ export function fakePhoneHarness({ readyAfter = 1, start = "ok", loseAnswer = fa
 		const node = (cls, attrs, children = []) => ({ cls, attrs: { text: "", "resource-id": "", "content-desc": "", clickable: "false", focused: "false", scrollable: "false", enabled: "true", ...attrs }, children });
 		const box = ([x, y, w, h]) => `[${x},${y}][${x + w},${y + h}]`;
 		const full = [0, 0, SCREEN.width, SCREEN.height];
-		if (phone.foreground === LAUNCHER) {
+		if (phone.foreground === LAUNCHER || launchHidden) {
 			return node("android.widget.FrameLayout", { bounds: box(full), package: LAUNCHER }, [node("android.widget.TextView", { text: "Settings", "content-desc": "Settings", clickable: "true", bounds: box([20, 500, 80, 80]), package: LAUNCHER })]);
 		}
 		const pkg = { package: SETTINGS };
@@ -278,7 +279,7 @@ export function fakePhoneHarness({ readyAfter = 1, start = "ok", loseAnswer = fa
 		header.writeUInt32LE(1, 8);
 		header.writeUInt32LE(0, 12);
 		const pixels = Buffer.alloc(SCREEN.width * SCREEN.height * 4);
-		for (let i = 0; i < pixels.length; i += 4) pixels.set([phone.foreground === SETTINGS ? 30 : 200, 60, 90, 255], i);
+		for (let i = 0; i < pixels.length; i += 4) pixels.set([phone.foreground === SETTINGS && !launchHidden ? 30 : 200, 60, 90, 255], i);
 		return Buffer.concat([header, pixels]);
 	}
 
