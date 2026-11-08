@@ -8,4 +8,4 @@ Template fixes from QA on Render:
 - `GET /v2/templates` shows each package's `author` and its answer's schema (`output: {schema, json_schema}`).
 - `kyb`'s answer fits its output limit: the report is a short narrative, never a copy of the structured fields.
 - `inbound-lead`'s score is computed from the criteria it lists, by its rubric, so a missed must or a met disqualifier always caps it.
-- `market-monitor` reads small slices of pages (at most a few per company), so a weekly run fits its budget.
+- `market-monitor` reads small slices of pages (at most a few per company), and its budget is $1.50, so a weekly run of up to 4 companies fits.

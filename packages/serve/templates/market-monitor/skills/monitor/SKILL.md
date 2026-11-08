@@ -38,7 +38,7 @@ $0.035 on every turn after that, and a handful of them park the run before it wr
 of whole pages, because its next step alone needed $2.23.
 
 The plan: about 25 KB of instructions, plus about 25 KB per company and never over 40 KB (3 small fetches and 1
-search), in about a dozen requests. That fits $1.00 for 3 companies even at 40 KB each, and for 4 on typical pages.
+search), in about a dozen requests. That fits the $1.50 budget for 4 companies even at 40 KB each, with room for the last step.
 So:
 
 - **Every `web_fetch` passes `max_chars`:** 3000 for a changelog or blog (its first screen holds the newest entries),

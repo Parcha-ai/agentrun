@@ -52,12 +52,15 @@ Save it in the console (Settings → Tool keys → Model keys), which takes effe
    `ANTHROPIC_API_KEY` or `OPENAI_API_KEY` instead; any OpenAI Responses gateway works through `AGENT_MODEL_BASE_URL`
    and `AGENT_MODEL_API_KEY`, with its model named in `AGENT_MODEL`.
 
-2. **About $7 a month**: deploy it to Render in one click: a Starter instance with a 1 GB disk, always on, with a URL. A Starter's 512 MB runs 3 pi agents or 2 Codex runs at once; a start that doesn't fit is refused with a retry-after until a run ends. A 2 GB instance holds 10 Codex runs. The image leaves Claude Code out for now, so run Claude Code agents with `npx @parcha/agentrun`. Render's free instance works for a try, but it has no disk, so it loses every run when it sleeps or restarts.
+2. **About $27.50 a month**: deploy it to Render in one click: a 2 GB instance (`1c-2g`, $25 a month) with a 10 GB disk ($2.50), always on, with a URL. Take no less: Claude Code and Codex install themselves on first use onto the disk, which fills 1 GB, and 512 MB is short for them. 2 GB holds 10 Codex runs at once; a start that doesn't fit is refused with a retry-after until a run ends. Render's free instance works for a try, but it has no disk, so it loses every run when it sleeps or restarts.
 
    [Deploy to Render](https://render.com/deploy?repo=https://github.com/Parcha-ai/agentrun) from [`render.yaml`](render.yaml),
    then set `OPENROUTER_API_KEY` in the service's Environment (or another provider's key, or a gateway's
    `AGENT_MODEL_BASE_URL` and `AGENT_MODEL_API_KEY` with its model in `AGENT_MODEL`). Render generates the token,
    `AGENTRUN_TOKEN`: open `https://<your service>.onrender.com/?token=<it>`.
+   With a public address (`AGENTRUN_PUBLIC_URL`, or on Render its own `RENDER_EXTERNAL_URL`), the first visit asks for a setup
+   code. Find the setup code in the server's log (on Render, the Logs tab), or open the link the log prints
+   (`Set up this server: https://<your service>.onrender.com/setup#code=<code>`).
 
 Then **New agent**, **Start a run**, and **All runs**. [AgentRun Server](packages/serve/README.md) has the API, the models, what
 a run may reach, and the container.

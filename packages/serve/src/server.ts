@@ -743,6 +743,10 @@ async function startHolding(options: ServeOptions, data: string, lock: ServerLoc
   const tokenFile = options.token === undefined ? join(data, TOKEN_FILE) : null;
   const stored = options.token === undefined ? await tokenIn(tokenFile!) : undefined;
   const token = options.token ?? stored!.token;
+  // Given a token (AGENTRUN_TOKEN), a .token an earlier start made holds one this server refuses: it goes, so nothing
+  // (a person told the token is there, a CLI that reads it) takes a dead token from it. A later start without one makes a
+  // new file and token.
+  if (options.token !== undefined) await rm(join(data, TOKEN_FILE), { force: true });
   const doorTokenFile = join(data, DOOR_TOKEN_FILE);
   const { token: doorToken } = await tokenIn(doorTokenFile);
   const log = options.log;
