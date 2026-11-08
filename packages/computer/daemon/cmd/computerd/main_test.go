@@ -308,7 +308,7 @@ func TestInitWithOwnNetworkMustStartAsRoot(t *testing.T) {
 	}
 }
 
-func TestProbeListsTheInterfacesOfItsNetwork(t *testing.T) {
+func TestProbeListsTheLiveInterfacesOfItsNetwork(t *testing.T) {
 	code, stdout, stderr := computerdOut(t, 30*time.Second, "probe")
 	if code != 0 {
 		t.Fatalf("probe: exit %d, stderr %s", code, stderr)
@@ -323,12 +323,16 @@ func TestProbeListsTheInterfacesOfItsNetwork(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
+	// The live ones, up or addressed, in the kernel's order: a down interface with no address is quiet, not listed here.
 	want := []string{}
 	for _, iface := range ifaces {
-		want = append(want, iface.Name)
+		addrs, _ := iface.Addrs()
+		if iface.Flags&net.FlagUp != 0 || len(addrs) > 0 {
+			want = append(want, iface.Name)
+		}
 	}
 	if strings.Join(report.Interfaces, ",") != strings.Join(want, ",") {
-		t.Fatalf("probe interfaces %q, want this network's %q", report.Interfaces, want)
+		t.Fatalf("probe interfaces %q, want this network's live %q", report.Interfaces, want)
 	}
 }
 

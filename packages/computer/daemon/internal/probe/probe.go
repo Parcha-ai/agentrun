@@ -26,6 +26,8 @@ import (
 	"sync"
 	"syscall"
 	"time"
+
+	"github.com/Parcha-ai/agentrun/packages/computer/daemon/internal/netstate"
 )
 
 // Bounds bounds each target: its connect, its answer (from the request's send), and the bytes read from it; and, for a
@@ -73,13 +75,17 @@ type Target struct {
 
 // Result is the probe's report, one JSON line. Reached holds the targets that answered, Accepted those that accepted
 // a connection and sent nothing back, each in the order given; Results has every target, refused ones too. Interfaces
-// names the network interfaces the probe's network namespace holds: ["lo"] alone in a computer whose programs have a
-// network of their own (init --own-network); null when they cannot be listed.
+// names the live network interfaces of the probe's network namespace, those up or addressed: ["lo"] alone in a
+// computer whose programs have a network of their own (init --own-network); null when they cannot be listed. Quiet
+// names the rest, down with no address (a kernel's fallback tunnels, on some kernels), and Raised the quiet ones the
+// probe could bring up as its user (it puts each back): none for a program with no CAP_NET_ADMIN.
 type Result struct {
 	UID        int      `json:"uid"`
 	GID        int      `json:"gid"`
 	Kernel     string   `json:"kernel"`
 	Interfaces []string `json:"interfaces"`
+	Quiet      []string `json:"quiet"`
+	Raised     []string `json:"raised"`
 	Reached    []string `json:"reached"`
 	Accepted   []string `json:"accepted"`
 	Results    []Target `json:"results"`
@@ -122,7 +128,8 @@ func Run(targets []string, bounds Bounds) Result {
 		}()
 	}
 	wg.Wait()
-	result := Result{UID: os.Getuid(), GID: os.Getgid(), Kernel: kernel(), Interfaces: interfaces(), Reached: []string{}, Accepted: []string{}, Results: results}
+	live, quiet, raised := interfaces()
+	result := Result{UID: os.Getuid(), GID: os.Getgid(), Kernel: kernel(), Interfaces: live, Quiet: quiet, Raised: raised, Reached: []string{}, Accepted: []string{}, Results: results}
 	for _, one := range results {
 		switch one.Outcome {
 		case "answered":
@@ -369,18 +376,21 @@ func framedDNS(id uint16) func([]byte) (string, int) {
 	}
 }
 
-// interfaces names the network interfaces of the probe's network namespace, in the kernel's order; nil when they
-// cannot be listed.
-func interfaces() []string {
-	ifaces, err := net.Interfaces()
+// interfaces names the probe's network namespace's live interfaces (up or addressed), its quiet ones (down, no
+// address) and the quiet ones it could raise, each in the kernel's order; nil, and empty lists, when they cannot be read.
+func interfaces() (live, quiet, raised []string) {
+	ifaces, err := netstate.Read()
 	if err != nil {
-		return nil
+		return nil, []string{}, []string{}
 	}
-	names := make([]string, 0, len(ifaces))
-	for _, iface := range ifaces {
-		names = append(names, iface.Name)
+	raised = []string{}
+	quiet = netstate.Quiet(ifaces)
+	for _, name := range quiet {
+		if up, _ := netstate.Raise(name); up {
+			raised = append(raised, name)
+		}
 	}
-	return names
+	return netstate.Live(ifaces), quiet, raised
 }
 
 // kernel is uname's release, or "" when it cannot be read.
