@@ -18,6 +18,7 @@ import { parseArgs } from 'node:util';
 import { FLAGS, WAIT } from '../packages/agentrun/lib/follow.mjs';
 import { SECRETS } from '../packages/agentrun/lib/login.mjs';
 import { SKILL_INSTALL } from '../packages/agentrun/lib/skill.mjs';
+import { TEMPLATE_VALIDATE } from '../packages/agentrun/lib/template.mjs';
 import { allCommands, recipeProblems, referenceText, skillText } from './clients/skill.mjs';
 import { clientProblems, clientText } from './clients/typescript.mjs';
 import { typesOf, typesText } from './clients/types.mjs';
@@ -33,7 +34,7 @@ const TYPES = 'apps/console/src/lib/api.generated.ts';
 // may begin with one.
 const RESERVED = ['api', 'help', 'import', 'reset-password', 'login', 'logout', 'skill'];
 // The CLI's hand-written commands: none may be a generated one too.
-const HAND = { flags: FLAGS, wait: WAIT, local: [...SECRETS, SKILL_INSTALL] };
+const HAND = { flags: FLAGS, wait: WAIT, local: [...SECRETS, SKILL_INSTALL, TEMPLATE_VALIDATE] };
 const SCALAR = ['string', 'number', 'integer', 'boolean'];
 const GLOBAL_FLAGS = ['base-url', 'data', 'body', 'body-type', 'help'];
 // Headers the CLI sets itself.

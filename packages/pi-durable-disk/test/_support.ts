@@ -3,7 +3,7 @@ import { mkdirSync, mkdtempSync, rmSync } from "node:fs";
 import { join } from "node:path";
 import * as piDurable from "@earendil-works/pi-durable";
 import { ROOT_CONVERSATION_ID } from "@earendil-works/pi-durable";
-import type { EntryId, Storage, StorageWrite } from "@earendil-works/pi-durable";
+import type { EntryId, Seq, Storage, StorageWrite } from "@earendil-works/pi-durable";
 import type { SqliteDatabase, SqliteExecutor, SqliteValue } from "@earendil-works/pi-durable/storage/sqlite";
 import { BACKGROUND_CONTEXT } from "@earendil-works/chord/context";
 import { openArchilStore } from "../src/store.ts";
@@ -30,19 +30,29 @@ export function sqliteError(errcode: number, message: string): Error {
   return Object.assign(new Error(message), { code: "ERR_SQLITE_ERROR", errcode, errstr: message });
 }
 
+/** One ordinary commit of `writes` through pi 1.5's batched `Storage.commit`: its seq, from the durability receipt; a
+ *  batch Durable refused throws its refusal, as the commit itself threw before 1.5. */
+export async function commitOne(storage: Storage, writes: readonly StorageWrite[]): Promise<Seq> {
+  let seq: Seq | undefined;
+  const result = await storage.commit([writes], (_index, stored) => (seq = stored), ctx);
+  if (result.refused !== undefined) throw result.refused;
+  if (seq === undefined) throw new Error("the commit stored nothing and refused nothing");
+  return seq;
+}
+
 /** The first commit creates the root conversation; each later commit appends one entry (the cheapest FULL commit). */
 export function entryCommitter(storage: Storage, payloadBytes = 256) {
   const pad = "x".repeat(payloadBytes);
   return {
     async setup(): Promise<void> {
-      await storage.commit([{ type: "conversation", value: { id: ROOT_CONVERSATION_ID } }], ctx);
+      await commitOne(storage, [{ type: "conversation", value: { id: ROOT_CONVERSATION_ID } }]);
     },
     async commit(n: number): Promise<number> {
       const id = await storage.mintId<EntryId>();
       const writes: StorageWrite[] = [
         { type: "entry", value: { id, conversationId: ROOT_CONVERSATION_ID, kind: "p2.chunk", data: { n, pad } } },
       ];
-      return Number(await storage.commit(writes, ctx));
+      return Number(await commitOne(storage, writes));
     },
   };
 }
@@ -75,6 +85,10 @@ export class FaultyDatabase implements SqliteDatabase {
 
   run(sql: string, ...params: SqliteValue[]): Promise<void> {
     return this.inner.run(sql, ...params);
+  }
+
+  runCounted(sql: string, ...params: SqliteValue[]): Promise<number> {
+    return this.inner.runCounted(sql, ...params);
   }
 
   get<T extends object>(sql: string, ...params: SqliteValue[]): Promise<T | undefined> {

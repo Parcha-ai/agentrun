@@ -10,8 +10,12 @@ import { createServer, type IncomingMessage, type ServerResponse } from "node:ht
 import { isIP, type AddressInfo } from "node:net";
 import type { Context, JsonValue } from "@earendil-works/chord";
 import { BACKGROUND_CONTEXT, withAbortSignal } from "@earendil-works/chord/context";
-import { ConversationBusy, ROOT_CONVERSATION_ID, watchEvents } from "@earendil-works/pi-durable";
+import { ConversationBusy, ROOT_CONVERSATION_ID } from "@earendil-works/pi-durable";
 import type { Conversation, ConversationId, Cursor, EntryId, Harness, JsonObject, SubmissionId, SubmissionRecord, Tx, UserInput } from "@earendil-works/pi-durable";
+
+// pi 1.5 removed watchEvents: the door's GET /events reads the adapter that rebuilds it on observeCommits until P5 moves
+// it to conversation.watch with ConversationTranscript and pi.live (scripts/watch-events-p5.test.mjs lists each caller).
+import { watchEvents } from "./live-events.ts";
 import { DOOR_TIMEOUT, openDoor, type Door, type DoorHook, type DoorRecord, type DoorLog, type DoorTimeouts } from "./door.ts";
 import { PdaError } from "./errors.ts";
 import { busyState } from "./park.ts";

@@ -39,13 +39,16 @@ for (const [point, before, total] of [['after-conversation', ['legacy-open'], 1]
   });
 }
 
-test('without its extension back, the older build\'s request in flight runs before the runner reaches the node and is lost', (t) => {
+test('without its extension back, the older build\'s request in flight is not sent again before the runner reaches the node, and the node is delivered once', (t) => {
+  // pi 1.5 never resends a request a crash cut: the attempt counts as failed under its retry policy, and the next one
+  // waits for the backoff (pi-durable CHANGELOG 1.5.0). On 1.1 the resent request ran before the runner reached the node.
   const dir = mkdtempSync(join(tmpdir(), 'node-runner-legacy-'));
   t.after(() => rmSync(dir, { recursive: true, force: true }));
   writeFileSync(join(dir, 'requests'), '');
   assert.equal(child('legacy', dir, { KILL_AT: 'mid-model' }).signal, 'SIGKILL');
   const second = child('resume', dir, { LEGACY: 'none' });
-  assert.equal(second.events[0], 'request', 'pi resumed the request before the runner reached the node');
-  assert.notEqual(second.status, 0);
-  assert.match(second.stderr, /NODE_NOT_DELIVERED/);
+  assert.equal(second.status, 0, second.stderr || `no end: ${JSON.stringify(second.rows)}`);
+  assert.deepEqual(second.events, ['reached', 'open', 'request', 'end'], 'nothing of the node ran before the runner reached it');
+  assert.deepEqual(second.end.record, { verdict: 'buy' });
+  assert.equal(requests(dir), 2);
 });

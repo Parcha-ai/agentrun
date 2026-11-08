@@ -8,6 +8,7 @@ import {
 	type ExecutionEnv,
 	ExecutionError,
 	err,
+	type FileChange,
 	FileError,
 	type FileInfo,
 	type FileWatcher,
@@ -17,7 +18,6 @@ import {
 	type ShellExecResult,
 	type TextLineReader,
 	toError,
-	type WatchChange,
 	type WatchTarget,
 } from "@earendil-works/pi-durable/env";
 import { type Box, BoxError, type BoxProvider, type BoxSpec, isReservedLabel } from "../box/box.ts";
@@ -144,7 +144,7 @@ class LazyEnv implements ExecutionEnv {
 
 	watch(
 		targets: readonly WatchTarget[],
-		onChange: (change: WatchChange) => void,
+		onChange: (change: FileChange) => void,
 		context: Context,
 	): Promise<Result<FileWatcher, FileError>> {
 		return this.#file(targets[0]?.path ?? "", context, (env) => env.watch(targets, onChange, context));

@@ -36,21 +36,24 @@ export function waitDeadline(checkpoint: JsonValue | undefined): number | undefi
 }
 
 /**
- * Whether the run's live work needs this instance. A task that runs or is ready to run does, unless it only sleeps
- * until a deadline more than `thresholdMs` away. Waiting and completing tasks depend on other tasks, which decide; a
- * blocked task (no registered definition can take it) never runs, so it never keeps the instance up. A closing
- * Harness, a task state this code does not know, and unsettled submissions with no live task all count as busy.
+ * Whether the run's live work needs this instance. A task that runs or is pending (pi 1.5's name for ready to run)
+ * does, unless it only sleeps until a deadline more than `thresholdMs` away: a `sleeping` task (pi 1.5's durable
+ * sleep) until its `until`, a running one until its checkpoint's deadline (`waitDeadline`). Waiting and completing
+ * tasks depend on other tasks, which decide; a blocked task (no registered definition can take it) never runs, so it
+ * never keeps the instance up. A closing Harness, a task state this code does not know, and unsettled submissions with
+ * no live task all count as busy.
  */
 export function busyState(inspection: HarnessInspection, now: number, thresholdMs: number): BusyState {
   if (inspection.scheduling === "closing") return { kind: "busy" };
   let until: number | undefined;
   let live = false;
   for (const task of inspection.tasks) {
-    const kind = task.state.kind as string;
+    const state = task.state as { readonly kind: string; readonly until?: unknown };
+    const kind = state.kind;
     if (kind === "waiting" || kind === "completing" || kind === "blocked") continue;
-    if (kind !== "running" && kind !== "ready") return { kind: "busy" };
+    if (kind !== "running" && kind !== "pending" && kind !== "sleeping") return { kind: "busy" };
     live = true;
-    const deadline = waitDeadline(task.record.state.checkpoint);
+    const deadline = kind === "sleeping" ? (typeof state.until === "number" && Number.isFinite(state.until) ? state.until : undefined) : waitDeadline(task.record.state.checkpoint);
     if (deadline === undefined || deadline - now <= thresholdMs) return { kind: "busy" };
     until = Math.min(until ?? deadline, deadline);
   }
@@ -202,7 +205,9 @@ export function watchParking(run: ParkTarget, options: ParkOptions): Parking {
     queueMicrotask(() => void loop());
   }
 
-  const unsubscribe = run.harness.subscribeCommits(() => check());
+  // Each stored commit rechecks (pi 1.5's observeCommits; the Session's close or failure publishes nothing more, as on 1.1).
+  const observation = run.harness.observeCommits({ advance: () => check(), end: () => undefined });
+  const unsubscribe = () => observation.detach();
   settled.promise.catch(() => {});
   check();
   return {
@@ -234,7 +239,8 @@ export async function drain(run: Pick<ParkTarget, "harness">, options: DrainOpti
   const now = options.now ?? Date.now;
   let changed = () => {};
   let timedOut = false;
-  const unsubscribe = run.harness.subscribeCommits(() => changed());
+  const observation = run.harness.observeCommits({ advance: () => changed(), end: () => undefined });
+  const unsubscribe = () => observation.detach();
   const timer = setTimeout(() => {
     timedOut = true;
     changed();

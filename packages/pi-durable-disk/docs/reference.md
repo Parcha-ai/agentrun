@@ -18,7 +18,7 @@ keyless example, and the install lines.
 
 - Linux with `setpriv` (util-linux), or macOS for development ([On macOS](#on-macos)). Windows is not supported.
 - Node 22.19 or later, to run the package and its unit tests.
-- `@earendil-works/pi-durable` and `@earendil-works/chord`, `>=1.0.4 <1.4.0`, as peer dependencies. The package is developed against 1.1.0, and CI runs its whole suite on 1.0.4 too, the lowest version the range accepts, and on 1.2 and 1.3.
+- `@earendil-works/pi-durable` and `@earendil-works/chord`, `1.5.0` exactly, as peer dependencies. CI runs its whole suite on 1.5.0.
 
 A run lives on a directory of one machine ([A run on a local directory](#a-run-on-a-local-directory)). Placing a run on
 an Archil disk, or in a remote box, is agentrun-serve's job, not this package's.

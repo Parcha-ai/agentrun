@@ -125,12 +125,16 @@
       "processTable",
       "profilePragmas",
       "runPath",
-      "snapshotInputs"
+      "snapshotInputs",
+      "watchEvents"
     ],
     "types": [
       "BarrierRow",
       "BarrierStatus",
       "InputRecord",
+      "LiveEnd",
+      "LiveEvent",
+      "LiveEvents",
       "Pin",
       "PinSpec",
       "ProcessInfo",

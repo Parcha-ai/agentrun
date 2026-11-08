@@ -30,11 +30,12 @@ test('no tracked file imports Type, Static or TSchema from pi-ai, pi-agent-core,
   assert.deepEqual(found, [], 'take TypeBox from typebox');
 });
 
-test('each package whose source uses TypeBox declares typebox itself, at the version pi-ai resolves', () => {
+test('each package whose source uses TypeBox declares typebox itself, at the one typebox the workspace locks', () => {
   const lock = JSON.parse(readFileSync(join(root, 'package-lock.json'), 'utf8'));
-  const piAi = lock.packages['node_modules/@earendil-works/pi-ai'];
-  const wanted = piAi.dependencies.typebox;
-  assert.match(wanted, /^\d+\.\d+\.\d+$/, 'pi-ai pins its typebox exactly');
+  // pi-ai 1.5 no longer depends on typebox (nor re-exports it): the workspace's one typebox is what a package declares.
+  assert.equal(lock.packages['node_modules/@earendil-works/pi-ai'].dependencies?.typebox, undefined, 'pi-ai 1.5 takes no typebox');
+  const wanted = lock.packages['node_modules/typebox'].version;
+  assert.match(wanted, /^\d+\.\d+\.\d+$/, 'one typebox, at an exact version');
   const wrong = [];
   for (const name of readdirSync(join(root, 'packages'))) {
     const src = join(root, 'packages', name, 'src');

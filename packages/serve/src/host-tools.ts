@@ -14,7 +14,8 @@
 import { StringDecoder } from "node:string_decoder";
 import type { Context } from "@earendil-works/chord";
 import { withAbortSignal } from "@earendil-works/chord/context";
-import { ROOT_CONVERSATION_ID, type ToolRegistration } from "@earendil-works/pi-durable";
+import { createModels } from "@earendil-works/pi-ai/models";
+import { ROOT_CONVERSATION_ID, type ToolExecutionApi, type ToolRegistration } from "@earendil-works/pi-durable";
 import type { HostTool } from "@parcha/agentrun-kernel";
 import type { DurableRun } from "@parcha/pi-durable-disk";
 import { wireName } from "./catalog.js";
@@ -97,6 +98,24 @@ function bounded(limits: ToolRegistration["outputLimits"]) {
 /** One call's result, kept by its call id for the run's timeline (an adapter's tool_end carries none). */
 export type ToolResults = Map<string, { text: string; isError: boolean }>;
 
+/** The members of pi's ToolExecutionApi a host tool's api gives. They are typed against pi's own type (`HostApi`), so a
+ *  change to any of them in pi fails the build, and they are every member pi's own tools read (scripts/host-tool-api.test.mjs
+ *  reads pi's tool sources for each `api.<member>`). The rest of pi's api (taskId, registry, the task, memo, document and
+ *  nested-tool members) belongs to the tool task pi runs a tool in, which a host tool, called by another harness, has
+ *  none of: the full type cannot be built here, so a read of any other member throws, naming it, rather than reading as
+ *  "is not a function". `conversationId` is not given: serve's browser-cost `capped` reads it, but the browser tools run
+ *  on pi only, never as a host tool (BOXED_TOOLS and the web and monid tools are the host tools); a browser host tool
+ *  would add it here. */
+export const HOST_API_MEMBERS = ["env", "callId", "commit", "output", "outputWindow", "retainedOutput", "diagnostic", "agent", "models"] as const;
+type HostApi = Pick<ToolExecutionApi, (typeof HOST_API_MEMBERS)[number]>;
+const hostApi = (given: HostApi): ToolExecutionApi =>
+  new Proxy(given, {
+    get: (target, key) => {
+      if (typeof key === "symbol" || key === "then" || Object.hasOwn(target, key)) return Reflect.get(target, key);
+      throw new Error(`a host tool's api has no ${key}: pi gives it only to a tool its own tool task runs`);
+    },
+  }) as unknown as ToolExecutionApi;
+
 /** The tools whose result is pi's own words about a path (`Successfully wrote to <path>`), never a file's text. */
 const SAYS_PATH = new Set(["write", "edit"]);
 
@@ -149,20 +168,32 @@ export function hostTools(run: DurableRun, names: readonly string[], context: Co
         const notes: string[] = [];
         const env = await run.env({ conversationId: ROOT_CONVERSATION_ID, read: undefined as never }, context);
         // The call's id and the run's store, as pi's: a paid call marks and books its charge there (monid.ts).
-        const api = { env, callId, commit: (change: never, at: Context) => run.harness.commit(change, at), output: (chunk: string | Uint8Array) => out.push(chunk), outputWindow: undefined, retainedOutput: () => out.retained(), diagnostic: (note: { message: string }) => void notes.push(note.message) };
+        const api = hostApi({
+          env, callId,
+          commit: (change, at, options) => run.harness.commit(change, at, options),
+          output: (chunk) => out.push(chunk), outputWindow: undefined, retainedOutput: () => out.retained(),
+          diagnostic: (note) => void notes.push(note.message),
+          // pi's read asks the calling agent for its model, for an image's limits. A non-pi run's root agent has no pi
+          // model, so read uses its default image limits; models is an empty catalog it then never consults.
+          agent: async (at) => {
+            const root = await run.harness.conversation(ROOT_CONVERSATION_ID, at);
+            if (!root) throw new Error("the run has no root conversation");
+            return root.agent(at);
+          },
+          models: createModels(),
+        });
         // A tool that throws (bash on a non-zero exit or a timeout) still answers with its output, as pi's harness does;
         // monid's answer a failure as an error result, which is kept as it is.
-        const result = await tool.execute(args as never, api as never, withAbortSignal(signal, context)).catch((error: Error) => ({ failed: error.message, isError: true }));
-        // pi 1.1 names the result's blocks `content`, pi 1.2 and later `output`; pi 1.2's bash answers its exit as a
-        // result's diagnostic, where 1.1 threw it.
-        const given = result as unknown as { content?: unknown; output?: unknown; isError?: boolean; failed?: string; diagnostics?: readonly { message: string }[] };
-        const said = [textOf(given.content ?? given.output) || out.text(), given.failed, ...notes, ...(given.diagnostics ?? []).map((note) => note.message)].filter((part) => part).join("\n\n");
+        const result = await tool.execute(args as never, api, withAbortSignal(signal, context)).catch((error: Error) => ({ failed: error.message, isError: true }));
+        // pi names a result's blocks `output`; its bash answers its exit as a result's diagnostic.
+        const given = result as unknown as { output?: unknown; isError?: boolean; failed?: string; diagnostics?: readonly { message: string }[] };
+        const said = [textOf(given.output) || out.text(), given.failed, ...notes, ...(given.diagnostics ?? []).map((note) => note.message)].filter((part) => part).join("\n\n");
         const isError = given.isError === true;
         const work = (env as { cwd?: unknown }).cwd;
         const works = typeof work === "string" ? [work, realOf(work)] : [];
         const answer = { text: isError || SAYS_PATH.has(name) ? workspaceRelative(said, works) : said, isError };
         results.set(callId, answer);
-        const images = imagesOf(given.content ?? given.output);
+        const images = imagesOf(given.output);
         return images.length ? { ...answer, images } : answer;
       },
     };

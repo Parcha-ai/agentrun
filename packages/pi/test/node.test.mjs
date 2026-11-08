@@ -12,7 +12,7 @@ import { RecordDoc, recordTool } from '../dist/durable/record-tool.js';
 const MODEL = { provider: 'faux', modelId: 'faux-1' };
 const SCHEMA = { type: 'object', additionalProperties: false, required: ['verdict'], properties: { verdict: { type: 'string' } } };
 const submit = (args) => fauxAssistantMessage([fauxToolCall('submit', args)], { stopReason: 'toolUse' });
-const NoteDoc = defineDoc({ kind: 'node-test.note', version: 1, scope: 'conversation', history: 'latest', fork: 'initial', initial: () => ({ label: '' }) });
+const NoteDoc = defineDoc({ kind: 'node-test.note', version: 1, scope: 'conversation', history: 'latest', fork: 'initial', checkpointWhen: () => false, initial: () => ({ label: '' }) });
 
 /** A Harness with the `submit` tool installed and a scripted model; `tasks` are installed beside it. */
 async function open(turns, { tasks = [], maxAttempts } = {}) {
