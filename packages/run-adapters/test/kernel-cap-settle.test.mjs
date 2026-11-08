@@ -198,6 +198,21 @@ test("a step id used again after its step settled is a step of its own: both are
   assert.ok(Math.abs(reopened.spentUsd() - 0.5) < 1e-12, `a reopen reads both: ${reopened.spentUsd()}`);
 });
 
+test("an id whose last end mark was not written is not admitted again until that settle is retried: then each step books its own figure, and a reopen reads the true total", async () => {
+  const { cap, marks } = marked(10);
+  await cap.admit(toolRequest("search", 0.1, { id: "x" }));
+  marks.failNext();
+  await assert.rejects(cap.settle("x", { end: "charged", usd: 0.1 }), /end could not be recorded/);
+  await assert.rejects(cap.admit(toolRequest("search", 5, { id: "x" })), { name: "StepNotSettled" }, "the id's last end is not written: not admitted again");
+  assert.equal(cap.heldUsd(), 0, "the refused admit holds nothing");
+  assert.equal(await cap.settle("x", { end: "charged", usd: 0.1 }), 0.1, "the first step's retried settle answers its own booking");
+  await cap.admit(toolRequest("search", 5, { id: "x" }));
+  assert.equal(await cap.settle("x", { end: "charged", usd: 5 }), 5, "the second step books its own charge");
+  near(cap.spentUsd(), 5.1, "spent:");
+  const reopened = await openCap({ capUsd: () => 10, marks });
+  near(reopened.spentUsd(), 5.1, "a reopen reads:");
+});
+
 test("a settle of an id the cap never held is refused, and books nothing", async () => {
   const { cap } = capOn(1);
   await assert.rejects(cap.settle("never-held", { end: "lost", label: "cut" }), /holds no step never-held/);
