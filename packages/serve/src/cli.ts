@@ -159,6 +159,8 @@ if (process.argv[2] === "eval-template") {
       ...(given.server !== undefined ? { server: { baseUrl: given.server, token: token! } } : {}), ...(given["grader-model"] !== undefined ? { graderModel: given["grader-model"] } : {}),
       ...(given.faux !== undefined ? { serve: { faux: resolve(given.faux) } } : {}), log: (line) => console.error(line), signal: stop.signal,
     });
+    // A stop asked as the eval ended still stops it: no report, 130.
+    stop.signal.throwIfAborted();
     if (given.report !== undefined) writeFileSync(resolve(given.report), `${JSON.stringify(report, null, 2)}\n`);
     process.stdout.write(markdownReport(report));
     process.exit(report.pass ? 0 : 1);

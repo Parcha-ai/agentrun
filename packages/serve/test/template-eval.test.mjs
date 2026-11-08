@@ -4,6 +4,7 @@
 // shipped package's cases are read and their fakes served here too, so a broken case fails CI, never the paid run.
 import assert from "node:assert/strict";
 import { spawn } from "node:child_process";
+import { createServer } from "node:http";
 import { cpSync, existsSync, readFileSync, watch, writeFileSync } from "node:fs";
 import { basename, dirname, join } from "node:path";
 import { test } from "node:test";
@@ -241,6 +242,59 @@ test("a stopped eval cancels the run in progress and cleans up what it made, as 
   await assert.rejects(stopped, { name: "AbortError" });
   assert.equal((await api("GET", `/runs/${runs[0].run_id}`)).body.status, "cancelled", "the run in progress is cancelled");
   assert.equal((await api("GET", "/agents")).body.agents.length, 0, "the agent it made is archived, and no other was made");
+});
+
+/** A proxy on port 0 to the server at `baseUrl` (ending /v2) that answers 500 to every timeline read and passes the rest
+ *  on: a server whose timeline fails under the eval. Its /v2 address. */
+async function timelineFails(t, baseUrl) {
+  const proxy = createServer(async (req, res) => {
+    if (/\/runs\/[^/]+\/timeline/.test(req.url)) return void res.writeHead(500, { "content-type": "application/json" }).end('{"error":{"code":"internal","message":"timeline down"}}');
+    const chunks = [];
+    for await (const chunk of req) chunks.push(chunk);
+    const body = Buffer.concat(chunks);
+    const answer = await fetch(`${baseUrl.replace(/\/v2$/, "")}${req.url}`, { method: req.method, headers: Object.fromEntries(Object.entries(req.headers).filter(([name]) => name !== "host" && name !== "content-length")), ...(body.length ? { body } : {}) });
+    res.writeHead(answer.status, { "content-type": answer.headers.get("content-type") ?? "application/json" }).end(Buffer.from(await answer.arrayBuffer()));
+  });
+  await new Promise((resolve) => proxy.listen(0, "127.0.0.1", resolve));
+  t.after(() => new Promise((resolve) => (proxy.closeAllConnections(), proxy.close(resolve))));
+  return `http://127.0.0.1:${proxy.address().port}/v2`; // key-gate: loopback-rule the test's proxy listens on loopback
+}
+
+test("a run whose wait fails is cancelled before the eval goes on, never left going", { timeout: 300_000 }, async (t) => {
+  // The held case's run never answers on its own: only a cancel ends it.
+  process.env.AGENTRUN_TEST_EVAL_HOLD = join(await scratch(t), "holding");
+  t.after(() => delete process.env.AGENTRUN_TEST_EVAL_HOLD);
+  const { api, baseUrl, token } = await serve(t, { faux: FAUX, templates: FIXTURES });
+  const report = await evalTemplate({ dir: PKG, cases: ["held"], server: { baseUrl: await timelineFails(t, baseUrl), token } });
+  assert.match(report.cases[0].error, /timeline down/);
+  const runs = (await api("GET", "/runs?archived=true")).body.runs;
+  assert.equal(runs.length, 1);
+  assert.equal((await api("GET", `/runs/${runs[0].run_id}`)).body.status, "cancelled", "the run the eval started is cancelled");
+});
+
+test("an eval's agent has none of the package's triggers: market-monitor's weekly schedule is deleted at its apply", { timeout: 300_000 }, async (t) => {
+  const { api, baseUrl, token } = await serve(t, { faux: FAUX });
+  const report = await evalTemplate({ dir: join(TEMPLATES_DIR, "market-monitor"), cases: ["nothing-changed"], runs: 1, server: { baseUrl, token } });
+  assert.equal(report.cases[0].runs.length, 1, JSON.stringify(report.cases[0]));
+  assert.deepEqual((await api("GET", "/triggers")).body.triggers, [], "no trigger left");
+});
+
+test("on another server, a package that differs in what runs (budget, effort, tools) fails the case, naming the field", { timeout: 300_000 }, async (t) => {
+  const shipped = join(await scratch(t), "templates");
+  cpSync(PKG, join(shipped, "evalpkg"), { recursive: true });
+  const manifest = join(shipped, "evalpkg", "agent.md");
+  writeFileSync(manifest, readFileSync(manifest, "utf8").replace("tools: [read, write, ask_person]", "tools: [read, write, ask_person, web_fetch]").replace("learning: true", "learning: true\neffort: high\nbudget: { per_run_usd: 9 }"));
+  const { baseUrl, token } = await serve(t, { faux: FAUX, templates: shipped });
+  const report = await evalTemplate({ dir: PKG, cases: ["learned"], server: { baseUrl, token } });
+  assert.equal(report.pass, false);
+  assert.match(report.cases[0].error, /the server's evalpkg package is not this folder's: it differs in budget, effort, tools/);
+});
+
+test("a stop asked after the last run is waited for still stops the eval: no report", { timeout: 300_000 }, async () => {
+  const stop = new AbortController();
+  // The line for run 1 is told once it is waited for and graded: the last run, so nothing is left to wait on.
+  const eval_ = evalTemplate({ dir: PKG, cases: ["learned"], serve: { faux: FAUX }, signal: stop.signal, log: (line) => line.startsWith("case learned run 1:") && stop.abort() });
+  await assert.rejects(eval_, { name: "AbortError" });
 });
 
 test("graders read the answer as written: the last fenced json block, a target field, and a grader's verdict", () => {

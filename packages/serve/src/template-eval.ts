@@ -20,7 +20,7 @@ import { NOTE_FILE } from "./learn/notes.js";
 import { MCP_SERVER_NAME } from "./mcp-servers.js";
 import { settingsKeyOf } from "./tool-gate.js";
 import { ASK_TOOL, BOUND_TOOLS } from "./tools.js";
-import { applyBodyOf, compiled, type Package, PackageError, readPackage } from "./templates.js";
+import { applyBodyOf, compiled, type Package, PackageError, packageView, readPackage } from "./templates.js";
 import { isObject, type Json, MODEL_REF } from "./validate.js";
 
 /** What a grader run is told, whatever the rubric: blind, strict, and its verdict as one JSON block. */
@@ -607,6 +607,10 @@ export type EvalOptions = {
    *  throws the signal's reason (the CLI's Ctrl-C: a run left going would go on spending). */
   signal?: AbortSignal;
 };
+/** What the eval made on the server: its agents (archived at the end on an owner's server), its runs not known to have
+ *  ended (cancelled at each case's end), and the package's triggers its applies made (deleted). */
+type Made = { agents: string[]; runs: Set<string>; triggers: Set<string> };
+type Ctx = { api: Api; pkg: Package; options: EvalOptions; made: Made; log: (line: string) => void; graderAgent: () => Promise<string>; served?: Promise<Json> };
 export type GraderResult = { grader: string; type: string; pass: boolean; reason: string; cost_usd: number | null; run_id?: string };
 export type RunResult = { run: number; agent_id: string | null; run_id: string | null; status: string; pass: boolean; error?: string; cost_usd: number | null; graders: GraderResult[] };
 export type CaseResult = { name: string; description: string; pass: boolean; runs: RunResult[]; error?: string; cost_usd: number };
@@ -653,27 +657,34 @@ export async function evalTemplate(options: EvalOptions): Promise<Report> {
   }
   const results: CaseResult[] = [];
   let grader: string | undefined;
-  const archive: string[] = [];
+  const made: Made = { agents: [], runs: new Set(), triggers: new Set() };
+  const ctx: Ctx = {
+    api, pkg, options, made, log,
+    graderAgent: async () => {
+      if (grader) return grader;
+      const agent = expectOk("making the grader agent", await api("POST", "/agents", { definition: { version: 1, name: GRADER_NAME, description: "Grades a template eval's runs against a rubric: answers {pass, reason}.", instructions: GRADER_INSTRUCTIONS, skills: [], tools: [], learning: false, max_cost_usd: GRADER_CAP_USD, ...(options.graderModel ? { model: options.graderModel } : {}) } }));
+      grader = String(agent.agent_id);
+      made.agents.push(grader);
+      return grader;
+    },
+  };
   try {
     for (const one of cases) {
       options.signal?.throwIfAborted();
       log(`case ${one.name}: ${options.runs ?? one.runs} run${(options.runs ?? one.runs) === 1 ? "" : "s"}`);
-      const result = await runCase(api, pkg, one, options, async () => {
-        if (grader) return grader;
-        const made = expectOk("making the grader agent", await api("POST", "/agents", { definition: { version: 1, name: GRADER_NAME, description: "Grades a template eval's runs against a rubric: answers {pass, reason}.", instructions: GRADER_INSTRUCTIONS, skills: [], tools: [], learning: false, max_cost_usd: GRADER_CAP_USD, ...(options.graderModel ? { model: options.graderModel } : {}) } }));
-        grader = String(made.agent_id);
-        archive.push(grader);
-        return grader;
-      }, archive, log);
+      const result = await runCase(ctx, one);
       log(`case ${one.name}: ${result.pass ? "pass" : "FAIL"}${result.error ? ` (${result.error})` : ""}`);
       results.push(result);
     }
   } finally {
+    await cleanUp(api, made);
     // On an owner's server, what the eval made goes to the archive (an archived agent and its runs stay readable).
-    if (options.server) for (const id of archive) await api("POST", `/agents/${encodeURIComponent(id)}/archive`, {}).catch(() => undefined);
+    if (options.server) for (const id of made.agents) await api("POST", `/agents/${encodeURIComponent(id)}/archive`, {}).catch(() => undefined);
     await close();
     if (scratch) removeTree(scratch);
   }
+  // A stop asked at any point, the last case's end included, ends the eval with no report.
+  options.signal?.throwIfAborted();
   const runs = results.flatMap((c) => c.runs);
   const graders = runs.flatMap((r) => r.graders);
   const sum = (values: (number | null)[]) => Math.round(values.reduce<number>((total, value) => total + (value ?? 0), 0) * 1e6) / 1e6;
@@ -691,7 +702,8 @@ export async function evalTemplate(options: EvalOptions): Promise<Report> {
 
 /** One case: its fakes saved, then each run applied, seeded, run and graded; the fakes removed. A step the server
  *  refuses fails the case with its words, and the next case runs. */
-async function runCase(api: Api, pkg: Package, one: EvalCase, options: EvalOptions, graderAgent: () => Promise<string>, archive: string[], log: (line: string) => void): Promise<CaseResult> {
+async function runCase(ctx: Ctx, one: EvalCase): Promise<CaseResult> {
+  const { api, options, log } = ctx;
   const fakes: Fake[] = [];
   const saved: string[] = [];
   const runs: RunResult[] = [];
@@ -710,7 +722,7 @@ async function runCase(api: Api, pkg: Package, one: EvalCase, options: EvalOptio
     for (let n = 1; n <= total; n++) {
       options.signal?.throwIfAborted();
       for (const fake of fakes) fake.calls.length = 0;
-      const result = await runOnce(api, pkg, one, n, options, fakes, graderAgent, archive);
+      const result = await runOnce(ctx, one, n, fakes);
       log(`case ${one.name} run ${n}: ${result.status}, ${result.pass ? "pass" : "FAIL"}${result.cost_usd === null ? "" : ` (${usd(result.cost_usd)})`}`);
       runs.push(result);
     }
@@ -719,6 +731,8 @@ async function runCase(api: Api, pkg: Package, one: EvalCase, options: EvalOptio
     if (!(error instanceof ApiFailure)) throw error;
     return { name: one.name, description: one.description, pass: false, runs, error: error.message, cost_usd: caseCost(runs) };
   } finally {
+    // Before the next case: no run of this one left going (a wait that failed leaves its run started), no trigger left.
+    await cleanUp(api, ctx.made);
     for (const name of saved) await api("DELETE", `/settings/mcp-servers/${name}`).catch(() => undefined);
     for (const fake of fakes) await fake.close();
   }
@@ -726,21 +740,29 @@ async function runCase(api: Api, pkg: Package, one: EvalCase, options: EvalOptio
 const caseCost = (runs: readonly RunResult[]) => Math.round(runs.reduce((sum, r) => sum + (r.cost_usd ?? 0) + r.graders.reduce((g, x) => g + (x.cost_usd ?? 0), 0), 0) * 1e6) / 1e6;
 
 /** One run of a case: a fresh agent (so one run's learning never reaches the next), its notes, the run, its grades. */
-async function runOnce(api: Api, pkg: Package, one: EvalCase, n: number, options: EvalOptions, fakes: readonly Fake[], graderAgent: () => Promise<string>, archive: string[]): Promise<RunResult> {
+async function runOnce(ctx: Ctx, one: EvalCase, n: number, fakes: readonly Fake[]): Promise<RunResult> {
+  const { api, pkg, options, made } = ctx;
+  const stopped = () => options.signal?.throwIfAborted();
   const applied = expectOk(`applying ${pkg.name}`, await api("POST", `/templates/${pkg.name}/apply`, { parameters: one.parameters, grants: one.grants }));
   const agentId = String(applied.agent_id);
-  archive.push(agentId);
+  made.agents.push(agentId);
+  // An eval's agent runs only the eval's runs: the package's triggers (a weekly schedule, say) would start paid runs of
+  // their own, into the fakes' logs, and outlive the eval. Each one the apply made is deleted at once.
+  for (const id of Array.isArray(applied.trigger_ids) ? (applied.trigger_ids as unknown[]).map(String) : []) made.triggers.add(id);
+  await deleteTriggers(api, made, true);
   const agent = expectOk(`reading the agent ${agentId}`, await api("GET", `/agents/${encodeURIComponent(agentId)}`));
-  sameAsLocal(pkg, one, agent);
+  await sameAsLocal(ctx, one, agent);
+  stopped();
   for (const note of one.learning) {
     expectOk(`seeding the note ${note.file}`, await api("PUT", `/agents/${encodeURIComponent(agentId)}/learning/files/${encodeURIComponent(note.file)}`, note.text, { "if-none-match": "*" }));
   }
-  const started = expectOk("starting the run", await api("POST", `/agents/${encodeURIComponent(agentId)}/runs`, { input: { content: one.input }, ...(one.maxCostUsd !== undefined ? { max_cost_usd: one.maxCostUsd } : {}) }));
-  const runId = String(started.run_id);
+  stopped();
+  const runId = await startRun(ctx, agentId, { input: { content: one.input }, ...(one.maxCostUsd !== undefined ? { max_cost_usd: one.maxCostUsd } : {}) }, "starting the run");
   const ended = await waitRun(api, runId, Date.now() + (options.runTimeoutMs ?? RUN_TIMEOUT_MS), options.signal);
   const view = expectOk(`reading run ${runId}`, await api("GET", `/runs/${runId}`));
   // A run that waits on a person (a question, an approval, its cap) is graded as it stands, then cancelled.
-  if (ended.status === "input_required") await api("POST", `/runs/${runId}/cancel`, {});
+  await settle(ctx, runId, ended.status);
+  stopped();
   const result = isObject(view.result) ? view.result : {};
   const harness = isObject(agent.definition) && typeof agent.definition.harness === "string" ? agent.definition.harness : "pi";
   const record: RunRecord = {
@@ -749,6 +771,7 @@ async function runOnce(api: Api, pkg: Package, one: EvalCase, n: number, options
     mcpCalls: fakes.flatMap((fake) => fake.calls.map((call) => ({ ...call }))),
     files: await filesOf(api, runId),
   };
+  stopped();
   const base = { run: n, agent_id: agentId, run_id: runId, status: ended.status, cost_usd: costOf(view) };
   // Waiting on its person's answer (an ask_person question, a tool call's approval) is where such a run stops, and is
   // graded; paused at its cap, or stopped, it did not get there.
@@ -762,6 +785,7 @@ async function runOnce(api: Api, pkg: Package, one: EvalCase, n: number, options
     : undefined;
   const graders: GraderResult[] = [];
   for (const grader of one.graders) {
+    stopped();
     if (grader.type !== "llm") {
       graders.push({ grader: grader.file, type: grader.type, cost_usd: null, ...gradeDeterministic(grader, record, Object.keys(one.mcp)) });
       continue;
@@ -771,18 +795,20 @@ async function runOnce(api: Api, pkg: Package, one: EvalCase, n: number, options
       graders.push({ grader: grader.file, type: grader.type, pass: false, reason: "not graded: the run did not finish", cost_usd: null });
       continue;
     }
-    graders.push({ grader: grader.file, type: grader.type, ...(await gradeLlm(api, await graderAgent(), graderInput(grader, one.input, record), options)) });
+    graders.push({ grader: grader.file, type: grader.type, ...(await gradeLlm(ctx, await ctx.graderAgent(), graderInput(grader, one.input, record))) });
   }
+  stopped();
   return { ...base, pass: graded && graders.every((g) => g.pass), ...(error ? { error } : {}), graders };
 }
 
 /** An llm grader's verdict: a run of the grader agent on the rubric and the run, its answer read as {pass, reason}. */
-async function gradeLlm(api: Api, agentId: string, input: string, options: EvalOptions): Promise<{ pass: boolean; reason: string; cost_usd: number | null; run_id?: string }> {
-  const started = expectOk("starting a grader run", await api("POST", `/agents/${encodeURIComponent(agentId)}/runs`, { input: { content: input } }));
-  const runId = String(started.run_id);
+async function gradeLlm(ctx: Ctx, agentId: string, input: string): Promise<{ pass: boolean; reason: string; cost_usd: number | null; run_id?: string }> {
+  const { api, options } = ctx;
+  const runId = await startRun(ctx, agentId, { input: { content: input } }, "starting a grader run");
   const ended = await waitRun(api, runId, Date.now() + (options.runTimeoutMs ?? RUN_TIMEOUT_MS), options.signal);
   const view = expectOk(`reading grader run ${runId}`, await api("GET", `/runs/${runId}`));
-  if (ended.status === "input_required") await api("POST", `/runs/${runId}/cancel`, {});
+  await settle(ctx, runId, ended.status);
+  options.signal?.throwIfAborted();
   const cost = costOf(view);
   const answer = isObject(view.result) && typeof view.result.final_answer === "string" ? view.result.final_answer : "";
   const verdict = ended.status === "completed" ? verdictOf(answer) : undefined;
@@ -790,18 +816,60 @@ async function gradeLlm(api: Api, agentId: string, input: string, options: EvalO
   return { ...verdict, cost_usd: cost, run_id: runId };
 }
 
-/** The agent an apply made on the server holds this folder's instructions and skill files: on another server the
- *  package of the same name may be another version, and its eval would measure that one. */
-function sameAsLocal(pkg: Package, one: EvalCase, agent: Json): void {
+/** The package the server applied is this folder's: its view (GET /v2/templates: the model, effort, tools, MCP tools
+ *  and what they allow, budget, learning, parameters, triggers, version, ...) equals this folder's, and the agent the
+ *  apply made holds this folder's instructions and skill files. On another server a package of the same name may be
+ *  another version, and its eval would measure that one: the case fails, naming each field that differs. */
+async function sameAsLocal(ctx: Ctx, one: EvalCase, agent: Json): Promise<void> {
+  const { pkg } = ctx;
+  ctx.served ??= (async () => {
+    const listed = expectOk("listing the server's templates", await ctx.api("GET", "/templates"));
+    return ((listed.templates as Json[] | undefined) ?? []).find((t) => t.name === pkg.name) ?? {};
+  })();
+  const served = await ctx.served;
+  const view = JSON.parse(JSON.stringify(packageView(pkg))) as Json;
+  const differs = [...new Set([...Object.keys(view), ...Object.keys(served)])].filter((key) => !same(view[key], served[key]));
   const { parameters } = applyBodyOf(pkg, { parameters: one.parameters, grants: one.grants });
   const local = compiled(pkg, parameters, { mcp: [], defaultTools: [], grants: [] }).agent;
   const sha = (text: string) => createHash("sha256").update(text).digest("hex");
   const theirs = Object.fromEntries(((agent.skills as Json[] | undefined) ?? []).map((s) => [String(s.path), String(s.sha256)]));
   const ours = Object.fromEntries(Object.entries(pkg.skills).map(([path, text]) => [path, sha(text)]));
-  const instructions = isObject(agent.definition) ? agent.definition.instructions : undefined;
-  if (instructions !== (local.definition as Json).instructions || !same(theirs, ours)) {
-    throw new ApiFailure(`the server's ${pkg.name} package is not this folder's (its agent's instructions or skill files differ): the eval would measure the server's copy. Run it without --server, or on a server that ships this version`);
+  if (!isObject(agent.definition) || agent.definition.instructions !== (local.definition as Json).instructions) differs.push("instructions");
+  if (!same(theirs, ours)) differs.push("skill files");
+  if (differs.length) throw new ApiFailure(`the server's ${pkg.name} package is not this folder's: it differs in ${[...new Set(differs)].sort().join(", ")}. The eval would measure the server's copy: run it without --server, or on a server that ships this version`);
+}
+
+/** A run of `agentId` started, and kept in `made.runs` until it is known to have ended. */
+async function startRun(ctx: Ctx, agentId: string, body: Json, what: string): Promise<string> {
+  const started = expectOk(what, await ctx.api("POST", `/agents/${encodeURIComponent(agentId)}/runs`, body));
+  const runId = String(started.run_id);
+  ctx.made.runs.add(runId);
+  return runId;
+}
+
+/** A run waited for, as it stands: one that ended is forgotten, any other (waiting on a person, timed out) cancelled. */
+async function settle(ctx: Ctx, runId: string, status: string): Promise<void> {
+  if (!ENDED.includes(status)) await ctx.api("POST", `/runs/${runId}/cancel`, {});
+  ctx.made.runs.delete(runId);
+}
+
+/** Every trigger in `made.triggers` deleted; `strict`, one the server refuses to delete fails the case. */
+async function deleteTriggers(api: Api, made: Made, strict = false): Promise<void> {
+  for (const id of [...made.triggers]) {
+    const answered = await api("DELETE", `/triggers/${encodeURIComponent(id)}`).catch((error: unknown) => (strict ? Promise.reject(error) : { status: 0, body: null }));
+    if (answered.status === 204 || answered.status === 404) made.triggers.delete(id);
+    else if (strict) expectOk(`deleting the package's trigger ${id}`, answered, [204]);
   }
+}
+
+/** What the eval made and still holds on the server, let go: each run not known to have ended cancelled, each
+ *  trigger deleted. Best effort: a cleanup that fails never hides why the eval stopped. */
+async function cleanUp(api: Api, made: Made): Promise<void> {
+  for (const id of [...made.runs]) {
+    await api("POST", `/runs/${id}/cancel`, {}).catch(() => undefined);
+    made.runs.delete(id);
+  }
+  await deleteTriggers(api, made).catch(() => undefined);
 }
 
 /** `dir` and everything in it, removed: each folder made writable first (a run may leave one read-only). */
