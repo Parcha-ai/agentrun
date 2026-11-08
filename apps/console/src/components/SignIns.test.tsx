@@ -3,6 +3,7 @@ import { createRoot } from "react-dom/client";
 import { afterEach, describe, expect, it } from "vitest";
 import { SignIns } from "./SignIns";
 import type { Agent } from "@/lib/agentForm";
+import type { SignIn, SignInForgotten } from "@/lib/v2";
 import { ClientError } from "@/lib/client";
 
 // The agent page's saved sign-ins: GET /v2/agents/{id}'s `sign_ins` (serve's SignInView: key, provider, state, held_by,
@@ -14,13 +15,13 @@ import { ClientError } from "@/lib/client";
 let root: ReturnType<typeof createRoot> | undefined;
 afterEach(() => { act(() => root?.unmount()); document.body.innerHTML = ""; });
 
-type SignIn = { key: string; provider: string; state: "ready" | "held" | "unreadable"; held_by: string | null; verified_at: string | null };
-type Removed = { key: string; removed: { provider: string; at_vendor: "deleted" | "not_deleted"; message?: string }[] };
+// The served shapes (the generated types, through v2's aliases).
+type Removed = SignInForgotten;
 const RUN = "01a1aa49-10ff-785c-9d1d-6f2fc8489901";
 const agentWith = (signIns: SignIn[] | undefined, browser = "browserbase"): Agent => ({
   agent_id: "shopper", kind: "agentic", revision: "r1", revisions: 1, archived_at: null,
   definition: { version: 1, name: "Shopper", instructions: "Shop.", harness: "pi", skills: [], tools: ["browser"] },
-  tools: [{ name: "browser", provider: "auto", provider_from: "default", default_provider: "auto", resolved: browser }],
+  tools: [{ name: "browser", provider: "auto", provider_from: "default", default_provider: "auto", resolved: browser, permission: "allow", permission_from: "default", default_permission: "allow", permissions: ["allow", "ask", "deny"] }],
   ...(signIns ? { sign_ins: signIns } : {}),
 } as Agent);
 const bb: SignIn = { key: "default", provider: "browserbase", state: "ready", held_by: null, verified_at: "2026-11-05T08:00:00.000Z" };

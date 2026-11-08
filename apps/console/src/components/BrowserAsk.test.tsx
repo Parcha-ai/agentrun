@@ -120,14 +120,24 @@ describe("the run page, a run waiting on the person in its browser", () => {
     expect(m.host.querySelector('[role="tab"][aria-selected="true"]')?.textContent).toMatch(/^Browser/);
   });
 
-  it("Done and Cancel answer it where the page can (canAnswerBrowser and onHandBack), and are absent otherwise", async () => {
+  it("Done and Cancel answer it wherever the page answers (onHandBack): no capability gates them (every server serves ask)", async () => {
     const calls: string[] = [];
-    const m = page({ canAnswerBrowser: true, onHandBack: async (outcome: string) => { calls.push(outcome); return null; } });
+    const m = page({ onHandBack: async (outcome: string) => { calls.push(outcome); return null; } });
     await m.click(m.button(/^Cancel$/));
     expect(calls).toEqual(["cancelled"]);
     act(() => root?.unmount()); document.body.innerHTML = "";
-    const n = page({ onHandBack: async () => null });
+    const n = page();
     expect(n.button(/^Done$/)).toBeUndefined();
+  });
+
+  it("Done answers once however fast it is clicked: one \"done\", and nothing else answers the ask", async () => {
+    const calls: string[] = [];
+    let release!: () => void;
+    const m = page({ onHandBack: (outcome: string) => { calls.push(outcome); return new Promise<null>((r) => { release = () => r(null); }); } });
+    const done = m.button(/^Done$/)!;
+    await act(async () => { done.click(); done.click(); m.button(/^Cancel$/)!.click(); });
+    expect(calls).toEqual(["done"]);
+    await act(async () => { release(); });
   });
 
   it("the message box says a message steers the run and doesn't answer the ask", () => {
