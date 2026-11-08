@@ -789,7 +789,8 @@ It loads `@parcha/agentrun-dsl` and `@parcha/agentrun-pi` only when one of its f
 | `readWorkflowRun(run)` | The run as its store shows it, read-only: no write, no lock, no Harness. With `run.state` (the runs row's) ended and no write-ahead log beside the store, it opens the store as an immutable file and makes no file in the run's directory. Working means live: an ended run's interrupted nodes read `stopped`, or `failed` when the run failed. A run in the driver's keyed layout is refused as `format` |
 | `revisionGraph(revision, parent?)` | The revision's graph (the DSL's `workflowGraph`), and the DSL's `graphDiff` from its parent when the parent is a workflow revision; an agentic parent, or none, gives no diff |
 
-Its types: `WorkflowBody`, `WorkflowIssue`, `WorkflowRunStart` (the part of a store's started run it reads), `WorkflowRunView`,
+Its types: `WorkflowBody`, `WorkflowIssue`, `WorkflowRunStart` (the part of a store's started run it reads), `WorkflowStorage`
+(the reads `readWorkflowRun` and `workflowCarry` take in place of a store file: a run's journal in a shared store), `WorkflowRunView`,
 `RunState`, `RunNodeState` (the DSL's `NodeState` and `stopped`), and the DSL's `WorkflowGraph`, `GraphDiff`, `NodeState`
 and `WorkflowOutcome`.
 
