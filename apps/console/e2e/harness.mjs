@@ -2,10 +2,12 @@
 // starts it, and headless Chrome driven through playwright-core, so the page loads with the server's real headers, its CSP,
 // its cookies and its redirects. jsdom sees none of those.
 //
-// A flow gets a server of its own on 127.0.0.1 with a fresh data dir and home, which it removes when it ends. Nothing waits
-// on a clock: every wait is on the server's output, a selector, or a response.
+// The target is a built checkout (this one by default): a flow gets a server of its own from it on 127.0.0.1 with a fresh
+// data dir and home, which it removes when it ends. Or the target is a server already running (attachServer): the flows
+// that can share one run against it. Nothing waits on a clock: every wait is on the server's output, a selector, or a
+// response.
 import { spawn } from "node:child_process";
-import { mkdirSync, mkdtempSync, rmSync } from "node:fs";
+import { mkdirSync, mkdtempSync, readFileSync, rmSync } from "node:fs";
 import { createServer } from "node:net";
 import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
@@ -18,8 +20,9 @@ export const ROOT = join(dirname(fileURLToPath(import.meta.url)), "../../..");
 /** A serve test fixture by its file name (packages/serve/test/fixtures), e.g. the faux model. */
 export const fixture = (name, checkout = ROOT) => join(checkout, "packages/serve/test/fixtures", name);
 
-/** A password no one uses anywhere: the owner's, for the flows that set one. */
-export const PASSWORD = "e2e-not-a-real-password";
+/** The owner's password, for the flows that set one or sign in: one no one uses anywhere, or E2E_PASSWORD for a running
+ *  server whose owner is already set. */
+export const PASSWORD = process.env.E2E_PASSWORD || ["e2e", "not", "a", "real", "password"].join("-");
 
 /** What a server's output may hold that must never be shown: its API key and any ar_ key. */
 const redact = (line) => line.replace(/(AGENTRUN_API_KEY=)\S+/g, "$1<redacted>").replace(/\bar_[A-Za-z0-9_-]+/g, "ar_<redacted>");
@@ -27,7 +30,8 @@ const redact = (line) => line.replace(/(AGENTRUN_API_KEY=)\S+/g, "$1<redacted>")
 /** Starts the built server from `checkout` on 127.0.0.1, port chosen by the system, with a data dir and home of its own.
  *  Its environment holds only PATH, HOME, TMPDIR and `env` (e.g. AGENTRUN_PUBLIC_URL), so nothing of this machine reaches
  *  it. `faux`: the model fixture (the faux model by default). Resolves once its banner names its URL. Its output stays in
- *  memory: `log()` gives it with keys redacted, `line(re)` waits for a line. */
+ *  memory: `log()` gives it with keys redacted, `line(re)` waits for a line. With a public URL, `setupCode()` reads the
+ *  code setup asks for from that output. */
 export async function startServer({ env = {}, faux = "faux-model.mjs", args = [], port = 0, checkout = ROOT, timeoutMs = 30_000 } = {}) {
   const dir = mkdtempSync(join(tmpdir(), "agentrun-e2e-"));
   const home = join(dir, "home");
@@ -70,11 +74,41 @@ export async function startServer({ env = {}, faux = "faux-model.mjs", args = []
   };
   try {
     const [, baseUrl] = await line(/^agentrun-serve on (http:\/\/127\.0\.0\.1:\d+\/v2)\b/);
-    return { baseUrl, origin: baseUrl.replace(/\/v2$/, ""), line, log: () => lines.map(redact).join("\n"), stop };
+    const server = { baseUrl, origin: baseUrl.replace(/\/v2$/, ""), line, log: () => lines.map(redact).join("\n"), stop };
+    // The server's token is the setup code it takes at a public URL; kept in memory, never printed.
+    if (env.AGENTRUN_PUBLIC_URL) server.setupCode = () => tokenOf(server);
+    return server;
   } catch (error) {
     await stop();
     throw new Error(`${error.message}\n${lines.map(redact).join("\n")}`);
   }
+}
+
+/** A server already running at `url` (its origin, e.g. a QA server or one a person started), as a target. `setupCodeFile`:
+ *  a file holding the code its setup asks for (as read from its output), when its owner is not set yet. Nothing is
+ *  started or stopped, and its output is not read. */
+export function attachServer({ url, setupCodeFile }) {
+  const origin = new URL(url).origin;
+  return {
+    baseUrl: `${origin}/v2`,
+    origin,
+    attached: true,
+    line: () => Promise.reject(new Error("an attached server's output is not read")),
+    log: () => "(an attached server: its output is not read here)",
+    stop: async () => {},
+    ...(setupCodeFile ? { setupCode: async () => readFileSync(setupCodeFile, "utf8").trim() } : {}),
+  };
+}
+
+/** The server has an owner with `password`: set through the API (POST /v2/setup, with the server's setup code when it has
+ *  one) unless it already is. The write names the server's own origin, as its page's would. No browser is signed in. */
+export async function owner(server, password = PASSWORD) {
+  const session = await fetch(`${server.baseUrl}/auth/session`);
+  check(session.ok, `GET /v2/auth/session answered ${session.status}`);
+  if ((await session.json()).password_set) return;
+  const code = server.setupCode ? await server.setupCode() : undefined;
+  const setup = await fetch(`${server.baseUrl}/setup`, { method: "POST", headers: { "content-type": "application/json", origin: server.origin }, body: JSON.stringify({ password, ...(code ? { code } : {}) }) });
+  check(setup.ok, `the setup answered ${setup.status}`);
 }
 
 /** A port free on 127.0.0.1 now: for a flow whose server must know its own address before it starts (its public URL). */
