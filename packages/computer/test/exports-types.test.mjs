@@ -10,6 +10,8 @@ import test, { after } from "node:test";
 import ts from "typescript";
 
 const INDEX = fileURLToPath(new URL("../dist/index.js", import.meta.url));
+/** Node's types, as the package's own tsconfig takes them ("types": ["node"]), from the workspace's node_modules. */
+const TYPE_ROOTS = [fileURLToPath(new URL("../../../node_modules/@types", import.meta.url))];
 const dir = mkdtempSync(join(tmpdir(), "computer-types-"));
 after(() => rmSync(dir, { recursive: true, force: true }));
 
@@ -17,7 +19,7 @@ after(() => rmSync(dir, { recursive: true, force: true }));
 function diagnostics(source) {
 	const file = join(dir, "caller.ts");
 	writeFileSync(file, source.replaceAll("<index>", INDEX));
-	const program = ts.createProgram([file], { strict: true, noEmit: true, module: ts.ModuleKind.NodeNext, moduleResolution: ts.ModuleResolutionKind.NodeNext, target: ts.ScriptTarget.ES2022, types: [] });
+	const program = ts.createProgram([file], { strict: true, noEmit: true, module: ts.ModuleKind.NodeNext, moduleResolution: ts.ModuleResolutionKind.NodeNext, target: ts.ScriptTarget.ES2022, types: ["node"], typeRoots: TYPE_ROOTS });
 	return ts.getPreEmitDiagnostics(program).map((d) => ts.flattenDiagnosticMessageText(d.messageText, "\n"));
 }
 
