@@ -84,7 +84,7 @@ function tracked(adapter) {
 /** The adapter loop for the suite's setup: pi through the adapter, its model through the session proxy to the script. */
 export function piAdapterSpec({ script, tools, hooks }, options = {}) {
   return (_claim, run) => ({
-    adapter: tracked(piAdapter({ run, model: MODEL, provider: { api: "anthropic-messages", origin: "https://faux.invalid", credential: () => `not-a-secret-${"x"}` }, fetch: scriptedOrigin(script, options.requests), price: () => 0 })),
+    adapter: tracked(piAdapter({ run, model: MODEL, provider: { api: "anthropic-messages", origin: "https://faux.invalid", credential: () => `not-a-secret-${"x"}` }, fetch: options.fetch ?? scriptedOrigin(script, options.requests), price: () => 0 })),
     session: { key: "root", label: "root", system: ["Follow the script."], tools: hostTools(tools), context: "fresh" },
     input: "Follow the script.",
     hooks,
