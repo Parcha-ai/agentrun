@@ -37,14 +37,18 @@ const examples = readdirSync(WORKFLOWS).filter((f) => f.endsWith(".json")).sort(
 test("every decision-demo workflow saves as an agent through the API: none is refused for a reason that means the example is wrong", { timeout: 120_000 }, async (t) => {
   assert.ok(examples.length >= 5, `the examples are there: ${examples.join(", ")}`);
   const { api } = await serve(t);
-  const shown = examples.map((file) => [basename(file, ".json"), JSON.parse(readFileSync(join(WORKFLOWS, file), "utf8"))]);
-  // An example broken the way a removed tool breaks one: a call node naming fetch_page, which no host binds.
-  const broken = JSON.parse(readFileSync(join(WORKFLOWS, "merchant-mcc.json"), "utf8").replaceAll('"tool": "web_fetch"', '"tool": "fetch_page"'));
-  shown.push(["merchant-mcc-fetch-page", broken]);
   const refused = [];
-  for (const [id, workflow] of shown) {
-    const why = await refusalOf(api, id, workflow);
-    if (why) refused.push(`${id}: ${why}`);
+  for (const file of examples) {
+    const why = await refusalOf(api, basename(file, ".json"), JSON.parse(readFileSync(join(WORKFLOWS, file), "utf8")));
+    if (why) refused.push(`${file}: ${why}`);
   }
   assert.deepEqual(refused, [], "no example is refused");
+});
+
+test("the check catches an example broken the way a removed tool breaks one: a call node naming fetch_page is refused at definition.workflow", { timeout: 60_000 }, async (t) => {
+  const { api } = await serve(t);
+  const broken = JSON.parse(readFileSync(join(WORKFLOWS, "merchant-mcc.json"), "utf8").replaceAll('"tool": "web_fetch"', '"tool": "fetch_page"'));
+  assert.notEqual(JSON.stringify(broken).indexOf('"fetch_page"'), -1, "the copy names fetch_page");
+  const why = await refusalOf(api, "merchant-mcc-fetch-page", broken);
+  assert.match(why ?? "", /^422 .*"field":"definition\.workflow","reason":"not_an_option"/, `refused as the example's own fault: ${why}`);
 });
