@@ -84,7 +84,8 @@ body (a tool key, an MCP server's credentials) has each of its values cut from t
 it keeps only its code.
 
 A GET, or a request that carries an `Idempotency-Key`, is tried again after a 429, a 5xx or a dropped connection, with
-backoff and never sooner than the server's `Retry-After`. Any other request is sent once.
+backoff and never sooner than the server's `Retry-After`. Any other request is sent once. A server no connection reaches
+(refused, unknown name, unreachable host) and a certificate the client refuses are unreachable at once.
 
 The methods and types are generated from the server's OpenAPI document by `node scripts/generate-clients.mjs`, from the
 same projection and resource map as the CLI's commands.

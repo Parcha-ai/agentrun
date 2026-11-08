@@ -337,3 +337,21 @@ test("a caller's abort while a refusal's body is still coming is the caller's ab
     assert.equal(error, reason, `the abort's own reason, not ${error?.name}: ${error?.message}`);
   }
 });
+
+test("a fresh client's first GET is tried again when the server takes the connection and drops it before answering", async (t) => {
+  let tries = 0;
+  const server = await listener(t, (req, res) => (++tries === 1 ? void res.socket.destroy() : json(200, { agents: [], next_cursor: null })));
+  const client = new AgentRun({ baseUrl: server.base, apiKey: KEY });
+  assert.deepEqual(await client.agents.list(), { agents: [], next_cursor: null });
+  assert.equal(tries, 2, "the dropped first request was tried once more");
+});
+
+test("a certificate the client refuses is unreachable after one try, and a refused connection on a fresh client too", async () => {
+  for (const code of ["DEPTH_ZERO_SELF_SIGNED_CERT", "ERR_TLS_CERT_ALTNAME_INVALID", "ECONNREFUSED"]) {
+    let calls = 0;
+    const fetch = async () => { calls++; throw new TypeError("fetch failed", { cause: Object.assign(new Error("no"), { code }) }); };
+    const error = await thrown(new AgentRun({ baseUrl: "https://agentrun.example/v2", apiKey: KEY, fetch }).agents.list());
+    assert.ok(error instanceof AgentRunUnreachable, code);
+    assert.deepEqual([error.cause, calls], [code, 1], code);
+  }
+});
