@@ -193,6 +193,10 @@ const ENTRYPOINT_SCRIPT = [
 	'exec "$d" "$@"',
 ].join("\n");
 
+/** held PATH: every component of PATH up to / is owned by uid 0 with no group or other write, and not a link; else it
+ *  says which is not and returns 1. The same rule as the Daytona provider's install. */
+const HELD = 'held() { x=$1; while :; do set -- $(ls -ldn "$x" 2>/dev/null); case "$1" in ?????[!w]??[!w]?|?????[!w]??[!w]?.) ;; *) false ;; esac && [ "$3" = 0 ] || { echo "the daemon at $d is not root\'s alone: $x is ${1:-missing}, owner ${3:-none}"; return 1; }; [ "$x" = / ] && return 0; x=${x%/*}; x=${x:-/}; done; }';
+
 /**
  * The upload, run through exec as root (Modal containers always run as root): stdin to a part file beside the daemon's
  * path, its sha256 printed, and the part moved into place last, only when it is the one named. The rename is what the
@@ -200,12 +204,21 @@ const ENTRYPOINT_SCRIPT = [
  */
 const UPLOAD_SCRIPT = [
 	"# agentrun-computer: upload",
-	'd=$1; s=$2; p="${d%/*}/.computerd.part"',
-	'mkdir -p "${d%/*}" && cat > "$p" && chmod 0755 "$p" || { echo "writing the daemon to $p failed"; exit 4; }',
+	'd=$1; s=$2; b=${d%/*}; p="$b/.computerd.part"',
+	// The daemon's path must be root's alone, every directory up to /: each connection runs it as root through Modal's
+	// exec, so a path a non-root computer user could change would let that user swap what root runs. A path another
+	// user can change is refused with nothing installed; the daemon's own directory is made root's (0755) first.
+	HELD,
+	'[ -d "${b%/*}" ] || mkdir -p -m 0755 "${b%/*}" || { echo "making ${b%/*} failed"; exit 4; }',
+	'held "${b%/*}" || exit 7',
+	'[ -L "$b" ] && { echo "the daemon at $d is not root\'s alone: $b is a symbolic link"; exit 7; }',
+	'mkdir -p "$b" && chown 0:0 "$b" && chmod 0755 "$b" || { echo "making $b root\'s failed"; exit 4; }',
+	'cat > "$p" && chmod 0755 "$p" || { echo "writing the daemon to $p failed"; exit 4; }',
 	'r=$(sha256sum "$p" | cut -c1-64)',
 	'echo "sha256 $r"',
 	'[ "$r" = "$s" ] || { echo "the daemon written to $p reads sha256 $r, not $s, so it is not moved into place"; exit 5; }',
 	'mv -f "$p" "$d" || { echo "moving the daemon into $d failed"; exit 6; }',
+	'held "$d" || exit 7',
 ].join("\n");
 
 /**
