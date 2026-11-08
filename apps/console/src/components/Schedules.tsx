@@ -7,7 +7,7 @@ import { Chip } from "@/components/ui/chip";
 import type { Agent } from "@/lib/agentForm";
 import type { Client } from "@/lib/client";
 import { runLabel, when } from "@/lib/format";
-import { uuid } from "@/lib/idempotency";
+import { keeper, uuid } from "@/lib/idempotency";
 import { type Problem, problem } from "@/lib/problem";
 import type { Tone } from "@/lib/runState";
 import { atLeast, bodyOf, capOf, dollars, FIRED_BY, hookUrlOf, isScheduleTrigger, isWebhookTrigger, SIGNATURE_WORDS, utcWhen, type Draft, draftOf, type Schedule, type WebhookTrigger, emptyDraft, FIRING_LABEL, firingWords, instantKept, issuesOf, patchOf, whenWords, emptyWebhook, type WebhookDraft, webhookBodyOf } from "@/lib/schedules";
@@ -126,11 +126,15 @@ function ScheduleDetail({ v2, go, agentName, id, every }: PageProps & { id: stri
   const [firings, setFirings] = useState<Firing[]>([]);
   const [error, setError] = useState<Problem | null>(null);
   const [said, setSaid] = useState<Problem | null>(null);
-  const [busy, setBusy] = useState<"pause" | "fire" | "delete" | "secret" | null>(null);
+  const [busy, setBusy] = useState<"pause" | "fire" | "delete" | null>(null);
   const [confirming, setConfirming] = useState(false);
   // A webhook's Rotate secret: asked first (the old secret stops signing at once), then the new one shown that once.
   const [rotating, setRotating] = useState(false);
   const [fresh, setFresh] = useState<string | null>(null);
+  // A rotation out: its own flag, not `busy` (a Run now that ends first clears that), so a second rotation never goes out
+  // while the first is, and an older answer never shows a secret the newer one already revoked.
+  const rotateOut = useRef(false);
+  const [renewing, setRenewing] = useState(false);
   const [tries, setTries] = useState(0);
   // A Run now out: a second click while it is waits for it, so a double click fires once.
   const firing = useRef(false);
@@ -164,7 +168,7 @@ function ScheduleDetail({ v2, go, agentName, id, every }: PageProps & { id: stri
   if (!hook && !isScheduleTrigger(trigger)) return <NotASchedule />;
   const runs = trigger as Schedule | WebhookTrigger;
 
-  const act = async (what: "pause" | "delete" | "secret", work: () => Promise<unknown>, failed: string) => {
+  const act = async (what: "pause" | "delete", work: () => Promise<unknown>, failed: string) => {
     setBusy(what); setSaid(null);
     try { await work(); } catch (e) { setSaid(problem(e, failed)); } finally { setBusy(null); }
   };
@@ -175,7 +179,11 @@ function ScheduleDetail({ v2, go, agentName, id, every }: PageProps & { id: stri
     setTrigger(answer);
   }, trigger.enabled ? "the pause" : "the resume");
   const remove = () => act("delete", async () => { await v2.deleteTrigger(id); go("#/triggers"); }, "the delete");
-  const rotate = () => act("secret", async () => { setFresh(null); const r = await v2.rotateTriggerSecret(id); setFresh(r.secret); }, "the new secret");
+  const rotate = async () => {
+    if (rotateOut.current) return;
+    rotateOut.current = true; setRenewing(true); setSaid(null); setFresh(null);
+    try { setFresh((await v2.rotateTriggerSecret(id)).secret); } catch (e) { setSaid(problem(e, "the new secret")); } finally { rotateOut.current = false; setRenewing(false); }
+  };
   const runNow = async () => {
     if (firing.current) return;
     firing.current = true; setBusy("fire"); setSaid(null);
@@ -204,7 +212,7 @@ function ScheduleDetail({ v2, go, agentName, id, every }: PageProps & { id: stri
           <Button size="sm" variant="solid" onClick={() => void runNow()} disabled={busy === "fire"}><Zap aria-hidden /> {busy === "fire" ? "Starting" : "Run now"}</Button>
           <Button size="sm" onClick={() => void toggle()} disabled={busy !== null}>{trigger.enabled ? <><Pause aria-hidden /> Pause</> : <><Play aria-hidden /> Resume</>}</Button>
           {!hook && <Button size="sm" onClick={() => go(`${hashOf(id)}/edit`)}><Pencil aria-hidden /> Edit</Button>}
-          {hook && (!rotating ? <Button size="sm" onClick={() => setRotating(true)} disabled={busy !== null}><KeyRound aria-hidden /> Rotate secret</Button> : (
+          {hook && (!rotating ? <Button size="sm" onClick={() => setRotating(true)} disabled={busy !== null || renewing}><KeyRound aria-hidden /> Rotate secret</Button> : (
             <span className="flex items-center gap-2 border border-warning/50 px-2 py-1 text-[12px]" role="alertdialog" aria-label="Make a new secret?">
               <span>The old secret stops signing at once.</span>
               <Button size="sm" variant="solid" onClick={() => { setRotating(false); void rotate(); }}>Yes, make a new one</Button>
@@ -299,8 +307,9 @@ function ScheduleForm({ v2, go, trigger, minEvery }: FormProps & { trigger?: Sch
   const [issues, setIssues] = useState<Record<string, string>>({});
   const [rest, setRest] = useState<string[]>([]);
   const [saving, setSaving] = useState(false);
-  // One key per form: a create sent again (a lost answer, a second click) makes one schedule (createTrigger's Idempotency-Key).
-  const [key] = useState(uuid);
+  // A create sent again unchanged (a lost answer, a second click) reuses its Idempotency-Key and makes one schedule; an
+  // edited one gets a new key.
+  const keys = useRef(keeper()).current;
   useEffect(() => { allAgents(v2).then(setAgents, () => setAgents([])); }, [v2]);
   const set = <K extends keyof Draft>(key: K) => (value: Draft[K]) => setDraft((d) => ({ ...d, [key]: value }));
   const shown = new Set(["name", "source.cron", "source.timezone", "source.at", "source.every_s", "source.start_at", "target.agent_id", "target.input", "target.max_cost_usd", ...(trigger ? [] : ["enabled"])]);
@@ -317,7 +326,7 @@ function ScheduleForm({ v2, go, trigger, minEvery }: FormProps & { trigger?: Sch
     setIssues({}); setSaving(true);
     try {
       if (!trigger) {
-        const made = await v2.createTrigger(body as TriggerCreate, key);
+        const made = await v2.createTrigger(body as TriggerCreate, keys.keyFor("createTrigger", body));
         go(hashOf(made.id));
       } else {
         const patch = patchOf(trigger, body);
@@ -405,14 +414,20 @@ function ScheduleForm({ v2, go, trigger, minEvery }: FormProps & { trigger?: Sch
   );
 }
 
-/** Writes `text` to the clipboard; says Copied beside it once it is there. */
+/** Writes `text` to the clipboard and says Copied beside it. The clipboard exists only in a secure context (https or
+ *  localhost): with none, or a write the browser refuses, it says to select the text instead. */
 function CopyButton({ text, label }: { text: string; label: string }) {
-  const [copied, setCopied] = useState(false);
-  const copy = () => { navigator.clipboard.writeText(text).then(() => setCopied(true), () => setCopied(false)); };
+  const [said, setSaid] = useState<string | null>(null);
+  const manual = "The browser won't copy here. Select it and copy it.";
+  const copy = () => {
+    const clip = typeof navigator !== "undefined" ? navigator.clipboard : undefined;
+    if (!clip?.writeText) { setSaid(manual); return; }
+    clip.writeText(text).then(() => setSaid("Copied"), () => setSaid(manual));
+  };
   return (
-    <span className="inline-flex items-center gap-2">
+    <span className="inline-flex flex-wrap items-center gap-2">
       <Button type="button" size="sm" onClick={copy}><Copy aria-hidden /> {label}</Button>
-      {copied && <span className="font-mono text-[11px] text-muted-foreground" role="status">Copied</span>}
+      {said && <span className="font-mono text-[11px] text-muted-foreground" role="status">{said}</span>}
     </span>
   );
 }
@@ -449,7 +464,9 @@ function WebhookForm({ v2, go }: { v2: Client; go: (hash: string) => void }) {
   const [rest, setRest] = useState<string[]>([]);
   const [saving, setSaving] = useState(false);
   const [made, setMade] = useState<TriggerMade | null>(null);
-  const [key] = useState(uuid);
+  // A create sent again unchanged reuses its Idempotency-Key (one webhook, its secret's note on the retry); an edited one
+  // gets a new key.
+  const keys = useRef(keeper()).current;
   useEffect(() => { allAgents(v2).then(setAgents, () => setAgents([])); }, [v2]);
   const set = <K extends keyof WebhookDraft>(k: K) => (value: WebhookDraft[K]) => setDraft((d) => ({ ...d, [k]: value }));
   const shown = new Set(["name", "source.signature", "target.agent_id", "target.input", "target.max_cost_usd"]);
@@ -462,7 +479,7 @@ function WebhookForm({ v2, go }: { v2: Client; go: (hash: string) => void }) {
     if (!body) { setIssues(missing ?? {}); return; }
     setIssues({}); setSaving(true);
     try {
-      setMade(await v2.createTrigger(body, key));
+      setMade(await v2.createTrigger(body, keys.keyFor("createTrigger", body)));
     } catch (err) {
       const found = issuesOf(err);
       setIssues(Object.fromEntries(Object.entries(found.fields).filter(([k]) => shown.has(k))));
