@@ -45,9 +45,15 @@ export function createStepWaits({ marks, now = Date.now }: { marks?: CapMarks; n
   const waiting = new Map<string, CapRefused>();
   const sessions = new Map<string, string>();
   const stops = new Map<string, CapStop>();
+  /** Each step's generation, and the resumes': a resume, done or stop bumps them, and a wait whose generation moved while
+   *  its mark was written counts no wait (it was answered before it began). */
+  const generations = new Map<string, number>();
+  let resumes = 0;
+  const bump = (path: string) => generations.set(path, (generations.get(path) ?? 0) + 1);
   return {
     working: (path) => void working.add(path),
     done: (path) => {
+      bump(path);
       working.delete(path);
       waiting.delete(path);
     },
@@ -59,13 +65,20 @@ export function createStepWaits({ marks, now = Date.now }: { marks?: CapMarks; n
       return known;
     },
     async wait(path, refusal) {
+      const [step, resumed] = [generations.get(path) ?? 0, resumes];
       await marks?.write({ kind: "wait", path, at: now() });
+      // Resumed, ended or stopped while the mark was written: the wait is answered already, never left behind.
+      if ((generations.get(path) ?? 0) !== step || resumes !== resumed) return;
       waiting.set(path, refusal);
     },
-    resume: () => waiting.clear(),
+    resume: () => {
+      resumes++;
+      waiting.clear();
+    },
     allWaiting: () => working.size > 0 && [...working].every((path) => waiting.has(path)),
     waitingFor: () => [...waiting.keys()],
     stop(path, refusal) {
+      bump(path);
       const stop = new CapStop(path, refusal);
       stops.set(path, stop);
       working.delete(path);

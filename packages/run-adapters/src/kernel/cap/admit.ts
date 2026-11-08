@@ -45,6 +45,8 @@ export function createCap(options: CapOptions, seed: { costs?: { model: string; 
   /** What each model request under way is, for its settle. */
   const steps = new Map<string, { model: string; side: boolean; noted: boolean }>();
   const ownCosts = (model: string): number[] => costs.filter((cost) => cost.model === model).map((cost) => cost.usd);
+  /** Each step's settle, by id: its booking and which of its marks landed, so a retry books nothing twice. */
+  const settlements = new Map<string, { usd: number | null; rule: string; tells: boolean; endWritten: boolean; toldWritten: boolean }>();
 
   /** A refused step's own start mark, before its refusal is thrown; a mark that fails still ends it with the refusal. */
   const refusing = async (id: string, refusal: CapRefused, extra: Partial<StartMark>): Promise<never> => {
@@ -52,10 +54,10 @@ export function createCap(options: CapOptions, seed: { costs?: { model: string; 
     throw refusal;
   };
   /** A step's start mark, before it leaves: one that fails lets its hold go and the step is not sent. */
-  const started = async (admission: Admission, extra: Partial<StartMark>): Promise<Admission> => {
+  const started = async (admission: Admission, extra: Partial<StartMark>, heldUsd: number | null = admission.heldUsd): Promise<Admission> => {
     if (!marks) return admission;
     try {
-      await marks.write({ kind: "start", id: admission.id, at: now(), heldUsd: admission.heldUsd, ...(admission.boundUsd > 0 ? { boundUsd: admission.boundUsd } : {}), ...extra });
+      await marks.write({ kind: "start", id: admission.id, at: now(), heldUsd, ...(admission.boundUsd > 0 ? { boundUsd: admission.boundUsd } : {}), ...extra });
     } catch {
       ledger.release(admission.id);
       throw new Error(MARK_NOT_WRITTEN);
@@ -91,26 +93,38 @@ export function createCap(options: CapOptions, seed: { costs?: { model: string; 
           if (error instanceof CapRefused) return refusing(request.id, error, extra);
           throw error;
         }
-        // A paid call that holds nothing (a page's later part) takes no hold.
-        if (admission.heldUsd > 0 || request.kind === "model") ledger.hold(request.id, { usd: admission.heldUsd, stoppedPrice: admission.stoppedUsd });
+        // Every step holds, a $0 one too: its settle then books a known figure (its charge, else its $0 hold).
+        ledger.hold(request.id, { usd: admission.heldUsd, stoppedPrice: admission.stoppedUsd });
       }
-      const sent = await started(admission, extra);
+      // With no cap nothing was held: its start mark holds no figure, so a crash before its end reopens as unknown.
+      const sent = await started(admission, extra, capUsd === undefined ? null : admission.heldUsd);
       if (request.kind === "model") steps.set(request.id, { model: request.model.id, side: request.side === true, noted: request.noted === true });
       return sent;
     },
     async settle(id: string, ended: Settled): Promise<number | null> {
-      const { usd, rule } = ledger.settle(id, ended);
-      const step = steps.get(id);
-      steps.delete(id);
-      const answered = rule.startsWith("answered");
-      if (step && !step.side && answered && typeof usd === "number" && usd > 0) costs.push({ model: step.model, usd });
-      if (marks) await withinWait(marks.write({ kind: "end", id, at: now(), usd, rule }));
-      // The note is told once the request carrying it is answered, never before.
-      if (step?.noted && answered && !told) {
-        told = true;
-        if (marks) await withinWait(marks.write({ kind: "told", id, at: now(), words: offered?.words ?? "", leftUsd: offered?.leftUsd ?? 0 }));
+      // Booked once: a settle retried after its marks failed reuses the first booking, its costs and its note.
+      let settled = settlements.get(id);
+      if (!settled) {
+        const { usd, rule } = ledger.settle(id, ended);
+        const step = steps.get(id);
+        steps.delete(id);
+        const answered = rule.startsWith("answered");
+        if (step && !step.side && answered && typeof usd === "number" && usd > 0) costs.push({ model: step.model, usd });
+        // The note is told once the request carrying it is answered, never before.
+        const tells = step?.noted === true && answered && !told;
+        if (tells) told = true;
+        settled = { usd, rule, tells, endWritten: false, toldWritten: false };
+        settlements.set(id, settled);
       }
-      return usd;
+      if (marks && !settled.endWritten) {
+        await withinWait(marks.write({ kind: "end", id, at: now(), usd: settled.usd, rule: settled.rule }));
+        settled.endWritten = true;
+      }
+      if (marks && settled.tells && !settled.toldWritten) {
+        await withinWait(marks.write({ kind: "told", id, at: now(), words: offered?.words ?? "", leftUsd: offered?.leftUsd ?? 0 }));
+        settled.toldWritten = true;
+      }
+      return settled.usd;
     },
     leastUsd(request: ModelCapRequest): number {
       const p = priced(request, mode, now());

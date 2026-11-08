@@ -11,6 +11,8 @@ export type Hold = { readonly usd: number; readonly stoppedPrice?: (streamedToke
 export class Ledger {
   #spent: number | null;
   readonly #holds = new Map<string, Hold>();
+  /** Each step's booking, by id: a step books once, whatever retries its settle. */
+  readonly #booked = new Map<string, { usd: number | null; rule: string }>();
 
   constructor(spentUsd: number | null) {
     this.#spent = spentUsd;
@@ -39,6 +41,9 @@ export class Ledger {
   /** Lets `id`'s hold go and books what it ended at, with the rule that gave it. A step it never held books its own figure
    *  (a paid call's charge, an answer's cost), or nothing that can be known. */
   settle(id: string, ended: Settled): { usd: number | null; rule: string } {
+    // A step books once: a settle retried (its end mark failed after the first booking) answers the first booking.
+    const first = this.#booked.get(id);
+    if (first) return first;
     const hold = this.#holds.get(id);
     this.#holds.delete(id);
     let booked: { usd: number | null; rule: string };
@@ -50,6 +55,7 @@ export class Ledger {
     }
     const usd = booked.usd;
     this.#spent = this.#spent === null || usd === null ? null : this.#spent + usd;
+    this.#booked.set(id, booked);
     return booked;
   }
 }
