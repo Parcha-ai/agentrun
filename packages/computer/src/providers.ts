@@ -1,6 +1,8 @@
 // The registry: one line per computer, id → () => import("./<vendor>.js"). The conformance CLI (and serve, once wired)
 // resolves providers through it alone, so a new computer is its provider file and its line here, with no edit to either. Every import is
 // lazy: loading the registry loads no provider and no vendor SDK.
+import type { RunFolder } from "./conformance/types.js";
+import type { MountKind } from "./mount.js";
 import type { ComputerProvider } from "./provider.js";
 
 /** Where a provider's settings are read: process.env, or a record of the same shape. */
@@ -8,12 +10,14 @@ export type ProviderEnv = Readonly<Record<string, string | undefined>>;
 
 /**
  * What a conformance module exports, the CLI's contract for a module given by path too: createProvider(), and optionally
- * createDriftedProvider() for the drift case, conformanceImage() for a run that names no image, and conformanceNotes for
- * the report. The CLI passes each function its options, which a module may ignore.
+ * createDriftedProvider() for the drift case, conformanceImage() for a run that names no image, conformanceNotes for
+ * the report, and mountFor() for the mount cases. The CLI passes each function its options, which a module may ignore.
  */
 export interface ConformanceModule {
 	createProvider(options?: object): ComputerProvider | Promise<ComputerProvider>;
 	createDriftedProvider?(options?: object): ComputerProvider | Promise<ComputerProvider>;
+	/** A fresh run folder for a mount kind the provider declares, with its outside; undefined for a kind it cannot make. */
+	mountFor?(kind: MountKind, options?: object): RunFolder | undefined | Promise<RunFolder | undefined>;
 	conformanceImage?(options?: object): string | Promise<string>;
 	conformanceNotes?: string[];
 }
@@ -22,6 +26,11 @@ export interface ConformanceModule {
 export interface ProviderModule {
 	/** Every variable fromEnv reads, by role: each named COMPUTER_<ID>_*, never a vendor's bare variable. */
 	readonly ENV: Readonly<Record<string, string>>;
+	/**
+	 * The mount kinds its computers take, the same as its provider's capabilities().mount (none: []): a caller tells which
+	 * provider binds a local folder from the registry alone, without building one.
+	 */
+	readonly MOUNT: readonly MountKind[];
 	/**
 	 * The provider, built from those variables alone; it throws in words when one is missing or wrong. A key is read here,
 	 * when the provider is built, and never when the module loads.

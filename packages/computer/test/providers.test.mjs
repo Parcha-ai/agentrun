@@ -94,6 +94,19 @@ test("every id resolves to a module of the registry's shape: ENV of COMPUTER_<ID
 	}
 });
 
+test("every registry module exports MOUNT beside ENV: the mount kinds its computers take, known without building a provider", async () => {
+	for (const id of providerIds) {
+		const module = await providerModule(id);
+		assert.ok(Array.isArray(module.MOUNT), `${id} exports MOUNT, an array`);
+		for (const kind of module.MOUNT) assert.ok(index.MOUNT_KINDS.includes(kind), `${id}'s MOUNT holds ${JSON.stringify(kind)}, which is not a mount kind`);
+		assert.equal(new Set(module.MOUNT).size, module.MOUNT.length, `${id}'s MOUNT names each kind once`);
+	}
+	// Which provider binds a local folder, read from the registry alone: Docker; Modal and Daytona take none until D6.
+	const binds = [];
+	for (const id of providerIds) if ((await providerModule(id)).MOUNT.includes("bind")) binds.push(id);
+	assert.deepEqual(binds, ["docker"]);
+});
+
 test("providerFromEnv() names the known ids for an id it does not know", async () => {
 	for (const id of ["nope", "constructor", "__proto__", "toString", ""]) {
 		await assert.rejects(providerFromEnv(id, {}), (error) => {

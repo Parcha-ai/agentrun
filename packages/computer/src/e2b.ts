@@ -13,6 +13,7 @@ import { childCommands, type DaemonExpected, daemonDrift } from "./child.js";
 import { DaemonClient } from "./client.js";
 import { DESKTOP_GROUPS, type DesktopOptions, desktopOf, startDisplay } from "./desktop.js";
 import { COMPUTER_LABEL, DAEMON_IN_COMPUTER, DEADLINE_LABEL, helloDrift, type ProbeReport, probeNetworkDrift, probeNotes, probeReportOf, WORK } from "./drift.js";
+import type { MountKind } from "./mount.js";
 import type { HelloResult } from "./protocol.js";
 import {
 	type AttachedComputer,
@@ -300,6 +301,9 @@ const DEFAULTS: E2BTimeouts = {
 	pollMs: 1_000,
 	listedMs: 15_000,
 };
+
+/** The mount kinds an E2B computer takes: none yet (capabilities() declares no mount); the Archil mount comes with D6. */
+export const MOUNT: readonly MountKind[] = [];
 const RELEASE_POLL_MAX_MS = 5_000;
 const LISTED_POLL_MS = 150;
 const LISTED_ROUNDS = 2;

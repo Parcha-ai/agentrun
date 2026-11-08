@@ -1,5 +1,6 @@
 // The drift check for a Docker computer: what the computer reports of itself after create, from docker inspect and the
 // daemon's hello, against what was declared. Pure: no Docker call. Each mismatch is one sentence; none is an empty list.
+import { type MountReadBack, WORKSPACE } from "./mount.js";
 import type { ComputerKind, Group, HelloResult } from "./protocol.js";
 import type { ComputerSpec, NetworkPolicy, NetworkSpec } from "./provider.js";
 
@@ -13,7 +14,7 @@ export const DEFAULT_MEMORY_MB = 4096;
 export const DEFAULT_PIDS = 1024;
 /** CPUs are a CFS quota of each 100 ms, as serve gives them: Docker refuses a --cpus above its own CPU count. */
 export const CPU_PERIOD_US = 100_000;
-/** The computer's home and default workdir: a tmpfs its user owns, since a non-root user can write nowhere else. */
+/** The computer's home and default workdir: a tmpfs its user owns. The run's folder, when bound, is at WORKSPACE. */
 export const WORK = "/work";
 /** Where init's socket lives (the daemon's DefaultSocket's directory): a tmpfs the computer's user owns, mode 0700. */
 export const SOCKET_DIR = "/run/agentrun";
@@ -87,6 +88,11 @@ export interface DockerHost {
 	selinux: boolean;
 	/** Each enforcement the host lacks, in words; a computer is refused on a host with any. */
 	problems: string[];
+	/**
+	 * Present when the host remaps user ids (docker info's name=userns: userns-remap; name=rootless: rootless Docker): a
+	 * computer's uid is then another uid on the host. No problem for a computer, but a bind of the run folder is refused.
+	 */
+	remap?: "userns" | "rootless";
 }
 
 /** docker info names the kernel's architecture; hello names Go's. */
@@ -116,7 +122,8 @@ export function hostOf(info: DockerInfo | null | undefined): DockerHost {
 		problems.push("this Docker host's default seccomp profile is unconfined, so a computer could make any system call");
 	}
 	const machine = typeof info?.Architecture === "string" ? info.Architecture : "";
-	return { arch: GO_ARCH[machine] ?? machine, apparmor: named("apparmor") !== undefined, selinux: named("selinux") !== undefined, problems };
+	const remap = named("userns") !== undefined ? "userns" : named("rootless") !== undefined ? "rootless" : undefined;
+	return { arch: GO_ARCH[machine] ?? machine, apparmor: named("apparmor") !== undefined, selinux: named("selinux") !== undefined, problems, ...(remap ? { remap } : {}) };
 }
 
 /** What the daemon must report: the provider's version, kind and groups, and the host's architecture. */
@@ -246,6 +253,22 @@ export function probeNotes(probe: ProbeReport, network: NetworkSpec | NetworkPol
 	return network === "none" && probe.accepted.length > 0 ? [`network: none; accepted with no answer (no bytes came back): ${probe.accepted.join(", ")}`] : [];
 }
 
+type InspectMount = NonNullable<DockerInspect["Mounts"]>[number];
+/** One mount as a person reads it: "a read-write bind of /runs/r1". */
+const mountWords = (mount: InspectMount) => `a ${mount.RW === true ? "read-write" : "read-only"} ${mount.Type ?? "mount"} of ${mount.Source ?? mount.Name ?? "nothing"}`;
+
+/**
+ * What is mounted at /workspace, read back from inspect: a read-write bind is the run's folder; nothing is undefined;
+ * anything else (read-only, a volume, two mounts) is reported in words, never as a bind it might be.
+ */
+export function mountOf(inspected: DockerInspect | null | undefined): MountReadBack | undefined {
+	const at = (inspected?.Mounts ?? []).filter((mount) => mount.Destination === WORKSPACE);
+	const [only] = at;
+	if (only === undefined) return undefined;
+	if (at.length === 1 && only.Type === "bind" && only.RW === true && typeof only.Source === "string") return { kind: "bind", path: only.Source };
+	return { other: `${at.map(mountWords).join(", ")} at ${WORKSPACE}` };
+}
+
 /** Every way hello differs from what the provider expects. */
 export function helloDrift(hello: HelloResult | null | undefined, expected: HelloExpected): string[] {
 	const found: string[] = [];
@@ -307,10 +330,20 @@ export function inspectDrift(spec: ComputerSpec, inspected: DockerInspect | null
 	for (const [path, options] of Object.entries(tmpfs)) {
 		if (!(path in tmpfsAsked)) found.push(`tmpfs ${path}: none declared but /work and /run/agentrun, read back ${show(options)}`);
 	}
-	const asked = { Type: "bind", Source: expected.daemonPath, Target: DAEMON_IN_COMPUTER, ReadOnly: true };
-	const [daemonMount, ...moreMounts] = host.Mounts ?? [];
-	const sameMount = daemonMount !== undefined && Object.entries(daemonMount).every(([key, value]) => (key in asked ? asked[key as keyof typeof asked] === value : blank(value)));
-	if (!sameMount || moreMounts.length > 0 || !Object.keys(asked).every((key) => daemonMount?.[key] !== undefined)) mismatch("HostConfig.Mounts", [asked], host.Mounts);
+	// A Docker computer takes a bind alone; check() refuses any other kind, so one here is drift, named by its kind only.
+	if (spec.mount !== undefined && spec.mount.kind !== "bind") found.push(`mount: declared a mount of kind ${String(spec.mount.kind)}, which a Docker computer never makes`);
+	const bound = spec.mount?.kind === "bind" ? spec.mount.path : undefined;
+	// In create's order: the daemon read-only, then the run's folder read-write at /workspace when one was asked for.
+	const asked: Array<Record<string, unknown>> = [
+		{ Type: "bind", Source: expected.daemonPath, Target: DAEMON_IN_COMPUTER, ReadOnly: true },
+		...(bound === undefined ? [] : [{ Type: "bind", Source: bound, Target: WORKSPACE }]),
+	];
+	const hostMounts = host.Mounts ?? [];
+	const sameMount = (made: Record<string, unknown> | undefined, want: Record<string, unknown>) =>
+		made !== undefined &&
+		Object.entries(made).every(([key, value]) => (key in want ? want[key] === value : blank(value))) &&
+		Object.keys(want).every((key) => made[key] !== undefined);
+	if (hostMounts.length !== asked.length || !asked.every((want, i) => sameMount(hostMounts[i], want))) mismatch("HostConfig.Mounts", asked, host.Mounts);
 	for (const [field, value] of Object.entries(host)) {
 		if (HOST_ASKED.has(field) || HOST_IRRELEVANT.has(field)) continue;
 		const rule = HOST_DEFAULTS[field];
@@ -339,8 +372,17 @@ export function inspectDrift(spec: ComputerSpec, inspected: DockerInspect | null
 	if (daemon.length !== 1 || only?.Type !== "bind" || only.Source !== expected.daemonPath || only.RW !== false || !["", "rprivate", undefined].includes(only.Propagation)) {
 		found.push(`daemon mount: declared ${expected.daemonPath} bound read-only at ${DAEMON_IN_COMPUTER}, read back ${show(daemon)}`);
 	}
+	if (bound !== undefined) {
+		const workspace = mounts.filter((mount) => mount.Destination === WORKSPACE);
+		const [one] = workspace;
+		if (workspace.length !== 1 || one?.Type !== "bind" || one.Source !== bound || one.RW !== true || !["", "rprivate", undefined].includes(one.Propagation)) {
+			found.push(`workspace mount: declared ${bound} bound read-write at ${WORKSPACE}, read back ${show(workspace)}`);
+		}
+	}
+	const declared = bound === undefined ? "the daemon's" : "the daemon's and the run folder's";
 	for (const mount of mounts) {
-		if (mount.Destination !== DAEMON_IN_COMPUTER) found.push(`${mount.Type ?? "unknown"} mount: none declared but the daemon's, read back ${show(mount)}`);
+		if (mount.Destination === DAEMON_IN_COMPUTER || (bound !== undefined && mount.Destination === WORKSPACE)) continue;
+		found.push(`${mount.Type ?? "unknown"} mount: none declared but ${declared}, read back ${show(mount)}`);
 	}
 	if (!sameList(config.Entrypoint, [DAEMON_IN_COMPUTER])) mismatch("Entrypoint", [DAEMON_IN_COMPUTER], config.Entrypoint);
 	const cmd = ["init", "--deadline", expected.deadline];

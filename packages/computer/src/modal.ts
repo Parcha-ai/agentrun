@@ -19,6 +19,7 @@ import {
 	probeReportOf,
 	WORK,
 } from "./drift.js";
+import type { MountKind } from "./mount.js";
 import {
 	type AttachedComputer,
 	type CallContext,
@@ -161,6 +162,9 @@ export const ENV = {
 	/** The server the key goes to; the SDK's default when unset. */
 	serverUrl: "COMPUTER_MODAL_SERVER_URL",
 } as const;
+
+/** The mount kinds a Modal computer takes: none yet (capabilities() declares no mount); the Archil mount comes with D6. */
+export const MOUNT: readonly MountKind[] = [];
 
 /** The SDK's default server (modal-client@64880502:js/src/config.ts:143). */
 const MODAL_DEFAULT_SERVER_URL = "https://api.modal.com:443";

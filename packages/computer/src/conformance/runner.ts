@@ -3,12 +3,24 @@ import { randomBytes } from "node:crypto";
 import { setTimeout as sleep } from "node:timers/promises";
 import { isDeepStrictEqual } from "node:util";
 import { sweep } from "../janitor.js";
+import type { MountKind } from "../mount.js";
 import { type ComputerClient, type ExecRunParams, type Group, GROUPS, type HelloResult } from "../protocol.js";
 import type { ComputerConnection, ComputerProvider, ComputerRef, ComputerSpec, CreatedComputer } from "../provider.js";
 import { type ComputerErrorCode, fail, ok, type Result } from "../result.js";
 import { conformanceCases } from "./cases/index.js";
 import { type StartedFixture, startFixture } from "./fixture.js";
-import { type Capability, type Case, type Clock, type CaseContext, type CaseResult, type ConformanceOptions, type ConformanceReport, coreGroups, type Ran } from "./types.js";
+import {
+	type Capability,
+	type Case,
+	type Clock,
+	type CaseContext,
+	type CaseResult,
+	type ConformanceOptions,
+	type ConformanceReport,
+	coreGroups,
+	type Ran,
+	type RunFolder,
+} from "./types.js";
 
 /** The label every computer of a run carries, with the run's id. */
 export const RUN_LABEL = "agentrun.conformance";
@@ -68,7 +80,7 @@ function whenAborted(signal: AbortSignal): Promise<never> {
  * or is named in the cleanup, and a computer that arrives after its case ended is deleted when it arrives.
  */
 export async function runConformance(provider: ComputerProvider, options: ConformanceOptions): Promise<ConformanceReport> {
-	const { image, only, signal, cases = conformanceCases, drifted, onResult, notes, caseTimeoutMs = 180_000, patience = 30_000, cleanupTimeoutMs = 60_000, fixture } = options;
+	const { image, only, signal, cases = conformanceCases, drifted, mountFor, onResult, notes, caseTimeoutMs = 180_000, patience = 30_000, cleanupTimeoutMs = 60_000, fixture } = options;
 	const fetcher = options.fetch ?? ((url: string, init?: { signal?: AbortSignal; method?: string }) => fetch(url, init));
 	const clock: Clock = options.clock ?? { now: () => Date.now(), sleep: (ms) => new Promise((resolve) => setTimeout(resolve, ms)) };
 	const run = randomBytes(6).toString("hex");
@@ -194,6 +206,8 @@ export async function runConformance(provider: ComputerProvider, options: Confor
 				if ("hello" in got && !(Array.isArray(got.hello.groups) && got.hello.groups.includes(need as Group))) {
 					return `the ${capabilities.daemon === "none" ? "computer's" : "daemon's"} hello does not declare ${need}`;
 				}
+			} else if (need.startsWith("mount:")) {
+				if (!capabilities.mount?.includes(need.slice("mount:".length) as MountKind)) return `the provider does not declare ${need}`;
 			} else if (need === "extend" || need === "stream") {
 				if (typeof provider[need] !== "function") return `the provider has no ${need}()`;
 			} else if (need.startsWith("network:")) {
@@ -244,6 +258,8 @@ export async function runConformance(provider: ComputerProvider, options: Confor
 		/** The fixture's stop, set as soon as it is launched: one that never logs ready is stopped as well. */
 		let stopFixture: (() => Promise<void>) | undefined;
 		let dirs = 0;
+		/** The run folders the case asked for: each is closed when the case ends, after its computers are deleted. */
+		const folders: RunFolder[] = [];
 		// Set when the case ends: what a provider call gives after that is ended at once, not left to the case.
 		let ended = false;
 
@@ -346,6 +362,15 @@ export async function runConformance(provider: ComputerProvider, options: Confor
 					if (drifted === undefined) return t.skip("no drifted provider was given: a provider module exports createDriftedProvider() for the drift cases");
 					return await drifted();
 				},
+				async runFolder(kind) {
+					const none = `the run was given no run folder for mount kind ${kind}`;
+					if (mountFor === undefined) return t.skip(`${none}: a provider's conformance module exports mountFor(kind)`);
+					const folder = await mountFor(kind);
+					if (folder === undefined) return t.skip(`${none}: mountFor(${JSON.stringify(kind)}) made none`);
+					if (ended) keep(bounded(folder.close().catch(() => {}), CLOSE_MS), `close of a run folder (${c.id})`);
+					else folders.push(folder);
+					return folder;
+				},
 				async exec(argv: string[], extra: Partial<ExecRunParams> = {}, client: ComputerClient = t.client): Promise<Ran> {
 					const ran = unwrap(await client.call("exec.run", { argv, timeoutMs: patience, ...extra }, { signal: caseSignal }), `exec.run ${show(argv)}`);
 					const decode = (base64: string) => Buffer.from(base64, "base64").toString("utf8");
@@ -420,6 +445,8 @@ export async function runConformance(provider: ComputerProvider, options: Confor
 			}
 			for (const connection of connections) await bounded(connection.close().catch(() => {}), CLOSE_MS);
 			for (const { ref, by } of refs) await release(ref, by);
+			// A folder that cannot be removed is left, as a fixture that cannot be stopped is: it is not the case's verdict.
+			for (const folder of folders) await bounded(folder.close().catch(() => {}), CLOSE_MS);
 		}
 	};
 
