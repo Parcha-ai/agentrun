@@ -143,7 +143,14 @@ export function createLearningLoop(learning: LearningLoopDeps): (deps: LoopDeps)
           await append(KINDS.learningDropped, { source: source.runId, reason: "no_proposal", detail: said.stopped(STOPPED.notChecked) } satisfies DroppedData, "ended");
           return { state: "ended" };
         }
-        const proposal = kept.proposal as KeptProposal;
+        // The row as the end-of-run hook keeps it: its state and words, the kept Proposal inside (a drop queues no learning
+        // run, so a row that isn't proposed is read as nothing to grade).
+        const row = kept.proposal as { readonly state?: string; readonly proposal?: KeptProposal } | null;
+        if (row?.state !== "proposed" || !row.proposal) {
+          await append(KINDS.learningDropped, { source: source.runId, reason: "no_proposal", detail: said.stopped(STOPPED.notChecked) } satisfies DroppedData, "ended");
+          return { state: "ended" };
+        }
+        const proposal = row.proposal;
         const ws = learning.workspace(source.agentId);
         const entries = await journalEntries(journal, context);
         rooted = entries.length > 0;
