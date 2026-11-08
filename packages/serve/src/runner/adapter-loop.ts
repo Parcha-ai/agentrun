@@ -24,6 +24,7 @@ import { type AlsoRow, type Claim, type Command, type CommandOutcome, deniedText
 import { answerText, REFLECT_NOTE_ONLY, reflectRequestId, underLearning, WRITES } from "./end-of-run.js";
 import { approvalOf, CLOSE_MS, CUT_STEP_MS, STOP_SETTLE_MS, commandRequest, DEFAULT_RESTART_LIMIT, entriesOf, findData, Gate, heldReporter, Interrupted, KernelFault, Parked, quiet, restartLimited, writesEntry, writesSubmission } from "./loop.js";
 import type { PiRun, PiSessionIO, PreIntentAnswer, PreIntentCall } from "./adapters/pi.js";
+import { HAND_BACK, handBackOf } from "./hand-back.js";
 import { journalSessions } from "./sessions.js";
 import { sideEffect } from "./side-effects.js";
 
@@ -163,6 +164,31 @@ function adapterLoop(specOf: (claim: Claim, run: AdapterRun) => AdapterRunSpec |
     }
     if (!raising.resuming) await takeRaises();
     return { taken: true };
+  };
+
+  /** Hand-backs one at a time: each decides on the journal the one before it left, so a second answer meets the first. */
+  let handing: Promise<unknown> = Promise.resolve();
+  /** A person's answer to the agent's browser hand-over (hand-back.ts): the first for an ask is its answer, committed as
+   *  the answered hand-over entry at the row's own time, the row taken in that commit. A row after the ask lapsed writes
+   *  the expiry (at the expiry's time) and is refused; one for an ask answered already, or never made, is refused. */
+  const handBack = (command: Command): Promise<CommandOutcome> => {
+    const turn = handing.then(async (): Promise<CommandOutcome> => {
+      await Promise.race([ready, (finished ?? new Promise<never>(() => {})).then(() => undefined, () => undefined)]);
+      const [theGate, theHarness, theRoot] = [gate, harness, root];
+      if (!theGate || !theHarness || !theRoot) return { refused: handBackOf([], command.body, command.createdAt).refused! };
+      const { write, refused } = handBackOf(await entriesOf(theGate.journal, theRoot.id, context), command.body, command.createdAt);
+      if (write) {
+        const answers = refused === undefined;
+        // The person's answer takes its row in the commit that writes it; an expiry is the ask's own, and takes none.
+        const landed = answers ? theGate.expect(writesEntry(KINDS.handover, (data) => data.id === write.id && data.state === write.state), { take: [command.id] }) : undefined;
+        landed?.catch(() => undefined);
+        await theHarness.commit((tx) => tx.appendEntry(theRoot.id, { kind: KINDS.handover, data: write as unknown as JsonValue }), context);
+        await landed;
+      }
+      return refused === undefined ? { taken: true } : { refused };
+    });
+    handing = turn.catch(() => undefined);
+    return turn;
   };
 
   /** The raise entry, taking every raise row this claim has in its one commit (each take keyed to the entry). */
@@ -679,6 +705,7 @@ function adapterLoop(specOf: (claim: Claim, run: AdapterRun) => AdapterRunSpec |
         return { taken: true };
       }
       if (command.kind === "raise") return raise(command);
+      if (command.kind === HAND_BACK) return handBack(command);
       return { refused: `an adapter loop takes no ${command.kind} command` };
     },
     async stop(reason) {

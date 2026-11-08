@@ -51,7 +51,37 @@ export const KINDS = {
   learningDropped: "agentrun.learning.dropped",
   /** The learning folder could not be reached: the run parks and tries again after a backoff. */
   learningUnavailable: "agentrun.learning.unavailable",
+  /** A browser hand-over (pi-browser's browser_request_handoff), on the root. The run's browser host commits the ask, the
+   *  whole of it (HandoverAsked); its answer is an entry too (HandoverAnswered): the person's (a browser_hand_back row
+   *  the loop applies, taking the row in that commit), or the ask's expiry. The first answer for an ask is its answer. */
+  handover: "agent.handover",
 } as const;
+
+/** How a browser hand-over ended: the person's two answers, or its expiry. */
+export type HandoverOutcome = "done" | "cancelled" | "expired";
+
+/** A browser hand-over asked (KINDS.handover): the whole ask, as the server's reader needs it, the instruction again as
+ *  `reason` (the timeline's words). */
+export interface HandoverAsked {
+  readonly state: "waiting";
+  readonly id: string;
+  readonly session: string;
+  readonly instruction: string;
+  readonly completion_condition: string;
+  readonly asked_at: string;
+  readonly expires_at: string;
+  readonly reason?: string;
+}
+
+/** A browser hand-over answered (KINDS.handover): how, and when: the person's own time (their row's), or the expiry's
+ *  when it lapsed first. `reason`: why, for the agent, when the run's cap ended it. */
+export interface HandoverAnswered {
+  readonly state: HandoverOutcome;
+  readonly id: string;
+  readonly session?: string;
+  readonly at: string;
+  readonly reason?: string;
+}
 
 /** A raise taken (KINDS.raise): the cap the run goes on under, and the raise rows taken with it. */
 export interface RaiseData {

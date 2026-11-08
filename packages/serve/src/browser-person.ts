@@ -224,6 +224,19 @@ const TAKE_ENDED: Record<Exclude<HoldEnd, "answered" | "cap">, string> = {
 const CAP_ENDED = "The agent's hand-over ended at the run's spend cap";
 const ASK_ENDED: Record<AskOutcome, string> = { done: GIVEN_BACK, cancelled: "You cancelled the agent's hand-over", expired: "The agent's hand-over expired before you answered it" };
 
+/** The hand-over entry an ask commits: the whole ask, as the server reads it (browser-commands.ts), its session's tag as
+ *  `session`, and its instruction again as `reason` (the timeline's words). */
+const waitingEntry = (ask: PendingAsk): Record<string, string> => ({
+  state: "waiting",
+  id: ask.id,
+  session: ask.tag,
+  instruction: ask.instruction,
+  completion_condition: ask.completion_condition,
+  asked_at: ask.asked_at,
+  expires_at: ask.expires_at,
+  reason: ask.instruction,
+});
+
 /** A take-over's share of its session's person time (an ask's is `ask:<id>`). */
 const TAKE_USER = "take";
 /** A root entry of the run's: a timeline row's source. */
@@ -450,7 +463,7 @@ export function personHands(options: {
     const kept = dir && options.waiting ? pendingOf(readOwn(dir, `${id}.json`), id) : undefined;
     if (!dir || !kept || settled.has(id) || answerOf(readOwn(dir, `${id}.answer.json`)) || Date.parse(kept.expires_at) <= Date.now()) return;
     const nth = asksIn(options.root).map(({ ask: each }) => each).filter((each) => each.tag === kept.tag).reverse().findIndex((each) => each.id === id) + 1;
-    if (nth > 0 && (await options.waiting!(kept.tag)) < nth) await note("agent.handover", { state: "waiting", reason: kept.instruction, session: kept.tag });
+    if (nth > 0 && (await options.waiting!(kept.tag)) < nth) await note("agent.handover", waitingEntry(kept));
   };
 
   /** Ask `id`'s answer, once there is one (the person's, or `expired` once it is due, written here): its hold dropped, any
@@ -556,7 +569,7 @@ export function personHands(options: {
         // The row is what shows the person the ask (askShown): one that cannot be written fails the request, plainly, and
         // leaves nothing behind (its hold, its open entry, its record), so the agent's next request makes it afresh.
         try {
-          await options.note("agent.handover", { state: "waiting", reason: record.instruction, session: ask.sessionTag });
+          await options.note("agent.handover", waitingEntry(record));
         } catch {
           if (open.get(id)?.drop) open.get(id)!.drop();
           open.delete(id);
