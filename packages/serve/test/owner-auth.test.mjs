@@ -80,6 +80,19 @@ test("at a public address setup takes the printed code (or the token): none or a
   assert.equal(byToken.status, 201, "the token stands in for the code");
 });
 
+test("the session read says whether setup takes a code, never the code: true at a public address, false on open setup, absent once a password is set", async (t) => {
+  const session = async (server) => (await call(server.port, { path: "/v2/auth/session" })).json;
+  const coded = await serve(t, { accounts: true });
+  const code = new URL(coded.setupUrl).hash.slice("#code=".length);
+  const before = await session(coded);
+  assert.deepEqual(before, { password_set: false, signed_in: false, setup_code: true });
+  assert.ok(!JSON.stringify(before).includes(code), "the code itself is never in the answer");
+  const open = await serve(t, { accounts: true, openSetup: true });
+  assert.deepEqual(await session(open), { password_set: false, signed_in: false, setup_code: false });
+  assert.equal((await setup(coded, { password: PASSWORD, code })).status, 201);
+  assert.deepEqual(await session(coded), { password_set: true, signed_in: false }, "no setup_code once a password is set");
+});
+
 test("sign-in: the password gives a session cookie, HttpOnly, SameSite=Strict, Path=/, 30 days; a wrong one is a 401 and sets nothing", async (t) => {
   const server = await owned(t);
   const wrong = await signIn(server, "not the password");
