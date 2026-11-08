@@ -42,4 +42,18 @@ export { type ReleasedOlder, releaseOlder, sweep, type SweepOptions, type Swept 
 export { EPOCH_LABEL, epochOf, epochProblem, RUN_LABEL, runLabels, runProblem } from "./labels.js";
 export { waitUntil, type WaitOptions } from "./wait.js";
 export { type ConformanceModule, isProviderId, type ProviderEnv, type ProviderId, providerFromEnv, providerIds, type ProviderModule, providerModule, providers } from "./providers.js";
+export {
+	type Kind,
+	type KindCapabilities,
+	type KindPlane,
+	type KindSpec,
+	type KindTool,
+	KIND_PROVIDERS,
+	KIND_SPECS,
+	KINDS,
+	kindOf,
+	serves,
+	servingRefusals,
+	toolsFor,
+} from "./kinds.js";
 export * from "./conformance/index.js";
