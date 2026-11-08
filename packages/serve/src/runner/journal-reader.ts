@@ -3,6 +3,7 @@
 // one output: a pi run's own records (its pi.tool tasks and its pi.user / pi.assistant entries), and a CLI run's
 // agentrun.* entries (runner/journal-kinds.ts). A run's stop reason is on its run row (its end commit's summary).
 import type { Context } from "@earendil-works/chord";
+import { type MessageOrigin, originOf } from "@parcha/pi-durable-agent/timeline";
 import type { ConversationId, ConversationRecord, EntryRecord, SubmissionRecord, TaskRecord } from "@earendil-works/pi-durable";
 import { reflectFrom } from "./end-of-run.js";
 import { type CallEndData, type CallStartData, KINDS, type MessageData, type MessageRole, type SessionKeyData } from "./journal-kinds.js";
@@ -27,6 +28,8 @@ export interface MessageRecord {
   readonly entry: number;
   /** The end-of-run turn's (end-of-run.ts reflectFrom): its message and its answer, never the run's own. */
   readonly learning?: true;
+  /** Who wrote a message the person did not type (a trigger's): the Timeline's attribution, as the message carries it. */
+  readonly origin?: MessageOrigin;
 }
 
 /** What the reader reads: every entry and every task of the run, and its submissions (where its end-of-run turn began:
@@ -147,8 +150,15 @@ export function messagesOf(from: readonly EntryRecord[] | JournalRecords): Messa
   const turn = (entry: number) => (from_ !== undefined && entry >= from_ ? { learning: true as const } : {});
   for (const entry of recordOf(records.entries)) {
     const at = entryNumber(entry);
-    if (entry.kind === KINDS.message) out.push({ ...dataOf<MessageData>(entry), entry: at, ...turn(at) });
-    else if (entry.kind === PI.user) out.push({ role: entry.byTaskId === undefined ? "person" : "steer", text: piText(entry), entry: at, ...turn(at) });
+    if (entry.kind === KINDS.message) {
+      const { origin, ...data } = dataOf<MessageData>(entry);
+      const known = originOf(origin);
+      out.push({ ...data, entry: at, ...(known ? { origin: known } : {}), ...turn(at) });
+    } else if (entry.kind === PI.user || entry.kind === KINDS.input) {
+      // A pi input under the host's kind carries who wrote it (a trigger's message); pi's own user entry is the person's.
+      const known = entry.kind === KINDS.input ? originOf((entry.data as { origin?: unknown } | undefined)?.origin) : undefined;
+      out.push({ role: entry.byTaskId === undefined ? "person" : "steer", text: piText(entry), entry: at, ...(known ? { origin: known } : {}), ...turn(at) });
+    }
     else if (entry.kind === PI.assistant) {
       const text = piText(entry);
       if (text !== "") out.push({ role: "model", text, entry: at, ...turn(at) });

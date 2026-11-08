@@ -1,16 +1,16 @@
-// A pi loop that fails before its journal is sealed (its spec, or pi's Harness, could not open) ends the run failed, with
-// why, after one claim. The runner stores a failure it is told by a throw: a loop that returned "failed" without writing
-// the run's end left it running, so the runner released it and claimed it again, over and over.
+// pi through the adapter loop: a loop that fails before its journal is sealed (pi's Harness could not open) ends the run
+// failed, with why, after one claim. The adapter loop's twin of runner-loop-failed: the runner stores a failure it is
+// told by a throw, so a loop that returned "failed" without writing the run's end left it running, claimed over and over.
 import assert from "node:assert/strict";
-import { test } from "node:test";
-import { piSpec } from "./conformance-pi.mjs";
+import { after, test } from "node:test";
+import { closeOpenSessions, piAdapterSubject } from "./conformance-pi-adapter.mjs";
 import { observed, queue, recorder, sleep, stores, until } from "./runner-support.mjs";
 
 const { startRunner } = await import("../dist/runner/runner.js");
-const { createPiLoop } = await import("../dist/runner/loop.js");
 const { suiteTools } = await import("../dist/runner/conformance/harness.js");
 const TIMING = { leaseMs: 600, renewEveryMs: 150, stopMarginMs: 200, pollMs: 20, commandPollMs: 30 };
 const quiet = { beforeIntent: async () => {}, beforeResult: async () => {} };
+after(closeOpenSessions);
 
 /** `journal` with every read refused, as a store that cannot be read: pi's Harness cannot open on it. */
 const unreadable = (journal) =>
@@ -22,12 +22,12 @@ const unreadable = (journal) =>
     },
   });
 
-test("a pi loop that cannot open ends the run failed, with why, after one claim", async (t) => {
+test("pi through the adapter: a loop that cannot open ends the run failed, with why, after one claim", async (t) => {
   const opened = await stores({ runners: 1 });
   const record = recorder();
   await queue(opened.server, "run-1");
   const { tools } = suiteTools();
-  const inner = createPiLoop(piSpec({ script: [{ say: "done" }], tools, hooks: quiet }));
+  const inner = piAdapterSubject.createLoop({ script: [{ say: "done" }], tools, hooks: quiet });
   const createLoop = (deps) => inner({ ...deps, journal: (claim) => unreadable(deps.journal(claim)) });
   const runner = startRunner({ store: observed(opened.runners[0], record), createLoop, name: "runner-a", ...TIMING });
   t.after(() => runner.close());

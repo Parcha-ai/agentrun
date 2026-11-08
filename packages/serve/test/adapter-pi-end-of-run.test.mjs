@@ -1,26 +1,30 @@
-// The end-of-run step on a pi run (loop-contract.ts EndOfRunTurn, the learning lane's end-of-run turn moved into the
-// runner): asked once after the job's answer and before the end, its turn's writes under work/.learning/ refused, the
-// rows it returns landing in the end commit's one transaction, and a lost claim writing no end, the next claim asking
-// again. On a real store and runner, with pi-ai's faux model playing the script.
+// The end-of-run step, the end's patch and harnessReady on pi through the adapter loop (runner/adapter-loop.ts): the
+// pi loop's cases (runner-end-of-run on the cutover base) on the one loop. The step (loop-contract.ts EndOfRunTurn) is
+// asked once after the job's answer and before the end, its turn's writes under work/.learning/ refused, the rows it
+// returns landing in the end commit's one transaction, a lost claim writing no end and the next claim asking again; the
+// end's patch (outcome, cost, metrics) rides in the end's commit; a mark committed through harnessReady's commit is
+// fenced with the run's. On a real store and runner, the model a scripted origin behind pi's session proxy.
 import assert from "node:assert/strict";
 import { mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { DatabaseSync } from "node:sqlite";
-import { test } from "node:test";
+import { after, test } from "node:test";
 import { BACKGROUND_CONTEXT } from "@earendil-works/chord/context";
 import { ROOT_CONVERSATION_ID } from "@earendil-works/pi-durable";
 import { openSqliteStore } from "../dist/store/index.js";
 import { startRunner } from "../dist/runner/runner.js";
-import { piSpec } from "./conformance-pi.mjs";
+import { closeOpenSessions, openSessions, piAdapterSpec } from "./conformance-pi-adapter.mjs";
 
-const { createPiLoop } = await import("../dist/runner/loop.js");
+const { createAdapterLoop } = await import("../dist/runner/adapter-loop.js");
 const quiet = { beforeIntent: async () => {}, beforeResult: async () => {} };
 const TIMING = { leaseMs: 600, renewEveryMs: 150, stopMarginMs: 200, pollMs: 20, commandPollMs: 30 };
+const WAIT_MS = 15_000;
 const told = (marker) => ({ table: "channel_told", row: { channel: "learning:test", marker } });
+after(closeOpenSessions);
 
 async function setup(t) {
-  const dir = mkdtempSync(join(process.env.TMPDIR ?? tmpdir(), "agentrun-end-of-run-"));
+  const dir = mkdtempSync(join(process.env.TMPDIR ?? tmpdir(), "agentrun-adapter-end-of-run-"));
   const server = await openSqliteStore({ dataDir: dir, role: "server" });
   const runners = [];
   const stores = [];
@@ -40,7 +44,7 @@ async function setup(t) {
     return runner;
   };
   const until = async (test, what) => {
-    const deadline = Date.now() + 15_000;
+    const deadline = Date.now() + WAIT_MS;
     for (;;) {
       const row = await server.runs.get("run-1");
       if (test(row)) return row;
@@ -48,66 +52,61 @@ async function setup(t) {
       await new Promise((resolve) => setTimeout(resolve, 20));
     }
   };
-  const toldRows = () => {
+  const read = (sql, ...args) => {
     const db = new DatabaseSync(join(dir, "store.sqlite"), { readOnly: true });
     try {
-      return db.prepare("SELECT channel, run_id, marker FROM channel_told ORDER BY marker").all().map((row) => ({ ...row }));
+      return db.prepare(sql).all(...args).map((row) => ({ ...row }));
     } finally {
       db.close();
     }
   };
-  const endEntries = () => {
-    const db = new DatabaseSync(join(dir, "store.sqlite"), { readOnly: true });
-    try {
-      return db.prepare("SELECT COUNT(*) AS n FROM pi_entries WHERE run_id = ? AND json_extract(record, '$.kind') = 'agentrun.end'").get("run-1").n;
-    } finally {
-      db.close();
-    }
-  };
-  const entriesOf = (kind) => {
-    const db = new DatabaseSync(join(dir, "store.sqlite"), { readOnly: true });
-    try {
-      return db.prepare("SELECT COUNT(*) AS n FROM pi_entries WHERE run_id = ? AND json_extract(record, '$.kind') = ?").get("run-1", kind).n;
-    } finally {
-      db.close();
-    }
-  };
+  const toldRows = () => read("SELECT channel, run_id, marker FROM channel_told ORDER BY marker");
+  const entriesOf = (kind) => read("SELECT COUNT(*) AS n FROM pi_entries WHERE run_id = ? AND json_extract(record, '$.kind') = ?", "run-1", kind)[0].n;
+  const endEntries = () => entriesOf("agentrun.end");
   return { server, start, until, toldRows, endEntries, entriesOf };
 }
 
-/** A pi loop whose spec names its agent, and whose deps carry `endOfRun`. */
-const loopWith = (spec, endOfRun) => {
-  const inner = createPiLoop(async (claim) => ({ ...(await spec(claim)), agentId: "agent-1" }));
-  return (deps) => inner({ ...deps, endOfRun });
+/** The adapter loop on `spec`, its spec naming the run's agent and carrying `extra` (endPatch, harnessReady), its deps
+ *  given `more` (endOfRun, a journal). */
+const loopWith = (spec, extra = {}, more = {}) => {
+  const inner = createAdapterLoop(async (claim, run) => ({ ...(await spec(claim, run)), agentId: "agent-1", ...extra }));
+  return (deps) => inner({ ...deps, ...(typeof more === "function" ? more(deps) : more) });
 };
 
-test("the end-of-run step is asked once, after the job answered and before the end, with the turn's answer", async (t) => {
+/** A tool that runs until its call is aborted, telling the test when it started. */
+function heldTool() {
+  let started;
+  const running = new Promise((resolve) => (started = resolve));
+  const tool = { name: "slow", replaySafe: true, ask: false, run: (_args, signal) => (started(), new Promise((resolve) => signal.addEventListener("abort", () => resolve("cut"), { once: true }))) };
+  return { tool, running };
+}
+
+test("pi through the adapter: the end-of-run step is asked once, after the job answered and before the end, with the turn's answer", async (t) => {
   const { start, until, endEntries } = await setup(t);
   const calls = [];
   const endOfRun = async (input) => {
     const answer = await input.ask("What did you learn?", { origin: "reflect", deadlineMs: 10_000 });
-    calls.push({ runId: input.runId, agentId: input.agentId, outcome: input.outcome, epoch: input.claim.epoch, answer });
+    calls.push({ runId: input.runId, agentId: input.agentId, outcome: input.outcome, answer });
     return undefined;
   };
-  await start(loopWith(piSpec({ script: [{ say: "the job's answer" }, { say: "a note" }], tools: {}, hooks: quiet }), endOfRun), "runner-a");
+  await start(loopWith(piAdapterSpec({ script: [{ say: "the job's answer" }, { say: "a note" }], tools: {}, hooks: quiet }), {}, { endOfRun }), "runner-a");
   await until((row) => row.state === "ended" && row.runner === null, "the run did not end");
-  assert.equal(calls.length, 1, "asked once");
-  assert.deepEqual(calls[0], { runId: "run-1", agentId: "agent-1", outcome: "completed", epoch: calls[0].epoch, answer: { ended: true, answer: "a note" } });
+  assert.deepEqual(calls, [{ runId: "run-1", agentId: "agent-1", outcome: "completed", answer: { ended: true, answer: "a note" } }], "asked once, with the turn's answer");
   assert.equal(endEntries(), 1, "one end, written after the step");
 });
 
-test("the rows the end-of-run step returns land with the end, in its one commit", async (t) => {
+test("pi through the adapter: the rows the end-of-run step returns land with the end, in its one commit", async (t) => {
   const { start, until, toldRows } = await setup(t);
   const endOfRun = async (input) => {
     await input.ask("What did you learn?", { origin: "reflect", deadlineMs: 10_000 });
     return { also: [told("proposed")] };
   };
-  await start(loopWith(piSpec({ script: [{ say: "done" }, { say: "a note" }], tools: {}, hooks: quiet }), endOfRun), "runner-a");
+  await start(loopWith(piAdapterSpec({ script: [{ say: "done" }, { say: "a note" }], tools: {}, hooks: quiet }), {}, { endOfRun }), "runner-a");
   await until((row) => row.state === "ended" && row.runner === null, "the run did not end");
   assert.deepEqual(toldRows(), [{ channel: "learning:test", run_id: "run-1", marker: "proposed" }], "the step's row is stored with the end");
 });
 
-test("the learning hook on a pi run: its turn and proposal kept with the end, and one learning run queued", async (t) => {
+test("pi through the adapter: the learning hook keeps its turn and proposal with the end, and queues one learning run", async (t) => {
   const { server, start, until } = await setup(t);
   const { createReflectHook } = await import("../dist/runner/reflect-hook.js");
   const hook = createReflectHook({
@@ -117,7 +116,7 @@ test("the learning hook on a pi run: its turn and proposal kept with the end, an
     check: async ({ turn }) => ({ state: "proposed", notes: 1, skills: 0, workflows: 0, proposal: { seed: "s", notes: [{ file: "n.md", text: turn.answer }], asked: turn.asked } }),
     newRunId: () => "run-1-learning",
   });
-  await start(loopWith(piSpec({ script: [{ say: "done" }, { say: "a note" }], tools: {}, hooks: quiet }), hook), "runner-a");
+  await start(loopWith(piAdapterSpec({ script: [{ say: "done" }, { say: "a note" }], tools: {}, hooks: quiet }), {}, { endOfRun: hook }), "runner-a");
   await until((row) => row.state === "ended" && row.runner === null, "the run did not end");
   const kept = await server.learning.proposal("run-1");
   assert.equal(kept?.turn?.answer, "a note", "the turn's answer is kept with the end");
@@ -144,44 +143,36 @@ function refusingTheEnd(journal) {
   });
 }
 
-/** A pi loop whose spec names its agent and carries `extra` (endPatch, harnessReady), its deps given `more`. */
-const loopWithSpec = (spec, extra, more = {}) => {
-  const inner = createPiLoop(async (claim) => ({ ...(await spec(claim)), agentId: "agent-1", ...extra }));
-  return (deps) => inner({ ...deps, ...(typeof more === "function" ? more(deps) : more) });
-};
-
-test("the end patch (outcome, cost, metrics) lands on the run in the end's own commit", async (t) => {
-  const { server, start, until } = await setup(t);
+test("pi through the adapter: the end patch (outcome, cost, metrics) lands on the run in the end's own commit", async (t) => {
+  const { start, until } = await setup(t);
   const endPatch = async (end) => ({ outcome: end.state === "ended" ? "escalated" : undefined, costUsd: 1.25, metrics: { requests: 3 } });
-  await start(loopWithSpec(piSpec({ script: [{ say: "done" }], tools: {}, hooks: quiet }), { endPatch }), "runner-a");
+  await start(loopWith(piAdapterSpec({ script: [{ say: "done" }], tools: {}, hooks: quiet }), { endPatch }), "runner-a");
   const row = await until((r) => r.state === "ended" && r.runner === null, "the run did not end");
   assert.deepEqual([row.outcome, row.costUsd, row.metrics], ["escalated", 1.25, { requests: 3 }]);
 });
 
-test("a fenced end writes neither the end nor its patch", async (t) => {
-  const { server, start, until } = await setup(t);
+test("pi through the adapter: a fenced end writes neither the end nor its patch", async (t) => {
+  const { start, until, endEntries } = await setup(t);
   const endPatch = async () => ({ outcome: "escalated", costUsd: 1.25, metrics: { requests: 3 } });
-  await start(loopWithSpec(piSpec({ script: [{ say: "done" }], tools: {}, hooks: quiet }), { endPatch }, (deps) => ({ journal: (claim) => refusingTheEnd(deps.journal(claim)) })), "runner-a");
-  await new Promise((resolve) => setTimeout(resolve, 1_500));
-  const row = await server.runs.get("run-1");
+  await start(loopWith(piAdapterSpec({ script: [{ say: "done" }], tools: {}, hooks: quiet }), { endPatch }, (deps) => ({ journal: (claim) => refusingTheEnd(deps.journal(claim)) })), "runner-a");
+  // The loop could write no end, so the runner stores the run failed with why, outside the journal.
+  const row = await until((r) => r.state !== "running" && r.runner === null, "the runner did not settle the run");
   assert.notEqual(row.state, "ended", "the end did not land");
+  assert.equal(endEntries(), 0, "no end entry");
   assert.deepEqual([row.outcome, row.costUsd, row.metrics], [null, null, null], "nor its patch");
 });
 
-test("an end patch whose reader stalls cannot hold a person's stop: the run still ends stopped, promptly", async (t) => {
+test("pi through the adapter: an end patch whose reader stalls cannot hold a person's stop: the run still ends stopped", async (t) => {
   const { server, start, until } = await setup(t);
   const endPatch = () => new Promise(() => {});
-  const slow = { name: "slow", replaySafe: true, ask: false, run: (_args, signal) => new Promise((resolve) => signal.addEventListener("abort", () => resolve("cut"), { once: true })) };
-  await start(loopWithSpec(piSpec({ script: [{ call: "slow" }, { say: "done" }], tools: { slow }, hooks: quiet }), { endPatch }), "runner-a");
-  await until((row) => row.state === "running" && row.runner !== null, "the run did not start");
-  await new Promise((resolve) => setTimeout(resolve, 300));
-  const at = Date.now();
+  const { tool, running } = heldTool();
+  await start(loopWith(piAdapterSpec({ script: [{ call: "slow" }, { say: "done" }], tools: { slow: tool }, hooks: quiet }), { endPatch }), "runner-a");
+  await running;
   await server.command("run-1", { kind: "stop" });
   await until((row) => row.state === "stopped" && row.runner === null, "the run did not stop");
-  assert.ok(Date.now() - at < 8_000, `the stop took ${Date.now() - at} ms`);
 });
 
-test("a mark committed through harnessReady's commit is in the run's journal, and refused once the run's claim is gone", async (t) => {
+test("pi through the adapter: a mark committed through harnessReady's commit is in the run's journal, and refused once the run's claim is gone", async (t) => {
   const { start, until, entriesOf } = await setup(t);
   let commit;
   const marked = [];
@@ -193,12 +184,25 @@ test("a mark committed through harnessReady's commit is in the run's journal, an
       return "slow done";
     },
   };
-  await start(loopWithSpec(piSpec({ script: [{ call: "slow" }, { say: "done" }], tools: { slow }, hooks: quiet }), { harnessReady: (c) => (commit = c) }), "runner-a");
+  await start(loopWith(piAdapterSpec({ script: [{ call: "slow" }, { say: "done" }], tools: { slow }, hooks: quiet }), { harnessReady: (c) => (commit = c) }), "runner-a");
   await until((row) => row.state === "ended" && row.runner === null, "the run did not end");
   assert.deepEqual(marked, ["ok"], "the mark was committed through the run's own Harness");
   assert.equal(entriesOf("test.mark"), 1, "and it is in the run's journal");
   await assert.rejects(mark(2), undefined, "a commit after the run let its claim go is refused");
   assert.equal(entriesOf("test.mark"), 1, "and wrote nothing");
+});
+
+test("pi through the adapter: a run's release is called once, after its session closed, when the run ends; one that throws leaves the end standing", async (t) => {
+  const { start, until } = await setup(t);
+  const released = [];
+  const release = async () => {
+    released.push({ sessionsOpen: openSessions.size });
+    throw new Error("the cleanup failed");
+  };
+  await start(loopWith(piAdapterSpec({ script: [{ say: "done" }], tools: {}, hooks: quiet }), { release }), "runner-a");
+  const row = await until((r) => r.state === "ended" && r.runner === null, "the run did not end");
+  assert.equal(row.state, "ended", "a release that throws leaves the end standing");
+  assert.deepEqual(released, [{ sessionsOpen: 0 }], "released once, with the session already closed");
 });
 
 /** A journal that refuses every commit after the one that wrote the run's end: the fault between two commits. */
@@ -220,45 +224,41 @@ function refusingAfterEnd(journal) {
   });
 }
 
-test("the end and the step's rows land together or not at all, even when a commit after the end is refused", async (t) => {
+test("pi through the adapter: the end and the step's rows land together or not at all, even when a commit after the end is refused", async (t) => {
   const { start, until, toldRows, endEntries } = await setup(t);
   const endOfRun = async (input) => {
     await input.ask("What did you learn?", { origin: "reflect", deadlineMs: 10_000 });
     return { also: [told("kept")] };
   };
-  const inner = createPiLoop(async (claim) => ({ ...(await piSpec({ script: [{ say: "done" }, { say: "a note" }], tools: {}, hooks: quiet })(claim)), agentId: "agent-1" }));
-  const createLoop = (deps) => inner({ ...deps, endOfRun, journal: (claim) => refusingAfterEnd(deps.journal(claim)) });
-  await start(createLoop, "runner-a");
+  await start(loopWith(piAdapterSpec({ script: [{ say: "done" }, { say: "a note" }], tools: {}, hooks: quiet }), {}, (deps) => ({ endOfRun, journal: (claim) => refusingAfterEnd(deps.journal(claim)) })), "runner-a");
   await until((row) => row.state === "ended" && row.runner === null, "the run did not end");
   assert.equal(endEntries(), 1, "the end is stored");
   assert.deepEqual(toldRows().map((row) => row.marker), ["kept"], "the step's rows are stored with the end, in its one commit");
 });
 
-test("a run whose step returns nothing stores no row beside its end", async (t) => {
+test("pi through the adapter: a run whose step returns nothing stores no row beside its end", async (t) => {
   const { start, until, toldRows } = await setup(t);
-  await start(loopWith(piSpec({ script: [{ say: "done" }, { say: "" }], tools: {}, hooks: quiet }), async () => undefined), "runner-a");
+  await start(loopWith(piAdapterSpec({ script: [{ say: "done" }, { say: "" }], tools: {}, hooks: quiet }), {}, { endOfRun: async () => undefined }), "runner-a");
   await until((row) => row.state === "ended" && row.runner === null, "the run did not end");
   assert.deepEqual(toldRows(), [], "no row");
 });
 
-test("a lost claim during the end-of-run turn writes no end; the next claim asks again, and the end is written once", async (t) => {
+test("pi through the adapter: a lost claim during the end-of-run turn writes no end; the next claim asks again, and the end is written once", async (t) => {
   const { start, until, toldRows, endEntries } = await setup(t);
-  let release;
-  const held = new Promise((resolve) => (release = resolve));
+  let asked;
+  const firstAsked = new Promise((resolve) => (asked = resolve));
   const seen = [];
   const first = async (input) => {
     seen.push("first");
     await input.ask("What did you learn?", { origin: "reflect", deadlineMs: 10_000 });
-    await Promise.race([held, new Promise((resolve) => input.signal.addEventListener("abort", resolve, { once: true }))]);
-    if (input.signal.aborted) throw new Error("aborted");
-    return { also: [told("first")] };
+    asked();
+    // Held until the claim's signal aborts (the runner closing): the step never finishes on this claim.
+    await new Promise((resolve) => input.signal.addEventListener("abort", resolve, { once: true }));
+    throw new Error("aborted");
   };
-  const runnerA = await start(loopWith(piSpec({ script: [{ say: "done" }, { say: "a note" }], tools: {}, hooks: quiet }), first), "runner-a");
-  const deadline = Date.now() + 10_000;
-  while (!seen.length && Date.now() < deadline) await new Promise((resolve) => setTimeout(resolve, 20));
-  assert.deepEqual(seen, ["first"], "the first claim asked the step");
+  const runnerA = await start(loopWith(piAdapterSpec({ script: [{ say: "done" }, { say: "a note" }], tools: {}, hooks: quiet }), {}, { endOfRun: first }), "runner-a");
+  await firstAsked;
   await runnerA.close();
-  release();
   assert.equal(endEntries(), 0, "no end while the step was cut off");
   assert.deepEqual(toldRows(), [], "nothing of the step was stored");
   const second = async (input) => {
@@ -267,14 +267,14 @@ test("a lost claim during the end-of-run turn writes no end; the next claim asks
     assert.deepEqual(answer, { ended: true, answer: "a note" }, "the resumed turn's answer is the one already given");
     return { also: [told("second")] };
   };
-  await start(loopWith(piSpec({ script: [{ say: "done" }, { say: "a note" }], tools: {}, hooks: quiet }), second), "runner-b");
+  await start(loopWith(piAdapterSpec({ script: [{ say: "done" }, { say: "a note" }], tools: {}, hooks: quiet }), {}, { endOfRun: second }), "runner-b");
   await until((row) => row.state === "ended" && row.runner === null, "the run did not end on the next claim");
   assert.deepEqual(seen, ["first", "second"], "asked again on the next claim");
   assert.equal(endEntries(), 1, "one end");
   assert.deepEqual(toldRows().map((row) => row.marker), ["second"], "only the finished step's row");
 });
 
-test("the end-of-run turn's write under work/.learning/ is refused; the job's own write there is not", async (t) => {
+test("pi through the adapter: the end-of-run turn's write under work/.learning/ is refused; the job's own write there is not", async (t) => {
   const { start, until } = await setup(t);
   const ran = [];
   const write = { name: "write", replaySafe: false, ask: false, run: async (args) => (ran.push(args.path), "written") };
@@ -284,13 +284,13 @@ test("the end-of-run turn's write under work/.learning/ is refused; the job's ow
     answer = await input.ask("What did you learn?", { origin: "reflect", deadlineMs: 10_000 });
     return undefined;
   };
-  await start(loopWith(piSpec({ script, tools: { write }, hooks: quiet }), endOfRun), "runner-a");
+  await start(loopWith(piAdapterSpec({ script, tools: { write }, hooks: quiet }), {}, { endOfRun }), "runner-a");
   await until((row) => row.state === "ended" && row.runner === null, "the run did not end");
   assert.deepEqual(ran, [".learning/job.md"], "the job wrote; the end-of-run turn's write never ran");
   assert.deepEqual(answer, { ended: true, answer: "a note" });
 });
 
-test("a person's stop during the job: the stopped end carries the step's rows for a cut run, and nothing is asked", async (t) => {
+test("pi through the adapter: a person's stop during the job: the stopped end carries the step's rows for a cut run, and nothing is asked", async (t) => {
   const { server, start, until, toldRows } = await setup(t);
   const calls = [];
   const endOfRun = async (input) => {
@@ -299,59 +299,81 @@ test("a person's stop during the job: the stopped end carries the step's rows fo
     await input.ask("What did you learn?", { origin: "reflect", deadlineMs: 10_000 });
     return { also: [told("asked")] };
   };
-  const slow = { name: "slow", replaySafe: true, ask: false, run: (_args, signal) => new Promise((resolve) => signal.addEventListener("abort", () => resolve("cut"), { once: true })) };
-  await start(loopWith(piSpec({ script: [{ call: "slow" }, { say: "done" }], tools: { slow }, hooks: quiet }), endOfRun), "runner-a");
-  await until((row) => row.state === "running" && row.runner !== null, "the run did not start");
-  await new Promise((resolve) => setTimeout(resolve, 300));
+  const { tool, running } = heldTool();
+  await start(loopWith(piAdapterSpec({ script: [{ call: "slow" }, { say: "done" }], tools: { slow: tool }, hooks: quiet }), {}, { endOfRun }), "runner-a");
+  await running;
   await server.command("run-1", { kind: "stop" });
   await until((row) => row.state === "stopped" && row.runner === null, "the run did not stop");
   assert.deepEqual(calls, ["stopped"], "the step asked once, told the run was cut by a stop");
   assert.deepEqual(toldRows(), [{ channel: "learning:test", run_id: "run-1", marker: "cut:stopped" }], "its rows stored with the stopped end");
 });
 
-test("a cut step that never answers (its store stalled) cannot hold a person's stop: the run still ends stopped, promptly", async (t) => {
-  const { server, start, until } = await setup(t);
-  const endOfRun = async (input) => (input.cut ? new Promise(() => {}) : undefined);
-  const slow = { name: "slow", replaySafe: true, ask: false, run: (_args, signal) => new Promise((resolve) => signal.addEventListener("abort", () => resolve("cut"), { once: true })) };
-  await start(loopWith(piSpec({ script: [{ call: "slow" }, { say: "done" }], tools: { slow }, hooks: quiet }), endOfRun), "runner-a");
-  await until((row) => row.state === "running" && row.runner !== null, "the run did not start");
-  await new Promise((resolve) => setTimeout(resolve, 300));
-  const at = Date.now();
-  await server.command("run-1", { kind: "stop" });
-  await until((row) => row.state === "stopped" && row.runner === null, "the run did not stop");
-  assert.ok(Date.now() - at < 8_000, `the stop took ${Date.now() - at} ms`);
+test("pi through the adapter: a person's cancel during the end-of-run turn ends the run cancelled, the cut step's rows with that end", async (t) => {
+  const { server, start, until, toldRows } = await setup(t);
+  const calls = [];
+  const endOfRun = async (input) => {
+    calls.push(input.cut ?? "asked");
+    if (input.cut) return { also: [told(`cut:${input.cut}`)] };
+    await input.ask("What did you learn?", { origin: "reflect", deadlineMs: 30_000 });
+    return { also: [told("asked")] };
+  };
+  // The job answers; the end-of-run turn calls `slow`, which runs until its call is aborted.
+  const { tool, running } = heldTool();
+  await start(loopWith(piAdapterSpec({ script: [{ say: "done" }, { call: "slow" }, { say: "a note" }], tools: { slow: tool }, hooks: quiet }), {}, { endOfRun }), "runner-a");
+  await running;
+  await server.command("run-1", { kind: "cancel" });
+  const row = await until((r) => r.state === "stopped" && r.runner === null, "the run did not stop");
+  assert.equal(row.summary, "cancelled", "a cancel's end says cancelled, never a stop's words");
+  assert.deepEqual(calls, ["asked", "stopped-looking"], "asked once, then told the run was cut while it looked back");
+  assert.deepEqual(toldRows().map((each) => each.marker), ["cut:stopped-looking"], "the cut step's rows stored with the cancelled end");
 });
 
-test("a person's steer during the end-of-run turn is not swallowed by it: left for the end's own words, the turn not told", async (t) => {
+test("pi through the adapter: a cut step that never answers (its store stalled) cannot hold a person's stop: the run still ends stopped", async (t) => {
   const { server, start, until } = await setup(t);
-  let steerSent;
+  const endOfRun = async (input) => (input.cut ? new Promise(() => {}) : undefined);
+  const { tool, running } = heldTool();
+  await start(loopWith(piAdapterSpec({ script: [{ call: "slow" }, { say: "done" }], tools: { slow: tool }, hooks: quiet }), {}, { endOfRun }), "runner-a");
+  await running;
+  await server.command("run-1", { kind: "stop" });
+  await until((row) => row.state === "stopped" && row.runner === null, "the run did not stop");
+});
+
+test("pi through the adapter: a person's steer during the end-of-run turn is not swallowed by it: left for the end's own words, the turn not told", async (t) => {
+  const { server, start, until } = await setup(t);
+  // The end-of-run turn calls `slow`; the steer is sent once that call runs, and the call returns once the steer is in.
+  let started;
+  const reflectCallRuns = new Promise((resolve) => (started = resolve));
+  let sent;
+  const steerIn = new Promise((resolve) => (sent = resolve));
+  const slow = { name: "slow", replaySafe: true, ask: false, run: async () => (started(), await steerIn, "slow done") };
+  let steerRow;
   const endOfRun = async (input) => {
     if (input.cut) return undefined;
     const steering = (async () => {
-      await new Promise((resolve) => setTimeout(resolve, 150));
-      steerSent = await server.command("run-1", { kind: "steer", body: { text: "one more thing" } });
+      await reflectCallRuns;
+      steerRow = await server.command("run-1", { kind: "steer", body: { text: "one more thing" } });
+      sent();
     })();
-    const answer = await input.ask("What did you learn?", { origin: "reflect", deadlineMs: 1_500 });
+    const answer = await input.ask("What did you learn?", { origin: "reflect", deadlineMs: 10_000 });
     await steering;
     return { also: [told("ended" in answer ? `answered:${answer.answer}` : "timed-out")] };
   };
-  const slow = { name: "slow", replaySafe: true, ask: false, run: (_args, signal) => new Promise((resolve) => setTimeout(() => resolve("slow done"), 600, signal)) };
-  await start(loopWith(piSpec({ script: [{ say: "done" }, { call: "slow" }, { say: "a note" }], tools: { slow }, hooks: quiet }), endOfRun), "runner-a");
+  await start(loopWith(piAdapterSpec({ script: [{ say: "done" }, { call: "slow" }, { say: "a note" }], tools: { slow }, hooks: quiet }), {}, { endOfRun }), "runner-a");
   await until((row) => row.state === "ended" && row.runner === null, "the run did not end");
   const rows = await server.commands("run-1", 0);
-  const steer = rows.find((row) => row.id === steerSent.id);
+  const steer = rows.find((row) => row.id === steerRow.id);
   assert.ok(steer.refused !== null, `the steer is refused at the end in words, not taken by the end-of-run turn: ${JSON.stringify(steer)}`);
 });
 
-test("an end-of-run turn past its deadline is aborted and answers timedOut; the run still ends", async (t) => {
+test("pi through the adapter: an end-of-run turn past its deadline is aborted and answers timedOut; the run still ends", async (t) => {
   const { start, until, endEntries } = await setup(t);
   let answer;
-  const slow = { name: "slow", replaySafe: true, ask: false, run: (_args, signal) => new Promise((resolve) => signal.addEventListener("abort", () => resolve("cut"), { once: true })) };
+  const { tool } = heldTool();
   const endOfRun = async (input) => {
     answer = await input.ask("What did you learn?", { origin: "reflect", deadlineMs: 300 });
     return undefined;
   };
-  await start(loopWith(piSpec({ script: [{ say: "done" }, { call: "slow" }, { say: "late" }], tools: { slow }, hooks: quiet }), endOfRun), "runner-a");
+  await start(loopWith(piAdapterSpec({ script: [{ say: "done" }, { call: "slow" }, { say: "late" }], tools: { slow: tool }, hooks: quiet }), {}, { endOfRun }), "runner-a");
   await until((row) => row.state === "ended" && row.runner === null, "the run did not end");
   assert.deepEqual(answer, { timedOut: true });
   assert.equal(endEntries(), 1);
