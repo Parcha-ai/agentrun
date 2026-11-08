@@ -542,7 +542,46 @@ const CASES: readonly Case[] = [
       assert.equal(ran.asked, 1, "approved, it ran once");
     },
   },
+  {
+    // An answer the model's output limit cut (stopReason "length") is unfinished: a run that ends on it never reads ended.
+    id: "length-ends-failed",
+    title: "a final answer the model cut at its output limit ends the run failed, saying so",
+    async body(subject, t) {
+      const w = await world(subject, t);
+      const { tools } = suiteTools();
+      await w.start("runner-a", { script: [{ say: "The answer is", cut: true }], tools, hooks: quiet });
+      const row = await settledRun(w);
+      assert.equal(row.state, "failed", `the run ends failed, never ended: ${JSON.stringify({ state: row.state, summary: row.summary })}`);
+      assert.match(row.summary ?? "", CUT_AT_LIMIT, "it says the model stopped at its output limit");
+      const { messages } = await w.read();
+      assert.deepEqual(messages.filter((message) => message.role === "model").map((message) => message.text), ["The answer is"], "its cut answer is kept as it came");
+    },
+  },
+  {
+    id: "length-mid-run",
+    title: "a cut answer the run goes on from changes nothing: the run's end reads its last answer",
+    async body(subject, t) {
+      const w = await world(subject, t);
+      const { tools } = suiteTools();
+      await w.start("runner-a", { script: [{ say: "Part of it", cut: true }, { say: "done" }], tools, hooks: quiet });
+      const row = await settledRun(w);
+      assert.deepEqual([row.state, row.summary], ["ended", null], "the run ends as its last answer says");
+      const { messages } = await w.read();
+      assert.deepEqual(messages.filter((message) => message.role === "model").map((message) => message.text), ["Part of it", "done"]);
+    },
+  },
 ];
+
+/** What a run whose answer was cut at the model's output limit says (loop-contract.ts cutAtLimit). */
+const CUT_AT_LIMIT = /^the model stopped at its output limit( \(\d+ tokens\))? before finishing its answer$/;
+
+/** The run once it is released in a final state, whichever: a case reads which. */
+async function settledRun(w: { run(): Promise<RunRow> }): Promise<RunRow> {
+  return until(async () => {
+    const row = await w.run();
+    return row.runner === null && (row.state === "ended" || row.state === "failed" || row.state === "stopped") && row;
+  }, "the run ends and is released");
+}
 
 /** Registers the six cases for `subject` with `test` (node:test). A case the subject cannot model is skipped with its
  *  reason, never passed. */
