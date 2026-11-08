@@ -99,9 +99,12 @@ export async function receivePush(deps: PushDeps, req: IncomingMessage, segment:
     deps.say({ condition: "hook_unparsed", source: adapter.id, route });
     return { status: 200, body: { firings: [] } };
   }
-  // A trigger's own path: its one event is its firing, answered as the firing.
+  // A trigger's own path: each event is its own firing. One (a webhook's request) is answered as its firing; more, as a
+  // server-wide source's are, by the firings they made.
   if (pathTrigger) {
-    const { created, firing } = deps.receive(pathTrigger, events[0]!.key, events[0]!.text);
+    const fired = events.map((event) => deps.receive(pathTrigger, event.key, event.text));
+    if (fired.length > 1) return { status: fired.some((f) => f.created) ? 202 : 200, body: { firings: fired.map((f) => f.firing) } };
+    const { created, firing } = fired[0]!;
     return { status: created ? 202 : 200, body: firing, ...(created ? {} : { headers: { "idempotent-replayed": "true" } }) };
   }
   // A server-wide source's: each event fires the one trigger that listens on its scope (a scope belongs to one trigger:
