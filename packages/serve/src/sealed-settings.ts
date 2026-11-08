@@ -53,6 +53,8 @@ export class SealedSettings {
   private readonly opened: Record<string, Record<string, string>> = {};
   /** The values this store held open and no longer does, rotated or removed: in memory alone, for this process's life. */
   private readonly retired = new Set<string>();
+  /** The PEM keys this store held open and no longer does: in memory alone, listed by pemValues. */
+  private readonly retiredPem: string[] = [];
   /** Why the file does not read: nothing is made, rotated or removed, nothing it holds is read, and it is never written over. */
   private readonly unreadable?: string;
 
@@ -107,7 +109,7 @@ export class SealedSettings {
     this.writable();
     this.write({ ...this.sealed, [scope]: { ...this.sealed[scope], [field]: seal(this.key!, Buffer.from(value, "utf8"), aad(this.adapterId, scope, field)).toString("base64") } });
     const was = this.opened[scope]?.[field];
-    if (was !== undefined && was !== value) for (const secret of this.secretsOf(field, was)) this.retired.add(secret);
+    if (was !== undefined && was !== value) this.retire(field, was);
     (this.opened[scope] ??= {})[field] = value;
   }
 
@@ -121,7 +123,7 @@ export class SealedSettings {
     if (this.unreadable || !(scope in this.sealed)) return;
     const { [scope]: _, ...rest } = this.sealed;
     this.write(rest);
-    for (const [field, value] of Object.entries(this.opened[scope] ?? {})) for (const secret of this.secretsOf(field, value)) this.retired.add(secret);
+    for (const [field, value] of Object.entries(this.opened[scope] ?? {})) this.retire(field, value);
     delete this.opened[scope];
   }
 
@@ -131,12 +133,25 @@ export class SealedSettings {
     return [...Object.values(this.opened).flatMap((fields) => Object.entries(fields).flatMap(([field, value]) => this.secretsOf(field, value))), ...this.retired];
   }
 
-  /** What of `field`'s `value` is a secret to list: none for a public field, a PEM key's base64 lines, else the value. */
+  /** What of `field`'s `value` is a secret to list with a floor (server-secrets.ts): none for a public field or a PEM key
+   *  (pemValues lists that), else the value. */
   private secretsOf(field: string, value: string): string[] {
     const spec = this.spec.fields[field];
-    if (spec?.public) return [];
-    if (spec?.format === "pem") return value.split(/\r?\n/).map((line) => line.trim()).filter((line) => line && !line.startsWith("-----"));
+    if (spec?.public || spec?.format === "pem") return [];
     return [value];
+  }
+
+  /** Every PEM key held open, or rotated or removed since this store opened: each whole and each of its base64 lines,
+   *  the short last one too, listed with no floor (server-secrets.ts `whole`). */
+  pemValues(): string[] {
+    const pem = (field: string) => this.spec.fields[field]?.format === "pem";
+    const forms = (value: string) => [value, ...value.split(/\r?\n/).map((line) => line.trim()).filter((line) => line && !line.startsWith("-----"))];
+    return [...Object.values(this.opened).flatMap((fields) => Object.entries(fields).filter(([field]) => pem(field)).flatMap(([, value]) => forms(value))), ...this.retiredPem.flatMap(forms)];
+  }
+
+  private retire(field: string, value: string): void {
+    if (this.spec.fields[field]?.format === "pem") this.retiredPem.push(value);
+    else for (const secret of this.secretsOf(field, value)) this.retired.add(secret);
   }
 
   /** Why nothing can be written here (no seal key, or a file that does not read), as the refusal a write would throw;
