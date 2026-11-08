@@ -19,7 +19,7 @@ const SECURITY = { "content-security-policy": CSP, "x-content-type-options": "no
 const HTML = "text/html; charset=utf-8";
 /** Strict-Transport-Security for a server whose public address (AGENTRUN_PUBLIC_URL) is https: a browser that saw it
  *  once opens the address over https only, for a year. None over http or with no public address (a browser would pin
- *  http://127.0.0.1 to https and lose the console). */
+ *  the loopback address to https and lose the console). */
 export function hstsHeaders(publicUrl: string | undefined): Record<string, string> {
   try {
     return publicUrl && new URL(publicUrl).protocol === "https:" ? { "strict-transport-security": "max-age=31536000" } : {};

@@ -1,6 +1,6 @@
 // A server whose public address is https sends Strict-Transport-Security on its pages, so a browser that saw it once
 // never opens the address over http again; over http, or on loopback with no public address, it sends none (a browser
-// would pin http://127.0.0.1 to https and lose the console).
+// would pin the loopback address to https and lose the console).
 import assert from "node:assert/strict";
 import { test } from "node:test";
 import * as page from "../dist/page.js";

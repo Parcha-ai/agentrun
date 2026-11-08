@@ -1,5 +1,5 @@
 // A real browser's first visit at a public address, against the real built server and console (their own headers and
-// CSP): headless Chrome, no fake. Three servers, each started from packages/serve/dist/cli.js on 127.0.0.1 with a fresh
+// CSP): headless Chrome, no fake. Four servers, each started from packages/serve/dist/cli.js on loopback with a fresh
 // data directory and home, its setup code read from its own stdout:
 //   1. AGENTRUN_PUBLIC_URL set (http): the plain address shows the Setup code field and its note; setups sent with no code
 //      are refused and print no new code; a wrong code is refused in words; the code from the server's log sets the
@@ -7,6 +7,7 @@
 //   2. AGENTRUN_PUBLIC_URL https: the printed setup link (#code=) fills the field and sets the password; the page carries
 //      Strict-Transport-Security.
 //   3. No public address (open setup, loopback): no code field, and no Strict-Transport-Security.
+//   4. AGENTRUN_PUBLIC_URL set: the server's API token, typed into the Setup code field, sets the password.
 // No fixed sleeps: every wait is for a condition, with a bound. Exits 0 when every check holds, else 1.
 // Needs the repository built (npm run build). Chrome: CHROME_BIN, else playwright's own; playwright-core: PLAYWRIGHT_CORE,
 // else the package `playwright-core`.
@@ -19,7 +20,7 @@ import { fileURLToPath } from "node:url";
 const ROOT = fileURLToPath(new URL("../../../", import.meta.url));
 const CLI = join(ROOT, "packages/serve/dist/cli.js");
 const { chromium } = await import(process.env.PLAYWRIGHT_CORE ?? "playwright-core");
-const NOTE = "Find the setup code in the server's log (on Render, the Logs tab), or open the link the log prints.";
+const NOTE = "Find the setup code in the server's log (on Render, the Logs tab), or open the link the log prints. The server's API token (AGENTRUN_TOKEN) works here too.";
 const PASSWORD = ["not", "a", "secret", "e2e", "setup"].join("-");
 const HSTS = "max-age=31536000";
 const SETUP_LINE = /^Set up this server: \S+\/setup#code=([A-Za-z0-9_-]{22})$/gm;
@@ -30,7 +31,7 @@ const check = (what, ok, detail = "") => { checks.push(ok); console.log(`${ok ? 
 /** The server, started as a person starts it, in a process group of its own: its address and what it printed. */
 async function start(env) {
   const root = await mkdtemp(join(tmpdir(), "agentrun-e2e-setup-"));
-  const child = spawn(process.execPath, [CLI, "--data", join(root, "data"), "--port", "0", "--listen", "127.0.0.1"], {
+  const child = spawn(process.execPath, [CLI, "--data", join(root, "data"), "--port", "0"], {
     stdio: ["ignore", "pipe", "pipe"], detached: true,
     env: { ...process.env, HOME: root, AGENTRUN_PUBLIC_URL: "", RENDER_EXTERNAL_URL: "", AGENTRUN_ACCOUNTS: "", ...env },
   });
@@ -42,7 +43,7 @@ async function start(env) {
     // Its output holds the server's token: never echoed, here or on a failure.
     const timer = setTimeout(() => reject(new Error("the server did not print its address in 60 s")), 60_000);
     // The banner's first line names the address it listens on; the Open line names the public one.
-    const look = () => { const m = /^agentrun-serve on (http:\/\/127\.0\.0\.1:\d+)/m.exec(out); if (m) { clearTimeout(timer); child.stdout.off("data", look); resolve(m[1]); } };
+    const look = () => { const m = /^agentrun-serve on (http:\/\/[^\s/]+)/m.exec(out); if (m) { clearTimeout(timer); child.stdout.off("data", look); resolve(m[1]); } };
     child.stdout.on("data", look);
     look();
   });
@@ -50,6 +51,8 @@ async function start(env) {
   return {
     base,
     codes,
+    /** The API token this start made (the banner's AGENTRUN_API_KEY line): typed into the field, never printed here. */
+    token: () => /^AGENTRUN_API_KEY=(\S+)$/m.exec(out)?.[1],
     /** The first setup code it printed, once it has (bounded). */
     firstCode: () => new Promise((resolve, reject) => {
       const timer = setTimeout(() => reject(new Error("the server printed no setup code in 30 s")), 30_000);
@@ -141,6 +144,20 @@ try {
     check("server 3 page has no HSTS (loopback, no public address)", headers["strict-transport-security"] === undefined, headers["strict-transport-security"] ?? "");
     check("open setup shows no Setup code field", (await codeField(page).count()) === 0);
   } finally { await c.stop(); }
+
+  // 4. The server's API token in the Setup code field.
+  const d = await start({ AGENTRUN_PUBLIC_URL: "http://agentrun-e2e.example.test" });
+  try {
+    await d.firstCode();
+    const token = d.token();
+    check("server 4 printed the token it made", typeof token === "string" && token.length > 0);
+    const { page, errors } = await open(`${d.base}/`);
+    await fill(page, token);
+    await page.click('button[type="submit"]');
+    await signedIn(page);
+    check("the server's API token in the Setup code field sets the password and signs in", true);
+    check("server 4 page: no console errors", errors.length === 0, errors.join(" | "));
+  } finally { await d.stop(); }
 } catch (error) {
   check("the walk ran to its end", false, error instanceof Error ? error.message.split("\n")[0] : String(error));
 } finally {

@@ -1879,7 +1879,10 @@ async function startHolding(options: ServeOptions, data: string, lock: ServerLoc
         // The owner's yes, on the box ticked, is kept with the owner: written durably before the password, so a setup that
         // cannot keep it sets no owner and can be tried again, and taken back if the password is not written.
         const along = body.import === true ? { keep: () => writeDurable(importAsked, ""), drop: () => rm(importAsked, { force: true }) } : undefined;
-        const made = await me.setFirst(password, body.code, byToken, along);
+        // The server's API token stands in for the code in the code field too (on Render it is in the Environment tab, the
+        // code only in the log), compared as the header is, in constant time; a wrong one counts as a wrong code.
+        const tokenAsCode = typeof body.code === "string" && body.code !== "" && timingSafeEqual(digest(`Bearer ${body.code}`), expected);
+        const made = await me.setFirst(password, body.code, byToken || tokenAsCode, along);
         if (made === "exists") throw new ApiError("forbidden", "this server has its owner, or is being set up: sign in");
         if (made === "missing") throw new ApiError("forbidden", "this server's setup takes the setup code in its log: send it as code");
         if (made === "wrong") throw new ApiError("forbidden", "that is not the setup code in the server's log");
