@@ -45,7 +45,9 @@ async function box(t, { root = true } = {}) {
   writeFileSync(mounts, PROC);
   const calls = join(dir, "calls");
   const archil = join(dir, "archil");
-  writeFileSync(archil, `#!/bin/sh\n{ printf 'argv %s\\n' "$*"; [ "\${ARCHIL_MOUNT_TOKEN-}" = '${TOKEN}' ] && echo 'env token'; ps -eo args | awk 'index($0, ENVIRON["ARCHIL_MOUNT_TOKEN"]) { n++ } END { print "ps " n + 0 }'; } >> '${calls}'\n[ ! -e '${join(dir, "archil-fails")}' ] || { echo 'archil: mount failed' >&2; exit 1; }\n`);
+  // A mount shows the disk's tree at the mountpoint: a box given a `tree` script runs it once mounted.
+  const tree = join(dir, "archil-tree");
+  writeFileSync(archil, `#!/bin/sh\n{ printf 'argv %s\\n' "$*"; [ "\${ARCHIL_MOUNT_TOKEN-}" = '${TOKEN}' ] && echo 'env token'; ps -eo args | awk 'index($0, ENVIRON["ARCHIL_MOUNT_TOKEN"]) { n++ } END { print "ps " n + 0 }'; } >> '${calls}'\n[ ! -e '${join(dir, "archil-fails")}' ] || { echo 'archil: mount failed' >&2; exit 1; }\n[ ! -e '${tree}' ] || sh '${tree}'\n`);
   chmodSync(archil, 0o755);
   // The computer's chown: it records its arguments, and whether the token reached its environment (it must not).
   const chown = join(dir, "chown");
@@ -59,7 +61,7 @@ async function box(t, { root = true } = {}) {
   writeFileSync(mount, `#!/bin/sh\nprintf '%s\\n' "$*" >> '${remounts}'\n[ -e '${remountable}' ] || { echo 'mount: /proc: permission denied.' >&2; exit 32; }\n[ "$*" = '-o remount,hidepid=2 /proc' ] || exit 1\nsed -i 's#^proc /proc proc \\([^ ]*\\) #proc /proc proc \\1,hidepid=invisible #' '${mounts}'\n`);
   chmodSync(mount, 0o755);
   const source = readFileSync(HELPER, "utf8");
-  const fixed = { ARCHIL: ["/usr/bin/archil", archil], MP: ["/workspace", mp], MOUNTS: ["/proc/self/mounts", mounts], MOUNT: ["/usr/bin/mount", mount], CHOWN: ["/usr/bin/chown", chown], TOOL: ["agentrun-tool", userInfo().username], ROOT_UID: ["0", String(root ? process.getuid() : process.getuid() + 1)], COMPUTERD: ["/opt/agentrun/computerd", computerd], HELD_TOP: ["/", dir], SOCK: ["/run/agentrun-archil/archil.sock", join(dir, "run", "archil.sock")] };
+  const fixed = { ARCHIL: ["/usr/bin/archil", archil], MP: ["/workspace", mp], MOUNTS: ["/proc/self/mounts", mounts], MOUNT: ["/usr/bin/mount", mount], CHOWN: ["/usr/bin/chown", chown], TOOL: ["agentrun-tool", userInfo().username], TOOL_UID: ["2510", String(process.getuid() + 1)], ROOT_UID: ["0", String(root ? process.getuid() : process.getuid() + 1)], COMPUTERD: ["/opt/agentrun/computerd", computerd], HELD_TOP: ["/", dir], SOCK: ["/run/agentrun-archil/archil.sock", join(dir, "run", "archil.sock")] };
   let copy = source;
   for (const [name, [shipped, here]] of Object.entries(fixed)) {
     assert.ok(source.includes(`\n${name}=${shipped}\n`), `the helper fixes ${name}=${shipped}`);
@@ -72,11 +74,32 @@ async function box(t, { root = true } = {}) {
     const ran = spawnSync(helper, args, { input: stdin, encoding: "utf8", env: { PATH: process.env.PATH } });
     return { status: ran.status, stderr: ran.stderr, calls: existsSync(calls) ? readFileSync(calls, "utf8").split("\n").filter(Boolean) : [] };
   };
-  return { dir, mp, mounts, run, computerd, sock: join(dir, "run", "archil.sock"), remounts: () => (existsSync(remounts) ? readFileSync(remounts, "utf8").split("\n").filter(Boolean) : []), remountable: () => writeFileSync(remountable, ""), mounted: (folder = FOLDER) => writeFileSync(mounts, `${PROC}${DISK}:/${folder}[${REGION}] ${mp} fuse.archil rw 0 0\n`) };
+  return { dir, mp, mounts, run, computerd, tree: (script) => writeFileSync(tree, script), sock: join(dir, "run", "archil.sock"), remounts: () => (existsSync(remounts) ? readFileSync(remounts, "utf8").split("\n").filter(Boolean) : []), remountable: () => writeFileSync(remountable, ""), mounted: (folder = FOLDER) => writeFileSync(mounts, `${PROC}${DISK}:/${folder}[${REGION}] ${mp} fuse.archil rw 0 0\n`) };
 }
 
-/** The chown a mount ends with: the mount's top folder given to the tool user (here, this user), in no token's company. */
-const chowned = (b) => `chown ${userInfo().username}:${userInfo().username} ${b.mp}`;
+/**
+ * The chown a mount ends with: every path of the mounted tree not the tool user's (here: TOOL_UID is another uid, so all
+ * of them; an empty mount is its top alone) given to the tool user, links themselves (-h), in no token's company.
+ */
+const chowned = (b) => `chown -h ${userInfo().username}:${userInfo().username} ${b.mp}`;
+
+test("mount and revoke give the whole mounted tree to the tool user, as root, never following a link out of it", async (t) => {
+  // The Daytona live run: files and folders the disk's object API made read uid 0, 644 and 755, so the tools could not
+  // write them. Outside writes are refused while a computer holds the folder, so every such file is there at the mount.
+  for (const verb of ["mount", "revoke"]) {
+    const b = await box(t);
+    const outside = join(b.dir, "outside");
+    writeFileSync(outside, "not the run's\n");
+    b.tree(`mkdir -p '${b.mp}/dir' && echo a > '${b.mp}/file' && echo b > '${b.mp}/dir/inner' && ln -s '${outside}' '${b.mp}/link'\n`);
+    const ran = b.run([verb, DISK, REGION, FOLDER]);
+    assert.equal(ran.status, 0, ran.stderr);
+    const chowns = ran.calls.filter((call) => call.startsWith("chown"));
+    assert.ok(chowns.length > 0 && chowns.every((call) => call.startsWith(`chown -h ${userInfo().username}:${userInfo().username} `)), `${verb}: ${JSON.stringify(chowns)}`);
+    const paths = chowns.flatMap((call) => call.split(" ").slice(3)).sort();
+    assert.deepEqual(paths, [b.mp, `${b.mp}/dir`, `${b.mp}/dir/inner`, `${b.mp}/file`, `${b.mp}/link`].sort(), `${verb}: the whole tree, the link itself`);
+    assert.ok(!paths.includes(outside), `${verb}: nothing outside the mount`);
+  }
+});
 
 test("mount: the client alone, with fixed arguments; the token in its environment, never an argument any process shows; then the folder's top given to the tool user", async (t) => {
   const b = await box(t);
