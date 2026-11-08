@@ -260,8 +260,6 @@ function piLoop(specOf: (claim: Claim) => PiRunSpec | Promise<PiRunSpec>, deps: 
   let opened: () => void = () => {};
   const ready = new Promise<void>((resolve) => (opened = resolve));
   let context: Context = BACKGROUND_CONTEXT;
-  /** Steers handed over before the root was open: placed once it is. */
-  const early: Command[] = [];
   /** Approve or deny rows refused because they named no call waiting for its answer. */
   let refusals = 0;
 
@@ -277,10 +275,12 @@ function piLoop(specOf: (claim: Claim) => PiRunSpec | Promise<PiRunSpec>, deps: 
 
   /** Places a steer in the run's turn; its row is taken by pi's own commit of that submission. */
   const steer = async (command: Command): Promise<CommandOutcome> => {
-    if (!gate || !root) {
-      early.push(command);
-      return { taken: true };
-    }
+    // Handed over before the root is open: placed once it is, its outcome the real one (never taken and then dropped).
+    if (!gate || !root) await Promise.race([ready, (finished ?? new Promise<never>(() => {})).then(() => undefined, () => undefined)]);
+    // The loop never opened, or its journal is sealed (the run parks, or it is stopping): left untaken for the next claim,
+    // which hands it on again; never refused for good.
+    if (!gate || !root) return { later: "the run's loop did not open: the steer waits for its next claim" };
+    if (gate.sealed) return { later: "the run is parking: the steer waits for its resume" };
     const text = typeof (command.body as { text?: unknown } | null)?.text === "string" ? (command.body as { text: string }).text : "";
     const requestId = commandRequest(command.id);
     // A message that answers nothing (a trigger's, answers: false) waits for the turn's end and runs as a turn of its
@@ -291,6 +291,8 @@ function piLoop(specOf: (claim: Claim) => PiRunSpec | Promise<PiRunSpec>, deps: 
       await root.submit({ type: "input", content: text, requestId, whenBusy: followUp ? "followUp" : "steer" }, context);
     } catch (error) {
       taken.catch(() => {});
+      // Sealed while it was placed (the run parked meanwhile): left for the resume, as above.
+      if (gate.sealed) return { later: "the run is parking: the steer waits for its resume" };
       return { refused: `the steer was not placed: ${(error as Error).message}` };
     }
     await taken.catch(() => {});
@@ -422,7 +424,6 @@ function piLoop(specOf: (claim: Claim) => PiRunSpec | Promise<PiRunSpec>, deps: 
         root = await harness.root(context, { agent: { model: spec.model, extensions: [kernel] } as never });
         await reportHeld(harness, root.id);
         opened();
-        for (const command of early.splice(0)) void steer(command);
         if (restarts > restartLimit + 1) {
           // pi cut the call off long before this; a fault that keeps coming back from elsewhere is bounded here too.
           return await writeEnd(harness, root, gate, { state: "failed", summary: `the kernel faulted on every restart (${restarts} restarts)` }, []);
