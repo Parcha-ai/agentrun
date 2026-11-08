@@ -9,6 +9,7 @@ import type { TriggerAdapter } from "./trigger-adapter.js";
 import { TRIGGER_ADAPTERS } from "./trigger-adapters.js";
 import { NOTE_ORIGINS, NOTE_STATUSES, NOTE_TYPES } from "./learn/index.js";
 import { ERROR_STATUS } from "./errors.js";
+import { TAKE_OVER_MINUTES } from "./computer-view.js";
 import { LAUNCH_LOST, SETUP_LOST } from "./files.js";
 import { HARNESSES } from "./harness.js";
 import { LEARNING_LABEL, LEARNING_MODES, LEARNING_REASONS, LEARNING_STATES } from "./learning.js";
@@ -26,7 +27,7 @@ import { DEFINITION_FIELDS, MODEL_REF, NOT_KEPT } from "./validate.js";
 import { GRADER_TYPES, MODEL_TIERS, PARAMETER_TYPES } from "./templates.js";
 import { NOT_SET_UP } from "./runnable.js";
 import { APPROVAL_ROW, ARGS_PREVIEW_BYTES, MAX_PIN_ARGS, MAX_PIN_CHOICES, PERMISSIONS } from "./tool-gate.js";
-import { MAX_PIN_TEXT, permissionsOf, type Pickable, PICKABLE, PROVIDERS, TABLE_TOOLS } from "./tool-plane.js";
+import { KIND_KEYS, MAX_PIN_TEXT, permissionsOf, type Pickable, PICKABLE, PROVIDERS, TABLE_TOOLS } from "./tool-plane.js";
 
 type Json = Record<string, unknown>;
 
@@ -279,8 +280,8 @@ const PERMISSION = {
   enum: [...PERMISSIONS],
   description: "What the tool gate does with each call a model makes: allow runs it; ask parks the run until the owner answers (POST /runs/{run_id}/approvals/{approval_id}); deny refuses it at once, and the model reads why. The owner's defaults: allow for this server's tools, ask for a catalog tool (monid.<tool>, mcp:<server>/<tool>). ask is offered for the tools whose approved call the kernel runs itself (read, write, edit, bash, web_fetch, web_search, learned_workflow) and for catalog tools; any other is allow or deny.",
 };
-/** The table's tools a setting may name. */
-const SETTINGS_TOOLS = TABLE_TOOLS;
+/** The table's tools a setting may name, and a computer kind's keys (desktop, phone), each holding its kind's tools. */
+const SETTINGS_TOOLS = [...TABLE_TOOLS, ...KIND_KEYS];
 /** A catalog tool's settings key, or an MCP server's wildcard, which sets each of its tools. */
 const CATALOG_KEY = { type: "string", pattern: "^(monid\\.[^/]+|mcp:[^/]+/.+)$" };
 /** A pinned scalar. */
@@ -533,6 +534,17 @@ const RUN_NOTES: Record<string, Json> = {
 };
 /** `properties` as a closed object, its `optional` ones left out of `required`. */
 const closedWith = (properties: Record<string, Json>, optional: Record<string, Json>) => ({ ...closed(properties), properties: { ...properties, ...optional } });
+
+/** A run's desktop or phone, as GET /runs/{run_id}/computer and its take-over and hand-back answer it (computer-view.ts). */
+const COMPUTER_VIEW = closedWith({
+  kind: { enum: ["desktop", "phone", null], description: "The run's computer's kind; null when it has none here." },
+  state: { enum: ["live", "none", "off"], description: "`live`: up, watchable (or taken over); `none`: the run has a desktop or phone that is not up now; `off`: it has none." },
+  taken_over: { type: "boolean", description: "Whether the owner holds it now: the agent's screen, input and phone calls wait meanwhile." },
+  viewer: { oneOf: [{ type: "null" }, closed({ url: { type: "string", description: "The provider's own live stream of the screen: view-only, or one that drives while the owner holds it." } })], description: "The live view, while the computer is up and its provider streams its screen; null otherwise." },
+}, {
+  taken_until: { type: "string", format: "date-time", description: "When an owner's take-over goes back to the agent on its own, without a hand-back." },
+  why: { type: "string", description: "Why there is nothing to watch, in the server's words: with state `off` (the run has no desktop or phone) and `none` (it is not up now)." },
+});
 /** trigger/1: triggers, a schedule or a signed webhook, that start an agent's capped runs or message a run (triggers.ts). */
 const TRIGGER_MARK = { "x-agentrun-serve": "trigger/1" };
 /** A run's `trigger`, on Run and on RunSummary alike. */
@@ -1001,6 +1013,35 @@ const EXTENSIONS: Record<string, Record<string, Json>> = {
         ...errors(401, 403, 404, 409, 422, 429, 500),
       },
       "x-agentrun-serve": "liveview/2",
+    },
+  },
+  "/runs/{run_id}/computer": {
+    get: {
+      operationId: "getRunComputer", tags: ["runs"], summary: "Watch the run's desktop or phone live: its kind, its state and its viewer, for the owner",
+      description: "A run whose computer is a desktop or a phone: `live` with `viewer`, the provider's own live stream of its screen (view-only while the agent works; once the owner takes it over, one that drives), while the computer is up; `none` when the run has such a computer that is not up now; `off` when it has none (a browser is watched at GET /runs/{run_id}/browser). `taken_over` says whether the owner holds it now, and `taken_until` when it goes back to the agent on its own. It takes the owner's password session in the console: never a token (403); no credential is 401.",
+      parameters: [ref("parameters/RunId")],
+      responses: { "200": json(COMPUTER_VIEW, "The run's computer, as its owner sees it."), ...errors(401, 403, 404, 429, 500) },
+      "x-agentrun-serve": "computer/1",
+    },
+  },
+  "/runs/{run_id}/computer/take-over": {
+    post: {
+      operationId: "takeOverRunComputer", tags: ["runs"], summary: "Take over the run's desktop or phone",
+      description: `The owner holds the run's desktop or phone: the answer's viewer drives it, and the agent's screen, input and phone calls wait meanwhile. At the hand-back a look (a screenshot, the app list) runs on the screen as the owner left it; an act (input, a tap, a swipe, typing, opening an app) is not done, and the agent is told the person had the computer and to look again. The hold goes back to the agent on its own after ${TAKE_OVER_MINUTES} minutes with no hand-back, or at the run's end. Taking one already taken is the same answer. 404 when the run has no desktop or phone up; 409 \`computer_not_live\` when it is not up now. The run stays working. It takes the owner's password session in the console: never a token (403).`,
+      parameters: [ref("parameters/RunId")],
+      requestBody: { required: false, content: { "application/json": { schema: closed({}) } } },
+      responses: { "200": json(COMPUTER_VIEW, "The run's computer, taken over."), ...errors(401, 403, 404, 409, 422, 429, 500) },
+      "x-agentrun-serve": "computer/1",
+    },
+  },
+  "/runs/{run_id}/computer/hand-back": {
+    post: {
+      operationId: "handBackRunComputer", tags: ["runs"], summary: "Hand the run's desktop or phone back to the agent",
+      description: "The owner's hold ends and the agent's waiting calls go on. Handing back one nobody holds is the same answer. 404 when the run has no desktop or phone up. It takes the owner's password session in the console: never a token (403).",
+      parameters: [ref("parameters/RunId")],
+      requestBody: { required: false, content: { "application/json": { schema: closed({}) } } },
+      responses: { "200": json(COMPUTER_VIEW, "The run's computer, back with the agent."), ...errors(401, 403, 404, 422, 429, 500) },
+      "x-agentrun-serve": "computer/1",
     },
   },
   "/workflows/validate": {
