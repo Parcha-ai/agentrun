@@ -722,6 +722,50 @@ export async function changedOrder(cwd: string, repo: string, sha: string): Prom
   return order;
 }
 
+/** What the learning folder's read at a commit gives a run's seed (the folder's script's read op, through the agent's
+ *  learning Workspace): each file of its index, its active notes and its active skills, by its path from the folder's
+ *  root; or why it has none: the folder cannot answer now (`unavailable`), or the commit is no longer there (`gone`). */
+export type SeedRead = { ok: true; files: readonly { path: string; text: string }[] } | { ok: false; why: "unavailable" | "gone" };
+/** The read at `commit` (null: the folder has no main yet, an empty read). */
+export type SeedReader = (commit: string | null) => Promise<SeedRead>;
+/** What a seed can't tell from its read alone, as the folder's snapshot keeps it: every note file on main, whatever its
+ *  status, with its place in main's log (0 the newest), and each skill's place by its name. */
+export type SeedOrder = { readonly notes: readonly { file: string; order: number }[]; readonly skills?: readonly { name: string; order: number }[] };
+
+/** A run's seed from the folder's read at `commit` (`read`): its index, its notes the one changed last first, and its
+ *  skills grouped by folder, the one changed last first, each with its files while it could fit a run's budget at all
+ *  (LEARNED_SKILLS_BUDGET), else held by its size alone. A path that is neither (a file deeper than the folder's top, a
+ *  skill folder named out of shape) is named in `skipped`. No commit yet is an empty seed; a read that fails throws,
+ *  saying why, and the run starts with nothing learned (or, opened again, keeps what it has). No git here: the read is
+ *  the folder's. */
+export async function seedFrom(commit: string | null, read: SeedReader, order?: SeedOrder): Promise<Seed> {
+  const got = await read(commit);
+  if (!got.ok) throw new Error(`the learning folder's read at ${commit ?? "its start"} is ${got.why}`);
+  const seed: Seed = { sha: commit ?? "", notes: {}, files: [], skipped: [], recent: [], skills: [] };
+  const skills = new Map<string, Record<string, string>>();
+  for (const { path, text } of got.files) {
+    if (path === INDEX_FILE) seed.index = text;
+    else if (NOTE_FILE.test(path)) seed.notes[path] = text;
+    else {
+      const [top, name = "", ...rest] = path.split("/");
+      const file = rest.join("/");
+      if (top === SKILLS_DIR && SKILL_NAME.test(name) && SKILL_FILE_PATH.test(file)) (skills.get(name) ?? skills.set(name, {}).get(name)!)[file] = text;
+      else seed.skipped.push(path);
+    }
+  }
+  const noteAt = new Map((order?.notes ?? []).map(({ file, order: at }) => [file, at]));
+  const skillAt = new Map((order?.skills ?? []).map(({ name, order: at }) => [name, at]));
+  const by = (at: Map<string, number>) => (a: string, b: string) => (at.get(a) ?? Number.POSITIVE_INFINITY) - (at.get(b) ?? Number.POSITIVE_INFINITY) || (a < b ? -1 : a > b ? 1 : 0);
+  seed.recent = Object.keys(seed.notes).sort(by(noteAt));
+  seed.files = [...new Set([...(seed.index === undefined ? [] : [INDEX_FILE]), ...Object.keys(seed.notes), ...noteAt.keys(), ...(skills.size ? [SKILLS_DIR] : [])])];
+  seed.skills = [...skills.keys()].sort(by(skillAt)).map((name) => {
+    const files = skills.get(name)!;
+    const bytes = Object.values(files).reduce((sum, text) => sum + Buffer.byteLength(text, "utf8"), 0);
+    return bytes > LEARNED_SKILLS_BUDGET ? { name, bytes } : { name, bytes, files };
+  });
+  return seed;
+}
+
 /** The seed of a run of agent `agentId` about to be made: main's commit, the folder made first when it is absent, and
  *  what that commit holds, its active notes in the order they changed on main, the one changed last first (then by
  *  name). In the agent's queue. */
