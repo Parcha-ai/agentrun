@@ -240,8 +240,8 @@ export function startRunner(options: RunnerOptions): Runner {
     if (stop) {
       // A stop never waits on a loop that cannot start: the run ends stopped here, its stop row taken, and every other
       // untaken row refused as a stopped run's.
-      await store.runs.update(claim, { state: "stopped", summary: "stopped" });
-      await store.take(claim, stop.id, "taken");
+      // One write: the run ends stopped with its stop row taken, or neither (a final run never keeps its stop untaken).
+      await store.runs.update(claim, { state: "stopped", summary: "stopped by a person" }, { take: [stop.id] });
       const reason = endedReason("stopped");
       for (const row of untaken) {
         if (row.id === stop.id) continue;

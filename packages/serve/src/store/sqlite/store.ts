@@ -8,7 +8,7 @@ import { DatabaseSync } from "node:sqlite";
 import { RunStorage } from "../journal/storage.js";
 import { DDL, SCHEMA_VERSION } from "../schema.js";
 import {
-  RefreshLeaseLost, SchemaVersionUnknown, StoreConstraint, StoreFromEarlierVersion,
+  CommandTaken, RefreshLeaseLost, SchemaVersionUnknown, StoreConstraint, StoreFromEarlierVersion,
   type AgentRow, type Agents, type AlsoRow, type Claim, type Command, type Journal, type NewRevision, type RevisionRow, type RunPatch, type RunRow, type Runs,
   type RunState, type Store, type StoreRole, type TemplatePackage, type Templates, type TriggerDef, type TriggerRow, type Triggers, type TriggerScope,
   FINAL_STATES, type Mcp, type McpPinRow, type McpServerRow,
@@ -324,7 +324,19 @@ class SqliteStore implements Store {
         return rows.map((row) => row.id);
       },
       claimMany: (runner, k, { leaseMs = DEFAULT_LEASE_MS } = {}) => this.#claimRuns(runner, leaseMs, { k }),
-      update: async (claim: Claim, patch: RunPatch, also: readonly AlsoRow[] = []): Promise<RunRow> => db.transaction((tx) => applyRunPatch(tx, claim, patch, also, now())),
+      update: async (claim, patch, with_ = []) => {
+        const { also = [], take = [] } = Array.isArray(with_) ? { also: with_ as readonly AlsoRow[] } : (with_ as { also?: readonly AlsoRow[]; take?: readonly number[] });
+        return db.transaction(async (tx) => {
+          const at = now();
+          const row = await applyRunPatch(tx, claim, patch, also, at);
+          for (const commandId of take) {
+            if ((await tx.runCounted("UPDATE commands SET taken_at = ? WHERE id = ? AND run_id = ? AND taken_at IS NULL", at, commandId, claim.runId)) === 0) {
+              throw new CommandTaken(claim.runId, commandId);
+            }
+          }
+          return row;
+        });
+      },
     };
 
     const server = async (executor: SqliteExecutor, name: string) => {
