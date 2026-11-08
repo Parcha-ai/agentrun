@@ -22,6 +22,10 @@
 // commit's dispatch already finds the second's steps: their document events come out a little ahead of the second
 // commit's entries; every event arrives, in step order. A document absent when the stream attaches has no observer:
 // every change to it in a stored commit is applied.
+// A tool's start carries its call's arguments: from its task's checkpoint when the commit translated carries the task,
+// else from the assistant's stored tool call with the same ID (the snapshot's entries included). A held `running` step
+// and an earlier step of a stored commit carry no task changes of their own, so the stored call is what they read. A
+// start with neither (a call pi shows running before any entry holds it) is kept, with no `args`: never an invented {}.
 import type { Context, JsonValue } from "@earendil-works/chord";
 import { AgentDoc, InboxDoc, LiveDoc, UsageDoc } from "@earendil-works/pi-durable";
 import type { CommitPublication, ConversationId, EntryRecord, Harness, JsonObject, Observation, SubmissionRecord, TaskRecord } from "@earendil-works/pi-durable";
@@ -277,7 +281,8 @@ function translateOne(conversationId: ConversationId, publication: CommitPublica
   for (const slot of slots) {
     if (slot.status !== "running" || slotsBefore.get(slot.callId)?.status === "running") continue;
     const checkpoint = slot.taskId === undefined ? undefined : (tasks.get(slot.taskId)?.state as { checkpoint?: { arguments?: unknown } } | undefined)?.checkpoint;
-    events.push({ type: "tool_execution_start", toolCallId: slot.callId, toolName: slot.name, args: checkpoint?.arguments ?? {} });
+    const args = checkpoint?.arguments ?? callOf(state.entries, slot.callId)?.arguments;
+    events.push({ type: "tool_execution_start", toolCallId: slot.callId, toolName: slot.name, ...(args === undefined ? {} : { args }) });
   }
   const partialBefore = was.generation?.message;
   const partial = now.generation?.message;
@@ -352,6 +357,17 @@ function translateOne(conversationId: ConversationId, publication: CommitPublica
 }
 
 const docsMoved = (before: State, after: State) => DOCS.some((kind) => before.docs[kind] !== after.docs[kind]);
+
+/** The assistant's stored tool call `callId` among `entries`, the newest first. */
+function callOf(entries: readonly EntryRecord[], callId: string): { arguments?: unknown } | undefined {
+  for (let at = entries.length - 1; at >= 0; at -= 1) {
+    const message = (entries[at] as { model?: { role?: string; content?: { type?: string; id?: string; arguments?: unknown }[] }[] }).model?.[0];
+    if (message?.role !== "assistant") continue;
+    const call = message.content?.find((block) => block.type === "toolCall" && block.id === callId);
+    if (call) return call;
+  }
+  return undefined;
+}
 
 /** The tool result for `callId` among `entries`. */
 function resultOf(entries: readonly EntryRecord[], callId: string): EntryRecord | undefined {
