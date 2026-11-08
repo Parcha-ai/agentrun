@@ -9,9 +9,9 @@ describe("startBody", () => {
     });
   });
 
-  it("starts a workflow run with its typed input as JSON, and never a spend cap (the server refuses one)", () => {
+  it("starts a workflow run with its typed input as JSON, and its spend cap (serve takes one on a workflow run too)", () => {
     expect(startBody("workflow", { text: '{"subject":"Where is my invoice?","body":"Cannot find it."}', maxCostUsd: "1" })).toEqual({
-      ok: true, body: { input: { subject: "Where is my invoice?", body: "Cannot find it." } },
+      ok: true, body: { input: { subject: "Where is my invoice?", body: "Cannot find it." }, max_cost_usd: 1 },
     });
   });
 
