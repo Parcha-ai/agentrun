@@ -56,7 +56,8 @@ export function beforeRequestOf(options: BeforeRequestOptions): BeforeRequest {
       inFlight += figure;
     }
     // The run's spend and holds: the runner's (its model requests) and the host's (its priced tools).
-    const toolSpent = options.spentUsd?.() ?? 0;
+    // $0 only with no hook: a hook's null (a tool charge no one knows) makes the run's spend unknown, never free.
+    const toolSpent = options.spentUsd ? options.spentUsd() : 0;
     const spentUsd = request.spentUsd === null || toolSpent === null ? null : request.spentUsd + toolSpent;
     const heldUsd = inFlight + (options.heldUsd?.() ?? 0);
     try {
