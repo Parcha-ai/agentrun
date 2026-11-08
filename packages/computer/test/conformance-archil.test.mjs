@@ -49,8 +49,18 @@ test("archilRunFolder over a given object API: a fresh folder of the helper's sh
 	const folder = await archilRunFolder({ disk: DISK, region: REGION, token: TOKEN, objects });
 	assert.deepEqual({ ...folder.mount, folder: undefined }, { kind: "archil", disk: DISK, region: REGION, folder: undefined, token: TOKEN });
 	assert.match(folder.mount.folder, FOLDER);
-	assert.notEqual((await archilRunFolder({ disk: DISK, region: REGION, token: TOKEN, objects })).mount.folder, folder.mount.folder, "a fresh folder each time");
-	assert.equal((await archilRunFolder({ disk: DISK, region: REGION, token: TOKEN, objects, agent: "a1", run: "r7" })).mount.folder, "agents/a1/runs/r7/work");
+	const other = await archilRunFolder({ disk: DISK, region: REGION, token: TOKEN, objects });
+	assert.notEqual(other.mount.folder, folder.mount.folder, "a fresh folder each time");
+	await other.close();
+	const named = await archilRunFolder({ disk: DISK, region: REGION, token: TOKEN, objects, agent: "a1", run: "r7" });
+	assert.equal(named.mount.folder, "agents/a1/runs/r7/work");
+	// The folder's run, which a computer that mounts it is labelled for (agentrun.run): the helper's rule.
+	assert.equal(named.run, "r7");
+	assert.equal(folder.run, folder.mount.folder.split("/")[3]);
+	// The folder is there before any computer mounts it: its marker is the first thing written.
+	const first = objects.calls.find(([name]) => name === "putObject");
+	assert.deepEqual(first, ["putObject", `${folder.mount.folder}/`]);
+	await named.close();
 	await folder.write("a.txt", Buffer.from("outside\n"));
 	assert.deepEqual(objects.calls.at(-1), ["putObject", `${folder.mount.folder}/a.txt`]);
 	assert.equal(Buffer.from(await folder.read("a.txt")).toString("utf8"), "outside\n");

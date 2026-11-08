@@ -1,6 +1,8 @@
 // The mount group of the conformance suite against the fake provider (test/fake-computer.mjs): "mounts the run's folder"
 // for each mount kind a provider declares, and the refusal of each kind it does not. No Docker, no daemon binary.
 import assert from "node:assert/strict";
+import { existsSync, mkdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
 import { after } from "node:test";
 import test from "node:test";
@@ -42,9 +44,38 @@ test("the run-folder Archil case records both directions while the computer hold
 	const report = await run({ mount: ["archil"] }, { ids: ["mount.run-folder-archil"] });
 	const [result] = report.results;
 	assert.equal(result.status, "pass", result.reason);
-	assert.equal(result.observed.length, 2);
-	assert.match(result.observed[0], /^outside in, while held: a file the file API wrote is read at \/workspace as written$/);
-	assert.match(result.observed[1], /^inside out, while held: a file files\.write made \(synced before it answered\) is read through the file API as written$/);
+	assert.equal(result.observed.length, 4, JSON.stringify(result.observed));
+	// What the file API gives a file and a folder it makes, as the computer sees them: the owner a tool writes against.
+	assert.match(result.observed[0], /^a file the file API made, seen at \/workspace: /);
+	assert.match(result.observed[1], /^a folder the file API made, seen at \/workspace: /);
+	assert.match(result.observed[2], /^outside in, while held: a file the file API wrote is read at \/workspace as written$/);
+	assert.match(result.observed[3], /^inside out, while held: a file files\.write made \(synced before it answered\) is read through the file API as written$/);
+});
+
+test("the run-folder Archil case labels its computer for the folder's own run, as the helper's rule asks, even when the run folder does not say its run", async () => {
+	const run = "r42";
+	const folder = `agents/conformance/runs/${run}/work`;
+	const dir = join(folders.disks["fake-disk"], folder);
+	mkdirSync(dir, { recursive: true });
+	// A run folder like one from before RunFolder had its run: the mount alone says it.
+	const mountFor = (kind) =>
+		kind !== "archil"
+			? undefined
+			: {
+					mount: { kind: "archil", disk: "fake-disk", region: "fake-region-1", folder, token: "tok-run-folder-label-0123456789" },
+					read: async (path) => (existsSync(join(dir, path)) ? readFileSync(join(dir, path)) : undefined),
+					write: async (path, data) => {
+						mkdirSync(dirname(join(dir, path)), { recursive: true });
+						if (!path.endsWith("/")) writeFileSync(join(dir, path), data);
+					},
+					close: async () => rmSync(dir, { recursive: true, force: true }),
+				};
+	const { provider } = fakeComputers({ disks: folders.disks, mount: ["archil"] });
+	const check = provider.check.bind(provider);
+	// The helper's rule, as every remote provider's check applies it: the folder is the labelled run's.
+	provider.check = (spec) => [...check(spec), ...(spec.mount?.kind === "archil" && spec.labels?.["agentrun.run"] !== run ? [{ field: "mount", message: `mount.folder is run ${run}'s folder, not the labelled run's` }] : [])];
+	const report = await runConformance(provider, { image: IMAGE, cases: conformanceCases.filter((c) => c.id === "mount.run-folder-archil"), mountFor });
+	assert.equal(report.results[0].status, "pass", report.results[0].reason);
 });
 
 test("mount.run-folder-bind passes a fake that binds the run's folder at /workspace; the Archil case skips in words", async () => {
