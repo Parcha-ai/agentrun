@@ -414,8 +414,8 @@ function ScheduleForm({ v2, go, trigger, minEvery }: FormProps & { trigger?: Sch
   );
 }
 
-/** Writes `text` to the clipboard and says Copied beside it. The clipboard exists only in a secure context (https or
- *  localhost): with none, or a write the browser refuses, it says to select the text instead. */
+/** Writes `text` to the clipboard and says Copied beside it. The clipboard needs a secure page: with none, or a write
+ *  the browser refuses, it says to select the text instead. */
 function CopyButton({ text, label }: { text: string; label: string }) {
   const [said, setSaid] = useState<string | null>(null);
   const manual = "The browser won't copy here. Select it and copy it.";
