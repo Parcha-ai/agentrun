@@ -68,9 +68,10 @@ import { removeEgressDir, RUN_BOX_ALLOW_ENV } from "./box-egress.js";
 import { BehindReadError, checkpointRunDb, MonotonicReads, readRunDb } from "./run-db.js";
 import { holderLives, holderOfClaim, holderOfProcess, holderState, killHolder, LAUNCH_HOLDER, RUN_EPOCH_ENV, RUN_LAUNCH_ENV, type RunHolder, signal } from "./run-holder.js";
 import { firstDoorLine, untilOpened, verifyDoor } from "./door-line.js";
-import { costOf, costView, knownToolCostOf, soFarOf, type SoFar, toolCostOf } from "./run-view.js";
-// The cost reads kept their import path here for the server routes and tests that read them from this module.
-export { costOf, costView, knownToolCostOf, soFarOf, type SoFar, toolCostOf };
+import { BUDGET_PAUSED, cents, centsUp, costOf, costView, knownToolCostOf, overByMiss, type SoFar, soFarOf, toolCostOf, withOverCap, withPaused } from "./run-view.js";
+// The cost reads and the served row transforms kept their import path here for the server routes and tests that read them
+// from this module.
+export { costOf, costView, knownToolCostOf, soFarOf, type SoFar, toolCostOf, withOverCap, withPaused };
 
 /** `holder` with this launch's door nonce, which the row keeps so a next server can prove the door too. */
 const withNonce = (holder: RunHolder | undefined, nonce: string): RunHolder | undefined => holder && { ...holder, nonce };
@@ -517,29 +518,7 @@ export function withAsks(rows: readonly TimelineEvent[]): TimelineEvent[] {
   return out;
 }
 
-/** An amount in an over-cap row's or failure's words, to the cent ($0.38020940000000003 is $0.38; $1 is $1), as money
- *  says it; `centsUp` to the cent above, for what a run went over by and a bound, so neither reads $0 or under. */
-const cents = (usd: number): string => money(Math.round(usd * 100) / 100);
-const centsUp = (usd: number): string => money(Math.ceil(usd * 100 - 1e-9) / 100);
-/** Whether a run that spent `usd` passed its `cap` by no more than `bound`, the bounds of the requests that ended since
- *  its cost last fit (bounds.ts): a
- *  cache miss an expected-cost cap (cap.ts) admits the risk of, never a cap the run's own rule broke. */
-const overByMiss = (usd: number, cap: number, bound: number): boolean => bound > 0 && usd - cap <= bound + FIT_TOLERANCE;
-/** The row that says a run's booked spend passed its cap, and by how much, after its usage row: a request's cost is
- *  booked once it answers, never clipped, and under an expected-cost cap (cap.ts) a request that missed the cache can cost
- *  up to its bound beyond what it was admitted at; one carrying a native web search is held at an allowance, not a bound,
- *  so a run can pass its cap by its last request. The next request is then refused. `bound`: the requests' that ended since the cost last fit,
- *  bound; when the run passed its cap by no more than it, the row says a cache miss did it, and the most it could have. */
-export function withOverCap(rows: TimelineEvent[], cap: number | undefined, bound = 0): TimelineEvent[] {
-  const at = rows.findLastIndex((row) => row.kind === "usage");
-  const usd = rows[at]?.usage?.usd;
-  if (cap === undefined || typeof usd !== "number" || usd <= cap + FIT_TOLERANCE) return rows;
-  const { usage: _, ...usage } = rows[at]!;
-  // In cents: what it went over by and the bound rounded up, so "at most" holds.
-  const summary = overByMiss(usd, cap, bound) ? `Went ${centsUp(usd - cap)} over its cap on a cache miss (at most ${centsUp(bound)}).` : `Spent ${cents(usd)}, ${centsUp(usd - cap)} over the run's cap of ${cents(cap)}`;
-  const over: TimelineEvent = { ...usage, id: `${usage.id}:over_cap`, kind: "phase", summary, text: null };
-  return [...rows.slice(0, at + 1), over, ...rows.slice(at + 1)];
-}
+/** The over-cap row and the cent-rounding its words use move to run-view.ts (over the run's rows), unchanged. */
 
 /** A user message's text parts, joined as the timeline joins them. */
 const userText = (message: unknown): string => {
@@ -828,25 +807,7 @@ export const raiseFailedRow = ({ at, words }: { at: string; words: string }): Ti
 export const placeRow = ({ at, words }: { at: string; words: string }): TimelineEvent => servedOnly({ id: "server:waiting-place", timestamp: at, created_at: at, kind: "phase", summary: words, agent_label: null, tool_name: null, tool_use_id: null, tool_status: null, tool_input_preview: null, tool_result_preview: null, tool_result_size_bytes: null, text: null });
 export const installRow = ({ at, words }: { at: string; words: string }): TimelineEvent => servedOnly({ id: "harness:installing", timestamp: at, created_at: at, kind: "phase", summary: words, agent_label: null, tool_name: null, tool_use_id: null, tool_status: null, tool_input_preview: null, tool_result_preview: null, tool_result_size_bytes: null, text: null });
 
-/** The row of a refusal for room a run paused at (servedError): the server's `phase` row in these words (origin server,
- *  its id the refusal's with NOTE_SUFFIX, so it is no message: isMessageRow), marked `paused`, never an error row. The
- *  refusal's sentence is the pause's (pending.said), which a client shows once, as its banner. */
-const BUDGET_PAUSED = "Paused at the run's cap";
-/** The waiting row of a run paused at its cap, after the refusal's row: "Waiting for you to raise the cap", and no
- *  more: the refusal's words are the pause's (pending.said), which a client shows once, as its banner. */
-const BUDGET_WAITING = "Waiting for you to raise the cap";
-export function withPaused(rows: readonly TimelineEvent[]): TimelineEvent[] {
-  const at = rows.findLastIndex((row) => row.paused === true);
-  if (at < 0) return [...rows];
-  // The refusal's own marker (`paused`, servedError) and the server's origin stay on the refusal's row: the waiting row
-  // is no refusal and no row of the server's, and keeps the id it had, the refusal's own with ":paused".
-  const { paused: _marker, origin: _origin, ...refusal } = rows[at]!;
-  const own = refusal.id.endsWith(NOTE_SUFFIX) ? refusal.id.slice(0, -NOTE_SUFFIX.length) : refusal.id;
-  // Only the served view makes it (servedOnly): once the run is raised, show() stops making it and it goes, even while a
-  // live process feeds the timeline (keepCommitted).
-  const paused: TimelineEvent = servedOnly({ ...refusal, id: `${own}:paused`, kind: "waiting", summary: BUDGET_WAITING, text: BUDGET_WAITING, tool_name: null, tool_use_id: null, tool_status: null, tool_input_preview: null, tool_result_preview: null, tool_result_size_bytes: null });
-  return [...rows.slice(0, at + 1), paused, ...rows.slice(at + 1)];
-}
+/** The paused run's waiting row and the BUDGET_PAUSED/BUDGET_WAITING words move to run-view.ts (over the run's rows). */
 /** Whether an error row of `run`'s is a refusal for room it paused at: one in an agentic run's own turn (decide never
  *  fails that run on it; it waits for a raise, pausedAt), now or before a raise. Read from the row and the run's kind
  *  alone, never from its status, so a row reads the same live, on a full re-read and from a server started again. A
