@@ -28,7 +28,7 @@ const ORDER = { notes: [{ file: "newer.md", order: 0 }, { file: "older.md", orde
 
 test("a seed from the folder's read at a commit: its index, its notes newest first, its skills newest first with their files", async () => {
   const asked = [];
-  const seed = await seedFrom(COMMIT, async (commit) => (asked.push(commit), { ok: true, files: FILES }), ORDER);
+  const seed = await seedFrom(COMMIT, async (commit) => (asked.push(commit), { ok: true, files: FILES, refused: [] }), { order: ORDER });
   assert.deepEqual(asked, [COMMIT], "read once, at the commit asked");
   assert.equal(seed.sha, COMMIT);
   assert.equal(seed.index, FILES[0].text);
@@ -40,14 +40,30 @@ test("a seed from the folder's read at a commit: its index, its notes newest fir
 
 test("a skill over the learned skills' budget is held by its size alone; a path that is no note's or skill's is skipped", async () => {
   const big = "x".repeat(LEARNED_SKILLS_BUDGET + 1);
-  const seed = await seedFrom(COMMIT, async () => ({ ok: true, files: [{ path: "skills/huge/SKILL.md", text: skill("huge", big) }, { path: "notes/deep.md", text: "?" }, { path: "skills/Bad Name/SKILL.md", text: "x" }] }));
+  const seed = await seedFrom(COMMIT, async () => ({ ok: true, files: [{ path: "skills/huge/SKILL.md", text: skill("huge", big) }, { path: "notes/deep.md", text: "?" }, { path: "skills/Bad Name/SKILL.md", text: "x" }], refused: [] }));
   assert.deepEqual(seed.skills.map(({ name, bytes, files }) => [name, bytes > LEARNED_SKILLS_BUDGET, files]), [["huge", true, undefined]]);
   assert.deepEqual(seed.skipped.sort(), ["notes/deep.md", "skills/Bad Name/SKILL.md"]);
 });
 
-test("no commit yet is an empty seed; a commit the folder cannot read, or that is gone, is no seed and says why", async () => {
-  const empty = await seedFrom(null, async () => ({ ok: true, files: [] }));
-  assert.deepEqual([empty.notes, empty.files, empty.index, empty.skills], [{}, [], undefined, []]);
+test("a skill the folder refused (a tracked link in it) is left out, and said in one warn line of the run; the others lay", async () => {
+  const warned = [];
+  const seed = await seedFrom(COMMIT, async () => ({ ok: true, files: FILES, refused: [{ skill: "linked", why: "a link at skills/linked/ref.md" }] }), { order: ORDER, warn: (line) => warned.push(line) });
+  assert.deepEqual(seed.skills.map(({ name }) => name), ["keep-dates", "check-units"]);
+  assert.deepEqual(warned, ["starts without the skill linked its agent learned: a link at skills/linked/ref.md"]);
+});
+
+test("no commit yet is an empty seed whose commit stays null, read at null; a commit the folder cannot read, or that is gone, is no seed and says why", async (t) => {
+  const asked = [];
+  const empty = await seedFrom(null, async (commit) => (asked.push(commit), { ok: true, files: [], refused: [] }));
+  assert.deepEqual(asked, [null], "read at null, never at a stand-in");
+  assert.deepEqual([empty.sha, empty.notes, empty.files, empty.index, empty.skills], [null, {}, [], undefined, []]);
+  // Its pin says the run learns from an empty seed: null, read back as null.
+  const dir = mkdtempSync(join(process.env.TMPDIR ?? tmpdir(), "agentrun-seed-from-"));
+  dirs.push(dir);
+  (await import("node:fs")).mkdirSync(join(dir, "work"));
+  const pin = await pinSeed(dir, localWorkspace(join(dir, "work")), empty, { budget: 8000, read: true, shown: secretsShown([]), own: [] });
+  assert.equal(pin.seed, null);
+  assert.equal((await learning.readPin(dir)).seed, null);
   await assert.rejects(seedFrom(COMMIT, async () => ({ ok: false, why: "unavailable" })), /unavailable/);
   await assert.rejects(seedFrom(COMMIT, async () => ({ ok: false, why: "gone" })), /gone/);
 });
@@ -57,7 +73,7 @@ test("a seed read this way is laid in a run through its Workspace as before: the
   dirs.push(dir);
   const { mkdirSync } = await import("node:fs");
   mkdirSync(join(dir, "work"));
-  const seed = await seedFrom(COMMIT, async () => ({ ok: true, files: FILES }), ORDER);
+  const seed = await seedFrom(COMMIT, async () => ({ ok: true, files: FILES, refused: [] }), { order: ORDER });
   const pin = await pinSeed(dir, localWorkspace(join(dir, "work")), seed, { budget: 8000, read: true, shown: secretsShown([]), own: [] });
   assert.equal(pin.seed, COMMIT);
   assert.deepEqual(readdirSync(join(dir, "work", ".learning")).sort(), ["MEMORY.md", "newer.md", "older.md"]);

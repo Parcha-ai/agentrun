@@ -221,20 +221,20 @@ export const LEARNED_DIR = ".learning";
  *  settles (learning-run.ts beforeSettle), where the host alone reads it: what propose.ts checks. */
 export const LEARNING_TURN = "learning-turn.json";
 export type Turn = { answer: string; asked: string[]; triggered?: Triggered[] };
-/** What a run's pin holds: the commit of main it was seeded from, and what it reads under `# Learned` (learnedOf), when
- *  it learned anything.
+/** What a run's pin holds: the commit of main it was seeded from (null: the folder had no main yet, so the run learns
+ *  from an empty seed), and what it reads under `# Learned` (learnedOf), when it learned anything.
  *  `skills`: the files of the learned skills laid in its work, by their paths under `.agents/skills/`, as a revision
  *  names its own; `skills_left_out`: the learned skills it does not get, over their budget or holding a secret.
  *  `workflows`: the names of the learned workflows the run may run (its `learned_workflow` tool), each written whole in
  *  LEARNED_WORKFLOWS_FILE in the run's directory, outside its work; `workflows_left_out`: the learned workflows it does
  *  not get, their lines over what is left of the tool's description budget (LEARNED_WORKFLOWS_BUDGET), or holding a
  *  secret. Every harness runs them, on the run's one model route. */
-export type Pin = { seed: string; section?: string; given?: NoteUsed[]; skills?: string[]; skills_left_out?: string[]; workflows?: string[]; workflows_left_out?: string[] };
-/** What a run is seeded from: main's commit, its index and its active notes by file, and the name of every entry at its
- *  top. `skipped` names what was there and not read. `recent`, when seedOf read it: the active notes' files, the one
+export type Pin = { seed: string | null; section?: string; given?: NoteUsed[]; skills?: string[]; skills_left_out?: string[]; workflows?: string[]; workflows_left_out?: string[] };
+/** What a run is seeded from: main's commit (null when the folder has none yet), its index and its active notes by
+ *  file, and the name of every entry at its top. `skipped` names what was there and not read. `recent`, when seedOf read it: the active notes' files, the one
  *  changed last on main first. `skills`, when seedOf read them: the skills the agent wrote, the one changed last on main
  *  first. */
-export type Seed = { sha: string; index?: string; notes: Record<string, string>; files: string[]; skipped: string[]; recent?: string[]; skills?: LearnedSkill[]; workflows?: LearnedWorkflow[] };
+export type Seed = { sha: string | null; index?: string; notes: Record<string, string>; files: string[]; skipped: string[]; recent?: string[]; skills?: LearnedSkill[]; workflows?: LearnedWorkflow[] };
 /** A workflow the agent learned, as a run may run it: its name, the line its README says what it does with, and its
  *  workflow.json whole. */
 export type LearnedWorkflow = { name: string; description: string; workflow: string };
@@ -724,8 +724,11 @@ export async function changedOrder(cwd: string, repo: string, sha: string): Prom
 
 /** What the learning folder's read at a commit gives a run's seed (the folder's script's read op, through the agent's
  *  learning Workspace): each file of its index, its active notes and its active skills, by its path from the folder's
- *  root; or why it has none: the folder cannot answer now (`unavailable`), or the commit is no longer there (`gone`). */
-export type SeedRead = { ok: true; files: readonly { path: string; text: string }[] } | { ok: false; why: "unavailable" | "gone" };
+ *  root, and each skill it left out whole and why (`refused`, always there: a skill holding a tracked link); or why it
+ *  has none: the folder cannot answer now (`unavailable`), or the commit is no longer there (`gone`). */
+export type SeedRead =
+  | { ok: true; files: readonly { path: string; text: string }[]; refused: readonly { skill: string; why: string }[] }
+  | { ok: false; why: "unavailable" | "gone" };
 /** The read at `commit` (null: the folder has no main yet, an empty read). */
 export type SeedReader = (commit: string | null) => Promise<SeedRead>;
 /** What a seed can't tell from its read alone, as the folder's snapshot keeps it: every note file on main, whatever its
@@ -735,13 +738,15 @@ export type SeedOrder = { readonly notes: readonly { file: string; order: number
 /** A run's seed from the folder's read at `commit` (`read`): its index, its notes the one changed last first, and its
  *  skills grouped by folder, the one changed last first, each with its files while it could fit a run's budget at all
  *  (LEARNED_SKILLS_BUDGET), else held by its size alone. A path that is neither (a file deeper than the folder's top, a
- *  skill folder named out of shape) is named in `skipped`. No commit yet is an empty seed; a read that fails throws,
- *  saying why, and the run starts with nothing learned (or, opened again, keeps what it has). No git here: the read is
- *  the folder's. */
-export async function seedFrom(commit: string | null, read: SeedReader, order?: SeedOrder): Promise<Seed> {
+ *  skill folder named out of shape) is named in `skipped`. A skill the read refused is not in it, and is said in one
+ *  `warn` line of the run. No commit yet (null, read as null) is an empty seed whose commit stays null; a read that fails
+ *  throws, saying why, and the run starts with nothing learned (or, opened again, keeps what it has). No git here: the
+ *  read is the folder's. */
+export async function seedFrom(commit: string | null, read: SeedReader, { order, warn }: { order?: SeedOrder; warn?: (line: string) => void } = {}): Promise<Seed> {
   const got = await read(commit);
   if (!got.ok) throw new Error(`the learning folder's read at ${commit ?? "its start"} is ${got.why}`);
-  const seed: Seed = { sha: commit ?? "", notes: {}, files: [], skipped: [], recent: [], skills: [] };
+  for (const { skill, why } of got.refused) warn?.(`starts without the skill ${skill} its agent learned: ${why}`);
+  const seed: Seed = { sha: commit, notes: {}, files: [], skipped: [], recent: [], skills: [] };
   const skills = new Map<string, Record<string, string>>();
   for (const { path, text } of got.files) {
     if (path === INDEX_FILE) seed.index = text;
@@ -797,13 +802,14 @@ export function seedOf(data: string, agentId: string): Promise<Seed> {
 }
 
 /** The skills the agent wrote at commit `sha` (readSkills): what a run's pin names, laid again. In the agent's queue,
- *  through agentFolder. */
-export const skillsAt = (data: string, agentId: string, sha: string): Promise<LearnedSkill[]> =>
-  withAgentRepo(data, agentId, async () => (await readSkills(agentFolderOf(data, agentId), await agentFolder(data, agentId), sha)).skills);
+ *  through agentFolder. No commit (a pin of an empty seed) holds none. */
+export const skillsAt = async (data: string, agentId: string, sha: string | null): Promise<LearnedSkill[]> =>
+  sha === null ? [] : withAgentRepo(data, agentId, async () => (await readSkills(agentFolderOf(data, agentId), await agentFolder(data, agentId), sha)).skills);
 
 /** What commit `sha` of the agent's folder holds for a run, as seedOf reads main: a run's seed, read again. In the
- *  agent's queue, through agentFolder. */
-export const seedAt = (data: string, agentId: string, sha: string): Promise<Seed> =>
+ *  agent's queue, through agentFolder. No commit (a pin of an empty seed) is the empty seed. */
+export const seedAt = async (data: string, agentId: string, sha: string | null): Promise<Seed> =>
+  sha === null ? { sha: null, notes: {}, files: [], skipped: [] } :
   withAgentRepo(data, agentId, async () => readSeed(agentFolderOf(data, agentId), await agentFolder(data, agentId), sha));
 /** The active notes of a seed, parsed. */
 export const activeOf = (seed: Pick<Seed, "notes">): LearnedNote[] => Object.entries(seed.notes).flatMap(([file, text]) => {
@@ -1107,7 +1113,7 @@ export async function readPin(runDir: string): Promise<Pin | undefined> {
   const pin = JSON.parse(text) as unknown;
   const names = (value: unknown, shape: (entry: string) => boolean) => value === undefined || (Array.isArray(value) && value.every((entry) => typeof entry === "string" && shape(entry)));
   const skillFile = (entry: string) => SKILL_NAME.test(entry.split("/")[0]!) && SKILL_FILE_PATH.test(entry.slice(entry.indexOf("/") + 1)) && entry.includes("/");
-  if (!isObject(pin) || typeof pin.seed !== "string" || (pin.section !== undefined && typeof pin.section !== "string") || (pin.given !== undefined && !(Array.isArray(pin.given) && pin.given.every((entry: unknown) => isObject(entry) && typeof entry.file === "string" && typeof entry.name === "string"))) || !names(pin.skills, skillFile) || !names(pin.skills_left_out, () => true) || !names(pin.workflows, (entry) => WORKFLOW_NAME.test(entry)) || !names(pin.workflows_left_out, (entry) => WORKFLOW_NAME.test(entry))) throw new Error(`the run's ${LEARNING_PIN} is not a learning pin`);
+  if (!isObject(pin) || (typeof pin.seed !== "string" && pin.seed !== null) || (pin.section !== undefined && typeof pin.section !== "string") || (pin.given !== undefined && !(Array.isArray(pin.given) && pin.given.every((entry: unknown) => isObject(entry) && typeof entry.file === "string" && typeof entry.name === "string"))) || !names(pin.skills, skillFile) || !names(pin.skills_left_out, () => true) || !names(pin.workflows, (entry) => WORKFLOW_NAME.test(entry)) || !names(pin.workflows_left_out, (entry) => WORKFLOW_NAME.test(entry))) throw new Error(`the run's ${LEARNING_PIN} is not a learning pin`);
   return pin as Pin;
 }
 
