@@ -308,6 +308,9 @@ async function processCrashThenResume(subject: ConformanceSubject, t: { after(fn
   const eventsFile = join(w.dir, "runner-process-events.jsonl");
   const config = { dataDir: w.dir, module: subject.process!.module, export: subject.process!.export, tool, point, countFile, eventsFile, ...(stall ? { stopOnce: true } : {}) };
   const child = spawn(process.execPath, [CHILD, JSON.stringify(config)], { env: childEnv(), stdio: ["ignore", "ignore", "pipe"] });
+  // Its end, listened for from its start: a process that ends while the case waits on something else (the fence's wait
+  // returns on that end) is never missed by the wait for its death below.
+  const exited = once(child, "exit").catch((error: unknown) => ["error", String(error)]) as Promise<[number | string | null, string | null]>;
   let stderr = "";
   child.stderr.on("data", (chunk: Buffer) => (stderr += chunk.toString()));
   t.after(() => {
@@ -327,7 +330,7 @@ async function processCrashThenResume(subject: ConformanceSubject, t: { after(fn
     await until(() => child.exitCode !== null || child.signalCode !== null || childEvents(eventsFile).some((event) => outcome(event as Seen)), "the old loop writes once it goes on, or the process ends", 15_000);
     fenceHeld(childEvents(eventsFile) as Seen[], continuedAt);
   }
-  const exit = (await Promise.race([once(child, "exit"), sleep(EVENT_WAIT_MS).then(() => ["timeout", null])])) as [number | string | null, string | null];
+  const exit = (await Promise.race([exited, sleep(EVENT_WAIT_MS).then(() => ["timeout", null])])) as [number | string | null, string | null];
   // What the process did, when it did not die where it should: its claims, lost claims, commits (landed or refused, by
   // epoch), the tool's runs and the run's row.
   if (exit[1] !== "SIGKILL") {
