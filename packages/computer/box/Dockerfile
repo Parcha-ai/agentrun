@@ -51,7 +51,7 @@ COPY agentrun-archil /usr/local/sbin/agentrun-archil
 RUN set -eu; \
     chown root:root /usr/local/sbin/agentrun-archil; \
     chmod 0755 /usr/local/sbin/agentrun-archil; \
-    for x in /usr/bin/archil /usr/bin/awk /usr/bin/realpath /usr/bin/mount /usr/bin/chown /usr/bin/id /usr/bin/ls; do \
+    for x in /usr/bin/archil /usr/bin/awk /usr/bin/realpath /usr/bin/mount /usr/bin/chown /usr/bin/find /usr/bin/id /usr/bin/ls; do \
       [ -x "$x" ] || { echo "the image has no $x" >&2; exit 1; }; \
     done; \
     ! command -v sudo >/dev/null 2>&1 || { echo "the image has sudo" >&2; exit 1; }; \
