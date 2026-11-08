@@ -6,6 +6,7 @@
 // `agentrun.session.key` entry on the run's root conversation. Every entry inside a session's conversation is resume log
 // only (kernel.submission, kernel.start, kernel.end, kernel.retry, kernel.blob, runner.response, runner.submit,
 // runner.accepted, …): the reader skips every one of them, whatever its kind, and never reads it as a call or a message.
+import type { MessageOrigin } from "@parcha/pi-durable-agent/timeline";
 
 export const KINDS = {
   /** A tool call about to run: written before it runs (and before the flush that precedes a side effect). */
@@ -15,6 +16,10 @@ export const KINDS = {
   callEnd: "agentrun.call.end",
   /** A message: the person's, a steer, or the model's. */
   message: "agentrun.message",
+  /** A pi input the person did not type (a trigger's message): pi's user entry under the host's kind, its `data.origin`
+   *  the Timeline's attribution (pi-durable-agent's originMatcher reads a host's user entry's own origin). The model
+   *  reads it as any message. */
+  input: "agentrun.input",
   /** A tool call the gate asked a person about: the run parks on it. */
   ask: "agentrun.ask",
   /** The person's answer to an ask, written by the commit that takes the approve or deny row. */
@@ -69,6 +74,8 @@ export type MessageRole = "person" | "steer" | "model";
 export interface MessageData {
   readonly role: MessageRole;
   readonly text: string;
+  /** Who wrote a message the person did not type (a trigger's): the steer row's body.origin. */
+  readonly origin?: MessageOrigin;
 }
 
 export interface AskData {
@@ -79,6 +86,9 @@ export interface AskData {
 export interface AnswerData {
   readonly callId: string;
   readonly approved: boolean;
+  /** The person's words with their answer (a decline's reason): the model reads it with the refusal, and the resume row
+   *  shows it. Absent when they gave none. */
+  readonly note?: string;
 }
 
 export interface EndData {
