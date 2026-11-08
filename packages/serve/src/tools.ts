@@ -15,7 +15,7 @@ import type { Revision } from "@parcha/pi-durable-agent";
 import { BACKGROUND_LOG_BYTES, BACKGROUND_MAX, BACKGROUND_PAGE_BYTES } from "./background.js";
 import type { CodingSource } from "./coding-tools.js";
 import { writeInWork } from "./workspace.js";
-import { FETCH_PAGE_TOOL, fetchOptions, HTML_READ_CHARS, TEXT_CAP } from "./fetch-page.js";
+import { fetchOptions, HTML_READ_CHARS, TEXT_CAP } from "./web-fetch-direct.js";
 import { DEFAULT_HARNESS, HARNESSES } from "./harness.js";
 import { REPLAY } from "./host-tools.js";
 import { type Complete, LLM_TOOL } from "./llm.js";
@@ -27,8 +27,8 @@ import { browserPrice, browserSpend } from "./browser-cost.js";
 import { forModel } from "./result.js";
 import { fetchFor, runPages, WEB_FETCH_TOOL, webFetchTool } from "./web-fetch.js";
 import { searchFor, WEB_SEARCH_TOOL, webSearchTool } from "./web-search.js";
-import { browserNeeds, capabilityOf, explainsView, isUnavailable, NO_PARALLEL_KEY, permissionsOf, type Pickable, PICKABLE, planeOf, type Plane, PROVIDERS, type Tooling, type ToolSettingsMap, whyUnavailable, withDefaults } from "./tool-plane.js";
-import { defaultPermission, permissionOf, type SettingFrom } from "./tool-gate.js";
+import { browserNeeds, explainsView, isUnavailable, NO_PARALLEL_KEY, type Pickable, PICKABLE, planeOf, type Plane, PROVIDERS, serverGate, type Tooling, type ToolSettingsMap, whyUnavailable, withDefaults } from "./tool-plane.js";
+import type { SettingFrom } from "./tool-gate.js";
 import { PARALLEL_KEY_ENV } from "./decisions.js";
 import { keyNeeded } from "./key-words.js";
 import { handedSignIn } from "./secrets.js";
@@ -116,7 +116,7 @@ const callOnly = (summary: string, effect: NonNullable<ToolEntry["effect"]>): To
   bind: async () => { throw new Error("a call-only tool binds no agent tool"); },
 });
 
-/** web_fetch, bound under `name`: its own, or a legacy name for it (LEGACY_NAMES, fetch_page). */
+/** web_fetch, bound under `name`. */
 const webFetchEntry = (name: string): ToolEntry => ({
   summary: `Read one public web page from a public host through the guarded direct fetch, or through Parallel's extract where Parallel is picked (falling back to the direct fetch, saying why, when Parallel answers no page), a part at a time (offset, max_chars; the page fetched once a run): { ok, url, status, title, text, chars, truncated?, original_chars?, beyond_read?, offset?, next_offset?, html_chars?, converted?, links, links_omitted?, via, parallel?, refused?, error? }; html_chars, the page's whole length, when its HTML was cut at ${HTML_READ_CHARS.toLocaleString("en-US")} characters before it was read, so its text is only the start of the page; converted: "text" when the text is plain text, its conversion to markdown having run out of time; a private or local address, a port other than 80 or 443, or a scheme other than http(s) is refused, never sent to Parallel.`,
   needs: [],
@@ -280,7 +280,7 @@ const browserTool: ToolEntry = {
     // vendor's refusal can quote it, as pi-browser's one-saver rule names Kernel's profile.
     // A run handed its agent's sign-in tells the model its browser keeps it (`run`'s description): one with none claims
     // cookies across pages only.
-    const browser = createBrowserExtension({ provider, driver: parts.driver as never, evidence: evidenceIn(host.where.work) as never, ...files, gates, onSession: onSessions as never, signIns: kept !== undefined, redact: { values: () => (kept ? [kept.ref] : []) }, prices: { sessionUsdPerHour: price.usdPerHour, sessionMinimumS: price.minimumS }, onCharge: spend.onCharge });
+    const browser = createBrowserExtension({ provider, driver: parts.driver as never, evidence: evidenceIn(host.where.work) as never, ...files, gates, onSession: onSessions as never, signIns: kept !== undefined, beforeCreate: spend.opening, redact: { values: () => (kept ? [kept.ref] : []) }, prices: { sessionUsdPerHour: price.usdPerHour, sessionMinimumS: price.minimumS }, onCharge: spend.onCharge });
     const tools = (browser.tools as unknown as ToolRegistration[]).map(spend.capped);
     const extension = { ...(browser.extension as unknown as Extension), tools } as Extension;
     host.install(extension);
@@ -365,31 +365,28 @@ export const TOOLS: Readonly<Record<string, ToolEntry>> = Object.freeze({
 export const BOUND_TOOLS: readonly string[] = Object.keys(TOOLS).filter((name) => !TOOLS[name]!.callOnly);
 export const NODE_TOOLS: readonly string[] = BOUND_TOOLS.filter((name) => TOOLS[name]!.nodes);
 export const CALL_TOOLS: readonly string[] = Object.keys(TOOLS).filter((name) => TOOLS[name]!.effect !== undefined);
-/** Whether `name` is one of `allowed`, or a legacy name for one (fetch_page, web_fetch's): a revision that names it
- *  still saves and runs, though the table lists it no more. */
-export const allows = (allowed: readonly string[], name: string): boolean => allowed.includes(capabilityOf(name));
+/** Whether `name` is one of `allowed`. */
+export const allows = (allowed: readonly string[], name: string): boolean => allowed.includes(name);
 
 /** The tools a run's learned workflow may name (learn/check.ts at learn time, learned-workflow.ts at a call): those of the
- *  agent's `granted` tools a workflow's call node runs here (CALL_TOOLS), each as granted and by its capability's name,
- *  and with the run's `plane`, none it resolves unavailable (its agent's own tool of the name does not run either). A
+ *  agent's `granted` tools a workflow's call node runs here (CALL_TOOLS), and with the run's `plane`, none it resolves unavailable (its agent's own tool of the name does not run either). A
  *  learned model node runs without tools (learn/skills.ts MODEL_NODE_TOOLS), and a harness's own tool (Bash,
  *  exec_command, apply_patch) is never one, so the DSL refuses a draft that names it. */
 export const learnedWorkflowTools = (granted: readonly string[], plane?: Plane): string[] =>
-  [...new Set(granted.filter((name) => allows(CALL_TOOLS, name) && !isUnavailable(plane?.[capabilityOf(name) as Pickable])).flatMap((name) => [name, capabilityOf(name)]))];
+  [...new Set(granted.filter((name) => allows(CALL_TOOLS, name) && !isUnavailable(plane?.[name as Pickable])))];
 
 /** The tools a learned draft may name (learnedWorkflowTools) that the gate allows: `permission` is what the gate holds a
- *  tool to now (tool-gate.ts permissionOf, or the run's gate's policy), by its capability's settings key, as the gate
- *  holds a legacy name. One set to ask or deny is left out of `tools`, so the end-of-run prompt never offers it, and named
+ *  tool to now (tool-gate.ts permissionOf, or the run's gate's policy), by its settings key. One set to ask or deny is left out of `tools`, so the end-of-run prompt never offers it, and named
  *  in `gated` with its setting, which the checker and a learned workflow's check before it runs refuse a draft for. */
 export const learnedDraftTools = (granted: readonly string[], permission: (name: string) => string, plane?: Plane, from?: (name: string) => SettingFrom): { tools: string[]; gated: Record<string, string>; deniedBy: Record<string, SettingFrom> } => {
   const gated: Record<string, string> = {};
   // Where each deny was set (this agent's settings or this server's), so the refusal names it.
   const deniedBy: Record<string, SettingFrom> = {};
   const tools = learnedWorkflowTools(granted, plane).filter((name) => {
-    const setting = permission(capabilityOf(name));
+    const setting = permission(name);
     if (setting === "allow") return true;
     gated[name] = setting;
-    if (setting === "deny" && from) deniedBy[name] = from(capabilityOf(name));
+    if (setting === "deny" && from) deniedBy[name] = from(name);
     return false;
   });
   return { tools, gated, deniedBy };
@@ -417,7 +414,7 @@ export async function grantedTools(revision: { kind: string; tools?: readonly st
 }
 
 /** The table's entry for `name`, or undefined for a name it does not hold. */
-export const toolOf = (name: string): ToolEntry | undefined => (Object.hasOwn(TOOLS, name) ? TOOLS[name] : name === FETCH_PAGE_TOOL ? webFetchEntry(FETCH_PAGE_TOOL) : undefined);
+export const toolOf = (name: string): ToolEntry | undefined => (Object.hasOwn(TOOLS, name) ? TOOLS[name] : undefined);
 
 /** What a stored revision's tools resolve from (tool-plane.ts): the tools it grants, its harness, model and settings. */
 export async function toolingOf(revision: Revision): Promise<Tooling> {
@@ -470,6 +467,6 @@ export const toolsView = (env: NodeJS.ProcessEnv, settings: ToolSettingsMap = {}
     // Unavailable says why: a sandbox-only tool no box here can run, why none can (`noBox`); on a tool a user picks a
     // provider for, the resolutions' own words (`web_search is turned off in settings`); else the variables it needs.
     const reason = available ? undefined : refusal ?? boxless ?? (plane ? [...new Set(Object.values(plane).filter(isUnavailable).map(whyUnavailable))].join("; ") : `Needs ${keyNeeded(missing)}`);
-    return { name, summary: entry.summary, ...(blurbOf(name) ? { blurb: blurbOf(name) } : {}), nodes: entry.nodes, calls: entry.effect !== undefined, ...(entry.callOnly ? { call_only: true } : {}), ...(entry.sandboxOnly ? { sandbox_only: true } : {}), available, ...(reason ? { reason } : {}), ...(missing.length ? { missing } : {}), harnesses: name in REPLAY ? [...HARNESSES] : [DEFAULT_HARNESS], permission: permissionOf(name, settings as never), default_permission: defaultPermission(name), permissions: [...permissionsOf(name)], ...(plane ? { providers: [...PROVIDERS[name as Pickable]], provider: picked[name as Pickable].provider, default_provider: PROVIDERS[name as Pickable][0], resolves: plane, why: view!.why } : {}) };
+    return { name, summary: entry.summary, ...(blurbOf(name) ? { blurb: blurbOf(name) } : {}), nodes: entry.nodes, calls: entry.effect !== undefined, ...(entry.callOnly ? { call_only: true } : {}), ...(entry.sandboxOnly ? { sandbox_only: true } : {}), available, ...(reason ? { reason } : {}), ...(missing.length ? { missing } : {}), harnesses: name in REPLAY ? [...HARNESSES] : [DEFAULT_HARNESS], ...serverGate(name, settings), ...(plane ? { providers: [...PROVIDERS[name as Pickable]], provider: picked[name as Pickable].provider, default_provider: PROVIDERS[name as Pickable][0], resolves: plane, why: view!.why } : {}) };
   });
 };

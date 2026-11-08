@@ -8,6 +8,7 @@ import { readFile, writeFile } from "node:fs/promises";
 import { join } from "node:path";
 import { test } from "node:test";
 import { agent, follow, runDir, runRecordOf, scratch, serve, withEnv } from "./support.mjs";
+import { fauxTable } from "./fixtures/faux-table.mjs";
 
 const RELAUNCH = new URL("./fixtures/faux-harness-relaunch.mjs", import.meta.url).pathname;
 const WEB_HOLD = new URL("./fixtures/faux-web-hold.mjs", import.meta.url).pathname;
@@ -18,7 +19,7 @@ const rowsOf = async (api, runId) => (await api("GET", `/runs/${runId}/timeline`
 /** A claude-agent run of `instructions` whose first turn has answered, then a follow-up whose turn's first request has
  *  left (its start mark makes the usage row count 3 requests: turn 1's two and this one). */
 async function inSecondTurn(api, id, instructions) {
-  assert.equal((await api("POST", "/agents", agent(id, { harness: "claude-agent", instructions, tools: ["fetch_page"] }))).status, 201);
+  assert.equal((await api("POST", "/agents", agent(id, { harness: "claude-agent", instructions, tools: ["web_fetch"] }))).status, 201);
   const { body } = await api("POST", `/agents/${id}/runs`, { input: { content: "hi" } });
   await follow(api, body.run_id, ["completed"], { deadlineMs: 55_000 });
   assert.equal((await api("POST", `/runs/${body.run_id}/messages`, { content: "and then?" })).status, 202);
@@ -51,7 +52,7 @@ test("a claude-agent run relaunched after its process dies, its turn's request c
   const dir = await scratch(t);
   const [mark, gate] = [join(dir, "killed"), join(dir, "go")];
   withEnv(t, { RELAUNCH_MARK: mark });
-  const { api, data } = await serve(t, { fauxHarness: RELAUNCH, fauxWeb: WEB_HOLD });
+  const { api, data } = await serve(t, { harnessTable: fauxTable(RELAUNCH), fauxWeb: WEB_HOLD });
   const runId = await inSecondTurn(api, "relaunch", `Probe the relaunch, held until ${gate}.`);
   const record = async () => runRecordOf(data, runId);
   const killed = (await record()).holder.pid;

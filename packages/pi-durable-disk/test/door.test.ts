@@ -33,8 +33,8 @@ const submit = (server: RunServer, requestId: string, content = "hello") => call
 type Outcome = { accepted: true } | { accepted: false; reason: "busy" };
 
 /** A hook whose submit and abort the test scripts; it records every call. */
-function scripted(options: { submit?: (input: DoorInput, ctx: DoorContext) => Promise<Outcome>; abort?: (ctx: DoorContext) => Promise<"aborted" | "idle"> } = {}) {
-  const calls = { submit: [] as DoorInput[], abort: 0, signals: [] as AbortSignal[] };
+function scripted(options: { submit?: (input: DoorInput, ctx: DoorContext) => Promise<Outcome>; abort?: (ctx: DoorContext) => Promise<"aborted" | "idle">; close?: () => Promise<void> } = {}) {
+  const calls = { submit: [] as DoorInput[], abort: 0, close: 0, signals: [] as AbortSignal[] };
   const state = { busy: false };
   const hook: DoorHook = {
     async submit(input, ctx) {
@@ -46,7 +46,12 @@ function scripted(options: { submit?: (input: DoorInput, ctx: DoorContext) => Pr
       calls.abort++;
       return (options.abort ?? (async () => "aborted" as const))(ctx);
     },
+    close() {
+      calls.close++;
+      return (options.close ?? (async () => undefined))();
+    },
     busy: () => state.busy,
+    harness: "scripted",
   };
   return { hook, calls, state };
 }
@@ -58,13 +63,14 @@ async function doorEntries(run: DurableRun): Promise<{ kind: string; data: Recor
   return [...page.items].sort((x, y) => Number(x.id) - Number(y.id)).filter((e) => e.kind.startsWith("door.")).map((e) => ({ kind: e.kind, data: e.data as Record<string, unknown> }));
 }
 
-async function served(disk: LocalDisk, hook: DoorHook, extra: { token?: string; submitMs?: number; abortMs?: number; decorateStore?: (db: SqliteDatabase) => SqliteDatabase; onIdle?: () => void } = {}) {
+async function served(disk: LocalDisk, hook: DoorHook, extra: { token?: string; submitMs?: number; abortMs?: number; decorateStore?: (db: SqliteDatabase) => SqliteDatabase; onIdle?: () => void; log?: (event: string, detail: Record<string, unknown>) => void } = {}) {
   const app = lifecycleApp(newCounters());
   const fenced: unknown[] = [];
   const server = await serveRun({
     root: { agent: app.agent },
     ...(extra.token ? { token: extra.token } : {}),
     ...(extra.onIdle ? { onIdle: extra.onIdle } : {}),
+    ...(extra.log ? { log: extra.log } : {}),
     doorTimeouts: { submitMs: extra.submitMs ?? 5_000, abortMs: extra.abortMs ?? 1_000 },
   });
   const run = await openOn(disk, REF, app, { fenced, ...(extra.decorateStore ? { decorateStore: extra.decorateStore } : {}) });
@@ -228,8 +234,11 @@ describe("the door hook: admission", () => {
       const run = await openOn(disk, REF, app);
       // The run as the door sees it: fenced from the moment the admission commits (the lease lost right after it).
       let lost = false;
-      run.harness.subscribeCommits((publication) => {
-        if (publication.changes.some((c) => c.type === "entry" && c.value.kind === "door.input")) lost = true;
+      run.harness.observeCommits({
+        advance: (publication) => {
+          if (publication.changes.some((c) => c.type === "entry" && c.value.kind === "door.input")) lost = true;
+        },
+        end: () => undefined,
       });
       const seen = new Proxy(run, { get: (target, key) => (key === "fenced" ? lost : Reflect.get(target, key, target)) });
       server.attach(seen, hook);
@@ -519,7 +528,7 @@ describe("the door hook: outcomes", () => {
       assert.deepEqual([unknown.status, unknown.body.status], [504, "UNKNOWN"]);
       const admitted = await submit(c.server, "admitted");
       assert.deepEqual([admitted.status, admitted.body.error, admitted.body.status], [504, "UNKNOWN", "UNKNOWN"], "an earlier instance's ADMITTED is not a hook running here");
-      assert.match(admitted.body.message, /admitted by an earlier instance, or before the lease was lost: whether the hook took it is unknown/);
+      assert.match(admitted.body.message, /admitted by an earlier instance, or before the run was fenced: whether the hook took it is unknown/);
       await until("the open's UNKNOWN in the store", async () => (await doorEntries(c.run)).some((e) => e.kind === "door.status" && e.data.requestId === "admitted" && e.data.status === "UNKNOWN"));
       assert.equal(three.calls.submit.length, 0, "the resume submitted nothing again");
       await c.run.release();
@@ -843,6 +852,143 @@ describe("the door hook: turns, children and stops", () => {
     }
   });
 
+  it("a drain tells an idle hook its instance is going: no abort, and its close is called once, however often the door stops", async () => {
+    const disk = new LocalDisk("door-close-idle");
+    try {
+      const { hook, calls } = scripted();
+      const s = await served(disk, hook, { abortMs: 500 });
+      assert.equal((await submit(s.server, "c1")).status, 200);
+      await s.server.stopDoor();
+      await s.server.stopDoor();
+      const seen = { abort: calls.abort, close: calls.close };
+      // Let go before the check, so a failing one leaves no server holding the process open.
+      await s.run.release();
+      await s.server.close();
+      assert.deepEqual(seen, { abort: 0, close: 1 }, "an idle hook is not aborted, and is closed once");
+    } finally {
+      disk.remove();
+    }
+  });
+
+  it("a fence closes the hook once, alongside the kill, busy or idle, and a drain after it closes it no more", async () => {
+    for (const busy of [true, false]) {
+      const disk = new LocalDisk(`door-close-fence-${busy}`);
+      try {
+        const { hook, calls, state } = scripted();
+        const s = await served(disk, hook, { abortMs: 500 });
+        assert.equal((await submit(s.server, "f1")).status, 200);
+        state.busy = busy;
+        await s.server.stopDoor({ now: true });
+        const fenced = calls.close;
+        state.busy = false;
+        await s.server.stopDoor();
+        const drained = calls.close;
+        // Let go before the checks, so a failing one leaves no server holding the process open.
+        await s.run.release();
+        await s.server.close();
+        assert.equal(fenced, 1, `a fence closed the ${busy ? "busy" : "idle"} hook once`);
+        assert.equal(drained, 1, `the drain after the fence closed the ${busy ? "busy" : "idle"} hook no more`);
+      } finally {
+        disk.remove();
+      }
+    }
+  });
+
+  it("a drain and a fence at once close the hook once, and its adopted child is killed", async () => {
+    const disk = new LocalDisk("door-close-race");
+    let pid = 0;
+    try {
+      const { hook, calls, state } = scripted({
+        submit: async (_input, ctx) => {
+          const child = spawn("sleep", ["600"], { detached: true, stdio: "ignore" });
+          child.unref();
+          pid = child.pid!;
+          ctx.adopt(pid);
+          state.busy = true;
+          return { accepted: true };
+        },
+        // A drain's abort that takes a while: the fence lands while the drain still waits on it.
+        abort: async () => {
+          await sleep(150);
+          state.busy = false;
+          return "aborted";
+        },
+      });
+      const s = await served(disk, hook, { abortMs: 1_000 });
+      assert.equal((await submit(s.server, "r1")).status, 200);
+      await Promise.all([s.server.stopDoor(), s.server.stopDoor({ now: true }), s.server.stopDoor()]);
+      const seen = { close: calls.close, gone: await waitGone(pid, 2_000) };
+      await s.run.release();
+      await s.server.close();
+      assert.deepEqual(seen, { close: 1, gone: true }, "one close for the drain, the fence and the drain again; no child left");
+    } finally {
+      killQuietly(pid);
+      disk.remove();
+    }
+  });
+
+  it("a hook whose close throws, at once or by rejecting, leaves every stop to finish: its child killed, close tried once, the failure logged with the hook's harness", async () => {
+    for (const how of ["throws", "rejects"] as const) {
+      const disk = new LocalDisk(`door-close-${how}`);
+      let pid = 0;
+      try {
+        const log: { event: string; detail: Record<string, unknown> }[] = [];
+        const broken = new Error(`close ${how}`);
+        const { hook, calls } = scripted({
+          submit: async (_input, ctx) => {
+            const child = spawn("sleep", ["600"], { detached: true, stdio: "ignore" });
+            child.unref();
+            pid = child.pid!;
+            ctx.adopt(pid);
+            return { accepted: true };
+          },
+          close: how === "throws" ? () => { throw broken; } : async () => Promise.reject(broken),
+        });
+        const s = await served(disk, hook, { abortMs: 500, log: (event, detail) => void log.push({ event, detail }) });
+        assert.equal((await submit(s.server, "t1")).status, 200);
+        const drained = await s.server.stopDoor().then(() => "finished", (error: unknown) => `threw: ${(error as Error).message}`);
+        const fenced = await s.server.stopDoor({ now: true }).then(() => "finished", (error: unknown) => `threw: ${(error as Error).message}`);
+        const seen = { drained, fenced, close: calls.close, gone: await waitGone(pid, 2_000), log };
+        await s.run.release();
+        await s.server.close();
+        assert.deepEqual(seen, { drained: "finished", fenced: "finished", close: 1, gone: true, log: [{ event: "door close failed", detail: { harness: "scripted", error: `close ${how}` } }] }, `a close that ${how}`);
+      } finally {
+        killQuietly(pid);
+        disk.remove();
+      }
+    }
+  });
+
+  it("a hook whose close never settles holds a stop no longer than its bound: the stop finishes, the child is killed, and the overrun is logged", async () => {
+    const disk = new LocalDisk("door-close-hangs");
+    let pid = 0;
+    try {
+      const log: { event: string; detail: Record<string, unknown> }[] = [];
+      const { hook, calls } = scripted({
+        submit: async (_input, ctx) => {
+          const child = spawn("sleep", ["600"], { detached: true, stdio: "ignore" });
+          child.unref();
+          pid = child.pid!;
+          ctx.adopt(pid);
+          return { accepted: true };
+        },
+        close: () => new Promise<void>(() => {}),
+      });
+      const s = await served(disk, hook, { abortMs: 300, log: (event, detail) => void log.push({ event, detail }) });
+      assert.equal((await submit(s.server, "h1")).status, 200);
+      const began = Date.now();
+      await s.server.stopDoor();
+      const took = Date.now() - began;
+      const seen = { close: calls.close, gone: await waitGone(pid, 2_000), within: took < 300 + 1_500, log };
+      await s.run.release();
+      await s.server.close();
+      assert.deepEqual(seen, { close: 1, gone: true, within: true, log: [{ event: "door close timed out", detail: { harness: "scripted", error: "close() did not settle within 300 ms" } }] }, `the stop took ${took} ms`);
+    } finally {
+      killQuietly(pid);
+      disk.remove();
+    }
+  });
+
   it("a child adopted after the stop began is killed too, and the stop aborts every submit still running", async () => {
     const disk = new LocalDisk("door-late-child");
     let pid = 0;
@@ -909,12 +1055,12 @@ describe("the door hook: turns, children and stops", () => {
     }
   });
 
-  it("an app that releases the run itself, or fails in onOpen, leaves no adopted child behind", async () => {
+  it("an app that releases the run itself, or fails in onOpen, leaves no adopted child behind, and its hook is closed once", async () => {
     for (const how of ["released", "failed"] as const) {
       const disk = new LocalDisk(`door-app-${how}`);
       let pid = 0;
       try {
-        const { hook } = scripted({
+        const { hook, calls } = scripted({
           submit: async (_input, ctx) => {
             const child = spawn("sleep", ["600"], { detached: true, stdio: "ignore" });
             child.unref();
@@ -929,9 +1075,13 @@ describe("the door hook: turns, children and stops", () => {
         const onOpen = how === "released" ? (run: DurableRun) => void run.release() : async () => Promise.reject(new Error("the app broke"));
         const exit = await serveUntilDone(s.run, onOpen, "resume", () => {}, new EventEmitter(), { server: s.server });
         assert.equal(exit, how === "released" ? 0 : 1);
-        assert.ok(await waitGone(pid, 2_000), `no harness child outlives an app that ${how}`);
+        const gone = await waitGone(pid, 2_000);
+        const closed = calls.close;
         if (how === "failed") await s.run.release();
         await s.server.close();
+        assert.ok(gone, `no harness child outlives an app that ${how}`);
+        // Released, the door drains; failed in onOpen (a start that crashed), it is fenced: either way the hook hears once.
+        assert.equal(closed, 1, `the hook of an app that ${how} is closed once`);
       } finally {
         killQuietly(pid);
         disk.remove();

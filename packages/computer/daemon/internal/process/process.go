@@ -6,21 +6,28 @@ const (
 	RingBytes = 8 << 20
 	// MaxEntries is how many processes the table holds, running or ended.
 	MaxEntries = 256
-	// RetainedBytes is how much output the table's rings hold together before it lets go of the rings of the
-	// processes that ended first: 256 MiB, where 256 entries' full rings would be 4 GiB.
+	// RetainedBytes is how much output the table's rings, live and ended, hold together: 256 MiB, where 256 entries'
+	// full rings would be 4 GiB. Past it, the rings of the processes that ended first are let go, then the live rings
+	// are limited to an equal share of it.
 	RetainedBytes = 256 << 20
+	// RingFloorBytes is the least a live ring is limited to: 256 entries' two rings at the floor are 32 MiB.
+	RingFloorBytes = 64 << 10
 	// MaxRead is the most bytes one process.read returns: in base64, it fits a line.
 	MaxRead = 512 << 10
 	// MaxWaitMs bounds a read's long poll.
 	MaxWaitMs = 30_000
+	// LogBytes is how much of a process's output its log file keeps: the first 16 MiB.
+	LogBytes = 16 << 20
 )
 
 // Options size a table; zero values are the defaults.
 type Options struct {
 	RingBytes  int
 	MaxEntries int
-	// RetainedBytes bounds the output every ring in the table holds together; only ended processes' rings are let go.
+	// RetainedBytes bounds the output every ring in the table, live or ended, holds together.
 	RetainedBytes int64
+	// LogBytes is how much a log file keeps.
+	LogBytes int64
 }
 
 type Size struct {
@@ -35,6 +42,13 @@ type StartParams struct {
 	User  string            `json:"user,omitempty"`
 	Pty   *Size             `json:"pty,omitempty"`
 	Stdin bool              `json:"stdin,omitempty"`
+	// Log is an absolute path for a new file the daemon writes the first LogBytes of the output to (logFile).
+	Log string `json:"log,omitempty"`
+	// WaitGroup: the process runs until its program and every process left in its group (with a pty, its session)
+	// have ended, and reports the program's own exit.
+	WaitGroup bool `json:"waitGroup,omitempty"`
+	// Orphans "keep": what the process started outside it runs on when it ends, to the computer's end.
+	Orphans string `json:"orphans,omitempty"`
 }
 
 type StartResult struct {
@@ -55,6 +69,14 @@ type ReadResult struct {
 	NextOffset int64  `json:"nextOffset"`
 	Dropped    int64  `json:"dropped"`
 	Exited     bool   `json:"exited"`
+	// Size is the stream's bytes so far: every byte since the process started, kept in the ring or dropped. For the log,
+	// the bytes the log holds.
+	Size int64 `json:"size"`
+	// Capped is the log's alone: output came past its LogBytes and was not written to it.
+	Capped bool `json:"capped,omitempty"`
+	// LogError is the log's alone: a write failed or wrote short, so the log stopped there for good and holds only the
+	// output before it; why.
+	LogError string `json:"logError,omitempty"`
 }
 
 type WriteParams struct {
@@ -66,6 +88,13 @@ type WriteParams struct {
 type SignalParams struct {
 	ID     string `json:"id"`
 	Signal string `json:"signal"`
+}
+
+// SignalResult is empty but for INT on a terminal with no foreground group, which went to the program's own group, and
+// INT on a terminal whose foreground group had no process left in the program's session when the guard came to signal
+// it, which was not sent.
+type SignalResult struct {
+	Note string `json:"note,omitempty"`
 }
 
 type ResizeParams struct {

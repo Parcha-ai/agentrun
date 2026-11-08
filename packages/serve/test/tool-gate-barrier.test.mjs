@@ -5,7 +5,7 @@ import assert from "node:assert/strict";
 import { join } from "node:path";
 import { test } from "node:test";
 import { BACKGROUND_CONTEXT } from "@earendil-works/chord/context";
-import { openArchilStore } from "@parcha/pi-durable-disk/lease";
+import { openArchilStore } from "../../pi-durable-disk/dist/store.js";
 import { RunGate } from "../dist/tool-gate.js";
 import { scratch } from "./support.mjs";
 

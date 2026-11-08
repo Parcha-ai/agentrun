@@ -1,5 +1,6 @@
 // The daemon's methods: the one shared definition on the TypeScript side (daemon/internal/methods is the Go side).
 // JSON-RPC 2.0, one UTF-8 JSON object per line, in both directions.
+import type { Result } from "./result.js";
 
 /** The longest line, in bytes without its newline, either side reads or writes. */
 export const MAX_LINE_BYTES = 1024 * 1024;
@@ -14,6 +15,8 @@ export const MAX_LIST_DEPTH = 16;
 export const MAX_LIST_ENTRIES = 1000;
 /** How much of each stream a process keeps: the last 8 MiB, read by byte offset. */
 export const PROCESS_RING_BYTES = 8 * 1024 * 1024;
+/** How much of a process's output its log file keeps: the first 16 MiB. */
+export const PROCESS_LOG_BYTES = 16 * 1024 * 1024;
 /** How many processes a daemon holds, running or ended; the oldest ended ones are dropped first. */
 export const MAX_PROCESSES = 256;
 /**
@@ -24,8 +27,20 @@ export const PROCESS_RETAINED_BYTES = 256 * 1024 * 1024;
 /** The longest a process.read waits for new bytes. */
 export const MAX_READ_WAIT_MS = 30_000;
 
-/** What a daemon can do, as hello reports it. */
-export type DaemonCapability = "exec" | "files" | "processes";
+/** What a computer is: the shape its tools take. Kind sets which groups are Core. */
+export type ComputerKind = "linux" | "desktop" | "android" | "ios";
+
+/** The platform a computer runs, which the key table and exec need. */
+export type ComputerOs = "linux" | "windows" | "macos" | "android" | "ios";
+
+/**
+ * What a computer offers, as one flat list: capabilities().groups, repeated in hello.groups. A sub-flag such as
+ * input.touch is its own entry. Each is optional unless kind makes it Core.
+ */
+export type Group = "exec" | "files" | "processes" | "screen" | "input.pointer" | "input.keys" | "input.touch" | "apps" | "apps.install" | "apps.ui_tree";
+
+/** Every group, in the order the protocol lists them. */
+export const GROUPS: readonly Group[] = ["exec", "files", "processes", "screen", "input.pointer", "input.keys", "input.touch", "apps", "apps.install", "apps.ui_tree"];
 
 export interface HelloParams {
 	/** Who is asking, for the daemon's log: a name and version. */
@@ -34,10 +49,11 @@ export interface HelloParams {
 
 export interface HelloResult {
 	version: string;
-	os: "linux";
+	os: ComputerOs;
+	kind: ComputerKind;
 	/** Go's name for the architecture: amd64, arm64. */
 	arch: string;
-	capabilities: DaemonCapability[];
+	groups: Group[];
 }
 
 export type PingParams = Record<string, never>;
@@ -231,6 +247,20 @@ export interface ProcessStartParams {
 	pty?: PtySize;
 	/** Keep stdin open for process.write. Without it (and without a pty), stdin is /dev/null. */
 	stdin?: boolean;
+	/**
+	 * An absolute path for a new file the daemon writes the first PROCESS_LOG_BYTES of the output to, stdout and stderr
+	 * (or the terminal's) as they come, and read as the "log" stream. The daemon makes the missing directories and the
+	 * file itself (mode 0644, its own); a link at the path or at any directory on its way is refused as `denied`, a
+	 * file already there as `exists`, and nothing is started.
+	 */
+	log?: string;
+	/**
+	 * The process runs until its program and every process left in its process group (with a pty, its session) have
+	 * ended, and reports the program's own exit. A signal goes to what is left of the group once the program is gone.
+	 */
+	waitGroup?: boolean;
+	/** "keep": when the process ends, what it started outside it runs on, to the computer's end, instead of being ended. */
+	orphans?: "keep";
 }
 
 export interface ProcessStartResult {
@@ -240,11 +270,11 @@ export interface ProcessStartResult {
 	pid: number;
 }
 
-export type ProcessStream = "stdout" | "stderr" | "pty";
+export type ProcessStream = "stdout" | "stderr" | "pty" | "log";
 
 export interface ProcessReadParams {
 	id: string;
-	/** "stdout" or "stderr"; "pty" for a process started with one. */
+	/** "stdout" or "stderr"; "pty" for a process started with one; "log" for one started with a log. */
 	stream: ProcessStream;
 	/** Bytes since the process started. Pass the last read's nextOffset. */
 	offset: number;
@@ -265,6 +295,15 @@ export interface ProcessReadResult {
 	dropped: number;
 	/** The process has ended and nothing is left past nextOffset. */
 	exited: boolean;
+	/** The stream's bytes so far: every byte since the process started, kept in the ring or dropped. For "log", the log's. */
+	size: number;
+	/** "log" only: output came past the log's PROCESS_LOG_BYTES and was not written to it. */
+	capped?: boolean;
+	/**
+	 * "log" only: a write to the log failed or wrote short (a full disk), so the log stopped there for good and holds
+	 * only the output before it: why. Nothing after it is written, so the file stays a true prefix.
+	 */
+	logError?: string;
 }
 
 export interface ProcessWriteParams {
@@ -279,8 +318,23 @@ export type ProcessSignal = "TERM" | "INT" | "KILL" | "HUP";
 
 export interface ProcessSignalParams {
 	id: string;
-	/** Sent to the program's process group. A signal to a process that has ended does nothing. */
+	/**
+	 * INT to a process started with a pty is ^C: it goes to the terminal's foreground process group (the job a shell
+	 * runs in the foreground, or the program when it runs none), and is refused as denied when that group is outside
+	 * the program's session. Every other signal, and INT without a pty, goes to the program's process group. A signal
+	 * to a process that has ended does nothing.
+	 */
 	signal: ProcessSignal;
+}
+
+export interface ProcessSignalResult {
+	/**
+	 * Set only for INT on a terminal: when it found no foreground group (the program let go of it, or is ending) and went
+	 * to the program's own group, or when the foreground group had no process left in the program's session by the time
+	 * the guard came to signal it (it ended, and its id may have gone to a group in another session) and INT was not
+	 * sent: why.
+	 */
+	note?: string;
 }
 
 export interface ProcessResizeParams extends PtySize {
@@ -329,6 +383,166 @@ export interface ProcessWaitParams {
 
 export type Empty = Record<string, never>;
 
+/** Pixels of the full screenshot, origin top left. A region shot never changes this space. */
+export type Point = [x: number, y: number];
+export type Rect = [x: number, y: number, w: number, h: number];
+export type Button = "left" | "right" | "middle";
+
+export interface ScreenShotParams {
+	/** Only this part of the screen; its coordinates stay those of the full screenshot. */
+	region?: Rect;
+}
+
+export interface ScreenShotResult {
+	/** The shot's id, for screen.read. */
+	id: string;
+	/**
+	 * The PNG's bytes; data holds at most MAX_CHUNK_BYTES of it. The PNG is 8-bit and non-interlaced (gray, RGB, palette,
+	 * gray and alpha, or RGBA), as the conformance suite decodes it.
+	 */
+	size: number;
+	/** base64; read the rest with screen.read. */
+	data: string;
+	eof: boolean;
+	/** The image's pixels: the input coordinate space (never downscaled). */
+	width: number;
+	height: number;
+	/** Device pixels per logical point: 1 on Xvfb; a phone reports its own. */
+	scale: number;
+	/** Where the pointer is, with input.pointer. */
+	cursor?: Point;
+}
+
+/** One shot is held; it is dropped at eof or at the next shot. */
+export interface ScreenReadParams {
+	id: string;
+	offset: number;
+}
+
+export interface ScreenReadResult {
+	/** base64. */
+	data: string;
+	eof: boolean;
+}
+
+/** The most actions one input.actions batch holds. */
+export const MAX_ACTIONS = 100;
+/**
+ * The most time one batch asks for, summed over every action that names a duration: wait, hold, long_press, swipe and
+ * pinch (Anthropic's 300 s cap).
+ */
+export const MAX_BATCH_WAIT_MS = 300_000;
+/** The most times one key action presses its keys. */
+export const MAX_KEY_REPEAT = 100;
+/** The one canonical key table. The daemon's Go table (daemon/internal/keys) mirrors it, and a Go test keeps them equal. */
+export const KEYS = [
+	"enter", "tab", "space", "backspace", "delete", "escape", "insert",
+	"up", "down", "left", "right", "home", "end", "pageup", "pagedown",
+	"f1", "f2", "f3", "f4", "f5", "f6", "f7", "f8", "f9", "f10", "f11", "f12",
+	"shift", "ctrl", "alt", "super", "capslock",
+] as const;
+/** A key is a name in KEYS, or one printable ASCII character (0x21-0x7e): "a", "A", "1", "/". */
+export type Key = (typeof KEYS)[number] | string;
+
+export type InputAction =
+	// input.pointer
+	| { type: "move"; at: Point }
+	/** State persists across batches: a down with no up stays down. */
+	| { type: "down" | "up"; button?: Button }
+	| { type: "click"; at?: Point; button?: Button; count?: 1 | 2 | 3; keys?: Key[] }
+	/** 2 or more points. */
+	| { type: "drag"; path: Point[]; button?: Button; keys?: Key[] }
+	| { type: "scroll"; at?: Point; dx?: number; dy?: number; unit: "clicks" | "px"; keys?: Key[] }
+	// input.keys
+	/** One key is a press; several are a combo, released in reverse. */
+	| { type: "key"; keys: Key[]; repeat?: number }
+	| { type: "hold"; keys: Key[]; ms: number }
+	| { type: "type"; text: string }
+	// input.touch
+	| { type: "tap"; at: Point; count?: 1 | 2 }
+	| { type: "long_press"; at: Point; ms?: number }
+	| { type: "swipe"; path: Point[]; ms?: number }
+	/** Above 1 the fingers move apart, below 1 together. */
+	| { type: "pinch"; at: Point; scale: number; ms?: number }
+	/** Not keys: "home" the key is line start. */
+	| { type: "button"; name: "back" | "home" | "app_switch" }
+	// any input group
+	| { type: "wait"; ms: number };
+
+export interface InputActionsParams {
+	actions: InputAction[];
+}
+
+export interface InputActionsResult {
+	/** How many actions ran. */
+	done: number;
+	/** The action that failed, and why; absent when every action ran. */
+	failed?: { index: number; kind: DaemonErrorKind; message: string };
+}
+
+export interface App {
+	id: string;
+	name?: string;
+	version?: string;
+}
+
+export interface AppsListResult {
+	apps: App[];
+	/** The id of the app in front, or null. */
+	foreground: string | null;
+}
+
+export interface AppsInstallParams {
+	/** A file already in the computer (files.write first). */
+	path: string;
+}
+
+/** apps.launch and apps.terminate. */
+export interface AppsLaunchParams {
+	id: string;
+}
+
+/** The most nodes apps.ui_tree returns. */
+export const MAX_UI_NODES = 5000;
+
+export interface UiNode {
+	/** The platform's class as given: "android.widget.Button", "XCUIElementTypeButton". */
+	role: string;
+	/** resource-id or accessibilityIdentifier. */
+	id?: string;
+	/** Visible text or value. */
+	text?: string;
+	/** content-desc or accessibilityLabel. */
+	label?: string;
+	/** In screenshot pixels (iOS points times scale). */
+	bounds: Rect;
+	enabled: boolean;
+	clickable?: boolean;
+	focused?: boolean;
+	selected?: boolean;
+	checked?: boolean;
+	scrollable?: boolean;
+	children: UiNode[];
+}
+
+export interface UiTreeResult {
+	root: UiNode;
+	/** How many nodes the tree holds, at most MAX_UI_NODES. */
+	nodes: number;
+	truncated: boolean;
+}
+
+/** Moves init's own deadline. Init refuses an earlier one. Typed now; the daemon answers it from the X11 shim's PR on. */
+export interface DeadlineExtendParams {
+	/** ISO time. */
+	at: string;
+}
+
+export interface DeadlineExtendResult {
+	/** The deadline init holds after the call, ISO time. */
+	at: string;
+}
+
 /** Every method the daemon answers: its params and its result. */
 export interface DaemonMethods {
 	hello: { params: HelloParams; result: HelloResult };
@@ -350,13 +564,33 @@ export interface DaemonMethods {
 	"process.start": { params: ProcessStartParams; result: ProcessStartResult };
 	"process.read": { params: ProcessReadParams; result: ProcessReadResult };
 	"process.write": { params: ProcessWriteParams; result: Empty };
-	"process.signal": { params: ProcessSignalParams; result: Empty };
+	"process.signal": { params: ProcessSignalParams; result: ProcessSignalResult };
 	"process.resize": { params: ProcessResizeParams; result: Empty };
 	"process.list": { params: ProcessListParams; result: ProcessListResult };
 	"process.wait": { params: ProcessWaitParams; result: ProcessExit };
+	"screen.shot": { params: ScreenShotParams; result: ScreenShotResult };
+	"screen.read": { params: ScreenReadParams; result: ScreenReadResult };
+	"input.actions": { params: InputActionsParams; result: InputActionsResult };
+	"apps.list": { params: Empty; result: AppsListResult };
+	/** The installed app. */
+	"apps.install": { params: AppsInstallParams; result: App };
+	"apps.launch": { params: AppsLaunchParams; result: Empty };
+	"apps.terminate": { params: AppsLaunchParams; result: Empty };
+	"apps.ui_tree": { params: Empty; result: UiTreeResult };
+	"deadline.extend": { params: DeadlineExtendParams; result: DeadlineExtendResult };
 }
 
 export type DaemonMethod = keyof DaemonMethods;
+
+/**
+ * What answers a computer's methods: computerd over a stream (DaemonClient), or, with daemon none, the provider in
+ * process. Callers and the conformance suite see one surface.
+ */
+export interface ComputerClient {
+	call<M extends DaemonMethod>(method: M, params: DaemonMethods[M]["params"], options?: { signal?: AbortSignal }): Promise<Result<DaemonMethods[M]["result"]>>;
+	/** Ends the connection: pending and later calls fail with `gone`. */
+	close(): void;
+}
 
 /** error.data.kind in the daemon's error replies. */
 export type DaemonErrorKind =

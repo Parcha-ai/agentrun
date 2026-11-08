@@ -139,7 +139,7 @@ test("a host header the proxy would refuse is refused when the adapter is made, 
 
 test("the adapter declares its harness's own MCP client: the kernel's proxy mounts the session's MCP door from it, and reads a call's id from claudecode/toolUseId", () => {
   const adapter = claudeAgentAdapter({ model: 'm', provider: { origin: 'https://x.invalid', credential: () => 'k' }, sdk: fakeSdk(), standIn: { command: process.execPath } });
-  assert.deepEqual(adapter.capabilities(), { fork: false, mcpClient: { callIdMeta: 'claudecode/toolUseId' } });
+  assert.deepEqual(adapter.capabilities(), { mcpClient: { callIdMeta: 'claudecode/toolUseId' } });
 });
 
 test("the PreToolUse gate leaves the session's own tools to the tool, and a failure inside it is a deny, while the turn runs", async (t) => {
@@ -248,7 +248,7 @@ test("an interrupt as a never tool's outcome is still being written: the next tu
   const charges = new Set();
   let release;
   let held = false;
-  const writer = { key: raw.key, read: () => raw.read(), append: async (records) => {
+  const writer = { key: raw.key, sync: () => raw.sync(), read: () => raw.read(), append: async (records) => {
     for (const r of records) if (r.kind === 'kernel.start' && r.data.name === 'tool.charge') charges.add(r.data.stepId);
     if (!held && records.some((r) => r.kind === 'kernel.end' && charges.has(r.data.stepId))) { held = true; await new Promise((resolve) => { release = resolve; }); }
     return raw.append(records);
@@ -525,7 +525,7 @@ test("an interrupt that lands while send() is still recording the prompt: the se
   const reached = new Promise((resolve) => { held = resolve; });
   let release;
   const gate = new Promise((resolve) => { release = resolve; });
-  const writer = { key: inner.key, read: () => inner.read(), append: async (records) => {
+  const writer = { key: inner.key, sync: () => inner.sync(), read: () => inner.read(), append: async (records) => {
     if (records.some((r) => r.kind === 'kernel.submission' && r.data?.text === 'go')) { held(); await gate; }
     return inner.append(records);
   } };
@@ -569,7 +569,7 @@ function holdingWriter(inner, match) {
   let release;
   const gate = new Promise((resolve) => { release = resolve; });
   let done = false;
-  const writer = { key: inner.key, read: () => inner.read(), append: async (records) => {
+  const writer = { key: inner.key, sync: () => inner.sync(), read: () => inner.read(), append: async (records) => {
     for (const r of records) if (r.kind === 'kernel.submission' && typeof r.data?.text === 'string') ids.set(r.data.text, r.data.id);
     if (!done && records.some((r) => match(r, ids))) { done = true; held(); await gate; }
     return inner.append(records);

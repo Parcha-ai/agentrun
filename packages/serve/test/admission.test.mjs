@@ -8,13 +8,17 @@ import { writeFile } from "node:fs/promises";
 import { join } from "node:path";
 import { test } from "node:test";
 import * as harness from "../dist/harness.js";
+import * as table from "../dist/harness-table.js";
 import * as host from "../dist/host.js";
 import { startServe } from "../dist/index.js";
 import { agent, client, FAUX, follow, scratch, serve } from "./support.mjs";
+import { fauxTable } from "./fixtures/faux-table.mjs";
 
 const MiB = 2 ** 20;
 // Read as names, not bindings: a build without them fails each test on its own, not the file at its import.
-const { RUN_MIB } = harness;
+const { builtinHarness } = table;
+/** Each harness's run size, as its table entry states it (an adapter's from its facts). */
+const RUN_MIB = Object.fromEntries((harness.HARNESSES ?? []).map((id) => [id, builtinHarness?.(id)?.runMib]));
 const { defaultMaxRuns, neverFits, runsMemoryMib, runsThatFit, SERVER_MIB } = host;
 const FAUX_HARNESS = new URL("./fixtures/faux-harness.mjs", import.meta.url).pathname;
 
@@ -26,7 +30,7 @@ function withMemory(t, mib) {
 }
 
 test("the memory math: what runs may hold is the host's memory less the server's own, and each harness fits by its own size", () => {
-  assert.deepEqual(RUN_MIB, { pi: 128, "claude-agent": 288, codex: 192, opencode: 704 }, "the measured table (harness.ts)");
+  assert.deepEqual(RUN_MIB, { pi: 128, "claude-agent": 288, codex: 192, opencode: 704 }, "the measured sizes (harness-table.ts, each adapter's facts)");
   assert.equal(SERVER_MIB, 128);
   const fit = (mib) => ["pi", "codex", "claude-agent"].map((id) => runsThatFit(id, mib * MiB));
   assert.equal(runsMemoryMib(512 * MiB), 384);
@@ -44,7 +48,7 @@ test("the memory math: what runs may hold is the host's memory less the server's
 });
 
 test("an opencode run reserves its own measured size, 704 MB, not the largest: 1 GB holds one, 2 GB two and 512 MB none, said in words", () => {
-  assert.equal(RUN_MIB.opencode, 704, "measured (harness.ts)");
+  assert.equal(RUN_MIB.opencode, 704, "measured (opencode's facts)");
   assert.equal(host.runMibOf("opencode"), 704);
   assert.deepEqual([512, 1024, 2048, 8192].map((mib) => runsThatFit("opencode", mib * MiB)), [0, 1, 2, 11]);
   assert.equal(neverFits("opencode", 1024 * MiB), undefined);
@@ -54,7 +58,7 @@ test("an opencode run reserves its own measured size, 704 MB, not the largest: 1
 
 test("a 384 MB server: claude-agent is unavailable with why in capabilities, its start refused at once with that reason; pi runs", async (t) => {
   withMemory(t, 384);
-  const { api } = await serve(t, { fauxHarness: FAUX_HARNESS });
+  const { api } = await serve(t, { harnessTable: fauxTable(FAUX_HARNESS) });
   const caps = (await api("GET", "/capabilities")).body;
   const offer = Object.fromEntries(caps.harnesses.map((h) => [h.id, h]));
   assert.equal(offer["claude-agent"].available, false, JSON.stringify(offer["claude-agent"]));
@@ -80,7 +84,7 @@ test("a 384 MB server: claude-agent is unavailable with why in capabilities, its
 
 test("a 512 MB server holds one claude-agent run: a second, and a pi run with too little left, are 429 rate_limited with retry-after; once it ends, the next starts", { timeout: 120_000 }, async (t) => {
   withMemory(t, 512);
-  const { api } = await serve(t, { fauxHarness: FAUX_HARNESS });
+  const { api } = await serve(t, { harnessTable: fauxTable(FAUX_HARNESS) });
   const go = join(await scratch(t), "go");
   assert.equal((await api("POST", "/agents", agent("big", { harness: "claude-agent", instructions: `Wait for ${go} before the answer.` }))).status, 201);
   const first = await api("POST", "/agents/big/runs", { input: { content: "hi" } });
@@ -122,7 +126,7 @@ test("--max-runs still bounds the count beside the memory: on 1 GB with a cap of
 
 test("two starts at once with a live run holding memory and room for one more: one starts and one is 429", { timeout: 120_000 }, async (t) => {
   withMemory(t, 512);
-  const { api, data } = await serve(t, { fauxHarness: FAUX_HARNESS });
+  const { api, data } = await serve(t, { harnessTable: fauxTable(FAUX_HARNESS) });
   const go = join(data, "go");
   assert.equal((await api("POST", "/agents", agent("small"))).status, 201);
   const held = await api("POST", "/agents/small/runs", { input: { content: `Answer once ${go} exists.` } });
@@ -141,7 +145,7 @@ test("two starts at once with a live run holding memory and room for one more: o
 test("after a restart on a host whose memory never holds a run's harness: a run that would open again fails with why, and a stopped one's message is refused with why; neither starts", { timeout: 120_000 }, async (t) => {
   const data = join(await scratch(t), "agents");
   const never = join(data, "never");
-  const one = await startServe({ data, port: 0, faux: FAUX, fauxHarness: FAUX_HARNESS, drainTimeout: "5s" });
+  const one = await startServe({ data, port: 0, faux: FAUX, harnessTable: fauxTable(FAUX_HARNESS), drainTimeout: "5s" });
   let open = true;
   t.after(() => open && one.close());
   const first = client(one.baseUrl, one.token);
@@ -154,7 +158,7 @@ test("after a restart on a host whose memory never holds a run's harness: a run 
   await one.close();
   open = false;
   withMemory(t, 384);
-  const { api } = await serve(t, { data, fauxHarness: FAUX_HARNESS });
+  const { api } = await serve(t, { data, harnessTable: fauxTable(FAUX_HARNESS) });
   const why = neverFits("claude-agent", 384 * MiB);
   await follow(api, working, ["failed"]);
   assert.deepEqual((await api("GET", `/runs/${working}`)).body.error.message, why);

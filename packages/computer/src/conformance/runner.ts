@@ -2,18 +2,18 @@
 import { randomBytes } from "node:crypto";
 import { setTimeout as sleep } from "node:timers/promises";
 import { isDeepStrictEqual } from "node:util";
-import type { DaemonClient } from "../client.js";
 import { sweep } from "../janitor.js";
-import type { DaemonCapability, ExecRunParams, HelloResult } from "../protocol.js";
+import { type ComputerClient, type ExecRunParams, type Group, GROUPS, type HelloResult } from "../protocol.js";
 import type { ComputerConnection, ComputerProvider, ComputerRef, ComputerSpec } from "../provider.js";
 import { type ComputerErrorCode, fail, ok, type Result } from "../result.js";
 import { conformanceCases } from "./cases/index.js";
-import type { Capability, Case, CaseContext, CaseResult, ConformanceOptions, ConformanceReport, Ran } from "./types.js";
+import { type StartedFixture, startFixture } from "./fixture.js";
+import { type Capability, type Case, type Clock, type CaseContext, type CaseResult, type ConformanceOptions, type ConformanceReport, coreGroups, type Ran } from "./types.js";
 
 /** The label every computer of a run carries, with the run's id. */
 export const RUN_LABEL = "agentrun.conformance";
 const LIFETIME_MS = 30 * 60_000;
-const DAEMON_CAPABILITIES: ReadonlySet<string> = new Set<DaemonCapability>(["exec", "files", "processes"]);
+const GROUP_NAMES: ReadonlySet<string> = new Set(GROUPS);
 const CLOSE_MS = 10_000;
 
 class Skip extends Error {}
@@ -68,37 +68,51 @@ function whenAborted(signal: AbortSignal): Promise<never> {
  * or is named in the cleanup, and a computer that arrives after its case ended is deleted when it arrives.
  */
 export async function runConformance(provider: ComputerProvider, options: ConformanceOptions): Promise<ConformanceReport> {
-	const { image, only, signal, cases = conformanceCases, drifted, onResult, caseTimeoutMs = 180_000, patience = 30_000, cleanupTimeoutMs = 60_000 } = options;
+	const { image, only, signal, cases = conformanceCases, drifted, onResult, notes, caseTimeoutMs = 180_000, patience = 30_000, cleanupTimeoutMs = 60_000, fixture } = options;
+	const fetcher = options.fetch ?? ((url: string, init?: { signal?: AbortSignal; method?: string }) => fetch(url, init));
+	const clock: Clock = options.clock ?? { now: () => Date.now(), sleep: (ms) => new Promise((resolve) => setTimeout(resolve, ms)) };
 	const run = randomBytes(6).toString("hex");
 	const runLabels = { [RUN_LABEL]: run };
 	const capabilities = provider.capabilities();
+	// A provider of the shape before groups declares none, so its kind-consistent case fails in words, not the run.
+	const groups: Group[] = Array.isArray(capabilities.groups) ? capabilities.groups : [];
+	/** What this kind of computer must declare: a case missing one fails, where a case missing an optional one skips. */
+	const required: ReadonlySet<Capability> = new Set(coreGroups(capabilities.kind, capabilities.daemon));
 	const selected = only === undefined ? cases : cases.filter((c) => only.includes(c.group) || only.includes(c.id));
 	const report: ConformanceReport = {
 		provider: provider.id,
 		providerVersion: provider.version,
+		kind: capabilities.kind,
+		daemonMode: capabilities.daemon,
 		image,
 		daemon: null,
-		...(only === undefined ? {} : { only }),
+		...(only === undefined ? {} : { only, coreNotRun: cases.filter((c) => c.level === "core" && !selected.includes(c)).map((c) => c.id) }),
 		results: [],
 		core: "fail",
 		undeclared: [],
 		cleanup: { deleted: [], left: [], errors: [], late: [] },
+		...(notes !== undefined && notes.length > 0 ? { notes: [...notes] } : {}),
 	};
 	const deleted = new Set<string>();
-	/** Provider calls a run stopped waiting for; the cleanup waits for them, bounded, so what they make is deleted. */
-	const pending = new Set<Promise<unknown>>();
-	const keep = (promise: Promise<unknown>) => {
-		pending.add(promise);
+	/**
+	 * Provider calls a run stopped waiting for, each with what it is; the cleanup waits for them, bounded, so what they
+	 * make is deleted, and names each one still pending after that in cleanup.errors.
+	 */
+	const pending = new Map<Promise<unknown>, string>();
+	const keep = (promise: Promise<unknown>, what: string) => {
+		pending.set(promise, what);
 		// Both branches handled: a rejection is the caller's to report, never an unhandled one here.
 		const done = () => pending.delete(promise);
 		void promise.then(done, done);
 	};
 
-	// Network none, never wider: a provider without it fails Core rather than being tested on an open network.
+	// Network none, never wider, wherever the kind requires it: a provider without it fails Core rather than being tested
+	// on an open network. A phone, whose kind does not require none, is tested on none when it declares it, else open.
+	const network = required.has("network:none") || capabilities.network.includes("none") ? "none" : "open";
 	const spec = (extra: Partial<ComputerSpec> = {}): ComputerSpec => ({
 		image,
 		lifetimeMs: LIFETIME_MS,
-		network: "none",
+		network,
 		...extra,
 		labels: { ...extra.labels, ...runLabels },
 	});
@@ -112,7 +126,7 @@ export async function runConformance(provider: ComputerProvider, options: Confor
 		}
 	};
 	/** Deletes the computer a create gives after nobody waits for it any more, and names it in the report. */
-	const lateCreate = (creating: Promise<Result<ComputerRef>>, by: ComputerProvider = provider) =>
+	const lateCreate = (creating: Promise<Result<ComputerRef>>, what: string, by: ComputerProvider = provider) =>
 		keep(
 			creating.then(
 				async (created) => {
@@ -122,11 +136,12 @@ export async function runConformance(provider: ComputerProvider, options: Confor
 				},
 				() => {},
 			),
+			what,
 		);
 	const createError = (result: Result<unknown>) =>
 		result.ok ? "" : `create ${result.error.code === "refused" ? "was refused" : `failed (${result.error.code})`}: ${result.error.message}`;
 	const sawHello = (hello: HelloResult) => {
-		report.daemon ??= { version: hello.version, arch: hello.arch };
+		report.daemon ??= { version: hello.version, os: hello.os, arch: hello.arch };
 	};
 
 	/** The run's shared computer, made the first time a case needs it or the daemon's hello. */
@@ -141,7 +156,7 @@ export async function runConformance(provider: ComputerProvider, options: Confor
 				created = await within(creating, caseTimeoutMs, "create");
 			} catch (error) {
 				stop.abort();
-				lateCreate(creating);
+				lateCreate(creating, "create (the run's computer)");
 				return { error: words(error) };
 			}
 			if (!created.ok) return { error: createError(created) };
@@ -151,7 +166,10 @@ export async function runConformance(provider: ComputerProvider, options: Confor
 			try {
 				connected = await within(connecting, caseTimeoutMs, "connect");
 			} catch (error) {
-				keep(connecting.then((late) => (late.ok ? bounded(late.value.close(), CLOSE_MS) : undefined), () => {}));
+				keep(
+					connecting.then((late) => (late.ok ? bounded(late.value.close(), CLOSE_MS) : undefined), () => {}),
+					`connect to ${created.value.name} (the run's computer)`,
+				);
 				return { error: words(error) };
 			}
 			if (!connected.ok) return { error: `connect: ${connected.error.code}: ${connected.error.message}` };
@@ -163,15 +181,21 @@ export async function runConformance(provider: ComputerProvider, options: Confor
 	/** Why a case cannot run here, or undefined when everything it needs is declared. */
 	const missing = async (needs: Capability[]): Promise<string | undefined> => {
 		for (const need of needs) {
-			if (DAEMON_CAPABILITIES.has(need)) {
-				if (!capabilities.daemon.includes(need as DaemonCapability)) return `the provider does not declare ${need}`;
+			if (GROUP_NAMES.has(need)) {
+				if (!groups.includes(need as Group)) return `the provider does not declare ${need}`;
 				const got = await getShared();
-				if ("hello" in got && !got.hello.capabilities.includes(need as DaemonCapability)) return `the daemon's hello does not declare ${need}`;
+				if ("hello" in got && !(Array.isArray(got.hello.groups) && got.hello.groups.includes(need as Group))) {
+					return `the ${capabilities.daemon === "none" ? "computer's" : "daemon's"} hello does not declare ${need}`;
+				}
+			} else if (need === "extend" || need === "stream") {
+				if (typeof provider[need] !== "function") return `the provider has no ${need}()`;
 			} else if (need.startsWith("network:")) {
 				if (!capabilities.network.includes(need.slice("network:".length) as "none")) return `the provider does not declare ${need}`;
 			} else if (need === "lifetime:janitor" && capabilities.lifetime !== "janitor") {
 				return `the provider declares lifetime "${capabilities.lifetime}", not ${need}`;
 			} else if (need.startsWith("user:") && !capabilities.user?.includes(need.slice("user:".length) as "root")) {
+				return `the provider does not declare ${need}`;
+			} else if (need === "release:stop" && !(Array.isArray(capabilities.release) && capabilities.release.includes("stop"))) {
 				return `the provider does not declare ${need}`;
 			}
 		}
@@ -189,10 +213,17 @@ export async function runConformance(provider: ComputerProvider, options: Confor
 		if (signal?.aborted) return result("fail", "not run: the run was aborted");
 		const why = await missing(c.needs);
 		if (why !== undefined) {
-			if (c.level === "full") {
-				for (const need of c.needs) if (!report.undeclared.includes(need) && (await missing([need])) !== undefined) report.undeclared.push(need);
+			const lacking: Capability[] = [];
+			for (const need of c.needs) if ((await missing([need])) !== undefined) lacking.push(need);
+			// A Core case fails when its kind requires what is missing ("a desktop computer must declare screen"); a case
+			// whose missing needs are all optional is skipped and named in undeclared.
+			const owed = c.level === "core" ? lacking.find((need) => required.has(need)) : undefined;
+			if (owed !== undefined) {
+				const who = capabilities.daemon === "none" ? `a ${capabilities.kind} computer` : `a ${capabilities.kind} computer with daemon ${capabilities.daemon}`;
+				return result("fail", `${who} must declare ${owed}: ${(await missing([owed])) ?? why}`);
 			}
-			return result("skip", why);
+			for (const need of lacking) if (!report.undeclared.includes(need)) report.undeclared.push(need);
+			return { ...result("skip", why), undeclared: lacking };
 		}
 		// The shared computer is made, bounded on its own, before the case's time starts.
 		const sharedComputer = (c.computer ?? "shared") === "shared" ? await getShared() : undefined;
@@ -202,6 +233,9 @@ export async function runConformance(provider: ComputerProvider, options: Confor
 		const caseSignal = signal ? AbortSignal.any([signal, timer.signal]) : timer.signal;
 		const refs: Array<{ ref: ComputerRef; by: ComputerProvider }> = [];
 		const connections: ComputerConnection[] = [];
+		let started: Promise<StartedFixture> | undefined;
+		/** The fixture's stop, set as soon as it is launched: one that never logs ready is stopped as well. */
+		let stopFixture: (() => Promise<void>) | undefined;
 		let dirs = 0;
 		// Set when the case ends: what a provider call gives after that is ended at once, not left to the case.
 		let ended = false;
@@ -210,7 +244,7 @@ export async function runConformance(provider: ComputerProvider, options: Confor
 			if (!ended) refs.push({ ref, by });
 			else {
 				report.cleanup.late.push(ref.name);
-				keep(release(ref, by));
+				keep(release(ref, by), `release ${ref.name}`);
 			}
 		};
 		const connect = async (ref: ComputerRef) => {
@@ -218,22 +252,26 @@ export async function runConformance(provider: ComputerProvider, options: Confor
 				if (!connected.ok) return connected;
 				let closing: Promise<void> | undefined;
 				const once: ComputerConnection = { ...connected.value, close: () => (closing ??= connected.value.close()) };
-				if (ended) keep(bounded(once.close(), CLOSE_MS));
+				if (ended) keep(bounded(once.close(), CLOSE_MS), `close of a connection to ${ref.name} (${c.id})`);
 				else connections.push(once);
 				return ok(once);
 			});
-			keep(connecting);
+			keep(connecting, `connect to ${ref.name} (${c.id})`);
 			const once = unwrap(await connecting, `connect to ${ref.name}`);
 			sawHello(once.hello);
 			return once;
 		};
-		const create = async (extra?: Partial<ComputerSpec>) => {
-			const creating = provider.create(spec(extra), { signal: caseSignal }).then((created) => {
-				if (created.ok) track(created.value);
+		/** create through by, kept: what it gives is deleted when the case ends, or as it comes after that. */
+		const attempt = (whole: ComputerSpec, by: ComputerProvider = provider) => {
+			const creating = by.create(whole, { signal: caseSignal }).then((created) => {
+				if (created.ok) track(created.value, by);
 				return created;
 			});
-			keep(creating);
-			const created = await creating;
+			keep(creating, `create (${c.id})`);
+			return creating;
+		};
+		const create = async (extra?: Partial<ComputerSpec>) => {
+			const created = await attempt(spec(extra));
 			if (!created.ok) throw new Error(createError(created));
 			return created.value;
 		};
@@ -271,6 +309,7 @@ export async function runConformance(provider: ComputerProvider, options: Confor
 				},
 				spec,
 				create,
+				attempt,
 				track,
 				connect: (ref) => connect(ref ?? needComputer().ref),
 				async home() {
@@ -284,11 +323,22 @@ export async function runConformance(provider: ComputerProvider, options: Confor
 					await t.call("files.mkdir", { path, parents: true });
 					return path;
 				},
+				fixture() {
+					if (fixture === undefined) {
+						return t.skip("no fixture was given: --fixture names computerd-fixture for a desktop, or the fixture APK for an Android phone");
+					}
+					started ??= startFixture(t, fixture, (stop) => {
+						stopFixture = stop;
+					});
+					return started;
+				},
+				fetch: (url, init) => fetcher(url, { ...init, signal: init?.signal ?? caseSignal }),
+				clock,
 				async drifted() {
 					if (drifted === undefined) return t.skip("no drifted provider was given: a provider module exports createDriftedProvider() for the drift cases");
 					return await drifted();
 				},
-				async exec(argv: string[], extra: Partial<ExecRunParams> = {}, client: DaemonClient = t.client): Promise<Ran> {
+				async exec(argv: string[], extra: Partial<ExecRunParams> = {}, client: ComputerClient = t.client): Promise<Ran> {
 					const ran = unwrap(await client.call("exec.run", { argv, timeoutMs: patience, ...extra }, { signal: caseSignal }), `exec.run ${show(argv)}`);
 					const decode = (base64: string) => Buffer.from(base64, "base64").toString("utf8");
 					return {
@@ -354,6 +404,12 @@ export async function runConformance(provider: ComputerProvider, options: Confor
 		} finally {
 			ended = true;
 			clearTimeout(timeout);
+			// The fixture is stopped while the case's connection is still open, whether or not it logged ready; a start still
+			// launching is given CLOSE_MS to launch or fail first. A stop that fails is not the case's verdict.
+			if (started !== undefined) {
+				if (stopFixture === undefined) await bounded(started.catch(() => {}), CLOSE_MS);
+				if (stopFixture !== undefined) await bounded(stopFixture().catch(() => {}), CLOSE_MS);
+			}
 			for (const connection of connections) await bounded(connection.close().catch(() => {}), CLOSE_MS);
 			for (const { ref, by } of refs) await release(ref, by);
 		}
@@ -368,12 +424,25 @@ export async function runConformance(provider: ComputerProvider, options: Confor
 	} finally {
 		if (shared !== undefined) await shared;
 		if (sharedRef !== undefined) await release(sharedRef);
-		await bounded(Promise.allSettled([...pending]), cleanupTimeoutMs);
+		// A kept call may keep another as it settles (a late create, then its release): wait until none is left.
+		await bounded(
+			(async () => {
+				while (pending.size > 0) await Promise.allSettled([...pending.keys()]);
+			})(),
+			cleanupTimeoutMs,
+		);
+		// The bound kept: a call still pending may yet make a computer, so the cleanup is incomplete and Core fails.
+		for (const what of pending.values()) {
+			report.cleanup.errors.push(`${what} did not settle within ${cleanupTimeoutMs / 1000} s of the run's end: what it makes may be left`);
+		}
 		await cleanup(provider, capabilities.lifetime, runLabels, report, deleted, cleanupTimeoutMs);
 	}
-	const core = report.results.filter((r) => r.level === "core");
+	// A Core case skipped for an optional group the computer does not declare is not part of Core's verdict.
+	const core = report.results.filter((r) => r.level === "core" && !(r.status === "skip" && r.undeclared !== undefined));
 	const clean = report.cleanup.left.length === 0 && report.cleanup.errors.length === 0;
-	report.core = core.length > 0 && core.every((r) => r.status === "pass") && clean ? "pass" : "fail";
+	const corePassed = core.every((r) => r.status === "pass") && clean;
+	if ((report.coreNotRun ?? []).length === 0) report.core = core.length > 0 && corePassed ? "pass" : "fail";
+	else report.core = corePassed && report.results.every((r) => r.status !== "fail") ? "partial" : "fail";
 	return report;
 }
 

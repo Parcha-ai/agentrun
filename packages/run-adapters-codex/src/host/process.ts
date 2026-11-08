@@ -149,23 +149,14 @@ export interface GatewayRoute {
 /** Codex's one route: the Responses API. */
 export const CODEX_ROUTES: readonly GatewayRoute[] = Object.freeze([{ method: "POST", path: "/v1/responses", headers: ["originator", "x-client-request-id"] }]);
 
-/** The session's dollar ledger, kept by the harness in its records. */
-export interface GatewayLedger {
-  spent(): { turnUsd: number; sessionUsd: number };
-  add(usd: number, info: { method: string; path: string; model?: string; estimated?: boolean }): void;
-}
-
 /** What the harness says about its model route; the machine's proxy serves it (machine.ts). */
 export interface GatewayHandlerOptions {
   routes: readonly GatewayRoute[];
   models: { model: string };
-  budget?: { turnUsd: number; sessionUsd: number };
-  ledger?: GatewayLedger;
   network?: string;
   credential: () => Promise<string | undefined> | string | undefined;
   target: string;
   track?: unknown;
-  onCap?: (cap: "turnUsd" | "sessionUsd" | "concurrency") => void;
   log?: (message: string, fields?: Record<string, unknown>) => void;
 }
 export interface GatewayHandler {

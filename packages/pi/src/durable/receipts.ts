@@ -62,7 +62,7 @@ export type ReuseReceiptsOptions = {
 
 export type ReceiptReuse = {
   /** The tool with its `execute` wrapped; a tool not named in `tools` is returned as it is. A wrapped call whose result
-   *  carries its blocks only under the key the loaded pi-durable does not read throws `ToolResultKeyError`, and no
+   *  carries its blocks only under `content` (pi 1.1's key; pi-durable reads `output`) throws `ToolResultKeyError`, and no
    *  receipt is written: the model would have received an empty result. */
   wrap<T extends ReusableTool>(tool: T): T;
   /** Calls answered from a receipt and calls refused as unknown, so far. */

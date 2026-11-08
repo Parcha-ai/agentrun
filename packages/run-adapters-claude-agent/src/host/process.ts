@@ -3,9 +3,9 @@
 // machine.ts), its brand, and the model route the harness describes for the session's model proxy (policy.ts).
 //
 // Model spend is accounted only by the runner, through the proxy's hooks (`runner.request` before a request leaves,
-// `runner.turn` with its cost after). Upstream also keeps a dollar ledger in the session's journal and traces each request
-// as a model step through its own gateway; here `journalLedger` and `ModelSteps` record nothing, so no spend is recorded
-// twice.
+// `runner.turn` with its cost after). Upstream also keeps a dollar ledger in the session's journal, traces each request as
+// a model step through its own gateway and ends a turn at its own dollar caps; none of that is here, so no spend is
+// recorded twice and the host's cap is the only one.
 import type { DriveContext } from "./kernel.js";
 
 export {
@@ -91,21 +91,14 @@ export const CLAUDE_ROUTES: readonly GatewayRoute[] = Object.freeze([{ method: "
 
 /** A provider-hosted tool the harness may offer (none here: the policy refuses them all). */
 export type ProviderTool = "web_search" | "web_fetch";
-/** The caps a model route can reach. */
-export type GatewayCap = "turnUsd" | "sessionUsd" | "concurrency";
-
 /** What the harness says about its model route; the machine's proxy serves it (machine.ts, policy.ts). */
 export interface GatewayHandlerOptions {
   routes: readonly GatewayRoute[];
   models: { model: string; smallModel?: string };
-  budget?: { turnUsd: number; sessionUsd: number };
-  ledger?: unknown;
   providerTools?: readonly ProviderTool[];
   network?: string;
   credential: () => Promise<string | undefined> | string | undefined;
   target: string;
-  track?: unknown;
-  onCap?: (cap: GatewayCap) => void;
   /** The provider refused the session's key: a paid request answered 401, with the provider's own words. No retry can
    *  pass, so the harness ends the turn at the first rather than let the CLI retry it for minutes. */
   onKeyRefused?: (detail: string) => void;
@@ -126,21 +119,3 @@ export const gatewayUrl = (): string => {
   throw new Error("agentrun-harness-claude: no provider URL was given to the harness");
 };
 
-/** Upstream's model steps (a trace of each request through its gateway). The runner accounts requests here: nothing to trace. */
-export class ModelSteps {
-  constructor(_ctx: DriveContext, _options: { log?: (message: string, fields?: Record<string, unknown>) => void } = {}) {}
-  readonly request = (): void => {};
-  async settleAbandoned(): Promise<void> {}
-  async close(): Promise<void> {}
-}
-export async function settleAbandonedModelSteps(_ctx: DriveContext): Promise<void> {}
-
-/** Upstream's dollar ledger in the session's journal. The runner accounts spend here: this one records nothing. */
-export interface JournalLedger {
-  turn(key: string): void;
-  spent(): { turnUsd: number; sessionUsd: number };
-  add(usd: number, info: { method: string; path: string; model?: string; estimated?: boolean }): void;
-}
-export function journalLedger(_journal: unknown, _options: { records?: readonly unknown[] } = {}): JournalLedger {
-  return { turn: () => {}, spent: () => ({ turnUsd: 0, sessionUsd: 0 }), add: () => {} };
-}

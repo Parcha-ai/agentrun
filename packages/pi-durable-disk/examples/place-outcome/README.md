@@ -1,7 +1,7 @@
 # place-outcome: how a run ended
 
-A supervisor of your own needs to know how a run ended without learning the package's vocabulary. A place (`localPlace`
-here, `archilPlace` on a disk) starts a run's instance and, when it ends, says how: a `PlaceOutcome`. Its `status` is the
+A supervisor of your own needs to know how a run ended without learning the package's vocabulary. A place (`localPlace`)
+starts a run's instance and, when it ends, says how: a `PlaceOutcome`. Its `status` is the
 run's word, `complete` when the run finished and delivered a record and `failed` for anything else, with the generation, the
 app's `record`, or its `code` and `message`, and the `models` the run used.
 
@@ -96,12 +96,10 @@ export default function app(): AppOptions {
 
 ```sh
 npm init -y && npm pkg set type=module
-npm install @parcha/pi-durable-disk@latest @earendil-works/pi-durable@1.3.0 @earendil-works/pi-ai@1.3.0 @earendil-works/chord@1.3.0
+npm install @parcha/pi-durable-disk@latest @earendil-works/pi-durable@1.5.0 @earendil-works/pi-ai@1.5.0 @earendil-works/chord@1.5.0
 # save main.ts and app.ts here, then
 node main.ts
 ```
-
-pi 1.4 is not supported yet; a later release widens the range.
 
 **From a checkout:**
 
@@ -125,8 +123,8 @@ ok: two runs, two outcomes: the one that delivered is complete with its record, 
 - `localPlace({ app })` returns `(ctx) => Place`. `ctx.paths` is the run's id and directory as the supervisor computed them.
   `place.start({ gen, env })` starts the instance as a child in its own process group, with only `PATH` and the order's `env`,
   and `runner.exited` settles when it ends, with its exit and its `outcome`. `place.release()` stops anything still running.
-- The outcome is the instance's `{"outcome":...}` line on stdout when it prints one, else `run.json` as the run left it. This
-  app prints none, so it is `run.json`'s: the app's last `setStatus` carries the result. `done` with a `record` is `complete`;
+- The outcome is the instance's `{"outcome":...}` line on stdout when it prints one, else the run's record as the run left it. This
+  app prints none, so it is the record's: the app's last `setStatus` carries the result. `done` with a `record` is `complete`;
   `failed`, or `done` with no record, is `failed`. An app that wants its supervisor to have its result puts it in that last
   status, and the models it used under `models` (kept only when they are a plain object of strings).
 - The faux model answers one turn so the run has something to deliver; the supervisor never sees the conversation, only
@@ -134,6 +132,5 @@ ok: two runs, two outcomes: the one that delivered is complete with its record, 
 
 ## What it does not show
 
-On a disk, `archilPlace` reads the same outcome from `run.json` over S3, because a box's stdout is out of reach, and
-`status()`, the takeover and `recordHome` are there too ([Places](../../docs/reference.md#places-where-a-runs-instance-starts-and-ends)).
-A place is also what a supervisor kills and brings back, which this example does not do.
+A place is also what a supervisor kills and brings back, which this example does not do
+([Places](../../docs/reference.md#places-where-a-runs-instance-starts-and-ends)).

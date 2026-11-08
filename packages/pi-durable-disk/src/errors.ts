@@ -3,15 +3,14 @@
 // A module's own errors extend FencedError or HeldError (overriding `code`) so one `instanceof` or `exitCodeFor` covers
 // them all, e.g. `class StoreFencedError extends FencedError` with `{ code: "STORE_FENCED" }`.
 
-/** EX_DATAERR: the run's data refuses to open (a store behind its seal, an unreadable `run.json`); a restart cannot help. */
+/** EX_DATAERR: the run's data refuses to open (an unreadable record); a restart cannot help. */
 export const EXIT_DATAERR = 65;
 /** EX_SOFTWARE: this package cannot read the head of pi's store (pi's schema moved); a restart cannot help. */
 export const EXIT_SOFTWARE = 70;
 /** EX_TEMPFAIL: the claim was revoked or its mount failed; nothing this process writes can become durable. */
 export const EXIT_FENCED = 75;
 /**
- * Someone else holds the run: another client's delegation, another process's owner lock, another store connection. A
- * held delegation is live or orphaned (its client gone); the supervisor revokes orphans.
+ * Someone else holds the run: another store connection, or a process a killed incarnation's commands left alive.
  */
 export const EXIT_HELD = 76;
 /** EX_CONFIG: the host launched a run with no box to run it in (`boxMode: "unavailable"`); a restart on this server cannot help. */
@@ -44,8 +43,8 @@ export class FencedError extends PdaError {
 }
 
 /** `commands`: processes a killed incarnation's commands left that did not die when the next open killed them. */
-export type Holder = "claim" | "owner-lock" | "store" | "commands";
-const HELD_CODES: Record<Holder, string> = { claim: "CLAIM_HELD", "owner-lock": "OWNER_LOCK_HELD", store: "STORE_BUSY", commands: "COMMANDS_ALIVE" };
+export type Holder = "claim" | "store" | "commands";
+const HELD_CODES: Record<Holder, string> = { claim: "CLAIM_HELD", store: "STORE_BUSY", commands: "COMMANDS_ALIVE" };
 
 /** Someone else holds the run (see `Holder`). The process exits 76. */
 export class HeldError extends PdaError {
@@ -56,22 +55,9 @@ export class HeldError extends PdaError {
   }
 }
 
-export type ClaimErrorCode =
-  | "INVALID_ARGUMENT"
-  | "MOUNTPOINT_BUSY"
-  | "MOUNTPOINT_NOT_EMPTY"
-  | "MOUNTPOINT_WRITTEN"
-  | "MOUNTPOINT_UNCHECKED"
-  | "MOUNT_FAILED"
-  | "CLAIM_NOT_VERIFIED"
-  | "ARCHIL_CLI_FAILED"
-  | "UNMOUNT_FAILED"
-  | "DEAD_MOUNT_CLEANUP_FAILED"
-  | "CLAIM_RELEASED"
-  | "CONTROL_API_FAILED"
-  | "NOT_RELEASED";
+export type ClaimErrorCode = "INVALID_ARGUMENT";
 
-/** Any other claim failure (bad input, a refused or unverifiable mount, a CLI or control API failure). Exit 1. */
+/** A claim refused for bad input (a run id that is not one safe path segment). Exit 1. */
 export class ClaimError extends PdaError {
   constructor(code: ClaimErrorCode, message: string, options: { cause?: unknown; exitCode?: number } = {}) {
     super(code, message, options);
@@ -83,10 +69,8 @@ export function exitCodeFor(err: unknown): number {
 }
 
 /**
- * Any error writing a file the claim owns (its probe, `run.json`, `owner.lock`, the run directory itself) is a fence. A
- * revoked mount answers such writes with EIO, EROFS, ENOENT, SQLITE_CANTOPEN or a success into its local cache,
- * so no errno is evidence that the claim is still held. Taking the owner lock is not a write: a lock
- * another process holds is `HeldError("owner-lock")`.
+ * Any error writing a file the claim owns (its layout, the run directory itself) is a fence: no errno is evidence that
+ * the claim is still sound. Trying the store's lock is not a write: a store another process holds is `HeldError("store")`.
  */
 export function ownWriteFenced(what: string, cause: unknown): FencedError {
   const reason = cause instanceof Error ? cause.message : String(cause);

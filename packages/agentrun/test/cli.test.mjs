@@ -177,15 +177,14 @@ test("demo: the CLI creates an agent, starts a capped run, reads it, lists runs 
   const rawInline = cli(["api", "PUT", "/settings/tool-keys/exa", "--body", '{"values":{"EXA_API_KEY":"not-a-secret"}}', ...data]);
   assert.equal(rawInline.code, 2);
   for (const run of [inline, rawInline]) assert.ok(!`${run.out}${run.err}`.includes("not-a-secret"), "the refused value is in no output");
-  // An MCP OAuth start may carry a pre-registered client's secret: no flag for it, and its body never from the command line.
-  const oauthFlag = cli(["mcp-servers", "oauth-start", "docs", "--url", "https://mcp.example.com/mcp", "--client-id", "app", "--client-secret", "not-a-secret", ...data]);
-  assert.equal(oauthFlag.code, 2, oauthFlag.err);
-  const oauthInline = cli(["mcp-servers", "oauth-start", "docs", "--body", '{"url":"https://mcp.example.com/mcp","client_id":"app","client_secret":"not-a-secret"}', ...data]);
-  assert.equal(oauthInline.code, 2, oauthInline.err);
-  assert.match(oauthInline.err, /--body -/);
+  // An MCP sign-in starts only in the owner's browser: no command for it. Its route may carry a pre-registered client's
+  // secret, so a raw call to it never takes its body from the command line either.
+  const oauthCommand = cli(["mcp-servers", "oauth-start", "docs", "--body", '{"url":"https://mcp.example.com/mcp","client_id":"app","client_secret":"not-a-secret"}', ...data]);
+  assert.equal(oauthCommand.code, 2, oauthCommand.err);
+  assert.match(oauthCommand.err, /has no verb oauth-start/);
   const oauthRaw = cli(["api", "POST", "/settings/mcp-servers/docs/oauth/start", "--body", '{"url":"https://mcp.example.com/mcp","client_id":"app","client_secret":"not-a-secret"}', ...data]);
   assert.equal(oauthRaw.code, 2, oauthRaw.err);
-  for (const run of [oauthFlag, oauthInline, oauthRaw]) assert.ok(!`${run.out}${run.err}`.includes("not-a-secret"), "the refused value is in no output");
+  for (const run of [oauthCommand, oauthRaw]) assert.ok(!`${run.out}${run.err}`.includes("not-a-secret"), "the refused value is in no output");
   // 3: nothing answers.
   const port = await closedPort();
   const unreachable = cli(["agents", "list", "--base-url", `http://127.0.0.1:${port}/v2`], { extra: { AGENTRUN_API_KEY: "fake-test-key" } });

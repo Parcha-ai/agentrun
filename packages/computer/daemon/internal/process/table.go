@@ -18,7 +18,7 @@
 // packages/envd/internal/services/process (signal.go's signal names, list.go, and handler.go's pty read loop, which
 // ends on EIO). Changed for the open platform: ids are "p1", "p2", ...; the table is bounded and keeps ended
 // processes for reads; output goes to a ring per stream read by offset, not to subscribers; a signal goes to the
-// program's group through its guard; errors are the protocol's kinds.
+// program's group through its guard, INT on a terminal to its foreground group; errors are the protocol's kinds.
 
 package process
 
@@ -54,8 +54,9 @@ var signals = map[string]syscall.Signal{"TERM": syscall.SIGTERM, "INT": syscall.
 
 // Table is every process the daemon holds, shared by all its connections. It holds at most MaxEntries, running or
 // ended; a start into a full table drops the process that ended first once the new one runs, and is refused as limit
-// when all of them run. Its rings hold at most RetainedBytes together: past that, the rings of the processes that ended
-// first are let go, while their entries stay.
+// when all of them run. Its rings, live and ended, hold at most RetainedBytes together: past that, the rings of the
+// processes that ended first are let go, while their entries stay, and when no ended ring is left the live rings are
+// limited to their share of the budget.
 type Table struct {
 	opts Options
 	// startSlot holds one token while a start runs; a start waits for it in a select, so its cancellation ends the wait.
@@ -78,6 +79,9 @@ func NewTable(opts Options) *Table {
 	if opts.RetainedBytes <= 0 {
 		opts.RetainedBytes = RetainedBytes
 	}
+	if opts.LogBytes <= 0 {
+		opts.LogBytes = LogBytes
+	}
 	return &Table{opts: opts, startSlot: make(chan struct{}, 1)}
 }
 
@@ -97,6 +101,9 @@ type proc struct {
 	// input is stdin or the terminal; nil when the process takes none, or no longer does.
 	input     *os.File
 	takesNone bool
+
+	// log is the file the first output goes to, when the start named one; nil otherwise.
+	log *logFile
 
 	mu       sync.Mutex
 	terminal *os.File
@@ -144,10 +151,26 @@ func (t *Table) Start(ctx context.Context, params StartParams) (StartResult, err
 		return StartResult{}, rpc.Errorf(rpc.KindAborted, "process.start was cancelled while another start was in progress")
 	}
 	defer func() { <-t.startSlot }()
+	if params.Orphans != "" && params.Orphans != "keep" {
+		return StartResult{}, rpc.Errorf(rpc.KindInvalid, `orphans is "keep" or absent, not %q`, params.Orphans)
+	}
 	if err := t.checkRoom(); err != nil {
 		return StartResult{}, err
 	}
 	p := &proc{table: t, argv: params.Argv, pty: params.Pty != nil, writing: make(chan struct{}, 1), streams: map[string]*stream{}, changed: make(chan struct{}), ended: make(chan struct{})}
+	if params.Log != "" {
+		log, err := openLog(params.Log, t.opts.LogBytes)
+		if err != nil {
+			return StartResult{}, err
+		}
+		p.log = log
+		// A start that does not run its program leaves no log behind.
+		defer func() {
+			if p.g == nil {
+				log.discard()
+			}
+		}()
+	}
 	var stdin, stdout, stderr *os.File
 	var theirs []*os.File
 	if params.Pty != nil {
@@ -183,11 +206,14 @@ func (t *Table) Start(ctx context.Context, params StartParams) (StartResult, err
 			theirs = append(theirs, r)
 		}
 	}
-	g, err := execrun.Start(ctx, execrun.Program{Argv: params.Argv, Cwd: params.Cwd, Env: params.Env, User: params.User, Terminal: p.pty}, stdin, stdout, stderr)
+	g, err := execrun.Start(ctx, execrun.Program{Argv: params.Argv, Cwd: params.Cwd, Env: params.Env, User: params.User, Terminal: p.pty, WaitGroup: params.WaitGroup, KeepOrphans: params.Orphans == "keep"}, stdin, stdout, stderr)
 	closeAll(theirs...)
 	if err != nil {
 		p.release()
 		return StartResult{}, err
+	}
+	if p.log != nil {
+		p.log.settle()
 	}
 	t.mu.Lock()
 	dropped := t.dropOldestEnded()
@@ -251,16 +277,22 @@ func (t *Table) hold(grew int) {
 	t.trim()
 }
 
-// trim lets go of the rings of the processes that ended first until the table is within RetainedBytes, or no ended
-// process holds a ring. A running process keeps its ring. Hold t.mu.
+// trim keeps the table within RetainedBytes. First it lets go of the rings of the processes that ended first. When
+// every ended ring is gone and the table is still over, the live rings are what holds it: each stops growing and keeps
+// at most an equal share of the budget, never less than the floor, dropping its oldest bytes, which a read reports as
+// dropped. Hold t.mu.
 func (t *Table) trim() {
 	if t.held <= t.opts.RetainedBytes {
 		return
 	}
-	var ended []*proc
+	var ended, live []*proc
+	rings := 0
 	for _, p := range t.procs {
 		if p.hasEnded() {
 			ended = append(ended, p)
+		} else {
+			live = append(live, p)
+			rings += len(p.streams)
 		}
 	}
 	sort.SliceStable(ended, func(i, j int) bool { return ended[i].endedAt.Before(ended[j].endedAt) })
@@ -270,6 +302,24 @@ func (t *Table) trim() {
 		}
 		t.held -= p.releaseRings()
 	}
+	if t.held <= t.opts.RetainedBytes || rings == 0 {
+		return
+	}
+	share := int(max(t.opts.RetainedBytes/int64(rings), int64(min(RingFloorBytes, t.opts.RingBytes))))
+	for _, p := range live {
+		t.held -= p.limitRings(share)
+	}
+}
+
+// limitRings keeps each ring of p within n bytes from now on (ring.limit), and returns how many bytes they let go.
+func (p *proc) limitRings(n int) int64 {
+	p.mu.Lock()
+	defer p.mu.Unlock()
+	var freed int64
+	for _, s := range p.streams {
+		freed += int64(s.limit(n))
+	}
+	return freed
 }
 
 // releaseRings lets go of every ring of p, so none of them grows again, and returns how many bytes they held.
@@ -289,13 +339,20 @@ func (p *proc) collect(s *stream) {
 	for {
 		n, err := s.reader.Read(buf)
 		if n > 0 {
+			// The log first, so a read the notify below wakes finds the bytes in it too.
+			if p.log != nil {
+				p.log.write(buf[:n])
+			}
+			// Under t.mu, so the table counts and trims the bytes before anything else reads what it holds.
+			t := p.table
+			t.mu.Lock()
 			p.mu.Lock()
 			grew := s.write(buf[:n])
 			p.notify()
 			p.mu.Unlock()
-			if grew > 0 {
-				p.table.hold(grew)
-			}
+			t.held += int64(grew)
+			t.trim()
+			t.mu.Unlock()
 		}
 		if err != nil {
 			break
@@ -313,11 +370,15 @@ func (p *proc) collect(s *stream) {
 	p.unlockInput()
 }
 
-// watch records how the process ended once its guard is done, and closes its stdin.
+// watch records how the process ended once its guard says so, and closes its stdin. A guard that keeps what the process
+// left outside it runs on after that: it is let go of only once it is done, so the daemon's hold on it never ends them.
 func (p *proc) watch() {
-	<-p.g.Done()
+	<-p.g.Ended()
 	code, signal, _ := p.g.Exit()
-	p.g.Close()
+	go func() {
+		<-p.g.Done()
+		p.g.Close()
+	}()
 	p.lockInput()
 	if !p.pty && p.input != nil {
 		_ = p.input.Close()
@@ -342,6 +403,9 @@ func (p *proc) release() {
 	for _, s := range p.streams {
 		_ = s.reader.Close()
 	}
+	if p.log != nil {
+		p.log.close()
+	}
 }
 
 func (t *Table) get(id string) (*proc, error) {
@@ -361,10 +425,13 @@ func (t *Table) Read(ctx context.Context, params ReadParams) (ReadResult, error)
 		return ReadResult{}, err
 	}
 	s := p.streams[params.Stream]
-	if s == nil {
+	if s == nil && (params.Stream != "log" || p.log == nil) {
 		names := "stdout and stderr"
 		if p.pty {
 			names = "pty"
+		}
+		if p.log != nil {
+			names += ", and log"
 		}
 		return ReadResult{}, rpc.Errorf(rpc.KindInvalid, "process %s has no stream %q; it has %s", p.id, params.Stream, names)
 	}
@@ -387,6 +454,9 @@ func (t *Table) Read(ctx context.Context, params ReadParams) (ReadResult, error)
 	timer := time.NewTimer(time.Duration(params.WaitMs) * time.Millisecond)
 	defer timer.Stop()
 	waiting := params.WaitMs > 0
+	if s == nil {
+		return p.readLog(ctx, offset, max, waiting, timer)
+	}
 	for {
 		p.mu.Lock()
 		if offset > s.total {
@@ -397,12 +467,42 @@ func (t *Table) Read(ctx context.Context, params ReadParams) (ReadResult, error)
 		done := s.eof && p.hasEnded()
 		if !waiting || offset < s.total || done {
 			data, next, dropped := s.read(offset, max)
-			res := ReadResult{Data: data, NextOffset: next, Dropped: dropped, Exited: done && next == s.total}
+			res := ReadResult{Data: data, NextOffset: next, Dropped: dropped, Exited: done && next == s.total, Size: s.total}
 			p.mu.Unlock()
 			return res, nil
 		}
 		changed := p.changed
 		p.mu.Unlock()
+		select {
+		case <-changed:
+		case <-timer.C:
+			waiting = false
+		case <-ctx.Done():
+			return ReadResult{}, rpc.Errorf(rpc.KindAborted, "process.read was cancelled")
+		}
+	}
+}
+
+// readLog is Read of the "log" stream: at most max bytes from offset of the log, read through the daemon's own open
+// file. Its size is the bytes the log holds, and it says when output past them was dropped.
+func (p *proc) readLog(ctx context.Context, offset int64, max int, waiting bool, timer *time.Timer) (ReadResult, error) {
+	for {
+		p.mu.Lock()
+		done := p.hasEnded()
+		for _, s := range p.streams {
+			done = done && s.eof
+		}
+		changed := p.changed
+		p.mu.Unlock()
+		written, capped, failed := p.log.state()
+		if offset > written {
+			return ReadResult{}, rpc.Errorf(rpc.KindInvalid, "offset %d is past the end of %s's log, %d bytes so far", offset, p.id, written)
+		}
+		if !waiting || offset < written || done {
+			data := p.log.read(offset, int(min(int64(max), written-offset)))
+			next := offset + int64(len(data))
+			return ReadResult{Data: data, NextOffset: next, Exited: done && next == written, Size: written, Capped: capped, LogError: failed}, nil
+		}
 		select {
 		case <-changed:
 		case <-timer.C:
@@ -475,21 +575,46 @@ func (t *Table) Write(ctx context.Context, params WriteParams) (Empty, error) {
 	return Empty{}, nil
 }
 
-// Signal sends a signal to the program's process group, through its guard. A signal to a process that has ended does
-// nothing.
-func (t *Table) Signal(params SignalParams) (Empty, error) {
+// Signal sends a signal through the program's guard. Where it goes: INT to a process started with a pty is ^C, so it
+// goes to the terminal's foreground process group (the job a shell runs in the foreground, or the program itself when
+// it runs none), which must be in the program's own session: the program leads that session, so the group is under
+// its guard, and a group in another session is refused. The guard checks the group again right before it signals it:
+// one with no process left in the program's session by then (it ended, and its id may have gone to a group in another
+// session) is not signalled, and the note says INT was not sent. A terminal with no foreground group left has INT go
+// to the program's own group, with a note that says so. Every other signal, and INT without a pty, goes to the program's
+// group. A signal to a process that has ended does nothing.
+func (t *Table) Signal(params SignalParams) (SignalResult, error) {
 	sig, ok := signals[params.Signal]
 	if !ok {
-		return Empty{}, rpc.Errorf(rpc.KindInvalid, "signal is TERM, INT, KILL or HUP, not %q", params.Signal)
+		return SignalResult{}, rpc.Errorf(rpc.KindInvalid, "signal is TERM, INT, KILL or HUP, not %q", params.Signal)
 	}
 	p, err := t.get(params.ID)
 	if err != nil {
-		return Empty{}, err
+		return SignalResult{}, err
 	}
 	if p.hasEnded() {
-		return Empty{}, nil
+		return SignalResult{}, nil
 	}
-	return Empty{}, p.g.Signal(sig)
+	if !p.pty || sig != syscall.SIGINT {
+		return SignalResult{}, p.g.Signal(sig)
+	}
+	p.mu.Lock()
+	group, session, err := 0, 0, errNoForeground
+	if p.terminal != nil {
+		group, session, err = foreground(p.terminal)
+	}
+	p.mu.Unlock()
+	switch {
+	case err != nil:
+		return SignalResult{Note: err.Error() + "; INT went to the program's own group"}, p.g.Signal(sig)
+	case session != p.pid:
+		return SignalResult{}, rpc.Errorf(rpc.KindDenied, "process %s's terminal belongs to another session: its foreground group %d is in session %d, not the program's, %d; INT was not sent", p.id, group, session, p.pid)
+	}
+	sent, why, err := p.g.SignalGroup(sig, group)
+	if err != nil || sent {
+		return SignalResult{}, err
+	}
+	return SignalResult{Note: why + "; INT was not sent"}, nil
 }
 
 func (t *Table) Resize(params ResizeParams) (Empty, error) {

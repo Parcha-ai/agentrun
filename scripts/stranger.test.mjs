@@ -74,11 +74,11 @@ test("every spec's companions are its package's repository dependencies, transit
 });
 
 test("a README's install line keeps its own arguments, with this tree's companions after them, and must name the package", () => {
-  const line = 'npm install @parcha/pi-durable-agent@latest @earendil-works/pi-durable@1.3.0\n';
+  const line = 'npm install @parcha/pi-durable-agent@latest @earendil-works/pi-durable@1.5.0\n';
   const packed = new Map([['@parcha/pi-durable-agent', '/packs/agent.tgz']]);
   assert.deepEqual(readmeInstallArgs(line, packed, ['/packs/dsl.tgz', '/packs/pi.tgz']),
-    ['install', '/packs/agent.tgz', '@earendil-works/pi-durable@1.3.0', '/packs/dsl.tgz', '/packs/pi.tgz']);
-  assert.throws(() => readmeInstallArgs('npm install @earendil-works/pi-durable@1.3.0\n', packed, ['/packs/dsl.tgz']), /does not install @parcha\/pi-durable-agent/);
+    ['install', '/packs/agent.tgz', '@earendil-works/pi-durable@1.5.0', '/packs/dsl.tgz', '/packs/pi.tgz']);
+  assert.throws(() => readmeInstallArgs('npm install @earendil-works/pi-durable@1.5.0\n', packed, ['/packs/dsl.tgz']), /does not install @parcha\/pi-durable-agent/);
 });
 
 test("a README's install line is installed as written, with this tree's packed package in its place", () => {
@@ -118,15 +118,6 @@ test('the local box spec accepts the host kernel name, and the Docker spec requi
   assert.equal(judge(docker, { exitCode: 0, stdout: output(darwin), stderr: '', timedOut: false }).length, 1);
 });
 
-test('the vision spec accepts exactly the output its README shows under the command, and nothing more or less', async () => {
-  const vision = await loadSpec('pi-vision');
-  const [file] = vision.files;
-  const shown = extractSnippet(await readFile(new URL(`../${file.readme}`, import.meta.url), 'utf8'), { heading: file.heading, fence: 'text' });
-  const ran = over => judge(vision, { exitCode: 0, stdout: shown, stderr: '', timedOut: false, ...over }).length;
-  assert.equal(ran({}), 0);
-  assert.deepEqual([ran({ stdout: `${shown}more\n` }), ran({ stdout: shown.slice(1) }), ran({ stdout: shown.replace('B2=1250.5', 'B2=1250') }), ran({ stderr: 'a warning\n' })], [1, 1, 1, 1]);
-});
-
 test("the agent-home spec accepts exactly the output its README shows under the command, followed by nothing but Node's warning lines", async () => {
   const agent = await loadSpec('pi-durable-agent');
   const [file] = agent.files;
@@ -145,26 +136,6 @@ test('the browser spec accepts exactly the output its README shows under the com
   const ran = over => judge(browser, { exitCode: 0, stdout: shown, stderr: '', timedOut: false, ...over }).length;
   assert.equal(ran({}), 0);
   assert.deepEqual([ran({ stdout: `${shown}more\n` }), ran({ stdout: shown.slice(1) }), ran({ stdout: shown.replace('forty-two', 'forty-three') }), ran({ stderr: 'a warning\n' })], [1, 1, 1, 1]);
-});
-
-test('the git-remote spec accepts exactly the output its README shows under the quickstart, and nothing more or less', async () => {
-  const gitRemote = await loadSpec('pi-git-remote');
-  const [file] = gitRemote.files;
-  const shown = extractSnippet(await readFile(new URL(`../${file.readme}`, import.meta.url), 'utf8'), { heading: file.heading, fence: '' });
-  const ran = over => judge(gitRemote, { exitCode: 0, stdout: shown, stderr: '', timedOut: false, ...over }).length;
-  assert.equal(ran({}), 0);
-  assert.deepEqual([ran({ stdout: `${shown}more\n` }), ran({ stdout: shown.slice(1) }), ran({ stdout: shown.replace('again: false', 'again: true') }), ran({ stderr: 'a warning\n' })], [1, 1, 1, 1]);
-});
-
-test('the learn spec accepts the output its README shows under the quickstart with a real sha for <sha>, and nothing more or less', async () => {
-  const learn = await loadSpec('pi-agent-learn');
-  const [file] = learn.files;
-  const shown = extractSnippet(await readFile(new URL(`../${file.readme}`, import.meta.url), 'utf8'), { heading: file.heading, fence: '' });
-  assert.ok(shown.includes('your repo at <sha>)'), 'the README shows the seeded commit as <sha>');
-  const printed = shown.replace('your repo at <sha>)', 'your repo at 6c2011ad512a)');
-  const ran = over => judge(learn, { exitCode: 0, stdout: printed, stderr: '', timedOut: false, ...over }).length;
-  assert.equal(ran({}), 0);
-  assert.deepEqual([ran({ stdout: shown }), ran({ stdout: printed.replace('6c2011ad512a', '6c2011a') }), ran({ stdout: `${printed}more\n` }), ran({ stdout: printed.slice(1) }), ran({ stdout: printed.replace('(used 3)', '(used 4)') }), ran({ stderr: 'a warning\n' })], [1, 1, 1, 1, 1, 1]);
 });
 
 // ---- the examples' Since cells ----

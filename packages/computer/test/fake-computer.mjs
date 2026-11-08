@@ -10,12 +10,17 @@ const b64 = (text) => Buffer.from(text).toString("base64");
 
 const ALL_CAPABILITIES = "000001ffffffffff";
 const NO_CAPABILITIES = "0000000000000000";
+/** What /proc/self/status reads in a computer that leaves its programs nothing: every set empty, no_new_privs set. */
+const UNPRIVILEGED = { CapInh: NO_CAPABILITIES, CapPrm: NO_CAPABILITIES, CapEff: NO_CAPABILITIES, CapBnd: NO_CAPABILITIES, CapAmb: NO_CAPABILITIES, NoNewPrivs: "1" };
 
 /** What exec.run of argv prints in a computer whose user is uid, as `user` (a name in users, or a uid) when given. */
-function output(argv, { uid, caps, users, user }) {
+function output(argv, { uid, status, users, user }) {
 	const who = user === undefined ? uid : String(users[user] ?? user);
 	if (argv[0] === "id" && argv[1] === "-u") return `${who}\n`;
-	if (argv[0] === "cat" && argv[1] === "/proc/self/status") return `Uid:\t${who}\nCapEff:\t${caps}\nCapPrm:\t${caps}\n`;
+	if (argv[0] === "cat" && argv[1] === "/proc/self/status") {
+		const lines = Object.entries(status).filter(([, value]) => value !== undefined);
+		return `Uid:\t${who}\n${lines.map(([field, value]) => `${field}:\t${value}\n`).join("")}`;
+	}
 	if (argv[0] === "env") return "PATH=/usr/bin:/bin\nHOME=/home/fake\n";
 	if (argv[0] === "sh" && argv[2]?.includes('echo ok > "$HOME/x"')) return "ok\n";
 	return `${argv.slice(1).join(" ")}\n`;
@@ -97,13 +102,27 @@ function fakeDaemon(hello, computer) {
  * - `createHangs`, `releaseHangs`: those calls never answer. `createDelays`: ms before each create answers, by call.
  * - `connectThrows`: connect throws that message. `uid`: the default user's uid; `users`: names to uids.
  * - `capsForUser`: a computer whose spec asked for a user has every capability.
+ * - `status`: /proc/self/status fields over the unprivileged ones, in every computer (a value of undefined drops the
+ *   line); `statusForUser`: the same, in a computer whose spec asked for a user.
  * - `createRejects`: create rejects with that message. `createIgnoresCheck`: create makes a computer check refuses.
  * - `listPage`: how many processes one process.list page holds. `filesPage`: how many entries one files.list page holds.
+ * - `declaresStopDeletes`: capabilities().stopDeletes, left out unless given. `stopIgnored`: a stop does nothing, and the
+ *   computer runs on.
+ * - `networkSwitches`: network() applies a change to a network the provider declares, instead of refusing every change.
+ *   Each network() call that asks for a policy is in `calls` as ["network", name, policy].
+ * - `attachSpec`: merged over the spec attach reports (null: attach reports none).
+ * - `release`: what capabilities().release declares (default stop and delete). A stop it does not declare is refused as
+ *   `unsupported` and leaves the computer running, unless `stopAnyway`; `stopDeletes`: a stop deletes the computer.
+ * - `kind`, `mode` (capabilities().daemon), `groups`, `maxLifetimeMs`: what capabilities() declares; check() refuses a
+ *   lifetime past maxLifetimeMs. `hello` is merged over the hello the daemon gives.
  */
 export function fakeComputers({
 	id = "fake",
 	version = "1.0.0",
-	daemon = ["exec", "files", "processes"],
+	kind = "linux",
+	mode = "pid1",
+	groups = ["exec", "files", "processes"],
+	maxLifetimeMs = 24 * 60 * 60_000,
 	hello = {},
 	network = ["none"],
 	lifetime = "janitor",
@@ -117,9 +136,18 @@ export function fakeComputers({
 	uid = 1000,
 	users = {},
 	capsForUser = false,
+	status = {},
+	statusForUser = {},
 	createRejects,
 	createIgnoresCheck = false,
 	listPage = 100,
+	declaresStopDeletes,
+	stopIgnored = false,
+	networkSwitches = false,
+	attachSpec = {},
+	release = ["stop", "delete"],
+	stopAnyway = false,
+	stopDeletes = false,
 	filesPage = 100,
 } = {}) {
 	const computers = new Map();
@@ -130,10 +158,11 @@ export function fakeComputers({
 	const provider = {
 		id,
 		version,
-		capabilities: () => ({ lifetime, network, isolation: "container", os: "linux", daemon, ...(user ? { user } : {}) }),
+		capabilities: () => ({ kind, lifetime, network, isolation: "container", os: "linux", daemon: mode, groups, maxLifetimeMs, release, ...(user ? { user } : {}) }),
 		check(spec) {
 			const refusals = [];
 			if (!(Number.isSafeInteger(spec.lifetimeMs) && spec.lifetimeMs > 0)) refusals.push({ field: "lifetimeMs", message: "lifetimeMs is required" });
+			else if (spec.lifetimeMs > maxLifetimeMs) refusals.push({ field: "lifetimeMs", message: `lifetimeMs is at most ${maxLifetimeMs} ms` });
 			const kind = typeof spec.network === "string" ? spec.network : "allow";
 			if (!network.includes(kind)) refusals.push({ field: "network", message: `network ${kind} is not offered` });
 			return refusals;
@@ -149,13 +178,19 @@ export function fakeComputers({
 			const name = `fake-${++next}`;
 			const record = {
 				ref: { id: `id-${next}`, name },
+				image: spec.image,
 				labels: { ...spec.labels },
 				network: spec.network,
 				deadline: new Date(Date.now() + spec.lifetimeMs),
 				state: "running",
 				daemon: {
 					uid: spec.user ?? String(uid),
-					caps: capsForUser && spec.user !== undefined ? ALL_CAPABILITIES : NO_CAPABILITIES,
+					status: {
+						...UNPRIVILEGED,
+						...status,
+						...(spec.user !== undefined && capsForUser ? { CapEff: ALL_CAPABILITIES, CapPrm: ALL_CAPABILITIES } : {}),
+						...(spec.user !== undefined ? statusForUser : {}),
+					},
 					users,
 					processes: [],
 					listPage,
@@ -173,7 +208,10 @@ export function fakeComputers({
 			);
 			if (found.length === 0) return fail("not_found", "no such computer");
 			if (found.length > 1) return fail("invalid", `${found.length} computers match`);
-			return ok(found[0].ref);
+			const [c] = found;
+			const [u, g = u] = c.daemon.uid.split(":");
+			const read = { image: c.image, user: `${u}:${g}`, network: c.network, deadline: c.deadline };
+			return ok(attachSpec === null ? { ...c.ref } : { ...c.ref, spec: { ...read, ...attachSpec } });
 		},
 		async list(labels) {
 			calls.push(["list", labels]);
@@ -183,13 +221,17 @@ export function fakeComputers({
 		async network(ref, policy) {
 			const record = computers.get(ref.name);
 			if (!record) return fail("not_found", `no computer ${ref.name}`);
-			if (policy !== undefined && policy !== record.network) return fail("refused", "the network is fixed");
+			if (policy !== undefined) calls.push(["network", ref.name, policy]);
+			if (policy !== undefined && JSON.stringify(policy) !== JSON.stringify(record.network)) {
+				if (!networkSwitches || !network.includes(typeof policy === "string" ? policy : "allow")) return fail("refused", "the network is fixed");
+				record.network = policy;
+			}
 			return ok(record.network);
 		},
 		async connect(ref) {
 			if (connectThrows) throw new Error(connectThrows);
 			if (!computers.has(ref.name)) return fail("not_found", `no computer ${ref.name}`);
-			const value = { version, os: "linux", arch: "amd64", capabilities: daemon, ...hello };
+			const value = { version, os: "linux", kind, arch: "amd64", groups, ...hello };
 			connections++;
 			let closed = false;
 			const client = new DaemonClient(fakeDaemon(value, computers.get(ref.name).daemon));
@@ -203,11 +245,19 @@ export function fakeComputers({
 		async release(ref, how) {
 			calls.push(["release", ref.name, how]);
 			if (releaseHangs) return new Promise(() => {});
+			if (how === "stop" && stopIgnored) return ok(undefined);
 			const record = computers.get(ref.name);
+			if (how === "stop" && !release.includes("stop") && !stopAnyway) return fail("unsupported", "this fake has no stop that keeps a computer; release it with delete");
+			if (record && how === "stop" && stopDeletes) computers.delete(ref.name);
 			if (record && how === "stop") record.state = "stopped";
 			if (record && how === "delete" && !keepOnRelease) computers.delete(ref.name);
 			return ok(undefined);
 		},
 	};
+	// stopDeletes as declared, apart from the line that declares the rest.
+	if (declaresStopDeletes !== undefined) {
+		const declared = provider.capabilities;
+		provider.capabilities = () => ({ ...declared(), stopDeletes: declaresStopDeletes });
+	}
 	return { provider, made, calls, alive: () => [...computers.keys()], open: () => connections };
 }

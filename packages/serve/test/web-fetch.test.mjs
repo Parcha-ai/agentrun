@@ -5,7 +5,7 @@ import assert from "node:assert/strict";
 import { readFile } from "node:fs/promises";
 import { join } from "node:path";
 import { test } from "node:test";
-import * as pages from "../dist/fetch-page.js";
+import * as pages from "../dist/web-fetch-direct.js";
 import * as web from "../dist/web-fetch.js";
 import { fetchFor, PARALLEL_EXTRACT_URL, parallelExtract, webFetch } from "../dist/web-fetch.js";
 import { bookedIn, PARALLEL_EXTRACT_USD } from "../dist/paid-calls.js";
@@ -88,7 +88,7 @@ test("the URL in Parallel's errors, a 5xx, or a request that fails falls back to
   }
 }));
 
-test("a URL the guard refuses is never sent to Parallel: refused as fetch_page refuses it, via direct", inCall(async (t) => {
+test("a URL the guard refuses is never sent to Parallel: refused as the guarded fetch refuses it, via direct", inCall(async (t) => {
   withEnv(t, {}, [MODE]);
   const { sent, send } = parallel();
   const extract = parallelExtract(CANARY, send);
@@ -164,7 +164,6 @@ test("a long page is read in parts: max_chars characters from offset (20,000 by 
   assert.equal(first.text, long.slice(0, 20_000));
   assert.equal(pages.PAGE_CHARS, 20_000);
   assert.equal(where(first), "Characters 0-20000 of 47003: call web_fetch again with offset=20000 for the rest.");
-  assert.equal(where(first, "fetch_page"), "Characters 0-20000 of 47003: call fetch_page again with offset=20000 for the rest.", "by the name it was called");
   const next = await read({ offset: 20_000, maxChars: 25_000 });
   assert.deepEqual([next.text, next.chars, next.offset, next.truncated, next.original_chars, next.next_offset], [long.slice(20_000, 45_000), 25_000, 20_000, true, 47_003, 45_000]);
   const last = await read({ offset: 45_000 });

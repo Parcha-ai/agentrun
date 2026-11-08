@@ -41,12 +41,12 @@ test("a guard: a marker names no other conversation's entry, nor one with anothe
 const KEY = ["not-a-secret", "server-row-key", "0123456789ab"].join("-");
 const redact = (text) => text.split(KEY).join("[redacted]");
 /** An approval's resume as the gate writes it: its head line, then the call's result, where a held key can be. */
-const resume = (result) => `[tool approval] This answers your fetch_page call call_1 (arguments {"url":"https://api.example/"}), which waited for a person's approval; it is not a new message from them.\nThe call ran. Its result:\n${result}`;
+const resume = (result) => `[tool approval] This answers your web_fetch call call_1 (arguments {"url":"https://api.example/"}), which waited for a person's approval; it is not a new message from them.\nThe call ran. Its result:\n${result}`;
 
 test("a server message's row is redacted whole as a person's is, its result's lines too, before its first line is taken: no way around the host's redaction", () => {
   const rows = timelineOf([user(resume(`{"token":"${KEY}"}`), 0, { data: { origin: { kind: "server", reason: "approval" } } })], { redact });
   const [summary, text] = phases(rows)[0] ?? [];
-  assert.equal(summary, `AgentRun: [tool approval] This answers your fetch_page call call_1 (arguments {"url":"https://api.example/"}), which waited for a person's approval; it is not a new message from them.`);
+  assert.equal(summary, `AgentRun: [tool approval] This answers your web_fetch call call_1 (arguments {"url":"https://api.example/"}), which waited for a person's approval; it is not a new message from them.`);
   assert.ok(text?.endsWith('{"token":"[redacted]"}') && !text.includes(KEY), `the result's key is redacted in the row's text: ${text}`);
 });
 
@@ -56,7 +56,7 @@ test("an approval a person's message declined shows two rows: the server's resum
   const rows = timelineOf([user("Fetch the page."), user(resume("The person declined the call."), 0, { data: { origin: declined } })], { redact });
   assert.deepEqual(rows.filter((r) => ["user_message", "phase"].includes(r.kind)).map((r) => [r.kind, r.summary]), [
     ["user_message", "You: Fetch the page."],
-    ["phase", `AgentRun: [tool approval] This answers your fetch_page call call_1 (arguments {"url":"https://api.example/"}), which waited for a person's approval; it is not a new message from them.`],
+    ["phase", `AgentRun: [tool approval] This answers your web_fetch call call_1 (arguments {"url":"https://api.example/"}), which waited for a person's approval; it is not a new message from them.`],
     ["user_message", "You: No, not that one. Use http://127.0.0.1:7340/#/runs/01a1a88c-4f2e-7abc-8def-0123456789ab and [redacted] instead."],
   ], "the person's words are never hidden: a row of theirs, their console link's fragment kept, their pasted key redacted");
   // The server's row says it is the server's (origin "server", as any server message's row), and the turn took one

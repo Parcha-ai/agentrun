@@ -1,10 +1,9 @@
 // process.*: a process outlives the connection that started it, is read by offset, takes stdin, runs in a terminal,
 // is signalled and waited on, is listed, and leaves nothing behind when it ends.
-import type { DaemonClient } from "../../client.js";
 import { listProcesses, readAll } from "../../processes.js";
-import type { ProcessStream } from "../../protocol.js";
+import { type ComputerClient, PROCESS_LOG_BYTES, type ProcessStream } from "../../protocol.js";
 import type { Capability, Case, CaseContext } from "../types.js";
-import { alive, b64, decode } from "./util.js";
+import { alive, b64, decode, delay } from "./util.js";
 
 const processCase = (name: string, run: Case["run"], needs: Capability[] = ["processes"]): Case => ({
 	id: `process.${name}`,
@@ -16,16 +15,18 @@ const processCase = (name: string, run: Case["run"], needs: Capability[] = ["pro
 const TICKER = ["sh", "-c", "i=0; while true; do echo tick $i; i=$((i+1)); sleep 0.2; done"];
 
 /** Reads a stream from offset until what was read holds want; returns it and where the stream now ends. */
-async function readUntil(t: CaseContext, client: DaemonClient, id: string, stream: ProcessStream, offset: number, want: string) {
+async function readUntil(t: CaseContext, client: ComputerClient, id: string, stream: ProcessStream, offset: number, want: string | RegExp) {
 	let text = "";
 	let at = offset;
+	const holds = () => (typeof want === "string" ? text.includes(want) : want.test(text));
+	const shown = typeof want === "string" ? JSON.stringify(want) : String(want);
 	await t.until(async () => {
 		const read = await t.call("process.read", { id, stream, offset: at, waitMs: 1000 }, client);
 		text += decode(read.data);
 		at = read.nextOffset;
-		if (!text.includes(want) && read.exited) throw new Error(`${id} ${stream} ended without ${JSON.stringify(want)}: ${JSON.stringify(text)}`);
-		return text.includes(want);
-	}, `${id} ${stream} to show ${JSON.stringify(want)} (it showed ${JSON.stringify(text.slice(-200))})`);
+		if (!holds() && read.exited) throw new Error(`${id} ${stream} ended without ${shown}: ${JSON.stringify(text)}`);
+		return holds();
+	}, `${id} ${stream} to show ${shown} (it showed ${JSON.stringify(text.slice(-200))})`);
 	return { text, offset: at };
 }
 
@@ -66,6 +67,7 @@ export const processCases: Case[] = [
 		const again = await t.call("process.read", { id: started.id, stream: "stdout", offset: 0, maxBytes: 7 });
 		t.equal(decode(again.data), "tick 0\n", "a second read from offset 0, 7 bytes");
 		t.equal(again.nextOffset, 7, "its nextOffset");
+		t.assert(again.size >= offset, `its size, the stream's bytes so far: ${again.size}, at least the ${offset} already read`);
 		t.refused(await t.client.call("process.read", { id: started.id, stream: "stdout", offset: offset + 1_000_000 }), "a read past the end", ["invalid"]);
 		await kill(t, started.id);
 	}),
@@ -116,6 +118,51 @@ export const processCases: Case[] = [
 		},
 		["processes", "exec"],
 	),
+	processCase(
+		"pty-interrupt",
+		async (t) => {
+			// INT on a terminal is ^C: it ends the foreground job, and the shell that started the job reads on. What the
+			// terminal echoes of a typed line holds name=$..., never digits, so only the shell's output shows name=<pid>.
+			const sh = await t.call("process.start", { argv: ["sh", "-i"], pty: { cols: 80, rows: 24 } });
+			let offset = 0;
+			const pidAfter = async (line: string, name: string) => {
+				await t.call("process.write", { id: sh.id, data: b64(line) });
+				const pattern = new RegExp(`${name}=(\\d+)\\r?\\n`);
+				const read = await readUntil(t, t.client, sh.id, "pty", offset, pattern);
+				offset = read.offset;
+				return Number(pattern.exec(read.text)?.[1]);
+			};
+			const stateOf = async (pid: number) => {
+				const stat = (await t.exec(["sh", "-c", alive([pid])])).out;
+				return stat.slice(stat.lastIndexOf(")") + 1).trim().split(/\s+/);
+			};
+			// The shell and its two jobs go however the case ends: a failed or timed-out check aborts the case's signal, so the
+			// KILL goes without it, and the guard ends what the shell started.
+			let checked = false;
+			try {
+				const bg = await pidAfter("sleep 306 & echo bg=$!\n", "bg");
+				const fg = await pidAfter("sh -c 'echo fg=$$; exec sleep 308'\n", "fg");
+				// The job is in the foreground once its group is the terminal's: its stat's pgrp and tpgid are its pid.
+				await t.until(async () => {
+					const fields = await stateOf(fg);
+					return fields[2] === String(fg) && fields[5] === String(fg);
+				}, `${fg} in the terminal's foreground`);
+				t.deepEqual(await t.call("process.signal", { id: sh.id, signal: "INT" }), {}, "the reply to INT with a foreground job");
+				await t.until(async () => ["", "Z"].includes((await stateOf(fg))[0] ?? ""), `the foreground job ${fg} gone`);
+				await t.call("process.write", { id: sh.id, data: b64("echo status=$?\n") });
+				({ offset } = await readUntil(t, t.client, sh.id, "pty", offset, "status=130"));
+				await t.call("process.write", { id: sh.id, data: b64("echo al''ive\n") });
+				({ offset } = await readUntil(t, t.client, sh.id, "pty", offset, "alive"));
+				t.assert(!["", "Z"].includes((await stateOf(bg))[0] ?? ""), `the background job ${bg} still runs`);
+				t.deepEqual(await t.call("process.wait", { id: sh.id, timeoutMs: 0 }), { running: true, exitCode: null, signal: null }, "the shell after INT");
+				checked = true;
+			} finally {
+				const killed = await t.client.call("process.signal", { id: sh.id, signal: "KILL" });
+				if (checked) t.ok(killed, "KILL to the shell");
+			}
+		},
+		["processes", "exec"],
+	),
 	processCase("wait", async (t) => {
 		const sleeper = await t.call("process.start", { argv: ["sleep", "303"] });
 		t.deepEqual(await t.call("process.wait", { id: sleeper.id, timeoutMs: 0 }), { running: true, exitCode: null, signal: null }, "wait with timeoutMs 0 on a running process");
@@ -155,6 +202,62 @@ export const processCases: Case[] = [
 		t.deepEqual((await t.call("process.list", { from: page.next })).processes, [], "the page from next, after the last");
 		await kill(t, term.id);
 	}),
+	processCase(
+		"log",
+		async (t) => {
+			// A folder of the run's, as the computer's user makes one: the log goes in it, and nothing else does.
+			const folder = (await t.exec(["mktemp", "-d"])).out.trim();
+			const path = `${folder}/background/1/output.log`;
+			const started = await t.call("process.start", { argv: ["sh", "-c", `head -c ${PROCESS_LOG_BYTES + 1000} /dev/zero | tr '\\0' x; echo after >&2`], log: path });
+			t.equal((await t.call("process.wait", { id: started.id, timeoutMs: t.patience })).exitCode, 0, "the writer's end");
+			t.equal((await t.exec(["stat", "-c", "%s %a %F", path])).out.trim(), `${PROCESS_LOG_BYTES} 644 regular file`, "the file: the first 16 MiB, mode 644");
+			t.equal((await t.exec(["sh", "-c", `tail -c 3 ${path}; find ${folder} -type f`])).out, `xxx${path}\n`, "its last bytes are the first output's, and it is the folder's one file");
+			const end = await t.call("process.read", { id: started.id, stream: "log", offset: PROCESS_LOG_BYTES - 3 });
+			t.deepEqual([decode(end.data), end.nextOffset, end.size, end.capped, end.exited], ["xxx", PROCESS_LOG_BYTES, PROCESS_LOG_BYTES, true, true], "the log stream's end");
+			t.refused(await t.client.call("process.read", { id: started.id, stream: "log", offset: PROCESS_LOG_BYTES + 1 }), "a read past the log's end", ["invalid"]);
+		},
+		["processes", "exec"],
+	),
+	processCase(
+		"log-links",
+		async (t) => {
+			// The run's folder is the program's to write: a link planted at the log or at a directory on its way is refused,
+			// and nothing is written where it points.
+			const folder = (await t.exec(["mktemp", "-d"])).out.trim();
+			await t.exec(["sh", "-c", `mkdir ${folder}/outside ${folder}/a && ln -s ${folder}/outside/target.log ${folder}/a/output.log && ln -s ${folder}/outside ${folder}/background`]);
+			for (const path of [`${folder}/a/output.log`, `${folder}/background/1/output.log`]) {
+				t.refused(await t.client.call("process.start", { argv: ["sh", "-c", `echo ran > ${folder}/ran`], log: path }), `a log at ${path}, through a link`, ["denied"]);
+			}
+			t.equal((await t.exec(["sh", "-c", `ls -A ${folder}/outside; ls ${folder}/ran 2>/dev/null; true`])).out, "", "nothing written through a link, and nothing ran");
+			await t.exec(["sh", "-c", `echo before > ${folder}/a/existing.log`]);
+			t.refused(await t.client.call("process.start", { argv: ["true"], log: `${folder}/a/existing.log` }), "a log where a file is", ["exists"]);
+		},
+		["processes", "exec"],
+	),
+	processCase("wait-group", async (t) => {
+		const started = await t.call("process.start", { argv: ["sh", "-c", "sleep 1 & echo started"], waitGroup: true });
+		t.deepEqual(await t.call("process.wait", { id: started.id, timeoutMs: 300 }), { running: true, exitCode: null, signal: null }, "running while the job it left runs");
+		t.deepEqual(await t.call("process.wait", { id: started.id, timeoutMs: t.patience }), { running: false, exitCode: 0, signal: null }, "the program's exit once the job ended");
+		const job = await t.call("process.start", { argv: ["sh", "-c", "sleep 310 >/dev/null 2>&1 & exit 3"], waitGroup: true });
+		t.deepEqual(await t.call("process.wait", { id: job.id, timeoutMs: 300 }), { running: true, exitCode: null, signal: null }, "running while sleep 310 runs");
+		await t.call("process.signal", { id: job.id, signal: "TERM" });
+		t.deepEqual(await t.call("process.wait", { id: job.id, timeoutMs: t.patience }), { running: false, exitCode: 3, signal: null }, "TERM reached the job, and the end is the program's");
+	}),
+	processCase(
+		"orphans-keep",
+		async (t) => {
+			const started = await t.call("process.start", { argv: ["sh", "-c", "setsid sleep 311 >/dev/null 2>&1 </dev/null & echo $!"], waitGroup: true, orphans: "keep" });
+			t.equal((await t.call("process.wait", { id: started.id, timeoutMs: t.patience })).running, false, "the process ends with its group");
+			const pid = Number(Buffer.from(t.ok(await readAll(t.client, started.id, "stdout"), "its output").data).toString().trim());
+			try {
+				await delay(500);
+				t.assert((await t.exec(["sh", "-c", alive([pid])])).out !== "", `the daemon ${pid} runs on after the process ended`);
+			} finally {
+				await t.exec(["sh", "-c", `kill -KILL ${pid}`]);
+			}
+		},
+		["processes", "exec"],
+	),
 	processCase(
 		"guard-killed",
 		async (t) => {

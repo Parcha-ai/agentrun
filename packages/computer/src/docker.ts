@@ -4,6 +4,8 @@ import { execFile, spawn } from "node:child_process";
 import { randomBytes } from "node:crypto";
 import { readFileSync, statSync } from "node:fs";
 import { resolve } from "node:path";
+import { fileURLToPath } from "node:url";
+import { setTimeout as sleep } from "node:timers/promises";
 import { DaemonClient } from "./client.js";
 import {
 	COMPUTER_LABEL,
@@ -23,23 +25,43 @@ import {
 	tmpfsOf,
 	WORK,
 } from "./drift.js";
-import type {
-	CallContext,
-	ComputerCapabilities,
-	ComputerConnection,
-	ComputerInfo,
-	ComputerProvider,
-	ComputerRef,
-	ComputerSpec,
-	NetworkPolicy,
-	NetworkSpec,
-	Refusal,
+import {
+	type AttachedComputer,
+	type CallContext,
+	type ComputerCapabilities,
+	checkLifetime,
+	type ComputerConnection,
+	type ComputerInfo,
+	type ComputerProvider,
+	type ComputerRef,
+	type ComputerSpec,
+	type NetworkPolicy,
+	type NetworkSpec,
+	type Refusal,
 } from "./provider.js";
 import { fail, ok, type Result } from "./result.js";
+
+/**
+ * A Docker desktop: an image with an X server (test/fixtures/desktop/Dockerfile is the smallest, Debian and Xvfb).
+ * computerd stays the first process and starts nothing of its own: create gives it DISPLAY, then starts the X server
+ * through it with process.start, as any program, so the server is in its process table and ends with the computer.
+ * The daemon reaches the display once it answers, and hello declares screen, input.pointer and input.keys from then on.
+ */
+export interface DockerDesktopOptions {
+	/** The display the daemon and the X server use, given to the daemon as DISPLAY. Default ":0". */
+	display?: string;
+	/** The X server's argv, run in the computer as its user. Default Xvfb on the display, 1280x800 at 24 bits, no TCP. */
+	server?: readonly string[];
+	/** How long create waits for the display to answer, from asking the daemon to start the server: every call to the
+	 *  daemon in that time is bounded by it, so a daemon that stops answering fails create as `timeout`. Default 30 s. */
+	timeoutMs?: number;
+}
 
 export interface DockerProviderOptions {
 	/** The daemon binary on this machine, for the computer's architecture (dist/computerd-linux-<arch>). */
 	daemonPath: string;
+	/** Makes every computer a desktop (kind desktop): its image must have the X server. */
+	desktop?: DockerDesktopOptions;
 	/** The docker CLI. */
 	docker?: string;
 	/** Who a computer runs as when its spec does not say: uid or uid:gid, in numbers. Default: this process's uid:gid, or
@@ -47,6 +69,53 @@ export interface DockerProviderOptions {
 	 *  its spec asks. */
 	user?: string;
 }
+
+/** The environment fromEnv reads, by name. */
+export const ENV = {
+	/** The daemon binary for Docker's architecture; default this package's dist/computerd-linux-<arch>. */
+	daemon: "COMPUTER_DOCKER_DAEMON",
+	/** Who a computer runs as when its spec does not say, uid or uid:gid in numbers; see DockerProviderOptions.user. */
+	user: "COMPUTER_DOCKER_USER",
+} as const;
+
+export interface DockerFromEnvOptions extends Partial<DockerProviderOptions> {
+	/** The longest `docker version` may take, when fromEnv asks Docker its architecture; default 30 s. */
+	timeoutMs?: number;
+}
+
+/**
+ * Docker's architecture as `docker version` reports it (amd64, arm64), within timeoutMs, or an error in words. The docker
+ * CLI runs with this process's environment, as every call of the provider does, so it asks the Docker the provider uses.
+ */
+export function dockerArch({ docker = "docker", timeoutMs = 30_000 }: Pick<DockerFromEnvOptions, "docker" | "timeoutMs"> = {}): Promise<string> {
+	return new Promise((resolve, reject) => {
+		execFile(docker, ["version", "--format", "{{.Server.Arch}}"], { encoding: "utf8", timeout: timeoutMs, killSignal: "SIGKILL" }, (error, stdout, stderr) => {
+			if (!error) return resolve(stdout.trim());
+			const killed = error.killed === true && error.signal === "SIGKILL";
+			const why = killed ? `${docker} version did not answer within ${timeoutMs / 1000} s, so it was killed` : (stderr.trim() || error.message).split("\n")[0];
+			reject(new Error(`cannot ask Docker its architecture (${docker} version): ${why}`));
+		});
+	});
+}
+
+/**
+ * A DockerProvider from COMPUTER_DOCKER_* alone. Without COMPUTER_DOCKER_DAEMON it asks Docker its architecture and takes
+ * this package's daemon for it, and says when that daemon is not built. Options win over the environment.
+ */
+export async function fromEnv(env: Record<string, string | undefined> = process.env, options: DockerFromEnvOptions = {}): Promise<DockerProvider> {
+	const { timeoutMs, ...given } = options;
+	const user = env[ENV.user] || undefined;
+	let daemonPath = given.daemonPath ?? (env[ENV.daemon] || undefined);
+	if (daemonPath === undefined) {
+		const arch = await dockerArch({ ...(given.docker ? { docker: given.docker } : {}), ...(timeoutMs === undefined ? {} : { timeoutMs }) });
+		daemonPath = fileURLToPath(new URL(`./computerd-linux-${arch}`, import.meta.url));
+		if (fileMode(daemonPath) === undefined) throw new Error(`no daemon for Docker's ${arch} at ${daemonPath}: run npm run build:daemon -w @parcha/agentrun-computer`);
+	}
+	return new DockerProvider({ ...(user === undefined ? {} : { user }), ...given, daemonPath });
+}
+
+/** The conformance CLI's module for Docker: the drifted twin. */
+export const conformance = () => import("./conformance/docker.js");
 
 const VERSION: string = JSON.parse(readFileSync(new URL("../package.json", import.meta.url), "utf8")).version;
 const NAME = /^computer-[0-9a-f]{12}$/;
@@ -61,6 +130,10 @@ const MAX_PIDS = 4_194_304;
 /** Docker's least --memory. */
 const MIN_MEMORY_MB = 6;
 const HELLO_TIMEOUT_MS = 30_000;
+const DISPLAY = /^:\d{1,5}(\.\d{1,5})?$/;
+const DESKTOP_GROUPS = ["screen", "input.pointer", "input.keys"] as const;
+/** How often create asks the daemon whether the display is up yet. */
+const DISPLAY_POLL_MS = 100;
 /** Ids a list() inspect takes at once, so its argv and output stay bounded however many computers match. */
 const INSPECT_BATCH = 50;
 /** Only the fields list() reads, in inspect's own shape: a whole inspect is kilobytes a container, and execFile's
@@ -68,7 +141,8 @@ const INSPECT_BATCH = 50;
 const LIST_FORMAT =
 	'{"Id":{{json .Id}},"Name":{{json .Name}},"State":{"Running":{{json .State.Running}}},"Config":{"Labels":{{json .Config.Labels}}},' +
 	'"HostConfig":{"NetworkMode":{{json .HostConfig.NetworkMode}}},"NetworkSettings":{"Networks":{{json .NetworkSettings.Networks}}}}';
-/** The longest lifetime: 30 days. A computer meant to live longer is asked for again. */
+/** The longest lifetime: 30 days. A computer meant to live longer is asked for again. No extend(): the deadline is a
+ *  container label, and a label cannot change after create. */
 const MAX_LIFETIME_MS = 30 * 24 * 60 * 60 * 1000;
 const SPEC_FIELDS = new Set(["image", "lifetimeMs", "network", "cpus", "memoryMb", "pids", "labels", "workdir", "user"]);
 const NUL = "a NUL byte cannot be passed to docker run";
@@ -100,12 +174,14 @@ export class DockerProvider implements ComputerProvider {
 	readonly #daemonPath: string;
 	readonly #docker: string;
 	readonly #user: string;
+	readonly #desktop: Required<DockerDesktopOptions> | undefined;
 	/** The host as docker info first read it: a host's enforcement does not change under a running provider. */
 	#host: DockerHost | undefined;
 
-	constructor({ daemonPath, docker = "docker", user }: DockerProviderOptions) {
+	constructor({ daemonPath, docker = "docker", user, desktop }: DockerProviderOptions) {
 		this.#daemonPath = resolve(daemonPath);
 		this.#docker = docker;
+		this.#desktop = desktop === undefined ? undefined : desktopOf(desktop);
 		const given = user === undefined ? defaultUser() : userOf(user);
 		if (given === undefined) throw new Error(`the provider's user ${JSON.stringify(user)} must be ${USER_FORM}`);
 		if (given.startsWith("0:")) throw new Error(`the provider's user ${user} is root; a computer runs as root only when its spec asks for user "0"`);
@@ -116,7 +192,20 @@ export class DockerProvider implements ComputerProvider {
 	}
 
 	capabilities(): ComputerCapabilities {
-		return { lifetime: "janitor", network: ["none", "open"], isolation: "container", os: "linux", daemon: ["exec", "files", "processes"], user: ["root", "uid"] };
+		return {
+			kind: this.#desktop ? "desktop" : "linux",
+			lifetime: "janitor",
+			network: ["none", "open"],
+			networkReadBack: true,
+			isolation: "container",
+			os: "linux",
+			daemon: "pid1",
+			groups: ["exec", "files", "processes", ...(this.#desktop ? DESKTOP_GROUPS : [])],
+			maxLifetimeMs: MAX_LIFETIME_MS,
+			user: ["root", "uid"],
+			release: ["stop", "delete"],
+			stopDeletes: false,
+		};
 	}
 
 	/** The spec's refusals, and the host's once create, attach or host() has read it. */
@@ -132,11 +221,7 @@ export class DockerProvider implements ComputerProvider {
 		if (typeof image !== "string" || image.trim() === "" || image.startsWith("-")) {
 			refuse("image", "an image is required, such as debian:bookworm-slim");
 		} else if (image.includes("\0")) refuse("image", NUL);
-		if (!isWhole(lifetimeMs) || lifetimeMs <= 0) {
-			refuse("lifetimeMs", "lifetimeMs is required: a whole number of milliseconds above 0, after which the janitor deletes the computer");
-		} else if (lifetimeMs > MAX_LIFETIME_MS) {
-			refuse("lifetimeMs", `lifetimeMs is at most 30 days (${MAX_LIFETIME_MS} ms); ask for a new computer after that`);
-		}
+		refusals.push(...checkLifetime(lifetimeMs, this.capabilities()));
 		if (typeof network === "object" && network !== null && "allow" in network) refuse("network", ALLOWLIST);
 		else if (network !== "none" && network !== "open") refuse("network", 'network is required: "none" or "open"');
 		if (cpus !== undefined && !(isNumber(cpus) && cpus >= 0.01)) refuse("cpus", "cpus must be a number of CPUs of at least 0.01");
@@ -185,6 +270,7 @@ export class DockerProvider implements ComputerProvider {
 		const user = userOf(spec.user) ?? this.#user;
 		const memoryMb = spec.memoryMb ?? DEFAULT_MEMORY_MB;
 		args.push("--user", user, "--env", `HOME=${WORK}`);
+		if (this.#desktop) args.push("--env", `DISPLAY=${this.#desktop.display}`);
 		for (const [path, options] of Object.entries(tmpfsOf(user, memoryMb))) args.push("--tmpfs", `${path}:${options}`);
 		args.push("--cap-drop", "ALL", "--security-opt", "no-new-privileges", "--pids-limit", String(spec.pids ?? DEFAULT_PIDS));
 		// Not the daemon's defaults, which a host may set to shareable IPC or, on cgroup v1, the host's cgroup namespace.
@@ -216,6 +302,15 @@ export class DockerProvider implements ComputerProvider {
 			const why = state ? `status ${state.Status}, exit code ${state.ExitCode}${state.Error ? `: ${state.Error}` : ""}` : "it could not be inspected";
 			return fail("docker", `the computer ${name} was not running after its start (${why}), so it was removed`);
 		}
+		if (this.#desktop) {
+			const shown = await this.#startDisplay(ref, this.#desktop, signal);
+			if (signal?.aborted) return this.#abandon(ref);
+			if (!shown.ok) {
+				const removed = await this.release(ref, "delete");
+				const after = removed.ok ? "was deleted" : `could not be deleted (${removed.error.message})`;
+				return fail(shown.error.code, `the computer ${name} ${after}: ${shown.error.message}`);
+			}
+		}
 		const checked = await this.#check(spec, ref, report as DockerInspect, host.value, deadline, user, signal);
 		// Fail closed: no create returns ok once its signal has aborted.
 		if (signal?.aborted) return this.#abandon(ref);
@@ -233,6 +328,47 @@ export class DockerProvider implements ComputerProvider {
 		return fail("aborted", `create was aborted after docker run; the computer ${ref.name} ${after}`);
 	}
 
+	/**
+	 * Starts the desktop's X server through the daemon (process.start) and waits until hello declares the display: the
+	 * server ending first, or the bound passing, is a failure in words, with the server's own last words. Every call
+	 * takes a signal that ends at the bound, so a hello the X connection setup holds, or a daemon that stops answering,
+	 * cannot outwait it.
+	 */
+	async #startDisplay(ref: ComputerRef, desktop: Required<DockerDesktopOptions>, signal?: AbortSignal): Promise<Result<void>> {
+		const opened = await this.#open(ref, signal);
+		if (!opened.ok) return opened;
+		const { client } = opened.value;
+		const server = desktop.server.join(" ");
+		const bound = AbortSignal.timeout(desktop.timeoutMs);
+		const either = signal ? AbortSignal.any([signal, bound]) : bound;
+		const late = () => fail("timeout", `the display ${desktop.display} was not up within ${desktop.timeoutMs / 1000} s of starting the X server (${server})`);
+		// A call that failed because the bound passed is the timeout; the caller's own abort stays aborted.
+		const timedOut = () => bound.aborted && !signal?.aborted;
+		try {
+			const started = await client.call("process.start", { argv: [...desktop.server] }, { signal: either });
+			if (!started.ok) return timedOut() ? late() : fail(started.error.code, `the X server (${server}) did not start: ${started.error.message}`);
+			const { id } = started.value;
+			for (;;) {
+				const hello = await client.call("hello", { client: `@parcha/agentrun-computer ${VERSION}` }, { signal: either });
+				if (!hello.ok) return timedOut() ? late() : hello;
+				if (Array.isArray(hello.value.groups) && hello.value.groups.includes("screen")) return ok(undefined);
+				const waited = await client.call("process.wait", { id, timeoutMs: 0 }, { signal: either });
+				if (waited.ok && !waited.value.running) {
+					const read = await client.call("process.read", { id, stream: "stderr", offset: 0 }, { signal: either });
+					const words = read.ok ? Buffer.from(read.value.data, "base64").toString("utf8").trim().split("\n").slice(-5).join("; ") : "";
+					const how = waited.value.signal ? `signal ${waited.value.signal}` : `exit code ${waited.value.exitCode}`;
+					return fail("docker", `the X server (${server}) ended with ${how} before the display ${desktop.display} was up${words ? `: ${words}` : ""}`);
+				}
+				if (timedOut()) return late();
+				if (signal?.aborted) return fail("aborted", "create was aborted while the display came up");
+				await sleep(DISPLAY_POLL_MS, undefined, { signal: either }).catch(() => undefined);
+				if (signal?.aborted) return fail("aborted", "create was aborted while the display came up");
+			}
+		} finally {
+			await opened.value.close();
+		}
+	}
+
 	/** The drift check: the computer's own report, from inspect and from its daemon's hello, against the spec. */
 	async #check(spec: ComputerSpec, ref: ComputerRef, report: DockerInspect, host: DockerHost, deadline: string, user: string, signal?: AbortSignal): Promise<Result<void>> {
 		const opened = await this.#open(ref, signal);
@@ -244,7 +380,8 @@ export class DockerProvider implements ComputerProvider {
 
 	#expected(host: DockerHost, deadline: string, user: string) {
 		const { arch, apparmor, selinux } = host;
-		return { version: VERSION, capabilities: this.capabilities().daemon, arch, apparmor, selinux, daemonPath: this.#daemonPath, deadline, user };
+		const { kind, groups } = this.capabilities();
+		return { version: VERSION, kind, groups, arch, apparmor, selinux, daemonPath: this.#daemonPath, deadline, user };
 	}
 
 	/** The Docker host's architecture and enforcement (hostOf), read by docker info once per provider. */
@@ -265,9 +402,10 @@ export class DockerProvider implements ComputerProvider {
 
 	/**
 	 * The drift check of a computer attach did not make: the spec it was made with, read back from its own report and
-	 * held to what check() allows, then inspect and, when it runs, hello, as at create.
+	 * held to what check() allows, then inspect and, when it runs, hello, as at create. A computer that passes is
+	 * returned with that spec.
 	 */
-	async #attached(report: DockerInspect, signal?: AbortSignal): Promise<Result<ComputerRef>> {
+	async #attached(report: DockerInspect, signal?: AbortSignal): Promise<Result<AttachedComputer>> {
 		const ref = { id: report.Id ?? "", name: nameOf(report) };
 		const host = await this.host({ signal });
 		if (!host.ok) return host;
@@ -281,7 +419,7 @@ export class DockerProvider implements ComputerProvider {
 		const at = Date.parse(deadline);
 		if (Number.isNaN(at) || new Date(at).toISOString() !== deadline) {
 			found.push(`deadline: the label ${DEADLINE_LABEL} reads ${JSON.stringify(deadline)}, not the ISO time create writes`);
-		} else if (at > Date.now() + MAX_LIFETIME_MS + 60_000) found.push(`deadline: ${deadline} is past the 30 days create allows`);
+		} else if (at > Date.now() + this.capabilities().maxLifetimeMs + 60_000) found.push(`deadline: ${deadline} is past the 30 days create allows`);
 		const spec = {
 			image: config.Image,
 			lifetimeMs: 1,
@@ -296,21 +434,27 @@ export class DockerProvider implements ComputerProvider {
 		const user = userOf(config.User) ?? String(config.User);
 		const expected = this.#expected(host.value, deadline, user);
 		found.push(...inspectDrift(spec, report, expected).filter((line) => typeof network === "string" || !line.startsWith("network:")));
+		let kind: AttachedComputer["spec"]["kind"];
 		if (report.State?.Running === true) {
 			const opened = await this.#open(ref, signal);
 			if (!opened.ok) return opened;
 			await opened.value.close();
 			found.push(...helloDrift(opened.value.hello, expected));
+			kind = opened.value.hello.kind;
 		}
-		if (found.length === 0) return ok(ref);
-		return fail("refused", `the computer ${ref.name} does not match this provider, so attach refuses it and it is left as it is: ${found.join("; ")}`);
+		if (found.length > 0) {
+			return fail("refused", `the computer ${ref.name} does not match this provider, so attach refuses it and it is left as it is: ${found.join("; ")}`);
+		}
+		const { image, network: read, cpus, memoryMb, pids, workdir } = spec;
+		return ok({ ...ref, spec: { image, user, network: read, cpus, memoryMb, pids, workdir, deadline: new Date(at), ...(kind === undefined ? {} : { kind }) } });
 	}
 
 	async connect(ref: ComputerRef): Promise<Result<ComputerConnection>> {
 		if (!NAME.test(ref.name)) return fail("invalid", `${ref.name} is not the name of a Docker computer (computer-<12 hex digits>)`);
 		const opened = await this.#open(ref);
 		if (!opened.ok) return opened;
-		const found = helloDrift(opened.value.hello, { version: VERSION, capabilities: this.capabilities().daemon });
+		const { kind, groups } = this.capabilities();
+		const found = helloDrift(opened.value.hello, { version: VERSION, kind, groups });
 		if (found.length === 0) return opened;
 		await opened.value.close();
 		return fail("refused", `the daemon in ${ref.name} does not match this provider: ${found.join("; ")}`);
@@ -348,7 +492,7 @@ export class DockerProvider implements ComputerProvider {
 		return ok({ client, hello: hello.value, close });
 	}
 
-	async attach(ref: { id: string } | { labels: Record<string, string> }, { signal }: CallContext = {}): Promise<Result<ComputerRef>> {
+	async attach(ref: { id: string } | { labels: Record<string, string> }, { signal }: CallContext = {}): Promise<Result<AttachedComputer>> {
 		const given = (typeof ref === "object" && ref !== null ? ref : {}) as { id?: unknown; labels?: unknown };
 		if ((given.id === undefined) === (given.labels === undefined)) return fail("invalid", "attach takes { id } or { labels }, one of them");
 		if (given.id !== undefined) {
@@ -455,6 +599,24 @@ export class DockerProvider implements ComputerProvider {
 			});
 		});
 	}
+}
+
+/** The desktop options with their defaults, or a throw in words. */
+/** The longest delay Node's timers, and so AbortSignal.timeout, hold: 2^31 - 1 ms. */
+const MAX_TIMER_MS = 2_147_483_647;
+
+function desktopOf({ display = ":0", server, timeoutMs = 30_000 }: DockerDesktopOptions): Required<DockerDesktopOptions> {
+	if (typeof display !== "string" || !DISPLAY.test(display)) throw new Error(`the desktop's display ${JSON.stringify(display)} must be a local X display, such as :0`);
+	const argv = server ?? ["Xvfb", display, "-screen", "0", "1280x800x24", "-nolisten", "tcp"];
+	if (!Array.isArray(argv) || argv.length === 0 || !argv.every((arg) => typeof arg === "string" && !arg.includes("\0")) || argv[0] === "") {
+		throw new Error("the desktop's server must be a program and its arguments, such as [\"Xvfb\", \":0\"]");
+	}
+	// AbortSignal.timeout and Node's timers hold at most 2^31 - 1 ms (a longer one throws or fires at once), so a longer
+	// bound is refused here, before any computer exists, not in create after the container is made.
+	if (!Number.isSafeInteger(timeoutMs) || timeoutMs <= 0 || timeoutMs > MAX_TIMER_MS) {
+		throw new Error(`the desktop's timeoutMs must be a whole number of milliseconds above 0 and at most ${MAX_TIMER_MS}, not ${timeoutMs}`);
+	}
+	return { display, server: [...argv], timeoutMs };
 }
 
 function labelProblem(key: string, value: unknown): string | undefined {

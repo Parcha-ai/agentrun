@@ -1,8 +1,9 @@
-// The provider: check refuses in words and makes nothing, create, attach, list and release do what they say, the
-// network reads back as asked and a change is refused or applied truthfully, a computer does not run past its deadline,
+// The provider: check refuses in words and makes nothing (past maxLifetimeMs too), create, attach, list and release do
+// what they say, the network reads back as asked, a change to a network the provider does not declare is refused
+// (Core) and one it does declare is refused or applied truthfully (Full), a computer does not run past its deadline,
 // and the janitor ends only the expired, stopped or running.
 import { sweep } from "../../janitor.js";
-import type { ComputerSpec, NetworkSpec } from "../../provider.js";
+import type { ComputerRef, ComputerSpec, NetworkSpec } from "../../provider.js";
 import type { Case, CaseContext } from "../types.js";
 import { CASE_LABEL, delay } from "./util.js";
 
@@ -13,14 +14,24 @@ const names = async (t: CaseContext, labels: Record<string, string>) =>
 		.ok(await t.provider.list(labels), `list ${JSON.stringify(labels)}`)
 		.map((info) => info.ref.name)
 		.sort();
+/** What attach found, as a ref: its id and name alone. */
+const refOf = ({ id, name }: ComputerRef): ComputerRef => ({ id, name });
 const kindOf = (policy: NetworkSpec) => (typeof policy === "string" ? policy : "allow");
 const POLICIES: NetworkSpec[] = ["none", "open", { allow: ["example.com"] }];
 
-/** Asserts create refuses spec; a computer it makes anyway is handed to the runner first, so it is deleted. */
+/**
+ * Asserts create refuses spec for what check() refuses in it: the refusal carries check()'s own words, so a create
+ * refused for another reason (no capacity, a network mismatch) does not pass. A computer create makes anyway, even
+ * after the case ended, is deleted by the runner.
+ */
 async function refusedCreate(t: CaseContext, spec: ComputerSpec, what: string) {
-	const created = await t.provider.create(spec);
-	if (created.ok) t.track(created.value);
-	t.refused(created, what, ["refused"]);
+	const checked = t.provider.check(spec);
+	t.assert(checked.length > 0, `${what}: check() refuses it`);
+	const error = t.refused(await t.attempt(spec), what, ["refused"]);
+	t.assert(
+		checked.some(({ message }) => error.message.includes(message)),
+		`${what}: create's refusal names what check() refused (${checked.map(({ field, message }) => `${field}: ${message}`).join("; ")}), not: ${error.message}`,
+	);
 }
 
 const provider = (name: string, run: Case["run"], extra: Partial<Case> = {}): Case => ({
@@ -32,6 +43,33 @@ const provider = (name: string, run: Case["run"], extra: Partial<Case> = {}): Ca
 	run,
 	...extra,
 });
+
+/**
+ * A Full case for one wider policy the provider declares: on a computer of its own (never the run's shared one), a
+ * change from none to it and back to none is refused in words with the network unchanged, or applied, returned and
+ * read back as asked.
+ */
+const switchCase = (name: string, wider: NetworkSpec): Case =>
+	provider(
+		name,
+		async (t) => {
+			const ref = await t.create({ labels: own(t, name) });
+			for (const policy of [wider, "none" as const]) {
+				const was = t.ok(await t.provider.network(ref), "network read-back");
+				const changed = await t.provider.network(ref, policy);
+				const words = `a change from network ${JSON.stringify(was)} to ${JSON.stringify(policy)}`;
+				if (changed.ok) {
+					t.deepEqual(changed.value, policy, `${words}: what it returns`);
+					t.deepEqual(t.ok(await t.provider.network(ref), "network read-back"), policy, `${words}: the network read back after it`);
+				} else {
+					const error = t.refused(changed, words, ["refused"]);
+					t.assert(error.message !== "", `${words}: the refusal is in words`);
+					t.deepEqual(t.ok(await t.provider.network(ref), "network read-back"), was, `${words}, refused: the network read back after it`);
+				}
+			}
+		},
+		{ level: "full", needs: [`network:${kindOf(wider)}`] },
+	);
 
 export const providerCases: Case[] = [
 	provider("check-refuses", async (t) => {
@@ -54,6 +92,16 @@ export const providerCases: Case[] = [
 			t.assert(refusals.some((r) => r.field === "network" && r.message !== ""), `check refuses network ${kindOf(policy)}, which the provider does not declare`);
 			await refusedCreate(t, t.spec({ labels, network: policy }), `create with network ${kindOf(policy)}`);
 		}
+		// The vendor's cap is a capability, so check() refuses past it with no vendor call.
+		const { maxLifetimeMs } = t.provider.capabilities();
+		t.assert(Number.isSafeInteger(maxLifetimeMs) && maxLifetimeMs > 0, `capabilities().maxLifetimeMs is a whole number of milliseconds above 0, not ${JSON.stringify(maxLifetimeMs)}`);
+		const over = t.spec({ labels, lifetimeMs: maxLifetimeMs + 1 });
+		const refusals = t.provider.check(over);
+		t.assert(
+			refusals.some((r) => r.field === "lifetimeMs" && r.message !== ""),
+			`check of lifetimeMs ${maxLifetimeMs + 1}, past maxLifetimeMs, refuses lifetimeMs in words: ${JSON.stringify(refusals)}`,
+		);
+		await refusedCreate(t, over, "create of a spec past maxLifetimeMs");
 		t.deepEqual(await names(t, labels), [], "the computers the refused creates made");
 	}),
 	provider("create-release", async (t) => {
@@ -67,16 +115,27 @@ export const providerCases: Case[] = [
 		t.ok(await t.provider.release(ref, "delete"), "release delete");
 		t.ok(await t.provider.release(ref, "delete"), "a second delete of the same computer");
 		t.deepEqual(await names(t, labels), [], "listed after delete");
-		t.refused(await t.provider.connect(ref), "connect to a deleted computer");
+		t.refused(await t.provider.connect(ref), "connect to a deleted computer", ["gone", "not_found"]);
 	}),
 	provider("attach", async (t) => {
 		const labels = own(t, "attach");
-		const a = await t.create({ labels: { ...labels, role: "a" } });
+		const spec = t.spec({ labels: { ...labels, role: "a" } });
+		const a = await t.create(spec);
 		const b = await t.create({ labels: { ...labels, role: "b" } });
-		t.deepEqual(t.ok(await t.provider.attach({ id: a.id }), "attach by id"), a, "attach by id");
+		const byId = t.ok(await t.provider.attach({ id: a.id }), "attach by id");
+		t.deepEqual(refOf(byId), a, "attach by id");
 		const byLabels = t.ok(await t.provider.attach({ labels: { ...labels, role: "b" } }), "attach by labels");
-		t.deepEqual(byLabels, b, "attach by labels");
-		const both = t.refused(await t.provider.attach({ labels }), "attach by labels two computers match");
+		t.deepEqual(refOf(byLabels), b, "attach by labels");
+		// What attach reports is read back from the computer: the network and image create asked for, and, since create
+		// asked for no user, the provider's non-root default.
+		for (const [how, attached] of [["by id", byId], ["by labels", byLabels]] as const) {
+			const read = t.present(attached.spec, `attach ${how} reports the spec it read back`);
+			t.deepEqual(read.network, spec.network, `attach ${how}: the network it reports`);
+			t.equal(read.image, spec.image, `attach ${how}: the image it reports`);
+			t.match(read.user, /^\d+:\d+$/, `attach ${how}: the user it reports, as uid:gid`);
+			t.assert(!read.user.startsWith("0:"), `attach ${how} reports user ${read.user}, root, though create asked for no user`);
+		}
+		const both = t.refused(await t.provider.attach({ labels }), "attach by labels two computers match", ["invalid"]);
 		t.assert(both.message !== "", "the refusal is in words");
 		t.refused(await t.provider.attach({ labels: { ...labels, role: "c" } }), "attach by labels no computer has", ["not_found"]);
 		const connected = await t.connect(byLabels);
@@ -102,10 +161,35 @@ export const providerCases: Case[] = [
 		t.assert(deadline >= before + spec.lifetimeMs - 1000 && deadline <= after + spec.lifetimeMs + 1000, `its deadline, ${String(info.deadline)}, is lifetimeMs after create`);
 		t.deepEqual(await names(t, { ...labels, role: "other" }), [], "list by a label no computer has");
 	}),
+	// Stop is declared or refused: a provider that declares it lists the computer stopped; one that does not refuses it
+	// in words and leaves the computer running, never stopped or deleted behind the caller's back.
 	provider("stop", async (t) => {
 		const labels = own(t, "stop");
 		const ref = await t.create({ labels });
+		const declared = t.provider.capabilities().release;
+		if (!(Array.isArray(declared) && declared.includes("stop"))) {
+			const words = "release stop, which the provider does not declare";
+			const error = t.refused(await t.provider.release(ref, "stop"), words, ["unsupported"]);
+			t.assert(error.message !== "", `${words}: the refusal is in words`);
+			t.deepEqual(
+				t.ok(await t.provider.list(labels), "list").map((info) => [info.ref.name, info.state]),
+				[[ref.name, "running"]],
+				`${words}: the computer is still listed, running`,
+			);
+			t.ok(await t.provider.release(ref, "delete"), "release delete");
+			t.deepEqual(await names(t, labels), [], "listed after delete");
+			return;
+		}
 		t.ok(await t.provider.release(ref, "stop"), "release stop");
+		// A provider that declares stopDeletes ends a stopped computer: once release returns, it is neither listed nor
+		// attachable, and a delete after it is the idempotent delete of a computer already gone.
+		if (t.provider.capabilities().stopDeletes === true) {
+			const words = "a stop on a provider whose stop ends in deletion (stopDeletes)";
+			t.deepEqual(await names(t, labels), [], `${words}: listed after it`);
+			t.refused(await t.provider.attach({ id: ref.id }), `${words}: attach to it`, ["not_found"]);
+			t.ok(await t.provider.release(ref, "delete"), `${words}: a delete after it`);
+			return;
+		}
 		const listed = t.ok(await t.provider.list(labels), "list");
 		t.deepEqual(
 			listed.map((info) => [info.ref.name, info.state]),
@@ -121,21 +205,16 @@ export const providerCases: Case[] = [
 		const declared = t.provider.capabilities().network;
 		t.deepEqual(t.ok(await t.provider.network(ref), "network read-back"), spec.network, "the network read back");
 		t.deepEqual(t.ok(await t.provider.network(ref, spec.network), "asking for the network it has"), spec.network, "asking for the network it has");
-		for (const policy of POLICIES.filter((p) => JSON.stringify(p) !== JSON.stringify(spec.network))) {
-			const was = t.ok(await t.provider.network(ref), "network read-back");
-			const changed = await t.provider.network(ref, policy);
-			const words = `a change to network ${JSON.stringify(policy)}`;
-			if (changed.ok) {
-				t.assert(declared.includes(kindOf(policy)), `${words} was applied, though the provider does not declare ${kindOf(policy)}`);
-				t.deepEqual(changed.value, policy, `${words}: what it returns`);
-				t.deepEqual(t.ok(await t.provider.network(ref), "network read-back"), policy, `${words}: the network read back after it`);
-			} else {
-				const error = t.refused(changed, words, ["refused"]);
-				t.assert(error.message !== "", `${words}: the refusal is in words`);
-				t.deepEqual(t.ok(await t.provider.network(ref), "network read-back"), was, `${words}, refused: the network read back after it`);
-			}
+		// Core never asks for a network the provider could give: only for one it does not declare, which it must refuse.
+		for (const policy of POLICIES.filter((p) => !declared.includes(kindOf(p)))) {
+			const words = `a change to network ${JSON.stringify(policy)}, which the provider does not declare`;
+			const error = t.refused(await t.provider.network(ref, policy), words, ["refused"]);
+			t.assert(error.message !== "", `${words}: the refusal is in words`);
+			t.deepEqual(t.ok(await t.provider.network(ref), "network read-back"), spec.network, `${words}, refused: the network read back after it`);
 		}
 	}),
+	switchCase("network-switch", "open"),
+	switchCase("network-switch-allow", { allow: ["example.com"] }),
 	provider(
 		"network-open",
 		async (t) => {
@@ -179,13 +258,14 @@ export const providerCases: Case[] = [
 				"the computer past its deadline, with a process that ignores TERM, stopped or gone",
 				120_000,
 			);
-			t.refused(await t.provider.connect(ref), "connect to a computer past its deadline");
+			t.refused(await t.provider.connect(ref), "connect to a computer past its deadline", ["gone", "not_found"]);
 		},
 		{ needs: ["processes"], timeoutMs: 300_000 },
 	),
 	provider(
 		"janitor",
 		async (t) => {
+			if (t.provider.capabilities().stopDeletes === true) t.skip("the provider declares stopDeletes: a stop ends in deletion, so it keeps no stopped computer for the janitor to sweep");
 			const labels = own(t, "janitor");
 			const stopped = await t.create({ lifetimeMs: 60_000, labels: { ...labels, role: "stopped" } });
 			const running = await t.create({ lifetimeMs: 5 * 60_000, labels: { ...labels, role: "running" } });
@@ -198,9 +278,9 @@ export const providerCases: Case[] = [
 				"a sweep past two deadlines: the stopped and the running computer deleted, the third kept",
 			);
 			t.deepEqual(await names(t, labels), [long.name], "left after the sweep");
-			t.deepEqual(t.ok(await t.provider.attach({ id: t.ref.id }), "attach to the run's computer"), t.ref, "a computer outside the swept labels");
+			t.deepEqual(refOf(t.ok(await t.provider.attach({ id: t.ref.id }), "attach to the run's computer")), t.ref, "a computer outside the swept labels");
 			t.deepEqual(t.ok(await sweep(t.provider, { labels }), "a second sweep"), { deleted: [], kept: 1 }, "a second sweep, now");
 		},
-		{ level: "full", needs: ["lifetime:janitor"], computer: "shared" },
+		{ level: "full", needs: ["lifetime:janitor", "release:stop"], computer: "shared" },
 	),
 ];

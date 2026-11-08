@@ -181,7 +181,7 @@ shell: compose reads it each time, and `compose.yaml` needs it to be read at all
 
 From a checkout, the same command in its root, with `--build` to build the image from it.
 `packages/serve/docker/Dockerfile` builds that image: the server and the open packages it runs, on Node 22 and Debian 13
-(trixie), with git 2.47 for `pi-git-remote` and the Docker client. Everything it keeps is under `/data`: the agent store,
+(trixie), with git 2.47 for an agent's learning folder and the Docker client. Everything it keeps is under `/data`: the agent store,
 the runs and the token.
 
 The token is in the log of the start that made it. On a stop the server gives a busy run 6 s
@@ -193,7 +193,9 @@ every route but `GET /v2/capabilities` and `GET /v2/health` still needs the toke
 `render.yaml`'s `healthCheckPath` are `GET /v2/health`.
 
 `render.yaml` at the repository's root is a Render blueprint for the same image: one web service with a 1 GB disk at
-`/data`. Render generates `AGENTRUN_TOKEN`, which scripts and the CLI read in the service's Environment tab. With no
+`/data`. Render generates `AGENTRUN_TOKEN`, which scripts and the CLI read in the service's Environment tab, and
+`AGENTRUN_SEAL_KEY`, which seals the keys, MCP server credentials and webhook trigger secrets the server saves (keep a
+copy: a service that loses it loses them). With no
 `AGENTRUN_PUBLIC_URL` the server takes Render's own `RENDER_EXTERNAL_URL` as its public address, so setup takes the
 code the start prints in the service's log (`Set up this server: ...`). On another host, set `AGENTRUN_PUBLIC_URL` to
 the address people open before the first start; without it, whoever opens the console first sets the password. Set
@@ -347,7 +349,7 @@ link, and write through a temporary file renamed over the old one, keeping its m
 says so and names the box's path; `bash`, in the container, can still reach the file. Where this server reaches
 directories by path (no `/proc/self/fd`, as on macOS), or a box binds nothing, all four run in the container, made on
 the first of them.
-`web_fetch` (and `fetch_page`, its legacy name), `web_search` and the `monid.*` tools stay on this server, and so do
+`web_fetch`, `web_search` and the `monid.*` tools stay on this server, and so do
 the run's loop, its log, its model calls and every key. What the server itself files in `work/` (monid's long answers,
 the browser's evidence) never goes through a link a box's command planted there: each directory is held open on the
 way (`/proc/self/fd`). On a host without it (macOS), where a link swapped in mid-walk could still turn a write, a sandbox run's `work/` gets none of
@@ -836,10 +838,7 @@ agent_not_runnable`, with `details.unbound` and `details.missing`).
 | `llm` | A workflow call only: `{prompt, system?, maxTokens?, tier?}` in, `{text, model, usage, cost_usd}` out. One completion on the run's model of the tier (`default`; a tier the state fills in, such as `"{requestedTier}"`, may be any of the three, and a tier with no model fails the call), no tools and no loop; `cost_usd` is null when the model has no price, never 0 | a model | no, yes |
 
 `bash` and the background tools run only in a box: a runner agent, and a workflow, get no shell on this machine (see [Safety](#safety)). In a
-sandbox place `read`, `write` and `edit` run in the box too. `fetch_page` is a legacy name for `web_fetch`: a
-revision, a model node or a call node that names it still saves and runs, and gets `web_fetch` under that name (the
-same Page with `via`, resolved as `web_fetch` is: the guarded fetch, Parallel only where picked). The table lists it no
-more.
+sandbox place `read`, `write` and `edit` run in the box too.
 
 A call tool that fails on its own (an unreadable PDF, a model's refusal) fails its call node; inside a `map` with
 `onItemFailure: "collect"` it fails that item, and the other items go on. A cancel or the node's deadline still
@@ -1324,7 +1323,13 @@ proxy on a public https address, set `AGENTRUN_PUBLIC_URL` to that address and h
 and `X-Forwarded-Proto: https`: without them a start reads as another address (or plain http) than the callback's,
 and every start answers `409 wrong_origin`. For an MCP server whose URL is not loopback, every endpoint its authorization server names (and
 every request to one) must be `https` and resolve to no private, loopback or link-local address, or the sign-in or
-refresh is refused with words and nothing is sent; a loopback MCP server may name loopback endpoints. The callback exchanges the code, seals the token set (access and refresh tokens, expiry,
+refresh is refused with words and nothing is sent. A loopback MCP server is a development-only exception: its
+authorization server may name endpoints on the MCP server's own loopback host, exactly as its URL writes it (never
+another loopback address, the IPv6 loopback, or a name for this machine in its place), on any port but this server's own; any other
+loopback endpoint is refused the same way. The host is pinned, not the port, as a local authorization server listens on
+its own port. What that leaves: such an authorization server can still have this server send its sign-in and refresh
+requests to other ports on that same loopback host (a port Docker publishes there, say), blind, learning only the
+endpoint and its status, never a body. That is why the allowance is for development only. The callback exchanges the code, seals the token set (access and refresh tokens, expiry,
 scopes, the client and its secret) under `AGENTRUN_SEAL_KEY`, bound to the server's name, lists the tools as a `PUT`
 does, and redirects to the console's MCP servers page, `/#/settings/mcp?server=<name>&sign_in=ok` (or
 `sign_in=failed&error=<code>`). The redirect URI is this server's own callback under its address: on loopback, the
@@ -1335,7 +1340,9 @@ Reads show `auth.type: "oauth"`, `credential: "sealed"` and `oauth: {expires_at,
 set. Refresh tokens never leave this server: a run's launch refreshes an access token that expires within 5 minutes
 (one refresh at a time per server, so a rotating refresh token is spent once; one given with no expiry is taken to last an hour) and hands the run the access token
 alone. A refresh the authorization server refuses (revoked, expired) makes the server read `credential: "expired"`,
-and a preview, refresh or run says to sign in again in Settings → MCP servers. A token that expires during a run is not
+and a preview, refresh or run says to sign in again in Settings → MCP servers. A launch's refresh waits at most 4 s a
+try, two tries, so an authorization server that does not answer holds a start's answer about 8 s at most; the run's
+call is then refused unsent, saying to try again. A token that expires during a run is not
 refreshed in that run: its calls fail as unauthorized, and the run's next launch refreshes it. A server that stops aborts any
 refresh or code exchange under way and writes nothing after; if the authorization server had already rotated that
 refresh token, the next start reads `credential: "expired"` and asks for a sign-in again.
@@ -1412,6 +1419,9 @@ asked by default.
   run's tool cost (a `Tool cost` row, the `tools` meter of `GET /usage`). A tool with no price runs "not metered": a
   row says so, the run's usage row counts it (`not_metered`), and `GET /usage`'s `tools` line counts the calls
   (`not_metered_calls`); it is outside the run's cost and its cap. A run keeps the prices its first launch saw.
+  A PUT that names no `prices` keeps the saved ones, for the tools the server still lists at the same URL (a new URL
+  keeps none), so a save from any client never leaves a paid tool unmetered; `"prices": {}` clears them. A read lists
+  the tools no price meters as `not_metered`.
 - **The timeline** shows each call as `<server> · <tool>`.
 
 ## Webhooks
@@ -1483,7 +1493,7 @@ change repeats fires once, at its first pass; one it skips fires at the first ti
 reckoned from the last nominal one, so a timer that wakes late does not drift. Every run a trigger starts is capped: by
 the target's `max_cost_usd`, else by the agent's default (its definition's `max_cost_usd`) as it stands when the firing
 starts. A target with neither is `422`, and a firing that finds neither (the default removed since) fails, so no trigger
-starts an uncapped run. A workflow agent is refused, since a workflow run's spend is not capped here. Each run's
+starts an uncapped run, a workflow agent's included ([workflow runs](#a-workflow-run-under-its-cap)). Each run's
 input ends with a line naming the schedule and the time it fired for, in its zone, and the run's `trigger` names the
 trigger and the firing, in the run's view and in the runs lists (`GET /v2/runs`, `GET /v2/agents/{id}/runs`) alike;
 a run a caller started has `trigger: null`.
@@ -1555,6 +1565,15 @@ never opens a completed run again for one it already has. A firing to a run that
 5 s), and a trigger holds at most 20 firings due: past them a webhook event and a run now answer `429 rate_limited`
 with `Retry-After: 30`, recording nothing, and a schedule's time is `skipped`.
 
+## Templates
+
+A template package makes a working agent in one call: its definition, its skills and rules, and its triggers, from a
+folder the server ships. `GET /v2/templates` lists them; `POST /v2/templates/{name}/apply` with `{parameters,
+overrides?: {model}}` makes one, or nothing when a check fails (a trigger refused archives the agent it made). A
+package's `version` is SemVer and never `definition.version`, the agent's revision number. The first package is `code-review`, a code review agent for one GitHub repository. The format and the
+rules of an apply are in [templates/README.md](https://github.com/Parcha-ai/agentrun/blob/main/packages/serve/templates/README.md);
+`agentrun template validate DIR` checks a folder as the server does.
+
 ## What it serves
 
 | Route | Here |
@@ -1562,7 +1581,7 @@ with `Retry-After: 30`, recording nothing, and a schedule's time is `skipped`.
 | `GET /health` | Without a credential: whether the store reads and the disk has room ([capacity and health](#capacity-and-health)). |
 | `GET /openapi.json` | Without a credential: this API as an OpenAPI 3.1 document, the `agentrun.v2/0` contract (vendored in `src/openapi/`, its source in `info`) with this server's own routes marked `x-agentrun-serve` the operations it answers `501` marked `x-agentrun-serve-unsupported`, and a contract operation that takes more than the contract gives marked `x-agentrun-serve-changed` with each change named; `links.openapi` in capabilities points at it. |
 | `GET /capabilities` | Without a credential. `backend: local`, every feature flag present and true only when it works; `tools`, the tools an agentic revision may name; `workflows`, what a workflow revision's model nodes get and, in `workflows.decisions.providers`, the decision providers its typed questions run on; `models`, where models come from and the model of each tier. |
-| `POST /agents`, `GET /agents`, `GET /agents/{id}` | `POST` takes `{definition, skills?, note?}` and makes the agent with its first revision, current. A definition has `instructions` (an agentic revision) or `workflow` (a workflow revision, checked by the DSL first), and `name`, `description`, `model` and `thinking` (agentic only), `harness` ([harnesses](#harnesses)), `place` ([place](#place)), `tools`, `tool_settings` ([search and fetch](#search-and-fetch)), `skills` (names; each `<name>/SKILL.md` is in `skills`) and `version`, which is the number the revision gets, and `max_cost_usd` (agentic only), the agent's default cap, kept by an edit that leaves it out and cleared only by 0, and `cap_mode` (agentic only), how such a cap prices a request, `expected` or `strict` ([spend cap](#spend-cap)). A field the store does not keep (`input_schema`, `output_schema`) is `422 input_invalid` by name, and so is a definition that can never run here; one this host cannot run yet saves with `warnings` ([models](#models)). The ETag (`home_etag`) is the current revision's id. `GET /agents/{id}` adds `tools`, the tools its current revision grants with each one's provider ([search and fetch](#search-and-fetch)). |
+| `POST /agents`, `GET /agents`, `GET /agents/{id}` | `POST` takes `{definition, skills?, note?}` and makes the agent with its first revision, current. A definition has `instructions` (an agentic revision) or `workflow` (a workflow revision, checked by the DSL first), and `name`, `description`, `model` and `thinking` (agentic only), `harness` ([harnesses](#harnesses)), `place` ([place](#place)), `tools`, `tool_settings` ([search and fetch](#search-and-fetch)), `skills` (names; each `<name>/SKILL.md` is in `skills`) and `version`, which is the number the revision gets, and `max_cost_usd`, the agent's default cap (an agentic agent's or a workflow's), kept by an edit that leaves it out and cleared only by 0, and `cap_mode`, how such a cap prices a request, `expected` or `strict` ([spend cap](#spend-cap)). A field the store does not keep (`input_schema`, `output_schema`) is `422 input_invalid` by name, and so is a definition that can never run here; one this host cannot run yet saves with `warnings` ([models](#models)). The ETag (`home_etag`) is the current revision's id. `GET /agents/{id}` adds `tools`, the tools its current revision grants with each one's provider ([search and fetch](#search-and-fetch)). |
 | `PUT /agents/{id}/definition` | The same body, checked [the same way](#models): a new revision, its parent the current one, made current. Without `skills` the current revision's skill files carry over. A definition that is the current revision already writes nothing, so a PUT sent twice makes one revision. An agent's id, name and description stay those it was made with. `If-Match` that is not the current ETag is `412 precondition_failed`; the store compares it again inside the commit, so of two edits that read the same revision exactly one lands. The contract's body is taken too: the definition itself, with `If-Match` required (`412` without it) and `definition.version` greater than the current one (`422`). Any such version is taken, and always makes a new revision, the same definition included; the revision is numbered as this server numbers them, the next, and the answer says which; the route reads a body holding `definition` as this one, any other as the contract's. |
 | `GET /agents/{id}/revisions` | The agent's revisions, newest first: `revision`, `version`, `parent`, `kind`, `current`, `note`, `created_at` and the `definition`. |
 | `POST /agents/{id}/current` | `{revision}`: one of the agent's revisions becomes current again. |
@@ -1588,6 +1607,7 @@ with `Retry-After: 30`, recording nothing, and a schedule's time is `skipped`.
 | `GET /runs/{id}/browser` | This server's own (`x-agentrun-serve: "liveview/1"`): the run's live browser view for the owner, `{state: "off", reason}`, `{state: "none"}` or `{state: "live", viewer}` ([the live view](#the-browsers-live-view)). |
 | `GET`, `PUT` and `DELETE /settings/webhook`, `POST /settings/webhook/test`, `GET /settings/webhook/deliveries` and `POST .../deliveries/{webhook_id}/redeliver` | [Webhooks](#webhooks), this server's own routes (`x-agentrun-serve: "webhook/1"`): the URL run notices are POSTed to, signed by the Standard Webhooks spec; never its secret but once. |
 | `GET` and `POST /triggers`, `GET`, `PATCH` and `DELETE /triggers/{id}`, `POST /triggers/{id}/fire`, `GET /triggers/{id}/firings`, `POST /triggers/{id}/secret`, `POST /hooks/{id}` (no token: [signed](#webhook-triggers)) | [Schedules](#schedules), this server's own routes (`x-agentrun-serve: "trigger/1"`): schedules that start an agent's capped runs, each firing once, and their history. |
+| `GET /templates`, `POST /templates/{name}/apply` | [Templates](#templates), this server's own routes (`x-agentrun-serve: "templates/1"`): the template packages it ships, and an apply that makes one's agent and triggers, all or nothing. |
 | `POST /mcp` | This server's own route (`x-agentrun-serve: "mcp/1"`): the [MCP endpoint](#for-coding-agents), Streamable HTTP with one JSON-RPC message per POST (`initialize`, `ping`, `tools/list`, `tools/call`), answered as JSON, stateless. Its ten tools call these routes in process with the caller's token. The Bearer token only, never the page's cookie; a browser `Origin` other than this server's own is `403`; any other method is `405`. |
 | `GET /usage` | The runs' cost estimates, by meter, agent, key, day or region (`key` and `region` are one line, `local`). A run of unknown cost adds what it is known to have spent so far (its `so_far_usd`: each priced charge, browser time and paid tools included) and is counted in `unpriced_runs` (in the total and in each line it is unknown on), so no sum is ever null, it never passes as $0, and a total is never below a line of its own: with `unpriced_runs` above 0 the total is a lower bound. |
 
@@ -2058,13 +2078,12 @@ Each run of an agent that learns starts from `main` as it is when the run is mad
   and handed the key of; a tier the run has no model of runs there too), in a session of its own with no tool of its
   own, each call node `via: "tool"` on a tool the agent has, its paid requests booked under
   the `learned_workflow` call, and web_search on the provider's own search where it resolves native, through the run's
-  models. Its model requests are the run's, under its cap and on its timeline as side requests labelled
-  `learned_workflow`: on claude-agent and codex, the harness's requests and the workflow's count against one total, and
-  each holds its worst case in flight where the other's check sees it, and the workflow's go where the harness's go (on
-  OPENROUTER_API_KEY alone, through OpenRouter, by OpenRouter's name for the run's model; claude-agent through the
-  operator's own gateway at ANTHROPIC_BASE_URL, or any harness at an origin its requests could not follow, is offered
-  none, which its pin names in `workflows_off`; opencode takes codex's route). A call a crash cut off is answered interrupted,
-  never run again. The tool gate holds
+  models. Its model requests are the run's, under its cap: on pi, side requests of the run's models labelled
+  `learned_workflow` on its timeline; on claude-agent, codex and opencode, requests on the run's one route, the session's
+  model proxy, under a key of the run's own: the same body rules, provider, key, price and cap as the harness's own
+  requests, booked on the session's records labelled `learned_workflow`. So they go wherever the harness's go (the
+  operator's gateway at ANTHROPIC_BASE_URL or AGENT_MODEL_BASE_URL, OpenRouter, the vendor's API), and every run is
+  offered the workflows its pin names. A call a crash cut off is answered interrupted, never run again. The tool gate holds
   `learned_workflow` like any tool: its settings key is `learned_workflow`, allowed by default (the agent's own graded
   workflow, each node checked), and tool settings may set it to ask (the run parks until an owner answers) or deny.
 
@@ -2254,11 +2273,11 @@ log shows `by: {user: true, via: "console"}` at the commit's time, never the not
 
 ## Spend cap
 
-An agentic run may name `max_cost_usd` (a workflow run may not: `422`). A run that names none takes its agent's default,
+A run may name `max_cost_usd`, an agentic run or a workflow run ([below](#a-workflow-run-under-its-cap)). A run that names none takes its agent's default,
 the `max_cost_usd` of the revision it runs, kept with the revision; a run's own cap wins, since its caller chose it. A
 definition's `max_cost_usd` above 0 sets that default, and 0 clears it (no default); anything else is `422`. An edit that
 leaves the field out keeps the agent's default, as it keeps its harness and place: leaving a field out never removes a
-spend limit. A workflow definition keeps none: above 0 is `422 not_allowed`, and 0 changes nothing. The cap is checked in the run's own process
+spend limit. A workflow definition keeps one the same way. The cap is checked in the run's own process
 before each model request, the agent's and a compaction's alike, on every harness: what the run has spent so far, plus
 what each request still in flight is held at, plus what this request is expected to cost must stay within it, or the
 request is not sent and the run pauses ([below](#a-run-paused-at-its-cap)). A request costs its input, plus the output it
@@ -2415,8 +2434,10 @@ offered raise, `suggested_cap_usd`, is `spent_usd` + 10 × `needs_usd` rounded u
 cap, so a `PATCH` with it (below) resumes the run; it is absent with the other figures. The figures come from the refusal's own start mark, so a
 server started again says them too, shown as `cost.usd` is (to a millionth of a dollar), except `spent_usd` once the paused process is gone: the refusal counted requests
 still answering at what it held for them, so then it is the store's spend, when that is lower, and `suggested_cap_usd`
-follows it. The refusal's words (`said`) keep its own figures. Its timeline shows the refusal's row, then a waiting row: "Waiting for you to raise the cap", and no more: the words are
-`pending.said`'s, which a client shows once. The
+follows it. The refusal's words (`said`) keep its own figures. Its timeline shows the refusal's row, the server's `phase` row "Paused at the run's cap" (`origin` server, its id
+ending `:note`, so it is no message) marked `paused` (never an `error` row; it stays once the cap is raised, as the
+run's history), then a waiting row: "Waiting for you to raise the
+cap", and no more: the words are `pending.said`'s, which a client shows once. The
 webhook's `run.needs_input` says `pending.kind: "budget"`. Its process is let go while it waits (SIGTERM: it drains and
 releases the run), so a paused run holds no place; a server started again reads it paused from its store. A paused
 process that does not let go within the drain timeout (`--drain-timeout`, 30 s by default) is killed, and the run ends
@@ -2435,8 +2456,8 @@ message, starts a turn that is judged as any other. A paid call refused because 
 still ends the run `failed`.
 
 `PATCH /runs/{run_id}` with `{max_cost_usd}` raises the cap, and only raises it: the new cap is above the run's current
-cap, its last raise included, by more than a float's tail (1e-9; `422` otherwise, and for a run with no cap or a workflow
-run; `409 not_continuable` for an ended run). The same raise sent again (a retry), within that tail, changes nothing and
+cap, its last raise included, by more than a float's tail (1e-9; `422` otherwise, and for a run with no cap;
+`409 not_continuable` for an ended run). A workflow run's raise is [below](#a-workflow-run-under-its-cap). The same raise sent again (a retry), within that tail, changes nothing and
 answers as the first did. The run's serve.json keeps the raise before any answer, with each raise in `cap_raised`, so its
 next process opens under it, as does a server started again; a raise it could not keep is not taken (an error answers it),
 and the same raise again is taken anew. A run paused at its cap goes on: the answer is `{run_id, max_cost_usd, resumed: true,
@@ -2469,6 +2490,34 @@ A run's `cost.usd` is $0 before its first model request (a run cancelled before 
 response reported no price or a request was cut before its end (a stop, a cancel, a crash): no request costs nothing,
 but a request of unknown price is unknown, never $0. A stopped request shows `null` whether or not its cap counted it at
 its held worst case.
+
+### A workflow run under its cap
+
+A workflow run is capped by the same checks, in its own process, each before the paid step is sent:
+
+| Step | Held at | Where |
+|---|---|---|
+| A model node's request | its expected cost, as an agentic run's request | the run's models (`cap.ts` capModels) |
+| A call node's `llm` call | the same | the same, as a side request |
+| A call node's paid tool call (Parallel's search or extract) | its fee | `paidCall`, as an agentic run's |
+| A decision on Parallel | its list price for one request, $0.001 | before the driver admits it (`decision-cap.ts`) |
+| A decision on Jev | TypeSafe's published price, $0.042 a million input tokens, one token a byte of its state and questions | the same |
+| A decision on an OpenRouter Decisions model | its catalog price: per request, per image, per input token, and per output token for 256 a question (`expected`) or the catalog's most (`strict`) | the same |
+
+What a decision charged is booked in the run's store as the cap counted it, so a run opened again counts it once. A step
+the cap has no room for is not sent and waits where it stands: the run is `input_required`, state `waiting`, with
+`pending.kind` budget and `pending.node` the node's label. A model node's request waits unsent; a call node's call
+ends its effect held, sending nothing, and goes again as a new effect once raised, never as the tool's own failure, which
+a map that collects failed items would take for an item's; a decision waits before the driver admits it, so it is never
+a request asked and unanswered. What a call node waited is not counted against its deadline. A pause holds the run's
+process for 10 minutes, then lets it go (nothing in flight but the waits): the run stays paused, and no process is
+started for it. `PATCH /runs/{run_id}` raises the cap as for an agentic run, with no follow-up turn: a waiting process
+judges its step again under the new cap, and a run whose process was let go is opened again under it, resuming from its
+journal, so no completed node is sent again (`resumed: true`, no `message_id`). A capped start is refused before anything is sent, as an
+agentic run's is, when a model one of its nodes or `llm` calls runs on has no price here, or a decision pins an
+OpenRouter Decisions model the catalog lists no price for: `409 agent_not_runnable`, each in `error.fields` with the
+node's label and its fix. A step no cap fixes all the same (a spend no one knows) ends the run `failed`,
+`spend_cap_reached`, in the cap's words, after the node's label.
 
 ## The faux model
 
