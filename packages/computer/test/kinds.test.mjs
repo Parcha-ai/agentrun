@@ -3,7 +3,11 @@
 // and serves()/kindOf() computed from a provider's capabilities, never from a list beside them. No vendor, no Docker.
 import assert from "node:assert/strict";
 import test from "node:test";
-import { GROUPS, KIND_PROVIDERS, KIND_SPECS, KINDS, kindOf, providerIds, serves, toolsFor } from "../dist/index.js";
+import { DaytonaProvider, GROUPS, KIND_PROVIDERS, KIND_SPECS, KINDS, kindOf, ModalProvider, providerIds, serves, servingRefusals, toolsFor } from "../dist/index.js";
+import { E2BProvider } from "../dist/e2b.js";
+import { fakeDocker } from "./fake-docker.mjs";
+import { fakeE2B } from "./fake-e2b.mjs";
+import { fakeModal } from "./fake-modal.mjs";
 
 /** Capabilities as a provider declares them, with only what serves() and kindOf() read changed per case. */
 const caps = (fields) => ({ kind: "linux", lifetime: "vendor", network: ["none"], isolation: "container", os: "linux", daemon: "pid1", groups: ["exec", "files", "processes"], maxLifetimeMs: 3_600_000, release: ["delete"], ...fields });
@@ -77,6 +81,33 @@ test("toolsFor() gives a kind's tools whose groups the capabilities declare, and
 	assert.ok(toolsFor("phone", caps({ ...phone, groups: [...PHONE, "apps.ui_tree"] })).some((tool) => tool.name === "ui_tree"));
 	assert.deepEqual(toolsFor("desktop", caps({})), [], "a sandbox is given no desktop tools");
 	assert.deepEqual(toolsFor("sandbox", caps({})).map((tool) => tool.name), KIND_SPECS.sandbox.tools.map((tool) => tool.name));
+});
+
+/**
+ * Each provider the registry offers for a kind, built as it offers it, from the unit tests' fakes: no vendor, no Docker.
+ * A builder that adds an id to KIND_PROVIDERS adds its line here, or the test below fails for the missing one.
+ */
+const OFFERED = {
+	"docker sandbox": () => fakeDocker().provider,
+	"docker desktop": () => fakeDocker({ desktop: {} }).provider,
+	"e2b sandbox": () => new E2BProvider({ apiKey: "e2b-test-key", Sandbox: fakeE2B().Sandbox, kind: "linux" }),
+	"e2b desktop": () => new E2BProvider({ apiKey: "e2b-test-key", Sandbox: fakeE2B().Sandbox }),
+	"daytona sandbox": () => new DaytonaProvider({ apiKey: "daytona-test-key", apiUrl: "https://api.daytona.test/api", daemonPath: "/nonexistent/computerd", fetch: async () => new Response(null, { status: 500 }) }),
+	"modal sandbox": () => new ModalProvider({ sdk: fakeModal().sdk, app: "computers", daemonImage: `ghcr.io/example/computerd@sha256:${"a".repeat(64)}` }),
+};
+
+test("every provider the registry offers for a kind serves it, by its own capabilities, and kindOf names that kind or a richer one", () => {
+	for (const kind of KINDS) {
+		for (const id of KIND_PROVIDERS[kind]) {
+			const build = OFFERED[`${id} ${kind}`];
+			assert.ok(build, `${id} is offered for ${kind}: test/kinds.test.mjs builds it as it offers the kind`);
+			const capabilities = build().capabilities();
+			assert.deepEqual(servingRefusals(capabilities, kind), [], `${id} serves ${kind}`);
+			assert.ok(KINDS.indexOf(kindOf(capabilities)) >= KINDS.indexOf(kind), `${id} as offered for ${kind}: kindOf reads ${kindOf(capabilities)}`);
+		}
+	}
+	assert.equal(kindOf(fakeDocker().provider.capabilities()), "sandbox");
+	assert.equal(kindOf(fakeDocker({ desktop: {} }).provider.capabilities()), "desktop");
 });
 
 test("the registry names, per kind, provider ids the registry holds; sandbox is every one of today's", () => {
