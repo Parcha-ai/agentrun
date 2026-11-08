@@ -55,7 +55,8 @@ export interface McpClaimOptions {
 export interface McpClaimStep {
   /** The run's pin; undefined when it grants no MCP tool. */
   readonly pin: McpPin | undefined;
-  /** Each pinned server's URL now, with its headers or why they can't be used: the run's gateway's `credentials`. */
+  /** Each pinned server's URL now, with its headers or why they can't be used: the run's gateway's `credentials`, which
+   *  it reads at every request, so a refresh or a removal here reaches a gateway already built. */
   readonly credentials: McpCredentials;
   /** Every credential value held, for the redaction set. */
   readonly secrets: ReadonlySet<string>;
@@ -139,8 +140,12 @@ export async function mcpClaim(options: McpClaimOptions): Promise<McpClaimStep> 
    *  its expiry). `again`: a row another claim's refresh left, opened as it is, never refreshed from here once more. */
   const open = async (name: string, pinnedUrl: string, again?: McpServerRow): Promise<{ awaited: boolean }> => {
     const row = again ?? (await store.mcp.server(name));
-    // Forgotten since the pin: its calls are refused by the gateway, which finds no URL for it.
-    if (!row) return { awaited: false };
+    // Forgotten since the pin: its entry goes (an earlier open's URL and headers with it), so the gateway finds no URL
+    // for it and refuses its calls unsent.
+    if (!row) {
+      delete credentials[name];
+      return { awaited: false };
+    }
     const entry = (extra: { headers?: Record<string, string>; unopened?: string }) => {
       if (released) return;
       // Headers go only to the URL the run was pinned to: a server moved since is refused per call by the gateway.

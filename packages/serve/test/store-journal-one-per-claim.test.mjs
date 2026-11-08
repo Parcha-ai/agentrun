@@ -44,6 +44,15 @@ test("the store keeps no journal it no longer hands out: none once a journal is 
   assert.equal(store.openJournals, 0, "none kept once its claim is released");
 });
 
+test("a released claim gets no journal: journal(claim) refuses it with Fenced, and the store keeps nothing for it", async (t) => {
+  const { store } = await storeOn(t);
+  await queued(store, "run-1");
+  const claim = await store.claim("run-1", "runner-a", { leaseMs: 30_000 });
+  await store.release(claim);
+  assert.throws(() => store.journal(claim), (error) => error?.name === "Fenced", "refused, not a journal that is Fenced at its first write");
+  assert.equal(store.openJournals, 0);
+});
+
 test("two runs' journals stay apart, and a closed journal is not handed out again", async (t) => {
   const { store } = await storeOn(t);
   await queued(store, "run-1");

@@ -84,6 +84,31 @@ test("a worker that exits leaves every later call rejected in words within 2 s, 
   assert.equal(await within2s(db.close()), "resolved", "close() resolved within 2 s");
 });
 
+test("a worker lost inside a transaction rejects that transaction with StoreWorkerLost itself, never an AggregateError, within 2 s", async (t) => {
+  // Its own connection, closed by the test itself under the same bound, as the test above.
+  const dir = mkdtempSync(join(tmpdir(), "store-connection-lost-tx-"));
+  t.after(() => rmSync(dir, { recursive: true, force: true }));
+  const db = await Connection.open(join(dir, "c.sqlite"));
+  await db.exec("CREATE TABLE notes (id INTEGER PRIMARY KEY, text TEXT NOT NULL)");
+  const within2s = (promise) => Promise.race([promise.then(() => "resolved", (error) => error), new Promise((resolve) => setTimeout(() => resolve("still waiting after 2 s"), 2_000))]);
+  let inside;
+  const entered = new Promise((resolve) => (inside = resolve));
+  let go;
+  const gate = new Promise((resolve) => (go = resolve));
+  const tx = db.transaction(async (h) => {
+    await h.run("INSERT INTO notes (text) VALUES (?)", "first");
+    inside();
+    await gate;
+    await h.run("INSERT INTO notes (text) VALUES (?)", "second");
+  });
+  await entered;
+  await Connection.workerOf(db).terminate();
+  go();
+  const outcome = await within2s(tx);
+  assert.ok(outcome instanceof Error && outcome.name === "StoreWorkerLost" && /the store's worker (exited|failed)/.test(outcome.message), `the transaction rejected within 2 s with StoreWorkerLost: ${outcome?.name}: ${String(outcome)}`);
+  assert.equal(await within2s(db.close()), "resolved", "close() resolved within 2 s");
+});
+
 test("a commit that fails (a deferred foreign key) is rolled back, and the next write goes", async (t) => {
   const db = await connected(t);
   await db.exec("CREATE TABLE parent (id INTEGER PRIMARY KEY); CREATE TABLE child (id INTEGER PRIMARY KEY, parent_id INTEGER NOT NULL REFERENCES parent (id))");

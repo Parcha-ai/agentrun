@@ -7,7 +7,7 @@ import { join } from "node:path";
 import { after } from "node:test";
 import test from "node:test";
 import * as computer from "../dist/index.js";
-import { container, fakeDocker, idOf, report, valuesOf } from "./fake-docker.mjs";
+import { container, fakeDocker, idOf, removal, report, valuesOf } from "./fake-docker.mjs";
 
 const SPEC = { image: "debian:bookworm-slim", lifetimeMs: 600_000, network: "none" };
 const TOKEN = "archil-token-fedcba9876543210";
@@ -78,12 +78,12 @@ test("check() refuses a bind path Docker cannot take or that is not the run fold
 });
 
 test("create() binds the run folder read-write at /workspace after the daemon's mount; HOME and the workdir stay /work", async () => {
-	const { provider, calls, daemonPath } = fakeDocker();
+	const { provider, calls, bound } = fakeDocker();
 	const dir = runFolder();
 	const result = await provider.create({ ...SPEC, mount: bind(dir) });
 	assert.equal(result.ok, true, JSON.stringify(result));
 	const run = runOf(calls());
-	assert.deepEqual(valuesOf(run, "--mount"), [`type=bind,src=${daemonPath},dst=/opt/agentrun/computerd,readonly`, `type=bind,src=${dir},dst=/workspace`]);
+	assert.deepEqual(valuesOf(run, "--mount"), [`type=bind,src=${bound},dst=/opt/agentrun/computerd,readonly`, `type=bind,src=${dir},dst=/workspace`]);
 	assert.deepEqual(valuesOf(run, "--env"), ["HOME=/work"]);
 	assert.deepEqual(valuesOf(run, "--workdir"), ["/work"]);
 	assert.ok(!valuesOf(run, "--tmpfs").some((tmpfs) => tmpfs.startsWith("/workspace")), "no tmpfs over the run folder");
@@ -189,7 +189,7 @@ test("create() deletes a computer whose bind is not what was asked: another fold
 		assert.equal(result.error.code, "refused");
 		assert.match(result.error.message, words);
 		assert.match(result.error.message, /HostConfig\.Mounts/);
-		assert.equal(calls().at(-1)[0], "rm");
+		assert.deepEqual(calls().slice(-3), removal(valuesOf(runOf(calls()), "--name")[0]));
 		assert.deepEqual(names(), []);
 	}
 });

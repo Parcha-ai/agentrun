@@ -17,6 +17,8 @@ export interface Swept {
 	deleted: string[];
 	/** How many were left, their deadline still ahead. */
 	kept: number;
+	/** For a provider with sweepLeftovers: what its computers left behind that the sweep removed, by name. */
+	leftovers?: string[];
 }
 
 /** Clock skew a deadline may carry past now + maxLifetimeMs before it counts as unreadable. */
@@ -27,7 +29,8 @@ const SKEW_MS = 60_000;
  * (fail closed); leaves the rest. A deadline more than the provider's maxLifetimeMs past now (with a minute for clock
  * skew) counts as unreadable: no computer the provider made can carry one. Only for a provider that declares lifetime
  * "janitor"; a caller runs it on a schedule. A computer that cannot be deleted does not stop the sweep: the result is
- * then an error naming it and what was deleted.
+ * then an error naming it and what was deleted. A provider with sweepLeftovers then removes, with the same labels and
+ * time, what its computers left behind (Docker: egress proxies and volumes whose computer is gone).
  */
 export async function sweep(provider: ComputerProvider, { labels = {}, now, signal }: SweepOptions = {}): Promise<Result<Swept>> {
 	const { lifetime, maxLifetimeMs } = provider.capabilities();
@@ -59,8 +62,24 @@ export async function sweep(provider: ComputerProvider, { labels = {}, now, sign
 			failed.push(`${ref.name}: ${released.error.message}`);
 		}
 	}
-	if (firstError) return fail(firstError.code, `the sweep deleted ${deleted.join(", ") || "none"} but could not delete ${failed.join("; ")}`);
-	return ok({ deleted, kept });
+	// Then what the computers left behind (a provider's own parts whose computer is gone), after the computers, since a
+	// computer released above takes its own parts with it.
+	let leftovers: string[] | undefined;
+	let leftBehind: string | undefined;
+	if (provider.sweepLeftovers) {
+		if (signal?.aborted) return fail("aborted", `the sweep was aborted; it had deleted ${deleted.join(", ") || "none"}`);
+		const left = await provider.sweepLeftovers({ labels, now: new Date(at), signal });
+		if (left.ok) leftovers = left.value;
+		else {
+			firstError ??= left.error;
+			leftBehind = left.error.message;
+		}
+	}
+	if (firstError) {
+		const words = [...(failed.length > 0 ? [`could not delete ${failed.join("; ")}`] : []), ...(leftBehind === undefined ? [] : [`could not remove what its computers left behind: ${leftBehind}`])];
+		return fail(firstError.code, `the sweep deleted ${deleted.join(", ") || "none"} but ${words.join(", and ")}`);
+	}
+	return ok({ deleted, kept, ...(leftovers === undefined ? {} : { leftovers }) });
 }
 
 export interface ReleasedOlder {

@@ -29,6 +29,7 @@ import {
   defineExtension,
   defineTool,
   type EntryRecord,
+  GenerationTask,
   Harness,
   hook,
   LiveDoc,
@@ -75,6 +76,11 @@ export const DEFAULT_RESTART_LIMIT = 5;
 /** The first input's request id: pi answers a repeat of it from its submission, so a resumed run never asks twice. */
 const INPUT_REQUEST = "agentrun:input";
 const commandRequest = (id: number) => `agentrun:command:${id}`;
+/** The approval an approve or deny row names (commands.ts requires it): the asked call's id. */
+const approvalOf = (command: Command): string | undefined => {
+  const approval = (command.body as { approval?: unknown } | null)?.approval;
+  return typeof approval === "string" ? approval : undefined;
+};
 const quiet: KernelHooks = { beforeIntent: async () => {}, beforeResult: async () => {} };
 /** Held until the hook's own context aborts (pi closing the Session), so a parked call never moves on in this process. */
 const heldUntilAborted = (hookContext: Context) =>
@@ -245,6 +251,18 @@ function piLoop(specOf: (claim: Claim) => PiRunSpec | Promise<PiRunSpec>, deps: 
   let context: Context = BACKGROUND_CONTEXT;
   /** Steers handed over before the root was open: placed once it is. */
   const early: Command[] = [];
+  /** Approve or deny rows refused because they named no call waiting for its answer. */
+  let refusals = 0;
+
+  /** Whether a call of this run waits for the answer `approval` names: asked, and not answered yet. */
+  const waitsFor = async (approval: string | undefined): Promise<boolean> => {
+    if (approval === undefined) return false;
+    await Promise.race([ready, (finished ?? new Promise<never>(() => {})).then(() => undefined, () => undefined)]);
+    if (!gate || !root) return false;
+    const entries = await entriesOf(gate.journal, root.id, context);
+    const asked = findData<AskData>(entries, KINDS.ask, (data) => data.callId === approval) !== undefined;
+    return asked && findData<AnswerData>(entries, KINDS.answer, (data) => data.callId === approval) === undefined;
+  };
 
   /** Places a steer in the run's turn; its row is taken by pi's own commit of that submission. */
   const steer = async (command: Command): Promise<CommandOutcome> => {
@@ -291,9 +309,9 @@ function piLoop(specOf: (claim: Claim) => PiRunSpec | Promise<PiRunSpec>, deps: 
           parked();
           return heldUntilAborted(hookContext);
         }
-        // Asked before and resumed: the approve or deny row the runner hands over answers it.
+        // Asked before and resumed: the approve or deny row the runner hands over, naming this call, answers it.
         for (;;) {
-          const row = inbox.find((command) => command.kind === "approve" || command.kind === "deny");
+          const row = inbox.find((command) => (command.kind === "approve" || command.kind === "deny") && approvalOf(command) === call.callId);
           if (row) {
             inbox.splice(inbox.indexOf(row), 1);
             const data: AnswerData = { callId: call.callId, approved: row.kind === "approve" };
@@ -303,6 +321,16 @@ function piLoop(specOf: (claim: Claim) => PiRunSpec | Promise<PiRunSpec>, deps: 
             return data;
           }
           if (stopReason) return heldUntilAborted(hookContext);
+          // The row that woke this run named no waiting call and was refused: the call is asked again and the run parks
+          // on it, so a refused approval neither answers it nor keeps the run claimed.
+          if (refusals > 0) {
+            const data: AskData = { callId: call.callId, tool: call.tool };
+            const asked = gate!.expect(writesEntry(KINDS.ask, (entry) => entry.callId === call.callId), { run: { state: "parked" } });
+            await harness!.commit((tx) => tx.appendEntry(root!.id, { kind: KINDS.ask, data: data as unknown as JsonValue }), context);
+            await asked;
+            parked();
+            return heldUntilAborted(hookContext);
+          }
           await new Promise<void>((resolve) => (wakeInbox = resolve));
         }
       };
@@ -348,6 +376,17 @@ function piLoop(specOf: (claim: Claim) => PiRunSpec | Promise<PiRunSpec>, deps: 
               const decision = spec.gate?.(call) ?? "allow";
               if (decision === "deny") return { block: `Permission denied: ${call.tool} is set to deny.` };
               if (decision === "ask" && !(await answer(call, hookContext)).approved) return { block: `Permission denied: a person denied ${call.tool}.` };
+              return undefined;
+            },
+          }),
+          // The rule before a side effect for the model too: a paid request leaves only after a flush made every record
+          // before it durable (the attempt's request checkpoint among them), so a machine lost after the send never loses
+          // that it was asked and sends it again. Once per attempt, recovery and the generation's retries included, for
+          // every provider: within an attempt pi writes nothing durable before the send, and pi-ai's resends of it
+          // (the same body, or one rebuilt after a refusal) carry no new record.
+          hook(GenerationTask, {
+            beforeRequest: async () => {
+              await deps.flush();
               return undefined;
             },
           }),
@@ -409,7 +448,10 @@ function piLoop(specOf: (claim: Claim) => PiRunSpec | Promise<PiRunSpec>, deps: 
         gate?.seal(new Interrupted("its claim's signal aborted"));
         return { state: "interrupted" };
       }
-      return { state: "failed", error: { code: "pi-loop", message: (error as Error).message } };
+      // A failure with no end written (pi's Harness could not open, a read failed): thrown, so the runner stores the run
+      // failed with why (a parked run brought back stays parked and is tried again after a backoff). Returning "failed"
+      // would leave it running, released and claimed again at once.
+      throw error;
     } finally {
       deps.signal.removeEventListener("abort", signalAbort);
       held?.detach();
@@ -469,6 +511,14 @@ function piLoop(specOf: (claim: Claim) => PiRunSpec | Promise<PiRunSpec>, deps: 
     async command(command) {
       if (command.kind === "steer") return steer(command);
       if (command.kind === "approve" || command.kind === "deny") {
+        // An answer names its approval: the asked call's id. One that names no call waiting for its answer (an old
+        // approval, another run's) is refused, never applied to the call that waits now.
+        const approval = approvalOf(command);
+        if (!(await waitsFor(approval))) {
+          refusals += 1;
+          wakeInbox();
+          return { refused: `no call of this run waits for approval ${JSON.stringify(approval ?? "")}` };
+        }
         inbox.push(command);
         wakeInbox();
         return { taken: true };
