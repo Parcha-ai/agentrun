@@ -1979,7 +1979,7 @@ async function startHolding(options: ServeOptions, data: string, lock: ServerLoc
     // read (push-handler.ts).
     if (found.name === "receiveHook") {
       // A body cut at its cap or its time is answered, then its socket closed: never read to its end.
-      const answer = await receivePush({ adapters, hookable: (id, kind) => triggers.hookable(id, kind), receive: (id, eventId, payload) => triggers.receive(id, eventId, payload), scoped: (kind, scope) => triggers.scoped(kind, scope), setting: (adapterId, scope, field) => triggerSettings.get(adapterId)?.get(scope, field), refused: authFailed, say: (fields) => log?.(logLine("trigger", fields)) }, req, /^\/hooks\/([^/]+)$/.exec(path)![1]!);
+      const answer = await receivePush({ adapters, hookable: (id, kind) => triggers.hookable(id, kind), receive: (id, eventId, payload) => triggers.receive(id, eventId, payload), scoped: (kind, scope) => triggers.scoped(kind, scope), setting: (adapterId, scope, field) => triggerSettings.get(adapterId)?.get(scope, field), refused: authFailed, say: (fields) => (log ? log(logLine("trigger", fields)) : void process.stderr.write(`agentrun-serve: ${logLine("trigger", fields)}\n`)) }, req, /^\/hooks\/([^/]+)$/.exec(path)![1]!);
       return send(res, answer.status, answer.body, answer.headers ?? {});
     }
     // An MCP server's OAuth sign-in: the browser coming back from its authorization server carries no token (the state
