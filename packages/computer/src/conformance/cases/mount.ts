@@ -80,7 +80,7 @@ const runFolder = (kind: MountKind): Case =>
 
 /** A mount of each kind the provider does not declare, with a token this case alone knows. */
 function undeclaredMount(kind: MountKind, token: string): MountSpec {
-	return kind === "bind" ? { kind, path: "/" } : { kind, disk: "conformance-disk", folder: "runs/conformance", token };
+	return kind === "bind" ? { kind, path: "/" } : { kind, disk: "conformance-disk", region: "conformance-region", folder: "runs/conformance", token };
 }
 
 export const mountCases: Case[] = [

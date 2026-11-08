@@ -479,17 +479,18 @@ const made = await docker.create({ image: "debian:bookworm-slim", lifetimeMs: 60
 ```
 
 - `ComputerSpec.mount` is `{ kind: "bind", path }`, a folder on the provider's host bound in (the local Docker
-  computer), or `{ kind: "archil", disk, folder, token }`, the run's folder inside an Archil disk, mounted in a remote
-  computer. `capabilities().mount` lists the kinds a provider takes; absent, it takes none.
+  computer), or `{ kind: "archil", disk, region, folder, token }`, the run's folder (such as
+  `agents/<a>/runs/<r>/work`) inside an Archil disk in its region, mounted in a remote computer.
+  `capabilities().mount` lists the kinds a provider takes; absent, it takes none.
 - `checkMount(mount, declared)` (`src/mount.ts`) is the one rule every provider's `check` runs, with no vendor call: a
   kind the provider does not declare is refused in words (`this provider does not take a mount of kind archil; it takes
   bind`); a bind's `path` is absolute, canonical (its own realpath, so what is read back is what is bound: Docker
   reports a bind's source as given, a symlink included), an existing directory on the host, with no NUL; an Archil
-  mount's `disk`, `folder` and `token` are non-empty strings with no NUL, the `folder` relative to the disk's root and
+  mount's `disk`, `region`, `folder` and `token` are non-empty strings with no NUL, the `folder` relative to the disk's root and
   with no `..` part. A field the kind does not have is refused.
 - **The token is a secret.** No refusal names an Archil field's value (a token put in the wrong field is not echoed),
   and what a provider reads back of a mount, `MountReadBack` (`readBackOf(mount)`), is its kind and source alone:
-  `{ kind: "bind", path }` or `{ kind: "archil", disk, folder }`, or `{ other: "<words>" }` for a mount at
+  `{ kind: "bind", path }` or `{ kind: "archil", disk, region, folder }`, or `{ other: "<words>" }` for a mount at
   `/workspace` the provider never makes. The token is never in a label, a read-back or an error.
 - **Docker takes a bind.** `create` adds `--mount type=bind,src=<path>,dst=/workspace` after the daemon's mount:
   read-write, propagation `rprivate`. A path Docker's `--mount` cannot hold (a comma, a double quote, a line break) is
