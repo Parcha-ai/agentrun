@@ -6,22 +6,12 @@
 import assert from "node:assert/strict";
 import { createHash } from "node:crypto";
 import { test } from "node:test";
-import {
-	DEFAULT_DOCKER_IMAGE,
-	DOCKER_IMAGE_ENV,
-	DOCKER_RECIPE,
-	DOCKER_RECIPE_HAS,
-	DockerProvider,
-	ensureImage,
-	IMAGE_REPOSITORY,
-	IMAGE_TIMEOUT_MS,
-	imageSourceOf,
-	RECIPE_LABEL,
-	recipeHash,
-	recipeTag,
-} from "../dist/index.js";
+import * as index from "../dist/index.js";
+import * as image from "../dist/docker/image.js";
 import { ENV, fromEnv } from "../dist/docker.js";
 import { alive, fakeImageDocker, until } from "./fake-image-docker.mjs";
+
+const { DEFAULT_DOCKER_IMAGE, DOCKER_RECIPE, DOCKER_RECIPE_HAS, DockerProvider, ensureImage, IMAGE_REPOSITORY, IMAGE_TIMEOUT_MS, RECIPE_LABEL, recipeHash, recipeTag } = index;
 
 const RECIPE = "FROM alpine:3.20\nRUN echo one > /one\n";
 const HASH = createHash("sha256").update(RECIPE).digest("hex");
@@ -40,10 +30,13 @@ const failure = (result) => {
 	return result.error;
 };
 
-test("the names: the repository, the label, the env setting and the bound", () => {
+test("the names: the repository, the label and the bound; no env setting of its own", () => {
 	assert.equal(IMAGE_REPOSITORY, "agentrun-computer");
 	assert.equal(RECIPE_LABEL, "agentrun.computer.recipe");
-	assert.equal(DOCKER_IMAGE_ENV, "COMPUTER_DOCKER_IMAGE");
+	for (const name of ["DOCKER_IMAGE_ENV", "imageSourceOf"]) {
+		assert.equal(name in index, false, `the index exports no ${name}: the image is an option, never read from env here`);
+		assert.equal(name in image, false, `image.ts exports no ${name}`);
+	}
 	assert.equal(IMAGE_TIMEOUT_MS, 10 * 60_000);
 	assert.equal(recipeHash(RECIPE), HASH);
 	assert.equal(recipeTag(RECIPE), TAG);
@@ -56,13 +49,6 @@ test("the default recipe is serve's box recipe, moved: python:3.12-slim pinned b
 	assert.equal(DOCKER_RECIPE_HAS, "python, git, curl, node, npm, rg", "serve's words for it, unchanged");
 	assert.equal(DEFAULT_DOCKER_IMAGE, recipeTag(DOCKER_RECIPE));
 	assert.match(DEFAULT_DOCKER_IMAGE, /^agentrun-computer:[0-9a-f]{12}$/);
-});
-
-test("COMPUTER_DOCKER_IMAGE names another image; unset or empty, the default recipe", () => {
-	assert.deepEqual(imageSourceOf({ COMPUTER_DOCKER_IMAGE: IMAGE }), { image: IMAGE });
-	assert.deepEqual(imageSourceOf({ COMPUTER_DOCKER_IMAGE: "" }), { recipe: DOCKER_RECIPE });
-	assert.deepEqual(imageSourceOf({}), { recipe: DOCKER_RECIPE });
-	assert.deepEqual(imageSourceOf({ AGENTRUN_DOCKER_IMAGE: IMAGE }), { recipe: DOCKER_RECIPE }, "serve's old setting is not read");
 });
 
 test("a recipe is built on first use, once, on stdin with no context, tagged with its hash and labelled with it; found again with that hash, it is ready with no build", async () => {
@@ -271,7 +257,7 @@ test("a pull that fails, or passes its bound, says why and the next step, with n
 	assert.deepEqual(await said(DENIED), { code: "docker", message: `the registry refused the pull of nosuch/box:1 (no such repository, or it needs a docker login): ${see}` });
 	assert.deepEqual(await said(`Error response from daemon: manifest for nosuch/box:1 not found: manifest unknown ${RAW}`), {
 		code: "docker",
-		message: "the registry has no nosuch/box:1: name an image it has (COMPUTER_DOCKER_IMAGE)",
+		message: "the registry has no nosuch/box:1: name an image it has",
 	});
 	assert.deepEqual(await said(`Error response from daemon: Get "https://registry-1.docker.io/v2/": dial tcp: connection refused ${RAW}`), {
 		code: "docker",
@@ -357,24 +343,21 @@ test("DockerProvider.image(): the default recipe, or the source it was given, th
 	assert.throws(() => new DockerProvider({ daemonPath: fake.docker, image: { recipe: "no base" } }), /^Error: the provider's image: a recipe is the text of a Dockerfile with a FROM line/);
 });
 
-test("fromEnv reads COMPUTER_DOCKER_IMAGE: an image by name; absent or empty, the provider's own recipe; an option wins; a name that is not one is refused naming the variable", async () => {
-	assert.equal(ENV.image, DOCKER_IMAGE_ENV, "ENV lists it");
-	assert.equal(ENV.image, "COMPUTER_DOCKER_IMAGE");
+test("fromEnv takes the image only as an option; a COMPUTER_DOCKER_IMAGE in env is ignored", async () => {
+	assert.equal("image" in ENV, false, "ENV names no image setting");
 	const fake = fakeImageDocker();
 	const daemon = { COMPUTER_DOCKER_DAEMON: fake.docker };
 	fake.keep(IMAGE, {});
-	const named = await fromEnv({ ...daemon, COMPUTER_DOCKER_IMAGE: IMAGE }, { docker: fake.docker });
-	assert.deepEqual(await named.image(), { ok: true, value: IMAGE });
-	assert.deepEqual(fake.calls(), [[...INSPECT, IMAGE]], "the named image, found: no build, no pull");
-	for (const env of [daemon, { ...daemon, COMPUTER_DOCKER_IMAGE: "" }]) {
+	// In env, a name Docker has, an empty one and one that is not a name at all: each ignored, the provider's own recipe.
+	for (const env of [daemon, { ...daemon, COMPUTER_DOCKER_IMAGE: IMAGE }, { ...daemon, COMPUTER_DOCKER_IMAGE: "" }, { ...daemon, COMPUTER_DOCKER_IMAGE: "-v" }]) {
 		const own = await fromEnv(env, { docker: fake.docker });
 		assert.deepEqual(await own.image(), { ok: true, value: DEFAULT_DOCKER_IMAGE }, JSON.stringify(env));
 	}
 	assert.deepEqual(fake.builds().map((build) => build.recipe), [DOCKER_RECIPE], "the provider's own recipe, built once");
-	const given = await fromEnv({ ...daemon, COMPUTER_DOCKER_IMAGE: IMAGE }, { docker: fake.docker, image: { recipe: RECIPE } });
-	assert.deepEqual(await given.image(), { ok: true, value: TAG }, "options win over the environment");
-	await assert.rejects(fromEnv({ ...daemon, COMPUTER_DOCKER_IMAGE: "-v" }, { docker: fake.docker }), (error) => {
-		assert.equal(error.message, 'COMPUTER_DOCKER_IMAGE: an image is a name such as debian:bookworm-slim: not empty, with no space or NUL byte, not starting with "-"');
-		return true;
-	});
+	assert.equal(fake.calls().some((args) => args.includes(IMAGE)), false, "Docker is never asked for the image named in env");
+	const named = await fromEnv({ ...daemon, COMPUTER_DOCKER_IMAGE: "alpine:3.20" }, { docker: fake.docker, image: { image: IMAGE } });
+	assert.deepEqual(await named.image(), { ok: true, value: IMAGE }, "the image option is the one way to name another image");
+	const given = await fromEnv(daemon, { docker: fake.docker, image: { recipe: RECIPE } });
+	assert.deepEqual(await given.image(), { ok: true, value: TAG });
+	await assert.rejects(fromEnv(daemon, { docker: fake.docker, image: { image: "-v" } }), /^Error: the provider's image: an image is a name/, "a bad option is the constructor's refusal");
 });

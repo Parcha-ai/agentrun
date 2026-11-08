@@ -141,7 +141,7 @@ test("the package's index exports the registry, so serve resolves a provider wit
 
 test("Docker's fromEnv takes the daemon from COMPUTER_DOCKER_DAEMON without asking Docker, and refuses a root COMPUTER_DOCKER_USER", async () => {
 	const docker = await import("../dist/docker.js");
-	assert.deepEqual(docker.ENV, { daemon: "COMPUTER_DOCKER_DAEMON", user: "COMPUTER_DOCKER_USER", image: "COMPUTER_DOCKER_IMAGE" });
+	assert.deepEqual(docker.ENV, { daemon: "COMPUTER_DOCKER_DAEMON", user: "COMPUTER_DOCKER_USER" });
 	const provider = await docker.fromEnv({ COMPUTER_DOCKER_DAEMON: DAEMON }, { docker: join(dir, "no-such-docker") });
 	assert.equal(provider.id, "docker", "built without running the docker CLI, which does not exist");
 	await assert.rejects(docker.fromEnv({ COMPUTER_DOCKER_DAEMON: DAEMON, COMPUTER_DOCKER_USER: "0:0" }), /root/);
