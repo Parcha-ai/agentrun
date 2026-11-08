@@ -100,14 +100,18 @@ const fill = async (page, code, password = PASSWORD) => {
   await page.fill('input[aria-label="New password"]', password);
   await page.fill('input[aria-label="Password again"]', password);
 };
+/** Whether the server says this browser is signed in, within 30 s: settles, rejecting at the bound. */
 const signedIn = (page) => page.waitForFunction(async () => (await (await fetch("/v2/auth/session")).json()).signed_in === true, null, { timeout: 30_000 });
 
 const arg = (name) => { const at = process.argv.indexOf(name); return at > 1 ? process.argv[at + 1] : undefined; };
 const hosted = arg("--url");
+// A --url given empty (an unset variable) never falls back to the local servers: that would pass without checking it.
+if (process.argv.includes("--url") && !hosted) { console.error("--url needs the server's address"); process.exit(2); }
 if (hosted) {
   try {
     const code = (await readFile(arg("--setup-code-file") ?? "", "utf8")).trim();
-    const password = (await readFile(arg("--password-file") ?? "", "utf8")).trim();
+    // The password as the file holds it, spaces kept; only a final line ending is not part of it.
+    const password = (await readFile(arg("--password-file") ?? "", "utf8")).replace(/\r?\n$/, "");
     check("a setup code (or token) and a password of 12 characters or more were given", code.length > 0 && password.length >= 12);
     const url = hosted.replace(/\/+$/, "");
     const { page, errors, headers } = await open(`${url}/`);
@@ -118,8 +122,7 @@ if (hosted) {
     check("with its note", ((await field.textContent()) ?? "").includes(NOTE));
     await fill(page, code, password);
     await page.click('button[type="submit"]');
-    await signedIn(page);
-    check("the setup code (or token) sets the password and signs in", true);
+    check("the setup code (or token) sets the password and signs in", await signedIn(page).then(() => true, () => false));
     check("no console errors", errors.length === 0, errors.join(" | "));
   } catch (error) {
     check("the walk ran to its end", false, error instanceof Error ? error.message.split("\n")[0] : String(error));
@@ -161,8 +164,7 @@ try {
     check("a wrong code is refused in words", ((await page.textContent('[role="alert"]')) ?? "").includes("That setup code is not the one in the server's log."));
     await fill(page, code);
     await page.click('button[type="submit"]');
-    await signedIn(page);
-    check("the code from the server's log sets the password and signs in", true);
+    check("the code from the server's log sets the password and signs in", await signedIn(page).then(() => true, () => false));
     check("server 1 page: no console errors", errors.length === 0, errors.join(" | "));
   } finally { await a.stop(); }
 
@@ -176,8 +178,7 @@ try {
     check("and leaves the address without the code", !page.url().includes(code));
     await fill(page);
     await page.click('button[type="submit"]');
-    await signedIn(page);
-    check("the link's code sets the password and signs in", true);
+    check("the link's code sets the password and signs in", await signedIn(page).then(() => true, () => false));
     check("server 2 page: no console errors", errors.length === 0, errors.join(" | "));
   } finally { await b.stop(); }
 
@@ -198,8 +199,7 @@ try {
     const { page, errors } = await open(`${d.base}/`);
     await fill(page, token);
     await page.click('button[type="submit"]');
-    await signedIn(page);
-    check("the server's API token in the Setup code field sets the password and signs in", true);
+    check("the server's API token in the Setup code field sets the password and signs in", await signedIn(page).then(() => true, () => false));
     check("server 4 page: no console errors", errors.length === 0, errors.join(" | "));
   } finally { await d.stop(); }
 } catch (error) {

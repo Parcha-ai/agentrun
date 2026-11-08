@@ -1,15 +1,15 @@
 // First visit at a public URL (AGENTRUN_PUBLIC_URL; on Render, its own address): setup takes the code the server prints
 // to its log, and the page asks for it at the plain address, with no link. With no code typed, the page sends nothing.
 // The server's code (read from its output, never shown) and the owner's password, twice, set the password and sign this
-// browser in. Over https the page carries Strict-Transport-Security. It can run against a server already running
-// (run.mjs --url, with --setup-code-file) whose owner is not set yet.
+// browser in. Over https the page carries Strict-Transport-Security. It runs against a server already running only with
+// its setup code (run.mjs --url with --setup-code-file): one whose owner is set has no first visit to check, so it skips.
 import { check, PASSWORD, signedIn } from "../harness.mjs";
 
 const NOTE = "Find the setup code in the server's log (on Render, the Logs tab), or open the link the log prints. The server's API token (AGENTRUN_TOKEN) works here too.";
 
 export default {
   name: "setup-public",
-  shares: true,
+  shares: ({ setupCodeFile }) => !!setupCodeFile,
   server: { env: { AGENTRUN_PUBLIC_URL: "https://agentrun-e2e.example.test" } },
   async run({ server, page, origin }) {
     const first = await page.goto(`${origin}/`);
