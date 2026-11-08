@@ -1,5 +1,5 @@
 import { Globe } from "lucide-react";
-import { type ReactNode, useState } from "react";
+import { type ReactNode, useRef, useState } from "react";
 import { Button } from "@/components/ui/button";
 import { when } from "@/lib/format";
 import { cn } from "@/lib/utils";
@@ -19,10 +19,14 @@ export function BrowserAskCard({ pending, heading, open, onHandBack, compact = f
 }) {
   const [busy, setBusy] = useState(false);
   const [said, setSaid] = useState<string | null>(null);
+  // One answer in flight: a second click (Done again, or Cancel) before the first answers sends nothing. The server takes
+  // the first answer and nothing else answers the ask (the viewer's Hand back only gives the browser back).
+  const answering = useRef(false);
   const answer = async (outcome: "done" | "cancelled") => {
-    if (!onHandBack) return;
+    if (!onHandBack || answering.current) return;
+    answering.current = true;
     setBusy(true); setSaid(null);
-    try { setSaid(await onHandBack(outcome)); } finally { setBusy(false); }
+    try { setSaid(await onHandBack(outcome)); } finally { answering.current = false; setBusy(false); }
   };
   return (
     <section aria-label="Waiting for you in the browser" className={compact ? "px-4 py-3" : "border border-warning/50 bg-warning/5 p-4"}>
