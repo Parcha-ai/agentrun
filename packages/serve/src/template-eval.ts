@@ -55,6 +55,8 @@ const TARGET = /^[A-Za-z_][A-Za-z0-9_]*(?:\.[A-Za-z_][A-Za-z0-9_]*)*$/;
 const ENDED = ["completed", "failed", "cancelled"];
 /** Where each fake MCP server listens: loopback, for the server on this machine that the eval runs on. */
 const LOOPBACK = "127.0.0.1"; // key-gate: loopback-rule each fake MCP server listens on loopback only, for a server on this machine
+/** A host name on this machine: a case with fake MCP servers needs a server here, which reaches them on loopback. */
+const LOOPBACK_HOST = /^(?:127\.\d+\.\d+\.\d+|localhost|\[::1\])$/; // key-gate: loopback-rule a server on this machine reaches the fakes
 
 type Validate = (value: unknown) => string[];
 export type Grader =
@@ -697,7 +699,7 @@ async function runCase(api: Api, pkg: Package, one: EvalCase, options: EvalOptio
   try {
     for (const [name, fixture] of Object.entries(one.mcp)) {
       // A fake listens on this machine's loopback, which only a server on this machine reaches.
-      if (options.server && !/^(?:127\.\d+\.\d+\.\d+|localhost|\[::1\])$/.test(new URL(options.server.baseUrl).hostname)) throw new ApiFailure(`the case fakes the MCP server ${name} on this machine's loopback, which the server at ${new URL(options.server.baseUrl).host} cannot reach: run it on a server on this machine`);
+      if (options.server && !LOOPBACK_HOST.test(new URL(options.server.baseUrl).hostname)) throw new ApiFailure(`the case fakes the MCP server ${name} on this machine's loopback, which the server at ${new URL(options.server.baseUrl).host} cannot reach: run it on a server on this machine`);
       // An owner's server keeps its own MCP servers: a case never replaces one, it fails instead.
       if (options.server &&(await api("GET", `/settings/mcp-servers/${name}`)).status !== 404) throw new ApiFailure(`the server already has an MCP server named ${name}, and the case would replace it with its fake: run the eval on its own server (no --server), or on one without ${name}`);
       const fake = await startFake(name, fixture);
