@@ -6,6 +6,7 @@ import { type RunActions, RunHeader } from "@/components/RunHeader";
 import { RunError } from "@/components/RunError";
 import { ArtifactViewer, RunFiles } from "@/components/RunFiles";
 import { RunResult } from "@/components/RunResult";
+import { BrowserPanel, useRunBrowser } from "@/components/RunBrowser";
 import { RunChanges, useRunChanges } from "@/components/RunChanges";
 import { Timeline, Working } from "@/components/Timeline";
 import { APPROVAL_ROW, approvalOf } from "@/lib/approval";
@@ -13,7 +14,7 @@ import { type LearningDiff, learningSteps } from "@/lib/learning";
 import { isEscalated, type MessageFeatures, type RunView, runState } from "@/lib/runState";
 import { cn } from "@/lib/utils";
 import { latest, pendingQuestion } from "@/lib/viewing";
-import type { Run, RunFile, TimelineRow } from "@/lib/v2";
+import type { Run, RunBrowser, RunFile, TimelineRow } from "@/lib/v2";
 
 export type RunDetailProps = {
   run: Run;
@@ -41,8 +42,12 @@ export type RunDetailProps = {
   /** Reads what the run's learning changed (GET /v2/runs/{id}/learning/diff): "What it changed", read only for a run
    *  that kept a note. */
   readLearningDiff?: () => Promise<LearningDiff>;
+  /** Reads the run's browser (GET /v2/runs/{id}/browser): a Browser tab while it has one, its live page when one is open. */
+  readBrowser?: () => Promise<RunBrowser>;
+  /** How often the browser is read again while the run is live, in ms (tests read it faster). */
+  browserEvery?: number;
 };
-type Tab = "graph" | "report" | "timeline" | "files";
+type Tab = "graph" | "report" | "timeline" | "files" | "browser";
 
 /** The message box's words while a tool call waits on an approval: a message declines the call, and the agent reads it. */
 const DECLINES = { label: "Decline and say what to do instead", placeholder: "Tell the agent what to do instead...", does: "Sending it declines the waiting call; the agent reads your message." };
@@ -73,12 +78,13 @@ function beforeAnswer(run: Pick<Run, "status" | "state" | "pending">, view: RunV
 }
 
 /** The run page: Report / Timeline / Files tabs over AgentRun Server's run, timeline and files. */
-export function RunDetail({ run, agentName, messages, harnessSteers, rows, files, readFile, openFile = null, actions, onMessage, onApprove, tab: initial, graphView, costText, readLearningDiff }: RunDetailProps) {
+export function RunDetail({ run, agentName, messages, harnessSteers, rows, files, readFile, openFile = null, actions, onMessage, onApprove, tab: initial, graphView, costText, readLearningDiff, readBrowser, browserEvery }: RunDetailProps) {
   // A run paused at its spend cap takes no message until its cap is raised (409 budget_reached): no composer for it.
   const budget = run.pending?.kind === "budget" ? run.pending : null;
   const state = runState(run.status, run.state, run.kind, messages, harnessSteers, run.error, run.review);
   const view = budget ? { ...state, canMessage: false, messageMode: null } : state;
-  const [tab, setTab] = useState<Tab>(initial ?? (graphView ? "graph" : view.final && run.status === "completed" ? "report" : "timeline"));
+  const defaultTab: Tab = graphView ? "graph" : view.final && run.status === "completed" ? "report" : "timeline";
+  const [tab, setTab] = useState<Tab>(initial ?? defaultTab);
   const [open, setOpen] = useState<{ file: RunFile; text: string | null } | null>(openFile ? { file: openFile, text: null } : null);
   // A tool call waiting on the owner's approval takes the question's place: an earlier question, answered, may still be
   // the newest waiting row, and is no question now.
@@ -108,10 +114,24 @@ export function RunDetail({ run, agentName, messages, harnessSteers, rows, files
   const close = () => { reads.cancel(); setOpen(null); };
   // What the run's learning changed: read once, shown under the report and under the timeline's look-back.
   const changes = useRunChanges(run, readLearningDiff);
+  // The run's browser: a tab of its own while it has one (not `off`), "live" in its name while a page is open.
+  // The run can still open a browser while it is queued or working, waits on its question with its process held, or is a
+  // paused workflow (a pause blocks new work; its session can stay open). It is read until the run is over (completed,
+  // failed, cancelled): an ended run has nothing to watch.
+  const browserOpens = view.live || (run.status === "input_required" && run.state === "waiting") || run.status === "paused";
+  const browser = useRunBrowser(readBrowser, !view.final, browserEvery);
+  // The Browser tab, selected, goes away (a read says off, or the route refuses): the run's default tab is selected, not
+  // none. A tab opened on Browser before the first read is left until there is one to go away.
+  const hadBrowser = useRef(false);
+  useEffect(() => {
+    if (browser) { hadBrowser.current = true; return; }
+    if (hadBrowser.current && tab === "browser") setTab(defaultTab);
+    hadBrowser.current = false;
+  }, [browser, tab, defaultTab]);
   // A story or a deep link can open a file on first render.
   useEffect(() => { if (openFile && readFile) void show(openFile); }, [openFile]); // eslint-disable-line react-hooks/exhaustive-deps
 
-  const tabs: [Tab, string][] = [...(graphView ? [["graph", "Graph"] as [Tab, string]] : []), ["report", "Report"], ["timeline", "Timeline"], ["files", `Files ${files.length}`]];
+  const tabs: [Tab, string][] = [...(graphView ? [["graph", "Graph"] as [Tab, string]] : []), ["report", "Report"], ["timeline", "Timeline"], ["files", `Files ${files.length}`], ...(browser ? [["browser", browser.state === "live" ? "Watch live" : "Browser"] as [Tab, string]] : [])];
   return (
     <div className="flex h-full min-h-0 flex-col">
       <RunHeader run={run} agentName={agentName} actions={actions} costText={costText} />
@@ -148,6 +168,7 @@ export function RunDetail({ run, agentName, messages, harnessSteers, rows, files
           {tab === "timeline" && <Timeline rows={learningSteps(rows, run.learning)} live={view.live} asking={approvalRow?.id ?? (view.needsYou && !budget ? waiting?.id : undefined)} />}
           {(tab === "report" || tab === "timeline") && changes && <RunChanges got={changes.got} retry={changes.retry} />}
           {tab === "files" && <RunFiles files={files} onOpen={show} />}
+          {tab === "browser" && browser && <BrowserPanel runId={run.run_id} browser={browser} opens={browserOpens} followUp={view.canMessage && view.messageMode === "follow_up"} />}
         </div>
       </div>}
       {/* While a call waits on an approval, a message declines it, as its reason: the box says so. */}

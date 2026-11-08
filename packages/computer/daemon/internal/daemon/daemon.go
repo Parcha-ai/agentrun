@@ -16,7 +16,9 @@ import (
 	"syscall"
 	"time"
 
+	"github.com/Parcha-ai/agentrun/packages/computer/daemon/internal/desktop"
 	"github.com/Parcha-ai/agentrun/packages/computer/daemon/internal/execrun"
+	"github.com/Parcha-ai/agentrun/packages/computer/daemon/internal/lifetime"
 	"github.com/Parcha-ai/agentrun/packages/computer/daemon/internal/methods"
 	"github.com/Parcha-ai/agentrun/packages/computer/daemon/internal/process"
 	"github.com/Parcha-ai/agentrun/packages/computer/daemon/internal/proctree"
@@ -48,10 +50,11 @@ func SocketPath() string {
 }
 
 // Init runs as the computer's first process. It is a child subreaper (PID 1 is one anyway), serves every connection on
-// socket with one process table, and sweeps: a child of its own that is not one of its guards is an orphan whose guard
-// died, and is killed with everything under it. SIGTERM, SIGINT or the deadline ends every process, guards first, and
-// returns 0, which ends the computer.
-func Init(version, socket string, deadline time.Time, logger *log.Logger) int {
+// socket with one process table and the display DISPLAY names, if any, and sweeps: a child of its own that is not one
+// of its guards is an orphan whose guard died, and is killed with everything under it. SIGTERM, SIGINT or the deadline
+// ends every process, guards first, and returns 0, which ends the computer. deadline.extend moves the deadline, never
+// past the maximum the provider gave, and is refused once init has decided to end the computer.
+func Init(version, socket string, deadline *lifetime.Deadline, logger *log.Logger) int {
 	if _, _, errno := syscall.RawSyscall(syscall.SYS_PRCTL, prSetChildSubreaper, 1, 0); errno != 0 {
 		logger.Printf("init: cannot become a child subreaper: %v", errno)
 		return 1
@@ -70,7 +73,9 @@ func Init(version, socket string, deadline time.Time, logger *log.Logger) int {
 	}
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
-	server := rpc.NewServer(methods.Handlers(version, process.NewTable(process.Options{})), logger)
+	display := desktop.New(os.Getenv("DISPLAY"))
+	defer display.Close()
+	server := rpc.NewServer(methods.Handlers(version, process.NewTable(process.Options{}), methods.Options{Display: display, Deadline: deadline}), logger)
 	go func() {
 		for {
 			conn, err := listener.Accept()
@@ -87,21 +92,32 @@ func Init(version, socket string, deadline time.Time, logger *log.Logger) int {
 	}()
 	tick := time.NewTicker(sweepEvery)
 	defer tick.Stop()
-	end := time.NewTimer(time.Until(deadline))
+	end := time.NewTimer(time.Until(deadline.At()))
 	defer end.Stop()
 	for {
 		select {
+		case <-deadline.Changed():
+			end.Reset(time.Until(deadline.At()))
+			logger.Printf("init: the deadline moved to %s", deadline.At().UTC().Format(time.RFC3339Nano))
 		case <-signals:
 			sweep()
 		case <-tick.C:
 			sweep()
 		case sig := <-stop:
+			deadline.Stop(fmt.Sprintf("init was sent %v", sig))
 			logger.Printf("init: %v, ending every process", sig)
 			_ = listener.Close()
 			shutdown()
 			return 0
 		case <-end.C:
-			logger.Printf("init: the deadline %s has come, ending every process and the computer", deadline.UTC().Format(time.RFC3339Nano))
+			// Decided under the lock deadline.extend takes: an extension either lands first and moves the deadline,
+			// or is refused.
+			if !deadline.End(time.Now()) {
+				// Moved as the old one came.
+				end.Reset(time.Until(deadline.At()))
+				continue
+			}
+			logger.Printf("init: the deadline %s has come, ending every process and the computer", deadline.At().UTC().Format(time.RFC3339Nano))
 			_ = listener.Close()
 			shutdown()
 			return 0

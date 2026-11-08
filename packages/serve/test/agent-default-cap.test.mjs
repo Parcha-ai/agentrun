@@ -1,7 +1,7 @@
 // An agent's default spend cap, through the API: a definition's max_cost_usd is kept with its revision and caps every run
 // started without one of its own, a trigger's included, read when the firing starts; a run's own cap wins; leaving the
-// field out of an edit never removes the cap, only 0 does; a workflow agent keeps none, since a workflow run is not capped
-// here; and a trigger with no cap of its own needs the agent's.
+// field out of an edit never removes the cap, only 0 does; a workflow agent keeps one as an agentic agent does; and a
+// trigger with no cap of its own needs the agent's.
 import assert from "node:assert/strict";
 import { test } from "node:test";
 import { agent, answerFlow, flowAgent, follow, serve } from "./support.mjs";
@@ -37,12 +37,16 @@ test("a definition's max_cost_usd is the agent's default cap: kept with its revi
   const uncapped = (await api("POST", "/agents/capped/runs", { input: { content: "Answer soon." } })).body;
   assert.equal(uncapped.cost.cap_usd, null);
   await follow(api, uncapped.run_id, ["completed"]);
-  // Refused: anything but a number of at least 0 (null included); and above 0 on a workflow agent, whose runs are not
-  // capped here, where 0 says nothing and is taken.
+  // Refused: anything but a number of at least 0 (null included).
   for (const value of [-1, "1", null]) assert.deepEqual(fields(await api("POST", "/agents", agent(`bad-${String(value)}`, { max_cost_usd: value }))), [["definition.max_cost_usd", "wrong_type"]], String(value));
-  const flow = await api("POST", "/agents", flowAgent("flow", answerFlow(), { max_cost_usd: 1 }));
-  assert.deepEqual(fields(flow), [["definition.max_cost_usd", "not_allowed"]]);
-  assert.match(flow.body.error.fields[0].message, /workflow/);
+  // A workflow agent keeps a default cap, and its cap mode, as an agentic one does: each run started with none takes it.
+  const flow = await api("POST", "/agents", flowAgent("flow", answerFlow(), { max_cost_usd: 1, cap_mode: "strict" }));
+  assert.deepEqual(flow.body.error?.fields?.map((f) => [f.field, f.reason]) ?? [], []);
+  assert.equal(flow.status, 201);
+  assert.deepEqual([flow.body.definition.max_cost_usd, flow.body.definition.cap_mode], [1, "strict"]);
+  const flowRun = (await api("POST", "/agents/flow/runs", { input: { question: "What is six times seven?" } })).body;
+  assert.deepEqual([flowRun.cost.cap_usd, flowRun.cap_mode], [1, "strict"], JSON.stringify(flowRun));
+  await follow(api, flowRun.run_id, ["completed", "failed"]);
   const flowZero = await api("POST", "/agents", flowAgent("flow-zero", answerFlow(), { max_cost_usd: 0 }));
   assert.equal(flowZero.status, 201, JSON.stringify(flowZero.body));
   assert.equal(flowZero.body.definition.max_cost_usd, undefined);

@@ -14,6 +14,7 @@ import { writeDurableSync } from "./files.js";
 import { metaToolOf } from "./mcp-meta.js";
 import { type ClientKind, MCP_SETTINGS_PAGE, McpSignIns, type OAuthNetwork, systemNetwork, reasonOf, refreshed, refused, SIGN_IN_AGAIN, type TokenSet } from "./mcp-oauth.js";
 import { SEAL_KEY_ENV, sealKeyOf } from "./tool-keys.js";
+import { serverGate, type ToolSettingsMap } from "./tool-plane.js";
 import { isObject, unknownFields } from "./validate.js";
 
 export const MCP_SERVERS_FILE = "mcp-servers.json";
@@ -361,14 +362,23 @@ export class McpServers {
     return kept;
   }
 
+  /** The server's own tool settings (GET /settings/tools), set as the server starts: each tool's permission on a read
+   *  is the one they put in force (serverGate), as capabilities and an agent's read give it. */
+  toolSettings: () => ToolSettingsMap = () => ({});
+
   private view(name: string, kept: Kept) {
     const { auth, ...rest } = kept;
+    const settings = this.toolSettings();
+    const listed = marked(kept.url, rest);
     const opened = auth.type === "none" ? null : this.open(name, kept);
     // The tools a call of which no price meters: outside the run's cost and its cap, said on every read.
     const unmetered = kept.tools.filter((tool) => !(kept.prices && Object.hasOwn(kept.prices, tool.name))).map((tool) => tool.name);
     return {
       name,
-      ...marked(kept.url, rest),
+      ...listed,
+      // Each tool's permission as this server applies it to an agent that sets none: the console shows a tool's row by
+      // it as soon as the tool is ticked, before any agent's read gives it.
+      tools: listed.tools.map((tool) => ({ ...tool, ...serverGate(`mcp:${name}/${tool.name}`, settings) })),
       ...(unmetered.length ? { not_metered: unmetered } : {}),
       auth: { type: auth.type, ...(auth.type === "headers" ? { headers: Object.keys(auth.sealed ?? {}) } : {}) },
       credential: opened === null ? null : !("headers" in opened) ? opened.unreadable : auth.oauth?.expired ? ("expired" as const) : ("sealed" as const),

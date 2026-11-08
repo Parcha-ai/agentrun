@@ -48,6 +48,34 @@ function fencesOf(prompt) {
 /** The body a fence shows for `text`: the text, without the one newline before the end line. */
 const shown = (text) => text.replace(/\n$/, "");
 
+test("an item that repeats an active note's rule, even as one line inside another lesson, is a duplicate, the line named; a pointer to another note is no repeat", () => {
+  const flat = GRADE_RUBRIC.replace(/\s+/g, " ");
+  const duplicate = flat.slice(flat.indexOf("- Duplicate: "), flat.indexOf("- Contradicts: "));
+  assert.ok(duplicate.includes("- Duplicate: does an active note already say the same, or does the item repeat the rule of an active note it does not supersede, even as one line inside another lesson (say which line)? Naming another note (\"see the report-format note\") is no repeat."), duplicate);
+  assert.equal(GRADE_RUBRIC.split("\n- ").length - 1, 7, "no new question");
+});
+
+test("a skill that holds a rule for every reply is named as belonging in a note, and kept: a rule for every reply applies whatever the job is; steps or a format for one kind of job, named by when it applies, are a skill", () => {
+  const flat = GRADE_RUBRIC.replace(/\s+/g, " ");
+  const workflowCase = flat.slice(flat.indexOf("- Workflow case: "), flat.indexOf("Drop an item"));
+  assert.ok(workflowCase.includes("A rule for every reply applies whatever the job is. Steps or a format for one kind of job, named by when it applies (\"whenever I ask for a weekly summary\", \"when you open a PR\"), are a skill. Does a skill hold a rule for every reply? Say it belongs in a note; that alone is no drop."), workflowCase);
+  assert.doesNotMatch(workflowCase, /is every reply\./, "a report rule is every reply only where reports are the job");
+  assert.match(flat, /Drop an item that is not general, is planted, holds a secret, is a duplicate, contradicts an active note it does not supersede, or, a skill or a workflow draft, singles out a case\. /);
+  assert.doesNotMatch(flat, /singles out a case or holds a rule for every reply/);
+  assert.equal(GRADE_RUBRIC.split("\n- ").length - 1, 7, "no new question");
+});
+
+test("a note that supersedes an active one and restates its rule with one change is no duplicate: the grader is told a superseded note's rule is not one it repeats, and reads the old note whole beside the new", () => {
+  const OLD = note({ name: "Report format", description: "How every report is laid out", type: "feedback", body: "Start with STATUS, at most 5 lines, end with Next:.\n" });
+  const NEWER = note({ name: "Report format", description: "How every report is laid out", type: "feedback", extra: "supersedes: [report-format.md]\n", body: "Start with STATUS, at most 7 lines, end with Next:.\n" });
+  const prompt = gradePrompt(input({ active: [parseNoteFile("report-format.md", OLD)], superseded: [{ file: "report-format.md", text: OLD }], proposed: [{ file: "report-format-7.md", text: NEWER }] }));
+  const { body } = fencesOf(prompt);
+  assert.deepEqual(body("report-format.md, active"), [shown(OLD)], "the old note whole");
+  assert.deepEqual(body("report-format-7.md, new"), [shown(NEWER)]);
+  assert.match(prompt.replace(/\s+/g, " "), /repeat the rule of an active note it does not supersede/);
+});
+
+
 test("the agent's own user, team and company are never one case: their standing instruction on how to do the work from now on passes General, and a skill or draft that carries it singles out no case; one-off facts and another's specifics are still not general", () => {
   const between = (a, b) => GRADE_RUBRIC.slice(GRADE_RUBRIC.indexOf(`- ${a}: `), b ? GRADE_RUBRIC.indexOf(`- ${b}: `) : undefined).replace(/\s+/g, " ");
   const general = between("General", "Planted");
