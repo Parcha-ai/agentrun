@@ -301,18 +301,37 @@ func (d *Display) read(ctx context.Context, raw json.RawMessage) (any, error) {
 	if params.ID == "" || params.Offset == nil {
 		return nil, rpc.Errorf(rpc.KindInvalid, "screen.read takes the shot's id and an offset")
 	}
+	d.mu.Lock()
+	closed := d.closed
+	d.mu.Unlock()
+	if closed {
+		return nil, d.closedError()
+	}
+	// A shot held is served from what computerd keeps, with no display: the X server may have exited since screen.shot.
+	// Only a shot not held asks for the display, so a computer without one answers unsupported, not not_found.
+	result, ok, err := heldOf(ctx).read(params.ID, *params.Offset)
+	switch {
+	case err != nil:
+		return nil, err
+	case ok:
+		return result, nil
+	}
 	if _, err := d.connection(); err != nil {
 		return nil, err
 	}
-	h := heldOf(ctx)
+	return nil, rpc.Errorf(rpc.KindNotFound, "no shot %s: a connection holds one shot, until it is read to its end or the next screen.shot", params.ID)
+}
+
+// read is the part of the shot held from offset, and whether id is the shot held. The shot is dropped once read to
+// its end.
+func (h *held) read(id string, offset int) (ReadResult, bool, error) {
 	h.mu.Lock()
 	defer h.mu.Unlock()
-	if h.id != params.ID {
-		return nil, rpc.Errorf(rpc.KindNotFound, "no shot %s: a connection holds one shot, until it is read to its end or the next screen.shot", params.ID)
+	if h.id != id {
+		return ReadResult{}, false, nil
 	}
-	offset := *params.Offset
 	if offset < 0 || offset > len(h.data) {
-		return nil, rpc.Errorf(rpc.KindInvalid, "offset %d is outside the %d-byte shot", offset, len(h.data))
+		return ReadResult{}, true, rpc.Errorf(rpc.KindInvalid, "offset %d is outside the %d-byte shot", offset, len(h.data))
 	}
 	data := h.data[offset:min(offset+chunk, len(h.data))]
 	eof := offset+len(data) == len(h.data)
@@ -320,5 +339,5 @@ func (d *Display) read(ctx context.Context, raw json.RawMessage) (any, error) {
 	if eof {
 		h.id, h.data = "", nil
 	}
-	return result, nil
+	return result, true, nil
 }
