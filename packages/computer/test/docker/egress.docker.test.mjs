@@ -17,6 +17,7 @@ import { join } from "node:path";
 import { fileURLToPath } from "node:url";
 import { after, before, describe, it } from "node:test";
 import { DockerProvider, EGRESS_IMAGE, sweep } from "../../dist/index.js";
+import { createForDeadline } from "./deadline.mjs";
 
 const LIVE = process.env.AGENTRUN_COMPUTER_LIVE_DOCKER === "1";
 const RUN_LABEL = "agentrun.test.run";
@@ -212,9 +213,17 @@ describe("a Docker computer whose network is an allowlist", { skip: LIVE ? false
 		assert.deepEqual(egressOf(ref.name).containers, [`${ref.name}-egress`], "and so is its proxy");
 	});
 
-	it("the proxy ends itself at the computer's deadline, and the janitor's sweep then removes the computer, its proxy and its volume", async () => {
-		const short = await create({ lifetimeMs: 15_000 });
-		const bound = Date.now() + 120_000;
+	it("the proxy ends itself at the computer's deadline, and the janitor's sweep then removes the computer, its proxy and its volume", async (t) => {
+		// 15 s, counted before the proxy starts, or longer on a host slow to start the two (createForDeadline).
+		const got = await createForDeadline(t, (lifetimeMs) => provider.create({ image: EGRESS_IMAGE, lifetimeMs, network: { allow: ALLOW }, labels: { [RUN_LABEL]: run } }), {
+			lifetimeMs: 15_000,
+			keep: (name) => made.add(name),
+		});
+		if (got === undefined) return;
+		const { result, lifetimeMs, from } = got;
+		assert.equal(result.ok, true, JSON.stringify(result));
+		const short = result.value;
+		const bound = from + lifetimeMs + 120_000;
 		let state;
 		for (;;) {
 			state = JSON.parse(docker("inspect", "--format", "{{json .State}}", `${short.name}-egress`));

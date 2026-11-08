@@ -308,6 +308,26 @@ test("pi through the adapter: a person's stop during the job: the stopped end ca
   assert.deepEqual(toldRows(), [{ channel: "learning:test", run_id: "run-1", marker: "cut:stopped" }], "its rows stored with the stopped end");
 });
 
+test("pi through the adapter: a person's cancel during the end-of-run turn ends the run cancelled, the cut step's rows with that end", async (t) => {
+  const { server, start, until, toldRows } = await setup(t);
+  const calls = [];
+  const endOfRun = async (input) => {
+    calls.push(input.cut ?? "asked");
+    if (input.cut) return { also: [told(`cut:${input.cut}`)] };
+    await input.ask("What did you learn?", { origin: "reflect", deadlineMs: 30_000 });
+    return { also: [told("asked")] };
+  };
+  // The job answers; the end-of-run turn calls `slow`, which runs until its call is aborted.
+  const { tool, running } = heldTool();
+  await start(loopWith(piAdapterSpec({ script: [{ say: "done" }, { call: "slow" }, { say: "a note" }], tools: { slow: tool }, hooks: quiet }), {}, { endOfRun }), "runner-a");
+  await running;
+  await server.command("run-1", { kind: "cancel" });
+  const row = await until((r) => r.state === "stopped" && r.runner === null, "the run did not stop");
+  assert.equal(row.summary, "cancelled", "a cancel's end says cancelled, never a stop's words");
+  assert.deepEqual(calls, ["asked", "stopped-looking"], "asked once, then told the run was cut while it looked back");
+  assert.deepEqual(toldRows().map((each) => each.marker), ["cut:stopped-looking"], "the cut step's rows stored with the cancelled end");
+});
+
 test("pi through the adapter: a cut step that never answers (its store stalled) cannot hold a person's stop: the run still ends stopped", async (t) => {
   const { server, start, until } = await setup(t);
   const endOfRun = async (input) => (input.cut ? new Promise(() => {}) : undefined);
