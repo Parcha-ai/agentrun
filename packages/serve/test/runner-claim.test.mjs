@@ -14,12 +14,14 @@ const TIMING = { leaseMs: LEASE_MS, renewEveryMs: 100, stopMarginMs: 150, pollMs
 async function twoRunners(t, createLoop) {
   const { server, runners: [one, two] } = await stores({ runners: 2 });
   const record = recorder();
+  const events = [];
+  const onEvent = (event) => events.push(event);
   const started = [
-    startRunner({ store: observed(one, record), createLoop, name: "runner-a", ...TIMING }),
-    startRunner({ store: observed(two, record), createLoop, name: "runner-b", ...TIMING }),
+    startRunner({ store: observed(one, record), createLoop, name: "runner-a", onEvent, ...TIMING }),
+    startRunner({ store: observed(two, record), createLoop, name: "runner-b", onEvent, ...TIMING }),
   ];
   t.after(() => Promise.all(started.map((runner) => runner.close())));
-  return { server, record, runners: started };
+  return { server, record, events, runners: started };
 }
 
 test("two runners, one queued run: exactly one claims it, and keeps it while it renews", async (t) => {
@@ -84,11 +86,14 @@ test("a runner that closes stops its loop where it can resume and releases the r
 
 test("a run that ends is flushed and released, and never claimed again", async (t) => {
   const faux = fauxLoops({ turns: 2, turnMs: 10 });
-  const { server, record, runners } = await twoRunners(t, faux.createLoop);
+  const { server, record, events, runners } = await twoRunners(t, faux.createLoop);
+  // A slow flush, as on a loaded machine: the end commit already reads released on the row, so only the runner's own
+  // "released" says the flush and the release are done.
+  record.flushDelayMs = 150;
   await queue(server, "run-1");
 
-  await until(async () => (await server.runs.get("run-1")).state === "ended", "the run ends");
-  await until(async () => (await server.runs.get("run-1")).runner === null, "the release");
+  await until(() => events.some((event) => event.type === "released" && event.runId === "run-1"), "the runner says released");
+  assert.equal((await server.runs.get("run-1")).runner, null, "the end commit released the row");
   assert.match(record.ops.join(" | "), /ended run-1 \| flush \| release run-1/, "the end commit, then a flush, then the release");
   const run = await server.runs.get("run-1");
   assert.ok(run.endedAt !== null, "the end commit stamped ended_at");
