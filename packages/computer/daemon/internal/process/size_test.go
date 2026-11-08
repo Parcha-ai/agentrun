@@ -28,6 +28,9 @@ func TestReadSize(t *testing.T) {
 	tbl := table(t, process.Options{RingBytes: 4})
 	p := start(t, tbl, process.StartParams{Argv: []string{"sh", "-c", "printf hello; printf oops >&2"}})
 	wait(t, tbl, p.ID)
+	// Every byte is in once the streams read to their end: the process's end can come before them.
+	readAll(t, tbl, p.ID, "stdout")
+	readAll(t, tbl, p.ID, "stderr")
 	two := 2
 	res, err := tbl.Read(context.Background(), process.ReadParams{ID: p.ID, Stream: "stdout", Offset: off(1), MaxBytes: &two})
 	if err != nil || string(res.Data) != "el" || res.Dropped != 0 {
