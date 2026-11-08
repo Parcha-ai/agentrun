@@ -310,24 +310,38 @@ class SqliteStore implements Store {
     };
 
     this.runs = {
-      create: async ({ id, agentId, revisionId }) => {
-        const [result] = await db.write([{ sql: `INSERT INTO runs (id, agent_id, revision_id, state, epoch, started_at) VALUES (?, ?, ?, 'queued', 0, ?) RETURNING ${RUN_COLUMNS}`, params: [id, agentId, revisionId, now()] }]);
+      create: async ({ id, agentId, revisionId, origin }) => {
+        const insert = `INSERT INTO runs (id, agent_id, revision_id, state, epoch, started_at) VALUES (?, ?, ?, 'queued', 0, ?) RETURNING ${RUN_COLUMNS}`;
+        if (origin) {
+          // The run and its origin in one transaction: the key -> run link holds even if the kept response never lands.
+          return db.transaction(async (tx) => {
+            const at = now();
+            const row = await tx.get<RunRecord>(insert, id, agentId, revisionId, at);
+            await tx.run("INSERT INTO run_origins (key, run_id, fingerprint, created_at) VALUES (?, ?, ?, ?)", origin.key, id, origin.fingerprint ?? null, at);
+            return runOf(row!);
+          });
+        }
+        const [result] = await db.write([{ sql: insert, params: [id, agentId, revisionId, now()] }]);
         return runOf(result!.rows[0] as RunRecord);
       },
       get: async (id) => {
         const row = await db.get<RunRecord>(`SELECT ${RUN_COLUMNS} FROM runs WHERE id = ?`, id);
         return row && runOf(row);
       },
-      list: async ({ agentId, revisionId, state, limit }) => {
+      list: async ({ agentId, revisionId, state, archived, limit }) => {
         const where: string[] = [];
         const params: SqliteValue[] = [];
         if (agentId !== undefined) (where.push("agent_id = ?"), params.push(agentId));
         if (revisionId !== undefined) (where.push("revision_id = ?"), params.push(revisionId));
         if (state !== undefined) (where.push("state = ?"), params.push(state));
+        if (archived !== undefined) where.push(`archived_at IS ${archived ? "NOT NULL" : "NULL"}`);
         const bounded = typeof limit === "number" && Number.isSafeInteger(limit) && limit >= 0;
         if (bounded) params.push(limit);
         const rows = await db.all<RunRecord>(`SELECT ${RUN_COLUMNS} FROM runs ${where.length ? `WHERE ${where.join(" AND ")}` : ""} ORDER BY started_at DESC, id DESC${bounded ? " LIMIT ?" : ""}`, ...params);
         return rows.map(runOf);
+      },
+      archive: async (runId, archived) => {
+        await db.write([{ sql: "UPDATE runs SET archived_at = ? WHERE id = ?", params: [archived ? now() : null, runId] }]);
       },
       claimable: async ({ limit } = {}) => {
         const at = now();
@@ -538,6 +552,11 @@ class SqliteStore implements Store {
 
   async commands(runId: string, after: number): Promise<Command[]> {
     return (await this.#db.all<CommandRecord>(`SELECT ${COMMAND_COLUMNS} FROM commands WHERE run_id = ? AND id > ? ORDER BY id`, runId, after)).map(commandOf);
+  }
+
+  async runOfOrigin(key: string): Promise<{ runId: string; fingerprint: string | null } | undefined> {
+    const row = await this.#db.get<{ run_id: string; fingerprint: string | null }>("SELECT run_id, fingerprint FROM run_origins WHERE key = ?", key);
+    return row && { runId: row.run_id, fingerprint: row.fingerprint };
   }
 
   async take(claim: Claim, commandId: number, outcome: "taken" | "refused" = "taken", reason?: string): Promise<void> {

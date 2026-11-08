@@ -56,6 +56,14 @@ export const STORE_DDL: readonly string[] = [
     cost_usd REAL,
     ${json("metrics", true)},
     summary TEXT,
+    -- How an ended run (state 'ended') ended apart from being done: 'escalated' (it finished its work and waits for a
+    -- person, which v2 reads as completed with a review) or 'completed'; null is a plain completion. A failed or stopped
+    -- run says so in its state and needs none. Written in the run's end commit (RunPatch.outcome).
+    outcome TEXT CHECK (outcome IS NULL OR outcome IN ('completed', 'escalated')),
+    -- When the run itself was archived (its agent's archive is the agent row's): hidden from the default lists, kept.
+    archived_at INTEGER,
+    -- The session an imported run came from ({source, session}), written by Store.importRun; null for a run started here.
+    ${json("imported_from", true)},
     started_at INTEGER NOT NULL,
     ended_at INTEGER
   ) STRICT`,
@@ -84,6 +92,17 @@ export const STORE_DDL: readonly string[] = [
     ${json("response")},
     at INTEGER NOT NULL,
     PRIMARY KEY (scope, key)
+  ) STRICT`,
+
+  // The origin key a run was started under (a create's idempotency key, or a trigger's firing key): the run it started and
+  // the fingerprint of what was asked then, so a retry under the same key finds that run (runOfOrigin) and tells itself
+  // from another request under the same key. Written in the run's own transaction (runs.create), so the link holds even
+  // when the server went down before its answer was stored (the kept response is written later, and separately).
+  `CREATE TABLE IF NOT EXISTS run_origins (
+    key TEXT PRIMARY KEY,
+    run_id TEXT NOT NULL REFERENCES runs (id),
+    fingerprint TEXT,
+    created_at INTEGER NOT NULL
   ) STRICT`,
 
   // Triggers (module E's), their scopes (rows only while enabled), firings, conversations and adapter settings.
