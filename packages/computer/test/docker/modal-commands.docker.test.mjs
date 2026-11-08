@@ -97,6 +97,24 @@ describe("the Modal provider's upload commands in a root container with no netwo
 	}
 
 	for (const image of IMAGES) {
+		it(`${image}: the upload refuses a daemon path another user can change, and makes the daemon's directory root's alone`, () => {
+			const { bytes, sha } = daemon();
+			const upload = modalCommands({ sha256: sha }).upload;
+			// /opt writable by every user: a non-root computer user could swap the binary every connect runs as root.
+			const open = sandbox(image);
+			docker("exec", open.name, "sh", "-c", "mkdir -p /opt && chmod 0777 /opt");
+			const refused = spawnSync("docker", ["exec", "-i", open.name, ...upload], { input: bytes, encoding: "utf8" });
+			assert.notEqual(refused.status, 0, "the upload refuses /opt at mode 0777");
+			assert.match(refused.stdout, /the daemon at \/opt\/agentrun\/computerd is not root's alone: \/opt is drwxrwxrwx/);
+			assert.equal(docker("exec", open.name, "sh", "-c", "test -e /opt/agentrun/computerd && echo there || echo absent").trim(), "absent", "nothing installed");
+			// A daemon directory the image left to another user is taken back: root's, 0755, before the daemon is moved in.
+			const owned = sandbox(image);
+			docker("exec", owned.name, "sh", "-c", "mkdir -p /opt/agentrun && chown 1000:1000 /opt/agentrun && chmod 0777 /opt/agentrun");
+			const uploaded = execFileSync("docker", ["exec", "-i", owned.name, ...upload], { input: bytes, encoding: "utf8" });
+			assert.equal(uploaded, `sha256 ${sha}\n`);
+			assert.equal(docker("exec", owned.name, "stat", "-c", "%u:%g %a", "/opt/agentrun").trim(), "0:0 755", "the daemon's directory is root's alone");
+		});
+
 		it(`${image}: the entrypoint waits, the upload streams the daemon in and checks its sha256, init runs as 1000 with no capabilities, and hello answers`, async () => {
 			const { name, deadline } = sandbox(image);
 			const { arch, bytes, sha } = daemon();
