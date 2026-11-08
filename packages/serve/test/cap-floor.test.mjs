@@ -179,6 +179,22 @@ test("pi: a floor measured under other host settings (here the host's thinking l
   assert.equal(small.status, 202, `measured at high, the low run is not refused on it: ${JSON.stringify(small.body)}`);
 });
 
+test("pi: a run asked for an effort (its guidance in the prompt) measures no floor a run asked for none is refused by, at the same thinking level", { timeout: 120_000 }, async (t) => {
+  // No host level: a run with no effort of its own thinks at medium, as one asked for medium does.
+  withEnv(t, {}, ["AGENT_THINKING"]);
+  const { api } = await serve(t, { faux: FLOOR_PRICED });
+  assert.equal((await api("POST", "/agents", agent("floor-asked"))).status, 201);
+  const asked = await api("POST", "/agents/floor-asked/runs", { input: { content: "Write one.md" }, effort: "medium", max_cost_usd: 0.02 });
+  assert.equal(asked.status, 202, JSON.stringify(asked.body));
+  await follow(api, asked.body.run_id, SETTLED);
+  const { pending } = (await api("GET", `/runs/${asked.body.run_id}`)).body;
+  assert.equal(pending?.kind, "budget", JSON.stringify(pending));
+  // Asked for no effort, its prompt has no effort guidance (well over 50 bytes, $0.0005 at $10 a million): $0.0005 under
+  // what the asked run needed covers it.
+  const plain = await api("POST", "/agents/floor-asked/runs", { input: { content: "Write one.md" }, max_cost_usd: Math.round((pending.needs_usd - 0.0005) * 1e6) / 1e6 });
+  assert.equal(plain.status, 202, `the asked run's guidance is not counted in a run asked for none: ${JSON.stringify(plain.body)}`);
+});
+
 test("pi: only a fresh conversation's first request has a floor: a request after an answer (a follow-up in a later process) has none", async () => {
   const floorOf = await piFloor({ effort: "medium" });
   const model = { id: "floor-1", name: "floor-1", api: "openai-responses", provider: "p", maxTokens: 64_000, contextWindow: 400_000, cost: { input: 10, output: 100, cacheRead: 0, cacheWrite: 0 } };
