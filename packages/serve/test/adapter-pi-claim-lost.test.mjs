@@ -6,13 +6,14 @@
 import assert from "node:assert/strict";
 import { after, test } from "node:test";
 import { closeOpenSessions, piAdapterSpec } from "./conformance-pi-adapter.mjs";
-import { nextOrder, observed, queue, recorder, sleep, stores, until } from "./runner-support.mjs";
+import { nextOrder, observed, queue, recorder, stores, until } from "./runner-support.mjs";
 
 const { startRunner } = await import("../dist/runner/runner.js");
 const { createAdapterLoop } = await import("../dist/runner/adapter-loop.js");
 const { suiteTools } = await import("../dist/runner/conformance/harness.js");
 
 const TIMING = { leaseMs: 600, renewEveryMs: 100, stopMarginMs: 200, pollMs: 20, commandPollMs: 20 };
+const WAIT_MS = 10_000;
 const quiet = { beforeIntent: async () => {}, beforeResult: async () => {} };
 after(closeOpenSessions);
 
@@ -42,10 +43,21 @@ async function midTurn(t, timing = {}) {
     return { ...given, adapter };
   };
   const inner = createAdapterLoop(spec);
-  // The loop's stop as the runner tells it, in the order things happened.
+  // The loop's stop as the runner tells it, in the order things happened, with the stop's own promise: it returns once
+  // the loop's run has finished (its session closed, no write in flight), so a test waits on that, never on the clock.
   const createLoop = (deps) => {
     const loop = inner(deps);
-    return { ...loop, stop: (reason) => (stops.push({ kind: reason.kind, order: nextOrder() }), loop.stop(reason)) };
+    return {
+      ...loop,
+      stop: (reason) => {
+        const order = nextOrder();
+        const done = loop.stop(reason);
+        const each = { kind: reason.kind, order, returned: false };
+        done.then(() => (each.returned = true), () => (each.returned = true));
+        stops.push(each);
+        return done;
+      },
+    };
   };
   const runner = startRunner({ store: observed(opened.runners[0], record), createLoop, name: "runner-a", ...TIMING, ...timing });
   t.after(async () => {
@@ -54,6 +66,13 @@ async function midTurn(t, timing = {}) {
   });
   await slowStarted;
   return { ...opened, record, runner, calls, stops, letSlowGo };
+}
+
+/** The runner's own events, in order: its stop of the loop for the lost claim, then that stop's return (the loop's run
+ * finished). The bound only caps a wait on those events; nothing here reads the clock. */
+async function stoppedForTheLoss(world, what) {
+  const stop = await until(() => world.stops.find((each) => each.kind === "claim-lost"), what, WAIT_MS);
+  await until(() => stop.returned, "the loop's stop returned: its run finished", WAIT_MS);
 }
 
 /** The checks both losses share: interrupt then close, once each, for epoch 1; no epoch 1 commit after the stop. */
@@ -69,9 +88,7 @@ function endedThroughTheAdapter({ calls, stops, record }) {
 test("pi through the adapter: a claim lost at the renew deadline mid-turn ends the session with interrupt then close, writes nothing after, and the run is claimed again", async (t) => {
   const world = await midTurn(t);
   world.record.blockRenew.add("runner-a");
-  await until(() => world.stops.some((each) => each.kind === "claim-lost"), "the runner stops the loop at its renew deadline", TIMING.leaseMs * 3);
-  await until(() => world.calls.filter((call) => call.epoch === 1).length >= 2, "the session ended", 5_000).catch(() => undefined);
-  await sleep(TIMING.leaseMs);
+  await stoppedForTheLoss(world, "the runner stops the loop at its renew deadline");
   endedThroughTheAdapter(world);
   // Reclaimable: with renews working again the run is claimed at a new epoch and ends there.
   world.record.blockRenew.delete("runner-a");
@@ -89,8 +106,6 @@ test("pi through the adapter: a claim fenced mid-turn (another runner took it) e
   world.clock.skewMs = TIMING.leaseMs * 2;
   const taken = await world.server.claim("run-1", "runner-z", { leaseMs: 60_000 });
   assert.equal(taken?.epoch, 2, "the other runner's claim: the run was claimable");
-  await until(() => world.stops.some((each) => each.kind === "claim-lost"), "the runner stops the loop", TIMING.renewEveryMs * 6);
-  await until(() => world.calls.filter((call) => call.epoch === 1).length >= 2, "the session ended", 5_000).catch(() => undefined);
-  await sleep(TIMING.renewEveryMs * 3);
+  await stoppedForTheLoss(world, "the runner stops the loop for the fenced claim");
   endedThroughTheAdapter(world);
 });
