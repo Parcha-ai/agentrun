@@ -30,8 +30,12 @@ const BINARY_PATH = join(dir, "computerd");
 writeFileSync(BINARY_PATH, "a stand-in for computerd\n");
 after(() => rmSync(dir, { recursive: true, force: true }));
 
+/**
+ * The provider on the fake. Modal's network stays on for an Archil computer (root reaches Archil), so the tools' network
+ * none is init's own namespace: each new sandbox's probe reaches nothing here, as it does once init runs with it.
+ */
 function setup(options = {}, fakeOptions = {}) {
-	const fake = fakeModal(fakeOptions);
+	const fake = fakeModal({ ...fakeOptions, box: { network: "none", ...fakeOptions.box } });
 	const provider = new ModalProvider({ sdk: fake.sdk, app: APP, daemonImage: DAEMON_IMAGE, ...options });
 	return { fake, provider };
 }
@@ -132,6 +136,17 @@ test("Modal create of an Archil computer: preflight, netlock, the takeover, moun
 	// Nowhere else: no argv, tag, image layer or other SDK call holds it.
 	noToken(fake.calls, "the SDK calls");
 	noToken(runs.map(({ argv }) => argv), "the root commands' argv");
+});
+
+test("Modal create of an Archil computer whose tools reach an address is refused: Modal's network is on, so the probe from inside holds network none", async () => {
+	const { provider, fake } = setup({}, { box: { network: "open" } });
+	const created = await provider.create(SPEC);
+	assert.equal(created.ok, false);
+	assert.match(created.error.message, /network: declared none, read back an answer/);
+	noToken(created, "the refusal");
+	const { id } = newest(fake);
+	assert.equal(fake.sandboxes.get(id).running, false);
+	assert.equal(verbsOf(fake, id).at(-1), "checkin", "the folder is let go before the terminate");
 });
 
 test("Modal create of an Archil computer without daemonImage: the daemon is uploaded first, since serve runs it", async () => {

@@ -97,6 +97,7 @@ test("capabilities: a linux VM whose lifetime Modal enforces up to 24 hours, ini
 		maxLifetimeMs: DAY_MS,
 		user: ["uid"],
 		release: ["delete"],
+		mount: ["archil"],
 	});
 	assert.deepEqual(kindRefusals(provider.capabilities()), []);
 	assert.equal(provider.extend, undefined, "no extend()");
