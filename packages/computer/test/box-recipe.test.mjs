@@ -88,3 +88,17 @@ test("each build names what it made, and the Daytona snapshot's name covers ever
   const hashed = daytona.match(/for name in \(([^)]*)\)/)?.[1].split(",").map((name) => name.trim().replace(/^"|"$/g, "")).filter(Boolean);
   assert.deepEqual(hashed?.sort(), ["Dockerfile", ...copied].sort());
 });
+
+test("the E2B build makes a template from the same Dockerfile, with the workspace's own e2b SDK, and names it by the recipe's hash, every copied file in it", () => {
+  // The E2B live stage had no template to run: box/ built a Daytona snapshot and a Modal image only.
+  const e2b = read("build-e2b.mjs");
+  assert.match(e2b, /from "e2b"/, "the e2b SDK the workspace's lock pins");
+  assert.match(e2b, /fromDockerfile\(/);
+  assert.match(e2b, /Template\.build\(/);
+  assert.ok(e2b.includes("console.log(`template=${name}`)"), "it prints the template's name, as the other builds print theirs");
+  assert.ok(e2b.includes('"agentrun-archil-"'), "named agentrun-archil-<hash>, as the Daytona snapshot is");
+  const copied = INSTRUCTIONS.filter((line) => line.startsWith("COPY ")).map((line) => line.split(/\s+/)[1]);
+  const hashed = e2b.match(/const RECIPE = \[([^\]]*)\]/)?.[1].split(",").map((name) => name.trim().replace(/^"|"$/g, "")).filter(Boolean);
+  assert.deepEqual(hashed?.sort(), ["Dockerfile", ...copied].sort());
+  assert.ok(!/process\.env\.\w*KEY/.test(e2b) || e2b.includes("E2B_API_KEY"), "the key comes from E2B_API_KEY, the SDK's own, set by the caller for this one command");
+});
