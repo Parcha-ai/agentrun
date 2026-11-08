@@ -440,8 +440,11 @@ class SqliteStore implements Store {
         );
         return rows.map((row): LiveRow => ({ runId: row.run_id, state: JSON.parse(row.state), updatedAt: row.updated_at }));
       },
-      drop: async (runId) => {
-        await db.write([{ sql: "DELETE FROM run_live WHERE run_id = ?", params: [runId] }]);
+      drop: async (claim) => {
+        await db.write([{
+          sql: "DELETE FROM run_live WHERE run_id = ? AND EXISTS (SELECT 1 FROM runs WHERE id = ? AND epoch = ?)",
+          params: [claim.runId, claim.runId, claim.epoch],
+        }]);
       },
     };
   }

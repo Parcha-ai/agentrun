@@ -307,8 +307,9 @@ export interface Live {
   put(rows: readonly { readonly claim: Claim; readonly state: unknown }[]): Promise<{ written: string[]; fenced: string[] }>;
   /** The rows of `runIds` that have one, in one query: the server's read. */
   read(runIds: readonly string[]): Promise<LiveRow[]>;
-  /** The run's row goes, at its end. */
-  drop(runId: string): Promise<void>;
+  /** The run's row goes, at its end, under `claim`: fenced by its epoch like a put, so a loop that ends after its claim
+   *  was lost drops nothing of the row a later claim wrote. */
+  drop(claim: Claim): Promise<void>;
 }
 
 /** Who opens the store. The server sets the schema up at its start and holds the store's owner lock (one server per
