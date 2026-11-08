@@ -191,6 +191,8 @@ export function egressRunArgs({ name, user, image, allow, local, deadline, code,
 	args.push("--network", "bridge");
 	args.push("--mount", `type=volume,src=${proxy},dst=${PROXY_VOLUME}`);
 	args.push("--mount", `type=bind,src=${code.dir},dst=${PROXY_CODE},readonly`, "--mount", `type=bind,src=${code.packageJson},dst=${PROXY_PACKAGE},readonly`);
+	// Create pulled the image before it made the volume, so this run never pulls: the sweep's grace holds.
+	args.push("--pull", "never");
 	args.push("--entrypoint", "node", image, PROXY_MAIN, "--socket", PROXY_SOCKET, "--deadline", deadline, "--allow", allow.join(","));
 	if (local.length > 0) args.push("--local", local.join(","));
 	if (hint !== undefined) args.push("--hint", hint);
@@ -215,9 +217,11 @@ export interface EgressOwner {
  * A computer's allowlist, read back from its proxy container's inspect: the list its argv holds, when the container is
  * the computer's own (its label and deadline), running while the computer runs, and as create makes one (Docker's
  * default bridge alone, no port, the computer's user, a read-only root, no capability or privilege, exactly its volume
- * and its code, `code`'s when given). Anything less is `{ other }` in words, never an allowlist.
+ * and its code, `code`'s when given), refusing every one of `local`, the Docker host's own addresses the provider
+ * requires now (more is fine). Anything less is `{ other }` in words, never an allowlist. A host whose addresses
+ * changed since the proxy was made reads as other: fail closed.
  */
-export function egressOf(proxy: DockerInspect | null | undefined, owner: EgressOwner, code?: EgressCode): { allow: string[] } | { other: string } {
+export function egressOf(proxy: DockerInspect | null | undefined, owner: EgressOwner, code?: EgressCode, local: readonly string[] = []): { allow: string[] } | { other: string } {
 	const named = egressNameOf(owner.name);
 	const other = (what: string) => ({ other: `network allow, but its egress proxy ${named} ${what}` });
 	if (proxy === undefined || proxy === null) return other("is gone: the computer reaches nothing");
@@ -280,6 +284,12 @@ export function egressOf(proxy: DockerInspect | null | undefined, owner: EgressO
 	if (unknown.length > 0) return other(`runs with flags ${unknown.join(", ")}, which create never gives`);
 	const read = allowOf((flags.get("--allow") ?? "").split(","));
 	if ("problem" in read) return other(`holds a list this provider never makes: ${read.problem}`);
+	// The host block: a --local removed or shortened lets the computer reach the Docker host's own addresses.
+	const refused = new Set((flags.get("--local") ?? "").split(",").filter(Boolean));
+	const missing = local.filter((address) => !refused.has(address));
+	if (missing.length > 0) {
+		return other(`does not refuse the Docker host's ${missing.length === 1 ? "address" : "addresses"} ${missing.join(", ")} (its --local reads ${show(flags.get("--local"))})`);
+	}
 	return { allow: read.list };
 }
 

@@ -363,6 +363,14 @@ export class DockerProvider implements ComputerProvider {
 			const unwritable = folderProblem(bound, user);
 			if (unwritable !== undefined) return fail("refused", `mount: ${unwritable}`);
 		}
+		if (allow !== undefined) {
+			// Both images on the host before the volume is made, so nothing from the volume to the computer pulls: the
+			// sweep takes a proxy with no computer past its grace for a create that died (#leftoverGraceMs).
+			for (const image of new Set([spec.image, this.#egress.image])) {
+				const pulled = await this.#pull(image, signal);
+				if (!pulled.ok) return pulled;
+			}
+		}
 		if (signal?.aborted) return fail("aborted", "create was aborted before docker run");
 		const name = `computer-${randomBytes(6).toString("hex")}`;
 		const deadline = new Date(Date.now() + spec.lifetimeMs).toISOString();
@@ -393,8 +401,9 @@ export class DockerProvider implements ComputerProvider {
 		args.push("--mount", `type=bind,src=${daemon.value},dst=${DAEMON_IN_COMPUTER},readonly`, "--entrypoint", DAEMON_IN_COMPUTER);
 		// The run's folder, read-write at /workspace; HOME and the default workdir stay /work.
 		if (bound !== undefined) args.push("--mount", `type=bind,src=${bound},dst=${WORKSPACE}`);
-		// The proxy's volume, read-only: the computer reaches its socket and cannot replace it.
-		if (allow !== undefined) args.push("--mount", `type=volume,src=${egressNameOf(name)},dst=${EGRESS_MOUNT},readonly`);
+		// The proxy's volume, read-only: the computer reaches its socket and cannot replace it. Its image was pulled before
+		// the volume was made, so this run never pulls.
+		if (allow !== undefined) args.push("--mount", `type=volume,src=${egressNameOf(name)},dst=${EGRESS_MOUNT},readonly`, "--pull", "never");
 		args.push("--workdir", spec.workdir ?? WORK);
 		// PID 1 ends the computer at the deadline the label holds, so a computer the janitor misses still stops. With an
 		// allowlist it relays its loopback port 3128 to the proxy's socket, and names that port as every program's proxy.
@@ -436,6 +445,18 @@ export class DockerProvider implements ComputerProvider {
 		return fail(checked.error.code, `the computer ${name} ${after}: ${checked.error.message}`);
 	}
 
+	/** Makes sure `image` is on the Docker host: docker image inspect, and docker pull when it is not there. */
+	async #pull(image: string, signal?: AbortSignal): Promise<Result<void>> {
+		const aborted = () => fail("aborted", `create was aborted while it looked for or pulled the image ${image}; nothing was made`);
+		const found = await this.#run(["image", "inspect", "--format", "{{.Id}}", image], signal);
+		if (!found.ok) return signal?.aborted ? aborted() : found;
+		if (found.value.exitCode === 0) return ok(undefined);
+		const pulled = await this.#run(["pull", image], signal);
+		if (!pulled.ok) return signal?.aborted ? aborted() : pulled;
+		if (pulled.value.exitCode !== 0) return fail("docker", `docker pull ${image} failed, so nothing was made: ${pulled.value.stderr.trim()}`);
+		return ok(undefined);
+	}
+
 	/** Deletes a computer whose create was aborted after docker run; the delete itself is not signalled. */
 	async #abandon(ref: ComputerRef): Promise<Result<never>> {
 		const removed = await this.release(ref, "delete");
@@ -454,8 +475,7 @@ export class DockerProvider implements ComputerProvider {
 		if (!volume.ok) return volume;
 		if (volume.value.exitCode !== 0) return fail("docker", `docker volume create ${proxy} failed: ${volume.value.stderr.trim()}`);
 		const { image, hint, readyMs } = this.#egress;
-		const local = [...new Set([...hostAddresses(), ...(this.#egress.hostAddresses ?? [])])];
-		const args = egressRunArgs({ name, user, image, allow, local, deadline, code: this.#code, labels, ...(hint === undefined ? {} : { hint }) });
+		const args = egressRunArgs({ name, user, image, allow, local: this.#hostLocal(), deadline, code: this.#code, labels, ...(hint === undefined ? {} : { hint }) });
 		const ran = await this.#run(args, signal);
 		if (!ran.ok) return ran;
 		if (ran.value.exitCode !== 0) return fail("docker", `docker run of the egress proxy ${proxy} failed: ${ran.value.stderr.trim()}`);
@@ -513,7 +533,15 @@ export class DockerProvider implements ComputerProvider {
 	#expected(host: DockerHost, deadline: string, user: string, daemonPath: string, proxy?: DockerInspect | null): DriftExpected {
 		const { arch, apparmor, selinux } = host;
 		const { kind, groups } = this.capabilities();
-		return { version: VERSION, kind, groups, arch, apparmor, selinux, daemonPath, deadline, user, proxy, egressCode: this.#code };
+		return { version: VERSION, kind, groups, arch, apparmor, selinux, daemonPath, deadline, user, proxy, egressCode: this.#code, hostAddresses: this.#hostLocal() };
+	}
+
+	/**
+	 * The Docker host's own addresses the egress proxy refuses (its --local): this machine's public ones and
+	 * egress.hostAddresses. Create gives them to the proxy, and every read-back holds the proxy to them as they are now.
+	 */
+	#hostLocal(): string[] {
+		return [...new Set([...hostAddresses(), ...(this.#egress.hostAddresses ?? [])])];
 	}
 
 	/**
@@ -593,7 +621,7 @@ export class DockerProvider implements ComputerProvider {
 		const found: string[] = [];
 		const proxy = await this.#proxyOf(report, signal);
 		if (!proxy.ok) return proxy;
-		const network = networkOf(report, proxy.value, this.#code);
+		const network = networkOf(report, proxy.value, this.#code, this.#hostLocal());
 		if (typeof network !== "string" && "other" in network) found.push(`network: ${network.other}, which this provider never makes`);
 		const deadline = config.Labels?.[DEADLINE_LABEL] ?? "";
 		const at = Date.parse(deadline);
@@ -725,6 +753,7 @@ export class DockerProvider implements ComputerProvider {
 		if (ran.value.exitCode !== 0) return fail("docker", `docker ps failed: ${ran.value.stderr.trim()}`);
 		const ids = ran.value.stdout.split("\n").map((line) => line.trim()).filter(Boolean);
 		const infos: ComputerInfo[] = [];
+		const local = this.#hostLocal();
 		for (let at = 0; at < ids.length; at += INSPECT_BATCH) {
 			// A computer removed between ps and inspect is left out.
 			const found = await this.#inspect(ids.slice(at, at + INSPECT_BATCH), signal, LIST_FORMAT);
@@ -738,7 +767,7 @@ export class DockerProvider implements ComputerProvider {
 				if (!read.ok) return read;
 				for (const proxy of read.value) proxies.set(nameOf(proxy), proxy);
 			}
-			infos.push(...computers.map((report) => infoOf(report, egressShaped(report) ? (proxies.get(egressNameOf(nameOf(report))) ?? null) : undefined, this.#code)));
+			infos.push(...computers.map((report) => infoOf(report, egressShaped(report) ? (proxies.get(egressNameOf(nameOf(report))) ?? null) : undefined, this.#code, local)));
 		}
 		return ok(infos);
 	}
@@ -747,8 +776,9 @@ export class DockerProvider implements ComputerProvider {
 	 * The janitor's second pass (sweep calls it after the computers): every egress proxy container and egress volume
 	 * labelled EGRESS_LABEL, and with all of `labels`, whose deadline label has passed (or is missing or unreadable, fail
 	 * closed), or whose computer is gone and that is older than a create could take (#leftoverGraceMs: one under way has
-	 * made its proxy before its computer). Each is removed by what its label found, a proxy before its volume, never by a
-	 * name alone. Returns the names removed, a volume's as "<name> (volume)".
+	 * made its proxy before its computer, and pulled both images before either, so no pull happens in between). Each is
+	 * removed by what its label found, a proxy before its volume, never by a name alone. Returns the names removed, a
+	 * volume's as "<name> (volume)".
 	 */
 	async sweepLeftovers({ labels = {}, now = new Date(), signal }: { labels?: Record<string, string>; now?: Date; signal?: AbortSignal } = {}): Promise<Result<string[]>> {
 		const problem = filterProblem(labels);
@@ -810,7 +840,11 @@ export class DockerProvider implements ComputerProvider {
 		return ok(removed);
 	}
 
-	/** How long a proxy or volume with no computer may be a create under way: its ready wait, and two minutes more. */
+	/**
+	 * How long a proxy or volume with no computer may be a create under way: its ready wait, and two minutes more. It
+	 * holds because no pull happens inside it: create pulls both images before it makes the volume, and both docker runs
+	 * take --pull never, so from the volume to the computer it waits on the proxy's ready line and two local starts.
+	 */
 	#leftoverGraceMs(): number {
 		return Math.max(this.#egress.readyMs, EGRESS_READY_MS) + 120_000;
 	}
@@ -829,7 +863,7 @@ export class DockerProvider implements ComputerProvider {
 		if (report === undefined || !ours(report)) return fail("not_found", `no Docker computer is named ${ref.name}`);
 		const proxy = await this.#proxyOf(report, signal);
 		if (!proxy.ok) return proxy;
-		const current = networkOf(report, proxy.value, this.#code);
+		const current = networkOf(report, proxy.value, this.#code, this.#hostLocal());
 		if (asked === undefined || samePolicy(asked, current)) return ok(current);
 		return fail("refused", `${FIXED}: ${ref.name} has network ${policyWords(current)}, not ${policyWords(asked)}`);
 	}
@@ -917,15 +951,16 @@ function filterProblem(labels: unknown): string | undefined {
 	return undefined;
 }
 
-/** A computer as list() reports it. The deadline counts only as the provider writes it, an ISO time. */
-function infoOf(report: DockerInspect, proxy: DockerInspect | null | undefined, code: EgressCode): ComputerInfo {
+/** A computer as list() reports it. The deadline counts only as the provider writes it, an ISO time; an allowlist's
+ *  proxy must refuse each of `local`, the Docker host's own addresses. */
+function infoOf(report: DockerInspect, proxy: DockerInspect | null | undefined, code: EgressCode, local: readonly string[]): ComputerInfo {
 	const labels = { ...(report.Config?.Labels ?? {}) };
 	const written = labels[DEADLINE_LABEL];
 	const at = written === undefined ? Number.NaN : Date.parse(written);
 	const deadline = Number.isNaN(at) || new Date(at).toISOString() !== written ? undefined : new Date(at);
 	const state = report.State?.Running === true ? "running" : "stopped";
 	const mount: MountReadBack | undefined = mountOf(report);
-	return { ref: { id: report.Id ?? "", name: nameOf(report) }, labels, deadline, state, network: networkOf(report, proxy, code), ...(mount === undefined ? {} : { mount }) };
+	return { ref: { id: report.Id ?? "", name: nameOf(report) }, labels, deadline, state, network: networkOf(report, proxy, code, local), ...(mount === undefined ? {} : { mount }) };
 }
 
 /** The longest delay Node's timers, and so AbortSignal.timeout, hold: 2^31 - 1 ms. */

@@ -150,6 +150,8 @@ export interface DriftExpected extends HelloExpected {
 	 *  is on the host, as it was bound. */
 	proxy?: DockerInspect | null;
 	egressCode?: EgressCode;
+	/** For a computer with an allowlist: the Docker host's own addresses its proxy must refuse (its --local holds each). */
+	hostAddresses?: readonly string[];
 }
 
 const show = (value: unknown) => (value === undefined ? "nothing" : JSON.stringify(value));
@@ -204,10 +206,10 @@ export function egressShaped(inspected: DockerInspect | null | undefined): boole
  * The network a computer is on, read back from inspect: `none` is network mode none on no network but Docker's own
  * `none`, `open` is the default bridge alone. An allowlist is network mode none with the computer's egress volume
  * mounted read-only at EGRESS_MOUNT and init relaying to its socket, and the list read back from `proxy`, the
- * computer's proxy container's inspect (egressOf: none when it is gone). Anything else is reported in words, never as a
- * policy it might widen to.
+ * computer's proxy container's inspect (egressOf: none when it is gone), which must refuse each of `local`, the Docker
+ * host's own addresses. Anything else is reported in words, never as a policy it might widen to.
  */
-export function networkOf(inspected: DockerInspect | null | undefined, proxy?: DockerInspect | null, code?: EgressCode): NetworkPolicy {
+export function networkOf(inspected: DockerInspect | null | undefined, proxy?: DockerInspect | null, code?: EgressCode, local?: readonly string[]): NetworkPolicy {
 	const mode = inspected?.HostConfig?.NetworkMode;
 	const networks = Object.keys(inspected?.NetworkSettings?.Networks ?? {}).sort();
 	const none = mode === "none" && networks.every((name) => name === "none");
@@ -229,7 +231,7 @@ export function networkOf(inspected: DockerInspect | null | undefined, proxy?: D
 	if (at.length !== 1 || only?.Type !== "volume" || only.Name !== egressNameOf(name) || only.RW !== false) {
 		return { other: `the egress volume at ${EGRESS_MOUNT} is ${at.map(mountWords).join(", ")}, not ${egressNameOf(name)} read-only` };
 	}
-	return egressOf(proxy, { name, user: inspected?.Config?.User, deadline: inspected?.Config?.Labels?.[DEADLINE_LABEL], running: inspected?.State?.Running === true }, code);
+	return egressOf(proxy, { name, user: inspected?.Config?.User, deadline: inspected?.Config?.Labels?.[DEADLINE_LABEL], running: inspected?.State?.Running === true }, code, local);
 }
 
 /** Whether a policy read back is the one declared: the same string, or an allowlist with the same entries, normalized. */
@@ -337,7 +339,7 @@ export function inspectDrift(spec: ComputerSpec, inspected: DockerInspect | null
 	const host = inspected?.HostConfig ?? {};
 	const config = inspected?.Config ?? {};
 
-	const network = networkOf(inspected, expected.proxy, expected.egressCode);
+	const network = networkOf(inspected, expected.proxy, expected.egressCode, expected.hostAddresses);
 	if (!samePolicy(spec.network, network)) found.push(`network: declared ${policyWords(spec.network)}, read back ${policyWords(network)}`);
 	const allowed = typeof spec.network === "object" && spec.network !== null && "allow" in spec.network;
 	const volume = egressNameOf((inspected?.Name ?? "").replace(/^\//, ""));

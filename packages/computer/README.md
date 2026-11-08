@@ -551,8 +551,8 @@ key.
   port, and runs as the computer's uid:gid with a read-only root, `--cap-drop ALL`, `no-new-privileges`, 256 MiB, 64
   pids, half a CPU (a fixed quota, not the computer's own cpus), 1024 open files and a bounded log. Its argv holds the list, the computer's deadline (it ends itself then), this machine's own
   public addresses (refused as `this-host`), and `egress.hint`, the words a refusal adds (printable ASCII).
-  `EGRESS_IMAGE` is the one place its digest is written. Docker pulls it at the first allow computer when the host
-  lacks it, so a host with no registry access pulls it ahead, reading the name from this package:
+  `EGRESS_IMAGE` is the one place its digest is written. `create` pulls it at the first allow computer when the host
+  lacks it (see Lifetime), so a host with no registry access pulls it ahead, reading the name from this package:
   `docker pull "$(node --input-type=module -e 'import { EGRESS_IMAGE } from "@parcha/agentrun-computer"; console.log(EGRESS_IMAGE)')"`
   (in this repository, from `packages/computer` after a build: `node -e 'import("./dist/index.js").then((m) => console.log(m.EGRESS_IMAGE))'`).
 - **The computer**: init gets `--egress /opt/agentrun/egress/egress.sock`, listens on port 3128 of its own loopback,
@@ -573,8 +573,9 @@ key.
   made, and `check` says so once it knows, unless `egress.hostAddresses` names the host's addresses (IP addresses),
   which then go to the proxy beside this machine's own. A plain local host is as before. `egress.hostRoot` (default
   `/`) is the root those container signs are read under, for tests and embedders. An address that is not on any
-  interface is never seen: a cloud machine's NAT'd or elastic public IP, or one the host gains after create (they are
-  read once, at create). Put those in `egress.hostAddresses` too.
+  interface is never seen: a cloud machine's NAT'd or elastic public IP. Put those in `egress.hostAddresses` too. The
+  read-back holds every proxy to the addresses as they are now, so a host that gains an address after create reads its
+  older proxies back as `other` (fail closed).
 - **What the proxy refuses**, each before any socket opens: a name off the list, before any lookup, so it never
   leaves the host; an IP literal outside a listed CIDR of its own family; any port but 80 and 443; a listed name or
   address that is private, loopback, link-local, metadata, multicast or reserved, in any form it is written (decimal,
@@ -586,8 +587,10 @@ key.
   network list: <hint>`, the words serve's model sees today. The proxy does not open TLS, so a CONNECT to a listed CDN
   name can carry an SNI for any other tenant of that CDN (domain fronting); listing a CDN's shared name lists every site
   behind it. That is inherent to a CONNECT proxy, and the same as serve.
-- **Lifetime.** `create` makes the volume, starts the proxy and waits for its ready line (`egress.readyMs`, 10 s), then
-  runs the computer. A proxy that ends first, or is not ready in time, fails create in its own words; the proxy and the
+- **Lifetime.** `create` first makes sure the computer's image and the proxy's are on the host (`docker image inspect`,
+  then `docker pull` for one that is not; a failed pull fails create in words, with nothing made). It then makes the
+  volume, starts the proxy and waits for its ready line (`egress.readyMs`, 10 s), then runs the computer; both runs
+  take `--pull never`, so no pull happens between the volume and the computer. A proxy that ends first, or is not ready in time, fails create in its own words; the proxy and the
   volume are removed, and the computer is never run. `release` removes the proxy and the volume after the computer, each
   found by the label `agentrun.computer.egress=<computer>`, never by name alone, so the janitor's sweep and
   `releaseOlder` remove them too. Parts left with no computer (one removed by hand, or a provider that died between its
@@ -599,7 +602,8 @@ key.
   read-only at its path, init's relay in its command, and a proxy container that carries the computer's label and
   deadline, runs while the computer runs, is hardened and bounded as above (its memory and swap, pids limit, private
   IPC and cgroup namespaces, and json-file log of 1m and 2 files included) with exactly its volume and code, and whose
-  argv holds the list. Anything less is `{ other: "network allow, but its egress proxy ... <why>" }`. **A crashed proxy** is not
+  argv holds the list and refuses every one of the Docker host's own addresses the provider requires now (more is
+  fine). Anything less is `{ other: "network allow, but its egress proxy ... <why>" }`. **A crashed proxy** is not
   restarted: the computer then reaches nothing, its network reads back `other` ("is not running"), and `attach` refuses
   it, so a caller makes a new computer. `list` reads every listed computer's proxy in one more inspect.
 
