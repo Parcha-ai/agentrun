@@ -27,7 +27,13 @@ export async function openSettings(t: CaseContext): Promise<string> {
 	const app = settingsApp(t);
 	t.deepEqual(await t.call("apps.terminate", { id: app }), {}, `apps.terminate ${app}`);
 	t.deepEqual(await t.call("apps.launch", { id: app }), {}, `apps.launch ${app}`);
-	await t.until(async () => (await foreground(t)) === app, `${app} in front after apps.launch`);
+	// What is in front instead, the last time it was read, goes in the words: a live run showed only the wait.
+	let seen: string | null = null;
+	try {
+		await t.until(async () => (seen = await foreground(t)) === app, `${app} in front after apps.launch`);
+	} catch (error) {
+		throw new Error(`${error instanceof Error ? error.message : String(error)} (in front: ${seen ?? "nothing"})`);
+	}
 	return app;
 }
 
@@ -58,14 +64,20 @@ export function listOf(tree: UiTreeResult): UiNode | undefined {
 	return nodesOf(tree.root).find((node) => node.scrollable === true);
 }
 
-/** The rows of a tree's list: each clickable node in it, whole inside it, with the first text it holds. */
+/** Whether a node, or one under it, says search: its text, its label or its id. */
+const saysSearch = (node: UiNode) => nodesOf(node).some((one) => /search/i.test(`${one.text ?? ""} ${one.label ?? ""} ${one.id ?? ""}`));
+
+/**
+ * The rows of a tree's list: each clickable node in it, whole inside it, with the first text it holds. Settings' search
+ * entry is not a row, though a live Settings shows it as the list's first item.
+ */
 export function rowsOf(tree: UiTreeResult): Row[] {
 	const list = listOf(tree);
 	if (list === undefined) return [];
 	const [lx, ly, lw, lh] = list.bounds;
 	const rows: Row[] = [];
 	for (const node of nodesOf(list).slice(1)) {
-		if (node.clickable !== true) continue;
+		if (node.clickable !== true || saysSearch(node)) continue;
 		const [x, y, w, h] = node.bounds;
 		if (x < lx || y < ly || x + w > lx + lw || y + h > ly + lh || w === 0 || h === 0) continue;
 		const text = nodesOf(node).find((one) => one.text)?.text;
@@ -87,16 +99,14 @@ export async function settingsRows(t: CaseContext, count: number): Promise<{ tre
 const isField = (node: UiNode) => /EditText$/.test(node.role);
 
 /**
- * Settings' search field, opened from its list: the case taps the search entry (a clickable node outside the list whose
- * text or label says search) and waits for the field. An empty field may show its hint as its text, so only the field
- * is waited for.
+ * Settings' search field, opened from its list: the case taps the search entry (the first clickable node that says
+ * search, by its own text, label or id or a child's; a live Settings shows it inside the list, its text on a child) and
+ * waits for the field. An empty field may show its hint as its text, so only the field is waited for.
  */
 export async function openSearch(t: CaseContext): Promise<void> {
 	const { tree } = await settingsRows(t, 1);
-	const list = listOf(tree);
-	const inList = new Set(list ? nodesOf(list) : []);
 	const entry = t.present(
-		nodesOf(tree.root).find((node) => !inList.has(node) && node.clickable === true && /search/i.test(`${node.text ?? ""} ${node.label ?? ""}`)),
+		nodesOf(tree.root).find((node) => node.clickable === true && saysSearch(node)),
 		"Settings' search entry (a clickable node saying search) in apps.ui_tree",
 	);
 	const at = middle(entry.bounds);
