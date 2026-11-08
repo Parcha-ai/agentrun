@@ -3,16 +3,15 @@
 // covered, on every harness. A deny (the server's or the agent's own) still refuses: never turns ask into allow as the
 // gate's last step, after every refusal. A wrong value is a 422. The agent read serves it, its tools say where an allow
 // came from ("unattended"), and the run read serves the run's own, as it started. A workflow's call node on a tool set
-// to ask runs under never; under ask its run is refused, as before. A template's manifest sets it, and an apply's
-// overrides do. No socket leaves this machine and no real key is used.
+// to ask runs under never; under ask its run is refused, as before. A template apply's overrides set it. No socket
+// leaves this machine and no real key is used.
 import assert from "node:assert/strict";
 import { randomBytes } from "node:crypto";
-import { cpSync, readFileSync, writeFileSync } from "node:fs";
+import { writeFileSync } from "node:fs";
 import { readFile } from "node:fs/promises";
 import { join } from "node:path";
 import { test } from "node:test";
 import { deniedText, permissionFrom, RunGate } from "../dist/tool-gate.js";
-import { compiled, PackageError, readPackage } from "../dist/templates.js";
 import { startFakeMcp } from "./fixtures/fake-mcp-server.mjs";
 import { agent, follow, scratch, serve, withEnv } from "./support.mjs";
 import { fauxTable } from "./fixtures/faux-table.mjs";
@@ -21,7 +20,6 @@ const fixture = (name) => new URL(`./fixtures/${name}`, import.meta.url).pathnam
 const GATE = { faux: fixture("faux-gate.mjs"), harnessTable: fauxTable(fixture("faux-gate.mjs")), fauxWeb: fixture("faux-gate-web.mjs"), accounts: true, openSetup: true };
 const PAGE = "http://public.example/";
 const HARNESSES = ["pi", "claude-agent", "codex"];
-const REVIEW = new URL("../templates/code-review/", import.meta.url).pathname;
 const FAUX_MCP = fixture("faux-mcp.mjs");
 const MCP_TOKEN = `not-a-secret-${"approvals-never-bearer"}`;
 
@@ -168,24 +166,15 @@ test("approvals takes ask or never: anything else is a 422 naming the field", as
   assert.match(field.message, /ask.*never/);
 });
 
-test("a template's manifest sets approvals, and an apply's overrides do; a wrong value in a manifest is a problem readPackage names", async (t) => {
-  // The manifest: a copy of code-review that runs unattended.
-  const dir = join(await scratch(t), "code-review");
-  cpSync(REVIEW, dir, { recursive: true });
-  const manifest = join(dir, "agent.md");
-  writeFileSync(manifest, readFileSync(manifest, "utf8").replace(/^---\n/, "---\napprovals: never\n"));
-  const pkg = readPackage(dir);
-  assert.equal(compiled(pkg, { repo: "Parcha-ai/agentrun" }, { mcp: [], defaultTools: [], grants: [] }).agent.definition.approvals, "never");
-  writeFileSync(manifest, readFileSync(manifest, "utf8").replace("approvals: never", "approvals: sometimes"));
-  assert.throws(() => readPackage(dir), (error) => error instanceof PackageError && error.problems.some((p) => /approvals/.test(p.message ?? String(p))));
-
-  // The apply: code-review as shipped, applied to run unattended.
+test("an apply's overrides.approvals sets the agent's approvals; none given asks; a wrong value is a 422", async (t) => {
   const { api } = await serve(t);
   const applied = await api("POST", "/templates/code-review/apply", { parameters: { repo: "Parcha-ai/agentrun" }, overrides: { approvals: "never" } });
   assert.equal(applied.status, 201, JSON.stringify(applied.body));
   assert.equal((await api("GET", `/agents/${applied.body.agent_id}`)).body.definition.approvals, "never");
   const plain = await api("POST", "/templates/code-review/apply", { parameters: { repo: "Parcha-ai/agentrun" } });
-  assert.equal((await api("GET", `/agents/${plain.body.agent_id}`)).body.definition.approvals, "ask", "none given: the manifest's, else ask");
+  assert.equal(plain.status, 201, JSON.stringify(plain.body));
+  assert.equal((await api("GET", `/agents/${plain.body.agent_id}`)).body.definition.approvals, "ask", "none given: the agent asks");
   const wrong = await api("POST", "/templates/code-review/apply", { parameters: { repo: "Parcha-ai/agentrun" }, overrides: { approvals: "sometimes" } });
   assert.equal(wrong.status, 422, JSON.stringify(wrong.body));
+  assert.equal(wrong.body.error.fields.find((f) => f.field === "overrides.approvals")?.reason, "not_an_option", JSON.stringify(wrong.body.error.fields));
 });

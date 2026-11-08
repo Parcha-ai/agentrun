@@ -28,7 +28,7 @@ export const MANIFEST = "agent.md";
 export const MODEL_TIERS: Readonly<Record<string, Tier>> = { fast: "fast", balanced: "default", strong: "strong" };
 export const PARAMETER_TYPES = ["string", "number", "integer", "boolean"] as const;
 export const GRADER_TYPES = ["llm", "regex", "tool_used", "file_exists", "schema"] as const;
-const FIELDS = ["name", "display_name", "version", "description", "license", "author", "repository", "harness", "model", "effort", "tools", "mcp", "computer", "parameters", "secrets", "budget", "learning", "approvals", "triggers", "output", "checks"];
+const FIELDS = ["name", "display_name", "version", "description", "license", "author", "repository", "harness", "model", "effort", "tools", "mcp", "computer", "parameters", "secrets", "budget", "learning", "triggers", "output", "checks"];
 const NAME = /^[a-z0-9]+(?:-[a-z0-9]+)*$/;
 const PARAMETER = /^[a-z][a-z0-9_]{0,63}$/;
 /** The keys a package may need: those Settings saves (a tool's or a model provider's), each one a run is handed. */
@@ -86,8 +86,6 @@ export type Package = {
   secrets: string[];
   budget?: { per_run_usd: number };
   learning?: boolean;
-  /** Whether its agent asks a person (ask, the default) or runs unattended (never): definition.approvals. */
-  approvals?: Approvals;
   /** POST /v2/triggers bodies, placeholders unfilled, each target a start_run with no agent_id. */
   triggers: Json[];
   output?: { schema: string };
@@ -230,7 +228,6 @@ export function readPackage(dir: string): Package {
   for (const secret of secrets.filter((name) => !PACKAGE_SECRETS.includes(name))) bad(MANIFEST, `secrets names ${secret}, a key this server cannot hold: a package needs the keys Settings saves and a run is handed (${PACKAGE_SECRETS.join(", ")})`);
   if (f.budget !== undefined && !(isObject(f.budget) && !unknownFields(f.budget, ["per_run_usd"]).length && typeof f.budget.per_run_usd === "number" && Number.isFinite(f.budget.per_run_usd) && f.budget.per_run_usd > 0)) bad(MANIFEST, "budget is {per_run_usd: a number above 0}");
   if (f.learning !== undefined && typeof f.learning !== "boolean") bad(MANIFEST, "learning is true or false");
-  if (f.approvals !== undefined && !(APPROVALS as readonly unknown[]).includes(f.approvals)) bad(MANIFEST, `approvals is one of ${APPROVALS.join(", ")}: ask waits for a person where a tool is set to ask; never runs the agent unattended, while a deny still refuses`);
   const triggers = f.triggers === undefined ? [] : Array.isArray(f.triggers) ? (f.triggers as unknown[]) : (bad(MANIFEST, "triggers is a list of POST /v2/triggers bodies"), []);
   const triggerNames = new Set<string>();
   triggers.forEach((trigger, i) => {
@@ -344,7 +341,7 @@ export function readPackage(dir: string): Package {
     name, ...(typeof f.display_name === "string" ? { displayName: f.display_name } : {}), version: f.version as string, description: f.description as string,
     ...(typeof f.license === "string" ? { license: f.license } : {}), ...(isObject(f.author) ? { author: f.author } : {}), ...(typeof f.repository === "string" ? { repository: f.repository } : {}),
     ...(harness ? { harness } : {}), ...(isObject(f.model) ? { model: f.model as { tier: string; prefer?: string } } : {}), ...(typeof f.effort === "string" ? { effort: f.effort } : {}),
-    ...(tools ? { tools } : {}), mcp, parameters, secrets, ...(isObject(f.budget) ? { budget: { per_run_usd: f.budget.per_run_usd as number } } : {}), ...(typeof f.learning === "boolean" ? { learning: f.learning } : {}), ...(f.approvals === "never" || f.approvals === "ask" ? { approvals: f.approvals } : {}),
+    ...(tools ? { tools } : {}), mcp, parameters, secrets, ...(isObject(f.budget) ? { budget: { per_run_usd: f.budget.per_run_usd as number } } : {}), ...(typeof f.learning === "boolean" ? { learning: f.learning } : {}),
     triggers: triggers as Json[], ...(isObject(f.output) ? { output: { schema: f.output.schema as string } } : {}), checks, instructions, skills, evals,
   };
   // What an apply makes, made here with each parameter's default, else a sample of its type, and checked as POST
@@ -383,7 +380,7 @@ export function packageView(p: Package) {
     name: p.name, display_name: p.displayName ?? null, version: p.version, description: p.description, license: p.license ?? null, repository: p.repository ?? null,
     harness: p.harness ?? null, model: p.model ?? null, effort: p.effort ?? null, tools: p.tools ?? null,
     mcp: p.mcp.map(({ server, tools, required, allow }) => ({ server, required, tools: tools.map((name) => ({ name, tool: mcpToolName(server, name), asks: allow.includes(name) ? "allow" : "ask" })) })), parameters: p.parameters, secrets: p.secrets,
-    budget: p.budget ?? null, learning: p.learning ?? false, approvals: p.approvals ?? "ask", triggers: p.triggers, skills: Object.keys(p.skills).filter((path) => /^[^/]+\/SKILL\.md$/.test(path)).map((path) => path.slice(0, -"/SKILL.md".length)), evals: p.evals,
+    budget: p.budget ?? null, learning: p.learning ?? false, triggers: p.triggers, skills: Object.keys(p.skills).filter((path) => /^[^/]+\/SKILL\.md$/.test(path)).map((path) => path.slice(0, -"/SKILL.md".length)), evals: p.evals,
   };
 }
 
@@ -450,8 +447,8 @@ export function compiled(p: Package, parameters: Json, chosen: { harness?: strin
     ...(chosen.harness ? { harness: chosen.harness } : {}), ...(chosen.model ? { model: chosen.model } : {}), ...(p.effort ? { thinking: p.effort } : {}),
     ...(tools ? { tools } : {}), ...(allowed.length ? { tool_settings: Object.fromEntries(allowed.map((tool) => [tool, { permission: "allow" }])) } : {}),
     ...(p.learning !== undefined ? { learning: p.learning } : {}), ...(p.budget ? { max_cost_usd: p.budget.per_run_usd } : {}), skills,
-    // The apply's choice, else the package's: unattended only when one of them says never.
-    ...((chosen.approvals ?? p.approvals) === "never" ? { approvals: "never" } : {}),
+    // The apply's choice: unattended only when it says never (none given: the agent asks).
+    ...(chosen.approvals === "never" ? { approvals: "never" } : {}),
   };
   return { agent: { definition, skills: { ...p.skills } }, triggers: p.triggers.map((trigger) => filled(trigger, parameters) as Json) };
 }

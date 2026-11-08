@@ -89,7 +89,6 @@ Each `evals/<case>/` is one test of the package's agent. No eval runs on the ser
 | `secrets` | Variable names (never values) the server must hold: a model or tool key Settings saves (`OPENROUTER_API_KEY`, `PARALLEL_API_KEY`, ...), set where it starts or saved there. Any other name is refused: the server could neither save it nor hand it to a run. Apply refuses with `409 agent_not_runnable`, making nothing, when one is missing. |
 | `budget` | `{per_run_usd}`: each run's cap (the agent's `max_cost_usd`). Required when the package has triggers. |
 | `learning` | `true` or `false`: whether the agent's runs learn. |
-| `approvals` | `ask` (the default) or `never`: the agent's `approvals`. `never` runs it unattended: each tool that would ask is allowed at its gate, while a deny (the server's or the agent's) still refuses. Apply's `overrides.approvals` sets it instead. |
 | `triggers` | `POST /v2/triggers` bodies with no `agent_id` (the target is a `start_run`), each with a `name`, unique in the package: the key an upgrade will match triggers by. |
 | `output` | `{schema: <file>}`: the JSON Schema of the agent's answer, a file in the package. It ships beside each SKILL.md, as a rule does, so the agent reads it there: the skill names it. |
 | `checks` | Names of structural checks of a run's answer; none runs yet. |
