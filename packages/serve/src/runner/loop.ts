@@ -283,9 +283,12 @@ function piLoop(specOf: (claim: Claim) => PiRunSpec | Promise<PiRunSpec>, deps: 
     }
     const text = typeof (command.body as { text?: unknown } | null)?.text === "string" ? (command.body as { text: string }).text : "";
     const requestId = commandRequest(command.id);
+    // A message that answers nothing (a trigger's, answers: false) waits for the turn's end and runs as a turn of its
+    // own (pi's follow-up), never steering the turn in flight, and never as a waiting call's answer.
+    const followUp = (command.body as { answers?: unknown } | null)?.answers === false;
     const taken = gate.expect(writesSubmission(requestId), { take: [command.id] });
     try {
-      await root.submit({ type: "input", content: text, requestId, whenBusy: "steer" }, context);
+      await root.submit({ type: "input", content: text, requestId, whenBusy: followUp ? "followUp" : "steer" }, context);
     } catch (error) {
       taken.catch(() => {});
       return { refused: `the steer was not placed: ${(error as Error).message}` };
