@@ -426,7 +426,7 @@ export type Run = {
    *  so a restart finishes the raise the same way. */
   placeWait?: { at: string; words: string };
   /** The tries in a row whose launch failed after its place was taken (finishRaise): back of the queue after each, and
-   *  off it after RAISE_TRIES, its mark kept, so a run whose launch keeps failing never holds a place reserved. */
+   *  off it after RAISE_TRIES, its mark kept, so a run whose launch keeps failing keeps no place for good (placesKept). */
   raiseTries?: number;
   /** A raise whose launch failed RAISE_TRIES times: why, since `at`, shown as a row while the run stays paused at its
    *  cap, so the owner reads that the raise was taken and the run could not start, not a call for another raise. */
@@ -3766,11 +3766,16 @@ export class Runs {
 
   /** A raised run that found no place: queued, saying it waits for one, and tried again every PLACE_RETRY_MS until it
    *  opens (finishRaise), ends or is cancelled. */
-  private waitForPlace(run: Run, cap: number): void {
+  private waitForPlace(run: Run, cap: number, failed?: Error): void {
     // A run another path has opened, ended or let go of its pause meanwhile (a retry that won the place while this raise
     // was refused one), or a server that is closing, waits for nothing.
     if (this.closing || run.outcome || run.cancel || run.finishing || this.live(run) || !budgetPausedIn(run.dir)) return;
-    run.placeWait ??= { at: new Date().toISOString(), words: `The cap was raised to ${money(cap)}. The run opens again once this server has a free place for it: it is at its limit of runs at once, or of memory for them.` };
+    // Its words say why it waits now: a launch that failed (raiseFailed) is tried again, whatever places are free; else
+    // the server is at its limits. Since the first wait.
+    const words = failed
+      ? `The cap was raised to ${money(cap)}, but the run could not be started yet: ${failed.message.slice(0, 300)}. It is tried again shortly.`
+      : `The cap was raised to ${money(cap)}. The run opens again once this server has a free place for it: it is at its limit of runs at once, or of memory for them.`;
+    run.placeWait = { at: run.placeWait?.at ?? new Date().toISOString(), words };
     this.placeWaiters.add(run);
     this.show(run);
     this.refresh(run);
@@ -3811,7 +3816,7 @@ export class Runs {
 
   /** A raised run whose launch failed after its place was taken: to the back of the queue, its mark kept, and off it
    *  after RAISE_TRIES failures in a row (still paused at its cap; a raise retried, or the server's next start, finishes it
-   *  then), so it never holds a place reserved for good. */
+   *  then), so no place is kept for it for good (placesKept counts it only while it waits in the queue). */
   private raiseFailed(run: Run, cap: number, error: Error): void {
     const tries = (run.raiseTries ?? 0) + 1;
     warn(run.id, `its raise did not open it (${tries} of ${RAISE_TRIES}): ${error.message}`);
@@ -3821,7 +3826,7 @@ export class Runs {
       return this.leavePlaceQueue(run);
     }
     run.raiseTries = tries;
-    this.waitForPlace(run, cap);
+    this.waitForPlace(run, cap, error);
   }
 
   private async retryPlaces(): Promise<void> {
