@@ -1,6 +1,6 @@
 ---
-description: The answer waits until the test releases it, so a test can stop the eval mid-run.
+description: With AGENTRUN_TEST_EVAL_HOLD set, the run holds in its turn until stopped, so a test stops the eval mid-run; unset, it answers at once.
 ---
-Hold until released.
+Hold until stopped.
 Answer:
 Released.

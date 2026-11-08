@@ -4,8 +4,8 @@
 // shipped package's cases are read and their fakes served here too, so a broken case fails CI, never the paid run.
 import assert from "node:assert/strict";
 import { spawn } from "node:child_process";
-import { cpSync, readFileSync, writeFileSync } from "node:fs";
-import { join } from "node:path";
+import { cpSync, existsSync, readFileSync, watch, writeFileSync } from "node:fs";
+import { basename, dirname, join } from "node:path";
 import { test } from "node:test";
 import { Client, StreamableHTTPClientTransport } from "@modelcontextprotocol/client";
 import Ajv2020 from "ajv/dist/2020.js";
@@ -23,11 +23,19 @@ const CLI = new URL("../dist/cli.js", import.meta.url).pathname;
 const STATE = await scratch();
 process.env.AGENTRUN_TEST_EVAL_COUNTER = join(STATE, "counter");
 process.env.AGENTRUN_TEST_EVAL_GRADER_LOG = join(STATE, "graders.jsonl");
+/** Resolves once `path` exists, or `ended` settles (the process that would make it is gone): told by its folder's
+ *  watch, never polled. The watch is set before the first look, so a file made in between is not missed. */
+const untilFile = (path, ended) => new Promise((resolve) => {
+  const done = () => (watcher.close(), resolve());
+  const watcher = watch(dirname(path), (_, name) => name === basename(path) && existsSync(path) && done());
+  if (existsSync(path)) done();
+  ended.then(done, done);
+});
 const graderInputs = () => readFileSync(process.env.AGENTRUN_TEST_EVAL_GRADER_LOG, "utf8").trim().split("\n").map((line) => JSON.parse(line));
 
 // One eval of every fixture case, on one in-process server, which the tests below read.
 let all;
-const eval_ = () => (all ??= evalTemplate({ dir: PKG, serve: { faux: FAUX }, runTimeoutMs: 90_000 }));
+const eval_ = () => (all ??= evalTemplate({ dir: PKG, serve: { faux: FAUX } }));
 const caseOf = async (name) => (await eval_()).cases.find((c) => c.name === name);
 const graderOf = (run, file) => run.graders.find((g) => g.grader === file);
 
@@ -191,7 +199,7 @@ test("a case passes only when every run passes: one failing run of two fails it"
 test("on an owner's server it applies that server's package only when it is this folder's, never replaces an MCP server, and archives what it made", { timeout: 300_000 }, async (t) => {
   const { api, baseUrl, token } = await serve(t, { faux: FAUX, templates: FIXTURES });
   const server = { baseUrl, token };
-  const report = await evalTemplate({ dir: PKG, cases: ["mcp-match"], server, runTimeoutMs: 90_000 });
+  const report = await evalTemplate({ dir: PKG, cases: ["mcp-match"], server });
   assert.equal(report.pass, true, JSON.stringify(report, null, 1));
   assert.deepEqual(report.server, { kind: "remote", base_url: baseUrl.replace(/\/$/, "") });
   assert.equal((await api("GET", "/settings/mcp-servers/crm")).status, 404, "the fake's entry is gone");
@@ -202,7 +210,7 @@ test("on an owner's server it applies that server's package only when it is this
   const owner = await startFake("crm", readCases(PKG, ["mcp-match"]).cases[0].mcp.crm);
   t.after(() => owner.close());
   assert.equal((await api("PUT", "/settings/mcp-servers/crm", { url: owner.url, auth: { type: "none" } })).status, 200);
-  const kept = await evalTemplate({ dir: PKG, cases: ["mcp-match"], server, runTimeoutMs: 90_000 });
+  const kept = await evalTemplate({ dir: PKG, cases: ["mcp-match"], server });
   assert.equal(kept.pass, false);
   assert.match(kept.cases[0].error, /already has an MCP server named crm/);
   assert.equal((await api("GET", "/settings/mcp-servers/crm")).body.url, owner.url, "the owner's entry is untouched");
@@ -211,28 +219,27 @@ test("on an owner's server it applies that server's package only when it is this
   const dir = join(await scratch(t), "evalpkg");
   cpSync(PKG, dir, { recursive: true });
   writeFileSync(join(dir, "agent.md"), readFileSync(join(dir, "agent.md"), "utf8").replace("You answer for", "You now answer for"));
-  const other = await evalTemplate({ dir, cases: ["learned"], server, runTimeoutMs: 90_000 });
+  const other = await evalTemplate({ dir, cases: ["learned"], server });
   assert.equal(other.pass, false);
   assert.match(other.cases[0].error, /the server's evalpkg package is not this folder's/);
 });
 
 test("a stopped eval cancels the run in progress and cleans up what it made, as its end does", { timeout: 300_000 }, async (t) => {
-  // Set before the server starts, so its runs' processes hold the held case's answer until the file exists: never, here.
-  process.env.AGENTRUN_TEST_EVAL_HOLD = join(await scratch(t), "never");
+  // Set before the server starts, so its runs' processes inherit it: the held case's run writes the file once it is in
+  // its turn, and holds there until it is stopped.
+  const holding = join(await scratch(t), "holding");
+  process.env.AGENTRUN_TEST_EVAL_HOLD = holding;
   t.after(() => delete process.env.AGENTRUN_TEST_EVAL_HOLD);
   const { api, baseUrl, token } = await serve(t, { faux: FAUX, templates: FIXTURES });
   const stop = new AbortController();
-  const stopped = evalTemplate({ dir: PKG, cases: ["held", "learned"], server: { baseUrl, token }, signal: stop.signal, runTimeoutMs: 90_000 });
-  let runs = [];
-  for (let i = 0; !runs.some((run) => run.status === "working"); i++) {
-    assert.ok(i < 600, "the held run started");
-    await new Promise((resolve) => setTimeout(resolve, 100));
-    runs = (await api("GET", "/runs")).body.runs ?? [];
-  }
+  const stopped = evalTemplate({ dir: PKG, cases: ["held", "learned"], server: { baseUrl, token }, signal: stop.signal });
+  await untilFile(holding, stopped);
+  assert.ok(existsSync(holding), "the held run reached its turn");
+  const runs = (await api("GET", "/runs")).body.runs;
+  assert.equal(runs.length, 1, "the held run, in its turn");
   stop.abort();
   await assert.rejects(stopped, { name: "AbortError" });
-  const [held] = runs;
-  assert.equal((await api("GET", `/runs/${held.run_id}`)).body.status, "cancelled", "the run in progress is cancelled");
+  assert.equal((await api("GET", `/runs/${runs[0].run_id}`)).body.status, "cancelled", "the run in progress is cancelled");
   assert.equal((await api("GET", "/agents")).body.agents.length, 0, "the agent it made is archived, and no other was made");
 });
 
@@ -292,16 +299,18 @@ test("agentrun-serve eval-template: exit 0 when every case passes, 1 when one fa
   assert.match(failed.out, /\| mcp-mismatch \| 0\/1 \| \*\*fail\*\* \|/);
   assert.equal(JSON.parse(readFileSync(join(dir, "fail.json"), "utf8")).passed, 1);
 
-  // A Ctrl-C cancels the run in progress, cleans up and exits 130 with no report.
-  const held = spawn(process.execPath, [CLI, "eval-template", PKG, "--case", "held", "--faux", FAUX, "--report", join(dir, "stopped.json")], { stdio: ["ignore", "pipe", "pipe"], env: { ...process.env, AGENTRUN_BOXES: "none", AGENTRUN_TEST_EVAL_HOLD: join(dir, "never") } });
+  // A Ctrl-C while the held run is in its turn (the file its faux writes says so) cancels it, cleans up and exits 130
+  // with no report.
+  const holding = join(dir, "holding");
+  const held = spawn(process.execPath, [CLI, "eval-template", PKG, "--case", "held", "--faux", FAUX, "--report", join(dir, "stopped.json")], { stdio: ["ignore", "pipe", "pipe"], env: { ...process.env, AGENTRUN_BOXES: "none", AGENTRUN_TEST_EVAL_HOLD: holding } });
   let heldErr = "";
-  let sent = false;
-  held.stderr.on("data", (chunk) => {
-    heldErr += chunk;
-    if (!sent && heldErr.includes("case held: 1 run")) (sent = true), setTimeout(() => held.kill("SIGINT"), 1_000);
-  });
+  held.stderr.on("data", (chunk) => (heldErr += chunk));
   held.stdout.resume();
-  const code = await new Promise((resolve) => held.on("close", resolve));
+  const closed = new Promise((resolve) => held.on("close", resolve));
+  await untilFile(holding, closed);
+  assert.ok(existsSync(holding), `the held run reached its turn: ${heldErr}`);
+  held.kill("SIGINT");
+  const code = await closed;
   assert.equal(code, 130, heldErr);
   assert.match(heldErr, /stopping: cancelling the run in progress[\s\S]*stopped; no report\./);
   assert.throws(() => readFileSync(join(dir, "stopped.json")), { code: "ENOENT" });
@@ -309,8 +318,8 @@ test("agentrun-serve eval-template: exit 0 when every case passes, 1 when one fa
   for (const [args, said] of [
     [[PKG, "--case", "nope", "--faux", FAUX], /evals\/nope: no such case/],
     [[PKG, "--runs", "0"], /--runs takes a whole number/],
-    [[PKG, "--server", "http://127.0.0.1:9", "--faux", FAUX], /--faux is the model of the server it starts itself/],
-    [[PKG, "--server", "http://127.0.0.1:9"], /--server needs that server's token in AGENTRUN_API_KEY/],
+    [[PKG, "--server", "https://agentrun.invalid", "--faux", FAUX], /--faux is the model of the server it starts itself/],
+    [[PKG, "--server", "https://agentrun.invalid"], /--server needs that server's token in AGENTRUN_API_KEY/],
     [[PKG, "--grader-model", "nomodel", "--faux", FAUX], /--grader-model is "provider\/model-id"/],
     [[join(PKG, "evals")], /is not a valid package/],
     [[], /it takes one package folder/],

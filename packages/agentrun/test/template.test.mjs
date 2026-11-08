@@ -3,7 +3,7 @@
 // and exits 1), and its eval runner.
 import assert from "node:assert/strict";
 import { spawn, spawnSync } from "node:child_process";
-import { cpSync, existsSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { cpSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { test } from "node:test";
@@ -34,7 +34,6 @@ test("template validate checks a package folder as the server does", (t) => {
 // `agentrun template eval DIR`: the package's eval cases run and graded by the installed server (agentrun-serve
 // eval-template), on a server of its own or, with --server, on that one with its token found as every command finds it,
 // handed to the launcher in its environment and never printed. Its exit is the eval's: 0, 1, or 2 when nothing ran.
-const SERVE = new URL("../../serve/dist/cli.js", import.meta.url).pathname;
 const EVALPKG = new URL("../../serve/test/fixtures/templates-eval/evalpkg/", import.meta.url).pathname;
 const EVAL_FAUX = new URL("../../serve/test/fixtures/faux-template-eval.mjs", import.meta.url).pathname;
 const REVIEW_FAUX = new URL("../../serve/test/fixtures/faux-review.mjs", import.meta.url).pathname;
@@ -56,25 +55,23 @@ test("template eval runs a package's cases on a server of its own and exits as t
   assert.match(refused.stderr, /evals\/nope: no such case/);
 });
 
-test("template eval --server runs on that server with the token the CLI finds, and never prints it", { timeout: 300_000 }, async (t) => {
+test("template eval --server runs on that server with the token in AGENTRUN_API_KEY, and never prints it", { timeout: 300_000 }, async (t) => {
   const dir = mkdtempSync(join(tmpdir(), "agentrun-template-eval-"));
-  const env = evalEnv(dir);
   const data = join(dir, "data");
-  const server = spawn(process.execPath, [SERVE, "--data", data, "--port", "0", "--faux", REVIEW_FAUX], { stdio: "ignore", env: { ...env, AGENTRUN_ACCOUNTS: "0" } });
-  t.after(() => {
-    if (server.exitCode === null) server.kill("SIGKILL");
+  // The server in this process, on port 0: listening once startServe resolves, nothing to wait for.
+  process.env.AGENTRUN_BOXES = "none";
+  const { startServe } = await import("../../serve/dist/index.js");
+  const server = await startServe({ data, port: 0, faux: REVIEW_FAUX });
+  t.after(async () => {
+    await server.close();
     rmSync(dir, { recursive: true, force: true });
   });
-  for (let i = 0; !existsSync(join(data, ".server.json")); i++) {
-    assert.ok(i < 600 && server.exitCode === null, "the server started");
-    await new Promise((resolve) => setTimeout(resolve, 100));
-  }
-  const { base_url: base } = JSON.parse(readFileSync(join(data, ".server.json"), "utf8"));
-  const token = readFileSync(join(data, ".token"), "utf8").trim();
+  const { baseUrl: base, token } = server;
+  const env = { ...evalEnv(dir), AGENTRUN_API_KEY: token };
   // code-review's null-name case: the faux reviewer's answer meets the findings schema, and its llm grader, run on the
   // same faux, answers no verdict, so the case fails, graded on that server.
   const ran = await new Promise((resolve) => {
-    const child = spawn(process.execPath, [BIN, "template", "eval", REVIEW, "--case", "null-name", "--runs", "1", "--server", base, "--data", data, "--report", join(dir, "report.json")], { env, stdio: ["ignore", "pipe", "pipe"] });
+    const child = spawn(process.execPath, [BIN, "template", "eval", REVIEW, "--case", "null-name", "--runs", "1", "--server", base, "--report", join(dir, "report.json")], { env, stdio: ["ignore", "pipe", "pipe"] });
     let out = "";
     let err = "";
     child.stdout.on("data", (chunk) => (out += chunk));
