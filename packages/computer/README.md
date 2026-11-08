@@ -443,7 +443,7 @@ live under:
   | `DAYTONA_TARGET` | Daytona's `target` |
   | `MODAL_TOKEN_ID`, `MODAL_TOKEN_SECRET` | Modal's `tokenId`, `tokenSecret` |
   | `AGENTRUN_BOX_APP` | Modal's `app` (serve's default, `agentrun`, when unset) |
-  | `AGENTRUN_DOCKER_IMAGE` | the `image` of a Docker computer's spec (`provider.create({ image, ... })`), not a provider option |
+  | `AGENTRUN_DOCKER_IMAGE` | Docker's `image` option, `{ image: <name> }` (unset: the provider's own recipe); `docker.image()` makes it ready and gives the tag a computer's spec names |
   | `E2B_API_KEY` | E2B's `apiKey`: serve's new name for the E2B box |
 
 - **the conformance CLI and the live harness** (`src/conformance/`: the CLI, each provider's conformance module and the
@@ -704,6 +704,58 @@ const made = await docker.create({ image: "debian:bookworm-slim", lifetimeMs: 60
   `/workspace` is `{ kind: "bind", path }`; a read-only one, a volume or two mounts there is `{ other }`, and `attach`
   refuses such a computer. The drift check (below) holds a computer to the mount it was asked for: the bind there, from
   that path, read-write, `rprivate`, and no other mount.
+
+### The image: `ensureImage`
+
+The provider owns the image its computers start from and makes it ready in its own process. There is no state file and
+no other process to wait on: Docker's own tag is the shared state.
+
+```ts
+import { DockerProvider } from "@parcha/agentrun-computer";
+
+const docker = new DockerProvider({ daemonPath: "dist/computerd-linux-amd64" }); // image: the default recipe
+const image = await docker.image({ signal });   // built once; one inspect when Docker has it
+if (!image.ok) throw new Error(image.error.message);
+const made = await docker.create({ image: image.value, lifetimeMs: 600_000, network: "none" });
+```
+
+- `ensureImage(source, { docker?, signal?, timeoutMs?, onWait? })` (`src/docker/image.ts`) gives the tag. `source` is
+  `{ recipe }`, a Dockerfile with no build context, or `{ image }`, an image by name.
+  - A recipe is built with `docker build --quiet --label agentrun.computer.recipe=<sha256> --tag
+    agentrun-computer:<first 12 hex digits> -`, the recipe on stdin (`recipeTag(recipe)`, `recipeHash(recipe)`,
+    `RECIPE_LABEL`). It is built only when `docker image inspect` finds no image under the tag, or one whose label is
+    not this recipe's whole sha256: a changed recipe is a new tag, and the same recipe is never built twice.
+  - An image by name is ready when Docker has it, and pulled once (`docker pull --quiet`) when it has none. It is never
+    built.
+- `DockerProvider`'s `image` option is that source; the default is `{ recipe: DOCKER_RECIPE }`, the provider's own
+  image (`DEFAULT_DOCKER_IMAGE`): `python:3.12-slim` pinned by its index digest (`DOCKER_BASE`), with git, curl,
+  nodejs, npm, ripgrep and socat from apt. `docker.image({ signal?, timeoutMs?, onWait? })` is `ensureImage` of it with the
+  provider's docker CLI. A source that is neither throws at construction, in words.
+- **The image is an option only; there is no env name for it.** Another image is named with the `image` option, to
+  `new DockerProvider(...)` or to `create({ image: { image: "..." } })`. The library reads no environment (see
+  [Settings](#settings)), and Docker's conformance module reads no image name either: a `COMPUTER_DOCKER_IMAGE` in its
+  environment is ignored. serve keeps its own setting, `AGENTRUN_DOCKER_IMAGE`,
+  and at the cutover passes it in as the `image` option, so there is one name and the owner's setting keeps working.
+- **One build per process.** Concurrent callers share one flight per docker CLI and recipe (or image): the first starts
+  it, the rest wait on it and ask Docker nothing. A flight is forgotten once it settles, so the next call inspects
+  again, and a failure is never kept: the next call tries again.
+- **Two processes need no state file.** Same recipe, same tag, same label, so a build is idempotent. Two processes
+  that both miss the tag both build, BuildKit sharing its cache. With Docker 29's containerd image store the first to
+  tag wins and the others fail with `already exists`; with the classic store the last one wins. Either way a build or
+  pull that fails asks Docker once more, and the tag on an image of this recipe is the answer, so every process ends
+  with the tag. A computer made from an image that lost its tag keeps it, as Docker holds an image by its id.
+- `onWait(making, tag)` is told once, before a caller waits on a build or pull (`"build"` or `"pull"`), its own or one
+  it joined, and never when Docker has the image: a caller shows its own "preparing" row with it
+  (`DOCKER_RECIPE_HAS` is the default image's contents in words). `docker.image()` takes it too.
+- **One bound, the caller's signal.** `timeoutMs` (default `IMAGE_TIMEOUT_MS`, 10 minutes) covers a flight's inspect and
+  its build or pull, and the first caller's bound is the flight's; past it the docker CLI is killed (`timeout`). A
+  caller's `signal` ends its own wait (`aborted`); when the last caller waiting aborts, the build or pull is killed.
+- **The words hold none of Docker's output**, only what happened and the next step: Docker not answering ("is it
+  running, and may this user reach it?"); a build that could not reach the network, could not pull its base, ran out
+  of disk space, or could not install a package; a recipe Docker could not parse (`at line 2`) or whose step failed
+  (``failed at the step `RUN make` with exit code 2``), the recipe's own words; a registry that refused a pull, has no
+  such image, or could not be reached. A source that is neither a recipe with a `FROM` line nor an image name, or a
+  bound that is not one, is `invalid` before Docker is called.
 
 ### The drift check
 
@@ -1845,10 +1897,10 @@ provider by id from its options and refuses an id it does not hold, naming the o
 
 Docker's conformance module reads `COMPUTER_DOCKER_DAEMON` (`daemonPath`; unset, `create()` takes this package's daemon
 for Docker's architecture, from `docker version`), `COMPUTER_DOCKER_DAEMON_CACHE` (`daemonCache`) and
-`COMPUTER_DOCKER_USER` (`user`); Modal's, Daytona's and E2B's read
-the names in their sections. `test/providers.test.mjs` holds every provider file to its registry line and its line to
-this shape, checks that the CLI's usage names every id, and runs `scripts/check-env.mjs` on `src/`. Run the suite on
-the new computer, by path before its line exists and by id after:
+`COMPUTER_DOCKER_USER` (`user`); the provider's `image` is an option only, which no module reads from the environment
+(see "The image"). Modal's, Daytona's and E2B's read the names in their sections. `test/providers.test.mjs` holds every
+provider file to its registry line and its line to this shape, checks that the CLI's usage names every id, and runs
+`scripts/check-env.mjs` on `src/`. Run the suite on the new computer, by path before its line exists and by id after:
 
 ```sh
 npm run conformance -w @parcha/agentrun-computer -- --provider ./packages/computer/dist/fly.js
@@ -1877,14 +1929,17 @@ Where Xvfb is on PATH, the Go tests also run the X client, and screen and input 
 server; elsewhere those tests skip in words and the fake X server's tests still run.
 
 The live tests run the conformance suite on Docker, one test per case, on a plain computer and on a desktop built from
-`test/fixtures/desktop/Dockerfile` with `computerd-fixture` built from `daemon/cmd/fixture`, and the CLI against
+`test/fixtures/desktop/Dockerfile` by `ensureImage` with `computerd-fixture` built from `daemon/cmd/fixture`, and the
+CLI against
 `alpine:3.20`; the rest of
 them check what only Docker shows (the user, sizes, tmpfs mounts and hardening flags in `docker inspect`, the daemon
 mount, the socket directory, hello's arch against Docker's, `/work` as the user's home, the daemon's exit 0 on `docker
 stop` and at its deadline, attach by a container's name). They need Docker, `debian:bookworm-slim`
 and `alpine:3.20` pulled, both builds, and Go on PATH (the drift case builds a daemon of another version). They use
-the daemon for Docker's own architecture, and remove every container they make by its exact name, pass or fail. One of
-them, `test/docker/modal-commands.docker.test.mjs`, runs the Modal provider's entrypoint and upload exactly as sent, in
+the daemon for Docker's own architecture, and remove every container they make by its exact name, pass or fail.
+`test/docker/image.docker.test.mjs` builds fresh `alpine:3.20` recipes: once for three concurrent callers, reused on
+the next call, from three processes at once, and a broken one refused in words; it removes each tag it made. Another,
+`test/docker/modal-commands.docker.test.mjs`, runs the Modal provider's entrypoint and upload exactly as sent, in
 a Debian and an Alpine root container with no network, and checks that init comes up as uid 1000 with no capabilities
 and `no_new_privs`, and answers hello over `computerd stdio`. Those root containers keep Docker's default
 capabilities, or every one (`--cap-add ALL`), with no `--cap-drop`, as Modal runs them: with `--user 0:0` and
