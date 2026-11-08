@@ -409,10 +409,13 @@ test('the Python client is source: its .py files, pyproject.toml and py.typed ar
   for (const path of sources) await f.write(path, `# ${path}\n`);
   await f.write('python/agentrun/__pycache__/_client.cpython-311.pyc', 'BYTECODE\n');
   await f.write('python/tests/__pycache__/helpers.cpython-311.pyc', 'BYTECODE\n');
+  // What `pip install ./python` leaves beside the source: its build tree and its metadata.
+  await f.write('python/build/lib/agentrun/__init__.py', '# a copy\n');
+  await f.write('python/parcha_agentrun.egg-info/PKG-INFO', 'Metadata-Version: 2.1\n');
   await f.run();
   const listing = await f.listing();
   for (const path of sources) assert.match(listing, new RegExp(`agentrun-dsl-source/${path.replace(/\./g, '\\.')}\\n`), path);
-  assert.doesNotMatch(listing, /__pycache__|\.pyc/);
+  assert.doesNotMatch(listing, /__pycache__|\.pyc|python\/build\/|egg-info/);
   const fakeSecret = ['ghp_', 'z'.repeat(36)].join('');
   await f.write('python/agentrun/_key.py', `KEY = "${fakeSecret}"\n`);
   await assert.rejects(f.run(), error => {

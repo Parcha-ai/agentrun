@@ -141,6 +141,8 @@ function excluded(path, file) {
   const parts = path.split('/');
   // A review file is a file named `<name>.review.<ext>` (the author's `<n>.review.json`). Only files match: a module or
   // directory named review, and a directory named like a review file, are source.
+  // What `pip install ./python` leaves beside the Python client's source (its build tree, its metadata) is not source.
+  if (path === 'python/build' || path.startsWith('python/build/') || /(?:^|\/)[^/]+\.egg-info(?:\/|$)/.test(path)) return true;
   return parts.some(part => part === 'pi.config.mjs' || excludedComponents.has(part) || /^\.env(?:\.|$)/.test(part) || /\.local(?:\.|$)/.test(part)) ||
     (file && /^.+\.review\.[^/]+$/.test(parts.at(-1))) ||
     /\.(?:tgz|tar|gz|pem|key|p12|pfx|map|log)$/.test(path);
