@@ -1,0 +1,105 @@
+// A run's desktop or phone, as its owner watches and takes it: GET /v2/runs/{id}/computer, POST .../computer/take-over and
+// POST .../computer/hand-back. Owner-only, as a run's browser is (its viewer is a full-control credential for the
+// computer): the owner's password session in the console, never a token.
+//
+// The view is the provider's own live stream of the screen (the computer module's provider.stream()), view-only while
+// the agent works; a take-over gives the owner a stream that drives, and parks the run's screen, input and phone tools
+// (workspace/computer-hold.ts) until the hand-back, which gives the computer back to the agent. The browser keeps its own
+// routes (GET /v2/runs/{id}/browser, its loopback viewer); a run whose computer is a browser, a sandbox or none has no
+// computer here.
+//
+// Where a run's computer is: the process that holds the run's claim registers it (registerRunComputer) once its computer
+// is up, and lets it go at the run's end; these routes answer from that register.
+import { type ComputerHold, HOLD_MAX_MS } from "./workspace/computer-hold.js";
+
+/** The kinds of computer these routes show: a screen a person can watch and take. */
+export type ViewedKind = "desktop" | "phone";
+
+/** A run's desktop or phone, as the routes reach it. */
+export type RunComputer = {
+  readonly kind: ViewedKind;
+  /** The provider's live stream of the screen: view-only, or one that drives. Undefined when the provider has none. */
+  readonly stream?: (options: { readonly viewOnly: boolean }) => Promise<{ readonly url: string; readonly expiresAt?: Date } | undefined>;
+  /** The person's hold on it. */
+  readonly hold: ComputerHold;
+  /** Whether the computer is up now (false once it ended or failed). */
+  live(): boolean;
+};
+
+/** What GET /v2/runs/{id}/computer answers. */
+export type ComputerView = {
+  readonly kind: ViewedKind | null;
+  /** live: up, and watchable (or taken); none: the run has a desktop or phone that is not up now; off: it has none. */
+  readonly state: "live" | "none" | "off";
+  /** Whether the owner holds it now, and until when it goes back to the agent on its own. */
+  readonly taken_over: boolean;
+  readonly taken_until?: string;
+  readonly viewer: { readonly url: string } | null;
+};
+
+const computers = new Map<string, RunComputer>();
+
+/** Run `runId`'s computer is up (from the process that holds the run's claim): the routes show it until it is let go. */
+export function registerRunComputer(runId: string, computer: RunComputer): () => void {
+  computers.set(runId, computer);
+  return () => {
+    if (computers.get(runId) !== computer) return;
+    computer.hold.give("ended");
+    computers.delete(runId);
+  };
+}
+
+/** Run `runId`'s registered computer, when there is one. */
+export const runComputerOf = (runId: string): RunComputer | undefined => computers.get(runId);
+
+/** The run read's computer state, with the owner's hold: "taken_over" while they hold it, else the state given. */
+export function computerStateOf<S extends string>(runId: string, state: S): S | "taken_over" {
+  return computers.get(runId)?.hold.state().held ? "taken_over" : state;
+}
+
+/** The routes' names in serve's route table: each takes the owner's password session, never a token. */
+export const COMPUTER_ROUTES: ReadonlySet<string> = new Set(["getRunComputer", "takeOverRunComputer", "handBackRunComputer"]);
+
+/** Why a computer route refused, as an ApiError's code and words. */
+export type ViewRefusal = { readonly code: "not_found" | "computer_not_live"; readonly message: string };
+
+const viewerOf = async (computer: RunComputer, viewOnly: boolean): Promise<{ url: string } | null> => {
+  const stream = await computer.stream?.({ viewOnly });
+  return stream ? { url: stream.url } : null;
+};
+
+/** GET /v2/runs/{id}/computer. `hasComputer`: whether the run's setting asks for a desktop or a phone (off when not). */
+export async function readComputer(runId: string, hasComputer: { readonly kind: ViewedKind } | undefined): Promise<ComputerView> {
+  const computer = computers.get(runId);
+  if (!computer || !computer.live()) {
+    return { kind: computer?.kind ?? hasComputer?.kind ?? null, state: computer || hasComputer ? "none" : "off", taken_over: false, viewer: null };
+  }
+  const held = computer.hold.state();
+  return {
+    kind: computer.kind, state: "live", taken_over: held.held,
+    ...(held.held ? { taken_until: new Date(held.until).toISOString() } : {}),
+    viewer: await viewerOf(computer, !held.held),
+  };
+}
+
+/** POST .../computer/take-over: the owner holds the computer, the run's screen and input tools park, and the answer's
+ *  viewer drives. Taking one already held is the same answer. */
+export async function takeOver(runId: string): Promise<ComputerView | ViewRefusal> {
+  const computer = computers.get(runId);
+  if (!computer) return { code: "not_found", message: "this run has no desktop or phone up to take over (a browser is taken over from GET /v2/runs/{id}/browser)" };
+  if (!computer.live()) return { code: "computer_not_live", message: `this run's ${computer.kind} is not up now, so there is nothing to take over` };
+  computer.hold.take();
+  return readComputer(runId, undefined);
+}
+
+/** POST .../computer/hand-back: the computer goes back to the agent; its parked calls go on. Handing back one nobody
+ *  holds is the same answer. */
+export async function handBack(runId: string): Promise<ComputerView | ViewRefusal> {
+  const computer = computers.get(runId);
+  if (!computer) return { code: "not_found", message: "this run has no desktop or phone up to hand back" };
+  computer.hold.give("given");
+  return readComputer(runId, undefined);
+}
+
+/** The longest a take-over lasts with no hand-back, in minutes, for the API's words. */
+export const TAKE_OVER_MINUTES = HOLD_MAX_MS / 60_000;
