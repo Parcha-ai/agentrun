@@ -134,7 +134,8 @@ export function RunDetail({ run, agentName, messages, harnessSteers, rows, files
   const tabs: [Tab, string][] = [...(graphView ? [["graph", "Graph"] as [Tab, string]] : []), ["report", "Report"], ["timeline", "Timeline"], ["files", `Files ${files.length}`], ...(browser ? [["browser", browser.state === "live" ? "Watch live" : "Browser"] as [Tab, string]] : [])];
   return (
     <div className="flex h-full min-h-0 flex-col">
-      <RunHeader run={run} agentName={agentName} actions={actions} costText={costText} />
+      {/* The kind of trigger that started it, from its own trigger row (serve's TimelineRow.trigger.source): a deleted trigger's too. */}
+      <RunHeader run={run} agentName={agentName} actions={actions} costText={costText} triggerSource={rows.find((r) => r.trigger)?.trigger?.source} />
       <div className="flex border-b px-5 md:px-8" role="tablist">
         {tabs.map(([id, name]) => (
           <button key={id} type="button" role="tab" aria-selected={tab === id} onClick={() => setTab(id)}

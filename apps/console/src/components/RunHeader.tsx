@@ -27,7 +27,7 @@ const costTitle = (c: Run["cost"], ended: boolean): string | undefined => {
 /** The run's title bar: back to its agent, the title, its status, what it cost so far, stop versus cancel, and archive.
  *  Stop ends the turn and keeps the run open (it waits for a message); cancel ends the run for good, after a confirm.
  *  Archive hides the run from the runs list and keeps it; the server takes it in any state, as serve's own page offers it. */
-export function RunHeader({ run, agentName, actions = {}, costText }: { run: Run; agentName: string; actions?: RunActions; costText?: string }) {
+export function RunHeader({ run, agentName, actions = {}, costText, triggerSource }: { run: Run; agentName: string; actions?: RunActions; costText?: string; triggerSource?: string }) {
   // Where it ran, as its start resolved it.
   const ranIn = runPlaceWords(placeOf((run as { place?: unknown }).place));
   const view = runState(run.status, run.state, run.kind, NO_MESSAGES, true, run.error, run.review);
@@ -62,7 +62,7 @@ export function RunHeader({ run, agentName, actions = {}, costText }: { run: Run
             {costText !== undefined ? <span className="font-mono" title="The run's decisions and model calls, as the providers priced them">{costText}</span>
               : <span className="font-mono" title={costTitle(run.cost, runEnded(run.status))}>{cost(run.cost, { ended: runEnded(run.status) })}</span>}
             <LearningChips run={run} link />
-            <ScheduleChip run={run} />
+            <ScheduleChip run={run} source={triggerSource} />
           </div>
           {run.status === "completed" && run.review && <p className="mt-2 text-[13px] text-warning-text">Needs review: {run.review.reason}</p>}
         </div>
