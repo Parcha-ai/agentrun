@@ -3748,12 +3748,20 @@ export class Runs {
         this.raiseFailed(run, cap, error as Error);
         return true;
       }
-      // Read again after the pins, then the mark goes and the launch follows with nothing awaited between them.
+      // Read again after the pins, then the launch, and the mark goes in the same turn with nothing awaited between them.
       if (this.raiseMoot(run)) return true;
+      // A launch that throws (its claim written, its process log or mark not opened, its spawn refused) starts no process:
+      // the mark stays, and the raise goes back to the queue with its tries counted (raiseFailed), never a run stranded
+      // with neither. Off the queue, and the mark gone, only once the launch has returned.
+      try {
+        this.launch(run);
+      } catch (error) {
+        this.raiseFailed(run, cap, error as Error);
+        return true;
+      }
       this.leavePlaceQueue(run);
       run.raiseFailedRow = undefined;
       clearBudgetPause(run.dir);
-      this.launch(run);
       this.show(run);
       this.refresh(run);
     } finally {
