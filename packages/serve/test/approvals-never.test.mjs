@@ -178,3 +178,60 @@ test("an apply's overrides.approvals sets the agent's approvals; none given asks
   assert.equal(wrong.status, 422, JSON.stringify(wrong.body));
   assert.equal(wrong.body.error.fields.find((f) => f.field === "overrides.approvals")?.reason, "not_an_option", JSON.stringify(wrong.body.error.fields));
 });
+
+test("never lifts no ask that a deny stands behind: a server deny under the agent's ask, a server wildcard deny under an exact ask, and the agent's deny under the server's ask all stay as without never", () => {
+  const cases = [
+    ["web_fetch", { web_fetch: { permission: "deny" } }, { web_fetch: { permission: "ask" } }],
+    ["mcp:fake/add", { "mcp:fake/*": { permission: "deny" } }, { "mcp:fake/add": { permission: "ask" } }],
+    ["mcp:fake/add", {}, { "mcp:fake/*": { permission: "deny" }, "mcp:fake/add": { permission: "ask" } }],
+    ["web_fetch", { web_fetch: { permission: "ask" } }, { web_fetch: { permission: "deny" } }],
+    ["bash_background", { bash: { permission: "deny" } }, { bash: { permission: "ask" } }],
+  ];
+  for (const [name, server, agent] of cases) {
+    const without = permissionFrom(name, server, agent);
+    assert.deepEqual(permissionFrom(name, server, agent, "never"), without, `${name}: never leaves ${JSON.stringify([server, agent])} as it was`);
+    assert.notEqual(permissionFrom(name, server, agent, "never").permission, "allow", `${name}: never allowed`);
+  }
+});
+
+test("never lifts no ask that stands in for a setting that does not read: a fallback mark, or a value that is no permission", async (t) => {
+  assert.deepEqual(permissionFrom("bash", { bash: { permission: "ask", fallback: true } }, {}, "never"), { permission: "ask", from: "server" });
+  assert.deepEqual(permissionFrom("bash", { bash: { permission: "maybe" } }, {}, "never"), { permission: "ask", from: "server" });
+  assert.deepEqual(permissionFrom("web_fetch", {}, { web_fetch: { permission: "maybe" } }, "never"), { permission: "ask", from: "agent" });
+  // Through the gate, from the server's settings file: an invalid permission for bash reads as an ask it never lifts.
+  const dir = await scratch(t);
+  writeFileSync(join(dir, "tool-settings.json"), JSON.stringify({ bash: { permission: "maybe" }, web_fetch: { permission: "deny" } }));
+  const where = { root: join(dir, "runs", "r"), work: join(dir, "work"), data: dir, runId: "r", harness: "pi" };
+  const never = new RunGate(where, { web_fetch: { permission: "ask" } }, true, true, "never");
+  assert.equal(never.policy("bash"), "ask", "an invalid bash permission is never run unattended");
+  assert.equal(never.policy("bash_background"), "ask", "nor a shell watcher held to it");
+  assert.notEqual(never.policy("web_fetch"), "allow", "the server's deny under the agent's ask is never allowed");
+});
+
+test("a server deny under the agent's own ask is never run under never: the call parks as it does without never, and is never sent", { timeout: 120_000 }, async (t) => {
+  const dialled = await network(t);
+  const { api } = await serve(t, GATE);
+  assert.equal((await api("PUT", "/settings/tools", { web_fetch: { permission: "deny" } })).status, 200);
+  const runId = await fetching(api, "never-under-deny", "pi", { approvals: "never", tool_settings: { web_fetch: { permission: "ask" } } });
+  const { last } = await follow(api, runId, ["input_required", "completed"], { deadlineMs: 60_000 });
+  const view = (await api("GET", `/runs/${runId}`)).body;
+  assert.ok(last.status === "input_required" ? view.pending?.kind === "approval" : true, `parked as without never: ${JSON.stringify(view.pending)}`);
+  assert.deepEqual(await dialled(), [], "never sent");
+});
+
+test("native web_search set to ask on claude-agent and codex: under never it is allowed, so the agent saves without the native-ask warning and starts; under ask the warning stands and its run is refused", { timeout: 120_000 }, async (t) => {
+  await network(t);
+  const { api } = await serve(t, GATE);
+  const NATIVE_ASKS = /native search cannot wait for an approval/;
+  for (const harness of ["claude-agent", "codex"]) {
+    const native = { harness, tools: ["web_search"], tool_settings: { web_search: { provider: "native", permission: "ask" } } };
+    const never = await api("POST", "/agents", agent(`native-never-${harness}`, { ...native, approvals: "never" }));
+    assert.equal(never.status, 201, `${harness}: ${JSON.stringify(never.body)}`);
+    assert.equal((never.body.warnings ?? []).some((w) => NATIVE_ASKS.test(w.message ?? "")), false, `${harness}: no native-ask warning under never: ${JSON.stringify(never.body.warnings)}`);
+    const started = await api("POST", `/agents/native-never-${harness}/runs`, { input: { content: "Search once." } });
+    assert.equal(started.status, 202, `${harness}: it starts under never: ${JSON.stringify(started.body)}`);
+    const asked = await api("POST", "/agents", agent(`native-ask-${harness}`, native));
+    assert.equal(asked.status, 201, `${harness}: ${JSON.stringify(asked.body)}`);
+    assert.ok((asked.body.warnings ?? []).some((w) => NATIVE_ASKS.test(w.message ?? "")), `${harness}: under ask the warning stands: ${JSON.stringify(asked.body.warnings)}`);
+  }
+});
