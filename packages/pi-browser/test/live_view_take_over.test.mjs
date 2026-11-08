@@ -557,3 +557,76 @@ test("take-over viewer: a person's command that never returns renews their turn 
   assert.deepEqual(next.content.map((c) => c.text), ["ran again"], JSON.stringify(next));
   assert.deepEqual(b.log, ["history", "agent", "agent again"]);
 });
+
+/** The real page driver over a stand-in Stagehand whose page is at `url` (a batch may move it), with a snapshot of two ids. */
+async function batchRig({ onAction }) {
+  const { pageDriver } = await import("../dist/driver/page-driver.js");
+  const page = { pageId: "page-1", at: "https://example.test/page", url: async () => page.at, snapshot: async () => ({ formattedTree: "[1-1] link: Details\n[1-2] textbox: Name", xpathMap: { "1-1": "/html/body/a", "1-2": "/html/body/input" } }), screenshot: async () => new Uint8Array() };
+  const stagehand = {
+    browser: { context: { activePage: async () => page } },
+    experimentalBatch: async (_callback, input) => {
+      for (const action of input?.actions ?? []) await onAction(action, page);
+      return { completed: input?.actions?.length ?? 0 };
+    },
+    close: async () => {},
+  };
+  return { driver: pageDriver(stagehand, { batchMs: 5_000 }), page };
+}
+
+test("a run of several actions that clicks a same-page link and then fills a field runs both: the page's address moved by the batch's own click is not a stale snapshot", async () => {
+  const gates = createDrivingGates();
+  const tag = "ar-run-to-20-1";
+  const acts = [];
+  const { driver } = await batchRig({ onAction: async (action, page) => { acts.push(action.id); if (action.id === "1-1") page.at = "https://example.test/page#details"; } });
+  await driver.snapshot({});
+  const port = { session: async () => ({ tag, driver, notice: null }), relaunch: async () => ({ tag, driver }), release: async () => ({ released: true, sessionId: null }) };
+  const tool = drivingGuard(async (_a, p) => {
+    const s = await p.session();
+    try { return { content: [{ type: "text", text: JSON.stringify(await s.driver.run({ actions: [{ op: "click", id: "1-1" }, { op: "fill", id: "1-2", value: "Ada" }] })) }] }; }
+    catch (error) { return { content: [{ type: "text", text: JSON.stringify({ message: error.message, ...(error.failure ?? {}) }) }], isError: true }; }
+  }, gates);
+  const out = await tool({}, port, {});
+  assert.equal(out.isError, undefined, out.content[0].text);
+  assert.deepEqual(JSON.parse(out.content[0].text), { completed: 2, url: "https://example.test/page#details" });
+  assert.deepEqual(acts, ["1-1", "1-2"], "both actions reached the page");
+  // The snapshot itself is still the address it was taken at: a later call on the moved page is told to snapshot again.
+  await assert.rejects(driver.run({ actions: [{ op: "click", id: "1-1" }] }), /navigated after its snapshot/);
+});
+
+test("a run of several actions over the real page driver: a take-over between them still stops the batch", async () => {
+  const gates = createDrivingGates();
+  const tag = "ar-run-to-21-1";
+  const acts = [];
+  const { driver } = await batchRig({ onAction: async (action) => { acts.push(action.id); if (action.id === "1-1") assert.equal(gates(tag).take(), true, "the person takes over during the first action"); } });
+  await driver.snapshot({});
+  const port = { session: async () => ({ tag, driver, notice: null }), relaunch: async () => ({ tag, driver }), release: async () => ({ released: true, sessionId: null }) };
+  const tool = drivingGuard(async (_a, p) => {
+    const s = await p.session();
+    try { return { content: [{ type: "text", text: JSON.stringify(await s.driver.run({ actions: [{ op: "click", id: "1-1" }, { op: "fill", id: "1-2", value: "Ada" }] })) }] }; }
+    catch (error) { return { content: [{ type: "text", text: JSON.stringify({ name: error.constructor.name, ...(error.failure ?? { message: error.message }) }) }], isError: true }; }
+  }, gates);
+  const out = await tool({}, port, {});
+  const failure = JSON.parse(out.content[0].text);
+  assert.deepEqual([failure.name, failure.effect, failure.completed], ["FenceRefusal", "partial", 1]);
+  assert.deepEqual(acts, ["1-1"], "the second action never reached the page");
+  gates(tag).give();
+});
+
+test("a run of several actions over the real page driver whose snapshot is stale before its first action sends nothing", async () => {
+  const gates = createDrivingGates();
+  const tag = "ar-run-to-22-1";
+  const acts = [];
+  const { driver, page } = await batchRig({ onAction: async (action) => { acts.push(action.id); } });
+  await driver.snapshot({});
+  page.at = "https://example.test/elsewhere";
+  const port = { session: async () => ({ tag, driver, notice: null }), relaunch: async () => ({ tag, driver }), release: async () => ({ released: true, sessionId: null }) };
+  const tool = drivingGuard(async (_a, p) => {
+    const s = await p.session();
+    try { return { content: [{ type: "text", text: JSON.stringify(await s.driver.run({ actions: [{ op: "click", id: "1-1" }, { op: "fill", id: "1-2", value: "Ada" }] })) }] }; }
+    catch (error) { return { content: [{ type: "text", text: JSON.stringify({ message: error.message }) }], isError: true }; }
+  }, gates);
+  const out = await tool({}, port, {});
+  assert.equal(out.isError, true);
+  assert.match(JSON.parse(out.content[0].text).message, /navigated after its snapshot/, "the stale snapshot, as before");
+  assert.deepEqual(acts, [], "nothing was sent");
+});

@@ -51,7 +51,10 @@ export type RunAction =
 
 export type PageDriver = BrowserDriver & {
   snapshot(options?: { includeIframes?: boolean }): Promise<string>;
-  run(input: { code?: string; actions?: RunAction[] }): Promise<unknown>;
+  /** `checked`: an action after the first of a run of several, sent alone (driving-guard sends a batch one action at a time)
+   *  after the whole batch was checked against the page's snapshot: the page's address, which the batch's own earlier
+   *  actions may have moved (a same-page link), is not checked against the snapshot again. Its ids still are. */
+  run(input: { code?: string; actions?: RunAction[]; checked?: true }): Promise<unknown>;
   /** The page's URL, cheaply: no page content is read. */
   url(): Promise<string>;
   /** Drops every snapshot's element ids, so an action by an old id fails as a stale snapshot (a person changed the page, whatever its URL). Optional:

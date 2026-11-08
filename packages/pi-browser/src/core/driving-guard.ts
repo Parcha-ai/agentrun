@@ -54,12 +54,15 @@ function epochFenced<D extends BrowserDriver>(driver: D, gate: DrivingGate, epoc
           if (typeof check === "function") await check.call(target, list);
           let completed = 0;
           let url: unknown;
-          for (const action of list) {
+          for (const [index, action] of list.entries()) {
             if (moved()) throw new FenceRefusal(personTookFailure(acted, { completed, of: list.length }));
             acted = true;
             let answer: { completed?: unknown; url?: unknown } | undefined;
             try {
-              answer = (await value.call(target, { actions: [action] })) as typeof answer;
+              // The batch was checked as one before any was sent, as the browser's own batch checks it once: an action after
+              // the first is not refused because the page's address moved under the batch's own earlier actions (a
+              // same-page link). The person's take-over is still fenced before each one, above.
+              answer = (await value.call(target, index === 0 ? { actions: [action] } : { actions: [action], checked: true })) as typeof answer;
             } catch (error) {
               if (completed > 0) throw partway(error, completed, list.length);
               throw error;
