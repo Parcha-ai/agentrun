@@ -22,6 +22,16 @@ test("a request stopped mid-answer: so far the finished requests' sum, 1 not pri
   assert.equal(rowOf(entries).summary, "Cost so far: $0.0100 known, 1 not priced, over 2 model requests");
 });
 
+test("an ended run's usage row says its cost, never \"so far\": every cost known, or what is known and how many are not priced; one not ended keeps \"so far\"", () => {
+  const known = [user("go"), started(), priced("one", 0.01), started(), priced("two", 0.02)];
+  const cut = [user("go"), started(), priced("one", 0.01), started(), aborted(), ended()];
+  const summaryOf = (entries, options) => timelineOf(entries, options).find((row) => row.kind === "usage")?.summary;
+  assert.equal(summaryOf(known, { settled: true, ended: true }), "Cost: $0.0300 over 2 model requests");
+  assert.equal(summaryOf(cut, { settled: true, ended: true }), "Cost: $0.0100 known, 1 not priced, over 2 model requests");
+  // Settled but not ended (a run paused, its process let go): still what it has cost so far.
+  assert.equal(summaryOf(cut, { settled: true }), "Cost so far: $0.0100 known, 1 not priced, over 2 model requests");
+});
+
 test("a request a crash cut (marked, no answer) is 1 not priced once the run is settled; live, it is in flight and the cost is the sum so far", () => {
   const entries = [user("go"), started(), priced("one", 0.01), started()];
   assert.deepEqual(usageOf(entries), { usd: null, requests: 2, so_far_usd: 0.01, unpriced: 1 });

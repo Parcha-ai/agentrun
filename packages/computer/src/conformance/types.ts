@@ -11,8 +11,8 @@ export type CaseGroup = "health" | "exec" | "files" | "process" | "provider" | "
 
 /**
  * What a case needs: a group (declared by both the provider's capabilities().groups and the computer's hello), a
- * network the provider declares, the janitor as the keeper of deadlines, a spec.user the provider takes, or a provider
- * method that is optional (extend, stream), declared by being there.
+ * network the provider declares, the janitor as the keeper of deadlines, a spec.user the provider takes, a release that
+ * stops a computer and keeps it, or a provider method that is optional (extend, stream), declared by being there.
  */
 export type Capability =
 	| Group
@@ -22,6 +22,7 @@ export type Capability =
 	| "lifetime:janitor"
 	| "user:root"
 	| "user:uid"
+	| "release:stop"
 	| "extend"
 	| "stream";
 
@@ -172,6 +173,8 @@ export interface ConformanceReport {
 	 * after their case had ended (each deleted as it came).
 	 */
 	cleanup: { deleted: string[]; left: string[]; errors: string[]; late: string[] };
+	/** What the provider module says of its configuration, for whoever reads the report; absent when it says nothing. */
+	notes?: string[];
 }
 
 export interface ConformanceOptions {
@@ -186,6 +189,8 @@ export interface ConformanceOptions {
 	drifted?: () => Promise<ComputerProvider> | ComputerProvider;
 	/** Called as each case ends. */
 	onResult?: (result: CaseResult) => void;
+	/** Notes the provider module gives for the report, printed before the verdict. */
+	notes?: string[];
 	/** The longest one case may run; default 180 s. */
 	caseTimeoutMs?: number;
 	/** How long a case waits on a program; default 30 s. */

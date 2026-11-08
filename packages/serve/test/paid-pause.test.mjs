@@ -14,6 +14,7 @@ import { join } from "node:path";
 import { test } from "node:test";
 import { KEY } from "./fixtures/faux-monid.mjs";
 import { agent, follow, scratch, serve, withEnv } from "./support.mjs";
+import { fauxTable } from "./fixtures/faux-table.mjs";
 
 const FAUX_MONID = new URL("./fixtures/faux-monid.mjs", import.meta.url).pathname;
 const FAUX_HARNESS = new URL("./fixtures/faux-harness.mjs", import.meta.url).pathname;
@@ -32,7 +33,7 @@ for (const harness of ["pi", "claude-agent", "codex"]) {
   test(`${harness}: a paid call the cap refuses for room pauses the run, its result saying it was not sent; a raise sends it on and the model's next call is made, once`, { timeout: 120_000 }, async (t) => {
     const log = join(await scratch(t), "monid-calls.jsonl");
     withEnv(t, { MONID_API_KEY: KEY, AGENTRUN_TEST_FAUX_MONID_CALLS: log });
-    const { api } = await serve(t, { fauxMonid: FAUX_MONID, ...(harness === "pi" ? {} : { fauxHarness: FAUX_HARNESS }) });
+    const { api } = await serve(t, { fauxMonid: FAUX_MONID, ...(harness === "pi" ? {} : { harnessTable: fauxTable(FAUX_HARNESS) }) });
     const id = `paid-${harness}`;
     assert.equal((await api("POST", "/agents", agent(id, { ...(harness === "pi" ? {} : { harness, instructions: ASK }), tools: ["monid.run"], tool_settings: ALLOWED }))).status, 201);
     const started = await api("POST", `/agents/${id}/runs`, { input: { content: ASK }, max_cost_usd: 0.5 });
@@ -134,7 +135,7 @@ test("claude-agent: a turn stopped between a refused paid call and its next requ
   const log = join(await scratch(t), "monid-calls.jsonl");
   const signal = join(await scratch(t), "held");
   withEnv(t, { MONID_API_KEY: KEY, AGENTRUN_TEST_FAUX_MONID_CALLS: log });
-  const { api } = await serve(t, { fauxMonid: FAUX_MONID, fauxHarness: FAUX_HARNESS });
+  const { api } = await serve(t, { fauxMonid: FAUX_MONID, harnessTable: fauxTable(FAUX_HARNESS) });
   const held = `Run monid's /person/enrich, then hold the turn (signal ${signal}).`;
   assert.equal((await api("POST", "/agents", agent("paid-stopped", { harness: "claude-agent", instructions: held, tools: ["monid.run"], tool_settings: ALLOWED }))).status, 201);
   const started = await api("POST", "/agents/paid-stopped/runs", { input: { content: "go" }, max_cost_usd: 0.5 });

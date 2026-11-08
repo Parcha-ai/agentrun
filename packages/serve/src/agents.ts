@@ -7,7 +7,8 @@ import { DatabaseSync } from "node:sqlite";
 import { type Agent, AgentHomeError, type AgentStore, type NewRevision, openStore, type Revision, type RevisionPlace, type RevisionRow, type RunRow, STORE_FILE } from "@parcha/pi-durable-agent";
 import { agentLink } from "./console-links.js";
 import { ApiError, invalid } from "./errors.js";
-import { DEFAULT_HARNESS, harnessOfBody } from "./harness.js";
+import { harnessOfBody } from "./harness.js";
+import { storedHarness } from "./harness-table.js";
 import { type DefinitionBody, isObject, type Json, skillIssues, skillNames, stable } from "./validate.js";
 import type { SignInView } from "./sign-ins.js";
 
@@ -99,7 +100,8 @@ export class Agents {
     const issues = skillIssues(definition.skills, Object.keys(files));
     if (issues.length) throw invalid(issues);
     // The default harness is never stored: naming pi and naming none are one revision.
-    const harness = typeof definition.harness === "string" && definition.harness !== DEFAULT_HARNESS ? { harness: definition.harness } : {};
+    const stored = typeof definition.harness === "string" ? storedHarness(definition.harness) : undefined;
+    const harness = stored ? { harness: stored } : {};
     // Unlike the harness, a place is kept when it is runner: the default is the host's, so naming runner says something.
     const place = isObject(definition.place) ? { place: definition.place as RevisionPlace } : {};
     // A capability with nothing set is none: `{web_search: {}}` and no settings are one revision.

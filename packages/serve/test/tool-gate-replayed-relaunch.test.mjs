@@ -13,6 +13,7 @@ import { test } from "node:test";
 import { processAlive } from "@parcha/agentrun-kernel/host";
 import { NOT_RUN, RAN_UNKNOWN } from "../dist/tool-gate.js";
 import { agent, flowAgent, follow, runRecordOf, scratch, serve, withEnv } from "./support.mjs";
+import { REQUESTS_ENV, requestsOf, rolesOf } from "./fixtures/faux-requests.mjs";
 
 const fixture = (name) => new URL(`./fixtures/${name}`, import.meta.url).pathname;
 const GATE = { faux: fixture("faux-gate.mjs"), fauxWeb: fixture("faux-gate-web.mjs"), accounts: true, openSetup: true };
@@ -49,20 +50,28 @@ async function cutThenDenied(t, definition, input, { preload = false } = {}) {
   await writeFile(hold, "");
   const { last } = await follow(server.api, runId, ["completed"], { deadlineMs: 55_000 });
   assert.equal(last.final, true);
-  return { view: (await server.api("GET", `/runs/${runId}`)).body, loaded };
+  return { view: (await server.api("GET", `/runs/${runId}`)).body, loaded, runId };
 }
 
-/** What the model was told of the rerun says its outcome is not known, never that nothing was sent. */
-function unknownNotNothing(told) {
-  assert.ok(told.includes(RAN_UNKNOWN), `the rerun's deny says the outcome is not known: ${told}`);
-  assert.ok(!told.includes(NOT_RUN), `never that nothing was sent: ${told}`);
+/** What the model was told of the rerun says its outcome is not known, never that nothing was sent. `seen`: what else a
+ *  failure shows (the model's requests). */
+function unknownNotNothing(told, seen = "") {
+  assert.ok(told.includes(RAN_UNKNOWN), `the rerun's deny says the outcome is not known: ${told}${seen}`);
+  assert.ok(!told.includes(NOT_RUN), `never that nothing was sent: ${told}${seen}`);
 }
 
-test("a pi run whose process died during a web_fetch it let through, relaunched with web_fetch denied, tells the model whether the call took effect is not known", { skip: process.env.CI && !process.env.AGENTRUN_RUN_QUARANTINED && "quarantined F40 (tl-tools) until 2026-11-09T00:07Z, scripts/quarantine.json", timeout: 120_000 }, async (t) => {
+test("a pi run whose process died during a web_fetch it let through, relaunched with web_fetch denied, tells the model whether the call took effect is not known", { timeout: 120_000 }, async (t) => {
   const ask = `Fetch ${HELD} once.`;
-  const { view, loaded } = await cutThenDenied(t, agent("held", { harness: "pi", instructions: ask, tools: ["web_fetch"] }), { content: ask }, { preload: true });
+  // Each request pi's faux model is asked, across both processes: counted below, and shown when the answer is wrong.
+  const requests = join(await scratch(t), "requests.jsonl");
+  withEnv(t, { [REQUESTS_ENV]: requests });
+  const { view, loaded, runId } = await cutThenDenied(t, agent("held", { harness: "pi", instructions: ask, tools: ["web_fetch"] }), { content: ask }, { preload: true });
   assert.ok(existsSync(loaded), "the relaunched process ran its open hook after the rerun");
-  unknownNotNothing(view.result?.final_answer ?? "");
+  // Two requests in all: the message, before the process died, and the rerun's refusal, after the relaunch. A third is a
+  // real extra one, whatever the faux model made of it.
+  const asked = requestsOf(requests, runId);
+  assert.equal(asked.length, 2, `pi asked its model once before the kill and once after the relaunch: ${rolesOf(asked)}`);
+  unknownNotNothing(view.result?.final_answer ?? "", `; its requests: ${rolesOf(asked)}`);
 });
 
 test("a workflow whose process died during its model node's web_fetch, relaunched with web_fetch denied, tells the node whether the call took effect is not known", { timeout: 120_000 }, async (t) => {

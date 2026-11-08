@@ -12,6 +12,7 @@
     "deleteHomeFile": "path"
   },
   "omit": {
+    "startMcpOAuth": "The sign-in's cookie, which the callback requires, is set on the answer to whoever starts it, so it must start in the owner's browser: use the console's MCP page.",
     "approveLearningFile": "It takes the owner's password session in the console; the server refuses every token on it.",
     "answerApproval": "Only the owner's password session answers a tool call's approval, on the console's own origin; the server refuses every token on it.",
     "getRunBrowser": "A run's live browser view is a full-control credential for its session; only the owner's password session reads it, in the console. The server refuses every token on it.",
@@ -88,7 +89,6 @@
     "saveMcpServer": ["mcp-servers", "save"],
     "deleteMcpServer": ["mcp-servers", "delete"],
     "refreshMcpServer": ["mcp-servers", "refresh"],
-    "startMcpOAuth": ["mcp-servers", "oauth-start"],
     "mcpOAuthClient": ["mcp-servers", "oauth-client"],
     "getToolSettings": ["tool-settings", "get"],
     "putToolSettings": ["tool-settings", "save"],

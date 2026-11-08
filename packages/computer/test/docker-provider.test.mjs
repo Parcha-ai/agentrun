@@ -23,12 +23,15 @@ test("capabilities: a linux container with computerd as PID 1, whose lifetime th
 		kind: "linux",
 		lifetime: "janitor",
 		network: ["none", "open"],
+		networkReadBack: true,
 		isolation: "container",
 		os: "linux",
 		daemon: "pid1",
 		groups: ["exec", "files", "processes"],
 		maxLifetimeMs: 30 * 24 * 60 * 60 * 1000,
 		user: ["root", "uid"],
+		release: ["stop", "delete"],
+		stopDeletes: false,
 	});
 	assert.equal(provider.extend, undefined, "no extend(): the deadline is a label, which cannot change after create");
 	assert.equal(provider.stream, undefined, "no stream()");

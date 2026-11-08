@@ -58,4 +58,20 @@ describe("RunDetail, a run waiting on a tool call's approval", () => {
     expect(text(html)).toContain("Your approval");
     expect(text(html)).toContain("Asked your approval: web_fetch");
   });
+
+  it("an answered call reads in the served order: the call held, your approval, then what came of it (AgentRun's resume row)", () => {
+    // As serve now sends an answered call: its own rows say only that it was held, its approval row follows, and the
+    // outcome is the resume row below it. The console folds the result into the call's step and keeps the served order.
+    const served: TimelineRow[] = [
+      ...rows.slice(0, 4),
+      row(4, { kind: "tool_result", summary: "Held for your approval", tool_name: "web_fetch", tool_use_id: "call_1" }),
+      row(5, { id: "row_4:approval", kind: "tool_approval_requested", summary: `Asked your approval: web_fetch ${PENDING.args_preview}`, text: PENDING.args_preview, tool_name: "web_fetch", tool_use_id: "call_1" }),
+      row(6, { kind: "phase", origin: "server", summary: "AgentRun: web_fetch was refused: you declined it: use the cached copy", text: "web_fetch was refused: you declined it." }),
+    ];
+    const shown = text(renderToStaticMarkup(createElement(RunDetail, { run: { ...run, status: "working", state: "working", pending: null }, agentName: "fetcher", messages: messageFeatures, harnessSteers: true, rows: served, files: [], actions: {}, onMessage: () => {}, onApprove: async () => null, tab: "timeline" })));
+    const where = (words: string) => shown.indexOf(words);
+    expect(where("Held for your approval")).toBeGreaterThan(-1);
+    expect(where("Asked your approval: web_fetch")).toBeGreaterThan(where("Held for your approval"));
+    expect(where("web_fetch was refused: you declined it: use the cached copy")).toBeGreaterThan(where("Asked your approval: web_fetch"));
+  });
 });

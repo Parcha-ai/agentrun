@@ -38,7 +38,7 @@ export async function startFakeMcp({ era = "modern", token, oauth = false, port 
     try {
       message = JSON.parse(body.toString("utf8"));
     } catch {}
-    for (const one of [message ?? {}].flat()) log.push({ http: req.method, path: req.url, method: one.method, tool: one.method === "tools/call" ? one.params?.name : undefined, authorization: req.headers.authorization !== undefined });
+    for (const one of [message ?? {}].flat()) log.push({ http: req.method, path: req.url, method: one.method, tool: one.method === "tools/call" ? one.params?.name : undefined, authorization: req.headers.authorization !== undefined, id: one.id, at: Date.now() });
     // A tool call whose client went away before its answer (on 2026-07-28 a client cancels a call by closing its request).
     const called = [message ?? {}].flat().find((one) => one.method === "tools/call");
     if (called) res.once("close", () => { if (!res.writableFinished) log.push({ http: req.method, path: req.url, method: "closed", closed: called.params?.name }); });
