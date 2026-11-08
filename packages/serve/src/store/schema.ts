@@ -256,8 +256,9 @@ export const PI_TABLE = {
   submissions: "pi_submissions",
   documents: "pi_documents",
   documentRevisions: "pi_document_revisions",
+  commitWrites: "pi_commit_writes",
 } as const;
-export const PI_TABLES = ["pi_record_ids", "pi_metadata", "pi_conversations", "pi_entries", "pi_tasks", "pi_submissions", "pi_documents", "pi_document_revisions"] as const;
+export const PI_TABLES = ["pi_record_ids", "pi_metadata", "pi_conversations", "pi_entries", "pi_tasks", "pi_submissions", "pi_documents", "pi_document_revisions", "pi_commit_writes"] as const;
 
 const P = PI_TABLE;
 export const PI_DDL: readonly string[] = [
@@ -355,6 +356,17 @@ export const PI_DDL: readonly string[] = [
     PRIMARY KEY (run_id, document_id, seq)
   ) STRICT`,
   `CREATE INDEX IF NOT EXISTS pi_document_revisions_by_kind ON ${P.documentRevisions} (run_id, document_id, kind, seq DESC)`,
+  // Each commit's own writes of the rows pi keeps only as they are now (a task, a submission, a document that keeps only
+  // its latest value), as that commit wrote them, in its own transaction: journal.commitsAfter reads a run commit by
+  // commit, so a replay equals the live view. Kept with the run (never pruned at its end), as its journal is.
+  `CREATE TABLE IF NOT EXISTS ${P.commitWrites} (
+    run_id TEXT NOT NULL,
+    seq INTEGER NOT NULL,
+    kind TEXT NOT NULL CHECK (kind IN ('task', 'submission', 'document')),
+    id INTEGER NOT NULL,
+    value TEXT NOT NULL CHECK (json_valid(value)),
+    PRIMARY KEY (run_id, seq, kind, id)
+  ) STRICT`,
 ];
 
 /** Everything the server's setup runs, in order. */

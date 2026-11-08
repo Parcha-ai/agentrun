@@ -392,6 +392,29 @@ export class RunStorage implements Journal {
   async #applyBatch(executor: SqliteExecutor, writes: readonly StorageWrite[], documentActions: Map<number, DocumentAction>, seq: Seq): Promise<void> {
     for (const write of writes) await this.#applyTableWrite(executor, write, seq);
     await this.#applyDocumentActions(executor, documentActions, seq);
+    await this.#logWrites(executor, writes, documentActions, seq);
+  }
+
+  /** This commit's own writes of the rows kept only as they are now (tasks, submissions, latest-only documents), as it
+   *  wrote them, in its transaction (pi_commit_writes): the last write of a row within the commit is the one kept. */
+  async #logWrites(executor: SqliteExecutor, writes: readonly StorageWrite[], documentActions: Map<number, DocumentAction>, seq: Seq): Promise<void> {
+    const log = (kind: string, id: number, value: unknown) =>
+      executor.run(`INSERT INTO ${T.commitWrites} (run_id, seq, kind, id, value) VALUES (?, ?, ?, ?, ?) ON CONFLICT (run_id, seq, kind, id) DO UPDATE SET value = excluded.value`, this.#runId, seq as unknown as number, kind, id, encodeJson(value as JsonValue));
+    for (const write of writes) {
+      if (write.type === "task" || write.type === "submission") await log(write.type, write.value.id as unknown as number, write.value);
+    }
+    for (const id of documentActions.keys()) {
+      const row = await executor.get<Row>(`SELECT record FROM ${T.documents} WHERE run_id = ? AND id = ?`, this.#runId, id);
+      if (row === undefined) continue;
+      const record = parseJson<DocumentRecord & { retiredAt?: number }>(row.record!);
+      if (!isCurrentOnly(record)) continue;
+      if (record.retiredAt === (seq as unknown as number)) {
+        await log("document", id, { retired: true });
+        continue;
+      }
+      const stored = await this.#materializeDocument(executor, id, "current");
+      if (stored) await log("document", id, { value: (stored as unknown as { value: JsonValue }).value });
+    }
   }
 
   async mintId<I extends Id<string>>(): Promise<I> {
@@ -621,8 +644,9 @@ export class RunStorage implements Journal {
 
   /**
    * The run's commits after `afterSeq`, in seq order, at most `limit`, for the live view: each with its own entries, the
-   * documents it changed (each's value at that seq; a retired one marked `retired`, with no value), and the tasks and
-   * submissions it last wrote (a row written again later appears only in that later commit, as it is then). One
+   * documents it changed (each's value at that seq, a latest-only one's as that commit wrote it; a retired one marked
+   * `retired`, with no value), and the tasks and submissions it wrote, as it wrote them (pi_commit_writes), so a replay
+   * equals the live view. One
    * transaction, so the page is one committed state. `next`: the last seq returned, when commits may follow it. A
    * run's seqs are consecutive from 1 (each stored batch takes the next), so a commit that wrote only a conversation is
    * one too, with nothing listed.
@@ -645,32 +669,38 @@ export class RunStorage implements Journal {
   async #commitAt(tx: SqliteExecutor, seq: number): Promise<JournalCommit> {
     const run = this.#runId;
     const entries = (await tx.all<Row>(`SELECT record FROM ${T.entries} WHERE run_id = ? AND commit_seq = ? ORDER BY id`, run, seq)).map((row) => parseJson<EntryRecord>(row.record!));
-    const tasks = (await tx.all<Row>(`SELECT record FROM ${T.tasks} WHERE run_id = ? AND seq = ? ORDER BY id`, run, seq)).map((row) => parseJson<StoredTask>(row.record!));
-    const submissions = (await tx.all<Row>(`SELECT record FROM ${T.submissions} WHERE run_id = ? AND seq = ? ORDER BY id`, run, seq)).map((row) => parseJson<SubmissionRecord>(row.record!));
+    // This commit's own writes, as it wrote them (pi_commit_writes), never the rows as later commits left them.
+    const logged = await tx.all<{ kind: string; id: number; value: string }>(`SELECT kind, id, value FROM ${T.commitWrites} WHERE run_id = ? AND seq = ? ORDER BY kind, id`, run, seq);
+    const tasks = logged.filter((row) => row.kind === "task").map((row) => parseJson<StoredTask>(row.value));
+    const submissions = logged.filter((row) => row.kind === "submission").map((row) => parseJson<SubmissionRecord>(row.value));
+    const latestOnly = new Map(logged.filter((row) => row.kind === "document").map((row) => [row.id, parseJson<{ value?: JsonValue; retired?: true }>(row.value)]));
     const changed = await tx.all<{ id: number }>(
       `SELECT document_id AS id FROM ${T.documentRevisions} WHERE run_id = ? AND seq = ?
         UNION SELECT id FROM ${T.documents} WHERE run_id = ? AND (created_at = ? OR retired_at = ?) ORDER BY id`,
       run, seq, run, seq, seq,
     );
     const documents: JournalDocument[] = [];
-    for (const { id } of changed) {
+    // A latest-only document's revision of this commit is gone once a later commit wrote it: its log row names it.
+    const ids = [...new Set([...changed.map((row) => row.id), ...latestOnly.keys()])].sort((a, b) => a - b);
+    for (const id of ids) {
       const row = await tx.get<Row>(`SELECT record FROM ${T.documents} WHERE run_id = ? AND id = ?`, run, id);
       if (row === undefined) continue;
       const record = parseJson<DocumentRecord & { retiredAt?: number }>(row.record!);
       const scope = record.scope as { kind: string; conversationId?: ConversationId };
       const head = { id: record.id, kind: record.kind, ...(scope.kind === "conversation" ? { conversationId: scope.conversationId } : {}) };
+      if (isCurrentOnly(record)) {
+        // A document that keeps only its latest value: as this commit wrote it (its log row), if it wrote it.
+        const written = latestOnly.get(id);
+        if (written?.retired) documents.push({ ...head, retired: true });
+        else if (written) documents.push({ ...head, value: written.value as JsonValue });
+        continue;
+      }
       if (record.retiredAt === seq) {
         documents.push({ ...head, retired: true });
         continue;
       }
-      // A document that keeps only its latest value (pi.live, pi.inbox, pi.usage) has no value at an older seq: it
-      // appears only in the commit that last wrote it (its newest revision's seq), as tasks and submissions do.
-      if (isCurrentOnly(record)) {
-        const newest = await tx.get<{ seq: number | null }>(`SELECT MAX(seq) AS seq FROM ${T.documentRevisions} WHERE run_id = ? AND document_id = ?`, run, id);
-        if (Number(newest?.seq) !== seq) continue;
-      }
-      // Its value at this seq (the latest-only one's, now, is this commit's).
-      const stored = await this.#materializeDocument(tx, id, isCurrentOnly(record) ? "current" : (seq as unknown as DocumentPoint));
+      // Its value at this seq (a document that keeps its history).
+      const stored = await this.#materializeDocument(tx, id, seq as unknown as DocumentPoint);
       if (stored) documents.push({ ...head, value: (stored as unknown as { value: JsonValue }).value });
     }
     return { seq: seqOf(seq), entries, documents, tasks, submissions };
