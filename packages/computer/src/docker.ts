@@ -451,22 +451,31 @@ export class DockerProvider implements ComputerProvider {
 		const ran = await this.#run(args, signal);
 		if (!ran.ok) return ran;
 		if (ran.value.exitCode !== 0) return fail("docker", `docker run of the egress proxy ${proxy} failed: ${ran.value.stderr.trim()}`);
-		const bound = Date.now() + readyMs;
+		// Every call of the poll ends at the readiness bound, so a docker that stops answering cannot hold create past it: a
+		// call the bound cut off is the timeout, and the caller's own abort stays aborted.
+		const bound = AbortSignal.timeout(readyMs);
+		const either = signal ? AbortSignal.any([signal, bound]) : bound;
+		const late = () => fail("timeout", `the egress proxy ${proxy} was not ready within ${readyMs / 1000} s`);
+		const cut = <T>(result: Result<T>): Result<T> => {
+			if (result.ok) return result;
+			if (signal?.aborted) return fail("aborted", `create was aborted while the egress proxy ${proxy} started`);
+			return bound.aborted ? late() : result;
+		};
 		for (;;) {
-			const logs = await this.#run(["logs", proxy], signal);
+			const logs = cut(await this.#run(["logs", proxy], either));
 			if (!logs.ok) return logs;
 			const said = `${logs.value.stdout}\n${logs.value.stderr}`;
 			if (said.split("\n").some((line) => line.startsWith(EGRESS_READY))) return ok(undefined);
-			const found = await this.#inspect([proxy], signal);
+			const found = cut(await this.#inspect([proxy], either));
 			if (!found.ok) return found;
 			const state = found.value[0]?.State;
 			if (state?.Running !== true) {
 				const words = said.trim().split("\n").filter(Boolean).slice(-3).join("; ");
 				return fail("docker", `the egress proxy ${proxy} ended (exit code ${state?.ExitCode ?? "unknown"}) before it was ready${words ? `: ${words}` : ""}`);
 			}
-			if (Date.now() >= bound) return fail("timeout", `the egress proxy ${proxy} was not ready within ${readyMs / 1000} s`);
-			await sleep(EGRESS_POLL_MS, undefined, { signal }).catch(() => undefined);
+			await sleep(EGRESS_POLL_MS, undefined, { signal: either }).catch(() => undefined);
 			if (signal?.aborted) return fail("aborted", `create was aborted while the egress proxy ${proxy} started`);
+			if (bound.aborted) return late();
 		}
 	}
 
