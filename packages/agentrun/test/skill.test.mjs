@@ -19,7 +19,9 @@ const GENERATOR = join(ROOT, "scripts", "generate-clients.mjs");
 const DROPPED = ["AGENTRUN_BASE_URL", "AGENTRUN_API_KEY", "AGENTRUN_TOKEN", "ANTHROPIC_API_KEY", "OPENAI_API_KEY", "OPENROUTER_API_KEY", "AGENT_MODEL", "AGENTRUN_BOXES", "CLAUDE_CONFIG_DIR", "CODEX_HOME", "PARALLEL_API_KEY"];
 
 // Writes the file the first message names (`write NAME.md`); asks its person first when told to ask, and writes what
-// they said; then answers. Priced, so recipe 5's run stops at its cap.
+// they said; then answers. Asked for everything known, it writes a long file (1,600 output tokens, $0.16). Priced, so
+// recipe 5's run stops at its cap: its $0.25 sends the first request (its least $0.1024), and after that write what is
+// left ($0.09) cannot send the next one.
 const FAUX = `import { isReminder } from ${JSON.stringify(new URL("../../serve/test/fixtures/faux-model.mjs", import.meta.url).href)};
 const textOf = (m) => (typeof m?.content === "string" ? m.content : (m?.content ?? []).map((c) => (c.type === "text" ? c.text : "")).join(""));
 export default (context, faux) => {
@@ -29,7 +31,8 @@ export default (context, faux) => {
   if (wrote) return faux.message("Done.");
   if (users[0].includes("Ask me") && users.length === 1 && context.messages.at(-1)?.role !== "toolResult") return faux.message(faux.toolCall("ask_person", { question: "Which region?" }), { stopReason: "toolUse" });
   const file = /write (\\S+\\.md)/i.exec(users[0])?.[1] ?? "out.md";
-  return faux.message(faux.toolCall("write", { path: file, content: "# " + users.at(-1) + "\\n" }), { stopReason: "toolUse" });
+  const body = users[0].includes("everything known") ? "The Moon. ".repeat(640) : "";
+  return faux.message(faux.toolCall("write", { path: file, content: "# " + users.at(-1) + "\\n" + body }), { stopReason: "toolUse" });
 };
 // Priced on output only, $100 a million, as the server's cap tests price it: a request's least (1,024 tokens) is
 // $0.1024, so a run capped under that stops at its cap before its first request. A request is held at far more, so a
@@ -109,7 +112,8 @@ test("SKILL.md: its front matter, its size, and each recipe block run in order a
   // Strict, so no request goes past the cap, and the recipe says what the default allows.
   assert.match(stopped.code, /^agentrun runs start .* --cap-mode strict /m);
   assert.match(readFileSync(join(SKILL, "SKILL.md"), "utf8"), /`--cap-mode strict`.*no request is sent that the cap cannot cover.*`expected`.*`cost\.overshoot_bound_usd`/);
-  assert.deepEqual([stopped.run.status, stopped.run.pending?.kind, stopped.run.cost.cap_usd], ["input_required", "budget", 0.05], "it stopped at its cap");
+  assert.deepEqual([stopped.run.status, stopped.run.pending?.kind, stopped.run.cost.cap_usd], ["input_required", "budget", 0.25], "it stopped at its cap");
+  assert.ok(stopped.run.cost.usd > 0, `it did work before its cap stopped it: ${JSON.stringify(stopped.run.cost)}`);
   // Its hint names the command that raises the cap, with the cap the server suggests.
   assert.ok(typeof stopped.run.pending.suggested_cap_usd === "number", JSON.stringify(stopped.run.pending));
   assert.equal(stopped.err, `Run ${stopped.run.run_id} stopped at its spend cap: raise it with \`agentrun runs raise-cap ${stopped.run.run_id} --max-cost-usd ${stopped.run.pending.suggested_cap_usd}\`, then \`agentrun runs wait ${stopped.run.run_id}\`.\n`);

@@ -82,10 +82,12 @@ agentrun runs get "$run" > out.json && node -p 'JSON.stringify(require("./out.js
 
 A run stopped at its spend cap, or waiting for a tool call to be approved, exits 8 with `pending.kind` `budget` or `approval` in out.json.
 
+A cap too small for even one request is refused when the run starts, once the agent has run: exit 1, and `error.details.least_cap_usd` on stderr is the least a cap must be (ask the person for at least that).
+
 A cap too small for the task stops the run before a request it cannot pay for. With `--cap-mode strict` no request is sent that the cap cannot cover; under the default, `expected`, a request that misses the cache can go over by at most the run's `cost.overshoot_bound_usd`:
 
 ```sh
-agentrun runs start notes --max-cost-usd 0.05 --cap-mode strict --body '{"input": {"content": "Write moon.md with everything known about the Moon."}}' --wait > out.json
+agentrun runs start notes --max-cost-usd 0.25 --cap-mode strict --body '{"input": {"content": "Write moon.md with everything known about the Moon."}}' --wait > out.json
 # exit 8 once it stops at its cap: out.json has pending.kind budget, with cap_usd, spent_usd and suggested_cap_usd; 0 if the cap was enough
 ```
 
