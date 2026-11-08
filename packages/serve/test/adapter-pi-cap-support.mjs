@@ -26,7 +26,7 @@ export const sleep = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
 
 /** A store with one queued run, a runner on the adapter loop running `script` with `beforeRequest`, until the run is
  *  not running or `ms` passes. `asked`: each request the host was asked about; `sent`: each body the provider got. */
-export async function capRun(t, { script, beforeRequest, cap: runCap, specOf, during, ms = 20_000 }) {
+export async function capRun(t, { script, beforeRequest, cap: runCap, specOf, during, journalOf, ms = 20_000 }) {
   const dir = mkdtempSync(join(process.env.TMPDIR ?? tmpdir(), "agentrun-adapter-cap-"));
   const server = await openSqliteStore({ dataDir: dir, role: "server" });
   const store = await openSqliteStore({ dataDir: dir, role: "runner" });
@@ -52,7 +52,9 @@ export async function capRun(t, { script, beforeRequest, cap: runCap, specOf, du
       return answer;
     },
   }), { restartLimit: MAX_RESTARTS });
-  runner = startRunner({ store, createLoop: loop, name: "runner-a", ...STEADY });
+  // `journalOf(journal)`: the claim's journal as the loop sees it (a test's commit hook), else the store's own.
+  const createLoop = journalOf ? (deps) => loop({ ...deps, journal: (claim) => journalOf(deps.journal(claim)) }) : loop;
+  runner = startRunner({ store, createLoop, name: "runner-a", ...STEADY });
   // `during(server)`: what a test does while the run runs (a person's stop once a request is out), awaited before the read.
   const acting = during ? during(server) : undefined;
   acting?.catch(() => undefined);
