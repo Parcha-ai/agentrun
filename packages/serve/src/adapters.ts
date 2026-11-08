@@ -584,15 +584,18 @@ async function fauxProxy(harness: string, env: NodeJS.ProcessEnv, needs: Adapter
 export async function adapterFor(harness: string, env: NodeJS.ProcessEnv, needs: AdapterNeeds): Promise<AgentAdapter> {
   const faux = env[FAUX_HARNESS_ENV];
   if (faux) {
-    const [{ fauxAdapter }, module] = await Promise.all([import("@parcha/agentrun-kernel/testing"), import(pathToFileURL(faux).href) as Promise<{ script?: (spec: SessionSpec) => never[]; opened?: (harness: string, options: Record<string, unknown>) => void }>]);
+    const [{ fauxAdapter }, module] = await Promise.all([import("@parcha/agentrun-kernel/testing"), import(pathToFileURL(faux).href) as Promise<{ script?: (spec: SessionSpec) => never[]; opened?: (harness: string, options: Record<string, unknown>) => void; closed?: (key: string) => void; openDelayMs?: () => number; closeDelayMs?: () => number; closeError?: () => string | undefined }>]);
     if (typeof module.script !== "function") throw new Error(`${FAUX_HARNESS_ENV} names ${faux}, which exports no script(spec)`);
     // The options the harness's own adapter would be built with from the run (its web search), told to the module.
     module.opened?.(harness, nativeOptions(harness, env));
+    const openDelayMs = module.openDelayMs?.() ?? 0;
+    const closeDelayMs = module.closeDelayMs?.() ?? 0;
+    const closeError = module.closeError?.();
     // The session's model proxy, as the harness's own adapter would start it (its policy, origin, credential and price),
     // so the run's own requests beside the scripted harness's go through the one route. None where the harness would
     // refuse the run (a model no key reaches).
     const proxy = await fauxProxy(harness, env, needs).catch(() => undefined);
-    return fauxAdapter({ script: module.script, ...(proxy ? { proxy } : {}) });
+    return fauxAdapter({ script: module.script, ...(proxy ? { proxy } : {}), ...(module.closed ? { onClose: module.closed } : {}), ...(openDelayMs > 0 ? { openDelayMs } : {}), ...(closeDelayMs > 0 ? { closeDelayMs } : {}), ...(closeError ? { closeError } : {}) });
   }
   if (harness === "codex") return codexOf(env, needs);
   if (harness === "opencode") return opencodeOf(env, needs);

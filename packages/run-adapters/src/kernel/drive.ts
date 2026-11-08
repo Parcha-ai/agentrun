@@ -118,7 +118,6 @@ export interface OpenDriveOptions {
   /** The session's writer (`SessionStore.open`): the drive writes only through it, and its key is the session's. */
   writer: SessionWriter;
   signal: AbortSignal;
-  config?: unknown;
   attempt?: number;
   deadline?: number;
   live?: (event: unknown) => void;
@@ -173,7 +172,6 @@ export async function openDrive(options: OpenDriveOptions): Promise<Drive> {
     runId: key,
     // The copied code's own writes (a journal's blobs) go through the same queue as the drive's.
     world: { store: { key: writer.key, read: () => writer.read(), append: (written) => append([...written]), sync: () => queue.then(() => writer.sync()) } },
-    config: options.config,
     attempt: options.attempt ?? 0,
     ...(options.deadline === undefined ? {} : { deadline: options.deadline }),
     signal,
