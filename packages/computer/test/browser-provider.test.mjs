@@ -36,6 +36,16 @@ const VENDORS = {
 		heldLabels: { agentrun_run: "run-1", job: "j-42" },
 		lifetime: (fake, id) => fake.sessions.get(id).expiresAt,
 		creates: (fake) => fake.only("POST", "/v1/sessions"),
+		/** The domain its CDP URL is on, as read live on 11-08. */
+		domain: "browserbase.com",
+		/** A fake vendor whose create answers this CDP URL (undefined: none). */
+		answering: (url) => fakeBrowserbase({ connectUrl: () => url }),
+		/** Sets the CDP URL the vendor holds for a session, as a later read gives it. */
+		holds: (fake, id, url) => {
+			fake.sessions.get(id).connectUrl = url;
+		},
+		/** Whether every session the fake made was released. */
+		allReleased: (fake) => [...fake.sessions.values()].every((s) => s.status !== "RUNNING"),
 	},
 	kernel: {
 		fake: fakeKernel,
@@ -58,6 +68,12 @@ const VENDORS = {
 		heldLabels: { "agentrun.run": "run-1", job: "j-42" },
 		lifetime: (fake, id) => fake.browsers.get(id).timeout,
 		creates: (fake) => fake.only("POST", "/browsers"),
+		domain: "kernel.sh",
+		answering: (url) => fakeKernel({ cdpUrl: () => url }),
+		holds: (fake, id, url) => {
+			fake.browsers.get(id).cdp = url;
+		},
+		allReleased: (fake) => [...fake.browsers.values()].every((b) => b.deletedAt !== undefined),
 	},
 };
 
@@ -171,6 +187,44 @@ for (const [id, vendor] of Object.entries(VENDORS)) {
 		const viewOnly = await provider.stream(ref, { viewOnly: true });
 		assert.equal(viewOnly.ok, false, "the vendor's live view takes input: a view-only one is refused, never handed over as one");
 		assert.equal(viewOnly.error.code, "unsupported");
+	});
+
+	/** CDP URLs a driver must never be handed: none, not wss:, or not on the vendor's own domain. */
+	const unusable = (domain) => [
+		undefined,
+		"",
+		"not a url SECRET",
+		`ws://cdp.${domain}/x?k=SECRET`,
+		`https://cdp.${domain}/x?k=SECRET`,
+		"wss://evil.example/x?k=SECRET",
+		`wss://${domain}.evil.example/x?k=SECRET`,
+		`wss://evil${domain}/x?k=SECRET`,
+	];
+
+	test(`${id}: a create answered with no usable CDP URL fails, and the session it made is released; the words say so and carry no URL`, async () => {
+		for (const url of unusable(vendor.domain)) {
+			const fake = vendor.answering(url);
+			const provider = await vendor.make(fake);
+			const made = await provider.create(spec());
+			assert.equal(made.ok, false, `${JSON.stringify(url)}: create fails`);
+			assert.equal(vendor.creates(fake).length, 1, "one create");
+			assert.ok(vendor.allReleased(fake), `${JSON.stringify(url)}: the paid session it made is released, not left to its timeout`);
+			assert.match(made.error.message, /released/, made.error.message);
+			assert.doesNotMatch(JSON.stringify(made), SECRET);
+		}
+	});
+
+	test(`${id}: connect hands over a CDP URL only when it is wss: on the vendor's own domain; one the vendor reads back otherwise is refused in words with no URL`, async () => {
+		for (const url of unusable(vendor.domain).filter((u) => u !== undefined && u !== "")) {
+			const fake = vendor.fake();
+			const ref = value(await (await vendor.make(fake)).create(spec()), "create");
+			vendor.holds(fake, ref.id, url);
+			// A provider with nothing held reads the URL from the vendor.
+			const connected = await (await vendor.make(fake)).connect(ref);
+			assert.equal(connected.ok, false, `${JSON.stringify(url)}: connect refuses it`);
+			assert.doesNotMatch(JSON.stringify(connected), SECRET);
+			assert.ok(connected.error.message.includes(`wss: on ${vendor.domain}`), connected.error.message);
+		}
 	});
 
 	test(`${id}: release is idempotent, and attach, connect and ping after it fail in words that carry no URL`, async () => {

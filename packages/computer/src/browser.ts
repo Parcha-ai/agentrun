@@ -206,6 +206,27 @@ export function vendorFailure(vendor: "browserbase" | "kernel", name: string, ca
 	return vendorFail(code, words, error);
 }
 
+/**
+ * Why a vendor's CDP URL is not one to hand a driver, in words that never carry it; undefined when it is. It must be wss:
+ * (the session's signing key rides it) on the vendor's own domain or a host under it: a vendor answer that named another
+ * host would send the driver, and the key, there. The REST call that gave it was https to the vendor's pinned API with
+ * redirects refused; this holds the CDP URL itself to the same.
+ */
+export function cdpUrlProblem(url: unknown, name: string, domain: string): string | undefined {
+	const wanted = `wss: on ${domain}`;
+	if (typeof url !== "string" || url === "") return `${name} gave no CDP URL (one is ${wanted})`;
+	let parsed: URL;
+	try {
+		parsed = new URL(url);
+	} catch {
+		return `${name}'s CDP URL is not a URL (one is ${wanted})`;
+	}
+	if (parsed.protocol !== "wss:") return `${name}'s CDP URL is ${parsed.protocol} (one is ${wanted})`;
+	const host = parsed.hostname.toLowerCase();
+	if (host !== domain && !host.endsWith(`.${domain}`)) return `${name}'s CDP URL is on another host (one is ${wanted})`;
+	return undefined;
+}
+
 /** What the REST calls share: one request, never retried, read whole; a failure throws a BrowserVendorError. */
 export interface RestReply {
 	status: number;
