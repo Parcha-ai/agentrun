@@ -916,7 +916,8 @@ default). An agent's `definition.tool_settings` has the same shape and is over t
 for its capability (`auto`, `native`, `exa-keyless` or `parallel` for `web_search`; `kernel` or `parallel` for `web_fetch`;
 `auto`, `browserbase`, `kernel` or `chrome` for `browser`, [below](#tools)); an
 unknown capability or provider is `422`. Any tool's settings also take a `permission`, `allow`, `ask` or `deny`, which the
-tool gate holds every call to (an ask parks the run for the owner's approval); a workflow's call node, which cannot wait
+tool gate holds every call to (an ask parks the run for the owner's approval), and an MCP tool's a `pin`, the arguments
+its calls must carry ([MCP servers](#mcp-servers), `422` for one that is not one); a workflow's call node, which cannot wait
 for an approval, refuses its run when its tool is set to ask or deny (`409`, `details.asks` or `details.denied`). The
 settings are kept in the data directory
 (`tool-settings.json`, 0600, written whole and durably), not a secret, and read by every run launched from then on.
@@ -1030,7 +1031,8 @@ saying why. Kernel's browsers run headless, and keep no downloads, so a run on K
 run's process over its pipe, as the rest do. A session's custody (its lease, its tag, what it was
 doing) is kept in the run's own store, so a run opened again on its directory reconciles the sessions it held. Each
 page it reads is filed under the run's `work/evidence/`, each read in a file of its own (`0001-browser_read.md`, ...),
-reads at once included. There is no recording. The owner watches the browser live, read-only (below). When the run is let go (its work done, or a SIGTERM)
+reads at once included. There is no recording. The owner watches the browser live, takes it over and hands it back, and
+the agent can ask them to (below). When the run is let go (its work done, or a SIGTERM)
 the sessions it still holds are released at their vendor. An agent's browser stays signed in from one run to the next
 ([saved sign-ins](#saved-sign-ins)).
 
@@ -1054,23 +1056,58 @@ every browser call is refused. Under a cap the browser's time is held before it 
 
 #### The browser's live view
 
-The owner watches a run's browser live from the console, read-only: the same view for every vendor (pi-browser's own viewer,
-a screencast of the page the agent is on), never the vendors' own live-view links, which stay in the run's process. As a
-session opens, the run's process serves its viewer on a loopback port of its own and hands it to the server in one file in
-the run's directory, outside `work/` (`browser-live/<session>.json`, one file per session, 0600), which goes when that
-session ends: a session's end never touches another's, so a relaunch's old session never hides its new one's view. `GET /v2/runs/{id}/browser`
-answers `{state: "live", viewer}` while a session is open (`viewer`, a link on this server with its token in the fragment),
-`{state: "none"}` when the run has a browser but no session is open, and `{state: "off", reason}` when it has none: its agent
-has no `browser` tool, or its browser resolves unavailable here (the tool plane's words, `a local Chrome is not set up on this
-server`, or for Kernel with no key, that it needs a Kernel key). It takes the owner's password session in the console: a token, which a run's process, an MCP client or a
-script may hold, is `403`. The viewer's page and its WebSocket are under `/v2/runs/{id}/browser/live/`, proxied to that run's
-port alone: the page is framed by this server's own origin alone (`frame-ancestors 'self'`, the console's `'none'` everywhere
-else), and the WebSocket is taken only from this server's own origin (as the request reaches it, or the public address,
-`AGENTRUN_PUBLIC_URL`, for a TLS proxy that rewrites `Host`) with the owner's session, and on a loopback address only at
-one of its names, as every route is (a rebound name is refused, whatever its `Origin`). One viewer at a time: a second is
-refused (`viewer_in_use`). The viewer drops input before the browser (`held read_only`); a browser with no page yet (Kernel's
-headless one starts with none) shows "No page yet" until one opens. The token dies with the session: the answer says `none`
-and the old link opens nothing. The token is in no record, timeline row, run view, run file, home, log or the model's context.
+The owner watches a run's browser live from the console, and takes it over: the same view for every vendor (pi-browser's
+own viewer, a screencast of the page the agent is on), never the vendors' own live-view links, which stay in the run's
+process. As a session opens, the run's process runs its viewer on a loopback port of its own and hands it to the server in
+one file in the run's directory, outside `work/` (`browser-live/<session>.json`, one file per session, 0600), which goes
+when that session ends: a session's end never touches another's, so a relaunch's old session never hides its new one's
+view. A session a restarted process keeps (it was still running at the vendor) gets its viewer handed over again by the
+new process, with a new token, and nobody holding the browser. `GET /v2/runs/{id}/browser` answers `{state: "live", viewer}` while a session is open (`viewer`, a link on this server
+with its token in the fragment), `{state: "none"}` when the run has a browser but no session is open, and
+`{state: "off", reason}` when it has none: its agent has no `browser` tool, or its browser resolves unavailable here (the
+tool plane's words, `a local Chrome is not set up on this server`, or for Kernel with no key, that it needs a Kernel key). It takes the owner's
+password session in the console: a token, which a run's process, an MCP client or a script may hold, is `403`.
+
+The viewer lives under `/v2/runs/{id}/browser/live/`. Its page, script and style are this server's own (the files of the
+pi-browser it has installed), framed by this server's own origin alone (`frame-ancestors 'self'`, the console's `'none'`
+everywhere else); only its WebSocket goes to the run's port, taken only from this server's own origin (as the request
+reaches it, or the public address, `AGENTRUN_PUBLIC_URL`, for a TLS proxy that rewrites `Host`) with the owner's session,
+and on a loopback address only at one of its names, as every route is (a rebound name is refused, whatever its `Origin`).
+One viewer at a time: a second is refused (`viewer_in_use`). A browser with no page yet (Kernel's headless one starts with
+none) shows "No page yet" until one opens. The token dies with the session: the answer says `none` and the old link opens
+nothing. The token is in no record, timeline row, run view, run file, home, log or the model's context.
+
+**Take over, hand back.** The viewer watches until the owner presses **Take over** in it; until then the run drops its
+input before the browser (`held not_taken`). Take over holds the browser for the owner until they press **Hand back**,
+the viewer has been gone 2 minutes, or 15 minutes pass with no input from them. While they hold it, their input is the only
+input; the agent's browser calls wait inside the tool (they do not fail), then go on with the page's old element ids
+dropped, and the model is told in plain words that the person had the browser and the page may have changed. A call that
+was under way at the take acts no more: each change of hands moves the session's epoch, and an act from before it is
+refused, each action of a run checked on its own; the act already in the browser (a run's code is one batch there) ends
+first, and only then does the owner's input reach the browser. The run stays `working`; its timeline says "You took over the browser" and how it came back ("You handed the
+browser back", or that it went back to the agent after the idle or away window). The owner's time counts: Take over holds
+the next 15 minutes of session time at the provider's price under the run's cap first, and with no room it is refused in
+the cap's words, shown in the viewer. A take-over that input keeps alive is held again every 15 minutes, and with no room
+the browser goes back to the agent at the cap ("The browser went back to the agent at the run's spend cap", in the viewer
+and on the timeline, with the cap's words). A take-over and an ask on the same session share one hold; an ask that joins it holds the extra stretch its own expiry needs
+(refused in the cap's words without room), and a re-hold the cap refuses ends both: the take-over goes back to the agent,
+and the ask expires, the agent told the cap's words. When the
+browser comes back, what was held up front goes, and the time the person had stays held, at the provider's price, until
+the session's next charge books it: take-overs given back with no browser call between them still meet the cap.
+
+**The agent asks.** The agent may ask the owner to do something in its browser (`browser_request_handoff`: an instruction
+and how it will know it is done, such as signing in). Its person's time is held the same way first; with no room no ask is
+made, and the tool's result says why. The run then reads `input_required`/`waiting` with
+`pending: {kind: "browser", instruction, completion_condition, asked_at, expires_at}`, its timeline shows "Waiting for you:
+<instruction>", and the webhook's `run.needs_input` says `pending.kind: "browser"`; the agent's turn waits inside the tool
+call. The owner takes over in the viewer, does it, and answers `POST /v2/runs/{id}/browser/hand-back` with
+`{outcome: "done"}` or `{outcome: "cancelled"}` (the owner's password session alone, as above). The first answer wins: the
+same answer again is `200`, a different one `409 handoff_answered` with the answer it has. Any answer hands the browser back
+to the agent. Unanswered for 15 minutes, the ask expires: the agent hears `expired`, and a later answer is `409` with
+`outcome: "expired"`. The ask's record is one 0600 file in the run's directory (`browser-ask/`, never `work/`): the
+instruction, the done-when condition and the ask's times, never the viewer's link or token. A run's process that dies
+while the ask waits is started again, as a working run's is, and the new process takes the wait up: it reads the owner's
+answer, or writes the expiry. The record goes when the run ends, or when its process lets its browser sessions go.
 
 ### Saved sign-ins
 
@@ -1418,6 +1455,21 @@ asked by default.
   until the owner answers `POST /v2/runs/{id}/approvals/{approval_id}` from their password session. Allowed, the run
   sends the call once and resumes with its result; denied, it resumes with the refusal. A restart while a call is
   parked loses nothing.
+- **Pins.** An MCP tool's own key (`mcp:<server>/<tool>`, never the wildcard) may also carry `pin`, 1 to 8 of the
+  tool's top-level arguments, each to the one JSON scalar its calls must carry (`null`: the argument left out), or a
+  list of 1 to 16 of them, the argument one of the list, compared strictly:
+  `{"mcp:slack/slack_send_message": {"permission": "allow", "pin": {"channel_id": "C0123"}}}`,
+  `{"mcp:github/pull_request_review_write": {"pin": {"method": ["create", "submit_pending"], "event": [null, "COMMENT"]}}}`. The gate checks a pinned
+  tool's call before it runs or asks anyone, whatever the permission (an allow, an ask, a grant): a call whose arguments
+  are not as pinned is refused, never sent and never asked about, and the model reads "mcp:slack/slack_send_message may
+  only be called with channel_id = C0123: its destination is fixed by the agent's settings". The run's process logs a
+  line naming the tool, the call and the arguments that did not hold, and its Timeline row is a failed call, as any
+  refusal's. A call approved under ask is checked again before it is sent. A pin adds to a setting and is never a
+  permission: the agent's pin and the server's both hold (an argument both pin takes what holds both), and where
+  nothing holds both every call is refused, saying so. A template pins its sends' destinations to its parameters ([Templates](#templates)). A pin in
+  `tool-settings.json` that does not read refuses every call of its tool until a `PUT` sets it again. Until the agent
+  store's cutover an agent's own pin (`definition.tool_settings.<tool>.pin`) is refused, `422 not_set_up_here`: the
+  store this server writes today keeps no pin, so set it on the server meanwhile.
 - **Prices.** `PUT /v2/settings/mcp-servers/{name}` takes `prices`, each tool's price in USD a call
   (`{"prices": {"search": 0.01}}`; a finite number, 0 or more, for a tool the server lists; else `422`). A priced call
   is held at its price under the run's `max_cost_usd`, refused unsent when the cap cannot take it, and booked as the
@@ -1457,7 +1509,9 @@ queues a wait it stands at that the outbox does not name (one the run came to wh
 ```
 
 A message is thin: ids, the status, the title and a link to the run on the page; never a tool's arguments, an output
-or an input, which the API reads (`GET /v2/runs/{id}`). `pending.kind` is `question` (an `ask_person`) or `stopped`.
+or an input, which the API reads (`GET /v2/runs/{id}`). `pending.kind` is `question` (an `ask_person`),
+`approval` (a tool call that waits for a person's approval), `stopped`, `budget` (a run paused at its cap) or `browser`
+(the agent asked for the owner in its browser).
 
 Messages are signed by the [Standard Webhooks](https://www.standardwebhooks.com) spec, so a receiver verifies them
 with any of its libraries: `webhook-id` (the same on every try of a message, so it is the receiver's idempotency key),
@@ -1508,7 +1562,8 @@ A firing starts its run once. Its key comes from the trigger and its nominal tim
 a restart drives again finds its run. A firing's key stays bound to that run: when the server stopped while setting the
 run up, the firing reads `failed` ("The server stopped while setting up the run.") with that run's id, it never fires
 again, the next firing goes ahead, and `POST /v2/triggers/{id}/fire` is how a person tries it again. While the trigger's last run is active (working, or waiting on a person), a firing
-is `skipped`, with why; a full server (`429`) keeps it due and tries again. Times missed while the server was down are
+is `skipped`, with why (a webhook trigger with `accept` is the exception: [each event it takes](#webhook-triggers)
+starts its own run); a full server (`429`) keeps it due and tries again. Times missed while the server was down are
 one `missed` firing with their count, and the schedule goes on from now; the latest of them still fires, once, when it is
 no older than the trigger's `catchup_window_s` (default an hour; 0, never), marked `catch_up`. A
 firing while the last run is active (working, or parked waiting on a person) is skipped with why, never queued,
@@ -1547,11 +1602,72 @@ said in its log (`condition=trigger_setting_unopened`, naming the trigger), and 
 secret is made. A `trigger-settings-webhook.json` that does not read is never written over: until it is fixed or moved
 away, no webhook trigger is made or rotated (`409 store_unreadable`) and none fires.
 
-The request's `webhook-id` is its firing's key: the first answers `202` once the firing is recorded, and its run starts
-after; the same `webhook-id` again, for a day after (even once the firing has left the history of 200), answers `200` with that
-firing and starts nothing. The agent gets the trigger's input,
-then the body, cut at 16 KiB, inside `<trigger-payload source="webhook" untrusted>...</trigger-payload>`: whatever the
-sender wrote is data, not an instruction.
+The request's `webhook-id`, which its signature covers, is its firing's key: the first answers `202` once the firing is
+recorded, and its run starts after; the same `webhook-id` again, for a day after, answers `200` with that firing and
+starts nothing (`{"ok": "duplicate"}` once the firing has left the trigger's history of 200 and the 1,000 it keeps past
+it). Each trigger keeps the keys of its last day's pushed firings in `triggers.json`, at most 5,000, the oldest let go
+first past that, which the log says once (`condition=trigger_seen_full`). The agent gets the trigger's input,
+then the body, cut at 16 KiB, inside `<trigger-payload source="webhook" scheme="standard" untrusted>...</trigger-payload>`:
+whatever the sender wrote is data, not an instruction. The tag names the signature scheme, the event as that scheme
+reads it (`event="..."`), the JSON body's top-level `action` (`action="..."`) and an unsigned delivery id
+(`delivery="..."`, GitHub's `X-GitHub-Delivery`), each when there is one, so an agent's instructions can read what it
+was given; a sender's words there are cut to 200 characters, their quotes and brackets escaped, and a closing tag in
+the body, in any case, is defused.
+
+A webhook trigger's `signature` names its scheme, one of a table of them: `standard` (the default, above) or `github`,
+for a GitHub repository or organization webhook. A request is checked by the one scheme whose signature header it
+carries (`webhook-signature`, `X-Hub-Signature-256`), and the scheme gives its firing key, from what its signature
+covers, and its event. With `github`, paste the trigger's whole `whsec_...` secret, as it is, into the GitHub webhook's
+Secret (content type `application/json`): each delivery is checked by `X-Hub-Signature-256: sha256=<hex HMAC-SHA256 of
+the raw body>`, keyed by the UTF-8 bytes of that string. GitHub signs the body alone, not `X-GitHub-Delivery` nor a
+time, so the firing's key is the SHA-256 of the raw body: a redelivery from GitHub's page sends the same body and
+answers its firing, and so does a captured delivery sent again within the key's day under any delivery id. After the
+day it would fire again (over TLS, a risk taken); there is no 5-minute window. Two real deliveries never share a body,
+since GitHub's carry their own ids and times. `X-GitHub-Delivery` (1 to 255 printable ASCII characters) only names the
+delivery on the payload's tag, for tracing. A request that carries no scheme's signature header, or more than
+one, or is signed under a scheme other than its trigger's, is the same `401` as a bad signature, and the headers are
+checked before the body is read.
+
+`accept` makes a trigger take only the events it names, from the delivery alone:
+
+```json
+{ "kind": "webhook", "signature": "github",
+  "accept": [
+    { "event": "pull_request", "actions": ["opened", "synchronize", "ready_for_review"],
+      "where": [ { "pointer": "/pull_request/draft", "in": [false] } ] },
+    { "event": "issue_comment", "actions": ["created"],
+      "where": [ { "pointer": "/issue/pull_request", "exists": true },
+                 { "pointer": "/comment/author_association", "in": ["OWNER", "MEMBER", "COLLABORATOR"] },
+                 { "pointer": "/comment/body", "prefix": "@reviewer review" } ] } ] }
+```
+
+A rule's `event` is the event as the trigger's scheme reads it: GitHub's `X-GitHub-Event`, or a Standard Webhooks
+body's top-level `type`. GitHub signs the body, not `X-GitHub-Event`: a delivery a trigger ignored keeps its key for
+the day, so the same body sent again under another event answers `{"ok": "duplicate"}`, and where it matters a rule
+should also test a field only that event's body has (`/pull_request`, `/comment`, `/issue/pull_request`); `actions`, when given,
+lists the values the body's top-level `action` may take; each of `where`'s conditions is a JSON pointer (RFC 6901) into
+the body with one test: `in` (the value there equals one of the JSON values listed, an object's fields in any order),
+`exists` (`true`, the pointer names a value, `null` included; `false`, it names none) or `prefix` (the value is a string
+whose first line, trimmed, starts with it, ignoring case). A delivery fires when any rule takes it, with all its
+conditions holding. A verified delivery no rule takes (GitHub's `ping` among them, a body that is not JSON too) answers
+`200 {"ok": "ignored"}`, fires nothing, and is one log line (`condition=hook_ignored`, with the trigger and why). Without
+`accept`, every verified request fires, as before. A trigger holds at most 20 rules, each at most 20 conditions and 20
+actions; an `in` lists at most 20 values of at most 1024 characters of JSON each, a pointer is at most 512 characters,
+and an event, an action or a prefix at most 200. A trigger with `accept` starts a run for each event it takes, its last
+run active or not, since the events it takes are each their own work (a review per pull request); the server's run
+limit still holds: a start it refuses (`429`) keeps the firing due and tries it again, and past 20 firings due a new
+delivery answers `429`. This holds for every firing of such a trigger, a run now (`POST /v2/triggers/{id}/fire`)
+included. Runs start in the order their events came while the server has room; while one firing waits to be tried
+again after a `429`, a later one can start first.
+
+Such a trigger can take every run this server has room for, starving other triggers and the runs people start. Give it
+`max_active_runs` (1 to 100; `null` clears it): past that many of its runs active, a firing waits due and is tried
+again, as at a full server, and is never skipped. It counts the runs this trigger started while they work, kept apart
+from its history (so a long run counts however many firings follow it) and read again at each check; a run a person
+opens again after it ended is that person's follow-up, not counted. Only a trigger whose firings each start a run
+takes it (`422` otherwise). On a public repository, a rule for `issue_comment` or `issues` events needs a condition on
+`/comment/author_association` or `/issue/author_association` (`in: ["OWNER", "MEMBER", "COLLABORATOR"]`): without one,
+anyone who can comment starts runs.
 
 A trigger's input, a started run's first message or a firing's message, is the trigger's, never the person's: it carries
 the origin `{kind: "trigger", trigger_id, source, owner}`, `owner` decided by the trigger's definition as it fires and
@@ -1594,7 +1710,7 @@ rules of an apply are in [templates/README.md](https://github.com/Parcha-ai/agen
 | `DELETE /agents/{id}/sign-ins/{key}` | This server's own route (`x-agentrun-serve: "signins/1"`): forgets one of the agent's [saved sign-ins](#saved-sign-ins), at its vendor and here. `409 sign_in_held` while a run holds its save lease, or while a run it was handed is still going. |
 | `POST /agents/{id}/runs`, `GET /agents/{id}/runs` | A run of the current revision, or of `revision`. An agentic run's input is `{content: string}`; a workflow run's is what its workflow's input schema takes. `file_ids` names [uploaded](#uploads) files, copied into the run's `work/inputs/` before it starts and named in its first message. The agent's runs, newest first. |
 | `GET /runs` | Every agent's runs, newest first, a page of at most 100; `agent`, `revision` and `status` narrow it, and `archived=true` lists only archived ones. A failed run's summary carries its `error`, and a waiting run's its `pending`. |
-| `GET /runs/{id}` | The run: its revision, kind, status, state, result, error, `pending` (this server's own, `pending/1`: what it waits on, by `kind`, such as `{kind: "question", question, asked_at}` for a question it asked a person; else null) and cost (`basis: estimate`; $0 before its first model request, a cancelled run's included). |
+| `GET /runs/{id}` | The run: its revision, kind, status, state, result, error, `pending` (this server's own, `pending/1`: what it waits on, by `kind`, such as `{kind: "question", question, asked_at}` for a question it asked a person, or `{kind: "browser", instruction, completion_condition, asked_at, expires_at}` for its agent's ask for the owner in its browser; else null) and cost (`basis: estimate`; $0 before its first model request, a cancelled run's included). |
 | `GET /runs/{id}/timeline` | JSON pages with the change-number cursor (`after`, `next_after`, `reset`, `drop`, `has_more`, `final`, `wait_ms` long poll, and this server's own `limit`, 1 to 500 rows a page, default 500), or server-sent events with `Accept: text/event-stream` (`id` is the cursor, `Last-Event-ID` resumes). Rows sort by `seq`; the usage row (`Cost so far`), the run's running total, is always the last row, and moves to the end when a row comes after it. |
 | `POST /runs/{id}/messages` | To an agentic run: `steer` while the agent works, `answer` when it asked the person, `follow_up` after a stop or after it completed: a completed run opens again, the same run on its own session and store, takes a place under `--max-runs` (`429` when none is free), and completes again. A failed or cancelled run, an archived run and a run of an archived agent are `409 not_continuable`; a workflow run takes none (`501`). |
 | `POST /runs/{id}/stop`, `POST /runs/{id}/cancel` | Stop ends an agentic run's turn and leaves the run `input_required` and idle. Cancel ends a run `cancelled` once its process has exited. |
@@ -1610,6 +1726,7 @@ rules of an apply are in [templates/README.md](https://github.com/Parcha-ai/agen
 | `GET /settings/mcp-servers`, `POST /settings/mcp-servers/preview`, `GET`, `PUT` and `DELETE /settings/mcp-servers/{name}`, `POST .../{name}/refresh`, `POST .../{name}/oauth/start`, `GET /settings/mcp-servers/oauth/callback` and `GET .../oauth/client.json` | [MCP servers](#mcp-servers), this server's own routes (`x-agentrun-serve: "mcpservers/1"`): preview a remote MCP server's tools, save it with its credential sealed, read it back without the credential, refresh its tools, forget it, or [sign in to it with OAuth](#signing-in-with-oauth) (the callback and the client document take no token). |
 | `GET /settings/tools`, `PUT /settings/tools` | This server's own: the providers of `web_search`, `web_fetch` and `browser` ([search and fetch](#search-and-fetch)). |
 | `GET /runs/{id}/browser` | This server's own (`x-agentrun-serve: "liveview/1"`): the run's live browser view for the owner, `{state: "off", reason}`, `{state: "none"}` or `{state: "live", viewer}` ([the live view](#the-browsers-live-view)). |
+| `POST /runs/{id}/browser/hand-back` | This server's own (`liveview/2`): the owner's answer to the agent's ask for them in its browser, `{outcome: "done" \| "cancelled"}`; the first answer wins, a different one is `409 handoff_answered` ([the live view](#the-browsers-live-view)). |
 | `GET`, `PUT` and `DELETE /settings/webhook`, `POST /settings/webhook/test`, `GET /settings/webhook/deliveries` and `POST .../deliveries/{webhook_id}/redeliver` | [Webhooks](#webhooks), this server's own routes (`x-agentrun-serve: "webhook/1"`): the URL run notices are POSTed to, signed by the Standard Webhooks spec; never its secret but once. |
 | `GET` and `POST /triggers`, `GET`, `PATCH` and `DELETE /triggers/{id}`, `POST /triggers/{id}/fire`, `GET /triggers/{id}/firings`, `POST /triggers/{id}/secret`, `POST /hooks/{id}` (no token: [signed](#webhook-triggers)) | [Schedules](#schedules), this server's own routes (`x-agentrun-serve: "trigger/1"`): schedules that start an agent's capped runs, each firing once, and their history. |
 | `GET /templates`, `POST /templates/{name}/apply` | [Templates](#templates), this server's own routes (`x-agentrun-serve: "templates/1"`): the template packages it ships, and an apply that makes one's agent and triggers, all or nothing. |
@@ -2254,13 +2371,16 @@ with the token, an archived agent's too:
   `GET /runs/{run_id}/learning/diff`: a merged run's merge commit against its parent, else its proposal against its
   seed, each file's patch as git writes it from the first `@@`, or `withheld` (`too_large`, `secret`).
 
-Every read is git plumbing at one commit, with no optional lock, and every text it answers is cut of the server's
-secrets as they are then; a file name holding one (a note named after a value made secret since, say) reads
+Every read is the folder's snapshot (`.agentrun/snapshot.json`, written last by the same exec as each commit to
+`main`), the files it names, each checked against its blob id (a file that is not, read twice, is a write in flight:
+`503`), and a merge's `.agentrun/diffs/<run>.json`, through the folder's file API: no git and no exec. Every text it
+answers is cut of the server's secrets as they are then; a file name holding one (a note named after a value made secret since, say) reads
 `[redacted]` whole, in the notes (`file`, `superseded_by`), the log's `files` and a diff's `path`, and a write's
-`Location` leaves it out, while its route still answers the real name to a caller who knows it. A commit's notes are
-parsed once and kept, for the few commits last read, so the view and every page at that commit read no note again; a
-log page reads only its own commits (`git log` from the cursor's offset, at most `limit`), and the log's `total` is
-counted once a commit. A symbolic link at the agent's home, its learning folder or the folder's `.git` is never
+`Location` leaves it out, while its route still answers the real name to a caller who knows it. A page reads only its
+own notes' files, each once at its blob; a log page reads the snapshot alone (it keeps the newest 200 changes). A
+cursor reads at the main it names while this server still holds that snapshot, else as the first page of `main` now.
+Every write to `main` (a run's merge, a person's edit, create, retire, approve or restore) is one exec of the learning
+script, a compare and swap on `main`. A symbolic link at the agent's home, its learning folder or the folder's `.git` is never
 followed: a read or a write there answers `500`, and nothing is written.
 
 ### Approving a note that waits
@@ -2574,11 +2694,19 @@ carries no cost at all, as from a provider that does not price the model. The te
   in the run's `work/`. An agent's saved sign-in stays at the vendor; this server keeps a sealed pointer to it, which a
   run's process gets over its pipe and its tools and model never see. Anyone holding the vendor's key can open that
   context or profile there.
-- A run's live browser view is a full-control credential for its session: its token lives in the run's process, in one 0600
-  file in the run's directory (never `work/`) while the session is open, and in the owner's answer to `GET /runs/{id}/browser`,
-  which takes the owner's password session alone. The viewer is served and its WebSocket taken only under the run's path, from
-  this server's own origin, framed by it alone; its input never reaches the browser; the vendors' own live-view links never leave
-  the run's process.
+- A run's live browser view is a full-control credential for its session: once taken over, it drives the browser. Its
+  token lives in the run's process, in one 0600 file in the run's directory (never `work/`) while the session is open, and in
+  the owner's answer to `GET /runs/{id}/browser`, which takes the owner's password session alone, as the hand-back does. The
+  viewer's WebSocket is taken only under the run's path, from this server's own origin, with the owner's session; its page is
+  framed by this server's own origin alone; outside a take-over its input is dropped by the run before the browser; the
+  vendors' own live-view links never leave the run's process.
+- The viewer's code always comes from this server: its page, script and style are the files of the pi-browser this server has
+  installed, served under `script-src 'self'`, never anything a run's port answers. A run's port only ever carries the
+  viewer's WebSocket, which is data, so whatever answers on a run's port never runs script on the console's origin.
+- The owner's time in a run's browser counts toward its cap and is held before it starts: a take-over, and an agent's ask,
+  hold 15 minutes of session time at the provider's price (once per session, shared by a take-over and an ask on it),
+  refused in the cap's words without room. A take-over that steady input keeps alive past 15 minutes is held again every
+  15 minutes; with no room the browser goes back to the agent, in the cap's words.
 - It binds 127.0.0.1 by default, and there refuses a request whose `Host` names something other than this machine
   (DNS rebinding): `localhost`, `127.0.0.1`, `[::1]`, the `AGENTRUN_PUBLIC_URL` name and each `--allow-host` name are
   served, on any port, so a tunnel (`ssh -L 8080:localhost:7340`) or a proxy in front works; any other name is `403`, a
@@ -2650,6 +2778,9 @@ carries no cost at all, as from a provider that does not price the model. The te
   value under another name.
 - The 4,096-byte pipe limit stays until the launcher writes the pipe from a background subshell that blocks until the
   server has read it.
+- The browser's evidence is numbered from the highest number the run's `evidence/` holds when its browser first files
+  there, through the run's Workspace, which has no exclusive create. One browser per run files there, so two never pick
+  one number; two filing into one run's `evidence/` at the same moment could.
 
 ## Test
 

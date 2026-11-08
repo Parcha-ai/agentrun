@@ -9,7 +9,7 @@
 // run (its row, its journal commits, a command taken) carries the epoch it holds. A write under a lower epoch than the
 // run's is refused (Fenced) and writes nothing.
 import type { Context } from "@earendil-works/chord";
-import type { Storage } from "@earendil-works/pi-durable";
+import type { Storage, StorageWrite } from "@earendil-works/pi-durable";
 import type { JournalPage } from "./journal/storage.js";
 
 /** A run's state. queued: a row, no runner yet. running: a runner holds the claim. parked: waiting for a person (an
@@ -165,6 +165,26 @@ export interface RunLaunchRow {
   readonly body: unknown;
   readonly sealed: Uint8Array | null;
   readonly createdAt: number;
+}
+
+/** A run imported from another harness's session: an ended run with where it came from, its launch (built from the
+ *  session), its cost and metrics, and its transcript as journal batches — the whole thing written in one transaction.
+ *  `transcript` is the session as pi-durable write batches (a root conversation and its entries), each batch a commit. */
+export interface ImportRunInput {
+  readonly id: string;
+  readonly agentId: string;
+  readonly revisionId: string;
+  readonly importedFrom: ImportedFrom;
+  readonly launch: RunLaunchInput;
+  /** How the imported run ended (default 'ended'); `outcome` an ended run's (completed is the default). */
+  readonly state?: "ended" | "failed" | "stopped";
+  readonly outcome?: RunOutcome | null;
+  readonly costUsd?: number | null;
+  readonly summary?: string | null;
+  readonly metrics?: unknown;
+  readonly startedAt: number;
+  readonly endedAt?: number;
+  readonly transcript: readonly (readonly StorageWrite[])[];
 }
 
 /** Rows written in the same commit as a run's update (runs.update, or a journal commit's staged patch): a channel post the
@@ -578,6 +598,9 @@ export interface Store {
   claim(runId: string, runner: string, options?: { leaseMs?: number }): Promise<Claim | null>;
   /** Moves the claim's end to now + `leaseMs`. Fenced when the run's epoch moved on. */
   renew(claim: Claim, options?: { leaseMs?: number }): Promise<Claim>;
+  /** Renews every claim in one transaction, each to now + `leaseMs`: a runner's renew of all it holds. Each answer is the
+   *  renewed claim, or Fenced for one whose epoch moved on (nothing written to it; the others renew). */
+  renewMany(claims: readonly Claim[], options?: { leaseMs?: number }): Promise<(Claim | Fenced)[]>;
   /** Gives the run back (no runner, no claimed_until; `state` when given; `wakeAt` and `backoffUntil` or none), in a
    *  durable commit (as flush). Fenced when the epoch moved on. */
   release(claim: Claim, options?: { state?: RunState; wakeAt?: number | null; backoffUntil?: number | null }): Promise<void>;
@@ -590,6 +613,11 @@ export interface Store {
   /** The run started under origin `key` (runs.create's origin), with the fingerprint recorded then; undefined when no run
    *  was started under it. The one read a retry under a key makes to find the run its first request started. */
   runOfOrigin(key: string): Promise<{ runId: string; fingerprint: string | null } | undefined>;
+  /** Imports a run that has already ended: its row (ended, imported_from, cost, summary, metrics, outcome), its launch row
+   *  and its transcript's journal, all in one transaction — the server's own writer, no second writer and no throwaway
+   *  database. The run is created at epoch 0 in the same transaction, so the journal's fence passes; a crash mid-import
+   *  leaves nothing. StoreConstraint on a duplicate run id or import (source, session). */
+  importRun(run: ImportRunInput): Promise<RunRow>;
   /** One durable commit: every commit before it, of every run, is on the disk when it resolves. Before a call that must
    *  not run twice, at a run's end and when a claim is released. */
   flush(): Promise<void>;
@@ -597,6 +625,9 @@ export interface Store {
   command(runId: string, command: { kind: string; body?: unknown }): Promise<Command>;
   /** The run's commands with an id above `after`, in id order. */
   commands(runId: string, after: number): Promise<Command[]>;
+  /** Every run's commands with an id above its own cursor, in id order, in one read: a runner's poll of all it holds. A run
+   *  with none is absent from the map. */
+  commandsOf(cursors: readonly { runId: string; after: number }[]): Promise<Map<string, Command[]>>;
   /** Marks the command taken (or refused, with `reason`) under the claim, once: a command already taken stays as it was.
    *  Fenced on a stale claim. */
   take(claim: Claim, commandId: number, outcome?: "taken" | "refused", reason?: string): Promise<void>;

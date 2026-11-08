@@ -8,7 +8,7 @@ import { join } from "node:path";
 import { test } from "node:test";
 import { note } from "./fixtures/faux-learn.mjs";
 import { CAPS } from "../dist/learn/check.js";
-import { ended, git, learner, LEARN, made, mergesOf, reflectRows, repoOf, savedOf, sleep, started } from "./learn-support.mjs";
+import { ended, git, learner, LEARN, made, mergesOf, reflectRows, repoOf, resnap, savedOf, sleep, started } from "./learn-support.mjs";
 import { runDir, scratch, serve, withEnv } from "./support.mjs";
 
 /** A SKILL.md whose steps hold a fenced code block: a ``` line inside its four-backtick block closes nothing. */
@@ -214,6 +214,7 @@ test("a skill is laid into a run with its name and description alone in its fron
   writeFileSync(join(repo, "skills/find-policies/SKILL.md"), `${hooked}\n`);
   git(repo, ["add", "skills/find-policies/SKILL.md"]);
   git(repo, ["commit", "-q", "-m", "a hand edit"]);
+  await resnap(data, "laid");
   const runId = await started(api, "laid");
   await ended(api, runId);
   const given = readFileSync(join(runDir(data, runId), "work", ".agents", "skills", "find-policies", "SKILL.md"), "utf8");

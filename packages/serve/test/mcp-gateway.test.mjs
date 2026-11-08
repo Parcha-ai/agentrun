@@ -2,7 +2,7 @@
 // and a redirect are words the model reads (never a header, never a hop), a long answer is filed in work/, and a server
 // whose address changed is sent nothing.
 import assert from "node:assert/strict";
-import { mkdtemp, readFile, rm } from "node:fs/promises";
+import { mkdtemp, readdir, readFile, rm, symlink } from "node:fs/promises";
 import { createServer, request } from "node:http";
 import { createServer as createTcpServer } from "node:net";
 import { tmpdir } from "node:os";
@@ -12,6 +12,7 @@ import { startModelProxy } from "@parcha/agentrun-kernel/host";
 import { useSpend } from "../dist/cap.js";
 import { HEADER_SCAN_DEPTH, isParked, MCP_CLIP, mcpCredentialsOf, mcpGateway, mcpHeaderProblem, mcpPinOf, mcpRegistrations } from "../dist/mcp-gateway.js";
 import { deniedText, GATED_BY_GATEWAY, gateOf, waitingText } from "../dist/tool-gate.js";
+import { localWorkspace, WORKSPACE_ERRORS } from "../dist/workspace/index.js";
 import { startFakeMcp } from "./fixtures/fake-mcp-server.mjs";
 
 const TOKEN = `not-a-secret-${"gateway-bearer-0123"}`;
@@ -32,7 +33,7 @@ async function setup(t, { token = TOKEN, url, prices, gate, commit, bounds } = {
     if (typeof init?.body === "string" && init.body.includes('"tools/call"')) sent.push(init);
     return fetch(input, init);
   };
-  const gateway = mcpGateway({ pin: { fake: { url: pinned, tools, ...(prices ? { prices } : {}) } }, credentials: { fake: { url: pinned, headers: { authorization: `Bearer ${token}` } } }, work: () => work, fetch: spy, ...(gate ? { gate } : {}), ...(commit ? { commit } : {}), ...(bounds ? { bounds } : {}) });
+  const gateway = mcpGateway({ pin: { fake: { url: pinned, tools, ...(prices ? { prices } : {}) } }, credentials: { fake: { url: pinned, headers: { authorization: `Bearer ${token}` } } }, work: () => localWorkspace(work), fetch: spy, ...(gate ? { gate } : {}), ...(commit ? { commit } : {}), ...(bounds ? { bounds } : {}) });
   /** Whether the server was told the call was cancelled: notifications/cancelled (2025 era), or its request closed. */
   const cancelled = () => fake.log.some((entry) => entry.method === "notifications/cancelled") || sent.some((init) => init.signal?.aborted);
   return { fake, gateway, work, cancelled };
@@ -66,6 +67,17 @@ test("a refused credential says where to update it and never shows it; an answer
   const filed = /evidence\/mcp\/fake\/(\S+\.json)\]$/.exec(long)?.[1];
   assert.ok(long.startsWith("x".repeat(MCP_CLIP)) && filed, long.slice(-200));
   assert.equal(JSON.parse(await readFile(join(work, "evidence", "mcp", "fake", filed), "utf8")).content[0].text.length, MCP_CLIP + 10);
+});
+
+test("an answer past the clip that cannot be filed (a link at evidence/) still answers, cut, with the port's code and its line", async (t) => {
+  const { gateway, work } = await setup(t);
+  const outside = await mkdtemp(join(tmpdir(), "mcp-gateway-outside-"));
+  t.after(() => rm(outside, { recursive: true, force: true }));
+  await symlink(outside, join(work, "evidence"));
+  const long = textOf(await gateway.call("fake", "long", {}, { signal: signal() }));
+  assert.ok(long.startsWith("x".repeat(MCP_CLIP)), long.slice(0, 40));
+  assert.ok(long.endsWith(`the whole answer could not be saved (ESCAPE: ${WORKSPACE_ERRORS.ESCAPE})]`), long.slice(-200));
+  assert.deepEqual(await readdir(outside), [], "nothing written through the link");
 });
 
 test("a server that echoes its credential never shows it: not to the model, not in the run's files", async (t) => {

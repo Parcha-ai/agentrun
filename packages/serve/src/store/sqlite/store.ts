@@ -9,7 +9,7 @@ import { RunStorage } from "../journal/storage.js";
 import { DDL, SCHEMA_VERSION } from "../schema.js";
 import {
   CommandTaken, Fenced, RefreshLeaseLost, SchemaVersionUnknown, StoreConstraint, StoreFromEarlierVersion, type AgentRow, type Agents,
-  type AlsoRow, type Claim, type Command, type Journal, type NewRevision, type RevisionRow, type RunPatch, type RunRow, type Runs,
+  type AlsoRow, type Claim, type Command, type ImportRunInput, type Journal, type NewRevision, type RevisionRow, type RunPatch, type RunRow, type Runs,
   type JournalReads,
   type RunState, type Store, type StoreRole, type TemplatePackage, type Templates, type TriggerDef, type TriggerRow, type Triggers, type TriggerScope,
   FINAL_STATES, MCP_REFRESH_CALL_MS, MCP_REFRESH_LEASE_MS, type Learning, type LearningProposal, type Live, type LiveRow, type Mcp, type McpPinRow, type McpServerRow,
@@ -50,16 +50,19 @@ const REVISION_COLUMNS = "id, agent_id, parent_id, kind, body, skills, note, pac
 const COMMAND_COLUMNS = "id, run_id, kind, body, created_at, taken_at, refused, tries";
 const TRIGGER_COLUMNS = "id, agent_id, name, enabled, source, target, next_at, last_run_id";
 const FINAL = FINAL_STATES.map((state) => `'${state}'`).join(", ");
-/** The runs a runner may claim, at a time bound three times (CLAIMABLE_AT): queued; running with no runner (released) or
- *  its claim run out; parked with its wake_at passed, an untaken stop, or an untaken command once its backoff (a failed
- *  resume's) has passed. */
+/** The runs a runner may claim, at a time bound five times (CLAIMABLE_AT): queued; running with no runner (released) or
+ *  its claim run out, once its backoff (an interrupted run's) has passed; parked, once no claim holds it (a run parks
+ *  under its claim and is released a few seconds later), with its wake_at passed, an untaken stop, or an untaken command
+ *  that can answer it once its backoff (a failed resume's) has passed. A row marked `answers: false` (a trigger's
+ *  follow-up message) answers no park: it waits, untaken, and its loop gets it after the person's answer wakes the run. */
 const CLAIMABLE = `(state = 'queued'
-  OR (state = 'running' AND (runner IS NULL OR claimed_until < ?))
-  OR (state = 'parked' AND (
+  OR (state = 'running' AND (runner IS NULL OR claimed_until < ?) AND (backoff_until IS NULL OR backoff_until <= ?))
+  OR (state = 'parked' AND (runner IS NULL OR claimed_until < ?) AND (
     (wake_at IS NOT NULL AND wake_at <= ?)
     OR EXISTS (SELECT 1 FROM commands WHERE commands.run_id = runs.id AND commands.taken_at IS NULL AND commands.kind = 'stop')
-    OR ((backoff_until IS NULL OR backoff_until <= ?) AND EXISTS (SELECT 1 FROM commands WHERE commands.run_id = runs.id AND commands.taken_at IS NULL)))))`;
-const CLAIMABLE_AT = (at: number): number[] => [at, at, at];
+    OR ((backoff_until IS NULL OR backoff_until <= ?) AND EXISTS (SELECT 1 FROM commands WHERE commands.run_id = runs.id AND commands.taken_at IS NULL
+      AND json_extract(commands.body, '$.answers') IS NOT 0)))))`;
+const CLAIMABLE_AT = (at: number): number[] => [at, at, at, at, at];
 /** What a claim sets: the next epoch, the runner and its lease, running, no backoff. */
 const CLAIM_SET = "epoch = epoch + 1, runner = ?, claimed_until = ?, state = 'running', backoff_until = NULL";
 
@@ -675,6 +678,21 @@ class SqliteStore implements Store {
     return { ...claim, until };
   }
 
+  async renewMany(claims: readonly Claim[], { leaseMs = DEFAULT_LEASE_MS }: { leaseMs?: number } = {}): Promise<(Claim | Fenced)[]> {
+    if (claims.length === 0) return [];
+    // One transaction for every claim, each update on its own: a claim another runner took changes no row and is answered
+    // Fenced, never rolling the others back.
+    return this.#db.transaction(async (tx) => {
+      const until = this.#now() + leaseMs;
+      const out: (Claim | Fenced)[] = [];
+      for (const claim of claims) {
+        const renewed = await tx.all<{ id: string }>("UPDATE runs SET claimed_until = ? WHERE id = ? AND epoch = ? AND runner = ? RETURNING id", until, claim.runId, claim.epoch, claim.runner);
+        out.push(renewed.length > 0 ? { ...claim, until } : new Fenced(claim.runId, claim.epoch));
+      }
+      return out;
+    });
+  }
+
   async release(claim: Claim, { state, wakeAt = null, backoffUntil = null }: { state?: RunState; wakeAt?: number | null; backoffUntil?: number | null } = {}): Promise<void> {
     const ending = state !== undefined && FINAL_STATES.includes(state);
     await this.#db.write([fenced(
@@ -740,6 +758,41 @@ class SqliteStore implements Store {
   async runOfOrigin(key: string): Promise<{ runId: string; fingerprint: string | null } | undefined> {
     const row = await this.#db.get<{ run_id: string; fingerprint: string | null }>("SELECT run_id, fingerprint FROM run_origins WHERE key = ?", key);
     return row && { runId: row.run_id, fingerprint: row.fingerprint };
+  }
+
+  async commandsOf(cursors: readonly { runId: string; after: number }[]): Promise<Map<string, Command[]>> {
+    const out = new Map<string, Command[]>();
+    if (cursors.length === 0) return out;
+    // One read for every run: each cursor a (run_id, after) row of a VALUES list joined against the commands.
+    const rows = await this.#db.all<CommandRecord>(
+      `WITH cursors(run_id, after) AS (VALUES ${cursors.map(() => "(?, ?)").join(", ")})
+       SELECT ${COMMAND_COLUMNS.split(", ").map((column) => `commands.${column}`).join(", ")} FROM commands JOIN cursors ON commands.run_id = cursors.run_id AND commands.id > cursors.after ORDER BY commands.id`,
+      ...cursors.flatMap((cursor) => [cursor.runId, cursor.after]),
+    );
+    for (const row of rows) {
+      const command = commandOf(row);
+      out.set(command.runId, [...(out.get(command.runId) ?? []), command]);
+    }
+    return out;
+  }
+
+  async importRun(run: ImportRunInput): Promise<RunRow> {
+    const at = this.#now();
+    const state = run.state ?? "ended";
+    return this.#db.transaction(async (tx) => {
+      // The ended run row, its launch row and its transcript's journal, all in this one transaction (the server's own
+      // writer): a crash between them leaves nothing. The run is created at epoch 0, so the journal's fence passes.
+      const row = await tx.get<RunRecord>(
+        `INSERT INTO runs (id, agent_id, revision_id, state, epoch, cost_usd, metrics, summary, outcome, imported_from, started_at, ended_at)
+          VALUES (?, ?, ?, ?, 0, ?, ?, ?, ?, ?, ?, ?) RETURNING ${RUN_COLUMNS}`,
+        run.id, run.agentId, run.revisionId, state, run.costUsd ?? null,
+        run.metrics === undefined || run.metrics === null ? null : json(run.metrics), run.summary ?? null,
+        run.outcome ?? null, JSON.stringify(run.importedFrom), run.startedAt, run.endedAt ?? at,
+      );
+      await writeLaunch(tx, run.id, run.launch, at);
+      await new RunStorage(this.#db, { runId: run.id, epoch: 0 }, this.#now).applyIn(tx, run.transcript);
+      return runOf(row!);
+    });
   }
 
   async take(claim: Claim, commandId: number, outcome: "taken" | "refused" = "taken", reason?: string): Promise<void> {

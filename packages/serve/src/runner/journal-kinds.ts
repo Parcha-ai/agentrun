@@ -70,6 +70,12 @@ export interface AnswerData {
 export interface EndData {
   readonly state: "ended" | "stopped" | "failed";
   readonly summary?: string;
+  /** How an ended run ended, set only for an escalation (the store's RunOutcome). */
+  readonly outcome?: "completed" | "escalated";
+  /** What the run cost, as its end knows it. */
+  readonly costUsd?: number;
+  /** The run's metrics (the old StoredMetrics JSON). */
+  readonly metrics?: unknown;
 }
 
 export interface SessionKeyData {

@@ -4,7 +4,7 @@ export type {
   AgentRow, Agents, AlsoRow, ChannelPost, Claim, Command, Firing, Journal, Live, LiveRow, Mcp, McpOauth, McpOauthPendingRow, McpPinRow,
   McpServerRow, NewRevision, RevisionRow, RunPatch, RunRow, Runs, RunState, SealedKeyRow, SealedKeys, SettingRow, Settings, Staged,
   StagedTake, Store, StoreRole, TemplatePackage, Templates, TriggerDef, TriggerRow, Triggers, TriggerScope, TriggerSettingRow,
-  TriggerSettings, ImportedFrom, ImportSource, JournalReads, RunOrigin, RunOutcome, RunLaunchInput, RunLaunchRow, Learning,
+  TriggerSettings, ImportedFrom, ImportSource, ImportRunInput, JournalReads, RunOrigin, RunOutcome, RunLaunchInput, RunLaunchRow, Learning,
   LearningProposal, SignIns, SignInRow, SignInTombstoneRow,
 } from "./store.js";
 export { aadOf, type McpCredential, type OpenedMcpCredential, openMcpCredential, sealColumn, type SealedAt, sealedAt, sealMcpCredential, unsealColumn } from "./seal.js";

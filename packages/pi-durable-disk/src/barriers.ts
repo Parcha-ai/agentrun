@@ -125,7 +125,7 @@ export const BARRIERS = {
       "packages/serve/test/harness-conformance-reference.test.mjs",
       "packages/serve/test/harness-conformance-pi.test.mjs",
     ],
-    why: "a runner loop's effect that is not replay-safe (a tool call, a model request): its intent in the one store's journal, flushed before the effect runs",
+    why: "a runner loop's effects that are not replay-safe, each flushed in the one store's journal before it runs: a tool call that is not replay-safe (its intent flushed before the call), and each model-request attempt (flushed once per attempt, after its request checkpoint, before the request leaves)",
   },
 } as const satisfies Record<string, BarrierRow>;
 

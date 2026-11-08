@@ -302,3 +302,65 @@ test("M15: a pinned server removed since an earlier open is dropped from the ste
   assert.deepEqual(calls(fake), [], "the removed server received nothing");
   step.release();
 });
+
+/** A refresh the authorization server has granted (the refresh token rotated, the old one spent) whose answer is still on
+ *  the wire when `stop` ends the claim's step; then the answer arrives, and the run's next claim opens the server. */
+async function rotatedAcross(t, { expiresAt, stop }) {
+  const { store, oauth, claim } = await oauthSetUp(t, { expiresAt });
+  const hold = oauth.holdNext();
+  const signal = new AbortController();
+  const bounds = { requestMs: 3_000, tries: 1 };
+  const first = claimOf(store, claim, ["mcp:fake/add"], { now: () => T0, signal: signal.signal, bounds });
+  // Behind a token still valid, the step returns before the refresh is answered; an expired one is awaited.
+  const step = expiresAt > T0 ? await first : undefined;
+  await hold.granted;
+  stop({ step, signal });
+  hold.answer();
+  if (!step) await first.catch(() => undefined);
+  // Later, past the old token's expiry: the next claim needs the rotated set, or a refresh with the spent token.
+  const next = await claimOf(store, claim, ["mcp:fake/add"], { now: () => T0 + 120_000, bounds });
+  t.after(() => next.release());
+  return { oauth, next };
+}
+
+test("M16: a refresh granted while the step ends (shutdown, a lost claim, the run's end) is kept: the rotated token is used once and the server stays signed in", async (t) => {
+  for (const [what, expiresAt, stop] of [
+    ["the claim's signal aborts behind a token near its expiry (a shutdown or a lost claim)", T0 + 60_000, ({ signal }) => signal.abort()],
+    ["release() at the run's end, behind a token near its expiry", T0 + 60_000, ({ step }) => step.release()],
+    ["the claim's signal aborts while an expired token's refresh is awaited", T0 - 1_000, ({ signal }) => signal.abort()],
+  ]) {
+    const { oauth, next } = await rotatedAcross(t, { expiresAt, stop });
+    assert.equal(next.credentials.fake?.unopened, undefined, `${what}: the next claim is not signed out`);
+    assert.ok(oauth.accepts(bearer(next)), `${what}: the next claim holds a token the server takes (${bearer(next)})`);
+    assert.equal(refreshes(oauth), 1, `${what}: the rotating refresh token was used once`);
+  }
+});
+
+test("M17: claims waiting on another claim's refresh read the server's row O(1) times each, not every 25 ms", async (t) => {
+  const { store, oauth, claim } = await oauthSetUp(t, { expiresAt: T0 - 1_000 });
+  let reads = 0;
+  const mcp = new Proxy(store.mcp, {
+    get(target, key) {
+      const value = Reflect.get(target, key, target);
+      if (key === "server") return (...args) => ((reads += 1), value.apply(target, args));
+      return typeof value === "function" ? value.bind(target) : value;
+    },
+  });
+  const counted = { mcp, runs: store.runs };
+  const hold = oauth.holdNext();
+  const CLAIMS = 300;
+  const steps = Array.from({ length: CLAIMS }, () => claimOf(counted, claim, ["mcp:fake/add"], { now: () => T0, bounds: { requestMs: 5_000, tries: 1 } }));
+  await hold.granted;
+  // The holder's answer takes a while; every other claim waits on its lease meanwhile.
+  await new Promise((resolve) => setTimeout(resolve, 600));
+  const answered = Date.now();
+  hold.answer();
+  const opened = await Promise.all(steps);
+  const took = Date.now() - answered;
+  t.after(() => opened.forEach((step) => step.release()));
+  assert.equal(refreshes(oauth), 1, "one refresh");
+  assert.equal(new Set(opened.map(bearer)).size, 1, "every claim holds the one refreshed token");
+  assert.ok(oauth.accepts(bearer(opened[0])), "a token the server takes");
+  assert.ok(reads <= 4 * CLAIMS, `the server's row read at most 4 times a claim: ${reads} reads for ${CLAIMS} claims`);
+  assert.ok(took < 3_000, `every waiting claim woke when the holder let the lease go, not at the lease's end: ${took} ms`);
+});
