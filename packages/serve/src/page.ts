@@ -14,7 +14,7 @@ import { storeApi } from "@parcha/pi-durable-agent/serve";
 import { ApiError } from "./errors.js";
 import { hostRefusedPage } from "./host-check.js";
 
-const CSP = "default-src 'self'; script-src 'self'; style-src 'self'; img-src 'self' data:; base-uri 'none'; form-action 'none'; frame-ancestors 'none'";
+const CSP = "default-src 'self'; script-src 'self'; style-src 'self'; img-src 'self' data:; base-uri 'none'; form-action https://github.com; frame-ancestors 'none'";
 const SECURITY = { "content-security-policy": CSP, "x-content-type-options": "nosniff", "referrer-policy": "no-referrer", "cache-control": "no-store" };
 const HTML = "text/html; charset=utf-8";
 /** The console's build, beside the server. */
