@@ -141,7 +141,7 @@ export class AgentRun {
     const secrets = secretOp && typeof sent === "string" ? secretsOf(sent, secretOp.publicFields) : [];
     const response = await this.#send({
       method: op.method, path: url.slice(this.baseUrl.length), route, headers, body: sent, signal: options?.signal, timeoutMs: options?.timeoutMs,
-      retryable: op.method === "GET" || headers["Idempotency-Key"] !== undefined, secret: secretOp !== undefined,
+      retryable: op.method === "GET" || headers["Idempotency-Key"] !== undefined, secret: secretOp !== undefined, secrets,
       streamed: op.answer === "bytes" && options?.stream === true,
     });
     const answer = await readAnswer(op, route, response, options?.stream === true, secretOp ? scrubberOf(secrets) : undefined);
@@ -222,13 +222,14 @@ function secretAt(method: string, url: string): Operation | undefined {
 }
 
 /** A refused answer as its outcome. The server's error object is kept with every copy of the key cut from it; after a
- *  secret body, only its code. Its text is never read into a message. A caller's abort while the body is still coming
- *  is thrown as the caller's own reason: cancelled work is never reported as a refusal or a bad key. */
+ *  secret body, with the body's values cut too, only its code, and a code that held one is no code. Its text is never
+ *  read into a message. A caller's abort while the body is still coming is thrown as the caller's own reason: cancelled
+ *  work is never reported as a refusal or a bad key. */
 async function refusal(x: Exchange, response: Response, apiKey: string): Promise<AgentRunError> {
   let error: ServerError | undefined;
   try {
     const parsed = JSON.parse(new TextDecoder().decode(await response.arrayBuffer())) as { error?: unknown };
-    if (parsed?.error && typeof parsed.error === "object" && !Array.isArray(parsed.error)) error = scrubberOf([apiKey])(parsed.error as ServerError);
+    if (parsed?.error && typeof parsed.error === "object" && !Array.isArray(parsed.error)) error = scrubberOf([apiKey, ...(x.secrets ?? [])])(parsed.error as ServerError);
   } catch {
     if (x.signal?.aborted) throw x.signal.reason;
     error = undefined;

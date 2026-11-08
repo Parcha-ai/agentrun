@@ -355,3 +355,17 @@ test("a certificate the client refuses is unreachable after one try, and a refus
     assert.deepEqual([error.cause, calls], [code, 1], code);
   }
 });
+
+test("a refusal whose code echoes a secret body's value keeps no code, in the error or its message", async (t) => {
+  const secret = `secret_${randomBytes(8).toString("hex")}`;
+  const server = await listener(t, (req) => (req.url.endsWith("/auth") ? json(401, { error: { code: secret, message: "no" } }) : json(422, { error: { code: secret, message: "no" } })));
+  const client = new AgentRun({ baseUrl: server.base, apiKey: KEY });
+  const refused = await thrown(client.mcpServers.save("docs", { url: "https://mcp.example.com/mcp", auth: { type: "bearer", token: secret } }));
+  assert.ok(refused instanceof AgentRunRefused);
+  assert.deepEqual([refused.status, refused.code, refused.error], [422, undefined, undefined]);
+  assert.ok(!printed(refused).includes(secret), printed(refused));
+  const auth = await thrown(client.mcpServers.save("auth", { url: "https://mcp.example.com/mcp", auth: { type: "bearer", token: secret } }));
+  assert.ok(auth instanceof AgentRunAuthError);
+  assert.equal(auth.code, undefined);
+  assert.ok(!printed(auth).includes(secret), printed(auth));
+});

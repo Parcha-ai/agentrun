@@ -16,6 +16,8 @@ export interface Exchange {
   deadline?: number;
   /** The body carried a secret: a refusal keeps only its code. */
   secret?: boolean;
+  /** The secret body's values: cut from a refusal before its code is read, as the API key is. */
+  secrets?: readonly string[];
   /** The success's body is left to the caller, unread (a stream, a download asked for as a Response); else it is read
    *  whole inside the exchange, so a body cut midway is tried again or refused as any dropped connection is. */
   streamed?: boolean;
