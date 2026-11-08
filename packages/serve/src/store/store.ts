@@ -227,9 +227,8 @@ export interface Runs {
   claimMany(runner: string, k: number, options?: { leaseMs?: number }): Promise<Claim[]>;
   /** Changes the run's row under `claim`, and in the same commit writes `also` and marks `take`'s command rows taken (a
    *  stop the runner applies itself ends the run with its stop row taken, or neither). Refused, nothing written: Fenced when
-   *  the run's epoch is not the claim's; CommandTaken when a command in `take` is taken already, or not the run's. An array
-   *  third argument is `also`. */
-  update(claim: Claim, patch: RunPatch, with_?: readonly AlsoRow[] | { readonly also?: readonly AlsoRow[]; readonly take?: readonly number[] }): Promise<RunRow>;
+   *  the run's epoch is not the claim's; CommandTaken when a command in `take` is taken already, or not the run's. */
+  update(claim: Claim, patch: RunPatch, rows?: { readonly also?: readonly AlsoRow[]; readonly take?: readonly number[] }): Promise<RunRow>;
 }
 
 /** A saved MCP server: its listed tools (each with whether it can be granted, and why not), the owner's prices, and its

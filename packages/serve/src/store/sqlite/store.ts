@@ -335,8 +335,9 @@ class SqliteStore implements Store {
         return rows.map((row) => row.id);
       },
       claimMany: (runner, k, { leaseMs = DEFAULT_LEASE_MS } = {}) => this.#claimRuns(runner, leaseMs, { k }),
-      update: async (claim, patch, with_ = []) => {
-        const { also = [], take = [] } = Array.isArray(with_) ? { also: with_ as readonly AlsoRow[] } : (with_ as { also?: readonly AlsoRow[]; take?: readonly number[] });
+      update: async (claim, patch, rows = {}) => {
+        if (Array.isArray(rows) || typeof rows !== "object" || rows === null) throw new TypeError("runs.update's third argument is { also?, take? }");
+        const { also = [], take = [] } = rows;
         return db.transaction(async (tx) => {
           const at = now();
           const row = await applyRunPatch(tx, claim, patch, also, at);
