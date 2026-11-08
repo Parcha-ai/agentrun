@@ -89,6 +89,21 @@ export const testClock = (() => {
 	};
 })();
 
+/**
+ * A clock that reads no wall clock at all: it starts at `start` and moves only when something sleeps on it. A run and
+ * its fake given the same one measure every duration exactly, so a test may assert a number computed from them (what a
+ * create took) to the millisecond.
+ */
+export function virtualClock(start = Date.UTC(2026, 0, 1)) {
+	let now = start;
+	return {
+		now: () => now,
+		sleep: async (ms) => {
+			now += Math.max(0, ms);
+		},
+	};
+}
+
 export function fakeDevices({
 	clock = testClock,
 	id = "fake-device",

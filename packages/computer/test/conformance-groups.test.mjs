@@ -27,7 +27,7 @@ import {
 	runConformance,
 } from "../dist/index.js";
 import { fakeComputers } from "./fake-computer.mjs";
-import { fakeDevices, fakeFetch, png, pngOf, testClock } from "./fake-device.mjs";
+import { fakeDevices, fakeFetch, png, pngOf, testClock, virtualClock } from "./fake-device.mjs";
 
 const IMAGE = "fixture:image";
 const dir = mkdtempSync(join(tmpdir(), "computer-groups-"));
@@ -369,20 +369,33 @@ test("provider.deadline sees the end of a 45 s lifetime on the run's clock, with
 	assert.deepEqual(deadlineLifetimes(made), [45_000]);
 });
 
-test("provider.deadline on a host slower to start a computer than its lifetime asks once more, for 45 s past twice what create took, and passes", { timeout: 10_000 }, async () => {
-	// The run's shared computer first, at once; then each create takes 50 s. The first, of a 45 s lifetime, fails as
-	// Docker's does; the second, for 145 s, takes 50 s too and leaves 95 s.
-	const { provider, made } = fakeDevices({ createMs: [0, 50_000] });
-	const report = await run(provider, ["provider.deadline"]);
+/**
+ * provider.deadline on a host slow to start a computer, measured on a clock that reads no wall clock (virtualClock): the
+ * fake's creates take exactly their createMs on it, so what the case computes from them is exact. The run's shared
+ * computer is made first, at once; createMs then gives each of the case's creates in turn.
+ */
+const slowHost = (createMs) => {
+	const clock = virtualClock();
+	const { provider, made } = fakeDevices({ clock, createMs: [0, ...createMs] });
+	return { made, ran: run(provider, ["provider.deadline"], { clock }) };
+};
+
+test("provider.deadline, when the first create outlasts its 45 s lifetime, asks once more for exactly 45 s past twice what create took, and passes", async () => {
+	// 50 s of a 45 s lifetime fails as Docker's does; the retry asks for 45 + 2 x 50 = 145 s, takes 50 s, and leaves 95 s.
+	const { made, ran } = slowHost([50_000, 50_000]);
+	const report = await ran;
 	assert.deepEqual(statuses(report), { "provider.deadline": "pass" }, reasons(report)["provider.deadline"]);
 	assert.deepEqual(deadlineLifetimes(made), [45_000, 145_000]);
 });
 
-test("provider.deadline skips in words when the second create is still too slow for its lifetime, never passing unseen", { timeout: 10_000 }, async () => {
-	const { provider, made } = fakeDevices({ createMs: [0, 50_000, 1_000_000] });
-	const report = await run(provider, ["provider.deadline"]);
+test("provider.deadline skips in words, never passes, when the retry is still too slow for its lifetime", async () => {
+	const { made, ran } = slowHost([50_000, 1_000_000]);
+	const report = await ran;
 	assert.deepEqual(statuses(report), { "provider.deadline": "skip" });
-	assert.match(reasons(report)["provider.deadline"], /^create took 1000 s of a lifetime of 145 s \(the first took 50 s of 45 s\): this host starts a computer too slowly for the case to watch its deadline; /);
+	assert.equal(
+		reasons(report)["provider.deadline"],
+		"create took 1000 s of a lifetime of 145 s (the first took 50 s of 45 s): this host starts a computer too slowly for the case to watch its deadline; desktop-3's lifetime of 145 s ended before create finished (it took 1000 s)",
+	);
 	assert.deepEqual(deadlineLifetimes(made), [45_000, 145_000]);
 	assert.equal(report.core, "fail", "a Core case that could not run is no pass");
 });
