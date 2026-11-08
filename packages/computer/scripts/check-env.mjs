@@ -10,8 +10,7 @@
 // expression is never a read, and no spelling of one gets past: process.env, process["env"], `const { env } = process`,
 // globalThis.process, an alias of process or globalThis, a parameter or binding that shadows process, and an import or
 // require of the process module are all reads. Any use of process but a named member other than env is one, so a new
-// spelling fails closed.
-//   node packages/computer/scripts/check-env.mjs   exits 1 with each read, file:line, when there is one
+// spelling fails closed. test/providers.test.mjs runs checkEnv() on src/, and scan() on fixtures of every evasion.
 import { readdir, readFile } from "node:fs/promises";
 import { join, relative, sep } from "node:path";
 import { fileURLToPath } from "node:url";
@@ -166,13 +165,4 @@ export async function checkEnv(src = fileURLToPath(new URL("../src/", import.met
 		guards.push(...guarded.map((g) => ({ file, ...g })));
 	}
 	return { problems, guards };
-}
-
-if (process.argv[1] && fileURLToPath(import.meta.url) === process.argv[1]) {
-	const { problems } = await checkEnv();
-	for (const { file, line, what } of problems) console.error(`src/${file}:${line}: ${what}`);
-	if (problems.length > 0) {
-		console.error("the library reads no environment: take the setting as an option, and read its COMPUTER_ name in src/conformance/");
-		process.exitCode = 1;
-	}
 }

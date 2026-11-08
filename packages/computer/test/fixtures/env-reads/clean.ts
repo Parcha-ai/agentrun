@@ -6,5 +6,5 @@ export const pattern = /process\.env\.HOME/;
 export const rpc = { "process.start": 1, "process.read": 2 };
 
 export function members(config: { env: Record<string, string>; process: { env: string } }): unknown[] {
-	return [process.argv[1], process.getuid?.(), process.getgid?.(), process.platform, process.execPath, config.env.HOME, config.process.env, globalThis.WebSocket];
+	return [process.argv.slice(2), process.getuid?.(), process.getgid?.(), process.platform, process.execPath, config.env.HOME, config.process.env, globalThis.WebSocket];
 }
