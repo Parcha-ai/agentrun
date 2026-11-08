@@ -33,6 +33,7 @@ export {
 	type ArchilRoot,
 	archilLabels,
 	archilMount,
+	archilNetwork,
 	archilReadBack,
 	archilRefusals,
 	archilRelease,

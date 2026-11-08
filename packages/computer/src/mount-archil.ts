@@ -278,6 +278,33 @@ export function archilReadBack({ mounts, epoch, served, recorded }: { mounts: st
 	return "kind" in read && read.kind === "archil" ? { ...read, exclusive: served } : read;
 }
 
+/** Prints, as root, the two rules netlock puts first: OUTPUT's jump to its chain, and the chain's drop of the tool
+ *  user, for IPv4, and for IPv6 when the computer has it ("ip6tables none" when it has none). */
+const NETLOCK_READ = [
+	"# agentrun-computer: archil network",
+	"for t in iptables ip6tables; do",
+	'  if [ "$t" = ip6tables ] && [ -z "$(cat /proc/net/if_inet6 2>/dev/null)" ]; then echo "$t none"; continue; fi',
+	'  echo "$t jump $(/usr/sbin/$t -w -S OUTPUT 2>/dev/null | sed -n 2p)"',
+	'  echo "$t first $(/usr/sbin/$t -w -S AGENTRUN-NET 2>/dev/null | sed -n 2p)"',
+	"done",
+].join("\n");
+
+/**
+ * An Archil computer's network, read back from inside it as root: "none" only when netlock's rules are in place (OUTPUT
+ * jumps first to its chain, whose first rule drops every packet of the tool user, loopback included), for IPv4 and for
+ * IPv6 where the computer has it; else `{ other }` in words. The vendor's own network for it is open for root, which
+ * netlock holds to Archil alone, so the vendor's read-back is not the tools' network.
+ */
+export async function archilNetwork({ root, timeoutMs, signal }: { root: ArchilRoot; timeoutMs: number; signal?: AbortSignal }): Promise<Result<{ other: string } | "none">> {
+	const ran = await root.run(["sh", "-c", NETLOCK_READ, "sh"], { timeoutMs, ...(signal ? { signal } : {}) });
+	if (!ran.ok) return fail(ran.error.code, `netlock's rules could not be read back: ${ran.error.message}`);
+	const lines = new Set(ran.value.output.split("\n").map((line) => line.trim()));
+	const locked = (t: string) => lines.has(`${t} jump -A OUTPUT -j AGENTRUN-NET`) && lines.has(`${t} first -A AGENTRUN-NET -m owner --uid-owner ${ARCHIL_TOOL_UID} -j DROP`);
+	const missing = [locked("iptables") ? undefined : "IPv4", lines.has("ip6tables none") || locked("ip6tables") ? undefined : "IPv6"].filter(Boolean);
+	if (ran.value.exitCode === 0 && missing.length === 0) return ok("none");
+	return ok({ other: `open at the provider, and netlock's rules do not read back for ${missing.join(" and ") || "it"} (exit ${ran.value.exitCode}), so the tools' network is not known to be none` });
+}
+
 /** What Archil answers a checkin by a client that holds no delegation there: EROFS (30), measured on 0.10.1. */
 const CHECKED_IN = /'checkin' operation failed .*Unexpected error \(30\)/;
 

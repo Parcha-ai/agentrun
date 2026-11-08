@@ -115,7 +115,7 @@ test("the takeover: the run's lower epochs are deleted before any mount, then th
 	const again = setup();
 	const older = await again.provider.create({ ...SPEC, labels: { ...LABELS, [EPOCH_LABEL]: "2" } });
 	assert.equal(older.ok, true);
-	again.fake.knobs.fail = [{ method: "DELETE", path: new RegExp(`/api/sandbox/${older.value.id}$`), status: 500, times: 10 }];
+	again.fake.knobs.fail = [{ method: "DELETE", path: new RegExp(`/api/sandbox/${older.value.id}$`), status: 500, times: 1000 }];
 	const refused = await again.provider.create(SPEC);
 	assert.equal(refused.ok, false);
 	assert.match(refused.error.message, /takeover/);

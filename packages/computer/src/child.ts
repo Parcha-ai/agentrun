@@ -60,7 +60,8 @@ const INIT_SCRIPT = [
 const STDIO_SCRIPT = ["# agentrun-computer: stdio", "d=$1; r=$2", HELD, 'held "$d" >&2 || exit 6', ROOT, `exec $p env -i PATH=${PATH} AGENTRUN_COMPUTERD_SOCKET="$r/computerd.sock" "$d" stdio`].join("\n");
 
 const quote = (word: string) => `'${word.replaceAll("'", "'\\''")}'`;
-const shellCommand = (script: string, args: readonly string[]) => ["sh", "-c", quote(script), "sh", ...args.map(quote)].join(" ");
+/** One string for a shell: `sh -c '<script>' sh '<arg>' ...`, every word quoted. */
+export const shellCommand = (script: string, args: readonly string[]) => ["sh", "-c", quote(script), "sh", ...args.map(quote)].join(" ");
 
 export interface ChildCommandOptions {
 	/** Where the vendor's upload left the daemon. */

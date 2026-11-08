@@ -34,10 +34,10 @@ test("Modal: MOUNT is [] until D6, what its provider declares", () => {
 	assert.deepEqual([...modal.MOUNT], declared(provider));
 });
 
-test("Daytona: MOUNT is [] until D6, what its provider declares", () => {
+test("Daytona: MOUNT is [\"archil\"], what its provider declares", () => {
 	const fake = fakeDaytona();
 	const provider = new DaytonaProvider({ apiKey: KEY, apiUrl: API, daemonPath: DAEMON, fetch: fake.fetch, webSocket: fake.webSocket });
-	assert.deepEqual([...daytona.MOUNT], []);
+	assert.deepEqual([...daytona.MOUNT], ["archil"]);
 	assert.deepEqual([...daytona.MOUNT], declared(provider));
 });
 

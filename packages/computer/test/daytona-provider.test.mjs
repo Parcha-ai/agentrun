@@ -69,7 +69,7 @@ const of = (fake, method, path) => fake.requests.filter((r) => r.method === meth
 const deleted = (fake) => of(fake, "DELETE", /^\/api\/sandbox\/[^/]+$/);
 const created = (fake) => of(fake, "POST", "/api/sandbox");
 
-test("capabilities: a linux computer with init a child of Daytona's toolbox, a vendor lifetime up to 30 days, network none, open and allow with the ports each list opens, a container, exec, files and processes, and stop and delete", () => {
+test("capabilities: a linux computer with init a child of Daytona's toolbox, a vendor lifetime up to 30 days, network none, open and allow with the ports each list opens, a container, exec, files and processes, stop and delete, and an Archil mount", () => {
 	const { provider, fake } = setup();
 	assert.equal(provider.id, "daytona");
 	assert.equal(provider.version, VERSION);
@@ -85,6 +85,7 @@ test("capabilities: a linux computer with init a child of Daytona's toolbox, a v
 		maxLifetimeMs: 30 * 24 * 3600 * 1000,
 		release: ["stop", "delete"],
 		stopDeletes: false,
+		mount: ["archil"],
 	});
 	assert.deepEqual(kindRefusals(provider.capabilities()), []);
 	assert.equal(provider.extend, undefined, "no extend()");
