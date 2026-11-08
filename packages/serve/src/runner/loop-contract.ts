@@ -2,6 +2,7 @@
 // claims, renews, delivers command rows and releases; the loop runs the harness on the run's journal. B2's loop.ts
 // implements `Loop` for pi and the CLI adapters; the runner knows nothing about harnesses.
 
+import { refusedText } from "../refusal-words.js";
 import type { Claim, Command, Journal } from "../store/store.js";
 
 // The store's own: a claim (its epoch fences every write made under it; `until` in epoch ms) and a command row (taken_at
@@ -32,10 +33,10 @@ export function endedBy(cancel: boolean | undefined): string {
   return cancel ? "cancelled" : "stopped by a person";
 }
 
-/** The refusal a denied call's model reads: the kernel's words, and the person's own reason when they gave one (main's
- *  " Reason: <note>"). */
+/** The refusal a denied call's model reads: serve's own words for a call a person denied (refusal-words.ts refusedText,
+ *  one copy with the tool gate's), the person's note with it. Asked before its intent, the call never ran. */
 export function deniedText(tool: string, note?: string): string {
-  return `Permission denied: a person denied ${tool}.${note?.trim() ? ` Reason: ${note}` : ""}`;
+  return refusedText(tool, note?.trim() ? note : undefined, "no");
 }
 
 /** An approve's or deny's note (body.note, the person's words), as its answer entry keeps it: absent when blank. */
