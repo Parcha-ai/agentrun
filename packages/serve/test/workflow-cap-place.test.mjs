@@ -196,6 +196,21 @@ test("a raise whose launch fails after its place was taken (a pin that throws) l
   assert.deepEqual([failed > 0, status], [true, "completed"], "the launch that failed left the run waiting, and the next try opened it under the raised cap");
 });
 
+test("a raise whose launch fails on a server with places free says the launch failed and is tried again, never that the server has no free place", { timeout: 180_000 }, async (t) => {
+  // The queue's next try held a minute: the run says what its first failed try left, for as long as a test reads it.
+  withEnv(t, { AGENTRUN_SERVE_BUDGET_HOLD_MS: "1000", AGENTRUN_SERVE_TEST_PLACE_RETRY_MS: "60000" }, KEYS);
+  const { api, data } = await serve(t, { faux: PRICED, beforeRaiseLaunch: () => { throw new Error("a pin that fails"); } });
+  assert.equal((await api("POST", "/agents", flowAgent("free", twoNodes()))).status, 201);
+  const { run_id: runId } = (await api("POST", "/agents/free/runs", { input: { question: "What is six times seven?" }, max_cost_usd: 0.12 })).body;
+  await follow(api, runId, SETTLED, { deadlineMs: 60_000 });
+  await letGo(data, runId);
+  assert.equal((await api("PATCH", `/runs/${runId}`, { max_cost_usd: 1 })).status, 200);
+  const { rows } = await follow(api, runId, ["queued"], { deadlineMs: 30_000 });
+  const waiting = rows.find((row) => row.id === "server:waiting-place");
+  assert.equal(waiting?.summary, "The cap was raised to $1, but the run could not be started yet: a pin that fails. It is tried again shortly.", JSON.stringify(waiting));
+  assert.equal((await api("POST", `/runs/${runId}/cancel`)).status, 202);
+});
+
 test("a raise on a server whose memory for runs another run holds starts no process past the memory limit: the run waits for a place, and starts once the memory frees", { timeout: 180_000 }, async (t) => {
   withEnv(t, { AGENTRUN_SERVE_BUDGET_HOLD_MS: "1000" }, KEYS);
   const { RUN_MIB } = await import("../dist/harness.js");
