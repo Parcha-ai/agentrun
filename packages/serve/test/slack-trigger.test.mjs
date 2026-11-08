@@ -663,7 +663,7 @@ test("a reply in a Slack thread whose run waits on a tool call's approval never 
   assert.equal((await api("GET", `/runs/${started.run_id}`)).body.pending?.kind, "approval");
   assert.equal((await hook(reply("1767239060.000200", "1767239000.000100", "no, do not fetch it"))).body.ok, "received");
   const [skipped] = await firings(api, body.id, 2);
-  assert.deepEqual([skipped.status, skipped.reason], ["skipped", "The run is waiting on a person."], JSON.stringify(skipped));
+  assert.deepEqual([skipped.status, skipped.reason], ["skipped", `The last run, ${started.run_id}, is waiting for a person.`], JSON.stringify(skipped));
   const read = (await api("GET", `/runs/${started.run_id}`)).body;
   assert.deepEqual([read.status, read.state, read.pending?.kind, read.pending?.tool], ["input_required", "waiting", "approval", "web_fetch"], "the approval stands");
   assert.deepEqual(JSON.parse(await readFile(join(runDir(data, started.run_id), "serve.json"), "utf8")).approvals ?? {}, {}, "never answered");
@@ -682,7 +682,7 @@ test("a reply in a Slack thread whose run is paused at its spend cap never answe
   assert.equal((await api("GET", `/runs/${started.run_id}`)).body.pending?.kind, "budget");
   assert.equal((await hook(reply("1767240060.000200", "1767240000.000100", "go on"))).body.ok, "received");
   const [skipped] = await firings(api, body.id, 2);
-  assert.deepEqual([skipped.status, skipped.reason], ["skipped", "The run is waiting on a person."], JSON.stringify(skipped));
+  assert.deepEqual([skipped.status, skipped.reason], ["skipped", `The last run, ${started.run_id}, is waiting for a person.`], JSON.stringify(skipped));
   const read = (await api("GET", `/runs/${started.run_id}`)).body;
   assert.deepEqual([read.status, read.state, read.pending?.kind], ["input_required", "waiting", "budget"], "still paused at its cap");
   assert.equal((await api("POST", `/runs/${started.run_id}/cancel`)).status, 202);

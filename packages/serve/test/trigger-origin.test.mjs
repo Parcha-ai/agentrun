@@ -70,6 +70,7 @@ for (const harness of ["pi", "claude-agent"]) {
     assert.deepEqual(userEntries(data, fired.run_id), [{ text: sent, origin: { kind: "trigger", trigger_id: id, source: "webhook", owner: false } }], "the first input, as the model reads it, is the trigger's");
     assert.equal(rows.filter((r) => r.kind === "user_message").length, 0, `no "You:" row: ${JSON.stringify(rows.map((r) => [r.kind, r.summary]))}`);
     assert.deepEqual(rows.filter((r) => r.origin === "trigger").map((r) => [r.kind, r.summary]), [["phase", "Webhook on push: Triage this event."]]);
+    assert.equal((await api("GET", `/runs/${fired.run_id}`)).body.title, "Webhook on push", "titled from its trigger, never its payload's markup");
   });
 }
 
@@ -135,6 +136,7 @@ test("a schedule's run's first Timeline row names the schedule by its name, on a
   const { rows } = await follow(api, firing.run_id, ["completed"]);
   assert.deepEqual(named(rows), [`Schedule utc-check: Tell me the time in UTC. Hold the answer until ${gate}.`], "the final rows name it");
   assert.deepEqual(rows.find((r) => r.origin === "trigger").trigger, { id, source: "schedule", owner: true });
+  assert.equal((await api("GET", `/runs/${firing.run_id}`)).body.title, "Schedule utc-check");
   assert.equal((await api("DELETE", `/triggers/${id}`)).status, 204);
   const after = (await api("GET", `/runs/${firing.run_id}/timeline`)).body.rows;
   assert.deepEqual(named(after), [`Schedule ${id}: Tell me the time in UTC. Hold the answer until ${gate}.`], "a deleted trigger's row names it by its id");

@@ -65,7 +65,7 @@ test("a firing never answers a run that waits on a person: it is skipped with wh
   const { id, secret } = (await api("POST", "/triggers", messaging(run.run_id))).body;
   assert.equal((await post(baseUrl, id, "eu", secret)).status, 202);
   const [skipped] = await firings(api, id, 1);
-  assert.deepEqual([skipped.status, skipped.reason, skipped.run_id], ["skipped", "The run is waiting on a person.", null], JSON.stringify(skipped));
+  assert.deepEqual([skipped.status, skipped.reason, skipped.run_id], ["skipped", `The last run, ${run.run_id}, is waiting for a person.`, null], JSON.stringify(skipped));
   const read = (await api("GET", `/runs/${run.run_id}`)).body;
   assert.deepEqual([read.status, read.state, read.pending?.kind], ["input_required", "waiting", "question"], "still waiting, unanswered");
   assert.equal((await api("POST", `/runs/${run.run_id}/cancel`)).status, 202);
@@ -130,7 +130,7 @@ test("a run that comes to wait on a person between the firing's check and its do
   const { id, secret } = (await api("POST", "/triggers", messaging(run.run_id))).body;
   assert.equal((await post(server.baseUrl, id, "eu", secret)).status, 202);
   const [skipped] = await firings(api, id, 1);
-  assert.deepEqual([skipped.status, skipped.reason], ["skipped", "The run is waiting on a person."], JSON.stringify(skipped));
+  assert.deepEqual([skipped.status, skipped.reason], ["skipped", `The last run, ${run.run_id}, is waiting for a person.`], JSON.stringify(skipped));
   const read = (await api("GET", `/runs/${run.run_id}`)).body;
   assert.deepEqual([read.status, read.state, read.pending?.kind], ["input_required", "waiting", "question"], "the question stands, unanswered");
   const { rows } = await follow(api, run.run_id, ["input_required"]);
@@ -179,7 +179,7 @@ test("a trigger's message that reaches a run while a tool call waits for its own
   await said;
   if (seen.error) throw seen.error;
   assert.deepEqual(seen.approvals, {}, "no approval answered: none declined by the trigger's message");
-  assert.deepEqual([seen.firing.status, seen.firing.reason], ["skipped", "The run is waiting on a person."], JSON.stringify(seen.firing));
+  assert.deepEqual([seen.firing.status, seen.firing.reason], ["skipped", `The last run, ${run.run_id}, is waiting for a person.`], JSON.stringify(seen.firing));
   // Once the person's message is in, the call still waits for its owner: the same one, the only one, unanswered.
   let read;
   for (const end = Date.now() + 30_000; (read = (await api("GET", `/runs/${run.run_id}`)).body).pending?.kind !== "approval"; await new Promise((resolve) => setTimeout(resolve, 50))) assert.ok(Date.now() < end, `the approval still waits: ${JSON.stringify(read.pending)}`);
@@ -226,7 +226,7 @@ test("a trigger's message that reaches a run paused at its cap while another mes
   for (const end = Date.now() + 60_000; !seen; await new Promise((resolve) => setTimeout(resolve, 50))) assert.ok(Date.now() < end, "the person's message reached the seam");
   await said;
   if (seen.error) throw seen.error;
-  assert.deepEqual([seen.firing.status, seen.firing.reason], ["skipped", "The run is waiting on a person."], JSON.stringify(seen.firing));
+  assert.deepEqual([seen.firing.status, seen.firing.reason], ["skipped", `The last run, ${run.run_id}, is waiting for a person.`], JSON.stringify(seen.firing));
   const rows = (await api("GET", `/runs/${run.run_id}/timeline`)).body.rows;
   assert.equal(rows.filter((row) => (row.text ?? "").startsWith("A new event came in.")).length, 0, `no message of the trigger's: ${JSON.stringify(rows.map((r) => [r.kind, r.summary]))}`);
   assert.equal((await api("POST", `/runs/${run.run_id}/cancel`)).status, 202);
@@ -253,7 +253,7 @@ test("a run that comes to wait on a tool call's approval between the firing's ch
   const { id, secret } = (await api("POST", "/triggers", messaging(run.run_id))).body;
   assert.equal((await post(server.baseUrl, id, "eu", secret)).status, 202);
   const [skipped] = await firings(api, id, 1);
-  assert.deepEqual([skipped.status, skipped.reason], ["skipped", "The run is waiting on a person."], JSON.stringify(skipped));
+  assert.deepEqual([skipped.status, skipped.reason], ["skipped", `The last run, ${run.run_id}, is waiting for a person.`], JSON.stringify(skipped));
   const read = (await api("GET", `/runs/${run.run_id}`)).body;
   assert.deepEqual([read.status, read.state, read.pending?.kind, read.pending?.tool], ["input_required", "waiting", "approval", "web_fetch"], "the approval stands, unanswered");
   const { rows } = await follow(api, run.run_id, ["input_required"]);
@@ -272,7 +272,7 @@ test("a firing never reaches a run paused at its spend cap (pending budget): it 
   const { id, secret } = (await api("POST", "/triggers", messaging(run.run_id))).body;
   assert.equal((await post(baseUrl, id, "{}", secret)).status, 202);
   const [skipped] = await firings(api, id, 1);
-  assert.deepEqual([skipped.status, skipped.reason], ["skipped", "The run is waiting on a person."], JSON.stringify(skipped));
+  assert.deepEqual([skipped.status, skipped.reason], ["skipped", `The last run, ${run.run_id}, is waiting for a person.`], JSON.stringify(skipped));
   const read = (await api("GET", `/runs/${run.run_id}`)).body;
   assert.deepEqual([read.status, read.state, read.pending?.kind], ["input_required", "waiting", "budget"], "still paused at its cap");
   assert.equal((await api("POST", `/runs/${run.run_id}/cancel`)).status, 202);

@@ -611,5 +611,6 @@ test("a trigger's run cap counts every run it started that still works, however 
   const [third] = triggers.firings(hook.id).firings;
   assert.deepEqual([third.status, runs], ["due", 252], JSON.stringify(third));
   assert.match(third.reason, /max_active_runs/);
+  assert.match(third.reason, /^The trigger has 2 runs active /);
   working.delete("run-1");
 });
