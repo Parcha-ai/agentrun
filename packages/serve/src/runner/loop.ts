@@ -77,14 +77,14 @@ export interface PiRunSpec {
 export const DEFAULT_RESTART_LIMIT = 5;
 
 /** The first input's request id: pi answers a repeat of it from its submission, so a resumed run never asks twice. */
-const INPUT_REQUEST = "agentrun:input";
-const commandRequest = (id: number) => `agentrun:command:${id}`;
+export const INPUT_REQUEST = "agentrun:input";
+export const commandRequest = (id: number) => `agentrun:command:${id}`;
 /** The approval an approve or deny row names (commands.ts requires it): the asked call's id. */
-const approvalOf = (command: Command): string | undefined => {
+export const approvalOf = (command: Command): string | undefined => {
   const approval = (command.body as { approval?: unknown } | null)?.approval;
   return typeof approval === "string" ? approval : undefined;
 };
-const quiet: KernelHooks = { beforeIntent: async () => {}, beforeResult: async () => {} };
+export const quiet: KernelHooks = { beforeIntent: async () => {}, beforeResult: async () => {} };
 /** Held until the hook's own context aborts (pi closing the Session), so a parked call never moves on in this process. */
 const heldUntilAborted = (hookContext: Context) =>
   new Promise<never>((_, reject) => {
@@ -93,9 +93,9 @@ const heldUntilAborted = (hookContext: Context) =>
     signal?.addEventListener("abort", () => reject(new Parked()), { once: true });
   });
 /** How long a loop waits for pi to close a Session it no longer writes through. */
-const CLOSE_MS = 2_000;
+export const CLOSE_MS = 2_000;
 /** How long a person's stop waits for the turn to settle, by default. */
-const STOP_SETTLE_MS = 30_000;
+export const STOP_SETTLE_MS = 30_000;
 
 /** Loops for pi runs: `spec(claim)` gives each claim's run what it runs. */
 export function createPiLoop(spec: (claim: Claim) => PiRunSpec | Promise<PiRunSpec>): LoopFactory {
@@ -116,7 +116,7 @@ type Expected = { readonly run?: Staged["run"]; readonly also?: Staged["also"]; 
  * record's batch, so a command is taken with its effect or not at all), and resolves once that batch is stored. seal()
  * refuses every later commit.
  */
-class Gate {
+export class Gate {
   readonly journal: Journal;
   #sealed: Error | undefined;
   #pending: { match: Match; expected: Expected; landed: () => void; failed: (error: unknown) => void }[] = [];
@@ -187,10 +187,10 @@ function merge(all: readonly { expected: Expected; at: Matched }[]): Staged {
 }
 
 /** Whether `batches` write an entry of `kind` whose data `test` accepts. */
-const writesEntry = (kind: string, test: (data: Record<string, unknown>) => boolean = () => true): Match => (batches) =>
+export const writesEntry = (kind: string, test: (data: Record<string, unknown>) => boolean = () => true): Match => (batches) =>
   firstMatch(batches, (write) => write.type === "entry" && write.value.kind === kind && test((write.value.data ?? {}) as Record<string, unknown>));
 /** Where `batches` write the submission with request id `requestId`. */
-const writesSubmission = (requestId: string): Match => (batches) => firstMatch(batches, (write) => write.type === "submission" && write.value.requestId === requestId);
+export const writesSubmission = (requestId: string): Match => (batches) => firstMatch(batches, (write) => write.type === "submission" && write.value.requestId === requestId);
 /** The first write of `batches` that `test` takes: its batch's index and its record's id. */
 function firstMatch(batches: readonly (readonly StorageWrite[])[], test: (write: StorageWrite) => boolean): Matched | undefined {
   for (const [index, batch] of batches.entries()) {
@@ -201,18 +201,18 @@ function firstMatch(batches: readonly (readonly StorageWrite[])[], test: (write:
   return undefined;
 }
 
-class Parked extends Error {
+export class Parked extends Error {
   constructor() {
     super("the run parked on an ask: this loop writes nothing more");
   }
 }
-class Interrupted extends Error {
+export class Interrupted extends Error {
   constructor(reason: string) {
     super(`the loop stopped (${reason}): it writes nothing more`);
   }
 }
 /** The kernel's own fault between a call and its result: the Session restarts, the call before its result. */
-class KernelFault extends Error {
+export class KernelFault extends Error {
   constructor(call: ToolCall, cause: unknown) {
     super(`the kernel faulted on ${call.tool} (${call.callId}) before its result: ${(cause as Error)?.message ?? String(cause)}`, { cause });
   }
@@ -225,7 +225,7 @@ export function heldReporter(live: NonNullable<LoopDeps["live"]>): (value: unkno
 }
 
 /** A run's held state from its pi.live document: the tools running now and the answer streaming so far. */
-function heldStateOf(value: unknown): HeldState | undefined {
+export function heldStateOf(value: unknown): HeldState | undefined {
   const live = (value ?? {}) as { tools?: { callId: string; name: string; status: string; arguments?: unknown; output?: string }[]; generation?: { message?: { content?: { type: string; text?: string }[] } } };
   const tools = (live.tools ?? []).filter((slot) => slot.status === "running").map((slot) => ({ callId: slot.callId, name: slot.name, ...(slot.arguments !== undefined ? { args: slot.arguments } : {}), ...(slot.output ? { output: slot.output } : {}) }));
   const text = (live.generation?.message?.content ?? []).map((part) => (part.type === "text" ? part.text ?? "" : "")).join("");
@@ -234,7 +234,7 @@ function heldStateOf(value: unknown): HeldState | undefined {
 }
 
 /** A tool result pi wrote for a call it cut off at its restart limit, as its message, if any. */
-function restartLimited(entries: readonly EntryRecord[]): string | undefined {
+export function restartLimited(entries: readonly EntryRecord[]): string | undefined {
   for (const entry of entries) {
     if (entry.kind !== "pi.tool-result") continue;
     const diagnostics = (entry.data as { diagnostics?: { code?: string; message?: string }[] } | undefined)?.diagnostics ?? [];
@@ -569,7 +569,7 @@ function piLoop(specOf: (claim: Claim) => PiRunSpec | Promise<PiRunSpec>, deps: 
 }
 
 /** The root conversation's entries, oldest first. */
-async function entriesOf(journal: Journal, conversationId: ConversationId, context: Context): Promise<EntryRecord[]> {
+export async function entriesOf(journal: Journal, conversationId: ConversationId, context: Context): Promise<EntryRecord[]> {
   const out: EntryRecord[] = [];
   for (let cursor: unknown = undefined; ; ) {
     const page = await journal.scanEntries({ conversationId, order: "ascending" } as never, 500, cursor as never, context);
@@ -579,7 +579,7 @@ async function entriesOf(journal: Journal, conversationId: ConversationId, conte
   }
 }
 
-function findData<T>(entries: readonly EntryRecord[], kind: string, test: (data: T) => boolean): T | undefined {
+export function findData<T>(entries: readonly EntryRecord[], kind: string, test: (data: T) => boolean): T | undefined {
   for (const entry of entries) if (entry.kind === kind && test(entry.data as unknown as T)) return entry.data as unknown as T;
   return undefined;
 }
