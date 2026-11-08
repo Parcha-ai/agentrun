@@ -102,6 +102,65 @@ test("a CLI request when the host's tool charges are unknown (null) is refused f
   assert.equal(answer.refuse, "spend_cap_reached: Not sent: what the run has spent is unknown, so its cap of $1 cannot be kept: the run is out of budget.");
 });
 
+const ASK = { key: "k", label: "k", model: SONNET.id, turn: 1, maxTurns: null, spentUsd: 0, inFlight: [], inputTokensMax: 1_000, outputTokensAsked: 1_024 };
+const UNKNOWN_SPEND = "spend_cap_reached: Not sent: what the run has spent is unknown, so its cap of $1 cannot be kept: the run is out of budget.";
+const UNKNOWN_HELD = "spend_cap_reached: Not sent: what the run's steps still running hold is unknown, so its cap of $1 cannot be kept: the run is out of budget.";
+const UNMEASURED = "spend_cap_reached: Not sent: the size of the next model request's input is unknown, so the run's cap of $1 cannot be kept: the run is out of budget.";
+
+test("a CLI request when the host's tool holds are unknown (the held hook says null, or nothing) is refused for good as an unknown hold, never judged as $0 held", async () => {
+  for (const held of [null, undefined]) {
+    const before = beforeRequestOf({ capUsd: () => 1, modelOf: () => SONNET, now: () => T0, spentUsd: () => 0, heldUsd: () => held });
+    assert.equal((await before(ASK)).refuse, UNKNOWN_HELD, `held ${held}`);
+  }
+});
+
+test("a spent hook's figure that is not a finite figure of 0 or more frees no room: a negative, NaN or Infinity spend is refused as an unknown spend", async () => {
+  for (const figure of [-100, Number.NaN, Number.POSITIVE_INFINITY]) {
+    const before = beforeRequestOf({ capUsd: () => 1, modelOf: () => SONNET, now: () => T0, spentUsd: () => figure });
+    assert.equal((await before(ASK)).refuse, UNKNOWN_SPEND, `spent ${figure}`);
+  }
+});
+
+test("each part of the run's spend is checked on its own: a negative part beside a positive one ($1 and -$0.50, either way round) is refused as an unknown spend, never summed to a valid $0.50", async () => {
+  for (const [runner, hook] of [[1, -0.5], [-0.5, 1]]) {
+    const before = beforeRequestOf({ capUsd: () => 1, modelOf: () => SONNET, now: () => T0, spentUsd: () => hook });
+    assert.equal((await before({ ...ASK, spentUsd: runner })).refuse, UNKNOWN_SPEND, `runner ${runner}, hook ${hook}`);
+  }
+});
+
+test("each part of the run's holds is checked on its own: a negative held hook beside a $1 request in flight is refused as an unknown hold, never summed to a valid $0.50", async () => {
+  const before = beforeRequestOf({ capUsd: () => 1, modelOf: () => SONNET, now: () => T0, spentUsd: () => 0, heldUsd: () => -0.5 });
+  assert.equal((await before({ ...ASK, turn: 2, inFlight: [{ turn: 1, model: SONNET.id, holdUsd: 1 }] })).refuse, UNKNOWN_HELD);
+});
+
+test("a held hook's figure that is not a finite figure of 0 or more frees no room: a negative, NaN or Infinity hold is refused as an unknown hold", async () => {
+  for (const figure of [-100, Number.NaN, Number.POSITIVE_INFINITY]) {
+    const before = beforeRequestOf({ capUsd: () => 1, modelOf: () => SONNET, now: () => T0, spentUsd: () => 0, heldUsd: () => figure });
+    assert.equal((await before(ASK)).refuse, UNKNOWN_HELD, `held ${figure}`);
+  }
+});
+
+test("the runner's own spend as NaN, Infinity or below 0 is refused as an unknown spend, in words with no NaN", async () => {
+  const before = beforeRequestOf({ capUsd: () => 1, modelOf: () => SONNET, now: () => T0 });
+  for (const spentUsd of [Number.NaN, Number.POSITIVE_INFINITY, -1]) {
+    const answer = await before({ ...ASK, spentUsd });
+    assert.equal(answer.refuse, UNKNOWN_SPEND, `runner spent ${spentUsd}`);
+  }
+});
+
+test("a request in flight whose hold is below 0 frees no room: it counts at its worst case, and with no measure it is refused as unmeasured", async () => {
+  const before = beforeRequestOf({ capUsd: () => 1, modelOf: () => SONNET, now: () => T0 });
+  const answer = await before({ ...ASK, turn: 2, spentUsd: 0.99, inFlight: [{ turn: 1, model: SONNET.id, holdUsd: -100 }] });
+  assert.equal(answer.refuse, UNMEASURED);
+});
+
+test("a request in flight with no hold, no output limit and a model with priced output but no ceiling cannot be counted: refused, never priced at 0 output", async () => {
+  const open = { ...SONNET, id: "open-ended", outputCeiling: null };
+  const before = beforeRequestOf({ capUsd: () => 1, modelOf: (id) => (id === open.id ? open : SONNET), now: () => T0 });
+  const answer = await before({ ...ASK, turn: 2, spentUsd: 0.9, inFlight: [{ turn: 1, model: open.id, inputTokensMax: 1_000 }] });
+  assert.equal(answer.refuse, UNMEASURED);
+});
+
 test("a CLI request beside one in flight with no hold and no measured input is refused for good as unmeasured, never held at Infinity", async () => {
   const before = beforeRequestOf({ capUsd: () => 1, modelOf: () => SONNET, now: () => T0 });
   const answer = await before({ key: "k", label: "k", model: SONNET.id, turn: 2, maxTurns: null, spentUsd: 0, inFlight: [{ turn: 1, model: SONNET.id }], inputTokensMax: 10, outputTokensAsked: 1_024 });

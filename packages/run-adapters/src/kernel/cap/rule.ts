@@ -6,11 +6,18 @@
 import { CapRefused } from "./errors.js";
 import { FIT_TOLERANCE, inputBound, mostOutput, outputAsked, outputLeast, pricingOf, requestPrice, STOP_ALLOWANCE_TOKENS, thinkingWithin } from "./price.js";
 import { typicalCost, WRAP_UP_STEP0_ANSWER_TOKENS, wrapUpDue, wrapUpWords } from "./wrap-up.js";
-import { noCeiling, noPrice, noToolPrice, paidRefusal, roomRefusal, unknownSpend, unmeasured } from "./words.js";
+import { noCeiling, noPrice, noToolPrice, paidRefusal, roomRefusal, unknownHeld, unknownSpend, unmeasured } from "./words.js";
 import type { CapMode, ModelCapRequest, ToolCapRequest } from "./types.js";
 
-/** What a judgement reads: the cap (read before this check), the run's spend (null: unknown) and its holds. */
-export type JudgeState = { capUsd: number; spentUsd: number | null; heldUsd: number; mode: CapMode; now: number };
+/** What a judgement reads: the cap (read before this check), the run's spend (null: unknown) and its holds (null:
+ *  unknown). */
+export type JudgeState = { capUsd: number; spentUsd: number | null; heldUsd: number | null; mode: CapMode; now: number };
+/** The state once both figures are known. */
+type Known = JudgeState & { spentUsd: number; heldUsd: number };
+
+/** A money figure the cap can count: a finite number of 0 or more. Anything else (null, NaN, Infinity, below 0) is
+ *  unknown: it never reads as $0 and never frees room. */
+export const isFigure = (usd: unknown): usd is number => typeof usd === "number" && Number.isFinite(usd) && usd >= 0;
 
 /** A step admitted: what it is held at, the most a cache miss adds, its worst case, the output it may be sent with and its
  *  thinking budget, and what it counts at if stopped having streamed that many tokens (within its hold). */
@@ -26,7 +33,7 @@ export function priced(request: ModelCapRequest, mode: CapMode, now: number) {
   return { asked, cost, worst, least: asked === undefined ? 0 : outputLeast(request, asked) };
 }
 
-function judgeModel(request: ModelCapRequest, { capUsd, spentUsd: spent, heldUsd: held, mode, now }: JudgeState & { spentUsd: number }): Judged {
+function judgeModel(request: ModelCapRequest, { capUsd, spentUsd: spent, heldUsd: held, mode, now }: Known): Judged {
   if (inputBound(request) === undefined) throw new CapRefused(unmeasured(capUsd), { forGood: true, spentUsd: spent });
   const price = request.model.price;
   if (price === null) throw new CapRefused(noPrice(capUsd), { forGood: true, spentUsd: spent });
@@ -51,7 +58,7 @@ function judgeModel(request: ModelCapRequest, { capUsd, spentUsd: spent, heldUsd
   };
 }
 
-function judgeTool(request: ToolCapRequest, { capUsd, spentUsd: spent, heldUsd: held }: JudgeState & { spentUsd: number }): Judged {
+function judgeTool(request: ToolCapRequest, { capUsd, spentUsd: spent, heldUsd: held }: Known): Judged {
   // A hold that is not a finite figure of 0 or more cannot be kept within a cap (a NaN would fail every check open; a
   // negative one would free room): refused for good.
   if (typeof request.holdUsd !== "number" || !Number.isFinite(request.holdUsd) || request.holdUsd < 0) throw new CapRefused(noToolPrice(capUsd, request.name), { forGood: true, spentUsd: spent });
@@ -65,8 +72,10 @@ function judgeTool(request: ToolCapRequest, { capUsd, spentUsd: spent, heldUsd: 
 
 /** The one rule: admits `request` under `state`, or throws CapRefused. */
 function judge(request: ModelCapRequest | ToolCapRequest, state: JudgeState): Judged {
-  if (state.spentUsd === null) throw new CapRefused(unknownSpend(state.capUsd), { forGood: true, spentUsd: null });
-  const known = { ...state, spentUsd: state.spentUsd };
+  // An unknown figure refuses for good: no raise can make it fit, and none is read as $0 (its words never say NaN).
+  if (!isFigure(state.spentUsd)) throw new CapRefused(unknownSpend(state.capUsd), { forGood: true, spentUsd: null });
+  if (!isFigure(state.heldUsd)) throw new CapRefused(unknownHeld(state.capUsd), { forGood: true, spentUsd: state.spentUsd });
+  const known: Known = { ...state, spentUsd: state.spentUsd, heldUsd: state.heldUsd };
   return request.kind === "model" ? judgeModel(request, known) : judgeTool(request, known);
 }
 
