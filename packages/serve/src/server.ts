@@ -72,7 +72,7 @@ import { WEBHOOK_EVENTS, Webhooks } from "./webhooks.js";
 import { type SealedSettings } from "./sealed-settings.js";
 import { openServerSecrets, type ServerSecrets } from "./server-secrets.js";
 import { HOOK_TOLERANCE_S } from "./standard-webhooks.js";
-import { GitHubConnect, GitHubConnection, githubTargetOf, startedHere as gitHubStartedHere, stateCookie } from "./github-connection.js";
+import { GitHubConnect, GitHubConnection, githubTargetOf, INSTALLED_PATH, startedHere as gitHubStartedHere, stateCookie } from "./github-connection.js";
 import { GITHUB_API } from "./github.js";
 import { HookCut, receivePush } from "./push-handler.js";
 import type { TriggerAdapter } from "./trigger-adapter.js";
@@ -2044,12 +2044,17 @@ async function startHolding(options: ServeOptions, data: string, lock: ServerLoc
       const state = url.searchParams.get("state") ?? "";
       // Another browser's (no cookie for this state) leaves the state as it is, for the browser that started it.
       if (!state || !gitHubStartedHere(req.headers.cookie, req.socket.localPort, state)) return void res.writeHead(302, { location: githubConnect.failed("state_invalid", "the browser brought no cookie for this state"), "cache-control": "no-store" }).end();
-      const location = await githubConnect.callback(url.searchParams.get("code"), state, stopping.signal);
-      return void res.writeHead(302, { location, "cache-control": "no-store", "set-cookie": stateCookie(req.socket.localPort, state, overHttps(req), 0) }).end();
+      const { location, installState } = await githubConnect.callback(url.searchParams.get("code"), state, stopping.signal);
+      // Its state's cookie goes; the install state's is set, for the installed redirect GitHub sends this browser to.
+      const cookies = [stateCookie(req.socket.localPort, state, overHttps(req), 0), ...(installState ? [stateCookie(req.socket.localPort, installState, overHttps(req), undefined, INSTALLED_PATH)] : [])];
+      return void res.writeHead(302, { location, "cache-control": "no-store", "set-cookie": cookies }).end();
     }
     if (found.name === "gitHubInstalled") {
-      const location = await githubConnect.installed(url.searchParams.get("installation_id"), stopping.signal);
-      return void res.writeHead(302, { location, "cache-control": "no-store" }).end();
+      // Bound only by the install state the callback sent GitHub and the cookie it set in this browser.
+      const state = url.searchParams.get("state");
+      const bound = state && gitHubStartedHere(req.headers.cookie, req.socket.localPort, state) ? state : null;
+      const location = await githubConnect.installed(url.searchParams.get("installation_id"), bound, stopping.signal);
+      return void res.writeHead(302, { location, "cache-control": "no-store", ...(bound ? { "set-cookie": stateCookie(req.socket.localPort, bound, overHttps(req), 0, INSTALLED_PATH) } : {}) }).end();
     }
     if (found.name === "getHealth") {
       const health = await healthOf(data, minFreeBytes);

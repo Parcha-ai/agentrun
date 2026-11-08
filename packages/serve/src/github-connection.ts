@@ -69,9 +69,10 @@ export class ManifestStates {
 }
 
 const cookieName = (port: number | undefined, state: string) => `agentrun-github-${port ?? 0}-${createHash("sha256").update(state).digest("hex").slice(0, 16)}`;
-/** The cookie a start sets in the browser that started it, which the callback must bring: no other browser finishes it. */
-export const stateCookie = (port: number | undefined, state: string, https: boolean, maxAgeS = STATE_MS / 1000) =>
-  `${cookieName(port, state)}=${maxAgeS ? state : ""}; HttpOnly; SameSite=Lax; Path=${CALLBACK_PATH}; Max-Age=${maxAgeS}${https ? "; Secure" : ""}`;
+/** The cookie a step sets in the browser that took it, which the next step (on `path`: the callback, or the installed
+ *  redirect) must bring: no other browser finishes it. */
+export const stateCookie = (port: number | undefined, state: string, https: boolean, maxAgeS = STATE_MS / 1000, path = CALLBACK_PATH) =>
+  `${cookieName(port, state)}=${maxAgeS ? state : ""}; HttpOnly; SameSite=Lax; Path=${path}; Max-Age=${maxAgeS}${https ? "; Secure" : ""}`;
 /** Whether the callback's request carries the cookie its state's start set. */
 export function startedHere(cookies: string | undefined, port: number | undefined, state: string): boolean {
   const name = `${cookieName(port, state)}=`;
@@ -148,11 +149,15 @@ export class GitHubConnection {
  *  and where a step that finished sends the browser. */
 export class GitHubConnect {
   readonly states: ManifestStates;
+  /** The install states a callback sends on to GitHub's install page, which GitHub passes to the setup URL: the one
+   *  binding of an installed redirect to the browser that connected. */
+  readonly installStates: ManifestStates;
   constructor(
     private readonly connection: GitHubConnection,
     private readonly options: { publicUrl?: string; api: string; say: (fields: Record<string, string>) => void; now?: () => number },
   ) {
     this.states = new ManifestStates(options.now);
+    this.installStates = new ManifestStates(options.now);
   }
 
   /** POST /integrations/github/connect: the form the console posts to GitHub (its action, with the state, and the
@@ -165,7 +170,7 @@ export class GitHubConnect {
     if (!base) throw new ApiError("github_no_public_url", "GitHub can't reach this server: set its public URL first (AGENTRUN_PUBLIC_URL, the https address GitHub sends events to), then connect again.");
     // The state's cookie is set where the console asked from, and GitHub sends the browser back to the public URL: the
     // one origin, or the callback never sees it. Refused before any state is made.
-    if (origin !== new URL(base).origin) throw new ApiError("github_wrong_origin", `Open this server at ${base} to connect GitHub.`, { details: { open: base } });
+    if (origin !== new URL(base).origin) throw new ApiError("github_wrong_origin", `Open this server at ${base} to connect GitHub.`, { details: { public_url: base } });
     const unwritable = this.connection.unwritable();
     if (unwritable) throw unwritable;
     if (this.connection.view()) throw new ApiError("github_already_connected", "This server already has a GitHub App. Disconnect it first.");
@@ -195,36 +200,45 @@ export class GitHubConnect {
   /** GET /integrations/github/callback, its state checked (the server checks the browser's cookie first): the code
    *  converted into the App's credentials, kept sealed, its client secret dropped; where to send the browser next: to
    *  install the App, or back to the console with state_invalid or conversion_failed. */
-  async callback(code: string | null, state: string | null, signal?: AbortSignal): Promise<string> {
-    if (!state || !this.states.take(state)) return this.failed("state_invalid", "the state is unknown, used, or over an hour old");
-    if (!code || !/^[A-Za-z0-9_-]{1,200}$/.test(code)) return this.failed("conversion_failed", "GitHub's redirect brought no code");
-    if (this.connection.view()) return this.failed("already_connected", "a GitHub App is connected already");
+  async callback(code: string | null, state: string | null, signal?: AbortSignal): Promise<{ location: string; installState?: string }> {
+    if (!state || !this.states.take(state)) return { location: this.failed("state_invalid", "the state is unknown, used, or over an hour old") };
+    if (!code || !/^[A-Za-z0-9_-]{1,200}$/.test(code)) return { location: this.failed("conversion_failed", "GitHub's redirect brought no code") };
+    if (this.connection.view()) return { location: this.failed("already_connected", "a GitHub App is connected already") };
     let answer: { status: number; json: unknown };
     try {
       answer = await githubCall(this.options.api, `/app-manifests/${code}/conversions`, { method: "POST", ...(signal ? { signal } : {}) });
     } catch (error) {
-      return this.failed("conversion_failed", (error as Error).message);
+      return { location: this.failed("conversion_failed", (error as Error).message) };
     }
     const app = isObject(answer.json) ? answer.json : {};
     if (answer.status !== 201 || !Number.isSafeInteger(app.id) || typeof app.slug !== "string" || typeof app.client_id !== "string" || typeof app.pem !== "string" || typeof app.webhook_secret !== "string") {
-      return this.failed("conversion_failed", `GitHub answered the code's conversion with HTTP ${answer.status}${answer.status === 201 ? " and no App" : ""}`);
+      return { location: this.failed("conversion_failed", `GitHub answered the code's conversion with HTTP ${answer.status}${answer.status === 201 ? " and no App" : ""}`) };
     }
     // Another Connect may have kept its App while GitHub converted this code: one App per server, the first kept.
-    if (this.connection.view()) return this.failed("already_connected", `a GitHub App was connected while GitHub made this one (${app.slug}); delete that one on GitHub`);
+    if (this.connection.view()) return { location: this.failed("already_connected", `a GitHub App was connected while GitHub made this one (${app.slug}); delete that one on GitHub`) };
     const owner = isObject(app.owner) && typeof app.owner.login === "string" ? app.owner : undefined;
     const settingsUrl = owner?.type === "Organization" ? `${GITHUB_WEB}/organizations/${owner.login}/settings/apps/${app.slug}` : `${GITHUB_WEB}/settings/apps/${app.slug}`;
     try {
       this.connection.save({ id: String(app.id), slug: app.slug, clientId: app.client_id, pem: app.pem, webhookSecret: app.webhook_secret, settingsUrl });
     } catch (error) {
-      return this.failed("conversion_failed", `the App's credentials were not kept (${(error as Error).message})`);
+      return { location: this.failed("conversion_failed", `the App's credentials were not kept (${(error as Error).message})`) };
     }
     this.options.say({ condition: "github_connected", app_id: String(app.id), slug: app.slug });
-    return `${GITHUB_WEB}/apps/${encodeURIComponent(app.slug)}/installations/new`;
+    // On to install it, with a fresh install state GitHub passes on to the setup URL (the server sets its cookie).
+    const installState = this.installStates.make();
+    return { location: `${GITHUB_WEB}/apps/${encodeURIComponent(app.slug)}/installations/new?state=${encodeURIComponent(installState)}`, installState };
   }
 
   /** GET /integrations/github/installed: the installation GitHub's redirect names, kept once GitHub, asked with the
-   *  App's JWT, says it is the App's; where to send the browser: the console, connected or installation_unverified. */
-  async installed(installationId: string | null, signal?: AbortSignal): Promise<string> {
+   *  App's JWT, says it is the App's; where to send the browser: the console, connected or installation_unverified. It
+   *  records one only with the install state its callback sent (`state`, the server checked the browser's cookie for it):
+   *  a redirect without it (an install made from GitHub's own pages, or anyone's request) records nothing and lands on the
+   *  console, the installation arriving as the App's signed installation event. */
+  async installed(installationId: string | null, state: string | null, signal?: AbortSignal): Promise<string> {
+    if (!state || !this.installStates.take(state)) {
+      this.options.say({ condition: "github_install_unbound", installation: String(installationId ?? "").slice(0, 20) });
+      return consoleAt(this.options.publicUrl, CONNECTED_PAGE);
+    }
     if (!installationId || !/^\d{1,15}$/.test(installationId)) return this.failed("installation_unverified", "GitHub's redirect named no installation");
     const credentials = this.connection.credentials();
     if (!credentials || !this.connection.view()) return this.failed("installation_unverified", "no GitHub App is connected");
