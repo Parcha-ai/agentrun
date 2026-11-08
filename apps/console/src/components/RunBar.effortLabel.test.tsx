@@ -3,6 +3,8 @@ import { createRoot } from "react-dom/client";
 import { afterEach, describe, expect, it } from "vitest";
 import { RunBar } from "./RunBar";
 import type { Agent } from "@/lib/agentForm";
+// The shared picker helper: importing it installs the ResizeObserver stub the picker's positioning needs (jsdom has none).
+import "@/test/picker";
 
 // The run bar's visible "Effort" caption is the Picker's label: a click on it acts on the picker as a click on the picker
 // does (its list opens, focus moves into it), as a click on a select's label did.
