@@ -9,6 +9,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { PassThrough } from "node:stream";
 import { DaemonClient, epochOf } from "../dist/index.js";
+import { MAX_OUTPUT_BYTES } from "../dist/protocol.js";
 
 const fail = (code, message) => ({ ok: false, error: { code, message } });
 const ok = (value) => ({ ok: true, value });
@@ -127,9 +128,14 @@ function fakeDaemon(hello, computer) {
 			const reply = (body) => fromDaemon.write(`${JSON.stringify({ jsonrpc: "2.0", id: request.id, ...body })}\n`);
 			if (request.method === "hello") reply({ result: hello });
 			else if (request.method === "ping") reply({ result: {} });
-			else if (request.method === "exec.run") {
+			else if (request.method === "exec.run" && (request.params.maxOutput ?? 0) > MAX_OUTPUT_BYTES) {
+				// As computerd refuses it: more output than one reply line holds.
+				reply({ error: { code: -32602, message: `maxOutput ${request.params.maxOutput} is over the most a reply line holds, ${MAX_OUTPUT_BYTES}`, data: { kind: "invalid" } } });
+			} else if (request.method === "exec.run") {
 				const cat = catOf(request.params.argv, request.params.cwd, computer);
-				const ran = cat ?? { exitCode: 0, stdout: output(request.params.argv, { ...computer, user: request.params.user }), stderr: "" };
+				// A computer has no sudo for its user (the Archil image ships none).
+				const sudo = request.params.argv.join(" ").includes("sudo -n") ? { exitCode: 127, stdout: "", stderr: "sh: sudo: not found\n" } : undefined;
+				const ran = cat ?? sudo ?? { exitCode: 0, stdout: output(request.params.argv, { ...computer, user: request.params.user }), stderr: "" };
 				reply({ result: { exitCode: ran.exitCode, stdout: b64(ran.stdout), stderr: b64(ran.stderr), timedOut: false, truncated: false } });
 			} else if (["files.mkdir", "files.write", "files.list", "files.read"].includes(request.method)) {
 				const result = files(computer, request.method, request.params);

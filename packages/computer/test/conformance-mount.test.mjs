@@ -88,6 +88,13 @@ test("mount.run-folder-bind passes a fake that binds the run's folder at /worksp
 	assert.match(text, /^full mount +run-folder-bind run-folder-archil +✓ 2 - 1$/m, text);
 });
 
+test("mount.archil-token asks exec.run for no more output than a reply line holds, and passes a fake daemon that refuses more, as computerd does", async () => {
+	// Review (#1994, P2) and the Daytona live run: it asked for 4 MiB, over MAX_OUTPUT_BYTES, and failed before checking.
+	const report = await run({ mount: ["archil"] }, { ids: ["mount.archil-token"] });
+	const [result] = report.results;
+	assert.equal(result.status, "pass", result.reason);
+});
+
 test("mount.run-folder-archil passes a fake that mounts the Archil folder, and the bind case skips", async () => {
 	const report = await run({ mount: ["archil"] });
 	assert.deepEqual(statuses(report), { "mount.run-folder-bind": "skip", "mount.run-folder-archil": "pass", "mount.undeclared-kind": "pass" }, JSON.stringify(reasons(report)));
