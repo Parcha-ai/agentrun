@@ -101,7 +101,7 @@ const itemOf = (file: string): string => {
 };
 
 /** `proposal` with only what `verdict` keeps (a verdict per item): a note or file its item keeps or holds. */
-function keptOf(proposal: KeptProposal, verdict: Verdict): KeptProposal {
+export function keptOf(proposal: KeptProposal, verdict: Verdict): KeptProposal {
   if (!verdict.items.length) return proposal;
   const kept = new Set(verdict.items.filter((item) => item.keep).map((item) => item.file));
   return { ...proposal, notes: proposal.notes.filter(({ file }) => kept.has(file)), files: (proposal.files ?? []).filter(({ file }) => kept.has(itemOf(file))) };
@@ -111,7 +111,7 @@ function keptOf(proposal: KeptProposal, verdict: Verdict): KeptProposal {
  *  the origin its item gives (`you` for the user's own words, else the run's) and held for its owner's OK when its item
  *  is pending; a skill's SKILL.md or a draft's README.md held when its item is (a draft's workflow.json is held by its
  *  README); and the seed the source run started from, so a skill's or draft's file changed on main since is a conflict. */
-function mergeChangeOf(runId: string, merging: KeptProposal, verdict: Verdict, graded: Readonly<Record<string, string>>): MergeChange {
+export function mergeChangeOf(runId: string, merging: KeptProposal, verdict: Verdict, graded: Readonly<Record<string, string>>): MergeChange {
   const judged = new Map(verdict.items.map((item) => [item.file, item]));
   const notes = merging.notes.map(({ file, text }) => ({ path: file, text: mergedNote(text, { origin: judged.get(file)?.origin ?? "run" }) }));
   const files = (merging.files ?? []).map(({ file, text }) => ({ path: file, text }));

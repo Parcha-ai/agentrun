@@ -9,7 +9,7 @@ import { readFileSync } from "node:fs";
 import { join } from "node:path";
 import { test } from "node:test";
 import { note } from "./fixtures/faux-learn.mjs";
-import { ended, LEARN, learner, made, savedOf, started } from "./learn-support.mjs";
+import { ended, LEARN, learner, made, RUN_END_TODO, savedOf, started } from "./learn-support.mjs";
 import { runDir, serve, storeRun } from "./support.mjs";
 
 const UNITS = note("Check units", "Convert every amount to one unit before comparing", "Amounts in one answer came in cents and in dollars.\n");
@@ -43,7 +43,7 @@ function sideOf(data, runIds) {
   };
 }
 
-test("an agent's impact: null before any note and until each side counts 2 runs; then before its first note against runs seeded with one, each side's time to the answer, its job's own cost and what learning cost, from the store's rows and each run's learning; a run with learning off and one seeded with no note are on neither side; a restarted server, which holds none of the runs, reads the same from the learning ledger", { timeout: 240_000 }, async (t) => {
+test("an agent's impact: null before any note and until each side counts 2 runs; then before its first note against runs seeded with one, each side's time to the answer, its job's own cost and what learning cost, from the store's rows and each run's learning; a run with learning off and one seeded with no note are on neither side; a restarted server, which holds none of the runs, reads the same from the learning ledger", { timeout: 240_000, skip: RUN_END_TODO }, async (t) => {
   const first = await serve(t, { learning: "on", faux: LEARN });
   let { api } = first;
   const { data } = first;

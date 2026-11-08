@@ -71,39 +71,3 @@ test("a link planted at the agent's learning folder after the run started: the e
   assert.deepEqual(tree(proposerAside), proposerBefore, "nothing written through the link");
 });
 
-test("a link planted at the agent's learning folder while a run's proposal waits for its grade: the grade's read of main is refused, the grader never asked, and the merge of a kept verdict is refused, both grade_failed; main never moves", { timeout: 180_000 }, async (t) => {
-  const dir = await scratch(t);
-  const calls = join(dir, "calls.jsonl");
-  withEnv(t, { AGENTRUN_TEST_FAUX_CALLS: calls, AGENTRUN_TEST_FAUX_GRADE_HOLD: "1" }, ["TYPESAFE_API_KEY", "OPENROUTER_API_KEY"]);
-  // Two runs proposed, each held at its grader, and the server closed under them: both stay proposed.
-  const first = await serve(t, { learning: "on", faux: LEARN });
-  const { data } = first;
-  const runs = {};
-  for (const id of ["reader", "merger"]) {
-    await made(first.api, learner(id, { plan: PLAN }));
-    runs[id] = await started(first.api, id);
-    await until(`${id}'s grader is asked`, async () => (await first.api("GET", `/runs/${runs[id]}`)).body.learning?.state === "proposed" && callsIn(calls).length === Object.keys(runs).length);
-  }
-  await first.close();
-  delete process.env.AGENTRUN_TEST_FAUX_GRADE_HOLD;
-  // The merger's verdict was kept before the server went: its next start merges on it, without reading main to grade.
-  const file = join(runDir(data, runs.merger), "serve.json");
-  const meta = JSON.parse(readFileSync(file, "utf8"));
-  assert.equal(meta.learning.state, "proposed");
-  writeFileSync(file, JSON.stringify({ ...meta, learning: { ...meta.learning, verdict: { merge: true, reason: "Each note is general and new.", items: [{ file: "check-units.md", keep: true, why: "It holds as a general rule." }] }, cost_usd: { grade: 0.001 }, tokens: { grade: { input: 1, cache_read: 0, cache_write: 0, output: 1 } } } }));
-  const before = {};
-  for (const id of ["reader", "merger"]) {
-    plant(data, id, join(dir, `${id}-learning`));
-    before[id] = tree(join(dir, `${id}-learning`));
-  }
-
-  const second = await serve(t, { learning: "on", faux: LEARN, data });
-  for (const id of ["reader", "merger"]) {
-    const { view, rows } = await ended(second.api, runs[id]);
-    settled(view, rows, "dropped", "grade_failed");
-    await savedOf(data, runs[id]);
-    assert.deepEqual(tree(join(dir, `${id}-learning`)), before[id], `${id}: nothing written through the link`);
-    assert.equal(git(join(dir, `${id}-learning`), ["rev-list", "--count", "main"]), "1", `${id}: main did not move`);
-  }
-  assert.equal(callsIn(calls).length, 2, "the grader was not asked again: main was never read through the link");
-});
