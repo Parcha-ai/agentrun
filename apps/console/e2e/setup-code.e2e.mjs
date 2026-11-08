@@ -13,8 +13,8 @@
 // server's API token) in F, with the owner's password in P, sets the password and signs in; over https the page carries
 // Strict-Transport-Security. Neither file's content is printed.
 // No fixed sleeps: every wait is for a condition, with a bound. Exits 0 when every check holds, else 1.
-// Needs the repository built (npm run build). Chrome: CHROME_BIN, else playwright's own; playwright-core: PLAYWRIGHT_CORE,
-// else the package `playwright-core`.
+// Needs the repository built (npm run build). Chrome: CHROME_BIN, else playwright's own; playwright-core: PLAYWRIGHT_CORE
+// (its index.mjs or its index.js: either loads), else the package `playwright-core`.
 import { spawn } from "node:child_process";
 import { mkdtemp, readFile, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
@@ -23,7 +23,10 @@ import { fileURLToPath } from "node:url";
 
 const ROOT = fileURLToPath(new URL("../../../", import.meta.url));
 const CLI = join(ROOT, "packages/serve/dist/cli.js");
-const { chromium } = await import(process.env.PLAYWRIGHT_CORE ?? "playwright-core");
+// index.mjs exports `chromium`; the CommonJS index.js, imported, has it only on its default export.
+const playwright = await import(process.env.PLAYWRIGHT_CORE ?? "playwright-core");
+const chromium = playwright.chromium ?? playwright.default?.chromium;
+if (!chromium) throw new Error(`no chromium in ${process.env.PLAYWRIGHT_CORE ?? "playwright-core"}`);
 const NOTE = "Find the setup code in the server's log (on Render, the Logs tab), or open the link the log prints. The server's API token (AGENTRUN_TOKEN) works here too.";
 const PASSWORD = ["not", "a", "secret", "e2e", "setup"].join("-");
 const HSTS = "max-age=31536000";
