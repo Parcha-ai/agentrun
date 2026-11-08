@@ -1,12 +1,12 @@
 // Settings → Computers, the serve side: which computers this server offers, each provider's keys (saved or not, never a
 // value), saving a provider's keys sealed in the store, testing a provider's account, and the refusal a run meets at its
-// claim when its agent's computer cannot be had here. createComputerRoutes takes the server's Store and the computer
-// package's kind registry by its own names (SETTING_KINDS, PROVIDERS, servingRefusals) and a TestConnection; the tools
-// each kind brings come from the kernel's tool registry (capabilityToolDefs). Keys go by their names only: a provider
-// declares them, Settings takes only those, and the store keeps each sealed under the server's seal key
-// (server-keys.ts); a provider is handed its keys only at the claim, or for its test. testConnectionOf is serve's
-// TestConnection: it maps a provider's keys, by name, onto the options its create() takes, builds it, and asks it for
-// its one account-level read.
+// claim when its agent's computer cannot be had here, with the options its provider is made with. createComputerRoutes
+// takes the server's Store and the computer package's kind registry by its own names (SETTING_KINDS, PROVIDERS,
+// servingRefusals); the tools each kind brings come from the kernel's tool registry (capabilityToolDefs). Keys go by
+// their names only: a provider declares them, Settings takes only those, and the store keeps each sealed under the
+// server's seal key (server-keys.ts); a provider is handed its keys only at the claim, or for its test, both through
+// computer-keys.ts (providerOptions, testConnection), which maps a key's name onto the option it fills.
+import { type OptionsAnswer, type ProviderFactories, type ProviderSettings, providerOptions, testConnection } from "./computer-keys.js";
 import { COMPUTER_KINDS, type ComputerKind, type ComputerSetting } from "./computer-setting.js";
 import { getSealedKey, putSealedKey, removeSealedKey, sealedKeyNames } from "./server-keys.js";
 import type { Store } from "./store/index.js";
@@ -33,11 +33,6 @@ export interface ProviderEntry {
   readonly capabilities: readonly KindCapabilities[];
 }
 
-/** An answer of a TestConnection (the computer package's Result). */
-export type TestResult = { ok: true; value: { detail: string } } | { ok: false; error: { code: string; message: string } };
-/** The kind registry's TestConnection: one account-level read with the keys by their serve-side names, never a create. */
-export type TestConnection = (providerId: string, options: { keys: Readonly<Record<string, string>>; signal?: AbortSignal }) => Promise<TestResult>;
-
 /** The kind registry, by its own names. */
 export interface KindRegistry {
   readonly SETTING_KINDS: Readonly<Record<ComputerKind, SettingKindSpec>>;
@@ -54,7 +49,10 @@ export interface ComputerRoutesOptions {
   /** The server's seal key; absent, no key is kept here. */
   readonly sealKey: Buffer | undefined;
   readonly kinds: KindRegistry;
-  readonly testConnection: TestConnection;
+  /** Each provider module's create(), by provider id (the computer package's): what a test and a claim make. */
+  readonly factories: ProviderFactories;
+  /** The server's settings that go to a provider's options but are no key (the Modal app). */
+  readonly settings?: ProviderSettings;
   /** The model-visible tools a kind brings (the kernel registry's capabilityToolDefs), by name. */
   readonly tools: (kind: ComputerKind) => readonly string[];
   readonly mode: FolderMode;
@@ -98,18 +96,10 @@ const missingKeys = (provider: ProviderEntry, saved: ReadonlySet<string>): strin
 const keysWhy = (provider: ProviderEntry, missing: readonly string[]): string =>
   `${provider.label} needs ${missing.join(" and ")} saved: save ${missing.length > 1 ? "them" : "it"} in Settings → Computers (PUT /v2/computers/${provider.id}/keys)`;
 
-/** A failed account test in plain words, by its code: the key refused, the vendor not reached, or the vendor's own words. */
-function testWhy(provider: ProviderEntry, error: { code: string; message: string }): string {
-  const names = provider.keys.map((key) => key.name).join(" and ");
-  if (error.code === "unauthorized") return `${provider.label} refused the key: check ${names} in Settings → Computers, then test again`;
-  if (error.code === "unreachable") return `${provider.label} could not be reached from this server: check its network${provider.keys.some((key) => key.name.endsWith("_API_URL")) ? ", and the API URL if you saved one" : ""}, then test again`;
-  return `${provider.label} did not pass its test: ${error.message}`;
-}
-
 /** The routes' work over the server's store: GET /v2/computers (view), PUT /v2/computers/{provider}/keys (saveKeys), POST
  *  /v2/computers/{provider}/test (test), and the claim's refusal (claimRefusal). */
 export function createComputerRoutes(options: ComputerRoutesOptions) {
-  const { store, sealKey, kinds, testConnection, tools, mode } = options;
+  const { store, sealKey, kinds, factories, settings = {}, tools, mode } = options;
   const providerOf = (id: string) => kinds.PROVIDERS.find((one) => one.id === id);
 
   /** Each kind, whether this server offers it and why not, the capability groups and tools it brings, and each provider
@@ -161,16 +151,16 @@ export function createComputerRoutes(options: ComputerRoutesOptions) {
     return keys;
   }
 
-  /** The account test of a provider with its saved keys: one account-level read, never a create. Undefined for a provider
-   *  this server does not have. */
+  /** The account test of a provider with its saved keys (computer-keys.ts testConnection): one account-level read, never a
+   *  create. Its words are the answer's why. Undefined for a provider this server does not have. */
   async function test(providerId: string, signal?: AbortSignal): Promise<TestView | undefined> {
     const provider = providerOf(providerId);
     if (!provider) return undefined;
     const keys = await keysOf(provider);
     const missing = missingKeys(provider, new Set(Object.keys(keys)));
     if (missing.length) return { ok: false, why: keysWhy(provider, missing) };
-    const answer = await testConnection(providerId, { keys, ...(signal ? { signal } : {}) });
-    return answer.ok ? { ok: true, detail: answer.value.detail } : { ok: false, why: testWhy(provider, answer.error) };
+    const answer = await testConnection(providerId, { keys, ...(signal ? { signal } : {}) }, factories, settings);
+    return answer.ok ? { ok: true, detail: answer.value.detail } : { ok: false, why: answer.error.message };
   }
 
   /** Why a run of an agent whose computer is `computer` cannot have it here, in words naming the setting to fill;
@@ -190,51 +180,17 @@ export function createComputerRoutes(options: ComputerRoutesOptions) {
     return missing.length ? keysWhy(provider, missing) : undefined;
   }
 
-  return { view, saveKeys, test, claimRefusal, keysOf };
+  /** What the claim makes a run's computer with: the options its provider's create() takes, from its saved keys and the
+   *  server's settings (computer-keys.ts providerOptions); refused with computer_unavailable and claimRefusal's words when
+   *  the computer cannot be had here. Undefined for a run with no computer. */
+  async function claimOptions(computer: ComputerSetting): Promise<OptionsAnswer | undefined> {
+    if (computer.kind === "none") return undefined;
+    const why = await claimRefusal(computer);
+    if (why) return { ok: false, error: { code: COMPUTER_UNAVAILABLE, message: why } };
+    return providerOptions(computer.provider, await keysOf(providerOf(computer.provider)!), settings);
+  }
+
+  return { view, saveKeys, test, claimRefusal, claimOptions };
 }
 
 export type ComputerRoutes = ReturnType<typeof createComputerRoutes>;
-
-/** A provider as its create() builds it, as far as the test reads it. */
-export interface TestableProvider {
-  testConnection?(context?: { signal?: AbortSignal }): Promise<TestResult>;
-}
-
-/** The options each provider's create() takes, from its keys by their serve-side names; undefined for a provider whose
- *  create() serve does not build. Docker takes no key; a key not saved is left out, so create() names it. */
-export function providerOptionsOf(providerId: string, keys: Readonly<Record<string, string>>): Record<string, string> | undefined {
-  const pick = (map: Readonly<Record<string, string>>) => Object.fromEntries(Object.entries(map).flatMap(([name, option]) => (keys[name] === undefined ? [] : [[option, keys[name]]])));
-  switch (providerId) {
-    case "docker": return {};
-    case "daytona": return pick({ DAYTONA_API_KEY: "apiKey", DAYTONA_API_URL: "apiUrl", DAYTONA_TARGET: "target" });
-    case "e2b": return pick({ E2B_API_KEY: "apiKey" });
-    case "modal": return pick({ MODAL_TOKEN_ID: "tokenId", MODAL_TOKEN_SECRET: "tokenSecret" });
-    default: return undefined;
-  }
-}
-
-/** A message with every key value in it replaced, so no answer carries a key. */
-const withoutKeys = (message: string, keys: Readonly<Record<string, string>>): string =>
-  Object.values(keys).reduce((text, value) => (value ? text.split(value).join("[key]") : text), message);
-
-/**
- * Serve's TestConnection: the provider's keys mapped by name onto its create() options (providerOptionsOf), with the
- * server's own settings for it (`settings`, such as Modal's app) under them, the provider built by `build` (the computer
- * package's providerFor), and its one account-level read. A provider serve does not build, or one without a test, is
- * refused in words; a create() that throws (a key it refuses) answers refused with its words. No answer carries a key.
- */
-export function testConnectionOf(build: (providerId: string, options: object) => Promise<TestableProvider>, settings: Readonly<Record<string, object>> = {}): TestConnection {
-  return async (providerId, { keys, signal }) => {
-    const mapped = providerOptionsOf(providerId, keys);
-    if (!mapped) return { ok: false, error: { code: "unsupported", message: `this server cannot build ${providerId} computers yet, so it cannot test the account` } };
-    let provider: TestableProvider;
-    try {
-      provider = await build(providerId, { ...(settings[providerId] ?? {}), ...mapped });
-    } catch (error) {
-      return { ok: false, error: { code: "refused", message: withoutKeys(error instanceof Error ? error.message : String(error), keys) } };
-    }
-    if (!provider.testConnection) return { ok: false, error: { code: "unsupported", message: `${providerId} has no account test yet` } };
-    const answer = await provider.testConnection(signal ? { signal } : {});
-    return answer.ok ? answer : { ok: false, error: { code: answer.error.code, message: withoutKeys(answer.error.message, keys) } };
-  };
-}

@@ -1,22 +1,22 @@
 // Settings → Computers, the serve side (computers.ts): createComputerRoutes over a real store on a temp file and a
-// stand-in kind registry by its own names (fixtures/computer-kinds.mjs), and serve's TestConnection over fake providers.
-// The kinds this server offers in each folder mode, each provider's keys saved or not (never a value), a key save that
-// takes only a provider's declared names, sealed in the store, an account test whose failures are plain words, and the
-// refusal a run meets at its claim when its computer cannot be had, in words that name the setting to fill. No provider
-// is ever called.
+// stand-in kind registry by its own names (fixtures/computer-kinds.mjs), with the account test and the claim's options
+// through computer-keys.ts over fake provider modules. The kinds this server offers in each folder mode, each provider's
+// keys saved or not (never a value), a key save that takes only a provider's declared names, sealed in the store, an
+// account test whose failures are plain words, and the refusal a run meets at its claim when its computer cannot be had,
+// in words that name the setting to fill, else the options its provider is made with. No provider is ever called.
 import assert from "node:assert/strict";
 import { randomBytes } from "node:crypto";
 import { test } from "node:test";
-import { createComputerRoutes, KeysRefused, providerOptionsOf, testConnectionOf } from "../dist/computers.js";
+import { createComputerRoutes, KeysRefused } from "../dist/computers.js";
 import { getSealedKey } from "../dist/server-keys.js";
-import { fakeBuild, KINDS, tools } from "./fixtures/computer-kinds.mjs";
+import { fakeFactories, KINDS, tools } from "./fixtures/computer-kinds.mjs";
 import { storeOn } from "./store-helpers.mjs";
 
 async function setup(t, { mode = "local", settings, ...given } = {}) {
   const sealKey = "sealKey" in given ? given.sealKey : randomBytes(32);
   const { store } = await storeOn(t);
-  const fake = fakeBuild();
-  const routes = createComputerRoutes({ store, sealKey, kinds: KINDS, testConnection: testConnectionOf(fake.build, settings), tools, mode });
+  const fake = fakeFactories();
+  const routes = createComputerRoutes({ store, sealKey, kinds: KINDS, factories: fake.factories, ...(settings ? { settings } : {}), tools, mode });
   return { store, sealKey, routes, ...fake };
 }
 
@@ -52,7 +52,7 @@ test("Mode 2 (run folders on the owner's disk): Docker's sandbox is refused, a s
 test("a kind no provider can serve here is not offered, and says why", async (t) => {
   const { store } = await storeOn(t);
   const kinds = { ...KINDS, PROVIDERS: KINDS.PROVIDERS.filter((one) => one.id === "docker" || one.id === "modal") };
-  const view = await createComputerRoutes({ store, sealKey: undefined, kinds, testConnection: testConnectionOf(fakeBuild().build), tools, mode: "disk" }).view();
+  const view = await createComputerRoutes({ store, sealKey: undefined, kinds, factories: fakeFactories().factories, tools, mode: "disk" }).view();
   assert.deepEqual([kindOf(view, "sandbox").offered, kindOf(view, "sandbox").why], [false, "no provider of a sandbox computer can reach this server's run folders"]);
   assert.deepEqual([kindOf(view, "phone").offered, kindOf(view, "phone").why, kindOf(view, "phone").providers], [false, "no provider serves a phone computer", []]);
 });
@@ -77,48 +77,40 @@ test("with no seal key the server keeps no key, and says how to give it one", as
   await assert.rejects(routes.saveKeys("e2b", { E2B_API_KEY: "good-e" }), (error) => error instanceof KeysRefused && error.fields[0].reason === "unavailable" && /AGENTRUN_SEAL_KEY/.test(error.message));
 });
 
-test("serve maps each provider's keys, by name, onto the options its create() takes", () => {
-  assert.deepEqual(providerOptionsOf("docker", {}), {});
-  assert.deepEqual(providerOptionsOf("daytona", { DAYTONA_API_KEY: "k", DAYTONA_API_URL: "https://d.example/api", DAYTONA_TARGET: "eu" }), { apiKey: "k", apiUrl: "https://d.example/api", target: "eu" });
-  assert.deepEqual(providerOptionsOf("daytona", { DAYTONA_API_KEY: "k" }), { apiKey: "k" }, "an optional key not saved is left out");
-  assert.deepEqual(providerOptionsOf("e2b", { E2B_API_KEY: "k" }), { apiKey: "k" });
-  assert.deepEqual(providerOptionsOf("modal", { MODAL_TOKEN_ID: "id", MODAL_TOKEN_SECRET: "s" }), { tokenId: "id", tokenSecret: "s" });
-  assert.equal(providerOptionsOf("browserbase", { BROWSERBASE_API_KEY: "k" }), undefined, "a provider serve does not build yet");
-});
-
-test("a provider's test opens its saved keys, builds it with them, and reads its account once; failures are plain words with no key", async (t) => {
-  const { routes, built } = await setup(t, { settings: { modal: { app: "agentrun" } } });
+test("a provider's test opens its saved keys, makes it with them through computer-keys, and reads its account once; failures are its plain words, with no key", async (t) => {
+  const { routes, built } = await setup(t, { settings: { modalApp: "runs-app" } });
   assert.deepEqual(await routes.test("e2b"), { ok: false, why: "E2B needs E2B_API_KEY saved: save it in Settings → Computers (PUT /v2/computers/e2b/keys)" });
-  assert.deepEqual(built, [], "nothing built with a key missing");
+  assert.deepEqual(built, [], "nothing made with a key missing");
   await routes.saveKeys("e2b", { E2B_API_KEY: "good-e" });
   assert.deepEqual(await routes.test("e2b"), { ok: true, detail: "e2b: 2 computers" });
   assert.deepEqual(built.at(-1), ["e2b", { apiKey: "good-e" }]);
   await routes.saveKeys("e2b", { E2B_API_KEY: "bad-e2b-secret" });
   const refused = await routes.test("e2b");
-  assert.deepEqual(refused, { ok: false, why: "E2B refused the key: check E2B_API_KEY in Settings → Computers, then test again" });
+  assert.equal(refused.ok, false);
+  assert.match(refused.why, /^E2B refused the saved key: check E2B_API_KEY in Settings → Computers\./);
+  assert.ok(!refused.why.includes("bad-e2b-secret"), "the key never comes back");
   await routes.saveKeys("daytona", { DAYTONA_API_KEY: "down-daytona-secret", DAYTONA_API_URL: "https://d.example/api" });
-  assert.deepEqual(await routes.test("daytona"), { ok: false, why: "Daytona could not be reached from this server: check its network, and the API URL if you saved one, then test again" });
+  const unreachable = await routes.test("daytona");
+  assert.match(unreachable.why, /^Daytona could not be reached/);
+  assert.ok(!unreachable.why.includes("down-daytona-secret"));
   assert.deepEqual(built.at(-1), ["daytona", { apiKey: "down-daytona-secret", apiUrl: "https://d.example/api" }]);
   await routes.saveKeys("modal", { MODAL_TOKEN_ID: "ak-1", MODAL_TOKEN_SECRET: "good-m" });
   assert.deepEqual(await routes.test("modal"), { ok: true, detail: "modal: 2 computers" });
-  assert.deepEqual(built.at(-1), ["modal", { app: "agentrun", tokenId: "ak-1", tokenSecret: "good-m" }], "the server's own setting under the keys");
+  assert.deepEqual(built.at(-1), ["modal", { tokenId: "ak-1", tokenSecret: "good-m", app: "runs-app" }], "the server's own setting with the keys");
   assert.deepEqual(await routes.test("docker"), { ok: true, detail: "docker: 2 computers" }, "Docker takes no key");
+  await routes.saveKeys("browserbase", { BROWSERBASE_API_KEY: "good-b", BROWSERBASE_PROJECT_ID: "good-p" });
+  assert.equal((await routes.test("browserbase")).ok, false, "a provider with no module here is not tested");
   assert.equal(await routes.test("nope"), undefined);
 });
 
-test("serve's TestConnection: a cancelled test, a create() that refuses, a provider with no test, and one serve does not build answer in words, never with a key", async () => {
-  const { build } = fakeBuild();
-  const testConnection = testConnectionOf(build);
-  const cancelled = new AbortController();
-  cancelled.abort();
-  assert.deepEqual(await testConnection("e2b", { keys: { E2B_API_KEY: "good-e" }, signal: cancelled.signal }), { ok: false, error: { code: "aborted", message: "the test was cancelled" } });
-  assert.deepEqual(await testConnection("e2b", { keys: {} }), { ok: false, error: { code: "refused", message: "options.apiKey, the e2b API key, is required" } });
-  assert.deepEqual(await testConnection("modal", { keys: { MODAL_TOKEN_ID: "i", MODAL_TOKEN_SECRET: "good-s" } }), { ok: false, error: { code: "unsupported", message: "modal has no account test yet" } });
-  assert.equal((await testConnection("browserbase", { keys: { BROWSERBASE_API_KEY: "k" } })).error.code, "unsupported");
-  const answer = await testConnection("e2b", { keys: { E2B_API_KEY: "bad-e2b-secret" } });
-  assert.deepEqual(answer, { ok: false, error: { code: "unauthorized", message: "401 for key [key]" } }, "a vendor's words that carry the key lose it");
-  const thrown = await testConnectionOf(async () => { throw new Error("bad token sekret-1 for daytona"); })("daytona", { keys: { DAYTONA_API_KEY: "sekret-1" } });
-  assert.deepEqual(thrown, { ok: false, error: { code: "refused", message: "bad token [key] for daytona" } });
+test("the claim's options: computer_unavailable with the refusal's words, else the provider's create() options from its saved keys", async (t) => {
+  const { routes } = await setup(t);
+  assert.equal(await routes.claimOptions({ kind: "none" }), undefined);
+  assert.deepEqual(await routes.claimOptions({ kind: "phone", provider: "phone-harness" }), { ok: false, error: { code: "computer_unavailable", message: "Phone harness needs PHONE_HARNESS_API_KEY saved: save it in Settings → Computers (PUT /v2/computers/phone-harness/keys)" } });
+  await routes.saveKeys("phone-harness", { PHONE_HARNESS_API_KEY: "good-p" });
+  assert.deepEqual(await routes.claimOptions({ kind: "phone", provider: "phone-harness" }), { ok: true, options: { apiKey: "good-p" } });
+  assert.deepEqual(await routes.claimOptions({ kind: "sandbox", provider: "docker" }), { ok: true, options: {} });
+  assert.equal((await routes.claimOptions({ kind: "sandbox", provider: "daytona" })).error.code, "computer_unavailable");
 });
 
 test("at the claim: a computer this server cannot give is refused in words that name the setting to fill", async (t) => {

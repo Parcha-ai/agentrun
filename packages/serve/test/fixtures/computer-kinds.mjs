@@ -40,26 +40,24 @@ export const tools = (kind) => TOOLS[kind];
 export const KINDS = { SETTING_KINDS, PROVIDERS, servingRefusals };
 
 /**
- * Fake providers as serve's build would make them, each recording the options it was built with: create() refuses a
- * missing key as the real ones do, and testConnection answers by the key: "good-..." passes, "down-..." is unreachable,
- * anything else unauthorized, its message echoing the key so the test sees it scrubbed. A Modal built with no app has
- * no test.
+ * Fake provider modules' create(), by provider id (the factories computer-keys.ts's testConnection takes), each
+ * recording the options it was made with. testConnection answers by the key: "good-..." passes, "down-..." is
+ * unreachable, anything else unauthorized, its message echoing the key so the test sees it scrubbed. No browserbase:
+ * serve has no module for it yet.
  */
-export function fakeBuild() {
+export function fakeFactories() {
   const built = [];
-  async function build(providerId, options) {
+  const fake = (providerId) => (options) => {
     built.push([providerId, options]);
-    if ((providerId === "daytona" || providerId === "e2b") && !options.apiKey) throw new Error(`options.apiKey, the ${providerId} API key, is required`);
-    if (providerId === "modal" && !options.app) return {};
     const key = options.apiKey ?? options.tokenSecret ?? "good-docker";
     return {
-      async testConnection({ signal } = {}) {
-        if (signal?.aborted) return { ok: false, error: { code: "aborted", message: "the test was cancelled" } };
+      async testConnection() {
         if (key.startsWith("good-")) return { ok: true, value: { detail: `${providerId}: 2 computers` } };
         if (key.startsWith("down-")) return { ok: false, error: { code: "unreachable", message: `connect ECONNREFUSED for ${key}` } };
         return { ok: false, error: { code: "unauthorized", message: `401 for key ${key}` } };
       },
     };
-  }
-  return { built, build };
+  };
+  const factories = Object.fromEntries(["docker", "daytona", "modal", "e2b", "phone-harness"].map((id) => [id, fake(id)]));
+  return { built, factories };
 }
