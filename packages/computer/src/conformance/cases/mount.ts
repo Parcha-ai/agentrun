@@ -13,6 +13,7 @@
 import { randomBytes } from "node:crypto";
 import { EPOCH_LABEL, RUN_LABEL, runLabels as claimLabels } from "../../labels.js";
 import { MOUNT_KINDS, type MountKind, type MountSpec, readBackOf, WORKSPACE } from "../../mount.js";
+import { MAX_OUTPUT_BYTES } from "../../protocol.js";
 import type { ComputerRef } from "../../provider.js";
 import type { Case, CaseContext, RunFolder } from "../types.js";
 import { assertIsolated } from "./isolation.js";
@@ -184,9 +185,11 @@ const archilToken = mount(
 		// What a tool can read of every process: its own and any other it sees (hidepid hides root's), and its own files.
 		const seen = await t.exec(
 			["sh", "-c", 'for f in /proc/[0-9]*/environ /proc/[0-9]*/cmdline; do cat "$f" 2>/dev/null; echo; done; env; ls -la /proc | wc -l; ls -A /tmp /run 2>/dev/null'],
-			{ maxOutput: 4 * 1024 * 1024 },
+			{ maxOutput: MAX_OUTPUT_BYTES },
 			connected.client,
 		);
+		// Every byte is read, or the case fails saying so: a cut output proves nothing about the bytes it dropped.
+		t.assert(!seen.truncated, `what a tool reads of every process came to more than the ${MAX_OUTPUT_BYTES} bytes exec.run keeps, so the token check did not see all of it`);
 		t.assert(!seen.out.includes(asked.token) && !seen.err.includes(asked.token), "a tool reads the Archil token in some process's environment or arguments");
 		const sudo = await t.exec(["sh", "-c", "sudo -n true"], {}, connected.client);
 		t.assert(sudo.exitCode !== 0, "the tool user ran sudo");

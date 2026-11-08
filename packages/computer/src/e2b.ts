@@ -862,7 +862,7 @@ export class E2BProvider implements ComputerProvider {
 		// it is mounted. A folder mounted for a computer create then gives up on is let go before the kill, never signalled.
 		if (spec.mount?.kind !== "archil") return this.#start(spec, ref, sandbox, commands, signal, diagnostic);
 		const root = this.#root(sandbox, ref.name);
-		const mounted = await this.#mountArchil(root, { mount: spec.mount, run: spec.labels?.[RUN_LABEL] as string, epoch: claimEpoch(spec.labels) }, signal);
+		const mounted = await this.#mountArchil(root, ref, { mount: spec.mount, run: spec.labels?.[RUN_LABEL] as string, epoch: claimEpoch(spec.labels) }, signal);
 		if (!mounted.ok) return mounted;
 		const started = await this.#start(spec, ref, sandbox, commands, signal, diagnostic);
 		if (!started.ok || signal?.aborted) await archilRelease({ root, client: undefined, timeoutMs: this.#timeouts.mountMs });
@@ -1005,8 +1005,8 @@ export class E2BProvider implements ComputerProvider {
 	}
 
 	/** The shared Archil steps (archilMount) through root, with the takeover of this provider's lower epochs. */
-	#mountArchil(root: ArchilRoot, { mount, run, epoch }: { mount: ArchilMount; run: string; epoch: number }, signal?: AbortSignal): Promise<Result<void>> {
-		return archilMount({ root, mount, releaseOlder: () => releaseOlder(this, run, epoch, signal ? { signal } : {}), timeoutMs: this.#timeouts.mountMs, ...(signal ? { signal } : {}) });
+	#mountArchil(root: ArchilRoot, computer: ComputerRef, { mount, run, epoch }: { mount: ArchilMount; run: string; epoch: number }, signal?: AbortSignal): Promise<Result<void>> {
+		return archilMount({ root, mount, self: computer, releaseOlder: () => releaseOlder(this, run, epoch, signal ? { signal } : {}), timeoutMs: this.#timeouts.mountMs, ...(signal ? { signal } : {}) });
 	}
 
 	#daemonExpected(): DaemonExpected {

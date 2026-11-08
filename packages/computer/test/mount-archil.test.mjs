@@ -126,6 +126,30 @@ test("archilMount: a takeover releases the lower epochs before any mount; releas
 	}
 });
 
+test("archilMount: another computer of the run at the claim's own epoch is never forced off: a held folder then refuses in words, and a takeover of lower epochs mounts without force", async () => {
+	const SELF = { id: "c-new", name: "c-new" };
+	const twin = { id: "c-twin", name: "c-twin" };
+	const keeping = (released = []) => async () => ok({ released, kept: [SELF, twin], unproven: [] });
+
+	const held = fakeRoot({ mount: { exitCode: 1, output: "mount failed: dsk:/agents/a1/runs/r1/work has an outstanding delegation" } });
+	const refused = await archilMount({ root: held, mount: MOUNT, self: SELF, releaseOlder: keeping(), timeoutMs: 1000 });
+	assert.equal(refused.ok, false);
+	assert.equal(refused.error.code, "refused");
+	assert.match(refused.error.message, /c-twin/);
+	assert.match(refused.error.message, /same epoch|epoch 3/);
+	noToken(refused, "the refusal");
+	assert.deepEqual(held.verbs(), ["preflight", "mount"], "no revoke, no serve");
+
+	const takeover = fakeRoot();
+	assert.deepEqual(await archilMount({ root: takeover, mount: MOUNT, self: SELF, releaseOlder: keeping([{ id: "old", name: "old" }]), timeoutMs: 1000 }), ok(undefined));
+	assert.deepEqual(takeover.verbs(), ["preflight", "mount", "serve"], "lower epochs released, but a twin is listed: mount, never revoke");
+
+	// The computer itself, listed at its own epoch, is no twin.
+	const alone = fakeRoot({ mount: { exitCode: 1, output: "mount failed: dsk:/agents/a1/runs/r1/work has an outstanding delegation" } });
+	assert.deepEqual(await archilMount({ root: alone, mount: MOUNT, self: SELF, releaseOlder: async () => ok({ released: [], kept: [SELF], unproven: [] }), timeoutMs: 1000 }), ok(undefined));
+	assert.deepEqual(alone.verbs(), ["preflight", "mount", "revoke", "serve"]);
+});
+
 test("archilMount: a preflight that differs from the image refuses before anything else, naming each difference", async () => {
 	const wrong = ["uid 1000", "helper 0000 -rwxrwxrwx 1000 1000", "archil Archil Client: v0.10.0-1792692895", "tool 1000:1000", "sudo /usr/bin/sudo"].join("\n");
 	const root = fakeRoot({ preflight: { exitCode: 0, output: wrong } });
@@ -181,6 +205,8 @@ test("syncingClient: every call that may change the folder syncs before it answe
 		["files.mkdir", { path: "/workspace/d" }],
 		["tar.push.end", { id: "t" }],
 		["exec.run", { argv: ["true"], timeoutMs: 1000 }],
+		// Review (#1994, P1): process.start makes its log file, and any missing folder above it, which may be in /workspace.
+		["process.start", { argv: ["sleep", "60"], log: "/workspace/logs/run.log" }],
 		["process.write", { id: "p", data: "" }],
 		["process.signal", { id: "p", signal: "TERM" }],
 		["process.wait", { id: "p" }],
@@ -226,6 +252,45 @@ test("syncingClient: coalesced: calls during a sync in flight wait for it, then 
 	await first;
 	assert.ok(rest.every((result) => result.ok));
 	assert.equal(client.methods().filter((method) => method === "mount.sync").length, 2, "one in flight, then one shared by the three");
+});
+
+test("syncingClient: a caller whose signal fires stops waiting for the sync, in words; the sync goes on, and others still wait for it", async () => {
+	// Review (#1994, P1): the sync is held until the test lets it go, so no clock is involved.
+	let finish;
+	const held = new Promise((resolve) => {
+		finish = resolve;
+	});
+	const calls = [];
+	const client = {
+		async call(method) {
+			calls.push(method);
+			if (method === "mount.sync") return held;
+			return ok({});
+		},
+		close() {},
+	};
+	const syncing = syncingClient(client);
+	const stopping = new AbortController();
+	const cancelled = syncing.call("files.write", { path: "/workspace/a", data: "" }, { signal: stopping.signal });
+	const patient = syncing.call("files.write", { path: "/workspace/b", data: "" });
+	await Promise.resolve();
+	stopping.abort();
+	const stopped = await cancelled;
+	assert.equal(stopped.ok, false);
+	assert.equal(stopped.error.code, "aborted");
+	assert.match(stopped.error.message, /files\.write ran/);
+	assert.match(stopped.error.message, /sync/);
+
+	// Already aborted when the call returns: it answers at once, without waiting for any sync.
+	const gone = new AbortController();
+	gone.abort();
+	const late = await syncing.call("files.write", { path: "/workspace/c", data: "" }, { signal: gone.signal });
+	assert.equal(late.ok, false);
+	assert.equal(late.error.code, "aborted");
+
+	finish(ok({ exitCode: 0 }));
+	assert.equal((await patient).ok, true, "a caller with no signal still waits for the sync, and gets its answer");
+	assert.ok(calls.includes("mount.sync"));
 });
 
 test("archilReadBack: fuse.archil at /workspace with the asked source, under the epoch, exclusive once serve answers; anything else is in words", () => {

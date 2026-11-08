@@ -118,6 +118,19 @@ test("attach and list read the mount back under the epoch label, exclusive; netw
 	assert.match(wider.value.other, /eth0/);
 });
 
+test("attach refuses an Archil computer whose mount reads back not exclusive: its sync server is gone, or its sync fails", async () => {
+	// Review (#1994, P1): the source alone matched, so attach took a computer whose later writes would fail.
+	const { provider, fake } = setup();
+	const made = await provider.create(SPEC);
+	assert.equal(made.ok, true, made.ok ? "" : made.error.message);
+	fake.knobs.syncExit = 1;
+	const refused = await provider.attach({ id: made.value.id });
+	assert.equal(refused.ok, false);
+	assert.equal(refused.error.code, "refused");
+	assert.match(refused.error.message, /mount: declared .*read back/);
+	assert.ok(!refused.error.message.includes(TOKEN));
+});
+
 test("the takeover: the run's lower epochs are deleted before any mount, then the folder is revoked; a release that fails mounts nothing", async () => {
 	const { fake, provider } = setup();
 	const old = await provider.create({ ...SPEC, labels: { ...LABELS, [EPOCH_LABEL]: "2" } });

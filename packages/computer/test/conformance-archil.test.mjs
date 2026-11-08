@@ -25,7 +25,7 @@ test("ARCHIL_ENV names the settings a module reads for the Archil mount cases", 
 		archilDisk: "COMPUTER_ARCHIL_DISK",
 		archilRegion: "COMPUTER_ARCHIL_REGION",
 		archilToken: "COMPUTER_ARCHIL_TOKEN",
-		archilApiKey: "COMPUTER_ARCHIL_API_KEY",
+		archilKey: "COMPUTER_ARCHIL_API_KEY",
 		archilS3Url: "COMPUTER_ARCHIL_S3_URL",
 	});
 });

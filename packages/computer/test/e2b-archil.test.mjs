@@ -14,6 +14,8 @@ const e2b = await import("../dist/e2b.js");
 const { E2BProvider } = e2b;
 
 const TOKEN = "tok-e2b-archil-0123456789abcdef";
+/** A made-up Archil account key, for the object API outside. */
+const ARCHIL_KEY = "key-archil-account-0123456789abcdef";
 const RUN = "r1";
 const EPOCH = 3;
 const MOUNT = { kind: "archil", disk: "dsk-00000000000baf76", region: "aws-us-east-1", folder: `agents/a1/runs/${RUN}/work`, token: TOKEN };
@@ -318,14 +320,14 @@ test("the E2B conformance module: mountFor(\"archil\") gives a fresh run folder 
 	assert.equal(ARCHIL_ENV.archilDisk, "COMPUTER_ARCHIL_DISK");
 	assert.equal(ARCHIL_ENV.archilRegion, "COMPUTER_ARCHIL_REGION");
 	assert.equal(ARCHIL_ENV.archilToken, "COMPUTER_ARCHIL_TOKEN");
-	assert.equal(ARCHIL_ENV.archilApiKey, "COMPUTER_ARCHIL_API_KEY");
+	assert.equal(ARCHIL_ENV.archilKey, "COMPUTER_ARCHIL_API_KEY");
 	assert.equal(ARCHIL_ENV.archilS3Url, "COMPUTER_ARCHIL_S3_URL");
 	assert.equal(Object.values(E2B_ENV).some((name) => name.startsWith("COMPUTER_ARCHIL_")), false, "the provider's settings name no Archil setting");
 	const settings = {
 		COMPUTER_ARCHIL_DISK: MOUNT.disk,
 		COMPUTER_ARCHIL_REGION: MOUNT.region,
 		COMPUTER_ARCHIL_TOKEN: TOKEN,
-		COMPUTER_ARCHIL_API_KEY: "key-archil-account-0123456789abcdef",
+		COMPUTER_ARCHIL_API_KEY: ARCHIL_KEY,
 		COMPUTER_ARCHIL_S3_URL: "https://s3.green.us-east-1.aws.prod.archil.com",
 	};
 	const env = { AGENTRUN_COMPUTER_LIVE_E2B: "1", ...settings };

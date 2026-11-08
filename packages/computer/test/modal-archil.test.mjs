@@ -23,12 +23,14 @@ const COMPUTER = "agentrun.computer";
 const NAME = "agentrun.computer.name";
 const DEADLINE = "agentrun.computer.deadline";
 const SPEC_TAG = "agentrun.computer.spec";
+/** A made-up Archil account key, for the object API outside. */
+const ARCHIL_KEY = "key-archil-account-0123456789abcdef";
 /** The Archil mount cases' settings, as a conformance module reads them. */
 const ARCHIL_SETTINGS = {
 	COMPUTER_ARCHIL_DISK: MOUNT.disk,
 	COMPUTER_ARCHIL_REGION: MOUNT.region,
 	COMPUTER_ARCHIL_TOKEN: TOKEN,
-	COMPUTER_ARCHIL_API_KEY: "key-archil-account-0123456789abcdef",
+	COMPUTER_ARCHIL_API_KEY: ARCHIL_KEY,
 	COMPUTER_ARCHIL_S3_URL: "https://s3.green.us-east-1.aws.prod.archil.com",
 };
 const readBack = (epoch = EPOCH) => ({ kind: "archil", disk: MOUNT.disk, region: MOUNT.region, folder: MOUNT.folder, exclusive: true, epoch });
@@ -353,7 +355,7 @@ test("the Modal conformance module: mountFor(\"archil\") gives a fresh run folde
 	assert.equal(ARCHIL_ENV.archilDisk, "COMPUTER_ARCHIL_DISK");
 	assert.equal(ARCHIL_ENV.archilRegion, "COMPUTER_ARCHIL_REGION");
 	assert.equal(ARCHIL_ENV.archilToken, "COMPUTER_ARCHIL_TOKEN");
-	assert.equal(ARCHIL_ENV.archilApiKey, "COMPUTER_ARCHIL_API_KEY");
+	assert.equal(ARCHIL_ENV.archilKey, "COMPUTER_ARCHIL_API_KEY");
 	assert.equal(ARCHIL_ENV.archilS3Url, "COMPUTER_ARCHIL_S3_URL");
 	assert.equal(Object.values(MODAL_ENV).some((name) => name.startsWith("COMPUTER_ARCHIL_")), false, "the provider's settings name no Archil setting");
 	const env = { AGENTRUN_COMPUTER_LIVE_MODAL: "1", ...ARCHIL_SETTINGS };

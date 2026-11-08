@@ -239,6 +239,21 @@ test('the code owners file is archived and scanned as text; another extensionles
   await assert.rejects(f.run(), /Unreviewed source-export file type: \.github\/OWNERS/);
 });
 
+test('the computer image recipe (the root helper, its Dockerfile and its two build scripts) is archived and scanned as text; another file there still stops the export', async t => {
+  const f = await fixture(t);
+  const box = ['packages/computer/box/agentrun-archil', 'packages/computer/box/Dockerfile', 'packages/computer/box/build-daytona.py', 'packages/computer/box/build-modal.py'];
+  for (const path of box) await f.write(path, '# fixture\n');
+  await f.run();
+  const receipt = JSON.parse(await readFile(join(f.root, '.release/source-export-receipt.json'), 'utf8'));
+  const listing = await f.listing();
+  for (const path of box) {
+    assert.ok(listing.includes(`agentrun-dsl-source/${path}\n`), path);
+    assert.equal(receipt.files.find(file => file.path === path)?.kind, 'text', path);
+  }
+  await f.write('packages/computer/box/build-e2b.py', '# fixture\n');
+  await assert.rejects(f.run(), /Unreviewed source-export file type: packages\/computer\/box\/build-e2b\.py/);
+});
+
 test('inventory generation works without build output and does not produce an archive', async t => {
   const f = await fixture(t);
   await f.run('--inventory-only');

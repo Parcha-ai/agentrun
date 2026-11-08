@@ -138,8 +138,10 @@ function helper(verb: "mount" | "revoke" | "serve" | "checkin", mount?: ArchilMo
 export interface ArchilMountOptions {
 	root: ArchilRoot;
 	mount: ArchilMount;
+	/** The computer being made, as list() reports it: among releaseOlder's kept, it is no other computer. */
+	self: ComputerRef;
 	/** The takeover's first step: releaseOlder of this provider for the run at the claim's epoch (janitor.ts). */
-	releaseOlder: () => Promise<Result<{ released: ComputerRef[]; unproven: unknown[] }>>;
+	releaseOlder: () => Promise<Result<{ released: ComputerRef[]; kept: ComputerRef[]; unproven: unknown[] }>>;
 	/** The bound of each step in the computer. */
 	timeoutMs: number;
 	signal?: AbortSignal;
@@ -153,12 +155,14 @@ export interface ArchilMountOptions {
  *   2. the takeover: every computer of the run with a lower epoch is released; one that could not be (or a higher epoch,
  *      fenced) stops here, and nothing is revoked;
  *   3. mount, with the token on fd 0; or revoke (mount --force) when the takeover released any, or the mount found the
- *      folder held by a client that no listing shows: a forced-off client's later writes are lost, which is the fence;
+ *      folder held by a client that no listing shows: a forced-off client's later writes are lost, which is the fence.
+ *      Another computer of the run at the claim's own epoch is never forced off: while one is listed there is no
+ *      revoke, and a held folder refuses in words;
  *   4. serve: the resident sync server, which holds no token.
  * The archil client and serve run in the computer's own network namespace, which reaches Archil; the tools' network is
  * init's own namespace, loopback alone (computerd init --own-network), so there is no firewall to set here.
  */
-export async function archilMount({ root, mount, releaseOlder, timeoutMs, signal }: ArchilMountOptions): Promise<Result<void>> {
+export async function archilMount({ root, mount, self: computer, releaseOlder, timeoutMs, signal }: ArchilMountOptions): Promise<Result<void>> {
 	const step = async (argv: readonly string[], what: string, stdin?: string) => {
 		const ran = await root.run(argv, { timeoutMs, ...(stdin === undefined ? {} : { stdin }), ...(signal ? { signal } : {}) });
 		if (!ran.ok) return fail(ran.error.code, `archil ${what} in the computer could not run: ${scrub(ran.error.message, mount.token)}`);
@@ -175,9 +179,14 @@ export async function archilMount({ root, mount, releaseOlder, timeoutMs, signal
 	}
 	const older = await releaseOlder();
 	if (!older.ok) return fail(older.error.code, `the takeover could not release the run's lower epochs, so nothing was revoked or mounted: ${older.error.message}`);
-	let verb: "mount" | "revoke" = older.value.released.length > 0 || older.value.unproven.length > 0 ? "revoke" : "mount";
+	const twins = older.value.kept.filter((ref) => ref.id !== computer.id).map((ref) => ref.name);
+	const force = twins.length === 0 && (older.value.released.length > 0 || older.value.unproven.length > 0);
+	let verb: "mount" | "revoke" = force ? "revoke" : "mount";
 	let took = await step(helper(verb, mount), verb, `${mount.token}\n`);
 	if (!took.ok) return took;
+	if (verb === "mount" && took.value.exitCode !== 0 && took.value.output.includes(HELD) && twins.length > 0) {
+		return fail("refused", `the run's folder is held, and the run has ${twins.join(", ")} at this claim's same epoch: a create never forces off a computer of its own epoch, so nothing was revoked; release that computer, or attach to it`);
+	}
 	if (verb === "mount" && took.value.exitCode !== 0 && took.value.output.includes(HELD)) {
 		verb = "revoke";
 		took = await step(helper(verb, mount), verb, `${mount.token}\n`);
@@ -192,13 +201,15 @@ export async function archilMount({ root, mount, releaseOlder, timeoutMs, signal
 }
 
 /** The computerd calls that may change the folder: each syncs before it answers. */
-const MUTATING = new Set<DaemonMethod>(["files.write", "files.move", "files.remove", "files.mkdir", "tar.push.end", "exec.run", "process.write", "process.signal", "process.wait"]);
+const MUTATING = new Set<DaemonMethod>(["files.write", "files.move", "files.remove", "files.mkdir", "tar.push.end", "exec.run", "process.start", "process.write", "process.signal", "process.wait"]);
 
 /**
  * A computerd client whose every call that may change the folder (files.write, move, remove and mkdir; tar.push.end;
- * exec.run; process.write and signal; a process seen ended, by process.wait or a process.read that says so) syncs
- * before it answers, through mount.sync, coalesced: a call during a sync in flight waits for it, then shares one more.
- * A failed sync fails the call in words; a call that failed still syncs, and answers its own error.
+ * exec.run; process.start, which makes its log and the folders above it; process.write and signal; a process seen
+ * ended, by process.wait or a process.read that says so) syncs before it answers, through mount.sync, coalesced: a
+ * call during a sync in flight waits for it, then shares one more. A failed sync fails the call in words; a call that
+ * failed still syncs, and answers its own error. A caller whose signal fires stops waiting, answered "aborted" in words
+ * (or its own error), while the shared sync goes on for every other caller.
  */
 export function syncingClient(client: ComputerClient): ComputerClient {
 	let running: Promise<Result<void>> | undefined;
@@ -229,7 +240,20 @@ export function syncingClient(client: ComputerClient): ComputerClient {
 			const result = await client.call(method, params, options);
 			const ended = method === "process.read" && result.ok && (result.value as DaemonMethods["process.read"]["result"]).exited;
 			if (!MUTATING.has(method) && !ended) return result;
-			const synced = await sync();
+			// The sync is shared and goes on whatever this caller does; a caller whose signal fires stops waiting for it.
+			const shared = sync();
+			const signal = options?.signal;
+			const stopped = (): Result<never> => fail("aborted", `${method} ran, but its caller stopped waiting for the sync that makes the run's folder durable; the sync goes on`);
+			if (signal?.aborted) return result.ok ? stopped() : result;
+			const synced = signal === undefined ? await shared : await new Promise<Result<void> | "stopped">((resolve) => {
+				const onAbort = () => resolve("stopped");
+				signal.addEventListener("abort", onAbort, { once: true });
+				shared.then((value) => {
+					signal.removeEventListener("abort", onAbort);
+					resolve(value);
+				});
+			});
+			if (synced === "stopped") return result.ok ? stopped() : result;
 			if (!result.ok || synced.ok) return result;
 			return fail(synced.error.code, `${method} ran, but the run's folder could not be made durable: ${synced.error.message}`);
 		},
