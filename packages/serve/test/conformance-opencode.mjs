@@ -10,7 +10,7 @@ import { join } from "node:path";
 import { fileURLToPath } from "node:url";
 
 const { createAdapterLoop } = await import("../dist/runner/adapter-loop.js");
-const { openCodeAdapter } = await import("../dist/harness-opencode/index.js");
+const { resolveHarness } = await import("../dist/runner/adapters/index.js");
 const { facts } = await import("../dist/harness-opencode/facts.js");
 const { MAX_RESTARTS } = await import("../dist/runner/conformance/harness.js");
 
@@ -86,20 +86,19 @@ function tracked(adapter) {
   };
 }
 
-/** The adapter loop's spec for the suite's setup: OpenCode through its adapter, its model through the session's proxy to
- *  the script. One sessions folder per loop: a resume on another runner opens the session from the run's journal. */
+/** The adapter loop's spec for the suite's setup: OpenCode as the runner's harnesses give it (resolveHarness), on the
+ *  stand-in, its model through the session's proxy to the script, the run's visible record kept by the loop. One
+ *  sessions folder per loop: a resume on another runner opens the session from the run's journal. */
 export function openCodeSpec({ script, tools, hooks }, options = {}) {
   const sessionsDir = mkdtempSync(join(process.env.TMPDIR ?? tmpdir(), "agentrun-opencode-conformance-"));
   dirs.push(sessionsDir);
-  return () => ({
-    adapter: tracked(openCodeAdapter({
-      model: MODEL,
-      provider: { origin: "https://provider.invalid", credential: () => `not-a-secret-${"x"}` },
-      price: () => 0,
-      sessionsDir,
-      standIn: { command: process.execPath, args: [STAND_IN] },
-      fetch: options.fetch ?? scriptedResponses(script, options.requests),
-    })),
+  const harness = resolveHarness("opencode");
+  return async (_claim, run) => ({
+    adapter: tracked(await harness.adapter(
+      { run, model: MODEL, provider: { origin: "https://provider.invalid", credential: () => `not-a-secret-${"x"}` }, price: () => 0, sessionsDir, fetch: options.fetch ?? scriptedResponses(script, options.requests) },
+      { standIn: { command: process.execPath, args: [STAND_IN] } },
+    )),
+    record: harness.record,
     session: { key: "root", label: "root", system: ["Follow the script."], tools: hostTools(tools), context: "fresh" },
     input: "Follow the script.",
     hooks,
@@ -107,24 +106,14 @@ export function openCodeSpec({ script, tools, hooks }, options = {}) {
   });
 }
 
-/** The cases OpenCode's facts say it cannot model: a CLI never reruns a call it started (rerunsStarted false), so a
- *  replay-safe call is not run again and a faulted task is not restarted; with no steer mid-turn (steer false), a
- *  message waits for the turn's end. */
-const unsupportedByFacts = {
-  ...(facts.rerunsStarted === true ? {} : {
-    "replay-safe-rerun": "a CLI never reruns a call it started (its facts: rerunsStarted false)",
-    "fault-restarts-bounded": "a CLI never reruns a call it started (its facts: rerunsStarted false)",
-  }),
-  ...(facts.steer ? {} : { "steer-mid-turn": "a message mid-turn waits for the turn's end (its facts: steer false)" }),
-};
-
-/** The subject the suite runs: OpenCode through the adapter loop. The runner process the process cases start is no test
+/** The subject the suite runs: OpenCode through the runner. The runner process the process cases start is no test
  *  runner, and the OpenCode stand-in runs only under one (its guard), so those two cases cannot run on the stand-in. */
 export const openCodeSubject = {
-  name: "opencode through the adapter loop",
+  name: "opencode through the runner",
   createLoop: (setup) => createAdapterLoop(openCodeSpec(setup), { restartLimit: MAX_RESTARTS }),
+  // What its adapter declares (steer false, rerunsStarted false): the suite derives the cases those rule out.
+  facts,
   unsupported: {
-    ...unsupportedByFacts,
     "crash-before-intent-process": "the OpenCode stand-in runs only under a test runner, and the conformance runner process is none (the in-process crash case covers the point)",
     "crash-after-intent-process": "the OpenCode stand-in runs only under a test runner, and the conformance runner process is none (the in-process crash case covers the point)",
   },
