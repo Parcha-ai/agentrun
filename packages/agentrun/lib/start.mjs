@@ -126,12 +126,12 @@ export const SERVER_COMMANDS = ["import", "reset-password", "validate-template"]
 export const TOLD_MAX = 20;
 
 /** Why a request was refused, in words, by the server's reason; any other reason is said as the server names it. */
-const REFUSED = {
-  wrong_token: "the API token is not this server's",
-  no_credential: "it carried no API token",
-  wrong_password: "the password is wrong",
-  sign_in_table_full: "too many sign-ins at once",
-};
+const REFUSED = new Map([
+  ["wrong_token", "the API token is not this server's"],
+  ["no_credential", "it carried no API token"],
+  ["wrong_password", "the password is wrong"],
+  ["sign_in_table_full", "too many sign-ins at once"],
+]);
 
 /** The fields of one of the server's log lines (print.ts: `key=value` or `key="value"`); a repeated key keeps its first
  *  value, the line's own event. */
@@ -154,7 +154,7 @@ export function tellerOf() {
     let key;
     if (fields.event === "auth_failed" && fields.route) {
       key = `auth ${fields.route} ${fields.reason}`;
-      words = `AgentRun refused a request to ${fields.route}: ${REFUSED[fields.reason] ?? fields.reason}.`;
+      words = `AgentRun refused a request to ${fields.route}: ${REFUSED.get(fields.reason) ?? fields.reason}.`;
     } else if (fields.event === "trigger" && fields.condition === "hook_ignored" && fields.route) {
       const hookEvent = [...line.matchAll(/ event=(\S+)/g)][1]?.[1];
       key = `hook ${fields.route} ${fields.reason}`;
