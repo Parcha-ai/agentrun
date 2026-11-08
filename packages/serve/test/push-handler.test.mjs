@@ -14,6 +14,7 @@ import { SealedSettings } from "../dist/sealed-settings.js";
 import { headersRefusal, MIN_KEY_BYTES, verify } from "../dist/standard-webhooks.js";
 import { openapiDocument } from "../dist/openapi.js";
 import { TRIGGER_ADAPTERS } from "../dist/trigger-adapters.js";
+import { schemaProblems } from "./schema-support.mjs";
 import { agent, client, FAUX, scratch, withEnv } from "./support.mjs";
 import { firings } from "./trigger-support.mjs";
 
@@ -302,4 +303,15 @@ test("with no log, what the push handler says goes to stderr, as the triggers' o
     process.stderr.write = write;
   }
   assert.ok(written.some((line) => line.includes("condition=hook_unparsed")), `said on stderr: ${JSON.stringify(written)}`);
+});
+
+test("a server-wide hook's documented answers are its own: its firings' by names its source, and a firings answer and a handshake answer each match exactly one of its 200's shapes", () => {
+  const doc = openapiDocument(() => undefined, [...TRIGGER_ADAPTERS, ping]);
+  const responses = doc.paths["/hooks/ping"].post.responses;
+  const body = (code) => responses[code].content["application/json"].schema;
+  const firingBy = (schema) => schema.properties.firings.items.properties.by.enum;
+  assert.ok(firingBy(body("202")).includes("ping"), JSON.stringify(firingBy(body("202"))));
+  const firings = body("200").oneOf.find((part) => part.properties?.firings);
+  assert.ok(firings && firingBy(firings).includes("ping"), JSON.stringify(body("200")));
+  for (const answer of [{ firings: [] }, { challenge: "c-123" }]) assert.deepEqual(schemaProblems(doc, body("200"), answer), [], JSON.stringify(answer));
 });
