@@ -602,3 +602,65 @@ func TestEachRepliesLengthIsBoundedByItsRequest(t *testing.T) {
 		})
 	}
 }
+
+// A server that sends errors no request caused is not an honest X server: one error is sent only for a request, so a
+// connection that has had more errors than requests with no reply is closed in words. What the client keeps for Sync
+// stays bounded however many it sends.
+func TestErrorsNoRequestCausedCloseTheConnectionInWords(t *testing.T) {
+	f, conn := x11fake.Start(t, nil)
+	c, err := x11.Open(conn, x11.Auth{}, 0)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer c.Close()
+	e := make([]byte, 32)
+	e[1] = 2 // BadValue
+	le.PutUint16(e[2:], 0xbeef)
+	before := totalAlloc()
+	sent := 0
+	for ; sent < 100_000; sent++ {
+		if f.Send(e) != nil {
+			break
+		}
+	}
+	grew := totalAlloc() - before
+	if !errors.Is(c.Err(), x11.ErrClosed) || !strings.Contains(c.Err().Error(), "error") {
+		t.Fatalf("after %d errors no request caused, the connection: %v; want closed, in words", sent, c.Err())
+	}
+	if sent > 64 {
+		t.Errorf("the client read %d errors no request caused before it closed the connection", sent)
+	}
+	if grew > 1<<20 {
+		t.Errorf("the client allocated %d bytes for %d errors", grew, sent)
+	}
+}
+
+// Many requests the server refuses at once (a long scroll on a pointer without the wheel's buttons) are an honest
+// server's errors: the connection stays open, and Sync hands back the first of them, at most 64, in order.
+func TestSyncKeepsAtMost64ErrorsAndTheFirst(t *testing.T) {
+	_, c := xtestConn(t, func(f *x11fake.Server) {
+		f.ErrorFor = func(r x11fake.Request) (byte, bool) {
+			return 2, r.Opcode == x11fake.XTest && r.Data == 2 && r.Body[1] == 6
+		}
+	})
+	first := c.Seq() + 1
+	for i := 0; i < 500; i++ {
+		if err := c.FakeInput(x11.ButtonPress, 6, 0, 0); err != nil {
+			t.Fatal(err)
+		}
+	}
+	errs, err := c.Sync()
+	if err != nil || c.Err() != nil {
+		t.Fatalf("Sync after 500 refused requests: %v, the connection %v; want it open", err, c.Err())
+	}
+	if len(errs) == 0 || len(errs) > 64 || errs[0].Seq != first {
+		var at uint16
+		if len(errs) > 0 {
+			at = errs[0].Seq
+		}
+		t.Fatalf("Sync handed back %d errors, the first for request %d; want 1 to 64, the first for %d", len(errs), at, first)
+	}
+	if errs, err := c.Sync(); err != nil || len(errs) != 0 {
+		t.Fatalf("a second Sync: %+v %v", errs, err)
+	}
+}

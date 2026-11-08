@@ -3,9 +3,11 @@ package desktop_test
 // input.actions against the fake X server, for what Xvfb does not do on demand: refuse a request, or stop reading.
 
 import (
+	"bytes"
 	"context"
 	"encoding/json"
 	"errors"
+	"image/png"
 	"path/filepath"
 	"strings"
 	"sync"
@@ -353,4 +355,93 @@ func TestOnTheFakeCloseDoesNotWaitForADial(t *testing.T) {
 	if _, err := shotOn(d)(context.Background()); err == nil {
 		t.Error("screen.shot after Close succeeded")
 	}
+}
+
+// A null where a batch takes a number, a point, a name or a list is refused as invalid, as checkActions refuses it, and
+// nothing in the batch runs: not even the click before it.
+func TestOnTheFakeANullInABatchRunsNothing(t *testing.T) {
+	f, act := onFake(t, nil)
+	click := map[string]any{"type": "click", "at": []int{10, 10}}
+	for _, bad := range []map[string]any{
+		{"type": "move", "at": []any{nil, 20}},
+		{"type": "wait", "ms": nil},
+		{"type": "key", "keys": []string{"a"}, "repeat": nil},
+		{"type": "down", "button": nil},
+	} {
+		got, err := act(context.Background(), click, bad)
+		if err != nil {
+			t.Fatal(err)
+		}
+		r := got.(desktop.ActionsResult)
+		if r.Done != 0 || r.Failed == nil || r.Failed.Index != 1 || r.Failed.Kind != rpc.KindInvalid || r.Failed.Message == "" {
+			t.Errorf("a click, then %v: done %d, failed %+v; want done 0 and action 1 invalid, in words", bad, r.Done, r.Failed)
+		}
+	}
+	if in := inputs(f); len(in) != 0 {
+		t.Fatalf("a refused batch reached the server: %+v", in)
+	}
+}
+
+// A long scroll on a pointer without the wheel's buttons is refused at every click: an honest server's errors, as many
+// as the requests. The batch stops at the scroll with the server's BadValue, in words; the display is not taken for gone.
+func TestOnTheFakeALongRefusedScrollStopsAtItsAction(t *testing.T) {
+	_, act := onFake(t, func(f *x11fake.Server) {
+		f.ErrorFor = func(r x11fake.Request) (byte, bool) {
+			return 2, r.Opcode == x11fake.XTest && r.Data == 2 && (r.Body[0] == x11.ButtonPress || r.Body[0] == x11.ButtonRelease) && r.Body[1] >= 6
+		}
+	})
+	got, err := act(context.Background(),
+		map[string]any{"type": "move", "at": []int{5, 5}},
+		map[string]any{"type": "scroll", "at": []int{10, 10}, "dx": 500, "unit": "clicks"},
+	)
+	if err != nil {
+		t.Fatal(err)
+	}
+	r := got.(desktop.ActionsResult)
+	if r.Done != 1 || r.Failed == nil || r.Failed.Index != 1 || r.Failed.Kind != rpc.KindInvalid || !strings.Contains(r.Failed.Message, "BadValue") {
+		t.Fatalf("done %d, failed %+v; want done 1 and action 1 invalid with BadValue", r.Done, r.Failed)
+	}
+}
+
+// A shot this connection holds is read to its end though the X server exits after screen.shot gave its first part:
+// computerd already has every byte. A new screen.shot needs the display, and says it is gone.
+func TestOnTheFakeASavedShotIsReadAfterTheDisplayExits(t *testing.T) {
+	defer desktop.SetChunkForTest(100)()
+	t.Setenv("XAUTHORITY", "")
+	f, name := x11fake.Listen(t, func(f *x11fake.Server) { f.Image = gray })
+	d := desktop.New(name)
+	t.Cleanup(d.Close)
+	c := serve(t, d)
+	var s shot
+	c.ok("screen.shot", map[string]any{}, &s)
+	if s.EOF || len(s.Data) != 100 || s.Size <= 100 {
+		t.Fatalf("a %d-byte shot gave %d bytes, eof %v; want more than one part", s.Size, len(s.Data), s.EOF)
+	}
+	f.Exit()
+	deadline := time.Now().Add(patience)
+	for d.Groups() != nil {
+		if time.Now().After(deadline) {
+			t.Fatalf("the display still answers %v after it exited", patience)
+		}
+		time.Sleep(10 * time.Millisecond)
+	}
+	got := append([]byte{}, s.Data...)
+	for eof := false; !eof; {
+		var part struct {
+			Data []byte `json:"data"`
+			EOF  bool   `json:"eof"`
+		}
+		c.ok("screen.read", map[string]any{"id": s.ID, "offset": len(got)}, &part)
+		if len(part.Data) == 0 && !part.EOF {
+			t.Fatalf("screen.read at %d gave nothing and no eof", len(got))
+		}
+		got, eof = append(got, part.Data...), part.EOF
+	}
+	if len(got) != s.Size {
+		t.Fatalf("read %d bytes of a %d-byte shot", len(got), s.Size)
+	}
+	if _, err := png.Decode(bytes.NewReader(got)); err != nil {
+		t.Fatalf("the shot read after the display exited: %v", err)
+	}
+	unsupported(t, c.call("screen.shot", map[string]any{}), name)
 }

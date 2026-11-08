@@ -130,6 +130,7 @@ type Server struct {
 	requests  []Request
 	byteOrder byte
 	sessions  []*session
+	exit      func()
 }
 
 // session is one connection the fake serves: its writes, one at a time, and the sequence number of its last request.
@@ -183,6 +184,7 @@ func Listen(t *testing.T, configure func(*Server)) (*Server, string) {
 		}
 		var mu sync.Mutex
 		var open []net.Conn
+		exited := false
 		go func() {
 			for {
 				conn, err := l.Accept()
@@ -190,19 +192,26 @@ func Listen(t *testing.T, configure func(*Server)) (*Server, string) {
 					return
 				}
 				mu.Lock()
+				if exited {
+					mu.Unlock()
+					_ = conn.Close()
+					return
+				}
 				open = append(open, conn)
 				mu.Unlock()
 				go f.serve(conn)
 			}
 		}()
-		t.Cleanup(func() {
+		f.exit = func() {
 			_ = l.Close()
 			mu.Lock()
 			defer mu.Unlock()
+			exited = true
 			for _, conn := range open {
 				_ = conn.Close()
 			}
-		})
+		}
+		t.Cleanup(f.Exit)
 		return f, fmt.Sprintf(":%d", n)
 	}
 	t.Fatal("no display number from 6100 to 6399 is free for the fake X server")
@@ -233,6 +242,28 @@ func (f *Server) Rebind(code byte, syms ...uint32) {
 	copy(f.Keymap[at:at+f.PerCode], syms)
 	f.mu.Unlock()
 	f.notify(code, 1)
+}
+
+// Exit is the X server exiting: it stops listening and hangs up every connection. Only a display Listen serves exits.
+func (f *Server) Exit() {
+	if f.exit != nil {
+		f.exit()
+	}
+}
+
+// Send writes out to every connection unasked, as a server may at any time: an event, or an error no request caused.
+// It is the first write's error, if any.
+func (f *Server) Send(out []byte) error {
+	f.mu.Lock()
+	sessions := append([]*session(nil), f.sessions...)
+	f.mu.Unlock()
+	var first error
+	for _, s := range sessions {
+		if err := s.write(out); err != nil && first == nil {
+			first = err
+		}
+	}
+	return first
 }
 
 // notify sends every connection a MappingNotify for count keycodes from first.
