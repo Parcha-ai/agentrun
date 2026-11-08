@@ -68,10 +68,11 @@ export async function runGraph(given: GraphInput) {
     // From the one store's journal (store.readJournal), no file: the run's view and pin as readWorkflowRun reads them over
     // A, and its decisions as receipts. The same answers as the file path; the cut passes the store and a context.
     const { store, context } = given;
-    const { decisionsOverStore } = await import("./store-reads/decisions.js");
+    const [{ decisionsOverStore }, { readWorkflowRunOver }] = await Promise.all([import("./store-reads/decisions.js"), import("./store-reads/workflow.js")]);
+    // The one reader of a workflow run's view over A (node status, outcome, escalation): the workflow-loop builder's.
+    view = (await readWorkflowRunOver(store, id, context)) ?? { status: {} };
     const reads = store.readJournal(id);
     try {
-      view = await readWorkflowRun({ runId: id, storage: reads, revision: { body: { workflow: given.workflow } } as never }, { context });
       // The pin frame is the driver document's `state.pin`, as readWorkflowRun reads it internally over the journal.
       const driver = await reads.findDocument({ kind: "agentrun.driver", scope: { kind: "session" }, key: id } as never, "current", context);
       const driverValue = driver ? ((await reads.document(driver.id, "current", context))?.value as { state?: { pin?: Frame } } | undefined) : undefined;
