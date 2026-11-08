@@ -264,6 +264,9 @@ describe("the Modal provider's upload commands in a root container with no netwo
 
 		it(`${image}: init that cannot empty its bounding set (root without CAP_SETPCAP) refuses to start, in words, and the container ends`, () => {
 			const { name } = sandbox(image, { user: "0:0", caps: ["--cap-drop", "SETPCAP"] });
+			// The upload's checks after its rename (each `ls` once the daemon is in place) are held 2 s, so the entrypoint,
+			// which polls every 0.2 s, starts init and init ends the container while the upload still runs, every time.
+			docker("exec", name, "sh", "-c", 'printf \'#!/bin/sh\\n[ -e /opt/agentrun/computerd ] && sleep 2\\nexec /bin/ls "$@"\\n\' > /usr/local/bin/ls && chmod 0755 /usr/local/bin/ls');
 			upload(name);
 			const code = execFileSync("docker", ["wait", name], { encoding: "utf8", timeout: 30_000 }).trim();
 			assert.equal(code, "1");
