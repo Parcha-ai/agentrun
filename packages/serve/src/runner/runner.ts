@@ -8,8 +8,12 @@
 // - the store refuses any write under an epoch another claim moved past (Fenced): the backstop for a runner that froze.
 import { randomUUID } from "node:crypto";
 import { hostname } from "node:os";
+import type { JsonValue } from "@earendil-works/chord";
+import { BACKGROUND_CONTEXT } from "@earendil-works/chord/context";
+import type { ConversationId, EntryId, StorageWrite } from "@earendil-works/pi-durable";
 import { COMMAND_KINDS, endedReason } from "./commands.js";
-import type { Claim, Journal, Loop, LoopEnd, LoopFactory, StopReason } from "./loop-contract.js";
+import { KINDS } from "./journal-kinds.js";
+import type { Claim, Command, Journal, Loop, LoopEnd, LoopFactory, StopReason } from "./loop-contract.js";
 import { isFenced, type RunnerStore } from "./store-port.js";
 
 /** A commit by a loop whose claim this runner gave up: refused before it reaches the store. */
@@ -37,6 +41,9 @@ export interface RunnerOptions {
   resumeTries?: number;
   /** The wait after a resume's first failed try; each later one waits twice the one before. */
   resumeBackoffMs?: number;
+  /** The wait before a run whose loop ended interrupted on its own (no stop asked of it: its Session closed itself) is
+   *  claimable again; each such end of the run in a row waits twice the one before, up to 64 times this. */
+  interruptBackoffMs?: number;
   /** How long a run's end waits for a command still with its loop before it writes its end; an answer after that is
    *  dropped (nothing written, nothing said). */
   endWaitMs?: number;
@@ -96,6 +103,7 @@ export function startRunner(options: RunnerOptions): Runner {
     commandPollMs = 500,
     resumeTries = 3,
     resumeBackoffMs = 5_000,
+    interruptBackoffMs = 1_000,
     endWaitMs = 5_000,
     onEvent = () => {},
   } = options;
@@ -111,6 +119,11 @@ export function startRunner(options: RunnerOptions): Runner {
   };
   /** Every run this runner claimed whose loop has not settled, lost ones included (they still take a loop's place). */
   const runs = new Map<string, Held>();
+  /** A lost claim's loop that had not settled when its run was claimed again (its place in `runs` taken by the new one):
+   *  still counted against `loops` until it settles, so a loop that ignores its stop never lets the runner hold more. */
+  const replaced = new Set<Held>();
+  /** Each run's ends in a row, on this runner, as interrupted on its own: its next release's backoff doubles with them. */
+  const interruptedInARow = new Map<string, number>();
   let closed = false;
   let killed = false;
   let pollTimer: NodeJS.Timeout | undefined;
@@ -155,52 +168,69 @@ export function startRunner(options: RunnerOptions): Runner {
     held.loop.stop(reason).catch((error: unknown) => emit({ type: "error", runId: held.claim.runId, step: "stop", message: message(error) }));
   };
 
-  const renew = async (held: Held) => {
-    if (held.renewing || held.fence.lost || held.ending || killed) return;
-    held.renewing = true;
+  /** Every held claim renewed in one transaction (store.renewMany), never one per run: a claim answered Fenced is lost,
+   *  the others move on. Any other failure (a busy store) is tried at the next renew; each run's deadline stops its loop
+   *  if none lands. */
+  const renewAll = async () => {
+    if (killed) return;
+    const due = [...runs.values()].filter((held) => !held.renewing && !held.fence.lost && !held.ending);
+    if (due.length === 0) return;
+    for (const held of due) held.renewing = true;
     const sentAt = Date.now();
     try {
-      const renewed = await store.renew(held.claim, { leaseMs });
-      if (held.fence.lost || held.ending || killed) return;
-      held.claim = renewed;
-      armDeadline(held, sentAt + leaseMs - stopMarginMs);
+      const results = await store.renewMany(due.map((held) => held.claim), { leaseMs });
+      results.forEach((result, i) => {
+        const held = due[i]!;
+        if (held.fence.lost || held.ending || killed) return;
+        if (isFenced(result)) loseClaim(held, "fenced");
+        else {
+          held.claim = result as Claim;
+          armDeadline(held, sentAt + leaseMs - stopMarginMs);
+        }
+      });
     } catch (error) {
-      if (isFenced(error)) loseClaim(held, "fenced");
-      // Any other failure (a busy store) is tried at the next renew; the deadline stops the loop if none lands.
-      else emit({ type: "error", runId: held.claim.runId, step: "renew", message: message(error) });
+      for (const held of due) emit({ type: "error", runId: held.claim.runId, step: "renew", message: message(error) });
     } finally {
-      held.renewing = false;
+      for (const held of due) held.renewing = false;
     }
   };
-  const renewTimer = setInterval(() => {
-    for (const held of runs.values()) void renew(held);
-  }, renewEveryMs);
+  const renewTimer = setInterval(() => void renewAll(), renewEveryMs);
 
   /** Hands the run's new command rows to its loop: stop as stop(), the other kinds as command(); refusals are taken. The
    *  run's end waits for it (finish), so a refusal of a command the loop had when it ended is written before the release;
-   *  once the end has sealed the claim, an answer still to come is dropped: nothing written, nothing said. */
-  const deliver = (held: Held): Promise<void> => {
+   *  once the end has sealed the claim, an answer still to come is dropped: nothing written, nothing said. `given`: the
+   *  rows the runner's one read of every run found for it (deliverAll), else it reads its own. */
+  const deliver = (held: Held, given?: readonly Command[]): Promise<void> => {
     if (held.delivering || held.stopping || held.ending || held.fence.lost || killed) return Promise.resolve();
     held.delivering = true;
     // Declared before it is assigned: its own finally reads it.
     let delivery: Promise<void> | undefined;
     delivery = (async () => {
       try {
-        const rows = await store.commands(held.claim.runId, held.cursor);
+        const rows = given ?? (await store.commands(held.claim.runId, held.cursor));
         for (const row of rows) {
           if (held.stopping || held.ending || held.fence.lost || killed) break;
-          held.cursor = Math.max(held.cursor, row.id);
-          if (row.takenAt !== null) continue;
+          // A row another delivery handed on since the runner's read is not handed on again.
+          if (row.id <= held.cursor) continue;
+          // The cursor moves past a row only once its delivery went through (handed to the loop, and any refusal written):
+          // a delivery that throws leaves the row for the next poll, never skipped for the rest of the claim.
+          if (row.takenAt !== null) {
+            held.cursor = Math.max(held.cursor, row.id);
+            continue;
+          }
           if (row.kind === "stop") {
+            held.cursor = Math.max(held.cursor, row.id);
             stopLoop(held, { kind: "command", commandId: row.id });
             break;
           }
           const outcome = COMMAND_KINDS.has(row.kind) ? await held.loop.command(row) : { refused: `no command is of kind ${JSON.stringify(row.kind)}` };
           if (held.sealed || killed) return;
+          // `taken`: the loop's commit took it. `later`: left untaken for the run's next claim. Only a refusal is written here.
           if ("refused" in outcome) {
             await store.take(held.claim, row.id, "refused", outcome.refused);
             emit({ type: "refused", runId: held.claim.runId, commandId: row.id, reason: outcome.refused });
           }
+          held.cursor = Math.max(held.cursor, row.id);
         }
       } catch (error) {
         if (held.sealed || killed) return;
@@ -214,15 +244,56 @@ export function startRunner(options: RunnerOptions): Runner {
     held.inFlight = delivery;
     return delivery;
   };
+  /** One read of every held run's new command rows a tick (store.commandsOf), never one per run, each run's then handed
+   *  to its loop; the next tick is set once this read is done. */
   const deliverAll = () => {
     if (closed || killed) return;
-    for (const held of runs.values()) void deliver(held);
-    commandTimer = setTimeout(deliverAll, commandPollMs);
+    void (async () => {
+      const due = [...runs.values()].filter((held) => !(held.delivering || held.stopping || held.ending || held.fence.lost));
+      if (due.length === 0) return;
+      try {
+        const rows = await store.commandsOf(due.map((held) => ({ runId: held.claim.runId, after: held.cursor })));
+        for (const held of due) void deliver(held, rows.get(held.claim.runId) ?? []);
+      } catch (error) {
+        for (const held of due) emit({ type: "error", runId: held.claim.runId, step: "commands", message: message(error) });
+      }
+    })().finally(() => {
+      if (!closed && !killed) commandTimer = setTimeout(deliverAll, commandPollMs);
+    });
   };
 
   /** After start() settles: a final run's leftover rows refused, then one flush, then the release. A lost claim writes
    *  nothing; a killed runner does nothing. */
+  /**
+   * Ends the run under `claim` in its journal, for a loop that could not write its own end: an agentrun.end entry on the
+   * run's root conversation (one made for it when the run has none yet), with the run row's patch and the commands in
+   * `take` keyed to that entry, so they land in its one commit or not at all. When the journal cannot take that commit,
+   * the run row alone (runs.update, the same take in its one transaction). A lost claim (Fenced) writes neither.
+   */
+  const endRun = async (claim: Claim, data: { state: "stopped" | "failed"; summary: string }, take: readonly number[]) => {
+    try {
+      const journal = store.journal(claim);
+      const [root] = (await journal.scanConversations({}, 1, undefined, BACKGROUND_CONTEXT)).items;
+      const writes: StorageWrite[] = [];
+      let conversationId = root?.id;
+      if (conversationId === undefined) {
+        conversationId = (await journal.mintId()) as unknown as ConversationId;
+        writes.push({ type: "conversation", value: { id: conversationId } } as StorageWrite);
+      }
+      const id = (await journal.mintId()) as unknown as EntryId;
+      writes.push({ type: "entry", value: { id, conversationId, kind: KINDS.end, data: data as unknown as JsonValue } } as StorageWrite);
+      journal.stage({ run: { state: data.state, summary: data.summary }, effect: id as unknown as number, ...(take.length ? { take: take.map((command) => ({ command, effect: id as unknown as number })) } : {}) });
+      const result = await journal.commit([writes], () => {}, BACKGROUND_CONTEXT);
+      if (result.stored !== 1) throw result.refused ?? new Error("the run's end was not stored");
+    } catch (error) {
+      if (isFenced(error)) throw error;
+      await store.runs.update(claim, { state: data.state, summary: data.summary }, take.length ? { take } : undefined);
+    }
+  };
+
   const finish = async (held: Held, end: LoopEnd, threw: boolean) => {
+    // Whether the runner asked the loop to stop before it ended (only stopLoop sets this).
+    const stoppedBefore = held.stopping;
     held.ending = true;
     clearTimeout(held.deadline);
     const { claim } = held;
@@ -240,7 +311,17 @@ export function startRunner(options: RunnerOptions): Runner {
       // one more try, and the run is claimable again after a backoff; after the last try that row is refused with why.
       // Never failed: a person can raise again or stop it (#1944-5, the lead's keep list).
       if (threw && end.state === "failed" && claim.from === "parked") return await resumeFailed(held, end.error.message);
-      if (threw && end.state === "failed") await store.runs.update(claim, { state: "failed", summary: end.error.message });
+      if (threw && end.state === "failed") {
+        // A loop that failed with no end written: a person's stop waiting now is the run's end (stopped, its row taken),
+        // never refused as a failed run's; else the run ends failed with why. Either way its end is in the journal.
+        const stop = (await store.commands(claim.runId, 0)).find((row) => row.takenAt === null && row.kind === "stop");
+        if (stop) {
+          await endRun(claim, { state: "stopped", summary: "stopped by a person" }, [stop.id]);
+          end = { state: "stopped" };
+        } else {
+          await endRun(claim, { state: "failed", summary: end.error.message }, []);
+        }
+      }
       if (end.state === "ended" || end.state === "stopped" || end.state === "failed") {
         const reason = endedReason(end.state);
         for (const row of await store.commands(claim.runId, 0)) {
@@ -250,7 +331,17 @@ export function startRunner(options: RunnerOptions): Runner {
         }
       }
       await store.flush();
-      await store.release(claim, end.state === "parked" && end.wakeAt !== undefined ? { wakeAt: end.wakeAt } : {});
+      // A loop that ended interrupted with no stop asked of it (its Session closed itself) is released with a backoff that
+      // doubles each time in a row, so a Harness that keeps closing is not claimed again every poll. A stopped loop (a
+      // shutdown, a lost claim) is released at once, for another runner to take over.
+      const closedItself = end.state === "interrupted" && !stoppedBefore;
+      const inARow = closedItself ? (interruptedInARow.get(claim.runId) ?? 0) + 1 : 0;
+      if (inARow > 0) interruptedInARow.set(claim.runId, inARow);
+      else interruptedInARow.delete(claim.runId);
+      await store.release(claim,
+        end.state === "parked" && end.wakeAt !== undefined ? { wakeAt: end.wakeAt }
+        : inARow > 0 ? { backoffUntil: Date.now() + interruptBackoffMs * 2 ** Math.min(inARow - 1, 6) }
+        : {});
       emit({ type: "released", runId: claim.runId, epoch: claim.epoch, end: end.state });
     } catch (error) {
       emit({ type: "error", runId: claim.runId, step: isFenced(error) ? "release (fenced)" : "release", message: message(error) });
@@ -271,7 +362,7 @@ export function startRunner(options: RunnerOptions): Runner {
       // A stop never waits on a loop that cannot start: the run ends stopped here, its stop row taken, and every other
       // untaken row refused as a stopped run's.
       // One write: the run ends stopped with its stop row taken, or neither (a final run never keeps its stop untaken).
-      await store.runs.update(claim, { state: "stopped", summary: "stopped by a person" }, { take: [stop.id] });
+      await endRun(claim, { state: "stopped", summary: "stopped by a person" }, [stop.id]);
       const reason = endedReason("stopped");
       for (const row of untaken) {
         if (row.id === stop.id) continue;
@@ -305,10 +396,13 @@ export function startRunner(options: RunnerOptions): Runner {
   const hold = (claim: Claim, sentAt: number) => {
     const fence = { lost: false };
     const abort = new AbortController();
+    let firstDelivered!: () => void;
+    const delivered = new Promise<void>((resolve) => (firstDelivered = resolve));
     const loop = createLoop({
       journal: (forClaim) => fenced(store.journal(forClaim), fence, forClaim.runId),
       flush: () => store.flush(),
       signal: abort.signal,
+      delivered,
     });
     const held: Held = { claim, loop, fence, abort, cursor: 0, stopping: false, ending: false, sealed: false, renewing: false, delivering: false };
     runs.set(claim.runId, held);
@@ -325,14 +419,15 @@ export function startRunner(options: RunnerOptions): Runner {
       }
       await finish(held, end, threw);
     })();
-    void deliver(held);
+    // The claim's first delivery: deps.delivered resolves once it has handed on every untaken row it read.
+    void deliver(held).finally(firstDelivered);
   };
 
   const claimMore = async () => {
     if (polling || closed || killed) return;
     polling = true;
     try {
-      const free = loops - runs.size;
+      const free = loops - runs.size - replaced.size;
       if (free <= 0) return;
       // One store call claims the batch, each run at its own epoch + 1 (store.runs.claimMany): filling 300 loops, or
       // taking a dead runner's runs over, is one transaction, not 300.
@@ -347,6 +442,11 @@ export function startRunner(options: RunnerOptions): Runner {
           continue;
         }
         try {
+          // A lost claim's loop still running keeps its place until it settles.
+          if (before?.done) {
+            replaced.add(before);
+            void before.done.finally(() => replaced.delete(before));
+          }
           hold(claim, sentAt);
         } catch (error) {
           // The loop could not be made: the run fails here, so it is not claimed again and again.

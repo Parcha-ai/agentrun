@@ -13,7 +13,7 @@
 //   close, idle   the server closing: grades stopped, then every check and grade in flight waited for
 // It holds the runs' learning in flight; a run's learning itself is in its serve.json (`learning`, `reflect`), which
 // the kernel writes.
-import { lstat, readFile } from "node:fs/promises";
+import { readFile } from "node:fs/promises";
 import { join, posix } from "node:path";
 import { ANSWER_MAX, INDEX_FILE, parseNoteFile, redactSecrets, type Verdict } from "./learn/index.js";
 import { type AnalyticsFilter, type Revision, runDirIn, type RunRow, type StartedRun } from "@parcha/pi-durable-agent";
@@ -31,6 +31,7 @@ import { notKept, said, STOPPED } from "./learning-words.js";
 import { ended, lineNotesOf, type NoteFiles, notesLineOf, notesOf, type Outcome, outcomeOf, outcomes, record } from "./usage.js";
 import { isObject, type Json } from "./validate.js";
 import { REFLECT_REQUEST } from "./turns.js";
+import { isWorkspaceError, localWorkspace } from "./workspace/index.js";
 
 /** A run's end-of-run turn: the job's outcome, the newest store entry before the turn and, once the run ended, the newest
  *  after it (its rows are those between), its deadline, and how it ended. */
@@ -342,7 +343,7 @@ export class LearningRuns {
       if ("seed" in seeded) {
         try {
           const own = revision.kind === "agentic" ? Object.keys(revision.body.skills) : [];
-          const pin = await pinSeed(started.dir, started.workspace, seeded.seed, { budget: this.options.learningBudget ?? LEARNING_BUDGET, read, shown: this.shown(), own });
+          const pin = await pinSeed(started.dir, localWorkspace(started.workspace), seeded.seed, { budget: this.options.learningBudget ?? LEARNING_BUDGET, read, shown: this.shown(), own });
           given = pin.given ?? [];
           for (const path of seeded.seed.skipped) warn(started.runId, `its learning folder's ${path} was not read`);
           for (const name of pin.skills_left_out ?? []) warn(started.runId, `starts without the skill ${name} its agent learned: it is over what is left of the learned skills' budget, or holds a secret`);
@@ -362,7 +363,7 @@ export class LearningRuns {
    *  says it; the copy taken back. */
   async copyThrew(started: Pick<StartedRun, "runId" | "dir" | "workspace">, at: string, error: unknown): Promise<Learning> {
     warn(started.runId, `starts with nothing learned: ${error instanceof Error ? error.message : String(error)}`);
-    await dropSeed(started.dir, started.workspace).catch(() => undefined);
+    await dropSeed(started.dir, localWorkspace(started.workspace)).catch(() => undefined);
     return { state: "dropped", reason: "seed_failed", detail: said.stopped(STOPPED.notCopied), at };
   }
 
@@ -402,7 +403,7 @@ export class LearningRuns {
    *  ledger's line (onSaved). Called before anything reads the run: its relaunch, a settle, a follow-up. A seed_failed
    *  run asks no end-of-run turn (reflectSkip). A copy that never began leaves nothing, and the learning stays null. */
   async onLoad(row: Pick<RunRow, "id" | "agent" | "state">, dir: string, meta: Run["meta"], save: () => Promise<void>): Promise<void> {
-    if (row.state !== "running" || meta.learning || !(await dropSeed(dir, join(dir, "work")))) return;
+    if (row.state !== "running" || meta.learning || !(await dropSeed(dir, localWorkspace(join(dir, "work"))))) return;
     meta.learning = { state: "dropped", reason: "seed_failed", detail: said.stopped(STOPPED.serverStopped), at: new Date().toISOString() };
     await save();
     warn(row.id, "its server stopped while it copied what its agent learned; it starts again with nothing learned");
@@ -464,12 +465,13 @@ export class LearningRuns {
    *  learned skills its pin names laid again, fresh, so its process reads each where it was. A fault leaves it without. */
   async onReopen(run: Run): Promise<void> {
     await learningTestHooks.beforeReopen?.(run.dir);
-    const dir = join(run.dir, "work", LEARNED_DIR);
+    const work = localWorkspace(join(run.dir, "work"));
     if (!run.meta.reflect) return;
     try {
       const pin = await readPin(run.dir);
-      if (pin && !(await lstat(dir).then(() => true, () => false))) await layLearned(dir, await seedAt(this.options.agents.dir, run.agentId, pin.seed), this.shown());
-      if (pin) await layPinnedSkills(join(run.dir, "work"), pin, () => skillsAt(this.options.agents.dir, run.agentId, pin.seed));
+      const copied = await work.list(LEARNED_DIR).then(() => true, (error: unknown) => !isWorkspaceError(error, "NOT_FOUND"));
+      if (pin && !copied) await layLearned(work, await seedAt(this.options.agents.dir, run.agentId, pin.seed), this.shown());
+      if (pin) await layPinnedSkills(work, pin, () => skillsAt(this.options.agents.dir, run.agentId, pin.seed));
     } catch (error) {
       warn(run.id, `opens again without its copy of what its agent learned: ${(error as Error).message}`);
     }
@@ -796,6 +798,9 @@ export class LearningRuns {
       await learningTestHooks.beforePropose?.(run.dir);
       const pin = await readPin(run.dir);
       if (!pin) throw new Error("the run has no learning pin");
+      // A pin of an empty seed (no main when the run started) is the folder's read's to propose from; this proposal
+      // reads a commit of main.
+      if (pin.seed === null) throw new Error("the run's pin names no commit of main to propose against");
       const { proposeRun } = await import("./propose.js");
       // The secrets this server holds, wherever its launcher put them, the keys saved on it, what each launch handed the
       // run, and its own tokens. How the job ended, before its end-of-run turn: only a completed run keeps a skill.

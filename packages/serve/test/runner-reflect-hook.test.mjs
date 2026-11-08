@@ -38,6 +38,20 @@ test("a run that does not learn asks nothing and keeps nothing", async () => {
   assert.deepEqual(calls.asked, []);
 });
 
+test("a run cut before it could look back (a person's stop, or a fault) keeps its drop beside its end, and nothing is asked", async () => {
+  for (const [cut, reason, detail] of [
+    ["stopped", "cancelled", said.stopped(STOPPED.cancelled)],
+    ["stopped-looking", "cancelled", said.stopped(STOPPED.cancelledLooking)],
+    ["faulted", "crashed", said.stopped(STOPPED.crashed)],
+  ]) {
+    const { hook, input, calls } = hookWith();
+    assert.deepEqual(await hook({ ...input("failed"), cut }), { also: [dropped(reason, detail)] }, cut);
+    assert.deepEqual(calls.asked, [], `${cut}: nothing asked`);
+  }
+  const { hook, input } = hookWith({ facts: { learns: false } });
+  assert.equal(await hook({ ...input("failed"), cut: "stopped" }), undefined, "a run that does not learn keeps nothing, cut or not");
+});
+
 test("a cancelled run, one its cap stopped, and one whose spend is unknown under a cap: dropped in the server's words, nothing asked", async () => {
   for (const [facts, reason, detail] of [
     [{ cancelled: true }, "cancelled", said.stopped(STOPPED.cancelled)],

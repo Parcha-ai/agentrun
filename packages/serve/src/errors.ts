@@ -34,7 +34,8 @@ export const ERROR_STATUS = {
   // no seal key to keep it under, a send to a webhook a 410 turned off, a write to a learning note that names no
   // version it read, a remote MCP server that asks for a credential, does not speak MCP, or fails, a saved-servers file
   // that does not read, which is never written over (mcp-servers.ts), a message to a run paused at its cap, which
-  // takes one once its cap is raised, and a saved sign-in forgotten while a run holds its save lease (sign-ins.ts).
+  // takes one once its cap is raised, a saved sign-in forgotten while a run holds its save lease (sign-ins.ts), and an
+  // answer to a browser hand-over that already has a different one (browser-person.ts).
   key_set_by_server: 409,
   budget_reached: 409,
   no_sealing_key: 409,
@@ -46,6 +47,7 @@ export const ERROR_STATUS = {
   store_unreadable: 409,
   wrong_origin: 409,
   sign_in_held: 409,
+  handoff_answered: 409,
   scope_taken: 409,
 } as const;
 

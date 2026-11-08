@@ -1,7 +1,7 @@
 // The schedule: a trigger source on a clock. A cron line in an IANA zone, one time, or every N seconds on a grid. The
 // engine (triggers.ts) reads its times through `clock`, and keeps the catch-up of missed times its own.
 import { Cron } from "croner";
-import { closedSchema, instantOf, second, type Source, type TriggerAdapter, unknownSourceFields, validZone } from "./trigger-adapter.js";
+import { closedSchema, instantOf, type ObjectSchema, second, type Source, type TriggerAdapter, unknownSourceFields, validZone } from "./trigger-adapter.js";
 
 /** The shortest every_s, and so the most often a schedule fires: a cron line has no seconds field. */
 export const MIN_EVERY_S = 60;
@@ -31,6 +31,13 @@ function latestBy(source: Schedule, first: number, now: number, cron?: Cron): nu
   return at !== undefined && at >= first && at <= now ? at : first;
 }
 
+/** The schedule's shapes as a write gives them. */
+const SCHEMAS: ObjectSchema[] = [
+  closedSchema({ kind: { const: "schedule" }, cron: { type: "string", description: "Five fields, minute hour day-of-month month day-of-week, as cron reads them (croner): at most once a minute. A time a clock change repeats fires once, at its first pass; one it skips fires at the first time after the gap." } }, { timezone: { type: "string", default: "UTC", description: "The IANA zone the cron line is read in." } }),
+  closedSchema({ kind: { const: "schedule" }, at: { ...DATE_TIME, description: "Once, at this time (to the second, in the future); the trigger turns itself off after." } }),
+  closedSchema({ kind: { const: "schedule" }, every_s: { type: "integer", minimum: MIN_EVERY_S, maximum: MAX_EVERY_S, description: "Every this many seconds, on the grid from start_at." } }, { start_at: { ...DATE_TIME, description: "The grid's origin, to the second: the first firing is at it when it is ahead, else at the first point of the grid after now. Default the time the trigger was made." } }),
+];
+
 export const schedule: TriggerAdapter = {
   id: "schedule",
   label: "schedule",
@@ -38,11 +45,9 @@ export const schedule: TriggerAdapter = {
   owner: true,
   describe: '{kind: "schedule", cron, timezone}, {kind: "schedule", at}, {kind: "schedule", every_s, start_at?}',
   fires: `a cron line in a zone, one time, every N seconds (${MIN_EVERY_S} or more)`,
-  schemas: [
-    closedSchema({ kind: { const: "schedule" }, cron: { type: "string", description: "Five fields, minute hour day-of-month month day-of-week, as cron reads them (croner): at most once a minute. A time a clock change repeats fires once, at its first pass; one it skips fires at the first time after the gap." } }, { timezone: { type: "string", default: "UTC", description: "The IANA zone the cron line is read in." } }),
-    closedSchema({ kind: { const: "schedule" }, at: { ...DATE_TIME, description: "Once, at this time (to the second, in the future); the trigger turns itself off after." } }),
-    closedSchema({ kind: { const: "schedule" }, every_s: { type: "integer", minimum: MIN_EVERY_S, maximum: MAX_EVERY_S, description: "Every this many seconds, on the grid from start_at." } }, { start_at: { ...DATE_TIME, description: "The grid's origin, to the second: the first firing is at it when it is ahead, else at the first point of the grid after now. Default the time the trigger was made." } }),
-  ],
+  schemas: SCHEMAS,
+  // The zone and the start are filled in when a write leaves them out: every field is sent.
+  sent: SCHEMAS.map((schema) => ({ ...schema, required: Object.keys(schema.properties) })),
   parse(value, now, bad, issues) {
     const forms = ["cron", "at", "every_s"].filter((field) => value[field] !== undefined);
     if (forms.length !== 1) return bad("", "invalid", "a schedule names exactly one of cron, at and every_s"), undefined;
