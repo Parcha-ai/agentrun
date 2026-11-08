@@ -6,6 +6,7 @@ import { execCases } from "./exec.js";
 import { filesCases } from "./files.js";
 import { healthCases } from "./health.js";
 import { inputCases } from "./input.js";
+import { isolationCases } from "./isolation.js";
 import { lifetimeCases } from "./lifetime.js";
 import { mountCases } from "./mount.js";
 import { processCases } from "./process.js";
@@ -20,6 +21,7 @@ export const conformanceCases: Case[] = [
 	...processCases,
 	...providerCases,
 	...driftCases,
+	...isolationCases,
 	...mountCases,
 	...screenCases,
 	...inputCases,

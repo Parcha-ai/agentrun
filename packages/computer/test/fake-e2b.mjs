@@ -13,6 +13,7 @@
 // mount.sync from it. Nothing reaches the network, and no SDK is loaded.
 import { createHash } from "node:crypto";
 import { GOOD_PREFLIGHT, mountsOf, rootVerb } from "./fake-modal.mjs";
+import { netDevText } from "./net-dev.mjs";
 
 export const VERSION = JSON.parse(await (await import("node:fs/promises")).readFile(new URL("../package.json", import.meta.url), "utf8")).version;
 export const DAEMON = "/opt/agentrun/computerd";
@@ -111,7 +112,8 @@ const newId = () => `i${String(++counter).padStart(19, "0")}`;
  *  - install: exit code of the install script (default 0);
  *  - initFails: words init writes to stderr before it exits 1 (no daemon listens);
  *  - notListening: how many bridges find no daemon listening before one does;
- *  - box: what the daemon reports, over the defaults (hello, uid, gid, status fields, kernel, reached, accepted (the
+ *  - box: what the daemon reports, over the defaults (hello, uid, gid, status fields, kernel, interfaces (its own
+ *    /proc/self/net/dev and the probe's, default the loopback alone), reached, accepted (the
  *    probe targets that accept and send nothing back: by default every IPv4 TCP one with no internet access), display),
  *    udpAnswers (with no internet access, a host:port/udp target answers anyway, as it would were E2B's firewall to let
  *    DNS over UDP out), probe: "no-accepted" (the probe's report has no accepted list), and what
@@ -184,10 +186,11 @@ export function fakeE2B({
 			lingering: undefined,
 			box: {
 				hello: { version: VERSION, os: "linux", kind: "linux", arch: "amd64", groups: [...LINUX_GROUPS] },
-				uid: 1000,
-				gid: 1000,
+				uid: 2510,
+				gid: 2510,
 				status: {},
 				kernel: "6.1.102",
+				interfaces: ["lo"],
 				cwd: "/work",
 				exe: DAEMON,
 				...boxPatch,
@@ -257,8 +260,12 @@ export function fakeE2B({
 			return result({ exitCode: sb.box.syncExit ?? 0 });
 		}
 		if (method === "files.read" && params.path === "/proc/self/status") {
-			const fields = { Uid: `${sb.box.uid}\t${sb.box.uid}\t${sb.box.uid}\t${sb.box.uid}`, Gid: `${sb.box.gid}\t${sb.box.gid}\t${sb.box.gid}\t${sb.box.gid}`, Groups: "", NoNewPrivs: "1", CapInh: NO_CAPS, CapPrm: NO_CAPS, CapEff: NO_CAPS, CapBnd: NO_CAPS, CapAmb: NO_CAPS, ...sb.box.status };
+			const fields = { Uid: `${sb.box.uid}\t${sb.box.uid}\t${sb.box.uid}\t${sb.box.uid}`, Gid: `${sb.box.gid}\t${sb.box.gid}\t${sb.box.gid}\t${sb.box.gid}`, Groups: "", NoNewPrivs: "1", CapInh: NO_CAPS, CapPrm: NO_CAPS, CapEff: NO_CAPS, CapBnd: NO_CAPS, CapAmb: NO_CAPS, Seccomp: "2", ...sb.box.status };
 			const text = Object.entries(fields).map(([k, v]) => `${k}:\t${v}\n`).join("");
+			return result({ data: Buffer.from(text).toString("base64"), size: text.length, eof: true });
+		}
+		if (method === "files.read" && params.path === "/proc/self/net/dev") {
+			const text = netDevText(sb.box.interfaces);
 			return result({ data: Buffer.from(text).toString("base64"), size: text.length, eof: true });
 		}
 		if (method === "files.stat") {
@@ -291,7 +298,7 @@ export function fakeE2B({
 				const none = sb.allowInternetAccess === false;
 				const reached = sb.box.reached ?? (none ? (sb.box.udpAnswers ? targets.filter(udp) : []) : targets);
 				const accepted = sb.box.accepted ?? (none ? targets.filter((target) => !udp(target) && !target.startsWith("[")) : []);
-				const report = { uid: sb.box.uid, gid: sb.box.gid, kernel: sb.box.kernel, reached, accepted };
+				const report = { uid: sb.box.uid, gid: sb.box.gid, kernel: sb.box.kernel, interfaces: sb.box.interfaces, reached, accepted };
 				if (sb.box.probe === "no-accepted") delete report.accepted;
 				return out(`${JSON.stringify(report)}\n`);
 			}
@@ -470,7 +477,7 @@ export function fakeE2B({
 						} else {
 							const [uid, gid] = user.split(":").map(Number);
 							Object.assign(sb.box, { uid, gid });
-							sb.init = { deadline, user, display, max, handle, timeoutMs: opts.timeoutMs };
+							sb.init = { deadline, user, display, max, handle, timeoutMs: opts.timeoutMs, command: cmd };
 						}
 						return handle;
 					}

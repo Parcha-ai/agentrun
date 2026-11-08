@@ -82,12 +82,13 @@ test("the suite has the extension's 13 new cases, each at its level and with the
 	});
 });
 
-test("coreGroups: computerd brings exec, files, processes and network none; a desktop adds screen and keyboard and pointer; a phone needs screen and touch", () => {
+test("coreGroups: computerd brings exec, files, processes and network none (a child daemon its vendor's agent too); a desktop adds screen and keyboard and pointer; a phone needs screen and touch", () => {
 	const linux = ["exec", "files", "processes", "network:none"];
+	const child = [...linux, "vendor-agent"];
 	assert.deepEqual(coreGroups("linux", "pid1"), linux);
-	assert.deepEqual(coreGroups("linux", "child"), linux);
+	assert.deepEqual(coreGroups("linux", "child"), child);
 	assert.deepEqual(coreGroups("desktop", "pid1"), [...linux, "screen", "input.pointer", "input.keys"]);
-	assert.deepEqual(coreGroups("desktop", "child"), [...linux, "screen", "input.pointer", "input.keys"]);
+	assert.deepEqual(coreGroups("desktop", "child"), [...child, "screen", "input.pointer", "input.keys"]);
 	assert.deepEqual(coreGroups("desktop", "none"), ["screen", "input.pointer", "input.keys"]);
 	assert.deepEqual(coreGroups("android", "none"), ["screen", "input.touch"]);
 	assert.deepEqual(coreGroups("ios", "none"), ["screen", "input.touch"]);

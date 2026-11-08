@@ -42,9 +42,17 @@ function catOf(argv, cwd, computer) {
 const UNPRIVILEGED = { CapInh: NO_CAPABILITIES, CapPrm: NO_CAPABILITIES, CapEff: NO_CAPABILITIES, CapBnd: NO_CAPABILITIES, CapAmb: NO_CAPABILITIES, NoNewPrivs: "1" };
 
 /** What exec.run of argv prints in a computer whose user is uid, as `user` (a name in users, or a uid) when given. */
-function output(argv, { uid, status, users, user }) {
+function output(argv, { uid, status, users, user, probe }) {
 	const who = user === undefined ? uid : String(users[user] ?? user);
 	if (argv[0] === "id" && argv[1] === "-u") return `${who}\n`;
+	if (argv[0] === "/opt/agentrun/computerd" && argv[1] === "probe") {
+		// computerd probe --connect <target>...: the interfaces the computer's programs see, and each target refused
+		// unless the fake's vendor agent answers it.
+		const targets = argv.slice(2).filter((_, i) => i % 2 === 1);
+		const answered = targets.filter((target) => probe.answers.includes(target));
+		const results = targets.map((target) => ({ target, protocol: "any", outcome: answered.includes(target) ? "answered" : "refused", bytes: answered.includes(target) ? 12 : 0, detail: "" }));
+		return `${JSON.stringify({ uid: Number(who), gid: Number(who), kernel: "6.8.0", interfaces: probe.interfaces, reached: answered, accepted: [], results })}\n`;
+	}
 	if (argv[0] === "cat" && argv[1] === "/proc/self/status") {
 		const lines = Object.entries(status).filter(([, value]) => value !== undefined);
 		return `Uid:\t${who}\n${lines.map(([field, value]) => `${field}:\t${value}\n`).join("")}`;
@@ -168,6 +176,8 @@ function fakeDaemon(hello, computer) {
  *   (an Archil mount reads back without its region).
  * - `listIgnoresLabels`: list() gives every computer, whatever labels it was asked for.
  * - `failRelease`: labels; a release of a computer that carries all of them fails ("refused", in words) and leaves it.
+ * - `vendorAgentPorts`: capabilities().vendorAgentPorts, left out unless given. `probeInterfaces`: the interfaces
+ *   `computerd probe` reports (default the loopback alone); `agentAnswers`: the probe targets that answer (default none).
  */
 export function fakeComputers({
 	id = "fake",
@@ -208,6 +218,9 @@ export function fakeComputers({
 	brokenMount,
 	listIgnoresLabels = false,
 	failRelease,
+	vendorAgentPorts,
+	probeInterfaces = ["lo"],
+	agentAnswers = [],
 } = {}) {
 	/** The mount as attach and list read it back: its kind and source, never the token unless broken so. An Archil mount
 	 *  is exclusive, under the epoch of the computer's agentrun.epoch label; with no such label it is a mount in words. */
@@ -232,7 +245,7 @@ export function fakeComputers({
 	const provider = {
 		id,
 		version,
-		capabilities: () => ({ kind, lifetime, network, isolation: "container", os: "linux", daemon: mode, groups, maxLifetimeMs, release, ...(user ? { user } : {}), ...(mount ? { mount } : {}) }),
+		capabilities: () => ({ kind, lifetime, network, isolation: "container", os: "linux", daemon: mode, groups, maxLifetimeMs, release, ...(user ? { user } : {}), ...(mount ? { mount } : {}), ...(vendorAgentPorts ? { vendorAgentPorts } : {}) }),
 		check(spec) {
 			const refusals = [];
 			if (spec.mount !== undefined && !(mount ?? []).includes(spec.mount.kind) && brokenMount !== "check-ignores") {
@@ -277,6 +290,7 @@ export function fakeComputers({
 					tree: new Map(),
 					filesPage,
 					bound: folderOf(spec.mount),
+					probe: { interfaces: probeInterfaces, answers: agentAnswers },
 				},
 			};
 			computers.set(name, record);

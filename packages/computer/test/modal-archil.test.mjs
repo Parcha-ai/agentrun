@@ -117,7 +117,7 @@ test("Modal create of an Archil computer: preflight, the takeover, mount with th
 	const at = params.command.indexOf("--gate");
 	assert.ok(at > 0, `the entrypoint waits for the gate: ${JSON.stringify(params.command)}`);
 	assert.equal(params.command[at + 1], ARCHIL_GATE);
-	assert.deepEqual(params.command.slice(params.command.indexOf("init")), ["init", "--deadline", params.tags[DEADLINE], "--user", "2510:2510"]);
+	assert.deepEqual(params.command.slice(params.command.indexOf("init")), ["init", "--deadline", params.tags[DEADLINE], "--user", "2510:2510", "--own-network"]);
 	// The spec tag records the mount as it reads back, never the token.
 	const recorded = JSON.parse(params.tags[SPEC_TAG]);
 	assert.deepEqual(recorded.mount, readBack());
@@ -411,13 +411,13 @@ test("the entrypoint with a gate becomes init only once the gate is there, bound
 		onSpawn: () => setTimeout(() => writeFileSync(gate, ""), 400),
 	});
 	assert.equal(ran.code, 0, JSON.stringify(ran));
-	assert.equal(ran.stdout, "args init --deadline 2026-11-06T12:00:00.000Z --user 2510:2510\n");
+	assert.equal(ran.stdout, "args init --deadline 2026-11-06T12:00:00.000Z --user 2510:2510 --own-network\n");
 });
 
 test("Modal: the daemon path stays the daemon's, and the gate is beside it, root's alone", () => {
 	assert.equal(ARCHIL_GATE.slice(0, ARCHIL_GATE.lastIndexOf("/")), DAEMON.slice(0, DAEMON.lastIndexOf("/")));
 	const { entrypoint } = modal.modalCommands({ deadline: "2026-11-06T12:00:00.000Z", user: "2510:2510", waitSeconds: 9, gate: ARCHIL_GATE });
-	assert.deepEqual(entrypoint.slice(3), ["sh", DAEMON, "9", "/work", "--gate", ARCHIL_GATE, "init", "--deadline", "2026-11-06T12:00:00.000Z", "--user", "2510:2510"]);
+	assert.deepEqual(entrypoint.slice(3), ["sh", DAEMON, "9", "/work", "--gate", ARCHIL_GATE, "init", "--deadline", "2026-11-06T12:00:00.000Z", "--user", "2510:2510", "--own-network"]);
 	const plain = modal.modalCommands({ deadline: "2026-11-06T12:00:00.000Z", user: "1000:1000", waitSeconds: 9 });
-	assert.deepEqual(plain.entrypoint.slice(3), ["sh", DAEMON, "9", "/work", "init", "--deadline", "2026-11-06T12:00:00.000Z", "--user", "1000:1000"], "no gate: the same command as before");
+	assert.deepEqual(plain.entrypoint.slice(3), ["sh", DAEMON, "9", "/work", "init", "--deadline", "2026-11-06T12:00:00.000Z", "--user", "1000:1000", "--own-network"], "no gate: the same command as before");
 });

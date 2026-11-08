@@ -10,6 +10,7 @@ import { resolve } from "node:path";
 import { PassThrough, Writable } from "node:stream";
 import { fileURLToPath } from "node:url";
 import { childCommands, type DaemonExpected, daemonDrift } from "./child.js";
+import { OWN_NETWORK_ONLY, TOOL_USER } from "./isolation.js";
 import { DaemonClient } from "./client.js";
 import { DESKTOP_GROUPS, type DesktopOptions, desktopOf, startDisplay } from "./desktop.js";
 import { COMPUTER_LABEL, DAEMON_IN_COMPUTER, DEADLINE_LABEL, helloDrift, type ProbeReport, probeNetworkDrift, probeNotes, probeReportOf, WORK } from "./drift.js";
@@ -197,11 +198,15 @@ export interface E2BProviderOptions {
 	desktop?: DesktopOptions;
 	/** The longest lifetime check takes: E2B Hobby's 1 h by default, Pro's 24 h at most. */
 	maxLifetimeMs?: number;
-	/** Who the daemon runs as, uid:gid in numbers, never root. Default 1000:1000. */
+	/**
+	 * Who the daemon runs as, uid:gid in numbers, never root. Default 2510:2510 (TOOL_USER), a uid no process of E2B's
+	 * holds: init refuses to start while another process does.
+	 */
 	daemonUser?: string;
 	/**
-	 * Computers take public traffic, so stream() gives a URL a browser opens: every port in the computer is then open to
-	 * anyone with its address, so its network is open, never none. Default false: no stream, network none or open.
+	 * Refused for now, in words: computers would take public traffic, so stream() gave a URL a browser opens, but the
+	 * daemon's programs run in a network of their own (init --own-network), which E2B's proxy cannot reach, and a public
+	 * stream's network is open, which a remote computer does not take yet. Default false.
 	 */
 	publicStream?: boolean;
 	timeouts?: Partial<E2BTimeouts>;
@@ -227,9 +232,9 @@ export const ENV = {
 	kind: "COMPUTER_E2B_KIND",
 	/** The cap, in ms: 3600000 (Hobby, default) up to 86400000 (Pro). */
 	maxLifetimeMs: "COMPUTER_E2B_MAX_LIFETIME_MS",
-	/** uid:gid the daemon runs as; default 1000:1000. */
+	/** uid:gid the daemon runs as; default 2510:2510. */
 	user: "COMPUTER_E2B_USER",
-	/** 1: computers take public traffic and stream() gives a URL; network open only. */
+	/** 1: computers take public traffic and stream() gives a URL; refused for now (publicStream). */
 	publicStream: "COMPUTER_E2B_PUBLIC_STREAM",
 } as const;
 
@@ -373,11 +378,11 @@ const STREAM_PROGRAMS = ["x11vnc", NOVNC];
 const ALNUM = "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789";
 const SPEC_FIELDS = new Set(["image", "lifetimeMs", "network", "labels", "mount"]);
 const NUL = "a NUL byte cannot be sent to E2B";
-const ALLOWLIST =
-	"an E2B computer takes no allowlist yet: E2B's allowOut (CIDRs, addresses and domains) reads back, but an allowlist counts only once the live bypass cases pass (ruling 9); ask for network none or open";
 const FIXED = "an E2B computer's network is fixed at create: create a new computer";
 const PUBLIC =
-	"a public stream lets anyone with the computer's address reach any port in it, so its network is open: ask for open, or make the provider without publicStream for network none";
+	"publicStream is refused: the daemon's programs, the stream's servers among them, run in a network of their own (their loopback alone, out of reach of envd, which runs commands as root), which E2B's proxy cannot reach; and a public stream lets anyone with the computer's address reach any port in it, so its network is open, which a remote computer does not take yet";
+/** envd's port in the sandbox (e2b@2.63.0 dist/index.mjs:1213, ConnectionConfig.envdPort). */
+const ENVD_PORT = 49983;
 const STOP = "an E2B computer has no stop that this provider declares: release it with delete";
 
 const isWhole = (value: unknown): value is number => typeof value === "number" && Number.isSafeInteger(value);
@@ -629,13 +634,14 @@ export class E2BProvider implements ComputerProvider {
 		kind = "desktop",
 		desktop = {},
 		maxLifetimeMs = HOBBY_MAX_MS,
-		daemonUser = "1000:1000",
+		daemonUser = TOOL_USER,
 		publicStream = false,
 		timeouts = {},
 		probeTargets = DEFAULT_PROBE_TARGETS,
 	}: E2BProviderOptions) {
 		this.#onNote = onNote;
 		if (typeof apiKey !== "string" || apiKey === "") throw new Error("an E2B API key is required");
+		if (publicStream === true) throw new Error(PUBLIC);
 		const lacks = ["create", "connect", "getInfo", "setTimeout", "kill", "list"].filter((name) => typeof (Sandbox as unknown as Record<string, unknown>)?.[name] !== "function");
 		if (lacks.length > 0) throw new Error(`options.Sandbox must be the e2b SDK's Sandbox class; it lacks ${lacks.join(", ")}`);
 		const ambient = ambientProblem();
@@ -665,7 +671,9 @@ export class E2BProvider implements ComputerProvider {
 		this.#desktop = kind === "desktop" ? desktopOf(desktop) : undefined;
 		this.#maxLifetimeMs = maxLifetimeMs;
 		[this.#uid, this.#gid] = [String(Number(user[1])), String(Number(user[2]))];
-		this.#publicStream = publicStream === true;
+		// Refused above while the daemon's programs have a network of their own; the stream's code stays for the inbound
+		// forward that lifts the refusal (loop/PR-NOTES.md, known gaps).
+		this.#publicStream = false;
 		this.#timeouts = merged;
 		this.#probeTargets = [...probeTargets];
 		if (this.#publicStream && this.#desktop) this.stream = (ref, options, context) => this.#stream(ref, options, context);
@@ -674,13 +682,15 @@ export class E2BProvider implements ComputerProvider {
 	/**
 	 * daemon child: E2B's envd is the sandbox's first process, under systemd with Restart=always (e2b-dev/infra
 	 * envd.service.tpl:26-30), and init is a background command it runs (#prepare), so init's exit leaves the sandbox. Its
-	 * cap is E2B's: Hobby's 1 h unless the provider was made with more, up to Pro's 24 h.
+	 * cap is E2B's: Hobby's 1 h unless the provider was made with more, up to Pro's 24 h. envd runs as root and answers on
+	 * 49983, so init starts with --own-network, and network none is all a computer takes until a proxy carries open out
+	 * of the daemon's own network.
 	 */
 	capabilities(): ComputerCapabilities {
 		return {
 			kind: this.#kind,
 			lifetime: "vendor",
-			network: this.#publicStream ? ["open"] : ["none", "open"],
+			network: ["none"],
 			networkReadBack: true,
 			isolation: "microvm",
 			os: "linux",
@@ -689,6 +699,7 @@ export class E2BProvider implements ComputerProvider {
 			maxLifetimeMs: this.#maxLifetimeMs,
 			release: ["delete"],
 			mount: [...MOUNT],
+			vendorAgentPorts: [ENVD_PORT],
 		};
 	}
 
@@ -707,9 +718,8 @@ export class E2BProvider implements ComputerProvider {
 		}
 		if (typeof image !== "string" || !TEMPLATE.test(image)) refuse("image", 'an image is required: the name or id of an E2B template, such as "desktop" (E2B Desktop) or "base"');
 		refusals.push(...checkLifetime(lifetimeMs, this.capabilities()));
-		if (typeof network === "object" && network !== null && "allow" in network) refuse("network", ALLOWLIST);
-		else if (network !== "none" && network !== "open") refuse("network", 'network is required: "none" or "open"');
-		else if (network === "none" && this.#publicStream) refuse("network", PUBLIC);
+		if (network === "open" || (typeof network === "object" && network !== null && "allow" in network)) refuse("network", OWN_NETWORK_ONLY);
+		else if (network !== "none") refuse("network", 'network is required: "none"');
 		if (labels !== undefined) {
 			const entries = typeof labels === "object" && labels !== null && !Array.isArray(labels) ? Object.entries(labels) : undefined;
 			const bad = entries === undefined ? "labels must map names to strings" : entries.map(([key, value]) => labelProblem(key, value)).find(Boolean);
@@ -1484,9 +1494,9 @@ export class E2BProvider implements ComputerProvider {
 	async network(ref: ComputerRef, policy?: NetworkSpec, { signal }: CallContext = {}): Promise<Result<NetworkPolicy>> {
 		const problem = refProblem(ref);
 		if (problem) return fail("invalid", problem);
-		if (policy !== undefined && policy !== "none" && policy !== "open") {
-			const allow = typeof policy === "object" && policy !== null && "allow" in policy;
-			return fail("refused", allow ? `${ALLOWLIST}; ${FIXED}` : `${FIXED}; a network is "none" or "open"`);
+		if (policy !== undefined && policy !== "none") {
+			const wider = policy === "open" || (typeof policy === "object" && policy !== null && "allow" in policy);
+			return fail("refused", wider ? `${OWN_NETWORK_ONLY}; ${FIXED}` : `${FIXED}; a network is "none"`);
 		}
 		const found = await this.#own(ref, signal);
 		if (!found.ok) return found;

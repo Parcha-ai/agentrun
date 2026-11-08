@@ -8,6 +8,7 @@ import { resolve } from "node:path";
 import { PassThrough, Writable } from "node:stream";
 import { fileURLToPath } from "node:url";
 import { childCommands, type DaemonExpected, daemonDrift, shellCommand } from "./child.js";
+import { OWN_NETWORK_ONLY, TOOL_USER } from "./isolation.js";
 import { DaemonClient } from "./client.js";
 import { COMPUTER_LABEL, DEADLINE_LABEL, helloDrift, WORK } from "./drift.js";
 import { releaseOlder } from "./janitor.js";
@@ -96,7 +97,10 @@ export interface DaytonaProviderOptions {
 	sandboxClass?: "container" | "linux-vm";
 	/** The Daytona target (region); default the organization's. */
 	target?: string;
-	/** Who the daemon runs as, uid:gid in numbers, never root. Default 1000:1000. */
+	/**
+	 * Who the daemon runs as, uid:gid in numbers, never root. Default 2510:2510 (TOOL_USER), a uid no process of Daytona's
+	 * holds: init refuses to start while another process does.
+	 */
 	daemonUser?: string;
 	/**
 	 * Daytona's autoStopInterval: minutes without outside activity after which Daytona stops the sandbox, whatever runs in
@@ -176,7 +180,7 @@ export const ENV = {
 	target: "COMPUTER_DAYTONA_TARGET",
 	/** container (default) or linux-vm: the class the snapshot makes. */
 	sandboxClass: "COMPUTER_DAYTONA_CLASS",
-	/** uid:gid the daemon runs as; default 1000:1000. */
+	/** uid:gid the daemon runs as; default 2510:2510. */
 	user: "COMPUTER_DAYTONA_USER",
 } as const;
 
@@ -259,7 +263,8 @@ const MAX_LIFETIME_MS = 30 * 24 * 60 * 60 * 1000;
 const LIFETIME_SLACK_MS = 60_000 + 120_000;
 const MAX_DOMAINS = 100;
 const MAX_CIDRS = 10;
-const DOMAIN_PORTS = [80, 443];
+/** The toolbox's port, on every interface of the sandbox (daytonaio/daytona@b5a5d9e7 apps/daemon/pkg/toolbox/config/config.go:6). */
+const TOOLBOX_PORT = 2280;
 const INIT_SESSION = "agentrun-computerd";
 const STAGING = "/tmp/agentrun-computerd-";
 const SPEC_FIELDS = new Set(["image", "lifetimeMs", "network", "labels", "mount"]);
@@ -306,7 +311,7 @@ const ECHO = /^\{"jsonrpc":"2\.0",("id":\d+,)?"method":/;
  * (each a session command), the child daemon's commands (childCommands). Exported so a test can run them where Daytona
  * would, in a root container.
  */
-export function daytonaCommands({ staging = "", deadline = "", user = "1000:1000" }: { staging?: string; deadline?: string; user?: string } = {}) {
+export function daytonaCommands({ staging = "", deadline = "", user = TOOL_USER }: { staging?: string; deadline?: string; user?: string } = {}) {
 	return childCommands({ staging, deadline, user });
 }
 
@@ -671,7 +676,7 @@ export class DaytonaProvider implements ComputerProvider {
 		arch = "amd64",
 		sandboxClass = "container",
 		target,
-		daemonUser = "1000:1000",
+		daemonUser = TOOL_USER,
 		autoStopMinutes = 0,
 		autoDeleteMinutes,
 		fetch: fetcher,
@@ -707,14 +712,15 @@ export class DaytonaProvider implements ComputerProvider {
 	/**
 	 * daemon child: Daytona's toolbox daemon is the sandbox's first process, and init is a command it runs in a session
 	 * (#prepare), so deleting that session ends init and leaves the sandbox. maxLifetimeMs is the 30 days check() has
-	 * always given; Daytona's TTL is in whole minutes and documents no cap of its own.
+	 * always given; Daytona's TTL is in whole minutes and documents no cap of its own. The toolbox listens on 2280 on
+	 * every interface and runs commands for whoever reaches it, so init starts with --own-network, and network none is
+	 * all a computer takes until a proxy carries open and allowlists out of the daemon's own network.
 	 */
 	capabilities(): ComputerCapabilities {
 		return {
 			kind: "linux",
 			lifetime: "vendor",
-			network: ["none", "open", "allow"],
-			allow: { domains: { max: MAX_DOMAINS, ports: DOMAIN_PORTS }, cidrs: { max: MAX_CIDRS, ports: "any" }, mixed: false },
+			network: ["none"],
 			isolation: this.#class === "linux-vm" ? "vm" : "container",
 			os: "linux",
 			daemon: "child",
@@ -724,6 +730,7 @@ export class DaytonaProvider implements ComputerProvider {
 			// autoDeleteInterval 0: Daytona deletes a sandbox as soon as it stops, so a stop keeps no computer.
 			stopDeletes: this.#autoDelete === 0,
 			mount: [...MOUNT],
+			vendorAgentPorts: [TOOLBOX_PORT],
 		};
 	}
 
@@ -735,10 +742,8 @@ export class DaytonaProvider implements ComputerProvider {
 		if (typeof image !== "string" || image.trim() === "") refuse("image", `an image is required: the id or name of a Daytona snapshot, or "${DAYTONA_DEFAULT_SNAPSHOT}" for Daytona's default snapshot`);
 		else if (/[\0-\x1f]/.test(image)) refuse("image", "a snapshot name has no control characters");
 		refusals.push(...checkLifetime(lifetimeMs, this.capabilities()));
-		if (typeof network === "object" && network !== null && "allow" in network) {
-			const lists = allowOf((network as { allow: unknown }).allow);
-			if (typeof lists === "string") refuse("network", lists);
-		} else if (network !== "none" && network !== "open") refuse("network", 'network is required: "none", "open" or { allow: [domains or IPv4 CIDRs] }');
+		if (network === "open" || (typeof network === "object" && network !== null && "allow" in network)) refuse("network", OWN_NETWORK_ONLY);
+		else if (network !== "none") refuse("network", 'network is required: "none"');
 		if (labels !== undefined) {
 			const entries = typeof labels === "object" && labels !== null && !Array.isArray(labels) ? Object.entries(labels) : undefined;
 			const bad = entries === undefined ? "labels must map names to strings" : entries.map(([key, value]) => labelProblem(key, value)).find(Boolean);
