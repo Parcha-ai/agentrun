@@ -2610,6 +2610,8 @@ async function startHolding(options: ServeOptions, data: string, lock: ServerLoc
     const sent = String(req.headers.origin ?? "").toLowerCase();
     if (sent === "" || (sent !== ownOrigin(req) && sent !== publicOrigin)) return (authFailed(raw, "live_view_origin"), deny("403 Forbidden"));
     if (!owner || !signedIn(req, owner)) return (authFailed(raw, "live_view_without_session"), deny("401 Unauthorized"));
+    // Once the run's WebSocket is piped to this socket, a failure here only ends it: an HTTP line would land mid-stream.
+    let piping = false;
     void (async () => {
       const run = await runs.get(viewing[1]!);
       const handover = run && runs.hasProcess(run.id) ? await handoverById(run.dir, viewing[2]!.slice(3, -3)) : undefined;
@@ -2622,8 +2624,8 @@ async function startHolding(options: ServeOptions, data: string, lock: ServerLoc
       const admitted = () => held.some((value) => owner.valid(value));
       if (!admitted()) return deny("401 Unauthorized");
       viewers.watch(socket, admitted);
-      proxyLiveUpgrade(req, socket, head, handover, viewing[2]!);
-    })().catch(() => deny("500 Internal Server Error"));
+      proxyLiveUpgrade(req, socket, head, handover, viewing[2]!, () => { piping = true; });
+    })().catch(() => (piping ? void socket.destroy() : deny("500 Internal Server Error")));
   });
   const first = options.port ?? DEFAULT_PORT;
   const last = options.nextFreePort && first !== 0 ? Math.min(first + 99, 65_535) : first;
