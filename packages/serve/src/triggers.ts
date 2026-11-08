@@ -646,7 +646,9 @@ export class Triggers {
       soonest = (await this.store.triggers.soonest()) ?? Infinity;
       for (const f of await this.store.triggers.pending()) {
         if (f.status === "failed") soonest = Math.min(soonest, this.clock.now() + BACKOFF_MS[0]);
-        else if (!this.driving.has(f.key) && f.retryAt !== null) soonest = Math.min(soonest, f.retryAt);
+        // A due firing not being driven: at its next try; one with none (its last write did not land, so it holds no retry
+        // time) after the table's first wait, never left with no time to drive it. A waiting one is the poll's.
+        else if (!this.driving.has(f.key) && f.waitsOn === null) soonest = Math.min(soonest, f.retryAt ?? this.clock.now() + BACKOFF_MS[0]);
       }
     } catch {
       soonest = this.clock.now() + BACKOFF_MS[0];
@@ -733,7 +735,9 @@ export class Triggers {
 
   /** Why `source` no longer reads on this server, if it does not. */
   private problem(source: Source): string | undefined {
-    return this.adapter(source)?.problem?.(source);
+    // A kind this server has no adapter for (a source the store kept that this build does not take) no longer reads.
+    const adapter = adapterIn(this.adapters, source.kind);
+    return adapter ? adapter.problem?.(source) : `this server has no ${source.kind} source`;
   }
 
   /** `target` with its input as a firing of a trigger named `name` would give it to its run: what create and PATCH
