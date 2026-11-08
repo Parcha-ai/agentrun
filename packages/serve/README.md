@@ -1533,11 +1533,14 @@ anything else. A bad signature, a stale timestamp, an unknown trigger, one that 
 answer the same `401`, so no trigger id can be found by asking; a body past 256 KiB is `413`.
 
 The secret, `whsec_` and 32 random bytes in base64, is made with the trigger and shown in the `201` once; no `GET`
-shows it. It is kept sealed under `AGENTRUN_SEAL_KEY` in `DIR/trigger-secrets.json`, so with no seal key no webhook
-trigger is made (`409 no_sealing_key`). `POST /v2/triggers/{id}/secret` makes a new one, shown once, and the old one
-signs nothing from then on. An import cuts these secrets out of what it keeps, and no learning text shows one. A
-`trigger-secrets.json` that does not read is never written over: until it is fixed or moved away, no webhook trigger is
-made or rotated (`409 store_unreadable`) and none fires.
+shows it. It is kept sealed under `AGENTRUN_SEAL_KEY` in `DIR/trigger-settings-webhook.json` (each trigger source's
+sealed settings have a file of their own), so with no seal key no webhook trigger is made (`409 no_sealing_key`).
+`POST /v2/triggers/{id}/secret` makes a new one, shown once, and the old one signs nothing from then on. Like every
+secret this server keeps (its tokens, its outbound webhook's secret), it is cut from what a run shows, from what an
+import keeps and from every learning text. A secret that does not open under the seal key the server starts with is
+said in its log (`condition=trigger_setting_unopened`, naming the trigger), and its trigger is refused until a new
+secret is made. A `trigger-settings-webhook.json` that does not read is never written over: until it is fixed or moved
+away, no webhook trigger is made or rotated (`409 store_unreadable`) and none fires.
 
 The request's `webhook-id` is its firing's key: the first answers `202` once the firing is recorded, and its run starts
 after; the same `webhook-id` again, for a day after (even once the firing has left the history of 200), answers `200` with that

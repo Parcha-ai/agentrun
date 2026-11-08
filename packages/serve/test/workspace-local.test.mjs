@@ -91,14 +91,13 @@ test("local: list leaves out links and pipes; a read of a directory or a pipe is
   await refused(workspace.append("pipe", "x"), "REFUSED");
 });
 
-test("local: a root that is not there is UNAVAILABLE; attach is REFUSED until the computer mount", async () => {
+test("local: a root that is not there is UNAVAILABLE, for its mount too", async () => {
   const { dir } = scratch();
   const gone = localWorkspace(join(dir, "never-made"));
   await refused(gone.read("x"), "UNAVAILABLE");
   await refused(gone.write("x", "y"), "UNAVAILABLE");
   await refused(gone.exec(["true"], { env: {}, timeoutMs: 1_000 }), "UNAVAILABLE");
-  const { root } = scratch();
-  await assert.rejects(localWorkspace(root).attach({}), (error) => error.code === "REFUSED" && /computer mount/.test(error.message));
+  await refused(gone.mountSpec(), "UNAVAILABLE");
 });
 
 test("local: exec's default output cap keeps 16 MiB whole (a learning seed's git cat-file --batch)", async () => {
@@ -191,7 +190,7 @@ test("local: every remove is durable on return (a crash after it does not bring 
   /** The removed entries a crash would bring back: those whose folder was not synced after the remove (only the
    *  writer's calls sync anything under the shim's folder, and it only removes). */
   const cameBack = (root) => removed.filter((entry) => !existsSync(`${dirname(join(root, entry))}.synced`));
-  for (const how of ["plain", "port"]) {
+  for (const how of ["plain", "port", "attached"]) {
     const root = join(dir, how);
     for (const file of ["gone.txt", "keep.txt", "sub/gone.txt", "sub/keep.txt", "tree/x/y.txt", "tree/z.txt"]) {
       mkdirSync(dirname(join(root, file)), { recursive: true });
@@ -201,7 +200,7 @@ test("local: every remove is durable on return (a crash after it does not bring 
     runWriterUnderShim(lib, `${how}-remove`, root);
     for (const entry of removed) assert.equal(existsSync(join(root, entry)), false, `the ${how} writer removed ${entry}`);
     if (how === "plain") assert.deepEqual(cameBack(root), removed, "red: a plain unlink or rm that returned comes back after a crash");
-    else assert.deepEqual(cameBack(root), [], "a remove that returned stays removed after a crash");
+    else assert.deepEqual(cameBack(root), [], `a remove that returned (${how}) stays removed after a crash`);
   }
 });
 
@@ -265,4 +264,9 @@ test("local: every write is durable on return (a crash after it keeps it whole);
   const port = runWriter("port");
   assert.ok(port.get("deep/er/file.bin")?.equals(expected), "a write that returned is whole after a crash, three new folders down");
   assert.equal(port.get("log/run.log")?.toString("utf8"), "first\nsecond\n", "an append that returned is kept after a crash");
+  // Attached to a computer that binds the folder and never syncs (as computerd writes into a bind): the host syncs
+  // after each delegated call, so the same holds.
+  const attached = runWriter("attached");
+  assert.ok(attached.get("deep/er/file.bin")?.equals(expected), "a write through a bound computer that returned is whole after a crash");
+  assert.equal(attached.get("log/run.log")?.toString("utf8"), "first\nsecond\n", "an append through a bound computer that returned is kept after a crash");
 });

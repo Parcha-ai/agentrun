@@ -10,7 +10,7 @@ import { createRequire } from "node:module";
 import { join } from "node:path";
 import { test } from "node:test";
 import { isMessageRow } from "@parcha/pi-durable-agent/timeline";
-import { hookRefusal } from "../dist/trigger-secrets.js";
+import { verify as hookRefusal } from "../dist/standard-webhooks.js";
 import { follow, runDir, scratch, serve, withEnv } from "./support.mjs";
 import { firings, made } from "./trigger-support.mjs";
 

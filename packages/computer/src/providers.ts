@@ -47,6 +47,7 @@ export const providers = {
 	docker: () => import("./docker.js"),
 	modal: () => import("./modal.js"),
 	daytona: () => import("./daytona.js"),
+	e2b: () => import("./e2b.js"),
 } satisfies Record<string, () => Promise<ProviderModule>>;
 
 export type ProviderId = keyof typeof providers;

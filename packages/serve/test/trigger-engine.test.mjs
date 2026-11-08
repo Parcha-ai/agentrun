@@ -181,7 +181,7 @@ test("a target changed to message_run while a start_run firing waits on its over
     start: async () => ({ run_id: "run-1" }),
     statusOf: () => new Promise((resolve) => (release = resolve)),
     message: async (target, input, key) => void sent.push({ run_id: target.run_id, key }),
-    secrets: { mint: () => "unused", remove: () => {} },
+    settings: () => ({ mint: () => "unused", remove: () => {} }),
   });
   const { id } = await triggers.create({ ...body({ cron: "0 9 * * *" }), enabled: false });
   assert.equal((await triggers.fire(id, "first")).firing.status, "started");
@@ -202,7 +202,7 @@ test("a message_run firing refused because its run is working is tried again eve
       if (working-- > 0) throw new ApiError("rate_limited", "The run is working.", { retry_after_ms: 5_000, details: { reason: "working" } });
       sent.push(key);
     },
-    secrets: { mint: () => "unused", remove: () => {} },
+    settings: () => ({ mint: () => "unused", remove: () => {} }),
   });
   const { id } = await triggers.create({ ...body({ cron: "0 9 * * *" }), enabled: false, target: { kind: "message_run", run_id: "run-9", input: { content: "Hello." } } });
   assert.equal((await triggers.fire(id, "now")).firing.status, "due");
@@ -231,7 +231,7 @@ test("a trigger holds at most 20 firings due: an event past them is refused, ret
     message: async () => {
       throw WORKING();
     },
-    secrets: { mint: () => "unused", remove: () => {} },
+    settings: () => ({ mint: () => "unused", remove: () => {} }),
     say: (fields) => said.push(fields),
   });
   const hook = await triggers.create({ name: "inbox", source: { kind: "webhook" }, target: toRun9 });
@@ -408,7 +408,7 @@ test("a webhook event's firing is driven in its trigger's turn: a tick while its
       calls.push(next);
       return next.promise;
     },
-    secrets: { mint: () => "unused", remove: () => {} },
+    settings: () => ({ mint: () => "unused", remove: () => {} }),
   });
   const hook = await triggers.create({ name: "inbox", source: { kind: "webhook" }, target: toRun9 });
   const poll = await triggers.create(body({ every_s: 60 }));
@@ -462,7 +462,7 @@ test("triggers.json is read in this build's shape alone: a trigger missing a fie
 test("a source is one adapter the engine is given: its kind, its check, its firings' by and key, its payload's tag and its runs' line come from the adapter alone", async (t) => {
   // A pushed source no other code knows of: given to the engine, nothing else changes.
   const ping = {
-    id: "ping", label: "ping trigger", delivery: "push", owner: false, secret: false,
+    id: "ping", label: "ping trigger", delivery: "push", owner: false,
     describe: '{kind: "ping", channel}', fires: "a ping", schemas: [],
     parse(value, _now, bad, issues) {
       issues.push(...Object.keys(value).filter((k) => k !== "kind" && k !== "channel").map((k) => ({ field: `source.${k}`, reason: "not_allowed", message: k })));

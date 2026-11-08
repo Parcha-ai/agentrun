@@ -5,9 +5,9 @@ import { randomBytes } from "node:crypto";
 import { readFileSync, type Stats, statSync } from "node:fs";
 import { resolve } from "node:path";
 import { fileURLToPath } from "node:url";
-import { setTimeout as sleep } from "node:timers/promises";
 import { DaemonClient } from "./client.js";
 import { daemonCopy, defaultDaemonCache } from "./daemon-copy.js";
+import { DESKTOP_GROUPS, type DesktopOptions, desktopOf, startDisplay } from "./desktop.js";
 import {
 	COMPUTER_LABEL,
 	CPU_PERIOD_US,
@@ -48,18 +48,9 @@ import { fail, ok, type Result } from "./result.js";
 /**
  * A Docker desktop: an image with an X server (test/fixtures/desktop/Dockerfile is the smallest, Debian and Xvfb).
  * computerd stays the first process and starts nothing of its own: create gives it DISPLAY, then starts the X server
- * through it with process.start, as any program, so the server is in its process table and ends with the computer.
- * The daemon reaches the display once it answers, and hello declares screen, input.pointer and input.keys from then on.
+ * through it with process.start (startDisplay in ./desktop.ts).
  */
-export interface DockerDesktopOptions {
-	/** The display the daemon and the X server use, given to the daemon as DISPLAY. Default ":0". */
-	display?: string;
-	/** The X server's argv, run in the computer as its user. Default Xvfb on the display, 1280x800 at 24 bits, no TCP. */
-	server?: readonly string[];
-	/** How long create waits for the display to answer, from asking the daemon to start the server: every call to the
-	 *  daemon in that time is bounded by it, so a daemon that stops answering fails create as `timeout`. Default 30 s. */
-	timeoutMs?: number;
-}
+export type DockerDesktopOptions = DesktopOptions;
 
 export interface DockerProviderOptions {
 	/** The daemon binary on this machine, for the computer's architecture (dist/computerd-linux-<arch>). Any mode this
@@ -142,10 +133,6 @@ const MAX_PIDS = 4_194_304;
 /** Docker's least --memory. */
 const MIN_MEMORY_MB = 6;
 const HELLO_TIMEOUT_MS = 30_000;
-const DISPLAY = /^:\d{1,5}(\.\d{1,5})?$/;
-const DESKTOP_GROUPS = ["screen", "input.pointer", "input.keys"] as const;
-/** How often create asks the daemon whether the display is up yet. */
-const DISPLAY_POLL_MS = 100;
 /** Ids a list() inspect takes at once, so its argv and output stay bounded however many computers match. */
 const INSPECT_BATCH = 50;
 /** Only the fields list() reads, in inspect's own shape: a whole inspect is kilobytes a container, and execFile's
@@ -362,42 +349,12 @@ export class DockerProvider implements ComputerProvider {
 		return fail("aborted", `create was aborted after docker run; the computer ${ref.name} ${after}`);
 	}
 
-	/**
-	 * Starts the desktop's X server through the daemon (process.start) and waits until hello declares the display: the
-	 * server ending first, or the bound passing, is a failure in words, with the server's own last words. Every call
-	 * takes a signal that ends at the bound, so a hello the X connection setup holds, or a daemon that stops answering,
-	 * cannot outwait it.
-	 */
+	/** Starts the desktop's X server through the daemon and waits until hello declares the display (startDisplay). */
 	async #startDisplay(ref: ComputerRef, desktop: Required<DockerDesktopOptions>, signal?: AbortSignal): Promise<Result<void>> {
 		const opened = await this.#open(ref, signal);
 		if (!opened.ok) return opened;
-		const { client } = opened.value;
-		const server = desktop.server.join(" ");
-		const bound = AbortSignal.timeout(desktop.timeoutMs);
-		const either = signal ? AbortSignal.any([signal, bound]) : bound;
-		const late = () => fail("timeout", `the display ${desktop.display} was not up within ${desktop.timeoutMs / 1000} s of starting the X server (${server})`);
-		// A call that failed because the bound passed is the timeout; the caller's own abort stays aborted.
-		const timedOut = () => bound.aborted && !signal?.aborted;
 		try {
-			const started = await client.call("process.start", { argv: [...desktop.server] }, { signal: either });
-			if (!started.ok) return timedOut() ? late() : fail(started.error.code, `the X server (${server}) did not start: ${started.error.message}`);
-			const { id } = started.value;
-			for (;;) {
-				const hello = await client.call("hello", { client: `@parcha/agentrun-computer ${VERSION}` }, { signal: either });
-				if (!hello.ok) return timedOut() ? late() : hello;
-				if (Array.isArray(hello.value.groups) && hello.value.groups.includes("screen")) return ok(undefined);
-				const waited = await client.call("process.wait", { id, timeoutMs: 0 }, { signal: either });
-				if (waited.ok && !waited.value.running) {
-					const read = await client.call("process.read", { id, stream: "stderr", offset: 0 }, { signal: either });
-					const words = read.ok ? Buffer.from(read.value.data, "base64").toString("utf8").trim().split("\n").slice(-5).join("; ") : "";
-					const how = waited.value.signal ? `signal ${waited.value.signal}` : `exit code ${waited.value.exitCode}`;
-					return fail("docker", `the X server (${server}) ended with ${how} before the display ${desktop.display} was up${words ? `: ${words}` : ""}`);
-				}
-				if (timedOut()) return late();
-				if (signal?.aborted) return fail("aborted", "create was aborted while the display came up");
-				await sleep(DISPLAY_POLL_MS, undefined, { signal: either }).catch(() => undefined);
-				if (signal?.aborted) return fail("aborted", "create was aborted while the display came up");
-			}
+			return await startDisplay(opened.value.client, desktop, { version: VERSION, vendor: "docker", signal });
 		} finally {
 			await opened.value.close();
 		}
@@ -656,24 +613,6 @@ export class DockerProvider implements ComputerProvider {
 			});
 		});
 	}
-}
-
-/** The desktop options with their defaults, or a throw in words. */
-/** The longest delay Node's timers, and so AbortSignal.timeout, hold: 2^31 - 1 ms. */
-const MAX_TIMER_MS = 2_147_483_647;
-
-function desktopOf({ display = ":0", server, timeoutMs = 30_000 }: DockerDesktopOptions): Required<DockerDesktopOptions> {
-	if (typeof display !== "string" || !DISPLAY.test(display)) throw new Error(`the desktop's display ${JSON.stringify(display)} must be a local X display, such as :0`);
-	const argv = server ?? ["Xvfb", display, "-screen", "0", "1280x800x24", "-nolisten", "tcp"];
-	if (!Array.isArray(argv) || argv.length === 0 || !argv.every((arg) => typeof arg === "string" && !arg.includes("\0")) || argv[0] === "") {
-		throw new Error("the desktop's server must be a program and its arguments, such as [\"Xvfb\", \":0\"]");
-	}
-	// AbortSignal.timeout and Node's timers hold at most 2^31 - 1 ms (a longer one throws or fires at once), so a longer
-	// bound is refused here, before any computer exists, not in create after the container is made.
-	if (!Number.isSafeInteger(timeoutMs) || timeoutMs <= 0 || timeoutMs > MAX_TIMER_MS) {
-		throw new Error(`the desktop's timeoutMs must be a whole number of milliseconds above 0 and at most ${MAX_TIMER_MS}, not ${timeoutMs}`);
-	}
-	return { display, server: [...argv], timeoutMs };
 }
 
 function labelProblem(key: string, value: unknown): string | undefined {
