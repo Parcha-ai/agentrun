@@ -46,7 +46,7 @@ Links and other special files are refused anywhere in the folder, and its only f
 The check is whole: the package is compiled with a sample of each parameter, and the agent body and each trigger body are
 checked as `POST /v2/agents` and `POST /v2/triggers` check theirs (all but the agent a trigger names, which apply makes).
 A tool the server does not bind, a trigger field or schedule it refuses, or a skill file's path is refused here, not at
-apply. A package holds at most 256 files, each at most 256 KiB, and 1 MiB together (`POST /v2/agents`' own body limit).
+apply. A trigger's date is checked for its form only: one that has passed is refused at apply, never at a server's start. A package holds at most 256 files, each at most 256 KiB, and 1 MiB together (`POST /v2/agents`' own body limit).
 
 ## Apply
 

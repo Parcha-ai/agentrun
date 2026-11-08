@@ -92,6 +92,9 @@ test("the validator refuses a malformed package, naming each problem", async (t)
   const trigger = (source, rest = "") => edit => edit("learning: false", `learning: false\ntriggers:\n  - name: nightly\n    source: ${source}\n    target: { kind: start_run, input: { content: Go. } }${rest}`);
   await refused(({ edit }) => trigger("{ kind: schedule, cron: every morning }")(edit), /triggers\[0\]\.source\.cron: cron is five fields/);
   await refused(({ edit }) => trigger('{ kind: schedule, cron: "0 9 * * *" }', "\n    colour: red")(edit), /triggers\[0\]\.colour: /);
+  await refused(({ edit }) => trigger("{ kind: schedule, at: next tuesday }")(edit), /triggers\[0\]\.source\.at: at is an RFC 3339 date-time/);
+  // A date is checked for its form alone: one that has passed stops no server's start; an apply refuses it.
+  assert.deepEqual(await problemsOf(t, ({ edit }) => trigger('{ kind: schedule, at: "2020-01-01T00:00:00Z" }')(edit)), [], "a date that has passed still reads");
   await refused(({ edit }) => trigger('{ kind: schedule, cron: "${parameters.repo}" }')(edit), /triggers\[0\]\.source holds \$\{parameters\.repo\}: a placeholder goes in display_name, the instructions or a trigger's target\.input/);
   await refused(({ edit }) => edit("learning: false", "learning: false\ntools: [bassh]"), /tools: bassh is not a tool this server binds/);
   await refused(({ dir }) => writeFileSync(join(dir, "skills", "review", "a\\b.md"), "x"), /skills\/review\/a\\b\.md: the skill path/);

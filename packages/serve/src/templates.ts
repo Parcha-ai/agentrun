@@ -307,12 +307,13 @@ export function readPackage(dir: string): Package {
     triggers: triggers as Json[], ...(isObject(f.output) ? { output: { schema: f.output.schema as string } } : {}), checks, instructions, skills, evals,
   };
   // What an apply makes, made here with a sample of each parameter and checked as POST /v2/agents and POST /v2/triggers
-  // check their bodies (all but the agent the trigger names, which an apply makes): what passes here, an apply takes.
+  // check their bodies (all but the agent the trigger names, which an apply makes). A trigger's times are read as of the
+  // epoch, so its form is checked here and a date that has passed is the apply's refusal, never a server's start.
   const samples = Object.fromEntries(Object.entries(parameters).map(([key, spec]) => [key, SAMPLES[spec.type]]));
   const made = compiled(p, samples, { ...(harness ? { harness: harness[0]! } : {}), ...(p.model?.prefer ? { model: p.model.prefer } : {}), mcp, defaultTools: [], grants: [] });
   for (const issue of definitionBodyIssues(made.agent)) bad(issue.field.startsWith("skills.") ? `skills/${issue.field.slice("skills.".length)}` : MANIFEST, `${issue.field.startsWith("skills.") ? "" : `the agent it makes: ${issue.field}: `}${issue.message}`);
   made.triggers.forEach((trigger, i) => {
-    for (const issue of triggerBodyIssues({ ...trigger, target: { ...(trigger.target as Json), agent_id: SAMPLE_AGENT } }, Date.now())) bad(MANIFEST, `triggers[${i}].${issue.field}: ${issue.message}`);
+    for (const issue of triggerBodyIssues({ ...trigger, target: { ...(trigger.target as Json), agent_id: SAMPLE_AGENT } }, 0)) bad(MANIFEST, `triggers[${i}].${issue.field}: ${issue.message}`);
   });
   if (problems.length) throw new PackageError(dir, [...new Set(problems)]);
   return p;
