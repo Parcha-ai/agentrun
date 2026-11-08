@@ -12,6 +12,7 @@ import {
   type AgentRow, type Agents, type AlsoRow, type Claim, type Command, type Journal, type NewRevision, type RevisionRow, type RunPatch, type RunRow, type Runs,
   type RunState, type Store, type StoreRole, type TemplatePackage, type Templates, type TriggerDef, type TriggerRow, type Triggers, type TriggerScope,
   FINAL_STATES, MCP_REFRESH_CALL_MS, MCP_REFRESH_LEASE_MS, type Live, type LiveRow, type Mcp, type McpPinRow, type McpServerRow,
+  type McpOauth, type McpOauthPendingRow, type SealedKeyRow, type SealedKeys, type Settings, type SettingRow, type TriggerSettingRow, type TriggerSettings,
 } from "../store.js";
 import { Connection, type SqliteExecutor, type SqliteValue, type Statement } from "./connection.js";
 import { applyRunPatch, RUN_COLUMNS, runOf, type RunRecord } from "./run-patch.js";
@@ -80,6 +81,15 @@ const mcpServerOf = (r: McpServerRecord): McpServerRow => ({
   sealed: r.sealed === null ? null : Uint8Array.from(r.sealed), refreshHolder: r.refresh_holder, refreshUntil: r.refresh_until, createdAt: r.created_at, updatedAt: r.updated_at,
 });
 const mcpPinOf = (r: McpPinRecord): McpPinRow => ({ runId: r.run_id, body: JSON.parse(r.body), pinnedAt: r.pinned_at });
+
+type SettingRecord = { key: string; value: string; updated_at: number };
+const settingOf = (r: SettingRecord): SettingRow => ({ key: r.key, value: JSON.parse(r.value), updatedAt: r.updated_at });
+type SealedKeyRecord = { name: string; sealed: Uint8Array; updated_at: number };
+const sealedKeyOf = (r: SealedKeyRecord): SealedKeyRow => ({ name: r.name, sealed: Uint8Array.from(r.sealed), updatedAt: r.updated_at });
+type TriggerSettingRecord = { adapter: string; scope: string; field: string; sealed: string; updated_at: number };
+const triggerSettingOf = (r: TriggerSettingRecord): TriggerSettingRow => ({ adapter: r.adapter, scope: r.scope, field: r.field, sealed: r.sealed, updatedAt: r.updated_at });
+type McpOauthRecord = { state: string; server: string; verifier_sealed: Uint8Array; cookie_binding: string; expires_at: number };
+const mcpOauthOf = (r: McpOauthRecord): McpOauthPendingRow => ({ state: r.state, server: r.server, verifierSealed: Uint8Array.from(r.verifier_sealed), cookieBinding: r.cookie_binding, expiresAt: r.expires_at });
 
 /** The store's schema version as the file holds it: null when the server has not set it up (no store_meta yet). */
 async function versionOf(db: Connection): Promise<number | null> {
@@ -186,6 +196,10 @@ class SqliteStore implements Store {
   readonly runs: Runs;
   readonly mcp: Mcp;
   readonly live: Live;
+  readonly settings: Settings;
+  readonly sealedKeys: SealedKeys;
+  readonly triggerSettings: TriggerSettings;
+  readonly mcpOauth: McpOauth;
   readonly #db: Connection;
   readonly #now: () => number;
   /** Each claim's one journal, until it is closed. */
@@ -443,6 +457,63 @@ class SqliteStore implements Store {
       drop: async (runId) => {
         await db.write([{ sql: "DELETE FROM run_live WHERE run_id = ?", params: [runId] }]);
       },
+    };
+
+    this.settings = {
+      get: async (key) => {
+        const row = await db.get<{ value: string }>("SELECT value FROM settings WHERE key = ?", key);
+        return row === undefined ? undefined : JSON.parse(row.value);
+      },
+      put: async (key, value) => {
+        await db.write([{ sql: "INSERT INTO settings (key, value, updated_at) VALUES (?, ?, ?) ON CONFLICT (key) DO UPDATE SET value = excluded.value, updated_at = excluded.updated_at", params: [key, json(value), now()] }]);
+      },
+      remove: async (key) => {
+        await db.write([{ sql: "DELETE FROM settings WHERE key = ?", params: [key] }]);
+      },
+      all: async () => (await db.all<SettingRecord>("SELECT key, value, updated_at FROM settings ORDER BY key")).map(settingOf),
+    };
+
+    this.sealedKeys = {
+      get: async (name) => {
+        const row = await db.get<{ sealed: Uint8Array }>("SELECT sealed FROM sealed_keys WHERE name = ?", name);
+        return row === undefined ? undefined : Uint8Array.from(row.sealed);
+      },
+      put: async (name, sealed) => {
+        await db.write([{ sql: "INSERT INTO sealed_keys (name, sealed, updated_at) VALUES (?, ?, ?) ON CONFLICT (name) DO UPDATE SET sealed = excluded.sealed, updated_at = excluded.updated_at", params: [name, sealed, now()] }]);
+      },
+      remove: async (name) => {
+        await db.write([{ sql: "DELETE FROM sealed_keys WHERE name = ?", params: [name] }]);
+      },
+      all: async () => (await db.all<SealedKeyRecord>("SELECT name, sealed, updated_at FROM sealed_keys ORDER BY name")).map(sealedKeyOf),
+    };
+
+    this.triggerSettings = {
+      get: async (adapter) => (await db.all<TriggerSettingRecord>("SELECT adapter, scope, field, sealed, updated_at FROM trigger_settings WHERE adapter = ? ORDER BY scope, field", adapter)).map(triggerSettingOf),
+      put: async ({ adapter, scope, field, sealed }) => {
+        await db.write([{ sql: "INSERT INTO trigger_settings (adapter, scope, field, sealed, updated_at) VALUES (?, ?, ?, ?, ?) ON CONFLICT (adapter, scope, field) DO UPDATE SET sealed = excluded.sealed, updated_at = excluded.updated_at", params: [adapter, scope, field, sealed, now()] }]);
+      },
+      removeScope: async (adapter, scope) => {
+        await db.write([{ sql: "DELETE FROM trigger_settings WHERE adapter = ? AND scope = ?", params: [adapter, scope] }]);
+      },
+    };
+
+    this.mcpOauth = {
+      put: async ({ state, server, verifierSealed, cookieBinding, expiresAt }) => {
+        await db.write([{
+          sql: `INSERT INTO mcp_oauth_pending (state, server, verifier_sealed, cookie_binding, expires_at) VALUES (?, ?, ?, ?, ?)
+            ON CONFLICT (state) DO UPDATE SET server = excluded.server, verifier_sealed = excluded.verifier_sealed, cookie_binding = excluded.cookie_binding, expires_at = excluded.expires_at`,
+          params: [state, server, verifierSealed, cookieBinding, expiresAt],
+        }]);
+      },
+      get: async (state, at) => {
+        const row = await db.get<McpOauthRecord>("SELECT state, server, verifier_sealed, cookie_binding, expires_at FROM mcp_oauth_pending WHERE state = ?", state);
+        if (row === undefined || (at !== undefined && row.expires_at <= at)) return undefined;
+        return mcpOauthOf(row);
+      },
+      remove: async (state) => {
+        await db.write([{ sql: "DELETE FROM mcp_oauth_pending WHERE state = ?", params: [state] }]);
+      },
+      sweepExpired: async (at) => (await db.write([{ sql: "DELETE FROM mcp_oauth_pending WHERE expires_at <= ?", params: [at] }]))[0]!.changes,
     };
   }
 
