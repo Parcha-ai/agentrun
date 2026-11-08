@@ -11,7 +11,7 @@ import {
   CommandTaken, RefreshLeaseLost, SchemaVersionUnknown, StoreConstraint, StoreFromEarlierVersion,
   type AgentRow, type Agents, type AlsoRow, type Claim, type Command, type Journal, type NewRevision, type RevisionRow, type RunPatch, type RunRow, type Runs,
   type RunState, type Store, type StoreRole, type TemplatePackage, type Templates, type TriggerDef, type TriggerRow, type Triggers, type TriggerScope,
-  FINAL_STATES, type Mcp, type McpPinRow, type McpServerRow,
+  FINAL_STATES, MCP_REFRESH_CALL_MS, MCP_REFRESH_LEASE_MS, type Mcp, type McpPinRow, type McpServerRow,
 } from "../store.js";
 import { Connection, type SqliteExecutor, type SqliteValue, type Statement } from "./connection.js";
 import { applyRunPatch, RUN_COLUMNS, runOf, type RunRecord } from "./run-patch.js";
@@ -358,7 +358,7 @@ class SqliteStore implements Store {
         const [result] = await db.write([{
           sql: `INSERT INTO mcp_servers (name, url, auth, protocol, tools, prices, sealed, created_at, updated_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
             ON CONFLICT (name) DO UPDATE SET url = excluded.url, auth = excluded.auth, protocol = excluded.protocol, tools = excluded.tools,
-              prices = excluded.prices, sealed = excluded.sealed, updated_at = excluded.updated_at
+              prices = excluded.prices, sealed = excluded.sealed, refresh_holder = NULL, refresh_until = NULL, updated_at = excluded.updated_at
             RETURNING ${MCP_SERVER_COLUMNS}`,
           params: [name, url, auth, protocol, json(tools), json(prices), sealed, at, at],
         }]);
@@ -380,8 +380,11 @@ class SqliteStore implements Store {
           return mcpPinOf((await tx.get<McpPinRecord>("SELECT run_id, body, pinned_at FROM mcp_pins WHERE run_id = ?", claim.runId))!);
         }),
       // The credential as read is compared by its bytes (`sealed IS ?`, NULL included): updated_at can repeat within a ms.
-      leaseRefresh: (name, { seen, holder, ms }) =>
-        db.transaction(async (tx) => {
+      leaseRefresh: async (name, { seen, holder, ms = MCP_REFRESH_LEASE_MS }) => {
+        if (!(Number.isFinite(ms) && ms > MCP_REFRESH_CALL_MS)) {
+          throw new RangeError(`a refresh lease must be longer than the refresh call's own deadline (${MCP_REFRESH_CALL_MS} ms), not ${ms} ms: it would lapse while its holder's call may still spend the token`);
+        }
+        return db.transaction(async (tx) => {
           const at = now();
           const granted = await tx.runCounted(
             "UPDATE mcp_servers SET refresh_holder = ?, refresh_until = ? WHERE name = ? AND sealed IS ? AND (refresh_until IS NULL OR refresh_until < ?)",
@@ -390,7 +393,8 @@ class SqliteStore implements Store {
           const row = await server(tx, name);
           if (!row) throw new StoreConstraint(`no MCP server ${name}: it is no longer saved`);
           return { leased: granted === 1, row };
-        }),
+        });
+      },
       refreshToken: (name, { holder, sealed }) =>
         db.transaction(async (tx) => {
           const at = now();

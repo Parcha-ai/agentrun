@@ -256,8 +256,14 @@ export interface McpPinRow {
   readonly pinnedAt: number;
 }
 
+/** The longest an MCP token refresh may take: two tries of 4 s each. The runner's claim step gives its call up by then. */
+export const MCP_REFRESH_CALL_MS = 2 * 4_000;
+/** A refresh lease's length by default: the call's deadline and room to write its result. */
+export const MCP_REFRESH_LEASE_MS = MCP_REFRESH_CALL_MS + 4_000;
+
 export interface Mcp {
-  /** The server's write: the server's row, inserted or replaced by name (its first save's time kept). */
+  /** The server's write: the server's row, inserted or replaced by name (its first save's time kept). An owner's save
+   *  clears any refresh lease, so a refresh in flight is refused (RefreshLeaseLost) and never overwrites it. */
   put(server: { name: string; url: string; auth: string; protocol?: string | null; tools: unknown; prices?: unknown; sealed?: Uint8Array | null }): Promise<McpServerRow>;
   remove(name: string): Promise<void>;
   /** The registry's rows, by name. */
@@ -270,10 +276,12 @@ export interface Mcp {
    *  stale claim. */
   pinOnce(claim: Claim, body: unknown): Promise<McpPinRow>;
   /** One refresh at a time per server (a provider that rotates refresh tokens spends the old one at each refresh): the lease
-   *  is granted to `holder` for `ms` only while the credential is still the one it read (`seen`: the sealed bytes, null for
-   *  none) and no live lease is held. Not granted: the current row comes back, and the caller waits for the holder's set
-   *  (re-reading) or the lease's end. A lease whose holder died runs out; the next claim may take it. */
-  leaseRefresh(name: string, lease: { seen: Uint8Array | null; holder: string; ms: number }): Promise<{ leased: boolean; row: McpServerRow }>;
+   *  is granted to `holder` for `ms` (MCP_REFRESH_LEASE_MS by default) only while the credential is still the one it read
+   *  (`seen`: the sealed bytes, null for none) and no live lease is held. Not granted: the current row comes back, and the
+   *  caller waits for the holder's set (re-reading) or the lease's end. A lease whose holder died runs out; the next claim
+   *  may take it. `ms` must be longer than the refresh call's own deadline (MCP_REFRESH_CALL_MS: the holder gives its call
+   *  up by then), so a lease never lapses while its holder's call may still spend the token; a shorter one is refused. */
+  leaseRefresh(name: string, lease: { seen: Uint8Array | null; holder: string; ms?: number }): Promise<{ leased: boolean; row: McpServerRow }>;
   /** The lease holder's refreshed credential: written, and the lease cleared, in one transaction. RefreshLeaseLost (nothing
    *  written) when `holder` no longer holds the lease (it ran out and another claim took it, or the server was removed). */
   refreshToken(name: string, refresh: { holder: string; sealed: Uint8Array }): Promise<McpServerRow>;
