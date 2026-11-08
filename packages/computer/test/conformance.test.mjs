@@ -14,9 +14,11 @@ import { fakeComputers } from "./fake-computer.mjs";
 const IMAGE = "debian:bookworm-slim";
 const HERE = fileURLToPath(new URL(".", import.meta.url));
 const CLI = fileURLToPath(new URL("../dist/conformance/cli.js", import.meta.url));
-const GROUPS = ["health", "exec", "files", "process", "provider", "drift", "screen", "input", "touch", "apps", "lifetime"];
+const GROUPS = ["health", "exec", "files", "process", "provider", "drift", "mount", "screen", "input", "touch", "apps", "lifetime"];
 const PROTOCOL_GROUPS = ["exec", "files", "processes", "screen", "input.pointer", "input.keys", "input.touch", "apps", "apps.install", "apps.ui_tree"];
-const CAPABILITIES = [...PROTOCOL_GROUPS, "network:none", "network:open", "network:allow", "lifetime:janitor", "user:root", "user:uid", "extend", "stream"];
+const CAPABILITIES = [...PROTOCOL_GROUPS, "network:none", "network:open", "network:allow", "lifetime:janitor", "user:root", "user:uid", "extend", "stream", "mount:bind", "mount:archil"];
+/** Groups with no Core case: lifetime's extend and the mount of the run's folder are optional for every kind. */
+const OPTIONAL_GROUPS = ["lifetime", "mount"];
 
 const pass = (id, extra = {}) => ({ id, level: "core", group: id.split(".")[0], needs: [], run: async () => {}, ...extra });
 const statuses = (report) => Object.fromEntries(report.results.map((r) => [r.id, r.status]));
@@ -322,9 +324,12 @@ test("each case of the suite is data: a unique id in its group, a level, and nee
 		if (c.level === "core") assert.ok(c.needs.every((need) => [...PROTOCOL_GROUPS, "network:none"].includes(need)), `${c.id}: a Core case needs only groups and network:none`);
 		assert.equal(typeof c.run, "function");
 	}
-	// lifetime's one case is Full: extend is optional for every kind.
-	for (const group of GROUPS.filter((g) => g !== "lifetime")) assert.ok(conformanceCases.some((c) => c.group === group && c.level === "core"), `a Core case in ${group}`);
-	assert.ok(conformanceCases.some((c) => c.group === "lifetime"), "a case in lifetime");
+	// lifetime's one case is Full: extend is optional for every kind. So is every mount case, until the cutover decides.
+	for (const group of GROUPS.filter((g) => !OPTIONAL_GROUPS.includes(g))) assert.ok(conformanceCases.some((c) => c.group === group && c.level === "core"), `a Core case in ${group}`);
+	for (const group of OPTIONAL_GROUPS) {
+		assert.ok(conformanceCases.some((c) => c.group === group), `a case in ${group}`);
+		assert.deepEqual(conformanceCases.filter((c) => c.group === group && c.level !== "full").map((c) => c.id), [], `every ${group} case is Full`);
+	}
 });
 
 const byId = (...ids) => conformanceCases.filter((c) => ids.includes(c.id));

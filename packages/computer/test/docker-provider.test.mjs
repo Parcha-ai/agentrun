@@ -15,7 +15,7 @@ const ALLOWLIST = "a Docker computer cannot enforce an allowlist yet; ask for ne
 const runOf = (all) => all.find((args) => args[0] === "run");
 const DEFAULT_USER = process.getuid() !== 0 && process.getgid() !== 0 ? `${process.getuid()}:${process.getgid()}` : "1000:1000";
 
-test("capabilities: a linux container with computerd as PID 1, whose lifetime the janitor enforces up to 30 days, network none or open, and exec, files and processes", () => {
+test("capabilities: a linux container with computerd as PID 1, whose lifetime the janitor enforces up to 30 days, network none or open, exec, files and processes, and a bind mount", () => {
 	const { provider } = fakeDocker();
 	assert.equal(provider.id, "docker");
 	assert.match(provider.version, /^\d+\.\d+\.\d+/);
@@ -29,6 +29,7 @@ test("capabilities: a linux container with computerd as PID 1, whose lifetime th
 		groups: ["exec", "files", "processes"],
 		maxLifetimeMs: 30 * 24 * 60 * 60 * 1000,
 		user: ["root", "uid"],
+		mount: ["bind"],
 	});
 	assert.equal(provider.extend, undefined, "no extend(): the deadline is a label, which cannot change after create");
 	assert.equal(provider.stream, undefined, "no stream()");
