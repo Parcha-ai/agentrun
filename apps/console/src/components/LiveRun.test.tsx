@@ -176,4 +176,39 @@ describe("LiveRun, a working run's cost", () => {
     expect(header()).toContain(cost(priced as Run["cost"]));
     expect(header()).not.toContain(cost(zero as Run["cost"]));
   });
+  it("follows each later page's cost while the run works, then the run's own read once it ends", async () => {
+    const at$ = (usd: number) => ({ usd, basis: "estimate", charge_state: null, cap_usd: null });
+    const page = (usd: number, status: Run["status"]) => ({ cost: at$(usd), run_id: "r1", status, state: status === "working" ? "working" : "idle", rows: [], drop: [], reset: false, unchanged: false, final: status !== "working", has_more: false, next_after: 0 }) as unknown as TimelinePage;
+    // The pages, one per read: the test hands each out in turn.
+    const waiting: ((p: TimelinePage) => void)[] = [];
+    let ended = false;
+    const v2 = {
+      getRun: async () => (ended ? { ...at("completed", false), cost: at$(0.08) } : { ...at("working", false), cost: at$(0) }),
+      listFiles: async () => ({ run_id: "r1", files: [], complete: true, truncated: false }),
+      getTimeline: () => new Promise<TimelinePage>((resolve) => { waiting.push(resolve); }),
+      listRevisions: async () => ({ revisions: [], next_cursor: null }),
+    };
+    const host = document.body.appendChild(document.createElement("div"));
+    root = createRoot(host);
+    act(() => root!.render(createElement(LiveRun, { v2: v2 as never, runId: "r1", caps: null, agentName: () => "Calc" })));
+    const settle = async () => { for (let i = 0; i < 10; i++) await act(async () => { await new Promise((r) => setTimeout(r, 0)); }); };
+    const header = () => host.querySelector("header")?.textContent ?? "";
+    // The follow loop keeps a short pause between reads: wait until it asks for the next page, then hand that one out.
+    const hand = async (p: TimelinePage) => {
+      for (const end = Date.now() + 3000; !waiting.length && Date.now() < end; ) await act(async () => { await new Promise((r) => setTimeout(r, 25)); });
+      expect(waiting.length).toBeGreaterThan(0);
+      waiting.shift()!(p); await settle();
+    };
+    await hand(page(0.0126, "working"));
+    expect(header()).toContain(cost(at$(0.0126) as Run["cost"]));
+    await hand(page(0.05, "working"));
+    expect(header()).toContain(cost(at$(0.05) as Run["cost"]));
+    expect(header()).not.toContain(cost(at$(0.0126) as Run["cost"]));
+    // The run ends: its own read (at its end) has the final figure, which the header shows, not the last page's.
+    ended = true;
+    await hand(page(0.09, "completed"));
+    expect(header()).toContain("Completed");
+    expect(header()).toContain(cost(at$(0.08) as Run["cost"], { ended: true }));
+    expect(header()).not.toContain(cost(at$(0.09) as Run["cost"]));
+  });
 });
