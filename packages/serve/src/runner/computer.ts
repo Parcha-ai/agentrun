@@ -90,5 +90,7 @@ export async function dockerComputer(
       return mount ? { ok: true, value: mount } : { ok: false, error: { code: "invalid", message: "the run's computer read back no mount at /workspace" } };
     },
   };
-  return { run: { computer, check: { readBackOf } }, release };
+  // The check carries the claim's epoch (D6): a disk read-back under another epoch is refused. Docker's bind read-back
+  // carries no epoch, so the fence there is the computer's epoch label; the epoch here is for a disk mount.
+  return { run: { computer, check: { readBackOf, epoch: options.epoch } }, release };
 }

@@ -55,6 +55,8 @@ test("dockerComputer makes the computer, exposes its client and read-back, and r
   assert.equal(handle.run.computer.id, "c1");
   assert.equal(typeof handle.run.computer.client.call, "function");
   assert.equal(typeof handle.run.check.readBackOf, "function");
+  // The check carries the claim's epoch (D6's fence for a disk read-back).
+  assert.equal(handle.run.check.epoch, 3);
   // Its read-back is the mount D made; the check reads back the same shape for the mount it asked for.
   assert.deepEqual(await handle.run.computer.readBack(), { ok: true, value: mount });
   assert.deepEqual(handle.run.check.readBackOf(mount), { kind: "bind", path: mount.path });
