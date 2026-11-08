@@ -6,6 +6,7 @@ import (
 	"net"
 	"os"
 	"path/filepath"
+	"strings"
 	"sync"
 	"sync/atomic"
 	"syscall"
@@ -93,7 +94,7 @@ func TestOneRequestByteRunsOneSyncAndAnswersItsExitCode(t *testing.T) {
 	b := newBox(t)
 	var runs atomic.Int32
 	b.serve(t, func(context.Context) int { runs.Add(1); return 7 })
-	code, err := archilsync.Ask(context.Background(), b.socket)
+	code, err := archilsync.Ask(context.Background(), b.socket, here)
 	if err != nil || code != 7 {
 		t.Fatalf("Ask = %d, %v; want 7", code, err)
 	}
@@ -137,7 +138,7 @@ func TestCoalescedTheRequestsDuringASyncShareOneMore(t *testing.T) {
 	codes := make([]int, 4)
 	ask := func(i int) {
 		defer wg.Done()
-		code, err := archilsync.Ask(context.Background(), b.socket)
+		code, err := archilsync.Ask(context.Background(), b.socket, here)
 		if err != nil {
 			t.Errorf("Ask %d: %v", i, err)
 		}
@@ -276,7 +277,7 @@ func TestAnInheritedListenerServes(t *testing.T) {
 	defer cancel()
 	done := make(chan error, 1)
 	go func() { done <- archilsync.Serve(ctx, inherited, b.config(), func(context.Context) int { return 9 }) }()
-	if code, err := archilsync.Ask(context.Background(), b.socket); err != nil || code != 9 {
+	if code, err := archilsync.Ask(context.Background(), b.socket, here); err != nil || code != 9 {
 		t.Fatalf("Ask = %d, %v; want 9", code, err)
 	}
 	b.mount(t, false)
@@ -288,10 +289,56 @@ func TestAnInheritedListenerServes(t *testing.T) {
 }
 
 func TestAskWithNoServerIsNotFoundInWords(t *testing.T) {
-	_, err := archilsync.Ask(context.Background(), filepath.Join(t.TempDir(), "archil.sock"))
+	_, err := archilsync.Ask(context.Background(), filepath.Join(t.TempDir(), "run", "archil.sock"), here)
 	var e *rpc.Error
 	if !errors.As(err, &e) || e.Kind != rpc.KindNotFound {
 		t.Fatalf("Ask = %v, want not_found", err)
+	}
+}
+
+// here is the owner a test's server makes its folder and socket as: this user (root's stand-in) and its group.
+var here = archilsync.Owner{UID: os.Geteuid(), GID: os.Getegid()}
+
+// Ask trusts an answer only from a socket in a folder root's alone, with the tool user's group: a folder or socket of
+// another owner (a tool user's stand-in), another group, another mode, or a link is refused in words, and no byte is
+// sent to it.
+func TestAskRefusesASocketOrFolderThatIsNotRootsInWords(t *testing.T) {
+	b := newBox(t)
+	var runs atomic.Int32
+	b.serve(t, func(context.Context) int { runs.Add(1); return 0 })
+	dir := filepath.Dir(b.socket)
+	refuses := func(what string, owner archilsync.Owner, words string) {
+		t.Helper()
+		_, err := archilsync.Ask(context.Background(), b.socket, owner)
+		var e *rpc.Error
+		if !errors.As(err, &e) || e.Kind != rpc.KindDenied || !strings.Contains(e.Message, words) {
+			t.Errorf("%s: Ask = %v; want denied, saying %q", what, err, words)
+		}
+	}
+	// Owned by this user, which stands for the tool user here: root is another uid.
+	refuses("a folder the tool user owns", archilsync.Owner{UID: os.Geteuid() + 1, GID: os.Getegid()}, "not root's")
+	refuses("a folder of another group", archilsync.Owner{UID: os.Geteuid(), GID: os.Getegid() + 1}, "group")
+	if err := os.Chmod(dir, 0o770); err != nil {
+		t.Fatal(err)
+	}
+	refuses("a folder the group may write", here, "0750")
+	if err := os.Chmod(dir, 0o750); err != nil {
+		t.Fatal(err)
+	}
+	linked := filepath.Join(b.dir, "linked")
+	if err := os.Symlink(dir, linked); err != nil {
+		t.Fatal(err)
+	}
+	_, err := archilsync.Ask(context.Background(), filepath.Join(linked, "archil.sock"), here)
+	var e *rpc.Error
+	if !errors.As(err, &e) || e.Kind != rpc.KindDenied || !strings.Contains(e.Message, "link") {
+		t.Errorf("a folder that is a link: Ask = %v; want denied", err)
+	}
+	if runs.Load() != 0 {
+		t.Fatalf("syncs = %d: a refused socket was asked", runs.Load())
+	}
+	if code, err := archilsync.Ask(context.Background(), b.socket, here); err != nil || code != 0 {
+		t.Fatalf("the folder as made: Ask = %d, %v", code, err)
 	}
 }
 
