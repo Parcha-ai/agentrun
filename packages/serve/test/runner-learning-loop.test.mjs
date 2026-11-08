@@ -28,7 +28,9 @@ async function setUp(t) {
   await agentWithRevision(store);
   await store.runs.create({ id: "run-1", agentId: "agent-1", revisionId: "rev-1" });
   const source = await store.claim("run-1", "runner-a", { leaseMs: 60_000 });
-  await store.runs.update(source, { state: "ended" }, { also: [{ table: "learning_proposals", row: { turn: { answer: "…" }, proposal: PROPOSAL } }, { table: "learning_run", row: { id: "learn-1" } }] });
+  // The row as the end-of-run hook keeps it (runner/reflect-hook.ts): its state and words, the kept Proposal inside.
+  const kept = { state: "proposed", notes: ["Retries"], skills: [], workflows: [], proposal: PROPOSAL, detail: "Proposed 1 note." };
+  await store.runs.update(source, { state: "ended" }, { also: [{ table: "learning_proposals", row: { turn: { answer: "…" }, proposal: kept } }, { table: "learning_run", row: { id: "learn-1" } }] });
   const claim = await store.claim("learn-1", "runner-a", { leaseMs: 60_000 });
   return { store, clock, claim };
 }
