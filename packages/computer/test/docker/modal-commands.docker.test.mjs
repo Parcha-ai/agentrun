@@ -121,6 +121,26 @@ describe("the Modal provider's upload commands in a root container with no netwo
 			assert.equal(docker("exec", mismatch.name, "sh", "-c", "test -e /opt/agentrun/computerd && echo there || echo absent").trim(), "absent");
 		});
 
+		it(`${image}: the image route's hold step refuses a daemon path another user can change, and makes it root's alone`, () => {
+			const { bytes } = daemon();
+			const hold = modalCommands().hold;
+			const put = (name, setup) => {
+				docker("exec", name, "sh", "-c", `${setup}; mkdir -p /opt/agentrun`);
+				execFileSync("docker", ["exec", "-i", name, "sh", "-c", "cat > /opt/agentrun/computerd"], { input: bytes });
+			};
+			const open = sandbox(image);
+			put(open.name, "mkdir -p /opt && chmod 0777 /opt");
+			const refused = spawnSync("docker", ["exec", open.name, ...hold], { encoding: "utf8" });
+			assert.equal(refused.status, 7, refused.stdout + refused.stderr);
+			assert.match(refused.stdout, /the daemon at \/opt\/agentrun\/computerd is not root's alone: \/opt is drwxrwxrwx/);
+			const owned = sandbox(image);
+			put(owned.name, "true");
+			docker("exec", owned.name, "sh", "-c", "chown -R 1000:1000 /opt/agentrun && chmod -R 0777 /opt/agentrun");
+			const held = spawnSync("docker", ["exec", owned.name, ...hold], { encoding: "utf8" });
+			assert.equal(held.status, 0, held.stdout + held.stderr);
+			assert.equal(docker("exec", owned.name, "stat", "-c", "%u:%g %a", "/opt/agentrun", "/opt/agentrun/computerd").trim(), "0:0 755\n0:0 755");
+		});
+
 		it(`${image}: the entrypoint waits, the upload streams the daemon in and checks its sha256, init runs as 1000 with no capabilities, and hello answers`, async () => {
 			const { name, deadline } = sandbox(image);
 			const { arch, bytes, sha } = daemon();
