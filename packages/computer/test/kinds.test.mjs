@@ -20,6 +20,7 @@ import {
 	servingRefusals,
 } from "../dist/index.js";
 import { E2BProvider } from "../dist/e2b.js";
+import { create as createOrgo } from "../dist/orgo.js";
 import { fakeDocker } from "./fake-docker.mjs";
 import { fakeE2B } from "./fake-e2b.mjs";
 import { fakeModal } from "./fake-modal.mjs";
@@ -117,6 +118,7 @@ const BUILT = {
 	e2b: [() => new E2BProvider({ apiKey: "e2b-test-key", Sandbox: fakeE2B().Sandbox, kind: "linux" }), () => new E2BProvider({ apiKey: "e2b-test-key", Sandbox: fakeE2B().Sandbox })],
 	daytona: [() => new DaytonaProvider({ apiKey: "daytona-test-key", apiUrl: "https://api.daytona.test/api", daemonPath: "/nonexistent/computerd", fetch: async () => new Response(null, { status: 500 }) })],
 	modal: [() => new ModalProvider({ sdk: fakeModal().sdk, app: "computers", daemonImage: `ghcr.io/example/computerd@sha256:${"a".repeat(64)}` })],
+	orgo: [() => createOrgo({ apiKey: "orgo-test-key", workspaceId: "ws-test", fetch: async () => new Response(null, { status: 500 }) })],
 };
 
 test("a built provider's capabilities, in each configuration, are its entry's static capabilities", () => {

@@ -6,11 +6,11 @@ import { mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import test from "node:test";
-import { KIND_PROVIDERS, providerIds } from "../dist/index.js";
+import { PROVIDERS, providerIds } from "../dist/index.js";
 import { fakeOrgoApi, KEY, WORKSPACE } from "./fake-orgo.mjs";
 
 const conformance = await import("../dist/conformance/orgo.js");
-const { CONFORMANCE_MAX_LIFETIME_MS, conformanceImage, createDriftedProvider, createProvider, ORGO_ENV, settingsFromEnv } = conformance;
+const { CONFORMANCE_MAX_LIFETIME_MS, conformanceImage, createDriftedProvider, createProvider, ENV, settingsFromEnv } = conformance;
 const dir = mkdtempSync(join(tmpdir(), "computer-orgo-module-"));
 const DRIFT = join(dir, "computerd-drift");
 writeFileSync(DRIFT, "a daemon of another version\n");
@@ -18,7 +18,7 @@ test.after(() => rmSync(dir, { recursive: true, force: true }));
 const ENV_OK = { AGENTRUN_COMPUTER_LIVE_ORGO: "1", COMPUTER_ORGO_API_KEY: KEY, COMPUTER_ORGO_WORKSPACE: WORKSPACE };
 
 test("the Orgo module's env names: the live switch, the key, the workspace, the API URL and the run's template, each COMPUTER_ORGO_* but the switch", () => {
-	assert.deepEqual(ORGO_ENV, {
+	assert.deepEqual(ENV, {
 		live: "AGENTRUN_COMPUTER_LIVE_ORGO",
 		template: "COMPUTER_ORGO_TEMPLATE",
 		apiKey: "COMPUTER_ORGO_API_KEY",
@@ -45,8 +45,13 @@ test("the Orgo module makes nothing without its live switch, checked before any 
 	assert.deepEqual(api.requests, [], "building providers calls nothing");
 });
 
-test("the registry holds orgo, and offers it for the desktop kind", () => {
+test("the registry holds orgo, and its Settings entry: the desktop kind, the ORGO_API_KEY key, no mount, metered, its module's capabilities", async () => {
 	assert.ok(providerIds.includes("orgo"));
-	assert.ok(KIND_PROVIDERS.desktop.includes("orgo"));
-	assert.ok(!KIND_PROVIDERS.sandbox.includes("orgo"), "offered as a desktop: an agent that wants a sandbox gets a cheaper one");
+	const entry = PROVIDERS.find((one) => one.id === "orgo");
+	assert.deepEqual(entry.kinds, ["desktop"], "a desktop only: an agent that wants a sandbox gets a cheaper one");
+	assert.deepEqual(entry.keys, [{ name: "ORGO_API_KEY", required: true }]);
+	assert.deepEqual(entry.mounts, []);
+	assert.equal(entry.metered, true);
+	const orgo = await import("../dist/orgo.js");
+	assert.deepEqual(entry.capabilities, orgo.CAPABILITIES);
 });

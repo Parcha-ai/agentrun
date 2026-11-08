@@ -12,7 +12,7 @@ import { kindOf, serves } from "../dist/index.js";
 import { API, fakeOrgoApi, fakeOrgoChannel, KEY, LABELS_PATH, VNC, WORKSPACE } from "./fake-orgo.mjs";
 
 const orgo = await import("../dist/orgo.js");
-const { create, ENV, fromEnv, MOUNT, OrgoProvider, orgoName } = orgo;
+const { CAPABILITIES, create, MOUNT, OrgoProvider, orgoName } = orgo;
 
 const RUN = "run-7f3a";
 const SPEC = { image: "linux", lifetimeMs: 30 * 60_000, network: "none", labels: { "agentrun.run": RUN, "agentrun.epoch": "3", team: "a" } };
@@ -54,14 +54,29 @@ test("Orgo: the provider takes its key and workspace as options, reads no enviro
 	assert.throws(() => create({ apiKey: KEY, fetch: api.fetch }), (error) => /workspaceId/.test(error.message) && !error.message.includes(KEY));
 	assert.throws(() => create({ apiKey: KEY, workspaceId: WORKSPACE, fetch: api.fetch, apiUrl: "http://orgo.example/api" }), /https/);
 	assert.throws(() => create({ apiKey: KEY, workspaceId: WORKSPACE, fetch: api.fetch, user: "0:0" }), /root/);
-	assert.ok(create({ apiKey: KEY, workspaceId: WORKSPACE, fetch: api.fetch }) instanceof OrgoProvider);
-	assert.deepEqual(MOUNT, []);
-	assert.deepEqual(ENV, { apiKey: "COMPUTER_ORGO_API_KEY", workspace: "COMPUTER_ORGO_WORKSPACE", apiUrl: "COMPUTER_ORGO_API_URL" });
-	await assert.rejects(fromEnv({ ORGO_API_KEY: KEY, COMPUTER_ORGO_WORKSPACE: WORKSPACE }), (error) => /COMPUTER_ORGO_API_KEY/.test(error.message) && !error.message.includes(KEY));
-	await assert.rejects(fromEnv({ COMPUTER_ORGO_API_KEY: KEY }), /COMPUTER_ORGO_WORKSPACE/);
-	const built = await fromEnv({ COMPUTER_ORGO_API_KEY: KEY, COMPUTER_ORGO_WORKSPACE: WORKSPACE }, { fetch: api.fetch });
+	const built = create({ apiKey: KEY, workspaceId: WORKSPACE, fetch: api.fetch });
+	assert.ok(built instanceof OrgoProvider);
 	assert.equal(built.id, "orgo");
+	assert.deepEqual(MOUNT, []);
+	assert.deepEqual(CAPABILITIES, [{ kind: "desktop", groups: ["exec", "files", "processes", "screen", "input.pointer", "input.keys"] }], "what a built provider declares, known without building one");
+	assert.equal(orgo.ENV, undefined, "the library names no environment variable");
+	assert.equal(orgo.fromEnv, undefined, "every setting is an option");
 	assert.deepEqual(api.requests, [], "building a provider calls nothing");
+});
+
+test("Orgo testConnection: one read of the workspace, which makes nothing; ok with the count; a refused key is unauthorized, in words without it", async () => {
+	const fakes = setup();
+	seeded(fakes);
+	fakes.api.add({ name: "someone-elses-desktop" });
+	const tested = await fakes.provider.testConnection();
+	assert.equal(tested.ok, true, JSON.stringify(tested));
+	assert.match(tested.value.detail, /Orgo answered: 1 computer of this provider/);
+	assert.deepEqual(fakes.api.routes(), [`GET /workspaces/${WORKSPACE}`], "one account-level read, and no create");
+	assert.deepEqual(fakes.channel.calls, [], "nothing runs in a computer");
+	const refused = await create({ apiKey: "sk_refused_key_000000000000", workspaceId: WORKSPACE, apiUrl: API, fetch: fakes.api.fetch }).testConnection();
+	assert.equal(refused.ok, false);
+	assert.equal(refused.error.code, "unauthorized");
+	assert.ok(!refused.error.message.includes("sk_refused_key"));
 });
 
 test("Orgo: a Linux desktop with computerd as a child of Orgo's own agent, network none, Orgo's lifetime, delete, no mount; it serves the desktop kind", () => {
