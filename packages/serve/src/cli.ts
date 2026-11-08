@@ -11,7 +11,7 @@ import { chmodSync, writeFileSync } from "node:fs";
 import { join, resolve } from "node:path";
 import { defaultData, removeOwnRecord, SERVER_FILE, writeDurableSync } from "./files.js";
 import { startedWith } from "./adapters.js";
-import { stopOnSignals } from "./stop-signals.js";
+import { REPEAT_MS, stopOnSignals } from "./stop-signals.js";
 import { canOpen } from "./host.js";
 import { resetPassword } from "./owner.js";
 import type { ImageState } from "./box-image.js";
@@ -138,10 +138,16 @@ if (process.argv[2] === "eval-template") {
   const token = given.server === undefined ? undefined : secret("AGENTRUN_API_KEY") || secret("AGENTRUN_TOKEN");
   if (given.server !== undefined && !token) usage("--server needs that server's token in AGENTRUN_API_KEY.");
   // The first Ctrl-C (or a stop) cancels the run in progress and cleans up what the eval made, as its end does: a run
-  // left going would go on spending. A second one leaves at once.
+  // left going would go on spending. A second one leaves at once; one within a second of the first is the same Ctrl-C,
+  // reaching this process twice (stop-signals.ts REPEAT_MS).
   const stop = new AbortController();
+  let stoppedAt = 0;
   const onStop = () => {
-    if (stop.signal.aborted) process.exit(130);
+    if (stop.signal.aborted) {
+      if (Date.now() - stoppedAt > REPEAT_MS) process.exit(130);
+      return;
+    }
+    stoppedAt = Date.now();
     console.error("agentrun-serve eval-template: stopping: cancelling the run in progress and cleaning up (again to leave now)");
     stop.abort();
   };

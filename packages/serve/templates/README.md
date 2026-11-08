@@ -111,8 +111,9 @@ saved by the same name, and the agents the eval made are archived at the end.
 3. The `learning` folder's notes are written to the agent's learning folder (`PUT .../learning/files/{file}`); the
    server builds `MEMORY.md` from them, so the folder's own `MEMORY.md` is not sent.
 4. A run starts with the prompt's body as its input and `max_cost_usd` as its cap, and is waited for (30 minutes at
-   most, then cancelled and failed). A run that ends waiting on a person (a question, an approval, its cap) is graded as
-   it stands, then cancelled; one that fails or is cancelled fails, its `llm` graders not run.
+   most, then cancelled and failed). A run that ends waiting on its person's answer (an `ask_person` question, a tool
+   call's approval) is graded as it stands, then cancelled. One paused at its cap, stopped, failed or cancelled fails,
+   its `llm` graders not run.
 5. Each grader grades what the run left: its final answer, its tool calls (its timeline; and each fake's own log, with
    the whole arguments), and the files of its work folder.
 

@@ -748,10 +748,16 @@ async function runOnce(api: Api, pkg: Package, one: EvalCase, n: number, options
     files: await filesOf(api, runId),
   };
   const base = { run: n, agent_id: agentId, run_id: runId, status: ended.status, cost_usd: costOf(view) };
-  const graded = ended.status === "completed" || ended.status === "input_required";
+  // Waiting on its person's answer (an ask_person question, a tool call's approval) is where such a run stops, and is
+  // graded; paused at its cap, or stopped, it did not get there.
+  const pending = isObject(view.pending) && typeof view.pending.kind === "string" ? view.pending.kind : undefined;
+  const asked = ended.status === "input_required" && (pending === "question" || pending === "approval");
+  const graded = ended.status === "completed" || asked;
   const error = ended.status === "timed_out" ? `the run took longer than ${Math.round((options.runTimeoutMs ?? RUN_TIMEOUT_MS) / 1000)} s and was cancelled`
-    : !graded ? `the run ended ${ended.status}${isObject(view.error) && typeof view.error.message === "string" ? `: ${view.error.message}` : ""}`
-    : ended.status === "input_required" ? `the run waited on a person (${ended.waiting}); graded as it stood` : undefined;
+    : ended.status === "input_required" && pending === "budget" ? `the run reached its cap${one.maxCostUsd !== undefined ? ` of $${one.maxCostUsd}` : ""} and paused there`
+    : asked ? `the run waited on a person (${ended.waiting}); graded as it stood`
+    : !graded ? `the run ended ${ended.status}${pending ? ` (${pending})` : ""}${isObject(view.error) && typeof view.error.message === "string" ? `: ${view.error.message}` : ""}`
+    : undefined;
   const graders: GraderResult[] = [];
   for (const grader of one.graders) {
     if (grader.type !== "llm") {

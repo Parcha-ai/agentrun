@@ -166,6 +166,15 @@ test("a learned note seeded through the learning API reaches the run", { timeout
   assert.equal(one.pass, true, JSON.stringify(one, null, 1));
 });
 
+test("a run that asks its person ends there, and is graded as it stood", { timeout: 600_000 }, async () => {
+  const one = await caseOf("asks");
+  assert.equal(one.pass, true, JSON.stringify(one, null, 1));
+  const [run] = one.runs;
+  assert.equal(run.status, "input_required");
+  assert.match(run.error, /^the run waited on a person \(.*Which region\?.*\); graded as it stood$/);
+  assert.match(graderOf(run, "asked.md").reason, /^1 call of ask_person; the grader expects exactly 1$/);
+});
+
 test("a case passes only when every run passes: one failing run of two fails it", { timeout: 600_000 }, async () => {
   const one = await caseOf("flaky");
   assert.deepEqual(one.runs.map((r) => [r.run, r.status, r.pass]), [[1, "completed", true], [2, "completed", false]]);
@@ -173,8 +182,8 @@ test("a case passes only when every run passes: one failing run of two fails it"
   assert.notEqual(one.runs[0].agent_id, one.runs[1].agent_id, "each run its own agent");
   const report = await eval_();
   assert.equal(report.pass, false);
-  assert.deepEqual(report.cases.map((c) => [c.name, c.pass]), [["all-fail", false], ["all-pass", true], ["flaky", false], ["held", true], ["learned", true], ["mcp-match", true], ["mcp-mismatch", false]]);
-  assert.equal(report.passed, 4);
+  assert.deepEqual(report.cases.map((c) => [c.name, c.pass]), [["all-fail", false], ["all-pass", true], ["asks", true], ["flaky", false], ["held", true], ["learned", true], ["mcp-match", true], ["mcp-mismatch", false]]);
+  assert.equal(report.passed, 5);
   assert.equal(report.cost_usd.total, Math.round((report.cost_usd.runs + report.cost_usd.graders) * 1e6) / 1e6);
   assert.equal(report.cost_usd.unknown, 0);
 });
@@ -286,9 +295,10 @@ test("agentrun-serve eval-template: exit 0 when every case passes, 1 when one fa
   // A Ctrl-C cancels the run in progress, cleans up and exits 130 with no report.
   const held = spawn(process.execPath, [CLI, "eval-template", PKG, "--case", "held", "--faux", FAUX, "--report", join(dir, "stopped.json")], { stdio: ["ignore", "pipe", "pipe"], env: { ...process.env, AGENTRUN_BOXES: "none", AGENTRUN_TEST_EVAL_HOLD: join(dir, "never") } });
   let heldErr = "";
+  let sent = false;
   held.stderr.on("data", (chunk) => {
     heldErr += chunk;
-    if (heldErr.includes("case held: 1 run")) setTimeout(() => held.kill("SIGINT"), 1_000);
+    if (!sent && heldErr.includes("case held: 1 run")) (sent = true), setTimeout(() => held.kill("SIGINT"), 1_000);
   });
   held.stdout.resume();
   const code = await new Promise((resolve) => held.on("close", resolve));
