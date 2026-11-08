@@ -121,6 +121,11 @@ const DRIVER_FORMS = {
   "a dynamic import of pi-durable, destructured": [`const { SqliteStorage } = await import("@earendil-works/pi-durable");`, "@earendil-works/pi-durable SqliteStorage"],
   "createRequire, called at once": [`const sqlite = createRequire(import.meta.url)("node:sqlite");`, "node:sqlite"],
   "createRequire, through a named require": [`const load = createRequire(import.meta.url);\nconst sqlite = load("node:sqlite");`, "node:sqlite"],
+  "a renamed createRequire": [`import { createRequire as makeRequire } from "node:module";\nconst sqlite = makeRequire(import.meta.url)("node:sqlite");`, "node:sqlite"],
+  "a renamed createRequire, through a named require": [`import { createRequire as makeRequire } from "node:module";\nconst load = makeRequire(import.meta.url);\nconst sqlite = load("node:sqlite");`, "node:sqlite"],
+  "createRequire off a namespace import of node:module": [`import * as mod from "node:module";\nconst sqlite = mod.createRequire(import.meta.url)("node:sqlite");`, "node:sqlite"],
+  "a bracket read of SqliteStorage off a namespace import": [`import * as durable from "@earendil-works/pi-durable";\nconst storage = new durable["SqliteStorage"](db);`, "@earendil-works/pi-durable SqliteStorage"],
+  "a bracket read of SqliteStorage off an import()": [`const durable = await import("@earendil-works/pi-durable");\nconst storage = new durable[\`SqliteStorage\`](db);`, "@earendil-works/pi-durable SqliteStorage"],
 };
 for (const [form, [source, driver]] of Object.entries(DRIVER_FORMS)) {
   test(`the guard sees a SQLite driver taken by ${form}`, () => {
