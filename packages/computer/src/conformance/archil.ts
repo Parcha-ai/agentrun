@@ -59,6 +59,8 @@ export interface ArchilRunFolderOptions {
 	baseUrl?: string;
 	/** The SDK's Archil client; default the host's `disk` package's. */
 	Archil?: ArchilConstructor;
+	/** For tests: the package the SDK's client is imported from; default `disk`. */
+	sdkPackage?: string;
 }
 
 /** Not a literal, so no type checker or bundler resolves the SDK from this package. */
@@ -111,9 +113,17 @@ function failure(what: string, error: unknown, apiKey: string): Error {
 }
 
 /** The disk's object API from the SDK's client: every setting given, the disk looked up once. */
-async function sdkObjects({ disk, region, apiKey, s3BaseUrl, baseUrl, Archil }: ArchilRunFolderOptions): Promise<ArchilObjects> {
+async function sdkObjects({ disk, region, apiKey, s3BaseUrl, baseUrl, Archil, sdkPackage = ARCHIL_PACKAGE }: ArchilRunFolderOptions): Promise<ArchilObjects> {
 	if (!apiKey || !s3BaseUrl) throw new Error(`the Archil run folder reaches its disk through the object API: give objects, or apiKey and s3BaseUrl (${ARCHIL_ENV.archilApiKey}, ${ARCHIL_ENV.archilS3Url})`);
-	const Client = Archil ?? ((await import(ARCHIL_PACKAGE)) as { Archil: ArchilConstructor }).Archil;
+	let Client = Archil;
+	if (Client === undefined) {
+		try {
+			Client = ((await import(sdkPackage)) as { Archil: ArchilConstructor }).Archil;
+		} catch (error) {
+			const why = (error instanceof Error ? error.message : String(error)).replaceAll(apiKey, "[key]").slice(0, 200);
+			throw new Error(`the Archil run folder needs Archil's Node SDK, the package ${JSON.stringify(sdkPackage)}: it is serve's dependency, pinned in the lockfile, so npm ci at the repository root installs it (${why})`);
+		}
+	}
 	try {
 		return await new Client({ apiKey, region, s3BaseUrl, ...(baseUrl === undefined ? {} : { baseUrl }) }).disks.get(disk);
 	} catch (error) {
