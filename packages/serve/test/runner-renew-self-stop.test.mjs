@@ -44,6 +44,10 @@ test("renews that fail: the loop is stopped before claimed_until, and nothing it
     `refused by the runner's fence, not the store's: ${JSON.stringify(loop.commitErrors.slice(0, 3))}`,
   );
   assert.deepEqual(runner.held(), [], "the runner no longer holds the run");
+  // pi chains on commit's promise: the refusal is a rejected promise, never a throw out of the call itself.
+  let pending;
+  assert.doesNotThrow(() => (pending = loop.journal.commit({ kind: "probe" })), "commit does not throw where it is called");
+  await assert.rejects(pending, { name: "ClaimLost" });
 });
 
 test("a renew refused as Fenced (another runner took the claim): the loop is stopped at once", async (t) => {

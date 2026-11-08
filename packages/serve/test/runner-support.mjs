@@ -1,13 +1,14 @@
 // A double of the store's runner part (src/runner/store-port.ts) and faux loops, for the runner's reds until module A's
 // SqliteStore lands; then the reds open the real store and keep these loops. The double keeps A's rules: a claim moves
 // the epoch, every write under a lower epoch is refused (Fenced), a command for a final run is refused in the insert
-// (RunEnded), and a journal commit's staged takes land with it or not at all (CommandTaken).
+// (RunFinal), and a journal commit's staged takes land with it or not at all (CommandTaken). Times are ms since the
+// epoch, as A's are.
 
 export class Fenced extends Error {
   name = "Fenced";
 }
-export class RunEnded extends Error {
-  name = "RunEnded";
+export class RunFinal extends Error {
+  name = "RunFinal";
 }
 export class CommandTaken extends Error {
   name = "CommandTaken";
@@ -111,14 +112,14 @@ export function storeDouble({ now = () => Date.now() } = {}) {
       run.wakeAt = null;
       run.state = "running";
       claims.push({ runId, runner, epoch: run.epoch, at, until: run.claimedUntil });
-      return { runId, runner, epoch: run.epoch, until: iso(run.claimedUntil) };
+      return { runId, runner, epoch: run.epoch, until: run.claimedUntil };
     },
     async renew(claim, { leaseMs }) {
       await tick();
       if (blockRenew.has(claim.runner)) throw Object.assign(new Error("database is locked"), { code: "SQLITE_BUSY" });
       const run = fence(claim);
       run.claimedUntil = now() + leaseMs;
-      return { ...claim, until: iso(run.claimedUntil) };
+      return { ...claim, until: run.claimedUntil };
     },
     async release(claim, options = {}) {
       await tick();
@@ -157,7 +158,7 @@ export function storeDouble({ now = () => Date.now() } = {}) {
     },
     async command(runId, { kind, body = {} }) {
       await tick();
-      if (FINAL.has(row(runId).state)) throw new RunEnded(`run ${runId} is ${row(runId).state}`);
+      if (FINAL.has(row(runId).state)) throw new RunFinal(`run ${runId} is ${row(runId).state}`);
       const command = { id: ++commandId, runId, kind, body, createdAt: iso(now()), takenAt: null, refused: null };
       commands.push(command);
       return { ...command };

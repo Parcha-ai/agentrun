@@ -58,8 +58,8 @@ test("a command for an ended run is refused: in the insert once it is final, and
   assert.match(row.refused ?? "", /ended/, `the late steer is refused with the reason: ${JSON.stringify(row)}`);
   assert.equal(faux.loops[0].received.length, 0, "the loop never received it");
 
-  await assert.rejects(sendCommand(store, "run-1", { kind: "steer", body: { text: "too late" } }), { name: "RunEnded" });
-  await assert.rejects(sendCommand(store, "run-1", { kind: "stop" }), { name: "RunEnded" });
+  await assert.rejects(sendCommand(store, "run-1", { kind: "steer", body: { text: "too late" } }), { name: "RunFinal" });
+  await assert.rejects(sendCommand(store, "run-1", { kind: "stop" }), { name: "RunFinal" });
 });
 
 test("a command of no known kind is refused before it is a row", async (t) => {
