@@ -5,7 +5,7 @@
 import { BACKGROUND_EXECUTORS } from "./background.js";
 import { boundedBash } from "./bash.js";
 import { hostToolDefs, type ShellPlace, type ToolDef } from "./defs.js";
-import type { Executor, HostExecutors, ToolAnswer, ToolCall } from "./hands.js";
+import { answerOf, type Executor, type HostExecutors, type ToolAnswer, type ToolCall } from "./hands.js";
 import { BACKGROUND_TOOLS } from "./limits.js";
 
 export type Registry = {
@@ -31,13 +31,15 @@ export function createRegistry(options: { maxExecS: number; shell: ShellPlace; e
   return {
     list: () => defs,
     get: (name) => byName.get(name) ?? defs.find((def) => def.gateName === name),
-    async invoke(name, args, call) {
+    invoke(name, args, call) {
       const run = runs.get(name);
       if (run) return run(args, call);
-      if (shell !== "computer" && (BACKGROUND_TOOLS as readonly string[]).includes(name)) {
-        throw new Error(`${name} needs a computer: with no computer, bash runs in the run's folder and background processes are not offered`);
-      }
-      throw new Error(`there is no host tool ${name} in this run`);
+      return answerOf(call, async () => {
+        if (shell !== "computer" && (BACKGROUND_TOOLS as readonly string[]).includes(name)) {
+          throw new Error(`${name} needs a computer: with no computer, bash runs in the run's folder and background processes are not offered`);
+        }
+        throw new Error(`there is no host tool ${name} in this run`);
+      });
     },
   };
 }

@@ -1,16 +1,94 @@
-// A run's hands on a local folder, for the kernel registry's tests: files under `root`, commands run by `bash -lc` in
-// `root` with TMPDIR set to a directory of this run's own (the background tools keep their box-only copies there).
+// A run's hands on a local folder, for the kernel registry's tests: files under `root`, commands run by `bash -c` in
+// `root` with a fixed minimal env, and (with `processes: true`) a computer's process port played by local processes,
+// each in a group of its own, its stdout and stderr kept as its log the way a computer keeps it.
 import { spawn } from "node:child_process";
-import { mkdtempSync, mkdirSync } from "node:fs";
+import { mkdtempSync, mkdirSync, writeFileSync, appendFileSync, lstatSync } from "node:fs";
 import { appendFile, lstat, readdir, readFile, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { dirname, join, resolve } from "node:path";
 
-/** A fresh folder and its hands. */
-export function localHands({ maxExecS = 600 } = {}) {
+const LOG_BYTES = 16 * 1024 * 1024;
+const failure = (code, message) => Object.assign(new Error(message), { code });
+
+/** A computer's processes, played locally: what the kernel's port asks of one. */
+export function localProcesses(root) {
+  const procs = new Map();
+  let next = 1;
+  const get = (handle) => {
+    const p = procs.get(handle);
+    if (!p) throw failure("not_found", `no process ${handle}`);
+    return p;
+  };
+  const port = {
+    starts: 0,
+    async start({ argv, cwd, log, pty }) {
+      port.starts++;
+      const logPath = resolve(root, log);
+      const dir = dirname(dirname(logPath));
+      try {
+        if (lstatSync(dir).isSymbolicLink()) throw failure("denied", `${dir} is a link`);
+      } catch (error) {
+        if (error.code === "denied") throw error;
+      }
+      mkdirSync(dirname(logPath), { recursive: true });
+      writeFileSync(logPath, "");
+      const child = spawn(argv[0], argv.slice(1), { cwd: resolve(root, cwd), detached: true, stdio: ["pipe", "pipe", "pipe"], env: { PATH: process.env.PATH, HOME: root } });
+      const p = { handle: String(next++), argv: [...argv], running: true, exitCode: null, signal: null, startedAt: Date.now(), pty: Boolean(pty), bytes: Buffer.alloc(0), capped: false, child, closed: false };
+      const keep = (data) => {
+        const room = LOG_BYTES - p.bytes.length;
+        if (room <= 0) return void (p.capped = true);
+        const part = data.subarray(0, room);
+        if (part.length < data.length) p.capped = true;
+        p.bytes = Buffer.concat([p.bytes, part]);
+        appendFileSync(logPath, part);
+      };
+      child.stdout.on("data", keep);
+      child.stderr.on("data", keep);
+      child.stdin.on("error", () => {});
+      child.on("exit", (code, signal) => {
+        p.running = false;
+        p.exitCode = code;
+        p.signal = signal ? signal.replace(/^SIG/, "") : null;
+      });
+      procs.set(p.handle, p);
+      await new Promise((ready) => child.once("spawn", ready));
+      return { handle: p.handle, pid: child.pid };
+    },
+    async read(handle, { offset, maxBytes }) {
+      const p = get(handle);
+      if (offset > p.bytes.length) throw failure("invalid", `offset ${offset} is past the log's end`);
+      return { data: new Uint8Array(p.bytes.subarray(offset, offset + maxBytes)), size: p.bytes.length, capped: p.capped };
+    },
+    async write(handle, { data, close }) {
+      const p = get(handle);
+      if (p.closed) throw failure("invalid", "stdin is closed");
+      if (data && data.length > 0) p.child.stdin.write(Buffer.from(data));
+      if (close) {
+        p.child.stdin.end();
+        p.closed = true;
+      }
+    },
+    async signal(handle, name) {
+      const p = get(handle);
+      try {
+        process.kill(-p.child.pid, `SIG${name}`);
+      } catch {}
+      return {};
+    },
+    async list() {
+      return [...procs.values()].map((p) => ({ handle: p.handle, argv: [...p.argv], running: p.running, exitCode: p.exitCode, signal: p.signal, startedAt: p.startedAt, pty: p.pty }));
+    },
+    /** Every process still running, killed: a test's cleanup. */
+    reap() {
+      for (const p of procs.values()) if (p.running) try { process.kill(-p.child.pid, "SIGKILL"); } catch {}
+    },
+  };
+  return port;
+}
+
+/** A fresh folder and its hands; `processes: true` gives them a computer's process port. */
+export function localHands({ maxExecS = 600, processes = false } = {}) {
   const root = mkdtempSync(join(tmpdir(), "kernel-registry-"));
-  const tmp = join(root, ".tmp");
-  mkdirSync(tmp);
   const at = (path) => resolve(root, path);
   const hands = {
     maxExecS,
@@ -42,7 +120,7 @@ export function localHands({ maxExecS = 600 } = {}) {
     },
     exec(command, options, signal) {
       return new Promise((done, fail) => {
-        const child = spawn("bash", ["-c", command], { cwd: root, env: { PATH: process.env.PATH, HOME: root, TMPDIR: tmp }, stdio: ["ignore", "pipe", "pipe"], signal });
+        const child = spawn("bash", ["-c", command], { cwd: root, env: { PATH: process.env.PATH, HOME: root }, stdio: ["ignore", "pipe", "pipe"], signal });
         let timedOut = false;
         const timer = setTimeout(() => {
           timedOut = true;
@@ -60,8 +138,9 @@ export function localHands({ maxExecS = 600 } = {}) {
         });
       });
     },
+    ...(processes ? { processes: localProcesses(root) } : {}),
   };
-  return { root, tmp, hands };
+  return { root, hands };
 }
 
 /** Waits until `done()` holds, or fails naming `what`. */

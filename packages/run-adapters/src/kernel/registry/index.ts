@@ -6,8 +6,8 @@ export { bashTimeoutWords, hostToolDefs } from "./defs.js";
 export type { ShellPlace, ToolDef } from "./defs.js";
 export { defaultPermissionOf, SHELL_FAMILY, SHELL_WATCHERS, shellPermission, shellToolOf } from "./gate.js";
 export type { Permission } from "./gate.js";
-export { exitCodeOf } from "./hands.js";
-export type { ExecResult, Executor, Hands, HostExecutors, ToolAnswer, ToolCall } from "./hands.js";
+export { answerOf, exitCodeOf } from "./hands.js";
+export type { ExecResult, Executor, Hands, HostExecutors, ProcessInfo, Processes, ToolAnswer, ToolCall } from "./hands.js";
 export {
   BACKGROUND_DIR,
   BACKGROUND_INPUT_BYTES,
