@@ -315,31 +315,51 @@ params and results of `files.*` and `tar.*` sit beside their code in `daemon/int
 
 ## Kinds: the computer an agent is given
 
-An agent's computer is a setting, one of five kinds (`src/kinds.ts`). A kind is a set of the protocol's capability
-groups, the tools a loop gets for it, and the provider ids that offer it, as data the serve side reads to wire an
-agent's `computer: { kind, provider }` and give its loop the kind's tools and nothing else.
+Two axes. The machine kind is the protocol's, `capabilities().kind` (`linux`, `desktop`, `android`, `ios`, `browser`;
+below). The setting kind is what an agent is given in Settings, `computer: { kind, provider? }`: one of five, each a
+set of machine kinds and capability groups (`src/kinds.ts`, `SETTING_KINDS`). The model's tools are not here: they live
+in the kernel's tool registry, keyed by these groups.
 
-| kind | plane | required groups | optional groups | protocol kinds | offered by |
-| --- | --- | --- | --- | --- | --- |
-| `none` | none | | | | (the run's folder only: no computer) |
-| `sandbox` | computerd | `exec`, `files`, `processes` | | `linux`, `desktop` | `docker`, `e2b`, `daytona`, `modal` |
-| `desktop` | computerd | sandbox's, `screen`, `input.pointer`, `input.keys` | | `desktop` | `docker` (its desktop option), `e2b` (kind desktop) |
-| `phone` | computerd | `screen`, `input.touch`, `apps` | `input.keys`, `apps.ui_tree`, `apps.install` | `android`, `ios` | (the phone provider, to come) |
-| `browser` | cdp | | | | (a provider declaring a CDP plane, to come) |
+| setting kind | machine kinds | required groups | optional groups |
+| --- | --- | --- | --- |
+| `none` | | | (the run's folder only: no computer) |
+| `sandbox` | `linux` | `exec`, `files`, `processes` | |
+| `desktop` | `desktop` | `screen`, `input.pointer`, `input.keys` | `exec`, `files`, `processes`, `apps`, `stream` |
+| `phone` | `android`, `ios` | `screen`, `input.touch`, `apps` | `input.keys`, `apps.install`, `apps.ui_tree`, `stream` |
+| `browser` | `browser` | `cdp` | `stream`, `downloads` |
 
-- `KIND_SPECS[kind]` holds each row, and its `tools`: each `{ name, groups }`, given only where every group of it is
-  declared. sandbox: `bash`, `read`, `write`, `edit` and the five `bash_*` background tools, named as the kernel's tool
-  registry names them. desktop: those and `screen_shot` and `desktop_input`. phone: `screen_shot`, `touch`, `type`,
-  `apps`, `ui_tree`, `app_install`. browser: pi-browser's tools, which the browser lane owns. The serve side gives
-  each tool its words and schema.
-- `KIND_PROVIDERS[kind]` is the menu: provider ids of the registry (`providers.ts`) that offer the kind. Offering is not
-  serving: `serves(capabilities, kind)` decides for the provider built, from its `capabilities().kind` and `groups`
-  alone, so a provider that drops a group stops serving the kind; `servingRefusals` says why in words, `kindOf` names
-  the richest kind capabilities serve, and `toolsFor(kind, capabilities)` gives the tools a loop gets. A unit test
-  builds every provider the menu offers, as it offers the kind, and holds it to `serves`.
-- A desktop serves sandbox too: it is a sandbox with a screen. Only an android or ios computer serves phone, and no
-  provider serves `none` (no computer) or `browser` until one declares a CDP plane.
-- A provider passes a kind's conformance with `--kind` (see [Conformance](#conformance)).
+- `serves(capabilities, kind)` is true when `capabilities().kind` is one of the kind's machine kinds and every required
+  group is declared, so a provider that drops a group stops serving the kind; `servingRefusals` says why not in words,
+  and `kindOf` names the setting kind capabilities serve (machine kinds are apart, so at most one).
+- `PROVIDERS` is what Settings offers: each entry's `id`, `label`, `keys` (the serve-side names Settings accepts, each
+  required or not; never a value), `mounts` (the mount kinds its computers take; `[]` cannot mount the run's folder),
+  `metered` (the vendor bills by time), and `capabilities`, the machine kind and groups of each configuration it
+  offers. Its `kinds` are derived from those by `serves`, never written by hand.
+
+  | id | label | kinds | keys (required unless marked) | mounts | metered |
+  | --- | --- | --- | --- | --- | --- |
+  | docker | Docker | sandbox, desktop | none | bind | no |
+  | daytona | Daytona | sandbox | `DAYTONA_API_KEY`; `DAYTONA_API_URL`, `DAYTONA_TARGET` (optional) | none until D6's archil | yes |
+  | modal | Modal | sandbox | `MODAL_TOKEN_ID`, `MODAL_TOKEN_SECRET` | none until D6's archil | yes |
+  | e2b | E2B | sandbox, desktop | `E2B_API_KEY` | none until D6's archil | yes |
+  | orgo | Orgo | desktop | `ORGO_API_KEY` | none | yes |
+  | phone-harness | Phone harness | phone | `PHONE_HARNESS_API_KEY` | none | yes |
+  | browserbase | Browserbase | browser | `BROWSERBASE_API_KEY`, `BROWSERBASE_PROJECT_ID` | none | yes |
+  | kernel | Kernel | browser | `KERNEL_API_KEY` | none | yes |
+
+- Each provider module exports `CAPABILITIES` beside `MOUNT` (the registry's contract, `ProviderModule`). A unit test
+  holds every registry provider's `CAPABILITIES` and `MOUNT` to its entry, and each provider built from the test fakes,
+  in each configuration, to its entry's capabilities. orgo, phone-harness, browserbase and kernel are data until their
+  provider file joins the registry; that test then holds each to its file.
+- `testConnection()` (optional on `ComputerProvider`) is Settings' test of a provider's keys: ONE account-level read
+  that never creates a computer, so it never spends. Docker, Daytona and E2B list by the provider's own label; Modal
+  reads its app without making it (an app not made yet is still a connection). It answers `{ detail }` in words, or an
+  error: `unauthorized` for a key the vendor refused, `unreachable` for a vendor not reached in time, else the read's
+  own code; no message carries a key. A full live check (create, then the kind's conformance) is the QA board's.
+  `TestConnection` is the serve side's signature, `(providerId, { keys, signal })`, keys by their serve-side names.
+- A browser computer's connection carries `cdp: { url }`, its CDP target: a secret, never logged and never in a
+  result, a report or an error.
+- A provider passes a setting kind's conformance with `--kind` (see [Conformance](#conformance)).
 
 ## The protocol extension: kind, daemon modes, screen, input, apps, lifetime
 
@@ -348,7 +368,7 @@ has the types, the cases, the daemon's screen and input on X11 ([The X11 shim](#
 a Docker desktop; a phone provider comes in a later change. Docker declares `linux` with computerd as PID 1 unless it is
 made a desktop, so on a plain Docker computer every new case skips in words.
 
-**Kind.** `capabilities().kind` is `"linux" | "desktop" | "android" | "ios"`, and hello repeats it. `os` stays: it names
+**Kind.** `capabilities().kind` is `"linux" | "desktop" | "android" | "ios" | "browser"`, and hello repeats it. `os` stays: it names
 the platform the key table and exec need; kind names the shape the tools need. Only these pairs are valid
 (`kindRefusals(capabilities)` names any other in words, and the case `health.kind-consistent` fails it):
 
@@ -358,6 +378,10 @@ the platform the key table and exec need; kind names the shape the tools need. O
 | `desktop` | linux (windows, macos later) | `pid1`, `child` or `none` | linux's, when daemon is not `none`; and `screen`, `input.pointer`, `input.keys` |
 | `android` | android | `none` | `screen`, `input.touch`; exec and files only when declared |
 | `ios` | ios | `none` | `screen`, `input.touch` |
+| `browser` | linux | `none` | `cdp`: its connection's CDP target |
+
+The groups `cdp`, `stream` and `downloads` are the provider's (`PROVIDER_GROUPS`): a browser's CDP target, a live view of
+the screen (`provider.stream()`), the files a browser saved. A computerd hello never lists them.
 
 **Daemon mode.** `capabilities().daemon` says who answers the methods. `pid1`: computerd init is the computer's main
 process, so its exit ends the computer (Docker). `child`: the vendor's own agent is the main process and starts init at
@@ -1724,8 +1748,9 @@ reasons }`), the text report ends on `kind <kind> PASS` or `kind <kind> FAIL: <w
 the provider passes the kind, 1 when it does not. A provider passes a kind only when it serves it (by its
 capabilities), no case of the run failed (a declared optional group that fails would hand a loop a broken tool),
 every required group has at least one passing case and none skipped but for an optional group the computer does not
-declare, and the run left nothing behind. `none` and `browser` have no computerd cases, and `--kind` refuses them in
-words. `kindCases` and `kindVerdict` are exported, so the serve side reads the same table.
+declare, and the run left nothing behind. `none` is no computer, and `--kind` refuses it in words; `browser` runs, and
+fails `no case of cdp passed` until the suite has CDP cases. `kindCases` and `kindVerdict` are exported, so the serve
+side reads the same table.
 
 What a module given by path implements: either a provider file's `fromEnv()` (see
 [Adding a computer](#adding-a-computer)), run with no drifted provider, or a conformance module's:
