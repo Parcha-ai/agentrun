@@ -14,10 +14,10 @@
 //
 // It reads COMPUTER_E2B_API_KEY and COMPUTER_E2B_DOMAIN as the provider's fromEnv does: the key passed to every SDK
 // call explicitly, an ambient E2B_SANDBOX_URL refused. It needs no AGENTRUN_COMPUTER_LIVE_E2B: it makes nothing.
-import { readFileSync, realpathSync, writeFileSync } from "node:fs";
-import { pathToFileURL } from "node:url";
+import { readFileSync, writeFileSync } from "node:fs";
 import { COMPUTER_LABEL } from "../drift.js";
 import { type E2BProvider, type E2BSandboxClass, ENV, fromEnv } from "../e2b.js";
+import { isCommand } from "../entry.js";
 import { waitUntil } from "../wait.js";
 
 /** A stream as main writes to it: done is called once the text is handed on. */
@@ -135,6 +135,6 @@ export async function main(argv: string[], io: SweepIo = {}): Promise<number> {
 	return stillThere.length === 0 ? 0 : 1;
 }
 
-if (process.argv[1] !== undefined && import.meta.url === pathToFileURL(realpathSync(process.argv[1])).href) {
+if (isCommand(import.meta)) {
 	process.exitCode = await main(process.argv.slice(2));
 }

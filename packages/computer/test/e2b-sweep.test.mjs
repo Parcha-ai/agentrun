@@ -85,12 +85,12 @@ test("usage errors, a missing key and an unreadable before file exit 2 and kill 
 	for (const [argv, env, pattern] of [
 		[[], ENV, /give --before <file> or --after <file>/],
 		[["--after", join(DIR, "missing.json")], ENV, /cannot read the before file/],
-		[["--before", fileIn()], { E2B_API_KEY: "e2b_bare_key_must_never_be_used" }, /COMPUTER_E2B_API_KEY/],
+		[["--before", fileIn()], { E2B_API_KEY: "fake-test-key" }, /COMPUTER_E2B_API_KEY/],
 	]) {
 		const ran = await sweep(argv, fake, { env });
 		assert.equal(ran.code, 2, ran.stderr);
 		assert.match(ran.stderr, pattern);
-		assert.doesNotMatch(ran.stderr, /e2b_bare_key_must_never_be_used/);
+		assert.doesNotMatch(ran.stderr, /fake-test-key/);
 	}
 	assert.deepEqual(fake.kills, []);
 });

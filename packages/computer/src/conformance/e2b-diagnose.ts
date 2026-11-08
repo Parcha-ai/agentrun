@@ -15,9 +15,8 @@
 // E2B_API_KEY), and the template is COMPUTER_E2B_TEMPLATE as for conformance (default "desktop"). The live switch is
 // checked before any of them is read. Exit 0 when a diagnosis came back and the sandbox reads gone, 1 otherwise, 2 on a
 // usage error, no live switch, or a setting the provider refuses (nothing is made then).
-import { realpathSync } from "node:fs";
-import { pathToFileURL } from "node:url";
 import { diagnoseNetworkNone, type E2BFromEnvOptions, ENV, fromEnv } from "../e2b.js";
+import { isCommand } from "../entry.js";
 import { conformanceImage, E2B_ENV } from "./e2b.js";
 
 /** A stream as main writes to it: done is called once the text is handed on. */
@@ -72,7 +71,7 @@ export async function main(argv: string[], io: DiagnoseIo = {}): Promise<number>
 	return report.diagnosis !== undefined && report.released.gone ? 0 : 1;
 }
 
-if (process.argv[1] !== undefined && import.meta.url === pathToFileURL(realpathSync(process.argv[1])).href) {
+if (isCommand(import.meta)) {
 	const controller = new AbortController();
 	for (const name of ["SIGINT", "SIGTERM"] as const) process.once(name, () => controller.abort());
 	process.exitCode = await main(process.argv.slice(2), { signal: controller.signal });

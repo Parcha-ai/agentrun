@@ -103,9 +103,9 @@ test("providerFromEnv() names the known ids for an id it does not know", async (
 });
 
 test("providerFromEnv() reads COMPUTER_<VENDOR>_* only: a bare vendor variable is never a fallback", async () => {
-	await assert.rejects(providerFromEnv("daytona", { DAYTONA_API_KEY: "prod-key-must-not-be-used" }), (error) => {
+	await assert.rejects(providerFromEnv("daytona", { DAYTONA_API_KEY: "fake-test-key" }), (error) => {
 		assert.match(error.message, /COMPUTER_DAYTONA_API_KEY/);
-		assert.doesNotMatch(error.message, /prod-key-must-not-be-used/);
+		assert.doesNotMatch(error.message, /fake-test-key/);
 		return true;
 	});
 	await assert.rejects(providerFromEnv("modal", { MODAL_TOKEN_ID: "prod-id-must-not-be-used", MODAL_TOKEN_SECRET: "prod-token-must-not-be-used", COMPUTER_MODAL_APP: "computers" }), (error) => {
@@ -113,9 +113,9 @@ test("providerFromEnv() reads COMPUTER_<VENDOR>_* only: a bare vendor variable i
 		assert.doesNotMatch(error.message, /prod-(id|token)-must-not-be-used/);
 		return true;
 	});
-	await assert.rejects(providerFromEnv("e2b", { E2B_API_KEY: "prod-key-must-not-be-used" }), (error) => {
+	await assert.rejects(providerFromEnv("e2b", { E2B_API_KEY: "fake-test-key" }), (error) => {
 		assert.match(error.message, /COMPUTER_E2B_API_KEY/);
-		assert.doesNotMatch(error.message, /prod-key-must-not-be-used/);
+		assert.doesNotMatch(error.message, /fake-test-key/);
 		return true;
 	});
 	const docker = await providerFromEnv("docker", { COMPUTER_DOCKER_DAEMON: DAEMON });
