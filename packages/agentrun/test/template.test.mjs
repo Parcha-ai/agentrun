@@ -1,8 +1,9 @@
-// `agentrun template validate DIR`: the server's own package validator, run on a folder on this machine. A valid package
-// prints what it holds and exits 0; a malformed one, or no folder at all, prints each problem and exits 1.
+// `agentrun template validate DIR` and `agentrun template eval DIR`: the server's own package validator, run on a folder on
+// this machine (a valid package prints what it holds and exits 0; a malformed one, or no folder at all, prints each problem
+// and exits 1), and its eval runner.
 import assert from "node:assert/strict";
-import { spawnSync } from "node:child_process";
-import { cpSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { spawn, spawnSync } from "node:child_process";
+import { cpSync, existsSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { test } from "node:test";
@@ -28,4 +29,65 @@ test("template validate checks a package folder as the server does", (t) => {
   const gone = validate(join(dir, "nope"));
   assert.equal(gone.status, 1);
   assert.match(gone.stderr, /nope is not a valid package:\n- it is not a folder/);
+});
+
+// `agentrun template eval DIR`: the package's eval cases run and graded by the installed server (agentrun-serve
+// eval-template), on a server of its own or, with --server, on that one with its token found as every command finds it,
+// handed to the launcher in its environment and never printed. Its exit is the eval's: 0, 1, or 2 when nothing ran.
+const SERVE = new URL("../../serve/dist/cli.js", import.meta.url).pathname;
+const EVALPKG = new URL("../../serve/test/fixtures/templates-eval/evalpkg/", import.meta.url).pathname;
+const EVAL_FAUX = new URL("../../serve/test/fixtures/faux-template-eval.mjs", import.meta.url).pathname;
+const REVIEW_FAUX = new URL("../../serve/test/fixtures/faux-review.mjs", import.meta.url).pathname;
+const evalEnv = (dir) => ({ ...Object.fromEntries(Object.entries(process.env).filter(([name]) => !["AGENTRUN_API_KEY", "AGENTRUN_TOKEN", "AGENTRUN_BASE_URL"].includes(name))), AGENTRUN_BOXES: "none", HOME: dir, XDG_CONFIG_HOME: join(dir, ".config") });
+const evaluate = (args, env) => spawnSync(process.execPath, [BIN, "template", "eval", ...args], { encoding: "utf8", env, timeout: 240_000 });
+
+test("template eval runs a package's cases on a server of its own and exits as the eval did", { timeout: 300_000 }, (t) => {
+  const dir = mkdtempSync(join(tmpdir(), "agentrun-template-eval-"));
+  t.after(() => rmSync(dir, { recursive: true, force: true }));
+  const env = evalEnv(dir);
+  const passed = evaluate([EVALPKG, "--case", "learned", "--faux", EVAL_FAUX, "--report", join(dir, "report.json")], env);
+  assert.equal(passed.status, 0, passed.stderr);
+  assert.match(passed.stdout, /^# Evals: evalpkg 0\.1\.0\n\n1 of 1 case passed\./);
+  assert.deepEqual(JSON.parse(readFileSync(join(dir, "report.json"), "utf8")).cases.map((c) => [c.name, c.pass]), [["learned", true]]);
+  const failed = evaluate([EVALPKG, "--case", "mcp-mismatch", "--faux", EVAL_FAUX], env);
+  assert.equal(failed.status, 1, failed.stderr);
+  const refused = evaluate([EVALPKG, "--case", "nope"], env);
+  assert.equal(refused.status, 2, refused.stderr);
+  assert.match(refused.stderr, /evals\/nope: no such case/);
+});
+
+test("template eval --server runs on that server with the token the CLI finds, and never prints it", { timeout: 300_000 }, async (t) => {
+  const dir = mkdtempSync(join(tmpdir(), "agentrun-template-eval-"));
+  const env = evalEnv(dir);
+  const data = join(dir, "data");
+  const server = spawn(process.execPath, [SERVE, "--data", data, "--port", "0", "--faux", REVIEW_FAUX], { stdio: "ignore", env: { ...env, AGENTRUN_ACCOUNTS: "0" } });
+  t.after(() => {
+    if (server.exitCode === null) server.kill("SIGKILL");
+    rmSync(dir, { recursive: true, force: true });
+  });
+  for (let i = 0; !existsSync(join(data, ".server.json")); i++) {
+    assert.ok(i < 600 && server.exitCode === null, "the server started");
+    await new Promise((resolve) => setTimeout(resolve, 100));
+  }
+  const { base_url: base } = JSON.parse(readFileSync(join(data, ".server.json"), "utf8"));
+  const token = readFileSync(join(data, ".token"), "utf8").trim();
+  // code-review's null-name case: the faux reviewer's answer meets the findings schema, and its llm grader, run on the
+  // same faux, answers no verdict, so the case fails, graded on that server.
+  const ran = await new Promise((resolve) => {
+    const child = spawn(process.execPath, [BIN, "template", "eval", REVIEW, "--case", "null-name", "--runs", "1", "--server", base, "--data", data, "--report", join(dir, "report.json")], { env, stdio: ["ignore", "pipe", "pipe"] });
+    let out = "";
+    let err = "";
+    child.stdout.on("data", (chunk) => (out += chunk));
+    child.stderr.on("data", (chunk) => (err += chunk));
+    child.on("close", (status) => resolve({ status, out, err }));
+  });
+  assert.equal(ran.status, 1, ran.err);
+  assert.ok(!ran.out.includes(token) && !ran.err.includes(token), "the token is never printed");
+  const report = JSON.parse(readFileSync(join(dir, "report.json"), "utf8"));
+  assert.ok(!JSON.stringify(report).includes(token));
+  assert.equal(report.server.kind, "remote");
+  const graders = Object.fromEntries(report.cases[0].runs[0].graders.map((g) => [g.grader, [g.pass, g.reason]]));
+  assert.deepEqual(graders["schema.md"], [true, "the answer's json meets findings.schema.json"]);
+  assert.equal(graders["finds.md"][0], false);
+  assert.match(graders["finds.md"][1], /the grader's answer was not \{pass, reason\}/);
 });

@@ -1674,6 +1674,22 @@ package's `version` is SemVer and never `definition.version`, the agent's revisi
 rules of an apply are in [templates/README.md](https://github.com/Parcha-ai/agentrun/blob/main/packages/serve/templates/README.md);
 `agentrun template validate DIR` checks a folder as the server does.
 
+`agentrun template eval DIR` (`agentrun-serve eval-template DIR`) runs a package's eval cases as real runs of its agent
+and grades each run with the case's graders: by default on a server of its own over a temp data directory, so it never
+touches yours, with each case's fake MCP servers on loopback and its learned notes seeded through the learning API. Real
+models cost money: each run is capped at its case's `max_cost_usd`. It exits 0 when every case passed, 1 when one
+failed, 2 when nothing ran. The runner, the graders and the report are in
+[templates/README.md](https://github.com/Parcha-ai/agentrun/blob/main/packages/serve/templates/README.md#running-the-evals).
+
+| `eval-template` flag | What |
+| --- | --- |
+| `--case NAME` | A case to run; repeat it. Without one, every case. |
+| `--runs N` | Runs of each case, in place of each case's `runs`. |
+| `--server URL` | Run on that server, its token in `AGENTRUN_API_KEY` (the launcher hands it over its pipe; never printed). The agents the eval makes are archived at the end. |
+| `--grader-model PROVIDER/MODEL` | The `llm` graders' model; default the server's. |
+| `--report FILE` | The whole report as JSON (per case, run and grader: pass, reason, cost); a summary goes to stdout, progress to stderr. |
+| `--faux MODULE` | Answer every model request from the module, as the server's `--faux` does. Not with `--server`. |
+
 ## What it serves
 
 | Route | Here |

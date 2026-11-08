@@ -503,6 +503,19 @@ Route: `POST /templates/{template}/apply`.
 - `--body JSON|@FILE|-` (application/json, required): The whole body: inline, from a file or from stdin. The flags above win over a JSON body's fields.
 - `--body-type TYPE` (string): The body's type, one of application/json; any other than JSON is sent as given.
 
+### `agentrun template eval DIR`
+
+Run a template package's eval cases as real runs of its agent and grade each run (real models cost money).
+
+Route: none, it runs on this machine.
+
+- `--case NAME` (string, this CLI's own): a case to run (repeat it); without one, every case
+- `--runs N` (string, this CLI's own): how many runs of each case, in place of each case's own runs
+- `--server URL` (string, this CLI's own): run on that server, with its token (AGENTRUN_API_KEY), instead of on a server of its own over a temp data directory
+- `--grader-model PROVIDER/MODEL` (string, this CLI's own): the model of the llm graders (default: the server's)
+- `--report FILE` (string, this CLI's own): the whole report, as JSON (a summary goes to stdout either way)
+- `--faux MODULE` (string, this CLI's own): answer every model request from MODULE's default export: no key, no network
+
 ### `agentrun template list`
 
 The template packages this server ships: each makes an agent, its skills and its triggers.

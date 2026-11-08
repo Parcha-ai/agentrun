@@ -7,7 +7,7 @@ import { secret } from "./secrets.js";
 import "./quiet-sqlite-warning.js";
 import { parseArgs } from "node:util";
 import { spawn } from "node:child_process";
-import { chmodSync } from "node:fs";
+import { chmodSync, writeFileSync } from "node:fs";
 import { join, resolve } from "node:path";
 import { defaultData, removeOwnRecord, SERVER_FILE, writeDurableSync } from "./files.js";
 import { startedWith } from "./adapters.js";
@@ -22,6 +22,7 @@ import { DEFAULT_PORT, type Serve, startServe } from "./server.js";
 const USAGE = `usage: agentrun-serve [--data DIR] [--listen ADDR] [--port N] [--open] [--faux MODULE] [--allow-host NAME ...] [--max-runs N] [--drain-timeout D] [--documents DIR] [--allow-code-nodes] [--learning on|off] [--learning-budget BYTES] [--grade-model MODEL]
        agentrun-serve reset-password [--data DIR]
        agentrun-serve validate-template DIR
+       agentrun-serve eval-template DIR [--case NAME ...] [--runs N] [--server URL] [--grader-model PROVIDER/MODEL] [--report FILE] [--faux MODULE]
        agentrun-serve import [--data DIR] [--from claude-code,codex,pi] [--dry-run] [--include-deleted] [--all] [--verbose] [--port N]
 
   --data DIR        the agent store and its runs (default ~/.local/share/agentrun/agents); the token is DIR/.token, mode 0600
@@ -69,7 +70,16 @@ import; run again, it imports only what it has not. Sessions written in the last
 What is left out is counted by why; --verbose lists each file. --include-deleted keeps projects whose directory is gone (a
 deleted worktree's); --all keeps those and temporary ones too. Each run keeps what its session used (tokens, requests, tools,
 time at work), priced at the catalog's list prices when its source did not price it. Both end with a summary of every
-session found, those imported before included, and the address to open the console at (--port as the server takes it).`;
+session found, those imported before included, and the address to open the console at (--port as the server takes it).
+
+\`agentrun-serve eval-template DIR\` runs a template package's eval cases (all, or each --case) as real runs of its agent
+and grades each run with the case's graders (templates/README.md, "Running the evals"). By default on a server of its
+own in this process, over a temp data directory removed at the end, so it never touches your server; --server URL runs
+them on that server instead, its token in AGENTRUN_API_KEY, and archives the agents it made. --runs N runs each case N
+times in place of its own count; --grader-model is the llm graders' model (default: the server's); --faux answers every
+model request from MODULE, as the server's --faux does. Progress goes to stderr, a summary to stdout, the whole report
+as JSON to --report FILE. Exit 0 when every case passed, 1 when one failed, 2 when the flags, the package or a case are
+wrong and nothing ran. Real runs cost money: each case's prompt.md caps each of its runs (max_cost_usd).`;
 
 if (process.argv[2] === "reset-password") {
   let dir: string | undefined;
@@ -102,6 +112,44 @@ if (process.argv[2] === "validate-template") {
     if (!(error instanceof PackageError)) throw error;
     console.error(error.message);
     process.exit(1);
+  }
+}
+
+// A template package's evals run and graded (template-eval.ts): on a server in this process over a temp data directory,
+// or with --server on one already running, its token from AGENTRUN_API_KEY (the launcher hands it over its pipe, never
+// in the environment or the arguments). Progress on stderr, the summary on stdout, the whole report as JSON to --report.
+// 0: every case passed; 1: one failed; 2: the flags, the package or a case is wrong, and nothing ran.
+if (process.argv[2] === "eval-template") {
+  const { CaseError, evalTemplate, markdownReport } = await import("./template-eval.js");
+  const { PackageError } = await import("./templates.js");
+  const usage = (message: string): never => (console.error(`agentrun-serve eval-template: ${message}\n\n${USAGE}`), process.exit(2));
+  const read = () => {
+    try {
+      return parseArgs({ args: process.argv.slice(3), allowPositionals: true, options: { case: { type: "string", multiple: true, default: [] }, runs: { type: "string" }, server: { type: "string" }, "grader-model": { type: "string" }, report: { type: "string" }, faux: { type: "string" } } });
+    } catch (error) {
+      return usage((error as Error).message);
+    }
+  };
+  const { values: given, positionals } = read();
+  if (positionals.length !== 1) usage("it takes one package folder.");
+  if (given.runs !== undefined && !/^[1-9]\d{0,2}$/.test(given.runs)) usage("--runs takes a whole number from 1 to 999.");
+  if (given.server !== undefined && !(URL.canParse(given.server) && /^https?:$/.test(new URL(given.server).protocol))) usage("--server takes the server's http(s) address.");
+  if (given.server !== undefined && given.faux !== undefined) usage("--faux is the model of the server it starts itself, and --server names another server.");
+  const token = given.server === undefined ? undefined : secret("AGENTRUN_API_KEY") || secret("AGENTRUN_TOKEN");
+  if (given.server !== undefined && !token) usage("--server needs that server's token in AGENTRUN_API_KEY.");
+  try {
+    const report = await evalTemplate({
+      dir: resolve(positionals[0]!), cases: given.case, ...(given.runs !== undefined ? { runs: Number(given.runs) } : {}),
+      ...(given.server !== undefined ? { server: { baseUrl: given.server, token: token! } } : {}), ...(given["grader-model"] !== undefined ? { graderModel: given["grader-model"] } : {}),
+      ...(given.faux !== undefined ? { serve: { faux: resolve(given.faux) } } : {}), log: (line) => console.error(line),
+    });
+    if (given.report !== undefined) writeFileSync(resolve(given.report), `${JSON.stringify(report, null, 2)}\n`);
+    process.stdout.write(markdownReport(report));
+    process.exit(report.pass ? 0 : 1);
+  } catch (error) {
+    if (!(error instanceof PackageError || error instanceof CaseError)) throw error;
+    console.error(error.message);
+    process.exit(2);
   }
 }
 

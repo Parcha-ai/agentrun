@@ -18,7 +18,8 @@ code-review/
 ```
 
 Links and other special files are refused anywhere in the folder, and its only folders are `skills/`, `rules/` and
-`evals/`. Evals are checked for their layout only: no eval runs here.
+`evals/`. The server checks evals for their layout only and runs none; `agentrun template eval DIR` runs them ([Running
+the evals](#running-the-evals)).
 
 ## The packages this server ships
 
@@ -44,7 +45,8 @@ the owner grants a write, text the agent read could try to copy what that read r
 
 ## Eval cases
 
-Each `evals/<case>/` is one test of the package's agent. No eval runs on the server; a runner reads this layout.
+Each `evals/<case>/` is one test of the package's agent. No eval runs on the server; the eval runner reads this layout
+([Running the evals](#running-the-evals)).
 
 - `prompt.md`: its body is the run's input, written as the agent receives it (a webhook case as the trigger delivers
   it: the trigger's words, then the body in `<trigger-payload ... untrusted>`). Front matter: `description`, `runs`
@@ -69,6 +71,71 @@ Each `evals/<case>/` is one test of the package's agent. No eval runs on the ser
     `args` (the arguments a call must carry).
   - `file_exists`: `path` in the run's work folder.
   - `schema`: `schema`, a JSON Schema file in the package, which the answer's last fenced `json` block meets.
+
+## Running the evals
+
+`agentrun template eval DIR` (the server's `agentrun-serve eval-template DIR`) runs a package's cases as real runs of its
+agent and grades each run, so a package's quality bar is measured. **Real runs cost money**: each run is capped at its
+case's `max_cost_usd`, and each `llm` grade is a run of its own, capped at $0.50.
+
+| Flag | |
+|---|---|
+| `--case NAME` | A case to run; repeat it. Without one, every case. |
+| `--runs N` | Runs of each case, in place of each case's `runs`. |
+| `--server URL` | Run on that server instead, with its token as the CLI finds one (`AGENTRUN_API_KEY`, the CLI's config, or the data directory's for the server on this machine). The token goes to the runner over the launcher's pipe and is never printed. |
+| `--grader-model PROVIDER/MODEL` | The `llm` graders' model. Absent: the server's default. |
+| `--report FILE` | The whole report as JSON: per case, per run and per grader, its pass, its reason and its cost. A summary goes to stdout either way, progress to stderr. |
+| `--faux MODULE` | Answer every model request from the module, as the server's `--faux` does: no key, no network. |
+
+It exits 0 when every case passed, 1 when one failed, and 2 when nothing ran: a flag, the package or a case is wrong.
+Before anything runs, every case named is read and checked whole: the prompt's front matter, `case.yaml` against the
+package (its parameters and grants as an apply checks them), each fake MCP server's fixture, each learned note as the
+learning API checks one, and each grader's fields (an unknown field, a pattern that does not compile, a schema that
+does not compile, a tool the package does not have).
+
+**Where it runs.** By default on a server of its own, started in the command's process over a temp data directory that
+holds a copy of the package alone and is removed at the end: the eval never touches your server, and needs the model
+keys a server needs. With `--server`, everything goes through that server's v2 API: the package it ships by this name
+must be this folder's (the agent an apply makes holds this folder's instructions and skill files, else the case fails
+saying so), a case with a fake MCP server needs a server on this machine and fails rather than replace an MCP server
+saved by the same name, and the agents the eval made are archived at the end.
+
+**A case**, run by run:
+
+1. Each `mcp` fixture is served as an MCP server on this machine's loopback and saved under its name with no
+   credential; it records every call, with its arguments. It is removed after the case.
+2. The package is applied with the case's `parameters` and `grants`: a fresh agent for each run, so what one run
+   learns never reaches the next.
+3. The `learning` folder's notes are written to the agent's learning folder (`PUT .../learning/files/{file}`); the
+   server builds `MEMORY.md` from them, so the folder's own `MEMORY.md` is not sent.
+4. A run starts with the prompt's body as its input and `max_cost_usd` as its cap, and is waited for (30 minutes at
+   most, then cancelled and failed). A run that ends waiting on a person (a question, an approval, its cap) is graded as
+   it stands, then cancelled; one that fails or is cancelled fails, its `llm` graders not run.
+5. Each grader grades what the run left: its final answer, its tool calls (its timeline; and each fake's own log, with
+   the whole arguments), and the files of its work folder.
+
+A case passes when every grader passes on every run.
+
+**The graders**, as the runner reads them:
+
+- `schema`: the answer's last fenced `json` block (```` ```json ```` or a longer fence), parsed and checked against the
+  schema, draft 2020-12 with `format` checked.
+- `regex`: `pattern` with `flags` (some of `i`, `m`, `s`, `u`, `v`) over the whole answer, or over `target`, a field of
+  the last `json` block (`a.b` for a nested one; a string as it is, anything else as its JSON). An answer with no such
+  field fails the grader, whatever `expect` says.
+- `tool_used`: the calls of `tool` (or any of `tools`) by gate name (`write`, `web_fetch`, `mcp:<server>/<tool>`). A
+  faked MCP tool's calls are its fake's log, the calls that reached it; any other tool's are the timeline's. With
+  `count`, exactly that many calls; else `expect: called`, one or more, or `not_called`, none. `args` keeps the calls
+  that carry each of its arguments (an object's own fields compared the same way, any other value equal), and is
+  allowed on a faked MCP tool only: the timeline keeps a call's input as a preview.
+- `file_exists`: `path`, relative to the run's work folder, among its files.
+- `llm`: a run of a grader agent on the same server, with no tools, a fixed instruction and the `--grader-model`. It is
+  given the rubric, the run's input, its answer, its tool calls and the calls each fake received, and with `target`
+  that field besides (the whole answer stays, for anything else the rubric checks). Never another grader, the case's
+  description or anything the case expects. It answers `{pass, reason}` in a fenced `json` block; any other answer
+  fails the grader.
+
+The report gives each run's cost and each `llm` grade's, as their run records say, and the total.
 
 ## agent.md
 

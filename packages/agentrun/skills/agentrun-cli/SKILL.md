@@ -123,7 +123,7 @@ A tool call waiting for approval (`pending.kind` `approval`) is answered by the 
 - `agentrun server`: capabilities, health, mcp, openapi
 - `agentrun skill`: install
 - `agentrun stats`: Counts and cost over every agent and run
-- `agentrun template`: apply, list, validate
+- `agentrun template`: apply, eval, list, validate
 - `agentrun tool-keys`: delete, list, save, set
 - `agentrun tool-settings`: get, save
 - `agentrun triggers`: create, delete, fire, firings, get, list, rotate-secret, update
