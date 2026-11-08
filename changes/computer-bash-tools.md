@@ -1,8 +1,0 @@
----
-packages: @parcha/agentrun-computer
-kind: feature
----
-The coding agent's shell, on computerd: `bash` and the five background tools (`bash_background`, `bash_output`, `bash_input`, `bash_signal`, `bash_list`) as functions of a computer's client, with today's names, parameters, limits and words, and the tool gate's mapping (`SHELL_UNDER_ASK`, `shellPermission`) as data. Nothing calls them yet: the workspace wires them.
-- `bash(client, {command, timeoutMs?, cwd?})` runs the command through `process.start` and `process.read`: 120 s by default, 600 s at most (a call asking more runs at 600 s and says so), killed with everything it started at its timeout, the end of its output kept (2000 lines or 50 KB) and the whole of a longer one saved to a file in the computer.
-- The background tools are `process.start`, `read`, `write`, `signal`, `wait` and `list`, with no script run in the computer. An id is the run's own; the log is `work/background/<id>/output.log`, the first 16 MiB, which computerd writes and `bash_output` reads from computerd; a job started with `&` keeps the process running, and a daemon runs on to the computer's end. Nine starts at once start eight.
-- computerd: `process.start` takes `log` (a new file it makes and writes the first 16 MiB of output to, never through a link: a link at the path or at a directory on its way is refused, and nothing starts), `waitGroup` (the process runs until its group is empty, with the program's own exit) and `orphans: "keep"` (what it left outside it runs on to the computer's end). `process.read` answers `size`, the stream's bytes so far, reads the `log` stream from its own open file, and says when the log was `capped`.

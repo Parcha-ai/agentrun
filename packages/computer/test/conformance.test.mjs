@@ -45,12 +45,12 @@ test("a case that passes is pass; one that throws is fail, with what it found as
 				},
 			}),
 			pass("exec.two", { run: async (t) => t.equal(1, 2, "one and two") }),
-			pass("exec.refused", { run: async (t) => t.ok(await t.client.call("process.resize", { id: "p1", cols: 80, rows: 24 }), "process.resize") }),
+			pass("exec.refused", { run: async (t) => t.ok(await t.client.call("process.read", { id: "p1", stream: "stdout", offset: 0 }), "process.read") }),
 		],
 	});
 	assert.deepEqual(statuses(report), { "health.echo": "pass", "exec.two": "fail", "exec.refused": "fail" });
 	assert.equal(reasons(report)["exec.two"], "one and two: expected 2, got 1");
-	assert.match(reasons(report)["exec.refused"], /^process\.resize: unsupported: process\.resize is not a method/);
+	assert.match(reasons(report)["exec.refused"], /^process\.read: unsupported: process\.read is not a method/);
 	assert.equal(report.core, "fail");
 	assert.equal(report.provider, "fake");
 	assert.equal(report.providerVersion, "1.0.0");
