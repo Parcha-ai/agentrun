@@ -406,7 +406,8 @@ export function attachedWorkspace(base: Workspace, computer: AttachableComputer,
       if (aborted) throw abortError(signal);
       return {
         stdout: Buffer.concat(kept.stdout), stderr: Buffer.concat(kept.stderr).toString("utf8"),
-        code: timedOut ? null : exit.exitCode, signal: timedOut ? "KILL" : exit.signal, timedOut, truncated,
+        // computerd names a signal without SIG ("TERM"); the port says it as Node does ("SIGTERM").
+        code: timedOut ? null : exit.exitCode, signal: exit.signal === null ? (timedOut ? "SIGKILL" : null) : `SIG${exit.signal.replace(/^SIG/, "")}`, timedOut, truncated,
       };
     },
 

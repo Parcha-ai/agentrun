@@ -58,7 +58,8 @@ export function withLiveTicker(store: { readonly live: Live }, createLoop: LoopF
             // The run's row goes once its loop ends, before start() resolves (so before the runner releases the run):
             // after any put already on its way, and a state reported before the end is not written after it.
             changed.delete(given.runId);
-            writing = writing.then(() => store.live.drop(given.runId).catch(() => undefined));
+            // Under its claim: a loop that ended after its claim was lost drops nothing of a later claim's row.
+            writing = writing.then(() => store.live.drop(given).catch(() => undefined));
             await writing;
           }
         },

@@ -84,6 +84,13 @@ describe("the conformance suite on Docker", { skip: LIVE ? false : "set AGENTRUN
 		assert.ok(report.results.filter((r) => r.group === "mount").every((r) => r.level === "full"), "the mount group is not Core");
 	});
 
+	it("runs the network cases that need an allowlist, and passes them: Docker declares network allow", () => {
+		const by = Object.fromEntries(report.results.filter((r) => r.id.startsWith("provider.network")).map((r) => [r.id, r]));
+		for (const id of ["provider.network-allow", "provider.network-switch-allow", "provider.network-switch", "provider.network-change", "provider.network-open"]) {
+			assert.equal(by[id]?.status, "pass", `${id}: ${by[id]?.reason}`);
+		}
+	});
+
 	it("leaves no computer behind", () => {
 		assert.deepEqual(report.cleanup.left, []);
 		assert.deepEqual(report.cleanup.errors, []);

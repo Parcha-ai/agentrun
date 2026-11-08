@@ -27,7 +27,10 @@ async function refused(promise, code, label) {
 
 const text = (bytes) => Buffer.from(bytes).toString("utf8");
 
-export function suite(name, make) {
+/** `options.skip` names cases a backend cannot have, each with the reason: `symlinks` (no symbolic link can be made
+ *  where the suite plants them), `linksListed` (the backend cannot tell a link from a file, so list shows it as one),
+ *  `abortKills` (an exec, once sent, cannot be stopped: an abort answers at once, and the command runs on). */
+export function suite(name, make, options = {}) {
   /** A fresh workspace, with a sentinel file outside its root. */
   async function fresh() {
     const made = await make();
@@ -183,7 +186,7 @@ export function suite(name, make) {
       untouched(outside);
     });
 
-    test("a symbolic link in the root that points outside is ESCAPE: for a read, a write, exec's cwd, and as the last part", async () => {
+    test("a symbolic link in the root that points outside is ESCAPE: for a read, a write, exec's cwd, and as the last part", { skip: options.skip?.symlinks }, async () => {
       const { workspace, root, outside } = await fresh();
       symlinkSync(outside, join(root, "dirlink"));
       symlinkSync(join(outside, "sentinel"), join(root, "filelink"));
@@ -269,6 +272,15 @@ export function suite(name, make) {
       await refused(workspace.read("left"), "NOT_FOUND", "the grandchild of an exec that exited was killed");
     });
 
+    test("a symbolic link an exec makes is left out of list", { skip: options.skip?.linksListed }, async () => {
+      const { workspace } = await fresh();
+      await workspace.write("f", "x");
+      await workspace.mkdir("d");
+      await workspace.exec(["ln", "-s", "f", "lf"], { env: ENV, timeoutMs: 10_000 });
+      await workspace.exec(["ln", "-s", "d", "ld"], { env: ENV, timeoutMs: 10_000 });
+      assert.deepEqual((await workspace.list("")).map((e) => [e.name, e.kind]), [["d", "dir"], ["f", "file"]]);
+    });
+
     test("exec: output past the cap is cut and flagged", async () => {
       const { workspace } = await fresh();
       const out = await workspace.exec(["head", "-c", "300000", "/dev/zero"], { env: ENV, maxOutput: 1000, timeoutMs: 10_000 });
@@ -305,28 +317,41 @@ export function suite(name, make) {
       else assert.deepEqual([seen.stdout.length, seen.stderr.length], [1, 1], "a backend that cannot stream calls it once per stream");
     });
 
-    test("exec: a signal that ends it is said: code null and the signal's name; a deadline's kill is KILL; an exit has none", async () => {
+    test("exec: a signal that ends it is said in Node's naming (SIGTERM, SIGSEGV), its code null; an exit has none; the deadline is timedOut", async () => {
       const { workspace } = await fresh();
       const termed = await workspace.exec(["bash", "-c", "kill -TERM $$"], { env: ENV, timeoutMs: 10_000 });
-      assert.deepEqual([termed.code, termed.signal, termed.timedOut], [null, "TERM", false]);
+      assert.deepEqual([termed.code, termed.signal, termed.timedOut], [null, "SIGTERM", false]);
+      const crashed = await workspace.exec(["bash", "-c", "kill -SEGV $$"], { env: ENV, timeoutMs: 10_000 });
+      assert.deepEqual([crashed.code, crashed.signal, crashed.timedOut], [null, "SIGSEGV", false]);
+      const exited = await workspace.exec(["bash", "-c", "exit 139"], { env: ENV, timeoutMs: 10_000 });
+      assert.deepEqual([exited.code, exited.signal], [139, null], "an exit of 128+n by itself is an exit, not a signal");
+      // At the deadline what ended the program is whatever signal did it; the suite pins timedOut, not the signal.
       const slow = await workspace.exec(["sleep", "30"], { env: ENV, timeoutMs: 300 });
-      assert.deepEqual([slow.code, slow.signal, slow.timedOut], [null, "KILL", true]);
-      const exited = await workspace.exec(["bash", "-c", "exit 4"], { env: ENV, timeoutMs: 10_000 });
-      assert.deepEqual([exited.code, exited.signal], [4, null]);
+      assert.deepEqual([slow.code, slow.timedOut], [null, true]);
     });
 
-    test("exec: an abort kills the group and rejects with an AbortError; an aborted signal runs nothing", async () => {
+    test("exec: an abort kills the group (its grandchild too)", { skip: options.skip?.abortKills }, async () => {
       const { workspace } = await fresh();
       const controller = new AbortController();
-      const started = Date.now();
       setTimeout(() => controller.abort(), 300);
       await assert.rejects(
         workspace.exec(["bash", "-c", "(sleep 1.5; echo alive > late) & sleep 30"], { env: ENV, timeoutMs: 20_000, signal: controller.signal }),
         (error) => error?.name === "AbortError",
       );
-      assert.ok(Date.now() - started < 5_000, "it returns at the abort");
       await sleep(2_000);
       await refused(workspace.read("late"), "NOT_FOUND", "the grandchild of an aborted exec was killed");
+    });
+
+    test("exec: an abort answers at once with an AbortError; an aborted signal runs nothing", async () => {
+      const { workspace } = await fresh();
+      const controller = new AbortController();
+      const started = Date.now();
+      setTimeout(() => controller.abort(), 300);
+      await assert.rejects(
+        workspace.exec(["bash", "-c", "sleep 3"], { env: ENV, timeoutMs: 20_000, signal: controller.signal }),
+        (error) => error?.name === "AbortError",
+      );
+      assert.ok(Date.now() - started < 2_500, "it returns at the abort");
       await assert.rejects(
         workspace.exec(["bash", "-c", "echo ran > ran"], { env: ENV, timeoutMs: 10_000, signal: AbortSignal.abort() }),
         (error) => error?.name === "AbortError",
@@ -334,8 +359,8 @@ export function suite(name, make) {
       await refused(workspace.read("ran"), "NOT_FOUND", "an exec given an aborted signal runs nothing");
     });
 
-    test("stat says a file's or a folder's kind, size and time without following anything; nothing there is undefined", async () => {
-      const { workspace, root, outside } = await fresh();
+    test("stat says a file's or a folder's kind, size and time; nothing there is undefined; a path out is ESCAPE", async () => {
+      const { workspace } = await fresh();
       const before = Date.now();
       await workspace.write("sub/file.txt", "12345");
       const file = await workspace.stat("sub/file.txt");
@@ -347,12 +372,16 @@ export function suite(name, make) {
       assert.equal(await workspace.stat("missing"), undefined);
       assert.equal(await workspace.stat("missing/deeper"), undefined, "under a folder that is not there");
       assert.equal(await workspace.stat("sub/file.txt/under"), undefined, "under a file");
+      for (const path of ["../x", "/etc/passwd", "a//b", "a/./b"]) await refused(workspace.stat(path), "ESCAPE", `stat ${path}`);
+    });
+
+    test("stat never follows a link: one as the last part is a link, one on the way is ESCAPE", { skip: options.skip?.symlinks }, async () => {
+      const { workspace, root, outside } = await fresh();
       symlinkSync(join(outside, "sentinel"), join(root, "filelink"));
       symlinkSync(outside, join(root, "dirlink"));
       assert.equal((await workspace.stat("filelink")).kind, "link", "a link as the last part is a link, never followed");
       assert.equal((await workspace.stat("dirlink")).kind, "link");
       await refused(workspace.stat("dirlink/sentinel"), "ESCAPE", "a link on the way");
-      for (const path of ["../x", "/etc/passwd", "a//b", "a/./b"]) await refused(workspace.stat(path), "ESCAPE", `stat ${path}`);
       untouched(outside);
     });
 

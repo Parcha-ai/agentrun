@@ -187,7 +187,7 @@ test("attached: exec streams, gives onOutput every byte of a long output (its en
   assert.equal(all.subarray(-3).toString(), "END", "the end of a long output is there");
   assert.deepEqual([out.stdout.length, out.truncated, out.code], [1000, true, 0]);
   const termed = await workspace.exec(["bash", "-c", "kill -TERM $$"], { env: { PATH: "/usr/bin:/bin" }, timeoutMs: 10_000 });
-  assert.deepEqual([termed.code, termed.signal, termed.timedOut], [null, "TERM", false]);
+  assert.deepEqual([termed.code, termed.signal, termed.timedOut], [null, "SIGTERM", false], "computerd's TERM, said as Node says it");
 });
 
 test("attached: at the deadline, or an abort, exec sends KILL to the process and returns: timedOut, or an AbortError", async () => {
@@ -195,7 +195,7 @@ test("attached: at the deadline, or an abort, exec sends KILL to the process and
   realProcesses(computer, root);
   let started = Date.now();
   const slow = await workspace.exec(["sleep", "30"], { env: { PATH: "/usr/bin:/bin" }, timeoutMs: 300 });
-  assert.deepEqual([slow.code, slow.signal, slow.timedOut], [null, "KILL", true]);
+  assert.deepEqual([slow.code, slow.signal, slow.timedOut], [null, "SIGKILL", true]);
   assert.ok(Date.now() - started < 5_000);
   assert.ok(computer.calls.some(([method, params]) => method === "process.signal" && params.signal === "KILL"));
   const controller = new AbortController();

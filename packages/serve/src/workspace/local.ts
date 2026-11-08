@@ -508,7 +508,8 @@ class LocalWorkspace implements Workspace {
             : new WorkspaceError("UNAVAILABLE", `exec of ${JSON.stringify(argv[0])} failed: ${error.message}`, { cause: error }));
       });
       child.on("exit", (code, ended) => {
-        exit = { code: timedOut ? null : code, signal: timedOut ? "KILL" : ended ? ended.replace(/^SIG/, "") : null };
+        // Node names the signal ("SIGTERM"); at the deadline it is the one that ended the program (our SIGKILL).
+        exit = { code: timedOut ? null : code, signal: ended };
         clearTimeout(timer);
         killGroup();
         grace = setTimeout(() => { child.stdout!.destroy(); child.stderr!.destroy(); finish(); }, PIPE_GRACE_MS);

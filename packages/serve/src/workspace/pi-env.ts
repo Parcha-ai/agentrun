@@ -241,7 +241,7 @@ export function piEnv(workspace: Workspace, options: PiEnvOptions): ExecutionEnv
       return err(timedOut);
     }
     if (spillError !== undefined) return err(new ExecutionError("unknown", `Failed to preserve complete shell output: ${(spillError as Error)?.message ?? String(spillError)}`, spillError as Error));
-    const signalled = ran!.signal === null ? undefined : (osConstants.signals as Record<string, number>)[`SIG${ran!.signal}`];
+    const signalled = ran!.signal === null ? undefined : (osConstants.signals as Record<string, number>)[ran!.signal];
     const exitCode = ran!.code ?? (signalled === undefined ? 1 : 128 + signalled);
     return ok({ exitCode, ...(spillPath === undefined ? {} : { spillPath }) });
   }

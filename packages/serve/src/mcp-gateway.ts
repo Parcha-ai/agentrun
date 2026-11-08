@@ -215,6 +215,11 @@ export interface McpGatewayOptions {
    *  unpriced call's "not metered" are written on its root. None: a priced call is refused unsent, as a paid call with
    *  nowhere to book it is (paid-calls.ts). */
   commit?: () => Park["commit"] | undefined;
+  /** Read `credentials` at every call and every request rather than copy it when the gateway is built: a change made
+   *  after (a token refreshed behind the claim, a server removed) reaches it, even through a client already connected.
+   *  Only the runner's MCP claim step (runner/mcp-claim.ts), which keeps that object current, passes it. Without it, the
+   *  credentials are copied at construction and a client sends the headers it connected with. */
+  liveCredentials?: true;
 }
 
 /** The gateway: a session's servers, and a call that takes the gate's `park` of the harness it came from (its journal's
@@ -228,15 +233,19 @@ export function mcpGateway(options: McpGatewayOptions): McpGateway {
   type Upstream = { callTool(params: unknown, options: unknown): Promise<unknown> };
   const clients = new Map<string, Promise<Upstream>>();
   const pins = new Map(Object.entries(options.pin));
-  const credentials = new Map(Object.entries(options.credentials));
+  const live = options.liveCredentials === true;
+  const credentials: Pick<Map<string, McpCredentials[string]>, "get"> = live
+    ? { get: (server) => (Object.hasOwn(options.credentials, server) ? options.credentials[server] : undefined) }
+    : new Map(Object.entries(options.credentials));
   /** Each server's last HTTP status, which tells a refused credential from another failure. */
   const statuses = new Map<string, { last?: number }>();
   const send = options.fetch ?? fetch;
 
   /** The fetch one server's client sends with: its credential added, no redirect followed, at most MAX_RESPONSE read. */
-  const guarded = (headers: Record<string, string>, status: { last?: number }) => async (input: string | URL | Request, init: RequestInit = {}) => {
+  const guarded = (headers: Record<string, string> | (() => Record<string, string>), status: { last?: number }) => async (input: string | URL | Request, init: RequestInit = {}) => {
     const sent = new Headers(init.headers);
-    for (const [name, value] of Object.entries(headers)) sent.set(name, value);
+    // Live credentials: the server's headers as they are at this request.
+    for (const [name, value] of Object.entries(typeof headers === "function" ? headers() : headers)) sent.set(name, value);
     const response = await send(input, { ...init, headers: sent, redirect: "manual" });
     status.last = response.status;
     if (response.status >= 300 && response.status < 400) throw new Error(`it answered a redirect (HTTP ${response.status}), which is never followed`);
@@ -261,7 +270,7 @@ export function mcpGateway(options: McpGatewayOptions): McpGateway {
         const { Client, StreamableHTTPClientTransport } = await import("@modelcontextprotocol/client");
         // The 2026-07-28 revision first, a 2025-era server through its initialize, as a preview connects.
         const client = new Client({ name: "agentrun", version: "1.0.0" }, { capabilities: {}, versionNegotiation: { mode: "auto" } });
-        await client.connect(new StreamableHTTPClientTransport(new URL(url), { fetch: guarded(headers, status) as never }), { timeout: options.bounds?.connectMs ?? CONNECT_MS });
+        await client.connect(new StreamableHTTPClientTransport(new URL(url), { fetch: guarded(live ? () => credentials.get(server)?.headers ?? {} : headers, status) as never }), { timeout: options.bounds?.connectMs ?? CONNECT_MS });
         return client as unknown as Upstream;
       })();
       clients.set(server, upstream);
@@ -349,7 +358,7 @@ export function mcpGateway(options: McpGatewayOptions): McpGateway {
     const listed = pinnedTools.find((t) => t.name === tool)!;
     // Whether the call left for the server: only then is it booked, at its price or as not metered.
     let went = false;
-    const call = (mark: () => Promise<string | undefined> = async () => undefined) => forward(server, url, credentials.get(server)!.headers ?? {}, listed, args, signal, async () => {
+    const call = (mark: () => Promise<string | undefined> = async () => undefined) => forward(server, url, credentials.get(server)?.headers ?? {}, listed, args, signal, async () => {
       const refused = await mark();
       went = refused === undefined;
       return refused;
