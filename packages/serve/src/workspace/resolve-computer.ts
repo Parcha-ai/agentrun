@@ -62,6 +62,8 @@ export type LaunchedComputer = {
  *  computer of the kind, with the run's folder as its mount when it mounts it. A launch that fails throws its words. */
 export type ClaimSide = {
   keysOf(provider: string): Promise<Readonly<Record<string, string>>>;
+  /** Whether a provider that binds a folder of this machine (Docker) answers here now: the Mode 1 default asks it. */
+  answers(provider: string): Promise<boolean>;
   launch(entry: ProviderEntry, spec: { readonly kind: ComputerSettingKind; readonly keys: Readonly<Record<string, string>>; readonly mount?: MountSpec; readonly signal?: AbortSignal }): Promise<LaunchedComputer>;
 };
 
@@ -89,8 +91,21 @@ const FOLDER_PORTS: readonly Port[] = ["files", "exec", "processes"];
 const unavailable = (words: string): Error => Object.assign(new Error(words), { code: "computer_unavailable" });
 const nothing = async (): Promise<void> => {};
 
-/** The setting resolved for `mode`, or a refusal in words that name the setting. */
-export async function resolveComputer(setting: ComputerSetting, mode: 1 | 2, registry: KindRegistry, side: ClaimSide): Promise<ResolvedComputer | { readonly refused: string }> {
+/** The server's default where an agent has no computer setting: in Mode 1 a sandbox on the first provider that binds a
+ *  folder of this machine and answers here (Docker), else none; in Mode 2 none. */
+async function defaultSetting(mode: 1 | 2, registry: KindRegistry, side: ClaimSide): Promise<ComputerSetting> {
+  if (mode === 1) {
+    for (const entry of registry.PROVIDERS) {
+      if (entry.kinds.includes("sandbox") && entry.mounts.includes("bind") && (await side.answers(entry.id))) return { kind: "sandbox", provider: entry.id };
+    }
+  }
+  return { kind: "none" };
+}
+
+/** The setting resolved for `mode` (none given: the server's default), or a refusal in words that name the setting. A
+ *  workflow runs with no computer: its caller gives kind none. */
+export async function resolveComputer(given: ComputerSetting | undefined, mode: 1 | 2, registry: KindRegistry, side: ClaimSide): Promise<ResolvedComputer | { readonly refused: string }> {
+  const setting = given ?? (await defaultSetting(mode, registry, side));
   const kind = setting.kind as ComputerSettingKind;
   if (!Object.hasOwn(registry.SETTING_KINDS, kind)) {
     const [why] = registry.servingRefusals({ kind: "linux", groups: [] }, kind);

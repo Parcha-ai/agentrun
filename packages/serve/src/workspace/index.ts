@@ -10,7 +10,7 @@ export {
   agentDirName, agentFolder, agentHomeFolder, agentLearningFolder, COMPUTER_ROOT, DISK_DIR, homeKey, learningKey, portPath,
   relativePath, relativeSegments, runFolder, runKey, scratchFolder,
 } from "./paths.js";
-export { type Available, type Place, type Registry, type Resolved, resolvePlace } from "./place.js";
+export type { Place } from "./place.js";
 export { localWorkspace, workspaceAt } from "./local.js";
 export { archilWorkspace, type ArchilWorkspaceOptions } from "./archil.js";
 export { archilDisk, type ArchilDisk, type ArchilDiskOptions, type ArchilImage } from "./archil-disk.js";

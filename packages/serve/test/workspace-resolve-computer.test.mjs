@@ -47,6 +47,14 @@ const resolve = (setting, mode, root = scratch(), saved, kinds = ARCHIL_KINDS) =
 const KIND_REGISTRY = ARCHIL_KINDS;
 const shape = (resolved) => ("refused" in resolved ? resolved : { kind: resolved.kind, provider: resolved.provider, mounts: resolved.mounts, ports: resolved.ports });
 
+test("no setting is the server's default: in Mode 1 Docker's sandbox where Docker answers here, else no computer; in Mode 2 no computer", async () => {
+  const answering = (ids) => ({ ...claim(scratch()), answers: async (id) => ids.includes(id) });
+  const defaulted = await resolveComputer(undefined, 1, KINDS, answering(["docker"]));
+  assert.deepEqual(shape(defaulted), { kind: "sandbox", provider: "docker", mounts: true, ports: ["files", "exec", "processes"] });
+  assert.deepEqual(shape(await resolveComputer(undefined, 1, KINDS, answering([]))), { kind: "none", provider: null, mounts: false, ports: [] });
+  assert.deepEqual(shape(await resolveComputer(undefined, 2, KINDS, answering(["docker"]))), { kind: "none", provider: null, mounts: false, ports: [] });
+});
+
 test("kind none is no computer: nothing to start, nothing mounted", async () => {
   const none = await resolve({ kind: "none" }, 1);
   assert.deepEqual(shape(none), { kind: "none", provider: null, mounts: false, ports: [] });
