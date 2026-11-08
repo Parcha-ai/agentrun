@@ -564,7 +564,8 @@ key.
   `/proc/self/cgroup`), or its docker CLI talks to a daemon that is not a local unix socket (`docker context inspect`,
   which resolves the context and `DOCKER_HOST` as the CLI does), an allowlist is refused in words before anything is
   made, and `check` says so once it knows, unless `egress.hostAddresses` names the host's addresses (IP addresses),
-  which then go to the proxy beside this machine's own. A plain local host is as before. An address that is not on any
+  which then go to the proxy beside this machine's own. A plain local host is as before. `egress.hostRoot` (default
+  `/`) is the root those container signs are read under, for tests and embedders. An address that is not on any
   interface is never seen: a cloud machine's NAT'd or elastic public IP, or one the host gains after create (they are
   read once, at create). Put those in `egress.hostAddresses` too.
 - **What the proxy refuses**, each before any socket opens: a name off the list, before any lookup, so it never

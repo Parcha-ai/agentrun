@@ -89,6 +89,12 @@ export interface DockerEgressOptions {
 	 * in a container (containerSigns), or its docker CLI talks to a daemon that is not a local unix socket.
 	 */
 	hostAddresses?: string[];
+	/**
+	 * The root of the filesystem containerSigns reads to tell whether this provider runs in a container (/.dockerenv,
+	 * /run/.containerenv, /proc/self/cgroup under it): an absolute path, default "/". For tests and embedders that know
+	 * better; it never makes the refusal weaker than what that root shows.
+	 */
+	hostRoot?: string;
 }
 
 export interface DockerProviderOptions {
@@ -215,7 +221,7 @@ export class DockerProvider implements ComputerProvider {
 	readonly #docker: string;
 	readonly #user: string;
 	readonly #desktop: Required<DockerDesktopOptions> | undefined;
-	readonly #egress: { image: string; hint?: string; readyMs: number; hostAddresses?: string[] };
+	readonly #egress: { image: string; hint?: string; readyMs: number; hostAddresses?: string[]; hostRoot: string };
 	/** Why this provider's own interfaces are not the Docker host's, in words, or none: read once, for the first allowlist
 	 *  with no egress.hostAddresses (#elsewhere). */
 	#elsewhere: string | null | undefined;
@@ -522,7 +528,7 @@ export class DockerProvider implements ComputerProvider {
 	 */
 	async #elsewhereOf(signal?: AbortSignal): Promise<Result<string | null>> {
 		if (this.#elsewhere !== undefined) return ok(this.#elsewhere);
-		const sign = containerSigns();
+		const sign = containerSigns(this.#egress.hostRoot);
 		if (sign !== undefined) return ok((this.#elsewhere = `this provider runs in a container (${sign})`));
 		const ran = await this.#run(["context", "inspect", "--format", "{{json .Endpoints.docker.Host}}"], signal);
 		if (!ran.ok) return ran;
@@ -907,7 +913,14 @@ function infoOf(report: DockerInspect, proxy: DockerInspect | null | undefined, 
 const MAX_TIMER_MS = 2_147_483_647;
 
 /** The egress options with their defaults, or a throw in words. */
-function egressOptionsOf({ image = EGRESS_IMAGE, hint, readyMs = EGRESS_READY_MS, hostAddresses: given }: DockerEgressOptions): { image: string; hint?: string; readyMs: number; hostAddresses?: string[] } {
+function egressOptionsOf({ image = EGRESS_IMAGE, hint, readyMs = EGRESS_READY_MS, hostAddresses: given, hostRoot = "/" }: DockerEgressOptions): {
+	image: string;
+	hint?: string;
+	readyMs: number;
+	hostAddresses?: string[];
+	hostRoot: string;
+} {
+	if (typeof hostRoot !== "string" || !hostRoot.startsWith("/")) throw new Error(`the egress proxy's hostRoot must be an absolute path, not ${JSON.stringify(hostRoot)}`);
 	if (typeof image !== "string" || image.trim() === "" || image.startsWith("-") || image.includes("\0")) {
 		throw new Error(`the egress proxy's image ${JSON.stringify(image)} must name an image, such as ${EGRESS_IMAGE}`);
 	}
@@ -919,7 +932,7 @@ function egressOptionsOf({ image = EGRESS_IMAGE, hint, readyMs = EGRESS_READY_MS
 	if (given !== undefined && !(Array.isArray(given) && given.every((address) => typeof address === "string" && addressBytes(address) !== undefined && !address.includes(",")))) {
 		throw new Error(`the egress proxy's hostAddresses must be a list of IP addresses, such as ["93.184.215.20"], not ${JSON.stringify(given)}`);
 	}
-	return { image, readyMs, ...(hint === undefined ? {} : { hint }), ...(given === undefined ? {} : { hostAddresses: [...given] }) };
+	return { image, readyMs, hostRoot, ...(hint === undefined ? {} : { hint }), ...(given === undefined ? {} : { hostAddresses: [...given] }) };
 }
 
 /**
