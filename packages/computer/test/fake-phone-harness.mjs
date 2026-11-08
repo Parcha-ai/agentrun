@@ -30,7 +30,9 @@ export const ITEMS = [
 export const SCREEN = { width: 360, height: 640 };
 const HEADER = 96;
 const ROW = 64;
-const ADB_CODE = "424242";
+/** The phone's adb endpoint and unlock code in the vendor's own shapes (OpenAPI SessionAdb): a DNS name, and ph_ with 26 base32 letters. */
+export const ADB_HOST = "live.phone-harness.test";
+export const ADB_CODE = "ph_mfwcc5nknqaod7a4nwojzw2lzq";
 
 /** A clock whose sleep() moves time on at once: no test waits on the wall clock. */
 export function fakeClock(start = Date.now()) {
@@ -99,7 +101,8 @@ export function fakePhoneHarness({ readyAfter = 1, start = "ok", loseAnswer = fa
 		if (method === "POST" && adb) {
 			const s = sessions.get(adb[1]);
 			if (!s) return json(404, { error: "no such session" });
-			return json(200, { host: "203.0.113.7", port: 40000 + Number(s.id.slice(5)), code: ADB_CODE });
+			// The vendor's AdbConnection, unwrapped: 201, enabled, transport, host, port, code, expires_at.
+			return json(201, { enabled: true, transport: "adb", host: ADB_HOST, port: 22220 + Number(s.id.slice(5)), code: ADB_CODE, expires_at: s.expires_at });
 		}
 		const one = /^\/sessions\/([^/]+)$/.exec(path);
 		if (one) {
@@ -283,34 +286,84 @@ export function fakePhoneHarness({ readyAfter = 1, start = "ok", loseAnswer = fa
 		return Buffer.concat([header, pixels]);
 	}
 
-	/** The adb runner the provider takes: (args, { timeoutMs, signal }) => Result<{ exitCode, stdout, stderr }>. */
-	async function adb(args, options = {}) {
-		adbCalls.push({ args: [...args], timeoutMs: options.timeoutMs });
-		const ok = (stdout, exitCode = 0, stderr = "") => ({ ok: true, value: { exitCode, stdout: Buffer.from(stdout), stderr } });
-		if (args[0] === "connect") {
-			phone.connected.add(args[1]);
-			return ok(`connected to ${args[1]}\n`);
-		}
-		if (args[0] === "disconnect") {
-			phone.connected.delete(args[1]);
-			return ok("");
-		}
-		if (args[0] !== "-s") return ok("", 1, "adb: usage");
-		const serial = args[1];
-		if (!phone.connected.has(serial)) return ok("", 1, `adb: device '${serial}' not found`);
-		if (args[2] === "exec-out" && args[3] === "screencap") return ok(screencap());
-		if (args[2] === "exec-out" && args[3] === "uiautomator dump /dev/tty") return ok(dump());
-		if (args[2] !== "shell") return ok("", 1, "adb: unknown command");
-		const command = args.slice(3).join(" ");
-		if (!phone.unlocked.has(serial) && !command.startsWith("unlock") && !command.startsWith("echo")) return ok("", 1, "error: device locked");
-		if (command.startsWith("echo") && !phone.unlocked.has(serial)) return ok("");
-		const ran = shell(command);
+	// --- adb: the spawned CLI (run, every argv recorded) and the local adb server's socket protocol (server) --------------
+	/** Each connected endpoint's transport id, as `adb devices -l` names it. */
+	const transports = new Map();
+	let nextTransport = 0;
+	/** Every shell command the phone ran, from an argv or from stdin, in order. */
+	const ran = [];
+	const result = (stdout, exitCode = 0, stderr = "") => ({ ok: true, value: { exitCode, stdout: Buffer.from(stdout), stderr } });
+
+	function connectTo(endpoint) {
+		phone.connected.add(endpoint);
+		if (!transports.has(endpoint)) transports.set(endpoint, String(++nextTransport));
+		return `connected to ${endpoint}`;
+	}
+	function disconnectFrom(endpoint) {
+		phone.connected.delete(endpoint);
+		phone.unlocked.delete(endpoint);
+		transports.delete(endpoint);
+		return `disconnected ${endpoint}`;
+	}
+
+	/** One shell command on the phone at serial, as adbd runs it. */
+	function shellOn(serial, command) {
+		ran.push(command);
+		if (!phone.unlocked.has(serial) && !command.startsWith("unlock") && !command.startsWith("echo")) return result("", 1, "error: device locked");
+		if (command.startsWith("echo") && !phone.unlocked.has(serial)) return result("");
+		const out = shell(command);
 		if (phone.unlockedNow) {
 			phone.unlocked.add(serial);
 			phone.unlockedNow = false;
 		}
-		return { ok: true, value: ran };
+		return { ok: true, value: out };
 	}
+
+	/** The spawned adb CLI: args (each recorded, as /proc would show them), and stdin when given. */
+	async function run(args, options = {}) {
+		adbCalls.push({ args: [...args], timeoutMs: options.timeoutMs, input: options.input });
+		if (args[0] === "start-server") return result("");
+		// The old ways to name a device and to connect, by argv.
+		if (args[0] === "connect") return result(`${connectTo(args[1])}\n`);
+		if (args[0] === "disconnect") return result(`${disconnectFrom(args[1])}\n`);
+		let serial;
+		if (args[0] === "-s") serial = args[1];
+		else if (args[0] === "-t") serial = [...transports].find(([, id]) => id === args[1])?.[0];
+		else return result("", 1, "adb: usage");
+		if (serial === undefined || !phone.connected.has(serial)) return result("", 1, `adb: device '${args[1]}' not found`);
+		const rest = args.slice(2);
+		if (rest[0] === "exec-out" && rest[1] === "screencap") return result(screencap());
+		if (rest[0] === "exec-out" && rest[1] === "uiautomator dump /dev/tty") return result(dump());
+		if (rest[0] !== "shell") return result("", 1, "adb: unknown command");
+		// adb shell -T with no command: sh reads its commands from stdin.
+		if (rest[1] === "-T" && rest.length === 2) {
+			let out = "";
+			for (const line of String(options.input ?? "").split("\n")) {
+				if (line.trim() === "" || line.trim() === "exit") continue;
+				const one = shellOn(serial, line);
+				out += one.value.stdout.toString("utf8");
+			}
+			return result(out);
+		}
+		return shellOn(serial, rest.slice(1).join(" "));
+	}
+
+	/** The local adb server, by its socket protocol: host:connect:<endpoint>, host:disconnect:<endpoint>, host:devices-l. */
+	async function server(service) {
+		serverCalls.push(service);
+		const connect = /^host:connect:(.+)$/.exec(service);
+		if (connect) return { ok: true, value: connectTo(connect[1]) };
+		const disconnect = /^host:disconnect:(.+)$/.exec(service);
+		if (disconnect) return { ok: true, value: disconnectFrom(disconnect[1]) };
+		if (service === "host:devices-l") {
+			return { ok: true, value: [...transports].map(([endpoint, id]) => `${endpoint}          device product:sdk_gphone64_x86_64 model:sdk_gphone64_x86_64 device:emu64xa transport_id:${id}\n`).join("") };
+		}
+		return { ok: false, error: { code: "phone", message: `the adb server does not know ${service}` } };
+	}
+	const serverCalls = [];
+
+	/** The provider's adb: callable as the old runner, and the transport (run, server). */
+	const adb = Object.assign((args, options) => run(args, options), { run, server });
 
 	return {
 		fetch,
@@ -320,10 +373,12 @@ export function fakePhoneHarness({ readyAfter = 1, start = "ok", loseAnswer = fa
 		sessions,
 		/** Every API request, as { method, path, headers, body }. */
 		requests: () => requests,
-		/** Every adb call's argv. */
+		/** Every spawned adb's argv. */
 		adbCalls: () => adbCalls.map((c) => c.args),
-		/** The shell commands sent, in order. */
-		shells: () => adbCalls.filter((c) => c.args[2] === "shell").map((c) => c.args.slice(3).join(" ")),
+		/** Every request to the local adb server. */
+		serverCalls: () => [...serverCalls],
+		/** The shell commands the phone ran, in order, from an argv or from stdin. */
+		shells: () => [...ran],
 		dump,
 	};
 }

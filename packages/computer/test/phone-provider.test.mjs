@@ -7,7 +7,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import test, { after } from "node:test";
 import { kindRefusals } from "../dist/index.js";
-import { fakeClock, fakePhoneHarness, ITEMS, KEY, SCREEN, SEARCH_FIELD, SETTINGS } from "./fake-phone-harness.mjs";
+import { ADB_CODE, ADB_HOST, fakeClock, fakePhoneHarness, ITEMS, KEY, SCREEN, SEARCH_FIELD, SETTINGS } from "./fake-phone-harness.mjs";
 
 const phone = await import("../dist/phone-harness.js");
 const { create, MOUNT, memoryLedger, adbCli, PHONE_GROUPS } = phone;
@@ -195,20 +195,22 @@ test("connect reaches the phone over adb with its unlock code, which no result o
 	const { value: ref } = await provider.create(SPEC);
 	const connected = await provider.connect(ref);
 	assert.equal(connected.ok, true, JSON.stringify(connected));
-	const serial = `203.0.113.7:${40000 + 1}`;
-	assert.deepEqual(fake.adbCalls().slice(0, 3), [["connect", serial], ["-s", serial, "shell", "unlock 424242"], ["-s", serial, "shell", "echo ph-ok"]]);
+	// The phone harness's own link: a DNS name, a port, and a ph_ code (OpenAPI SessionAdb), as a live run gave it.
+	const serial = `${ADB_HOST}:${22220 + 1}`;
+	assert.deepEqual(fake.adbCalls().slice(0, 3), [["connect", serial], ["-s", serial, "shell", `unlock ${ADB_CODE}`], ["-s", serial, "shell", "echo ph-ok"]]);
 	assert.deepEqual(connected.value.hello, { version: provider.version, os: "android", kind: "android", arch: "amd64", groups: PHONE_GROUPS });
 	assert.deepEqual((await connected.value.client.call("hello", { client: "test" })).value, connected.value.hello);
 	assert.deepEqual(await connected.value.client.call("ping", {}), { ok: true, value: {} });
 	await connected.value.close();
 	assert.equal((await connected.value.client.call("ping", {})).error.code, "gone");
 
-	const locked = await setup({ code: "999999" });
+	const locked = await setup({ code: "ph_aaaaaaaaaaaaaaaaaaaaaaaaaa" });
 	const lockedRef = (await locked.provider.create(SPEC)).value;
 	const refused = await locked.provider.connect(lockedRef);
 	assert.equal(refused.ok, false);
 	assert.match(refused.error.message, /stayed locked after its unlock code/);
-	assert.ok(!JSON.stringify(refused).includes("424242"), "the unlock code is never in an error");
+	assert.ok(!JSON.stringify(refused).includes(ADB_CODE), "the unlock code is never in an error");
+	assert.ok(!JSON.stringify(refused).includes("ph_"), "nor any part of it");
 
 	const arm = await setup({ abi: "arm64-v8a" });
 	const armHello = (await arm.provider.connect((await arm.provider.create(SPEC)).value)).value.hello;
