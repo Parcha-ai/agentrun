@@ -299,10 +299,10 @@ const { checkEnv, envReads, GUARDS } = await import("../scripts/check-env.mjs").
 test("nothing under src/ outside src/conformance/ reads the environment, but the two documented guards, each where it is documented", async () => {
 	const { problems, guards, files } = await checkEnv(SRC_DIR);
 	assert.deepEqual(problems, [], problems.map((p) => `${p.file}:${p.line}: ${p.what}`).join("\n"));
-	// The check reads every file under src/, those in its directories included: the Docker provider's own files and the
-	// daemon's copy are library code like any other.
+	// The check reads every file under src/, those in its directories included: the Docker provider's own files (its
+	// egress proxy and its image) and the daemon's copy are library code like any other.
 	assert.ok(Array.isArray(files), "the check says which files it read");
-	for (const file of ["docker.ts", "daemon-copy.ts", "docker/egress.ts", "docker/egress-main.ts", "docker/egress-proxy.ts", "docker/egress-table.ts", "modal.ts", "e2b.ts"]) {
+	for (const file of ["docker.ts", "daemon-copy.ts", "docker/egress.ts", "docker/egress-main.ts", "docker/egress-proxy.ts", "docker/egress-table.ts", "docker/image.ts", "modal.ts", "e2b.ts"]) {
 		assert.ok(files.includes(file), `the check reads ${file}`);
 	}
 	assert.deepEqual(files.filter((file) => file.startsWith("conformance/")), [], "and none under src/conformance/");
