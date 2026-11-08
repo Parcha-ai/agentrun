@@ -4,6 +4,7 @@
 //
 // Browserbase (api.browserbase.test), as its v1 API answers and @browserbasehq/sdk 2.x calls it: POST /v1/sessions makes
 // a RUNNING session with a signed connectUrl and keeps userMetadata; GET /v1/sessions/{id} reads one (404: unknown);
+// a userMetadata key with a "." is refused with 400, as Browserbase answered live on 11-08;
 // GET /v1/sessions?status=&q= lists by status, q being user_metadata['key']:'value'; POST /v1/sessions/{id} with
 // status REQUEST_RELEASE ends one (COMPLETED, still readable); GET /v1/sessions/{id}/debug gives the live view's URLs.
 // The key is the X-BB-API-Key header.
@@ -169,6 +170,9 @@ export function fakeBrowserbase(knobs = {}) {
 		const [, , , id, sub] = call.path.split("/");
 		if (call.method === "POST" && call.path === "/v1/sessions") {
 			if (knobs.failCreate) return json(knobs.failCreate, { error: `no ${ECHO}` });
+			// Browserbase refuses a userMetadata key with a dot, as it answered live on 11-08.
+			const dotted = Object.keys(call.body?.userMetadata ?? {}).find((key) => key.includes("."));
+			if (dotted !== undefined) return json(400, { error: "Bad Request", message: `Key is not a valid metadata key: ${dotted}`, statusCode: 400 });
 			const sid = `sess_${++seq}`;
 			const now = Date.parse("2026-11-08T12:00:00.000Z") + seq * 1000;
 			const s = {
