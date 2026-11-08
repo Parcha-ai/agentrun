@@ -14,8 +14,8 @@ import { SealedSettings } from "../dist/sealed-settings.js";
 import { headersRefusal, MIN_KEY_BYTES, verify } from "../dist/standard-webhooks.js";
 import { openapiDocument } from "../dist/openapi.js";
 import { TRIGGER_ADAPTERS } from "../dist/trigger-adapters.js";
-import { agent, client, FAUX, scratch, withEnv } from "./support.mjs";
 import { schemaProblems } from "./schema-support.mjs";
+import { agent, client, FAUX, scratch, withEnv } from "./support.mjs";
 import { firings } from "./trigger-support.mjs";
 
 const { Webhook } = createRequire(import.meta.url)("standardwebhooks");
@@ -323,4 +323,15 @@ test("a server-wide source's hook answers as its document says, with the trigger
   assert.ok(lines.some((line) => line.includes("condition=hook_ignored") && line.includes("source=ping")), "said");
   const unparsed = await post(server.baseUrl, "/hooks/ping", "not json", { secret });
   for (const body of [ignored.body, unparsed.body, { firings: [{ ok: "duplicate" }] }, { challenge: "c-1" }]) assert.deepEqual(schemaProblems(doc, hook, body), [], JSON.stringify(body));
+});
+
+test("a server-wide hook's documented answers are its own: its firings' by names its source, and a firings answer and a handshake answer each match exactly one of its 200's shapes", () => {
+  const doc = openapiDocument(() => undefined, [...TRIGGER_ADAPTERS, ping]);
+  const responses = doc.paths["/hooks/ping"].post.responses;
+  const body = (code) => responses[code].content["application/json"].schema;
+  const firingBy = (schema) => schema.properties.firings.items.properties.by.enum;
+  assert.ok(firingBy(body("202")).includes("ping"), JSON.stringify(firingBy(body("202"))));
+  const firings = body("200").oneOf.find((part) => part.properties?.firings);
+  assert.ok(firings && firingBy(firings).includes("ping"), JSON.stringify(body("200")));
+  for (const answer of [{ firings: [] }, { challenge: "c-123" }]) assert.deepEqual(schemaProblems(doc, body("200"), answer), [], JSON.stringify(answer));
 });

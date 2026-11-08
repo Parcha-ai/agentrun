@@ -613,8 +613,8 @@ const HOOK_DUPLICATE = closed({ ok: { const: "duplicate" } }, "A firing key seen
 const HOOK_IGNORED = closed({ ok: { const: "ignored" } }, "Verified, and not an event the trigger's `accept` (or its source's own filter) takes: nothing fired.");
 /** What a pushed request made: one firing for each event it held that a trigger takes, in order (a key seen within its
  *  day whose firing is no longer kept, `{ok: "duplicate"}`); none for a request with no event, or whose events no
- *  trigger takes. */
-const HOOK_FIRINGS = closed({ firings: { type: "array", items: { oneOf: [TRIGGER_FIRING, HOOK_DUPLICATE] } } });
+ *  trigger takes. Its firings' `by` names the sources `adapters` give. */
+const hookFiringsOf = (adapters: readonly TriggerAdapter[]) => closed({ firings: { type: "array", items: { oneOf: [{ ...TRIGGER_FIRING, properties: { ...TRIGGER_FIRING.properties, by: firedByOf(adapters) } }, HOOK_DUPLICATE] } } });
 const TRIGGER_SECRET = { type: "string", pattern: "^whsec_[A-Za-z0-9+/]+={0,2}$", description: "A webhook trigger's signing secret, shown this once: `whsec_` and 32 random bytes in base64, as the Standard Webhooks spec gives it. Never in any GET; kept sealed under the seal key. Sign each request to /hooks/{trigger_id} with it." };
 /** templates/1: template packages, listed and applied (templates.ts; the format is templates/README.md). */
 const TEMPLATE_MARK = { "x-agentrun-serve": "templates/1" };
@@ -1827,13 +1827,16 @@ function serverHooks(adapters: readonly TriggerAdapter[]): Record<string, Json> 
     const push = adapter.push;
     if (!push || adapter.settings?.scope !== "server") continue;
     const handshake = push.handshake ? " A handshake its sender asks for (a URL check) is answered as the source answers it, after the check, never before." : "";
+    // Its firings name the sources the server has, its own among them.
+    const made = hookFiringsOf(adapters);
     paths[`/hooks/${adapter.id}`] = {
       post: {
         operationId: `receiveHook_${adapter.id}`, tags: ["local"], summary: `Fire a ${adapter.label}: a request it checks, no token`,
         description: `A pushed source's own route, with no token: the request is checked by the source's own check against its settings' \`${push.key}\` (the server's, PUT through its settings), on the raw body before anything else. The body is at most ${push.maxBodyBytes} bytes (413 at once past it, the socket closed) and arrives within ${HOOK_BODY_MS / 1000} s (408). Every refusal is the same 401. Each event the request holds fires the one trigger of this source that listens where it happened; an event no trigger takes, and a request with none, is answered 200 with no firing for it, and said in the server's log.${handshake}`,
         security: [],
         requestBody: { required: true, content: { "*/*": { schema: {} } } },
-        responses: { "202": json(HOOK_FIRINGS, "Recorded: each firing's run starts (or its message goes) after this answer."), "200": json(push.handshake ? { anyOf: [HOOK_FIRINGS, HOOK_IGNORED, { type: "object", description: "The source's handshake answer, as the source gives it." }] } : { oneOf: [HOOK_FIRINGS, HOOK_IGNORED] }, "Nothing new: each event's firing as it stands (a key seen within its day whose firing is no longer kept, `{ok: \"duplicate\"}`), or none; or `{ok: \"ignored\"}`, a request the source's own filter does not take."), "408": HOOK_TIMEOUT, ...errors(401, 413, 429, 500) },
+        // A handshake's answer is any object but a firings or an ok one, so each answer is exactly one of the 200's shapes.
+        responses: { "202": json(made, "Recorded: each firing's run starts (or its message goes) after this answer."), "200": json(push.handshake ? { oneOf: [made, HOOK_IGNORED, { type: "object", not: { anyOf: [{ required: ["firings"] }, { required: ["ok"] }] }, description: "The source's handshake answer." }] } : { oneOf: [made, HOOK_IGNORED] }, "Nothing new: each event's firing as it stands (a key seen within its day whose firing is no longer kept, `{ok: \"duplicate\"}`), or none; or `{ok: \"ignored\"}`, a request the source's own filter does not take."), "408": HOOK_TIMEOUT, ...errors(401, 413, 429, 500) },
         ...TRIGGER_MARK,
       },
     };
