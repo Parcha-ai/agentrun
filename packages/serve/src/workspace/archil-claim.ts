@@ -9,8 +9,9 @@
 // go in `secrets`, for the redaction set. release(), or the claim's signal aborting, drops them; a call after that is
 // refused. A row that is missing, or that does not open under the seal key (sealed under another key, or for another
 // row), refuses in words that name the row and never hold a value. Nothing here reads the environment: the settings,
-// the rows and the seal key are handed in.
+// the store's sealed keys and the seal key are handed in.
 import { sealedAt, unsealColumn } from "../store/seal.js";
+import type { SealedKeys } from "../store/store.js";
 import { type ArchilDisk, type ArchilDiskOptions, type ArchilImage, archilDisk } from "./archil-disk.js";
 
 /** The sealed_keys row of the account API key (the disk's file API and exec). */
@@ -34,8 +35,8 @@ export class ArchilClaimRefused extends Error {
 export interface ArchilClaimOptions {
   /** The server's Archil settings; undefined when they are not set up. */
   readonly settings: ArchilSettings | undefined;
-  /** A sealed_keys row's sealed bytes, or undefined when none is saved. */
-  readonly sealedKey: (name: string) => Promise<Uint8Array | undefined>;
+  /** The store's sealed_keys rows (store.sealedKeys): a row's sealed bytes, or undefined when none is saved. */
+  readonly keys: Pick<SealedKeys, "get">;
   /** The runner's seal key (the server's): undefined when it was started without one. */
   readonly sealKey: Buffer | undefined;
   /** The claim's signal: aborted when the claim is lost or the runner stops. */
@@ -68,7 +69,7 @@ export async function archilClaim(options: ArchilClaimOptions): Promise<ArchilCl
     throw new ArchilClaimRefused(`This runner was started without the server's seal key, so it can't open the saved ${ARCHIL_API_KEY_ROW} key: start it with the key the server keeps.`);
   }
   const open = async (name: string): Promise<string> => {
-    const sealed = await options.sealedKey(name);
+    const sealed = await options.keys.get(name);
     if (sealed === undefined) throw new ArchilClaimRefused(`no ${name} key is saved on this server: save it in the server's keys, then run again.`);
     try {
       return unsealColumn(sealKey, sealedAt.sealedKey(name), sealed).toString("utf8").trim();

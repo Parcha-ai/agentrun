@@ -5,6 +5,7 @@ import { randomBytes } from "node:crypto";
 import { test } from "node:test";
 import { sealColumn, sealedAt } from "../dist/store/seal.js";
 import { ARCHIL_API_KEY_ROW, ARCHIL_DISK_TOKEN_ROW, ArchilClaimRefused, archilClaim } from "../dist/workspace/index.js";
+import { storeOn } from "./store-helpers.mjs";
 
 const KEY = randomBytes(32);
 const API = "fake-test-key-api-0001";
@@ -21,7 +22,7 @@ async function claimOf({ rows = rowsOf(), settings = SETTINGS, sealKey = KEY, si
   const made = [];
   const claim = await archilClaim({
     settings,
-    sealedKey: async (name) => { asked.push(name); return rows.get(name); },
+    keys: { get: async (name) => { asked.push(name); return rows.get(name); } },
     sealKey,
     signal,
     makeDisk: (options) => { made.push(options); return { id: options.disk, made: true }; },
@@ -52,13 +53,13 @@ test("archil claim: a claim that cannot open its key is refused in words, before
   const refused = async (options, words) => {
     const made = [];
     await assert.rejects(
-      archilClaim({ settings: SETTINGS, sealedKey: async (name) => options.rows?.get(name), sealKey: KEY, signal: new AbortController().signal, ...options, makeDisk: (o) => { made.push(o); return { id: o.disk }; } }),
+      archilClaim({ settings: SETTINGS, keys: { get: async (name) => options.rows?.get(name) }, sealKey: KEY, signal: new AbortController().signal, ...options, makeDisk: (o) => { made.push(o); return { id: o.disk }; } }),
       (error) => error instanceof ArchilClaimRefused && words.test(error.message) && !error.message.includes(API),
     );
     assert.deepEqual(made, [], "no disk was made");
   };
   await refused({ settings: undefined, rows: rowsOf() }, /Archil disk is not set up/);
-  await refused({ sealKey: undefined, rows: rowsOf(), sealedKey: async () => assert.fail("no row is read without a seal key") }, /seal key/);
+  await refused({ sealKey: undefined, rows: rowsOf(), keys: { get: async () => assert.fail("no row is read without a seal key") } }, /seal key/);
   await refused({ rows: new Map() }, new RegExp(`no ${ARCHIL_API_KEY_ROW.replace(".", "\\.")} key is saved`));
   await refused({ rows: rowsOf(randomBytes(32)) }, /does not open/);
   // A value sealed for another row does not open as this one.
@@ -66,8 +67,22 @@ test("archil claim: a claim that cannot open its key is refused in words, before
   await refused({ rows: moved }, /does not open/);
   // The real disk checks its S3 endpoint when it is made (no call is sent): a bad one refuses the claim.
   await assert.rejects(
-    archilClaim({ settings: { ...SETTINGS, s3BaseUrl: "http://s3.example.com" }, sealedKey: async (name) => rowsOf().get(name), sealKey: KEY, signal: new AbortController().signal }),
+    archilClaim({ settings: { ...SETTINGS, s3BaseUrl: "http://s3.example.com" }, keys: { get: async (name) => rowsOf().get(name) }, sealKey: KEY, signal: new AbortController().signal }),
     (error) => error instanceof ArchilClaimRefused && /S3 endpoint/.test(error.message) && !error.message.includes(API),
+  );
+});
+
+test("archil claim: over the store's own sealed_keys rows, as the server saved them", async (t) => {
+  const { store } = await storeOn(t);
+  for (const [name, sealed] of rowsOf()) await store.sealedKeys.put(name, sealed);
+  const made = [];
+  const claim = await archilClaim({ settings: SETTINGS, keys: store.sealedKeys, sealKey: KEY, signal: new AbortController().signal, makeDisk: (options) => { made.push(options); return { id: options.disk }; } });
+  assert.equal(await made[0].key(), API);
+  assert.equal(await claim.token(), TOKEN);
+  await store.sealedKeys.remove(ARCHIL_API_KEY_ROW);
+  await assert.rejects(
+    archilClaim({ settings: SETTINGS, keys: store.sealedKeys, sealKey: KEY, signal: new AbortController().signal, makeDisk: () => assert.fail("no disk") }),
+    (error) => error instanceof ArchilClaimRefused && /no archil\.api_key key is saved/.test(error.message),
   );
 });
 
