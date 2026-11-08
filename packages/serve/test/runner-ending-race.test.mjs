@@ -24,8 +24,9 @@ function heldLoop() {
         control.started = true;
         control.end = async () => {
           const journal = deps.journal(claim);
-          journal.stage({ run: { state: "ended" } });
-          await commitWrites(journal, [{ type: "conversation", value: { id: 1 } }, { type: "entry", value: { id: await journal.mintId(), conversationId: 1, kind: "message" } }], BACKGROUND_CONTEXT);
+          const end = await journal.mintId();
+          journal.stage({ run: { state: "ended" }, effect: end });
+          await commitWrites(journal, [{ type: "conversation", value: { id: 1 } }, { type: "entry", value: { id: end, conversationId: 1, kind: "message" } }], BACKGROUND_CONTEXT);
           resolve({ state: "ended" });
         };
       }),

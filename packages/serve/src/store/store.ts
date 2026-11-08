@@ -119,10 +119,12 @@ export interface StagedTake {
 }
 
 /** What a journal commit writes beside its batches, in its one transaction, under its fence: the run row's patch and rows
- *  beside it (the next commit that stores a batch), and the commands it takes (the commit that stores each one's effect). */
+ *  beside it, landing with the record `effect` names (required with either: a park's ask, an end's entry), and the
+ *  commands it takes (each with its own effect). Each is written only by the commit that stores its effect. */
 export interface Staged {
   readonly run?: RunPatch;
   readonly also?: readonly AlsoRow[];
+  readonly effect?: number;
   readonly take?: readonly StagedTake[];
 }
 

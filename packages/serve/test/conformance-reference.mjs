@@ -40,8 +40,8 @@ function referenceLoop({ script, tools, hooks }, deps) {
     if (!rooted && !(await journal.conversation(ROOT, context))) writes.push({ type: "conversation", value: { id: ROOT } });
     const id = await journal.mintId();
     writes.push({ type: "entry", value: { id, conversationId: ROOT, kind, data } });
-    // A take is keyed to its effect: this commit's entry.
-    if (staged) journal.stage({ ...staged, ...(staged.take ? { take: staged.take.map((command) => ({ command, effect: id })) } : {}) });
+    // A run patch and a take are keyed to their effect: this commit's entry.
+    if (staged) journal.stage({ ...staged, ...(staged.run || staged.also ? { effect: id } : {}), ...(staged.take ? { take: staged.take.map((command) => ({ command, effect: id })) } : {}) });
     await commitWrites(journal, writes, context);
     rooted = true;
   };

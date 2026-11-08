@@ -167,9 +167,12 @@ class Gate {
 function merge(all: readonly { expected: Expected; at: Matched }[]): Staged {
   const run = all.reduce<Staged["run"]>((patch, { expected }) => (expected.run ? { ...patch, ...expected.run } : patch), undefined);
   const also = all.flatMap(({ expected }) => expected.also ?? []);
+  // The patch and rows land with the record their expectation matched (the first that stages any): never on a storage
+  // call where that record's batch was refused.
+  const effect = all.find(({ expected }) => expected.run !== undefined || (expected.also ?? []).length > 0)?.at.id;
   // Each take keyed to the record its expectation matched: the store writes it only with that record's batch.
   const take = all.flatMap(({ expected, at }) => (expected.take ?? []).map((command) => ({ command, effect: at.id })));
-  return { ...(run ? { run } : {}), ...(also.length ? { also } : {}), ...(take.length ? { take } : {}) };
+  return { ...(run ? { run } : {}), ...(also.length ? { also } : {}), ...(effect !== undefined && (run || also.length) ? { effect } : {}), ...(take.length ? { take } : {}) };
 }
 
 /** Whether `batches` write an entry of `kind` whose data `test` accepts. */

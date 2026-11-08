@@ -124,7 +124,7 @@ test("a commit rolled back by a fence failure after its writes leaves no row in 
   const tk = await storage.mintId();
   const rows = async () => Number((await db.get("SELECT COUNT(*) AS n FROM pi_commit_writes WHERE run_id = ?", "run-1")).n);
   const before = await rows();
-  storage.stage({ run: { state: "ended" } });
+  storage.stage({ run: { state: "ended" }, effect: tk });
   fenced.on = true;
   await assert.rejects(commitWrites(storage, [task(tk, "pending", "t")], context), (error) => error?.name === "Fenced", "the commit is refused by the fence");
   assert.equal(await rows(), before, "no log row of the refused commit");

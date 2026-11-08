@@ -268,20 +268,24 @@ export class RunStorage implements Journal {
 
   /**
    * Stage what a commit writes beside its batches, in its one transaction, under its fence:
-   * - the run row's patch and other rows (`also`, such as an outbox row for a run moment): written by the next commit
-   *   that stores a batch, then cleared; a commit refused before it stored a batch, or one that failed, keeps them. A
-   *   later stage replaces them.
+   * - the run row's patch and other rows (`also`, such as an outbox row for a run moment), with `effect`, the id of the
+   *   record they land with (a park's ask, an end's entry): written only by the commit that stores that record, then
+   *   cleared, so a run never reads parked or ended without what caused it; until then they wait. A later stage that
+   *   names a patch or rows replaces them.
    * - the commands it takes (`take`: each with the id of the record that is its effect): a take is written only by the
    *   commit that stores that record, so a command is taken with its effect or not at all; until then it waits, across
    *   commits and later stages. Each must be this run's untaken command, else that commit rejects with CommandTaken.
    */
   stage(staged: Staged): void {
+    if ((staged.run !== undefined || staged.also !== undefined) && !Number.isSafeInteger(Number(staged.effect))) {
+      throw new Error(`run ${this.#runId}: a staged run patch or rows name no effect (the id of the record they land with)`);
+    }
     for (const take of staged.take ?? []) {
       if (!Number.isSafeInteger(take?.command) || !Number.isSafeInteger(Number(take?.effect))) throw new Error(`run ${this.#runId}: a staged take names no command and effect ids: ${JSON.stringify(take)}`);
     }
     for (const take of staged.take ?? []) this.#takes.set(take.command, Number(take.effect));
     // A stage that names a run patch or rows replaces the ones staged before; one that only takes leaves them.
-    if (staged.run !== undefined || staged.also !== undefined) this.#staged = { ...(staged.run !== undefined ? { run: staged.run } : {}), ...(staged.also !== undefined ? { also: staged.also } : {}) };
+    if (staged.run !== undefined || staged.also !== undefined) this.#staged = { ...(staged.run !== undefined ? { run: staged.run } : {}), ...(staged.also !== undefined ? { also: staged.also } : {}), effect: Number(staged.effect) };
   }
 
   /**
@@ -309,6 +313,8 @@ export class RunStorage implements Journal {
     const staged = this.#staged;
     // The takes this commit writes: those whose effect a stored batch of it holds.
     const taking: number[] = [];
+    // Whether a stored batch of this commit writes the staged patch's effect: only then does the patch land.
+    let patching = false;
     // Queued at once, with nothing awaited before it (a fresh journal reads its namespace inside the transaction), so a
     // store close asked after this commit waits for it. The transaction holds the store's one connection: its work awaits
     // only its own statements, never a model or a tool.
@@ -341,6 +347,7 @@ export class RunStorage implements Journal {
         // A take whose effect this stored batch writes is this commit's.
         const written = new Set(writes.map(effectId).filter((id): id is number => id !== undefined));
         for (const [command, effect] of this.#takes) if (written.has(effect) && !taking.includes(command)) taking.push(command);
+        if (staged?.effect !== undefined && written.has(staged.effect)) patching = true;
       }
       if (seqs.length > 0) {
         await tx.run(
@@ -350,7 +357,7 @@ export class RunStorage implements Journal {
         // The run patch's fenced UPDATE (0 rows: Fenced), then its rows (store/sqlite/run-patch.ts, as runs.update writes
         // them), then the takes.
         const now = this.#now();
-        if (staged?.run !== undefined || (staged?.also ?? []).length > 0) {
+        if (patching && (staged?.run !== undefined || (staged?.also ?? []).length > 0)) {
           await applyRunPatch(tx, { runId: this.#runId, epoch: this.#epoch }, staged?.run ?? {}, staged?.also ?? [], now);
         }
         for (const commandId of taking) {
@@ -361,7 +368,8 @@ export class RunStorage implements Journal {
       }
     });
     this.#nextId = Math.max(this.#nextId, candidateNextId);
-    if (seqs.length > 0 && this.#staged === staged) this.#staged = undefined;
+    // Landed with its effect: no longer staged (a patch whose effect this commit did not store waits).
+    if (patching && this.#staged === staged) this.#staged = undefined;
     // Taken with their effects, now durable: no longer waiting.
     for (const command of taking) this.#takes.delete(command);
     // COMMIT returned: the stored batches are durable (to the store's synchronous level; flush makes them so on disk).
