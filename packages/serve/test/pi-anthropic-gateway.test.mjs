@@ -1,4 +1,4 @@
-// pi's Anthropic route honors ANTHROPIC_BASE_URL as claude-agent's does (adapters.ts claudeProvider): every Anthropic
+// pi's Anthropic route honors ANTHROPIC_BASE_URL as claude-agent's does (provider.ts providerFor): every Anthropic
 // model request of a pi run goes to <base>/v1/messages with ANTHROPIC_API_KEY as x-api-key, and nothing else of the
 // host's (ANTHROPIC_AUTH_TOKEN as a bearer, OpenRouter's key) goes there. Capabilities say pi's default model is ready
 // only where that route can run: a gateway it could not reach, or one with no ANTHROPIC_API_KEY, is not ready.

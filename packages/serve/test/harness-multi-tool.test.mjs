@@ -11,13 +11,14 @@ import { DatabaseSync } from "node:sqlite";
 import { test } from "node:test";
 import { openStoreReader } from "@parcha/pi-durable-agent";
 import { agent, follow, runDir, serve, withEnv } from "./support.mjs";
+import { fauxTable } from "./fixtures/faux-table.mjs";
 
 const FAUX_HARNESS = new URL("./fixtures/faux-harness.mjs", import.meta.url).pathname;
 // Under the faux harness claude-agent and codex run one path (the id is only a label), so codex stands for both.
 const harness = "codex";
 
 test(`${harness}: two tool calls in one answer, then the closing answer: the run completes, each call shows before its result under the answer that asked for it, none interrupted`, async (t) => {
-  const { api, data } = await serve(t, { fauxHarness: FAUX_HARNESS });
+  const { api, data } = await serve(t, { harnessTable: fauxTable(FAUX_HARNESS) });
   const id = `two-${harness}`;
   assert.equal((await api("POST", "/agents", agent(id, { harness, instructions: "Write two files in one answer.", tools: ["read", "write", "edit"] }))).status, 201);
   const started = await api("POST", `/agents/${id}/runs`, { input: { content: "Write the word alpha to a.md and the word beta to b.md." } });
@@ -48,7 +49,7 @@ test(`${harness}: two tool calls in one answer, then the closing answer: the run
 });
 
 test("claude-agent: two tool calls that end before their answer is paid: each call is stored before its result, at a cost still to come, and reads as its call's, once, none interrupted, and the run's metrics count two calls, none failed", async (t) => {
-  const { api, data } = await serve(t, { fauxHarness: FAUX_HARNESS });
+  const { api, data } = await serve(t, { harnessTable: fauxTable(FAUX_HARNESS) });
   assert.equal((await api("POST", "/agents", agent("streamed", { harness: "claude-agent", instructions: "Write two files while answering.", tools: ["read", "write", "edit"] }))).status, 201);
   const started = await api("POST", "/agents/streamed/runs", { input: { content: "Write the word alpha to a.md and the word beta to b.md." } });
   assert.equal(started.status, 202, JSON.stringify(started.body));
@@ -94,7 +95,7 @@ test("claude-agent: two tool calls that end before their answer is paid: each ca
 
 for (const on of ["claude-agent", "codex"]) {
   test(`${on}: one answer that writes, calls, writes again and calls again, both calls ending before it is paid: one request for it, its cost known, both texts shown and each call above its result`, async (t) => {
-    const { api, data } = await serve(t, { fauxHarness: FAUX_HARNESS });
+    const { api, data } = await serve(t, { harnessTable: fauxTable(FAUX_HARNESS) });
     assert.equal((await api("POST", "/agents", agent("between", { harness: on, instructions: "Write between two calls.", tools: ["read", "write", "edit"] }))).status, 201);
     const started = await api("POST", "/agents/between/runs", { input: { content: "Write alpha to a.md and beta to b.md." } });
     assert.equal(started.status, 202, JSON.stringify(started.body));
@@ -118,7 +119,7 @@ for (const on of ["claude-agent", "codex"]) {
 for (const on of ["claude-agent", "codex"]) {
   test(`${on}: on a store slow to write, a call that ends before its answer is paid: one request for that answer at its known cost, and the call above its result`, async (t) => {
     withEnv(t, { AGENTRUN_SERVE_TEST_ROOT_WRITE_DELAY_MS: "300" });
-    const { api } = await serve(t, { fauxHarness: FAUX_HARNESS });
+    const { api } = await serve(t, { harnessTable: fauxTable(FAUX_HARNESS) });
     assert.equal((await api("POST", "/agents", agent("slow-store", { harness: on, instructions: "Write once on a slow store.", tools: ["read", "write", "edit"] }))).status, 201);
     const started = await api("POST", "/agents/slow-store/runs", { input: { content: "Write alpha to a.md." } });
     assert.equal(started.status, 202, JSON.stringify(started.body));

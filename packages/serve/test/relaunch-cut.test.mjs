@@ -8,6 +8,7 @@ import { readFile, writeFile } from "node:fs/promises";
 import { join } from "node:path";
 import { test } from "node:test";
 import { agent, follow, runDir, runRecordOf, scratch, serve, withEnv } from "./support.mjs";
+import { fauxTable } from "./fixtures/faux-table.mjs";
 
 const RELAUNCH = new URL("./fixtures/faux-harness-relaunch.mjs", import.meta.url).pathname;
 const WEB_HOLD = new URL("./fixtures/faux-web-hold.mjs", import.meta.url).pathname;
@@ -51,7 +52,7 @@ test("a claude-agent run relaunched after its process dies, its turn's request c
   const dir = await scratch(t);
   const [mark, gate] = [join(dir, "killed"), join(dir, "go")];
   withEnv(t, { RELAUNCH_MARK: mark });
-  const { api, data } = await serve(t, { fauxHarness: RELAUNCH, fauxWeb: WEB_HOLD });
+  const { api, data } = await serve(t, { harnessTable: fauxTable(RELAUNCH), fauxWeb: WEB_HOLD });
   const runId = await inSecondTurn(api, "relaunch", `Probe the relaunch, held until ${gate}.`);
   const record = async () => runRecordOf(data, runId);
   const killed = (await record()).holder.pid;

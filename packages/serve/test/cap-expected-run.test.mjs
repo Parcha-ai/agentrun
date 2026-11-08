@@ -13,6 +13,7 @@ import { REQUEST_STARTED } from "@parcha/pi-durable-agent/timeline";
 import { grown } from "./fixtures/faux-harness.mjs";
 import { wrapUpWords } from "../dist/cap.js";
 import { agent, follow, letGo, runDir, runRecordOf, scratch, serve } from "./support.mjs";
+import { fauxTable } from "./fixtures/faux-table.mjs";
 
 const FAUX_HARNESS = new URL("./fixtures/faux-harness.mjs", import.meta.url).pathname;
 const SONNET_PRICED = new URL("./fixtures/faux-sonnet-priced.mjs", import.meta.url).pathname;
@@ -35,7 +36,7 @@ const sum = (n) => Array.from({ length: n }, (_, k) => grown(k).usd).reduce((a, 
 let server;
 const stops = [];
 before(async () => {
-  server = await serve({ after: (stop) => stops.push(stop) }, { fauxHarness: FAUX_HARNESS, faux: SONNET_PRICED });
+  server = await serve({ after: (stop) => stops.push(stop) }, { harnessTable: fauxTable(FAUX_HARNESS), faux: SONNET_PRICED });
 });
 after(async () => {
   for (const stop of stops.reverse()) await stop();
