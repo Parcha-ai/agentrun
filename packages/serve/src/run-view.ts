@@ -14,6 +14,7 @@ import type { Turns } from "./turns.js";
 import type { PendingAsk } from "./browser-person.js";
 import { type PendingApproval, previewOf } from "./tool-gate.js";
 import { LEARNING_LABEL } from "./learning.js";
+import { builtinHarness } from "./harness-table.js";
 
 /** The run's newest usage row, which carries its cost. */
 const usageOf = (rows: readonly TimelineEvent[]) => rows.findLast((r) => r.kind === "usage");
@@ -145,9 +146,15 @@ export type RunViewMeta = {
   stopped_after?: number;
 };
 
-/** The run fields the status and pending views read (statusOf and its predicates): a structural subset of Run, so the
- *  server passes its live Run and the store-backed view a value built from a row and the journal. */
+/** The run fields the status, pending and moment views read (statusOf, the predicates, momentOf): a structural subset of
+ *  Run, so the server passes its live Run and the store-backed view a value built from a row and the journal. */
 export interface RunView {
+  id: string;
+  agentId: string;
+  /** The harness its revision names, for whether a message steers it mid-turn (momentOf). */
+  harness: string;
+  /** Imported history (`agentrun-serve import`): the source it ran in; absent for a run started here. */
+  imported?: { source: string; session: string };
   kind: RevisionKind;
   outcome?: Status;
   finishing?: Status;
@@ -331,4 +338,93 @@ export function statusOf(run: RunView, facts: RunFacts): { status: Status; state
   if (run.working) return { status: "working", state: "working" };
   if (meaningful(run.rows)?.kind === "waiting") return { status: "input_required", state: "waiting" };
   return { status: "working", state: "idle" };
+}
+
+/** A run has reached a last state. */
+const TERMINAL = new Set<Status>(["completed", "failed", "cancelled"]);
+
+/** How a tool call's approval was answered, as the run view folds the journal and the command rows: a person's allow or
+ *  deny, a withdrawal when the run was stopped, or a cancel with the run. */
+export type ApprovalDecision = "allow" | "deny" | "withdrawn" | "canceled";
+
+/** A run's live moment, as the run view computes it (statusOf and the predicates above), for the one acceptance decision
+ *  each act a run takes (message, stop, raise, approve) makes. The write half (runs-over-store.ts) reads nothing else of
+ *  the run's live state; the coarse facts a row holds (its state, its launch cap) it reads from the store itself. The
+ *  server builds this from its live Run; the store-backed view builds it from the run's row and journal (momentOverStore),
+ *  so the acceptance and words an act answers with stay the same. */
+export interface RunMoment {
+  readonly id: string;
+  readonly agentId: string;
+  readonly kind: "agentic" | "workflow";
+  /** Where an imported run came from (run.imported?.source); absent for a run started here. An imported run takes no act. */
+  readonly importedSource?: string;
+  /** A cancel is in flight (run.cancel), whether or not its end is written yet. */
+  readonly cancelled: boolean;
+  /** The run has reached a last state (statusOf: completed, failed or cancelled). */
+  readonly terminal: boolean;
+  /** Which last state, for the refusal's words (completed, failed or cancelled). */
+  readonly terminalKind?: "completed" | "failed" | "cancelled";
+  /** The message "working" predicate: the run's turn is in flight (queued, working-working, or its agent waits on the
+   *  person in its browser), so a message steers it or follows it, never answers. */
+  readonly working: boolean;
+  /** The run waits on a person's answer to a question it asked (input_required and waiting on ask_person): a message
+   *  answers it. */
+  readonly awaitingAnswer: boolean;
+  /** The run's harness takes a message mid-turn (pi and every workflow run): else a message to a working run follows the
+   *  turn as a new one (follow_up), never a steer it cannot do. */
+  readonly steers: boolean;
+  /** The run's cap as it stands now (its launch cap folded with any raise rows), or undefined when it is uncapped. */
+  readonly maxCostUsd?: number;
+  /** The run is paused at its cap: a message is refused for the same room (raise the cap first). The pause's words, which
+   *  the refusal carries, or undefined when it is not paused. */
+  readonly pausedWords?: string;
+  /** The run is paused at its cap (pausedAt): raising the cap resumes it. */
+  readonly paused: boolean;
+  /** The run has a live process now (a runner holds its claim): a raise's cap holds from its next process, not this one. */
+  readonly live: boolean;
+  /** A message that may not answer a person (a trigger's) is refused while the run waits on one, before anything else. */
+  readonly waitsOnPerson: boolean;
+  /** The tool call that waits for approval now, if any (waitingApproval): a person's message declines it. */
+  readonly waitingApprovalId?: string;
+  /** The tool calls this run has or had waiting for approval, by id (for the not-found refusal). */
+  readonly approvalIds?: ReadonlySet<string>;
+  /** The approvals already answered, by call id, as the run view folds them (for the first-wins refusal and its words). */
+  readonly answeredApprovals?: Readonly<Record<string, { readonly decision: ApprovalDecision }>>;
+}
+
+/** A run's live moment (RunMoment), computed from the same status table and predicates a person's view reads, plus whether
+ *  a runner holds its claim now (`live`). The server passes its live Run with `live = this.live(run)`; the store-backed
+ *  view passes a value built from the run's row and journal, so an act's acceptance is decided the same way either path. */
+export function momentOf(run: RunView, facts: RunFacts, live: boolean): RunMoment {
+  const { status, state } = statusOf(run, facts);
+  const terminal = TERMINAL.has(status);
+  const waiting = waitingApproval(run);
+  const pausedWords = pausedAt(run);
+  const answered = run.meta.approvals;
+  return {
+    id: run.id,
+    agentId: run.agentId,
+    kind: run.kind,
+    ...(run.imported ? { importedSource: run.imported.source } : {}),
+    cancelled: run.cancel,
+    terminal,
+    ...(terminal ? { terminalKind: status as "completed" | "failed" | "cancelled" } : {}),
+    // The message "working" predicate (runs.ts message): queued, working-working, or its agent waits on the person in its
+    // browser (mid-turn, the tool call waiting inside the turn).
+    working: status === "queued" || (status === "working" && state === "working") || facts.browserAsk() !== undefined,
+    awaitingAnswer: status === "input_required" && state === "waiting",
+    // Whether its harness takes a message mid-turn (runs.ts steers): every workflow run, and an agentic run whose harness
+    // steers (pi).
+    steers: run.kind !== "agentic" || (builtinHarness(run.harness)?.steer ?? false),
+    ...(run.meta.max_cost_usd !== undefined ? { maxCostUsd: run.meta.max_cost_usd } : {}),
+    ...(pausedWords !== undefined ? { pausedWords } : {}),
+    paused: pausedWords !== undefined,
+    live,
+    // Whether it waits on a person (runs.ts waitsOnPerson): a parked approval, a pause at its cap (read through a message
+    // counted but not shown), or a question its turn ended on.
+    waitsOnPerson: run.kind === "agentic" && (waiting !== undefined || pausedAt(run, { inFlight: false }) !== undefined || (status === "input_required" && state === "waiting")),
+    ...(waiting ? { waitingApprovalId: waiting.id } : {}),
+    ...(run.approvals ? { approvalIds: new Set(run.approvals.keys()) } : {}),
+    ...(answered ? { answeredApprovals: Object.fromEntries(Object.entries(answered).map(([id, a]) => [id, { decision: a.decision }])) } : {}),
+  };
 }
