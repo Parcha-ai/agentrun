@@ -53,16 +53,19 @@ export interface DaytonaModuleOptions {
 	webSocket?: DaytonaProviderOptions["webSocket"];
 	/** The provider's bounds; the sweep sets how long a release waits. */
 	timeouts?: DaytonaProviderOptions["timeouts"];
+	/** What the provider says that is no failure: the CLI gives it and puts it in the report. */
+	onNote?: DaytonaProviderOptions["onNote"];
 }
 
 /** The provider's options from the environment (optionsFromEnv), with the run's bounds. */
-function optionsOf({ env = process.env, fetch, webSocket, timeouts }: DaytonaModuleOptions): DaytonaProviderOptions {
+function optionsOf({ env = process.env, fetch, webSocket, timeouts, onNote }: DaytonaModuleOptions): DaytonaProviderOptions {
 	return optionsFromEnv(env, {
 		autoStopMinutes: CONFORMANCE_AUTO_STOP_MINUTES,
 		autoDeleteMinutes: CONFORMANCE_AUTO_DELETE_MINUTES,
 		...(fetch ? { fetch } : {}),
 		...(webSocket ? { webSocket } : {}),
 		...(timeouts ? { timeouts } : {}),
+		...(onNote ? { onNote } : {}),
 	});
 }
 

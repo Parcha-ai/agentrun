@@ -210,6 +210,12 @@ export interface ConformanceReport {
 	 * accepted and sent nothing back), one entry per note, naming the computer, in the order they came; absent when none.
 	 */
 	computerNotes?: ComputerNote[];
+	/**
+	 * What the provider said through its onNote option during the run (a release that did not let an Archil folder go
+	 * cleanly), naming the computer, in the order it came: no failure of any case. The CLI gives the option and fills
+	 * this; absent when nothing was said.
+	 */
+	providerNotes?: ComputerNote[];
 }
 
 /** One note a create returned: the computer's name and the note's words. */

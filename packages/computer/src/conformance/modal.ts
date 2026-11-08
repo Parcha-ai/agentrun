@@ -15,6 +15,7 @@
 // COMPUTER_ARCHIL_S3_URL, or an object API given as archil.objects); with no disk named it makes none, and the cases
 // are skipped.
 import type { MountKind } from "../mount.js";
+import type { ProviderNote } from "../mount-archil.js";
 import type { ComputerProvider } from "../provider.js";
 import { ENV, fromEnv, type ModalClientConstructor } from "../modal.js";
 import { ARCHIL_ENV, type ArchilRunFolderOptions, archilRunFolder, archilSettings } from "./archil.js";
@@ -43,6 +44,8 @@ export interface ModalModuleOptions {
 	buildDaemon?: (version: string) => Promise<string>;
 	/** For mountFor("archil"): the disk's object API, or the SDK's Archil client, in place of the host's disk package. */
 	archil?: Pick<ArchilRunFolderOptions, "objects" | "Archil" | "baseUrl">;
+	/** What the provider says that is no failure: the CLI gives it and puts it in the report. */
+	onNote?: ProviderNote;
 }
 
 function live(env: Record<string, string | undefined>): void {
@@ -51,9 +54,9 @@ function live(env: Record<string, string | undefined>): void {
 	}
 }
 
-export async function createProvider({ env = process.env, ModalClient, daemonPath }: ModalModuleOptions = {}): Promise<ComputerProvider> {
+export async function createProvider({ env = process.env, ModalClient, daemonPath, onNote }: ModalModuleOptions = {}): Promise<ComputerProvider> {
 	live(env);
-	return fromEnv(env, { ...(ModalClient ? { ModalClient } : {}), ...(daemonPath === undefined ? {} : { daemonPath }), maxLifetimeMs: CONFORMANCE_MAX_LIFETIME_MS });
+	return fromEnv(env, { ...(ModalClient ? { ModalClient } : {}), ...(daemonPath === undefined ? {} : { daemonPath }), ...(onNote ? { onNote } : {}), maxLifetimeMs: CONFORMANCE_MAX_LIFETIME_MS });
 }
 
 /**

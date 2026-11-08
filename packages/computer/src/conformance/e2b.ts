@@ -41,7 +41,7 @@ export const conformanceNotes: string[] = [
 	"e2b: E2B Hobby plan: every sandbox's timeout is its lifetime, capped at 30 minutes for the run (Hobby caps a sandbox at 1 h, Pro at 24 h). The daemon is a child of E2B's envd, started as a background command; network none is no internet access and no public traffic, read back from E2B and probed from inside; no public stream, so screen.stream is skipped.",
 ];
 
-export interface E2BModuleOptions extends Pick<E2BFromEnvOptions, "Sandbox" | "daemonPath" | "timeouts"> {
+export interface E2BModuleOptions extends Pick<E2BFromEnvOptions, "Sandbox" | "daemonPath" | "timeouts" | "onNote"> {
 	/** Where the settings are read; default process.env. */
 	env?: Record<string, string | undefined>;
 	/** Builds this package's daemon for linux/amd64 stamped with version, and gives its path; default go build. */
@@ -62,9 +62,9 @@ export function conformanceImage({ env = process.env }: Pick<E2BModuleOptions, "
 }
 
 /** The provider the CLI runs; throws in words without the live switch, or when a setting is missing or wrong. */
-export async function createProvider({ env = process.env, Sandbox, daemonPath, timeouts }: E2BModuleOptions = {}): Promise<E2BProvider> {
+export async function createProvider({ env = process.env, Sandbox, daemonPath, timeouts, onNote }: E2BModuleOptions = {}): Promise<E2BProvider> {
 	live(env);
-	return fromEnv(env, { ...(Sandbox ? { Sandbox } : {}), ...(daemonPath === undefined ? {} : { daemonPath }), ...(timeouts ? { timeouts } : {}), maxLifetimeMs: CONFORMANCE_MAX_LIFETIME_MS });
+	return fromEnv(env, { ...(Sandbox ? { Sandbox } : {}), ...(daemonPath === undefined ? {} : { daemonPath }), ...(timeouts ? { timeouts } : {}), ...(onNote ? { onNote } : {}), maxLifetimeMs: CONFORMANCE_MAX_LIFETIME_MS });
 }
 
 /**
