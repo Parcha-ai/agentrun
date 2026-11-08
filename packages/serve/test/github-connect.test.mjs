@@ -44,9 +44,9 @@ async function fakeGitHub(t) {
       answer(404, { message: "Not Found" });
     });
   });
-  await new Promise((resolve) => server.listen(0, "127.0.0.1", resolve)); // key-gate: loopback-rule the fake GitHub the test runs
+  await new Promise((resolve) => server.listen(0, "127.0.0.1", resolve));
   t.after(() => new Promise((resolve) => server.close(resolve)));
-  return { url: `http://127.0.0.1:${server.address().port}`, app, publicKey, requests }; // key-gate: loopback-rule the fake GitHub the test runs
+  return { url: `http://127.0.0.1:${server.address().port}`, app, publicKey, requests };
 }
 
 /** A server with a public URL and a seal key, its GitHub API the fake's. */
