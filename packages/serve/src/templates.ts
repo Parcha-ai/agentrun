@@ -15,6 +15,7 @@ import { MCP_SERVER_NAME } from "./mcp-servers.js";
 import { chooseModel, harnessRuns, hostModel, MODEL_KEYS, THINKING_LEVELS, type Tier } from "./model.js";
 import { mcpToolName } from "./tool-gate.js";
 import { BOUND_TOOLS } from "./tools.js";
+import { TRIGGER_ADAPTERS } from "./trigger-adapters.js";
 import { triggerBodyIssues } from "./triggers.js";
 import { definitionBodyIssues, isObject, type Json, MODEL_REF, unknownFields } from "./validate.js";
 
@@ -313,7 +314,7 @@ export function readPackage(dir: string): Package {
   const made = compiled(p, samples, { ...(harness ? { harness: harness[0]! } : {}), ...(p.model?.prefer ? { model: p.model.prefer } : {}), mcp, defaultTools: [], grants: [] });
   for (const issue of definitionBodyIssues(made.agent)) bad(issue.field.startsWith("skills.") ? `skills/${issue.field.slice("skills.".length)}` : MANIFEST, `${issue.field.startsWith("skills.") ? "" : `the agent it makes: ${issue.field}: `}${issue.message}`);
   made.triggers.forEach((trigger, i) => {
-    for (const issue of triggerBodyIssues({ ...trigger, target: { ...(trigger.target as Json), agent_id: SAMPLE_AGENT } }, 0)) bad(MANIFEST, `triggers[${i}].${issue.field}: ${issue.message}`);
+    for (const issue of triggerBodyIssues(TRIGGER_ADAPTERS, { ...trigger, target: { ...(trigger.target as Json), agent_id: SAMPLE_AGENT } }, 0)) bad(MANIFEST, `triggers[${i}].${issue.field}: ${issue.message}`);
   });
   if (problems.length) throw new PackageError(dir, [...new Set(problems)]);
   return p;

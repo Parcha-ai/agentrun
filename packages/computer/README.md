@@ -112,9 +112,11 @@ extension](#the-protocol-extension-kind-daemon-modes-screen-input-apps-lifetime)
   (`test/docker/modal-commands.docker.test.mjs`: root containers with Docker's default capabilities and `--cap-add
   ALL`, as 0:0 and 1000:1000, and the refusal without CAP_SETPCAP), and computerd's end at its deadline with the
   Docker live tests. The test binaries (`CGO_ENABLED=0 go test -c`) also run as root in a container by hand.
-- `computerd probe [--connect <host:port>]...` prints one JSON line: the uid and gid it runs as, the kernel's release,
-  and which addresses a TCP connection reached, each tried for at most 3 s. A provider whose vendor reads nothing back
-  runs it through `exec.run` (below, Modal).
+- `computerd probe [--connect <host:port>[/udp]]...` prints one JSON line: the uid and gid it runs as, the kernel's
+  release, `reached` (the targets that answered), `accepted` (the targets that accepted a TCP connection and sent nothing back)
+  and `results`, each target's `protocol`, `outcome` (`refused`, `accepted` or `answered`), `bytes` and `detail` in
+  words. A provider whose vendor reads nothing back runs it through `exec.run` (below, Modal), under the rule in
+  [Network none, read from inside](#network-none-read-from-inside-nothing-answers).
 - `computerd stdio` is a thin bridge: it connects to the socket (waiting up to 3 s for a computer that has just
   started) and copies bytes both ways until either side ends. With no daemon to reach it says so on stderr and exits 1;
   it never serves on its own.
@@ -133,6 +135,55 @@ extension](#the-protocol-extension-kind-daemon-modes-screen-input-apps-lifetime)
   after. It refuses in words an earlier time (`invalid`), one past `--max-deadline`, the most the provider allowed at
   start (`limit`), and any move when init got no `--max-deadline` (`unsupported`); a refusal moves nothing. Init
   refuses to start with a maximum before its deadline.
+
+### Network none, read from inside: nothing answers
+
+Where a vendor reads no network policy back, `computerd probe` stands for one, and network none holds only when
+**nothing answers within 10 s**: a target counts as reached only when bytes come back from it. One rule for every
+provider.
+
+- **Targets.** `host:port` is tried over TCP; `host:port/udp` (the `/udp` suffix, on `--connect` and in a provider's
+  `probeTargets`) is sent a DNS query over UDP. Modal's defaults are TCP to `1.1.1.1:443`, `8.8.8.8:443` and
+  `[2606:4700:4700::1111]:443`, and DNS over UDP to `1.1.1.1:53/udp` and `[2606:4700:4700::1111]:53/udp`: DNS over UDP
+  is the classic path out of a sandbox that drops TCP.
+- **Each TCP target gets a request by its port**, so a server that waits for its client speaks: 443 a TLS 1.2
+  ClientHello, 80 an HTTP/1.0 `HEAD /`, 53 a DNS query for example.com (behind its 2-byte length), and any other port
+  an HTTP `HEAD /` (the most common protocol where the client speaks first; a server that speaks first, as SSH and SMTP
+  do, answers whatever is sent). The ClientHello names the server (SNI) only when the target's host is a name: an IP
+  literal is no server name (RFC 6066, section 3), so `1.1.1.1:443` gets none. The HTTP request's `Host` is the
+  target's host. **A UDP target**, whatever its port, gets one datagram: a recursive DNS query for example.com's A
+  records with a random id.
+- **Bounds:** 10 s to connect, 10 s from the request to the answer, at most 4 KiB read per target, every target at once.
+  The probe runs once per create (and per attach and `network(ref)`), so its window is wide: a transparent proxy that
+  connects onward lazily, under load, still answers within it. Modal's 30 s bound on the probe's `exec.run` covers the
+  longest a probe can take (20 s).
+- **Outcomes.** `refused`: no connection, or for UDP no reply (UDP has no accept, so a datagram that brings nothing back
+  is refused, as is one the far side's ICMP port-unreachable answers). `answered`: any byte came back, whatever it is: a
+  ServerHello, a TLS alert (a server that will not serve the hello still spoke), an HTTP status line, a DNS response
+  with the query's id and the response bit, a banner, or bytes of no expected protocol (the detail says which; over UDP
+  a datagram that is not the DNS response still came back, and is an answer). Only `answered` is `reached`, and a
+  provider refuses network none on any. `accepted`: a TCP connection, then nothing back within the bound, closed or
+  held open.
+- **An accepted-but-silent connection is recorded, never refused and never hidden.** Some firewalls accept every
+  outbound connection first and decide after, closing a denied one with nothing sent back (E2B documents exactly this).
+  Such a connection shows that nothing came back, so it is not counted as reached. The provider keeps the computer and
+  names the targets in its read-back's words: `notes` on what `create` returns and on what `attach` finds, such as
+  `network: none; accepted with no answer (no bytes came back): 1.1.1.1:443, 8.8.8.8:443`. `network(ref)` reads back
+  none. The conformance report carries create's notes too, each naming its computer (see
+  [Conformance](#conformance)).
+- **What the rule can and cannot detect.** It detects a TCP or UDP path that carries bytes back within 10 s on a probed
+  host:port. It cannot detect:
+  - a one-way leak: a path that forwards outbound bytes and drops every reply reads accepted or refused, never answered;
+  - a port that is not probed: the probe shows its own targets are blocked, not every address;
+  - a client-first server that silently drops what it is sent: a TCP target whose server waits for its own protocol and
+    drops a first message it cannot parse (an HTTP `HEAD` sent to a port that speaks something else) reads `accepted`.
+    The defaults never meet this (443 gets TLS, 53 DNS); only an operator's own `probeTargets` can.
+- **What it changes.** Only a provider that probes, on a vendor whose firewall accepts first, reads differently. Docker
+  reads its network back from `docker inspect` (`--network none` leaves no interface but `lo`, so a TCP connection is
+  refused outright and a UDP datagram has no route, which `test/docker/modal-commands.docker.test.mjs` pins with the
+  probe itself, every default target refused); Daytona reads `networkBlockAll` back from its API and runs no probe;
+  Modal's live run with `blockNetwork` read back no TCP accept at any target under the earlier accept-counts rule, so
+  nothing it accepted is newly let through. The UDP targets have not yet run live on Modal.
 
 ### Processes
 
@@ -733,15 +784,18 @@ of that slice, and the live conformance file waits for a key (below).
 - **Network.** `none` is `blockNetwork: true`; `open` passes no network field. Modal has no read-back of a sandbox's
   policy, so `networkReadBack` is false and the daemon's probe stands for one: `create`, `attach` and `network(ref)` run
   `computerd probe` through `exec.run`, as the computer's user, against public addresses (`1.1.1.1:443`,
-  `8.8.8.8:443`, `[2606:4700:4700::1111]:443`, or the `probeTargets` option). A computer with network none that
-  reaches any of them is terminated at create, refused by attach, and reads back as another network in words. This
-  shows those addresses are blocked, not every one. An allowlist is refused: Modal's CIDR allowlist (any protocol,
+  `8.8.8.8:443`, `[2606:4700:4700::1111]:443`, and DNS over UDP to `1.1.1.1:53/udp` and
+  `[2606:4700:4700::1111]:53/udp`, or the `probeTargets` option). A computer with network none that any of
+  them answers is terminated at create, refused by attach, and reads back as another network in words; one that only
+  accepted, sending nothing back, is kept, the targets named in `notes` (see
+  [Network none, read from inside](#network-none-read-from-inside-nothing-answers)). This shows those addresses are
+  blocked, not every one. An allowlist is refused: Modal's CIDR allowlist (any protocol,
   every port) and its domain allowlist (beta, TLS on 443 by SNI only) cannot be read back, so per ruling 9 an
   allowlist counts only once the live bypass cases pass. A change of network is refused: blockNetwork cannot be
   updated, and an allowlist only if one was set at create.
 - **The drift check** after create: `poll()` is null (it runs), `getTags()` reads back exactly the tags given, hello's
   version, os, arch (`amd64`), kind (`linux`) and exact groups match, and the probe's uid:gid is the computer's user, its kernel is
-  not gVisor's (`4.19.0-gvisor`), and with network none it reached nothing. A mismatch, an abort or a timeout
+  not gVisor's (`4.19.0-gvisor`), and with network none none of its targets answered. A mismatch, an abort or a timeout
   terminates the sandbox and refuses in words. The SDK reads back no runtime, image or size: the probe's kernel is the
   only runtime read-back, and image and sizes are what create recorded in a tag only the host's token writes.
 - **Sizes are limits**, as in Docker: `cpus` (at least 0.25) becomes `cpuLimit` in physical cores (2 CPUs each) and
@@ -1213,7 +1267,11 @@ An id is resolved through the provider registry, and only there; the usage lists
 resolved from the directory npm was run in. It exits 0 when Core passes, 1 when it fails, 2 on a
 usage error, and 3 on a partial run; `--json` prints the report object (`{ provider, providerVersion, kind,
 daemonMode, image, daemon: { version, os, arch }, only?, coreNotRun?, results: [{ id, level, group, status, reason?,
-undeclared? }], core, undeclared, cleanup }`). A failure is listed under its line with what the case found.
+undeclared? }], core, undeclared, cleanup, notes?, computerNotes? }`). A failure is listed under its line with what the
+case found. `computerNotes` (`[{ computer, note }]`, absent when empty) holds every note a `create` returned beside its
+ref, such as a probe target that accepted and sent nothing back, naming the computer, in the order they came; the text
+report prints each as `note <computer>: <words>` above the verdict, so a run that passes Core never hides one. Notes an
+`attach` returns are not carried: cases call `attach` on the provider directly, so the runner never sees them.
 
 `--only` that leaves any Core case out is a partial run: `core` is `"partial"` when every case that ran passed (a
 skipped Core case is not a pass) and nothing was left behind, else `"fail"`; `coreNotRun` names the Core cases that did

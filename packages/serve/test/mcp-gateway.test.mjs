@@ -4,6 +4,7 @@
 import assert from "node:assert/strict";
 import { mkdtemp, readFile, rm } from "node:fs/promises";
 import { createServer, request } from "node:http";
+import { createServer as createTcpServer } from "node:net";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { test } from "node:test";
@@ -409,14 +410,16 @@ test("a grant whose server is no longer saved, or whose tool a refresh removed, 
 });
 
 test("a server that can't be reached reads so, at its address with a short reason and that nothing was sent, never the MCP SDK's own words", async (t) => {
-  // A port nothing listens on: the server's address once it was saved, and gone since.
-  const closed = createServer();
-  await new Promise((resolve) => closed.listen(0, "127.0.0.1", resolve));
-  const url = `http://127.0.0.1:${closed.address().port}/mcp`;
-  await new Promise((resolve) => closed.close(resolve));
+  // A server that cannot be reached: a port this test holds for its whole run, so no other test can take it, where each
+  // connection is reset at once (TCP RST) before any HTTP answer. A freed port is not used: another test may bind it
+  // between the close and the dial.
+  const dead = createTcpServer((socket) => socket.resetAndDestroy());
+  await new Promise((resolve) => dead.listen(0, "127.0.0.1", resolve));
+  t.after(() => new Promise((resolve) => dead.close(resolve)));
+  const url = `http://127.0.0.1:${dead.address().port}/mcp`;
   const { gateway } = await setup(t, { url });
   const said = await gateway.call("fake", "add", { a: 2, b: 3 }, { signal: signal() });
   assert.equal(said.isError, true);
-  assert.equal(textOf(said), `The MCP server fake could not be reached at ${new URL(url).origin} (connection refused); nothing was sent.`);
+  assert.equal(textOf(said), `The MCP server fake could not be reached at ${new URL(url).origin} (the connection was reset); nothing was sent.`);
   assert.doesNotMatch(textOf(said), /Version negotiation|fetch failed/);
 });

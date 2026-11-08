@@ -1,8 +1,9 @@
 // The commands the Modal provider sends when it uploads the daemon, run where Modal would run them: a container started
 // as root (Modal containers always run as root) with no network, whose command is the provider's entrypoint, the
 // upload streamed into `docker exec -i` as the provider streams it into exec's stdin, and the bridge over
-// `docker exec -i ... computerd stdio`. On a Debian image (coreutils) and an Alpine one (BusyBox only). The containers
-// keep Docker's default capabilities, or every one: init leaves itself none, whatever user --user names, root included.
+// `docker exec -i ... computerd stdio`, and the provider's probe through it, refused at every target. On a Debian
+// image (coreutils) and an Alpine one (BusyBox only). The containers keep Docker's default capabilities, or every one:
+// init leaves itself none, whatever user --user names, root included.
 // AGENTRUN_COMPUTER_LIVE_DOCKER=1 only; needs `npm run build` and `npm run build:daemon`, and debian:bookworm-slim and
 // alpine:3.20 pulled. Each container is named computer-modal-<hex> and removed by that name, pass or fail.
 import assert from "node:assert/strict";
@@ -173,6 +174,26 @@ describe("the Modal provider's upload commands in a root container with no netwo
 			assert.equal(ran.ok, true, JSON.stringify(ran));
 			assert.equal(Buffer.from(ran.value.stdout, "base64").toString(), "1000\n/work\n");
 			client.close();
+		});
+
+		it(`${image}: the provider's probe through the daemon with no network: every target, TCP and UDP, refused outright, none reached and none accepted`, async () => {
+			const { name } = sandbox(image);
+			upload(name);
+			const client = await connected(name);
+			// The Modal provider's default targets: TCP to 443, and DNS over UDP to 53 (UDP has no accept: no reply is refused).
+			const targets = ["1.1.1.1:443", "8.8.8.8:443", "[2606:4700:4700::1111]:443", "1.1.1.1:53/udp", "[2606:4700:4700::1111]:53/udp"];
+			const argv = ["/opt/agentrun/computerd", "probe", ...targets.flatMap((target) => ["--connect", target])];
+			const ran = await client.call("exec.run", { argv, timeoutMs: 30_000 }, { signal: AbortSignal.timeout(40_000) });
+			client.close();
+			assert.equal(ran.ok, true, JSON.stringify(ran));
+			assert.equal(ran.value.exitCode, 0, Buffer.from(ran.value.stderr, "base64").toString());
+			const report = JSON.parse(Buffer.from(ran.value.stdout, "base64").toString());
+			assert.deepEqual(report.reached, [], "Docker's network none answers nothing");
+			assert.deepEqual(report.accepted, [], "Docker's network none accepts nothing either: each connection is refused outright");
+			assert.deepEqual(
+				report.results.map(({ target, protocol, outcome }) => [target, protocol, outcome]),
+				targets.map((target) => [target, target.endsWith("/udp") ? "dns" : "tls", "refused"]),
+			);
 		});
 
 		for (const [user, caps, words] of [

@@ -10,9 +10,13 @@
 //	                    cannot be relied on (Daytona). As any user, root included, init first leaves every thread no
 //	                    capability in any set and no_new_privs set, or refuses to start
 //	computerd stdio     bridge stdin and stdout to init's socket (stdout carries protocol lines only; stderr is the log)
-//	computerd probe [--connect <host:port>]...
-//	                    print one JSON line: this process's uid and gid, the kernel's release, and the addresses a TCP
-//	                    connection reached, each tried for at most 3 s
+//	computerd probe [--connect <host:port>[/udp]]...
+//	                    print one JSON line: this process's uid and gid, the kernel's release, the addresses that
+//	                    answered (reached: bytes came back), those that accepted a TCP connection and sent nothing back
+//	                    (accepted), and each target's outcome (results). A TCP target gets a request by its port (443 a
+//	                    TLS ClientHello, 80 an HTTP HEAD, 53 a DNS query, any other an HTTP HEAD), a host:port/udp one
+//	                    a DNS query in one datagram (no reply is refused: UDP has no accept); 10 s to connect and 10 s
+//	                    to answer, and at most 4 KiB is read
 //	computerd version   print the version
 //
 // Each exec.run and process.start starts itself again as `computerd guard`, with no other caller (see execrun.Guard).
@@ -22,7 +26,6 @@ import (
 	"encoding/json"
 	"fmt"
 	"log"
-	"net"
 	"os"
 	"strconv"
 	"strings"
@@ -67,7 +70,7 @@ func main() {
 		if !ok {
 			os.Exit(2)
 		}
-		if err := json.NewEncoder(os.Stdout).Encode(probe.Run(targets, probe.DialTimeout)); err != nil {
+		if err := json.NewEncoder(os.Stdout).Encode(probe.Run(targets, probe.ConnectBounds)); err != nil {
 			logger.Printf("probe: %v", err)
 			os.Exit(1)
 		}
@@ -79,7 +82,7 @@ func main() {
 }
 
 func usage() {
-	fmt.Fprintln(os.Stderr, "usage: computerd init --deadline <RFC 3339 time> [--max-deadline <RFC 3339 time>] [--user <uid:gid>] | stdio | probe [--connect <host:port>]... | version")
+	fmt.Fprintln(os.Stderr, "usage: computerd init --deadline <RFC 3339 time> [--max-deadline <RFC 3339 time>] [--user <uid:gid>] | stdio | probe [--connect <host:port>[/udp]]... | version")
 	os.Exit(2)
 }
 
@@ -171,16 +174,16 @@ func accountOf(value string) (account, bool) {
 	return account{uid: int(u), gid: int(g)}, true
 }
 
-// probeTargetsOf reads probe's `--connect <host:port>` flags.
+// probeTargetsOf reads probe's `--connect <host:port>[/udp]` flags.
 func probeTargetsOf(logger *log.Logger, args []string) ([]string, bool) {
 	targets := []string{}
 	for i := 0; i < len(args); i += 2 {
 		if args[i] != "--connect" || i+1 >= len(args) {
-			logger.Printf("probe: each target is --connect <host:port>, such as --connect example.com:443")
+			logger.Printf("probe: each target is --connect <host:port>[/udp], such as --connect example.com:443 or --connect 1.1.1.1:53/udp")
 			return nil, false
 		}
-		if _, _, err := net.SplitHostPort(args[i+1]); err != nil {
-			logger.Printf("probe: %q is not host:port: %v", args[i+1], err)
+		if _, _, err := probe.ParseTarget(args[i+1]); err != nil {
+			logger.Printf("probe: %q is not host:port or host:port/udp: %v", args[i+1], err)
 			return nil, false
 		}
 		targets = append(targets, args[i+1])
