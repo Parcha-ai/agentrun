@@ -18,7 +18,7 @@ export const INSTALLED = new Set(["acme/widgets"]);
  *  App's installations as GitHub holds them now (`installations`: id → {account, suspended_at}, which a test changes as
  *  GitHub would), installation tokens and a repository's installation. It keeps each request so a test reads what was
  *  asked and with which credential; `holds` keeps an answer back until a test lets it go (a conversion by its code, an
- *  installation's read by `installation`, the list by `installations`, which answers the list as it was when asked).
+ *  installation's read by `installation` (the next one alone, answered as when asked, by `installationOnce`), the list by `installations`, which answers the list as it was when asked).
  *  `asked(prefix)` and `dropped(prefix)` settle at the next request to a path under `prefix`, or the next one its client
  *  left unanswered. */
 export async function fakeGitHub(t) {
@@ -66,11 +66,22 @@ export async function fakeGitHub(t) {
       if (req.method === "GET" && installation) {
         const id = appId();
         if (!id) return answer(401, { message: "A JSON web token could not be decoded" });
+        // `installationOnce` holds the next read alone, answering it as GitHub held the installation when it was asked: a
+        // slow answer, older than now. `installation` holds every read, answered as it is when let go.
+        const once = holds.installationOnce;
+        delete holds.installationOnce;
+        const read = () => {
+          if (failures.installation) return [failures.installation, { message: "Server Error" }];
+          const held = own(id).find(([key]) => key === Number(installation[1]))?.[1];
+          return held ? [200, { id: Number(installation[1]), account: { login: held.account, type: "Organization" }, app_id: id, suspended_at: held.suspended_at }] : [404, { message: "Not Found" }];
+        };
+        if (once) {
+          const asked = read();
+          await once;
+          return res.destroyed ? undefined : answer(...asked);
+        }
         await holds.installation;
-        if (failures.installation) return answer(failures.installation, { message: "Server Error" });
-        const held = own(id).find(([key]) => key === Number(installation[1]))?.[1];
-        if (!held) return answer(404, { message: "Not Found" });
-        return answer(200, { id: Number(installation[1]), account: { login: held.account, type: "Organization" }, app_id: id, suspended_at: held.suspended_at });
+        return answer(...read());
       }
       const listing = /^\/app\/installations\?per_page=(\d+)&page=(\d+)$/.exec(req.url);
       if (req.method === "GET" && listing) {

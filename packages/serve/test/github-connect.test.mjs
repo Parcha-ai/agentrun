@@ -436,3 +436,54 @@ test("a server that closes while its start's repair waits on GitHub stops waitin
   assert.deepEqual(lines.filter((line) => /github_installations_repaired|connection_lost/.test(line)), [], "no repair taken");
   assert.deepEqual(unhandled, [], "no unhandled rejection");
 });
+
+test("an installation event whose check GitHub answers after a newer event for the same installation landed is checked again, not applied: an old suspend never removes an installation an unsuspend put back, nor turns a trigger off", { timeout: 60_000 }, async (t) => {
+  const server = await connectable(t);
+  await made(server.api, "review");
+  await connect(server);
+  const id = (await server.api("POST", "/triggers", { name: "a", source: { kind: "github", accept: [{ event: "pull_request" }] }, target: target("review") })).body.id;
+  const { webhook_secret: secret } = server.github.app;
+  const installation = { id: 777, account: { login: "acme" }, app_id: 4242 };
+  // Suspended on GitHub when the suspend's check asks; its answer held while the unsuspend comes and is applied.
+  server.github.installations.set(777, { account: "acme", suspended_at: "2026-06-01T00:00:00Z" });
+  const hold = held();
+  server.github.holds.installationOnce = hold.promise;
+  const asked = server.github.asked("/app/installations/777");
+  const suspend = deliver(server.baseUrl, secret, "installation", { action: "suspend", installation });
+  await asked;
+  server.github.installations.set(777, { account: "acme", suspended_at: null });
+  const unsuspend = await deliver(server.baseUrl, secret, "installation", { action: "unsuspend", installation });
+  assert.equal(unsuspend.status, 200, JSON.stringify(unsuspend.body));
+  hold.release();
+  assert.equal((await suspend).status, 200);
+  assert.deepEqual((await server.api("GET", "/integrations/github")).body.installations, [{ id: 777, account: "acme" }], "still listed");
+  const trigger = (await server.api("GET", `/triggers/${id}`)).body;
+  assert.deepEqual([trigger.enabled, trigger.disabled], [true, null], JSON.stringify(trigger));
+});
+
+test("a server that closes while an installation event's check waits on GitHub stops waiting: close resolves, the check's request dropped, and nothing is written", { timeout: 60_000 }, async (t) => {
+  const server = await connectable(t);
+  await made(server.api, "review");
+  await connect(server);
+  const id = (await server.api("POST", "/triggers", { name: "a", source: { kind: "github", accept: [{ event: "pull_request" }] }, target: target("review") })).body.id;
+  const { webhook_secret: secret } = server.github.app;
+  // Gone on GitHub: the deletion's check would drop the last installation and turn the trigger off, were it taken.
+  server.github.installations.delete(777);
+  const hold = held();
+  server.github.holds.installationOnce = hold.promise;
+  const asked = server.github.asked("/app/installations/777");
+  const dropped = server.github.dropped("/app/installations/777");
+  const unhandled = [];
+  const onUnhandled = (reason) => unhandled.push(reason);
+  process.on("unhandledRejection", onUnhandled);
+  t.after(() => process.off("unhandledRejection", onUnhandled));
+  void deliver(server.baseUrl, secret, "installation", { action: "deleted", installation: { id: 777, account: { login: "acme" }, app_id: 4242 } }).catch(() => undefined);
+  await asked;
+  await server.close();
+  await dropped;
+  hold.release();
+  const trigger = JSON.parse(await readFile(join(server.data, "triggers.json"), "utf8")).triggers.find((x) => x.id === id);
+  assert.deepEqual([trigger.enabled, trigger.disabled], [true, null], "still on");
+  assert.deepEqual(server.lines.filter((line) => /github_installation_lost|connection_lost/.test(line)), [], "the deletion not taken");
+  assert.deepEqual(unhandled, [], "no unhandled rejection");
+});
