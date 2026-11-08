@@ -764,13 +764,14 @@ export const FLOOR_FIELD = "floor";
  *  ran under (its revision's model, else the host's default for its harness: hostModel), so a floor measured under
  *  other host settings is never applied. A create reads the newest matching one of its agent's revision (cap-floor.ts)
  *  and refuses a cap under the least. */
-export type FloorMark = { model: string; effort?: string; setting?: string; inputTokens: number; leastUsd: number; typicalUsd: number; inputUsdPerToken: number };
-/** What a run's floor is measured under: its thinking level (`effort`) and its model setting (`setting`). */
-export type FloorRun = { effort?: string; setting?: string };
+export type FloorMark = { model: string; effort?: string; asked?: string; setting?: string; inputTokens: number; leastUsd: number; typicalUsd: number; inputUsdPerToken: number };
+/** What a run's floor is measured under: its thinking level (`effort`), the effort it was asked for (`asked`, none for
+ *  the agent's own: an asked effort adds its guidance to the prompt), and its model setting (`setting`). */
+export type FloorRun = { effort?: string; asked?: string; setting?: string };
 /** A first request's floor: `input` tokens (its bound), `asked` and `least` output, and `feeUsd`, priced at `price`. */
-export function floorFigures(price: (input: InputParts, output: number) => number, model: string, { input, asked, least, feeUsd = 0 }: { input: number; asked: number; least: number; feeUsd?: number }, { effort, setting }: FloorRun = {}): FloorMark {
+export function floorFigures(price: (input: InputParts, output: number) => number, model: string, { input, asked, least, feeUsd = 0 }: { input: number; asked: number; least: number; feeUsd?: number }, run: FloorRun = {}): FloorMark {
   const priced = requestPrice(price, input, undefined, 0, "expected", feeUsd);
-  return { model, ...(effort ? { effort } : {}), ...(setting ? { setting } : {}), inputTokens: input, leastUsd: priced.cost(least), typicalUsd: priced.cost(Math.min(WRAP_UP_STEP0_ANSWER_TOKENS, asked)), inputUsdPerToken: price({ cached: 0, fresh: 1 }, 0) - price({ cached: 0, fresh: 0 }, 0) };
+  return { model, ...(run.effort ? { effort: run.effort } : {}), ...(run.asked ? { asked: run.asked } : {}), ...(run.setting ? { setting: run.setting } : {}), inputTokens: input, leastUsd: priced.cost(least), typicalUsd: priced.cost(Math.min(WRAP_UP_STEP0_ANSWER_TOKENS, asked)), inputUsdPerToken: price({ cached: 0, fresh: 1 }, 0) - price({ cached: 0, fresh: 0 }, 0) };
 }
 /** The output a request on another harness asks and needs at least, as admission reads them (capBefore): what it asks,
  *  at most the model's ceiling `output`, and its least (1,024 tokens, or what its body says it needs), at most that. */

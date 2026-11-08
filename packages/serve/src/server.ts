@@ -1479,6 +1479,7 @@ async function startHolding(options: ServeOptions, data: string, lock: ServerLoc
    *  process reads it: its effort, else its revision's, else the host's) and its model setting (floorSetting). */
   const floorRunOf = (revision: Revision, effort: string | undefined) => ({
     effort: thinkingOf({ ...(process.env.AGENT_THINKING ? { AGENT_THINKING: process.env.AGENT_THINKING } : {}), ...(effort ? { [EFFORT_ENV]: effort } : {}) }, revision.kind === "agentic" ? revision.body.thinking : undefined),
+    ...(effort ? { asked: effort } : {}),
     ...floorSetting(env, revision as never),
   });
 

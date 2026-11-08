@@ -60,14 +60,16 @@ export function floorFor(measured: MeasuredRun, input: unknown): { leastUsd: num
  *  at. Undefined with none. */
 export function capFloorView(all: readonly MeasuredRun[], setting: string | undefined): CapFloor | undefined {
   const measured = all.filter((run) => run.mark.setting === setting);
-  const newest = measured[0];
+  // A run asked for no effort first (its prompt has no effort guidance, the least of them), else the newest.
+  const newest = measured.find((run) => run.mark.asked === undefined) ?? measured[0];
   if (!newest) return undefined;
   const free = (run: MeasuredRun): FloorFigures => {
     const { leastUsd, typicalUsd } = floorFor(run, { content: "" });
     return { least_usd: micro(leastUsd), typical_usd: micro(typicalUsd) };
   };
   const byEffort: Record<string, FloorFigures> = {};
-  for (const run of measured) if (run.mark.effort && !Object.hasOwn(byEffort, run.mark.effort)) byEffort[run.mark.effort] = free(run);
+  const plainFirst = [...measured.filter((run) => run.mark.asked === undefined), ...measured.filter((run) => run.mark.asked !== undefined)];
+  for (const run of plainFirst) if (run.mark.effort && !Object.hasOwn(byEffort, run.mark.effort)) byEffort[run.mark.effort] = free(run);
   return { ...free(newest), model: newest.mark.model, ...(newest.mark.effort ? { effort: newest.mark.effort } : {}), measured_at: newest.at, by_effort: byEffort };
 }
 
@@ -77,7 +79,7 @@ export function capFloorView(all: readonly MeasuredRun[], setting: string | unde
  *  their list only adds to its first request), so a run with files is refused only when even its message is not
  *  covered. */
 export function belowLeast(cap: number, measured: readonly MeasuredRun[], input: unknown, run: FloorRun): ApiError | undefined {
-  const same = measured.find((one) => one.mark.effort === run.effort && one.mark.setting === run.setting);
+  const same = measured.find((one) => one.mark.effort === run.effort && one.mark.asked === run.asked && one.mark.setting === run.setting);
   if (!same) return undefined;
   const { leastUsd, typicalUsd } = floorFor(same, input);
   if (cap >= leastUsd) return undefined;

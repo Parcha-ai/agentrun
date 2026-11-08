@@ -132,7 +132,7 @@ export default async function app(where: AppContext): Promise<AppOptions> {
   const thinkingLevel = thinkingOf(process.env, revision.kind === "agentic" ? revision.body.thinking : undefined);
   // What a run's floor is measured under (cap.ts FloorMark): the thinking level it runs at, and its model setting, its
   // revision's model else the host's default for its harness (hostModel, as the server picks it at the launch).
-  const floorRun = { effort: thinkingLevel, ...floorSetting(env, revision as never, process.env[DEFAULT_MODEL_ENV]) };
+  const floorRun = { effort: thinkingLevel, ...(process.env[EFFORT_ENV] ? { asked: process.env[EFFORT_ENV] } : {}), ...floorSetting(env, revision as never, process.env[DEFAULT_MODEL_ENV]) };
   // A fresh run's first turn request records its floor (cap.ts FloorMark) on its start mark, capped or not, sent or
   // refused: a create reads the revision's newest matching one (cap-floor.ts).
   const floor = onHarness ? undefined : await piFloor(floorRun);
