@@ -502,7 +502,7 @@ if (!image.ok) throw new Error(image.error.message);
 const made = await docker.create({ image: image.value, lifetimeMs: 600_000, network: "none" });
 ```
 
-- `ensureImage(source, { docker?, signal?, timeoutMs? })` (`src/docker/image.ts`) gives the tag. `source` is
+- `ensureImage(source, { docker?, signal?, timeoutMs?, onWait? })` (`src/docker/image.ts`) gives the tag. `source` is
   `{ recipe }`, a Dockerfile with no build context, or `{ image }`, an image by name.
   - A recipe is built with `docker build --quiet --label agentrun.computer.recipe=<sha256> --tag
     agentrun-computer:<first 12 hex digits> -`, the recipe on stdin (`recipeTag(recipe)`, `recipeHash(recipe)`,
@@ -512,7 +512,7 @@ const made = await docker.create({ image: image.value, lifetimeMs: 600_000, netw
     built.
 - `DockerProvider`'s `image` option is that source; the default is `{ recipe: DOCKER_RECIPE }`, the provider's own
   image (`DEFAULT_DOCKER_IMAGE`): `python:3.12-slim` pinned by its index digest (`DOCKER_BASE`), with git, curl,
-  nodejs, npm, ripgrep and socat from apt. `docker.image({ signal?, timeoutMs? })` is `ensureImage` of it with the
+  nodejs, npm, ripgrep and socat from apt. `docker.image({ signal?, timeoutMs?, onWait? })` is `ensureImage` of it with the
   provider's docker CLI. A source that is neither throws at construction, in words.
 - `COMPUTER_DOCKER_IMAGE` (`DOCKER_IMAGE_ENV`) names another image instead: `imageSourceOf(env)` gives `{ image }` for
   it, and the default recipe when it is unset or empty.
@@ -520,9 +520,13 @@ const made = await docker.create({ image: image.value, lifetimeMs: 600_000, netw
   it, the rest wait on it and ask Docker nothing. A flight is forgotten once it settles, so the next call inspects
   again, and a failure is never kept: the next call tries again.
 - **Two processes need no state file.** Same recipe, same tag, same label, so a build is idempotent. Two processes
-  that both miss the tag both build: on one Docker daemon BuildKit shares the steps and their cache, each `--tag` lands
-  on an image of this recipe, and the last one wins. A computer already made from the other keeps it, as Docker holds
-  an image by its id.
+  that both miss the tag both build, BuildKit sharing its cache. With Docker 29's containerd image store the first to
+  tag wins and the others fail with `already exists`; with the classic store the last one wins. Either way a build or
+  pull that fails asks Docker once more, and the tag on an image of this recipe is the answer, so every process ends
+  with the tag. A computer made from an image that lost its tag keeps it, as Docker holds an image by its id.
+- `onWait(making, tag)` is told once, before a caller waits on a build or pull (`"build"` or `"pull"`), its own or one
+  it joined, and never when Docker has the image: a caller shows its own "preparing" row with it
+  (`DOCKER_RECIPE_HAS` is the default image's contents in words). `docker.image()` takes it too.
 - **One bound, the caller's signal.** `timeoutMs` (default `IMAGE_TIMEOUT_MS`, 10 minutes) covers a flight's inspect and
   its build or pull, and the first caller's bound is the flight's; past it the docker CLI is killed (`timeout`). A
   caller's `signal` ends its own wait (`aborted`); when the last caller waiting aborts, the build or pull is killed.
@@ -1392,7 +1396,7 @@ stop` and at its deadline, attach by a container's name). They need Docker, `deb
 and `alpine:3.20` pulled, both builds, and Go on PATH (the drift case builds a daemon of another version). They use
 the daemon for Docker's own architecture, and remove every container they make by its exact name, pass or fail.
 `test/docker/image.docker.test.mjs` builds fresh `alpine:3.20` recipes: once for three concurrent callers, reused on
-the next call, from two processes at once, and a broken one refused in words; it removes each tag it made. Another,
+the next call, from three processes at once, and a broken one refused in words; it removes each tag it made. Another,
 `test/docker/modal-commands.docker.test.mjs`, runs the Modal provider's entrypoint and upload exactly as sent, in
 a Debian and an Alpine root container with no network, and checks that init comes up as uid 1000 with no capabilities
 and `no_new_privs`, and answers hello over `computerd stdio`. Those root containers keep Docker's default
