@@ -10,12 +10,12 @@ import { API, fakeOrgoApi, fakeTerminal, KEY, VNC, WORKSPACE } from "./fake-orgo
 
 const { MAX_UPLOAD_BYTES, orgoRest, orgoTerminalChannel } = await import("../dist/orgo-channel.js");
 
-function setup({ api: apiOptions = {}, onExec, frames } = {}) {
+function setup({ api: apiOptions = {}, onExec, frames, drops, echoMs } = {}) {
 	const api = fakeOrgoApi(apiOptions);
 	const computer = api.add({ name: "computer-0123456789ab" });
-	const terminal = fakeTerminal({ onExec, ...(frames ? { frames } : {}) });
+	const terminal = fakeTerminal({ onExec, ...(frames ? { frames } : {}), ...(drops ? { drops } : {}) });
 	const rest = orgoRest({ apiKey: KEY, apiUrl: API, fetch: api.fetch });
-	const channel = orgoTerminalChannel({ rest, workspaceId: WORKSPACE, webSocket: terminal.factory });
+	const channel = orgoTerminalChannel({ rest, workspaceId: WORKSPACE, webSocket: terminal.factory, ...(echoMs ? { echoMs } : {}) });
 	return { api, terminal, channel, id: computer.id };
 }
 const secretless = (value, what) => {
@@ -97,6 +97,28 @@ test("stdio: the root terminal made raw, everything before the marker dropped (t
 	await opened.value.close();
 	assert.equal(socket.closed, true);
 	secretless(opened.value.said?.() ?? "", "the bridge's words");
+});
+
+test("stdio: the line is typed once the shell's prompt has come, never into a shell still starting (which drops it, as Orgo's did live)", async () => {
+	const { channel, id, terminal } = setup({ onExec: (command, io) => io.write('{"hello":1}\n') });
+	const opened = await channel.stdio(id, ["/opt/agentrun/computerd", "stdio"], { timeoutMs: 1000 });
+	assert.equal(opened.ok, true, JSON.stringify(opened));
+	assert.equal(terminal.sockets[0].sent.length, 1, "typed once, after the prompt");
+	await opened.value.close();
+});
+
+test("stdio: a line the shell dropped (no echo within echoMs) is typed again, and a line that never echoes is a timeout in words", async () => {
+	const { channel, id, terminal } = setup({ drops: 1, echoMs: 20, onExec: (command, io) => io.write('{"hello":1}\n') });
+	const opened = await channel.stdio(id, ["/opt/agentrun/computerd", "stdio"], { timeoutMs: 2000 });
+	assert.equal(opened.ok, true, JSON.stringify(opened));
+	assert.equal(terminal.sockets[0].sent.length, 2, "typed again once");
+	await opened.value.close();
+	const deaf = setup({ drops: 100, echoMs: 20 });
+	const refused = await deaf.channel.stdio(deaf.id, ["/opt/agentrun/computerd", "stdio"], { timeoutMs: 2000 });
+	assert.equal(refused.ok, false);
+	assert.match(refused.error.message, /typed 3 times, and the shell never echoed it/);
+	assert.equal(deaf.terminal.sockets[0].sent.length, 3, "at most 3 tries");
+	secretless(refused, "the refusal");
 });
 
 test("stdio: output that comes as plain text frames or as binary frames carries the bytes as the JSON frames do", async () => {
