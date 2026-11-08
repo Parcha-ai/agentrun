@@ -4,7 +4,7 @@
 // files, the browser's evidence, monid's long answers, and pdf_pages. Each lands under the run's folder's keys on the
 // disk, and nothing is written on this machine for the run.
 import assert from "node:assert/strict";
-import { createServer } from "node:http";
+import { EventEmitter } from "node:events";
 import { mkdtemp, readdir, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
@@ -50,7 +50,20 @@ test("uploads land in inputs/ on the disk, a taken name suffixed, and the first 
   assert.deepEqual(await readdir(dir), ["files"], "nothing of the run's on this machine");
 });
 
-test("the run's files list from the disk with their times, and a file is served whole in ranged reads", async (t) => {
+/** A response that keeps what is sent to it: its head and its bytes. */
+function kept() {
+  const res = new EventEmitter();
+  Object.assign(res, {
+    destroyed: false, head: undefined, chunks: [],
+    writeHead(status, headers) { res.head = { status, headers }; return res; },
+    write(chunk) { res.chunks.push(Buffer.from(chunk)); return true; },
+    end() { res.ended = true; },
+    destroy() { res.destroyed = true; },
+  });
+  return res;
+}
+
+test("the run's files list from the disk with their times, and a file is served whole in ranged reads", async () => {
   const { work } = fresh();
   const before = Date.now() - 2000;
   await work.write("report.md", "# Report\n");
@@ -59,12 +72,10 @@ test("the run's files list from the disk with their times, and a file is served 
   const { files, deep } = await listFiles(work, 2000);
   assert.deepEqual([files.map((f) => [f.path, f.size_bytes]), deep], [[["out/data.csv", 4], ["report.md", 9]], false]);
   for (const file of files) assert.ok(Date.parse(file.modified_at) >= before, `${file.path}: ${file.modified_at}`);
-  const server = createServer((req, res) => void sendFile(req, res, new URL(req.url, "http://x"), work, "report.md", "a tool").catch((error) => res.writeHead(500).end(String(error))));
-  await new Promise((resolve) => server.listen(0, "127.0.0.1", resolve));
-  t.after(() => server.close());
-  const answer = await fetch(`http://127.0.0.1:${server.address().port}/`);
-  assert.equal(answer.headers.get("content-length"), "9");
-  assert.equal(await answer.text(), "# Report\n");
+  const res = kept();
+  await sendFile({ method: "GET" }, res, new URL("files/report.md", "https://agentrun.invalid/"), work, "report.md", "a tool");
+  assert.deepEqual([res.head.status, res.head.headers["content-length"], res.ended], [200, 9, true]);
+  assert.equal(Buffer.concat(res.chunks).toString("utf8"), "# Report\n");
 });
 
 test("a revision's skills are laid on the disk and read back for the prompt", async () => {
