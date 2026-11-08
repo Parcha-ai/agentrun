@@ -7,6 +7,7 @@ import { resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 import { setTimeout as sleep } from "node:timers/promises";
 import { DaemonClient } from "./client.js";
+import { daemonCopy, defaultDaemonCache } from "./daemon-copy.js";
 import {
 	COMPUTER_LABEL,
 	CPU_PERIOD_US,
@@ -17,6 +18,7 @@ import {
 	DEFAULT_PIDS,
 	type DockerHost,
 	type DockerInspect,
+	type DriftExpected,
 	drift,
 	helloDrift,
 	hostOf,
@@ -60,8 +62,13 @@ export interface DockerDesktopOptions {
 }
 
 export interface DockerProviderOptions {
-	/** The daemon binary on this machine, for the computer's architecture (dist/computerd-linux-<arch>). */
+	/** The daemon binary on this machine, for the computer's architecture (dist/computerd-linux-<arch>). Any mode this
+	 *  process can read: a computer binds the provider's own 0755 copy of it (daemonCache), never this file. */
 	daemonPath: string;
+	/** The directory the provider copies the daemon into, the copy each computer binds: computerd-<sha256 of its bytes>,
+	 *  mode 0755. Made 0700 when missing; refused in words when it is a link, another user's, open to other users, or
+	 *  under a directory another user may write. Default agentrun-computer under XDG_CACHE_HOME, else ~/.cache. */
+	daemonCache?: string;
 	/** Makes every computer a desktop (kind desktop): its image must have the X server. */
 	desktop?: DockerDesktopOptions;
 	/** The docker CLI. */
@@ -179,14 +186,16 @@ export class DockerProvider implements ComputerProvider {
 	readonly id = "docker";
 	readonly version = VERSION;
 	readonly #daemonPath: string;
+	readonly #daemonCache: string;
 	readonly #docker: string;
 	readonly #user: string;
 	readonly #desktop: Required<DockerDesktopOptions> | undefined;
 	/** The host as docker info first read it: a host's enforcement does not change under a running provider. */
 	#host: DockerHost | undefined;
 
-	constructor({ daemonPath, docker = "docker", user, desktop }: DockerProviderOptions) {
+	constructor({ daemonPath, daemonCache, docker = "docker", user, desktop }: DockerProviderOptions) {
 		this.#daemonPath = resolve(daemonPath);
+		this.#daemonCache = resolve(daemonCache ?? defaultDaemonCache());
 		this.#docker = docker;
 		this.#desktop = desktop === undefined ? undefined : desktopOf(desktop);
 		const given = user === undefined ? defaultUser() : userOf(user);
@@ -273,15 +282,8 @@ export class DockerProvider implements ComputerProvider {
 		if (refusals.length > 0) return fail("refused", refusals.map(({ field, message }) => `${field}: ${message}`).join("; "));
 		const user = userOf(spec.user) ?? this.#user;
 		const bound = spec.mount?.kind === "bind" ? spec.mount.path : undefined;
-		const mode = fileMode(this.#daemonPath);
-		if (mode === undefined) {
-			return fail("not_found", `no daemon binary at ${this.#daemonPath}: run npm run build:daemon -w @parcha/agentrun-computer`);
-		}
-		// A computer's user, root or not, has no capabilities, so it runs the mounted daemon only if every user may.
-		if ((mode & 0o005) !== 0o005) {
-			return fail("invalid", `the daemon at ${this.#daemonPath} has mode ${(mode & 0o777).toString(8)}; a computer's user, with no capabilities, cannot run it: chmod 755 it`);
-		}
-		if (this.#daemonPath.includes(",")) return fail("invalid", `the daemon path ${this.#daemonPath} has a comma, which a Docker mount cannot hold`);
+		const daemon = this.#daemon();
+		if (!daemon.ok) return daemon;
 		if (signal?.aborted) return fail("aborted", "create was aborted before Docker was called");
 		const host = await this.host({ signal });
 		if (!host.ok) return host;
@@ -310,7 +312,7 @@ export class DockerProvider implements ComputerProvider {
 		// Memory and swap together are the memory: swap never adds to it.
 		const memory = `${memoryMb}m`;
 		args.push("--memory", memory, "--memory-swap", memory);
-		args.push("--mount", `type=bind,src=${this.#daemonPath},dst=${DAEMON_IN_COMPUTER},readonly`, "--entrypoint", DAEMON_IN_COMPUTER);
+		args.push("--mount", `type=bind,src=${daemon.value},dst=${DAEMON_IN_COMPUTER},readonly`, "--entrypoint", DAEMON_IN_COMPUTER);
 		// The run's folder, read-write at /workspace; HOME and the default workdir stay /work.
 		if (bound !== undefined) args.push("--mount", `type=bind,src=${bound},dst=${WORKSPACE}`);
 		args.push("--workdir", spec.workdir ?? WORK);
@@ -343,7 +345,7 @@ export class DockerProvider implements ComputerProvider {
 				return fail(shown.error.code, `the computer ${name} ${after}: ${shown.error.message}`);
 			}
 		}
-		const checked = await this.#check(spec, ref, report as DockerInspect, host.value, deadline, user, signal);
+		const checked = await this.#check(spec, ref, report as DockerInspect, this.#expected(host.value, deadline, user, daemon.value), signal);
 		// Fail closed: no create returns ok once its signal has aborted.
 		if (signal?.aborted) return this.#abandon(ref);
 		if (checked.ok) return ok(ref);
@@ -402,18 +404,32 @@ export class DockerProvider implements ComputerProvider {
 	}
 
 	/** The drift check: the computer's own report, from inspect and from its daemon's hello, against the spec. */
-	async #check(spec: ComputerSpec, ref: ComputerRef, report: DockerInspect, host: DockerHost, deadline: string, user: string, signal?: AbortSignal): Promise<Result<void>> {
+	async #check(spec: ComputerSpec, ref: ComputerRef, report: DockerInspect, expected: DriftExpected, signal?: AbortSignal): Promise<Result<void>> {
 		const opened = await this.#open(ref, signal);
 		if (!opened.ok) return opened;
 		await opened.value.close();
-		const found = drift(spec, report, opened.value.hello, this.#expected(host, deadline, user));
+		const found = drift(spec, report, opened.value.hello, expected);
 		return found.length === 0 ? ok(undefined) : fail("refused", `it did not match its spec: ${found.join("; ")}`);
 	}
 
-	#expected(host: DockerHost, deadline: string, user: string) {
+	/** What the drift check holds a computer to; daemonPath is the file it binds, the provider's copy of the daemon. */
+	#expected(host: DockerHost, deadline: string, user: string, daemonPath: string): DriftExpected {
 		const { arch, apparmor, selinux } = host;
 		const { kind, groups } = this.capabilities();
-		return { version: VERSION, kind, groups, arch, apparmor, selinux, daemonPath: this.#daemonPath, deadline, user };
+		return { version: VERSION, kind, groups, arch, apparmor, selinux, daemonPath, deadline, user };
+	}
+
+	/**
+	 * The daemon file a computer binds: the provider's 0755 copy of daemonPath in daemonCache (daemonCopy), so a daemon
+	 * installed under any umask runs as any computer user, and the file that is every computer's init sits where only
+	 * this user may change it. Always the copy, even of a 0755 daemon, so create and attach have one path to compare.
+	 */
+	#daemon(): Result<string> {
+		const copied = daemonCopy(this.#daemonPath, this.#daemonCache);
+		if (copied.ok && MOUNT_UNSAFE.test(copied.value)) {
+			return fail("invalid", `the daemon's copy ${copied.value} has a comma, a double quote or a line break in its path, which a Docker mount cannot hold: give the provider another daemonCache`);
+		}
+		return copied;
 	}
 
 	/** The Docker host's architecture and enforcement (hostOf), read by docker info once per provider. */
@@ -469,7 +485,10 @@ export class DockerProvider implements ComputerProvider {
 		} as ComputerSpec;
 		found.push(...this.#checkSpec({ ...spec, mount: undefined }).map(({ field, message }) => `${field}: ${message}, read back from the computer`));
 		const user = userOf(config.User) ?? String(config.User);
-		const expected = this.#expected(host.value, deadline, user);
+		// The copy create binds for this provider's daemon: the same bytes, from any process, have the same path.
+		const daemon = this.#daemon();
+		if (!daemon.ok) return daemon;
+		const expected = this.#expected(host.value, deadline, user, daemon.value);
 		found.push(...inspectDrift(spec, report, expected).filter((line) => typeof network === "string" || !line.startsWith("network:")));
 		let kind: AttachedComputer["spec"]["kind"];
 		if (report.State?.Running === true) {
