@@ -28,7 +28,8 @@ export function SignIns({ agent, v2, onAgent }: { agent: Agent; v2: Pick<Client,
   // The server always serves the list (GET /v2/agents/{id}); an agent read without one has none saved.
   const list = agent.sign_ins ?? [];
   const resolved = agent.tools?.find((t) => t.name === "browser")?.resolved;
-  if (!list.length && resolved !== "browserbase" && resolved !== "kernel") return null;
+  // Hidden with none saved and no vendor browser, unless a forget's result is still to be read.
+  if (!list.length && resolved !== "browserbase" && resolved !== "kernel" && !said) return null;
   const groups = [...new Set(list.map((s) => s.key))].map((key) => ({ key, items: list.filter((s) => s.key === key) }));
 
   const forget = async (key: string) => {
@@ -36,9 +37,15 @@ export function SignIns({ agent, v2, onAgent }: { agent: Agent; v2: Pick<Client,
     try {
       const r = await v2.forgetSignIn(agent.agent_id, key);
       const kept = r.removed.filter((x) => x.at_vendor === "not_deleted");
-      if (kept.length) setSaid({ tone: "warn", text: kept.map((x) => `Forgotten here, but ${vendor(x.provider)} didn't confirm the delete. ${x.message ?? ""}`.trim()).join(" ") });
+      const known = kept.length ? { tone: "warn" as const, text: kept.map((x) => `Forgotten here, but ${vendor(x.provider)} didn't confirm the delete. ${x.message ?? ""}`.trim()).join(" ") } : null;
+      setSaid(known);
       setAsking(null);
-      onAgent((await v2.getAgent(agent.agent_id)).agent);
+      // The forget went through: a read of the agent that fails after it keeps that, with the key's rows gone here.
+      try { onAgent((await v2.getAgent(agent.agent_id)).agent); }
+      catch (e) {
+        onAgent({ ...agent, sign_ins: list.filter((s) => s.key !== key) });
+        setSaid({ tone: "warn", text: `${known ? `${known.text} ` : "Forgotten. "}The agent couldn't be read again: ${problemOf(e)}` });
+      }
     } catch (e) {
       const held = e instanceof ClientError && e.code === "sign_in_held" ? (e.details?.held_by as string | undefined) : undefined;
       setSaid(e instanceof ClientError && e.code === "sign_in_held"

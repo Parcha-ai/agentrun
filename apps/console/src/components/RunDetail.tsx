@@ -113,6 +113,15 @@ export function RunDetail({ run, agentName, messages, harnessSteers, rows, files
   // It is said apart from the card unless that same approval's card still shows (the card says it then): the run may
   // already wait on the next call, whose card is another.
   const [refused, setRefused] = useState<{ id: string; text: string } | null>(null);
+  // A hand-back's refusal, by the ask it answered (its asked_at): the run is read again after it, and an ask answered
+  // first elsewhere or expired is gone with its card, so the words stay here (the card says them while it shows).
+  const [askRefused, setAskRefused] = useState<{ at: string; text: string } | null>(null);
+  const handBack = onHandBack && (async (outcome: "done" | "cancelled") => {
+    const at = browserAsk?.asked_at ?? "";
+    const said = await onHandBack(outcome);
+    setAskRefused(said ? { at, text: said } : null);
+    return said;
+  });
   const approve = async (id: string, decision: "allow" | "deny", note?: string) => {
     const said = onApprove ? await onApprove(id, decision, note) : "This page can't answer an approval.";
     setRefused(said ? { id, text: said } : null);
@@ -172,7 +181,8 @@ export function RunDetail({ run, agentName, messages, harnessSteers, rows, files
               <p className="mt-1 font-mono text-[12px] text-muted-foreground">{[run.review.node && `Stopped at ${run.review.node}`, run.review.kind].filter(Boolean).join(" · ")}. A person takes it from here.</p></section>
           )}
           {refused && refused.id !== approval?.id && <p className="border border-destructive/50 px-4 py-2.5 font-mono text-[12px] text-destructive-text" role="alert">Your answer wasn't taken: {refused.text}</p>}
-          {browserAsk ? <BrowserAskCard key={browserAsk.asked_at} pending={browserAsk} onHandBack={onHandBack}
+          {askRefused && askRefused.at !== browserAsk?.asked_at && <p className="border border-destructive/50 px-4 py-2.5 font-mono text-[12px] text-destructive-text" role="alert">Your answer wasn't taken: {askRefused.text}</p>}
+          {browserAsk ? <BrowserAskCard key={browserAsk.asked_at} pending={browserAsk} onHandBack={handBack}
               open={readBrowser && tab !== "browser" ? <button type="button" className="text-[13px] underline underline-offset-2" onClick={() => setTab("browser")}>Open the browser</button> : null} />
             : approval ? <ApprovalCard key={approval.id} pending={approval} onAnswer={(decision, note) => approve(approval.id, decision, note)} />
             : view.needsYou && (budget ? <BudgetPaused pending={budget} /> : <NeedsYou waiting={waiting} />)}

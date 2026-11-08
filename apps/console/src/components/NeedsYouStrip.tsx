@@ -49,15 +49,27 @@ export function NeedsYouStrip({ asking, failed, live, agentName, onAnswer, onApp
     const t = setInterval(() => tick((n) => n + 1), 1000);
     return () => clearInterval(t);
   }, [live.length]);
-  // A refused answer to an approval, in words, by run: the strip reads again after it, and when another answer, a stop or
-  // a cancel came first the run no longer waits, so its card goes; the words stay here until dismissed.
-  const [refused, setRefused] = useState<{ runId: string; approvalId: string; title: string; text: string }[]>([]);
+  // A refused answer, in words, by run: to an approval (`what` its id) or to a browser ask (`ask:` its asked_at). The strip
+  // reads again after it, and when another answer, a stop, a cancel or the ask's expiry came first the run no longer waits
+  // on it, so its card goes; the words stay here until dismissed.
+  const [refused, setRefused] = useState<{ runId: string; what: string; title: string; text: string }[]>([]);
+  const hold = (runId: string, what: string, said: string | null) => {
+    const title = asking.find((r) => r.run_id === runId)?.title ?? runId;
+    setRefused((held) => [...held.filter((x) => x.runId !== runId), ...(said ? [{ runId, what, title, text: said }] : [])]);
+  };
   const approve = onApprove && (async (runId: string, approvalId: string, decision: "allow" | "deny", note?: string) => {
     const said = await onApprove(runId, approvalId, decision, note);
-    const title = asking.find((r) => r.run_id === runId)?.title ?? runId;
-    setRefused((held) => [...held.filter((x) => x.runId !== runId), ...(said ? [{ runId, approvalId, title, text: said }] : [])]);
+    hold(runId, approvalId, said);
     return said;
   });
+  const handBack = onHandBack && (async (runId: string, outcome: "done" | "cancelled") => {
+    const pending = asking.find((r) => r.run_id === runId)?.pending;
+    const said = await onHandBack(runId, outcome);
+    hold(runId, pending?.kind === "browser" ? `ask:${pending.asked_at}` : "ask:", said);
+    return said;
+  });
+  // What a run waits on now, as `what` names it: its card shows the words itself while it waits on the same thing.
+  const waitsOn = (r: Run) => (r.pending?.kind === "approval" ? r.pending.id : r.pending?.kind === "browser" ? `ask:${r.pending.asked_at}` : null);
   const failures = groups.reduce((n, g) => n + g.runs.length, 0);
   const needs = asking.length + failures;
   if (!needs && !live.length && !problem && !refused.length) return null;
@@ -67,7 +79,7 @@ export function NeedsYouStrip({ asking, failed, live, agentName, onAnswer, onApp
       {needs > 0 && <h2 className="caps text-[12px] font-semibold">Needs you <span className="text-warning-text">· {needs}</span></h2>}
       {problem && <p className="border border-destructive/50 px-4 py-2.5 font-mono text-[12px] text-destructive-text" role="alert">{problem}</p>}
       {/* Said apart from the card unless that same approval's card still shows: the run may wait on its next call now. */}
-      {refused.filter((x) => !asking.some((r) => r.run_id === x.runId && r.pending?.kind === "approval" && r.pending.id === x.approvalId)).map((x) => (
+      {refused.filter((x) => !asking.some((r) => r.run_id === x.runId && waitsOn(r) === x.what)).map((x) => (
         <p key={x.runId} className="flex items-start gap-3 border border-destructive/50 px-4 py-2.5 font-mono text-[12px] text-destructive-text" role="alert">
           <span className="min-w-0 flex-1"><a href={runHref(x.runId)} className="underline-offset-4 hover:underline">{x.title}</a>: your answer wasn't taken. {x.text}</span>
           <button type="button" className="caps shrink-0 text-[11px] text-muted-foreground hover:text-foreground" onClick={() => setRefused((held) => held.filter((y) => y.runId !== x.runId))}>Dismiss</button>
@@ -78,7 +90,7 @@ export function NeedsYouStrip({ asking, failed, live, agentName, onAnswer, onApp
           {asking.map((r) => r.pending?.kind === "approval"
             ? <Approval key={`${r.run_id}:${r.pending.id}`} run={r} pending={r.pending} agentName={agentName(r.agent_id)} at={at} onApprove={approve} />
             : r.pending?.kind === "browser"
-            ? <BrowserAsked key={`${r.run_id}:${r.pending.asked_at}`} run={r} pending={r.pending} agentName={agentName(r.agent_id)} at={at} onHandBack={onHandBack} />
+            ? <BrowserAsked key={`${r.run_id}:${r.pending.asked_at}`} run={r} pending={r.pending} agentName={agentName(r.agent_id)} at={at} onHandBack={handBack} />
             : <Question key={`${r.run_id}:${r.pending?.kind === "question" ? r.pending.asked_at : r.pending?.kind === "budget" ? (r.pending.at ?? "") : ""}`} run={r} agentName={agentName(r.agent_id)} at={at} onAnswer={onAnswer} />)}
         </ul>
       )}
