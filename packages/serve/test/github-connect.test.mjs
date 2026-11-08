@@ -61,6 +61,8 @@ test("with no public URL, or no seal key, Connect GitHub is refused in words: Gi
 
 test("the callback takes a state once, from the browser that started it: a bad, a replayed or another browser's state sends the browser to the console with state_invalid, a code GitHub does not convert with conversion_failed; a good one converts the code, seals the App's fields, drops its client secret, logs and answers no secret, and sends the browser to install the App", { timeout: 60_000 }, async (t) => {
   const server = await connectable(t);
+  // Before the App is installed GitHub holds no installation of it: the read finds none.
+  server.github.installations.clear();
   const started = await startConnect(server, {});
   const cookie = String(started.headers.get("set-cookie")).split(";")[0];
   const back = (state, headers = { cookie }, code = "code-1") => fetch(`${server.baseUrl}/integrations/github/callback?code=${code}&state=${state}`, { redirect: "manual", headers });
@@ -297,6 +299,8 @@ test("Connect started at an address other than the public URL is refused before 
 
 test("the installed redirect records an installation only with the install state its callback sent to GitHub and that browser's cookie: without them it records nothing and lands on the console, as GitHub's own install pages do; with them, one GitHub does not know is installation_unverified", { timeout: 60_000 }, async (t) => {
   const server = await connectable(t);
+  // Nothing installed on GitHub's side either, so a read of the connection repairs nothing into the list.
+  server.github.installations.clear();
   const started = await startConnect(server);
   const back = await callback(server, "code-1", started.body.state, String(started.headers.get("set-cookie")).split(";")[0]);
   const list = async () => (await server.api("GET", "/integrations/github")).body.installations;
