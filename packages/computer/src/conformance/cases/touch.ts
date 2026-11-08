@@ -1,9 +1,12 @@
 // Touch on a phone, checked against the fixture app's log: a tap lands at its point, a swipe starts and ends where
-// asked, and a pinch moves two fingers apart.
+// asked, and a pinch moves two fingers apart. A phone that takes no fixture file is checked through Settings and its
+// UI tree instead (settings.ts): a tap on a row opens that row's page, the back button comes back, and a swipe up
+// moves the list up.
 import type { Point } from "../../protocol.js";
 import type { FixtureEvent, StartedFixture } from "../fixture.js";
 import type { Case, CaseContext } from "../types.js";
 import { act, allRan, logged, pointIn } from "./input.js";
+import { listOf, middle, openSettings, rowsOf, settingsRows, textsOf, throughSettings } from "./settings.js";
 
 /** How far a logged touch may be from where it was aimed: a phone's input path may round. */
 const SLACK = 2;
@@ -14,14 +17,48 @@ const near = (a: Point, b: Point) => Math.abs(a[0] - b[0]) <= SLACK && Math.abs(
 const distance = (a: Point, b: Point) => Math.hypot(a[0] - b[0], a[1] - b[1]);
 const lifted = (events: FixtureEvent[], fingers: number) => new Set(touches(events).filter((e) => e.phase === "up").map((e) => e.pointer)).size >= fingers;
 
-/** The fixture, once the case has a way to see what touch did: today, the fixture's log over files. */
+/** The fixture, once the case has a way to see what touch did: the fixture's log over files. */
 async function observed(t: CaseContext): Promise<StartedFixture> {
 	const declared = t.provider.capabilities().groups;
 	if (!declared.includes("files")) {
 		if (!declared.includes("apps.ui_tree")) return t.skip("no way to observe the effect: declare files or apps.ui_tree");
-		return t.skip("seeing touch through apps.ui_tree alone is settled in the phone spike; today the suite reads the fixture's log over files");
+		return t.skip(`no fixture runs on a ${t.provider.capabilities().kind} computer with no files, and no stock app is known for it`);
 	}
 	return t.fixture();
+}
+
+/** A tap on Settings' first row opens its page, which shows its title and not the next row's; back comes back to the list. */
+async function tapThroughSettings(t: CaseContext) {
+	await openSettings(t);
+	const { rows } = await settingsRows(t, 2);
+	const [row, next] = [rows[0], t.present(rows.find((one) => one.text !== rows[0].text), "a second row with another title")];
+	const at = middle(row.bounds);
+	allRan(t, await act(t, [{ type: "tap", at }]), 1, `a tap on Settings' row ${JSON.stringify(row.text)} at ${at}`);
+	await t.until(async () => {
+		const texts = textsOf(await t.call("apps.ui_tree", {}));
+		return texts.includes(row.text) && !texts.includes(next.text);
+	}, `the page of ${JSON.stringify(row.text)} after a tap on its row: its title, and not the row ${JSON.stringify(next.text)}`);
+	allRan(t, await act(t, [{ type: "button", name: "back" }]), 1, "the back button");
+	await t.until(async () => textsOf(await t.call("apps.ui_tree", {})).includes(next.text), `Settings' list again after back: the row ${JSON.stringify(next.text)}`);
+}
+
+/** A swipe up Settings' list moves it up: a row on screen before and after is higher by a quarter of the swipe at least, or the first row has left. */
+async function swipeThroughSettings(t: CaseContext) {
+	await openSettings(t);
+	const { tree, rows } = await settingsRows(t, 2);
+	const [x, y, w, h] = t.present(listOf(tree), "Settings' list in apps.ui_tree").bounds;
+	const from: Point = [Math.floor(x + w / 2), Math.floor(y + h * 0.8)];
+	const to: Point = [from[0], Math.floor(y + h * 0.2)];
+	allRan(t, await act(t, [{ type: "swipe", path: [from, to], ms: 400 }]), 1, `a swipe up Settings' list from ${from} to ${to}`);
+	const enough = (from[1] - to[1]) / 4;
+	await t.until(async () => {
+		const after = rowsOf(await t.call("apps.ui_tree", {}));
+		const moved = rows.some((before) => {
+			const now = after.find((one) => one.text === before.text);
+			return now !== undefined && before.bounds[1] - now.bounds[1] >= enough;
+		});
+		return moved || (after.length > 0 && !after.some((one) => one.text === rows[0].text));
+	}, `Settings' list moved up by ${Math.round(enough)} px at least after a swipe up`);
 }
 
 /** One finger's touches: where it went down, and where it came up. */
@@ -36,6 +73,7 @@ const touch = (name: string, run: Case["run"], level: Case["level"] = "core"): C
 
 export const touchCases: Case[] = [
 	touch("tap", async (t) => {
+		if (throughSettings(t)) return tapThroughSettings(t);
 		const fixture = await observed(t);
 		const at = pointIn(fixture, 0.5, 0.4);
 		const before = (await fixture.events()).length;
@@ -46,6 +84,7 @@ export const touchCases: Case[] = [
 		t.assert(near(down, at) && near(up, at), `a tap at ${at} was logged down at ${down} and up at ${up}`);
 	}),
 	touch("swipe", async (t) => {
+		if (throughSettings(t)) return swipeThroughSettings(t);
 		const fixture = await observed(t);
 		const from = pointIn(fixture, 0.5, 0.7);
 		const to = pointIn(fixture, 0.5, 0.3);
@@ -59,6 +98,13 @@ export const touchCases: Case[] = [
 	touch(
 		"pinch",
 		async (t) => {
+			if (throughSettings(t)) {
+				// Settings shows nothing a pinch changes; a provider that refuses pinch says so, and either way it is not seen.
+				const shot = await t.call("screen.shot", {});
+				const tried = await act(t, [{ type: "pinch", at: [Math.floor(shot.width / 2), Math.floor(shot.height / 2)], scale: 2, ms: 400 }]);
+				if (tried.failed?.kind === "unsupported") return t.skip(`the provider refuses a pinch in words: ${tried.failed.message}`);
+				return t.skip("a pinch shows nothing in Settings' tree; only the fixture's log sees one");
+			}
 			const fixture = await observed(t);
 			const at = pointIn(fixture, 0.5, 0.5);
 			const before = (await fixture.events()).length;
