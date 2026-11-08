@@ -115,7 +115,14 @@ const newId = () => `i${String(++counter).padStart(19, "0")}`;
  *  - lingers: { reads, lists }: after a kill, getInfo still reads it running for `reads` reads, and list still lists it
  *    for `lists` listings;
  *  - onStep(step, sandbox): called at the start of every SDK call and every daemon request, by name, so a test can
- *    abort the caller's signal there.
+ *    abort the caller's signal there;
+ *  - processPage: how many processes one process.list reply holds before it is truncated (default 8), as the daemon's
+ *    reply fills;
+ *  - killMs: how long a signalled process takes to end (default 30): process.signal only sends the signal, as the
+ *    daemon's does, and process.wait waits up to its timeoutMs for the end.
+ * The stream's servers hold their ports, x11vnc its -rfbport and noVNC its --listen (or a test's entry its port): one
+ * started while a running process holds its port ends at once, unable to bind, and netstat lists a port only while a
+ * running process holds it.
  */
 export function fakeE2B({
 	templates = { desktop: "tpl-desktop", base: "tpl-base" },
@@ -129,6 +136,8 @@ export function fakeE2B({
 	display = "ok",
 	lingers,
 	onStep = () => {},
+	processPage = 8,
+	killMs = 30,
 } = {}) {
 	const calls = [];
 	const sandboxes = new Map();
@@ -198,6 +207,21 @@ export function fakeE2B({
 
 	const gone = (sb) => sb === undefined || (sb.killed && !(sb.lingering?.reads > 0));
 
+	/** The port a stream server listens on, by its argv, or undefined for any other program. */
+	const portOf = (argv) => {
+		const after = (flag, fallback) => (argv.includes(flag) ? Number(argv[argv.indexOf(flag) + 1]) : fallback);
+		if (/(^|\/)x11vnc$/.test(argv[0])) return after("-rfbport", 5900);
+		if (/(^|\/)novnc_proxy$/.test(argv[0])) return after("--listen", 6080);
+		return undefined;
+	};
+	/** A process ends: its exit fields set, and every process.wait on it answered. */
+	const finish = (entry, fields) => {
+		if (!entry.running) return;
+		Object.assign(entry, { running: false, exitCode: null, signal: null, ...fields });
+		for (const wake of (entry.waiters ?? []).splice(0)) wake();
+	};
+	const exitOf = (entry) => ({ running: entry.running, exitCode: entry.exitCode, signal: entry.signal });
+
 	/** What the daemon in sb answers to one request, or undefined for none. */
 	function answer(sb, request) {
 		const { method, params } = request;
@@ -250,7 +274,10 @@ export function fakeE2B({
 				if (sb.box.probe === "no-accepted") delete report.accepted;
 				return out(`${JSON.stringify(report)}\n`);
 			}
-			if (argv[0] === "sh" && /netstat/.test(argv[2] ?? "")) return out("", sb.processes.some((p) => p.running && /novnc_proxy/.test(p.argv[0])) ? 0 : 1);
+			if (argv[0] === "sh" && /netstat/.test(argv[2] ?? "")) {
+				const ports = [...argv[2].matchAll(/:(\d+) /g)].map((match) => Number(match[1]));
+				return out("", ports.length > 0 && ports.every((port) => sb.processes.some((p) => p.running && p.port === port)) ? 0 : 1);
+			}
 			return out(`${argv.join(" ")}\n`);
 		}
 		if (method === "process.start") {
@@ -259,23 +286,42 @@ export function fakeE2B({
 				sb.xvfb = entry;
 				if (display === "dies") Object.assign(entry, { running: false, exitCode: 1, stderr: "(EE) Fatal server error:\n(EE) Cannot establish any listening sockets\n" });
 			}
+			const port = portOf(params.argv);
+			if (port !== undefined) {
+				if (sb.processes.some((p) => p.running && p.port === port)) Object.assign(entry, { running: false, exitCode: 1, stderr: `bind: port ${port}: address already in use\n` });
+				else entry.port = port;
+			}
 			sb.processes.push(entry);
 			return result({ id: entry.id, pid: entry.pid });
 		}
 		if (method === "process.wait") {
 			const entry = sb.processes.find((p) => p.id === params.id);
-			return result({ running: entry.running, exitCode: entry.exitCode, signal: entry.signal });
+			if (entry === undefined) return error("not_found", `no process ${params.id}`);
+			if (!entry.running || !(params.timeoutMs > 0)) return result(exitOf(entry));
+			return new Promise((done) => {
+				const answer = () => {
+					clearTimeout(timer);
+					done(result(exitOf(entry)));
+				};
+				const timer = setTimeout(answer, params.timeoutMs);
+				(entry.waiters ??= []).push(answer);
+			});
 		}
 		if (method === "process.read") {
 			const entry = sb.processes.find((p) => p.id === params.id);
 			return result({ data: Buffer.from(entry.stderr).toString("base64"), offset: 0, next: entry.stderr.length, exited: !entry.running });
 		}
 		if (method === "process.list") {
-			return result({ processes: sb.processes.map((p) => ({ id: p.id, pid: p.pid, argv: p.argv, argvClipped: false, running: p.running, exitCode: p.exitCode, signal: p.signal })), next: sb.processes.length });
+			const from = params?.from ?? 0;
+			const page = sb.processes.slice(from, from + processPage);
+			const processes = page.map((p) => ({ id: p.id, pid: p.pid, argv: p.argv, argvClipped: false, running: p.running, exitCode: p.exitCode, signal: p.signal }));
+			return result({ processes, truncated: from + page.length < sb.processes.length, next: from + page.length });
 		}
 		if (method === "process.signal") {
 			const entry = sb.processes.find((p) => p.id === params.id);
-			if (entry) Object.assign(entry, { running: false, signal: params.signal });
+			if (entry === undefined) return error("not_found", `no process ${params.id}`);
+			// The signal is sent; the process ends a moment later, and holds its port until then.
+			if (entry.running) setTimeout(() => finish(entry, { signal: params.signal }), killMs);
 			return result({});
 		}
 		if (method === "deadline.extend") {
@@ -402,7 +448,7 @@ export function fakeE2B({
 						if (typeof request.id !== "number") continue;
 						fake.requests.push({ sandbox: sb.id, method: request.method, params: request.params });
 						await onStep(request.method, sb);
-						const reply = answer(sb, request);
+						const reply = await answer(sb, request);
 						if (reply !== undefined) handle.out(`${JSON.stringify({ jsonrpc: "2.0", id: request.id, ...reply })}\n`);
 					}
 					void opts;

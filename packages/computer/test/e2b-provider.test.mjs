@@ -813,6 +813,61 @@ test("with publicStream the computers take public traffic and network open only,
 	assert.notEqual(new URL(view.value.url).searchParams.get("password"), url.searchParams.get("password"), "each stream() makes a new password");
 });
 
+/** A process seeded straight into the fake's daemon, as an earlier call would have started it. */
+function started(sb, argv, fields = {}) {
+	const entry = { id: `p${sb.processes.length + 1}`, pid: 100 + sb.processes.length, argv, running: true, exitCode: null, signal: null, stderr: "", ...fields };
+	sb.processes.push(entry);
+	return entry;
+}
+const OLD_VNC = ["x11vnc", "-display", ":0", "-forever", "-rfbport", "5900"];
+const OLD_NOVNC = ["/opt/noVNC/utils/novnc_proxy", "--vnc", "localhost:5900", "--listen", "6080"];
+const newest = (sb, program) => sb.processes.filter((p) => p.argv[0] === program).at(-1);
+
+test("stream() stops the old stream servers wherever they are in the process list, past its first page", async () => {
+	const { provider, fake } = setup({ publicStream: true }, { processPage: 4 });
+	const { ref, sb } = seeded(fake, { network: "open", extra: { network: { allowPublicTraffic: true } } });
+	for (let i = 0; i < 9; i++) started(sb, ["sleep", "600"]);
+	const oldVnc = started(sb, OLD_VNC, { port: 5900 });
+	const oldNovnc = started(sb, OLD_NOVNC, { port: 6080 });
+	const streamed = await provider.stream(ref, {});
+	assert.equal(streamed.ok, true, streamed.ok ? "" : streamed.error.message);
+	assert.equal(oldVnc.running, false, "the old x11vnc, on the third page, was stopped");
+	assert.equal(oldNovnc.running, false, "the old noVNC, on the third page, was stopped");
+	assert.ok(newest(sb, "x11vnc").running, "the new x11vnc runs");
+	assert.ok(newest(sb, "/opt/noVNC/utils/novnc_proxy").running, "the new noVNC runs");
+	assert.ok(fake.requests.filter((r) => r.method === "process.list").length >= 3, "every page was read");
+});
+
+test("stream() waits for the old servers to end before it starts the new ones, and returns a URL only when both new ones run and listen", async () => {
+	const { provider, fake } = setup({ publicStream: true }, { killMs: 60 });
+	const { ref, sb } = seeded(fake, { network: "open", extra: { network: { allowPublicTraffic: true } } });
+	const oldVnc = started(sb, OLD_VNC, { port: 5900 });
+	const oldNovnc = started(sb, OLD_NOVNC, { port: 6080 });
+	const streamed = await provider.stream(ref, {});
+	assert.equal(streamed.ok, true, streamed.ok ? "" : streamed.error.message);
+	assert.equal(oldVnc.running, false);
+	assert.equal(oldNovnc.running, false);
+	const vnc = newest(sb, "x11vnc");
+	const novnc = newest(sb, "/opt/noVNC/utils/novnc_proxy");
+	assert.notEqual(vnc, oldVnc);
+	assert.notEqual(novnc, oldNovnc);
+	assert.ok(vnc.running, `the new x11vnc runs: ${vnc.stderr}`);
+	assert.ok(novnc.running, `the new noVNC runs: ${novnc.stderr}`);
+	const ended = fake.requests.findIndex((r) => r.method === "process.wait" && r.params.id === oldNovnc.id);
+	const begun = fake.requests.findIndex((r) => r.method === "process.start" && r.params.argv[0] === "x11vnc");
+	assert.ok(ended >= 0 && ended < begun, "the wait for the old servers' end comes before the new ones start");
+});
+
+test("stream() refuses in words when a new server cannot listen: another process holding noVNC's port is not its stream", async () => {
+	const { provider, fake } = setup({ publicStream: true });
+	const { ref, sb } = seeded(fake, { network: "open", extra: { network: { allowPublicTraffic: true } } });
+	started(sb, ["python3", "-m", "http.server", "6080"], { port: 6080 });
+	const streamed = await provider.stream(ref, {});
+	assert.equal(streamed.ok, false, "the listener on 6080 is not the new noVNC, so no URL");
+	assert.match(streamed.error.message, /novnc_proxy ended .*address already in use/);
+	assert.equal(newest(sb, "/opt/noVNC/utils/novnc_proxy").running, false);
+});
+
 test("the stream URL and its password are never logged and never in an error", async () => {
 	const { provider, fake } = setup({ publicStream: true });
 	const { value: result, text } = await captured(async () => {
