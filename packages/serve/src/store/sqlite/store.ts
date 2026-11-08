@@ -9,7 +9,7 @@ import { RunStorage } from "../journal/storage.js";
 import { DDL, SCHEMA_VERSION } from "../schema.js";
 import {
   CommandTaken, Fenced, RefreshLeaseLost, SchemaVersionUnknown, StoreConstraint, StoreFromEarlierVersion, type AgentRow, type Agents,
-  type AlsoRow, type Claim, type Command, type Journal, type NewRevision, type RevisionRow, type RunPatch, type RunRow, type Runs,
+  type AlsoRow, type Claim, type Command, type ImportRunInput, type Journal, type NewRevision, type RevisionRow, type RunPatch, type RunRow, type Runs,
   type JournalReads,
   type RunState, type Store, type StoreRole, type TemplatePackage, type Templates, type TriggerDef, type TriggerRow, type Triggers, type TriggerScope,
   FINAL_STATES, MCP_REFRESH_CALL_MS, MCP_REFRESH_LEASE_MS, type Learning, type LearningProposal, type Live, type LiveRow, type Mcp, type McpPinRow, type McpServerRow,
@@ -706,6 +706,25 @@ class SqliteStore implements Store {
       out.set(command.runId, [...(out.get(command.runId) ?? []), command]);
     }
     return out;
+  }
+
+  async importRun(run: ImportRunInput): Promise<RunRow> {
+    const at = this.#now();
+    const state = run.state ?? "ended";
+    return this.#db.transaction(async (tx) => {
+      // The ended run row, its launch row and its transcript's journal, all in this one transaction (the server's own
+      // writer): a crash between them leaves nothing. The run is created at epoch 0, so the journal's fence passes.
+      const row = await tx.get<RunRecord>(
+        `INSERT INTO runs (id, agent_id, revision_id, state, epoch, cost_usd, metrics, summary, outcome, imported_from, started_at, ended_at)
+          VALUES (?, ?, ?, ?, 0, ?, ?, ?, ?, ?, ?, ?) RETURNING ${RUN_COLUMNS}`,
+        run.id, run.agentId, run.revisionId, state, run.costUsd ?? null,
+        run.metrics === undefined || run.metrics === null ? null : json(run.metrics), run.summary ?? null,
+        run.outcome ?? null, JSON.stringify(run.importedFrom), run.startedAt, run.endedAt ?? at,
+      );
+      await writeLaunch(tx, run.id, run.launch, at);
+      await new RunStorage(this.#db, { runId: run.id, epoch: 0 }, this.#now).applyIn(tx, run.transcript);
+      return runOf(row!);
+    });
   }
 
   async take(claim: Claim, commandId: number, outcome: "taken" | "refused" = "taken", reason?: string): Promise<void> {

@@ -4,6 +4,11 @@
 // tools (app.ts), the kernel's host tools on claude-agent and codex (host-tools.ts), and the MCP gateway, which takes
 // the same park (harness-app.ts) and registers an executor for its approved calls.
 //
+// An MCP tool's setting may also carry a pin (pinRefusal): top-level arguments its calls must carry, each a JSON scalar
+// or one of a list. A pin adds to a setting and is never a permission: the gate checks it after a deny and before an
+// allow or an ask, so an allowed call not as pinned is refused unsent, and one under ask is refused before anyone is
+// asked; an approved call is checked again before it runs. The agent's pin and the server's both hold.
+//
 // An ask has one way to wait, every tool's alike (the owner's ruling of 11-04): it PARKS. The gated call answers at once
 // with waitingText and the turn ends, as ask_person's does; the run goes needs_input with the pending approval. On an
 // answer the gate runs the approved call itself (exactly once, through the journaled path: the kernel's host tool; an
@@ -120,13 +125,67 @@ export function settingsKeyOf(harness: string, name: string, mcpServers: readonl
   return alias && mcpServers.includes(alias[1]!) ? mcpToolName(alias[1]!, alias[2]!) : undefined;
 }
 
+/** A pinned argument's scalar: `null` holds for a call that leaves the argument out (or gives null). */
+export type PinScalar = string | number | boolean | null;
+/** A pinned argument's value: one scalar the call must carry, or a list of 1 to MAX_PIN_CHOICES ("one of"), whose order
+ *  is the author's and shows in the refusal. */
+export type PinValue = PinScalar | readonly PinScalar[];
+/** A setting's `pin`: an MCP tool's top-level arguments, by name, each fixed to one value or one of a list. */
+export type Pin = Readonly<Record<string, PinValue>>;
+/** The most arguments one setting pins, and the most values a one-of list holds. */
+export const MAX_PIN_ARGS = 8;
+export const MAX_PIN_CHOICES = 16;
+
 /** A layer of tool settings (the server's, PUT /v2/settings/tools, or an agent's own, definition.tool_settings) as the
- *  gate reads it: a permission by settings key. */
-export type PermissionSettings = Readonly<Record<string, { permission?: Permission; /** Not as written: a value not offered, read as its fail-closed stand-in (tool-plane.ts readToolSettings). Never shown. */ fallback?: true } | undefined>>;
+ *  gate reads it: a permission by settings key, and an MCP tool's pin. */
+export type PermissionSettings = Readonly<Record<string, { permission?: Permission; /** Not as written: a value not offered, read as its fail-closed stand-in (tool-plane.ts readToolSettings). Never shown. */ fallback?: true; pin?: Pin; /** A pin in the server's file that does not read (tool-plane.ts readToolSettings): every call of the tool is refused. Never shown. */ brokenPin?: true } | undefined>>;
+
+/** Whether a call's argument `given` is the pinned scalar `one`: the same JSON scalar (strict equality), or, for null,
+ *  left out or null. */
+const isOne = (given: unknown, one: PinScalar): boolean => (one === null ? given === undefined || given === null : given === one);
+/** Whether `given` holds pinned `value`: its scalar, or one of its list. */
+const holds = (given: unknown, value: PinValue): boolean => (Array.isArray(value) ? value.some((one) => isOne(given, one)) : isOne(given, value as PinScalar));
+/** A scalar in a refusal's words: text as it is, null as `absent`, any other as JSON. */
+const scalarWords = (one: PinScalar): string => (one === null ? "absent" : typeof one === "string" ? one : JSON.stringify(one));
+/** A pin in words, as the refusal says it: `channel_id = C0123`, `cc absent` for a null, `event in (absent | COMMENT)`
+ *  for a list, in its order. */
+export const pinWords = (pin: Pin): string => Object.entries(pin).map(([arg, value]) => (Array.isArray(value) ? `${arg} in (${value.map(scalarWords).join(" | ")})` : value === null ? `${arg} absent` : `${arg} = ${scalarWords(value as PinScalar)}`)).join(", ");
+/** What holds both of two layers' pins of one argument (`own`, the agent's, and `theirs`, the server's): a scalar where
+ *  either is one and the other holds it, else the agent's list kept to the server's, in the agent's order; undefined when
+ *  nothing holds both. */
+function bothOf(own: PinValue, theirs: PinValue): PinValue | undefined {
+  const list = (value: PinValue): readonly PinScalar[] => (Array.isArray(value) ? value : [value as PinScalar]);
+  if (!Array.isArray(own)) return list(theirs).some((one) => one === own) ? own : undefined;
+  if (!Array.isArray(theirs)) return own.some((one) => one === theirs) ? theirs : undefined;
+  const kept = own.filter((one) => theirs.some((other) => other === one));
+  return kept.length ? kept : undefined;
+}
+
+/** Why the call of MCP tool `name` with `args` is refused by a pin, or undefined when no pin refuses it. A pin is an
+ *  addition to a setting, never a permission: each layer's pin on the tool's own key holds (the agent's and the
+ *  server's both, whatever the permission), and a call must carry every pinned argument as pinned: its value, or one of
+ *  its list. An argument both layers pin takes what holds both; where nothing does, every call is refused. `ran`: whether an earlier attempt of
+ *  the call may have been sent (deniedText's). `mismatched`: the arguments that do not hold, for the gate's log line. */
+export function pinRefusal(name: string, args: unknown, server: PermissionSettings, agent: PermissionSettings = {}, ran: "no" | "unknown" = "no"): { text: string; mismatched: string[] } | undefined {
+  if (!isMcpTool(name)) return undefined;
+  const what = ran === "no" ? NOT_RUN : RAN_UNKNOWN;
+  if (server[name]?.brokenPin) return { text: `${name} can't be called: its pin in this server's tool settings does not read, so no call is let through until the owner sets it again (Settings → Tools). ${what}`, mismatched: [] };
+  const own = agent[name]?.pin ?? {};
+  const theirs = server[name]?.pin ?? {};
+  // Both layers hold: an argument both pin takes what holds both (bothOf), and one where nothing does refuses every call.
+  const clash = Object.keys(own).filter((arg) => Object.hasOwn(theirs, arg) && bothOf(own[arg]!, theirs[arg]!) === undefined);
+  if (clash.length) return { text: `${name} can't be called: this agent's settings fix ${pinWords(Object.fromEntries(clash.map((arg) => [arg, own[arg]!])))} and this server's fix ${pinWords(Object.fromEntries(clash.map((arg) => [arg, theirs[arg]!])))}, so no call can satisfy both. ${what} Don't retry it: the owner makes the two agree.`, mismatched: clash };
+  const pin: Pin = { ...theirs, ...Object.fromEntries(Object.entries(own).map(([arg, value]) => [arg, Object.hasOwn(theirs, arg) ? bothOf(value, theirs[arg]!)! : value])) };
+  const given = typeof args === "object" && args !== null && !Array.isArray(args) ? (args as Record<string, unknown>) : {};
+  const mismatched = Object.keys(pin).filter((arg) => !holds(Object.hasOwn(given, arg) ? given[arg] : undefined, pin[arg]!));
+  if (!mismatched.length) return undefined;
+  const by = Object.keys(own).length && Object.keys(theirs).length ? "the agent's and this server's settings" : Object.keys(own).length ? "the agent's settings" : "this server's settings";
+  return { text: `${name} may only be called with ${pinWords(pin)}: its destination is fixed by ${by}. ${what}`, mismatched };
+}
 
 /** `name`'s permission in force and the layer it came from, most specific first: the agent's exact key, the agent's
- *  server wildcard, the server's exact key, the server's server wildcard, then the default. Rules over a call's
- *  arguments are not in V1. */
+ *  server wildcard, the server's exact key, the server's server wildcard, then the default. A call's arguments are
+ *  held only by a pin (pinRefusal), which adds to a setting and is never a permission. */
 export function permissionFrom(name: string, server: PermissionSettings, agent: PermissionSettings = {}): { permission: Permission; from: "agent" | "server" | "default" } {
   // A shell tool's permission is bash's (SHELL_FAMILY), from bash's layer, wherever it is read: the gate, capabilities, an
   // agent's tools. A watcher (SHELL_WATCHERS) runs unasked only under an ask set as written in a layer: an ask that stands
@@ -391,6 +450,12 @@ export class RunGate {
     return permissionFrom(shellToolOf(tool) ?? key, server, this.overrides);
   }
 
+  /** Why a pin refuses the call of `key` with `args` now (pinRefusal): the revision's own pins and the server's, read at
+   *  each call as its permission is, so a pin set or changed reaches a live run at its next call. */
+  private pinned(key: string, args: unknown, ran: "no" | "unknown" = "no"): { text: string; mismatched: string[] } | undefined {
+    return pinRefusal(key, args, this.serverSettings() ?? {}, this.overrides, ran);
+  }
+
   private lastGood?: PermissionSettings;
   private readonly told = new Set<string>();
   /** The server's settings now: read at each call, so a change reaches a live run; a file that does not read keeps the
@@ -427,9 +492,16 @@ export class RunGate {
     // from its answer (NOTE_ONLY_TEXT). Any other turn's write there follows its permission, as anywhere.
     if ((key === "write" || key === "edit") && this.turnOrigin() === "reflect" && underLearning(this.where.work, args)) return { text: NOTE_ONLY_TEXT, isError: true };
     const verdict = this.policy(name);
-    if (verdict === "allow") return undefined;
     const ran = options.replayed ? "unknown" : "no";
     if (verdict === "deny") return { text: deniedText(tool, key, this.denyFrom(name), ran), isError: true };
+    // A pinned MCP tool's call whose arguments are not the pinned ones: refused before it runs or asks anyone, so an
+    // allowed or approved call goes only where its settings fix.
+    const pinned = this.pinned(key, args, ran);
+    if (pinned) {
+      process.stderr.write(`agentrun-serve: the tool gate refused ${key} call ${callId}: ${pinned.mismatched.length ? `${pinned.mismatched.join(", ")} not as pinned` : "its pin does not read"}\n`);
+      return { text: pinned.text, isError: true };
+    }
+    if (verdict === "allow") return undefined;
     // No one can answer here: refused at once with why, never parked until a cancel.
     if (!this.approvers) return { text: noApproverText(tool, ran), isError: true };
     if (!this.parks) return { text: `This ${tool} call needs a person's approval, which a workflow's model node cannot wait for; it was not run.`, isError: true };
@@ -606,7 +678,9 @@ export class RunGate {
         // An allow runs the call, unless its tool was set to deny since it asked.
         // A request parked on a replay may follow an attempt that was sent: its refusal makes no "nothing was charged" claim.
         if (decision === "allow") this.unpark?.();
-        const result = decision === "deny" ? { text: refusedText(held.tool, answer.note, held.replayed ? "unknown" : "no"), isError: true } : this.policy(held.tool) === "deny" ? await this.ranOrDenied(held) : await this.run(held);
+        // And a pin holds for an approved call too: one whose arguments are no longer as pinned (a pin set since it asked)
+        // is refused as a deny since is.
+        const result = decision === "deny" ? { text: refusedText(held.tool, answer.note, held.replayed ? "unknown" : "no"), isError: true } : this.policy(held.tool) === "deny" || this.pinned(held.tool, held.args) ? await this.ranOrDenied(held) : await this.run(held);
         // A test's seam, unset in a server (AGENTRUN_SERVE_TEST_CRASH_AFTER_CALL, a file that marks it once): an approved
         // call that ran and whose outcome is in the journal, then the process goes before its resume, once the test says go
         // (<file>.go), as a crash between the two would leave the run.
@@ -667,7 +741,8 @@ export class RunGate {
     return this.drive;
   }
 
-  /** An approved call whose tool was set to deny before the gate acted on the answer. A call whose outcome is in the
+  /** An approved call whose tool was set to deny (or pinned so that its arguments no longer hold) before the gate acted
+   *  on the answer. A call whose outcome is in the
    *  journal RAN (a crash came between it and its resume): the model gets that outcome, as any allowed call's, and nothing
    *  runs again; a later deny can't un-run it. One with an intent and no outcome may have been sent: denied, with no claim
    *  either way. One the journal never saw is denied, not run and not charged. */
@@ -676,7 +751,12 @@ export class RunGate {
     const key = `approval:${held.id}`;
     if (drive.isMemoized(key)) return this.run(held);
     const heldTo = settingsKeyOf(this.where.harness ?? DEFAULT_HARNESS, held.tool, this.where.mcpServers);
-    return { text: deniedText(held.tool, heldTo, this.denyFrom(held.tool), held.replayed || drive.state().effects.has(key) ? "unknown" : "no"), isError: true };
+    const ran = held.replayed || drive.state().effects.has(key) ? "unknown" : "no";
+    if (this.policy(held.tool) !== "deny") {
+      const pinned = this.pinned(held.tool, held.args, ran);
+      if (pinned) return { text: pinned.text, isError: true };
+    }
+    return { text: deniedText(held.tool, heldTo, this.denyFrom(held.tool), ran), isError: true };
   }
 
   /** The approved call, run once by the kernel through the journal any host tool's call goes through, as an effect of

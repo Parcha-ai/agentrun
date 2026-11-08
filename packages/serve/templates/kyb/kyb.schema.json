@@ -1,0 +1,266 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "kyb.schema.json",
+  "title": "KYB due diligence answer",
+  "description": "One company's due diligence. Every fact carries the ids of the sources it rests on (S1, S2, ...), each listed in `sources` with the date it was read. A fact that was looked for and not found is null, never guessed.",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["checked_on", "risk_appetite", "subject", "identity", "ownership", "sanctions", "adverse_media", "red_flags", "verdict", "limitations", "sources", "report_markdown"],
+  "properties": {
+    "checked_on": { "$ref": "#/$defs/date", "description": "the run's date" },
+    "risk_appetite": { "enum": ["low", "medium", "high"] },
+    "subject": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["input", "resolved", "resolution"],
+      "properties": {
+        "input": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": ["name"],
+          "properties": {
+            "name": { "type": ["string", "null"] },
+            "domain": { "type": ["string", "null"] },
+            "country": { "type": ["string", "null"] },
+            "registration_number": { "type": ["string", "null"] },
+            "reason": { "enum": ["vendor", "customer", "investment", "unspecified"] }
+          }
+        },
+        "resolved": { "type": "boolean", "description": "true when one registry record (or, outside the covered registries, one clearly identified company) was established as the subject" },
+        "resolution": { "type": "string", "minLength": 1, "maxLength": 3000, "description": "how the subject was told apart from the other candidates, and each candidate rejected with why; or why it could not be resolved" },
+        "rejected_candidates": {
+          "type": "array",
+          "items": {
+            "type": "object",
+            "additionalProperties": false,
+            "required": ["name", "why_not", "sources"],
+            "properties": {
+              "name": { "type": "string", "minLength": 1 },
+              "registration_number": { "type": ["string", "null"] },
+              "jurisdiction": { "type": ["string", "null"] },
+              "why_not": { "type": "string", "minLength": 1, "maxLength": 1000 },
+              "sources": { "$ref": "#/$defs/citations" }
+            }
+          }
+        }
+      }
+    },
+    "identity": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["legal_name", "registration_number", "jurisdiction", "registered_address", "incorporation_date", "status", "website", "domain_registered", "domain_age_days"],
+      "properties": {
+        "legal_name": { "$ref": "#/$defs/fact" },
+        "former_names": { "type": "array", "items": { "$ref": "#/$defs/fact" } },
+        "registration_number": { "$ref": "#/$defs/fact" },
+        "registry": { "$ref": "#/$defs/fact" },
+        "jurisdiction": { "$ref": "#/$defs/fact" },
+        "registered_address": { "$ref": "#/$defs/fact" },
+        "incorporation_date": { "$ref": "#/$defs/fact" },
+        "status": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": ["value", "sources"],
+          "properties": {
+            "value": { "enum": ["active", "dissolved", "in_insolvency", "other", null] },
+            "detail": { "type": ["string", "null"], "maxLength": 500 },
+            "sources": { "$ref": "#/$defs/citations" }
+          },
+          "if": { "type": "object", "properties": { "value": { "type": "string" } } },
+          "then": { "type": "object", "properties": { "sources": { "type": "array", "minItems": 1 } } }
+        },
+        "website": { "$ref": "#/$defs/fact" },
+        "domain_registered": { "$ref": "#/$defs/fact", "description": "the domain's registration date from RDAP or WHOIS, YYYY-MM-DD" },
+        "domain_age_days": { "type": ["integer", "null"], "minimum": 0 },
+        "lei": { "$ref": "#/$defs/fact" },
+        "other_identifiers": { "type": "array", "items": { "$ref": "#/$defs/fact" } }
+      }
+    },
+    "ownership": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["officers", "beneficial_owners", "summary"],
+      "properties": {
+        "officers": { "type": "array", "items": { "$ref": "#/$defs/party" } },
+        "beneficial_owners": { "type": "array", "items": { "$ref": "#/$defs/party" } },
+        "parents": { "type": "array", "items": { "$ref": "#/$defs/party" }, "description": "direct and ultimate parent companies, each a separate entity" },
+        "summary": { "type": "string", "minLength": 1, "maxLength": 3000, "description": "who owns and controls the company, or what could not be found and where it was looked for" },
+        "sources": { "$ref": "#/$defs/citations" }
+      }
+    },
+    "sanctions": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["lists", "subjects"],
+      "properties": {
+        "lists": {
+          "type": "array",
+          "minItems": 4,
+          "items": {
+            "type": "object",
+            "additionalProperties": false,
+            "required": ["list", "version", "checked", "source"],
+            "properties": {
+              "list": { "enum": ["OFAC SDN", "OFAC Consolidated (non-SDN)", "UN Security Council Consolidated", "EU Consolidated Financial Sanctions", "UK Sanctions List"] },
+              "version": { "type": "string", "minLength": 1, "maxLength": 100, "description": "the list's publication or generation date as the list or its index states it, or 'unknown'" },
+              "checked": { "type": "boolean", "description": "whether this list was screened in this run by any method of SANCTIONS.md (rows in the input, a screening tool, an index with the owner's records); false when every subject's result on it is not_checked" },
+              "source": { "$ref": "#/$defs/sourceId" }
+            }
+          }
+        },
+        "subjects": {
+          "type": "array",
+          "minItems": 1,
+          "items": {
+            "type": "object",
+            "additionalProperties": false,
+            "required": ["name", "kind", "role", "results"],
+            "properties": {
+              "name": { "type": "string", "minLength": 1 },
+              "kind": { "enum": ["company", "person"] },
+              "role": { "type": "string", "minLength": 1, "maxLength": 200 },
+              "results": {
+                "type": "array",
+                "minItems": 4,
+                "items": {
+                  "type": "object",
+                  "additionalProperties": false,
+                  "required": ["list", "result", "method", "sources"],
+                  "properties": {
+                    "list": { "enum": ["OFAC SDN", "OFAC Consolidated (non-SDN)", "UN Security Council Consolidated", "EU Consolidated Financial Sanctions", "UK Sanctions List"] },
+                    "result": { "enum": ["no_hit", "confirmed_hit", "possible_match", "false_positive", "not_checked"] },
+                    "method": { "enum": ["list_rows_in_input", "full_list_read", "screening_tool", "index_then_source_record", "index_only", "not_checked"] },
+                    "matches": {
+                      "type": "array",
+                      "items": {
+                        "type": "object",
+                        "additionalProperties": false,
+                        "required": ["entry_id", "listed_name", "match_type", "evidence"],
+                        "properties": {
+                          "entry_id": { "type": "string", "minLength": 1, "description": "the list owner's own id: OFAC ent_num, UN reference number, EU logical id, UK Unique ID" },
+                          "listed_name": { "type": "string", "minLength": 1 },
+                          "match_type": { "enum": ["exact", "alias", "fuzzy"] },
+                          "program": { "type": ["string", "null"] },
+                          "evidence": { "type": "string", "minLength": 1, "maxLength": 1500, "description": "the identifiers compared, which agree and which conflict; for a false positive, the conflicting identifier" }
+                        }
+                      }
+                    },
+                    "note": { "type": ["string", "null"], "maxLength": 1000 },
+                    "sources": { "$ref": "#/$defs/citations" }
+                  },
+                  "allOf": [
+                    { "if": { "type": "object", "properties": { "result": { "enum": ["confirmed_hit", "possible_match", "false_positive"] } } }, "then": { "type": "object", "required": ["matches"], "properties": { "matches": { "type": "array", "minItems": 1 }, "sources": { "type": "array", "minItems": 1 } } } },
+                    { "if": { "type": "object", "properties": { "result": { "const": "no_hit" } } }, "then": { "type": "object", "properties": { "sources": { "type": "array", "minItems": 1 } } } }
+                  ]
+                }
+              }
+            }
+          }
+        },
+        "not_screened": { "type": "array", "items": { "type": "string" }, "description": "named people not screened, with why (budget, no name given)" }
+      }
+    },
+    "adverse_media": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": ["headline", "published", "publisher", "category", "relevance", "about", "summary", "sources"],
+        "properties": {
+          "headline": { "type": "string", "minLength": 1, "maxLength": 500 },
+          "published": { "type": "string", "pattern": "^\\d{4}(-\\d{2}(-\\d{2})?)?$", "description": "YYYY-MM-DD, or YYYY-MM / YYYY when the source gives no more" },
+          "event_date": { "type": ["string", "null"], "pattern": "^\\d{4}(-\\d{2}(-\\d{2})?)?$" },
+          "publisher": { "type": "string", "minLength": 1 },
+          "category": { "enum": ["fraud", "financial_crime", "regulatory", "litigation", "labour", "environmental", "other"] },
+          "relevance": { "enum": ["high", "medium", "low", "not_relevant"] },
+          "relevance_why": { "type": "string", "maxLength": 1000 },
+          "about": { "type": "string", "minLength": 1, "maxLength": 300, "description": "the subject itself, or the related party it is about (an officer, a parent), or the other entity of the same name" },
+          "status": { "enum": ["allegation", "proceedings_open", "settled", "finding_or_penalty", "conviction", "dismissed_or_acquitted", "unknown"] },
+          "summary": { "type": "string", "minLength": 1, "maxLength": 1500 },
+          "sources": { "$ref": "#/$defs/citationsRequired" }
+        }
+      }
+    },
+    "red_flags": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": ["flag", "severity", "why_it_matters", "sources"],
+        "properties": {
+          "flag": { "type": "string", "minLength": 1, "maxLength": 300 },
+          "code": { "type": "string", "pattern": "^RF\\d{2}$", "description": "the row of the red-flag table it comes from" },
+          "severity": { "enum": ["critical", "high", "medium", "low", "info"] },
+          "why_it_matters": { "type": "string", "minLength": 1, "maxLength": 1500 },
+          "sources": { "$ref": "#/$defs/citationsRequired" }
+        }
+      }
+    },
+    "verdict": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["decision", "rationale"],
+      "properties": {
+        "decision": { "enum": ["proceed", "proceed_with_conditions", "escalate"] },
+        "conditions": { "type": "array", "items": { "type": "string", "minLength": 1, "maxLength": 500 } },
+        "rationale": { "type": "string", "minLength": 1, "maxLength": 2500, "description": "one paragraph" }
+      },
+      "if": { "type": "object", "properties": { "decision": { "const": "proceed_with_conditions" } } },
+      "then": { "type": "object", "required": ["conditions"], "properties": { "conditions": { "type": "array", "minItems": 1 } } }
+    },
+    "limitations": { "type": "array", "items": { "type": "string", "minLength": 1, "maxLength": 1000 } },
+    "sources": {
+      "type": "array",
+      "minItems": 1,
+      "items": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": ["id", "url", "title", "kind", "read_on"],
+        "properties": {
+          "id": { "$ref": "#/$defs/sourceId" },
+          "url": { "type": "string", "minLength": 1, "maxLength": 2048, "description": "the URL read, or for a record handed in the run's input, `input:` and what it is" },
+          "title": { "type": "string", "minLength": 1, "maxLength": 500 },
+          "kind": { "enum": ["registry", "sanctions_list", "regulator", "court", "filing", "domain_record", "news", "company_site", "aggregator", "input", "other"] },
+          "read_on": { "$ref": "#/$defs/date" },
+          "found": { "type": "boolean", "description": "false for a search that found nothing (kept as the proof of where you looked)" },
+          "note": { "type": ["string", "null"], "maxLength": 500 }
+        }
+      }
+    },
+    "report_markdown": { "type": "string", "minLength": 200, "maxLength": 60000 }
+  },
+  "$defs": {
+    "date": { "type": "string", "pattern": "^\\d{4}-\\d{2}-\\d{2}$" },
+    "sourceId": { "type": "string", "pattern": "^S\\d{1,3}$" },
+    "citations": { "type": "array", "items": { "$ref": "#/$defs/sourceId" } },
+    "citationsRequired": { "type": "array", "minItems": 1, "items": { "$ref": "#/$defs/sourceId" } },
+    "fact": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["value", "sources"],
+      "properties": {
+        "value": { "type": ["string", "null"], "maxLength": 1000 },
+        "note": { "type": ["string", "null"], "maxLength": 500 },
+        "sources": { "$ref": "#/$defs/citations" }
+      },
+      "if": { "type": "object", "properties": { "value": { "type": "string" } } },
+      "then": { "type": "object", "properties": { "sources": { "type": "array", "minItems": 1 } } }
+    },
+    "party": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["name", "kind", "role", "sources"],
+      "properties": {
+        "name": { "type": "string", "minLength": 1 },
+        "kind": { "enum": ["person", "entity"] },
+        "role": { "type": "string", "minLength": 1, "maxLength": 300, "description": "director, officer title, or the control held (e.g. 'ownership of shares 75% or more')" },
+        "since": { "type": ["string", "null"] },
+        "until": { "type": ["string", "null"] },
+        "nationality": { "type": ["string", "null"] },
+        "born": { "type": ["string", "null"], "description": "month and year where the registry publishes them" },
+        "identifier": { "type": ["string", "null"], "description": "registration number for an entity, the registry's officer id for a person" },
+        "sources": { "$ref": "#/$defs/citationsRequired" }
+      }
+    }
+  }
+}
