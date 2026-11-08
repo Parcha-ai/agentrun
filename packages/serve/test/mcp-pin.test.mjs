@@ -5,10 +5,12 @@
 // holds too, and one that disagrees with the agent's refuses every call. No key, no network.
 import assert from "node:assert/strict";
 import { randomBytes } from "node:crypto";
+import { mkdirSync, readFileSync, writeFileSync } from "node:fs";
+import { join } from "node:path";
 import { test } from "node:test";
 import { startFakeMcp } from "./fixtures/fake-mcp-server.mjs";
 import { AGENT_LAYER_PINS } from "../dist/tool-plane.js";
-import { agent, call, cookieOf, follow, serve, withEnv } from "./support.mjs";
+import { agent, call, cookieOf, follow, scratch, serve, withEnv } from "./support.mjs";
 
 /** An agent's own pin is kept from the store cutover on (tool-plane.ts AGENT_LAYER_PINS): its tests run from then. */
 const AGENT_PINS = AGENT_LAYER_PINS ? {} : { skip: "an agent's own pin waits for the store cutover (AGENT_LAYER_PINS)" };
@@ -135,4 +137,25 @@ test("an agent's pin and the server's that fix one argument differently refuse e
   assert.equal((await follow(api, runId, ["completed", "failed", "input_required"], { deadlineMs: 180_000 })).last.status, "completed");
   assert.match(await answerOf(api, runId), /mcp:fake\/send_message can't be called: this agent's settings fix channel_id = C0123 and this server's fix channel_id = C0999, so no call can satisfy both\./);
   assert.equal(sends().length, 0);
+});
+
+test("a broken pin in the server's file is served as pin_broken, and the console's whole-map save of another tool keeps it broken; a valid pin repairs it", { timeout: 120_000 }, async (t) => {
+  const data = join(await scratch(t), "agents");
+  mkdirSync(data, { recursive: true });
+  const broken = { channel_id: { any: true } };
+  writeFileSync(join(data, "tool-settings.json"), JSON.stringify({ [SEND]: { permission: "allow", pin: broken } }));
+  const { api } = await serve(t, { data });
+  const served = (await api("GET", "/settings/tools")).body;
+  assert.deepEqual(served[SEND], { permission: "allow", pin_broken: true });
+  // The console saves the whole map it read, with one change elsewhere: 200, and the pin stays broken, in the file too.
+  const saved = await api("PUT", "/settings/tools", { ...served, web_search: { provider: "exa-keyless" } });
+  assert.equal(saved.status, 200, JSON.stringify(saved.body));
+  assert.deepEqual(saved.body[SEND], { permission: "allow", pin_broken: true });
+  assert.deepEqual(JSON.parse(readFileSync(join(data, "tool-settings.json"), "utf8"))[SEND], { permission: "allow", pin: broken });
+  // An agent can't carry the mark.
+  const own = await api("POST", "/agents", agent("marked", { tools: [SEND], tool_settings: { [SEND]: { pin_broken: true } } }));
+  assert.equal(own.status, 422, JSON.stringify(own.body));
+  // A valid pin repairs it.
+  const repaired = await api("PUT", "/settings/tools", { [SEND]: { permission: "allow", pin: { channel_id: "C0123" } } });
+  assert.deepEqual(repaired.body[SEND], { permission: "allow", pin: { channel_id: "C0123" } });
 });

@@ -144,26 +144,84 @@ test("the CLI loads the Daytona module, by path or by its registry id, and fails
 	}
 });
 
-test("the provider's fromEnv() reads the same COMPUTER_DAYTONA_ names, never DAYTONA_API_KEY, and keeps the provider's own defaults: no idle stop, no auto-delete", async () => {
+/** Runs fn with these names set in process.env, and puts back what was there. */
+async function withProcessEnv(values, fn) {
+	const before = Object.fromEntries(Object.keys(values).map((name) => [name, process.env[name]]));
+	Object.assign(process.env, values);
+	try {
+		return await fn();
+	} finally {
+		for (const [name, value] of Object.entries(before)) {
+			if (value === undefined) delete process.env[name];
+			else process.env[name] = value;
+		}
+	}
+}
+
+/** Every Daytona name a host may hold, each set to a value the provider must never use. */
+const AMBIENT = {
+	DAYTONA_API_KEY: PROD_KEY,
+	DAYTONA_API_URL: PROD_API,
+	DAYTONA_TARGET: "prod-target",
+	COMPUTER_DAYTONA_API_KEY: PROD_KEY,
+	COMPUTER_DAYTONA_API_URL: PROD_API,
+	COMPUTER_DAYTONA_TARGET: "prod-target",
+};
+
+test("the provider's create() reads no environment: the key, the API URL and the target are options, whatever DAYTONA_ or COMPUTER_DAYTONA_ names hold", async () => {
 	const daytona = await import("../dist/daytona.js");
-	const { snapshot: _snapshot, ...providerNames } = DAYTONA_ENV;
-	assert.deepEqual(daytona.ENV, providerNames, "the module's names are the provider's and the run's snapshot");
-	assert.equal(DAYTONA_ENV.snapshot, "COMPUTER_DAYTONA_SNAPSHOT");
+	assert.equal(daytona.ENV, undefined, "no ENV of names");
+	assert.equal(daytona.fromEnv, undefined, "no fromEnv");
+	assert.equal(daytona.optionsFromEnv, undefined, "no optionsFromEnv");
 	const fake = fakeDaytona();
-	assert.throws(() => daytona.fromEnv({ DAYTONA_API_KEY: PROD_KEY, DAYTONA_API_URL: PROD_API }, { fetch: fake.fetch, webSocket: fake.webSocket }), (error) => {
-		assert.match(error.message, /set COMPUTER_DAYTONA_API_KEY to a Daytona API key/);
-		assert.doesNotMatch(error.message, new RegExp(PROD_KEY));
-		return true;
+	await withProcessEnv(AMBIENT, async () => {
+		for (const options of [{}, { apiKey: "" }]) {
+			assert.throws(() => daytona.create({ ...options, daemonPath: DAEMON, fetch: fake.fetch, webSocket: fake.webSocket }), (error) => {
+				assert.match(error.message, /options\.apiKey/);
+				assert.doesNotMatch(error.message, /DAYTONA_API_KEY/, "the library names its option, never an environment variable");
+				assert.doesNotMatch(error.message, new RegExp(PROD_KEY));
+				return true;
+			});
+		}
+		assert.deepEqual(fake.requests, []);
+		const provider = daytona.create({ apiKey: KEY, apiUrl: API, target: "eu", daemonPath: DAEMON, fetch: fake.fetch, webSocket: fake.webSocket });
+		const made = await provider.create({ image: "default", lifetimeMs: 600_000, network: "none" });
+		assert.equal(made.ok, true, JSON.stringify(made));
+		const post = fake.requests.find((r) => r.method === "POST" && r.path === "/api/sandbox");
+		assert.equal(post.body.target, "eu", "options.target, not DAYTONA_TARGET or COMPUTER_DAYTONA_TARGET");
+		assert.equal(post.body.autoStopInterval, 0, "the run's 30-minute bound is the conformance module's, not the provider's");
+		assert.equal(post.body.autoDeleteInterval, -1);
+		assert.equal(provider.capabilities().stopDeletes, false);
+		for (const request of fake.requests) {
+			assert.equal(request.headers.authorization, `Bearer ${KEY}`);
+			assert.match(request.host, /\.daytona\.test$/, "options.apiUrl, not DAYTONA_API_URL or COMPUTER_DAYTONA_API_URL");
+			assert.doesNotMatch(request.host, /prod/);
+		}
+		// Without options.apiUrl, Daytona's own API, as before: never an environment's.
+		const hosts = [];
+		const answer = async (url) => {
+			hosts.push(new URL(url).host);
+			return new Response("[]", { status: 200, headers: { "content-type": "application/json" } });
+		};
+		const byDefault = daytona.create({ apiKey: KEY, daemonPath: DAEMON, fetch: answer, webSocket: fake.webSocket });
+		assert.deepEqual(await byDefault.list({}), { ok: true, value: [] });
+		assert.deepEqual([...new Set(hosts)], ["app.daytona.io"]);
 	});
-	assert.deepEqual(fake.requests, []);
-	const provider = daytona.fromEnv({ [DAYTONA_ENV.key]: KEY, [DAYTONA_ENV.url]: API, [DAYTONA_ENV.daemon]: DAEMON, DAYTONA_API_KEY: PROD_KEY }, { fetch: fake.fetch, webSocket: fake.webSocket });
-	const made = await provider.create({ image: "default", lifetimeMs: 600_000, network: "none" });
-	assert.equal(made.ok, true, JSON.stringify(made));
+});
+
+test("the conformance module reads COMPUTER_DAYTONA_API_URL and COMPUTER_DAYTONA_TARGET and passes them as options.apiUrl and options.target", async () => {
+	const fake = fakeDaytona();
+	await withProcessEnv({ DAYTONA_API_URL: PROD_API, DAYTONA_TARGET: "prod-target" }, async () => {
+		const env = { [DAYTONA_ENV.key]: KEY, [DAYTONA_ENV.url]: API, [DAYTONA_ENV.target]: "eu", [DAYTONA_ENV.daemon]: DAEMON, DAYTONA_API_URL: PROD_API, DAYTONA_TARGET: "prod-target" };
+		assert.deepEqual(daytonaModule.settingsFromEnv(env), { apiKey: KEY, apiUrl: API, target: "eu", daemonPath: DAEMON });
+		const provider = createProvider({ env, fetch: fake.fetch, webSocket: fake.webSocket });
+		const made = await provider.create({ image: "default", lifetimeMs: 600_000, network: "none" });
+		assert.equal(made.ok, true, JSON.stringify(made));
+	});
 	const post = fake.requests.find((r) => r.method === "POST" && r.path === "/api/sandbox");
-	assert.equal(post.body.autoStopInterval, 0, "the run's 30-minute bound is the conformance module's, not the provider's");
-	assert.equal(post.body.autoDeleteInterval, -1);
-	assert.equal(provider.capabilities().stopDeletes, false);
-	for (const request of fake.requests) assert.equal(request.headers.authorization, `Bearer ${KEY}`);
+	assert.equal(post.body.target, "eu");
+	for (const request of fake.requests) assert.match(request.host, /\.daytona\.test$/);
+	assert.deepEqual(daytonaModule.settingsFromEnv({ [DAYTONA_ENV.key]: KEY }), { apiKey: KEY }, "unset names pass nothing: the provider's own defaults hold");
 });
 
 /** Runs the live file with an environment of PATH and the given variables alone, and returns its TAP. */
