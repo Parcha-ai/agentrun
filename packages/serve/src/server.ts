@@ -80,7 +80,7 @@ import { webhook } from "./trigger-webhook.js";
 import { SCHEME_NAMES } from "./trigger-signatures.js";
 import { permissionFrom } from "./tool-gate.js";
 import { CATCHUP_WINDOW_S, FAILURES_TO_PAUSE, HISTORY_KEPT, MIN_EVERY_S, PAYLOAD_KEPT_BYTES, type RunTrigger, SOURCE_KINDS, TARGET_KINDS, type TriggerClock, Triggers } from "./triggers.js";
-import { applyBodyOf, compiled, type Package, packageModel, packageView, readPackages } from "./templates.js";
+import { applyBodyOf, compiled, madeTriggerIssues, type Package, packageModel, packageView, readPackages } from "./templates.js";
 import { checkDefinitionBody, DEFAULT_INPUT_SCHEMA, definitionBodyIssues, ID, IDEMPOTENCY_TTL_S, inputIssues, isObject, type Json, stable, unknownFields } from "./validate.js";
 import { agentTools, browserKeyRow, isUnavailable, recheckPlane, settingsIssues, ToolSettings, type ToolSettingsMap, whyUnavailable, withDefaults } from "./tool-plane.js";
 import { MAX_FILES_PER_RUN, MAX_UPLOAD_BYTES, Uploads, UPLOADS_DIR } from "./uploads.js";
@@ -1403,10 +1403,14 @@ async function startHolding(options: ServeOptions, data: string, lock: ServerLoc
     const saved = pkg.mcp.filter((need) => mcpSource.server(need.server));
     const unsaved = pkg.mcp.filter((need) => !saved.includes(need));
     const needed = unsaved.filter((need) => need.required);
-    if (missing.length || needed.length) {
+    // A webhook trigger's secret is kept sealed, never in the clear: with no seal key, its create would be refused after
+    // the agent is made, so the apply is refused first, naming each one.
+    const unsealed = sealKeyOf(env[SEAL_KEY_ENV]) ? [] : pkg.triggers.flatMap((trigger, i) => (isObject(trigger.source) && trigger.source.kind === "webhook" ? [i] : []));
+    if (missing.length || needed.length || unsealed.length) {
       const fix = "Add it in Settings → Model keys or Settings → Tool keys, or set it where AgentRun starts, then apply the template again.";
       const server = "Add it in Settings → MCP servers, under that name, then apply the template again.";
-      throw new ApiError("agent_not_runnable", `The ${pkg.name} template needs ${[...missing, ...needed.map((need) => `the MCP server ${need.server}`)].join(" and ")}, which this server does not have. Nothing was created.`, { fields: [...missing.map((name) => ({ field: `secrets.${name}`, reason: NOT_SET_UP, message: `${name} is not set on this server.`, fix })), ...needed.map((need) => ({ field: `mcp.${need.server}`, reason: NOT_SET_UP, message: `No MCP server ${need.server} is saved on this server.`, fix: server }))] });
+      const sealing = `Start the server with its launcher, agentrun-serve, which makes and keeps a seal key, or set ${SEAL_KEY_ENV} (32 random bytes in base64) where AgentRun starts, then apply the template again.`;
+      throw new ApiError("agent_not_runnable", `The ${pkg.name} template needs ${[...missing, ...needed.map((need) => `the MCP server ${need.server}`), ...(unsealed.length ? ["a seal key for its webhook trigger's secret"] : [])].join(" and ")}, which this server does not have. Nothing was created.`, { fields: [...missing.map((name) => ({ field: `secrets.${name}`, reason: NOT_SET_UP, message: `${name} is not set on this server.`, fix })), ...needed.map((need) => ({ field: `mcp.${need.server}`, reason: NOT_SET_UP, message: `No MCP server ${need.server} is saved on this server.`, fix: server })), ...unsealed.map((i) => ({ field: `triggers.${i}`, reason: NOT_SET_UP, message: `This server has no seal key (${SEAL_KEY_ENV}), so it cannot keep the webhook trigger's secret.`, fix: sealing }))] });
     }
     // An MCP server the package can do without is skipped, and said: its tools are not granted.
     const skipped: InputIssue[] = unsaved.map((need) => ({ field: `mcp.${need.server}`, reason: NOT_SET_UP, message: `No MCP server ${need.server} is saved on this server, so the agent was made without its tools (${need.tools.join(", ")}). Save it in Settings → MCP servers and apply again to grant them.` }));
@@ -1418,6 +1422,10 @@ async function startHolding(options: ServeOptions, data: string, lock: ServerLoc
     const denied = grants.filter((tool) => { const set = permissionFrom(tool, server); return set.from === "server" && set.permission === "deny"; });
     const kept: InputIssue[] = denied.map((tool) => ({ field: `grants.${tool}`, reason: "not_allowed", message: `${tool} is denied on this server (Settings → Tools), so the agent was not allowed it: its runs are refused it until the owner changes that setting.` }));
     const made = compiled(pkg, parameters, { ...(harness ? { harness } : {}), ...(model ? { model } : {}), mcp: saved, defaultTools, grants: grants.filter((tool) => !denied.includes(tool)) });
+    // Every trigger is checked as POST /triggers checks it, its parameters filled, before anything is made: a schedule
+    // from a parameter that does not read, or a date that has passed, refuses the apply (422 under triggers.<i>).
+    const refusedTriggers = madeTriggerIssues(made.triggers, Date.now());
+    if (refusedTriggers.length) throw invalid(refusedTriggers);
     // POST /agents' and POST /triggers' own body limit: parameters filled in more than once can grow a package past it.
     for (const one of [made.agent, ...made.triggers]) if (Buffer.byteLength(JSON.stringify(one)) > MAX_BODY) throw new ApiError("payload_too_large", `the ${pkg.name} template, its parameters filled in, makes a body over ${MAX_BODY} bytes`, { details: { limit: "max_body_bytes" } });
     const { entry, warnings } = await createAgentOf(made.agent);
