@@ -33,6 +33,10 @@ export interface RunnerOptions {
   pollMs?: number;
   /** How often each held run's command rows are read: a command reaches its loop within one of these. */
   commandPollMs?: number;
+  /** How many times a parked run brought back by a row is tried when its loop cannot start, before that row is refused. */
+  resumeTries?: number;
+  /** The wait after a resume's first failed try; each later one waits twice the one before. */
+  resumeBackoffMs?: number;
   onEvent?: (event: RunnerEvent) => void;
 }
 
@@ -82,6 +86,8 @@ export function startRunner(options: RunnerOptions): Runner {
     stopMarginMs = 5_000,
     pollMs = 1_000,
     commandPollMs = 500,
+    resumeTries = 3,
+    resumeBackoffMs = 5_000,
     onEvent = () => {},
   } = options;
   if (!(stopMarginMs < leaseMs && renewEveryMs < leaseMs - stopMarginMs)) {
@@ -200,6 +206,10 @@ export function startRunner(options: RunnerOptions): Runner {
     const { claim } = held;
     try {
       if (killed || held.fence.lost) return;
+      // A parked run brought back (a raise, an approval) whose loop could not start stays parked: its waking row keeps
+      // one more try, and the run is claimable again after a backoff; after the last try that row is refused with why.
+      // Never failed: a person can raise again or stop it (#1944-5, the lead's keep list).
+      if (threw && end.state === "failed" && claim.from === "parked") return await resumeFailed(held, end.error.message);
       if (threw && end.state === "failed") await store.runs.update(claim, { state: "failed", summary: end.error.message });
       if (end.state === "ended" || end.state === "stopped" || end.state === "failed") {
         const reason = endedReason(end.state);
@@ -217,6 +227,48 @@ export function startRunner(options: RunnerOptions): Runner {
     } finally {
       runs.delete(claim.runId);
     }
+  };
+
+  /** A parked run's resume that threw: one more try on the row that woke it, released parked with a backoff; after
+   *  `resumeTries`, that row refused with why and the run released parked with nothing to wake it. */
+  const resumeFailed = async (held: Held, why: string) => {
+    const { claim } = held;
+    const untaken = (await store.commands(claim.runId, 0)).filter((row) => row.takenAt === null);
+    const stop = untaken.find((row) => row.kind === "stop");
+    const woke = untaken[0];
+    if (stop) {
+      // A stop never waits on a loop that cannot start: the run ends stopped here, its stop row taken, and every other
+      // untaken row refused as a stopped run's.
+      await store.runs.update(claim, { state: "stopped", summary: "stopped" });
+      await store.take(claim, stop.id, "taken");
+      const reason = endedReason("stopped");
+      for (const row of untaken) {
+        if (row.id === stop.id) continue;
+        await store.take(claim, row.id, "refused", reason);
+        emit({ type: "refused", runId: claim.runId, commandId: row.id, reason });
+      }
+      await store.flush();
+      await store.release(claim, {});
+      emit({ type: "released", runId: claim.runId, epoch: claim.epoch, end: "stopped" });
+      return;
+    }
+    if (woke) {
+      const tries = await store.retry(claim, woke.id);
+      if (tries >= resumeTries) {
+        const reason = `the run could not go on after ${tries} tries; the last: ${why}`;
+        await store.take(claim, woke.id, "refused", reason);
+        emit({ type: "refused", runId: claim.runId, commandId: woke.id, reason });
+        await store.flush();
+        await store.release(claim, { state: "parked" });
+      } else {
+        await store.flush();
+        await store.release(claim, { state: "parked", backoffUntil: Date.now() + resumeBackoffMs * 2 ** (tries - 1) });
+      }
+    } else {
+      await store.flush();
+      await store.release(claim, { state: "parked" });
+    }
+    emit({ type: "released", runId: claim.runId, epoch: claim.epoch, end: "parked" });
   };
 
   const hold = (claim: Claim, sentAt: number) => {
