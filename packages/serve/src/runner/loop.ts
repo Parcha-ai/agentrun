@@ -31,12 +31,13 @@ import {
   type EntryRecord,
   Harness,
   hook,
+  LiveDoc,
   type StorageWrite,
   ToolTask,
 } from "@earendil-works/pi-durable";
 import type { KernelHooks, ToolCall } from "./conformance/subject.js";
 import { type AnswerData, type AskData, type EndData, KINDS } from "./journal-kinds.js";
-import type { Claim, Command, CommandOutcome, Journal, Loop, LoopDeps, LoopEnd, LoopFactory, StopReason } from "./loop-contract.js";
+import type { Claim, Command, CommandOutcome, HeldState, Journal, Loop, LoopDeps, LoopEnd, LoopFactory, StopReason } from "./loop-contract.js";
 import { sideEffect } from "./side-effects.js";
 import type { Staged } from "../store/store.js";
 
@@ -179,6 +180,15 @@ class KernelFault extends Error {
   constructor(call: ToolCall, cause: unknown) {
     super(`the kernel faulted on ${call.tool} (${call.callId}) before its result: ${(cause as Error)?.message ?? String(cause)}`, { cause });
   }
+}
+
+/** A run's held state from its pi.live document: the tools running now and the answer streaming so far. */
+function heldStateOf(value: unknown): HeldState | undefined {
+  const live = (value ?? {}) as { tools?: { callId: string; name: string; status: string; arguments?: unknown; output?: string }[]; generation?: { message?: { content?: { type: string; text?: string }[] } } };
+  const tools = (live.tools ?? []).filter((slot) => slot.status === "running").map((slot) => ({ callId: slot.callId, name: slot.name, ...(slot.arguments !== undefined ? { args: slot.arguments } : {}), ...(slot.output ? { output: slot.output } : {}) }));
+  const text = (live.generation?.message?.content ?? []).map((part) => (part.type === "text" ? part.text ?? "" : "")).join("");
+  if (tools.length === 0 && !text) return undefined;
+  return { tools, ...(text ? { partial: { text } } : {}) };
 }
 
 /** A tool result pi wrote for a call it cut off at its restart limit, as its message, if any. */
@@ -332,6 +342,7 @@ function piLoop(specOf: (claim: Claim) => PiRunSpec | Promise<PiRunSpec>, deps: 
         if (deps.signal.aborted) gate.seal(new Interrupted("its claim's signal aborted"));
         harness = await Harness.open(gate.journal, { models: spec.models, registry, settings: { restartLimit }, onReport: () => {} }, context);
         root = await harness.root(context, { agent: { model: spec.model, extensions: [kernel] } as never });
+        await reportHeld(harness, root.id);
         opened();
         for (const command of early.splice(0)) void steer(command);
         if (restarts > restartLimit + 1) {
@@ -376,8 +387,34 @@ function piLoop(specOf: (claim: Claim) => PiRunSpec | Promise<PiRunSpec>, deps: 
       return { state: "failed", error: { code: "pi-loop", message: (error as Error).message } };
     } finally {
       deps.signal.removeEventListener("abort", signalAbort);
+      held?.detach();
+      deps.live?.(undefined);
       if (gate && harness) await closeBehindSeal(gate, harness);
     }
+  }
+
+  /** The Session's pi.live document as pi shows it (held changes included), reported through deps.live as each change is
+   *  made: its running tools and its partial answer. pi stores these later, collapsed; the live view needs them now. */
+  let held: { detach(): void } | undefined;
+  async function reportHeld(session: Harness, conversationId: ConversationId): Promise<void> {
+    held?.detach();
+    held = undefined;
+    if (!deps.live) return;
+    const report = (value: unknown) => deps.live?.(heldStateOf(value));
+    const observation = await session.observeDoc(LiveDoc as never, conversationId, {
+      // Never throws out to pi (a throw would detach it for good): a value it cannot read reports nothing held.
+      advance: (call: { kind: string; value?: unknown; retired?: boolean }) => {
+        try {
+          if (call.kind === "value") report(call.retired ? undefined : call.value);
+        } catch {
+          deps.live?.(undefined);
+        }
+      },
+      end: () => undefined,
+    } as never, context) as { value?: unknown; detach(): void } | undefined;
+    if (!observation) return;
+    held = observation;
+    report(observation.value);
   }
 
   /** Closes a Session behind its journal's seal: its abort commits are refused, so the store keeps what it had (a parked

@@ -45,20 +45,23 @@ async function heldWrites(t, loops, holdMs = 2_000) {
   const from = Date.now();
   await sleep(holdMs);
   const window = puts.filter((call) => call.at >= from && call.at < from + holdMs);
-  letSlowGo();
-  return { perSecond: (window.length * 1_000) / holdMs, rows: window.reduce((sum, call) => sum + call.rows, 0), server };
+  // The slow tools are let go by the caller (`release`), so a check can look while they still run.
+  t.after(() => letSlowGo());
+  return { perSecond: (window.length * 1_000) / holdMs, rows: window.reduce((sum, call) => sum + call.rows, 0), server, release: letSlowGo };
 }
 
 test("a runner writes held states in one store transaction per tick, as many for 300 loops as for 30", { timeout: 240_000 }, async (t) => {
   const few = await heldWrites(t, 30);
+  few.release();
   const many = await heldWrites(t, 300);
+  many.release();
   const ceiling = 1_000 / TICK_MS + 1;
   assert.ok(few.perSecond <= ceiling, `30 loops: ${few.perSecond} puts a second, at most ${ceiling}`);
   assert.ok(many.perSecond <= ceiling, `300 loops: ${many.perSecond} puts a second, at most ${ceiling}`);
 });
 
 test("a held-state write is never in a run's journal: no commit, no seq", async (t) => {
-  const { server } = await heldWrites(t, 3, 1_000);
+  const { server, release } = await heldWrites(t, 3, 1_000);
   const row = await server.runs.get("run-0");
   const journal = server.journal({ runId: "run-0", runner: "reader", epoch: row.epoch, until: 0, from: row.state });
   const before = (await journal.commitsAfter(0, 10_000, ctx)).commits.map((commit) => commit.seq);
@@ -66,4 +69,5 @@ test("a held-state write is never in a run's journal: no commit, no seq", async 
   const after = (await journal.commitsAfter(0, 10_000, ctx)).commits.map((commit) => commit.seq);
   assert.ok((await server.live.read(["run-0"])).length === 1, "the run's held row was written meanwhile");
   assert.deepEqual(after, before, "a second of held-state ticks added no commit to the run's journal");
+  release();
 });
