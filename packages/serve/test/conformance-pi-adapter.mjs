@@ -21,12 +21,17 @@ export function scriptedOrigin(script, requests = []) {
     const next = script[step];
     const usage = { input_tokens: 100, output_tokens: 10 };
     const start = { type: "message_start", message: { id: `msg_${step}`, type: "message", role: "assistant", model: body.model, content: [], stop_reason: null, usage: { input_tokens: usage.input_tokens, output_tokens: 1 } } };
-    if (next && "call" in next) {
+    // A call, or several in one round ({ calls: [{ call, args }, …] }, which pi runs in parallel).
+    const calls = next && "calls" in next ? next.calls : next && "call" in next ? [next] : undefined;
+    if (calls) {
+      const blocks = calls.flatMap((each, index) => [
+        { type: "content_block_start", index, content_block: { type: "tool_use", id: `toolu_${step}_${index}`, name: each.call, input: {} } },
+        { type: "content_block_delta", index, delta: { type: "input_json_delta", partial_json: JSON.stringify(each.args ?? {}) } },
+        { type: "content_block_stop", index },
+      ]);
       return sse([
         start,
-        { type: "content_block_start", index: 0, content_block: { type: "tool_use", id: `toolu_${step}`, name: next.call, input: {} } },
-        { type: "content_block_delta", index: 0, delta: { type: "input_json_delta", partial_json: JSON.stringify(next.args ?? {}) } },
-        { type: "content_block_stop", index: 0 },
+        ...blocks,
         { type: "message_delta", delta: { stop_reason: "tool_use", stop_sequence: null }, usage: { output_tokens: usage.output_tokens } },
         { type: "message_stop" },
       ]);
