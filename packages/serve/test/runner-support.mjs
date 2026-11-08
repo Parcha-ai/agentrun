@@ -221,10 +221,12 @@ export function fauxLoops({ turns = 3, turnMs = 10, park = false, stubborn = fal
               return { state: "interrupted" };
             }
             const take = loop.pending.splice(0).map((command) => command.id);
+            // When the commit was tried (a commit begun before a stop may be refused after it), and when it was refused.
+            const startedAt = Date.now();
             try {
               await write(journal, claim.runId, take.length ? { take } : undefined);
             } catch (error) {
-              loop.commitErrors.push({ at: Date.now(), name: error.name });
+              loop.commitErrors.push({ startedAt, at: Date.now(), name: error.name });
               if (!stubborn) throw error;
             }
           }
