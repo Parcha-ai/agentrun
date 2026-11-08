@@ -5,6 +5,9 @@ import { rm } from "node:fs/promises";
 import path from "node:path";
 import test from "node:test";
 import { STAGEHAND_INFERENCE_REFUSED, stagehandDriver } from "../dist/driver/stagehand.js";
+import { createDrivingGates } from "../dist/core/driving.js";
+import { drivingGuard } from "../dist/core/driving-guard.js";
+import { staleSnapshotIdError } from "../dist/vendor/stagehand-facade/contract.js";
 import { cdpProvider } from "../dist/providers/cdp.js";
 import { CHROME, NO_CHROME, skipIncapable } from "./fixtures/local-chrome.mjs";
 import { startSite } from "./fixtures/site.mjs";
@@ -63,7 +66,16 @@ test("the Stagehand driver serves the page tools' contract on a real Chrome", { 
       assert.ok(link, "a link ID");
       assert.equal((await driver.run({ actions: [{ op: "click", id: link }] })).completed, 1);
       const form = await readAfterNavigation(() => driver.snapshot({}), (tree) => Boolean(idOf(tree, /^textbox/i) && idOf(tree, /button.*Submit/)));
-      await driver.run({ actions: [{ op: "fill", id: idOf(form, /^textbox/i), value: "Ada Lovelace" }, { op: "click", id: idOf(form, /button.*Submit/) }] });
+      const actions = [{ op: "fill", id: idOf(form, /^textbox/i), value: "Ada Lovelace" }, { op: "click", id: idOf(form, /button.*Submit/) }];
+      // Every action is checked against the snapshot before any is sent, in the facade's own words for a stale id.
+      await assert.rejects(driver.checkActions([actions[0], { op: "click", id: "999-999" }]), (error) => error.message === staleSnapshotIdError("999-999"));
+      await driver.checkActions(actions);
+      // Through the driving guard, as a model call runs it: the actions go one at a time, and the form still reaches the
+      // server once.
+      const gates = createDrivingGates();
+      const port = { session: async () => ({ tag: "sh-driver-run", driver, notice: null }), relaunch: async () => ({ tag: "sh-driver-run", driver }), release: async () => ({ released: true, sessionId: null }) };
+      const ran = await drivingGuard(async (_args, p) => ({ content: [{ type: "text", text: JSON.stringify(await (await p.session()).driver.run({ actions })) }] }), gates)({}, port, {});
+      assert.equal(JSON.parse(ran.content[0].text).completed, 2);
       assert.equal(await readAfterNavigation(() => driver.run({ code: AFTER_SUBMIT }), (value) => typeof value === "string"), "Submission 1 received for Ada Lovelace.");
       assert.equal(site.submissions(), 1);
     });
