@@ -27,6 +27,10 @@ export type ToolSettings = Record<string, ToolSetting>;
 /** GET /v2/agents/{id}'s `tools`: each tool the agent grants, with its permission and provider in force. */
 export type AgentTool = NonNullable<components["Agent"]["tools"]>[number];
 
+/** GET /v2/agents/{id}'s `tools`, always there on that answer (serve's agentTools), which a list, a create and a
+ *  definition save do not carry. */
+export type GetAgentTools = Answer<"getAgent">["tools"];
+
 /** `so_far_usd` and `unpriced` (serve's costsofar/1), present only while `usd` is null. */
 export type Cost = components["Cost"];
 
