@@ -200,6 +200,26 @@ test("an allowlist whose Docker host is not where this provider runs (a daemon t
 	for (const address of HOST) assert.ok(local?.includes(address), `${address} reaches the proxy's --local: ${proxy.join(" ")}`);
 });
 
+test("an allowlist from a provider whose host root shows it runs in a container (egress.hostRoot with /.dockerenv) is refused in words before anything is made, unless egress.hostAddresses names the host's addresses", async () => {
+	const root = mkdtempSync(join(tmpdir(), "computer-in-container-"));
+	try {
+		writeFileSync(join(root, ".dockerenv"), "");
+		const { provider, calls, names, volumeNames } = fakeDocker({ egressOptions: { hostRoot: root } });
+		const refused = await provider.create(SPEC);
+		assert.equal(refused.ok, false, JSON.stringify(refused));
+		assert.equal(refused.error.code, "refused");
+		assert.match(refused.error.message, /^network: this provider runs in a container \(\/\.dockerenv exists\), so this provider's own interfaces are not the Docker host's/);
+		assert.deepEqual(calls().map((args) => args[0]), ["info"], "nothing is made, and the docker CLI is not asked where its daemon is");
+		assert.deepEqual([names(), volumeNames()], [[], []]);
+		assert.deepEqual(provider.check(SPEC).map((r) => r.field), ["network"]);
+		const given = fakeDocker({ egressOptions: { hostRoot: root, hostAddresses: ["93.184.215.20"] } });
+		assert.equal((await given.provider.create(SPEC)).ok, true, "with the host's addresses given");
+		for (const hostRoot of ["", "relative/root", 7]) assert.throws(() => new DockerProvider({ daemonPath: "/nonexistent", egress: { hostRoot } }), /egress/, JSON.stringify(hostRoot));
+	} finally {
+		rmSync(root, { recursive: true, force: true });
+	}
+});
+
 test("containerSigns() names what shows this provider runs in a container: /.dockerenv, /run/.containerenv, or a container's cgroup; a plain host shows none", async () => {
 	const { containerSigns } = await import("../dist/docker/egress.js");
 	const root = mkdtempSync(join(tmpdir(), "computer-container-signs-"));

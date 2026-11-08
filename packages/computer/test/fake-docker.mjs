@@ -2,7 +2,7 @@
 // containers in a JSON file, and answers run, inspect, ps, stop, rm, info and exec (with the daemon's hello) as the
 // docker CLI does. An inspect --format renders each {{json .Path}} in it. No Docker and no daemon binary are needed.
 import { createHash } from "node:crypto";
-import { chmodSync, existsSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { chmodSync, existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { after } from "node:test";
@@ -377,7 +377,11 @@ switch (args[0]) {
 		change(all.find((c) => c.Name === `/${name}`));
 		writeFileSync(state, JSON.stringify(all));
 	};
-	const options = { daemonPath, docker: program, ...(user === undefined ? {} : { user }), ...(desktop === undefined ? {} : { desktop }), ...(egressOptions === undefined ? {} : { egress: egressOptions }) };
+	// The host the provider looks at for a container's signs is a clean fake root, so these tests run the same inside a
+	// container; egressOptions.hostRoot replaces it.
+	const hostRoot = join(dir, "host-root");
+	mkdirSync(hostRoot);
+	const options = { daemonPath, docker: program, ...(user === undefined ? {} : { user }), ...(desktop === undefined ? {} : { desktop }), egress: { hostRoot, ...egressOptions } };
 	return { provider: new DockerProvider(options), calls, names, volumeNames, alter, daemonPath, proceed, started };
 }
 
