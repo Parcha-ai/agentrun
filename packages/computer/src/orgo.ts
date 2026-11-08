@@ -19,6 +19,7 @@ import { DaemonClient } from "./client.js";
 import { DESKTOP_GROUPS } from "./desktop.js";
 import { COMPUTER_LABEL, DAEMON_IN_COMPUTER, helloDrift, type ProbeReport, probeNetworkDrift, probeNotes, probeReportOf, SOCKET_DIR, WORK } from "./drift.js";
 import { EPOCH_LABEL, RUN_LABEL } from "./labels.js";
+import type { KindCapabilities } from "./kinds.js";
 import { checkMount, type MountKind } from "./mount.js";
 import { type OrgoChannel, type OrgoRest, type OrgoStart, type OrgoWebSocketFactory, ORGO_API_URL, orgoRest, orgoTerminalChannel, START_LOG } from "./orgo-channel.js";
 import type { Group } from "./protocol.js";
@@ -37,20 +38,17 @@ import {
 	type NetworkSpec,
 	type Refusal,
 } from "./provider.js";
-import { type ComputerError, type ComputerErrorCode, fail, ok, type Result } from "./result.js";
-
-/** What fromEnv reads, by name: never ORGO_API_KEY, which a host may hold for another account. */
-export const ENV = {
-	/** Required: an Orgo API key. */
-	apiKey: "COMPUTER_ORGO_API_KEY",
-	/** Required: the workspace this deployment's computers live in. */
-	workspace: "COMPUTER_ORGO_WORKSPACE",
-	/** Orgo's API; default https://www.orgo.ai/api. */
-	apiUrl: "COMPUTER_ORGO_API_URL",
-} as const;
+import { type ComputerError, fail, ok, type Result } from "./result.js";
+import { listTested } from "./test-connection.js";
 
 /** The mount kinds an Orgo computer takes: none yet (an Archil mount needs an Orgo template that bakes the helper). */
 export const MOUNT: readonly MountKind[] = [];
+
+/** The groups every Orgo computer offers: a Linux shell, files and processes, and the desktop's screen and input. */
+const GROUPS: Group[] = ["exec", "files", "processes", ...DESKTOP_GROUPS];
+
+/** What a built provider declares, known without building one: one configuration, a Linux desktop (the registry's entry). */
+export const CAPABILITIES: readonly KindCapabilities[] = [{ kind: "desktop", groups: [...GROUPS] }];
 
 /** The conformance CLI's module for Orgo: its live switch, the run's 1 h cap and the drifted twin. */
 export const conformance = () => import("./conformance/orgo.js");
@@ -330,7 +328,7 @@ export class OrgoProvider implements ComputerProvider {
 			isolation: "vm",
 			os: "linux",
 			daemon: "child",
-			groups: ["exec", "files", "processes", ...DESKTOP_GROUPS] as Group[],
+			groups: [...GROUPS],
 			maxLifetimeMs: this.#maxLifetimeMs,
 			release: ["delete"],
 			mount: [...MOUNT],
@@ -762,6 +760,11 @@ export class OrgoProvider implements ComputerProvider {
 	}
 
 	/** none, read back by the probe from inside, as the tool user; a change is refused: none is the one network here. */
+	/** Settings' test: one read of the workspace's computers (list with no label to read from inside), which makes nothing. */
+	async testConnection(context: CallContext = {}): Promise<Result<{ detail: string }>> {
+		return listTested("Orgo", await this.list({}, context));
+	}
+
 	async network(ref: ComputerRef, policy?: NetworkSpec, { signal }: CallContext = {}): Promise<Result<NetworkPolicy>> {
 		const problem = refProblem(ref);
 		if (problem) return fail("invalid", problem);
@@ -837,24 +840,12 @@ export class OrgoProvider implements ComputerProvider {
 	}
 }
 
-/** An OrgoProvider from options alone: serve passes apiKey (ORGO_API_KEY's value) and its workspace. */
+/**
+ * An OrgoProvider from its options alone, its key included: it reads no environment. Serve passes apiKey from its
+ * ORGO_API_KEY setting and its workspace; the conformance module reads COMPUTER_ORGO_* (settingsFromEnv).
+ */
 export function create(options: OrgoProviderOptions): OrgoProvider {
 	return new OrgoProvider(options);
-}
-
-export interface OrgoFromEnvOptions extends Partial<Omit<OrgoProviderOptions, "apiKey" | "workspaceId" | "apiUrl">> {}
-
-/**
- * An OrgoProvider from COMPUTER_ORGO_* alone: the key from COMPUTER_ORGO_API_KEY and nowhere else (never ORGO_API_KEY),
- * the workspace from COMPUTER_ORGO_WORKSPACE. Options win over the environment, but never give the key.
- */
-export async function fromEnv(env: Record<string, string | undefined> = process.env, options: OrgoFromEnvOptions = {}): Promise<OrgoProvider> {
-	const apiKey = env[ENV.apiKey];
-	if (!apiKey) throw new Error(`set ${ENV.apiKey} to an Orgo API key: the Orgo provider reads it there and nowhere else, never from ORGO_API_KEY`);
-	const workspaceId = env[ENV.workspace];
-	if (!workspaceId) throw new Error(`set ${ENV.workspace} to the Orgo workspace this deployment's computers live in`);
-	const apiUrl = env[ENV.apiUrl] || undefined;
-	return create({ ...options, apiKey, workspaceId, ...(apiUrl ? { apiUrl } : {}) });
 }
 
 export type { OrgoChannel, OrgoStart, OrgoStream, OrgoWebSocketFactory } from "./orgo-channel.js";

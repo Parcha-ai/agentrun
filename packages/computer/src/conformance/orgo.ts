@@ -6,16 +6,22 @@
 // The daemon is uploaded into each computer (dist/computerd-linux-amd64, `npm run build:daemon`); the drifted provider
 // uploads one built with Go as version <version>-drift. Every computer of a run lives at most 1 h, Orgo's shortest end
 // (ends_in_hours 1): Orgo deletes it then whatever happens to the run.
-import { create, ENV, type OrgoChannel, type OrgoProvider, type OrgoWebSocketFactory } from "../orgo.js";
+import { create, type OrgoChannel, type OrgoProvider, type OrgoWebSocketFactory } from "../orgo.js";
 import { buildDriftDaemon, DRIFT_VERSION } from "./drift-daemon.js";
 
 /** The environment this module reads, by name: the live switch, the run's template, and the provider's settings. */
-export const ORGO_ENV = {
+export const ENV = {
 	live: "AGENTRUN_COMPUTER_LIVE_ORGO",
 	/** The template every computer of the run starts from; default Orgo's base desktop ("linux"). */
 	template: "COMPUTER_ORGO_TEMPLATE",
-	...ENV,
+	/** Required: an Orgo API key (never ORGO_API_KEY, which a host may hold for another account). */
+	apiKey: "COMPUTER_ORGO_API_KEY",
+	/** Required: the workspace the run's computers live in. */
+	workspace: "COMPUTER_ORGO_WORKSPACE",
+	/** Orgo's API; default https://www.orgo.ai/api. */
+	apiUrl: "COMPUTER_ORGO_API_URL",
 } as const;
+const ORGO_ENV = ENV;
 
 /** The longest lifetime a computer of a run may ask for: Orgo's shortest end, 1 h. */
 export const CONFORMANCE_MAX_LIFETIME_MS = 60 * 60_000;
