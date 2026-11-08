@@ -17,6 +17,10 @@
 //	                    TLS ClientHello, 80 an HTTP HEAD, 53 a DNS query, any other an HTTP HEAD), a host:port/udp one
 //	                    a DNS query in one datagram (no reply is refused: UDP has no accept); 10 s to connect and 10 s
 //	                    to answer, and at most 4 KiB is read
+//	computerd probe --diagnose
+//	                    print one JSON line: per well-known public address and port (1.1.1.1, 8.8.8.8, 9.9.9.9 and
+//	                    151.101.1.57 on 443/tcp, 80/tcp and 53/udp), whether it refused, accepted with no answer, or
+//	                    answered (any byte back, as for --connect), each step bounded, 15 s in all
 //	computerd version   print the version
 //
 // Each exec.run and process.start starts itself again as `computerd guard`, with no other caller (see execrun.Guard).
@@ -66,6 +70,15 @@ func main() {
 		}
 		os.Exit(daemon.Init(version, daemon.SocketPath(), opts.deadline, logger))
 	case "probe":
+		if diagnose, ok := diagnoseOf(logger, os.Args[2:]); !ok {
+			os.Exit(2)
+		} else if diagnose {
+			if err := json.NewEncoder(os.Stdout).Encode(probe.Diagnose(probe.DiagnoseChecks(), probe.DiagnoseBounds)); err != nil {
+				logger.Printf("probe: %v", err)
+				os.Exit(1)
+			}
+			return
+		}
 		targets, ok := probeTargetsOf(logger, os.Args[2:])
 		if !ok {
 			os.Exit(2)
@@ -82,7 +95,7 @@ func main() {
 }
 
 func usage() {
-	fmt.Fprintln(os.Stderr, "usage: computerd init --deadline <RFC 3339 time> [--max-deadline <RFC 3339 time>] [--user <uid:gid>] | stdio | probe [--connect <host:port>[/udp]]... | version")
+	fmt.Fprintln(os.Stderr, "usage: computerd init --deadline <RFC 3339 time> [--max-deadline <RFC 3339 time>] [--user <uid:gid>] | stdio | probe [--connect <host:port>[/udp]]... | probe --diagnose | version")
 	os.Exit(2)
 }
 
@@ -172,6 +185,20 @@ func accountOf(value string) (account, bool) {
 		return account{}, false
 	}
 	return account{uid: int(u), gid: int(g)}, true
+}
+
+// diagnoseOf reads probe's `--diagnose`, which takes no other argument: true when it is given, alone.
+func diagnoseOf(logger *log.Logger, args []string) (bool, bool) {
+	for _, arg := range args {
+		if arg == "--diagnose" {
+			if len(args) != 1 {
+				logger.Printf("probe: --diagnose takes no other argument; it tries its own fixed targets")
+				return false, false
+			}
+			return true, true
+		}
+	}
+	return false, true
 }
 
 // probeTargetsOf reads probe's `--connect <host:port>[/udp]` flags.

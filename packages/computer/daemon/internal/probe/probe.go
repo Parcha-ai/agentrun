@@ -28,10 +28,12 @@ import (
 	"time"
 )
 
-// Bounds bounds each target: its connect, its answer (from the request's send), and the bytes read from it.
+// Bounds bounds each target: its connect, its answer (from the request's send), and the bytes read from it; and, for a
+// diagnosis, the whole of it (zero: no bound but each target's).
 type Bounds struct {
 	Connect time.Duration
 	Read    time.Duration
+	Whole   time.Duration
 	MaxRead int
 }
 
@@ -144,7 +146,7 @@ func Try(target, protocol string, bounds Bounds) Target {
 		result.Detail = fmt.Sprintf("%q is no protocol over %s: tls, http, dns or any over TCP, dns over UDP", protocol, network)
 		return result
 	}
-	outcome, n, detail := exchange(network, address, ask, bounds.Connect, bounds.Read, bounds.MaxRead)
+	outcome, n, detail := exchange(network, address, ask, bounds, time.Time{})
 	result.Outcome, result.Bytes, result.Detail = outcome, n, detail
 	return result
 }
@@ -184,12 +186,13 @@ func askFor(protocol, host, network string) (asking, bool) {
 	return asking{}, false
 }
 
-// exchange dials network ("tcp" or "udp") address within connect, sends ask's request, and reads what comes back
-// within read, at most most bytes. It reports refused (no connection; for UDP, also no reply), accepted (a TCP
-// connection, and no byte back) or answered (any byte back: the far side spoke, whatever it said), the bytes read, and
-// what in words.
-func exchange(network, address string, ask asking, connect, read time.Duration, most int) (string, int, string) {
-	conn, err := net.DialTimeout(network, address, connect)
+// exchange dials network ("tcp" or "udp") address within bounds.Connect, sends ask's request, and reads what comes
+// back within bounds.Read, at most bounds.MaxRead bytes, never past end (zero: no end but these). It reports refused
+// (no connection; for UDP, also no reply), accepted (a TCP connection, and no byte back) or answered (any byte back:
+// the far side spoke, whatever it said), the bytes read, and what in words. --connect and --diagnose both judge by it.
+func exchange(network, address string, ask asking, bounds Bounds, end time.Time) (string, int, string) {
+	dialer := net.Dialer{Deadline: within(bounds.Connect, end)}
+	conn, err := dialer.Dial(network, address)
 	if err != nil {
 		return "refused", 0, "no connection: " + reason(err)
 	}
@@ -199,9 +202,11 @@ func exchange(network, address string, ask asking, connect, read time.Duration, 
 	if network == "tcp" {
 		silent, nothing = "accepted", "no bytes"
 	}
-	_ = conn.SetDeadline(time.Now().Add(read))
+	readBy := within(bounds.Read, end)
+	window := max(time.Until(readBy).Round(time.Millisecond), 0)
+	_ = conn.SetDeadline(readBy)
 	_, sent := conn.Write(ask.request)
-	got, err := readAnswer(conn, network, most, ask.name)
+	got, err := readAnswer(conn, network, bounds.MaxRead, ask.name)
 	if len(got) > 0 {
 		if what, _ := ask.name(got); what != "" {
 			return "answered", len(got), what + " came back"
@@ -214,11 +219,19 @@ func exchange(network, address string, ask asking, connect, read time.Duration, 
 	case errors.Is(err, io.EOF):
 		return silent, 0, "the connection closed with no bytes"
 	case isTimeout(err):
-		return silent, 0, fmt.Sprintf("%s within %v", nothing, read)
+		return silent, 0, fmt.Sprintf("%s within %v", nothing, window)
 	case err != nil:
 		return silent, 0, nothing + ": " + reason(err)
 	}
 	return silent, 0, nothing
+}
+
+// within is now plus d, never past end (zero: no end).
+func within(d time.Duration, end time.Time) time.Time {
+	if at := time.Now().Add(d); end.IsZero() || at.Before(end) {
+		return at
+	}
+	return end
 }
 
 // readAnswer reads until name can judge what came (it says how many bytes it needs), the peer ends, or the deadline
