@@ -133,6 +133,8 @@ export function AgentEditor({ agent, revisions = [], caps, onSave, onMakeCurrent
   const workflow = agent?.kind === "workflow";
   // A new agent made from a starter (Decision, Workflow): a workflow revision, so no instructions, tools, thinking or model.
   const starting = creating && isStarter(f.harness);
+  // What a new agent still needs before Create, in words, for the footer.
+  const createNeeds = [...(!f.name?.trim() ? ["Give the agent a name to create it."] : []), ...(!workflow && !starting && !f.instructions?.trim() ? ["Write its instructions to create it."] : [])];
   const choices = harnessOptions(caps.harnesses, creating ? { available: !!caps.decisionProvider } : undefined);
   // `revisions` counts them; the current one is the agent's `revision`, which can be an earlier one after "Make current".
   const current = revisions.find((r) => r.revision === agent?.revision) ?? revisions.find((r) => r.current);
@@ -414,6 +416,9 @@ export function AgentEditor({ agent, revisions = [], caps, onSave, onMakeCurrent
         {at < steps.length - 1 && <Button size="sm" onClick={() => goTo(steps[at + 1].id)}>Next <ArrowRight aria-hidden /></Button>}
         {/* Off with nothing to save, saying which revision is saved (the served current one); on with an edit. */}
         {!viewing && <Button ref={saveButton} size="sm" variant="solid" onClick={save} disabled={!onSave || saving || (!creating && !dirty) || !f.name?.trim() || (!workflow && !starting && !f.instructions?.trim())}>{creating ? (saving ? "Creating…" : "Create") : saving ? "Saving…" : dirty ? "Save revision" : savedRev ? `Saved · rev ${savedRev}` : "Saved"}</Button>}
+        {/* Why Create is off, under it: what the form still needs. A name is the person's own (it is fixed at creation), so
+            none is made up for them. */}
+        {creating && !saving && !viewing && createNeeds.map((why) => <p key={why} className="w-full text-right font-mono text-[12px] text-muted-foreground">{why}</p>)}
         {/* Why a save failed, under the button that made it. */}
         {problem?.kind === "invalid" && <p className="w-full text-right font-mono text-[12px] text-destructive-text" role="alert">The server refused the save: {problem.message}</p>}
         {problem?.kind === "other" && <p className="w-full text-right font-mono text-[12px] text-destructive-text" role="alert">{problem.message}</p>}
