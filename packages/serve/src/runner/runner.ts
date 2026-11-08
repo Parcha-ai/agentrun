@@ -9,7 +9,7 @@
 import { randomUUID } from "node:crypto";
 import { hostname } from "node:os";
 import { COMMAND_KINDS, endedReason } from "./commands.js";
-import type { Claim, Loop, LoopEnd, LoopFactory, StopReason } from "./loop-contract.js";
+import type { Claim, Journal, Loop, LoopEnd, LoopFactory, StopReason } from "./loop-contract.js";
 import { isFenced, type RunnerStore } from "./store-port.js";
 
 /** A commit by a loop whose claim this runner gave up: refused before it reaches the store. */
@@ -17,9 +17,9 @@ export class ClaimLost extends Error {
   override name = "ClaimLost";
 }
 
-export interface RunnerOptions<Journal extends object> {
-  store: RunnerStore<Journal>;
-  createLoop: LoopFactory<Journal>;
+export interface RunnerOptions {
+  store: RunnerStore;
+  createLoop: LoopFactory;
   /** This runner's name in the runs it claims (runs.runner). Default: host, pid and a random part. */
   name?: string;
   /** Most runs held at once. */
@@ -71,7 +71,7 @@ interface Held {
 
 const message = (error: unknown) => (error instanceof Error ? error.message : String(error));
 
-export function startRunner<Journal extends object>(options: RunnerOptions<Journal>): Runner {
+export function startRunner(options: RunnerOptions): Runner {
   const {
     store,
     createLoop,
@@ -210,7 +210,7 @@ export function startRunner<Journal extends object>(options: RunnerOptions<Journ
         }
       }
       await store.flush();
-      await store.release(claim, end.state === "parked" && end.wakeAt !== undefined ? { wakeAt: end.wakeAt } : undefined);
+      await store.release(claim, end.state === "parked" && end.wakeAt !== undefined ? { wakeAt: end.wakeAt } : {});
       emit({ type: "released", runId: claim.runId, epoch: claim.epoch, end: end.state });
     } catch (error) {
       emit({ type: "error", runId: claim.runId, step: isFenced(error) ? "release (fenced)" : "release", message: message(error) });

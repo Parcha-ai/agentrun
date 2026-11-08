@@ -2,27 +2,11 @@
 // claims, renews, delivers command rows and releases; the loop runs the harness on the run's journal. B2's loop.ts
 // implements `Loop` for pi and the CLI adapters; the runner knows nothing about harnesses.
 
-/** A claim on one run: `epoch` fences every write made under it (the store refuses a lower epoch). */
-export interface Claim {
-  readonly runId: string;
-  readonly runner: string;
-  readonly epoch: number;
-  /** When the claim runs out unless renewed: ms since the epoch (the store's one time convention). */
-  readonly until: number;
-}
+import type { Claim, Command, Journal } from "../store/store.js";
 
-/** A command row (commands table): a person's stop, steer, approve, deny or raise for one run. */
-export interface Command {
-  readonly id: number;
-  readonly runId: string;
-  readonly kind: string;
-  readonly body: unknown;
-  readonly createdAt: string;
-  /** Set once: by the loop's journal commit that applies it, or by the runner's refusal. */
-  readonly takenAt: string | null;
-  /** Why it was refused, when it was; null when it was applied or is still pending. */
-  readonly refused?: string | null;
-}
+// The store's own: a claim (its epoch fences every write made under it; `until` in epoch ms) and a command row (taken_at
+// set once, by the loop's journal commit that applies it or by the runner's refusal, with `refused` its reason).
+export type { Claim, Command, Journal };
 
 /** How a loop's start() ended. The run's own outcome (state, cost) is already in the journal's last commit. */
 export type LoopEnd =
@@ -55,7 +39,7 @@ export interface Loop {
   stop(reason: StopReason): Promise<void>;
 }
 
-export interface LoopDeps<Journal> {
+export interface LoopDeps {
   /** The run's journal (store.journal(claim)) behind the runner's own fence: after a claim-lost stop, a commit is
    *  refused (ClaimLost) before it reaches the store. */
   journal(claim: Claim): Journal;
@@ -65,4 +49,4 @@ export interface LoopDeps<Journal> {
   signal: AbortSignal;
 }
 
-export type LoopFactory<Journal> = (deps: LoopDeps<Journal>) => Loop;
+export type LoopFactory = (deps: LoopDeps) => Loop;
