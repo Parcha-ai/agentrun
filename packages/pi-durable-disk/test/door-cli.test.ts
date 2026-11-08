@@ -4,7 +4,7 @@
 import { describe, it } from "node:test";
 import assert from "node:assert/strict";
 import { spawn } from "node:child_process";
-import { chmodSync, existsSync, mkdirSync, readFileSync } from "node:fs";
+import { existsSync, mkdirSync, readFileSync } from "node:fs";
 import { join } from "node:path";
 import { createInterface } from "node:readline";
 import { fileURLToPath } from "node:url";
@@ -15,8 +15,13 @@ const CLI = fileURLToPath(new URL("../src/cli.ts", import.meta.url));
 const APP = fileURLToPath(new URL("./fixtures/door-app.ts", import.meta.url));
 
 /** The instance as its own process group; its stderr log lines as JSON. */
+/** Each run directory's next epoch: the test is the host of the runs it starts. */
+const epochs = new Map<string, number>();
+
 function instance(root: string, out: string, flags: string[], env: Record<string, string>) {
-  const child = spawn(process.execPath, [CLI, "run", "--dir", root, "--app", APP, "--serve", "0", ...flags], {
+  const epoch = (epochs.get(root) ?? 0) + 1;
+  epochs.set(root, epoch);
+  const child = spawn(process.execPath, [CLI, "run", "--dir", root, "--epoch", String(epoch), "--app", APP, "--serve", "0", ...flags], {
     detached: true,
     stdio: ["ignore", "ignore", "pipe"],
     env: { ...process.env, PDA_TEST_OUT: out, ...env },
@@ -106,36 +111,6 @@ describe("the door hook through the CLI", () => {
       assert.ok(s.it.events.some((e) => e.event === "released"), s.it.stderr());
       assert.ok(await waitGone(s.pid, 2_000), "no harness child outlives the instance");
     } finally {
-      s.it.kill();
-      killQuietly(s.pid);
-      s.dir.remove();
-    }
-  });
-
-  it("a fence (the lease lost: its heartbeat cannot be written) ends the hook's harness child before the exit 75", { timeout: 60_000, skip: process.getuid?.() === 0 && "root writes through a read-only directory" }, async () => {
-    const s = await started("door-cli-fence", ["--heartbeat-ms", "100", "--lease-expiry-ms", "10000", "--lease-margin-ms", "2000"], { PDA_DOOR_BUSY: "1" });
-    try {
-      chmodSync(s.root, 0o555);
-      assert.equal(await s.it.exited, 75, s.it.stderr());
-      assert.ok(await waitGone(s.pid, 2_000), "no harness child acts on after the lease is lost");
-    } finally {
-      chmodSync(s.root, 0o755);
-      s.it.kill();
-      killQuietly(s.pid);
-      s.dir.remove();
-    }
-  });
-
-  it("a fence with a hook whose abort never settles kills the harness child at once: the lease is gone, so nothing waits on the hook", { timeout: 60_000, skip: process.getuid?.() === 0 && "root writes through a read-only directory" }, async () => {
-    const s = await started("door-cli-fence-stuck", ["--heartbeat-ms", "100", "--lease-expiry-ms", "10000", "--lease-margin-ms", "2000"], { PDA_DOOR_BUSY: "1", PDA_DOOR_ABORT: "stuck" });
-    try {
-      const from = Date.now();
-      chmodSync(s.root, 0o555);
-      assert.equal(await s.it.exited, 75, s.it.stderr());
-      assert.ok(Date.now() - from < 2_000, `the exit waited ${Date.now() - from} ms on the hook's abort`);
-      assert.ok(await waitGone(s.pid, 500), "the harness child is gone with the exit");
-    } finally {
-      chmodSync(s.root, 0o755);
       s.it.kill();
       killQuietly(s.pid);
       s.dir.remove();

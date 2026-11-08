@@ -10,7 +10,7 @@ import { runLabel, when } from "@/lib/format";
 import { uuid } from "@/lib/idempotency";
 import { type Problem, problem } from "@/lib/problem";
 import type { Tone } from "@/lib/runState";
-import { atLeast, bodyOf, capOf, disabledWords, dollars, isScheduleTrigger, utcWhen, type Draft, draftOf, emptyDraft, FIRING_LABEL, firingWords, instantKept, issuesOf, patchOf, whenWords } from "@/lib/schedules";
+import { atLeast, bodyOf, capOf, disabledWords, dollars, isScheduleTrigger, utcWhen, type Draft, draftOf, type Schedule, emptyDraft, FIRING_LABEL, firingWords, instantKept, issuesOf, patchOf, whenWords } from "@/lib/schedules";
 import type { Firing, Trigger } from "@/lib/v2";
 
 /** Which schedules page: the list (no `schedule`), a new one (`schedule` null), one schedule, or its editor (`edit`). */
@@ -284,7 +284,7 @@ async function allAgents(v2: Client): Promise<Agent[]> {
 }
 
 /** A new schedule, or `trigger` to edit. A save the server refuses (422) says each issue under the field it names. */
-function ScheduleForm({ v2, go, trigger, minEvery }: FormProps & { trigger?: Trigger }) {
+function ScheduleForm({ v2, go, trigger, minEvery }: FormProps & { trigger?: Schedule }) {
   const [draft, setDraft] = useState<Draft>(() => (trigger ? draftOf(trigger) : emptyDraft()));
   const [agents, setAgents] = useState<Agent[] | null>(null);
   const [issues, setIssues] = useState<Record<string, string>>({});

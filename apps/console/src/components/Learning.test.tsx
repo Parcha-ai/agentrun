@@ -33,17 +33,17 @@ const view = (extra: Partial<AgentLearning> = {}): AgentLearning => ({
   counts: { merged: 2, dropped: { empty: 2, grader: 1 }, in_progress: 0 },
   ...extra,
 });
-const runOf = (id: string, title: string, learning: Run["learning"]): Run => ({
+const runOf = (id: string, title: string, learning: Run["learning"]): Run => ({ sha: null, updated_at: "2026-11-04T00:00:00Z", poll_after_ms: 0,
   run_id: id, agent_id: "refunds", agent_version: 1, revision: "rv1", kind: "agentic", status: "completed", state: "idle", title,
-  created_at: "2026-11-03T16:52:00Z", ended_at: "2026-11-03T16:52:09Z", result: null, error: null, cost: null, archived_at: null, learning,
+  created_at: "2026-11-03T16:52:00Z", ended_at: "2026-11-03T16:52:09Z", result: null, error: null, cost: { usd: null, basis: "estimate", charge_state: null, cap_usd: null }, archived_at: null, learning,
 });
 const RUNS: Run[] = [
-  runOf("run-e", "everlane.com", { state: "dropped", reason: "empty", read: [{ file: FIRST, name: "Try" }, { file: MINE, name: "Keep" }] }),
-  runOf("run-k", "kith.com", { state: "dropped", reason: "grader", detail: "Not kept: It's about one shop's returns portal.", read: [{ file: FIRST, name: "Try" }] }),
-  runOf("run-c", "allbirds.com", { state: "dropped", reason: "empty", read: [{ file: FIRST, name: "Try" }] }),
-  runOf("run-b", "brooklinen.com", { state: "merged", reason: null, read: [{ file: OLD, name: "Old" }] }),
-  runOf("run-p", "patagonia.com", { state: "dropped", reason: "no_budget" }),
-  runOf("run-a", "taylorstitch.com", { state: "merged", reason: null }),
+  runOf("run-e", "everlane.com", { detail: null, at: "2026-11-03T16:52:09Z", state: "dropped", reason: "empty", read: [{ file: FIRST, name: "Try" }, { file: MINE, name: "Keep" }] }),
+  runOf("run-k", "kith.com", { at: "2026-11-03T16:52:09Z", state: "dropped", reason: "grader", detail: "Not kept: It's about one shop's returns portal.", read: [{ file: FIRST, name: "Try" }] }),
+  runOf("run-c", "allbirds.com", { detail: null, at: "2026-11-03T16:52:09Z", state: "dropped", reason: "empty", read: [{ file: FIRST, name: "Try" }] }),
+  runOf("run-b", "brooklinen.com", { detail: null, at: "2026-11-03T16:52:09Z", state: "merged", reason: null, read: [{ file: OLD, name: "Old" }] }),
+  runOf("run-p", "patagonia.com", { detail: null, at: "2026-11-03T16:52:09Z", state: "dropped", reason: "no_budget" }),
+  runOf("run-a", "taylorstitch.com", { detail: null, at: "2026-11-03T16:52:09Z", state: "merged", reason: null }),
 ];
 
 let root: ReturnType<typeof createRoot> | undefined;
@@ -180,7 +180,7 @@ describe("what runs did not keep", () => {
     expect(list.textContent).toContain("2 more runs had nothing new to remember.");
   });
   it("a run with no sentence says the reason in the console's words", async () => {
-    const t = await open(agent(true), { runs: [runOf("run-k", "kith.com", { state: "dropped", reason: "grader" })] });
+    const t = await open(agent(true), { runs: [runOf("run-k", "kith.com", { detail: null, at: "2026-11-03T16:52:09Z", state: "dropped", reason: "grader" })] });
     expect(t.host.querySelector('section[aria-label="Kept nothing"]')!.textContent).toContain("Not kept: it wouldn't help later runs enough.");
   });
 });
@@ -593,7 +593,7 @@ describe("pages past the first", () => {
     v.log = { ...v.log, next_cursor: "l1" };
     const t = await open(agent(true), {
       learning: async () => v,
-      runs: [...RUNS, runOf("run-z", "rei.com", { state: "merged", reason: null })],
+      runs: [...RUNS, runOf("run-z", "rei.com", { detail: null, at: "2026-11-03T16:52:09Z", state: "merged", reason: null })],
       log: async () => ({ items: [{ by: { run: "run-z" }, commit: "c0", at: "2026-11-03T15:00:00Z", reason: "General.", files: ["older.md", "MEMORY.md"] }], total: 4, next_cursor: null }),
     });
     expect(t.calls).toContain("log after l1");
@@ -1161,7 +1161,7 @@ describe("the Learning tab's runs that kept nothing", () => {
     "Not kept, the skill find-policies: it named a value the server keeps secret.",
   ];
   it("lists each sentence as served, saying Not kept once in each row and not in the title", async () => {
-    const runs = SHAPES.map((detail, i) => runOf(`run-d${i}`, `shop${i}.com`, { state: "dropped", reason: "grader", detail }));
+    const runs = SHAPES.map((detail, i) => runOf(`run-d${i}`, `shop${i}.com`, { at: "2026-11-03T16:52:09Z", state: "dropped", reason: "grader", detail }));
     const t = await open(agent(true), { learning: async () => view(), runs });
     const panel = [...t.host.querySelectorAll("aside section")].find((s) => SHAPES.some((d) => s.textContent?.includes(d))) as HTMLElement;
     expect(panel).toBeTruthy();

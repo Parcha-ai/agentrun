@@ -5,6 +5,7 @@
 // again on its directory, and resumes from its store.
 import { type ChildProcess, spawn } from "node:child_process";
 import { createHash, randomBytes } from "node:crypto";
+import { once } from "node:events";
 import { closeSync, existsSync, openSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { open as openFile, readFile, rm, stat } from "node:fs/promises";
 import { join } from "node:path";
@@ -43,7 +44,7 @@ import { BOUND_FIELD, CAP_ENV, CAP_MODE_ENV, CAP_MODES, CAP_REFUSAL_PREFIX, CAP_
 import { DEFAULT_MODEL_ENV, EFFORT_ENV, GATEWAY_KEY_ENV, hostModel, llmTiers, modelKeys, nodeTiers, PROVIDER_KEYS, thinkingOf, type Tier, withoutFaux, workflowNodes } from "./model.js";
 import { llmAnswers, pausedIn, readNodeLog, RUN_PAUSED } from "./pause.js";
 import { durationMs } from "./print.js";
-import { capabilityOf, handsParallel, keptFromBefore, keptVendor, type Plane, planeFor, recheckPlane, relaunchPlane, TOOL_PLANE_ENV, type Tooling, type ToolSettingsMap } from "./tool-plane.js";
+import { handsParallel, keptFromBefore, keptVendor, type Plane, planeFor, recheckPlane, relaunchPlane, TOOL_PLANE_ENV, type Tooling, type ToolSettingsMap } from "./tool-plane.js";
 import { APPROVAL_ENTRY, APPROVAL_ROW, NO_APPROVER_ENV, type PendingApproval, permissionOf, previewOf, RESUME_PREFIX, resumeHead, TURN_ORIGIN_FILE } from "./tool-gate.js";
 import { ChangeClock, type Page, RowLog } from "./rows.js";
 import { TOOL_KEYS } from "./tool-keys.js";
@@ -89,6 +90,8 @@ const DRAIN = "30s";
 const PROCESS_LOG = "process.log";
 /** How long a request waits for a run's door: its process coming up, or a settle in progress. */
 const READY_TIMEOUT_MS = 45_000;
+/** How long a launched process whose door failed its proof has to exit on its own before it is stopped. */
+const DOOR_EXIT_WAIT_MS = 2_000;
 /** The reducer's live "Run started" and "Run finished" rows: a turn's edges, which no store entry makes on any harness,
  *  so a run's settled timeline never has them. Never served, live or settled, so no row a reader saw goes at the end. */
 const QUIET = /:run:(start|end)$/;
@@ -688,11 +691,11 @@ const micro = (usd: number): number => Math.round(usd * 1e6) / 1e6;
 const microUp = (usd: number): number => Math.ceil(usd * 1e6 - 1e-9) / 1e6;
 /** For tests only: how long each launch path waits where it refreshes a run's MCP OAuth tokens (mcpFresh). */
 export const REFRESH_DELAY_ENV = "AGENTRUN_SERVE_TEST_REFRESH_DELAY_MS";
-/** The refresh step's test-only wait, in ms: none unless the server runs under a test runner (NODE_TEST_CONTEXT, or
- *  NODE_ENV=test, as the stand-ins' guards read it), so a value set by mistake in a server holds no launch; within one,
- *  REFRESH_DELAY_ENV's value, at most a second. */
+/** The refresh step's test-only wait, in ms: none unless the server runs under a test runner (node --test's
+ *  NODE_TEST_CONTEXT; NODE_ENV=test alone is none, as a production server can carry it), so a value set by mistake in a
+ *  server holds no launch; within one, REFRESH_DELAY_ENV's value, at most a second. */
 export function refreshDelayMs(env: NodeJS.ProcessEnv = process.env): number {
-  if (!env.NODE_TEST_CONTEXT && env.NODE_ENV !== "test") return 0;
+  if (!env.NODE_TEST_CONTEXT) return 0;
   const ms = Number(env[REFRESH_DELAY_ENV]);
   return Number.isFinite(ms) && ms > 0 ? Math.min(ms, 1_000) : 0;
 }
@@ -1152,6 +1155,10 @@ export class Runs {
   /** Every run's graph as served, part by part (servedGraph): one LRU by bytes across runs (graph-served.ts PartCache). */
   private readonly graphCache = new PartCache(GRAPH_CACHE_BYTES);
   private readonly adopting = new Map<string, Promise<Run>>();
+  /** The runs this process is starting, from the store's row until the run is held (start): its serve.json and its seed
+   *  copy are written in between. A read of one waits for its start and never loads it from disk, where it would look
+   *  like a run a stopped server left mid-copy. Null once a start failed. */
+  private readonly startingRuns = new Map<string, Promise<Run | null>>();
   /** The hosts this server's next remote box asks for: the setting's, until the provider cannot keep a list here, then none. */
   private remoteAllow: readonly string[] | "none" | undefined;
   private readonly clock = new ChangeClock();
@@ -1221,6 +1228,9 @@ export class Runs {
   async get(id: string): Promise<Run | null> {
     const known = this.runs.get(id);
     if (known) return known;
+    // One this process is starting is its start's Run once held; a start that failed leaves its row, read as any.
+    const starting = await this.startingRuns.get(id);
+    if (starting) return starting;
     const row = await this.options.agents.request(() => this.store.readRun(id));
     return row ? this.adopt(row) : null;
   }
@@ -1229,6 +1239,9 @@ export class Runs {
   private adopt(row: RunRow): Promise<Run> {
     const known = this.runs.get(row.id);
     if (known) return Promise.resolve(known);
+    // One this process is starting is never read from disk (startingRuns): its start holds it.
+    const starting = this.startingRuns.get(row.id);
+    if (starting) return starting.then((run) => run ?? this.adopt(row));
     let pending = this.adopting.get(row.id);
     if (!pending) {
       pending = this.load(row).finally(() => this.adopting.delete(row.id));
@@ -1276,7 +1289,8 @@ export class Runs {
     // A turn's origin a server before this one set is not known to be the turn running now: it goes.
     await rm(join(dir, TURN_ORIGIN_FILE), { force: true }).catch(() => undefined);
     // A seed copy a server went down during is taken back before anything holds the run: its relaunch, a settle, a
-    // follow-up (learning-run.ts onLoad).
+    // follow-up (learning-run.ts onLoad). A run this process is starting is never read here (startingRuns), and every
+    // start that ended saved its learning, so a copy with none saved is a stopped server's.
     if (stored) await this.learning.onLoad(row, dir, meta, () => writeWhole(join(dir, RUN_META), `${JSON.stringify(meta)}\n`));
     const known = await this.options.agents.revision(row.agent, row.revision);
     const run = this.blank(row, dir, meta, known?.version ?? 0, harnessOfBody(known?.revision.body ?? {}), known ? await toolingOf(known.revision) : undefined, known?.revision);
@@ -1297,14 +1311,14 @@ export class Runs {
     // Hidden as one whose sign-in does not open is, below, when its revision grants the browser or can't be read; one whose
     // revision has none never had a browser, so was never handed a sign-in. Nothing is written over the damaged file here:
     // its end writes serve.json anew, hidden, and until then each server finds it damaged and hides it again.
-    if (row.state === "running" && damaged && !row.importedFrom && !run.meta.unshown && (!run.tooling || run.tooling.tools.some((name) => capabilityOf(name) === "browser"))) {
+    if (row.state === "running" && damaged && !row.importedFrom && !run.meta.unshown && (!run.tooling || run.tooling.tools.includes("browser"))) {
       run.error = { code: "run_failed", message: UNREADABLE_RUN_META, retryable: false };
       run.meta.unshown = true;
     }
     // An ended run whose serve.json was damaged since: withheld as an ended run whose sign-in does not open is (below:
     // no store read, no answer, output or error words), on the same terms. It ended as it ended: nothing is stopped or
     // failed, and nothing is saved, so its words are shown again only once serve.json reads (each server decides anew).
-    if (row.state !== "running" && damaged && !row.importedFrom && !run.meta.unshown && (!run.tooling || run.tooling.tools.some((name) => capabilityOf(name) === "browser"))) run.meta.unshown = true;
+    if (row.state !== "running" && damaged && !row.importedFrom && !run.meta.unshown && (!run.tooling || run.tooling.tools.includes("browser"))) run.meta.unshown = true;
     // A run still going whose agent's browser sign-in does not open under this server's seal key: whatever it said, or
     // says, could repeat the pointer, which nothing here can cut. Its rows are never read, and it ends failed, saying
     // why: a live process is stopped (below), one already gone is never opened again.
@@ -2839,8 +2853,11 @@ export class Runs {
         // A door that does not answer this launch's nonce (wrongly, or not within the proof's time) is not this launch's
         // to record, and its process is not taken for up: as one that misses its open time, it is said once and stopped,
         // by this server's own handle on its child, and its exit opens the run again (up to MAX_RELAUNCHES), the last
-        // one's failure naming this cause. One that has exited already is its exit's to settle.
+        // one's failure naming this cause. One that has exited already is its exit's to settle, and so is one that exits
+        // on its own within DOOR_EXIT_WAIT_MS: an app that fails at its start closes its door, failing the proof, before its
+        // exit is seen here, and that exit fails the run with its own error, never as a process that did not open it.
         if (!(await verifyDoor(door, nonce, this.headers(run)))) {
+          if (run.child === child && child.exitCode === null && child.signalCode === null) await once(child, "exit", { signal: AbortSignal.timeout(DOOR_EXIT_WAIT_MS) }).catch(() => undefined);
           if (run.child !== child || child.exitCode !== null || child.signalCode !== null) return;
           run.notOpened = "its process's door did not answer this launch's nonce";
           warn(run.id, `its process ${pid}'s door did not answer this launch's nonce; it is stopped`);
@@ -3308,36 +3325,56 @@ export class Runs {
     const started = await this.options.agents.request(() => this.store.startRun({ agent: entry.agent.id, revision: revision.id, ...(options.origin ? { origin: options.origin } : {}) })).catch((error) => storeError(error, "revision"));
     // Only another writer of the store gets here first under the same origin: its run is the one asked for, set up by it.
     if (started.existing) return (await this.get(started.runId))!;
-    const at = new Date().toISOString();
-    const meta: RunMeta = {
-      // Shown on the run list and its view: no held secret a person pasted into the message it is taken from.
-      title: clip(redacted(options.title.trim().replace(/\s+/g, " "), this.serverSecrets()), 80),
-      created_at: at,
-      input: options.input,
-      place: options.place,
-      ...(options.effort ? { effort: options.effort } : {}),
-      ...(options.maxCostUsd !== undefined ? { max_cost_usd: options.maxCostUsd } : {}),
-      ...(options.capMode !== undefined ? { cap_mode: options.capMode } : {}),
-      ...(options.trigger ? { trigger: options.trigger } : {}),
-      ...(options.from ? { input_origin: options.from } : {}),
-      ...(Object.keys(plane).length ? { tool_plane: plane } : {}),
-    };
-    // The run's input is saved first, as the store has it running: a server that goes down from here on leaves a run the
-    // next one relaunches with its first message.
-    await this.setUp(started.runId, started.dir, meta);
-    if (pin) {
-      // Then its seed copied and pinned, and its learning saved once the copy is whole or gone. A server that goes down
-      // during the copy leaves none saved, and the next one takes the copy back (learning-run.ts onLoad).
-      meta.learning = await pin(started, at);
+    // Held as starting until the run is: a read in between waits for it (get, adopt) and never loads it from disk.
+    let started_!: (run: Run | null) => void;
+    this.startingRuns.set(started.runId, new Promise((resolve) => (started_ = resolve)));
+    let held: Run | null = null;
+    try {
+      const at = new Date().toISOString();
+      const meta: RunMeta = {
+        // Shown on the run list and its view: no held secret a person pasted into the message it is taken from.
+        title: clip(redacted(options.title.trim().replace(/\s+/g, " "), this.serverSecrets()), 80),
+        created_at: at,
+        input: options.input,
+        place: options.place,
+        ...(options.effort ? { effort: options.effort } : {}),
+        ...(options.maxCostUsd !== undefined ? { max_cost_usd: options.maxCostUsd } : {}),
+        ...(options.capMode !== undefined ? { cap_mode: options.capMode } : {}),
+        ...(options.trigger ? { trigger: options.trigger } : {}),
+        ...(options.from ? { input_origin: options.from } : {}),
+        ...(Object.keys(plane).length ? { tool_plane: plane } : {}),
+      };
+      // The run's input is saved first, as the store has it running: a server that goes down from here on leaves a run the
+      // next one relaunches with its first message.
       await this.setUp(started.runId, started.dir, meta);
+      if (pin) {
+        // Then its seed copied and pinned, and its learning saved once the copy is whole or gone. A server that goes down
+        // during the copy leaves none saved, and the next one takes the copy back (learning-run.ts onLoad). A copy that
+        // throws is saved as failed in its own words, the copy taken back, before the start fails: every start that
+        // ends leaves its learning said, so only a stopped server's leaves a copy with none.
+        try {
+          meta.learning = await pin(started, at);
+        } catch (error) {
+          meta.learning = await this.learning.copyThrew(started, at, error as Error);
+          await this.setUp(started.runId, started.dir, meta).catch(() => undefined);
+          throw error;
+        }
+        await this.setUp(started.runId, started.dir, meta);
+      }
+      const run = this.blank({ id: started.runId, agent: entry.agent.id, revision: revision.id, kind: revision.kind }, started.dir, meta, version, harnessOfBody(revision.body), tooling, revision);
+      // Before the run is known here, so nothing launches it first.
+      await this.pinNeeds(run, revision);
+      const refreshing = this.mcpFresh(run);
+      if (refreshing) await refreshing;
+      await this.pinSignIn(run);
+      this.runs.set(run.id, run);
+      held = run;
+    } finally {
+      this.startingRuns.delete(started.runId);
+      started_(held);
     }
-    const run = this.blank({ id: started.runId, agent: entry.agent.id, revision: revision.id, kind: revision.kind }, started.dir, meta, version, harnessOfBody(revision.body), tooling, revision);
-    // Before the run is known here, so nothing launches it first.
-    await this.pinNeeds(run, revision);
-    const refreshing = this.mcpFresh(run);
-    if (refreshing) await refreshing;
-    await this.pinSignIn(run);
-    this.runs.set(run.id, run);
+    const run = held!;
+    const meta = run.meta;
     // A seed that failed is a learning row from the start, and its learning's end is in the ledger.
     this.show(run);
     void this.learning.onSaved(run, meta.learning);

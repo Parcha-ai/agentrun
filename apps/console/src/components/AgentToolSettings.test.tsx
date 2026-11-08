@@ -21,7 +21,7 @@ const agentWith = (toolSettings?: Agent["definition"]["tool_settings"], resolved
   agent_id: "searcher", kind: "agentic", revision: "r1", revisions: 1, archived_at: null,
   definition: { version: 1, name: "Searcher", instructions: "Look it up.", harness: "pi", skills: [], tools: ["read", "web_search"], ...(toolSettings ? { tool_settings: toolSettings } : {}) },
   // GET /agents/{id}'s tools: what each grant resolves to for this agent.
-  tools: [{ name: "read" }, { name: "web_search", provider: toolSettings?.web_search?.provider ?? "exa-keyless", provider_from: toolSettings ? "agent" : "server", default_provider: "exa-keyless", resolved }],
+  tools: [{ name: "read", permission: "allow" as const, permission_from: "default" as const, default_permission: "allow" as const, permissions: ["allow" as const, "ask" as const, "deny" as const] }, { name: "web_search", permission: "allow" as const, permission_from: "default" as const, default_permission: "allow" as const, permissions: ["allow" as const, "ask" as const, "deny" as const], provider: toolSettings?.web_search?.provider ?? "exa-keyless", provider_from: toolSettings ? "agent" : "server", default_provider: "exa-keyless", resolved }],
 });
 
 async function open(agent: Agent, { providerChoices = choices, editorCaps = caps }: { providerChoices?: typeof choices; editorCaps?: typeof caps } = {}) {
@@ -32,7 +32,7 @@ async function open(agent: Agent, { providerChoices = choices, editorCaps = caps
   const settle = async () => { for (let i = 0; i < 10; i++) await act(async () => { await new Promise((r) => setTimeout(r, 0)); }); };
   await settle();
   const row = (tool: string) => host.querySelector<HTMLTableRowElement>(`section[aria-label="Tool settings"] tr[data-tool="${tool}"]`);
-  const select = (tool: string) => row(tool)!.querySelector("select")!;
+  const select = (tool: string) => row(tool)!.querySelector<HTMLSelectElement>(`select[aria-label="${tool} provider"]`)!;
   const choose = async (tool: string, provider: string) => {
     await act(async () => { const s = select(tool); Object.getOwnPropertyDescriptor(HTMLSelectElement.prototype, "value")!.set!.call(s, provider); s.dispatchEvent(new Event("change", { bubbles: true })); });
   };
@@ -46,7 +46,8 @@ describe("AgentEditor, an agent's tool settings", () => {
     const page = await open(agentWith());
     expect(page.row("web_search")).toBeTruthy();
     expect(page.row("web_fetch")).toBeNull();
-    expect(page.row("read")).toBeNull();
+    // A tool with no provider choice has no provider to pick: its row holds only its permission.
+    expect(page.row("read")?.querySelector('select[aria-label="read provider"]') ?? null).toBeNull();
     expect([...page.select("web_search").options].map((o) => o.textContent)).toEqual(["auto", "native", "Exa keyless (default)", "Parallel", "off"]);
     expect(page.select("web_search").value).toBe("exa-keyless");
     expect(page.row("web_search")!.hasAttribute("data-set")).toBe(false);
@@ -85,7 +86,7 @@ describe("AgentEditor, an agent's tool settings", () => {
     const off = toolChoices([{ ...SEARCH, provider: "off", available: false, reason: OFF, resolves: { pi: `unavailable: ${OFF}`, "claude-agent": `unavailable: ${OFF}`, codex: `unavailable: ${OFF}` } }, FETCH]);
     const offCaps = { ...caps, tools: caps.tools.map((t) => (t.name === "web_search" ? { ...t, available: false } : t)) };
     const base = agentWith();
-    const agent: Agent = { ...base, definition: { ...base.definition, tools: ["read"] }, tools: [{ name: "read" }] };
+    const agent: Agent = { ...base, definition: { ...base.definition, tools: ["read"] }, tools: [{ name: "read", permission: "allow" as const, permission_from: "default" as const, default_permission: "allow" as const, permissions: ["allow" as const, "ask" as const, "deny" as const] }] };
     const page = await open(agent, { providerChoices: off, editorCaps: offCaps });
     const grant = () => page.host.querySelector<HTMLInputElement>('input[value="web_search"]')!;
     // The server's off is the only obstacle: the grant waits for a provider of the agent's own, offered before it.
@@ -139,7 +140,7 @@ describe("AgentEditor, tool settings around a save and a stale read", () => {
     const host = document.body.appendChild(document.createElement("div"));
     root = createRoot(host);
     act(() => root!.render(createElement(AgentEditor, { agent: agentWith(), caps, providerChoices: choices, step: "tools", onSave: async (fields: AgentFields) => { saves.push(fields); await held; return null; } })));
-    const select = () => host.querySelector<HTMLTableRowElement>('section[aria-label="Tool settings"] tr[data-tool="web_search"]')!.querySelector("select")!;
+    const select = () => host.querySelector<HTMLSelectElement>('section[aria-label="Tool settings"] tr[data-tool="web_search"] select[aria-label="web_search provider"]')!;
     const choose = async (p: string) => { await act(async () => { const s = select(); Object.getOwnPropertyDescriptor(HTMLSelectElement.prototype, "value")!.set!.call(s, p); s.dispatchEvent(new Event("change", { bubbles: true })); }); };
     await choose("parallel");
     await act(async () => { [...host.querySelectorAll("button")].find((b) => /^Save/.test((b.textContent ?? "").trim()))!.click(); });
@@ -163,7 +164,7 @@ describe("AgentEditor, tool settings around a save and a stale read", () => {
     const onSave = async (fields: AgentFields) => { saves.push(fields); if (saves.length === 1) { await held; render(after); } return null; };
     act(() => render(before));
     const row = () => host.querySelector<HTMLTableRowElement>('section[aria-label="Tool settings"] tr[data-tool="web_search"]')!;
-    const select = () => row().querySelector("select")!;
+    const select = () => row().querySelector<HTMLSelectElement>('select[aria-label="web_search provider"]')!;
     const settle = async () => { for (let i = 0; i < 10; i++) await act(async () => { await new Promise((r) => setTimeout(r, 0)); }); };
     const choose = async (p: string) => { await act(async () => { const s = select(); Object.getOwnPropertyDescriptor(HTMLSelectElement.prototype, "value")!.set!.call(s, p); s.dispatchEvent(new Event("change", { bubbles: true })); }); };
     const click = async (label: RegExp) => { await act(async () => { [...host.querySelectorAll("button")].find((b) => label.test((b.getAttribute("aria-label") ?? b.textContent ?? "").trim()))!.click(); }); };
@@ -212,31 +213,6 @@ describe("AgentEditor, tool settings around a save and a stale read", () => {
     expect(page.row("web_search")!.textContent).not.toContain("pi: Parallel");
     // Capabilities' word, read with the provider the select shows.
     expect(page.row("web_search")!.textContent).toContain("pi: Exa keyless");
-  });
-});
-
-// fetch_page is web_fetch's older name: a revision may still grant it, and the server runs and resolves it as web_fetch
-// (serve's tool-plane.ts, LEGACY_NAMES). Its provider is web_fetch's, so the row is web_fetch's.
-describe("AgentEditor, tool settings for an agent granting fetch_page", () => {
-  const fetchAgent = (toolSettings?: Agent["definition"]["tool_settings"]): Agent => ({
-    agent_id: "reader", kind: "agentic", revision: "r1", revisions: 1, archived_at: null,
-    definition: { version: 1, name: "Reader", instructions: "Read it.", harness: "pi", skills: [], tools: ["read", "fetch_page"], ...(toolSettings ? { tool_settings: toolSettings } : {}) },
-    // GET /agents/{id}'s tools name the grant as the revision does.
-    tools: [{ name: "read" }, { name: "fetch_page", provider: toolSettings?.web_fetch?.provider ?? "kernel", provider_from: toolSettings ? "agent" : "server", default_provider: "kernel", resolved: toolSettings?.web_fetch?.provider ?? "kernel" }],
-  });
-  const fetchCaps = { ...caps, tools: [{ name: "read", available: true }, { name: "fetch_page", available: true }, { name: "web_fetch", available: true }] };
-  it("shows web_fetch's provider row, the server's pick its default, and a pick there saves as web_fetch's", async () => {
-    const page = await open(fetchAgent(), { editorCaps: fetchCaps });
-    expect(page.row("web_fetch")).toBeTruthy();
-    expect(page.select("web_fetch").value).toBe("kernel");
-    await page.choose("web_fetch", "parallel");
-    await page.click(/^Save/);
-    expect(page.saves[0]!.tool_settings).toEqual({ web_fetch: { provider: "parallel" } });
-  });
-  it("its saved provider shows what the agent's read says it resolves to", async () => {
-    const page = await open(fetchAgent({ web_fetch: { provider: "parallel" } }), { editorCaps: fetchCaps });
-    expect(page.select("web_fetch").value).toBe("parallel");
-    expect(page.row("web_fetch")!.textContent).toContain("pi: Parallel");
   });
 });
 

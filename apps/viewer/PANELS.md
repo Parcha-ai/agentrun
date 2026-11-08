@@ -245,17 +245,6 @@ is still a replay:
 `at` and `cite`. The stop is the last whose lines all happened by then, so a time between two commits shows the stop
 before it (never the inside of a commit), with the clock at the time asked for.
 
-## The disk panel (`src/disk.ts`)
-
-One panel for every demo that runs on a disk place. It reads the supervisor's `host` lines `run.json`, `delegation`,
-`revoke` and `fenced` (RECORDING.md section 5), the shell's own `process.started` and `kill`, and the durable
-`agentrun.effects` documents; it draws a lane per claim generation (who held it, from when, and how it ended: released
-with its sealed sequence, killed or its box taken away, fenced, or replaced between two polls), the events between them
-in order (the orphan flag as seen, the revoke and the takeover time, the fence), and each paid call marked made once,
-repeated, cut by a kill (unknown, not sent again) or in flight. The paid-call verdicts are the shell's own counter fold
-(`appliedIn`), so the panel and the counters strip agree. A recording with no disk claim line (`shows`: a `run.json`, `delegation`, `revoke` or `fenced` host line) does not draw the
-panel at all, its title included. Its test, `test/disk.test.ts`, renders `test/fixtures/disk-takeover`.
-
 ## The run's picture
 
 The run's result so far as an image (RECORDING.md draft 31): the recording's home side draws it from the run's committed

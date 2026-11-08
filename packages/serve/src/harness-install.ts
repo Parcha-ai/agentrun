@@ -14,7 +14,7 @@
 // by hand. The locks are metadata; the CLIs still come from npm, never from us.
 //
 // One install of each harness at a time: the server holds its data root alone (server-lock.ts), and an install in flight
-// is the one every run and save that needs it waits for; a server that stops stops its npm (SIGTERM). An install lands
+// is the one every run and save that needs it waits for; a server that stops stops its npm (runNpm). An install lands
 // whole or not at all: npm writes into a fresh directory beside `<data>/harnesses/<harness>`, the result is checked there
 // (the entry's `lacking`), and only then is it renamed into place and made read-only. A crash or a kill part way leaves
 // that directory, never a half install, and the next install removes it; a tree that is not whole (an install by hand
@@ -189,8 +189,8 @@ function npmCommand(env: NodeJS.ProcessEnv): { command: string; args: string[] }
  *  beside it: `npm ci` in a fresh directory beside `dir`, with no key of this server's in its environment, no package's
  *  install script and the optional platform package included; checked whole there (its `lacking`), then renamed into
  *  place and made read-only. Resolves once it is in; rejects with HarnessNotInstalled naming why, and leaves `dir` as it
- *  was. `signal`: aborted, npm is stopped (SIGTERM). */
-export async function npmInstall(entry: HarnessInstallEntry, dir: string, pins: HarnessPins, { lock = entry.lock, env = process.env, timeoutMs = INSTALL_TIMEOUT_MS, signal }: { lock?: string; env?: NodeJS.ProcessEnv; timeoutMs?: number; signal?: AbortSignal } = {}): Promise<void> {
+ *  was. `signal`: aborted, npm is stopped (SIGTERM, then SIGKILL after NPM_STOP_GRACE_MS); `onKilled` hears of a SIGKILL. */
+export async function npmInstall(entry: HarnessInstallEntry, dir: string, pins: HarnessPins, { lock = entry.lock, env = process.env, timeoutMs = INSTALL_TIMEOUT_MS, signal, onKilled }: { lock?: string; env?: NodeJS.ProcessEnv; timeoutMs?: number; signal?: AbortSignal; onKilled?: () => void } = {}): Promise<void> {
   const { version } = pins;
   const fail = (why: string) => new HarnessNotInstalled(entry, dir, version, `Couldn't install ${entry.label} (${entry.package}@${version}) from npm: ${why}`, lock);
   const manifest = join(dirname(lock), "package.json");
@@ -208,7 +208,7 @@ export async function npmInstall(entry: HarnessInstallEntry, dir: string, pins: 
     await copyFile(manifest, join(staging, "package.json"));
     await copyFile(lock, join(staging, "package-lock.json"));
     // --include=optional: the CLI is an optional platform package, which a person's omit=optional would leave out.
-    await runNpm(["ci", "--prefix", staging, "--ignore-scripts", "--include=optional", "--no-audit", "--no-fund", "--loglevel=error"], env, timeoutMs, signal).catch((why: Error) => Promise.reject(fail(why.message)));
+    await runNpm(["ci", "--prefix", staging, "--ignore-scripts", "--include=optional", "--no-audit", "--no-fund", "--loglevel=error"], env, timeoutMs, signal, onKilled).catch((why: Error) => Promise.reject(fail(why.message)));
     const missing = entry.lacking(staging, pins);
     if (missing) throw fail(`npm ended, and the install lacks ${missing}`);
     // Into place whole: what was there (an install cut short, one by hand) goes aside first, then away.
@@ -253,9 +253,17 @@ async function writable(dir: string, on: boolean): Promise<void> {
   await walk(dir);
 }
 
+/** How long npm has to exit after a SIGTERM before it gets SIGKILL. Once npm writes (its reify), a SIGTERM only marks
+ *  it: npm finishes the step under way, which waits on every tarball, before it rolls back and exits, so a slow tarball
+ *  would hold a server's close. npm writes only into the staging directory, which the install removes. */
+export const NPM_STOP_GRACE_MS = 5_000;
+/** How long the exit of an npm sent SIGKILL is waited for, at most (it is at once): the stop never hangs on it. */
+export const NPM_KILLED_WAIT_MS = 5_000;
+
 /** Runs npm with `args`, with no key of this server's in its environment and no shell; rejects with npm's last words.
- *  `signal`, aborted: npm is sent SIGTERM (it rolls back what it was writing) and this rejects once it is gone. */
-function runNpm(args: string[], env: NodeJS.ProcessEnv, timeoutMs: number, signal?: AbortSignal): Promise<void> {
+ *  `signal`, aborted (or the timeout): npm is sent SIGTERM, then SIGKILL after NPM_STOP_GRACE_MS, and this rejects once
+ *  it is gone, or NPM_KILLED_WAIT_MS after the SIGKILL at the latest. `onKilled` hears of the SIGKILL. */
+function runNpm(args: string[], env: NodeJS.ProcessEnv, timeoutMs: number, signal?: AbortSignal, onKilled?: () => void): Promise<void> {
   const npm = npmCommand(env);
   return new Promise((resolve, reject) => {
     if (signal?.aborted) return reject(new Error("the server stopped before npm started"));
@@ -265,15 +273,23 @@ function runNpm(args: string[], env: NodeJS.ProcessEnv, timeoutMs: number, signa
     child.stdout.on("data", hear);
     child.stderr.on("data", hear);
     let stopped: string | undefined;
+    let kill: NodeJS.Timeout | undefined;
+    let killed: NodeJS.Timeout | undefined;
     const stop = (why: string) => {
-      stopped ??= why;
+      if (stopped) return;
+      stopped = why;
       child.kill("SIGTERM");
+      kill = setTimeout(() => {
+        child.kill("SIGKILL");
+        onKilled?.();
+        killed = setTimeout(() => (done(), reject(new Error(`${stopped} (killed)`))), NPM_KILLED_WAIT_MS);
+      }, NPM_STOP_GRACE_MS);
     };
     const timer = setTimeout(() => stop(`npm took more than ${Math.round(timeoutMs / 60_000)} minutes and was stopped`), timeoutMs);
     timer.unref();
     const onAbort = () => stop("the server stopped, and npm with it");
     signal?.addEventListener("abort", onAbort, { once: true });
-    const done = () => (clearTimeout(timer), signal?.removeEventListener("abort", onAbort));
+    const done = () => (clearTimeout(timer), clearTimeout(kill), clearTimeout(killed), signal?.removeEventListener("abort", onAbort));
     child.once("error", (error) => (done(), reject(new Error(`npm did not start (${error.message})`))));
     child.once("close", (code, by) => {
       done();
@@ -288,7 +304,7 @@ function runNpm(args: string[], env: NodeJS.ProcessEnv, timeoutMs: number, signa
 
 /** The server's one installer of a harness into `dir`: `ensure()` resolves once it is installed whole, installing it first
  *  when it is not, and every caller while an install runs waits for that one. A failed install is not kept: the next call
- *  tries again. `stop()` stops an install that runs (its npm, SIGTERM) and waits for it to end. `onInstalled` hears of an
+ *  tries again. `stop()` stops an install that runs (its npm) and waits, bounded, for it to end. `onInstalled` hears of an
  *  install this server made, and how long it took. */
 export class HarnessInstall {
   private running?: Promise<void>;
@@ -328,7 +344,7 @@ export class HarnessInstall {
     return this.running;
   }
 
-  /** Stops an install that runs (its npm gets SIGTERM) and waits for it to end; none starts after. */
+  /** Stops an install that runs (its npm gets SIGTERM, then SIGKILL) and waits for it to end; none starts after. */
   async stop(): Promise<void> {
     this.stopping.abort();
     await this.running?.catch(() => undefined);

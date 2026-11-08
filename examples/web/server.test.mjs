@@ -1,4 +1,4 @@
-// The runs app on fakes: a fake door that emits canned events, and a runs directory built in the test (run.json, a tiny
+// The runs app on fakes: a fake door that emits canned events, and a runs directory built in the test (a record, a tiny
 // store shaped like pi's entries table, work files). No network, no key, no model. Expected rows and headers are written
 // by hand from the fixtures, not read back from the code.
 import assert from "node:assert/strict";
@@ -19,7 +19,11 @@ import { carryBack, durableProfileStore, readAgentHome, setPrompts, startRun } f
 import { foldCalls, groupTimeline } from "@parcha/pi-durable-agent/timeline";
 import { PROFILE } from "./agent/app.ts";
 import { ensureAgentHome } from "./agent/home.mjs";
-import { assistant, call, fakeDoor, frameLine, jpegSha, makeRun, result, signInGap, signInRun, text, transcript, user, writeFrames } from "./fixtures.mjs";
+import { pathToFileURL } from "node:url";
+import { assistant, call, fakeDoor, frameLine, jpegSha, makeRun, result, signInGap, signInRun, text, transcript, user, writeFrames, writeRecord } from "./fixtures.mjs";
+
+/** What a fake start command imports to leave a door and a record, as a real run does. */
+const FAKE_RUN = JSON.stringify(pathToFileURL(new URL("./fake-run.mjs", import.meta.url).pathname).href);
 import { httpSource } from "./page/source.js";
 import { startServer } from "./server.mjs";
 
@@ -72,7 +76,9 @@ test("runs are the agent home's, listed newest first, with agent, status, times 
   await makeRun(home, "newest", { status: "sleeping", entries: transcript, meta: { title: "Newest run", agent: "Wren", createdAt: at(1) } });
   await makeRun(home, "middle", { status: "failed", meta: { createdAt: at(5) } });
   await makeRun(home, "broken", { meta: { createdAt: at(100) } });
-  writeFileSync(join(root, "broken", "run.json"), "not json");
+  const broken = new DatabaseSync(join(root, "broken", "store", "run.sqlite"));
+  broken.prepare("UPDATE pda_run_status SET record = 'not json' WHERE id = 1").run();
+  broken.close();
   writeFileSync(join(root, "stray-file"), "x");
   mkdirSync(join(root, ".hidden"));
   mkdirSync(join(root, "unindexed"));
@@ -134,7 +140,7 @@ const asking = [
   result(3, "c1", "request_sign_in", ASKED, false, { site: "the practice site", reason: "The secure page needs a sign-in." }),
 ];
 
-test("a run of an imported home has no run.json: its endedAt in the home's index makes it done and reads its store; without one it is not read as released", async (t) => {
+test("a run of an imported home has no record: its endedAt in the home's index makes it done and reads its store; without one it is not read as released", async (t) => {
   const { home, root, get, json } = await app(t);
   const tiny = (dir) => {
     rmSync(join(dir, "store"), { recursive: true });
@@ -150,10 +156,7 @@ test("a run of an imported home has no run.json: its endedAt in the home's index
   const unended = await makeRun(home, "unended");
   const restarted = await makeRun(home, "restarted", { status: "running" });
   await carryBack(home, { runId: "restarted" }, { outcome: "completed" });
-  for (const dir of [arrived, unended]) {
-    tiny(dir);
-    rmSync(join(dir, "run.json"));
-  }
+  for (const dir of [arrived, unended]) tiny(dir);
   const run = await json("/runs/arrived");
   assert.equal(run.status, "done");
   assert.equal(run.costUsd, 0.03, "its store's rows give the cost, as for any released run");
@@ -162,10 +165,11 @@ test("a run of an imported home has no run.json: its endedAt in the home's index
   assert.ok(stored.rows.some((r) => r.kind === "waiting"));
   assert.equal(stored.state, "waiting");
   assert.deepEqual((await json("/runs/arrived/files")).files.map((f) => f.path), ["report.md"]);
-  assert.equal((await get("/runs/unended/timeline")).status, 409, "a run no one carried back and no run.json says released is not read from its store");
+  assert.equal((await get("/runs/unended/timeline")).status, 409, "a run no one carried back and no record says released is not read from its store");
   assert.equal((await json("/runs/unended")).status, "unknown");
   tiny(restarted);
-  assert.equal((await get("/runs/restarted/timeline")).status, 409, "a run that has a run.json is judged by it, as before, whatever its index says");
+  writeRecord(restarted, { run: "restarted", status: "running" });
+  assert.equal((await get("/runs/restarted/timeline")).status, 409, "a run that has a record is judged by it, as before, whatever its index says");
 });
 
 test("a turn that ends on request_sign_in is a wait: its own group, the reason, the waiting state, no blank assistant bubble", async (t) => {
@@ -281,14 +285,14 @@ test("files: dotfiles are hidden, nothing outside work/ is reachable, html is sa
   const { home, root, get, json } = await app(t);
   const png = Buffer.from("89504e470d0a1a0a", "hex");
   const dir = await makeRun(home, "r1", { status: "done", files: { "notes.md": "# Hi", "my report.md": "# Spaced", "data/rows.csv": "a,b\n1,2\n", "report.html": "<h1>x</h1><script>alert(1)</script>", "shot.png": png, "blob.bin": "xx", ".secret": "no", ".git/config": "no", "big.txt": "x".repeat(600 * 1024) } });
-  writeFileSync(join(dir, "run.json.bak"), "outside work");
-  symlinkSync(join(dir, "run.json"), join(dir, "work", "leak.json"));
+  writeFileSync(join(dir, "web.json.bak"), "outside work");
+  symlinkSync(join(dir, "web.json.bak"), join(dir, "work", "leak.json"));
   symlinkSync(root, join(dir, "work", "linked"));
 
   const { files } = await json("/runs/r1/files");
   assert.deepEqual(files.map((f) => f.path), ["big.txt", "blob.bin", "data/rows.csv", "my report.md", "notes.md", "report.html", "shot.png"]);
 
-  for (const bad of [".secret", ".git/config", "../run.json", "sub/../../run.json", "/etc/passwd", "leak.json", "linked/r1/run.json", "data", "nope.txt", "a\0b"]) {
+  for (const bad of [".secret", ".git/config", "../web.json.bak", "sub/../../web.json.bak", "/etc/passwd", "leak.json", "linked/r1/web.json.bak", "data", "nope.txt", "a\0b"]) {
     const res = await get(`/runs/r1/files/${encodeURIComponent(bad)}`);
     assert.equal(res.status, 404, `refused: ${JSON.stringify(bad)}`);
   }
@@ -431,13 +435,13 @@ test("a new run starts the start command on its own directory and sends the firs
   const script = join(dir, "start.mjs");
   writeFileSync(
     script,
-    `import { mkdirSync, writeFileSync } from "node:fs";
+    `import { mkdirSync } from "node:fs";
 import { join } from "node:path";
+import { writeDoor, writeRecord } from ${FAKE_RUN};
 const [door, dir] = process.argv.slice(2);
 mkdirSync(join(dir, "work"), { recursive: true });
-const write = (status) => writeFileSync(join(dir, "run.json"), JSON.stringify({ run: "x", status, generation: 2, sealedSeq: null, wakeAt: null, holder: status === "running" ? { driver: "local", host: "h", bootId: null, pid: process.pid, since: new Date().toISOString(), serve: door } : null, heartbeatAt: status === "running" ? new Date().toISOString() : null, updatedAt: new Date().toISOString(), detail: null }));
-write("running");
-process.on("SIGTERM", () => { write("sleeping"); process.exit(0); });
+writeDoor(dir, door, process.pid, 2);
+process.on("SIGTERM", () => { writeRecord(dir, { status: "sleeping", generation: 2 }); process.exit(0); });
 setInterval(() => {}, 1000);
 `,
   );
@@ -472,11 +476,12 @@ test("a home with prompt variants: each new run's prompt is chosen before it sta
   const dir = await mkdtemp(join(tmpdir(), "web-prompt-"));
   t.after(() => rm(dir, { recursive: true, force: true }));
   const script = join(dir, "start.mjs");
-  writeFileSync(script, `import { mkdirSync, writeFileSync } from "node:fs";
+  writeFileSync(script, `import { mkdirSync } from "node:fs";
 import { join } from "node:path";
+import { writeDoor } from ${FAKE_RUN};
 const [door, dir] = process.argv.slice(2);
 mkdirSync(join(dir, "work"), { recursive: true });
-writeFileSync(join(dir, "run.json"), JSON.stringify({ run: "x", status: "running", generation: 1, sealedSeq: null, wakeAt: null, holder: { driver: "local", host: "h", bootId: null, pid: process.pid, since: new Date().toISOString(), serve: door }, heartbeatAt: new Date().toISOString(), updatedAt: new Date().toISOString(), detail: null }));
+writeDoor(dir, door);
 process.on("SIGTERM", () => process.exit(0));
 setInterval(() => {}, 1000);
 `);
@@ -489,7 +494,7 @@ setInterval(() => {}, 1000);
   const plain = await (await post("/runs", { content: "Do the thing" })).json();
   assert.equal(existsSync(join(root, plain.id, "prompt.json")), false, "a home with no variants writes no prompt.json");
   assert.deepEqual([asked.length, (await readAgentHome(home)).runs[plain.id].prompt], [0, undefined], "and asks Jev nothing");
-  // The plain run's message has reached the door before the next run is posted: each message goes out when its run's start command has written run.json, so on a slow first start the second run's message would otherwise arrive first.
+  // The plain run's message has reached the door before the next run is posted: each message goes out when its run's start command has written its door, so on a slow first start the second run's message would otherwise arrive first.
   for (let i = 0; i < 100 && door.submits.length < 1; i++) await new Promise((r) => setTimeout(r, 100));
 
   await setPrompts(home, [
@@ -510,7 +515,7 @@ setInterval(() => {}, 1000);
 });
 
 /**
- * A start command that plays a run's instance: run.json running with a door, sleeping on SIGTERM. `next(config)` sets
+ * A start command that plays a run's instance: its door in web.json while it runs, its record sleeping on SIGTERM. `next(config)` sets
  * what the next instance started plays: `door`, and the `entries` its store holds when it is released, as pi would have
  * committed them. An instance reads its config once, when it starts; after that it touches only its run's directory,
  * where life.log gets a line for its start and one for its SIGTERM (`lifeOf`).
@@ -523,6 +528,7 @@ function fakeInstance(dir) {
     `import { appendFileSync, readFileSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { DatabaseSync } from "node:sqlite";
+import { writeDoor, writeRecord } from ${FAKE_RUN};
 const [config, dir] = process.argv.slice(2);
 const { door, entries = [] } = JSON.parse(readFileSync(config, "utf8"));
 const life = (event) => appendFileSync(join(dir, "life.log"), event + " " + process.pid + "\\n");
@@ -533,9 +539,8 @@ const commit = () => {
   db.close();
 };
 writeFileSync(join(dir, "origin.txt"), process.env.AGENT_PAGE_ORIGIN ?? "");
-const write = (status) => writeFileSync(join(dir, "run.json"), JSON.stringify({ run: "x", status, generation: 1, sealedSeq: null, wakeAt: null, holder: status === "running" ? { driver: "local", host: "h", bootId: null, pid: process.pid, since: new Date().toISOString(), serve: door } : null, heartbeatAt: status === "running" ? new Date().toISOString() : null, updatedAt: new Date().toISOString(), detail: null }));
 life("start");
-write("running");
+writeDoor(dir, door);
 process.on("SIGTERM", () => {
   life("term");
   try {
@@ -543,7 +548,7 @@ process.on("SIGTERM", () => {
   } catch (error) {
     writeFileSync(join(dir, "commit-failed.txt"), String(error));
   }
-  write("sleeping");
+  writeRecord(dir, { status: "sleeping" });
   process.exit(0);
 });
 setInterval(() => {}, 1000);
@@ -770,7 +775,7 @@ test("a local Chrome's live view is reached on the page's origin: the viewer's f
   assert.deepEqual([summary.liveView, summary.browser, summary.liveNote], [null, "chrome", "live view not available for local Chrome yet"]);
 });
 
-test("a door address in run.json that is not loopback http is never contacted", async (t) => {
+test("a door address in web.json that is not loopback http is never contacted", async (t) => {
   const { home, root, get, json } = await app(t);
   await makeRun(home, "far", { status: "running", door: "http://203.0.113.9:8080" });
   await makeRun(home, "tls", { status: "running", door: "https://127.0.0.1:9" });

@@ -2,7 +2,6 @@
 // use. No compatibility promise: a name here may change or go in any release, and the CHANGELOG says when. A name moves
 // to the root entry when something outside this repository needs it.
 export { runPath } from "./claim.ts";
-export { isLeaseFresh, parseRunRecord, RUN_JSON } from "./status.ts";
 // What a run's database is opened with (the exclusive profile, and on macOS F_FULLFSYNC), for a host that checkpoints it
 // itself once the run's process is gone (agentrun-serve's take-back).
 export { profilePragmas, SYNCHRONOUS_LEVEL } from "./store.ts";

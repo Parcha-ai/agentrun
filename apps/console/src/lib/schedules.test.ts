@@ -1,13 +1,14 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { ClientError } from "./client";
-import { bodyOf, capWords, disabledWords, type Draft, draftOf, emptyDraft, firingWords, instantOf, issuesOf, patchOf, span, utcWhen, wallOf, whenWords } from "./schedules";
-import type { Firing, Trigger } from "./v2";
+import { bodyOf, capWords, disabledWords, type Draft, draftOf, type Schedule, emptyDraft, firingWords, instantOf, issuesOf, patchOf, span, utcWhen, wallOf, whenWords } from "./schedules";
+import type { Firing } from "./v2";
 
 const draft = (over: Partial<Draft>): Draft => ({ ...emptyDraft(), agentId: "triage", content: "Triage last night's issues.", maxCost: "2", ...over });
-const trigger = (over: Partial<Trigger> = {}): Trigger => ({
+const trigger = (over: Partial<Schedule> = {}): Schedule => ({
   id: "trg_1", name: "nightly triage", enabled: true, source: { kind: "schedule", cron: "30 1 * * *", timezone: "America/Los_Angeles" },
   target: { kind: "start_run", agent_id: "triage", input: { content: "Triage last night's issues." }, max_cost_usd: 2 },
-  created_at: "2026-11-04T00:00:00Z", updated_at: "2026-11-04T00:00:00Z", next_at: "2026-11-05T09:30:00Z", last_firing: null, failures_in_a_row: 0, disabled: null, ...over,
+  catchup_window_s: 300, failures_in_a_row: 0, disabled: null, last_run_id: null,
+  created_at: "2026-11-04T00:00:00Z", updated_at: "2026-11-04T00:00:00Z", next_at: "2026-11-05T09:30:00Z", last_firing: null, ...over,
 });
 const firing = (over: Partial<Firing>): Firing => ({ key: "fir_1", by: "schedule", nominal_at: "2026-11-05T09:30:00Z", status: "started", at: "2026-11-05T09:30:01Z", run_id: null, reason: null, error: null, ...over });
 

@@ -1,5 +1,5 @@
 // A run on a plain local directory, for one machine: the claim is the directory itself. Nothing mounts and nothing is
-// delegated, so nothing but this machine's owner lock stands between two processes and the run: it is for a laptop, a CI
+// delegated, so nothing but the store's own lock stands between two processes and the run: it is for a laptop, a CI
 // job or a test, never for a directory another machine can reach.
 //
 //   const run = await openDurableRun(ref, { ...localRun("/var/runs/run-1"), harness: { models, registry } });

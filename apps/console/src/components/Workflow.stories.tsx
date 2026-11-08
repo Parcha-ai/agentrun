@@ -17,11 +17,11 @@ const meta: Meta = { title: "Workflow" };
 export default meta;
 type Story = StoryObj;
 
-const runOf = (g: RunGraph, title: string): Run => ({
+const runOf = (g: RunGraph, title: string): Run => ({ sha: null, updated_at: "2026-11-04T00:00:00Z", poll_after_ms: 0,
   run_id: g.run.id, agent_id: g.run.agent, agent_version: Number(g.run.revision.replace(/\D/g, "")) || 1, revision: g.run.revision, kind: "workflow",
   status: g.run.status === "working" ? "working" : g.run.status === "completed" ? "completed" : "failed", state: g.run.status === "working" ? "working" : "idle",
   title, created_at: g.run.startedAt, ended_at: g.run.endedAt, result: null, error: null,
-  cost: { usd: g.totals.cost_usd, basis: "provider", charge_state: null, cap_usd: null }, archived_at: null,
+  cost: { usd: g.totals.cost_usd, basis: "charge", charge_state: null, cap_usd: null }, archived_at: null,
 });
 
 const page = (g: RunGraph, title: string, agent: string, initial: Selection = null) => (

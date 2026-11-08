@@ -213,7 +213,7 @@ export function kybRun(): RunGraph {
   };
 }
 
-// ---- jury: fetch_page -> parallel{ Jev, three OpenRouter decision models } -> aggregate -> route by value ----------
+// ---- jury: web_fetch -> parallel{ Jev, three OpenRouter decision models } -> aggregate -> route by value ----------
 
 export const JURY_RUN = "run_01JD7P0B6W3T9Y2HQX4N8KM5CF";
 const JURY_T0 = "2026-10-30T15:31:07.000Z";
@@ -238,7 +238,7 @@ export function juryRun(): RunGraph {
     juror(3, "clef", "openrouter", "cloudflare/clef", 0.35, 0.0004, 380),
   ];
   const effects: Effect[] = [{
-    node: "/root/steps/0", executionPath: "/root/steps/0", item: null, tool: "fetch_page", status: "done",
+    node: "/root/steps/0", executionPath: "/root/steps/0", item: null, tool: "web_fetch", status: "done",
     input: { url: "https://saltmarsh-outdoor.example" }, output: { status: 200, url: "https://saltmarsh-outdoor.example/", title: "Saltmarsh Outdoor Gear: camp, fish, hunt", text: STOREFRONT },
     startedAt: t(30), endedAt: t(880),
   }];
