@@ -63,6 +63,17 @@ describe("the strip, a run waiting on the person in its browser", () => {
     await m.click(m.button(/^Cancel$/));
     expect(m.host.textContent).toContain("Sign in with your password to answer from here.");
   });
+
+  it("keeps a late answer's refusal once the run has moved on and its card is gone, with the run named", async () => {
+    // The page reads again after a refused answer (another page answered first): the ask is gone from `asking`.
+    const props = { ...base, onHandBack: async () => "It was already answered: done." } as never;
+    const m = mount(createElement(NeedsYouStrip, props));
+    await m.click(m.button(/^Cancel$/));
+    await act(async () => { root!.render(createElement(NeedsYouStrip, { ...(props as object), asking: [] } as never)); });
+    const alert = m.host.querySelector('[role="alert"]') as HTMLElement;
+    expect(alert.textContent).toContain("It was already answered: done.");
+    expect(alert.querySelector(`a[href="#/runs/${asking.run_id}"]`)).not.toBeNull();
+  });
 });
 
 // The ask is the agent's words, and an agent can write a phishing-shaped one: every place it shows says it's the agent's
@@ -111,6 +122,16 @@ describe("a hand-back the server refuses, in words", () => {
 
 describe("the run page, a run waiting on the person in its browser", () => {
   const page = (extra: Record<string, unknown> = {}) => mount(createElement(RunDetail, { run: asking, agentName: "browsing", messages: messageFeatures, harnessSteers: true, rows: [], files: [], actions: {}, onMessage: () => {}, ...extra } as never));
+
+  it("keeps a late answer's refusal once the run has moved on and the ask's card is gone", async () => {
+    const extra = { onHandBack: async () => "The ask expired before your answer: the agent was told." };
+    const m = page(extra);
+    await m.click(m.button(/^Done$/));
+    const movedOn = { ...asking, status: "working", state: "working", pending: null } as unknown as Run;
+    await act(async () => { root!.render(createElement(RunDetail, { run: movedOn, agentName: "browsing", messages: messageFeatures, harnessSteers: true, rows: [], files: [], actions: {}, onMessage: () => {}, ...extra } as never)); });
+    expect(m.host.querySelector('[aria-label="Waiting for you in the browser"]')).toBeNull();
+    expect(m.host.querySelector('[role="alert"]')?.textContent).toContain("The ask expired before your answer: the agent was told.");
+  });
 
   it("shows the ask above the page, from the run alone, and opens on the Browser tab", () => {
     const m = page({ readBrowser: async () => ({ state: "live", viewer: "/v2/runs/x/browser/live/v/AbCdEfGhIjKlMnOpQrStUv#t=T" }) });

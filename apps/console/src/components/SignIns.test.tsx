@@ -28,11 +28,11 @@ const bb: SignIn = { key: "default", provider: "browserbase", state: "ready", he
 const kernel: SignIn = { key: "default", provider: "kernel", state: "ready", held_by: null, verified_at: null };
 const deletedAll = (list: SignIn[]) => async (_id: string, key: string): Promise<Removed> => ({ key, removed: list.filter((s) => s.key === key).map((s) => ({ provider: s.provider, at_vendor: "deleted" as const })) });
 
-async function show(agent: Agent, forget: (id: string, key: string) => Promise<unknown> = deletedAll(agent.sign_ins ?? []), after: Agent = agentWith([])) {
+async function show(agent: Agent, forget: (id: string, key: string) => Promise<unknown> = deletedAll(agent.sign_ins ?? []), after: Agent | (() => Promise<never>) = agentWith([])) {
   const calls: string[] = [];
   const v2 = {
     forgetSignIn: async (id: string, key: string) => { calls.push(`delete ${id} ${key}`); return forget(id, key); },
-    getAgent: async (id: string) => { calls.push(`get ${id}`); return { agent: after, etag: '"r1"' }; },
+    getAgent: async (id: string) => { calls.push(`get ${id}`); return typeof after === "function" ? after() : { agent: after, etag: '"r1"' }; },
   };
   const host = document.body.appendChild(document.createElement("div"));
   root = createRoot(host);
@@ -109,6 +109,24 @@ describe("the agent page's sign-ins", () => {
     expect(p.section()!.textContent).toContain("A run is using this sign-in; you can forget it when that run ends");
     expect(p.section()!.querySelector(`a[href="#/runs/${RUN}"]`)).toBeTruthy();
     expect(p.rows()).toHaveLength(1);
+  });
+
+  it("a vendor's not-deleted warning stays after its last sign-in is forgotten, even for an agent with no vendor browser now", async () => {
+    const gone = "unavailable: no browser key";
+    const notDeleted = async (_id: string, key: string): Promise<Removed> => ({ key, removed: [{ provider: "kernel", at_vendor: "not_deleted", message: "Kernel said 503." }] });
+    const p = await show(agentWith([kernel], gone), notDeleted, agentWith([], gone));
+    await p.click(p.forgets()[0]);
+    await p.click(p.button(/^Yes, forget/));
+    expect(p.section()?.textContent).toContain("Kernel didn't confirm the delete");
+  });
+
+  it("a forget that went through says so even when the agent can't be read again: the row goes, no \"Not forgotten\"", async () => {
+    const p = await show(agentWith([bb]), deletedAll([bb]), async () => { throw new ClientError(500, "internal", "the read failed", true); });
+    await p.click(p.forgets()[0]);
+    await p.click(p.button(/^Yes, forget/));
+    expect(p.section()?.textContent).not.toContain("Not forgotten");
+    expect(p.rows()).toHaveLength(0);
+    expect(p.section()?.textContent).toContain("Forgotten.");
   });
 
   it("is not there with none saved for an agent with no vendor browser", async () => {
