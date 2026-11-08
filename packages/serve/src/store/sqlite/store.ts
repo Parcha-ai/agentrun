@@ -273,7 +273,8 @@ class SqliteStore implements Store {
       for (const { kind, scope } of scopes) await tx.run("INSERT INTO trigger_scopes (kind, scope, trigger_id) VALUES (?, ?, ?)", kind, scope, triggerId);
     };
     /** Inserts the trigger, or (on its name for the agent) changes it in place, keeping its id; then its scope rows, only
-     *  while it is enabled. */
+     *  while it is enabled. `insertOnly` (an apply's new agent): no ON CONFLICT, and the package check keeps the names
+     *  distinct, so the store's one name per agent is never what refuses an apply (templates.apply below). */
     const upsertTrigger = async (tx: SqliteExecutor, agentId: string, trigger: TriggerDef, at: number, { insertOnly = false } = {}) => {
       const enabled = trigger.enabled !== false;
       const onName = insertOnly ? "" : `ON CONFLICT (agent_id, name) DO UPDATE SET enabled = excluded.enabled, source = excluded.source, target = excluded.target,
@@ -326,7 +327,10 @@ class SqliteStore implements Store {
           const at = now();
           await insertAgent(tx, agent, at);
           await insertRevision(tx, agent.id, revision, at);
-          // A new agent has no triggers: a plain insert, so a name given twice is refused (UNIQUE (agent_id, name)).
+          // A new agent has no triggers: a plain insert. UNIQUE (agent_id, name) cannot fire here by construction: a
+          // package names each trigger once, compared trimmed as a trigger keeps its name (templates.ts readPackage), so
+          // the names it is given are distinct once trimmed. A caller that passed two the same anyway is refused by the
+          // constraint as a StoreConstraint, and this transaction writes nothing: never a part of an apply.
           for (const trigger of triggers) await upsertTrigger(tx, agent.id, trigger, at, { insertOnly: true });
           const result = { agentId: agent.id, revisionId: revision.id };
           if (idempotencyKey !== undefined) await tx.run("INSERT INTO idempotency (scope, key, response, at) VALUES ('templates.apply', ?, ?, ?)", idempotencyKey, json(result), at);
