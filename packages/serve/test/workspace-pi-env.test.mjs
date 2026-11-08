@@ -12,7 +12,10 @@ import { BACKGROUND_CONTEXT as ctx } from "@earendil-works/chord/context";
 import { codingSource } from "../dist/coding-tools.js";
 import { hostTools } from "../dist/host-tools.js";
 import { localWorkspace } from "../dist/workspace/index.js";
-import { bashTool, fileTools, OUTPUT_DIR, piEnv } from "../dist/workspace/pi-env.js";
+import { bashTool, fileTools, OUTPUT_DIR, piEnv, readAnywhereInComputer } from "../dist/workspace/pi-env.js";
+import { readBackOf } from "@parcha/agentrun-computer";
+import { fakeComputer } from "./workspace-fake-computer.mjs";
+import { realProcesses } from "./workspace-fake-processes.mjs";
 
 const dirs = [];
 after(() => { for (const dir of dirs) rmSync(dir, { recursive: true, force: true }); });
@@ -117,6 +120,28 @@ test("a link in the run's folder is refused by read, write and edit, in words, a
     assert.doesNotMatch(answer.text, /secret/);
   }
   assert.equal(readFileSync(outside, "utf8"), "secret");
+});
+
+test("in a computer read opens an image at any path there (a render in /tmp), read through the computer; anything else outside stays refused, and with no computer an image outside is refused too", async () => {
+  const root = scratch();
+  const elsewhere = scratch();
+  writeFileSync(join(elsewhere, "render.png"), PNG);
+  writeFileSync(join(elsewhere, "fake.png"), "not an image");
+  writeFileSync(join(elsewhere, "notes.txt"), "text");
+  const computer = realProcesses(fakeComputer(root), root);
+  const attached = await localWorkspace(root).attach(computer, { readBackOf });
+  const names = ["/workspace"];
+  const env = piEnv(attached, { cwd: "/workspace", env: {}, defaultTimeoutS: 120 });
+  const read = readAnywhereInComputer(fileTools().find((tool) => tool.name === "read"), attached, names, { PATH: "/usr/bin:/bin" });
+  const [tool] = hostTools({ env: async () => env }, ["read"], ctx, new Map(), [read]);
+  const image = await call([tool], "read", { path: join(elsewhere, "render.png") });
+  assert.deepEqual([image.text, image.isError, image.images], [`${join(elsewhere, "render.png")}: image/png, ${PNG.length} bytes`, false, [{ mimeType: "image/png", data: PNG.toString("base64") }]]);
+  assert.ok(computer.methods().includes("process.start"), "read through the computer");
+  assert.deepEqual(await call([tool], "read", { path: join(elsewhere, "fake.png") }), { text: `${join(elsewhere, "fake.png")} is not an image`, isError: true });
+  assert.deepEqual(await call([tool], "read", { path: join(elsewhere, "missing.png") }), { text: `${join(elsewhere, "missing.png")} could not be read in the box`, isError: true });
+  assert.deepEqual(await call([tool], "read", { path: join(elsewhere, "notes.txt") }), { text: `${join(elsewhere, "notes.txt")}: outside the workspace`, isError: true });
+  const none = onWorkspace(root);
+  assert.deepEqual(await call(none, "read", { path: join(elsewhere, "render.png") }), { text: `${join(elsewhere, "render.png")}: outside the workspace`, isError: true }, "with no computer, read never opens a path outside");
 });
 
 /** pi's bash on the Workspace, through a host tool: the answer a model reads. */

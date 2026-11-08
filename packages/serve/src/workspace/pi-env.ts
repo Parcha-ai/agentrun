@@ -22,6 +22,7 @@ import {
   type ShellExecOptions, type ShellExecResult, StreamDecoder,
 } from "@earendil-works/pi-durable/env";
 import { CodingTools } from "@earendil-works/pi-durable/tools";
+import { forModelBlocks } from "../result.js";
 import { portPath, relativePath } from "./paths.js";
 import { type Stat, type Workspace, WorkspaceError } from "./workspace.js";
 
@@ -295,6 +296,55 @@ export function piEnv(workspace: Workspace, options: PiEnvOptions): ExecutionEnv
     createTempFile: unoffered("createTempFile"),
     exec,
     cleanup: async () => undefined,
+  };
+}
+
+/** The image types read opens anywhere in a computer, by extension; the bytes must say the same (imageTypeOf). */
+const IMAGE_EXTENSIONS: Readonly<Record<string, string>> = { png: "image/png", jpg: "image/jpeg", jpeg: "image/jpeg", gif: "image/gif", webp: "image/webp" };
+/** The largest image read hands the model, in bytes: 3.75 MiB, whose base64 is the 5 MiB the strictest platform a
+ *  harness sends images to takes (the claude-agent adapter's CLAUDE_AGENT_MAX_IMAGE_BYTES, Amazon Bedrock's). */
+export const READ_IMAGE_MAX_BYTES = 3_932_160;
+/** The computer's side of an image read: at most `$2` bytes of `$1`. A file over the bound never leaves the computer
+ *  whole: the server holds one byte past it at most, and refuses it. */
+const READ_IMAGE_SCRIPT = '[ -f "$1" ] && [ -r "$1" ] || exit 6; head -c "$2" -- "$1"';
+/** The image type the bytes say they are, or undefined: the magic bytes of PNG, JPEG, GIF and WebP. */
+function imageTypeOf(bytes: Uint8Array): string | undefined {
+  const at = (offset: number, ...values: number[]) => values.every((value, index) => bytes[offset + index] === value);
+  if (at(0, 0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a)) return "image/png";
+  if (at(0, 0xff, 0xd8, 0xff)) return "image/jpeg";
+  if (at(0, 0x47, 0x49, 0x46, 0x38)) return "image/gif";
+  if (at(0, 0x52, 0x49, 0x46, 0x46) && at(8, 0x57, 0x45, 0x42, 0x50)) return "image/webp";
+  return undefined;
+}
+/** A path read may open as an image anywhere in a computer: an absolute path (not `~`, not a URL) whose extension is an
+ *  image's. */
+const imagePath = (path: string): boolean => path.startsWith("/") && !path.startsWith("//") && IMAGE_EXTENSIONS[posix.extname(path).slice(1).toLowerCase()] !== undefined;
+
+/**
+ * pi's read (from fileTools), which in a computer also opens an image at any path there, such as one rendered to /tmp:
+ * read through the computer itself (Workspace.exec, the attached workspace's), never on this machine, and only when the
+ * bytes are an image's; anything else outside the run's folder is refused as before. `names` are the folder's names
+ * (portPath), `env` the shell environment the read runs with. Only for a run with a computer: with none, a path outside
+ * the folder is this machine's, and read never opens it.
+ */
+export function readAnywhereInComputer(read: ToolRegistration, workspace: Workspace, names: readonly string[], env: Readonly<Record<string, string>>): ToolRegistration {
+  return {
+    ...read,
+    async execute(args, api, context) {
+      const path = (args as { path?: unknown } | null)?.path;
+      if (typeof path !== "string" || !imagePath(path) || portPath(path, names) !== undefined) return read.execute(args, api, context);
+      const ran = await workspace.exec(["sh", "-c", READ_IMAGE_SCRIPT, "agentrun-read-image", path, String(READ_IMAGE_MAX_BYTES + 1)], {
+        env, timeoutMs: 30_000, maxOutput: READ_IMAGE_MAX_BYTES + 1, ...(context.abortSignal ? { signal: context.abortSignal } : {}),
+      }).catch(() => undefined);
+      // Said as what it is: a path the computer could not read (no such file, no permission), or bytes that are no image's.
+      if (!ran || ran.code !== 0) throw new Error(`${path} could not be read in the box`);
+      const bytes = ran.stdout;
+      const mimeType = imageTypeOf(bytes);
+      if (!mimeType) throw new Error(`${path} is not an image`);
+      if (bytes.byteLength > READ_IMAGE_MAX_BYTES) throw new Error(`${path} is an image over read's ${READ_IMAGE_MAX_BYTES} bytes: scale it down first (for example with ffmpeg in bash).`);
+      // A line naming it, then the image: an answer is never an empty text, on pi or on another harness.
+      return forModelBlocks([{ type: "text", text: `${path}: ${mimeType}, ${bytes.byteLength} bytes` }, { type: "image", data: Buffer.from(bytes).toString("base64"), mimeType }]);
+    },
   };
 }
 
