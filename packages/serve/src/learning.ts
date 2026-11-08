@@ -1,12 +1,14 @@
 // Learning: an agent whose definition says `learning: true` keeps a folder of what it learned, and each of its runs
 // starts from it. The folder is `learning/` in the agent's folder on the disk (files.ts agentFolderOf), in Claude Code's auto-memory format
 // (learn/notes.ts): `MEMORY.md`, the index, one line per active note, and one `<slug>.md` per note. It is plain
-// git with main checked out, so any reader sees its files. This server is its only writer. Every git call runs with the
-// repository's hooks, fsmonitor, replace refs and lazy fetches off and reads no system or global config, and every call
-// on one agent's folder waits its turn in that agent's queue in this process.
+// git with main checked out, so any reader sees its files, reached through its Workspace (learningWorkspace). Every
+// write to main is one exec of the learning script (learn/folder.ts: a run's merge, a person's write, the first commit),
+// which also writes `.agentrun/snapshot.json`, what the routes read. The seed's reads below still run git on the local
+// folder (each with hooks, fsmonitor, replace refs and lazy fetches off and no system or global config, in the agent's
+// queue in this process) until the seed reads the snapshot (tl-places' e4b).
 //
-// When a run of such an agent is made the server makes the folder if it is absent (one host commit on main, holding an
-// empty `MEMORY.md`), resolves main's commit and reads it with plumbing, never the working tree. It copies that commit's
+// When a run of such an agent is made the server makes the folder if it is absent (the script's init: one host commit
+// on main, holding an empty `MEMORY.md`), resolves main's commit and reads it with plumbing, never the working tree. It copies that commit's
 // index and active notes into the run's `work/.learning/` and pins the commit in the run's directory (`learning.json`),
 // with what the run reads under `# Learned` (learnedOf): each active note whole while they fit the server's learning
 // budget, else the index and the notes changed last, whole, while they fit; every text cut of the server's secrets, the
@@ -27,9 +29,9 @@
 // or at `learning/.git`, or a `MEMORY.md` that is one when the host writes it, is refused, and the run starts with
 // nothing learned. The end-of-run turn's seed, its proposal's check, its grade and its merge reach the folder the same
 // way, and a link there drops what the run learned. A person's reads and writes (learning-routes.ts) check it the same
-// way (readFolder, agentFolder), and a link there is an error.
+// way (learningWorkspace), and a link there is an error.
 import { spawn } from "node:child_process";
-import { constants, existsSync } from "node:fs";
+import { existsSync } from "node:fs";
 import { lstat, mkdir, readFile, rm, writeFile } from "node:fs/promises";
 import { dirname, join, posix, relative } from "node:path";
 import { SKILL_BYTES } from "@parcha/agentrun-kernel";
@@ -39,6 +41,8 @@ import { agentFolderOf, serialBy, writeDurable } from "./files.js";
 import { DETAIL_MAX, LIST_DETAIL, said, short, wordsOf } from "./learning-words.js";
 import { isObject } from "./validate.js";
 import { readWorkText } from "./workspace.js";
+import { learningInit } from "./learn/folder.js";
+import { localWorkspace, type Workspace } from "./workspace/index.js";
 
 /** The server's learning switch (`--learning`, AGENTRUN_SERVE_LEARNING; capabilities.features.learning). `on`, the
  *  default: a run learns when its agent's definition says `learning: true`. `off`: no run this server starts does. */
@@ -365,7 +369,8 @@ async function refuseLink(data: string, path: string, absent = false): Promise<v
 /** The agent's learning folder, each level checked by `lstat`: its home, its `learning/` and, once there, `.git`. None
  *  may be a symbolic link or anything but a directory, or the host's git would read from, and write to, where the link
  *  points. `make`: the home and the folder are made where absent first, one level at a time, each checked after it is
- *  made (agentFolder); without it nothing is made and a missing level passes (readFolder). The one link rule. */
+ *  made (agentFolder); without it nothing is made and a missing level passes (a read: learningWorkspace). The one link
+ *  rule. */
 async function checkedFolder(data: string, agentId: string, make: boolean): Promise<string> {
   const home = agentFolderOf(data, agentId);
   const repo = learningRepo(data, agentId);
@@ -383,18 +388,13 @@ async function checkedFolder(data: string, agentId: string, make: boolean): Prom
 
 /** The agent's learning folder, its home and the folder made where absent (checkedFolder). A link swapped in for a part
  *  just made is caught by the check after. `<data>/disk/agents` is the operator's, as the data directory is. Every write into
- *  the folder goes through it, in the agent's queue: before anything reads or makes the repository, and again once
- *  `git init` has made `.git`; before a run's end-of-run turn reads its seed again (seedAt), before its proposal is
- *  checked against it (propose.ts), before its grade reads main and its merge writes it (grade.ts), and before a
- *  person's edit, create or retire (learning-routes.ts). A refusal throws: a run about to start starts with nothing
+ *  the folder goes through it (learningWorkspace with `make`), in the agent's queue: before a run's seed reads or makes
+ *  the repository, before its end-of-run turn reads its seed again (seedAt), before its proposal is checked against it
+ *  (propose.ts), before its grade reads main and its merge writes it (grade.ts), and before a person's edit, create,
+ *  retire, approve or restore (learning-routes.ts). A refusal throws: a run about to start starts with nothing
  *  learned (seed_failed), a run that ended drops what it learned (reflect_failed, propose_failed or grade_failed), and
  *  a person's write is an error. */
 export const agentFolder = (data: string, agentId: string): Promise<string> => checkedFolder(data, agentId, true);
-
-/** The agent's learning folder for a person's read, outside the queue: the same check as agentFolder's, and nothing
- *  made. A link or a non-directory throws as it does there; a missing level passes, so a folder never made reads as
- *  empty (mainOf finds no main). */
-export const readFolder = (data: string, agentId: string): Promise<string> => checkedFolder(data, agentId, false);
 
 /** Before every command: a `-c` flag wins over the repository's own config. No hook or fsmonitor runs, no replace ref
  *  is read, a commit is never signed (which would run a program), and no transport runs, so nothing is fetched lazily.
@@ -440,8 +440,6 @@ export function git(cwd: string, repo: string | undefined, args: readonly string
   });
 }
 
-export const line = (out: Buffer): string => out.toString("utf8").trim();
-
 const gitChecks = new Map<string, Promise<string | undefined>>();
 
 /** Why this host keeps no learning folder, or undefined when it can: git MIN_GIT or later on `env`'s PATH. */
@@ -479,42 +477,18 @@ function queued<T>(key: string, work: () => Promise<T>): Promise<T> {
   return serialBy(queues, key, work);
 }
 
-/** Main's commit, or undefined when there is no main yet: no repository, one whose `init` never finished, or one whose
- *  making stopped before main. A main that is there, by its ref, and names no commit git can read is an error: the
- *  repository is never made again over it. */
-export async function mainOf(cwd: string, repo: string): Promise<string | undefined> {
-  if (!existsSync(join(repo, ".git")) || !(await git(cwd, repo, ["rev-parse", "--git-dir"]).then(() => true, () => false))) return undefined;
-  if (!line(await git(cwd, repo, ["for-each-ref", "--format=%(objectname)", "refs/heads/main"]))) return undefined;
-  return line(await git(cwd, repo, ["rev-parse", "--verify", "--quiet", "refs/heads/main^{commit}"]));
+/** The agent's learning folder as its Workspace: the one way serve writes it (learn/folder.ts, the script) and the
+ *  routes read it (the snapshot and the bodies, the file API alone). Here, Mode 1's: the local folder, checked as
+ *  agentFolder checks it (no link at the agent's home, its learning/ or its .git), made with `make`, and
+ *  undefined without it when the folder is not there (a folder never made reads as empty).
+ *  TODO(tl-places, ws-c3 E4c): the place-aware learningWorkspace(agentId) (Mode 2: the owner's Archil disk at
+ *  learningKey) replaces this one function; every caller goes through it. */
+export async function learningWorkspace(data: string, agentId: string, options: { make?: boolean } = {}): Promise<Workspace | undefined> {
+  if (learningTestHooks.workspace) return learningTestHooks.workspace(data, agentId, options);
+  const repo = await checkedFolder(data, agentId, options.make === true);
+  if (!options.make && !existsSync(repo)) return undefined;
+  return localWorkspace(repo);
 }
-
-/** Makes the agent's folder, or finishes one whose making stopped before main: `init` with no template, then the host's
- *  one commit on main, holding an empty `MEMORY.md` alone, made with plumbing. The working tree and the index show that
- *  commit's tree first (written here, never checked out; a `MEMORY.md` that is a link is refused, never written
- *  through), and main is created last, only where it is not there yet: a making that stops anywhere before leaves no
- *  main, and the next one does it all again. Called in the queue, on the folder agentFolder made and checked; `check`
- *  checks it again once `.git` is made. */
-export async function openAgentRepo(cwd: string, repo: string, check: () => Promise<unknown>): Promise<string> {
-  const known = await mainOf(cwd, repo);
-  if (known) return known;
-  await git(cwd, undefined, ["init", "-q", "--template=", "--initial-branch=main", repo]);
-  await check();
-  const blob = line(await git(cwd, repo, ["hash-object", "-w", "--no-filters", "--stdin"], ""));
-  const tree = line(await git(cwd, repo, ["mktree"], `100644 blob ${blob}\t${INDEX_FILE}\n`));
-  await writeFile(join(repo, INDEX_FILE), "", { flag: constants.O_WRONLY | constants.O_CREAT | constants.O_TRUNC | constants.O_NOFOLLOW }).catch((error: NodeJS.ErrnoException) => {
-    throw error.code === "ELOOP" ? new Error(`the learning folder's ${INDEX_FILE} is a symbolic link, and the host never writes through one`) : error;
-  });
-  await git(cwd, repo, ["read-tree", tree]);
-  const commit = line(await git(cwd, repo, ["commit-tree", tree, "-m", "host: the agent's learning folder"]));
-  await git(cwd, repo, ["update-ref", "-m", "host: the agent's learning folder", "refs/heads/main", commit, ""]);
-  return commit;
-}
-
-/** Brings the folder's checked-out files in line with commit `sha` of main: host-only files, so no hook or filter runs,
- *  with the work tree named outright, the folder itself. Why it could not, when it could not. In the queue, on the
- *  folder agentFolder checked. */
-export const checkOut = (repo: string, sha: string): Promise<Error | undefined> =>
-  git(repo, repo, ["read-tree", "-u", "--reset", sha], "", { GIT_WORK_TREE: repo }).then(() => undefined, (error: Error) => error);
 
 /** The blobs `oids` hold, in order, read in one `cat-file --batch`. One git cannot read throws. */
 export async function readBlobs(cwd: string, repo: string, oids: readonly string[]): Promise<Buffer[]> {
@@ -727,10 +701,10 @@ export async function changedOrder(cwd: string, repo: string, sha: string): Prom
  *  name). In the agent's queue. */
 export function seedOf(data: string, agentId: string): Promise<Seed> {
   return withAgentRepo(data, agentId, async () => {
-    const check = () => agentFolder(data, agentId);
-    const repo = await check();
+    const repo = await agentFolder(data, agentId);
     const home = agentFolderOf(data, agentId);
-    const sha = await openAgentRepo(home, repo, check);
+    // The folder made, when it is not, by the learning script's init: its first commit and its snapshot.
+    const sha = await learningInit((await learningWorkspace(data, agentId, { make: true }))!);
     const seed = await readSeed(home, repo, sha);
     const order = await changedOrder(home, repo, sha);
     const place = (file: string) => order.get(file) ?? Number.POSITIVE_INFINITY;
@@ -772,6 +746,8 @@ export const activeOf = (seed: Pick<Seed, "notes">): LearnedNote[] => Object.ent
  *  learns opens again for a follow-up, and as each git call starts (its arguments). */
 export const learningTestHooks: {
   git?: (args: readonly string[]) => void;
+  /** The agent's learning folder's Workspace, in place of the local one (learningWorkspace): a spy, or another backend. */
+  workspace?: (data: string, agentId: string, options: { make?: boolean }) => Promise<Workspace | undefined>;
   afterMkdir?: (dir: string) => Promise<void> | void;
   beforePin?: (runDir: string) => Promise<void> | void;
   afterPin?: (runDir: string) => Promise<void> | void;
