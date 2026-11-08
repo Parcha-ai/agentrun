@@ -8,14 +8,16 @@ import { DatabaseSync } from "node:sqlite";
 import { RunStorage } from "../journal/storage.js";
 import { DDL, SCHEMA_VERSION } from "../schema.js";
 import {
-  CommandTaken, Fenced, RefreshLeaseLost, SchemaVersionUnknown, StoreConstraint, StoreFromEarlierVersion,
-  type AgentRow, type Agents, type AlsoRow, type Claim, type Command, type Journal, type NewRevision, type RevisionRow, type RunPatch, type RunRow, type Runs,
+  CommandTaken, Fenced, RefreshLeaseLost, SchemaVersionUnknown, StoreConstraint, StoreFromEarlierVersion, type AgentRow, type Agents,
+  type AlsoRow, type Claim, type Command, type Journal, type NewRevision, type RevisionRow, type RunPatch, type RunRow, type Runs,
+  type JournalReads,
   type RunState, type Store, type StoreRole, type TemplatePackage, type Templates, type TriggerDef, type TriggerRow, type Triggers, type TriggerScope,
-  FINAL_STATES, MCP_REFRESH_CALL_MS, MCP_REFRESH_LEASE_MS, type Live, type LiveRow, type Mcp, type McpPinRow, type McpServerRow,
+  FINAL_STATES, MCP_REFRESH_CALL_MS, MCP_REFRESH_LEASE_MS, type Learning, type LearningProposal, type Live, type LiveRow, type Mcp, type McpPinRow, type McpServerRow,
   type McpOauth, type McpOauthPendingRow, type SealedKeyRow, type SealedKeys, type Settings, type SettingRow, type TriggerSettingRow, type TriggerSettings,
 } from "../store.js";
 import { Connection, type SqliteExecutor, type SqliteValue, type Statement } from "./connection.js";
 import { applyRunPatch, RUN_COLUMNS, runOf, type RunRecord } from "./run-patch.js";
+import { readLaunch, writeLaunch } from "./run-launch.js";
 
 /** A claim's length when the caller names none. */
 export const DEFAULT_LEASE_MS = 30_000;
@@ -202,6 +204,7 @@ class SqliteStore implements Store {
   readonly runs: Runs;
   readonly mcp: Mcp;
   readonly live: Live;
+  readonly learning: Learning;
   readonly settings: Settings;
   readonly sealedKeys: SealedKeys;
   readonly triggerSettings: TriggerSettings;
@@ -336,24 +339,41 @@ class SqliteStore implements Store {
     };
 
     this.runs = {
-      create: async ({ id, agentId, revisionId }) => {
-        const [result] = await db.write([{ sql: `INSERT INTO runs (id, agent_id, revision_id, state, epoch, started_at) VALUES (?, ?, ?, 'queued', 0, ?) RETURNING ${RUN_COLUMNS}`, params: [id, agentId, revisionId, now()] }]);
+      create: async ({ id, agentId, revisionId, origin }, launch) => {
+        const insert = `INSERT INTO runs (id, agent_id, revision_id, state, epoch, started_at) VALUES (?, ?, ?, 'queued', 0, ?) RETURNING ${RUN_COLUMNS}`;
+        if (origin || launch) {
+          // The run, its origin and its launch row in one transaction: the key -> run link holds even if the kept response
+          // never lands, and a run never exists without the launch it was started with.
+          return db.transaction(async (tx) => {
+            const at = now();
+            const row = await tx.get<RunRecord>(insert, id, agentId, revisionId, at);
+            if (origin) await tx.run("INSERT INTO run_origins (key, run_id, fingerprint, created_at) VALUES (?, ?, ?, ?)", origin.key, id, origin.fingerprint ?? null, at);
+            if (launch) await writeLaunch(tx, id, launch, at);
+            return runOf(row!);
+          });
+        }
+        const [result] = await db.write([{ sql: insert, params: [id, agentId, revisionId, now()] }]);
         return runOf(result!.rows[0] as RunRecord);
       },
       get: async (id) => {
         const row = await db.get<RunRecord>(`SELECT ${RUN_COLUMNS} FROM runs WHERE id = ?`, id);
         return row && runOf(row);
       },
-      list: async ({ agentId, revisionId, state, limit }) => {
+      launch: (runId) => readLaunch(db, runId),
+      list: async ({ agentId, revisionId, state, archived, limit }) => {
         const where: string[] = [];
         const params: SqliteValue[] = [];
         if (agentId !== undefined) (where.push("agent_id = ?"), params.push(agentId));
         if (revisionId !== undefined) (where.push("revision_id = ?"), params.push(revisionId));
         if (state !== undefined) (where.push("state = ?"), params.push(state));
+        if (archived !== undefined) where.push(`archived_at IS ${archived ? "NOT NULL" : "NULL"}`);
         const bounded = typeof limit === "number" && Number.isSafeInteger(limit) && limit >= 0;
         if (bounded) params.push(limit);
         const rows = await db.all<RunRecord>(`SELECT ${RUN_COLUMNS} FROM runs ${where.length ? `WHERE ${where.join(" AND ")}` : ""} ORDER BY started_at DESC, id DESC${bounded ? " LIMIT ?" : ""}`, ...params);
         return rows.map(runOf);
+      },
+      archive: async (runId, archived) => {
+        await db.write([{ sql: "UPDATE runs SET archived_at = ? WHERE id = ?", params: [archived ? now() : null, runId] }]);
       },
       claimable: async ({ limit } = {}) => {
         const at = now();
@@ -472,6 +492,22 @@ class SqliteStore implements Store {
           params: [claim.runId, claim.runId, claim.epoch],
         }]);
       },
+    };
+
+    type ProposalRecord = { run_id: string; agent_id: string; turn: string; proposal: string; created_at: number };
+    const proposalOf = (row: ProposalRecord): LearningProposal => ({
+      runId: row.run_id, agentId: row.agent_id, turn: JSON.parse(row.turn), proposal: JSON.parse(row.proposal), createdAt: row.created_at,
+    });
+    this.learning = {
+      proposal: async (runId) => {
+        const row = await db.get<ProposalRecord>("SELECT run_id, agent_id, turn, proposal, created_at FROM learning_proposals WHERE run_id = ?", runId);
+        return row ? proposalOf(row) : undefined;
+      },
+      proposals: async (agentId, { limit = 100 } = {}) =>
+        (await db.all<ProposalRecord>(
+          "SELECT run_id, agent_id, turn, proposal, created_at FROM learning_proposals WHERE agent_id = ? ORDER BY created_at DESC, run_id DESC LIMIT ?",
+          agentId, limit,
+        )).map(proposalOf),
     };
 
     this.settings = {
@@ -603,6 +639,14 @@ class SqliteStore implements Store {
     return journal;
   }
 
+  /** A run's journal opened for reading only (no claim): a fresh RunStorage on the store's connection, its reads alone. A
+   *  read never checks the epoch (only a commit's fence does), so the view carries epoch 0 and never writes; its type
+   *  (JournalReads) hands out no commit, stage or mintId. The store keeps no reference to it — it holds no claim and two
+   *  readers of one run never share ids, since neither mints any. A run with no journal yet reads as empty. */
+  readJournal(runId: string): JournalReads {
+    return new RunStorage(this.#db, { runId, epoch: 0 }, this.#now);
+  }
+
   /** How many journals the store keeps (open, of a claim not released). */
   get openJournals(): number {
     return this.#journals.size;
@@ -623,6 +667,11 @@ class SqliteStore implements Store {
 
   async commands(runId: string, after: number): Promise<Command[]> {
     return (await this.#db.all<CommandRecord>(`SELECT ${COMMAND_COLUMNS} FROM commands WHERE run_id = ? AND id > ? ORDER BY id`, runId, after)).map(commandOf);
+  }
+
+  async runOfOrigin(key: string): Promise<{ runId: string; fingerprint: string | null } | undefined> {
+    const row = await this.#db.get<{ run_id: string; fingerprint: string | null }>("SELECT run_id, fingerprint FROM run_origins WHERE key = ?", key);
+    return row && { runId: row.run_id, fingerprint: row.fingerprint };
   }
 
   async take(claim: Claim, commandId: number, outcome: "taken" | "refused" = "taken", reason?: string): Promise<void> {
