@@ -3,7 +3,7 @@
 // module's daemon. Also: the mount a local Workspace asks for, the read-back attach checks, and the background surface
 // with no computer.
 import assert from "node:assert/strict";
-import { chmodSync, mkdirSync, mkdtempSync, readFileSync, realpathSync, renameSync, rmSync, statSync, utimesSync, writeFileSync } from "node:fs";
+import { chmodSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, realpathSync, renameSync, rmSync, statSync, utimesSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { after, test } from "node:test";
@@ -84,13 +84,14 @@ test("attached: a write goes to a temporary file beside the target, then a move;
   const { root, computer, workspace } = await attached();
   await workspace.write("notes/a.md", "hello");
   assert.equal(readFileSync(join(root, "notes/a.md"), "utf8"), "hello", "it landed in the bound folder");
-  const [stat, write, move] = computer.calls;
+  const [folder, stat, write, move] = computer.calls;
+  assert.deepEqual(folder, ["files.stat", { path: "/workspace/notes", follow: false }], "the folder on the way, checked for a link first");
   assert.deepEqual(stat, ["files.stat", { path: "/workspace/notes/a.md", follow: false }]);
   assert.equal(write[0], "files.write");
   assert.match(write[1].path, /^\/workspace\/notes\/\.workspace-[0-9a-f]{16}\.tmp$/);
   assert.deepEqual([write[1].parents, text(write[1].data)], [true, "hello"]);
   assert.deepEqual(move, ["files.move", { from: write[1].path, to: "/workspace/notes/a.md", overwrite: true }]);
-  assert.equal(computer.calls.length, 3);
+  assert.equal(computer.calls.length, 4);
   computer.clear();
   chmodSync(join(root, "notes/a.md"), 0o640);
   const big = Buffer.alloc(COMPUTER_CHUNK * 2 + 5, 7);
@@ -113,7 +114,7 @@ test("attached: read, ranged and chunked, from /workspace/<path>; append in chun
   assert.deepEqual(computer.calls.at(-1), ["files.read", { path: "/workspace/f.txt", offset: 2, length: 5 }]);
   computer.clear();
   await workspace.append("logs/run.log", Buffer.alloc(COMPUTER_CHUNK + 1, 1));
-  assert.deepEqual(computer.calls.slice(1).map(([method, p]) => [method, p.path, Buffer.from(p.data, "base64").length, p.append, p.parents]), [
+  assert.deepEqual(computer.calls.filter(([method]) => method === "files.write").map(([method, p]) => [method, p.path, Buffer.from(p.data, "base64").length, p.append, p.parents]), [
     ["files.write", "/workspace/logs/run.log", COMPUTER_CHUNK, true, true], ["files.write", "/workspace/logs/run.log", 1, true, true],
   ]);
   await workspace.mkdir("z/y");
@@ -242,7 +243,7 @@ test("attached on a bind: a write's temporary file is synced on the host before 
   const workspace = attachedWorkspace(localWorkspace(root), computer, { synced: async (path, only) => { computer.calls.push(["synced", { path, only }]); } });
   await workspace.write("notes/a.md", "hello");
   const order = computer.calls.map(([method, params]) => (method === "synced" ? `synced ${params.path.replace(/\.workspace-[0-9a-f]+\.tmp$/, "<temp>")} ${params.only ?? "up"}` : method));
-  assert.deepEqual(order, ["files.stat", "files.write", "synced notes/<temp> file", "files.move", "synced notes/a.md up"]);
+  assert.deepEqual(order, ["files.stat", "files.stat", "files.write", "synced notes/<temp> file", "files.move", "synced notes/a.md up"]);
 });
 
 test("attached: a private file replaced in many chunks is never readable by others on the way", async () => {
@@ -285,4 +286,18 @@ test("attached: a read of no bytes still says a missing path, or a directory", a
   await refused(workspace.read("d", { length: 0 }), "REFUSED", /directory/);
   assert.equal((await workspace.read("f", { length: 0 })).length, 0);
   assert.equal((await workspace.read("f", { offset: 5, length: 0 })).length, 0);
+});
+
+test("attached: a folder link on the way is refused before a call changes anything; a read may follow it inside the computer", async () => {
+  const { root, computer, workspace } = await attached();
+  mkdirSync(join(root, "real"));
+  writeFileSync(join(root, "real", "kept"), "kept");
+  computer.plant.link("/workspace/alias", "real");
+  await refused(workspace.append("alias/log", "x"), "ESCAPE", /"alias" is a symbolic link/);
+  await refused(workspace.write("alias/new", "x"), "ESCAPE", /"alias" is a symbolic link/);
+  await refused(workspace.mkdir("alias/sub"), "ESCAPE", /"alias" is a symbolic link/);
+  await refused(workspace.mkdir("alias"), "ESCAPE", /"alias" is a symbolic link/);
+  await refused(workspace.remove("alias/kept", { force: true }), "ESCAPE", /"alias" is a symbolic link/);
+  assert.deepEqual(readdirSync(join(root, "real")), ["kept"], "nothing landed, nothing went: no call that failed changed the folder");
+  assert.equal(Buffer.from(await workspace.read("alias/kept")).toString(), "kept", "a read follows a link inside the computer, its mount the boundary");
 });

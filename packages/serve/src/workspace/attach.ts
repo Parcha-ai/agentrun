@@ -54,7 +54,8 @@
 // provider's mounts) is passed in, and the cutover passes D's own.
 //
 // In the computer, the mount is the boundary: a path is still checked by the relative-path rule (no absolute path, no
-// "..", no empty segment), but a link inside /workspace is the computer's to follow, as its own programs do. grep is
+// "..", no empty segment), and a read may follow a link inside /workspace, as the computer's own programs do; a call that
+// changes the folder refuses a link on its way (ESCAPE) before it changes anything, as the local backend does. grep is
 // not a computerd call: it runs through the Workspace the computer mounts (its folder, or the disk's own search),
 // which is current because D syncs after every call that changes the folder.
 //
@@ -164,6 +165,19 @@ export function attachedWorkspace(base: Workspace, computer: AttachableComputer,
   const noLink = (stat: FileStat | undefined, rel: string): void => {
     if (stat?.type === "symlink") throw new WorkspaceError("ESCAPE", `${JSON.stringify(rel)} is a symbolic link, and a workspace follows none`, { path: rel });
   };
+  /** Each folder on the way to the first `count` segments, in the computer, is not a link (ESCAPE otherwise): a call
+   *  that changes the folder is refused before it changes anything, as a bind's host sync would refuse it after. A
+   *  folder not there yet ends the walk (the call makes it). Reads follow links inside the computer, its mount the
+   *  boundary. */
+  const noLinkOnTheWay = async (segments: readonly string[], count: number, rel: string): Promise<void> => {
+    for (let i = 1; i <= count; i++) {
+      const part = segments.slice(0, i).join("/");
+      const stat = await statOf(`${MOUNT_AT}/${part}`, rel);
+      if (stat === undefined) return;
+      if (stat.type === "symlink") throw new WorkspaceError("ESCAPE", `${JSON.stringify(part)} is a symbolic link, and a workspace follows none`, { path: rel });
+      if (stat.type !== "dir") return;
+    }
+  };
 
   const processes: Processes = {
     start: async (params) => {
@@ -223,6 +237,7 @@ export function attachedWorkspace(base: Workspace, computer: AttachableComputer,
     async write(path, data) {
       const { rel, abs, segments } = below(path, "a file");
       const bytes = bytesOf(data);
+      await noLinkOnTheWay(segments, segments.length - 1, rel);
       const existing = await statOf(abs, rel);
       noLink(existing, rel);
       if (existing !== undefined && existing.type !== "file") throw new WorkspaceError("REFUSED", `${JSON.stringify(rel)} is not a file`, { path: rel });
@@ -254,7 +269,8 @@ export function attachedWorkspace(base: Workspace, computer: AttachableComputer,
     },
 
     async append(path, data) {
-      const { rel, abs } = below(path, "a file");
+      const { rel, abs, segments } = below(path, "a file");
+      await noLinkOnTheWay(segments, segments.length - 1, rel);
       noLink(await statOf(abs, rel), rel);
       for (const part of chunks(bytesOf(data))) await value(call("files.write", { path: abs, data: base64(part), append: true, parents: true }), rel);
       await synced(rel);
@@ -279,6 +295,7 @@ export function attachedWorkspace(base: Workspace, computer: AttachableComputer,
     async mkdir(dir) {
       const { rel, abs, segments } = at(dir);
       if (segments.length === 0) return;
+      await noLinkOnTheWay(segments, segments.length, rel);
       await value(call("files.mkdir", { path: abs, parents: true }), rel);
       await synced(rel);
     },
@@ -290,6 +307,7 @@ export function attachedWorkspace(base: Workspace, computer: AttachableComputer,
     async remove(path, options = {}) {
       const where = at(path);
       if (where.segments.length === 0) throw new WorkspaceError("REFUSED", "the workspace's root is never removed", { path: "" });
+      await noLinkOnTheWay(where.segments, where.segments.length - 1, where.rel);
       const existing = await statOf(where.abs, where.rel);
       if (existing === undefined) {
         if (options.force) return;

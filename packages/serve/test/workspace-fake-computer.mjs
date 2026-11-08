@@ -108,7 +108,7 @@ export function fakeComputer(root, options = {}) {
     /** Test seams: plant a file or a link in the bound folder, as the computer's own programs could. */
     plant: {
       file: (path, data) => { mkdirSync(dirname(host(path)), { recursive: true }); writeFileSync(host(path), data); },
-      link: (path) => { mkdirSync(dirname(host(path)), { recursive: true }); symlinkSync("/etc", host(path)); },
+      link: (path, target = "/etc") => { mkdirSync(dirname(host(path)), { recursive: true }); symlinkSync(target, host(path)); },
     },
     /** The calls made, by method name only. */
     methods: () => calls.map(([method]) => method),
