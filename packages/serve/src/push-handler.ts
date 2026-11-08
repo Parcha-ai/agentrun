@@ -9,7 +9,7 @@
 import { randomBytes } from "node:crypto";
 import type { IncomingMessage } from "node:http";
 import { ApiError } from "./errors.js";
-import type { Headers, TriggerAdapter } from "./trigger-adapter.js";
+import type { Headers, Source, TriggerAdapter } from "./trigger-adapter.js";
 import { ID } from "./validate.js";
 
 /** The kernel's one decoy key: what a request is checked against when it names no trigger, or one with no key. */
@@ -54,8 +54,8 @@ const REFUSED = "this route needs a request signed by the webhook trigger's secr
 
 export type PushDeps = {
   adapters: readonly TriggerAdapter[];
-  /** Whether `id` is a trigger of the pushed source `kind` that is on. */
-  hookable(id: string, kind: string): boolean;
+  /** The source of trigger `id`, when it is a trigger of the pushed source `kind` that is on. */
+  hooked(id: string, kind: string): Source | undefined;
   /** Its firing for the event, recorded (triggers.ts receive). */
   receive(id: string, eventId: string, payload: string): { created: boolean; firing: unknown };
   /** The triggers of the pushed source `kind`, on, that listen on `scope` (its adapter's scopeOf). */
@@ -87,9 +87,10 @@ export async function receivePush(deps: PushDeps, req: IncomingMessage, segment:
   const early = push.headers?.(req.headers as Headers, now);
   if (early) throw refuse(early);
   const body = await readCapped(req, push.maxBodyBytes);
-  const pathTrigger = own ? undefined : ID.test(name) && deps.hookable(name, adapter.id) ? name : undefined;
+  const source = own || !ID.test(name) ? undefined : deps.hooked(name, adapter.id);
+  const pathTrigger = source ? name : undefined;
   const key = own ? deps.setting(adapter.id, "server", push.key) : pathTrigger && deps.setting(adapter.id, pathTrigger, push.key);
-  const refusal = push.verify(key ?? DECOY, req.headers as Headers, body, now);
+  const refusal = push.verify(key ?? DECOY, req.headers as Headers, body, now, key ? source : undefined);
   if (!key || refusal) throw refuse(key ? refusal! : own ? "no_key" : "no_webhook_trigger");
   const handshake = push.handshake?.(req.headers as Headers, body);
   if (handshake) return handshake;

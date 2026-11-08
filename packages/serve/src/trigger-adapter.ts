@@ -64,15 +64,16 @@ export type TriggerAdapter = {
 /** Request headers, as Node gives them. */
 export type Headers = Record<string, string | string[] | undefined>;
 /** How a pushed source's requests are taken, in this order: its headers, its body (at most maxBodyBytes), its check
- *  against its settings' `key`, its handshake, its parse. Every refusal is the one 401. */
+ *  against its settings' `key`, its handshake, its parse. Every refusal is the one 401. `source`: on a trigger's own path,
+ *  the trigger's source when it names one of this kind that is on; else undefined. */
 export type Push = {
   maxBodyBytes: number;
   /** The settings field it checks a request with. */
   key: string;
   /** Why the headers alone are refused, before a byte of the body is read. */
   headers?(headers: Headers, nowMs: number): string | undefined;
-  /** Why the request is not the sender's under `key`, or undefined when it is. */
-  verify(key: string, headers: Headers, body: Buffer, nowMs: number): string | undefined;
+  /** Why the request is not the sender's under `key`, or undefined when it is (and fits `source`, when given). */
+  verify(key: string, headers: Headers, body: Buffer, nowMs: number, source?: Source): string | undefined;
   /** An answer of its own, after the check and before the parse (a sender's URL check), or undefined. */
   handshake?(headers: Headers, body: Buffer): { status: number; body: Json } | undefined;
   /** The events the request holds, none or more: none is a request this source takes nothing from (answered 200, and

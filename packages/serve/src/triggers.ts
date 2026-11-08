@@ -327,8 +327,13 @@ export class Triggers {
 
   /** Whether `id` is a trigger of the pushed source `kind` that is on: the one a request delivered for `kind` may fire. */
   hookable(id: string, kind: string): boolean {
+    return this.hookSource(id, kind) !== undefined;
+  }
+
+  /** The source of trigger `id` when it is hookable: what its pushed source's check and parse read (its filter). */
+  hookSource(id: string, kind: string): Source | undefined {
     const trigger = this.unreadable ? undefined : this.triggers.find((t) => t.id === id);
-    return trigger !== undefined && trigger.source.kind === kind && this.adapter(trigger.source).delivery === "push" && trigger.enabled;
+    return trigger !== undefined && trigger.source.kind === kind && this.adapter(trigger.source).delivery === "push" && trigger.enabled ? trigger.source : undefined;
   }
 
   /** The triggers of the pushed source `kind` that are on and listen on `scope` (its adapter's scopeOf): the ones an
