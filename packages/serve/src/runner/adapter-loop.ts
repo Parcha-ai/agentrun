@@ -123,6 +123,11 @@ function adapterLoop(specOf: (claim: Claim, run: AdapterRun) => AdapterRunSpec |
   /** While the end-of-run turn runs: a steer is left for the end, and its writes and edits under work/.learning/ are
    *  refused (REFLECT_NOTE_ONLY). */
   let reflecting = false;
+  /** The session's paid requests admitted and not yet booked (its model port's beforeRequest, then its afterRequest), and
+   *  who waits for none: the run's end waits for them, since a booking written after the end (the run's release) is
+   *  fenced and lost, and its request read back at its hold. */
+  let unbooked = 0;
+  let bookedAll: (() => void)[] = [];
   /** The raises this claim has: the state the ones before left (the kernel cap's takeRaises, in arrival order), the rows
    *  to take in the raise entry's commit, whether any resumes a paused run, and the budget it answered. */
   const raising: { state?: RaiseState; takes: number[]; resumes: boolean; capUsd?: number; budget?: BudgetData; resuming: boolean } = { takes: [], resumes: false, resuming: false };
@@ -311,7 +316,28 @@ function adapterLoop(specOf: (claim: Claim, run: AdapterRun) => AdapterRunSpec |
               },
             }),
         }));
-        const io: PiSessionIO = { writer, models: booking.models, signal: deps.signal, onEvent: () => {}, gate: gateOf };
+        // The session's model port, counting what it admitted and has not booked yet (a stop's booking comes once the
+        // session's proxy sees its upstream end, which can be after pi went idle).
+        const port = booking.models;
+        unbooked = 0;
+        const counted: typeof port = {
+          beforeRequest: async (request) => {
+            const ticket = await port.beforeRequest(request);
+            unbooked += 1;
+            return ticket;
+          },
+          afterRequest: async (...args) => {
+            try {
+              await port.afterRequest(...args);
+            } finally {
+              unbooked = Math.max(0, unbooked - 1);
+              if (unbooked === 0) for (const wake of bookedAll.splice(0)) wake();
+            }
+          },
+          ...(port.responded ? { responded: port.responded.bind(port) } : {}),
+          ...(port.note ? { note: port.note.bind(port) } : {}),
+        };
+        const io: PiSessionIO = { writer, models: counted, signal: deps.signal, onEvent: () => {}, gate: gateOf };
         session = await spec.adapter.open({ ...spec.session, tools }, io);
         root = await harness.root(context);
         // A run brought back from a park: the raises its claim has are taken together, once its delivery is done.
@@ -665,9 +691,21 @@ function adapterLoop(specOf: (claim: Claim, run: AdapterRun) => AdapterRunSpec |
     return { state: "parked" };
   }
 
+  /** Waits, at most CLOSE_MS, until every paid request the session admitted is booked: a person's stop is booked at what
+   *  streamed once the session's proxy sees its upstream end. Past the bound the end is written anyway, and a request left
+   *  unbooked reads at its hold and bound, the worst it can have cost. */
+  async function bookingsSettled(): Promise<void> {
+    if (unbooked === 0) return;
+    let timer: NodeJS.Timeout | undefined;
+    await Promise.race([new Promise<void>((resolve) => bookedAll.push(resolve)), new Promise<void>((resolve) => (timer = setTimeout(resolve, CLOSE_MS)))]);
+    clearTimeout(timer);
+  }
+
   /** The end commit: an `agentrun.end` entry carrying the run row's final patch (the spec's end patch in it), the rows
    *  staged with it (the end-of-run step's), and the rows it takes. */
   async function writeEnd(on: Harness, conversation: Conversation, theGate: Gate, base: EndData, take: readonly number[], also: readonly AlsoRow[] = []): Promise<LoopEnd> {
+    // The end is the run's release: nothing of this claim lands after it, so its requests' bookings come first.
+    await bookingsSettled();
     const patch = await endPatchOf(base);
     const data: EndData = { ...base, ...(patch.outcome !== undefined ? { outcome: patch.outcome } : {}), ...(patch.costUsd !== undefined ? { costUsd: patch.costUsd } : {}), ...(patch.metrics !== undefined ? { metrics: patch.metrics } : {}) };
     const run = {
