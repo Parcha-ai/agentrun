@@ -163,6 +163,16 @@ describe("App, leaving the agent editor with nothing unsaved", () => {
     expect(confirms).toEqual([]);
   });
 
+  it("leaves a new agent's form untouched without asking: its default instructions are no edit", async () => {
+    const page = await open("#/agents/new");
+    await page.wait(() => !!page.instructions(), "the new agent's editor");
+    expect(page.instructions()!.value).not.toBe("");
+    expect(page.unloadAsks()).toBe(false);
+    await page.click(page.sidebar("Agents"));
+    await page.wait(() => location.hash === "#/agents", "on the agents list");
+    expect(confirms).toEqual([]);
+  });
+
   it("leaves without asking right after a save", async () => {
     const page = await editing();
     await page.type(page.instructions(), "Answer, then check the sum.");
