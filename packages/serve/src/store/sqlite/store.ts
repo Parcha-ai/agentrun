@@ -17,6 +17,7 @@ import {
 } from "../store.js";
 import { Connection, type SqliteExecutor, type SqliteValue, type Statement } from "./connection.js";
 import { applyRunPatch, RUN_COLUMNS, runOf, type RunRecord } from "./run-patch.js";
+import { readLaunch, writeLaunch } from "./run-launch.js";
 
 /** A claim's length when the caller names none. */
 export const DEFAULT_LEASE_MS = 30_000;
@@ -337,14 +338,16 @@ class SqliteStore implements Store {
     };
 
     this.runs = {
-      create: async ({ id, agentId, revisionId, origin }) => {
+      create: async ({ id, agentId, revisionId, origin }, launch) => {
         const insert = `INSERT INTO runs (id, agent_id, revision_id, state, epoch, started_at) VALUES (?, ?, ?, 'queued', 0, ?) RETURNING ${RUN_COLUMNS}`;
-        if (origin) {
-          // The run and its origin in one transaction: the key -> run link holds even if the kept response never lands.
+        if (origin || launch) {
+          // The run, its origin and its launch row in one transaction: the key -> run link holds even if the kept response
+          // never lands, and a run never exists without the launch it was started with.
           return db.transaction(async (tx) => {
             const at = now();
             const row = await tx.get<RunRecord>(insert, id, agentId, revisionId, at);
-            await tx.run("INSERT INTO run_origins (key, run_id, fingerprint, created_at) VALUES (?, ?, ?, ?)", origin.key, id, origin.fingerprint ?? null, at);
+            if (origin) await tx.run("INSERT INTO run_origins (key, run_id, fingerprint, created_at) VALUES (?, ?, ?, ?)", origin.key, id, origin.fingerprint ?? null, at);
+            if (launch) await writeLaunch(tx, id, launch, at);
             return runOf(row!);
           });
         }
@@ -355,6 +358,7 @@ class SqliteStore implements Store {
         const row = await db.get<RunRecord>(`SELECT ${RUN_COLUMNS} FROM runs WHERE id = ?`, id);
         return row && runOf(row);
       },
+      launch: (runId) => readLaunch(db, runId),
       list: async ({ agentId, revisionId, state, archived, limit }) => {
         const where: string[] = [];
         const params: SqliteValue[] = [];
