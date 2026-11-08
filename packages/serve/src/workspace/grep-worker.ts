@@ -5,6 +5,7 @@
 // `{ done: false | "max" }`.
 import { closeSync, constants, fstatSync, openSync, readdirSync, readSync } from "node:fs";
 import { parentPort, workerData } from "node:worker_threads";
+import { globRegex } from "./glob.js";
 
 export type GrepJob = {
   readonly dir: string;
@@ -21,21 +22,6 @@ type Match = { path: string; line: number; text: string };
 
 const { O_NOFOLLOW, O_NONBLOCK, O_RDONLY } = constants;
 const LINUX = process.platform === "linux";
-
-/** A glob (`*`, `**`, `?`) as a regex over a relative path. */
-export function globRegex(glob: string): RegExp {
-  let out = "";
-  for (let i = 0; i < glob.length; i++) {
-    const c = glob[i]!;
-    if (c === "*" && glob[i + 1] === "*") {
-      i++;
-      if (glob[i + 1] === "/") { i++; out += "(?:.*/)?"; } else out += ".*";
-    } else if (c === "*") out += "[^/]*";
-    else if (c === "?") out += "[^/]";
-    else out += c.replace(/[.+^${}()|[\]\\]/g, "\\$&");
-  }
-  return new RegExp(`^${out}$`);
-}
 
 const sorted = (names: string[]): string[] => names.sort((a, b) => (a < b ? -1 : a > b ? 1 : 0));
 
