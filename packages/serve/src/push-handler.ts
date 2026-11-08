@@ -89,7 +89,8 @@ export async function receivePush(deps: PushDeps, req: IncomingMessage, segment:
   const body = await readCapped(req, push.maxBodyBytes);
   const pathTrigger = own ? undefined : ID.test(name) && deps.hookable(name, adapter.id) ? name : undefined;
   const key = own ? deps.setting(adapter.id, "server", push.key) : pathTrigger && deps.setting(adapter.id, pathTrigger, push.key);
-  const refusal = push.verify(key ?? DECOY, req.headers as Headers, body, now);
+  // Checked against the clock now the body has arrived: a timestamp at the tolerance's edge never passes by a slow body.
+  const refusal = push.verify(key ?? DECOY, req.headers as Headers, body, Date.now());
   if (!key || refusal) throw refuse(key ? refusal! : own ? "no_key" : "no_webhook_trigger");
   const handshake = push.handshake?.(req.headers as Headers, body);
   if (handshake) return handshake;
