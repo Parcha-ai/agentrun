@@ -31,12 +31,22 @@ export const STORE_DDL: readonly string[] = [
     created_at INTEGER NOT NULL,
     archived_at INTEGER
   ) STRICT`,
+  // A revision's skills (the P4 fold of the old agent store's skill table): the revision's own skill files, a JSON object
+  // keyed by the skill's path under `.agents/skills/` to its text. The body's `skills` map keeps the path to the text's
+  // SHA-256 (so two revisions with the same files are one body, and a view can show each file's size), and this column
+  // holds the texts themselves, on the revision's own row rather than a shared, content-addressed table: a revision is
+  // read and copied whole with its files. Null is none (a revision with no skills).
+  // `parent_id`: the revision that was the agent's current one when this revision was committed (null for its first), kept
+  // for the v2 revisions view. `note`: the optional note a revision was committed with (the v2 note), null for none.
   `CREATE TABLE IF NOT EXISTS revisions (
     id TEXT PRIMARY KEY,
     agent_id TEXT NOT NULL REFERENCES agents (id),
+    parent_id TEXT REFERENCES revisions (id),
     kind TEXT NOT NULL CHECK (kind IN ('agentic', 'workflow')),
     ${json("body")},
+    ${json("skills", true)},
     ${json("package", true)},
+    note TEXT,
     created_at INTEGER NOT NULL
   ) STRICT`,
   `CREATE INDEX IF NOT EXISTS revisions_by_agent ON revisions (agent_id, created_at)`,
@@ -64,6 +74,11 @@ export const STORE_DDL: readonly string[] = [
     archived_at INTEGER,
     -- The session an imported run came from ({source, session}), written by Store.importRun; null for a run started here.
     ${json("imported_from", true)},
+    -- The SHA-256 hashes (a JSON array) of the browser sign-in pointers handed to this run at its launch, never the
+    -- pointers themselves. Written once with the queued run (runs.create). While the run is running, a sign-in whose
+    -- pointer hashes to one of these is in use by it, so forgetting it is refused (sign-ins-store.ts), and its served
+    -- output is redacted by every handed pointer. Null when the run was handed none.
+    ${json("sign_in_handed", true)},
     started_at INTEGER NOT NULL,
     ended_at INTEGER
   ) STRICT`,
@@ -224,6 +239,29 @@ export const STORE_DDL: readonly string[] = [
     updated_at INTEGER NOT NULL,
     PRIMARY KEY (agent_id, key)
   ) STRICT`,
+
+  // An agent's saved browser sign-ins (design 2.1, tl-browser's rules): one live row per agent and browser provider, its
+  // pointer (the vendor's context or profile id) sealed with the store's one rule (store/seal.ts, AAD
+  // sign_ins|<agent>:<provider>|pointer), which the store never opens. The owner sees its name ("default") and saved_at,
+  // never the pointer, and no run's tools ever do. Forgetting a sign-in moves its sealed pointer, byte for byte so it
+  // still opens, into a tombstone row (sign_in_tombstones), kept only so a server started later can still cut it from
+  // what a run it was handed shows; the newest 32 per agent are kept, the oldest dropped first.
+  `CREATE TABLE IF NOT EXISTS sign_ins (
+    agent_id TEXT NOT NULL REFERENCES agents (id),
+    provider TEXT NOT NULL,
+    name TEXT NOT NULL,
+    pointer_sealed BLOB NOT NULL,
+    saved_at INTEGER NOT NULL,
+    PRIMARY KEY (agent_id, provider)
+  ) STRICT`,
+  `CREATE TABLE IF NOT EXISTS sign_in_tombstones (
+    id INTEGER PRIMARY KEY,
+    agent_id TEXT NOT NULL REFERENCES agents (id),
+    provider TEXT NOT NULL,
+    pointer_sealed BLOB NOT NULL,
+    forgotten_at INTEGER NOT NULL
+  ) STRICT`,
+  `CREATE INDEX IF NOT EXISTS sign_in_tombstones_by_agent ON sign_in_tombstones (agent_id, id)`,
 
   // The MCP registry: one row per saved server (its listed tools with each one's grantable and meta reason, the owner's
   // prices, and the credential, a bearer, headers or the OAuth token set and client, sealed). A sign-in in flight (10 min).

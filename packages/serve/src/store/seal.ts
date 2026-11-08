@@ -21,6 +21,13 @@ export const sealedAt = {
   mcpServer: (name: string): SealedAt => ({ table: "mcp_servers", row: name, column: "sealed" }),
   oauthVerifier: (state: string): SealedAt => ({ table: "mcp_oauth_pending", row: state, column: "verifier" }),
   sealedKey: (name: string): SealedAt => ({ table: "sealed_keys", row: name, column: "sealed" }),
+  // A saved browser sign-in's pointer: the one sealed column of the agent-and-provider row, bound to both by a composite
+  // row key. A ":" in either part is refused, so agent:provider names one pair only. A tombstone keeps the same sealed
+  // bytes under this same binding, so a forgotten pointer still opens.
+  signIn: (agentId: string, provider: string): SealedAt => {
+    for (const part of [agentId, provider]) if (part.includes(":")) throw new Error(`a sign-in's agent and provider never hold ":": ${JSON.stringify(part)}`);
+    return { table: "sign_ins", row: `${agentId}:${provider}`, column: "pointer" };
+  },
 };
 
 /** The AAD a value at `at` is sealed under. A part with the separator in it is refused: no two places share an AAD. */

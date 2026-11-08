@@ -14,6 +14,7 @@ import {
   type RunState, type Store, type StoreRole, type TemplatePackage, type Templates, type TriggerDef, type TriggerRow, type Triggers, type TriggerScope,
   FINAL_STATES, MCP_REFRESH_CALL_MS, MCP_REFRESH_LEASE_MS, type Learning, type LearningProposal, type Live, type LiveRow, type Mcp, type McpPinRow, type McpServerRow,
   type McpOauth, type McpOauthPendingRow, type SealedKeyRow, type SealedKeys, type Settings, type SettingRow, type TriggerSettingRow, type TriggerSettings,
+  SignInHandedTo, SignInMissing, SIGN_IN_TOMBSTONES_KEPT, type SignIns, type SignInRow, type SignInTombstoneRow,
 } from "../store.js";
 import { Connection, type SqliteExecutor, type SqliteValue, type Statement } from "./connection.js";
 import { applyRunPatch, RUN_COLUMNS, runOf, type RunRecord } from "./run-patch.js";
@@ -40,12 +41,12 @@ export type SqliteStoreOptions = (
 };
 
 type AgentRecord = { id: string; name: string; description: string | null; current_revision: string | null; created_at: number; archived_at: number | null };
-type RevisionRecord = { id: string; agent_id: string; kind: string; body: string; package: string | null; created_at: number };
+type RevisionRecord = { id: string; agent_id: string; parent_id: string | null; kind: string; body: string; skills: string | null; note: string | null; package: string | null; created_at: number };
 type CommandRecord = { id: number; run_id: string; kind: string; body: string; created_at: number; taken_at: number | null; refused: string | null; tries: number };
 type TriggerRecord = { id: string; agent_id: string; name: string; enabled: number; source: string; target: string; next_at: number | null; last_run_id: string | null };
 
 const AGENT_COLUMNS = "id, name, description, current_revision, created_at, archived_at";
-const REVISION_COLUMNS = "id, agent_id, kind, body, package, created_at";
+const REVISION_COLUMNS = "id, agent_id, parent_id, kind, body, skills, note, package, created_at";
 const COMMAND_COLUMNS = "id, run_id, kind, body, created_at, taken_at, refused, tries";
 const TRIGGER_COLUMNS = "id, agent_id, name, enabled, source, target, next_at, last_run_id";
 const FINAL = FINAL_STATES.map((state) => `'${state}'`).join(", ");
@@ -64,7 +65,8 @@ const CLAIM_SET = "epoch = epoch + 1, runner = ?, claimed_until = ?, state = 'ru
 
 const agentOf = (r: AgentRecord): AgentRow => ({ id: r.id, name: r.name, description: r.description, currentRevision: r.current_revision, createdAt: r.created_at, archivedAt: r.archived_at });
 const revisionOf = (r: RevisionRecord): RevisionRow => ({
-  id: r.id, agentId: r.agent_id, kind: r.kind, body: JSON.parse(r.body), package: r.package === null ? null : (JSON.parse(r.package) as TemplatePackage), createdAt: r.created_at,
+  id: r.id, agentId: r.agent_id, parent: r.parent_id, kind: r.kind, body: JSON.parse(r.body), skills: r.skills === null ? null : JSON.parse(r.skills),
+  note: r.note, package: r.package === null ? null : (JSON.parse(r.package) as TemplatePackage), createdAt: r.created_at,
 });
 const commandOf = (r: CommandRecord): Command => ({ id: r.id, runId: r.run_id, kind: r.kind, body: JSON.parse(r.body), createdAt: r.created_at, takenAt: r.taken_at, refused: r.refused, tries: r.tries });
 const triggerOf = (r: TriggerRecord): TriggerRow => ({
@@ -92,6 +94,10 @@ type TriggerSettingRecord = { adapter: string; scope: string; field: string; sea
 const triggerSettingOf = (r: TriggerSettingRecord): TriggerSettingRow => ({ adapter: r.adapter, scope: r.scope, field: r.field, sealed: r.sealed, updatedAt: r.updated_at });
 type McpOauthRecord = { state: string; server: string; verifier_sealed: Uint8Array; cookie_binding: string; working: string | null; expires_at: number };
 const mcpOauthOf = (r: McpOauthRecord): McpOauthPendingRow => ({ state: r.state, server: r.server, verifierSealed: Uint8Array.from(r.verifier_sealed), cookieBinding: r.cookie_binding, working: r.working === null ? null : JSON.parse(r.working), expiresAt: r.expires_at });
+type SignInRecord = { agent_id: string; provider: string; name: string; pointer_sealed: Uint8Array; saved_at: number };
+const signInOf = (r: SignInRecord): SignInRow => ({ agentId: r.agent_id, provider: r.provider, name: r.name, pointerSealed: Uint8Array.from(r.pointer_sealed), savedAt: r.saved_at });
+type SignInTombstoneRecord = { agent_id: string; provider: string; pointer_sealed: Uint8Array; forgotten_at: number };
+const signInTombstoneOf = (r: SignInTombstoneRecord): SignInTombstoneRow => ({ agentId: r.agent_id, provider: r.provider, pointerSealed: Uint8Array.from(r.pointer_sealed), forgottenAt: r.forgotten_at });
 
 /** The store's schema version as the file holds it: null when the server has not set it up (no store_meta yet). */
 async function versionOf(db: Connection): Promise<number | null> {
@@ -209,6 +215,7 @@ class SqliteStore implements Store {
   readonly sealedKeys: SealedKeys;
   readonly triggerSettings: TriggerSettings;
   readonly mcpOauth: McpOauth;
+  readonly signIns: SignIns;
   readonly #db: Connection;
   readonly #now: () => number;
   /** Each claim's one journal, until it is closed. */
@@ -227,9 +234,15 @@ class SqliteStore implements Store {
     const insertAgent = (tx: SqliteExecutor, agent: { id: string; name: string; description?: string | null }, at: number) =>
       tx.run("INSERT INTO agents (id, name, description, created_at) VALUES (?, ?, ?, ?)", agent.id, agent.name, agent.description ?? null, at);
     const insertRevision = async (tx: SqliteExecutor, agentId: string, revision: NewRevision, at: number) => {
-      await tx.run("INSERT INTO revisions (id, agent_id, kind, body, package, created_at) VALUES (?, ?, ?, ?, ?, ?)",
-        revision.id, agentId, revision.kind, json(revision.body), revision.package === undefined ? null : json(revision.package), at);
-      if ((await tx.runCounted("UPDATE agents SET current_revision = ? WHERE id = ?", revision.id, agentId)) === 0) throw new StoreConstraint(`no agent ${agentId}`);
+      // The parent is the agent's current revision now (null for its first): the agent must exist, which its first revision
+      // (create) and a later one (addRevision, upgrade) both guarantee before this.
+      const agent = await tx.get<{ current_revision: string | null }>("SELECT current_revision FROM agents WHERE id = ?", agentId);
+      if (!agent) throw new StoreConstraint(`no agent ${agentId}`);
+      await tx.run("INSERT INTO revisions (id, agent_id, parent_id, kind, body, skills, note, package, created_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)",
+        revision.id, agentId, agent.current_revision, revision.kind, json(revision.body),
+        revision.skills === undefined || revision.skills === null ? null : json(revision.skills),
+        revision.note ?? null, revision.package === undefined ? null : json(revision.package), at);
+      await tx.run("UPDATE agents SET current_revision = ? WHERE id = ?", revision.id, agentId);
     };
     const writeScopes = async (tx: SqliteExecutor, triggerId: string, scopes: readonly TriggerScope[]) => {
       await tx.run("DELETE FROM trigger_scopes WHERE trigger_id = ?", triggerId);
@@ -271,6 +284,13 @@ class SqliteStore implements Store {
       },
       addRevision: async ({ agentId, ...revision }) => {
         await db.transaction((tx) => insertRevision(tx, agentId, revision, now()));
+      },
+      setCurrent: async (agentId, revisionId) => {
+        const changed = await db.transaction((tx) => tx.runCounted(
+          "UPDATE agents SET current_revision = ? WHERE id = ? AND EXISTS (SELECT 1 FROM revisions WHERE id = ? AND agent_id = ?)",
+          revisionId, agentId, revisionId, agentId,
+        ));
+        if (changed === 0) throw new StoreConstraint(`${revisionId} is not a revision of agent ${agentId}`);
       },
       revision: async (id) => {
         const row = await db.get<RevisionRecord>(`SELECT ${REVISION_COLUMNS} FROM revisions WHERE id = ?`, id);
@@ -340,6 +360,7 @@ class SqliteStore implements Store {
 
     this.runs = {
       create: async ({ id, agentId, revisionId, origin }, launch) => {
+        // sign_in_handed is not written here: the runner writes it at its claim (runs.update under the epoch fence).
         const insert = `INSERT INTO runs (id, agent_id, revision_id, state, epoch, started_at) VALUES (?, ?, ?, 'queued', 0, ?) RETURNING ${RUN_COLUMNS}`;
         if (origin || launch) {
           // The run, its origin and its launch row in one transaction: the key -> run link holds even if the kept response
@@ -565,6 +586,53 @@ class SqliteStore implements Store {
         await db.write([{ sql: "DELETE FROM mcp_oauth_pending WHERE state = ?", params: [state] }]);
       },
       sweepExpired: async (at) => (await db.write([{ sql: "DELETE FROM mcp_oauth_pending WHERE expires_at <= ?", params: [at] }]))[0]!.changes,
+    };
+
+    // A running run whose sign_in_handed array holds `hash` (handedHolder), or any running run handed a sign-in at all
+    // (handedAny): the one read forget and the runner make, over `runs` alone.
+    const handedHolderIn = (tx: Pick<SqliteExecutor, "get">, hash: string) =>
+      tx.get<{ id: string }>("SELECT id FROM runs WHERE state = 'running' AND sign_in_handed IS NOT NULL AND EXISTS (SELECT 1 FROM json_each(sign_in_handed) WHERE value = ?) LIMIT 1", hash);
+    const handedAnyIn = (tx: Pick<SqliteExecutor, "get">) =>
+      tx.get<{ id: string }>("SELECT id FROM runs WHERE state = 'running' AND sign_in_handed IS NOT NULL AND json_array_length(sign_in_handed) > 0 LIMIT 1");
+    this.signIns = {
+      save: async ({ agentId, provider, name, pointerSealed }) => {
+        const at = now();
+        const [result] = await db.write([{
+          sql: `INSERT INTO sign_ins (agent_id, provider, name, pointer_sealed, saved_at) VALUES (?, ?, ?, ?, ?)
+            ON CONFLICT (agent_id, provider) DO UPDATE SET name = excluded.name, pointer_sealed = excluded.pointer_sealed, saved_at = excluded.saved_at
+            RETURNING agent_id, provider, name, pointer_sealed, saved_at`,
+          params: [agentId, provider, name, pointerSealed, at],
+        }]);
+        return signInOf(result!.rows[0] as SignInRecord);
+      },
+      list: async (agentId) =>
+        (await db.all<SignInRecord>("SELECT agent_id, provider, name, pointer_sealed, saved_at FROM sign_ins WHERE agent_id = ? ORDER BY provider", agentId)).map(signInOf),
+      get: async (agentId, provider) => {
+        const row = await db.get<SignInRecord>("SELECT agent_id, provider, name, pointer_sealed, saved_at FROM sign_ins WHERE agent_id = ? AND provider = ?", agentId, provider);
+        return row && signInOf(row);
+      },
+      tombstones: async (agentId, provider) =>
+        (await db.all<SignInTombstoneRecord>("SELECT agent_id, provider, pointer_sealed, forgotten_at FROM sign_in_tombstones WHERE agent_id = ? AND provider = ? ORDER BY id DESC", agentId, provider)).map(signInTombstoneOf),
+      forget: (agentId, provider, held) =>
+        db.transaction(async (tx) => {
+          // The hold check and the move are one transaction: a launch writing sign_in_handed is another, and the store's one
+          // writer lock serializes them, so forget never passes a hold a launch took, nor a launch a forget cleared.
+          const holder = held.hash !== undefined ? await handedHolderIn(tx, held.hash) : held.heldUnreadable ? await handedAnyIn(tx) : undefined;
+          if (holder) throw new SignInHandedTo(holder.id);
+          const live = await tx.get<SignInRecord>("SELECT agent_id, provider, name, pointer_sealed, saved_at FROM sign_ins WHERE agent_id = ? AND provider = ?", agentId, provider);
+          if (!live) throw new SignInMissing(agentId, provider);
+          const at = now();
+          const tomb = await tx.get<SignInTombstoneRecord>(
+            "INSERT INTO sign_in_tombstones (agent_id, provider, pointer_sealed, forgotten_at) VALUES (?, ?, ?, ?) RETURNING agent_id, provider, pointer_sealed, forgotten_at",
+            agentId, provider, live.pointer_sealed, at,
+          );
+          await tx.run("DELETE FROM sign_ins WHERE agent_id = ? AND provider = ?", agentId, provider);
+          // The newest kept, the oldest dropped first (per agent, across providers).
+          await tx.run("DELETE FROM sign_in_tombstones WHERE agent_id = ? AND id NOT IN (SELECT id FROM sign_in_tombstones WHERE agent_id = ? ORDER BY id DESC LIMIT ?)", agentId, agentId, SIGN_IN_TOMBSTONES_KEPT);
+          return signInTombstoneOf(tomb!);
+        }),
+      handedHolder: async (hash) => (await handedHolderIn(db, hash))?.id,
+      handedAny: async () => (await handedAnyIn(db))?.id,
     };
   }
 
