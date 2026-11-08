@@ -494,14 +494,14 @@ func (p *proc) readLog(ctx context.Context, offset int64, max int, waiting bool,
 		}
 		changed := p.changed
 		p.mu.Unlock()
-		written, capped := p.log.state()
+		written, capped, failed := p.log.state()
 		if offset > written {
 			return ReadResult{}, rpc.Errorf(rpc.KindInvalid, "offset %d is past the end of %s's log, %d bytes so far", offset, p.id, written)
 		}
 		if !waiting || offset < written || done {
 			data := p.log.read(offset, int(min(int64(max), written-offset)))
 			next := offset + int64(len(data))
-			return ReadResult{Data: data, NextOffset: next, Exited: done && next == written, Size: written, Capped: capped}, nil
+			return ReadResult{Data: data, NextOffset: next, Exited: done && next == written, Size: written, Capped: capped, LogError: failed}, nil
 		}
 		select {
 		case <-changed:

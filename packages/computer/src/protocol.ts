@@ -299,6 +299,11 @@ export interface ProcessReadResult {
 	size: number;
 	/** "log" only: output came past the log's PROCESS_LOG_BYTES and was not written to it. */
 	capped?: boolean;
+	/**
+	 * "log" only: a write to the log failed or wrote short (a full disk), so the log stopped there for good and holds
+	 * only the output before it: why. Nothing after it is written, so the file stays a true prefix.
+	 */
+	logError?: string;
 }
 
 export interface ProcessWriteParams {

@@ -74,6 +74,9 @@ type ReadResult struct {
 	Size int64 `json:"size"`
 	// Capped is the log's alone: output came past its LogBytes and was not written to it.
 	Capped bool `json:"capped,omitempty"`
+	// LogError is the log's alone: a write failed or wrote short, so the log stopped there for good and holds only the
+	// output before it; why.
+	LogError string `json:"logError,omitempty"`
 }
 
 type WriteParams struct {
