@@ -10,9 +10,9 @@ import type { Run } from "@/lib/v2";
 let root: ReturnType<typeof createRoot> | undefined;
 afterEach(() => { act(() => root?.unmount()); root = undefined; document.body.innerHTML = ""; });
 
-const run = (learning: Run["learning"]): Run => ({
+const run = (learning: Run["learning"]): Run => ({ sha: null, updated_at: "2026-11-04T00:00:00Z", poll_after_ms: 0,
   run_id: "01a1a22b-0000", agent_id: "refunds", agent_version: 1, revision: "rv1", kind: "agentic", status: "completed", state: "idle", title: "brooklinen.com",
-  created_at: "2026-11-03T16:08:00Z", ended_at: "2026-11-03T16:08:12Z", result: null, error: null, cost: null, archived_at: null, learning,
+  created_at: "2026-11-03T16:08:00Z", ended_at: "2026-11-03T16:08:12Z", result: null, error: null, cost: { usd: null, basis: "estimate", charge_state: null, cap_usd: null }, archived_at: null, learning,
 });
 const FIRST = { file: "try-policies-refund-policy-first.md", name: "Try /policies/refund-policy first" };
 const MINE = { file: "keep-it-to-three-lines.md", name: "Keep the summary to three lines" };
@@ -45,7 +45,7 @@ describe("LearningChips, what a run started with and read", () => {
   });
 
   it("a run that started with nothing and read nothing shows neither; `used` is no field the console reads", () => {
-    const host = mount({ state: "dropped", reason: "empty", used: [FIRST] } as Run["learning"]);
+    const host = mount({ state: "dropped", reason: "empty", detail: null, at: "2026-11-03T16:52:09Z", used: [FIRST] } as Run["learning"]);
     expect(host.textContent).toBe("");
   });
 });

@@ -8,6 +8,7 @@ import { createRequire } from 'node:module';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { BACKGROUND_CONTEXT as ctx } from '@earendil-works/chord/context';
+import { createModels } from '@earendil-works/pi-ai/models';
 import { Harness, createRegistry } from '@earendil-works/pi-durable';
 import { openNodeSqliteStorage } from '@earendil-works/pi-durable/storage/sqlite/node';
 import { workspaceFiles } from '@parcha/agentrun-dsl/recovery';
@@ -33,7 +34,7 @@ if (mode) {
   const registry = createRegistry();
   registry.install(flow.extension);
   const storage = await openNodeSqliteStorage(file);
-  const harness = await Harness.open(storage, { registry, models: {} }, ctx);
+  const harness = await Harness.open(storage, { registry, models: createModels() }, ctx);
   // The head, as a disk run reads it with storeHead; this test's store admits a second connection.
   const { DatabaseSync } = createRequire(import.meta.url)('node:sqlite');
   const reader = new DatabaseSync(file, { readOnly: true });
@@ -43,13 +44,13 @@ if (mode) {
   write(snapshot);
   log({ snapshot: head });
   const stop = recordCommits(harness, { from: snapshot, write });
-  harness.subscribeCommits((publication) => {
+  harness.observeCommits({ end() {}, advance: (publication) => {
     for (const change of publication.changes) {
       if (change.type !== 'document' || !change.value) continue;
       const point = change.record.kind === 'agentrun.effects' ? (change.value.status === 'unknown' ? 'after-admit' : 'after-complete') : null;
       if (point && process.env.KILL_AT === point) { log({ kill: point, commit: Number(publication.seq) }); process.kill(process.pid, 'SIGKILL'); }
     }
-  });
+  } });
   if (mode === 'start') {
     const run = await flow.start(harness, { key: 'run-1', workflow: WORKFLOW, input: { sku: 'A-1' } }, ctx);
     log({ outcome: (await run.wait(ctx)).status });

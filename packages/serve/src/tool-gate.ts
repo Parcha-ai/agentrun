@@ -33,21 +33,23 @@
 //   run: a stop, unlike a cancel, leaves no mark the resume is held to.
 
 import { createHash } from "node:crypto";
-import { readFileSync } from "node:fs";
+import { existsSync, readFileSync, writeFileSync } from "node:fs";
 import { join, posix, resolve, sep } from "node:path";
 import type { Context } from "@earendil-works/chord";
-import { type Cursor, defineExtension, type Extension, ROOT_CONVERSATION_ID, type ToolRegistration, type Tx, wrapTool } from "@earendil-works/pi-durable";
+import { type Cursor, defineExtension, type Extension, type Harness, ROOT_CONVERSATION_ID, type ToolRegistration, type Tx, wrapTool } from "@earendil-works/pi-durable";
 import { type Drive, EffectFailure, INTERRUPTED_TEXT, openDrive } from "@parcha/agentrun-kernel/kernel";
 import { boundResult } from "@parcha/agentrun-kernel/process";
-import { type DurableRun, MESSAGE_ORIGIN_KIND } from "@parcha/pi-durable-disk";
+import { BARRIER, type DurableRun, MESSAGE_ORIGIN_KIND, syncNow, type SyncTarget } from "@parcha/pi-durable-disk";
 import { dataOfRun, readJson, RUN_META } from "./files.js";
 import { LEARNED_DIR } from "./learning.js";
 import { BOX_WORK } from "./place.js";
 import type { TurnOrigin } from "./learning-run.js";
 import { forModel } from "./result.js";
+import { builtinHarness } from "./harness-table.js";
+import { DEFAULT_HARNESS } from "./harness.js";
 import { durableSessions } from "./sessions.js";
 import { SHELL_TOOLS } from "./background.js";
-import { LEGACY_NAMES, readToolSettings, SERVE_OWN_TOOLS, TABLE_TOOLS } from "./tool-plane.js";
+import { readToolSettings, SERVE_OWN_TOOLS, TABLE_TOOLS } from "./tool-plane.js";
 
 /** What the gate does with a tool's calls. */
 export const PERMISSIONS = ["allow", "ask", "deny"] as const;
@@ -89,36 +91,32 @@ export function permissionKeys(name: string): string[] {
 /** The browser's registrations on pi (pi-browser's BROWSER_TOOL_NAMES, which a test holds this list to): each is a call
  *  of the table's `browser`. */
 const BROWSER_REGISTRATIONS: readonly string[] = ["snapshot", "run", "screenshot", "browser_read", "browser_release", "browser_relaunch", "browser_request_handoff", "browser_downloads", "browser_upload"];
-/** A CLI's own tools, by harness, and the table's tool each one is. */
-const NATIVE_TOOLS: Readonly<Record<string, Readonly<Record<string, string>>>> = {
-  "claude-agent": { WebSearch: "web_search", WebFetch: "web_fetch", Bash: "bash", Read: "read", Write: "write", Edit: "edit" },
-  codex: { web_search: "web_search", shell: "bash" },
-};
 /** The MCP server through which claude-agent calls the kernel's host tools (`mcp__hands__<wire name>`). */
 const HOST_TOOLS_SERVER = "hands";
 
 /** The settings key a call named `name` on `harness` is held to: the one mapping from every name a call reaches the gate
  *  by. A settings key is itself (a table tool, `monid.<tool>`, `mcp:<server>/<tool>`); a CLI's own tool is the table's it
  *  is; an MCP alias, `mcp__<server>__<tool>` (claude-agent's host tools `mcp__hands__<wire name>`, mapped as their
- *  wire name) and on OpenCode `<server>_<tool>`, is `mcp:<server>/<tool>`; a catalog's wire name (`monid_run`) is its
+ *  wire name) and a harness's own (its facts' toolAlias: OpenCode's `<server>_<tool>`), is `mcp:<server>/<tool>`; a catalog's wire name (`monid_run`) is its
  *  catalog name; the browser's registrations are `browser`. OpenCode's `<server>_<tool>` maps only for a server of
  *  `mcpServers` (the run's configured MCP servers), never by its shape, since a host tool's name has the same shape.
  *  Undefined: nothing maps it, and the gate asks. The key only: an MCP call enters the gate once, in the MCP gateway for a
  *  registration it marks (GATED_BY_GATEWAY), else where its tool is wrapped. */
 export function settingsKeyOf(harness: string, name: string, mcpServers: readonly string[] = []): string | undefined {
-  // A legacy name the tool plane folds into a capability (fetch_page into web_fetch) is held to that capability's key,
-  // and a tool that runs a command in the box (bash_background and the rest) to bash's: before the table's own names.
-  if (Object.hasOwn(LEGACY_NAMES, name)) return LEGACY_NAMES[name];
+  // A tool that runs a command in the box (bash_background and the rest) is held to bash's key: before the table's own names.
   if (Object.hasOwn(SHELL_FAMILY, name)) return SHELL_FAMILY[name];
   if (TABLE_TOOLS.includes(name) || SERVE_OWN_TOOLS.includes(name) || isCatalogTool(name)) return name;
-  const native = NATIVE_TOOLS[harness]?.[name];
+  // A CLI's own tool, the table's tool it is (its facts' nativeTools), by an own name only.
+  const nativeTools = builtinHarness(harness)?.facts?.nativeTools;
+  const native = nativeTools && Object.hasOwn(nativeTools, name) ? nativeTools[name] : undefined;
   if (native) return native;
   const mcp = /^mcp__([a-z][a-z0-9-]*)__(.+)$/.exec(name);
   if (mcp) return mcp[1] === HOST_TOOLS_SERVER ? settingsKeyOf(harness, mcp[2]!, mcpServers) : mcpToolName(mcp[1]!, mcp[2]!);
   const monid = /^monid_([a-z]+)$/.exec(name);
   if (monid) return `monid.${monid[1]}`;
   if (BROWSER_REGISTRATIONS.includes(name)) return "browser";
-  const alias = harness === "opencode" ? /^([a-z][a-z0-9-]*)_(.+)$/.exec(name) : null;
+  // A harness whose client names a session's MCP tool another way too (its facts' toolAlias: OpenCode's `<server>_<tool>`).
+  const alias = builtinHarness(harness)?.facts?.toolAlias?.exec(name) ?? null;
   return alias && mcpServers.includes(alias[1]!) ? mcpToolName(alias[1]!, alias[2]!) : undefined;
 }
 
@@ -189,6 +187,9 @@ export type Park = { commit<T>(change: (tx: unknown) => Promise<T>): Promise<T>;
 export type EnterOptions = {
   /** What the approval card shows the call costs. */
   price?: ApprovalPrice;
+  /** The call is a replay: a crash cut an earlier attempt that may have been sent (the kernel's attempt above 0). A
+   *  refusal then never says nothing was sent or charged. */
+  replayed?: true;
 };
 
 /** enter's answer. `undefined`: run the call. Otherwise the answer the model reads instead: a refusal
@@ -220,20 +221,29 @@ export interface Gate {
 
 /** Where a permission was set (permissionFrom's `from`): the agent's own tool settings, the server's, or the default. */
 export type SettingFrom = "agent" | "server" | "default";
+/** What every deny tells the model, plainly: the call never left, so nothing was charged for it. */
+export const NOT_RUN = "It was not run: nothing was sent and nothing was charged.";
+/** What a refusal says instead when an earlier attempt of the call may have been sent: an approved call cut mid-flight,
+ *  or a replay-safe call the kernel runs again after a crash. Never a claim that nothing was charged. */
+export const RAN_UNKNOWN = "It had started before the deny, and whether it took effect is not known.";
 /** Where a deny was set, in words: the place a person changes it. */
 export const denyPlace = (from: SettingFrom = "server"): string => (from === "agent" ? "for this agent" : from === "default" ? "by default" : "on this server");
 /** The refusal of a call whose tool is set to deny; of one held to another tool's setting (`heldTo`, a shell tool's
  *  bash), naming the setting to change and where it was set (`from`: this agent's settings or this server's). */
-export const deniedText = (tool: string, heldTo?: string, from: SettingFrom = "server"): string =>
-  heldTo && heldTo !== tool ? `Permission denied: ${tool} follows ${heldTo}'s setting, which is deny ${denyPlace(from)}. Don't retry it.` : `Permission denied: ${tool} is set to deny ${denyPlace(from)}. Don't retry it.`;
+export const deniedText = (tool: string, heldTo?: string, from: SettingFrom = "server", ran: "no" | "unknown" = "no"): string => {
+  // `ran`: "unknown" for a call an earlier attempt of which may have been sent (an approved call cut mid-flight, or a
+  // replay-safe call run again after a crash): the words never claim it wasn't.
+  const what = ran === "no" ? NOT_RUN : RAN_UNKNOWN;
+  return heldTo && heldTo !== tool ? `Permission denied: ${tool} follows ${heldTo}'s setting, which is deny ${denyPlace(from)}. ${what} Don't retry it.` : `Permission denied: ${tool} is set to deny ${denyPlace(from)}. ${what} Don't retry it.`;
+};
 /** The refusal of an ask where no one can approve it: a server with accounts off, whose answer route takes no token. */
-export const noApproverText = (tool: string): string => `Permission denied: ${tool} needs the owner's approval, and this server has accounts off (AGENTRUN_ACCOUNTS=0), so no one can give it: set the tool to allow or deny in the agent's Tools.`;
+export const noApproverText = (tool: string, ran: "no" | "unknown" = "no"): string => `Permission denied: ${tool} needs the owner's approval, and this server has accounts off (AGENTRUN_ACCOUNTS=0), so no one can give it: set the tool to allow or deny in the agent's Tools. ${ran === "no" ? NOT_RUN : RAN_UNKNOWN}`;
 /** Set by the server in a run's environment when no one can approve here (accounts off): the gate refuses each ask. */
 export const NO_APPROVER_ENV = "AGENTRUN_SERVE_NO_APPROVER";
 /** A parked call's answer: the run pauses here. */
 export const waitingText = (tool: string): string => `This ${tool} call waits for a person's approval; the run pauses here and continues with the result when they answer.`;
 /** A call a person denied, with their reason when they gave one. */
-export const refusedText = (tool: string, note?: string): string => `The user denied this ${tool} call.${note ? ` Reason: ${note}` : ""}`;
+export const refusedText = (tool: string, note?: string, ran: "no" | "unknown" = "no"): string => `The user denied this ${tool} call. ${ran === "no" ? NOT_RUN : RAN_UNKNOWN}${note ? ` Reason: ${note}` : ""}`;
 
 /** The Timeline row of a call that waits for an approval. */
 export const APPROVAL_ROW = "tool_approval_requested" as const;
@@ -269,6 +279,15 @@ export const TURN_ORIGIN_FILE = "turn-origin.json";
 /** The run's store's record of a call that waits for approval (`phase: "requested"`), and of its answer acted on
  *  (`phase: "resolved"`), on its root conversation. */
 export const APPROVAL_ENTRY = "agentrun.tool_approval";
+/** The run's store's record that the gate let a replay-safe pi call that can bill through (`{ callId }`), written before
+ *  the tool runs. pi-durable reruns a cut replay-safe call with the same call id and no sign that it is a rerun: this mark
+ *  is how the gate knows an earlier attempt may have been sent, so a deny of the rerun never says nothing was charged.
+ *  Outside `agentrun.tool_`, the tool ledger's kinds (paid-calls.ts), which readers of a run's charges take by prefix. */
+export const GATE_PASSED_ENTRY = "agentrun.gate_passed";
+/** The replay-safe tools, by settings key, whose call can be charged (a provider's fee: Parallel's search or extract): the
+ *  only ones the gate marks, so the root conversation does not grow by a mark per free call (read, the shell watchers,
+ *  monid's discover and inspect), whose earlier attempt charged nothing. monid.run is never rerun (host-tools.ts REPLAY). */
+const BILLED_REPLAYS: ReadonlySet<string> = new Set(["web_fetch", "web_search"]);
 
 /** The refusal of the end-of-run turn's write or edit under work/.learning/: its notes are kept only from its answer's
  *  note blocks (learn/reflect.ts parseReflection), which the host merges in its own store; a file there is never kept. */
@@ -285,7 +304,7 @@ export function underLearning(work: string, args: unknown): boolean {
 }
 
 /** One call that waits for approval, as the run's store keeps it. */
-export type ApprovalRequest = { id: string; tool: string; call_id: string; args: unknown; args_preview: string; requested_at: string; /** The message the turn that parked it took: a reopen settles that turn, answered or not. */ turn?: string; price?: ApprovalPrice };
+export type ApprovalRequest = { id: string; tool: string; call_id: string; args: unknown; args_preview: string; requested_at: string; /** The message the turn that parked it took: a reopen settles that turn, answered or not. */ turn?: string; price?: ApprovalPrice; /** Parked on a replay: a crash cut an earlier attempt that may have been sent, so a refusal never says nothing was charged. Kept in the store, so a restart keeps it. */ replayed?: true };
 /** Resumes the session with `content` as one message of its own (`approval-<id>`), writing `mark` with it or after it. */
 export type Resume = (id: string, content: string, mark: (tx: Tx) => Promise<unknown>, origin?: ResumeOrigin) => Promise<void>;
 /** Who wrote a resume, for the Timeline (pi-durable-agent's MessageOrigin): the server, carrying an answer, so it never
@@ -307,28 +326,40 @@ export const RESUME_PREFIX = "[tool approval] ";
 
 /** The one message that resumes a session once a person answered: it names the call it answers (its tool, call id and
  *  arguments), so the model tells it from a person's new input, and carries the call's result, or the refusal. */
-export function resumeText(request: Pick<ApprovalRequest, "tool" | "call_id">, shown: string, decision: "allow" | "deny", result: ToolAnswer): string {
-  // `shown`: the arguments as the server shows them, redacted whole then cut (runs.ts): never the call's own.
+/** The head of the gate's resume message: the call it answers, its arguments as shown (`shown`, redacted whole then cut,
+ *  runs.ts) cut again at 300 characters, and the words that say it is not the person's. The one source of it: the resume
+ *  writes it, and the Timeline strips exactly it from the row a person opens (runs.ts resumeShows). */
+export function resumeHead(request: Pick<ApprovalRequest, "tool" | "call_id">, shown: string): string {
   const args = shown.length > 300 ? `${shown.slice(0, 299)}…` : shown;
-  const head = `${RESUME_PREFIX}This answers your ${request.tool} call ${request.call_id} (arguments ${args}), which waited for a person's approval; it is not a new message from them.`;
+  return `${RESUME_PREFIX}This answers your ${request.tool} call ${request.call_id} (arguments ${args}), which waited for a person's approval; it is not a new message from them.`;
+}
+export function resumeText(request: Pick<ApprovalRequest, "tool" | "call_id">, shown: string, decision: "allow" | "deny", result: ToolAnswer): string {
+  const head = resumeHead(request, shown);
   return decision === "allow" ? `${head} They allowed it, and it ran${result.isError ? " and failed" : ""}. Its result:\n${result.text}` : `${head}\n${result.text}`;
 }
 
 /** The gate of the run `runId` at `where` (its directory, under the data directory's runs/), on its pinned revision:
  *  an agentic run's parks an asked call; a workflow's model node cannot. */
 export function runGate(where: { root: string; work: string }, runId: string, revision: { kind: string; body: { toolSettings?: unknown; harness?: string } }): RunGate {
-  return new RunGate({ root: where.root, work: where.work, data: dataOfRun(where.root), runId, harness: revision.body.harness ?? "pi" }, (revision.body.toolSettings ?? {}) as PermissionSettings, revision.kind === "agentic", process.env[NO_APPROVER_ENV] !== "1");
+  return new RunGate({ root: where.root, work: where.work, data: dataOfRun(where.root), runId, harness: revision.body.harness ?? DEFAULT_HARNESS }, (revision.body.toolSettings ?? {}) as PermissionSettings, revision.kind === "agentic", process.env[NO_APPROVER_ENV] !== "1");
 }
 
 /** The gate in a run's process, park mode: its policy, the turn's origin, the calls that wait, and the answers acted on. */
 export class RunGate {
   private readonly requests = new Map<string, ApprovalRequest & { resolved?: true }>();
+  /** The replay-safe pi calls the gate let through (GATE_PASSED_ENTRY), by call id: a rerun of one is a replay. */
+  private readonly passed = new Set<string>();
   private durable?: DurableRun;
+  /** The run's store, for the barrier before a call that is not replay-safe: from `prime` (before the resume) or `load`. */
+  private syncTarget?: SyncTarget;
   private context?: Context;
   private coding?: readonly ToolRegistration[];
   /** The run's own tools beyond the table (its learned_workflow), on which an approved call of one runs. */
   private extra: readonly ToolRegistration[] = [];
   private resume?: Resume;
+  /** Told just before an allowed call runs (harness-app's): the run is un-parked, so the call's own model requests (a
+   *  learned workflow's node) go out; the harness is idle then, as the park ended its turn. */
+  private unpark?: () => void;
   private drive?: Promise<Drive>;
   private timer?: NodeJS.Timeout;
   private settling = false;
@@ -345,7 +376,7 @@ export class RunGate {
   /** Where the permission `policy` gives `tool` was set: the agent's own tool settings, the server's, or the default. */
   readonly denyFrom = (tool: string): SettingFrom => this.setting(tool).from;
   private setting(tool: string): { permission: Permission; from: SettingFrom } {
-    const key = settingsKeyOf(this.where.harness ?? "pi", tool, this.where.mcpServers);
+    const key = settingsKeyOf(this.where.harness ?? DEFAULT_HARNESS, tool, this.where.mcpServers);
     // A name nothing maps fails closed: it asks (refused where no one can approve), never allows.
     if (key === undefined) return { permission: "ask", from: "default" };
     const server = this.serverSettings();
@@ -390,16 +421,17 @@ export class RunGate {
   async enter(name: string, args: unknown, callId: string, park: Park, options: EnterOptions = {}): Promise<Entered> {
     // Held to its settings key (settingsKeyOf), the name its request, a refusal and the approved call give; a shell tool
     // held to bash's (SHELL_FAMILY) keeps its own name, so an approved bash_background runs bash_background, never bash.
-    const key = settingsKeyOf(this.where.harness ?? "pi", name, this.where.mcpServers) ?? name;
+    const key = settingsKeyOf(this.where.harness ?? DEFAULT_HARNESS, name, this.where.mcpServers) ?? name;
     const tool = shellToolOf(name) ?? key;
     // The end-of-run turn writes no file under work/.learning/, whatever the tool's permission: its notes are kept only
     // from its answer (NOTE_ONLY_TEXT). Any other turn's write there follows its permission, as anywhere.
     if ((key === "write" || key === "edit") && this.turnOrigin() === "reflect" && underLearning(this.where.work, args)) return { text: NOTE_ONLY_TEXT, isError: true };
     const verdict = this.policy(name);
     if (verdict === "allow") return undefined;
-    if (verdict === "deny") return { text: deniedText(tool, key, this.denyFrom(name)), isError: true };
+    const ran = options.replayed ? "unknown" : "no";
+    if (verdict === "deny") return { text: deniedText(tool, key, this.denyFrom(name), ran), isError: true };
     // No one can answer here: refused at once with why, never parked until a cancel.
-    if (!this.approvers) return { text: noApproverText(tool), isError: true };
+    if (!this.approvers) return { text: noApproverText(tool, ran), isError: true };
     if (!this.parks) return { text: `This ${tool} call needs a person's approval, which a workflow's model node cannot wait for; it was not run.`, isError: true };
     // Named by the call, so a call run again after a crash parks as the same request.
     const id = `ap_${createHash("sha256").update(JSON.stringify([callId, tool, args ?? null])).digest("hex").slice(0, 16)}`;
@@ -407,7 +439,7 @@ export class RunGate {
     if (other) return { text: `This ${tool} call was not run: the ${other.tool} call ${other.call_id} already waits for a person's approval. Call it again once that one is answered.`, isError: true };
     if (!this.requests.has(id)) {
       const turn = park.turn?.();
-      const request: ApprovalRequest = { id, tool, call_id: callId, args: args ?? null, args_preview: argsPreview(args), requested_at: new Date().toISOString(), ...(turn !== undefined ? { turn } : {}), ...(options.price !== undefined ? { price: options.price } : {}) };
+      const request: ApprovalRequest = { id, tool, call_id: callId, args: args ?? null, args_preview: argsPreview(args), requested_at: new Date().toISOString(), ...(turn !== undefined ? { turn } : {}), ...(options.price !== undefined ? { price: options.price } : {}), ...(options.replayed ? { replayed: true as const } : {}) };
       // Held before the commit's await, in the tick of the look above: pi runs a turn's calls in parallel, and an ask
       // entered meanwhile finds this one and is refused. A commit that fails lets it go.
       this.requests.set(id, request);
@@ -435,32 +467,58 @@ export class RunGate {
 
   private wrap(tool: ToolRegistration): ToolRegistration {
     const gate = this;
+    const billed = tool.replay === "safe" && BILLED_REPLAYS.has(settingsKeyOf(this.where.harness ?? DEFAULT_HARNESS, tool.name, this.where.mcpServers) ?? "");
     return {
       ...tool,
       async execute(args, api, context) {
-        const answer = await gate.enter(tool.name, args, api.callId, { commit: (change) => api.commit(change as never, context) as never });
+        const commit = (change: unknown) => api.commit(change as never, context) as never;
+        // A rerun of a replay-safe call the gate let through before (pi-durable reruns it with the same call id after a
+        // crash, with no sign of it): an earlier attempt may have been sent, which the gate's refusal must not deny. The
+        // marks were read before the run resumed (prime), so a rerun the resume dispatches finds them.
+        const answer = await gate.enter(tool.name, args, api.callId, { commit }, gate.passed.has(api.callId) ? { replayed: true } : {});
         // A parked call ends the turn, as ask_person's does.
         if (answer) return forModel(answer.text, answer.parked ? { control: { terminate: true } } : { isError: true });
+        // Let through: a call that can bill is marked in the store before the tool runs, so a crash after it leaves a
+        // rerun the gate knows for one. A mark that fails to commit stops the call (nothing has been sent).
+        if (billed && !gate.passed.has(api.callId)) {
+          await commit((tx: Tx) => tx.appendEntry(ROOT_CONVERSATION_ID, { kind: GATE_PASSED_ENTRY, data: { callId: api.callId } }));
+          gate.passed.add(api.callId);
+        }
+        // pi-durable committed the call's intent before it reached execute: durable before the call is sent, so a lost
+        // box never sends it twice (a resumed call with its intent is reported interrupted, not run again).
+        if (tool.replay !== "safe" || billed) await syncNow(gate.syncTarget, BARRIER.piToolIntent);
         return tool.execute(args, api, context);
       },
     } as ToolRegistration;
   }
 
-  /** Reads the requests the run's store holds, as the run's process opens, before its turns go on. `coding`: the run's
-   *  coding source (coding-tools.ts), on which an approved coding call runs, as the run's own would; `extra`, the run's
- *  own tools beyond the table (its learned_workflow), on which an approved call of one runs. */
+  /** Takes the open run, as the run's process opens (its app's onOpen), reading what its store holds of the gate unless
+   *  `prime` read it before the resume. `coding`: the run's coding source (coding-tools.ts), on which an approved coding
+   *  call runs, as the run's own would; `extra`, the run's own tools beyond the table (its learned_workflow), on which an
+   *  approved call of one runs. */
   async load(durable: DurableRun, context: Context, coding?: readonly ToolRegistration[], extra: readonly ToolRegistration[] = []): Promise<void> {
     this.durable = durable;
+    this.syncTarget = durable.store;
     this.context = context;
     this.coding = coding;
     this.extra = extra;
-    const root = await durable.harness.conversation(ROOT_CONVERSATION_ID, context);
+    if (!this.primed) await this.prime(durable.harness, context);
+  }
+
+  private primed = false;
+  /** Reads what the run's store holds of the gate (the calls that wait, the answers acted on, the calls it let through)
+   *  before the run resumes: its app's beforeResume hook, ahead of harness.resume(), which dispatches the calls a crash
+   *  cut. Read here, not in onOpen, which a recovered call races. A workflow's run calls only this; load reads nothing more. */
+  async prime(harness: Pick<Harness, "conversation">, context: Context, syncTarget?: SyncTarget): Promise<void> {
+    if (syncTarget) this.syncTarget = syncTarget;
+    const root = await harness.conversation(ROOT_CONVERSATION_ID, context);
     for (let cursor: Cursor | undefined; root; ) {
       const page = await root.entries({ order: "ascending" }, 500, cursor, context);
       for (const entry of page.items) this.note(entry as { kind: string; data?: unknown });
       if (page.next === undefined) break;
       cursor = page.next;
     }
+    this.primed = true;
   }
 
   /** Whether a call waits for its answer, or for its answer to be acted on: a harness keeps the turn it ended closed. */
@@ -475,12 +533,18 @@ export class RunGate {
   }
 
   /** Acts on the answers from now on, resuming the session through `resume`; by default pi's root conversation. */
-  start(resume?: Resume): void {
+  start(resume?: Resume, unpark?: () => void): void {
     this.resume = resume ?? this.submit;
+    this.unpark = unpark;
     this.watch();
   }
 
   private note(entry: { kind: string; data?: unknown }): void {
+    if (entry.kind === GATE_PASSED_ENTRY) {
+      const callId = (entry.data as { callId?: unknown } | undefined)?.callId;
+      if (typeof callId === "string") this.passed.add(callId);
+      return;
+    }
     const data = entry.data as (ApprovalRequest & { phase?: string }) | undefined;
     if (entry.kind !== APPROVAL_ENTRY || typeof data?.id !== "string") return;
     const held = this.requests.get(data.id);
@@ -540,7 +604,18 @@ export class RunGate {
           continue;
         }
         // An allow runs the call, unless its tool was set to deny since it asked.
-        const result = decision === "deny" ? { text: refusedText(held.tool, answer.note), isError: true } : this.policy(held.tool) === "deny" ? { text: deniedText(held.tool, settingsKeyOf(this.where.harness ?? "pi", held.tool, this.where.mcpServers), this.denyFrom(held.tool)), isError: true } : await this.run(held);
+        // A request parked on a replay may follow an attempt that was sent: its refusal makes no "nothing was charged" claim.
+        if (decision === "allow") this.unpark?.();
+        const result = decision === "deny" ? { text: refusedText(held.tool, answer.note, held.replayed ? "unknown" : "no"), isError: true } : this.policy(held.tool) === "deny" ? await this.ranOrDenied(held) : await this.run(held);
+        // A test's seam, unset in a server (AGENTRUN_SERVE_TEST_CRASH_AFTER_CALL, a file that marks it once): an approved
+        // call that ran and whose outcome is in the journal, then the process goes before its resume, once the test says go
+        // (<file>.go), as a crash between the two would leave the run.
+        const seam = process.env.AGENTRUN_SERVE_TEST_CRASH_AFTER_CALL;
+        if (seam && decision === "allow" && !existsSync(seam)) {
+          while (!existsSync(`${seam}.go`)) await new Promise((done) => setTimeout(done, 50));
+          writeFileSync(seam, "");
+          process.kill(process.pid, "SIGKILL");
+        }
         // And again once the call is done: a stop or a cancel while it ran drops its result, which never reaches the model.
         const after = ((await readJson(join(this.where.root, RUN_META)))?.approvals as Record<string, { decision?: string }> | undefined)?.[held.id];
         if (after?.decision === "canceled" || after?.decision === "withdrawn") {
@@ -580,25 +655,43 @@ export class RunGate {
     held.resolved = true;
   }
 
-  /** The approved call, run once by the kernel through the journal any host tool's call goes through, as an effect of
-   *  the run's own `approvals:` session, on the run's coding source: its intent is durable before it runs, its outcome
-   *  after; a replay-safe call a crash cut off runs again, any other is answered interrupted and never runs again. */
-  private async run(held: ApprovalRequest): Promise<ToolAnswer> {
-    const runner = await this.runnerOf(held);
-    if ("refused" in runner) return { text: runner.refused, isError: true };
-    this.drive ??= durableSessions(this.durable!.harness, this.context!)
+  /** The run's own `approvals:` session, the journal every approved call runs through: opened once. */
+  private journal(): Promise<Drive> {
+    this.drive ??= durableSessions(this.durable!.harness, this.context!, this.durable!.store)
       .open(`approvals:${this.where.runId}`)
       .then((writer) => openDrive({ writer, signal: this.stop.signal }))
       .catch((error: unknown) => {
         this.drive = undefined;
         throw error;
       });
+    return this.drive;
+  }
+
+  /** An approved call whose tool was set to deny before the gate acted on the answer. A call whose outcome is in the
+   *  journal RAN (a crash came between it and its resume): the model gets that outcome, as any allowed call's, and nothing
+   *  runs again; a later deny can't un-run it. One with an intent and no outcome may have been sent: denied, with no claim
+   *  either way. One the journal never saw is denied, not run and not charged. */
+  private async ranOrDenied(held: ApprovalRequest): Promise<ToolAnswer> {
+    const drive = await this.journal();
+    const key = `approval:${held.id}`;
+    if (drive.isMemoized(key)) return this.run(held);
+    const heldTo = settingsKeyOf(this.where.harness ?? DEFAULT_HARNESS, held.tool, this.where.mcpServers);
+    return { text: deniedText(held.tool, heldTo, this.denyFrom(held.tool), held.replayed || drive.state().effects.has(key) ? "unknown" : "no"), isError: true };
+  }
+
+  /** The approved call, run once by the kernel through the journal any host tool's call goes through, as an effect of
+   *  the run's own `approvals:` session, on the run's coding source: its intent is durable before it runs, its outcome
+   *  after; a replay-safe call a crash cut off runs again, any other is answered interrupted and never runs again. */
+  private async run(held: ApprovalRequest): Promise<ToolAnswer> {
+    const runner = await this.runnerOf(held);
+    if ("refused" in runner) return { text: runner.refused, isError: true };
+    const drive = this.journal();
     try {
       // Its own abort beside the drive's: a stop or a cancel of the run cuts this call, which runs outside any turn.
       const cut = new AbortController();
       this.inFlight = { id: held.id, cut };
       try {
-        return await (await this.drive).effect(`approval:${held.id}`, { name: held.tool, replay: runner.replay, input: held.args }, async ({ signal }) => {
+        return await (await drive).effect(`approval:${held.id}`, { name: held.tool, replay: runner.replay, input: held.args }, async ({ signal }) => {
           try {
             const answer = await runner.call(AbortSignal.any([signal, cut.signal]));
             // A host tool answers its own abort as an error result: still the stop's cut.

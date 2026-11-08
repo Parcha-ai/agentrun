@@ -16,6 +16,7 @@ import { stable } from "../dist/validate.js";
 import { ledgerOf, reflectRows } from "./learn-support.mjs";
 import { agent, client, FAUX, flowAgent, follow, runDir, runRecordOf, scratch, startRun, storeRun } from "./support.mjs";
 import { processTable } from "@parcha/pi-durable-disk/internals";
+import { fauxTable } from "./fixtures/faux-table.mjs";
 
 const CLI = new URL("../dist/cli.js", import.meta.url).pathname;
 // A hang guard far beyond a measured start (median 7.4 s locally; slowest CI test 17.4 s), not a start budget.
@@ -311,7 +312,7 @@ test("a run whose live process the next server adopts holds its harness's memory
   const was = process.constrainedMemory;
   process.constrainedMemory = () => 384 * 2 ** 20;
   t.after(() => void (process.constrainedMemory = was));
-  const api = await adopting(t, data, runId, { fauxHarness: new URL("./fixtures/faux-harness.mjs", import.meta.url).pathname, drainTimeout: "5s" });
+  const api = await adopting(t, data, runId, { harnessTable: fauxTable(new URL("./fixtures/faux-harness.mjs", import.meta.url).pathname), drainTimeout: "5s" });
   await untilState(api, runId, ["working", "working"]);
   assert.equal((await api("POST", "/agents", agent("mid", { harness: "codex" }))).status, 201);
   const refused = await api("POST", "/agents/mid/runs", { input: { content: "hi" } });
@@ -332,7 +333,12 @@ test("Idempotency-Key answers outlive a restart for the retention capabilities s
   t.after(() => two.close());
   const api = client(two.baseUrl, two.token);
   const replay = await api("POST", "/agents", agent("kept"), key);
-  assert.deepEqual([replay.status, replay.headers.get("idempotent-replayed"), replay.body], [201, "true", first.body]);
+  assert.deepEqual([replay.status, replay.headers.get("idempotent-replayed")], [201, "true"]);
+  // The kept answer, but for its console page, which is at the address this request reached (the new server's port).
+  const { console_url: _first, ...kept } = first.body;
+  const { console_url: page, ...replayed } = replay.body;
+  assert.deepEqual(replayed, kept);
+  assert.equal(page, `${new URL(two.baseUrl).origin}/#/agents/kept`);
   assert.equal((await api("POST", "/agents", agent("other"), key)).body.error.code, "idempotency_mismatch");
   assert.equal((await api("GET", "/capabilities")).body.limits.idempotency_ttl_s, 86_400);
 });

@@ -9,6 +9,7 @@ import { join } from "node:path";
 import { setTimeout as sleep } from "node:timers/promises";
 import { test } from "node:test";
 import { BACKGROUND_CONTEXT as ctx } from "@earendil-works/chord/context";
+import { createModels } from "@earendil-works/pi-ai/models";
 import { createRegistry, Harness, MemoryStorage, ROOT_CONVERSATION_ID } from "@earendil-works/pi-durable";
 import { HOST_RESULT_MAX_CHARS } from "@parcha/agentrun-kernel";
 import { boundResult } from "@parcha/agentrun-kernel/process";
@@ -21,7 +22,7 @@ const ARGS = { text: "hello", nested: { n: 1 } };
 /** A run's gate on `storage` (a fresh one: the run's first process; the same one: its next, after a crash), with the
  *  fake `executor` registered for mcp: when given, its resumes recorded. */
 async function runOn(t, { storage = new MemoryStorage(), where, executor } = {}) {
-  const harness = await Harness.open(storage, { registry: createRegistry(), models: {} }, ctx);
+  const harness = await Harness.open(storage, { registry: createRegistry(), models: createModels() }, ctx);
   await harness.root(ctx);
   const dirs = where ?? { root: await scratch(t), work: await scratch(t), data: await scratch(t) };
   const gate = new RunGate({ ...dirs, runId: "r1", harness: "claude-agent" });
@@ -138,7 +139,7 @@ test("a denied MCP call never reaches the executor, and the resume carries the r
 
 test("an approved MCP call whose answer a stop overrides after the live gate read it never reaches the executor: the gate reads the answer again before it writes the call's intent", async (t) => {
   const executor = fakeExecutor();
-  const harness = await Harness.open(new MemoryStorage(), { registry: createRegistry(), models: {} }, ctx);
+  const harness = await Harness.open(new MemoryStorage(), { registry: createRegistry(), models: createModels() }, ctx);
   await harness.root(ctx);
   const requested = (id, tool, call) => ({ kind: APPROVAL_ENTRY, data: { phase: "requested", id, tool, call_id: call, args: ARGS, args_preview: "{}", requested_at: new Date().toISOString() } });
   await harness.commit(async (tx) => {

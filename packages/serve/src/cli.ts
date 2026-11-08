@@ -7,9 +7,11 @@ import { secret } from "./secrets.js";
 import "./quiet-sqlite-warning.js";
 import { parseArgs } from "node:util";
 import { spawn } from "node:child_process";
-import { chmodSync, writeFileSync } from "node:fs";
+import { chmodSync } from "node:fs";
 import { join, resolve } from "node:path";
-import { defaultData, removeOwnRecord, SERVER_FILE } from "./files.js";
+import { defaultData, removeOwnRecord, SERVER_FILE, writeDurableSync } from "./files.js";
+import { startedWith } from "./adapters.js";
+import { stopOnSignals } from "./stop-signals.js";
 import { canOpen } from "./host.js";
 import { resetPassword } from "./owner.js";
 import type { ImageState } from "./box-image.js";
@@ -17,8 +19,9 @@ import { banner, boxImageLine } from "./print.js";
 import type { LearningMode } from "./learning.js";
 import { DEFAULT_PORT, type Serve, startServe } from "./server.js";
 
-const USAGE = `usage: agentrun-serve [--data DIR] [--listen ADDR] [--port N] [--open] [--faux MODULE] [--allow-host NAME ...] [--max-runs N] [--drain-timeout D] [--documents DIR] [--allow-code-nodes] [--learning on|off] [--learning-budget BYTES] [--grade-model MODEL]
+const USAGE = `usage: agentrun-serve [--data DIR] [--listen ADDR] [--port N] [--open] [--faux MODULE] [--faux-browser MODULE] [--allow-host NAME ...] [--max-runs N] [--drain-timeout D] [--documents DIR] [--allow-code-nodes] [--learning on|off] [--learning-budget BYTES] [--grade-model MODEL]
        agentrun-serve reset-password [--data DIR]
+       agentrun-serve validate-template DIR
        agentrun-serve import [--data DIR] [--from claude-code,codex,pi] [--dry-run] [--include-deleted] [--all] [--verbose] [--port N]
 
   --data DIR        the agent store and its runs (default ~/.local/share/agentrun/agents); the token is DIR/.token, mode 0600
@@ -28,6 +31,9 @@ const USAGE = `usage: agentrun-serve [--data DIR] [--listen ADDR] [--port N] [--
   --open            open the console in this machine's browser once the server listens (not in CI, nor on Linux with no
                     display)
   --faux MODULE     answer every model request from MODULE's default export: no key, no network
+  --faux-browser MODULE
+                    with --faux only: the browser tool's provider and driver from MODULE's default export (a fake
+                    browser, no vendor, no key), for the console's real-browser tests
   --allow-host NAME another Host name to accept (repeatable)
   --max-runs N      the most runs at once (default AGENTRUN_MAX_RUNS, else as many pi runs as this host's memory
                     holds); each run also reserves its harness's memory, and over either a new run is 429
@@ -48,7 +54,7 @@ const USAGE = `usage: agentrun-serve [--data DIR] [--listen ADDR] [--port N] [--
 Without --faux, a revision's model ("provider/model-id", or AGENT_MODEL when it names none; a workflow node's tier maps
 to AGENT_MODEL_FAST or AGENT_MODEL_STRONG, each falling back to AGENT_MODEL) is served by pi-ai's providers with their
 keys from the environment, or, with AGENT_MODEL_BASE_URL, by that one OpenAI Responses gateway (AGENT_MODEL_API_KEY when
-it needs a key). AGENTRUN_TOKEN, when set, is the token in place of DIR/.token's, and is never printed; DIR/.token's is
+it needs a key). AGENTRUN_TOKEN, when set, is the token in place of DIR/.token's (a DIR/.token from an earlier start is removed), and is never printed; DIR/.token's is
 printed only by the start that made it. AGENTRUN_PUBLIC_URL, when set, is the address people open (a container's
 published port, or a proxy's URL), and the link printed uses it; with none, Render's RENDER_EXTERNAL_URL is. stdout gets one line per request, per run start and
 end, and per refused credential; AGENTRUN_LOG=quiet leaves out the request lines.
@@ -82,6 +88,26 @@ if (process.argv[2] === "reset-password") {
   process.exit(0);
 }
 
+// A template package folder checked by the one validator the server runs on the packages it ships (templates.ts): what
+// it holds as one JSON line and 0, or each problem and 1. Nothing in the package runs.
+if (process.argv[2] === "validate-template") {
+  const { PackageError, readPackage } = await import("./templates.js");
+  const { positionals } = parseArgs({ args: process.argv.slice(3), options: { data: { type: "string" } }, allowPositionals: true });
+  if (positionals.length !== 1) {
+    console.error(`agentrun-serve validate-template takes one folder.\n\n${USAGE}`);
+    process.exit(2);
+  }
+  try {
+    const { name, version, skills, evals } = readPackage(resolve(positionals[0]!));
+    console.log(JSON.stringify({ valid: true, name, version, skills: Object.keys(skills).filter((path) => /^[^/]+\/SKILL\.md$/.test(path)).map((path) => path.split("/")[0]), evals }));
+    process.exit(0);
+  } catch (error) {
+    if (!(error instanceof PackageError)) throw error;
+    console.error(error.message);
+    process.exit(1);
+  }
+}
+
 if (process.argv[2] === "import") {
   const { importCommand } = await import("./import.js");
   process.exit(await importCommand(process.argv.slice(3), USAGE));
@@ -98,6 +124,7 @@ try {
       port: { type: "string" },
       open: { type: "boolean", default: false },
       faux: { type: "string" },
+      "faux-browser": { type: "string" },
       "allow-host": { type: "string", multiple: true, default: [] },
       "max-runs": { type: "string" },
       "drain-timeout": { type: "string" },
@@ -134,6 +161,10 @@ if (publicName) {
   }
   publicUrl = parsed.href.replace(/\/+$/, "");
 }
+if (values["faux-browser"] && !values.faux) {
+  console.error(`--faux-browser goes with --faux\n\n${USAGE}`);
+  process.exit(2);
+}
 const budget = values["learning-budget"];
 if (budget !== undefined && !/^\d+$/.test(budget)) {
   console.error(`--learning-budget takes a whole number of bytes\n\n${USAGE}`);
@@ -156,11 +187,13 @@ const onBoxImage = (state: ImageState) => {
   if (bannered) console.log(line);
   else early.push(line);
 };
+// How it was started, for the hints that start it again (adapters.ts npxLine): itself and its runs read it.
+Object.assign(process.env, startedWith({ ...(values.port !== undefined ? { port: values.port } : {}), open: values.open === true }));
 let serve: Serve;
 try {
   serve = await startServe({
     onBoxImage,
-    data, port, ...(values.port === undefined ? { nextFreePort: true } : {}), ...(values.listen ? { host: values.listen } : {}), ...(given ? { token: given } : {}), ...(values.faux ? { faux: values.faux } : {}), allowHosts: values["allow-host"],
+    data, port, ...(values.port === undefined ? { nextFreePort: true } : {}), ...(values.listen ? { host: values.listen } : {}), ...(given ? { token: given } : {}), ...(values.faux ? { faux: values.faux } : {}), ...(values["faux-browser"] ? { fauxBrowser: values["faux-browser"] } : {}), allowHosts: values["allow-host"],
     ...(values["max-runs"] !== undefined ? { maxRuns: Number(values["max-runs"]) } : {}),
     ...(values["drain-timeout"] ? { drainTimeout: values["drain-timeout"] } : {}), ...(values.documents ? { documents: values.documents } : {}), ...(values["allow-code-nodes"] ? { allowCodeNodes: true } : {}), ...(values.learning !== undefined ? { learning: values.learning as LearningMode } : {}), ...(values["grade-model"] ? { gradeModel: values["grade-model"] } : {}), ...(budget !== undefined ? { learningBudget: Number(budget) } : {}), log: (line) => void process.stdout.write(`${line}\n`),
     // The public address is the server's with accounts on or off: the Host names it serves, the webhook URLs it gives.
@@ -182,12 +215,19 @@ for (const line of early.splice(0)) console.log(line);
 // and the browser's history.
 if (values.open && canOpen(process.env)) spawn(process.platform === "darwin" ? "open" : "xdg-open", [`${publicUrl ?? serve.url}/`], { stdio: "ignore", detached: true }).on("error", () => {}).unref();
 const record = join(resolve(data), SERVER_FILE);
-// The record goes before close() releases the data directory's lock, and only while it is this server's: a server that
-// takes the lock next writes its own, which this stop must not remove.
-const stop = () => (removeOwnRecord(record), void serve.close().then(() => process.exit(0)));
-// The stop is in place before the record is written: a SIGTERM sent the moment the record appears is a clean stop that
-// removes it, never the default end by signal that leaves it behind. Its handler runs after this synchronous write.
-process.once("SIGINT", stop);
-process.once("SIGTERM", stop);
-writeFileSync(record, `${JSON.stringify({ base_url: serve.baseUrl, pid: process.pid, ...(serve.tokenFile ? { token_file: serve.tokenFile } : {}) })}\n`, { mode: 0o600 });
+// The record goes only while it is this server's: a server that takes the lock next writes its own, which this stop must
+// not remove. One stop per press or process-manager stop; a later signal, or a stop past its deadline, stops at once
+// (stop-signals.ts). The stop is in place before the record is written: a SIGTERM sent the moment the record appears is
+// a clean stop that removes it, never the default end by signal that leaves it behind.
+const stop = stopOnSignals({
+  close: () => (removeOwnRecord(record), serve.close()),
+  stopping: () => serve.stopping(),
+  done: (code) => (removeOwnRecord(record), process.exit(code)),
+  say: (line) => console.error(line),
+});
+process.on("SIGINT", stop);
+process.on("SIGTERM", stop);
+// Written whole under a name of its own, then renamed into place: a reader in another process (the npx command, a test
+// waiting for this server) that finds the record reads all of it, never a file made but not yet filled.
+writeDurableSync(record, `${JSON.stringify({ base_url: serve.baseUrl, pid: process.pid, ...(serve.tokenFile ? { token_file: serve.tokenFile } : {}) })}\n`);
 chmodSync(record, 0o600);

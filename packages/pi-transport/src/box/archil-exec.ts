@@ -543,8 +543,7 @@ class ArchilExecBox implements Box {
 /**
  * Boxes that are directories of an agent's Archil work disk, run by Archil's serverless `exec`: one request per
  * command, in a fresh container with the disk mounted, answering when the command ends. A box has no machine of its
- * own and keeps no program running between calls (`facts().liveProcesses` is false), so it fits tool calls and never a
- * home; the box place refuses it with `no_live_processes`.
+ * own and keeps no program running between calls (`facts().liveProcesses` is false), so it fits tool calls.
  *
  * The box is the directory `<root>/<id>/` of the disk. Its labels, facts and end time (no env: a box has none) are the file
  * `<root>.records/<id>.json`, outside every directory a command can hold, so `attach` and `list` find the box after a restart

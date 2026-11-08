@@ -17,7 +17,7 @@ test("capabilities answer without a credential and say what this server offers: 
   assert.equal(body.contract, "agentrun.v2/0");
   assert.equal(body.limits.max_upload_bytes, 50 * 2 ** 20);
   assert.equal(body.limits.max_files_per_run, 20);
-  assert.deepEqual(body.models, { source: "faux", route_prefix: null, fast: "faux/faux-1", default: "faux/faux-1", strong: "faux/faux-1", ready: true, needs: null });
+  assert.deepEqual(body.models, { source: "faux", route_prefix: null, fast: "faux/faux-1", default: "faux/faux-1", strong: "faux/faux-1", ready: true, needs: null, priced: true });
   assert.equal(body.features.quotes, false);
   assert.deepEqual(body.features.home, { export: false, import: false, check: false });
   assert.deepEqual(body.features.runs, { stop: true, cancel: true, kill: false, list: true, kinds: ["agentic", "workflow"], pause_workflow_runs: true, graph: true });
@@ -47,8 +47,8 @@ test("capabilities answer without a credential and say what this server offers: 
 test("without a default model a revision that names none is refused before it starts, and so is one whose model has no key here (409)", async (t) => {
   // No model key either: a provider's key gives the host a default (model.ts' MODEL_KEYS).
   withEnv(t, {}, ["AGENT_MODEL_BASE_URL", "AGENT_MODEL", "ANTHROPIC_API_KEY", "OPENAI_API_KEY", "OPENROUTER_API_KEY"]);
-  assert.deepEqual((await capabilities({})).models, { source: "providers", route_prefix: null, fast: null, default: null, strong: null, ready: false, needs: "key" });
-  assert.deepEqual((await capabilities({ AGENT_MODEL_BASE_URL: "http://127.0.0.1:9", AGENT_MODEL: "m-1", AGENT_MODEL_FAST: "m-fast" })).models, { source: "gateway", route_prefix: "agent-model", fast: "agent-model/m-fast", default: "agent-model/m-1", strong: "agent-model/m-1", ready: true, needs: null }, "a tier with no model of its own takes the default");
+  assert.deepEqual((await capabilities({})).models, { source: "providers", route_prefix: null, fast: null, default: null, strong: null, ready: false, needs: "key", priced: null });
+  assert.deepEqual((await capabilities({ AGENT_MODEL_BASE_URL: "http://127.0.0.1:9", AGENT_MODEL: "m-1", AGENT_MODEL_FAST: "m-fast" })).models, { source: "gateway", route_prefix: "agent-model", fast: "agent-model/m-fast", default: "agent-model/m-1", strong: "agent-model/m-1", ready: true, needs: null, priced: false }, "a tier with no model of its own takes the default; m-1 has no price here");
   const { api } = await serve(t, { faux: undefined });
   assert.equal((await api("POST", "/agents", agent("plain"))).status, 201);
   const refused = await api("POST", "/agents/plain/runs", { input: { content: "hi" } });
@@ -124,6 +124,21 @@ test("a token given in place of the data directory's is the one required, and no
   await assert.rejects(stat(join(data, ".token")), { code: "ENOENT" });
   await assert.rejects(startServe({ data: join(data, "other"), port: 0, token: "too short" }), /32 characters or more/);
   await assert.rejects(startServe({ data: join(data, "other"), port: 0, token: `${token} spaced` }), /no whitespace/);
+});
+
+test("a token given on a data directory that has a .token from an earlier start removes that file, so nothing reads a token this server refuses", async (t) => {
+  const data = join(await scratch(t), "agents");
+  const first = await serve(t, { data });
+  const old = first.token;
+  await first.close();
+  const token = `given_${createHash("sha256").update("another token").digest("hex")}`;
+  const given = await serve(t, { data, token });
+  assert.equal((await client(given.baseUrl, old)("GET", "/agents")).status, 401, "the earlier token is refused");
+  await assert.rejects(stat(join(data, ".token")), { code: "ENOENT" }, "and the file that held it is gone");
+  await given.close();
+  const again = await serve(t, { data });
+  assert.notEqual(again.token, old, "a start without one makes a new token and file");
+  assert.equal((await stat(join(data, ".token"))).mode & 0o777, 0o600);
 });
 
 test("an agent is created from a definition and skills, read back with its ETag, and listed newest first, page by page", async (t) => {
@@ -276,7 +291,6 @@ test("the tool table is closed: a name outside it is refused by name, and a tool
   assert.equal(toolsView({}, { web_search: { provider: "parallel" } }).find((t) => t.name === "web_search").reason, "parallel is picked, and it needs a Parallel key: save one in Settings → Tool keys (or set PARALLEL_API_KEY where the server starts)");
   assert.equal(toolsView({}).find((t) => t.name === "monid.discover").reason, "Needs a Monid key: save one in Settings → Tool keys (or set MONID_API_KEY where the server starts)");
   for (const t of toolsView({}, { web_search: { provider: "off" } })) assert.equal(typeof t.reason === "string" && t.reason.length > 0, !t.available, `${t.name}: a reason exactly when it is unavailable`);
-  assert.deepEqual(toolRefusal(["fetch_page", "read"], {}, "calls").unbound, ["read"], "a call node runs only a tool the table gives an effect, fetch_page as web_fetch's legacy name");
-  assert.equal(toolRefusal(["fetch_page"], {}), undefined, "fetch_page, no longer listed, is still a name a revision may grant");
+  assert.deepEqual(toolRefusal(["web_fetch", "read"], {}, "calls").unbound, ["read"], "a call node runs only a tool the table gives an effect");
   assert.equal(toolRefusal(["browser"], {}), undefined, "the browser needs either vendor's keys: whether it runs is its plane's (tool-plane.ts), as web_search's is");
 });

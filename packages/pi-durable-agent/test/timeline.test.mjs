@@ -21,7 +21,7 @@ const KINDS = new Set([
 const page = (url, title) => `url: ${url}\ntitle: ${title}\nevidence: evidence/x.json\n---\nbody`;
 /** Userinfo is built at run time, so no credential-shaped URL sits in the source. */
 const userinfo = (secret) => `${["us", "er"].join("")}:${secret}`;
-const SESSION = /Opened a live browser session/;
+const SESSION = /A live browser session started/;
 /** The rendered lines, without the cost row and the session-opened row, which most tests are not about. */
 const lines = (rows, options) =>
   renderText(groupTimeline(rows.filter((row) => row.kind !== "usage" && !SESSION.test(row.summary ?? ""))), options).split("\n").filter(Boolean);
@@ -189,8 +189,8 @@ test("a fetch whose page says it was refused, or failed, reads as that and as fa
   const rows = timelineOf([
     assistant([call("a", "web_fetch", { url: "http://x.example:8080/health" })], 0),
     result("a", "web_fetch", page({ url: "http://x.example:8080/health", refused: "refused: port 8080 is not 80 or 443", via: "direct" }), 0),
-    assistant([call("b", "fetch_page", { url: "https://down.example/x" })], 1),
-    result("b", "fetch_page", page({ url: "https://down.example/x", error: "timed out after 15000 ms" }), 1),
+    assistant([call("b", "web_fetch", { url: "https://down.example/x" })], 1),
+    result("b", "web_fetch", page({ url: "https://down.example/x", error: "timed out after 15000 ms" }), 1),
     assistant([call("c", "web_fetch", { url: "https://example.com" })], 2),
     result("c", "web_fetch", JSON.stringify({ ok: true, url: "https://example.com/", status: 200, title: "Example Domain", text: "x", links: [], via: "direct" }), 2),
   ]);
@@ -956,4 +956,23 @@ test("a message after an adapter turn's end is the person's next message, not a 
     user("Go on.", 3),
   ];
   assert.deepEqual([userMessages(timelineOf(entries)), userMessages(live(entries))], [["You: Write five files", "You: Go on."], ["You: Write five files", "You: Go on."]]);
+});
+
+test("a waiting row's words are the host's redact's: a browser hand-over's reason and request_sign_in's, settled and live, never a held value in the clear", () => {
+  // A value the host holds, made here (no real key).
+  const held = ["held", "value", "for", "this", "test"].join("-");
+  const redact = (text) => text.replaceAll(held, "[redacted]");
+  const entries = [
+    assistant([call("r", "request_sign_in", { reason: `Sign in with ${held}` })], 0),
+    result("r", "request_sign_in", "waiting", 1),
+    custom("agent.handover", { state: "waiting", reason: `Use ${held} to sign in`, session: "tag-1" }),
+  ];
+  const reducer = timelineReducer({ conversationId: 1, redact });
+  reducer.apply([{ type: "snapshot", entries: entries.slice(0, 1), agent: {} }]);
+  reducer.apply(entries.slice(1).map((entry) => ({ type: "message_end", entry })));
+  for (const rows of [timelineOf(entries, { redact }), reducer.rows()]) {
+    const waiting = rows.filter((row) => row.kind === "waiting");
+    assert.deepEqual(waiting.map((row) => row.summary), ["Waiting for you: Sign in with [redacted]", "Waiting for you: Use [redacted] to sign in"]);
+    assert.ok(!JSON.stringify(rows).includes(held), "no held value in any row");
+  }
 });

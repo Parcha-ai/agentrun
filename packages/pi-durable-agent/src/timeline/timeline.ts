@@ -1,6 +1,6 @@
 import { BROWSER_OPENERS, BROWSER_STEPS, callFailed, endsTurn, failedWith, inputPreview, labelOf, outcomeOf, savedPaths, type LabelFn, type ToolResultView } from "./labels.js";
 import { cut, firstLine, firstSentence, json, obj, scrubUrls, str, utf8Bytes, type Obj } from "./util.js";
-import { BESIDE_SUFFIX, originMatcher } from "./origin.js";
+import { BESIDE_SUFFIX, NOTE_SUFFIX, originMatcher, type TriggerSource } from "./origin.js";
 
 export type TimelineKind =
   | "thinking" | "text_block" | "tool_use" | "tool_result" | "phase"
@@ -39,11 +39,15 @@ export type TimelineEvent = {
   session?: string;
   /** The file a "Saved" phase row is about. */
   path?: string;
-  /** `server` on the row of a message the server wrote into the run (origin.ts): a `phase` row, which counts, as a
-   *  person's `user_message` does, as the message its turn took (`isMessageRow`). */
-  origin?: "server";
-  /** `true` on an `error` row that is a spend cap's refusal for room (serve): the request was not sent and the run paused
-   *  for a raise; a pause, never a failure, whether the run waits on its cap now or was raised since. */
+  /** `server` on the row of a message the server wrote into the run, `trigger` on a trigger's (origin.ts): a `phase` row,
+   *  which counts, as a person's `user_message` does, as the message its turn took (`isMessageRow`). */
+  origin?: "server" | "trigger";
+  /** On a trigger's row (`origin: "trigger"`) alone: its trigger, from the message's origin, so a client labels the row
+   *  by its source without reading its summary. */
+  trigger?: { id: string; source: TriggerSource; owner: boolean };
+  /** `true` on the server's `phase` row of a spend cap's refusal for room (serve), "Paused at the run's cap", origin
+   *  server and its id ending NOTE_SUFFIX: the request was not sent and the run paused for a raise; a pause, never a
+   *  failure, whether the run waits on its cap now or was raised since. */
   paused?: true;
   /** On the usage row, the run's cost. On a paid tool's charge row (a `phase` naming the tool), that charge alone. On a
    *  browser call's `tool_use` row, every browser charge booked under that call (BROWSER_CHARGE): its session's time
@@ -101,6 +105,9 @@ export const BROWSER_CHARGE = "browser";
  *  undefined for any other row: another tool's call row, whatever it carries, and the usage row. */
 export const chargedTool = (row: TimelineEvent): string | undefined =>
   !row.usage ? undefined : row.kind === "phase" ? (row.tool_name ?? undefined) : row.kind === "tool_use" && row.tool_name !== null && BROWSER_STEPS.has(row.tool_name) ? BROWSER_CHARGE : undefined;
+/** The spend cap's wrap-up (serve's cap.ts): the run's model was told once, near its cap, to finish (`words`, what it was
+ *  told). A row of its own, the server's ("AgentRun: …"); no request, no cost. */
+export const CAP_WRAPUP = "agentrun.cap_wrapup";
 /** A tool call with no price, run outside the run's cost and its cap (an MCP tool its owner set no price for): `tool`,
  *  `charged_by` and `call` name it. It shows as a row of its own, "not metered", and the usage row counts it
  *  (`not_metered`); it is no charge and never makes the cost unknown. */
@@ -115,7 +122,8 @@ export const TOOL_STARTED = "agentrun.tool_started";
  *  first call's end). It shows as that answer's, and is no request: no count, no cost, no tokens. */
 export const REQUEST_CONTINUED = "agentrun.request_continued";
 /** A host's own step, in its words (`summary`), such as a box waiting for its image: one `phase` row with that summary,
- *  cut at CAPS.summary. No request, no cost; one without a summary shows nothing. */
+ *  cut at CAPS.summary, at `at` (ms) when the host gave the time it happened, else at the time of the log before it. No
+ *  request, no cost; one without a summary shows nothing. */
 export const HOST_PHASE = "agentrun.phase";
 const COMPACTION = "compaction";
 const isCompaction = (entry: EntryLike) => obj(entry.data)?.request === COMPACTION;
@@ -147,6 +155,9 @@ export type TimelineOptions = {
   caps?: Partial<typeof CAPS>;
   /** Nothing is running: a call with no result is interrupted. */
   settled?: boolean;
+  /** The run has ended (completed, failed, cancelled): its usage row says its cost ("Cost: …"), never what it has cost
+   *  "so far". A run settled and not ended (paused, its process let go) keeps "Cost so far". */
+  ended?: boolean;
   /** The clock for retry and poll waits; live only. */
   now?: () => number;
   /** How a row names a file path a call gave (`path`, `file_path`) or saved: a host's name for it, such as one relative
@@ -458,6 +469,19 @@ function diagnosticOf(text: string): string | undefined {
   return first ? (first[2] ?? "") : (inner[0] ?? "");
 }
 
+/** A browser call that waited for the person to hand the browser back (pi-browser's `waited_for_person_ms` in its
+ *  result's details) says so first, and for how long: its row spans the person's take-over, and without it the call
+ *  reads as the agent acting while the person had the browser. "then <what it did>" only for a call that succeeded: one
+ *  that failed after its wait reads "Waited for you 11 s: <its label> failed: …", never as having acted. */
+const WAITED_FOR_PERSON = "waited_for_person_ms";
+const waitedFirst = (tool: string, result: ToolResultView | undefined, said: string): string => {
+  const ms = obj(result?.details)?.[WAITED_FOR_PERSON];
+  if (!BROWSER_STEPS.has(tool) || typeof ms !== "number" || !Number.isFinite(ms) || ms <= 0) return said;
+  const long = ms < 1000 ? `${Math.round(ms)} ms` : `${Math.round(ms / 1000)} s`;
+  if (callFailed(tool, result!)) return `Waited for you ${long}: ${said}`;
+  return `Waited for you ${long}, then ${said.charAt(0).toLowerCase()}${said.slice(1)}`;
+};
+
 /** One place turns entries into rows, whether they come from a released store or from live events. */
 function createProjector(options: TimelineOptions) {
   const redactedWhy = redactOf(options);
@@ -468,7 +492,7 @@ function createProjector(options: TimelineOptions) {
     const named = (value: unknown) => (typeof value === "string" && value ? options.path!(value) : value);
     return "path" in args || "file_path" in args ? { ...args, ...("path" in args ? { path: named(args.path) } : {}), ...("file_path" in args ? { file_path: named(args.file_path) } : {}) } : args;
   };
-  const label = (tool: string, args: Obj, result?: ToolResultView) => labelOf(tool, shown(args), result, options.labels);
+  const label = (tool: string, args: Obj, result?: ToolResultView) => waitedFirst(tool, result, labelOf(tool, shown(args), result, options.labels));
   const seen = new Set<string>();
   const calls = new Map<string, OpenCall>();
   // Results stored before their call (a harness bridge once wrote a result before the answer holding its call), by
@@ -631,6 +655,13 @@ function createProjector(options: TimelineOptions) {
     const add = (row: TimelineEvent) => { rows.push(row); out.push(row); };
     const touch = (row: TimelineEvent) => { if (!out.includes(row)) out.push(row); };
 
+    if (entry.kind === CAP_WRAPUP) {
+      // What the run's model was told near its cap: the server's row (`origin: "server"`, in the words of its other rows),
+      // no request, no cost, and no message any turn took (its id ends in NOTE_SUFFIX, which isMessageRow passes over).
+      const words = str(obj(entry.data)?.words);
+      if (words) add(make("phase", conv, `${base}${NOTE_SUFFIX}`, { summary: `AgentRun: ${words}`, text: words, origin: "server" }));
+      return out;
+    }
     const metered = meter.push(entry);
     if (metered === "mark") {
       // A request's mark or cost, or pi's answer to a request that never left: counted, nothing to show.
@@ -698,7 +729,7 @@ function createProjector(options: TimelineOptions) {
           const args = argsOf(obj(block.arguments) ?? {});
           if (BROWSER_OPENERS.has(name) && !browsers.has(conv)) {
             browsers.add(conv);
-            add(make("phase", conv, `${base}:${index}:session`, { summary: "Opened a live browser session" }));
+            add(make("phase", conv, `${base}:${index}:session`, { summary: "A live browser session started" }));
           }
           const use = useRow(conv, `${base}:${index}`, id, name, args, { round });
           const before = early.get(`${conv}:${id}`);
@@ -767,6 +798,10 @@ function createProjector(options: TimelineOptions) {
     } else if (entry.kind === "pi.compaction") {
       add(make("phase", conv, base, { summary: "Summarized older context", text: textOf(message) || null }));
     } else if (entry.kind === HOST_PHASE) {
+      // A step the host stamped (`at`, ms) shows at that time: written as it happened, it can sit after a message whose time
+      // is earlier (a model request's start), and the time of the log before it would not be its own.
+      const at = obj(entry.data)?.at;
+      if (typeof at === "number" && Math.abs(at) <= 8.64e15) stamp = at;
       const summary = str(obj(entry.data)?.summary);
       if (summary) add(make("phase", conv, base, { summary: firstLine(summary) }));
     } else if (entry.kind === RUN_RESUMED) {
@@ -775,7 +810,10 @@ function createProjector(options: TimelineOptions) {
       add(make("phase", conv, base, { summary: data?.after === "crash" ? "Resumed after a crash" : "Resumed after the server stopped" }));
     } else if (entry.kind === "agent.handover") {
       const data = obj(entry.data);
-      const [state, reason, tag] = [str(data?.state), str(data?.reason), str(data?.session)];
+      const [state, tag] = [str(data?.state), str(data?.session)];
+      // The model's words (what it asks the person to do), so redacted as its call's arguments are: a held value it echoes
+      // never shows.
+      const reason = str(data?.reason) && redactText(str(data?.reason)!);
       const session = tag && TAG.test(tag) ? tag : undefined;
       if (state === "waiting") add(make("waiting", conv, base, { summary: `Waiting for you: ${reason ? firstLine(reason) : "sign in on the live browser"}`, session }));
       else if (state === "done") add(make("user_message", conv, base, { summary: "You signed in", session }));
@@ -789,8 +827,10 @@ function createProjector(options: TimelineOptions) {
       // A person's message that declined the call: their words are the message the turn took, a row of theirs under a
       // person's rules, with the entry's own id; the server's resume beside it is the server's (`origin: "server"`) but
       // not a message (an id of its own, BESIDE_SUFFIX, which isMessageRow passes over). Any other: the server's row is
-      // that message, with the entry's id and `origin: "server"`.
-      if (origin.reason === "approval_declined") {
+      // that message, with the entry's id and `origin: "server"`. A trigger's message: "Trigger <its id>: …", `origin:
+      // "trigger"`, never the person's.
+      if (origin.kind === "trigger") add(make("phase", conv, base, { summary: `Trigger ${origin.trigger_id}: ${firstLine(text)}`, text, origin: "trigger", trigger: { id: origin.trigger_id, source: origin.source, owner: origin.owner } }));
+      else if (origin.reason === "approval_declined") {
         const said = redactText(origin.said.trim());
         add(make("phase", conv, `${base}${BESIDE_SUFFIX}`, { summary: `AgentRun: ${firstLine(text)}`, text, origin: "server" }));
         add(make("user_message", conv, base, { summary: `You: ${firstLine(said)}`, text: said }));
@@ -868,7 +908,7 @@ function createProjector(options: TimelineOptions) {
     const spent = usd !== null ? dollars(usd) : so_far_usd !== undefined && unpriced !== undefined ? `${dollars(so_far_usd)} known, ${unpriced} not priced,` : "unknown";
     return make("usage", root, `${root}:usage`, {
       // A run whose only request its cap refused sent none, and says so; otherwise what is known so far (costsofar/1).
-      summary: requests === 0 && !charges ? "no model request sent" : `Cost so far: ${spent} over ${requests} model request${requests === 1 ? "" : "s"}${paid}`,
+      summary: requests === 0 && !charges ? "no model request sent" : `${costLabel(options.ended === true)}: ${spent} over ${requests} model request${requests === 1 ? "" : "s"}${paid}`,
       // The contract's TimelineUsage and its costsofar/1 fields, while the cost is unknown: no other of the meter's reaches it.
       usage: { usd, requests, ...(so_far_usd !== undefined && unpriced !== undefined ? { so_far_usd, unpriced } : {}), ...(not_metered ? { not_metered } : {}) },
     });
@@ -885,6 +925,17 @@ function createProjector(options: TimelineOptions) {
     rows: () => rows,
     conv: () => current,
   };
+}
+
+/** The usage row's label: a run that has ended says its cost, one still going (or paused) what it has cost so far. */
+export const COST_SO_FAR = "Cost so far";
+export const COST_ENDED = "Cost";
+export const costLabel = (ended: boolean): string => (ended ? COST_ENDED : COST_SO_FAR);
+/** `row` as an ended run's: a usage row made while it ran ("Cost so far: …") says its cost ("Cost: …"); any other row as
+ *  it is. For a host that keeps rows read before the run ended. */
+export function endedUsage<T extends { kind: string; summary?: string | null }>(row: T): T {
+  const head = `${COST_SO_FAR}: `;
+  return row.kind === "usage" && typeof row.summary === "string" && row.summary.startsWith(head) ? { ...row, summary: `${COST_ENDED}: ${row.summary.slice(head.length)}` } : row;
 }
 
 /** Rows of a stored conversation, in log order. Pure: the same entries give the same rows. */

@@ -1,10 +1,10 @@
 // Learning's grader for a claude-agent agent on OPENROUTER_API_KEY alone: the grade goes where the run's own requests go
-// (claudeProvider's answer: OpenRouter's Messages endpoint, the key as a bearer token) and names the model id the run
+// (providerFor's answer: OpenRouter's Messages endpoint, the key as a bearer token) and names the model id the run
 // sends (claude-sonnet-5-5), which pi-ai's anthropic catalog knows. Before, the grade looked up the name the cap keeps
 // (OpenRouter's dotted anthropic/claude-sonnet-5.5), found no model, and every learning run ended grade_failed before
 // any request went out.
 //
-// judgeProposal is called exactly as learning-run.ts calls it, with no provider handed in. claudeProvider points only at
+// judgeProposal is called exactly as learning-run.ts calls it, with no provider handed in. providerFor points only at
 // openrouter.ai on this route, by design (no setting sends the OpenRouter key anywhere else), so the test reaches the
 // faux gateway by redirecting fetch: a request to https://openrouter.ai/<path>?<query> is sent to the gateway at the
 // same path and query, with its method, headers and body unchanged. Any other request off loopback is refused and
@@ -86,7 +86,7 @@ for (const model of ["anthropic/claude-sonnet-5.5", "openrouter/anthropic/claude
 }
 
 // codex on OPENROUTER_API_KEY alone: the grade goes where the run's own requests go, OpenRouter with the same key, on the
-// model the run runs (codexModel, then codexProvider's id: openai/gpt-6-sol), through pi-ai's openrouter provider (Chat
+// model the run runs (modelOn, then providerFor's id: openai/gpt-6-sol), through pi-ai's openrouter provider (Chat
 // Completions). Before, the grade asked runModels for the revision's own name, and openai/<model> needs OPENAI_API_KEY
 // there, so every codex learning proposal ended grade_failed. The model faux switch stays off here (it would grade on the
 // faux model), so the screen's Jev request, which goes to openrouter.ai too, is answered in the test, as quietly as the
@@ -135,7 +135,7 @@ for (const model of ["openai/gpt-6-sol", "openrouter/openai/gpt-6-sol", undefine
   });
 }
 
-// opencode takes codex's route (adapters.ts' codexModel and codexProvider), so its grade goes where codex's does: the
+// opencode takes codex's route (provider.ts' modelOn and providerFor), so its grade goes where codex's does: the
 // same names, the same model on the wire.
 for (const model of ["openai/gpt-6-sol", "openrouter/openai/gpt-6-sol", undefined]) {
   const named = model ?? "the host's default";

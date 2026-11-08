@@ -10,7 +10,8 @@ import { readFile, writeFile } from "node:fs/promises";
 import { join } from "node:path";
 import { DatabaseSync } from "node:sqlite";
 import { test } from "node:test";
-import { agent, follow, runDir, runRecordOf, scratch, serve, withEnv } from "./support.mjs";
+import { agent, follow, runDir, runRecordOf, scratch, serve, withEnv, jsonIn } from "./support.mjs";
+import { fauxTable } from "./fixtures/faux-table.mjs";
 
 const FAUX_HARNESS = new URL("./fixtures/faux-harness.mjs", import.meta.url).pathname;
 // The faux harness in a process a test can hold at the write of a turn's end (TURN_END_ARM, TURN_END_HELD).
@@ -41,7 +42,7 @@ async function until(what, check, ms = 60_000) {
 
 for (const harness of ["claude-agent", "codex", "opencode"]) {
   test(`${harness}: a turn stopped mid-request stays stopped when its process is replaced; the follow-up is answered by its own turn, and nothing of the stopped turn shows before it`, { timeout: 180_000 }, async (t) => {
-    const { api, data } = await serve(t, { fauxHarness: FAUX_HARNESS });
+    const { api, data } = await serve(t, { harnessTable: fauxTable(FAUX_HARNESS) });
     const go = join(await scratch(t), "go");
     assert.equal((await api("POST", "/agents", agent(`stopped-${harness}`, { harness, instructions: `Cut until ${go}.` }))).status, 201);
     const runId = (await api("POST", `/agents/stopped-${harness}/runs`, { input: { content: "hi" } })).body.run_id;
@@ -72,7 +73,7 @@ for (const harness of ["claude-agent", "codex", "opencode"]) {
     const dir = await scratch(t);
     const [arm, held, go] = [join(dir, "arm"), join(dir, "held"), join(dir, "go")];
     withEnv(t, { TURN_END_ARM: arm, TURN_END_HELD: held });
-    const { api, data } = await serve(t, { fauxHarness: CUT });
+    const { api, data } = await serve(t, { harnessTable: fauxTable(CUT) });
     assert.equal((await api("POST", "/agents", agent(`unended-${harness}`, { harness, instructions: `Cut until ${go}.` }))).status, 201);
     const runId = (await api("POST", `/agents/unended-${harness}/runs`, { input: { content: "hi" } })).body.run_id;
     await until("the second request is admitted", async () => (await usageRow(api, runId))?.requests === 2);
@@ -80,7 +81,7 @@ for (const harness of ["claude-agent", "codex", "opencode"]) {
     await writeFile(arm, "");
     assert.equal((await api("POST", `/runs/${runId}/stop`)).body.stopped, true);
     let hold = null;
-    await until("the stopped turn reaches the write of its end", async () => (hold = JSON.parse(await readFile(held, "utf8").catch(() => "null"))) !== null);
+    await until("the stopped turn reaches the write of its end", async () => (hold = await jsonIn(held)) !== null);
     assert.equal(holderOf(data, runId), hold.pid, "the held process is the run's");
     await writeFile(go, "");
     process.kill(hold.pid, "SIGKILL");
@@ -110,14 +111,14 @@ for (const harness of ["claude-agent", "codex", "opencode"]) {
     const dir = await scratch(t);
     const [arm, held, again, go] = [join(dir, "arm"), join(dir, "held"), join(dir, "again"), join(dir, "go")];
     withEnv(t, { TURN_END_ARM: arm, TURN_END_HELD: held, TURN_END_AGAIN: again });
-    const { api, data } = await serve(t, { fauxHarness: CUT });
+    const { api, data } = await serve(t, { harnessTable: fauxTable(CUT) });
     assert.equal((await api("POST", "/agents", agent(`resettled-${harness}`, { harness, instructions: `Cut until ${go}.` }))).status, 201);
     const runId = (await api("POST", `/agents/resettled-${harness}/runs`, { input: { content: "hi" } })).body.run_id;
     await until("the second request is admitted", async () => (await usageRow(api, runId))?.requests === 2);
     await writeFile(arm, "");
     assert.equal((await api("POST", `/runs/${runId}/stop`)).body.stopped, true);
     let hold = null;
-    await until("the stopped turn reaches the write of its end", async () => (hold = JSON.parse(await readFile(held, "utf8").catch(() => "null"))) !== null);
+    await until("the stopped turn reaches the write of its end", async () => (hold = await jsonIn(held)) !== null);
     assert.equal(holderOf(data, runId), hold.pid, "the held process is the run's");
     await writeFile(go, "");
     process.kill(hold.pid, "SIGKILL");
@@ -127,7 +128,7 @@ for (const harness of ["claude-agent", "codex", "opencode"]) {
     // again, on the process it opens next.
     const posted = api("POST", `/runs/${runId}/messages`, { content: "go on" });
     let second = null;
-    await until("the next process reaches the write of the stopped turn's end", async () => (second = JSON.parse(await readFile(again, "utf8").catch(() => "null"))) !== null);
+    await until("the next process reaches the write of the stopped turn's end", async () => (second = await jsonIn(again)) !== null);
     assert.notEqual(second.pid, hold.pid);
     assert.equal(holderOf(data, runId), second.pid, "the second held process is the run's");
     process.kill(second.pid, "SIGKILL");
@@ -149,7 +150,7 @@ for (const harness of ["claude-agent", "codex", "opencode"]) {
 
   test(`${harness}: a turn a drain cut (its process stopped, no stop by the person) still goes on in the next process and ends with its answer`, { timeout: 180_000 }, async (t) => {
     // The guard for what must not change: only a person's stop settles an open turn; a crash or a drain resumes it.
-    const { api, data } = await serve(t, { fauxHarness: FAUX_HARNESS, drainTimeout: "1s" });
+    const { api, data } = await serve(t, { harnessTable: fauxTable(FAUX_HARNESS), drainTimeout: "1s" });
     const go = join(await scratch(t), "go");
     assert.equal((await api("POST", "/agents", agent(`drained-${harness}`, { harness, instructions: `Cut until ${go}.` }))).status, 201);
     const runId = (await api("POST", `/agents/drained-${harness}/runs`, { input: { content: "hi" } })).body.run_id;

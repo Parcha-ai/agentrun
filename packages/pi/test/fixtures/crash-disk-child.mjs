@@ -4,7 +4,7 @@
 import { join } from 'node:path';
 import { openClaimDir, openDurableRun } from '@parcha/pi-durable-disk';
 import { BACKGROUND_CONTEXT as ctx } from '@earendil-works/chord/context';
-import { Type } from '@earendil-works/pi-ai';
+import { Type } from 'typebox';
 import { createModels } from '@earendil-works/pi-ai/models';
 import { fauxAssistantMessage, fauxProvider, fauxToolCall } from '@earendil-works/pi-ai/providers/faux';
 import { configure, createRegistry, defineDoc, defineDocFamily, defineExtension, defineTool } from '@earendil-works/pi-durable';
@@ -33,8 +33,8 @@ const workflow = {
 };
 
 // What the step keeps: the conversation it runs in, by the session the driver admitted; and the record its tool took.
-const Nodes = defineDocFamily({ kind: 'crash.nodes', version: 1, scope: 'session', family: true, initial: () => ({ conversation: null }) });
-const Record = defineDoc({ kind: 'crash.record', version: 1, scope: 'conversation', history: 'latest', fork: 'initial', initial: () => ({ record: null }) });
+const Nodes = defineDocFamily({ kind: 'crash.nodes', version: 1, scope: 'session', family: true, checkpointWhen: () => false, initial: () => ({ conversation: null }) });
+const Record = defineDoc({ kind: 'crash.record', version: 1, scope: 'conversation', history: 'latest', fork: 'initial', checkpointWhen: () => false, initial: () => ({ record: null }) });
 const submit = defineTool({
   name: 'submit', description: "Submit the step's record.", parameters: Type.Object({ verdict: Type.String() }), replay: 'safe',
   execute: async (args, api, context) => {
@@ -60,15 +60,15 @@ const claim = (ref) => {
   let fence;
   return {
     ref, disk: ref.disk, root: directory, work: join(directory, 'work'), store: join(directory, 'store'),
-    reused: false, forced: false, timings: { mountMs: 0, verifyMs: 0 },
+   
     get fenced() { return fence !== undefined; },
     markFenced(cause) { fence ??= { cause }; },
     async barrier() { if (fence) throw new Error('fenced', { cause: fence.cause }); return { ms: 0 }; },
-    async release() { return { via: 'archil' }; },
+    async release() { return { via: 'none' }; },
   };
 };
 const run = await openDurableRun({ disk: 'dsk-local', region: 'local', id: 'run-1' }, {
-  mountToken: 'unused', acquire: async ({ ref }) => claim(ref), claimDir: (root) => openClaimDir(root, { fstype: null }),
+  acquire: async ({ ref }) => claim(ref), claimDir: (root) => openClaimDir(root),
   harness: { registry, models },
 });
 const { harness } = run;

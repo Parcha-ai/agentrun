@@ -12,6 +12,7 @@ import { capBefore, capToolSpend, holdsInFlight, paidCall, spentIn, useSpend } f
 import { chargeOf, CLIP, monidClient, monidText } from "../dist/monid.js";
 import fakeMonid, { calls, KEY } from "./fixtures/faux-monid.mjs";
 import { agent, client, follow, runDir, scratch, serve, withEnv } from "./support.mjs";
+import { fauxTable } from "./fixtures/faux-table.mjs";
 
 const FAUX_MONID = new URL("./fixtures/faux-monid.mjs", import.meta.url).pathname;
 const FAUX_HARNESS = new URL("./fixtures/faux-harness.mjs", import.meta.url).pathname;
@@ -134,7 +135,7 @@ const entriesOf = (data, runId, kind) => {
 
 test("a run whose monid call times out (TIMED_OUT, no cost said) books its charge unknown, and the cap counts the call at its hold: its next model request goes while the cap allows, the run's cost reads unknown, and a restarted process reads the hold too", { timeout: 90_000 }, async (t) => {
   withEnv(t, { MONID_API_KEY: KEY });
-  const { api, data } = await serve(t, { fauxHarness: FAUX_HARNESS, fauxMonid: FAUX_MONID });
+  const { api, data } = await serve(t, { harnessTable: fauxTable(FAUX_HARNESS), fauxMonid: FAUX_MONID });
   assert.equal((await api("POST", "/agents", agent("late", { harness: "claude-agent", instructions: "Run monid's /late on Ada.", tools: ["monid.run"], tool_settings: ALLOWED }))).status, 201);
   // No inspect quoted the endpoint: the call is held at the $1 allowance, which a $5 cap holds beside the requests.
   const run = await api("POST", "/agents/late/runs", { input: { content: "hi" }, max_cost_usd: 5 });
@@ -156,7 +157,7 @@ test("a run whose monid call times out (TIMED_OUT, no cost said) books its charg
   useSpend({ cap: 1.002, spent: () => capToolSpend(root), add: () => {} });
   assert.match((await paidCall("monid_run", async () => ({}), chargeOf, { usd: 0.003, basis: "quoted" })).refused ?? "", /^spend_cap_reached: Not sent: this run has spent \$1 of its \$1\.002 cap, and the next step, monid_run, could cost up to \$0\.003 \(quoted\)\. Raise the cap to at least \$1\.01 to continue\.$/, "one that does not is refused for room");
   const guard = await capBefore(5, { id: "faux", api: "faux", provider: "faux", maxTokens: 10, contextWindow: 100, cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0 } });
-  assert.deepEqual(guard.beforeRequest({ spentUsd: capToolSpend(root), inFlight: [], inputTokensMax: 1 }), { outputTokensMax: 10 }, "and a model request that fits goes, at its whole output (#1539's clamp leaves it whole)");
+  assert.equal(guard.beforeRequest({ spentUsd: capToolSpend(root), inFlight: [], inputTokensMax: 1 }).outputTokensMax, 10, "and a model request that fits goes, at its whole output (#1539's clamp leaves it whole)");
 });
 
 test("a capped pi run stopped while its monid call is under way: monid is asked to stop it, the call counts at its hold, never unknown, and the next message's request goes while the cap allows; the run's cost reads unknown", { timeout: 90_000 }, async (t) => {
@@ -277,7 +278,7 @@ test("capabilities list the three, on every harness: missing MONID_API_KEY on a 
 
 test("a revision naming the three saves with a warning on a keyless server and its run is 409, on pi and claude-agent alike; with the key the claude-agent one runs", { timeout: 60_000 }, async (t) => {
   withEnv(t, {}, ["MONID_API_KEY"]);
-  const { api } = await serve(t, { fauxHarness: FAUX_HARNESS, fauxMonid: FAUX_MONID });
+  const { api } = await serve(t, { harnessTable: fauxTable(FAUX_HARNESS), fauxMonid: FAUX_MONID });
   const saved = await api("POST", "/agents", agent("finder", { tools: NAMES }));
   assert.equal(saved.status, 201, JSON.stringify(saved.body));
   assert.deepEqual(saved.body.warnings.map((w) => [w.field, w.reason]), NAMES.map((_, i) => [`definition.tools[${i}]`, "not_set_up_here"]));
@@ -291,7 +292,7 @@ test("a revision naming the three saves with a warning on a keyless server and i
   assert.deepEqual([refused.status, refused.body.error.details.unbound, refused.body.error.details.missing], [409, [], { "monid.run": ["MONID_API_KEY"] }]);
   // A server reads its environment as it starts: the next one has the key.
   process.env.MONID_API_KEY = KEY;
-  const keyed = (await serve(t, { fauxHarness: FAUX_HARNESS, fauxMonid: FAUX_MONID })).api;
+  const keyed = (await serve(t, { harnessTable: fauxTable(FAUX_HARNESS), fauxMonid: FAUX_MONID })).api;
   assert.deepEqual([(await keyed("POST", "/agents", claude)).body.warnings], [[]]);
   const ran = await keyed("POST", "/agents/finder-claude/runs", { input: { content: "hi" } });
   assert.equal(ran.status, 202, JSON.stringify(ran.body));

@@ -4,6 +4,7 @@ import { HARNESSES } from "./harness.js";
 import { THINKING_LEVELS } from "./model.js";
 import { placeIssues } from "./place.js";
 import { settingsIssues } from "./tool-plane.js";
+import { CAP_MODES } from "./cap.js";
 
 export const ID = /^[A-Za-z0-9][A-Za-z0-9._-]{0,127}$/;
 const SKILL_PATH = /^(?!.*(?:^|\/)\.{1,2}(?:\/|$))(?!.*\/\/)(?!.*\/$)[^/\\\u0000][^\\\u0000]*$/;
@@ -17,7 +18,7 @@ export const IDEMPOTENCY_TTL_S = 86_400;
 export const stable = (value: unknown): string =>
   Array.isArray(value) ? `[${value.map(stable).join(",")}]` : isObject(value) ? `{${Object.keys(value).sort().map((k) => `${JSON.stringify(k)}:${stable(value[k])}`).join(",")}}` : JSON.stringify(value);
 
-export const DEFINITION_FIELDS = ["id", "version", "name", "description", "instructions", "workflow", "model", "thinking", "harness", "place", "learning", "skills", "tools", "tool_settings", "max_cost_usd"];
+export const DEFINITION_FIELDS = ["id", "version", "name", "description", "instructions", "workflow", "model", "thinking", "harness", "place", "learning", "skills", "tools", "tool_settings", "max_cost_usd", "cap_mode"];
 /** Why a field a definition may have elsewhere has no place in an agent store's revision. */
 export const NOT_KEPT: Record<string, string> = {
   input_schema: "The agent store keeps no input_schema: an agentic run takes {content}, and a workflow checks its input against its own schema.",
@@ -84,7 +85,10 @@ export function definitionIssues(definition: unknown, { at = "definition", creat
   // an edit that leaves it out keeps the agent's (agents.ts), so leaving a field out never removes a spend limit.
   if (d.max_cost_usd !== undefined) {
     if (!(typeof d.max_cost_usd === "number" && Number.isFinite(d.max_cost_usd) && d.max_cost_usd >= 0)) out.push(issue(`${at}.max_cost_usd`, "wrong_type", `${at}.max_cost_usd is a number of at least 0, in US dollars: above 0 sets the agent's default cap, 0 clears it`));
-    else if (d.workflow !== undefined && d.max_cost_usd > 0) out.push(issue(`${at}.max_cost_usd`, "not_allowed", "A workflow run's spend is not capped here, so a workflow revision keeps no max_cost_usd.", `Remove ${at}.max_cost_usd.`));
+  }
+  // How a run's cap prices its requests (cap.ts CapMode): kept, as the default cap is, by an edit that leaves it out.
+  if (d.cap_mode !== undefined) {
+    if (!(CAP_MODES as readonly unknown[]).includes(d.cap_mode)) out.push(issue(`${at}.cap_mode`, "not_an_option", `${at}.cap_mode is one of ${CAP_MODES.join(", ")}: expected prices a request's input from the previous request's cache, strict prices all of it uncached`));
   }
   return out;
 }
@@ -111,17 +115,23 @@ export function skillIssues(named: unknown, files: Iterable<string>): InputIssue
 
 export type DefinitionBody = { definition: Json; skills?: Record<string, string>; note?: string };
 
+/** What is wrong with `{definition, skills?, note?}`, as checkDefinitionBody refuses it: every field issue. */
+export function definitionBodyIssues(body: Json, { creating = true } = {}): InputIssue[] {
+  const out: InputIssue[] = [];
+  for (const key of Object.keys(body)) if (!["definition", "skills", "note"].includes(key)) out.push(issue(key, "not_allowed", `The body keeps no field ${key}.`, `Remove ${key}.`));
+  out.push(...definitionIssues(body.definition, { creating }));
+  if (body.skills !== undefined || creating) skillFileIssues(body.skills ?? {}, out);
+  if (body.note !== undefined && !(typeof body.note === "string" && body.note.length <= 2_000)) out.push(issue("note", "wrong_type", "note is text of at most 2000 characters"));
+  return out;
+}
+
 /**
  * `{definition, skills?, note?}`, as `POST /agents` and `PUT .../definition` take it. `skills` are the revision's skill
  * files (absent on an edit: the current revision's); `note` says what the revision changes. Throws `422 input_invalid`
  * naming every field that is wrong.
  */
 export function checkDefinitionBody(body: Json, { creating = true } = {}): DefinitionBody {
-  const out: InputIssue[] = [];
-  for (const key of Object.keys(body)) if (!["definition", "skills", "note"].includes(key)) out.push(issue(key, "not_allowed", `The body keeps no field ${key}.`, `Remove ${key}.`));
-  out.push(...definitionIssues(body.definition, { creating }));
-  if (body.skills !== undefined || creating) skillFileIssues(body.skills ?? {}, out);
-  if (body.note !== undefined && !(typeof body.note === "string" && body.note.length <= 2_000)) out.push(issue("note", "wrong_type", "note is text of at most 2000 characters"));
+  const out = definitionBodyIssues(body, { creating });
   if (out.length) throw invalid(out);
   return { definition: body.definition as Json, ...(body.skills !== undefined || creating ? { skills: (body.skills ?? {}) as Record<string, string> } : {}), ...(typeof body.note === "string" ? { note: body.note } : {}) };
 }

@@ -24,12 +24,12 @@ async function onPi(t, settings, name, { overrides = {}, approvers = true } = {}
   if (settings) await writeFile(join(data, "tool-settings.json"), JSON.stringify(settings));
   const runGate = new RunGate({ root, work, data, runId: "r1", harness: "pi" }, overrides, true, approvers);
   let ran = 0;
-  const registration = { name, description: name, parameters: {}, execute: async () => (ran++, { content: [{ type: "text", text: "ran" }] }) };
+  const registration = { name, description: name, parameters: {}, execute: async () => (ran++, { output: [{ type: "text", text: "ran" }] }) };
   const wrapped = runGate.extension([registration]).wraps.find((wrap) => wrap.tool === name)?.wrap(registration) ?? registration;
   const kept = [];
   const api = { callId: `c-${name}`, commit: async (change) => change({ appendEntry: async (_conversation, entry) => void kept.push(entry) }) };
   const result = await wrapped.execute({ command: "sleep 1" }, api, {});
-  return { text: (result.content ?? result.output ?? []).map((block) => block.text ?? "").join(""), isError: result.isError === true, ran, kept };
+  return { text: (result.output ?? []).map((block) => block.text ?? "").join(""), isError: result.isError === true, ran, kept };
 }
 
 test("each background tool is held to bash's settings key, on every harness and as claude-agent's mcp__hands__ host tool, and is no settings key of its own", () => {
@@ -46,10 +46,10 @@ const WATCHERS = ["bash_output", "bash_list", "bash_signal"];
 
 test("bash: deny refuses bash and each background tool, saying they follow bash's setting; bash: allow runs each", async (t) => {
   const bash = await onPi(t, { bash: { permission: "deny" } }, "bash");
-  assert.deepEqual([bash.text, bash.isError, bash.ran], ["Permission denied: bash is set to deny on this server. Don't retry it.", true, 0]);
+  assert.deepEqual([bash.text, bash.isError, bash.ran], ["Permission denied: bash is set to deny on this server. It was not run: nothing was sent and nothing was charged. Don't retry it.", true, 0]);
   for (const name of BACKGROUND_TOOLS) {
     const denied = await onPi(t, { bash: { permission: "deny" } }, name);
-    assert.deepEqual([denied.text, denied.isError, denied.ran], [`Permission denied: ${name} follows bash's setting, which is deny on this server. Don't retry it.`, true, 0], name);
+    assert.deepEqual([denied.text, denied.isError, denied.ran], [`Permission denied: ${name} follows bash's setting, which is deny on this server. It was not run: nothing was sent and nothing was charged. Don't retry it.`, true, 0], name);
     const allowed = await onPi(t, { bash: { permission: "allow" } }, name);
     assert.deepEqual([allowed.text, allowed.ran, allowed.kept.length], ["ran", 1, 0], name);
   }
@@ -84,12 +84,12 @@ test("fail closed stays closed: with no settings ever read, the watchers ask as 
   for (const name of WATCHERS) {
     const runGate = new RunGate({ root, work, data, runId: "r1", harness: "pi" });
     let ran = 0;
-    const registration = { name, description: name, parameters: {}, execute: async () => (ran++, { content: [{ type: "text", text: "ran" }] }) };
+    const registration = { name, description: name, parameters: {}, execute: async () => (ran++, { output: [{ type: "text", text: "ran" }] }) };
     const wrapped = runGate.extension([registration]).wraps.find((wrap) => wrap.tool === name).wrap(registration);
     const kept = [];
     const api = { callId: `c-${name}`, commit: async (change) => change({ appendEntry: async (_conversation, entry) => void kept.push(entry) }) };
     const result = await wrapped.execute({ id: "1" }, api, {});
-    assert.deepEqual([(result.content ?? []).map((block) => block.text ?? "").join(""), ran, kept.map((entry) => entry.data?.tool)], [waitingText(name), 0, [name]], name);
+    assert.deepEqual([(result.output ?? []).map((block) => block.text ?? "").join(""), ran, kept.map((entry) => entry.data?.tool)], [waitingText(name), 0, [name]], name);
   }
 });
 
@@ -98,12 +98,12 @@ async function watcherAt(t, data, name, overrides = {}) {
   const [root, work] = [await scratch(t), await scratch(t)];
   const runGate = new RunGate({ root, work, data, runId: "r1", harness: "pi" }, overrides);
   let ran = 0;
-  const registration = { name, description: name, parameters: {}, execute: async () => (ran++, { content: [{ type: "text", text: "ran" }] }) };
+  const registration = { name, description: name, parameters: {}, execute: async () => (ran++, { output: [{ type: "text", text: "ran" }] }) };
   const wrapped = runGate.extension([registration]).wraps.find((wrap) => wrap.tool === name).wrap(registration);
   const kept = [];
   const api = { callId: `c-${name}`, commit: async (change) => change({ appendEntry: async (_conversation, entry) => void kept.push(entry) }) };
   const result = await wrapped.execute({ id: "1" }, api, {});
-  return { text: (result.content ?? []).map((block) => block.text ?? "").join(""), ran, tools: kept.map((entry) => entry.data?.tool), policy: runGate.policy(name) };
+  return { text: (result.output ?? []).map((block) => block.text ?? "").join(""), ran, tools: kept.map((entry) => entry.data?.tool), policy: runGate.policy(name) };
 }
 
 test("only a valid ask set in a settings layer lets the watchers run unasked: bash set to a value not offered reads ask for bash and the watchers alike, from the server's file or the agent's own", async (t) => {

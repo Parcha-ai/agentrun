@@ -12,7 +12,7 @@ import { wireName } from "../dist/catalog.js";
 import { BACKGROUND_TOOLS } from "../dist/background.js";
 import { REPLAY } from "../dist/host-tools.js";
 import * as gate from "../dist/tool-gate.js";
-import { LEGACY_NAMES, SERVE_OWN_TOOLS, TABLE_TOOLS } from "../dist/tool-plane.js";
+import { permissionsOf, SERVE_OWN_TOOLS, TABLE_TOOLS } from "../dist/tool-plane.js";
 import { scratch } from "./support.mjs";
 
 const { deniedText, noApproverText, RunGate, waitingText } = gate;
@@ -22,13 +22,12 @@ const isKey = (key) => typeof key === "string" && (TABLE_TOOLS.includes(key) || 
 const MONID = ["monid.discover", "monid.inspect", "monid.run"];
 /** A host tool's settings key: its own name, or for a legacy name the capability the tool plane folds it into; a
  *  background tool (background.ts) is held to bash's. */
-const folded = (name) => LEGACY_NAMES[name] ?? (BACKGROUND_TOOLS.includes(name) ? "bash" : name);
+const folded = (name) => (BACKGROUND_TOOLS.includes(name) ? "bash" : name);
 
 /** Every name a call reaches the gate by, on each harness, and the key it must map to. */
 const NAMES = {
   pi: [
     ...["read", "write", "edit", "bash", "ask_person", "web_fetch", "web_search"].map((name) => [name, name]),
-    ["fetch_page", "web_fetch"],
     ...BACKGROUND_TOOLS.map((name) => [name, "bash"]),
     ...MONID.map((name) => [wireName(name), name]),
     ...BROWSER_TOOL_NAMES.map((name) => [name, "browser"]),
@@ -101,6 +100,16 @@ test("on pi, browser set to deny refuses each of its registrations, run and snap
   }
 });
 
+test("on pi, the agent's ask for the person in its browser (browser_request_handoff) is held to the browser setting: deny refuses it, allow lets it run (the browser offers no ask)", async (t) => {
+  assert.ok(BROWSER_TOOL_NAMES.includes("browser_request_handoff"), "pi-browser lists it");
+  assert.equal(keyOf("pi", "browser_request_handoff"), "browser");
+  const denied = await onPi(t, { browser: { permission: "deny" } }, "browser_request_handoff");
+  assert.deepEqual([denied.text, denied.ran], [deniedText("browser"), 0], "deny: refused, never asked of the person");
+  const allowed = await onPi(t, { browser: { permission: "allow" } }, "browser_request_handoff");
+  assert.deepEqual([allowed.text, allowed.ran], ["ran", 1], "allow: it runs");
+  assert.deepEqual(permissionsOf("browser"), ["allow", "deny"], "the browser setting is allow or deny");
+});
+
 test("OpenCode's <server>_<tool> is an MCP tool only for a server the run has configured, never by its shape alone; a table tool's name stays the table tool's", () => {
   assert.equal(keyOf("opencode", "srv_echo", ["srv"]), "mcp:srv/echo");
   assert.equal(keyOf("opencode", "srv_echo"), undefined, "no server configured: unmapped, so it asks");
@@ -124,16 +133,4 @@ test("an MCP call enters this gate once on every harness: the host tools bind no
   assert.deepEqual(runGate.extension([{ ...registration, [gate.GATED_BY_GATEWAY]: true }]).wraps, [], "the gateway's own: gated there");
   assert.deepEqual(runGate.extension([registration]).wraps.map((wrap) => wrap.tool), ["mcp__srv__echo"], "unmarked: wrapped here");
   assert.equal(entered, 0);
-});
-
-test("a legacy name the tool plane folds into a capability (fetch_page, web_fetch's) is held to that capability's setting: asked where it asks, refused where it denies, and never a settings key of its own", async (t) => {
-  const { LEGACY_NAMES, settingsIssues } = await import("../dist/tool-plane.js");
-  for (const [legacy, target] of Object.entries(LEGACY_NAMES)) {
-    for (const harness of ["pi", "claude-agent", "codex"]) assert.equal(keyOf(harness, legacy), target, `${harness} ${legacy}`);
-    assert.deepEqual(settingsIssues({ [legacy]: { permission: "deny" } }).map((issue) => [issue.field, issue.reason]), [[legacy, "not_allowed"]], `${legacy} is set by ${target}`);
-  }
-  const asked = await onPi(t, { web_fetch: { permission: "ask" } }, "fetch_page");
-  assert.deepEqual([asked.text, asked.ran, asked.kept.map((entry) => entry.data?.tool)], [waitingText("web_fetch"), 0, ["web_fetch"]], "web_fetch: ask parks a fetch_page call");
-  const denied = await onPi(t, { web_fetch: { permission: "deny" } }, "fetch_page");
-  assert.deepEqual([denied.text, denied.ran], [deniedText("web_fetch"), 0], "web_fetch: deny refuses it");
 });

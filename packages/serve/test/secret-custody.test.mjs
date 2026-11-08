@@ -4,9 +4,8 @@
 import assert from "node:assert/strict";
 import { spawn } from "node:child_process";
 import { createHash, randomBytes } from "node:crypto";
-import { closeSync, constants, copyFileSync, existsSync, mkdirSync, mkdtempSync, openSync, readdirSync, readFileSync, readlinkSync, readSync, symlinkSync, writeFileSync } from "node:fs";
+import { closeSync, constants, existsSync, mkdirSync, mkdtempSync, openSync, readdirSync, readFileSync, readlinkSync, readSync, symlinkSync, writeFileSync } from "node:fs";
 import { createServer } from "node:http";
-import { fileURLToPath } from "node:url";
 import { rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
@@ -18,10 +17,12 @@ import { BOX_KEYS } from "../dist/boxes.js";
 import { ToolKeys } from "../dist/tool-keys.js";
 import { processAlive } from "@parcha/agentrun-kernel/host";
 import { fakeAnthropic } from "@parcha/agentrun-harness-claude/testing";
-import { agent, answerFlow, client, FAUX, flowAgent, follow, linkClaudeSdk, printed, responsesEndpoint, runDir, scratch } from "./support.mjs";
+import { agent, answerFlow, client, FAUX, flowAgent, follow, linkHarnesses, printed, responsesEndpoint, runDir, scratch } from "./support.mjs";
 import { CANARY as JEV_CANARY } from "./fixtures/faux-jev.mjs";
 import { CANARY as PARALLEL_CANARY } from "./fixtures/faux-parallel.mjs";
 import { reported } from "./fixtures/custody-report.mjs";
+import { copyStandInSync } from "../../run-adapters-codex/test/stand-in.mjs";
+import { fauxTable } from "./fixtures/faux-table.mjs";
 // A run's served answer has no held secret in it, so what a custody run's process reported is read as it wrote it
 // (fixtures/custody-report.mjs), never from the answer.
 process.env.CUSTODY_REPORT_DIR ??= mkdtempSync(join(tmpdir(), "custody-reports-"));
@@ -31,7 +32,6 @@ const CUSTODY = new URL("./fixtures/faux-custody.mjs", import.meta.url).pathname
 const FAUX_BROWSER = new URL("./fixtures/faux-browser.mjs", import.meta.url).pathname;
 const FAUX_JEV = new URL("./fixtures/faux-jev.mjs", import.meta.url).pathname;
 const FAUX_PARALLEL = new URL("./fixtures/faux-parallel.mjs", import.meta.url).pathname;
-const STAND_IN = fileURLToPath(new URL("../../run-adapters-codex/test/fake-app-server.mjs", import.meta.url));
 const CONFINED = existsSync("/usr/bin/setpriv");
 /** The server's own: its token, the seal key its tool keys are kept under, and the boxes' keys, which only its box
  *  providers read (boxes.ts). */
@@ -150,7 +150,7 @@ async function launched(t, env, args = ["--faux", CUSTODY]) {
   const dir = mkdtempSync(join(process.env.TMPDIR ?? tmpdir(), "agentrun-serve-"));
   const data = join(dir, "agents");
   // Its data holds Claude Code as a first use installs it: no test downloads it.
-  await linkClaudeSdk(data);
+  await linkHarnesses(data);
   // The launcher's own temporary directory, where its FIFO is made: the test's, so it can see that nothing is left.
   const tmp = join(dir, "tmp");
   mkdirSync(tmp);
@@ -345,7 +345,7 @@ process.stdout.write("AGENTRUN_BASE_URL=" + server.baseUrl + "\\n");`;
   assert.equal((await api("POST", "/agents", flowAgent("coi", coi))).status, 201);
   assert.equal(await parallel(), false);
   const refused = await start();
-  assert.deepEqual([refused.status, refused.body.error?.code, refused.body.error?.details?.decisions], [409, "agent_not_runnable", { parallel: { reason: "not_set_up_here", needs: ["PARALLEL_API_KEY"] } }]);
+  assert.deepEqual([refused.status, refused.body.error?.code, refused.body.error?.details?.decisions], [409, "agent_not_runnable", { parallel: { reason: "not_set_up_here", needs: ["PARALLEL_API_KEY", "OPENROUTER_API_KEY"] } }]);
 
   assert.equal((await api("PUT", "/settings/tool-keys/parallel", { values: { PARALLEL_API_KEY: PARALLEL_CANARY } })).status, 204);
   assert.equal(await parallel(), true, "no restart");
@@ -413,7 +413,7 @@ const CUSTODY_HARNESS = new URL("./fixtures/faux-custody-harness.mjs", import.me
 function launchedWith(t, env) {
   const script = `const { startServe } = await import(${JSON.stringify(new URL("../dist/index.js", import.meta.url).href)});
 const { secret } = await import(${JSON.stringify(new URL("../dist/secrets.js", import.meta.url).href)});
-const server = await startServe({ data: process.argv[1], port: 0, token: secret("AGENTRUN_TOKEN"), faux: ${JSON.stringify(CUSTODY)}, fauxHarness: ${JSON.stringify(CUSTODY_HARNESS)} });
+const server = await startServe({ data: process.argv[1], port: 0, token: secret("AGENTRUN_TOKEN"), faux: ${JSON.stringify(CUSTODY)}, harnessTable: ${JSON.stringify(fauxTable(CUSTODY_HARNESS))} });
 process.stdout.write("AGENTRUN_BASE_URL=" + server.baseUrl + "\\n");`;
   const only = { ...Object.fromEntries([...SECRET_NAMES, ...MODEL_SETTINGS].map((name) => [name, undefined])), AGENTRUN_SEAL_KEY: randomBytes(32).toString("base64"), ...env };
   return launched(t, only, (data) => ["--", process.execPath, "--input-type=module", "-e", script, data]);
@@ -495,7 +495,7 @@ test("secretsFor: a tool key's fields only for a revision naming a tool its row 
   assert.deepEqual(await secretsOf(agentic(["monid.run"])), without(...BROWSER));
   assert.deepEqual(await secretsOf(agentic(["read", "browser"])), without("MONID_API_KEY"));
   assert.deepEqual(await secretsOf(agentic(["monid.discover", "browser"])), without());
-  assert.deepEqual(await secretsOf(agentic(["read", "fetch_page", "ask_person"])), without(...TOOL_KEYS));
+  assert.deepEqual(await secretsOf(agentic(["read", "web_fetch", "ask_person"])), without(...TOOL_KEYS));
   assert.deepEqual(await secretsOf(agentic([])), without(...TOOL_KEYS));
   // Only a `tool` row's fields are scoped by the tools: a row of another kind (a model's) leaves its field to the model,
   // so a run on OpenAI's model gets OpenAI's key, unless the same row is a tool key's that unlocks none of its tools.
@@ -702,7 +702,7 @@ test("on codex, with every secret set and its turn held inside Codex's own proce
   const password = `${unlisted}-FOO_PASSWORD`;
   const gw = await heldGateway(t);
   const standIn = join(await scratch(t), "codex-stand-in.mjs");
-  copyFileSync(STAND_IN, standIn);
+  copyStandInSync(standIn);
   const { root, api, data } = await launched(t, {
     ...secrets,
     FOO_API_KEY: foo,
@@ -875,7 +875,7 @@ test("on codex, with its turn held inside Codex's own process, no process of the
   const { canary, secrets } = canaries();
   const gw = await heldGateway(t);
   const standIn = join(await scratch(t), "codex-stand-in.mjs");
-  copyFileSync(STAND_IN, standIn);
+  copyStandInSync(standIn);
   const { root, api } = await launched(t, {
     ...secrets,
     AGENTRUN_CODEX_STANDIN: "1",

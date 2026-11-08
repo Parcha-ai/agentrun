@@ -3,12 +3,14 @@
 // `perplexity/pplx-decider-v1.2`, `liquid/d1` or `cloudflare/clef`. A request is paid once sent, so it is sent again only
 // when it provably never reached OpenRouter (a connect error before sending) or was refused with a time to retry (a 429
 // with Retry-After); a 408, a 5xx, a connection lost after sending or a deadline in flight is outcome_unknown at an unknown
-// cost. The cost is the response's `usage.cost`, else unknown (null, never 0). Images go in the JSON body as base64
+// cost. The cost is the response's `usage.cost` when above 0, else unknown (null, never 0): a model the catalog prices at 0
+// reports 0, which is no price. A Decisions model that cites the web (Parallel's) returns url_citation annotations, the evidence. Images go in the JSON body as base64
 // `assets` (OpenRouter refuses TypeSafe's multipart form), only to a model whose catalog entry lists image input; OpenRouter
 // documents them as alpha, so the provider marks them experimental.
 import { setTimeout as sleep } from "node:timers/promises";
 import { checkCapabilities, DecisionProviderError, imageDimensions } from "@parcha/agentrun-dsl";
 import type { DecisionCapabilities, DecisionContext, DecisionImage, DecisionOutcome, DecisionProvider, DecisionRequest, ProviderAnswer } from "@parcha/agentrun-dsl";
+import { urlCitations } from "./evidence.js";
 
 const KEY_VARIABLE = "OPENROUTER_API_KEY";
 const BASE_URL = "https://openrouter.ai/api";
@@ -38,10 +40,25 @@ export interface OpenRouterOptions {
   takesImages?: (model: string) => boolean | Promise<boolean>;
   /** Sent as OpenRouter's app attribution headers (HTTP-Referer, X-Title) when set. */
   app?: { url?: string; title?: string };
+  /** Whether a citation keeps its passage (default true); false keeps none, whatever the model sent. */
+  includeExcerpts?: boolean;
 }
 
 /** What a provider adds beside the seam's capabilities: the inputs not verified against the live API. */
 export interface ExperimentalInputs { experimental: { inputs: readonly DecisionCapabilities["inputs"][number][]; note: string } }
+
+/** A Decisions model's price as OpenRouter's public catalog lists it (`pricing`, USD): per input token, per output token,
+ *  per request and per image, and the most output its top provider gives one request (null when it names none). */
+export type DecisionModelPrice = { promptUsd: number; completionUsd: number; requestUsd: number; imageUsd: number; maxCompletionTokens: number | null };
+/** What the provider adds for a host that keeps a spend cap: `priceOf(model)`, the model's catalog price, read once
+ *  with the catalog; null when the catalog lists no price for it. A catalog that cannot be read (no answer in 10 s, an
+ *  answer not 2xx, one that does not parse or lists no models) throws CatalogUnreadable, never a price or null, and is read again next time. */
+export interface PricedModels { priceOf(model: string): Promise<DecisionModelPrice | null> }
+/** OpenRouter's catalog could not be read, so no model's price is known from it now. */
+export class CatalogUnreadable extends Error {
+  override readonly name = "CatalogUnreadable";
+  constructor() { super("OpenRouter's catalog could not be read"); }
+}
 
 const isRecord = (v: unknown): v is Record<string, unknown> => v !== null && typeof v === "object" && !Array.isArray(v);
 const isCount = (v: unknown): v is number => typeof v === "number" && Number.isSafeInteger(v) && v >= 0;
@@ -113,7 +130,7 @@ function* tokenPlaces(state: unknown, questions: DecisionRequest["questions"]): 
 
 /** The answers, metering and id of a 200 response, checked for shape and against the questions asked; the seam checks
  *  each answer against its question. */
-function readResponse(body: unknown, questions: DecisionRequest["questions"], attempts: number): DecisionOutcome {
+function readResponse(body: unknown, questions: DecisionRequest["questions"], attempts: number, includeExcerpts = true): DecisionOutcome {
   // OpenRouter answered, so the request was billed: a response this rejects is booked at an unknown cost.
   const invalid = (why: string) => new DecisionProviderError("invalid_response", `OpenRouter returned ${why}.`, { attempts, costUsd: null, costBasis: "unknown" });
   if (!isRecord(body) || !isRecord(body.answers)) throw invalid("no answers");
@@ -126,9 +143,10 @@ function readResponse(body: unknown, questions: DecisionRequest["questions"], at
   }
   const usage = isRecord(body.usage) ? body.usage : undefined;
   const counted = usage && isCount(usage.input_tokens) ? { input_tokens: usage.input_tokens as number, output_tokens: isCount(usage.output_tokens) ? usage.output_tokens as number : 0 } : null;
-  const cost = usage && typeof usage.cost === "number" && Number.isFinite(usage.cost) && usage.cost >= 0 ? usage.cost : null;
+  // A reported cost above 0 is the price. 0 (a model OpenRouter's catalog prices at 0) or none is unpriced: unknown, never $0.
+  const cost = usage && typeof usage.cost === "number" && Number.isFinite(usage.cost) && usage.cost > 0 ? usage.cost : null;
   return {
-    answers: { ...answers }, evidence: [], model: typeof body.model === "string" && body.model.trim() ? body.model : null, usage: counted,
+    answers: { ...answers }, evidence: urlCitations(body.annotations, { excerpts: includeExcerpts }), model: typeof body.model === "string" && body.model.trim() ? body.model : null, usage: counted,
     cost_usd: cost, cost_basis: cost === null ? "unknown" : "reported", provider_request_id: typeof body.id === "string" ? body.id : null,
   };
 }
@@ -144,23 +162,45 @@ function raced<T>(promise: Promise<T>, signal: AbortSignal): Promise<T> {
   });
 }
 
-/** The image-capable Decisions models the public catalog lists, read once; null when it cannot be read. */
-function catalogReader(fetcher: typeof fetch, root: string): () => Promise<Set<string> | null> {
-  let read: Promise<Set<string> | null> | undefined;
+/** A catalog price field (a decimal string, as OpenRouter lists it, or a number): a finite figure of at least 0, else
+ *  none. An absent field is 0, as the catalog leaves out what it does not charge. */
+const priceField = (value: unknown): number | undefined => {
+  if (value === undefined) return 0;
+  const n = typeof value === "number" ? value : typeof value === "string" && value.trim() !== "" ? Number(value) : NaN;
+  return Number.isFinite(n) && n >= 0 ? n : undefined;
+};
+/** A catalog entry's price, or null when it lists none or one that is not a figure. */
+function priceOfEntry(entry: Record<string, unknown>): DecisionModelPrice | null {
+  if (!isRecord(entry.pricing)) return null;
+  const [prompt, completion, request, image] = [entry.pricing.prompt, entry.pricing.completion, entry.pricing.request, entry.pricing.image].map(priceField);
+  if (prompt === undefined || completion === undefined || request === undefined || image === undefined || entry.pricing.prompt === undefined) return null;
+  const most = isRecord(entry.top_provider) ? entry.top_provider.max_completion_tokens : undefined;
+  return { promptUsd: prompt, completionUsd: completion, requestUsd: request, imageUsd: image, maxCompletionTokens: isCount(most) && most > 0 ? most : null };
+}
+type Catalog = { images: Set<string>; prices: Map<string, DecisionModelPrice> };
+/** The public catalog's Decisions models, read once: the image-capable ones and each one's price; null when it cannot
+ *  be read (and read again next time). */
+function catalogReader(fetcher: typeof fetch, root: string): () => Promise<Catalog | null> {
+  let read: Promise<Catalog | null> | undefined;
   return () => (read ??= (async () => {
     try {
       const response = await fetcher(`${root}/v1/models?output_modalities=decisions`, { signal: AbortSignal.timeout(10_000) });
       if (!response.ok) return null;
       const body: unknown = await response.json();
-      const models = isRecord(body) && Array.isArray(body.data) ? body.data : [];
-      return new Set(models.filter(isRecord).filter((m) => isRecord(m.architecture) && Array.isArray(m.architecture.input_modalities) && m.architecture.input_modalities.includes("image")).map((m) => String(m.id)));
+      // An answer with no list of models is no catalog: unreadable (not kept, read again next time), never an empty one
+      // that would leave every model unpriced.
+      if (!isRecord(body) || !Array.isArray(body.data)) return null;
+      const models = body.data.filter(isRecord);
+      const images = new Set(models.filter((m) => isRecord(m.architecture) && Array.isArray(m.architecture.input_modalities) && m.architecture.input_modalities.includes("image")).map((m) => String(m.id)));
+      const prices = new Map(models.flatMap((m) => { const price = priceOfEntry(m); return price ? [[String(m.id), price] as const] : []; }));
+      return { images, prices };
     } catch { return null; }
-  })().then((set) => { if (set === null) read = undefined; return set; }));
+  })().then((catalog) => { if (catalog === null) read = undefined; return catalog; }));
 }
 
-export function openrouterProvider(options: OpenRouterOptions = {}): DecisionProvider & ExperimentalInputs {
+export function openrouterProvider(options: OpenRouterOptions = {}): DecisionProvider & ExperimentalInputs & PricedModels {
   const capabilities: DecisionCapabilities = {
-    types: ["noul", "choice", "score"], inputs: ["text", "json", "image"], evidence: "none", probability: "model", grounding: false,
+    types: ["noul", "choice", "score"], inputs: ["text", "json", "image"], evidence: "citations", probability: "model", grounding: false,
     replay: "never", maxQuestions: null, maxStateBytes: null,
   };
   const timeoutMs = options.timeoutMs ?? 30_000;
@@ -171,9 +211,15 @@ export function openrouterProvider(options: OpenRouterOptions = {}): DecisionPro
   const url = `${root}/v1/systemone`;
   const fetcher = options.fetch ?? fetch;
   const catalog = catalogReader(fetcher, root);
-  const takesImages = options.takesImages ?? (async (model: string) => (await catalog())?.has(model) ?? true);
+  const takesImages = options.takesImages ?? (async (model: string) => (await catalog())?.images.has(model) ?? true);
   return {
     id: "openrouter", needs: [KEY_VARIABLE], capabilities,
+    // A host's spend cap prices a request before it is sent: the catalog's figures, the same read the image check makes.
+    priceOf: async (model: string) => {
+      const read = await catalog();
+      if (!read) throw new CatalogUnreadable();
+      return read.prices.get(model) ?? null;
+    },
     experimental: { inputs: ["image"], note: "Images to OpenRouter's Decisions models go as base64 JSON assets, an alpha OpenRouter feature; for other models each token is a whole top-level state value, sent as an item of an array state." },
     async decide(request: DecisionRequest, ctx: DecisionContext): Promise<DecisionOutcome> {
       checkCapabilities(capabilities, request);
@@ -240,7 +286,7 @@ export function openrouterProvider(options: OpenRouterOptions = {}): DecisionPro
           let parsed: unknown;
           try { parsed = JSON.parse(text); }
           catch { throw new DecisionProviderError("invalid_response", "OpenRouter returned a body that is not JSON.", { attempts: attempt, costUsd: null, costBasis: "unknown" }); }
-          return readResponse(parsed, request.questions, attempt);
+          return readResponse(parsed, request.questions, attempt, options.includeExcerpts ?? true);
         }
         const status = response.status;
         if (status === 408 || (status >= 500 && status <= 599)) { void response.body?.cancel().catch(() => {}); throw lost(attempt, `answered HTTP ${status}`, status); }

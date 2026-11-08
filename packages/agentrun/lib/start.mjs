@@ -117,8 +117,61 @@ export function installedServer(resolve = createRequire(import.meta.url).resolve
  *  --open, which itself skips a CI run and a machine with no display). */
 export const serverArgs = (argv) => (argv.includes("--no-open") ? argv.filter((arg) => arg !== "--no-open") : ["--open", ...argv]);
 
+/** The server's own commands (its CLI's first word), which this command runs on its store: every other first word is
+ *  the CLI's, which names a command it has or says it has none. */
+export const SERVER_COMMANDS = ["import", "reset-password", "validate-template"];
+
+/** How many of the server's refusals and ignored deliveries a start says, each route and reason once, before one line
+ *  that says the rest are not: under this command the server's log goes nowhere else (its stdout is read here and dropped). */
+export const TOLD_MAX = 20;
+
+/** Why a request was refused, in words, by the server's reason; any other reason is said as the server names it. */
+const REFUSED = new Map([
+  ["wrong_token", "the API token is not this server's"],
+  ["no_credential", "it carried no API token"],
+  ["wrong_password", "the password is wrong"],
+  ["sign_in_table_full", "too many sign-ins at once"],
+]);
+
+/** The fields of one of the server's log lines (print.ts: `key=value` or `key="value"`); a repeated key keeps its first
+ *  value, the line's own event. */
+function fieldsOf(line) {
+  const fields = {};
+  for (const [, key, quoted, plain] of line.matchAll(/(?:^| )([\w-]+)=(?:"([^"]*)"|(\S+))/g)) if (!(key in fields)) fields[key] = quoted ?? plain;
+  return fields;
+}
+
+/** A teller for one start: given a line of the server's output, what to say of it to the person, or undefined. A refused
+ *  request (auth_failed) and a verified webhook delivery its trigger does not take (hook_ignored) are said in words, with
+ *  their route and reason and never what was sent, each route and reason once, at most TOLD_MAX. With AGENTRUN_LOG=quiet,
+ *  as this command starts the server, those lines are all an operator would otherwise miss. */
+export function tellerOf() {
+  const said = new Set();
+  let full = false;
+  return (line) => {
+    const fields = fieldsOf(line);
+    let words;
+    let key;
+    if (fields.event === "auth_failed" && fields.route) {
+      key = `auth ${fields.route} ${fields.reason}`;
+      words = `AgentRun refused a request to ${fields.route}: ${REFUSED.get(fields.reason) ?? fields.reason}.`;
+    } else if (fields.event === "trigger" && fields.condition === "hook_ignored" && fields.route) {
+      const hookEvent = [...line.matchAll(/ event=(\S+)/g)][1]?.[1];
+      key = `hook ${fields.route} ${fields.reason}`;
+      words = `AgentRun ignored a webhook delivery to ${fields.route} (${fields.source}${hookEvent ? `, event ${hookEvent}` : ""}): ${fields.reason}.`;
+    } else return undefined;
+    if (said.has(key) || full) return undefined;
+    if (said.size >= TOLD_MAX) return (full = true), "AgentRun refuses more requests than this terminal shows; it says no more of them here.";
+    said.add(key);
+    return said.size === 1 ? `${words} (Each route and reason is said once.)` : words;
+  };
+}
+
 export async function main(argv, env = process.env) {
-  if (NOUNS.has(words(argv)[0])) return cli(argv, env);
+  // The first argument, past --data and its value: a word there names a command (the server's own, or else the CLI's),
+  // and a flag starts the server, whose flags with values (--listen ADDR) follow.
+  const first = argv.find((arg, i) => arg !== "--data" && !arg.startsWith("--data=") && argv[i - 1] !== "--data");
+  if (NOUNS.has(words(argv)[0]) || (first !== undefined && !first.startsWith("-") && !SERVER_COMMANDS.includes(first))) return cli(argv, env);
   if (argv.includes("--help") || argv.includes("-h")) return console.log(USAGE), 0;
   if (process.platform === "win32") return console.error("AgentRun's server runs on macOS and Linux; on Windows, use WSL or its container."), 1;
   const launcher = installedServer();
@@ -177,7 +230,11 @@ export async function main(argv, env = process.env) {
   let timer;
   let told = false;
   const held = [];
-  const tell = (line) => SAID.test(line) && (told ? console.error(line) : held.push(line));
+  const teller = tellerOf();
+  const tell = (line) => {
+    const said = SAID.test(line) ? line : teller(line);
+    if (said !== undefined) told ? console.error(said) : held.push(said);
+  };
   // A SAID line can come before the "Open " line too (the setup link is printed as the server attaches its owner, before
   // its banner): it is held and said first, in order.
   const seen = [];
@@ -186,7 +243,7 @@ export async function main(argv, env = process.env) {
   if (url === undefined) {
     child.kill("SIGTERM");
     // Its stdout is kept out of this terminal, so its last lines are shown here: with its stderr above, they say why.
-    console.error(seen.length > 0 ? `AgentRun did not start. The server's last lines:\n${seen.map((line) => `  ${line}`).join("\n")}` : "AgentRun did not start, and the server printed nothing.");
+    console.error(seen.length > 0 ? `AgentRun did not start. The server's last lines:\n${seen.map((line) => `  ${line}`).join("\n")}` : "AgentRun did not start; the server's own message, if it gave one, is above.");
     return (await exited) || 1;
   }
   console.log(`AgentRun is running at ${url}`);

@@ -11,7 +11,13 @@ export type ComputerErrorCode =
 	| "unsupported"
 	| "denied"
 	| "limit"
-	| "docker";
+	| "exists"
+	| "not_dir"
+	| "is_dir"
+	| "docker"
+	| "daytona"
+	| "modal"
+	| "e2b";
 
 export interface ComputerError {
 	code: ComputerErrorCode;

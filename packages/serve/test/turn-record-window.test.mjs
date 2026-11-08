@@ -7,7 +7,8 @@ import { readFile, writeFile } from "node:fs/promises";
 import { join } from "node:path";
 import { test } from "node:test";
 import { startServe } from "../dist/index.js";
-import { agent, client, FAUX, follow, runDir, runRecordOf, scratch, serve, withEnv } from "./support.mjs";
+import { agent, client, FAUX, follow, runDir, runRecordOf, scratch, serve, withEnv, writtenJson } from "./support.mjs";
+import { fauxTable } from "./fixtures/faux-table.mjs";
 
 const SEND_CUT = new URL("./fixtures/faux-harness-send-cut.mjs", import.meta.url).pathname;
 const WEB_HOLD = new URL("./fixtures/faux-web-hold.mjs", import.meta.url).pathname;
@@ -52,12 +53,12 @@ for (const harness of ["claude-agent", "codex"]) {
     const data = join(dir, "agents");
     const [arm, held, go] = [join(dir, "arm"), join(dir, "held"), join(dir, "go")];
     withEnv(t, { SEND_CUT_ARM: arm, SEND_CUT_HELD: held });
-    const options = { data, port: 0, faux: FAUX, fauxHarness: SEND_CUT, fauxWeb: WEB_HOLD, drainTimeout: "5s" };
+    const options = { data, port: 0, faux: FAUX, harnessTable: fauxTable(SEND_CUT), fauxWeb: WEB_HOLD, drainTimeout: "5s" };
     const one = await startServe(options);
     let closed = false;
     t.after(() => (closed ? undefined : one.close()));
     let api = client(one.baseUrl, one.token);
-    assert.equal((await api("POST", "/agents", agent(harness, { harness, instructions: `Queue a follow-up behind a turn held until ${go}.`, tools: ["fetch_page"] }))).status, 201);
+    assert.equal((await api("POST", "/agents", agent(harness, { harness, instructions: `Queue a follow-up behind a turn held until ${go}.`, tools: ["web_fetch"] }))).status, 201);
     const { body } = await api("POST", `/agents/${harness}/runs`, { input: { content: "hi" } });
     const runId = body.run_id;
     for (const end = Date.now() + 55_000; ; await sleep(50)) {
@@ -71,7 +72,7 @@ for (const harness of ["claude-agent", "codex"]) {
     await writeFile(arm, "");
     await writeFile(go, "");
     let hold = null;
-    for (const end = Date.now() + 55_000; !(hold = JSON.parse(await readFile(held, "utf8").catch(() => "null"))); await sleep(50)) assert.ok(Date.now() < end, "the follow-up's send reaches its record");
+    hold = await writtenJson(held, "the follow-up's send reaches its record");
     assert.equal(runRecordOf(data, runId).holder?.pid, hold.pid, "the held process is the run's");
     process.kill(hold.pid, "SIGKILL");
     closed = true;

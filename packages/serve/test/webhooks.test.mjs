@@ -14,6 +14,7 @@ import { processAlive } from "@parcha/agentrun-kernel/host";
 import { openStore } from "@parcha/pi-durable-agent";
 import { startServe } from "../dist/index.js";
 import { ATTEMPTS_KEPT, signatureOf, Webhooks } from "../dist/webhooks.js";
+import { verify } from "../dist/standard-webhooks.js";
 import { schemaProblems } from "./schema-support.mjs";
 import { client, FAUX, follow, printed, runDir, runRecordOf, scratch, serve, startRun, withEnv } from "./support.mjs";
 
@@ -83,6 +84,15 @@ test("the signature is the Standard Webhooks spec's, byte for byte: its publishe
   const [id, timestamp, body] = ["msg_p5jXN8AQM9LWM0D4loKWxJek", "1614265330", '{"test": 2432232314}'];
   assert.equal(signatureOf(secret, id, timestamp, body), "v1,g0hM9SsE+OTPJTGt/tmIKtSyZlE3uFJELVlNIOLJ1OE=");
   assert.equal(new Webhook(secret).sign(id, new Date(Number(timestamp) * 1000), body), signatureOf(secret, id, timestamp, body), "as the spec's library signs it");
+});
+
+test("one Standard Webhooks module signs and verifies: what the outbound webhook signs, the inbound check takes, byte for byte, and a changed byte it refuses", () => {
+  const secret = `whsec_${randomBytes(32).toString("base64")}`;
+  const [id, timestamp, body] = ["msg_cross", String(Math.floor(Date.now() / 1000)), '{"type":"run.ended","data":{"run_id":"r1","title":"é"}}'];
+  const headers = { "webhook-id": id, "webhook-timestamp": timestamp, "webhook-signature": signatureOf(secret, id, timestamp, body) };
+  assert.equal(verify(secret, headers, Buffer.from(body, "utf8"), Date.now()), undefined, "the outbound signature verifies inbound");
+  assert.equal(new Webhook(secret).verify(body, headers) !== undefined, true, "and the spec's own library takes it");
+  assert.equal(verify(secret, headers, Buffer.from(body.replace("r1", "r2"), "utf8"), Date.now()), "bad_signature", "a changed byte is refused");
 });
 
 test("demo: a run that ends and a run that asks its person each POST a Standard Webhooks message the spec's library verifies; a wrong secret does not; the secret is in no GET and on disk only sealed", async (t) => {

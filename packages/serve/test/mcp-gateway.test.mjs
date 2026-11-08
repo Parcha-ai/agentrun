@@ -4,10 +4,11 @@
 import assert from "node:assert/strict";
 import { mkdtemp, readFile, rm } from "node:fs/promises";
 import { createServer, request } from "node:http";
+import { createServer as createTcpServer } from "node:net";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { test } from "node:test";
-import { mcpRoute, startModelProxy } from "@parcha/agentrun-kernel/host";
+import { startModelProxy } from "@parcha/agentrun-kernel/host";
 import { useSpend } from "../dist/cap.js";
 import { HEADER_SCAN_DEPTH, isParked, MCP_CLIP, mcpCredentialsOf, mcpGateway, mcpHeaderProblem, mcpPinOf, mcpRegistrations } from "../dist/mcp-gateway.js";
 import { deniedText, GATED_BY_GATEWAY, gateOf, waitingText } from "../dist/tool-gate.js";
@@ -59,7 +60,7 @@ test("a refused credential says where to update it and never shows it; an answer
   const { gateway: refused } = await setup(t, { token: `not-a-secret-${"wrong-token-0123456"}` });
   const said = await refused.call("fake", "add", { a: 1, b: 1 }, { signal: signal() });
   assert.equal(said.isError, true);
-  assert.equal(textOf(said), "The MCP server fake refused its credential; update it in Settings → MCP servers.");
+  assert.equal(textOf(said), "The MCP server fake refused its credential (its sign-in expired or was revoked, or its key changed): sign in again in Settings → MCP servers, or update its credential there.");
   const { gateway, work } = await setup(t);
   const long = textOf(await gateway.call("fake", "long", {}, { signal: signal() }));
   const filed = /evidence\/mcp\/fake\/(\S+\.json)\]$/.exec(long)?.[1];
@@ -92,11 +93,12 @@ test("a redirect is never followed: the credential goes nowhere else", async (t)
 
 test("names that are an object's own properties are servers and tools like any other: the pin and the credentials hold them", async () => {
   const listed = [{ name: "toString", inputSchema: schema }];
-  const source = { server: (name) => (name === "constructor" ? { url: "http://127.0.0.1:9/mcp", tools: listed } : undefined), headers: () => ({ authorization: `Bearer ${TOKEN}` }) };
+  const source = { server: (name) => (name === "constructor" ? { url: "http://127.0.0.1:9/mcp", tools: listed } : undefined), headers: () => ({ headers: { authorization: `Bearer ${TOKEN}` } }) };
   const pin = mcpPinOf(["mcp:constructor/toString", "mcp:toString/add"], source);
   assert.deepEqual(Object.keys(pin), ["constructor"]);
   assert.deepEqual(pin.constructor.tools.map((tool) => tool.name), ["toString"]);
   assert.deepEqual(Object.keys(mcpCredentialsOf(pin, source)), ["constructor"]);
+  assert.deepEqual(mcpCredentialsOf(pin, source).constructor.headers, { authorization: `Bearer ${TOKEN}` });
   const none = mcpGateway({ pin: {}, credentials: {}, work: () => tmpdir() });
   assert.match(textOf(await none.call("constructor", "toString", {}, { signal: signal() })), /not a tool of the MCP server constructor/);
   assert.match(textOf(await none.call("__proto__", "toString", {}, { signal: signal() })), /not a tool/);
@@ -144,7 +146,9 @@ test("a call the gate parks answers its waiting text, marked parked, with the ha
   const parked = [];
   const park = { commit: async (change) => change({}), parked: (id) => parked.push(id) };
   const said = await gateway.call("fake", "add", { a: 1, b: 1 }, { signal: signal(), callId: "c1", park });
-  assert.deepEqual([textOf(said), said.isError, isParked(said), JSON.stringify(said).includes("parked")], [waitingText("mcp:fake/add"), undefined, true, false]);
+  // The gateway's answer carries `parked` for the harness's session; the door never sends it to a harness's own client
+  // (run-adapters mcp-route.test.mjs: "never the host's parked flag").
+  assert.deepEqual([textOf(said), said.isError, isParked(said), said.parked], [waitingText("mcp:fake/add"), undefined, true, true]);
   assert.deepEqual([parks[0] === park, parked], [true, ["c1"]], "the harness's park, told the call parked");
   assert.equal(isParked(await setup(t).then(({ gateway: plain }) => plain.call("fake", "add", { a: 1, b: 1 }, { signal: signal() }))), false);
   assert.equal(fake.log.filter((entry) => entry.method === "tools/call").length, 0);
@@ -210,7 +214,7 @@ test("at the session proxy's /mcp/<server>: a client that drops a held tools/cal
   const { fake, gateway, cancelled } = await setup(t);
   const key = "session-key-for-tests";
   const policy = { id: "test", routes: [], keyOf: (headers) => String(headers.authorization ?? "").replace(/^Bearer /, ""), authHeaders: () => ({}), apply: (body) => body, usageOf: () => undefined };
-  const proxy = await startModelProxy({ policy, model: "m", origin: "https://provider.invalid", credential: () => "c", hooks: { beforeRequest: async () => {}, afterRequest: async () => {} }, mcp: mcpRoute(gateway) }, key);
+  const proxy = await startModelProxy({ policy, model: "m", origin: "https://provider.invalid", credential: () => "c", hooks: { beforeRequest: async () => {}, afterRequest: async () => {} }, mcp: { session: gateway, client: { callIdMeta: "claudecode/toolUseId" } } }, key);
   t.after(() => proxy.close());
   const gone = new AbortController();
   const body = JSON.stringify({ jsonrpc: "2.0", id: 1, method: "tools/call", params: { name: "slow_write", arguments: { line: "x", seconds: 30 } } });
@@ -260,7 +264,7 @@ test("a priced call that never left (its server is down) books nothing: no mark,
   useSpend({ cap: 1, spent: () => spent, add: (usd) => void (spent += usd) });
   const said = await gateway.call("fake", "paid", { query: "ada" }, { signal: signal(), callId: "c1" });
   assert.equal(said.isError, true);
-  assert.match(textOf(said), /The MCP server fake failed/);
+  assert.match(textOf(said), /The MCP server fake could not be reached at http:\/\/127\.0\.0\.1:9 \(.+\); nothing was sent\./);
   assert.deepEqual([spent, entries], [0, []]);
   const unpriced = mcpGateway({ pin: { fake: { url: dead, tools } }, credentials: { fake: { url: dead } }, work: () => tmpdir(), commit });
   await unpriced.call("fake", "add", {}, { signal: signal(), callId: "c2" });
@@ -297,6 +301,25 @@ test("a declared header that cannot be sent is named, and a grant of its tool re
   assert.deepEqual(mcpPinOf(["mcp:fake/good"], source).fake.tools.map((tool) => tool.name), ["good"]);
   // A granted tool that cannot be pinned refuses the pin in words, never a pin without it.
   assert.throws(() => mcpPinOf(["mcp:fake/bad", "mcp:fake/good"], source), /^Error: The MCP tool mcp:fake\/bad declares a header it cannot send: a: x-mcp-header is only allowed on a string, integer or boolean\.$/);
+});
+
+test("the header check walks schema keywords only: an x-mcp-header inside default, examples, const or enum is data and never refused; the same under a real keyword still is", () => {
+  const stray = { "x-mcp-header": "Stray" };
+  const unsendable = { type: "object", "x-mcp-header": "Stray", properties: { inner: { type: "array", items: { type: "string", "x-mcp-header": "Item" } } } };
+  for (const [keyword, value] of [["default", stray], ["examples", [stray, unsendable]], ["const", unsendable], ["enum", [stray, { nested: [stray] }]]]) {
+    const onProperty = { type: "object", properties: { region: { type: "string", "x-mcp-header": "Region", [keyword]: value } } };
+    assert.equal(mcpHeaderProblem(onProperty), undefined, `${keyword} on a property holds data, not schema`);
+    assert.equal(mcpHeaderProblem({ type: "object", [keyword]: value, properties: { a: { type: "string" } } }), undefined, `${keyword} at the root holds data, not schema`);
+  }
+  // A vendor annotation holds no schema either, as the SDK client's own check reads it.
+  assert.equal(mcpHeaderProblem({ type: "object", "x-ui": { hint: stray }, properties: { a: { type: "string" } } }), undefined, "an annotation is no schema");
+  for (const [keyword, schema] of [
+    ["items", { type: "object", properties: { list: { type: "array", items: { type: "string", "x-mcp-header": "Item" } } } }],
+    ["anyOf", { type: "object", anyOf: [{ type: "string", "x-mcp-header": "Any" }] }],
+    ["additionalProperties", { type: "object", additionalProperties: { type: "string", "x-mcp-header": "Extra" } }],
+    ["$defs", { type: "object", $defs: { region: { type: "string", "x-mcp-header": "Region" } } }],
+    ["patternProperties", { type: "object", patternProperties: { "^r": { type: "string", "x-mcp-header": "Region" } } }],
+  ]) assert.match(mcpHeaderProblem(schema) ?? "", /reached through properties alone/, keyword);
 });
 
 /** A schema `levels` deep in additionalProperties, every level also holding a property. */
@@ -384,4 +407,19 @@ test("a grant whose server is no longer saved, or whose tool a refresh removed, 
   assert.throws(() => mcpPinOf(["mcp:gone/add"], saved), /^Error: The MCP tool mcp:gone\/add cannot be pinned: the MCP server gone is no longer saved\.$/);
   assert.throws(() => mcpPinOf(["mcp:fake/add", "mcp:fake/sub"], saved), /^Error: The MCP tool mcp:fake\/sub cannot be pinned: sub is no longer one of its tools since the last refresh\.$/);
   assert.deepEqual(Object.keys(mcpPinOf(["mcp:fake/add", "read"], saved)), ["fake"], "a name that is no MCP tool's is not the pin's");
+});
+
+test("a server that can't be reached reads so, at its address with a short reason and that nothing was sent, never the MCP SDK's own words", async (t) => {
+  // A server that cannot be reached: a port this test holds for its whole run, so no other test can take it, where each
+  // connection is reset at once (TCP RST) before any HTTP answer. A freed port is not used: another test may bind it
+  // between the close and the dial.
+  const dead = createTcpServer((socket) => socket.resetAndDestroy());
+  await new Promise((resolve) => dead.listen(0, "127.0.0.1", resolve));
+  t.after(() => new Promise((resolve) => dead.close(resolve)));
+  const url = `http://127.0.0.1:${dead.address().port}/mcp`;
+  const { gateway } = await setup(t, { url });
+  const said = await gateway.call("fake", "add", { a: 2, b: 3 }, { signal: signal() });
+  assert.equal(said.isError, true);
+  assert.equal(textOf(said), `The MCP server fake could not be reached at ${new URL(url).origin} (the connection was reset); nothing was sent.`);
+  assert.doesNotMatch(textOf(said), /Version negotiation|fetch failed/);
 });

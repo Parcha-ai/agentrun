@@ -85,7 +85,8 @@ export type SessionSettingsSupport = { proxies: boolean; verified: boolean; geol
 
 export type LiveView = { fullscreen: string | null; framed: string | null; pages: Array<{ id: string | null; url: string | null; title: string | null; fullscreen: string | null }> };
 export type Recording = { id: string; startedAt: string | null; durationS: number | null };
-export type RemoteFile = { name: string; sizeBytes: number; modifiedAt: string | null };
+/** `downloading`: the browser is still writing it; it is listed so the caller can say so, and is not read. */
+export type RemoteFile = { name: string; sizeBytes: number; modifiedAt: string | null; downloading?: true };
 
 export type FetchRequest = { url: string; format: "markdown" | "raw"; proxies: boolean };
 export type FetchResult = { finalUrl: string | null; statusCode: number | null; contentType: string | null; content: string; usage?: ToolUsage };
@@ -152,7 +153,8 @@ export interface HandoffPort {
   /** Idempotent by `requestId`. `sessionId` is the provider's id for the held session, by which a host finds the
    *  session's own grants. `liveView` reaches the host only, never the model. */
   request(ask: { requestId: string; sessionTag: string; sessionId: string; liveView: LiveView | null; instruction: string; completionCondition: string }, signal: AbortSignal): Promise<{ interactionId: string } | { refused: string }>;
-  outcome(interactionId: string, signal: AbortSignal): Promise<"pending" | HandoffOutcome>;
+  /** With `reason`: why, in the host's words, for the model (an ask the host ended at its spend cap). */
+  outcome(interactionId: string, signal: AbortSignal): Promise<"pending" | HandoffOutcome | { outcome: HandoffOutcome; reason: string }>;
 }
 
 export type ReleaseReason = "tool" | "idle" | "relaunch" | "close" | "ended" | "lost" | "create_failed";

@@ -36,7 +36,7 @@ import { SKILL_BYTES } from "@parcha/agentrun-kernel";
 import { INDEX_FILE, type LearnedNote, loadedIndex, NOTE_FILE, parseNoteFile, type Problem, redactSecrets, secretShapes, servedSkill, SKILLS_DIR, valueMatcher, type Verdict, WORKFLOW_NAME, WORKFLOWS_DIR } from "./learn/index.js";
 import { DISK_DIR } from "@parcha/pi-durable-agent";
 import { agentFolderOf, serialBy, writeDurable } from "./files.js";
-import { DETAIL_MAX, LIST_DETAIL, short, wordsOf } from "./learning-words.js";
+import { DETAIL_MAX, LIST_DETAIL, said, short, wordsOf } from "./learning-words.js";
 import { isObject } from "./validate.js";
 import { readWorkText } from "./workspace.js";
 
@@ -153,6 +153,33 @@ export function notesView({ state, given, read: opened, learned, pending, skills
   const [kept, drafts] = [files(skills), files(workflows)];
   return { ...(started.length ? { given: started } : {}), ...(read.length ? { read } : {}), ...(added.length ? { learned: added } : {}), ...(waiting.length ? { pending: waiting } : {}), ...(kept.length ? { skills: kept } : {}), ...(drafts.length ? { workflows: drafts } : {}) };
 }
+/** A learned item's status on main (a note's front matter, a skill's SKILL.md, a draft's README.md), with what a note
+ *  supersedes. */
+export type ItemStatus = { status: string; supersedes?: readonly string[] };
+/** Whether a run's learning held anything for its owner's OK: a merge with a held note, skill or draft. Only such a
+ *  run's reads check main (currentLearning). */
+export const holdsForOk = (learning: Learning | undefined): learning is Learning =>
+  learning?.state === "merged" && ((Array.isArray(learning.pending) && learning.pending.length > 0) || [...(Array.isArray(learning.skills) ? learning.skills : []), ...(Array.isArray(learning.workflows) ? learning.workflows : [])].some((item) => item?.pending));
+
+/** A merged run's learning as it reads now: what it held for the owner's OK checked against each item's status on
+ *  main now (`status`, by file: a note's, a skill's SKILL.md, a draft's workflow.json). Still pending, it waits; approved
+ *  (active), it is learned, as a merge that held nothing says it; retired or gone, it is no longer said. The record keeps
+ *  what the merge wrote; only its reads change. No status (the folder unread): as written. */
+export function currentLearning(learning: Learning, status: ReadonlyMap<string, ItemStatus> | undefined): Learning {
+  if (!status || learning.state !== "merged") return learning;
+  const of = (file: unknown) => (typeof file === "string" ? status.get(file)?.status : undefined);
+  const held = Array.isArray(learning.pending) ? learning.pending : [];
+  // An approved note replaces what its front matter on main says it supersedes, as a merge that held nothing says it.
+  const approved = held.filter((note) => of(note?.file) === "active").map(({ file, name }) => ({ file, name, supersedes: [...(status.get(file)?.supersedes ?? [])] }));
+  const files = (list: LearnedFile[] | undefined) => (Array.isArray(list) ? list.flatMap((item) => (!item?.pending || of(item.file) === "pending" ? [item] : of(item.file) === "active" ? [{ file: item.file, name: item.name }] : [])) : list);
+  const { pending: _pending, learned, skills, workflows, ...rest } = learning;
+  const waits = held.filter((note) => of(note?.file) === "pending");
+  const kept = [...(Array.isArray(learned) ? learned : []), ...approved];
+  const [madeSkills, madeDrafts] = [files(skills), files(workflows)];
+  const gone = !kept.length && !waits.length && !madeSkills?.length && !madeDrafts?.length;
+  return { ...rest, ...(gone ? { detail: said.retiredSince } : {}), ...(kept.length ? { learned: kept } : learned ? { learned } : {}), ...(waits.length ? { pending: waits } : {}), ...(madeSkills ? { skills: madeSkills } : {}), ...(madeDrafts ? { workflows: madeDrafts } : {}) };
+}
+
 /** A run's learning in a person's words as a read shows them (learning-words.ts wordsOf): each part cut of the host's
  *  secrets as they are now (`shown`) first, then the words cut short to `max`, so a secret is never shown in part. */
 export const detailShown = (learning: Learning, shown: Shown, max = DETAIL_MAX): string | null => {
@@ -179,9 +206,12 @@ export const LEARNING_LABEL = "learning";
 /** A run's proposal, in its directory (propose.ts): the seed it was checked against, each new note's file and text, its
  *  skill's and workflow draft's files by path and text (`files`: a SKILL.md, a workflow.json and its README.md; absent
  *  when it gives none), and what the user said in the run as the grader reads it (each message cut of the host's
- *  secrets, then shortened to GRADE_CAPS.askedMessage; absent in a proposal kept before the grader read them). */
+ *  secrets, then shortened to its head and tail, shortMessage; absent in a proposal kept before the grader read them). */
 export const PROPOSAL = "learning-proposal.json";
-export type Proposal = { seed: string; notes: { file: string; text: string }[]; files?: { file: string; text: string }[]; asked?: string[] };
+export type Proposal = { seed: string; notes: { file: string; text: string }[]; files?: { file: string; text: string }[]; asked?: string[]; triggered?: Triggered[] };
+/** A message a trigger sent the run that its owner did not write (a webhook body, a Slack or GitHub event), by its
+ *  source: never what the user said. */
+export type Triggered = { source: string; text: string };
 
 /** A run's pin, in its directory: written once, when the run is made, and never changed by a resume. */
 export const LEARNING_PIN = "learning.json";
@@ -190,7 +220,7 @@ export const LEARNED_DIR = ".learning";
 /** What the run's end-of-run turn answered, and what the user said in the run, kept in the run's directory as the run
  *  settles (learning-run.ts beforeSettle), where the host alone reads it: what propose.ts checks. */
 export const LEARNING_TURN = "learning-turn.json";
-export type Turn = { answer: string; asked: string[] };
+export type Turn = { answer: string; asked: string[]; triggered?: Triggered[] };
 /** What a run's pin holds: the commit of main it was seeded from, and what it reads under `# Learned` (learnedOf), when
  *  it learned anything.
  *  `skills`: the files of the learned skills laid in its work, by their paths under `.agents/skills/`, as a revision
@@ -198,9 +228,8 @@ export type Turn = { answer: string; asked: string[] };
  *  `workflows`: the names of the learned workflows the run may run (its `learned_workflow` tool), each written whole in
  *  LEARNED_WORKFLOWS_FILE in the run's directory, outside its work; `workflows_left_out`: the learned workflows it does
  *  not get, their lines over what is left of the tool's description budget (LEARNED_WORKFLOWS_BUDGET), or holding a
- *  secret, or every one when `workflows_off` says why the run is offered none (its harness's requests go where a learned
- *  workflow's could not follow: learnedWorkflowsOff). */
-export type Pin = { seed: string; section?: string; given?: NoteUsed[]; skills?: string[]; skills_left_out?: string[]; workflows?: string[]; workflows_left_out?: string[]; workflows_off?: string };
+ *  secret. Every harness runs them, on the run's one model route. */
+export type Pin = { seed: string; section?: string; given?: NoteUsed[]; skills?: string[]; skills_left_out?: string[]; workflows?: string[]; workflows_left_out?: string[] };
 /** What a run is seeded from: main's commit, its index and its active notes by file, and the name of every entry at its
  *  top. `skipped` names what was there and not read. `recent`, when seedOf read it: the active notes' files, the one
  *  changed last on main first. `skills`, when seedOf read them: the skills the agent wrote, the one changed last on main
@@ -297,9 +326,9 @@ const statusOf = (text: string | undefined): string | undefined => {
 /** A file main holds over this is not read: a note is short, and the index is read only so far (loadedIndex). */
 const FILE_CAP = 1 << 20;
 const IDENTITY = { name: "agentrun-serve", email: "serve@agentrun.invalid" };
-/** The floor of git this server's learning needs: the one the repository's other learning packages test on. Its own
- *  calls need 2.32 (GIT_CONFIG_GLOBAL). */
-const MIN_GIT = [2, 40] as const;
+/** The floor of git this server's learning needs: what its own calls need, 2.32 (GIT_CONFIG_GLOBAL, which every call
+ *  sets to keep a host's global config out). A stock serverless exec image has 2.34. */
+const MIN_GIT = [2, 32] as const;
 /** How long one git call may take before it is killed: a hung call would hold its agent's queue. */
 const GIT_TIMEOUT_MS = 60_000;
 
@@ -746,6 +775,8 @@ export const learningTestHooks: {
   afterMkdir?: (dir: string) => Promise<void> | void;
   beforePin?: (runDir: string) => Promise<void> | void;
   afterPin?: (runDir: string) => Promise<void> | void;
+  /** Once a start's seed is copied and pinned, before its learning is said: a throw here leaves the start's pin. */
+  afterSeed?: (runDir: string) => Promise<void> | void;
   beforePropose?: (runDir: string) => Promise<void> | void;
   beforeReopen?: (runDir: string) => Promise<void> | void;
 } = {};
@@ -763,7 +794,9 @@ export async function keepTurn(runDir: string, turn: Turn): Promise<void> {
 /** The turn a run's directory keeps (keepTurn). One that is not there, or out of shape, throws. */
 export async function readTurn(runDir: string): Promise<Turn> {
   const turn = JSON.parse(await readFile(join(runDir, LEARNING_TURN), "utf8")) as unknown;
-  if (!isObject(turn) || typeof turn.answer !== "string" || !Array.isArray(turn.asked) || !turn.asked.every((message) => typeof message === "string")) throw new Error(`the run's ${LEARNING_TURN} is not a turn`);
+  const triggered = isObject(turn) ? turn.triggered : undefined;
+  const triggeredOk = triggered === undefined || (Array.isArray(triggered) && triggered.every((one) => isObject(one) && typeof one.source === "string" && typeof one.text === "string"));
+  if (!isObject(turn) || typeof turn.answer !== "string" || !Array.isArray(turn.asked) || !turn.asked.every((message) => typeof message === "string") || !triggeredOk) throw new Error(`the run's ${LEARNING_TURN} is not a turn`);
   return turn as Turn;
 }
 
@@ -809,7 +842,7 @@ export async function layLearned(dir: string, seed: Seed, shown: Shown): Promise
 
 /** How a run reads what it learned (learnedOf): the server's learning budget, in bytes; whether its agent has the read
  *  tool; the host's secrets, which every text is cut of. */
-export type LearnedOptions = { budget: number; read: boolean; shown: Shown; workflowsOff?: string };
+export type LearnedOptions = { budget: number; read: boolean; shown: Shown };
 /** The lines before what a run learned, under `# Learned` after LEARNS, and the one that names `.learning/` to an agent
  *  that can read it. */
 const KEPT = "Follow a note when it applies to what you are doing.";
@@ -952,11 +985,6 @@ export async function pinSeed(runDir: string, work: string, seed: Seed, options:
     const flowsLeft: string[] = [];
     let room = LEARNED_WORKFLOWS_BUDGET;
     for (const flow of seed.workflows ?? []) {
-      // None, when the run is offered none (learnedWorkflowsOff): each is named, but for a name that is itself a secret.
-      if (options.workflowsOff !== undefined) {
-        if (!options.shown.holds(flow.name)) flowsLeft.push(flow.name);
-        continue;
-      }
       if (options.shown.holds(flow.workflow) || options.shown.holds(flow.description) || options.shown.holds(flow.name)) {
         // Named, but for a name that is itself a secret.
         if (!options.shown.holds(flow.name)) flowsLeft.push(flow.name);
@@ -967,7 +995,7 @@ export async function pinSeed(runDir: string, work: string, seed: Seed, options:
       else (room -= bytes), flows.push(flow);
     }
     if (flows.length) await writeDurable(join(runDir, LEARNED_WORKFLOWS_FILE), `${JSON.stringify(flows)}\n`);
-    const pin: Pin = { seed: seed.sha, ...(section ? { section } : {}), ...(given.length ? { given: given.map(({ file, name }) => ({ file, name })) } : {}), ...(skills.length ? { skills } : {}), ...(left.length ? { skills_left_out: left } : {}), ...(flows.length ? { workflows: flows.map(({ name }) => name) } : {}), ...(options.workflowsOff !== undefined && flowsLeft.length ? { workflows_off: options.workflowsOff } : {}), ...(flowsLeft.length ? { workflows_left_out: flowsLeft } : {}) };
+    const pin: Pin = { seed: seed.sha, ...(section ? { section } : {}), ...(given.length ? { given: given.map(({ file, name }) => ({ file, name })) } : {}), ...(skills.length ? { skills } : {}), ...(left.length ? { skills_left_out: left } : {}), ...(flows.length ? { workflows: flows.map(({ name }) => name) } : {}), ...(flowsLeft.length ? { workflows_left_out: flowsLeft } : {}) };
     // The pin names the skills before they are laid: a server that goes down while they are takes them back (dropSeed).
     await writeDurable(pinFile, `${JSON.stringify(pin)}\n`);
     await laySkills(work, taken, made);
@@ -1022,7 +1050,7 @@ export async function readPin(runDir: string): Promise<Pin | undefined> {
   const pin = JSON.parse(text) as unknown;
   const names = (value: unknown, shape: (entry: string) => boolean) => value === undefined || (Array.isArray(value) && value.every((entry) => typeof entry === "string" && shape(entry)));
   const skillFile = (entry: string) => SKILL_NAME.test(entry.split("/")[0]!) && SKILL_FILE_PATH.test(entry.slice(entry.indexOf("/") + 1)) && entry.includes("/");
-  if (!isObject(pin) || typeof pin.seed !== "string" || (pin.section !== undefined && typeof pin.section !== "string") || (pin.given !== undefined && !(Array.isArray(pin.given) && pin.given.every((entry: unknown) => isObject(entry) && typeof entry.file === "string" && typeof entry.name === "string"))) || !names(pin.skills, skillFile) || !names(pin.skills_left_out, () => true) || !names(pin.workflows, (entry) => WORKFLOW_NAME.test(entry)) || !names(pin.workflows_left_out, (entry) => WORKFLOW_NAME.test(entry)) || (pin.workflows_off !== undefined && typeof pin.workflows_off !== "string")) throw new Error(`the run's ${LEARNING_PIN} is not a learning pin`);
+  if (!isObject(pin) || typeof pin.seed !== "string" || (pin.section !== undefined && typeof pin.section !== "string") || (pin.given !== undefined && !(Array.isArray(pin.given) && pin.given.every((entry: unknown) => isObject(entry) && typeof entry.file === "string" && typeof entry.name === "string"))) || !names(pin.skills, skillFile) || !names(pin.skills_left_out, () => true) || !names(pin.workflows, (entry) => WORKFLOW_NAME.test(entry)) || !names(pin.workflows_left_out, (entry) => WORKFLOW_NAME.test(entry))) throw new Error(`the run's ${LEARNING_PIN} is not a learning pin`);
   return pin as Pin;
 }
 
@@ -1030,7 +1058,7 @@ export async function readPin(runDir: string): Promise<Pin | undefined> {
 export const LEARNED_HEADING = "# Learned";
 /** What every run that learns is told first under it, notes or none: a run not told it learns saves what the person
  *  asks it to remember in a file, or says it cannot, and that is never kept. */
-const LEARNS = "You learn from your runs. When this run ends you are asked what to keep for later runs, anything the person asked you to remember included, and only your answer then is kept: a file you write is not. So when the person asks you to remember something, don't put it in a file or say you can't: tell them you will keep it for later runs, in one short sentence at the start of your reply, never after a closing line or sign-off they asked you to end with. A secret (a password, key or token) is never kept, so say so instead.";
+const LEARNS = "You learn from your runs. When this run ends you are asked what to keep for later runs, anything the person asked you to remember included, and only your answer then is kept: a file you write is not. So when the person asks you to remember something, don't put it in a file or say you can't: tell them in one short sentence at the start of your reply that you will keep it for later runs. When what they asked sets how your reply starts or ends, follow it from your reply's first line to its last and leave that sentence out. A secret (a password, key or token) is never kept, so say so instead.";
 /** What a run that starts with no note is told in place of what it learned. */
 const NOTHING_YET = "Nothing learned yet.";
 

@@ -6,8 +6,9 @@ import { writeFile } from "node:fs/promises";
 import { join } from "node:path";
 import { test } from "node:test";
 import { DatabaseSync } from "node:sqlite";
+import { TOOL_COST } from "@parcha/pi-durable-agent/timeline";
 import { BROWSER_PRICES, browserPrice, browserSpend, priceEnvOf } from "../dist/browser-cost.js";
-import { paidHolds, useSpend } from "../dist/cap.js";
+import { paidCall, paidHolds, takePaidRefusal, useSpend } from "../dist/cap.js";
 import { agent, follow, runDir, scratch, serve, withEnv } from "./support.mjs";
 
 const START = "https://example.test/start";
@@ -225,6 +226,115 @@ test("a charge joins the run's spend and moves its holds only once the commit th
   assert.deepEqual([Math.round(spent * 1e12) / 1e12, paidHolds()], [0.002, 0]);
 });
 
+test("a person's time carried for a session stays held until the session's next charge books it, and goes then", async (t) => {
+  const [{ BACKGROUND_CONTEXT: ctx }, durable, { createModels }] = await Promise.all([import("@earendil-works/chord/context"), import("@earendil-works/pi-durable"), import("@earendil-works/pi-ai/models")]);
+  let spent = 0;
+  useSpend({ cap: 1, spent: () => spent, add: (usd) => void (spent += usd) });
+  t.after(() => useSpend(undefined));
+  const harness = await durable.Harness.open(new durable.MemoryStorage(), { models: createModels(), registry: durable.createRegistry(), onReport: () => {} }, ctx);
+  t.after(() => harness.close(ctx));
+  await harness.root(ctx, { agent: { model: { provider: "faux", modelId: "faux-1" } } });
+  const spend = browserSpend("browserbase", BROWSERBASE, 180, async () => undefined);
+  spend.watch(harness);
+  const base = paidHolds();
+  spend.carry("ar-run-2", 600);
+  assert.ok(Math.abs(paidHolds() - base - 0.02) < 1e-12, "10 minutes at $0.12 an hour, held");
+  spend.carry("ar-run-3", 300);
+  await harness.commit((tx) => spend.onCharge({ conversationId: 1, tag: "ar-run-2", provider: "browserbase", at: new Date(T0).toISOString(), seconds: 600, usd: 0.02, final: true, state: "priced" }, tx), ctx);
+  assert.ok(Math.abs(paidHolds() - base - 0.01) < 1e-12, "booked: that session's carried time goes, another's stays");
+  assert.equal(Math.round(spent * 1e12) / 1e12, 0.02);
+  await harness.commit((tx) => spend.onCharge({ conversationId: 1, tag: "ar-run-3", provider: "browserbase", at: new Date(T0).toISOString(), seconds: 300, usd: 0.01, final: true, state: "priced" }, tx), ctx);
+  assert.ok(Math.abs(paidHolds() - base) < 1e-12, "and the other's goes with its own charge: nothing is left held");
+});
+
+test("a person's minutes are held once: the next browser call's hold leaves out the carried time it would cover, so under a $0.05 cap it fits; a charge books carried time only up to its own through", async (t) => {
+  const [{ BACKGROUND_CONTEXT: ctx }, durable, { createModels }] = await Promise.all([import("@earendil-works/chord/context"), import("@earendil-works/pi-durable"), import("@earendil-works/pi-ai/models")]);
+  t.mock.timers.enable({ apis: ["Date"], now: T0 });
+  let spent = 0;
+  useSpend({ cap: 0.05, spent: () => spent, add: (usd) => void (spent += usd ?? 0) });
+  t.after(() => useSpend(undefined));
+  const harness = await durable.Harness.open(new durable.MemoryStorage(), { models: createModels(), registry: durable.createRegistry(), onReport: () => {} }, ctx);
+  t.after(() => harness.close(ctx));
+  await harness.root(ctx, { agent: { model: { provider: "faux", modelId: "faux-1" } } });
+  const releases = [];
+  const spend = browserSpend("browserbase", BROWSERBASE, 180, async (conversation) => void releases.push(conversation.id));
+  spend.watch(harness);
+  const base = paidHolds();
+  const tag = "ar-run-4";
+  const charge = (seconds, usd, final = false) => ({ conversationId: 1, tag, provider: "browserbase", at: new Date(Date.now()).toISOString(), seconds, usd, final, state: "priced" });
+  // The session's first charge: its $0.009 reserve held from here.
+  await harness.commit((tx) => spend.onCharge(charge(0, 0), tx), ctx);
+  // Ten minutes the person had, given back: $0.02 carried.
+  t.mock.timers.tick(600_000);
+  spend.carry(tag, 600);
+  assert.ok(Math.abs(paidHolds() - base - 0.029) < 1e-9, `the reserve and the carried time: ${paidHolds() - base}`);
+  // Greptile's numbers: the next call needs the ten minutes once ($0.02, carried) and its two stretches ($0.018) beside the
+  // reserve: $0.047 under the $0.05 cap.
+  let ran = 0;
+  const tool = spend.capped({ name: "snapshot", execute: async () => { ran += 1; return { content: [{ type: "text", text: "ran" }] }; } });
+  const api = { conversationId: 1, callId: "c1", commit: async (change) => harness.commit(change, ctx) };
+  const out = await tool.execute({}, api, ctx);
+  assert.deepEqual([ran, releases, out.content[0].text], [1, [], "ran"], "it fits: the minutes are held once");
+  // Five more minutes the person had (T0+10 to T0+15 min, $0.01 carried), then a charge computed through T0+12.5 min that
+  // lands after: it books the first ten minutes and half of these, and the rest ($0.005) stays held.
+  t.mock.timers.tick(300_000);
+  spend.carry(tag, 300);
+  assert.ok(Math.abs(paidHolds() - base - 0.039) < 1e-9, `the reserve and both carried stretches: ${paidHolds() - base}`);
+  await harness.commit((tx) => spend.onCharge({ ...charge(750, 0.025), at: new Date(T0 + 750_000).toISOString() }, tx), ctx);
+  assert.ok(Math.abs(paidHolds() - base - 0.014) < 1e-9, `the reserve, and the carried time after the charge's own through: ${paidHolds() - base}`);
+  await harness.commit((tx) => spend.onCharge(charge(150, 0.005, true), tx), ctx);
+  assert.ok(Math.abs(paidHolds() - base) < 1e-9, "the release's charge books the rest: nothing left held");
+});
+
+test("a person's minutes are held once while they still have the browser: ten minutes into a take-over, the call's hold leaves out what the take-over holds, so under a $0.06 cap it fits; a charge books those minutes off the take-over's hold", async (t) => {
+  const [{ BACKGROUND_CONTEXT: ctx }, durable, { createModels }] = await Promise.all([import("@earendil-works/chord/context"), import("@earendil-works/pi-durable"), import("@earendil-works/pi-ai/models")]);
+  t.mock.timers.enable({ apis: ["Date"], now: T0 });
+  let spent = 0;
+  useSpend({ cap: 0.06, spent: () => spent, add: (usd) => void (spent += usd ?? 0) });
+  t.after(() => useSpend(undefined));
+  const harness = await durable.Harness.open(new durable.MemoryStorage(), { models: createModels(), registry: durable.createRegistry(), onReport: () => {} }, ctx);
+  t.after(() => harness.close(ctx));
+  await harness.root(ctx, { agent: { model: { provider: "faux", modelId: "faux-1" } } });
+  const releases = [];
+  const spend = browserSpend("browserbase", BROWSERBASE, 180, async (conversation) => void releases.push(conversation.id));
+  spend.watch(harness);
+  const base = paidHolds();
+  const tag = "ar-run-5";
+  const charge = (seconds, usd, final = false) => ({ conversationId: 1, tag, provider: "browserbase", at: new Date(Date.now()).toISOString(), seconds, usd, final, state: "priced" });
+  // The session's first charge: its $0.009 reserve held from here. Then the owner takes over: fifteen minutes, $0.03, held up front.
+  await harness.commit((tx) => spend.onCharge(charge(0, 0), tx), ctx);
+  const take = await spend.personTime("taking over the browser", 900, { pauses: false, tag, from: Date.now() });
+  assert.equal(take.refused, undefined);
+  t.mock.timers.tick(600_000);
+  // Greptile's numbers: ten minutes in, the call needs its two stretches ($0.018) beside the take-over's $0.03 and the
+  // reserve's $0.009: $0.057 under the $0.06 cap. The ten minutes are inside the take-over's hold already.
+  let ran = 0;
+  const tool = spend.capped({ name: "snapshot", execute: async () => { ran += 1; return { content: [{ type: "text", text: "ran" }] }; } });
+  const api = { conversationId: 1, callId: "c1", commit: async (change) => harness.commit(change, ctx) };
+  const out = await tool.execute({}, api, ctx);
+  assert.deepEqual([ran, releases, out.content[0].text], [1, [], "ran"], "it fits: the person's minutes are held once");
+  // A charge through T0+10 min books those ten minutes ($0.02): the take-over's hold keeps only the five minutes after it.
+  await harness.commit((tx) => spend.onCharge(charge(600, 0.02), tx), ctx);
+  assert.ok(Math.abs(paidHolds() - base - 0.019) < 1e-9, `the reserve and the take-over's five minutes left: ${paidHolds() - base}`);
+  take.drop();
+  assert.ok(Math.abs(paidHolds() - base - 0.009) < 1e-9, "handed back: the reserve alone");
+  await harness.commit((tx) => spend.onCharge(charge(0, 0, true), tx), ctx);
+  assert.ok(Math.abs(paidHolds() - base) < 1e-9, "the release's charge: nothing left held");
+});
+
+test("a person's time the cap refuses pauses the run only when it is the agent's own step: an ask's does, the owner's take-over's does not", async (t) => {
+  const spend = { cap: 0.01, spent: () => 0, add: () => {} };
+  useSpend(spend);
+  t.after(() => useSpend(undefined));
+  const browser = browserSpend("browserbase", BROWSERBASE, 180, async () => undefined);
+  const take = await browser.personTime("taking over the browser", 900, { pauses: false });
+  assert.match(take.refused ?? "", /taking over the browser/);
+  assert.equal(takePaidRefusal(spend), undefined, "the owner's refused take-over leaves the run's next request alone");
+  const ask = await browser.personTime("handing the browser to you", 900);
+  assert.match(ask.refused ?? "", /handing the browser to you/);
+  assert.match(takePaidRefusal(spend)?.words ?? "", /handing the browser to you/, "the agent's refused ask pauses the run at its next request");
+});
+
 test("prices by provider: Browserbase, Kernel and local Chrome, each overridden by its own variable; one unknown or unreadable has none", async (t) => {
   assert.deepEqual(BROWSER_PRICES, { browserbase: { usdPerHour: 0.12, minimumS: 60 }, kernel: { usdPerHour: 0.06, minimumS: 0 }, cdp: { usdPerHour: 0, minimumS: 0 } });
   assert.deepEqual(browserPrice("kernel", {}), { usdPerHour: 0.06, minimumS: 0 });
@@ -264,7 +374,7 @@ test("after a reopen, a kept session's down time is held once: its first call fi
   const releases = [];
   const spend = browserSpend("browserbase", BROWSERBASE, 180, async (conversation) => void releases.push(conversation.id));
   let listener;
-  spend.watch({ subscribeCommits: (fn) => (listener = fn) });
+  spend.watch({ observeCommits: (observer) => ((listener = (publication) => observer.advance(publication)), { detach: () => {} }) });
   const docs = { Inventory: "inventory", Sessions: "sessions" };
   const store = (final) => ({ snapshot: async (token) => (token === "inventory" ? { rows: { k: { tag: "ar-kept", conversationId: 1 } } } : { sessions: [{ tag: "ar-kept", spent: { chargedThrough: new Date(T0).toISOString(), ...(final ? { final: true } : {}) } }] }) });
   // A session whose final charge landed before `kept` read it: nothing to hold, and nothing would ever drop the hold.
@@ -289,6 +399,163 @@ test("after a reopen, a kept session's down time is held once: its first call fi
   assert.ok(Math.abs(held[0] - 0.077) < 1e-6, `spent and held as the call runs: ${held[0]}`);
   for (const figure of [...held, spent + paidHolds() - base]) assert.ok(figure <= cap, `${figure} is over the cap of ${cap}`);
   assert.ok(Math.abs(paidHolds() - base - 0.009) < 1e-9, "after its charge the session holds one stretch again");
+});
+
+// ---- pi 1.5's commit observers detach on a throw (observeCommits) ----
+
+/** pi 1.5's observeCommits as the Session runs it: an `advance` that throws is reported, the observer is detached and
+ *  ended `listener_error`, and it hears no later commit (pi-durable types.d.ts, Session.observeCommits). */
+function piObserver() {
+  const state = { detached: false, observer: undefined };
+  // The Session's own end (`closed`), settled by `closeAs` as pi's close settles it.
+  let closeAs;
+  const closed = new Promise((resolve) => (closeAs = resolve));
+  return {
+    state,
+    closeAs,
+    harness: { closed, observeCommits: (observer) => ((state.observer = observer), { detach: () => void (state.detached = true) }) },
+    publish(changes) {
+      if (state.detached) return;
+      try {
+        state.observer.advance({ seq: 1, changes }, undefined);
+      } catch (error) {
+        state.detached = true;
+        state.observer.end({ kind: "listener_error", error });
+      }
+    },
+    end: (end) => state.observer.end(end),
+  };
+}
+/** A browser charge's commit, as onCharge books it: a session's last (final), so it leaves no session open and no reserve
+ *  held. A charge that is not final would keep its session's reserve in cap.ts's holds, which belong to the process and
+ *  so to every later test in this file: enough of them refused the restart tests' first browser call for room. */
+const chargeOf = (tag, usd) => [{ type: "entry", value: { kind: TOOL_COST, data: { tool: "browser", charged_by: "browserbase", call: null, usd, seconds: 60, tag, conversation: 1, at: new Date(T0).toISOString(), final: true } } }];
+/** A run's spend whose count fails `failures` times, then adds; an unknown figure (null) makes it unknown for good. The
+ *  test ends with the process's holds as it found them: cap.ts keeps them for the process, one run's in serve. */
+function countingSpend(t, cap, failures = 0) {
+  const base = paidHolds();
+  t.after(() => assert.equal(paidHolds(), base, "the test leaves no hold behind for the next"));
+  const spend = { spent: 0, adds: [] };
+  useSpend({ cap, spent: () => spend.spent, add: (usd) => {
+    spend.adds.push(usd);
+    if (failures-- > 0) throw new Error("the count failed");
+    spend.spent = spend.spent === null || usd === null ? null : spend.spent + usd;
+  } });
+  return spend;
+}
+/** The cap's refusal of a spend no one knows (cap-unknown.test.mjs). */
+const UNKNOWN = /^spend_cap_reached: .*spent is unknown.*out of budget/;
+
+test("a browser charge the process fails to count (pi 1.5 detaches an observer that throws): the observer stays attached, a later charge still reaches the count, and the run's spend reads unknown, logged once: never silently uncounted", (t) => {
+  t.after(() => useSpend(undefined));
+  const spend = countingSpend(t, 5, 1);
+  const lines = [];
+  const pi = piObserver();
+  browserSpend("browserbase", BROWSERBASE, 180, async () => {}, (line) => lines.push(line)).watch(pi.harness);
+  pi.publish(chargeOf("ar-1", 0.01));
+  pi.publish(chargeOf("ar-1", 0.02));
+  assert.equal(pi.state.detached, false, "the observer stays attached");
+  assert.ok(spend.adds.includes(0.02), `the later charge still reaches the count: ${JSON.stringify(spend.adds)}`);
+  assert.equal(spend.spent, null, "the run's spend reads unknown, never the later charge alone");
+  assert.equal(lines.filter((line) => line.includes("browser_spend_uncounted")).length, 1, lines.join("\n"));
+});
+
+test("on a capped run, a browser charge the process failed to count refuses the run's next paid call as unknown spend, in the cap's own words", async (t) => {
+  t.after(() => useSpend(undefined));
+  countingSpend(t, 5, 1);
+  const pi = piObserver();
+  browserSpend("browserbase", BROWSERBASE, 180, async () => {}, () => {}).watch(pi.harness);
+  pi.publish(chargeOf("ar-1", 0.01));
+  let sent = 0;
+  const answer = await paidCall("a paid call", async () => (sent += 1), () => 0, { usd: 0.001, basis: "a test's" });
+  assert.match(answer.refused ?? "", UNKNOWN, JSON.stringify(answer));
+  assert.equal(sent, 0, "not sent");
+});
+
+/** pi 1.5's end for a Session that closed normally: `failed` with "session closed" (session/session.js closeEnds). */
+const SESSION_CLOSED = () => ({ kind: "failed", error: new Error("session closed") });
+
+test("an observer end with a Session that failed, or a listener error, leaves the run's browser spend unknown, never silently uncounted, whatever words pi's end carries", async (t) => {
+  t.after(() => useSpend(undefined));
+  const FAILED = { kind: "failed", error: new Error("the disk is gone") };
+  for (const [end, closedAs] of [[{ kind: "listener_error", error: new Error("a listener threw") }, undefined], [FAILED, FAILED], [SESSION_CLOSED(), FAILED]]) {
+    const spend = countingSpend(t, 5);
+    const pi = piObserver();
+    browserSpend("browserbase", BROWSERBASE, 180, async () => {}, () => {}).watch(pi.harness);
+    pi.publish(chargeOf("ar-1", 0.01));
+    pi.end(end);
+    if (closedAs) pi.closeAs(closedAs);
+    await new Promise((resolve) => setImmediate(resolve));
+    assert.equal(spend.spent, null, `${end.kind} ${end.error?.message ?? ""}, the Session ${closedAs?.kind ?? "open"}: unknown`);
+  }
+});
+
+test("an observer end with a Session that closed normally (pi's `closed`) keeps the count, silently, whatever words pi's end carries", async (t) => {
+  t.after(() => useSpend(undefined));
+  const closed = countingSpend(t, 5);
+  const lines = [];
+  const pi = piObserver();
+  const spend = browserSpend("browserbase", BROWSERBASE, 180, async () => {}, (line) => lines.push(line));
+  spend.watch(pi.harness);
+  pi.publish(chargeOf("ar-1", 0.01));
+  pi.end(SESSION_CLOSED());
+  pi.closeAs({ kind: "closed" });
+  await new Promise((resolve) => setImmediate(resolve));
+  assert.equal(closed.spent, 0.01, "the count stands");
+  assert.deepEqual(lines, [], "no line");
+  assert.equal("closing" in spend, false, "no flag of our own: pi's end decides");
+});
+
+test("a real Harness: a charge booked, the Harness closed by the run's own close: the count stands, with no line", async (t) => {
+  const [{ BACKGROUND_CONTEXT: ctx }, durable, { createModels }] = await Promise.all([import("@earendil-works/chord/context"), import("@earendil-works/pi-durable"), import("@earendil-works/pi-ai/models")]);
+  t.after(() => useSpend(undefined));
+  const counted = countingSpend(t, 5);
+  const lines = [];
+  const harness = await durable.Harness.open(new durable.MemoryStorage(), { models: createModels(), registry: durable.createRegistry(), onReport: () => {} }, ctx);
+  await harness.root(ctx, { agent: { model: { provider: "faux", modelId: "faux-1" } } });
+  const spend = browserSpend("browserbase", BROWSERBASE, 180, async () => undefined, (line) => lines.push(line));
+  spend.watch(harness);
+  const charge = { conversationId: 1, tag: "ar-run-1", provider: "browserbase", at: new Date(T0).toISOString(), seconds: 3, usd: 0.0001, final: true, state: "priced" };
+  await harness.commit((tx) => spend.onCharge(charge, tx), ctx);
+  await harness.close(ctx);
+  await new Promise((resolve) => setImmediate(resolve));
+  assert.equal(counted.spent, 0.0001, "the count stands after the close");
+  assert.deepEqual(lines, [], "no line");
+});
+
+/** A real Harness over memory with one browser charge booked and counted: `storage` to fail it with. */
+async function chargedHarness(t, lines) {
+  const [{ BACKGROUND_CONTEXT: ctx }, durable, { createModels }] = await Promise.all([import("@earendil-works/chord/context"), import("@earendil-works/pi-durable"), import("@earendil-works/pi-ai/models")]);
+  t.after(() => useSpend(undefined));
+  const counted = countingSpend(t, 5);
+  const storage = new durable.MemoryStorage();
+  const harness = await durable.Harness.open(storage, { models: createModels(), registry: durable.createRegistry(), onReport: () => {} }, ctx);
+  const root = await harness.root(ctx, { agent: { model: { provider: "faux", modelId: "faux-1" } } });
+  const spend = browserSpend("browserbase", BROWSERBASE, 180, async () => undefined, (line) => lines.push(line));
+  spend.watch(harness);
+  const charge = { conversationId: 1, tag: "ar-run-1", provider: "browserbase", at: new Date(T0).toISOString(), seconds: 3, usd: 0.0001, final: true, state: "priced" };
+  await harness.commit((tx) => spend.onCharge(charge, tx), ctx);
+  return { ctx, durable, counted, storage, harness, root };
+}
+
+test("a real Harness closed by a path that never says the run's close began (a drain without resume, a fence, pi closing it): its normal close keeps the count, with no line", async (t) => {
+  const lines = [];
+  const { ctx, counted, harness } = await chargedHarness(t, lines);
+  await harness.close(ctx);
+  await new Promise((resolve) => setImmediate(resolve));
+  assert.equal(counted.spent, 0.0001, "the count stands after a normal close");
+  assert.deepEqual(lines, [], "no line: nothing went uncounted");
+});
+
+test("a real Harness whose store fails: the Session's failed end leaves the run's spend unknown, with one line", async (t) => {
+  const lines = [];
+  const { ctx, durable, counted, storage, harness, root } = await chargedHarness(t, lines);
+  storage.commit = async () => { throw new Error("the disk is gone"); };
+  await harness.commit(async (tx) => { (await tx.doc(durable.AgentDoc, root.id)).thinkingLevel = "high"; }, ctx).catch(() => undefined);
+  assert.equal((await harness.closed).kind, "failed", "the Session failed");
+  await new Promise((resolve) => setImmediate(resolve));
+  assert.equal(counted.spent, null, "the run's spend is unknown");
+  assert.equal(lines.filter((line) => line.includes("browser_spend_uncounted")).length, 1, lines.join("\n"));
 });
 
 // Last of this process's runs: its first process's reserve stays in this process's holds (a real one would be gone).

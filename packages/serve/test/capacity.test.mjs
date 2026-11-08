@@ -2,12 +2,14 @@
 // reads the store and the free disk, a cancel that settles a run whose carry back cannot be written, and a run whose
 // process was killed answered again at once.
 import assert from "node:assert/strict";
+import { randomBytes } from "node:crypto";
 import { chmod, readFile, rm, writeFile } from "node:fs/promises";
 import { request } from "node:http";
 import { join } from "node:path";
 import { DatabaseSync } from "node:sqlite";
 import { test } from "node:test";
 import { startServe } from "../dist/index.js";
+import { sealKeyOf } from "../dist/tool-keys.js";
 import { agent, client, FAUX, follow, runDir, runRecordOf, scratch, serve, storeRun, withEnv } from "./support.mjs";
 
 const MiB = 2 ** 20;
@@ -33,10 +35,10 @@ async function held(api, path, body, key) {
 
 test("the default cap on how many runs at once is pi's: the host's memory less the server's own, at a pi run's size, never under 1", async () => {
   const { defaultMaxRuns } = await import("../dist/index.js");
-  const { RUN_MIB } = await import("../dist/harness.js");
+  const { builtinHarness } = await import("../dist/harness-table.js");
   const { SERVER_MIB } = await import("../dist/host.js");
   assert.equal(typeof defaultMaxRuns, "function");
-  for (const mib of [512, 1024, 8 * 1024]) assert.equal(defaultMaxRuns(mib * MiB), Math.floor((mib - SERVER_MIB) / RUN_MIB?.pi), `${mib} MB`);
+  for (const mib of [512, 1024, 8 * 1024]) assert.equal(defaultMaxRuns(mib * MiB), Math.floor((mib - SERVER_MIB) / builtinHarness("pi").runMib), `${mib} MB`);
   assert.equal(defaultMaxRuns(100 * MiB), 1, "never under 1");
 });
 
@@ -304,10 +306,18 @@ test("a disk health cannot measure fails its check (503 cannot_check), never rea
 });
 
 test("compose and render.yaml check /v2/health", async () => {
-  const compose = await readFile(new URL("../docker/compose.yaml", import.meta.url), "utf8");
+  const compose = await readFile(new URL("../../../compose.yaml", import.meta.url), "utf8");
   assert.match(compose, /^ {4}healthcheck:\n {6}test: .*\/v2\/health/m, "the service's healthcheck reads /v2/health");
   const render = await readFile(new URL("../../../render.yaml", import.meta.url), "utf8");
   assert.match(render, /healthCheckPath: \/v2\/health/);
+});
+
+test("render.yaml generates the seal key, in a form the server takes: Render's random base64 of 256 bits", async () => {
+  const render = await readFile(new URL("../../../render.yaml", import.meta.url), "utf8");
+  assert.match(render, /^ {6}- key: AGENTRUN_SEAL_KEY\n {8}generateValue: true$/m, "a new service seals its saved keys, MCP credentials and trigger secrets from its first start");
+  // Render's generateValue: "a randomized, base64-encoded, 256-bit value" (render.com/docs/blueprint-spec).
+  const generated = randomBytes(32).toString("base64");
+  assert.equal(sealKeyOf(generated)?.length, 32);
 });
 
 test("a cancel settles a run whose carry back cannot be written: cancelled, final, priced; the store gets it once it can", { skip: process.getuid?.() === 0 && "root writes a directory of mode 555", timeout: 90_000 }, async (t) => {

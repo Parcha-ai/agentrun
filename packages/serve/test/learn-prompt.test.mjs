@@ -13,6 +13,18 @@ const ABSOLUTE = /(?:^|[\s`'"(\[])\/[^\s/]/m;
 /** A note's block, as the prompt asks for one. */
 const block = (file, text = note(), fence = "```") => `${fence}note ${file}\n${text}${text.endsWith("\n") ? "" : "\n"}${fence}`;
 
+test("the prompt says a rule for every reply applies whatever the job is and is kept as a note, and steps or a format for one kind of job, named by when it applies, are a skill", () => {
+  const prompt = reflectPrompt({ dir: ".learning", active: 0, tools: ["read"] }).replace(/\s+/g, " ");
+  assert.ok(prompt.includes("A rule for every reply applies whatever the job is. Keep it as a note, which every later run reads. Steps or a format for one kind of job, named by when it applies (\"whenever I ask for a weekly summary\", \"when you open a PR\"), are a skill."), prompt);
+  // Beside it, a skill's job still needs no note.
+  assert.ok(prompt.includes("A job you keep a skill for needs no note beside it."));
+});
+
+test("the prompt says a note holds its own lesson and never repeats another note's rule, so a retired rule stays retired", () => {
+  const prompt = reflectPrompt({ dir: ".learning", active: 0, tools: ["read"] }).replace(/\s+/g, " ");
+  assert.ok(prompt.includes("A note holds its own lesson: never repeat another note's rule in it, so a retired rule stays retired."), prompt);
+});
+
 test("the prompt asks for the notes in the answer, one ```note block each, in the note format, with no tool; it says only the answer counts, names the folder, supersede and never reuse a name, and that nothing is fine", () => {
   const prompt = reflectPrompt({ dir: DIR, active: 3 });
   assert.ok(prompt.includes("```note refund-policy-path.md\n---\nname: A short title\ndescription: One line that says when it applies\ntype: user, feedback, project or reference\n---\nThe memory itself, in a few lines.\n```\n"));
@@ -59,18 +71,23 @@ test("an answer's notes are its ```note blocks, in order, each the file it names
   const answer = `I'll keep two notes.\n\n${block("check-units.md", units)}\n\nAnd one about the user:\n\n${block("answer-as-table.md", tables)}\n\n\`\`\`json\n{"not": "a note"}\n\`\`\`\nDone.`;
   assert.deepEqual(parseReflection(answer), { ok: true, notes: [{ file: "check-units.md", text: units }, { file: "answer-as-table.md", text: tables }] });
   assert.deepEqual(parseReflection(block("check-units.md", units).replaceAll("\n", "\r\n")), { ok: true, notes: [{ file: "check-units.md", text: units }] }, "CRLF reads as LF");
-  // A note that quotes a fence is fenced with a longer one, or with tildes.
+  // A note that quotes a fence is fenced with four backticks; tildes are no note's fence.
   const quoting = note({ body: "Run it so:\n```sh\nnpm test\n```\n" });
   assert.deepEqual(parseReflection(block("run-tests.md", quoting, "````")), { ok: true, notes: [{ file: "run-tests.md", text: quoting }] });
-  assert.deepEqual(parseReflection(block("run-tests.md", quoting, "~~~")), { ok: true, notes: [{ file: "run-tests.md", text: quoting }] });
+  assert.equal(parseReflection(block("run-tests.md", quoting, "~~~")).notes, undefined);
   assert.deepEqual(parseReflection(`  ${block("check-units.md", units).replace("\n```", "\n   ```")}`).notes?.[0]?.file, "check-units.md", "indented up to three spaces");
+});
+
+test("a note given twice, word for word, is that note once", () => {
+  const parsed = parseReflection(`${block("a.md")}\n\n${block("a.md")}`);
+  assert.deepEqual([parsed.ok, parsed.notes?.map(({ file }) => file)], [true, ["a.md"]]);
 });
 
 test("an answer with no note is empty: nothing, 'No notes.', prose, or blocks of another kind", () => {
   for (const answer of ["", "   \n", "No notes.", "Nothing new from this run.", "```json\n{}\n```", "```\nplain\n```", undefined, null, 7]) assert.deepEqual(parseReflection(answer), { ok: false, reason: "empty" }, JSON.stringify(answer));
 });
 
-test("an answer that tries and is out of format is unparsed: a note's block not closed, with no file name or two, a name given twice, front matter outside a block, or one over the cap", () => {
+test("an answer that tries and is out of format is unparsed: a note's block with no file name or two, a name given twice, front matter outside a block, or one over the cap", () => {
   const unparsed = (answer) => {
     const parsed = parseReflection(answer);
     assert.equal(parsed.ok, false, answer.slice(0, 80));
@@ -78,10 +95,11 @@ test("an answer that tries and is out of format is unparsed: a note's block not 
     assert.equal(typeof parsed.detail, "string");
     return parsed.detail;
   };
-  assert.match(unparsed(`${block("a.md")}\n\`\`\`note b.md\n${note()}`), /not closed/);
+  // A note's block never closed is no block: the notes before it are read.
+  assert.deepEqual(parseReflection(`${block("a.md")}\n\`\`\`note b.md\n${note()}`).notes?.map(({ file }) => file), ["a.md"]);
   assert.match(unparsed(`\`\`\`note\n${note()}\`\`\``), /no file/);
   assert.match(unparsed(`\`\`\`note a.md b.md\n${note()}\`\`\``), /more than one file/);
-  assert.match(unparsed(`${block("a.md")}\n${block("a.md")}`), /one file name/);
+  assert.match(unparsed(`${block("a.md")}\n${block("a.md", note({ name: "Other" }))}`), /one file name/, "two different notes under one file name");
   assert.match(unparsed(`Here is my note:\n\n${note()}`), /outside a ```note block/);
   assert.match(unparsed(`\`\`\`markdown\n${note()}\`\`\``), /outside a ```note block/, "a note in a block of another kind");
   assert.match(unparsed(`${block("a.md")}\n${"x".repeat(ANSWER_MAX)}`), /over/);

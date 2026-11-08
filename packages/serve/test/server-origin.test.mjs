@@ -13,6 +13,7 @@ import { test } from "node:test";
 import * as disk from "@parcha/pi-durable-disk";
 import * as timeline from "@parcha/pi-durable-agent/timeline";
 import { agent, follow, runDir, runRecordOf, scratch, serve } from "./support.mjs";
+import { fauxTable } from "./fixtures/faux-table.mjs";
 
 const FAUX_HARNESS = new URL("./fixtures/faux-harness.mjs", import.meta.url).pathname;
 const FAUX_WEB_HOLD = new URL("./fixtures/faux-web-hold.mjs", import.meta.url).pathname;
@@ -45,10 +46,10 @@ const userTexts = (data, runId) => storeEntries(data, runId).filter((e) => e.mod
 
 for (const harness of ["pi", "claude-agent", "opencode"]) {
   test(`${harness}: a follow-up the server writes (its submit's origin) shows as the server's row, "AgentRun: …", never "You: …"; the model reads its very text`, { timeout: 120_000 }, async (t) => {
-    const { api, data } = await serve(t, { fauxHarness: FAUX_HARNESS, fauxWeb: FAUX_WEB_HOLD });
+    const { api, data } = await serve(t, { harnessTable: fauxTable(FAUX_HARNESS), fauxWeb: FAUX_WEB_HOLD });
     const go = join(await scratch(t), "go");
     const id = `origin-${harness}`;
-    assert.equal((await api("POST", "/agents", agent(id, harness === "pi" ? { tools: [] } : { harness, instructions: `Hold the answer until ${go}.`, tools: ["fetch_page"] }))).status, 201);
+    assert.equal((await api("POST", "/agents", agent(id, harness === "pi" ? { tools: [] } : { harness, instructions: `Hold the answer until ${go}.`, tools: ["web_fetch"] }))).status, 201);
     const run = await api("POST", `/agents/${id}/runs`, { input: { content: harness === "pi" ? `Hold the answer until ${go}.` : "hi" } });
     assert.equal(run.status, 202, JSON.stringify(run.body));
     const runId = run.body.run_id;
@@ -72,7 +73,7 @@ for (const harness of ["pi", "claude-agent", "opencode"]) {
 }
 
 test("pi: a caller's request id never collides with the marker a server message writes: after the server's \"foo\", an input the caller names \"foo:origin\" reaches the model, its submission done and its answer there", { timeout: 120_000 }, async (t) => {
-  const { api, data } = await serve(t, { fauxHarness: FAUX_HARNESS, fauxWeb: FAUX_WEB_HOLD });
+  const { api, data } = await serve(t, { harnessTable: fauxTable(FAUX_HARNESS), fauxWeb: FAUX_WEB_HOLD });
   const go = join(await scratch(t), "go");
   assert.equal((await api("POST", "/agents", agent("origin-ids", { tools: [] }))).status, 201);
   const run = await api("POST", "/agents/origin-ids/runs", { input: { content: `Hold the answer until ${go}.` } });
@@ -95,7 +96,7 @@ test("pi: a caller's request id never collides with the marker a server message 
 });
 
 test("the door refuses an origin that is not the server's, and writes nothing for it", { timeout: 120_000 }, async (t) => {
-  const { api, data } = await serve(t, { fauxHarness: FAUX_HARNESS });
+  const { api, data } = await serve(t, { harnessTable: fauxTable(FAUX_HARNESS) });
   const go = join(await scratch(t), "go");
   assert.equal((await api("POST", "/agents", agent("origin-bad", { tools: [] }))).status, 201);
   const runId = (await api("POST", "/agents/origin-bad/runs", { input: { content: `Hold the answer until ${go}.` } })).body.run_id;
@@ -109,10 +110,8 @@ test("the door refuses an origin that is not the server's, and writes nothing fo
   assert.ok(!userTexts(data, runId).includes(RAISED), "nothing written for a refused origin");
 });
 
-// An input that may not answer (answers false: a trigger's message) is refused while the run works, after the door
-// would have queued its origin's marker: a marker with no input after it would name the next message as the server's.
-test("the door refuses an origin on an input that may not answer: 400, and no marker written, though the run works", { timeout: 120_000 }, async (t) => {
-  const { api, data } = await serve(t, { fauxHarness: FAUX_HARNESS });
+test("the door refuses a server origin on an input that may not answer: 400, and no marker written", { timeout: 120_000 }, async (t) => {
+  const { api, data } = await serve(t, { harnessTable: fauxTable(FAUX_HARNESS) });
   const go = join(await scratch(t), "go");
   assert.equal((await api("POST", "/agents", agent("origin-guarded", { tools: [] }))).status, 201);
   const runId = (await api("POST", "/agents/origin-guarded/runs", { input: { content: `Hold the answer until ${go}.` } })).body.run_id;
@@ -120,8 +119,41 @@ test("the door refuses an origin on an input that may not answer: 400, and no ma
   const sent = await toDoor(data, runId, { requestId: "guarded-1", content: RAISED, answers: false, asks: ["ask_person"], origin: { kind: "server", reason: "cap_raised" } });
   await writeFile(go, "");
   await follow(api, runId, ["completed"], { deadlineMs: 90_000 });
-  assert.deepEqual(storeEntries(data, runId).filter((e) => e.kind === disk.MESSAGE_ORIGIN_KIND), [], `no marker left with no message after it (the door answered ${JSON.stringify(sent)})`);
-  assert.deepEqual([sent.status, sent.body?.error], [400, "BAD_REQUEST"], JSON.stringify(sent));
+  assert.deepEqual([sent.status, sent.body?.error, storeEntries(data, runId).filter((e) => e.kind === disk.MESSAGE_ORIGIN_KIND).length], [400, "BAD_REQUEST", 0], JSON.stringify(sent));
+});
+
+// A trigger's message may not answer a person (answers false), so the door refuses it while the run works, after its
+// origin's marker is queued: that marker is withdrawn (its retry, under the same request id, writes its own:
+// trigger-origin.test.mjs).
+const TRIGGER = { kind: "trigger", trigger_id: "trg_1", source: "webhook", owner: false };
+const EVENT = 'A new event came in.\n\n(From the webhook trigger "inbox", received at Nov 6, 2026, 9:00 AM UTC.)';
+
+/** A run that works until `go` is written, with a trigger's guarded message sent to it meanwhile, refused busy. */
+async function busyThenRefused(t, id) {
+  const { api, data } = await serve(t, { harnessTable: fauxTable(FAUX_HARNESS) });
+  const go = join(await scratch(t), "go");
+  assert.equal((await api("POST", "/agents", agent(id, { tools: [] }))).status, 201);
+  const runId = (await api("POST", `/agents/${id}/runs`, { input: { content: `Hold the answer until ${go}.` } })).body.run_id;
+  await follow(api, runId, ["working"], { deadlineMs: 30_000 });
+  const busy = await toDoor(data, runId, { requestId: "fir_1", content: EVENT, answers: false, asks: ["ask_person"], origin: TRIGGER });
+  assert.deepEqual([busy.status, busy.body?.error], [409, "BUSY"], JSON.stringify(busy));
+  await writeFile(go, "");
+  await follow(api, runId, ["completed"], { deadlineMs: 90_000 });
+  return { api, data, runId };
+}
+const openMarkers = (data, runId) => {
+  const entries = storeEntries(data, runId);
+  return { markers: entries.filter((e) => e.kind === disk.MESSAGE_ORIGIN_KIND).map((e) => e.data), origins: [...timeline.messageOrigins(entries).entries()].map(([e, origin]) => [e.model[0].content, origin]) };
+};
+
+test("after a trigger's marker is withdrawn, a person's later message with the very same text is the person's", { timeout: 120_000 }, async (t) => {
+  const { api, data, runId } = await busyThenRefused(t, "origin-withdrawn");
+  assert.equal((await api("POST", `/runs/${runId}/messages`, { content: EVENT })).status, 202);
+  const { rows } = await follow(api, runId, ["completed"], { deadlineMs: 90_000 });
+  const { markers, origins } = openMarkers(data, runId);
+  assert.deepEqual(markers, [{ origin: TRIGGER, text: EVENT }, { origin: TRIGGER, text: EVENT, withdrawn: true }]);
+  assert.deepEqual(origins, [], "no entry is the trigger's");
+  assert.equal(rows.filter((r) => r.kind === "user_message" && r.text === EVENT).length, 1, `the person's own row: ${shown(rows)}`);
 });
 
 test("the door's marker kind is the Timeline's: one name for the entry that names a server message's origin", () => {

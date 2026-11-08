@@ -1,18 +1,12 @@
-import { existsSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, rmSync } from "node:fs";
-import { tmpdir } from "node:os";
+import { existsSync, mkdirSync, readdirSync, readFileSync } from "node:fs";
 import { join } from "node:path";
 import { BACKGROUND_CONTEXT, withCancel } from "@earendil-works/chord/context";
-import { createModels } from "@earendil-works/pi-ai/models";
 import type { ShellExecOptions } from "@earendil-works/pi-durable/env";
 import { describe, expect, it } from "vitest";
 import { archilExecBoxes } from "../src/box/archil-exec.ts";
 import type { Box, BoxSpec } from "../src/box/box.ts";
 import { finish, readStream } from "../src/box/files.ts";
 import { boxEnv } from "../src/hands/box-env.ts";
-import { localVault } from "../src/home/checkpoint.ts";
-import { dirStore } from "../src/home/dir-store.ts";
-import { leaseIn } from "../src/home/ownership.ts";
-import { boxPlace } from "../src/place/box-place.ts";
 import { registerBoxConformance } from "../src/testing/index.ts";
 import { FakeArchil, FakeArchilError } from "./archil-fake.ts";
 
@@ -879,37 +873,6 @@ describe("archil exec boxes", () => {
 			const result = await run(box, ["sh", "-c", "printf '\\377abc'"]);
 			expect(result.stdout).toBe("�abc");
 		} finally {
-			close();
-		}
-	});
-});
-
-describe("an archil exec box is never a home", () => {
-	it("is refused by the box place with a typed error, and the box it made is destroyed", async () => {
-		const { fake, provider, close } = rig();
-		const root = mkdtempSync(join(tmpdir(), "pi-transport-archil-home-"));
-		try {
-			const lines: string[] = [];
-			const placed = await boxPlace(
-				{
-					session: "run-1",
-					provider,
-					spec: SPEC,
-					environment: "archil",
-					ownership: leaseIn(dirStore(join(root, "lease"))),
-					program: { argv: ["node", "-e", "0"] },
-					models: createModels(),
-					vault: localVault(join(root, "vault")),
-					lines: (kind) => lines.push(kind),
-				},
-				context,
-			);
-			expect(placed.ok).toBe(false);
-			if (!placed.ok) expect(placed.error.code).toBe("no_live_processes");
-			expect(lines).toEqual([]);
-			expect(readdirSync(join(fake.root, "boxes"))).toEqual([]);
-		} finally {
-			rmSync(root, { recursive: true, force: true });
 			close();
 		}
 	});

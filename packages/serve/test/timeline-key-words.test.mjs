@@ -8,6 +8,7 @@ import { createServer } from "node:http";
 import { test } from "node:test";
 import { agent, answerFlow, flowAgent, follow, serve, withEnv } from "./support.mjs";
 import { redacted, withoutLoopback } from "../dist/key-refusal.js";
+import { fauxTable } from "./fixtures/faux-table.mjs";
 
 const FAUX_HARNESS = new URL("./fixtures/faux-harness.mjs", import.meta.url).pathname;
 const KEY = `not-a-secret-${"openrouter-key"}`;
@@ -36,19 +37,21 @@ async function failedRun(t, api, harness, said) {
 for (const harness of ["claude-agent", "codex"]) {
   test(`${harness} on OpenRouter's key alone: a refused key's Timeline row says what the run's error says, in plain words`, { timeout: 60_000 }, async (t) => {
     withEnv(t, { OPENROUTER_API_KEY: KEY }, NAMES);
-    const { api } = await serve(t, { fauxHarness: FAUX_HARNESS });
+    const { api } = await serve(t, { harnessTable: fauxTable(FAUX_HARNESS) });
     const { run, timeline } = await failedRun(t, api, harness, SAID[harness]);
     assert.equal(run.error?.message, OPENROUTER, JSON.stringify(run.error));
     const rows = errorRows(timeline.rows);
     assert.ok(rows.length > 0, JSON.stringify(timeline.rows.map((r) => r.kind)));
     for (const row of rows) assert.deepEqual([row.summary, row.text], [OPENROUTER, OPENROUTER], JSON.stringify(row));
-    assert.ok(!JSON.stringify(timeline).includes("127.0.0.1") && !JSON.stringify(run).includes("127.0.0.1"), "no loopback address anywhere");
+    // The run's own console page is at this server's address; the gateway's must be nowhere else.
+    const { console_url: _page, ...rest } = run;
+    assert.ok(!JSON.stringify(timeline).includes("127.0.0.1") && !JSON.stringify(rest).includes("127.0.0.1"), "no loopback address anywhere");
   });
 }
 
 test("codex: an error that is no refused key keeps its words, without serve's loopback proxy address, on the Timeline and in the run's error", { timeout: 60_000 }, async (t) => {
   withEnv(t, { OPENROUTER_API_KEY: KEY }, NAMES);
-  const { api } = await serve(t, { fauxHarness: FAUX_HARNESS });
+  const { api } = await serve(t, { harnessTable: fauxTable(FAUX_HARNESS) });
   const { run, timeline } = await failedRun(t, api, "codex", `unexpected status 500 Internal Server Error: upstream broke, url: ${LOOPBACK}`);
   const said = "codex: unexpected status 500 Internal Server Error: upstream broke";
   assert.equal(run.error?.message, said, JSON.stringify(run.error));

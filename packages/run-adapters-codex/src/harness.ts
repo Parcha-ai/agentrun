@@ -1,6 +1,6 @@
 // Copyright 2026 Vercel Inc. Licensed under the Apache License, Version 2.0; see LICENSE in this package.
 // From github.com/vercel-labs/durable-harness, packages/harness-codex/src/harness.ts at ea8aa4060c (UPSTREAM.json records its blob and sha256).
-// Changed by Parcha, imports rewritten for AgentRun; patches: 002-standin-guard, 004-names, 006-comments, 007-code-mode-nested, 008-recovery-note-developer, 010-repair-without-a-note, 011-web-search-live, 012-cut-off-safe-call
+// Changed by Parcha, and AgentRun's own since the port from upstream froze on 2026-11-07.
 import { AsyncLocalStorage } from 'node:async_hooks';
 import { dirname } from 'node:path';
 import { type DriveContext, type EffectRecord, type Harness, type HostTool, type ReplayPolicy, type SessionState, type Submission, Unavailable, UNAVAILABLE_STEP } from './host/kernel.js';
@@ -10,7 +10,6 @@ import {
   type BuiltinStart,
   CODEX_ROUTES,
   failureText,
-  type GatewayLedger,
   gatewayCredential,
   gatewayHandler,
   gatewayUrl,
@@ -105,13 +104,11 @@ import {
  *
  * Model traffic goes from the VM's loopback model port through the relay to
  * this drive's `gatewayHandler` (`CODEX_ROUTES`: the fixed path table, the
- * body policy, the model, the budget), which adds the credential: the VM
+ * body policy, the model), which adds the credential: the VM
  * never holds it. Codex's provider key is the attach's model key
  * (`SessionMachine.modelKey`, which the relay checks with the caller's pid),
  * hidden from the model's commands
- * (`shell_environment_policy`). Each response's cost is a record in the log
- * (`codex.spend`), so the dollar caps hold over the turn and the session,
- * across invocations. app-server runs no git of the Drive's: `GIT_DIR`
+ * (`shell_environment_policy`). app-server runs no git of the Drive's: `GIT_DIR`
  * points nowhere and no git config is read.
  */
 
@@ -180,24 +177,11 @@ export interface CodexMachine {
   env?: Readonly<Record<string, string>>;
   /** `sandbox({ network })`: the gateway handler refuses what would reach past it through the provider. Default `allow-all`. */
   network?: 'allow-all' | 'deny-all' | { readonly allow: readonly string[] };
-  /** `sandbox({ budget })`'s dollar caps, over the turn and the session (each response's cost is in the log). Default none (`Infinity`). */
-  budget?: { readonly turnUsd?: number; readonly sessionUsd?: number };
   /** `sandbox({ commandTimeoutMs })`: a built-in command's longest run, within the time left in the invocation. */
   commandTimeoutMs?: number;
 }
 
 export const DEFAULT_MODEL = 'openai/gpt-5.4-mini';
-
-/** Options this harness no longer takes, with what replaced them (docs/workspaces.md §3.4). */
-const REMOVED: Readonly<Record<string, string>> = {
-  sandbox: "`sandbox` is now `sandboxMode` (Codex's own sandbox for its commands; `sandbox()` is the session's environment, `workspace: sandbox()`)",
-  host: "Codex runs only on the session machine its adapter makes: pass `machine`, not a host",
-  cwd: "the working directory is always /workspace, the session's Drive",
-  bin: 'the codex binary is the one the sandbox image pins',
-  env: 'pass non-secret variables with sandbox({ env })',
-  keepSessionDir: "CODEX_HOME is in the session's VM and is rebuilt from the log every drive",
-  workspaceNote: "/workspace is the session's Drive, the same on every VM",
-};
 
 const SANDBOX_MODES = new Set(['read-only', 'workspace-write', 'danger-full-access']);
 
@@ -240,8 +224,6 @@ export const TIMEOUT_TEXT = 'The command ran out of time in this invocation and 
 export const NO_TIME_TEXT = 'Not run: too little time was left in this invocation to run it and record its outcome. Nothing happened; make the same call again.';
 /** Rollout tail failures in one turn before the turn ends with an `Unavailable` instead of another redelivery. */
 const MAX_TAIL_FAILURES = 3;
-/** The journal stream of response costs: `{ usd, turn, estimated? }` (`turn`: the session turn it was spent in). */
-export const SPEND_STREAM = 'codex.spend';
 /** The journal stream of the bubblewrap self-test's verdict: `{ sandboxMode, reason? }`, the first one kept. */
 export const SANDBOX_STREAM = 'codex.sandbox';
 /** The journal stream of rollout tail failures: `{ turn, error }`. */
@@ -280,7 +262,7 @@ export class RolloutTailError extends Error {
 
 function testGuard(): void {
   if (process.env.AGENTRUN_CODEX_STANDIN !== '1') throw new TypeError('agentrun-harness-codex: a stand-in app-server needs AGENTRUN_CODEX_STANDIN=1');
-  if (!process.env.NODE_TEST_CONTEXT && process.env.NODE_ENV !== 'test') throw new TypeError('agentrun-harness-codex: a stand-in app-server runs only under a test runner');
+  if (!process.env.NODE_TEST_CONTEXT) throw new TypeError('agentrun-harness-codex: a stand-in app-server runs only under a test runner');
   if (process.env.NODE_ENV === 'production') throw new TypeError('agentrun-harness-codex: a stand-in app-server refuses to run in production');
 }
 
@@ -304,46 +286,6 @@ function turnIndex(state: SessionState): number {
   return transcriptOf(state).filter((r) => r.data?.type === 'turn').length + state.effectOrder.filter((e) => e.name === UNAVAILABLE_STEP).length;
 }
 
-/** A `codex.spend` record. */
-interface SpendRecord {
-  usd: number;
-  turn: number;
-  estimated?: true;
-}
-
-/**
- * The dollar ledger, from the log: every response's cost is a `codex.spend`
- * record tagged with its session turn, so the session's total and the open
- * turn's hold across invocations and redeliveries (docs/workspaces.md §5.5).
- * A crash can lose the costs of the last group commit's responses (a
- * couple of seconds), never more.
- */
-function logLedger(journal: NativeJournal, turn: number): GatewayLedger & { turnEnded(): void; close(): void } {
-  let session = 0;
-  let thisTurn = 0;
-  let open = true;
-  for (const r of journal.records<SpendRecord>(SPEND_STREAM)) {
-    const usd = Number(r.data?.usd);
-    if (!Number.isFinite(usd) || usd < 0) continue;
-    session += usd;
-    if (r.data?.turn === turn) thisTurn += usd;
-  }
-  return {
-    spent: () => ({ turnUsd: thisTurn, sessionUsd: session }),
-    add: (usd, info) => {
-      thisTurn += usd;
-      session += usd;
-      // A late response after the drive let go of the log: counted in memory only.
-      if (open) journal.append(SPEND_STREAM, { usd, turn, ...(info.estimated ? { estimated: true } : {}) } satisfies SpendRecord);
-    },
-    turnEnded: () => {
-      turn++;
-      thisTurn = 0;
-    },
-    close: () => void (open = false),
-  };
-}
-
 /** What the drives of one invocation share across a re-attach. */
 interface Invocation {
   /** One app tool at a time, across re-attaches too. */
@@ -359,9 +301,6 @@ interface Invocation {
 }
 
 export function codexHarness(options: CodexHarnessOptions = {}): Harness {
-  for (const [key, why] of Object.entries(REMOVED)) {
-    if ((options as Record<string, unknown>)[key] !== undefined) throw new TypeError(`agentrun-harness-codex: the ${key} option is gone: ${why}`);
-  }
   const builtinsOn = options.builtins ?? false;
   if (options.sandboxMode !== undefined) {
     if (!SANDBOX_MODES.has(options.sandboxMode)) throw new TypeError(`agentrun-harness-codex: sandboxMode must be 'read-only', 'workspace-write' or 'danger-full-access'`);
@@ -375,7 +314,6 @@ export function codexHarness(options: CodexHarnessOptions = {}): Harness {
   const spec = options.machine;
   const codex = options.test ? { command: options.test.command, args: options.test.args ?? [] } : { command: cliPath(CODEX_CLI), args: [] as string[] };
   const network = spec?.network === undefined || spec.network === 'allow-all' ? 'allow-all' : spec.network === 'deny-all' ? 'deny-all' : 'custom';
-  const budget = { turnUsd: spec?.budget?.turnUsd ?? Infinity, sessionUsd: spec?.budget?.sessionUsd ?? Infinity };
   /** Nothing left to do: no turn a crash cut off, nothing in the inbox. */
   const idle = (ctx: DriveContext) => !recoveryNote(ctx.state()) && ctx.pending().length === 0;
 
@@ -431,21 +369,13 @@ export function codexHarness(options: CodexHarnessOptions = {}): Harness {
     const inDrive = AsyncLocalStorage.snapshot();
     // Every model request, through the handler: the drive's model steps, written around a "Crash during: model" drill.
     const steps = new ModelSteps(ctx, { log });
-    /** The spend cap a model call of this drive was refused for, if one was. */
-    let capped: 'turnUsd' | 'sessionUsd' | undefined;
-    const ledger = logLedger(journal, turnAt);
     const handler = gatewayHandler({
       routes: CODEX_ROUTES,
       models: { model },
-      budget,
-      ledger,
       network,
       credential: () => inDrive(credential),
       target: options.gatewayUrl ?? gatewayUrl(),
       track: steps.request,
-      onCap: (cap) => {
-        if (cap !== 'concurrency') capped = cap;
-      },
       // Without the app's own log, the handler's default: a refused model call is a warning in the Function's logs, not silence.
       ...(options.log ? { log: (message: string, fields?: Record<string, unknown>) => log(`codex gateway: ${message}`, fields) } : {}),
     });
@@ -453,12 +383,10 @@ export function codexHarness(options: CodexHarnessOptions = {}): Harness {
     try {
       machine = await attachInDrive(ctx, spec.acquire, { model: handler, deadline });
     } catch (err) {
-      ledger.close();
       await steps.close();
       throw err;
     }
     if (!isBrandedMachine(machine)) {
-      ledger.close();
       await Promise.resolve((machine as { close?: () => Promise<void> } | undefined)?.close?.()).catch(() => {});
       await steps.close();
       throw sandboxRequired("the machine it was given is not one the sandbox tier's session factory made.");
@@ -975,12 +903,6 @@ export function codexHarness(options: CodexHarnessOptions = {}): Harness {
         const said = takeSaid(t);
         if (said) journal.message({ type: 'message', role: 'assistant', text: said });
         active = undefined;
-        // A model call the budget refused: the turn ends here, saying which cap (no redelivery spends more).
-        if (capped) {
-          throw new Unavailable(`The turn stopped: the ${capped === 'turnUsd' ? "turn's" : "session's"} model spend reached its cap (sandbox({ budget: { ${capped} } })).`, {
-            hint: `Raise sandbox({ budget: { ${capped} } }) to let the session spend more.`,
-          });
-        }
         const status = result.status === 'completed' ? 'completed' : result.status === 'interrupted' ? 'interrupted' : 'failed';
         const error = status === 'completed' ? undefined : (t.error ?? result.error?.message ?? undefined);
         return { status, ...(error ? { error } : {}) };
@@ -989,7 +911,6 @@ export function codexHarness(options: CodexHarnessOptions = {}): Harness {
         code.turnEnded();
         journal.message({ type: 'turn', ...outcome });
         await guard(journal.flush());
-        ledger.turnEnded();
         // The turn that showed the model its notes is in the log: the record stops repeating them. Notes that never reached the model stay owed.
         if (invocation.notesShown && !invocation.notesAcknowledged && machine.notes.length) {
           await guard(acknowledgeInDrive(ctx, invocation.notesKey));
@@ -1128,7 +1049,6 @@ export function codexHarness(options: CodexHarnessOptions = {}): Harness {
         clearTimeout(timer);
       }
       if (held.lost && !ctx.signal.aborted) await journal.flush().catch(() => {});
-      ledger.close();
       // No model step outlives the drive.
       await steps.close();
       // Nothing the model started outlives the drive (§5.4 "Ending an invocation"): the session's processes are killed, the VM and the Drive stay.

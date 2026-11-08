@@ -48,8 +48,6 @@ try {
       const r = run(bin, ["--no-experimental-strip-types", "--input-type=module", "-e", `const m = await import(${JSON.stringify(specifier(key))}); console.log(Object.keys(m).length)`], { cwd: app, env });
       check(`node ${version}, no type stripping: import "${specifier(key)}" (${r.stdout.trim()} exports)`, r.status === 0 && Number(r.stdout) > 0, r.stderr);
     }
-    const wrapper = run(bin, ["--no-experimental-strip-types", "--input-type=module", "-e", `import { existsSync } from "node:fs"; import { ARCHIL_SCOPED } from ${JSON.stringify(pkg.name)}; process.exit(existsSync(ARCHIL_SCOPED) ? 0 : 1)`], { cwd: app, env });
-    check(`node ${version}: ARCHIL_SCOPED names the shipped wrapper`, wrapper.status === 0, wrapper.stderr);
     const usage = run(bin, ["--no-experimental-strip-types", cli], { cwd: app, env });
     check(`node ${version}, no type stripping: the CLI prints its usage and exits 2`, usage.status === 2 && /usage:/.test(usage.stderr), `${usage.status}\n${usage.stderr}`);
   }
@@ -57,7 +55,7 @@ try {
   // Every entry typechecks from the installed package. Errors inside the package's own declarations fail; errors in
   // other packages' declarations (skipLibCheck is off so ours are really checked) are listed and ignored.
   const imports = entries.map(([key], i) => `import * as entry${i} from ${JSON.stringify(specifier(key))};`).join("\n");
-  writeFileSync(join(app, "check.ts"), `${imports}\n${entries.map((_, i) => `void entry${i};`).join("\n")}\n// @ts-expect-error a type that resolves to any would make this directive unused\nconst notANumber: number = (entry0 as { ARCHIL_SCOPED: string }).ARCHIL_SCOPED;\nvoid notANumber;\n`);
+  writeFileSync(join(app, "check.ts"), `${imports}\n${entries.map((_, i) => `void entry${i};`).join("\n")}\n// @ts-expect-error a type that resolves to any would make this directive unused\nconst notANumber: number = entry0.localRun;\nvoid notANumber;\n`);
   writeFileSync(join(app, "tsconfig.json"), JSON.stringify({ compilerOptions: { target: "es2023", module: "nodenext", moduleResolution: "nodenext", strict: true, noEmit: true, types: ["node"] }, include: ["check.ts"] }));
   const tsc = run(process.execPath, [join(app, "node_modules/typescript/bin/tsc"), "-p", app], { cwd: app });
   const lines = `${tsc.stdout}${tsc.stderr}`.split("\n").filter((l) => /error TS\d+/.test(l));

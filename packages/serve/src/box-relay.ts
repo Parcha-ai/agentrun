@@ -50,7 +50,7 @@ export type BoxRelayOptions = {
   /** Whether `runId` is a run this server holds in a remote box that has not ended. */
   serves(runId: string): boolean;
   /** The run's box, found by its label or made with its work/ seeded (run-box.ts ensureRemoteBox): its id, and whether it is new. */
-  ensure(runId: string): Promise<{ id: string; made: boolean }>;
+  ensure(runId: string): Promise<{ id: string; made: boolean; replaced?: boolean }>;
 };
 
 export type BoxRelay = { url: string; close(): Promise<void> };
@@ -164,7 +164,7 @@ export async function startBoxRelay(options: BoxRelayOptions): Promise<BoxRelay>
         if (req.method !== "POST") return answer(res, 405, { message: "POST asks for the run's box" });
         const box = await options.ensure(runId);
         remember(box.id, { run: runId });
-        return answer(res, 200, { id: box.id, made: box.made, ...(options.apiKey ? { api_url: base } : {}) });
+        return answer(res, 200, { id: box.id, made: box.made, ...(box.replaced ? { replaced: true } : {}), ...(options.apiKey ? { api_url: base } : {}) });
       }
       if (path[2]!.startsWith("vm/")) return options.vm ? options.vm.handle(runId, path[2]!.slice(3), req, res) : answer(res, 404, { message: "this server has no Modal sandbox" });
       if (!options.apiKey) return answer(res, 404, { message: "this server has no Daytona box" });
@@ -225,12 +225,12 @@ export const relayFetch = (root: string, runDir: string, runId: string): typeof 
   }) as typeof fetch;
 
 /** Asks the relay for run `runId`'s box: made and seeded by the server when it has none. */
-export async function relayedBox(root: string, runDir: string, runId: string, signal?: AbortSignal): Promise<{ id: string; made: boolean; apiUrl?: string }> {
+export async function relayedBox(root: string, runDir: string, runId: string, signal?: AbortSignal): Promise<{ id: string; made: boolean; replaced?: boolean; apiUrl?: string }> {
   const { url, token } = await relayAddress(root, runDir);
   const sent = await fetch(`${url}/runs/${encodeURIComponent(runId)}/box`, { method: "POST", headers: { authorization: `Bearer ${token}` }, redirect: "error", ...(signal ? { signal } : {}) });
-  const body = (await sent.json().catch(() => null)) as { id?: unknown; made?: unknown; api_url?: unknown; message?: unknown } | null;
+  const body = (await sent.json().catch(() => null)) as { id?: unknown; made?: unknown; replaced?: unknown; api_url?: unknown; message?: unknown } | null;
   if (!sent.ok || typeof body?.id !== "string") {
     throw new Error(`the server did not give the run its box: ${typeof body?.message === "string" ? body.message : `it answered ${sent.status}`}`);
   }
-  return { id: body.id, made: body.made === true, ...(typeof body.api_url === "string" ? { apiUrl: body.api_url } : {}) };
+  return { id: body.id, made: body.made === true, ...(body.replaced === true ? { replaced: true } : {}), ...(typeof body.api_url === "string" ? { apiUrl: body.api_url } : {}) };
 }

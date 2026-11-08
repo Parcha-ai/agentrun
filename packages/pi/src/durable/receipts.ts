@@ -20,6 +20,7 @@ import type { DocumentStoreHost } from "./store.js";
  *  answered and not paid for again. The kind, version and key are a stored format. */
 export const ReceiptIndex = defineDocFamily<{ tool: string; argsHash: string; result: JsonValue | null; session: string | null }, null>({
   kind: "agentrun.receipts", version: 1, scope: "session", family: true, initial: () => ({ tool: "", argsHash: "", result: null, session: null }),
+  checkpointWhen: () => false,
 });
 
 /** Put a journal's paid receipts into the run's receipts before a continuation's first request. A receipt already held
@@ -61,7 +62,7 @@ export type ReuseReceiptsOptions = {
 
 export type ReceiptReuse = {
   /** The tool with its `execute` wrapped; a tool not named in `tools` is returned as it is. A wrapped call whose result
-   *  carries its blocks only under the key the loaded pi-durable does not read throws `ToolResultKeyError`, and no
+   *  carries its blocks only under `content` (pi 1.1's key; pi-durable reads `output`) throws `ToolResultKeyError`, and no
    *  receipt is written: the model would have received an empty result. */
   wrap<T extends ReusableTool>(tool: T): T;
   /** Calls answered from a receipt and calls refused as unknown, so far. */

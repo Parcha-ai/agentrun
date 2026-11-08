@@ -262,24 +262,24 @@ describe("same", () => {
 describe("tools by default (tools on, Miguel's rule), and whether the agent reaches the web", () => {
   const offers = toolOffers([
     { name: "read", available: true }, { name: "write", available: true }, { name: "edit", available: true },
-    { name: "fetch_page", available: true }, { name: "ask_person", available: true }, { name: "browser", available: false, missing: ["BROWSERBASE_API_KEY"] },
+    { name: "web_fetch", available: true }, { name: "ask_person", available: true }, { name: "browser", available: false, missing: ["BROWSERBASE_API_KEY"] },
   ]);
   it("takes the server's tools as objects", () => {
     expect(offers.find((t) => t.name === "browser")).toEqual({ name: "browser", available: false, missing: ["BROWSERBASE_API_KEY"] });
   });
   it("a new pi agent starts with every tool the server can run ticked, never one it can't", () => {
-    expect(defaultTools("pi", offers)).toEqual(["read", "write", "edit", "fetch_page", "ask_person"]);
+    expect(defaultTools("pi", offers)).toEqual(["read", "write", "edit", "web_fetch", "ask_person"]);
   });
   it("on Claude or Codex, only the tools that harness runs here: the server's own rule until it says per harness", () => {
     expect(defaultTools("claude-agent", offers)).toEqual(["read", "write", "edit"]);
     expect(defaultTools("codex", offers)).toEqual(["read", "write", "edit"]);
   });
   it("follows the server when it says which harnesses run each tool", () => {
-    const said = toolOffers([{ name: "read", available: true, harnesses: ["pi", "codex"] }, { name: "fetch_page", available: true, harnesses: ["pi", "codex"] }, { name: "ask_person", available: true, harnesses: ["pi"] }]);
-    expect(defaultTools("codex", said)).toEqual(["read", "fetch_page"]);
+    const said = toolOffers([{ name: "read", available: true, harnesses: ["pi", "codex"] }, { name: "web_fetch", available: true, harnesses: ["pi", "codex"] }, { name: "ask_person", available: true, harnesses: ["pi"] }]);
+    expect(defaultTools("codex", said)).toEqual(["read", "web_fetch"]);
   });
-  it("reaches the web with any of fetch_page, web_fetch and web_search, and with none of them does not", () => {
-    for (const web of ["fetch_page", "web_fetch", "web_search"]) expect(reachesWeb(["read", web]), web).toBe(true);
+  it("reaches the web with web_fetch or web_search, and with neither does not", () => {
+    for (const web of ["web_fetch", "web_search"]) expect(reachesWeb(["read", web]), web).toBe(true);
     expect(reachesWeb(["read", "write", "ask_person"])).toBe(false);
     expect(reachesWeb([])).toBe(false);
   });

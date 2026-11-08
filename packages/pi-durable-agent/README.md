@@ -35,13 +35,12 @@ where each tool runs. The definition names tools; the host binds them. It does n
 ## Install
 
 ```sh
-npm install @parcha/pi-durable-agent@latest @earendil-works/pi-durable@1.3.0 @earendil-works/pi-ai@1.3.0 @earendil-works/chord@1.3.0
+npm install @parcha/pi-durable-agent@latest @earendil-works/pi-durable@1.5.0 @earendil-works/pi-ai@1.5.0 @earendil-works/chord@1.5.0
 ```
 
 The package needs Node 22.19 or later, and `@earendil-works/pi-durable` and `@earendil-works/chord` as peers
 ([Requirements](#requirements)); `@earendil-works/pi-ai` gives the host's Harness its models. The pi packages are pinned
-to 1.3.0, the newest its peer range takes. pi 1.4 is not supported yet; a later release widens the range. It does not
-need a browser, a key or a network.
+to 1.5.0, the one version its peers take. It does not need a browser, a key or a network.
 
 To try a version that is not on npm yet, `npm pack -w @parcha/pi-durable-agent` in a built checkout writes
 `parcha-pi-durable-agent-<version>.tgz`: install that file's path in place of `@parcha/pi-durable-agent@latest`.
@@ -51,12 +50,11 @@ To try a version that is not on npm yet, `npm pack -w @parcha/pi-durable-agent` 
 Two runs of one agent on this machine. The first signs in, using a stand-in for the provider, and the second finds that
 sign-in already saved. The reference it prints, `ctx_1`, is a stand-in; a real one is secret.
 
-In an empty directory, install the package and the pi packages it runs with (pinned to 1.3.0: pi 1.4 is not supported yet;
-a later release widens the range), save this as `quickstart.mjs`, and run
+In an empty directory, install the package and the pi packages it runs with (pinned to 1.5.0), save this as `quickstart.mjs`, and run
 `node --no-warnings=ExperimentalWarning quickstart.mjs` (Node's SQLite is marked experimental and says so):
 
 ```sh
-npm install @parcha/pi-durable-agent@latest @earendil-works/pi-durable@1.3.0 @earendil-works/pi-ai@1.3.0 @earendil-works/chord@1.3.0
+npm install @parcha/pi-durable-agent@latest @earendil-works/pi-durable@1.5.0 @earendil-works/pi-ai@1.5.0 @earendil-works/chord@1.5.0
 ```
 
 ```js
@@ -107,15 +105,6 @@ run-2: carried back acme.example
 Run 1 signs in once. It starts with no save lease, because the agent has no sign-in to lease yet; a new sign-in goes to
 the first run that carries it back. Run 2 starts with the lease, finds the sign-in ready and never makes one.
 
-## A runnable example
-
-[`examples/web`](https://github.com/Parcha-ai/agentrun/tree/main/examples/web) is a small web server over an agent home:
-a job history, each run's timeline, its files and its live browser. Its agent asks the person to sign in to a site
-through the live view, and its next run starts signed in. A run needs a browser and a model endpoint. With neither,
-the quickstart above is the keyless path.
-[Its README](https://github.com/Parcha-ai/agentrun/tree/main/examples/web#run-it) says which browsers it takes and how
-to run it from a checkout.
-
 ## A saved sign-in
 
 A sign-in is kept as the provider's reference to a signed-in browser: a Browserbase context id, or, for a local Chrome,
@@ -150,8 +139,7 @@ acme/                        the agent home
   runs/<run id>/             a pi-durable-disk run directory
     store/run.sqlite         that run's pi-durable store; the host opens its Harness on it
     work/                    that run's files, with the agent's skills under .agents/skills/
-    run.json, owner.lock,    written by pi-durable-disk when it runs the run (and commands/ on a local
-    tmp/                     directory); carryBack reads only the store
+    tmp/, commands/          written by pi-durable-disk when it runs the run; carryBack reads only the store
 ```
 
 `runPaths(home, runId)` gives a run's `dir`, `storePath` and `workspace`. To run it under pi-durable-disk, start it with
@@ -737,13 +725,15 @@ No dependency, no Node built-in, and no thrown error of its own: a page, a viewe
 | `registerLabel(tool, label, fold?, { name? })` | The label of a host's own tool, in the past tense, for every later call; `fold` says how its calls fold into one line; `name` is what the tool is called where calls are counted (a run's analytics), in plain words |
 | `nameOf(tool)` | That name: the registered one, else the name the tool was called by. The registry is the one source of a tool's display name |
 | `callFailed(tool, result)` | Whether a finished call failed: an error, or a result its tool's outcome reads as failed (a refused fetch). A result row's `tool_status` and `runMetricsOf`'s tool `errors` both read it |
-| `registerOutcome(tool, outcome)` | How a host's tool tells its outcome from a result it returned, not an error: `outcome(result)` gives `{ failed, text }`, and the result row reads `<label>: <text>`, with `tool_status` `failed` when `failed`, in place of `<label>: ok`. `web_fetch` and `fetch_page` have theirs: a page with `ok: false` reads `refused: …` or `failed: …` |
+| `registerOutcome(tool, outcome)` | How a host's tool tells its outcome from a result it returned, not an error: `outcome(result)` gives `{ failed, text }`, and the result row reads `<label>: <text>`, with `tool_status` `failed` when `failed`, in place of `<label>: ok`. `web_fetch` has its own: a page with `ok: false` reads `refused: …` or `failed: …` |
 | `registerTurnEnding(tool)` | A host's tool that ends its turn (pi's `terminate`, as an ask-the-person tool does). A message after a round whose tools all end the turn is the person's next message, never a `(steer)` |
 | `labelOf(tool, args, result?, extra?)` | The label of one call. An unknown tool gets `Using tool: <name>` |
 | `foldLabel(tool, calls)` | One line for several calls of one tool, from their input and output previews |
 | `inputPreview(args, max)` | The input worth showing, or `null`: a `description`, `command`, `query`, `file_path`, `url`, `path` or `code` argument, with a URL's query values dropped, cut to `max` |
 | `runMetricsOf(records)` | What a run that ended used, from the entries of all its conversations, in log order: its tokens (`input`, `cacheRead`, `cacheWrite`, `output`), its `requests` as the usage row counts them and `unmetered`, those of unknown tokens (an aborted response's partial usage, and a usage with no input at all, are never summed), its requests by `provider/model` (`models`) and the busiest `model`, and each tool's `calls` and `errors` (`tools`), their names kept to what the store takes (`METRIC_NAMES`). A `RunMetrics`, for the store's `carryBack` and `importRun` ([Agents in a folder](#agents-in-a-folder-the-agent-store)) |
 | `runMetricsWithDecisions(records, decisions)` | `runMetricsOf`, with a workflow run's decision receipts (`DecisionLike`) beside its entries: each a request by `provider/model`, its `usage` (`input_tokens`, `output_tokens`) in the token sums, and one with none, or cancelled, in `unmetered`. serve passes a workflow run's receipts at its end; `runMetricsOf` keeps one parameter, so `.map(runMetricsOf)` stays safe |
+| `costLabel(ended)` | The words before a usage row's cost: "Cost" for a run that has ended, "Cost so far" for one still going. The usage row says them as `timelineOf`'s `ended` option is set |
+| `endedUsage(row)` | A usage row made while the run ran, as an ended run's: its "Cost so far:" read as "Cost:". Any other row as it is. For a host that serves rows it read before the run ended |
 | `CAPS` | The caps a row's `summary`, `preview`, `text` and `thinking` are cut to: 500, 500, 2000 and 100 |
 | `RUN_RESUMED` | The entry kind a host writes on the root as a run's process opens to go on with a run its last process left unfinished (`data`: `after`, `crash` or `server_stop`; `generation`; `at`): a `phase` row of its own at `at`, "Resumed after a crash" or "Resumed after the server stopped", and no request. A reader from before it ignores it, as it does any kind it does not know |
 | `TURN_END` | The entry kind a host writes on the root as a turn on another harness (claude-agent, codex) ends (`data`: `key`, `status`, ...). No row. A message after it is the person's next message, never a `(steer)`, even when the turn's last entry was a tool's result: a stop that came after the result and before the next model request |
@@ -751,20 +741,26 @@ No dependency, no Node built-in, and no thrown error of its own: a page, a viewe
 | `cut(text, max)` | `text` cut to `max` characters, the last three `...` when it was longer: how a row's strings are cut to `CAPS` |
 | `METRIC_NAMES` | How `runMetricsOf` keeps tool and model names: `max` 256 characters, the `kept` 100 busiest of each, and the names it sums the rest and a nameless tool under: `otherTools` (`…other tools`), `otherModels` (`…other models`), `unnamedTool` (`…unnamed tool`) |
 | `REQUEST_STARTED`, `REQUEST_ENDED`, `REQUEST_COST`, `REQUEST_REFUSED`, `REQUEST_COST_PENDING`, `REQUEST_COST_LATE`, `REQUEST_CONTINUED` | The entry kinds a host writes to mark a model request: as it leaves, and as it ends aborted; and the cost of a request with no `pi.assistant` entry of its own (a compaction summary, marked `request: "compaction"`). An answer written before its cost came in is followed by `REQUEST_COST_PENDING`, and its cost comes later as `REQUEST_COST_LATE` (`usd`): it adds to the cost and is not counted as a request; the cost reads unknown while one is pending. A call an answer asked for, written after that answer's own entry (a harness reports each call as it runs it), follows `REQUEST_CONTINUED` in a `pi.assistant` of its own: it shows under that answer and counts as a call, not as a request, a cost or tokens. The usage row counts each marked request and sums each cost; one with no entry or cost (cut before its answer) other than the latest still in flight makes the cost unknown. A request the host refused before it left (`REQUEST_REFUSED`) is not counted, and pi's error entry for it is not shown. A conversation with no marks reads as before |
+| `CAP_WRAPUP` | The entry kind a host writes on a run's root when its spend cap's wrap-up note went to the model (`{capUsd, leftUsd, words}`, with `key` on another harness): the model was told once, in a request it sent, to finish now with its answer. It shows as the server's own `phase` row, `AgentRun: <words>` (`text` the words, `origin: "server"`, its id ending in `NOTE_SUFFIX`), after the message of the turn it was told in. It is no request, no cost and no message its turn took |
 | `TOOL_STARTED`, `TOOL_COST` | `TOOL_STARTED` marks a paid tool's call before it is sent (`{tool, charged_by, call, heldUsd}`); the `TOOL_COST` of the same `call` settles it, and in a settled timeline one never settled (a crash) makes the cost unknown, as a cut model request does: its `heldUsd` is a host cap's bound, never a charge. `TOOL_COST` is the entry kind a host writes for what a paid tool's call charged (`{tool, charged_by, usd, call?}`, `usd` null when the call may have charged and did not say how much): it adds to the run's cost, which a null makes unknown, and shows as a `phase` row of its own (`Tool cost: monid charged $0.0030 for monid.run`, `tool_name` the tool, `tool_use_id` the call). It is not a request: the usage row names the paid tool calls apart (`... over 1 model request and 1 paid tool call`), each call once by its `call` however many charges it books (a browser call and its session's release under it are 1 paid tool call; when any of them has no price, 1 charge not priced). The charge's `phase` row carries it as `usage` (`{usd, requests: 0}`), so a host can sum a run's paid tools from the same rows as its cost |
 | `BROWSER_CHARGE`, `chargedTool(row)` | `BROWSER_CHARGE` (`browser`) is the `tool` of a browser session's `TOOL_COST` (`{tool: "browser", charged_by, usd, call, tag, conversation, seconds, at, final}`). It makes no row of its own: it folds into the `tool_use` row of the call it names, as that row's `usage` (`{usd, requests: 0}`, every charge booked under the call summed; `{usd: null, requests: 0, so_far_usd, unpriced: 1}` once one has no price: the call is one charge not priced, however many it booked, as the usage row counts it). A charge with no call (a release after the run's last call) folds into the last call charged for its session (`tag`), else its conversation's latest browser call. Only a charge none of these is found for (its calls compacted away) keeps a `phase` row. A charge booked after the row was shown changes that row, under the same id, live too. The run's cost counts each charge once, as before. `chargedTool(row)` names the tool whose charge a row carries: a charge row's `tool_name`, `browser` for a browser step's call row (its `tool_name` one of the browser's tools) with `usage`, undefined for any other row (another tool's call row, whatever it carries, and the usage row). A browser charge folds only into a browser step's row: one that names another tool's call goes to its session's or conversation's browser call, else keeps its own row. The text view shows a call's charges on its line (`Read the page "Example" · $0.0017`) |
 | `TOOL_UNMETERED` | The entry kind a host writes for a tool call that ran with no price (an MCP tool its owner set none for: `{tool, charged_by, call}`): it is outside the run's cost and never makes it unknown. It shows as a `phase` row of its own (`Not metered: mcp:fake/add has no price set, so it is outside the run's cost`, `tool_name` the tool, `tool_use_id` the call), with no `usage`, and the usage row counts these calls (`usage.not_metered`, and `...; 1 tool call not metered` in its summary) |
-| `HOST_PHASE` | The entry kind a host writes for a step of its own, in its words (`{summary}`), such as a box waiting for its image: one `phase` row with the summary's first line, cut at the summary cap, stored and live alike. It is no request and no cost; one with no summary shows nothing |
-| `MESSAGE_ORIGIN` | The entry kind (`agentrun.message_origin`, `{ origin, text }`) a host writes just before a message the server wrote, whose user entry carries no data of its own (pi's): it names the next user entry in its conversation whose text is exactly `text`, once. The model never reads it: it carries no model message |
-| `originOf(value)` | `value` as a `MessageOrigin`, or `undefined` when it is not one |
-| `messageOrigins(entries)` | The user entries the server wrote, each with its origin: its own `data.origin`, else the first open `MESSAGE_ORIGIN` marker with its exact text. The Timeline reads them with the same rule: such an entry is a `phase` row, "AgentRun: <its first line>", with `origin: "server"`, never a "You:" `user_message`; an `approval_declined` one is the person's words (`said`) as their own `user_message` row, beside the server's `phase` row, which also has `origin: "server"` and an id ending in `:server` |
-| `isMessageRow(row)` | Whether a row is a message its run took: a `user_message`, or a row with `origin: "server"` whose id does not end in `:server` (a server's row beside the person's words is not a second message). A host that counts a run's messages (their arrival, where a stop stands) counts these |
+| `HOST_PHASE` | The entry kind a host writes for a step of its own, in its words (`{summary}`, and `at`, ms, when it happened), such as a box waiting for its image: one `phase` row with the summary's first line, cut at the summary cap, stored and live alike, at `at` when given, else at the time of the entry before it. It is no request and no cost; one with no summary shows nothing |
+| `MESSAGE_ORIGIN` | The entry kind (`agentrun.message_origin`, `{ origin, text }`) a host writes just before a message the server wrote, whose user entry carries no data of its own (pi's): it names the next user entry in its conversation whose text is exactly `text`, once. One with `withdrawn: true` takes back the last open marker of the same text and origin (its input was refused). The model never reads it: it carries no model message |
+| `originOf(value)` | `value` as a `MessageOrigin`, or `undefined` when it is not one: `{kind: "server", reason}` (`said` too for `approval_declined`), or `{kind: "trigger", trigger_id, source, owner}`, a trigger's input (a non-empty id, a source of `TRIGGER_SOURCES`: `schedule`, `webhook`, `slack`, `github`, and a boolean `owner`, true when the words are the trigger's owner's) |
+| `messageOrigins(entries)` | The user entries the server wrote, each with its origin: its own `data.origin`, else the first open `MESSAGE_ORIGIN` marker with its exact text. The Timeline reads them with the same rule: such an entry is a `phase` row, "AgentRun: <its first line>", with `origin: "server"`, never a "You:" `user_message`; an `approval_declined` one is the person's words (`said`) as their own `user_message` row, beside the server's `phase` row, which also has `origin: "server"` and an id ending in `:server`; a trigger's is a `phase` row, "Trigger <trigger_id>: <its first line>", with `origin: "trigger"` and `trigger: {id, source, owner}` (its origin's, `trigger_id` as `id`) |
+| `originMatcher()` | A reader for entries in order: it returns, for each user entry, its origin (its own `data.origin`, else the first open `MESSAGE_ORIGIN` marker with its exact text), and `undefined` for a person's own message. `messageOrigins` reads with it; a host that walks entries as they stream (and keeps what each user entry said) uses it directly |
+| `isUserEntry(entry)` | Whether an entry is a user-role message the Timeline shows: a pi user entry, or a host's user entry |
+| `TRIGGER_SOURCES` | What can fire a trigger, as a `trigger` origin's `source` names it: `schedule`, `webhook`, `slack`, `github` |
+| `isMessageRow(row)` | Whether a row is a message its run took: a `user_message`, or a row with `origin: "server"` or `"trigger"` whose id does not end in `:server` (a server's row beside the person's words is not a second message) or `NOTE_SUFFIX`. A host that counts a run's messages (their arrival, where a stop stands) counts these |
+| `NOTE_SUFFIX` | `:note`, the id suffix of the server's row for a note it told the run's model (`CAP_WRAPUP`): `origin: "server"`, so a host labels it as the server's, and never a message its turn took (`isMessageRow` is false) |
 
 Its types: `TimelineEvent` (Grep's fields, plus the optional ones above, `origin` among them) and `TimelineKind`, `TimelineOptions`, `OutcomeFn`,
 `EntryLike` (a pi conversation entry as stored), `AgentEventLike` (a pi event), `Call`, `Fold`, `Group`, `LabelFn`,
 `FoldSpec`, `ToolResultView`, `RunMetrics` and `ToolMetrics` (what `runMetricsOf` returns), and `DecisionLike` (a
-workflow's decision receipt, as `runMetricsWithDecisions` reads it), and `MessageOrigin` (who wrote a message the person did
-not: `{ kind: "server", reason: "cap_raised" | "approval" }`, or `"approval_declined"` with `said`).
+workflow's decision receipt, as `runMetricsWithDecisions` reads it), `TriggerSource` (one of `TRIGGER_SOURCES`), and `MessageOrigin` (who wrote a message the person did
+not: `{ kind: "server", reason: "cap_raised" | "approval" }`, or `"approval_declined"` with `said`; or a trigger's firing,
+`{ kind: "trigger", trigger_id, source, owner }`, `owner` true only when the trigger's owner wrote its words).
 
 ### `@parcha/pi-durable-agent/serve`
 
@@ -847,28 +843,19 @@ replaced (`seed.prior`). It acts only while that start is still the run's (its r
 touches only leases exactly as it set them, so an undo retried after the run id was prepared again, or after the run went
 on, changes nothing and returns `{ undone: false }`.
 
-Binding the access and the seed to pi-durable-disk looks like this (a host's code, not part of this package):
+Binding the seed to pi-durable-disk looks like this (a host's code, not part of this package). A home on a local
+directory needs no `access`: the package reads its own files.
 
 ```js
-import { openDurableRun, readReleased, withClaim } from "@parcha/pi-durable-disk";
-import { carryBack, prepareRun, seedRun } from "@parcha/pi-durable-agent";
+import { localRun, openDurableRun } from "@parcha/pi-durable-disk";
+import { carryBack, prepareRun, runPaths, seedRun } from "@parcha/pi-durable-agent";
 
-const access = {
-  claim: (fn) => withClaim({ control, disk, region, path: "agent" }, ({ root }) => fn(root)),
-  runStore: async (run) => {
-    const { bytes } = await readReleased({ control, path: run.path }, "store/run.sqlite", { sqlite: true });
-    const file = join(tmp, `${run.runId}.sqlite`);
-    await writeFile(file, bytes);
-    return file;
-  },
-};
-
-const seed = await prepareRun(home, { host: "worker-1", sha, access });
-const run = await openDurableRun({ disk, region, id: seed.runId }, { harness, seed: (dir) => seedRun(dir, seed) });
-// (a run that will never start: await undoPrepare(home, seed, { access }) gives its leases back)
+const seed = await prepareRun(home, { host: "worker-1", sha });
+const run = await openDurableRun({ disk: "local", region: "local", id: seed.runId }, { ...localRun(runPaths(home, seed.runId).dir), harness, seed: (dir) => seedRun(dir, seed) });
+// (a run that will never start: await undoPrepare(home, seed) gives its leases back)
 // ... the run works, then:
 await run.release();
-await carryBack(home, { runId: seed.runId }, { outcome: "completed", access });
+await carryBack(home, { runId: seed.runId }, { outcome: "completed" });
 ```
 
 `seed` runs inside the first claim of a new run, before its Harness opens the store; a throw fails the open with
@@ -887,8 +874,8 @@ carried back later.
 ## Requirements
 
 - Node 22.19 or later.
-- `@earendil-works/pi-durable` and `@earendil-works/chord`, `>=1.1.0 <1.4.0`, as peer dependencies. The package is
-  developed against 1.1.0, and CI runs its suite on 1.2.0 and 1.3.0 too.
+- `@earendil-works/pi-durable` and `@earendil-works/chord`, `1.5.0` exactly, as peer dependencies. CI runs its suite
+  on 1.5.0.
 
 ## License
 

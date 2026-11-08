@@ -1,6 +1,6 @@
 // Copyright 2026 Vercel Inc. Licensed under the Apache License, Version 2.0; see LICENSE in this package.
 // From github.com/vercel-labs/durable-harness, packages/harness-claude-code/src/harness.ts at ea8aa4060c (UPSTREAM.json records its blob and sha256).
-// Changed by Parcha, imports rewritten for AgentRun; patches: 001-gate-always-on, 002-names, 003-comments, 008-tool-description-max, 009-tool-result-barrier-and-refusals, 010-served-tools-with-images, 011-session-skills, 013-recovery-note-system-prompt, 015-web-search, 016-mcp-output-tokens, 017-key-refused, 019-recovery-covers, 020-mcp-servers, 021-tool-server-modules
+// Changed by Parcha, and AgentRun's own since the port from upstream froze on 2026-11-07.
 import { AsyncLocalStorage } from 'node:async_hooks';
 import { randomUUID } from 'node:crypto';
 import { mkdtemp, rm } from 'node:fs/promises';
@@ -10,14 +10,11 @@ import { type DriveContext, type Harness, type HostTool, type ReplayPolicy, Rest
 import {
   BuiltinCalls,
   CLAUDE_ROUTES,
-  type GatewayCap,
   gatewayCredential,
   type GatewayHandler,
   gatewayHandler,
   gatewayUrl,
   isBrandedMachine,
-  journalLedger,
-  ModelSteps,
   NativeJournal,
   openTurn,
   placeSubmissions,
@@ -27,7 +24,6 @@ import {
   replayBy,
   type SessionMachine,
   type SessionProcess,
-  settleAbandonedModelSteps,
   toolBridge,
   waitForSubmissions,
 } from './host/process.js';
@@ -74,10 +70,9 @@ import { assertAgentSdkVersion, CLAUDE_VM_EXECUTABLE } from './versions.js';
  * **The model.** The CLI's base URL is the VM's model port, its key the
  * attach's model key (`SessionMachine.modelKey`); every request it sends is
  * relayed to this drive's `gatewayHandler` (Claude's fixed table, the body
- * policy, the model allowlist, the budget, the credential), so the VM never
- * holds a credential (decision 6). The spend is kept in the session's
- * journal (`journalLedger`); a request past `sandbox({ budget })`'s turn or
- * session cap ends the turn at once with an `Unavailable` naming the cap.
+ * policy, the model allowlist, the credential), so the VM never holds a
+ * credential (decision 6). The spend is the runner's: each request is booked
+ * through the host's model port, and the host's cap bounds it.
  *
  * **Tools.** Tool-less by default: the app's `HostTool`s (`tools`) are the
  * CLI's only tools (`tools: []`), and the system prompt says so. With
@@ -133,8 +128,6 @@ export interface ClaudeSandbox {
   readonly env?: Readonly<Record<string, string>>;
   /** `sandbox({ network })`: what the CLI's own sandbox lets commands reach, and whether provider-hosted tools may run. */
   readonly network: ClaudeSandboxNetwork;
-  /** `sandbox({ budget })`'s dollar caps (`Infinity` turns one off). */
-  readonly budget: { readonly turnUsd: number; readonly sessionUsd: number };
   /** `sandbox({ commandTimeoutMs })`: the longest a Bash command may run. */
   readonly commandTimeoutMs?: number;
   /**
@@ -204,8 +197,8 @@ export interface ClaudeCodeHarnessOptions {
    * model proxy (`<modelUrl>/mcp/<name>`, behind the session's key), with the
    * tools granted on each: those are allowed by name (`mcp__<name>__<tool>`)
    * and each call is recorded as a built-in's. They are set over the CLI's
-   * stdin (`setMcpServers`), never in its argv. A server that does not
-   * connect fails the turn. Default none.
+   * stdin (`setMcpServers`), never in its argv. The proxy answers the
+   * handshake: an unreachable server shows at its first call. Default none.
    */
   mcpServers?: readonly { readonly name: string; readonly tools: readonly string[] }[];
   /**
@@ -459,15 +452,12 @@ export function claudeCodeHarness(options: ClaudeCodeHarnessOptions = {}): Harne
 
   return {
     name: options.name ?? 'claude-agent',
-    // Each model request reaches the provider through the session's proxy (`ModelSteps.request`).
+    // Each model request reaches the provider through the session's proxy, which books it through the host's model port.
     modelCalls: 'self',
     async drive(ctx: DriveContext) {
       // Nothing to do (an idle wake, a chaos arming): no VM. A model step a
       // crash left open after its turn ended is closed (no request will retry it).
-      if (!recoveryNote(ctx.state()) && ctx.pending().length === 0) {
-        await settleAbandonedModelSteps(ctx);
-        return;
-      }
+      if (!recoveryNote(ctx.state()) && ctx.pending().length === 0) return;
       const sandbox = options.sandbox;
       if (!sandbox) throw sandboxRequired();
       const { query } = await loadSdk();
@@ -479,25 +469,15 @@ export function claudeCodeHarness(options: ClaudeCodeHarnessOptions = {}): Harne
       // that started the drive.
       const inDrive = AsyncLocalStorage.snapshot();
       const credential = options.credential ?? gatewayCredential;
-      // The handler also sees each model request start and end: the drive's
-      // model steps, written around a "Crash during: model" drill.
-      const steps = new ModelSteps(ctx, options.log ? { log: options.log } : {});
-      const ledger = journalLedger(journal, { records });
       if (ctx.deadline === undefined) log('claude-agent: the kernel gave no deadline; assuming a 300 s invocation', {});
       const deadline = ctx.deadline ?? Date.now() + ASSUMED_INVOCATION_MS;
       const handler = gatewayHandler({
         routes: CLAUDE_ROUTES,
         models: { model, ...(smallModel ? { smallModel } : {}) },
-        budget: sandbox.budget,
-        ledger,
         providerTools,
         network: sandbox.network === 'allow-all' || sandbox.network === 'deny-all' ? sandbox.network : 'custom',
         credential: () => inDrive(credential),
         target: options.gatewayUrl ?? gatewayUrl(),
-        track: steps.request,
-        onCap: (cap) => {
-          if (cap !== 'concurrency') ctx.halt?.(spendCapped(cap));
-        },
         // A refused key fails the turn at the provider's first 401, in the words the CLI would end on after its retries.
         onKeyRefused: (detail) => ctx.halt?.(new Error(`Failed to authenticate. API Error: 401${detail ? ` ${detail}` : ''}`)),
         // Without the app's own log, the handler's default: a refused model call is a warning in the Function's logs, not silence.
@@ -796,8 +776,6 @@ export function claudeCodeHarness(options: ClaudeCodeHarnessOptions = {}): Harne
           // (the key of its placement), so a recovery can find it in the
           // transcript (`lostPrompts`).
           const first = placed[0]?.id;
-          // A new turn's spend is keyed by its first submission; a steer joins the turn it steers, and a recovery note keeps the key of the turn it resumes (set before).
-          if (first && how.priority !== 'next' && !how.synthetic) ledger.turn(first);
           const uuid = !first ? randomUUID() : how.synthetic ? uuidFrom(`note:${first}`) : uuidFrom(first);
           // A recovery message carries placed prompts' words: which, under its uuid, before it goes (lostPrompts reads it).
           if (how.covers?.length) await ctx.effect(`covers:${uuid}`, { name: 'covers', replay: 'safe', input: { ids: how.covers } }, async () => true);
@@ -919,7 +897,6 @@ export function claudeCodeHarness(options: ClaudeCodeHarnessOptions = {}): Harne
           const open = openTurn(ctx.state());
           const note = recovered && recoveryNote(ctx.state());
           if (note) {
-            if (open) ledger.turn(open.placed[0] ?? `open:${open.since}`);
             // The CLI answers again from the interrupted step: what a reader saw of its reply is replaced by what the log kept.
             ctx.live(restartEvent(note.turn));
             const covers = [...(open ? lostPrompts(ctx.state(), open.placed, store) : []), ...note.pending.map((s) => s.id)];
@@ -935,8 +912,6 @@ export function claudeCodeHarness(options: ClaudeCodeHarnessOptions = {}): Harne
             await send(s.text ?? '', [s]);
             await runTurn();
           }
-          // A model step a crash left open that no request of this drive made again: closed.
-          await steps.settleAbandoned();
           // Let the CLI exit (stdin closed) and the SDK deliver its last mirror frames.
           input.end();
           await drain(messages, 10_000);
@@ -961,8 +936,6 @@ export function claudeCodeHarness(options: ClaudeCodeHarnessOptions = {}): Harne
         if (!ctx.signal.aborted) await Promise.race([Promise.allSettled([store.flush(), journal.flush()]), new Promise((r) => setTimeout(r, 2000).unref())]);
         // Nothing the model started outlives the drive: the session's processes in the VM are killed (the VM and the Drive stay).
         if (held) await held.close().catch(() => {});
-        // No model step outlives the drive.
-        await steps.close();
         if (configDir) await rm(configDir, { recursive: true, force: true }).catch(() => {});
       }
     },
@@ -995,13 +968,6 @@ export function protectedPath(root: string, path: string): boolean {
   return PROTECTED_DIRS.some((d) => {
     const base = posix.join(root, d);
     return abs === base || abs.startsWith(`${base}/`);
-  });
-}
-
-/** A spend cap the model calls reached: the turn ends, saying which (§5.5 step 6). */
-function spendCapped(cap: Exclude<GatewayCap, 'concurrency'>): Unavailable {
-  return new Unavailable(`The turn stopped: the ${cap === 'turnUsd' ? "turn's" : "session's"} model spend reached its cap (sandbox({ budget: { ${cap} } })).`, {
-    hint: `Raise sandbox({ budget: { ${cap} } }) to let the session spend more.`,
   });
 }
 

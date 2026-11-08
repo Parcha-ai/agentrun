@@ -118,7 +118,6 @@ export interface OpenDriveOptions {
   /** The session's writer (`SessionStore.open`): the drive writes only through it, and its key is the session's. */
   writer: SessionWriter;
   signal: AbortSignal;
-  config?: unknown;
   attempt?: number;
   deadline?: number;
   live?: (event: unknown) => void;
@@ -172,8 +171,7 @@ export async function openDrive(options: OpenDriveOptions): Promise<Drive> {
   const drive: Drive = {
     runId: key,
     // The copied code's own writes (a journal's blobs) go through the same queue as the drive's.
-    world: { store: { key: writer.key, read: () => writer.read(), append: (written) => append([...written]) } },
-    config: options.config,
+    world: { store: { key: writer.key, read: () => writer.read(), append: (written) => append([...written]), sync: () => queue.then(() => writer.sync()) } },
     attempt: options.attempt ?? 0,
     ...(options.deadline === undefined ? {} : { deadline: options.deadline }),
     signal,
@@ -207,6 +205,9 @@ export async function openDrive(options: OpenDriveOptions): Promise<Drive> {
       if (known?.status === "completed") return known.output as T;
       if (known?.status === "failed") throw new EffectFailure(known.error ?? { message: "failed" });
       if (known?.status === "running" || inflight.has(k)) throw new Fatal(`agentrun-kernel: effect ${k} is already running in this drive`);
+      // A writer with no sync cannot make the start of an effect that may not run twice durable: refused before its
+      // start is written, so no intent is left without an outcome.
+      if (effectOptions.replay !== "safe" && typeof writer.sync !== "function") throw new Fatal(`agentrun-kernel: effect ${k} may not run twice, and the session's writer has no sync to make its start durable`);
       if (signal.aborted) throw signal.reason;
       const placing = effectOptions.placed ?? [];
       // A withdraw already in the log beat this placement: refuse before writing anything, so no intent is left for
@@ -220,6 +221,9 @@ export async function openDrive(options: OpenDriveOptions): Promise<Drive> {
         // A withdraw appended while this intent was being written beat the placement: what the caller would send next
         // is not what the log placed, so it must rebuild instead of running.
         if (placing.length && state.effects.get(k)?.placed.length !== placing.length) throw new Restart(`agentrun-kernel: effect ${k} placed a withdrawn submission; the drive must be rebuilt`);
+        // An effect that may not run twice runs only once its start is durable: after a lost box the next drive finds
+        // the start with no end and reports it interrupted, rather than finding nothing and running it again.
+        if (effectOptions.replay !== "safe") await writer.sync();
         const partial: unknown[] = [];
         let output: T;
         try {

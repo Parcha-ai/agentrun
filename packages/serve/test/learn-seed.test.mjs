@@ -15,6 +15,7 @@ import { agentFolderOf, homeKey } from "../dist/files.js";
 import { learningTestHooks } from "../dist/learning.js";
 import { KEEPS, learnedIn, NOTHING_YET, wholeIn } from "./learn-support.mjs";
 import { agent, follow, runDir, scratch, serve, withEnv } from "./support.mjs";
+import { fauxTable } from "./fixtures/faux-table.mjs";
 
 const SYSTEM = new URL("./fixtures/faux-system.mjs", import.meta.url).pathname;
 const note = (name, description, type, extra = "", body = `${description}.\n`) => `---\nname: ${name}\ndescription: ${description}\ntype: ${type}\n${extra}---\n${body}`;
@@ -152,21 +153,22 @@ test("an empty learning/ in the agent's home before its first run, with no .git,
 // The faux harness stands in for claude-agent's and codex's: it says the system prompt the run gives it.
 for (const harness of ["pi", "claude-agent", "codex"]) {
   test(`a fresh agent's first ${harness} run that learns is told so: # Learned after the instructions says it learns, how, and to tell the person it keeps what they ask but never a secret, then that nothing is learned yet`, { timeout: 90_000 }, async (t) => {
-    const { api, data } = await serve(t, { faux: SYSTEM, fauxHarness: SYSTEM });
+    const { api, data } = await serve(t, { faux: SYSTEM, harnessTable: fauxTable(SYSTEM) });
     const id = `first-${harness}`;
     assert.equal((await api("POST", "/agents", agent(id, { learning: true, harness, instructions: "Answer the question." }))).status, 201);
     const { runId, prompt } = await ran(api, id);
     assert.deepEqual(pinOf(data, runId), { seed: git(repoOf(data, id), ["rev-parse", "main"]) }, "a first run has a pin, with nothing learned");
     assert.ok(prompt.includes(`Answer the question.\n\n# Learned\n\n${KEEPS}\n\n${NOTHING_YET}`), prompt);
     assert.equal(prompt.split("# Learned").length, 2, "one section");
-    // It never promises to keep what is never kept: a secret the person asks it to remember is refused, and said so.
-    assert.match(prompt, /\n# Learned\n\n[^\n]*tell them you will keep it for later runs, in one short sentence at the start of your reply, never after a closing line or sign-off they asked you to end with\. A secret \(a password, key or token\) is never kept, so say so instead\.\n\n/);
+    // It never promises to keep what is never kept: a secret the person asks it to remember is refused, and said so. A
+    // reply whose start or end the person set follows it from its first line to its last, with no keep sentence.
+    assert.match(prompt, /\n# Learned\n\n[^\n]*tell them in one short sentence at the start of your reply that you will keep it for later runs\. When what they asked sets how your reply starts or ends, follow it from your reply's first line to its last and leave that sentence out\. A secret \(a password, key or token\) is never kept, so say so instead\.\n\n/);
   });
 }
 
 for (const harness of ["pi", "claude-agent", "codex"]) {
   test(`a ${harness} run with no read tool starts from main's commit, never the working tree: each active note whole under # Learned, and the index and the active notes in work/.learning, not the superseded one`, { timeout: 120_000 }, async (t) => {
-    const { api, data } = await serve(t, { faux: SYSTEM, fauxHarness: SYSTEM });
+    const { api, data } = await serve(t, { faux: SYSTEM, harnessTable: fauxTable(SYSTEM) });
     const id = `seeded-${harness}`;
     const sha = await learned(api, data, id, { harness, instructions: "Answer the question." });
     // Uncommitted edits in the working tree: what a run reads is main's commit, never these.
@@ -305,7 +307,7 @@ test("a note that is not active, a pending one among them, is never served: not 
   const dir = await scratch(t);
   // The budget is exactly what the two active notes take: counted, the pending one would spill them past it.
   const blocks = bytes(WHOLE) - bytes(WHOLE.split("\n\n")[0]);
-  const exact = await serve(t, { faux: SYSTEM, fauxHarness: SYSTEM, data: join(dir, "exact"), learningBudget: blocks });
+  const exact = await serve(t, { faux: SYSTEM, harnessTable: fauxTable(SYSTEM), data: join(dir, "exact"), learningBudget: blocks });
   for (const harness of ["pi", "codex"]) {
     const id = `waiting-${harness}`;
     await learned(exact.api, exact.data, id, { harness, instructions: "Answer the question." }, files);

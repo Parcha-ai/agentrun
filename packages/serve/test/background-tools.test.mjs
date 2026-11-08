@@ -176,7 +176,8 @@ test("a signal ends it: INT as Ctrl-C, and KILL where TERM is ignored", { timeou
   assert.equal(said[1].text, "Sent INT to background process 1: it ended by signal INT (exit code 130).");
   assert.equal(said[4].text, "Sent TERM to background process 2: it is running. Send KILL to end it at once.");
   assert.equal(said[5].text, "Sent KILL to background process 2: it ended by signal KILL (exit code 137).");
-  assert.match(said[6].text, /signal: must be equal to one of the allowed values/);
+  // pi 1.5 validates arguments with pi-schema, in its own words.
+  assert.match(said[6].text, /signal: expected one of \["TERM","INT","KILL"\]/);
   for (const id of ["1", "2"]) assert.equal(groupAlive(Number(readFileSync(join(work, "background", id, "pid"), "utf8"))), false, `${id}'s group is gone`);
 });
 
