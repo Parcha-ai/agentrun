@@ -1,6 +1,7 @@
 // Every case of the suite, in the order it runs.
 import type { Case } from "../types.js";
 import { appsCases } from "./apps.js";
+export { browserCases, browserOnlyCases } from "./browser.js";
 import { driftCases } from "./drift.js";
 import { execCases } from "./exec.js";
 import { filesCases } from "./files.js";

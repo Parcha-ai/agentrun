@@ -98,7 +98,7 @@ function entry(fields: Omit<ProviderEntry, "kinds">): ProviderEntry {
 }
 
 /**
- * Every provider Settings offers. orgo, phone-harness, browserbase and kernel are data until their provider file lands;
+ * Every provider Settings offers. orgo and phone-harness are data until their provider file lands (browserbase's and kernel's have);
  * a unit test then holds each to its module (CAPABILITIES, MOUNT). daytona, modal and e2b take archil mounts once D6
  * lands, and their entries follow their modules then.
  */
@@ -146,9 +146,9 @@ export const PROVIDERS: readonly ProviderEntry[] = [
 		],
 		mounts: [],
 		metered: true,
-		capabilities: [{ kind: "browser", groups: ["cdp"] }],
+		capabilities: [{ kind: "browser", groups: ["cdp", "stream"] }],
 	}),
-	entry({ id: "kernel", label: "Kernel", keys: [{ name: "KERNEL_API_KEY", required: true }], mounts: [], metered: true, capabilities: [{ kind: "browser", groups: ["cdp"] }] }),
+	entry({ id: "kernel", label: "Kernel", keys: [{ name: "KERNEL_API_KEY", required: true }], mounts: [], metered: true, capabilities: [{ kind: "browser", groups: ["cdp", "stream"] }] }),
 ];
 
 /** What testConnection is given: the provider's keys by their serve-side names, and the caller's signal. */

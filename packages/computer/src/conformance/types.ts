@@ -4,13 +4,14 @@ import type { ComputerClient, ComputerKind, DaemonMethod, DaemonMethods, ExecRun
 import type { ComputerConnection, ComputerProvider, ComputerRef, ComputerSpec, DaemonMode } from "../provider.js";
 import type { ComputerError, ComputerErrorCode, Result } from "../result.js";
 import type { ComputerSettingKind } from "../kinds.js";
+import type { CdpDialer, CdpSocket } from "./cdp.js";
 import type { StartedFixture } from "./fixture.js";
 import type { KindVerdict } from "./kind.js";
 
 /** Core: what a computer of its kind must do. Full: an optional capability, tested only where it is declared. */
 export type Level = "core" | "full";
 /** The suite's own grouping of its cases, the first part of each case id; not the protocol's Group. */
-export type CaseGroup = "health" | "exec" | "files" | "process" | "provider" | "drift" | "mount" | "screen" | "input" | "touch" | "apps" | "lifetime";
+export type CaseGroup = "health" | "exec" | "files" | "process" | "provider" | "drift" | "mount" | "screen" | "input" | "touch" | "apps" | "lifetime" | "browser";
 
 /**
  * What a case needs: a group (declared by both the provider's capabilities().groups and the computer's hello), a
@@ -123,6 +124,8 @@ export interface CaseContext {
 	fixture(): Promise<StartedFixture>;
 	/** fetch, as the run was given it; the global one by default. */
 	fetch(url: string, init?: { signal?: AbortSignal; method?: string }): Promise<{ status: number }>;
+	/** A CDP socket to a browser's CDP URL, through the run's dialer, closed when the case ends. */
+	cdp(url: string): Promise<CdpSocket>;
 	/** The run's clock: the wall clock by default. A case that waits on a vendor's timer reads time and waits through it. */
 	clock: Clock;
 	exec(argv: string[], extra?: Partial<ExecRunParams>, client?: ComputerClient): Promise<Ran>;
@@ -251,6 +254,8 @@ export interface ConformanceOptions {
 	fixture?: string;
 	/** fetch for screen.stream; default the global one. */
 	fetch?: CaseContext["fetch"];
+	/** How the browser cases open a CDP socket; default a WebSocket (dialCdp). Tests give a fake browser's. */
+	cdp?: CdpDialer;
 	/** The clock lifetime.extend reads and waits on; default the wall clock. Tests give one their fakes share. */
 	clock?: Clock;
 }

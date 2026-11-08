@@ -19,7 +19,10 @@ import {
 	serves,
 	servingRefusals,
 } from "../dist/index.js";
+import { BrowserbaseProvider } from "../dist/browserbase.js";
 import { E2BProvider } from "../dist/e2b.js";
+import { KernelProvider } from "../dist/kernel.js";
+import { BROWSERBASE_KEY, BROWSERBASE_URL, fakeBrowserbase, fakeKernel, KERNEL_KEY, KERNEL_URL } from "./fake-browser.mjs";
 import { fakeDocker } from "./fake-docker.mjs";
 import { fakeE2B } from "./fake-e2b.mjs";
 import { fakeModal } from "./fake-modal.mjs";
@@ -108,7 +111,7 @@ test("every registry provider has an entry, and its module's static capabilities
 
 test("an entry whose provider file has not landed is data alone; once it lands, the test above holds it to its file", () => {
 	const pending = PROVIDERS.filter((entry) => !providerIds.includes(entry.id)).map((entry) => entry.id);
-	for (const id of pending) assert.ok(["orgo", "phone-harness", "browserbase", "kernel"].includes(id), `${id}: only the providers to come are data alone`);
+	for (const id of pending) assert.ok(["orgo", "phone-harness"].includes(id), `${id}: only the providers to come are data alone`);
 });
 
 /** Each provider built as the registry offers it, from the unit tests' fakes. */
@@ -117,6 +120,8 @@ const BUILT = {
 	e2b: [() => new E2BProvider({ apiKey: "e2b-test-key", Sandbox: fakeE2B().Sandbox, kind: "linux" }), () => new E2BProvider({ apiKey: "e2b-test-key", Sandbox: fakeE2B().Sandbox })],
 	daytona: [() => new DaytonaProvider({ apiKey: "daytona-test-key", apiUrl: "https://api.daytona.test/api", daemonPath: "/nonexistent/computerd", fetch: async () => new Response(null, { status: 500 }) })],
 	modal: [() => new ModalProvider({ sdk: fakeModal().sdk, app: "computers", daemonImage: `ghcr.io/example/computerd@sha256:${"a".repeat(64)}` })],
+	browserbase: [() => new BrowserbaseProvider({ apiKey: BROWSERBASE_KEY, apiUrl: BROWSERBASE_URL, fetch: fakeBrowserbase().fetch })],
+	kernel: [() => new KernelProvider({ apiKey: KERNEL_KEY, apiUrl: KERNEL_URL, fetch: fakeKernel().fetch })],
 };
 
 test("a built provider's capabilities, in each configuration, are its entry's static capabilities", () => {

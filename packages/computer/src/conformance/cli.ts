@@ -9,8 +9,9 @@ import { isCommand } from "../entry.js";
 import type { ComputerProvider } from "../provider.js";
 import { type ConformanceModule, isProviderId, type ProviderEnv, providerIds, providerModule } from "../providers.js";
 import { type ComputerSettingKind, SETTING_KIND_NAMES } from "../kinds.js";
-import { conformanceCases } from "./cases/index.js";
+import { browserCases, conformanceCases } from "./cases/index.js";
 import { kindRunProblem } from "./kind.js";
+import type { CdpDialer } from "./cdp.js";
 import { formatReport } from "./report.js";
 import { runConformance } from "./runner.js";
 import type { Case, CaseResult, ConformanceOptions } from "./types.js";
@@ -28,7 +29,10 @@ export interface CliIo {
 	stderr?: Writer;
 	/** Where a module path is resolved from; default the directory npm was run in. */
 	cwd?: string;
+	/** The cases to run; default the browser case set for a provider of kind browser, else the whole suite. */
 	cases?: Case[];
+	/** How the browser cases open a CDP socket; default a WebSocket. A test gives a fake browser's. */
+	cdp?: CdpDialer;
 	signal?: AbortSignal;
 	/** Print each case to stderr as it ends. */
 	progress?: boolean;
@@ -46,7 +50,7 @@ const USAGE = `usage: npm run conformance -w @parcha/agentrun-computer -- --prov
               createDriftedProvider(); for the mount cases, mountFor(kind), a fresh run folder for that mount kind)
   --image     the image every computer starts from (default the module's conformanceImage(), else debian:bookworm-slim)
   --only      run only these groups (health, exec, files, process, provider, drift, mount, screen, input, touch,
-              apps, lifetime) or case ids; a run that leaves Core cases out is partial: no Core verdict, and exit 3 when
+              apps, lifetime; browser, run alone for a provider of kind browser) or case ids; a run that leaves Core cases out is partial: no Core verdict, and exit 3 when
               every case that ran passed
   --kind      run a setting kind's cases (sandbox, desktop, phone, browser) and exit on its verdict: the provider passes the kind only
               when it serves it and every case of each required group passes; not with --only
@@ -194,10 +198,11 @@ async function load(label: string, module: Partial<ConformanceModule>, options: 
 }
 
 export async function main(argv: string[], io: CliIo = {}): Promise<number> {
-	const { stdout = process.stdout, stderr = process.stderr, cases = conformanceCases, signal, progress = false } = io;
+	const { stdout = process.stdout, stderr = process.stderr, signal, progress = false } = io;
 	let args: Args;
 	try {
-		args = parse(argv, cases);
+		// --only is read against every case either set holds; the set itself is chosen once the provider says its kind.
+		args = parse(argv, io.cases ?? [...conformanceCases, ...browserCases.filter((c) => !conformanceCases.includes(c))]);
 	} catch (error) {
 		await write(stderr, `${(error as Error).message}\n${USAGE}\n`);
 		return 2;
@@ -220,6 +225,7 @@ export async function main(argv: string[], io: CliIo = {}): Promise<number> {
 		}
 		return 1;
 	}
+	const cases = io.cases ?? (target.provider.capabilities().kind === "browser" ? browserCases : conformanceCases);
 	const onResult = progress ? (r: CaseResult) => stderr.write(`${r.status === "pass" ? "✓" : r.status === "fail" ? "✗" : "-"} ${r.id}\n`) : undefined;
 	const report = await runConformance(target.provider, {
 		image: args.image ?? target.image ?? DEFAULT_IMAGE,
@@ -232,6 +238,7 @@ export async function main(argv: string[], io: CliIo = {}): Promise<number> {
 		...(target.drifted ? { drifted: target.drifted } : {}),
 		...(target.mountFor ? { mountFor: target.mountFor } : {}),
 		...(onResult ? { onResult } : {}),
+		...(io.cdp ? { cdp: io.cdp } : {}),
 	});
 	await write(stdout, args.json ? `${JSON.stringify(report, null, 2)}\n` : formatReport(report));
 	if (report.kindVerdict) return report.kindVerdict.verdict === "pass" ? 0 : 1;

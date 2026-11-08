@@ -378,7 +378,7 @@ the platform the key table and exec need; kind names the shape the tools need. O
 | `desktop` | linux (windows, macos later) | `pid1`, `child` or `none` | linux's, when daemon is not `none`; and `screen`, `input.pointer`, `input.keys` |
 | `android` | android | `none` | `screen`, `input.touch`; exec and files only when declared |
 | `ios` | ios | `none` | `screen`, `input.touch` |
-| `browser` | linux | `none` | `cdp`: its connection's CDP target |
+| `browser` | linux | `none` | `cdp`: its connection's CDP target (see [Browsers](#browsers-browserbase-and-kernel)) |
 
 The groups `cdp`, `stream` and `downloads` are the provider's (`PROVIDER_GROUPS`): a browser's CDP target, a live view of
 the screen (`provider.stream()`), the files a browser saved. A computerd hello never lists them.
@@ -391,8 +391,8 @@ itself, from our server (adb, a vendor API). Either way a connection's `client` 
 params, { signal })` and `close()`): `DaemonClient` over a stream, or a provider's in-process client.
 
 **Groups.** `capabilities().groups` is one flat list, repeated in hello's `groups`: `exec`, `files`, `processes`,
-`screen`, `input.pointer`, `input.keys`, `input.touch`, `apps`, `apps.install`, `apps.ui_tree`. Each is optional unless
-kind makes it Core. The drift check and Docker's `connect` refuse a hello whose kind or groups differ from what the
+`screen`, `input.pointer`, `input.keys`, `input.touch`, `apps`, `apps.install`, `apps.ui_tree`, and the provider's
+`cdp`, `stream`, `downloads`. Each is optional unless kind makes it Core. The drift check and Docker's `connect` refuse a hello whose kind or groups differ from what the
 provider declares, either way.
 
 | group | methods |
@@ -497,6 +497,8 @@ live under:
   | `AGENTRUN_BOX_APP` | Modal's `app` (serve's default, `agentrun`, when unset) |
   | `AGENTRUN_DOCKER_IMAGE` | Docker's `image` option, `{ image: <name> }` (unset: the provider's own recipe); `docker.image()` makes it ready and gives the tag a computer's spec names |
   | `E2B_API_KEY` | E2B's `apiKey`: serve's new name for the E2B box |
+  | `BROWSERBASE_API_KEY`, `BROWSERBASE_PROJECT_ID` | Browserbase's `apiKey`, `projectId`: the names pi-browser reads today |
+  | `KERNEL_API_KEY` | Kernel's `apiKey`: the name pi-browser reads today |
 
 - **the conformance CLI and the live harness** (`src/conformance/`: the CLI, each provider's conformance module and the
   sweeps) read their own `COMPUTER_<ID>_*` names, the ones the live scripts set, through each module's
@@ -1766,11 +1768,57 @@ A live run must show:
 `packages/envd/internal/services/process/start.go`, `.../process/handler/handler.go:395-420`), and E2B's docs
 (network/restrict-public-access and network/internet-access, read 2026-11-07). Each is cited where it is used above and in `src/e2b.ts`.
 
+## Browsers: Browserbase and Kernel
+
+A browser is a computer of kind `browser`: a vendor's browser session that answers CDP. No computerd runs (daemon
+`none`): the provider answers hello and ping itself, from the vendor's API, and refuses any other method in words, since
+a browser is driven over CDP. `connect(ref)` gives a connection whose `cdp.url` is the vendor's signed CDP URL, which a
+driver dials; `stream(ref)` gives the vendor's live view. Both URLs are secrets: they are held in memory (a `UrlStore`)
+and are never in a ref, a list, an error's words or a report. `client` stays a `ComputerClient`, so every caller of
+`connect` reads a browser's connection as it reads any other.
+
+| | Browserbase (`browserbase.ts`) | Kernel (`kernel.ts`) |
+| --- | --- | --- |
+| a computer is | a session (`POST /v1/sessions`, `keepAlive: true`) | a browser (`POST /browsers`) |
+| labels ride | the session's `userMetadata` | the browser's `tags` |
+| lifetime | the session's `timeout`, 60 s to 6 h, wall clock | `timeout_seconds`, 10 s to 72 h, an idle timeout: no wall clock, so list reads no deadline |
+| groups (`CAPABILITIES`) | `cdp`, `stream` | `cdp`, `stream` |
+| test connection | one `GET /v1/sessions?status=RUNNING` | one `GET /browsers?status=active` page |
+| release | `REQUEST_RELEASE`, then read back until it is no longer `RUNNING` or `PENDING` | `DELETE`, then read back until 404 or `deleted_at` |
+| options | `apiKey` (or `api`, a host's own calls), `projectId`, `apiUrl` | `apiKey` (or `request`, a host's own), `apiUrl` |
+| conformance reads | `COMPUTER_BROWSERBASE_API_KEY`, `COMPUTER_BROWSERBASE_PROJECT_ID`, `COMPUTER_BROWSERBASE_API_URL` | `COMPUTER_KERNEL_API_KEY`, `COMPUTER_KERNEL_API_URL` |
+
+Both declare `lifetime: "vendor"`, `network: ["open"]`, `isolation: "vm"`, `release: ["delete"]`, and no `extend`
+(neither vendor moves a running session's timeout). Neither declares `downloads` yet: Browserbase keeps a session's
+downloads, but the protocol has no method that reads them, so the group waits for one. Both call the vendor endpoints
+pi-browser's Browserbase and Kernel providers call today. `check()` refuses an image other than `chromium`, a lifetime past
+the cap, a network other than open, and any size, user, workdir or mount, before a vendor call. `list` and attach by
+labels take at least one label (a vendor account holds sessions no provider made), ask the vendor by status and by the
+first label a query carries as it is, and match every label themselves. A release is idempotent: one already ended or
+unknown to the vendor is released.
+
+A vendor call is one request, never retried where a retry could open a second paid browser, and a failure names the
+call and the HTTP status alone, never the vendor's words. A host that already talks to the vendor (pi-browser's SDK
+client) passes its own transport: `BrowserbaseApi` or `KernelRequest`. Its thrown error rides the failure as a hidden
+cause (`causeOf(result)`), not enumerable, so it is in no JSON.
+
+The conformance CLI runs the browser case set for a provider of kind browser: the health cases, then `browser.*`
+(check past the cap, attach by id and by labels, list, CDP `Browser.getVersion` and `Runtime.evaluate` on a `data:`
+page, the live view, and release last). Every case but the first shares the run's one browser, so a live run costs one
+session.
+
+```sh
+AGENTRUN_COMPUTER_LIVE_BROWSERBASE=1 COMPUTER_BROWSERBASE_API_KEY=... COMPUTER_BROWSERBASE_PROJECT_ID=... \
+  npm run conformance -w @parcha/agentrun-computer -- --provider browserbase
+AGENTRUN_COMPUTER_LIVE_KERNEL=1 COMPUTER_KERNEL_API_KEY=... \
+  npm run conformance -w @parcha/agentrun-computer -- --provider kernel
+```
+
 ## Conformance
 
 A provider for another vendor passes the same suite as Docker's, with one command. The suite is data: each case in
 `src/conformance/cases/` names its level, its group (`health`, `exec`, `files`, `process`, `provider`, `drift`,
-`mount`, `screen`, `input`, `touch`, `apps`, `lifetime`) and the capabilities it needs, and uses only `ComputerProvider`,
+`mount`, `screen`, `input`, `touch`, `apps`, `lifetime`, `browser`) and the capabilities it needs, and uses only `ComputerProvider`,
 `ComputerClient` and the suite's assertion helpers, so the same cases run against a provider with daemon `none`.
 
 ```sh

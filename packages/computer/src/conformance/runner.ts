@@ -8,6 +8,7 @@ import { type ComputerClient, type ExecRunParams, type Group, GROUPS, type Hello
 import type { ComputerConnection, ComputerProvider, ComputerRef, ComputerSpec, CreatedComputer } from "../provider.js";
 import { type ComputerErrorCode, fail, ok, type Result } from "../result.js";
 import { conformanceCases } from "./cases/index.js";
+import { type CdpSocket, dialCdp } from "./cdp.js";
 import { type StartedFixture, startFixture } from "./fixture.js";
 import { kindCases, kindRunProblem, kindVerdict } from "./kind.js";
 import {
@@ -97,6 +98,7 @@ export async function runConformance(provider: ComputerProvider, options: Confor
 	const kindProblem = kind === undefined ? undefined : kindRunProblem(kind);
 	if (kindProblem !== undefined) throw new TypeError(kindProblem);
 	const fetcher = options.fetch ?? ((url: string, init?: { signal?: AbortSignal; method?: string }) => fetch(url, init));
+	const dialer = options.cdp ?? dialCdp;
 	const clock: Clock = options.clock ?? { now: () => Date.now(), sleep: (ms) => new Promise((resolve) => setTimeout(resolve, ms)) };
 	const run = randomBytes(6).toString("hex");
 	const runLabels = { [RUN_LABEL]: run };
@@ -273,6 +275,7 @@ export async function runConformance(provider: ComputerProvider, options: Confor
 		const caseSignal = signal ? AbortSignal.any([signal, timer.signal]) : timer.signal;
 		const refs: Array<{ ref: ComputerRef; by: ComputerProvider }> = [];
 		const connections: ComputerConnection[] = [];
+		const sockets: CdpSocket[] = [];
 		let started: Promise<StartedFixture> | undefined;
 		/** The fixture's stop, set as soon as it is launched: one that never logs ready is stopped as well. */
 		let stopFixture: (() => Promise<void>) | undefined;
@@ -376,6 +379,12 @@ export async function runConformance(provider: ComputerProvider, options: Confor
 					return started;
 				},
 				fetch: (url, init) => fetcher(url, { ...init, signal: init?.signal ?? caseSignal }),
+				async cdp(url) {
+					const socket = await dialer(url, { signal: caseSignal });
+					if (ended) socket.close();
+					else sockets.push(socket);
+					return socket;
+				},
 				clock,
 				async drifted() {
 					if (drifted === undefined) return t.skip("no drifted provider was given: a provider module exports createDriftedProvider() for the drift cases");
@@ -462,6 +471,7 @@ export async function runConformance(provider: ComputerProvider, options: Confor
 				if (stopFixture === undefined) await bounded(started.catch(() => {}), CLOSE_MS);
 				if (stopFixture !== undefined) await bounded(stopFixture().catch(() => {}), CLOSE_MS);
 			}
+			for (const socket of sockets) socket.close();
 			for (const connection of connections) await bounded(connection.close().catch(() => {}), CLOSE_MS);
 			for (const { ref, by } of refs) await release(ref, by);
 			// A folder that cannot be removed is left, as a fixture that cannot be stopped is: it is not the case's verdict.
