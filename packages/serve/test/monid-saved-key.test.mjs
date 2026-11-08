@@ -13,6 +13,7 @@ import { DatabaseSync } from "node:sqlite";
 import { test } from "node:test";
 import { agent, follow, runDir, scratch, serve, withEnv } from "./support.mjs";
 import { reported } from "./fixtures/custody-report.mjs";
+import { fauxTable } from "./fixtures/faux-table.mjs";
 // A run's served answer has no held secret in it, so what a custody run's process reported is read as it wrote it
 // (fixtures/custody-report.mjs), never from the answer.
 process.env.CUSTODY_REPORT_DIR ??= mkdtempSync(join(tmpdir(), "custody-reports-"));
@@ -44,7 +45,7 @@ test("a saved monid key reaches only the runs that name monid, with no restart; 
   const saved = ["not-a-secret", "monid", randomBytes(6).toString("hex")].join("-");
   withEnv(t, { AGENTRUN_SEAL_KEY: randomBytes(32).toString("base64"), AGENTRUN_TEST_FAUX_MONID_CALLS: log, AGENTRUN_TEST_FAUX_MONID_ACCEPTS: createHash("sha256").update(saved).digest("hex") }, ["MONID_API_KEY"]);
   // pi answers with the custody model (what its process was handed); claude-agent runs the faux harness.
-  const { api, data } = await serve(t, { faux: CUSTODY, fauxHarness: FAUX_HARNESS, fauxMonid: FAUX_MONID });
+  const { api, data } = await serve(t, { faux: CUSTODY, harnessTable: fauxTable(FAUX_HARNESS), fauxMonid: FAUX_MONID });
   const sent = () => (existsSync(log) ? readFileSync(log, "utf8").trim().split("\n").filter(Boolean).map((line) => JSON.parse(line)) : []);
   const refusal = async (id) => {
     const res = await api("POST", `/agents/${id}/runs`, { input: { content: "hi" } });

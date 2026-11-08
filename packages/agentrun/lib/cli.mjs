@@ -6,7 +6,7 @@ import { closeSync, constants, fstatSync, openSync, readFileSync } from "node:fs
 import { homedir } from "node:os";
 import { join, resolve } from "node:path";
 import { parseArgs } from "node:util";
-import { COMMANDS } from "./commands.generated.mjs";
+import { COMMANDS, SECRET_ROUTES } from "./commands.generated.mjs";
 import { FLAGS, REQUEST_MS, WAIT, followTimeline, timerMs, waitRun } from "./follow.mjs";
 import { SECRETS, guarded } from "./login.mjs";
 import { SKILL_INSTALL } from "./skill.mjs";
@@ -240,7 +240,7 @@ const refuseLanded = (landed, value) => {
 function secretAt(method, url) {
   const pathname = new URL(url).pathname.replace(/\/{2,}/g, "/");
   const route = (entry) => new RegExp(`(?:^|/)${entry.path.slice(1).split(/\{[^}]+\}/).map((part) => part.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")).join("[^/]+")}/?$`);
-  return COMMANDS.find((entry) => entry.secretBody && entry.method === method && route(entry).test(pathname));
+  return SECRET_ROUTES.find((entry) => entry.method === method && route(entry).test(pathname));
 }
 
 /** Requests to the target, each with its token (follow.mjs makes its own through one): `fetch(path, init)`, exit 3 for

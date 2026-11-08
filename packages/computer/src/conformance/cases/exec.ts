@@ -1,14 +1,18 @@
 // exec.run: argv not a shell, split streams, the exit code, a timeout and an abort that end the whole tree, truncation,
-// cwd and a minimal environment, a user that is not root with no capabilities, a user switch honoured or refused, never
-// ignored; Full: root or another uid when the spec asks, still with no capabilities.
+// cwd and a minimal environment, a user that is not root with no capabilities in any set and no_new_privs, a user switch
+// honoured or refused, never ignored; Full: root or another uid when the spec asks, still with no capabilities.
 import type { Case, CaseContext } from "../types.js";
 import { alive } from "./util.js";
 
 const NONE = "0000000000000000";
+/**
+ * A program the daemon runs holds no capability in any set, the bounding and ambient sets included, so neither it nor
+ * a program it starts can gain one, root included; and no_new_privs is set. A field the kernel does not report fails.
+ */
 function noCapabilities(t: CaseContext, status: string) {
-	for (const set of ["CapEff", "CapPrm"]) {
-		t.equal(new RegExp(`^${set}:\\s*([0-9a-f]+)$`, "m").exec(status)?.[1], NONE, `${set} in /proc/self/status: no capabilities`);
-	}
+	const field = (name: string) => new RegExp(`^${name}:\\s*(\\S+)\\s*$`, "m").exec(status)?.[1];
+	for (const set of ["CapEff", "CapPrm", "CapInh", "CapBnd", "CapAmb"]) t.equal(field(set), NONE, `${set} in /proc/self/status: no capabilities`);
+	t.equal(field("NoNewPrivs"), "1", "NoNewPrivs in /proc/self/status: set");
 }
 
 const exec = (name: string, run: Case["run"]): Case => ({ id: `exec.${name}`, level: "core", group: "exec", needs: ["exec"], run });

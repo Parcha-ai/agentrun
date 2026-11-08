@@ -13,9 +13,10 @@ import { join } from "node:path";
 import { test } from "node:test";
 import { CANARY as PARALLEL_CANARY } from "./fixtures/faux-parallel.mjs";
 import { agent, follow, runDir, scratch, serve, withEnv } from "./support.mjs";
+import { fauxTable } from "./fixtures/faux-table.mjs";
 
 const fixture = (name) => new URL(`./fixtures/${name}`, import.meta.url).pathname;
-const FAUX = { fauxHarness: fixture("faux-harness.mjs"), fauxWeb: fixture("faux-web.mjs"), fauxParallel: fixture("faux-parallel.mjs"), fauxUpstream: fixture("faux-upstream.mjs"), fauxExa: fixture("faux-exa.mjs") };
+const FAUX = { harnessTable: fauxTable(fixture("faux-harness.mjs")), fauxWeb: fixture("faux-web.mjs"), fauxParallel: fixture("faux-parallel.mjs"), fauxUpstream: fixture("faux-upstream.mjs"), fauxExa: fixture("faux-exa.mjs") };
 const PAGE = "http://public.example/";
 const ANTHROPIC_TOOL = { type: "web_search_20250305", name: "web_search", max_uses: 5 };
 // OpenCode has no native search: picked, it is unavailable there; on auto it takes the server's Parallel key.

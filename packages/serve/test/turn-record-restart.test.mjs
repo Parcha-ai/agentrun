@@ -10,6 +10,7 @@ import { join } from "node:path";
 import { test } from "node:test";
 import { startServe } from "../dist/index.js";
 import { agent, client, FAUX, follow, printed, runDir, runRecordOf, scratch } from "./support.mjs";
+import { fauxTable } from "./fixtures/faux-table.mjs";
 
 const SLOW_EXIT_HARNESS = new URL("./fixtures/faux-harness-slow-exit.mjs", import.meta.url).pathname;
 const FAUX_HARNESS = new URL("./fixtures/faux-harness.mjs", import.meta.url).pathname;
@@ -30,7 +31,7 @@ for (const harness of ["claude-agent", "codex"]) {
     const data = join(dir, "agents");
     const [signal, gate] = [join(dir, "admitted"), join(dir, "gate")];
     const script = `const { startServe } = await import(${JSON.stringify(new URL("../dist/index.js", import.meta.url).href)});
-const server = await startServe({ data: ${JSON.stringify(data)}, port: 0, faux: ${JSON.stringify(FAUX)}, fauxHarness: ${JSON.stringify(SLOW_EXIT_HARNESS)}, drainTimeout: "5s" });
+const server = await startServe({ data: ${JSON.stringify(data)}, port: 0, faux: ${JSON.stringify(FAUX)}, harnessTable: ${JSON.stringify(fauxTable(SLOW_EXIT_HARNESS))}, drainTimeout: "5s" });
 process.stdout.write(JSON.stringify({ base: server.baseUrl, token: server.token }) + "\\n");`;
     const child = spawn(process.execPath, ["--input-type=module", "-e", script], { stdio: ["ignore", "pipe", "pipe"], env: { ...process.env, EXIT_GATE: gate } });
     t.after(() => child.kill("SIGKILL"));
@@ -50,7 +51,7 @@ process.stdout.write(JSON.stringify({ base: server.baseUrl, token: server.token 
     const { holder } = runRecordOf(data, runId);
     process.kill(holder.pid, "SIGKILL");
     for (const end = Date.now() + 10_000; !gone(holder.pid); await sleep(50)) assert.ok(Date.now() < end, "the run's process is gone");
-    const next = await startServe({ data, port: 0, faux: FAUX, fauxHarness: FAUX_HARNESS, drainTimeout: "5s" });
+    const next = await startServe({ data, port: 0, faux: FAUX, harnessTable: fauxTable(FAUX_HARNESS), drainTimeout: "5s" });
     t.after(() => next.close());
     const api = client(next.baseUrl, next.token);
     const seen = [];

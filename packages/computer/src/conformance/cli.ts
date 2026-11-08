@@ -1,22 +1,15 @@
 // `npm run conformance -w @parcha/agentrun-computer -- --provider docker | ./module.js [--image <image>] [--only <groups>] [--json]`
 // Exits 0 when Core passes, 1 when it fails, 2 on a usage error, and 3 when --only left Core cases out and every case
 // that ran passed: a partial run is never a Core pass, so no script reads its exit code as one.
-import { realpathSync } from "node:fs";
 import { resolve } from "node:path";
 import { pathToFileURL } from "node:url";
+import { isCommand } from "../entry.js";
 import type { ComputerProvider } from "../provider.js";
 import { conformanceCases } from "./cases/index.js";
 import { dockerConformance } from "./docker.js";
 import { formatReport } from "./report.js";
 import { runConformance } from "./runner.js";
 import type { Case, CaseResult, ConformanceOptions } from "./types.js";
-
-/** What a run is given from the provider's side: the provider, its drifted twin and run folders when it has them. */
-interface Target {
-	provider: ComputerProvider;
-	drifted?: () => Promise<ComputerProvider>;
-	mountFor?: ConformanceOptions["mountFor"];
-}
 
 /** A stream as main writes to it: done is called once the text is handed on, as Writable.write's callback is. */
 export interface Writer {
@@ -42,7 +35,7 @@ export interface CliIo {
 const USAGE = `usage: npm run conformance -w @parcha/agentrun-computer -- --provider docker|<module.js> [--image <image>] [--only <group|case>,...] [--fixture <path>] [--json]
   --provider  docker, or a module that exports createProvider() (and, for the drift case, createDriftedProvider();
               for the mount cases, mountFor(kind), a fresh run folder for that mount kind)
-  --image     the image every computer starts from (default debian:bookworm-slim)
+  --image     the image every computer starts from (default the module's conformanceImage(), else debian:bookworm-slim)
   --only      run only these groups (health, exec, files, process, provider, drift, mount, screen, input, touch,
               apps, lifetime) or case ids; a run that leaves Core cases out is partial: no Core verdict, and exit 3 when
               every case that ran passed
@@ -56,7 +49,7 @@ class Usage extends Error {}
 
 interface Args {
 	provider: string;
-	image: string;
+	image?: string;
 	only?: string[];
 	fixture?: string;
 	json: boolean;
@@ -80,7 +73,7 @@ function parse(argv: string[], cases: Case[]): Args {
 		else if (flag === "--help" || flag === "-h") args.help = true;
 		else throw new Usage(`unknown option ${flag}`);
 	}
-	if (args.help) return { provider: "", image: "", json: false, help: true };
+	if (args.help) return { provider: "", json: false, help: true };
 	if (args.provider === undefined) throw new Usage("--provider is required");
 	const groups = [...new Set(cases.map((c) => c.group))];
 	for (const name of args.only ?? []) {
@@ -90,7 +83,7 @@ function parse(argv: string[], cases: Case[]): Args {
 	}
 	return {
 		provider: args.provider,
-		image: args.image ?? "debian:bookworm-slim",
+		...(args.image === undefined ? {} : { image: args.image }),
 		...(args.only ? { only: args.only } : {}),
 		...(args.fixture ? { fixture: args.fixture } : {}),
 		json: args.json,
@@ -98,9 +91,25 @@ function parse(argv: string[], cases: Case[]): Args {
 	};
 }
 
-/** The provider a module makes, its drifted twin and its run folders (mountFor) when it offers them. */
+const DEFAULT_IMAGE = "debian:bookworm-slim";
+
+interface Target {
+	provider: ComputerProvider;
+	drifted?: () => Promise<ComputerProvider>;
+	/** The module's run folders for the mount cases: mountFor(kind). */
+	mountFor?: ConformanceOptions["mountFor"];
+	/** The module's image for a run that names none. */
+	image?: string;
+	/** The module's notes for the report. */
+	notes?: string[];
+}
+
+/**
+ * The provider a module makes, its drifted twin and its run folders (mountFor) when it offers them, and what it says of
+ * its run: conformanceImage(), the image when --image names none, and conformanceNotes, strings for the report.
+ */
 async function load(path: string): Promise<Target> {
-	let module: { createProvider?: unknown; createDriftedProvider?: unknown; mountFor?: unknown };
+	let module: { createProvider?: unknown; createDriftedProvider?: unknown; mountFor?: unknown; conformanceImage?: unknown; conformanceNotes?: unknown };
 	try {
 		module = await import(pathToFileURL(path).href);
 	} catch (error) {
@@ -113,11 +122,20 @@ async function load(path: string): Promise<Target> {
 	if (lacks.length > 0 || typeof provider.id !== "string") {
 		throw new Usage(`${path}: createProvider() did not return a ComputerProvider: it lacks ${[...lacks, ...(typeof provider?.id === "string" ? [] : ["id"])].join(", ")}`);
 	}
-	return {
-		provider,
-		...(typeof createDriftedProvider === "function" ? { drifted: async () => (await createDriftedProvider()) as ComputerProvider } : {}),
-		...(typeof mountFor === "function" ? { mountFor: mountFor as NonNullable<ConformanceOptions["mountFor"]> } : {}),
-	};
+	const target: Target = { provider };
+	if (typeof createDriftedProvider === "function") target.drifted = async () => (await createDriftedProvider()) as ComputerProvider;
+	if (typeof mountFor === "function") target.mountFor = mountFor as NonNullable<ConformanceOptions["mountFor"]>;
+	if (module.conformanceImage !== undefined) {
+		const image = typeof module.conformanceImage === "function" ? await module.conformanceImage() : undefined;
+		if (typeof image !== "string" || image === "") throw new Usage(`${path}: conformanceImage() did not return an image`);
+		target.image = image;
+	}
+	const notes = module.conformanceNotes;
+	if (notes !== undefined) {
+		if (!Array.isArray(notes) || !notes.every((note) => typeof note === "string")) throw new Usage(`${path}: conformanceNotes is not an array of strings`);
+		target.notes = notes;
+	}
+	return target;
 }
 
 export async function main(argv: string[], io: CliIo = {}): Promise<number> {
@@ -154,7 +172,8 @@ export async function main(argv: string[], io: CliIo = {}): Promise<number> {
 	try {
 		const onResult = progress ? (r: CaseResult) => stderr.write(`${r.status === "pass" ? "✓" : r.status === "fail" ? "✗" : "-"} ${r.id}\n`) : undefined;
 		const report = await runConformance(target.provider, {
-			image: args.image,
+			image: args.image ?? target.image ?? DEFAULT_IMAGE,
+			...(target.notes && target.notes.length > 0 ? { notes: target.notes } : {}),
 			cases,
 			...(args.only ? { only: args.only } : {}),
 			...(args.fixture ? { fixture: resolve(io.cwd ?? process.env.INIT_CWD ?? process.cwd(), args.fixture) } : {}),
@@ -170,7 +189,7 @@ export async function main(argv: string[], io: CliIo = {}): Promise<number> {
 	}
 }
 
-if (process.argv[1] !== undefined && import.meta.url === pathToFileURL(realpathSync(process.argv[1])).href) {
+if (isCommand(import.meta)) {
 	const controller = new AbortController();
 	const stop = () => controller.abort();
 	process.once("SIGINT", stop);
