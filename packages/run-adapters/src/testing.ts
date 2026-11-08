@@ -52,7 +52,9 @@ export function memorySessionStore(): SessionStore & { keys(): string[] } {
  *  session's (a resumed turn's, say) with no request of this process's own yet, and a side call's the only one open. The
  *  side call is paid at `usd` with this request (at once, or once its `bookWhen` file exists). `resultWhen`: a call's
  *  result is told (its tool_end) only once this file exists, as a harness still recording it would. */
-export type FauxRequest = { tokens?: { input: number; output: number; cacheRead?: number; cacheWrite?: number }; inputTokensMax?: number; outputTokensAsked?: number; outputTokensLeast?: number; until?: string; bookWhen?: string; sideAfterNote?: { usd: number }; sideDuring?: { usd: number }; sideFirst?: { usd: number; say: string }; resultWhen?: string };
+/** `onRefused: "next"`: a request its host refuses (its admission throws) is not the turn's end: the client goes on to its
+ *  next action, as a CLI whose request the proxy refused sends another. */
+export type FauxRequest = { onRefused?: "next"; tokens?: { input: number; output: number; cacheRead?: number; cacheWrite?: number }; inputTokensMax?: number; outputTokensAsked?: number; outputTokensLeast?: number; until?: string; bookWhen?: string; sideAfterNote?: { usd: number }; sideDuring?: { usd: number }; sideFirst?: { usd: number; say: string }; resultWhen?: string };
 
 /** One model request of the faux harness, and what its reply does. */
 export type FauxAction =
@@ -67,8 +69,12 @@ export type FauxAction =
   /** The reply ends the turn without a submission: `completed`, or the status `turn` names (a harness that ends its own
    *  turn interrupted, with no stop asked for, ends it so). */
   | { end: true; usd?: number | null; turn?: TurnStatus }
-  /** The request fails: the turn ends failed. */
+  /** The request fails: the provider answers an error status before any event (booked so), and the turn ends failed. */
   | { fail: string }
+  /** The provider does not answer this request: an error status before any event (`status`), our stop after part of it
+   *  streamed (`stopped`), or the connection lost once it left (`lost`). It is booked as such, and the client goes on to
+   *  its next action, as a CLI sends a request again. */
+  | ({ unanswered: "status" | "stopped" | "lost" } & FauxRequest)
   /** The process stops here: nothing resolves until the session's signal aborts. */
   | { hang: true }
   /** The harness halts the drive with this reason (a spend cap, a mirror it cannot keep): the turn ends failed, naming it. */
@@ -135,7 +141,12 @@ export function fauxAdapter(options: FauxOptions): FauxAdapter {
       const proxy: ModelProxy | undefined = options.proxy ? await startModelProxy({ ...options.proxy.options, hooks: io.models as never }, randomBytes(32).toString("base64url")) : undefined;
       io.signal.addEventListener("abort", () => void proxy?.close(), { once: true });
       const append = (kind: string, data: JsonValue) => io.writer.append([{ kind, data }]);
-      let cursor = records.filter((r) => r.kind === FAUX_RECORDS.request).length;
+      // The script's place: one past its last request's (each faux.request keeps its action's index), never the count of
+      // them, since an action refused with `onRefused: "next"` is skipped with no record.
+      let cursor = records.reduce((next, r) => {
+        const index = r.kind === FAUX_RECORDS.request ? (r.data as { index?: unknown } | null)?.index : undefined;
+        return typeof index === "number" && index + 1 > next ? index + 1 : next;
+      }, 0);
       const turnsStarted = records.filter((r) => r.kind === FAUX_RECORDS.turn).length;
       const turnsEnded = records.filter((r) => r.kind === FAUX_RECORDS.turnEnd).length;
       let state: SessionState = turnsStarted === 0 ? "new" : turnsStarted > turnsEnded ? "open_turn" : "idle";
@@ -199,13 +210,21 @@ export function fauxAdapter(options: FauxOptions): FauxAdapter {
             }
             // The output it asks for at most (a CLI's max_tokens), as a real adapter's proxy reads it from the body.
             const asked = { ...("outputTokensAsked" in action && typeof action.outputTokensAsked === "number" ? { outputTokensAsked: action.outputTokensAsked } : {}), ...("outputTokensLeast" in action && typeof action.outputTokensLeast === "number" ? { outputTokensLeast: action.outputTokensLeast } : {}) };
-            const ticket = await io.models.beforeRequest({ model: own, inputTokensMax: note ? measured + Buffer.byteLength(note, "utf8") : measured, ...asked, ...(note ? { noted: true as const, inputTokensMaxWithoutNote: measured } : {}) });
+            const admit = () => io.models.beforeRequest({ model: own, inputTokensMax: note ? measured + Buffer.byteLength(note, "utf8") : measured, ...asked, ...(note ? { noted: true as const, inputTokensMaxWithoutNote: measured } : {}) });
+            let ticket: Awaited<ReturnType<typeof admit>>;
+            try {
+              ticket = await admit();
+            } catch (error) {
+              if (!("onRefused" in action && action.onRefused === "next")) throw error;
+              cursor += 1;
+              continue;
+            }
             if (note && !ticket?.noteDropped) await append(FAUX_RECORDS.note, { text: note });
             if ("cut" in action) { stats.requests += 1; return await hang(signal); }
             if ("cutBooked" in action) {
               stats.requests += 1;
               await append(FAUX_RECORDS.request, { index: cursor++ });
-              try { return await hang(signal); } finally { await io.models.afterRequest({ input: 10, output: 5, usd: action.usd === undefined ? 0.001 : action.usd }); }
+              try { return await hang(signal); } finally { await io.models.afterRequest({ input: 10, output: 5, usd: action.usd === undefined ? 0.001 : action.usd }, ticket || undefined, { end: "lost", label: "cut" }); }
             }
             stats.requests += 1;
             const index = cursor++;
@@ -213,11 +232,21 @@ export function fauxAdapter(options: FauxOptions): FauxAdapter {
             // write it into the body: filed, for a test to see.
             const limit = ticket ? ticket.outputTokensMax : undefined;
             await append(FAUX_RECORDS.request, { index, ...(limit === undefined ? {} : { outputTokensMax: limit }) });
-            if ("fail" in action) return await end("failed", action.fail);
+            if ("fail" in action) {
+              await io.models.afterRequest({ input: 0, output: 0, cacheRead: 0, usd: 0 }, ticket || undefined, { end: "nothing", label: "status" });
+              return await end("failed", action.fail);
+            }
+            if ("unanswered" in action) {
+              const how = action.unanswered;
+              await io.models.afterRequest({ input: 0, output: 0, cacheRead: 0, usd: how === "status" ? 0 : null }, ticket || undefined,
+                how === "status" ? { end: "nothing", label: "status" } : how === "stopped" ? { end: "stopped", streamedTokens: 10 } : { end: "lost", label: "error_after", began: true });
+              continue;
+            }
             // Held in flight, admitted and not answered, until the file it waits for exists (or the turn is stopped).
             if ("until" in action && typeof action.until === "string") await untilExists(action.until, signal);
             const tokens = "tokens" in action && action.tokens ? action.tokens : { input: 10, output: 5 };
-            const book = () => io.models.afterRequest({ ...tokens, usd: action.usd === undefined ? 0.001 : action.usd });
+            const usd = action.usd === undefined ? 0.001 : action.usd;
+            const book = () => io.models.afterRequest({ ...tokens, usd }, ticket || undefined, { end: "answered", usd });
             const bookAfter = "calls" in action && action.bookAfter === true;
             if ("bookWhen" in action && typeof action.bookWhen === "string") void untilExists(action.bookWhen, signal).then(book).catch(() => undefined);
             else if (!bookAfter) await book();

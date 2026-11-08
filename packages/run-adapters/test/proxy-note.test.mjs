@@ -29,9 +29,10 @@ async function proxied(t, policy, notes = [NOTE], ticket = undefined) {
   const asked = [];
   const taken = [];
   const takenWith = [];
+  const booked = [];
   const hooks = {
     beforeRequest: async (request) => (asked.push(request), ticket),
-    afterRequest: async () => {},
+    afterRequest: async (usage, _ticket, ended) => void booked.push({ usage, ended }),
     note: (model, request) => (taken.push(model), takenWith.push(request), notes.shift()),
   };
   const fetch = async (_url, init) => (forwarded.push(JSON.parse(init.body)), new Response('{"usage":{}}', { status: 200, headers: { 'content-type': 'application/json' } }));
@@ -43,7 +44,7 @@ async function proxied(t, policy, notes = [NOTE], ticket = undefined) {
     req.on('error', resolve);
     req.end(JSON.stringify(body));
   });
-  return { forwarded, asked, taken, takenWith, send };
+  return { forwarded, asked, taken, takenWith, booked, send };
 }
 const client = { model: 'main-model', messages: [{ role: 'user', text: 'Write the report.', cache: true }, { role: 'assistant', text: 'Reading.' }, { role: 'user', text: 'tool result' }] };
 
@@ -100,6 +101,14 @@ test('the request taking the note is measured first, as its client sent it, and 
   await p.send({ ...client, max_tokens: 32_000 });
   assert.deepEqual(p.takenWith, [{ inputTokensMax: plain.asked[0].inputTokensMax, outputTokensAsked: 32_000, outputTokensLeast: 10_240 }], 'the note is asked for with the request measured without it');
   assert.equal(p.asked[0].inputTokensMaxWithoutNote, plain.asked[0].inputTokensMax, 'the same measure the admission has');
+});
+
+test('a request admitted carrying the note that the proxy then never sends (released) is booked as never having left, so its host does not count the note told', async (t) => {
+  // Admitted with an output limit its policy cannot write into the body (no limitOutput): released, never sent.
+  const p = await proxied(t, withNote, [NOTE], { outputTokensMax: 100 });
+  await p.send(client);
+  assert.deepEqual([p.asked[0]?.noted, p.forwarded.length], [true, 0], 'admitted carrying the note, and never sent');
+  assert.deepEqual(p.booked.map((b) => b.ended), [{ end: 'nothing', label: 'never_left' }], 'booked as never having left');
 });
 
 test('a request the host sends beside the harness (a side key\'s, its host label) never takes the note: the note is never asked for on it, its body goes as sent, and it is admitted at its own bytes (its hold is its plain bound)', async (t) => {
