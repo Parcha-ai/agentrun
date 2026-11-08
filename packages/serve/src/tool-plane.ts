@@ -26,7 +26,8 @@ import { join } from "node:path";
 import { decisionKeysOf, PARALLEL_KEY_ENV } from "./decisions.js";
 import { keyNeeded } from "./key-words.js";
 import type { InputIssue } from "./errors.js";
-import { writeDurableSync } from "./files.js";
+import { writeDurableSync } from "./server-fs.js";
+import type { Settings } from "./store/index.js";
 import { DEFAULT_HARNESS, HARNESSES, type HarnessId } from "./harness.js";
 import { builtinHarness, harnessOf } from "./harness-table.js";
 import { viaOpenRouter, WIRES } from "./provider.js";
@@ -391,8 +392,16 @@ export function readToolSettings(dir: string): { settings: ToolSettingsMap; prob
     if ((error as NodeJS.ErrnoException).code === "ENOENT") return { settings: {}, problems: [] };
     return { settings: {}, problems: [`${file} does not read as JSON`], unreadable: true };
   }
+  return checkToolSettings(read, file);
+}
+
+/** A parsed tool-settings object (from the file, or the store), checked and failed closed: each entry that reads is kept;
+ *  one that does not is dropped, but a known tool keeps what of it reads, and its permission, when not one offered, reads
+ *  ask (deny where ask is not offered), never its allow default. `where` names the source in each problem line (the file's
+ *  path, or the setting's key in the store). `unreadable`: the value as a whole is not an object. */
+export function checkToolSettings(read: unknown, where: string): { settings: ToolSettingsMap; problems: string[]; unreadable?: true } {
   const isPlain = (v: unknown): v is Record<string, unknown> => typeof v === "object" && v !== null && !Array.isArray(v);
-  if (!isPlain(read)) return { settings: {}, problems: [`${file} is not an object of tools to their settings`], unreadable: true };
+  if (!isPlain(read)) return { settings: {}, problems: [`${where} is not an object of tools to their settings`], unreadable: true };
   const settings: ToolSettingsMap = {};
   const problems: string[] = [];
   for (const [name, setting] of Object.entries(read)) {
@@ -401,7 +410,7 @@ export function readToolSettings(dir: string): { settings: ToolSettingsMap; prob
       settings[name] = setting as ToolSetting;
       continue;
     }
-    problems.push(`${file}: ${issues.map((issue) => `${issue.field} ${issue.reason}`).join(", ")}`);
+    problems.push(`${where}: ${issues.map((issue) => `${issue.field} ${issue.reason}`).join(", ")}`);
     if (!isSettingsKey(name) || !isPlain(setting)) continue;
     const kept: ToolSetting = {};
     if (typeof setting.provider === "string" && !settingsIssues({ [name]: { provider: setting.provider } }).length) kept.provider = setting.provider;
@@ -418,6 +427,34 @@ export function readToolSettings(dir: string): { settings: ToolSettingsMap; prob
     if (Object.keys(kept).length) settings[name] = kept;
   }
   return { settings, problems };
+}
+
+/** The key the server's tool settings live under in the one store (store.settings). */
+export const TOOL_SETTINGS_KEY = "tool-settings";
+
+/** The server's tool settings read from the one store (store.settings), failing closed as readToolSettings does: no row
+ *  is every default. The store-backed replacement for `new ToolSettings(dir)` + get(); the cut wires it. */
+export async function loadToolSettings(store: { settings: Pick<Settings, "get"> }): Promise<{ settings: ToolSettingsMap; problems: string[]; unreadable?: true }> {
+  const read = await store.settings.get(TOOL_SETTINGS_KEY);
+  if (read === undefined) return { settings: {}, problems: [] };
+  return checkToolSettings(read, "the stored tool settings");
+}
+
+/** Replaces the server's tool settings in the one store, as ToolSettings.put does to the file: a tool `map` leaves out
+ *  takes its defaults, and a fail-closed stand-in sent back unchanged (a permission equal to the one it stood in for) stays
+ *  a stand-in, the row keeping the value as written. Answers the settings as served (the stand-in marks within). The
+ *  store-backed replacement for ToolSettings.put; the cut wires it. */
+export async function saveToolSettings(store: { settings: Pick<Settings, "get" | "put"> }, map: ToolSettingsMap): Promise<ToolSettingsMap> {
+  const { settings: current } = await loadToolSettings(store);
+  const kept: ToolSettingsMap = Object.fromEntries(Object.entries(map).flatMap(([name, setting]) => {
+    const set: ToolSetting = { ...(setting?.provider ? { provider: setting.provider } : {}), ...(setting?.permission ? { permission: setting.permission } : {}) };
+    const before = current[name];
+    if (before?.fallback && set.permission === before.permission) Object.assign(set, { fallback: true, raw: before.raw });
+    return Object.keys(set).length ? [[name, set]] : [];
+  }));
+  const written = Object.fromEntries(Object.entries(kept).map(([name, setting]) => [name, { ...(setting!.provider ? { provider: setting!.provider } : {}), ...(setting!.fallback ? { permission: setting!.raw } : setting!.permission ? { permission: setting!.permission } : {}) }]));
+  await store.settings.put(TOOL_SETTINGS_KEY, written);
+  return structuredClone(kept);
 }
 
 export class ToolSettings {

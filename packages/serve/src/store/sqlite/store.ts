@@ -8,13 +8,16 @@ import { DatabaseSync } from "node:sqlite";
 import { RunStorage } from "../journal/storage.js";
 import { DDL, SCHEMA_VERSION } from "../schema.js";
 import {
-  CommandTaken, RefreshLeaseLost, SchemaVersionUnknown, StoreConstraint, StoreFromEarlierVersion, TriggerFull,
-  type AgentRow, type Agents, type AlsoRow, type Claim, type Command, type FiringChange, type FiringRow, type FiringStatus, type Journal, type NewRevision, type RevisionRow, type RunPatch, type RunRow, type Runs,
+  CommandTaken, Fenced, RefreshLeaseLost, SchemaVersionUnknown, StoreConstraint, StoreFromEarlierVersion, TriggerFull, type AgentRow, type Agents,
+  type AlsoRow, type Claim, type Command, type FiringChange, type FiringRow, type FiringStatus, type Journal, type NewRevision, type RevisionRow, type RunPatch, type RunRow, type Runs,
+  type JournalReads,
   type RunState, type Store, type StoreRole, type TemplatePackage, type Templates, type TriggerDef, type TriggerPatch, type TriggerRow, type Triggers, type TriggerScope,
-  FINAL_STATES, MCP_REFRESH_CALL_MS, MCP_REFRESH_LEASE_MS, type Live, type LiveRow, type Mcp, type McpPinRow, type McpServerRow,
+  FINAL_STATES, MCP_REFRESH_CALL_MS, MCP_REFRESH_LEASE_MS, type Learning, type LearningProposal, type Live, type LiveRow, type Mcp, type McpPinRow, type McpServerRow,
+  type McpOauth, type McpOauthPendingRow, type SealedKeyRow, type SealedKeys, type Settings, type SettingRow, type TriggerSettingRow, type TriggerSettings,
 } from "../store.js";
 import { Connection, type SqliteExecutor, type SqliteValue, type Statement } from "./connection.js";
 import { applyRunPatch, RUN_COLUMNS, runOf, type RunRecord } from "./run-patch.js";
+import { readLaunch, writeLaunch } from "./run-launch.js";
 
 /** A claim's length when the caller names none. */
 export const DEFAULT_LEASE_MS = 30_000;
@@ -115,6 +118,15 @@ const mcpServerOf = (r: McpServerRecord): McpServerRow => ({
 });
 const mcpPinOf = (r: McpPinRecord): McpPinRow => ({ runId: r.run_id, body: JSON.parse(r.body), pinnedAt: r.pinned_at });
 
+type SettingRecord = { key: string; value: string; updated_at: number };
+const settingOf = (r: SettingRecord): SettingRow => ({ key: r.key, value: JSON.parse(r.value), updatedAt: r.updated_at });
+type SealedKeyRecord = { name: string; sealed: Uint8Array; updated_at: number };
+const sealedKeyOf = (r: SealedKeyRecord): SealedKeyRow => ({ name: r.name, sealed: Uint8Array.from(r.sealed), updatedAt: r.updated_at });
+type TriggerSettingRecord = { adapter: string; scope: string; field: string; sealed: string; updated_at: number };
+const triggerSettingOf = (r: TriggerSettingRecord): TriggerSettingRow => ({ adapter: r.adapter, scope: r.scope, field: r.field, sealed: r.sealed, updatedAt: r.updated_at });
+type McpOauthRecord = { state: string; server: string; verifier_sealed: Uint8Array; cookie_binding: string; working: string | null; expires_at: number };
+const mcpOauthOf = (r: McpOauthRecord): McpOauthPendingRow => ({ state: r.state, server: r.server, verifierSealed: Uint8Array.from(r.verifier_sealed), cookieBinding: r.cookie_binding, working: r.working === null ? null : JSON.parse(r.working), expiresAt: r.expires_at });
+
 /** The store's schema version as the file holds it: null when the server has not set it up (no store_meta yet). */
 async function versionOf(db: Connection): Promise<number | null> {
   const table = await db.get<{ name: string }>("SELECT name FROM sqlite_schema WHERE type = 'table' AND name = 'store_meta'");
@@ -136,7 +148,10 @@ function earlierVersionIn(dataDir: string): string[] {
   if (!existsSync(dataDir)) return [];
   const found: string[] = [];
   const isFile = (path: string) => statSync(path, { throwIfNoEntry: false })?.isFile() === true;
-  const dirsIn = (path: string) => (statSync(path, { throwIfNoEntry: false })?.isDirectory() ? readdirSync(path, { withFileTypes: true }).filter((e) => e.isDirectory()).map((e) => e.name) : []);
+  // A directory linked in counts as one (stat follows the link), as the server's check of old homes reads them: an
+  // earlier version's home or run kept elsewhere and linked in is still the earlier version's.
+  const isDir = (path: string) => statSync(path, { throwIfNoEntry: false })?.isDirectory() === true;
+  const dirsIn = (path: string) => (isDir(path) ? readdirSync(path).filter((name) => isDir(join(path, name))) : []);
   const store = join(dataDir, STORE_FILE);
   if (isFile(store) && !isThisVersionsStore(store)) found.push(STORE_FILE);
   for (const name of EARLIER_ROOT_FILES) if (isFile(join(dataDir, name))) found.push(name);
@@ -205,6 +220,9 @@ export async function openSqliteStore(options: SqliteStoreOptions): Promise<Stor
   return new SqliteStore(connection, options.now ?? Date.now);
 }
 
+/** How many released claims a store remembers, to refuse their journals. */
+const RELEASED_KEPT = 1024;
+
 /** The key of a claim's one journal: its run and epoch. */
 const journalKey = (claim: Pick<Claim, "runId" | "epoch">): string => `${claim.runId}\u0000${claim.epoch}`;
 
@@ -220,10 +238,21 @@ class SqliteStore implements Store {
   readonly runs: Runs;
   readonly mcp: Mcp;
   readonly live: Live;
+  readonly learning: Learning;
+  readonly settings: Settings;
+  readonly sealedKeys: SealedKeys;
+  readonly triggerSettings: TriggerSettings;
+  readonly mcpOauth: McpOauth;
   readonly #db: Connection;
   readonly #now: () => number;
   /** Each claim's one journal, until it is closed. */
   readonly #journals = new Map<string, RunStorage>();
+  /** Each run's claim this store released last (its epoch): journal() refuses that claim, or an older one, rather than
+   *  hand out a journal that is Fenced at its first write. A newer claim of the run by this store drops it; at most
+   *  RELEASED_KEPT are kept, the oldest dropped first. Past that cap journal() no longer refuses an old released claim,
+   *  but nothing is written through it: release moved the run's epoch on, so the journal's first commit is Fenced by the
+   *  epoch check in its own transaction. The map refuses early; the epoch is what guarantees it. */
+  readonly #released = new Map<string, number>();
 
   constructor(db: Connection, now: () => number) {
     this.#db = db;
@@ -317,21 +346,29 @@ class SqliteStore implements Store {
       },
       list: async (agentId) => (await db.all<TriggerRecord>(`SELECT ${TRIGGER_COLUMNS} FROM triggers WHERE agent_id = ? ORDER BY name`, agentId)).map(triggerOf),
       all: async () => (await db.all<TriggerRecord>(`SELECT ${TRIGGER_COLUMNS} FROM triggers ORDER BY created_at, id`)).map(triggerOf),
-      create: async (t) => {
+      create: async (t, scopes = []) => {
         const at = now();
-        const row = await db.transaction((tx) =>
-          tx.get<TriggerRecord>(
+        const row = await db.transaction(async (tx) => {
+          const made = await tx.get<TriggerRecord>(
             `INSERT INTO triggers (id, agent_id, name, enabled, source, target, next_at, catchup_window_s, max_active_runs, created_at, updated_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?) RETURNING ${TRIGGER_COLUMNS}`,
             t.id, t.agentId, t.name, t.enabled ? 1 : 0, json(t.source), json(t.target), t.nextAt, t.catchupWindowS, t.maxActiveRuns ?? null, at, at,
-          ),
-        );
+          );
+          if (t.enabled) await writeScopes(tx, t.id, scopes);
+          return made;
+        });
         return triggerOf(row!);
       },
-      update: async (id, patch) => {
+      update: async (id, patch, scopes) => {
         const { set, params } = triggerSet(patch, now());
-        const row = await db.transaction((tx) => tx.get<TriggerRecord>(`UPDATE triggers SET ${set} WHERE id = ? RETURNING ${TRIGGER_COLUMNS}`, ...params, id));
+        const row = await db.transaction(async (tx) => {
+          const changed = await tx.get<TriggerRecord>(`UPDATE triggers SET ${set} WHERE id = ? RETURNING ${TRIGGER_COLUMNS}`, ...params, id);
+          // Scope rows only while it is on: turned off, it holds none; given scopes, they are its rows now.
+          if (changed && (changed.enabled === 0 || scopes !== undefined)) await writeScopes(tx, id, changed.enabled === 1 ? (scopes ?? []) : []);
+          return changed;
+        });
         return row && triggerOf(row);
       },
+      scoped: async (kind, scope) => (await db.all<{ trigger_id: string }>("SELECT trigger_id FROM trigger_scopes WHERE kind = ? AND scope = ?", kind, scope)).map((r) => r.trigger_id),
       remove: async (id) => {
         await db.write([{ sql: "DELETE FROM triggers WHERE id = ?", params: [id] }]);
       },
@@ -481,10 +518,12 @@ class SqliteStore implements Store {
           await writeScopes(tx, triggerId, []);
         });
       },
-      fire: async (firing, run, _options = {}) =>
+      fire: async (firing, run, { launch } = {}) =>
         db.transaction(async (tx) => {
           const at = now();
           const row = await tx.get<RunRecord>(`INSERT INTO runs (id, agent_id, revision_id, state, epoch, started_at) VALUES (?, ?, ?, 'queued', 0, ?) RETURNING ${RUN_COLUMNS}`, run.id, run.agentId, run.revisionId, at);
+          // The run's launch row lands with it, through the store's one writer, or neither does.
+          if (launch) await writeLaunch(tx, run.id, launch, at);
           // The due firing the engine recorded becomes started; one not recorded yet is recorded started. A firing already
           // past due (started, or settled otherwise) is refused, and its run with it.
           const moved = await tx.runCounted(
@@ -503,24 +542,41 @@ class SqliteStore implements Store {
     };
 
     this.runs = {
-      create: async ({ id, agentId, revisionId }) => {
-        const [result] = await db.write([{ sql: `INSERT INTO runs (id, agent_id, revision_id, state, epoch, started_at) VALUES (?, ?, ?, 'queued', 0, ?) RETURNING ${RUN_COLUMNS}`, params: [id, agentId, revisionId, now()] }]);
+      create: async ({ id, agentId, revisionId, origin }, launch) => {
+        const insert = `INSERT INTO runs (id, agent_id, revision_id, state, epoch, started_at) VALUES (?, ?, ?, 'queued', 0, ?) RETURNING ${RUN_COLUMNS}`;
+        if (origin || launch) {
+          // The run, its origin and its launch row in one transaction: the key -> run link holds even if the kept response
+          // never lands, and a run never exists without the launch it was started with.
+          return db.transaction(async (tx) => {
+            const at = now();
+            const row = await tx.get<RunRecord>(insert, id, agentId, revisionId, at);
+            if (origin) await tx.run("INSERT INTO run_origins (key, run_id, fingerprint, created_at) VALUES (?, ?, ?, ?)", origin.key, id, origin.fingerprint ?? null, at);
+            if (launch) await writeLaunch(tx, id, launch, at);
+            return runOf(row!);
+          });
+        }
+        const [result] = await db.write([{ sql: insert, params: [id, agentId, revisionId, now()] }]);
         return runOf(result!.rows[0] as RunRecord);
       },
       get: async (id) => {
         const row = await db.get<RunRecord>(`SELECT ${RUN_COLUMNS} FROM runs WHERE id = ?`, id);
         return row && runOf(row);
       },
-      list: async ({ agentId, revisionId, state, limit }) => {
+      launch: (runId) => readLaunch(db, runId),
+      list: async ({ agentId, revisionId, state, archived, limit }) => {
         const where: string[] = [];
         const params: SqliteValue[] = [];
         if (agentId !== undefined) (where.push("agent_id = ?"), params.push(agentId));
         if (revisionId !== undefined) (where.push("revision_id = ?"), params.push(revisionId));
         if (state !== undefined) (where.push("state = ?"), params.push(state));
+        if (archived !== undefined) where.push(`archived_at IS ${archived ? "NOT NULL" : "NULL"}`);
         const bounded = typeof limit === "number" && Number.isSafeInteger(limit) && limit >= 0;
         if (bounded) params.push(limit);
         const rows = await db.all<RunRecord>(`SELECT ${RUN_COLUMNS} FROM runs ${where.length ? `WHERE ${where.join(" AND ")}` : ""} ORDER BY started_at DESC, id DESC${bounded ? " LIMIT ?" : ""}`, ...params);
         return rows.map(runOf);
+      },
+      archive: async (runId, archived) => {
+        await db.write([{ sql: "UPDATE runs SET archived_at = ? WHERE id = ?", params: [archived ? now() : null, runId] }]);
       },
       claimable: async ({ limit } = {}) => {
         const at = now();
@@ -633,9 +689,85 @@ class SqliteStore implements Store {
         );
         return rows.map((row): LiveRow => ({ runId: row.run_id, state: JSON.parse(row.state), updatedAt: row.updated_at }));
       },
-      drop: async (runId) => {
-        await db.write([{ sql: "DELETE FROM run_live WHERE run_id = ?", params: [runId] }]);
+      drop: async (claim) => {
+        await db.write([{
+          sql: "DELETE FROM run_live WHERE run_id = ? AND EXISTS (SELECT 1 FROM runs WHERE id = ? AND epoch = ?)",
+          params: [claim.runId, claim.runId, claim.epoch],
+        }]);
       },
+    };
+
+    type ProposalRecord = { run_id: string; agent_id: string; turn: string; proposal: string; created_at: number };
+    const proposalOf = (row: ProposalRecord): LearningProposal => ({
+      runId: row.run_id, agentId: row.agent_id, turn: JSON.parse(row.turn), proposal: JSON.parse(row.proposal), createdAt: row.created_at,
+    });
+    this.learning = {
+      proposal: async (runId) => {
+        const row = await db.get<ProposalRecord>("SELECT run_id, agent_id, turn, proposal, created_at FROM learning_proposals WHERE run_id = ?", runId);
+        return row ? proposalOf(row) : undefined;
+      },
+      proposals: async (agentId, { limit = 100 } = {}) =>
+        (await db.all<ProposalRecord>(
+          "SELECT run_id, agent_id, turn, proposal, created_at FROM learning_proposals WHERE agent_id = ? ORDER BY created_at DESC, run_id DESC LIMIT ?",
+          agentId, limit,
+        )).map(proposalOf),
+    };
+
+    this.settings = {
+      get: async (key) => {
+        const row = await db.get<{ value: string }>("SELECT value FROM settings WHERE key = ?", key);
+        return row === undefined ? undefined : JSON.parse(row.value);
+      },
+      put: async (key, value) => {
+        await db.write([{ sql: "INSERT INTO settings (key, value, updated_at) VALUES (?, ?, ?) ON CONFLICT (key) DO UPDATE SET value = excluded.value, updated_at = excluded.updated_at", params: [key, json(value), now()] }]);
+      },
+      remove: async (key) => {
+        await db.write([{ sql: "DELETE FROM settings WHERE key = ?", params: [key] }]);
+      },
+      all: async () => (await db.all<SettingRecord>("SELECT key, value, updated_at FROM settings ORDER BY key")).map(settingOf),
+    };
+
+    this.sealedKeys = {
+      get: async (name) => {
+        const row = await db.get<{ sealed: Uint8Array }>("SELECT sealed FROM sealed_keys WHERE name = ?", name);
+        return row === undefined ? undefined : Uint8Array.from(row.sealed);
+      },
+      put: async (name, sealed) => {
+        await db.write([{ sql: "INSERT INTO sealed_keys (name, sealed, updated_at) VALUES (?, ?, ?) ON CONFLICT (name) DO UPDATE SET sealed = excluded.sealed, updated_at = excluded.updated_at", params: [name, sealed, now()] }]);
+      },
+      remove: async (name) => {
+        await db.write([{ sql: "DELETE FROM sealed_keys WHERE name = ?", params: [name] }]);
+      },
+      all: async () => (await db.all<SealedKeyRecord>("SELECT name, sealed, updated_at FROM sealed_keys ORDER BY name")).map(sealedKeyOf),
+    };
+
+    this.triggerSettings = {
+      get: async (adapter) => (await db.all<TriggerSettingRecord>("SELECT adapter, scope, field, sealed, updated_at FROM trigger_settings WHERE adapter = ? ORDER BY scope, field", adapter)).map(triggerSettingOf),
+      put: async ({ adapter, scope, field, sealed }) => {
+        await db.write([{ sql: "INSERT INTO trigger_settings (adapter, scope, field, sealed, updated_at) VALUES (?, ?, ?, ?, ?) ON CONFLICT (adapter, scope, field) DO UPDATE SET sealed = excluded.sealed, updated_at = excluded.updated_at", params: [adapter, scope, field, sealed, now()] }]);
+      },
+      removeScope: async (adapter, scope) => {
+        await db.write([{ sql: "DELETE FROM trigger_settings WHERE adapter = ? AND scope = ?", params: [adapter, scope] }]);
+      },
+    };
+
+    this.mcpOauth = {
+      put: async ({ state, server, verifierSealed, cookieBinding, working, expiresAt }) => {
+        await db.write([{
+          sql: `INSERT INTO mcp_oauth_pending (state, server, verifier_sealed, cookie_binding, working, expires_at) VALUES (?, ?, ?, ?, ?, ?)
+            ON CONFLICT (state) DO UPDATE SET server = excluded.server, verifier_sealed = excluded.verifier_sealed, cookie_binding = excluded.cookie_binding, working = excluded.working, expires_at = excluded.expires_at`,
+          params: [state, server, verifierSealed, cookieBinding, json(working), expiresAt],
+        }]);
+      },
+      get: async (state, at) => {
+        const row = await db.get<McpOauthRecord>("SELECT state, server, verifier_sealed, cookie_binding, working, expires_at FROM mcp_oauth_pending WHERE state = ?", state);
+        if (row === undefined || (at !== undefined && row.expires_at <= at)) return undefined;
+        return mcpOauthOf(row);
+      },
+      remove: async (state) => {
+        await db.write([{ sql: "DELETE FROM mcp_oauth_pending WHERE state = ?", params: [state] }]);
+      },
+      sweepExpired: async (at) => (await db.write([{ sql: "DELETE FROM mcp_oauth_pending WHERE expires_at <= ?", params: [at] }]))[0]!.changes,
     };
   }
 
@@ -662,6 +794,8 @@ class SqliteStore implements Store {
         runner, until, ...picked.map((row) => row.id),
       );
       const epochs = new Map(rows.map((row) => [row.id, row.epoch]));
+      // A newer claim of a run supersedes its release here: journal() refuses by epoch, and the newer epoch passes.
+      for (const { id } of picked) this.#released.delete(id);
       return picked.map(({ id, state }) => ({ runId: id, runner, epoch: epochs.get(id)!, until, from: state }));
     });
   }
@@ -685,14 +819,19 @@ class SqliteStore implements Store {
       `UPDATE runs SET epoch = epoch + 1, runner = NULL, claimed_until = NULL, wake_at = ?, backoff_until = ?, state = coalesce(?, state)${ending ? ", ended_at = coalesce(ended_at, ?)" : ""} WHERE id = ? AND epoch = ? AND runner = ?`,
       [wakeAt, backoffUntil, state ?? null, ...(ending ? [this.#now()] : []), claim.runId, claim.epoch, claim.runner],
     )], { full: true });
-    // The released claim's journal is dead (its epoch moved on): the store keeps it no longer.
+    // The released claim's journal is dead (its epoch moved on): the store keeps it no longer, and refuses it from now.
     this.#journals.delete(journalKey(claim));
+    this.#released.delete(claim.runId);
+    this.#released.set(claim.runId, claim.epoch);
+    if (this.#released.size > RELEASED_KEPT) this.#released.delete(this.#released.keys().next().value!);
   }
 
   /** The claim's one journal (pi assumes one Storage per owner): asked again for the same claim while it is open, the same
    *  journal, so two callers never mint the same ids. The store keeps it only while it is open and its claim held: its
    *  close, or its claim's release, drops it, so a long-lived runner keeps no journal of a finished claim. */
   journal(claim: Claim): Journal {
+    const released = this.#released.get(claim.runId);
+    if (released !== undefined && claim.epoch <= released) throw new Fenced(claim.runId, claim.epoch);
     const key = journalKey(claim);
     const open = this.#journals.get(key);
     if (open && !open.closed) return open;
@@ -701,6 +840,14 @@ class SqliteStore implements Store {
     });
     this.#journals.set(key, journal);
     return journal;
+  }
+
+  /** A run's journal opened for reading only (no claim): a fresh RunStorage on the store's connection, its reads alone. A
+   *  read never checks the epoch (only a commit's fence does), so the view carries epoch 0 and never writes; its type
+   *  (JournalReads) hands out no commit, stage or mintId. The store keeps no reference to it — it holds no claim and two
+   *  readers of one run never share ids, since neither mints any. A run with no journal yet reads as empty. */
+  readJournal(runId: string): JournalReads {
+    return new RunStorage(this.#db, { runId, epoch: 0 }, this.#now);
   }
 
   /** How many journals the store keeps (open, of a claim not released). */
@@ -723,6 +870,11 @@ class SqliteStore implements Store {
 
   async commands(runId: string, after: number): Promise<Command[]> {
     return (await this.#db.all<CommandRecord>(`SELECT ${COMMAND_COLUMNS} FROM commands WHERE run_id = ? AND id > ? ORDER BY id`, runId, after)).map(commandOf);
+  }
+
+  async runOfOrigin(key: string): Promise<{ runId: string; fingerprint: string | null } | undefined> {
+    const row = await this.#db.get<{ run_id: string; fingerprint: string | null }>("SELECT run_id, fingerprint FROM run_origins WHERE key = ?", key);
+    return row && { runId: row.run_id, fingerprint: row.fingerprint };
   }
 
   async take(claim: Claim, commandId: number, outcome: "taken" | "refused" = "taken", reason?: string): Promise<void> {

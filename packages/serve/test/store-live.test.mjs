@@ -54,7 +54,7 @@ test("a row is overwritten in place by the next tick, and dropped at the run's e
   await store.live.put([{ claim, state: { text: "ab" } }]);
   const [row] = await store.live.read([claim.runId]);
   assert.deepEqual([row.state, row.updatedAt], [{ text: "ab" }, clock.now]);
-  await store.live.drop(claim.runId);
+  await store.live.drop(claim);
   assert.deepEqual(await store.live.read([claim.runId]), []);
   assert.deepEqual(await store.live.read([]), [], "no runs asked: none");
 });

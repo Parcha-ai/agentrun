@@ -2,11 +2,33 @@
 // claims, renews, delivers command rows and releases; the loop runs the harness on the run's journal. B2's loop.ts
 // implements `Loop` for pi and the CLI adapters; the runner knows nothing about harnesses.
 
-import type { Claim, Command, Journal } from "../store/store.js";
+import type { AlsoRow, Claim, Command, Journal } from "../store/store.js";
 
 // The store's own: a claim (its epoch fences every write made under it; `until` in epoch ms) and a command row (taken_at
 // set once, by the loop's journal commit that applies it or by the runner's refusal, with `refused` its reason).
-export type { Claim, Command, Journal };
+export type { AlsoRow, Claim, Command, Journal };
+
+/** How an end-of-run turn the loop asked ended: its answer's text, its deadline passed (the turn is aborted), or it
+ *  failed. */
+export type EndOfRunAnswer = { readonly ended: true; readonly answer: string } | { readonly timedOut: true } | { readonly failed: { readonly code: string; readonly message: string } };
+
+/**
+ * The end-of-run step (the learning lane's end-of-run turn): asked once, after the job's last turn ended and before the
+ * loop writes the run's end. `ask` sends one more turn through the run's own session, its origin `reflect`: while it
+ * runs the loop refuses its writes and edits under work/.learning/ (REFLECT_NOTE_ONLY), and it is aborted at
+ * `deadlineMs`. The rows it returns are staged into the end commit, so they land in that commit's one transaction or not
+ * at all. A stop or a lost claim aborts `signal`: no end is written, and the next claim asks again (the turn's request
+ * id is one per run, so its model is asked once).
+ */
+export type EndOfRunTurn = (input: {
+  readonly runId: string;
+  readonly agentId: string;
+  readonly claim: Claim;
+  /** How the job ended. */
+  readonly outcome: "completed" | "failed";
+  ask(prompt: string, opts: { readonly origin: "reflect"; readonly deadlineMs: number }): Promise<EndOfRunAnswer>;
+  readonly signal: AbortSignal;
+}) => Promise<{ readonly also: readonly AlsoRow[] } | undefined>;
 
 /** How a loop's start() ended. The run's own outcome (state, cost) is already in the journal's last commit. */
 export type LoopEnd =
@@ -51,6 +73,8 @@ export interface LoopDeps {
    *  `undefined` once there is nothing held. The runner's live ticker (runner/live-ticker.ts) writes it to the run's
    *  run_live row, one store transaction per tick for all its loops, never into the journal. Absent: not reported. */
   live?: (held: HeldState | undefined) => void;
+  /** The end-of-run step (EndOfRunTurn): asked once before a run that answered or failed writes its end. Absent: none. */
+  endOfRun?: EndOfRunTurn;
 }
 
 /** A run's held state: what pi shows before it stores it. The live view (live/stream.ts) streams it beside the stored

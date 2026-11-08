@@ -215,6 +215,9 @@ export class Triggers {
     this.store = deps.store;
     this.clock = deps.clock ?? REAL_CLOCK;
     this.adapters = deps.adapters ?? TRIGGER_ADAPTERS;
+    // A pushed source's own hook path is its id, beside the trigger ids a hook path also names: none looks like one.
+    const shaped = this.adapters.find((a) => a.id.startsWith("trg_"));
+    if (shaped) throw new Error(`a trigger source's id never starts as a trigger's does: ${shaped.id}`);
   }
 
   /** At the server's start: every enabled trigger whose source no longer reads turned off, each failure's trigger.failed
@@ -254,14 +257,16 @@ export class Triggers {
     const agentId = await this.agentOf(target);
     const id = `trg_${randomBytes(12).toString("hex")}`;
     const enabled = body.enabled !== false;
+    // A scope belongs to one trigger: told before anything is minted or written (the store's scope rows are the backstop).
+    if (enabled) await this.scopeFree(source, id);
     // Its secrets are kept before the trigger is: one that cannot be kept (no seal key) makes none.
     const minted = this.mint(source, id);
     const name = typeof body.name === "string" ? body.name.trim() : id;
     let row: TriggerRow;
     try {
-      row = await this.store.triggers.create({ id, agentId, name, enabled, source, target, nextAt: enabled ? nextAfter(this.adapter(source), source, now) : null, catchupWindowS: settings.catchup_window_s ?? CATCHUP_WINDOW_S });
+      row = await this.store.triggers.create({ id, agentId, name, enabled, source, target, nextAt: enabled ? nextAfter(this.adapter(source), source, now) : null, catchupWindowS: settings.catchup_window_s ?? CATCHUP_WINDOW_S }, this.scopesOf(source));
     } catch (error) {
-      throw nameTaken(error, name);
+      throw await this.scopeTaken(error, source, id) ?? nameTaken(error, name);
     }
     void this.arm();
     // What it minted, shown this once, by field: a webhook's `secret`.
@@ -280,6 +285,14 @@ export class Triggers {
     const row = await this.store.triggers.get(id);
     const trigger = row && asTrigger(row);
     return trigger !== undefined && trigger.source.kind === kind && this.adapter(trigger.source)?.delivery === "push" && trigger.enabled;
+  }
+
+  /** The triggers of the pushed source `kind` that are on and listen on `scope` (its adapter's scopeOf): the ones an
+   *  event there fires. */
+  async scoped(kind: string, scope: string): Promise<string[]> {
+    const adapter = adapterIn(this.adapters, kind);
+    if (!adapter?.scopeOf) return [];
+    return this.store.triggers.scoped(kind, scope);
   }
 
   /** A delivered request for trigger `id` (its pushed source's checks passed, server.ts): its firing, keyed by the
@@ -319,12 +332,14 @@ export class Triggers {
     if (enabled && next === null && adapter.delivery === "clock") throw invalid([{ field: "enabled", reason: "invalid", message: `This ${adapter.label} has no time left to fire at: give it a new source.` }]);
     // On again, a trigger starts a new streak: a failure streak that turned it off is behind it.
     const again: TriggerPatch = enabled && !trigger.enabled ? { failuresInARow: 0, disabled: null } : {};
+    const scopeSource = source ?? trigger.source;
+    if (enabled) await this.scopeFree(scopeSource, trigger.id);
     const patch: TriggerPatch = {
       ...(typeof body.name === "string" ? { name: body.name.trim() } : {}), ...(source ? { source } : {}), ...(target ? { target } : {}),
       ...(settings.catchup_window_s !== undefined ? { catchupWindowS: settings.catchup_window_s } : {}), ...again, enabled, nextAt: next,
     };
-    const row = await this.store.triggers.update(id, patch).catch((error: unknown) => {
-      throw nameTaken(error, patch.name ?? trigger.name);
+    const row = await this.store.triggers.update(id, patch, enabled ? this.scopesOf(scopeSource) : []).catch(async (error: unknown) => {
+      throw (await this.scopeTaken(error, scopeSource, trigger.id)) ?? nameTaken(error, patch.name ?? trigger.name);
     });
     if (!row) throw new ApiError("not_found", `no trigger ${id}`);
     void this.arm();
@@ -685,6 +700,35 @@ export class Triggers {
     const store = this.deps.settings(adapter.id);
     if (!store) throw new Error(`no sealed settings for ${adapter.id}`);
     return Object.fromEntries(Object.entries(adapter.settings!.fields).filter(([, f]) => f.mint).map(([field]) => [field, store.mint(id, field)]));
+  }
+
+  /** A scope belongs to one trigger: `source`'s (its adapter's scopeOf), for a trigger `id` that is to be on, is refused
+   *  409 scope_taken while another trigger of its kind that is on listens there (its scope rows). */
+  private async scopeFree(source: Source, id: string): Promise<void> {
+    const refused = await this.scopeRefusal(source, id);
+    if (refused) throw refused;
+  }
+
+  /** The 409 scope_taken for `source`'s scope when another enabled trigger holds it, else undefined. */
+  private async scopeRefusal(source: Source, id: string): Promise<ApiError | undefined> {
+    const adapter = this.adapter(source);
+    if (!adapter.scopeOf) return undefined;
+    const scope = adapter.scopeOf(source);
+    const other = (await this.store.triggers.scoped(source.kind, scope)).find((t) => t !== id);
+    return other ? new ApiError("scope_taken", `The ${adapter.label} scope ${scope} belongs to the trigger ${other}: a scope belongs to one trigger. Turn that one off, or give this one another scope.`, { details: { source: adapter.id, scope, trigger_id: other } }) : undefined;
+  }
+
+  /** A store refusal on the scope rows (two writes raced past scopeFree): the same 409 scope_taken; undefined for any
+   *  other error. */
+  private async scopeTaken(error: unknown, source: Source, id: string): Promise<ApiError | undefined> {
+    if (!(error instanceof StoreConstraint) || !/trigger_scopes/.test(error.message)) return undefined;
+    return (await this.scopeRefusal(source, id)) ?? new ApiError("scope_taken", "That scope belongs to another trigger: a scope belongs to one trigger.");
+  }
+
+  /** `source`'s scope rows, while its trigger is on: its adapter's scopeOf, or none. */
+  private scopesOf(source: Source): { kind: string; scope: string }[] {
+    const scopeOf = this.adapter(source).scopeOf;
+    return scopeOf ? [{ kind: source.kind, scope: scopeOf(source) }] : [];
   }
 
   /** Why `source` no longer reads on this server, if it does not. */

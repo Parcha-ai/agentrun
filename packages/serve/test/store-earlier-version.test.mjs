@@ -2,11 +2,11 @@
 // found, with words to start in a new, empty directory. Nothing is read, moved or changed there. An empty directory (or one
 // not made yet, or one holding this version's store) opens.
 import assert from "node:assert/strict";
-import { mkdirSync, mkdtempSync, readdirSync, rmSync, writeFileSync } from "node:fs";
+import { mkdirSync, mkdtempSync, readdirSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
 import { DatabaseSync } from "node:sqlite";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { test } from "node:test";
+import { after, test } from "node:test";
 
 const { openSqliteStore } = await import("../dist/store/index.js");
 
@@ -26,6 +26,20 @@ const sqlite = (path) => {
   db.close();
 };
 
+/** A link at `path` to a directory elsewhere that `make` fills: an earlier version's home or run kept outside the data
+ *  directory and linked in, as the server's own check of old homes follows (server.ts oldHomes). */
+const linked = (path, make) => {
+  const target = mkdtempSync(join(process.env.TMPDIR ?? tmpdir(), "agentrun-earlier-target-"));
+  linkedTargets.push(target);
+  make(target);
+  mkdirSync(join(path, ".."), { recursive: true });
+  symlinkSync(target, path, "dir");
+};
+const linkedTargets = [];
+after(() => {
+  for (const target of linkedTargets) rmSync(target, { recursive: true, force: true });
+});
+
 const SHAPES = [
   ["an earlier version's store.sqlite (no schema_version row)", (dir) => sqlite(join(dir, "store.sqlite")), "store.sqlite"],
   ["an agent home's agent.sqlite", (dir) => sqlite(join(dir, "agent-1", "agent.sqlite")), join("agent-1", "agent.sqlite")],
@@ -43,6 +57,11 @@ const SHAPES = [
   ["a home's sign-ins.json", (dir) => file(join(dir, "homes", "home-1", "sign-ins", "sign-ins.json")), join("homes", "home-1", "sign-ins", "sign-ins.json")],
   // The per-run door's token: only an earlier version's runs had a door.
   [".door-token", (dir) => file(join(dir, ".door-token"), "token"), ".door-token"],
+  // A home or run linked in from elsewhere is the earlier version's all the same.
+  ["a linked agent home's agent.sqlite", (dir) => linked(join(dir, "agent-1"), (to) => sqlite(join(to, "agent.sqlite"))), join("agent-1", "agent.sqlite")],
+  ["a linked agents/ home's agent.sqlite", (dir) => linked(join(dir, "agents", "agent-1"), (to) => sqlite(join(to, "agent.sqlite"))), join("agents", "agent-1", "agent.sqlite")],
+  ["a linked run's run.sqlite under runs/", (dir) => linked(join(dir, "runs", "run-1"), (to) => sqlite(join(to, "run.sqlite"))), join("runs", "run-1", "run.sqlite")],
+  ["a linked home's sign-ins.json", (dir) => linked(join(dir, "homes", "home-1"), (to) => file(join(to, "sign-ins", "sign-ins.json"))), join("homes", "home-1", "sign-ins", "sign-ins.json")],
 ];
 
 test("this version's own files beside its store open: .token, .server.json, and a leftover box-image.json the cutover stopped writing", async (t) => {
