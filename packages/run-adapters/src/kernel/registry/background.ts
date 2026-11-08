@@ -14,6 +14,8 @@
 import { answerOf, type Executor, type Hands, type ProcessInfo, type Processes, type ToolAnswer } from "./hands.js";
 import { BACKGROUND_DIR, BACKGROUND_INPUT_BYTES, BACKGROUND_LIST_MAX, BACKGROUND_LOG_BYTES, BACKGROUND_MAX, BACKGROUND_PAGE_BYTES, BACKGROUND_SIGNALS } from "./limits.js";
 
+/** Every background tool's refusal with no computer (Mode 1 or Mode 2), as ruled. */
+export const NEEDS_A_COMPUTER = "Background programs need a computer: run this agent with place sandbox (Docker in Mode 1, or a remote computer in Mode 2).";
 /** The terminal a `tty: true` process runs on. */
 const TTY_SIZE = Object.freeze({ cols: 80, rows: 24 });
 /** How long `bash_signal` waits for the process to end before it answers. */
@@ -279,7 +281,7 @@ const bashList = async (processes: Processes): Promise<ToolAnswer> => {
 const onProcesses = (name: string, run: (processes: Processes, args: unknown, hands: Hands) => Promise<ToolAnswer>): Executor => (args, call) => answerOf(call, async () => {
   call.signal?.throwIfAborted();
   const processes = call.hands.processes;
-  if (!processes) throw new Error(`${name} needs a computer: with no computer, bash runs in the run's folder and background processes are not offered`);
+  if (!processes) throw new Error(NEEDS_A_COMPUTER);
   return run(processes, args, call.hands);
 });
 
