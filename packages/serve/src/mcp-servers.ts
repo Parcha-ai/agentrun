@@ -155,8 +155,9 @@ export class McpServers {
       return marked(kept.url, await listServer(new URL(kept.url), await this.withAppToken(kept, this.opened(name, kept, "name"), stop), this.version, stop));
     }
     const { url, auth } = this.admit(body);
-    if (auth.type !== "none" && !auth.headers) throw invalid([credentialMissing(auth.type, "A preview needs the credential it is to connect with.")]);
-    return marked(url.href, await listServer(url, auth.headers ?? {}, this.version, stop));
+    // A github_app server's credential is a token of the App, minted here, as for a saved one: its static headers are optional.
+    if (auth.type !== "none" && auth.type !== "github_app" && !auth.headers) throw invalid([credentialMissing(auth.type, "A preview needs the credential it is to connect with.")]);
+    return marked(url.href, await listServer(url, await this.withAppToken({ auth: { type: auth.type } }, auth.headers ?? {}, stop), this.version, stop));
   }
 
   /** PUT: preview, then keep the server with the tools listed. A body with no credential keeps the sealed one, while
@@ -167,8 +168,12 @@ export class McpServers {
     if (auth.type !== "none" && !this.key) throw new ApiError("no_sealing_key", `This server was handed no seal key (${SEAL_KEY_ENV}), so it keeps no MCP server credential: it never keeps one in the clear. ${SEAL_KEY_HOW}`);
     const was = this.servers()[name];
     let headers = auth.headers;
-    // A github_app server's own headers are only its static ones (its token is minted): none is a credential to keep.
-    if (auth.type === "github_app" && !headers && was?.auth.type === "github_app" && was.auth.sealed) headers = this.opened(name, was, "auth.headers");
+    // A github_app server's own headers are only its static ones (its token is minted), kept as saved only at the same
+    // origin, as any saved credential: a move takes them again, or none goes to another origin.
+    if (auth.type === "github_app" && !headers && was?.auth.type === "github_app" && was.auth.sealed) {
+      if (new URL(was.url).origin !== url.origin) throw invalid([credentialMissing(auth.type, `The address moved from ${new URL(was.url).origin} to ${url.origin}: send the headers again, so saved ones never go to another origin.`)]);
+      headers = this.opened(name, was, "auth.headers");
+    }
     if (auth.type !== "none" && auth.type !== "github_app" && !headers) {
       if (!was || was.auth.type !== auth.type) throw invalid([credentialMissing(auth.type, `The server ${name} has no saved ${auth.type} credential to keep.`)]);
       if (new URL(was.url).origin !== url.origin) throw invalid([credentialMissing(auth.type, `The address moved from ${new URL(was.url).origin} to ${url.origin}: send the credential again, so a saved one never goes to another origin.`)]);
