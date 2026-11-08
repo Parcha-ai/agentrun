@@ -418,10 +418,6 @@ function openFigures(entries: readonly EntryLike[]): { generation: Figure[]; com
 export function spentIn(storeFile: string): number | null {
   if (!existsSync(storeFile)) return 0;
   // Fresh, read-only and lock-free (run-db.ts): its process may hold it.
-  const entries: EntryLike[] = [];
-  // The store's own entries, as read (without the answers written below for a stopped request): openFigures reads them.
-  const read: EntryLike[] = [];
-  let marked = false;
   const rows: EntryLike[] = [];
   readRunDbSync(storeFile, false, (db) => {
     // A read made again (its file changed during it) starts from none.
@@ -431,6 +427,20 @@ export function spentIn(storeFile: string): number | null {
       rows.push(entry);
     }
   });
+  return spentFrom(rows);
+}
+
+/** What the run's model requests cost, from its entries in log order: the one computation, shared by spentIn (reading a
+ *  settled run's own database) and the one-store reader (store-reads, reading A's journal). These readings are the cap's
+ *  own, on its copy of the entries (the run's shown cost is the timeline's, unchanged): a request stopped before its end
+ *  counts at the figure its end mark holds (HELD_FIELD), and one a crash cut (marked as sent, no answer, no end) at the
+ *  figure its start mark holds (openFigures), each the worst case the cap held for it; without that figure either stays
+ *  cut, at an unknown cost. This cap's refusals are left out, as none left. Unknown is null, which a cap never reads as $0. */
+export function spentFrom(rows: readonly EntryLike[]): number | null {
+  // The store's own entries, as read (without the answers written below for a stopped request): openFigures reads them.
+  const entries: EntryLike[] = [];
+  const read: EntryLike[] = [];
+  let marked = false;
   // pi's error entry for a request that ended on an error after its response began is left out, as an aborted one is: its
   // end mark (`error`) counts it at its hold. pi writes the entry as the mark is written, before it or after, so each such
   // mark takes the nearest error entry not yet taken among those after the earliest start holding its figure (a request's
@@ -777,7 +787,7 @@ export function takePaidRefusal(owner: RunSpend | undefined): { words: string; f
   return { words: refusal.words, figures: refusal.figures };
 }
 
-export async function paidCall<T>(name: string, call: () => Promise<T>, charge: (result: T) => number | null | undefined, hold: { usd: number; basis: string }): Promise<{ refused: string; leastCapUsd?: number } | { result: T }> {
+export async function paidCall<T>(name: string, call: () => Promise<T>, charge: (result: T) => number | null | undefined, hold: { usd: number; basis: string }, options: { pauses?: boolean } = {}): Promise<{ refused: string; leastCapUsd?: number } | { result: T }> {
   const spend = runSpend;
   if (!spend) return { result: await call() };
   const turn = paying.then(async () => {
@@ -795,10 +805,12 @@ export async function paidCall<T>(name: string, call: () => Promise<T>, charge: 
       // words and the least cap that sends it (leastCapUsd) are one figure, which the pause carries to its mark and serves.
       const refusal = paidRefusal(spend.cap, read, holding, name, hold);
       const room = { words: refusal.text.slice(`${SPEND_CAP_REACHED}: `.length), figures: { spentUsd: read + holding, needsUsd: hold.usd, leastCapUsd: refusal.leastCapUsd } };
+      // `pauses: false`: no step of the run's own (a person's take-over of its browser), so neither a workflow's call nor the
+      // model's next request is told: the run goes on unpaused.
       // Inside a workflow's call node: the call is told, and ends on it. Else the model's next request is refused in its words.
-      const told = capRefusals.getStore();
+      const told = options.pauses !== false ? capRefusals.getStore() : undefined;
       if (told) told({ ...room, room: true, capUsd: spend.cap });
-      else paidRoomRefusal = { owner: spend, ...room };
+      else if (options.pauses !== false) paidRoomRefusal = { owner: spend, ...room };
       return { refused: refusal.text, leastCapUsd: refusal.leastCapUsd };
     }
     // Held from here; settled into the spend in the same step that lets the hold go, so no check between sees neither.

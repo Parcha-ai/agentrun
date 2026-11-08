@@ -27,12 +27,13 @@ import { decisionKeysOf, PARALLEL_KEY_ENV } from "./decisions.js";
 import { keyNeeded } from "./key-words.js";
 import type { InputIssue } from "./errors.js";
 import { writeDurableSync } from "./server-fs.js";
+import type { Settings } from "./store/index.js";
 import { DEFAULT_HARNESS, HARNESSES, type HarnessId } from "./harness.js";
 import { builtinHarness, harnessOf } from "./harness-table.js";
 import { viaOpenRouter, WIRES } from "./provider.js";
 import { savedIn } from "./secrets.js";
 import { hostModel } from "./model.js";
-import { defaultPermission, isCatalogTool, isMcpTool, type Permission, PERMISSIONS, permissionFrom, permissionOf, SHELL_FAMILY } from "./tool-gate.js";
+import { defaultPermission, isCatalogTool, isMcpTool, MAX_PIN_ARGS, MAX_PIN_CHOICES, type Permission, PERMISSIONS, permissionFrom, permissionOf, type Pin, SHELL_FAMILY } from "./tool-gate.js";
 
 /**
  * The capabilities a pack or a revision may grant, by name: the tools the kernel gives a run, bound from serve's closed
@@ -72,8 +73,42 @@ export const SERVE_OWN_TOOLS: readonly string[] = ["learned_workflow"];
 /** A settings key: a tool of the table, one of the run's own tools (SERVE_OWN_TOOLS), a catalog tool (`monid.<tool>`,
  *  `mcp:<server>/<tool>`), or an MCP server's wildcard (`mcp:<server>/*`), which sets each of its tools. */
 const isSettingsKey = (name: string): boolean => isToolSettingsKey(name) && (TABLE_TOOLS.includes(name) || SERVE_OWN_TOOLS.includes(name) || isCatalogTool(name) || /^mcp:[^/]+\/\*$/.test(name));
-/** One tool's settings: its provider (a capability that has a choice) and its permission. */
-export type ToolSetting = { provider?: string; permission?: Permission; /** Read as a stand-in for a value not offered (readToolSettings); never shown or written. */ fallback?: true; /** The stand-in's value as written in the file, which a save that keeps the stand-in writes back (ToolSettings.put). Never shown. */ raw?: unknown };
+/** One tool's settings: its provider (a capability that has a choice), its permission, and an MCP tool's pin (the
+ *  arguments its calls must carry, tool-gate.ts pinRefusal). */
+export type ToolSetting = { provider?: string; permission?: Permission; pin?: Pin; /** Read as a stand-in for a value not offered (readToolSettings); never shown or written. */ fallback?: true; /** The stand-in's value as written in the file, which a save that keeps the stand-in writes back (ToolSettings.put). Never shown. */ raw?: unknown; /** A pin in the file that does not read (readToolSettings): the gate refuses every call of the tool. Never shown or written. */ brokenPin?: true };
+/** Whether an agent's own settings (definition.tool_settings) keep a pin. Not yet: the agent store this server writes
+ *  today keeps a setting's values as names only, and refuses a pin; the store of the rewrite (store/, module A) keeps it
+ *  as given, and this is true from its cutover on. Until then a pin is set on the server (PUT /v2/settings/tools), which
+ *  the gate holds every run to; the gate reads an agent's pin wherever a revision carries one. */
+export const AGENT_LAYER_PINS: boolean = false;
+/** Why an agent's own pin is refused while AGENT_LAYER_PINS is false. */
+export const AGENT_PIN_LATER = "An agent's own pin is kept once this server's agent store takes it (the store cutover). Until then set the pin on this server, PUT /v2/settings/tools (Settings → Tools), which the tool gate holds every run to.";
+/** The longest pinned string. */
+export const MAX_PIN_TEXT = 1024;
+/** A pinned argument's name: a top-level argument of the tool, as MCP tools name theirs. */
+const PIN_ARG = /^[A-Za-z_][A-Za-z0-9_.-]{0,127}$/;
+
+/** The one check of a pin, every place that takes one calls it (the server's settings, an agent's, a template's mcp
+ *  entry, the store's revision bodies at the cutover): `pin` under `at`, an object of 1 to MAX_PIN_ARGS of a tool's
+ *  top-level arguments (PIN_ARG), each to a JSON scalar (a string of at most MAX_PIN_TEXT characters, a finite number,
+ *  true or false, or null: left out) or a list of 1 to MAX_PIN_CHOICES of them, the argument one of the list. With
+ *  `key`, the settings key it is set on, which is one MCP tool's own (`mcp:<server>/<tool>`), never a server's wildcard,
+ *  whose tools take other arguments, nor any other tool's. */
+export function pinIssues(pin: unknown, at: string, key?: string): InputIssue[] {
+  if (key !== undefined && (!isMcpTool(key) || /\/\*$/.test(key))) return [{ field: at, reason: "not_allowed", message: `A pin is set on one MCP tool's own key (mcp:<server>/<tool>), never on ${key}.` }];
+  const entries = typeof pin === "object" && pin !== null && !Array.isArray(pin) ? Object.entries(pin) : undefined;
+  if (!entries || !entries.length || entries.length > MAX_PIN_ARGS) return [{ field: at, reason: "wrong_type", message: `${at} is an object of 1 to ${MAX_PIN_ARGS} of the tool's top-level arguments, each to the value its calls must carry or a list of the values one of which they must` }];
+  const scalar = (value: unknown) => value === null || typeof value === "boolean" || (typeof value === "number" && Number.isFinite(value)) || (typeof value === "string" && value.length <= MAX_PIN_TEXT);
+  return entries.flatMap(([arg, value]): InputIssue[] => {
+    if (!PIN_ARG.test(arg)) return [{ field: `${at}.${arg}`, reason: "bad_format", message: `${at} names a top-level argument of the tool (${PIN_ARG.source}); ${JSON.stringify(arg).slice(0, 60)} is none` }];
+    const held = Array.isArray(value) ? value.length >= 1 && value.length <= MAX_PIN_CHOICES && value.every(scalar) : scalar(value);
+    return held ? [] : [{ field: `${at}.${arg}`, reason: "wrong_type", message: `${at}.${arg} is a JSON scalar (a string of at most ${MAX_PIN_TEXT} characters, a number, true or false, or null: the argument left out) or a list of 1 to ${MAX_PIN_CHOICES} of them, the argument one of the list` }];
+  });
+}
+
+/** `pin` with its arguments sorted, a one-of list's order kept as written (the author's, which the refusal shows): the
+ *  one form a pin takes in a revision's body, so the same pin is the same text. */
+export const sortedPin = (pin: Pin): Pin => Object.fromEntries(Object.keys(pin).sort().map((arg) => [arg, pin[arg]!]));
 /** The tools' settings, the server's (`/v2/settings/tools`) and an agent's own (`definition.tool_settings`), one shape:
  *  by settings key. */
 export type ToolSettingsMap = Partial<Record<string, ToolSetting>>;
@@ -353,8 +388,9 @@ export function settingsIssues(value: unknown, at = ""): InputIssue[] {
   return Object.entries(value).flatMap(([name, setting]): InputIssue[] => {
     const pickable = Object.hasOwn(PROVIDERS, name);
     if (!isSettingsKey(name)) return [{ field: field(name), reason: "not_allowed", message: `Tool settings are kept for this server's tools (${[...TABLE_TOOLS, ...SERVE_OWN_TOOLS].join(", ")}), catalog tools (monid.<tool>, mcp:<server>/<tool>) and an MCP server's tools (mcp:<server>/*); ${name} is none of them.` }];
-    if (!isPlain(setting)) return [{ field: field(name), reason: "wrong_type", message: `${field(name)} is an object, {${pickable ? "provider, " : ""}permission}` }];
+    if (!isPlain(setting)) return [{ field: field(name), reason: "wrong_type", message: `${field(name)} is an object, {${pickable ? "provider, " : ""}permission${isMcpTool(name) ? ", pin" : ""}}` }];
     return Object.entries(setting).flatMap(([key, given]): InputIssue[] => {
+      if (key === "pin") return pinIssues(given, field(name, key), name);
       if (key === "permission") {
         // A wildcard sets each tool of its server's: a catalog tool's permissions.
         const offered = permissionsOf(isMcpTool(name) ? name : name.replace(/\/\*$/, "/_"));
@@ -367,10 +403,23 @@ export function settingsIssues(value: unknown, at = ""): InputIssue[] {
   });
 }
 
+/** `map` as a revision body keeps it: each tool's provider, permission and pin as written (never a stand-in's internal
+ *  marks), tools, fields and a pin's arguments sorted, and a tool with none of them gone. The one form, so two
+ *  revisions whose settings say the same (a pin's arguments in another order) are the same text, and so one revision
+ *  where its id is the body's digest (the store keeps the body as given: store/sqlite/store.ts). */
+export function canonicalToolSettings(map: ToolSettingsMap): ToolSettingsMap {
+  const sorted = <T>(record: Readonly<Record<string, T>>): Record<string, T> => Object.fromEntries(Object.keys(record).sort().map((key) => [key, record[key]!]));
+  return sorted(Object.fromEntries(Object.entries(map).flatMap(([name, setting]) => {
+    if (!setting) return [];
+    const kept: ToolSetting = sorted({ ...(setting.permission ? { permission: setting.permission } : {}), ...(setting.pin ? { pin: sortedPin(setting.pin) } : {}), ...(setting.provider ? { provider: setting.provider } : {}) });
+    return Object.keys(kept).length ? [[name, kept]] : [];
+  })));
+}
+
 /** `map` with each capability's provider, its default where none is picked; a permission where one is set. */
 export const withDefaults = (map: ToolSettingsMap): ToolSettingsMap & Record<Pickable, { provider: string; permission?: Permission }> => ({
   // As served: what is in force, never the internal mark of a stand-in.
-  ...Object.fromEntries(Object.entries(map).map(([name, setting]) => [name, setting && { ...(setting.provider ? { provider: setting.provider } : {}), ...(setting.permission ? { permission: setting.permission } : {}) }])),
+  ...Object.fromEntries(Object.entries(map).map(([name, setting]) => [name, setting && { ...(setting.provider ? { provider: setting.provider } : {}), ...(setting.permission ? { permission: setting.permission } : {}), ...(setting.pin ? { pin: setting.pin } : {}) }])),
   ...(Object.fromEntries(PICKABLE.map((name) => [name, { provider: map[name]?.provider ?? PROVIDERS[name][0], ...(map[name]?.permission ? { permission: map[name]!.permission } : {}) }])) as Record<Pickable, { provider: string; permission?: Permission }>),
 });
 
@@ -391,8 +440,16 @@ export function readToolSettings(dir: string): { settings: ToolSettingsMap; prob
     if ((error as NodeJS.ErrnoException).code === "ENOENT") return { settings: {}, problems: [] };
     return { settings: {}, problems: [`${file} does not read as JSON`], unreadable: true };
   }
+  return checkToolSettings(read, file);
+}
+
+/** A parsed tool-settings object (from the file, or the store), checked and failed closed: each entry that reads is kept;
+ *  one that does not is dropped, but a known tool keeps what of it reads, and its permission, when not one offered, reads
+ *  ask (deny where ask is not offered), never its allow default. `where` names the source in each problem line (the file's
+ *  path, or the setting's key in the store). `unreadable`: the value as a whole is not an object. */
+export function checkToolSettings(read: unknown, where: string): { settings: ToolSettingsMap; problems: string[]; unreadable?: true } {
   const isPlain = (v: unknown): v is Record<string, unknown> => typeof v === "object" && v !== null && !Array.isArray(v);
-  if (!isPlain(read)) return { settings: {}, problems: [`${file} is not an object of tools to their settings`], unreadable: true };
+  if (!isPlain(read)) return { settings: {}, problems: [`${where} is not an object of tools to their settings`], unreadable: true };
   const settings: ToolSettingsMap = {};
   const problems: string[] = [];
   for (const [name, setting] of Object.entries(read)) {
@@ -401,10 +458,16 @@ export function readToolSettings(dir: string): { settings: ToolSettingsMap; prob
       settings[name] = setting as ToolSetting;
       continue;
     }
-    problems.push(`${file}: ${issues.map((issue) => `${issue.field} ${issue.reason}`).join(", ")}`);
+    problems.push(`${where}: ${issues.map((issue) => `${issue.field} ${issue.reason}`).join(", ")}`);
     if (!isSettingsKey(name) || !isPlain(setting)) continue;
     const kept: ToolSetting = {};
     if (typeof setting.provider === "string" && !settingsIssues({ [name]: { provider: setting.provider } }).length) kept.provider = setting.provider;
+    // A pin that does not read is never dropped to nothing, which would let every call through: the gate refuses the
+    // tool's calls until a save sets it again.
+    if (setting.pin !== undefined) {
+      if (pinIssues(setting.pin, "pin", name).length) kept.brokenPin = true;
+      else kept.pin = setting.pin as Pin;
+    }
     if (setting.permission !== undefined) {
       const offered = permissionsOf(isMcpTool(name) ? name : name.replace(/\/\*$/, "/_"));
       if (offered.includes(setting.permission as Permission)) kept.permission = setting.permission as Permission;
@@ -418,6 +481,34 @@ export function readToolSettings(dir: string): { settings: ToolSettingsMap; prob
     if (Object.keys(kept).length) settings[name] = kept;
   }
   return { settings, problems };
+}
+
+/** The key the server's tool settings live under in the one store (store.settings). */
+export const TOOL_SETTINGS_KEY = "tool-settings";
+
+/** The server's tool settings read from the one store (store.settings), failing closed as readToolSettings does: no row
+ *  is every default. The store-backed replacement for `new ToolSettings(dir)` + get(); the cut wires it. */
+export async function loadToolSettings(store: { settings: Pick<Settings, "get"> }): Promise<{ settings: ToolSettingsMap; problems: string[]; unreadable?: true }> {
+  const read = await store.settings.get(TOOL_SETTINGS_KEY);
+  if (read === undefined) return { settings: {}, problems: [] };
+  return checkToolSettings(read, "the stored tool settings");
+}
+
+/** Replaces the server's tool settings in the one store, as ToolSettings.put does to the file: a tool `map` leaves out
+ *  takes its defaults, and a fail-closed stand-in sent back unchanged (a permission equal to the one it stood in for) stays
+ *  a stand-in, the row keeping the value as written. Answers the settings as served (the stand-in marks within). The
+ *  store-backed replacement for ToolSettings.put; the cut wires it. */
+export async function saveToolSettings(store: { settings: Pick<Settings, "get" | "put"> }, map: ToolSettingsMap): Promise<ToolSettingsMap> {
+  const { settings: current } = await loadToolSettings(store);
+  const kept: ToolSettingsMap = Object.fromEntries(Object.entries(map).flatMap(([name, setting]) => {
+    const set: ToolSetting = { ...(setting?.provider ? { provider: setting.provider } : {}), ...(setting?.permission ? { permission: setting.permission } : {}) };
+    const before = current[name];
+    if (before?.fallback && set.permission === before.permission) Object.assign(set, { fallback: true, raw: before.raw });
+    return Object.keys(set).length ? [[name, set]] : [];
+  }));
+  const written = Object.fromEntries(Object.entries(kept).map(([name, setting]) => [name, { ...(setting!.provider ? { provider: setting!.provider } : {}), ...(setting!.fallback ? { permission: setting!.raw } : setting!.permission ? { permission: setting!.permission } : {}) }]));
+  await store.settings.put(TOOL_SETTINGS_KEY, written);
+  return structuredClone(kept);
 }
 
 export class ToolSettings {
@@ -436,7 +527,7 @@ export class ToolSettings {
   /** Replaces the settings: a tool `map` leaves out takes its defaults. Durable before it returns. */
   put(map: ToolSettingsMap): ToolSettingsMap {
     const kept: ToolSettingsMap = Object.fromEntries(Object.entries(map).flatMap(([name, setting]) => {
-      const set: ToolSetting = { ...(setting?.provider ? { provider: setting.provider } : {}), ...(setting?.permission ? { permission: setting.permission } : {}) };
+      const set: ToolSetting = { ...(setting?.provider ? { provider: setting.provider } : {}), ...(setting?.permission ? { permission: setting.permission } : {}), ...(setting?.pin ? { pin: setting.pin } : {}) };
       // A stand-in sent back as served (a client saves the whole map) is no choice: it stays a stand-in, and the file keeps
       // the value as written, so neither this save nor a restart turns it into a permission set (tool-gate.ts
       // SHELL_WATCHERS). A different permission is a choice, written as given.
@@ -444,7 +535,7 @@ export class ToolSettings {
       if (before?.fallback && set.permission === before.permission) Object.assign(set, { fallback: true, raw: before.raw });
       return Object.keys(set).length ? [[name, set]] : [];
     }));
-    const written = Object.fromEntries(Object.entries(kept).map(([name, setting]) => [name, { ...(setting!.provider ? { provider: setting!.provider } : {}), ...(setting!.fallback ? { permission: setting!.raw } : setting!.permission ? { permission: setting!.permission } : {}) }]));
+    const written = Object.fromEntries(Object.entries(kept).map(([name, setting]) => [name, { ...(setting!.provider ? { provider: setting!.provider } : {}), ...(setting!.fallback ? { permission: setting!.raw } : setting!.permission ? { permission: setting!.permission } : {}), ...(setting!.pin ? { pin: setting!.pin } : {}) }]));
     writeDurableSync(join(this.dir, ToolSettings.FILE), `${JSON.stringify(written)}\n`);
     this.current = kept;
     return this.get();

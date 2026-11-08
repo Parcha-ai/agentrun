@@ -20,6 +20,8 @@ export async function startFakeOAuth({ cimd = false, clients = {}, expiresIn = 3
   let hanging = false;
   let failing = 0;
   let grantedUnanswered = false;
+  /** The next `/token` request's hold (holdNext): granted at once, its answer sent when the test lets it go. */
+  let holding;
   const http = createServer(async (req, res) => {
     const url = new URL(req.url, issuer());
     const chunks = [];
@@ -64,7 +66,16 @@ export async function startFakeOAuth({ cimd = false, clients = {}, expiresIn = 3
       if (hanging) return; // never answered: its client's own timeout ends it
       if (failing) return void res.writeHead(failing, { "content-type": "text/plain" }).end("the token service is down");
       // The next one is granted (a refresh token rotated) but its answer never sent.
-      const answer = grantedUnanswered ? ((grantedUnanswered = false), () => {}) : json;
+      const hold = holding;
+      holding = undefined;
+      const answer = grantedUnanswered
+        ? ((grantedUnanswered = false), () => {})
+        : hold
+          ? (status, body) => {
+              hold.granted();
+              void hold.sent.then(() => json(status, body));
+            }
+          : json;
       const basic = /^Basic (.+)$/.exec(req.headers.authorization ?? "");
       const [id, secret] = basic ? Buffer.from(basic[1], "base64").toString("utf8").split(":").map(decodeURIComponent) : [form.client_id, form.client_secret];
       const client = registered.get(id);
@@ -115,6 +126,14 @@ export async function startFakeOAuth({ cimd = false, clients = {}, expiresIn = 3
     heal: () => void ((hanging = false), (failing = 0)),
     /** The next `/token` request is granted (a refresh token is spent) but never answered. */
     grantUnanswered: () => void (grantedUnanswered = true),
+    /** The next `/token` request is granted at once (a refresh token is spent) and its answer held: `granted` resolves
+     *  once it is, and the answer leaves when `answer()` is called, as a reply still on the wire. */
+    holdNext: () => {
+      let granted, answer;
+      const hold = { granted: new Promise((resolve) => (granted = resolve)), sent: new Promise((resolve) => (answer = resolve)) };
+      holding = { granted, sent: hold.sent };
+      return { granted: hold.granted, answer };
+    },
     /** Every access token given so far stops working, as at its expiry; refresh tokens still do. */
     expire: () => access.clear(),
     close: () => new Promise((resolve) => (http.close(resolve), http.closeAllConnections())),

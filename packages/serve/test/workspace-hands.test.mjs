@@ -50,13 +50,12 @@ test("hands.exec: a signal, a timeout capped at maxExecS, and an abort", async (
   const root = scratch();
   const hands = handsOf(localWorkspace(root), { maxExecS: 1, env: shellEnv() });
   assert.deepEqual(await hands.exec("kill -TERM $$", { timeoutS: 10 }), { exitCode: null, signal: "SIGTERM", timedOut: false });
-  const started = Date.now();
-  const slow = await hands.exec("sleep 30", { timeoutS: 900 });
-  assert.deepEqual([slow.exitCode, slow.timedOut], [null, true], "900 s asked, maxExecS 1 s");
-  assert.ok(Date.now() - started < 5_000);
+  const slow = await hands.exec("sleep 300", { timeoutS: 900 });
+  assert.deepEqual([slow.exitCode, slow.timedOut], [null, true], "900 s asked, maxExecS 1 s: it ended at the ceiling");
+  // Aborted when the command has said it started, not after a clock: had the abort done nothing, the exec would answer
+  // at its deadline, not reject.
   const controller = new AbortController();
-  setTimeout(() => controller.abort(), 200);
-  await assert.rejects(handsOf(localWorkspace(root), { maxExecS: 600, env: shellEnv() }).exec("sleep 30", { timeoutS: 60 }, controller.signal), (error) => error?.name === "AbortError");
+  await assert.rejects(handsOf(localWorkspace(root), { maxExecS: 600, env: shellEnv() }).exec("echo started; sleep 300", { timeoutS: 600, onOutput: () => controller.abort() }, controller.signal), (error) => error?.name === "AbortError");
   await assert.rejects(hands.exec("true", { timeoutS: 0 }), (error) => error?.code === "REFUSED");
 });
 
@@ -73,6 +72,8 @@ test("hands: stat, read, write, append and list are the port's; a link is a link
   assert.equal(await hands.stat("nope"), undefined);
   symlinkSync("/etc", join(root, "link"));
   assert.equal((await hands.stat("link")).kind, "link");
-  assert.deepEqual(await hands.list(""), [{ name: "a", kind: "dir", size: 0 }]);
+  const listed = await hands.list("");
+  assert.ok(listed.every((entry) => typeof entry.mtimeMs === "number"), "each entry carries its modified time");
+  assert.deepEqual(listed.map(({ mtimeMs, ...entry }) => entry), [{ name: "a", kind: "dir", size: 0 }]);
   assert.equal(await hands.grep("two", "a"), "a/b.txt:1:onetwo");
 });

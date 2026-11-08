@@ -4,6 +4,12 @@
 //   <data>/disk/agents/<agent>/runs/<run>/work   a run's folder (runFolder; runKey on a disk): its Workspace's root
 //   <data>/disk/agents/<agent>/learning          an agent's learning folder (agentLearningFolder; learningKey): its git
 //                                                folder
+//   <data>/disk/agents/<agent>/home              an agent's home (agentHomeFolder; homeKey): the files its owner keeps
+//                                                for it
+// and on this machine alone:
+//   <data>/scratch/<agent>/<run>                 a run's scratch folder (scratchFolder): never on the disk above, so in
+//                                                no Workspace: a harness's private files and working directory, swept
+//                                                at the run's end
 // <agent> is the id in lower case, a dash, and 16 hex digits of the id's SHA-256, so ids that differ only in case never
 // share a folder on a disk that folds case.
 //
@@ -43,6 +49,17 @@ export const runFolder = (dataDir: string, agentId: string, runId: string): stri
 
 /** Agent `agentId`'s learning folder, the root of its learning Workspace: `<data>/disk/agents/<agent>/learning`. */
 export const agentLearningFolder = (dataDir: string, agentId: string): string => join(dataDir, DISK_DIR, learningKey(agentId));
+
+/** Agent `agentId`'s home as a key from a disk's root: `agents/<agent>/home`. */
+export const homeKey = (agentId: string): string => `agents/${agentDirName(agentId)}/home`;
+
+/** Agent `agentId`'s home, the root of its home Workspace: `<data>/disk/agents/<agent>/home`. */
+export const agentHomeFolder = (dataDir: string, agentId: string): string => join(dataDir, DISK_DIR, homeKey(agentId));
+
+/** Run `runId`'s scratch folder on this machine: `<data>/scratch/<agent>/<run>`. Outside the disk, so no Workspace
+ *  holds it, in either mode. */
+export const scratchFolder = (dataDir: string, agentId: string, runId: string): string =>
+  join(dataDir, "scratch", agentDirName(agentId), checkId(runId, "run"));
 
 /**
  * The segments of relative path `path`: "" and "." are the root itself (no segments). Anything that could name a place

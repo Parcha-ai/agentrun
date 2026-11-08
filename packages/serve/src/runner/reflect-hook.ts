@@ -52,6 +52,10 @@ export function createReflectHook(deps: ReflectDeps): EndOfRunTurn {
   return async (input) => {
     const facts = await deps.facts(input.runId);
     if (!facts.learns) return undefined;
+    // closeLearning for a run cut before it could look back: a person's stop, before or during the turn, or a fault.
+    if (input.cut === "stopped") return { also: [droppedRow(null, "cancelled", said.stopped(STOPPED.cancelled))] };
+    if (input.cut === "stopped-looking") return { also: [droppedRow(null, "cancelled", said.stopped(STOPPED.cancelledLooking))] };
+    if (input.cut === "faulted") return { also: [droppedRow(null, "crashed", said.stopped(STOPPED.crashed))] };
     // reflectSkip: the cap keeps no reserve; a run its cap stopped has no room left, and one whose spend is unknown
     // cannot be kept within its cap.
     if (facts.cancelled) return { also: [droppedRow(null, "cancelled", said.stopped(STOPPED.cancelled))] };

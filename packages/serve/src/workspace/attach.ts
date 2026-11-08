@@ -79,8 +79,10 @@ import {
 /** Where every computer mounts a run's folder: D's WORKSPACE, checked against its type, so a change there fails here. */
 const MOUNT_AT: typeof WORKSPACE = "/workspace";
 
-/** What attach runs of D, passed in (the cutover passes D's own): the read-back a mount made as `spec` asks gives. */
-export type MountCheck = { readonly readBackOf: (spec: MountSpec) => MountReadBack };
+/** What attach runs of D, passed in (the cutover passes D's own): the read-back a mount made as `spec` asks gives, and
+ *  the claim's epoch it is read back under (D reads an Archil mount back with the computer's claim epoch; a bind takes
+ *  none). */
+export type MountCheck = { readonly readBackOf: (spec: MountSpec, epoch?: number) => MountReadBack; readonly epoch?: number };
 
 /** A computer as attach takes it: its ref, its computerd client, and D's read-back of what it mounts at /workspace. */
 export interface AttachableComputer {
@@ -313,8 +315,8 @@ export function attachedWorkspace(base: Workspace, computer: AttachableComputer,
         const page = await value(call("files.list", { path: abs, depth: 1, offset }), rel);
         for (const entry of page.entries) {
           const name = entry.path.slice(entry.path.lastIndexOf("/") + 1);
-          if (entry.type === "file") entries.push({ name, kind: "file", size: entry.size });
-          else if (entry.type === "dir") entries.push({ name, kind: "dir", size: 0 });
+          if (entry.type === "file") entries.push({ name, kind: "file", size: entry.size, mtimeMs: entry.mtimeMs });
+          else if (entry.type === "dir") entries.push({ name, kind: "dir", size: 0, mtimeMs: entry.mtimeMs });
         }
         if (!page.truncated || page.entries.length === 0) break;
         offset += page.entries.length;
@@ -419,18 +421,25 @@ export function attachedWorkspace(base: Workspace, computer: AttachableComputer,
   };
 }
 
+/** An Archil read-back's hold and epoch, where D gives them (its Archil mount change adds both). */
+const held = (back: MountReadBack): { exclusive?: unknown; epoch?: unknown } => back as { exclusive?: unknown; epoch?: unknown };
 /** A read-back in words, never with the token (D's read-backs hold none). */
-const shown = (back: MountReadBack): string =>
-  "other" in back ? back.other : back.kind === "bind" ? `a bind of ${back.path}` : `${back.disk}:/${back.folder} in ${back.region}`;
+const shown = (back: MountReadBack): string => {
+  if ("other" in back) return back.other;
+  if (back.kind === "bind") return `a bind of ${back.path}`;
+  const { exclusive, epoch } = held(back);
+  const hold = exclusive === undefined ? "" : exclusive === true ? ", exclusive" : ", not exclusive";
+  return `${back.disk}:/${back.folder} in ${back.region}${hold}${epoch === undefined ? "" : ` under epoch ${String(epoch)}`}`;
+};
 const keyOf = (back: MountReadBack): string => ("other" in back ? `other ${back.other}` : `${back.kind} ${shown(back)}`);
 
-/** `computer`'s read-back checked against the one a mount made as `spec` asks gives (`check.readBackOf`, D's): anything
- *  else, a mount D never makes ("other") included, is REFUSED in words, never with the token.
- *  TODO(D6): D6 adds exclusive and epoch to the disk's read-back; check them here then. */
+/** `computer`'s read-back checked against the one a mount made as `spec` asks gives (`check.readBackOf`, D's, under the
+ *  claim's `check.epoch`): anything else, a mount D never makes ("other"), one not held exclusively and one under any
+ *  other epoch included, is REFUSED in words, never with the token. */
 export async function checkReadBack(computer: AttachableComputer, spec: MountSpec, check: MountCheck): Promise<void> {
   const read = await computer.readBack();
   if (!read.ok) throw new WorkspaceError("UNAVAILABLE", `the computer ${computer.id} did not say what it mounts at ${MOUNT_AT}: ${read.error.message}`);
-  const want = check.readBackOf(spec);
+  const want = check.readBackOf(spec, check.epoch);
   if (keyOf(read.value) !== keyOf(want)) {
     throw new WorkspaceError("REFUSED", `the computer ${computer.id} does not hold this run's folder at ${MOUNT_AT}: it mounts ${shown(read.value)}, not ${shown(want)}`);
   }

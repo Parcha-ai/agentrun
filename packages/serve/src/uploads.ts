@@ -2,18 +2,16 @@
 // /v2/files?path=..., the bytes the body); listed, read and deleted; and the ready files a run names (`file_ids`) copied
 // into its workspace before its process starts. Each file is `<data>/files/<file_id>/`: its bytes
 // (`bytes`) and its record (`file.json`, the contract's File), both 0600, the record written whole. A ready file's bytes
-// never change, and a run gets a copy of them, never a link: nothing a run does reaches the upload, and the run's file
-// reads (workspace.ts) refuse a file with a second link.
+// never change, and a run gets a copy of them through its Workspace, never a link: nothing a run does reaches the upload.
 import { createHash, randomBytes } from "node:crypto";
-import { createReadStream } from "node:fs";
-import { type FileHandle, lstat, mkdir, open, readdir, rename, rm, unlink } from "node:fs/promises";
+import { type FileHandle, lstat, mkdir, open, readdir, readFile, rename, rm, unlink } from "node:fs/promises";
 import { DISK_DIR } from "@parcha/pi-durable-agent";
 import { dirname, join } from "node:path";
-import { pipeline } from "node:stream/promises";
 import { ApiError, type InputIssue, invalid } from "./errors.js";
+import { typeOf } from "./file-types.js";
 import { readJson, serialBy, tempOf, writeDurable } from "./files.js";
 import { ID, type Json, unknownFields } from "./validate.js";
-import { typeOf } from "./workspace.js";
+import { type Entry, isWorkspaceError, type Workspace, workspaceAt } from "./workspace/index.js";
 
 /** `limits.max_upload_bytes`: the largest file a reservation names and a PUT sends. */
 export const MAX_UPLOAD_BYTES = 50 * 2 ** 20;
@@ -52,9 +50,9 @@ const GENERIC_TYPES = new Set(["application/octet-stream", "application/x-www-fo
  *  as given (`http://host:port`) or as the contract's `/v2` server URL alike. */
 export const uploadUrl = (id: string): string => `/v2/files/${id}`;
 
-/** Test seams, tests only: as a run's copy starts, with the run's work/, before any file is copied; and as a file sent in
- *  one call writes its record, with the file's folder, its bytes in place. */
-export const uploadTestHooks: { beforeCopy?: (work: string) => Promise<void> | void; beforeRecord?: (dir: string) => Promise<void> | void } = {};
+/** Test seams, tests only: as a run's copy starts, with the run's Workspace, before any file is copied; and as a file
+ *  sent in one call writes its record, with the file's folder, its bytes in place. */
+export const uploadTestHooks: { beforeCopy?: (workspace: Workspace) => Promise<void> | void; beforeRecord?: (dir: string) => Promise<void> | void } = {};
 
 /** The contract's FileUpload: the file, and where to send its bytes (for a file sent in one call, ready, a PUT of the
  *  same bytes, which changes nothing). */
@@ -407,50 +405,57 @@ export class Uploads {
     return files;
   }
 
-  /** Copies `files` into `work/inputs/`, each at its `path` with its folders, in order, before the run's process exists:
-   *  a name taken already (the same path twice, or a file where another's folder goes) gets the next free suffix
-   *  (`notes-2.txt`, `docs-2/`), the same for the same files in the same order. Each copy is a new file, made as the
-   *  agent store makes a run's skill files (its mode from the umask): never a link to the upload. */
-  async copyInto(work: string, files: readonly UploadedFile[]): Promise<void> {
-    await uploadTestHooks.beforeCopy?.(work);
-    const base = join(work, INPUTS_DIR);
-    await mkdir(base, { recursive: true });
+  /** Copies `files` into the run's `inputs/` through its Workspace, each at its `path` with its folders, in order, before
+   *  the run's process exists: a name taken already (the same path twice, a file where another's folder goes, or what
+   *  the folder held before) gets the next free suffix (`notes-2.txt`, `docs-2/`), the same for the same files in the
+   *  same order. Each copy is a new file written whole by the Workspace, never a link to the upload; a link on the way
+   *  fails the copy (ESCAPE), and nothing is written through it. The run's start still hands its folder's path. */
+  async copyInto(work: Workspace | string, files: readonly UploadedFile[]): Promise<void> {
+    const workspace = workspaceAt(work);
+    await uploadTestHooks.beforeCopy?.(workspace);
+    const names = takenNames(workspace);
     for (const file of files) {
       const segments = file.path.split("/");
-      let dir = base;
-      for (const segment of segments.slice(0, -1)) dir = join(dir, await folderIn(dir, segment));
-      await copyIn(dir, segments.at(-1)!, join(this.root, file.file_id, BYTES));
+      let dir = INPUTS_DIR;
+      for (const segment of segments.slice(0, -1)) dir = `${dir}/${free(await names(dir), segment, "dir")}`;
+      const name = free(await names(dir), segments.at(-1)!, "file");
+      await workspace.write(`${dir}/${name}`, await readFile(join(this.root, file.file_id, BYTES)));
     }
   }
 }
 
-/** The folder `name` in `dir`, made or one already there, or the first suffixed name free of a file. */
-async function folderIn(dir: string, name: string): Promise<string> {
+type Kind = Entry["kind"];
+
+/** The names in each folder of `workspace`, by its path, each read once from its listing (none for a folder not there
+ *  yet) and kept up to date with what the copy takes. */
+function takenNames(workspace: Workspace): (dir: string) => Promise<Map<string, Kind>> {
+  const folders = new Map<string, Promise<Map<string, Kind>>>();
+  return (dir) => {
+    let names = folders.get(dir);
+    if (!names) {
+      names = workspace.list(dir).then(
+        (entries) => new Map(entries.map((entry) => [entry.name, entry.kind])),
+        (error: unknown) => {
+          if (isWorkspaceError(error, "NOT_FOUND")) return new Map<string, Kind>();
+          throw error;
+        },
+      );
+      folders.set(dir, names);
+    }
+    return names;
+  };
+}
+
+/** `name`, or its first suffixed form, that `names` leaves free for a `kind`: a folder may go into one already there,
+ *  a file only where nothing is. The name is taken in `names`. */
+function free(names: Map<string, Kind>, name: string, kind: Kind): string {
   for (let n = 1; ; n++) {
     const candidate = suffixed(name, n);
-    try {
-      await mkdir(join(dir, candidate));
+    const there = names.get(candidate);
+    if (there === undefined) {
+      names.set(candidate, kind);
       return candidate;
-    } catch (error) {
-      if ((error as NodeJS.ErrnoException).code !== "EEXIST") throw error;
     }
-    if ((await lstat(join(dir, candidate))).isDirectory()) return candidate;
-  }
-}
-
-/** A copy of `source` in `dir` as `name`, or the first suffixed name nothing holds. Created exclusive, so it is a new
- *  file and never what a name already pointed at. */
-async function copyIn(dir: string, name: string, source: string): Promise<string> {
-  for (let n = 1; ; n++) {
-    const candidate = suffixed(name, n);
-    let handle: FileHandle;
-    try {
-      handle = await open(join(dir, candidate), "wx");
-    } catch (error) {
-      if ((error as NodeJS.ErrnoException).code === "EEXIST") continue;
-      throw error;
-    }
-    await pipeline(createReadStream(source), handle.createWriteStream());
-    return candidate;
+    if (kind === "dir" && there === "dir") return candidate;
   }
 }
