@@ -78,6 +78,25 @@ export interface RevisionRow {
   readonly createdAt: number;
 }
 
+/** How an ended run (state 'ended') ended apart from being done: 'escalated' (it finished its work and waits for a person,
+ *  which the v2 status reads as completed with a review) or 'completed'. A failed or stopped run says so in its state. */
+export type RunOutcome = "completed" | "escalated";
+
+/** The harness an imported run came from. */
+export type ImportSource = "claude-code" | "codex" | "pi";
+/** Where an imported run came from: the harness that ran it, and its own session id. */
+export interface ImportedFrom {
+  readonly source: ImportSource;
+  readonly session: string;
+}
+
+/** What a run was started under: `key`, the caller's name for it (a create's idempotency key, a trigger's firing key),
+ *  which starts one run only, and `fingerprint`, what was asked, kept to tell a retry from another request under the key. */
+export interface RunOrigin {
+  readonly key: string;
+  readonly fingerprint?: string | null;
+}
+
 export interface RunRow {
   readonly id: string;
   readonly agentId: string;
@@ -92,6 +111,12 @@ export interface RunRow {
   readonly costUsd: number | null;
   readonly metrics: unknown;
   readonly summary: string | null;
+  /** An ended run's outcome (RunOutcome), null for a plain completion or a run not ended this way. */
+  readonly outcome: RunOutcome | null;
+  /** When the run itself was archived (its agent's archive is read apart); null when it is not. */
+  readonly archivedAt: number | null;
+  /** The session an imported run came from; null for a run started here. */
+  readonly importedFrom: ImportedFrom | null;
   readonly startedAt: number;
   readonly endedAt: number | null;
 }
@@ -102,14 +127,55 @@ export interface RunPatch {
   readonly costUsd?: number | null;
   readonly metrics?: unknown;
   readonly summary?: string | null;
+  /** An ended run's outcome, set in its end commit; null clears it. */
+  readonly outcome?: RunOutcome | null;
   readonly endedAt?: number | null;
+}
+
+/** A run's launch, as the server writes it at start: its JSON `body` (run-launch.ts: the first input, title, place, effort,
+ *  cap, trigger and origin), and `sealed` ciphertext for any secret it carries (sealed with the server's key outside the
+ *  store, AAD `run_launch|<run_id>|sealed`), or none. Written once, in the same transaction as the queued run. */
+export interface RunLaunchInput {
+  readonly body: unknown;
+  readonly sealed?: Uint8Array | null;
+}
+
+/** A run's launch as the store holds it: the body the runner reads at its claim, and its sealed bytes, which the store never
+ *  opens. */
+export interface RunLaunchRow {
+  readonly runId: string;
+  readonly body: unknown;
+  readonly sealed: Uint8Array | null;
+  readonly createdAt: number;
 }
 
 /** Rows written in the same commit as a run's update (runs.update, or a journal commit's staged patch): a channel post the
  *  run's moment owes (the outbox), what a channel was told. A command consumed is Staged.take, refused when not untaken. */
 export type AlsoRow =
   | { readonly table: "channel_posts"; readonly row: ChannelPost }
-  | { readonly table: "channel_told"; readonly row: { channel: string; marker: string } };
+  | { readonly table: "channel_told"; readonly row: { channel: string; marker: string } }
+  /** What the run's end-of-run turn kept: the turn and the proposal checked from it (the run's agent is the row's). */
+  | { readonly table: "learning_proposals"; readonly row: { turn: unknown; proposal: unknown } }
+  /** The learning run that grades and merges the kept proposal: a queued run `id` of the run's agent and revision. Started
+   *  once: the same id staged again (an end replayed after a crash) adds nothing. */
+  | { readonly table: "learning_run"; readonly row: { id: string } };
+
+/** A run's kept learning (learning_proposals): what its end-of-run turn asked and answered, and the proposal checked from it. */
+export interface LearningProposal {
+  readonly runId: string;
+  readonly agentId: string;
+  readonly turn: unknown;
+  readonly proposal: unknown;
+  readonly createdAt: number;
+}
+
+/** Learning on the runner: the kept proposals, written only beside a run's end (AlsoRow learning_proposals). */
+export interface Learning {
+  /** The run's kept proposal; undefined when its end kept none. */
+  proposal(runId: string): Promise<LearningProposal | undefined>;
+  /** The agent's kept proposals, newest first. */
+  proposals(agentId: string, options?: { limit?: number }): Promise<LearningProposal[]>;
+}
 
 /** A command a journal commit takes, with the id of the record that is its effect, an id the effect's batch newly
  *  allocates (an entry, a created document, a new task): written only by the commit that newly writes that record, in its
@@ -140,6 +206,16 @@ export interface Journal extends Storage {
   /** The run's commits after `afterSeq`, at most `limit`, each with only what it wrote (store/journal JournalPage). */
   commitsAfter(afterSeq: number, limit: number, context: Context): Promise<JournalPage>;
 }
+
+/** A run's journal opened for reading only: the read half of its Storage — its scans and lookups and commitsAfter, with no
+ *  commit, stage or mintId, and no claim. The server reads a run this way (its timeline, the records analytics sums), where
+ *  it holds no claim; a writer uses journal(claim) instead. A read never fences (only a commit does), so the view needs no
+ *  epoch; a run with no journal yet reads as empty. close() lets its admitted reads drain, and leaves the store's
+ *  connection open: the store owns it. */
+export type JournalReads = Pick<
+  Journal,
+  "runId" | "conversation" | "scanConversations" | "entry" | "findLatestHeadMarker" | "scanEntries" | "task" | "scanTasks" | "submission" | "scanSubmissions" | "submissionByRequest" | "findDocument" | "document" | "scanDocuments" | "commitsAfter" | "close"
+>;
 
 export interface ChannelPost {
   readonly id: string;
@@ -218,16 +294,26 @@ export interface Triggers {
   /** Disables the trigger (with why, JSON) and deletes its scope rows, in one transaction. */
   disable(triggerId: string, why?: unknown): Promise<void>;
   /** The firing starts a run: the queued run, the `started` firing that names it and the trigger's last_run_id, in one
-   *  transaction. */
+   *  transaction. The run's launch row is written in that same transaction when the firing carries one (route-1's fire
+   *  calls the store's writeLaunch). */
   fire(firing: Firing, run: { id: string; agentId: string; revisionId: string }): Promise<RunRow>;
 }
 
 export interface Runs {
-  /** A queued run of `revisionId`, its row's only writer until a runner claims it. */
-  create(run: { id: string; agentId: string; revisionId: string }): Promise<RunRow>;
+  /** A queued run of `revisionId`, its row's only writer until a runner claims it. With `origin`, the origin row is written
+   *  in the same transaction, so a retry under the same key finds this run (runOfOrigin); a key already used is refused
+   *  (StoreConstraint), and nothing is written. With `launch`, its launch row is written in the same transaction too (all
+   *  or nothing). */
+  create(run: { id: string; agentId: string; revisionId: string; origin?: RunOrigin }, launch?: RunLaunchInput): Promise<RunRow>;
   get(id: string): Promise<RunRow | undefined>;
-  /** Newest first, at most `limit` (no limit: all). */
-  list(filter: { agentId?: string; revisionId?: string; state?: RunState; limit?: number }): Promise<RunRow[]>;
+  /** The run's launch row (the runner reads it at its claim; the server for views). StoreLaunchMissing when the run has
+   *  none (it was not started with one), never a default. */
+  launch(runId: string): Promise<RunLaunchRow>;
+  /** Newest first, at most `limit` (no limit: all). `archived` filters on the run's own archive time (true: archived,
+   *  false: not); its agent's archive is read apart. */
+  list(filter: { agentId?: string; revisionId?: string; state?: RunState; archived?: boolean; limit?: number }): Promise<RunRow[]>;
+  /** Archives the run (its own archive time), or unarchives it: idempotent. */
+  archive(runId: string, archived: boolean): Promise<void>;
   /** The runs a runner may claim, oldest first: queued; parked with an untaken command or its wake_at passed; running with
    *  no runner (released at a runner's shutdown: it stays running, a run that started keeps that fact) or its claim run
    *  out. */
@@ -406,6 +492,7 @@ export interface Store {
   readonly runs: Runs;
   readonly mcp: Mcp;
   readonly live: Live;
+  readonly learning: Learning;
   /** The server's tool settings and any other server setting it keeps (design 2.1): one JSON value per key. */
   readonly settings: Settings;
   /** The model and provider keys the server holds, sealed (store/seal.ts): bytes the store never opens. */
@@ -425,6 +512,12 @@ export interface Store {
   /** The run's journal: pi-durable's Storage for this one run, every commit fenced by the claim (store/journal). Its commit
    *  holds the store's one connection while it runs, so it awaits nothing but its own statements, under a deadline. */
   journal(claim: Claim): Journal;
+  /** A run's journal opened for reading only (JournalReads): the server's reads of a run, which hold no claim. Its reads
+   *  alone, never a commit; a read never fences, so it needs no claim. A run with no journal yet reads as empty. */
+  readJournal(runId: string): JournalReads;
+  /** The run started under origin `key` (runs.create's origin), with the fingerprint recorded then; undefined when no run
+   *  was started under it. The one read a retry under a key makes to find the run its first request started. */
+  runOfOrigin(key: string): Promise<{ runId: string; fingerprint: string | null } | undefined>;
   /** One durable commit: every commit before it, of every run, is on the disk when it resolves. Before a call that must
    *  not run twice, at a run's end and when a claim is released. */
   flush(): Promise<void>;
@@ -557,6 +650,17 @@ export class RunFinal extends Error {
   constructor(runId: string) {
     super(`run ${runId} is not running (it ended, or there is no such run): it takes no command`);
     this.name = "RunFinal";
+    this.runId = runId;
+  }
+}
+
+/** A run with no launch row: it was not started with one (an unknown run reads the same way). The runner's claim needs it to
+ *  build the run's spec, so its absence is this named refusal, never a default. */
+export class StoreLaunchMissing extends Error {
+  readonly runId: string;
+  constructor(runId: string) {
+    super(`run ${runId} has no launch record: it was not started with one, or there is no such run`);
+    this.name = "StoreLaunchMissing";
     this.runId = runId;
   }
 }
