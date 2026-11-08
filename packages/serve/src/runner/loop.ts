@@ -68,6 +68,9 @@ export interface PiRunSpec {
   /** How many times pi restarts a call's task cut off without progress before it ends it (restart_limit). Default
    *  DEFAULT_RESTART_LIMIT, pi's own; always finite. */
   readonly restartLimit?: number;
+  /** How long a person's stop waits for the turn to settle before the run is failed in words (a tool call that ignores
+   *  its abort). Default STOP_SETTLE_MS. */
+  readonly stopSettleMs?: number;
 }
 
 /** pi's own default restart limit (pi-durable 1.5.0 agent settings). */
@@ -91,6 +94,8 @@ const heldUntilAborted = (hookContext: Context) =>
   });
 /** How long a loop waits for pi to close a Session it no longer writes through. */
 const CLOSE_MS = 2_000;
+/** How long a person's stop waits for the turn to settle, by default. */
+const STOP_SETTLE_MS = 30_000;
 
 /** Loops for pi runs: `spec(claim)` gives each claim's run what it runs. */
 export function createPiLoop(spec: (claim: Claim) => PiRunSpec | Promise<PiRunSpec>): LoopFactory {
@@ -436,8 +441,18 @@ function piLoop(specOf: (claim: Claim) => PiRunSpec | Promise<PiRunSpec>, deps: 
           return { state: "interrupted" };
         }
         if (end === "stop" && stopReason?.kind === "command") {
-          await root.abort(context).catch(() => {});
-          await harness.waitForIdle(context).catch(() => {});
+          // Bounded, the abort included: a tool call that ignores its abort keeps the turn from settling, and the claim is
+          // renewed meanwhile. Past the bound the run is failed in words, the stop row taken in that end's commit.
+          const settleMs = spec.stopSettleMs ?? STOP_SETTLE_MS;
+          const settling = (async () => {
+            await root!.abort(context).catch(() => {});
+            await harness!.waitForIdle(context).catch(() => {});
+            return true as const;
+          })();
+          let timer: NodeJS.Timeout | undefined;
+          const settled = await Promise.race([settling, new Promise<false>((resolve) => (timer = setTimeout(() => resolve(false), settleMs)))]);
+          clearTimeout(timer);
+          if (!settled) return await writeEnd(harness, root, gate, { state: "failed", summary: `stopped by a person, but the turn did not settle within ${settleMs / 1000} s: a tool call ignored its abort` }, [stopReason.commandId]);
           return await writeEnd(harness, root, gate, { state: "stopped", summary: "stopped by a person" }, [stopReason.commandId]);
         }
         await harness.waitForIdle(context);
