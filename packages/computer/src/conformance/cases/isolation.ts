@@ -48,6 +48,8 @@ export const OUTSIDE_TARGETS = ["1.1.1.1:443", "example.com:443"];
 
 interface ProbeLine {
 	interfaces?: unknown;
+	quiet?: unknown;
+	raised?: unknown;
 	results?: Array<{ target?: unknown; outcome?: unknown; detail?: unknown }>;
 }
 
@@ -71,7 +73,12 @@ export async function assertIsolated(t: CaseContext, client?: ComputerClient): P
 	} catch {
 		return t.assert(false, `the probe wrote what is not its report: ${ran.out.slice(0, 200)}`);
 	}
-	t.deepEqual(probe.interfaces, ["lo"], "the interfaces a program of the computer's user sees: its own loopback alone");
+	t.deepEqual(probe.interfaces, ["lo"], "the live interfaces (up or addressed) a program of the computer's user sees: its own loopback alone");
+	// A kernel's fallback tunnels, down with no address, are quiet: recorded. One a program could bring up is a way out.
+	const quiet = Array.isArray(probe.quiet) ? probe.quiet.map(String) : [];
+	if (quiet.length > 0) t.observe(`quiet interfaces (down, no address) a program of the computer's user sees: ${quiet.join(", ")}`);
+	const raised = Array.isArray(probe.raised) ? probe.raised.map(String) : [];
+	t.assert(raised.length === 0, `a program of the computer's user brought up ${raised.join(", ")}, which no program of its own network may`);
 	for (const target of targets) {
 		const result = probe.results?.find((one) => one.target === target);
 		const what = agent.includes(target) ? "the vendor's agent" : "the outside";
@@ -83,8 +90,25 @@ export async function assertIsolated(t: CaseContext, client?: ComputerClient): P
 	t.equal(sockets.exitCode, 0, `the path socket listing's exit code (stderr: ${sockets.err.trim().slice(0, 200)})`);
 	const connects = lines.filter((line) => line.startsWith("connects ")).map((line) => line.slice("connects ".length));
 	t.observe(`path unix sockets a tool can connect to: ${connects.join(", ") || "none"}`);
-	const other = connects.filter((path) => !OWN_SOCKETS.includes(path));
-	t.assert(other.length === 0, `a program of the computer's user connects to path unix sockets that are not the computer's own (${OWN_SOCKETS.join(", ")}): ${other.join(", ")}`);
+	// A desktop's tools draw on its display: the one X socket of the daemon's own DISPLAY is the computer's own too.
+	const own = [...OWN_SOCKETS];
+	if (t.provider.capabilities().kind === "desktop") {
+		const display = await displaySocket(client ?? t.client);
+		if (display !== undefined) own.push(display);
+		else t.observe("the desktop's display socket: not known (the daemon's environment names no DISPLAY of the form :N)");
+	}
+	const other = connects.filter((path) => !own.includes(path));
+	t.assert(other.length === 0, `a program of the computer's user connects to path unix sockets that are not the computer's own (${own.join(", ")}): ${other.join(", ")}`);
+}
+
+/** The X socket of the daemon's own DISPLAY (:N or :N.S, /tmp/.X11-unix/XN), read from its /proc/self/environ. */
+async function displaySocket(client: ComputerClient): Promise<string | undefined> {
+	const read = await client.call("files.read", { path: "/proc/self/environ" });
+	if (!read.ok) return undefined;
+	const environ = Buffer.from(read.value.data, "base64").toString("utf8").split("\0");
+	const display = environ.find((entry) => entry.startsWith("DISPLAY="))?.slice("DISPLAY=".length);
+	const number = /^:(\d{1,4})(?:\.\d{1,4})?$/.exec(display ?? "")?.[1];
+	return number === undefined ? undefined : `/tmp/.X11-unix/X${number}`;
 }
 
 export const isolationCases: Case[] = [

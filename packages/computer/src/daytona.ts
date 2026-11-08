@@ -8,7 +8,7 @@ import { resolve } from "node:path";
 import { PassThrough, Writable } from "node:stream";
 import { fileURLToPath } from "node:url";
 import { childCommands, type DaemonExpected, daemonDrift, shellCommand } from "./child.js";
-import { netDevInterfaces, OWN_NETWORK_ONLY, ownNetworkDrift, TOOL_USER } from "./isolation.js";
+import { OWN_NETWORK_ONLY, readOwnNetwork, TOOL_USER } from "./isolation.js";
 import { DaemonClient } from "./client.js";
 import { COMPUTER_LABEL, DEADLINE_LABEL, helloDrift, WORK } from "./drift.js";
 import { releaseOlder } from "./janitor.js";
@@ -1320,7 +1320,7 @@ export class DaytonaProvider implements ComputerProvider {
 		return this.#makeSafe(ref, "refused", `Daytona did not apply network ${policyWords(policy)} (it read back ${policyWords(read)})`);
 	}
 
-	/** The network of a computer's programs, read back from its daemon (its /proc/self/net/dev): "none" while lo alone. */
+	/** The network of a computer's programs, read back as their user sees it (computerd probe): "none" while lo alone. */
 	async #toolsNetwork(sb: Sandbox, signal?: AbortSignal): Promise<Result<NetworkPolicy>> {
 		if (sb.state !== "started") return fail("refused", `${sb.name ?? sb.id} is ${sb.state ?? "in no state Daytona reports"}, so its daemon cannot read its network back`);
 		const toolbox = await this.#toolbox(sb, signal);
@@ -1329,10 +1329,9 @@ export class DaytonaProvider implements ComputerProvider {
 		if (!opened.ok) return opened;
 		try {
 			const bounded = signal ? AbortSignal.any([signal, AbortSignal.timeout(this.#timeouts.helloMs)]) : AbortSignal.timeout(this.#timeouts.helloMs);
-			const read = await opened.value.client.call("files.read", { path: "/proc/self/net/dev" }, { signal: bounded });
-			if (!read.ok) return fail(read.error.code, `reading the daemon's /proc/self/net/dev: ${read.error.message}`);
-			const drift = ownNetworkDrift(netDevInterfaces(Buffer.from(read.value.data, "base64").toString("utf8")));
-			return ok(drift.length === 0 ? "none" : { other: drift.join("; ") });
+			const drift = await readOwnNetwork(opened.value.client, this.#timeouts.helloMs, bounded);
+			if (!drift.ok) return drift;
+			return ok(drift.value.length === 0 ? "none" : { other: drift.value.join("; ") });
 		} finally {
 			await opened.value.close();
 		}

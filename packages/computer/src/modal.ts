@@ -19,7 +19,7 @@ import {
 	probeReportOf,
 	WORK,
 } from "./drift.js";
-import { OWN_NETWORK_ONLY, ownNetworkDrift, TOOL_USER } from "./isolation.js";
+import { OWN_NETWORK_ONLY, probeOwnNetworkDrift, TOOL_USER } from "./isolation.js";
 import { releaseOlder } from "./janitor.js";
 import type { KindCapabilities } from "./kinds.js";
 import { EPOCH_LABEL, epochOf, RUN_LABEL } from "./labels.js";
@@ -683,7 +683,8 @@ function probeDrift(probe: ProbeReport, expected: { user?: string; network?: Net
 	if (expected.user !== undefined && user !== expected.user) found.push(`user: declared ${expected.user}, read back ${user} (the uid:gid the daemon's programs run as)`);
 	if (/gvisor/i.test(probe.kernel)) found.push(`runtime: declared vm, read back gVisor (the kernel reports ${JSON.stringify(probe.kernel)})`);
 	if (expected.network === "none") found.push(...probeNetworkDrift(probe));
-	found.push(...ownNetworkDrift(probe.interfaces));
+	// Its own network: the live interfaces lo alone (a kernel's quiet tunnels are none), and none it could bring up.
+	found.push(...probeOwnNetworkDrift(probe));
 	return found;
 }
 

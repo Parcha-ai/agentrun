@@ -72,8 +72,10 @@ extension](#the-protocol-extension-kind-daemon-modes-screen-input-apps-lifetime)
   refuses uid 0 for its programs (root shares its uid with every root process of the vendor's); refuses to start while
   any other process holds that uid (one could be signalled, traced or written to by them, and a vendor's agent among
   them would be theirs to command), naming each; moves every one of its threads into a new network namespace and
-  brings its loopback up, reading back that no thread stayed behind and that the namespace holds the loopback alone,
-  up; then drops as below, and installs a seccomp filter on every thread that refuses (EPERM) a socket of family
+  brings its loopback up, reading back that no thread stayed behind and that the loopback alone is up or addressed
+  (a kernel with the tunnel modules loaded gives every new namespace its fallback tunnels, tunl0, gre0, sit0 and the
+  rest, down with no address: they stay so, since no program holds CAP_NET_ADMIN, and computerd's probe reports any
+  it could bring up, which every read-back refuses); then drops as below, and installs a seccomp filter on every thread that refuses (EPERM) a socket of family
   `AF_VSOCK` (a network namespace does not cut vsock, where a virtual machine's agent may listen) and `io_uring_setup`
   (its rings open sockets past a filter on `socket(2)`), and gives `ENOSYS` to every call of another architecture or
   table (32-bit x86, x32). So init and every program it starts reach their own loopback and nothing else: no address of

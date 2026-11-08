@@ -724,7 +724,8 @@ test("network none: a probe whose targets only accepted keeps the computer, the 
 
 /** E2B's default probe targets: TCP to 443 and DNS over UDP to 53, over IPv4 and IPv6, as Modal's. */
 const PROBE_TARGETS = ["1.1.1.1:443", "8.8.8.8:443", "[2606:4700:4700::1111]:443", "1.1.1.1:53/udp", "[2606:4700:4700::1111]:53/udp"];
-const probeRun = (fake) => fake.requests.find((r) => r.method === "exec.run" && r.params.argv[1] === "probe" && r.params.argv[2] !== "--diagnose");
+// The probe of network none, with its targets: not the daemon check's own-network read (`computerd probe` alone).
+const probeRun = (fake) => fake.requests.find((r) => r.method === "exec.run" && r.params.argv[1] === "probe" && r.params.argv[2] === "--connect");
 
 test("network none: the probe tries TCP to 443 and DNS over UDP to 53, over IPv4 and IPv6, and E2B's firewall reads the UDP targets refused", async () => {
 	const { provider, fake } = setup();

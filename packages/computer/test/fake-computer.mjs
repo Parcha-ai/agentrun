@@ -151,6 +151,10 @@ function fakeDaemon(hello, computer) {
 				const sudo = request.params.argv.join(" ").includes("sudo -n") ? { exitCode: 127, stdout: "", stderr: "sh: sudo: not found\n" } : undefined;
 				const ran = cat ?? sudo ?? appendOf(request.params.argv, computer) ?? { exitCode: 0, stdout: output(request.params.argv, { ...computer, user: request.params.user }), stderr: "" };
 				reply({ result: { exitCode: ran.exitCode, stdout: b64(ran.stdout), stderr: b64(ran.stderr), timedOut: false, truncated: false } });
+			} else if (request.method === "files.read" && request.params.path === "/proc/self/environ") {
+				// The daemon's own environment, NUL-separated: DISPLAY when the computer has a display.
+				const environ = `PATH=/usr/bin:/bin\0HOME=/home/fake\0${computer.display === undefined ? "" : `DISPLAY=${computer.display}\0`}`;
+				reply({ result: { data: b64(environ), eof: true, size: environ.length } });
 			} else if (["files.mkdir", "files.write", "files.list", "files.read"].includes(request.method)) {
 				const result = files(computer, request.method, request.params);
 				reply(result.error ? { error: result.error } : { result });
@@ -245,6 +249,7 @@ export function fakeComputers({
 	agentAnswers = [],
 	toolCannotWrite = false,
 	pathSockets = [],
+	display,
 } = {}) {
 	/** The mount as attach and list read it back: its kind and source, never the token unless broken so. An Archil mount
 	 *  is exclusive, under the epoch of the computer's agentrun.epoch label; with no such label it is a mount in words. */
@@ -316,6 +321,7 @@ export function fakeComputers({
 					bound: folderOf(spec.mount),
 					toolCannotWrite,
 					pathSockets,
+					display,
 					probe: { interfaces: probeInterfaces, quiet: probeQuiet, raised: probeRaised, answers: agentAnswers },
 				},
 			};

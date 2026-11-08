@@ -65,6 +65,24 @@ test("a kernel's fallback tunnels, down and addressless, pass; one a program of 
 	assert.match(reasons(raised)[ID], /tunl0/);
 });
 
+test("a desktop's own display socket (the daemon's DISPLAY :N, /tmp/.X11-unix/XN) is its own; any other socket still fails, and a computer with no desktop has no display of its own", async () => {
+	// The ruling for desktop providers (Orgo's X99, Docker's and E2B's X0): the tool must reach the display, nothing else.
+	const own = ["/run/agentrun/computerd.sock"];
+	const desktop = { kind: "desktop", groups: ["exec", "files", "processes", "screen", "input.pointer", "input.keys"], vendorAgentPorts: [2280], display: ":99" };
+	const passing = await run({ ...desktop, pathSockets: [...own, "/tmp/.X11-unix/X99"] });
+	assert.deepEqual(statuses(passing), { [ID]: "pass" }, reasons(passing)[ID]);
+	const bus = await run({ ...desktop, pathSockets: [...own, "/tmp/.X11-unix/X99", "/run/user/2510/bus"] });
+	assert.equal(statuses(bus)[ID], "fail");
+	assert.match(reasons(bus)[ID], /\/run\/user\/2510\/bus/);
+	assert.doesNotMatch(reasons(bus)[ID], /: .*X11-unix\/X99/, "the display is not among the sockets named as not its own");
+	const another = await run({ ...desktop, pathSockets: [...own, "/tmp/.X11-unix/X0"] });
+	assert.equal(statuses(another)[ID], "fail", "a display other than its own DISPLAY's");
+	assert.match(reasons(another)[ID], /X11-unix\/X0/);
+	const linux = await run({ vendorAgentPorts: [2280], display: ":99", pathSockets: [...own, "/tmp/.X11-unix/X99"] });
+	assert.equal(statuses(linux)[ID], "fail", "a computer with no desktop");
+	assert.match(reasons(linux)[ID], /X11-unix\/X99/);
+});
+
 test("it fails where a program sees another interface than its own loopback, and names them", async () => {
 	const report = await run({ vendorAgentPorts: [2280], probeInterfaces: ["lo", "eth0"] });
 	assert.equal(statuses(report)[ID], "fail");

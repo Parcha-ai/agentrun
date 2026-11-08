@@ -2,7 +2,7 @@
 // computerd goes in through the vendor's file upload and starts as a command that agent runs. These are the shell
 // commands such a provider sends, exactly, and the read-back of the daemon it started: the same for every such vendor.
 import { DAEMON_IN_COMPUTER, helloDrift, SOCKET_DIR, WORK } from "./drift.js";
-import { netDevInterfaces, ownNetworkDrift, TOOL_USER } from "./isolation.js";
+import { readOwnNetwork, TOOL_USER } from "./isolation.js";
 import type { ComputerCapabilities, ComputerConnection } from "./provider.js";
 import { fail, ok, type Result } from "./result.js";
 
@@ -132,9 +132,10 @@ export async function daemonDrift(connection: ComputerConnection, expected: Daem
 		if (value === undefined || !/^0+$/.test(value)) found.push(`daemon ${set}: declared no capabilities, read back ${show(value)}`);
 	}
 	if (fields.get("Seccomp") !== "2") found.push(`daemon seccomp: declared 2 (the filter that refuses vsock and io_uring), read back ${show(fields.get("Seccomp"))}`);
-	const net = await connection.client.call("files.read", { path: "/proc/self/net/dev" }, { signal: bounded() });
-	if (!net.ok) return fail(net.error.code === "aborted" && !signal?.aborted ? "timeout" : net.error.code, `reading the daemon's /proc/self/net/dev: ${net.error.message}`);
-	found.push(...ownNetworkDrift(netDevInterfaces(Buffer.from(net.value.data, "base64").toString("utf8"))));
+	// Its own network, as its user sees it: the live interfaces lo alone, and none it could bring up (computerd probe).
+	const net = await readOwnNetwork(connection.client, timeoutMs, bounded());
+	if (!net.ok) return fail(net.error.code === "aborted" && !signal?.aborted ? "timeout" : net.error.code, net.error.message);
+	found.push(...net.value);
 	for (const [path, want, what] of [
 		["/proc/self/cwd", WORK, "working directory"],
 		["/proc/self/exe", DAEMON_IN_COMPUTER, "binary"],
