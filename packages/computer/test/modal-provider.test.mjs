@@ -1465,7 +1465,8 @@ test("the loopback block: network none only, no agent port declared, open refuse
 });
 
 test("the loopback block: init starts with --own-network as 2510:2510 by default, on both routes", async () => {
-	for (const options of [{}, { daemonImage: undefined }]) {
+	// The upload route gets the test's own stand-in binary: a unit run has no built daemon in dist/.
+	for (const options of [{}, { daemonImage: undefined, daemonPath: BINARY_PATH }]) {
 		const { provider, fake } = setup(options);
 		const made = await provider.create(SPEC);
 		assert.equal(made.ok, true, JSON.stringify(made));
