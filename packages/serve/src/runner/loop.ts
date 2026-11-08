@@ -409,7 +409,10 @@ function piLoop(specOf: (claim: Claim) => PiRunSpec | Promise<PiRunSpec>, deps: 
         gate?.seal(new Interrupted("its claim's signal aborted"));
         return { state: "interrupted" };
       }
-      return { state: "failed", error: { code: "pi-loop", message: (error as Error).message } };
+      // A failure with no end written (pi's Harness could not open, a read failed): thrown, so the runner stores the run
+      // failed with why (a parked run brought back stays parked and is tried again after a backoff). Returning "failed"
+      // would leave it running, released and claimed again at once.
+      throw error;
     } finally {
       deps.signal.removeEventListener("abort", signalAbort);
       held?.detach();
