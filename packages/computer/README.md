@@ -349,8 +349,8 @@ in the kernel's tool registry, keyed by these groups.
 
 - Each provider module exports `CAPABILITIES` beside `MOUNT` (the registry's contract, `ProviderModule`). A unit test
   holds every registry provider's `CAPABILITIES` and `MOUNT` to its entry, and each provider built from the test fakes,
-  in each configuration, to its entry's capabilities. orgo, phone-harness, browserbase and kernel are data until their
-  provider file joins the registry; that test then holds each to its file.
+  in each configuration, to its entry's capabilities. orgo, browserbase and kernel are data until their provider file
+  joins the registry; that test then holds each to its file.
 - `testConnection()` (optional on `ComputerProvider`) is Settings' test of a provider's keys: ONE account-level read
   that never creates a computer, so it never spends. Docker, Daytona and E2B list by the provider's own label; Modal
   reads its app without making it (an app not made yet is still a connection). It answers `{ detail }` in words, or an
@@ -1765,6 +1765,70 @@ A live run must show:
 (`packages/orchestrator/pkg/template/build/core/rootfs/files/envd.service.tpl`,
 `packages/envd/internal/services/process/start.go`, `.../process/handler/handler.go:395-420`), and E2B's docs
 (network/restrict-public-access and network/internet-access, read 2026-11-07). Each is cited where it is used above and in `src/e2b.ts`.
+
+## Phone harness (the phone kind)
+
+```ts
+import { providerFor } from "@parcha/agentrun-computer";
+
+const phones = await providerFor("phone-harness", { apiKey }); // serve passes PHONE_HARNESS_API_KEY
+const made = await phones.create({ image: "android", lifetimeMs: 10 * 60_000, network: "open", labels: { run } });
+```
+
+`src/phone-harness.ts`, provider id `phone-harness`, rents a temporary cloud Android emulator from the phone harness
+(phone-harness.com). The phone harness bills it at 5 cents a minute from the account's credit. A cloud iPhone (driven by
+the API's control URL) is a later change: `platform: "ios"` is refused in words.
+
+- **No daemon.** Nothing runs on the phone. `connect()` asks the phone harness for the session's adb link, runs
+  `adb connect`, unlocks the phone with the session's code (never in a result or an error) and probes it. Then it gives
+  a client in this process that answers each protocol method with adb commands:
+  - `screen.shot`/`screen.read`: a raw `screencap`, cropped to the region and encoded as an RGBA PNG; `scale` is the
+    density over 160;
+  - `input.actions`: checked whole first (`checkActions`). Then tap, long press, swipe (`input swipe`, or
+    `input motionevent` for a path of three points or more), the back, home and app switch buttons, `type`
+    (`input text`, ASCII and line breaks) and one key at a time (`input keyevent`), and `wait`;
+  - `apps.list` (`pm list packages`, and the app in front from `dumpsys activity activities`), `apps.launch` (its
+    launcher activity, `am start -W`) and `apps.terminate` (`am force-stop`);
+  - `apps.ui_tree`: `uiautomator dump`.
+
+  exec, files, processes and tar are refused in words: a phone has no shell in the computer protocol. So are pinch
+  (adb's `input` has one finger), hold, a combo of keys, `apps.install` and `deadline.extend`.
+- **Capabilities.** Kind and os `android`, daemon `none`, lifetime `vendor`, network `open`, release `delete` only.
+  Groups `screen`, `input.touch`, `input.keys`, `apps` and `apps.ui_tree`. `maxLifetimeMs` is 30 min by default. No
+  mount, no extend.
+- **create** asks for `timeout_seconds` = the lifetime, and the phone harness ends the session then, whatever happens.
+  The lifetime includes the boot, so a phone ready past its deadline fails `timeout`.
+  - Each POST carries an Idempotency-Key, and a create whose answer was lost is found by it, never sent twice.
+  - A phone that fails, or is not ready within `readyMs` (240 s), is ended.
+  - The service's refusals keep their words (`limit` for `phones_busy` and `session_limit`, `denied` for the key or
+    credit) and never hold the key.
+- **The ledger.** The phone harness keeps no labels on a session, so the provider keeps each phone's labels, image and
+  deadline in its `ledger` option: `{ put, get, list, remove }`. It is in memory by default; serve passes a store-backed
+  one, and the conformance module a JSON file. `list`, `attach`, `network`, `connect`, `release` and the janitor see
+  only the phones it names, never another session on the account, and forget a phone the service ended.
+- **adb** is an option too: a runner (tests give a fake), or the path of the `adb` CLI (Android platform-tools; default
+  `adb` on PATH). Without it, connect says so in words.
+- **testConnection** is one `GET /sessions` joined to the ledger, which rents nothing and reaches no phone: ok with the
+  count of this provider's phones, `unauthorized` for a refused key, `unreachable` when the phone harness is not
+  reached.
+
+Conformance (`src/conformance/phone-harness.ts`) reads `COMPUTER_PHONE_HARNESS_API_KEY`,
+`COMPUTER_PHONE_HARNESS_PLATFORM`, `COMPUTER_PHONE_HARNESS_ADB`, `COMPUTER_PHONE_HARNESS_LEDGER` and
+`AGENTRUN_COMPUTER_LIVE_PHONE_HARNESS`, never the bare
+`PHONE_HARNESS_API_KEY`. A run's phones live at most 10 min, and the run's computers ask for at most the provider's
+`maxLifetimeMs`.
+
+With no fixture app (it takes no files), the touch, keys and apps cases drive the stock Settings app and read back
+through `apps.ui_tree` (`src/conformance/cases/settings.ts`):
+- `touch.tap`: a tap on a row opens its page, which shows the row's title, and back comes back;
+- `touch.swipe`: a swipe up moves the list up;
+- `input.type-text` and `input.key-table-refuses-unknown`: the text read back from the search field;
+- `apps.launch-terminate`, which needs the apps group alone: Settings is listed; once launched it is in front, and
+  shown, in `apps.ui_tree` when the phone has one, else in a screenshot other than the one before; once terminated it
+  is not in front;
+- `apps.ui-tree-shape`: the tree's shape, on Settings.
+
+`touch.pinch` skips in the provider's own refusal.
 
 ## Conformance
 

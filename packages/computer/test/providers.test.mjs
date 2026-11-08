@@ -37,11 +37,26 @@ const sink = () => {
 	};
 };
 
-/** Every registry line as written: id, and the provider file it imports. */
-function registryLines() {
-	const source = readFileSync(new URL("../dist/providers.js", import.meta.url), "utf8");
-	return [...source.matchAll(/^\s*([a-z][a-z0-9-]*):\s*\(\)\s*=>\s*import\("\.\/([a-z][a-z0-9-]*)\.js"\),?$/gm)].map(([, id, file]) => ({ id, file }));
+/** The registry lines in source, as written: id, and the provider file it imports. */
+function linesOf(source) {
+	// The id bare, or quoted with one kind of quote on both sides: a hyphenated id is no JavaScript name.
+	return [...source.matchAll(/^\s*(?:(["'])([a-z][a-z0-9-]*)\1|([a-z][a-z0-9]*)):\s*\(\)\s*=>\s*import\("\.\/([a-z][a-z0-9-]*)\.js"\),?$/gm)].map(([, , quoted, bare, file]) => ({ id: quoted ?? bare, file }));
 }
+
+/** Every registry line of the built registry. */
+function registryLines() {
+	return linesOf(readFileSync(new URL("../dist/providers.js", import.meta.url), "utf8"));
+}
+
+test("a registry line is read with its id bare, or quoted when the id is no JavaScript name (phone-harness)", () => {
+	const source = ['\tdocker: () => import("./docker.js"),', '\t"phone-harness": () => import("./phone.js"),', "\t'orgo-cloud': () => import(\"./orgo.js\"),"].join("\n");
+	assert.deepEqual(linesOf(source), [
+		{ id: "docker", file: "docker" },
+		{ id: "phone-harness", file: "phone" },
+		{ id: "orgo-cloud", file: "orgo" },
+	]);
+	assert.deepEqual(linesOf('\t"phone-harness\': () => import("./phone.js"),'), [], "quotes that do not match are not a line");
+});
 
 /** Every provider file under src/: one that declares a class implementing ComputerProvider, with the id it reports. */
 function providerFiles() {

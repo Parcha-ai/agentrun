@@ -98,7 +98,7 @@ function entry(fields: Omit<ProviderEntry, "kinds">): ProviderEntry {
 }
 
 /**
- * Every provider Settings offers. orgo, phone-harness, browserbase and kernel are data until their provider file lands;
+ * Every provider Settings offers. orgo, browserbase and kernel are data until their provider file lands;
  * a unit test then holds each to its module (CAPABILITIES, MOUNT). daytona, modal and e2b take archil mounts once D6
  * lands, and their entries follow their modules then.
  */
@@ -135,7 +135,7 @@ export const PROVIDERS: readonly ProviderEntry[] = [
 		keys: [{ name: "PHONE_HARNESS_API_KEY", required: true }],
 		mounts: [],
 		metered: true,
-		capabilities: [{ kind: "android", groups: ["screen", "input.touch", "apps"] }],
+		capabilities: [{ kind: "android", groups: ["screen", "input.touch", "input.keys", "apps", "apps.ui_tree"] }],
 	}),
 	entry({
 		id: "browserbase",

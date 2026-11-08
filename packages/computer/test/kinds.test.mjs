@@ -23,6 +23,8 @@ import { E2BProvider } from "../dist/e2b.js";
 import { fakeDocker } from "./fake-docker.mjs";
 import { fakeE2B } from "./fake-e2b.mjs";
 import { fakeModal } from "./fake-modal.mjs";
+import { PhoneHarnessProvider } from "../dist/phone-harness.js";
+import { fakePhoneHarness, KEY as PHONE_KEY } from "./fake-phone-harness.mjs";
 
 const caps = (fields) => ({ kind: "linux", groups: ["exec", "files", "processes"], ...fields });
 const SETTINGS = ["none", "sandbox", "desktop", "phone", "browser"];
@@ -117,6 +119,12 @@ const BUILT = {
 	e2b: [() => new E2BProvider({ apiKey: "e2b-test-key", Sandbox: fakeE2B().Sandbox, kind: "linux" }), () => new E2BProvider({ apiKey: "e2b-test-key", Sandbox: fakeE2B().Sandbox })],
 	daytona: [() => new DaytonaProvider({ apiKey: "daytona-test-key", apiUrl: "https://api.daytona.test/api", daemonPath: "/nonexistent/computerd", fetch: async () => new Response(null, { status: 500 }) })],
 	modal: [() => new ModalProvider({ sdk: fakeModal().sdk, app: "computers", daemonImage: `ghcr.io/example/computerd@sha256:${"a".repeat(64)}` })],
+	"phone-harness": [
+		() => {
+			const fake = fakePhoneHarness();
+			return new PhoneHarnessProvider({ apiKey: PHONE_KEY, fetch: fake.fetch, adb: fake.adb });
+		},
+	],
 };
 
 test("a built provider's capabilities, in each configuration, are its entry's static capabilities", () => {
