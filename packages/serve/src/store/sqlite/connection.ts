@@ -168,7 +168,7 @@ export class Connection implements SqliteDatabase {
 
   /** A write transaction (BEGIN IMMEDIATE) the callback steps through its handle, deciding each statement from the ones
    *  before it. It commits when the callback resolves; when the callback rejects it rolls back and rejects with the same
-   *  error, or with an AggregateError when the rollback fails too. `full`: a FULL commit. Every other call of this process
+   *  error, or with an AggregateError when the rollback fails too (StoreWorkerLost alone when the worker was lost). `full`: a FULL commit. Every other call of this process
    *  waits for it, so the callback awaits nothing but its own statements (no model or tool call inside), and a transaction
    *  still open `deadlineMs` after it began is rolled back and rejects with StoreDeadline: a later statement of its callback
    *  is refused, and the calls behind it go on. */
@@ -194,6 +194,8 @@ export class Connection implements SqliteDatabase {
         try {
           await this.#send({ op: "rollback" });
         } catch (rollback) {
+          // A worker lost mid-transaction failed both: its loss is the one error, as every later call's.
+          if (this.#lost) throw this.#lost;
           throw new AggregateError([error, rollback], "the store's transaction failed, and so did its rollback");
         }
         throw error;

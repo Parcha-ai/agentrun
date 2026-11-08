@@ -18,6 +18,7 @@ import { BACKGROUND_CONTEXT } from "@earendil-works/chord/context";
 import { openSqliteStore, type RunRow, type Store } from "../../store/index.js";
 import { sendCommand } from "../commands.js";
 import { callsOf, journalRecords, messagesOf, type CallRecord, type MessageRecord } from "../journal-reader.js";
+import { KINDS } from "../journal-kinds.js";
 import { startRunner, type Runner } from "../runner.js";
 import type { ConformanceCase, ConformanceSetup, ConformanceSubject, KernelHooks, ScriptStep, SuiteTool, ToolName } from "./subject.js";
 
@@ -147,7 +148,15 @@ async function world(subject: ConformanceSubject, t: { after(fn: () => unknown):
       throw new Error(`${error.message}; the run is ${row.state} (runner ${row.runner}, epoch ${row.epoch}); the runners said ${JSON.stringify(events)}`);
     });
   const commandRow = async (id: number) => (await server.commands(RUN, id - 1)).find((row) => row.id === id)!;
-  return { dir, server, start, run, read, ended, commandRow };
+  /** The call the run asked a person about: its ask entry's callId, which an approve or deny names as its approval. */
+  const askedCall = async (): Promise<string> => {
+    const row = await run();
+    const { entries } = await journalRecords(server.journal({ runId: RUN, runner: "conformance-reader", epoch: row.epoch, until: 0, from: row.state }), BACKGROUND_CONTEXT);
+    const ask = entries.find((entry) => entry.kind === KINDS.ask);
+    assert.ok(ask, "the run wrote its ask");
+    return String((ask.data as { callId?: unknown }).callId);
+  };
+  return { dir, server, start, run, read, ended, commandRow, askedCall };
 }
 
 interface Case {
@@ -349,11 +358,36 @@ const CASES: readonly Case[] = [
       await w.start("runner-a", { script: [{ call: "asked" }, { say: "done" }], tools, hooks: quiet });
       const parked = await w.ended("parked");
       assert.equal(ran.asked, 0, "the asked tool waits for its answer");
-      const approve = await sendCommand(w.server, RUN, { kind: "approve", body: { approval: "asked" } });
+      const approve = await sendCommand(w.server, RUN, { kind: "approve", body: { approval: await w.askedCall() } });
       const row = await w.ended("ended");
       assert.ok(row.epoch > parked.epoch, "resumed under a new claim");
       assert.equal(ran.asked, 1, "approved, it ran once");
       assert.ok((await w.commandRow(approve.id)).takenAt !== null, "the approve row is taken");
+      const { calls } = await w.read();
+      assert.deepEqual(calls.map((call) => [call.tool, call.status]), [["asked", "done"]]);
+    },
+  },
+  {
+    id: "approval-names-its-call",
+    title: "an approval that names another call is refused, never answers the waiting one, and the run parks again",
+    async body(subject, t) {
+      const w = await world(subject, t);
+      const { tools, ran } = suiteTools();
+      await w.start("runner-a", { script: [{ call: "asked" }, { say: "done" }], tools, hooks: quiet });
+      await w.ended("parked");
+      const callId = await w.askedCall();
+      const stale = await sendCommand(w.server, RUN, { kind: "approve", body: { approval: `${callId}-another` } });
+      const refused = await until(async () => {
+        const row = await w.commandRow(stale.id);
+        return row.takenAt !== null && row;
+      }, "the other approval answered");
+      assert.match(refused.refused ?? "", /approval/, `refused in words: ${JSON.stringify(refused)}`);
+      assert.equal(ran.asked, 0, "the waiting call did not run on another call's approval");
+      await w.ended("parked");
+      const approve = await sendCommand(w.server, RUN, { kind: "approve", body: { approval: callId } });
+      await w.ended("ended");
+      assert.equal(ran.asked, 1, "approved by its own approval, it ran once");
+      assert.equal((await w.commandRow(approve.id)).refused, null, "its approve row is taken, not refused");
       const { calls } = await w.read();
       assert.deepEqual(calls.map((call) => [call.tool, call.status]), [["asked", "done"]]);
     },

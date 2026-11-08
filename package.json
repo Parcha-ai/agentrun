@@ -7,7 +7,7 @@
     "packages/*"
   ],
   "engines": {
-    "node": ">=22.19.0"
+    "node": ">=24.11.0"
   },
   "scripts": {
     "build": "node scripts/check-node.mjs && node scripts/build-console.mjs && node scripts/build-workspaces.mjs",

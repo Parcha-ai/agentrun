@@ -56,6 +56,14 @@ export const STORE_DDL: readonly string[] = [
     cost_usd REAL,
     ${json("metrics", true)},
     summary TEXT,
+    -- How an ended run (state 'ended') ended apart from being done: 'escalated' (it finished its work and waits for a
+    -- person, which v2 reads as completed with a review) or 'completed'; null is a plain completion. A failed or stopped
+    -- run says so in its state and needs none. Written in the run's end commit (RunPatch.outcome).
+    outcome TEXT CHECK (outcome IS NULL OR outcome IN ('completed', 'escalated')),
+    -- When the run itself was archived (its agent's archive is the agent row's): hidden from the default lists, kept.
+    archived_at INTEGER,
+    -- The session an imported run came from ({source, session}), written by Store.importRun; null for a run started here.
+    ${json("imported_from", true)},
     started_at INTEGER NOT NULL,
     ended_at INTEGER
   ) STRICT`,
@@ -84,6 +92,17 @@ export const STORE_DDL: readonly string[] = [
     ${json("response")},
     at INTEGER NOT NULL,
     PRIMARY KEY (scope, key)
+  ) STRICT`,
+
+  // The origin key a run was started under (a create's idempotency key, or a trigger's firing key): the run it started and
+  // the fingerprint of what was asked then, so a retry under the same key finds that run (runOfOrigin) and tells itself
+  // from another request under the same key. Written in the run's own transaction (runs.create), so the link holds even
+  // when the server went down before its answer was stored (the kept response is written later, and separately).
+  `CREATE TABLE IF NOT EXISTS run_origins (
+    key TEXT PRIMARY KEY,
+    run_id TEXT NOT NULL REFERENCES runs (id),
+    fingerprint TEXT,
+    created_at INTEGER NOT NULL
   ) STRICT`,
 
   // Triggers (module E's), their scopes (rows only while enabled), firings, conversations and adapter settings.
@@ -236,6 +255,18 @@ export const STORE_DDL: readonly string[] = [
     pinned_at INTEGER NOT NULL
   ) STRICT`,
 
+  // A run's launch record: the one body the server writes when it starts a run (start = INSERT run), read by the runner at
+  // its claim to build the run's spec. It replaces the per-run serve.json the old per-run process read: one row per run,
+  // written in the same transaction as the queued run, never after. `body` is the launch JSON (run-launch.ts: the first
+  // input, title, place, effort, cap, and the trigger and origin that started it); `sealed` holds any secret sealed with
+  // the server's key outside the store (AAD run_launch|<run_id>|sealed), or null when the launch holds none.
+  `CREATE TABLE IF NOT EXISTS run_launch (
+    run_id TEXT PRIMARY KEY REFERENCES runs (id),
+    ${json("body")},
+    sealed BLOB,
+    created_at INTEGER NOT NULL
+  ) STRICT`,
+
   // A running run's live view (the tool it runs now, its partial text): one row, outside the journal, overwritten in place
   // by its runner's tick and dropped at its end.
   `CREATE TABLE IF NOT EXISTS run_live (
@@ -243,6 +274,18 @@ export const STORE_DDL: readonly string[] = [
     ${json("state")},
     updated_at INTEGER NOT NULL
   ) STRICT`,
+
+  // Learning on the runner: what a run's end-of-run turn kept (the turn it asked and answered, and the proposal checked from
+  // it), written in the same commit as the run's end, beside the learning run that grades and merges it. Read by the
+  // learning routes (the pre-merge view) and by the learning run.
+  `CREATE TABLE IF NOT EXISTS learning_proposals (
+    run_id TEXT PRIMARY KEY REFERENCES runs (id),
+    agent_id TEXT NOT NULL REFERENCES agents (id),
+    ${json("turn")},
+    ${json("proposal")},
+    created_at INTEGER NOT NULL
+  ) STRICT`,
+  `CREATE INDEX IF NOT EXISTS learning_proposals_by_agent ON learning_proposals (agent_id, created_at DESC)`,
 ];
 
 /** pi-durable's journal tables (its SqliteStorage schema, version 2, the `sleeping` task status included; MIT, see NOTICE),

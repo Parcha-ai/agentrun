@@ -55,6 +55,7 @@ export type ConformanceCase =
   | "steer-mid-turn"
   | "stop-ends-turn"
   | "park-on-ask"
+  | "approval-names-its-call"
   | "fault-effects-once"
   | "fault-restarts-bounded";
 

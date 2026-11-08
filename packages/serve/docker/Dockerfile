@@ -22,7 +22,7 @@ RUN npm ci --ignore-scripts && (cd apps/console && npm ci --ignore-scripts && np
 
 FROM node:22.23.2-trixie-slim@sha256:c5849ff9c9ebcd66615412f0b548ca5b8ecaef84003dc9ac2e077ebe46aaa3f6
 # tini is PID 1, so the run processes the server starts are reaped and get its SIGTERM. git is for an agent's learning
-# folder, which needs 2.40 or newer: trixie's is 2.47 (bookworm's was 2.39). docker-cli (26.1) is the Docker client alone, no daemon:
+# folder, which needs 2.32 or newer; this image holds itself to 2.40 by its own choice: trixie's is 2.47. docker-cli (26.1) is the Docker client alone, no daemon:
 # with the host's Docker socket mounted (compose.yaml at the repository's root), a run's Docker box is a container beside this one.
 RUN apt-get update -qq \
  && DEBIAN_FRONTEND=noninteractive apt-get install -y -qq --no-install-recommends tini git docker-cli >/dev/null \

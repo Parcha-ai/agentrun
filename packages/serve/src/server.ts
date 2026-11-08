@@ -72,8 +72,11 @@ import type { McpServerSource } from "./mcp-gateway.js";
 import { WEBHOOK_EVENTS, Webhooks } from "./webhooks.js";
 import { type SealedSettings } from "./sealed-settings.js";
 import { openServerSecrets, type ServerSecrets } from "./server-secrets.js";
-import { HOOK_TOLERANCE_S, headersRefusal, verify } from "./standard-webhooks.js";
+import { HOOK_TOLERANCE_S } from "./standard-webhooks.js";
+import { HookCut, receivePush } from "./push-handler.js";
+import type { TriggerAdapter } from "./trigger-adapter.js";
 import { TRIGGER_ADAPTERS } from "./trigger-adapters.js";
+import { webhook } from "./trigger-webhook.js";
 import { permissionFrom } from "./tool-gate.js";
 import { CATCHUP_WINDOW_S, FAILURES_TO_PAUSE, HISTORY_KEPT, MIN_EVERY_S, PAYLOAD_KEPT_BYTES, type RunTrigger, SOURCE_KINDS, TARGET_KINDS, type TriggerClock, Triggers } from "./triggers.js";
 import { applyBodyOf, compiled, type Package, packageModel, packageView, readPackages } from "./templates.js";
@@ -94,8 +97,6 @@ const IDEMPOTENCY_FILE = ".idempotency.json";
 /** A run's live browser viewer, under the run's path (browser-live.ts): its run id, then its page, files or WebSocket. */
 const LIVE_PATH = /^\/v2\/runs\/([^/]+)\/browser\/live(\/.*)$/;
 const MAX_BODY = 1 << 20;
-/** The largest body a webhook trigger takes (POST /v2/hooks/{id}). */
-const HOOK_MAX_BODY = 256 << 10;
 const MAX_MESSAGE = 20_000;
 const MAX_WAIT_MS = 25_000;
 const PAGE_ROWS = 500;
@@ -281,6 +282,8 @@ export type ServeOptions = {
   learningBudget?: number;
   /** A test's seam: the triggers' clock and timer (triggers.ts), in place of Date.now and setTimeout. */
   triggerClock?: TriggerClock;
+  /** A test's seam: the trigger sources this server has (default the registry, trigger-adapters.ts). */
+  triggerAdapters?: readonly TriggerAdapter[];
   /** A test's seam: the folder the template packages are read from, in place of the package's own (templates.ts). */
   templates?: string;
   /** The waits before each try again of a webhook delivery (default 5 s, 5 min, 30 min, 2 h, 5 h and 10 h: webhooks.ts RETRY_MS). */
@@ -328,8 +331,6 @@ async function tokenIn(file: string): Promise<{ token: string; made: boolean }> 
 const digest = (text: string) => createHash("sha256").update(text).digest();
 /** Why a trigger never messages a run: it has no spend cap, and every turn a trigger drives is capped. */
 const NO_CAP = "The run has no spend cap: a trigger only messages a run with one, as every turn it drives is capped.";
-/** What an unknown trigger's request is checked against, so it is refused in a known trigger's time. */
-const NO_TRIGGER_SECRET = `whsec_${randomBytes(32).toString("base64")}`;
 const sha256Hex = (text: string) => createHash("sha256").update(text).digest("hex");
 const SESSION_S = SESSION_MS / 1000;
 
@@ -607,7 +608,7 @@ function capabilitiesWith(env: NodeJS.ProcessEnv, maxRuns: number, harnesses: Ha
        *  ends (webhooks.ts); its secret kept sealed under the same seal key, so with none no webhook is set. */
       webhooks: { routes: true, events: [...WEBHOOK_EVENTS], signing: "standard-webhooks/v1", at_rest: sealKeyOf(env[SEAL_KEY_ENV]) ? "sealed" : "unavailable" },
       /** /triggers: what starts an agent's capped runs with no caller (triggers.ts). */
-      triggers: { routes: true, sources: [...SOURCE_KINDS], targets: [...TARGET_KINDS], min_every_s: MIN_EVERY_S, history_kept: HISTORY_KEPT, catchup_window_s: CATCHUP_WINDOW_S, failures_to_pause: FAILURES_TO_PAUSE, webhook: { signing: "standard-webhooks/v1", tolerance_s: HOOK_TOLERANCE_S, max_body_bytes: HOOK_MAX_BODY, payload_kept_bytes: PAYLOAD_KEPT_BYTES, at_rest: sealKeyOf(env[SEAL_KEY_ENV]) ? "sealed" : "unavailable" } },
+      triggers: { routes: true, sources: [...SOURCE_KINDS], targets: [...TARGET_KINDS], min_every_s: MIN_EVERY_S, history_kept: HISTORY_KEPT, catchup_window_s: CATCHUP_WINDOW_S, failures_to_pause: FAILURES_TO_PAUSE, webhook: { signing: "standard-webhooks/v1", tolerance_s: HOOK_TOLERANCE_S, max_body_bytes: webhook.push!.maxBodyBytes, payload_kept_bytes: PAYLOAD_KEPT_BYTES, at_rest: sealKeyOf(env[SEAL_KEY_ENV]) ? "sealed" : "unavailable" } },
     },
     regions: [{ id: "local", jurisdiction: null, state: "live" }],
     /** This server's own: where its OpenAPI document is, beside this one. */
@@ -949,9 +950,10 @@ async function startHolding(options: ServeOptions, data: string, lock: ServerLoc
   }
   log?.(logLine("boxes", boxesLog(boxOffers, enabledBoxes(env))));
   if (image) imageLog(image.state());
-  const openapi = openapiDocument((operationId) => ROUTES.find((r) => r.name === operationId)?.capability);
+  const adapters = options.triggerAdapters ?? TRIGGER_ADAPTERS;
+  const openapi = openapiDocument((operationId) => ROUTES.find((r) => r.name === operationId)?.capability, adapters);
   const agents = new Agents(data);
-  ({ secrets: secretStores, settings: triggerSettings } = openServerSecrets(data, env, TRIGGER_ADAPTERS, (fields) => (log ? log(logLine("trigger", fields)) : void process.stderr.write(`agentrun-serve: ${logLine("trigger", fields)}\n`))));
+  ({ secrets: secretStores, settings: triggerSettings } = openServerSecrets(data, env, adapters, (fields) => (log ? log(logLine("trigger", fields)) : void process.stderr.write(`agentrun-serve: ${logLine("trigger", fields)}\n`))));
   secretStores.add("server", () => [token, doorToken]);
   // Each agent's saved sign-ins (sign-ins.ts), under the seal key the tool keys are kept under: its vendor's calls on the
   // server's keys (under faux, the vendor's fake alone), a lease held while the run it names has not ended, and a
@@ -1084,6 +1086,7 @@ async function startHolding(options: ServeOptions, data: string, lock: ServerLoc
   // Firings an earlier server left due are driven again now, beside the recovery above.
   const triggers: Triggers = new Triggers(data, {
     clock: options.triggerClock,
+    adapters,
     say: (fields) => (log ? log(logLine("trigger", fields)) : void process.stderr.write(`agentrun-serve: ${logLine("trigger", fields)}\n`)),
     async targetIssues(target) {
       if (target.kind === "message_run") {
@@ -1232,30 +1235,6 @@ async function startHolding(options: ServeOptions, data: string, lock: ServerLoc
     }
     if (size > max) throw new ApiError("payload_too_large", `the body is over ${max} bytes`, { details: { limit: "max_body_bytes" } });
     return Buffer.concat(chunks);
-  }
-
-  /** POST /v2/hooks/{trigger_id}: a webhook trigger's firing, signed by the Standard Webhooks spec under its secret
-   *  (standard-webhooks.ts), checked on the raw body before anything else. An unknown trigger, one that is off or not a
-   *  webhook's, and a check that fails are one answer, so no trigger id can be found by asking; an unknown one is
-   *  checked against a secret of no trigger's, so it takes the same time. A webhook-id already fired answers its firing. */
-  async function hook(req: IncomingMessage, res: ServerResponse, path: string): Promise<void> {
-    const refuse = (reason: string) => {
-      authFailed(`/v2${path}`, reason);
-      return new ApiError("unauthenticated", "this route needs a request signed by the webhook trigger's secret");
-    };
-    // Headers that can never pass are refused before a byte of the body is read; they say nothing of the trigger.
-    const early = headersRefusal(req.headers, Date.now());
-    if (early) throw refuse(early);
-    const body = await bytesOf(req, HOOK_MAX_BODY);
-    let id = "";
-    try {
-      id = decodeURIComponent(/^\/hooks\/([^/]+)$/.exec(path)![1]!);
-    } catch {}
-    const secret = ID.test(id) && triggers.hookable(id, "webhook") ? triggerSettings.get("webhook")?.get(id, "secret") : undefined;
-    const refusal = verify(secret ?? NO_TRIGGER_SECRET, req.headers, body, Date.now());
-    if (!secret || refusal) throw refuse(secret ? refusal! : "no_webhook_trigger");
-    const { created, firing } = triggers.receive(id, String(req.headers["webhook-id"]), body.toString("utf8"));
-    return send(res, created ? 202 : 200, firing, created ? {} : { "idempotent-replayed": "true" });
   }
 
   async function bodyOf(req: IncomingMessage): Promise<Json> {
@@ -1997,8 +1976,13 @@ async function startHolding(options: ServeOptions, data: string, lock: ServerLoc
     if (!found) throw new ApiError("method_not_allowed", `${req.method} is not a method of ${path}`, {}, { allow: [...new Set(matching.map((r) => r.method))].join(", ") });
     if (found.name === "getCapabilities") return send(res, 200, forCaller(caps, byOwnerSession(req)));
     if (found.name === "getOpenapi") return send(res, 200, servedOpenapi(openapi, req.socket.localPort));
-    // The one route with no token: a webhook trigger's request, checked by its signature before anything else is read.
-    if (found.name === "receiveHook") return hook(req, res, path);
+    // The one route with no token: a pushed trigger source's request, checked by its source before anything else is
+    // read (push-handler.ts).
+    if (found.name === "receiveHook") {
+      // A body cut at its cap or its time is answered, then its socket closed: never read to its end.
+      const answer = await receivePush({ adapters, hookable: (id, kind) => triggers.hookable(id, kind), receive: (id, eventId, payload) => triggers.receive(id, eventId, payload), scoped: (kind, scope) => triggers.scoped(kind, scope), setting: (adapterId, scope, field) => triggerSettings.get(adapterId)?.get(scope, field), refused: authFailed, say: (fields) => (log ? log(logLine("trigger", fields)) : void process.stderr.write(`agentrun-serve: ${logLine("trigger", fields)}\n`)) }, req, /^\/hooks\/([^/]+)$/.exec(path)![1]!);
+      return send(res, answer.status, answer.body, answer.headers ?? {});
+    }
     // An MCP server's OAuth sign-in: the browser coming back from its authorization server carries no token (the state
     // it brings is the check, mcp-oauth.ts), and the client metadata document is for that server to fetch.
     if (found.name === "mcpOAuthCallback") {
@@ -2554,6 +2538,8 @@ async function startHolding(options: ServeOptions, data: string, lock: ServerLoc
     }
     const fail = (error: unknown) => {
       if (res.headersSent) return void res.end();
+      // A request cut before its body was read (push-handler.ts readCapped): its socket goes once the answer is out.
+      if (error instanceof HookCut) res.once("finish", () => req.socket.destroy());
       // A store still busy past a request's wait is home_busy, whichever read or write met it.
       const known = error instanceof ApiError ? error : storeBusy(error) ? homeBusy() : new ApiError("internal", (error as Error)?.message ?? String(error));
       if (!(error instanceof ApiError) && !storeBusy(error)) process.stderr.write(`agentrun-serve: ${(error as Error)?.stack ?? String(error)}\n`);
@@ -2585,6 +2571,10 @@ async function startHolding(options: ServeOptions, data: string, lock: ServerLoc
     if (viewing) return ID.test(viewing[1]!) ? void liveRoute(req, res, viewing[1]!, viewing[2]!).catch(fail) : fail(new ApiError("not_found", "no run's live view at that address"));
     route(req, res, url, raw.slice(3)).catch(fail);
   });
+  // A request's headers come within 10 s, whatever its route: nothing sends more than a few kilobytes of them. Its body
+  // keeps Node's 5-minute request timeout, which an upload of a large file needs; the token-less hook route has its own
+  // 30 s for its body (push-handler.ts HOOK_BODY_MS), so dribbling senders hold no socket for long.
+  server.headersTimeout = 10_000;
   // The one upgrade this server takes: a run's live browser viewer's WebSocket (browser-live.ts). Every other is refused.
   server.on("upgrade", (req: IncomingMessage, socket: Duplex, head: Buffer) => {
     socket.on("error", () => socket.destroy());
