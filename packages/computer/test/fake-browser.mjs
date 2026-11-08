@@ -182,7 +182,8 @@ export function fakeBrowserbase(knobs = {}) {
 				expiresAt: new Date(now + call.body.timeout * 1000).toISOString(),
 				keepAlive: call.body.keepAlive === true,
 				userMetadata: { ...call.body.userMetadata },
-				connectUrl: `wss://connect.browserbase.test/${sid}?signingKey=SECRET-${sid}`,
+				// Browserbase's own shape, wss: on browserbase.com (read live 11-08); knobs.connectUrl(sid) answers another, or none.
+				connectUrl: knobs.connectUrl ? knobs.connectUrl(sid) : `wss://connect.browserbase.com/${sid}?signingKey=SECRET-${sid}`,
 				lag: 0,
 			};
 			sessions.set(sid, s);
@@ -244,7 +245,8 @@ export function fakeKernel(knobs = {}) {
 			const bid = `kb_${++seq}`;
 			const b = {
 				id: bid,
-				cdp: `wss://browser.kernel.test/cdp/${bid}?jwt=SECRET-${bid}`,
+				// Kernel's own shape, wss: on kernel.sh, port 8443 (read live 11-08); knobs.cdpUrl(bid) answers another, or none.
+				cdp: knobs.cdpUrl ? knobs.cdpUrl(bid) : `wss://cdp.kernel.sh:8443/${bid}?jwt=SECRET-${bid}`,
 				live: `https://live.kernel.test/${bid}?jwt=SECRET-live-${bid}`,
 				createdAt: new Date(Date.parse("2026-11-08T12:00:00.000Z") + seq * 1000).toISOString(),
 				timeout: call.body.timeout_seconds,
