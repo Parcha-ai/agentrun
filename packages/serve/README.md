@@ -1645,8 +1645,9 @@ and keeps the App's id, slug and client id, which are no secret, and its private
 sealed in `DIR/trigger-settings-github.json`; GitHub's client secret is never kept, and no secret is logged or answered.
 The browser goes on to install the App; GitHub's redirect after (`/v2/integrations/github/installed`)
 records the installation once GitHub, asked with the App's own JWT, says it is the App's, and sends the browser to the
-console's `/#/settings/github?github=connected`. Neither leg ever answers an error body: a state that is unknown, used,
-older than an hour or from another browser sends the browser to `/#/settings/github?github=error&reason=state_invalid`,
+console at the public URL, `<public>/#/settings/github?github=connected`. Neither leg ever answers an error body: a state
+that is unknown, used, older than an hour or from another browser sends the browser to
+`<public>/#/settings/github?github=error&reason=state_invalid`,
 a code GitHub does not convert to `...&reason=conversion_failed`, and an installation GitHub does not confirm to
 `...&reason=installation_unverified`; nothing is kept. The App's `installation` events keep the list current.
 `GET /v2/integrations/github` shows `{app_id, slug, installations}`, never a secret.
@@ -1679,8 +1680,9 @@ installation and repository (the server's own payload tag); any other names it i
 the run's MCP calls with the static headers beside it, lives only in memory (handed to the run's process over its pipe,
 never its environment, journal, a log line or an answer), and is cut from whatever a run shows while it may be in use.
 A run whose repository the App does not cover, or that names none, has those calls answered in words ("The GitHub App
-isn't installed on owner/repo"). A token lasts an hour and is not renewed inside a live run's process: a run still
-working past it has its GitHub calls refused by GitHub, and gets a new token when it resumes.
+isn't installed on owner/repo"). A known limit: a token lasts an hour and is not renewed inside a live run's process
+(it is minted at each launch): a run still working past it has its GitHub calls answered, unsent, "The GitHub token for
+this run expired: it is minted again when the run resumes", and its next resume mints a fresh one.
 
 ## Templates
 
