@@ -282,7 +282,9 @@ export const providerCases: Case[] = [
 			);
 			t.deepEqual(await names(t, labels), [long.name], "left after the sweep");
 			t.deepEqual(refOf(t.ok(await t.provider.attach({ id: t.ref.id }), "attach to the run's computer")), refOf(t.ref), "a computer outside the swept labels");
-			t.deepEqual(t.ok(await sweep(t.provider, { labels }), "a second sweep"), { deleted: [], kept: 1 }, "a second sweep, now");
+			// The computers only: a provider that also sweeps its own leftovers (Docker's egress proxies) reports them beside.
+			const again = t.ok(await sweep(t.provider, { labels }), "a second sweep");
+			t.deepEqual({ deleted: again.deleted, kept: again.kept }, { deleted: [], kept: 1 }, "a second sweep, now");
 		},
 		{ level: "full", needs: ["lifetime:janitor", "release:stop"], computer: "shared" },
 	),
