@@ -413,6 +413,14 @@ class SqliteStore implements Store {
         }),
       pending: async () =>
         (await db.all<FiringRecord>(`SELECT ${FIRING_COLUMNS} FROM trigger_firings WHERE status = 'due' OR (status = 'failed' AND (notified IS NULL OR notified = 0)) ORDER BY at, rowid`)).map(firingOf),
+      waiting: async () =>
+        (await db.all<FiringRecord & { free: number }>(
+          `SELECT ${FIRING_COLUMNS.split(", ").map((c) => `f.${c}`).join(", ")},
+             (SELECT COUNT(*) FROM trigger_firings s JOIN runs r ON r.id = s.run_id
+               WHERE s.trigger_id = f.trigger_id AND s.status = 'started' AND r.state NOT IN (${FINAL})) < COALESCE(t.max_active_runs, 1) AS free
+           FROM trigger_firings f JOIN triggers t ON t.id = f.trigger_id
+           WHERE f.status = 'due' AND f.waits_on IS NOT NULL ORDER BY f.at, f.rowid`,
+        )).map((r) => ({ ...firingOf(r), free: r.free === 1 })),
       soonest: async () => (await db.get<{ at: number | null }>("SELECT MIN(next_at) AS at FROM triggers WHERE enabled = 1 AND next_at IS NOT NULL"))?.at ?? null,
       activeRuns: async (triggerId) =>
         (await db.get<{ n: number }>(

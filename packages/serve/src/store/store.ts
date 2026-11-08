@@ -318,6 +318,9 @@ export interface Triggers {
   settle(triggerId: string, key: string, change: FiringChange, streak?: FiringStreak): Promise<{ firing: FiringRow; paused: boolean } | undefined>;
   /** Every due firing, and every failed one whose trigger.failed is not marked queued, oldest first. */
   pending(): Promise<FiringRow[]>;
+  /** Every due firing waiting for its trigger's room (waits_on), oldest first, each with whether the room is there now
+   *  (fewer of its trigger's started runs not ended than its max_active_runs): one read for all of them. */
+  waiting(): Promise<(FiringRow & { readonly free: boolean })[]>;
   /** The soonest next time of an enabled trigger, or null. */
   soonest(): Promise<number | null>;
   /** How many of the trigger's started runs have not ended (a run reopened later does not count). */

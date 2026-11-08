@@ -75,6 +75,7 @@ import { HOOK_TOLERANCE_S, headersRefusal, verify } from "./standard-webhooks.js
 import { TRIGGER_ADAPTERS } from "./trigger-adapters.js";
 import { permissionFrom } from "./tool-gate.js";
 import { CATCHUP_WINDOW_S, FAILURES_TO_PAUSE, HISTORY_KEPT, MIN_EVERY_S, PAYLOAD_KEPT_BYTES, type RunTrigger, SOURCE_KINDS, TARGET_KINDS, type TriggerClock, Triggers } from "./triggers.js";
+import type { Store } from "./store/index.js";
 import { applyBodyOf, compiled, type Package, packageModel, packageView, readPackages } from "./templates.js";
 import { checkDefinitionBody, DEFAULT_INPUT_SCHEMA, definitionBodyIssues, ID, IDEMPOTENCY_TTL_S, inputIssues, isObject, type Json, stable, unknownFields } from "./validate.js";
 import { agentTools, browserKeyRow, isUnavailable, recheckPlane, settingsIssues, ToolSettings, type ToolSettingsMap, whyUnavailable, withDefaults } from "./tool-plane.js";
@@ -280,6 +281,9 @@ export type ServeOptions = {
   learningBudget?: number;
   /** A test's seam: the triggers' clock and timer (triggers.ts), in place of Date.now and setTimeout. */
   triggerClock?: TriggerClock;
+  /** The server's store (store/index.ts), where the triggers and their firings live. Without it the trigger routes answer
+   *  unavailable and nothing fires. */
+  store?: Pick<Store, "triggers" | "runs">;
   /** A test's seam: the folder the template packages are read from, in place of the package's own (templates.ts). */
   templates?: string;
   /** The waits before each try again of a webhook delivery (default 5 s, 5 min, 30 min, 2 h, 5 h and 10 h: webhooks.ts RETRY_MS). */
@@ -327,6 +331,16 @@ async function tokenIn(file: string): Promise<{ token: string; made: boolean }> 
 const digest = (text: string) => createHash("sha256").update(text).digest();
 /** Why a trigger never messages a run: it has no spend cap, and every turn a trigger drives is capped. */
 const NO_CAP = "The run has no spend cap: a trigger only messages a run with one, as every turn it drives is capped.";
+
+/** The triggers' store before the server opens its own: each call answers unavailable, and nothing fires. */
+function storeless(): Pick<Store, "triggers" | "runs"> {
+  const refused = new Proxy({}, {
+    get: () => async () => {
+      throw new ApiError("unavailable", "The triggers live in the server's store, which this server has not opened.");
+    },
+  });
+  return { triggers: refused, runs: refused } as unknown as Pick<Store, "triggers" | "runs">;
+}
 /** What an unknown trigger's request is checked against, so it is refused in a known trigger's time. */
 const NO_TRIGGER_SECRET = `whsec_${randomBytes(32).toString("base64")}`;
 const sha256Hex = (text: string) => createHash("sha256").update(text).digest("hex");
@@ -1081,7 +1095,8 @@ async function startHolding(options: ServeOptions, data: string, lock: ServerLoc
 
   // Schedules: each firing starts its run as POST /agents/{id}/runs does, capped, under the firing's key (triggers.ts).
   // Firings an earlier server left due are driven again now, beside the recovery above.
-  const triggers: Triggers = new Triggers(data, {
+  const triggers: Triggers = new Triggers({
+    store: options.store ?? storeless(),
     clock: options.triggerClock,
     say: (fields) => (log ? log(logLine("trigger", fields)) : void process.stderr.write(`agentrun-serve: ${logLine("trigger", fields)}\n`)),
     async targetIssues(target) {
@@ -1136,7 +1151,7 @@ async function startHolding(options: ServeOptions, data: string, lock: ServerLoc
     },
   });
   stops.push(async () => triggers.close());
-  triggers.start();
+  if (options.store) void triggers.start().catch((error: Error) => void process.stderr.write(`agentrun-serve: the triggers' start: ${error.message}\n`));
 
   // Setup's import of this machine's sessions: offered by a server on this machine only (no public address, listening
   // on loopback), counted once (a listing, no transcript kept), run once, each on a worker thread (import-worker.ts) so
@@ -1250,10 +1265,10 @@ async function startHolding(options: ServeOptions, data: string, lock: ServerLoc
     try {
       id = decodeURIComponent(/^\/hooks\/([^/]+)$/.exec(path)![1]!);
     } catch {}
-    const secret = ID.test(id) && triggers.hookable(id, "webhook") ? triggerSettings.get("webhook")?.get(id, "secret") : undefined;
+    const secret = ID.test(id) && (await triggers.hookable(id, "webhook")) ? triggerSettings.get("webhook")?.get(id, "secret") : undefined;
     const refusal = verify(secret ?? NO_TRIGGER_SECRET, req.headers, body, Date.now());
     if (!secret || refusal) throw refuse(secret ? refusal! : "no_webhook_trigger");
-    const { created, firing } = triggers.receive(id, String(req.headers["webhook-id"]), body.toString("utf8"));
+    const { created, firing } = await triggers.receive(id, String(req.headers["webhook-id"]), body.toString("utf8"));
     return send(res, created ? 202 : 200, firing, created ? {} : { "idempotent-replayed": "true" });
   }
 
@@ -1451,7 +1466,7 @@ async function startHolding(options: ServeOptions, data: string, lock: ServerLoc
     } catch (error) {
       for (const id of ids.reverse()) {
         try {
-          triggers.remove(id);
+          await triggers.remove(id);
         } catch (undo) {
           log?.(logLine("template_undo_failed", { template: pkg.name, trigger: id, message: (undo as Error).message }));
         }
@@ -2459,7 +2474,7 @@ async function startHolding(options: ServeOptions, data: string, lock: ServerLoc
       case "redeliverWebhook":
         return send(res, 200, await webhooks.redeliver(id));
       case "listTriggers":
-        return send(res, 200, triggers.list());
+        return send(res, 200, await triggers.list());
       case "createTrigger": {
         const body = await bodyOf(req);
         // A webhook trigger's secret is in its first answer alone: the Idempotency-Key's record keeps the trigger and a
@@ -2487,13 +2502,13 @@ async function startHolding(options: ServeOptions, data: string, lock: ServerLoc
         return send(res, answer.status, answer.body, answer.headers);
       }
       case "rotateTriggerSecret":
-        return send(res, 200, triggers.rotate(id));
+        return send(res, 200, await triggers.rotate(id));
       case "getTrigger":
-        return send(res, 200, triggers.get(id));
+        return send(res, 200, await triggers.get(id));
       case "updateTrigger":
         return send(res, 200, await triggers.update(id, await bodyOf(req)));
       case "deleteTrigger":
-        triggers.remove(id);
+        await triggers.remove(id);
         return void res.writeHead(204, { "cache-control": "no-store" }).end();
       case "fireTrigger": {
         const key = req.headers["idempotency-key"];
@@ -2502,7 +2517,7 @@ async function startHolding(options: ServeOptions, data: string, lock: ServerLoc
         return send(res, fired.created ? 202 : 200, fired.firing, fired.created ? {} : { "idempotent-replayed": "true" });
       }
       case "listTriggerFirings":
-        return send(res, 200, triggers.firings(id));
+        return send(res, 200, await triggers.firings(id));
     }
     throw new ApiError("not_found", `no route ${path}`);
   }
