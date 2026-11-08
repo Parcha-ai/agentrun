@@ -1,0 +1,4 @@
+# The box's own user (Daytona's daytona) runs the root helper, whose every argument the helper checks itself, and the
+# run's tools as agentrun-tool, which has no sudo. No other grant. A box whose own user is root needs neither line.
+daytona ALL=(root) NOPASSWD: /usr/local/sbin/agentrun-archil
+daytona ALL=(agentrun-tool) NOPASSWD: ALL
