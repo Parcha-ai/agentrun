@@ -307,13 +307,11 @@ export function startRunner(options: RunnerOptions): Runner {
     held.sealed = true;
     try {
       if (killed) return;
-      if (held.fence.lost) {
-        // A loop that came back with a final end wrote it: its end commit landed, and a write that makes the run final is
-        // its release (the store's rule). A renew answered Fenced between that commit and here marked the claim lost, but
-        // the run was released by its end: said so, with nothing more written.
-        if (!threw && (end.state === "ended" || end.state === "stopped" || end.state === "failed")) emit({ type: "released", runId: claim.runId, epoch: claim.epoch, end: end.state });
-        return;
-      }
+      // A loop that came back with a final end wrote it: its end commit landed, and a write that makes the run final is its
+      // release (the store's rule). A renew answered Fenced after that commit is expected, never a lost claim: the end goes
+      // on as any end does, made durable (a flush) before the runner says released. Any other lost claim writes nothing.
+      const endedItself = !threw && (end.state === "ended" || end.state === "stopped" || end.state === "failed");
+      if (held.fence.lost && !endedItself) return;
       // A parked run brought back (a raise, an approval) whose loop could not start stays parked: its waking row keeps
       // one more try, and the run is claimable again after a backoff; after the last try that row is refused with why.
       // Never failed: a person can raise again or stop it (#1944-5, the lead's keep list).
@@ -330,13 +328,11 @@ export function startRunner(options: RunnerOptions): Runner {
         }
       }
       if (end.state === "ended" || end.state === "stopped" || end.state === "failed") {
-        // The write that made the run final refused its untaken rows itself, in that transaction (the store's rule): said
-        // here as the runner always said them. A row still untaken (an end written outside that rule) is refused now.
+        // The write that made the run final refused its untaken rows itself, in that transaction (the store's rule), and
+        // released the run: said here as the runner always said them. Nothing is taken after it (its claim is spent).
         const reason = endedReason(end.state);
         for (const row of await store.commands(claim.runId, 0)) {
-          if (row.takenAt === null) await store.take(claim, row.id, "refused", reason);
-          else if (row.refused !== reason) continue;
-          emit({ type: "refused", runId: claim.runId, commandId: row.id, reason });
+          if (row.refused === reason) emit({ type: "refused", runId: claim.runId, commandId: row.id, reason });
         }
       }
       await store.flush();
@@ -372,13 +368,11 @@ export function startRunner(options: RunnerOptions): Runner {
       // untaken row refused as a stopped run's.
       // One write: the run ends stopped with its stop row taken, or neither (a final run never keeps its stop untaken).
       await endRun(claim, { state: "stopped", summary: "stopped by a person" }, [stop.id]);
-      // Every other untaken row was refused in that same write (the store's rule for a write that makes a run final): said
-      // here; the take is a no-op on a row already settled.
+      // Every other untaken row was refused in that same write, and the write released the run (the store's rule for a
+      // write that makes a run final): said here, from what the end refused. Nothing is taken after it (its claim is spent).
       const reason = endedReason("stopped");
-      for (const row of untaken) {
-        if (row.id === stop.id) continue;
-        await store.take(claim, row.id, "refused", reason);
-        emit({ type: "refused", runId: claim.runId, commandId: row.id, reason });
+      for (const row of await store.commands(claim.runId, 0)) {
+        if (row.id !== stop.id && row.refused === reason) emit({ type: "refused", runId: claim.runId, commandId: row.id, reason });
       }
       await store.flush();
       await store.release(claim, {});
