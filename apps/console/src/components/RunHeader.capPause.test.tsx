@@ -91,6 +91,32 @@ describe("RunHeader on a run paused at its spend cap", () => {
     expect([...host.querySelectorAll("button")].map((b) => b.textContent?.trim())).toContain("Raise the cap and continue");
   });
 
+  // A workflow run opens on its Graph tab: paused at its cap, the banner and its one raise show there too.
+  it("a workflow run paused at its cap, on its Graph tab: the banner's raise shows above the graph", () => {
+    const run = { ...paused(), kind: "workflow" } as Run;
+    const f = runFixture("run.input_required.waiting.1");
+    const host = document.body.appendChild(document.createElement("div"));
+    const root = createRoot(host);
+    act(() => root.render(createElement(RunDetail, { run, agentName: "Calc", messages: messageFeatures, harnessSteers: true, rows: f.page.rows, files: [], actions, onMessage: () => {}, tab: "graph", graphView: createElement("div", { "data-graph": "" }) })));
+    roots.push(() => act(() => root.unmount()));
+    expect(host.querySelector("[data-graph]")).not.toBeNull();
+    expect(host.querySelectorAll('form[aria-label="Raise the cap"]')).toHaveLength(1);
+    expect([...host.querySelectorAll("button")].map((b) => b.textContent?.trim())).toContain("Raise the cap and continue");
+  });
+
+  // A live workflow page gives its graph's cost (costText): its served cap shows beside it, and the new one once raised.
+  it("a workflow run's header shows its graph's cost and its served cap beside it", () => {
+    const host = document.body.appendChild(document.createElement("div"));
+    const root = createRoot(host);
+    const render = (r: Run) => act(() => root.render(createElement(RunHeader, { run: r, agentName: "Calc", actions, costText: "$0.31 so far" })));
+    render(base({ kind: "workflow" }));
+    roots.push(() => act(() => root.unmount()));
+    const cost = () => host.querySelector("header span[title^=\"The run's decisions\"]")?.textContent?.trim();
+    expect(cost()).toBe("$0.31 so far · $0.60 cap");
+    render(base({ kind: "workflow", cost: { usd: 0.52, basis: "estimate", charge_state: null, cap_usd: 2 } }));
+    expect(cost()).toBe("$0.31 so far · $2 cap");
+  });
+
   it("the header shows what it spent of its served cap, and the new cap once raised", () => {
     const t = mount(paused());
     expect(t.cost()).toBe("$0.52 est. of $0.60 cap");
