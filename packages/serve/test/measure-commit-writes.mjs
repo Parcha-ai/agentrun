@@ -1,12 +1,13 @@
 // A measurement, not a test: what pi_commit_writes adds per run against the journal's own tables, on a 24-turn faux pi
-// run on the real store. The run: the kernel's pi loop (runner/loop.ts, createPiLoop) with pi-ai's faux model playing a
-// script of 23 calls of the suite's replay-safe `read` tool and the answer (24 model turns), run by a runner to its end. No
-// provider is called. Run from packages/serve after a build: node test/measure-commit-writes.mjs
+// run on the real store. The run: pi through the adapter (runner/adapter-loop.ts, runner/adapters/pi.ts) with a scripted
+// Anthropic origin (an in-process fetch behind the session's model proxy) playing a script of 23 calls of the suite's
+// replay-safe `read` tool and the answer (24 model turns), run by a runner to its end. No provider is called. Run from
+// packages/serve after a build: node test/measure-commit-writes.mjs
 import { mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { DatabaseSync } from "node:sqlite";
-import { piSubject } from "./conformance-pi.mjs";
+import { closeOpenSessions, piAdapterSubject as piSubject } from "./conformance-pi-adapter.mjs";
 
 const { openSqliteStore } = await import("../dist/store/index.js");
 const { startRunner } = await import("../dist/runner/runner.js");
@@ -32,6 +33,7 @@ try {
     await new Promise((resolve) => setTimeout(resolve, 50));
   }
   await runner.close();
+  await closeOpenSessions();
   await runnerStore.close();
   await server.close();
   const db = new DatabaseSync(join(dir, "store.sqlite"), { readOnly: true });

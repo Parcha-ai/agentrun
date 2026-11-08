@@ -15,10 +15,11 @@ import { fileURLToPath } from "node:url";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { BACKGROUND_CONTEXT } from "@earendil-works/chord/context";
-import { openSqliteStore, type RunRow, type Store } from "../../store/index.js";
+import { openSqliteStore, RunFinal, type RunRow, type Store } from "../../store/index.js";
 import { sendCommand } from "../commands.js";
 import { callsOf, journalRecords, messagesOf, type CallRecord, type MessageRecord } from "../journal-reader.js";
-import { KINDS } from "../journal-kinds.js";
+import { type AnswerData, KINDS } from "../journal-kinds.js";
+import type { LoopFactory } from "../loop-contract.js";
 import { startRunner, type Runner } from "../runner.js";
 import type { ConformanceCase, ConformanceSetup, ConformanceSubject, KernelHooks, ScriptStep, SuiteTool, ToolName } from "./subject.js";
 
@@ -31,8 +32,15 @@ const TIMING = { leaseMs: 600, renewEveryMs: 150, stopMarginMs: 200, pollMs: 20,
 export const MAX_RESTARTS = 5;
 /** The suite's runner timing, for its runner process too (child.ts). */
 export const CONFORMANCE_TIMING = TIMING;
+/** A lease no missed renew lets lapse within a case: for the cases whose property is not the lease (a claim lost mid-way
+ *  changes what they read), so a starved box can't turn them. */
+const STEADY = { leaseMs: 30_000, stopMarginMs: 5_000 };
 const RUN = "run-1";
-const CASE_TIMEOUT_MS = 30_000;
+/** A case's bound, and the cap on a wait for a runner process's own event: caps on waits for events, never a sleep. */
+const CASE_TIMEOUT_MS = 180_000;
+const EVENT_WAIT_MS = 60_000;
+/** A cancelled run's summary, as main's cancel ends a run: its state stopped, its summary "cancelled" (runs.ts settle). */
+const CANCELLED = "cancelled";
 
 const sleep = (ms: number) => new Promise((resolve) => setTimeout(resolve, ms));
 async function until<T>(check: () => Promise<T | false | undefined | null> | T | false | undefined | null, what: string, ms = 10_000): Promise<T> {
@@ -111,7 +119,7 @@ function crashAt(point: keyof KernelHooks, holder: { runner?: Runner; crashed?: 
 }
 
 /** A store in a data directory of its own, one queued run, and runners started on it (each its own connection). */
-async function world(subject: ConformanceSubject, t: { after(fn: () => unknown): void }) {
+async function world(subject: ConformanceSubject, t: { after(fn: () => unknown): void }, timing: Partial<typeof TIMING> = {}) {
   const dir = mkdtempSync(join(process.env.TMPDIR ?? tmpdir(), "agentrun-conformance-"));
   const server = await openSqliteStore({ dataDir: dir, role: "server" });
   const stores: Store[] = [server];
@@ -125,20 +133,51 @@ async function world(subject: ConformanceSubject, t: { after(fn: () => unknown):
   });
   await server.agents.create({ id: "agent-1", name: "Conformance" }, { id: "rev-1", kind: "agentic", body: { instructions: "Follow the script." } });
   await server.runs.create({ id: RUN, agentId: "agent-1", revisionId: "rev-1" });
+  /** The command rows a runner has handed to a loop's command(): with the loop, whether or not taken yet. */
+  const handed = new Set<number>();
   const start = async (name: string, setup: ConformanceSetup, holder?: { runner?: Runner }) => {
     const store = await openSqliteStore({ dataDir: dir, role: "runner" });
     stores.push(store);
-    const runner = startRunner({ store, createLoop: subject.createLoop(setup), name, ...TIMING, onEvent: (event) => events.push({ runner: name, ...event }) });
+    // Each journal commit's outcome, by the claim's epoch (as child.ts records its process's): what a loop wrote, and
+    // whether a loop that lost its claim wrote anything after; and each command row handed to the loop.
+    const factory = subject.createLoop(setup);
+    const observedLoop: LoopFactory = (deps) => {
+      const loop = factory({
+        ...deps,
+        journal: (claim) =>
+          new Proxy(deps.journal(claim), {
+            get(target, property) {
+              const value: unknown = Reflect.get(target, property, target);
+              if (typeof value !== "function") return value;
+              if (property !== "commit") return value.bind(target);
+              return async (...args: unknown[]) => {
+                try {
+                  const result = await value.apply(target, args);
+                  events.push({ runner: name, at: Date.now(), type: "commit-landed", epoch: claim.epoch });
+                  return result;
+                } catch (error) {
+                  events.push({ runner: name, at: Date.now(), type: "commit-refused", epoch: claim.epoch, name: (error as Error)?.name });
+                  throw error;
+                }
+              };
+            },
+          }),
+      });
+      return { ...loop, command: (command) => (handed.add(command.id), loop.command(command)) };
+    };
+    const runner = startRunner({ store, createLoop: observedLoop, name, ...TIMING, ...timing, onEvent: (event) => events.push({ runner: name, at: Date.now(), ...event }) });
     runners.push(runner);
     if (holder) holder.runner = runner;
     return runner;
   };
   const run = async (): Promise<RunRow> => (await server.runs.get(RUN))!;
-  const read = async (): Promise<{ calls: CallRecord[]; messages: MessageRecord[] }> => {
+  const read = async (): Promise<{ calls: CallRecord[]; messages: MessageRecord[]; answers: AnswerData[] }> => {
     const row = await run();
     // pi's tool tasks and the CLI record alike: the kernel's one reader.
     const entries = await journalRecords(server.journal({ runId: RUN, runner: "conformance-reader", epoch: row.epoch, until: 0, from: row.state }), BACKGROUND_CONTEXT);
-    return { calls: callsOf(entries), messages: messagesOf(entries) };
+    // The answers to the run's asks: one place for every harness, the resume row's source.
+    const answers = entries.entries.filter((entry) => entry.kind === KINDS.answer).map((entry) => entry.data as unknown as AnswerData);
+    return { calls: callsOf(entries), messages: messagesOf(entries), answers };
   };
   const ended = (state: RunRow["state"], ms = 15_000) =>
     until(async () => {
@@ -157,13 +196,63 @@ async function world(subject: ConformanceSubject, t: { after(fn: () => unknown):
     assert.ok(ask, "the run wrote its ask");
     return String((ask.data as { callId?: unknown }).callId);
   };
-  return { dir, server, start, run, read, ended, commandRow, askedCall };
+  return { dir, server, start, run, read, ended, commandRow, askedCall, events, handedOver: (id: number) => handed.has(id) };
 }
 
 interface Case {
   readonly id: ConformanceCase;
   readonly title: string;
   body(subject: ConformanceSubject, t: { after(fn: () => unknown): void }): Promise<void>;
+}
+
+/**
+ * The resume after a crash, as runner-b's own events tell it: runner-b claimed the run once and released it once, with the
+ * run ended, and nothing touched the row after its end (its end commit is its release, moving the epoch to runner-b's
+ * claim + 1 in that commit; runner-b's release after it is a no-op). Not an absolute epoch:
+ * on a slow box the crashed runner may lose its own claim (a renew that missed) and retake the run before it dies, so the
+ * epoch runner-b claims at counts the box's speed, not the resume.
+ */
+/** Waits for runner-b to say it released the run. The run reads ended and released from its end commit (a write that makes
+ *  the run final is its release), which comes before the runner's own end of it says so: bounded, never a sleep. */
+async function saidReleased(events: readonly unknown[]): Promise<void> {
+  await until(() => events.some((event) => (event as { runner?: string; type?: string }).runner === "runner-b" && (event as { type?: string }).type === "released"), "runner-b says it released the run", EVENT_WAIT_MS);
+}
+
+function resumedOnceByB(events: readonly unknown[], row: RunRow): void {
+  // The whole claim history, every runner's (the crashed one's too, the process cases' read from its events file), in time
+  // order: a failure here says what each runner did, not only that the epoch differed.
+  const history = JSON.stringify([...events].sort((a, b) => ((a as { at?: number }).at ?? 0) - ((b as { at?: number }).at ?? 0)));
+  // runner-b's own events, in the order it said them.
+  const ofB = events.filter((event) => (event as { runner?: string }).runner === "runner-b") as { type: string; claim?: { epoch: number }; epoch?: number; end?: string }[];
+  const claims = ofB.filter((event) => event.type === "claimed");
+  assert.ok(claims.length > 0, `runner-b claimed the run: ${history}`);
+  // Every claim after its first is accounted for: a starved box can miss runner-b's renews, and then it takes the run
+  // again. Each such claim comes after runner-b lost the one before (a renew that missed or was fenced), at a fresh epoch,
+  // and nothing of the lost epoch landed after its loss.
+  for (let i = 1; i < claims.length; i += 1) {
+    const before = claims[i - 1]!.claim!.epoch;
+    const next = claims[i]!.claim!.epoch;
+    assert.ok(next > before, `runner-b's claim ${i + 1} is at a fresh epoch (${next} after ${before}): ${history}`);
+    const lostAt = ofB.findIndex((event) => event.type === "claim-lost" && event.epoch === before);
+    assert.ok(lostAt >= 0 && lostAt < ofB.indexOf(claims[i]!), `runner-b lost its claim at epoch ${before} before it claimed again: ${history}`);
+    assert.deepEqual(ofB.slice(lostAt).filter((event) => event.type === "commit-landed" && event.epoch === before), [], `nothing of runner-b's lost epoch ${before} landed after its loss: ${history}`);
+  }
+  const last = claims[claims.length - 1]!.claim!.epoch;
+  const releases = ofB.filter((event) => event.type === "released");
+  assert.deepEqual(releases.map((event) => [event.epoch, event.end]), [[last, "ended"]], `runner-b released it once, ended, under its last claim: ${history}`);
+  assert.equal(row.epoch, last + 1, `nothing touched the run after runner-b's end: ${history}`);
+}
+
+/** The crashed runner process's events, appended to `file` as JSON lines (child.ts): each one, or none when it wrote none. */
+function childEvents(file: string): unknown[] {
+  if (!existsSync(file)) return [];
+  return readFileSync(file, "utf8").split("\n").filter(Boolean).map((line) => {
+    try {
+      return JSON.parse(line) as unknown;
+    } catch {
+      return { runner: "runner-process", unreadable: line };
+    }
+  });
 }
 
 /** A crash at `point` during a call of `tool`, then a second runner's resume: the run ends. */
@@ -173,11 +262,11 @@ async function crashThenResume(subject: ConformanceSubject, t: { after(fn: () =>
   const script: ScriptStep[] = [{ call: tool }, { say: "done" }];
   const holder: { runner?: Runner; crashed?: boolean } = {};
   await w.start("runner-a", { script, tools, hooks: crashAt(point, holder) }, holder);
-  await until(() => holder.crashed, `the crash at ${point}`);
+  await until(() => holder.crashed, `the crash at ${point}`, EVENT_WAIT_MS);
   await w.start("runner-b", { script, tools, hooks: quiet });
-  const row = await w.ended("ended");
-  // The first claim is 1, the second runner's is 2, and the release at its end bumps it to 3.
-  assert.equal(row.epoch, 3, "the second runner resumed it under its own claim, then released it");
+  const row = await w.ended("ended", EVENT_WAIT_MS);
+  await saidReleased(w.events);
+  resumedOnceByB(w.events, row);
   return { ...(await w.read()), ran };
 }
 
@@ -191,24 +280,39 @@ const childEnv = () => {
 
 /** As crashThenResume, with the first runner a process of its own that SIGKILLs itself at `point`: nothing it had not
  *  committed survives, as in a real crash. The tools count their runs in a file both processes append to. */
-async function processCrashThenResume(subject: ConformanceSubject, t: { after(fn: () => unknown): void }, tool: ToolName, point: keyof KernelHooks) {
+async function processCrashThenResume(subject: ConformanceSubject, t: { after(fn: () => unknown): void }, tool: ToolName, point: keyof KernelHooks, { stall = false }: { stall?: boolean } = {}) {
   const w = await world(subject, t);
   const countFile = join(w.dir, "tool-runs");
   const { tools, ran } = suiteTools(countFile);
-  const config = { dataDir: w.dir, module: subject.process!.module, export: subject.process!.export, tool, point, countFile };
+  const eventsFile = join(w.dir, "runner-process-events.jsonl");
+  const config = { dataDir: w.dir, module: subject.process!.module, export: subject.process!.export, tool, point, countFile, eventsFile, ...(stall ? { stopOnce: true } : {}) };
   const child = spawn(process.execPath, [CHILD, JSON.stringify(config)], { env: childEnv(), stdio: ["ignore", "ignore", "pipe"] });
   let stderr = "";
   child.stderr.on("data", (chunk: Buffer) => (stderr += chunk.toString()));
   t.after(() => {
     if (child.exitCode === null && child.signalCode === null) child.kill("SIGKILL");
   });
-  const exit = (await Promise.race([once(child, "exit"), sleep(15_000).then(() => ["timeout", null])])) as [number | string | null, string | null];
-  assert.equal(exit[1], "SIGKILL", `the runner process dies at ${point} (it ended ${JSON.stringify(exit)}): ${stderr}`);
+  // `stall`: the process stops itself at `point` (child.ts stopOnce) and is let go once its lease has run out, before
+  // anyone has taken the run again: the window where only the store can refuse what its old loop writes next.
+  let continuedAt = 0;
+  if (stall) {
+    await until(() => childEvents(eventsFile).some((event) => (event as { type?: string }).type === "stopping"), `the runner process stops at ${point}`, EVENT_WAIT_MS);
+    await sleep(TIMING.leaseMs + TIMING.stopMarginMs + 100);
+    continuedAt = Date.now();
+    child.kill("SIGCONT");
+  }
+  const exit = (await Promise.race([once(child, "exit"), sleep(EVENT_WAIT_MS).then(() => ["timeout", null])])) as [number | string | null, string | null];
+  // What the process did, when it did not die where it should: its claims, lost claims, commits (landed or refused, by
+  // epoch), the tool's runs and the run's row.
+  if (exit[1] !== "SIGKILL") {
+    const row = await w.run();
+    assert.fail(`the runner process dies at ${point} (it ended ${JSON.stringify(exit)}); continued at ${continuedAt}; its events ${JSON.stringify(childEvents(eventsFile))}; the tool ran ${JSON.stringify(ran)}; the run ${JSON.stringify(row)}; stderr ${stderr}`);
+  }
   await w.start("runner-b", { script: [{ call: tool }, { say: "done" }], tools, hooks: quiet });
-  const row = await w.ended("ended");
-  // The first claim is 1, the second runner's is 2, and the release at its end bumps it to 3.
-  assert.equal(row.epoch, 3, "the second runner resumed it under its own claim, then released it");
-  return { ...(await w.read()), ran };
+  const row = await w.ended("ended", EVENT_WAIT_MS);
+  await saidReleased(w.events);
+  resumedOnceByB([...childEvents(eventsFile), ...w.events], row);
+  return { ...(await w.read()), ran, events: childEvents(eventsFile) as { type?: string; at?: number; epoch?: number; name?: string; claim?: { epoch: number } }[], continuedAt };
 }
 
 const CASES: readonly Case[] = [
@@ -249,6 +353,23 @@ const CASES: readonly Case[] = [
     },
   },
   {
+    id: "stalled-past-lease-process",
+    title: "a runner process paused past its lease before a tool's intent: its old loop's write is refused, a fresh loop retakes the run, and the tool runs once",
+    async body(subject, t) {
+      const { calls, ran, events, continuedAt } = await processCrashThenResume(subject, t, "effect", "beforeIntent", { stall: true });
+      const history = JSON.stringify(events);
+      const claims = events.filter((event) => event.type === "claimed").map((event) => event.claim!.epoch);
+      assert.ok(claims.length >= 2 && claims[1]! > claims[0]!, `the process lost its claim and took the run back at a new epoch, with a fresh loop: ${history}`);
+      // What its old loop wrote once it went on, its lease run out and no one holding the run yet: tried, and refused.
+      const old = events.filter((event) => (event.at ?? 0) >= continuedAt && event.epoch === claims[0] && (event.type === "commit-landed" || event.type === "commit-refused"));
+      assert.ok(old.length > 0, `the old loop tried to write after it went on: ${history}`);
+      assert.deepEqual(old.filter((event) => event.type === "commit-landed"), [], `none of the old loop's writes landed: ${history}`);
+      assert.ok(old.every((event) => event.name === "ClaimLost" || event.name === "Fenced"), `each was refused by the claim's fence, by name: ${history}`);
+      assert.equal(ran.effect, 1, "the effect ran once");
+      assert.deepEqual(calls.map((call) => [call.tool, call.status]), [["effect", "done"]]);
+    },
+  },
+  {
     // #1933's read: a task restart re-ran a node's effects (pi's restartLimit masked it). A fault after the effect ran
     // (the process alive) restarts the task under the kernel's rule, and the effect never runs twice.
     id: "fault-effects-once",
@@ -282,7 +403,9 @@ const CASES: readonly Case[] = [
     id: "fault-restarts-bounded",
     title: "a task that faults every time is restarted a bounded number of times, then the run fails",
     async body(subject, t) {
-      const w = await world(subject, t);
+      // On a lease no missed renew lets lapse: a claim lost between restarts would hand the run to a fresh loop, and the
+      // restarts this case counts are one claim's.
+      const w = await world(subject, t, STEADY);
       const { tools, ran } = suiteTools();
       const hooks: KernelHooks = {
         beforeIntent: async () => {},
@@ -348,6 +471,86 @@ const CASES: readonly Case[] = [
       assert.match(row.summary ?? "", /stopped/, `the run says why it stopped: ${JSON.stringify(row.summary)}`);
       assert.ok(row.endedAt !== null, "its end commit stamped ended_at");
       assert.ok((await w.commandRow(stop.id)).takenAt !== null, "the stop row is taken");
+    },
+  },
+  {
+    id: "cancel-ends-for-good",
+    title: "a cancel ends the run for good, cancelled in the server's words, and the run takes nothing more",
+    async body(subject, t) {
+      const w = await world(subject, t);
+      const { tools, slowStarted } = suiteTools();
+      await w.start("runner-a", { script: [{ call: "slow" }, { say: "never" }], tools, hooks: quiet });
+      await slowStarted;
+      const cancel = await sendCommand(w.server, RUN, { kind: "cancel" });
+      const row = await w.ended("stopped");
+      const { calls, messages } = await w.read();
+      assert.ok(calls.every((call) => call.status !== "pending"), `no call left pending: ${JSON.stringify(calls)}`);
+      assert.equal(messages.some((message) => message.text === "never"), false, "the turn did not go on");
+      // The end main's cancel writes: stopped, its summary "cancelled", staged in the end commit.
+      assert.equal(row.summary, CANCELLED, `the run says it was cancelled: ${JSON.stringify(row)}`);
+      const taken = await w.commandRow(cancel.id);
+      assert.ok(taken.takenAt !== null && taken.refused === null, `the cancel row is taken, not refused: ${JSON.stringify(taken)}`);
+      await assert.rejects(sendCommand(w.server, RUN, { kind: "steer", body: { text: "go on" } }), RunFinal, "a cancelled run takes no more messages");
+    },
+  },
+  {
+    id: "cancel-parked",
+    title: "a cancel of a parked run ends it for good, the asked call never run",
+    async body(subject, t) {
+      const w = await world(subject, t);
+      const { tools, ran } = suiteTools();
+      await w.start("runner-a", { script: [{ call: "asked" }, { say: "done" }], tools, hooks: quiet });
+      await w.ended("parked");
+      const cancel = await sendCommand(w.server, RUN, { kind: "cancel" });
+      const row = await w.ended("stopped");
+      assert.equal(row.summary, CANCELLED, `the run says it was cancelled: ${JSON.stringify(row)}`);
+      assert.equal(ran.asked, 0, "the asked call never ran");
+      const taken = await w.commandRow(cancel.id);
+      assert.ok(taken.takenAt !== null && taken.refused === null, `the cancel row is taken, not refused: ${JSON.stringify(taken)}`);
+      await assert.rejects(sendCommand(w.server, RUN, { kind: "approve", body: { approval: "any" } }), RunFinal, "a cancelled run takes no answer");
+    },
+  },
+  {
+    id: "deny-note",
+    title: "a deny's note is the person's words: on the answer, and in the refusal the model reads",
+    async body(subject, t) {
+      const w = await world(subject, t);
+      const { tools, ran } = suiteTools();
+      await w.start("runner-a", { script: [{ call: "asked" }, { sayLastResult: true }], tools, hooks: quiet });
+      await w.ended("parked");
+      const callId = await w.askedCall();
+      await sendCommand(w.server, RUN, { kind: "deny", body: { approval: callId, note: "not on a Friday" } });
+      await w.ended("ended");
+      assert.equal(ran.asked, 0, "denied, it never ran");
+      const { answers, messages } = await w.read();
+      assert.deepEqual(answers, [{ callId, approved: false, note: "not on a Friday" }], "the answer keeps the note");
+      const said = messages.filter((message) => message.role === "model").map((message) => message.text);
+      assert.equal(said.length, 1, `the model answered once: ${JSON.stringify(messages)}`);
+      // Main's words for a call a person denied (tool-gate.ts refusedText), the note with them. The harness may frame a
+      // refusal its own way (pi: a blocked call's error) around them.
+      const refused = "The user denied this asked call. It was not run: nothing was sent and nothing was charged. Reason: not on a Friday";
+      assert.ok(said[0]!.includes(refused), `the model read main's refusal with the person's reason: ${JSON.stringify(said)}`);
+    },
+  },
+  {
+    id: "steer-origin",
+    title: "a steer's origin (a trigger's message) is kept on the message the run took",
+    async body(subject, t) {
+      const w = await world(subject, t);
+      const { tools, letSlowGo, slowStarted } = suiteTools();
+      await w.start("runner-a", { script: [{ call: "slow" }, { sayLastSteer: true }], tools, hooks: quiet });
+      await slowStarted;
+      const origin = { kind: "trigger", trigger_id: "trigger-1", source: "webhook", owner: false };
+      const steer = await sendCommand(w.server, RUN, { kind: "steer", body: { text: "a new order came in", origin } });
+      // The tool goes on once the steer is with the loop: the turn in flight has it, never a timer.
+      await until(() => w.handedOver(steer.id), "the steer handed to the loop");
+      letSlowGo();
+      await w.ended("ended");
+      const { messages } = await w.read();
+      const steered = messages.find((message) => message.text === "a new order came in" && message.role !== "model");
+      assert.deepEqual(steered?.origin, origin, `the message keeps its origin: ${JSON.stringify(messages)}`);
+      const said = messages.filter((message) => message.role === "model").map((message) => message.text);
+      assert.deepEqual(said, ["a new order came in"], "the model read it as any message");
     },
   },
   {
@@ -426,7 +629,7 @@ const CASES: readonly Case[] = [
       await w.ended("parked");
       const callId = await w.askedCall();
       // A trigger's message: it says "yes", but it answers nothing (answers: false), so it resolves no approval.
-      await sendCommand(w.server, RUN, { kind: "steer", body: { text: "yes", answers: false, origin: { kind: "trigger", trigger: "trigger-1" } } });
+      await sendCommand(w.server, RUN, { kind: "steer", body: { text: "yes", answers: false, origin: { kind: "trigger", trigger_id: "trigger-1", source: "webhook", owner: false } } });
       await sleep(TIMING.leaseMs * 2);
       assert.equal(ran.asked, 0, "the waiting call did not run on a message");
       const row = await w.run();
