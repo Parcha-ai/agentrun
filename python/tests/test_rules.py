@@ -681,6 +681,51 @@ class Rules(unittest.TestCase):
         self.assertEqual((stalled.cause, len(held)), ("timeout", 1))
         self.assertLess(took, 0.5 + 0.15, "the handshake had what the connect left of the try, not a timeout of its own")
 
+    def test_a_resolver_that_stalls_ends_the_try_at_its_timeout_as_a_timeout_after_one_try(self) -> None:
+        asked: list[str] = []
+
+        def stall(host: Any, *args: Any, **kwargs: Any) -> Any:
+            asked.append(str(host))
+            time.sleep(2.0)
+            return []
+
+        client = AgentRun(base_url="http://agentrun.example/v2", api_key=KEY)
+        began = time.monotonic()
+        with mock.patch("socket.getaddrinfo", stall):
+            stalled = self.thrown(client.agents.list, timeout=0.3)
+        took = time.monotonic() - began
+        assert isinstance(stalled, AgentRunUnreachable), repr(stalled)
+        self.assertEqual((stalled.cause, asked), ("timeout", ["agentrun.example"]))
+        self.assertLess(took, 0.3 + 0.15, "the lookup is on the try's clock")
+
+    def test_several_addresses_that_never_answer_share_the_tries_one_timeout(self) -> None:
+        addresses = [(socket.AF_INET, socket.SOCK_STREAM, 6, "", ("192.0.2.1", 80)), (socket.AF_INET, socket.SOCK_STREAM, 6, "", ("192.0.2.2", 80))]
+        tried: list[Any] = []
+
+        def blackhole(sock: socket.socket, address: Any) -> None:
+            tried.append(address)
+            time.sleep(sock.gettimeout() or 0)
+            raise socket.timeout("timed out")
+
+        client = AgentRun(base_url="http://agentrun.example/v2", api_key=KEY)
+        began = time.monotonic()
+        with mock.patch("socket.getaddrinfo", lambda *args, **kwargs: addresses), mock.patch.object(socket.socket, "connect", blackhole):
+            stalled = self.thrown(client.agents.list, timeout=0.3)
+        took = time.monotonic() - began
+        assert isinstance(stalled, AgentRunUnreachable), repr(stalled)
+        self.assertEqual(stalled.cause, "timeout")
+        self.assertLess(took, 0.3 + 0.15, f"every address on the try's one clock, {len(tried)} tried")
+
+    def test_a_url_python_cannot_parse_is_a_usage_error_as_a_base_url_and_a_refused_redirect_as_a_location(self) -> None:
+        self.assertIsInstance(self.thrown(AgentRun, base_url="http://[::1/v2", api_key=KEY), AgentRunUsage)
+        elsewhere = Listener(self)
+        server = Listener(self, lambda request, reply: (302, {"location": "http://[::1/x"}, ""))
+        refused = self.thrown(AgentRun(base_url=server.base, api_key=KEY).agents.list)
+        assert isinstance(refused, AgentRunRefused), repr(refused)
+        self.assertEqual((refused.status, refused.code), (302, "redirect"))
+        self.assertEqual((len(server.requests), elsewhere.requests), (1, []))
+        self.assertNotIn(KEY, printed(refused))
+
     def test_nothing_but_an_agentrun_error_escapes_a_host_idna_refuses_is_a_usage_error_and_a_lone_surrogate_in_a_query_is_sent_as_u_fffd(self) -> None:
         self.assertIsInstance(self.thrown(AgentRun, base_url=f"http://{'a' * 64}.example/v2", api_key=KEY), AgentRunUsage)
         server = Listener(self, lambda request, reply: json_answer(200, {"agents": [], "next_cursor": None}))
