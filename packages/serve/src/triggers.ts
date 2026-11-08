@@ -8,7 +8,8 @@
 // on; a key already in the history is not recorded again, nor a run now's key within its day after it left the history. Then its run is started with the key as its origin, which
 // the agent store keeps in the run's own insert, so a firing driven again after a restart finds its run and starts no
 // second one. While the trigger's last run is active (working, or waiting on a person), a firing is `skipped`, never
-// queued: a firing queued behind a run parked on a person would wait for as long as the person does.
+// queued: a firing queued behind a run parked on a person would wait for as long as the person does. A source whose
+// adapter says each firing is its own work (concurrent: a webhook with accept) starts a run per firing instead.
 // One timer, at the soonest next time of an enabled trigger (or a firing's retry), is armed again after each change. A
 // next time is reckoned from the last nominal time, never from the clock, so a late timer does not drift. Of the times
 // that came while the server was down, or its timer late past LATE_MS, the latest fires if it is within the trigger's
@@ -591,8 +592,10 @@ export class Triggers {
     return trigger && firing ? { trigger, firing } : undefined;
   }
 
-  /** Why `firing` is skipped (overlap: skip), if it is: an earlier firing still due, or the last run still active. */
+  /** Why `firing` is skipped, if it is: an earlier firing still due, or the last run still active. Never, for a trigger
+   *  whose source starts a run per firing (its adapter's concurrent): the server's run limit still holds, through retry. */
   private async busy(trigger: Trigger, firing: Firing): Promise<string | undefined> {
+    if (this.adapter(trigger.source).concurrent?.(trigger.source)) return undefined;
     const earlier = trigger.firings.slice(0, trigger.firings.indexOf(firing));
     if (earlier.some((f) => f.status === "due")) return "An earlier firing is still waiting to start its run.";
     const last = trigger.last_run_id;

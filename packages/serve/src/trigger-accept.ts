@@ -121,7 +121,7 @@ const POINTER = { type: "string", maxLength: L.pointer, pattern: "^(/([^~]|~[01]
 /** `accept` as JSON Schema. */
 export const ACCEPT_SCHEMA: Json = {
   type: "array", minItems: 1, maxItems: L.rules,
-  description: "Which verified deliveries fire the trigger: a delivery fires when any rule takes it; any other is answered 200 `{\"ok\": \"ignored\"}`, fires nothing, and is said in the log. Absent: every verified delivery fires.",
+  description: "Which verified deliveries fire the trigger: a delivery fires when any rule takes it; any other is answered 200 `{\"ok\": \"ignored\"}`, fires nothing, and is said in the log. Absent: every verified delivery fires. A trigger with `accept` starts a run for each event it takes, its last run active or not.",
   items: closedSchema(
     { event: { ...NAME_SCHEMA, description: "The event, as the trigger's signature scheme reads it: for `github`, X-GitHub-Event (`pull_request`, `issue_comment`, and GitHub's `ping`); for `standard`, the JSON body's top-level `type`." } },
     {

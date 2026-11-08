@@ -2,7 +2,7 @@
 // trigger's own secret, is a firing, keyed by the sender's id for it. How it is signed is one of the schemes in
 // trigger-signatures.ts, `signature` naming the trigger's (default `standard`): the request is checked by the scheme
 // whose signature header it carries, and one of another scheme than its trigger's is refused as any bad signature is.
-// `accept` (trigger-accept.ts) takes only the events it names.
+// `accept` (trigger-accept.ts) takes only the events it names, and a trigger with it starts a run per event it takes.
 import { MIN_KEY_BYTES } from "./standard-webhooks.js";
 import { ACCEPT_SCHEMA, acceptOf, acceptRefusal, type Rule } from "./trigger-accept.js";
 import { closedSchema, type Source, type TriggerAdapter, unknownSourceFields } from "./trigger-adapter.js";
@@ -57,6 +57,7 @@ export const webhook: TriggerAdapter = {
     return fieldsOf(value, bad);
   },
   wellFormed: (source) => fieldsOf(source, () => {}) !== undefined,
+  concurrent: (source) => source.accept !== undefined,
   push: {
     maxBodyBytes: 256 << 10,
     key: "secret",

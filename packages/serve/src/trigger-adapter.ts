@@ -59,6 +59,9 @@ export type TriggerAdapter = {
   /** For a pushed source whose settings are the server's: the scope a trigger of it listens on, matched to each event's
    *  `scope` to find the triggers it fires. */
   scopeOf?(source: Source): string;
+  /** Whether each firing of a trigger of `source` starts its own run, its last run active or not (a webhook that takes
+   *  only the events it names). Default false: a firing while the last run is active is skipped. */
+  concurrent?(source: Source): boolean;
 };
 
 /** Request headers, as Node gives them. */
