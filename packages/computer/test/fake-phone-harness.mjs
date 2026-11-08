@@ -228,8 +228,9 @@ export function fakePhoneHarness({ readyAfter = 1, start = "ok", loseAnswer = fa
 		const ok = (stdout = "") => ({ exitCode: 0, stdout: Buffer.from(stdout), stderr: "" });
 		if (w[0] === "echo") return ok(`${w.slice(1).join(" ")}\n`);
 		if (w[0] === "unlock") {
-			if (w[1] === expected) phone.unlockedNow = true;
-			return ok("");
+			if (w[1] !== expected) return ok("wrong code\n");
+			phone.unlockedNow = true;
+			return ok("unlocked\n");
 		}
 		if (w[0] === "getprop" && w[1] === "ro.product.cpu.abi") return ok(`${abi}\n`);
 		if (w[0] === "wm" && w[1] === "size") return ok(`Physical size: ${SCREEN.width}x${SCREEN.height}\n`);
@@ -308,11 +309,13 @@ export function fakePhoneHarness({ readyAfter = 1, start = "ok", loseAnswer = fa
 		return `disconnected ${endpoint}`;
 	}
 
-	/** One shell command on the phone at serial, as adbd runs it. */
+	/**
+	 * One shell service on the phone at serial, by its command string, as the vendor's endpoint answers it (docs,
+	 * guides/connect-adb): until the connection is unlocked by the command `unlock <code>`, every shell answers `locked`.
+	 */
 	function shellOn(serial, command) {
 		ran.push(command);
-		if (!phone.unlocked.has(serial) && !command.startsWith("unlock") && !command.startsWith("echo")) return result("", 1, "error: device locked");
-		if (command.startsWith("echo") && !phone.unlocked.has(serial)) return result("");
+		if (!phone.unlocked.has(serial) && !/^unlock /.test(command)) return result("locked\n");
 		const out = shell(command);
 		if (phone.unlockedNow) {
 			phone.unlocked.add(serial);
@@ -337,8 +340,11 @@ export function fakePhoneHarness({ readyAfter = 1, start = "ok", loseAnswer = fa
 		if (rest[0] === "exec-out" && rest[1] === "screencap") return result(screencap());
 		if (rest[0] === "exec-out" && rest[1] === "uiautomator dump /dev/tty") return result(dump());
 		if (rest[0] !== "shell") return result("", 1, "adb: unknown command");
-		// adb shell -T with no command: sh reads its commands from stdin.
+		// adb shell -T with no command: a shell service with no command string, which a locked connection answers
+		// `locked` without reading stdin; an unlocked one runs stdin's lines.
 		if (rest[1] === "-T" && rest.length === 2) {
+			ran.push(`(stdin) ${String(options.input ?? "").split("\n")[0].split(" ")[0]}`);
+			if (!phone.unlocked.has(serial)) return result("locked\n");
 			let out = "";
 			for (const line of String(options.input ?? "").split("\n")) {
 				if (line.trim() === "" || line.trim() === "exit") continue;
@@ -350,9 +356,21 @@ export function fakePhoneHarness({ readyAfter = 1, start = "ok", loseAnswer = fa
 		return shellOn(serial, rest.slice(1).join(" "));
 	}
 
-	/** The local adb server, by its socket protocol: host:connect:<endpoint>, host:disconnect:<endpoint>, host:devices-l. */
-	async function server(service) {
-		serverCalls.push(service);
+	/**
+	 * The local adb server, by its socket protocol: host:connect:<endpoint>, host:disconnect:<endpoint>, host:devices-l;
+	 * and with { transport }, a socket bound to that phone first (host:transport-id:<id>), then a shell service with its
+	 * command string (shell:<command>, or shell,v2,raw:<command>), answered with the command's output.
+	 */
+	async function server(service, options = {}) {
+		serverCalls.push(options.transport === undefined ? service : `host:transport-id:${options.transport} ${service.replace(/unlock \S+/, "unlock [code]")}`);
+		if (options.transport !== undefined) {
+			const serial = [...transports].find(([, id]) => id === options.transport)?.[0];
+			if (serial === undefined || !phone.connected.has(serial)) return { ok: false, error: { code: "phone", message: `the adb server refused host:transport-id: device not found` } };
+			const shellService = /^shell(?:,v2)?(?:,raw)?:(.*)$/s.exec(service);
+			if (!shellService) return { ok: false, error: { code: "phone", message: `the adb server does not know ${service.split(":")[0]}` } };
+			const ran = shellOn(serial, shellService[1]);
+			return { ok: true, value: ran.value.stdout.toString("utf8") };
+		}
 		const connect = /^host:connect:(.+)$/.exec(service);
 		if (connect) return { ok: true, value: connectTo(connect[1]) };
 		const disconnect = /^host:disconnect:(.+)$/.exec(service);
