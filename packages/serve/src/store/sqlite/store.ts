@@ -46,16 +46,17 @@ const REVISION_COLUMNS = "id, agent_id, kind, body, package, created_at";
 const COMMAND_COLUMNS = "id, run_id, kind, body, created_at, taken_at, refused, tries";
 const TRIGGER_COLUMNS = "id, agent_id, name, enabled, source, target, next_at, last_run_id";
 const FINAL = FINAL_STATES.map((state) => `'${state}'`).join(", ");
-/** The runs a runner may claim, at a time bound three times (CLAIMABLE_AT): queued; running with no runner (released) or
- *  its claim run out; parked with its wake_at passed, an untaken stop, or an untaken command once its backoff (a failed
- *  resume's) has passed. */
+/** The runs a runner may claim, at a time bound five times (CLAIMABLE_AT): queued; running with no runner (released) or
+ *  its claim run out, once its backoff (an interrupted run's) has passed; parked, once no claim holds it (a run parks
+ *  under its claim and is released a few seconds later), with its wake_at passed, an untaken stop, or an untaken command
+ *  once its backoff (a failed resume's) has passed. */
 const CLAIMABLE = `(state = 'queued'
-  OR (state = 'running' AND (runner IS NULL OR claimed_until < ?))
-  OR (state = 'parked' AND (
+  OR (state = 'running' AND (runner IS NULL OR claimed_until < ?) AND (backoff_until IS NULL OR backoff_until <= ?))
+  OR (state = 'parked' AND (runner IS NULL OR claimed_until < ?) AND (
     (wake_at IS NOT NULL AND wake_at <= ?)
     OR EXISTS (SELECT 1 FROM commands WHERE commands.run_id = runs.id AND commands.taken_at IS NULL AND commands.kind = 'stop')
     OR ((backoff_until IS NULL OR backoff_until <= ?) AND EXISTS (SELECT 1 FROM commands WHERE commands.run_id = runs.id AND commands.taken_at IS NULL)))))`;
-const CLAIMABLE_AT = (at: number): number[] => [at, at, at];
+const CLAIMABLE_AT = (at: number): number[] => [at, at, at, at, at];
 /** What a claim sets: the next epoch, the runner and its lease, running, no backoff. */
 const CLAIM_SET = "epoch = epoch + 1, runner = ?, claimed_until = ?, state = 'running', backoff_until = NULL";
 
@@ -500,6 +501,21 @@ class SqliteStore implements Store {
     return { ...claim, until };
   }
 
+  async renewMany(claims: readonly Claim[], { leaseMs = DEFAULT_LEASE_MS }: { leaseMs?: number } = {}): Promise<(Claim | Fenced)[]> {
+    if (claims.length === 0) return [];
+    // One transaction for every claim, each update on its own: a claim another runner took changes no row and is answered
+    // Fenced, never rolling the others back.
+    return this.#db.transaction(async (tx) => {
+      const until = this.#now() + leaseMs;
+      const out: (Claim | Fenced)[] = [];
+      for (const claim of claims) {
+        const renewed = await tx.all<{ id: string }>("UPDATE runs SET claimed_until = ? WHERE id = ? AND epoch = ? AND runner = ? RETURNING id", until, claim.runId, claim.epoch, claim.runner);
+        out.push(renewed.length > 0 ? { ...claim, until } : new Fenced(claim.runId, claim.epoch));
+      }
+      return out;
+    });
+  }
+
   async release(claim: Claim, { state, wakeAt = null, backoffUntil = null }: { state?: RunState; wakeAt?: number | null; backoffUntil?: number | null } = {}): Promise<void> {
     const ending = state !== undefined && FINAL_STATES.includes(state);
     await this.#db.write([fenced(
@@ -552,6 +568,22 @@ class SqliteStore implements Store {
 
   async commands(runId: string, after: number): Promise<Command[]> {
     return (await this.#db.all<CommandRecord>(`SELECT ${COMMAND_COLUMNS} FROM commands WHERE run_id = ? AND id > ? ORDER BY id`, runId, after)).map(commandOf);
+  }
+
+  async commandsOf(cursors: readonly { runId: string; after: number }[]): Promise<Map<string, Command[]>> {
+    const out = new Map<string, Command[]>();
+    if (cursors.length === 0) return out;
+    // One read for every run: each cursor a (run_id, after) row of a VALUES list joined against the commands.
+    const rows = await this.#db.all<CommandRecord>(
+      `WITH cursors(run_id, after) AS (VALUES ${cursors.map(() => "(?, ?)").join(", ")})
+       SELECT ${COMMAND_COLUMNS.split(", ").map((column) => `commands.${column}`).join(", ")} FROM commands JOIN cursors ON commands.run_id = cursors.run_id AND commands.id > cursors.after ORDER BY commands.id`,
+      ...cursors.flatMap((cursor) => [cursor.runId, cursor.after]),
+    );
+    for (const row of rows) {
+      const command = commandOf(row);
+      out.set(command.runId, [...(out.get(command.runId) ?? []), command]);
+    }
+    return out;
   }
 
   async take(claim: Claim, commandId: number, outcome: "taken" | "refused" = "taken", reason?: string): Promise<void> {
