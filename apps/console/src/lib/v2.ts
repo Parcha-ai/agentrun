@@ -26,6 +26,9 @@ export type ToolSetting = { provider?: NonNullable<Body<"putToolSettings">["web_
 export type ToolSettings = Record<string, ToolSetting>;
 /** GET /v2/agents/{id}'s `tools`: each tool the agent grants, with its permission and provider in force. */
 export type AgentTool = NonNullable<components["Agent"]["tools"]>[number];
+/** The computer an agent's runs are given (definition.computer): its kind and the provider that serves it, absent for
+ *  none. The server keeps `place` as its v2 view and writes both from either; the console writes this one. */
+export type Computer = NonNullable<components["DefinitionInput"]["computer"]>;
 
 /** `so_far_usd` and `unpriced` (serve's costsofar/1), present only while `usd` is null. */
 export type Cost = components["Cost"];
