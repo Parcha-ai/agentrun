@@ -22,6 +22,7 @@ import {
   placeSubmissions,
   recoveryNote,
   restartEvent,
+  resumeUnstartedCalls,
   type SessionMachine,
   type SessionProcess,
   settleAbandonedModelSteps,
@@ -34,6 +35,7 @@ import {
 import { acknowledgeInDrive, attachInDrive, cliPath, CODEX_CLI, DriveFiles, SANDBOX_DOC } from './host/sandbox.js';
 import { AppServer, type RpcNotification, type RpcServerRequest } from './app-server.js';
 import { codeMode } from './code-mode.js';
+import { danglingCalls, settleCall } from './transcript.js';
 import { BUILTINS_ON, checkConfig, codexConfig, type TomlValue, toToml } from './config.js';
 import {
   callIdOf,
@@ -412,8 +414,9 @@ export function codexHarness(options: CodexHarnessOptions = {}): Harness {
     const thread = journal.records<ThreadRecord>(THREAD_STREAM).at(-1)?.data;
     const restored = thread ? (await journal.read<string>(rolloutStream(thread.threadId))).map((r) => r.data) : [];
     const resume = thread && isSessionMeta(restored[0]) && isRolloutPath(thread.path, thread.threadId) ? thread : undefined;
-    const lines = resume ? restored : [];
-    const rolloutBytes = new TextEncoder().encode(rolloutText(lines));
+    // Settled before Codex starts (below): a host call the rollout left with no output gets one.
+    let lines = resume ? restored : [];
+    let rolloutBytes = new TextEncoder().encode(rolloutText(lines));
 
     // Codex's key: the attach's model key, which the relay checks (its hash armed the relay; only the attach's processes may use it). Never a credential: the handler adds that.
     const key = machine.modelKey;
@@ -430,6 +433,20 @@ export function codexHarness(options: CodexHarnessOptions = {}): Harness {
     let builtins: BuiltinCalls | undefined;
     const clamps = new Map<string, ReturnType<typeof setTimeout>>();
     try {
+      if (resume) {
+        // A resumed thread's host calls with no output, before Codex starts on it: one that never started (no intent in
+        // the session's records) runs now through the bridge under its own id (gate, intent, run, result); one the log
+        // finished is answered with its recorded result; one with an intent and no outcome is left to the recovery below,
+        // never run again. Each answer is its function_call_output line in the mirrored rollout, which Codex resumes from.
+        // A call the gate parks rejects here, nothing written.
+        await resumeUnstartedCalls(ctx, bridge, danglingCalls(lines), async (call, outcome) => {
+          const settled = settleCall(lines, call.callId, outcome);
+          journal.append(rolloutStream(resume.threadId), settled.at(-1));
+          await journal.flush();
+          lines = settled;
+        });
+        rolloutBytes = new TextEncoder().encode(rolloutText(lines));
+      }
       // The log wins: the VM's cache dirs are wiped, and CODEX_HOME rebuilt from the log.
       await machine.files.wipe();
       let sandboxMode: NonNullable<CodexHarnessOptions['sandboxMode']> = 'read-only';
