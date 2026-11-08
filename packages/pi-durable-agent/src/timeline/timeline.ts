@@ -797,9 +797,12 @@ function createProjector(options: TimelineOptions) {
       // never shows.
       const reason = str(data?.reason) && redactText(str(data?.reason)!);
       const session = tag && TAG.test(tag) ? tag : undefined;
+      // An answer that names its ask (`id`: the person's hand-back, a cancel, an expiry) is the hand-over's record: the
+      // run's process writes that action's own row, so this entry shows none. A done naming its session alone is a sign-in.
+      const answersAsk = state !== "waiting" && typeof data?.id === "string";
       if (state === "waiting") add(make("waiting", conv, base, { summary: `Waiting for you: ${reason ? firstLine(reason) : "sign in on the live browser"}`, session }));
-      else if (state === "done") add(make("user_message", conv, base, { summary: "You signed in", session }));
-      else if (state === "declined") add(make("user_message", conv, base, { summary: "You declined to sign in", session }));
+      else if (state === "done" && !answersAsk) add(make("user_message", conv, base, { summary: "You signed in", session }));
+      else if (state === "declined" && !answersAsk) add(make("user_message", conv, base, { summary: "You declined to sign in", session }));
     } else if (origin) {
       // A message the server wrote (a raised cap's follow-up, an approval's resume): the model reads it as it reads any,
       // and the row says it is the server's. Its whole text is redacted as a person's is (a resume's later lines hold the
