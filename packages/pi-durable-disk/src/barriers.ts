@@ -114,6 +114,19 @@ export const BARRIERS = {
     proof: "packages/pi-durable-disk/test/barriers-crash.test.ts",
     why: "the release: what the run committed is durable before its claim is sealed and let go",
   },
+  storeIntentFlush: {
+    store: "one-store",
+    site: "serve/src/runner/side-effects.ts",
+    call: "if (!call.replaySafe) await call.flush();",
+    status: "active",
+    proof: [
+      "packages/serve/test/store-flush.test.mjs",
+      "packages/serve/test/runner-loop-flush.test.mjs",
+      "packages/serve/test/harness-conformance-reference.test.mjs",
+      "packages/serve/test/harness-conformance-pi.test.mjs",
+    ],
+    why: "a runner loop's effect that is not replay-safe (a tool call, a model request): its intent in the one store's journal, flushed before the effect runs",
+  },
 } as const satisfies Record<string, BarrierRow>;
 
 export type BarrierName = keyof typeof BARRIERS;
@@ -182,9 +195,9 @@ export const STORES = {
   "one-store": {
     opens: ["serve/src/store/sqlite/worker.ts"],
     synchronous: "NORMAL",
-    effects: "none",
+    effects: "barriers",
     interface: "serve/src/store/",
-    what: "the one store (store.sqlite in the data directory) and its owner lock: WAL at NORMAL, flush() one FULL commit; unused until the cutover, so no tool and no model runs through it yet (at the cutover its effects pass flush() barriers)",
+    what: "the one store (store.sqlite in the data directory) and its owner lock: WAL at NORMAL, flush() one FULL commit; the runner's loops run tools and models through its Store interface, each effect that is not replay-safe after its intent and a flush()",
   },
 } as const satisfies Record<string, StoreRow>;
 
