@@ -157,17 +157,6 @@ const writeId = (write: StorageWrite): number | undefined => {
       return undefined;
   }
 };
-/** The record a write stores, for matching a staged effect: every write's (a document change or retire names its document
- *  too), unlike writeId, which names only the ids a write newly allocates. */
-const effectId = (write: StorageWrite): number | undefined => {
-  switch (write.type) {
-    case "document.change":
-    case "document.retire":
-      return write.id as unknown as number;
-    default:
-      return writeId(write);
-  }
-};
 
 /** `executor`, noting in `calls.failed` when one of its calls throws: then a failing check is the database's. */
 function watchCalls(executor: SqliteExecutor, calls: { failed: boolean }): SqliteExecutor {
@@ -200,6 +189,8 @@ export class RunStorage implements Journal {
   #staged: Staged | undefined;
   /** Commands staged to be taken, each with the record of its effect: taken only by the commit that stores that record. */
   readonly #takes = new Map<number, number>();
+  /** Ids this journal minted and has not yet written: the only ones a staged take may name as its effect. */
+  readonly #minted = new Set<number>();
   #closed = false;
   #closing: Promise<void> | undefined;
   #admittedReads = 0;
@@ -264,13 +255,23 @@ export class RunStorage implements Journal {
    * - the run row's patch and other rows (`also`, such as an outbox row for a run moment): written by the next commit
    *   that stores a batch, then cleared; a commit refused before it stored a batch, or one that failed, keeps them. A
    *   later stage replaces them.
-   * - the commands it takes (`take`: each with the id of the record that is its effect): a take is written only by the
-   *   commit that stores that record, so a command is taken with its effect or not at all; until then it waits, across
-   *   commits and later stages. Each must be this run's untaken command, else that commit rejects with CommandTaken.
+   * - the commands it takes (`take`: each with the id of the record that is its effect, an id its effect's batch newly
+   *   allocates): a take is written only by the commit that newly writes that record, so a command is taken with its own
+   *   effect or not at all, never by another path's update of an existing record. An effect that changes or retires a
+   *   document, or updates a task, carries a marker entry (kind `agentrun.command`, data `{ command }`) minted for it in
+   *   the same batch. A take naming an id this journal did not mint, or has already written, throws here: it could never
+   *   be taken, so it is refused rather than left waiting. Otherwise a take waits, across commits and later stages; stage
+   *   it before its effect's commit is asked. Each must be this run's untaken command, else that commit rejects with
+   *   CommandTaken.
    */
   stage(staged: Staged): void {
     for (const take of staged.take ?? []) {
       if (!Number.isSafeInteger(take?.command) || !Number.isSafeInteger(Number(take?.effect))) throw new Error(`run ${this.#runId}: a staged take names no command and effect ids: ${JSON.stringify(take)}`);
+      // Refused here, never left waiting forever: an effect must be an id this journal minted and has not yet written,
+      // so only the batch that newly writes it can take the command.
+      if (!this.#minted.has(Number(take.effect))) {
+        throw new Error(`run ${this.#runId}: command ${take.command}'s take names effect ${String(take.effect)}, which is no id this journal minted and has not yet written (an effect that updates a record takes its command through a marker entry minted for it)`);
+      }
     }
     for (const take of staged.take ?? []) this.#takes.set(take.command, Number(take.effect));
     // A stage that names a run patch or rows replaces the ones staged before; one that only takes leaves them.
@@ -328,12 +329,15 @@ export class RunStorage implements Journal {
           break;
         }
         const seq = seqOf(next++);
+        // The ids this batch newly allocates, read before it writes: a take's effect is matched only to one of them, a
+        // record that no other path can have written (an update of an existing task, or a document's change or retire,
+        // takes nothing: the command's runner puts a marker entry, freshly minted, in that batch).
+        const fresh = await this.#freshIds(tx, writes);
         await this.#applyBatch(tx, writes, documentActions, seq);
         seqs.push(seq);
         candidateNextId = Math.max(candidateNextId, this.#candidateNextId(writes));
-        // A take whose effect this stored batch writes is this commit's.
-        const written = new Set(writes.map(effectId).filter((id): id is number => id !== undefined));
-        for (const [command, effect] of this.#takes) if (written.has(effect) && !taking.includes(command)) taking.push(command);
+        // A take whose effect this stored batch newly writes is this commit's.
+        for (const [command, effect] of this.#takes) if (fresh.has(effect) && !taking.includes(command)) taking.push(command);
       }
       if (seqs.length > 0) {
         await tx.run(
@@ -354,6 +358,14 @@ export class RunStorage implements Journal {
       }
     });
     this.#nextId = Math.max(this.#nextId, candidateNextId);
+    // Ids written now are no longer fresh: a take staged after this cannot name them.
+    for (const [index, writes] of batches.entries()) {
+      if (index >= seqs.length) break;
+      for (const write of writes) {
+        const id = writeId(write);
+        if (id !== undefined) this.#minted.delete(id);
+      }
+    }
     if (seqs.length > 0 && this.#staged === staged) this.#staged = undefined;
     // Taken with their effects, now durable: no longer waiting.
     for (const command of taking) this.#takes.delete(command);
@@ -382,6 +394,24 @@ export class RunStorage implements Journal {
     await this.#resolveCopies(executor, documentActions);
   }
 
+  /** The ids `writes` newly allocate in this run: an entry's and a created or copied document's always (pi's checks refuse
+   *  a reused id), a conversation's, task's or submission's when no record holds that id yet (else it is an update). */
+  async #freshIds(executor: SqliteExecutor, writes: readonly StorageWrite[]): Promise<Set<number>> {
+    const fresh = new Set<number>();
+    const upserts: number[] = [];
+    for (const write of writes) {
+      const id = writeId(write);
+      if (id === undefined) continue;
+      if (write.type === "entry" || write.type === "document.create" || write.type === "document.copy") fresh.add(id);
+      else upserts.push(id);
+    }
+    if (upserts.length > 0) {
+      const known = new Set((await executor.all<{ id: number }>(`SELECT id FROM ${T.recordIds} WHERE run_id = ? AND id IN (${upserts.map(() => "?").join(", ")})`, this.#runId, ...upserts)).map((row) => Number(row.id)));
+      for (const id of upserts) if (!known.has(id)) fresh.add(id);
+    }
+    return fresh;
+  }
+
   async #applyBatch(executor: SqliteExecutor, writes: readonly StorageWrite[], documentActions: Map<number, DocumentAction>, seq: Seq): Promise<void> {
     for (const write of writes) await this.#applyTableWrite(executor, write, seq);
     await this.#applyDocumentActions(executor, documentActions, seq);
@@ -391,7 +421,9 @@ export class RunStorage implements Journal {
     this.#assertOpen();
     await this.#opened();
     if (!Number.isSafeInteger(this.#nextId)) throw new Error("ID space is exhausted");
-    return idOf<I>(this.#nextId++);
+    const id = this.#nextId++;
+    this.#minted.add(id);
+    return idOf<I>(id);
   }
 
   async conversation(id: ConversationId, _context: Context): Promise<ConversationRecord | undefined> {

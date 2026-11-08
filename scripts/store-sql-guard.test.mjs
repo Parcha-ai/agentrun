@@ -113,10 +113,35 @@ const DRIVER_FORMS = {
   "pi's SqliteStorage": [`import { SqliteStorage } from "@earendil-works/pi-durable";`, "@earendil-works/pi-durable SqliteStorage"],
   "a dynamic import": [`const { DatabaseSync } = await import("node:sqlite");`, "node:sqlite"],
   "a require": [`const Database = require("better-sqlite3");`, "better-sqlite3"],
+  "chord's node opener (a subpath)": [`import { openNodeSqliteDatabase } from "@earendil-works/chord/sqlite/node";`, "@earendil-works/chord/sqlite/node"],
+  "pi-durable's node SQLite storage (a subpath)": [`import { openNodeSqliteStorage } from "@earendil-works/pi-durable/storage/sqlite/node";`, "@earendil-works/pi-durable/storage/sqlite/node"],
+  "pi-durable's SQLite module, any name": [`import { NodeSqliteDatabase, applySqliteMigrations } from "@earendil-works/pi-durable/storage/sqlite";`, "@earendil-works/pi-durable/storage/sqlite"],
+  "a namespace import of pi-durable": [`import * as durable from "@earendil-works/pi-durable";\nconst storage = new durable.SqliteStorage(db);`, "@earendil-works/pi-durable SqliteStorage"],
+  "a dynamic import of pi-durable": [`const durable = await import("@earendil-works/pi-durable");\nconst storage = new durable.SqliteStorage(db);`, "@earendil-works/pi-durable SqliteStorage"],
+  "a dynamic import of pi-durable, destructured": [`const { SqliteStorage } = await import("@earendil-works/pi-durable");`, "@earendil-works/pi-durable SqliteStorage"],
+  "createRequire, called at once": [`const sqlite = createRequire(import.meta.url)("node:sqlite");`, "node:sqlite"],
+  "createRequire, through a named require": [`const load = createRequire(import.meta.url);\nconst sqlite = load("node:sqlite");`, "node:sqlite"],
+  "a renamed createRequire": [`import { createRequire as makeRequire } from "node:module";\nconst sqlite = makeRequire(import.meta.url)("node:sqlite");`, "node:sqlite"],
+  "a renamed createRequire, through a named require": [`import { createRequire as makeRequire } from "node:module";\nconst load = makeRequire(import.meta.url);\nconst sqlite = load("node:sqlite");`, "node:sqlite"],
+  "createRequire off a namespace import of node:module": [`import * as mod from "node:module";\nconst sqlite = mod.createRequire(import.meta.url)("node:sqlite");`, "node:sqlite"],
+  "a bracket read of SqliteStorage off a namespace import": [`import * as durable from "@earendil-works/pi-durable";\nconst storage = new durable["SqliteStorage"](db);`, "@earendil-works/pi-durable SqliteStorage"],
+  "a bracket read of SqliteStorage off an import()": [`const durable = await import("@earendil-works/pi-durable");\nconst storage = new durable[\`SqliteStorage\`](db);`, "@earendil-works/pi-durable SqliteStorage"],
 };
 for (const [form, [source, driver]] of Object.entries(DRIVER_FORMS)) {
   test(`the guard sees a SQLite driver taken by ${form}`, () => {
     assert.deepEqual(driversIn(source), [driver], source);
+  });
+}
+
+// A type is no driver: a file that only names a driver's types opens nothing.
+const TYPE_ONLY = {
+  "import type": `import type { SqliteDatabase } from "@earendil-works/chord/sqlite";`,
+  "an inline type import": `import { type SqliteDatabase } from "@earendil-works/chord/sqlite";`,
+  "export type": `export type { SqliteStorage } from "@earendil-works/pi-durable";`,
+};
+for (const [form, source] of Object.entries(TYPE_ONLY)) {
+  test(`the guard takes no driver from ${form}`, () => {
+    assert.deepEqual(driversIn(source), [], source);
   });
 }
 
@@ -136,7 +161,8 @@ test("the list only shrinks: a listed file with no SQL left is taken off it", ()
 
 const withDriver = roots.flatMap(sources).filter((file) => driversIn(readFileSync(join(ROOT, file), "utf8"), file).length > 0);
 /** The files outside the store that took a SQLite driver when the guard began reading imports. Each goes at the cutover;
- *  the list only shrinks. */
+ *  the list only shrinks. One file joined it after: pi/src/durable/readers.ts loads node:sqlite through createRequire,
+ *  which the guard first saw when it learnt that form. */
 const TODAY_DRIVER = [
   "packages/pi-durable-agent/src/agent-store.ts",
   "packages/pi-durable-agent/src/home.ts",
@@ -147,6 +173,7 @@ const TODAY_DRIVER = [
   "packages/pi-durable-disk/src/run.ts",
   "packages/pi-durable-disk/src/status.ts",
   "packages/pi-durable-disk/src/store.ts",
+  "packages/pi/src/durable/readers.ts",
   "packages/pi/src/signin/store.ts",
   "packages/serve/src/agents.ts",
   "packages/serve/src/import.ts",
