@@ -85,6 +85,8 @@ export function recorder() {
     /** When set (a promise), the next renews wait for it before they reach the store; renewsHeld counts them. */
     holdRenew: undefined,
     renewsHeld: 0,
+    /** When set, each flush waits this long before it reaches the store (a slow disk, or a loaded machine). */
+    flushDelayMs: 0,
   };
 }
 
@@ -179,6 +181,7 @@ export function observed(store, record) {
     async flush() {
       alive();
       called("flush");
+      if (record.flushDelayMs > 0) await sleep(record.flushDelayMs);
       await store.flush();
       record.ops.push("flush");
     },
