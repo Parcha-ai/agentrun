@@ -6,7 +6,7 @@ import assert from "node:assert/strict";
 import { execFileSync } from "node:child_process";
 import { after, before, describe, it } from "node:test";
 import { conformanceCases, formatReport, runConformance } from "../../dist/index.js";
-import { createDriftedProvider, createProvider } from "../../dist/conformance/docker.js";
+import { createDriftedProvider, createProvider, mountFor } from "../../dist/conformance/docker.js";
 
 const LIVE = process.env.AGENTRUN_COMPUTER_LIVE_DOCKER === "1";
 const IMAGE = "debian:bookworm-slim";
@@ -28,7 +28,7 @@ describe("the conformance suite on Docker", { skip: LIVE ? false : "set AGENTRUN
 			if (created.ok) made.add(created.value.name);
 			return created;
 		};
-		report = await runConformance(provider, { image: IMAGE, drifted });
+		report = await runConformance(provider, { image: IMAGE, drifted, mountFor });
 		console.log(formatReport(report));
 	});
 
@@ -43,7 +43,7 @@ describe("the conformance suite on Docker", { skip: LIVE ? false : "set AGENTRUN
 	});
 
 	it("has cases in every group", () => {
-		for (const group of ["health", "exec", "files", "process", "provider", "drift", "screen", "input", "touch", "apps", "lifetime"]) {
+		for (const group of ["health", "exec", "files", "process", "provider", "drift", "mount", "screen", "input", "touch", "apps", "lifetime"]) {
 			assert.ok(conformanceCases.some((c) => c.group === group), `no ${group} case`);
 		}
 	});
@@ -73,6 +73,15 @@ describe("the conformance suite on Docker", { skip: LIVE ? false : "set AGENTRUN
 		}
 		const kind = report.results.find((r) => r.id === "health.kind-consistent");
 		assert.equal(kind?.status, "pass", kind?.reason);
+	});
+
+	it("mounts the run's folder: a bind of a host folder at /workspace passes, an Archil mount is not declared and is refused", () => {
+		const by = Object.fromEntries(report.results.filter((r) => r.group === "mount").map((r) => [r.id, r]));
+		assert.equal(by["mount.run-folder-bind"]?.status, "pass", by["mount.run-folder-bind"]?.reason);
+		assert.equal(by["mount.run-folder-archil"]?.status, "skip");
+		assert.equal(by["mount.run-folder-archil"]?.reason, "the provider does not declare mount:archil");
+		assert.equal(by["mount.undeclared-kind"]?.status, "pass", by["mount.undeclared-kind"]?.reason);
+		assert.ok(report.results.filter((r) => r.group === "mount").every((r) => r.level === "full"), "the mount group is not Core");
 	});
 
 	it("leaves no computer behind", () => {

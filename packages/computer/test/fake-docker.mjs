@@ -31,8 +31,11 @@ export const DAEMON = "@daemon";
 export function report({
 	id, name, image = "debian:bookworm-slim", labels = {}, cmd, user = "1000:1000", workdir = "/work", env = ["HOME=/work"], network = "none", running = true,
 	capDrop = ["ALL"], securityOpt = ["no-new-privileges"], pids = 1024, memory = 4096 * 1024 * 1024, swap = memory, period = 100_000, quota = 200_000,
-	tmpfs, ipc = "private", cgroupns = "private", daemonPath = "@daemon", apparmor = false, masked, readonly,
+	tmpfs, ipc = "private", cgroupns = "private", daemonPath = "@daemon", apparmor = false, masked, readonly, binds = [],
 }) {
+	// Each further --mount type=bind, after the daemon's, as Docker 29 reports it: ReadOnly only when it is.
+	const hostBinds = binds.map((b) => ({ Type: "bind", Source: b.src, Target: b.dst, ...(b.readonly ? { ReadOnly: true } : {}) }));
+	const mountBinds = binds.map((b) => ({ Type: "bind", Source: b.src, Destination: b.dst, Mode: "", RW: !b.readonly, Propagation: "rprivate" }));
 	const [uid, gid] = user.split(":");
 	return {
 		Id: id,
@@ -59,11 +62,11 @@ export function report({
 			BlkioWeightDevice: [], BlkioDeviceReadBps: [], BlkioDeviceWriteBps: [], BlkioDeviceReadIOps: [], BlkioDeviceWriteIOps: [], CpuPeriod: period, CpuQuota: quota,
 			CpuRealtimePeriod: 0, CpuRealtimeRuntime: 0, CpusetCpus: "", CpusetMems: "", Devices: [], DeviceCgroupRules: null, DeviceRequests: null, MemoryReservation: 0,
 			MemorySwap: swap, MemorySwappiness: null, OomKillDisable: null, PidsLimit: pids, Ulimits: [], CpuCount: 0, CpuPercent: 0, IOMaximumIOps: 0, IOMaximumBandwidth: 0,
-			Mounts: [{ Type: "bind", Source: daemonPath, Target: "/opt/agentrun/computerd", ReadOnly: true }],
+			Mounts: [{ Type: "bind", Source: daemonPath, Target: "/opt/agentrun/computerd", ReadOnly: true }, ...hostBinds],
 			MaskedPaths: masked ?? ["/proc/acpi", "/proc/asound", "/proc/interrupts", "/proc/kcore", "/proc/keys", "/proc/latency_stats", "/proc/sched_debug", "/proc/scsi", "/proc/timer_list", "/proc/timer_stats", "/sys/devices/virtual/powercap", "/sys/firmware"],
 			ReadonlyPaths: readonly ?? ["/proc/bus", "/proc/fs", "/proc/irq", "/proc/sys", "/proc/sysrq-trigger"],
 		},
-		Mounts: [{ Type: "bind", Source: daemonPath, Destination: "/opt/agentrun/computerd", Mode: "", RW: false, Propagation: "rprivate" }],
+		Mounts: [{ Type: "bind", Source: daemonPath, Destination: "/opt/agentrun/computerd", Mode: "", RW: false, Propagation: "rprivate" }, ...mountBinds],
 		NetworkSettings: { Networks: { [network]: {} } },
 	};
 }
@@ -86,8 +89,10 @@ export function container({ name, labels = {}, network = "none", running = true,
  * is what the daemon's display does once process.start runs its X server: "up" (hello reports kind desktop and the
  * display's groups from then on), "exits" (the server ends at once, saying why on stderr), "never", or "stalls" (the
  * daemon answers nothing once the server is started, as one stuck in the X connection setup, or stopped, does).
+ * `binds` is merged over each bind docker run makes after the daemon's ({ src } binds another folder, { readonly: true }
+ * binds it read-only), or "drop" makes none: a Docker that does not bind what it was asked to.
  */
-export function fakeDocker({ running = true, gone = false, containers = [], patch = {}, hello = {}, arch = "x86_64", info = {}, vanish = [], noDaemon = false, user, hold = [], desktop, display = "up" } = {}) {
+export function fakeDocker({ running = true, gone = false, containers = [], patch = {}, hello = {}, arch = "x86_64", info = {}, vanish = [], noDaemon = false, user, hold = [], desktop, display = "up", binds = {} } = {}) {
 	const dir = mkdtempSync(join(tmpdir(), "computer-fake-docker-"));
 	dirs.push(dir);
 	const log = join(dir, "calls.jsonl");
@@ -97,7 +102,7 @@ export function fakeDocker({ running = true, gone = false, containers = [], patc
 	writeFileSync(daemonPath, "not a real daemon");
 	chmodSync(daemonPath, 0o755);
 	const program = join(dir, "docker");
-	const config = JSON.stringify({ dir, log, state, running, gone, patch, hello: { ...HELLO, ...hello },
+	const config = JSON.stringify({ dir, log, state, running, gone, patch, binds, hello: { ...HELLO, ...hello },
 		info: { Architecture: arch, SecurityOptions: ["name=seccomp,profile=builtin", "name=cgroupns"], MemoryLimit: true, SwapLimit: true, PidsLimit: true, CPUCfsQuota: true, CPUCfsPeriod: true, ...info },
 		vanish, noDaemon, hold, display, desktopHello: { ...HELLO, ...hello, kind: "desktop", groups: [...HELLO.groups, "screen", "input.pointer", "input.keys"] } });
 	writeFileSync(
@@ -139,7 +144,10 @@ switch (args[0]) {
 		for (; i < args.length && args[i].startsWith("--"); i += args[i] === "--detach" ? 1 : 2) (flags[args[i]] ??= []).push(args[i + 1]);
 		const name = flags["--name"][0];
 		const labels = Object.fromEntries(flags["--label"].map((l) => [l.slice(0, l.indexOf("=")), l.slice(l.indexOf("=") + 1)]));
-		const mount = Object.fromEntries(flags["--mount"][0].split(",").map((p) => p.split("=")));
+		const [mount, ...more] = flags["--mount"].map((m) => Object.fromEntries(m.split(",").map((p) => (p.includes("=") ? [p.slice(0, p.indexOf("=")), p.slice(p.indexOf("=") + 1)] : [p, ""]))));
+		// config.binds is merged over each further bind as Docker made it, or "drop" leaves them out: a Docker that does
+		// not bind what it was asked to.
+		const binds = config.binds === "drop" ? [] : more.map((m) => ({ src: m.src, dst: m.dst, readonly: "readonly" in m, ...config.binds }));
 		const network = flags["--network"][0];
 		const memory = flags["--memory"] ? Number.parseInt(flags["--memory"][0], 10) * 1024 * 1024 : 0;
 		const swap = flags["--memory-swap"] ? Number.parseInt(flags["--memory-swap"][0], 10) * 1024 * 1024 : 0;
@@ -149,7 +157,7 @@ switch (args[0]) {
 			memory, swap, period: Number(flags["--cpu-period"]?.[0] ?? 0), quota: Number(flags["--cpu-quota"]?.[0] ?? 0),
 			tmpfs: Object.fromEntries((flags["--tmpfs"] ?? []).map((t) => [t.slice(0, t.indexOf(":")), t.slice(t.indexOf(":") + 1)])),
 			ipc: flags["--ipc"]?.[0] ?? "private", cgroupns: flags["--cgroupns"]?.[0] ?? "private", daemonPath: mount.src,
-			apparmor: config.info.SecurityOptions.some((option) => option.startsWith("name=apparmor")),
+			apparmor: config.info.SecurityOptions.some((option) => option.startsWith("name=apparmor")), binds,
 		});
 		made.HostConfig.Mounts[0].ReadOnly = "readonly" in mount;
 		made.Mounts[0].RW = !("readonly" in mount);

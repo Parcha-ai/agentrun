@@ -9,6 +9,7 @@ import { PassThrough, Writable } from "node:stream";
 import { fileURLToPath } from "node:url";
 import { DaemonClient } from "./client.js";
 import { COMPUTER_LABEL, DAEMON_IN_COMPUTER, DEADLINE_LABEL, helloDrift, SOCKET_DIR, WORK } from "./drift.js";
+import type { MountKind } from "./mount.js";
 import { MAX_LINE_BYTES } from "./protocol.js";
 import {
 	type AttachedComputer,
@@ -160,6 +161,9 @@ export const ENV = {
 	/** uid:gid the daemon runs as; default 1000:1000. */
 	user: "COMPUTER_DAYTONA_USER",
 } as const;
+
+/** The mount kinds a Daytona computer takes: none yet (capabilities() declares no mount); the Archil mount comes with D6. */
+export const MOUNT: readonly MountKind[] = [];
 
 /** What fromEnv takes besides the environment: any option but the key, which comes from COMPUTER_DAYTONA_API_KEY alone. */
 export type DaytonaFromEnvOptions = Partial<Omit<DaytonaProviderOptions, "apiKey">>;

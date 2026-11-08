@@ -256,31 +256,45 @@ func TestInitWithAUserMustStartAsRoot(t *testing.T) {
 	}
 }
 
-func TestProbePrintsOneJSONLineOfWhatItReached(t *testing.T) {
-	listener, err := net.Listen("tcp", ":0")
+// probeListener listens on the IPv4 loopback and runs answer on each connection, closing it after.
+func probeListener(t *testing.T, answer func(net.Conn)) string {
+	t.Helper()
+	listener, err := net.Listen("tcp", "127.0.0.1:0")
 	if err != nil {
 		t.Fatal(err)
 	}
-	defer listener.Close()
+	t.Cleanup(func() { _ = listener.Close() })
 	go func() {
 		for {
 			conn, err := listener.Accept()
 			if err != nil {
 				return
 			}
+			answer(conn)
 			_ = conn.Close()
 		}
 	}()
-	address := listener.Addr().String()
-	code, stdout, stderr := computerdOut(t, 30*time.Second, "probe", "--connect", address)
+	return listener.Addr().String()
+}
+
+func TestProbePrintsOneJSONLineOfWhatAnsweredAndWhatOnlyAccepted(t *testing.T) {
+	answers := probeListener(t, func(conn net.Conn) { _, _ = conn.Write([]byte("SSH-2.0-test\r\n")) })
+	silent := probeListener(t, func(net.Conn) {})
+	code, stdout, stderr := computerdOut(t, 30*time.Second, "probe", "--connect", answers, "--connect", silent)
 	if code != 0 {
 		t.Fatalf("probe: exit %d, stderr %q", code, stderr)
 	}
 	var report struct {
-		UID     *int     `json:"uid"`
-		GID     *int     `json:"gid"`
-		Kernel  string   `json:"kernel"`
-		Reached []string `json:"reached"`
+		UID      *int     `json:"uid"`
+		GID      *int     `json:"gid"`
+		Kernel   string   `json:"kernel"`
+		Reached  []string `json:"reached"`
+		Accepted []string `json:"accepted"`
+		Results  []struct {
+			Target   string `json:"target"`
+			Protocol string `json:"protocol"`
+			Outcome  string `json:"outcome"`
+		} `json:"results"`
 	}
 	if err := json.Unmarshal([]byte(stdout), &report); err != nil || strings.Count(stdout, "\n") != 1 {
 		t.Fatalf("probe wrote %q; want one JSON line (%v)", stdout, err)
@@ -288,8 +302,41 @@ func TestProbePrintsOneJSONLineOfWhatItReached(t *testing.T) {
 	if report.UID == nil || *report.UID != os.Getuid() || report.GID == nil || *report.GID != os.Getgid() || report.Kernel == "" {
 		t.Fatalf("probe reported %+v; want this process's uid and gid and the kernel", report)
 	}
-	if len(report.Reached) != 1 || report.Reached[0] != address {
-		t.Fatalf("probe reached %q; want [%s]", report.Reached, address)
+	if len(report.Reached) != 1 || report.Reached[0] != answers {
+		t.Fatalf("probe reached %q; want [%s]: only a target whose bytes came back is reached", report.Reached, answers)
+	}
+	if len(report.Accepted) != 1 || report.Accepted[0] != silent {
+		t.Fatalf("probe accepted %q; want [%s]: a silent accept is recorded, not reached", report.Accepted, silent)
+	}
+	if len(report.Results) != 2 || report.Results[0].Outcome != "answered" || report.Results[1].Outcome != "accepted" || report.Results[1].Protocol != "any" {
+		t.Fatalf("probe results %+v; want answered then accepted, each by its port's protocol", report.Results)
+	}
+}
+
+func TestProbeTakesAUDPTargetAsHostPortSlashUDP(t *testing.T) {
+	conn, err := net.ListenPacket("udp", "127.0.0.1:0")
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = conn.Close() })
+	go func() {
+		buffer := make([]byte, 512)
+		n, from, err := conn.ReadFrom(buffer)
+		if err != nil || n < 12 {
+			return
+		}
+		_, _ = conn.WriteTo(append([]byte{buffer[0], buffer[1], 0x81, 0x80}, buffer[4:n]...), from)
+	}()
+	target := conn.LocalAddr().String() + "/udp"
+	code, stdout, stderr := computerdOut(t, 30*time.Second, "probe", "--connect", target)
+	if code != 0 {
+		t.Fatalf("probe --connect %s: exit %d, stderr %q", target, code, stderr)
+	}
+	var report struct {
+		Reached []string `json:"reached"`
+	}
+	if err := json.Unmarshal([]byte(stdout), &report); err != nil || len(report.Reached) != 1 || report.Reached[0] != target {
+		t.Fatalf("probe wrote %q (%v); want %s reached", stdout, err, target)
 	}
 }
 
@@ -298,6 +345,8 @@ func TestProbeRefusesATargetThatIsNotHostAndPort(t *testing.T) {
 		{"probe", "--connect"},
 		{"probe", "--connect", "example.com"},
 		{"probe", "example.com:443"},
+		{"probe", "--connect", "example.com:53/sctp"},
+		{"probe", "--connect", "example.com:53/"},
 	} {
 		code, _, stderr := computerdOut(t, 30*time.Second, args...)
 		if code != 2 || !strings.Contains(stderr, "host:port") {

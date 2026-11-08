@@ -17,7 +17,7 @@ const COMPUTER = "agentrun.computer";
 const NAME = "agentrun.computer.name";
 const DEADLINE = "agentrun.computer.deadline";
 const SPEC_TAG = "agentrun.computer.spec";
-const PROBE_TARGETS = ["1.1.1.1:443", "8.8.8.8:443", "[2606:4700:4700::1111]:443"];
+const PROBE_TARGETS = ["1.1.1.1:443", "8.8.8.8:443", "[2606:4700:4700::1111]:443", "1.1.1.1:53/udp", "[2606:4700:4700::1111]:53/udp"];
 // The image route holds the daemon's path to root's alone in the image itself, right after the COPY (exec form).
 const LAYER = [`COPY --from=${DAEMON_IMAGE} /computerd ${DAEMON}`, `RUN ${JSON.stringify(modal.modalCommands().hold)}`, "ENV HOME=/work", "WORKDIR /work"];
 const DAY_MS = 24 * 60 * 60 * 1000;
@@ -73,6 +73,9 @@ test("the constructor refuses, in words, what would make a computer it cannot vo
 	assert.throws(make({ user: "alice" }), /uid:gid/);
 	assert.throws(make({ probeTargets: [] }), /probe/);
 	assert.throws(make({ probeTargets: ["example.com"] }), /host:port/);
+	assert.throws(make({ probeTargets: ["1.1.1.1:53/sctp"] }), /host:port/);
+	assert.throws(make({ probeTargets: ["1.1.1.1:53/"] }), /host:port/);
+	assert.doesNotThrow(make({ probeTargets: ["1.1.1.1:53/udp", "[2606:4700:4700::1111]:53/udp", "example.com:443"] }), "a UDP target is host:port/udp");
 	assert.throws(make({ timeouts: { createMs: 0 } }), /createMs/);
 	assert.throws(() => new ModalProvider({ sdk: {}, app: APP, daemonImage: DAEMON_IMAGE }), /sdk/);
 	assert.deepEqual(fake.calls, [], "no SDK call");
@@ -360,6 +363,28 @@ test("create: network none that reaches an address is refused, and open never is
 	assert.equal((await provider.create({ ...SPEC, network: "open" })).ok, true);
 });
 
+test("create: network none that answers on one target is refused, whatever the others only accepted", async () => {
+	const error = await driftedCreate({ box: { reached: ["1.1.1.1:443"], accepted: ["8.8.8.8:443", "[2606:4700:4700::1111]:443"] } }, /network: declared none, read back an answer from 1\.1\.1\.1:443/);
+	assert.equal(error.code, "refused");
+});
+
+test("create: network none whose probe targets only accepted, with no answer, is kept, and the accepts are named in its read-back words", async () => {
+	const { provider, fake } = setup({}, { box: { accepted: PROBE_TARGETS } });
+	const created = await provider.create(SPEC);
+	assert.equal(created.ok, true, JSON.stringify(created));
+	const made = only(fake);
+	assert.equal(made.running, true);
+	assert.equal(made.terminated, 0);
+	assert.deepEqual([created.value.id, created.value.name], [made.id, made.tags[NAME]]);
+	assert.equal(created.value.notes?.length, 1, JSON.stringify(created.value));
+	assert.match(created.value.notes[0], /^network: none; accepted with no answer/);
+	assert.ok(created.value.notes[0].endsWith(PROBE_TARGETS.join(", ")), created.value.notes[0]);
+	const open = setup({}, { box: { accepted: PROBE_TARGETS } });
+	const opened = await open.provider.create({ ...SPEC, network: "open" });
+	assert.equal(opened.ok, true);
+	assert.equal(opened.value.notes, undefined, "open says nothing of accepts: nothing is wider");
+});
+
 test("create: tags that do not read back as given are drift", async () => {
 	await driftedCreate({ tags: { [DEADLINE]: undefined } }, /tag agentrun\.computer\.deadline/);
 	await driftedCreate({ tags: { [SPEC_TAG]: "{}" } }, /tag agentrun\.computer\.spec/);
@@ -371,6 +396,11 @@ test("create: a sandbox that is not running after create, or has no daemon, is r
 	await driftedCreate({ box: { daemon: false } }, /no daemon listens/, SPEC, { timeouts: { helloMs: 300 } });
 	await driftedCreate({ box: { probe: "fails" } }, /probe/);
 	await driftedCreate({ box: { probe: "garbled" } }, /probe/);
+});
+
+test("create: a probe report with no accepted list is refused in words, never read as nothing accepted", async () => {
+	const error = await driftedCreate({ box: { probe: "no-accepted" } }, /the probe in .* wrote a report with no accepted list/);
+	assert.equal(error.code, "refused");
 });
 
 test("create: a daemon that never answers hello is a timeout, and the sandbox is terminated", async () => {
@@ -923,6 +953,28 @@ test("network: none that reaches an address reads back as another network, in wo
 	assert.equal(read.ok, true);
 	assert.match(read.value.other, /1\.1\.1\.1:443/);
 	assert.equal((await provider.network(refOf(fake), "none")).error?.code, "refused");
+});
+
+test("attach and network: none whose probe targets only accepted reads back none, the accepts named in attach's words", async () => {
+	const { provider, fake } = setup({}, { sandboxes: [seeded({ box: { accepted: ["1.1.1.1:443", "8.8.8.8:443"] } })] });
+	const ref = refOf(fake);
+	const attached = await provider.attach({ id: ref.id });
+	assert.equal(attached.ok, true, JSON.stringify(attached));
+	assert.equal(attached.value.spec.network, "none");
+	assert.deepEqual(attached.value.notes, ["network: none; accepted with no answer (no bytes came back): 1.1.1.1:443, 8.8.8.8:443"]);
+	assert.deepEqual(await provider.network(ref), { ok: true, value: "none" });
+	assert.deepEqual(await provider.network(ref, "none"), { ok: true, value: "none" });
+});
+
+test("attach and network: none that answers on one target is refused and reads back another network, whatever the others only accepted", async () => {
+	const { provider, fake } = setup({}, { sandboxes: [seeded({ box: { reached: ["8.8.8.8:443"], accepted: ["1.1.1.1:443"] } })] });
+	const ref = refOf(fake);
+	const attached = await provider.attach({ id: ref.id });
+	assert.equal(attached.error?.code, "refused");
+	assert.match(attached.error.message, /network: declared none, read back an answer from 8\.8\.8\.8:443/);
+	const read = await provider.network(ref);
+	assert.equal(read.ok, true);
+	assert.match(read.value.other, /an answer came back from 8\.8\.8\.8:443/);
 });
 
 test("network: a computer that is not this provider's is not_found", async () => {
