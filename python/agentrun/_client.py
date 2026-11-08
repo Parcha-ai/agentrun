@@ -14,7 +14,7 @@ import re
 import ssl
 import time
 from typing import Any, Callable, Dict, Iterator, Mapping, Optional, Tuple, cast
-from urllib.parse import urlencode, urljoin, urlsplit
+from urllib.parse import SplitResult, urlencode, urljoin, urlsplit
 
 from ._errors import AgentRunAuthError, AgentRunError, AgentRunRefused, AgentRunUnreachable, AgentRunUnsupported, AgentRunUsage, ServerError
 from ._generated import OPERATIONS, Resources, Run, RunsResource, TimelinePage
@@ -55,6 +55,25 @@ def _key_from_environment() -> Optional[Secret]:
     return None if value is None else Secret(value)
 
 
+def _split(url: str) -> Optional[SplitResult]:
+    """`url` in parts, or None when Python cannot read it (an unclosed IPv6 bracket, a port that is not a number):
+    urlsplit and its port raise ValueError on those, which no caller should see."""
+    try:
+        parts = urlsplit(url)
+        parts.port
+    except ValueError:
+        return None
+    return parts
+
+
+def _joined(base: str, location: str) -> Optional[str]:
+    """`location` read against `base`, or None when Python cannot read it."""
+    try:
+        return urljoin(base, location)
+    except ValueError:
+        return None
+
+
 def _base_of(given: Optional[str], where: str) -> str:
     """A base URL as the client takes it; `where` names it in the refusal. The URL itself is never echoed: it may hold a
     password."""
@@ -63,11 +82,9 @@ def _base_of(given: Optional[str], where: str) -> str:
     why = f"{where} must be an http or https URL with no query, fragment, user, password, space or . or .. segment: the API's base, ending /v2."
     if not isinstance(given, str) or not URL_TEXT.fullmatch(given) or "?" in given or "#" in given:  # pyright: ignore[reportUnnecessaryIsInstance]
         raise AgentRunUsage(why)
-    parts = urlsplit(given)
-    try:
-        parts.port
-    except ValueError:
-        raise AgentRunUsage(why) from None
+    parts = _split(given)
+    if parts is None:
+        raise AgentRunUsage(why)
     dotted = any(re.sub("%2e", ".", segment, flags=re.IGNORECASE) in (".", "..") for segment in parts.path.split("/"))
     if parts.scheme not in ("http", "https") or not parts.hostname or "@" in parts.netloc or dotted:
         raise AgentRunUsage(why)
@@ -82,14 +99,10 @@ def _base_of(given: Optional[str], where: str) -> str:
 def _origin_of(url: str) -> Optional[Origin]:
     """Where `url` connects: its scheme, host and port; None for a URL with a user or password, or one this client
     cannot send."""
-    parts = urlsplit(url)
-    try:
-        port = parts.port
-    except ValueError:
+    parts = _split(url)
+    if parts is None or parts.scheme not in ("http", "https") or not parts.hostname or "@" in parts.netloc:
         return None
-    if parts.scheme not in ("http", "https") or not parts.hostname or "@" in parts.netloc:
-        return None
-    return Origin(parts.scheme, parts.hostname, port or (443 if parts.scheme == "https" else 80))
+    return Origin(parts.scheme, parts.hostname, parts.port or (443 if parts.scheme == "https" else 80))
 
 
 def _positive(value: object, name: str) -> float:
@@ -115,6 +128,7 @@ def _query_text(value: object) -> str:
 def _secret_at(method: str, url: str) -> Optional[Operation]:
     """The secret operation `method` on `url` reaches: the route at the end of the path, whatever part of it the base
     URL holds."""
+    # `url` is the checked base URL with an encoded path and query after it: urlsplit cannot refuse it.
     pathname = re.sub(r"/{2,}", "/", urlsplit(url).path)
     for op in OPERATIONS.values():
         if op.secret and op.method == method:
@@ -333,13 +347,14 @@ class AgentRun(Resources):
             response.close()
             location = response.headers.get("location")
             here = f"{self._origin.scheme}://{urlsplit(self.base_url).netloc}{target}"
-            following = urljoin(here, location) if location and URL_TEXT.fullmatch(location) else None
-            home = following is not None and _origin_of(following) == self._origin
+            following = _joined(here, location) if location and URL_TEXT.fullmatch(location) else None
+            # A Location Python cannot read is a redirect this client does not follow: the key stays home.
+            parts = _split(following) if following is not None else None
+            home = parts is not None and following is not None and _origin_of(following) == self._origin
             if not home or x.method != "GET" or hops >= MAX_HOPS:
                 how = "this client does not follow" if home else "to another origin"
                 raise AgentRunRefused(x.route, response.status, "redirect", None, f"The server answered {x.route} with a redirect {how} ({response.status}); not followed, so the API key stays with {self.base_url}.")
-            assert following is not None
-            parts = urlsplit(following)
+            assert parts is not None
             target = f"{parts.path or '/'}{f'?{parts.query}' if parts.query else ''}"
         raise AssertionError("unreachable")  # pragma: no cover
 
