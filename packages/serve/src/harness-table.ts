@@ -174,9 +174,11 @@ const BUILTIN: Readonly<Record<HarnessId, HarnessEntry>> = Object.freeze({
 const loaded = new Map<string, Readonly<Record<string, HarnessEntry>>>();
 const requireHere = createRequire(import.meta.url);
 
-/** The table `env` runs on: the built-in entries, with a test's module's (HARNESS_TABLE_ENV) merged over them. */
+/** The table `env` runs on: the built-in entries, with a test's module's (HARNESS_TABLE_ENV) merged over them, and only
+ *  under a test runner (node --test's NODE_TEST_CONTEXT, which a server's and a run's processes there carry): anywhere
+ *  else the variable loads nothing. */
 export function harnessTable(env: NodeJS.ProcessEnv): Readonly<Record<string, HarnessEntry>> {
-  const path = env[HARNESS_TABLE_ENV];
+  const path = env.NODE_TEST_CONTEXT ? env[HARNESS_TABLE_ENV] : undefined;
   if (!path) return BUILTIN;
   let table = loaded.get(path);
   if (!table) {
