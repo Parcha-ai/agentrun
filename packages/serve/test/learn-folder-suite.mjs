@@ -5,11 +5,11 @@
 import assert from "node:assert/strict";
 import { test } from "node:test";
 import {
-  blobOid, DIFFS_DIR, FolderBusy, folderTestHooks, forgetBodies, commitChange, learningInit, learningRepair, nextSnapshot, parseRead,
+  blobOid, DIFFS_DIR, FolderBusy, STDIN_MAX, folderTestHooks, forgetBodies, commitChange, learningInit, learningRepair, nextSnapshot, parseRead,
   readLearning, readRunDiff, readSnapshot, SCRIPT_FILE, SNAPSHOT_FILE, snapshotOfRead, writeLearning,
 } from "../dist/learn/folder.js";
 import { learningCommit, readMain } from "../dist/learn/commit.js";
-import { makeProposalCheck, seedBase } from "../dist/learn/seed-check.js";
+import { makeProposalCheck, readSeed, seedBase } from "../dist/learn/seed-check.js";
 import { buildIndex, parseNoteFile, retire, approve, mergedNote, supersede, held, released, retiredLearned } from "../dist/learn/index.js";
 
 const note = (name, description, body = `${name}, in a sentence.\n`, extra = "") => `---\nname: ${name}\ndescription: ${description}\ntype: reference\n${extra}---\n${body}`;
@@ -344,9 +344,12 @@ export function folderSuite(backend, make) {
     assert.equal((await readRunDiff(ws, "run-c1")).merge, merged.result.main);
     const again = await execsOf(() => learningCommit(ws, merge));
     assert.deepEqual([again.result, again.ops], [{ ok: true, main: snap.main, commit: snap.main, files: merged.result.files }, []], "merged once: nothing written again");
-    // A graded oid that is another blob on main now: a conflict, nothing written.
-    const stale = await learningCommit(ws, { ...merge, runId: "run-c2", files: [{ path: "later.md", text: note("Later", "A later rule") }], held: [], supersede: [], graded: { "check-units.md": unitsOid } });
-    assert.deepEqual([stale.ok, stale.reason, stale.problems.map((p) => p.path)], [false, "conflict", ["check-units.md"]]);
+    // A graded oid that is another blob on main now, on a note the merge would mark: a conflict, named by the note that
+    // marks it, nothing written. One the merge leaves alone stands.
+    const V3 = note("Units v3", "Convert, always", "Best.\n", "supersedes: [units-v2.md]\n");
+    const stale = await learningCommit(ws, { kind: "merge", runId: "run-c2", reason: "x", files: [{ path: "units-v3.md", text: V3 }], graded: { "units-v2.md": unitsOid } });
+    assert.deepEqual([stale.ok, stale.reason, stale.problems.map((p) => [p.path, p.detail])], [false, "conflict", [["units-v3.md", "units-v2.md changed after the grade read it"]]]);
+    assert.equal((await readSnapshot(ws)).main, snap.main, "nothing written");
     // A new note named like a note on main: refused.
     const taken = await learningCommit(ws, { kind: "merge", runId: "run-c3", reason: "x", files: [{ path: "units-v2.md", text: V2 }], graded: {} });
     assert.deepEqual([taken.ok, taken.reason, taken.problems?.map((p) => p.rule)], [false, "refused", ["exists"]], JSON.stringify(taken));
@@ -406,5 +409,64 @@ export function folderSuite(backend, make) {
     assert.deepEqual(snap.notes.map((n) => [n.file, n.status, n.superseded_by]), [["units-v2.md", "active", null], ["check-units.md", "superseded", "units-v2.md"], ["held-v3.md", "pending", null]], "the view's order: active first, then the newest change");
     assert.doesNotMatch(text(await ws.read("units-v2.md")), /^risky:/m);
     assert.equal(text(await ws.read("MEMORY.md")), indexOf({ "units-v2.md": V2 }));
+  });
+
+  test(`${backend}: learningCommit maps the script's preconditions as COMMIT-API says: a skill file changed on main since the run's seed is a conflict; a write past what one exec carries is refused before any exec`, async () => {
+    const { ws } = await make();
+    const seeded = await learningCommit(ws, { kind: "merge", runId: "run-s1", reason: "A skill.", files: [{ path: "skills/weekly-report/SKILL.md", text: SKILL }], graded: {} });
+    assert.equal(seeded.ok, true, JSON.stringify(seeded));
+    const seed = seeded.main;
+    const skillOid = (await readSnapshot(ws)).skills[0].oid;
+    const retired = await learningCommit(ws, { kind: "person", action: "retired", file: "skills/weekly-report/SKILL.md", text: retiredLearned(SKILL), ifMatch: skillOid });
+    assert.equal(retired.ok, true, JSON.stringify(retired));
+    const before = await readSnapshot(ws);
+    const stale = await execsOf(() => learningCommit(ws, { kind: "merge", runId: "run-s2", reason: "A newer skill.", files: [{ path: "skills/weekly-report/SKILL.md", text: SKILL.replace("Steps.", "Better steps.") }], graded: {}, seed }));
+    assert.deepEqual(stale.result, { ok: false, reason: "conflict", problems: [{ rule: "supersedes", path: "skills/weekly-report/SKILL.md", detail: "skills/weekly-report/SKILL.md changed on main after the run started" }] });
+    assert.deepEqual(stale.ops, ["commit"], "the script checked it on main: one exec, exit 4");
+    assert.deepEqual(await readSnapshot(ws), before, "nothing written");
+    const big = await execsOf(() => learningCommit(ws, { kind: "merge", runId: "run-big", reason: "Too much.", files: [{ path: "skills/huge/SKILL.md", text: `---\nname: huge\ndescription: d\n---\n${"x".repeat(STDIN_MAX)}` }], graded: {} }));
+    assert.deepEqual([big.result.ok, big.result.reason, big.result.problems?.map((p) => p.rule)], [false, "refused", ["too_large"]]);
+    assert.match(big.result.problems[0].detail, /one exec takes at most 2097152/);
+    assert.deepEqual(big.ops, [], "refused before any exec");
+    assert.deepEqual(await readSnapshot(ws), before);
+  });
+
+  test(`${backend}: seedBase at an older seed gives the base it gave when that seed was main; a broken folder is unavailable; the check refuses on the old seed what proposeRun refuses (a note named like one there)`, async () => {
+    const { ws } = await make();
+    await learningInit(ws);
+    const one = await commitChange(ws, await readSnapshot(ws), personChange("created", "check-units.md", { "check-units.md": UNITS }));
+    const atMain = await seedBase(ws, one.main);
+    await commitChange(ws, await readSnapshot(ws), personChange("retired", "check-units.md", { "check-units.md": retire(UNITS) }));
+    const older = await execsOf(() => seedBase(ws, one.main));
+    assert.deepEqual(older.ops, ["read"]);
+    assert.deepEqual({ files: [...older.result.base.files], active: older.result.base.active.map((n) => n.file), kept: older.result.kept }, { files: [...atMain.base.files], active: atMain.base.active.map((n) => n.file), kept: atMain.kept }, "the same base from git's own read as from the snapshot it had");
+    const broken = wrap(ws, { read: async () => { throw Object.assign(new Error("the disk is gone"), { name: "WorkspaceError", code: "UNAVAILABLE" }); }, exec: async () => { throw Object.assign(new Error("the disk is gone"), { name: "WorkspaceError", code: "UNAVAILABLE" }); } });
+    const down = await seedBase(broken, one.main);
+    assert.deepEqual([down.ok, down.reason], [false, "unavailable"]);
+    const check = makeProposalCheck({ open: () => ({ workspace: ws, end: async () => undefined }) });
+    const taken = await check({ agentId: "a", seed: one.main, changes: [{ path: "check-units.md", status: "added", mode: "100644", bytes: Buffer.from(TABLES) }], outcome: "completed", tools: [], dsl: undefined });
+    assert.deepEqual(taken, { ok: false, problems: [{ rule: "exists", path: "check-units.md", detail: "the folder has a note by this name" }] });
+    const downCheck = makeProposalCheck({ open: () => ({ workspace: broken, end: async () => undefined }) });
+    assert.equal((await downCheck({ agentId: "a", seed: one.main, changes: [], outcome: "completed", tools: [], dsl: undefined })).unavailable !== undefined, true);
+  });
+
+  test(`${backend}: readSeed gives what a run is laid from at its seed: MEMORY.md, the active notes and the active skills' files; at main with no exec, at an older commit with one read exec and the same files; null is empty; a missing commit is gone, a broken folder unavailable`, async () => {
+    const { ws } = await make();
+    assert.deepEqual(await readSeed(ws, null), { ok: true, files: [] });
+    await learningInit(ws);
+    const files = { "check-units.md": UNITS, "ask-first.md": mergedNote(note("Ask first", "Ask which currency"), { origin: "run", pending: true }) };
+    const one = await commitChange(ws, await readSnapshot(ws), { by: { run: "run-r", reason: "Learned." }, writes: [...Object.entries(files).map(([path, text]) => ({ path, text })), { path: "MEMORY.md", text: indexOf(files) }, { path: "skills/weekly-report/SKILL.md", text: SKILL }, { path: "skills/weekly-report/reference.md", text: "A table.\n" }, { path: "skills/held-one/SKILL.md", text: held(SKILL.replace("weekly-report", "held-one")) }] });
+    forgetBodies();
+    const atMain = await execsOf(() => readSeed(ws, one.main));
+    assert.deepEqual(atMain.ops, [], "the seed is main: the snapshot and its bodies, no exec");
+    const expected = [{ path: "MEMORY.md", text: indexOf(files) }, { path: "check-units.md", text: UNITS }, { path: "skills/weekly-report/SKILL.md", text: SKILL }, { path: "skills/weekly-report/reference.md", text: "A table.\n" }];
+    assert.deepEqual(atMain.result, { ok: true, files: expected }, "a pending note and a held skill are never laid");
+    await commitChange(ws, await readSnapshot(ws), personChange("retired", "check-units.md", { ...files, "check-units.md": retire(UNITS) }));
+    const older = await execsOf(() => readSeed(ws, one.main));
+    assert.deepEqual(older.ops, ["read"]);
+    assert.deepEqual(older.result, { ok: true, files: expected }, "the same files, read by git at the seed");
+    assert.deepEqual([(await readSeed(ws, "0".repeat(40))).reason], ["gone"]);
+    const broken = wrap(ws, { read: async () => { throw Object.assign(new Error("the disk is gone"), { name: "WorkspaceError", code: "UNAVAILABLE" }); }, exec: async () => { throw Object.assign(new Error("gone"), { name: "WorkspaceError", code: "UNAVAILABLE" }); } });
+    assert.deepEqual([(await readSeed(broken, one.main)).reason], ["unavailable"]);
   });
 }

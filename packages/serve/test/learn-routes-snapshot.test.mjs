@@ -3,10 +3,10 @@
 // read writes. A person's write is ONE exec of the learning script (a restore reads its retire first, one more). A
 // body that is not the snapshot's blob, twice, is 503.
 import assert from "node:assert/strict";
-import { writeFileSync } from "node:fs";
+import { rmSync, symlinkSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { test } from "node:test";
-import { forgetBodies, SCRIPT_FILE } from "../dist/learn/folder.js";
+import { folderTestHooks, forgetBodies, SCRIPT_FILE } from "../dist/learn/folder.js";
 import { learningTestHooks } from "../dist/learning.js";
 import { note } from "./fixtures/faux-learn.mjs";
 import { ended, LEARN, learner, made, repoOf, settled, spiedWorkspace, started } from "./learn-support.mjs";
@@ -26,9 +26,9 @@ test("no learning route read execs, runs git or writes: the view, its pages, a f
 
   const calls = [];
   const gitCalls = [];
-  learningTestHooks.workspace = spiedWorkspace(calls);
+  folderTestHooks.workspace = spiedWorkspace(calls);
   learningTestHooks.git = (args) => gitCalls.push(args);
-  t.after(() => void (learningTestHooks.workspace = undefined, learningTestHooks.git = undefined));
+  t.after(() => void (folderTestHooks.workspace = undefined, learningTestHooks.git = undefined));
   forgetBodies();
 
   const view = (await api("GET", "/agents/reader/learning")).body;
@@ -48,6 +48,7 @@ test("no learning route read execs, runs git or writes: the view, its pages, a f
   assert.deepEqual(calls.filter(([method]) => method !== "read"), [], "every route read is a file read: no exec, no write");
   assert.deepEqual([...new Set(calls.map(([, path]) => path))].sort(), [".agentrun/diffs/" + `${runId}.json`, ".agentrun/snapshot.json", "MEMORY.md", "check-units.md", "quote-sources.md"].sort());
   assert.deepEqual(gitCalls, [], "no route read runs git");
+  assert.ok(calls.opened > 0 && calls.opened === calls.ended, `every folder opened is ended: ${calls.opened} opened, ${calls.ended} ended`);
 
   // A person's edit, create and retire: each one exec, the script's commit, and no git on this side.
   calls.length = 0;
@@ -72,4 +73,18 @@ test("no learning route read execs, runs git or writes: the view, its pages, a f
   assert.equal((await api("GET", "/agents/reader/learning")).status, 503);
   assert.equal((await api("GET", `${files}/check-units.md`)).status, 200, "a body that is the snapshot's still reads");
   assert.deepEqual(calls.filter(([method]) => method !== "read"), [], "no read repairs anything: it reads");
+  assert.equal(calls.opened, calls.ended, "every folder opened is ended, a failing read's too");
+
+  // A link found in the folder later (a note's file replaced by one): reads fail closed, in words that name it.
+  folderTestHooks.workspace = undefined;
+  forgetBodies();
+  const repo = repoOf(data, "reader");
+  writeFileSync(join(repo, "ask-first.md"), ASK);
+  rmSync(join(repo, "check-units.md"));
+  symlinkSync("/etc/hostname", join(repo, "check-units.md"));
+  const linked = await api("GET", `${files}/check-units.md`);
+  assert.deepEqual([linked.status, linked.body?.error?.code], [500, "internal"], JSON.stringify(linked.body));
+  assert.equal(linked.body.error.message, "a link in the learning folder at check-units.md can't be followed, so nothing learned is read or written; remove the link");
+  const view2 = await api("GET", "/agents/reader/learning");
+  assert.match(view2.body?.error?.message ?? "", /^a link in the learning folder at check-units\.md can't be followed/);
 });

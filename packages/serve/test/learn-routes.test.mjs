@@ -11,7 +11,7 @@ import { parseNoteFile } from "../dist/learn/notes.js";
 import { note } from "./fixtures/faux-learn.mjs";
 import { copyOf, ended, git, LEARN, learnedIn, learner, made, objects, repoOf, resnap, savedOf, settled, started, wholeIn } from "./learn-support.mjs";
 import { schemaProblems } from "./schema-support.mjs";
-import { forgetBodies } from "../dist/learn/folder.js";
+import { folderTestHooks, forgetBodies } from "../dist/learn/folder.js";
 import { learningTestHooks } from "../dist/learning.js";
 import { spiedWorkspace } from "./learn-support.mjs";
 import { agent, call, follow, runsFolders, scratch, serve, withEnv } from "./support.mjs";
@@ -289,7 +289,7 @@ test("a link planted at the agent's learning folder makes a person's edit, creat
   ]) {
     const res = await send();
     assert.deepEqual([res.status, res.json?.error?.code], [500, "internal"], what);
-    assert.match(res.json.error.message, /symbolic link/, what);
+    assert.match(res.json.error.message, /^a link in the learning folder at disk\/agents\/linked-[0-9a-f]{16}\/learning can't be followed, .*; remove the link$/, what);
     assert.ok(!res.text.includes(outside), `${what}: the answer never names where the link points`);
   }
   // The reads check the same levels, making nothing: the view, its pages and a file answer the same error, holding none
@@ -297,7 +297,7 @@ test("a link planted at the agent's learning folder makes a person's edit, creat
   for (const path of ["/v2/agents/linked/learning", "/v2/agents/linked/learning/notes", "/v2/agents/linked/learning/log", `${files}/check-units.md`]) {
     const res = await call(port, { path, headers: headers() });
     assert.deepEqual([res.status, res.json?.error?.code], [500, "internal"], path);
-    assert.match(res.json.error.message, /symbolic link/, path);
+    assert.match(res.json.error.message, /^a link in the learning folder at disk\/agents\/linked-[0-9a-f]{16}\/learning can't be followed, .*; remove the link$/, path);
     for (const held of [outside, before.main, "Convert every amount"]) assert.ok(!res.text.includes(held), `${path}: the answer holds ${held}`);
   }
   assert.ok(lstatSync(repo).isSymbolicLink(), "the link is left where it was");
@@ -371,9 +371,9 @@ test("a commit's notes are read once: a later page and the view at the same main
   const calls = [];
   const gitCalls = [];
   learningTestHooks.git = (args) => gitCalls.push(args);
-  learningTestHooks.workspace = spiedWorkspace(calls);
+  folderTestHooks.workspace = spiedWorkspace(calls);
   forgetBodies();
-  t.after(() => void (learningTestHooks.git = undefined, learningTestHooks.workspace = undefined));
+  t.after(() => void (learningTestHooks.git = undefined, folderTestHooks.workspace = undefined));
   /** The workspace calls since the last look, each its method and path (exec: its argv). */
   const reads = () => calls.splice(0).map(([method, what]) => `${method} ${what}`);
 
