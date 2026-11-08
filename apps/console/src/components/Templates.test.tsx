@@ -28,12 +28,12 @@ const REVIEWER: TemplateView = {
 };
 const NOTES: TemplateView = { ...REVIEWER, name: "meeting-notes", display_name: null, version: "0.2.0", description: "Turns a transcript into notes.", mcp: [], parameters: {}, secrets: [], budget: null, triggers: [] };
 
-type Fake = { apply?: (name: string, body: unknown, key: string) => Promise<unknown>; servers?: string[] };
+type Fake = { apply?: (name: string, body: unknown, key: string) => Promise<unknown>; servers?: string[]; templates?: TemplateView[] };
 async function open(name?: string, fake: Fake = {}) {
   const went: string[] = [];
   const sent: { name: string; body: { parameters?: Record<string, unknown>; grants?: string[] }; key: string }[] = [];
   const v2 = {
-    listTemplates: async () => ({ templates: [REVIEWER, NOTES] }),
+    listTemplates: async () => ({ templates: fake.templates ?? [REVIEWER, NOTES] }),
     listMcpServers: async () => ({ servers: (fake.servers ?? ["github"]).map((n) => ({ name: n, url: `https://${n}.example/mcp`, auth: { type: "none" }, tools: [], credential: null })) }),
     applyTemplate: async (n: string, body: never, key: string) => { sent.push({ name: n, body, key }); return (fake.apply ?? (async () => ({ template: n, version: "1.0.0", agent_id: "pr-reviewer-1", trigger_ids: [], warnings: [] })))(n, body, key); },
   };
@@ -113,6 +113,16 @@ describe("applying a template", () => {
     expect(t.sent[0].body).toEqual({ parameters: { repo: "acme/web", max_files: 3 }, grants: ["mcp:github/create_review"] });
     expect(t.sent[0].key).toBeTruthy();
     expect(t.sent[1].key).toBe(t.sent[0].key);
+  });
+
+  it("sends a boolean parameter as its checkbox shows it: false untouched, true once ticked", async () => {
+    const FLAGGED: TemplateView = { ...REVIEWER, name: "flagged", parameters: { ...REVIEWER.parameters, strict: { type: "boolean", required: true, description: "Fail on any finding" } } };
+    const t = await open("flagged", { templates: [FLAGGED] });
+    await t.type(t.host.querySelector('[data-field="parameters.repo"] input'), "acme/web");
+    const box = t.host.querySelector<HTMLInputElement>('[data-field="parameters.strict"] input[type="checkbox"]')!;
+    expect(box.checked).toBe(false);
+    await t.click(t.button(/^Apply/));
+    expect(t.sent[0].body.parameters).toEqual({ repo: "acme/web", strict: false });
   });
 
   it("places a 422's issues at their fields: a parameter under its input, a grant at its tool", async () => {
