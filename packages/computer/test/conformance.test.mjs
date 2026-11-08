@@ -230,6 +230,19 @@ test("an aborted run ends what it made and reports the cases it did not run as f
 	assert.deepEqual(fake.alive(), []);
 });
 
+test("an abort while the run's shared computer is still being made ends the wait at once, not at the case timeout", async () => {
+	// Ctrl-C during setup: the provider's create never answers, so only the run's signal can end the wait.
+	const fake = fakeComputers({ createHangs: true });
+	const controller = new AbortController();
+	setTimeout(() => controller.abort(), 100);
+	const started = Date.now();
+	const report = await runConformance(fake.provider, { image: IMAGE, signal: controller.signal, cases: [pass("health.one")], cleanupTimeoutMs: 500 });
+	const took = Date.now() - started;
+	assert.ok(took < 5_000, `the run ended ${took} ms after it started; the abort came at 100 ms and the case timeout is 180 s`);
+	assert.equal(statuses(report)["health.one"], "fail");
+	assert.deepEqual(fake.alive(), [], "nothing made is left alive");
+});
+
 test("the report prints one line per level and group, failures and skips under it, and the verdict", async () => {
 	const { provider } = fakeComputers();
 	const report = await runConformance(provider, {
