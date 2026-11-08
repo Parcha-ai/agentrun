@@ -451,6 +451,9 @@ live under:
   `settingsFromEnv(env)`, and pass them in. Each provider's section lists its names. They never read serve's names or a
   vendor's bare variable, which on a shared host may hold another account's key.
 
+A default never comes from the environment either: Docker's `daemonCache` defaults to `~/.cache/agentrun-computer`
+whatever `XDG_CACHE_HOME` says, and a caller that keeps its cache elsewhere passes `daemonCache`.
+
 Two lines of the library touch the environment, each a guard against a vendor SDK that reads it on its own, not a
 setting:
 
@@ -461,8 +464,8 @@ setting:
 - **E2B, `E2B_SANDBOX_URL`** (`ambientProblem` in `src/e2b.ts`). The SDK sends every sandbox call to it when it is set,
   and no option clears it, so the provider refuses to start while it is set. It only reads.
 
-`scripts/check-env.mjs` holds the library to this: it reads every file under `src/` outside `src/conformance/` with
-TypeScript's parser and fails on any use of `process.env` (dotted, bracketed, destructured, aliased, through
+`scripts/check-env.mjs` holds the library to this: it reads every file under `src/` outside `src/conformance/`, those
+in its directories (`src/docker/`) included, with TypeScript's parser and fails on any use of `process.env` (dotted, bracketed, destructured, aliased, through
 `globalThis` or an import of `node:process`) but these two, each by its variable, its file and its function.
 `test/providers.test.mjs` runs it, and on fixtures of every evasion it catches.
 
@@ -511,7 +514,7 @@ await docker.release(made.value, "delete");
   start is removed.
 - **A computer binds the provider's own copy of the daemon, never `daemonPath`.** `daemonPath` may have any mode this
   process can read (npm installs it 0700 under `umask 077`). `create` copies it to `computerd-<sha256 of its bytes>`,
-  mode 0755, in `daemonCache` (default `agentrun-computer` under `XDG_CACHE_HOME`, else `~/.cache`), so every computer
+  mode 0755, in `daemonCache` (default `~/.cache/agentrun-computer`; `XDG_CACHE_HOME` is not read), so every computer
   user may run it, and binds that copy. The copy is written to a temporary file and renamed into place, then hashed
   again before each bind. The directory is made 0700 if missing and is never changed: a link, another user's
   directory, a mode other than 0700, or a directory above it another user may write is refused in words. The drift
@@ -1840,7 +1843,8 @@ provider by id from its options and refuses an id it does not hold, naming the o
   provider with the CLI's options, and the drift case skips, so Core does not pass.
 
 Docker's conformance module reads `COMPUTER_DOCKER_DAEMON` (`daemonPath`; unset, `create()` takes this package's daemon
-for Docker's architecture, from `docker version`) and `COMPUTER_DOCKER_USER` (`user`); Modal's, Daytona's and E2B's read
+for Docker's architecture, from `docker version`), `COMPUTER_DOCKER_DAEMON_CACHE` (`daemonCache`) and
+`COMPUTER_DOCKER_USER` (`user`); Modal's, Daytona's and E2B's read
 the names in their sections. `test/providers.test.mjs` holds every provider file to its registry line and its line to
 this shape, checks that the CLI's usage names every id, and runs `scripts/check-env.mjs` on `src/`. Run the suite on
 the new computer, by path before its line exists and by id after:

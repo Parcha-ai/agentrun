@@ -105,7 +105,8 @@ export interface DockerProviderOptions {
 	daemonPath: string;
 	/** The directory the provider copies the daemon into, the copy each computer binds: computerd-<sha256 of its bytes>,
 	 *  mode 0755. Made 0700 when missing; refused in words when it is a link, another user's, open to other users, or
-	 *  under a directory another user may write. Default agentrun-computer under XDG_CACHE_HOME, else ~/.cache. */
+	 *  under a directory another user may write. Default ~/.cache/agentrun-computer; the provider reads no
+	 *  environment, XDG_CACHE_HOME included. */
 	daemonCache?: string;
 	/** The egress proxy of a computer whose network is an allowlist. */
 	egress?: DockerEgressOptions;

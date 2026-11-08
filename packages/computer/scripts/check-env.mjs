@@ -152,17 +152,20 @@ async function sourceFiles(dir) {
 
 /**
  * Every read under src (default this package's src/) outside src/conformance/: { problems: [{ file, line, what }],
- * guards: [{ file, line, name }] }, the guards being the allowed reads it found.
+ * guards: [{ file, line, name }], files }, the guards being the allowed reads it found and files every file it read,
+ * each a posix path under src/.
  */
 export async function checkEnv(src = fileURLToPath(new URL("../src/", import.meta.url))) {
 	const problems = [];
 	const guards = [];
+	const files = [];
 	for (const path of await sourceFiles(src)) {
 		const file = relative(src, path).split(sep).join("/");
 		if (file === READER || file.startsWith(`${READER}/`)) continue;
+		files.push(file);
 		const { reads, guarded } = scan(file, await readFile(path, "utf8"));
 		problems.push(...reads.map((r) => ({ file, ...r })));
 		guards.push(...guarded.map((g) => ({ file, ...g })));
 	}
-	return { problems, guards };
+	return { problems, guards, files };
 }
