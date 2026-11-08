@@ -29,6 +29,8 @@ function referenceLoop({ script, tools, hooks }, deps) {
   const inbox = [];
   let wake = () => {};
   let stopReason = null;
+  /** Approve or deny rows refused because they named no call waiting for its answer. */
+  let refusals = 0;
   const turn = new AbortController();
   deps.signal.addEventListener("abort", () => turn.abort(), { once: true });
   const waitForCommand = () => new Promise((resolve) => (wake = resolve));
@@ -143,10 +145,15 @@ function referenceLoop({ script, tools, hooks }, deps) {
                 await append(KINDS.ask, { callId, tool: next.call }, { run: { state: "parked" } });
                 return { state: "parked" };
               }
-              // Resumed on the command row: wait for the answer the runner hands over.
+              // Resumed on the command row: wait for the answer the runner hands over, naming this call.
               let answer;
-              while (!(answer = inbox.find((command) => command.kind === "approve" || command.kind === "deny"))) {
+              while (!(answer = inbox.find((command) => (command.kind === "approve" || command.kind === "deny") && (MUTANT === "approval-by-kind" || command.body?.approval === callId)))) {
                 if (stopReason) return stopReason.kind === "command" ? writeStop() : { state: "interrupted" };
+                // The row that woke the run named no waiting call and was refused: ask again and park on it.
+                if (refusals > 0 && MUTANT !== "approval-by-kind") {
+                  await append(KINDS.ask, { callId, tool: next.call }, { run: { state: "parked" } });
+                  return { state: "parked" };
+                }
                 await waitForCommand();
               }
               inbox.splice(inbox.indexOf(answer), 1);
@@ -179,6 +186,18 @@ function referenceLoop({ script, tools, hooks }, deps) {
       }
     },
     async command(command) {
+      // An answer names its approval, the asked call's id: one naming no call that waits is refused (the case's mutant
+      // takes any approve or deny for the waiting call, by kind).
+      if ((command.kind === "approve" || command.kind === "deny") && MUTANT !== "approval-by-kind") {
+        const entries = journal ? await journalEntries(journal, context) : [];
+        const approval = command.body?.approval;
+        const waits = entries.some((entry) => entry.kind === KINDS.ask && entry.data.callId === approval) && !entries.some((entry) => entry.kind === KINDS.answer && entry.data.callId === approval);
+        if (!waits) {
+          refusals += 1;
+          wake();
+          return { refused: `no call of this run waits for approval ${JSON.stringify(approval ?? "")}` };
+        }
+      }
       inbox.push(command);
       wake();
       return { taken: true };

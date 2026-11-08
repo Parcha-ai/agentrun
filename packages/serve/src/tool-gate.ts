@@ -34,7 +34,7 @@
 
 import { createHash } from "node:crypto";
 import { existsSync, readFileSync, writeFileSync } from "node:fs";
-import { join, posix, resolve, sep } from "node:path";
+import { join } from "node:path";
 import type { Context } from "@earendil-works/chord";
 import { type Cursor, defineExtension, type Extension, type Harness, ROOT_CONVERSATION_ID, type ToolRegistration, type Tx, wrapTool } from "@earendil-works/pi-durable";
 import { type Drive, EffectFailure, INTERRUPTED_TEXT, openDrive } from "@parcha/agentrun-kernel/kernel";
@@ -42,8 +42,8 @@ import { boundResult } from "@parcha/agentrun-kernel/process";
 import { BARRIER, type DurableRun, MESSAGE_ORIGIN_KIND, syncNow, type SyncTarget } from "@parcha/pi-durable-disk";
 import { dataOfRun, readJson, RUN_META } from "./files.js";
 import { LEARNED_DIR } from "./learning.js";
-import { BOX_WORK } from "./place.js";
 import type { TurnOrigin } from "./learning-run.js";
+import { COMPUTER_ROOT, portPath } from "./workspace/paths.js";
 import { forModel } from "./result.js";
 import { builtinHarness } from "./harness-table.js";
 import { DEFAULT_HARNESS } from "./harness.js";
@@ -293,14 +293,14 @@ const BILLED_REPLAYS: ReadonlySet<string> = new Set(["web_fetch", "web_search"])
  *  note blocks (learn/reflect.ts parseReflection), which the host merges in its own store; a file there is never kept. */
 export const NOTE_ONLY_TEXT = "A note is kept only from your answer: write it in a ```note block, not to a file.";
 
-/** Whether `args.path`, as a file tool resolves it (a leading `@` dropped, Unicode spaces made plain, then lexically),
- *  names work/.learning/ or a path under it: by this machine's `work` or the box's (BOX_WORK). */
+/** Whether `args.path`, as a file tool resolves it (a leading `@` dropped, Unicode spaces made plain, then the port's
+ *  path of it, portPath), names .learning/ in the run's folder or a path under it: by the folder's path here (`work`)
+ *  or a computer's name for it (COMPUTER_ROOT). */
 export function underLearning(work: string, args: unknown): boolean {
   const path = (args as { path?: unknown } | null | undefined)?.path;
   if (typeof path !== "string") return false;
   const plain = path.replace(/[\u00A0\u2002-\u200A\u202F\u205F\u3000]/g, " ").replace(/^@/, "");
-  const under = (base: string, at: string) => at === join(base, LEARNED_DIR) || at.startsWith(`${join(base, LEARNED_DIR)}${sep}`);
-  return under(resolve(work), resolve(work, plain)) || under(BOX_WORK, posix.resolve(BOX_WORK, plain));
+  return portPath(plain, [work, COMPUTER_ROOT])?.split("/")[0] === LEARNED_DIR;
 }
 
 /** One call that waits for approval, as the run's store keeps it. */

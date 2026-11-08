@@ -1,18 +1,25 @@
 // The one owner of the folder layout and of the relative-path rule.
 //
-// Layout, under a server's data directory:
-//   <data>/disk/agents/<agent>/runs/<run>/work   a run's folder (runFolder): the root of the run's Workspace
-//   <data>/disk/agents/<agent>/learning          an agent's learning folder (agentLearningFolder): its git folder
-//   <data>/disk/agents/<agent>/home              an agent's home (agentHomeFolder): the files its owner keeps for it
-//   <data>/scratch/<agent>/<run>                 a run's scratch folder (scratchFolder): this machine's own, never on
-//                                                the disk above, so in no Workspace: a harness's private files and
-//                                                working directory, swept at the run's end
+// Layout, under a server's data directory, or from the root of an Archil disk (the same keys, without <data>/disk):
+//   <data>/disk/agents/<agent>/runs/<run>/work   a run's folder (runFolder; runKey on a disk): its Workspace's root
+//   <data>/disk/agents/<agent>/learning          an agent's learning folder (agentLearningFolder; learningKey): its git
+//                                                folder
+//   <data>/disk/agents/<agent>/home              an agent's home (agentHomeFolder; homeKey): the files its owner keeps
+//                                                for it
+// and on this machine alone:
+//   <data>/scratch/<agent>/<run>                 a run's scratch folder (scratchFolder): never on the disk above, so in
+//                                                no Workspace: a harness's private files and working directory, swept
+//                                                at the run's end
 // <agent> is the id in lower case, a dash, and 16 hex digits of the id's SHA-256, so ids that differ only in case never
 // share a folder on a disk that folds case.
 //
-// A Workspace takes paths relative to its root only. relativeSegments is the rule both backends check them by.
+// A Workspace takes paths relative to its root only. relativeSegments is the rule both backends check them by. A tool
+// call's path (absolute, or relative to the folder's name the model knows) becomes one by portPath: the one mapping
+// from a model's path to the port's, for the tools (pi-env.ts) and the tool gate alike. A text a person or a model
+// reads names the folder relative to itself, never by this server's data directory (workspaceRelative).
 import { createHash } from "node:crypto";
-import { join } from "node:path";
+import { realpathSync } from "node:fs";
+import { dirname, join, posix } from "node:path";
 import { ID } from "../validate.js";
 import { WorkspaceError } from "./workspace.js";
 
@@ -31,15 +38,23 @@ export const agentDirName = (agentId: string): string =>
 /** Agent `agentId`'s folder: `<data>/disk/agents/<agent>`. */
 export const agentFolder = (dataDir: string, agentId: string): string => join(dataDir, DISK_DIR, "agents", agentDirName(agentId));
 
+/** Run `runId`'s folder as a key from a disk's root: `agents/<agent>/runs/<run>/work` (an Archil workspace's root). */
+export const runKey = (agentId: string, runId: string): string => `agents/${agentDirName(agentId)}/runs/${checkId(runId, "run")}/work`;
+
+/** Agent `agentId`'s learning folder as a key from a disk's root: `agents/<agent>/learning`. */
+export const learningKey = (agentId: string): string => `agents/${agentDirName(agentId)}/learning`;
+
 /** Run `runId`'s folder, the root of its Workspace: `<data>/disk/agents/<agent>/runs/<run>/work`. */
-export const runFolder = (dataDir: string, agentId: string, runId: string): string =>
-  join(agentFolder(dataDir, agentId), "runs", checkId(runId, "run"), "work");
+export const runFolder = (dataDir: string, agentId: string, runId: string): string => join(dataDir, DISK_DIR, runKey(agentId, runId));
 
 /** Agent `agentId`'s learning folder, the root of its learning Workspace: `<data>/disk/agents/<agent>/learning`. */
-export const agentLearningFolder = (dataDir: string, agentId: string): string => join(agentFolder(dataDir, agentId), "learning");
+export const agentLearningFolder = (dataDir: string, agentId: string): string => join(dataDir, DISK_DIR, learningKey(agentId));
+
+/** Agent `agentId`'s home as a key from a disk's root: `agents/<agent>/home`. */
+export const homeKey = (agentId: string): string => `agents/${agentDirName(agentId)}/home`;
 
 /** Agent `agentId`'s home, the root of its home Workspace: `<data>/disk/agents/<agent>/home`. */
-export const agentHomeFolder = (dataDir: string, agentId: string): string => join(agentFolder(dataDir, agentId), "home");
+export const agentHomeFolder = (dataDir: string, agentId: string): string => join(dataDir, DISK_DIR, homeKey(agentId));
 
 /** Run `runId`'s scratch folder on this machine: `<data>/scratch/<agent>/<run>`. Outside the disk, so no Workspace
  *  holds it, in either mode. */
@@ -68,3 +83,58 @@ export function relativeSegments(path: string): string[] {
 
 /** `path` checked by relativeSegments and joined again: "" for the root. */
 export const relativePath = (path: string): string => relativeSegments(path).join("/");
+
+/**
+ * `text` with the folder's absolute names taken out: `<work>/notes/a.md` reads `notes/a.md`, the folder itself `.`, a
+ * path beside it `../x` (pi's tools resolve a relative path before they refuse it), and pi's refusal ("<path>: outside
+ * the workspace <work>") names no directory. `works` are the folder's names (as the environment names it and as the
+ * kernel resolves it: they differ under a symlinked directory). For a refusal, an error, and a write's or edit's result;
+ * a read's result is the file's own text and is never changed.
+ */
+export function workspaceRelative(text: string, works: readonly string[]): string {
+  const escape = (path: string) => path.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+  // A name counts only where a path starts (not inside a longer one), and, unless a "/" follows, where it ends (a quote, a
+  // space, a separator or the text's end).
+  const start = "(?<![\\w./~-])";
+  const end = "(?![^'\"\\s,;:)\\]])";
+  let out = text;
+  // Longest first, so a name inside another is taken out before the outer one could take its prefix.
+  for (const work of [...new Set(works)].filter((w) => w.length > 1).sort((a, b) => b.length - a.length)) {
+    const name = `${start}${escape(work)}`;
+    out = out
+      .replace(new RegExp(`outside the workspace ${name}${end}`, "g"), "outside the workspace")
+      .replace(new RegExp(`${name}/`, "g"), "")
+      .replace(new RegExp(`${name}${end}`, "g"), ".");
+    const parent = dirname(work);
+    if (parent.length > 1) out = out.replace(new RegExp(`${start}${escape(parent)}/`, "g"), "../").replace(new RegExp(`${start}${escape(parent)}${end}`, "g"), "..");
+  }
+  return out;
+}
+
+/** `path` as the kernel resolves it, or itself when it cannot be resolved. */
+export const realOf = (path: string): string => {
+  try {
+    return realpathSync(path);
+  } catch {
+    return path;
+  }
+};
+
+/** Where every computer mounts a run's folder, and so the name a model in one knows it by. */
+export const COMPUTER_ROOT = "/workspace";
+
+/**
+ * `given`, a path a tool call gave, as the port's relative path ("" for the folder itself), or undefined when it leaves
+ * the folder. `names` are the folder's absolute names: the first is the working directory a relative path is resolved
+ * against (lexically, posix: no link is read), and each names the same folder (the folder's path here, COMPUTER_ROOT in a
+ * computer). `~` and a `file:` URL leave it.
+ */
+export function portPath(given: string, names: readonly string[]): string | undefined {
+  if (typeof given !== "string" || names.length === 0 || /^(~|file:)/.test(given) || given.includes("\0")) return undefined;
+  const abs = posix.resolve(names[0]!, given);
+  for (const name of names.map((name) => posix.resolve(name))) {
+    if (abs === name) return "";
+    if (abs.startsWith(`${name}/`)) return abs.slice(name.length + 1);
+  }
+  return undefined;
+}
