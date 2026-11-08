@@ -20,7 +20,7 @@ export const FIELDS = { appId: "app_id", slug: "slug", clientId: "client_id", se
 /** Where a browser leg sends the owner's browser: the console's GitHub settings (it routes by hash), connected, or with
  *  why not. */
 export const CONNECTED_PAGE = "/#/settings/github?github=connected";
-export type LegFailure = "state_invalid" | "conversion_failed" | "installation_unverified";
+export type LegFailure = "state_invalid" | "conversion_failed" | "already_connected" | "installation_unverified";
 const failedPage = (reason: LegFailure) => `/#/settings/github?github=error&reason=${reason}`;
 /** A page of the console at this server's public address (where GitHub sends the browser back), else at its own. */
 const consoleAt = (base: string | undefined, page: string) => `${base ?? ""}${page}`;
@@ -131,6 +131,13 @@ export class GitHubConnection {
     this.settings!.set(SCOPE, FIELDS.installations, withInstallation(installationsIn(this.get(FIELDS.installations)), installation));
   }
 
+  /** Installation `id` gone from the list; how many are left. */
+  removeInstallation(id: number): number {
+    const list = installationsIn(this.get(FIELDS.installations));
+    this.settings!.set(SCOPE, FIELDS.installations, withoutInstallation(list, id));
+    return list.filter((i) => i.id !== id).length;
+  }
+
   /** The connection gone from this server: every field. The App itself stays on GitHub. */
   remove(): void {
     this.settings?.remove(SCOPE);
@@ -150,12 +157,15 @@ export class GitHubConnect {
 
   /** POST /integrations/github/connect: the form the console posts to GitHub (its action, with the state, and the
    *  manifest), refused while GitHub could not reach this server, nothing could be kept, or an App is connected. */
-  start(body: Json): { action: string; manifest: Json; state: string } {
+  start(body: Json, origin: string): { action: string; manifest: Json; state: string } {
     const issues = Object.keys(body).filter((key) => key !== "org").map((key) => ({ field: key, reason: "not_allowed", message: `The body keeps no field ${key}.` }));
     if (body.org !== undefined && !(typeof body.org === "string" && LOGIN.test(body.org))) issues.push({ field: "org", reason: "invalid", message: "org is a GitHub organization's login: the App is made under it (absent: under the signed-in GitHub user)" });
     if (issues.length) throw invalid(issues);
     const base = this.options.publicUrl;
     if (!base) throw new ApiError("github_no_public_url", "GitHub can't reach this server: set its public URL first (AGENTRUN_PUBLIC_URL, the https address GitHub sends events to), then connect again.");
+    // The state's cookie is set where the console asked from, and GitHub sends the browser back to the public URL: the
+    // one origin, or the callback never sees it. Refused before any state is made.
+    if (origin !== new URL(base).origin) throw new ApiError("github_wrong_origin", `Open this server at ${base} to connect GitHub.`, { details: { open: base } });
     const unwritable = this.connection.unwritable();
     if (unwritable) throw unwritable;
     if (this.connection.view()) throw new ApiError("github_already_connected", "This server already has a GitHub App. Disconnect it first.");
@@ -188,7 +198,7 @@ export class GitHubConnect {
   async callback(code: string | null, state: string | null, signal?: AbortSignal): Promise<string> {
     if (!state || !this.states.take(state)) return this.failed("state_invalid", "the state is unknown, used, or over an hour old");
     if (!code || !/^[A-Za-z0-9_-]{1,200}$/.test(code)) return this.failed("conversion_failed", "GitHub's redirect brought no code");
-    if (this.connection.view()) return this.failed("conversion_failed", "a GitHub App is connected already");
+    if (this.connection.view()) return this.failed("already_connected", "a GitHub App is connected already");
     let answer: { status: number; json: unknown };
     try {
       answer = await githubCall(this.options.api, `/app-manifests/${code}/conversions`, { method: "POST", ...(signal ? { signal } : {}) });
@@ -199,6 +209,8 @@ export class GitHubConnect {
     if (answer.status !== 201 || !Number.isSafeInteger(app.id) || typeof app.slug !== "string" || typeof app.client_id !== "string" || typeof app.pem !== "string" || typeof app.webhook_secret !== "string") {
       return this.failed("conversion_failed", `GitHub answered the code's conversion with HTTP ${answer.status}${answer.status === 201 ? " and no App" : ""}`);
     }
+    // Another Connect may have kept its App while GitHub converted this code: one App per server, the first kept.
+    if (this.connection.view()) return this.failed("already_connected", `a GitHub App was connected while GitHub made this one (${app.slug}); delete that one on GitHub`);
     const owner = isObject(app.owner) && typeof app.owner.login === "string" ? app.owner : undefined;
     const settingsUrl = owner?.type === "Organization" ? `${GITHUB_WEB}/organizations/${owner.login}/settings/apps/${app.slug}` : `${GITHUB_WEB}/settings/apps/${app.slug}`;
     try {
@@ -225,9 +237,55 @@ export class GitHubConnect {
     const found = isObject(answer.json) ? answer.json : {};
     const account = isObject(found.account) && typeof found.account.login === "string" ? found.account.login : undefined;
     if (answer.status !== 200 || String(found.id) !== installationId || !account) return this.failed("installation_unverified", `GitHub does not know installation ${installationId} as this App's (HTTP ${answer.status})`);
+    // Checked for the App connected when it was asked: one disconnected, or replaced, meanwhile keeps nothing of it.
+    if (this.connection.view()?.app_id !== credentials.appId) return this.failed("installation_unverified", "GitHub was disconnected or connected again while the installation was checked");
     this.connection.addInstallation({ id: Number(installationId), account });
     this.options.say({ condition: "github_installed", installation: installationId, account });
     return consoleAt(this.options.publicUrl, CONNECTED_PAGE);
+  }
+
+  /** An installation event the App's hook verified (trigger-github.ts hands it on): taken only in its own shape (the
+   *  installation, its account, and this App's id) and as GitHub, asked with the App's JWT, bears it out now: gone (404)
+   *  for deleted, suspended for suspend, there and not suspended for created and unsuspend. X-GitHub-Event is not
+   *  signed, so another event's signed body sent as one is never taken. A removal that leaves no installation turns every
+   *  github trigger off (`turnOff`), naming it; one added turns none on. */
+  async installationEvent(doc: unknown, turnOff: (detail: string) => number): Promise<{ status: number; body: Json }> {
+    const action = isObject(doc) && typeof doc.action === "string" ? doc.action.slice(0, 64) : "";
+    const noted = { status: 200, body: { ok: "noted", action } };
+    const view = this.connection.view();
+    const credentials = this.connection.credentials();
+    const installation = isObject(doc) && isObject(doc.installation) ? doc.installation : undefined;
+    const id = installation?.id;
+    const account = isObject(installation?.account) && typeof installation.account.login === "string" ? installation.account.login.slice(0, 200) : undefined;
+    if (!view || !credentials || !Number.isSafeInteger(id) || !account || String(installation?.app_id) !== view.app_id) {
+      this.options.say({ condition: "github_installation_ignored", action, reason: "not_an_installation_of_this_app" });
+      return noted;
+    }
+    const adds = ["created", "new_permissions_accepted", "unsuspend"].includes(action);
+    const removes = action === "deleted" || action === "suspend";
+    if (!adds && !removes) return noted;
+    let answer: { status: number; json: unknown };
+    try {
+      answer = await githubCall(this.options.api, `/app/installations/${id}`, { jwt: appJwt(credentials.appId, credentials.pem, this.options.now?.() ?? Date.now()) });
+    } catch (error) {
+      this.options.say({ condition: "github_installation_ignored", action, installation: String(id), reason: (error as Error).message });
+      return noted;
+    }
+    const found = isObject(answer.json) ? answer.json : {};
+    const suspended = answer.status === 200 && found.suspended_at !== null && found.suspended_at !== undefined;
+    const borne = action === "deleted" ? answer.status === 404 : action === "suspend" ? suspended : answer.status === 200 && !suspended && String(found.app_id) === view.app_id;
+    if (!borne) {
+      this.options.say({ condition: "github_installation_ignored", action, installation: String(id), reason: `GitHub does not bear it out (HTTP ${answer.status})` });
+      return noted;
+    }
+    if (adds) {
+      this.connection.addInstallation({ id: id as number, account });
+      return noted;
+    }
+    const left = this.connection.removeInstallation(id as number);
+    const off = left ? 0 : turnOff(`The GitHub App's last installation left, installation ${id} (${account}), was ${action === "deleted" ? "deleted" : "suspended"} on GitHub: install the App again, then turn the trigger on.`);
+    this.options.say({ condition: "github_installation_lost", installation: String(id), account, action, installations_left: String(left), triggers_off: String(off) });
+    return noted;
   }
 
   /** The App's installation tokens minted and not yet long past their hour, by token: every one is a secret this server

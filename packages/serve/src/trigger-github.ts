@@ -2,11 +2,11 @@
 // /v2/hooks/github, verified with the App's webhook secret (trigger-signatures.ts's github scheme). A trigger names the
 // events it takes (accept, trigger-accept.ts) and keeps no secret of its own; one event fires every trigger that takes
 // it, each its own firing, keyed by the SHA-256 of the signed body (GitHub signs neither X-GitHub-Delivery nor
-// X-GitHub-Event). The App's ping is answered, and its installation events keep the connection's installation list and
-// turn every github trigger off when one is deleted or suspended.
-import { FIELDS, type Installation, installationsIn, withInstallation, withoutInstallation } from "./github-connection.js";
+// X-GitHub-Event). The App's ping is answered, and its installation events go to the connection, which checks each with
+// GitHub before it keeps its installation list or turns the github triggers off.
+import { FIELDS } from "./github-connection.js";
 import { ACCEPT_SCHEMA, acceptOf, acceptRefusal, type Rule } from "./trigger-accept.js";
-import { closedSchema, type PushContext, type Source, type TriggerAdapter, unknownSourceFields } from "./trigger-adapter.js";
+import { closedSchema, type Source, type TriggerAdapter, unknownSourceFields } from "./trigger-adapter.js";
 import { type Scheme, SIGNATURE_SCHEMES } from "./trigger-signatures.js";
 import { isObject } from "./validate.js";
 
@@ -22,32 +22,6 @@ const jsonOf = (text: string): unknown => {
   }
 };
 const cut = (text: string) => text.slice(0, ATTR_CHARS);
-
-/** The installation an installation event names, by its id and its account's login. */
-function installationOf(doc: unknown): Installation | undefined {
-  const installation = isObject(doc) && isObject(doc.installation) ? doc.installation : undefined;
-  const id = installation?.id;
-  const account = isObject(installation?.account) && typeof installation.account.login === "string" ? installation.account.login : "";
-  return Number.isSafeInteger(id) ? { id: id as number, account: cut(account) } : undefined;
-}
-
-/** An installation event (GitHub's `installation`): the connection's list kept current (one deleted or suspended leaves
- *  it, one unsuspended comes back), and every github trigger turned off, saying which, only once none is left. Coming
- *  back turns none on: its owner does. */
-function installationEvent(doc: unknown, ctx: PushContext): { ok: string; action: string } {
-  const action = isObject(doc) && typeof doc.action === "string" ? doc.action : "";
-  const installation = installationOf(doc);
-  if (!installation) return { ok: "noted", action: cut(action) };
-  const list = installationsIn(ctx.setting(FIELDS.installations));
-  if (["created", "new_permissions_accepted", "unsuspend"].includes(action)) ctx.set(FIELDS.installations, withInstallation(list, installation));
-  if (action === "deleted" || action === "suspend") {
-    const left = list.filter((i) => i.id !== installation.id);
-    ctx.set(FIELDS.installations, withoutInstallation(list, installation.id));
-    const off = left.length ? 0 : ctx.turnOff(`The GitHub App's last installation left, installation ${installation.id} (${installation.account}), was ${action === "deleted" ? "deleted" : "suspended"} on GitHub: install the App again, then turn the trigger on.`);
-    ctx.say({ condition: "github_installation_lost", installation: String(installation.id), account: installation.account, action, installations_left: String(left.length), triggers_off: String(off) });
-  }
-  return { ok: "noted", action: cut(action) };
-}
 
 /** The source's fields, checked: each issue through `bad`. */
 function fieldsOf(value: Record<string, unknown>, bad: (field: string, reason: string, message: string) => void): Source | undefined {
@@ -81,10 +55,11 @@ export const github: TriggerAdapter = {
     headers: (headers, nowMs) => scheme.precheck(headers, nowMs),
     verify: (key, headers, body, nowMs) => scheme.verify(key, headers, body, nowMs),
     // The App's ping (made, or its hook edited) is answered; its installation events are its own, kept and answered.
-    handshake(headers, body, ctx) {
+    async handshake(headers, body, ctx) {
       const event = scheme.eventOf(headers, undefined);
       if (event === "ping") return { status: 200, body: { ok: "pong" } };
-      if (event === "installation") return { status: 200, body: installationEvent(jsonOf(body.toString("utf8")), ctx) };
+      // The App's own installations: the connection's to check with GitHub and keep (github-connection.ts).
+      if (event === "installation") return (await ctx.notice("installation", jsonOf(body.toString("utf8")))) ?? { status: 200, body: { ok: "noted" } };
       return undefined;
     },
     parse(headers, body) {

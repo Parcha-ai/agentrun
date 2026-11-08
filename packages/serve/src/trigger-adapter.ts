@@ -86,7 +86,7 @@ export type Push = {
   verify(key: string, headers: Headers, body: Buffer, nowMs: number, source?: Source): string | undefined;
   /** An answer of its own, after the check and before the parse (a sender's URL check, a notice about the source's own
    *  connection), or undefined. `ctx` acts on the source's own settings and triggers. */
-  handshake?(headers: Headers, body: Buffer, ctx: PushContext): { status: number; body: Json } | undefined;
+  handshake?(headers: Headers, body: Buffer, ctx: PushContext): { status: number; body: Json } | undefined | Promise<{ status: number; body: Json } | undefined>;
   /** The events the request holds, none or more: none is a request this source takes nothing from (answered 200, and
    *  said). `ignored`: a request `source` does not take (its trigger's own filter), with why: answered 200
    *  `{ok: "ignored"}`, and said. */
@@ -96,13 +96,12 @@ export type Push = {
  *  key (`key`, as its event would be keyed), which its trigger keeps for its day: the same request sent again under
  *  another label (an unsigned event header) is then a duplicate, never a firing. */
 export type PushIgnored = { ignored: string; event?: string; key?: string };
-/** What a source's handshake may do beyond its answer: read and write its own settings (its request's scope: the
- *  server's, or its trigger's), turn every trigger of the source off with why (its connection is gone), and say. */
+/** What a source's handshake may do beyond its answer: read its own settings (its request's scope: the server's, or its
+ *  trigger's), hand a notice about the source's own connection (an App's installation) to the server's code for that
+ *  source, which checks it and answers it, and say. */
 export type PushContext = {
   setting(field: string): string | undefined;
-  set(field: string, value: string): void;
-  /** Every trigger of this source that is on, turned off, `detail` saying why; how many. */
-  turnOff(detail: string): number;
+  notice(event: string, body: unknown): Promise<{ status: number; body: Json } | undefined>;
   say(fields: Record<string, string>): void;
 };
 /** One event a pushed source delivers: `key`, its id (the sender's, which a retry repeats: one event delivered twice is

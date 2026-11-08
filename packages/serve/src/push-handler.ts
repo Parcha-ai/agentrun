@@ -67,10 +67,9 @@ export type PushDeps = {
   scoped(kind: string, scope: string): string[];
   /** The triggers of the pushed source `kind` that are on, with their sources: the ones its adapter's takes reads. */
   listening?(kind: string): { id: string; source: Source }[];
-  /** A source's sealed setting written (sealed-settings.ts), for a scope: a handshake's (PushContext.set). */
-  setSetting?(adapterId: string, scope: string, field: string, value: string): void;
-  /** Every trigger of the pushed source `kind` that is on, turned off with why (triggers.ts turnOff); how many. */
-  turnOff?(kind: string, detail: string): number;
+  /** A notice about source `adapterId`'s own connection, verified as the source's (PushContext.notice): checked and
+   *  answered by the server's code for it, or undefined when it takes none. */
+  notice?(adapterId: string, event: string, body: unknown): Promise<{ status: number; body: Record<string, unknown> } | undefined>;
   /** A source's sealed setting (sealed-settings.ts): its key, for a scope. */
   setting(adapterId: string, scope: string, field: string): string | undefined;
   /** A refusal, said: its route and why. */
@@ -111,11 +110,10 @@ export async function receivePush(deps: PushDeps, req: IncomingMessage, segment:
   const scope = own ? "server" : pathTrigger!;
   const ctx: PushContext = {
     setting: (field) => deps.setting(adapter.id, scope, field),
-    set: (field, value) => deps.setSetting?.(adapter.id, scope, field, value),
-    turnOff: (detail) => deps.turnOff?.(adapter.id, detail) ?? 0,
+    notice: async (event, doc) => deps.notice?.(adapter.id, event, doc),
     say: deps.say,
   };
-  const handshake = push.handshake?.(req.headers as Headers, body, ctx);
+  const handshake = await push.handshake?.(req.headers as Headers, body, ctx);
   if (handshake) return handshake;
   const events = push.parse(req.headers as Headers, body, source);
   // Verified, and not an event its trigger takes: answered, so the sender does not send it again, and said once.
