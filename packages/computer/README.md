@@ -972,8 +972,9 @@ setting from the environment (see [Settings](#settings)) and passes the token to
 SDK's default `https://api.modal.com:443`: since the client cannot take a server, it refuses while `MODAL_SERVER_URL`
 is set, and sets it to its choice only while it constructs the client, one construction at a time and put back after
 each, so neither `MODAL_PROFILE` nor a profile in `MODAL_CONFIG_PATH` or `~/.modal.toml` can redirect the key. With
-`options.daemonImage` the daemon is copied from that image; without it, it is uploaded from `options.daemonPath`, else
-`dist/computerd-linux-amd64`, so a run publishes nothing.
+`options.daemonImage` the daemon is copied from that image (given `options.daemonPath` too, the image wins and nothing
+is uploaded); without it, it is uploaded from `options.daemonPath`, else `dist/computerd-linux-amd64`, so a run
+publishes nothing.
 
 The conformance module, `dist/conformance/modal.js` (`--provider modal`), reads the run's settings from its own names
 (`settingsFromEnv`) and passes each to `create()` as its option: `COMPUTER_MODAL_TOKEN_ID` and
@@ -1744,7 +1745,8 @@ provider by id from its options and refuses an id it does not hold, naming the o
   missing or wrong, never echoing a key. It reads no environment (see [Settings](#settings)), and exports no names of
   variables;
 - optionally `conformance`, `() => import("./conformance/<vendor>.js")`: a module that reads the run's settings from
-  the environment by its own `COMPUTER_<ID>_*` names (`settingsFromEnv(env)`; never a vendor's bare variable such as
+  the environment by its own `COMPUTER_<ID>_*` names (`settingsFromEnv(env)`, with `ENV` listing every name it
+  reads; never a vendor's bare variable such as
   `DAYTONA_API_KEY`, which on a shared host may hold another account's key, not even as a fallback), bounds a
   conformance run's computers and makes the drifted provider (`createProvider()`, `createDriftedProvider()`,
   `conformanceImage()`, `conformanceNotes`), building them through `create()`. Without it the CLI runs `create()`'s

@@ -21,6 +21,9 @@ export const DOCKER_ENV = {
 	user: "COMPUTER_DOCKER_USER",
 } as const;
 
+/** The names this module reads, under the conformance modules' common name (ConformanceModule.ENV). */
+export const ENV = DOCKER_ENV;
+
 /** The provider's options this module reads from env, each only when its name is set. */
 export function settingsFromEnv(env: Record<string, string | undefined> = process.env): DockerCreateOptions {
 	return {

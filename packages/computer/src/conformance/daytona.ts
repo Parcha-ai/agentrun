@@ -27,6 +27,9 @@ export const DAYTONA_ENV = {
 	snapshot: "COMPUTER_DAYTONA_SNAPSHOT",
 } as const;
 
+/** The names this module reads, under the conformance modules' common name (ConformanceModule.ENV). */
+export const ENV = DAYTONA_ENV;
+
 /**
  * The provider's options this module reads from env, each only when its name is set; throws in words without the key,
  * never echoing one. create() checks the rest.

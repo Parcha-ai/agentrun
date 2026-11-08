@@ -28,6 +28,9 @@ export const MODAL_ENV = {
 	serverUrl: "COMPUTER_MODAL_SERVER_URL",
 } as const;
 
+/** The names this module reads, under the conformance modules' common name (ConformanceModule.ENV). */
+export const ENV = MODAL_ENV;
+
 /** What this module reads from the environment: the token, the app, and the server and daemon image when set. */
 export type ModalSettings = Pick<ModalCreateOptions, "tokenId" | "tokenSecret" | "app" | "serverUrl" | "daemonImage">;
 
@@ -73,10 +76,8 @@ function live(env: Record<string, string | undefined>): void {
 
 export async function createProvider({ env = process.env, ModalClient, daemonPath }: ModalModuleOptions = {}): Promise<ComputerProvider> {
 	live(env);
-	const settings = settingsFromEnv(env);
-	// The image wins: the daemon is copied from it, or uploaded, never both.
-	const daemon = settings.daemonImage === undefined && daemonPath !== undefined ? { daemonPath } : {};
-	return create({ ...settings, ...daemon, ...(ModalClient ? { ModalClient } : {}), maxLifetimeMs: CONFORMANCE_MAX_LIFETIME_MS });
+	// Given COMPUTER_MODAL_DAEMON_IMAGE and a daemonPath, create() takes the image.
+	return create({ ...settingsFromEnv(env), ...(daemonPath === undefined ? {} : { daemonPath }), ...(ModalClient ? { ModalClient } : {}), maxLifetimeMs: CONFORMANCE_MAX_LIFETIME_MS });
 }
 
 /**

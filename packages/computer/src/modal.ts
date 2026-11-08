@@ -226,15 +226,17 @@ export async function modalClient({ tokenId, tokenSecret, serverUrl = MODAL_DEFA
 /**
  * A ModalProvider from its options alone: the client as modalClient makes it from the token and server passed in, the
  * app (required), and the daemon copied from options.daemonImage when given, else uploaded (options.daemonPath, else this
- * package's build). It reads no environment but the guard modalClient keeps: serve passes its MODAL_TOKEN_ID,
- * MODAL_TOKEN_SECRET and AGENTRUN_BOX_APP, the conformance module the settings it reads. The app and the token are
- * checked before any client is made, and neither is ever echoed.
+ * package's build): given both, the image wins and no upload path is passed on, as the class takes one or the other. It
+ * reads no environment but the guard modalClient keeps: serve passes its MODAL_TOKEN_ID, MODAL_TOKEN_SECRET and
+ * AGENTRUN_BOX_APP, the conformance module the settings it reads. The app and the token are checked before any client
+ * is made, and neither is ever echoed.
  */
 export async function create(options: ModalCreateOptions): Promise<ModalProvider> {
-	const { tokenId, tokenSecret, serverUrl, ModalClient, ...rest } = options ?? ({} as ModalCreateOptions);
+	const { tokenId, tokenSecret, serverUrl, ModalClient, daemonImage, daemonPath, ...rest } = options ?? ({} as ModalCreateOptions);
 	if (typeof rest.app !== "string" || rest.app.trim() === "") throw new Error("options.app, the Modal app its sandboxes live in, is required");
+	const daemon = daemonImage !== undefined ? { daemonImage } : daemonPath !== undefined ? { daemonPath } : {};
 	const sdk = await modalClient({ tokenId, tokenSecret, ...(serverUrl === undefined ? {} : { serverUrl }), ...(ModalClient ? { ModalClient } : {}) });
-	return new ModalProvider({ ...rest, sdk });
+	return new ModalProvider({ ...rest, ...daemon, sdk });
 }
 
 /** The conformance CLI's module for Modal: its live switch, the run's 30-minute cap and the drifted twin. */

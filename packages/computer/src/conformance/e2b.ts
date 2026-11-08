@@ -33,6 +33,9 @@ export const E2B_ENV = {
 	publicStream: "COMPUTER_E2B_PUBLIC_STREAM",
 } as const;
 
+/** The names this module reads, under the conformance modules' common name (ConformanceModule.ENV). */
+export const ENV = E2B_ENV;
+
 /** What this module reads from the environment: the key, and each other option whose name is set. */
 export type E2BSettings = Omit<E2BOptions, "Sandbox" | "desktop" | "timeouts" | "probeTargets">;
 

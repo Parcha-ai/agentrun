@@ -16,7 +16,8 @@ export type ProviderEnv = Readonly<Record<string, string | undefined>>;
  * What a conformance module exports, the CLI's contract for a module given by path too: createProvider(), and optionally
  * createDriftedProvider() for the drift case, conformanceImage() for a run that names no image, conformanceNotes for
  * the report, mountFor() for the mount cases, and settingsFromEnv(env), the provider's options it reads from the
- * environment by its COMPUTER_<ID>_* names. The CLI passes each function its options, which a module may ignore.
+ * environment by its COMPUTER_<ID>_* names, with ENV, those names by role. The CLI passes each function its options,
+ * which a module may ignore.
  */
 export interface ConformanceModule {
 	createProvider(options?: object): ComputerProvider | Promise<ComputerProvider>;
@@ -26,6 +27,8 @@ export interface ConformanceModule {
 	conformanceImage?(options?: object): string | Promise<string>;
 	conformanceNotes?: string[];
 	settingsFromEnv?(env?: ProviderEnv): object;
+	/** Every name settingsFromEnv (and the module) reads, by role: COMPUTER_<ID>_*, or its live switch. */
+	readonly ENV?: Readonly<Record<string, string>>;
 }
 
 /** What every registry line resolves to: the provider file's module. */
