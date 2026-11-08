@@ -1,6 +1,6 @@
 // Copyright 2026 Vercel Inc. Licensed under the Apache License, Version 2.0; see LICENSE in this package.
 // From github.com/vercel-labs/durable-harness, packages/harness-process/src/tools.ts at ea8aa4060c (UPSTREAM.json records its blob and sha256).
-// Changed by Parcha, imports rewritten for AgentRun; patches: 002-message-prefix, 003-comments-name-this-host, 008-tool-images, 011-result-bound
+// Changed by Parcha, and AgentRun's own since the port from upstream froze on 2026-11-07.
 import { type DriveContext, EffectFailure, type EffectError, type HostTool, hostToolIO, type ReplayPolicy, type ToolOutput } from '../kernel/index.js';
 import { HOST_RESULT_MAX_CHARS, type ToolImage } from '../types.js';
 
@@ -113,8 +113,6 @@ export function toolBridge(ctx: DriveContext, tools: HostTool[], options: ToolBr
             name: `tool.${tool.name}`,
             replay: tool.replay,
             input: args,
-            ...(tool.requires ? { requires: tool.requires } : {}),
-            ...(tool.needs?.length ? { needs: tool.needs } : {}),
           },
           (io) => tool.execute(args, hostToolIO(io, ctx, { signal: signal ? AbortSignal.any([signal, io.signal]) : io.signal }))
         );

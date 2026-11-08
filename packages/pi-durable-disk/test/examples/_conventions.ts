@@ -6,7 +6,7 @@ import { join, relative } from "node:path";
 import { importsOf } from "../../../../scripts/package-imports.mjs";
 
 /** The directories under examples/ that predate the conventions: Archil examples 01 and 02, and their shared helpers. */
-export const LEGACY = new Set(["01-durable-chat", "02-paid-effect", "lib"]);
+export const LEGACY = new Set(["01-durable-chat"]);
 
 const NAME = /^[a-z][a-z0-9]*(?:-[a-z0-9]+)*$/;
 const PEER = /^@earendil-works\/(?:pi-durable|pi-ai|chord)(?:\/|$)/;

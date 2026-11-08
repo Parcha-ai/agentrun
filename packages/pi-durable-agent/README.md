@@ -107,15 +107,6 @@ run-2: carried back acme.example
 Run 1 signs in once. It starts with no save lease, because the agent has no sign-in to lease yet; a new sign-in goes to
 the first run that carries it back. Run 2 starts with the lease, finds the sign-in ready and never makes one.
 
-## A runnable example
-
-[`examples/web`](https://github.com/Parcha-ai/agentrun/tree/main/examples/web) is a small web server over an agent home:
-a job history, each run's timeline, its files and its live browser. Its agent asks the person to sign in to a site
-through the live view, and its next run starts signed in. A run needs a browser and a model endpoint. With neither,
-the quickstart above is the keyless path.
-[Its README](https://github.com/Parcha-ai/agentrun/tree/main/examples/web#run-it) says which browsers it takes and how
-to run it from a checkout.
-
 ## A saved sign-in
 
 A sign-in is kept as the provider's reference to a signed-in browser: a Browserbase context id, or, for a local Chrome,
@@ -150,8 +141,7 @@ acme/                        the agent home
   runs/<run id>/             a pi-durable-disk run directory
     store/run.sqlite         that run's pi-durable store; the host opens its Harness on it
     work/                    that run's files, with the agent's skills under .agents/skills/
-    run.json, owner.lock,    written by pi-durable-disk when it runs the run (and commands/ on a local
-    tmp/                     directory); carryBack reads only the store
+    tmp/, commands/          written by pi-durable-disk when it runs the run; carryBack reads only the store
 ```
 
 `runPaths(home, runId)` gives a run's `dir`, `storePath` and `workspace`. To run it under pi-durable-disk, start it with
@@ -737,7 +727,7 @@ No dependency, no Node built-in, and no thrown error of its own: a page, a viewe
 | `registerLabel(tool, label, fold?, { name? })` | The label of a host's own tool, in the past tense, for every later call; `fold` says how its calls fold into one line; `name` is what the tool is called where calls are counted (a run's analytics), in plain words |
 | `nameOf(tool)` | That name: the registered one, else the name the tool was called by. The registry is the one source of a tool's display name |
 | `callFailed(tool, result)` | Whether a finished call failed: an error, or a result its tool's outcome reads as failed (a refused fetch). A result row's `tool_status` and `runMetricsOf`'s tool `errors` both read it |
-| `registerOutcome(tool, outcome)` | How a host's tool tells its outcome from a result it returned, not an error: `outcome(result)` gives `{ failed, text }`, and the result row reads `<label>: <text>`, with `tool_status` `failed` when `failed`, in place of `<label>: ok`. `web_fetch` and `fetch_page` have theirs: a page with `ok: false` reads `refused: …` or `failed: …` |
+| `registerOutcome(tool, outcome)` | How a host's tool tells its outcome from a result it returned, not an error: `outcome(result)` gives `{ failed, text }`, and the result row reads `<label>: <text>`, with `tool_status` `failed` when `failed`, in place of `<label>: ok`. `web_fetch` has its own: a page with `ok: false` reads `refused: …` or `failed: …` |
 | `registerTurnEnding(tool)` | A host's tool that ends its turn (pi's `terminate`, as an ask-the-person tool does). A message after a round whose tools all end the turn is the person's next message, never a `(steer)` |
 | `labelOf(tool, args, result?, extra?)` | The label of one call. An unknown tool gets `Using tool: <name>` |
 | `foldLabel(tool, calls)` | One line for several calls of one tool, from their input and output previews |
@@ -853,28 +843,19 @@ replaced (`seed.prior`). It acts only while that start is still the run's (its r
 touches only leases exactly as it set them, so an undo retried after the run id was prepared again, or after the run went
 on, changes nothing and returns `{ undone: false }`.
 
-Binding the access and the seed to pi-durable-disk looks like this (a host's code, not part of this package):
+Binding the seed to pi-durable-disk looks like this (a host's code, not part of this package). A home on a local
+directory needs no `access`: the package reads its own files.
 
 ```js
-import { openDurableRun, readReleased, withClaim } from "@parcha/pi-durable-disk";
-import { carryBack, prepareRun, seedRun } from "@parcha/pi-durable-agent";
+import { localRun, openDurableRun } from "@parcha/pi-durable-disk";
+import { carryBack, prepareRun, runPaths, seedRun } from "@parcha/pi-durable-agent";
 
-const access = {
-  claim: (fn) => withClaim({ control, disk, region, path: "agent" }, ({ root }) => fn(root)),
-  runStore: async (run) => {
-    const { bytes } = await readReleased({ control, path: run.path }, "store/run.sqlite", { sqlite: true });
-    const file = join(tmp, `${run.runId}.sqlite`);
-    await writeFile(file, bytes);
-    return file;
-  },
-};
-
-const seed = await prepareRun(home, { host: "worker-1", sha, access });
-const run = await openDurableRun({ disk, region, id: seed.runId }, { harness, seed: (dir) => seedRun(dir, seed) });
-// (a run that will never start: await undoPrepare(home, seed, { access }) gives its leases back)
+const seed = await prepareRun(home, { host: "worker-1", sha });
+const run = await openDurableRun({ disk: "local", region: "local", id: seed.runId }, { ...localRun(runPaths(home, seed.runId).dir), harness, seed: (dir) => seedRun(dir, seed) });
+// (a run that will never start: await undoPrepare(home, seed) gives its leases back)
 // ... the run works, then:
 await run.release();
-await carryBack(home, { runId: seed.runId }, { outcome: "completed", access });
+await carryBack(home, { runId: seed.runId }, { outcome: "completed" });
 ```
 
 `seed` runs inside the first claim of a new run, before its Harness opens the store; a throw fails the open with

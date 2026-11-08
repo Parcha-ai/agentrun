@@ -1,4 +1,4 @@
-// The host tools a run on another harness gets are pi's, each with the replay the kernel keeps: read, fetch_page,
+// The host tools a run on another harness gets are pi's, each with the replay the kernel keeps: read,
 // web_fetch and web_search, and monid's discover and inspect, may run again after a crash; write, edit and monid.run
 // never (the faux harness does not consult it, so it is checked here, where it is set). Each goes to the harness under
 // its wire name.
@@ -16,20 +16,20 @@ import { withEnv } from "./support.mjs";
 const RUN = { claim: { work: "/nonexistent/work" } };
 const MONID = ["monid.discover", "monid.inspect", "monid.run"];
 
-test("read, fetch_page, web_fetch and web_search are replay-safe; write and edit never replay; a name pi has no tool for, ask_person or browser, gives none", () => {
-  const tools = hostTools(RUN, ["read", "write", "edit", "fetch_page", "web_fetch", "web_search", "ask_person", "browser", "bash"], ctx, new Map());
-  assert.deepEqual(tools.map((tool) => [tool.name, tool.replay]), [["read", "safe"], ["write", "never"], ["edit", "never"], ["fetch_page", "safe"], ["web_fetch", "safe"], ["web_search", "safe"]]);
+test("read, web_fetch and web_search are replay-safe; write and edit never replay; a name pi has no tool for, ask_person or browser, gives none", () => {
+  const tools = hostTools(RUN, ["read", "write", "edit", "web_fetch", "web_search", "ask_person", "browser", "bash"], ctx, new Map());
+  assert.deepEqual(tools.map((tool) => [tool.name, tool.replay]), [["read", "safe"], ["write", "never"], ["edit", "never"], ["web_fetch", "safe"], ["web_search", "safe"]]);
   for (const tool of tools) assert.equal(tool.inputSchema.type, "object", `${tool.name} keeps pi's parameters`);
 });
 
 test("in a box the coding source gives read, write, edit and bash (never replayed); the network tools stay this machine's, and a source holding another tool is refused", async () => {
   const { codingSource } = await import("../dist/coding-tools.js");
   const source = codingSource({ mode: "sandbox", box: "docker" }, { env: async () => ({}) });
-  const tools = hostTools({}, ["read", "write", "edit", "bash", "fetch_page", "web_fetch"], ctx, new Map(), source.tools);
-  assert.deepEqual(tools.map((tool) => [tool.name, tool.replay]), [["read", "safe"], ["write", "never"], ["edit", "never"], ["bash", "never"], ["fetch_page", "safe"], ["web_fetch", "safe"]]);
+  const tools = hostTools({}, ["read", "write", "edit", "bash", "web_fetch"], ctx, new Map(), source.tools);
+  assert.deepEqual(tools.map((tool) => [tool.name, tool.replay]), [["read", "safe"], ["write", "never"], ["edit", "never"], ["bash", "never"], ["web_fetch", "safe"]]);
   assert.equal(tools.find((tool) => tool.name === "bash").inputSchema.properties.command.type, "string", "pi's bash schema");
-  const stray = { ...source.tools[0], name: "fetch_page" };
-  assert.throws(() => hostTools({}, ["fetch_page"], ctx, new Map(), [stray]), /holds fetch_page, which is no coding tool/);
+  const stray = { ...source.tools[0], name: "web_fetch" };
+  assert.throws(() => hostTools({}, ["web_fetch"], ctx, new Map(), [stray]), /holds web_fetch, which is no coding tool/);
 });
 
 test("a host tool's answer keeps the tail of a long output within pi's limits, then its diagnostics, also when the tool failed", async () => {
@@ -99,7 +99,7 @@ test("a tool answering as pi 1.2's bash does (its retained output asked for, its
 });
 
 test("a run naming no monid tool never reads its claim: the other tools are built from a run with none", () => {
-  assert.deepEqual(hostTools({}, ["read", "fetch_page", "web_fetch"], ctx, new Map()).map((tool) => tool.name), ["read", "fetch_page", "web_fetch"]);
+  assert.deepEqual(hostTools({}, ["read", "web_fetch"], ctx, new Map()).map((tool) => tool.name), ["read", "web_fetch"]);
 });
 
 test("monid's three go under their wire names: discover and inspect replay-safe, run never; a wire name is not a catalog name", () => {

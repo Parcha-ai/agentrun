@@ -118,7 +118,7 @@ test('the adapter refuses a session whose tool Codex would mangle, before anythi
 
 test("the adapter declares Codex's own MCP client: the kernel's proxy mounts the session's MCP door from it, and reads a call's id from callId (its mcpToolCall item's id)", () => {
   const codex = codexAdapter({ model: 'luna-test', provider: { origin: 'https://provider.invalid', credential: () => 'k' }, sessionsDir: '/nonexistent', standIn: { command: process.execPath, args: ['-e', ''] } });
-  assert.deepEqual(codex.capabilities(), { fork: false, mcpClient: { callIdMeta: 'callId' } });
+  assert.deepEqual(codex.capabilities(), { mcpClient: { callIdMeta: 'callId' } });
 });
 
 test('the package gives the shapes check() refuses for Codex (codexSchemaProblems), for a host to refuse a remote MCP tool sooner', () => {

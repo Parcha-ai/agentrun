@@ -7,16 +7,19 @@
 import { withLocalModels } from "./local-models.js";
 import { pathToFileURL } from "node:url";
 import type { ModelCost, ModelThinkingLevel, Provider, ProviderStreams } from "@earendil-works/pi-ai";
-import { DEFAULT_HARNESS, FAUX_HARNESS_ENV } from "./harness.js";
+import { DEFAULT_HARNESS } from "./harness.js";
+import { HARNESS_TABLE_ENV, harnessOf } from "./harness-table.js";
+import { gatewayBase, WIRES } from "./provider.js";
 import { authContextOf } from "./secrets.js";
 
 /** The child's environment names the faux module by absolute path. */
 export const FAUX_ENV = "AGENTRUN_SERVE_FAUX";
-/** Every test hook's name starts so (AGENTRUN_SERVE_FAUX, AGENTRUN_SERVE_FAUX_HARNESS, AGENTRUN_SERVE_FAUX_WEB, ...). */
+/** Every test hook's name starts so (AGENTRUN_SERVE_FAUX, AGENTRUN_SERVE_FAUX_WEB, ...), but the harness table's
+ *  (harness-table.ts HARNESS_TABLE_ENV), which withoutFaux drops by name. */
 export const FAUX_PREFIX = "AGENTRUN_SERVE_FAUX";
 /** `env` without a test hook's name: serve sets those from startServe's options alone, so a name the server's own
  *  environment holds (an operator's export, a leftover) never gives its runs fake answers or loads a module. */
-export const withoutFaux = (env: NodeJS.ProcessEnv): NodeJS.ProcessEnv => Object.fromEntries(Object.entries(env).filter(([name]) => !name.startsWith(FAUX_PREFIX)));
+export const withoutFaux = (env: NodeJS.ProcessEnv): NodeJS.ProcessEnv => Object.fromEntries(Object.entries(env).filter(([name]) => !name.startsWith(FAUX_PREFIX) && name !== HARNESS_TABLE_ENV));
 /** Under `--faux` only: a module whose default export is the fetch the Anthropic and OpenAI providers send through (the
  *  tests' fake upstream), in place of their APIs. With it they are registered beside the faux model, for a tool's own
  *  request to the provider the revision's model names (web_search's, hosted-search.ts); the run's turns stay faux. */
@@ -59,51 +62,14 @@ export const MODEL_KEYS = [
 /** `row`'s default for `harness`: its own (`models`), else the row's. */
 const rowModel = (row: (typeof MODEL_KEYS)[number], harness: string): string => (row as { models?: Partial<Record<string, string>> }).models?.[harness] ?? row.model;
 
-/**
- * Whether `harness` reaches its vendor's models here only through OpenRouter: OPENROUTER_API_KEY is set and none of the
- * harness's own settings is. Those win, as on a host with no OpenRouter key: the endpoint the host names
- * (ANTHROPIC_BASE_URL for claude-agent, which needs ANTHROPIC_API_KEY; serve's gateway AGENT_MODEL_BASE_URL for codex
- * and opencode, which take the same route, with AGENT_MODEL_API_KEY or none), then the vendor's own key (ANTHROPIC_API_KEY, OPENAI_API_KEY), then OpenRouter. An
- * endpoint the host names never gets the OpenRouter key.
- */
-export function openRouterOnly(harness: "claude-agent" | "codex" | "opencode", env: NodeJS.ProcessEnv): boolean {
-  if (!env.OPENROUTER_API_KEY) return false;
-  return harness === "claude-agent" ? !env.ANTHROPIC_BASE_URL && !env.ANTHROPIC_API_KEY : !env.AGENT_MODEL_BASE_URL && !env.OPENAI_API_KEY;
-}
-
-/** Whether `harness`'s model requests for `model` (as named, `provider/model-id`; none, the host's for the harness) go
- *  through OpenRouter: a model named on it (`openrouter/<vendor>/...`), or the harness's vendor reached only through it
- *  (openRouterOnly). The route claudeProvider and codexProvider take (adapters.ts); a gateway (AGENT_MODEL_BASE_URL)
- *  comes first for codex. On it a harness's own search does not run: OpenRouter runs no OpenAI hosted web_search for
- *  Codex and no Anthropic server search for Claude, and its answers carry no count of searches to price. */
-export function viaOpenRouter(env: NodeJS.ProcessEnv, harness: string, model?: string): boolean {
-  if (harness === "codex") return !env.AGENT_MODEL_BASE_URL && (Boolean(model?.startsWith("openrouter/openai/")) || openRouterOnly("codex", env));
-  if (harness === "claude-agent") return Boolean(model?.startsWith("openrouter/anthropic/")) || openRouterOnly("claude-agent", env);
-  return false;
-}
-
 /** What a person does when no model runs here: add a model provider's key in the console, or set one where AgentRun
  *  starts (MODEL_KEYS' fields), OpenRouter's named first, as its one key runs every harness. The order a default is
  *  taken in is MODEL_KEYS' own. */
 export const ADD_A_KEY = `add a model key in Settings → Model keys, or set ${[...MODEL_KEYS].sort((a, b) => Number(b.id === "openrouter") - Number(a.id === "openrouter")).map((row) => row.field).join(", ").replace(/, ([^,]+)$/, " or $1")} where AgentRun starts.`;
 
-/** Whether `id` names `vendor`'s model on OpenRouter (`openrouter/<vendor>/<model-id>`), as pi names it and claude-agent
- *  and codex take it (adapters.ts' claudeModel and codexProvider). */
-const onOpenRouter = (id: string, vendor: string): boolean => new RegExp(`^openrouter/${vendor}/[^/]+$`).test(id);
-
-/** Whether `harness` runs the model `id`: pi any; claude-agent an Anthropic model (`anthropic/...`, or Anthropic's on
- *  OpenRouter, `openrouter/anthropic/...`), as it talks to an Anthropic Messages endpoint only; codex and opencode, behind a gateway
- *  (AGENT_MODEL_BASE_URL), any id, which is the gateway's own string and names no provider here (team/model included),
- *  as each takes that gateway for its OpenAI-compatible endpoint; without one, an OpenAI model (`openai/...`, or OpenAI's
- *  on OpenRouter). On the faux harness every harness runs the run's model. */
-export function harnessRuns(env: NodeJS.ProcessEnv, id: string, harness: string): boolean {
-  if (harness === DEFAULT_HARNESS || env[FAUX_HARNESS_ENV]) return true;
-  const slash = id.indexOf("/");
-  const provider = slash > 0 ? id.slice(0, slash) : undefined;
-  if (harness === "claude-agent") return provider === "anthropic" || onOpenRouter(id, "anthropic");
-  if (harness === "codex" || harness === "opencode") return Boolean(env.AGENT_MODEL_BASE_URL) || provider === "openai" || onOpenRouter(id, "openai");
-  return true;
-}
+/** Whether `harness` runs the model `id` (its entry in the harness table: harness-table.ts): pi any; one on an adapter, its
+ *  wire's vendor's model (or that vendor's on OpenRouter), or behind serve's gateway, on the wire it serves, any id. */
+export const harnessRuns = (env: NodeJS.ProcessEnv, id: string, harness: string): boolean => harnessOf(env, harness)?.runs(env, id) ?? true;
 
 /** The model a revision that names none runs on with `harness`, for `tier`: the tier's own variable, else AGENT_MODEL,
  *  each only when `harness` runs it (harnessRuns; one it can't is skipped, never an error), else that of the first of
@@ -335,7 +301,8 @@ export async function runModels(env: NodeJS.ProcessEnv, ref: string | undefined,
     const reply = mod.default as (context: unknown, helpers: FauxHelpers) => unknown;
     const helpers: FauxHelpers = { message: ai.fauxAssistantMessage, text: ai.fauxText, thinking: ai.fauxThinking, toolCall: ai.fauxToolCall };
     // `contextWindow` sizes the faux model's window, so a test can make a run long enough to compact; `maxTokens` its
-    // output ceiling, so a test can price a request's whole output allowance as a real model's (64,000 on Sonnet 4.5).
+    // output ceiling, so a test can price a request's whole output allowance as a real model's (64,000 on Sonnet 4.5),
+    // or run one whose ceiling bounds nothing (cap.ts noCeiling).
     const core = ai.createFauxCore({ models: ids.map((id) => ({ id, ...(price ? { cost: price } : {}), ...(typeof mod.contextWindow === "number" ? { contextWindow: mod.contextWindow } : {}), ...(typeof mod.maxTokens === "number" ? { maxTokens: mod.maxTokens } : {}) })) as [{ id: string }, ...{ id: string }[]] });
     const step = (async (context: unknown, options?: { signal?: AbortSignal }, _state?: unknown, model?: { id?: string }) => reply(context, { ...helpers, ...(options?.signal ? { signal: options.signal } : {}), ...(model?.id ? { model: model.id } : {}) })) as unknown as Parameters<typeof core.setResponses>[0][number];
     core.setResponses(Array.from({ length: 10_000 }, () => step));
@@ -382,9 +349,9 @@ export async function runModels(env: NodeJS.ProcessEnv, ref: string | undefined,
     }
     return { models, model, byTier, unpriced };
   }
-  // One base rule for every harness (adapters.ts' gatewayBase): one trailing /v1 off, then the API under <base>/v1, so
+  // One base rule for every harness (provider.ts' gatewayBase): one trailing /v1 off, then the API under <base>/v1, so
   // <gw>/api and <gw>/api/v1 both reach <gw>/api/v1/responses, as OpenRouter serves it.
-  const baseUrl = `${env.AGENT_MODEL_BASE_URL!.replace(/\/+$/, "").replace(/\/v1$/, "")}/v1`;
+  const baseUrl = `${gatewayBase("AGENT_MODEL_BASE_URL", env.AGENT_MODEL_BASE_URL!)}/v1`;
   const { openAIResponsesApi } = await import("@earendil-works/pi-ai/api/openai-responses.lazy");
   const priced = await gatewayPrices(env, byTier, namedBy);
   const priceOf = (id: string): ModelCost => {
@@ -436,11 +403,13 @@ async function gatewayPrices(env: NodeJS.ProcessEnv, byTier: ReadonlyMap<Tier, M
 
 /** The models a run of `ref` (an agentic revision's own, else the host's) on `harness` would take, of `tiers`, that serve
  *  has no price for here: a gateway's (AGENT_MODEL_BASE_URL) id with no price set and none in the catalog in any form
- *  (gatewayPrices). None elsewhere: pi-ai's providers price their own models, a $0 entry included, and claude-agent prices
+ *  (gatewayPrices). None elsewhere: pi-ai's providers price their own models, a $0 entry included, and a harness on a wire the gateway does not serve
+ *  (Anthropic's Messages: provider.ts WIRES) prices
  *  by its catalog entry. One a cap cannot be kept on: capabilities' `models.priced`, and blockersOf's refusal of a capped
  *  run. A model chooseModel cannot give is not this one's to say (its own blocker says why). */
 export async function unpricedModels(env: NodeJS.ProcessEnv, ref: string | undefined, tiers: readonly Tier[] = ["default"], harness: string = DEFAULT_HARNESS): Promise<string[]> {
-  if (env[FAUX_ENV] || !env.AGENT_MODEL_BASE_URL || harness === "claude-agent") return [];
+  const facts = harnessOf(env, harness)?.facts;
+  if (env[FAUX_ENV] || !env.AGENT_MODEL_BASE_URL || (facts && !WIRES[facts.wire].gateway)) return [];
   const byTier = new Map<Tier, ModelRef>();
   const namedBy = new Map<Tier, string>();
   for (const tier of new Set(tiers)) {
@@ -457,7 +426,7 @@ export async function unpricedModels(env: NodeJS.ProcessEnv, ref: string | undef
 const REQUESTS = new Set<PropertyKey>(["stream", "streamSimple", "complete", "completeSimple"]);
 
 /** The variable whose key a gateway named by ANTHROPIC_BASE_URL takes, sent as `x-api-key`, as claude-agent's adapter
- *  sends it (adapters.ts claudeProvider). Never ANTHROPIC_AUTH_TOKEN (a bearer), an OAuth token or OpenRouter's key. */
+ *  sends it (provider.ts providerFor). Never ANTHROPIC_AUTH_TOKEN (a bearer), an OAuth token or OpenRouter's key. */
 const ANTHROPIC_GATEWAY_KEY = "ANTHROPIC_API_KEY";
 
 /** The key under which providerModels marks Anthropic's provider refused, with gatewayBase's words. */
@@ -478,7 +447,7 @@ export async function providerModels(env: NodeJS.ProcessEnv) {
   // With the models serve lists beside pi-ai's catalog (local-models.ts): OpenRouter's particle-1.
   const models = withLocalModels(builtinModels({ authContext: authContextOf(env) }));
   if (!env.ANTHROPIC_BASE_URL) return models;
-  const [{ gatewayBase }, { createProvider }, { anthropicMessagesApi }] = await Promise.all([import("./adapters.js"), import("@earendil-works/pi-ai/models"), import("@earendil-works/pi-ai/api/anthropic-messages.lazy")]);
+  const [{ createProvider }, { anthropicMessagesApi }] = await Promise.all([import("@earendil-works/pi-ai/models"), import("@earendil-works/pi-ai/api/anthropic-messages.lazy")]);
   const own = models.getProvider("anthropic")!;
   let base: string;
   try {

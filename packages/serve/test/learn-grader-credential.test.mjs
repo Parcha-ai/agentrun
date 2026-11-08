@@ -1,4 +1,4 @@
-// The learning grader sends a claude-agent grade as the run's own requests go: to claudeProvider's origin, with its
+// The learning grader sends a claude-agent grade as the run's own requests go: to providerFor's origin, with its
 // credential, in its auth mode (x-api-key for Anthropic's API), and with nothing else of serve's env. pi-ai's anthropic
 // provider, left to read serve's env, reads ANTHROPIC_AUTH_TOKEN before ANTHROPIC_API_KEY and would send that token as a
 // bearer instead of the run's key.
@@ -22,7 +22,7 @@ const KEEP = JSON.stringify({ merge: true, reason: "The note is general and new.
 test("a claude-agent grade goes where the run's requests go, with the run's ANTHROPIC_API_KEY as x-api-key and no authorization, even when serve's env also holds ANTHROPIC_AUTH_TOKEN", { timeout: 60_000 }, async (t) => {
   const gw = await startFauxGateway({ text: (request) => (isGrade(request) ? KEEP : "ok") });
   t.after(() => gw.close());
-  // serve's env as the grade reads it: the run's provider (claudeProvider: ANTHROPIC_BASE_URL and ANTHROPIC_API_KEY), and
+  // serve's env as the grade reads it: the run's provider (providerFor: ANTHROPIC_BASE_URL and ANTHROPIC_API_KEY), and
   // a token the run never sends. No Jev key, so no injection screen runs before the grade.
   const env = { ANTHROPIC_BASE_URL: gw.url, ANTHROPIC_API_KEY: KEY("anthropic"), ANTHROPIC_AUTH_TOKEN: KEY("host-token") };
   const judged = await judgeProposal({

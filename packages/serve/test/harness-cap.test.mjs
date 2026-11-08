@@ -10,6 +10,7 @@ import { join } from "node:path";
 import { DatabaseSync } from "node:sqlite";
 import { after, before, test } from "node:test";
 import { agent, follow, runDir, runRecordOf, scratch, serve } from "./support.mjs";
+import { fauxTable } from "./fixtures/faux-table.mjs";
 
 const FAUX_HARNESS = new URL("./fixtures/faux-harness.mjs", import.meta.url).pathname;
 const OUTPUT_PRICED = new URL("./fixtures/faux-output-priced.mjs", import.meta.url).pathname;
@@ -21,7 +22,7 @@ const harness = "codex";
 let server;
 const stops = [];
 before(async () => {
-  server = await serve({ after: (stop) => stops.push(stop) }, { fauxHarness: FAUX_HARNESS, faux: OUTPUT_PRICED });
+  server = await serve({ after: (stop) => stops.push(stop) }, { harnessTable: fauxTable(FAUX_HARNESS), faux: OUTPUT_PRICED });
 });
 after(async () => {
   for (const stop of stops.reverse()) await stop();

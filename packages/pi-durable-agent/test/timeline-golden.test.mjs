@@ -15,7 +15,7 @@ function check(actual) {
 }
 
 test("the reference run: entries and events give the same committed rows, and the text matches the golden file", () => {
-  const recording = lines("test/fixtures/reference-job");
+  const recording = lines("reference-job");
   const stored = timelineOf(entriesOf(recording), { settled: true });
 
   const reducer = timelineReducer();
@@ -28,10 +28,13 @@ test("the reference run: entries and events give the same committed rows, and th
   assert.deepEqual(live.filter((row) => row.id.includes(":run:")).map((row) => row.summary), ["Run started"]);
   check(renderText(stored));
   assert.equal(renderText(committed), renderText(stored));
+  // A browser session's row says only that it started: the console may have no viewer to open for it.
+  assert.deepEqual(stored.filter((row) => row.id.endsWith(":session")).map((row) => row.summary), ["A live browser session started"]);
+  assert.ok(!renderText(stored).includes("Opened a live browser session"), "the old words, which promised a viewer, are gone");
 });
 
 test("one batch or one event at a time, the live path gives the same rows", () => {
-  const events = eventsOf(lines("test/fixtures/reference-job"));
+  const events = eventsOf(lines("reference-job"));
   const whole = timelineReducer();
   whole.apply(events);
   const piecemeal = timelineReducer();
@@ -40,8 +43,8 @@ test("one batch or one event at a time, the live path gives the same rows", () =
 });
 
 test("the killed run gives the same rows, with the interruption notice in a result", () => {
-  const killed = timelineOf(entriesOf(lines("test/fixtures/ten-kills-seed21")), { settled: true });
-  const clean = timelineOf(entriesOf(lines("test/fixtures/reference-job")), { settled: true });
+  const killed = timelineOf(entriesOf(lines("ten-kills-seed21")), { settled: true });
+  const clean = timelineOf(entriesOf(lines("reference-job")), { settled: true });
   assert.deepEqual(killed.map((row) => [row.kind, row.tool_name]), clean.map((row) => [row.kind, row.tool_name]));
   assert.ok(killed.some((row) => /interruption/.test(row.tool_result_preview ?? "")));
 });

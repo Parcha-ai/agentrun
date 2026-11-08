@@ -15,6 +15,7 @@ import { CANARY } from "./fixtures/faux-jev.mjs";
 import { note } from "./fixtures/faux-learn.mjs";
 import { ended, git, LEARN, learner, ledgerOf, made, mergesOf, repoOf, savedOf, settled, sleep, started } from "./learn-support.mjs";
 import { agent, follow, runDir, runsFolders, scratch, serve, withEnv } from "./support.mjs";
+import { fauxTable } from "./fixtures/faux-table.mjs";
 
 const FAUX_JEV = new URL("./fixtures/faux-jev.mjs", import.meta.url).pathname;
 const FAUX_HARNESS = new URL("./fixtures/faux-harness.mjs", import.meta.url).pathname;
@@ -440,7 +441,7 @@ test("a grader that never answers is cut off at its bound: the run's learning is
 test("GET /v2/usage books a run's tool charge as tools and a grade as learning, beside the runs' tokens: by meter, agent and day the lines sum to the same total", { timeout: 180_000 }, async (t) => {
   const saved = ["not-a-secret", "monid", randomBytes(6).toString("hex")].join("-");
   withEnv(t, { AGENTRUN_SEAL_KEY: randomBytes(32).toString("base64"), AGENTRUN_TEST_FAUX_MONID_CALLS: join(await scratch(t), "monid.jsonl"), AGENTRUN_TEST_FAUX_MONID_ACCEPTS: createHash("sha256").update(saved).digest("hex") }, ["MONID_API_KEY", "TYPESAFE_API_KEY", "OPENROUTER_API_KEY"]);
-  const { api, data } = await serve(t, { learning: "on", faux: LEARN, fauxHarness: FAUX_HARNESS, fauxMonid: FAUX_MONID });
+  const { api, data } = await serve(t, { learning: "on", faux: LEARN, harnessTable: fauxTable(FAUX_HARNESS), fauxMonid: FAUX_MONID });
   // A learning run on pi, graded and merged: its grade's cost is the learning ledger's.
   await made(api, learner("learner", { plan: PLAN }));
   const learnt = await started(api, "learner");
@@ -467,8 +468,10 @@ test("GET /v2/usage books a run's tool charge as tools and a grade as learning, 
   assert.deepEqual(Object.fromEntries(byAgent.lines.map((line) => [line.group, line.usd])), { learner: round(learnerRun + grade), enrich: enrichRun });
   assert.equal(byAgent.total_usd, byMeter.total_usd);
   const byDay = await usage("day");
-  assert.equal(byDay.lines.length, 1, "one day");
-  assert.equal(byDay.lines[0].usd, byMeter.total_usd);
+  // One day, or two in a row when the runs straddle UTC midnight: the day lines still sum to the same total.
+  const days = byDay.lines.map((line) => line.group).sort();
+  assert.ok(days.length === 1 || (days.length === 2 && Date.parse(days[1]) - Date.parse(days[0]) === 86_400_000), `one day, or two in a row: ${days.join(", ")}`);
+  assert.equal(sum(byDay), byMeter.total_usd, "the day lines sum to the total");
   assert.equal(byDay.total_usd, byMeter.total_usd);
   for (const body of [byMeter, byAgent, byDay]) assert.equal(body.unpriced_runs, 0);
   const caps = (await api("GET", "/capabilities")).body;

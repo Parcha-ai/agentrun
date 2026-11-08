@@ -137,5 +137,5 @@ test("this repository's shards cover every test file of every suite once, and ci
   assert.deepEqual(workflow.jobs['pi-1-2'].strategy.matrix.part, ['consumer', ...Array.from({ length: config.pi.shards }, (_, i) => String(i + 1))], 'pi-1-2 runs the consumer and every part');
   // The any pool's shards install poppler for serve's pdf_pages; the gh pool's run on GitHub's runners in the queue too.
   assert.ok(Object.values(shards).some((s) => s.pool === 'any' && s.suites.some((x) => x.name === '@parcha/agentrun-serve')), 'serve is in the any pool');
-  assert.deepEqual(config.pools.gh.suites, ['@parcha/pi-transport', 'test:viewer']);
+  assert.deepEqual(config.pools.gh.suites, ['@parcha/pi-transport']);
 });

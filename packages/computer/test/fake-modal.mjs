@@ -220,9 +220,10 @@ function uploader(found, command, fake, how) {
  *    "hang" (never exits);
  *  - list: "ok" (default) or "fail" (the listing throws InvalidError);
  *  - lingers: { polls, lists }: after a terminate, poll answers null for the next `polls` polls before the sandbox
- *    finishes with 137, and list still yields it for the next `lists` listings, finished or not (default none).
+ *    finishes with 137, and list still yields it for the next `lists` listings, finished or not (default none);
+ *  - bridgeMs: how long exec of the daemon's stdio bridge takes to answer with its process (default at once).
  */
-export function fakeModal({ create = "ok", box = {}, tags: tagPatch = {}, sandboxes: seeded = [], terminate = "ok", running = true, upload = "ok", list = "ok", lingers } = {}) {
+export function fakeModal({ create = "ok", box = {}, tags: tagPatch = {}, sandboxes: seeded = [], terminate = "ok", running = true, upload = "ok", list = "ok", lingers, bridgeMs = 0 } = {}) {
 	const calls = [];
 	const sandboxes = new Map();
 	const fake = { calls, sandboxes, execRuns: [], stdinClosed: 0, held: [], constructed: 0, uploads: [] };
@@ -284,7 +285,10 @@ export function fakeModal({ create = "ok", box = {}, tags: tagPatch = {}, sandbo
 			const found = sandboxes.get(id);
 			if (!found) throw new NotFoundError(`Sandbox ${id} not found`);
 			if (!found.running) throw new ConflictError(`Sandbox ${id} has already finished`);
-			if (command[0] === DAEMON && command[1] === "stdio" && command.length === 2) return bridge(found.box, fake);
+			if (command[0] === DAEMON && command[1] === "stdio" && command.length === 2) {
+				if (bridgeMs > 0) await sleep(bridgeMs);
+				return bridge(found.box, fake);
+			}
 			if (isScript(command, UPLOAD_MARK)) {
 				if (upload === "throw") throw new Error("exec failed on the server: task command router unavailable");
 				return uploader(found, command, fake, upload);

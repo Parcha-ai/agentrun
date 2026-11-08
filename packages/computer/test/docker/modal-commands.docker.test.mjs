@@ -97,6 +97,50 @@ describe("the Modal provider's upload commands in a root container with no netwo
 	}
 
 	for (const image of IMAGES) {
+		it(`${image}: the upload refuses a daemon path another user can change, and makes the daemon's directory root's alone`, () => {
+			const { bytes, sha } = daemon();
+			const upload = modalCommands({ sha256: sha }).upload;
+			// /opt writable by every user: a non-root computer user could swap the binary every connect runs as root.
+			const open = sandbox(image);
+			docker("exec", open.name, "sh", "-c", "mkdir -p /opt && chmod 0777 /opt");
+			const refused = spawnSync("docker", ["exec", "-i", open.name, ...upload], { input: bytes, encoding: "utf8" });
+			assert.notEqual(refused.status, 0, "the upload refuses /opt at mode 0777");
+			assert.match(refused.stdout, /the daemon at \/opt\/agentrun\/computerd is not root's alone: \/opt is drwxrwxrwx/);
+			assert.equal(docker("exec", open.name, "sh", "-c", "test -e /opt/agentrun/computerd && echo there || echo absent").trim(), "absent", "nothing installed");
+			// A daemon directory the image left to another user is taken back: root's, 0755, before the daemon is moved in.
+			const owned = sandbox(image);
+			docker("exec", owned.name, "sh", "-c", "mkdir -p /opt/agentrun && chown 1000:1000 /opt/agentrun && chmod 0777 /opt/agentrun");
+			const uploaded = execFileSync("docker", ["exec", "-i", owned.name, ...upload], { input: bytes, encoding: "utf8" });
+			assert.equal(uploaded, `sha256 ${sha}\n`);
+			assert.equal(docker("exec", owned.name, "stat", "-c", "%u:%g %a", "/opt/agentrun").trim(), "0:0 755", "the daemon's directory is root's alone");
+			// A daemon whose sha256 is not the one named is never moved where the entrypoint looks.
+			const mismatch = sandbox(image);
+			const bad = spawnSync("docker", ["exec", "-i", mismatch.name, ...modalCommands({ sha256: "f".repeat(64) }).upload], { input: bytes, encoding: "utf8" });
+			assert.equal(bad.status, 5, bad.stdout);
+			assert.match(bad.stdout, new RegExp(`^sha256 ${sha}\\n.*not moved into place`, "s"));
+			assert.equal(docker("exec", mismatch.name, "sh", "-c", "test -e /opt/agentrun/computerd && echo there || echo absent").trim(), "absent");
+		});
+
+		it(`${image}: the image route's hold step refuses a daemon path another user can change, and makes it root's alone`, () => {
+			const { bytes } = daemon();
+			const hold = modalCommands().hold;
+			const put = (name, setup) => {
+				docker("exec", name, "sh", "-c", `${setup}; mkdir -p /opt/agentrun`);
+				execFileSync("docker", ["exec", "-i", name, "sh", "-c", "cat > /opt/agentrun/computerd"], { input: bytes });
+			};
+			const open = sandbox(image);
+			put(open.name, "mkdir -p /opt && chmod 0777 /opt");
+			const refused = spawnSync("docker", ["exec", open.name, ...hold], { encoding: "utf8" });
+			assert.equal(refused.status, 7, refused.stdout + refused.stderr);
+			assert.match(refused.stdout, /the daemon at \/opt\/agentrun\/computerd is not root's alone: \/opt is drwxrwxrwx/);
+			const owned = sandbox(image);
+			put(owned.name, "true");
+			docker("exec", owned.name, "sh", "-c", "chown -R 1000:1000 /opt/agentrun && chmod -R 0777 /opt/agentrun");
+			const held = spawnSync("docker", ["exec", owned.name, ...hold], { encoding: "utf8" });
+			assert.equal(held.status, 0, held.stdout + held.stderr);
+			assert.equal(docker("exec", owned.name, "stat", "-c", "%u:%g %a", "/opt/agentrun", "/opt/agentrun/computerd").trim(), "0:0 755\n0:0 755");
+		});
+
 		it(`${image}: the entrypoint waits, the upload streams the daemon in and checks its sha256, init runs as 1000 with no capabilities, and hello answers`, async () => {
 			const { name, deadline } = sandbox(image);
 			const { arch, bytes, sha } = daemon();
@@ -159,6 +203,43 @@ describe("the Modal provider's upload commands in a root container with no netwo
 				for (const [file, fields] of byFile) assert.deepEqual(fields, want, `${file} in a root container with ${words}, init --user ${user}`);
 			});
 		}
+
+		// Why the provider refuses root (ModalProvider.check, ROOT): Modal's exec of the bridge runs /opt/agentrun/computerd
+		// outside the daemon, with Modal's own root capabilities. After the upload that path is root's, 0755, in a root
+		// 0755 directory under a root / and /opt: a computer user that is not root writes none of them. Root with no
+		// capability still owns every one, so it renames another program over the path, and the next exec runs that one
+		// with the container's capabilities.
+		it(`${image}: after the upload, uid 1000 cannot write the daemon or any directory above it; uid 0 with no capability can, and the next exec of the bridge runs what it put there`, async () => {
+			const as = async (user) => {
+				const { name } = sandbox(image, { user });
+				upload(name);
+				return { name, client: await connected(name) };
+			};
+			const run = async (client, script) => {
+				const ran = await client.call("exec.run", { argv: ["sh", "-c", script], timeoutMs: 10_000 });
+				assert.equal(ran.ok, true, JSON.stringify(ran));
+				return { out: Buffer.from(ran.value.stdout, "base64").toString(), code: ran.value.exitCode };
+			};
+			const owners = "stat -c '%n %u:%g %a' / /opt /opt/agentrun /opt/agentrun/computerd";
+			const replace = "printf '#!/bin/sh\\ngrep CapEff /proc/self/status\\n' > /opt/agentrun/x && chmod 0755 /opt/agentrun/x && mv -f /opt/agentrun/x /opt/agentrun/computerd";
+
+			const user = await as("1000:1000");
+			assert.equal((await run(user.client, owners)).out, "/ 0:0 755\n/opt 0:0 755\n/opt/agentrun 0:0 755\n/opt/agentrun/computerd 0:0 755\n");
+			for (const script of [replace, ": > /opt/agentrun/computerd", "mv /opt/agentrun /tmp/agentrun", "mkdir /opt/other", "chmod 0777 /opt/agentrun"]) {
+				assert.notEqual((await run(user.client, script)).code, 0, `uid 1000: ${script}`);
+			}
+			user.client.close();
+			assert.equal(docker("exec", user.name, "stat", "-c", "%u:%g %a %s", "/opt/agentrun/computerd").trim(), `0:0 755 ${daemon().bytes.length}`, "the daemon is as uploaded");
+
+			const root = await as("0:0");
+			const ran = await run(root.client, `grep CapEff /proc/self/status && ${replace}`);
+			root.client.close();
+			assert.equal(ran.code, 0, "root with no capability replaced the daemon: it owns /opt/agentrun");
+			assert.match(ran.out, new RegExp(`^CapEff:\\s+${ZERO}\\n$`), "and had no capability to do it with");
+			const bridged = spawnSync("docker", ["exec", root.name, ...modalCommands().stdio], { encoding: "utf8" });
+			assert.match(bridged.stdout, /^CapEff:\s+[0-9a-f]{16}\n$/);
+			assert.notEqual(bridged.stdout.trim().split(/\s+/)[1], ZERO, "the bridge's exec ran the replacement with the container's capabilities");
+		});
 
 		it(`${image}: init that cannot empty its bounding set (root without CAP_SETPCAP) refuses to start, in words, and the container ends`, () => {
 			const { name } = sandbox(image, { user: "0:0", caps: ["--cap-drop", "SETPCAP"] });

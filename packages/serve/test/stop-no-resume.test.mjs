@@ -8,6 +8,7 @@ import { readFileSync } from "node:fs";
 import { join } from "node:path";
 import { test } from "node:test";
 import { agent, follow, runDir, runRecordOf, serve } from "./support.mjs";
+import { fauxTable } from "./fixtures/faux-table.mjs";
 
 const sleep = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
 const resumedRows = (rows) => rows.filter((r) => r.kind === "phase" && r.summary.startsWith("Resumed")).map((r) => r.summary);
@@ -22,7 +23,7 @@ async function until(what, check, ms = 60_000) {
 for (const harness of ["pi", "claude-agent"]) {
   test(`${harness}: a run that answered, then is followed up, shows no "Resumed" phase: its server let it go, nothing stopped or crashed`, { timeout: 240_000 }, async (t) => {
     const fauxHarness = new URL("./fixtures/faux-harness.mjs", import.meta.url).pathname;
-    const { api, data } = await serve(t, harness === "pi" ? {} : { fauxHarness });
+    const { api, data } = await serve(t, harness === "pi" ? {} : { harnessTable: fauxTable(fauxHarness) });
     const id = `answered-${harness}`;
     assert.equal((await api("POST", "/agents", harness === "pi" ? agent(id, {}) : agent(id, { harness, instructions: "Make three requests." }))).status, 201);
     const runId = (await api("POST", `/agents/${id}/runs`, { input: { content: "hi" } })).body.run_id;

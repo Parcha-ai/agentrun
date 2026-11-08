@@ -12,7 +12,7 @@ provider.
 
 This is the README's [Try it](../../README.md#try-it-no-disk-no-key), as one file. It needs `@parcha/pi-durable-disk`
 0.1.0-beta.15 or later (`localRun` first shipped in 0.1.0-beta.13, and `readLocalRunStatus`, which reads the run's
-`run.json`, in 0.1.0-beta.15), on Linux with Node 22.19 or later.
+record, in 0.1.0-beta.15), on Linux with Node 22.19 or later.
 
 **From an install** (an empty directory; the npm package does not ship `examples/`, so save the file from GitHub at the tag
 of the version you installed):
@@ -59,11 +59,9 @@ ok: three processes, one run: each picked up where the last released it, the las
   `release()` seals the run, and the next open finds the store as the last process left it.
 - The faux model answers from the conversation it is handed, which is why the third answer can quote the first question:
   pi-durable gave it the messages the first two processes committed.
-- `readLocalRunStatus(root)` reads the run's `run.json` from outside: `done`, generation 3.
+- `readLocalRunStatus(root)` reads the run's record from outside, once no process holds it: `done`, generation 3.
 
 ## What it does not show
 
 A run on a local directory guards one machine only: the directory is the claim, so nothing keeps out a process on another
-machine that can reach it. [Bring your own disk](../../README.md#bring-your-own-disk) puts the run on an Archil disk that any
-host can mount, and [planned-move](../planned-move/) moves a run between two hosts. The model is scripted, so the answers say
-nothing about a real model.
+machine that can reach it. The model is scripted, so the answers say nothing about a real model.

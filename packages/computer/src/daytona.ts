@@ -257,14 +257,29 @@ const CAPS = ["CapInh", "CapPrm", "CapEff", "CapBnd", "CapAmb"];
 /** Root for what follows: the session's own user when it is root, else passwordless sudo, which the install checked. */
 const ROOT = 'p=; [ "$(id -u)" = 0 ] || p="sudo -n"';
 
+/** Whether the daemon at d is root's alone: the binary and every directory above it owned by root and writable by no
+ *  group or other user (and so no symbolic link, no ACL). Else a user who could rename an entry on the path could put
+ *  another binary there, which init and every bridge would run as root. Only root can change an owner or a mode, so a
+ *  path that holds once holds until root changes it. Prints why it does not, and fails. `ls -ldn` is in BusyBox and
+ *  coreutils alike; a trailing `.` (an SELinux label) is allowed, a `+` (an ACL) is not. */
+const HELD = 'held() { x=$1; while :; do set -- $(ls -ldn "$x" 2>/dev/null); case "$1" in ?????[!w]??[!w]?|?????[!w]??[!w]?.) ;; *) false ;; esac && [ "$3" = 0 ] || { echo "the daemon at $d is not root\'s alone: $x is ${1:-missing}, owner ${3:-none}"; return 1; }; [ "$x" = / ] && return 0; x=${x%/*}; x=${x:-/}; done; }';
+
 /** Installs the uploaded daemon root-owned and read-only to its user, makes its home and socket directory (init gives
  *  them to the daemon's user), and prints the installed binary's sha256. As root, or through passwordless sudo; else
- *  it says why. Every tool is in BusyBox and in coreutils alike: no privilege tool of the snapshot's is relied on. */
+ *  it says why. The daemon's directory is made root's (0755) even when the snapshot already had it, a stale entry at
+ *  the daemon's path is removed first, and the whole path is held to `held` before and after; a path another user can
+ *  change is refused with nothing installed. Every tool is in BusyBox and in coreutils alike: no privilege tool of the
+ *  snapshot's is relied on. */
 const INSTALL_SCRIPT = [
 	"# agentrun-computer: install",
-	"s=$1; d=$2; h=$3; r=$4",
+	"s=$1; d=$2; h=$3; r=$4; b=${d%/*}",
 	'if [ "$(id -u)" = 0 ]; then p=; elif command -v sudo >/dev/null 2>&1 && sudo -n true 2>/dev/null; then p="sudo -n"; else echo "the sandbox user $(id -un) is not root and has no passwordless sudo, so the daemon cannot be installed"; exit 3; fi',
-	'$p mkdir -p "${d%/*}" "$h" "$r" && $p install -m 0755 -o 0 -g 0 "$s" "$d" || { echo "installing the daemon at $d failed"; exit 5; }',
+	HELD,
+	'[ -d "${b%/*}" ] || $p mkdir -p -m 0755 "${b%/*}" || { echo "installing the daemon at $d failed"; exit 5; }',
+	'held "${b%/*}" || exit 6',
+	'[ ! -L "$b" ] || { echo "the daemon at $d is not root\'s alone: $b is a symbolic link"; exit 6; }',
+	'$p mkdir -p "$b" "$h" "$r" && $p chown 0:0 "$b" && $p chmod 0755 "$b" && $p rm -f "$d" && $p install -m 0755 -o 0 -g 0 "$s" "$d" || { echo "installing the daemon at $d failed"; exit 5; }',
+	'held "$d" || exit 6',
 	'rm -f "$s"',
 	'echo "sha256 $($p sha256sum "$d" | cut -c1-64)"',
 ].join("\n");
@@ -275,13 +290,17 @@ const INSTALL_SCRIPT = [
 const INIT_SCRIPT = [
 	"# agentrun-computer: init",
 	"d=$1; t=$2; w=$3; h=$4; r=$5",
+	HELD,
+	'held "$d" >&2 || exit 6',
 	ROOT,
 	`exec $p env -i PATH=${PATH} HOME="$h" AGENTRUN_COMPUTERD_SOCKET="$r/computerd.sock" sh -c 'cd "$HOME" && exec "$@"' sh "$d" init --deadline "$t" --user "$w"`,
 ].join("\n");
 
 /** The bridge one connection runs: stdin and stdout to init's socket. As root, to reach a socket in a directory that is
- *  the daemon's user's alone; it only carries bytes, and the session's user is root or has passwordless sudo already. */
-const STDIO_SCRIPT = ["# agentrun-computer: stdio", "d=$1; r=$2", ROOT, `exec $p env -i PATH=${PATH} AGENTRUN_COMPUTERD_SOCKET="$r/computerd.sock" "$d" stdio`].join("\n");
+ *  the daemon's user's alone; it only carries bytes, and the session's user is root or has passwordless sudo already.
+ *  Like init, it runs the daemon only when its path is root's alone (`held`), so a computer attached from an older
+ *  install is checked too. */
+const STDIO_SCRIPT = ["# agentrun-computer: stdio", "d=$1; r=$2", HELD, 'held "$d" >&2 || exit 6', ROOT, `exec $p env -i PATH=${PATH} AGENTRUN_COMPUTERD_SOCKET="$r/computerd.sock" "$d" stdio`].join("\n");
 
 /**
  * The three commands the provider sends into a sandbox, exactly: install (through /process/execute), init and stdio

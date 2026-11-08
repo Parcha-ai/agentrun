@@ -89,7 +89,7 @@ export interface ModalTimeouts {
 	createMs: number;
 	/** Every other SDK call: apps.fromName, fromId, getTags, poll, terminate, exec's start. */
 	callMs: number;
-	/** The daemon's hello over a new connection. */
+	/** A new connection, from the start of the bridge's exec (at most callMs of it) to the daemon's hello. */
 	helloMs: number;
 	/** The probe, run through the daemon. */
 	probeMs: number;
@@ -149,6 +149,9 @@ export const ENV = {
 /** The SDK's default server (modal-client@64880502:js/src/config.ts:143). */
 const MODAL_DEFAULT_SERVER_URL = "https://api.modal.com:443";
 
+/** The server the key goes to: COMPUTER_MODAL_SERVER_URL, else the SDK's default. */
+export const modalServerUrl = (env: Record<string, string | undefined> = process.env): string => env[ENV.serverUrl] || MODAL_DEFAULT_SERVER_URL;
+
 /** What fromEnv gives the SDK's ModalClient: the token, explicitly, so the SDK fills none of it in. */
 export interface ModalClientParams {
 	tokenId: string;
@@ -189,7 +192,7 @@ export async function modalClient({ env = process.env, ModalClient }: { env?: Re
 				`Unset it, and name the server in ${ENV.serverUrl} if it is not ${MODAL_DEFAULT_SERVER_URL}`,
 		);
 	}
-	const serverUrl = env[ENV.serverUrl] || MODAL_DEFAULT_SERVER_URL;
+	const serverUrl = modalServerUrl(env);
 	const Client = ModalClient ?? ((await import(MODAL_PACKAGE)) as { ModalClient: ModalClientConstructor }).ModalClient;
 	// getProfile reads MODAL_SERVER_URL from process.env when the client is constructed (client.ts:123), and the
 	// control-plane client is made then (client.ts:175); afterwards process.env is as it was.
@@ -239,6 +242,16 @@ const WORKDIR = /^\/[A-Za-z0-9._/-]*$/;
 const USER = /^(\d+)(?::(\d+))?$/;
 const MAX_ID = 4_294_967_294;
 const USER_FORM = "a uid or uid:gid in numbers, such as 1000:1000; a name is refused, since the image may not have it";
+/** A user that is root: uid 0, however written, or the name, with or without a group. */
+const ROOT_USER = /^(?:0+|root)(?::|$)/;
+const isRootUser = (value: unknown) => typeof value === "string" && ROOT_USER.test(value);
+/**
+ * Why a Modal computer never runs as root. Init leaves root no capability, yet uid 0 still owns /, /opt and
+ * /opt/agentrun, so it can rename a program of its own over the daemon; no file mode stops the owner of every directory
+ * above it. Every connection is Modal's exec of that path, outside the daemon, with Modal's own root capabilities.
+ */
+const ROOT =
+	"a Modal computer does not run as root: each connection is Modal's exec of the daemon's stdio bridge, which runs /opt/agentrun/computerd outside the daemon with Modal's own root capabilities, and a root computer user, though init leaves it no capability, owns /, /opt and /opt/agentrun, so it could replace what that exec runs; ask for another uid, such as 1000:1000";
 const TARGET = /^(?:\[[0-9A-Fa-f:.]+\]|[A-Za-z0-9.-]+):[0-9]{1,5}$/;
 /** Modal's own default request (guide/sandbox-resources, "Pay for what you use"): a spec's sizes are limits, as in Docker. */
 const CPU_REQUEST = 0.125;
@@ -273,6 +286,10 @@ const ENTRYPOINT_SCRIPT = [
 	'exec "$d" "$@"',
 ].join("\n");
 
+/** held PATH: every component of PATH up to / is owned by uid 0 with no group or other write, and not a link; else it
+ *  says which is not and returns 1. The same rule as the Daytona provider's install. */
+const HELD = 'held() { x=$1; while :; do set -- $(ls -ldn "$x" 2>/dev/null); case "$1" in ?????[!w]??[!w]?|?????[!w]??[!w]?.) ;; *) false ;; esac && [ "$3" = 0 ] || { echo "the daemon at $d is not root\'s alone: $x is ${1:-missing}, owner ${3:-none}"; return 1; }; [ "$x" = / ] && return 0; x=${x%/*}; x=${x:-/}; done; }';
+
 /**
  * The upload, run through exec as root (Modal containers always run as root): stdin to a part file beside the daemon's
  * path, its sha256 printed, and the part moved into place last, only when it is the one named. The rename is what the
@@ -280,12 +297,36 @@ const ENTRYPOINT_SCRIPT = [
  */
 const UPLOAD_SCRIPT = [
 	"# agentrun-computer: upload",
-	'd=$1; s=$2; p="${d%/*}/.computerd.part"',
-	'mkdir -p "${d%/*}" && cat > "$p" && chmod 0755 "$p" || { echo "writing the daemon to $p failed"; exit 4; }',
+	'd=$1; s=$2; b=${d%/*}; p="$b/.computerd.part"',
+	// The daemon's path must be root's alone, every directory up to /: each connection runs it as root through Modal's
+	// exec, so a path a non-root computer user could change would let that user swap what root runs. A path another
+	// user can change is refused with nothing installed; the daemon's own directory is made root's (0755) first.
+	HELD,
+	'[ -d "${b%/*}" ] || mkdir -p -m 0755 "${b%/*}" || { echo "making ${b%/*} failed"; exit 4; }',
+	'held "${b%/*}" || exit 7',
+	'[ -L "$b" ] && { echo "the daemon at $d is not root\'s alone: $b is a symbolic link"; exit 7; }',
+	'mkdir -p "$b" && chown 0:0 "$b" && chmod 0755 "$b" || { echo "making $b root\'s failed"; exit 4; }',
+	'cat > "$p" && chmod 0755 "$p" || { echo "writing the daemon to $p failed"; exit 4; }',
 	'r=$(sha256sum "$p" | cut -c1-64)',
 	'echo "sha256 $r"',
 	'[ "$r" = "$s" ] || { echo "the daemon written to $p reads sha256 $r, not $s, so it is not moved into place"; exit 5; }',
 	'mv -f "$p" "$d" || { echo "moving the daemon into $d failed"; exit 6; }',
+	'held "$d" || exit 7',
+].join("\n");
+
+/**
+ * The image route's hold step, run as root while the computer's image is built, right after the daemon is copied in:
+ * the daemon's directory and binary are made root's (0755), a link is refused, and the whole path up to / is held to
+ * the same rule as the upload's. A path another user can change fails the build, so no computer is made from it.
+ */
+const HOLD_SCRIPT = [
+	"# agentrun-computer: hold",
+	'd=$1; b=${d%/*}',
+	HELD,
+	'held "${b%/*}" || exit 7',
+	'[ -L "$b" ] && { echo "the daemon at $d is not root\'s alone: $b is a symbolic link"; exit 7; }',
+	'chown 0:0 "$b" "$d" && chmod 0755 "$b" "$d" || { echo "making $d root\'s failed"; exit 4; }',
+	'held "$d" || exit 7',
 ].join("\n");
 
 /**
@@ -303,6 +344,7 @@ export function modalCommands({
 	return {
 		entrypoint: ["sh", "-c", ENTRYPOINT_SCRIPT, "sh", daemon, String(waitSeconds), home, "init", "--deadline", deadline, "--user", user],
 		upload: ["sh", "-c", UPLOAD_SCRIPT, "sh", daemon, sha256],
+		hold: ["sh", "-c", HOLD_SCRIPT, "sh", daemon],
 		stdio: [daemon, "stdio"],
 	};
 }
@@ -601,7 +643,7 @@ export class ModalProvider implements ComputerProvider {
 		}
 		const given = user === undefined ? "1000:1000" : userOf(user);
 		if (given === undefined) throw new Error(`the provider's user ${JSON.stringify(user)} must be ${USER_FORM}`);
-		if (given.startsWith("0:")) throw new Error(`the provider's user ${user} is root; a computer runs as root only when its spec asks for user "0"`);
+		if (given.startsWith("0:")) throw new Error(`the provider's user ${user} is root; ${ROOT}`);
 		if (given.endsWith(":0")) throw new Error(`the provider's user ${user} is in root's group (gid 0); a computer is in group 0 only when its spec asks`);
 		const merged = { ...DEFAULT_TIMEOUTS, ...timeouts };
 		for (const [key, value] of Object.entries(merged)) {
@@ -637,7 +679,8 @@ export class ModalProvider implements ComputerProvider {
 			daemon: "pid1",
 			groups: ["exec", "files", "processes"],
 			maxLifetimeMs: this.#maxLifetimeMs,
-			user: ["root", "uid"],
+			// Never root: see ROOT.
+			user: ["uid"],
 			release: ["delete"],
 		};
 	}
@@ -675,7 +718,8 @@ export class ModalProvider implements ComputerProvider {
 		if (workdir !== undefined && !(typeof workdir === "string" && WORKDIR.test(workdir))) {
 			refuse("workdir", "workdir must be an absolute path of letters, digits and . _ - / only: it becomes the image's WORKDIR");
 		}
-		if (user !== undefined && userOf(user) === undefined) refuse("user", `user must be ${USER_FORM}`);
+		if (isRootUser(user)) refuse("user", ROOT);
+		else if (user !== undefined && userOf(user) === undefined) refuse("user", `user must be ${USER_FORM}`);
 		for (const [field, value] of Object.entries(given)) {
 			if (SPEC_FIELDS.has(field) || value === undefined) continue;
 			if (field === "gpu") refuse(field, "this provider makes VM computers, and Modal offers GPUs on the gVisor runtime only");
@@ -711,7 +755,10 @@ export class ModalProvider implements ComputerProvider {
 		// With daemonImage the daemon comes in as a layer of the computer's own image, there before the command starts.
 		// Without, the command is the entrypoint, which waits for the upload below. Either way the computer needs no
 		// network to get it. HOME is a directory init gives the computer's user.
-		const copy = this.#daemonImage === undefined ? [] : [`COPY --from=${this.#daemonImage} /computerd ${DAEMON_IN_COMPUTER}`];
+		// The image route holds the daemon's path to root's alone in the image itself (exec form, no shell quoting): each
+		// connection runs it as root through Modal's exec, so a path a non-root computer user could change fails the build.
+		const copy =
+			this.#daemonImage === undefined ? [] : [`COPY --from=${this.#daemonImage} /computerd ${DAEMON_IN_COMPUTER}`, `RUN ${JSON.stringify(modalCommands().hold)}`];
 		const image = this.#sdk.images.fromRegistry(spec.image).dockerfileCommands([...copy, `ENV HOME=${WORK}`, `WORKDIR ${workdir}`]);
 		const { uploadMs, callMs } = this.#timeouts;
 		const command =
@@ -897,6 +944,8 @@ export class ModalProvider implements ComputerProvider {
 		if (problem) return fail("invalid", problem);
 		const found = await this.#own(ref);
 		if (!found.ok) return found;
+		const root = rootRecorded(found.value.tags, ref.name);
+		if (root) return root;
 		const opened = await this.#open(found.value.sandbox, ref.name);
 		if (!opened.ok) return opened;
 		const drift = helloDrift(opened.value.hello, this.#expected());
@@ -912,16 +961,40 @@ export class ModalProvider implements ComputerProvider {
 	async #openWhenListening(sandbox: ModalSandbox, name: string, signal?: AbortSignal): Promise<Result<ComputerConnection>> {
 		const until = Date.now() + this.#timeouts.helloMs;
 		for (;;) {
-			const opened = await this.#open(sandbox, name, signal, Math.max(1, until - Date.now()));
+			const opened = await this.#open(sandbox, name, signal, until);
 			if (opened.ok || !opened.notListening || signal?.aborted || Date.now() + LISTEN_RETRY_MS >= until) return opened;
 			await pause(LISTEN_RETRY_MS, signal);
 		}
 	}
 
-	/** One connection to the computer's daemon over `computerd stdio` through exec, after hello, unchecked. */
-	async #open(sandbox: ModalSandbox, name: string, signal?: AbortSignal, helloMs = this.#timeouts.helloMs): Promise<Result<ComputerConnection> & { notListening?: true }> {
-		const started = await call(`exec of the daemon's stdio bridge in ${name}`, () => sandbox.exec([DAEMON_IN_COMPUTER, "stdio"], { mode: "binary" }), this.#timeouts.callMs, signal);
-		if (!started.ok) return started;
+	/**
+	 * One connection to the computer's daemon over `computerd stdio` through exec, after hello, unchecked. One deadline,
+	 * until (helloMs from now by default), bounds the exec's start and hello together: the start takes at most callMs of
+	 * it and hello what is left. Modal's exec goes on when the start is given up on (a timeout or the caller's abort), so
+	 * a bridge that lands after that has its stdin closed as it lands, and ends, as a late sandbox create is terminated.
+	 */
+	async #open(sandbox: ModalSandbox, name: string, signal?: AbortSignal, until = Date.now() + this.#timeouts.helloMs): Promise<Result<ComputerConnection> & { notListening?: true }> {
+		const what = `exec of the daemon's stdio bridge in ${name}`;
+		const { helloMs: totalMs, callMs } = this.#timeouts;
+		if (signal?.aborted) return fail("aborted", `${what} was aborted before it was called`);
+		let starting: Promise<ModalProcess>;
+		try {
+			starting = Promise.resolve(sandbox.exec([DAEMON_IN_COMPUTER, "stdio"], { mode: "binary" }));
+		} catch (error) {
+			return fail(codeOf(error), `${what} failed: ${words(error)}`);
+		}
+		const startMs = Math.max(1, Math.min(callMs, until - Date.now()));
+		const started = await race(starting, what, startMs, signal);
+		if (!started.ok) {
+			if (started.error.code === "timeout" || started.error.code === "aborted") {
+				starting.then((late) => late.stdin.close()).catch(() => {});
+				if (started.error.code === "timeout" && startMs < callMs) {
+					return fail("timeout", `the daemon in ${name} did not answer hello within ${seconds(totalMs)}: the exec of its stdio bridge had not started; a bridge that starts after this is closed`);
+				}
+				return fail(started.error.code, `${started.error.message}; a bridge that starts after this is closed`);
+			}
+			return started;
+		}
 		const program = started.value;
 		let stderr = "";
 		const stderrRead = (async () => {
@@ -944,14 +1017,14 @@ export class ModalProvider implements ComputerProvider {
 				client.close();
 				await race(program.wait(), "the stdio bridge's exit", CLOSE_WAIT_MS);
 			})());
-		const bound = within(helloMs, signal);
+		const bound = within(Math.max(1, until - Date.now()), signal);
 		const hello = await client.call("hello", { client: `@parcha/agentrun-computer ${VERSION}` }, { signal: bound.signal });
 		bound.clear();
 		if (!hello.ok) {
 			if (hello.error.code === "gone") await race(stderrRead, "the stdio bridge's stderr", 1000);
 			await close();
 			if (signal?.aborted) return fail("aborted", `hello to the daemon in ${name} was aborted`);
-			if (hello.error.code === "aborted") return fail("timeout", `the daemon in ${name} did not answer hello within ${seconds(helloMs)}`);
+			if (hello.error.code === "aborted") return fail("timeout", `the daemon in ${name} did not answer hello within ${seconds(totalMs)}`);
 			if (hello.error.code !== "gone") return hello;
 			return { ...fail("modal", `cannot reach the daemon in ${name}: ${stderr.trim() || hello.error.message}`), notListening: true };
 		}
@@ -1006,6 +1079,8 @@ export class ModalProvider implements ComputerProvider {
 			const { image, network, cpus, memoryMb, workdir, user } = recorded;
 			const refusals = this.check({ image, lifetimeMs: 1, network, cpus, memoryMb, workdir, user } as ComputerSpec);
 			found.push(...refusals.map(({ field, message }) => `${field}: ${message}, as recorded at create`));
+			// No exec in a computer whose user is root: the bridge would run what that user could have replaced.
+			if (isRootUser(user)) return fail("refused", `the computer ${name} does not match this provider, so attach refuses it and it is left as it is: ${found.join("; ")}`);
 		}
 		const inside = await this.#inside(sandbox, name, signal);
 		if (!inside.ok) return inside;
@@ -1090,6 +1165,8 @@ export class ModalProvider implements ComputerProvider {
 		if (policy !== undefined && policy !== recorded) return fail("refused", `${FIXED}: ${ref.name} was created with network ${recorded}, not ${policy}`);
 		let read: NetworkPolicy = recorded;
 		if (recorded === "none") {
+			const root = rootRecorded(found.value.tags, ref.name);
+			if (root) return root;
 			const inside = await this.#inside(found.value.sandbox, ref.name, signal);
 			if (!inside.ok) return inside;
 			const { reached } = inside.value.probe;
@@ -1127,6 +1204,13 @@ export class ModalProvider implements ComputerProvider {
 		if (finished.ok) return ok(undefined);
 		return fail(finished.error.code, `release delete of ${ref.name} is not done: ${finished.error.message}`);
 	}
+}
+
+/** A refusal for a computer whose spec tag records a root user, before any exec in it (see ROOT); else undefined. */
+function rootRecorded(tags: Record<string, string>, name: string): Result<never> | undefined {
+	const recorded = recordedOf(tags);
+	if (typeof recorded === "string" || !isRootUser(recorded.user)) return undefined;
+	return fail("refused", `the computer ${name} was made with user ${recorded.user}, so this provider runs nothing in it: ${ROOT}`);
 }
 
 /** Why ref is not a Modal computer's ref, or undefined. */

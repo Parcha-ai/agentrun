@@ -1,10 +1,12 @@
-// A revision's skills as a run's harness gets them. pi and codex, when the run can read its files (a `read` or `bash`
-// tool), get each skill's name, what it is for and its SKILL.md's path in the system prompt, and read the SKILL.md when
-// it fits the step they are on (on demand); a run that cannot read files gets every skill's SKILL.md inlined there.
-// claude-agent loads skills itself (its Skill tool, from a local plugin the adapter writes): it gets each skill whole, every
-// file of it, and the prompt keeps only the skills its adapter would refuse. The adapter's own check (its exported
-// skillProblems) says which: serve takes any <name>/SKILL.md, the adapter only a lowercase name, a SKILL.md whose front
-// matter names the skill and describes it, plain file paths, and 1 MiB in all.
+// A revision's skills as a run's harness gets them. pi, when the run can read its files (a `read` or `bash` tool), gets
+// each skill's name, what it is for and its SKILL.md's path in the system prompt, and reads the SKILL.md when it fits the
+// step it is on (on demand); a run that cannot read files gets every skill's SKILL.md inlined there. claude-agent, codex
+// and opencode load skills themselves (claude-agent's Skill tool, from a local plugin the adapter writes; Codex's own skills
+// list, from the session's CODEX_HOME/skills; OpenCode's instructions; codex and opencode read a skill's files with
+// read_skill_file): each gets every skill whole, every file of it, and the prompt keeps only the skills its adapter would
+// refuse. The adapter's own check (its exported skillProblems) says which: serve takes any <name>/SKILL.md, the adapter
+// only a lowercase name, a SKILL.md whose front matter names the skill and describes it, plain file paths, and 1 MiB in
+// all.
 import { learnedFront } from "./learn/skills.js";
 import { skillNames } from "./validate.js";
 import { readWorkText } from "./workspace.js";

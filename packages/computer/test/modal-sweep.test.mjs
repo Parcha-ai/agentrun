@@ -60,6 +60,7 @@ test("--before records every running sandbox in the app that carries the compute
 	assert.deepEqual(record.ids, [one, two].sort());
 	assert.equal(record.tag, `${COMPUTER}=1`);
 	assert.equal(record.app, APP);
+	assert.equal(record.serverUrl, "https://api.modal.com:443", "the server the listing came from, the SDK's default when unset");
 	assert.deepEqual(ran.made, [{ tokenId: "fake-dev-id", tokenSecret: "fake-dev-secret" }], "the COMPUTER_MODAL_ token, passed explicitly");
 	assert.deepEqual(
 		fake.calls.find(([name]) => name === "sandboxes.list"),
@@ -134,7 +135,7 @@ test("--after: a terminate that fails is said, and the sandbox counts as still t
 test("exit 2 on a usage error, a before file it cannot read, a missing token or app, or a listing Modal refused; nothing is terminated", async () => {
 	const fake = fakeModal({ sandboxes: [tagged()] });
 	const good = fileIn();
-	writeFileSync(good, `${JSON.stringify({ ids: [] })}\n`);
+	writeFileSync(good, `${JSON.stringify({ app: APP, serverUrl: "https://api.modal.com:443", ids: [] })}\n`);
 	const notBefore = fileIn();
 	writeFileSync(notBefore, "{}\n");
 	for (const [argv, env, pattern] of [
@@ -164,6 +165,56 @@ test("exit 2 on a usage error, a before file it cannot read, a missing token or 
 	const before = await sweep(["--before", fileIn()], refused);
 	assert.equal(before.code, 2);
 	assert.match(before.stderr, /nothing was recorded/);
+});
+
+test("--after refuses a before file of another app or server, or one that names neither, before any list or terminate", async () => {
+	const fake = fakeModal({ sandboxes: [tagged()] });
+	const file = fileIn();
+	assert.equal((await sweep(["--before", file], fake)).code, 0);
+	const record = JSON.parse(readFileSync(file, "utf8"));
+	const other = { ...ENV, COMPUTER_MODAL_APP: "elsewhere" };
+	fake.add({ ...tagged(), appId: "ap-elsewhere" });
+	const write = (patch) => {
+		const path = fileIn();
+		writeFileSync(path, `${JSON.stringify({ ...record, ...patch })}\n`);
+		return path;
+	};
+	const { app: _app, ...noApp } = record;
+	const { serverUrl: _server, ...noServer } = record;
+	const bare = (value) => {
+		const path = fileIn();
+		writeFileSync(path, `${JSON.stringify(value)}\n`);
+		return path;
+	};
+	for (const [what, path, env, pattern] of [
+		["the environment names another app", file, other, /recorded in the app computers.*COMPUTER_MODAL_APP names elsewhere/],
+		["the file names another app", write({ app: "elsewhere" }), ENV, /recorded in the app elsewhere.*COMPUTER_MODAL_APP names computers/],
+		["the environment names another server", file, { ...ENV, COMPUTER_MODAL_SERVER_URL: "https://other.example.invalid:443" }, /recorded from https:\/\/api\.modal\.com:443.*https:\/\/other\.example\.invalid:443/],
+		["the file names no app", bare(noApp), ENV, /names no app/],
+		["the file names no server", bare(noServer), ENV, /names no server/],
+	]) {
+		fake.calls.length = 0;
+		const ran = await sweep(["--after", path], fake, { env });
+		assert.equal(ran.code, 2, `${what}: ${ran.stderr}`);
+		assert.match(ran.stderr, pattern, what);
+		assert.match(ran.stderr, /nothing was listed or terminated/, what);
+		assert.equal(ran.stdout, "", what);
+		assert.deepEqual(fake.names().filter((name) => name === "sandboxes.list" || name === "sandbox.terminate"), [], `${what}: no list, no terminate`);
+	}
+	assert.ok([...fake.sandboxes.values()].every((one) => one.running), "every sandbox runs on");
+});
+
+test("--before records the server COMPUTER_MODAL_SERVER_URL names, and --after takes it back from the same", async () => {
+	const fake = fakeModal({ sandboxes: [tagged()] });
+	const env = { ...ENV, COMPUTER_MODAL_SERVER_URL: "https://dev.example.invalid:443" };
+	const file = fileIn();
+	assert.equal((await sweep(["--before", file], fake, { env })).code, 0);
+	assert.equal(JSON.parse(readFileSync(file, "utf8")).serverUrl, "https://dev.example.invalid:443");
+	const fresh = fake.add(tagged());
+	const ran = await sweep(["--after", file], fake, { env });
+	assert.equal(ran.code, 0, ran.stderr);
+	assert.deepEqual(JSON.parse(ran.stdout), { swept: 1, gone: 1, stillThere: [] });
+	assert.equal(fake.sandboxes.get(fresh).running, false);
 });
 
 test("the sweep needs no live switch, and imports nothing from the SDK at load", async () => {

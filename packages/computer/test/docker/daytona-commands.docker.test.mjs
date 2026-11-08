@@ -5,7 +5,7 @@
 // needs `npm run build` and `npm run build:daemon`, and debian:bookworm-slim and alpine:3.20 pulled. Each container is
 // named computer-daytona-<hex> and removed by that name, pass or fail.
 import assert from "node:assert/strict";
-import { execFileSync, spawn } from "node:child_process";
+import { execFileSync, spawn, spawnSync } from "node:child_process";
 import { createHash, randomBytes } from "node:crypto";
 import { readFileSync } from "node:fs";
 import { fileURLToPath } from "node:url";
@@ -17,6 +17,15 @@ const LIVE = process.env.AGENTRUN_COMPUTER_LIVE_DOCKER === "1";
 const docker = (...args) => execFileSync("docker", args, { encoding: "utf8" });
 const STAGING = "/tmp/agentrun-computerd-0123456789abcdef";
 const CAPS = ["CapInh", "CapPrm", "CapEff", "CapBnd", "CapAmb"];
+
+/** A command in a container, as root unless a user is given: piped to a shell's stdin as /process/execute does, or as
+ *  `sh -c` as a session command runs, with empty stdin. Never throws: the exit status and both streams. */
+function shell(name, command, { user, piped = false } = {}) {
+	const as = user ? ["--user", user] : [];
+	const argv = piped ? ["exec", "-i", ...as, name, "sh"] : ["exec", "-i", ...as, name, "sh", "-c", command];
+	const ran = spawnSync("docker", argv, { input: piped ? command : "", encoding: "utf8", timeout: 60_000 });
+	return { status: ran.status, stdout: ran.stdout ?? "", stderr: ran.stderr ?? "" };
+}
 
 /**
  * Each image, and how a setuid-root `id` is made in it before the daemon starts: coreutils' id copied, or BusyBox's
@@ -112,6 +121,52 @@ describe("the Daytona provider's commands in a root container", { skip: LIVE ? f
 
 			assert.equal(await run([suid, "-u"]), "1000\n", `${suid} is setuid root; with no_new_privs it runs as the daemon's user`);
 			client.close();
+		});
+
+		it(`${image}: the install takes back a daemon directory another user owns, and refuses one under a directory another user can write`, () => {
+			const { name, sha } = sandbox(image);
+			const commands = daytonaCommands({ staging: STAGING, deadline: new Date(Date.now() + 300_000).toISOString() });
+			// A snapshot may already hold the directory, owned by the computer's user.
+			docker("exec", name, "sh", "-c", "mkdir -p /opt/agentrun && chown 1000:1000 /opt/agentrun && chmod 0755 /opt/agentrun");
+			const installed = shell(name, commands.install, { piped: true });
+			assert.equal(installed.status, 0, installed.stdout + installed.stderr);
+			assert.equal(installed.stdout.trim(), `sha256 ${sha}`);
+			assert.equal(docker("exec", name, "stat", "-c", "%u:%g %a", "/opt/agentrun", "/opt/agentrun/computerd").trim(), "0:0 755\n0:0 755");
+			const swapped = shell(name, "mv /opt/agentrun/computerd /tmp/computerd", { user: "1000:1000" });
+			assert.notEqual(swapped.status, 0, "the computer's user cannot move the daemon out of its directory");
+			assert.equal(docker("exec", name, "sh", "-c", "test -e /tmp/computerd && echo moved || echo kept").trim(), "kept");
+
+			// A directory above it that another user can write: that user could rename /opt/agentrun and make its own.
+			const open = sandbox(image);
+			docker("exec", open.name, "chmod", "0777", "/opt");
+			const refused = shell(open.name, commands.install, { piped: true });
+			assert.equal(refused.status, 6, refused.stdout + refused.stderr);
+			assert.match(refused.stdout, /the daemon at \/opt\/agentrun\/computerd is not root's alone: \/opt is drwxrwxrwx, owner 0/);
+			assert.equal(docker("exec", open.name, "sh", "-c", "test -e /opt/agentrun/computerd && echo there || echo absent").trim(), "absent");
+		});
+
+		it(`${image}: init and the bridge never run, as root, a daemon another user could have replaced`, () => {
+			const { name, sha } = sandbox(image);
+			const commands = daytonaCommands({ staging: STAGING, deadline: new Date(Date.now() + 300_000).toISOString() });
+			assert.equal(shell(name, commands.install, { piped: true }).stdout.trim(), `sha256 ${sha}`);
+			// The directory as an older install left it when the snapshot already held it, owned by the computer's user,
+			// who then swaps the binary for one that records who ran it.
+			docker("exec", name, "chown", "1000:1000", "/opt/agentrun");
+			const swap = shell(name, "mv /opt/agentrun/computerd /opt/agentrun/real && printf '#!/bin/sh\\nid -u > /tmp/ran-as\\n' > /opt/agentrun/computerd && chmod 0755 /opt/agentrun/computerd", { user: "1000:1000" });
+			assert.equal(swap.status, 0, swap.stderr);
+			for (const which of ["init", "stdio"]) {
+				const ran = shell(name, commands[which]);
+				assert.equal(ran.status, 6, `${which}: ${ran.stdout}${ran.stderr}`);
+				assert.match(ran.stderr, /the daemon at \/opt\/agentrun\/computerd is not root's alone: \/opt\/agentrun\/computerd is -rwxr-xr-x, owner 1000/, which);
+				assert.equal(docker("exec", name, "sh", "-c", "cat /tmp/ran-as 2>/dev/null || echo never ran").trim(), "never ran", which);
+			}
+			// A root-owned binary in that directory is refused too: its owner could swap it at any time.
+			docker("exec", name, "sh", "-c", "mv /opt/agentrun/real /opt/agentrun/computerd && chown 0:0 /opt/agentrun/computerd");
+			for (const which of ["init", "stdio"]) {
+				const ran = shell(name, commands[which]);
+				assert.equal(ran.status, 6, `${which}: ${ran.stdout}${ran.stderr}`);
+				assert.match(ran.stderr, /the daemon at \/opt\/agentrun\/computerd is not root's alone: \/opt\/agentrun is drwxr-xr-x, owner 1000/, which);
+			}
 		});
 
 		it(`${image}: an install by a user that is not root and has no sudo says why, and installs nothing`, () => {

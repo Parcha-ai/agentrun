@@ -1,9 +1,10 @@
 // Docker for the conformance CLI (`--provider docker`): the provider as fromEnv builds it, and its drifted twin, the same
 // provider with a daemon of another version, built with Go for Docker's architecture when the drift case first asks.
+// With desktop, both are desktops (kind desktop) on an image with an X server, such as test/fixtures/desktop/Dockerfile's.
 import { dockerArch, type DockerFromEnvOptions, type DockerProvider, fromEnv } from "../docker.js";
 import { buildDriftDaemon } from "./drift-daemon.js";
 
-export interface DockerModuleOptions extends Pick<DockerFromEnvOptions, "docker" | "timeoutMs"> {
+export interface DockerModuleOptions extends Pick<DockerFromEnvOptions, "docker" | "timeoutMs" | "desktop"> {
 	/** Where the settings are read; default process.env. */
 	env?: Record<string, string | undefined>;
 }
