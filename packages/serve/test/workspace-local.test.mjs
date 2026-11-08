@@ -2,8 +2,8 @@
 // (paths.ts) pinned to where runs and learning keep their folders today, and what only a local folder has: modes,
 // pipes, a missing root, and durability on return, shown with pi-durable-disk's fsync-snapshot shim.
 import assert from "node:assert/strict";
-import { spawnSync } from "node:child_process";
-import { chmodSync, existsSync, lstatSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, realpathSync, rmSync, statSync, symlinkSync } from "node:fs";
+import { spawn, spawnSync } from "node:child_process";
+import { chmodSync, existsSync, lstatSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, realpathSync, rmSync, statSync, symlinkSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { dirname, join, relative } from "node:path";
 import { after, test } from "node:test";
@@ -154,22 +154,97 @@ function afterCrash(root) {
   return left;
 }
 
-test("local: every write is durable on return (a crash after it keeps it whole); plain node:fs writes are lost", { skip: process.platform !== "linux" && "the fsync-snapshot shim preloads on Linux", timeout: 60_000 }, () => {
-  const { dir } = scratch();
+const SHIM_SKIP = process.platform !== "linux" && "the fsync-snapshot shim preloads on Linux";
+
+/** The fsync-snapshot shim built into `dir`, or undefined off CI when there is no compiler (in CI that fails). */
+function buildShim(dir) {
   const lib = join(dir, "shim.so");
   const built = spawnSync("cc", ["-shared", "-fPIC", "-O2", "-o", lib, SHIM, "-ldl"], { encoding: "utf8" });
-  if (built.status !== 0) {
-    assert.ok(!process.env.CI, `the fsync-snapshot shim did not build: ${built.stderr}`);
-    return;
+  if (built.status === 0) return lib;
+  assert.ok(!process.env.CI, `the fsync-snapshot shim did not build: ${built.stderr}`);
+  return undefined;
+}
+
+/** The durable writer run as `how` on folder `root`, under the shim, to its "returned" and its SIGKILL. */
+function runWriterUnderShim(lib, how, root) {
+  const child = spawnSync(process.execPath, [WRITER, how, root], { encoding: "utf8", env: { ...process.env, LD_PRELOAD: lib, FSYNC_SNAPSHOT_DIR: root }, timeout: 30_000 });
+  assert.equal(child.stdout, "returned\n", `the ${how} writer returned: ${child.stderr}`);
+  assert.equal(child.signal, "SIGKILL");
+}
+
+test("local: every remove is durable on return (a crash after it does not bring the entry back); plain node:fs removes come back", { skip: SHIM_SKIP, timeout: 60_000 }, () => {
+  const { dir } = scratch();
+  const lib = buildShim(dir);
+  if (lib === undefined) return;
+  const removed = ["gone.txt", "sub/gone.txt", "tree"];
+  /** The removed entries a crash would bring back: those whose folder was not synced after the remove (only the
+   *  writer's calls sync anything under the shim's folder, and it only removes). */
+  const cameBack = (root) => removed.filter((entry) => !existsSync(`${dirname(join(root, entry))}.synced`));
+  for (const how of ["plain", "port"]) {
+    const root = join(dir, how);
+    for (const file of ["gone.txt", "keep.txt", "sub/gone.txt", "sub/keep.txt", "tree/x/y.txt", "tree/z.txt"]) {
+      mkdirSync(dirname(join(root, file)), { recursive: true });
+      writeFileSync(join(root, file), "durable before the test\n");
+    }
+    spawnSync("sync");
+    runWriterUnderShim(lib, `${how}-remove`, root);
+    for (const entry of removed) assert.equal(existsSync(join(root, entry)), false, `the ${how} writer removed ${entry}`);
+    if (how === "plain") assert.deepEqual(cameBack(root), removed, "red: a plain unlink or rm that returned comes back after a crash");
+    else assert.deepEqual(cameBack(root), [], "a remove that returned stays removed after a crash");
   }
+});
+
+test("local: a folder swapped for a link to outside, over and over, never sends a read, a write or a remove outside", { skip: process.platform !== "linux" && "the swap race is shown on Linux, where calls go through held folders", timeout: 60_000 }, async () => {
+  const { root, outside } = scratch();
+  const workspace = localWorkspace(root);
+  writeFileSync(join(outside, "victim"), "outside\n");
+  await workspace.write("a/victim", "inside\n");
+  // Another process swaps a/ for a link to outside/ and back, as fast as it can.
+  // A write that finds a/ gone makes it again; the swapper then drops that folder (inside the root) and goes on.
+  const swap = `const fs = require("fs"); const [root, outside] = process.argv.slice(1); process.chdir(root);
+    const back = () => { try { fs.renameSync("a.real", "a"); } catch { fs.rmSync("a", { recursive: true, force: true }); fs.renameSync("a.real", "a"); } };
+    for (;;) {
+      try { fs.renameSync("a", "a.real"); } catch { continue; }
+      try { fs.symlinkSync(outside, "a"); } catch { back(); continue; }
+      fs.unlinkSync("a");
+      back();
+    }`;
+  const swapper = spawn(process.execPath, ["-e", swap, root, outside], { detached: true, stdio: "ignore" });
+  const calls = { done: 0, refused: 0 };
+  try {
+    const until = Date.now() + 3_000;
+    while (Date.now() < until) {
+      for (const call of [
+        () => workspace.read("a/victim").then((bytes) => assert.notEqual(Buffer.from(bytes).toString("utf8"), "outside\n", "a read never returns the outside file")),
+        () => workspace.remove("a/victim", { force: true }),
+        () => workspace.write("a/victim", "inside\n"),
+        () => workspace.append("a/log", "x"),
+        () => workspace.list("a").then((entries) => assert.ok(entries.every((e) => e.name !== "victim" || e.size !== 8), "a list never shows the outside folder")),
+      ]) {
+        await call().then(() => calls.done++, (error) => {
+          if (error?.name !== "WorkspaceError") throw error;
+          calls.refused++;
+        });
+      }
+    }
+  } finally {
+    try { process.kill(-swapper.pid, "SIGKILL"); } catch { /* gone */ }
+  }
+  assert.ok(calls.done > 50, `calls went through between swaps (${JSON.stringify(calls)})`);
+  assert.deepEqual(readdirSync(outside), ["victim"], "nothing was made or removed outside");
+  assert.equal(readFileSync(join(outside, "victim"), "utf8"), "outside\n", "the outside file is unchanged");
+});
+
+test("local: every write is durable on return (a crash after it keeps it whole); plain node:fs writes are lost", { skip: SHIM_SKIP, timeout: 60_000 }, () => {
+  const { dir } = scratch();
+  const lib = buildShim(dir);
+  if (lib === undefined) return;
   const expected = Buffer.alloc(1024 * 1024 + 3);
   for (let i = 0; i < expected.length; i++) expected[i] = (i * 31 + 7) & 0xff;
   const runWriter = (how) => {
     const root = join(dir, how);
     mkdirSync(root);
-    const child = spawnSync(process.execPath, [WRITER, how, root], { encoding: "utf8", env: { ...process.env, LD_PRELOAD: lib, FSYNC_SNAPSHOT_DIR: root }, timeout: 30_000 });
-    assert.equal(child.stdout, "returned\n", `the ${how} writer returned: ${child.stderr}`);
-    assert.equal(child.signal, "SIGKILL");
+    runWriterUnderShim(lib, how, root);
     assert.ok(Buffer.from(readFileSync(join(root, "deep/er/file.bin"))).equals(expected), `the ${how} writer wrote the file`);
     return afterCrash(root);
   };

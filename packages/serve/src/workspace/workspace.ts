@@ -59,8 +59,11 @@ export type GrepOptions = {
   /** Only files whose path matches: `*`, `**` and `?`. A glob with no "/" is matched against the file's name, one with
    *  a "/" against its path from the root. */
   readonly glob?: string;
-  /** The most matches returned (default GREP_MAX). */
+  /** The most matches returned (default and ceiling GREP_MAX). */
   readonly max?: number;
+  /** How long it searches before it stops and returns what it has, truncated "time" (default and ceiling
+   *  GREP_TIME_MS). The deadline holds whatever the regex does: the search is stopped, not asked. */
+  readonly timeMs?: number;
 };
 
 export type ExecOptions = {

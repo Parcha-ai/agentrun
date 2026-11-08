@@ -118,6 +118,12 @@ export function suite(name, make) {
         { path: "notes/b.txt", line: 2, text: "needle three" },
         { path: "src/c.ts", line: 1, text: "const needle = 4;" },
       ], "every match, in path order, and none from the binary file");
+      const started = Date.now();
+      await workspace.write("evil.txt", `${"a".repeat(64)}!\n`);
+      const evil = await workspace.grep("^(a+)+$", { timeMs: 500 });
+      assert.equal(evil.truncated, "time", "a regex that backtracks without end is stopped at the deadline");
+      assert.ok(Date.now() - started < 5_000, `it returned at the deadline, not ${Date.now() - started} ms later`);
+      await workspace.remove("evil.txt");
       const two = await workspace.grep("needle", { max: 2 });
       assert.equal(two.matches.length, 2);
       assert.equal(two.truncated, "max");
