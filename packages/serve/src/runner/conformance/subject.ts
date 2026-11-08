@@ -57,6 +57,7 @@ export type ConformanceCase =
   | "park-on-ask"
   | "approval-names-its-call"
   | "approval-double-click"
+  | "message-never-answers"
   | "fault-effects-once"
   | "fault-restarts-bounded";
 

@@ -55,7 +55,8 @@ function referenceLoop({ script, tools, hooks }, deps) {
   };
   /** Steers handed over since the last step: into the journal, their rows taken in that commit. */
   const writeSteers = async () => {
-    const steers = MUTANT === "steer-at-end" ? [] : takeSteers();
+    // any-row-answers leaves steers in the inbox too, for the ask to take as an answer.
+    const steers = MUTANT === "steer-at-end" || MUTANT === "any-row-answers" ? [] : takeSteers();
     for (const steer of steers) await append(KINDS.message, { role: "steer", text: steer.body.text }, { take: [steer.id] });
   };
   /** The run ends stopped, why on its row (the end commit's summary), the stop row taken in the same commit. */
@@ -147,7 +148,8 @@ function referenceLoop({ script, tools, hooks }, deps) {
               }
               // Resumed on the command row: wait for the answer the runner hands over, naming this call.
               let answer;
-              while (!(answer = inbox.find((command) => (command.kind === "approve" || command.kind === "deny") && (MUTANT === "approval-by-kind" || command.body?.approval === callId)))) {
+              // The mutant any-row-answers lets any row (a message's too) answer the call.
+              while (!(answer = inbox.find((command) => (MUTANT === "any-row-answers" || command.kind === "approve" || command.kind === "deny") && (MUTANT === "approval-by-kind" || MUTANT === "any-row-answers" || command.body?.approval === callId)))) {
                 if (stopReason) return stopReason.kind === "command" ? writeStop() : { state: "interrupted" };
                 // The row that woke the run named no waiting call and was refused: ask again and park on it.
                 if (refusals > 0 && MUTANT !== "approval-by-kind") {

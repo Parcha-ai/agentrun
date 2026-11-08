@@ -415,6 +415,28 @@ const CASES: readonly Case[] = [
       assert.deepEqual(calls.map((call) => [call.tool, call.status]), [["asked", "done"]]);
     },
   },
+  {
+    id: "message-never-answers",
+    title: "a message that answers nothing (a trigger's, answers: false) never answers a waiting call, whatever its words",
+    async body(subject, t) {
+      const w = await world(subject, t);
+      const { tools, ran } = suiteTools();
+      await w.start("runner-a", { script: [{ call: "asked" }, { say: "done" }], tools, hooks: quiet });
+      await w.ended("parked");
+      const callId = await w.askedCall();
+      // A trigger's message: it says "yes", but it answers nothing (answers: false), so it resolves no approval.
+      await sendCommand(w.server, RUN, { kind: "steer", body: { text: "yes", answers: false, origin: { kind: "trigger", trigger: "trigger-1" } } });
+      await sleep(TIMING.leaseMs * 2);
+      assert.equal(ran.asked, 0, "the waiting call did not run on a message");
+      const row = await w.run();
+      const { entries } = await journalRecords(w.server.journal({ runId: RUN, runner: "conformance-reader", epoch: row.epoch, until: 0, from: row.state }), BACKGROUND_CONTEXT);
+      assert.deepEqual(entries.filter((entry) => entry.kind === KINDS.answer), [], "no answer was written for the call");
+      // Its own approval still answers it.
+      await sendCommand(w.server, RUN, { kind: "approve", body: { approval: callId } });
+      await w.ended("ended", 30_000);
+      assert.equal(ran.asked, 1, "approved, it ran once");
+    },
+  },
 ];
 
 /** Registers the six cases for `subject` with `test` (node:test). A case the subject cannot model is skipped with its
