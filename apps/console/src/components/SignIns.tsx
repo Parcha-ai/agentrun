@@ -1,5 +1,5 @@
 import { KeyRound } from "lucide-react";
-import { useState } from "react";
+import { useRef, useState } from "react";
 import { Button } from "@/components/ui/button";
 import type { Agent } from "@/lib/agentForm";
 import { type Client, ClientError, problemOf } from "@/lib/client";
@@ -25,6 +25,9 @@ export function SignIns({ agent, v2, onAgent }: { agent: Agent; v2: Pick<Client,
   const [asking, setAsking] = useState<string | null>(null);
   const [busy, setBusy] = useState(false);
   const [said, setSaid] = useState<{ text: string; run?: string; tone: "warn" | "error" } | null>(null);
+  // The agent the page holds now: a change saved while a Forget waits (the Learning switch) is the one to keep.
+  const latest = useRef(agent);
+  latest.current = agent;
   // The server always serves the list (GET /v2/agents/{id}); an agent read without one has none saved.
   const list = agent.sign_ins ?? [];
   const resolved = agent.tools?.find((t) => t.name === "browser")?.resolved;
@@ -43,7 +46,8 @@ export function SignIns({ agent, v2, onAgent }: { agent: Agent; v2: Pick<Client,
       // The forget went through: a read of the agent that fails after it keeps that, with the key's rows gone here.
       try { onAgent((await v2.getAgent(agent.agent_id)).agent); }
       catch (e) {
-        onAgent({ ...agent, sign_ins: list.filter((s) => s.key !== key) });
+        const now = latest.current;
+        onAgent({ ...now, sign_ins: (now.sign_ins ?? []).filter((s) => s.key !== key) });
         setSaid({ tone: "warn", text: `${known ? `${known.text} ` : "Forgotten. "}The agent couldn't be read again: ${problemOf(e)}` });
       }
     } catch (e) {
