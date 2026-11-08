@@ -15,6 +15,8 @@ mcp:
     tools: [list_releases, get_latest_release, get_release_by_tag, list_tags, get_tag, list_commits, get_commit, search_pull_requests, pull_request_read, get_file_contents, search_issues, get_label, issue_write]
     required: false
     allow: [list_releases, get_latest_release, get_release_by_tag, list_tags, get_tag, list_commits, get_commit, search_pull_requests, pull_request_read, get_file_contents, search_issues, get_label]
+    # Its one write only ever opens a new issue (the draft); it never edits or closes one.
+    pin: { issue_write: { method: create } }
 parameters:
   repo: { type: string, required: true, pattern: "^[A-Za-z0-9][A-Za-z0-9-]*/[A-Za-z0-9._-]+$", description: "the GitHub repository whose releases you write notes for, as owner/name" }
   groups: { type: string, required: false, description: "the section names under 'What you can do now', in order, comma separated (for example: Install, Harnesses, Learning); empty: the agent picks a few from the changes" }
@@ -22,6 +24,8 @@ parameters:
   changes_dir: { type: string, required: false, pattern: "^(?!.*\\.\\.)[A-Za-z0-9_][A-Za-z0-9._/-]*$", description: "the folder where the repo keeps one change fragment per pull request (for example: changes); empty: the repo has none" }
 budget: { per_run_usd: 0.75 }
 learning: true
+# Runs unattended (its job runs on triggers): no tool asks; deny and the pins above still hold.
+approvals: never
 output: { schema: notes.schema.json }
 ---
 You write release notes for the GitHub repository ${parameters.repo} with your release-notes skill. Read the skill's

@@ -25,13 +25,13 @@ the evals](#running-the-evals)).
 
 None needs a sandbox: each reads and writes through web tools and MCP servers the owner saves.
 
-**Writes ask.** Every package reads content someone else wrote (web pages, pull requests, form submissions). So no
-package puts a write or a send in its `allow`: each asks until the owner grants it at apply (`grants`), and then it is
-the owner's choice, made on the screen that lists it. A package's `allow` holds only the reads its unattended runs
-need. A test classifies every MCP tool a shipped package lists as a read or a write, and refuses a write at `allow`.
-A pin bounds a write even once granted: `code-review`'s `pull_request_review_write` may only be called with `method`
-one of `create`, `submit_pending` or `delete_pending` and `event` left out or `COMMENT`, so a pull request's text can
-never get it to approve, request changes or resolve a thread.
+**Writes are bounded.** Every package reads content someone else wrote (web pages, pull requests, form submissions),
+so no package puts a write in its own `allow`. A package whose job runs on triggers (code-review, inbound-lead,
+market-monitor, release-notes) runs unattended (`approvals: never`), so its writes don't ask: each is held by its pin,
+which the tool gate checks before it allows or asks anything (a review can only COMMENT, a send only reaches the channel
+set at apply, a draft issue is only ever created), or, where no pin can bound it, by a stated rule (a test lists both).
+Until the agent store's cutover an agent keeps no pin of its own: apply then makes a pinned write `deny`, unless this
+server's own settings pin that tool, so nothing a template grants runs without its pin.
 
 **A pinned send goes only where the owner set.** A package may pin a send's destination to a parameter (`pin` in its
 `mcp` entry): apply writes it into the agent's tool settings, and the server's tool gate refuses any call of that tool
@@ -175,6 +175,7 @@ The report gives each run's cost and each `llm` grade's, as their run records sa
 | `secrets` | Variable names (never values) the server must hold: a model or tool key Settings saves (`OPENROUTER_API_KEY`, `PARALLEL_API_KEY`, ...), set where it starts or saved there. Any other name is refused: the server could neither save it nor hand it to a run. Apply refuses with `409 agent_not_runnable`, making nothing, when one is missing. |
 | `budget` | `{per_run_usd}`: each run's cap (the agent's `max_cost_usd`). Required when the package has triggers. |
 | `learning` | `true` or `false`: whether the agent's runs learn. |
+| `approvals` | `ask` (the default: the agent asks its person before a tool runs) or `never` (it runs unattended). The package's recommendation, shown as `approvals_default` for the apply screen; a template whose job runs on triggers says `never`. Deny settings and pins hold either way. |
 | `triggers` | `POST /v2/triggers` bodies with no `agent_id` (the target is a `start_run`), each with a `name`, unique in the package: the key an upgrade will match triggers by. |
 | `output` | `{schema: <file>}`: the JSON Schema of the agent's answer, a file in the package. It ships beside each SKILL.md, as a rule does, so the agent reads it there: the skill names it. |
 | `checks` | Names of structural checks of a run's answer; none runs yet. |
