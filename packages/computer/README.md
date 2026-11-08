@@ -84,7 +84,7 @@ Its whole tree ends when the program ends or is signalled to its end. Ids are `p
 | Method | Params | Result |
 | --- | --- | --- |
 | `process.start` | `argv, cwd?, env?, user?, pty?: {cols, rows}, stdin?` | `{id, pid}`: `pid` is the program's. `cwd`, `env` and `user` are as for `exec.run`. Without `stdin` (and without a pty) stdin is /dev/null |
-| `process.read` | `id, stream, offset, maxBytes?, waitMs?` | `{data, nextOffset, dropped, exited}`: `stream` is `stdout` or `stderr`, or `pty`; at most 512 KiB a call (more is `limit`) |
+| `process.read` | `id, stream, offset, maxBytes?, waitMs?` | `{data, nextOffset, dropped, exited, size}`: `stream` is `stdout` or `stderr`, or `pty`; at most 512 KiB a call (more is `limit`); `size` is the stream's bytes so far, kept or dropped |
 | `process.write` | `id, data?, close?` | `{}`: to stdin, or the terminal; `close` closes stdin after the data |
 | `process.signal` | `id, signal` | `{}`: `TERM`, `INT`, `KILL` or `HUP`, to the program's process group, except `INT` with a pty (below); to a process that has ended it does nothing |
 | `process.resize` | `id, cols, rows` | `{}`: the terminal's new size; the program gets SIGWINCH |
@@ -130,6 +130,30 @@ Its whole tree ends when the program ends or is signalled to its end. Ids are `p
 `src/processes.ts` has `readAll(client, id, stream, {offset?, waitMs?, signal?})`, which pages a stream by offset
 until the process ends and returns its bytes, where it ended and what the ring dropped, and `listProcesses(client)`,
 which pages `process.list` and returns every process.
+
+### bash and the background tools
+
+`src/tools/` is the coding agent's shell, on these calls: the words a model reads are the tools', and no call runs a
+script of its own in the computer. Each command is a fresh shell (bash, else sh) whose `$0` names what started it, from
+the run's folder, `/workspace`, unless the call names another.
+
+- `bash(client, {command, timeoutMs?, cwd?, signal?, onOutput?})` starts the command with stdin closed and stderr in
+  stdout, reads its output as it comes, and answers when it ends: `{id, output, exitCode, signal, timedOut, error?,
+  diagnostics, timeoutMs}`. The timeout is 120 s by default; more than 600 s runs at 600 s, with a `timeout_capped`
+  diagnostic. At the timeout the shell's group gets `KILL`, and the guard ends what it left; `error` says
+  `Command timed out after N seconds`, or `Command exited with code N`. `output` is the end of the whole, 2000 lines or
+  50 KB; a longer output is saved whole to `/tmp/agentrun-bash/` in the computer (`full_output`) and the answer says
+  what it dropped (`truncated`). `BASH_TOOL` is its name, description and parameters (`timeout` in seconds).
+- `bashBackground`, `bashOutput`, `bashInput`, `bashSignal` and `bashList` are `bash_background`, `bash_output`,
+  `bash_input`, `bash_signal` and `bash_list` (`BACKGROUND_TOOL_DEFINITIONS`), each `(client, args)` answering
+  `{text, details}` or a refusal in words. A background process's id is computerd's number for it; a call reaches only
+  a process `bash_background` started. Its shell waits for the jobs its command leaves running, so a server started
+  with `&` keeps the process running. Its log is its process's ring: stdout and stderr together, the last 8 MiB, paged
+  by byte offset (48 KiB a call), a page never ending inside a character. At most 8 run at once. `tty: true` starts it
+  on an 80 by 24 terminal: `close: true` types Ctrl-D, and `INT` is Ctrl-C to the foreground job.
+  `endBackground(client)` sends `TERM` to every one still running, and `KILL` 3 s later.
+- `SHELL_UNDER_ASK` and `shellPermission(tool, bash)` are the tool gate's mapping: every one of the six takes bash's
+  setting, except that under `ask` the watchers (`bash_output`, `bash_list`, `bash_signal`) run unasked.
 
 ### Files
 
@@ -647,8 +671,8 @@ Where Xvfb is on PATH, the Go tests also run the X client, and screen and input 
 server; elsewhere those tests skip in words and the fake X server's tests still run.
 
 The live tests run the conformance suite on Docker, one test per case, on a plain computer and on a desktop built from
-`test/fixtures/desktop/Dockerfile` with `computerd-fixture` built from `daemon/cmd/fixture`, and the CLI against
-`alpine:3.20`; the rest of
+`test/fixtures/desktop/Dockerfile` with `computerd-fixture` built from `daemon/cmd/fixture`, the CLI against
+`alpine:3.20`, and bash and the background tools on a plain computer; the rest of
 them check what only Docker shows (the user, sizes, tmpfs mounts and hardening flags in `docker inspect`, the daemon
 mount, the socket directory, hello's arch against Docker's, `/work` as the user's home, the daemon's exit 0 on `docker
 stop` and at its deadline, attach by a container's name). They need Docker, `debian:bookworm-slim`

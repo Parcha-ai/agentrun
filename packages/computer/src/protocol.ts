@@ -279,6 +279,8 @@ export interface ProcessReadResult {
 	dropped: number;
 	/** The process has ended and nothing is left past nextOffset. */
 	exited: boolean;
+	/** The stream's bytes so far: every byte since the process started, kept in the ring or dropped. */
+	size: number;
 }
 
 export interface ProcessWriteParams {

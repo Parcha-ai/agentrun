@@ -67,6 +67,7 @@ export const processCases: Case[] = [
 		const again = await t.call("process.read", { id: started.id, stream: "stdout", offset: 0, maxBytes: 7 });
 		t.equal(decode(again.data), "tick 0\n", "a second read from offset 0, 7 bytes");
 		t.equal(again.nextOffset, 7, "its nextOffset");
+		t.assert(again.size >= offset, `its size, the stream's bytes so far: ${again.size}, at least the ${offset} already read`);
 		t.refused(await t.client.call("process.read", { id: started.id, stream: "stdout", offset: offset + 1_000_000 }), "a read past the end", ["invalid"]);
 		await kill(t, started.id);
 	}),

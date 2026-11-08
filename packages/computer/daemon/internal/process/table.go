@@ -425,7 +425,7 @@ func (t *Table) Read(ctx context.Context, params ReadParams) (ReadResult, error)
 		done := s.eof && p.hasEnded()
 		if !waiting || offset < s.total || done {
 			data, next, dropped := s.read(offset, max)
-			res := ReadResult{Data: data, NextOffset: next, Dropped: dropped, Exited: done && next == s.total}
+			res := ReadResult{Data: data, NextOffset: next, Dropped: dropped, Exited: done && next == s.total, Size: s.total}
 			p.mu.Unlock()
 			return res, nil
 		}

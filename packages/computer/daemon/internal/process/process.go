@@ -58,6 +58,8 @@ type ReadResult struct {
 	NextOffset int64  `json:"nextOffset"`
 	Dropped    int64  `json:"dropped"`
 	Exited     bool   `json:"exited"`
+	// Size is the stream's bytes so far: every byte since the process started, kept in the ring or dropped.
+	Size int64 `json:"size"`
 }
 
 type WriteParams struct {
