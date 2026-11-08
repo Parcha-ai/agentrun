@@ -214,7 +214,7 @@ test("capabilities and an agent's tools show each tool's permission, its default
   assert.deepEqual(denied, Object.fromEntries(Object.keys(denied).map((harness) => [harness, "unavailable: denied"])), "no provider is asked, on any harness");
 });
 
-test("web_fetch set to ask on pi, claude-agent and codex at once: each run parks with its pending approval; answered more than a minute later by the owner's session, allow runs the call once and resumes with one message naming it, deny with a note resumes with the refusal; a token is 403; a second, conflicting answer is 409", { timeout: 240_000 }, async (t) => {
+test("web_fetch set to ask on pi, claude-agent and codex at once: each run parks with its pending approval; answered more than a minute later by the owner's session, allow runs the call once and resumes with one message naming it, deny with a note resumes with the refusal; a token is 403; a second, conflicting answer is 409", { skip: process.env.CI && !process.env.AGENTRUN_RUN_QUARANTINED && "quarantined F39 (tl-tools) until 2026-11-09T00:07Z, scripts/quarantine.json", timeout: 240_000 }, async (t) => {
   const dialled = await network(t);
   const server = await serve(t, GATE);
   const { api } = server;

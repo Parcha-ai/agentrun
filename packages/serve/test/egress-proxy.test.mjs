@@ -9,7 +9,8 @@ import { connect, createServer as createNetServer } from 'node:net';
 import { networkInterfaces, tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { after, test } from 'node:test';
-import { addressBytes, checkAddress, EGRESS_RANGES, parseAllow, startEgressProxy } from '@parcha/agentrun-kernel/host';
+import { parseAllow, startEgressProxy } from '../dist/egress-proxy.js';
+import { addressBytes, checkAddress, EGRESS_RANGES } from '../dist/egress-table.js';
 
 const ROOT = mkdtempSync(join(tmpdir(), 'agentrun-egress-'));
 after(() => rmSync(ROOT, { recursive: true, force: true }));

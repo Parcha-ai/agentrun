@@ -49,7 +49,12 @@ export function fauxEntries(script) {
                 // The session's model proxy, as the harness's own adapter would start it. None where the harness would
                 // refuse the run (a model no key reaches).
                 const proxy = await builtin.route(env, needs).catch(() => undefined);
-                return fauxAdapter({ script: module.script, ...(proxy ? { proxy } : {}) });
+                // The module's own hooks on the harness's process (faux-harness.mjs): each session's close told to it, a
+                // slow open or close, and a close that fails.
+                const openDelayMs = module.openDelayMs?.() ?? 0;
+                const closeDelayMs = module.closeDelayMs?.() ?? 0;
+                const closeError = module.closeError?.();
+                return fauxAdapter({ script: module.script, ...(proxy ? { proxy } : {}), ...(module.closed ? { onClose: module.closed } : {}), ...(openDelayMs > 0 ? { openDelayMs } : {}), ...(closeDelayMs > 0 ? { closeDelayMs } : {}), ...(closeError ? { closeError } : {}) });
               },
             },
           ];
