@@ -84,18 +84,23 @@ type Result struct {
 
 // ProtocolOf is the request a target gets: a UDP target dns (a DNS query, the request a UDP server most commonly
 // answers), a TCP one by its port: tls (443), http (80), dns (53), else any (an HTTP HEAD, the most common protocol
-// where the client speaks first; a server that speaks first answers whatever is sent).
+// where the client speaks first; a server that speaks first answers whatever is sent). The port is chosen by its
+// number, as Dial connects to it: 00053 is 53.
 func ProtocolOf(target string) string {
 	if strings.HasSuffix(target, UDP) {
 		return "dns"
 	}
-	_, port, _ := net.SplitHostPort(target)
+	_, text, _ := net.SplitHostPort(target)
+	port, err := strconv.ParseUint(text, 10, 16)
+	if err != nil {
+		return "any"
+	}
 	switch port {
-	case "443":
+	case 443:
 		return "tls"
-	case "80":
+	case 80:
 		return "http"
-	case "53":
+	case 53:
 		return "dns"
 	}
 	return "any"

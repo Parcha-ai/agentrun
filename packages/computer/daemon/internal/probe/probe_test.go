@@ -102,6 +102,13 @@ func TestProtocolIsChosenByThePort(t *testing.T) {
 		"9.9.9.9:22":                  "any",
 		"[2606:4700:4700::1111]:8080": "any",
 		"151.101.1.57:65535":          "any",
+		// A port is a number: ParseTarget takes a padded one, and Dial connects to the port it names, so the request is
+		// chosen by that number, not the text.
+		"example.com:00053":     "dns",
+		"1.1.1.1:0443":          "tls",
+		"example.com:080":       "http",
+		"9.9.9.9:0022":          "any",
+		"example.com:00053/udp": "dns",
 	} {
 		if got := probe.ProtocolOf(address); got != want {
 			t.Errorf("ProtocolOf(%q) = %q; want %q", address, got, want)
