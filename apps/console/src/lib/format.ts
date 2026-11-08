@@ -77,9 +77,12 @@ const ENDED_STATUSES: ReadonlySet<string> = new Set(["completed", "failed", "can
 export const runEnded = (status: string | undefined | null): boolean => typeof status === "string" && ENDED_STATUSES.has(status);
 
 /** A charge on a timeline row, in words: "$0.0018", or what is known so far ("so far $0.001, 1 not priced") when one of its
- *  charges has no price. */
-export const chargeWords = (u: { usd: number | null; so_far_usd?: number; unpriced?: number }): string =>
-  u.usd !== null ? dollars(u.usd) : typeof u.so_far_usd === "number" ? `so far ${soFarDollars(u.so_far_usd)}, ${u.unpriced ?? 0} not priced` : "not priced";
+ *  charges has no price; on a run that has ended (`ended`), what is known without "so far" ("$0.001 known, 1 not priced"),
+ *  as cost says the run's. */
+export const chargeWords = (u: { usd: number | null; so_far_usd?: number; unpriced?: number }, { ended = false }: { ended?: boolean } = {}): string =>
+  u.usd !== null ? dollars(u.usd)
+    : typeof u.so_far_usd === "number" ? (ended ? `${soFarDollars(u.so_far_usd)} known, ${u.unpriced ?? 0} not priced` : `so far ${soFarDollars(u.so_far_usd)}, ${u.unpriced ?? 0} not priced`)
+    : "not priced";
 
 /** A local estimate stays an estimate, and a cost the server does not know says so: the contract's "Null while unknown.
  *  A client shows null as unknown, never as $0" (a request cut before its answer, a cost still pending, or a model with

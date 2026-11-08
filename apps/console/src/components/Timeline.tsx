@@ -50,7 +50,7 @@ const label = (row: TimelineRow) => fromServer(row) ? "AgentRun" :
   ({ user_message: "You", thinking: "Thinking", tool_use: toolName(row.tool_name) ?? "Tool", tool_result: toolName(row.tool_name) ?? "Result", waiting: "Waiting for you", usage: "Usage", final_answer: "Answer", phase: "Phase", error: "Error", decision: "Decision", text_block: "Text", tool_approval_requested: "Your approval", learning: "Learning" } as Partial<Record<string, string>>)[row.kind] ?? row.kind;
 
 /** One step: a failed one reads as failed. */
-function Row({ step, last }: { step: Step; last: boolean }) {
+function Row({ step, last, ended }: { step: Step; last: boolean; ended: boolean }) {
   // The row a step shows, and so its label: the one place a row is read for display.
   const row = step.row;
   const [open, setOpen] = useState(false);
@@ -71,7 +71,7 @@ function Row({ step, last }: { step: Step; last: boolean }) {
             <span className="flex items-center gap-2 text-[13px] text-muted-foreground">
               {label(row)}
               {/* A call's own charge (a browser call's session time, #1736): on its row, never a row of its own. */}
-              {(row.kind === "tool_use" || row.kind === "tool_result") && row.usage && <span className="font-mono text-[11px]">· {chargeWords(row.usage)}</span>}
+              {(row.kind === "tool_use" || row.kind === "tool_result") && row.usage && <span className="font-mono text-[11px]">· {chargeWords(row.usage, { ended })}</span>}
               {row.kind === "waiting" && <Chip tone="warning">Input required</Chip>}
               {awaitsApproval(row) && <Chip tone="warning">Approval required</Chip>}
               {failed && <Chip tone="error">Error</Chip>}
@@ -95,7 +95,9 @@ function Row({ step, last }: { step: Step; last: boolean }) {
 /** The run's live timeline as a step list (lib/timeline's `steps`: each tool once, from either of the server's shapes;
  *  a question once; repeated failures once): newest last, older steps folded behind "N earlier steps". `asking`: the
  *  waiting row of the question the page shows above while the run waits on it; its step points there. */
-export function Timeline({ rows, live, fold = 6, asking }: { rows: TimelineRow[]; live: boolean; fold?: number; asking?: string }) {
+export function Timeline({ rows, live, fold = 6, asking, ended = false }: { rows: TimelineRow[]; live: boolean; fold?: number; asking?: string;
+  /** Whether the run has ended (runEnded of its status): a charge's words then say what is known, never "so far". */
+  ended?: boolean }) {
   const [all, setAll] = useState(false);
   const told = steps(rows).map((s) => (asking && s.row.id === asking ? { ...s, above: true } : s));
   const hidden = all ? 0 : Math.max(0, told.length - fold);
@@ -108,7 +110,7 @@ export function Timeline({ rows, live, fold = 6, asking }: { rows: TimelineRow[]
           <ChevronRight className="size-3" aria-hidden /> {hidden} earlier steps
         </button>
       )}
-      <ol>{shown.map((step, i) => <Row key={step.row.id} step={step} last={i === shown.length - 1 && !live} />)}</ol>
+      <ol>{shown.map((step, i) => <Row key={step.row.id} step={step} last={i === shown.length - 1 && !live} ended={ended} />)}</ol>
       {live && <Working title="Working" note="Steps appear as the agent takes them." spin />}
     </div>
   );
