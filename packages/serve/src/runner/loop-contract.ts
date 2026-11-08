@@ -26,6 +26,9 @@ export type EndOfRunTurn = (input: {
   readonly claim: Claim;
   /** How the job ended. */
   readonly outcome: "completed" | "failed";
+  /** The run was cut before it could look back: by a person's stop (`stopped`), by one during the end-of-run turn
+   *  (`stopped-looking`), or by a fault (`faulted`). The step must not call `ask`: it returns only what a cut run keeps. */
+  readonly cut?: "stopped" | "stopped-looking" | "faulted";
   ask(prompt: string, opts: { readonly origin: "reflect"; readonly deadlineMs: number }): Promise<EndOfRunAnswer>;
   readonly signal: AbortSignal;
 }) => Promise<{ readonly also: readonly AlsoRow[] } | undefined>;

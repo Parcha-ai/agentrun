@@ -453,7 +453,7 @@ function piLoop(specOf: (claim: Claim) => PiRunSpec | Promise<PiRunSpec>, deps: 
         opened();
         if (restarts > restartLimit + 1) {
           // pi cut the call off long before this; a fault that keeps coming back from elsewhere is bounded here too.
-          return await writeEnd(harness, root, gate, { state: "failed", summary: `the kernel faulted on every restart (${restarts} restarts)` }, []);
+          return await writeEnd(harness, root, gate, { state: "failed", summary: `the kernel faulted on every restart (${restarts} restarts)` }, [], await cutRows(claim, spec, "faulted"));
         }
 
         // The first input, once: on a resume pi answers the same request id from its submission.
@@ -484,8 +484,9 @@ function piLoop(specOf: (claim: Claim) => PiRunSpec | Promise<PiRunSpec>, deps: 
           let timer: NodeJS.Timeout | undefined;
           const settled = await Promise.race([settling, new Promise<false>((resolve) => (timer = setTimeout(() => resolve(false), settleMs)))]);
           clearTimeout(timer);
-          if (!settled) return await writeEnd(harness, root, gate, { state: "failed", summary: `stopped by a person, but the turn did not settle within ${settleMs / 1000} s: a tool call ignored its abort` }, [stopReason.commandId]);
-          return await writeEnd(harness, root, gate, { state: "stopped", summary: "stopped by a person" }, [stopReason.commandId]);
+          const cut = await cutRows(claim, spec, "stopped");
+          if (!settled) return await writeEnd(harness, root, gate, { state: "failed", summary: `stopped by a person, but the turn did not settle within ${settleMs / 1000} s: a tool call ignored its abort` }, [stopReason.commandId], cut);
+          return await writeEnd(harness, root, gate, { state: "stopped", summary: "stopped by a person" }, [stopReason.commandId], cut);
         }
         await harness.waitForIdle(context);
         const record = await input.status(context);
@@ -495,7 +496,7 @@ function piLoop(specOf: (claim: Claim) => PiRunSpec | Promise<PiRunSpec>, deps: 
         // The end-of-run step, once, before the end: its rows ride in the end commit. A stop or a lost claim during it
         // writes no end of the job's (a person's stop ends the run stopped; a lost claim leaves it for the next claim).
         const step = await endOfRunStep(claim, spec, data.state === "failed" ? "failed" : "completed");
-        if (step.kind === "stopped") return await writeEnd(harness, root, gate, { state: "stopped", summary: "stopped by a person" }, [step.commandId]);
+        if (step.kind === "stopped") return await writeEnd(harness, root, gate, { state: "stopped", summary: "stopped by a person" }, [step.commandId], await cutRows(claim, spec, "stopped-looking"));
         if (step.kind === "interrupted") {
           gate.seal(new Interrupted(stopReason?.kind ?? "its claim's signal aborted"));
           return { state: "interrupted" };
@@ -514,7 +515,7 @@ function piLoop(specOf: (claim: Claim) => PiRunSpec | Promise<PiRunSpec>, deps: 
       // not be written (pi's Harness could not open): the runner stores that one failed with why. Returning "failed" with
       // no end would leave it running, released and claimed again at once.
       if (claim.from !== "parked" && harness && root && gate && !gate.sealed) {
-        const ended = await writeEnd(harness, root, gate, { state: "failed", summary: (error as Error)?.message ?? String(error) }, []).catch(() => undefined);
+        const ended = await writeEnd(harness, root, gate, { state: "failed", summary: (error as Error)?.message ?? String(error) }, [], await cutRows(claim, spec, "faulted")).catch(() => undefined);
         if (ended) return ended;
       }
       throw error;
@@ -577,6 +578,20 @@ function piLoop(specOf: (claim: Claim) => PiRunSpec | Promise<PiRunSpec>, deps: 
       return cut() ?? { kind: "rows", also: rows?.also ?? [] };
     } catch (error) {
       return cut() ?? (console.warn(`[runner] ${claim.runId}: its end-of-run step failed: ${(error as Error).message}`), { kind: "rows", also: [] });
+    }
+  }
+
+  /** What a run cut before it could look back keeps beside its end (LoopDeps.endOfRun with `cut`, never asking): a
+   *  person's stop, before or during the end-of-run turn, or a fault. A step that throws keeps nothing; the end is never
+   *  held up by it. */
+  async function cutRows(claim: Claim, spec: PiRunSpec, cut: "stopped" | "stopped-looking" | "faulted"): Promise<readonly AlsoRow[]> {
+    if (!deps.endOfRun || !spec.agentId) return [];
+    try {
+      const refuse = () => Promise.reject(new Error("a cut run's end-of-run step asks nothing"));
+      return (await deps.endOfRun({ runId: claim.runId, agentId: spec.agentId, claim, outcome: "failed", cut, signal: deps.signal, ask: refuse }))?.also ?? [];
+    } catch (error) {
+      console.warn(`[runner] ${claim.runId}: its end-of-run step failed: ${(error as Error).message}`);
+      return [];
     }
   }
 
