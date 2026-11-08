@@ -101,6 +101,17 @@ function end(commit: boolean): void {
   const conn = opened();
   try {
     conn.exec(commit ? "COMMIT" : "ROLLBACK");
+  } catch (error) {
+    // A COMMIT that fails (a deferred foreign key, a full disk) leaves the transaction open in SQLite: roll it back
+    // before clearing the state, or the next BEGIN IMMEDIATE fails, a transaction within a transaction, for good.
+    if (commit) {
+      try {
+        conn.exec("ROLLBACK");
+      } catch {
+        // No transaction left open: SQLite already ended it.
+      }
+    }
+    throw error;
   } finally {
     inTx = false;
     if (txFull) conn.exec(NORMAL);

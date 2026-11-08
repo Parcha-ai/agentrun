@@ -277,9 +277,11 @@ class SqliteStore implements Store {
    *  takes it between. */
   async #claimRuns(runner: string, leaseMs: number, pick: { runId: string } | { k: number }): Promise<Claim[]> {
     if ("k" in pick && !(Number.isSafeInteger(pick.k) && pick.k > 0)) return [];
-    const at = this.#now();
-    const until = at + leaseMs;
     return this.#db.transaction(async (tx) => {
+      // The clock is read once the transaction holds the writer lock: a claim that waited for another writer runs its
+      // lease from now, never comes back already run out.
+      const at = this.#now();
+      const until = at + leaseMs;
       const picked = "runId" in pick
         ? await tx.all<{ id: string; state: RunState }>(`SELECT id, state FROM runs WHERE id = ? AND ${CLAIMABLE}`, pick.runId, ...CLAIMABLE_AT(at))
         : await tx.all<{ id: string; state: RunState }>(`SELECT id, state FROM runs WHERE ${CLAIMABLE} ORDER BY started_at, id LIMIT ?`, ...CLAIMABLE_AT(at), pick.k);
@@ -294,8 +296,12 @@ class SqliteStore implements Store {
   }
 
   async renew(claim: Claim, { leaseMs = DEFAULT_LEASE_MS }: { leaseMs?: number } = {}): Promise<Claim> {
-    const until = this.#now() + leaseMs;
-    await this.#db.write([fenced(claim, "UPDATE runs SET claimed_until = ? WHERE id = ? AND epoch = ? AND runner = ?", [until, claim.runId, claim.epoch, claim.runner])]);
+    // As a claim's: the lease runs from when the renew holds the writer lock.
+    const until = await this.#db.transaction(async (tx) => {
+      const at = this.#now() + leaseMs;
+      await tx.step(fenced(claim, "UPDATE runs SET claimed_until = ? WHERE id = ? AND epoch = ? AND runner = ?", [at, claim.runId, claim.epoch, claim.runner]));
+      return at;
+    });
     return { ...claim, until };
   }
 
