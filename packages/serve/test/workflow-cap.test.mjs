@@ -343,6 +343,47 @@ test("a capped workflow's polled call held at its cap past its poll window is se
   }
 });
 
+test("a polled call held at its cap and resumed by a raise while its window still has time runs under the window the hold moved, not the old one, and still under its own deadline_s", { timeout: 300_000 }, async (t) => {
+  // A 36 s poll window, held from its start (the pause, about when it opened); the search answers after 18 s. Let go,
+  // and raised 24 s after the pause: the next process resumes with at most 12 s of the old window left, 6 s or more short
+  // of the search, and above 0 unless it takes 12 s to come up. The hold moves the window by the time held, so it ends
+  // 36 s after the resume, 18 s past the search's end. The call's own deadline_s is 36 s (twice the search: room), then
+  // 9 s (half: none), which still ends it. That one runs first, so a run that fails the other has passed it.
+  const cases = [{ deadline: 9, want: "failed" }, { deadline: 36, want: "completed" }];
+  for (const { deadline, want } of cases) {
+    const calls = join(await scratch(t), `parallel-calls-${deadline}.jsonl`);
+    withEnv(t, { PARALLEL_API_KEY: PARALLEL_CANARY, AGENTRUN_TEST_FAUX_PARALLEL_CALLS: calls, AGENTRUN_TEST_FAUX_PARALLEL_SEARCH: "slow:18000", AGENTRUN_SERVE_BUDGET_HOLD_MS: "1000" }, KEYS);
+    const { api, data } = await serve(t, { fauxParallel: FAUX_PARALLEL });
+    const flow = {
+      v: 2, name: "polled-resumed",
+      schemas: {
+        In: { type: "object", required: ["question"], properties: { question: { type: "string" } } },
+        Search: { type: "object", required: ["query", "results"], properties: { query: { type: "string" }, results: { type: "array" } } },
+      },
+      input: { schemaId: "In" },
+      output: { schemaId: "Search", path: "found" },
+      root: { node: "chain", steps: [{ node: "call", label: "search", via: "tool", tool: "web_search", args: { query: "{question}", n: 2 }, out: "Search", as: "found", deadline_s: deadline, poll: { until: { predicate: "field_type", path: "query", type: "string" }, interval_s: 1, deadline_s: 36 } }] },
+    };
+    const id = `polled-resumed-${deadline}`;
+    assert.equal((await api("POST", "/agents", flowAgent(id, flow, { tools: ["web_search"], tool_settings: { web_search: { provider: "parallel" } } }))).status, 201);
+    const started = Date.now();
+    const { run_id: runId } = (await api("POST", `/agents/${id}/runs`, { input: { question: "widgets" }, max_cost_usd: 0.0005 })).body;
+    await follow(api, runId, SETTLED, { deadlineMs: 60_000 });
+    const pausedAt = Date.now();
+    assert.equal((await view(api, runId)).pending?.node, "search");
+    await letGo(data, runId);
+    const goneAt = Date.now() - started;
+    await new Promise((resolve) => setTimeout(resolve, Math.max(0, pausedAt + 24_000 - Date.now())));
+    assert.equal((await api("PATCH", `/runs/${runId}`, { max_cost_usd: 1 })).status, 200);
+    const raisedAt = Date.now() - started;
+    await follow(api, runId, ENDED, { deadlineMs: 90_000 });
+    t.diagnostic(`deadline_s ${deadline}: paused at ${pausedAt - started} ms, let go at ${goneAt} ms, raised at ${raisedAt} ms, ended at ${Date.now() - started} ms`);
+    const run = await view(api, runId);
+    assert.deepEqual([deadline, run.status], [deadline, want], JSON.stringify(run.error));
+    assert.equal((await lines(calls)).filter((call) => call.path === "/v1/search").length, 1, "sent once, after the raise");
+  }
+});
+
 test("a decision answered and billed whose booking a crash lost still counts on the next process: what the cap reads from the store is its receipt's cost, as live", async (t) => {
   const calls = join(await scratch(t), "parallel-calls.jsonl");
   withEnv(t, { PARALLEL_API_KEY: PARALLEL_CANARY, AGENTRUN_TEST_FAUX_PARALLEL_CALLS: calls }, KEYS);
