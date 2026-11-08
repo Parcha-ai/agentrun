@@ -2,7 +2,7 @@
 import type { ExperimentalBatchCallback, Page, Stagehand } from "@browserbasehq/stagehand";
 import type { Locate, Target } from "../core/clip.js";
 import type { ScreenshotOptions } from "../core/images.js";
-import type { PageDriver } from "../core/tools.js";
+import type { PageDriver, RunAction } from "../core/tools.js";
 import { withinDeadline } from "../core/unanswered.js";
 import { StagehandFacadeTools } from "../vendor/stagehand-facade/tools.js";
 import { documentReads } from "./new-document.js";
@@ -88,9 +88,35 @@ export function pageDriver(stagehand: Stagehand, deadlines: { batchMs: number; s
   // In a batch of its own, which the browser runs once the new document is its page's.
   const newDocument = async () => stagehand.experimentalBatch(async (batch, input: { ms: number }) => { await batch.page.waitForLoadState("domcontentloaded", input.ms); }, { ms: NEW_DOCUMENT_MS }, { page: await active(), timeout: NEW_DOCUMENT_MS + 1_000 });
   const reads = documentReads(facade, newDocument);
+  type Kept = { url: string; xpathById: Record<string, string> };
+  const kept = () => (facade as unknown as { snapshotsByPage: Map<string, Kept> }).snapshotsByPage;
+  /** An action after the first of a batch checked as one (driving-guard): run by the facade with the snapshot taken as at
+   *  the page's address now, for this action only, so an address the batch's own earlier actions moved is not a stale
+   *  snapshot; then the snapshot's own address again, so a later call on the moved page is told to snapshot again. */
+  const afterChecked = async (actions: RunAction[]) => {
+    const page = await active();
+    const snapshot = kept().get(page.pageId);
+    const now = snapshot ? await page.url() : undefined;
+    if (!snapshot || now === snapshot.url) return facade.runActions(actions);
+    kept().set(page.pageId, { ...snapshot, url: now! });
+    try { return await facade.runActions(actions); }
+    finally {
+      const current = kept().get(page.pageId);
+      if (current && current.xpathById === snapshot.xpathById) kept().set(page.pageId, { ...current, url: snapshot.url });
+    }
+  };
   return {
     snapshot: (snapshotOptions) => reads.snapshot(snapshotOptions),
-    run: (input) => input.actions !== undefined ? facade.runActions(input.actions) : facade.run(input.code ?? ""),
+    run: (input) => input.actions !== undefined ? (input.checked ? afterChecked(input.actions) : facade.runActions(input.actions)) : facade.run(input.code ?? ""),
+    // As the facade's own batch checks a run's actions before it sends any (runActionsNow): the active page's snapshot,
+    // the page still at its address, and every id in it. Read from the facade's snapshots, as forgetSnapshots does.
+    checkActions: async (actions) => {
+      const page = await active();
+      const snapshot = (facade as unknown as { snapshotsByPage: Map<string, { url: string; xpathById: Record<string, string> }> }).snapshotsByPage.get(page.pageId);
+      if (!snapshot) throw new Error(NO_HYDRATED_SNAPSHOT_ERROR);
+      if ((await page.url()) !== snapshot.url) throw new Error(NAVIGATED_SNAPSHOT_ERROR);
+      for (const action of actions) if (!snapshot.xpathById[action.id]) throw new Error(staleSnapshotIdError(action.id));
+    },
     url: async () => documentUrl(stagehand, await active()),
     // The facade keeps each page's last snapshot's ids for its own actions; with none, an action by id fails NO_HYDRATED (a stale snapshot).
     forgetSnapshots: () => { (facade as unknown as { snapshotsByPage: Map<string, unknown> }).snapshotsByPage.clear(); },

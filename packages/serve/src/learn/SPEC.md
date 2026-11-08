@@ -203,10 +203,13 @@ the only judge of its notes, so a server with learning on should name a strong o
 
 ## The merge
 
-One host commit on `main`, made with plumbing: the new notes added (`mergedNote`: each with its `origin`, a pending one
+One commit on `main` by the learning script (`learning.sh`, one exec through the folder's Workspace: `folder.ts`
+`writeLearning`): the new notes added (`mergedNote`: each with its `origin`, a pending one
 with `status: pending`), the skill's and draft's files added or changed (a held one with `status: pending`), each note a kept one supersedes marked `status: superseded` with `superseded_by` (a pending
 note's supersedes waits for its approval, `approve`), and `MEMORY.md` rebuilt. Its message is `learning: <run id>: merged`, the
 grader's reason, and a `Run-Id: <run id>` trailer; a run a trailer on `main` already names is merged, never twice.
-`main` moves only from the commit the merge was made on. Before it, the host asks `mergeProblems` again of `main` as it
-is then: a name another run added since is `exists`, and a note superseded since or an index past 200 lines is refused
+`main` moves only from the commit the merge was made on (the script's compare and swap; a lost race writes nothing and
+the merge is computed again), and the same exec writes the run's diff (`.agentrun/diffs/<run>.json`) and, last, the
+folder's snapshot (`.agentrun/snapshot.json`, what every read reads). Before it, the host asks `mergeProblems` again of
+`main` as its snapshot has it: a name another run added since is `exists`, and a note superseded since or an index past 200 lines is refused
 as above. A note is never deleted: a retired or superseded note stays in the folder and leaves the index.

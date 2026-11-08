@@ -16,7 +16,7 @@ import { agentFolderOf } from "../dist/files.js";
 import * as learning from "../dist/learning.js";
 import { systemOf } from "../dist/skills.js";
 import { localWorkspace } from "../dist/workspace/index.js";
-import { ended, git } from "./learn-support.mjs";
+import { ended, git, resnap } from "./learn-support.mjs";
 import { agent, follow, runDir, scratch, serve, withEnv } from "./support.mjs";
 import { fauxTable } from "./fixtures/faux-table.mjs";
 
@@ -52,6 +52,7 @@ async function folderWith(data, id, files, links = {}) {
   }
   git(repo, ["add", "--", ...Object.keys(files), ...Object.keys(links)]);
   git(repo, ["commit", "-q", "-m", "learned"]);
+  await resnap(data, id);
   return git(repo, ["rev-parse", "main"]);
 }
 

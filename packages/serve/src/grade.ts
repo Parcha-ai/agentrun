@@ -8,33 +8,32 @@
 //   call cut off at its bound spent what nobody knows: the grade's cost is then unknown, never $0. No injection screen
 //   runs before it: a page classifier cannot see where a note came from, and dropped a preference the user stated (it
 //   reads like an instruction); the grader's Planted question decides, with what the user said in view.
-// - The merge is one host commit on main, made with plumbing on a temporary index: the new notes added, each note one of
-//   them supersedes marked, the skill's and draft's files added or changed (one the grader held, marked pending), and
-//   MEMORY.md rebuilt (buildIndex). Its message is `learning: <run id>: merged`, the verdict's
-//   reason and a `Run-Id` trailer, and main moves only from the commit it was made on (compare and swap), once more on a
-//   main that moved meanwhile. A run a commit on main already names is merged, never twice. The merge's own questions
-//   (learn/check.ts mergeProblems) are asked again of main as it is then, and each note superseded must still be the
-//   blob the grade read: one a person changed since is theirs, and nothing merges. The checked-out files are brought in
-//   line.
+// - The merge is one commit on main by the learning script (learn/folder.ts writeLearning, one exec): the new notes
+//   added, each note one of them supersedes marked, the skill's and draft's files added or changed (one the grader held,
+//   marked pending), and MEMORY.md rebuilt (buildIndex). Its message is `learning: <run id>: merged`, the verdict's
+//   reason and a `Run-Id` trailer, and main moves only from the main it read (compare and swap), computed again on a
+//   main that moved meanwhile; the script writes the run's diff file and the snapshot in the same exec. A run whose diff
+//   file the folder holds is merged, never twice. The merge's own questions (learn/check.ts mergeProblems) are asked
+//   again of main as it is then, each note superseded must still be the blob the grade read (one a person changed since
+//   is theirs, and nothing merges), a new note's name must be free on main as git holds it, and each skill or draft file
+//   must be on main as it was on the run's seed (the script checks both).
+// Both read main from the folder's snapshot and its bodies (learn/folder.ts), never with git.
+// TODO(tl-jobs): grade and merge are the built-in learning run the RUNNER runs (model calls through the proxy and cap,
+// git through learningWorkspace(agent).exec, its own journal). Until the runner has an entry point for built-in runs,
+// learning-run.ts calls readForGrade, judgeProposal and mergeProposal here, in the server; they move whole.
 // The merge runs in the agent's queue; the grader never does, so no run's seed waits on a model.
-import { rm } from "node:fs/promises";
-import { join } from "node:path";
-import { buildIndex, gradedItems, held, INDEX_FILE, type IndexEntry, type LearnedNote, learnedPlace, mergedNote, mergeProblems, type NoteText, parseNoteFile, type Problem, supersede, supersededBy, type Verdict } from "./learn/index.js";
+import { gradedItems, type IndexEntry, learnedPlace, mergedNote, type NoteText, type Problem, type Verdict } from "./learn/index.js";
+import { readRunDiff } from "./learn/folder.js";
+import { learningCommit, readMain } from "./learn/commit.js";
 import { harnessOf } from "./harness-table.js";
 import { type Provider, providerFor } from "./provider.js";
-import { agentFolderOf } from "./files.js";
-import { agentFolder, checkOut, git, line, mainOf, NO_TOKENS, type Proposal, readBlobs, type Tokens, withAgentRepo } from "./learning.js";
+import { learningFolderOf, NO_TOKENS, type Proposal, type Tokens, withAgentRepo } from "./learning.js";
 import { type Complete, completer } from "./llm.js";
 import { type ModelRef, runModels, thinkingOf } from "./model.js";
 
 /** How long the grader may take (unless the server names another), and the most it may write. */
 const GRADE_TIMEOUT_MS = 180_000;
 const GRADE_MAX_TOKENS = 16_000;
-const utf8 = new TextDecoder("utf-8", { fatal: true });
-
-/** Main as a grade reads it: its commit, every entry at its top, its notes' texts by file (any status), and each
- *  entry's object id. */
-export type Main = { sha: string; files: string[]; texts: Map<string, string>; oids: Map<string, string> };
 /** What a grade spent: the grader's calls. The dollars, null when any call's are unknown, and the tokens,
  *  null when any call's are. */
 export type GradeCost = { usd: number | null; tokens: Tokens | null };
@@ -42,45 +41,6 @@ export type Judged = { cost: GradeCost } & ({ verdict: Verdict; unread?: string 
 /** The agentic revision the run ran: its standing instructions, and what its model is. */
 export type Agent = { instructions: string; harness?: string; model?: string; thinking?: string };
 
-/** The newest commit on main whose Run-Id trailer names the run, as git reads trailers. */
-async function mergeOf(home: string, repo: string, main: string, runId: string): Promise<string | undefined> {
-  const out = (await git(home, repo, ["log", "--first-parent", "--format=%H %(trailers:key=Run-Id,valueonly,separator=%x2C)", main])).toString("utf8");
-  return out.split("\n").find((entry) => entry.slice(entry.indexOf(" ") + 1).split(",").includes(runId))?.split(" ")[0];
-}
-
-/** Main's top: every entry, and the text of each `.md` blob, read with plumbing. A blob that is not UTF-8 is left out. */
-async function readMain(home: string, repo: string, sha: string): Promise<Main> {
-  const listed = (await git(home, repo, ["ls-tree", "-z", sha])).toString("utf8").split("\0").filter(Boolean).map((entry) => {
-    const [mode, type, oid] = entry.slice(0, entry.indexOf("\t")).split(" ");
-    return { mode, type, oid: oid!, path: entry.slice(entry.indexOf("\t") + 1) };
-  });
-  const blobs = listed.filter((entry) => entry.type === "blob" && entry.mode === "100644" && entry.path.endsWith(".md"));
-  const read = await readBlobs(home, repo, blobs.map((entry) => entry.oid));
-  const texts = new Map<string, string>();
-  blobs.forEach((entry, i) => {
-    try {
-      texts.set(entry.path, utf8.decode(read[i]!));
-    } catch {
-      // Not UTF-8: no note of the folder's, and never read as one.
-    }
-  });
-  return { sha, files: listed.map((entry) => entry.path), texts, oids: new Map(listed.map((entry) => [entry.path, entry.oid])) };
-}
-
-/** Main's notes, parsed: the ones out of shape left out, as a run's seed leaves them. */
-const notesOf = (main: Main): LearnedNote[] => [...main.texts].flatMap(([file, text]) => {
-  const note = file === INDEX_FILE ? [] : parseNoteFile(file, text);
-  return Array.isArray(note) ? [] : [note];
-});
-
-/** The proposal's notes, parsed: each passed the checks, so one that does not parse is an error. */
-const proposedOf = (proposal: Proposal): LearnedNote[] => proposal.notes.map(({ file, text }) => {
-  const note = parseNoteFile(file, text);
-  if (Array.isArray(note)) throw new Error(`the proposal's ${file} is not a note`);
-  return note;
-});
-/** What stops the proposal joining `main` as it is now (learn/check.ts mergeProblems). */
-const problemsOf = (main: Main, notes: readonly LearnedNote[]) => mergeProblems({ files: main.files, active: notesOf(main).filter((note) => note.status === "active") }, notes);
 
 /** What a grade reads of main: each active note as the index lists it, the whole text of the ones the proposal
  *  supersedes, and the blob each of those was on main then (`graded`, by file), which its merge checks. */
@@ -89,20 +49,15 @@ export type GradeMain = { active: IndexEntry[]; superseded: NoteText[]; graded: 
 /** Main now, for run `runId`'s grade, in the agent's queue: merged already (a commit names the run), what stops its
  *  proposal joining main as it is now, or its active notes' index lines and the notes the proposal supersedes in full. */
 export function readForGrade(data: string, agentId: string, runId: string, proposal: Proposal): Promise<{ merged: string } | { problems: Problem[] } | GradeMain> {
-  const home = agentFolderOf(data, agentId);
   return withAgentRepo(data, agentId, async () => {
-    const repo = await agentFolder(data, agentId);
-    const sha = (await mainOf(home, repo))!;
-    const merged = await mergeOf(home, repo, sha, runId);
-    if (merged) return { merged };
-    const main = await readMain(home, repo, sha);
-    const added = proposedOf(proposal);
-    const problems = problemsOf(main, added);
-    if (problems.length) return { problems };
-    const active = notesOf(main).filter((note) => note.status === "active").map(({ file, name, description }) => ({ file, name, description }));
-    // mergeProblems passed: each note superseded is active on main, and named once.
-    const superseded = added.flatMap((note) => note.supersedes).map((file) => ({ file, text: main.texts.get(file)! }));
-    return { active, superseded, graded: Object.fromEntries(superseded.map(({ file }) => [file, main.oids.get(file)!])) };
+    const { workspace, end } = learningFolderOf(data, agentId);
+    try {
+      const merged = await readRunDiff(workspace, runId);
+      if (merged) return { merged: merged.merge };
+      return await readMain(workspace, proposal);
+    } finally {
+      await end();
+    }
   });
 }
 
@@ -237,9 +192,6 @@ export async function judgeProposal(input: { runId: string; agent: Agent; main: 
   }
 }
 
-/** Each skill and draft file as main keeps it: as the run gave it, or, for one the grader held for its owner's OK, with
- *  `status: pending` in its SKILL.md or its README.md (learn/skills.ts held). A held workflow.json is as given: its
- *  README holds it. */
 /** The graded item a proposal's file is judged as: a draft's README.md with its workflow.json, every other file as
  *  itself (a note, a skill's SKILL.md, a draft's workflow.json). */
 const itemOf = (file: string): string => {
@@ -258,92 +210,42 @@ export function keptProposal(proposal: Proposal, verdict?: Verdict): Proposal {
   return { ...rest, notes: proposal.notes.filter(({ file }) => kept.has(file)), ...(files.length ? { files } : {}) };
 }
 
-export function heldFiles(files: readonly NoteText[], verdict?: Verdict): NoteText[] {
-  const waiting = new Set((verdict?.items ?? []).filter((item) => item.pending).map((item) => item.file));
-  return files.map(({ file, text }) => {
-    const place = learnedPlace(file);
-    const judged = place?.kind === "readme" ? `workflows/${place.name}/workflow.json` : file;
-    return { file, text: waiting.has(judged) && place?.kind !== "workflow" ? held(text) : text };
-  });
-}
-
-/** The blob `file` is at commit `sha` of the agent's folder, or undefined when the commit holds no such file. */
-async function blobAt(home: string, repo: string, sha: string, file: string): Promise<string | undefined> {
-  try {
-    return line(await git(home, repo, ["rev-parse", "--verify", "--quiet", `${sha}:${file}`])) || undefined;
-  } catch {
-    return undefined;
-  }
-}
-
 /** Merges run `runId`'s proposal into main as main is now, in the agent's queue, as `verdict` judged its notes: one commit
- *  on main (its parent main) that adds the new notes, each with its `origin` and a pending one with `status: pending`
- *  (in no index, so no run reads it, until a person approves it), marks each note a kept one supersedes (a pending
- *  note's wait for its approval), adds or changes the skill's and draft's files (heldFiles: a held one pending) and
- *  rebuilds MEMORY.md, its message `learning: <run>: merged`,
- *  `reason` and the run's Run-Id; moved onto main only from the commit it was made on, once more on a main that moved
- *  meanwhile. Then the checked-out files are main's. A run a commit on main already names is that commit. `problems`
- *  when main, as it is now, takes the notes no more (mergeProblems), or when a note the merge marks superseded is not
- *  the blob the grade read (`graded`, readForGrade's): a person changed it since, and their text stands. A note held for
- *  its owner's OK marks nothing (supersededBy), so what it names is not checked. `checkout` is why the files could not
- *  be brought in line, when they could not: main is merged all the same. */
+ *  on main (its parent main) by the learning script that adds the new notes, each with its `origin` and a pending one
+ *  with `status: pending` (in no index, so no run reads it, until a person approves it), marks each note a kept one
+ *  supersedes (a pending note's wait for its approval), adds or changes the skill's and draft's files (a held one
+ *  pending) and rebuilds MEMORY.md, its message `learning: <run>: merged`, `reason` and the run's Run-Id; moved onto
+ *  main only from the main it read, computed again on a main that moved meanwhile, with the run's diff file and the
+ *  snapshot written in the same exec. A run whose diff file the folder holds is that merge. `problems` when main, as it
+ *  is now, takes the notes no more (mergeProblems, or a new note's name held on main by a file that is no note), when a
+ *  note the merge marks superseded is not the blob the grade read (`graded`, readForGrade's: a person changed it since,
+ *  and their text stands), or when a skill's or draft's file changed on main after the run's seed. A note held for its
+ *  owner's OK marks nothing (supersededBy), so what it names is not checked. `checkout` is why the files could not be
+ *  brought in line, when they could not (the script left them, and the snapshot was rebuilt): main is merged all the
+ *  same. */
 export function mergeProposal(data: string, agentId: string, runId: string, proposal: Proposal, reason: string, graded: Readonly<Record<string, string>>, verdict?: Verdict): Promise<{ merged: string; checkout: Error | undefined } | { problems: Problem[] }> {
-  const home = agentFolderOf(data, agentId);
-  // Each note as main keeps it: its origin, the grader's (a run's when it names none), and a pending one waiting.
+  // Each note as the grader judged it: its origin (a run's when it names none), and held for its owner's OK when its
+  // item is pending; a skill's SKILL.md or a draft's README.md held when its item is (heldFiles' rule).
   const judged = new Map((verdict?.items ?? []).map((item) => [item.file, item]));
-  const texts = proposal.notes.map(({ file, text }) => ({ file, text: mergedNote(text, { origin: judged.get(file)?.origin ?? "run", pending: judged.get(file)?.pending === true }) }));
-  const added = proposedOf({ ...proposal, notes: texts });
+  const notes = proposal.notes.map(({ file, text }) => ({ path: file, text: mergedNote(text, { origin: judged.get(file)?.origin ?? "run" }) }));
+  const waiting = new Set((verdict?.items ?? []).filter((item) => item.pending).map((item) => item.file));
+  const files = (proposal.files ?? []).map(({ file, text }) => ({ path: file, text }));
+  const held = [
+    ...proposal.notes.filter(({ file }) => judged.get(file)?.pending === true).map(({ file }) => file),
+    ...files.filter(({ path }) => {
+      const place = learnedPlace(path);
+      return place?.kind !== "workflow" && waiting.has(place?.kind === "readme" ? `workflows/${place.name}/workflow.json` : path);
+    }).map(({ path }) => path),
+  ];
   return withAgentRepo(data, agentId, async () => {
-    const repo = await agentFolder(data, agentId);
-    const checkout = (sha: string) => checkOut(repo, sha);
-    for (let tries = 0; ; tries++) {
-      const sha = (await mainOf(home, repo))!;
-      const known = await mergeOf(home, repo, sha, runId);
-      if (known) return { merged: known, checkout: await checkout(sha) };
-      const main = await readMain(home, repo, sha);
-      const problems = problemsOf(main, added);
-      if (problems.length) return { problems };
-      // What the merge marks superseded (a note held for its owner's OK marks nothing).
-      const replaced = supersededBy(added);
-      // The verdict was on the text the grade read: a note this merge marks that is another blob now is never marked on
-      // it.
-      const changed = [...replaced].filter(([old]) => main.oids.get(old) !== graded[old]).map(([old, by]): Problem => ({ rule: "supersedes", path: by, detail: `${old} changed after the grade read it` }));
-      if (changed.length) return { problems: changed };
-      // A skill's or a draft's file is written whole over main's: one that changed on main after the run started (a
-      // person retired or approved it, or another run's merge changed it) is never written over on this run's copy.
-      const moved: Problem[] = [];
-      for (const { file } of proposal.files ?? []) {
-        if ((await blobAt(home, repo, proposal.seed, file)) !== (await blobAt(home, repo, sha, file))) moved.push({ rule: "supersedes", path: file, detail: `${file} changed on main after the run started` });
-      }
-      if (moved.length) return { problems: moved };
-      const notes = notesOf(main);
-      // The new tree: main's, with the new notes, the ones the kept notes supersede marked, and the index rebuilt from
-      // what is active then (a pending note is not).
-      const files = new Map([...texts, ...heldFiles(proposal.files ?? [], verdict)].map(({ file, text }) => [file, text]));
-      for (const [old, by] of replaced) files.set(old, supersede(main.texts.get(old)!, by));
-      const after = [...notes.filter((note) => !replaced.has(note.file)), ...added];
-      files.set(INDEX_FILE, buildIndex(after));
-      const env = { GIT_INDEX_FILE: join(repo, ".git", `merge-${runId}.index`) };
-      let commit: string;
-      try {
-        await rm(env.GIT_INDEX_FILE, { force: true });
-        await git(home, repo, ["read-tree", sha], "", env);
-        const entries: string[] = [];
-        for (const [file, text] of files) entries.push(`100644 ${line(await git(home, repo, ["hash-object", "-w", "--no-filters", "--stdin"], text))}\t${file}\0`);
-        await git(home, repo, ["update-index", "-z", "--index-info"], entries.join(""), env);
-        const tree = line(await git(home, repo, ["write-tree"], "", env));
-        commit = line(await git(home, repo, ["commit-tree", tree, "-p", sha, "-m", `learning: ${runId}: merged`, "-m", reason, "-m", `Run-Id: ${runId}`]));
-      } finally {
-        await rm(env.GIT_INDEX_FILE, { force: true });
-      }
-      try {
-        await git(home, repo, ["update-ref", "-m", `learning: merge ${runId}`, "refs/heads/main", commit, sha]);
-      } catch (error) {
-        // Lost to a write since main was read: merged again onto the main that won, never forced over it.
-        if (tries === 0 && (await mainOf(home, repo)) !== sha) continue;
-        throw error;
-      }
-      return { merged: commit, checkout: await checkout(commit) };
+    const { workspace, end } = learningFolderOf(data, agentId);
+    try {
+      const done = await learningCommit(workspace, { kind: "merge", runId, reason, files: [...notes, ...files], held, graded: { ...graded }, seed: proposal.seed });
+      if (done.ok) return { merged: done.commit, checkout: undefined };
+      if (done.reason === "unavailable") throw new Error(done.error);
+      return { problems: done.problems };
+    } finally {
+      await end();
     }
   });
 }
