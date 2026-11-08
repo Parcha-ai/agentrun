@@ -15,8 +15,11 @@ import type { AgentDefinition, AgentIdentity, AgentSource, PromptVariant, RunRec
 import { AgentHomeError, openStore } from "../store.js";
 import type { EntryLike } from "../timeline/index.js";
 
-/** The one schema version of pi-durable's SQLite store this reader knows; a newer one is refused, not guessed at. */
-const SCHEMA_VERSION = 1;
+/** The schema versions of pi-durable's SQLite store this reader knows; a newer one is refused, not guessed at. pi 1.5
+ *  writes 2 (pi-durable dist/storage/sqlite/migrations.js: version 2 rebuilds `tasks` to admit the `sleeping` status),
+ *  and a store an earlier release wrote, and no 1.5 harness has reopened since, is 1. `entries`, the one table read
+ *  here, is the same in both: this is a version range on an unchanged table, not a migration or a legacy reader. */
+const SCHEMA_VERSIONS: readonly unknown[] = [1, 2];
 const BUSY_MS = 5_000;
 
 /** A store opened read-only, with its schema version checked; a write through the handle fails. The store of an `ended` run
@@ -28,7 +31,7 @@ export function openReadOnly(file: string, { ended = false }: { ended?: boolean 
   const db = new DatabaseSync(atRest ? `${pathToFileURL(file).href}?immutable=1` : file, { readOnly: true, timeout: BUSY_MS });
   try {
     const row = db.prepare("SELECT version FROM durable_schema WHERE singleton = 1").get() as { version?: unknown } | undefined;
-    if (row?.version !== SCHEMA_VERSION) throw new AgentHomeError("format", `${path.basename(file)} is pi-durable schema ${String(row?.version)}; this version reads ${SCHEMA_VERSION}`);
+    if (!SCHEMA_VERSIONS.includes(row?.version)) throw new AgentHomeError("format", `${path.basename(file)} is pi-durable schema ${String(row?.version)}; this version reads ${SCHEMA_VERSIONS.join(" and ")}`);
     return db;
   } catch (error) {
     db.close();

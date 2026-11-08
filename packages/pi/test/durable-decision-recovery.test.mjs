@@ -10,6 +10,7 @@ import { join } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { after, before, test } from 'node:test';
 import { BACKGROUND_CONTEXT as ctx } from '@earendil-works/chord/context';
+import { createModels } from '@earendil-works/pi-ai/models';
 import { Harness, createRegistry } from '@earendil-works/pi-durable';
 import { openNodeSqliteStorage } from '@earendil-works/pi-durable/storage/sqlite/node';
 import { DECISION_ROW_VERSION, appendDecision, decisionRecovery, readDecisions } from '@parcha/agentrun-pi/durable';
@@ -96,7 +97,7 @@ const receiptOf = (id, extra = {}) => ({
 const exchange = { request: { state: { request: 'The server room is flooding.' }, questions: { urgent: { type: 'noul', instructions: 'Is the request urgent?' } } } };
 
 test('decisionRecovery: rows commit in the order they are recorded; only an answered row this run recorded with its identity answers, the last one wins, and another run\'s rows never do', async () => {
-  const harness = await Harness.open(await openNodeSqliteStorage(join(mkdtempSync(join(root, 'rows-')), 'run.sqlite')), { registry: createRegistry(), models: {} }, ctx);
+  const harness = await Harness.open(await openNodeSqliteStorage(join(mkdtempSync(join(root, 'rows-')), 'run.sqlite')), { registry: createRegistry(), models: createModels() }, ctx);
   // The first commit is the slowest, and the rows still land in the order they were recorded.
   let commits = 0;
   const runtime = {
@@ -129,7 +130,7 @@ test('decisionRecovery: rows commit in the order they are recorded; only an answ
 });
 
 test('decisionRecovery: a row keeps the provider that answered, the sources it cited, the questions it refused and how the request ended, and the replayed receipt has them all again', async () => {
-  const harness = await Harness.open(await openNodeSqliteStorage(join(mkdtempSync(join(root, 'provider-')), 'run.sqlite')), { registry: createRegistry(), models: {} }, ctx);
+  const harness = await Harness.open(await openNodeSqliteStorage(join(mkdtempSync(join(root, 'provider-')), 'run.sqlite')), { registry: createRegistry(), models: createModels() }, ctx);
   const runtime = { commit: (change, context) => harness.commit(change, context), snapshot: (...args) => harness.snapshot(...args) };
   const decisions = decisionRecovery({ key: 'run-1', runtime, context: ctx });
   const evidence = [{ url: 'https://example.org/filing', title: 'A filing', excerpts: ['Example Widgets, Inc.'], scope: 'call' }, { url: 'https://example.org/registry', title: null, excerpts: [], scope: 'urgent' }];
@@ -145,7 +146,7 @@ test('decisionRecovery: a row keeps the provider that answered, the sources it c
 });
 
 test('decisionRecovery: a row keeps the images a request carried by digest, the state the judge saw and the cost basis, and the replay has them again', async () => {
-  const harness = await Harness.open(await openNodeSqliteStorage(join(mkdtempSync(join(root, 'images-')), 'run.sqlite')), { registry: createRegistry(), models: {} }, ctx);
+  const harness = await Harness.open(await openNodeSqliteStorage(join(mkdtempSync(join(root, 'images-')), 'run.sqlite')), { registry: createRegistry(), models: createModels() }, ctx);
   const runtime = { commit: (change, context) => harness.commit(change, context), snapshot: (...args) => harness.snapshot(...args) };
   const decisions = decisionRecovery({ key: 'run-1', runtime, context: ctx });
   const images = [{ token: 'page1', ref: 'pages/coi-acme/1.png', sha256: 'a'.repeat(64), mime: 'image/png', bytes: 1234 }];

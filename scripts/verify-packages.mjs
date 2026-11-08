@@ -15,11 +15,6 @@ import { runtimeSmokeChecks } from './release-preflight.mjs';
 import { ALLOWED_MARKS, attributionProblems, boundaryProblems, carriesUpstream } from './upstream-attribution.mjs';
 
 const exec = promisify(execFile);
-// `--pi <x.y.z>`: install the clean consumer's pi family at that version instead of the one the repository's lockfile holds.
-// Without it the consumer is pinned to the lockfile, as before.
-const piFlag = process.argv.indexOf('--pi');
-const legPi = piFlag === -1 ? undefined : process.argv[piFlag + 1];
-assert.ok(piFlag === -1 || /^\d+\.\d+\.\d+$/.test(legPi ?? ''), `--pi takes a plain x.y.z version, got ${legPi}`);
 // `--console`: the server's packed dist must carry the console it answers at "/" (apps/console, built before the server's
 // build, which copies it in). Its files are scanned like every packed file either way.
 const requireConsole = process.argv.includes('--console');
@@ -34,10 +29,6 @@ await rm(join(receiptDir, 'typescript-diagnostics.txt'), { force: true });
 const writeReceipt = () => writeFile(join(receiptDir, 'verification.json'), JSON.stringify(receipt, null, 2) + '\n');
 await writeReceipt();
 const temporary = await mkdtemp(join(tmpdir(), 'agentrun-package-check-'));
-/** The pins for a leg that names its own pi version: every @earendil-works package the lockfile holds is pinned to it, by name. */
-function piLeg({ held }, version) {
-  return { overrides: Object.fromEntries([...held.keys()].map(name => [name, version])), held: new Map([...held.keys()].map(name => [name, new Set([version])])) };
-}
 async function run(command, args, cwd = root, allowFailure = false, commandEnv = env) {
   try { return { ...(await exec(command, args, { cwd, env: commandEnv, maxBuffer: 16 * 1024 * 1024, timeout: 180_000 })), exitCode: 0 }; }
   catch (error) {
@@ -72,12 +63,13 @@ const allowedExtraFiles = {
   // The server's bin is its launcher, which hands the server its secrets over a pipe (launcher/agentrun-serve).
   // And the locks the CLI harnesses' first use installs by (src/harness-install.ts): each the package.json it locks and
   // npm's lock, metadata naming the package at its pin and every package of its tree by sha512, never the CLI itself.
-  serve: ['package/launcher/agentrun-serve', 'package/harnesses/claude-agent/package.json', 'package/harnesses/claude-agent/package-lock.json', 'package/harnesses/codex/package.json', 'package/harnesses/codex/package-lock.json'],
+  // And the template packages it ships, which it reads at its start (src/templates.ts), with their format (templates/README.md).
+  serve: ['package/launcher/agentrun-serve', 'package/harnesses/claude-agent/package.json', 'package/harnesses/claude-agent/package-lock.json', 'package/harnesses/codex/package.json', 'package/harnesses/codex/package-lock.json', 'package/templates/README.md', ...['agent.md', 'findings.schema.json', 'rules/REVIEW.md', 'skills/review/SKILL.md', 'evals/null-name/prompt.md', 'evals/null-name/graders/schema.md'].map((file) => `package/templates/code-review/${file}`)],
   // `npx @parcha/agentrun` is a command, not a library: its bin and the module the bin loads, plain JavaScript with no build,
   // and the API's CLI with its command table generated from the server's OpenAPI document (scripts/generate-clients.mjs),
-  // its wait-and-follow module (follow.mjs), the commands that read a secret from stdin (login.mjs) and its skill's
-  // installer (skill.mjs).
-  agentrun: ['package/bin/agentrun.mjs', 'package/lib/start.mjs', 'package/lib/cli.mjs', 'package/lib/follow.mjs', 'package/lib/commands.generated.mjs', 'package/lib/login.mjs', 'package/lib/skill.mjs'],
+  // its wait-and-follow module (follow.mjs), the commands that read a secret from stdin (login.mjs), its skill's
+  // installer (skill.mjs) and its template package check (template.mjs).
+  agentrun: ['package/bin/agentrun.mjs', 'package/lib/start.mjs', 'package/lib/cli.mjs', 'package/lib/follow.mjs', 'package/lib/commands.generated.mjs', 'package/lib/login.mjs', 'package/lib/skill.mjs', 'package/lib/template.mjs'],
 };
 const allowedEndpoints = {
   'run-adapters-claude-agent': [
@@ -212,7 +204,7 @@ try {
   const npmMajor = Number((await run('npm', ['--version'])).stdout.trim().split('.')[0]);
   // The drift check below fails the run if a future npm resolves either override shape differently.
   const pinned = buildOverrides(rootLock, npmMajor);
-  const { overrides, held } = legPi ? piLeg(pinned, legPi) : pinned;
+  const { overrides, held } = pinned;
   await writeFile(join(consumer, 'package.json'), JSON.stringify({ name: 'agentrun-clean-consumer', version: '1.0.0', private: true, type: 'module', overrides }));
   await run('npm', ['install', '--ignore-scripts', '--no-audit', '--no-fund', '--save-exact', ...tarballs], consumer);
   const typescript = await json(join(root, 'node_modules', 'typescript', 'package.json'));
@@ -220,7 +212,7 @@ try {
   const zod = await json(join(root, 'node_modules', 'zod', 'package.json'));
   // The Pi packages are optional peers of @parcha/agentrun-pi: a host or application supplies them, so the consumer does.
   const peers = [];
-  for (const name of ['@earendil-works/pi-coding-agent', '@earendil-works/pi-agent-core', '@earendil-works/pi-tui', '@earendil-works/pi-ai', 'typebox']) peers.push(`${name}@${legPi && name.startsWith('@earendil-works/') ? legPi : (await json(join(root, 'node_modules', name, 'package.json'))).version}`);
+  for (const name of ['@earendil-works/pi-coding-agent', '@earendil-works/pi-agent-core', '@earendil-works/pi-tui', '@earendil-works/pi-ai', 'typebox']) peers.push(`${name}@${(await json(join(root, 'node_modules', name, 'package.json'))).version}`);
   await run('npm', ['install', '--ignore-scripts', '--no-audit', '--no-fund', '--save-dev', '--save-exact', `typescript@${typescript.version}`, `@types/node@${nodeTypes.version}`, `zod@${zod.version}`, ...peers], consumer);
   // Every @earendil-works package in the consumer is at a version the repository's lockfile holds for that name.
   const consumerLock = JSON.parse(await readFile(join(consumer, 'package-lock.json'), 'utf8'));
@@ -229,17 +221,17 @@ try {
   receipt.checks.push('Every @earendil-works package in the consumer resolves at a version the repository lockfile holds for it.');
   // The versions the consumer landed on are printed and filed before they are judged, so a failure shows what was installed.
   const copies = listCopies(consumerLock.packages);
-  const developed = legPi ? { '@earendil-works/pi-durable': legPi, '@earendil-works/chord': legPi } : developedVersions(rootLock);
+  const developed = developedVersions(rootLock);
   const peerRanges = {};
   for (const packed of receipt.packages) {
     const ranges = Object.fromEntries(Object.entries((await json(join(consumer, 'node_modules', packed.name, 'package.json'))).peerDependencies ?? {}).filter(([name]) => name in developed));
     if (Object.keys(ranges).length) peerRanges[packed.name] = ranges;
   }
-  receipt.piFamily = { developedOn: developed, ...(legPi ? { leg: legPi } : {}), copies };
+  receipt.piFamily = { developedOn: developed, copies };
   for (const copy of copies) console.log(`Consumer holds ${copy.name}@${copy.version} at ${copy.location}`);
-  const piProblems = checkPiFamily(copies, developed, peerRanges, legPi ? [] : laggingWorkspaces(rootLock, developed));
+  const piProblems = checkPiFamily(copies, developed, peerRanges, laggingWorkspaces(rootLock, developed));
   if (piProblems.length) throw new Error(`The packages installed together do not land on the pi version the repository develops on:\n${piProblems.join('\n')}`);
-  receipt.checks.push(`The consumer holds one pi-durable and one chord, at ${developed['@earendil-works/pi-durable']} and ${developed['@earendil-works/chord']}, ${legPi ? `the version this leg names (--pi ${legPi})` : 'the versions the repository develops the durable packages on'}.`);
+  receipt.checks.push(`The consumer holds one pi-durable and one chord, at ${developed['@earendil-works/pi-durable']} and ${developed['@earendil-works/chord']}, the versions the repository develops the durable packages on.`);
   for (const packed of receipt.packages) {
     const installed = await json(join(consumer, 'node_modules', packed.name, 'package.json'));
     assert.equal(installed.version, packed.version, `Installed version mismatch: ${packed.name}`);

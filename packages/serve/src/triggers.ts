@@ -204,6 +204,22 @@ function settingsOf(body: Json, issues: InputIssue[]): { catchup_window_s?: numb
 }
 const WRITABLE = ["name", "enabled", "source", "target", "catchup_window_s"];
 
+/** A POST /triggers body's own fields, read as create reads them: its source, target, settings, name and enabled, with
+ *  every issue. What it names (the agent, the run) is create's own check (TriggerDeps.targetIssues). */
+function readBody(body: Json, now: number) {
+  const issues = unknownFields(body, WRITABLE);
+  const source = sourceOf(body.source, now, issues);
+  const target = targetOf(body.target, issues);
+  const settings = settingsOf(body, issues);
+  if (body.name !== undefined && !(typeof body.name === "string" && body.name.trim() && body.name.length <= MAX_NAME)) issues.push({ field: "name", reason: "invalid", message: `name is a string of 1 to ${MAX_NAME} characters` });
+  if (body.enabled !== undefined && typeof body.enabled !== "boolean") issues.push({ field: "enabled", reason: "wrong_type", message: "enabled is true or false" });
+  return { issues, source, target, settings };
+}
+
+/** What is wrong with a POST /triggers body by itself, as create refuses it, all but the agent or run its target names:
+ *  a template package's triggers are checked with it before any apply (templates.ts). */
+export const triggerBodyIssues = (body: Json, now: number): InputIssue[] => readBody(body, now).issues;
+
 /** A trigger as triggers.json keeps it, whole: what the engine reads of it is there, of its type. */
 function wellFormed(adapters: readonly TriggerAdapter[], t: unknown): t is Trigger {
   if (!isObject(t) || typeof t.id !== "string" || typeof t.name !== "string" || typeof t.enabled !== "boolean" || typeof t.created_at !== "string" || typeof t.updated_at !== "string") return false;
@@ -293,12 +309,7 @@ export class Triggers {
   async create(body: Json) {
     this.readable();
     const now = this.clock.now();
-    const issues = unknownFields(body, WRITABLE);
-    const source = sourceOf(this.adapters, body.source, now, issues);
-    const target = targetOf(body.target, issues);
-    const settings = settingsOf(body, issues);
-    if (body.name !== undefined && !(typeof body.name === "string" && body.name.trim() && body.name.length <= MAX_NAME)) issues.push({ field: "name", reason: "invalid", message: `name is a string of 1 to ${MAX_NAME} characters` });
-    if (body.enabled !== undefined && typeof body.enabled !== "boolean") issues.push({ field: "enabled", reason: "wrong_type", message: "enabled is true or false" });
+    const { issues, source, target, settings } = readBody(body, now);
     // Checked as its runs are given it: the input, then the line saying what fired it (a name the trigger may yet take).
     if (target) issues.push(...(await this.deps.targetIssues(this.given(typeof body.name === "string" ? body.name.trim() : `trg_${"0".repeat(24)}`, source, target, now))));
     if (issues.length || !source || !target) throw invalid(issues);
