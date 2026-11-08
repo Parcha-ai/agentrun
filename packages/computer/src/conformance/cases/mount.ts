@@ -3,9 +3,13 @@
 // as asked, with no Archil token in any read-back. A kind the provider does not declare is refused by check() in words,
 // before any vendor call. Every case is Full: optional for every kind of computer until the cutover decides.
 import { randomBytes } from "node:crypto";
+import { runLabels as claimLabels } from "../../labels.js";
 import { MOUNT_KINDS, type MountKind, type MountSpec, readBackOf, WORKSPACE } from "../../mount.js";
 import type { Case, CaseContext } from "../types.js";
 import { b64, CASE_LABEL, decode } from "./util.js";
+
+/** The claim epoch the run-folder cases make their computers under. */
+const EPOCH = 1;
 
 const mount = (name: string, run: Case["run"], extra: Partial<Case> = {}): Case => ({
 	id: `mount.${name}`,
@@ -30,7 +34,8 @@ const runFolder = (kind: MountKind): Case =>
 			const folder = await t.runFolder(kind);
 			const asked = folder.mount;
 			t.equal(asked.kind, kind, "the kind of the run folder's mount");
-			const labels = { ...t.runLabels, [CASE_LABEL]: `mount-${kind}` };
+			// The computer works for a run under a claim epoch, as a runner makes it: an Archil mount reads back under it.
+			const labels = { ...t.runLabels, ...claimLabels(`mount-${randomBytes(6).toString("hex")}`, EPOCH), [CASE_LABEL]: `mount-${kind}` };
 			const spec = t.spec({ labels, mount: asked });
 			const refusals = t.provider.check(spec);
 			tokenless(t, asked, refusals, "check's refusal of a spec that mounts the run's folder");
@@ -46,14 +51,14 @@ const runFolder = (kind: MountKind): Case =>
 			// The mount is read back from the computer, as asked, and no read-back holds the token.
 			const attached = t.ok(await t.provider.attach({ id: ref.id }), "attach by id");
 			tokenless(t, asked, attached, "attach by id: the mount it reads back");
-			t.deepEqual(attached.spec?.mount, readBackOf(asked), "attach by id: the mount it reads back");
+			t.deepEqual(attached.spec?.mount, readBackOf(asked, EPOCH), "attach by id: the mount it reads back");
 			const listed = t.ok(await t.provider.list(labels), "list");
 			tokenless(t, asked, listed, "list: what it reads back of the computer");
 			const info = t.present(
 				listed.find((one) => one.ref.name === ref.name),
 				`${ref.name} is listed by the case's labels`,
 			);
-			t.deepEqual(info.mount, readBackOf(asked), "list: the mount it reads back");
+			t.deepEqual(info.mount, readBackOf(asked, EPOCH), "list: the mount it reads back");
 
 			// Outside in: a file written to the folder from outside is read at /workspace.
 			const nonce = randomBytes(6).toString("hex");

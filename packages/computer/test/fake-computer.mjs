@@ -8,7 +8,7 @@ import { mkdirSync, mkdtempSync, readFileSync, realpathSync, rmSync, writeFileSy
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { PassThrough } from "node:stream";
-import { DaemonClient } from "../dist/index.js";
+import { DaemonClient, epochOf } from "../dist/index.js";
 
 const fail = (code, message) => ({ ok: false, error: { code, message } });
 const ok = (value) => ({ ok: true, value });
@@ -209,12 +209,16 @@ export function fakeComputers({
 	listIgnoresLabels = false,
 	failRelease,
 } = {}) {
-	/** The mount as attach and list read it back: its kind and source, never the token unless broken so. */
-	const readBack = (asked) => {
+	/** The mount as attach and list read it back: its kind and source, never the token unless broken so. An Archil mount
+	 *  is exclusive, under the epoch of the computer's agentrun.epoch label; with no such label it is a mount in words. */
+	const readBack = (asked, labels = {}) => {
 		if (asked === undefined || brokenMount === "no-read-back") return {};
 		if (asked.kind === "bind") return { mount: { kind: "bind", path: asked.path } };
+		const epoch = epochOf(labels);
+		if (!epoch.ok) return { mount: { other: `an Archil mount of ${asked.disk}:/${asked.folder}: ${epoch.error.message}` } };
 		const region = brokenMount === "no-region" ? {} : { region: asked.region };
-		return { mount: { kind: "archil", disk: asked.disk, ...region, folder: asked.folder, ...(brokenMount === "token-in-read-back" ? { token: asked.token } : {}) } };
+		const token = brokenMount === "token-in-read-back" ? { token: asked.token } : {};
+		return { mount: { kind: "archil", disk: asked.disk, ...region, folder: asked.folder, exclusive: true, epoch: epoch.value, ...token } };
 	};
 	const folderOf = (asked) => {
 		if (asked === undefined || brokenMount === "unbound") return undefined;
@@ -287,13 +291,13 @@ export function fakeComputers({
 			if (found.length > 1) return fail("invalid", `${found.length} computers match`);
 			const [c] = found;
 			const [u, g = u] = c.daemon.uid.split(":");
-			const read = { image: c.image, user: `${u}:${g}`, network: c.network, deadline: c.deadline, ...readBack(c.mount) };
+			const read = { image: c.image, user: `${u}:${g}`, network: c.network, deadline: c.deadline, ...readBack(c.mount, c.labels) };
 			return ok(attachSpec === null ? { ...c.ref } : { ...c.ref, spec: { ...read, ...attachSpec } });
 		},
 		async list(labels) {
 			calls.push(["list", labels]);
 			const found = [...computers.values()].filter((c) => listIgnoresLabels || Object.entries(labels).every(([k, v]) => c.labels[k] === v));
-			return ok(found.map((c) => ({ ref: c.ref, labels: c.labels, deadline: c.deadline, state: c.state, network: c.network, ...readBack(c.mount) })));
+			return ok(found.map((c) => ({ ref: c.ref, labels: c.labels, deadline: c.deadline, state: c.state, network: c.network, ...readBack(c.mount, c.labels) })));
 		},
 		async network(ref, policy) {
 			const record = computers.get(ref.name);

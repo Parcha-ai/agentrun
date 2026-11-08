@@ -635,9 +635,11 @@ const made = await docker.create({ image: "debian:bookworm-slim", lifetimeMs: 60
   mount's `disk`, `region`, `folder` and `token` are non-empty strings with no NUL, the `folder` relative to the disk's root and
   with no `..` part. A field the kind does not have is refused.
 - **The token is a secret.** No refusal names an Archil field's value (a token put in the wrong field is not echoed),
-  and what a provider reads back of a mount, `MountReadBack` (`readBackOf(mount)`), is its kind and source alone:
-  `{ kind: "bind", path }` or `{ kind: "archil", disk, region, folder }`, or `{ other: "<words>" }` for a mount at
-  `/workspace` the provider never makes. The token is never in a label, a read-back or an error.
+  and what a provider reads back of a mount, `MountReadBack` (`readBackOf(mount, epoch)`), is its kind and source
+  alone: `{ kind: "bind", path }` or `{ kind: "archil", disk, region, folder, exclusive, epoch }`, or
+  `{ other: "<words>" }` for a mount at `/workspace` the provider never makes. An Archil mount's `epoch` is the
+  computer's `agentrun.epoch` label (Archil's hold on a folder carries none), and `readBackOf` throws for an Archil
+  mount with no epoch. The token is never in a label, a read-back or an error.
 - **Docker takes a bind.** `create` adds `--mount type=bind,src=<path>,dst=/workspace` after the daemon's mount:
   read-write, propagation `rprivate`. A path Docker's `--mount` cannot hold (a comma, a double quote, a line break) is
   refused by `check`.
