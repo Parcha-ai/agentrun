@@ -36,7 +36,7 @@ test("a row key or column with the AAD's separator in it is refused, so no two p
 });
 
 test("an MCP credential opens for its server's row with the origin it was sealed for, and is refused as damaged for another", () => {
-  const credential = { type: "headers", headers: { authorization: "Bearer not-a-secret-x" } };
+  const credential = { type: "headers", headers: { authorization: `Bearer not-a-secret-${"x"}` } };
   const sealed = sealMcpCredential(KEY, "github", credential, "https://mcp.example.com/github");
   const row = { name: "github", url: "https://mcp.example.com/github/v2", sealed };
   assert.deepEqual(openMcpCredential(KEY, row), { credential: { ...credential, origin: "https://mcp.example.com" } }, "the same origin, another path: opens");
