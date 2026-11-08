@@ -168,6 +168,29 @@ test("check() takes a template as the image, none or open, and labels; it refuse
 	assert.deepEqual(fields({ ...SPEC, labels: { a: 1 } }), ["labels"]);
 });
 
+test("the daemon user is held to root's numbers, not its text: 00:00 is root as much as 0:0, from options or COMPUTER_E2B_USER", async () => {
+	for (const daemonUser of ["00:00", "000:1000", "1000:00", "0:1000"]) assert.throws(() => setup({ daemonUser }), /root or in root's group/, daemonUser);
+	assert.doesNotThrow(() => setup({ daemonUser: "01000:01000" }), "leading zeros on a user that is not root are its number");
+	const fake = fakeE2B();
+	await assert.rejects(fromEnv({ [ENV.key]: KEY, [ENV.user]: "00:00", [ENV.daemon]: DAEMON_PATH }, { Sandbox: fake.Sandbox }), /root or in root's group/);
+	assert.deepEqual(fake.calls, []);
+});
+
+test("a timeout that is not a whole number of ms, or one past Node's longest timer, is refused before any sandbox is made", () => {
+	const MAX_TIMER_MS = 2 ** 31 - 1;
+	for (const [key, value] of [
+		["probeMs", 30_000.5],
+		["requestMs", 0.5],
+		["helloMs", MAX_TIMER_MS],
+		["goneMs", 2 ** 31],
+		["listMs", Number.MAX_SAFE_INTEGER],
+	]) {
+		assert.throws(() => setup({ timeouts: { ...TIMEOUTS, [key]: value } }), new RegExp(`timeouts\\.${key} must be a whole number of ms above 0 and at most`), `${key}: ${value}`);
+	}
+	// The longest a call's own bound may be: Node's timer limit less the 5 s every SDK call's race adds to it.
+	assert.doesNotThrow(() => setup({ timeouts: { ...TIMEOUTS, createMs: MAX_TIMER_MS - 5_000 } }));
+});
+
 // --- the key ---
 
 test("fromEnv() reads the key from COMPUTER_E2B_API_KEY alone: a bare E2B_API_KEY is refused in words, and nothing is called", async () => {
