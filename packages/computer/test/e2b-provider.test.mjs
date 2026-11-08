@@ -1180,6 +1180,17 @@ test("the loopback block: init starts with --own-network as 2510:2510 by default
 	assert.match(sb.init.command, / init --deadline "\$t" --user "\$w" --own-network /);
 });
 
+test("the loopback block: a kernel's fallback tunnels, down and addressless, are no drift; one the computer's user could raise is", async () => {
+	const quiet = setup({}, { box: { interfaces: ["lo"], quiet: ["tunl0", "gre0", "sit0"] } });
+	const made = await quiet.provider.create(SPEC);
+	assert.equal(made.ok, true, JSON.stringify(made));
+	const raised = setup({}, { box: { interfaces: ["lo"], quiet: ["tunl0"], raised: ["tunl0"] } });
+	const refused = await raised.provider.create(SPEC);
+	assert.equal(refused.ok, false);
+	assert.equal(refused.error.code, "refused");
+	assert.match(refused.error.message, /brought up tunl0/);
+});
+
 test("the loopback block: a daemon whose network holds more than its loopback is refused and deleted", async () => {
 	const { provider, fake } = setup({}, { box: { interfaces: ["lo", "eth0"] } });
 	const made = await provider.create(SPEC);

@@ -64,7 +64,7 @@ function output(argv, { uid, status, users, user, probe, pathSockets = [] }) {
 		const targets = argv.slice(2).filter((_, i) => i % 2 === 1);
 		const answered = targets.filter((target) => probe.answers.includes(target));
 		const results = targets.map((target) => ({ target, protocol: "any", outcome: answered.includes(target) ? "answered" : "refused", bytes: answered.includes(target) ? 12 : 0, detail: "" }));
-		return `${JSON.stringify({ uid: Number(who), gid: Number(who), kernel: "6.8.0", interfaces: probe.interfaces, reached: answered, accepted: [], results })}\n`;
+		return `${JSON.stringify({ uid: Number(who), gid: Number(who), kernel: "6.8.0", interfaces: probe.interfaces, quiet: probe.quiet ?? [], raised: probe.raised ?? [], reached: answered, accepted: [], results })}\n`;
 	}
 	if (argv[0] === "cat" && argv[1] === "/proc/self/status") {
 		const lines = Object.entries(status).filter(([, value]) => value !== undefined);
@@ -240,6 +240,8 @@ export function fakeComputers({
 	failRelease,
 	vendorAgentPorts,
 	probeInterfaces = ["lo"],
+	probeQuiet = [],
+	probeRaised = [],
 	agentAnswers = [],
 	toolCannotWrite = false,
 	pathSockets = [],
@@ -314,7 +316,7 @@ export function fakeComputers({
 					bound: folderOf(spec.mount),
 					toolCannotWrite,
 					pathSockets,
-					probe: { interfaces: probeInterfaces, answers: agentAnswers },
+					probe: { interfaces: probeInterfaces, quiet: probeQuiet, raised: probeRaised, answers: agentAnswers },
 				},
 			};
 			computers.set(name, record);

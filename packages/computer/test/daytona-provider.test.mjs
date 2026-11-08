@@ -1007,6 +1007,18 @@ test("the loopback block: a daemon whose network holds more than its loopback is
 	assert.match(attached.error.message, /daemon network: declared its own \(lo alone\), read back lo, eth0/);
 });
 
+test("the loopback block: a kernel's fallback tunnels, down and addressless, are no drift; one the computer's user could raise is", async () => {
+	// The Modal live run's kernel; Daytona's runners may have the same modules loaded.
+	const quiet = setup({ interfaces: ["lo"], quiet: ["tunl0", "gre0", "sit0"] });
+	const made = await quiet.provider.create(SPEC);
+	assert.equal(made.ok, true, JSON.stringify(made));
+	const raised = setup({ interfaces: ["lo"], quiet: ["tunl0"], raised: ["tunl0"] });
+	const refused = await raised.provider.create(SPEC);
+	assert.equal(refused.ok, false);
+	assert.equal(refused.error.code, "refused");
+	assert.match(refused.error.message, /brought up tunl0/);
+});
+
 test("the loopback block: network() refuses a change to open or an allowlist in words, and sends nothing", async () => {
 	const { provider, fake } = setup();
 	const made = await provider.create(SPEC);

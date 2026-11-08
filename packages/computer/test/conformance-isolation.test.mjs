@@ -55,6 +55,16 @@ test("it fails where a program reaches the vendor's agent on a loopback, and nam
 	}
 });
 
+test("a kernel's fallback tunnels, down and addressless, pass; one a program of the computer's user could bring up fails, named", async () => {
+	// The Modal live run: Modal's kernel gives every new network namespace tunl0, gre0, sit0 and the rest, down and with no
+	// address; no program can use them, holding no CAP_NET_ADMIN. One a program could raise is a way out.
+	const quiet = await run({ vendorAgentPorts: [2280], probeQuiet: ["tunl0", "gre0", "sit0"] });
+	assert.deepEqual(statuses(quiet), { [ID]: "pass" }, reasons(quiet)[ID]);
+	const raised = await run({ vendorAgentPorts: [2280], probeQuiet: ["tunl0"], probeRaised: ["tunl0"] });
+	assert.equal(statuses(raised)[ID], "fail");
+	assert.match(reasons(raised)[ID], /tunl0/);
+});
+
 test("it fails where a program sees another interface than its own loopback, and names them", async () => {
 	const report = await run({ vendorAgentPorts: [2280], probeInterfaces: ["lo", "eth0"] });
 	assert.equal(statuses(report)[ID], "fail");

@@ -303,6 +303,11 @@ export function fakeDaytona(initial = {}) {
 			const target = params.path.endsWith("cwd") ? (knobs.cwd ?? "/work") : (knobs.exe ?? "/opt/agentrun/computerd");
 			return reply({ result: { type: "symlink", size: 0, mode: 0o777, mtimeMs: 0, uid: 1000, gid: 1000, target } });
 		}
+		if (method === "exec.run" && params.argv[0] === "/opt/agentrun/computerd" && params.argv[1] === "probe" && params.argv.length === 2) {
+			// computerd probe with no target: its own network as the computer's user sees it (live, quiet, raised).
+			const report = { uid: 2510, gid: 2510, kernel: "6.8.0", interfaces: knobs.interfaces ?? ["lo"], quiet: knobs.quiet ?? [], raised: knobs.raised ?? [], reached: [], accepted: [], results: [] };
+			return reply({ result: { exitCode: 0, stdout: Buffer.from(`${JSON.stringify(report)}\n`).toString("base64"), stderr: "", timedOut: false, truncated: false } });
+		}
 		if (method === "exec.run") {
 			const stdout = Buffer.from(`${params.argv.slice(1).join(" ")}\n`).toString("base64");
 			return reply({ result: { exitCode: 0, stdout, stderr: "", timedOut: false, truncated: false } });

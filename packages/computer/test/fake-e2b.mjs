@@ -298,7 +298,7 @@ export function fakeE2B({
 				const none = sb.allowInternetAccess === false;
 				const reached = sb.box.reached ?? (none ? (sb.box.udpAnswers ? targets.filter(udp) : []) : targets);
 				const accepted = sb.box.accepted ?? (none ? targets.filter((target) => !udp(target) && !target.startsWith("[")) : []);
-				const report = { uid: sb.box.uid, gid: sb.box.gid, kernel: sb.box.kernel, interfaces: sb.box.interfaces, reached, accepted };
+				const report = { uid: sb.box.uid, gid: sb.box.gid, kernel: sb.box.kernel, interfaces: sb.box.interfaces, quiet: sb.box.quiet ?? [], raised: sb.box.raised ?? [], reached, accepted };
 				if (sb.box.probe === "no-accepted") delete report.accepted;
 				return out(`${JSON.stringify(report)}\n`);
 			}

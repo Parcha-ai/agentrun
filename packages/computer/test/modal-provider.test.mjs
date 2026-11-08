@@ -1485,6 +1485,18 @@ test("the loopback block: init starts with --own-network as 2510:2510 by default
 	}
 });
 
+test("the loopback block: a kernel's fallback tunnels, down and addressless, are no drift; one the computer's user could raise is", async () => {
+	// The Modal live run: Modal's VM kernel gives the programs' namespace tunl0, gre0, sit0 and the rest, down.
+	const quiet = setup({}, { box: { interfaces: ["lo"], quiet: ["tunl0", "gre0", "sit0"] } });
+	const made = await quiet.provider.create(SPEC);
+	assert.equal(made.ok, true, JSON.stringify(made));
+	const raised = setup({}, { box: { interfaces: ["lo"], quiet: ["tunl0"], raised: ["tunl0"] } });
+	const refused = await raised.provider.create(SPEC);
+	assert.equal(refused.ok, false);
+	assert.equal(refused.error.code, "refused");
+	assert.match(refused.error.message, /brought up tunl0/);
+});
+
 test("the loopback block: a daemon whose programs see more than their loopback is refused and terminated", async () => {
 	const { provider, fake } = setup({}, { box: { interfaces: ["lo", "eth0"] } });
 	const made = await provider.create(SPEC);
