@@ -14,6 +14,7 @@ import { RUN_CANCELLED } from "../dist/files.js";
 import { adapterRun } from "../dist/harness-app.js";
 import { durableSessions } from "../dist/sessions.js";
 import { agent, FAUX, follow, runDir, serve, withEnv } from "./support.mjs";
+import { fauxTable } from "./fixtures/faux-table.mjs";
 
 const FAUX_HARNESS = new URL("./fixtures/faux-harness.mjs", import.meta.url).pathname;
 
@@ -67,14 +68,14 @@ test(`a cancel that lands after its check passed and before the request's record
 });
 
 test(`the run's app on ${harness} reads the cancel serve writes: built on a cancelled run's directory, its turn sends nothing`, { timeout: 90_000 }, async (t) => {
-  const { api, data } = await serve(t, { fauxHarness: FAUX_HARNESS });
+  const { api, data } = await serve(t, { harnessTable: fauxTable(FAUX_HARNESS) });
   assert.equal((await api("POST", "/agents", agent("calc", { harness }))).status, 201);
   const { body: run } = await api("POST", "/agents/calc/runs", { input: { content: "hello" } });
   await follow(api, run.run_id, ["completed"]);
   // The run's directory holds its revision; cancelling it writes the mark there, which the app's guard reads.
   const root = join(runDir(data, run.run_id));
   await writeFile(join(root, RUN_CANCELLED), "");
-  withEnv(t, { AGENTRUN_SERVE_FAUX: FAUX, AGENTRUN_SERVE_FAUX_HARNESS: FAUX_HARNESS });
+  withEnv(t, { AGENTRUN_SERVE_FAUX: FAUX, AGENTRUN_HARNESS_TABLE: fauxTable(FAUX_HARNESS) });
   const { default: app } = await import("../dist/app.js");
   const options = await app({ ref: { id: run.run_id }, root, work: join(root, "work"), store: join(root, "store") });
   const durable = await Harness.open(new MemoryStorage(), { registry: createRegistry(), models: createModels() }, ctx);

@@ -58,7 +58,7 @@ if (Array.isArray(caps.harnesses)) {
       if (!reason) fail(`${h.id} is unavailable with no reason`);
       if (/ERR_MODULE_NOT_FOUND|Cannot find (?:module|package)|ERR_PACKAGE_PATH|SyntaxError|TypeError/.test(reason)) fail(`${h.id}'s reason is an error, not words a person can act on: ${reason}`);
       if (h.id === "claude-agent" && !/does not run claude-agent yet/.test(reason) && !/\b(?:ANTHROPIC_[A-Z_]*|OPENROUTER_API_KEY)\b|\bkey\b/i.test(reason)) fail(`claude-agent is unavailable, but neither for a model key nor as a harness this server does not run yet: ${reason}`);
-      // Reads the setting codex's reason names, which is serve's wording (codexProvider in src/adapters.ts, pinned by
+      // Reads the setting codex's reason names, which is serve's wording (providerFor in src/provider.ts, pinned by
       // test/codex-offer.test.mjs): when that message changes, this check changes with it.
       if (h.id === "codex" && !/does not run codex yet/.test(reason) && !/\b(?:OPENAI_API_KEY|AGENT_MODEL[A-Z_]*)\b/.test(reason)) fail(`codex is unavailable, but neither for a model key nor as a harness this server does not run yet: ${reason}`);
       if (/not installed/i.test(reason) && !/npm install (?:--?[A-Za-z][A-Za-z-]* )*@/.test(reason)) fail(`${h.id} says it is not installed but gives no install line: ${reason}`);

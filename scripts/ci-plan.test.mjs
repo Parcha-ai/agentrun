@@ -136,5 +136,5 @@ test("this repository's shards cover every test file of every suite once, and ci
   assert.deepEqual([...lean.matchAll(/lean-sweep-([\w-]+)/g)].map((m) => m[1]), Object.keys(shards).filter((name) => name.startsWith('lean-')), 'the lean job reads every lean shard\'s captures');
   // The any pool's shards install poppler for serve's pdf_pages; the gh pool's run on GitHub's runners in the queue too.
   assert.ok(Object.values(shards).some((s) => s.pool === 'any' && s.suites.some((x) => x.name === '@parcha/agentrun-serve')), 'serve is in the any pool');
-  assert.deepEqual(config.pools.gh.suites, ['@parcha/pi-transport', 'test:viewer']);
+  assert.deepEqual(config.pools.gh.suites, ['@parcha/pi-transport']);
 });

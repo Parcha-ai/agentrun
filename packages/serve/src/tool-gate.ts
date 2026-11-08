@@ -45,6 +45,7 @@ import { LEARNED_DIR } from "./learning.js";
 import { BOX_WORK } from "./place.js";
 import type { TurnOrigin } from "./learning-run.js";
 import { forModel } from "./result.js";
+import { builtinHarness } from "./harness-table.js";
 import { durableSessions } from "./sessions.js";
 import { SHELL_TOOLS } from "./background.js";
 import { readToolSettings, SERVE_OWN_TOOLS, TABLE_TOOLS } from "./tool-plane.js";
@@ -100,7 +101,7 @@ const HOST_TOOLS_SERVER = "hands";
 /** The settings key a call named `name` on `harness` is held to: the one mapping from every name a call reaches the gate
  *  by. A settings key is itself (a table tool, `monid.<tool>`, `mcp:<server>/<tool>`); a CLI's own tool is the table's it
  *  is; an MCP alias, `mcp__<server>__<tool>` (claude-agent's host tools `mcp__hands__<wire name>`, mapped as their
- *  wire name) and on OpenCode `<server>_<tool>`, is `mcp:<server>/<tool>`; a catalog's wire name (`monid_run`) is its
+ *  wire name) and a harness's own (its facts' toolAlias: OpenCode's `<server>_<tool>`), is `mcp:<server>/<tool>`; a catalog's wire name (`monid_run`) is its
  *  catalog name; the browser's registrations are `browser`. OpenCode's `<server>_<tool>` maps only for a server of
  *  `mcpServers` (the run's configured MCP servers), never by its shape, since a host tool's name has the same shape.
  *  Undefined: nothing maps it, and the gate asks. The key only: an MCP call enters the gate once, in the MCP gateway for a
@@ -116,7 +117,8 @@ export function settingsKeyOf(harness: string, name: string, mcpServers: readonl
   const monid = /^monid_([a-z]+)$/.exec(name);
   if (monid) return `monid.${monid[1]}`;
   if (BROWSER_REGISTRATIONS.includes(name)) return "browser";
-  const alias = harness === "opencode" ? /^([a-z][a-z0-9-]*)_(.+)$/.exec(name) : null;
+  // A harness whose client names a session's MCP tool another way too (its facts' toolAlias: OpenCode's `<server>_<tool>`).
+  const alias = builtinHarness(harness)?.facts?.toolAlias?.exec(name) ?? null;
   return alias && mcpServers.includes(alias[1]!) ? mcpToolName(alias[1]!, alias[2]!) : undefined;
 }
 

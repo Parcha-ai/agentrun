@@ -1,35 +1,27 @@
-// The adapter a harness id runs on, and whether this server can run it. With a faux harness module (FAUX_HARNESS_ENV)
-// every id runs on run-adapters' faux harness, scripted by the module's `script(spec)`, as `--faux` runs pi on the
-// faux model. Otherwise codex runs on @parcha/agentrun-harness-codex, opencode on this server's own OpenCode adapter
-// (src/harness-opencode) and claude-agent on @parcha/agentrun-harness-claude, each with serve's own model, price and
-// endpoint, under the run's confinement, and claude-agent with its own web search where the run's web_search resolves
-// native, and codex with its own. claude-agent's Claude Agent SDK and codex's Codex are installed on first use into the
-// data's harnesses directory and loaded from there alone (harness-install.ts); opencode's package or pinned CLI that is missing says
-// so with the one line that installs it: an npm install beside serve, or, when serve runs from npx, the npx line that
-// runs it with the missing package (Codex, OpenCode).
+// What serve hands a harness's adapter: each adapter's factory (claudeOf, codexOf, opencodeOf, which the harness table
+// names: harness-table.ts), with serve's own model, price and endpoint (provider.ts), under the run's confinement, and the
+// harness's own web search where the run's web_search resolves native and the harness has one (its facts). claude-agent's
+// Claude Agent SDK and codex's Codex are installed on first use into the data's harnesses directory and loaded from there
+// alone (harness-install.ts); opencode's pinned CLI that is missing says so with the one line that installs it: an npm
+// install beside serve, or, when serve runs from npx, the npx line that runs it with the missing package.
 import { existsSync, readFileSync } from "node:fs";
 import { dirname, join, resolve, sep } from "node:path";
-import { fileURLToPath, pathToFileURL } from "node:url";
-import type { AgentAdapter, SessionSpec } from "@parcha/agentrun-kernel";
-import type { ProviderPolicy } from "@parcha/agentrun-kernel/host";
-import type { FauxOptions } from "@parcha/agentrun-kernel/testing";
-import { CLAUDE_SDK, codexBinaryIn, HARNESS_INSTALLS, type HarnessPins, HarnessNotInstalled, installDirOf, installLine, loadSdk, type LoadedSdk } from "./harness-install.js";
+import { fileURLToPath } from "node:url";
+import type { AdapterFacts, AgentAdapter, SessionSpec } from "@parcha/agentrun-kernel";
+import { facts as claudeFacts } from "@parcha/agentrun-harness-claude/facts";
+import { facts as codexFacts } from "@parcha/agentrun-harness-codex/facts";
+import { facts as openCodeFacts } from "./harness-opencode/facts.js";
+import { CLAUDE_SDK, codexBinaryIn, type HarnessPins, HarnessNotInstalled, installDirOf, installLine, loadSdk, type LoadedSdk } from "./harness-install.js";
 import { DATA_ENV, defaultData } from "./files.js";
-import { FAUX_HARNESS_ENV } from "./harness.js";
-import { chooseModel, FAUX_ENV, hostModel, type ModelRef, openRouterOnly } from "./model.js";
+import { type HarnessEntry, harnessOf, onAdapter } from "./harness-table.js";
+import type { ModelRef } from "./model.js";
+import { HarnessUnavailable, type InstallFix, providerFor } from "./provider.js";
 import { keyShaped } from "./secret-cut.js";
 import { servedSkill } from "./learn/skills.js";
 import { runKeyOf } from "./key-refusal.js";
 import type { SkillCheck, SkillFiles } from "./skills.js";
 import { planeOf } from "./tool-plane.js";
 import { NATIVE_SEARCH_ALLOWANCE_TOKENS } from "./cap.js";
-
-/** The one line that installs each harness beside serve (claude-agent's and codex's install themselves: harness-install.ts). */
-export const INSTALL: Record<string, string> = {
-  // The server is named first, as the other lines name a package beside it: OpenCode's CLI is an optional peer of the
-  // server's own.
-  opencode: "npm install @parcha/agentrun-serve opencode-ai@1.19.5",
-};
 
 /** This server's version: an npx line names it, so the server it runs is the one that said what was missing. */
 const SERVE_VERSION: string = JSON.parse(readFileSync(new URL("../package.json", import.meta.url), "utf8")).version;
@@ -153,24 +145,10 @@ export function harnessLog(harness: string, env: NodeJS.ProcessEnv, write: (line
   };
 }
 
-/** What fixes a harness that is not on this machine as its adapter needs it: `install`, its package or binary is missing;
- *  `pins`, what is installed is not the pinned build. */
-export type InstallFix = "install" | "pins";
-
-/** Why this server cannot run a harness here, in words a person can act on; `fix`, when installing is the fix; `keys`,
- *  when a model key is all it lacks: the keys, any one of which, set, lets it run (a key row names it: tool-keys.ts). */
-export class HarnessUnavailable extends Error {
-  constructor(message: string, readonly fix?: InstallFix, readonly keys?: readonly string[]) {
-    super(message);
-  }
-}
-
-/** What an adapter's own setup error says installing fixes, by its typed code: none for any other error. */
-function fixOf(error: unknown): InstallFix | undefined {
+/** What an adapter's own setup error says installing fixes, by the code its facts name for each: none for any other error. */
+function fixOf(facts: AdapterFacts, error: unknown): InstallFix | undefined {
   const code = (error as { code?: unknown } | null)?.code;
-  if (code === "CLAUDE_AGENT_NOT_INSTALLED" || code === "CODEX_NOT_INSTALLED" || code === "OPENCODE_NOT_INSTALLED") return "install";
-  if (code === "CLAUDE_AGENT_PIN_MISMATCH" || code === "CODEX_PIN_MISMATCH" || code === "OPENCODE_PIN_MISMATCH") return "pins";
-  return undefined;
+  return code === facts.install.codes.install ? "install" : code === facts.install.codes.pins ? "pins" : undefined;
 }
 
 /** How a reason found at the start's probe ends (harness.ts' harnessOffers), which is the only one: what is installed
@@ -186,13 +164,13 @@ export function startReason(error: unknown): string {
 }
 
 /** A HarnessUnavailable for an adapter's own setup `error`: its message, with the line that installs the harness when it
- *  names none, and with the adapter's own install line (`pinned`) made npx's where serve runs from npx (installHint):
+ *  names none, and with the adapter's own install line (its facts') made npx's where serve runs from npx (installHint):
  *  installing is its fix unless the line became npx's, which restarts AgentRun itself. */
-function unavailable(harness: string, error: unknown, pinned: { npmLine: string; spec: string } | undefined, npx: boolean, env: NodeJS.ProcessEnv): HarnessUnavailable {
+function unavailable(facts: AdapterFacts, error: unknown, npx: boolean, env: NodeJS.ProcessEnv): HarnessUnavailable {
   const message = (error as Error).message;
-  const said = message.includes("npm install") ? message : `${message} (${INSTALL[harness]})`;
-  const hinted = pinned ? installHint(said, pinned.npmLine, pinned.spec, npx, env) : said;
-  return new HarnessUnavailable(hinted, hinted === said ? fixOf(error) : undefined);
+  const said = message.includes("npm install") ? message : `${message} (${facts.install.npmLine})`;
+  const hinted = installHint(said, facts.install.npmLine, facts.install.spec, npx, env);
+  return new HarnessUnavailable(hinted, hinted === said ? fixOf(facts, error) : undefined);
 }
 
 type ModelCost = { input: number; output: number; cacheRead: number; cacheWrite: number };
@@ -210,91 +188,15 @@ export function confineOf(prefix: readonly string[]): ConfineChild | undefined {
   return (child) => ({ command: prefix[0]!, args: [...prefix.slice(1), child.command, ...child.args] });
 }
 
-/** Hosts a gateway may be reached at over plain http: this machine. */
-const LOOPBACK = new Set(["127.0.0.1", "localhost", "[::1]"]); // key-gate: loopback-rule names this machine only, the hosts a gateway may use plain http on; an allow-list, the line dials nothing
-
-/**
- * The base `setting` (a gateway's URL) gives the model proxy: its origin and its path, one trailing `/v1` taken off, since
- * every route the proxy sends to begins with `/v1/`. So `https://openrouter.ai/api` and `https://openrouter.ai/api/v1` both
- * send to `https://openrouter.ai/api/v1/...`. A provider's key goes wherever this points, so a value that could point
- * somewhere other than it reads is refused, by the setting's name: userinfo, a query or a fragment, a "." or ".." path
- * segment (raw or percent-encoded), a backslash, whitespace, or plain http to anything but this machine.
- */
-export function gatewayBase(setting: string, value: string): string {
-  const wrong = (why: string) => new HarnessUnavailable(`${setting} must be an https URL of a gateway, with a path if it serves the API under one; it ${why}.`);
-  if (/\s/.test(value)) throw wrong("holds whitespace");
-  // The URL parser reads a backslash as a path separator, so a ".." between backslashes would resolve where "/../" is refused.
-  if (value.includes("\\")) throw wrong("holds a backslash");
-  let url: URL;
-  try {
-    url = new URL(value);
-  } catch {
-    throw wrong("is not a URL");
-  }
-  if (url.username || url.password) throw wrong("names a user");
-  if (url.search || url.hash || /[?#]/.test(value)) throw wrong("has a query or a fragment");
-  // The URL parser resolves dot segments, so they are looked for in the text as given.
-  const path = value.slice(value.indexOf("//") + 2).replace(/^[^/]*/, "");
-  if (path.split("/").some((segment) => /^(\.|%2e){1,2}$/i.test(segment))) throw wrong("has a . or .. path segment");
-  if (url.protocol !== "https:" && !(url.protocol === "http:" && LOOPBACK.has(url.hostname))) throw wrong(`is ${url.protocol.replace(/:$/, "")}, not https`);
-  return `${url.origin}${url.pathname.replace(/\/+$/, "").replace(/\/v1$/, "")}`;
-}
-
-/** The model key a run on `harness` (claude-agent, codex, or opencode, which takes codex's route) of `model` (the revision's; none, the host's default for the
+/** The model key a run on `harness` (one on an adapter, by its wire's route) of `model` (the revision's; none, the host's default for the
  *  harness) takes: the one its requests carry on the route its provider below takes, as key-refusal.ts' runKeyOf names
  *  it. codex: the gateway's when AGENT_MODEL_BASE_URL is set, else OpenAI's, or OpenRouter's on OpenRouter's route;
  *  claude-agent: Anthropic's, for api.anthropic.com or ANTHROPIC_BASE_URL alike, or OpenRouter's on OpenRouter's route.
  *  None for pi, whose keys are its models' (model.ts' modelKeys). */
 export function harnessModelKeys(harness: string, env: NodeJS.ProcessEnv, model?: string): string[] {
-  if (harness !== "codex" && harness !== "claude-agent" && harness !== "opencode") return [];
+  if (!onAdapter(env, harness)) return [];
   const key = runKeyOf(env, harness, model);
   return key ? [key.field] : [];
-}
-
-/** OpenRouter's API: its Anthropic Messages endpoint (`<base>/v1/messages`) and its Responses API (`<base>/v1/responses`)
- *  under one base, its key taken as a bearer token. The OpenRouter key goes nowhere else. */
-export const OPENROUTER_BASE = "https://openrouter.ai/api";
-/** Anthropic's own origin, where pi-ai's Anthropic provider sends (a gateway is not it). */
-export const ANTHROPIC_ORIGIN = "https://api.anthropic.com";
-/** OpenAI's own origin, where pi-ai's OpenAI provider sends. */
-export const OPENAI_ORIGIN = "https://api.openai.com";
-
-export { openRouterOnly };
-
-/** OpenRouter's key, read per request, refused by name where it is not set (a model named on OpenRouter, a host
- *  without its key). */
-function openRouterKey(env: NodeJS.ProcessEnv, harness: string, named: string): () => string {
-  if (!env.OPENROUTER_API_KEY) throw new HarnessUnavailable(`${harness} runs ${named} through OpenRouter, which needs OPENROUTER_API_KEY.`, undefined, ["OPENROUTER_API_KEY"]);
-  return () => env.OPENROUTER_API_KEY ?? "";
-}
-
-/** Where codex's model requests go, and the model id sent there: a gateway at AGENT_MODEL_BASE_URL's base (gatewayBase:
- *  the proxy sends the Responses API to <base>/v1/responses) with its key, the model as model.ts chose it; OpenAI with
- *  its key, OpenAI's id; or OpenRouter's Responses API (openRouterOnly, or a model the run names on it,
- *  `openrouter/openai/<model-id>`) with OpenRouter's key, the model's whole id (`openai/gpt-6-sol`). Codex sends each key
- *  as a bearer token. */
-export type CodexProvider = { origin: string; credential: () => string; modelId: string };
-export function codexProvider(env: NodeJS.ProcessEnv, model: ModelRef, harness: "codex" | "opencode" = "codex"): CodexProvider {
-  if (env.AGENT_MODEL_BASE_URL) return { origin: gatewayBase("AGENT_MODEL_BASE_URL", env.AGENT_MODEL_BASE_URL), credential: () => env.AGENT_MODEL_API_KEY || "none", modelId: model.modelId };
-  const named = `${model.provider}/${model.modelId}`;
-  if (model.provider === "openrouter" && model.modelId.startsWith("openai/")) return { origin: OPENROUTER_BASE, credential: openRouterKey(env, harness, named), modelId: model.modelId };
-  if (model.provider !== "openai") throw new HarnessUnavailable(`${harness} runs OpenAI models; the run's model is ${named}.`);
-  if (openRouterOnly(harness, env)) return { origin: OPENROUTER_BASE, credential: openRouterKey(env, harness, named), modelId: named };
-  if (!env.OPENAI_API_KEY) throw new HarnessUnavailable(`${harness} needs OPENAI_API_KEY, OPENROUTER_API_KEY (OpenAI's models through OpenRouter), or a gateway in AGENT_MODEL_BASE_URL.`, undefined, ["OPENAI_API_KEY", "OPENROUTER_API_KEY"]);
-  return { origin: OPENAI_ORIGIN, credential: () => env.OPENAI_API_KEY ?? "", modelId: model.modelId };
-}
-
-/** codex's model for `ref` (a revision's; none, the host's default for codex), or opencode's (`harness`), which takes
- *  codex's route: as model.ts chooses it, except where it reaches OpenAI only through OpenRouter (openRouterOnly), where an OpenAI model needs no OpenAI key, only a
- *  model pi-ai's catalog lists (it prices the run): OpenRouter's key is the one codexProvider sends. A save, a run and
- *  capabilities all ask this. */
-export async function codexModel(env: NodeJS.ProcessEnv, ref: string | undefined, harness: "codex" | "opencode" = "codex"): ReturnType<typeof chooseModel> {
-  const named = ref ?? hostModel(env, "default", harness);
-  if (env[FAUX_ENV] || env[FAUX_HARNESS_ENV] || !openRouterOnly(harness, env) || !named?.startsWith("openai/")) return chooseModel(env, ref, "default", harness);
-  const modelId = named.slice("openai/".length);
-  const { builtinModels } = await import("@earendil-works/pi-ai/providers/all");
-  if (!builtinModels().getModel("openai", modelId)) return { why: `pi-ai knows no model ${modelId} of openai. Name one of its models, or route every model through a gateway with AGENT_MODEL_BASE_URL.`, host: ref === undefined, needs: "model" };
-  return { model: { provider: "openai", modelId } };
 }
 
 /** A response's price in USD, from the same catalog that prices pi's runs; null when the model has no price. The
@@ -307,84 +209,6 @@ export function priceOf(needs: AdapterNeeds) {
     if (!cost || typeof cost.input !== "number" || typeof cost.output !== "number") return null;
     return (usage.input * cost.input + usage.output * cost.output + (usage.cacheRead ?? 0) * (cost.cacheRead ?? 0) + (usage.cacheWrite ?? 0) * (cost.cacheWrite ?? 0)) / 1e6;
   };
-}
-
-/**
- * Where claude-agent's model requests go, as its proxy sends them and anything else that calls the same model (the
- * learning grader) must: the endpoint's origin (the proxy appends `/v1/messages`), its key, read per request, how the
- * endpoint takes it, the model id on the wire, and the catalog entry (pi-ai's) that prices the run.
- */
-export type ClaudeProvider = { origin: string; credential: () => string; auth: "bearer" | "x-api-key"; modelId: string; priceModel: { provider: string; id: string } };
-
-/** Where claude-agent's requests go, Anthropic Messages only: at ANTHROPIC_BASE_URL's base (an Anthropic-compatible
- *  endpoint, with its path: <base>/v1/messages) or api.anthropic.com, with ANTHROPIC_API_KEY as `x-api-key`, priced as
- *  Anthropic's; or OpenRouter's Messages endpoint (openRouterOnly, or a model the run names on it,
- *  `openrouter/anthropic/<model-id>`), with OPENROUTER_API_KEY as a bearer token, priced as OpenRouter's (OpenRouter
- *  bills it). Either way the wire carries Anthropic's own id (`claude-sonnet-5-5`), the one the CLI knows the limits of
- *  and OpenRouter takes too. Its own settings only: AGENT_MODEL_BASE_URL is the other harnesses' gateway, and Claude's
- *  requests never go there. */
-export function claudeProvider(env: NodeJS.ProcessEnv, model: ModelRef): ClaudeProvider {
-  const named = `${model.provider}/${model.modelId}`;
-  if (model.provider === "openrouter" && model.modelId.startsWith("anthropic/")) {
-    const own = claudeModelId({ provider: "anthropic", modelId: model.modelId.slice("anthropic/".length) });
-    return { origin: OPENROUTER_BASE, credential: openRouterKey(env, "claude-agent", named), auth: "bearer", modelId: own, priceModel: { provider: "openrouter", id: `anthropic/${openRouterName(own)}` } };
-  }
-  if (model.provider !== "anthropic") throw new HarnessUnavailable(`claude-agent runs Anthropic models; the run's model is ${named}.`);
-  const own = claudeModelId(model);
-  if (openRouterOnly("claude-agent", env)) return { origin: OPENROUTER_BASE, credential: openRouterKey(env, "claude-agent", named), auth: "bearer", modelId: own, priceModel: { provider: "openrouter", id: `anthropic/${openRouterName(own)}` } };
-  // The endpoint first: one it refuses is the reason, and no key would fix it (no `keys`). An endpoint the host names
-  // takes Anthropic's key alone: OpenRouter's never goes there.
-  const origin = env.ANTHROPIC_BASE_URL ? gatewayBase("ANTHROPIC_BASE_URL", env.ANTHROPIC_BASE_URL) : ANTHROPIC_ORIGIN;
-  if (!env.ANTHROPIC_API_KEY) throw env.ANTHROPIC_BASE_URL ? new HarnessUnavailable("claude-agent needs ANTHROPIC_API_KEY.", undefined, ["ANTHROPIC_API_KEY"]) : new HarnessUnavailable("claude-agent needs ANTHROPIC_API_KEY or OPENROUTER_API_KEY.", undefined, ["ANTHROPIC_API_KEY", "OPENROUTER_API_KEY"]);
-  return { origin, credential: () => env.ANTHROPIC_API_KEY ?? "", auth: "x-api-key", modelId: own, priceModel: { provider: "anthropic", id: own } };
-}
-
-/** Anthropic's own model id, the model id with dots as dashes: Anthropic's ids hold no dot, and OpenRouter names the same
- *  models with dots (anthropic/claude-sonnet-5.5), so a revision may name either, and the catalog prices them by
- *  Anthropic's id. */
-export function claudeModelId(model: ModelRef): string {
-  return model.provider === "anthropic" ? model.modelId.replaceAll(".", "-") : model.modelId;
-}
-
-/** OpenRouter's name for Anthropic's model `id` (Anthropic's own), as its catalog and pi-ai's list it: the version's
- *  last two numbers joined by a dot (claude-sonnet-5-5 is claude-sonnet-5.5; claude-opus-5 stays). */
-export const openRouterName = (id: string): string => id.replace(/-(\d+)-(\d+)$/, "-$1.$2");
-
-/** The catalog entry a claude-agent run on `model` is priced and capped by: claudeProvider's, or the model's own where
- *  claude-agent does not run here (its run is refused before any request). */
-export function claudePriceModel(env: NodeJS.ProcessEnv, model: ModelRef): ModelRef {
-  try {
-    const { priceModel } = claudeProvider(env, model);
-    return { provider: priceModel.provider, modelId: priceModel.id };
-  } catch {
-    return { ...model, modelId: claudeModelId(model) };
-  }
-}
-
-/** claude-agent's model: the revision's (or the server's default for claude-agent, hostModel) as `provider/model-id`.
- *  Never the gateway's model, which serves the other harnesses. An Anthropic model (`anthropic/<id>`) is Anthropic's
- *  own id, dots as dashes, except where claude-agent reaches Anthropic only through OpenRouter (openRouterOnly), where it
- *  keeps the name it was given (OpenRouter's dotted one, as capabilities show it): claudeProvider names the id on the
- *  wire and the catalog entry that prices it. OpenRouter's name for an Anthropic model (pi's,
- *  `openrouter/anthropic/<id>`) runs through OpenRouter. Whether it is an Anthropic model is claudeProvider's to say. */
-export function claudeModel(env: NodeJS.ProcessEnv, ref: string | undefined): { model: ModelRef } | { why: string; host: boolean } {
-  const named = ref ?? hostModel(env, "default", "claude-agent");
-  if (!named) return { why: "No model yet for claude-agent: add an OpenRouter or Anthropic key in Settings → Model keys, or set OPENROUTER_API_KEY or ANTHROPIC_API_KEY where AgentRun starts.", host: true };
-  const slash = named.indexOf("/");
-  if (slash < 1) return { why: `claude-agent runs a model named anthropic/<model-id>; the run's model is ${named}.`, host: ref === undefined };
-  const [provider, modelId] = [named.slice(0, slash), named.slice(slash + 1)];
-  // OpenRouter's name for a model is OpenRouter's provider, then the vendor's model; another vendor's is claudeProvider's
-  // to refuse.
-  const [vendor, id, ...more] = modelId.split("/");
-  if (provider === "openrouter" && id && !more.length) return { model: { provider, modelId: vendor === "anthropic" ? `anthropic/${openRouterName(claudeModelId({ provider: vendor, modelId: id }))}` : modelId } };
-  // One provider, then the model's own id: a second segment (anthropic/anthropic/<model>, once a workaround) is refused
-  // by name, never sent on to fail at the provider.
-  if (modelId.includes("/")) return { why: `claude-agent runs a model named ${provider}/<model-id>; ${named} names more than one segment: name it ${provider}/${modelId.slice(modelId.lastIndexOf("/") + 1)}.`, host: ref === undefined };
-  if (provider === "anthropic" && openRouterOnly("claude-agent", env)) return { model: { provider, modelId } };
-  // Anthropic's own id from here on, so the cap's model lookup, the price and the wire all name one model the catalog
-  // knows: a dotted name (OpenRouter's) would find no model under anthropic, and a cap with no model would admit nothing
-  // it could price.
-  return { model: { provider, modelId: claudeModelId({ provider, modelId }) } };
 }
 
 /** The package that runs claude-agent, imported by a name the build does not resolve (a test gives its own). Its Agent
@@ -418,43 +242,29 @@ export async function codexPins(): Promise<HarnessPins> {
   return { version: codex.CODEX_VERSION, platform: target?.pkg ?? `${process.platform}-${process.arch}`, ...(target ? { target: target.target } : {}) };
 }
 
-/** The pins of a harness that installs on first use (HARNESS_INSTALLS), by id. */
-export const harnessPins = (harness: string): Promise<HarnessPins> => (harness === "codex" ? codexPins() : claudePins());
-
-/** Whether a harness that installs on first use is installed whole in this server's data; true for any other harness. */
-export async function harnessInstalled(harness: string, env: NodeJS.ProcessEnv): Promise<boolean> {
-  const entry = HARNESS_INSTALLS[harness];
-  return !entry || entry.lacking(installDirOf(dataOf(env), harness), await harnessPins(harness)) === undefined;
+/** Whether a harness that installs on first use (its entry's `installs`) is installed whole in this server's data; true
+ *  for any other harness. */
+export async function harnessInstalled(harness: HarnessEntry, env: NodeJS.ProcessEnv): Promise<boolean> {
+  return !harness.installs || !harness.pins || harness.installs.lacking(installDirOf(dataOf(env), harness.id), await harness.pins()) === undefined;
 }
 
-/** The installed claude-agent adapter's own check of the skills it would load (its skillProblems), from `load` (a test
- *  gives its own): what it refuses stays in the run's prompt (skills.ts), so claudeOf never hands it a skill it throws
- *  on. None where the package is not installed, or has no such check: every skill stays inlined, and claudeOf says
- *  what is missing. */
-export async function claudeSkillCheck(load: () => Promise<unknown> = loadClaude): Promise<SkillCheck | undefined> {
-  const claude = (await load().catch(() => undefined)) as { skillProblems?: unknown } | undefined;
-  return typeof claude?.skillProblems === "function" ? (claude.skillProblems as SkillCheck) : undefined;
+/** An adapter package's own check of the skills its adapter would load (its `skillProblems`), from `load`, the package
+ *  (each harness's table entry names its own: claude-agent's Skill tool; codex's, which lists them from its session's
+ *  CODEX_HOME/skills; opencode's, whose instructions name them): what it refuses stays in the run's prompt (skills.ts),
+ *  so its adapter is never handed a skill it throws on. None where the package has no such check: every skill stays
+ *  inlined. */
+export async function packageSkillCheck(load: () => Promise<unknown>): Promise<SkillCheck | undefined> {
+  const pkg = (await load()) as { skillProblems?: unknown } | undefined;
+  return typeof pkg?.skillProblems === "function" ? (pkg.skillProblems as SkillCheck) : undefined;
 }
 
-/** The check of the skills `harness`'s adapter loads itself, its own: claude-agent's (claudeSkillCheck, its Skill tool),
- *  codex's (Codex lists them from its session's CODEX_HOME/skills) and opencode's (its instructions name them); the
- *  last two give the model read_skill_file. The skills it takes leave the run's prompt and are handed to the adapter;
- *  the ones it refuses stay in the prompt (skills.ts). None for any other harness: its skills stay in the prompt. */
-export async function skillCheckOf(harness: string): Promise<SkillCheck | undefined> {
-  if (harness === "claude-agent") return claudeSkillCheck();
-  if (harness === "codex") return claudeSkillCheck(() => import("@parcha/agentrun-harness-codex"));
-  if (harness === "opencode") return claudeSkillCheck(() => import("./harness-opencode/index.js"));
-  return undefined;
-}
-
-/** What a harness's adapter takes from the run's plane (tool-plane.ts) where web_search resolves native: claude-agent,
- *  Claude's own WebSearch with the input a search request may read in beyond its body (cap.ts), which its proxy adds to
- *  that request's bound; codex, Codex's own search, live (its adapter books each search); nothing otherwise. */
-export function nativeOptions(harness: string, env: NodeJS.ProcessEnv): { webSearch?: true | "live"; webSearchAllowance?: number } {
-  if (planeOf(env).web_search !== "native") return {};
-  if (harness === "claude-agent") return { webSearch: true, webSearchAllowance: NATIVE_SEARCH_ALLOWANCE_TOKENS };
-  if (harness === "codex") return { webSearch: "live" };
-  return {};
+/** What a harness's adapter takes from the run's plane (tool-plane.ts) where web_search resolves native, by its own search
+ *  (its facts' webSearch): `native`, the provider's search through its proxy, with the input a search request may read in
+ *  beyond its body (cap.ts), which its proxy adds to that request's bound; `live`, its own live search (its adapter books
+ *  each search); nothing for a harness with none. */
+export function nativeOptions(facts: AdapterFacts, env: NodeJS.ProcessEnv): { webSearch?: true | "live"; webSearchAllowance?: number } {
+  if (planeOf(env).web_search !== "native" || !facts.webSearch) return {};
+  return facts.webSearch === "native" ? { webSearch: true, webSearchAllowance: NATIVE_SEARCH_ALLOWANCE_TOKENS } : { webSearch: "live" };
 }
 
 /** claude-agent's adapter, from `load` (the package; a test gives its own), on the Agent SDK, its CLI and the MCP library
@@ -463,7 +273,7 @@ export function nativeOptions(harness: string, env: NodeJS.ProcessEnv): { webSea
 export async function claudeOf(env: NodeJS.ProcessEnv, needs: AdapterNeeds, load: () => Promise<unknown> = loadClaude, sdkOf: (version: string, platform: string) => Promise<LoadedSdk> = (version, platform) => loadSdk(installDirOf(dataOf(env), "claude-agent"), { version, platform })): Promise<AgentAdapter> {
   const claude = (await load()) as ClaudePackage;
   const dir = installDirOf(dataOf(env), "claude-agent");
-  const line = installLine(dir, HARNESS_INSTALLS["claude-agent"]!.lock);
+  const line = installLine(dir, harnessOf(env, claudeFacts.id)!.installs!.lock);
   const version = claude.CLAUDE_AGENT_SDK_VERSION;
   const sdk = await sdkOf(version, claude.claudeAgentPlatform()).catch((error: Error) => {
     throw new HarnessUnavailable(error.message, "install");
@@ -471,37 +281,35 @@ export async function claudeOf(env: NodeJS.ProcessEnv, needs: AdapterNeeds, load
   // What no key fixes is said first: the adapter is built before the provider's refusal is thrown, and its construction
   // checks the SDK's version, zod and the pinned CLI (claude --version, once). The provider is read only when a session
   // opens, so an adapter built with an unusable one is never returned.
-  let provider: ReturnType<typeof claudeProvider> | undefined;
+  let provider: ReturnType<typeof providerFor> | undefined;
   let refused: unknown;
   try {
-    provider = claudeProvider(env, needs.model);
+    provider = providerFor(claudeFacts.wire, env, needs.model, claudeFacts.id);
   } catch (error) {
     refused = error;
   }
   let adapter: AgentAdapter;
   try {
-    const native = { ...needs, model: { ...needs.model, modelId: claudeModelId(needs.model) } };
+    const native = { ...needs, model: claudeFacts.normalizeModel(needs.model) };
     // The CLI runs Anthropic's own id, which it knows the limits and betas of, and sends it as it is, OpenRouter too
-    // (claudeProvider's modelId); the key goes as the endpoint takes it, and the run is priced by the catalog entry of
+    // (providerFor's modelId); the key goes as the endpoint takes it, and the run is priced by the catalog entry of
     // whoever bills it (its priceModel).
     const endpoint = provider ? { origin: provider.origin, credential: provider.credential, auth: provider.auth } : { origin: "", credential: () => "" };
-    const priced = provider ? { ...needs, model: { provider: provider.priceModel.provider, modelId: provider.priceModel.id } } : native;
+    const priced = provider ? { ...needs, model: provider.priceModel } : native;
     // The skills only when there are some: with none, the adapter keeps its Skill tool off.
-    adapter = claude.claudeAgentAdapter({ model: { default: provider?.modelId ?? native.model.modelId }, provider: endpoint, price: priceOf(priced), log: harnessLog("claude-agent", env), sdk: sdk.sdk, sdkVersion: sdk.sdkVersion, cliPath: sdk.cliPath, mcp: sdk.mcp, ...(needs.confine ? { confine: needs.confine } : {}), ...(needs.skills?.length ? { skills: needs.skills } : {}), ...nativeOptions("claude-agent", env) });
+    adapter = claude.claudeAgentAdapter({ model: { default: provider?.modelId ?? native.model.modelId }, provider: endpoint, price: priceOf(priced), log: harnessLog(claudeFacts.id, env), sdk: sdk.sdk, sdkVersion: sdk.sdkVersion, cliPath: sdk.cliPath, mcp: sdk.mcp, ...(needs.confine ? { confine: needs.confine } : {}), ...(needs.skills?.length ? { skills: needs.skills } : {}), ...nativeOptions(claudeFacts, env) });
   } catch (error) {
     // The adapter's own install line is a project's; here Claude Code is installed into the data's harnesses directory.
     const message = (error as Error).message.split(claude.CLAUDE_AGENT_SDK_INSTALL).join(line);
-    throw new HarnessUnavailable(message.includes(line) ? message : `${message.replace(/\.$/, "")}. Install ${CLAUDE_SDK}@${version} again with: ${line}`, fixOf(error));
+    throw new HarnessUnavailable(message.includes(line) ? message : `${message.replace(/\.$/, "")}. Install ${CLAUDE_SDK}@${version} again with: ${line}`, fixOf(claudeFacts, error));
   }
   if (refused !== undefined) throw refused;
   return adapter;
 }
 
-/** The run's thinking level as the harness takes it: serve's levels run to max; Codex's and OpenCode's reasoning efforts
- *  (OpenAI's) stop at xhigh. */
-export const thinkingFor = (harness: string, level: string): SessionSpec["thinking"] => ((harness === "codex" || harness === "opencode") && level === "max" ? "xhigh" : level) as SessionSpec["thinking"];
-
-/** The bare id Codex takes: serve's "openai/<id>" without its provider. */
+/** The run's thinking level as the harness takes it (its facts' levels): serve's run to max; one above the harness's
+ *  highest (OpenAI's reasoning efforts stop at xhigh) runs at that highest. */
+export const thinkingFor = (facts: AdapterFacts, level: string): SessionSpec["thinking"] => ((facts.thinking as readonly string[]).includes(level) ? level : facts.thinking[facts.thinking.length - 1]) as SessionSpec["thinking"];
 
 /** codex's adapter, from `load` (the package; a test gives its own), on the Codex binary installed on first use into the
  *  data's harnesses directory, and from nowhere else (harness-install.ts): not installed there, or not its pinned build,
@@ -511,8 +319,8 @@ export async function codexOf(env: NodeJS.ProcessEnv, needs: AdapterNeeds, load:
   const standIn = env[CODEX_STANDIN_ENV] ? (JSON.parse(env[CODEX_STANDIN_ENV]) as { command: string; args?: string[]; env?: Record<string, string> }) : undefined;
   let binary: { path: string; packageVersion: string } | undefined;
   if (!standIn) {
-    const entry = HARNESS_INSTALLS.codex!;
-    const dir = installDirOf(dataOf(env), "codex");
+    const entry = harnessOf(env, codexFacts.id)!.installs!;
+    const dir = installDirOf(dataOf(env), codexFacts.id);
     const pins = await codexPins();
     const missing = entry.lacking(dir, pins);
     if (missing) throw new HarnessUnavailable(new HarnessNotInstalled(entry, dir, pins.version, existsSync(dir) ? `Codex in ${dir} is not whole: it lacks ${missing}` : undefined).message, "install");
@@ -522,109 +330,62 @@ export async function codexOf(env: NodeJS.ProcessEnv, needs: AdapterNeeds, load:
     } catch (error) {
       const line = installLine(dir, entry.lock);
       const message = (error as Error).message.split(codex.CODEX_INSTALL).join(line);
-      throw new HarnessUnavailable(message.includes(line) ? message : `${message.replace(/\.$/, "")}. Install ${entry.package}@${pins.version} again with: ${line}`, fixOf(error));
+      throw new HarnessUnavailable(message.includes(line) ? message : `${message.replace(/\.$/, "")}. Install ${entry.package}@${pins.version} again with: ${line}`, fixOf(codexFacts, error));
     }
   }
-  // The id as the provider's endpoint names it (codexProvider): a gateway's own name for the model as model.ts chose it,
+  // The id as the provider's endpoint names it (providerFor): a gateway's own name for the model as model.ts chose it,
   // whole (AGENT_MODEL_GATEWAY_IDS says whether it is provider-qualified), OpenAI's model id, which chooseModel has
   // already taken out of "openai/<id>", or OpenRouter's whole slug.
-  const provider = codexProvider(env, needs.model);
-  return codex.codexAdapter({ model: provider.modelId, provider: { origin: provider.origin, credential: provider.credential }, price: priceOf(needs), log: harnessLog("codex", env), ...(nativeOptions("codex", env).webSearch === "live" ? { webSearch: "live" as const } : {}), ...(needs.confine ? { confine: needs.confine } : {}), ...(needs.skills?.length ? { skills: needs.skills } : {}), ...(standIn ? { standIn } : binary ? { binary } : {}) });
+  const provider = providerFor(codexFacts.wire, env, needs.model, codexFacts.id);
+  return codex.codexAdapter({ model: provider.modelId, provider: { origin: provider.origin, credential: provider.credential }, price: priceOf({ ...needs, model: provider.priceModel }), log: harnessLog(codexFacts.id, env), ...(nativeOptions(codexFacts, env).webSearch === "live" ? { webSearch: "live" as const } : {}), ...(needs.confine ? { confine: needs.confine } : {}), ...(needs.skills?.length ? { skills: needs.skills } : {}), ...(standIn ? { standIn } : binary ? { binary } : {}) });
 }
 
-/** opencode's adapter, from `load` (the installed package; a test gives its own). Its model goes where codex's does: serve's
- *  gateway (AGENT_MODEL_BASE_URL) or OpenAI, on the Responses API, through the adapter's proxy. */
+/** opencode's adapter, from `load` (this server's own, src/harness-opencode; a test gives its own). Its model goes where
+ *  its wire's do (providerFor): serve's gateway (AGENT_MODEL_BASE_URL), OpenAI or OpenRouter, on the Responses API,
+ *  through the adapter's proxy. */
 export async function opencodeOf(env: NodeJS.ProcessEnv, needs: AdapterNeeds, load: () => Promise<typeof import("./harness-opencode/index.js")> = () => import("./harness-opencode/index.js"), npx = startedByNpx()): Promise<AgentAdapter> {
-  const opencode = await load().catch(() => {
-    throw new HarnessUnavailable(`opencode is not installed here: ${INSTALL.opencode}`, "install");
-  });
+  const opencode = await load();
   const standIn = env[OPENCODE_STANDIN_ENV] ? (JSON.parse(env[OPENCODE_STANDIN_ENV]) as { command: string; args?: string[]; env?: Record<string, string> }) : undefined;
   if (!standIn) {
     try {
       opencode.verifyOpenCode();
     } catch (error) {
       // serve's own line, which installs the adapter with its pinned CLI, in place of the adapter's (the CLI alone).
-      const message = (error as Error).message.replace(opencode.OPENCODE_INSTALL, INSTALL.opencode);
-      throw unavailable("opencode", Object.assign(new Error(message), { code: (error as { code?: unknown } | null)?.code }), { npmLine: INSTALL.opencode, spec: `opencode-ai@${opencode.OPENCODE_VERSION}` }, npx, env);
+      const message = (error as Error).message.replace(opencode.OPENCODE_INSTALL, openCodeFacts.install.npmLine);
+      throw unavailable(openCodeFacts, Object.assign(new Error(message), { code: (error as { code?: unknown } | null)?.code }), npx, env);
     }
   }
   // The shared date line (environment.ts) reaches OpenCode in the session's system prompt (app.ts), as it reaches every
   // harness.
-  // The id as the provider's endpoint names it (codexProvider, as codexOf takes it): OpenRouter's is the whole slug.
-  const provider = codexProvider(env, needs.model, "opencode");
+  // The id as the provider's endpoint names it (providerFor, as codexOf takes it): OpenRouter's is the whole slug.
+  const provider = providerFor(openCodeFacts.wire, env, needs.model, openCodeFacts.id);
   // Its instructions list each skill by the description its SKILL.md's front matter gives on one LF line, which is all the
   // adapter reads: each SKILL.md goes as servedSkill writes it (its name and description, as a prompt reads them, on one
   // line each), as a learned skill already does, so a CRLF file or a folded description is listed by its own words.
   const skills = needs.skills?.map((skill) => ({ ...skill, files: { ...skill.files, ...(skill.files["SKILL.md"] === undefined ? {} : { "SKILL.md": servedSkill(skill.files["SKILL.md"]) }) } }));
-  return opencode.openCodeAdapter({ model: provider.modelId, provider: { origin: provider.origin, credential: provider.credential }, price: priceOf(needs), log: harnessLog("opencode", env), ...(needs.confine ? { confine: needs.confine } : {}), ...(skills?.length ? { skills } : {}), ...(standIn ? { standIn } : {}) });
+  return opencode.openCodeAdapter({ model: provider.modelId, provider: { origin: provider.origin, credential: provider.credential }, price: priceOf({ ...needs, model: provider.priceModel }), log: harnessLog(openCodeFacts.id, env), ...(needs.confine ? { confine: needs.confine } : {}), ...(skills?.length ? { skills } : {}), ...(standIn ? { standIn } : {}) });
 }
 
-/** The model proxy a faux harness's session serves (FauxOptions.proxy): the policy, origin, credential and price `harness`'s
- *  own adapter gives its proxy for the run's model. Throws where the harness would refuse the run. */
-async function fauxProxy(harness: string, env: NodeJS.ProcessEnv, needs: AdapterNeeds): Promise<NonNullable<FauxOptions["proxy"]>> {
-  if (harness === "claude-agent") {
-    const provider = claudeProvider(env, needs.model);
-    const claude = (await loadClaude()) as { anthropicPolicy(options: Record<string, unknown>): ProviderPolicy };
-    const priced = { ...needs, model: { provider: provider.priceModel.provider, modelId: provider.priceModel.id } };
-    return {
-      api: "anthropic-messages",
-      options: { policy: claude.anthropicPolicy({ model: provider.modelId, tools: [], auth: provider.auth, ...nativeOptions(harness, env) }), model: provider.modelId, origin: provider.origin, credential: async () => provider.credential(), price: priceOf(priced) },
-    };
-  }
-  if (harness === "codex" || harness === "opencode") {
-    const provider = codexProvider(env, needs.model, harness);
-    const policy = harness === "codex"
-      ? (await import("@parcha/agentrun-harness-codex")).codexPolicy({ model: provider.modelId, tools: [], ...(nativeOptions(harness, env).webSearch === "live" ? { webSearch: "live" as const } : {}) })
-      : (await import("./harness-opencode/host/policy.js")).openCodePolicy({ model: provider.modelId, tools: [] });
-    return { api: "openai-responses", options: { policy, model: provider.modelId, origin: provider.origin, credential: async () => provider.credential(), price: priceOf(needs) } };
-  }
-  throw new HarnessUnavailable(`This server does not run ${harness} yet.`);
-}
-
+/** `harness`'s adapter for a run, as its entry in the harness table builds it (harness-table.ts). */
 export async function adapterFor(harness: string, env: NodeJS.ProcessEnv, needs: AdapterNeeds): Promise<AgentAdapter> {
-  const faux = env[FAUX_HARNESS_ENV];
-  if (faux) {
-    const [{ fauxAdapter }, module] = await Promise.all([import("@parcha/agentrun-kernel/testing"), import(pathToFileURL(faux).href) as Promise<{ script?: (spec: SessionSpec) => never[]; opened?: (harness: string, options: Record<string, unknown>) => void; closed?: (key: string) => void; openDelayMs?: () => number; closeDelayMs?: () => number; closeError?: () => string | undefined }>]);
-    if (typeof module.script !== "function") throw new Error(`${FAUX_HARNESS_ENV} names ${faux}, which exports no script(spec)`);
-    // The options the harness's own adapter would be built with from the run (its web search), told to the module.
-    module.opened?.(harness, nativeOptions(harness, env));
-    const openDelayMs = module.openDelayMs?.() ?? 0;
-    const closeDelayMs = module.closeDelayMs?.() ?? 0;
-    const closeError = module.closeError?.();
-    // The session's model proxy, as the harness's own adapter would start it (its policy, origin, credential and price),
-    // so the run's own requests beside the scripted harness's go through the one route. None where the harness would
-    // refuse the run (a model no key reaches).
-    const proxy = await fauxProxy(harness, env, needs).catch(() => undefined);
-    return fauxAdapter({ script: module.script, ...(proxy ? { proxy } : {}), ...(module.closed ? { onClose: module.closed } : {}), ...(openDelayMs > 0 ? { openDelayMs } : {}), ...(closeDelayMs > 0 ? { closeDelayMs } : {}), ...(closeError ? { closeError } : {}) });
-  }
-  if (harness === "codex") return codexOf(env, needs);
-  if (harness === "opencode") return opencodeOf(env, needs);
-  if (harness === "claude-agent") return claudeOf(env, needs);
-  throw new HarnessUnavailable(`This server does not run ${harness} yet.`);
+  const make = harnessOf(env, harness)?.adapter;
+  if (!make) throw new HarnessUnavailable(`This server does not run ${harness} yet.`);
+  return make(env, needs);
 }
 
-/** Why `harness` cannot run here, or undefined when it can: its package and pins, its provider, and the adapter's own
- *  check of the model `given` names (with none, a model of the harness's own provider: whether it runs here at all).
- *  `atStart`: asked by the start's probe, whose offers hold until a restart, so a reason installing fixes ends saying
- *  to restart AgentRun once it is installed (startReason). */
+/** Why `harness` cannot run here, or undefined when it can (its entry's refusal): its package and pins, its provider, and
+ *  the adapter's own check of the model `given` names (with none, a model of its wire's vendor: whether it runs here at
+ *  all). `atStart`: asked by the start's probe, whose offers hold until a restart, so a reason installing fixes ends
+ *  saying to restart AgentRun once it is installed (startReason). `keys`: the model keys any one of which lets it run when
+ *  a key is all it lacks (HarnessUnavailable's `keys`): the start's probe keeps them on the offer, for the key rows
+ *  (tool-keys.ts). */
+export async function harnessRefusal(harness: string, env: NodeJS.ProcessEnv, given: AdapterNeeds | undefined, { atStart = false }: { atStart?: boolean } = {}): Promise<{ reason: string; keys?: readonly string[] } | undefined> {
+  const entry = harnessOf(env, harness);
+  if (!entry) return { reason: `This server does not run ${harness} yet.` };
+  return entry.refusal(env, given, { atStart });
+}
+
+/** harnessRefusal's reason alone. */
 export async function harnessReason(harness: string, env: NodeJS.ProcessEnv, given: AdapterNeeds | undefined, { atStart = false }: { atStart?: boolean } = {}): Promise<string | undefined> {
   return (await harnessRefusal(harness, env, given, { atStart }))?.reason;
-}
-
-/** harnessReason's reason, with the model keys any one of which lets the harness run when a key is all it lacks
- *  (HarnessUnavailable's `keys`): the start's probe keeps them on the offer, for the key rows (tool-keys.ts). */
-export async function harnessRefusal(harness: string, env: NodeJS.ProcessEnv, given: AdapterNeeds | undefined, { atStart = false }: { atStart?: boolean } = {}): Promise<{ reason: string; keys?: readonly string[] } | undefined> {
-  if (env[FAUX_HARNESS_ENV]) return undefined;
-  const needs = given ?? { model: { provider: harness === "claude-agent" ? "anthropic" : "openai", modelId: "default" }, models: { getModel: () => undefined } };
-  try {
-    // Claude Code not installed yet installs on first use (harness-install.ts): until then the provider decides, as it would
-    // for a session.
-    if (HARNESS_INSTALLS[harness] && !(await harnessInstalled(harness, env))) return void (harness === "codex" ? codexProvider(env, needs.model) : claudeProvider(env, needs.model));
-    const adapter = await adapterFor(harness, env, needs);
-    const problems = adapter.check({ key: "capabilities", label: "capabilities", system: [], tools: [], context: "fresh" });
-    return problems.length ? { reason: problems.join(" ") } : undefined;
-  } catch (error) {
-    const keys = error instanceof HarnessUnavailable ? error.keys : undefined;
-    return { reason: atStart ? startReason(error) : (error as Error).message, ...(keys?.length ? { keys } : {}) };
-  }
 }

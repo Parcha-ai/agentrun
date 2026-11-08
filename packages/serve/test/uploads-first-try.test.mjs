@@ -10,6 +10,7 @@ import { test } from "node:test";
 import { MAX_UPLOAD_BYTES, Uploads, uploadTestHooks } from "../dist/uploads.js";
 import { schemaProblems } from "./schema-support.mjs";
 import { agent, call, cookieOf, follow, runDir, scratch, serve } from "./support.mjs";
+import { fauxTable } from "./fixtures/faux-table.mjs";
 
 const FAUX_HARNESS = new URL("./fixtures/faux-harness.mjs", import.meta.url).pathname;
 const sha = (bytes) => createHash("sha256").update(bytes).digest("hex");
@@ -178,7 +179,7 @@ export default function reply(context, faux) {
   return faux.message(faux.toolCall("read", { path }), { stopReason: "toolUse" });
 }
 `);
-  const server = await served(t, { faux: reader, fauxHarness: FAUX_HARNESS });
+  const server = await served(t, { faux: reader, harnessTable: fauxTable(FAUX_HARNESS) });
   const { api } = server;
   const words = "The upload reached the run.\n";
   const file = (await sendFile(server, { path: "brief/notes.txt" }, Buffer.from(words))).json.file;

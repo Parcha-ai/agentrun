@@ -105,15 +105,6 @@ run-2: carried back acme.example
 Run 1 signs in once. It starts with no save lease, because the agent has no sign-in to lease yet; a new sign-in goes to
 the first run that carries it back. Run 2 starts with the lease, finds the sign-in ready and never makes one.
 
-## A runnable example
-
-[`examples/web`](https://github.com/Parcha-ai/agentrun/tree/main/examples/web) is a small web server over an agent home:
-a job history, each run's timeline, its files and its live browser. Its agent asks the person to sign in to a site
-through the live view, and its next run starts signed in. A run needs a browser and a model endpoint. With neither,
-the quickstart above is the keyless path.
-[Its README](https://github.com/Parcha-ai/agentrun/tree/main/examples/web#run-it) says which browsers it takes and how
-to run it from a checkout.
-
 ## A saved sign-in
 
 A sign-in is kept as the provider's reference to a signed-in browser: a Browserbase context id, or, for a local Chrome,

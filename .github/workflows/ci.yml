@@ -73,9 +73,8 @@ jobs:
     name: test (${{ matrix.node }}, ${{ matrix.shard }})
     needs: [build]
     # Merge-queue candidates run on Blacksmith (shards took 127 to 227 s there, 230 to 390 s here); pull requests, forks
-    # included, stay on GitHub's runners. The gh pool stays too: the viewer's Chromes starved a 4-vCPU Blacksmith runner
-    # until it lost contact, and Blacksmith's kernels have no Yama ptrace_scope, so pi-transport's launcher refuses a
-    # launch with stdin or secrets there.
+    # included, stay on GitHub's runners. The gh pool stays too: Blacksmith's kernels have no Yama ptrace_scope, so
+    # pi-transport's launcher refuses a launch with stdin or secrets there.
     runs-on: ${{ github.event_name == 'merge_group' && !startsWith(matrix.shard, 'gh-') && 'blacksmith-4vcpu-ubuntu-2404' || 'ubuntu-latest' }}
     timeout-minutes: 30
     strategy:
@@ -84,7 +83,7 @@ jobs:
         # 22.19 = the supported floor, 22.23 = release toolchain, 24.21 = the active LTS line. The merge queue runs the release
         # toolchain only: every pull request and every push to main runs all three.
         node: ${{ fromJSON(github.event_name == 'merge_group' && '["22.23.2"]' || '["22.19.0","22.23.2","24.21.0"]') }}
-        shard: [checks, packages, source, gh-1, gh-2, lean-1, lean-2, lean-3, any-1, any-2, any-3, any-4, any-5, any-6]
+        shard: [checks, packages, source, gh-1, gh-2, lean-1, lean-2, any-1, any-2, any-3, any-4, any-5, any-6]
         # The downloaded source's consumer runs on the release toolchain only, as it did in `checks`.
         exclude:
           - node: '22.19.0'
@@ -123,9 +122,6 @@ jobs:
         run: node scripts/ci-build-output.mjs unpack "$RUNNER_TEMP/build"
       - if: matrix.shard == 'checks'
         run: npm run typecheck
-      - name: Demo setup prompts match their specs
-        if: matrix.shard == 'checks'
-        run: node scripts/check-setup-prompts.mjs
       - name: undici in this install is at or above its floor
         if: matrix.shard == 'checks'
         run: node scripts/check-undici.mjs
@@ -224,30 +220,6 @@ jobs:
           RESULT: ${{ needs.test.result }}
           CONSOLE: ${{ needs.console.result }}
         run: test "$RESULT" = success && test "$CONSOLE" = success
-
-  vision-binaries:
-    # @parcha/pi-vision's suites that run programs in the environment (test/binaries: ffmpeg and poppler). They are not
-    # part of the verify matrix: they need the programs, not three Node versions. A provider that cannot find its
-    # program fails here instead of skipping.
-    runs-on: ubuntu-latest
-    timeout-minutes: 15
-    steps:
-      - uses: actions/checkout@v4
-      - name: Install ffmpeg and poppler
-        run: |
-          printf '%s\n' 'https://archive.ubuntu.com/ubuntu/' | sudo tee /etc/apt/apt-mirrors.txt >/dev/null
-          sudo apt-get update
-          sudo apt-get install -y --no-install-recommends ffmpeg poppler-utils
-          ffmpeg -version | head -1
-          pdftoppm -v
-      - uses: actions/setup-node@v4
-        with:
-          node-version: '22.23.2'
-          cache: npm
-      - run: npm install --global npm@11.21.0 --ignore-scripts
-      - run: node scripts/npm-ci-retry.mjs --ignore-scripts
-      - run: npm run build -w @parcha/pi-vision
-      - run: npm run test:binaries -w @parcha/pi-vision
 
   transport-docker:
     # @parcha/pi-transport's formatter and linter, and its box conformance suite on real Docker containers. They are not
@@ -349,8 +321,6 @@ jobs:
       - name: The build job's output, for this tree and this Node
         run: node scripts/ci-build-output.mjs unpack "$RUNNER_TEMP/build"
       - run: npm run test:chrome -w @parcha/pi-browser
-      # The assembled reference job on the same Chrome: its record and ledger must be the fixed ones (the receipt name and token counts are not).
-      - run: node scripts/check-reference-chrome.mjs
 
   stranger:
     # A package installed from its packed tarball into an empty directory, with an empty environment and home, runs the one command
@@ -362,7 +332,7 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        spec: [agentrun-dsl, agentrun-jev, agentrun-pi, pi-durable-disk, pi-browser, pi-vision, pi-transport, pi-transport-docker, pi-durable-agent, agentrun-kernel, agentrun-harness-claude, agentrun-harness-codex, agentrun-harness, agentrun-serve]
+        spec: [agentrun-dsl, agentrun-jev, agentrun-pi, pi-durable-disk, pi-browser, pi-transport, pi-transport-docker, pi-durable-agent, agentrun-kernel, agentrun-harness-claude, agentrun-harness-codex, agentrun-serve]
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-node@v4
@@ -422,10 +392,11 @@ jobs:
     # (--readme-line): `packed` puts this tree's package in the line, so it says whether the next release installs; `registry`
     # runs the line as written, so it says whether the published package installs today. Unlike `stranger`, the peers are not
     # pinned to the developed versions. A mode that is not `blocking` reports a failure as a warning on the run and passes, so
-    # a known failure does not turn every pull request red. pi-durable-disk's two are blocking: 0.1.0-beta.14, whose peer
-    # ranges accept pi below 1.4, installs with the README's own line as written (0.1.0-beta.13, below 1.3, did not once pi
-    # 1.3.0 shipped). pi-durable-agent's `packed` blocks; its `registry` warns until its README's line names `@latest`,
-    # which the registry serves (0.1.0-beta.28), instead of `@beta`, a tag it has none of for this package. Make it blocking then.
+    # a known failure does not turn every pull request red. pi-durable-disk's `packed` blocks; its `registry` warns until the
+    # first release on pi 1.5 publishes (the README's line pins pi 1.5.0, and every published beta's peers stop below pi
+    # 1.4, so the line as written ends in ERESOLVE until then). Make it blocking then. pi-durable-agent's `packed` blocks;
+    # its `registry` warns until its README's line names `@latest`, which the registry serves (0.1.0-beta.28), instead of
+    # `@beta`, a tag it has none of for this package. Make it blocking then.
     needs: [build]
     runs-on: ubuntu-latest
     timeout-minutes: 10
@@ -438,7 +409,7 @@ jobs:
             blocking: true
           - spec: pi-durable-disk
             mode: registry
-            blocking: true
+            blocking: false
           - spec: pi-durable-agent
             mode: packed
             blocking: true
@@ -571,6 +542,6 @@ jobs:
           CAPTURES: ${{ runner.temp }}/lean-sweep
         run: >-
           node spec/lean/sweep/collect.mjs --captures "$CAPTURES/lean-sweep-lean-1" --captures "$CAPTURES/lean-sweep-lean-2"
-          --captures "$CAPTURES/lean-sweep-lean-3" spec/lean/.lake/validator-corpus.json
+          spec/lean/.lake/validator-corpus.json
       - name: The Lean validator accepts everything the TypeScript validator accepts
         run: lake exe validator-sweep .lake/validator-corpus.json

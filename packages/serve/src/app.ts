@@ -26,10 +26,10 @@ import { codingSource } from "./coding-tools.js";
 import { cancelledIn, markRequests } from "./request-start.js";
 import { decisionProvidersOf } from "./decisions.js";
 import { dataOfRun, FOLLOW_UP_OPEN_ENV, readJson, RUN_META } from "./files.js";
-import { adapterFor, claudeModel, claudePriceModel, codexModel, type ConfineChild, openRouterOnly, skillCheckOf, thinkingFor } from "./adapters.js";
+import { adapterFor, type ConfineChild, thinkingFor } from "./adapters.js";
 import { PORT_PROVIDER, portModels } from "./port-models.js";
 import type { SessionPort } from "@parcha/agentrun-kernel";
-import { DEFAULT_HARNESS, FAUX_HARNESS_ENV } from "./harness.js";
+import { type HarnessEntry, harnessOf } from "./harness-table.js";
 import { adapterRun } from "./harness-app.js";
 import { MCP_PIN, mcpGateway, mcpNameOf, type McpPin, mcpRegistrations } from "./mcp-gateway.js";
 import { pinnedWorkflows, readPin, withLearned } from "./learning.js";
@@ -37,7 +37,7 @@ import { LEARNED_WORKFLOW_TOOL, learnedWorkflowTool } from "./learned-workflow.j
 import { completer } from "./llm.js";
 import { searchOn } from "./hosted-search.js";
 import { imageLoader } from "./pdf-pages.js";
-import { EFFORT_ENV, FAUX_ENV, type ModelRef, llmTiers, nodeTiers, providerModels, runModels, type Tier, thinkingOf, workflowNodes } from "./model.js";
+import { EFFORT_ENV, type ModelRef, llmTiers, nodeTiers, providerModels, runModels, type Tier, thinkingOf, workflowNodes } from "./model.js";
 import { gated, liveView, nodeLog, readLiveView } from "./pause.js";
 import { remotePlace, storedPlace } from "./place.js";
 import { runBox, runBoxProvider } from "./run-box.js";
@@ -83,18 +83,12 @@ async function markResumed({ harness, context, generation, previous }: BeforeRes
   await harness.commit(async (tx) => void (await tx.appendEntry(ROOT_CONVERSATION_ID, { kind: RUN_RESUMED, data: { after, generation, at: Date.now() } })), context);
 }
 
-/** claude-agent's model and pi-ai's catalog that prices it: its own settings, never the gateway's (adapters.ts). */
-async function claudeModels(env: NodeJS.ProcessEnv, ref: string | undefined) {
-  const choice = claudeModel(env, ref);
-  if ("why" in choice) throw new Error(choice.why);
-  return { models: await providerModels(env), model: choice.model as ModelRef | undefined, byTier: new Map([["default", choice.model]]), unpriced: new Set<string>() };
-}
-
-/** codex's model (or opencode's, `harness`, on codex's route) and pi-ai's catalog that prices it, where it reaches OpenAI only through OpenRouter (codexModel: no
- *  OpenAI key needed); anywhere else, the run's usual models (runModels). */
-async function codexModels(env: NodeJS.ProcessEnv, ref: string | undefined, harness: "codex" | "opencode" = "codex") {
-  if (env[FAUX_HARNESS_ENV] || !openRouterOnly(harness, env)) return runModels(env, ref, ["default"], harness);
-  const choice = await codexModel(env, ref, harness);
+/** The run's model and pi-ai's catalog that prices it, where its harness's model is chosen on its wire's own settings (its
+ *  entry's onWire: claude-agent's, never the gateway's; an OpenAI model reached through OpenRouter alone, which needs no
+ *  OpenAI key: provider.ts modelOn). Anywhere else, the run's usual models (runModels). */
+async function wireModels(entry: HarnessEntry, env: NodeJS.ProcessEnv, ref: string | undefined) {
+  const choice = await entry.model(env, ref, true);
+  if (!choice) throw new Error(`${entry.id} does not run here.`);
   if ("why" in choice) throw new Error(choice.why);
   return { models: await providerModels(env), model: choice.model as ModelRef | undefined, byTier: new Map([["default", choice.model]]), unpriced: new Set<string>() };
 }
@@ -117,10 +111,9 @@ export default async function app(where: AppContext): Promise<AppOptions> {
   // This process's reading of its environment, with its secrets: never a child's (secrets.ts).
   const env = withSecrets(process.env);
   const workflowNodeList = revision.kind === "workflow" ? workflowNodes(revision.body.workflow, (await import("@parcha/agentrun-dsl")).inspectWorkflow(revision.body.workflow)) : [];
-  // codex's model as a save resolves it (codexModel): an OpenAI model it reaches through OpenRouter alone needs no OpenAI key.
-  // claude-agent's own model, as in production; on the faux harness too unless pi's faux model stands in (runnable.ts).
-  const fauxModels = Boolean(env[FAUX_HARNESS_ENV] && env[FAUX_ENV]);
-  const chosen = revision.kind === "agentic" && revision.body.harness === "claude-agent" && !fauxModels ? await claudeModels(env, revision.body.model) : revision.kind === "agentic" && (revision.body.harness === "codex" || revision.body.harness === "opencode") ? await codexModels(env, revision.body.model, revision.body.harness) : revision.kind === "agentic" ? await runModels(env, revision.body.model, ["default"], revision.body.harness) : await runModels(env, undefined, llmTiers(workflowNodeList, nodeTiers(workflowNodeList)));
+  // The run's harness, resolved once (harness-table.ts): its model as a save resolves it (runnable.ts harnessModel).
+  const entry = revision.kind === "agentic" ? harnessOf(env, revision.body.harness) : undefined;
+  const chosen = revision.kind !== "agentic" ? await runModels(env, undefined, llmTiers(workflowNodeList, nodeTiers(workflowNodeList))) : entry?.onWire(env) ? await wireModels(entry, env, revision.body.model) : await runModels(env, revision.body.model, ["default"], revision.body.harness);
   const { model, byTier } = chosen;
   // Read before the run opens its store: what it spent in earlier processes counts against its cap.
   const cap = capOf(process.env);
@@ -130,9 +123,10 @@ export default async function app(where: AppContext): Promise<AppOptions> {
   // search), on the session's booking under the run's one cap (port-models.ts, harness-app.ts). The run's models are the
   // session's port then; on pi they are the run's own, each request marked as it leaves (request-start.ts) inside the cap:
   // a request the cap refuses never leaves, and gets a start mark of its own, which its error entry answers.
-  const onHarness = revision.kind === "agentic" && Boolean(revision.body.harness) && revision.body.harness !== DEFAULT_HARNESS;
-  // claude-agent's run is capped at the price of whoever bills it (claudeProvider's priceModel), as its adapter prices it.
-  const priced = onHarness && revision.body.harness === "claude-agent" && !fauxModels ? claudePriceModel(env, model!) : model;
+  const onHarness = entry?.facts !== undefined;
+  // A run on an adapter is capped at the price of whoever bills it (its entry's priceModel: providerFor's), as its adapter
+  // prices it.
+  const priced = onHarness && model ? entry!.priceModel(env, model) : model;
   /** The session's port, once the harness's run is made (adapterRun): read at each request. */
   let sessionPort: ((label: string) => SessionPort | undefined) | undefined;
   const marked = onHarness ? undefined : await markRequests(chosen.models, cancelledIn(where.root));
@@ -197,16 +191,18 @@ export default async function app(where: AppContext): Promise<AppOptions> {
   // The run's effort, as its thinking level reads it: its note on how to work follows the instructions on every harness
   // (effort-guidance.ts). None without an effort.
   const guidance = effortGuidance(process.env[EFFORT_ENV]);
-  if (revision.kind === "agentic" && revision.body.harness && revision.body.harness !== DEFAULT_HARNESS) {
+  if (revision.kind === "agentic" && revision.body.harness && entry?.facts) {
     const harness = revision.body.harness;
-    // claude-agent, codex and opencode load the skills their adapter takes itself (skillCheckOf), and the prompt keeps only
-    // the ones it would refuse; a faux harness's prompt names each skill and its file when the run reads its files (it
-    // reads the SKILL.md when it fits), else keeps every skill whole (skills.ts).
-    const check = !env[FAUX_HARNESS_ENV] ? await skillCheckOf(harness) : undefined;
+    const facts = entry.facts;
+    // A harness that loads the skills its adapter takes itself (its entry's skillCheck: claude-agent's Skill tool, codex's
+    // and opencode's skill lists) keeps in its prompt only the ones it would refuse; any other's prompt (a test's stand-in)
+    // names each skill and its file when the run reads its files (it reads the SKILL.md when it fits), else keeps every
+    // skill whole (skills.ts).
+    const check = await entry.skillCheck?.();
     const { system: instructions, native } = await systemOf(learned.instructions, learned.skills, where.work, check, { onDemand: readsFiles(revision.body.tools) });
     // The session's system prompt starts with the line, made as this process opens it: a run resumed on a later day is
     // opened with that day.
-    const spec = { key: `run:${run.id}`, label: run.agent, system: [environmentLine(), instructions, guidance].filter((text): text is string => Boolean(text)), context: "fresh" as const, thinking: thinkingFor(harness, thinkingLevel), ...(gateway ? { mcp: gateway } : {}) };
+    const spec = { key: `run:${run.id}`, label: run.agent, system: [environmentLine(), instructions, guidance].filter((text): text is string => Boolean(text)), context: "fresh" as const, thinking: thinkingFor(facts, thinkingLevel), ...(gateway ? { mcp: gateway } : {}) };
     // ask_person stays pi's (runnable.ts refuses a run that names it here); the file tools are pi's own; the MCP tools
     // are the harness's own client's, at the session's proxy.
     const named = revision.body.tools.filter((name) => name !== ASK_TOOL && !mcpNameOf(name));
