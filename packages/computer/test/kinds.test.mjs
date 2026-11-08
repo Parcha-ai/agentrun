@@ -20,6 +20,7 @@ import {
 	servingRefusals,
 } from "../dist/index.js";
 import { E2BProvider } from "../dist/e2b.js";
+import { create as createOrgo } from "../dist/orgo.js";
 import { fakeDocker } from "./fake-docker.mjs";
 import { fakeE2B } from "./fake-e2b.mjs";
 import { fakeModal } from "./fake-modal.mjs";
@@ -125,6 +126,7 @@ const BUILT = {
 			return new PhoneHarnessProvider({ apiKey: PHONE_KEY, fetch: fake.fetch, adb: fake.adb });
 		},
 	],
+	orgo: [() => createOrgo({ apiKey: "orgo-test-key", workspaceId: "ws-test", fetch: async () => new Response(null, { status: 500 }) })],
 };
 
 test("a built provider's capabilities, in each configuration, are its entry's static capabilities", () => {

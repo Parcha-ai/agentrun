@@ -63,6 +63,7 @@ export const providers = {
 	daytona: () => import("./daytona.js"),
 	e2b: () => import("./e2b.js"),
 	"phone-harness": () => import("./phone-harness.js"),
+	orgo: () => import("./orgo.js"),
 } satisfies Record<string, () => Promise<ProviderModule>>;
 
 export type ProviderId = keyof typeof providers;

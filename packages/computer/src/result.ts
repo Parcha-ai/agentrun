@@ -21,7 +21,8 @@ export type ComputerErrorCode =
 	| "daytona"
 	| "modal"
 	| "e2b"
-	| "phone";
+	| "phone"
+	| "orgo";
 
 export interface ComputerError {
 	code: ComputerErrorCode;

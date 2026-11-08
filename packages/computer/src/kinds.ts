@@ -98,7 +98,7 @@ function entry(fields: Omit<ProviderEntry, "kinds">): ProviderEntry {
 }
 
 /**
- * Every provider Settings offers. orgo, browserbase and kernel are data until their provider file lands;
+ * Every provider Settings offers. browserbase and kernel are data until their provider file lands;
  * a unit test then holds each to its module (CAPABILITIES, MOUNT). daytona, modal and e2b take archil mounts once D6
  * lands, and their entries follow their modules then.
  */
@@ -128,7 +128,7 @@ export const PROVIDERS: readonly ProviderEntry[] = [
 		capabilities: [SANDBOX],
 	}),
 	entry({ id: "e2b", label: "E2B", keys: [{ name: "E2B_API_KEY", required: true }], mounts: [], metered: true, capabilities: [SANDBOX, LINUX_DESKTOP] }),
-	entry({ id: "orgo", label: "Orgo", keys: [{ name: "ORGO_API_KEY", required: true }], mounts: [], metered: true, capabilities: [{ kind: "desktop", groups: ["screen", "input.pointer", "input.keys"] }] }),
+	entry({ id: "orgo", label: "Orgo", keys: [{ name: "ORGO_API_KEY", required: true }], mounts: [], metered: true, capabilities: [LINUX_DESKTOP] }),
 	entry({
 		id: "phone-harness",
 		label: "Phone harness",
