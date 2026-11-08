@@ -1,5 +1,7 @@
 // The Archil claim step: once per claim in Mode 2, before the run's loop starts, the claim's Archil disk is made from the
-// server's Archil settings and its keys come from the store's sealed_keys rows, opened with the runner's seal key.
+// server's Archil settings (archil-settings.ts, the store's one settings row) and its keys come from the store's
+// sealed_keys rows under archil-settings.ts's names, opened with the runner's seal key. A saved exec image must be pinned
+// by digest (`<name>@sha256:<64 hex>`): any other refuses the claim before a key is read.
 //
 // Two rows. "archil.api_key" is the account API key the disk's file API and serverless exec take (archil-disk.ts asks for
 // it on every call, and gets it from this step's memory). "archil.disk_token" is the disk token a computer's mount takes
@@ -10,22 +12,12 @@
 // refused. A row that is missing, or that does not open under the seal key (sealed under another key, or for another
 // row), refuses in words that name the row and never hold a value. Nothing here reads the environment: the settings,
 // the store's sealed keys and the seal key are handed in.
+import { ARCHIL_API_KEY_ROW, ARCHIL_DISK_TOKEN_ROW, type ArchilSettings } from "../archil-settings.js";
 import { sealedAt, unsealColumn } from "../store/seal.js";
 import type { SealedKeys } from "../store/store.js";
-import { type ArchilDisk, type ArchilDiskOptions, type ArchilImage, archilDisk } from "./archil-disk.js";
+import { type ArchilDisk, type ArchilDiskOptions, type ArchilImage, archilDisk, pinnedImage } from "./archil-disk.js";
 
-/** The sealed_keys row of the account API key (the disk's file API and exec). */
-export const ARCHIL_API_KEY_ROW = "archil.api_key";
-/** The sealed_keys row of the disk token (a computer's mount). */
-export const ARCHIL_DISK_TOKEN_ROW = "archil.disk_token";
-
-/** The server's Archil settings, none of them secret: the disk, its region, its S3 endpoint and the exec image. */
-export type ArchilSettings = {
-  readonly disk: string;
-  readonly region: string;
-  readonly s3BaseUrl: string;
-  readonly image?: ArchilImage;
-};
+export { ARCHIL_API_KEY_ROW, ARCHIL_DISK_TOKEN_ROW, type ArchilSettings };
 
 /** A claim this step refused, in words a person reads: no Archil call was made. */
 export class ArchilClaimRefused extends Error {
@@ -33,7 +25,7 @@ export class ArchilClaimRefused extends Error {
 }
 
 export interface ArchilClaimOptions {
-  /** The server's Archil settings; undefined when they are not set up. */
+  /** The server's Archil settings (loadArchilSettings); undefined when they are not set up. */
   readonly settings: ArchilSettings | undefined;
   /** The store's sealed_keys rows (store.sealedKeys): a row's sealed bytes, or undefined when none is saved. */
   readonly keys: Pick<SealedKeys, "get">;
@@ -48,7 +40,10 @@ export interface ArchilClaimOptions {
 export interface ArchilClaim {
   /** The claim's disk: its key is this step's, asked for on every call. */
   readonly disk: ArchilDisk;
-  readonly settings: ArchilSettings;
+  /** The disk's region (a computer's mount names it). */
+  readonly region: string;
+  /** The exec image, pinned by digest; undefined for Archil's default. */
+  readonly image: ArchilImage | undefined;
   /** The disk token, opened the first time a mount asks. */
   token(): Promise<string>;
   /** Every value held, for the redaction set. */
@@ -64,6 +59,12 @@ export async function archilClaim(options: ArchilClaimOptions): Promise<ArchilCl
   const { settings, sealKey } = options;
   if (settings === undefined) {
     throw new ArchilClaimRefused("This server's Archil disk is not set up (its disk, region and S3 endpoint): Mode 2 keeps a run's folder on it, so the run can't start.");
+  }
+  let image: ArchilImage | undefined;
+  try {
+    image = settings.image === undefined ? undefined : pinnedImage({ baseImage: settings.image });
+  } catch (error) {
+    throw new ArchilClaimRefused(`This server's Archil exec image ${JSON.stringify(settings.image)} can't be used: ${(error as Error).message}`, { cause: error });
   }
   if (sealKey === undefined) {
     throw new ArchilClaimRefused(`This runner was started without the server's seal key, so it can't open the saved ${ARCHIL_API_KEY_ROW} key: start it with the key the server keeps.`);
@@ -84,9 +85,9 @@ export async function archilClaim(options: ArchilClaimOptions): Promise<ArchilCl
   let disk: ArchilDisk;
   try {
     disk = (options.makeDisk ?? archilDisk)({
-      disk: settings.disk,
+      disk: settings.diskId,
       region: settings.region,
-      s3BaseUrl: settings.s3BaseUrl,
+      s3BaseUrl: settings.s3Url,
       key: () => {
         if (released) throw new Error(RELEASED);
         return apiKey;
@@ -106,7 +107,8 @@ export async function archilClaim(options: ArchilClaimOptions): Promise<ArchilCl
   if (options.signal.aborted) release();
   return {
     disk,
-    settings,
+    region: settings.region,
+    image,
     secrets: held,
     token: async () => {
       if (released) throw new Error(RELEASED);

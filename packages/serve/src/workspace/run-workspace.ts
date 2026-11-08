@@ -41,10 +41,10 @@ export async function openRunWorkspace(options: RunWorkspaceOptions): Promise<Ru
     try { log(message); } catch { /* the caller's log */ }
   };
   const workspace = archilWorkspace(claim.disk, runKey(agentId, runId), {
-    ...(claim.settings.image === undefined ? {} : { image: claim.settings.image }),
+    ...(claim.image === undefined ? {} : { image: claim.image }),
     onCleanupFailed: say,
     // A computer's mount of the run's folder: the disk's region, and the disk token from the claim when a mount asks.
-    region: claim.settings.region,
+    region: claim.region,
     mountToken: () => claim.token(),
   });
   const sweep = async (when: "start" | "end"): Promise<void> => {

@@ -18,7 +18,7 @@ const under = (key, folder) => key === folder || key.startsWith(`${folder}/`);
 const text = (bytes) => Buffer.from(bytes).toString("utf8");
 
 /** A claim as archilClaim gives it, over a fake disk: no key, no call leaves the process. */
-const claimOf = (disk) => ({ disk, settings: { disk: disk.id, region: "aws-us-east-1", s3BaseUrl: "https://s3.green.us-east-1.aws.prod.archil.com" }, token: async () => "unused", secrets: new Set(), release() {} });
+const claimOf = (disk) => ({ disk, region: "aws-us-east-1", image: undefined, token: async () => "unused", secrets: new Set(), release() {} });
 
 const roots = [];
 after(() => { for (const root of roots) rmSync(root, { recursive: true, force: true }); });
@@ -77,10 +77,10 @@ test("run workspace (Mode 2): a sweep that fails is logged, never thrown, at the
   for (const line of logged) assert.match(line, /exec spill folder.*listing down/);
 });
 
-test("run workspace (Mode 2): the image and the mount's region come from the claim's settings", async () => {
+test("run workspace (Mode 2): the image and the mount's region come from the claim", async () => {
   const disk = new FakeArchilDisk();
-  const image = { imageId: "57e8c1a9800e66198bfaff607e2fc8edd9625a610e07ad35e499af40493b7df0", digest: `sha256:${"9e".repeat(32)}` };
-  const claim = { ...claimOf(disk), settings: { ...claimOf(disk).settings, image } };
+  const image = { baseImage: `docker.io/library/debian@sha256:${"9e".repeat(32)}` };
+  const claim = { ...claimOf(disk), image };
   const run = await openRunWorkspace({ mode: 2, agentId: AGENT, runId: RUN, archil: claim, log: () => {} });
   await run.workspace.exec(["true"], { env: ENV, timeoutMs: 10_000 });
   assert.deepEqual(disk.calls.filter((call) => call.op === "exec").map((call) => call.image), [image]);

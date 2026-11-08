@@ -4,13 +4,16 @@ import assert from "node:assert/strict";
 import { randomBytes } from "node:crypto";
 import { test } from "node:test";
 import { sealColumn, sealedAt } from "../dist/store/seal.js";
+import { ARCHIL_API_KEY_ROW as SETTINGS_API_ROW, ARCHIL_DISK_TOKEN_ROW as SETTINGS_TOKEN_ROW, loadArchilSettings, saveArchilSettings } from "../dist/archil-settings.js";
 import { ARCHIL_API_KEY_ROW, ARCHIL_DISK_TOKEN_ROW, ArchilClaimRefused, archilClaim } from "../dist/workspace/index.js";
 import { storeOn } from "./store-helpers.mjs";
 
 const KEY = randomBytes(32);
 const API = "fake-test-key-api-0001";
 const TOKEN = "fake-test-key-disk-token-0001";
-const SETTINGS = { disk: "dsk-0000000000000001", region: "aws-us-east-1", s3BaseUrl: "https://s3.green.us-east-1.aws.prod.archil.com" };
+/** The Archil settings as the store keeps them (archil-settings.ts). */
+const SETTINGS = { diskId: "dsk-0000000000000001", region: "aws-us-east-1", s3Url: "https://s3.green.us-east-1.aws.prod.archil.com" };
+const PINNED = `docker.io/library/debian@sha256:${"9e".repeat(32)}`;
 
 /** The sealed_keys rows as the store holds them: each sealed under `key` for its own row. */
 const rowsOf = (key = KEY, values = { [ARCHIL_API_KEY_ROW]: API, [ARCHIL_DISK_TOKEN_ROW]: TOKEN }) =>
@@ -33,12 +36,29 @@ async function claimOf({ rows = rowsOf(), settings = SETTINGS, sealKey = KEY, si
 test("archil claim: the disk is made from the settings, and its key is the sealed api key row, opened with the seal key", async () => {
   const { claim, asked, made } = await claimOf();
   assert.equal(made.length, 1);
-  assert.deepEqual([made[0].disk, made[0].region, made[0].s3BaseUrl], [SETTINGS.disk, SETTINGS.region, SETTINGS.s3BaseUrl]);
+  assert.deepEqual([made[0].disk, made[0].region, made[0].s3BaseUrl], [SETTINGS.diskId, SETTINGS.region, SETTINGS.s3Url]);
   assert.equal(typeof made[0].key, "function", "the key is a function the seam asks on every call");
   assert.equal(await made[0].key(), API);
-  assert.equal(claim.disk.id, SETTINGS.disk);
-  assert.deepEqual(claim.settings, SETTINGS);
+  assert.equal(claim.disk.id, SETTINGS.diskId);
+  assert.deepEqual([claim.region, claim.image], [SETTINGS.region, undefined], "no image: Archil's default");
   assert.deepEqual(asked, [ARCHIL_API_KEY_ROW], "the disk token is not opened until a mount asks for it");
+});
+
+test("archil claim: the key rows are the store's one set of names, and a saved image is pinned by digest or refused", async () => {
+  assert.deepEqual([ARCHIL_API_KEY_ROW, ARCHIL_DISK_TOKEN_ROW], [SETTINGS_API_ROW, SETTINGS_TOKEN_ROW]);
+  assert.deepEqual([ARCHIL_API_KEY_ROW, ARCHIL_DISK_TOKEN_ROW], ["archil.api_key", "archil.disk_token"]);
+  const { claim } = await claimOf({ settings: { ...SETTINGS, image: PINNED } });
+  assert.deepEqual(claim.image, { baseImage: PINNED });
+  for (const image of ["debian:trixie", "debian@sha256:short", ""]) {
+    await assert.rejects(claimOf({ settings: { ...SETTINGS, image } }), (error) => error instanceof ArchilClaimRefused && /pinned by digest/.test(error.message), image);
+  }
+});
+
+test("archil claim: over the settings row the server saved (archil-settings.ts)", async (t) => {
+  const { store } = await storeOn(t);
+  await saveArchilSettings(store, { ...SETTINGS, image: PINNED });
+  const { claim, made } = await claimOf({ settings: await loadArchilSettings(store) });
+  assert.deepEqual([made[0].disk, made[0].region, made[0].s3BaseUrl, claim.image], [SETTINGS.diskId, SETTINGS.region, SETTINGS.s3Url, { baseImage: PINNED }]);
 });
 
 test("archil claim: the disk token is opened when a mount first asks, once, and both values are in the redaction set", async () => {
@@ -67,7 +87,7 @@ test("archil claim: a claim that cannot open its key is refused in words, before
   await refused({ rows: moved }, /does not open/);
   // The real disk checks its S3 endpoint when it is made (no call is sent): a bad one refuses the claim.
   await assert.rejects(
-    archilClaim({ settings: { ...SETTINGS, s3BaseUrl: "http://s3.example.com" }, keys: { get: async (name) => rowsOf().get(name) }, sealKey: KEY, signal: new AbortController().signal }),
+    archilClaim({ settings: { ...SETTINGS, s3Url: "http://s3.example.com" }, keys: { get: async (name) => rowsOf().get(name) }, sealKey: KEY, signal: new AbortController().signal }),
     (error) => error instanceof ArchilClaimRefused && /S3 endpoint/.test(error.message) && !error.message.includes(API),
   );
 });

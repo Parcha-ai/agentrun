@@ -121,9 +121,9 @@ test("archil mountSpec and attach: a workspace made without a region or a token 
   }
 });
 
-test("archil mountSpec through the run's Workspace: the region from the claim's settings and the token from the claim", async () => {
+test("archil mountSpec through the run's Workspace: the region and the token from the claim", async () => {
   const disk = new FakeArchilDisk();
-  const claim = { disk, settings: { disk: disk.id, region: REGION, s3BaseUrl: "https://s3.green.us-east-1.aws.prod.archil.com" }, token: async () => TOKEN, secrets: new Set(), release() {} };
+  const claim = { disk, region: REGION, image: undefined, token: async () => TOKEN, secrets: new Set(), release() {} };
   const run = await openRunWorkspace({ mode: 2, agentId: AGENT, runId: RUN, archil: claim, log: () => {} });
   assert.deepEqual(await run.workspace.mountSpec(), { kind: "archil", disk: disk.id, region: REGION, folder: runKey(AGENT, RUN), token: TOKEN });
 });

@@ -67,7 +67,7 @@ export async function learningWorkspace(options: LearningWorkspaceOptions): Prom
     try { log(message); } catch { /* the caller's log */ }
   };
   const workspace = archilWorkspace(claim.disk, learningKey(agentId), {
-    ...(claim.settings.image === undefined ? {} : { image: claim.settings.image }),
+    ...(claim.image === undefined ? {} : { image: claim.image }),
     onCleanupFailed: say,
   });
   let ended: Promise<void> | undefined;

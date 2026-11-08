@@ -27,7 +27,7 @@ const dataDir = () => {
   return data;
 };
 /** A claim as archilClaim gives it, over a fake disk. */
-const claimOf = (disk) => ({ disk, settings: { disk: disk.id, region: "aws-us-east-1", s3BaseUrl: "https://s3.green.us-east-1.aws.prod.archil.com" }, token: async () => "unused", secrets: new Set(), release() {} });
+const claimOf = (disk) => ({ disk, region: "aws-us-east-1", image: undefined, token: async () => "unused", secrets: new Set(), release() {} });
 
 const BACKENDS = {
   local: async (log) => ({ learning: await learningWorkspace({ mode: 1, data: dataDir(), agentId: AGENT, log }) }),
