@@ -141,6 +141,7 @@ async function processes(computer, method, params) {
 		if (!entry.running) throw refusal("invalid", `process ${entry.id} has ended`);
 		if (entry.closed) throw refusal("invalid", `process ${entry.id}'s stdin is closed`);
 		if (entry.program?.stuck) throw refusal("timeout", `process ${entry.id} did not read its input: 0 of ${Buffer.from(params.data ?? "", "base64").length} bytes were written in 10s`);
+		if (entry.program?.unread) throw refusal("invalid", `process ${entry.id} no longer reads its input: it closed its stdin, or ended (0 of ${Buffer.from(params.data ?? "", "base64").length} bytes were written)`);
 		const text = Buffer.from(params.data ?? "", "base64").toString();
 		computer.inputs.push([entry.id, text, params.close === true]);
 		if (params.close) entry.closed = true;

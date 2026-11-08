@@ -152,6 +152,7 @@ test("stdin reaches a `read` loop, line by line; close: true ends its input; a c
 		}),
 		"cat > /dev/null": runs(),
 		"sleep 600": runs("", { stuck: true }),
+		"exec 0<&-; sleep 600": runs("", { unread: true }),
 	});
 	answer(await bashBackground(client, { command: loop }));
 	assert.equal(answer(await bashInput(client, { id: "1", text: "hello\n" })).text, "Wrote 6 bytes to background process 1's stdin. Read what it answers with bash_output.");
@@ -173,6 +174,9 @@ test("stdin reaches a `read` loop, line by line; close: true ends its input; a c
 	// Bytes go as base64 now, so a NUL is only a byte, as any other.
 	answer(await bashBackground(client, { command: loop }));
 	answer(await bashInput(client, { id: "5", text: "a\0b\n" }));
+	// Any other input the computer refuses is said as today's: what it said, and the pipe's 64 KiB.
+	answer(await bashBackground(client, { command: "exec 0<&-; sleep 600" }));
+	refused(await bashInput(client, { id: "6", text: "x\n" }), "invalid", /^process 6 did not take its input: process p6 no longer reads its input: .+ \(a process that does not read its stdin fills its pipe at 64 KiB\)$/);
 	assert.deepEqual(daemon.inputs.map(([id, text, close]) => [id, text, close]), [
 		["p1", "hello\n", false],
 		["p1", "stop\n", false],
