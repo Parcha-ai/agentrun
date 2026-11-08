@@ -8,6 +8,12 @@
 // GET /v1/sessions?status=&q= (list; q is user_metadata['key']:'value', and a status is always given, since q alone made
 // Browserbase answer 504 after 75 s), POST /v1/sessions/{id} with status REQUEST_RELEASE (release), and
 // GET /v1/sessions/{id}/debug (the live view). The key is the X-BB-API-Key header.
+//
+// A label's key is not its metadata key: Browserbase refuses a dot in a userMetadata key (POST /v1/sessions answered 400
+// "Key is not a valid metadata key: agentrun.conformance", found live on 11-08), and the protocol's labels are dotted
+// (agentrun.run, agentrun.epoch). metadataKey() writes each "." as "_", and labelKey() reads it back. check() takes a
+// label key of letters, digits and dots alone, so no label key holds an "_" and the mapping is one to one; a value with
+// ' or \ is refused too, since list's query quotes it.
 import { readFileSync } from "node:fs";
 import {
 	BROWSER_IMAGE,
@@ -59,6 +65,30 @@ export const BROWSERBASE_MAX_LIFETIME_MS = 6 * 60 * 60_000;
 export const BROWSERBASE_MIN_LIFETIME_MS = 60_000;
 /** The statuses of a session that runs (PENDING bills once it starts); any other has ended. */
 const LIVE = new Set(["RUNNING", "PENDING"]);
+
+/** A label key Browserbase's metadata can carry once its dots are underscores: letters, digits and dots, so the mapping is one to one. */
+const LABEL_KEY = /^[A-Za-z0-9.]+$/;
+
+/** The userMetadata key a label key is written under: each "." as "_", since Browserbase refuses a dot there. */
+export const metadataKey = (labelKey: string) => labelKey.replaceAll(".", "_");
+/** The label key a userMetadata key reads back as: each "_" as ".". */
+export const labelKey = (metadataKey: string) => metadataKey.replaceAll("_", ".");
+
+/** Labels as userMetadata. */
+const toMetadata = (labels: Record<string, string> = {}) => Object.fromEntries(Object.entries(labels).map(([key, value]) => [metadataKey(key), value]));
+/** userMetadata as labels: its string entries, each key read back. */
+const fromMetadata = (held: unknown): Record<string, string> => Object.fromEntries(Object.entries(labelsOf(held)).map(([key, value]) => [labelKey(key), value]));
+
+/** Why labels cannot ride a Browserbase session's userMetadata, in words naming the label; undefined when they can. */
+export function browserbaseLabelsProblem(labels: unknown): string | undefined {
+	const problem = labelsProblem(labels);
+	if (problem) return problem;
+	for (const [key, value] of Object.entries(labels as Record<string, string>)) {
+		if (!LABEL_KEY.test(key)) return `a Browserbase label's key is letters, digits and dots (each dot is written as "_" in the session's metadata, which refuses a dot), not ${JSON.stringify(key)}`;
+		if (/['\\]/.test(value)) return `the label ${JSON.stringify(key)} holds a quote or a backslash, which list's query to Browserbase cannot carry`;
+	}
+	return undefined;
+}
 
 /** A browser takes no mount. */
 export const MOUNT: readonly MountKind[] = [];
@@ -204,7 +234,13 @@ export class BrowserbaseProvider implements ComputerProvider {
 	}
 
 	check(spec: ComputerSpec): Refusal[] {
-		return checkBrowser(spec, this.capabilities(), NAME, BROWSERBASE_MIN_LIFETIME_MS);
+		const refusals = checkBrowser(spec, this.capabilities(), NAME, BROWSERBASE_MIN_LIFETIME_MS);
+		const labels = (spec as { labels?: unknown } | null)?.labels;
+		if (labels !== undefined && !refusals.some((r) => r.field === "labels")) {
+			const problem = browserbaseLabelsProblem(labels);
+			if (problem) refusals.push({ field: "labels", message: problem });
+		}
+		return refusals;
 	}
 
 	/**
@@ -220,7 +256,7 @@ export class BrowserbaseProvider implements ComputerProvider {
 			...settings,
 			timeout: Math.ceil(spec.lifetimeMs / 1000),
 			keepAlive: true,
-			userMetadata: { ...spec.labels },
+			userMetadata: toMetadata(spec.labels),
 			...(this.#projectId ? { projectId: this.#projectId } : {}),
 		};
 		let made: BrowserbaseSession;
@@ -302,11 +338,11 @@ export class BrowserbaseProvider implements ComputerProvider {
 	 * Both statuses must answer: a release trusts this list.
 	 */
 	async #sessions(labels: Record<string, string>, signal?: AbortSignal): Promise<Result<BrowserbaseSession[]>> {
-		const problem = labelsProblem(labels);
+		const problem = browserbaseLabelsProblem(labels);
 		if (problem) return fail("invalid", problem);
 		if (Object.keys(labels).length === 0) return fail("invalid", "list and attach take at least one label: a Browserbase project holds sessions this provider did not make");
 		const first = Object.entries(labels).find(queryable);
-		const q = first === undefined ? undefined : `user_metadata['${first[0]}']:'${first[1]}'`;
+		const q = first === undefined ? undefined : `user_metadata['${metadataKey(first[0])}']:'${first[1]}'`;
 		let pages: BrowserbaseSession[][];
 		try {
 			pages = await Promise.all((["RUNNING", "PENDING"] as const).map((status) => this.#api.list({ status, ...(q === undefined ? {} : { q }) }, signal)));
@@ -314,13 +350,13 @@ export class BrowserbaseProvider implements ComputerProvider {
 			return vendorFailure("browserbase", NAME, "GET /v1/sessions", error);
 		}
 		const seen = new Set<string>();
-		return ok(pages.flat().filter((s) => typeof s?.id === "string" && LIVE.has(s.status ?? "") && carries(s.userMetadata, labels) && !seen.has(s.id) && seen.add(s.id)));
+		return ok(pages.flat().filter((s) => typeof s?.id === "string" && LIVE.has(s.status ?? "") && carries(fromMetadata(s.userMetadata), labels) && !seen.has(s.id) && seen.add(s.id)));
 	}
 
 	async list(labels: Record<string, string>, { signal }: CallContext = {}): Promise<Result<ComputerInfo[]>> {
 		const found = await this.#sessions(labels, signal);
 		if (!found.ok) return found;
-		return ok(found.value.map((s) => ({ ref: refOf(s), labels: labelsOf(s.userMetadata), deadline: deadlineOf(s), state: "running", network: "open" })));
+		return ok(found.value.map((s) => ({ ref: refOf(s), labels: fromMetadata(s.userMetadata), deadline: deadlineOf(s), state: "running", network: "open" })));
 	}
 
 	/** Always open: a Browserbase browser reaches the open web, and a change is refused in words. */

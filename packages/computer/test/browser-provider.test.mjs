@@ -32,6 +32,8 @@ const VENDORS = {
 		},
 		/** The labels as the vendor holds them, on the session it made. */
 		held: (fake, id) => fake.sessions.get(id).userMetadata,
+		/** Browserbase refuses a dot in a metadata key, so a label's dots are written as underscores. */
+		heldLabels: { agentrun_run: "run-1", job: "j-42" },
 		lifetime: (fake, id) => fake.sessions.get(id).expiresAt,
 		creates: (fake) => fake.only("POST", "/v1/sessions"),
 	},
@@ -53,6 +55,7 @@ const VENDORS = {
 			release: ["delete"],
 		},
 		held: (fake, id) => fake.browsers.get(id).tags,
+		heldLabels: { "agentrun.run": "run-1", job: "j-42" },
 		lifetime: (fake, id) => fake.browsers.get(id).timeout,
 		creates: (fake) => fake.only("POST", "/browsers"),
 	},
@@ -124,7 +127,7 @@ for (const [id, vendor] of Object.entries(VENDORS)) {
 		const provider = await vendor.make(fake);
 		const created = value(await provider.create(spec()), "create");
 		assert.deepEqual(Object.keys(created).sort(), ["id", "name"]);
-		assert.deepEqual(vendor.held(fake, created.id), { "agentrun.run": "run-1", job: "j-42" }, "the labels, as the vendor holds them");
+		assert.deepEqual(vendor.held(fake, created.id), vendor.heldLabels, "the labels, as the vendor holds them");
 		assert.equal(vendor.lifetime(fake, created.id) !== undefined, true, "the lifetime rides the create");
 		value(await provider.create(spec({ labels: { "agentrun.run": "run-2" } })), "another run's");
 		const byId = value(await provider.attach({ id: created.id }), "attach by id");
@@ -248,3 +251,39 @@ for (const [id, vendor] of Object.entries(VENDORS)) {
 		assert.doesNotMatch(denied.error.message, /not-the-key/);
 	});
 }
+
+test("browserbase: a label's dots ride as underscores in userMetadata, which Browserbase refuses a dot in; list and attach read them back as labels", async () => {
+	const fake = fakeBrowserbase();
+	const provider = await VENDORS.browserbase.make(fake);
+	const labels = { "agentrun.conformance": "abc123", "agentrun.conformance.case": "labels", job: "j-42" };
+	const created = value(await provider.create(spec({ labels })), "create with dotted label keys");
+	assert.deepEqual(fake.sessions.get(created.id).userMetadata, { agentrun_conformance: "abc123", agentrun_conformance_case: "labels", job: "j-42" });
+	const listed = value(await provider.list({ "agentrun.conformance": "abc123" }), "list by a dotted label");
+	assert.deepEqual(listed.map((info) => info.ref), [created]);
+	assert.deepEqual(listed[0].labels, labels, "the labels read back as they were given");
+	const asked = fake.only("GET", "/v1/sessions").map((call) => call.query.q);
+	assert.ok(asked.every((q) => q === "user_metadata['agentrun_conformance']:'abc123'"), `the query names the metadata key: ${asked.join(", ")}`);
+	assert.deepEqual({ ...value(await provider.attach({ labels: { "agentrun.conformance.case": "labels" } }), "attach by a dotted label") }.id, created.id);
+});
+
+test("browserbase: check() refuses, by name, a label key an underscore or another character would make ambiguous, and a value that would break the query's quotes", async () => {
+	const fake = fakeBrowserbase();
+	const provider = await VENDORS.browserbase.make(fake);
+	for (const key of ["agentrun_tag", "a b", "a-b", "a:b", "a/b"]) {
+		const refusals = provider.check(spec({ labels: { [key]: "x" } }));
+		assert.equal(refusals.length, 1, `${key}: ${JSON.stringify(refusals)}`);
+		assert.equal(refusals[0].field, "labels");
+		assert.ok(refusals[0].message.includes(JSON.stringify(key)), `${key}: the refusal names the key: ${refusals[0].message}`);
+	}
+	for (const bad of ["it's", "a\\b"]) {
+		const refusals = provider.check(spec({ labels: { job: bad } }));
+		assert.equal(refusals.length, 1, `${bad}: ${JSON.stringify(refusals)}`);
+		assert.equal(refusals[0].field, "labels");
+		assert.match(refusals[0].message, /job/);
+	}
+	assert.deepEqual(provider.check(spec({ labels: { "agentrun.run": "run-1", Job2: "j-42" } })), []);
+	const refused = await provider.list({ agentrun_tag: "x" });
+	assert.equal(refused.ok, false, "list refuses such a key too");
+	assert.equal(refused.error.code, "invalid");
+	assert.equal(fake.calls.length, 0, "no vendor call");
+});
