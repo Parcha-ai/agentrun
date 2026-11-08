@@ -22,7 +22,7 @@ export const sleep = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
 
 /** A store with one queued run, a runner on the adapter loop running `script` with `beforeRequest`, until the run is
  *  not running or `ms` passes. `asked`: each request the host was asked about; `sent`: each body the provider got. */
-export async function capRun(t, { script, beforeRequest, ms = 20_000 }) {
+export async function capRun(t, { script, beforeRequest, cap: runCap, ms = 20_000 }) {
   const dir = mkdtempSync(join(process.env.TMPDIR ?? tmpdir(), "agentrun-adapter-cap-"));
   const server = await openSqliteStore({ dataDir: dir, role: "server" });
   const store = await openSqliteStore({ dataDir: dir, role: "runner" });
@@ -40,6 +40,7 @@ export async function capRun(t, { script, beforeRequest, ms = 20_000 }) {
   const spec = piAdapterSpec({ script, tools: {}, hooks: quiet }, { fetch: scriptedOrigin(script, sent) });
   const loop = createAdapterLoop(async (claim, run) => ({
     ...(await spec(claim, run)),
+    ...(runCap ? { cap: runCap } : {}),
     beforeRequest: async (request) => {
       const answer = await beforeRequest(request);
       asked.push({ request, answer });
@@ -56,4 +57,29 @@ export async function capRun(t, { script, beforeRequest, ms = 20_000 }) {
     await sleep(20);
   }
   return { row, asked, sent, ms: Date.now() - from, server, store };
+}
+
+/** The run's cap as a loop spec carries it (what E2 fills from the run's launch): its figure and the kernel's park. */
+export const specCap = (capUsd) => ({ capUsd, park: (refusal) => cap.parkOf(refusal, capUsd) });
+
+/** The data of each root entry of `kind` in run-1's journal, read under a reader's claim at the run's epoch. */
+export async function rootEntries(store, kind) {
+  const { BACKGROUND_CONTEXT: ctx } = await import("@earendil-works/chord/context");
+  const { createModels } = await import("@earendil-works/pi-ai/models");
+  const { createRegistry, Harness } = await import("@earendil-works/pi-durable");
+  const row = await store.runs.get("run-1");
+  const harness = await Harness.open(store.journal({ runId: "run-1", runner: "test-reader", epoch: row.epoch, until: 0, from: row.state }), { models: createModels(), registry: createRegistry(), onReport: () => {} }, ctx);
+  try {
+    const root = await harness.root(ctx);
+    const out = [];
+    for (let cursor; ; ) {
+      const page = await root.entries({ order: "ascending" }, 500, cursor, ctx);
+      for (const entry of page.items) if (entry.kind === kind) out.push(entry.data);
+      if (page.next === undefined) break;
+      cursor = page.next;
+    }
+    return out;
+  } finally {
+    await harness.close(ctx);
+  }
 }
