@@ -25,5 +25,7 @@ export const facts: AdapterFacts = Object.freeze<AdapterFacts>({
   // Its MCP client builds the model's copy of a server's tool with parse_tool_input_schema (codex-rs
   // tools/src/mcp_tool.rs at rust-v0.164.0): the shapes it drops or retypes, measured on the pinned binary.
   schemaProblems: codexSchemaProblems,
+  // Codex's own tools, each the host's table tool it is.
+  nativeTools: Object.freeze({ web_search: "web_search", shell: "bash" }),
   policy: (options) => codexPolicy({ model: options.model, tools: options.tools, ...(options.webSearch === "live" ? { webSearch: "live" as const } : {}), ...(options.maxOutputTokens ? { maxOutputTokens: options.maxOutputTokens } : {}) }),
 });
