@@ -1,7 +1,7 @@
 // A workflow run's decisions as timeline rows: one row per receipt its judge, pick, sift, route, ask and verify nodes
 // committed to the run's store (`agentrun.decisions`), so a run shows its verdicts beside its model nodes' rows. The
 // rows are read from the released store, as the rest of a workflow run's rows are.
-import { CAPS, cut, scrubUrls, type TimelineEvent } from "@parcha/pi-durable-agent/timeline";
+import { CAPS, costLabel, cut, endedUsage, scrubUrls, type TimelineEvent } from "@parcha/pi-durable-agent/timeline";
 
 type Answer = { type?: unknown; noul?: unknown; choice?: unknown; score?: unknown; legend?: unknown; confidence?: unknown; probabilities?: unknown };
 type Receipt = Record<string, unknown>;
@@ -95,17 +95,19 @@ const plural = (count: number, word: string) => `${count} ${word}${count === 1 ?
 
 /** `rows` with the decisions' rows among them by time, and their cost on the run's usage row, which stays last: one
  *  unknown cost makes the total unknown, never a lower figure. `receipts` null: the decisions could not be read, so the
- *  rows are as they were but the usage row's total is unknown, never the model nodes' alone. */
-export function withDecisions(rows: readonly TimelineEvent[], receipts: readonly Receipt[] | null, shown?: Shown): TimelineEvent[] {
+ *  rows are as they were but the usage row's total is unknown, never the model nodes' alone. `ended`: the run has ended,
+ *  so its usage row says its cost, never "so far" (costLabel). */
+export function withDecisions(rows: readonly TimelineEvent[], receipts: readonly Receipt[] | null, shown?: Shown, { ended = false }: { ended?: boolean } = {}): TimelineEvent[] {
+  const label = costLabel(ended);
   if (receipts === null) {
     const at = rows.findLastIndex((row) => row.kind === "usage");
     return rows.map((row, i) => {
       if (i !== at) return row;
       const requests = row.usage?.requests ?? 0;
-      return { ...row, summary: `Cost so far: unknown over ${plural(requests, "model request")}; its decisions could not be read`, usage: { usd: null, requests } };
+      return { ...row, summary: `${label}: unknown over ${plural(requests, "model request")}; its decisions could not be read`, usage: { usd: null, requests } };
     });
   }
-  if (!receipts.length) return [...rows];
+  if (!receipts.length) return ended ? rows.map(endedUsage) : [...rows];
   const decisions = decisionRows(receipts, shown);
   const at = rows.findLastIndex((row) => row.kind === "usage");
   const rest = at < 0 ? [...rows] : rows.filter((_, i) => i !== at);
@@ -126,6 +128,6 @@ export function withDecisions(rows: readonly TimelineEvent[], receipts: readonly
   const soFar = usd === null && modelsSoFar && unpriced > 0 ? { so_far_usd: Math.round((modelsSoFar.known + costs.reduce<number>((a, b) => a + (b ?? 0), 0)) * 1e6) / 1e6, unpriced } : undefined;
   const dollars = (n: number) => (n === 0 ? "$0" : n < 0.0001 ? "<$0.0001" : `$${n.toFixed(4)}`);
   const said = usd !== null ? dollars(usd) : soFar ? `${dollars(soFar.so_far_usd)} known, ${soFar.unpriced} not priced,` : "unknown";
-  const summary = `Cost so far: ${said} over ${plural(models.requests, "model request")} and ${plural(decisions.length, "decision")}`;
+  const summary = `${label}: ${said} over ${plural(models.requests, "model request")} and ${plural(decisions.length, "decision")}`;
   return [...rest, { ...base, kind: "usage", summary, usage: { usd, requests: models.requests + decisions.length, ...(soFar ?? {}) } }];
 }

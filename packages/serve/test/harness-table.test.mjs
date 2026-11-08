@@ -26,6 +26,25 @@ test("serve/src outside the harness table compares no harness name: no ===/!== a
   assert.deepEqual(hits, [], `harness-name branches:\n${hits.join("\n")}`);
 });
 
+test("serve/src keys no data by a harness's name outside the harness table: no default, list, keyed row, install id or path names pi, claude-agent, codex or opencode by its literal (each comes from DEFAULT_HARNESS, HARNESSES, an entry or its facts)", () => {
+  // The registry (harness.ts) and the table name them; the transcript formats' sources (import*.ts, and openapi.ts's
+  // `source` enums) are the formats' own words; the OpenCode adapter (harness-opencode/) names itself.
+  const outside = (file) => !EXCLUDED.has(file) && !["harness.ts", "import-summary.ts", "openapi.ts"].includes(file) && !file.startsWith("harness-opencode/");
+  const ID = `"(?:${NAMES})"`;
+  const KEYED = [
+    new RegExp(`\\?\\?\\s*${ID}`), // a default
+    new RegExp(`\\[[^\\]\\n]*${ID}`), // a list member (a row's harnesses, an enum)
+    new RegExp(`(?:^|[{,\\s])(?:"(?:claude-agent|codex|opencode)"|codex|opencode)\\s*:\\s*["{]`), // a key with a row or an id under it
+    new RegExp(`\\bid:\\s*${ID}`), // an id field
+    new RegExp(`installDirOf\\(.*,\\s*${ID}\\)`), // an install's path
+  ];
+  const hits = sources().filter(outside).flatMap((file) => readFileSync(join(SRC, file), "utf8").split("\n").flatMap((line, i) => {
+    const code = line.replace(/\/\/.*$/, "");
+    return /^\s*(\*|\/\*\*?)/.test(line) || !KEYED.some((pattern) => pattern.test(code)) ? [] : [`${file}:${i + 1}: ${line.trim().slice(0, 160)}`];
+  }));
+  assert.deepEqual(hits, [], `harness-keyed data:\n${hits.join("\n")}`);
+});
+
 test("production code never builds a stand-in harness: serve/src imports no @parcha/agentrun-kernel/testing and names no faux harness", () => {
   const hits = sources().flatMap((file) => readFileSync(join(SRC, file), "utf8").split("\n").flatMap((line, index) => (/agentrun-kernel\/testing|fauxAdapter|FauxOptions|FAUX_HARNESS/.test(line) ? [`${file}:${index + 1}: ${line.trim().slice(0, 140)}`] : [])));
   assert.deepEqual(hits, [], hits.join("\n"));

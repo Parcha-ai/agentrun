@@ -8,7 +8,7 @@ import { StatusBadge } from "@/components/StatusBadge";
 import { Button } from "@/components/ui/button";
 import { Chip } from "@/components/ui/chip";
 import { goBack } from "@/lib/back";
-import { cost, isEstimate, runLabel, soFar, soFarNote, when } from "@/lib/format";
+import { cost, isEstimate, runEnded, runLabel, soFar, soFarNote, when } from "@/lib/format";
 import { NO_MESSAGES, runState } from "@/lib/runState";
 import type { RaiseAnswer, Run } from "@/lib/v2";
 import { placeOf, runPlaceWords } from "@/lib/place";
@@ -18,9 +18,9 @@ import { placeOf, runPlaceWords } from "@/lib/place";
 export type RunActions = { onStop?: () => void; onCancel?: () => void; onArchive?: () => void; onRaiseCap?: (usd: number) => Promise<RaiseAnswer>; busy?: "stop" | "cancel" | "archive" | null };
 
 /** The cost's hover note: a known estimate is not a bill; a cost known so far is not the whole cost. */
-const costTitle = (c: Run["cost"]): string | undefined => {
+const costTitle = (c: Run["cost"], ended: boolean): string | undefined => {
   const known = soFar(c);
-  if (known) return soFarNote(known);
+  if (known) return soFarNote(known, { ended });
   return c && c.usd !== null && isEstimate(c) ? "A local estimate, not a bill" : undefined;
 };
 
@@ -41,7 +41,7 @@ export function RunHeader({ run, agentName, actions = {}, costText }: { run: Run
   const [raising, setRaising] = useState(false);
   // What it cost so far, of its cap when it has one (the served cost.cap_usd), so a raise shows as the new cap.
   const capped = typeof cap === "number" && Number.isFinite(cap);
-  const spent = cost(run.cost);
+  const spent = cost(run.cost, { ended: runEnded(run.status) });
   const costWords = !capped ? spent : run.cost?.usd !== null && run.cost?.usd !== undefined && !soFar(run.cost) ? `${spent} of ${capWords(cap!)} cap` : `${spent} · ${capWords(cap!)} cap`;
   return (
     <header className="border-b px-5 py-4 md:px-8">
@@ -65,7 +65,7 @@ export function RunHeader({ run, agentName, actions = {}, costText }: { run: Run
             <span className="font-mono">{when(run.created_at)}</span>
             {/* A workflow run's cost is its graph's totals (`costText`), the same the totals bar shows, with its served cap. */}
             {costText !== undefined ? <span className="font-mono" title="The run's decisions and model calls, as the providers priced them">{capped ? `${costText} · ${capWords(cap!)} cap` : costText}</span>
-              : <span className="font-mono" title={costTitle(run.cost)} data-run-cost>{costWords}</span>}
+              : <span className="font-mono" title={costTitle(run.cost, runEnded(run.status))} data-run-cost>{costWords}</span>}
             <LearningChips run={run} link />
             <ScheduleChip run={run} />
           </div>

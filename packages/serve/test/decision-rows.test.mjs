@@ -64,6 +64,16 @@ test("a workflow whose model request was cut says on its usage row what it cost 
   assert.deepEqual(withDecisions([usageRow(0.01, 1)], [receipt({ cost_usd: 0.004 })]).at(-1).usage, { usd: 0.014, requests: 2 }, "every cost known: neither field");
 });
 
+test("an ended workflow's usage row says its cost, never \"so far\": every cost known, what is known and how many are not priced, or unknown", () => {
+  const cut = { ...usageRow(null, 2), usage: { usd: null, requests: 2, so_far_usd: 0.01, unpriced: 1 } };
+  const ended = { ended: true };
+  assert.equal(withDecisions([usageRow(0.01, 1)], [receipt({ cost_usd: 0.004 })], undefined, ended).at(-1).summary, "Cost: $0.0140 over 1 model request and 1 decision");
+  assert.equal(withDecisions([cut], [receipt({ id: "d1", cost_usd: 0.004 })], undefined, ended).at(-1).summary, "Cost: $0.0140 known, 1 not priced, over 2 model requests and 1 decision");
+  assert.match(withDecisions([cut], null, undefined, ended).at(-1).summary, /^Cost: unknown over 2 model requests\b/);
+  // While it runs, what it has cost so far.
+  assert.match(withDecisions([cut], [receipt({ id: "d1", cost_usd: 0.004 })]).at(-1).summary, /^Cost so far: /);
+});
+
 test("a workflow whose decisions could not be read says plain unknown on the run: no figure so far that leaves its decisions out", () => {
   const cut = { ...usageRow(null, 2), usage: { usd: null, requests: 2, so_far_usd: 0.01, unpriced: 1 } };
   assert.equal(soFarOf([cut], null), undefined, "its decisions unreadable: how much they cost, and how many, no one knows");
