@@ -153,6 +153,22 @@ test("the proxy's code must be built and readable by the computer's user, its di
 	}
 });
 
+test("an allowlist on a host that remaps user ids is refused in words before any volume or container: the proxy's socket and code are owned by host ids the computer does not have", async () => {
+	for (const [remap, words] of [["userns", "userns-remap"], ["rootless", "rootless Docker"]]) {
+		const { provider, calls, names, volumeNames } = fakeDocker({ info: { SecurityOptions: ["name=seccomp,profile=builtin", `name=${remap}`, "name=cgroupns"] } });
+		const result = await provider.create(SPEC);
+		assert.equal(result.ok, false, `${remap}: ${JSON.stringify(result)}`);
+		assert.equal(result.error.code, "refused");
+		assert.match(result.error.message, new RegExp(`^network: this Docker host remaps user ids \\(${words}\\), so .*an allowlist.* ask for network none or open, or use a Docker host that does not remap ids$`), remap);
+		assert.deepEqual(calls().map((args) => args[0]), ["info"], `${remap}: nothing is made`);
+		assert.deepEqual([names(), volumeNames()], [[], []]);
+		// Once the host is read, check() says so too, for an allowlist alone.
+		assert.deepEqual(provider.check(SPEC).map((r) => r.field), ["network"], remap);
+		assert.deepEqual(provider.check({ ...SPEC, network: "none" }), [], `${remap}: network none`);
+		assert.equal((await provider.create({ ...SPEC, network: "open" })).ok, true, `${remap}: network open is made as before`);
+	}
+});
+
 test("create() fails closed when the proxy ends before it is ready: the computer is never run, and the proxy and its volume are removed", async () => {
 	const { provider, calls, names, volumeNames } = fakeDocker({ egress: "exits" });
 	const made = await provider.create(SPEC);
