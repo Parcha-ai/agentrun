@@ -24,7 +24,7 @@
 import { spawn } from "node:child_process";
 import { randomBytes } from "node:crypto";
 import { constants, type Stats } from "node:fs";
-import { type FileHandle, lstat, mkdir as makeDir, open, readdir, realpath, rename, rmdir, unlink } from "node:fs/promises";
+import { access, type FileHandle, lstat, mkdir as makeDir, open, readdir, realpath, rename, rmdir, unlink } from "node:fs/promises";
 import { join } from "node:path";
 import { Worker } from "node:worker_threads";
 import type { MountSpec } from "@parcha/agentrun-computer";
@@ -32,8 +32,9 @@ import { type AttachableComputer, attachedWorkspace, checkReadBack, type MountCh
 import type { GrepJob } from "./grep-worker.js";
 import { relativeSegments } from "./paths.js";
 import {
-  EXEC_OUTPUT_MAX, type Entry, type ExecOptions, type ExecResult, GREP_FILE_MAX, GREP_LINE_MAX, GREP_MAX, GREP_TIME_MS,
-  type GrepMatch, type GrepOptions, type GrepResult, READ_MAX, type Workspace, WorkspaceError, type WorkspaceErrorCode,
+  abortError, EXEC_OUTPUT_MAX, type Entry, type ExecOptions, type ExecResult, GREP_FILE_MAX, GREP_LINE_MAX, GREP_MAX,
+  GREP_TIME_MS, type GrepMatch, type GrepOptions, type GrepResult, READ_MAX, type Stat, type Workspace, WorkspaceError,
+  type WorkspaceErrorCode,
 } from "./workspace.js";
 
 const { O_APPEND, O_CREAT, O_DIRECTORY, O_EXCL, O_NOFOLLOW, O_NONBLOCK, O_RDONLY, O_RDWR, O_WRONLY } = constants;
@@ -291,15 +292,41 @@ class LocalWorkspace implements Workspace {
     }, { make: true });
   }
 
+  async stat(path: string): Promise<Stat | undefined> {
+    const segments = relativeSegments(path);
+    const of = (stats: Stats): Stat => ({
+      kind: stats.isSymbolicLink() ? "link" : stats.isDirectory() ? "dir" : stats.isFile() ? "file" : "other",
+      size: stats.isDirectory() ? 0 : stats.size,
+      mtimeMs: stats.mtimeMs,
+    });
+    if (segments.length === 0) return this.#in(path, segments, 0, async (root) => of(await root.handle.stat()));
+    try {
+      return await this.#in(path, segments, segments.length - 1, async (dir) => {
+        try {
+          const stats = await lstatOrNot(dir.at(segments.at(-1)!));
+          return stats === undefined ? undefined : of(stats);
+        } catch (error) {
+          throw failed(error, path);
+        }
+      });
+    } catch (error) {
+      // A folder on the way not there, or a file in its place: nothing is at the path.
+      if (error instanceof WorkspaceError && error.code === "NOT_FOUND") return undefined;
+      throw error;
+    }
+  }
+
   async list(dir: string): Promise<Entry[]> {
     const segments = relativeSegments(dir);
     return this.#in(dir, segments, segments.length, async (held) => {
       try {
         const entries = await Promise.all((await readdir(held.self)).map(async (name): Promise<Entry | undefined> => {
           const stats = await lstatOrNot(held.at(name));
-          if (stats?.isDirectory()) return { name, kind: "dir", size: 0 };
-          if (stats?.isFile()) return { name, kind: "file", size: stats.size };
-          return undefined;
+          if (stats?.isDirectory()) return { name, kind: "dir", size: 0, mtimeMs: stats.mtimeMs };
+          if (!stats?.isFile()) return undefined;
+          // Only a flag for the listing: the read itself is what refuses (REFUSED, permission denied).
+          const readable = await access(held.at(name), constants.R_OK).then(() => true, () => false);
+          return { name, kind: "file", size: stats.size, mtimeMs: stats.mtimeMs, ...(readable ? {} : { unreadable: true as const }) };
         }));
         return entries.filter((entry): entry is Entry => entry !== undefined).sort((a, b) => byName(a.name, b.name));
       } catch (error) {
@@ -418,8 +445,11 @@ class LocalWorkspace implements Workspace {
     if (!Number.isSafeInteger(cap) || cap < 0) throw new WorkspaceError("REFUSED", "exec's maxOutput is a whole number, 0 or more");
     const cwd = options.cwd ?? "";
     const segments = relativeSegments(cwd);
+    const { signal } = options;
+    if (signal?.aborted) throw abortError(signal);
     // The child starts in the held folder itself (/proc/self/fd/<fd> on Linux), held until the child is done.
     return this.#in(cwd, segments, segments.length, (dir) => new Promise<ExecResult>((resolve, reject) => {
+      if (signal?.aborted) return reject(abortError(signal));
       const child = spawn(argv[0]!, argv.slice(1), {
         cwd: dir.self,
         env: { ...env },
@@ -431,7 +461,8 @@ class LocalWorkspace implements Workspace {
       const kept = { out: 0, err: 0 };
       let truncated = false;
       let timedOut = false;
-      let exit: { code: number | null; signal: string | undefined } | undefined;
+      let aborted = false;
+      let exit: { code: number | null; signal: string | null } | undefined;
       let settled = false;
       let grace: NodeJS.Timeout | undefined;
 
@@ -440,25 +471,30 @@ class LocalWorkspace implements Workspace {
         if (child.pid === undefined) return;
         try { process.kill(-child.pid, "SIGKILL"); } catch { /* the group is gone */ }
       };
+      // Every byte goes to onOutput; the result keeps the first `cap` of each stream.
       const keep = (into: Buffer[], which: "out" | "err") => (chunk: Buffer): void => {
+        if (options.onOutput) {
+          try { options.onOutput({ stream: which === "out" ? "stdout" : "stderr", data: chunk }); } catch { /* the caller's callback; its error is not the call's */ }
+        }
         const room = cap - kept[which];
         if (chunk.length > room) truncated = true;
         if (room <= 0) return;
         const part = chunk.length > room ? chunk.subarray(0, room) : chunk;
         into.push(part);
         kept[which] += part.length;
-        if (options.onOutput) {
-          try { options.onOutput({ stream: which === "out" ? "stdout" : "stderr", data: part }); } catch { /* the caller's callback; its error is not the call's */ }
-        }
       };
+      const onAbort = (): void => { aborted = true; killGroup(); };
       const finish = (): void => {
         if (settled || exit === undefined) return;
         settled = true;
         clearTimeout(timer);
         clearTimeout(grace);
-        resolve({ stdout: Buffer.concat(out), stderr: Buffer.concat(err).toString("utf8"), code: exit.code, ...(exit.signal === undefined ? {} : { signal: exit.signal }), timedOut, truncated });
+        signal?.removeEventListener("abort", onAbort);
+        if (aborted) return reject(abortError(signal));
+        resolve({ stdout: Buffer.concat(out), stderr: Buffer.concat(err).toString("utf8"), code: exit.code, signal: exit.signal, timedOut, truncated });
       };
       const timer = setTimeout(() => { timedOut = true; killGroup(); }, timeoutMs);
+      signal?.addEventListener("abort", onAbort, { once: true });
 
       child.stdout!.on("data", keep(out, "out"));
       child.stderr!.on("data", keep(err, "err"));
@@ -466,14 +502,16 @@ class LocalWorkspace implements Workspace {
         if (settled) return;
         settled = true;
         clearTimeout(timer);
+        signal?.removeEventListener("abort", onAbort);
         killGroup();
         const code = errno(error);
         reject(code === "ENOENT" ? new WorkspaceError("NOT_FOUND", `${JSON.stringify(argv[0])} is not a program here (PATH ${JSON.stringify(env.PATH ?? "")})`, { cause: error })
           : code === "EACCES" ? new WorkspaceError("REFUSED", `${JSON.stringify(argv[0])} is not executable`, { cause: error })
             : new WorkspaceError("UNAVAILABLE", `exec of ${JSON.stringify(argv[0])} failed: ${error.message}`, { cause: error }));
       });
-      child.on("exit", (code, signal) => {
-        exit = { code: timedOut ? null : code, signal: timedOut || signal === null ? undefined : signal };
+      child.on("exit", (code, ended) => {
+        // Node names the signal ("SIGTERM"); at the deadline it is the one that ended the program (our SIGKILL).
+        exit = { code: timedOut ? null : code, signal: ended };
         clearTimeout(timer);
         killGroup();
         grace = setTimeout(() => { child.stdout!.destroy(); child.stderr!.destroy(); finish(); }, PIPE_GRACE_MS);
@@ -531,3 +569,7 @@ class LocalWorkspace implements Workspace {
 
 /** A Workspace on folder `root` of this machine. The folder must be there when it is first used (else UNAVAILABLE). */
 export const localWorkspace = (root: string): Workspace => new LocalWorkspace(root);
+
+/** `work` as a Workspace: a folder of this machine, by its path, becomes its LocalWorkspace. For the callers that still
+ *  hand a run's folder by its path (the run's start and its process), until they hand the run's Workspace. */
+export const workspaceAt = (work: string | Workspace): Workspace => (typeof work === "string" ? localWorkspace(work) : work);

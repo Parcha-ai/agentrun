@@ -32,6 +32,14 @@ export const KINDS = {
    *  takeRaises, all a claim found at once). A budget entry with a raise entry after it is answered. Neither a call nor a
    *  message, so the reader passes over it. */
   raise: "agentrun.raise",
+  /** A learning run's grade: the verdict and what it spent, written before its merge (a resumed run never asks again). */
+  learningGraded: "agentrun.learning.graded",
+  /** A learning run's merge: the new main and its commit, with the run's end. */
+  learningMerged: "agentrun.learning.merged",
+  /** Why a learning run merged nothing, with the run's end. */
+  learningDropped: "agentrun.learning.dropped",
+  /** The learning folder could not be reached: the run parks and tries again after a backoff. */
+  learningUnavailable: "agentrun.learning.unavailable",
 } as const;
 
 /** A raise taken (KINDS.raise): the cap the run goes on under, and the raise rows taken with it. */
@@ -84,6 +92,12 @@ export interface AnswerData {
 export interface EndData {
   readonly state: "ended" | "stopped" | "failed";
   readonly summary?: string;
+  /** How an ended run ended, set only for an escalation (the store's RunOutcome). */
+  readonly outcome?: "completed" | "escalated";
+  /** What the run cost, as its end knows it. */
+  readonly costUsd?: number;
+  /** The run's metrics (the old StoredMetrics JSON). */
+  readonly metrics?: unknown;
 }
 
 export interface SessionKeyData {

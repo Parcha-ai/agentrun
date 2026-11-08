@@ -220,6 +220,11 @@ A data directory an earlier version wrote, with its runs under `DIR/runs/` (or a
 at start, saying so: this version neither reads nor moves it. Keep it with that version, or start this one on a new data
 directory (an empty folder, or a new volume).
 
+When a run's folder is on the owner's Archil disk and the run has no computer, a command runs through Archil's
+serverless exec, for at most 295 s. A known limit: a command, once sent, cannot be stopped. Stopping the call answers at
+once, but the command runs on to its own deadline, and the run's next command, or a write to its folder, waits until it
+has ended. A command not yet sent when the call is stopped is never sent.
+
 ## Upgrading from 0.1.0-beta.26
 
 0.1.0-beta.27 keeps every agent in one store, `DIR/store.sqlite`, with its revisions (and this version each run on the
@@ -911,7 +916,8 @@ default). An agent's `definition.tool_settings` has the same shape and is over t
 for its capability (`auto`, `native`, `exa-keyless` or `parallel` for `web_search`; `kernel` or `parallel` for `web_fetch`;
 `auto`, `browserbase`, `kernel` or `chrome` for `browser`, [below](#tools)); an
 unknown capability or provider is `422`. Any tool's settings also take a `permission`, `allow`, `ask` or `deny`, which the
-tool gate holds every call to (an ask parks the run for the owner's approval); a workflow's call node, which cannot wait
+tool gate holds every call to (an ask parks the run for the owner's approval), and an MCP tool's a `pin`, the arguments
+its calls must carry ([MCP servers](#mcp-servers), `422` for one that is not one); a workflow's call node, which cannot wait
 for an approval, refuses its run when its tool is set to ask or deny (`409`, `details.asks` or `details.denied`). The
 settings are kept in the data directory
 (`tool-settings.json`, 0600, written whole and durably), not a secret, and read by every run launched from then on.
@@ -1449,6 +1455,21 @@ asked by default.
   until the owner answers `POST /v2/runs/{id}/approvals/{approval_id}` from their password session. Allowed, the run
   sends the call once and resumes with its result; denied, it resumes with the refusal. A restart while a call is
   parked loses nothing.
+- **Pins.** An MCP tool's own key (`mcp:<server>/<tool>`, never the wildcard) may also carry `pin`, 1 to 8 of the
+  tool's top-level arguments, each to the one JSON scalar its calls must carry (`null`: the argument left out), or a
+  list of 1 to 16 of them, the argument one of the list, compared strictly:
+  `{"mcp:slack/slack_send_message": {"permission": "allow", "pin": {"channel_id": "C0123"}}}`,
+  `{"mcp:github/pull_request_review_write": {"pin": {"method": ["create", "submit_pending"], "event": [null, "COMMENT"]}}}`. The gate checks a pinned
+  tool's call before it runs or asks anyone, whatever the permission (an allow, an ask, a grant): a call whose arguments
+  are not as pinned is refused, never sent and never asked about, and the model reads "mcp:slack/slack_send_message may
+  only be called with channel_id = C0123: its destination is fixed by the agent's settings". The run's process logs a
+  line naming the tool, the call and the arguments that did not hold, and its Timeline row is a failed call, as any
+  refusal's. A call approved under ask is checked again before it is sent. A pin adds to a setting and is never a
+  permission: the agent's pin and the server's both hold (an argument both pin takes what holds both), and where
+  nothing holds both every call is refused, saying so. A template pins its sends' destinations to its parameters ([Templates](#templates)). A pin in
+  `tool-settings.json` that does not read refuses every call of its tool until a `PUT` sets it again. Until the agent
+  store's cutover an agent's own pin (`definition.tool_settings.<tool>.pin`) is refused, `422 not_set_up_here`: the
+  store this server writes today keeps no pin, so set it on the server meanwhile.
 - **Prices.** `PUT /v2/settings/mcp-servers/{name}` takes `prices`, each tool's price in USD a call
   (`{"prices": {"search": 0.01}}`; a finite number, 0 or more, for a tool the server lists; else `422`). A priced call
   is held at its price under the run's `max_cost_usd`, refused unsent when the cap cannot take it, and booked as the
@@ -2350,13 +2371,16 @@ with the token, an archived agent's too:
   `GET /runs/{run_id}/learning/diff`: a merged run's merge commit against its parent, else its proposal against its
   seed, each file's patch as git writes it from the first `@@`, or `withheld` (`too_large`, `secret`).
 
-Every read is git plumbing at one commit, with no optional lock, and every text it answers is cut of the server's
-secrets as they are then; a file name holding one (a note named after a value made secret since, say) reads
+Every read is the folder's snapshot (`.agentrun/snapshot.json`, written last by the same exec as each commit to
+`main`), the files it names, each checked against its blob id (a file that is not, read twice, is a write in flight:
+`503`), and a merge's `.agentrun/diffs/<run>.json`, through the folder's file API: no git and no exec. Every text it
+answers is cut of the server's secrets as they are then; a file name holding one (a note named after a value made secret since, say) reads
 `[redacted]` whole, in the notes (`file`, `superseded_by`), the log's `files` and a diff's `path`, and a write's
-`Location` leaves it out, while its route still answers the real name to a caller who knows it. A commit's notes are
-parsed once and kept, for the few commits last read, so the view and every page at that commit read no note again; a
-log page reads only its own commits (`git log` from the cursor's offset, at most `limit`), and the log's `total` is
-counted once a commit. A symbolic link at the agent's home, its learning folder or the folder's `.git` is never
+`Location` leaves it out, while its route still answers the real name to a caller who knows it. A page reads only its
+own notes' files, each once at its blob; a log page reads the snapshot alone (it keeps the newest 200 changes). A
+cursor reads at the main it names while this server still holds that snapshot, else as the first page of `main` now.
+Every write to `main` (a run's merge, a person's edit, create, retire, approve or restore) is one exec of the learning
+script, a compare and swap on `main`. A symbolic link at the agent's home, its learning folder or the folder's `.git` is never
 followed: a read or a write there answers `500`, and nothing is written.
 
 ### Approving a note that waits
@@ -2754,6 +2778,9 @@ carries no cost at all, as from a provider that does not price the model. The te
   value under another name.
 - The 4,096-byte pipe limit stays until the launcher writes the pipe from a background subshell that blocks until the
   server has read it.
+- The browser's evidence is numbered from the highest number the run's `evidence/` holds when its browser first files
+  there, through the run's Workspace, which has no exclusive create. One browser per run files there, so two never pick
+  one number; two filing into one run's `evidence/` at the same moment could.
 
 ## Test
 

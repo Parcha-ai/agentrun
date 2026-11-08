@@ -4,7 +4,8 @@ import { createHash } from 'node:crypto';
 import { execFile } from 'node:child_process';
 import { promisify } from 'node:util';
 import { cp, lstat, mkdir, mkdtemp, readdir, readFile, rm, writeFile } from 'node:fs/promises';
-import { basename, dirname, join, resolve } from 'node:path';
+import { readdirSync } from 'node:fs';
+import { basename, dirname, join, relative, resolve, sep } from 'node:path';
 import { tmpdir } from 'node:os';
 import { fileURLToPath } from 'node:url';
 import { auditBlockers } from './audit-exceptions.mjs';
@@ -21,7 +22,7 @@ const requireConsole = process.argv.includes('--console');
 const root = resolve(dirname(fileURLToPath(import.meta.url)), '..');
 const receiptDir = join(root, '.release');
 const [major, minor] = process.versions.node.split('.').map(Number);
-assert.ok(major > 22 || major === 22 && minor >= 19, 'Package verification requires Node.js >=22.19.0');
+assert.ok(major > 24 || major === 24 && minor >= 11, 'Package verification requires Node.js >=24.11.0');
 const env = Object.fromEntries(Object.entries(process.env).filter(([key]) => !/(?:API_KEY|TOKEN|SECRET|PASSWORD|PRIVATE_KEY|NODE_OPTIONS|NODE_PATH)/i.test(key)));
 const receipt = { status: 'running', startedAt: new Date().toISOString(), node: process.version, packages: [], demos: [], checks: [], limitations: ['The content scan is heuristic, not proof of complete secret detection.', 'Smoke tests use fake adapters and prohibit networking; live provider behavior is verified separately.', 'License and publication ownership remain separate release decisions.'] };
 await mkdir(receiptDir, { recursive: true });
@@ -49,6 +50,13 @@ const forbid = [
   ['credential URL', /https?:\/\/[^\s/:]+:[^\s/@]+@/],
 ];
 
+// Every file of the template packages the server ships: the server checks each package whole at its start
+// (src/templates.ts readPackage), so what ships under templates/ is what the repository holds there.
+function templateFiles() {
+  const root = new URL('../packages/serve/templates/', import.meta.url);
+  return readdirSync(root, { recursive: true, withFileTypes: true }).filter((entry) => entry.isFile()).map((entry) => `package/templates/${relative(fileURLToPath(root), join(entry.parentPath, entry.name)).split(sep).join('/')}`).sort();
+}
+
 // Loopback and private endpoints are refused in every packed file. The browser package names a few loopback URLs on purpose, so
 // those exact literals, in those exact files, are removed before the scan; any other loopback string, in any file of any package,
 // still fails. Each entry says why it is there, and an entry that matches nothing fails too, so the list cannot go stale.
@@ -64,7 +72,7 @@ const allowedExtraFiles = {
   // And the locks the CLI harnesses' first use installs by (src/harness-install.ts): each the package.json it locks and
   // npm's lock, metadata naming the package at its pin and every package of its tree by sha512, never the CLI itself.
   // And the template packages it ships, which it reads at its start (src/templates.ts), with their format (templates/README.md).
-  serve: ['package/launcher/agentrun-serve', 'package/harnesses/claude-agent/package.json', 'package/harnesses/claude-agent/package-lock.json', 'package/harnesses/codex/package.json', 'package/harnesses/codex/package-lock.json', 'package/templates/README.md', ...['agent.md', 'findings.schema.json', 'rules/REVIEW.md', 'skills/review/SKILL.md', 'evals/null-name/prompt.md', 'evals/null-name/graders/schema.md'].map((file) => `package/templates/code-review/${file}`)],
+  serve: ['package/launcher/agentrun-serve', 'package/harnesses/claude-agent/package.json', 'package/harnesses/claude-agent/package-lock.json', 'package/harnesses/codex/package.json', 'package/harnesses/codex/package-lock.json', ...templateFiles()],
   // `npx @parcha/agentrun` is a command, not a library: its bin and the module the bin loads, plain JavaScript with no build,
   // and the API's CLI with its command table generated from the server's OpenAPI document (scripts/generate-clients.mjs),
   // its wait-and-follow module (follow.mjs), the commands that read a secret from stdin (login.mjs), its skill's

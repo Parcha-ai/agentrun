@@ -53,6 +53,7 @@ suite("ArchilWorkspace over a fake disk", async () => {
   skip: {
     symlinks: "the suite plants links with this machine's filesystem, which is not the disk; links an exec makes are tested below as Archil's file API showed them live: never followed (get 501, 404 through a linked folder, a put through one 409), exec's cwd through one ESCAPE",
     linksListed: "Archil's file API cannot tell a link from a file: it lists a link an exec made as a file, and reading it fails UNAVAILABLE (tested below)",
+    abortKills: "Archil's serverless exec cannot be stopped once sent: an abort answers at once, and the command runs on to its own deadline (tested below)",
   },
 });
 
@@ -408,6 +409,22 @@ test("archil: exec maps a signal to code null and an exit of 139 to 139, keeps a
   assert.deepEqual([noisy.stdout.length, noisy.stderr.length, noisy.truncated, noisy.code], [10, 10, true, 0], "both streams are read to the end and cut, and the program is not killed for it");
 });
 
+test("archil: an abort answers at once, the sent exec runs on to its end, and the next exec waits for it; one not yet sent is never sent", async () => {
+  const { disk, workspace } = fresh();
+  const controller = new AbortController();
+  const started = Date.now();
+  const first = workspace.exec(["bash", "-c", "sleep 1; echo done > first"], { env: ENV, timeoutMs: 10_000, signal: controller.signal });
+  const queued = new AbortController();
+  const second = workspace.exec(["bash", "-c", "echo ran > second"], { env: ENV, timeoutMs: 10_000, signal: queued.signal });
+  setTimeout(() => { controller.abort(); queued.abort(); }, 200);
+  await assert.rejects(first, (error) => error?.name === "AbortError");
+  await assert.rejects(second, (error) => error?.name === "AbortError");
+  assert.ok(Date.now() - started < 900, "the abort answered before the command ended");
+  const after = await workspace.exec(["cat", "first"], { env: ENV, timeoutMs: 10_000 });
+  assert.equal(text(after.stdout), "done\n", "the next exec ran after the aborted one ended, which wrote its file");
+  assert.equal(disk.calls.filter((call) => call.op === "exec").length, 2, "the queued exec was never sent");
+});
+
 test("archil: a glob is the port's (*, ** and ?), not ripgrep's: brackets, braces and a leading ! are themselves", async () => {
   const { disk, workspace } = fresh();
   for (const name of ["src/[ab].ts", "src/a.ts", "src/b.ts", "lit{a,b}.md", "lita.md", "!x.md", "x.md"]) await workspace.write(name, "needle\n");
@@ -458,12 +475,12 @@ test("archil: grep maps to the disk's grep: sorted, its stop reasons, a file as 
   await refused(workspace.grep("needle"), "UNAVAILABLE");
 });
 
-test("archil: mountSpec and attach are refused in words until the computer's helper mounts an Archil folder; nothing is called", async () => {
+test("archil: a workspace made without a region and a disk token refuses mountSpec and attach in words; nothing is called", async () => {
   const { disk, workspace } = fresh();
   for (const call of [() => workspace.mountSpec(), () => workspace.attach({}, { readBackOf: () => ({}) })]) {
     await assert.rejects(call(), (error) => {
       assert.equal(error.code, "REFUSED");
-      assert.match(error.message, /mounted by the computer's helper \(module D6\), not yet/);
+      assert.match(error.message, /only when it is made with its disk's region and its disk token/);
       return true;
     });
   }

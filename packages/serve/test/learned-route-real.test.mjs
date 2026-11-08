@@ -16,7 +16,7 @@ import { agentFolderOf } from "../dist/files.js";
 import * as learning from "../dist/learning.js";
 import { LEARNED_WORKFLOW_TOOL } from "../dist/learned-workflow.js";
 import { startFauxGateway } from "./fixtures/faux-gateway.mjs";
-import { git } from "./learn-support.mjs";
+import { git, resnap } from "./learn-support.mjs";
 import { agent, answerFlow, call, cookieOf, follow, runDir, runRecordOf, scratch, serve, withEnv } from "./support.mjs";
 import { copyStandIn } from "../../run-adapters-codex/test/stand-in.mjs";
 
@@ -38,6 +38,7 @@ async function folderWith(data, id) {
   }
   git(repo, ["add", "--", ...Object.keys(flowFiles)]);
   git(repo, ["commit", "-q", "-m", "learned"]);
+  await resnap(data, id);
 }
 function entries(data, runId, kinds) {
   const db = new DatabaseSync(join(runDir(data, runId), "store", "run.sqlite"), { readOnly: true, timeout: 2_000 });

@@ -2,10 +2,13 @@
 // hands to read the agent's folder.
 import assert from "node:assert/strict";
 import { spawnSync } from "node:child_process";
-import { existsSync, readFileSync } from "node:fs";
+import { existsSync, mkdirSync, readFileSync } from "node:fs";
 import { join } from "node:path";
 import { mergedNote } from "../dist/learn/notes.js";
 import { agentFolderOf } from "../dist/files.js";
+import { learningRepair } from "../dist/learn/folder.js";
+import { learningFolderOf } from "../dist/learning.js";
+import { localWorkspace } from "../dist/workspace/index.js";
 import { agent, follow, runDir } from "./support.mjs";
 
 /** A run's new note as main keeps it once merged: with the host's `origin: you` line when it keeps the user's own words
@@ -71,6 +74,44 @@ export function git(cwd, args) {
   assert.equal(out.status, 0, `git ${args.join(" ")}: ${out.stderr}`);
   return out.stdout.trim();
 }
+/** After a commit by the test's own hand (git, outside the learning script): the folder's snapshot rebuilt from main,
+ *  as the server rebuilds it when a write finds main moved under its snapshot (learn/folder.ts learningRepair). Every
+ *  read is the snapshot, so a hand commit is seen only once it is. */
+export async function resnap(data, agentId) {
+  const { workspace, end } = learningFolderOf(data, agentId);
+  try {
+    await learningRepair(workspace);
+  } finally {
+    await end();
+  }
+}
+/** resnap for a folder by its path, at once: in a child process, for a helper that commits synchronously. */
+export function resnapSync(repo) {
+  const code = `const { learningRepair } = await import(${JSON.stringify(new URL("../dist/learn/folder.js", import.meta.url).href)}); const { localWorkspace } = await import(${JSON.stringify(new URL("../dist/workspace/index.js", import.meta.url).href)}); await learningRepair(localWorkspace(process.argv[1]));`;
+  const out = spawnSync(process.execPath, ["--input-type=module", "-e", code, repo], { encoding: "utf8" });
+  assert.equal(out.status, 0, `the snapshot rebuilt: ${out.stderr}`);
+}
+/** A folderTestHooks.workspace (learn/folder.ts learningWorkspace's stand-in) that gives each agent's local learning
+ *  folder with every call recorded in `calls`: [method, path] (exec: [method, its argv joined]), and each open and end
+ *  counted in `calls.opened` and `calls.ended`. */
+export const spiedWorkspace = (calls) => {
+  calls.opened = 0;
+  calls.ended = 0;
+  return ({ agentId, data }) => {
+    const root = repoOf(data, agentId);
+    mkdirSync(root, { recursive: true });
+    const ws = localWorkspace(root);
+    const record = (method) => (first, ...rest) => {
+      calls.push([method, Array.isArray(first) ? first.join(" ") : first]);
+      return ws[method](first, ...rest);
+    };
+    calls.opened++;
+    return {
+      workspace: { read: record("read"), write: record("write"), append: record("append"), stat: record("stat"), list: record("list"), mkdir: record("mkdir"), grep: record("grep"), remove: record("remove"), exec: record("exec"), process: ws.process, mountSpec: () => ws.mountSpec(), attach: (...args) => ws.attach(...args) },
+      end: async () => void calls.ended++,
+    };
+  };
+};
 /** Every object of the repository, read whole: what a scan for a value must search. */
 export const objects = (repo) => spawnSync("git", ["cat-file", "--batch-all-objects", "--batch"], { cwd: repo, env: { PATH: process.env.PATH, GIT_CONFIG_NOSYSTEM: "1", GIT_CONFIG_GLOBAL: "/dev/null" }, maxBuffer: 1 << 26 }).stdout.toString("latin1");
 
