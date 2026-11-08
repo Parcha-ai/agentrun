@@ -18,6 +18,14 @@ const context = BACKGROUND_CONTEXT;
 const ROOT = 1;
 const MUTANT = process.env.CONFORMANCE_MUTANT ?? "";
 
+/** What the reference's model was told by its newest answer: a denied call's refusal, in the kernel's words. */
+function lastResult(entries) {
+  const answer = [...entries].reverse().find((entry) => entry.kind === KINDS.answer);
+  if (!answer || answer.data.approved) return "";
+  const ask = entries.find((entry) => entry.kind === KINDS.ask && entry.data.callId === answer.data.callId);
+  return `Permission denied: a person denied ${ask?.data.tool ?? "the call"}.`;
+}
+
 /** The subject the suite runs: reference loops for `setup`. */
 export const referenceSubject = {
   name: "reference",
@@ -173,7 +181,7 @@ function referenceLoop({ script, tools, hooks }, deps) {
           if (stopReason?.kind === "command") return writeStop();
           if (stopReason) return { state: "interrupted" };
         } else {
-          const text = "say" in next ? next.say : [...messagesOf(await journalEntries(journal, context))].reverse().find((m) => m.role === "steer")?.text ?? "";
+          const text = "say" in next ? next.say : "sayLastResult" in next ? lastResult(await journalEntries(journal, context)) : [...messagesOf(await journalEntries(journal, context))].reverse().find((m) => m.role === "steer")?.text ?? "";
           if (MUTANT === "steer-at-end") await writeSteersNow();
           const last = step === script.length - 1;
           await append(KINDS.message, { role: "model", text }, last ? { run: { state: "ended" } } : undefined);

@@ -3,6 +3,7 @@
 // one output: a pi run's own records (its pi.tool tasks and its pi.user / pi.assistant entries), and a CLI run's
 // agentrun.* entries (runner/journal-kinds.ts). A run's stop reason is on its run row (its end commit's summary).
 import type { Context } from "@earendil-works/chord";
+import type { MessageOrigin } from "@parcha/pi-durable-agent/timeline";
 import type { ConversationId, ConversationRecord, EntryRecord, TaskRecord } from "@earendil-works/pi-durable";
 import { type CallEndData, type CallStartData, KINDS, type MessageData, type MessageRole, type SessionKeyData } from "./journal-kinds.js";
 // Reads only (JournalReads): a run's live journal (journal(claim)) and the server's read-only view (store.readJournal) both
@@ -24,6 +25,8 @@ export interface MessageRecord {
   readonly role: MessageRole;
   readonly text: string;
   readonly entry: number;
+  /** Who wrote a message the person did not type (a trigger's): the Timeline's attribution, as the message carries it. */
+  readonly origin?: MessageOrigin;
 }
 
 /** What the reader reads: every entry and every task of the run. */
