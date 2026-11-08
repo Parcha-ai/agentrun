@@ -1480,23 +1480,29 @@ said in its log (`condition=trigger_setting_unopened`, naming the trigger), and 
 secret is made. A `trigger-settings-webhook.json` that does not read is never written over: until it is fixed or moved
 away, no webhook trigger is made or rotated (`409 store_unreadable`) and none fires.
 
-The request's `webhook-id` is its firing's key: the first answers `202` once the firing is recorded, and its run starts
-after; the same `webhook-id` again, for a day after (even once the firing has left the history of 200), answers `200` with that
-firing and starts nothing. The agent gets the trigger's input,
+The request's `webhook-id`, which its signature covers, is its firing's key: the first answers `202` once the firing is
+recorded, and its run starts after; the same `webhook-id` again, for a day after, answers `200` with that firing and
+starts nothing (`{"ok": "duplicate"}` once the firing has left the trigger's history of 200 and the 1,000 it keeps past
+it). Each trigger keeps the keys of its last day's pushed firings in `triggers.json`, at most 5,000, the oldest let go
+first past that, which the log says once (`condition=trigger_seen_full`). The agent gets the trigger's input,
 then the body, cut at 16 KiB, inside `<trigger-payload source="webhook" scheme="standard" untrusted>...</trigger-payload>`:
 whatever the sender wrote is data, not an instruction. The tag names the signature scheme, the event as that scheme
-reads it (`event="..."`) and the JSON body's top-level `action` (`action="..."`), each when there is one, so an agent's
-instructions can read what it was given; a sender's words there are cut to 200 characters, their quotes and brackets
-escaped.
+reads it (`event="..."`), the JSON body's top-level `action` (`action="..."`) and an unsigned delivery id
+(`delivery="..."`, GitHub's `X-GitHub-Delivery`), each when there is one, so an agent's instructions can read what it
+was given; a sender's words there are cut to 200 characters, their quotes and brackets escaped, and a closing tag in
+the body, in any case, is defused.
 
 A webhook trigger's `signature` names its scheme, one of a table of them: `standard` (the default, above) or `github`,
 for a GitHub repository or organization webhook. A request is checked by the one scheme whose signature header it
-carries (`webhook-signature`, `X-Hub-Signature-256`), and the scheme gives its delivery id and its event. With `github`, paste the trigger's whole `whsec_...` secret, as it is, into the GitHub webhook's
+carries (`webhook-signature`, `X-Hub-Signature-256`), and the scheme gives its firing key, from what its signature
+covers, and its event. With `github`, paste the trigger's whole `whsec_...` secret, as it is, into the GitHub webhook's
 Secret (content type `application/json`): each delivery is checked by `X-Hub-Signature-256: sha256=<hex HMAC-SHA256 of
-the raw body>`, keyed by the UTF-8 bytes of that string, and `X-GitHub-Delivery` (1 to 255 printable ASCII characters)
-is its firing's key, so a redelivery from GitHub's page answers its firing and starts nothing. GitHub signs no
-timestamp, so there is no 5-minute window: a captured delivery sent again within a day is the same firing, and after a
-day it would fire again (over TLS, a risk taken). A request that carries no scheme's signature header, or more than
+the raw body>`, keyed by the UTF-8 bytes of that string. GitHub signs the body alone, not `X-GitHub-Delivery` nor a
+time, so the firing's key is the SHA-256 of the raw body: a redelivery from GitHub's page sends the same body and
+answers its firing, and so does a captured delivery sent again within the key's day under any delivery id. After the
+day it would fire again (over TLS, a risk taken); there is no 5-minute window. Two real deliveries never share a body,
+since GitHub's carry their own ids and times. `X-GitHub-Delivery` (1 to 255 printable ASCII characters) only names the
+delivery on the payload's tag, for tracing. A request that carries no scheme's signature header, or more than
 one, or is signed under a scheme other than its trigger's, is the same `401` as a bad signature, and the headers are
 checked before the body is read.
 
@@ -1529,6 +1535,13 @@ limit still holds: a start it refuses (`429`) keeps the firing due and tries it 
 delivery answers `429`. This holds for every firing of such a trigger, a run now (`POST /v2/triggers/{id}/fire`)
 included. Runs start in the order their events came while the server has room; while one firing waits to be tried
 again after a `429`, a later one can start first.
+
+Such a trigger can take every run this server has room for, starving other triggers and the runs people start. Give it
+`max_active_runs` (1 to 1,000; `null` clears it): past that many of its runs active, a firing waits due and is tried
+again, as at a full server, and is never skipped. Only a trigger whose firings each start a run takes it (`422`
+otherwise). On a public repository, a rule for `issue_comment` or `issues` events needs a condition on
+`/comment/author_association` or `/issue/author_association` (`in: ["OWNER", "MEMBER", "COLLABORATOR"]`): without one,
+anyone who can comment starts runs.
 
 A trigger's input, a started run's first message or a firing's message, is the trigger's, never the person's: it carries
 the origin `{kind: "trigger", trigger_id, source, owner}`, `owner` decided by the trigger's definition as it fires and
