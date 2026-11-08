@@ -549,7 +549,9 @@ key.
 - **What a list holds** (`capabilities().allow`): names, exact or `*.suffix` (two labels or more), and CIDRs, IPv4 or
   IPv6, with host bits zero and over no range the address rule refuses; both in one list, at most 256 of each, each on
   ports 80 and 443. `check` refuses anything else in words: an empty list (ask for `none`), an address with no prefix, a
-  port, a URL, a private range.
+  port, a URL, a private range. On a Docker host that remaps user ids (userns-remap or rootless Docker), an allowlist
+  is refused before anything is made, as a bind is: the volume's owner and the proxy's code are host ids the computer's
+  user does not map to, and the provider does not guess the mapping.
 - **What the proxy refuses**, each before any socket opens: a name off the list, before any lookup, so it never
   leaves the host; an IP literal outside a listed CIDR of its own family; any port but 80 and 443; a listed name or
   address that is private, loopback, link-local, metadata, multicast or reserved, in any form it is written (decimal,

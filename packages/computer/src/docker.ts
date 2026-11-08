@@ -263,12 +263,13 @@ export class DockerProvider implements ComputerProvider {
 		};
 	}
 
-	/** The spec's refusals, and the host's once create, attach or host() has read it: its problems, and a bind on a host
-	 *  that remaps user ids. */
+	/** The spec's refusals, and the host's once create, attach or host() has read it: its problems, and a bind or an
+	 *  allowlist on a host that remaps user ids. */
 	check(spec: ComputerSpec): Refusal[] {
 		const host = this.#host;
 		const remapped = host?.remap !== undefined && spec?.mount?.kind === "bind" ? [{ field: "mount", message: remapWords(host.remap, String(spec.mount.path)) }] : [];
-		return [...this.#checkSpec(spec), ...remapped, ...(host?.problems ?? []).map((message) => ({ field: "host", message }))];
+		const allowRemapped = host?.remap !== undefined && isAllow(spec?.network) ? [{ field: "network", message: remapAllowWords(host.remap) }] : [];
+		return [...this.#checkSpec(spec), ...remapped, ...allowRemapped, ...(host?.problems ?? []).map((message) => ({ field: "host", message }))];
 	}
 
 	#checkSpec(spec: ComputerSpec): Refusal[] {
@@ -336,6 +337,8 @@ export class DockerProvider implements ComputerProvider {
 		const host = await this.host({ signal });
 		if (!host.ok) return host;
 		if (host.value.problems.length > 0) return fail("refused", `host: ${host.value.problems.join("; ")}`);
+		// Under remapped ids the egress volume and the proxy's code belong to host ids the computer's user is not.
+		if (allow !== undefined && host.value.remap !== undefined) return fail("refused", `network: ${remapAllowWords(host.value.remap)}`);
 		if (bound !== undefined) {
 			// Under remapped ids the folder's owner on the host is not the computer's user: refuse, never guess the mapping.
 			if (host.value.remap !== undefined) return fail("refused", `mount: ${remapWords(host.value.remap, bound)}`);
@@ -843,6 +846,22 @@ function egressOptionsOf({ image = EGRESS_IMAGE, hint, readyMs = EGRESS_READY_MS
 		throw new Error(`the egress proxy's readyMs must be a whole number of milliseconds above 0 and at most ${MAX_TIMER_MS}, not ${readyMs}`);
 	}
 	return { image, readyMs, ...(hint === undefined ? {} : { hint }) };
+}
+
+/** Whether a spec's network is an allowlist. */
+const isAllow = (network: unknown): network is { allow: unknown } => typeof network === "object" && network !== null && "allow" in network;
+
+/**
+ * Why an allowlist is refused on a host that remaps user ids: the egress volume's tmpfs owner and the proxy's code are
+ * ids of the host, and the computer's user and its proxy run as other ones there, so the proxy could not make its socket
+ * or the computer reach it. The provider does not guess the mapping.
+ */
+function remapAllowWords(remap: "userns" | "rootless"): string {
+	return (
+		`this Docker host remaps user ids (${remap === "userns" ? "userns-remap" : "rootless Docker"}), so the egress volume and the proxy's code are ` +
+		"owned by host ids the computer's user does not map to, and the provider cannot give it an allowlist: ask for network none or open, " +
+		"or use a Docker host that does not remap ids"
+	);
 }
 
 /**
