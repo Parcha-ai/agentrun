@@ -6,6 +6,7 @@ a download comes back byte for byte."""
 
 from __future__ import annotations
 
+import errno
 import json
 import os
 import pickle
@@ -666,18 +667,21 @@ class Rules(unittest.TestCase):
 
         threading.Thread(target=accept, daemon=True).start()
         self.addCleanup(lambda: [connection.close() for connection in held])
-        real = socket.create_connection
+        real = socket.socket.connect
+        slowed: list[Any] = []
 
-        def slow(*args: Any, **kwargs: Any) -> socket.socket:
+        def slow(sock: socket.socket, address: Any) -> None:
+            slowed.append(address)
             time.sleep(0.3)  # a connect that takes most of the try's time
-            return real(*args, **kwargs)
+            real(sock, address)
 
         client = AgentRun(base_url=f"https://127.0.0.1:{listening.getsockname()[1]}/v2", api_key=KEY)
         began = time.monotonic()
-        with mock.patch("socket.create_connection", slow):
+        with mock.patch.object(socket.socket, "connect", slow):
             stalled = self.thrown(client.agents.list, timeout=0.5)
         took = time.monotonic() - began
         assert isinstance(stalled, AgentRunUnreachable), repr(stalled)
+        self.assertEqual(len(slowed), 1, "the slow connect is the one the client makes")
         self.assertEqual((stalled.cause, len(held)), ("timeout", 1))
         self.assertLess(took, 0.5 + 0.15, "the handshake had what the connect left of the try, not a timeout of its own")
 
@@ -714,7 +718,27 @@ class Rules(unittest.TestCase):
         took = time.monotonic() - began
         assert isinstance(stalled, AgentRunUnreachable), repr(stalled)
         self.assertEqual(stalled.cause, "timeout")
+        self.assertEqual(tried[:1], [("192.0.2.1", 80)], "the client's connect is the one patched")
         self.assertLess(took, 0.3 + 0.15, f"every address on the try's one clock, {len(tried)} tried")
+
+    def test_an_address_whose_family_the_host_cannot_make_is_passed_over_for_the_next_one(self) -> None:
+        server = Listener(self, lambda request, reply: json_answer(200, {"agents": [], "next_cursor": None}))
+        port = int(server.origin.rsplit(":", 1)[1])
+        addresses = [(socket.AF_INET6, socket.SOCK_STREAM, 6, "", ("::1", port, 0, 0)), (socket.AF_INET, socket.SOCK_STREAM, 6, "", ("127.0.0.1", port))]
+        real = socket.socket
+        refused: list[int] = []
+
+        def make(*args: Any, **kwargs: Any) -> socket.socket:
+            family = args[0] if args else kwargs.get("family")
+            if family == socket.AF_INET6 and "fileno" not in kwargs:
+                refused.append(family)
+                raise OSError(errno.EAFNOSUPPORT, "Address family not supported by protocol")
+            return real(*args, **kwargs)
+
+        client = AgentRun(base_url=f"http://agentrun.example:{port}{server.prefix}/v2", api_key=KEY)
+        with mock.patch("socket.getaddrinfo", lambda *args, **kwargs: addresses), mock.patch("socket.socket", make):
+            self.assertEqual(client.agents.list(), {"agents": [], "next_cursor": None})
+        self.assertEqual((refused, len(server.requests)), ([socket.AF_INET6], 1))
 
     def test_a_url_python_cannot_parse_is_a_usage_error_as_a_base_url_and_a_refused_redirect_as_a_location(self) -> None:
         self.assertIsInstance(self.thrown(AgentRun, base_url="http://[::1/v2", api_key=KEY), AgentRunUsage)
