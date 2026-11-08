@@ -3,6 +3,7 @@
 // cutover.
 import type { Ended } from "../../booking.js";
 import type { InputShape } from "../../host/overhead.js";
+import type { CapMarks } from "./marks.js";
 
 /** A model's list price, in USD per million tokens, as the catalog gives it. No cache prices: the input price. */
 export interface ModelPrice {
@@ -99,9 +100,13 @@ export interface CapOptions {
   /** The run's cap, read before every paid check, so a raise holds from the next one. Undefined: no cap. */
   capUsd(): number | undefined;
   mode?: CapMode;
-  /** What the run has spent when the cap opens (null: unknown). */
+  /** What the run has spent when the cap opens (null: unknown). openCap reads it from `marks`. */
   spentUsd?: number | null;
   now?: () => number;
+  /** Where each step's start and end marks go (the journal binds it); none: the cap keeps no marks. */
+  marks?: CapMarks;
+  /** How long settle waits for a step's end mark before it fails loudly. Default 10 s. */
+  endMarkWaitMs?: number;
 }
 
 /** How the cap prices a request's input: "expected" from the previous request's cache; "strict" every token uncached. */

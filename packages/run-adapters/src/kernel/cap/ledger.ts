@@ -31,15 +31,25 @@ export class Ledger {
     this.#holds.set(id, hold);
   }
 
-  /** Lets `id`'s hold go and books what it ended at. A step it never held books its own figure (a paid call's charge, an
-   *  answer's cost), or nothing that can be known. */
-  settle(id: string, ended: Settled): number | null {
+  /** Lets `id`'s hold go with nothing booked: a step that never left (its start mark could not be written). */
+  release(id: string): void {
+    this.#holds.delete(id);
+  }
+
+  /** Lets `id`'s hold go and books what it ended at, with the rule that gave it. A step it never held books its own figure
+   *  (a paid call's charge, an answer's cost), or nothing that can be known. */
+  settle(id: string, ended: Settled): { usd: number | null; rule: string } {
     const hold = this.#holds.get(id);
     this.#holds.delete(id);
-    const usd = ended.end === "charged"
-      ? (typeof ended.usd === "number" && Number.isFinite(ended.usd) && ended.usd >= 0 ? ended.usd : hold?.usd ?? null)
-      : bookRequest(ended, { ...(hold ? { hold: hold.usd } : {}), ...(hold?.stoppedPrice ? { stoppedPrice: hold.stoppedPrice } : {}) }).usd;
+    let booked: { usd: number | null; rule: string };
+    if (ended.end === "charged") {
+      const said = typeof ended.usd === "number" && Number.isFinite(ended.usd) && ended.usd >= 0;
+      booked = { usd: said ? (ended.usd as number) : hold?.usd ?? null, rule: said ? "charged" : "charged:held" };
+    } else {
+      booked = bookRequest(ended, { ...(hold ? { hold: hold.usd } : {}), ...(hold?.stoppedPrice ? { stoppedPrice: hold.stoppedPrice } : {}) });
+    }
+    const usd = booked.usd;
     this.#spent = this.#spent === null || usd === null ? null : this.#spent + usd;
-    return usd;
+    return booked;
   }
 }

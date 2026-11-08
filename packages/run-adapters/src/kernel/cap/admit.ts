@@ -6,6 +6,8 @@
 // nothing is refused.
 import { inputBound, mostOutput, outputAsked, outputLeast, pricingOf, requestPrice, STOP_ALLOWANCE_TOKENS, thinkingWithin } from "./price.js";
 import { Ledger } from "./ledger.js";
+import type { CapMarks, StartMark } from "./marks.js";
+import { spendOf } from "./recover.js";
 import { noCeiling, noPrice, paidRefusal, roomRefusal, unknownSpend, unmeasured } from "./words.js";
 import type { Admission, Cap, CapMode, CapOptions, CapRequest, ModelCapRequest, RefusalFigures, Settled, ToolCapRequest } from "./types.js";
 
@@ -26,11 +28,39 @@ export class CapRefused extends Error {
 }
 
 const NO_HOLD = (id: string): Admission => ({ id, heldUsd: 0, boundUsd: 0, worstUsd: 0, stoppedUsd: () => 0 });
+/** A step whose start mark could not be written is not sent. */
+export const MARK_NOT_WRITTEN = "the model request was not sent: its mark could not be written";
+/** A step whose end mark did not land within its wait. */
+export const END_NOT_WRITTEN = "the model request's end could not be recorded";
+export const END_MARK_WAIT_MS = 10_000;
+
+/** The cap of a run opened again: what it has spent read from its marks (recover.ts), a step a crash cut at its hold. */
+export async function openCap(options: CapOptions & { marks: CapMarks }): Promise<Cap> {
+  const spent = spendOf(await options.marks.read()).spentUsd;
+  return createCap({ ...options, spentUsd: options.spentUsd === undefined ? spent : options.spentUsd });
+}
 
 export function createCap(options: CapOptions): Cap {
   const mode: CapMode = options.mode ?? "expected";
   const now = options.now ?? Date.now;
   const ledger = new Ledger(options.spentUsd === undefined ? 0 : options.spentUsd);
+  const marks = options.marks;
+  /** A refused step's own start mark, before its refusal is thrown; a mark that fails still ends it with the refusal. */
+  const refusing = async (id: string, refusal: CapRefused, extra: Partial<StartMark> = {}): Promise<never> => {
+    await marks?.write({ kind: "start", id, at: now(), heldUsd: 0, refused: true, ...extra }).catch(() => undefined);
+    throw refusal;
+  };
+  /** A step's start mark, before it leaves: one that fails lets its hold go and the step is not sent. */
+  const started = async (admission: Admission, extra: Partial<StartMark>): Promise<Admission> => {
+    if (!marks) return admission;
+    try {
+      await marks.write({ kind: "start", id: admission.id, at: now(), heldUsd: admission.heldUsd, ...(admission.boundUsd > 0 ? { boundUsd: admission.boundUsd } : {}), ...extra });
+    } catch {
+      ledger.release(admission.id);
+      throw new Error(MARK_NOT_WRITTEN);
+    }
+    return admission;
+  };
 
   /** A model request priced: its bound, the output it asks and needs at least, and its cost and worst case at an output. */
   const priced = (request: ModelCapRequest) => {
@@ -83,15 +113,38 @@ export function createCap(options: CapOptions): Cap {
 
   return {
     async admit(request: CapRequest): Promise<Admission> {
+      const extra: Partial<StartMark> = request.kind === "tool" ? { tool: request.name } : request.side ? { side: true } : {};
       // Read before every check: a raise holds from the next paid step.
       const capUsd = options.capUsd();
-      if (capUsd === undefined) return NO_HOLD(request.id);
+      if (capUsd === undefined) return started(NO_HOLD(request.id), extra);
       const spent = ledger.spent();
-      if (spent === null) throw new CapRefused(unknownSpend(capUsd), { forGood: true, spentUsd: null });
-      return request.kind === "model" ? admitModel(request, capUsd, spent) : admitTool(request, capUsd, spent);
+      let admission: Admission;
+      try {
+        if (spent === null) throw new CapRefused(unknownSpend(capUsd), { forGood: true, spentUsd: null });
+        admission = request.kind === "model" ? admitModel(request, capUsd, spent) : admitTool(request, capUsd, spent);
+      } catch (error) {
+        if (error instanceof CapRefused) return refusing(request.id, error, extra);
+        throw error;
+      }
+      return started(admission, extra);
     },
     async settle(id: string, ended: Settled): Promise<number | null> {
-      return ledger.settle(id, ended);
+      const { usd, rule } = ledger.settle(id, ended);
+      if (marks) {
+        const wait = options.endMarkWaitMs ?? END_MARK_WAIT_MS;
+        let timer: NodeJS.Timeout | undefined;
+        try {
+          await Promise.race([
+            marks.write({ kind: "end", id, at: now(), usd, rule }),
+            new Promise<never>((_, reject) => (timer = setTimeout(() => reject(new Error(`${END_NOT_WRITTEN}: its end mark did not land within ${wait} ms`)), wait))),
+          ]);
+        } catch (error) {
+          throw new Error(error instanceof Error && error.message.startsWith(END_NOT_WRITTEN) ? error.message : `${END_NOT_WRITTEN}: ${String(error)}`);
+        } finally {
+          clearTimeout(timer);
+        }
+      }
+      return usd;
     },
     leastUsd(request: ModelCapRequest): number {
       const p = priced(request);
