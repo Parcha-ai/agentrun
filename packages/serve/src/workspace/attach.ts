@@ -54,6 +54,10 @@
 // "..", no empty segment), but a link inside /workspace is the computer's to follow, as its own programs do. grep is
 // not a computerd call: it runs through the Workspace the computer mounts (its folder, or the disk's own search),
 // which is current because D syncs after every call that changes the folder.
+//
+// Durable on return, with a bind (lead, 11-08): a bind mount syncs nothing in the computer, so after each delegated
+// file call that changes the folder (write, append, mkdir, remove) the local backend fsyncs the target and every
+// folder from its own up to the root, on the host. exec's own writes are not covered, the same as with no computer.
 import { randomBytes } from "node:crypto";
 import { relativeSegments } from "./paths.js";
 import {
@@ -169,9 +173,12 @@ const chunks = (bytes: Uint8Array): Uint8Array[] => {
 /**
  * The attached Workspace: `base` (the run's folder, as the computer mounts it) reached inside `computer`. File calls
  * and exec go to the computer at /workspace/<path>; grep goes to `base`; `process` is the computer's, with start's
- * cwd taken relative to the run's folder. attach() checks the mount before it makes one of these.
+ * cwd taken relative to the run's folder. attach() checks the mount before it makes one of these. `synced(path)`, when
+ * given, runs after each file call that changed `path` (write, append, mkdir, remove): a bind mount's backend makes the
+ * change durable on the host there, since nothing in the computer syncs a bind.
  */
-export function attachedWorkspace(base: Workspace, computer: Computer): Workspace {
+export function attachedWorkspace(base: Workspace, computer: Computer, options: { readonly synced?: (path: string) => Promise<void> } = {}): Workspace {
+  const synced = options.synced ?? (async () => undefined);
   const at = (path: string): { rel: string; abs: string; segments: string[] } => {
     const segments = relativeSegments(path);
     const rel = segments.join("/");
@@ -249,12 +256,14 @@ export function attachedWorkspace(base: Workspace, computer: Computer): Workspac
         await computer.files.remove({ path: temp }).catch(() => undefined);
         throw error;
       }
+      await synced(rel);
     },
 
     async append(path, data) {
       const { rel, abs } = below(path, "a file");
       noLink(await statOf(abs, rel), rel);
       for (const part of chunks(bytesOf(data))) await value(computer.files.append({ path: abs, data: part, parents: true }), rel);
+      await synced(rel);
     },
 
     async list(dir) {
@@ -275,7 +284,9 @@ export function attachedWorkspace(base: Workspace, computer: Computer): Workspac
 
     async mkdir(dir) {
       const { rel, abs, segments } = at(dir);
-      if (segments.length > 0) await value(computer.files.mkdir({ path: abs, parents: true }), rel);
+      if (segments.length === 0) return;
+      await value(computer.files.mkdir({ path: abs, parents: true }), rel);
+      await synced(rel);
     },
 
     grep(pattern: string, options?: GrepOptions): Promise<GrepResult> {
@@ -292,6 +303,7 @@ export function attachedWorkspace(base: Workspace, computer: Computer): Workspac
       }
       noLink(existing, where.rel);
       await value(computer.files.remove({ path: where.abs, ...(options.recursive ? { recursive: true } : {}) }), where.rel);
+      await synced(where.rel);
     },
 
     async exec(argv: readonly string[], options: ExecOptions): Promise<ExecResult> {

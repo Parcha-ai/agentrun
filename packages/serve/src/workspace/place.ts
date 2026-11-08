@@ -28,7 +28,7 @@ export function resolvePlace(mode: 1 | 2, place: Place | undefined, kind: "agent
   const { box } = place;
   if (!isProvider(box)) return { refused: `place sandbox names "${box}", which is not a computer this server knows (${PROVIDERS.join(", ")}).` };
   if (box === "docker") {
-    if (mode === 2) return { refused: "place sandbox asks for Docker, and in Mode 2 the run's folder is on the owner's disk, which this server never mounts: a local Docker computer has nothing to bind. Use a remote computer, or place runner." };
+    if (mode === 2) return { refused: "Mode 2 keeps workspaces on Archil; a local Docker computer can't mount them. Use a remote box or place runner." };
     return available.docker ? { computer: "docker" } : { refused: "place sandbox asks for Docker, and Docker is not answering on this machine: start Docker, or run this agent with place runner." };
   }
   if (mode === 1) return { refused: `place sandbox asks for ${box}, a remote computer, and Mode 1 runs only the local Docker computer: a remote computer cannot reach a folder on this machine. Use box docker, or place runner.` };

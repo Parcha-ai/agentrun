@@ -497,7 +497,24 @@ class LocalWorkspace implements Workspace {
 
   async attach(computer: Computer): Promise<Workspace> {
     await checkMount(computer, await this.mountSpec());
-    return attachedWorkspace(this, computer);
+    return attachedWorkspace(this, computer, { synced: (path) => this.#syncUp(path) });
+  }
+
+  /** What a computer changed at `path` in this folder made durable on the host: the entry itself when it is there (a
+   *  file or a folder, never through a link), then every folder from its own up to the root. */
+  async #syncUp(path: string): Promise<void> {
+    const segments = relativeSegments(path);
+    await this.#in(path, segments, segments.length - 1, async (dir) => {
+      let handle: FileHandle;
+      try {
+        handle = await open(dir.at(segments.at(-1)!), O_RDONLY | O_NOFOLLOW | O_NONBLOCK);
+      } catch (error) {
+        if (errno(error) === "ENOENT" || errno(error) === "ELOOP") return;
+        throw failed(error, path);
+      }
+      try { await handle.sync(); } finally { await handle.close(); }
+    });
+    for (let count = segments.length - 1; count >= 0; count--) await this.#in(path, segments, count, (dir) => dir.handle.sync());
   }
 }
 

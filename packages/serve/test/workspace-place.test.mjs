@@ -45,7 +45,7 @@ test("Mode 2 takes a remote box it holds a key for, and refuses one with no key 
 });
 
 test("Mode 2 refuses docker in words, whether Docker answers or not: the run's folder is on the disk, never mounted here", () => {
-  const words = "place sandbox asks for Docker, and in Mode 2 the run's folder is on the owner's disk, which this server never mounts: a local Docker computer has nothing to bind. Use a remote computer, or place runner.";
+  const words = "Mode 2 keeps workspaces on Archil; a local Docker computer can't mount them. Use a remote box or place runner.";
   assert.deepEqual(resolvePlace(2, box("docker"), "agentic", all), { refused: words });
   assert.deepEqual(resolvePlace(2, box("docker"), "agentic", none), { refused: words });
 });

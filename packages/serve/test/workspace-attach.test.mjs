@@ -2,7 +2,7 @@
 // records every call (workspace-fake-computer.mjs), so the delegation is shown without module D. Also: the mount a
 // local Workspace asks for, the read-back attach checks, and the background surface with no computer.
 import assert from "node:assert/strict";
-import { mkdirSync, mkdtempSync, realpathSync, rmSync, writeFileSync } from "node:fs";
+import { chmodSync, mkdirSync, mkdtempSync, readFileSync, realpathSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { after, test } from "node:test";
@@ -30,7 +30,7 @@ async function refused(promise, code, words) {
 async function attached(options = {}) {
   const root = scratch();
   const base = localWorkspace(root);
-  const computer = fakeComputer({ readBack: { kind: "bind", at: "/workspace", path: root }, ...options });
+  const computer = fakeComputer(root, options);
   const workspace = await base.attach(computer);
   computer.clear();
   return { root, base, computer, workspace };
@@ -56,20 +56,21 @@ test("attach checks the computer's read-back: anything but this run's folder at 
     [{ ok: false, error: { code: "gone", message: "the computer went away" } }, "UNAVAILABLE", /did not say what it mounts at \/workspace: the computer went away/],
   ];
   for (const [readBack, code, words] of cases) {
-    const computer = fakeComputer({ readBack });
+    const computer = fakeComputer(root, { readBack });
     await refused(base.attach(computer), code, words);
     assert.deepEqual(computer.methods(), ["readBack"], "only the read-back was asked for");
   }
   const archil = { kind: "archil", disk: "dsk", region: "us-east-1", folder: "agents/a/runs/r/work", token: "secret-token" };
-  await refused(checkMount(fakeComputer({ readBack: { kind: "archil", at: "/workspace", source: "dsk:/agents/a/runs/r/work", exclusive: false, epoch: 1 } }), archil), "REFUSED", /not exclusive/);
-  await refused(checkMount(fakeComputer({ readBack: { kind: "archil", at: "/workspace", source: "dsk:/agents/b/runs/r/work", exclusive: true, epoch: 1 } }), archil), "REFUSED", /not dsk:\/agents\/a\/runs\/r\/work/);
-  await checkMount(fakeComputer({ readBack: { kind: "archil", at: "/workspace", source: "dsk:/agents/a/runs/r/work", exclusive: true, epoch: 1 } }), archil);
-  await assert.rejects(checkMount(fakeComputer({ readBack: { kind: "bind", at: "/workspace", path: "/x" } }), archil), (error) => !error.message.includes("secret-token"), "a refusal never carries the token");
+  await refused(checkMount(fakeComputer(root, { readBack: { kind: "archil", at: "/workspace", source: "dsk:/agents/a/runs/r/work", exclusive: false, epoch: 1 } }), archil), "REFUSED", /not exclusive/);
+  await refused(checkMount(fakeComputer(root, { readBack: { kind: "archil", at: "/workspace", source: "dsk:/agents/b/runs/r/work", exclusive: true, epoch: 1 } }), archil), "REFUSED", /not dsk:\/agents\/a\/runs\/r\/work/);
+  await checkMount(fakeComputer(root, { readBack: { kind: "archil", at: "/workspace", source: "dsk:/agents/a/runs/r/work", exclusive: true, epoch: 1 } }), archil);
+  await assert.rejects(checkMount(fakeComputer(root, { readBack: { kind: "bind", at: "/workspace", path: "/x" } }), archil), (error) => !error.message.includes("secret-token"), "a refusal never carries the token");
 });
 
 test("attached: a write goes to a temporary file beside the target, then a move; a big one in chunks; the file's mode is kept", async () => {
-  const { computer, workspace } = await attached();
+  const { root, computer, workspace } = await attached();
   await workspace.write("notes/a.md", "hello");
+  assert.equal(readFileSync(join(root, "notes/a.md"), "utf8"), "hello", "it landed in the bound folder");
   const [stat, write, move] = computer.calls;
   assert.deepEqual(stat, ["files.stat", { path: "/workspace/notes/a.md", follow: false }]);
   assert.equal(write[0], "files.write");
@@ -79,6 +80,7 @@ test("attached: a write goes to a temporary file beside the target, then a move;
   assert.deepEqual(move, ["files.move", { from: write[1].path, to: "/workspace/notes/a.md", overwrite: true }]);
   assert.equal(computer.calls.length, 3);
   computer.clear();
+  chmodSync(join(root, "notes/a.md"), 0o640);
   const big = Buffer.alloc(COMPUTER_CHUNK * 2 + 5, 7);
   await workspace.write("notes/a.md", big);
   assert.deepEqual(computer.methods(), ["files.stat", "files.write", "files.append", "files.append", "files.move"]);
@@ -110,7 +112,7 @@ test("attached: read, ranged and chunked, from /workspace/<path>; append in chun
   await refused(workspace.remove("logs"), "NOT_FOUND");
   await workspace.remove("logs", { force: true });
   await refused(workspace.remove("z"), "REFUSED", /not empty/);
-  await refused(workspace.read("z"), "REFUSED", /is a directory/);
+  await refused(workspace.read("z"), "REFUSED", /directory/);
   await refused(workspace.read("nope"), "NOT_FOUND");
 });
 
