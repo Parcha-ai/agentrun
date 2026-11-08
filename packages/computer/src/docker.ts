@@ -54,6 +54,7 @@ import {
 } from "./docker/egress.js";
 import { EGRESS_READY } from "./docker/egress-proxy.js";
 import { addressBytes } from "./docker/egress-table.js";
+import type { KindCapabilities } from "./kinds.js";
 import { checkMount, type MountKind, type MountReadBack, WORKSPACE } from "./mount.js";
 import {
 	type AttachedComputer,
@@ -133,6 +134,12 @@ export const ENV = {
 
 /** The mount kinds a Docker computer takes, as capabilities().mount declares them: a bind of a folder on this host. */
 export const MOUNT: readonly MountKind[] = ["bind"];
+
+/** The machine kind and groups of each configuration: a linux computer, and one made with the desktop option. */
+export const CAPABILITIES: readonly KindCapabilities[] = [
+	{ kind: "linux", groups: ["exec", "files", "processes"] },
+	{ kind: "desktop", groups: ["exec", "files", "processes", ...DESKTOP_GROUPS] },
+];
 
 export interface DockerFromEnvOptions extends Partial<DockerProviderOptions> {
 	/** The longest `docker version` may take, when fromEnv asks Docker its architecture; default 30 s. */

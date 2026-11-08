@@ -1,36 +1,35 @@
-// Conformance by kind: the cases a kind runs, and whether a provider passes it. One table with the registry
+// Conformance by kind: the cases a setting kind runs, and whether a provider passes it. One table with the registry
 // (src/kinds.ts): a kind's cases are those whose protocol groups it requires or allows, and a provider passes the kind
 // only when it serves it and every case of each required group passes, at least one of them.
-import { KIND_SPECS, type Kind, type KindCapabilities, KINDS, servingRefusals } from "../kinds.js";
+import { type ComputerSettingKind, type KindCapabilities, SETTING_KIND_NAMES, SETTING_KINDS, servingRefusals } from "../kinds.js";
 import { GROUPS, type Group } from "../protocol.js";
 import { conformanceCases } from "./cases/index.js";
 import type { Case, ConformanceReport } from "./types.js";
 
 /** A kind's verdict: pass, or fail with why, in words. */
 export interface KindVerdict {
-	kind: Kind;
+	kind: ComputerSettingKind;
 	verdict: "pass" | "fail";
 	reasons: string[];
 }
 
 const groupsOf = (c: Case): Group[] => c.needs.filter((need): need is Group => (GROUPS as readonly string[]).includes(need));
 
-/** Why a run cannot be by this kind, in words; undefined when it can. */
-export function kindRunProblem(kind: Kind): string | undefined {
-	const spec = KIND_SPECS[kind];
-	if (spec === undefined) return `${JSON.stringify(kind)} is not a kind: ${KINDS.join(", ")}`;
-	if (spec.plane === "none") return "kind none is no computer: there is nothing to run its cases on";
-	if (spec.plane === "cdp") return "kind browser answers CDP, and the suite has no CDP cases yet";
+/** Why a run cannot be by this kind, in words; undefined when it can. Kind none is no computer. */
+export function kindRunProblem(kind: ComputerSettingKind): string | undefined {
+	const spec = Object.hasOwn(SETTING_KINDS, kind) ? SETTING_KINDS[kind] : undefined;
+	if (spec === undefined) return `${JSON.stringify(kind)} is not a setting kind: ${SETTING_KIND_NAMES.join(", ")}`;
+	if (spec.machineKinds.length === 0) return `kind ${kind} is no computer: there is nothing to run its cases on`;
 	return undefined;
 }
 
 /**
  * The cases a kind runs: each whose protocol groups the kind requires or allows, those that need no group (health,
- * provider, drift) among them. None for a kind with no computerd plane (none, browser).
+ * provider, drift) among them. None for kind none.
  */
-export function kindCases(kind: Kind, cases: readonly Case[] = conformanceCases): Case[] {
+export function kindCases(kind: ComputerSettingKind, cases: readonly Case[] = conformanceCases): Case[] {
 	if (kindRunProblem(kind) !== undefined) return [];
-	const allowed: readonly Group[] = [...KIND_SPECS[kind].required, ...KIND_SPECS[kind].optional];
+	const allowed: readonly Group[] = [...SETTING_KINDS[kind].required, ...SETTING_KINDS[kind].optional];
 	return cases.filter((c) => groupsOf(c).every((group) => allowed.includes(group)));
 }
 
@@ -40,13 +39,13 @@ export function kindCases(kind: Kind, cases: readonly Case[] = conformanceCases)
  * for each required group, at least one case that needs it passed and none was skipped but for an optional group the
  * computer does not declare; and the run left nothing behind.
  */
-export function kindVerdict(kind: Kind, capabilities: KindCapabilities, report: ConformanceReport, cases: readonly Case[] = conformanceCases): KindVerdict {
+export function kindVerdict(kind: ComputerSettingKind, capabilities: KindCapabilities, report: ConformanceReport, cases: readonly Case[] = conformanceCases): KindVerdict {
 	const problem = kindRunProblem(kind);
 	if (problem !== undefined) return { kind, verdict: "fail", reasons: [problem] };
 	const reasons = [...servingRefusals(capabilities, kind)];
 	for (const result of report.results) if (result.status === "fail") reasons.push(`${result.id} failed: ${result.reason ?? "no reason given"}`);
 	const byId = new Map(cases.map((c) => [c.id, c]));
-	for (const group of KIND_SPECS[kind].required) {
+	for (const group of SETTING_KINDS[kind].required) {
 		const ofGroup = report.results.filter((result) => byId.get(result.id)?.needs.includes(group));
 		for (const result of ofGroup) {
 			if (result.status === "skip" && result.undeclared === undefined) reasons.push(`${result.id} was skipped: ${result.reason ?? "no reason given"}`);

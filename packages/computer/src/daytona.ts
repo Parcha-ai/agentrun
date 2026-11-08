@@ -10,6 +10,7 @@ import { fileURLToPath } from "node:url";
 import { childCommands, type DaemonExpected, daemonDrift } from "./child.js";
 import { DaemonClient } from "./client.js";
 import { COMPUTER_LABEL, DEADLINE_LABEL, helloDrift, WORK } from "./drift.js";
+import type { KindCapabilities } from "./kinds.js";
 import type { MountKind } from "./mount.js";
 import { MAX_LINE_BYTES } from "./protocol.js";
 import {
@@ -165,6 +166,9 @@ export const ENV = {
 
 /** The mount kinds a Daytona computer takes: none yet (capabilities() declares no mount); the Archil mount comes with D6. */
 export const MOUNT: readonly MountKind[] = [];
+
+/** The machine kind and groups of its one configuration: a linux computer. */
+export const CAPABILITIES: readonly KindCapabilities[] = [{ kind: "linux", groups: ["exec", "files", "processes"] }];
 
 /** What fromEnv takes besides the environment: any option but the key, which comes from COMPUTER_DAYTONA_API_KEY alone. */
 export type DaytonaFromEnvOptions = Partial<Omit<DaytonaProviderOptions, "apiKey">>;

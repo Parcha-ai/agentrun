@@ -2,6 +2,7 @@
 // resolves providers through it alone, so a new computer is its provider file and its line here, with no edit to either. Every import is
 // lazy: loading the registry loads no provider and no vendor SDK.
 import type { RunFolder } from "./conformance/types.js";
+import type { KindCapabilities } from "./kinds.js";
 import type { MountKind } from "./mount.js";
 import type { ComputerProvider } from "./provider.js";
 
@@ -31,6 +32,11 @@ export interface ProviderModule {
 	 * provider binds a local folder from the registry alone, without building one.
 	 */
 	readonly MOUNT: readonly MountKind[];
+	/**
+	 * The machine kind and groups of each configuration it offers, as its built providers' capabilities() declare them:
+	 * the kind registry's entry for it (PROVIDERS in kinds.ts) holds the same, and derives its setting kinds from them.
+	 */
+	readonly CAPABILITIES: readonly KindCapabilities[];
 	/**
 	 * The provider, built from those variables alone; it throws in words when one is missing or wrong. A key is read here,
 	 * when the provider is built, and never when the module loads.

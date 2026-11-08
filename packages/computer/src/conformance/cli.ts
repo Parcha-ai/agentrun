@@ -8,7 +8,7 @@ import { pathToFileURL } from "node:url";
 import { isCommand } from "../entry.js";
 import type { ComputerProvider } from "../provider.js";
 import { type ConformanceModule, isProviderId, type ProviderEnv, providerIds, providerModule } from "../providers.js";
-import { type Kind, KINDS } from "../kinds.js";
+import { type ComputerSettingKind, SETTING_KIND_NAMES } from "../kinds.js";
 import { conformanceCases } from "./cases/index.js";
 import { kindRunProblem } from "./kind.js";
 import { formatReport } from "./report.js";
@@ -47,7 +47,7 @@ const USAGE = `usage: npm run conformance -w @parcha/agentrun-computer -- --prov
   --only      run only these groups (health, exec, files, process, provider, drift, mount, screen, input, touch,
               apps, lifetime) or case ids; a run that leaves Core cases out is partial: no Core verdict, and exit 3 when
               every case that ran passed
-  --kind      run a kind's cases (sandbox, desktop, phone) and exit on its verdict: the provider passes the kind only
+  --kind      run a setting kind's cases (sandbox, desktop, phone, browser) and exit on its verdict: the provider passes the kind only
               when it serves it and every case of each required group passes; not with --only
   --fixture   the fixture the screen, input, touch and apps cases check effects with: computerd-fixture for a
               desktop, the fixture APK for an Android phone
@@ -62,7 +62,7 @@ interface Args {
 	provider: string;
 	image?: string;
 	only?: string[];
-	kind?: Kind;
+	kind?: ComputerSettingKind;
 	fixture?: string;
 	json: boolean;
 	help: boolean;
@@ -82,10 +82,10 @@ function parse(argv: string[], cases: Case[]): Args {
 		else if (flag === "--only") args.only = value().split(",").map((part) => part.trim()).filter(Boolean);
 		else if (flag === "--kind") {
 			const kind = value();
-			if (!(KINDS as readonly string[]).includes(kind)) throw new Usage(`--kind: ${JSON.stringify(kind)} is not a kind (${KINDS.join(", ")})`);
-			const problem = kindRunProblem(kind as Kind);
+			if (!(SETTING_KIND_NAMES as readonly string[]).includes(kind)) throw new Usage(`--kind: ${JSON.stringify(kind)} is not a kind (${SETTING_KIND_NAMES.join(", ")})`);
+			const problem = kindRunProblem(kind as ComputerSettingKind);
 			if (problem !== undefined) throw new Usage(`--kind ${kind}: ${problem}`);
-			args.kind = kind as Kind;
+			args.kind = kind as ComputerSettingKind;
 		} else if (flag === "--fixture") args.fixture = value();
 		else if (flag === "--json") args.json = true;
 		else if (flag === "--help" || flag === "-h") args.help = true;

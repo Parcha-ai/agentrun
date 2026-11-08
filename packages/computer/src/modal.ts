@@ -19,6 +19,7 @@ import {
 	probeReportOf,
 	WORK,
 } from "./drift.js";
+import type { KindCapabilities } from "./kinds.js";
 import type { MountKind } from "./mount.js";
 import {
 	type AttachedComputer,
@@ -165,6 +166,9 @@ export const ENV = {
 
 /** The mount kinds a Modal computer takes: none yet (capabilities() declares no mount); the Archil mount comes with D6. */
 export const MOUNT: readonly MountKind[] = [];
+
+/** The machine kind and groups of its one configuration: a linux computer. */
+export const CAPABILITIES: readonly KindCapabilities[] = [{ kind: "linux", groups: ["exec", "files", "processes"] }];
 
 /** The SDK's default server (modal-client@64880502:js/src/config.ts:143). */
 const MODAL_DEFAULT_SERVER_URL = "https://api.modal.com:443";

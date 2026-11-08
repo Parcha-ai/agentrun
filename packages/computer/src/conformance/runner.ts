@@ -218,7 +218,10 @@ export async function runConformance(provider: ComputerProvider, options: Confor
 	/** Why a case cannot run here, or undefined when everything it needs is declared. */
 	const missing = async (needs: Capability[]): Promise<string | undefined> => {
 		for (const need of needs) {
-			if (GROUP_NAMES.has(need)) {
+			// stream is a group (a live view, the provider's) and a provider method: a case that needs it needs stream().
+			if (need === "extend" || need === "stream") {
+				if (typeof provider[need] !== "function") return `the provider has no ${need}()`;
+			} else if (GROUP_NAMES.has(need)) {
 				if (!groups.includes(need as Group)) return `the provider does not declare ${need}`;
 				const got = await getShared();
 				if ("hello" in got && !(Array.isArray(got.hello.groups) && got.hello.groups.includes(need as Group))) {
@@ -226,8 +229,6 @@ export async function runConformance(provider: ComputerProvider, options: Confor
 				}
 			} else if (need.startsWith("mount:")) {
 				if (!capabilities.mount?.includes(need.slice("mount:".length) as MountKind)) return `the provider does not declare ${need}`;
-			} else if (need === "extend" || need === "stream") {
-				if (typeof provider[need] !== "function") return `the provider has no ${need}()`;
 			} else if (need.startsWith("network:")) {
 				if (!capabilities.network.includes(need.slice("network:".length) as "none")) return `the provider does not declare ${need}`;
 			} else if (need === "lifetime:janitor" && capabilities.lifetime !== "janitor") {

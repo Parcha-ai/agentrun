@@ -145,7 +145,7 @@ test("KEYS is the spec's table, and a key is a name in it or one printable ASCII
 	]);
 	for (const key of ["enter", "f12", "capslock", "a", "A", "1", "/", "~", "!"]) assert.equal(isKey(key), true, key);
 	for (const key of ["Enter", "Return", "Hyper_Q", " ", "\t", "é", "ab", "", "F13", 1, null]) assert.equal(isKey(key), false, JSON.stringify(key));
-	assert.deepEqual(GROUPS, ["exec", "files", "processes", "screen", "input.pointer", "input.keys", "input.touch", "apps", "apps.install", "apps.ui_tree"]);
+	assert.deepEqual(GROUPS, ["exec", "files", "processes", "screen", "input.pointer", "input.keys", "input.touch", "apps", "apps.install", "apps.ui_tree", "cdp", "stream", "downloads"]);
 });
 
 test("checkActions: the whole batch first: its shape, its length, each key, each action's group, a pixel scroll and the summed wait", () => {

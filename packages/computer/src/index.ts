@@ -43,17 +43,18 @@ export { EPOCH_LABEL, epochOf, epochProblem, RUN_LABEL, runLabels, runProblem } 
 export { waitUntil, type WaitOptions } from "./wait.js";
 export { type ConformanceModule, isProviderId, type ProviderEnv, type ProviderId, providerFromEnv, providerIds, type ProviderModule, providerModule, providers } from "./providers.js";
 export {
-	type Kind,
+	type ComputerSettingKind,
 	type KindCapabilities,
-	type KindPlane,
-	type KindSpec,
-	type KindTool,
-	KIND_PROVIDERS,
-	KIND_SPECS,
-	KINDS,
 	kindOf,
+	type ProviderEntry,
+	type ProviderKey,
+	PROVIDERS,
+	SETTING_KIND_NAMES,
+	SETTING_KINDS,
+	type SettingKindSpec,
 	serves,
 	servingRefusals,
-	toolsFor,
+	type TestConnection,
+	type TestConnectionOptions,
 } from "./kinds.js";
 export * from "./conformance/index.js";

@@ -13,6 +13,7 @@ import { childCommands, type DaemonExpected, daemonDrift } from "./child.js";
 import { DaemonClient } from "./client.js";
 import { DESKTOP_GROUPS, type DesktopOptions, desktopOf, startDisplay } from "./desktop.js";
 import { COMPUTER_LABEL, DAEMON_IN_COMPUTER, DEADLINE_LABEL, helloDrift, type ProbeReport, probeNetworkDrift, probeNotes, probeReportOf, WORK } from "./drift.js";
+import type { KindCapabilities } from "./kinds.js";
 import type { MountKind } from "./mount.js";
 import { listProcesses } from "./processes.js";
 import type { HelloResult, ProcessExit } from "./protocol.js";
@@ -305,6 +306,12 @@ const DEFAULTS: E2BTimeouts = {
 
 /** The mount kinds an E2B computer takes: none yet (capabilities() declares no mount); the Archil mount comes with D6. */
 export const MOUNT: readonly MountKind[] = [];
+
+/** The machine kind and groups of each configuration: kind linux (the plain template), and kind desktop (the default). */
+export const CAPABILITIES: readonly KindCapabilities[] = [
+	{ kind: "linux", groups: ["exec", "files", "processes"] },
+	{ kind: "desktop", groups: ["exec", "files", "processes", ...DESKTOP_GROUPS] },
+];
 const RELEASE_POLL_MAX_MS = 5_000;
 const LISTED_POLL_MS = 150;
 const LISTED_ROUNDS = 2;
