@@ -393,6 +393,16 @@ test("create: tags that do not read back as given are drift", async () => {
 	await driftedCreate({ tags: { extra: "1" } }, /tag extra/);
 });
 
+test("create: a sandbox whose own command has already ended is refused with its exit code and the tail of its output", async () => {
+	// The Modal live run: every create's sandbox had shut down before the daemon's bridge, and the error said only that.
+	const error = await driftedCreate({ running: false, ended: { exitCode: 1, stdout: "", stderr: "computerd init: cannot make its own network: operation not permitted\n" } }, /finished/);
+	assert.match(error.message, /its command exited 1/);
+	assert.match(error.message, /computerd init: cannot make its own network: operation not permitted/);
+	// A sandbox that ended with no output says so, in words.
+	const quiet = await driftedCreate({ running: false, ended: { exitCode: 0 } }, /finished/);
+	assert.match(quiet.message, /its command exited 0, with no output/);
+});
+
 test("create: a sandbox that is not running after create, or has no daemon, is refused", async () => {
 	await driftedCreate({ running: false }, /finished/);
 	await driftedCreate({ box: { daemon: false } }, /no daemon listens/, SPEC, { timeouts: { helloMs: 300 } });

@@ -346,7 +346,7 @@ function rooter(found, command, fake, answers) {
  * fake.events records, in order, every SDK call on a sandbox, every root command and every daemon method, each as
  * { sandbox, what }; fake.rootRuns each root command with what its stdin was given; fake.syncs each mount.sync.
  */
-export function fakeModal({ create = "ok", box = {}, tags: tagPatch = {}, sandboxes: seeded = [], terminate = "ok", running = true, upload = "ok", list = "ok", lingers, bridgeMs = 0, archil = {} } = {}) {
+export function fakeModal({ create = "ok", box = {}, tags: tagPatch = {}, sandboxes: seeded = [], terminate = "ok", running = true, upload = "ok", list = "ok", lingers, bridgeMs = 0, archil = {}, ended } = {}) {
 	const calls = [];
 	const sandboxes = new Map();
 	const fake = { calls, sandboxes, execRuns: [], stdinClosed: 0, held: [], constructed: 0, uploads: [], events: [], rootRuns: [], syncs: [] };
@@ -378,13 +378,17 @@ export function fakeModal({ create = "ok", box = {}, tags: tagPatch = {}, sandbo
 	};
 	const add = ({ tags = {}, running: on = true, box: extra = {}, params, appId = "ap-computers", stuck = false, image } = {}) => {
 		const id = newId();
-		sandboxes.set(id, { id, appId, tags: { ...tags }, running: on, exitCode: on ? null : 0, params, box: boxOf(id, params, extra, image), terminated: 0, stuck });
+		sandboxes.set(id, { id, appId, tags: { ...tags }, running: on, exitCode: on ? null : (ended?.exitCode ?? 0), params, box: boxOf(id, params, extra, image), terminated: 0, stuck });
 		return id;
 	};
 	for (const one of seeded) add(one);
+	/** The sandbox's own output, as the SDK's sandbox.stdout and stderr give it (ModalReadStream.readText). */
+	const streamOf = (text) => ({ readText: async () => text });
 
 	const handle = (id) => ({
 		sandboxId: id,
+		stdout: streamOf(ended?.stdout ?? ""),
+		stderr: streamOf(ended?.stderr ?? ""),
 		async getTags() {
 			record("sandbox.getTags", id);
 			const found = sandboxes.get(id);
