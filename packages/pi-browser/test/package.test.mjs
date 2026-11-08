@@ -176,20 +176,16 @@ test("importing the package has no effect: sideEffects is false, and loading eve
   assert.deepEqual(JSON.parse(out.stdout), []);
 });
 
-test("pi-durable and chord are bounded from the version a leg measured to below 1.4.0, the dev pins sit inside, and the pi coding agent stays an unbounded peer as pi's package guidance says", () => {
+test("pi-durable and chord are the pi family's one version, 1.5.0 exactly, the dev pins the same, and the pi coding agent stays an unbounded peer as pi's package guidance says", () => {
   const manifest = JSON.parse(fs.readFileSync(path.join(SRC, "..", "package.json"), "utf8"));
-  // 1.0.4 cannot build the durable adapter: use_website reads a child's last report by scanning entries in descending order, which 1.1 added.
-  const floors = { "@earendil-works/chord": "1.1.0", "@earendil-works/pi-durable": "1.1.0" };
-  const parts = (version) => version.split(".").map(Number);
-  const compare = (a, b) => { const [x, y] = [parts(a), parts(b)]; return x[0] - y[0] || x[1] - y[1] || x[2] - y[2]; };
+  const pinned = ["@earendil-works/chord", "@earendil-works/pi-durable"];
   const peers = Object.entries(manifest.peerDependencies ?? {}).filter(([name]) => name.startsWith("@earendil-works/"));
-  assert.deepEqual(peers.map(([name]) => name).sort(), [...Object.keys(floors), "@earendil-works/pi-coding-agent"].sort());
+  assert.deepEqual(peers.map(([name]) => name).sort(), [...pinned, "@earendil-works/pi-coding-agent"].sort());
   assert.equal(manifest.peerDependencies["@earendil-works/pi-coding-agent"], "*");
-  for (const [name, floor] of Object.entries(floors)) {
-    const range = manifest.peerDependencies[name];
-    assert.equal(range, `>=${floor} <1.4.0`, `${name} starts at its measured floor and ends below 1.4.0`);
+  for (const name of pinned) {
+    assert.equal(manifest.peerDependencies[name], "1.5.0", `${name} is the family's exact version`);
     const pin = manifest.devDependencies?.[name];
-    if (pin) assert.ok(compare(pin, floor) >= 0 && compare(pin, "1.4.0") < 0, `${name} is developed on ${pin}, outside ${range}`);
+    if (pin) assert.equal(pin, "1.5.0", `${name} is developed on the version it names`);
   }
 });
 

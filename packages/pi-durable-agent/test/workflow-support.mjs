@@ -1,6 +1,7 @@
 import { mkdir } from "node:fs/promises";
 import path from "node:path";
 import { BACKGROUND_CONTEXT as ctx } from "@earendil-works/chord/context";
+import { createModels } from "@earendil-works/pi-ai/models";
 import { createRegistry, Harness } from "@earendil-works/pi-durable";
 import { openNodeSqliteStorage } from "@earendil-works/pi-durable/storage/sqlite/node";
 import { workspaceFiles } from "@parcha/agentrun-dsl/recovery";
@@ -106,6 +107,6 @@ export async function hostFor(run, { tier = "fast", onCall, fail, effect, layout
   });
   const registry = createRegistry();
   registry.install(workflows.extension);
-  const harness = await Harness.open(await openNodeSqliteStorage(run.storePath, storage), { registry, models: {} }, ctx);
+  const harness = await Harness.open(await openNodeSqliteStorage(run.storePath, storage), { registry, models: createModels() }, ctx);
   return { harness, workflows, calls, close: () => harness.close(ctx) };
 }

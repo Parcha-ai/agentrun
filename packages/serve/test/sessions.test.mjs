@@ -4,13 +4,14 @@
 import assert from "node:assert/strict";
 import { test } from "node:test";
 import { BACKGROUND_CONTEXT as ctx } from "@earendil-works/chord/context";
+import { createModels } from "@earendil-works/pi-ai/models";
 import { createRegistry, Harness, MemoryStorage, ROOT_CONVERSATION_ID } from "@earendil-works/pi-durable";
 import { SessionFenced } from "@parcha/agentrun-kernel";
 import { FencedError } from "@parcha/pi-durable-disk";
 import { foldSession, openDrive } from "@parcha/agentrun-kernel/kernel";
 import { durableSessions } from "../dist/sessions.js";
 
-const harnessOn = (storage) => Harness.open(storage, { registry: createRegistry(), models: {} }, ctx);
+const harnessOn = (storage) => Harness.open(storage, { registry: createRegistry(), models: createModels() }, ctx);
 const record = (n) => ({ kind: "kernel.test", data: { n, text: `record ${n}` } });
 
 test("a session's records come back in order, per key, and a later Harness on the same store reads them", async () => {

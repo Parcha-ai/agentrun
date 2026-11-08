@@ -1,6 +1,8 @@
 // A sandbox run's box: one per run, made on the first call that runs in it and labelled with the run's id, so the label
-// is the record (a bound box's read, write and edit run on this machine: bound-files.ts). A run's process that starts
-// again finds it by that label and first kills the commands the process before it left running. Serve destroys it at
+// is the record (a bound box's read, write and edit run on this machine: bound-files.ts). A Docker box is labelled with
+// the epoch of the claim its process holds too (EPOCH_LABEL): a run's process that starts again, under a later epoch,
+// destroys every box of the run of an earlier one before it makes its own, and its model is told once that the box was
+// replaced (BOX_REPLACED_NOTE). Serve destroys it at
 // every settle (a cancel included) and at archive, and its start sweeps the boxes of runs that have ended. A box gets the
 // run's work/ only, at BOX_WORK, a fixed environment (never this process's, so no key or token enters it), no network
 // (or, on Docker with the server's host list set, those hosts alone, through this process's egress proxy: box-egress.ts),
@@ -15,7 +17,7 @@
 // way: the server makes, seeds, pulls and ends it with its own client, and the run's process runs pi-transport's VM
 // provider over the relay's VM half (box-relay-vm.ts), which holds the client and the token. It has no network.
 import { createHash } from "node:crypto";
-import { appendFile, lstat, readFile, realpath } from "node:fs/promises";
+import { appendFile, lstat, readFile, realpath, rm, writeFile } from "node:fs/promises";
 import { isAbsolute, join, posix, relative, sep } from "node:path";
 import { pathToFileURL } from "node:url";
 import type { Context } from "@earendil-works/chord";
@@ -43,12 +45,18 @@ export const NET_LABEL = "agentrun.net";
 export const netLabelOf = (allow: readonly string[]): string => createHash("sha256").update([...new Set(allow.map((host) => host.toLowerCase()))].sort().join(",")).digest("hex").slice(0, 16);
 /** And this one, the same on every run's box, which the start's sweep lists them by. */
 export const KIND_LABEL = "agentrun.box";
+/** And, on a Docker box, the epoch of the run's claim its process held when it made it (runs.ts launch, RUN_EPOCH_ENV). */
+export const EPOCH_LABEL = "agentrun.epoch";
+/** What a run's model is told, once, after its process made a new box in place of the one an earlier process left: the
+ *  run's files are the same, but whatever the old box held outside them is not. */
+export const BOX_REPLACED_NOTE = "this run's box was replaced after a restart: /workspace is kept; packages installed outside it and /tmp are gone; reinstall what you need";
 /** The whole environment of a box's programs: a constant, never this process's. */
 export const BOX_ENV: Readonly<Record<string, string>> = Object.freeze({ LANG: "C.UTF-8", HOME: "/tmp" });
 /** How long a box lives whatever happens to the server: a bound on a leaked box, never its clean end. */
 export const BOX_LIFETIME_MS = 24 * 60 * 60_000;
-/** A bash command's timeout when the model names none. */
-export const BASH_TIMEOUT_MS = 300_000;
+/** A box command's deadline when its call names none: bash's own default (coding-tools.ts BASH_DEFAULT_TIMEOUT_S), which
+ *  bash always names, so this is the backstop for any other command. */
+export const BASH_TIMEOUT_MS = 120_000;
 /** The image a Docker box starts from (box-image.ts, where the server makes it ready). */
 export { DEFAULT_DOCKER_IMAGE, DOCKER_IMAGE_ENV } from "./box-image.js";
 /** The settings that bound a Docker box; unset, their defaults: enough for a build, and safe on a laptop, where one run's
@@ -153,6 +161,9 @@ export const BOX_SYNC_FILE = "box-sync.json";
  *  process never writes it; a pull folds these lines into the mark it compares against, for paths the mark lacks, so
  *  the box's later edit of such a file comes back instead of reading as a change the server made. */
 export const BOX_MIRRORED_FILE = "box-mirrored.jsonl";
+/** In a run's directory while the box the server destroyed for a new one has no successor yet (ensureRemoteBox): the
+ *  attempt that makes one says the box was replaced, though the one that destroyed the old box failed after it. */
+export const BOX_REPLACED_FILE = "box-replaced";
 
 type Mount = NonNullable<BoxSpec["mounts"]>[number];
 
@@ -222,21 +233,28 @@ export const fauxBoxes = async (module: string, root: string): Promise<BoxProvid
  *  row; a remote box is the server's to make (ensureRemoteBox), and never waits on that. `mirror`, on a remote box: copies
  *  a file the run's host tools filed in work/ (at `path`, relative to it) into the box, now when the box is open, else at
  *  its open. */
-export type RunBox = { env(context: Context, note?: (summary: string) => Promise<void> | void): Promise<ExecutionEnv>; hostWork: string; bound(): Promise<boolean>; leftEnded(context: Context): Promise<void>; mirror?: (path: string, data: string | Uint8Array) => Promise<void> };
+export type RunBox = { env(context: Context, note?: (summary: string) => Promise<void> | void): Promise<ExecutionEnv>; hostWork: string; bound(): Promise<boolean>; leftEnded(context: Context): Promise<void>; mirror?: (path: string, data: string | Uint8Array) => Promise<void>; /** BOX_REPLACED_NOTE once, after this process replaced an earlier process's box; else nothing. */ replaced(): string | undefined };
 
 /** Where a run's box comes from: a provider of this process's own (Docker, or the tests' faux box), or, for a remote box,
  *  the server's relay in data root `relay`. A bare function is a provider of this process's own. */
 export type BoxSource = { provider: () => Promise<RunBoxes> } | { relay: string };
 
-export function runBox(given: BoxSource | (() => Promise<RunBoxes>), run: { id: string; root: string; dir: string; place: Place }): RunBox {
+export function runBox(given: BoxSource | (() => Promise<RunBoxes>), run: { id: string; root: string; dir: string; place: Place; epoch: number }): RunBox {
   const source: BoxSource = typeof given === "function" ? { provider: given } : given;
   let held: Promise<{ env: ExecutionEnv; box: Box }> | undefined;
+  // Whether this process destroyed a box of an earlier one, until its model is told (replaced).
+  let replaced: "untold" | "told" | undefined;
+  const fenced = (destroyed: number) => void (destroyed > 0 && replaced === undefined && (replaced = "untold"));
   // What the host tools filed while no box was open in this process: a box a process before it made has no seed now, so
   // these go in when it opens (and to a new box, whose seed carries them anyway, again: the same bytes).
   const filed = new Map<string, Uint8Array>();
   const open = async (context: Context, note: (summary: string) => Promise<void> | void): Promise<{ env: ExecutionEnv; box: Box }> => {
     const { boxEnv, endLeftCommands } = await import("@parcha/pi-transport/hands");
-    const { box, made } = "relay" in source ? await relayedRunBox(source.relay, run, context) : await localRunBox(await source.provider(), run, context, note);
+    const opened = "relay" in source ? await relayedRunBox(source.relay, run, context) : await localRunBox(await source.provider(), run, context, note, fenced);
+    const { box, made } = opened;
+    // A remote box the server made in place of the run's (another list, or its files at an older place): told as a
+    // Docker box an earlier process left is.
+    if ("replaced" in opened && opened.replaced) fenced(1);
     if (!made) {
       // A process before this one left it: what it still runs is killed first, since its calls were answered interrupted.
       const ended = await endLeftCommands(box, context);
@@ -285,7 +303,11 @@ export function runBox(given: BoxSource | (() => Promise<RunBoxes>), run: { id: 
       const provider = source.provider;
       checked ??= (async () => {
         if (held) return void (await held);
-        const listed = await (await provider()).list({ [RUN_LABEL]: run.id }, context);
+        // An earlier process's box is destroyed (fenceRunBoxes), and none made for a file tool; one of this epoch's own
+        // (opened before, then lost) is taken over.
+        const boxes = await provider();
+        fenced(await fenceRunBoxes(boxes, run, context));
+        const listed = await boxes.list({ [RUN_LABEL]: run.id }, context);
         if (!listed.ok) throw listed.error;
         if (listed.value.length) await env(context);
       })().catch((error: unknown) => {
@@ -293,6 +315,11 @@ export function runBox(given: BoxSource | (() => Promise<RunBoxes>), run: { id: 
         throw error;
       });
       return checked;
+    },
+    replaced() {
+      if (replaced !== "untold") return undefined;
+      replaced = "told";
+      return BOX_REPLACED_NOTE;
     },
     ...("relay" in source
       ? {
@@ -350,13 +377,16 @@ const egressLog = (line: string): void => void process.stderr.write(`${JSON.stri
  *  (the provider's `ready`, `note` writing the one timeline row while it is built or pulled). A box that reaches the
  *  server's host list has the run's egress proxy started first, its directory bound read-only and the proxy variables
  *  in its environment, and, made or found, its relay started (startRelay). */
-async function localRunBox(boxes: RunBoxes, run: { id: string; root: string; dir: string; place: Place }, context: Context, note: (summary: string) => Promise<void> | void): Promise<{ box: Box; made: boolean }> {
+async function localRunBox(boxes: RunBoxes, run: { id: string; root: string; dir: string; place: Place; epoch: number }, context: Context, note: (summary: string) => Promise<void> | void, fenced: (destroyed: number) => void): Promise<{ box: Box; made: boolean }> {
   let egress: Awaited<ReturnType<BoxEgress>> | undefined;
   try {
     egress = boxes.egress ? await boxes.egress(run.id) : undefined;
   } catch (error) {
     throw new Error(`the run's box could not have its network: ${(error as Error).message}`);
   }
+  // A box an earlier process made, under an earlier epoch, goes first: its mounts are the same folder, so its writer is
+  // gone before this one starts. Never taken over.
+  fenced(await fenceRunBoxes(boxes, run, context));
   // A box a process before this one made with another network (none, or another list: the server's setting changed
   // since) is made again: its mounts and environment are fixed at its create. Its work/ is this machine's, bound.
   await destroyListed(boxes, { [RUN_LABEL]: run.id }, (labels) => labels[NET_LABEL] !== boxes.net, context);
@@ -381,14 +411,19 @@ async function localRunBox(boxes: RunBoxes, run: { id: string; root: string; dir
   const spec: BoxSpec = {
     env: egress ? { ...BOX_ENV, ...PROXY_ENV } : BOX_ENV, workspace: agentWorkDir(run.dir, run.place),
     mounts: [...(await boxMounts(run.root, run.dir, run.place)), ...(egress?.mount ? [egress.mount] : [])],
-    labels: { [RUN_LABEL]: run.id, [KIND_LABEL]: "run", ...(boxes.net ? { [NET_LABEL]: boxes.net } : {}) }, network: "none", maxLifetimeMs: BOX_LIFETIME_MS,
+    labels: { [RUN_LABEL]: run.id, [KIND_LABEL]: "run", [EPOCH_LABEL]: String(run.epoch), ...(boxes.net ? { [NET_LABEL]: boxes.net } : {}) }, network: "none", maxLifetimeMs: BOX_LIFETIME_MS,
   };
+  // Of the run's boxes, the ones this process may destroy: its own epoch's and lower ones, never a later process's.
+  const notLater = (labels: Readonly<Record<string, string>>) => !(Number(labels[EPOCH_LABEL]) > run.epoch);
   const made = await boxes.create(spec, context);
   if (!made.ok) {
     // A create that failed may still have left a box (a client cut off while the daemon made it): it carries the label.
-    await destroyRunBoxes(boxes, run.id, context).catch(() => undefined);
+    await destroyListed(boxes, { [RUN_LABEL]: run.id }, notLater, context).catch(() => undefined);
     throw new Error(`the run's box could not be made: ${made.error.message}`);
   }
+  // The fence and the create are not one step: an earlier process's own create, still in flight when it was killed, may
+  // have landed since. Its box goes now, not at the end of its lifetime.
+  await destroyListed(boxes, { [RUN_LABEL]: run.id }, (labels) => !(Number(labels[EPOCH_LABEL]) >= run.epoch), context);
   if (egress) await startRelay(made.value, egress.socket, context, note);
   return { box: made.value, made: true };
 }
@@ -411,14 +446,14 @@ async function startRelay(box: Box, socket: string, context: Context, note: (sum
 /** A remote box, which the server finds or makes and seeds (ensureRemoteBox), reached through its relay: this process's
  *  provider holds no key, and every call it makes goes to the relay, which sends it on with the server's (Daytona's key;
  *  the VM box's client, box-relay-vm.ts). */
-async function relayedRunBox(root: string, run: { id: string; dir: string; place: Place }, context: Context): Promise<{ box: Box; made: boolean }> {
+async function relayedRunBox(root: string, run: { id: string; dir: string; place: Place }, context: Context): Promise<{ box: Box; made: boolean; replaced?: boolean }> {
   const { id: runId, dir: runDir } = run;
   const given = await relayedBox(root, runDir, runId, context.abortSignal);
   const boxes = run.place.mode === "sandbox" && run.place.box === VM_PROVIDER.id ? await relayedVmBoxes(root, runDir, runId) : await relayedDaytona(root, runDir, runId, given.apiUrl);
   const attached = await boxes.attach(given.id, context);
   if (!attached.ok) throw new Error(`the run's box could not be reached: ${attached.error.message}`);
   if (!attached.value) throw new Error(`the run's box ${given.id} is not running`);
-  return { box: attached.value, made: given.made };
+  return { box: attached.value, made: given.made, ...(given.replaced ? { replaced: true } : {}) };
 }
 
 /** The run's process's Daytona provider: its calls go to the relay, which adds the key. */
@@ -489,21 +524,25 @@ export type RemoteBoxOptions = {
   limits?: RemoteLimits;
 };
 
-export async function ensureRemoteBox(boxes: BoxProvider, run: { id: string; dir: string }, context: Context, options: RemoteBoxOptions = {}): Promise<{ id: string; made: boolean }> {
+export async function ensureRemoteBox(boxes: BoxProvider, run: { id: string; dir: string }, context: Context, options: RemoteBoxOptions = {}): Promise<{ id: string; made: boolean; replaced?: boolean }> {
   const { wake, allow = "none", onNoList, pull = pullRemoteBox, limits } = options;
   let asked: "none" | "allowlist" = allow === "none" ? "none" : "allowlist";
   let box = await runningRunBox(boxes, run.id, context, wake);
   let made = false;
   const facts = box?.facts();
-  const keep = facts?.network === "none" || (facts?.network === "allowlist" && allow !== "none" && sameHosts(facts.allow, allow));
+  // Kept with its network as asked, and its work/ where every box has it now (BOX_WORK): one made when boxes had it
+  // elsewhere is pulled from there, whole, and made again.
+  const keep = facts?.workspace === BOX_WORK && (facts?.network === "none" || (facts?.network === "allowlist" && allow !== "none" && sameHosts(facts.allow, allow)));
   if (box && !keep) {
     // Its files first, whole: a box replaced here holds nothing only it had. One whose copy back fails, or is not whole,
     // is kept for a later copy, and the call refused, so no tool runs in it.
     try {
       await pull(boxes, run, context, wake);
     } catch (error) {
-      throw new Error(`the run's box has another host list than this server's now (or a network it does not ask for), and its files could not all be copied back, so it is kept and not used: ${(error as Error).message}`);
+      throw new Error(`the run's box has another host list than this server's now (or a network it does not ask for, or its files outside /workspace), and its files could not all be copied back, so it is kept and not used: ${(error as Error).message}`);
     }
+    // Noted before the old box goes: should what follows fail, the attempt that makes its successor still says so.
+    await writeFile(join(run.dir, BOX_REPLACED_FILE), "");
     await destroyRunBoxes(boxes, run.id, context);
     box = undefined;
   }
@@ -536,7 +575,10 @@ export async function ensureRemoteBox(boxes: BoxProvider, run: { id: string; dir
     }
     await keepMark(run.dir, { box: box.id, mark: seeded.value.mark });
   }
-  return { id: box.id, made };
+  // `replaced`: a box the run had was destroyed for this one (in this attempt or a failed one before it), and what it
+  // held outside the run's files with it. Said once.
+  const replaced = await rm(join(run.dir, BOX_REPLACED_FILE)).then(() => true, (error: NodeJS.ErrnoException) => (error.code === "ENOENT" ? false : Promise.reject(error)));
+  return { id: box.id, made, ...(replaced ? { replaced } : {}) };
 }
 
 /** What a pull of a remote box brought back; undefined when the run has no box (none made, or it is gone). */
@@ -572,7 +614,8 @@ export async function pullRemoteBox(boxes: BoxProvider, run: { id: string; dir: 
   for (let round = 1; ; round++) {
     const kept = await markOf(run.dir);
     const since = kept?.box === box.id ? await withMirrored(run.dir, kept.mark) : undefined;
-    const pulled = await pullDir(box, { from: BOX_WORK, to: join(run.dir, "work"), ...(since ? { since } : {}), mirrorDeletes: true, overwrite: "if_unchanged" }, context);
+    // From where this box has the run's work/: BOX_WORK, or, for one made before every box had it there, its own.
+    const pulled = await pullDir(box, { from: box.facts().workspace ?? BOX_WORK, to: join(run.dir, "work"), ...(since ? { since } : {}), mirrorDeletes: true, overwrite: "if_unchanged" }, context);
     if (!pulled.ok) throw new Error(`the run's files could not be copied back from its box: ${pulled.error.message}`);
     // What it wrote is whole and in the mark, a stopped pull's too: the next pull asks only for the rest.
     await keepMark(run.dir, { box: box.id, mark: pulled.value.mark });
@@ -605,6 +648,17 @@ async function attachRunBox(boxes: BoxProvider, runId: string, context: Context)
     if (attached.value) return attached.value;
   }
   return undefined;
+}
+
+/** The fence of a run's boxes for a process under claim epoch `run.epoch`: every box of the run whose epoch is lower (or
+ *  that has none: made before boxes had one) is destroyed; how many. One of a higher epoch is a later process's: this
+ *  one is not the run's holder, so it throws, and makes and destroys nothing. */
+export async function fenceRunBoxes(boxes: BoxProvider, run: { id: string; epoch: number }, context: Context): Promise<number> {
+  const listed = await boxes.list({ [RUN_LABEL]: run.id }, context);
+  if (!listed.ok) throw listed.error;
+  const later = listed.value.find((ref) => Number(ref.labels[EPOCH_LABEL]) > run.epoch);
+  if (later) throw new Error(`the run's box ${later.id} is a later launch's (epoch ${later.labels[EPOCH_LABEL]}, this process's ${run.epoch}): this process no longer holds the run`);
+  return destroyListed(boxes, { [RUN_LABEL]: run.id }, (labels) => !(Number(labels[EPOCH_LABEL]) >= run.epoch), context);
 }
 
 /** Destroys every box labelled with run `runId`; how many it destroyed. */

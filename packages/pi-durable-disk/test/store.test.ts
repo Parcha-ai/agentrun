@@ -77,7 +77,10 @@ describe("the conformance runner is not vacuous", () => {
       const inner = new MemoryStorage();
       const broken = new Proxy(inner, {
         get(target, prop) {
-          if (prop === "commit") return (writes: Parameters<Storage["commit"]>[0], c: Parameters<Storage["commit"]>[1]) => target.commit(writes.filter((w) => w.type !== "task"), c);
+          if (prop === "commit") {
+            return (batches: Parameters<Storage["commit"]>[0], receive: Parameters<Storage["commit"]>[1], c: Parameters<Storage["commit"]>[2]) =>
+              target.commit(batches.map((writes) => writes.filter((w) => w.type !== "task")), receive, c);
+          }
           const value = Reflect.get(target, prop, target);
           return typeof value === "function" ? value.bind(target) : value;
         },
@@ -218,6 +221,9 @@ describe("pragma read-back refuses a wrong pragma", () => {
     const reads = (values: Record<string, unknown>): SqliteExecutor => ({
       async exec() {},
       async run() {},
+      async runCounted() {
+        return 0;
+      },
       async all() {
         return [];
       },
@@ -262,6 +268,9 @@ describe("pragma read-back refuses a wrong pragma", () => {
     const reads = (values: Record<string, unknown>): SqliteExecutor => ({
       async exec() {},
       async run() {},
+      async runCounted() {
+        return 0;
+      },
       async all() {
         return [];
       },
@@ -282,7 +291,7 @@ describe("pragma read-back refuses a wrong pragma", () => {
 // ---- T1: the fence-aware facade --------------------------------------------------------------------------------
 
 /** A database whose every call is counted and answers from `behavior`. */
-function scripted(behavior: Partial<Record<"exec" | "run" | "get" | "all" | "transaction" | "close", (...args: unknown[]) => unknown>> = {}) {
+function scripted(behavior: Partial<Record<"exec" | "run" | "runCounted" | "get" | "all" | "transaction" | "close", (...args: unknown[]) => unknown>> = {}) {
   const calls: string[] = [];
   const call = (name: keyof typeof behavior) => async (...args: unknown[]) => {
     calls.push(name);
@@ -291,6 +300,7 @@ function scripted(behavior: Partial<Record<"exec" | "run" | "get" | "all" | "tra
   const database = {
     exec: call("exec"),
     run: call("run"),
+    runCounted: call("runCounted"),
     get: call("get"),
     all: call("all"),
     transaction: call("transaction"),
@@ -372,7 +382,7 @@ describe("FencedDatabase classification", () => {
 
   it("fences on a statement inside a transaction handle, even when the caller wraps the error", async () => {
     const original = sqliteError(SQLITE_IOERR_WRITE, "disk I/O error");
-    const handle: SqliteExecutor = { exec: async () => {}, run: async () => { throw original; }, get: async () => undefined, all: async () => [] };
+    const handle: SqliteExecutor = { exec: async () => {}, run: async () => { throw original; }, runCounted: async () => 0, get: async () => undefined, all: async () => [] };
     const { database } = scripted({ transaction: (callback) => (callback as (h: SqliteExecutor) => Promise<unknown>)(handle) });
     const fence = new Fence();
     const facade = new FencedDatabase(database, fence);
@@ -402,6 +412,7 @@ describe("FencedDatabase classification", () => {
         statements.push(sql);
         throw sqliteError(SQLITE_IOERR_WRITE, "disk I/O error");
       },
+      runCounted: async () => 0,
       get: async () => undefined,
       all: async () => [],
     };
@@ -441,6 +452,8 @@ describe("FencedDatabase after a fence", () => {
     const attempts: Array<() => Promise<unknown>> = [
       () => facade.exec("PRAGMA synchronous"),
       () => facade.run("INSERT"),
+      // pi 1.5's group commit counts rows with runCounted: fenced exactly as run is.
+      () => facade.runCounted("UPDATE"),
       () => facade.get("SELECT 1"),
       () => facade.all("SELECT 1"),
       () => facade.transaction(async () => undefined),
@@ -451,6 +464,22 @@ describe("FencedDatabase after a fence", () => {
     }
     assert.deepEqual(calls, ["transaction"], "nothing reached the inner database after the fence: no retry, no close");
     assert.equal(seen.length, 1, "the callback runs once");
+  });
+
+  it("runCounted (pi 1.5's group commit) is fenced as run is: its count passes through, a fencing failure from it fences the handle, and a transaction handle's runCounted is fenced too", async () => {
+    const counting = new FencedDatabase(scripted({ runCounted: () => 3 }).database);
+    assert.equal(await counting.runCounted("UPDATE t SET x = 1"), 3, "the inner count, unchanged");
+    const original = sqliteError(SQLITE_IOERR_WRITE, "disk I/O error");
+    const { database, calls } = scripted({ runCounted: throwing(original) });
+    const facade = new FencedDatabase(database);
+    await assert.rejects(facade.runCounted("UPDATE"), (error: unknown) => error instanceof StoreFencedError && error.cause === original);
+    assert.equal(facade.fenced, true, "a fencing failure from runCounted fences the handle, as one from run does");
+    await assert.rejects(facade.run("INSERT"), (error: unknown) => error === facade.fencedBy);
+    assert.deepEqual(calls, ["runCounted"], "nothing reached the inner database after the fence");
+    const handle = { exec: async () => {}, run: async () => {}, runCounted: async () => { throw sqliteError(SQLITE_FULL, "full"); }, get: async () => undefined, all: async () => [] };
+    const inTx = new FencedDatabase(scripted({ transaction: (callback) => (callback as (h: SqliteExecutor) => Promise<unknown>)(handle) }).database);
+    await assert.rejects(inTx.transaction((tx) => tx.runCounted("UPDATE")), StoreFencedError);
+    assert.equal(inTx.fenced, true);
   });
 
   it("marks the flag before the callback runs and before the failing call rejects", async () => {

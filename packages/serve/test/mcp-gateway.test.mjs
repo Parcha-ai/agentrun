@@ -4,6 +4,7 @@
 import assert from "node:assert/strict";
 import { mkdtemp, readFile, rm } from "node:fs/promises";
 import { createServer, request } from "node:http";
+import { createServer as createTcpServer } from "node:net";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { test } from "node:test";
@@ -263,7 +264,7 @@ test("a priced call that never left (its server is down) books nothing: no mark,
   useSpend({ cap: 1, spent: () => spent, add: (usd) => void (spent += usd) });
   const said = await gateway.call("fake", "paid", { query: "ada" }, { signal: signal(), callId: "c1" });
   assert.equal(said.isError, true);
-  assert.match(textOf(said), /The MCP server fake failed/);
+  assert.match(textOf(said), /The MCP server fake could not be reached at http:\/\/127\.0\.0\.1:9 \(.+\); nothing was sent\./);
   assert.deepEqual([spent, entries], [0, []]);
   const unpriced = mcpGateway({ pin: { fake: { url: dead, tools } }, credentials: { fake: { url: dead } }, work: () => tmpdir(), commit });
   await unpriced.call("fake", "add", {}, { signal: signal(), callId: "c2" });
@@ -406,4 +407,19 @@ test("a grant whose server is no longer saved, or whose tool a refresh removed, 
   assert.throws(() => mcpPinOf(["mcp:gone/add"], saved), /^Error: The MCP tool mcp:gone\/add cannot be pinned: the MCP server gone is no longer saved\.$/);
   assert.throws(() => mcpPinOf(["mcp:fake/add", "mcp:fake/sub"], saved), /^Error: The MCP tool mcp:fake\/sub cannot be pinned: sub is no longer one of its tools since the last refresh\.$/);
   assert.deepEqual(Object.keys(mcpPinOf(["mcp:fake/add", "read"], saved)), ["fake"], "a name that is no MCP tool's is not the pin's");
+});
+
+test("a server that can't be reached reads so, at its address with a short reason and that nothing was sent, never the MCP SDK's own words", async (t) => {
+  // A server that cannot be reached: a port this test holds for its whole run, so no other test can take it, where each
+  // connection is reset at once (TCP RST) before any HTTP answer. A freed port is not used: another test may bind it
+  // between the close and the dial.
+  const dead = createTcpServer((socket) => socket.resetAndDestroy());
+  await new Promise((resolve) => dead.listen(0, "127.0.0.1", resolve));
+  t.after(() => new Promise((resolve) => dead.close(resolve)));
+  const url = `http://127.0.0.1:${dead.address().port}/mcp`;
+  const { gateway } = await setup(t, { url });
+  const said = await gateway.call("fake", "add", { a: 2, b: 3 }, { signal: signal() });
+  assert.equal(said.isError, true);
+  assert.equal(textOf(said), `The MCP server fake could not be reached at ${new URL(url).origin} (the connection was reset); nothing was sent.`);
+  assert.doesNotMatch(textOf(said), /Version negotiation|fetch failed/);
 });

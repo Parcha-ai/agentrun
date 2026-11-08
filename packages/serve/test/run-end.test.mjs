@@ -7,6 +7,7 @@ import { writeFile } from "node:fs/promises";
 import { join } from "node:path";
 import { test } from "node:test";
 import { agent, follow, scratch, serve, withEnv } from "./support.mjs";
+import { fauxTable } from "./fixtures/faux-table.mjs";
 
 const SLOW_EXIT = new URL("./fixtures/faux-answer-slow-exit.mjs", import.meta.url).pathname;
 const SLOW_EXIT_HARNESS = new URL("./fixtures/faux-harness-slow-exit.mjs", import.meta.url).pathname;
@@ -17,7 +18,7 @@ const sleep = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
 async function held(t) {
   const gate = join(await scratch(t), "gate");
   withEnv(t, { EXIT_GATE: gate });
-  const { api } = await serve(t, { faux: SLOW_EXIT, fauxHarness: SLOW_EXIT_HARNESS });
+  const { api } = await serve(t, { faux: SLOW_EXIT, harnessTable: fauxTable(SLOW_EXIT_HARNESS) });
   return { api, release: () => writeFile(gate, "") };
 }
 

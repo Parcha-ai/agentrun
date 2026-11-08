@@ -44,12 +44,13 @@ test("both stages build on one digest-pinned node:22 trixie base, and the runtim
   assert.equal(bases.length, 2, "a build stage and a runtime stage");
   assert.match(bases[0], /^node:22\.\d+\.\d+-trixie-slim@sha256:[0-9a-f]{64}$/, "pinned by digest");
   assert.equal(bases[1], bases[0], "one base for both stages");
-  // pi-git-remote needs git 2.40; trixie's is 2.47, bookworm's 2.39.
+  // An agent's learning folder needs git 2.32 (learning.ts MIN_GIT); the image holds itself to 2.40 by its own choice, and
+  // trixie's is 2.47.
   const runtime = dockerfile.slice(dockerfile.lastIndexOf("\nFROM "));
   const install = /apt-get install [^\n]*/.exec(runtime)?.[0] ?? "";
   assert.match(install, /--no-install-recommends/, "without recommends");
   for (const pkg of ["tini", "git"]) assert.match(install, new RegExp(`\\s${pkg}(\\s|$)`), `the runtime installs ${pkg}`);
-  // The RUN that reads git's version, continuation lines included, fails the build below 2.40.
+  // The RUN that reads git's version, continuation lines included, fails the build below the image's own 2.40.
   const guard = [...runtime.matchAll(/^RUN (?:[^\n]*\\\n)*[^\n]*/gm)].map(([run]) => run).find((run) => run.includes("git --version")) ?? "";
   assert.match(guard, /dpkg --compare-versions "\$v" ge 2\.40\b/, "the build compares the git it installed with 2.40");
   assert.match(guard, /\|\| \{[^}]*\bexit 1; \}/, "an older git fails the build");

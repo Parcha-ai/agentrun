@@ -14,6 +14,7 @@ import { REQUEST_STARTED } from "@parcha/pi-durable-agent/timeline";
 import { spentIn } from "../dist/cap.js";
 import { startServe } from "../dist/index.js";
 import { agent, client, follow, letGo, runDir, runRecordOf, scratch, serve, withEnv } from "./support.mjs";
+import { fauxTable } from "./fixtures/faux-table.mjs";
 
 /** The tests' faux model priced on output only, $100 a million: a request's least (1,024 tokens) is $0.1024. */
 const OUTPUT_PRICED = new URL("./fixtures/faux-output-priced.mjs", import.meta.url).pathname;
@@ -24,10 +25,10 @@ const raise = (api, runId, body) => api("PATCH", `/runs/${runId}`, body);
  *  is its first priced one, so its typical cost is that request's expected cost, which the faux model's 16,384 tokens
  *  clamp to nearly all that is left: under 3 times it, the note is due there, and its row follows the follow-up's. */
 const WRAP_UP = (left) => `About ${left} left of this run's budget: finish now with your answer.`;
-/** The same told before the run's own model has a priced request (step 0, cap.ts wrapUpWords' `nonePriced`): a pi run
- *  paused at its first request has none, so its raised follow-up's request is told in these words. The faux harness's is
- *  told a request later (its proxy places the note before the guard has priced anything), once its follow-up's first
- *  request is priced: the words above. */
+/** The same told while nothing is priced (step 0, cap.ts wrapUpWords' `nonePriced`): a run paused at its first request
+ *  has none, so its raised follow-up is told in these words, on pi in that request, on a faux CLI in the next (its proxy
+ *  places the note before the guard has priced anything), in the same words: the note came due at step 0. Under a $2
+ *  raise none is due at step 0 (the typical request is its input and a 4,096-token answer, $0.41, not its hold). */
 const WRAP_UP_FIRST = (left) => `This run's budget is about ${left}, enough for little work: answer as soon as you can.`;
 
 /** A run under a $0.05 cap, paused at it: its first request (least $0.1024) is refused. */
@@ -171,7 +172,7 @@ test("two raises of a paused run at once (a retry) resume it once: both answered
 
 for (const harness of ["claude-agent", "codex"]) {
   test(`${harness}: a run paused at its cap, its cap raised, goes on: the follow-up runs under the new cap and the run completes`, { timeout: 120_000 }, async (t) => {
-    const { api } = await serve(t, { fauxHarness: FAUX_HARNESS, faux: OUTPUT_PRICED });
+    const { api } = await serve(t, { harnessTable: fauxTable(FAUX_HARNESS), faux: OUTPUT_PRICED });
     assert.equal((await api("POST", "/agents", agent(`raise-${harness}`, { harness, instructions: "Make three requests." }))).status, 201);
     const { run_id } = (await api("POST", `/agents/raise-${harness}/runs`, { input: { content: "go" }, max_cost_usd: 0.05 })).body;
     await follow(api, run_id, SETTLED, { deadlineMs: 60_000 });
@@ -181,7 +182,7 @@ for (const harness of ["claude-agent", "codex"]) {
     const { rows } = await follow(api, run_id, ["completed", "failed", "cancelled"], { deadlineMs: 60_000 });
     const run = await view(api, run_id);
     assert.deepEqual([run.status, run.error, run.cost.cap_usd, run.result?.final_answer], ["completed", null, 1, "Read it."], JSON.stringify(run));
-    assert.deepEqual(said(rows), ["go", CONTINUE("$1"), WRAP_UP("$1")]);
+    assert.deepEqual(said(rows), ["go", CONTINUE("$1"), WRAP_UP_FIRST("$1")]);
   });
 }
 
@@ -270,7 +271,7 @@ test("a paused run's pending suggests a raise, spent + 10 × the refused request
   assert.deepEqual([raised.status, raised.body.max_cost_usd, raised.body.resumed], [200, 2, true], JSON.stringify(raised.body));
   const { rows } = await follow(api, runId, ["completed", "failed", "cancelled"], { deadlineMs: 60_000 });
   const run = await view(api, runId);
-  assert.deepEqual([run.status, run.error, run.cost.cap_usd, said(rows)], ["completed", null, 2, ["Write one.md", CONTINUE("$2"), WRAP_UP_FIRST("$2")]], JSON.stringify(run));
+  assert.deepEqual([run.status, run.error, run.cost.cap_usd, said(rows)], ["completed", null, 2, ["Write one.md", CONTINUE("$2")]], JSON.stringify(run));
 });
 
 test("the suggested raise is a whole dollar, always above the cap, and a float just past a dollar stays that dollar", async () => {
@@ -315,7 +316,7 @@ test("a paused run's figures, once its process is gone, are the store's spend: a
 
 for (const harness of ["claude-agent", "codex"]) {
   test(`${harness}: a run raised past its pause and gone on, then sent a message, ends that turn completed: the refusal is the paused turn's only`, { timeout: 120_000 }, async (t) => {
-    const { api } = await serve(t, { fauxHarness: FAUX_HARNESS, faux: OUTPUT_PRICED });
+    const { api } = await serve(t, { harnessTable: fauxTable(FAUX_HARNESS), faux: OUTPUT_PRICED });
     assert.equal((await api("POST", "/agents", agent(`after-${harness}`, { harness, instructions: "Make three requests." }))).status, 201);
     const { run_id } = (await api("POST", `/agents/after-${harness}/runs`, { input: { content: "go" }, max_cost_usd: 0.05 })).body;
     await follow(api, run_id, SETTLED, { deadlineMs: 60_000 });
@@ -327,8 +328,8 @@ for (const harness of ["claude-agent", "codex"]) {
     const { rows } = await follow(api, run_id, ["completed", "failed", "cancelled"], { deadlineMs: 60_000 });
     const run = await view(api, run_id);
     assert.deepEqual([run.status, run.error, run.pending], ["completed", null, null], JSON.stringify(run));
-    assert.deepEqual(said(rows), ["go", CONTINUE("$1"), WRAP_UP("$1"), "Once more."]);
-    assert.equal(rows.filter((row) => row.kind === "error").length, 1, `one error row, the paused turn's refusal: ${JSON.stringify(rows.filter((row) => row.kind === "error"))}`);
+    assert.deepEqual(said(rows), ["go", CONTINUE("$1"), WRAP_UP_FIRST("$1"), "Once more."]);
+    assert.deepEqual(rows.filter((row) => row.kind === "error" || row.paused === true).map((row) => row.kind), ["phase"], `no error row, and one pause row, the paused turn's refusal: ${JSON.stringify(rows.filter((row) => row.kind === "error" || row.paused === true))}`);
   });
 }
 
@@ -361,7 +362,7 @@ test("two raises of a paused run before its let-go process is gone resume it onc
   await writeFile(gate, "");
   const { rows } = await follow(api, runId, ENDED, { deadlineMs: 60_000 });
   const run = await view(api, runId);
-  assert.deepEqual([run.status, run.cost.cap_usd, said(rows)], ["completed", 2, ["Write one.md", CONTINUE("$2"), WRAP_UP_FIRST("$2")]], JSON.stringify(run));
+  assert.deepEqual([run.status, run.cost.cap_usd, said(rows)], ["completed", 2, ["Write one.md", CONTINUE("$2")]], JSON.stringify(run));
 });
 
 test("a raise whose follow-up's process came up, then its server was killed before the follow-up went: the next server sends it to that process, once", { timeout: 150_000 }, async (t) => {
@@ -471,9 +472,9 @@ test("a raise is the same cap within a float's tail: a cap a hair above the run'
 
 for (const harness of ["pi", "claude-agent"]) {
   test(`${harness}: a raise's follow-up shows as the server's, "AgentRun: The cap was raised to $1; continue the task.", never as the person's "You: …"`, { timeout: 120_000 }, async (t) => {
-    // pi tells its raised follow-up's request at step 0; the faux harness a request later, once one is priced (WRAP_UP_FIRST).
-    const told = harness === "pi" ? WRAP_UP_FIRST : WRAP_UP;
-    const { api } = await serve(t, { faux: OUTPUT_PRICED, ...(harness === "pi" ? {} : { fauxHarness: FAUX_HARNESS }) });
+    // Told at step 0 on both: pi in the follow-up's request, the faux harness in the next, in the same words.
+    const told = WRAP_UP_FIRST;
+    const { api } = await serve(t, { faux: OUTPUT_PRICED, ...(harness === "pi" ? {} : { harnessTable: fauxTable(FAUX_HARNESS) }) });
     assert.equal((await api("POST", "/agents", agent(`said-${harness}`, { ...(harness === "pi" ? {} : { harness }), instructions: "Make three requests." }))).status, 201);
     const { run_id } = (await api("POST", `/agents/said-${harness}/runs`, { input: { content: "go" }, max_cost_usd: 0.05 })).body;
     await follow(api, run_id, SETTLED, { deadlineMs: 60_000 });

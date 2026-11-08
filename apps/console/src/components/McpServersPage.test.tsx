@@ -266,6 +266,23 @@ describe("Settings → MCP servers, the saved ones", () => {
     expect(p.row("fake").textContent).toContain("Added paid");
     expect(p.row("fake").textContent).toContain("Removed slow_write");
     expect(p.row("fake").textContent).toContain("Changed add");
+    expect(s.calls.filter((c) => c.method === "GET")).toHaveLength(2);
+  });
+
+  it("a refresh refused for an expired sign-in reloads the list: the row shows the sign-in expired and offers Sign in again, with the refusal kept", async () => {
+    const later = "2026-11-08T10:00:00Z";
+    const live = saved({ name: "docs", auth: { type: "oauth" }, credential: "sealed", oauth: { expires_at: later, scopes: ["read"], client: "dynamic" } });
+    const revoked = { ...live, credential: "expired" as const };
+    const said = "The sign-in to docs expired or was revoked: sign in again from the MCP servers page.";
+    const s = server([[live], [revoked]], (c) => (c.path.endsWith("/refresh") ? refusal(422, "input_invalid", said, { fields: [{ field: "name", reason: "expired", message: said }] }) : undefined));
+    const p = await open(s.v2);
+    expect(p.button(/^Sign in again$/, p.row("docs"))).toBeUndefined();
+    await p.click(/^Refresh$/, p.row("docs"));
+    expect(s.calls.filter((c) => c.method === "GET")).toHaveLength(2);
+    expect(p.row("docs").textContent).toContain("sign-in expired");
+    expect(p.row("docs").textContent).not.toContain("token until");
+    expect(p.button(/^Sign in again$/, p.row("docs"))).toBeDefined();
+    expect(p.row("docs").querySelector('[role="alert"]')?.textContent).toContain(said);
   });
 
   it("deletes one only once confirmed", async () => {

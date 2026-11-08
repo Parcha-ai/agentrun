@@ -7,7 +7,8 @@ export async function attachInDrive(ctx: DriveContext, acquire: AcquireMachine, 
   return acquire({ ctx, ...(options.model ? { model: options.model } : {}), ...(options.deadline === undefined ? {} : { deadline: options.deadline }) });
 }
 
-/** A local machine shows the model no notes, so there is nothing to acknowledge. */
+/** A local machine's only note is one it makes again at every acquire (a Codex catalog it could not read, ../catalog.ts),
+ *  so there is nothing to acknowledge: the harness shows it once per invocation. */
 export async function acknowledgeInDrive(_ctx: DriveContext, _key?: string): Promise<void> {}
 
 /** The pinned Codex binary, as the harness names it. */

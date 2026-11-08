@@ -1,6 +1,6 @@
 // Copyright 2026 Vercel Inc. Licensed under the Apache License, Version 2.0; see LICENSE in this package.
 // From github.com/vercel-labs/durable-harness, packages/harness-claude-code/src/binary.ts at ea8aa4060c (UPSTREAM.json records its blob and sha256).
-// Changed by Parcha, patches: 003-comments, 005-binary-lookup
+// Changed by Parcha, and AgentRun's own since the port from upstream froze on 2026-11-07.
 import { existsSync, readdirSync, readFileSync } from 'node:fs';
 import { dirname, join } from 'node:path';
 import { fileURLToPath } from 'node:url';

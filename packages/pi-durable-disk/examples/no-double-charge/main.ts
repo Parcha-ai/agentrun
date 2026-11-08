@@ -15,7 +15,7 @@ import { join } from "node:path";
 import { createInterface } from "node:readline";
 import { fileURLToPath } from "node:url";
 import { BACKGROUND_CONTEXT as ctx } from "@earendil-works/chord/context";
-import { createModels, fauxAssistantMessage, fauxProvider, fauxToolCall, Type } from "@earendil-works/pi-ai";
+import { createModels, fauxAssistantMessage, fauxProvider, fauxToolCall } from "@earendil-works/pi-ai";
 import type { Message } from "@earendil-works/pi-ai";
 import { createRegistry, defineExtension, defineTool } from "@earendil-works/pi-durable";
 import type { Conversation, EntryRecord } from "@earendil-works/pi-durable";
@@ -49,9 +49,10 @@ if (process.argv[2] === "instance") {
   const charge = defineTool({
     name: "charge",
     description: "Charge an invoice. Costs real money: call it once per invoice.",
-    parameters: Type.Object({ invoice: Type.Number(), amount: Type.Number() }),
-    // No `replay: "safe"`: a call cut in flight comes back interrupted on the next open and is never run again.
-    async execute(args, api) {
+    parameters: { type: "object", required: ["invoice", "amount"], properties: { invoice: { type: "number" }, amount: { type: "number" } } },
+    // No `replay: "safe"`: a call cut in flight comes back interrupted on the next open and is never run again. pi 1.5
+    // validates the arguments against `parameters` and leaves their type to the tool.
+    async execute(args: { invoice: number; amount: number }, api) {
       console.log(`generation ${generation}: charging invoice ${args.invoice}`);
       // The call's id is recorded before the call starts and is the same in every process: the idempotency key.
       const response = await fetch(`${payments}/charges`, {

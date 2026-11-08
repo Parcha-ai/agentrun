@@ -6,20 +6,14 @@ change, and each one ends with a single `ok: ...` line naming what it showed.
 
 | Example | What it shows | Needs | Since | CI |
 |---|---|---|---|---|
-| [01-durable-chat](01-durable-chat/) | A chat survives its host being powered off: another host revokes the dead claim and goes on from the last committed message, nothing answered twice | Linux, the archil client, an Archil disk and API key | checkout | no |
 | [pick-up-a-run](pick-up-a-run/) | A run is a directory: three processes, one after another, open the same run, answer one question of one chat and release it, and the last still knows the first question; the run's record is read from outside | Linux, Node 22.19 or later | 0.1.0-beta.15 | yes |
-| [seed-a-run](seed-a-run/) | What a new run starts with: `seed` writes its store file and workspace files once, on the open that finds no `run.json`, and the next open keeps what the run changed since | Linux, Node 22.19 or later | 0.1.0-beta.15 | yes |
+| [seed-a-run](seed-a-run/) | What a new run starts with: `seed` writes its store file and workspace files once, on the open that finds no record in its store, and the next open keeps what the run changed since | Linux, Node 22.19 or later | 0.1.0-beta.15 | yes |
 | [place-outcome](place-outcome/) | How a run ended, in the run's own words: through `localPlace`, a run that delivers is `complete` with its record, one that gives up is `failed` with its code and message, and both name the models they used | Linux, Node 22.19 or later | 0.1.0-beta.16 | yes |
 | [01-durable-chat/on-a-directory.mjs](01-durable-chat/on-a-directory.mjs) | The no-key quickstart: the same chat on a directory of this machine, killed after its third answer and finished by a second process | Linux or macOS, Node 22.19 or later | 0.1.0-beta.13 | yes |
-| [02-paid-effect](02-paid-effect/) | A paid charge cut mid-flight by a lost host is never sent twice: the new host records it `interrupted` and tells the model | Linux, the archil client, an Archil disk and API key | checkout | no |
 | [no-double-charge](no-double-charge/) | A paid call cut by `kill -9` is never sent twice: the next process gets it back `interrupted`, and the payment server has one charge per invoice | Linux or macOS, Node 22.19 or later | 0.1.0-beta.13 | yes |
 | [audit-across-crashes](audit-across-crashes/) | A run killed twice mid-call is accounted for from its store alone: a recorder in `beforeResume` snapshots every task, document and entry at each incarnation's head, and the account names the cut calls and who settled them | Linux or macOS, Node 22.19 or later | 0.1.0-beta.13 | yes |
 | [kill-9](kill-9/) | A coding agent survives `kill -9` in the middle of a long bash command: its files are intact, the cut command comes back `interrupted` and is never run again, its file tools stay in `work/`, and it finishes | Linux or macOS, Node 22.19 or later | 0.1.0-beta.13 | yes |
-| [planned-move](planned-move/) | A run moves from this machine to a Daytona sandbox at a step boundary by hand-over: released and sealed, opened at the next generation, the agent told, nothing revoked or interrupted | Linux host with the archil client and systemd, an Archil disk and API key, a Daytona key (Tier 3 or 4) | 0.1.0-beta.14 | no |
-| [fork-into-many](fork-into-many/) | One run taken to a checkpoint and sealed is forked three ways: each fork is a run of its own, continues from the checkpoint with its own instruction, and the source stays byte for byte | Linux or macOS, Node 22.19 or later | 0.1.0-beta.14 | yes |
-| [serve-and-park](serve-and-park/) | An idle agent holds no process: a run that only waits on a long retry parks (the wake in `run.json`, the claim released, exit 0), a restart at `wakeAt` finishes it, and a repeated `requestId` is answered, not run again | Linux or macOS, Node 22.19 or later | 0.1.0-beta.15 | yes |
-| [docker-quickstart.sh](docker-quickstart.sh) | Example 02 with every instance in a container, on macOS or Linux, with nothing installed but Docker and Node | Docker, an Archil disk and API key | checkout | no |
-| [verify-production-path.sh](verify-production-path.sh) | The README's production host setup, checked on a disposable root machine | a disposable Linux machine with root, Archil | checkout | no |
+| [serve-and-park](serve-and-park/) | An idle agent holds no process: a run that only waits on a long retry parks (the wake in its record, the claim released, exit 0), a restart at `wakeAt` finishes it, and a repeated `requestId` is answered, not run again | Linux or macOS, Node 22.19 or later | 0.1.0-beta.15 | yes |
 
 ## Run one
 
@@ -31,29 +25,27 @@ cd packages/pi-durable-disk
 node examples/<name>/main.ts
 ```
 
-The quickstart is `node examples/01-durable-chat/on-a-directory.mjs`. Examples 01 and 02 on a disk, and the two scripts,
-run as their own READMEs and headers say.
+The quickstart is `node examples/01-durable-chat/on-a-directory.mjs`.
 
 Node 22.19 or later runs the TypeScript directly. A run on a local directory runs on Linux, and on macOS for development
 ([On macOS](../docs/reference.md#on-macos) says what is weaker there). On macOS every example needs 0.1.0-beta.14 or later, the
-first release that runs there, whatever its Since says.
+first release that runs there, whatever its Since says. From an install on pi 1.5.0, every example needs the first release
+whose peers take pi 1.5.0 (0.1.0-beta.32, the next beta; every earlier beta's peers stop below pi 1.4).
 
 ## Run one from an install
 
 The examples on `main` are written against `main`, and what npm has is the last published beta (`npm view
 @parcha/pi-durable-disk dist-tags`). The **Since** column is the first published version that has what the example imports:
 older than that, it stops at its first import. To run one from an install, in an empty directory on Linux or macOS, from
-0.1.0-beta.14 (0.1.0-beta.13's peers stop below pi 1.3, the version the line pins), with Node 22.19 or later:
+the first release whose peers take pi 1.5.0 (the version the line pins; earlier betas' peers stop below it), with Node 22.19 or later:
 
 ```sh
 npm init -y && npm pkg set type=module
-npm install @parcha/pi-durable-disk@latest @earendil-works/pi-durable@1.3.0 @earendil-works/pi-ai@1.3.0 @earendil-works/chord@1.3.0
+npm install @parcha/pi-durable-disk@latest @earendil-works/pi-durable@1.5.0 @earendil-works/pi-ai@1.5.0 @earendil-works/chord@1.5.0
 mkdir audit-across-crashes && cd audit-across-crashes
 # copy the example's files in (main.ts and any helper beside it, not its README or its test), from a checkout or from GitHub
 node main.ts
 ```
-
-pi 1.4 is not supported yet; a later release widens the range.
 
 `npm pkg set type=module` is what lets Node read the example's `import` lines without reparsing every file and printing a
 warning on each start. Run it from the directory that holds `node_modules`, or from one inside it. An example whose Since is
@@ -62,13 +54,13 @@ The `ExperimentalWarning` about SQLite on stderr is Node's own and harmless.
 
 The Since cells are checked, not just written: the `stranger` CI job (`scripts/stranger.mjs pi-durable-disk`, spec
 `scripts/stranger/pi-durable-disk.json`) installs each keyless example's Since from npm the way the section above says,
-runs it and expects its `ok:` line; on macOS it installs 0.1.0-beta.14 at the least (the spec's `platformFloors`), and the
-macOS CI job runs the same walk on a Mac. An example whose version is above the registry's `latest` tag is skipped, with the
+runs it and expects its `ok:` line, at 0.1.0-beta.32 at the least on Linux and macOS (the spec's `platformFloors`: the
+first release on pi 1.5.0, which the install line pins), and the macOS CI job runs the same walk on a Mac. An example whose version is above the registry's `latest` tag is skipped, with the
 reason printed; `node scripts/stranger.mjs pi-durable-disk --examples` runs just this check.
 
 ## Writing an example
 
-Examples 01 and 02 predate these conventions and run on an Archil disk. A new example follows them, and
+The quickstart, `01-durable-chat/on-a-directory.mjs`, predates these conventions. A new example follows them, and
 `test/examples/conventions.test.ts` checks the parts code can check.
 
 1. **One directory, one property.** `examples/<name>/` holds `README.md` and `main.ts`, and helpers beside them if it needs
@@ -86,10 +78,9 @@ Examples 01 and 02 predate these conventions and run on an Archil disk. A new ex
    first, and print its path. The model is pi-ai's faux provider, scripted so the run is the same every time. A real model
    is an optional flag (`--model <provider>/<modelId>`, its key from the provider's usual environment variable), never
    needed by the test, and only where the property does not depend on what the model chooses. Two things keep a scripted
-   run the same on every pi version the peers accept (1.0.4 to 1.3): the faux script reads the last message that is not
-   the system's (pi 1.0.4 puts its system message after the user's), and a tool gives the model its text with
-   `api.output(text)` and returns no `content` (`api` is the `ToolExecutionApi`, `execute`'s second argument; pi 1.2 drops
-   a returned `content`), and reads a result's text as `output ?? content`.
+   run the same: the faux script reads the last message that is not the system's, and a tool gives the model its text
+   with `api.output(text)` and returns no `content` (`api` is the `ToolExecutionApi`, `execute`'s second argument; pi
+   drops a returned `content`), and reads a result's text from `output`.
 5. **Its own supervisor.** An example that kills and restarts the run spawns its own instances (`main.ts instance`), reads
    their output a line at a time (`readline`), and waits for `close`, not `exit`, before it reads what they wrote. It
    ends every process it started, on success and on failure.

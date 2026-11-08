@@ -140,7 +140,7 @@ test("demo through the API: the server in a container, its data a named volume: 
   // The run's work/ on the agent's disk: `disk/agents/<key>/runs/<run>/work` below the data directory, and nothing above it.
   const work = join(runDirIn(data, "boxed", runId), "work");
   assert.deepEqual(flags(run, "--mount"), [
-    `type=volume,source=agentrun_agentrun-data,target=/run/agentrun/run/work,volume-subpath=${relative(data, work)},volume-nocopy`,
+    `type=volume,source=agentrun_agentrun-data,target=/workspace,volume-subpath=${relative(data, work)},volume-nocopy`,
     `type=volume,source=agentrun_agentrun-data,target=/run/agentrun/egress,volume-subpath=box-egress/${hash},volume-nocopy,readonly`,
   ]);
   assert.equal(flags(run, "--network")[0], "none");
@@ -209,7 +209,7 @@ test("the egress parent's limit holds the proxy's longest socket path, the tempo
   // The run's proxy itself there: it listens on a temporary socket (`.egress-<12 hex>.sock`, its longest name) and links
   // it to egress.sock, by the whole path. Node cuts a socket path past 107 bytes without a word, so only the link and the
   // file's name show it whole.
-  const { startEgressProxy } = await import("@parcha/agentrun-kernel/host");
+  const { startEgressProxy } = await import("../dist/egress-proxy.js");
   const socketPath = join(dir, "egress.sock");
   const proxy = await startEgressProxy({ socketPath, maxTunnels: 1, maxConnections: 1, log: () => {}, allow: ["pypi.org"] });
   t.after(() => proxy.close());

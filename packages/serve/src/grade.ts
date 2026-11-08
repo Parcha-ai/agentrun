@@ -20,12 +20,12 @@
 import { rm } from "node:fs/promises";
 import { join } from "node:path";
 import { buildIndex, gradedItems, held, INDEX_FILE, type IndexEntry, type LearnedNote, learnedPlace, mergedNote, mergeProblems, type NoteText, parseNoteFile, type Problem, supersede, supersededBy, type Verdict } from "./learn/index.js";
-import { claudeModel, claudeProvider, codexModel, codexProvider } from "./adapters.js";
+import { harnessOf } from "./harness-table.js";
+import { type Provider, providerFor } from "./provider.js";
 import { agentFolderOf } from "./files.js";
-import { FAUX_HARNESS_ENV } from "./harness.js";
 import { agentFolder, checkOut, git, line, mainOf, NO_TOKENS, type Proposal, readBlobs, type Tokens, withAgentRepo } from "./learning.js";
 import { type Complete, completer } from "./llm.js";
-import { type ModelRef, openRouterOnly, runModels, thinkingOf } from "./model.js";
+import { type ModelRef, runModels, thinkingOf } from "./model.js";
 
 /** How long the grader may take (unless the server names another), and the most it may write. */
 const GRADE_TIMEOUT_MS = 180_000;
@@ -139,8 +139,8 @@ type PiUsage = { input: number; output: number; cacheRead?: number; cacheWrite?:
 const tokensOf = (usage: PiUsage | undefined): Tokens | null =>
   usage && [usage.input, usage.output, usage.cacheRead ?? 0, usage.cacheWrite ?? 0].every((n) => Number.isSafeInteger(n) && n >= 0) ? { input: usage.input, cache_read: usage.cacheRead ?? 0, cache_write: usage.cacheWrite ?? 0, output: usage.output } : null;
 type PiModels = { getModel(provider: string, id: string): unknown; completeSimple(...args: unknown[]): Promise<{ usage?: PiUsage }> };
-/** claude-agent's provider, as claudeProvider returns it. Without `auth`, it takes x-api-key, as the adapter does. */
-export type RunProvider = ReturnType<typeof claudeProvider> & { auth?: "x-api-key" | "bearer" };
+/** A run's provider, as providerFor returns it. Without `auth`, it takes x-api-key, as the adapter does. */
+export type RunProvider = Pick<Provider, "origin" | "credential"> & { auth?: "x-api-key" | "bearer" };
 
 /** The variable pi-ai's anthropic provider reads for each auth mode: it sends the first as `authorization: Bearer`, the
  *  second as `x-api-key`. */
@@ -156,36 +156,39 @@ export function graderAuth(provider: RunProvider) {
 
 /** One completion for the grader: on the model the server names for grading (`named`), picked as a workflow's strong
  *  tier is (runModels: the gateway, pi-ai's providers, or the faux module); else on the agent's own model, as its run's
- *  process picks it (app.ts): claude-agent's from pi-ai's catalog, sent where and as the run's own requests go
- *  (claudeProvider), any other harness's by runModels. At its revision's thinking; counted in `cost` (a call that fails
+ *  process picks it (app.ts): one chosen on its wire's own settings sent where and as the run's own requests go
+ *  (providerFor), any other by runModels. At its revision's thinking; counted in `cost` (a call that fails
  *  has an unknown cost). */
 async function graderModel(env: NodeJS.ProcessEnv, agent: Agent, cost: GradeCost, named: string | undefined): Promise<Complete> {
   let chosen;
+  // The agent's harness, resolved once (harness-table.ts).
+  const entry = harnessOf(env, agent.harness);
   if (named) {
     // The strong tier named over `env` itself, never a copy of it: the server's keys are properties that do not list
     // (secrets.ts withSecrets), so a spread would leave every one out. runModels and pi-ai's auth read each by name.
     const tiered = Object.create(env, { AGENT_MODEL_STRONG: { value: named, enumerable: true } }) as NodeJS.ProcessEnv;
     const picked = await runModels(tiered, undefined, ["strong"]);
     chosen = { models: picked.models, model: picked.byTier.get("strong")! };
-  } else if (agent.harness === "claude-agent" && !env[FAUX_HARNESS_ENV]) {
-    const choice = claudeModel(env, agent.model);
+  } else if (entry?.facts && entry.onWire(env)) {
+    // A harness whose model is chosen on its wire's own settings (its entry's onWire): the grade goes where the run's
+    // requests go (providerFor), with the run's credential and auth mode, on the model the run runs (its entry's model,
+    // then the id providerFor sends).
+    const choice = await entry.model(env, agent.model, true);
+    if (!choice) throw new Error(`${entry.id} does not run here.`);
     if ("why" in choice) throw new Error(choice.why);
-    const { builtinModels } = await import("@earendil-works/pi-ai/providers/all");
-    // The grader asks where the run's requests go, with the run's credential and auth mode: one claudeProvider call for
-    // both. It sends the id the run sends (claudeProvider's modelId), on pi-ai's anthropic provider. The catalog only
-    // prices the model.
-    const sent: RunProvider = claudeProvider(env, choice.model);
-    const catalog = builtinModels({ authContext: graderAuth(sent) }) as unknown as PiModels;
-    const at = (found: unknown) => (found && typeof found === "object" ? { ...found, baseUrl: sent.origin } : found);
-    chosen = { models: { getModel: (provider: string, id: string) => at(catalog.getModel(provider, id)), completeSimple: (...call: unknown[]) => catalog.completeSimple(...call) }, model: { provider: "anthropic", modelId: sent.modelId } };
-  } else if ((agent.harness === "codex" || agent.harness === "opencode") && !env[FAUX_HARNESS_ENV] && openRouterOnly(agent.harness, env)) {
-    // codex on OpenRouter alone, and opencode, which takes codex's route: the grade goes where the run's requests go,
-    // OpenRouter with its key, on the model the run runs (codexModel, then the id codexProvider sends), through pi-ai's
-    // openrouter provider. The revision's own name (openai/<model>) would ask for an OpenAI key, which this route never
-    // needs.
-    const choice = await codexModel(env, agent.model, agent.harness);
-    if ("why" in choice) throw new Error(choice.why);
-    chosen = await runModels(env, `openrouter/${codexProvider(env, choice.model as ModelRef, agent.harness).modelId}`);
+    const sent = providerFor(entry.facts.wire, env, choice.model as ModelRef, entry.id);
+    if (entry.facts.wire === "anthropic-messages") {
+      // On pi-ai's anthropic provider at the run's endpoint. The catalog only prices the model.
+      const { builtinModels } = await import("@earendil-works/pi-ai/providers/all");
+      const catalog = builtinModels({ authContext: graderAuth(sent) }) as unknown as PiModels;
+      const at = (found: unknown) => (found && typeof found === "object" ? { ...found, baseUrl: sent.origin } : found);
+      chosen = { models: { getModel: (provider: string, id: string) => at(catalog.getModel(provider, id)), completeSimple: (...call: unknown[]) => catalog.completeSimple(...call) }, model: { provider: "anthropic", modelId: sent.modelId } };
+    } else {
+      // The Responses API through OpenRouter alone (onWire's other case): OpenRouter with its key, through pi-ai's
+      // openrouter provider. The revision's own name (openai/<model>) would ask for an OpenAI key, which this route never
+      // needs.
+      chosen = await runModels(env, `openrouter/${sent.modelId}`);
+    }
   } else chosen = await runModels(env, agent.model);
   const models = chosen.models as unknown as PiModels;
   const { model } = chosen;

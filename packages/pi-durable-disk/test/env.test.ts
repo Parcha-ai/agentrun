@@ -108,11 +108,11 @@ describe("the environment", () => {
       const env = archilEnv({ root, work })({});
       const watcher = getOrThrow(await env.watch([{ path: "f.txt" }], () => {}, context));
       assert.equal(watcher.mode, "polling");
-      await watcher.close(context);
+      await watcher.stop(context);
       const native = archilEnv({ root, work }, { watch: { mode: "native" } })({});
       const nativeWatcher = getOrThrow(await native.watch([{ path: "f.txt" }], () => {}, context));
       assert.equal(nativeWatcher.mode, "native");
-      await nativeWatcher.close(context);
+      await nativeWatcher.stop(context);
     });
   });
 

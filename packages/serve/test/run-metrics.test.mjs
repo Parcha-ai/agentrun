@@ -13,6 +13,7 @@ import { durableDecisions } from "@parcha/agentrun-pi/durable";
 import { CANARY } from "./fixtures/faux-jev.mjs";
 import { startServe } from "../dist/index.js";
 import { agent, answerFlow, client, FAUX, flowAgent, follow, printed, runDir, runRecordOf, scratch, serve, startRun, storeRun, withEnv } from "./support.mjs";
+import { fauxTable } from "./fixtures/faux-table.mjs";
 
 const FAUX_HARNESS = new URL("./fixtures/faux-harness.mjs", import.meta.url).pathname;
 const FAUX_JEV = new URL("./fixtures/faux-jev.mjs", import.meta.url).pathname;
@@ -54,7 +55,9 @@ test("a pi run's end writes its tokens, requests, tool calls and errors, model a
   const { rows } = await follow(api, runId, ["completed"]);
   const m = metricsOf(data, runId);
   assert.ok(m, "the run has metrics");
-  assert.ok(m.input > 0 && m.output > 0, `tokens counted: ${JSON.stringify(m)}`);
+  // pi-ai 1.5's faux provider keeps a simulated prompt cache per session: each prompt token is read from it or written
+  // to it, none plain input (providers/faux.js withUsageEstimate). The metrics keep each part apart.
+  assert.ok(m.input + m.cacheRead + m.cacheWrite > 0 && m.output > 0, `tokens counted: ${JSON.stringify(m)}`);
   assert.equal(m.requests, 3);
   assert.equal(m.requests, usageOf(rows).requests, "as many requests as the usage row says");
   assert.equal(m.unmetered, 0);
@@ -104,7 +107,7 @@ test("a run its server's successor ends keeps the effort its process ran at, not
 
 test("a run on the claude-agent or codex harness ends with metrics: its model the revision's, its effort the harness's", { timeout: 90_000 }, async (t) => {
   withEnv(t, {}, EFFORT_NAMES);
-  const { api, data } = await serve(t, { fauxHarness: FAUX_HARNESS });
+  const { api, data } = await serve(t, { harnessTable: fauxTable(FAUX_HARNESS) });
   const claude = await started(api, "claude", { harness: "claude-agent", model: "anthropic/claude-opus-5-5", instructions: "Make three requests." }, { input: { content: "hi" } });
   await follow(api, claude, ["completed"], { deadlineMs: 55_000 });
   const m = metricsOf(data, claude);
@@ -133,7 +136,8 @@ test("a follow-up on a completed run carries it back again with its counts updat
   const second = metricsOf(data, runId);
   assert.equal(second.requests, 2);
   assert.equal(second.requests, usageOf(rows).requests);
-  assert.ok(second.input > first.input && second.output > first.output, "the follow-up's tokens are added");
+  const prompt = (m) => m.input + m.cacheRead + m.cacheWrite;
+  assert.ok(prompt(second) > prompt(first) && second.output > first.output, "the follow-up's tokens are added");
   assert.ok(second.at > first.at, "written at the second end");
 });
 

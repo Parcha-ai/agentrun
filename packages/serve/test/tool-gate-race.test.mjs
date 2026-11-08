@@ -8,6 +8,7 @@ import { join } from "node:path";
 import { setTimeout as sleep } from "node:timers/promises";
 import { test } from "node:test";
 import { BACKGROUND_CONTEXT as ctx } from "@earendil-works/chord/context";
+import { createModels } from "@earendil-works/pi-ai/models";
 import { createRegistry, Harness, MemoryStorage, ROOT_CONVERSATION_ID } from "@earendil-works/pi-durable";
 import { APPROVAL_ENTRY, RunGate } from "../dist/tool-gate.js";
 import { scratch } from "./support.mjs";
@@ -16,7 +17,7 @@ const requested = (id, call) => ({ kind: APPROVAL_ENTRY, data: { phase: "request
 const denied = { decision: "deny", answered_at: new Date().toISOString(), args_shown: "{}" };
 
 test("a stop that overrides an answer after the live gate read it and before the gate acts on it wins: the second call is resolved with nothing resumed", async (t) => {
-  const harness = await Harness.open(new MemoryStorage(), { registry: createRegistry(), models: {} }, ctx);
+  const harness = await Harness.open(new MemoryStorage(), { registry: createRegistry(), models: createModels() }, ctx);
   await harness.root(ctx);
   await harness.commit(async (tx) => {
     await tx.appendEntry(ROOT_CONVERSATION_ID, requested("ap_first", "c1"));

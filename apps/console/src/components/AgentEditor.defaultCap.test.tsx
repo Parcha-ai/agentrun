@@ -50,23 +50,23 @@ describe("AgentEditor, the agent's default spend cap per run", () => {
     expect(renderToStaticMarkup(createElement(AgentEditor, { agent: none, caps, step: "settings" })).match(/<input[^>]*id="agent-max-cost"[^>]*>/)?.[0]).toContain('value=""');
   });
 
-  it("is not offered on a workflow agent or a new Decision agent: a workflow revision keeps no cap", () => {
-    const flow = { agent_id: "wf", kind: "workflow" as const, revision: "r1", revisions: 1, archived_at: null, definition: { version: 1, name: "Flow", workflow: { nodes: [] }, skills: [], tools: [] } };
-    expect(renderToStaticMarkup(createElement(AgentEditor, { agent: flow, caps, step: "settings" }))).not.toContain(LABEL);
+  it("is offered on a workflow agent as on an agentic one, and not on a new Decision agent, which starts with none", () => {
+    const flow = { agent_id: "wf", kind: "workflow" as const, revision: "r1", revisions: 1, archived_at: null, definition: { version: 1, name: "Flow", workflow: { nodes: [] }, skills: [], tools: [], max_cost_usd: 3 } };
+    expect(renderToStaticMarkup(createElement(AgentEditor, { agent: flow, caps, step: "settings" })).match(/<input[^>]*id="agent-max-cost"[^>]*>/)?.[0]).toContain('value="3"');
     const { host } = mount({ agent: null, caps: { ...caps, decisionProvider: "jev" } });
     expect(host.textContent).toContain(LABEL);
     act(() => { host.querySelector<HTMLInputElement>('input[type=radio][value="decision"]')!.click(); });
     expect(host.textContent).not.toContain(LABEL);
   });
 
-  it("a workflow agent's save sends no cap (the server refuses one above 0 on a workflow revision)", async () => {
+  it("a workflow agent's save sends its cap with its workflow, as an agentic agent's does", async () => {
     const sent: Record<string, unknown>[] = [];
     const flow = { agent_id: "wf", kind: "workflow" as const, revision: "r1", revisions: 1, archived_at: null, definition: { version: 1, name: "Flow", workflow: { nodes: [] }, skills: [], tools: [] } };
-    const { host, save } = mount({ agent: flow, step: "workflow", onSave: async (fields: Record<string, unknown>) => { sent.push(fields); return null; } });
-    expect(host.querySelector("#agent-max-cost")).toBeNull();
+    const { type, save } = mount({ agent: flow, onSave: async (fields: Record<string, unknown>) => { sent.push(fields); return null; } });
+    type("4");
     await save();
     expect(sent).toHaveLength(1);
-    expect([sent[0]!.max_cost_usd, sent[0]!.maxCostText]).toEqual([undefined, undefined]);
+    expect([sent[0]!.max_cost_usd, sent[0]!.maxCostText, sent[0]!.workflow]).toEqual([4, undefined, { nodes: [] }]);
   });
 
   it("an untouched save sends the cap back as it was; a new number replaces it; emptied, the save sends 0 to clear it", async () => {

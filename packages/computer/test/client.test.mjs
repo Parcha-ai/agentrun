@@ -47,8 +47,8 @@ test("a request is one JSON-RPC 2.0 line with a numeric id", async () => {
 	assert.equal(typeof request.id, "number");
 	assert.equal(request.method, "hello");
 	assert.deepEqual(request.params, { client: "test" });
-	send({ jsonrpc: "2.0", id: request.id, result: { version: "1", os: "linux", arch: "amd64", capabilities: ["exec"] } });
-	assert.deepEqual(await pending, { ok: true, value: { version: "1", os: "linux", arch: "amd64", capabilities: ["exec"] } });
+	send({ jsonrpc: "2.0", id: request.id, result: { version: "1", os: "linux", kind: "linux", arch: "amd64", groups: ["exec"] } });
+	assert.deepEqual(await pending, { ok: true, value: { version: "1", os: "linux", kind: "linux", arch: "amd64", groups: ["exec"] } });
 	client.close();
 });
 

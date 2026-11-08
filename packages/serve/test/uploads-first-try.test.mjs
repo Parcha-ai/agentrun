@@ -10,6 +10,7 @@ import { test } from "node:test";
 import { MAX_UPLOAD_BYTES, Uploads, uploadTestHooks } from "../dist/uploads.js";
 import { schemaProblems } from "./schema-support.mjs";
 import { agent, call, cookieOf, follow, runDir, scratch, serve } from "./support.mjs";
+import { fauxTable } from "./fixtures/faux-table.mjs";
 
 const FAUX_HARNESS = new URL("./fixtures/faux-harness.mjs", import.meta.url).pathname;
 const sha = (bytes) => createHash("sha256").update(bytes).digest("hex");
@@ -178,7 +179,7 @@ export default function reply(context, faux) {
   return faux.message(faux.toolCall("read", { path }), { stopReason: "toolUse" });
 }
 `);
-  const server = await served(t, { faux: reader, fauxHarness: FAUX_HARNESS });
+  const server = await served(t, { faux: reader, harnessTable: fauxTable(FAUX_HARNESS) });
   const { api } = server;
   const words = "The upload reached the run.\n";
   const file = (await sendFile(server, { path: "brief/notes.txt" }, Buffer.from(words))).json.file;
@@ -192,6 +193,23 @@ export default function reply(context, faux) {
     assert.deepEqual([listed?.size_bytes, listed?.content_type], [words.length, "text/plain; charset=utf-8"], `${harness}: in the run's files`);
     const result = rows.find((r) => r.kind === "tool_result");
     assert.ok(result?.tool_status === "success" && String(result.tool_result_preview).includes("The upload reached the run."), `${harness}: its read tool read the file: ${JSON.stringify(result)}`);
+  }
+});
+
+test("an image sent to a run on claude-agent or codex is read by pi's read tool as a host tool: an image read asks the calling agent for its model, which a host tool's api answers", { timeout: 180_000 }, async (t) => {
+  // pi 1.5's read, on an image, reads the calling agent's model for its image limits (api.agent(), api.models).
+  const server = await served(t, { harnessTable: fauxTable(FAUX_HARNESS) });
+  const { api } = server;
+  const png = Buffer.from("iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mNkYAAAAAYAAjCB0C8AAAAASUVORK5CYII=", "base64");
+  const file = (await sendFile(server, { path: "brief/pixel.png" }, png)).json.file;
+  for (const harness of ["claude-agent", "codex"]) {
+    const id = `image-${harness}`;
+    assert.equal((await api("POST", "/agents", agent(id, { harness, tools: ["read"], instructions: "Read the upload inputs/brief/pixel.png." }))).status, 201, harness);
+    const run = await api("POST", `/agents/${id}/runs`, { input: { content: "Read the upload inputs/brief/pixel.png." }, file_ids: [file.file_id] });
+    assert.equal(run.status, 202, `${harness}: ${JSON.stringify(run.body)}`);
+    const { rows } = await follow(api, run.body.run_id, ["completed"], { deadlineMs: 55_000 });
+    const result = rows.find((r) => r.kind === "tool_result");
+    assert.equal(result?.tool_status, "success", `${harness}: its read tool read the image: ${JSON.stringify(result)}`);
   }
 });
 

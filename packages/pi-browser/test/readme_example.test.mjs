@@ -60,14 +60,13 @@ test("the README quick start names the container setting, creates its session in
   assert.match(readme, /^\| `sandbox` \|/m, "the options table documents sandbox");
 });
 
-test("the README's install block pins a pi-durable host's peers to 1.3.0 and says pi 1.4 is not supported yet, and the pins are the peer range's last version", () => {
+test("the README's install block pins a pi-durable host's peers to the peers' exact version, 1.5.0, and every pi install line names it", () => {
   const readme = fs.readFileSync(path.join(PACKAGE, "README.md"), "utf8");
   const install = readme.split(/^## /m).find((part) => part.startsWith("Install")) ?? "";
   const line = install.split("\n").find((l) => l.startsWith("npm install") && l.includes("@earendil-works/pi-durable"));
   assert.ok(line, "the Install block has a line for a pi-durable host");
-  for (const name of ["pi-durable", "chord", "pi-ai"]) assert.ok(line.includes(`@earendil-works/${name}@1.3.0`), `${name} is pinned to 1.3.0 in that line`);
-  assert.ok(install.includes("pi 1.4 is not supported yet; a later release widens the range."), "the sentence about pi 1.4");
+  for (const name of ["pi-durable", "chord", "pi-ai"]) assert.ok(line.includes(`@earendil-works/${name}@1.5.0`), `${name} is pinned to 1.5.0 in that line`);
   const manifest = JSON.parse(fs.readFileSync(path.join(PACKAGE, "package.json"), "utf8"));
-  assert.equal(manifest.peerDependencies["@earendil-works/pi-durable"], ">=1.1.0 <1.4.0", "the pin names the last version below the peer range's bound; move both together");
-  for (const l of readme.split("\n")) if (/^(npm install|pi install)/.test(l) && /@earendil-works\/(pi-durable|chord|pi-ai)(?!@1\.3\.0)/.test(l)) assert.fail(`an unpinned install line: ${l}`);
+  assert.equal(manifest.peerDependencies["@earendil-works/pi-durable"], "1.5.0", "the pin is the peer's exact version; move both together");
+  for (const l of readme.split("\n")) if (/^(npm install|pi install)/.test(l) && /@earendil-works\/(pi-durable|chord|pi-ai)(?!@1\.5\.0)/.test(l)) assert.fail(`an unpinned install line: ${l}`);
 });
