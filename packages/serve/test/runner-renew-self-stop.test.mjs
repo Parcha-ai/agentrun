@@ -6,29 +6,30 @@
 import assert from "node:assert/strict";
 import { test } from "node:test";
 import { startRunner } from "../dist/runner/runner.js";
-import { fauxLoops, sleep, storeDouble, until } from "./runner-support.mjs";
+import { fauxLoops, observed, queue, recorder, sleep, stores, until } from "./runner-support.mjs";
 
 const TIMING = { leaseMs: 600, renewEveryMs: 100, stopMarginMs: 200, pollMs: 20, commandPollMs: 20 };
 
-async function held(t, store, faux) {
-  await store.runs.create("run-1");
-  const runner = startRunner({ store, createLoop: faux.createLoop, name: "runner-a", ...TIMING });
+async function held(t, faux) {
+  const opened = await stores({ runners: 1 });
+  const record = recorder();
+  await queue(opened.server, "run-1");
+  const runner = startRunner({ store: observed(opened.runners[0], record), createLoop: faux.createLoop, name: "runner-a", ...TIMING });
   t.after(async () => {
     for (const loop of faux.loops) loop.halted = true;
     await runner.close();
   });
-  await until(() => store.commits.some((commit) => commit.epoch === 1), "the loop commits under its claim");
-  return runner;
+  await until(() => record.commits.some((commit) => commit.epoch === 1), "the loop commits under its claim");
+  return { ...opened, record, runner };
 }
 
 test("renews that fail: the loop is stopped before claimed_until, and nothing it commits after the stop lands", async (t) => {
-  const store = storeDouble();
   const faux = fauxLoops({ stubborn: true, turnMs: 15 });
-  const runner = await held(t, store, faux);
+  const { server, record, runner } = await held(t, faux);
   const loop = faux.loops[0];
 
-  store.blockRenew.add("runner-a");
-  const lastUntil = (await store.runs.get("run-1")).claimedUntil;
+  record.blockRenew.add("runner-a");
+  const lastUntil = (await server.runs.get("run-1")).claimedUntil;
   const stop = await until(() => loop.stopCalls[0], "the runner stops the loop", TIMING.leaseMs * 3);
 
   assert.equal(stop.kind, "claim-lost");
@@ -36,34 +37,33 @@ test("renews that fail: the loop is stopped before claimed_until, and nothing it
   assert.equal(loop.deps.signal.aborted, true, "the loop's signal is aborted at the stop");
   // The stubborn loop keeps trying: every commit from the stop on is refused by the runner, never reaching the store.
   await sleep(TIMING.leaseMs);
-  const after = store.commits.filter((commit) => commit.at >= stop.at);
-  assert.deepEqual(after, [], "no commit lands after the stop");
-  assert.ok(loop.commitErrors.length > 0, "the loop did try to commit after the stop");
-  assert.ok(
-    loop.commitErrors.every((error) => error.name === "ClaimLost"),
-    `refused by the runner's fence, not the store's: ${JSON.stringify(loop.commitErrors.slice(0, 3))}`,
-  );
+  assert.deepEqual(record.commits.filter((commit) => commit.startedAt >= stop.at), [], "no commit started after the stop lands");
+  const late = loop.commitErrors.filter((error) => error.at >= stop.at);
+  assert.ok(late.length > 0, "the loop did try to commit after the stop");
+  assert.ok(late.every((error) => error.name === "ClaimLost"), `refused by the runner's fence, not the store's: ${JSON.stringify(late.slice(0, 3))}`);
   assert.deepEqual(runner.held(), [], "the runner no longer holds the run");
   // pi chains on commit's promise: the refusal is a rejected promise, never a throw out of the call itself.
   let pending;
-  assert.doesNotThrow(() => (pending = loop.journal.commit({ kind: "probe" })), "commit does not throw where it is called");
+  assert.doesNotThrow(() => (pending = loop.journal.commit([[]], () => {}, undefined)), "commit does not throw where it is called");
   await assert.rejects(pending, { name: "ClaimLost" });
 });
 
-test("a renew refused as Fenced (another runner took the claim): the loop is stopped at once", async (t) => {
-  const store = storeDouble();
+test("a renew refused as Fenced (the store's clock jumped and another runner took the claim): the loop is stopped at once", async (t) => {
   const faux = fauxLoops({ stubborn: true, turnMs: 15 });
-  await held(t, store, faux);
+  const { server, clock, record } = await held(t, faux);
   const loop = faux.loops[0];
 
-  // Another runner's claim moved the epoch (as after a long pause of this one).
-  const run = store.runsTableBump("run-1");
+  // The store's now jumps past the claim's until, and another runner claims the run: the epoch moves.
+  clock.skewMs = TIMING.leaseMs * 2;
+  const taken = await server.claim("run-1", "runner-z", { leaseMs: 60_000 });
+  const movedAt = Date.now();
+  assert.equal(taken?.epoch, 2, "the other runner's claim");
   const stop = await until(() => loop.stopCalls[0], "the runner stops the loop", TIMING.renewEveryMs * 4);
   assert.equal(stop.kind, "claim-lost");
-  assert.ok(stop.at - run.bumpedAt <= TIMING.renewEveryMs * 2, `stopped ${stop.at - run.bumpedAt} ms after the fence moved`);
+  assert.ok(stop.at - movedAt <= TIMING.renewEveryMs * 2, `stopped ${stop.at - movedAt} ms after the fence moved`);
   await sleep(TIMING.renewEveryMs * 2);
   // Before the stop the store's fence refused them (Fenced); from the stop on, the runner's does.
   const late = loop.commitErrors.filter((error) => error.at > stop.at);
   assert.ok(late.length > 0 && late.every((error) => error.name === "ClaimLost"), JSON.stringify(late.slice(0, 3)));
-  assert.equal(store.commits.filter((commit) => commit.epoch === 1 && commit.at >= run.bumpedAt).length, 0, "epoch 1 wrote nothing after the move");
+  assert.equal(record.commits.filter((commit) => commit.epoch === 1 && commit.startedAt >= movedAt).length, 0, "epoch 1 wrote nothing after the move");
 });
