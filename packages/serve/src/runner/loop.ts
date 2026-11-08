@@ -453,9 +453,15 @@ function piLoop(specOf: (claim: Claim) => PiRunSpec | Promise<PiRunSpec>, deps: 
         gate?.seal(new Interrupted("its claim's signal aborted"));
         return { state: "interrupted" };
       }
-      // A failure with no end written (pi's Harness could not open, a read failed): thrown, so the runner stores the run
-      // failed with why (a parked run brought back stays parked and is tried again after a backoff). Returning "failed"
-      // would leave it running, released and claimed again at once.
+      // A failure with no end written yet. While the journal still takes a commit, the run's end is written with why (the
+      // run patch in that commit), so the journal and the live view read it failed too. A parked run brought back is never
+      // failed by its resume: thrown, it stays parked and is tried again after a backoff, as is any failure whose end could
+      // not be written (pi's Harness could not open): the runner stores that one failed with why. Returning "failed" with
+      // no end would leave it running, released and claimed again at once.
+      if (claim.from !== "parked" && harness && root && gate && !gate.sealed) {
+        const ended = await writeEnd(harness, root, gate, { state: "failed", summary: (error as Error)?.message ?? String(error) }, []).catch(() => undefined);
+        if (ended) return ended;
+      }
       throw error;
     } finally {
       deps.signal.removeEventListener("abort", signalAbort);
@@ -503,7 +509,13 @@ function piLoop(specOf: (claim: Claim) => PiRunSpec | Promise<PiRunSpec>, deps: 
   /** The end commit: an `agentrun.end` entry carrying the run row's final patch and the rows it takes. */
   async function writeEnd(harness: Harness, conversation: Conversation, theGate: Gate, data: EndData, take: readonly number[]): Promise<LoopEnd> {
     const ended = theGate.expect(writesEntry(KINDS.end), { run: { state: data.state, ...(data.summary ? { summary: data.summary } : {}) }, ...(take.length ? { take } : {}) });
-    await harness.commit((tx) => tx.appendEntry(conversation.id, { kind: KINDS.end, data: data as unknown as JsonValue }), context);
+    try {
+      await harness.commit((tx) => tx.appendEntry(conversation.id, { kind: KINDS.end, data: data as unknown as JsonValue }), context);
+    } catch (error) {
+      // The end was not written: its expectation fails when the journal is sealed, and nothing waits on it.
+      ended.catch(() => undefined);
+      throw error;
+    }
     await ended;
     return data.state === "failed" ? { state: "failed", error: { code: "run-failed", message: data.summary ?? "the run failed" } } : { state: data.state };
   }
