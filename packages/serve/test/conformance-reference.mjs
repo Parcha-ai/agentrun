@@ -171,7 +171,7 @@ function referenceLoop({ script, tools, hooks }, deps) {
                 await waitForCommand();
               }
               inbox.splice(inbox.indexOf(answer), 1);
-              await append(KINDS.answer, { callId, approved: answer.kind === "approve", ...noteOf(answer) }, { take: [answer.id] });
+              await append(KINDS.answer, { callId, approved: answer.kind === "approve", decision: answer.kind === "approve" ? "allow" : "deny", answeredAt: new Date().toISOString(), ...noteOf(answer) }, { take: [answer.id] });
               if (answer.kind === "deny") continue;
             }
           }

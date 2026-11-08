@@ -18,7 +18,7 @@ import { createModels } from "@earendil-works/pi-ai/models";
 import { type Conversation, type ConversationId, createRegistry, Harness, LiveDoc } from "@earendil-works/pi-durable";
 import { type AdapterSession, type AgentAdapter, type BeforeRequest, type HostTool, modelPortFor, type Refusal, runBooking, type SessionSpec } from "@parcha/agentrun-kernel";
 import type { KernelHooks, ToolCall } from "./conformance/subject.js";
-import { type AnswerData, type AskData, type BudgetData, type EndData, KINDS, type RaiseData } from "./journal-kinds.js";
+import { type AnswerData, type ApprovalPrice, type AskData, type BudgetData, type EndData, KINDS, type RaiseData, withdrawnAnswers } from "./journal-kinds.js";
 import { originOf } from "@parcha/pi-durable-agent/timeline";
 import { type AlsoRow, type Claim, type Command, type CommandOutcome, deniedText, endedBy, type EndOfRunAnswer, type Loop, type LoopDeps, type LoopEnd, type LoopFactory, noteOf, type StopReason } from "./loop-contract.js";
 import { answerText, REFLECT_NOTE_ONLY, reflectRequestId, underLearning, WRITES } from "./end-of-run.js";
@@ -46,6 +46,9 @@ export interface AdapterRunSpec {
   readonly hooks?: KernelHooks;
   /** The gate's answer for a call, before its intent: run it, refuse it, or ask a person (the run parks). */
   readonly gate?: (call: ToolCall) => "allow" | "ask" | "deny";
+  /** What an asked call costs, for its approval card (main's tool gate options.price): dollars, or "not metered";
+   *  undefined when it has none (the ask says null). */
+  readonly approvalPrice?: (call: ToolCall) => ApprovalPrice | undefined;
   /** The host's check before each paid request (the spend cap). */
   readonly beforeRequest?: BeforeRequest;
   /** The run's cap, when it has one (filled from the run's launch): its figure, and what a refusal does to the run (the
@@ -86,6 +89,8 @@ export interface AdapterLoopOptions {
   /** How many times pi restarts a call's task cut off without progress before it ends it (restart_limit); finite.
    *  Default DEFAULT_RESTART_LIMIT. */
   readonly restartLimit?: number;
+  /** The gate's clock (epoch ms): when an ask was asked and answered. Default Date.now. */
+  readonly now?: () => number;
 }
 
 /** Loops for runs on the adapter contract: `spec(claim, run)` gives each Session what it runs. */
@@ -95,6 +100,9 @@ export function createAdapterLoop(spec: (claim: Claim, run: AdapterRun) => Adapt
 
 function adapterLoop(specOf: (claim: Claim, run: AdapterRun) => AdapterRunSpec | Promise<AdapterRunSpec>, options: AdapterLoopOptions, deps: LoopDeps): Loop {
   const restartLimit = options.restartLimit ?? DEFAULT_RESTART_LIMIT;
+  const now = options.now ?? Date.now;
+  /** The gate's clock as main's card says a time: ISO. */
+  const isoNow = () => new Date(now()).toISOString();
   const inbox: Command[] = [];
   let wakeInbox: () => void = () => {};
   let stopReason: StopReason | undefined;
@@ -471,19 +479,22 @@ function adapterLoop(specOf: (claim: Claim, run: AdapterRun) => AdapterRunSpec |
       const decision = spec.gate?.(kernelCall) ?? "allow";
       if (decision === "deny") return { deny: `Permission denied: ${call.tool} is set to deny.` };
       if (decision === "allow") return "allow";
-      const answer = await answerOf(call);
+      const answer = await answerOf(call, spec.approvalPrice?.(kernelCall) ?? null);
       if (answer === "park") return { park: true };
       return answer.approved ? "allow" : { deny: deniedText(call.tool, answer.note) };
     };
   }
 
   /** An ask's answer: one in the journal stands; else the approve or deny the runner hands over on a resume; else ask and
-   *  park (the ask entry with the run parked, in one commit). */
-  async function answerOf(call: PreIntentCall): Promise<AnswerData | "park"> {
+   *  park (the ask entry with the run parked, in one commit). The ask is main's approval card: the call's input, when it
+   *  was asked and its `price`; asked again on a resume, it is the same request. */
+  async function answerOf(call: PreIntentCall, price: ApprovalPrice | null): Promise<AnswerData | "park"> {
     const conversation = await harness!.root(context);
     const entries = await entriesOf(gate!.journal, conversation.id, context);
     const known = findData<AnswerData>(entries, KINDS.answer, (data) => data.callId === call.callId);
     if (known) return known;
+    const first = findData<AskData>(entries, KINDS.ask, (data) => data.callId === call.callId);
+    const ask: AskData = first ?? { callId: call.callId, tool: call.tool, args: call.args ?? null, requestedAt: isoNow(), price };
     // Commits the root's entry of `kind`, staging `staged` with it. False when the journal is sealed first (another call
     // of the round parked the run): nothing landed, and the expectation's failure is no one's to wait on.
     const entryLands = async (kind: string, data: AskData | AnswerData, staged: Parameters<Gate["expect"]>[1]): Promise<boolean> => {
@@ -499,16 +510,17 @@ function adapterLoop(specOf: (claim: Claim, run: AdapterRun) => AdapterRunSpec |
         throw error;
       }
     };
-    if (findData<AskData>(entries, KINDS.ask, (data) => data.callId === call.callId) === undefined) {
+    if (first === undefined) {
       // Asked and parked; or held as the parked call is, when another call of the round parked the run first.
-      if (await entryLands(KINDS.ask, { callId: call.callId, tool: call.tool }, { run: { state: "parked" } })) parked();
+      if (await entryLands(KINDS.ask, ask, { run: { state: "parked" } })) parked();
       return "park";
     }
     for (;;) {
       const row = inbox.find((command) => (command.kind === "approve" || command.kind === "deny") && approvalOf(command) === call.callId);
       if (row) {
         inbox.splice(inbox.indexOf(row), 1);
-        const data: AnswerData = { callId: call.callId, approved: row.kind === "approve", ...noteOf(row) };
+        const approved = row.kind === "approve";
+        const data: AnswerData = { callId: call.callId, approved, decision: approved ? "allow" : "deny", answeredAt: isoNow(), ...noteOf(row) };
         if (!(await entryLands(KINDS.answer, data, { take: [row.id] }))) return "park";
         return data;
       }
@@ -517,7 +529,7 @@ function adapterLoop(specOf: (claim: Claim, run: AdapterRun) => AdapterRunSpec |
       // no waiting call and was refused): the call is asked again and the run parks on it, so it never waits here
       // holding the claim while it reads running.
       if (delivered || refusals > 0) {
-        if (await entryLands(KINDS.ask, { callId: call.callId, tool: call.tool }, { run: { state: "parked" } })) parked();
+        if (await entryLands(KINDS.ask, ask, { run: { state: "parked" } })) parked();
         return "park";
       }
       await new Promise<void>((resolve) => (wakeInbox = resolve));
@@ -715,11 +727,18 @@ function adapterLoop(specOf: (claim: Claim, run: AdapterRun) => AdapterRunSpec |
       ...(data.costUsd !== undefined ? { costUsd: data.costUsd } : {}),
       ...(data.metrics !== undefined ? { metrics: data.metrics } : {}),
     };
+    // A person's stop or cancel withdraws every call still waiting for its answer, in the end's own commit: the approval
+    // card reads answered (withdrawn), never waiting for good on a final run.
+    const byPerson = data.state === "stopped" || stopReason?.kind === "command";
+    const withdrawn = byPerson ? withdrawnAnswers(await entriesOf(theGate.journal, conversation.id, context), isoNow()) : [];
     const ended = theGate.expect(writesEntry(KINDS.end), { run, ...(also.length ? { also } : {}), ...(take.length ? { take } : {}) });
     // A seal while the end is committed fails it before it is awaited: handled here, read by the await below.
     ended.catch(() => undefined);
     try {
-      await on.commit((tx) => tx.appendEntry(conversation.id, { kind: KINDS.end, data: data as unknown as JsonValue }), context);
+      await on.commit(async (tx) => {
+        for (const answer of withdrawn) await tx.appendEntry(conversation.id, { kind: KINDS.answer, data: answer as unknown as JsonValue });
+        return tx.appendEntry(conversation.id, { kind: KINDS.end, data: data as unknown as JsonValue });
+      }, context);
     } catch (error) {
       // The end was not written: its expectation fails when the journal is sealed, and nothing waits on it.
       ended.catch(() => undefined);

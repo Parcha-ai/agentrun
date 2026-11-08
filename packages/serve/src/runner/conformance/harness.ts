@@ -549,7 +549,8 @@ const CASES: readonly Case[] = [
       await w.ended("ended");
       assert.equal(ran.asked, 0, "denied, it never ran");
       const { answers, messages } = await w.read();
-      assert.deepEqual(answers, [{ callId, approved: false, note: "not on a Friday" }], "the answer keeps the note");
+      // The fields this case is about; its time is the loop's clock's (adapter-pi-approval-entries pins it).
+      assert.deepEqual(answers.map(({ callId: id, approved, decision, note }) => ({ callId: id, approved, decision, note })), [{ callId, approved: false, decision: "deny", note: "not on a Friday" }], "the answer is a deny that keeps the note");
       const said = messages.filter((message) => message.role === "model").map((message) => message.text);
       assert.equal(said.length, 1, `the model answered once: ${JSON.stringify(messages)}`);
       // Main's words for a call a person denied (tool-gate.ts refusedText), the note with them. The harness may frame a
