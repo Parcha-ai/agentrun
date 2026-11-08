@@ -73,8 +73,7 @@ export const EXCEPTIONS = [
   ['apps/console/vite.config.ts', 'packages/pi-browser', 1, ...CONSOLE_SOURCE],
   ['apps/console/vite.config.ts', 'packages/pi-durable-agent', 1, ...CONSOLE_SOURCE],
   ['packages/agentrun/package.json', 'packages/serve', 1, ...LAUNCHER_SERVER],
-  ['packages/agentrun/lib/start.mjs', 'packages/serve', 2, ...LAUNCHER_SERVER],
-  ['packages/agentrun/lib/cli.mjs', 'packages/serve', 3, 'the CLI finds the local server and its token by reading the server\'s data files', 'the CLI takes the address and token from its config or the environment, or asks the server through its API'],
+  ['packages/agentrun/lib/start.mjs', 'packages/serve', 1, ...LAUNCHER_SERVER],
 ];
 
 const SKIP_DIRS = new Set(['node_modules', 'dist', 'vendor', 'fixtures', 'test', 'tests', '__tests__', 'coverage']);

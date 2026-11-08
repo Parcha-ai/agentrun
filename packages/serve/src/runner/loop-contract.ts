@@ -2,11 +2,36 @@
 // claims, renews, delivers command rows and releases; the loop runs the harness on the run's journal. B2's loop.ts
 // implements `Loop` for pi and the CLI adapters; the runner knows nothing about harnesses.
 
-import type { Claim, Command, Journal } from "../store/store.js";
+import type { AlsoRow, Claim, Command, Journal } from "../store/store.js";
 
 // The store's own: a claim (its epoch fences every write made under it; `until` in epoch ms) and a command row (taken_at
 // set once, by the loop's journal commit that applies it or by the runner's refusal, with `refused` its reason).
-export type { Claim, Command, Journal };
+export type { AlsoRow, Claim, Command, Journal };
+
+/** How an end-of-run turn the loop asked ended: its answer's text, its deadline passed (the turn is aborted), or it
+ *  failed. */
+export type EndOfRunAnswer = { readonly ended: true; readonly answer: string } | { readonly timedOut: true } | { readonly failed: { readonly code: string; readonly message: string } };
+
+/**
+ * The end-of-run step (the learning lane's end-of-run turn): asked once, after the job's last turn ended and before the
+ * loop writes the run's end. `ask` sends one more turn through the run's own session, its origin `reflect`: while it
+ * runs the loop refuses its writes and edits under work/.learning/ (REFLECT_NOTE_ONLY), and it is aborted at
+ * `deadlineMs`. The rows it returns are staged into the end commit, so they land in that commit's one transaction or not
+ * at all. A stop or a lost claim aborts `signal`: no end is written, and the next claim asks again (the turn's request
+ * id is one per run, so its model is asked once).
+ */
+export type EndOfRunTurn = (input: {
+  readonly runId: string;
+  readonly agentId: string;
+  readonly claim: Claim;
+  /** How the job ended. */
+  readonly outcome: "completed" | "failed";
+  /** The run was cut before it could look back: by a person's stop (`stopped`), by one during the end-of-run turn
+   *  (`stopped-looking`), or by a fault (`faulted`). The step must not call `ask`: it returns only what a cut run keeps. */
+  readonly cut?: "stopped" | "stopped-looking" | "faulted";
+  ask(prompt: string, opts: { readonly origin: "reflect"; readonly deadlineMs: number }): Promise<EndOfRunAnswer>;
+  readonly signal: AbortSignal;
+}) => Promise<{ readonly also: readonly AlsoRow[] } | undefined>;
 
 /** How a loop's start() ended. The run's own outcome (state, cost) is already in the journal's last commit. */
 export type LoopEnd =
@@ -50,6 +75,8 @@ export interface LoopDeps {
   flush(): Promise<void>;
   /** Aborted on claim loss, self-stop or shutdown: in-flight model and tool calls are cut at once. */
   signal: AbortSignal;
+  /** The end-of-run step (EndOfRunTurn): asked once before a run that answered or failed writes its end. Absent: none. */
+  endOfRun?: EndOfRunTurn;
   /** Resolves once the claim's first delivery has handed every untaken row it read to command() (each call returned),
    *  or at once when there were none: a resumed ask with no answer row waits for it before it parks again, so an
    *  approve already on its way is never raced. Never rejects. */

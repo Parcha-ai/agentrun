@@ -97,5 +97,6 @@ export const claudeAgentSubject = {
     // is refused by its own guard; the in-process crash cases cover the same points.
     "crash-before-intent-process": "the stand-in Claude Agent CLI runs only under the test runner (its guard), and the suite's crash child runs outside it",
     "crash-after-intent-process": "the stand-in Claude Agent CLI runs only under the test runner (its guard), and the suite's crash child runs outside it",
+    "stalled-past-lease-process": "the stand-in Claude Agent CLI runs only under the test runner (its guard), and the suite's runner child runs outside it",
   },
 };

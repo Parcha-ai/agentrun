@@ -5,8 +5,7 @@ import { chmod, lstat, mkdir, readdir, readFile, realpath, rename, stat, writeFi
 import { createServer, type IncomingMessage, type ServerResponse } from "node:http";
 import type { Duplex } from "node:stream";
 import type { AddressInfo } from "node:net";
-import { dirname, join, resolve } from "node:path";
-import { pipeline } from "node:stream/promises";
+import { dirname, join, relative, resolve, sep } from "node:path";
 import { pathToFileURL } from "node:url";
 import { Worker } from "node:worker_threads";
 import { once } from "node:events";
@@ -23,8 +22,9 @@ import { FAUX_EXA_ENV } from "./exa-keyless.js";
 import { FAUX_BROWSER_ENV, NODE_TOOLS, toolingOf, toolOf, toolsView } from "./tools.js";
 import { ApiError, type InputIssue, invalid, unsupported } from "./errors.js";
 import { deref, explain } from "./explain.js";
-import { DATA_ENV, DOOR_TOKEN_FILE, HOME_HOST_OWNED, HOMES_DIR, homeOf, readJson, RUN_META, SETUP_LOST, syncDir, TOKEN_FILE, writeDurable } from "./files.js";
-import { checkedPath, decodedPath, homePath, hostOwnedOf, hostOwnedRefusal, type OwnedReadAt, ownedByIdentity } from "./home-path.js";
+import { DOOR_TOKEN_FILE, HOME_HOST_OWNED, RUN_META, SETUP_LOST } from "./files.js";
+import { DATA_ENV, readJson, syncDir, TOKEN_FILE, writeDurable } from "./server-fs.js";
+import { checkedPath, decodedPath, homePath, hostOwnedOf, type OwnedReadAt } from "./home-path.js";
 import { chooseModel, EFFORTS, FAUX_ENV, FAUX_UPSTREAM_ENV, MODEL_NODES, type ModelNeeds, modelSource, THINKING_LEVELS, unpricedModels, withoutFaux } from "./model.js";
 import { DEFAULT_HARNESS, HARNESSES, type HarnessCapability, harnessOfBody, harnessOffers } from "./harness.js";
 import { HARNESS_TABLE_ENV, harnessOf } from "./harness-table.js";
@@ -78,13 +78,15 @@ import type { TriggerAdapter } from "./trigger-adapter.js";
 import { TRIGGER_ADAPTERS } from "./trigger-adapters.js";
 import { webhook } from "./trigger-webhook.js";
 import { SCHEME_NAMES } from "./trigger-signatures.js";
-import { permissionFrom } from "./tool-gate.js";
+import { permissionFrom, pinWords } from "./tool-gate.js";
 import { CATCHUP_WINDOW_S, FAILURES_TO_PAUSE, HISTORY_KEPT, MIN_EVERY_S, PAYLOAD_KEPT_BYTES, type RunTrigger, SOURCE_KINDS, TARGET_KINDS, type TriggerClock, Triggers } from "./triggers.js";
-import { applyBodyOf, compiled, type Package, packageModel, packageView, readPackages } from "./templates.js";
+import { applyBodyOf, compiled, madeTriggerIssues, type Package, packageModel, packageView, readPackages } from "./templates.js";
 import { checkDefinitionBody, DEFAULT_INPUT_SCHEMA, definitionBodyIssues, ID, IDEMPOTENCY_TTL_S, inputIssues, isObject, type Json, stable, unknownFields } from "./validate.js";
 import { agentTools, browserKeyRow, isUnavailable, recheckPlane, settingsIssues, ToolSettings, type ToolSettingsMap, whyUnavailable, withDefaults } from "./tool-plane.js";
 import { MAX_FILES_PER_RUN, MAX_UPLOAD_BYTES, Uploads, UPLOADS_DIR } from "./uploads.js";
-import { INLINE_TYPES, openWorkFile, removeWorkFile, typeOf, WALK_DEPTH, walkWork, WorkRefused, writesHeld, writeWorkFile } from "./workspace.js";
+import { entryAt, listFiles, sendFile as sendWorkspaceFile, viewOf } from "./run-files.js";
+import { writesHeld } from "./workspace.js";
+import { agentHomeFolder, isWorkspaceError, localWorkspace, runFolder, type Workspace } from "./workspace/index.js";
 import { markRunning, markStopping, type ServerLock, takeServerLockAfterStop } from "./server-lock.js";
 
 export const CONTRACT = "agentrun.v2/0";
@@ -118,7 +120,8 @@ const noticeOf = (options: Pick<ServeOptions, "notice">) => (line: string): void
 };
 /** Why a home's PUT or DELETE is 501 where `capabilities.home.writes` is false (workspace.ts writesHeld). */
 const HOME_WRITES_OFF = "This server can't write a home's files safely here: a write needs /proc/self/fd, as on Linux, which this platform lacks. Reads and the list still work.";
-const FILE_CSP = "default-src 'none'; style-src 'unsafe-inline'; img-src data:; sandbox; form-action 'none'";
+/** Why a home's write or removal is refused when a link is on the way: the Workspace follows none. */
+const LINK_REFUSED = "A link is on the way to this path, or is the file: this server follows none.";
 
 export type ServeOptions = {
   /** The data directory: the agent store (`store.sqlite`) and its runs (`runs/<id>/`). */
@@ -1403,10 +1406,14 @@ async function startHolding(options: ServeOptions, data: string, lock: ServerLoc
     const saved = pkg.mcp.filter((need) => mcpSource.server(need.server));
     const unsaved = pkg.mcp.filter((need) => !saved.includes(need));
     const needed = unsaved.filter((need) => need.required);
-    if (missing.length || needed.length) {
+    // A webhook trigger's secret is kept sealed, never in the clear: with no seal key, its create would be refused after
+    // the agent is made, so the apply is refused first, naming each one.
+    const unsealed = sealKeyOf(env[SEAL_KEY_ENV]) ? [] : pkg.triggers.flatMap((trigger, i) => (isObject(trigger.source) && trigger.source.kind === "webhook" ? [i] : []));
+    if (missing.length || needed.length || unsealed.length) {
       const fix = "Add it in Settings → Model keys or Settings → Tool keys, or set it where AgentRun starts, then apply the template again.";
       const server = "Add it in Settings → MCP servers, under that name, then apply the template again.";
-      throw new ApiError("agent_not_runnable", `The ${pkg.name} template needs ${[...missing, ...needed.map((need) => `the MCP server ${need.server}`)].join(" and ")}, which this server does not have. Nothing was created.`, { fields: [...missing.map((name) => ({ field: `secrets.${name}`, reason: NOT_SET_UP, message: `${name} is not set on this server.`, fix })), ...needed.map((need) => ({ field: `mcp.${need.server}`, reason: NOT_SET_UP, message: `No MCP server ${need.server} is saved on this server.`, fix: server }))] });
+      const sealing = `Start the server with its launcher, agentrun-serve, which makes and keeps a seal key, or set ${SEAL_KEY_ENV} (32 random bytes in base64) where AgentRun starts, then apply the template again.`;
+      throw new ApiError("agent_not_runnable", `The ${pkg.name} template needs ${[...missing, ...needed.map((need) => `the MCP server ${need.server}`), ...(unsealed.length ? ["a seal key for its webhook trigger's secret"] : [])].join(" and ")}, which this server does not have. Nothing was created.`, { fields: [...missing.map((name) => ({ field: `secrets.${name}`, reason: NOT_SET_UP, message: `${name} is not set on this server.`, fix })), ...needed.map((need) => ({ field: `mcp.${need.server}`, reason: NOT_SET_UP, message: `No MCP server ${need.server} is saved on this server.`, fix: server })), ...unsealed.map((i) => ({ field: `triggers.${i}`, reason: NOT_SET_UP, message: `This server has no seal key (${SEAL_KEY_ENV}), so it cannot keep the webhook trigger's secret.`, fix: sealing }))] });
     }
     // An MCP server the package can do without is skipped, and said: its tools are not granted.
     const skipped: InputIssue[] = unsaved.map((need) => ({ field: `mcp.${need.server}`, reason: NOT_SET_UP, message: `No MCP server ${need.server} is saved on this server, so the agent was made without its tools (${need.tools.join(", ")}). Save it in Settings → MCP servers and apply again to grant them.` }));
@@ -1418,6 +1425,10 @@ async function startHolding(options: ServeOptions, data: string, lock: ServerLoc
     const denied = grants.filter((tool) => { const set = permissionFrom(tool, server); return set.from === "server" && set.permission === "deny"; });
     const kept: InputIssue[] = denied.map((tool) => ({ field: `grants.${tool}`, reason: "not_allowed", message: `${tool} is denied on this server (Settings → Tools), so the agent was not allowed it: its runs are refused it until the owner changes that setting.` }));
     const made = compiled(pkg, parameters, { ...(harness ? { harness } : {}), ...(model ? { model } : {}), mcp: saved, defaultTools, grants: grants.filter((tool) => !denied.includes(tool)) });
+    // Every trigger is checked as POST /triggers checks it, its parameters filled, before anything is made: a schedule
+    // from a parameter that does not read, or a date that has passed, refuses the apply (422 under triggers.<i>).
+    const refusedTriggers = madeTriggerIssues(made.triggers, Date.now());
+    if (refusedTriggers.length) throw invalid(refusedTriggers);
     // POST /agents' and POST /triggers' own body limit: parameters filled in more than once can grow a package past it.
     for (const one of [made.agent, ...made.triggers]) if (Buffer.byteLength(JSON.stringify(one)) > MAX_BODY) throw new ApiError("payload_too_large", `the ${pkg.name} template, its parameters filled in, makes a body over ${MAX_BODY} bytes`, { details: { limit: "max_body_bytes" } });
     const { entry, warnings } = await createAgentOf(made.agent);
@@ -1442,7 +1453,12 @@ async function startHolding(options: ServeOptions, data: string, lock: ServerLoc
       await agents.setArchived("agent", entry.agent.id, true).catch((undo: Error) => log?.(logLine("template_undo_failed", { template: pkg.name, agent: entry.agent.id, message: undo.message })));
       throw error;
     }
-    return { template: pkg.name, version: pkg.version, agent_id: entry.agent.id, trigger_ids: ids, warnings: [...skipped, ...kept, ...warnings] };
+    // A pinned send whose destination parameter was not given is denied, never let go anywhere: said, by its gate name.
+    const unpinned: InputIssue[] = made.unpinned.map(({ tool, parameters: named }) => ({ field: `pins.${tool}`, reason: NOT_SET_UP, message: `${tool}'s arguments are fixed by ${named.map((one) => `the ${one} parameter`).join(" and ")}, which was not given, so the agent was made with ${tool} set to deny: it can't call it at all. Apply again with ${named.join(" and ")} set to let it.` }));
+    // A pin this server's agent store does not keep yet (tool-plane.ts AGENT_LAYER_PINS): said, with the setting that holds
+    // the send to its destination meanwhile, the server's.
+    const unkept: InputIssue[] = made.unkept.map(({ tool, pin }) => ({ field: `pins.${tool}`, reason: NOT_SET_UP, message: `${tool} is not pinned to ${pinWords(pin)} for this agent yet: this server's agent store keeps an agent's own pin from the store cutover on. Until then it asks unless granted. To hold its calls to that destination, pin it on this server, which holds every agent's calls of ${tool}.`, fix: `Add ${JSON.stringify({ [tool]: { pin } })} to this server's tool settings (Settings → Tools; PUT /v2/settings/tools replaces the whole map, so send it with the rest).` }));
+    return { template: pkg.name, version: pkg.version, agent_id: entry.agent.id, trigger_ids: ids, warnings: [...skipped, ...kept, ...unpinned, ...unkept, ...warnings] };
   }
 
   /** A run create's issues told from the input this server checks (explain.ts): an agentic run's `{content: string}`,
@@ -1627,95 +1643,41 @@ async function startHolding(options: ServeOptions, data: string, lock: ServerLoc
 
   // ---- files ----------------------------------------------------------------------------------------------------------
 
-  type FileView = { path: string; size_bytes: number; modified_at: string; content_type: string | null; unreadable?: true };
-  const fileView = (path: string, st: { size: number; mtimeMs: number }): FileView => ({ path, size_bytes: st.size, modified_at: new Date(st.mtimeMs).toISOString(), content_type: typeOf(path) ?? null });
-
-  /** The files under `base` (a run's work/, an agent's home), through no link (workspace.ts): each regular file's own size
-   *  and time, a dot-name left out. `deep` when a directory below WALK_DEPTH was there and not entered. In a `home`, a
-   *  host-owned name at its top is the host's: named in `owned`, and nothing below it walked. */
-  async function walk(base: string, home = false): Promise<{ files: FileView[]; deep: boolean; owned: string[] }> {
-    const out: FileView[] = [];
-    const owned: string[] = [];
-    let deep = false;
-    if (!(await lstat(base).catch(() => null))?.isDirectory()) return { files: out, deep, owned };
-    // The directory unreadable as a whole lists nothing; what the walk could not read in it is left out.
-    await walkWork(base, (path, st, readable) => {
-      if (st.isFile()) out.push({ ...fileView(path, st), ...(readable ? {} : { unreadable: true }) });
-      else if (st.isDirectory() && path.split("/").length > WALK_DEPTH) deep = true;
-      return out.length <= FILE_LIST_CAP;
-    }, {
-      skip: (name, path) => {
-        if (name.startsWith(".")) return true;
-        if (!home || path !== name || !hostOwnedOf(name)) return false;
-        owned.push(name);
-        return true;
-      },
-    }).catch((error) => {
-      if (!(error instanceof WorkRefused)) throw error;
-    });
-    return { files: out, deep, owned };
-  }
-
-  /** The file `rel` under `root`, raw; `unreadable` says why one this server cannot read is private. */
-  async function sendFile(req: IncomingMessage, res: ServerResponse, url: URL, root: string, rel: string, unreadable: string): Promise<void> {
-    if (!(await lstat(root).catch(() => null))?.isDirectory()) throw new ApiError("not_found", "no such file");
-    // Through no link, held from the open to the last byte (workspace.ts): a name swapped for one is refused, not followed.
-    const opened = await openWorkFile(root, rel).catch((error) => {
-      if (error instanceof WorkRefused && error.reason === "unreadable") throw new ApiError("system_file_forbidden", `This file was created private by ${unreadable}: this server cannot read it.`, { details: { reason: "unreadable" } });
-      return null;
-    });
-    if (!opened) throw new ApiError("not_found", "no such file");
-    const { handle, stats: st } = opened;
-    const type = typeOf(rel) ?? "application/octet-stream";
-    const download = url.searchParams.get("download") === "1" || !INLINE_TYPES.has(type);
-    const name = rel.split("/").at(-1)!.replace(/[^\w.-]/g, "_");
-    res.writeHead(200, {
-      "content-type": type,
-      "content-length": st.size,
-      "x-content-type-options": "nosniff",
-      "cache-control": "no-store",
-      ...(type.startsWith("text/html") ? { "content-security-policy": FILE_CSP } : {}),
-      ...(download ? { "content-disposition": `attachment; filename="${name}"` } : {}),
-    });
-    if (req.method === "HEAD" || st.size === 0) {
-      await handle.close();
-      return void res.end();
-    }
-    await pipeline(handle.createReadStream(), res).catch(() => undefined);
-    await handle.close().catch(() => undefined);
+  /** Run `run`'s Workspace, which its files' list and reads go through: null while the run has no folder (an imported
+   *  run never has one), which lists nothing. */
+  async function runWorkspace(run: Pick<Run, "agentId" | "id">): Promise<Workspace | null> {
+    const root = runFolder(data, run.agentId, run.id);
+    return (await lstat(root).catch(() => null))?.isDirectory() ? localWorkspace(root) : null;
   }
 
   // ---- an agent's home --------------------------------------------------------------------------------------------------
 
-  /** The agent's home, `homes/<its home key>/`: null while nothing was ever written to it, made with homes/ (0700) when
-   *  `make`. Neither is ever a link: a read finds no home there, and a write is refused. */
-  async function homeDir(agentId: string, make: boolean): Promise<string | null> {
-    const home = homeOf(data, agentId);
-    for (const dir of [join(data, HOMES_DIR), home]) {
-      // One made is synced into its parent, so a write in it that is answered survives a crash of the machine.
-      if (make && (await mkdir(dir, { mode: 0o700 }).then(() => true, (error: NodeJS.ErrnoException) => (error.code === "EEXIST" ? false : Promise.reject(error))))) await syncDir(dirname(dir));
-      if ((await lstat(dir).catch(() => null))?.isDirectory()) continue;
-      if (make) throw new WorkRefused(dir, "link");
-      return null;
+  /** Agent `agentId`'s home as its Workspace (paths.ts agentHomeFolder): null while nothing was ever written to it. With
+   *  `make`, its folder and each above it under the data directory are made (0700) where absent, each one made synced
+   *  into its parent, so a write in it that is answered survives a crash of the machine. Never a link: a read finds no
+   *  home there, and a write is refused. */
+  async function homeWorkspace(agentId: string, make: boolean): Promise<Workspace | null> {
+    const root = agentHomeFolder(data, agentId);
+    if (make) {
+      let dir = data;
+      for (const part of relative(data, root).split(sep)) {
+        dir = join(dir, part);
+        if (await mkdir(dir, { mode: 0o700 }).then(() => true, (error: NodeJS.ErrnoException) => (error.code === "EEXIST" ? false : Promise.reject(error)))) await syncDir(dirname(dir));
+      }
     }
-    return home;
+    if ((await lstat(root).catch(() => null))?.isDirectory()) return localWorkspace(root);
+    if (make) throw new ApiError("system_file_forbidden", LINK_REFUSED, { details: { reason: "link" } });
+    return null;
   }
 
-  /** Refused when `rel`'s first segment is, on this disk, the same entry as a host-owned path of the home (home-path.ts):
-   *  the name check holds for the spellings it knows, and this for any other a disk takes. */
-  async function notHostOwned(home: string, rel: string, agentId: string, write: boolean): Promise<void> {
-    const owned = await ownedByIdentity(home, rel);
-    if (owned) throw hostOwnedRefusal(owned, agentId, write, ownedReadAt(agentId));
-  }
-
-  /** A write to the home or a removal from it refused (workspace.ts), as its answer. */
+  /** A write to the home or a removal from it the Workspace refused, as its answer. */
   function homeRefusal(error: unknown): never {
-    if (!(error instanceof WorkRefused)) throw error;
-    if (error.reason === "link") throw new ApiError("system_file_forbidden", "A link is on the way to this path, or is the file: this server follows none.", { details: { reason: "link" } });
-    if (error.reason === "unreadable") throw new ApiError("system_file_forbidden", "This server may not enter a directory on the way to this path.", { details: { reason: "unreadable" } });
-    if (error.reason === "not_regular") throw new ApiError("invalid_file_path", "the path names a directory, or runs through a file");
-    if (error.reason === "unheld") throw new ApiError("unsupported_here", HOME_WRITES_OFF);
-    throw new ApiError("not_found", "no such file");
+    if (!isWorkspaceError(error)) throw error;
+    if (error.code === "ESCAPE") throw new ApiError("system_file_forbidden", LINK_REFUSED, { details: { reason: "link" } });
+    const denied = ["EACCES", "EPERM"].includes((error.cause as NodeJS.ErrnoException | undefined)?.code ?? "");
+    if (denied) throw new ApiError("system_file_forbidden", "This server may not enter a directory on the way to this path.", { details: { reason: "unreadable" } });
+    if (error.code === "REFUSED" || error.code === "EXISTS" || error.code === "NOT_FOUND") throw new ApiError("invalid_file_path", "the path names a directory, or runs through a file");
+    throw error;
   }
 
   // ---- usage ----------------------------------------------------------------------------------------------------------
@@ -2227,15 +2189,16 @@ async function startHolding(options: ServeOptions, data: string, lock: ServerLoc
         filesShown(run);
         // A remote box's turn just ended: its pull lands first, so the list shows what the box wrote.
         await runs.pulled(run.id);
-        const { files, deep } = await walk(join(run.dir, "work"));
+        const workspace = await runWorkspace(run);
+        const { files, deep } = workspace ? await listFiles(workspace, FILE_LIST_CAP) : { files: [], deep: false };
         files.sort((a, b) => a.path.localeCompare(b.path));
         return send(res, 200, { run_id: run.id, files: files.slice(0, FILE_LIST_CAP), complete: true, truncated: deep || files.length > FILE_LIST_CAP });
       }
       // An archived agent's home is read and written as any other's: as its definition is.
       case "listHomeFiles": {
         await needAgent(id);
-        const home = await homeDir(id, false);
-        const { files, deep, owned } = home ? await walk(home, true) : { files: [], deep: false, owned: [] };
+        const home = await homeWorkspace(id, false);
+        const { files, deep, owned } = home ? await listFiles(home, FILE_LIST_CAP, { owned: (name) => hostOwnedOf(name) !== undefined }) : { files: [], deep: false, owned: [] };
         // A host-owned path there is one entry by its name, and none of what is in it.
         const listed = [...files, ...owned.map((path) => ({ path, host_owned: true as const }))].sort((a, b) => a.path.localeCompare(b.path));
         return send(res, 200, { agent_id: id, files: listed.slice(0, FILE_LIST_CAP), complete: true, truncated: deep || listed.length > FILE_LIST_CAP });
@@ -2243,33 +2206,34 @@ async function startHolding(options: ServeOptions, data: string, lock: ServerLoc
       case "readHomeFile": {
         await needAgent(id);
         const rel = homePath(second!, id, false, ownedReadAt(id));
-        const home = await homeDir(id, false);
+        const home = await homeWorkspace(id, false);
         if (!home) throw new ApiError("not_found", "no such file");
-        await notHostOwned(home, rel, id, false);
-        return sendFile(req, res, url, home, rel, "another user");
+        return sendWorkspaceFile(req, res, url, home, rel, "another user");
       }
       case "writeHomeFile": {
         await needAgent(id);
         if (!homeWrites) throw new ApiError("unsupported_here", HOME_WRITES_OFF);
         const rel = homePath(second!, id, true);
         const bytes = await bytesOf(req);
-        // Each write lands whole (a temporary file renamed over the old one); of two at once, the last rename wins.
-        const st = await homeDir(id, true)
-          .then(async (home) => {
-            await notHostOwned(home!, rel, id, true);
-            return writeWorkFile(home!, rel, bytes);
-          })
-          .catch(homeRefusal);
-        return send(res, 200, fileView(rel, st));
+        // Each write lands whole (the Workspace's write is atomic); of two at once, the last one wins.
+        const home = await homeWorkspace(id, true);
+        await home!.write(rel, bytes).catch(homeRefusal);
+        const written = await entryAt(home!, rel);
+        if (written?.kind !== "file") throw new ApiError("not_found", "no such file");
+        return send(res, 200, viewOf(rel, written));
       }
       case "deleteHomeFile": {
         await needAgent(id);
         if (!homeWrites) throw new ApiError("unsupported_here", HOME_WRITES_OFF);
         const rel = homePath(second!, id, true);
-        const home = await homeDir(id, false);
+        const home = await homeWorkspace(id, false);
         if (!home) throw new ApiError("not_found", "no such file");
-        await notHostOwned(home, rel, id, true);
-        await removeWorkFile(home, rel).catch(homeRefusal);
+        // A file alone: a folder is refused by the listing; a link (never listed) by the Workspace's remove (ESCAPE).
+        if ((await entryAt(home, rel))?.kind === "dir") throw new ApiError("invalid_file_path", "the path names a directory, or runs through a file");
+        await home.remove(rel).catch((error: unknown) => {
+          if (isWorkspaceError(error, "NOT_FOUND")) throw new ApiError("not_found", "no such file");
+          homeRefusal(error);
+        });
         res.writeHead(204, { "cache-control": "no-store", "x-content-type-options": "nosniff" });
         return void res.end();
       }
@@ -2299,7 +2263,10 @@ async function startHolding(options: ServeOptions, data: string, lock: ServerLoc
         const run = await needRun(id);
         filesShown(run);
         await runs.pulled(run.id);
-        return sendFile(req, res, url, join(run.dir, "work"), checkedPath(decodedPath(second!), "the run's own, not a file it wrote"), "a tool in the run's box");
+        const rel = checkedPath(decodedPath(second!), "the run's own, not a file it wrote");
+        const workspace = await runWorkspace(run);
+        if (!workspace) throw new ApiError("not_found", "no such file");
+        return sendWorkspaceFile(req, res, url, workspace, rel, "a tool in the run's box");
       }
       case "createFile": {
         // A `path` in the query, or a body that is not JSON: the file sent in one call, its bytes the body. Else the

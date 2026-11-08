@@ -38,6 +38,7 @@ import {
 } from "@earendil-works/pi-durable";
 import { PI_TABLE as T } from "../schema.js";
 import type { Connection } from "../sqlite/connection.js";
+import { claimFence } from "../fence.js";
 import { applyRunPatch, refuseLeftovers } from "../sqlite/run-patch.js";
 import { type Claim, CommandTaken, Fenced, type Journal, type Staged } from "../store.js";
 
@@ -321,7 +322,10 @@ export class RunStorage implements Journal {
     // store close asked after this commit waits for it. The transaction holds the store's one connection: its work awaits
     // only its own statements, never a model or a tool.
     await this.#transaction(async (tx) => {
-      if ((await tx.runCounted("UPDATE runs SET epoch = epoch WHERE id = ? AND epoch = ?", this.#runId, this.#epoch)) === 0) {
+      // The claim's fence (store/fence.ts): its epoch, and its lease not run out on the store's clock, read here inside the
+      // transaction so the check and the commit are one.
+      const fence = claimFence({ runId: this.#runId, epoch: this.#epoch }, this.#now());
+      if ((await tx.runCounted(`UPDATE runs SET epoch = epoch WHERE ${fence.where}`, ...fence.params)) === 0) {
         throw new Fenced(this.#runId, this.#epoch);
       }
       const metadata = await this.#readMetadata(tx);
@@ -398,6 +402,44 @@ export class RunStorage implements Journal {
    */
   publishing(publish: () => void, _context: Context): void {
     publish();
+  }
+
+  /**
+   * Applies `batches` to this run's journal inside `tx` — the caller's transaction, not one of its own — each batch a
+   * commit with its own seq, checked then written as commit() does, but with no staging, no takes and no publication: for
+   * a one-shot write that must land in the same transaction as other rows (an import's run row and its launch row). Fenced
+   * by the claim fence's inserted-here form (store/fence.ts): only the never-claimed row this transaction's own insert
+   * returned (`insertedHere`, its rowid) passes, never another run's; else nothing is written and the caller's
+   * transaction rolls back. A refused batch throws, so an import is all or nothing. Returns the seqs stored. Never
+   * interleave it with commit() on the same journal: it is for a fresh run's single import, not a live run's loop.
+   */
+  async applyIn(tx: SqliteExecutor, batches: readonly (readonly StorageWrite[])[], insertedHere: number): Promise<Seq[]> {
+    this.#assertOpen();
+    const fence = claimFence({ runId: this.#runId, epoch: this.#epoch }, this.#now(), { insertedHere });
+    if ((await tx.runCounted(`UPDATE runs SET epoch = epoch WHERE ${fence.where}`, ...fence.params)) === 0) {
+      throw new Fenced(this.#runId, this.#epoch);
+    }
+    const metadata = await this.#readMetadata(tx);
+    if (Number.isNaN(this.#nextId)) this.#nextId = Number(metadata.next_id);
+    let candidateNextId = this.#nextId;
+    let next = Number(metadata.next_seq);
+    const seqs: Seq[] = [];
+    for (const writes of batches) {
+      const documentActions = this.#prepareDocumentActions(writes);
+      await this.#checkBatch(tx, writes, documentActions);
+      const seq = seqOf(next++);
+      await this.#applyBatch(tx, writes, documentActions, seq);
+      seqs.push(seq);
+      candidateNextId = Math.max(candidateNextId, this.#candidateNextId(writes));
+    }
+    if (seqs.length > 0) {
+      await tx.run(
+        `INSERT INTO ${T.metadata} (run_id, next_id, next_seq) VALUES (?, ?, ?) ON CONFLICT (run_id) DO UPDATE SET next_id = excluded.next_id, next_seq = excluded.next_seq`,
+        this.#runId, String(Math.max(Number(metadata.next_id), candidateNextId)), next,
+      );
+    }
+    this.#nextId = Math.max(this.#nextId, candidateNextId);
+    return seqs;
   }
 
   async #readMetadata(executor: SqliteExecutor): Promise<{ next_id: string; next_seq: number }> {

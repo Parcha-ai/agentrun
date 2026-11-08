@@ -2,11 +2,17 @@
 // tool runs, a resume's stop that the runner ends itself, and a loop that fails before its journal opens, whose end the
 // runner writes. A stream left open on a final run would keep its reader waiting for good.
 import assert from "node:assert/strict";
-import { test } from "node:test";
+import { after, test } from "node:test";
 import { sendCommand } from "../dist/runner/commands.js";
-import { collect, liveWorld, RUN } from "./live-support.mjs";
+import { closeOpenSessions, piAdapterSpec } from "./conformance-pi-adapter.mjs";
+import { collect, liveWorld, quiet, RUN } from "./live-support.mjs";
 
 const { watchRun } = await import("../dist/live/stream.js");
+const { openSqliteStore } = await import("../dist/store/index.js");
+const { startRunner } = await import("../dist/runner/runner.js");
+const { createAdapterLoop } = await import("../dist/runner/adapter-loop.js");
+after(closeOpenSessions);
+const TIMING = { leaseMs: 600, renewEveryMs: 150, stopMarginMs: 200, pollMs: 20, commandPollMs: 30 };
 
 /** `journal` with every read refused, as a store that cannot be read: pi's Harness cannot open on it. */
 const unreadable = (journal) =>
@@ -45,6 +51,32 @@ test("a run whose loop fails before its journal opens closes its live stream", a
   await w.run([{ say: "done" }], { journal: unreadable });
   const row = await w.ended("failed");
   assert.match(row.summary ?? "", /could not open/);
+  assert.deepEqual(await closedWithin(stream, got, 5_000), { reason: "ended" });
+});
+
+test("a run failed because its stop did not settle closes its live stream, its pi input never settled", async (t) => {
+  const w = await liveWorld(t);
+  const stream = await watchRun(w.server, RUN, { pollMs: 20 });
+  t.after(() => stream.stop());
+  const got = collect(stream);
+  let started = () => {};
+  const running = new Promise((resolve) => (started = resolve));
+  let letGo = () => {};
+  const held = new Promise((resolve) => (letGo = resolve));
+  // Ignores its signal: the stop's bound passes with the turn unsettled, and only the test's end lets it go.
+  const tools = { stubborn: { name: "stubborn", replaySafe: true, ask: false, run: async () => (started(), await held, "late") } };
+  const spec = piAdapterSpec({ script: [{ call: "stubborn" }, { say: "done" }], tools, hooks: quiet });
+  const store = await openSqliteStore({ dataDir: w.dir, role: "runner" });
+  const runner = startRunner({ store, createLoop: createAdapterLoop(async (claim, run) => ({ ...(await spec(claim, run)), stopSettleMs: 300 })), name: "runner-a", ...TIMING });
+  t.after(async () => {
+    letGo();
+    await runner.close();
+    await store.close().catch(() => {});
+  });
+  await running;
+  await sendCommand(w.server, RUN, { kind: "stop", body: {} });
+  const row = await w.ended("failed");
+  assert.match(row.summary ?? "", /did not settle/);
   assert.deepEqual(await closedWithin(stream, got, 5_000), { reason: "ended" });
 });
 
