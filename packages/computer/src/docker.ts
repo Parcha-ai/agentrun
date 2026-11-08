@@ -7,6 +7,7 @@ import { resolve } from "node:path";
 import { setTimeout as sleep } from "node:timers/promises";
 import { fileURLToPath } from "node:url";
 import { DaemonClient } from "./client.js";
+import { daemonCopy, defaultDaemonCache } from "./daemon-copy.js";
 import { DESKTOP_GROUPS, type DesktopOptions, desktopOf, startDisplay } from "./desktop.js";
 import {
 	COMPUTER_LABEL,
@@ -18,6 +19,7 @@ import {
 	DEFAULT_PIDS,
 	type DockerHost,
 	type DockerInspect,
+	type DriftExpected,
 	drift,
 	egressShaped,
 	helloDrift,
@@ -98,8 +100,13 @@ export interface DockerEgressOptions {
 }
 
 export interface DockerProviderOptions {
-	/** The daemon binary on this machine, for the computer's architecture (dist/computerd-linux-<arch>). */
+	/** The daemon binary on this machine, for the computer's architecture (dist/computerd-linux-<arch>). Any mode this
+	 *  process can read: a computer binds the provider's own 0755 copy of it (daemonCache), never this file. */
 	daemonPath: string;
+	/** The directory the provider copies the daemon into, the copy each computer binds: computerd-<sha256 of its bytes>,
+	 *  mode 0755. Made 0700 when missing; refused in words when it is a link, another user's, open to other users, or
+	 *  under a directory another user may write. Default agentrun-computer under XDG_CACHE_HOME, else ~/.cache. */
+	daemonCache?: string;
 	/** The egress proxy of a computer whose network is an allowlist. */
 	egress?: DockerEgressOptions;
 	/** Makes every computer a desktop (kind desktop): its image must have the X server. */
@@ -218,6 +225,7 @@ export class DockerProvider implements ComputerProvider {
 	readonly id = "docker";
 	readonly version = VERSION;
 	readonly #daemonPath: string;
+	readonly #daemonCache: string;
 	readonly #docker: string;
 	readonly #user: string;
 	readonly #desktop: Required<DockerDesktopOptions> | undefined;
@@ -230,8 +238,9 @@ export class DockerProvider implements ComputerProvider {
 	/** The host as docker info first read it: a host's enforcement does not change under a running provider. */
 	#host: DockerHost | undefined;
 
-	constructor({ daemonPath, docker = "docker", user, desktop, egress }: DockerProviderOptions) {
+	constructor({ daemonPath, daemonCache, docker = "docker", user, desktop, egress }: DockerProviderOptions) {
 		this.#daemonPath = resolve(daemonPath);
+		this.#daemonCache = resolve(daemonCache ?? defaultDaemonCache());
 		this.#docker = docker;
 		this.#desktop = desktop === undefined ? undefined : desktopOf(desktop);
 		this.#egress = egressOptionsOf(egress ?? {});
@@ -327,15 +336,8 @@ export class DockerProvider implements ComputerProvider {
 		if (refusals.length > 0) return fail("refused", refusals.map(({ field, message }) => `${field}: ${message}`).join("; "));
 		const user = userOf(spec.user) ?? this.#user;
 		const bound = spec.mount?.kind === "bind" ? spec.mount.path : undefined;
-		const mode = fileMode(this.#daemonPath);
-		if (mode === undefined) {
-			return fail("not_found", `no daemon binary at ${this.#daemonPath}: run npm run build:daemon -w @parcha/agentrun-computer`);
-		}
-		// A computer's user, root or not, has no capabilities, so it runs the mounted daemon only if every user may.
-		if ((mode & 0o005) !== 0o005) {
-			return fail("invalid", `the daemon at ${this.#daemonPath} has mode ${(mode & 0o777).toString(8)}; a computer's user, with no capabilities, cannot run it: chmod 755 it`);
-		}
-		if (this.#daemonPath.includes(",")) return fail("invalid", `the daemon path ${this.#daemonPath} has a comma, which a Docker mount cannot hold`);
+		const daemon = this.#daemon();
+		if (!daemon.ok) return daemon;
 		// An allowlist: the list as the proxy reads it, and the proxy's code, built.
 		const allow = typeof spec.network === "object" ? (allowOf(spec.network.allow) as { list: string[] }).list : undefined;
 		if (allow !== undefined) {
@@ -388,7 +390,7 @@ export class DockerProvider implements ComputerProvider {
 		// Memory and swap together are the memory: swap never adds to it.
 		const memory = `${memoryMb}m`;
 		args.push("--memory", memory, "--memory-swap", memory);
-		args.push("--mount", `type=bind,src=${this.#daemonPath},dst=${DAEMON_IN_COMPUTER},readonly`, "--entrypoint", DAEMON_IN_COMPUTER);
+		args.push("--mount", `type=bind,src=${daemon.value},dst=${DAEMON_IN_COMPUTER},readonly`, "--entrypoint", DAEMON_IN_COMPUTER);
 		// The run's folder, read-write at /workspace; HOME and the default workdir stay /work.
 		if (bound !== undefined) args.push("--mount", `type=bind,src=${bound},dst=${WORKSPACE}`);
 		// The proxy's volume, read-only: the computer reaches its socket and cannot replace it.
@@ -424,7 +426,7 @@ export class DockerProvider implements ComputerProvider {
 				return fail(shown.error.code, `the computer ${name} ${after}: ${shown.error.message}`);
 			}
 		}
-		const checked = await this.#check(spec, ref, report as DockerInspect, host.value, deadline, user, signal);
+		const checked = await this.#check(spec, ref, report as DockerInspect, host.value, deadline, user, daemon.value, signal);
 		// Fail closed: no create returns ok once its signal has aborted.
 		if (signal?.aborted) return this.#abandon(ref);
 		if (checked.ok) return ok(ref);
@@ -497,20 +499,34 @@ export class DockerProvider implements ComputerProvider {
 	}
 
 	/** The drift check: the computer's own report, from inspect and from its daemon's hello, against the spec. */
-	async #check(spec: ComputerSpec, ref: ComputerRef, report: DockerInspect, host: DockerHost, deadline: string, user: string, signal?: AbortSignal): Promise<Result<void>> {
+	async #check(spec: ComputerSpec, ref: ComputerRef, report: DockerInspect, host: DockerHost, deadline: string, user: string, daemonPath: string, signal?: AbortSignal): Promise<Result<void>> {
 		const proxy = await this.#proxyOf(report, signal);
 		if (!proxy.ok) return proxy;
 		const opened = await this.#open(ref, signal);
 		if (!opened.ok) return opened;
 		await opened.value.close();
-		const found = drift(spec, report, opened.value.hello, this.#expected(host, deadline, user, proxy.value));
+		const found = drift(spec, report, opened.value.hello, this.#expected(host, deadline, user, daemonPath, proxy.value));
 		return found.length === 0 ? ok(undefined) : fail("refused", `it did not match its spec: ${found.join("; ")}`);
 	}
 
-	#expected(host: DockerHost, deadline: string, user: string, proxy?: DockerInspect | null) {
+	/** What the drift check holds a computer to; daemonPath is the file it binds, the provider's copy of the daemon. */
+	#expected(host: DockerHost, deadline: string, user: string, daemonPath: string, proxy?: DockerInspect | null): DriftExpected {
 		const { arch, apparmor, selinux } = host;
 		const { kind, groups } = this.capabilities();
-		return { version: VERSION, kind, groups, arch, apparmor, selinux, daemonPath: this.#daemonPath, deadline, user, proxy, egressCode: this.#code };
+		return { version: VERSION, kind, groups, arch, apparmor, selinux, daemonPath, deadline, user, proxy, egressCode: this.#code };
+	}
+
+	/**
+	 * The daemon file a computer binds: the provider's 0755 copy of daemonPath in daemonCache (daemonCopy), so a daemon
+	 * installed under any umask runs as any computer user, and the file that is every computer's init sits where only
+	 * this user may change it. Always the copy, even of a 0755 daemon, so create and attach have one path to compare.
+	 */
+	#daemon(): Result<string> {
+		const copied = daemonCopy(this.#daemonPath, this.#daemonCache);
+		if (copied.ok && MOUNT_UNSAFE.test(copied.value)) {
+			return fail("invalid", `the daemon's copy ${copied.value} has a comma, a double quote or a line break in its path, which a Docker mount cannot hold: give the provider another daemonCache`);
+		}
+		return copied;
 	}
 
 	/** The egress proxy container's inspect for a computer that shows any part of an allowlist, null when it is gone;
@@ -601,7 +617,10 @@ export class DockerProvider implements ComputerProvider {
 		} as ComputerSpec;
 		found.push(...this.#checkSpec({ ...spec, mount: undefined }).map(({ field, message }) => `${field}: ${message}, read back from the computer`));
 		const user = userOf(config.User) ?? String(config.User);
-		const expected = this.#expected(host.value, deadline, user, proxy.value);
+		// The copy create binds for this provider's daemon: the same bytes, from any process, have the same path.
+		const daemon = this.#daemon();
+		if (!daemon.ok) return daemon;
+		const expected = this.#expected(host.value, deadline, user, daemon.value, proxy.value);
 		found.push(...inspectDrift(spec, report, expected).filter((line) => typeof network === "string" || !("other" in network) || !line.startsWith("network:")));
 		let kind: AttachedComputer["spec"]["kind"];
 		if (report.State?.Running === true) {

@@ -2,7 +2,7 @@
 // containers in a JSON file, and answers run, inspect, ps, stop, rm, info and exec (with the daemon's hello) as the
 // docker CLI does. An inspect --format renders each {{json .Path}} in it. No Docker and no daemon binary are needed.
 import { createHash } from "node:crypto";
-import { chmodSync, existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { chmodSync, existsSync, mkdirSync, mkdtempSync, readFileSync, realpathSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { after } from "node:test";
@@ -22,8 +22,11 @@ export const idOf = (name) => createHash("sha256").update(name).digest("hex");
 /** The paths Docker 29 masks and makes read-only in a container that is not privileged. */
 export const MASKED_PATHS = ["/proc/acpi", "/proc/asound", "/proc/interrupts", "/proc/kcore", "/proc/keys", "/proc/latency_stats", "/proc/sched_debug", "/proc/scsi", "/proc/timer_list", "/proc/timer_stats", "/sys/devices/virtual/powercap", "/sys/firmware"];
 export const READONLY_PATHS = ["/proc/bus", "/proc/fs", "/proc/irq", "/proc/sys", "/proc/sysrq-trigger"];
-/** Stands for the provider's daemon path in a seeded container; fakeDocker puts the real path in. */
+/** Stands for the daemon file a seeded container binds; fakeDocker puts in the provider's private copy of its daemon. */
 export const DAEMON = "@daemon";
+/** The fake daemon's bytes, and the name of the provider's copy of them: computerd-<sha256 of the bytes>. */
+export const DAEMON_BYTES = "not a real daemon";
+export const COPY_NAME = `computerd-${createHash("sha256").update(DAEMON_BYTES).digest("hex")}`;
 
 /**
  * What Docker 29 inspect reports for a container made as DockerProvider.create makes one. Self-contained: the fake
@@ -158,23 +161,28 @@ export function egressVolume({ computer, deadline = new Date(Date.now() + 600_00
  * display's groups from then on), "exits" (the server ends at once, saying why on stderr), "never", or "stalls" (the
  * daemon answers nothing once the server is started, as one stuck in the X connection setup, or stopped, does).
  * `binds` is merged over each bind docker run makes after the daemon's ({ src } binds another folder, { readonly: true }
- * binds it read-only), or "drop" makes none: a Docker that does not bind what it was asked to.
+ * binds it read-only), or "drop" makes none: a Docker that does not bind what it was asked to. `daemonMode` is the fake
+ * daemon file's mode (default 0755); `daemonCache` is the provider's daemonCache option, by default a directory under
+ * the fake's temp dir, and `bound` is then the copy the provider binds.
  * `volumes` are there from the start ({ Name, Labels }); `egress` is what a new egress proxy does: "ready" (it logs its
  * ready line), "never" (it runs and never says it is ready) or "exits" (it ends at once, saying why); `proxyPatch` is
  * merged over each new proxy's report; `egressOptions` is the provider's egress option. `endpoint` is the daemon
  * `docker context inspect` names (a local unix socket by default), or null when it fails.
  */
-export function fakeDocker({ running = true, gone = false, containers = [], patch = {}, hello = {}, arch = "x86_64", info = {}, vanish = [], noDaemon = false, user, hold = [], desktop, display = "up", binds = {}, volumes = [], egress = "ready", proxyPatch = {}, egressOptions, endpoint = "unix:///var/run/docker.sock" } = {}) {
+export function fakeDocker({ running = true, gone = false, containers = [], patch = {}, hello = {}, arch = "x86_64", info = {}, vanish = [], noDaemon = false, user, hold = [], desktop, display = "up", binds = {}, daemonMode = 0o755, daemonCache, volumes = [], egress = "ready", proxyPatch = {}, egressOptions, endpoint = "unix:///var/run/docker.sock" } = {}) {
 	const dir = mkdtempSync(join(tmpdir(), "computer-fake-docker-"));
 	dirs.push(dir);
 	const log = join(dir, "calls.jsonl");
 	const state = join(dir, "containers.json");
 	const volumeState = join(dir, "volumes.json");
 	const daemonPath = join(dir, "computerd");
-	writeFileSync(state, JSON.stringify(containers).replaceAll(JSON.stringify(DAEMON), JSON.stringify(daemonPath)));
+	// The provider copies its daemon into its cache directory, by default one under this temp dir, and binds the copy.
+	const cache = daemonCache ?? join(dir, "cache");
+	const bound = daemonCache === undefined ? join(realpathSync(dir), "cache", COPY_NAME) : undefined;
+	writeFileSync(state, JSON.stringify(containers).replaceAll(JSON.stringify(DAEMON), JSON.stringify(bound ?? daemonPath)));
 	writeFileSync(volumeState, JSON.stringify(volumes));
-	writeFileSync(daemonPath, "not a real daemon");
-	chmodSync(daemonPath, 0o755);
+	writeFileSync(daemonPath, DAEMON_BYTES);
+	chmodSync(daemonPath, daemonMode);
 	const program = join(dir, "docker");
 	const config = JSON.stringify({ dir, log, state, volumeState, running, gone, patch, binds, egress, proxyPatch, endpoint, hello: { ...HELLO, ...hello },
 		info: { Architecture: arch, SecurityOptions: ["name=seccomp,profile=builtin", "name=cgroupns"], MemoryLimit: true, SwapLimit: true, PidsLimit: true, CPUCfsQuota: true, CPUCfsPeriod: true, ...info },
@@ -370,7 +378,7 @@ switch (args[0]) {
 	const names = () => JSON.parse(readFileSync(state, "utf8")).map((c) => c.Name.slice(1));
 	const proceed = (step) => writeFileSync(join(dir, `proceed-${step}`), "");
 	const started = () => (existsSync(join(dir, "started.jsonl")) ? readFileSync(join(dir, "started.jsonl"), "utf8").trim().split("\n").map((line) => JSON.parse(line)) : []);
-	const volumeNames = () => JSON.parse(readFileSync(volumeState, "utf8")).map((v) => v.Name);
+	const volumeNames =() => JSON.parse(readFileSync(volumeState, "utf8")).map((v) => v.Name);
 	/** Changes a container in the fake's state, by name: what Docker would do under the provider (a proxy that crashed). */
 	const alter = (name, change) => {
 		const all = JSON.parse(readFileSync(state, "utf8"));
@@ -381,8 +389,8 @@ switch (args[0]) {
 	// container; egressOptions.hostRoot replaces it.
 	const hostRoot = join(dir, "host-root");
 	mkdirSync(hostRoot);
-	const options = { daemonPath, docker: program, ...(user === undefined ? {} : { user }), ...(desktop === undefined ? {} : { desktop }), egress: { hostRoot, ...egressOptions } };
-	return { provider: new DockerProvider(options), calls, names, volumeNames, alter, daemonPath, proceed, started };
+	const options = { daemonPath, daemonCache: cache, docker: program, ...(user === undefined ? {} : { user }), ...(desktop === undefined ? {} : { desktop }), egress: { hostRoot, ...egressOptions } };
+	return { provider: new DockerProvider(options), calls, names, volumeNames, alter, daemonPath, bound, cache, program, proceed, started };
 }
 
 /** The docker calls that delete computer `name` with nothing else of its own: rm it, then look for its egress proxy and
