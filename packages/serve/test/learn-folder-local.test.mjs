@@ -6,7 +6,7 @@ import { mkdirSync, mkdtempSync, readdirSync, readFileSync, rmSync, symlinkSync,
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { after, test } from "node:test";
-import { learningCommit, learningInit, readSnapshot } from "../dist/learn/folder.js";
+import { commitChange, learningInit, readSnapshot } from "../dist/learn/folder.js";
 import { localWorkspace } from "../dist/workspace/index.js";
 import { folderSuite } from "./learn-folder-suite.mjs";
 
@@ -34,7 +34,7 @@ test("local: git sees what the snapshot says: main, each blob, the commit's auth
   assert.equal(git(root, ["rev-parse", "main"]), init);
   assert.equal(git(root, ["log", "-1", "--format=%an <%ae>%n%s", "main"]), "agentrun-serve <serve@agentrun.invalid>\nhost: the agent's learning folder");
   const text = "---\nname: Check units\ndescription: Convert every amount\n---\nBody.\n";
-  const merged = await learningCommit(ws, await readSnapshot(ws), { by: { run: "run-1", reason: "Each note is general." }, writes: [{ path: "check-units.md", text }, { path: "MEMORY.md", text: "- [Check units](check-units.md) — Convert every amount\n" }] });
+  const merged = await commitChange(ws, await readSnapshot(ws), { by: { run: "run-1", reason: "Each note is general." }, writes: [{ path: "check-units.md", text }, { path: "MEMORY.md", text: "- [Check units](check-units.md) — Convert every amount\n" }] });
   const snapshot = await readSnapshot(ws);
   assert.equal(git(root, ["rev-parse", "main"]), merged.main);
   assert.equal(git(root, ["rev-parse", "main:check-units.md"]), snapshot.notes[0].oid);
@@ -63,7 +63,7 @@ test("local: a symbolic link where the script would write is refused before main
   const before = await readSnapshot(ws);
   mkdirSync(join(root, "skills"));
   symlinkSync(outside, join(root, "skills", "weekly-report"));
-  await assert.rejects(learningCommit(ws, before, { by: { run: "run-l", reason: "A skill." }, writes: [{ path: "skills/weekly-report/SKILL.md", text: "---\nname: weekly-report\ndescription: d\n---\n" }] }), /skills\/weekly-report is a symbolic link/);
+  await assert.rejects(commitChange(ws, before, { by: { run: "run-l", reason: "A skill." }, writes: [{ path: "skills/weekly-report/SKILL.md", text: "---\nname: weekly-report\ndescription: d\n---\n" }] }), /skills\/weekly-report is a symbolic link/);
   assert.deepEqual(await readSnapshot(ws), before);
   assert.equal(git(root, ["rev-parse", "main"]), before.main);
   assert.deepEqual(readdirSync(outside), ["kept"]);

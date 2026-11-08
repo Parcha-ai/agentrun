@@ -5,9 +5,11 @@
 import assert from "node:assert/strict";
 import { test } from "node:test";
 import {
-  blobOid, DIFFS_DIR, FolderBusy, folderTestHooks, forgetBodies, learningCommit, learningInit, learningRepair, nextSnapshot, parseRead,
+  blobOid, DIFFS_DIR, FolderBusy, folderTestHooks, forgetBodies, commitChange, learningInit, learningRepair, nextSnapshot, parseRead,
   readLearning, readRunDiff, readSnapshot, SCRIPT_FILE, SNAPSHOT_FILE, snapshotOfRead, writeLearning,
 } from "../dist/learn/folder.js";
+import { learningCommit } from "../dist/learn/commit.js";
+import { makeProposalCheck, seedBase } from "../dist/learn/seed-check.js";
 import { buildIndex, parseNoteFile, retire, approve, mergedNote, supersede, held, released, retiredLearned } from "../dist/learn/index.js";
 
 const note = (name, description, body = `${name}, in a sentence.\n`, extra = "") => `---\nname: ${name}\ndescription: ${description}\ntype: reference\n${extra}---\n${body}`;
@@ -104,12 +106,12 @@ export function folderSuite(backend, make) {
     assert.equal(await learningInit(ws), init.result, "a second init reads the snapshot and makes nothing");
 
     const files = { "check-units.md": mergedNote(UNITS, { origin: "you" }), "quote-sources.md": SOURCES };
-    const merge = await execsOf(() => learningCommit(ws, first, { by: { run: "run-1", reason: "Each note is general and new." }, writes: [...Object.entries(files).map(([path, text]) => ({ path, text })), { path: "MEMORY.md", text: indexOf(files) }, { path: "skills/weekly-report/SKILL.md", text: SKILL }], absent: Object.keys(files) }));
+    const merge = await execsOf(() => commitChange(ws, first, { by: { run: "run-1", reason: "Each note is general and new." }, writes: [...Object.entries(files).map(([path, text]) => ({ path, text })), { path: "MEMORY.md", text: indexOf(files) }, { path: "skills/weekly-report/SKILL.md", text: SKILL }], absent: Object.keys(files) }));
     assert.deepEqual(merge.ops, ["commit"], "one exec");
     assert.equal(merge.result.landed, true);
     const second = await matchesMain(ws);
     assert.equal(second.main, merge.result.main);
-    assert.deepEqual(merge.result.snapshot, second, "what learningCommit hands back is what the script wrote");
+    assert.deepEqual(merge.result.snapshot, second, "what commitChange hands back is what the script wrote");
     assert.deepEqual(second.notes.map((n) => [n.file, n.oid, n.bytes, n.name, n.status, n.origin, n.order, n.history.last]), [
       ["check-units.md", blobOid(files["check-units.md"]), Buffer.byteLength(files["check-units.md"]), "Check units", "active", "you", 0, { kind: "learned", by: "run", at: second.at }],
       ["quote-sources.md", blobOid(SOURCES), Buffer.byteLength(SOURCES), "Quote sources", "active", "run", 0, { kind: "learned", by: "run", at: second.at }],
@@ -123,10 +125,10 @@ export function folderSuite(backend, make) {
     const { ws } = await make();
     await learningInit(ws);
     const base = await readSnapshot(ws);
-    const won = await learningCommit(ws, base, personChange("created", "check-units.md", { "check-units.md": UNITS }));
+    const won = await commitChange(ws, base, personChange("created", "check-units.md", { "check-units.md": UNITS }));
     assert.equal(won.landed, true);
     const before = { snapshot: text(await ws.read(SNAPSHOT_FILE)), main: (await gitMain(ws)).main, list: (await ws.list("")).map((e) => e.name) };
-    const lost = await learningCommit(ws, base, personChange("created", "prefers-tables.md", { "prefers-tables.md": TABLES }));
+    const lost = await commitChange(ws, base, personChange("created", "prefers-tables.md", { "prefers-tables.md": TABLES }));
     assert.deepEqual(lost, { stale: true, main: won.main }, "exit 3, with main as it is");
     assert.deepEqual({ snapshot: text(await ws.read(SNAPSHOT_FILE)), main: (await gitMain(ws)).main, list: (await ws.list("")).map((e) => e.name) }, before);
     await assert.rejects(ws.read("prefers-tables.md"), (error) => error.code === "NOT_FOUND");
@@ -141,7 +143,7 @@ export function folderSuite(backend, make) {
     const { ws } = await make();
     await learningInit(ws);
     const base = await readSnapshot(ws);
-    const one = await learningCommit(ws, base, { by: { run: "run-a", reason: "General." }, writes: [{ path: "check-units.md", text: UNITS }, { path: "MEMORY.md", text: indexOf({ "check-units.md": UNITS }) }] });
+    const one = await commitChange(ws, base, { by: { run: "run-a", reason: "General." }, writes: [{ path: "check-units.md", text: UNITS }, { path: "MEMORY.md", text: indexOf({ "check-units.md": UNITS }) }] });
     const diff = await readRunDiff(ws, "run-a");
     assert.deepEqual([diff.v, diff.run, diff.merge, diff.parent], [1, "run-a", one.main, base.main]);
     const lines = UNITS.split("\n").slice(0, -1);
@@ -154,7 +156,7 @@ export function folderSuite(backend, make) {
     const big = note("Big", "A long one", `${"word ".repeat(16000)}\n`);
     const marked = supersede(UNITS, "units-v2.md");
     const v2 = note("Units v2", "Convert to the answer's unit", "Better.\n", "supersedes: [check-units.md]\n");
-    const two = await learningCommit(ws, second, { by: { run: "run-b", reason: "It replaces the older note." }, writes: [{ path: "units-v2.md", text: v2 }, { path: "check-units.md", text: marked }, { path: "big.md", text: big }, { path: "MEMORY.md", text: indexOf({ "units-v2.md": v2, "big.md": big }) }] });
+    const two = await commitChange(ws, second, { by: { run: "run-b", reason: "It replaces the older note." }, writes: [{ path: "units-v2.md", text: v2 }, { path: "check-units.md", text: marked }, { path: "big.md", text: big }, { path: "MEMORY.md", text: indexOf({ "units-v2.md": v2, "big.md": big }) }] });
     const diff2 = await readRunDiff(ws, "run-b");
     assert.deepEqual([diff2.merge, diff2.parent], [two.main, one.main]);
     assert.deepEqual(diff2.files.map((f) => [f.path, f.status, f.withheld ?? null]), [["MEMORY.md", "modified", null], ["big.md", "added", "too_large"], ["check-units.md", "modified", null], ["units-v2.md", "added", null]]);
@@ -162,11 +164,11 @@ export function folderSuite(backend, make) {
     // A note's text with quotes, backslashes, tabs and characters past ASCII is carried as JSON writes it.
     const third = await readSnapshot(ws);
     const odd = note("Odd \"quotes\"", "Back\\slash and tab", "A\ttab, a \\ and é ü — and \"quotes\".\n");
-    await learningCommit(ws, third, { by: { run: "run-c", reason: "Odd characters." }, writes: [{ path: "odd.md", text: odd }] });
+    await commitChange(ws, third, { by: { run: "run-c", reason: "Odd characters." }, writes: [{ path: "odd.md", text: odd }] });
     const lines3 = odd.split("\n").slice(0, -1);
     assert.deepEqual((await readRunDiff(ws, "run-c")).files, [{ path: "odd.md", status: "added", patch: `@@ -0,0 +1,${lines3.length} @@\n${lines3.map((l) => `+${l}\n`).join("")}` }]);
     // A person's write keeps no diff file.
-    await learningCommit(ws, await readSnapshot(ws), personChange("retired", "odd.md", { "odd.md": retire(odd) }));
+    await commitChange(ws, await readSnapshot(ws), personChange("retired", "odd.md", { "odd.md": retire(odd) }));
     assert.deepEqual((await ws.list(DIFFS_DIR)).map((e) => e.name), ["run-a.json", "run-b.json", "run-c.json"]);
     await matchesMain(ws);
   });
@@ -174,14 +176,14 @@ export function folderSuite(backend, make) {
   test(`${backend}: snapshot.json is written last: a failure after the files leaves the old snapshot, a reader sees the old snapshot with newer bodies (503 on what changed), and the next write rebuilds it from main`, async () => {
     const { ws } = await make();
     await learningInit(ws);
-    await learningCommit(ws, await readSnapshot(ws), personChange("created", "check-units.md", { "check-units.md": UNITS }));
-    await learningCommit(ws, await readSnapshot(ws), personChange("created", "quote-sources.md", { "check-units.md": UNITS, "quote-sources.md": SOURCES }));
+    await commitChange(ws, await readSnapshot(ws), personChange("created", "check-units.md", { "check-units.md": UNITS }));
+    await commitChange(ws, await readSnapshot(ws), personChange("created", "quote-sources.md", { "check-units.md": UNITS, "quote-sources.md": SOURCES }));
     const old = await readSnapshot(ws);
     const oldBytes = text(await ws.read(SNAPSHOT_FILE));
     const edited = note("Check units", "Convert every amount to the answer's unit");
     folderTestHooks.env = { AGENTRUN_LEARNING_FAIL: "before-snapshot" };
     try {
-      await assert.rejects(learningCommit(ws, old, { by: { run: "run-x", reason: "Edited." }, writes: [{ path: "check-units.md", text: edited }, { path: "MEMORY.md", text: indexOf({ "check-units.md": edited, "quote-sources.md": SOURCES }) }] }), /before the snapshot/);
+      await assert.rejects(commitChange(ws, old, { by: { run: "run-x", reason: "Edited." }, writes: [{ path: "check-units.md", text: edited }, { path: "MEMORY.md", text: indexOf({ "check-units.md": edited, "quote-sources.md": SOURCES }) }] }), /before the snapshot/);
     } finally {
       folderTestHooks.env = undefined;
     }
@@ -213,7 +215,7 @@ export function folderSuite(backend, make) {
     await learningInit(ws);
     const files = {};
     const step = async (change, kind) => {
-      const { result, ops } = await execsOf(async () => learningCommit(ws, await readSnapshot(ws), change));
+      const { result, ops } = await execsOf(async () => commitChange(ws, await readSnapshot(ws), change));
       assert.equal(result.landed, true, kind);
       assert.deepEqual(ops, ["commit"], `${kind}: one exec`);
       return matchesMain(ws);
@@ -249,14 +251,14 @@ export function folderSuite(backend, make) {
   test(`${backend}: a precondition the script checks on main refuses the write whole (exit 4): a new name held by a file that is no note, a file changed since a seed`, async () => {
     const { ws } = await make();
     await learningInit(ws);
-    const seed = await learningCommit(ws, await readSnapshot(ws), { by: { run: "run-s", reason: "A skill." }, writes: [{ path: "skills/weekly-report/SKILL.md", text: SKILL }, { path: "bare.md", text: "no front matter\n" }] });
+    const seed = await commitChange(ws, await readSnapshot(ws), { by: { run: "run-s", reason: "A skill." }, writes: [{ path: "skills/weekly-report/SKILL.md", text: SKILL }, { path: "bare.md", text: "no front matter\n" }] });
     const snap = await readSnapshot(ws);
     assert.deepEqual(snap.notes, [], "a file that is no note is not in the snapshot");
-    const refused = await learningCommit(ws, snap, { ...personChange("created", "bare.md", { "bare.md": UNITS }), absent: ["bare.md"] });
+    const refused = await commitChange(ws, snap, { ...personChange("created", "bare.md", { "bare.md": UNITS }), absent: ["bare.md"] });
     assert.deepEqual(refused, { refused: { absent: ["bare.md"], same: [] } });
-    await learningCommit(ws, snap, { by: { person: "retired", file: "skills/weekly-report/SKILL.md" }, writes: [{ path: "skills/weekly-report/SKILL.md", text: retiredLearned(SKILL) }] });
+    await commitChange(ws, snap, { by: { person: "retired", file: "skills/weekly-report/SKILL.md" }, writes: [{ path: "skills/weekly-report/SKILL.md", text: retiredLearned(SKILL) }] });
     const after = await readSnapshot(ws);
-    const moved = await learningCommit(ws, after, { by: { run: "run-t", reason: "A newer skill." }, writes: [{ path: "skills/weekly-report/SKILL.md", text: SKILL.replace("Steps.", "Better steps.") }], same: [{ commit: seed.main, path: "skills/weekly-report/SKILL.md" }] });
+    const moved = await commitChange(ws, after, { by: { run: "run-t", reason: "A newer skill." }, writes: [{ path: "skills/weekly-report/SKILL.md", text: SKILL.replace("Steps.", "Better steps.") }], same: [{ commit: seed.main, path: "skills/weekly-report/SKILL.md" }] });
     assert.deepEqual(moved, { refused: { absent: [], same: ["skills/weekly-report/SKILL.md"] } });
     assert.equal((await readSnapshot(ws)).main, after.main, "nothing written");
     await assert.rejects(ws.read(`${DIFFS_DIR}/run-t.json`), (error) => error.code === "NOT_FOUND");
@@ -265,7 +267,7 @@ export function folderSuite(backend, make) {
   test(`${backend}: a body is checked against its oid: a mismatch reads the snapshot again and tries once more, a second is FolderBusy; the reads use the file API alone`, async () => {
     const { ws } = await make();
     await learningInit(ws);
-    await learningCommit(ws, await readSnapshot(ws), personChange("created", "check-units.md", { "check-units.md": UNITS }));
+    await commitChange(ws, await readSnapshot(ws), personChange("created", "check-units.md", { "check-units.md": UNITS }));
     const snap = await readSnapshot(ws);
     const oid = snap.notes[0].oid;
     // A body that is wrong once (a write in flight), then right: one retry, read whole.
@@ -297,7 +299,7 @@ export function folderSuite(backend, make) {
     const files = {};
     for (let i = 0; i < 6; i++) {
       files[`n${i}.md`] = note(`Note ${i}`, `The ${i}th`);
-      await learningCommit(ws, await readSnapshot(ws), personChange("created", `n${i}.md`, files));
+      await commitChange(ws, await readSnapshot(ws), personChange("created", `n${i}.md`, files));
     }
     const snap = await matchesMain(ws);
     assert.deepEqual(snap.notes.map((n) => [n.file, n.order]), [["n5.md", 0], ["n4.md", 1], ["n3.md", 2], ["n2.md", 3], ["n1.md", 4], ["n0.md", 5]]);
@@ -312,10 +314,75 @@ export function folderSuite(backend, make) {
     let writes = 0;
     const counted = wrap(ws, { write: async (path, data) => { if (path === SCRIPT_FILE) writes++; return ws.write(path, data); } });
     await learningInit(counted);
-    await learningCommit(counted, await readSnapshot(counted), personChange("created", "check-units.md", { "check-units.md": UNITS }));
+    await commitChange(counted, await readSnapshot(counted), personChange("created", "check-units.md", { "check-units.md": UNITS }));
     assert.match(SCRIPT_FILE, /^\.agentrun\/learning-[0-9a-f]{8}\.sh$/);
     assert.equal(writes, 1, "written once, then found");
     await learningRepair(counted);
     assert.equal(writes, 1);
+  });
+
+  test(`${backend}: learningCommit (COMMIT-API v1): a merge with a held note and a supersede is one exec and idempotent; a stale graded oid is a conflict; a name main holds is refused; a person's stale ifMatch is a conflict; a failing exec is unavailable`, async () => {
+    const { ws } = await make();
+    // A folder with no main: made in the same call.
+    const first = await execsOf(() => learningCommit(ws, { kind: "person", action: "created", file: "check-units.md", text: UNITS, ifMatch: null }));
+    assert.equal(first.result.ok, true, JSON.stringify(first.result));
+    assert.deepEqual(first.ops, ["init", "commit"]);
+    assert.deepEqual(first.result.files, ["MEMORY.md", "check-units.md"]);
+    const base = await matchesMain(ws);
+    const unitsOid = base.notes[0].oid;
+    const V2 = note("Units v2", "Convert to the answer's unit", "Better.\n", "supersedes: [check-units.md]\n");
+    const ASK = note("Ask first", "Ask which currency");
+    const merge = { kind: "merge", runId: "run-c1", reason: "One general rule, one risky.", files: [{ path: "units-v2.md", text: V2 }, { path: "ask-first.md", text: ASK }, { path: "skills/weekly-report/SKILL.md", text: SKILL }], held: ["ask-first.md", "skills/weekly-report/SKILL.md"], supersede: [{ path: "check-units.md", by: "units-v2.md" }], graded: { "check-units.md": unitsOid } };
+    const merged = await execsOf(() => learningCommit(ws, merge));
+    assert.equal(merged.result.ok, true, JSON.stringify(merged.result));
+    assert.deepEqual(merged.ops, ["commit"], "one exec");
+    assert.equal(merged.result.main, merged.result.commit);
+    const snap = await matchesMain(ws);
+    assert.deepEqual(snap.notes.map((n) => [n.file, n.status]), [["units-v2.md", "active"], ["ask-first.md", "pending"], ["check-units.md", "superseded"]]);
+    assert.equal(snap.skills[0].status, "pending");
+    assert.equal(text(await ws.read("MEMORY.md")), indexOf({ "units-v2.md": V2 }));
+    assert.equal((await readRunDiff(ws, "run-c1")).merge, merged.result.main);
+    const again = await execsOf(() => learningCommit(ws, merge));
+    assert.deepEqual([again.result, again.ops], [{ ok: true, main: snap.main, commit: snap.main, files: merged.result.files }, []], "merged once: nothing written again");
+    // A graded oid that is another blob on main now: a conflict, nothing written.
+    const stale = await learningCommit(ws, { ...merge, runId: "run-c2", files: [{ path: "later.md", text: note("Later", "A later rule") }], held: [], supersede: [], graded: { "check-units.md": unitsOid } });
+    assert.deepEqual([stale.ok, stale.reason, stale.problems.map((p) => p.path)], [false, "conflict", ["check-units.md"]]);
+    // A new note named like a note on main: refused.
+    const taken = await learningCommit(ws, { kind: "merge", runId: "run-c3", reason: "x", files: [{ path: "units-v2.md", text: V2 }], graded: {} });
+    assert.deepEqual([taken.ok, taken.reason, taken.problems?.map((p) => p.rule)], [false, "refused", ["exists"]], JSON.stringify(taken));
+    // A person's write by an ETag main moved past: a conflict. By the right one: lands.
+    const edited = note("Units v2", "Convert to the answer's unit, always", "Better.\n", "supersedes: [check-units.md]\n");
+    const v2oid = snap.notes.find((n) => n.file === "units-v2.md").oid;
+    const lost = await learningCommit(ws, { kind: "person", action: "edited", file: "units-v2.md", text: edited, ifMatch: `"${unitsOid}"` });
+    assert.deepEqual([lost.ok, lost.reason], [false, "conflict"]);
+    const won = await learningCommit(ws, { kind: "person", action: "edited", file: "units-v2.md", text: edited, ifMatch: `"${v2oid}"` });
+    assert.equal(won.ok, true, JSON.stringify(won));
+    assert.deepEqual((await matchesMain(ws)).log[0].by, { user: true });
+    // The workspace failing under the exec: unavailable, retryable later.
+    const broken = wrap(ws, { exec: async () => { throw Object.assign(new Error("the disk is gone"), { name: "WorkspaceError", code: "UNAVAILABLE" }); } });
+    const down = await learningCommit(broken, { kind: "person", action: "created", file: "x.md", text: note("X", "x"), ifMatch: null });
+    assert.deepEqual([down.ok, down.reason], [false, "unavailable"]);
+    assert.match(down.error, /the disk is gone/);
+  });
+
+  test(`${backend}: seedBase reads a run's seed from the snapshot when it is main (no exec), else with one read-only exec at that commit; makeProposalCheck checks a proposal against it`, async () => {
+    const { ws } = await make();
+    await learningInit(ws);
+    const one = await commitChange(ws, await readSnapshot(ws), personChange("created", "check-units.md", { "check-units.md": UNITS }));
+    const atMain = await execsOf(() => seedBase(ws, one.main));
+    assert.deepEqual(atMain.ops, [], "the seed is main: the snapshot, no exec");
+    assert.deepEqual([atMain.result.ok, [...atMain.result.base.files], atMain.result.base.active.map((n) => n.file)], [true, ["MEMORY.md", "check-units.md"], ["check-units.md"]]);
+    await commitChange(ws, await readSnapshot(ws), personChange("created", "quote-sources.md", { "check-units.md": UNITS, "quote-sources.md": SOURCES }));
+    const older = await execsOf(() => seedBase(ws, one.main));
+    assert.deepEqual(older.ops, ["read"], "an older seed: one read-only exec");
+    assert.deepEqual([...older.result.base.files], ["MEMORY.md", "check-units.md"], "the folder as the seed held it");
+    assert.deepEqual(await seedBase(ws, "0".repeat(40)), { ok: false, reason: "gone", detail: `the learning folder has no commit ${"0".repeat(40)}` });
+    let ended = 0;
+    const check = makeProposalCheck({ open: () => ({ workspace: ws, end: async () => void ended++ }) });
+    const common = { agentId: "a", seed: one.main, outcome: "completed", tools: [], dsl: undefined };
+    assert.deepEqual(await check({ ...common, changes: [{ path: "prefers-tables.md", status: "added", mode: "100644", bytes: Buffer.from(TABLES) }] }), { ok: true, problems: [] });
+    const edit = await check({ ...common, changes: [{ path: "check-units.md", status: "modified", mode: "100644", bytes: Buffer.from(TABLES) }] });
+    assert.deepEqual([edit.ok, edit.problems.map((p) => p.rule)], [false, ["edited"]]);
+    assert.equal(ended, 2, "the folder is ended after each check");
   });
 }
