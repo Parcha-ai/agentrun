@@ -17,7 +17,7 @@ export const isolationCases: Case[] = [
 		async run(t) {
 			const ports = t.provider.capabilities().vendorAgentPorts ?? [];
 			t.assert(ports.every((port) => Number.isSafeInteger(port) && port > 0 && port < 65536), `the declared ports ${JSON.stringify(ports)} are TCP ports`);
-			const targets = ports.flatMap((port) => [`127.0.0.1:${port}`, `[::1]:${port}`]);
+			const targets = ports.flatMap((port) => [`127.0.0.1:${port}`, `[::1]:${port}`]); // key-gate: loopback-rule the computer's own loopbacks, where the vendor's agent listens and its programs must be refused
 			const ran = await t.exec([DAEMON_IN_COMPUTER, "probe", ...targets.flatMap((target) => ["--connect", target])], { timeoutMs: t.patience });
 			t.equal(ran.exitCode, 0, `the probe's exit code (stderr: ${ran.err.trim()})`);
 			let probe: ProbeLine;

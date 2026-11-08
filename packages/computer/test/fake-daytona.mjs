@@ -5,6 +5,7 @@
 // ping, files.read of /proc/self/status, files.stat of /proc/self/cwd and /proc/self/exe, and exec.run (an echo).
 import { createHash } from "node:crypto";
 import { readFileSync } from "node:fs";
+import { netDevText } from "./net-dev.mjs";
 
 export const API = "https://api.daytona.test/api";
 export const PROXY = "https://proxy.daytona.test/toolbox";
@@ -18,7 +19,7 @@ const OUT = Buffer.from([1, 1, 1]);
 const ERR = Buffer.from([2, 2, 2]);
 
 /** /proc/self/status of a daemon run as uid:gid with no capabilities and no_new_privs, as the start script makes it. */
-export function statusText({ uid = 1000, gid = uid, capEff = "0000000000000000", capBnd = "0000000000000000", noNewPrivs = 1, groups = "" } = {}) {
+export function statusText({ uid = 2510, gid = uid, capEff = "0000000000000000", capBnd = "0000000000000000", noNewPrivs = 1, groups = "", seccomp = 2 } = {}) {
 	return [
 		"Name:\tcomputerd",
 		"State:\tS (sleeping)",
@@ -31,6 +32,7 @@ export function statusText({ uid = 1000, gid = uid, capEff = "0000000000000000",
 		`CapEff:\t${capEff}`,
 		`CapBnd:\t${capBnd}`,
 		"CapAmb:\t0000000000000000",
+		`Seccomp:\t${seccomp}`,
 		"",
 	].join("\n");
 }
@@ -79,7 +81,8 @@ const abortError = (signal) => signal?.reason ?? new DOMException("This operatio
  * - `readBack(sandbox)`: fields merged over each single read; `listBack(item)`: over each listed item.
  * - `uploadStatus`: the daemon upload's answer. `install`: { exitCode, result } of the install script, or `installSha`.
  * - `initFails`: init writes that to stderr and exits 1. `bridgeStderr`: a line the bridge writes to stderr at start.
- * - `hello`, `status`, `cwd`, `exe`: what the daemon reports. `echoInput`: input is echoed to stdout, as with
+ * - `hello`, `status`, `cwd`, `exe`, `interfaces` (its own /proc/self/net/dev, default the loopback alone): what the
+ *   daemon reports. `echoInput`: input is echoed to stdout, as with
  *   suppressInputEcho unset. `pageSize`: items a listing page holds. `sandboxClass` ("container").
  * - `networkStatus`: the answer to a network-settings change; `networkIgnored`: it answers 200 and changes nothing.
  * - `stopStopped` (400): the answer to a stop of a stopped sandbox. `stoppingReads`: after a stop the sandbox reads back,
@@ -220,6 +223,10 @@ export function fakeDaytona(initial = {}) {
 		if (method === "ping") return reply({ result: {} });
 		if (method === "files.read" && params.path === "/proc/self/status") {
 			const text = knobs.status ?? statusText();
+			return reply({ result: { data: Buffer.from(text).toString("base64"), eof: true, size: 0 } });
+		}
+		if (method === "files.read" && params.path === "/proc/self/net/dev") {
+			const text = netDevText(knobs.interfaces);
 			return reply({ result: { data: Buffer.from(text).toString("base64"), eof: true, size: 0 } });
 		}
 		if (method === "files.stat" && (params.path === "/proc/self/cwd" || params.path === "/proc/self/exe")) {

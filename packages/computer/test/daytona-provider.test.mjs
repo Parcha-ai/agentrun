@@ -8,7 +8,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { after, before, test } from "node:test";
 import { checkLifetime, DaytonaProvider, kindRefusals } from "../dist/index.js";
-import { API, DEFAULT_SNAPSHOT, fakeDaytona, HOSTS, KEY, PROXY, scriptOf, statusText, VERSION } from "./fake-daytona.mjs";
+import { API, DEFAULT_SNAPSHOT, fakeDaytona, HOSTS, KEY, PROXY, scriptOf, statusText, VERSION, wordsOf } from "./fake-daytona.mjs";
 
 const SPEC = { image: "agentrun-debian", lifetimeMs: 600_000, network: "none" };
 const FAST = { requestMs: 2000, createMs: 2000, startMs: 300, deleteMs: 2000, stopMs: 500, goneMs: 500, uploadMs: 2000, execMs: 2000, helloMs: 1000, pollMs: 1, retryMs: 1, listedMs: 2000, listedStableMs: 0 };
@@ -69,15 +69,14 @@ const of = (fake, method, path) => fake.requests.filter((r) => r.method === meth
 const deleted = (fake) => of(fake, "DELETE", /^\/api\/sandbox\/[^/]+$/);
 const created = (fake) => of(fake, "POST", "/api/sandbox");
 
-test("capabilities: a linux computer with init a child of Daytona's toolbox, a vendor lifetime up to 30 days, network none, open and allow with the ports each list opens, a container, exec, files and processes, and stop and delete", () => {
+test("capabilities: a linux computer with init a child of Daytona's toolbox, a vendor lifetime up to 30 days, network none alone, a container, exec, files and processes, stop and delete, and the toolbox's port", () => {
 	const { provider, fake } = setup();
 	assert.equal(provider.id, "daytona");
 	assert.equal(provider.version, VERSION);
 	assert.deepEqual(provider.capabilities(), {
 		kind: "linux",
 		lifetime: "vendor",
-		network: ["none", "open", "allow"],
-		allow: { domains: { max: 100, ports: [80, 443] }, cidrs: { max: 10, ports: "any" }, mixed: false },
+		network: ["none"],
 		isolation: "container",
 		os: "linux",
 		daemon: "child",
@@ -85,6 +84,7 @@ test("capabilities: a linux computer with init a child of Daytona's toolbox, a v
 		maxLifetimeMs: 30 * 24 * 3600 * 1000,
 		release: ["stop", "delete"],
 		stopDeletes: false,
+		vendorAgentPorts: [2280],
 	});
 	assert.deepEqual(kindRefusals(provider.capabilities()), []);
 	assert.equal(provider.extend, undefined, "no extend()");
@@ -110,9 +110,7 @@ test("the constructor refuses what it cannot run with, in words", () => {
 test("check() refuses in words, field by field, before any request", () => {
 	const { provider, fake } = setup();
 	assert.deepEqual(provider.check(SPEC), []);
-	assert.deepEqual(provider.check({ ...SPEC, network: "open", labels: { team: "a" } }), []);
-	assert.deepEqual(provider.check({ ...SPEC, network: { allow: ["example.com", "*.example.org"] } }), []);
-	assert.deepEqual(provider.check({ ...SPEC, network: { allow: ["208.80.154.232/32"] } }), []);
+	assert.deepEqual(provider.check({ ...SPEC, labels: { team: "a" } }), []);
 	const refused = (spec) => provider.check(spec).map((r) => r.field);
 	const words = (spec) => provider.check(spec).map((r) => r.message).join("; ");
 	assert.deepEqual(refused({ ...SPEC, image: "" }), ["image"]);
@@ -123,20 +121,14 @@ test("check() refuses in words, field by field, before any request", () => {
 	}
 	assert.match(words({ ...SPEC, lifetimeMs: 30 * 24 * 3600 * 1000 + 1 }), /at most 30 days \(2592000000 ms\)/);
 	assert.deepEqual(refused({ ...SPEC, network: "wifi" }), ["network"]);
-	assert.match(words({ ...SPEC, network: { allow: [] } }), /at least one/);
-	assert.match(words({ ...SPEC, network: { allow: ["example.com", "208.80.154.232/32"] } }), /never both/);
-	assert.match(words({ ...SPEC, network: { allow: Array.from({ length: 101 }, (_, i) => `h${i}.example.com`) } }), /at most 100 domains/);
-	assert.deepEqual(provider.check({ ...SPEC, network: { allow: Array.from({ length: 100 }, (_, i) => `h${i}.example.com`) } }), []);
-	assert.match(words({ ...SPEC, network: { allow: Array.from({ length: 11 }, (_, i) => `208.80.154.${i}/32`) } }), /at most 10 CIDRs/);
-	assert.match(words({ ...SPEC, network: { allow: ["2620:0:861:ed1a::1/128"] } }), /IPv4 only/);
-	assert.match(words({ ...SPEC, network: { allow: ["https://example.com"] } }), /IPv4 only|no scheme/);
-	assert.match(words({ ...SPEC, network: { allow: ["example.com/path"] } }), /neither a domain/);
-	assert.match(words({ ...SPEC, network: { allow: ["208.80.154.232"] } }), /A\.B\.C\.D\/N/);
-	assert.match(words({ ...SPEC, network: { allow: ["208.80.154.232/33"] } }), /A\.B\.C\.D\/N/);
+	// Open and every allowlist, well-formed or not, are refused alike: the loopback block test below holds the words.
+	for (const network of ["open", { allow: [] }, { allow: ["example.com", "208.80.154.232/32"] }, { allow: ["2620:0:861:ed1a::1/128"] }]) {
+		assert.deepEqual(refused({ ...SPEC, network }), ["network"], JSON.stringify(network));
+	}
 	assert.match(words({ ...SPEC, cpus: 2 }), /size of its snapshot/);
 	assert.match(words({ ...SPEC, memoryMb: 2048 }), /size of its snapshot/);
 	assert.match(words({ ...SPEC, pids: 64 }), /size of its snapshot/);
-	assert.match(words({ ...SPEC, user: "0" }), /daemon user \(1000:1000\)/);
+	assert.match(words({ ...SPEC, user: "0" }), /daemon user \(2510:2510\)/);
 	assert.match(words({ ...SPEC, workdir: "/data" }), /works in \/work/);
 	assert.match(words({ ...SPEC, gpu: 1 }), /does not support gpu/);
 	assert.deepEqual(refused({ ...SPEC, labels: { "agentrun.computer.deadline": "never" } }), ["labels"]);
@@ -199,10 +191,10 @@ test("create() makes the sandbox, pushes the daemon in, starts init, checks it, 
 	assert.match(init.path, /\/process\/session\/agentrun-computerd\/exec$/);
 	assert.equal(init.body.runAsync, true);
 	assert.equal(init.body.suppressInputEcho, true);
-	assert.deepEqual(scriptOf(init.body.command).args, ["/opt/agentrun/computerd", deadline, "1000:1000", "/work", "/run/agentrun"]);
+	assert.deepEqual(scriptOf(init.body.command).args, ["/opt/agentrun/computerd", deadline, "2510:2510", "/work", "/run/agentrun"]);
 	// The daemon drops to its user itself, started as root (through sudo -n when the session's user is not root): no
 	// privilege tool of the snapshot's is relied on.
-	assert.match(init.body.command, /"\$d" init --deadline "\$t" --user "\$w"/);
+	assert.match(init.body.command, /"\$d" init --deadline "\$t" --user "\$w" --own-network/);
 	assert.match(init.body.command, /\[ "\$\(id -u\)" = 0 \] \|\| p="sudo -n"/);
 	const stdio = execs.find((r) => scriptOf(r.body.command).kind === "stdio");
 	assert.deepEqual(scriptOf(stdio.body.command).args, ["/opt/agentrun/computerd", "/run/agentrun"]);
@@ -231,20 +223,19 @@ test("create() starts init with --user of the daemonUser option, and no command 
 	for (const r of fake.requests.filter((r) => typeof r.body?.command === "string")) assert.doesNotMatch(r.body.command, /setpriv/);
 });
 
-test("create() asks Daytona for the network as declared", async () => {
-	for (const [network, fields] of [
-		["open", { networkBlockAll: false, networkAllowList: undefined, domainAllowList: undefined }],
-		[{ allow: ["example.com", "*.example.org"] }, { networkBlockAll: undefined, domainAllowList: "example.com,*.example.org", networkAllowList: "" }],
-		[{ allow: ["208.80.154.232/32"] }, { networkBlockAll: undefined, networkAllowList: "208.80.154.232/32", domainAllowList: "" }],
-	]) {
+test("create() asks Daytona for network none, and makes nothing for open or an allowlist", async () => {
+	for (const network of ["open", { allow: ["example.com", "*.example.org"] }, { allow: ["208.80.154.232/32"] }]) {
 		const { provider, fake } = setup();
 		const made = await provider.create({ ...SPEC, network });
-		assert.equal(made.ok, true, JSON.stringify(made));
-		const [post] = created(fake);
-		for (const [field, value] of Object.entries(fields)) assert.equal(post.body[field], value, `${JSON.stringify(network)}: ${field}`);
-		const read = await provider.network(made.value);
-		assert.deepEqual(read, { ok: true, value: network });
+		assert.equal(made.ok, false, JSON.stringify(network));
+		assert.match(made.error.message, /network "none" only/);
+		assert.equal(fake.requests.length, 0, `${JSON.stringify(network)}: no request`);
 	}
+	const { provider, fake } = setup();
+	const made = await provider.create(SPEC);
+	assert.equal(made.ok, true, JSON.stringify(made));
+	assert.equal(created(fake)[0].body.networkBlockAll, true);
+	assert.deepEqual(await provider.network(made.value), { ok: true, value: "none" });
 });
 
 test('image "default" sends no snapshot field, so Daytona makes the sandbox from its default snapshot; a named one is sent', async () => {
@@ -477,8 +468,10 @@ const DRIFT = [
 	["a daemon that lacks a group", { hello: { groups: ["exec", "files"] } }, /groups lack processes/],
 	["a daemon that offers a group more", { hello: { groups: ["exec", "files", "processes", "screen"] } }, /offers groups screen/],
 	["a daemon of another kind", { hello: { kind: "desktop" } }, /hello: the daemon reports kind desktop, expected linux/],
-	["a daemon run as root", { status: statusText({ uid: 0 }) }, /daemon user: declared uid 1000, read back "0\\t0\\t0\\t0"/],
-	["a daemon in root's group", { status: statusText({ gid: 0 }) }, /daemon group: declared gid 1000/],
+	["a daemon run as root", { status: statusText({ uid: 0 }) }, /daemon user: declared uid 2510, read back "0\\t0\\t0\\t0"/],
+	["a daemon in root's group", { status: statusText({ gid: 0 }) }, /daemon group: declared gid 2510/],
+	["a daemon with no seccomp filter", { status: statusText({ seccomp: 0 }) }, /daemon seccomp: declared 2 \(the filter that refuses vsock and io_uring\), read back "0"/],
+	["a daemon on the sandbox's network", { interfaces: ["lo", "eth0"] }, /daemon network: declared its own \(lo alone\), read back lo, eth0/],
 	["a daemon with capabilities", { status: statusText({ capEff: "000001ffffffffff" }) }, /daemon CapEff: declared no capabilities, read back "000001ffffffffff"/],
 	["a daemon with a bounding set", { status: statusText({ capBnd: "000001ffffffffff" }) }, /daemon CapBnd/],
 	["a daemon that may gain privileges", { status: statusText({ noNewPrivs: 0 }) }, /daemon no_new_privs: declared 1, read back "0"/],
@@ -502,18 +495,12 @@ for (const [what, knobs, words] of DRIFT) {
 	});
 }
 
-test("drift: an allowlist Daytona did not keep is refused and deleted", async () => {
-	for (const [network, readBack] of [
-		[{ allow: ["example.com"] }, () => ({ domainAllowList: "example.com,example.org" })],
-		[{ allow: ["example.com"] }, () => ({ domainAllowList: undefined })],
-		[{ allow: ["208.80.154.232/32"] }, () => ({ networkAllowList: "208.80.154.0/24" })],
-		["none", () => ({ networkBlockAll: true, networkAllowList: "208.80.154.232/32" })],
-		["open", () => ({ networkBlockAll: undefined })],
-	]) {
+test("drift: a network none Daytona did not keep is refused and deleted", async () => {
+	for (const readBack of [() => ({ networkBlockAll: true, networkAllowList: "208.80.154.232/32" }), () => ({ networkBlockAll: false }), () => ({ networkBlockAll: undefined })]) {
 		const { provider, fake } = setup({ readBack });
-		const made = await provider.create({ ...SPEC, network });
-		assert.equal(made.ok, false, JSON.stringify(network));
-		assert.match(made.error.message, /network: declared/);
+		const made = await provider.create(SPEC);
+		assert.equal(made.ok, false, readBack.toString());
+		assert.match(made.error.message, /network: declared none/);
 		assert.equal(fake.sandboxes.size, 0);
 	}
 });
@@ -600,7 +587,7 @@ test("attach() by id, by name and by labels returns the spec read back, with the
 	for (const ref of [{ id: made.value.id }, { id: made.value.name }, { labels: { team: "a" } }]) {
 		const attached = await provider.attach(ref);
 		assert.equal(attached.ok, true, `${JSON.stringify(ref)}: ${JSON.stringify(attached)}`);
-		assert.deepEqual(attached.value, { ...made.value, spec: { image: SPEC.image, snapshot: SPEC.image, user: "1000:1000", network: "none", cpus: 1, memoryMb: 1024, workdir: "/work", deadline: new Date(deadline), kind: "linux" } });
+		assert.deepEqual(attached.value, { ...made.value, spec: { image: SPEC.image, snapshot: SPEC.image, user: "2510:2510", network: "none", cpus: 1, memoryMb: 1024, workdir: "/work", deadline: new Date(deadline), kind: "linux" } });
 	}
 	const missing = await provider.attach({ id: "nothing-by-this-id" });
 	assert.equal(missing.error.code, "not_found");
@@ -722,76 +709,71 @@ test("a daemon whose bridge cannot reach init is reported with the bridge's word
 	assert.match(connected.error.message, /cannot reach the daemon in computer-[0-9a-f]{12}: computerd: stdio: cannot reach the daemon/);
 });
 
-test("network() reads back, and a change is applied and read back, or refused with the network put back", async () => {
+/** A computer made with network none, then widened as one made before the loopback block was (open, or a list). */
+async function older(provider, fake, fields) {
+	const made = await provider.create(SPEC);
+	assert.equal(made.ok, true, JSON.stringify(made));
+	Object.assign(fake.sandboxes.get(made.value.id), fields);
+	return made.value;
+}
+
+test("network() reads back, refuses a change to open or a list, and a change to none is applied and read back, or refused with the network put back", async () => {
 	const { provider, fake } = setup();
 	const made = await provider.create(SPEC);
 	const ref = made.value;
 	assert.deepEqual(await provider.network(ref), { ok: true, value: "none" });
 	const before = of(fake, "POST", /network-settings$/).length;
 	assert.deepEqual(await provider.network(ref, "none"), { ok: true, value: "none" });
-	assert.equal(of(fake, "POST", /network-settings$/).length, before, "asking for the network it has changes nothing");
-	for (const [policy, body] of [
-		["open", { networkBlockAll: false }],
-		[{ allow: ["example.com"] }, { domainAllowList: "example.com", networkAllowList: "" }],
-		[{ allow: ["208.80.154.232/32"] }, { networkAllowList: "208.80.154.232/32", domainAllowList: "" }],
-		["none", { networkBlockAll: true }],
-	]) {
-		assert.deepEqual(await provider.network(ref, policy), { ok: true, value: policy }, JSON.stringify(policy));
-		assert.deepEqual(of(fake, "POST", /network-settings$/).at(-1).body, body);
-		assert.deepEqual(await provider.network(ref), { ok: true, value: policy });
+	for (const policy of ["open", { allow: ["example.com"] }, { allow: [] }]) assert.equal((await provider.network(ref, policy)).error.code, "invalid", JSON.stringify(policy));
+	assert.equal(of(fake, "POST", /network-settings$/).length, before, "asking for the network it has, or one refused, changes nothing");
+	for (const fields of [{ networkBlockAll: false }, { networkBlockAll: false, domainAllowList: "example.com" }, { networkBlockAll: false, networkAllowList: "208.80.154.232/32" }]) {
+		const wider = await older(provider, fake, fields);
+		assert.deepEqual(await provider.network(wider, "none"), { ok: true, value: "none" }, JSON.stringify(fields));
+		assert.deepEqual(of(fake, "POST", /network-settings$/).at(-1).body, { networkBlockAll: true });
+		assert.deepEqual(await provider.network(wider), { ok: true, value: "none" });
 	}
-	const bad = await provider.network(ref, { allow: [] });
-	assert.equal(bad.error.code, "invalid");
+	const open = await older(provider, fake, { networkBlockAll: false });
 	fake.knobs.networkStatus = 403;
-	const tier = await provider.network(ref, "open");
+	const tier = await provider.network(open, "none");
 	assert.equal(tier.error.code, "refused");
-	assert.match(tier.error.message, /Daytona refused the change to network open: .*403 .*cannot be overridden/);
-	assert.deepEqual(await provider.network(ref), { ok: true, value: "none" });
+	assert.match(tier.error.message, /Daytona refused the change to network none: .*403 .*cannot be overridden/);
+	assert.deepEqual(await provider.network(open), { ok: true, value: "open" });
 	fake.knobs.networkStatus = undefined;
 	fake.knobs.networkIgnored = true;
-	const ignored = await provider.network(ref, "open");
+	const ignored = await provider.network(open, "none");
 	assert.equal(ignored.error.code, "refused");
-	assert.match(ignored.error.message, /Daytona did not apply network open: computer-[0-9a-f]{12} still reads back none/);
-	assert.equal(of(fake, "POST", /network-settings$/).at(-1).body.networkBlockAll, false, "nothing to put back");
+	assert.match(ignored.error.message, /Daytona did not apply network none: computer-[0-9a-f]{12} still reads back open/);
 	fake.knobs.networkIgnored = false;
 	fake.knobs.hang = [{ method: "POST", path: /network-settings$/ }];
-	const slow = await provider.network(ref, "open", { signal: AbortSignal.timeout(50) });
+	const slow = await provider.network(open, "none", { signal: AbortSignal.timeout(50) });
 	assert.equal(slow.error.code, "aborted");
-	assert.match(slow.error.message, /the change to network open did not complete: POST \/api\/sandbox\/[^ ]+\/network-settings was aborted/);
-	assert.deepEqual(await provider.network(ref), { ok: true, value: "none" }, "a change that never answered is read back, and left as it was");
+	assert.match(slow.error.message, /the change to network none did not complete: POST \/api\/sandbox\/[^ ]+\/network-settings was aborted/);
+	assert.deepEqual(await provider.network(open), { ok: true, value: "open" }, "a change that never answered is read back, and left as it was");
 	fake.knobs.hang = undefined;
 	assert.equal((await provider.network({ id: "x", name: "x" })).error.code, "invalid");
 	assert.equal((await provider.network({ ...ref, id: "nothing-by-this-id" })).error.code, "not_found");
 });
 
-test("network(): a change Daytona applies otherwise is never left wider: it is put back, or blocked", async () => {
+test("network(): a change to none Daytona applies otherwise is never left wider: it is put back, or blocked", async () => {
 	const { provider, fake } = setup();
-	const made = await provider.create({ ...SPEC, network: { allow: ["example.com"] } });
-	const ref = made.value;
-	// Daytona keeps the domain list and adds what was not asked for: the change is undone.
-	fake.knobs.readBack = (sb) => (sb.domainAllowList === "example.org" ? { domainAllowList: "example.org,example.net" } : {});
-	const widened = await provider.network(ref, { allow: ["example.org"] });
-	assert.equal(widened.error.code, "refused");
-	assert.match(widened.error.message, /is back on \["example\.com"\]|is back on \{"allow":\["example\.com"\]\}/);
-	assert.deepEqual(await provider.network(ref), { ok: true, value: { allow: ["example.com"] } });
-	// One that cannot be put back either is blocked.
+	const ref = await older(provider, fake, { networkBlockAll: false, domainAllowList: "example.com" });
+	// Daytona answers the block and widens the list instead: the change is undone, back to the list it had.
 	const changes = of(fake, "POST", /network-settings$/).length;
-	fake.knobs.readBack = (sb) => (!sb.networkBlockAll && of(fake, "POST", /network-settings$/).length > changes ? { domainAllowList: "example.org,example.net" } : {});
-	const blocked = await provider.network(ref, { allow: ["example.org"] });
-	assert.equal(blocked.error.code, "refused");
-	assert.match(blocked.error.message, /was blocked \(none\)/);
+	fake.knobs.readBack = (sb) => (sb.networkBlockAll && of(fake, "POST", /network-settings$/).length === changes + 1 ? { networkBlockAll: false, domainAllowList: "example.com,example.net" } : {});
+	const widened = await provider.network(ref, "none");
+	assert.equal(widened.error.code, "refused");
+	assert.match(widened.error.message, /is back on \{"allow":\["example\.com"\]\}/);
+	assert.deepEqual(await provider.network(ref), { ok: true, value: { allow: ["example.com"] } });
 	fake.knobs.readBack = undefined;
-	assert.deepEqual(await provider.network(ref), { ok: true, value: "none" });
 });
 
 test("network(): the fallback block is read back; a computer whose network cannot be made safe is deleted", async () => {
 	const { provider, fake } = setup();
-	const made = await provider.create({ ...SPEC, network: { allow: ["example.com"] } });
-	const ref = made.value;
+	const ref = await older(provider, fake, { networkBlockAll: false, domainAllowList: "example.com" });
 	// Every change after this one reads back wider, the block included: Daytona answers each POST and applies none.
 	const changes = of(fake, "POST", /network-settings$/).length;
 	fake.knobs.readBack = () => (of(fake, "POST", /network-settings$/).length > changes ? { networkBlockAll: false, domainAllowList: "example.org,example.net", networkAllowList: "" } : {});
-	const unsafe = await provider.network(ref, { allow: ["example.org"] });
+	const unsafe = await provider.network(ref, "none");
 	assert.equal(unsafe.error.code, "refused");
 	assert.doesNotMatch(unsafe.error.message, /was blocked \(none\)/, "a block that is not read back is never reported as one");
 	assert.match(unsafe.error.message, /could not be made safe: blocking it \(none\) read back .*example\.net.*, so it was deleted/);
@@ -813,20 +795,19 @@ test("network(): a change whose read-back fails is made safe: blocked and read b
 		return answer;
 	};
 	const provider = new DaytonaProvider({ apiKey: KEY, apiUrl: API, daemonPath: DAEMON, fetch, webSocket: fake.webSocket, timeouts: FAST });
-	const made = await provider.create({ ...SPEC, network: "open" });
-	const ref = made.value;
+	const ref = await older(provider, fake, { networkBlockAll: false });
 	// The change answers; every try of the read after it fails (3), so what the network is now is not known.
 	failAfterChange = 3;
-	const unknown = await provider.network(ref, { allow: ["example.com"] });
+	const unknown = await provider.network(ref, "none");
 	assert.equal(unknown.ok, false);
-	assert.match(unknown.error.message, /network \{"allow":\["example\.com"\]\} could not be read back after the change: .*503.*, so .* was blocked \(none\) and read back none/);
+	assert.match(unknown.error.message, /network none could not be read back after the change: .*503.*, so .* was blocked \(none\) and read back none/);
 	assert.equal(of(fake, "POST", /network-settings$/).at(-1).body.networkBlockAll, true);
 	assert.deepEqual(await provider.network(ref), { ok: true, value: "none" });
 	// When the block cannot be read back either, the computer is deleted.
-	const second = (await provider.create({ ...SPEC, network: "open" })).value;
+	const second = await older(provider, fake, { networkBlockAll: false });
 	// The read after the change (3 tries) and the read after the block (3 tries) both fail.
 	failAfterChange = 6;
-	const lost = await provider.network(second, { allow: ["example.com"] });
+	const lost = await provider.network(second, "none");
 	assert.equal(lost.ok, false);
 	assert.match(lost.error.message, /could not be made safe: blocking it \(none\) could not be read back: .*503.*, so it was deleted/);
 	assert.equal(fake.sandboxes.has(second.id), false, "the computer is gone");
@@ -984,4 +965,56 @@ test("an aborted create sends the delete and returns without waiting for the san
 	assert.equal(made.error.code, "aborted");
 	assert.equal(deleted(fake).length, 1, "the delete was sent all the same");
 	assert.match(made.error.message, /was sent a delete, and the wait for it to go was aborted/);
+});
+
+// The loopback block: Daytona's toolbox listens on 2280 on every interface of the sandbox and runs commands for whoever
+// reaches it, so the daemon's programs get a network of their own (init --own-network) and run as 2510:2510.
+
+test("the loopback block: network none only, the toolbox's port declared, and open and allowlists refused in words", () => {
+	const { provider, fake } = setup();
+	assert.deepEqual(provider.capabilities().network, ["none"]);
+	assert.equal(provider.capabilities().allow, undefined, "no allowlist to describe");
+	assert.deepEqual(provider.capabilities().vendorAgentPorts, [2280]);
+	for (const network of ["open", { allow: ["example.com"] }, { allow: ["208.80.154.232/32"] }]) {
+		const refusals = provider.check({ ...SPEC, network });
+		assert.deepEqual(refusals.map((r) => r.field), ["network"], JSON.stringify(network));
+		assert.match(refusals[0].message, /network "none" only: its programs run in a network of their own/);
+	}
+	assert.equal(fake.requests.length, 0);
+});
+
+test("the loopback block: init starts with --own-network as 2510:2510 by default", async () => {
+	const { provider, fake } = setup();
+	const made = await provider.create(SPEC);
+	assert.equal(made.ok, true, JSON.stringify(made));
+	const init = of(fake, "POST", /\/process\/session\/[^/]+\/exec$/).find((r) => scriptOf(r.body.command).kind === "init");
+	assert.equal(scriptOf(init.body.command).args[2], "2510:2510");
+	assert.match(wordsOf(init.body.command)[2], / init --deadline "\$t" --user "\$w" --own-network /);
+});
+
+test("the loopback block: a daemon whose network holds more than its loopback is refused and deleted, and attach refuses it", async () => {
+	const { provider, fake } = setup({ interfaces: ["lo", "eth0"] });
+	const made = await provider.create(SPEC);
+	assert.equal(made.ok, false);
+	assert.equal(made.error.code, "refused");
+	assert.match(made.error.message, /daemon network: declared its own \(lo alone\), read back lo, eth0/);
+	assert.equal(deleted(fake).length, 1);
+	const deadline = new Date(Date.now() + 600_000).toISOString();
+	const sb = fake.seed({ name: "computer-0000000000ac", autoDestroyAt: deadline, labels: { "agentrun.computer": "1", "agentrun.computer.deadline": deadline } });
+	const attached = await provider.attach({ id: sb.id });
+	assert.equal(attached.error.code, "refused");
+	assert.match(attached.error.message, /daemon network: declared its own \(lo alone\), read back lo, eth0/);
+});
+
+test("the loopback block: network() refuses a change to open or an allowlist in words, and sends nothing", async () => {
+	const { provider, fake } = setup();
+	const made = await provider.create(SPEC);
+	const before = of(fake, "POST", /network-settings$/).length;
+	for (const policy of ["open", { allow: ["example.com"] }]) {
+		const changed = await provider.network(made.value, policy);
+		assert.equal(changed.ok, false, JSON.stringify(policy));
+		assert.match(changed.error.message, /network "none" only/);
+	}
+	assert.equal(of(fake, "POST", /network-settings$/).length, before);
+	assert.deepEqual(await provider.network(made.value), { ok: true, value: "none" });
 });

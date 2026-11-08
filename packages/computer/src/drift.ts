@@ -249,6 +249,8 @@ export interface ProbeReport {
 	uid: number;
 	gid: number;
 	kernel: string;
+	/** The interfaces the probe's network namespace holds; absent from a daemon too old to report them. */
+	interfaces?: string[];
 	reached: string[];
 	accepted: string[];
 }
@@ -274,7 +276,7 @@ export function probeReportOf(stdout: string): ProbeReport | { not: string } {
 	if (!isAddresses(value.accepted)) {
 		return { not: `wrote a report with no accepted list, so a target that only accepted cannot be told from one refused: ${text.slice(0, 200)}` };
 	}
-	return { uid: value.uid, gid: value.gid, kernel: value.kernel, reached: value.reached, accepted: value.accepted };
+	return { uid: value.uid, gid: value.gid, kernel: value.kernel, ...(isAddresses(value.interfaces) ? { interfaces: value.interfaces } : {}), reached: value.reached, accepted: value.accepted };
 }
 
 /** Network none's drift by the probe: a target that answered, in words; none when nothing answered. */

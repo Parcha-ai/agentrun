@@ -19,6 +19,7 @@ import {
 	probeReportOf,
 	WORK,
 } from "./drift.js";
+import { OWN_NETWORK_ONLY, ownNetworkDrift, TOOL_USER } from "./isolation.js";
 import type { MountKind } from "./mount.js";
 import {
 	type AttachedComputer,
@@ -138,7 +139,10 @@ export interface ModalProviderOptions {
 	daemonPath?: string;
 	/** The longest lifetime check takes, in ms, declared as capabilities().maxLifetimeMs: at most 24 hours, Modal's longest timeout, which is the default. */
 	maxLifetimeMs?: number;
-	/** Who a computer runs as when its spec does not say: uid:gid in numbers, never root or root's group. Default 1000:1000. */
+	/**
+	 * Who a computer runs as when its spec does not say: uid:gid in numbers, never root or root's group. Default 2510:2510
+	 * (TOOL_USER). Init refuses to start while another process in the sandbox holds the uid.
+	 */
 	user?: string;
 	timeouts?: Partial<ModalTimeouts>;
 	/**
@@ -356,14 +360,14 @@ const HOLD_SCRIPT = [
  */
 export function modalCommands({
 	deadline = "",
-	user = "1000:1000",
+	user = TOOL_USER,
 	waitSeconds = 360,
 	sha256 = "",
 	daemon = DAEMON_IN_COMPUTER,
 	home = WORK,
 }: { deadline?: string; user?: string; waitSeconds?: number; sha256?: string; daemon?: string; home?: string } = {}) {
 	return {
-		entrypoint: ["sh", "-c", ENTRYPOINT_SCRIPT, "sh", daemon, String(waitSeconds), home, "init", "--deadline", deadline, "--user", user],
+		entrypoint: ["sh", "-c", ENTRYPOINT_SCRIPT, "sh", daemon, String(waitSeconds), home, "init", "--deadline", deadline, "--user", user, "--own-network"],
 		upload: ["sh", "-c", UPLOAD_SCRIPT, "sh", daemon, sha256],
 		hold: ["sh", "-c", HOLD_SCRIPT, "sh", daemon],
 		stdio: [daemon, "stdio"],
@@ -378,8 +382,6 @@ const DEFAULT_PROBE_TARGETS = ["1.1.1.1:443", "8.8.8.8:443", "[2606:4700:4700::1
 const CLOSE_WAIT_MS = 5_000;
 const SPEC_FIELDS = new Set(["image", "lifetimeMs", "network", "cpus", "memoryMb", "pids", "labels", "workdir", "user"]);
 const NUL = "a NUL byte cannot be passed to Modal";
-const ALLOWLIST =
-	"a Modal computer takes no allowlist yet: Modal's outbound CIDR allowlist (any protocol, every port) and its domain allowlist (beta: TLS on port 443 only, matched by SNI) cannot be read back, so an allowlist counts only once the live bypass cases pass (ruling 9); ask for network none or open";
 const FIXED =
 	"a Modal computer's network is fixed at create: Modal cannot update the policy of a sandbox made with blockNetwork, and updates only an allowlist set at create; create a new computer";
 const STOP =
@@ -592,6 +594,7 @@ function probeDrift(probe: ProbeReport, expected: { user?: string; network?: Net
 	if (expected.user !== undefined && user !== expected.user) found.push(`user: declared ${expected.user}, read back ${user} (the uid:gid the daemon's programs run as)`);
 	if (/gvisor/i.test(probe.kernel)) found.push(`runtime: declared vm, read back gVisor (the kernel reports ${JSON.stringify(probe.kernel)})`);
 	if (expected.network === "none") found.push(...probeNetworkDrift(probe));
+	found.push(...ownNetworkDrift(probe.interfaces));
 	return found;
 }
 
@@ -646,7 +649,7 @@ export class ModalProvider implements ComputerProvider {
 		if (!isWhole(maxLifetimeMs) || maxLifetimeMs <= 0 || maxLifetimeMs > MAX_LIFETIME_MS) {
 			throw new Error(`maxLifetimeMs must be a whole number of ms above 0 and at most 24 hours (${MAX_LIFETIME_MS} ms), Modal's longest timeout`);
 		}
-		const given = user === undefined ? "1000:1000" : userOf(user);
+		const given = user === undefined ? TOOL_USER : userOf(user);
 		if (given === undefined) throw new Error(`the provider's user ${JSON.stringify(user)} must be ${USER_FORM}`);
 		if (given.startsWith("0:")) throw new Error(`the provider's user ${user} is root; ${ROOT}`);
 		if (given.endsWith(":0")) throw new Error(`the provider's user ${user} is in root's group (gid 0); a computer is in group 0 only when its spec asks`);
@@ -671,13 +674,15 @@ export class ModalProvider implements ComputerProvider {
 	 * daemon pid1: the sandbox's command is init itself (with daemonImage) or the entrypoint that execs into it, and Modal
 	 * finishes the sandbox when that main process exits (sandbox.ts:384-388), so init's exit ends the computer. Whether
 	 * Modal gives that process the number 1 is not documented; init reaps as a subreaper either way. maxLifetimeMs is this
-	 * instance's cap: Modal's 24 hours unless the provider was made with less.
+	 * instance's cap: Modal's 24 hours unless the provider was made with less. Init starts with --own-network whatever
+	 * Modal runs in the sandbox (no listener of its own there is documented, so no port is declared), and network none is
+	 * all a computer takes until a proxy carries open out of the daemon's own network.
 	 */
 	capabilities(): ComputerCapabilities {
 		return {
 			kind: "linux",
 			lifetime: "vendor",
-			network: ["none", "open"],
+			network: ["none"],
 			networkReadBack: false,
 			isolation: "vm",
 			os: "linux",
@@ -687,6 +692,7 @@ export class ModalProvider implements ComputerProvider {
 			// Never root: see ROOT.
 			user: ["uid"],
 			release: ["delete"],
+			vendorAgentPorts: [],
 		};
 	}
 
@@ -705,8 +711,8 @@ export class ModalProvider implements ComputerProvider {
 			refuse("image", "an image is required: a registry tag for linux/amd64 that Modal can pull, such as debian:bookworm-slim");
 		} else if (image.includes("\0")) refuse("image", NUL);
 		refusals.push(...checkLifetime(lifetimeMs, this.capabilities()));
-		if (typeof network === "object" && network !== null && "allow" in network) refuse("network", ALLOWLIST);
-		else if (network !== "none" && network !== "open") refuse("network", 'network is required: "none" or "open"');
+		if (network === "open" || (typeof network === "object" && network !== null && "allow" in network)) refuse("network", OWN_NETWORK_ONLY);
+		else if (network !== "none") refuse("network", 'network is required: "none"');
 		if (cpus !== undefined && !(isNumber(cpus) && cpus >= CPU_REQUEST * CPUS_PER_CORE)) {
 			refuse("cpus", `cpus must be a number of CPUs of at least ${CPU_REQUEST * CPUS_PER_CORE}: Modal counts physical cores, 2 CPUs each, and requests ${CPU_REQUEST} of one by default`);
 		}
@@ -768,7 +774,7 @@ export class ModalProvider implements ComputerProvider {
 		const { uploadMs, callMs } = this.#timeouts;
 		const command =
 			daemon === undefined
-				? [DAEMON_IN_COMPUTER, "init", "--deadline", deadline, "--user", user]
+				? [DAEMON_IN_COMPUTER, "init", "--deadline", deadline, "--user", user, "--own-network"]
 				: modalCommands({ deadline, user, waitSeconds: Math.ceil((uploadMs + callMs) / 1000), home: WORK }).entrypoint;
 		const cpuLimit = cpus / CPUS_PER_CORE;
 		const params: ModalCreateParams = {
@@ -1164,9 +1170,9 @@ export class ModalProvider implements ComputerProvider {
 	async network(ref: ComputerRef, policy?: NetworkSpec, { signal }: CallContext = {}): Promise<Result<NetworkPolicy>> {
 		const problem = refProblem(ref);
 		if (problem) return fail("invalid", problem);
-		if (policy !== undefined && policy !== "none" && policy !== "open") {
-			const allow = typeof policy === "object" && policy !== null && "allow" in policy;
-			return fail("refused", allow ? `${ALLOWLIST}; ${FIXED}` : `${FIXED}; a network is "none" or "open"`);
+		if (policy !== undefined && policy !== "none") {
+			const wider = policy === "open" || (typeof policy === "object" && policy !== null && "allow" in policy);
+			return fail("refused", wider ? `${OWN_NETWORK_ONLY}; ${FIXED}` : `${FIXED}; a network is "none"`);
 		}
 		const found = await this.#own(ref, signal);
 		if (!found.ok) return found;
