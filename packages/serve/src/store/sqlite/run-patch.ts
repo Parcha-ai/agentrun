@@ -57,13 +57,16 @@ export async function applyRunPatch(tx: Pick<SqliteExecutor, "run" | "get">, cla
       case "channel_told":
         await tx.run("INSERT INTO channel_told (channel, run_id, marker, at) VALUES (?, ?, ?, ?) ON CONFLICT DO NOTHING", each.row.channel, claim.runId, each.row.marker, now);
         break;
-      // The run's kept learning, of the run's own agent; kept once (an end replayed after a crash keeps the first).
-      case "learning_proposals":
+      // The run's kept learning, of the run's own agent, naming the learning run the same end queues (wherever the end
+      // lists it); kept once (an end replayed after a crash keeps the first).
+      case "learning_proposals": {
+        const queued = also.find((one): one is Extract<AlsoRow, { table: "learning_run" }> => one.table === "learning_run");
         await tx.run(
-          "INSERT INTO learning_proposals (run_id, agent_id, turn, proposal, created_at) SELECT id, agent_id, ?, ?, ? FROM runs WHERE id = ? ON CONFLICT (run_id) DO NOTHING",
-          JSON.stringify(each.row.turn ?? null), JSON.stringify(each.row.proposal ?? null), now, claim.runId,
+          "INSERT INTO learning_proposals (run_id, agent_id, turn, proposal, learning_run_id, created_at) SELECT id, agent_id, ?, ?, ?, ? FROM runs WHERE id = ? ON CONFLICT (run_id) DO NOTHING",
+          JSON.stringify(each.row.turn ?? null), JSON.stringify(each.row.proposal ?? null), queued?.row.id ?? null, now, claim.runId,
         );
         break;
+      }
       // The learning run: queued, of the run's agent and revision, started once (the same id again adds nothing).
       case "learning_run":
         await tx.run(
