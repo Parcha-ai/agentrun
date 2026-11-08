@@ -798,6 +798,9 @@ export class LearningRuns {
       await learningTestHooks.beforePropose?.(run.dir);
       const pin = await readPin(run.dir);
       if (!pin) throw new Error("the run has no learning pin");
+      // A pin of an empty seed (no main when the run started) is the folder's read's to propose from; this proposal
+      // reads a commit of main.
+      if (pin.seed === null) throw new Error("the run's pin names no commit of main to propose against");
       const { proposeRun } = await import("./propose.js");
       // The secrets this server holds, wherever its launcher put them, the keys saved on it, what each launch handed the
       // run, and its own tokens. How the job ended, before its end-of-run turn: only a completed run keeps a skill.
