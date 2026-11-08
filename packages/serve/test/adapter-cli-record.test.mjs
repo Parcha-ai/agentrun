@@ -27,9 +27,12 @@ function standInCli(tool) {
       let turn;
       return {
         get state() { return state; },
+        // `state` stays as open found it (the contract's SessionState), as a CLI adapter's does: a turn in flight is
+        // known by turnEnd(), never by reading state after send().
         async send() {
           await io.writer.append([{ kind: "stand-in.sent", data: null }]);
-          state = "open_turn";
+          // As the Claude Agent adapter does: idle from the moment its turn is sent.
+          state = "idle";
           turn = (async () => {
             io.onEvent({ type: "text", delta: "Looking." });
             const call = { callId: "call-1", tool, args: { q: "x" } };
@@ -41,7 +44,6 @@ function standInCli(tool) {
             io.onEvent({ type: "tool_end", callId: call.callId, name: tool, isError: Boolean(result.isError), result: result.text });
             io.onEvent({ type: "text", delta: `It said ${result.text}.` });
             io.onEvent({ type: "turn_end", status: "completed" });
-            state = "idle";
             return { status: "completed" };
           })();
         },
