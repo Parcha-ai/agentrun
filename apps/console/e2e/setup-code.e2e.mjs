@@ -8,11 +8,15 @@
 //      Strict-Transport-Security.
 //   3. No public address (open setup, loopback): no code field, and no Strict-Transport-Security.
 //   4. AGENTRUN_PUBLIC_URL set: the server's API token, typed into the Setup code field, sets the password.
+// With --url URL --setup-code-file F --password-file P, it starts nothing and checks a server already running (a hosted
+// one, at its public address): the plain address shows the Setup code field and its note; the setup code (or the
+// server's API token) in F, with the owner's password in P, sets the password and signs in; over https the page carries
+// Strict-Transport-Security. Neither file's content is printed.
 // No fixed sleeps: every wait is for a condition, with a bound. Exits 0 when every check holds, else 1.
 // Needs the repository built (npm run build). Chrome: CHROME_BIN, else playwright's own; playwright-core: PLAYWRIGHT_CORE,
 // else the package `playwright-core`.
 import { spawn } from "node:child_process";
-import { mkdtemp, rm } from "node:fs/promises";
+import { mkdtemp, readFile, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { fileURLToPath } from "node:url";
@@ -88,12 +92,41 @@ async function open(url) {
   return { page, errors, headers: response?.headers() ?? {} };
 }
 const codeField = (page) => page.locator("label", { has: page.locator("span", { hasText: /^Setup code$/ }) });
-const fill = async (page, code) => {
+const fill = async (page, code, password = PASSWORD) => {
   if (code !== undefined) await codeField(page).locator("input").fill(code);
-  await page.fill('input[aria-label="New password"]', PASSWORD);
-  await page.fill('input[aria-label="Password again"]', PASSWORD);
+  await page.fill('input[aria-label="New password"]', password);
+  await page.fill('input[aria-label="Password again"]', password);
 };
 const signedIn = (page) => page.waitForFunction(async () => (await (await fetch("/v2/auth/session")).json()).signed_in === true, null, { timeout: 30_000 });
+
+const arg = (name) => { const at = process.argv.indexOf(name); return at > 1 ? process.argv[at + 1] : undefined; };
+const hosted = arg("--url");
+if (hosted) {
+  try {
+    const code = (await readFile(arg("--setup-code-file") ?? "", "utf8")).trim();
+    const password = (await readFile(arg("--password-file") ?? "", "utf8")).trim();
+    check("a setup code (or token) and a password of 12 characters or more were given", code.length > 0 && password.length >= 12);
+    const url = hosted.replace(/\/+$/, "");
+    const { page, errors, headers } = await open(`${url}/`);
+    if (url.startsWith("https://")) check("the page carries HSTS over https", headers["strict-transport-security"] === HSTS, headers["strict-transport-security"] ?? "none");
+    else console.log("--   HSTS not checked: the --url is not https");
+    const field = codeField(page);
+    check("the plain address shows the Setup code field", (await field.count()) === 1);
+    check("with its note", ((await field.textContent()) ?? "").includes(NOTE));
+    await fill(page, code, password);
+    await page.click('button[type="submit"]');
+    await signedIn(page);
+    check("the setup code (or token) sets the password and signs in", true);
+    check("no console errors", errors.length === 0, errors.join(" | "));
+  } catch (error) {
+    check("the walk ran to its end", false, error instanceof Error ? error.message.split("\n")[0] : String(error));
+  } finally {
+    await browser.close();
+  }
+  const passed = checks.length > 0 && checks.every(Boolean);
+  console.log(`${passed ? "PASS" : "FAIL"} setup-code e2e (--url): ${checks.filter(Boolean).length}/${checks.length}`);
+  process.exit(passed ? 0 : 1);
+}
 
 try {
   // 1. A public address over http: the plain address.
