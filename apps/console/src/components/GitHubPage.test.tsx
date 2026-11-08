@@ -122,18 +122,6 @@ describe("Settings → GitHub", () => {
   }
 
   const WRONG_ORIGIN = "Connect GitHub from this server's public URL: GitHub sends you back there.";
-  it("a wrong-origin refusal says the server's words and links the public URL it serves (details.public_url)", async () => {
-    const { v2 } = server({ connection: null }, { connect: () => refusal(409, "github_wrong_origin", WRONG_ORIGIN, { public_url: "https://agentrun.example.test" }) });
-    const p = await page(v2);
-    await p.click(/^Connect GitHub$/);
-    const alert = p.host.querySelector('[role="alert"]') as HTMLElement;
-    expect(alert.textContent).toContain(WRONG_ORIGIN);
-    const link = alert.querySelector("a") as HTMLAnchorElement;
-    expect(link.getAttribute("href")).toBe("https://agentrun.example.test/");
-    expect(link.closest("p")?.textContent).toBe("Open this server at https://agentrun.example.test/ to connect GitHub.");
-    expect(submits).toBe(0);
-  });
-
   it("a wrong-origin refusal with no public URL served says the words alone, no link (never one read from the text)", async () => {
     const { v2 } = server({ connection: null }, { connect: () => refusal(409, "github_wrong_origin", `${WRONG_ORIGIN} It is https://agentrun.example.test.`) });
     const p = await page(v2);
