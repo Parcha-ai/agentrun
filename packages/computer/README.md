@@ -313,6 +313,34 @@ read to its end, the push calls its `return()` however it ends, so a pull piped 
 `src/protocol.ts` and `daemon/internal/methods` are the two definitions of these methods, TypeScript and Go (the Go
 params and results of `files.*` and `tar.*` sit beside their code in `daemon/internal/files`).
 
+## Kinds: the computer an agent is given
+
+An agent's computer is a setting, one of five kinds (`src/kinds.ts`). A kind is a set of the protocol's capability
+groups, the tools a loop gets for it, and the provider ids that offer it, as data the serve side reads to wire an
+agent's `computer: { kind, provider }` and give its loop the kind's tools and nothing else.
+
+| kind | plane | required groups | optional groups | protocol kinds | offered by |
+| --- | --- | --- | --- | --- | --- |
+| `none` | none | | | | (the run's folder only: no computer) |
+| `sandbox` | computerd | `exec`, `files`, `processes` | | `linux`, `desktop` | `docker`, `e2b`, `daytona`, `modal` |
+| `desktop` | computerd | sandbox's, `screen`, `input.pointer`, `input.keys` | | `desktop` | `docker` (its desktop option), `e2b` (kind desktop) |
+| `phone` | computerd | `screen`, `input.touch`, `apps` | `input.keys`, `apps.ui_tree`, `apps.install` | `android`, `ios` | (the phone provider, to come) |
+| `browser` | cdp | | | | (a provider declaring a CDP plane, to come) |
+
+- `KIND_SPECS[kind]` holds each row, and its `tools`: each `{ name, groups }`, given only where every group of it is
+  declared. sandbox: `bash`, `read`, `write`, `edit` and the five `bash_*` background tools, named as the kernel's tool
+  registry names them. desktop: those and `screen_shot` and `desktop_input`. phone: `screen_shot`, `touch`, `type`,
+  `apps`, `ui_tree`, `app_install`. browser: pi-browser's tools, which the browser lane owns. The serve side gives
+  each tool its words and schema.
+- `KIND_PROVIDERS[kind]` is the menu: provider ids of the registry (`providers.ts`) that offer the kind. Offering is not
+  serving: `serves(capabilities, kind)` decides for the provider built, from its `capabilities().kind` and `groups`
+  alone, so a provider that drops a group stops serving the kind; `servingRefusals` says why in words, `kindOf` names
+  the richest kind capabilities serve, and `toolsFor(kind, capabilities)` gives the tools a loop gets. A unit test
+  builds every provider the menu offers, as it offers the kind, and holds it to `serves`.
+- A desktop serves sandbox too: it is a sandbox with a screen. Only an android or ios computer serves phone, and no
+  provider serves `none` (no computer) or `browser` until one declares a CDP plane.
+- A provider passes a kind's conformance with `--kind` (see [Conformance](#conformance)).
+
 ## The protocol extension: kind, daemon modes, screen, input, apps, lifetime
 
 The types and the conformance cases for computers past a Linux shell: desktops, Android and iOS phones. This package
@@ -1688,6 +1716,16 @@ skipped Core case is not a pass) and nothing was left behind, else `"fail"`; `co
 not run, the text report lists them on a `core not run` line, and the verdict reads `core PARTIAL 11/11 · 52 Core cases
 not run` (on Docker, `--only health,provider`), never PASS. A partial run exits 3, so a script that checks for 0 never takes a subset for a Core pass. An
 `--only` that names every Core case is a whole run, and can pass.
+
+`--kind <kind>` (`kind` in `runConformance`'s options, never with `--only`) runs a kind's cases, `kindCases(kind)`:
+every case whose protocol groups the kind requires or allows (see [Kinds](#kinds-the-computer-an-agent-is-given)),
+those that need no group (health, provider, drift) among them. The report carries `kindVerdict` (`{ kind, verdict,
+reasons }`), the text report ends on `kind <kind> PASS` or `kind <kind> FAIL: <why>`, and the CLI exits on it: 0 when
+the provider passes the kind, 1 when it does not. A provider passes a kind only when it serves it (by its
+capabilities), no case of the run failed (a declared optional group that fails would hand a loop a broken tool),
+every required group has at least one passing case and none skipped but for an optional group the computer does not
+declare, and the run left nothing behind. `none` and `browser` have no computerd cases, and `--kind` refuses them in
+words. `kindCases` and `kindVerdict` are exported, so the serve side reads the same table.
 
 What a module given by path implements: either a provider file's `fromEnv()` (see
 [Adding a computer](#adding-a-computer)), run with no drifted provider, or a conformance module's:
