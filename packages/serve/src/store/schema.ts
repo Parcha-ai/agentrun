@@ -279,13 +279,15 @@ export const STORE_DDL: readonly string[] = [
   ) STRICT`,
 
   // Learning on the runner: what a run's end-of-run turn kept (the turn it asked and answered, and the proposal checked from
-  // it), written in the same commit as the run's end, beside the learning run that grades and merges it. Read by the
-  // learning routes (the pre-merge view) and by the learning run.
+  // it), written in the same commit as the run's end, beside the learning run that grades and merges it (learning_run_id,
+  // none for a learning dropped before it was proposed). Read by the learning routes (the pre-merge view), by the
+  // learning run, and by the reader of a run's learning end (store-reads/learning.ts).
   `CREATE TABLE IF NOT EXISTS learning_proposals (
     run_id TEXT PRIMARY KEY REFERENCES runs (id),
     agent_id TEXT NOT NULL REFERENCES agents (id),
     ${json("turn")},
     ${json("proposal")},
+    learning_run_id TEXT,
     created_at INTEGER NOT NULL
   ) STRICT`,
   `CREATE INDEX IF NOT EXISTS learning_proposals_by_agent ON learning_proposals (agent_id, created_at DESC)`,
