@@ -24,7 +24,7 @@ import { type AlsoRow, type Claim, type Command, type CommandOutcome, deniedText
 import { answerText, REFLECT_NOTE_ONLY, reflectRequestId, underLearning, WRITES } from "./end-of-run.js";
 import { approvalOf, CLOSE_MS, CUT_STEP_MS, STOP_SETTLE_MS, commandRequest, cutLast, DEFAULT_RESTART_LIMIT, entriesOf, findData, Gate, heldReporter, Interrupted, KernelFault, Parked, quiet, restartLimited, writesEntry, writesSubmission } from "./loop.js";
 import type { PiRun, PiSessionIO, PreIntentAnswer, PreIntentCall } from "./adapters/pi.js";
-import { HAND_BACK, handBackOf } from "./hand-back.js";
+import { answerOnce, HAND_BACK, handBackOf } from "./hand-back.js";
 import { journalSessions } from "./sessions.js";
 import { sideEffect } from "./side-effects.js";
 
@@ -189,15 +189,16 @@ function adapterLoop(specOf: (claim: Claim, run: AdapterRun) => AdapterRunSpec |
       await Promise.race([ready, (finished ?? new Promise<never>(() => {})).then(() => undefined, () => undefined)]);
       const [theGate, theHarness, theRoot] = [gate, harness, root];
       if (!theGate || !theHarness || !theRoot) return { refused: handBackOf([], command.body, command.createdAt).refused! };
-      const { write, refused } = handBackOf(await entriesOf(theGate.journal, theRoot.id, context), command.body, command.createdAt);
-      if (write) {
-        const answers = refused === undefined;
-        // The person's answer takes its row in the commit that writes it; an expiry is the ask's own, and takes none.
-        const landed = answers ? theGate.expect(writesEntry(KINDS.handover, (data) => data.id === write.id && data.state === write.state), { take: [command.id] }) : undefined;
-        landed?.catch(() => undefined);
-        await theHarness.commit((tx) => tx.appendEntry(theRoot.id, { kind: KINDS.handover, data: write as unknown as JsonValue }), context);
-        await landed;
-      }
+      // The person's answer takes its row in the commit that writes it: staged for the answer this row would write (its ask,
+      // its outcome, at its own time). Decided and written in one commit (answerOnce), so no other writer's answer (the
+      // browser host's give or expiry) lands between: a row whose commit writes nothing, or the ask's expiry, takes none,
+      // and the staging matches nothing (an answered ask is never answered again).
+      const { ask, outcome } = (command.body ?? {}) as { ask?: unknown; outcome?: unknown };
+      const at = new Date(command.createdAt).toISOString();
+      const landed = typeof ask === "string" ? theGate.expect(writesEntry(KINDS.handover, (data) => data.id === ask && data.state === outcome && data.at === at), { take: [command.id] }) : undefined;
+      landed?.catch(() => undefined);
+      const { write, refused } = await answerOnce((change) => theHarness.commit(change, context), theRoot.id, (entries) => handBackOf(entries, command.body, command.createdAt));
+      if (write && refused === undefined) await landed;
       return refused === undefined ? { taken: true } : { refused };
     });
     handing = turn.catch(() => undefined);
