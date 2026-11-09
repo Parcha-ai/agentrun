@@ -504,7 +504,7 @@ function Console({ v2, onSignedOut }: { v2: ReturnType<typeof createClient>; onS
         : where.section === "settings"
         ? <Settings active={where.settings ?? "keys"} offered={settingsOffered}>
             {where.settings === "tools" ? <ToolsPage v2={v2} choices={choices} gates={gates} onSaved={readCaps} onOpen={readCaps} />
-              : where.settings === "mcp" ? <McpServersPage v2={v2} atRest={caps?.features?.mcp_client?.at_rest} signIn={where.signIn} />
+              : where.settings === "mcp" ? <McpServersPage v2={v2} signIn={where.signIn} />
               : where.settings === "webhook" ? <WebhookPage v2={v2} atRest={caps?.features?.webhooks?.at_rest} />
               : <KeysPage v2={v2} atRest={caps?.features?.tool_keys?.at_rest} onChange={readCaps} />}
           </Settings>

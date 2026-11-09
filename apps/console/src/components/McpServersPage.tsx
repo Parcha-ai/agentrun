@@ -4,7 +4,7 @@ import { Button } from "@/components/ui/button";
 import { Chip } from "@/components/ui/chip";
 import type { Client } from "@/lib/client";
 import { when } from "@/lib/format";
-import { type McpAuth, type McpPreview, mcpProblem, type McpRefresh, type McpServer, NO_SEAL_KEY, signInFailure } from "@/lib/mcp";
+import { type McpAuth, type McpPreview, mcpProblem, type McpRefresh, type McpServer, signInFailure } from "@/lib/mcp";
 
 type Problem = ReturnType<typeof mcpProblem>;
 type SignIn = { server: string; ok: boolean; error?: string };
@@ -12,7 +12,7 @@ const MAX_HEADERS = 8;
 
 /** A saved server's credential, as its row says it. */
 const CREDENTIAL: Record<string, [string, "success" | "warning" | "plain"]> = {
-  sealed: ["sealed", "success"], expired: ["sign-in expired", "warning"], unreadable: ["can't be opened: enter it again", "warning"], seal_key_missing: ["no seal key now", "warning"],
+  sealed: ["sealed", "success"], expired: ["sign-in expired", "warning"], unreadable: ["can't be opened: enter it again", "warning"],
 };
 
 /** Where a saved credential came from, as its row says it (the read's `secret.source`). */
@@ -21,9 +21,9 @@ const SOURCE: Record<"env" | "console" | "sign-in", string> = { env: "From the s
 /** Settings → MCP servers: the remote MCP servers this server keeps, each with its tools and its credential's state, and
  *  a form to add one: its address and credential, a preview of the tools it lists, then Save. A credential goes to the
  *  server and nowhere else: its inputs are uncontrolled (React would mirror a value into the DOM), never filled from a
- *  read, and cleared once sent to be kept. `atRest` is capabilities' `features.mcp_client.at_rest`; `signIn`, the
+ *  read, and cleared once sent to be kept: every credential is kept sealed under the server's seal key. `signIn`, the
  *  outcome an OAuth sign-in's way back names (`#/settings/mcp?server=&sign_in=`); `open` takes the browser to a sign-in. */
-export function McpServersPage({ v2, atRest, signIn, open = (url) => location.assign(url) }: { v2: Client; atRest?: "sealed" | "unavailable"; signIn?: SignIn; open?: (url: string) => void }) {
+export function McpServersPage({ v2, signIn, open = (url) => location.assign(url) }: { v2: Client; signIn?: SignIn; open?: (url: string) => void }) {
   const [servers, setServers] = useState<McpServer[] | null>(null);
   const [unreadable, setUnreadable] = useState(false);
   const [loadError, setLoadError] = useState<Problem | null>(null);
@@ -36,7 +36,6 @@ export function McpServersPage({ v2, atRest, signIn, open = (url) => location.as
   useEffect(load, [v2]); // eslint-disable-line react-hooks/exhaustive-deps
   // The outcome is said once: a reload of the page does not say it again.
   useEffect(() => { if (signIn && location.hash.includes("sign_in=")) history.replaceState(null, "", "#/settings/mcp"); }, [signIn]);
-  const cantStore = atRest === "unavailable";
   const startSignIn = async (name: string, body: Parameters<Client["startMcpSignIn"]>[1]) => open((await v2.startMcpSignIn(name, body)).authorization_url);
   return (
     <div className="h-full overflow-auto">
@@ -54,7 +53,6 @@ export function McpServersPage({ v2, atRest, signIn, open = (url) => location.as
             {signIn.ok ? `Signed in to ${signIn.server}. Its tools are saved.` : `Signing in to ${signIn.server} failed: ${signInFailure(signIn.error)}.`}
           </p>
         )}
-        {cantStore && <p className="border bg-card p-4 font-mono text-[13px]" role="status">{NO_SEAL_KEY}</p>}
         {unreadable && <Warning>The file this server keeps its MCP servers in can't be read: restore it or remove it. Nothing is written over it.</Warning>}
         {loadError && (
           <div className="border p-4" role="alert">
@@ -63,7 +61,7 @@ export function McpServersPage({ v2, atRest, signIn, open = (url) => location.as
           </div>
         )}
         {/* A save that lands after its form was closed (Cancel, or another Change) closes no form opened since. */}
-        {form && <ServerForm key={form.saved?.name ?? "new"} v2={v2} saved={form.saved} cantStore={cantStore} signIn={startSignIn} onCancel={() => setForm(null)} onSaved={((mine) => () => { setForm((open) => (open === mine ? null : open)); load(); })(form)} />}
+        {form && <ServerForm key={form.saved?.name ?? "new"} v2={v2} saved={form.saved} signIn={startSignIn} onCancel={() => setForm(null)} onSaved={((mine) => () => { setForm((open) => (open === mine ? null : open)); load(); })(form)} />}
         {servers && (servers.length
           ? <ul className="border">{servers.map((s) => <ServerRow key={s.name} v2={v2} server={s} signIn={startSignIn} onChange={() => setForm({ saved: s })} onChanged={load} />)}</ul>
           : <p className="border px-3 py-4 font-mono text-[13px] text-muted-foreground">No MCP server is saved here yet.</p>)}
@@ -180,7 +178,7 @@ const AUTH: [McpAuth["type"], string][] = [["none", "None"], ["bearer", "Bearer 
 
 /** Add a server, or change a saved one (`saved`: its name stays, and a credential left empty is the sealed one kept).
  *  A new server is previewed before it can be saved; any change of its address or credential asks for another. */
-function ServerForm({ v2, saved, cantStore, signIn, onCancel, onSaved }: { v2: Client; saved?: McpServer; cantStore: boolean; signIn: (name: string, body: Parameters<Client["startMcpSignIn"]>[1]) => Promise<void>; onCancel: () => void; onSaved: () => void }) {
+function ServerForm({ v2, saved, signIn, onCancel, onSaved }: { v2: Client; saved?: McpServer; signIn: (name: string, body: Parameters<Client["startMcpSignIn"]>[1]) => Promise<void>; onCancel: () => void; onSaved: () => void }) {
   const form = useRef<HTMLFormElement>(null);
   const [name, setName] = useState(saved?.name ?? "");
   const [url, setUrl] = useState(saved?.url ?? "");
@@ -244,7 +242,7 @@ function ServerForm({ v2, saved, cantStore, signIn, onCancel, onSaved }: { v2: C
         <div className="flex flex-wrap gap-4">
           {AUTH.map(([id, label]) => (
             <label key={id} className="flex items-center gap-2 text-[13px]">
-              <input type="radio" name="mcp-auth" value={id} checked={type === id} disabled={cantStore && id !== "none"} onChange={() => { setType(id); edited(); }} className="accent-[hsl(var(--primary))]" />{label}
+              <input type="radio" name="mcp-auth" value={id} checked={type === id} onChange={() => { setType(id); edited(); }} className="accent-[hsl(var(--primary))]" />{label}
             </label>
           ))}
         </div>
@@ -294,9 +292,9 @@ function ServerForm({ v2, saved, cantStore, signIn, onCancel, onSaved }: { v2: C
       )}
       <div className="flex flex-wrap gap-2">
         {type === "oauth" && needsSignIn
-          ? <Button type="submit" size="sm" variant="solid" disabled={busy || !url.trim() || cantStore}>Sign in again with these settings</Button>
+          ? <Button type="submit" size="sm" variant="solid" disabled={busy || !url.trim()}>Sign in again with these settings</Button>
           : type === "oauth"
-          ? <Button type="button" size="sm" variant="solid" disabled={busy || !name.trim() || !url.trim() || cantStore} onClick={() => void startSignIn()}>{saved ? "Sign in again" : "Sign in"}</Button>
+          ? <Button type="button" size="sm" variant="solid" disabled={busy || !name.trim() || !url.trim()} onClick={() => void startSignIn()}>{saved ? "Sign in again" : "Sign in"}</Button>
           : <Button type="button" size="sm" disabled={busy || !url.trim()} onClick={runPreview}>Preview</Button>}
         {(type !== "oauth" || (saved && !needsSignIn)) && <Button type="submit" size="sm" variant="solid" disabled={!canSave}>{busy ? "Working" : "Save"}</Button>}
         <Button type="button" size="sm" onClick={() => { form.current?.reset(); onCancel(); }}>Cancel</Button>
