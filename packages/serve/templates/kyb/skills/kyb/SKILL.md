@@ -213,6 +213,9 @@ limit: aim for under 15,000 characters of JSON. An answer cut off mid-string is 
 - At most 10 adverse media items, the most relevant first; drop `low` and `not_relevant` items before `high` ones, and
   say in `limitations` how many you left out.
 - Each source once (see step 8). For a company with a large board, the officers that step 3 names, not every officer.
+- At most 20 officers and 10 beneficial owners. Past 20 officers: every current director first, then the chief
+  executive, chief financial officer and company secretary, then the most recent resignations. Say in `limitations`
+  how many officers you left out and cite the registry's officer list (its source id), where the rest are.
 
 The JSON shape, abridged:
 
