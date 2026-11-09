@@ -183,6 +183,44 @@ jobs:
           include-hidden-files: true
           if-no-files-found: ignore
 
+  serve-postgres:
+    # @parcha/agentrun-serve's store on Postgres (`npm run test:pg`), against a Postgres service container. Advisory: not
+    # in verify's needs nor a required check, until it has run green.
+    name: serve store on Postgres
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    # The service container's own throwaway login, made for this job and gone with it; the test's URL is built from
+    # these in its step, so no connection string with a password is written anywhere.
+    env:
+      PGUSER: agentrun
+      PGPASSWORD: agentrun
+      PGDATABASE: agentrun
+    services:
+      postgres:
+        image: postgres:17-alpine
+        env:
+          POSTGRES_USER: agentrun
+          POSTGRES_PASSWORD: agentrun
+          POSTGRES_DB: agentrun
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd "pg_isready -U agentrun -d agentrun"
+          --health-interval 2s
+          --health-timeout 3s
+          --health-retries 30
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '24.21.0'
+          cache: npm
+      - run: npm install --global npm@11.21.0 --ignore-scripts
+      - run: node scripts/npm-ci-retry.mjs --ignore-scripts
+      - run: npm run build
+      - name: The store's suite on Postgres
+        run: AGENTRUN_TEST_PG_URL="postgres://${PGUSER}:${PGPASSWORD}@127.0.0.1:5432/${PGDATABASE}" npm run test:pg -w packages/serve
+
   console:
     # apps/console, the server's console: a private app with its own lockfile (React, Vite, Storybook), outside the
     # workspaces. Its typecheck, tests, build and Storybook build run here; verify needs it like the test shards.
@@ -221,7 +259,7 @@ jobs:
       - uses: actions/checkout@v4
       - uses: actions/setup-node@v4
         with:
-          node-version: '22.23.2'
+          node-version: '24.21.0'
           cache: npm
       - uses: actions/setup-python@ece7cb06caefa5fff74198d8649806c4678c61a1 # v6.3.0
         with:
@@ -230,7 +268,7 @@ jobs:
       - run: node scripts/npm-ci-retry.mjs --ignore-scripts
       - uses: actions/download-artifact@v4
         with:
-          name: build-22.23.2
+          name: build-24.21.0
           path: ${{ runner.temp }}/build
       - name: The build job's output, for this tree and this Node
         run: node scripts/ci-build-output.mjs unpack "$RUNNER_TEMP/build"
@@ -318,6 +356,21 @@ jobs:
         env:
           AGENTRUN_COMPUTER_LIVE_DOCKER: '1'
 
+  deploy-compose:
+    # The deploy image and stack (deploy/compose.yaml): the image built from this checkout, a server and two runners
+    # from it on one store, and a run of an agent in the runner's place completed on a faux model (no key, no network).
+    # Outside the verify matrix: it needs a Docker daemon, not both Node versions. deploy/walk/reclaim.sh, the takeover
+    # walk, is run by hand: it takes about three minutes, half of them waiting out a lease.
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '24.21.0'
+      - name: The image built, and the stack's smoke
+        run: sh deploy/walk/smoke.sh
+
   real-chrome:
     # @parcha/pi-browser's suites that drive a real local Chrome (the coding agent's default provider, the cdp provider, Stagehand's
     # driver and its trace-export seal). They are not part of the verify matrix: they need one pinned browser, not both Node versions.
@@ -371,7 +424,7 @@ jobs:
       - uses: actions/checkout@v4
       - uses: actions/setup-node@v4
         with:
-          node-version: '22.23.2'
+          node-version: '24.21.0'
           cache: npm
       - uses: actions/cache@v4
         with:
@@ -389,7 +442,7 @@ jobs:
       - run: node scripts/npm-ci-retry.mjs --ignore-scripts
       - uses: actions/download-artifact@v4
         with:
-          name: build-22.23.2
+          name: build-24.21.0
           path: ${{ runner.temp }}/build
       - name: The build job's output, for this tree and this Node
         run: node scripts/ci-build-output.mjs unpack "$RUNNER_TEMP/build"

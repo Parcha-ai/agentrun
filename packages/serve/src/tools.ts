@@ -12,6 +12,7 @@ import { pathToFileURL } from "node:url";
 import { defineExtension, defineTool, type Extension, type Harness, ROOT_CONVERSATION_ID, type ToolRegistration, type Tx } from "@earendil-works/pi-durable";
 import type { AppContext } from "@parcha/pi-durable-disk";
 import type { Revision } from "@parcha/pi-durable-agent";
+import { registerTurnEnding } from "@parcha/pi-durable-agent/timeline";
 import { BACKGROUND_LOG_BYTES, BACKGROUND_MAX, BACKGROUND_PAGE_BYTES } from "./background.js";
 import type { CodingSource } from "./coding-tools.js";
 import { isWorkspaceError, localWorkspace, type Workspace } from "./workspace/index.js";
@@ -69,6 +70,10 @@ export const askPerson = defineTool({
     return forModel(asked(question), { details: { question }, control: { terminate: true } });
   },
 });
+// ask_person ends its turn (control.terminate), so the run waits on the person after it. Registered here, where the tool
+// is defined, so every reader of it agrees: the view reads a question row by this (run-view withAsks), and the runner's
+// loop parks on it (adapter-loop endedOnTurnEndingTool), whichever module loads — the loop never imports the view.
+registerTurnEnding(ASK_TOOL);
 
 /** What a tool's binding gets from the run's process. */
 export type ToolHost = {

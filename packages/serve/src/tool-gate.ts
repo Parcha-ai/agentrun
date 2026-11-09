@@ -56,7 +56,7 @@ import { DEFAULT_HARNESS } from "./harness.js";
 import { durableSessions } from "./sessions.js";
 import { SHELL_TOOLS } from "./background.js";
 import { readToolSettings, SERVE_OWN_TOOLS, TABLE_TOOLS } from "./tool-plane.js";
-import { deniedText, NOT_RUN, RAN_UNKNOWN, refusedText, type SettingFrom } from "./refusal-words.js";
+import { deniedText, modelNodeAskText, NOT_RUN, RAN_UNKNOWN, refusedText, type SettingFrom } from "./refusal-words.js";
 import { type Approvals, approvalsOf } from "./approvals.js";
 
 /** What the gate does with a tool's calls. */
@@ -602,7 +602,7 @@ export class RunGate {
     if (verdict === "allow") return undefined;
     // No one can answer here: refused at once with why, never parked until a cancel.
     if (!this.approvers) return { text: noApproverText(tool, ran), isError: true };
-    if (!this.parks) return { text: `This ${tool} call needs a person's approval, which a workflow's model node cannot wait for; it was not run.`, isError: true };
+    if (!this.parks) return { text: modelNodeAskText(tool), isError: true };
     // Named by the call, so a call run again after a crash parks as the same request.
     const id = `ap_${createHash("sha256").update(JSON.stringify([callId, tool, args ?? null])).digest("hex").slice(0, 16)}`;
     const other = [...this.requests.values()].find((held) => !held.resolved && held.id !== id);

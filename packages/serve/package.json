@@ -50,6 +50,7 @@
     "@browserbasehq/sdk": ">=2.20.0 <3",
     "@modelcontextprotocol/client": "2.4.0",
     "@modelcontextprotocol/server": "2.4.0",
+    "@parcha/agentrun-computer": "0.1.0-beta.31",
     "@parcha/agentrun-decisions": "0.1.0-beta.31",
     "@parcha/agentrun-dsl": "0.1.0-beta.31",
     "@parcha/agentrun-harness-claude": "0.1.0-beta.31",
@@ -85,7 +86,6 @@
     "@earendil-works/chord": "1.5.0",
     "@earendil-works/pi-ai": "1.5.0",
     "@earendil-works/pi-durable": "1.5.0",
-    "@parcha/agentrun-computer": "0.1.0-beta.31",
     "opencode-ai": "1.19.5"
   },
   "repository": {

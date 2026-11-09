@@ -22,7 +22,8 @@ const CANDIDATES: readonly string[] = [...new Set([...RUN_SECRETS, ...DECISION_K
  *  environment (its own, with no server secret in it: those are the store's). */
 export interface ClaimSecretsDeps {
   readonly store: { readonly sealedKeys: Pick<SealedKeys, "get"> };
-  readonly sealKey: Buffer;
+  /** The runner's seal key: with none, no saved key is opened, and only the environment's values are read. */
+  readonly sealKey: Buffer | undefined;
   readonly env?: NodeJS.ProcessEnv;
 }
 
@@ -37,7 +38,7 @@ export async function claimSecrets(deps: ClaimSecretsDeps, revision: Revision, l
   // stale one saved in the store.
   const working: NodeJS.ProcessEnv = { ...base };
   for (const name of CANDIDATES) {
-    const value = deps.env?.[name] ?? (await getSealedKey(deps.store, deps.sealKey, name));
+    const value = deps.env?.[name] ?? (deps.sealKey ? await getSealedKey(deps.store, deps.sealKey, name) : undefined);
     if (value !== undefined) working[name] = value;
   }
   const needs = await needsOf(revision);
