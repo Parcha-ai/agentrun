@@ -350,6 +350,24 @@ export class GitHubConnect {
       this.connection.addInstallation({ id: id as number, account });
       return noted;
     }
+    // The last one this server tracks: GitHub's own list, asked first, says whether it was the App's last (an event this
+    // server missed may have added others). Only none there turns the github triggers off; others there are the list.
+    if (!(this.connection.view()?.installations ?? []).some((i) => i.id !== id)) {
+      const version = this.connection.version;
+      const listed = await this.listed();
+      if (this.stopping.signal.aborted) throw STOPPING();
+      if (!listed) throw unavailable("the App's installations could not be listed");
+      if (this.connection.view()?.app_id !== view.app_id || this.connection.version !== version) {
+        this.options.say({ condition: "github_installation_ignored", action, installation: String(id), reason: "the connection or its list changed while GitHub's list was asked; the next read repairs it" });
+        return noted;
+      }
+      const others = listed.filter((i) => i.id !== id);
+      if (others.length) {
+        this.connection.setInstallations(others);
+        this.options.say({ condition: "github_installations_repaired", installations: String(others.length), was: "1", triggers_off: "0", reason: `installation ${id} ${action === "deleted" ? "deleted" : "suspended"}, and GitHub lists others` });
+        return noted;
+      }
+    }
     const left = this.connection.removeInstallation(id as number);
     const off = left ? 0 : turnOff(`The GitHub App's last installation left, installation ${id} (${account}), was ${action === "deleted" ? "deleted" : "suspended"} on GitHub: install the App again, then turn the trigger on.`);
     this.options.say({ condition: "github_installation_lost", installation: String(id), account, action, installations_left: String(left), triggers_off: String(off) });

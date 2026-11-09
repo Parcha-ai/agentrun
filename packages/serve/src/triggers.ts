@@ -489,7 +489,7 @@ export class Triggers {
     if (problem) throw invalid([{ field: "source", reason: "invalid", message: `This ${adapter.label} no longer reads (${problem}): give it a new source.` }]);
     const next = !enabled ? null : source || !trigger.enabled ? this.nextIso(source ?? trigger.source, now) : trigger.next_at;
     if (enabled && next === null && adapter.delivery === "clock") throw invalid([{ field: "enabled", reason: "invalid", message: `This ${adapter.label} has no time left to fire at: give it a new source.` }]);
-    if (enabled && (!trigger.enabled || source)) this.needAvailable(trigger.source.kind);
+    if (enabled && (!trigger.enabled || source)) this.needAvailable((source ?? trigger.source).kind);
     // On again, a trigger starts a new streak: a failure streak that turned it off is behind it.
     const again = enabled && !trigger.enabled ? { failures_in_a_row: 0, disabled: null } : {};
     if (enabled) this.scopeFree(source ?? trigger.source, trigger.id);

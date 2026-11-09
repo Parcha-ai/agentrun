@@ -96,10 +96,10 @@ export function GitHubPage({ v2, returned }: { v2: Client; returned?: GitHubRetu
         {returned && (
           <p aria-label="From GitHub" role="status" className={cn("border p-4 text-[14px]", returned.ok ? "border-success/50 bg-success/5" : "border-warning/50 bg-warning/5 text-warning-text")}>{githubReturnWords(returned)}</p>
         )}
-        {said && (
+        {(said || openAt) && (
           <div role="alert" className="border border-destructive/50 px-4 py-3 text-[14px] text-destructive-text">
-            <p>{said}</p>
-            {openAt && <p className="mt-1">Open this server at <a href={openAt} className="break-all underline underline-offset-2">{openAt}</a> to connect GitHub.</p>}
+            {/* A wrong-origin refusal is one line, the linked one: the server's words say the same thing unlinked. */}
+            {openAt ? <p>Open this server at <a href={openAt} className="break-all underline underline-offset-2">{openAt}</a> to connect GitHub.</p> : <p>{said}</p>}
           </div>
         )}
         {disconnected && (
