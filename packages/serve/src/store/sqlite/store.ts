@@ -637,8 +637,14 @@ class SqliteStore implements Store {
         const row = await db.get<SignInRecord>(`SELECT ${SIGN_IN_COLUMNS} FROM sign_ins WHERE agent_id = ? AND provider = ?`, agentId, provider);
         return row && signInOf(row);
       },
-      verify: async (agentId, provider, at) => {
-        await db.write([{ sql: "UPDATE sign_ins SET verified_at = ? WHERE agent_id = ? AND provider = ?", params: [at, agentId, provider] }]);
+      verify: async (agentId, provider, at, { ifSavedAt } = {}) => {
+        // With ifSavedAt, stamp only while saved_at is still that one (WHERE saved_at = ?): a save that landed since the
+        // caller checked (allowed while held; it clears verified_at) moved saved_at on, so verify never stamps it stale.
+        const [result] = await db.write([{
+          sql: `UPDATE sign_ins SET verified_at = ? WHERE agent_id = ? AND provider = ?${ifSavedAt === undefined ? "" : " AND saved_at = ?"}`,
+          params: ifSavedAt === undefined ? [at, agentId, provider] : [at, agentId, provider, ifSavedAt],
+        }]);
+        return result!.changes > 0;
       },
       tombstones: async (agentId, provider) =>
         (await db.all<SignInTombstoneRecord>("SELECT agent_id, provider, pointer_sealed, forgotten_at FROM sign_in_tombstones WHERE agent_id = ? AND provider = ? ORDER BY id DESC", agentId, provider)).map(signInTombstoneOf),

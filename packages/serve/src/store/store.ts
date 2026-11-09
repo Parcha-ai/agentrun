@@ -548,8 +548,11 @@ export interface SignIns {
   /** The agent's live sign-in for the provider, or undefined. */
   get(agentId: string, provider: string): Promise<SignInRow | undefined>;
   /** Marks the agent's sign-in for the provider verified at `at` (a run saved a live session back): sets verified_at, for
-   *  the v2 view. The run path (E2) calls it at a run's save; a missing sign-in is left as it is. */
-  verify(agentId: string, provider: string, at: number): Promise<void>;
+   *  the v2 view, and answers whether it stamped a row. With `ifSavedAt`, it stamps only while the sign-in's saved_at is
+   *  still that one (WHERE saved_at = ?), so a save that landed since the caller checked (allowed while held; it clears
+   *  verified_at) is never re-stamped stale — the answer is false then, and nothing is written. The run path (E2) calls it
+   *  at a run's save; a missing sign-in is left as it is (false). */
+  verify(agentId: string, provider: string, at: number, options?: { ifSavedAt?: number }): Promise<boolean>;
   /** The agent's forgotten pointers for the provider, newest first (kept sealed, never opened here). */
   tombstones(agentId: string, provider: string): Promise<SignInTombstoneRow[]>;
   /** Forgets the agent's live sign-in for the provider, in the one transaction a launch shares as its lock: when a running
