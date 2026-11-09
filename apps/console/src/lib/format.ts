@@ -136,18 +136,28 @@ export const openLinkedFile = (onOpen: (path: string) => void) => (e: MouseEvent
   if (path) { e.preventDefault(); onOpen(path); }
 };
 
-/** A trigger's payload's words, for a run with no input of its own before it. */
-const PAYLOAD_WORDS: Record<string, string> = { webhook: "A webhook request", github: "A GitHub event", slack: "A Slack message" };
+/** A trigger's payload's words, for a run with no input of its own before it: by the wrapper's scheme (a GitHub delivery
+ *  comes in as the webhook source with scheme github, serve's triggers.ts), else its source. */
+const payloadWords = (tag: string): string => {
+  const attr = (name: string) => new RegExp(`\\b${name}="([^"]*)"`).exec(tag)?.[1];
+  return attr("scheme") === "github" || attr("source") === "github" ? "A GitHub event" : attr("source") === "webhook" ? "A webhook request" : "A trigger's request";
+};
 
-/** A run's title as the console shows it. A webhook or GitHub trigger's run has the trigger's input and then the request's
- *  payload inside `<trigger-payload source="…" … untrusted>` (serve's triggers.ts); its title is the input's line alone,
- *  the payload left to the Timeline (a served title cut short leaves the wrapper open, so everything from its opening tag
- *  goes). With no input before the payload, its source's words. Any other title is as served. */
-export function runTitle(title: string): string {
-  const at = title.search(/<trigger-payload\b/);
-  if (at < 0) return title;
+/** A run's title as the console shows it. A webhook or GitHub trigger's run (one with a `trigger`) has the trigger's input
+ *  and then the request's payload inside `<trigger-payload source="…" … untrusted>` (serve's triggers.ts); its title is the
+ *  input's line alone, the payload left to the Timeline. The server clips a title to 80 characters with an ellipsis
+ *  (runs.ts), so the wrapper may be cut anywhere, its tag name included: everything from its opening goes. With no input
+ *  before the payload, its source's words. A run no trigger started keeps its title as served. */
+export function runTitle(run: { title: string; trigger?: unknown }): string {
+  const { title } = run;
+  if (!run.trigger) return title;
+  let at = title.search(/<trigger-payload\b/);
+  if (at < 0) {
+    // Cut inside the tag name: a "<", "<trig", … just before the clip's ellipsis.
+    const cut = /<([a-z-]*)…$/.exec(title);
+    if (!cut || !"trigger-payload".startsWith(cut[1]!)) return title;
+    at = cut.index;
+  }
   const own = title.slice(0, at).trim();
-  if (own) return own;
-  const source = /<trigger-payload\b[^>]*\bsource="([^"]*)"/.exec(title)?.[1] ?? "";
-  return PAYLOAD_WORDS[source] ?? "A trigger's request";
+  return own || payloadWords(title.slice(at));
 }

@@ -22,7 +22,7 @@ export type LearningProps = { agent: Agent; v2: Client; focus?: string[]; server
 
 /** A failed write in the problem card's words, under its own title ("The note was not saved."). */
 const failed = (e: unknown, what: string, title: string) => ({ ...problem(e, what), title });
-const runTitle = (runs: Map<string, Run>, id: string) => { const t = runs.get(id)?.title; return t ? shownTitle(t) : `run ${runLabel(id)}`; };
+const runTitle = (runs: Map<string, Run>, id: string) => { const r = runs.get(id); return r?.title ? shownTitle(r) : `run ${runLabel(id)}`; };
 /** A rendered note body: markdown, sanitized, in the console's type at a note's size. */
 const PROSE = "text-[14px] leading-[1.65] [&_a]:text-primary [&_a]:underline [&_a]:underline-offset-2 [&_code]:bg-muted [&_code]:px-1 [&_code]:font-mono [&_code]:text-[12.5px] [&_h1]:mb-2 [&_h1]:text-[15px] [&_h1]:font-semibold [&_h2]:mb-2 [&_h2]:mt-3 [&_h2]:text-[14px] [&_h2]:font-semibold [&_h3]:mt-3 [&_h3]:font-semibold [&_li]:mb-0.5 [&_ol]:mb-2 [&_ol]:list-decimal [&_ol]:pl-5 [&_p]:mb-2 [&_p:last-child]:mb-0 [&_pre]:mb-2 [&_pre]:overflow-x-auto [&_pre]:border [&_pre]:bg-background [&_pre]:p-3 [&_pre]:font-mono [&_pre]:text-[12px] [&_ul]:mb-2 [&_ul]:list-disc [&_ul]:pl-5";
 /** Whether the keyboard's save is ⌘ or Ctrl, as the editor's hint names it (both save). */
@@ -884,7 +884,7 @@ function NotKept({ runs }: { runs: Run[] }) {
             <li key={r.run_id} className="border-b last:border-b-0">
               <a href={`#/runs/${encodeURIComponent(r.run_id)}`} className="block px-4 py-3 hover:bg-accent">
                 <span className="block text-[13px]">{dropWords(r.learning!)}</span>
-                <span className="mt-1 flex items-center gap-2 font-mono text-[11px] text-muted-foreground"><span className="min-w-0 truncate" title={shownTitle(r.title)}>{shownTitle(r.title)}</span><span className="shrink-0">· {when(r.created_at)}</span></span>
+                <span className="mt-1 flex items-center gap-2 font-mono text-[11px] text-muted-foreground"><span className="min-w-0 truncate" title={shownTitle(r)}>{shownTitle(r)}</span><span className="shrink-0">· {when(r.created_at)}</span></span>
               </a>
             </li>
           ))}

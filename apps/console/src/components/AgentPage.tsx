@@ -189,7 +189,7 @@ function RunsTab({ agent, v2 }: TabProps) {
           <li key={r.run_id} className="border-b last:border-b-0">
             <a href={`#/runs/${encodeURIComponent(r.run_id)}`} className="flex flex-wrap items-center gap-x-4 gap-y-1 px-4 py-3 hover:bg-accent">
               <StatusBadge run={r} />
-              <span className="min-w-0 flex-1 truncate text-[14px]" title={runTitle(r.title)}>{runTitle(r.title)}</span>
+              <span className="min-w-0 flex-1 truncate text-[14px]" title={runTitle(r)}>{runTitle(r)}</span>
               <LearningChips run={r} />
               {r.effort && <Chip>effort {r.effort}</Chip>}
               <span className="font-mono text-[12px] text-muted-foreground">{when(r.created_at)}</span>

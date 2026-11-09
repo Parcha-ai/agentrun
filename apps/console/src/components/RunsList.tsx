@@ -57,7 +57,7 @@ function RunsTable({ runs, agentName, onOpen }: { runs: Run[]; agentName: (id: s
             <td className="px-3 py-2.5 align-top"><StatusBadge run={r} /></td>
             <td className="px-3 py-2.5 align-top">
               <button type="button" className="flex items-start gap-1 text-left" onClick={(e) => { e.stopPropagation(); onOpen(r.run_id); }}>
-                <span className="line-clamp-2">{runTitle(r.title)}</span><ArrowUpRight className="mt-0.5 size-3 shrink-0 text-muted-foreground" aria-hidden />
+                <span className="line-clamp-2">{runTitle(r)}</span><ArrowUpRight className="mt-0.5 size-3 shrink-0 text-muted-foreground" aria-hidden />
               </button>
               {r.status === "completed" && r.review && <span className="mt-1 block text-[12px] text-warning-text">{r.review.reason}</span>}
               {r.trigger && <span className="mt-1 flex"><ScheduleChip run={r} /></span>}
