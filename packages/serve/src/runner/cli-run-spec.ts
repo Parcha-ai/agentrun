@@ -35,7 +35,7 @@ import { isObject } from "../validate.js";
 import { runFolder, scratchFolder } from "../workspace/paths.js";
 import { openRunWorkspace } from "../workspace/run-workspace.js";
 import { runTools, type ToolResults } from "../workspace/run-tools.js";
-import { archilClaim } from "../workspace/archil-claim.js";
+import { archilClaim, MOUNT_TTL_MS } from "../workspace/archil-claim.js";
 import { loadArchilSettings } from "../archil-settings.js";
 import type { Workspace } from "../workspace/workspace.js";
 import type { AdapterRun, AdapterRunSpec } from "./adapter-loop.js";
@@ -133,7 +133,7 @@ export async function cliRunSpecFromLaunch(launch: RunLaunch, run: AdapterRun, d
     // named for the run and this claim's epoch; revoke at the run's end (below). mountControl (a test's loopback control-plane
     // fake) is spread into the mount, so no test reaches the real control plane. TODO(k2 lazy mint): the mint moves into
     // computerForClaim (a mounting computer only), with the ttl the run's lifetime bound (not this fixed figure). As pi does.
-    : await archilClaim({ settings: archilSettings, keys: deps.store.sealedKeys, sealKey: deps.sealKey, signal: new AbortController().signal, env: deps.env, mount: { runId: claim.runId, epoch: claim.epoch, ttlMs: 86_400_000, ...(deps.mountControl ?? {}) }, ...(deps.makeArchilDisk ? { makeDisk: deps.makeArchilDisk } : {}) });
+    : await archilClaim({ settings: archilSettings, keys: deps.store.sealedKeys, sealKey: deps.sealKey, signal: new AbortController().signal, env: deps.env, mount: { runId: claim.runId, epoch: claim.epoch, ttlMs: MOUNT_TTL_MS, ...(deps.mountControl ?? {}) }, ...(deps.makeArchilDisk ? { makeDisk: deps.makeArchilDisk } : {}) });
   // The run's Workspace at the claim, and its uploaded files copied into work/inputs/ once.
   const ws = archil === undefined
     ? await openRunWorkspace({ mode: 1, agentId: runRow.agentId, runId: claim.runId, data: deps.data, log })

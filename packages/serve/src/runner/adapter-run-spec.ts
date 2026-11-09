@@ -47,7 +47,7 @@ import { entriesOf } from "./loop.js";
 import type { Claim, Journal } from "./loop-contract.js";
 import { runMetrics } from "./metrics.js";
 import type { ModelRoute, RouteCost } from "./model-route.js";
-import { archilClaim, type ArchilClaimOptions } from "../workspace/archil-claim.js";
+import { archilClaim, type ArchilClaimOptions, MOUNT_TTL_MS } from "../workspace/archil-claim.js";
 import { loadArchilSettings } from "../archil-settings.js";
 import type { RunComputer } from "../workspace/run-tools.js";
 import type { Workspace } from "../workspace/workspace.js";
@@ -200,10 +200,10 @@ export async function adapterRunSpecFromLaunch(launch: RunLaunch, run: AdapterRu
     // the account key from the server's environment first, then the sealed row; named for the run and this claim's epoch, with
     // a 24 h ttl as the safety net if revoke never comes (revoke normally runs at the run's end, below). A run with no
     // mounting computer never mints one.
-    // mountControl (a test's loopback control-plane fake) is spread into the mount, so no test reaches the real control plane.
-    // TODO(k2 lazy mint): the mint moves into computerForClaim (a mounting computer only), with the ttl the run's lifetime
-    // bound (not this fixed figure), and no mint/list/remove for a run with no computer.
-    : await archilClaim({ settings: archilSettings, keys: deps.store.sealedKeys, sealKey: deps.sealKey, signal: new AbortController().signal, env: deps.env, mount: { runId: claim.runId, epoch: claim.epoch, ttlMs: 86_400_000, ...(deps.mountControl ?? {}) }, ...(deps.makeArchilDisk ? { makeDisk: deps.makeArchilDisk } : {}) });
+    // The mint is lazy (archil-claim.ts token(), k2's run-tools.ts): only a mounting computer asks for it, so a Mode 2 run
+    // with no computer makes no control-plane call. mountControl (a test's loopback control-plane fake) is spread into the
+    // mount, so no test reaches the real control plane. MOUNT_TTL_MS is the credential's safety net (7 days), not its lifetime.
+    : await archilClaim({ settings: archilSettings, keys: deps.store.sealedKeys, sealKey: deps.sealKey, signal: new AbortController().signal, env: deps.env, mount: { runId: claim.runId, epoch: claim.epoch, ttlMs: MOUNT_TTL_MS, ...(deps.mountControl ?? {}) }, ...(deps.makeArchilDisk ? { makeDisk: deps.makeArchilDisk } : {}) });
   // The run's Workspace at the claim: Mode 1 the run's local folder (made here, the server's start made it before); Mode 2
   // the run's folder on the disk.
   const ws = archil === undefined
