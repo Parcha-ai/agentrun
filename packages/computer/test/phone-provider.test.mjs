@@ -307,6 +307,28 @@ test("each API request has its own bound: a stalled readiness read is cut off by
 	assert.equal(made.at(-1).ms, 30_000, "the DELETE has a bound of its own");
 });
 
+// The hang guard only bounds a failure: on a pass nothing waits on a timer.
+test("a readiness read cut off by its own bound, with readyMs time left, is asked again: the phone comes back ready, never ended", { timeout: 10_000 }, async () => {
+	const { timeout, made } = testTimers();
+	let stalledNow;
+	const stalled = new Promise((resolve) => (stalledNow = resolve));
+	let reads = 0;
+	const stall = ({ method, path }) => method === "GET" && path === "/sessions/sess_0001" && ++reads === 2 && (stalledNow(), true);
+	// readyAfter 2: the first read answers provisioning, the second stalls (the fake counts no stalled read), the third
+	// answers ready.
+	const { provider, fake, ledger } = await setup({ readyAfter: 2, stall }, { readyMs: 240_000, pollMs: 2000, requestMs: 30_000, timeout });
+	const pending = provider.create(SPEC);
+	await stalled;
+	assert.equal(made.at(-1).ms, 30_000, "the stalled read's bound is requestMs: readyMs has 238 s left");
+	made.at(-1).fire();
+	const created = await pending;
+	assert.equal(created.ok, true, JSON.stringify(created));
+	assert.equal(fake.sessions.get(created.value.id)?.state, "ready");
+	assert.equal(fake.requests().some((r) => r.method === "DELETE"), false, "never ended");
+	assert.ok(await ledger.get(created.value.id), "and recorded");
+	assert.equal(fake.requests().filter((r) => r.method === "GET" && r.path === "/sessions/sess_0001").length, 3, "asked again after the cut-off read");
+});
+
 test("a POST that stalls is cut off by its bound and recovered by its Idempotency-Key, never posted again", { timeout: 10_000 }, async () => {
 	const { timeout, made } = testTimers();
 	let stalledNow;
