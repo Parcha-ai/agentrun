@@ -18,6 +18,39 @@ import type { ImageState } from "./box-image.js";
 import { banner, boxImageLine } from "./print.js";
 import type { LearningMode } from "./learning.js";
 import { DEFAULT_PORT, type Serve, startServe } from "./server.js";
+import { SEAL_KEY_ENV, sealKeyOf } from "./tool-keys.js";
+import { withoutFaux } from "./model.js";
+
+/** A runner beside the server on the same data directory (the CLI start's server-and-runner, and the `runner` subcommand):
+ *  its own store handle (role runner), and the runner's dispatch (dispatch.ts) for each claimed run — pi on the kernel's
+ *  adapter loop, a learning run on the learning loop. Returns the runner and a close() that stops it and closes its store. */
+async function runnerBeside(dataDir: string, loops?: number): Promise<{ runner: Awaited<ReturnType<typeof import("./runner/runner.js")["startRunner"]>>; close: () => Promise<void> }> {
+  const { startRunner } = await import("./runner/runner.js");
+  const { dispatchRunner } = await import("./runner/harness-loops.js");
+  const { routeOf } = await import("./runner/model-route.js");
+  const { RunnerRefused } = await import("./runner/main.js");
+  const { openSqliteStore, SchemaVersionUnknown } = await import("./store/index.js");
+  let store: Awaited<ReturnType<typeof openSqliteStore>>;
+  try {
+    store = await openSqliteStore({ dataDir, role: "runner" });
+  } catch (error) {
+    if (error instanceof SchemaVersionUnknown) {
+      throw new RunnerRefused(
+        error.found === null
+          ? `The store in ${dataDir} is not set up yet: start the server on this data directory first, then the runner.`
+          : `The store in ${dataDir} is at schema version ${error.found}, and this runner knows ${error.known}: run a runner of the same release as the server.`,
+        { cause: error },
+      );
+    }
+    throw error;
+  }
+  // A server with no seal key never serves a live view, so a stand-in satisfies the spec's live-viewer seam; a server with
+  // one seals its live-viewer tokens with it.
+  const sealKey = sealKeyOf(process.env[SEAL_KEY_ENV]) ?? Buffer.alloc(32);
+  const createLoop = dispatchRunner({ env: withoutFaux(process.env), data: dataDir, journal: (claim) => store.journal(claim), store, sealKey, routeOf });
+  const runner = startRunner({ store, createLoop, ...(loops !== undefined ? { loops } : {}) });
+  return { runner, close: async () => { await runner.close(); await store.close(); } };
+}
 
 const USAGE = `usage: agentrun-serve [--data DIR] [--listen ADDR] [--port N] [--open] [--faux MODULE] [--faux-browser MODULE] [--allow-host NAME ...] [--max-runs N] [--drain-timeout D] [--documents DIR] [--allow-code-nodes] [--learning on|off] [--learning-budget BYTES] [--grade-model MODEL]
        agentrun-serve reset-password [--data DIR]
@@ -188,10 +221,7 @@ if (process.argv[2] === "import") {
 // runner (sharing it with the server, setting nothing up) and claims and runs every run until SIGTERM/SIGINT. The loop it
 // runs for each run comes from the runner's dispatch (per harness).
 if (process.argv[2] === "runner") {
-  const { runnerArgs, startRunnerProcess, runUntilSignalled, RunnerRefused } = await import("./runner/main.js");
-  // TODO(E2r): createLoop is the runner's dispatch (runner/dispatch.ts) — the pi adapter loop and the CLI/workflow/learning
-  // loops, keyed by the run's harness. Named import until its sha lands.
-  const { createLoop } = await import("./runner/dispatch.js");
+  const { runnerArgs, runUntilSignalled, RunnerRefused } = await import("./runner/main.js");
   let args: { dataDir: string; loops?: number };
   try {
     args = runnerArgs(process.argv.slice(3));
@@ -201,7 +231,7 @@ if (process.argv[2] === "runner") {
   }
   let runner;
   try {
-    runner = await startRunnerProcess({ dataDir: args.dataDir, ...(args.loops !== undefined ? { loops: args.loops } : {}), createLoop });
+    runner = await runnerBeside(args.dataDir, args.loops);
   } catch (error) {
     console.error(`agentrun-serve runner: ${error instanceof RunnerRefused ? error.message : (error as Error).message}`);
     process.exit(1);
@@ -303,12 +333,10 @@ try {
   process.exit(1);
 }
 // The start launches one runner beside the server on the same data dir (design: "server and runner"): it claims and runs
-// every run, sharing only the store. TODO(E2r): createLoop is the runner's dispatch (runner/dispatch.ts).
-const { startRunnerProcess: startRunner } = await import("./runner/main.js");
-const { createLoop: runnerLoop } = await import("./runner/dispatch.js");
+// every run, sharing only the store.
 let runnerProc;
 try {
-  runnerProc = await startRunner({ dataDir: data, createLoop: runnerLoop });
+  runnerProc = await runnerBeside(data);
 } catch (error) {
   console.error(`agentrun-serve: the runner could not start: ${(error as Error).message}`);
   await serve.close();
