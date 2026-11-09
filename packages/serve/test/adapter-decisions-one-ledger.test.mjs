@@ -125,3 +125,66 @@ test("a paid charge booked outside any tool call (a browser session's release at
   assert.equal(said.length >= 1 ? typeof said.at(-1) : "nothing", "number", `the release's charge was booked on the run's paid ledger: ${JSON.stringify(said)}`);
   near(said.at(-1), 0.0014, `the run's paid calls after the release (${JSON.stringify(said)})`);
 });
+
+/** Runs `runs` (id: its release charge) on one runner, each with `script`/`tools`; the host's beforeRelease books a
+ *  browser release's charge on the run's paid booking (run.ledger.paid, as browserSpend captures it at its bind). What
+ *  each run's paid booking read after its release, by run, once every run has let go. */
+async function releasesAt(t, { runs, script, tools = {} }) {
+  const dir = mkdtempSync(join(process.env.TMPDIR ?? tmpdir(), "agentrun-adapter-release-at-"));
+  const server = await openSqliteStore({ dataDir: dir, role: "server" });
+  const store = await openSqliteStore({ dataDir: dir, role: "runner" });
+  let runner;
+  t.after(async () => {
+    await runner?.close();
+    await store.close().catch(() => {});
+    await server.close().catch(() => {});
+    rmSync(dir, { recursive: true, force: true });
+  });
+  await server.agents.create({ id: "agent-1", name: "Releases" }, { id: "rev-1", kind: "agentic", body: {} });
+  for (const id of Object.keys(runs)) await server.runs.create({ id, agentId: "agent-1", revisionId: "rev-1" });
+  const { paidStep } = await import("../dist/paid-calls.js");
+  const said = {};
+  const spec = piAdapterSpec({ script, tools, hooks: quiet });
+  const loop = createAdapterLoop(async (claim, run) => {
+    const paid = run.ledger?.paid;
+    const beforeRelease = [async () => {
+      const mine = (said[claim.runId] ??= []);
+      if (!paid) return void mine.push("the run handed no paid booking");
+      const stepped = await paidStep(paid, `${claim.runId}@release`, { name: "this browser session's time", holdUsd: 0, basis: "billed as it was charged" }, async () => undefined, () => runs[claim.runId]);
+      if ("refused" in stepped) mine.push(`refused: ${stepped.refused}`);
+      mine.push(paid.spentUsd());
+    }];
+    return { ...(await spec(claim, run)), runCap: { capUsd: () => 1, modelOf: () => SONNET }, lifecycle: { onConversation: [], beforeResume: [], beforeRelease } };
+  }, { restartLimit: MAX_RESTARTS });
+  runner = startRunner({ store, createLoop: loop, name: "runner-a", loops: 4, ...TIMING });
+  const deadline = Date.now() + 25_000;
+  for (;;) {
+    const rows = await Promise.all(Object.keys(runs).map((id) => server.runs.get(id)));
+    if (rows.every((row) => row.state !== "queued" && row.state !== "running" && row.runner === null)) break;
+    if (Date.now() > deadline) throw new Error(`the runs did not let go: ${JSON.stringify(rows.map((r) => [r.id, r.state, r.runner]))}; ${JSON.stringify(said)}`);
+    await new Promise((resolve) => setTimeout(resolve, 20));
+  }
+  for (const until = Date.now() + 5_000; Object.keys(said).length < Object.keys(runs).length && Date.now() < until; ) await new Promise((resolve) => setTimeout(resolve, 20));
+  return { said, server };
+}
+
+test("a browser's release at the run's END (the host's beforeRelease) books on the run's ledger under the live claim, before the end's commit", async (t) => {
+  const { said } = await releasesAt(t, { runs: { "run-1": 0.0014 }, script: [{ say: "done" }] });
+  near(said["run-1"]?.at(-1), 0.0014, `the run's paid calls after its release at its end (${JSON.stringify(said)})`);
+});
+
+test("a browser's release at a PARK (a call that asks a person) books on the run's ledger under the live claim, before the park's seal", async (t) => {
+  const asks = { name: "asks", replaySafe: false, ask: true, run: async () => "ran" };
+  const { said, server } = await releasesAt(t, { runs: { "run-1": 0.0014 }, script: [{ call: "asks" }, { say: "done" }], tools: { asks } });
+  assert.equal((await server.runs.get("run-1")).state, "parked", "the run parked on the ask");
+  near(said["run-1"]?.at(-1), 0.0014, `the run's paid calls after its release at its park (${JSON.stringify(said)})`);
+});
+
+test("two runs on one runner: each browser's release books on its own run's ledger and on no other's, and the process-wide cap sees none of it", async (t) => {
+  const { said } = await releasesAt(t, { runs: { "run-1": 0.0014, "run-2": 0.0021 }, script: [{ say: "done" }] });
+  near(said["run-1"]?.at(-1), 0.0014, `run-1's paid calls hold only its own release (${JSON.stringify(said)})`);
+  near(said["run-2"]?.at(-1), 0.0021, `run-2's paid calls hold only its own release (${JSON.stringify(said)})`);
+  const processCap = await import("../dist/cap.js");
+  assert.equal(processCap.runCap(), undefined, "the process-wide cap (cap.ts) holds no run");
+  assert.equal(processCap.paidHolds(), 0, "and nothing is held on it");
+});
