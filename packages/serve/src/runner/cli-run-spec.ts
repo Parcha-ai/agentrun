@@ -37,6 +37,8 @@ import { isObject } from "../validate.js";
 import { runFolder, scratchFolder } from "../workspace/paths.js";
 import { openRunWorkspace } from "../workspace/run-workspace.js";
 import { type RunComputer, runTools, type ToolResults } from "../workspace/run-tools.js";
+import { archilClaim, type ArchilClaimOptions } from "../workspace/archil-claim.js";
+import { loadArchilSettings } from "../archil-settings.js";
 import type { Workspace } from "../workspace/workspace.js";
 import type { AdapterRun, AdapterRunSpec } from "./adapter-loop.js";
 import type { AdapterSpecDeps } from "./adapter-run-spec.js";
@@ -45,16 +47,44 @@ import { entriesOf } from "./loop.js";
 import type { Claim } from "./loop-contract.js";
 import { runMetrics } from "./metrics.js";
 
-/** The run's computer at the claim, from the one shared function every spec takes (computerForClaim: none for a runner
- *  place), and its release, after the run's tools' end. */
-export type ComputerForClaim = (
-  launch: RunLaunch,
-  store: AdapterSpecDeps["store"],
-  deps: { readonly claim: Claim; readonly workspace: Workspace; readonly env: NodeJS.ProcessEnv; readonly makeProvider?: AdapterSpecDeps["makeProvider"] },
-) => Promise<{ readonly computer?: RunComputer; release(): Promise<void> }>;
+/** The launch as the shared claim-time computer reads it (workspace/computer-for-claim.ts ClaimLaunch). */
+export interface ClaimLaunch {
+  readonly runId: string;
+  readonly epoch: number;
+  readonly revisionId?: string;
+  readonly computer?: unknown;
+  readonly place?: unknown;
+}
 
-/** What the runner hands the CLI spec builder: the pi spec's deps, and the shared claim-time computer. One per runner. */
-export type CliSpecDeps = AdapterSpecDeps & { readonly computerForClaim: ComputerForClaim };
+/** What the spec gives the shared computerForClaim of its own (the run's mode, Workspace and the runner's seal key),
+ *  beside what the runner gives it once (`computerDeps`: the kind registry, the provider makers, the computer spec, the
+ *  key table and settings, the mount check, a --faux launch: ComputerForClaimDeps). */
+export interface ClaimDeps {
+  readonly mode: 1 | 2;
+  readonly workspace: Workspace;
+  readonly sealKey: Buffer | undefined;
+  readonly signal?: AbortSignal;
+}
+
+/** The run's computer at the claim (computer-for-claim.ts ClaimComputer): none for a runner place; `hold`, a desktop's or
+ *  a phone's take-over; its release, after the run's tools' end. A computer that cannot be had throws (computer_unavailable). */
+export interface ClaimComputer {
+  readonly computer?: RunComputer;
+  readonly hold?: unknown;
+  release(): Promise<void>;
+}
+
+/** The one shared claim-time computer every spec takes: computerForClaim(launch, store, deps), as computer-for-claim.ts
+ *  exports it (passed in by the runner, which also gives `computerDeps`). */
+export type ComputerForClaim = (launch: ClaimLaunch, store: AdapterSpecDeps["store"], deps: ClaimDeps & Readonly<Record<string, unknown>>) => Promise<ClaimComputer>;
+
+/** What the runner hands the CLI spec builder: the pi spec's deps, the shared claim-time computer and the runner's part of
+ *  its deps, and (a test's) the Archil disk a Mode 2 claim makes. One per runner. */
+export type CliSpecDeps = AdapterSpecDeps & {
+  readonly computerForClaim: ComputerForClaim;
+  readonly computerDeps?: Readonly<Record<string, unknown>>;
+  readonly makeArchilDisk?: ArchilClaimOptions["makeDisk"];
+};
 
 /** The revision's body, as the fields the spec reads of it. */
 type RevisionBody = {
@@ -126,9 +156,18 @@ export async function cliRunSpecFromLaunch(launch: RunLaunch, run: AdapterRun, d
   if (!name || !entry?.facts || !entry.adapter || !runner) throw new Error(`run ${claim.runId}: ${JSON.stringify(name)} is not a CLI harness this runner runs`);
   const facts = entry.facts;
 
-  // The run's Workspace at the claim, its uploaded files copied into work/inputs/ once, and a sandbox run's computer, as
-  // the pi spec makes them (Mode 1; Mode 2 is the pi spec's TODO too).
-  const ws = await openRunWorkspace({ mode: 1, agentId: runRow.agentId, runId: claim.runId, data: deps.data, log });
+  // The run's mode is the server's: Mode 2 where its Archil settings are saved (archil-settings.ts), the run's folder then
+  // on the claim's Archil disk (archil-claim.ts: its keys from the store's sealed rows, under the runner's seal key, in
+  // this claim's memory only, dropped at the release); else Mode 1, the run's local folder.
+  const archilSettings = await loadArchilSettings(deps.store);
+  const mode: 1 | 2 = archilSettings === undefined ? 1 : 2;
+  const archil = archilSettings === undefined
+    ? undefined
+    : await archilClaim({ settings: archilSettings, keys: deps.store.sealedKeys, sealKey: deps.sealKey, signal: new AbortController().signal, ...(deps.makeArchilDisk ? { makeDisk: deps.makeArchilDisk } : {}) });
+  // The run's Workspace at the claim, and its uploaded files copied into work/inputs/ once.
+  const ws = archil === undefined
+    ? await openRunWorkspace({ mode: 1, agentId: runRow.agentId, runId: claim.runId, data: deps.data, log })
+    : await openRunWorkspace({ mode: 2, agentId: runRow.agentId, runId: claim.runId, archil, log });
   if (launch.files?.length) {
     const copied = await ws.workspace.list(INPUTS_DIR).then(() => true, () => false);
     if (!copied) {
@@ -137,7 +176,12 @@ export async function cliRunSpecFromLaunch(launch: RunLaunch, run: AdapterRun, d
     }
   }
   // The run's computer, from the one shared claim-time function (the pi spec takes the same): none for a runner place.
-  const computer = await deps.computerForClaim(launch, deps.store, { claim, workspace: ws.workspace, env: deps.env, ...(deps.makeProvider ? { makeProvider: deps.makeProvider } : {}) });
+  // It throws computer_unavailable (nothing made) when the computer cannot be had: the run fails in its words.
+  const computer = await deps.computerForClaim(
+    { runId: claim.runId, epoch: claim.epoch, revisionId: runRow.revisionId, place: launch.place, ...((launch as { computer?: unknown }).computer !== undefined ? { computer: (launch as { computer?: unknown }).computer } : {}) },
+    deps.store,
+    { ...deps.computerDeps, mode, workspace: ws.workspace, sealKey: deps.sealKey },
+  );
 
   // The CLI works in the run's scratch folder on this machine (its working directory, swept at the run's end), its own
   // files (home, state) in a private folder inside it, never on the run's disk. The scratch is an alias of the run's
@@ -146,7 +190,8 @@ export async function cliRunSpecFromLaunch(launch: RunLaunch, run: AdapterRun, d
   const scratch = scratchFolder(deps.data, runRow.agentId, claim.runId);
   const dir = join(scratch, "harness");
   await mkdir(dir, { recursive: true, mode: 0o700 });
-  const tools = await runTools(ws.workspace, computer.computer, { mode: 1, context, aliases: [scratch] });
+  // The run's mode bounds its shell: 600 s locally or on a computer, 295 s on Archil's serverless exec (Mode 2, none).
+  const tools = await runTools(ws.workspace, computer.computer, { mode, context, aliases: [scratch] });
   const root = runFolder(deps.data, runRow.agentId, claim.runId);
 
   // The system prompt, as main's harness branch builds it: the environment line, the instructions with what the agent
@@ -227,6 +272,8 @@ export async function cliRunSpecFromLaunch(launch: RunLaunch, run: AdapterRun, d
       await tools.end().catch((error: unknown) => log(`the run's tools' end failed: ${(error as Error)?.message ?? String(error)}`));
       await computer.release().catch((error: unknown) => log(`the run's computer could not be let go: ${(error as Error)?.message ?? String(error)}`));
       await ws.end().catch((error: unknown) => log(`the run's workspace end failed: ${(error as Error)?.message ?? String(error)}`));
+      // The claim's Archil keys go from memory once nothing more reads the disk.
+      archil?.release();
     },
   };
 }
