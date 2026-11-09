@@ -364,15 +364,6 @@ const digest = (text: string) => createHash("sha256").update(text).digest();
 /** Why a trigger never messages a run: it has no spend cap, and every turn a trigger drives is capped. */
 const NO_CAP = "The run has no spend cap: a trigger only messages a run with one, as every turn it drives is capped.";
 
-/** The triggers' store before the server opens its own: each call answers unavailable, and nothing fires. */
-function storeless(): Pick<Store, "triggers" | "runs"> {
-  const refused = new Proxy({}, {
-    get: () => async () => {
-      throw new ApiError("unavailable", "The triggers live in the server's store, which this server has not opened.");
-    },
-  });
-  return { triggers: refused, runs: refused } as unknown as Pick<Store, "triggers" | "runs">;
-}
 const sha256Hex = (text: string) => createHash("sha256").update(text).digest("hex");
 const SESSION_S = SESSION_MS / 1000;
 
@@ -1145,7 +1136,9 @@ async function startHolding(options: ServeOptions, data: string, checked: { maxR
   // Schedules: each firing starts its run as POST /agents/{id}/runs does, capped, under the firing's key (triggers.ts).
   // Firings an earlier server left due are driven again now, beside the recovery above.
   const triggers: Triggers = new Triggers({
-    store: options.store ?? storeless(),
+    // The server's own store (the one it opened) holds the triggers a person writes and reads; a test may inject another
+    // (startServe's `store`).
+    store: options.store ?? store,
     clock: options.triggerClock,
     adapters,
     say: (fields) => (log ? log(logLine("trigger", fields)) : void process.stderr.write(`agentrun-serve: ${logLine("trigger", fields)}\n`)),
