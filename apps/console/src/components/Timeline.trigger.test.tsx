@@ -86,4 +86,21 @@ describe("Timeline, a trigger's message", () => {
     const bare = (row: TimelineRow) => (row.origin !== "trigger" ? row : ({ ...row, summary: "Say hello" } as TimelineRow));
     expect(render(entries, bare).filter((s) => !["Answer", "Usage"].includes(s.label ?? ""))).toEqual([{ label: "Trigger", title: "Say hello" }]);
   });
+
+  // A trigger's name can be long (up to 200 characters, spaces or none): its label never pushes the row wider than the
+  // page or over the time. It is cut to the row's width, whole in its title.
+  it("keeps a long trigger name inside the row: cut to its width, whole on hover", () => {
+    const long = `hook-${"x".repeat(190)}`;
+    const entries = [user("Say hello.", { data: { origin: WEBHOOK } }), assistant("Hello.")];
+    const served = (row: TimelineRow) => (row.origin !== "trigger" ? row : ({ ...row, summary: `Webhook ${long}: Say hello.`, trigger: { ...(row.trigger as Record<string, unknown>), name: long } } as TimelineRow));
+    render(entries, served);
+    const li = [...document.querySelectorAll("li")].find((el) => el.textContent?.includes("Say hello."))!;
+    const labelRow = li.querySelector("button > span > span")!;
+    expect(labelRow.classList.contains("min-w-0")).toBe(true);
+    const name = labelRow.querySelector("[data-label]")!;
+    expect(name.textContent).toBe(`Webhook ${long}`);
+    expect(name.getAttribute("title")).toBe(`Webhook ${long}`);
+    expect(name.classList.contains("truncate")).toBe(true);
+    expect(name.classList.contains("min-w-0")).toBe(true);
+  });
 });
