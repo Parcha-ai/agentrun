@@ -20,6 +20,8 @@ import { request as httpRequest, type IncomingMessage, type ServerResponse } fro
 import { connect } from "node:net";
 import { join } from "node:path";
 import type { Duplex } from "node:stream";
+import { sealColumn, sealedAt, unsealColumn } from "./store/seal.js";
+import type { Claim } from "./store/store.js";
 
 /** The hand-over directory in the run's directory (never in work/): one file per open session. */
 export const BROWSER_LIVE_DIR = "browser-live";
@@ -115,6 +117,70 @@ export const readHandover = async (runDir: string): Promise<LiveHandover | undef
 /** The hand-over of the viewer whose path id is `id`, or undefined. */
 export const handoverById = async (runDir: string, id: string): Promise<LiveHandover | undefined> => (await readHandovers(runDir)).find((handover) => handover.id === id);
 
+/** One open session's viewer as the store keeps it: one row per (run, session tag), its token sealed (sealedAt.liveViewer),
+ *  `at` the store's clock when it was put, `runner` the claim's holder. */
+export type LiveViewerRow = { tag: string; port: number; id: string; sealed: Uint8Array; at: number; runner: string };
+
+/**
+ * The slice of the one store that carries the hand-over across processes, once serve and the runner share only the store.
+ * The store's real `liveViewers` (store/, tl-jobs) replaces the fake tests use (test/live-viewers-support.mjs); this is the
+ * part of it this module calls. The token is never plaintext in the store: the runner seals it under the seal key it holds,
+ * and the server opens it for the owner's answer alone. Its rows go with the run's end, a take or reclaim of the run, and
+ * the run's delete, in the store.
+ */
+export interface LiveViewers {
+  /** The runner's put under its claim, upsert on (run_id, tag), `at` stamped by the store: false when the claim is stale
+   *  (its epoch moved on, or its lease ran out), and nothing written. */
+  put(claim: Claim, viewer: { tag: string; port: number; id: string; sealed: Uint8Array }): Promise<boolean>;
+  /** The runner's drop, fenced by its claim's epoch: session `tag`'s row, or with no tag every row of the run. */
+  drop(claim: Claim, tag?: string): Promise<void>;
+  /** The server's read: the run's rows, newest first, only those of its epoch, under a live claim, by its runner (a runner
+   *  that died, or a claim lost, names no viewer). */
+  of(runId: string): Promise<LiveViewerRow[]>;
+}
+/** A store that carries live viewers (the real one's Pick<Store, "liveViewers">). */
+export type LiveViewerStore = { readonly liveViewers: LiveViewers };
+
+/** The runner hands session `handover.tag`'s viewer over, under `claim`, its token sealed under `sealKey`: false when the
+ *  claim is stale and nothing was written. The time is the store's. */
+export async function putLiveViewer(store: LiveViewerStore, sealKey: Buffer, claim: Claim, handover: LiveHandover): Promise<boolean> {
+  if (!TAG.test(handover.tag)) throw new Error("a hand-over's tag is not a session's tag");
+  const { tag, port, id, token } = handover;
+  return store.liveViewers.put(claim, { tag, port, id, sealed: sealColumn(sealKey, sealedAt.liveViewer(claim.runId, tag), token) });
+}
+
+/** Session `tag`'s hand-over goes, and no other's; with no tag, every one of the run's (its runner let its sessions go). A
+ *  tag that is not a session's names no row. */
+export async function dropLiveViewer(store: LiveViewerStore, claim: Claim, tag?: string): Promise<void> {
+  if (tag === undefined) return store.liveViewers.drop(claim);
+  if (TAG.test(tag)) await store.liveViewers.drop(claim, tag);
+}
+
+/** Run `runId`'s row as one hand-over, checked as the files were (a viewer's path id, a session's tag, a port, a time), its
+ *  token opened and checked; undefined for anything else, a seal that does not open among them (never a throw). */
+function handoverOfRow(sealKey: Buffer, runId: string, row: Partial<LiveViewerRow>): LiveHandover | undefined {
+  if (!(Number.isInteger(row.port) && row.port! > 0 && row.port! < 65_536 && VIEWER_ID.test(String(row.id)) && typeof row.tag === "string" && TAG.test(row.tag) && Number.isFinite(row.at) && row.sealed instanceof Uint8Array)) return undefined;
+  let token: string;
+  try {
+    token = unsealColumn(sealKey, sealedAt.liveViewer(runId, row.tag), row.sealed).toString("utf8");
+  } catch {
+    return undefined;
+  }
+  return TOKEN.test(token) ? { port: row.port!, id: row.id!, token, tag: row.tag, at: row.at! } : undefined;
+}
+
+/** Run `runId`'s viewers as its live claim handed them over, newest first, each token opened with `sealKey`; a row that is
+ *  not a hand-over is left out. */
+export async function readLiveViewers(store: LiveViewerStore, sealKey: Buffer, runId: string): Promise<LiveHandover[]> {
+  const found = (await store.liveViewers.of(runId)).flatMap((row) => handoverOfRow(sealKey, runId, row) ?? []);
+  return found.sort((a, b) => b.at! - a.at! || b.tag.localeCompare(a.tag));
+}
+/** Run `runId`'s newest viewer, or undefined. */
+export const liveViewer = async (store: LiveViewerStore, sealKey: Buffer, runId: string): Promise<LiveHandover | undefined> => (await readLiveViewers(store, sealKey, runId))[0];
+/** Run `runId`'s viewer whose path id is `id`, or undefined. */
+export const liveViewerById = async (store: LiveViewerStore, sealKey: Buffer, runId: string, id: string): Promise<LiveHandover | undefined> =>
+  (await readLiveViewers(store, sealKey, runId)).find((handover) => handover.id === id);
+
 /** Where the viewer answers through the server, for run `runId`: the owner's link, its token in the fragment. */
 export const viewerLink = (runId: string, handover: LiveHandover): string => `/v2/runs/${encodeURIComponent(runId)}/browser/live/v/${handover.id}#t=${handover.token}`;
 
@@ -153,7 +219,7 @@ export const LIVE_RECHECK_MS = 2_000;
 /** The viewers' sockets open now, each with the check of the sessions that let it in. A socket whose sessions no longer
  *  hold is destroyed, which takes its way to the run with it (proxyLiveUpgrade): at once on `recheck()` (a sign-out or a
  *  password set in this process), else within LIVE_RECHECK_MS. The timer runs only while a viewer is open. */
-export class LiveViewers {
+export class OpenViewers {
   private readonly open = new Map<Duplex, () => boolean>();
   private timer: NodeJS.Timeout | undefined;
 
