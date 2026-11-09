@@ -15,7 +15,7 @@ import type { Models } from "@earendil-works/pi-ai";
 import { createModels } from "@earendil-works/pi-ai/models";
 import { type Extension, type Harness, ROOT_CONVERSATION_ID } from "@earendil-works/pi-durable";
 import type { Revision } from "@parcha/pi-durable-agent";
-import { chargedCost, type DecisionProvider, DecisionProviderError, type LoadImage, type Workflow, type WorkflowDeps } from "@parcha/agentrun-dsl";
+import { chargedCost, type DecisionProvider, DecisionProviderError, EffectFailure, inspectWorkflow, type LoadImage, type Workflow, type WorkflowDeps } from "@parcha/agentrun-dsl";
 import type { DecisionModelPrice } from "@parcha/agentrun-decisions";
 import { type BeforeRequest, modelPortFor, type Refusal, type RunSessions, type Wire } from "@parcha/agentrun-kernel";
 import { type ModelProxy, type ProviderPolicy, type ProxyUsage, startModelProxy } from "@parcha/agentrun-kernel/host";
@@ -28,7 +28,10 @@ import { decisionProvidersIn } from "../decisions.js";
 import { imageLoader } from "../pdf-pages.js";
 import type { RunLaunch } from "../run-launch.js";
 import { llmTiers, nodeTiers, type Tier, workflowNodes } from "../model.js";
-import { type EffectRun, toolOf } from "../tools.js";
+import { CALL_TOOLS, type EffectRun, toolOf, workflowTools } from "../tools.js";
+import { runGate } from "../tool-gate.js";
+import { callNodeAskText, deniedText } from "../refusal-words.js";
+import { loadToolSettings, TOOL_PLANE_ENV } from "../tool-plane.js";
 import { claimSecrets } from "./claim-secrets.js";
 import { type ModelRoute, routeOf } from "./model-route.js";
 import { PI_WIRES } from "./adapter-run-spec.js";
@@ -102,7 +105,7 @@ export async function providerFromRoute(route: ModelRoute): Promise<WorkflowProv
 
 /** What the claim-time builder reads and wires. */
 export interface WorkflowSpecDeps {
-  readonly store: Pick<Store, "runs" | "agents" | "flush" | "sealedKeys">;
+  readonly store: Pick<Store, "runs" | "agents" | "flush" | "sealedKeys" | "settings">;
   readonly env?: NodeJS.ProcessEnv;
   /** The runner's seal key, for reading a claim's sealed secrets from the store (claim-secrets.ts). Given in production, so
    *  the default decision providers and image loader read the run's own stored keys; a test that injects decisionProvidersOf
@@ -254,14 +257,16 @@ export function workflowSpecOf(deps: WorkflowSpecDeps): (claim: { runId: string 
           modelOf,
           sharedExtensions: [],
           nodeTool: () => undefined,
-          runEffect: runEffectOf(claimed, complete, deps.env ?? process.env),
+          runEffect: runEffectOf(claimed, complete, callEnvOf(deps.env ?? process.env, claimed), callPolicyOf(deps.store, claim.runId, claimed)),
           workRoot: claimed.workRoot,
           flush: () => deps.store.flush(),
           // A decision node books through the run's one cap (admitted and settled as main holds it); a cap refusal for room
           // parks the run through the loop's hook, the same as a model node's. The cap is wired at harnessReady, so the
           // wrapper reaches it through the deferred reference. With no decision provider the workflow runs none.
           ...(decisions ? { decisionProviders: decisions, ...(loadImage ? { loadImage } : {}) } : {}),
-          cap: decisions ? decisionWorkflowCap(() => decisionCap, decisions, hooks.park) : identityWorkflowCap(),
+          // A call node's tool failure the driver recorded as its effect's outcome is thrown past the driver (failingEffects,
+          // main's `failing`), on the first run and on a resume that answers it from its receipt alike.
+          cap: failingEffects(decisions ? decisionWorkflowCap(() => decisionCap, decisions, hooks.park) : identityWorkflowCap()),
         };
         return workflowHost(hostDeps) as { extensions: readonly Extension[]; host: never };
       },
@@ -340,11 +345,58 @@ function identityWorkflowCap(): WorkflowCap {
 /** A call node `via: "tool"`: the node-tool table's effect (toolOf(tool).effect) with the run's ctx, as app.ts ran it. Its
  *  paid requests (its `llm` call) book through the run's models under the cap. A cap-held request ends the effect held
  *  (CAP_HELD), a tool failure as the tool's own (TOOL_FAILED); the loop's `failing` reads both. */
-function runEffectOf(claimed: Claimed, complete: ReturnType<typeof completer>, env: NodeJS.ProcessEnv): EffectRun extends never ? never : WorkflowHostDeps["runEffect"] {
+/** A call tool's permission now, as main's per-run process read it at each call node (app.ts:382-384, the gate's
+ *  policy): the revision's tool settings and approvals over the server's, the server's read again from the store at each
+ *  call, so a deny or an ask set while the run goes reaches its next call. A read that fails holds the last good one. */
+type CallPolicy = (tool: string) => Promise<{ permission: "allow" | "ask" | "deny"; denyFrom: Parameters<typeof deniedText>[2] }>;
+function callPolicyOf(store: Pick<Store, "settings">, runId: string, claimed: Claimed): CallPolicy {
+  let current: Awaited<ReturnType<typeof loadToolSettings>> = { settings: {}, problems: [] } as never;
+  const gate = runGate({ root: claimed.workRoot, work: claimed.workRoot }, runId, claimed.revision as never, () => current);
+  return async (tool) => {
+    try {
+      current = await loadToolSettings(store);
+    } catch {
+      // Unread: the gate holds to its last good read.
+    }
+    return { permission: gate.policy(tool), denyFrom: gate.denyFrom(tool) };
+  };
+}
+
+/** The environment a call node's effect runs with: the runner's run environment (never this process's whole one), with
+ *  the run's tool plane (which provider each web tool resolves to), as a non-hand tool's ToolHost.env carries it. */
+function callEnvOf(env: NodeJS.ProcessEnv, claimed: Claimed): NodeJS.ProcessEnv {
+  return claimed.plane === undefined ? env : { ...env, [TOOL_PLANE_ENV]: JSON.stringify(claimed.plane) };
+}
+
+/** `cap` with a call node's recorded tool failure thrown as the node's failure, as main's `failing` (app.ts:417-420):
+ *  the driver records the effect's outcome ({ TOOL_FAILED: words }) as its receipt, and this, past the driver, throws it
+ *  as an EffectFailure in those words, so the call node fails and the run with it in the tool's words. Applied outside
+ *  the cap's own effect wrapper, on the outcome it returns. */
+export function failingEffects(cap: WorkflowCap): WorkflowCap {
+  return {
+    ...cap,
+    effect: <F>(fn: F): F => {
+      const inner = cap.effect(fn) as unknown as (params: unknown) => Promise<unknown>;
+      return (async (params: unknown) => {
+        const value = await inner(params);
+        const failed = value !== null && typeof value === "object" ? (value as Record<string, unknown>)[TOOL_FAILED] : undefined;
+        if (typeof failed === "string") throw new EffectFailure(failed, null, { code: null });
+        return value;
+      }) as unknown as F;
+    },
+  };
+}
+
+function runEffectOf(claimed: Claimed, complete: ReturnType<typeof completer>, env: NodeJS.ProcessEnv, policy: CallPolicy): EffectRun extends never ? never : WorkflowHostDeps["runEffect"] {
   return (async ({ node, input, signal }: { node: { label: string; via: string; tool?: string }; input: Record<string, unknown>; signal: AbortSignal }) => {
     const effect = node.via === "tool" && node.tool ? toolOf(node.tool)?.effect : undefined;
     if (!effect) throw new Error(`call node "${node.label}": agentrun-serve runs no tool ${node.tool ?? `via ${node.via}`}`);
+    // Its tool's permission now (main's app.ts:382-384): a deny set since the run started is refused in the gate's words,
+    // and an ask too, since a call node cannot wait for an approval. Neither runs.
     try {
+      const { permission, denyFrom } = await policy(node.tool!);
+      if (permission === "deny") throw new Error(deniedText(node.tool!, undefined, denyFrom));
+      if (permission === "ask") throw new Error(callNodeAskText(node.tool!));
       return await effect(input, { signal, env, work: claimed.workRoot, complete });
     } catch (error) {
       const message = String((error as Error)?.message ?? error);
@@ -458,8 +510,9 @@ function tiersOf(workflow: Workflow): Tier[] {
 
 /** The tools the workflow may call, for the host to register. */
 function toolsOf(workflow: Workflow): string[] {
-  void workflow;
-  return [];
+  // A call node's tool, as main's per-run process registers it (app.ts:490, the workflow's own): the call tools the
+  // workflow names (tools.ts CALL_TOOLS); any other was refused at its start (runnable.ts).
+  return workflowTools(workflowNodes(workflow, inspectWorkflow(workflow))).calls.filter((name) => CALL_TOOLS.includes(name));
 }
 
 const providerId = (tier: Tier): string => `workflow-session-${tier}`;
