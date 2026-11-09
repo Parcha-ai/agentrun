@@ -1,5 +1,7 @@
-// The Archil claim step (workspace/archil-claim.ts): a claim's Archil key comes from the store's sealed_keys row, opened
-// with the runner's seal key into the claim's memory only, never from the environment, and dropped at release. The disk
+// The Archil claim step (workspace/archil-claim.ts): a claim's Archil key is the one archilApiKey resolves
+// (workspace/archil-key.ts, its only reader): the environment's ARCHIL_API_KEY first, as the claim is given it, else the
+// store's sealed_keys row, opened with the runner's seal key. It is held in the claim's memory only and dropped at
+// release; the cases here give no environment, so the key is the sealed row's. The disk
 // token a mount takes is no saved row: it is minted per run at Archil's control API (a loopback fake here) when a mount
 // first asks, and revoked by its identifier.
 import assert from "node:assert/strict";

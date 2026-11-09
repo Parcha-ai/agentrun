@@ -28,6 +28,8 @@ import {
   answersOf,
   budgetOf,
   browserPending,
+  type ComputerAsk,
+  computerPending,
   redactorOf,
   servedRunErrorWith,
   servedReviewWith,
@@ -47,6 +49,7 @@ import { keptVendor, type Plane } from "./tool-plane.js";
 import { Turns } from "./turns.js";
 import { harnessOfBody } from "./harness.js";
 import { browserAsk as browserAskOf, BROWSER_HANDOVER_KIND } from "./browser-commands.js";
+import { computerAsk as computerAskOf, COMPUTER_HANDOVER_KIND } from "./computer-commands.js";
 import type { PendingAsk } from "./browser-person.js";
 import { approvalsOf, type Approvals } from "./approvals.js";
 import { FINAL_STATES, type RunRow, type Store } from "./store/store.js";
@@ -86,7 +89,7 @@ const reviewAt = (review: SavedReview | null, endedAt: string): (SavedReview & {
 /** A run's facts as statusOf and momentOf read them, built from the run's journal: whether it stands parked at its cap
  *  (an active agentrun.budget park), and the browser ask it waits on (wired next). A terminal run reaches none of them
  *  (its outcome answers first). */
-const factsOf = (run: StoreRun): RunFacts => ({ budgetWaiting: () => run.budget !== undefined, paused: () => false, browserAsk: () => run.browserAsk });
+const factsOf = (run: StoreRun): RunFacts => ({ budgetWaiting: () => run.budget !== undefined, paused: () => false, browserAsk: () => run.browserAsk, computerAsk: () => run.computerAsk });
 
 /** The run read from the store: the row, its launch, its timeline, its agent's revision count for the version, its
  *  learning end, and the sign-in cut it serves through. Undefined for an unknown run. */
@@ -116,6 +119,9 @@ interface StoreRun {
   /** The browser hand-over the run's agent waits on (the newest ask still waiting), or undefined. Also the `browserAsk`
    *  fact. */
   readonly browserAsk: PendingAsk | undefined;
+  /** The agent's ask on its desktop or phone the run waits on (computer-commands.ts), or undefined. Also the `computerAsk`
+   *  fact. */
+  readonly computerAsk: ComputerAsk | undefined;
   /** Whether the run ran unattended, as its revision kept it (approvals "never"), else the default (ask): the run read's
    *  `approvals` field, as runs.ts serves it. Named to stand apart from the approval-request map on the view. */
   readonly approvalsMode: Approvals;
@@ -206,6 +212,10 @@ async function storeRunOf(store: Store, runId: string, deps: ViewDeps): Promise<
   const browserAsk = records.entries.some((e) => e.kind === BROWSER_HANDOVER_KIND)
     ? browserAskOf(records.entries as unknown as Parameters<typeof browserAskOf>[0], await store.commands(runId, 0), deps.now?.() ?? Date.now())
     : undefined;
+  // The agent's ask on its desktop or phone, read the same way (computer-commands.ts): only a run with one fetches its rows.
+  const computerAsk = records.entries.some((e) => e.kind === COMPUTER_HANDOVER_KIND)
+    ? computerAskOf(records.entries as unknown as Parameters<typeof computerAskOf>[0], await store.commands(runId, 0), deps.now?.() ?? Date.now())
+    : undefined;
   const outcome = terminal ? STATUS_OF[row.state as Exclude<RunReadState, "running">] : undefined;
   const view: RunView = {
     id: row.id,
@@ -227,7 +237,7 @@ async function storeRunOf(store: Store, runId: string, deps: ViewDeps): Promise<
     ...(budget?.kind === "budget" ? { pausedWords: budget.said } : {}),
     meta,
   };
-  return { row, runRow, launch, rows, version, harness, learningEnd, view, unshown, values, live, updatedAtMs, lastProgressAt, budget, browserAsk, approvalsMode };
+  return { row, runRow, launch, rows, version, harness, learningEnd, view, unshown, values, live, updatedAtMs, lastProgressAt, budget, browserAsk, computerAsk, approvalsMode };
 }
 
 /** A run's learning as the view shows it: its end from the store, in a person's words cut of the host's secrets now, and,
@@ -282,7 +292,7 @@ export async function viewOverStore(store: Store, runId: string, deps: ViewDeps)
   // person's approval (approvalOf, its arguments shown through the run's redactor), else a run parked at its cap (the budget
   // card), else its agent waiting on a person in its browser (browserPending), else the question its turn ended on (pendingOf).
   const redactor = redactorOf(values);
-  const pending: Pending = status === "input_required" && state === "waiting" ? (approvalOf(view, redactor) ?? run.budget ?? browserPending(run.browserAsk, redactor) ?? pendingOf(run.rows)) : null;
+  const pending: Pending = status === "input_required" && state === "waiting" ? (approvalOf(view, redactor) ?? run.budget ?? browserPending(run.browserAsk, redactor) ?? computerPending(run.computerAsk, redactor) ?? pendingOf(run.rows)) : null;
   const settled = terminal;
 
   return {

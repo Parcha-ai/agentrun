@@ -113,8 +113,8 @@ import { agentTools, browserKeyRow, isUnavailable, recheckPlane, settingsIssues,
 import { toolSettingsOverStore } from "./tool-settings-store.js";
 import { MAX_FILES_PER_RUN, MAX_UPLOAD_BYTES, Uploads, UPLOADS_DIR } from "./uploads.js";
 import { entryAt, listFiles, sendFile as sendWorkspaceFile, viewOf } from "./run-files.js";
-import { COMPUTER_ROUTES } from "./computer-view.js";
-import { PROVIDERS as COMPUTER_PROVIDERS, providerFor as computerProviderFor, providerIds as computerProviderIds, SETTING_KINDS, servingRefusals } from "@parcha/agentrun-computer";
+import { COMPUTER_ROUTES, computerRoute } from "./computer-routes.js";
+import { PROVIDERS as COMPUTER_PROVIDERS, SETTING_KINDS, servingRefusals } from "@parcha/agentrun-computer";
 import { capabilityToolDefs, hostToolDefs } from "@parcha/agentrun-kernel/kernel";
 import { archilRoute, createArchilRoutes } from "./archil-routes.js";
 import { computerOfPlace, type ComputerKind, type ComputerSetting, type PlaceView } from "./computer-setting.js";
@@ -122,7 +122,7 @@ import { computerCapabilities, type ComputerRoutes, createComputerRoutes, folder
 import { FAUX_VIEW_PATH, type FauxComputers, fauxComputers } from "./faux-computers.js";
 import { runComputerField } from "./run-computer.js";
 import { writesHeld } from "./workspace.js";
-import { agentHomeFolder, isWorkspaceError, localWorkspace, runFolder, serverRunWorkspace, type Workspace } from "./workspace/index.js";
+import { agentHomeFolder, computerProviderFactories, computerProviderMakers, isWorkspaceError, localWorkspace, runFolder, serverRunWorkspace, storeLedger, type Workspace } from "./workspace/index.js";
 // server-lock.ts is gone: the store's EXCLUSIVE connection is the one-server lock (StoreOwned refuses a second server).
 
 export const CONTRACT = "agentrun.v2/0";
@@ -437,7 +437,6 @@ export const ROUTES: readonly Route[] = [
   { method: "GET", pattern: /^\/runs\/([^/]+)\/files$/, name: "listRunFiles" },
   { method: "GET", pattern: /^\/runs\/([^/]+)\/browser$/, name: "getRunBrowser" },
   { method: "POST", pattern: /^\/runs\/([^/]+)\/browser\/hand-back$/, name: "handBackRunBrowser" },
-  { method: "GET", pattern: /^\/runs\/([^/]+)\/computer$/, name: "getRunComputer" },
   { method: "POST", pattern: /^\/runs\/([^/]+)\/computer\/take-over$/, name: "takeOverRunComputer" },
   { method: "POST", pattern: /^\/runs\/([^/]+)\/computer\/hand-back$/, name: "handBackRunComputer" },
   // Settings → Computers (computers.ts settingsComputerRoute) and the owner's Archil settings (archil-routes.ts
@@ -1016,7 +1015,8 @@ async function startHolding(options: ServeOptions, data: string, checked: { maxR
       ? { kinds: fauxOf().kinds, factories: fauxOf().factories, keyTable: fauxOf().keyTable }
       : {
         kinds: { SETTING_KINDS, PROVIDERS: COMPUTER_PROVIDERS, servingRefusals } as unknown as KindRegistry,
-        factories: Object.fromEntries(computerProviderIds.map((id) => [id, (providerOptions: Record<string, string>) => computerProviderFor(id, providerOptions as never)])),
+        // The one place serve builds a provider (workspace/computer-providers.ts), the claim's makers' own.
+        factories: computerProviderFactories(computerProviderMakers(), (id) => storeLedger(store.computerLedger, id)),
       }),
   }));
   const archil = createArchilRoutes({ store, sealKey: checked.sealKey, env: process.env });
@@ -2097,7 +2097,7 @@ async function startHolding(options: ServeOptions, data: string, checked: { maxR
       authFailed(`/v2${path}`, "browser_without_session");
       throw new ApiError("forbidden", owner ? "A run's live browser takes the owner's password sign-in in the console, never a token." : "A run's live browser takes the owner's password sign-in, and this server has no accounts (AGENTRUN_ACCOUNTS=0).");
     }
-    // A run's desktop or phone view drives it once taken over: the owner's signed-in page alone (computer-view.ts decides).
+    // A run's desktop or phone view drives it once taken over: the owner's signed-in page alone (computer-routes.ts decides).
     if (COMPUTER_ROUTES.has(found.name) && !byOwnerSession(req) && req.headers.authorization !== undefined) authFailed(`/v2${path}`, "computer_without_session");
     // Answering a tool call that waits for approval (tool-gate.ts) is the same: the owner's signed-in page alone, never a
     // token, which the run's own process, an agent's MCP client or a script may hold.
@@ -2305,14 +2305,16 @@ async function startHolding(options: ServeOptions, data: string, checked: { maxR
         const answered = await browserHandBack(store, run.id, body.outcome as "done" | "cancelled", target, Date.now(), async () => (await runEntries(store, run.id, ctx)) as unknown as Parameters<typeof handBackTarget>[0]);
         return send(res, 200, { outcome: answered.outcome }, { "cache-control": "no-store" });
       }
-      case "getRunComputer":
       case "takeOverRunComputer":
       case "handBackRunComputer": {
-        // TODO(take-over over the store, k2): a run's desktop or phone view, take-over and hand-back read and write the
-        // run's computer through the store, as its runner holds it; computer-view.ts's in-memory register belongs to the
-        // pre-cut server and is not ported. Until k2's store-backed work lands, these routes refuse in words.
-        await needRun(id);
-        throw unsupported("computer.take_over", "A run's desktop or phone view, take-over and hand-back are not wired on this server yet: they move to the store with the runner's computer (the store-backed take-over).");
+        // The owner's take-over of a run's desktop or phone, and the hand-back for every kind (computer-routes.ts), over the
+        // store: the hold is the run's journal, a take-over and a hand-back are command rows its runner applies; a browser's
+        // hand-back is the browser's own answer row, as POST .../browser/hand-back writes it.
+        const run = await needRun(id);
+        const answer = await computerRoute(found.name, run.id, {
+          ownerSession: byOwnerSession(req), token: req.headers.authorization !== undefined, accounts: owner !== undefined, body: await bodyOf(req),
+        }, store, { context: ctx });
+        return send(res, 200, answer, { "cache-control": "no-store" });
       }
       case "listComputers":
       case "saveComputerKeys":
