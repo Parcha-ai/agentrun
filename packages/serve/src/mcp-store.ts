@@ -1,5 +1,5 @@
 // The MCP registry and OAuth sign-ins in flight, in the one store (store.mcp, store.mcpOauth), sealed with the store's one
-// rule (store/seal.ts, the tl-mcp note §7): the registry row's credential under AAD mcp_servers|<name>|sealed with the url
+// rule (store/seal.ts): the registry row's credential under AAD mcp_servers|<name>|sealed with the url
 // origin inside the plaintext, and a pending sign-in's secret parts (the PKCE verifier and the OAuth client, with its
 // secret) under AAD mcp_oauth_pending|<state>|sealed. The
 // store-backed replacement for mcp-servers.ts's file store and mcp-oauth.ts's in-memory pending map; the cut wires these

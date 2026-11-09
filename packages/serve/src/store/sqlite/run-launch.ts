@@ -1,5 +1,5 @@
 // The run_launch table's writer and reader, apart from the rest of SqliteStore so the run path (runs.create) and the
-// trigger path (route-1's store.triggers.fire) both write a run's launch row inside their own transaction, through one
+// trigger path (store.triggers.fire) both write a run's launch row inside their own transaction, through one
 // helper, with no second copy of the SQL. The launch body itself is opaque here (run-launch.ts owns its shape); sealed
 // bytes are the caller's, which the store never opens.
 import { type RunLaunchInput, type RunLaunchRow, StoreLaunchMissing } from "../store.js";
