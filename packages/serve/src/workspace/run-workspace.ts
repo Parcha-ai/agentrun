@@ -53,7 +53,7 @@ export async function openRunWorkspace(options: RunWorkspaceOptions): Promise<Ru
     // A computer's mount of the run's folder: the disk's region, and the run's minted mount credential when a mount asks.
     region: claim.region,
     // The claim's own mint (archil-claim.ts token(), revoked by its revoke()) unless the caller hands another.
-    mountToken: options.mountToken ?? (() => claim.token()),
+    ...(options.mountToken ? { mountToken: options.mountToken } : typeof claim.token === "function" ? { mountToken: () => claim.token() } : {}),
   });
   const sweep = async (when: "start" | "end"): Promise<void> => {
     try {
