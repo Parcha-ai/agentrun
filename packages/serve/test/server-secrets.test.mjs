@@ -148,6 +148,23 @@ test("a run its provider fails with an error quoting a webhook trigger's secret,
   check("the next server", await shown(api));
 });
 
+test("a deleted webhook trigger's secret, quoted by a run its provider failed before the delete, stays cut on the next server: its error, its Timeline and the lists", { timeout: 180_000 }, async (t) => {
+  withEnv(t, { AGENTRUN_SEAL_KEY: sealKey() });
+  const first = await serve(t);
+  assert.equal((await first.api("POST", "/agents", agent("target"))).status, 201);
+  const trigger = await first.api("POST", "/triggers", { name: "on push", source: { kind: "webhook" }, target: { kind: "start_run", agent_id: "target", input: { content: "Hi." }, max_cost_usd: 0.5 } });
+  assert.equal(trigger.status, 201, JSON.stringify(trigger.body));
+  const forms = Object.entries(spellings(trigger.body.signing_secret));
+  const runId = (await first.api("POST", "/agents/target/runs", { input: { content: `Fail quoting: ${forms.map(([, value]) => value).join(" ")}` } })).body.run_id;
+  await follow(first.api, runId, ["failed"], { deadlineMs: 90_000 });
+  assert.equal((await first.api("DELETE", `/triggers/${trigger.body.id}`)).status, 204);
+  await first.close();
+  const { api } = await serve(t, { data: first.data });
+  const seen = { view: (await api("GET", `/runs/${runId}`)).body, timeline: (await api("GET", `/runs/${runId}/timeline`)).body, runs: (await api("GET", "/runs")).body, agent: (await api("GET", "/agents/target/runs")).body };
+  assert.ok(seen.view.error?.message, JSON.stringify(seen.view));
+  for (const [part, body] of Object.entries(seen)) for (const [form, value] of forms) assert.ok(!holdsRun(JSON.stringify(body), value), `the deleted trigger's secret as ${form} is not in the ${part}`);
+});
+
 test("a webhook trigger's secret that does not open under the server's seal key is said at the start, naming its trigger, and the trigger stays refused", { timeout: 120_000 }, async (t) => {
   const data = join(await scratch(t), "agents");
   withEnv(t, { AGENTRUN_SEAL_KEY: sealKey() });
