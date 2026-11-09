@@ -16,6 +16,7 @@
 import type { Context } from "@earendil-works/chord";
 import type { CommitResult, ConversationId, EntryRecord, StorageWrite } from "@earendil-works/pi-durable";
 import type { KernelHooks, ToolCall } from "./conformance/subject.js";
+import { KINDS } from "./journal-kinds.js";
 import { type Command, cutAtLimit, type HeldState, type Journal, type LoopDeps } from "./loop-contract.js";
 import type { Staged } from "../store/store.js";
 
@@ -169,11 +170,17 @@ export function heldStateOf(value: unknown): HeldState | undefined {
   return { tools, ...(text ? { partial: { text } } : {}) };
 }
 
-/** Why the run fails, when the answer it would end on (the root's last pi.assistant) was cut at the model's output limit
+/** Why the run fails, when the answer it would end on (the root's last pi.assistant, or a CLI record's last model message)
+ *  was cut at the model's output limit
  *  (stopReason "length"): unfinished, so never ended. A cut answer the run went on from (a later turn answered after it)
  *  is not its last, and changes nothing. */
 export function cutLast(entries: readonly EntryRecord[]): string | undefined {
-  const last = [...entries].reverse().find((entry) => entry.kind === "pi.assistant");
+  // The newest model answer: pi's assistant entry, or a CLI record's model message (its turn_end's stop reason).
+  const last = [...entries].reverse().find((entry) => entry.kind === "pi.assistant" || (entry.kind === KINDS.message && (entry.data as { role?: unknown } | undefined)?.role === "model"));
+  if (last?.kind === KINDS.message) {
+    const said = last.data as { stopReason?: string; outputTokens?: number };
+    return said.stopReason === "length" ? cutAtLimit(said.outputTokens) : undefined;
+  }
   const message = (last as { model?: { stopReason?: string; usage?: { output?: number } }[] } | undefined)?.model?.[0];
   return message?.stopReason === "length" ? cutAtLimit(message.usage?.output) : undefined;
 }
