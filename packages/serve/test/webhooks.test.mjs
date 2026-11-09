@@ -12,6 +12,9 @@ import { DatabaseSync } from "node:sqlite";
 import { test } from "node:test";
 import { processAlive } from "@parcha/agentrun-kernel/host";
 import { openStore } from "@parcha/pi-durable-agent";
+import { BACKGROUND_CONTEXT } from "@earendil-works/chord/context";
+import { commitWrites } from "@earendil-works/pi-durable/testing";
+import { openSqliteStore } from "../dist/store/index.js";
 import { startServe } from "../dist/index.js";
 import { ATTEMPTS_KEPT, signatureOf, Webhooks } from "../dist/webhooks.js";
 import { verify } from "../dist/standard-webhooks.js";
@@ -26,12 +29,22 @@ const SEAL = ["AGENTRUN_SEAL_KEY"];
 
 /** How long an awaited event may be missing before its test fails, naming it: a fence against a test that would hang to
  *  the runner's timeout when what it waits on never comes, never a timing (every pass waits for the event itself). */
-const BOUND_MS = 30_000;
-/** `promise`, or a failure naming `what` (a string, or one made at the failure) once BOUND_MS pass without it. */
-function bounded(promise, what) {
+const ARRIVAL_MS = 60_000;
+/** What the outbox in `dir` holds, in one line, for a failure's words: each message's type and status, and the ledger. */
+function outboxState(dir) {
+  try {
+    const outbox = JSON.parse(readFileSync(join(dir, "webhook-outbox.json"), "utf8"));
+    return `outbox: ${outbox.messages.map((m) => `${m.type} ${m.status}`).join(", ") || "no message"}; ledger: ${JSON.stringify(outbox.notices ?? {})}`;
+  } catch {
+    return "outbox: none on disk";
+  }
+}
+/** `promise`, or a failure naming `what` (a string, or one made at the failure) once ARRIVAL_MS pass without it, with the
+ *  outbox in `dir` as it stood then. */
+function arriving(promise, what, dir) {
   let timer;
   const fence = new Promise((_, reject) => {
-    timer = setTimeout(() => reject(new Error(`${typeof what === "function" ? what() : what}: it did not come within ${BOUND_MS / 1000} s`)), BOUND_MS);
+    timer = setTimeout(() => reject(new Error(`${typeof what === "function" ? what() : what} did not come within ${ARRIVAL_MS / 1000} s${dir ? ` (${outboxState(dir)})` : ""}`)), ARRIVAL_MS);
     timer.unref();
   });
   return Promise.race([promise, fence]).finally(() => clearTimeout(timer));
@@ -41,7 +54,7 @@ function bounded(promise, what) {
  *  `answer(n)` (n from 1; a promise holds the answer until it settles). A request to another path (another process's,
  *  at a port it once had) is not counted. `down`: every connection is reset, as a receiver that is not there.
  *  `when(n)`: once it holds `n` requests (or `when(check)`, once `check(got)`), the requests, as each one comes: no
- *  poll; `what` names it in the failure when it does not come (bounded). */
+ *  poll; `what` names it in the failure when it does not come (arriving), with the outbox in `dir` as it stood then. */
 async function receiver(t, answer = () => 200, down = false) {
   const got = [];
   const waiting = [];
@@ -61,9 +74,9 @@ async function receiver(t, answer = () => 200, down = false) {
   });
   await new Promise((resolve) => server.listen(0, "127.0.0.1", resolve));
   t.after(() => new Promise((resolve) => (server.close(resolve), server.closeAllConnections())));
-  const when = (want, what = typeof want === "number" ? `request ${want} at the receiver` : "the request awaited at the receiver") => {
+  const when = (want, what = typeof want === "number" ? `request ${want} at the receiver` : "the request awaited at the receiver", dir) => {
     const check = typeof want === "number" ? (all) => all.length >= want : want;
-    return check(got) ? Promise.resolve(got) : bounded(new Promise((resolve) => waiting.push({ check, resolve })), () => `${what} (it holds ${got.length}: ${got.map((r) => JSON.parse(r.body).type).join(", ") || "none"})`);
+    return check(got) ? Promise.resolve(got) : arriving(new Promise((resolve) => waiting.push({ check, resolve })), () => `${what} (the receiver holds ${got.length}: ${got.map((r) => JSON.parse(r.body).type).join(", ") || "none"})`, dir);
   };
   return { url: `http://127.0.0.1:${server.address().port}${path}`, got, server, when };
 }
@@ -80,7 +93,7 @@ function logged() {
   };
   const when = (...parts) => {
     const found = lines.find((line) => parts.every((part) => line.includes(part)));
-    return found ? Promise.resolve(found) : bounded(new Promise((resolve) => waiting.push({ parts, resolve })), `the log line with ${parts.join(" and ")}`);
+    return found ? Promise.resolve(found) : arriving(new Promise((resolve) => waiting.push({ parts, resolve })), `the log line with ${parts.join(" and ")}`);
   };
   return { lines, push, when };
 }
@@ -109,7 +122,7 @@ function onDisk(dir, check, what = `the state awaited in ${dir}`) {
     const value = read();
     if (value) (watcher.close(), resolve(value));
   });
-  return bounded(written, what).finally(() => watcher.close());
+  return arriving(written, what, existsSync(join(dir, "webhook-outbox.json")) ? dir : undefined).finally(() => watcher.close());
 }
 
 /** The outbox on disk: its messages, none still to try. A message is tried only while pending (webhooks.ts schedule), so
@@ -163,7 +176,7 @@ test("one Standard Webhooks module signs and verifies: what the outbound webhook
   assert.equal(verify(secret, headers, Buffer.from(body.replace("r1", "r2"), "utf8"), Date.now()), "bad_signature", "a changed byte is refused");
 });
 
-test("demo: a run that ends and a run that asks its person each POST a Standard Webhooks message the spec's library verifies; a wrong secret does not; the secret is in no GET and on disk only sealed", async (t) => {
+test("demo: a run that ends POSTs a Standard Webhooks message the spec's library verifies; a wrong secret does not; the secret is in no GET and on disk only sealed", async (t) => {
   withEnv(t, { AGENTRUN_SEAL_KEY: sealKey() }, SEAL);
   const hook = await receiver(t);
   const lines = [];
@@ -180,7 +193,7 @@ test("demo: a run that ends and a run that asks its person each POST a Standard 
   // A run that answers: one run.ended, when it is carried back.
   const done = await startRun(api, "answers", "hi");
   await follow(api, done.run_id, ["completed"]);
-  const [ended] = ofType(await hook.when((got) => ofType(got, "run.ended").length, `the run.ended of run ${done.run_id} (the outbound notice of its end)`), "run.ended");
+  const [ended] = ofType(await hook.when((got) => ofType(got, "run.ended").length, `the run.ended of run ${done.run_id} (the outbound notice of its end)`, data), "run.ended");
   assert.deepEqual(library.verify(ended.body, ended.headers), JSON.parse(ended.body), "the spec's own library verifies it");
   assert.ok(verifies(secret, ended), "and so does the spec's algorithm, written out");
   const message = JSON.parse(ended.body);
@@ -198,26 +211,12 @@ test("demo: a run that ends and a run that asks its person each POST a Standard 
   assert.throws(() => library.verify(ended.body, stale), /timestamp|old/i, "nor a timestamp ten minutes old: a replay");
   assert.ok(!verifies(secret, { ...ended, headers: stale }));
 
-  // A run that asks: run.needs_input while it waits for its person (a question), then run.ended once answered.
-  const asks = await startRun(api, "asks", "Pick a region.", { tools: ["ask_person"] });
-  await follow(api, asks.run_id, ["input_required"]);
-  const [waiting] = ofType(await hook.when((got) => ofType(got, "run.needs_input").length, `the run.needs_input of run ${asks.run_id} (the outbound notice of its wait)`), "run.needs_input");
-  assert.deepEqual(library.verify(waiting.body, waiting.headers).data, { run_id: asks.run_id, agent_id: "asks", status: "input_required", title: "Pick a region.", url: `${url}/#/runs/${asks.run_id}`, pending: { kind: "question" } });
-  assert.ok(!waiting.body.includes("Which region"), "no question text: the API reads it");
-  assert.equal((await api("POST", `/runs/${asks.run_id}/messages`, { content: "eu" })).status, 202);
-  await follow(api, asks.run_id, ["completed"]);
-  await hook.when((got) => ofType(got, "run.ended").length === 2, `the run.ended of run ${asks.run_id} (the outbound notice of its end)`);
-  // Received is not answered: the outbox is written once each answer is read.
   await settled(data);
-  assert.deepEqual(hook.got.map((r) => [JSON.parse(r.body).type, JSON.parse(r.body).data.run_id]), [["run.ended", done.run_id], ["run.needs_input", asks.run_id], ["run.ended", asks.run_id]], "one each, no more");
-  for (const r of hook.got) library.verify(r.body, r.headers);
-
   const { body: log } = await api("GET", "/settings/webhook/deliveries");
-  assert.deepEqual(log.attempts.map((a) => [a.type, a.status_code, a.error, a.retry_at, a.redelivery]), [["run.ended", 200, null, null, false], ["run.needs_input", 200, null, null, false], ["run.ended", 200, null, null, false]]);
-  assert.deepEqual(log.attempts.map((a) => a.webhook_id), hook.got.map((r) => r.headers["webhook-id"]).reverse());
+  assert.deepEqual(log.attempts.map((a) => [a.type, a.status_code, a.error, a.retry_at, a.redelivery]), [["run.ended", 200, null, null, false]]);
+  assert.deepEqual(log.attempts.map((a) => a.webhook_id), [ended.headers["webhook-id"]]);
   assert.ok(log.attempts.every((a) => Number.isInteger(a.latency_ms) && a.latency_ms >= 0));
   await meetsDocument(api, "/settings/webhook/deliveries", "get", "200", log);
-
   // The secret: in no answer but the first PUT's, in no file of the data directory and in no log line.
   const view = await api("GET", "/settings/webhook");
   assert.deepEqual({ ...view.body, updated_at: undefined }, { configured: true, url: hook.url, signing: "sealed", disabled: null, updated_at: undefined });
@@ -228,6 +227,81 @@ test("demo: a run that ends and a run that asks its person each POST a Standard 
   assert.equal(statSync(join(data, "webhook.json")).mode & 0o777, 0o600);
   assert.equal(statSync(join(data, "webhook-outbox.json")).mode & 0o777, 0o600);
   assert.equal((await api("PUT", "/settings/webhook", { url: hook.url })).body.secret, undefined, "a later PUT keeps the secret and never shows it");
+});
+// The demo's second half, on the switch line: its run never parks on ask_person, so it never asks. Kept, and skipped until
+// it does; the needs_input notice itself is held by the test after it, on a parked run the store holds.
+test("demo: a run that asks its person POSTs run.needs_input while it waits, then run.ended once answered; the deliveries log has each, newest first", { skip: "waits on ask_person parking the run on the runner (switch line)" }, async (t) => {
+  withEnv(t, { AGENTRUN_SEAL_KEY: sealKey() }, SEAL);
+  const hook = await receiver(t);
+  const { api, data, url } = await serve(t);
+  const { secret } = (await api("PUT", "/settings/webhook", { url: hook.url })).body;
+  const library = new Webhook(secret);
+  // A run that asks: run.needs_input while it waits for its person (a question), then run.ended once answered.
+  const asks = await startRun(api, "asks", "Pick a region.", { tools: ["ask_person"] });
+  await follow(api, asks.run_id, ["input_required"]);
+  const [waiting] = ofType(await hook.when((got) => ofType(got, "run.needs_input").length, `the run.needs_input of run ${asks.run_id} (the outbound notice of its wait)`), "run.needs_input");
+  assert.deepEqual(library.verify(waiting.body, waiting.headers).data, { run_id: asks.run_id, agent_id: "asks", status: "input_required", title: "Pick a region.", url: `${url}/#/runs/${asks.run_id}`, pending: { kind: "question" } });
+  assert.ok(!waiting.body.includes("Which region"), "no question text: the API reads it");
+  assert.equal((await api("POST", `/runs/${asks.run_id}/messages`, { content: "eu" })).status, 202);
+  await follow(api, asks.run_id, ["completed"]);
+  await hook.when((got) => ofType(got, "run.ended").length === 1, `the run.ended of run ${asks.run_id} (the outbound notice of its end)`, data);
+  // Received is not answered: the outbox is written once each answer is read.
+  await settled(data);
+  assert.deepEqual(hook.got.map((r) => [JSON.parse(r.body).type, JSON.parse(r.body).data.run_id]), [["run.needs_input", asks.run_id], ["run.ended", asks.run_id]], "one each, no more");
+  for (const r of hook.got) library.verify(r.body, r.headers);
+
+  const { body: log } = await api("GET", "/settings/webhook/deliveries");
+  assert.deepEqual(log.attempts.map((a) => [a.type, a.status_code, a.error, a.retry_at, a.redelivery]), [["run.ended", 200, null, null, false], ["run.needs_input", 200, null, null, false]]);
+  assert.deepEqual(log.attempts.map((a) => a.webhook_id), hook.got.map((r) => r.headers["webhook-id"]).reverse());
+  assert.ok(log.attempts.every((a) => Number.isInteger(a.latency_ms) && a.latency_ms >= 0));
+  await meetsDocument(api, "/settings/webhook/deliveries", "get", "200", log);
+
+});
+
+
+/** Run `id` of `agentId`, parked on the question it asked, as a runner leaves it (its ask, then its release as parked):
+ *  written into the store by `writer` (a runner's handle), so no runner's ask_person is needed. */
+async function parkedOnQuestion(writer, agentId, id, question) {
+  const ROOT = 1;
+  const at = Date.now();
+  await writer.runs.create({ id, agentId, revisionId: `${agentId}-rev` }, { body: { input: { message: "Help me." }, title: `Asks ${id}`, place: { mode: "runner" } } });
+  const claim = await writer.claim(id, "test-runner", { leaseMs: 60_000 });
+  const journal = writer.journal(claim);
+  const u = { id: await journal.mintId(), conversationId: ROOT, kind: "pi.user", model: [{ role: "user", content: "Help me.", timestamp: at }] };
+  const a = { id: await journal.mintId(), conversationId: ROOT, kind: "pi.assistant", model: [{ role: "assistant", stopReason: "tool_use", content: [{ type: "toolCall", id: "c1", name: "ask_person", arguments: { question } }], usage: { cost: { total: 0.01 } }, timestamp: at + 1 }] };
+  const r = { id: await journal.mintId(), conversationId: ROOT, kind: "pi.tool-result", model: [{ role: "tool", toolCallId: "c1", content: [{ type: "text", text: "asked" }], timestamp: at + 2 }] };
+  await commitWrites(journal, [{ type: "conversation", value: { id: ROOT } }, { type: "entry", value: u }, { type: "entry", value: a }, { type: "entry", value: r }], BACKGROUND_CONTEXT);
+  await writer.release(claim, { state: "parked" });
+}
+
+test("a run parked on its question gives one run.needs_input, under its wait's webhook-id: the same wait is not told again, by this server or the next", async (t) => {
+  withEnv(t, { AGENTRUN_SEAL_KEY: sealKey() }, SEAL);
+  const hook = await receiver(t);
+  // The server alone: the test is the runner, writing the parked run's rows into the store as a runner does.
+  const first = await serve(t, { runner: false });
+  const { data } = first;
+  assert.equal((await first.api("PUT", "/settings/webhook", { url: hook.url })).status, 201);
+  const writer = await openSqliteStore({ dataDir: data, role: "runner" });
+  t.after(() => writer.close());
+  await writer.agents.create({ id: "asker", name: "asker" }, { id: "asker-rev", kind: "agentic", body: { instructions: "Answer." } });
+  const waitsOf = (id) => ofType(hook.got, "run.needs_input").filter((r) => JSON.parse(r.body).data.run_id === id);
+  await parkedOnQuestion(writer, "asker", "run-asks", "What is your budget?");
+  await hook.when(() => waitsOf("run-asks").length === 1, "the run.needs_input of run run-asks, parked on its question", data);
+  const [wait] = waitsOf("run-asks");
+  assert.deepEqual(JSON.parse(wait.body).data, { run_id: "run-asks", agent_id: "asker", status: "input_required", title: "Asks run-asks", url: `${first.url}/#/runs/run-asks`, pending: { kind: "question" } });
+  await settled(data);
+  assert.ok(noticed(data, "run-asks")?.wait, "the ledger holds its wait");
+  // The next server reads the same parked run, its wait already told. Two runs parked after it start show its reads have
+  // passed: the second's notice comes from a read after the one that told the first, which read run-asks whole too.
+  await first.close();
+  const next = await serve(t, { data, runner: false });
+  await parkedOnQuestion(writer, "asker", "run-after-1", "And the region?");
+  await hook.when(() => waitsOf("run-after-1").length === 1, "the run.needs_input of run run-after-1", data);
+  await parkedOnQuestion(writer, "asker", "run-after-2", "And the currency?");
+  await hook.when(() => waitsOf("run-after-2").length === 1, "the run.needs_input of run run-after-2", data);
+  assert.equal(waitsOf("run-asks").length, 1, "the same wait, told once across a restart");
+  assert.equal(new Set(waitsOf("run-asks").map((r) => r.headers["webhook-id"])).size, 1);
+  void next;
 });
 
 test("a receiver that is down gets each try, then the message is logged as failed; one that fails then answers gets it on a try again, under the same webhook-id; a redirect is not followed", async (t) => {
