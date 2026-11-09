@@ -76,7 +76,7 @@ export const defaultPermission = (name: string): Permission => (isCatalogTool(na
 export const SHELL_FAMILY: Readonly<Record<string, string>> = Object.freeze(Object.fromEntries(SHELL_TOOLS.map((name) => [name, "bash"])));
 /** The shell tool a call named `name` is, under claude-agent's host-tool name too (`mcp__hands__bash_background`), when
  *  it is one held to another's setting: its own name, which its request, its refusal and its approved call keep. */
-const shellToolOf = (name: string): string | undefined => {
+export const shellToolOf = (name: string): string | undefined => {
   const own = name.replace(/^mcp__hands__/, "");
   return Object.hasOwn(SHELL_FAMILY, own) && SHELL_FAMILY[own] !== own ? own : undefined;
 };
