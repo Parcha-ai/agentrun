@@ -14,7 +14,7 @@
 //     its password, the seal key, the server's token and API key, the model key.
 import assert from "node:assert/strict";
 import { spawn } from "node:child_process";
-import { existsSync, mkdirSync, mkdtempSync, rmSync, utimesSync, writeFileSync } from "node:fs";
+import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, utimesSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
 import { createInterface } from "node:readline";
@@ -98,6 +98,19 @@ function runnerChild(t, args, extra = {}, { cwd } = {}) {
   });
   return { child, out, err, exited, line };
 }
+
+test("started by its launcher with a store URL that holds a database password, the runner's own environment holds neither the URL nor its name, and its store opens", async (t) => {
+  const dir = await serverData(t);
+  const child = runnerChild(t, ["--data", dir], { AGENTRUN_STORE_URL: PLANT.AGENTRUN_STORE_URL, AGENTRUN_RUNNER_NAME: "runner-custody" });
+  await child.line(READY);
+  // The launcher execs the runner in its own process: its pid is the runner's.
+  const environ = readFileSync(`/proc/${child.child.pid}/environ`, "utf8");
+  assert.ok(environ.includes("AGENTRUN_RUNNER_NAME=runner-custody"), "the runner's own environment is read");
+  assert.ok(!environ.includes("plantedstorepass"), "no database password in the runner's environment");
+  assert.ok(!environ.split("\0").some((entry) => entry.startsWith("AGENTRUN_STORE_URL=")), "no store URL in the runner's environment");
+  child.child.kill("SIGTERM");
+  assert.deepEqual(await child.exited, { code: 0, signal: null });
+});
 
 test("bad arguments: the runner exits 2 in runnerArgs' words, and claims nothing", async (t) => {
   const none = runnerChild(t, []);
