@@ -18,7 +18,7 @@ import { ARCHIL_API_KEY_ROW, ARCHIL_DISK_TOKEN_ROW, type ArchilSettings } from "
 import { sealedAt, unsealColumn } from "../store/seal.js";
 import type { SealedKeys } from "../store/store.js";
 import { type ArchilDisk, type ArchilDiskOptions, type ArchilImage, archilDisk, pinnedImage } from "./archil-disk.js";
-import { type ArchilMountCredentialOptions, type MountCredential, mintMountToken, removeMountToken } from "./archil-mount-credential.js";
+import { type ArchilMountCredentialOptions, type MountCredential, mintMountToken, nicknameOf, removeMountToken, removeOlderMountTokens } from "./archil-mount-credential.js";
 
 export { ARCHIL_API_KEY_ROW, ARCHIL_DISK_TOKEN_ROW, type ArchilSettings };
 
@@ -38,10 +38,11 @@ export interface ArchilClaimOptions {
   readonly signal: AbortSignal;
   /** Makes the disk (default archilDisk): a test's capture. */
   readonly makeDisk?: (options: ArchilDiskOptions) => ArchilDisk;
-  /** The run's mount credential, minted when a mount first asks: the token user's nickname (the run's label) and its
-   *  ttl (the run's lifetime bound, the safety net if the remove never comes); a loopback control plane and its fetch in
-   *  a test. Absent: a mount is refused in words. */
-  readonly mount?: { readonly nickname: string; readonly ttlMs: number; readonly baseUrl?: string; readonly fetch?: typeof fetch };
+  /** The run's mount credential, minted when a mount first asks: the run and this claim's epoch (its token user's
+   *  nickname, agentrun:<run>:<epoch>, so a reclaim removes an earlier claim's first) and its ttl (the run's lifetime
+   *  bound, the safety net if the remove never comes); a loopback control plane and its fetch in a test. Absent: a mount
+   *  is refused in words. */
+  readonly mount?: { readonly runId: string; readonly epoch: number; readonly ttlMs: number; readonly baseUrl?: string; readonly fetch?: typeof fetch };
 }
 
 export interface ArchilClaim {
@@ -121,8 +122,22 @@ export async function archilClaim(options: ArchilClaimOptions): Promise<ArchilCl
     released = true;
     held.clear();
   };
-  options.signal.addEventListener("abort", release, { once: true });
-  if (options.signal.aborted) release();
+  /** Removes the credential minted, by its identifier: idempotent. */
+  const revoke = async (): Promise<void> => {
+    const credential = live ?? (await minted?.catch(() => undefined));
+    if (credential === undefined) return;
+    await removeMountToken(credentialOptions, credential.identifier, { token: credential.token });
+    if (live === credential) live = undefined;
+    minted = undefined;
+    held.delete(credential.token);
+  };
+  // A lost claim (or a stopped runner): the values dropped, and the credential removed at once, not left for the ttl.
+  const lost = (): void => {
+    release();
+    void revoke().catch(() => undefined);
+  };
+  options.signal.addEventListener("abort", lost, { once: true });
+  if (options.signal.aborted) lost();
   return {
     disk,
     region: settings.region,
@@ -132,7 +147,10 @@ export async function archilClaim(options: ArchilClaimOptions): Promise<ArchilCl
       if (released) throw new Error(RELEASED);
       const mount = options.mount;
       if (mount === undefined) throw new ArchilClaimRefused("This run's Archil claim was made without a mount credential to mint (its run's label and lifetime), so no computer can mount its folder.");
-      minted ??= mintMountToken(credentialOptions, { nickname: mount.nickname, ttlMs: mount.ttlMs, signal: options.signal }).then(
+      // An earlier claim's credential (its runner died before removing it) goes first; then this claim's is minted.
+      minted ??= removeOlderMountTokens(credentialOptions, mount.runId, mount.epoch, { signal: options.signal })
+        .then(() => mintMountToken(credentialOptions, { nickname: nicknameOf(mount.runId, mount.epoch), ttlMs: mount.ttlMs, signal: options.signal }))
+        .then(
         (credential) => {
           held.add(credential.token);
           live = credential;
@@ -148,14 +166,7 @@ export async function archilClaim(options: ArchilClaimOptions): Promise<ArchilCl
       if (released) throw new Error(RELEASED);
       return credential.token;
     },
-    revoke: async () => {
-      const credential = live ?? (await minted?.catch(() => undefined));
-      if (credential === undefined) return;
-      await removeMountToken(credentialOptions, credential.identifier, { token: credential.token });
-      if (live === credential) live = undefined;
-      minted = undefined;
-      held.delete(credential.token);
-    },
+    revoke,
     release,
   };
 }

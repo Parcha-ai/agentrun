@@ -5,6 +5,8 @@
 //           answers (in its `data` envelope) the token and its identifier. The ttl is the safety net if a remove never
 //           comes: the run's lifetime bound, as a duration ("86400s").
 // - remove: DELETE {control}/api/disks/{disk}/users/token?identifier=<identifier>, idempotent: a 404 is already gone.
+// - list:   GET    {control}/api/disks/{disk}, its authorized users: a reclaim removes the run's token users of an earlier
+//           claim epoch (nickname "agentrun:<run>:<epoch>") before it mints, as the janitor's releaseOlder does computers.
 // The control plane is the region's (the SDK's own table), or a loopback one given for a test. Neither the token nor the
 // key is ever in the environment, an argument, a file, a log line or an error: an error carries the status and Archil's
 // own words, scrubbed of both.
@@ -60,8 +62,22 @@ function controlOf(options: ArchilMountCredentialOptions): string {
   return url;
 }
 
-/** A ttl as Archil's durations read it: whole seconds, at least one. */
-export const ttlOf = (ms: number): string => `${Math.max(1, Math.ceil(ms / 1000))}s`;
+/** Archil's longest ttl, 365 days, in seconds. */
+const MAX_TTL_S = 8760 * 3600;
+
+/** A ttl as Archil reads it (a Go duration): whole seconds, at least one, at most Archil's 365 days. */
+export const ttlOf = (ms: number): string => `${Math.min(MAX_TTL_S, Math.max(1, Math.ceil(ms / 1000)))}s`;
+
+/** The nickname of run `run`'s token user under claim epoch `epoch`: the run and the epoch, so a later claim finds an
+ *  earlier one's (its runner died before removing it). */
+export const nicknameOf = (run: string, epoch: number): string => `agentrun:${run}:${epoch}`;
+
+/** The run and epoch a nickname names, when it is one of nicknameOf's. */
+function claimOfNickname(nickname: unknown): { run: string; epoch: number } | undefined {
+  if (typeof nickname !== "string") return undefined;
+  const match = /^agentrun:(.+):(0|[1-9][0-9]*)$/.exec(nickname);
+  return match ? { run: match[1]!, epoch: Number(match[2]) } : undefined;
+}
 
 /** `text` with each secret replaced. */
 const scrub = (text: string, secrets: readonly string[]): string => secrets.filter((one) => one.length >= 4).reduce((out, one) => out.split(one).join("[redacted]"), text);
@@ -102,6 +118,37 @@ export async function mintMountToken(options: ArchilMountCredentialOptions, run:
     throw new ArchilMountCredentialError("Archil answered the mint of the run's mount credential with no token or no identifier");
   }
   return { token: user.token, identifier: user.identifier };
+}
+
+/** The disk's token users, by nickname and identifier (GET {control}/api/disks/{disk}: its authorized users). */
+export async function listTokenUsers(options: ArchilMountCredentialOptions, context: { readonly signal?: AbortSignal } = {}): Promise<{ readonly nickname?: string; readonly identifier: string }[]> {
+  const key = await options.key();
+  const url = `${controlOf(options)}/api/disks/${encodeURIComponent(options.disk)}`;
+  let response: Response;
+  try {
+    response = await (options.fetch ?? fetch)(url, { method: "GET", headers: { Authorization: `Bearer ${key}` }, redirect: "error", ...(context.signal ? { signal: context.signal } : {}) });
+  } catch (error) {
+    throw new ArchilMountCredentialError(`Archil's control plane could not be reached to list the disk's token users: ${scrub(error instanceof Error ? error.message : String(error), [key])}`);
+  }
+  if (!response.ok) throw new ArchilMountCredentialError(`Archil refused to list the disk's token users (${response.status}): ${await wordsOf(response, [key])}`, response.status);
+  const body = (await response.json().catch(() => undefined)) as { data?: { authorizedUsers?: unknown } } | undefined;
+  const users = Array.isArray(body?.data?.authorizedUsers) ? (body!.data!.authorizedUsers as { type?: unknown; nickname?: unknown; identifier?: unknown }[]) : [];
+  return users
+    .filter((user) => user?.type === "token" && typeof user.identifier === "string")
+    .map((user) => ({ identifier: user.identifier as string, ...(typeof user.nickname === "string" ? { nickname: user.nickname } : {}) }));
+}
+
+/** Removes run `run`'s token users of a claim epoch below `epoch` (a runner that died before removing its own), the way
+ *  the janitor's releaseOlder does for computers, and answers their identifiers. Others' users are left alone. */
+export async function removeOlderMountTokens(options: ArchilMountCredentialOptions, run: string, epoch: number, context: { readonly signal?: AbortSignal } = {}): Promise<string[]> {
+  const removed: string[] = [];
+  for (const user of await listTokenUsers(options, context)) {
+    const claim = claimOfNickname(user.nickname);
+    if (claim === undefined || claim.run !== run || claim.epoch >= epoch) continue;
+    await removeMountToken(options, user.identifier, context);
+    removed.push(user.identifier);
+  }
+  return removed;
 }
 
 /** Removes the run's mount credential by its identifier. Idempotent: one already gone (404) is removed. */
