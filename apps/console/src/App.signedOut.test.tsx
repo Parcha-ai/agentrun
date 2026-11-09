@@ -15,13 +15,16 @@ const json = (status: number, body: unknown) => new Response(JSON.stringify(body
 const UNAUTHENTICATED = { error: { code: "unauthenticated", message: "sign in first", retryable: false } };
 const RUN = { run_id: "r1", agent_id: "calc", agent_version: 1, revision: "rv1", kind: "agentic", status: "working", state: "working", title: "Look at the page", created_at: "2026-11-08T06:00:00Z", ended_at: null, result: null, error: null, cost: null, archived_at: null };
 
-function server() {
-  const s = { signedIn: true, password: ["the", "right", "password", "0"].join("-"), asked: [] as string[] };
+function server({ accounts = true } = {}) {
+  // `held`: the next run read waits, then answers whatever `release` gives it (a read started under one session that
+  // comes back after another began).
+  const s = { signedIn: true, password: ["the", "right", "password", "0"].join("-"), asked: [] as string[], hold: false, release: null as null | ((r: Response) => void) };
   vi.stubGlobal("fetch", async (url: string, init?: RequestInit) => {
     const u = new URL(url, "http://serve.test");
     const method = init?.method ?? "GET";
     s.asked.push(`${method} ${u.pathname}`);
-    if (u.pathname === "/v2/auth/session") return json(200, { password_set: true, signed_in: s.signedIn });
+    if (u.pathname === "/v2/auth/session") return accounts ? json(200, { password_set: true, signed_in: s.signedIn }) : json(404, { error: { code: "not_found", message: "no accounts", retryable: false } });
+    if (s.hold && (u.pathname === "/v2/runs/r1" || u.pathname === "/v2/runs/r1/timeline" || u.pathname === "/v2/runs/r1/browser")) { s.hold = false; return new Promise<Response>((done) => { s.release = done; }); }
     if (u.pathname === "/v2/auth/sign-in" && method === "POST") {
       const { password } = JSON.parse(String(init?.body ?? "{}")) as { password?: string };
       if (password !== s.password) return json(401, { error: { code: "unauthenticated", message: "that is not the password", retryable: false } });
@@ -55,6 +58,30 @@ async function open(hash: string) {
   const password = () => host.querySelector('input[type="password"]') as HTMLInputElement | null;
   return { host, wait, heading, password };
 }
+
+describe("App, a refusal that is no sign-out", () => {
+  it("an old read's 401 that comes back once the session is good again leaves the console as it is", async () => {
+    const s = server();
+    const p = await open("#/runs/r1");
+    await p.wait(() => p.heading() === "Look at the page", "the run's page");
+    s.hold = true;
+    await p.wait(() => s.release !== null, "a run read in flight");
+    // It was refused when it was made; the session is good now (signed in again since).
+    s.release!(json(401, UNAUTHENTICATED));
+    await act(async () => { await new Promise((r) => setTimeout(r, 300)); });
+    expect(p.password()).toBeNull();
+    expect(p.heading()).toBe("Look at the page");
+  }, 20_000);
+
+  it("a server without accounts whose token stopped working shows its link page, never a password form", async () => {
+    const s = server({ accounts: false });
+    const p = await open("#/runs/r1");
+    await p.wait(() => p.heading() === "Look at the page", "the run's page");
+    s.signedIn = false;
+    await p.wait(() => !!p.host.textContent?.includes("Open the server's link"), "the link page");
+    expect(p.password()).toBeNull();
+  }, 20_000);
+});
 
 describe("App, signed out in another tab", () => {
   it("the run page's next read is refused (401): the sign-in page shows why, and signing in goes back to the run", async () => {
