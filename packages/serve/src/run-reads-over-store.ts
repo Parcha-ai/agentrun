@@ -5,11 +5,13 @@
 // journal. The live halves (a run's open browser viewer, the timeline's live stream) read the runner's live state through
 // the store (live/stream.ts watchRun) and the viewer handover, which the runner publishes.
 import type { Context } from "@earendil-works/chord";
+import type { TimelineEvent } from "@parcha/pi-durable-agent/timeline";
 import type { IncomingMessage, ServerResponse } from "node:http";
 import { ApiError } from "./errors.js";
 import { runGraph } from "./graph-view.js";
 import { checkedPath, decodedPath } from "./home-path.js";
 import { costOf, WITHHELD_SIGN_IN } from "./run-view.js";
+import { ChangeClock, type Page, RowLog } from "./rows.js";
 import { listFiles, sendFile, type FileView } from "./run-files.js";
 import { readLaunchBody } from "./run-launch.js";
 import { runTimeline } from "./store-reads/journal.js";
@@ -116,4 +118,79 @@ export async function runGraphView(store: Store, runId: string, deps: RunReadsDe
     store,
     context: deps.context,
   });
+}
+
+const sleep = (ms: number): Promise<void> => new Promise((resolve) => { const t = setTimeout(resolve, Math.max(0, ms)); t.unref?.(); });
+
+/** A run's served timeline page, byte-identical to the old route's: the change page (reset/rows/drop/next_after/unchanged/
+ *  has_more) with the run's status, state, cost and whether it is final. */
+export interface TimelinePage {
+  readonly run_id: string;
+  readonly status: string;
+  readonly state: string;
+  readonly reset: boolean;
+  readonly rows: Page["rows"];
+  readonly drop: readonly string[];
+  readonly next_after: number;
+  readonly unchanged: boolean;
+  readonly has_more: boolean;
+  readonly final: boolean;
+  readonly cost: number | null;
+}
+
+/** What the timeline reader needs beyond the store: a context, the run's timeline rows and its view (status/state/cost). */
+export interface TimelineDeps {
+  readonly context: Context;
+  /** The run's timeline rows over the store (store-reads/journal.ts runTimeline). */
+  timelineRows(store: Store, runId: string, context: Context): Promise<TimelineEvent[]>;
+  /** The run's view (viewOverStore), for its status, state, cost and whether it is final. */
+  runView(store: Store, runId: string): Promise<Record<string, unknown> | undefined>;
+  /** How often the store is re-read while a page waits (default 1000 ms, the old poll). */
+  readonly pollMs?: number;
+}
+
+/** The run timeline reader over the store (getTimeline): one RowLog per run, its change numbers stable across this server's
+ *  polls (as the old live run's log was across a process's life), synced from the run's journal on each read. `page` is the
+ *  old route's page, byte-identical, with the long-poll wait: it returns at once when the page changed, the run is final, or
+ *  `waitMs` passed; else it re-reads the journal every `pollMs` until one of those. The route frames the SSE stream around it,
+ *  and the live wake can come from watchRun in place of the poll; the page itself is the same either way.
+ *
+ *  Not folded in here: the learning row's freshness (the old rowsNow re-read of a learning row approved or retired since) —
+ *  the switch/store-view applies it to the rows, as it owns the learning view. */
+export function runTimelines(deps: TimelineDeps): { page(store: Store, runId: string, after: number, waitMs: number, limit: number): Promise<TimelinePage> } {
+  const clock = new ChangeClock();
+  const logs = new Map<string, RowLog>();
+  const logOf = (runId: string): RowLog => {
+    let log = logs.get(runId);
+    if (!log) logs.set(runId, (log = new RowLog(clock)));
+    return log;
+  };
+  const pollMs = deps.pollMs ?? 1_000;
+
+  async function once(store: Store, runId: string, after: number, limit: number): Promise<TimelinePage> {
+    const [rows, view] = await Promise.all([deps.timelineRows(store, runId, deps.context), deps.runView(store, runId)]);
+    if (!view) throw new ApiError("not_found", `There is no run ${runId}.`);
+    const status = String(view.status);
+    const state = String(view.state);
+    const log = logOf(runId);
+    // The run's rows as they stand now, then its status: a change to either is one more change the page carries.
+    log.sync(rows);
+    log.setState(`${status}:${state}`);
+    const page = log.page(after, limit);
+    // Final when the run is terminal and settled (the view says so with poll_after_ms 0, as the old final did).
+    const final = view.poll_after_ms === 0;
+    const cost = (view.cost as { usd?: number | null } | undefined)?.usd ?? null;
+    return { run_id: runId, status, state, reset: page.reset, rows: page.rows, drop: page.drop, next_after: page.next_after, unchanged: page.unchanged, has_more: page.has_more, final, cost };
+  }
+
+  return {
+    async page(store, runId, after, waitMs, limit) {
+      const deadline = Date.now() + waitMs;
+      for (;;) {
+        const page = await once(store, runId, after, limit);
+        if (!page.unchanged || page.final || Date.now() >= deadline) return page;
+        await sleep(Math.min(pollMs, deadline - Date.now()));
+      }
+    },
+  };
 }
