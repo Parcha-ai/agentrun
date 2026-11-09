@@ -9,7 +9,7 @@ import type { ApiError, Firing, InputIssue, McpPrivateHosts, TemplateApplied, Te
 /** A request AgentRun Server refused: its HTTP status and its typed error (`code`, `message`, `retryable`). */
 /** A refusal's issue at one field, as the server names it (with its `fix`, when it says one). Its `reason` is any string, as
  *  ApiError's `code` is: the server also sends reasons its document does not list yet (an MCP server's `url` "redirect"). */
-export type FieldIssue = Omit<InputIssue, "reason"> & { reason: InputIssue["reason"] | (string & {}) };
+export type FieldIssue = InputIssue;
 
 export class ClientError extends Error {
   /** A 422's issues, by field, as the server names them. */

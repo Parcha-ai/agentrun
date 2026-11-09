@@ -98,8 +98,7 @@ type ServedToolKeys = Answer<"listToolKeys">;
 export type ToolKey = ServedToolKeys["keys"][number];
 export type ToolKeys = ServedToolKeys;
 export type ToolKeyField = ToolKey["fields"][number];
-/** An MCP server's secret, or secrets (PENDING until tl-mcp's slice: secrets.pending.ts). */
-export type { PendingMcpSecrets } from "./secrets.pending";
+
 /** A saved key's check with its provider. Null, or absent from a server that does not check, says nothing. */
 export type ToolKeyCheck = NonNullable<ToolKey["check"]>;
 /** Saved values that do not open on this server, and why. `fields` is empty when the whole file does not read. */

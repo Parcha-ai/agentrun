@@ -17,9 +17,6 @@ const CREDENTIAL: Record<string, [string, "success" | "warning" | "plain"]> = {
   sealed: ["sealed", "success"], expired: ["sign-in expired", "warning"], unreadable: ["can't be opened: enter it again", "warning"], seal_key_missing: ["no seal key now", "warning"],
 };
 
-/** Where a saved credential came from, as its row says it (the read's `secret.source`). */
-const SOURCE: Record<"env" | "console" | "sign-in", string> = { env: "From the server's environment", console: "Pasted in the console", "sign-in": "From a sign-in" };
-
 /** Settings → MCP servers: the remote MCP servers this server keeps, each with its tools and its credential's state, and
  *  a form to add one: its address and credential, a preview of the tools it lists, then Save. A credential goes to the
  *  server and nowhere else: its inputs are uncontrolled (React would mirror a value into the DOM), never filled from a
@@ -92,8 +89,6 @@ function ServerRow({ v2, server: s, writable, signIn, onChange, onChanged }: { v
   const run = async (work: () => Promise<void>) => { setBusy(true); setProblem(null); try { await work(); } catch (e) { setProblem(mcpProblem(e)); } setBusy(false); };
   const [said, tone] = s.credential ? CREDENTIAL[s.credential] ?? [s.credential, "plain"] : ["no credential", "plain" as const];
   const oauth = s.auth.type === "oauth";
-  // Its credential: one secret ("mcp:<server>", a bearer token or a sign-in) or several ("mcp:<server>:<header>").
-  const metas = s.secrets ?? (s.secret ? [s.secret] : []);
   const changes = note && [["Added", note.added], ["Removed", note.removed], ["Changed", note.changed]].filter(([, names]) => names.length).map(([what, names]) => `${what} ${(names as string[]).join(", ")}`);
   return (
     <li data-server={s.name} className="border-b p-4 last:border-b-0">
@@ -102,19 +97,19 @@ function ServerRow({ v2, server: s, writable, signIn, onChange, onChanged }: { v
         <div className="min-w-0 flex-1">
           <p className="flex flex-wrap items-center gap-2"><span className="font-mono text-[15px] font-semibold">{s.name}</span><Chip tone={tone}>{said}</Chip>{!!s.not_metered?.length && <Chip tone="plain">not metered</Chip>}</p>
           <p className="mt-1.5 break-all font-mono text-[12px] text-muted-foreground">{s.url}</p>
-          {s.secret?.set && s.secret.source && <p className="mt-1 font-mono text-[12px] text-muted-foreground">{SOURCE[s.secret.source]}{s.secret.changed_at ? ` · last changed ${when(s.secret.changed_at)}` : ""}</p>}
           {oauth && s.oauth && <p className="mt-1 font-mono text-[12px] text-muted-foreground">Signed in with OAuth{s.oauth.scopes.length ? ` · ${s.oauth.scopes.join(" ")}` : ""}{s.oauth.client === "pre-registered" && s.oauth.client_id ? ` · client ${s.oauth.client_id}` : ""}{s.credential === "expired" ? " · sign-in expired: sign in again" : s.oauth.expires_at ? ` · token until ${when(s.oauth.expires_at)}` : ""}</p>}
           <details className="mt-2">
             <summary className="cursor-pointer font-mono text-[12px]">{s.tools.length} tool{s.tools.length === 1 ? "" : "s"}</summary>
             <ul className="mt-1 space-y-0.5">{s.tools.map((t) => <li key={t.name} className="font-mono text-[12px]">{t.name}{s.prices?.[t.name] !== undefined && <span className="text-muted-foreground"> · ${s.prices[t.name]} a call</span>}{s.not_metered?.includes(t.name) && <span className="text-muted-foreground"> · not metered</span>}</li>)}</ul>
           </details>
-          {/* Its credential's values (the token, each header's), each as a secret row: Replace opens the server's form. */}
-          {metas.length > 0 && <ul className="mt-2 space-y-1.5">{metas.map((m) => <SecretRow key={m.name} field={m} label={AUTH_LABEL[s.auth.type]} writable={writable} onPaste={m.source === "sign-in" ? undefined : onChange} />)}</ul>}
+          {/* Its one secret ("mcp:<server>": its bearer token, its headers' values, or its sign-in), as every secret's row.
+              Replace opens the server's form; a sign-in's has none: its Sign in is the write. */}
+          {s.secret && <ul className="mt-2"><SecretRow field={s.secret} label={AUTH_LABEL[s.auth.type]} writable={writable} onPaste={oauth ? undefined : onChange} /></ul>}
           {changes && <p className="mt-2 font-mono text-[12px]" role="status">{changes.length ? changes.join(" · ") : "No change: it lists the same tools."}</p>}
         </div>
         {!confirm && (
           <div className="flex flex-wrap gap-2">
-            {oauth && s.credential !== "sealed" && <Button size="sm" variant="primary" disabled={busy} onClick={() => void run(() => signIn(s.name, { url: s.url, ...(s.oauth?.scopes.length ? { scopes: s.oauth.scopes } : {}) }))}>Sign in again</Button>}
+            {oauth && s.credential !== "sealed" && writable && <Button size="sm" variant="primary" disabled={busy} onClick={() => void run(() => signIn(s.name, { url: s.url, ...(s.oauth?.scopes.length ? { scopes: s.oauth.scopes } : {}) }))}>Sign in again</Button>}
             {/* The list is read again however the refresh went: a refusal (a sign-in expired or revoked) changes the credential's state too. */}
             <Button size="sm" disabled={busy} onClick={() => void run(async () => { try { setNote(await v2.refreshMcpServer(s.name)); } finally { onChanged(); } })}>Refresh</Button>
             <Button size="sm" disabled={busy} onClick={onChange}>Change</Button>
@@ -254,7 +249,7 @@ function ServerForm({ v2, saved, cantStore, writable, signIn, onCancel, onSaved 
         <div className="flex flex-wrap gap-4">
           {AUTH.map(([id, label]) => (
             <label key={id} className="flex items-center gap-2 text-[13px]">
-              <input type="radio" name="mcp-auth" value={id} checked={type === id} disabled={(cantStore && id !== "none") || (!writable && (id === "bearer" || id === "headers"))} onChange={() => { setType(id); edited(); }} className="accent-[hsl(var(--primary))]" />{label}
+              <input type="radio" name="mcp-auth" value={id} checked={type === id} disabled={(cantStore && id !== "none") || (!writable && id !== "none")} onChange={() => { setType(id); edited(); }} className="accent-[hsl(var(--primary))]" />{label}
             </label>
           ))}
         </div>
@@ -287,7 +282,7 @@ function ServerForm({ v2, saved, cantStore, writable, signIn, onCancel, onSaved 
         <div className="space-y-2">
           <Said problem={problem} />
           {/* With OAuth chosen the form's own Sign in is there: one button, not two. */}
-          {problem.signIn && type !== "oauth" && <Button type="button" size="sm" variant="primary" disabled={busy || !name.trim()} onClick={() => void startSignIn()}>Sign in</Button>}
+          {problem.signIn && type !== "oauth" && writable && <Button type="button" size="sm" variant="primary" disabled={busy || !name.trim()} onClick={() => void startSignIn()}>Sign in</Button>}
         </div>
       )}
       {preview && (
@@ -303,7 +298,8 @@ function ServerForm({ v2, saved, cantStore, writable, signIn, onCancel, onSaved 
         </section>
       )}
       <div className="flex flex-wrap gap-2">
-        {type === "oauth" && needsSignIn
+        {type === "oauth" && !writable ? null
+          : type === "oauth" && needsSignIn
           ? <Button type="submit" size="sm" variant="solid" disabled={busy || !url.trim() || cantStore}>Sign in again with these settings</Button>
           : type === "oauth"
           ? <Button type="button" size="sm" variant="solid" disabled={busy || !name.trim() || !url.trim() || cantStore} onClick={() => void startSignIn()}>{saved ? "Sign in again" : "Sign in"}</Button>

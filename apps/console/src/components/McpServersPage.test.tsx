@@ -290,9 +290,11 @@ describe("Settings → MCP servers, the saved ones", () => {
       saved({ name: "open", auth: { type: "none" }, credential: null, secret: { name: "mcp:open", set: false, source: null, changed_at: null } }),
     ]]);
     const p = await open(s.v2);
-    expect(p.row("fake").textContent).toContain("Pasted in the console · last changed ");
-    expect(p.row("docs").textContent).toContain("From a sign-in · last changed ");
-    expect(p.row("open").textContent).not.toContain("last changed");
+    // Each server's one secret is its SecretRow (SecretRow.tsx): where it came from, and when it last changed.
+    expect(p.row("fake").querySelector('[data-secret="mcp:fake"]')!.textContent).toMatch(/Pasted here.*Changed .* ago/);
+    expect(p.row("docs").querySelector('[data-secret="mcp:docs"]')!.textContent).toMatch(/From sign-in.*Changed .* ago/);
+    expect(p.row("open").querySelector('[data-secret="mcp:open"]')!.textContent).toContain("Missing");
+    expect(p.row("open").textContent).not.toContain("Changed");
   });
 
   it("refreshes one and says what was added, removed and changed", async () => {
