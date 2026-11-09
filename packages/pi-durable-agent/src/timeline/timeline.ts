@@ -43,8 +43,9 @@ export type TimelineEvent = {
    *  which counts, as a person's `user_message` does, as the message its turn took (`isMessageRow`). */
   origin?: "server" | "trigger";
   /** On a trigger's row (`origin: "trigger"`) alone: its trigger, from the message's origin, so a client labels the row
-   *  by its source without reading its summary. */
-  trigger?: { id: string; source: TriggerSource; owner: boolean };
+   *  by its source without reading its summary. `name`, the trigger's name as it is now, is serve's to add (this
+   *  projector writes its id): the one the summary shows, so a client drops exactly that prefix, colons and all. */
+  trigger?: { id: string; source: TriggerSource; owner: boolean; name?: string };
   /** `true` on the server's `phase` row of a spend cap's refusal for room (serve), "Paused at the run's cap", origin
    *  server and its id ending NOTE_SUFFIX: the request was not sent and the run paused for a raise; a pause, never a
    *  failure, whether the run waits on its cap now or was raised since. */

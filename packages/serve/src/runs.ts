@@ -1725,7 +1725,9 @@ export class Runs {
     const name = given === undefined ? undefined : this.redactor(run)(given).replace(/\s+/g, " ").trim();
     const label = TRIGGER_LABELS[source];
     const written = `${label} ${id}: `;
-    return name && row.summary?.startsWith(written) ? { ...row, summary: `${label} ${name}: ${row.summary.slice(written.length)}` } : row;
+    // The name on the row's trigger too, as the summary shows it: a client drops exactly "<label> <name>: ", whatever
+    // colons the name and the message hold.
+    return name && row.summary?.startsWith(written) ? { ...row, summary: `${label} ${name}: ${row.summary.slice(written.length)}`, trigger: { ...row.trigger!, name } } : row;
   }
 
   /** Trigger `id` renamed or deleted (every trigger, with none: the triggers just read): each held run whose Timeline
