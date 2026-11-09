@@ -35,4 +35,4 @@ export {
 export { computerProviderFactories, computerProviderMakers, type ProviderLoad } from "./computer-providers.js";
 export { claimComputer, type ComputerDeps, computerDepsFrom, type ComputerDepsOptions, computerSpecOf } from "./computer-deps.js";
 export { type ClaimComputer, type ClaimLaunch, computerForClaim, type ComputerForClaimDeps, type ComputerRun, type ImageWait, type OpenComputerView, type ProviderMakers, sweepComputers, type ViewEnd } from "./computer-for-claim.js";
-export { layOwnSkills, layRevisionSkills, RUN_SKILLS_DIR } from "./revision-skills.js";
+export { layOwnSkills, RUN_SKILLS_DIR } from "./revision-skills.js";

@@ -17,7 +17,7 @@ import { layLearned, layPinnedSkills, secretsShown } from "../dist/learning.js";
 import { promptOf, skillsOf } from "../dist/skills.js";
 import { evidenceIn } from "../dist/tools.js";
 import { Uploads } from "../dist/uploads.js";
-import { archilWorkspace, layRevisionSkills, runKey } from "../dist/workspace/index.js";
+import { archilWorkspace, layOwnSkills, runKey } from "../dist/workspace/index.js";
 import { FakeArchilDisk } from "./fixtures/archil-fake.mjs";
 
 const ROOT = runKey("acme", "run-1");
@@ -80,7 +80,7 @@ test("the run's files list from the disk with their times, and a file is served 
 
 test("a revision's skills are laid on the disk and read back for the prompt", async () => {
   const { disk, work } = fresh();
-  await layRevisionSkills(work, { "cite/SKILL.md": "---\nname: cite\ndescription: Cite.\n---\nCite sources.\n", "cite/ref.md": "Primary.\n" });
+  await layOwnSkills(work, { "cite/SKILL.md": "---\nname: cite\ndescription: Cite.\n---\nCite sources.\n", "cite/ref.md": "Primary.\n" });
   assert.deepEqual(keysOf(disk), [".agents/skills/cite/SKILL.md", ".agents/skills/cite/ref.md"]);
   assert.deepEqual(await skillsOf(["cite/SKILL.md", "cite/ref.md"], work), [{ name: "cite", files: { "SKILL.md": "---\nname: cite\ndescription: Cite.\n---\nCite sources.\n", "ref.md": "Primary.\n" } }]);
   assert.match(await promptOf("Answer.", ["cite/SKILL.md"], work), /<skill name="cite">/);
