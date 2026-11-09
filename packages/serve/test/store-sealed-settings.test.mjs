@@ -71,6 +71,39 @@ test("mint writes a new secret sealed and returns it once; remove drops a scope'
   assert.ok(settings.values().includes(minted), "but the rotated value is still redacted this process's life");
 });
 
+test("a value sealed under another seal key does not open here: unset, marked unopened and said once, until it is set again; removing its scope drops its rows", async (t) => {
+  const { store } = await storeOn(t);
+  const minting = { scope: "trigger", fields: { secret: { mint: true, minBytes: MIN_KEY_BYTES } } };
+  const before = sealedSettingsOverStore(store, "hookish", minting, randomBytes(32), () => {});
+  await before.load();
+  await before.mint("trg_one", "secret");
+  await before.mint("trg_two", "secret");
+  const said = [];
+  const here = sealedSettingsOverStore(store, "hookish", minting, KEY, (f) => said.push(f));
+  await here.load();
+  assert.equal(here.get("trg_one", "secret"), undefined, "unset here");
+  assert.deepEqual([here.unopenedAt("trg_one", "secret"), here.unopenedAt("trg_none", "secret")], [true, false]);
+  assert.deepEqual(said.map((f) => [f.condition, f.scope]), [["trigger_setting_unopened", "trg_one"], ["trigger_setting_unopened", "trg_two"]]);
+  const fresh = await here.mint("trg_one", "secret");
+  assert.deepEqual([here.get("trg_one", "secret"), here.unopenedAt("trg_one", "secret")], [fresh, false], "a new one opens");
+  await here.remove("trg_two");
+  assert.equal(here.unopenedAt("trg_two", "secret"), false);
+  assert.deepEqual((await store.triggerSettings.get("hookish")).map((row) => row.scope), ["trg_one"], "the unopened scope's rows went with it");
+});
+
+test("with no seal key the sealed settings are not read, said once; a set is refused no_sealing_key", async (t) => {
+  const { store } = await storeOn(t);
+  const kept = sealedSettingsOverStore(store, "slackish", spec, KEY, () => {});
+  await kept.load();
+  await kept.set("server", "token", "a-long-enough-token");
+  const said = [];
+  const noKey = sealedSettingsOverStore(store, "slackish", spec, undefined, (f) => said.push(f));
+  await noKey.load();
+  assert.deepEqual(said.map((s) => [s.condition, s.adapter]), [["trigger_settings_no_seal_key", "slackish"]], "one line, not a value");
+  assert.equal(noKey.get("server", "token"), undefined, "not read");
+  await assert.rejects(() => noKey.set("server", "token", "another-token"), (e) => e.code === "no_sealing_key");
+});
+
 test("openServerSecretsOverStore wires each adapter's store settings into the redaction list", async (t) => {
   const { store } = await storeOn(t);
   const data = await mkdtemp(join(process.env.TMPDIR ?? tmpdir(), "server-secrets-store-"));

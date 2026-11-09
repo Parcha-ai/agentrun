@@ -16,7 +16,10 @@ import { startServe } from "../dist/index.js";
 import { ATTEMPTS_KEPT, signatureOf, Webhooks } from "../dist/webhooks.js";
 import { verify } from "../dist/standard-webhooks.js";
 import { schemaProblems } from "./schema-support.mjs";
-import { client, FAUX, follow, printed, runDir, runRecordOf, scratch, serve, startRun, withEnv } from "./support.mjs";
+import { client, FAUX, follow, printed, runDir, runRecordOf, scratch, secretWritePath, serve, startRun, withEnv } from "./support.mjs";
+
+// Removing the outbound webhook takes its secret with it: the client sends it from the owner's session, as the console does.
+secretWritePath(["DELETE"], /^\/settings\/webhook$/);
 
 // The spec's own library, in the lockfile through the Anthropic SDK: what a receiver would install.
 const { Webhook } = createRequire(import.meta.url)("standardwebhooks");
@@ -153,12 +156,13 @@ test("demo: a run that ends and a run that asks its person each POST a Standard 
   const hook = await receiver(t);
   const lines = [];
   const { api, data, url } = await serve(t, { log: (line) => lines.push(line) });
-  assert.deepEqual((await api("GET", "/settings/webhook")).body, { configured: false });
+  assert.deepEqual((await api("GET", "/settings/webhook")).body, { configured: false, secret: { name: "webhook:outbound", set: false, source: null, changed_at: null } });
   const set = await api("PUT", "/settings/webhook", { url: hook.url });
   assert.equal(set.status, 201, JSON.stringify(set.body));
-  const { secret } = set.body;
+  const { signing_secret: secret } = set.body;
   assert.match(secret, /^whsec_[A-Za-z0-9+/]{43}=$/, "whsec_ and 32 bytes in base64");
-  assert.deepEqual({ ...set.body, secret: undefined, updated_at: undefined }, { configured: true, url: hook.url, signing: "sealed", disabled: null, secret: undefined, updated_at: undefined });
+  assert.deepEqual({ ...set.body, signing_secret: undefined, secret: undefined, updated_at: undefined }, { configured: true, url: hook.url, signing: "sealed", disabled: null, signing_secret: undefined, secret: undefined, updated_at: undefined });
+  assert.deepEqual([set.body.secret.name, set.body.secret.set, set.body.secret.source], ["webhook:outbound", true, "console"], "its secret's metadata, never its value");
   await meetsDocument(api, "/settings/webhook", "put", "201", set.body);
   const library = new Webhook(secret);
 
@@ -205,14 +209,14 @@ test("demo: a run that ends and a run that asks its person each POST a Standard 
 
   // The secret: in no answer but the first PUT's, in no file of the data directory and in no log line.
   const view = await api("GET", "/settings/webhook");
-  assert.deepEqual({ ...view.body, updated_at: undefined }, { configured: true, url: hook.url, signing: "sealed", disabled: null, updated_at: undefined });
+  assert.deepEqual({ ...view.body, updated_at: undefined }, { configured: true, url: hook.url, signing: "sealed", secret: set.body.secret, disabled: null, updated_at: undefined });
   await meetsDocument(api, "/settings/webhook", "get", "200", view.body);
   const key = Buffer.from(secret.slice(6), "base64");
   const forms = [secret, secret.slice(6), key, key.toString("hex"), key.toString("base64url")];
   for (const where of [JSON.stringify(view.body), JSON.stringify(log), lines.join("\n"), ...filesIn(data)]) for (const form of forms) assert.ok(!Buffer.from(where).includes(form), "the secret is nowhere in the clear");
   assert.equal(statSync(join(data, "webhook.json")).mode & 0o777, 0o600);
   assert.equal(statSync(join(data, "webhook-outbox.json")).mode & 0o777, 0o600);
-  assert.equal((await api("PUT", "/settings/webhook", { url: hook.url })).body.secret, undefined, "a later PUT keeps the secret and never shows it");
+  assert.equal((await api("PUT", "/settings/webhook", { url: hook.url })).body.signing_secret, undefined, "a later PUT keeps the secret and never shows it");
 });
 
 test("a receiver that is down gets each try, then the message is logged as failed; one that fails then answers gets it on a try again, under the same webhook-id; a redirect is not followed", async (t) => {
@@ -512,7 +516,7 @@ test("settings: an http or https URL with no user or password, and nothing else;
   assert.equal((await api("PUT", "/settings/webhook", { url: hook.url })).status, 201);
   assert.equal((await api("POST", "/settings/webhook/test", {})).body.status_code, 200);
   assert.equal((await api("DELETE", "/settings/webhook")).status, 204);
-  assert.deepEqual((await api("GET", "/settings/webhook")).body, { configured: false });
+  assert.deepEqual((await api("GET", "/settings/webhook")).body, { configured: false, secret: { name: "webhook:outbound", set: false, source: null, changed_at: null } });
   assert.equal((await api("GET", "/settings/webhook/deliveries")).body.attempts.length, 1, "the log stays");
   const quiet = await startRun(api, "quiet", "hi");
   // Its end's notice is decided as its end is shown (runs.ts notice): by the time it reads completed, nothing was queued.

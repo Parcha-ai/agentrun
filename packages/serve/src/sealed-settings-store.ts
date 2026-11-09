@@ -23,6 +23,9 @@ const PEM = /^-----BEGIN ((?:[A-Z]+ )*)PRIVATE KEY-----\r?\n[A-Za-z0-9+/=\r\n]+-
 /** The store slice this layer reads and writes. */
 type SealedSettingsStore = { readonly triggerSettings: Pick<TriggerSettings, "get" | "put" | "removeScope">; flush(): Promise<void> };
 
+/** A (scope, field) pair as one key. */
+const pair = (scope: string, field: string) => `${scope}\0${field}`;
+
 class SealedSettingsOverStore {
   /** Opened, by scope and field: read once at load, then kept with every write. */
   private readonly opened: Record<string, Record<string, string>> = {};
@@ -30,6 +33,8 @@ class SealedSettingsOverStore {
   private readonly retired = new Set<string>();
   /** The PEM keys this store held open and no longer does: in memory alone, listed by pemValues. */
   private readonly retiredPem: string[] = [];
+  /** The (scope, field) pairs kept here that did not open under this server's seal key at load: unset until set again. */
+  private readonly unopened = new Set<string>();
 
   constructor(
     private readonly store: SealedSettingsStore,
@@ -47,6 +52,7 @@ class SealedSettingsOverStore {
       try {
         (this.opened[row.scope] ??= {})[row.field] = unseal(this.key, Buffer.from(row.sealed, "base64"), aad(this.adapterId, row.scope, row.field)).toString("utf8");
       } catch {
+        this.unopened.add(pair(row.scope, row.field));
         this.say({ condition: "trigger_setting_unopened", adapter: this.adapterId, scope: row.scope, field: row.field, effect: `it does not open under ${SEAL_KEY_ENV}: unset until it is set again` });
       }
     }
@@ -80,6 +86,7 @@ class SealedSettingsOverStore {
     const was = this.opened[scope]?.[field];
     if (was !== undefined && was !== value) this.retire(field, was);
     (this.opened[scope] ??= {})[field] = value;
+    this.unopened.delete(pair(scope, field));
   }
 
   /** `scope`'s `field`, opened; undefined when it is not set, or does not open here. */
@@ -87,9 +94,18 @@ class SealedSettingsOverStore {
     return this.opened[scope]?.[field];
   }
 
+  /** Whether `scope`'s `field` is kept here but did not open under this server's seal key (sealed under another): unset
+   *  here, and said once at load, until it is set again. */
+  unopenedAt(scope: string, field: string): boolean {
+    return this.unopened.has(pair(scope, field));
+  }
+
   /** A scope's settings gone (a deleted trigger's). Durable before it resolves. */
   async remove(scope: string): Promise<void> {
-    if (!(scope in this.opened)) return;
+    // A scope whose settings did not open here is removed all the same: its rows go with it.
+    const unopened = [...this.unopened].filter((key) => key.startsWith(`${scope}\0`));
+    if (!(scope in this.opened) && !unopened.length) return;
+    for (const key of unopened) this.unopened.delete(key);
     await this.store.triggerSettings.removeScope(this.adapterId, scope);
     await this.store.flush();
     for (const [field, value] of Object.entries(this.opened[scope] ?? {})) this.retire(field, value);

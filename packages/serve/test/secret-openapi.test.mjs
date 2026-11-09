@@ -21,6 +21,11 @@ test("every operation with a field marked x-agentrun-secret has a predicate regi
   assert.ok(mod, "secret-writes.js exists");
   const marked = mod.markedOperations(doc);
   assert.ok(marked.includes("saveToolKey"), `saveToolKey's values are marked: ${JSON.stringify(marked)}`);
+  // A removal carries no body, so the operation is marked whole: it writes a secret all the same.
+  assert.ok(marked.includes("deleteToolKey"), `deleteToolKey is marked as a whole: ${JSON.stringify(marked)}`);
+  const whole = structuredClone(doc);
+  whole.paths["/test-only-whole"] = { delete: { operationId: "testOnlyWhole", "x-agentrun-secret": true } };
+  assert.deepEqual(mod.unguardedOperations(whole, mod.registeredOperations()), ["testOnlyWhole"], "an operation marked whole and unregistered is named");
   assert.deepEqual(mod.unguardedOperations(doc, mod.registeredOperations()), [], "no marked operation lacks a predicate");
   // The check catches one: a marked operation no plane registered.
   const extra = structuredClone(doc);

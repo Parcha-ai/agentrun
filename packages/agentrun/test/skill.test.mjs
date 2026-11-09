@@ -1,7 +1,7 @@
 // The agentrun-cli skill: each shell block of its recipes, run in order against a server started with a faux model on
 // loopback, with `agentrun` this repository's bin on the PATH, exits as its last line says; --check fails when the
-// skill names a command the CLI does not have; `skill install` writes the folder; `tool-keys set` and `login` take their
-// secret from stdin or the environment and never print it; a config file open to others is refused.
+// skill names a command the CLI does not have; `skill install` writes the folder; `login` takes its
+// secret from stdin or the environment and never prints it; no command writes a tool key; a config file open to others is refused.
 import assert from "node:assert/strict";
 import { createHash, randomBytes } from "node:crypto";
 import { spawn, spawnSync } from "node:child_process";
@@ -160,35 +160,29 @@ test("SKILL.md: its front matter, its size, and each recipe block run in order a
     assert.equal(readFileSync(join(other, "agentrun-cli", "SKILL.md"), "utf8"), "---\nname: something-else\n---\n", "left as it was");
   });
 
-  await t.test("tool-keys set: the value from stdin or --from-env goes to the server, which refuses the token a secret write in its one sentence; the value is in no output", () => {
+  await t.test("no command writes a tool key: tool-keys set, save and delete are none of the CLI's; a raw api call with the value on stdin is refused the token in its one sentence; the value is in no output", () => {
     const outputs = [];
     const cli = cliOf(server.env, outputs);
     const value = `not-a-secret-${randomBytes(12).toString("hex")}`;
-    const unset = cli(["tool-keys", "list"]).json().keys.find((key) => key.id === "parallel");
-    assert.deepEqual(unset.fields.map((f) => f.set), [false]);
+    const field = () => cli(["tool-keys", "list"]).json().keys.find((key) => key.id === "parallel").fields[0];
+    assert.equal(field().set, false);
     // A secret is written only from the owner's session in the console (the server's secret-writes.ts): the CLI holds the
-    // token, so every save and removal is refused, saying where to do it.
+    // token, so it has no command for one, and a raw call is refused, saying where to do it.
+    for (const verb of ["set", "save", "delete"]) {
+      const none = cli(["tool-keys", verb, "parallel", "PARALLEL_API_KEY"], { input: value });
+      assert.equal(none.code, 2, `tool-keys ${verb}: ${none.err}`);
+      assert.match(none.err, new RegExp(`agentrun tool-keys has no verb ${verb}`));
+    }
     const refused = (res, what) => {
       assert.equal(res.code, 1, `${what}: ${res.err}`);
       assert.match(res.err, /forbidden/, what);
       assert.match(res.err, /owner's signed-in session in the console/, what);
     };
-    refused(cli(["tool-keys", "set", "parallel", "PARALLEL_API_KEY"], { input: `${value}\n` }), "from stdin");
-    const field = () => cli(["tool-keys", "list"]).json().keys.find((key) => key.id === "parallel").fields[0];
+    refused(cli(["api", "PUT", "/settings/tool-keys/parallel", "--body", "-"], { input: JSON.stringify({ values: { PARALLEL_API_KEY: value } }) }), "a raw save");
+    refused(cli(["api", "DELETE", "/settings/tool-keys/parallel"]), "a raw removal");
     assert.equal(field().set, false, "nothing saved");
-    refused(cli(["tool-keys", "delete", "parallel"]), "a removal");
-    refused(cli(["tool-keys", "set", "parallel", "PARALLEL_API_KEY", "--from-env", "KEY_VALUE"], { extra: { KEY_VALUE: value } }), "from the environment");
-    assert.equal(field().set, false, "nothing saved");
-    // A field the key does not have: refused the same, before its body is read, and still not the value.
-    refused(cli(["tool-keys", "set", "parallel", "NO_SUCH_FIELD"], { input: value }), "another field");
-    // On the command line, it is one argument too many: refused, nothing sent, and not echoed.
-    assert.equal(cli(["tool-keys", "set", "parallel", "PARALLEL_API_KEY", value]).code, 2);
-    assert.equal(cli(["tool-keys", "set", "parallel", "PARALLEL_API_KEY", "--from-env", "NOT_SET_HERE"]).code, 2);
-    // A KEY_ID fetch would read as a step up: refused, nothing sent.
-    const up = cli(["tool-keys", "set", "..", "PARALLEL_API_KEY"], { input: value });
-    assert.equal(up.code, 2);
-    assert.match(up.err, /KEY_ID may not be empty, \. or \.\./);
-    assert.equal(cli(["tool-keys", "set", "parallel", "PARALLEL_API_KEY"], { input: "" }).code, 2, "nothing on stdin");
+    // On the command line, a body bound for the secret route is refused, nothing sent, and not echoed.
+    assert.equal(cli(["api", "PUT", "/settings/tool-keys/parallel", "--body", JSON.stringify({ values: { PARALLEL_API_KEY: value } })]).code, 2);
     for (const out of outputs) {
       assert.ok(!out.includes(value), "no output holds the value");
       assert.ok(!out.includes(server.token), "no output holds the token");
@@ -321,15 +315,11 @@ test("a secret-bearing command never prints a server's error body, and cuts the 
   for (const secret of ['not"a\\secret-01', "Z", "fake-test-key-xyz"]) {
     for (const form of ["json", "raw"]) {
       Object.assign(echo.answer, { status: 422, secret, form });
-      const set = await cli(["tool-keys", "set", "parallel", "PARALLEL_API_KEY", ...base], { ...key, input: secret });
+      const set = await cli(["api", "PUT", "/settings/tool-keys/parallel", "--body", "-", ...base], { ...key, input: JSON.stringify({ values: { PARALLEL_API_KEY: secret } }) });
       assert.equal(set.code, 1, set.err);
       assert.equal(echo.requests.at(-1), "PUT /v2/settings/tool-keys/parallel", "it reached this test's own server");
-      clean(set, secret, `tool-keys set, ${form}`);
+      clean(set, secret, `a raw tool key save, ${form}`);
       if (form === "json") assert.match(set.err, /422 input_invalid/);
-
-      const save = await cli(["tool-keys", "save", "parallel", "--body", "-", ...base], { ...key, input: JSON.stringify({ values: { PARALLEL_API_KEY: secret } }) });
-      assert.equal(save.code, 1, save.err);
-      clean(save, secret, `tool-keys save, ${form}`);
       const mcp = await cli(["mcp-servers", "save", "srv", "--body", "-", ...base], { ...key, input: JSON.stringify({ url: "https://mcp.example.com/mcp", auth: { type: "bearer", token: secret } }) });
       assert.equal(mcp.code, 1, mcp.err);
       clean(mcp, secret, `mcp-servers save, ${form}`);
@@ -343,9 +333,9 @@ test("a secret-bearing command never prints a server's error body, and cuts the 
     }
     // A success that quotes it: printed, with every copy cut.
     Object.assign(echo.answer, { status: 200, secret, form: "json" });
-    const ok = await cli(["tool-keys", "set", "parallel", "PARALLEL_API_KEY", ...base], { ...key, input: secret });
+    const ok = await cli(["api", "PUT", "/settings/tool-keys/parallel", "--body", "-", ...base], { ...key, input: JSON.stringify({ values: { PARALLEL_API_KEY: secret } }) });
     assert.equal(ok.code, 0, ok.err);
-    clean(ok, secret, "tool-keys set, a success");
+    clean(ok, secret, "a raw tool key save, a success");
   }
 
   // An MCP server's credential under any header name, `url` and `type` among them, is a secret: cut from a success that

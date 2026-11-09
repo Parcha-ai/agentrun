@@ -11,7 +11,7 @@ import { join } from "node:path";
 import { test } from "node:test";
 import { startServe } from "../dist/index.js";
 import { ApiError } from "../dist/errors.js";
-import { SealedSettings } from "../dist/sealed-settings.js";
+import { sealedSettingsOverStore } from "../dist/sealed-settings-store.js";
 import { headersRefusal, MIN_KEY_BYTES, verify } from "../dist/standard-webhooks.js";
 import { openapiDocument } from "../dist/openapi.js";
 import { TRIGGER_ADAPTERS } from "../dist/trigger-adapters.js";
@@ -96,12 +96,25 @@ async function storedServe(t, options) {
   return { server, api, store };
 }
 
+/** The ping source's server-wide signing secret, sealed in the trigger_settings rows of the store the server opens in
+ *  `data` (its own, where it reads every source's settings at its start), before the server starts. */
+async function signedBy(data, secret) {
+  const own = await openSqliteStore({ dataDir: data, role: "server" });
+  try {
+    const settings = sealedSettingsOverStore(own, "ping", ping.settings, sealKey, () => {});
+    await settings.load();
+    await settings.set("server", "signing", secret);
+  } finally {
+    await own.close();
+  }
+}
+
 async function pingServer(t, extra = {}) {
   withEnv(t, SEAL);
   const data = join(await scratch(t), "agents");
   await mkdir(data, { recursive: true });
   const secret = `whsec_${randomBytes(32).toString("base64")}`;
-  new SealedSettings(data, "ping", ping.settings, sealKey, () => {}).set("server", "signing", secret);
+  await signedBy(data, secret);
   const lines = [];
   const { server, api, store } = await storedServe(t, { data, triggerAdapters: [...TRIGGER_ADAPTERS, ping], log: (line) => lines.push(line), ...extra });
   return { server, api, store, secret, lines };
@@ -150,9 +163,9 @@ test("an unknown trigger, or one that is off, on a trigger's own hook path is th
   const made = await api("POST", "/triggers", { name: "on push", source: { kind: "webhook" }, target: { kind: "start_run", agent_id: "hooked", input: { content: "Hi." }, max_cost_usd: 0.5 } });
   assert.equal(made.status, 201, JSON.stringify(made.body));
   const bad = await post(server.baseUrl, `/hooks/${made.body.id}`, "{}", { secret: `whsec_${randomBytes(32).toString("base64")}` });
-  const unknown = await post(server.baseUrl, "/hooks/trg_000000000000000000000000", "{}", { secret: made.body.secret });
+  const unknown = await post(server.baseUrl, "/hooks/trg_000000000000000000000000", "{}", { secret: made.body.signing_secret });
   assert.equal((await api("PATCH", `/triggers/${made.body.id}`, { enabled: false })).status, 200);
-  const off = await post(server.baseUrl, `/hooks/${made.body.id}`, "{}", { secret: made.body.secret });
+  const off = await post(server.baseUrl, `/hooks/${made.body.id}`, "{}", { secret: made.body.signing_secret });
   // All of the answer but what differs by request: its time and its request id.
   const strip = (answer) => ({ status: answer.status, headers: { ...answer.headers, date: undefined, "x-request-id": undefined }, error: { ...answer.body.error, request_id: undefined } });
   assert.deepEqual([strip(unknown), strip(off)], [strip(bad), strip(bad)], "the same 401, body and all");
@@ -237,7 +250,7 @@ test("a signature is checked against the clock when the body has arrived, not wh
   const { port, hostname: host } = new URL(server.baseUrl);
   const body = "{}";
   const at = Math.floor(Date.now() / 1000) - 299;
-  const signature = new Webhook(made.body.secret).sign("msg_slow", new Date(at * 1000), body);
+  const signature = new Webhook(made.body.signing_secret).sign("msg_slow", new Date(at * 1000), body);
   const answer = await new Promise((resolve, reject) => {
     const socket = connect(Number(port), host);
     let text = "";
@@ -277,7 +290,7 @@ test("a trigger's own hook path takes every event its source parses from one req
   assert.equal((await api("POST", "/agents", agent("paired"))).status, 201);
   const made = await api("POST", "/triggers", { name: "pairs", source: { kind: "pair" }, target: { kind: "start_run", agent_id: "paired", input: { content: "A pair." }, max_cost_usd: 0.5 } });
   assert.equal(made.status, 201, JSON.stringify(made.body));
-  const res = await post(server.baseUrl, `/hooks/${made.body.id}`, JSON.stringify({ events: [{ id: "e-1", text: "one" }, { id: "e-2", text: "two" }] }), { secret: made.body.secret });
+  const res = await post(server.baseUrl, `/hooks/${made.body.id}`, JSON.stringify({ events: [{ id: "e-1", text: "one" }, { id: "e-2", text: "two" }] }), { secret: made.body.signing_secret });
   assert.equal(res.status, 202, JSON.stringify(res.body));
   assert.deepEqual(res.body.firings?.map((f) => f.by), ["pair", "pair"], JSON.stringify(res.body));
   assert.equal((await firings(api, made.body.id, 2)).length, 2, "each event its own firing");
@@ -305,7 +318,7 @@ test("with no log, what the push handler says goes to stderr, as the triggers' o
   const data = join(await scratch(t), "agents");
   await mkdir(data, { recursive: true });
   const secret = `whsec_${randomBytes(32).toString("base64")}`;
-  new SealedSettings(data, "ping", ping.settings, sealKey, () => {}).set("server", "signing", secret);
+  await signedBy(data, secret);
   const { server } = await storedServe(t, { data, triggerAdapters: [...TRIGGER_ADAPTERS, ping] });
   const written = [];
   const write = process.stderr.write;
