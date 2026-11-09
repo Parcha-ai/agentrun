@@ -44,7 +44,7 @@ test("fail closed until the native route: with the claim's one-ledger booking PR
   assert.equal(spec.browserListed({ paid }, ["read"]), false, "nor a revision without the browser");
 });
 
-test.todo("with the claim's one-ledger booking on its ToolHost (host.paid), a runner-path run lists the browser's tools as main binds them (the same names and descriptions; Browserbase's nine, Kernel's without browser_downloads; with its keys gone since its start, main's then), its provider through browserSpend with { paid: host.paid }: waits on spendcap-1: the adapter loop handing the claim's PaidBooking to the spec (host.paid). The ledger itself is covered with a booking of the kernel cap's own in runner-browser-ledger.test.mjs");
+test.todo("with the claim's one-ledger booking on its ToolHost (host.paid), a runner-path run lists the browser's tools as main binds them (the same names and descriptions; Browserbase's nine, Kernel's without browser_downloads; with its keys gone since its start, main's then), its provider through browserSpend with { paid: host.paid }: waits on E2r3 wiring host.paid from spendcap-1's AdapterRun.ledger.paid, and on the native route (costsofar-4), which flips BROWSER_ON_RUNNER. The ledger itself is covered with a booking of the kernel cap's own in runner-browser-ledger.test.mjs");
 
 test("a revision that names no browser lists none of its tools", async (t) => {
   const { spec } = await specFor(t, { body: { tools: ["read", "web_fetch"] }, launch: { plane: { browser: "browserbase" } }, env: FAUX, keys: BROWSERBASE });
