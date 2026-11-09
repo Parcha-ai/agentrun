@@ -8,7 +8,7 @@ import { randomBytes } from "node:crypto";
 import { linkSync, mkdirSync, readFileSync, renameSync, unlinkSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
-import { type AdbTransport, create, type PhoneHarnessProvider, type PhoneLedger, type PhoneLedgerEntry, type PhoneProviderOptions } from "../phone-harness.js";
+import { type AdbTransport, adbCli, create, type PhoneHarnessProvider, type PhoneLedger, type PhoneLedgerEntry, type PhoneProviderOptions } from "../phone-harness.js";
 
 /** The environment this module reads, by name. */
 export const PHONE_ENV = {
@@ -197,7 +197,9 @@ function optionsOf({ env = process.env, adb, ...rest }: PhoneModuleOptions): Pho
 	return {
 		apiKey: settings.apiKey,
 		...(settings.platform ? { platform: settings.platform } : {}),
-		adb: adb ?? settings.adb ?? "adb",
+		// The adb the run spawns starts from this environment with every adb variable dropped (adbCli's env), and this
+		// module's own names too: the API key has no business in adb's environment.
+		adb: adb ?? adbCli(settings.adb ?? "adb", { env: Object.fromEntries(Object.entries(env).filter(([name]) => !(Object.values(PHONE_ENV) as string[]).includes(name))) }),
 		ledger: fileLedger(settings.ledgerPath ?? join(tmpdir(), "agentrun-phone-ledger.json")),
 		maxLifetimeMs: RUN_MAX_LIFETIME_MS,
 		...rest,

@@ -179,21 +179,25 @@ type AdbRun = (args: string[], options?: { timeoutMs?: number; signal?: AbortSig
 /** The adb server's port when none is given: adb's own default. */
 export const ADB_SERVER_PORT = 5037;
 
-/** The environment variables adb reads to find its server or its device: every one is cleared on a spawned adb. */
+/** The environment variables adb reads to find its server or its device: every one is dropped from a spawned adb's. */
 const ADB_ENV = /^(ADB_|ANDROID_ADB_|ANDROID_SERIAL$)/;
 
 /**
  * The adb CLI (Android platform-tools) at path, by execFile, never a shell, and the adb server it starts, on the
  * loopback at port (adb's own default), spoken to by its socket protocol.
+ *
+ * env is the environment a spawned adb starts from, with every adb variable dropped from it (ADB_SERVER_SOCKET,
+ * ANDROID_ADB_SERVER_SOCKET, ANDROID_ADB_SERVER_ADDRESS, ANDROID_SERIAL, ...), so nothing in it points the CLI at
+ * another server than its socket requests reach. The library reads no environment of its own: a caller passes it (the
+ * conformance module passes process.env). Without env, a spawned adb inherits the process's environment as it is.
  */
-export function adbCli(path = "adb", { port = ADB_SERVER_PORT }: { port?: number } = {}): AdbTransport {
+export function adbCli(path = "adb", { port = ADB_SERVER_PORT, env }: { port?: number; env?: Readonly<Record<string, string | undefined>> } = {}): AdbTransport {
 	// Every spawned adb names the server the socket requests go to: without -P it would take its own default, 5037 or
-	// ANDROID_ADB_SERVER_PORT, and start or ask another server. Its environment holds no adb variable, so nothing in it
-	// (ADB_SERVER_SOCKET, ANDROID_ADB_SERVER_SOCKET, ANDROID_ADB_SERVER_ADDRESS, ANDROID_SERIAL, ...) points it elsewhere.
+	// ANDROID_ADB_SERVER_PORT, and start or ask another server.
+	const spawnEnv = env === undefined ? undefined : Object.fromEntries(Object.entries(env).filter(([name, value]) => value !== undefined && !ADB_ENV.test(name)));
 	const run: AdbTransport["run"] = (args, { timeoutMs, signal, input }) =>
 		new Promise((resolve) => {
-			const env = Object.fromEntries(Object.entries(process.env).filter(([name]) => !ADB_ENV.test(name)));
-			const child = execFile(path, ["-P", String(port), ...args], { encoding: "buffer", env, timeout: timeoutMs, killSignal: "SIGKILL", maxBuffer: 64 * 1024 * 1024, ...(signal ? { signal } : {}) }, (error, stdout, stderr) => {
+			const child = execFile(path, ["-P", String(port), ...args], { encoding: "buffer", ...(spawnEnv ? { env: spawnEnv } : {}), timeout: timeoutMs, killSignal: "SIGKILL", maxBuffer: 64 * 1024 * 1024, ...(signal ? { signal } : {}) }, (error, stdout, stderr) => {
 				const code = (error as NodeJS.ErrnoException | null)?.code;
 				if (code === "ENOENT") {
 					return resolve(fail("not_found", `the phone provider needs adb (Android platform-tools) on this machine: ${path} is not there; install platform-tools or give the provider's adb option`));

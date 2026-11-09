@@ -9,7 +9,10 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import test, { after } from "node:test";
 
+import { fakePhoneHarness, KEY } from "./fake-phone-harness.mjs";
+
 const { adbCli, ADB_SERVER_PORT } = await import("../dist/phone-harness.js");
+const conformance = await import("../dist/conformance/phone-harness.js");
 
 const dir = mkdtempSync(join(tmpdir(), "computer-adb-cli-"));
 after(() => rmSync(dir, { recursive: true, force: true }));
@@ -70,34 +73,53 @@ test("adbCli on adb's default port names it too: the CLI would follow ANDROID_AD
 	assert.deepEqual(JSON.parse(readFileSync(log, "utf8").trim()), ["-P", String(ADB_SERVER_PORT), "-t", "1", "shell", "echo ok"]);
 });
 
-test("adbCli spawns adb with no ADB_* or ANDROID_ADB_* variable, so nothing in the environment points the CLI at another server", async () => {
-	// A poisoned environment: each of these could send the spawned CLI to another server than the socket requests reach.
-	const poison = {
-		ADB_SERVER_SOCKET: "tcp:203.0.113.7:5037",
-		ANDROID_ADB_SERVER_SOCKET: "tcp:203.0.113.7:5037",
-		ANDROID_ADB_SERVER_ADDRESS: "203.0.113.7",
-		ANDROID_ADB_SERVER_PORT: "1",
-		ANDROID_SERIAL: "another-device",
-		ADB_VENDOR_KEYS: "/elsewhere",
+/** A poisoned environment: each of these could send a spawned adb to another server or device than the provider's. */
+const POISON = {
+	ADB_SERVER_SOCKET: "tcp:203.0.113.7:5037",
+	ANDROID_ADB_SERVER_SOCKET: "tcp:203.0.113.7:5037",
+	ANDROID_ADB_SERVER_ADDRESS: "203.0.113.7",
+	ANDROID_ADB_SERVER_PORT: "1",
+	ANDROID_SERIAL: "another-device",
+	ADB_VENDOR_KEYS: "/elsewhere",
+};
+/** A stand-in adb that records the names of the adb variables it was given (and one unrelated one), then exits code. */
+function envRecorder(name, code = 0) {
+	const log = join(dir, `${name}.log`);
+	const script = join(dir, name);
+	writeFileSync(
+		script,
+		`#!${process.execPath}\nconst names = Object.keys(process.env).filter((n) => /ADB|ANDROID_SERIAL|AGENTRUN_|COMPUTER_PHONE_HARNESS/.test(n)).sort();\nrequire("node:fs").writeFileSync(${JSON.stringify(log)}, JSON.stringify(names));\nprocess.exit(${code});\n`,
+	);
+	chmodSync(script, 0o755);
+	return { script, names: () => JSON.parse(readFileSync(log, "utf8")) };
+}
+
+test("adbCli spawns adb from the environment it is given, with every ADB_*, ANDROID_ADB_* and ANDROID_SERIAL variable dropped", async () => {
+	const adb = envRecorder("adb-env");
+	const ran = await adbCli(adb.script, { env: { ...POISON, PATH: process.env.PATH, AGENTRUN_UNRELATED: "kept" } }).run(["-t", "1", "shell", "echo ok"], { timeoutMs: 10_000 });
+	assert.equal(ran.ok, true, JSON.stringify(ran));
+	assert.deepEqual(adb.names(), ["AGENTRUN_UNRELATED"], "every adb variable is dropped, and the rest of the environment is kept");
+});
+
+test("the conformance module's provider spawns adb from its environment with every adb variable and its own settings dropped: the API key never reaches adb", async () => {
+	// The adb exits 1 at start-server, so connect stops there, before any socket: no adb server is asked.
+	const adb = envRecorder("adb-conformance", 1);
+	const fake = fakePhoneHarness();
+	const env = {
+		...POISON,
+		PATH: process.env.PATH,
+		AGENTRUN_UNRELATED: "kept",
+		COMPUTER_PHONE_HARNESS_API_KEY: KEY,
+		COMPUTER_PHONE_HARNESS_ADB: adb.script,
+		COMPUTER_PHONE_HARNESS_LEDGER: join(dir, "conformance-ledger.json"),
+		AGENTRUN_COMPUTER_LIVE_PHONE_HARNESS: "1",
 	};
-	const saved = Object.fromEntries(Object.keys(poison).map((name) => [name, process.env[name]]));
-	Object.assign(process.env, poison, { AGENTRUN_UNRELATED: "kept" });
-	try {
-		const log = join(dir, "env.log");
-		const script = join(dir, "adb-env");
-		writeFileSync(
-			script,
-			`#!${process.execPath}\nconst names = Object.keys(process.env).filter((n) => /ADB|ANDROID_SERIAL|AGENTRUN_UNRELATED/.test(n)).sort();\nrequire("node:fs").writeFileSync(${JSON.stringify(log)}, JSON.stringify(names));\n`,
-		);
-		chmodSync(script, 0o755);
-		const ran = await adbCli(script).run(["-t", "1", "shell", "echo ok"], { timeoutMs: 10_000 });
-		assert.equal(ran.ok, true, JSON.stringify(ran));
-		assert.deepEqual(JSON.parse(readFileSync(log, "utf8")), ["AGENTRUN_UNRELATED"], "every adb variable is cleared, and the rest of the environment is kept");
-	} finally {
-		for (const [name, value] of Object.entries(saved)) {
-			if (value === undefined) delete process.env[name];
-			else process.env[name] = value;
-		}
-		delete process.env.AGENTRUN_UNRELATED;
-	}
+	const provider = await conformance.createProvider({ env, fetch: fake.fetch, now: fake.clock.now, sleep: fake.clock.sleep });
+	const created = await provider.create({ image: "android", lifetimeMs: 60_000, network: "open" });
+	assert.equal(created.ok, true, JSON.stringify(created));
+	const connected = await provider.connect(created.value);
+	assert.equal(connected.ok, false);
+	assert.match(connected.error.message, /adb start-server failed/);
+	assert.deepEqual(adb.names(), ["AGENTRUN_UNRELATED"], "no adb variable, and none of the module's own (the key among them)");
+	await provider.release(created.value, "delete");
 });
