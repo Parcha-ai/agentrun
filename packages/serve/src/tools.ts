@@ -23,6 +23,7 @@ import { DOCUMENTS_ENV, PDF_PAGES_TOOL, pdfPages } from "./pdf-pages.js";
 import { monidTool } from "./monid.js";
 import { FAUX_ENV, workflowNodes } from "./model.js";
 import { bookedIn, booking, type Ledger, type PaidBooking } from "./paid-calls.js";
+import type { Refusal } from "@parcha/agentrun-kernel";
 import { browserPrice, browserSpend } from "./browser-cost.js";
 import { forModel } from "./result.js";
 import { fetchFor, runPages, WEB_FETCH_TOOL, webFetchTool } from "./web-fetch.js";
@@ -98,11 +99,12 @@ export type ToolHost = {
   claim?: Claim;
   /** The key the live-viewer tokens are sealed under before they go to the store (store/seal.ts). */
   sealKey?: Buffer;
-  /** The claim's one-ledger booking (the kernel cap's paidCalls, paid-calls.ts PaidBooking), handed by the adapter loop.
-   *  The browser passes it to browserSpend (`{ paid }`), so its calls are held and settled there and a session's release
-   *  is booked there, never on this process's own spend. The runner binds the browser only with it (bindNonHandTools):
-   *  the loop does not hand it yet, so today the runner lists no browser tool. */
-  paid?: PaidBooking;
+  /** The run's ledger, as the adapter loop hands it (spendcap-1's AdapterRun.ledger): `paid`, the claim's one-ledger
+   *  booking (the kernel cap's paidCalls, paid-calls.ts PaidBooking), and `pause`, how a refusal at the cap parks the run.
+   *  The browser passes `paid` to browserSpend, so its calls are held and settled there and a session's release is booked
+   *  there, never on this process's own spend. The runner lists the browser only with `paid` and on the native route
+   *  (adapter-run-spec.ts browserListed), so today it lists none. */
+  ledger?: { paid: PaidBooking; pause?: (refusal: Refusal) => Promise<void> };
 };
 
 /** What a name stands for in the run: the pi tools it offers, and the extensions a conversation selects for them. */
@@ -365,9 +367,9 @@ const browserTool: ToolEntry = {
     // Its session time is the run's spend, at its provider's price, and held under the run's cap (browser-cost.ts).
     const providerName = (parts.provider as { name?: string } | undefined)?.name ?? vendor;
     const price = browserPrice(providerName, host.env);
-    // On the runner, the claim's one ledger (host.paid): each call held and settled there, and a session's release one more
-    // request there, never this process's own spend. Undefined on the old per-run process: browserSpend's own then.
-    const spend = browserSpend(providerName, price, DEFAULT_BROWSER_POLICY.idleReleaseS, (conversation, at) => browser.release(conversation as never, "close", at), undefined, { paid: host.paid });
+    // On the runner, the run's ledger (host.ledger): each call held and settled on its booking, and a session's release one
+    // more request there, never this process's own spend. Undefined on the old per-run process: browserSpend's own then.
+    const spend = browserSpend(providerName, price, DEFAULT_BROWSER_POLICY.idleReleaseS, (conversation, at) => browser.release(conversation as never, "close", at), undefined, { paid: host.ledger?.paid });
     // browser_downloads is listed only with a workspace to copy into, and only a provider that keeps a session's downloads
     // (Browserbase's; Kernel's keeps none) has any: without one, uploads still read the run's work/, through `files`.
     const downloads = typeof (parts.provider as { downloads?: unknown } | undefined)?.downloads === "object";

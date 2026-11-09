@@ -51,11 +51,11 @@ import type { ModelRoute, RouteCost } from "./model-route.js";
 const BROWSER_TOOL = "browser";
 /** Whether the runner offers the browser at all. Its calls read the tool task's own api (memo, taskId among them), which a
  *  host tool's api does not give, so every call would fail: off until the native route lands. */
-export const BROWSER_ON_RUNNER = false; // TODO(costsofar-4 native route): pi-browser as a durable pi extension in the claim's registry; flip with host.paid present
+export const BROWSER_ON_RUNNER = false; // TODO(costsofar-4 native route): pi-browser as a durable pi extension in the claim's registry; flip with host.ledger.paid present
 /** Whether the runner lists the browser for a run whose revision grants `granted`, fail closed: only on the native route
- *  (BROWSER_ON_RUNNER), and only with the claim's one-ledger booking on its ToolHost (host.paid), so no browser call is
+ *  (BROWSER_ON_RUNNER), and only with the run's ledger booking on its ToolHost (host.ledger.paid), so no browser call is
  *  held on this process's own spend. */
-export const browserListed = (host: Pick<ToolHost, "paid">, granted: readonly string[]): boolean => BROWSER_ON_RUNNER && host.paid !== undefined && granted.includes(BROWSER_TOOL);
+export const browserListed = (host: Pick<ToolHost, "ledger">, granted: readonly string[]): boolean => BROWSER_ON_RUNNER && host.ledger?.paid !== undefined && granted.includes(BROWSER_TOOL);
 
 /** What the runner hands the spec builder, beside the claim and the loop's own Harness (the AdapterRun): the store (its
  *  agent and run reads, and the live-viewer seam the browser tool writes through), the data directory a Mode 1 run folder
@@ -299,7 +299,7 @@ function settlePaidCall(name: string): { refused: string } | undefined {
 async function bindNonHandTools(host: ToolHost, granted: readonly string[], run: AdapterRun, context: Context, results: ToolResults, root: string, plane: Plane | undefined): Promise<AdapterRunSpec["session"]["tools"]> {
   const names = granted.filter((name) => name === WEB_FETCH_TOOL || name === WEB_SEARCH_TOOL || name.startsWith("monid."));
   // Fail closed (browserListed): the browser binds only on the native route and with the claim's one-ledger booking
-  // (host.paid); otherwise none of its tools is listed.
+  // (host.ledger.paid); otherwise none of its tools is listed.
   const browser = browserListed(host, granted);
   if (names.length === 0 && !browser) return [];
   const ctx: HostToolCtx = {
