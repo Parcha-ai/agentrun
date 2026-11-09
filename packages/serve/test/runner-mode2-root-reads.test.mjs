@@ -161,8 +161,10 @@ async function mode2Spec(t, { harness, build, watch = false, use = async () => {
   return { spec, disk, control, outbound: guard.outbound, localReads: watcher?.seen ?? [] };
 }
 
-/** The control plane's requests, as method and path (the disk's id kept). */
-const callsOf = (control) => control.requests.map((request) => `${request.method} ${request.path}${request.query.identifier ? `?identifier=${request.query.identifier}` : ""}`);
+/** The control plane's API requests (under /api/: Archil's; a bare probe of the fake's loopback port by anything else on
+ *  this machine is not one), the requests themselves and as method and path (the disk's id kept). */
+const apiOf = (control) => control.requests.filter((request) => request.path.startsWith("/api/"));
+const callsOf = (control) => apiOf(control).map((request) => `${request.method} ${request.path}${request.query.identifier ? `?identifier=${request.query.identifier}` : ""}`);
 
 /** The disk's reads of `key`: a get of the file, or a listing of the folder. */
 const readsOf = (disk, key) => disk.calls.filter((call) => (call.key ?? call.prefix ?? call.directory ?? "").startsWith(key));
@@ -200,9 +202,9 @@ for (const [name, harness, build] of [["pi's spec", undefined, adapterRunSpecFro
     const { spec, control, outbound } = await mode2Spec(t, { harness, build, computer: mountingComputer });
     const disk = `/api/disks/${ARCHIL_SETTINGS.diskId}`;
     assert.deepEqual(callsOf(control), [`GET ${disk}`, `POST ${disk}/users`], "an earlier claim's credentials looked for, then one minted");
-    assert.equal(control.requests[1].authorization, "Bearer fake-test-key-api-0001", "minted with the account key");
-    assert.match(control.requests[1].body?.nickname ?? "", new RegExp(RUN), "named for the run");
-    assert.equal(control.requests[1].body?.ttl, "604800s", "its safety-net lifetime, MOUNT_TTL_MS (7 days), in case the removal never comes");
+    assert.equal(apiOf(control)[1].authorization, "Bearer fake-test-key-api-0001", "minted with the account key");
+    assert.match(apiOf(control)[1].body?.nickname ?? "", new RegExp(RUN), "named for the run");
+    assert.equal(apiOf(control)[1].body?.ttl, "604800s", "its safety-net lifetime, MOUNT_TTL_MS (7 days), in case the removal never comes");
     await spec.release();
     assert.deepEqual(callsOf(control).slice(2), [`DELETE ${disk}/users/token?identifier=tok-1`], "removed once at the end: the computer's release and the run's end revoke it, idempotently");
     assert.deepEqual(outbound, [], "nothing left this machine");

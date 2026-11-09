@@ -233,5 +233,6 @@ test("Mode 2 (the server's Archil settings saved): the CLI still works in the ru
   assert.equal(Buffer.from(disk.files.get(`${runKey("agent-1", RUN)}/y.txt`) ?? "").toString("utf8"), "hi");
   // No computer: the run's mount credential is never minted, so Archil's control plane hears nothing, from build to end.
   await built.release();
-  assert.deepEqual(control.requests, [], "no list, no mint, no remove");
+  // Archil's API calls (under /api/): a bare probe of the fake's loopback port by anything else on this machine is not one.
+  assert.deepEqual(control.requests.filter((request) => request.path.startsWith("/api/")), [], "no list, no mint, no remove");
 });
