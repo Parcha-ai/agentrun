@@ -29,19 +29,26 @@ export function needsOf(t: TemplateView, { secrets = true, mcp = true } = {}): [
 /** The parameters form's text, by parameter name ("true"/"false" for a boolean). */
 export type ParameterText = Record<string, string>;
 
-/** The parameters as the template types them: a number or an integer as a number, a boolean as true or false, a string
- *  as typed. A field left empty is not sent (the server says when a required one is missing). Text that is no number is
- *  sent as typed, for the server to refuse in its own words. */
+/** The parameters as the template types them: a number or an integer as a number, a string as typed, and a boolean as
+ *  its checkbox shows it, always (an untouched box is false, and sent so). A text field left empty is not sent (the
+ *  server says when a required one is missing). Text that is no number is sent as typed, for the server to refuse in its
+ *  own words. */
 export function parametersOf(t: TemplateView, text: ParameterText): Record<string, unknown> {
   const out: Record<string, unknown> = {};
   for (const [key, p] of Object.entries(t.parameters)) {
     const v = text[key];
+    if (p.type === "boolean") { out[key] = v === "true"; continue; }
     if (v === undefined || v === "") continue;
-    if (p.type === "boolean") out[key] = v === "true";
-    else if (p.type === "number" || p.type === "integer") out[key] = Number.isFinite(Number(v)) ? Number(v) : v;
+    if (p.type === "number" || p.type === "integer") out[key] = Number.isFinite(Number(v)) ? Number(v) : v;
     else out[key] = v;
   }
   return out;
+}
+
+/** The parameters form as it opens: each boolean at its served default ("true"/"false"), unticked with none; text and
+ *  numbers empty (their default is shown as a hint, and the server applies it when the field is left out). */
+export function startValues(t: TemplateView): ParameterText {
+  return Object.fromEntries(Object.entries(t.parameters).flatMap(([key, p]) => (p.type === "boolean" && typeof p.default === "boolean" ? [[key, String(p.default)]] : [])));
 }
 
 /** The gate names the owner ticked, in the template's order: the consent an apply sends (`grants`), nothing else. */

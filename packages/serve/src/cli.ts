@@ -19,7 +19,7 @@ import { banner, boxImageLine } from "./print.js";
 import type { LearningMode } from "./learning.js";
 import { DEFAULT_PORT, type Serve, startServe } from "./server.js";
 
-const USAGE = `usage: agentrun-serve [--data DIR] [--listen ADDR] [--port N] [--open] [--faux MODULE] [--allow-host NAME ...] [--max-runs N] [--drain-timeout D] [--documents DIR] [--allow-code-nodes] [--learning on|off] [--learning-budget BYTES] [--grade-model MODEL]
+const USAGE = `usage: agentrun-serve [--data DIR] [--listen ADDR] [--port N] [--open] [--faux MODULE] [--faux-browser MODULE] [--allow-host NAME ...] [--max-runs N] [--drain-timeout D] [--documents DIR] [--allow-code-nodes] [--learning on|off] [--learning-budget BYTES] [--grade-model MODEL]
        agentrun-serve reset-password [--data DIR]
        agentrun-serve validate-template DIR
        agentrun-serve import [--data DIR] [--from claude-code,codex,pi] [--dry-run] [--include-deleted] [--all] [--verbose] [--port N]

@@ -43,7 +43,7 @@ export const REFRESH_MARGIN_MS = 5 * 60_000;
 /** How long a stop waits for the refreshes and code exchanges it aborted. */
 const CLOSE_MS = 2_000;
 /** How long an access token given with no expiry is taken to last: it is refreshed within the margin of then. */
-const UNKNOWN_EXPIRY_MS = 60 * 60_000;
+export const UNKNOWN_EXPIRY_MS = 60 * 60_000;
 const SCOPE = /^[\x21\x23-\x5b\x5d-\x7e]{1,128}$/;
 const REQUEST_MS = 15_000;
 const PREVIEW_MS = 30_000;

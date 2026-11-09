@@ -73,7 +73,7 @@ test("demo: with no model key, the bin starts on a free loopback port and prints
   assert.deepEqual([health.status, (await health.json()).status], [200, "ok"]);
   assert.equal((await (await fetch(`${base}/v2/capabilities`)).json()).models.default, null, "no model: none was given");
   // Until a single-use sign-in link replaces the plain address, the console's first visit sets the owner's password.
-  assert.deepEqual(await (await fetch(`${base}/v2/auth/session`)).json(), { password_set: false, signed_in: false });
+  assert.deepEqual(await (await fetch(`${base}/v2/auth/session`)).json(), { password_set: false, signed_in: false, setup_code: false });
   assert.ok(existsSync(join(STORE(home), ".token")), "the data directory is ~/.agentrun");
   assert.equal(existsSync(SERVE_STORE(home)), false, "no second store");
   child.kill("SIGTERM");

@@ -127,12 +127,27 @@ export type PermissionSettings = Readonly<Record<string, { permission?: Permissi
 
 /** `name`'s permission in force and the layer it came from, most specific first: the agent's exact key, the agent's
  *  server wildcard, the server's exact key, the server's server wildcard, then the default. Rules over a call's
- *  arguments are not in V1. `approvals` "never" (an agent run unattended) turns what is left an ask into an allow, from
- *  "unattended", as the last step: a deny from any layer is never lifted, and neither is anything RunGate.enter refuses
- *  before it decides between running and parking (a template's pin, among them). */
+ *  arguments are not in V1. `approvals` "never" (an agent run unattended) turns the ask that is left into an allow, from
+ *  "unattended", as the last step, and only where nothing stands behind that ask (standsBehind): never past a deny in any
+ *  layer, nor an ask that stands in for a setting that does not read. Nor is anything RunGate.enter refuses before it
+ *  decides between running and parking ever lifted (a template's pin, among them). Without never, the answer is as it
+ *  always was. */
 export function permissionFrom(name: string, server: PermissionSettings, agent: PermissionSettings = {}, approvals: Approvals = "ask"): { permission: Permission; from: SettingFrom } {
-  const set = settingOf(name, server, agent);
-  return approvals === "never" && set.permission === "ask" ? { permission: "allow", from: "unattended" } : set;
+  const { permission, from } = settingOf(name, server, agent);
+  if (approvals !== "never" || permission !== "ask" || standsBehind(name, server, agent)) return { permission, from };
+  return { permission: "allow", from: "unattended" };
+}
+
+/** Whether something stands behind `name`'s ask that approvals "never" must not lift: in either layer, under any key the
+ *  tool is read by (its own, its MCP server's wildcard; a shell tool's, bash's), a deny, a value that is no permission,
+ *  or a setting marked as not read as written (`fallback`). The ask a layer above gives does not hide a deny below it. */
+function standsBehind(name: string, server: PermissionSettings, agent: PermissionSettings): boolean {
+  const held = Object.hasOwn(SHELL_FAMILY, name) ? SHELL_FAMILY[name]! : name;
+  return [agent, server].some((layer) => permissionKeys(held).some((key) => {
+    const setting = layer[key];
+    if (setting?.permission === undefined) return false;
+    return setting.permission === "deny" || setting.fallback === true || !(PERMISSIONS as readonly string[]).includes(setting.permission);
+  }));
 }
 
 /** permissionFrom before approvals: what the layers and the default say. */

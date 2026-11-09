@@ -24,8 +24,16 @@ export default {
     const runId = started.body.run_id;
     const runPath = `/v2/runs/${encodeURIComponent(runId)}`;
 
-    // The run page: its browser is live once the agent opens a page, and the tab says Watch live.
+    // The run page: its browser is live once the agent opens a page, and the tab says Watch live. The agent's ask for the
+    // person comes a model call after its page opens: the page's own poll reads it (pending.kind "browser") before the
+    // hand-back that answers it, or the hand-back would answer nothing. The poll repeats while the ask waits.
+    const runRead = (kind) => page.waitForResponse(async (r) => {
+      if (r.request().method() !== "GET" || new URL(r.url()).pathname !== runPath || !r.ok()) return false;
+      return (await r.json().catch(() => null))?.pending?.kind === kind;
+    });
+    const asked = runRead("browser");
     await page.goto(`${base}/#/runs/${encodeURIComponent(runId)}`);
+    await asked;
     const tab = page.getByRole("tab", { name: "Watch live" });
     await tab.waitFor();
     await tab.click();
@@ -41,10 +49,7 @@ export default {
 
     // Hand back: the browser goes back to the agent, and the ask it was waiting on is answered "done": the run's next
     // read (the page's own poll) has its question, the hand-off's result, in place of the browser ask.
-    const moved = page.waitForResponse(async (r) => {
-      if (r.request().method() !== "GET" || new URL(r.url()).pathname !== runPath || !r.ok()) return false;
-      return (await r.json().catch(() => null))?.pending?.kind === "question";
-    });
+    const moved = runRead("question");
     await hands.click();
     await viewer.locator("#hands", { hasText: "Take over" }).waitFor();
     const pending = (await (await moved).json()).pending;

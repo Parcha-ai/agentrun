@@ -49,15 +49,25 @@ export async function startServer({ env = {}, faux = "faux-model.mjs", fauxBrows
   });
   const lines = [];
   const waiters = new Set();
-  const take = (chunk) => {
-    for (const line of String(chunk).split(/\r?\n/)) {
-      if (!line) continue;
-      lines.push(line);
-      for (const w of [...waiters]) { const m = w.re.exec(line); if (m) { waiters.delete(w); w.resolve(m); } }
-    }
+  const add = (line) => {
+    if (!line) return;
+    lines.push(line);
+    for (const w of [...waiters]) { const m = w.re.exec(line); if (m) { waiters.delete(w); w.resolve(m); } }
   };
-  child.stdout.on("data", take);
-  child.stderr.on("data", take);
+  // Each stream's lines, whole: a line split across two chunks waits for its end, and a last line with none is taken at
+  // the stream's end.
+  const reader = (stream) => {
+    let rest = "";
+    stream.setEncoding("utf8");
+    stream.on("data", (chunk) => {
+      const parts = (rest + chunk).split(/\r?\n/);
+      rest = parts.pop() ?? "";
+      parts.forEach(add);
+    });
+    stream.on("end", () => { add(rest); rest = ""; });
+  };
+  reader(child.stdout);
+  reader(child.stderr);
   const exited = new Promise((resolve) => child.once("exit", (code, signal) => resolve({ code, signal })));
 
   /** The first line, already printed or to come, that `re` matches; refused when the server exits first or `ms` pass. */
