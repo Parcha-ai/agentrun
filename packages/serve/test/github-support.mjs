@@ -32,6 +32,8 @@ export async function fakeGitHub(t) {
   const failures = {};
   const requests = [];
   const tokens = [];
+  /** The installation tokens revoked (DELETE /installation/token), by token. */
+  const revoked = [];
   // What a test waits on, never a time: a request that arrives, or one whose client went away unanswered.
   const waits = [];
   const fire = (what, url) => {
@@ -106,6 +108,19 @@ export async function fakeGitHub(t) {
         tokens.push({ token, installation: Number(minting[1]), repositories: asked.repositories, permissions: asked.permissions, at: Date.now() });
         return answer(201, { token, expires_at: new Date(Date.now() + app.tokenMs).toISOString(), permissions: { pull_requests: "write", contents: "read", metadata: "read", issues: "read" }, repository_selection: "selected" });
       }
+      // An installation token's own reads: the repositories it covers (installation 777's: INSTALLED), and its revoke.
+      const bearer = String(req.headers.authorization ?? "").replace(/^Bearer /, "");
+      const held = tokens.find((entry) => entry.token === bearer && !revoked.includes(entry.token));
+      if (req.method === "GET" && req.url.startsWith("/installation/repositories")) {
+        if (!held) return answer(401, { message: "Bad credentials" });
+        const names = [...INSTALLED].map((full) => full.split("/")[1]).filter((name) => !held.repositories || held.repositories.includes(name));
+        return answer(200, { total_count: names.length, repositories: names.map((name) => ({ name, full_name: `acme/${name}` })) });
+      }
+      if (req.method === "DELETE" && req.url === "/installation/token") {
+        if (!held) return answer(401, { message: "Bad credentials" });
+        revoked.push(held.token);
+        return res.writeHead(204).end();
+      }
       const covering = /^\/repos\/([^/]+)\/([^/]+)\/installation$/.exec(req.url);
       if (req.method === "GET" && covering) {
         const id = appId();
@@ -118,7 +133,7 @@ export async function fakeGitHub(t) {
   });
   await new Promise((resolve) => server.listen(0, "127.0.0.1", resolve));
   t.after(() => new Promise((resolve) => (server.close(resolve), server.closeAllConnections())));
-  return { url: `http://127.0.0.1:${server.address().port}`, app, second, publicKey, requests, tokens, installations, holds, failures, asked: next("asked"), dropped: next("dropped") };
+  return { url: `http://127.0.0.1:${server.address().port}`, app, second, publicKey, requests, tokens, revoked, installations, holds, failures, asked: next("asked"), dropped: next("dropped") };
 }
 
 /** A promise and the function that settles it: a hold a test lets go. */

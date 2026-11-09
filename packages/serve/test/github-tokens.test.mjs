@@ -37,7 +37,10 @@ async function withGitHubMcp(t) {
   return { server, fake, seen };
 }
 /** The tokens minted for runs, each narrowed to its repository: the save's own, to list the tools, covers the installation. */
-const runTokens = (server) => server.github.tokens.filter((entry) => entry.repositories);
+const runTokens = (server) => server.github.tokens.filter((entry) => entry.repositories && !entry.permissions);
+/** The tokens a save minted to list a server's tools: a metadata-read one GitHub alone saw (revoked), then one narrowed to a
+ *  single repository, the one sent. */
+const listingTokens = (server) => server.github.tokens.filter((entry) => entry.permissions);
 
 const files = async (dir) => Promise.all((await readdir(dir, { recursive: true, withFileTypes: true })).filter((e) => e.isFile()).map(async (e) => ({ path: join(e.parentPath, e.name), text: await readFile(join(e.parentPath, e.name), "utf8").catch(() => "") })));
 
@@ -51,7 +54,7 @@ test("demo: a github trigger's run calls the MCP server with an installation tok
   const { last } = await follow(server.api, fired.run_id, ["completed", "failed"], { deadlineMs: 60_000 });
   assert.equal(last.status, "completed");
   assert.equal((await server.api("GET", `/runs/${fired.run_id}`)).body.result?.final_answer, "The tool said: 5");
-  assert.deepEqual(server.github.tokens.filter((entry) => !entry.repositories).length, 1, "the save listed the tools with one token of the installation");
+  assert.deepEqual(listingTokens(server).map((entry) => entry.repositories ?? null), [null, ["widgets"]], "the save listed the tools with a token of one repository");
   const mints = runTokens(server);
   assert.equal(mints.length, 1, "one token, for this run's launch");
   assert.deepEqual([mints[0].installation, mints[0].repositories], [777, ["widgets"]], "the event's installation, narrowed to its one repository");
@@ -263,24 +266,35 @@ test("a repository named in the owner's words ends where the sentence does: trai
   ]) assert.deepEqual(githubTargetOf(words), { repo }, words);
 });
 
-test("a github_app server is GitHub's hosted MCP only: a preview or a save at any other origin is 422 on url, and no token of the App is minted or sent", { timeout: 60_000 }, async (t) => {
+test("a github_app server is GitHub's hosted MCP only: a preview or a save at any other URL (another host, a port, http, userinfo, a trailing dot, a host that only starts with GitHub's) is 422 on url, and no token of the App is minted", { timeout: 60_000 }, async (t) => {
   const server = await connectable(t);
   await connect(server);
-  const before = server.github.requests.filter((r) => r.url.endsWith("/access_tokens")).length;
-  const elsewhere = { url: "https://mcp.example.com/mcp", auth: { type: "github_app" } };
-  for (const [method, path] of [["POST", "/settings/mcp-servers/preview"], ["PUT", "/settings/mcp-servers/gh"]]) {
-    const res = await server.api(method, path, elsewhere);
-    assert.deepEqual([res.status, res.body.error?.fields?.map((f) => f.field)], [422, ["url"]], `${method} ${path}: ${JSON.stringify(res.body)}`);
-    assert.match(res.body.error.fields[0].message, /api\.githubcopilot\.com/);
+  const mints = () => server.github.requests.filter((r) => r.url.endsWith("/access_tokens")).length;
+  const before = mints();
+  for (const url of ["https://mcp.example.com/mcp", "https://x@api.githubcopilot.com/mcp/", "https://api.githubcopilot.com:8443/mcp/", "http://api.githubcopilot.com/mcp/", "https://api.githubcopilot.com./mcp/", "https://api.githubcopilot.com.example.com/mcp/"]) {
+    for (const [method, path] of [["POST", "/settings/mcp-servers/preview"], ["PUT", "/settings/mcp-servers/gh"]]) {
+      const res = await server.api(method, path, { url, auth: { type: "github_app" } });
+      assert.deepEqual([res.status, res.body.error?.fields?.map((f) => f.field)], [422, ["url"]], `${method} ${url}: ${JSON.stringify(res.body)}`);
+      assert.match(res.body.error.fields[0].message, /api\.githubcopilot\.com/);
+    }
   }
-  assert.equal(server.github.requests.filter((r) => r.url.endsWith("/access_tokens")).length, before, "no token minted for it");
+  assert.equal(mints(), before, "no token minted for any of them");
 });
 
-test("the token that lists a github_app server's tools as it is saved asks for the least: metadata read", { timeout: 60_000 }, async (t) => {
-  const { server } = await withGitHubMcp(t);
-  const listing = server.github.tokens.filter((entry) => !entry.repositories);
-  assert.equal(listing.length, 1);
-  assert.deepEqual(listing[0].permissions, { metadata: "read" });
+test("githubMcpUrl: GitHub's hosted MCP at its origin, any path, the default port written or not; nothing else", async () => {
+  const { githubMcpUrl } = await import("../dist/github.js");
+  for (const url of ["https://api.githubcopilot.com/mcp/", "https://api.githubcopilot.com:443/mcp/", "https://API.githubcopilot.com/x/readonly", "https://api.githubcopilot.com"]) assert.equal(githubMcpUrl(url), true, url);
+  for (const url of ["https://x@api.githubcopilot.com/mcp/", "https://x:y@api.githubcopilot.com/mcp/", "https://api.githubcopilot.com:8443/mcp/", "http://api.githubcopilot.com/mcp/", "https://api.githubcopilot.com./mcp/", "https://api.githubcopilot.com.example.com/mcp/", "https://mcp.example.com/mcp", "not a url"]) assert.equal(githubMcpUrl(url), false, url);
+});
+
+test("the token that lists a github_app server's tools as it is saved asks for the least: metadata read, of one repository; the one that found that repository never left the server and is revoked", { timeout: 60_000 }, async (t) => {
+  const { server, seen } = await withGitHubMcp(t);
+  const [scout, listing] = listingTokens(server);
+  assert.deepEqual([scout.repositories, scout.permissions], [undefined, { metadata: "read" }]);
+  assert.deepEqual([listing.repositories, listing.permissions], [["widgets"], { metadata: "read" }], "one repository, metadata read");
+  assert.deepEqual(server.github.revoked, [scout.token], "revoked once it named the repository");
+  assert.ok(!seen.some((request) => request.authorization === `Bearer ${scout.token}`), "never sent to the MCP server");
+  assert.ok(seen.some((request) => request.authorization === `Bearer ${listing.token}`), "the narrowed one listed the tools");
 });
 
 test("a github_app server saved at an origin that is no longer GitHub's hosted MCP gets no token: its preview by name is refused, and a run's launch mints none", { timeout: 120_000 }, async (t) => {
