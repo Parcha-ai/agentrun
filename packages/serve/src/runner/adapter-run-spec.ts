@@ -60,7 +60,7 @@ export interface AdapterSpecDeps {
 /** A model as the cap prices it, from the route's catalog cost: its price WITH TIERS (the money rule — a request past a
  *  model's tier is held and booked at the tier, as main's calculateCost does). `api` is the proxy's shape, for the
  *  overhead its provider adds; the output ceiling is the route's when it carries one, else none. */
-function capModelOf(route: ModelRoute): CapModel {
+export function capModelOf(route: ModelRoute): CapModel {
   const cost: RouteCost | undefined = route.cost;
   const price = cost
     ? {
@@ -71,7 +71,7 @@ function capModelOf(route: ModelRoute): CapModel {
         ...(cost.tiers ? { tiers: cost.tiers.map((tier) => ({ inputTokensAbove: tier.inputTokensAbove, input: tier.input, output: tier.output, cacheRead: tier.cacheRead, cacheWrite: tier.cacheWrite })) } : {}),
       }
     : null;
-  return { id: route.model, api: "anthropic-messages", price, outputCeiling: null };
+  return { id: route.model, api: "anthropic-messages", price, outputCeiling: route.outputCeiling ?? null };
 }
 
 /** The revision's body, as the fields the spec reads of it (agentic runs only reach here; a workflow run is dispatched to
