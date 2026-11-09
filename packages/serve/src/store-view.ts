@@ -287,6 +287,10 @@ export async function viewOverStore(store: Store, runId: string, deps: ViewDeps)
     state,
     title: launch?.title ?? "",
     place: launch?.place ?? { mode: "runner" },
+    // The runner holding the run now, when one does (a running run with a live claim): its id, the claim's count (up one each
+    // claim, carried on every write the runner makes), and when the claim runs out. Null when no runner holds the run, so a
+    // reclaim shows a new runner and a higher epoch. Additive on the Run (openapi claim/1).
+    claim: run.live ? { runner: runRow.runner!, epoch: runRow.epoch, until: iso(runRow.claimedUntil!) } : null,
     ...(launch?.effort ? { effort: launch.effort } : {}),
     created_at: iso(runRow.startedAt),
     updated_at: iso(run.updatedAtMs),

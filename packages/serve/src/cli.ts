@@ -52,7 +52,7 @@ async function runnerBeside(dataDir: string, loops?: number): Promise<{ runner: 
   return { runner, close: async () => { await runner.close(); await store.close(); } };
 }
 
-const USAGE = `usage: agentrun-serve [--data DIR] [--listen ADDR] [--port N] [--open] [--faux MODULE] [--faux-browser MODULE] [--allow-host NAME ...] [--max-runs N] [--drain-timeout D] [--documents DIR] [--allow-code-nodes] [--learning on|off] [--learning-budget BYTES] [--grade-model MODEL]
+const USAGE = `usage: agentrun-serve [--data DIR] [--listen ADDR] [--port N] [--open] [--faux MODULE] [--faux-browser MODULE] [--allow-host NAME ...] [--max-runs N] [--drain-timeout D] [--documents DIR] [--allow-code-nodes] [--learning on|off] [--learning-budget BYTES] [--grade-model MODEL] [--no-runner]
        agentrun-serve reset-password [--data DIR]
        agentrun-serve validate-template DIR
        agentrun-serve eval-template DIR [--case NAME ...] [--runs N] [--server URL] [--grader-model PROVIDER/MODEL] [--report FILE] [--faux MODULE]
@@ -85,6 +85,8 @@ const USAGE = `usage: agentrun-serve [--data DIR] [--listen ADDR] [--port N] [--
                     notes changed last, whole, while they fit
   --grade-model MODEL the model that grades what a run proposes to learn (default AGENTRUN_SERVE_GRADE_MODEL, else the
                     strong tier, AGENT_MODEL_STRONG, else each run's own model), named as the strong tier takes one
+  --no-runner       run the server alone, with no runner beside it (default: one runner beside the server); start one or
+                    more \`agentrun-serve runner --data DIR\` processes on the same data directory to claim and run runs
 
 Without --faux, a revision's model ("provider/model-id", or AGENT_MODEL when it names none; a workflow node's tier maps
 to AGENT_MODEL_FAST or AGENT_MODEL_STRONG, each falling back to AGENT_MODEL) is served by pi-ai's providers with their
@@ -261,6 +263,7 @@ try {
       learning: { type: "string" },
       "grade-model": { type: "string" },
       "learning-budget": { type: "string" },
+      "no-runner": { type: "boolean", default: false },
       help: { type: "boolean", short: "h", default: false },
     },
   }));
@@ -333,14 +336,17 @@ try {
   process.exit(1);
 }
 // The start launches one runner beside the server on the same data dir (design: "server and runner"): it claims and runs
-// every run, sharing only the store.
-let runnerProc;
-try {
-  runnerProc = await runnerBeside(data);
-} catch (error) {
-  console.error(`agentrun-serve: the runner could not start: ${(error as Error).message}`);
-  await serve.close();
-  process.exit(1);
+// every run, sharing only the store. With --no-runner the server runs alone, so the operator starts one or more separate
+// `agentrun runner --data DIR` processes on the same data directory instead.
+let runnerProc: Awaited<ReturnType<typeof runnerBeside>> | undefined;
+if (!values["no-runner"]) {
+  try {
+    runnerProc = await runnerBeside(data);
+  } catch (error) {
+    console.error(`agentrun-serve: the runner could not start: ${(error as Error).message}`);
+    await serve.close();
+    process.exit(1);
+  }
 }
 // A token from the environment is the operator's already, and the stored one is printed by the start that made it only.
 const source = given ? "env" : serve.tokenMade ? "made" : "file";
@@ -358,7 +364,7 @@ const record = join(resolve(data), SERVER_FILE);
 // (stop-signals.ts). The stop is in place before the record is written: a SIGTERM sent the moment the record appears is
 // a clean stop that removes it, never the default end by signal that leaves it behind.
 const stop = stopOnSignals({
-  close: () => (removeOwnRecord(record), Promise.all([runnerProc.close(), serve.close()]).then(() => undefined)),
+  close: () => (removeOwnRecord(record), Promise.all([runnerProc?.close() ?? Promise.resolve(), serve.close()]).then(() => undefined)),
   stopping: () => serve.stopping(),
   done: (code) => (removeOwnRecord(record), process.exit(code)),
   say: (line) => console.error(line),
