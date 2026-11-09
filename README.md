@@ -67,6 +67,55 @@ a run may reach, and the container.
 
 An agent with a shell runs it in a Docker container of its own: [Sandbox in 60 seconds](packages/serve/README.md#sandbox-in-60-seconds), from a checkout on a machine with Docker (the image above cannot host one yet).
 
+## Give your agent a computer
+
+An agent can have a computer of its own: a Linux sandbox to run code in, a desktop to click through, a phone, or a
+browser. You choose it with one setting, and the agent gets the tools for that kind of computer and nothing else.
+
+```yaml
+computer:
+  kind: phone      # none | sandbox | desktop | phone | browser
+  provider: auto   # or a vendor you connected in Settings → Computers
+```
+
+Set it in the agent editor's Computer step, or in the agent's definition. Swapping the computer changes nothing else
+about the agent.
+
+| Kind | What the agent can do | Providers | Status |
+|---|---|---|---|
+| none | Work in its run folder, with a shell that asks you before each command | no vendor needed | live |
+| sandbox | Run code, install packages, keep processes in the background on Linux | Docker (local), Daytona, Modal, E2B | live |
+| desktop | See a Linux screen, move the mouse, type | Orgo, Docker | live |
+| desktop | The same on macOS or Windows | not yet chosen | next |
+| phone | Tap, swipe, type, open apps and read the screen on Android | phone harness | live |
+| phone | The same on an iPhone | phone harness | next |
+| browser | Browse, with you able to take over at any point | Browserbase, Kernel | live |
+| GPU box | A sandbox with a GPU attached | not yet chosen | next |
+
+We mark a provider live only after it passes the conformance suite for its kind against the vendor's real service. You
+can run the same suite yourself:
+
+```sh
+npm run conformance -w @parcha/agentrun-computer -- --provider docker --kind sandbox
+```
+
+**The run's files.** Without Archil, a run's folder lives on your server, and a local Docker sandbox mounts it. Turn on
+Archil in Settings → Workspace and the folder lives on your Archil disk instead, so a remote sandbox on Daytona, Modal
+or E2B mounts the same folder the agent reads and writes.
+
+**Watching and taking over.** Every computer streams through your own server, never through a link to the vendor. Watch
+the agent work, take the controls, and hand them back. The agent can also stop and ask you to take over, for a login or
+a captcha.
+
+**Keys.** Add a vendor's key once in Settings → Computers. Your server seals it, shows it only as set or missing, and
+uses it only in its own calls to the vendor. The key never enters the agent's computer.
+
+To try the computer screens with no vendor keys:
+
+```sh
+npx @parcha/agentrun --faux
+```
+
 ## Building blocks
 
 The open packages underneath the platform, each usable on its own in your pi agent. Install the ones you need.
