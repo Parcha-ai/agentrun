@@ -777,6 +777,47 @@ test("on the runner's path the person handing the browser back from the live vie
   assert.deepEqual(rows, ["You took over the browser", "You handed the browser back"]);
 });
 
+test("on the runner's path a person's answer that lands as this process writes the ask's expiry stands alone: one answered entry, and the wait hears the person's", async (t) => {
+  const root = await scratch(t);
+  const journal = [];
+  const firstOf = (id) => journal.find((data) => data.id === id && ["done", "cancelled", "expired"].includes(data.state));
+  const toAnswer = (data) => ({ outcome: data.state, at: data.at, ...(data.reason ? { reason: data.reason } : {}) });
+  let lands = () => {};
+  /** The process on `root`, its journal's writes as the run's commits make them: the person's answer (`lands`) is
+   *  committed just before this process's own answer, after every read it made. `answer` reads and writes in one commit. */
+  const hands = () => personHands({
+    root, gates: () => ({ give: () => false }), pollMs: 60_000,
+    personTime: async () => ({ drop() {} }),
+    note: async (kind, data) => {
+      if (kind === "agent.handover" && data.state !== "waiting") lands();
+      if (kind === "agent.handover") journal.push(data);
+    },
+    answered: async (id) => (firstOf(id) ? toAnswer(firstOf(id)) : undefined),
+    answer: async (id, data) => {
+      lands();
+      const found = firstOf(id);
+      if (found) return toAnswer(found);
+      journal.push(data);
+      return toAnswer(data);
+    },
+  });
+  const before = hands();
+  const { interactionId: id } = await before.handoff.request(ask(76, "ar-run-76-1"));
+  before.close();
+  const file = join(root, "browser-ask", `${id}.json`);
+  writeFileSync(file, JSON.stringify({ ...JSON.parse(readFileSync(file, "utf8")), expires_at: T0 }), { mode: 0o600 });
+  let landed = false;
+  lands = () => {
+    if (landed) return;
+    landed = true;
+    journal.push({ state: "cancelled", id, session: "ar-run-76-1", at: "2001-02-03T04:05:00.000Z" });
+  };
+  const after = hands();
+  t.after(() => after.close());
+  assert.equal(await after.handoff.outcome(id), "cancelled", "the person's answer, committed first, is the ask's");
+  assert.deepEqual(answers(journal), [{ state: "cancelled", id, session: "ar-run-76-1", at: "2001-02-03T04:05:00.000Z" }], "exactly one answered entry");
+});
+
 test("on the runner's path the row an answer writes shows at the answered entry's time on the timeline: the person's, or the expiry's when the ask lapsed", async (t) => {
   const { timelineOf } = await import("@parcha/pi-durable-agent/timeline");
   /** The timeline row that says `summary`, over a run's entries: its kind and time. */
