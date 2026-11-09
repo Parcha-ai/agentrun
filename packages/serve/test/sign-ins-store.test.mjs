@@ -203,3 +203,43 @@ test("signInsOverStore.forget: the old {key, removed} shape; 404 for an unknown 
   // 404 when the agent has no sign-in by that key.
   await assert.rejects(bridge.forget("alpha", "default"), (e) => e instanceof ApiError && e.code === "not_found");
 });
+
+// P2-1 the save race: runs.update(claim, { signInHanded }) decides this run's save lease in the same transaction as the
+// sign_in_handed write, so two binds of one agent's sign-in claimed in one tick never both save (and clobber one browser
+// context). It answers { save } with the row: true for the one run that holds the lease, false for the rest.
+
+/** Two queued runs of one agent, each claimed by its own runner (a running run cannot be re-claimed). */
+async function twoRunning(store) {
+  await agentWithRevision(store, "alpha", "alpha-rev");
+  for (const id of ["run-a", "run-b"]) await store.runs.create({ id, agentId: "alpha", revisionId: "alpha-rev" });
+  return [await store.claim("run-a", "runner-a"), await store.claim("run-b", "runner-b")];
+}
+
+test("P2-1 two binds of one sign-in at once: exactly one gets save:true, decided in the write's own transaction", async (t) => {
+  const { store } = await storeOn(t);
+  const [claimA, claimB] = await twoRunning(store);
+  const hash = pointerHash("ctx-1");
+  // Both binds in flight at once (the store serializes their transactions): because the save lease is decided in the same
+  // transaction as each sign_in_handed write, one reads no other holder (save:true) and the other reads the first
+  // (save:false) — never both. A read-then-write bind would let both reads see no holder and both save.
+  const rows = await Promise.all([
+    store.runs.update(claimA, { signInHanded: [hash] }),
+    store.runs.update(claimB, { signInHanded: [hash] }),
+  ]);
+  const saves = rows.map((row) => row.save);
+  assert.equal(saves.filter((save) => save === true).length, 1, `exactly one save:true, got ${JSON.stringify(saves)}`);
+  assert.equal(saves.filter((save) => save === false).length, 1, "the other reads the first as the holder and does not save");
+});
+
+test("P2-1 a sole binder saves; its own re-bind (a later claim of the same run) saves again, never blocked by itself", async (t) => {
+  const { store, clock } = await storeOn(t);
+  await agentWithRevision(store, "alpha", "alpha-rev");
+  await store.runs.create({ id: "run-a", agentId: "alpha", revisionId: "alpha-rev" });
+  const hash = pointerHash("ctx-1");
+  const first = await store.claim("run-a", "runner-a", { leaseMs: 1_000 });
+  assert.equal((await store.runs.update(first, { signInHanded: [hash] })).save, true, "the only run holding it saves");
+  // The claim runs out and the same run is re-claimed: its own earlier hold must not block its save.
+  clock.now += 2_000;
+  const again = await store.claim("run-a", "runner-a");
+  assert.equal((await store.runs.update(again, { signInHanded: [hash] })).save, true, "a run is never its own blocker");
+});
