@@ -11,8 +11,8 @@
 // archilRoute holds the routes' rules, so serve's dispatch only calls it and sends the answer, or the ApiError's status.
 import { ARCHIL_API_KEY_ROW, type ArchilSettings, clearArchilSettings, loadArchilSettings, saveArchilSettings } from "./archil-settings.js";
 import { ApiError, type InputIssue, invalid } from "./errors.js";
-import { type KeyEnv, type KeyMeta, keyMetaOf, secretName } from "./key-meta.js";
-import { registerSecretWrite } from "./secret-writes.js";
+import { type KeyEnv, type KeyMeta, keyMetaOf } from "./key-meta.js";
+import { registerSecretWrite, secretName } from "./secret-writes.js";
 import { putSealedKey, removeSealedKey } from "./server-keys.js";
 import type { Store } from "./store/index.js";
 import { unknownFields } from "./validate.js";

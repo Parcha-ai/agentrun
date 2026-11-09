@@ -11,8 +11,8 @@ import { KEY_TABLE, type KeyTable, type OptionsAnswer, type ProviderFactories, t
 import { COMPUTER_KINDS, type ComputerKind, type ComputerSetting } from "./computer-setting.js";
 import { inArchilMode } from "./archil-settings.js";
 import { ApiError, invalid } from "./errors.js";
-import { type KeyEnv, type KeyMeta, keyMetaOf, envValue, secretName } from "./key-meta.js";
-import { registerSecretWrite } from "./secret-writes.js";
+import { type KeyEnv, type KeyMeta, keyMetaOf, envValue } from "./key-meta.js";
+import { registerSecretWrite, secretName } from "./secret-writes.js";
 import { getSealedKey, putSealedKey, removeSealedKey, sealedKeyNames } from "./server-keys.js";
 import type { Store } from "./store/index.js";
 

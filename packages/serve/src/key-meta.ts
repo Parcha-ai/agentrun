@@ -1,6 +1,6 @@
 // A computer or Archil key as every view shows it: the one shared shape, secret-writes.ts's SecretMeta ({ name, set,
 // source, changed_at }) made by its secretMeta, never a value, a prefix, a length or a hash. name is "<plane>:<id>"
-// (secretName): "computer:<provider>:<KEY>" for a computer provider's key, "workspace:archil" for the Archil account key.
+// (secret-writes.ts secretName): "computer:<provider>:<KEY>" for a computer provider's key, "workspace:archil" for the Archil account key.
 // An object with one secret carries `secret`, one with several `secrets`.
 //
 // What this module adds is where each key comes from: the server's environment first (a variable named as the key, not
@@ -15,13 +15,6 @@ export type { SecretMeta, SecretSource };
 export type KeyMeta = SecretMeta;
 /** The server's environment, as the key routes read it. */
 export type KeyEnv = Readonly<Record<string, string | undefined>>;
-
-/** A secret's name: its plane, then its ids, joined by ":" ("computer:e2b:E2B_API_KEY", "workspace:archil"). A copy of
- *  tl-tools' secret-writes.ts secretName, with its exact signature, until that export is on this branch's base; then
- *  this goes and theirs is imported. */
-export function secretName(plane: string, ...id: string[]): string {
-  return [plane, ...id].join(":");
-}
 
 /** One secret a view shows: its SecretMeta name, the environment variable that sets it, and the sealed-key row it is
  *  kept in. */
