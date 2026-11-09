@@ -16,7 +16,9 @@ const answer = (value) => ({ content: [{ type: "text", text: String(value) }] })
 /** The tools every fake serves, by name; a test may add, change or drop one, and the next list shows it. */
 export const baseTools = () => ({
   add: { title: "Add", description: "Add two numbers.", input: object({ a: number, b: number }), annotations: { readOnlyHint: true }, run: ({ a, b }) => answer(a + b) },
-  slow_write: { description: "Write a line after a wait.", input: object({ line: text, seconds: number }), run: async ({ line, seconds }) => (await new Promise((done) => setTimeout(done, seconds * 1000)), answer(`wrote ${line}`)) },
+  // Its wait never holds the test's process open (unref'd) and ends with the call (the SDK's signal): a cut call's timer
+  // is gone, so a file that cuts one exits when its tests end, not when the wait would have.
+  slow_write: { description: "Write a line after a wait.", input: object({ line: text, seconds: number }), run: async ({ line, seconds }, extra) => (await new Promise((done) => { const timer = setTimeout(done, seconds * 1000); timer.unref(); extra?.signal?.addEventListener("abort", () => clearTimeout(timer), { once: true }); }), answer(`wrote ${line}`)) },
   delete_thing: { description: "Delete a thing by id.", input: object({ id: text }), annotations: { destructiveHint: true }, run: ({ id }) => answer(`deleted ${id}`) },
   paid: { description: "A call the server bills.", input: object({ query: text }), run: ({ query }) => answer(`paid for ${query}`) },
 });
