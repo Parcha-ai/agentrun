@@ -50,7 +50,7 @@ export type ProviderMakers = Readonly<Partial<Record<string, (options: Record<st
 /** Why a live view ends: the computer was released, or the run ended. */
 export type ViewEnd = "released" | "ended";
 
-/** The live view of a desktop or a phone, proxy-only, as its registration (tl-browser's computer-live.ts
+/** The live view of a desktop or a phone, proxy-only, as its registration (computer-live.ts
  *  openComputerView, taken as a dep until it is on the base) opens it at the claim: fenced on the claim, tagged with the
  *  computer's ref id, fed by the provider's watch, and held by the run's take-over hold. */
 export type OpenComputerView = (args: {
@@ -127,7 +127,7 @@ function phonePlatform(machine: string | undefined, entry: ProviderEntry | undef
   return said === "ios" ? "ios" : "android";
 }
 
-/** The provider's watch of a computer's screen (tl-computer's ComputerProvider.watch), where it has one. */
+/** The provider's watch of a computer's screen (ComputerProvider.watch), where it has one. */
 type Watching = { watch(ref: { readonly id: string; readonly name: string }, context: { readonly signal: AbortSignal }): unknown };
 const watching = (provider: ComputerProvider): Watching | undefined =>
   typeof (provider as Partial<Watching>).watch === "function" ? (provider as unknown as Watching) : undefined;
@@ -167,7 +167,7 @@ async function providerLaunch(
       if (!attached.ok) return attached;
       return attached.value.spec.mount ? { ok: true, value: attached.value.spec.mount } : { ok: false, error: { code: "not_found", message: "nothing is mounted in this computer" } };
     },
-    // The provider's watch of the screen (tl-computer's provider.watch), which feeds the run's proxied live view.
+    // The provider's watch of the screen (provider.watch), which feeds the run's proxied live view.
     ...(watching(provider) ? { watch: (signal: AbortSignal) => watching(provider)!.watch(ref, { signal }) } : {}),
     async release() {
       await connected.value.close().catch(() => undefined);

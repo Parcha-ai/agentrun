@@ -62,6 +62,9 @@ export interface PiAdapterOptions {
   readonly price?: (model: string, usage: never) => number | null;
   /** The proxy's upstream fetch (a test's scripted origin). */
   readonly fetch?: typeof fetch;
+  /** The runner's one redactor, which a provider's error passes through in the session's proxy before pi has it
+   *  (ModelProxyOptions.redact; the proxy's own cut of the credential comes first). */
+  readonly redact?: (text: string) => string;
 }
 
 const PROVIDER = "agentrun-session";
@@ -92,6 +95,7 @@ async function openPi(options: PiAdapterOptions, spec: SessionSpec, io: PiSessio
     ...(options.price ? { price: options.price as never } : {}),
     ...(options.provider.headers ? { headers: options.provider.headers } : {}),
     ...(options.fetch ? { fetch: options.fetch } : {}),
+    ...(options.redact ? { redact: options.redact } : {}),
   }, randomBytes(32).toString("base64url"));
   // An open that fails from here (the claim lost while the session opened) closes the proxy: its server would hold the
   // runner's process open.

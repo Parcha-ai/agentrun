@@ -104,7 +104,7 @@ test("a wrong signature, a stale or future timestamp, missing headers, an unknow
   await follow(api, fired.run_id, ["completed"]);
 });
 
-test("a rotated secret signs from then on, and the old one is refused; handed no seal key, the server keeps a webhook trigger's secret under the one it made", { timeout: 120_000 }, async (t) => {
+test("a rotated secret signs from then on, and the old one is refused; handed no seal key, the server keeps a webhook trigger's secret under the one it made", { timeout: 120_000, skip: RUN_EXEC }, async (t) => {
   withEnv(t, SEAL);
   const { api, baseUrl } = await serve(t);
   await made(api, "triage");

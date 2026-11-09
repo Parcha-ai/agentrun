@@ -10,7 +10,7 @@ import { agentFolderOf } from "../dist/files.js";
 import { agentHomeFolder } from "../dist/workspace/index.js";
 import { ROUTES } from "../dist/server.js";
 import { DEFINITION_FIELDS } from "../dist/validate.js";
-import { DEFINITION_INPUT_OPTIONAL, DEFINITION_OPTIONAL, REQUEST_EXAMPLES, RUN_FIELDS_SENT } from "../dist/openapi.js";
+import { DEFINITION_INPUT_OPTIONAL, DEFINITION_OPTIONAL, REQUEST_EXAMPLES, RUN_FIELDS_SENT, SIGN_IN_FIELDS_SENT } from "../dist/openapi.js";
 import { schemaProblems } from "./schema-support.mjs";
 import { capabilities } from "../dist/index.js";
 import { note } from "./fixtures/faux-learn.mjs";
@@ -68,7 +68,9 @@ test("every route the server serves is in the document, and every operation in i
     assert.match(sample(found[0].path), route.pattern, `${route.name}: the document's path ${found[0].path} is the route's`);
   }
   for (const { path, method, op } of ops) {
-    const route = ROUTES.find((r) => r.name === op.operationId && r.method.toLowerCase() === method);
+    // A server-wide pushed source's own hook (receiveHook_<source>) is the one hook route's, at its source's path.
+    const name = /^receiveHook_[a-z][a-z0-9-]*$/.test(op.operationId) ? "receiveHook" : op.operationId;
+    const route = ROUTES.find((r) => r.name === name && r.method.toLowerCase() === method);
     assert.ok(route, `${method.toUpperCase()} ${path} (${op.operationId}) is a route of this server`);
     if (route.capability) assert.deepEqual(Object.keys(op["x-agentrun-serve-unsupported"] ?? {}).sort(), ["capability", "reason"], `${op.operationId} is marked unsupported`);
     else assert.equal(op["x-agentrun-serve-unsupported"], undefined, `${op.operationId} is served`);
@@ -223,7 +225,7 @@ test("the contract's operations are as vendored; this server's own are added and
   }
   const marked = [];
   // Names taken out of a schema's `required` with the property they name: only the fields this server always sends
-  // (RUN_FIELDS_SENT) may be, so a required addition anywhere else still fails this comparison.
+  // (RUN_FIELDS_SENT, SIGN_IN_FIELDS_SENT) may be, so a required addition anywhere else still fails this comparison.
   const unrequired = [];
   const notes = [];
   const strip = (schema, at) => {
@@ -297,7 +299,7 @@ test("the contract's operations are as vendored; this server's own are added and
     components.schemas[name].required = VENDORED.components.schemas[name].required;
   }
   assert.ok(isDeepStrictEqual(components, VENDORED.components), "the contract's components are unchanged but for the marked properties");
-  assert.deepEqual(unrequired.sort(), ["Run", "RunSummary"].flatMap((schema) => RUN_FIELDS_SENT.map((field) => `${schema}.${field}`)).sort(), "only the fields this server always sends are required beyond the contract");
+  assert.deepEqual(unrequired.sort(), [...["Run", "RunSummary"].flatMap((schema) => RUN_FIELDS_SENT.map((field) => `${schema}.${field}`)), ...SIGN_IN_FIELDS_SENT.map((field) => `SignIn.${field}`)].sort(), "only the fields this server always sends are required beyond the contract");
   assert.deepEqual(marked.sort(), [...doc.info["x-agentrun-serve"].fields].sort(), "info lists the marked properties");
   assert.deepEqual(notes.sort(), [...doc.info["x-agentrun-serve"].unsupported_fields, ...doc.info["x-agentrun-serve"].details, ...doc.info["x-agentrun-serve"].notes].sort(), "info lists the contract properties it notes");
 });

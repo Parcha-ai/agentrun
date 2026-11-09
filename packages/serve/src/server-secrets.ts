@@ -16,18 +16,24 @@ import { webhookSecretIn } from "./webhooks.js";
 
 export class ServerSecrets {
   private readonly sources = new Map<string, () => readonly string[]>();
+  /** Sources whose every value is listed as it is, of any length and whitespace and all: a PEM key's lines and whole. */
+  private readonly whole = new Set<string>();
 
-  /** A store's secrets, read at each use; one added again under the same name takes its place. */
-  add(name: string, read: () => readonly string[]): void {
+  /** A store's secrets, read at each use; one added again under the same name takes its place. `whole`: each value is
+   *  listed whatever its length or whitespace (a PEM key's short last line, the key with its line breaks). */
+  add(name: string, read: () => readonly string[], { whole = false }: { whole?: boolean } = {}): void {
     this.sources.set(name, read);
+    if (whole) this.whole.add(name);
+    else this.whole.delete(name);
   }
 
   /** Every secret held now, once each: of 8 characters or more and no whitespace, so no word is cut as one. A signing
    *  secret's key, after `whsec_`, signs alone and is pasted alone, which its `whsec_` form never matches: each is listed
    *  in every spelling of it (standard-webhooks.ts secretForms). */
   values(): string[] {
-    const all = [...this.sources.values()].flatMap((read) => read()).flatMap(secretForms);
-    return [...new Set(all)].filter((value) => value.length >= 8 && !/\s/.test(value));
+    const all = [...this.sources].filter(([name]) => !this.whole.has(name)).flatMap(([, read]) => read()).flatMap(secretForms);
+    const whole = [...this.sources].filter(([name]) => this.whole.has(name)).flatMap(([, read]) => read()).filter((value) => value.length > 0);
+    return [...new Set([...all.filter((value) => value.length >= 8 && !/\s/.test(value)), ...whole])];
   }
 }
 
@@ -61,6 +67,8 @@ export function openServerSecrets(data: string, env: NodeJS.ProcessEnv, adapters
     const store = new SealedSettings(data, adapter.id, adapter.settings, key, say);
     settings.set(adapter.id, store);
     secrets.add(`trigger-settings:${adapter.id}`, () => store.values());
+    // A PEM key's lines, its short last one too, and the key whole: listed with no floor.
+    secrets.add(`trigger-settings-pem:${adapter.id}`, () => store.pemValues(), { whole: true });
   }
   return { secrets, settings };
 }

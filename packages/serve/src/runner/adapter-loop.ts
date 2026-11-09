@@ -51,6 +51,9 @@ export type RaiseCheck =
 
 /** The gate's answer for a call: run it, ask a person, or refuse it (with the words the model reads, or generic ones). */
 export type GateAnswer = "allow" | "ask" | "deny" | { readonly deny: string };
+/** The gate before a call's intent; `askedAs`, when it has one, names a call as a person is asked about it (its settings
+ *  key, as main's pending approval names it), else the call is asked about by its own name. */
+export type SpecGate = ((call: ToolCall) => GateAnswer | Promise<GateAnswer>) & { readonly askedAs?: (tool: string) => string };
 
 /** What one claimed run's adapter loop runs. */
 export interface AdapterRunSpec {
@@ -66,7 +69,7 @@ export interface AdapterRunSpec {
   readonly hooks?: KernelHooks;
   /** The gate's answer for a call, before its intent: run it, refuse it, or ask a person (the run parks). A refusal may
    *  carry the words the model reads (`{ deny }`: where the deny was set, a pin's words); a bare "deny" gets generic ones. */
-  readonly gate?: (call: ToolCall) => GateAnswer | Promise<GateAnswer>;
+  readonly gate?: SpecGate;
   /** What an asked call costs, for its approval card (main's tool gate options.price): dollars, or "not metered";
    *  undefined when it has none (the ask says null). */
   readonly approvalPrice?: (call: ToolCall) => ApprovalPrice | undefined;
@@ -159,6 +162,10 @@ export type AdapterRun = PiRun & {
    *  paid calls (a charge outside any call, a browser release's, books here too) and its proxied models by label (a
    *  learned workflow's model nodes). Read from the spec's runCap once the spec is known. */
   readonly ledger: RunLedger;
+  /** The runner's one redactor (LoopDeps.redact; runner.ts), the same instance: the spec gives it to every place a secret
+   *  could reach text (the session's model proxy, the model route's translation, its log lines). Absent where no runner
+   *  gave one (a spec built alone). */
+  readonly redact?: (text: string) => string;
 };
 
 /** What the adapter loop hands a run's tool host: the run's decisions, paid calls and proxied models, on its one cap. */
@@ -185,6 +192,12 @@ export interface AdapterLoopOptions {
 
 /** The most of a harness's own turn error a failed run's summary keeps. */
 const TURN_ERROR_MAX = 500;
+
+/** `text` cut to at most `max` UTF-16 units, never inside a character: a high surrogate the cut leaves alone goes too. */
+const cutWhole = (text: string, max: number): string => {
+  const cut = text.slice(0, max);
+  return /[\uD800-\uDBFF]$/.test(cut) ? cut.slice(0, -1) : cut;
+};
 
 /** A host check's refusal as the cap's rule reads it (AdapterRunSpec.cap.park). */
 const refusalOf = (refusal: Refusal) => ({ message: refusal.refuse, forGood: refusal.forGood ?? true, ...(refusal.figures ? { figures: refusal.figures } : {}) });
@@ -583,7 +596,7 @@ function adapterLoop(specOf: (claim: Claim, run: AdapterRun) => AdapterRunSpec |
             await pauseFor?.(refusal);
           },
         };
-        const runOf: AdapterRun = { harness, registry, setModels: (given) => (models = given), ledger };
+        const runOf: AdapterRun = { harness, registry, setModels: (given) => (models = given), ledger, ...(deps.redact ? { redact: deps.redact } : {}) };
         // The spec, its MCP claim step among it (mcpForClaim, before the session opens). A refusal there ends the run in its
         // words with nothing sent; a claim lost during its refresh ends the loop with nothing more written.
         let spec: AdapterRunSpec;
@@ -901,7 +914,7 @@ function adapterLoop(specOf: (claim: Claim, run: AdapterRun) => AdapterRunSpec |
           // the run in those words, bounded; serve redacts a run's summary as it serves it, as every summary. With none,
           // the loop's own words.
           const said = outcome.error?.trim();
-          data = { state: "failed", summary: said ? said.slice(0, TURN_ERROR_MAX) : `the run gave no answer (${outcome.status})` };
+          data = { state: "failed", summary: said ? cutWhole(said, TURN_ERROR_MAX) : `the run gave no answer (${outcome.status})` };
         }
         else {
           // An answer cut at the model's output limit is unfinished: the run fails, saying so, never ended (loop.ts cutLast,
@@ -956,22 +969,27 @@ function adapterLoop(specOf: (claim: Claim, run: AdapterRun) => AdapterRunSpec |
       // Main's words for a tool set to deny (tool-gate's deniedText, from its one copy in refusal-words.ts).
       if (decision === "deny") return { deny: setToDenyText(call.tool) };
       if (decision === "allow") return "allow";
-      const answer = await answerOf({ ...call, tool }, mcp?.priceOf(tool) ?? spec.approvalPrice?.(kernelCall) ?? null);
+      // Asked about by the name the gate gives (its settings key, as main's pending approval is named), else the call's; the
+      // call and its price keep the MCP catalog name (tool).
+      const asked = spec.gate?.askedAs?.(call.tool) ?? call.tool;
+      const answer = await answerOf({ ...call, tool }, mcp?.priceOf(tool) ?? spec.approvalPrice?.(kernelCall) ?? null, asked);
       if (answer === "park") return { park: true };
-      return answer.approved ? "allow" : { deny: deniedText(tool, answer.note) };
+      return answer.approved ? "allow" : { deny: deniedText(asked, answer.note) };
     };
   }
 
   /** An ask's answer: one in the journal stands; else the approve or deny the runner hands over on a resume; else ask and
    *  park (the ask entry with the run parked, in one commit). The ask is main's approval card: the call's input, when it
    *  was asked and its `price`; asked again on a resume, it is the same request. */
-  async function answerOf(call: PreIntentCall, price: ApprovalPrice | null): Promise<AnswerData | "park"> {
+  async function answerOf(call: PreIntentCall, price: ApprovalPrice | null, asked: string = call.tool): Promise<AnswerData | "park"> {
     const conversation = await harness!.root(context);
     const entries = await entriesOf(gate!.journal, conversation.id, context);
     const known = findData<AnswerData>(entries, KINDS.answer, (data) => data.callId === call.callId);
     if (known) return known;
     const first = findData<AskData>(entries, KINDS.ask, (data) => data.callId === call.callId);
-    const ask: AskData = first ?? { callId: call.callId, tool: call.tool, args: call.args ?? null, requestedAt: isoNow(), price };
+    // The ask names the call as the person is asked about it (`asked`: its settings key), so every reader of the ask (the
+    // run's pending approval, its approval row, an "always" answer pinned by it) has the one name main gives it.
+    const ask: AskData = first ?? { callId: call.callId, tool: asked, args: call.args ?? null, requestedAt: isoNow(), price };
     // Commits the root's entry of `kind`, staging `staged` with it. False when the journal is sealed first (another call
     // of the round parked the run): nothing landed, and the expectation's failure is no one's to wait on.
     const entryLands = async (kind: string, data: AskData | AnswerData, staged: Parameters<Gate["expect"]>[1]): Promise<boolean> => {

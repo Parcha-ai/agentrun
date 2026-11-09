@@ -2,7 +2,7 @@
 // and summaryOverStore, through handed-values.ts handedValuesOf, by run-view.ts handedMark, main's one rule): a legacy
 // `true`, a bare hash, an object, the empty array, and an array holding anything but a hash each read as unreadable, so
 // the run is withheld and its answer, which repeats a pointer the agent's sign-in holds, is never served. A well-formed
-// mark still serves the answer cut of the pointer. (tl-browser's probe-malformed, kept with its assertion, over the
+// mark still serves the answer cut of the pointer. (the malformed-mark probe, kept with its assertion, over the
 // store-backed view: on this base the server's own routes still read runs from their files.)
 import assert from "node:assert/strict";
 import { createHash, randomBytes } from "node:crypto";

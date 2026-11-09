@@ -16,7 +16,7 @@ export const MCP_SERVER_NAME = /^[a-z][a-z0-9-]{0,31}$/;
 /** The names AgentRun's own tools are called by, which no MCP server takes: claude-agent calls the kernel's host tools
  *  as `mcp__hands__<tool>`, and monid's are `monid_<tool>` (tool-gate.ts settingsKeyOf reads both as AgentRun's). */
 export const RESERVED_MCP_NAMES: readonly string[] = ["hands", "monid"];
-export const MCP_AUTH_TYPES = ["none", "bearer", "headers", "oauth"] as const;
+export const MCP_AUTH_TYPES = ["none", "bearer", "headers", "oauth", "github_app"] as const;
 /** Where an owner updates a saved MCP server, as people read it. */
 const MCP_SETTINGS = "Settings → MCP servers";
 /** Why a saved credential can't be used for a run's calls, each with its own remedy and no other, as the model reads it
@@ -132,7 +132,7 @@ export function urlOf(value: unknown, issues: InputIssue[]): URL | undefined {
 /** The body's auth: its type and, when it sends one, its credential as the headers it becomes. */
 export function authOf(value: unknown, issues: InputIssue[]): Auth | undefined {
   if (value === undefined) return { type: "none" };
-  if (!isObject(value)) return void issues.push({ field: "auth", reason: "wrong_type", message: "auth is {type: none|bearer|headers|oauth, token?, headers?}." });
+  if (!isObject(value)) return void issues.push({ field: "auth", reason: "wrong_type", message: "auth is {type: none|bearer|headers|oauth|github_app, token?, headers?}." });
   const before = issues.length;
   issues.push(...unknownFields(value, ["type", "token", "headers"]).map((issue) => ({ ...issue, field: `auth.${issue.field}` })));
   const type = value.type;
@@ -143,6 +143,7 @@ export function authOf(value: unknown, issues: InputIssue[]): Auth | undefined {
     else if (Buffer.byteLength(text) > MAX_VALUE_BYTES) issues.push({ field, reason: "too_long", message: `${field} is at most ${MAX_VALUE_BYTES} bytes.` });
   };
   let headers: HeaderMap | undefined;
+  if (type === "github_app" && value.token !== undefined) issues.push({ field: "auth.token", reason: "not_allowed", message: "auth.type github_app takes no token: the connected GitHub App's installation token is minted for each run." });
   if ((type === "none" || type === "oauth") && (value.token !== undefined || value.headers !== undefined)) issues.push({ field: "auth", reason: "not_allowed", message: type === "none" ? "auth.type none sends no credential." : "auth.type oauth takes its credential from a sign-in, never from a body." });
   if (type === "bearer") {
     if (value.headers !== undefined) issues.push({ field: "auth.headers", reason: "not_allowed", message: "A bearer credential is auth.token." });
@@ -151,8 +152,8 @@ export function authOf(value: unknown, issues: InputIssue[]): Auth | undefined {
       headers = { authorization: `Bearer ${String(value.token)}` };
     }
   }
-  if (type === "headers") {
-    if (value.token !== undefined) issues.push({ field: "auth.token", reason: "not_allowed", message: "Named headers are auth.headers." });
+  if (type === "headers" || type === "github_app") {
+    if (type === "headers" && value.token !== undefined) issues.push({ field: "auth.token", reason: "not_allowed", message: "Named headers are auth.headers." });
     if (value.headers !== undefined) {
       const entries = isObject(value.headers) ? Object.entries(value.headers) : [];
       if (!entries.length || entries.length > MAX_HEADERS) issues.push({ field: "auth.headers", reason: "invalid", message: `auth.headers names 1 to ${MAX_HEADERS} headers and their values.` });
@@ -160,6 +161,7 @@ export function authOf(value: unknown, issues: InputIssue[]): Auth | undefined {
       for (const [name, text] of entries) {
         const lower = name.toLowerCase();
         if (!HEADER_NAME.test(name) || RESERVED.has(lower)) issues.push({ field: `auth.headers.${name}`, reason: "invalid", message: `${name} is not a header a credential may be sent in.` });
+        else if (type === "github_app" && lower === "authorization") issues.push({ field: `auth.headers.${name}`, reason: "not_allowed", message: "A github_app server's Authorization is the installation token minted for each run, never a saved one." });
         else if (lower in headers) issues.push({ field: `auth.headers.${name}`, reason: "duplicate", message: `${name} is named twice.` });
         check(`auth.headers.${name}`, text);
         headers[lower] = String(text);

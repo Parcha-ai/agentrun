@@ -99,8 +99,7 @@ function entry(fields: Omit<ProviderEntry, "kinds">): ProviderEntry {
 
 /**
  * Every provider Settings offers, each with its provider file in the registry;
- * a unit test then holds each to its module (CAPABILITIES, MOUNT). daytona, modal and e2b take archil mounts once D6
- * lands, and their entries follow their modules then.
+ * a unit test then holds each to its module (CAPABILITIES, MOUNT). daytona, modal and e2b take archil mounts.
  */
 export const PROVIDERS: readonly ProviderEntry[] = [
 	entry({ id: "docker", label: "Docker", keys: [], mounts: ["bind"], metered: false, capabilities: [SANDBOX, LINUX_DESKTOP] }),
@@ -112,7 +111,7 @@ export const PROVIDERS: readonly ProviderEntry[] = [
 			{ name: "DAYTONA_API_URL", required: false },
 			{ name: "DAYTONA_TARGET", required: false },
 		],
-		mounts: [],
+		mounts: ["archil"],
 		metered: true,
 		capabilities: [SANDBOX],
 	}),
@@ -123,11 +122,11 @@ export const PROVIDERS: readonly ProviderEntry[] = [
 			{ name: "MODAL_TOKEN_ID", required: true },
 			{ name: "MODAL_TOKEN_SECRET", required: true },
 		],
-		mounts: [],
+		mounts: ["archil"],
 		metered: true,
 		capabilities: [SANDBOX],
 	}),
-	entry({ id: "e2b", label: "E2B", keys: [{ name: "E2B_API_KEY", required: true }], mounts: [], metered: true, capabilities: [SANDBOX, LINUX_DESKTOP] }),
+	entry({ id: "e2b", label: "E2B", keys: [{ name: "E2B_API_KEY", required: true }], mounts: ["archil"], metered: true, capabilities: [SANDBOX, LINUX_DESKTOP] }),
 	entry({ id: "orgo", label: "Orgo", keys: [{ name: "ORGO_API_KEY", required: true }], mounts: [], metered: true, capabilities: [LINUX_DESKTOP] }),
 	entry({
 		id: "phone-harness",

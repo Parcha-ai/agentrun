@@ -1,11 +1,11 @@
-// The runner's MCP claim step: once per claim, before the run's loop starts (tl-mcp's note, sections 1, 4 and 5).
+// The runner's MCP claim step: once per claim, before the run's loop starts.
 //
 // The pin. A run's pin (the granted MCP tools as their servers listed them, each server's URL then, its prices) is made
 // at its first claim by mcpPinOf over the registry's rows and written by store.mcp.pinOnce: in its own store transaction,
 // behind the claim's epoch fence, inserted only when the run has none. So it exists before anything is sent, is written
 // once and never rewritten, and a crash between it and the loop's first commit leaves it for the next claim to read as
-// written (the first claim's snapshot, by design). tl-mcp acked this over the note's first "same commit as the first
-// journal entries" (11-08); the note's section 1 says so now. A pin that cannot be made refuses the claim in its words.
+// written (the first claim's snapshot, by design), rather than in the same commit as the first journal entries. A pin
+// that cannot be made refuses the claim in its words.
 // At every claim the pin is checked again: a pinned tool that is a meta tool now refuses the claim in words, nothing sent.
 //
 // The credentials. The pinned servers' credentials are unsealed (store/seal.ts openMcpCredential) into this step's

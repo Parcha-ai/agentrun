@@ -268,7 +268,7 @@ export const STORE_DDL: readonly string[] = [
     PRIMARY KEY (agent_id, key)
   ) STRICT`,
 
-  // An agent's saved browser sign-ins (design 2.1, tl-browser's rules): one live row per agent and browser provider, its
+  // An agent's saved browser sign-ins (design 2.1, the browser sign-in rules): one live row per agent and browser provider, its
   // pointer (the vendor's context or profile id) sealed with the store's one rule (store/seal.ts, AAD
   // sign_ins|<agent>:<provider>|pointer), which the store never opens. The owner sees its name ("default") and saved_at,
   // never the pointer, and no run's tools ever do. Forgetting a sign-in moves its sealed pointer, byte for byte so it

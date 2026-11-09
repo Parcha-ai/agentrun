@@ -1,5 +1,5 @@
 // An agent's saved browser sign-ins, over the one store (A: store.signIns), the store-backed replacement for sign-ins.ts's
-// file store (tl-browser's rules, the E1 store half of the E1/E2/E3 split). The cookies stay at the browser's vendor (a
+// file store (the browser sign-in rules, the E1 store half of the E1/E2/E3 split). The cookies stay at the browser's vendor (a
 // Browserbase context, a Kernel profile); this server keeps one sealed pointer per agent and provider, sealed with the
 // store's one rule (store/seal.ts, AAD sign_ins|<agent>:<provider>|pointer), never served, never written to a run in the
 // clear. Only the owner reads a sign-in's name ("default") and state. A run gets the pointer only at its launch, over its
@@ -11,6 +11,7 @@
 // writes sign_in_handed.
 import { createHash } from "node:crypto";
 import { ApiError } from "./errors.js";
+import { type SecretMeta, signInSecretMeta } from "./sign-ins-secrets.js";
 import { sealColumn, sealedAt, SignInHandedTo, SignInMissing, type Store, unsealColumn } from "./store/index.js";
 
 /** The one saved sign-in an agent keeps per provider is named this; the owner's label, never the model's. */
@@ -149,8 +150,9 @@ const settleFor = (provider: string): number => (provider === "browserbase" ? BR
 /** A browser the server keeps a sign-in for; a local Chrome keeps none. Ported from sign-ins.ts, kept here so this module
  *  does not depend on the file store the switch deletes. */
 export type Vendor = "browserbase" | "kernel";
-/** A saved sign-in as GET /agents/{id} shows it (the v2 SignIn), never its pointer. Identical to the old SignInView. */
-export type SignInView = { key: string; provider: Vendor; state: "ready" | "held" | "unreadable"; held_by: string | null; verified_at: string | null };
+/** A saved sign-in as GET /agents/{id} shows it (the v2 SignIn), never its pointer: the old SignInView's fields, and its
+ *  one secret's metadata under `secret` (sign-ins-secrets.ts signInSecretMeta). */
+export type SignInView = { key: string; provider: Vendor; state: "ready" | "held" | "unreadable"; held_by: string | null; verified_at: string | null; secret: SecretMeta };
 
 /** The vendor a run's browser resolves to keeps a sign-in for: Browserbase's and Kernel's; a local Chrome is refused by
  *  name; an unavailable browser has none. Ported from sign-ins.ts. */
@@ -165,15 +167,17 @@ const isoOf = (ms: number | null): string | null => (ms === null ? null : new Da
 /** The agent's sign-ins as the v2 API shows them (the old SignIns.view), never a pointer. Per sign-in: `held`/`held_by`
  *  when a live run holds its pointer's hash (store.signIns.handedHolder), a Browserbase one for its settle window past the
  *  run's end too (settleFor, so the view matches the save lease); `unreadable` when its pointer does not open under this
- *  server's seal key (then held_by is null — no hash to match a run by); `verified_at` from the store. */
+ *  server's seal key (then held_by is null — no hash to match a run by); `verified_at` from the store; and `secret`, its
+ *  secret's metadata, changed_at being its saved_at. */
 export async function signInViews(store: SignInsStore, sealKey: Buffer | undefined, agentId: string): Promise<SignInView[]> {
   const rows = await store.signIns.list(agentId);
   return Promise.all(rows.map(async (row): Promise<SignInView> => {
     const pointer = open(sealKey, agentId, row.provider, row.pointerSealed);
     const heldBy = pointer === undefined ? null : (await store.signIns.handedHolder(pointerHash(pointer), { settleMs: settleFor(row.provider) })) ?? null;
     const base = { key: row.name, provider: row.provider as Vendor, held_by: heldBy, verified_at: isoOf(row.verifiedAt) };
-    if (pointer === undefined) return { ...base, state: "unreadable" };
-    return { ...base, state: heldBy ? "held" : "ready" };
+    const secret = signInSecretMeta(row);
+    if (pointer === undefined) return { ...base, state: "unreadable", secret };
+    return { ...base, state: heldBy ? "held" : "ready", secret };
   }));
 }
 
