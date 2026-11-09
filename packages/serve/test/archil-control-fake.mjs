@@ -4,7 +4,7 @@
 // ({status, body}) for a test that wants a refusal.
 import { createServer } from "node:http";
 
-export async function archilControlFake({ answer } = {}) {
+export async function archilControlFake({ answer, tokenOf = (n) => `fake-minted-token-${n}` } = {}) {
   const requests = [];
   const users = new Map();
   let minted = 0;
@@ -21,7 +21,7 @@ export async function archilControlFake({ answer } = {}) {
       const mint = /^\/api\/disks\/([^/]+)\/users$/.exec(url.pathname);
       if (req.method === "POST" && mint) {
         minted += 1;
-        const user = { token: `fake-minted-token-${minted}`, identifier: `tok-${minted}`, nickname: body?.nickname, ttl: body?.ttl };
+        const user = { token: tokenOf(minted), identifier: `tok-${minted}`, nickname: body?.nickname, ttl: body?.ttl };
         users.set(user.identifier, user);
         return reply(201, { success: true, data: user });
       }
