@@ -22,9 +22,19 @@ const { sendCommand } = await import("../dist/runner/commands.js");
 const { parallelSearchFee } = await import("../dist/paid-calls.js");
 const { FAUX_PARALLEL_ENV } = await import("../dist/decisions.js");
 const { FAUX_ENV } = await import("../dist/model.js");
+const { paidRequestsOf } = await import("./fixtures/paid-requests.mjs");
+const { runTimeline } = await import("../dist/store-reads/journal.js");
+const { BACKGROUND_CONTEXT } = await import("@earendil-works/chord/context");
+/** The run's timeline rows that speak of a paid tool's charge: its Tool cost rows and its Not metered ones. */
+const chargeRows = (rows) => rows.filter((row) => row.kind === "phase" && /^(Tool cost|Not metered):/.test(row.summary ?? "")).map((row) => row.summary);
 const FAUX_PARALLEL = new URL("./fixtures/faux-parallel-search.mjs", import.meta.url).pathname;
 
-const TIMING = { leaseMs: 1_000, renewEveryMs: 250, stopMarginMs: 300, pollMs: 20, commandPollMs: 30 };
+/** A steady lease (this file tests call nodes, not leases): a lease the suite's load can outlast would cut a call node's
+ *  admitted effect, which the next claim refuses to repeat (runner-call-claim-lapse.test.mjs pins that). */
+const TIMING = { leaseMs: 60_000, renewEveryMs: 1_000, stopMarginMs: 5_000, pollMs: 20, commandPollMs: 30 };
+/** The words the run's store holds about why a call node failed (the engine's effect records, the node's error), for a
+ *  failure's message, so a red says why. */
+const whyIn = (text) => [...new Set(text.match(/FROZEN_[A-Z_]+[^"\\]{0,160}|Reconcile[^"\\]{0,160}|"error":"[^"]{0,200}/g) ?? [])].slice(0, 6);
 const sleep = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
 /** Output $100 a million, input free: an answer of 10 output tokens books $0.001. */
 const PRICED = Object.freeze({ id: "faux-priced", api: "anthropic-messages", price: { input: 0, output: 100, cacheRead: 0, cacheWrite: 0 }, outputCeiling: 16_384 });
@@ -99,7 +109,7 @@ async function runOn(t, { workflow, tools = ["llm"], toolSettings, fetch, capUsd
     // timeline's reader passes over.
     const journalText = async () => ["store.sqlite", "store.sqlite-wal"].map((name) => join(dir, name)).filter(existsSync).map((file) => readFileSync(file).toString("utf8")).join("\n");
     const resting = during ? ["ended", "failed", "stopped"] : ["ended", "failed", "stopped", "parked"];
-    if (resting.includes(row.state) && row.runner === null) return Object.assign(row, { journalText });
+    if (resting.includes(row.state) && row.runner === null) return Object.assign(row, { journalText, paidRequests: () => paidRequestsOf(store), timeline: () => runTimeline(server, "run-1", BACKGROUND_CONTEXT, { settled: true }) });
     if (Date.now() - from > 30_000) assert.fail(`the run never left running: ${JSON.stringify({ state: row.state, summary: row.summary })}`);
     await sleep(20);
   }
@@ -108,15 +118,24 @@ async function runOn(t, { workflow, tools = ["llm"], toolSettings, fetch, capUsd
 test("an llm call node runs to its end on the runner, its request booked once on the run's ledger", async (t) => {
   const origin = wordsOrigin(["CALL-ONE"]);
   const row = await runOn(t, { workflow: llmCalls("CALL-ONE"), fetch: origin.fetch });
-  assert.equal(row.state, "ended", JSON.stringify({ state: row.state, summary: row.summary }));
+  assert.equal(row.state, "ended", JSON.stringify({ state: row.state, summary: row.summary, why: whyIn(await row.journalText()) }));
   assert.deepEqual(origin.counts, { "CALL-ONE": 1 });
   assert.equal(eight(row.costUsd), eight(PER_ANSWER), `booked once: ${row.costUsd}`);
+});
+
+test("an llm call node's hold, given back as its own model request is held, shows no charge row on the run's timeline", async (t) => {
+  const origin = wordsOrigin(["CALL-ONE"]);
+  const row = await runOn(t, { workflow: llmCalls("CALL-ONE"), fetch: origin.fetch });
+  assert.equal(row.state, "ended", JSON.stringify({ state: row.state, summary: row.summary }));
+  // Its cost is its model request's (main's: an llm call is the run's usage, never a paid tool's charge), so no Tool cost
+  // row, and no Not metered one for the hold it gave back unused.
+  assert.deepEqual(chargeRows(await row.timeline()), [], "no charge row for the llm call");
 });
 
 test("the control: three llm call nodes in a chain, never paused, each run once and booked once", async (t) => {
   const origin = wordsOrigin(["CALL-ONE", "CALL-TWO", "CALL-THREE"]);
   const row = await runOn(t, { workflow: llmCalls("CALL-ONE", "CALL-TWO", "CALL-THREE"), fetch: origin.fetch });
-  assert.equal(row.state, "ended", JSON.stringify({ state: row.state, summary: row.summary }));
+  assert.equal(row.state, "ended", JSON.stringify({ state: row.state, summary: row.summary, why: whyIn(await row.journalText()) }));
   assert.deepEqual(origin.counts, { "CALL-ONE": 1, "CALL-TWO": 1, "CALL-THREE": 1 });
   assert.equal(eight(row.costUsd), eight(3 * PER_ANSWER), `booked once each: ${row.costUsd}`);
 });
@@ -162,9 +181,15 @@ test("a paid web_search call node on Parallel: its search sent once, and booked 
     workflow, tools: ["web_search"], fetch: wordsOrigin([]).fetch, plane: { web_search: "parallel" },
     env: { [FAUX_ENV]: "1", [FAUX_PARALLEL_ENV]: FAUX_PARALLEL, PARALLEL_API_KEY: `not-a-secret-${"p"}` },
   });
-  assert.equal(row.state, "ended", JSON.stringify({ state: row.state, summary: row.summary }));
+  assert.equal(row.state, "ended", JSON.stringify({ state: row.state, summary: row.summary, why: whyIn(await row.journalText()) }));
   assert.equal(globalThis.fauxParallelSearches, 1, "one search sent");
   assert.equal(eight(row.costUsd), eight(parallelSearchFee(3).usd), `booked once at Parallel's fee: ${row.costUsd}`);
+  // Its request's record names who charges for it, as an agentic run's does (main's charge row: charged_by parallel).
+  const paid = await row.paidRequests();
+  assert.ok(paid.length > 0, "the search's paid request is in the run's records");
+  for (const request of paid) assert.equal(request.charged_by, "parallel", `charged by Parallel: ${JSON.stringify(request)}`);
+  // Its one charge row, as main's: who charged and what.
+  assert.deepEqual(chargeRows(await row.timeline()), [`Tool cost: parallel charged $${parallelSearchFee(3).usd.toFixed(4)} for ${paid[0].model.slice("paid:".length)}`], "one charge row, Parallel's");
 });
 
 test("past the cap, an llm call node's hold is refused before its effect is admitted: the run parks with nothing sent, and a raise sends it once", async (t) => {
@@ -179,7 +204,7 @@ test("past the cap, an llm call node's hold is refused before its effect is admi
     },
   });
   assert.deepEqual(atPark?.counts, { "CALL-ONE": 0 }, `parked before anything was sent: ${JSON.stringify(atPark)}`);
-  assert.equal(row.state, "ended", JSON.stringify({ state: row.state, summary: row.summary }));
+  assert.equal(row.state, "ended", JSON.stringify({ state: row.state, summary: row.summary, why: whyIn(await row.journalText()) }));
   assert.deepEqual(origin.counts, { "CALL-ONE": 1 }, "the raise sent it once");
   assert.equal(eight(row.costUsd), eight(PER_ANSWER), `booked once: ${row.costUsd}`);
 });
@@ -188,7 +213,7 @@ test("a call charged exactly its hold is never failed by the net: an llm answer 
   // maxTokens 10: its hold is 10 output tokens at $100 a million; the answer reports exactly 10.
   const origin = wordsOrigin(["CALL-ONE"], 10);
   const row = await runOn(t, { workflow: boundedCall("CALL-ONE", 10), fetch: origin.fetch });
-  assert.equal(row.state, "ended", JSON.stringify({ state: row.state, summary: row.summary }));
+  assert.equal(row.state, "ended", JSON.stringify({ state: row.state, summary: row.summary, why: whyIn(await row.journalText()) }));
   assert.equal(eight(row.costUsd), eight(PER_ANSWER));
 });
 

@@ -338,6 +338,9 @@ function replyTo(context, faux) {
   if (first.includes("Answer quoting the later key.")) return faux.message(`Later: ${["not-a-secret", "later-key-0123456789abcdef"].join("-")} ends here.`);
   // A provider error quoting what the message gave it after "Fail quoting: " (server-secrets.test.mjs: a webhook trigger's
   // secret in each of its spellings), as a gateway that echoes a header would.
+  // The same, of a value the message holds reversed (runner-trigger-secret.test.mjs): the value reaches the run only through
+  // the provider's error, never as the person's own words.
+  if (first.startsWith("Fail quoting reversed: ")) return faux.message("", { stopReason: "error", errorMessage: `500 {"message":"The hook said ${first.slice("Fail quoting reversed: ".length).split(" ").map((one) => [...one].reverse().join("")).join(" ")}"}` });
   if (first.startsWith("Fail quoting: ")) return faux.message("", { stopReason: "error", errorMessage: `500 {"message":"The hook said ${first.slice("Fail quoting: ".length)}"}` });
   // A provider error that is no 401 but echoes the key it was sent.
   if (first.includes("Fail echoing a held key")) return faux.message("", { stopReason: "error", errorMessage: '500 {"message":"Key not-a-secret-echoed-key-0123 is not valid"}' });

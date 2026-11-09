@@ -614,6 +614,11 @@ export function momentOf(run: RunView, facts: RunFacts, live: boolean): RunMomen
 /** An ended run's words, withheld while this server can't read the sign-in it was handed (load). */
 export const WITHHELD_SIGN_IN = "This server can't read the run's browser sign-in (its seal key changed or is missing, or the sign-in is damaged), so nothing the run said is shown.";
 
+/** A withheld run's title: a short line that fits the title's length and holds nothing the run said, so a title that
+ *  repeats the handed sign-in is never served when this server can't cut it. The full sentence stays in the run's error
+ *  and review. */
+export const WITHHELD_TITLE = "Withheld: a sign-in this run used can't be read";
+
 /** What a `sign_in_handed` the server did not write (anything but a non-empty array of SHA-256 hashes: a `true` or one
  *  hash an older build wrote, or a damaged value) reads as: some pointer was handed, which one is not known, so the run is
  *  hidden or withheld, never served uncut, and forget waits for it while it goes. */

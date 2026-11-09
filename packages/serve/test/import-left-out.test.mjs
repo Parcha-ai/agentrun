@@ -6,7 +6,7 @@ import { randomBytes } from "node:crypto";
 import { copyFileSync, mkdirSync, readdirSync, readFileSync, symlinkSync, utimesSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { test } from "node:test";
-import { openStore } from "@parcha/pi-durable-agent";
+import { openSqliteStore } from "../dist/store/index.js";
 import * as importing from "../dist/import.js";
 import { claudeSession, piSession, sessionId } from "./fixtures/import-sessions.mjs";
 import { scratch } from "./support.mjs";
@@ -53,11 +53,11 @@ test("--include-deleted imports the sessions of folders that no longer exist, ea
   const plan = await importing.planImport(options);
   assert.deepEqual(plan.projects.map((p) => [p.name, p.sessions.length]), [["billing-api", 1], ["billing-api-docs", 1], ["billing-api-retries", 2]]);
   assert.deepEqual(plan.skipped.map((s) => s.kind).sort(), ["live", "no-project", "temp"]);
-  const store = openStore(join(h.root, "agents"));
-  t.after(() => store.close());
+  const store = await openSqliteStore({ dataDir: join(h.root, "agents"), role: "server" });
+  t.after(async () => await store.close());
   const report = await importing.runImport(store, plan, options);
   assert.deepEqual(report.agents.map((a) => [a.cwd, a.runs]), [[h.live, 1], [join(h.at, "worktrees", "billing-api-docs"), 1], [join(h.at, "worktrees", "billing-api-retries"), 2]]);
-  assert.equal(store.readAgent(report.agents[2].id).revisions[0].body.instructions, "", "a folder that is gone has no instructions to read");
+  assert.equal((await store.agents.revisions(report.agents[2].id))[0].body.instructions, "", "a folder that is gone has no instructions to read");
 });
 
 test("the CLI's dry run and import count what they leave out by why, with the flag that brings each kind in, and list each file only with --verbose", async (t) => {

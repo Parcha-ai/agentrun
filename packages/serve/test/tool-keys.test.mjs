@@ -423,7 +423,7 @@ test("a key saved is read by name with no restart: capabilities lose the tool's 
   assert.deepEqual(await refused(), [409, "agent_not_runnable", {}]);
 });
 
-test("a browser key saved by name reaches the run's browser with no restart: its provider gets both fields, saved", { timeout: 60_000, skip: "waits on the runner binding the browser tool (runner/adapter-run-spec.ts bindNonHandTools binds web, monid and learned workflows only)" }, async (t) => {
+test("a browser key saved by name reaches the run's browser with no restart: its provider gets both fields, saved", { timeout: 60_000 }, async (t) => {
   const log = join(await scratch(t), "browser.jsonl");
   withEnv(t, { AGENTRUN_SEAL_KEY: sealKey(), FAUX_BROWSER_LOG: log }, KEYS);
   const { api } = await serve(t, { fauxBrowser: FAUX_BROWSER });

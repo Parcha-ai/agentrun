@@ -118,6 +118,25 @@ test("store conformance: a retired secret (rotated, or its trigger deleted) is k
   assert.equal(aside.get("trg_one", "secret"), undefined, "its AAD is its own");
 });
 
+test("store conformance: two rotations of one trigger's secret at once each retire the value they replace, in two distinct retired rows, both cut after a restart", async (t) => {
+  const { store } = await storeOn(t);
+  const minting = { scope: "trigger", fields: { secret: { mint: true, minBytes: MIN_KEY_BYTES } } };
+  const settings = sealedSettingsOverStore(store, "hookish", minting, KEY, () => {});
+  await settings.load();
+  const first = await settings.mint("trg_one", "secret");
+  // Two Rotates of the same trigger in the same moment: neither waits for the other.
+  const [a, b] = await Promise.all([settings.mint("trg_one", "secret"), settings.mint("trg_one", "secret")]);
+  const now = settings.get("trg_one", "secret");
+  assert.ok([a, b].includes(now), "one of the two is the secret now");
+  const replaced = [first, a, b].filter((value) => value !== now);
+  const retired = (await store.triggerSettings.get("hookish")).filter((row) => row.scope.startsWith("retired:"));
+  assert.equal(new Set(retired.map((row) => row.scope)).size, 2, "two distinct retired rows, one per value replaced");
+  const next = sealedSettingsOverStore(store, "hookish", minting, KEY, () => {});
+  await next.load();
+  for (const value of replaced) assert.ok(next.values().includes(value), "each value replaced is cut after a restart");
+  assert.equal(next.get("trg_one", "secret"), now);
+});
+
 test("openServerSecretsOverStore wires each adapter's store settings into the redaction list", async (t) => {
   const { store } = await storeOn(t);
   const data = await mkdtemp(join(process.env.TMPDIR ?? tmpdir(), "server-secrets-store-"));

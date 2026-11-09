@@ -9,6 +9,11 @@ import { appJwt, GITHUB_FIELDS, GITHUB_SCOPE, GITHUB_WEB, githubCall, githubTarg
 import type { SealedSettingsOverStore } from "./sealed-settings-store.js";
 import { isObject, type Json } from "./validate.js";
 
+/** What every GitHub App Connect GitHub makes asks of the repositories it is installed on (its manifest's
+ *  default_permissions): the least its templates need. A tool that needs more is warned of when a template granting it is
+ *  applied (template-github-permissions.ts), never quietly refused at its first call. */
+export const APP_PERMISSIONS = { pull_requests: "write", contents: "read", metadata: "read", issues: "read" } as const satisfies Record<string, "read" | "write">;
+
 /** How long a Connect's state is good for, and the most kept at once. */
 export const STATE_MS = 60 * 60 * 1000;
 const MAX_STATES = 100;
@@ -210,7 +215,7 @@ export class GitHubConnect {
       setup_url: `${base}${INSTALLED_PATH}`,
       setup_on_update: true,
       public: false,
-      default_permissions: { pull_requests: "write", contents: "read", metadata: "read", issues: "read" },
+      default_permissions: { ...APP_PERMISSIONS },
       default_events: ["pull_request", "issue_comment"],
     };
     // GitHub reads the state from the form's URL; the form posts only the manifest.
