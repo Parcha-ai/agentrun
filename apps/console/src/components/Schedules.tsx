@@ -10,7 +10,7 @@ import { runLabel, when } from "@/lib/format";
 import { keeper, uuid } from "@/lib/idempotency";
 import { type Problem, problem } from "@/lib/problem";
 import type { Tone } from "@/lib/runState";
-import { atLeast, bodyOf, capOf, dollars, acceptWords, ranOnce, emptyGitHub, FIRED_BY, GITHUB_EVENTS, githubBodyOf, type GitHubDraft, githubWhen, type GitHubTrigger, isGitHubTrigger, HOOK_URL_HINT, hookUrlOf, hookWhen, isScheduleTrigger, isWebhookTrigger, SIGNATURE_WORDS, utcWhen, type Draft, draftOf, type Schedule, type WebhookTrigger, emptyDraft, FIRING_LABEL, firingWords, instantKept, issuesOf, patchOf, whenWords, emptyWebhook, type WebhookDraft, webhookBodyOf } from "@/lib/schedules";
+import { atLeast, bodyOf, capOf, dollars, acceptWords, onceState, type OnceState, emptyGitHub, FIRED_BY, GITHUB_EVENTS, githubBodyOf, type GitHubDraft, githubWhen, type GitHubTrigger, isGitHubTrigger, HOOK_URL_HINT, hookUrlOf, hookWhen, isScheduleTrigger, isWebhookTrigger, SIGNATURE_WORDS, utcWhen, type Draft, draftOf, type Schedule, type WebhookTrigger, emptyDraft, FIRING_LABEL, firingWords, instantKept, issuesOf, patchOf, whenWords, emptyWebhook, type WebhookDraft, webhookBodyOf } from "@/lib/schedules";
 import type { Firing, Trigger, TriggerCreate, TriggerMade } from "@/lib/v2";
 
 /** Which triggers page: the list (no `trigger`), a new one (`trigger` null, of `kind`), one trigger, or a schedule's editor
@@ -27,11 +27,12 @@ const TONE: Record<Firing["status"], Tone | "plain"> = { started: "success", sen
 
 /** Triggers (serve's trigger/1): schedules and webhooks, each starting an agent's capped runs with no one there. */
 /** `refreshMs`: how often an open trigger's page reads it again, so a firing shows as it happens (the list, twice that). */
-export function SchedulesPage({ v2, view, go, agentName, minEvery, refreshMs = 15_000 }: PageProps & { view: ScheduleView; minEvery?: number; refreshMs?: number }) {
-  if (view.trigger === undefined) return <ScheduleList v2={v2} go={go} agentName={agentName} every={refreshMs * 2} />;
+/** `now`: the page's clock, for whether a one-time schedule's time has passed. */
+export function SchedulesPage({ v2, view, go, agentName, minEvery, refreshMs = 15_000, now = Date.now }: PageProps & { view: ScheduleView; minEvery?: number; refreshMs?: number; now?: () => number }) {
+  if (view.trigger === undefined) return <ScheduleList v2={v2} go={go} agentName={agentName} every={refreshMs * 2} now={now} />;
   if (view.trigger === null) return view.kind === "webhook" ? <WebhookForm v2={v2} go={go} /> : view.kind === "github" ? <GitHubForm v2={v2} go={go} /> : <ScheduleForm v2={v2} go={go} minEvery={minEvery} />;
   if (view.edit) return <ScheduleEdit key={view.trigger} v2={v2} go={go} id={view.trigger} minEvery={minEvery} />;
-  return <ScheduleDetail key={view.trigger} v2={v2} go={go} agentName={agentName} id={view.trigger} every={refreshMs} />;
+  return <ScheduleDetail key={view.trigger} v2={v2} go={go} agentName={agentName} id={view.trigger} every={refreshMs} now={now} />;
 }
 
 /** `read` again every `every` ms while the tab shows, and once when it shows again; nothing while it is hidden (SWR's
@@ -48,10 +49,13 @@ function useRereads(read: () => void, every: number, deps: unknown[]) {
   }, [every, ...deps]); // eslint-disable-line react-hooks/exhaustive-deps
 }
 
+/** A passed one time in words: "Done · ran <when>", or "Its time passed · <when>" with no run known to have started. */
+const onceWords = (state: OnceState): string | null => (!state ? null : "ran" in state ? `Done · ran ${at(state.ran.nominal_at)}` : `Its time passed · ${at(state.passed)}`);
+
 /** How a schedule's last firing went, or that it has not fired. */
 const lastWords = (t: Trigger) => (t.last_firing ? `${firingWords(t.last_firing)} · ${at(t.last_firing.nominal_at)}` : "Not fired yet");
 
-function ScheduleList({ v2, go, agentName, every }: PageProps & { every: number }) {
+function ScheduleList({ v2, go, agentName, every, now }: PageProps & { every: number; now: () => number }) {
   const [triggers, setTriggers] = useState<Trigger[] | null>(null);
   const [error, setError] = useState<Problem | null>(null);
   const [tries, setTries] = useState(0);
@@ -87,12 +91,12 @@ function ScheduleList({ v2, go, agentName, every }: PageProps & { every: number 
                   <div className="flex flex-wrap items-center gap-2">
                     <a href={hashOf(t.id)} className="min-w-0 break-words text-[15px] font-semibold hover:underline">{t.name}</a>
                     <Chip>{KIND_WORDS[t.source.kind]}</Chip>
-                    {!t.enabled && !ranOnce(t) && <Chip tone="muted">Paused</Chip>}
+                    {!t.enabled && !onceState(t, now()) && <Chip tone="muted">Paused</Chip>}
                   </div>
                   <p className="mt-1 break-words font-mono text-[12px] text-muted-foreground" title={cronOf(t)}>{whatWords(t, agentName)}</p>
                 </div>
                 <div className="min-w-0 font-mono text-[12px] text-muted-foreground md:text-right">
-                  {t.source.kind === "schedule" && <p>{ranOnce(t) ? `Done · ran ${at(ranOnce(t)!.nominal_at)}` : t.next_at ? `Next ${at(t.next_at)}` : "No next time"}</p>}
+                  {t.source.kind === "schedule" && <p>{onceWords(onceState(t, now())) ?? (t.next_at ? `Next ${at(t.next_at)}` : "No next time")}</p>}
                   <p className="mt-1 break-words">{lastWords(t)}</p>
                 </div>
               </li>
@@ -127,7 +131,7 @@ function NotASchedule() {
   );
 }
 
-function ScheduleDetail({ v2, go, agentName, id, every }: PageProps & { id: string; every: number }) {
+function ScheduleDetail({ v2, go, agentName, id, every, now }: PageProps & { id: string; every: number; now: () => number }) {
   const [trigger, setTrigger] = useState<Trigger | null>(null);
   const [firings, setFirings] = useState<Firing[]>([]);
   const [error, setError] = useState<Problem | null>(null);
@@ -176,7 +180,7 @@ function ScheduleDetail({ v2, go, agentName, id, every }: PageProps & { id: stri
   if (!hook && !gh && !isScheduleTrigger(trigger)) return <NotASchedule />;
   const runs = trigger as Schedule | WebhookTrigger | GitHubTrigger;
   // A one-time schedule that has run: Done, with when it ran, and nothing to resume.
-  const done = ranOnce(trigger);
+  const done = onceState(trigger, now(), firings);
 
   const act = async (what: "pause" | "delete", work: () => Promise<unknown>, failed: string) => {
     setBusy(what); setSaid(null);
@@ -216,7 +220,7 @@ function ScheduleDetail({ v2, go, agentName, id, every }: PageProps & { id: stri
       <div className="mt-3 flex flex-col items-start gap-x-6 gap-y-3 sm:flex-row">
         <div className="min-w-0 flex-1 self-stretch">
           <h1 className="flex flex-wrap items-center gap-2 break-words text-2xl font-semibold leading-tight">{trigger.name}{!trigger.enabled && !done && <Chip tone="muted">Paused</Chip>}</h1>
-          <p className="mt-2 break-words font-mono text-[12px] text-muted-foreground">{hook ? `Webhook · ${hookWhen(hook.source)}` : gh ? `GitHub · ${githubWhen(gh.source)}` : <><span title={cronOf(trigger)}>{whenWords(runs.source as Schedule["source"])}</span>{` · ${done ? `Done · ran ${at(done.nominal_at)}` : trigger.next_at ? `next ${at(trigger.next_at)}` : "no next time"}`}</>}</p>
+          <p className="mt-2 break-words font-mono text-[12px] text-muted-foreground">{hook ? `Webhook · ${hookWhen(hook.source)}` : gh ? `GitHub · ${githubWhen(gh.source)}` : <><span title={cronOf(trigger)}>{whenWords(runs.source as Schedule["source"])}</span>{` · ${done ? onceWords(done) : trigger.next_at ? `next ${at(trigger.next_at)}` : "no next time"}`}</>}</p>
         </div>
         <div className="flex flex-wrap items-center gap-2">
           <Button size="sm" variant="solid" onClick={() => void runNow()} disabled={busy === "fire"}><Zap aria-hidden /> {busy === "fire" ? "Starting" : "Run now"}</Button>
