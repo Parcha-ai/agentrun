@@ -573,7 +573,7 @@ function GitHubForm({ v2, go }: { v2: Client; go: (hash: string) => void }) {
   // Whether the form is still open: a create that answers after the person left it (Cancel, the back link, the sidebar)
   // opens nothing.
   const open = useRef(true);
-  useEffect(() => () => { open.current = false; }, []);
+  useEffect(() => { open.current = true; return () => { open.current = false; }; }, []);
   useEffect(() => {
     let live = true;
     setReadError(null);
