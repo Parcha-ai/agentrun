@@ -15,7 +15,7 @@ export { localWorkspace, workspaceAt } from "./local.js";
 export { archilWorkspace, type ArchilWorkspaceOptions } from "./archil.js";
 export { archilDisk, type ArchilDisk, type ArchilDiskOptions, type ArchilImage } from "./archil-disk.js";
 export {
-  ARCHIL_API_KEY_ROW, ARCHIL_DISK_TOKEN_ROW, type ArchilClaim, archilClaim, type ArchilClaimOptions, ArchilClaimRefused, type ArchilSettings,
+  ARCHIL_API_KEY_ROW, type ArchilClaim, archilClaim, type ArchilClaimOptions, ArchilClaimRefused, type ArchilSettings,
 } from "./archil-claim.js";
 export { openRunWorkspace, type RunWorkspace, type RunWorkspaceOptions } from "./run-workspace.js";
 export { readOnlyWorkspace, SERVER_READS_ONLY, serverRunWorkspace, type ServerRunWorkspaceOptions } from "./server-run-workspace.js";

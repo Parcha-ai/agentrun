@@ -1,23 +1,23 @@
 // The Archil claim step: once per claim in Mode 2, before the run's loop starts, the claim's Archil disk is made from the
-// server's Archil settings (archil-settings.ts, the store's one settings row) and its keys come from the store's
-// sealed_keys rows under archil-settings.ts's names, opened with the runner's seal key. A saved exec image must be pinned
+// server's Archil settings (archil-settings.ts, the store's one settings row) and its account key comes from the store's
+// sealed_keys row under archil-settings.ts's name, opened with the runner's seal key. A saved exec image must be pinned
 // by digest (`<name>@sha256:<64 hex>`): any other refuses the claim before a key is read.
 //
-// Two rows. "archil.api_key" is the account API key the disk's file API and serverless exec take (archil-disk.ts asks for
-// it on every call, and gets it from this step's memory). "archil.disk_token" is the disk token a computer's mount takes
-// (ArchilWorkspace.mountSpec); it is opened only when a mount first asks, so a run with no computer never needs it.
+// One row: "archil.api_key", the account API key the disk's file API and serverless exec take (archil-disk.ts asks for it
+// on every call, and gets it from this step's memory). No disk token is kept: a computer's mount credential is minted per
+// run from the account key, by the claim (run-workspace.ts's mountToken).
 //
-// The values live in this step's memory only: never in the environment, the journal, a command row or a log line. Both
-// go in `secrets`, for the redaction set. release(), or the claim's signal aborting, drops them; a call after that is
+// The value lives in this step's memory only: never in the environment, the journal, a command row or a log line. It
+// goes in `secrets`, for the redaction set. release(), or the claim's signal aborting, drops it; a call after that is
 // refused. A row that is missing, or that does not open under the seal key (sealed under another key, or for another
 // row), refuses in words that name the row and never hold a value. Nothing here reads the environment: the settings,
 // the store's sealed keys and the seal key are handed in.
-import { ARCHIL_API_KEY_ROW, ARCHIL_DISK_TOKEN_ROW, type ArchilSettings } from "../archil-settings.js";
+import { ARCHIL_API_KEY_ROW, type ArchilSettings } from "../archil-settings.js";
 import { sealedAt, unsealColumn } from "../store/seal.js";
 import type { SealedKeys } from "../store/store.js";
 import { type ArchilDisk, type ArchilDiskOptions, type ArchilImage, archilDisk, pinnedImage } from "./archil-disk.js";
 
-export { ARCHIL_API_KEY_ROW, ARCHIL_DISK_TOKEN_ROW, type ArchilSettings };
+export { ARCHIL_API_KEY_ROW, type ArchilSettings };
 
 /** A claim this step refused, in words a person reads: no Archil call was made. */
 export class ArchilClaimRefused extends Error {
@@ -44,8 +44,6 @@ export interface ArchilClaim {
   readonly region: string;
   /** The exec image, pinned by digest; undefined for Archil's default. */
   readonly image: ArchilImage | undefined;
-  /** The disk token, opened the first time a mount asks. */
-  token(): Promise<string>;
   /** Every value held, for the redaction set. */
   readonly secrets: ReadonlySet<string>;
   /** Drops every value held: the loop ended, or the claim is lost. */
@@ -54,7 +52,7 @@ export interface ArchilClaim {
 
 const RELEASED = "the run's Archil keys were released (its loop ended or its claim was lost)";
 
-/** The Archil step of a claim: its disk made, its API key opened; the disk token opened when a mount asks. */
+/** The Archil step of a claim: its disk made, its account key opened. */
 export async function archilClaim(options: ArchilClaimOptions): Promise<ArchilClaim> {
   const { settings, sealKey } = options;
   if (settings === undefined) {
@@ -97,30 +95,11 @@ export async function archilClaim(options: ArchilClaimOptions): Promise<ArchilCl
     held.clear();
     throw new ArchilClaimRefused(`This server's Archil settings can't make its disk: ${(error as Error).message}`, { cause: error });
   }
-  let token: Promise<string> | undefined;
   const release = (): void => {
     released = true;
     held.clear();
-    token = undefined;
   };
   options.signal.addEventListener("abort", release, { once: true });
   if (options.signal.aborted) release();
-  return {
-    disk,
-    region: settings.region,
-    image,
-    secrets: held,
-    token: async () => {
-      if (released) throw new Error(RELEASED);
-      token ??= open(ARCHIL_DISK_TOKEN_ROW).then((value) => {
-        if (released) throw new Error(RELEASED);
-        held.add(value);
-        return value;
-      });
-      // A refused open is not kept: the next mount asks again.
-      token.catch(() => { token = undefined; });
-      return token;
-    },
-    release,
-  };
+  return { disk, region: settings.region, image, secrets: held, release };
 }

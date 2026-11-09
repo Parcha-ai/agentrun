@@ -1,13 +1,14 @@
 // The owner's Archil routes: what turns Mode 2 on and off. Mode 2 is the Archil settings row present (archil-settings.ts);
-// the disk's two credentials are sealed keys under the claim's row names ("archil.api_key", "archil.disk_token").
-//   GET    /v2/workspace/archil       on or off, the settings, and each key saved or not (never a value)
-//   PUT    /v2/workspace/archil       the settings row replaced, and the keys given sealed (null removes one); the exec
-//                                     image, when given, pinned by digest
-//   DELETE /v2/workspace/archil       off (the settings row removed; the keys are kept, for turning it on again)
+// the disk's one kept credential is the account key, sealed under the claim's row name ("archil.api_key"). No disk token
+// is kept: a computer's mount credential is minted per run from the account key.
+//   GET    /v2/workspace/archil       on or off, the settings, and whether the account key is saved (never a value)
+//   PUT    /v2/workspace/archil       the settings row replaced, and the account key sealed when given (null removes it);
+//                                     the exec image, when given, pinned by digest
+//   DELETE /v2/workspace/archil       off (the settings row removed; the key is kept, for turning it on again)
 //   POST   /v2/workspace/archil/test  one listing of the disk's root through its file API, with the account key opened
 //                                     as a claim opens it (archilClaim): { ok, detail } or { ok: false, why }
 // archilRoute holds the routes' rules, so serve's dispatch only calls it and sends the answer, or the ApiError's status.
-import { ARCHIL_API_KEY_ROW, ARCHIL_DISK_TOKEN_ROW, type ArchilSettings, clearArchilSettings, loadArchilSettings, saveArchilSettings } from "./archil-settings.js";
+import { ARCHIL_API_KEY_ROW, type ArchilSettings, clearArchilSettings, loadArchilSettings, saveArchilSettings } from "./archil-settings.js";
 import { ApiError, type InputIssue, invalid } from "./errors.js";
 import { putSealedKey, removeSealedKey, sealedKeyNames } from "./server-keys.js";
 import type { Store } from "./store/index.js";
@@ -18,11 +19,8 @@ import { type ArchilDisk, type ArchilDiskOptions, pinnedImage } from "./workspac
 /** The routes, by their operation names. */
 export const ARCHIL_ROUTES: ReadonlySet<string> = new Set(["getWorkspaceArchil", "putWorkspaceArchil", "deleteWorkspaceArchil", "testWorkspaceArchil"]);
 
-/** The keys the owner gives, by the names the API takes, and the sealed-key row each is kept in. */
-const KEYS: readonly { readonly name: string; readonly row: string }[] = [
-  { name: "ARCHIL_API_KEY", row: ARCHIL_API_KEY_ROW },
-  { name: "ARCHIL_DISK_TOKEN", row: ARCHIL_DISK_TOKEN_ROW },
-];
+/** The key the owner gives, by the name the API takes, and the sealed-key row it is kept in. */
+const KEYS: readonly { readonly name: string; readonly row: string }[] = [{ name: "ARCHIL_API_KEY", row: ARCHIL_API_KEY_ROW }];
 
 export type ArchilView = { on: boolean; diskId?: string; region?: string; s3Url?: string; image?: string; keys: { name: string; saved: boolean }[] };
 export type ArchilTest = { ok: true; detail: string } | { ok: false; why: string };
@@ -68,10 +66,10 @@ export function createArchilRoutes(options: ArchilRoutesOptions) {
       }
     }
     const keys = given.keys ?? {};
-    if (typeof keys !== "object" || keys === null || Array.isArray(keys)) issues.push({ field: "keys", reason: "wrong_type", message: "keys is an object of ARCHIL_API_KEY and ARCHIL_DISK_TOKEN" });
+    if (typeof keys !== "object" || keys === null || Array.isArray(keys)) issues.push({ field: "keys", reason: "wrong_type", message: "keys is an object of ARCHIL_API_KEY" });
     const entries = typeof keys === "object" && keys !== null ? Object.entries(keys as Record<string, unknown>) : [];
     for (const [name, value] of entries) {
-      if (!KEYS.some((key) => key.name === name)) issues.push({ field: `keys.${name}`, reason: "not_allowed", message: `Archil takes ARCHIL_API_KEY and ARCHIL_DISK_TOKEN, not ${name}` });
+      if (!KEYS.some((key) => key.name === name)) issues.push({ field: `keys.${name}`, reason: "not_allowed", message: `Archil takes ARCHIL_API_KEY alone, not ${name}: no disk token is kept, a computer's mount credential is minted per run from the account key` });
       else if (value !== null && !nonEmpty(value)) issues.push({ field: `keys.${name}`, reason: "wrong_type", message: `${name} is a non-empty string, or null to remove it` });
     }
     if (!sealKey && entries.some(([, value]) => value !== null)) issues.push({ field: "keys", reason: "unavailable", message: "this server was given no seal key, so it keeps no key: start it with AGENTRUN_SEAL_KEY" });

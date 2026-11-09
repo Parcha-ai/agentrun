@@ -596,7 +596,7 @@ const RUN_COMPUTER = {
 /** archil/1: GET, PUT and DELETE /workspace/archil's answer (archil-routes.ts view). */
 const ARCHIL_VIEW = closedWith({
   on: { type: "boolean", description: "Whether Mode 2 is on: run folders on this Archil disk. Off, they are on this server's own disk (Mode 1)." },
-  keys: { type: "array", items: closed({ name: { enum: ["ARCHIL_API_KEY", "ARCHIL_DISK_TOKEN"] }, saved: { type: "boolean", description: "Whether a value is saved: never shown." } }) },
+  keys: { type: "array", items: closed({ name: { enum: ["ARCHIL_API_KEY"] }, saved: { type: "boolean", description: "Whether a value is saved: never shown." } }) },
 }, {
   diskId: { type: "string" },
   region: { type: "string" },
@@ -1181,12 +1181,12 @@ const EXTENSIONS: Record<string, Record<string, Json>> = {
     },
     put: {
       operationId: "putWorkspaceArchil", tags: ["local"], summary: "Turn Mode 2 on: run folders on this Archil disk",
-      description: "Replaces the Archil settings (the disk, its region and S3 URL, and an exec image pinned by digest when given) and seals each key given (ARCHIL_API_KEY, the account key; ARCHIL_DISK_TOKEN, the token a computer's mount takes) under the server's seal key; null removes a key, and a key not given is kept. A field that is not right, an image not pinned by digest, or a key on a server with no seal key is 422 input_invalid with its fields, and nothing is saved. The answer never holds a key.",
+      description: "Replaces the Archil settings (the disk, its region and S3 URL, and an exec image pinned by digest when given) and seals the account key (ARCHIL_API_KEY) under the server's seal key when given; null removes it, and a key not given is kept. No disk token is kept: a computer's mount credential is minted per run from the account key, so ARCHIL_DISK_TOKEN is refused like any field Archil does not take. A field that is not right, an image not pinned by digest, or a key on a server with no seal key is 422 input_invalid with its fields, and nothing is saved. The answer never holds a key.",
       requestBody: {
         required: true,
         content: { "application/json": { schema: closedWith({ diskId: { type: "string", minLength: 1 }, region: { type: "string", minLength: 1 }, s3Url: { type: "string", format: "uri", pattern: "^https://" } }, {
           image: { type: "string", pattern: "^[^\\s@]+@sha256:[0-9a-f]{64}$" },
-          keys: { type: "object", additionalProperties: false, properties: { ARCHIL_API_KEY: { type: ["string", "null"], minLength: 1 }, ARCHIL_DISK_TOKEN: { type: ["string", "null"], minLength: 1 } } },
+          keys: { type: "object", additionalProperties: false, properties: { ARCHIL_API_KEY: { type: ["string", "null"], minLength: 1 } } },
         }) } },
       },
       responses: { "200": json(ARCHIL_VIEW, "The Archil settings, saved."), ...errors(401, 422, 429, 500) },

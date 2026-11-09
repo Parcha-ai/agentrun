@@ -20,7 +20,14 @@ export type RunWorkspaceOptions = {
   readonly log: (message: string) => void;
 } & (
   | { readonly mode: 1; /** The data directory. */ readonly data: string }
-  | { readonly mode: 2; /** The claim's Archil step. */ readonly archil?: ArchilClaim }
+  | {
+    readonly mode: 2;
+    /** The claim's Archil step. */
+    readonly archil?: ArchilClaim;
+    /** The run's mount credential, minted per run from the account key when a computer's mount asks for it. Without it
+     *  the run's folder is never put in a computer (no disk token is kept). */
+    readonly mountToken?: () => Promise<string>;
+  }
 );
 
 export interface RunWorkspace {
@@ -43,9 +50,9 @@ export async function openRunWorkspace(options: RunWorkspaceOptions): Promise<Ru
   const workspace = archilWorkspace(claim.disk, runKey(agentId, runId), {
     ...(claim.image === undefined ? {} : { image: claim.image }),
     onCleanupFailed: say,
-    // A computer's mount of the run's folder: the disk's region, and the disk token from the claim when a mount asks.
+    // A computer's mount of the run's folder: the disk's region, and the run's minted mount credential when a mount asks.
     region: claim.region,
-    mountToken: () => claim.token(),
+    ...(options.mountToken ? { mountToken: options.mountToken } : {}),
   });
   const sweep = async (when: "start" | "end"): Promise<void> => {
     try {
