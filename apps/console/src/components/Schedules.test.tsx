@@ -111,7 +111,7 @@ describe("the schedules list", () => {
     expect(rows.map((r) => r.getAttribute("data-trigger"))).toEqual(["trg_1", "trg_2"]);
     expect(rows[0].textContent).toContain("nightly triage");
     expect(rows[0].textContent).toContain("Triage");
-    expect(rows[0].textContent).toContain("Cron 30 1 * * * · America/Los_Angeles");
+    expect(rows[0].textContent).toContain("At 01:30 · America/Los_Angeles");
     expect(rows[0].textContent).toContain("Nov 5, 9:30 AM");
     expect(rows[0].textContent).toContain("Skipped: The last run is still working.");
     expect(rows[0].querySelector('a[href="#/triggers/trg_1"]')).not.toBeNull();
@@ -251,7 +251,7 @@ describe("one schedule", () => {
     ] };
     const t = await open(server({ firings }).v2, { trigger: "trg_1" });
     expect(t.text()).toContain("nightly triage");
-    expect(t.text()).toContain("Cron 30 1 * * * · America/Los_Angeles");
+    expect(t.text()).toContain("At 01:30 · America/Los_Angeles");
     expect(t.text()).toContain("$2.00 a run");
     const rows = [...t.host.querySelectorAll("[data-firing]")];
     expect(rows.map((r) => r.getAttribute("data-firing"))).toEqual(["f3", "f2", "f1"]);

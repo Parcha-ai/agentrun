@@ -27,6 +27,7 @@ import watchLive from "./watch-live.mjs";
 import serverDeny from "./server-deny.mjs";
 import computersKeys from "./computers-keys.mjs";
 import workspaceArchil from "./workspace-archil.mjs";
+import triggerRowLabel from "./trigger-row-label.mjs";
 
 export const flows = [
   setupOpen,
@@ -46,4 +47,5 @@ export const flows = [
   computersKeys,
   workspaceArchil,
   { name: "box-image-banner", pending: "waits on a server whose Docker box image is still being built or pulled (capabilities.places.boxes state preparing): the e2e servers have no Docker daemon to build one" },
+  triggerRowLabel,
 ];
