@@ -30,14 +30,14 @@ function origin(script, requests) {
 
 /** A runner (one per call of `start`) on the adapter loop: pi through the session's proxy to `script`, the run's root
  *  agent carrying `extension`, each paid request the booking admits recorded in `asked`. */
-async function nativeRun(t, { script, extension, gate, lifecycle }) {
+async function nativeRun(t, { script, extension, gate, lifecycle, sessionTools = [] }) {
   const opened = await stores({ runners: 2 });
   await queue(opened.server, "run-1");
   const requests = [];
   const asked = [];
   const loop = createAdapterLoop(async (_claim, run) => ({
     adapter: piAdapter({ run, model: MODEL, provider: { api: "anthropic-messages", origin: "https://faux.invalid", credential: () => `not-a-secret-${"x"}` }, fetch: origin(script, requests), price: () => 0, extensions: [extension] }),
-    session: { key: "root", label: "root", system: ["Follow the script."], tools: [], context: "fresh" },
+    session: { key: "root", label: "root", system: ["Follow the script."], tools: sessionTools, context: "fresh" },
     input: "Follow the script.",
     hooks: quiet,
     gate: gate ?? (() => "allow"),
@@ -133,6 +133,26 @@ test("a native tool's child conversation is owned by its task, driven by the cla
   const childRequests = w.requests.filter((body) => JSON.stringify(body.messages ?? []).includes(SUB_TASK));
   assert.equal(childRequests.length, 1, "the child's one model request went through the session's proxy");
   assert.equal(w.asked.length, w.requests.length, `every request, the child's among them, was admitted by the run's booking: ${w.asked.length} of ${w.requests.length}`);
+});
+
+/** The tool names a request offered the model (its body's `tools`, as the session's proxy sent it on). */
+const offered = (body) => (body?.tools ?? []).map((tool) => tool.name);
+
+test("a native tool is offered to the model exactly once in every request, alone or with a session tool of the same name", { timeout: CASE_MS }, async (t) => {
+  let ran = 0;
+  const browse = defineTool({ name: "browse", description: "Browses.", parameters: { type: "object", properties: {} }, replay: "safe", async execute() { ran += 1; return { output: [{ type: "text", text: "browsed" }] }; } });
+  // The same name among the session's host tools (a spec that binds the browser both ways): the native one is the one.
+  const hostBrowse = { name: "browse", description: "A host browse.", inputSchema: { type: "object", properties: {} }, replay: "safe", call: async () => ({ text: "host browsed" }) };
+  for (const sessionTools of [[], [hostBrowse]]) {
+    const w = await nativeRun(t, { script: [{ call: "browse" }, { say: "done" }], extension: defineExtension({ name: "native-browse", tools: [browse] }), sessionTools });
+    w.start(0, "runner-a");
+    await w.ended();
+    assert.ok(w.requests.length >= 2, `the run asked the model at least twice: ${w.requests.length}`);
+    for (const [i, body] of w.requests.entries()) {
+      assert.equal(offered(body).filter((name) => name === "browse").length, 1, `request ${i} offers browse once (session tools: ${sessionTools.length}): ${JSON.stringify(offered(body))}`);
+    }
+  }
+  assert.equal(ran, 2, "the native browse ran, once a run");
 });
 
 test("a native tool passes the session's gate: one the gate denies never runs", { timeout: CASE_MS }, async (t) => {

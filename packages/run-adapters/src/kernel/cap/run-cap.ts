@@ -65,8 +65,9 @@ export interface RunCap {
 /** A run's paid tool calls on its one cap. */
 export interface RunTools {
   /** Admits the paid request `id` at its price (`holdUsd`): its hold, or CapRefused. `call`: the tool call it runs under,
-   *  named on its runner.request (none for a step under no call, a person's browser time). */
-  admit(request: { readonly id: string; readonly name: string; readonly holdUsd: number; readonly basis: string; readonly call?: string }): Promise<Admission>;
+   *  named on its runner.request (none for a step under no call, a person's browser time); `chargedBy`, who charges
+   *  for it, named there as `charged_by`. */
+  admit(request: { readonly id: string; readonly name: string; readonly holdUsd: number; readonly basis: string; readonly call?: string; readonly chargedBy?: string }): Promise<Admission>;
   /** Settles it at what it charged (null: at its hold; 0: nothing was billed). */
   settle(id: string, usd: number | null): Promise<number | null>;
   spentUsd(): number | null;
@@ -126,7 +127,7 @@ export async function paidCalls(writer: SessionWriter, before: BeforeRequest, op
   const steps = await stepsOn(writer, before, options.flush, "paid call", () => {});
   return {
     // A hold that is no figure (an unpriced browser provider's) goes to the rule as given, which refuses it for good.
-    admit: (request) => steps.book(request.id, { model: `paid:${request.name}`, inputTokensMax: 0, ...(request.holdUsd !== 0 ? { feeUsd: request.holdUsd } : {}), paid: { name: request.name, basis: request.basis, ...(request.call === undefined ? {} : { call: request.call }) } }),
+    admit: (request) => steps.book(request.id, { model: `paid:${request.name}`, inputTokensMax: 0, ...(request.holdUsd !== 0 ? { feeUsd: request.holdUsd } : {}), paid: { name: request.name, basis: request.basis, ...(request.call === undefined ? {} : { call: request.call }), ...(request.chargedBy === undefined ? {} : { charged_by: request.chargedBy }) } }),
     settle: (id, usd) => steps.settle(id, usd),
     spentUsd: steps.spentUsd,
     heldUsd: steps.heldUsd,

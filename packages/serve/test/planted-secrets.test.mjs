@@ -13,6 +13,8 @@ import { dirname, join } from "node:path";
 import { test } from "node:test";
 import { agent, call, cookieOf, follow, serve, storeBytes, withEnv } from "./support.mjs";
 import { answerSources, filledPaths, findPlanted, formsOf, mergedIds, operationOf, plantedOf, plantedValue, registeredPlants } from "./fixtures/planted-secrets.mjs";
+// Each lane's plants, registered as their fixtures load.
+import "./fixtures/mcp-plants.mjs";
 
 const json = { "content-type": "application/json" };
 const FAUX_CALL = new URL("./fixtures/faux-call.mjs", import.meta.url).pathname;
@@ -65,7 +67,7 @@ test("no planted secret shows in any GET (by every id a plant made), a plant's a
       parsed = JSON.parse(res.text);
     } catch {}
     answers.push({ by, method, path, operation: operationOf(doc, method, path), status: res.status, text: `${JSON.stringify(res.headers)}\n${res.text}` });
-    return { status: res.status, text: res.text, json: parsed };
+    return { status: res.status, text: res.text, json: parsed, headers: res.headers };
   };
   const ctx = { owner: as("session", { cookie, origin }), token: as("token", { authorization: `Bearer ${server.token}` }), api: server.api, server };
   // An agent, so the routes under /agents/{id} (its export among them) have one to read.

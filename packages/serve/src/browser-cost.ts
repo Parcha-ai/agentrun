@@ -97,7 +97,7 @@ export function browserSpend(provider: string, price: { usdPerHour: number | nul
     if (!paid) return { hold: keepHold(usd), admitted: Promise.resolve({}) };
     const booking = paid;
     const id = `browser:${name}#${(ledgerSeq += 1)}`;
-    const admitted: Promise<{ refused?: string; refusal?: LedgerRefusal }> = booking.admit({ id, name, holdUsd: usd, basis }).then(
+    const admitted: Promise<{ refused?: string; refusal?: LedgerRefusal }> = booking.admit({ id, name, holdUsd: usd, basis, chargedBy: provider }).then(
       () => ({}),
       (error: unknown) => {
         const capped = (error as { code?: unknown })?.code === "spend_cap_reached";
@@ -186,7 +186,7 @@ export function browserSpend(provider: string, price: { usdPerHour: number | nul
       } else {
         // A charge under no call under way (the release's, its top-up to the minute): one more paid request on the ledger,
         // held at nothing (its time is spent already) and settled at the charge.
-        const step = paidStep(paid, `${charge.tag}${charge.final ? "@release" : "@charge"}`, { name: "this browser session's time", holdUsd: 0, basis: `${provider}'s session time, billed as it was charged` }, async () => undefined, () => usd).catch(() => undefined);
+        const step = paidStep(paid, `${charge.tag}${charge.final ? "@release" : "@charge"}`, { name: "this browser session's time", holdUsd: 0, basis: `${provider}'s session time, billed as it was charged`, by: charge.provider }, async () => undefined, () => usd).catch(() => undefined);
         pending.add(step);
         void step.finally(() => pending.delete(step));
       }
@@ -329,7 +329,7 @@ export function browserSpend(provider: string, price: { usdPerHour: number | nul
           calls.set(api.callId, { cid: api.conversationId, hold: { usd, drop: () => {} } as Hold });
           try {
             // A provider whose time has no price is held at no figure: the cap's rule refuses it for good, as main does.
-            const stepped = await paidStep(ledger.paid, api.callId, { name: "this browser call", holdUsd: rate === null ? Number.NaN : usd, basis }, () => tool.execute(args, api as never, context), () => chargedUnder.get(api.callId) ?? null);
+            const stepped = await paidStep(ledger.paid, api.callId, { name: "this browser call", holdUsd: rate === null ? Number.NaN : usd, basis, by: provider }, () => tool.execute(args, api as never, context), () => chargedUnder.get(api.callId) ?? null);
             return "refused" in stepped ? await refuse(stepped.refused, api, context) : stepped.result;
           } finally {
             calls.delete(api.callId);

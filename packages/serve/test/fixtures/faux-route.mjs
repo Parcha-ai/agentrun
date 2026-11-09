@@ -8,6 +8,8 @@ export default function reply(context, faux) {
   const last = [...context.messages].reverse().find((m) => m.role === "user");
   const said = textOf(last);
   const results = context.messages.filter((m) => m.role === "toolResult");
+  // A request the model fails, in its own words (a provider's error it passes on).
+  if (said.includes("fail in your own words")) return faux.message("", { stopReason: "error", errorMessage: '500 {"message":"the upstream broke"}' });
   if (said.includes("read it") && results.length === 0) return faux.message([faux.toolCall("read", { what: "totals" })], { stopReason: "toolUse" });
   if (results.length) return faux.message(`read: ${textOf(results.at(-1))}`);
   return faux.message(`said: ${said}`);

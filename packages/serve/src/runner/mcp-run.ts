@@ -41,8 +41,9 @@ export interface McpForClaimOptions {
   /** The one store: the registry's rows, the run's pin row and its run row (the epoch), the GitHub App's settings, and
    *  where it is (Store.where: the claims waiting on a server's refresh lease meet by it). */
   readonly store: Pick<Store, "mcp" | "runs" | "settings" | "triggerSettings" | "where">;
-  /** The runner's seal key (the server's): undefined when it was started without one (every sealed credential refused). */
-  readonly sealKey: Buffer | undefined;
+  /** The runner's seal key (the server's): always present (seal-key.ts boots one before any claim), so the claim's sealed
+   *  credentials always open; there is no no-seal-key path here (E6). */
+  readonly sealKey: Buffer;
   /** The run's granted tools, by catalog name (`mcp:<server>/<tool>` among them), as its revision grants them. */
   readonly grants: readonly string[];
   /** The loop's Harness for this pass (AdapterRun.harness): a call's records (not metered) go on the run's root through it. */

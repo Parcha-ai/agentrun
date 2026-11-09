@@ -129,3 +129,11 @@ test("a CLI run whose pin names no learned workflow books nothing under the lear
   assert.notEqual(row.state, "failed", `the run did not fail: ${JSON.stringify(row)}`);
   assert.deepEqual(requests.filter((request) => request.host === LEARNED_WORKFLOW_TOOL), [], "no learned workflow, nothing booked under its label");
 });
+
+test("a CLI turn that ends on its own error fails the run in main's words: the harness's name, then the CLI's error", async (t) => {
+  // Main words a CLI turn's own error as `<harness>: <error>` (harness-app.ts), so a person reads which CLI said it.
+  const said = "unexpected status 500 Internal Server Error: upstream broke";
+  const { row } = await cliRun(t, { tools: ["read"], instructions: `Fail with: ${said}`, learned: false });
+  assert.equal(row.state, "failed", `the run failed: ${JSON.stringify(row)}`);
+  assert.equal(row.summary, `${HARNESS}: ${said}`, "the run's error names its harness first");
+});

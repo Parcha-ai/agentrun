@@ -48,16 +48,7 @@ const RUN_READS = {
  *  alone. */
 const ASK_PARKS = "waits on ask_person parking the run on the runner";
 // The title/timeline cuts land through the run's one cut set (run-cut.ts, servedTimelineRows), so their cases run here.
-const GRAPH_WF = "waits on the workflow run's graph cutting the sign-in pointer it was handed: run-reads-over-store runGraphView cuts by the run's set, yet a node's served words still carry the pointer";
-const PENDING_PARKED = "waits on the parked run's own server (the ask-gate server) holding the stored tool key and the webhook secret its approval's arguments quote, so the run's cut knows them: today they are saved only on the read server";
-const WAITS = {
-  "getRunGraph (workflow)": GRAPH_WF,
-  "getRun (parked)": PENDING_PARKED,
-  "getTimeline (parked)": PENDING_PARKED,
-  "listRuns (parked)": PENDING_PARKED,
-  "listAllRuns (parked)": PENDING_PARKED,
-  "listAllRuns (parkedWithheld)": PENDING_PARKED,
-};
+const WAITS = {};
 const waitOf = (operation, kind) => WAITS[`${operation} (${kind})`] ?? WAITS[operation] ?? false;
 
 /** The one run read the zero-hits rule exempts, and why: a run's file is served as it was written, uncut. Its case asserts
@@ -133,14 +124,24 @@ async function handed(data, runId, agentId, pointer, sealKey) {
   } finally {
     await store.close();
   }
-  // Its server and runner may hold the store at this moment (a parked run's runner): wait for the write lock.
+  // Its server and runner may be writing the store at this moment (a parked run's runner). The mark is one IMMEDIATE
+  // transaction, as the store's own writer takes every write (store/sqlite/worker.ts): the write lock comes before any
+  // read snapshot, so the busy timeout covers an in-flight writer, where a deferred write upgrading a stale snapshot gets
+  // SQLITE_BUSY_SNAPSHOT at once. The run's mark and its launch's browser change together, as the runner's bind does.
   const db = new DatabaseSync(join(data, "store.sqlite"), { timeout: 15_000 });
   try {
-    db.prepare("UPDATE runs SET sign_in_handed = ? WHERE id = ?").run(JSON.stringify([createHash("sha256").update(pointer).digest("hex")]), runId);
-    const launch = db.prepare("SELECT body FROM run_launch WHERE run_id = ?").get(runId);
-    assert.ok(launch, `run ${runId} has a launch row`);
-    const body = JSON.parse(launch.body);
-    db.prepare("UPDATE run_launch SET body = ? WHERE run_id = ?").run(JSON.stringify({ ...body, plane: { ...(body.plane ?? {}), browser: "browserbase" } }), runId);
+    db.exec("BEGIN IMMEDIATE");
+    try {
+      db.prepare("UPDATE runs SET sign_in_handed = ? WHERE id = ?").run(JSON.stringify([createHash("sha256").update(pointer).digest("hex")]), runId);
+      const launch = db.prepare("SELECT body FROM run_launch WHERE run_id = ?").get(runId);
+      assert.ok(launch, `run ${runId} has a launch row`);
+      const body = JSON.parse(launch.body);
+      db.prepare("UPDATE run_launch SET body = ? WHERE run_id = ?").run(JSON.stringify({ ...body, plane: { ...(body.plane ?? {}), browser: "browserbase" } }), runId);
+      db.exec("COMMIT");
+    } catch (error) {
+      db.exec("ROLLBACK");
+      throw error;
+    }
   } finally {
     db.close();
   }
@@ -224,6 +225,14 @@ test("no planted secret in a run's words shows on any run read route: a run hand
   // ask_person whose question holds them. Accounts on: the owner's session answers.
   const gates = await serve(t, { faux: FAUX_ASK_GATE, accounts: true, openSetup: true, log: (line) => logs.push(line) });
   assert.equal((await gates.api("PUT", "/settings/tools", { web_fetch: { permission: "ask" } })).status, 200);
+  // The gate server holds the same stored key and a webhook secret of its own, each written as its owner writes one: a
+  // run's cut is its own server's, so the values its runs' words hold are this server's.
+  assert.equal((await gates.api("PUT", "/settings/tool-keys/monid", { values: { MONID_API_KEY: monid } })).status, 204);
+  assert.equal((await gates.api("POST", "/agents", agent("gates-hooked"))).status, 201);
+  const gatesTrigger = await gates.api("POST", "/triggers", { name: "on push", source: { kind: "webhook" }, target: { kind: "start_run", agent_id: "gates-hooked", input: { content: "Triage this event." }, max_cost_usd: 0.5 } });
+  assert.equal(gatesTrigger.status, 201, JSON.stringify(gatesTrigger.body));
+  const gatesWhsec = gatesTrigger.body.signing_secret ?? gatesTrigger.body.secret;
+  assert.match(String(gatesWhsec), /^whsec_/, "the gate server's trigger's signing secret, shown once to its maker");
   const parkedRun = async (agentId, values, content, tools) => {
     assert.equal((await gates.api("POST", "/agents", agent(agentId, { harness: "pi", tools }))).status, 201);
     const started = await gates.api("POST", `/agents/${agentId}/runs`, { input: { content } });
@@ -231,11 +240,11 @@ test("no planted secret in a run's words shows on any run read route: a run hand
     return { id: started.body.run_id, agentId, values, server: gates };
   };
   const fetchOf = (values) => `Fetch http://public.example/?sid=${encodeURIComponent(values[0])}&k=${encodeURIComponent(values[1])}&w=${encodeURIComponent(values[2])} once.`;
-  const parkedValues = [pointerOf(), monid, whsec];
-  const parkedWithheldValues = [pointerOf(), monid, whsec];
+  const parkedValues = [pointerOf(), monid, gatesWhsec];
+  const parkedWithheldValues = [pointerOf(), monid, gatesWhsec];
   runs.parked = await parkedRun("parked", parkedValues, fetchOf(parkedValues), ["web_fetch"]);
   runs.parkedWithheld = { ...(await parkedRun("parked-withheld", parkedWithheldValues, fetchOf(parkedWithheldValues), ["web_fetch"])), seal: randomBytes(32) };
-  const askedValues = [pointerOf(), monid, whsec];
+  const askedValues = [pointerOf(), monid, gatesWhsec];
   runs.asked = await parkedRun("asked", askedValues, `Ask: ${askedValues.join(" ")}`, ["ask_person"]);
   for (const kind of ["parked", "parkedWithheld"]) {
     await follow(gates.api, runs[kind].id, ["input_required"], { deadlineMs: 60_000 });

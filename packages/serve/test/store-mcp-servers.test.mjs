@@ -74,11 +74,10 @@ test("an oauth server reads its note from the sealed token set; an expired sign-
   assert.equal((await reg(store).get("linear")).credential, "expired");
 });
 
-test("a credential under another seal key reads unreadable; with no seal key it reads seal_key_missing", async (t) => {
+test("a credential under another seal key reads unreadable", async (t) => {
   const { store } = await storeOn(t);
   await saveMcpServer(store, KEY, { name: "github", url: "https://mcp.example.com/github", auth: "headers", tools: [], credential: { type: "headers", headers: { authorization: "Bearer x" } } });
   assert.equal((await reg(store, env(randomBytes(32))).get("github")).credential, "unreadable", "another key: unreadable");
-  assert.equal((await reg(store, {}).get("github")).credential, "seal_key_missing", "no key: seal_key_missing");
 });
 
 test("remove drops the server; an unknown server is not_found on get and remove", async (t) => {
@@ -100,7 +99,7 @@ test("save, preview and oauthStart refuse a bad body before any network probe", 
   await assert.rejects(() => r.oauthStart("github", { url: "https://x.example", client_secret: `not-a-secret-${"client"}` }), (e) => e.code === "input_invalid" && e.extra.fields.some((f) => f.field === "client_id"));
 });
 
-test("a header server with no seal key is refused a save (never kept in the clear)", async (t) => {
+test("the registry is never made without a seal key (the server never starts without one): it refuses in words, and there is no keyless mode", async (t) => {
   const { store } = await storeOn(t);
-  await assert.rejects(() => reg(store, {}).save("github", { url: "https://x.example/", auth: { type: "headers", headers: { authorization: "Bearer x" } } }), (e) => e.code === "no_sealing_key");
+  for (const given of [{}, { AGENTRUN_SEAL_KEY: "not a key" }]) assert.throws(() => reg(store, given), /MCP servers' credentials are kept under the server's seal key \(AGENTRUN_SEAL_KEY\), and none was handed over/);
 });

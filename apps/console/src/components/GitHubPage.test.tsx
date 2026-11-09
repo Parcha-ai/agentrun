@@ -7,7 +7,8 @@ import { route } from "@/App";
 import { createClient } from "@/lib/client";
 import { githubReturnOf } from "@/lib/github";
 
-// Settings → GitHub over /v2/integrations/github: one GitHub App per server. Not connected (404), Connect starts it
+// Settings → GitHub over /v2/integrations/github: one GitHub App per server. Not connected (200 {connected: false}: a
+// 404 would be a page error in a real browser), Connect starts it
 // (POST …/connect answers {action, manifest, state}) and the page posts a form to GitHub's `action` with the manifest
 // alone (the action carries ?state=); connected shows the App and where it is installed; Disconnect deletes it here
 // and says what to delete on GitHub. The way back from GitHub lands on #/settings/github?github=… (connected, or
@@ -32,7 +33,7 @@ function server(state: { connection: typeof CONNECTED | null }, { connect = () =
   const fetch = (async (url: string, init?: RequestInit) => {
     const call = { method: init?.method ?? "GET", path: new URL(String(url), "http://serve.test").pathname, body: init?.body ? JSON.parse(String(init.body)) : undefined };
     calls.push(call);
-    if (call.path === "/v2/integrations/github" && call.method === "GET") return state.connection ? json(200, state.connection) : refusal(404, "github_not_connected", "GitHub is not connected.");
+    if (call.path === "/v2/integrations/github" && call.method === "GET") return json(200, state.connection ? { connected: true, ...state.connection } : { connected: false });
     if (call.path === "/v2/integrations/github/connect" && call.method === "POST") return connect();
     if (call.path === "/v2/integrations/github" && call.method === "DELETE") {
       if (disconnect) return disconnect();
@@ -60,7 +61,7 @@ describe("Settings → GitHub", () => {
     expect(route("#/settings/github")).toMatchObject({ section: "settings", settings: "github" });
   });
 
-  it("not connected (404): a Connect button and an organization field, nothing to disconnect", async () => {
+  it("not connected (200 {connected: false}): a Connect button and an organization field, nothing to disconnect", async () => {
     const { v2 } = server({ connection: null });
     const p = await page(v2);
     expect(p.button(/^Connect GitHub$/)).toBeTruthy();
