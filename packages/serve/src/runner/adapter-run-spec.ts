@@ -36,29 +36,25 @@ import { learningEndOfRun } from "./learning-end.js";
 import { LEARNED_WORKFLOW_TOOL, learnedWorkflowTool } from "../learned-workflow.js";
 import { PORT_PROVIDER } from "../port-models.js";
 import { promptOf, readsFiles } from "../skills.js";
-import { openRunWorkspace } from "../workspace/run-workspace.js";
 import { layOwnSkills } from "../workspace/revision-skills.js";
 import { COMPUTER_ROOT, runFolder } from "../workspace/paths.js";
-import { runTools, type ToolResults } from "../workspace/run-tools.js";
-import { INPUTS_DIR, UPLOADS_DIR, Uploads } from "../uploads.js";
+import type { ToolResults } from "../workspace/run-tools.js";
 import { handedSignInReadsBack, signInReads } from "../sign-ins-store.js";
 import { UNREADABLE_SIGN_IN } from "../runs.js";
 import { claimSecrets } from "./claim-secrets.js";
-import { join } from "node:path";
 import { type AdapterRun, type AdapterRunSpec, hostLifecycle, type RunCapConfig } from "./adapter-loop.js";
 import { piAdapter } from "./adapters/pi.js";
 import { entriesOf } from "./loop.js";
 import { type Claim, ClaimRefused, type Journal } from "./loop-contract.js";
 import { runMetrics } from "./metrics.js";
 import type { ModelRoute, RouteCost } from "./model-route.js";
-import { archilClaim, type ArchilClaimOptions, MOUNT_TTL_MS } from "../workspace/archil-claim.js";
-import { loadArchilSettings } from "../archil-settings.js";
-import type { ComputerSetting } from "../computer-setting.js";
+import type { ArchilClaimOptions } from "../workspace/archil-claim.js";
 import type { claimComputer, ComputerDeps } from "../workspace/computer-deps.js";
 import type { RunComputer } from "../workspace/run-tools.js";
 import type { Workspace } from "../workspace/workspace.js";
 import { type HeldRedact, heldRedactor, holdClaimed, runnerSecrets, secretRedactor } from "./redact.js";
 import { holdStored } from "./store-secrets.js";
+import { claimRunHands } from "./run-hands.js";
 
 /** What a claim gives the shared computerForClaim: the run, its epoch, its revision, its place and any computer choice. */
 export interface ClaimLaunch {
@@ -221,51 +217,10 @@ export async function adapterRunSpecFromLaunch(launch: RunLaunch, run: AdapterRu
   const revision = { kind: revisionRow.kind, body } as { kind: string; body: { toolSettings?: unknown; harness?: string; approvals?: Approvals } };
   const granted = body.tools ?? [];
 
-  // The run's mode is the server's: Mode 2 where its Archil settings are saved (archil-settings.ts), the run's folder then
-  // on the claim's Archil disk (archil-claim.ts: its keys from the store's sealed rows, under the runner's seal key, in this
-  // claim's memory only); else Mode 1, the run's local folder. The same for the pi and the CLI spec.
-  const archilSettings = await loadArchilSettings(deps.store);
-  const mode: 1 | 2 = archilSettings === undefined ? 1 : 2;
-  const archil = archilSettings === undefined
-    ? undefined
-    // The run's mount credential is minted per run the first time a computer's mount asks (archil-mount-credential.ts), on
-    // the account key from the server's environment first, then the sealed row; named for the run and this claim's epoch, with
-    // a 24 h ttl as the safety net if revoke never comes (revoke normally runs at the run's end, below). A run with no
-    // mounting computer never mints one.
-    // The mint is lazy (archil-claim.ts token(), k2's run-tools.ts): only a mounting computer asks for it, so a Mode 2 run
-    // with no computer makes no control-plane call. mountControl (a test's loopback control-plane fake) is spread into the
-    // mount, so no test reaches the real control plane. MOUNT_TTL_MS is the credential's safety net (7 days), not its lifetime.
-    : await archilClaim({ settings: archilSettings, keys: deps.store.sealedKeys, sealKey: deps.sealKey, signal: new AbortController().signal, env: deps.env, mount: { runId: claim.runId, epoch: claim.epoch, ttlMs: MOUNT_TTL_MS, ...(deps.mountControl ?? {}) }, ...(deps.makeArchilDisk ? { makeDisk: deps.makeArchilDisk } : {}) });
-  // The run's Workspace at the claim: Mode 1 the run's local folder (made here, the server's start made it before); Mode 2
-  // the run's folder on the disk.
-  const ws = archil === undefined
-    ? await openRunWorkspace({ mode: 1, agentId: runRow.agentId, runId: claim.runId, data: deps.data, log })
-    : await openRunWorkspace({ mode: 2, agentId: runRow.agentId, runId: claim.runId, archil, log });
-
-  // The run's uploaded files, copied into its work/inputs/ before the first turn, as the server's start copied them before
-  // the per-run process ran (uploads.copyInto). Once per run: a fresh run has no inputs/ yet; a resumed claim finds them
-  // copied and skips, so the copy's name-collision suffixes never duplicate a file across claims.
-  if (launch.files?.length) {
-    const copied = await ws.workspace.list(INPUTS_DIR).then(() => true, () => false);
-    if (!copied) {
-      const uploads = new Uploads(join(deps.data, UPLOADS_DIR));
-      await uploads.copyInto(ws.workspace, await uploads.readyFiles(launch.files));
-    }
-  }
-
-  // The run's computer, from the one shared claim-time function (the CLI spec takes the same): none for a runner place, a
-  // Docker container for a sandbox, under the claim's epoch (the one fence). It throws computer_unavailable (nothing made)
-  // when the computer cannot be had: the run fails in its words.
-  const computer = await deps.computerForClaim(
-    { runId: claim.runId, epoch: claim.epoch, revisionId: runRow.revisionId, place: launch.place, ...((launch as { computer?: ComputerSetting }).computer !== undefined ? { computer: (launch as { computer?: ComputerSetting }).computer } : {}) },
-    deps.store,
-    // revokeMount removes the run's Archil mount credential when the computer is released (and if a start fails after a mint);
-    // the run's end revokes it too (below), so it goes on every outcome even when no computer is made. Idempotent.
-    { ...deps.computerDeps, mode, workspace: ws.workspace, sealKey: deps.sealKey, ...(archil ? { revokeMount: () => archil.revoke() } : {}) },
-  );
-
-  // The run's mode bounds its shell: 600 s locally or on a computer, 295 s on Archil's serverless exec (Mode 2, none).
-  const tools = await runTools(ws.workspace, computer.computer, { mode, context });
+  // The run's hands (run-hands.ts, the one way a claim opens them): its mode (Mode 2 where its Archil settings are saved),
+  // its Workspace with its uploaded files, the computer its place needs and the kernel's tools over them.
+  const hands = await claimRunHands({ ...deps, log }, claim, launch, runRow, context);
+  const { archil, ws, tools } = hands;
 
   // The run's model route: its model through routeOf (NEVER re-resolved — the launch's model, pinned at start), the catalog
   // price with tiers for the cap, and the proxy's price (pi-ai calculateCost, tiered).
@@ -441,14 +396,7 @@ export async function adapterRunSpecFromLaunch(launch: RunLaunch, run: AdapterRu
     },
     // The pass's resources go once the loop writes nothing more through them: its tools' end (background processes ended,
     // scratch swept), its computer let go, then its Workspace's end (Mode 2 sweeps the exec spill).
-    release: async () => {
-      await tools.end().catch((error: unknown) => log(`the run's tools' end failed: ${(error as Error)?.message ?? String(error)}`));
-      await computer.release().catch((error: unknown) => log(`the run's computer could not be let go: ${(error as Error)?.message ?? String(error)}`));
-      // The run's Archil mount credential, revoked at its end on every outcome, even with no computer (the computer's release
-      // revokes it too; revoke is idempotent, so a second call is a no-op). A run that minted none revokes nothing.
-      await archil?.revoke().catch((error: unknown) => log(`the run's Archil mount credential could not be revoked: ${(error as Error)?.message ?? String(error)}`));
-      await ws.end().catch((error: unknown) => log(`the run's workspace end failed: ${(error as Error)?.message ?? String(error)}`));
-    },
+    release: () => hands.release(),
   };
 }
 
