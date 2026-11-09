@@ -16,7 +16,7 @@ import { join } from "node:path";
 import { test } from "node:test";
 import { fakeAnthropic } from "@parcha/agentrun-harness-claude/testing";
 import { startFakeMcp } from "./fixtures/fake-mcp-server.mjs";
-import { REQUESTS_ENV, requestsOf, rolesOf } from "./fixtures/faux-requests.mjs";
+import { notedRequests, REQUESTS_ENV, rolesOf } from "./fixtures/faux-requests.mjs";
 import { noApproverText } from "../dist/tool-gate.js";
 import { schemaProblems } from "./schema-support.mjs";
 import { copyStandIn } from "../../run-adapters-codex/test/stand-in.mjs";
@@ -129,19 +129,23 @@ test("pi: allowed by the agent's exact key, or by the server's mcp:fake/*, the c
   withEnv(t, { [REQUESTS_ENV]: requests });
   const { api } = await serve(t);
   const fake = await addFake(t, api);
+  // The runs share the in-process runner's process, one after the other: each run's requests are the ones noted while it
+  // ran, from its start to its end.
   const exact = await started(api, "exact", ["mcp:fake/add"], ADD, { extra: { tool_settings: { "mcp:fake/add": { permission: "allow" } } } });
   await follow(api, exact, ["completed"], { deadlineMs: 60_000 });
   assert.equal(await answerOf(api, exact), "The tool said: 5");
+  const afterExact = notedRequests(requests).length;
   assert.equal((await allowFake(api)).status, 200);
   const wide = await started(api, "wide", ["mcp:fake/add"], ADD);
   await follow(api, wide, ["completed"], { deadlineMs: 60_000 });
   assert.equal(await answerOf(api, wide), "The tool said: 5");
+  const byRun = { exact: notedRequests(requests).slice(0, afterExact), wide: notedRequests(requests).slice(afterExact) };
   // Each run asked its model twice: the message (the call), then the call's result (the answer). A third request is a
   // real extra one, whatever the faux model made of it.
   // Both runs' request roles and the server's calls (JSON-RPC id, time), in either failure's message: an extra request is
   // explained by the calls it made, and an extra call by the requests around it.
-  const seen = `exact ${rolesOf(requestsOf(requests, exact))}; wide ${rolesOf(requestsOf(requests, wide))}; the server's calls ${JSON.stringify(calls(fake, "add").map((entry) => ({ id: entry.id, at: entry.at })))}`;
-  for (const runId of [exact, wide]) assert.equal(requestsOf(requests, runId).length, 2, `${runId === exact ? "exact" : "wide"}: one request for the call, one for its answer: ${seen}`);
+  const seen = `exact ${rolesOf(byRun.exact)}; wide ${rolesOf(byRun.wide)}; the server's calls ${JSON.stringify(calls(fake, "add").map((entry) => ({ id: entry.id, at: entry.at })))}`;
+  for (const name of ["exact", "wide"]) assert.equal(byRun[name].length, 2, `${name}: one request for the call, one for its answer: ${seen}`);
   assert.equal(calls(fake, "add").length, 2, `one call each: ${seen}`);
 });
 
