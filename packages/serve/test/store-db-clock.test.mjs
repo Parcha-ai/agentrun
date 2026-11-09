@@ -74,6 +74,22 @@ test("a refresh lease a store process takes whose clock runs behind is live to o
   assert.equal((await ahead.mcp.leaseRefresh("github", { seen: saved.sealed, holder: "run-2@1", ms: LEASE })).leased, false, "held: not granted to the other");
 });
 
+test("an MCP row reads the same to store processes whose clocks run a minute behind and ahead: a live refresh lease is not lapsed, and a token's time left is its own", ONLY, async (t) => {
+  const { server, runners: [behind, ahead] } = await storesSkewed(t, BEHIND, AHEAD);
+  const saved = await behind.mcp.put({ name: "github", url: "https://mcp.example.com/github", auth: "oauth", protocol: "2025-06-18", tools: [{ name: "create_issue", grantable: true }], prices: {}, sealed: Uint8Array.from([1, 2, 3, 4]), tokenLeftMs: 10 * MINUTE });
+  assert.equal((await behind.mcp.leaseRefresh("github", { seen: saved.sealed, holder: "run-1@1", ms: LEASE })).leased, true, "the lease");
+  for (const [who, store] of [["behind", behind], ["ahead", ahead], ["the server", server]]) {
+    const row = await store.mcp.server("github");
+    assert.equal(row.refreshLapsed, false, `${who}: the live lease is not lapsed`);
+    assert.ok(row.tokenLeftMs > 9.5 * MINUTE && row.tokenLeftMs <= 10 * MINUTE, `${who}: the token's time left is its ten minutes (${row.tokenLeftMs} ms)`);
+  }
+  // The refresher keeps the refreshed token: its time left is laid on the same clock.
+  const kept = await behind.mcp.keepRefreshed("github", { seen: saved.sealed, sealed: Uint8Array.from([5, 6, 7]), holder: "run-1@1", tokenLeftMs: 20 * MINUTE });
+  assert.equal(kept.kept, true, "kept");
+  const row = await ahead.mcp.server("github");
+  assert.ok(row.tokenLeftMs > 19.5 * MINUTE && row.tokenLeftMs <= 20 * MINUTE, `ahead: the refreshed token's time left is its twenty minutes (${row.tokenLeftMs} ms)`);
+});
+
 /** run-1 binds sign-in `hash` under a claim of `leaver`'s, then leaves running by `leave` (a park through release, or an end
  *  through the run update); run-2 then binds the same sign-in under a claim of `binder`'s, within the settle window. */
 async function bindWithinSettle(t, leave) {

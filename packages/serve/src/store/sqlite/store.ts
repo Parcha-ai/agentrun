@@ -138,9 +138,13 @@ type McpServerRecord = {
 };
 type McpPinRecord = { run_id: string; body: string; pinned_at: number };
 const MCP_SERVER_COLUMNS = "name, url, auth, protocol, tools, prices, server_info, instructions, sealed, refresh_holder, refresh_until, created_at, updated_at, listed_at, credential_changed_at, token_until";
-/** The row as read at `at`, the store's own clock: its refresh lease judged by that clock (refreshLapsed), the one
- *  leaseRefresh writes and grants it by, with its rule: a lease has run out once its refresh_until is before now. */
-const mcpServerOf = (r: McpServerRecord, at: number): McpServerRow => ({
+/** The columns of an MCP server row read at the deadlines' clock `n` (fence.ts storeNow) in the same statement: `read_at`,
+ *  the clock the row's refresh lease and token end are judged by (mcpServerOf). Binds `n`'s parameters. */
+const mcpServerColumnsAt = (n: StoreNow): string => `${MCP_SERVER_COLUMNS}, ${n.sql} AS read_at`;
+/** The row as read at `at` (its read_at, the deadlines' clock: the database's on Postgres, the store's on SQLite): its
+ *  refresh lease judged by that clock (refreshLapsed), the one leaseRefresh writes and grants it by, with its rule: a
+ *  lease has run out once its refresh_until is before now; its token's time left (tokenLeftMs) by the same clock. */
+const mcpServerOf = (r: McpServerRecord, at: number = Number((r as McpServerRecord & { read_at?: number }).read_at)): McpServerRow => ({
   name: r.name, url: r.url, auth: r.auth, protocol: r.protocol, tools: JSON.parse(r.tools), prices: JSON.parse(r.prices),
   serverInfo: r.server_info === null ? null : JSON.parse(r.server_info), instructions: r.instructions,
   sealed: r.sealed === null ? null : Uint8Array.from(r.sealed), refreshHolder: r.refresh_holder, refreshUntil: r.refresh_until,
@@ -774,14 +778,17 @@ class SqliteStore implements Store {
     };
 
     const server = async (executor: Pick<SqliteExecutor, "get">, name: string) => {
-      const row = await executor.get<McpServerRecord>(`SELECT ${MCP_SERVER_COLUMNS} FROM mcp_servers WHERE name = ?`, name);
-      return row && mcpServerOf(row, now());
+      const at = clock();
+      const row = await executor.get<McpServerRecord>(`SELECT ${mcpServerColumnsAt(at)} FROM mcp_servers WHERE name = ?`, ...at.params, name);
+      return row && mcpServerOf(row);
     };
     this.mcp = {
       put: async ({ name, url, auth, protocol = null, tools, prices = null, serverInfo = null, instructions = null, sealed = null, listedAt, updatedAt, credentialChangedAt, tokenLeftMs = null }) => {
         const at = now();
-        // The access token's end on this store's clock: the writer's measure of its life laid on now (token_until).
-        const tokenUntil = sealed !== null && typeof tokenLeftMs === "number" && Number.isFinite(tokenLeftMs) ? at + tokenLeftMs : null;
+        // The access token's end on the deadlines' clock (the database's on Postgres): the writer's measure of its life (a
+        // duration, clock-free) laid on that clock's now (token_until), in the statement that writes it.
+        const left = sealed !== null && typeof tokenLeftMs === "number" && Number.isFinite(tokenLeftMs) ? tokenLeftMs : null;
+        const stamp = clock();
         // updated_at defaults to now (a save or a sign-in); a refresh passes the kept one so it is not read as an edit.
         // listed_at is the tools' listing time, now unless given.
         const updated = updatedAt ?? at;
@@ -790,20 +797,20 @@ class SqliteStore implements Store {
         // time given back); null with none. A token refresh (keepRefreshed) never moves it.
         const credentialAt = sealed === null ? null : credentialChangedAt === undefined ? at : credentialChangedAt;
         const [result] = await db.write([{
-          sql: `INSERT INTO mcp_servers (name, url, auth, protocol, tools, prices, server_info, instructions, sealed, created_at, updated_at, listed_at, credential_changed_at, token_until) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+          sql: `INSERT INTO mcp_servers (name, url, auth, protocol, tools, prices, server_info, instructions, sealed, created_at, updated_at, listed_at, credential_changed_at, token_until) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ${stamp.sql} + ${d.bigintParam})
             ON CONFLICT (name) DO UPDATE SET url = excluded.url, auth = excluded.auth, protocol = excluded.protocol, tools = excluded.tools,
               prices = excluded.prices, server_info = excluded.server_info, instructions = excluded.instructions, sealed = excluded.sealed, refresh_holder = NULL, refresh_until = NULL, updated_at = excluded.updated_at, listed_at = excluded.listed_at, credential_changed_at = excluded.credential_changed_at, token_until = excluded.token_until
-            RETURNING ${MCP_SERVER_COLUMNS}`,
-          params: [name, url, auth, protocol, json(tools), json(prices), serverInfo === null ? null : json(serverInfo), instructions, sealed, at, updated, listed, credentialAt, tokenUntil],
+            RETURNING ${mcpServerColumnsAt(stamp)}`,
+          params: [name, url, auth, protocol, json(tools), json(prices), serverInfo === null ? null : json(serverInfo), instructions, sealed, at, updated, listed, credentialAt, ...stamp.params, left, ...stamp.params],
         }]);
-        return mcpServerOf(result!.rows[0] as McpServerRecord, at);
+        return mcpServerOf(result!.rows[0] as McpServerRecord);
       },
       remove: async (name) => {
         await db.write([{ sql: "DELETE FROM mcp_servers WHERE name = ?", params: [name] }]);
       },
       servers: async () => {
-        const at = now();
-        return (await db.all<McpServerRecord>(`SELECT ${MCP_SERVER_COLUMNS} FROM mcp_servers ORDER BY name`)).map((row) => mcpServerOf(row, at));
+        const at = clock();
+        return (await db.all<McpServerRecord>(`SELECT ${mcpServerColumnsAt(at)} FROM mcp_servers ORDER BY name`, ...at.params)).map((row) => mcpServerOf(row));
       },
       server: (name) => server(db, name),
       pin: async (runId) => {
@@ -840,15 +847,17 @@ class SqliteStore implements Store {
       keepRefreshed: (name, { seen, sealed, holder, tokenLeftMs = null }) =>
         db.transaction(async (tx) => {
           const at = now();
-          // The refreshed token's end on this store's clock (token_until), from the refresher's measure of its life.
-          const tokenUntil = typeof tokenLeftMs === "number" && Number.isFinite(tokenLeftMs) ? at + tokenLeftMs : null;
+          // The refreshed token's end on the deadlines' clock (token_until; the database's on Postgres), from the refresher's
+          // measure of its life (a duration), laid on that clock in this statement.
+          const left = typeof tokenLeftMs === "number" && Number.isFinite(tokenLeftMs) ? tokenLeftMs : null;
+          const stamp = clock();
           const written = await tx.runCounted(
-            `UPDATE mcp_servers SET sealed = ?, token_until = ?,
+            `UPDATE mcp_servers SET sealed = ?, token_until = ${stamp.sql} + ${d.bigintParam},
               refresh_until = CASE WHEN refresh_holder = ? THEN NULL ELSE refresh_until END,
               refresh_holder = CASE WHEN refresh_holder = ? THEN NULL ELSE refresh_holder END,
               updated_at = ${d.greatest}(?, updated_at + 1)
              WHERE name = ? AND ${d.nullSafeEquals("sealed")}`,
-            sealed, tokenUntil, holder, holder, at, name, seen,
+            sealed, ...stamp.params, left, holder, holder, at, name, seen,
           );
           return { kept: written === 1, row: await server(tx, name) };
         }, { deadlineMs: STORE_WRITE_DEADLINE_MS, fromCall: true }),
