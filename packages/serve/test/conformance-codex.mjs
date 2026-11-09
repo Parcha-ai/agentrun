@@ -13,7 +13,7 @@ import { fileURLToPath } from "node:url";
 const { createAdapterLoop } = await import("../dist/runner/adapter-loop.js");
 const { resolveHarness } = await import("../dist/runner/adapters/index.js");
 const { facts } = await import("@parcha/agentrun-harness-codex/facts");
-const { CLI_OUTPUT_LIMIT_UNSUPPORTED, MAX_RESTARTS } = await import("../dist/runner/conformance/harness.js");
+const { MAX_RESTARTS } = await import("../dist/runner/conformance/harness.js");
 
 process.env.AGENTRUN_CODEX_STANDIN = "1";
 const STAND_IN = fileURLToPath(new URL("../../run-adapters-codex/test/fake-app-server.mjs", import.meta.url));
@@ -46,7 +46,9 @@ export function scriptedResponses(script, requests = []) {
     const lastResult = [...input].reverse().find((item) => item.type === "function_call_output");
     const resultText = (output) => (typeof output === "string" ? output : (output ?? []).map((part) => part.text ?? "").join(""));
     const text = next === undefined ? "" : "say" in next ? next.say : "sayLastResult" in next ? resultText(lastResult?.output) : textOf(lastPerson);
-    return sse([{ type: "response.output_text.delta", item_id: `m_${step}`, output_index: 0, content_index: 0, delta: text }, done]);
+    // A cut step: the model stops at its output limit as it says it (OpenAI's incomplete answer, max_output_tokens).
+    const end = next?.cut ? { type: "response.incomplete", response: { id: `resp_${step}`, object: "response", status: "incomplete", incomplete_details: { reason: "max_output_tokens" }, usage } } : done;
+    return sse([{ type: "response.output_text.delta", item_id: `m_${step}`, output_index: 0, content_index: 0, delta: text }, end]);
   };
 }
 
@@ -117,14 +119,13 @@ export function codexSpec({ script, tools, hooks, agentId }, options = {}) {
 }
 
 /** The subject the suite runs: Codex through the adapter loop. What its adapter declares (steer false, rerunsStarted
- *  false): the suite derives the cases those rule out. The runner process the process cases start is no test runner, and
+ *  false, recoversCutAnswers 0): the suite derives the cases those rule out. The runner process the process cases start is no test runner, and
  *  the Codex stand-in runs only under one (its guard), so those cases cannot run on the stand-in. */
 export const codexSubject = {
   name: "codex through the adapter loop",
   createLoop: (setup) => createAdapterLoop(codexSpec(setup), { restartLimit: MAX_RESTARTS }),
   facts,
   unsupported: {
-    ...CLI_OUTPUT_LIMIT_UNSUPPORTED,
     "crash-before-intent-process": "the Codex stand-in runs only under a test runner, and the conformance runner process is none (the in-process crash case covers the point)",
     "crash-after-intent-process": "the Codex stand-in runs only under a test runner, and the conformance runner process is none (the in-process crash case covers the point)",
     "stalled-past-lease-process": "the Codex stand-in runs only under a test runner, and the suite's runner child runs outside it",
