@@ -59,7 +59,7 @@ const FRONT = /^---\r?\n([\s\S]*?)\r?\n---[ \t]*(?:\r?\n|$)/;
  *  `pin`, by tool: the arguments each of its calls must carry (a value, or `${parameters.<name>}`), which apply writes as
  *  the tool's pin in the agent's tool settings, so a send goes only to the destination the owner set. */
 export type McpNeed = { server: string; tools: string[]; required: boolean; allow: string[]; pin: Record<string, Record<string, PinValue>> };
-type Parameter = { type: (typeof PARAMETER_TYPES)[number]; required: boolean; description: string; pattern?: string; default?: string | number | boolean };
+type Parameter = { type: (typeof PARAMETER_TYPES)[number]; required: boolean; description: string; pattern?: string; enum?: (string | number | boolean)[]; default?: string | number | boolean };
 /** Whether `value` is of the parameter type `type`. */
 const ofType = (type: Parameter["type"], value: unknown): boolean => (type === "integer" ? Number.isSafeInteger(value) : type === "number" ? typeof value === "number" && Number.isFinite(value) : typeof value === type);
 /** Whether `text` matches `pattern`; a pattern that does not compile matches nothing (it is reported on its own). */
@@ -263,9 +263,9 @@ export function readPackage(dir: string): Package {
   if (f.computer !== undefined && f.computer !== "default") bad(MANIFEST, "computer is default (this server's own place): no other computer is known yet");
   const parameters: Record<string, Parameter> = {};
   for (const [key, p] of Object.entries(f.parameters === undefined ? {} : isObject(f.parameters) ? f.parameters : (bad(MANIFEST, "parameters is a mapping of names"), {}))) {
-    const ok = PARAMETER.test(key) && isObject(p) && !unknownFields(p, ["type", "required", "pattern", "description", "default"]).length && (PARAMETER_TYPES as readonly unknown[]).includes(p.type) && (p.required === undefined || typeof p.required === "boolean") && typeof p.description === "string" && p.description.trim() !== "" && (p.pattern === undefined || (p.type === "string" && typeof p.pattern === "string"));
+    const ok = PARAMETER.test(key) && isObject(p) && !unknownFields(p, ["type", "required", "pattern", "enum", "description", "default"]).length && (PARAMETER_TYPES as readonly unknown[]).includes(p.type) && (p.required === undefined || typeof p.required === "boolean") && typeof p.description === "string" && p.description.trim() !== "" && (p.pattern === undefined || (p.type === "string" && typeof p.pattern === "string"));
     if (!ok) {
-      bad(MANIFEST, `parameters.${key} is {type: ${PARAMETER_TYPES.join(" | ")}, required?, pattern? (strings), default?, description}, its name lowercase`);
+      bad(MANIFEST, `parameters.${key} is {type: ${PARAMETER_TYPES.join(" | ")}, required?, pattern? (strings), enum?, default?, description}, its name lowercase`);
       continue;
     }
     try {
@@ -273,12 +273,16 @@ export function readPackage(dir: string): Package {
     } catch {
       bad(MANIFEST, `parameters.${key}.pattern is not a regular expression`);
     }
+    // A closed set of values (a form shows a choice, never a pattern): one or more, each of the parameter's type, once.
+    const choices = p.enum === undefined ? undefined : Array.isArray(p.enum) && p.enum.length > 0 && p.enum.every((one) => ofType(p.type as Parameter["type"], one)) && new Set(p.enum).size === p.enum.length ? (p.enum as (string | number | boolean)[]) : (bad(MANIFEST, `parameters.${key}.enum is a list of one or more distinct ${p.type as string} values`), undefined);
+    if (choices && typeof p.pattern === "string") bad(MANIFEST, `parameters.${key} has an enum and a pattern: the enum says the values, so leave the pattern out`);
+    if (choices && p.default !== undefined && !choices.includes(p.default as string | number | boolean)) bad(MANIFEST, `parameters.${key}.default is not one of its enum`);
     if (p.default !== undefined) {
       if (!ofType(p.type as Parameter["type"], p.default)) bad(MANIFEST, `parameters.${key}.default is a ${p.type as string}, as the parameter is`);
       else if (typeof p.pattern === "string" && typeof p.default === "string" && !safeTest(p.pattern, p.default)) bad(MANIFEST, `parameters.${key}.default does not match its pattern`);
       if (p.required === true) bad(MANIFEST, `parameters.${key} is required and has a default: a default is for a parameter apply may leave out`);
     }
-    parameters[key] = { type: p.type as Parameter["type"], required: p.required === true, description: p.description as string, ...(typeof p.pattern === "string" ? { pattern: p.pattern } : {}), ...(p.default !== undefined && ofType(p.type as Parameter["type"], p.default) ? { default: p.default as string | number | boolean } : {}) };
+    parameters[key] = { type: p.type as Parameter["type"], required: p.required === true, description: p.description as string, ...(typeof p.pattern === "string" ? { pattern: p.pattern } : {}), ...(choices ? { enum: choices } : {}), ...(p.default !== undefined && ofType(p.type as Parameter["type"], p.default) ? { default: p.default as string | number | boolean } : {}) };
   }
   const secrets = list(f.secrets, "secrets", (secret) => /^[A-Z][A-Z0-9_]{0,127}$/.test(secret));
   for (const secret of secrets.filter((name) => !PACKAGE_SECRETS.includes(name))) bad(MANIFEST, `secrets names ${secret}, a key this server cannot hold: a package needs the keys Settings saves and a run is handed (${PACKAGE_SECRETS.join(", ")})`);
@@ -467,6 +471,7 @@ export function applyBodyOf(p: Package, body: Json): { parameters: Record<string
     const typed = spec && ofType(spec.type, value);
     if (!spec) issues.push({ field: `parameters.${key}`, reason: "not_allowed", message: `The package ${p.name} takes no parameter ${key}.` });
     else if (!typed) issues.push({ field: `parameters.${key}`, reason: "wrong_type", message: `parameters.${key} is a ${spec.type}: ${spec.description}` });
+    else if (spec.enum && !spec.enum.includes(value as string | number | boolean)) issues.push({ field: `parameters.${key}`, reason: "not_an_option", message: `parameters.${key} is one of ${spec.enum.join(", ")}: ${spec.description}` });
     else if (spec.pattern && !new RegExp(spec.pattern, "u").test(value as string)) issues.push({ field: `parameters.${key}`, reason: "bad_format", message: `parameters.${key} is ${spec.description}` });
     else parameters[key] = value as string | number | boolean;
   }
