@@ -44,14 +44,15 @@ type watchParams struct {
 }
 
 // WatchResult is screen.watch's answer. A frame (changed true) carries its JPEG as screen.shot carries its PNG: the
-// first chunk in data, the rest through screen.read by id.
+// first chunk in data, the rest through screen.read by id. EOF is on every frame, false included: a caller that reads a
+// missing field as true must read on.
 type WatchResult struct {
 	Seq         int     `json:"seq"`
 	Changed     bool    `json:"changed"`
 	ID          string  `json:"id,omitempty"`
 	Size        int     `json:"size,omitempty"`
 	Data        []byte  `json:"data,omitempty"`
-	EOF         bool    `json:"eof,omitempty"`
+	EOF         *bool   `json:"eof,omitempty"`
 	Format      string  `json:"format,omitempty"`
 	FrameWidth  int     `json:"frameWidth,omitempty"`
 	FrameHeight int     `json:"frameHeight,omitempty"`
@@ -60,10 +61,13 @@ type WatchResult struct {
 	Cursor      *[2]int `json:"cursor,omitempty"`
 }
 
-// watching is one connection's watch: one call at a time (turn), its seq, the newest frame, and the hash of what that
-// frame was read from (the pixels and the pointer's place).
+// watching is one connection's watch: one call at a time (turn), its seq, the newest frame, the hash of what that
+// frame was read from (the pixels and the pointer's place), when the screen was last read (read), and the newest
+// frame's rest for screen.read (held: its own, so a screen.shot never evicts it).
 type watching struct {
 	turn   chan struct{}
+	read   time.Time
+	held   held
 	seq    int
 	hash   uint64
 	jpeg   []byte
@@ -121,6 +125,16 @@ func (d *Display) watch(ctx context.Context, raw json.RawMessage) (any, error) {
 	}
 	deadline := time.Now().Add(time.Duration(waitMs) * time.Millisecond)
 	for {
+		// The screen is read at most once each pollEvery, across calls too: an animated screen acked at once is no
+		// faster than an idle one is polled.
+		if wait := time.Until(w.read.Add(pollEvery)); wait > 0 {
+			select {
+			case <-time.After(wait):
+			case <-ctx.Done():
+				return nil, rpc.Errorf(rpc.KindAborted, "screen.watch was cancelled while it waited to read the screen again")
+			}
+		}
+		w.read = time.Now()
 		img, cursor, err := d.shoot(ctx, "screen.watch", nil)
 		if err != nil {
 			return nil, err
@@ -140,12 +154,22 @@ func (d *Display) watch(ctx context.Context, raw json.RawMessage) (any, error) {
 		if left <= 0 {
 			return WatchResult{Seq: w.seq, Width: w.width, Height: w.height}, nil
 		}
-		select {
-		case <-time.After(min(left, pollEvery)):
-		case <-ctx.Done():
-			return nil, rpc.Errorf(rpc.KindAborted, "screen.watch was cancelled while it waited for the screen to change")
+		if left < pollEvery {
+			// Not another read before the wait is over: answer no change when it is.
+			select {
+			case <-time.After(left):
+			case <-ctx.Done():
+				return nil, rpc.Errorf(rpc.KindAborted, "screen.watch was cancelled while it waited for the screen to change")
+			}
+			return WatchResult{Seq: w.seq, Width: w.width, Height: w.height}, nil
 		}
 	}
+}
+
+// watchHeldOf is the newest frame's rest on this connection, for screen.read: the watch's own, apart from the shot's.
+func watchHeldOf(ctx context.Context) *held {
+	w := rpc.Local(ctx, watchKey{}, func() io.Closer { return &watching{turn: make(chan struct{}, 1)} }).(*watching)
+	return &w.held
 }
 
 // frame is the newest frame as an answer: its first chunk, and the rest held for screen.read when it is over one.
@@ -155,14 +179,13 @@ func (d *Display) frame(ctx context.Context, w *watching) WatchResult {
 	eof := len(first) == len(data)
 	id := ""
 	if !eof {
-		id = fmt.Sprintf("s%d", d.shots.Add(1))
-		h := heldOf(ctx)
-		h.mu.Lock()
-		h.id, h.data = id, data
-		h.mu.Unlock()
+		id = fmt.Sprintf("w%d", d.shots.Add(1))
+		w.held.mu.Lock()
+		w.held.id, w.held.data = id, data
+		w.held.mu.Unlock()
 	}
 	return WatchResult{
-		Seq: w.seq, Changed: true, ID: id, Size: len(data), Data: append([]byte{}, first...), EOF: eof, Format: "jpeg",
+		Seq: w.seq, Changed: true, ID: id, Size: len(data), Data: append([]byte{}, first...), EOF: &eof, Format: "jpeg",
 		FrameWidth: w.frameW, FrameHeight: w.frameH, Width: w.width, Height: w.height, Cursor: w.cursor,
 	}
 }

@@ -310,12 +310,15 @@ func (d *Display) read(ctx context.Context, raw json.RawMessage) (any, error) {
 	}
 	// A shot held is served from what computerd keeps, with no display: the X server may have exited since screen.shot.
 	// Only a shot not held asks for the display, so a computer without one answers unsupported, not not_found.
-	result, ok, err := heldOf(ctx).read(params.ID, *params.Offset)
-	switch {
-	case err != nil:
-		return nil, err
-	case ok:
-		return result, nil
+	// A watch's frame is held apart (watchHeldOf), so neither evicts the other.
+	for _, h := range []*held{heldOf(ctx), watchHeldOf(ctx)} {
+		result, ok, err := h.read(params.ID, *params.Offset)
+		switch {
+		case err != nil:
+			return nil, err
+		case ok:
+			return result, nil
+		}
 	}
 	if _, err := d.connection(); err != nil {
 		return nil, err
