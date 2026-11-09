@@ -12,8 +12,11 @@ import assert from "node:assert/strict";
 import { randomBytes } from "node:crypto";
 import { mkdirSync, mkdtempSync, realpathSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
-import { join } from "node:path";
+import { dirname, join } from "node:path";
 import { after, test } from "node:test";
+import { providerFor } from "@parcha/agentrun-computer";
+import { fakeDocker } from "../../computer/test/fake-docker.mjs";
+import { FAUX_VIEW_PATH, fauxComputers } from "../dist/faux-computers.js";
 import { putSealedKey } from "../dist/server-keys.js";
 import { computerDepsFrom, localWorkspace } from "../dist/workspace/index.js";
 import { fakeComputer } from "./workspace-fake-computer.mjs";
@@ -121,6 +124,49 @@ test("a key only saved in the store is opened with the server's seal key for the
   assert.deepEqual(spec.labels, { "agentrun.run": "run-1", "agentrun.epoch": "3" });
   assert.equal(spec.image, "linux", "Orgo's base desktop");
   await answer.release();
+});
+
+/** A store with saved computer keys (Settings → Computers'), as a server that has some keeps them. */
+async function savedKeysStore(sealKey) {
+  const store = memoryStore();
+  for (const [name, value] of Object.entries({ E2B_API_KEY: PLANTED.storeKey, ORGO_API_KEY: PLANTED.orgoKey, FAUX_SANDBOX_KEY: mark("faux-key") })) await putSealedKey(store, sealKey, name, value);
+  return store;
+}
+
+test("the composer builds a working claim on a docker box: the real Docker provider over a fake docker first on PATH gives a kinded sandbox, and its release ends it", async (t) => {
+  // The computer package's fake docker (it answers run, inspect, exec with the daemon's hello, rm): no Docker is reached.
+  const fake = fakeDocker();
+  const path = process.env.PATH;
+  process.env.PATH = `${dirname(fake.program)}:${path}`;
+  t.after(() => { process.env.PATH = path; });
+  const root = scratch();
+  const sealKey = randomBytes(32);
+  const store = await savedKeysStore(sealKey);
+  // The production builder (providerFor), told only where the fake daemon file and its cache are; docker is the one on PATH.
+  const load = (id, options) => providerFor(id, { ...options, daemonPath: fake.daemonPath, daemonCache: fake.cache });
+  const { computerForClaim, computerDeps } = computerDepsFrom({ env: ENV, store, sealKey, load });
+  const answer = await computerForClaim({ runId: "run-1", epoch: 3, computer: { kind: "sandbox", provider: "docker" } }, store, { ...computerDeps, mode: 1, workspace: localWorkspace(root), sealKey });
+  assert.equal(answer.computer?.kind, "sandbox", "a kinded RunComputer");
+  const run = fake.calls().find((args) => args[0] === "run");
+  assert.ok(run, `docker run was called: ${JSON.stringify(fake.calls())}`);
+  assert.deepEqual(plantsIn(run), [], "no planted value on docker run's command line");
+  assert.ok(run.includes("agentrun.run=run-1") || run.some((arg) => arg.includes("agentrun.run=run-1")), "made under the run's labels");
+  await answer.release();
+  assert.ok(fake.calls().some((args) => args[0] === "rm"), "its release removes the container");
+});
+
+test("the composer builds a working claim on the faux box: a faux desktop is a kinded RunComputer, and its release ends it", async () => {
+  const root = scratch();
+  const sealKey = randomBytes(32);
+  const store = await savedKeysStore(sealKey);
+  const faux = fauxComputers({ viewerBase: "http://127.0.0.1:9" });
+  const { computerForClaim, computerDeps } = computerDepsFrom({ env: {}, store, sealKey, faux });
+  const answer = await computerForClaim({ runId: "run-1", epoch: 3, computer: { kind: "desktop", provider: "faux-desktop" } }, store, { ...computerDeps, mode: 1, workspace: localWorkspace(root), sealKey });
+  assert.equal(answer.computer?.kind, "desktop", "a kinded RunComputer");
+  const page = `${FAUX_VIEW_PATH}/faux-desktop-1/view`;
+  assert.ok(faux.viewPage(page), "the faux desktop is live");
+  await answer.release();
+  assert.equal(faux.viewPage(page), undefined, "its release ended it");
 });
 
 test("the composer builds every provider through the one provider builder, and gives the claim the mount check", async () => {
