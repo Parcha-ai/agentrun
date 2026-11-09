@@ -331,7 +331,8 @@ export async function viewOverStore(store: Store, runId: string, deps: ViewDeps)
     archived_at: row.archivedAt ?? null,
     imported_from: runRow.importedFrom ?? null,
     trigger: launch?.trigger ?? null,
-    learning: learningViewOf(run.learningEnd, secretsShown(deps.serverSecrets()), terminal && settled),
+    // Cut by the run's one cut (the pointers it was handed among them), and none for a withheld run, as its words.
+    learning: unshown ? null : learningViewOf(run.learningEnd, secretsShown(values), terminal && settled),
     poll_after_ms: terminal && settled ? 0 : 1000,
     last_progress_at: run.lastProgressAt,
   };
@@ -356,6 +357,14 @@ export async function momentOverStore(store: Store, runId: string, deps: ViewDep
   const run = await storeRunOf(store, runId, deps);
   if (!run) return undefined;
   return momentOf(run.view, factsOf(run), run.live);
+}
+
+/** A run's timeline rows as the VIEW renders them (storeRunOf's view.rows: withAsks, so a run waiting on a question carries
+ *  its `:waiting` row). The run-ended/run-needs-input follower reads these for its wait marker, main's marker and webhook-id.
+ *  The served `/timeline` route uses run-timeline-served.ts (servedTimelineRows) instead; this is the internal view's rows.
+ *  Undefined for an unknown run. */
+export async function timelineOverStore(store: Store, runId: string, deps: ViewDeps): Promise<readonly TimelineEvent[] | undefined> {
+  return (await storeRunOf(store, runId, deps))?.view.rows;
 }
 
 /** Whether a run's served output is withheld: this server can't read the browser sign-in it was handed, so nothing it said

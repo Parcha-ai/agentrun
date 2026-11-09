@@ -33,7 +33,7 @@ import { healthOf, hostMemory, maxRunsOf, MIN_FREE_MIB, runsThatFit } from "./ho
 import { IMPORT_ASKED } from "./import.js";
 import type { ImportAnswer, ImportTask } from "./import-worker.js";
 import type { MessageOrigin } from "@parcha/pi-durable-agent/timeline";
-import { gradeModelOf, learningBudgetOf, type LearningMode, learningOf } from "./learning.js";
+import { gradeModelOf, LEARNING_LABEL, learningBudgetOf, type LearningMode, learningOf } from "./learning.js";
 import { agentLearning, learningLog, learningNotes, noteBody, pendingCount, readNote, secretsShown, sendNote, writeNote } from "./learning-routes.js";
 import { answerLlms, MCP_PATH, mcpEndpoint } from "./mcp.js";
 import { openapiDocument, servedOpenapi, UNSUPPORTED } from "./openapi.js";
@@ -48,8 +48,9 @@ import { type ComputerOf, computerView } from "./computer-view.js";
 import { durationMs, logLine } from "./print.js";
 import { knownToolCostOf, redactorOf, type RunMoment, type State, type Status, toolCostOf } from "./run-view.js";
 import { approve, archiveRun, cancel, message, raiseCap, type StartDeps, type StartOptions, startRun, stop as stopRunOverStore, WAITS_ON_A_PERSON } from "./runs-over-store.js";
-import { momentOverStore, summaryOverStore, type ViewDeps, viewOverStore, withheldOverStore } from "./store-view.js";
+import { momentOverStore, summaryOverStore, timelineOverStore, type ViewDeps, viewOverStore, withheldOverStore } from "./store-view.js";
 import { servedTimelineRows } from "./run-timeline-served.js";
+import { servedRunLearning } from "./run-learning-served.js";
 import { runCutValues } from "./run-cut.js";
 import { readLaunchBody } from "./run-launch.js";
 import { listRunFiles as listRunFilesOverStore, readRunFile as readRunFileOverStore, runBrowserState, runGraphView, type RunReadsDeps, runTimelines } from "./run-reads-over-store.js";
@@ -61,6 +62,7 @@ import { stats as statsOverStore } from "./store-reads/stats.js";
 import { analytics as analyticsOverStore } from "./store-reads/analytics.js";
 import { BACKGROUND_CONTEXT } from "@earendil-works/chord/context";
 import { type AgenticBody, type NewRevision, openSqliteStore, type RevisionPlace, type RunRow, type Store, StoreBusy, StoreConstraint, type WorkflowBody } from "./store/index.js";
+import { FINAL_STATES } from "./store/store.js";
 import { runModelRef } from "./model.js";
 // The v2 run statuses, as the run view names them (run-view.ts Status), for the list filter's validation. */
 const STATUSES = ["queued", "working", "paused", "input_required", "completed", "failed", "cancelled"] as const;
@@ -86,7 +88,7 @@ import { isSecretWriteOperation, SECRET_WRITE_REFUSAL, secretsWritableFields, se
 import { ensureSealKey, SealKeyRefused, sealKeyHome, sealKeyLine } from "./seal-key.js";
 import { redactedOutput } from "./key-refusal.js";
 import { analyticsFilter, analyticsView, statsView } from "./stats.js";
-import { agentLearningOverStore, learningCountsOverStore, runLearningOverStore } from "./store-reads/learning.js";
+import { agentLearningOverStore, learningCountsOverStore } from "./store-reads/learning.js";
 import { outcomes } from "./usage.js";
 import { keyOf, SEAL_KEY_ENV, sealKeyOf, TOOL_FIELDS } from "./tool-keys.js";
 import { toolKeysOverStore } from "./tool-keys-store.js";
@@ -99,7 +101,7 @@ import { MCP_AUTH_TYPES, type McpTool } from "./mcp-probe.js";
 import { mcpServersOverStore } from "./mcp-servers-store.js";
 import { metaToolOf } from "./mcp-meta.js";
 import { MCP_SETTINGS_PAGE, signInCookie, startedHere } from "./mcp-oauth.js";
-import { WEBHOOK_EVENTS, Webhooks } from "./webhooks.js";
+import { type RunNotice, WEBHOOK_EVENTS, Webhooks } from "./webhooks.js";
 import { templateTriggerSecret, triggerMade, triggerRotated, webhookSaved, withTriggerSecret } from "./trigger-secrets-shown.js";
 import { type SealedSettingsOverStore } from "./sealed-settings-store.js";
 import { type ServerSecrets } from "./server-secrets.js";
@@ -712,9 +714,10 @@ function capabilitiesWith(env: NodeJS.ProcessEnv, maxRuns: number, harnesses: Ha
       learning,
       /** /settings/webhook: one URL POSTed, signed by the Standard Webhooks spec, when a run needs its person and when it
        *  ends (webhooks.ts); its secret kept sealed under the same seal key, so with none no webhook is set. */
-      webhooks: { routes: true, events: [...WEBHOOK_EVENTS], signing: "standard-webhooks/v1", at_rest: sealKeyOf(env[SEAL_KEY_ENV]) ? "sealed" : "unavailable" },
+      // Always sealed: the server starts with its seal key (seal-key.ts ensureSealKey), so nothing is kept in the clear.
+      webhooks: { routes: true, events: [...WEBHOOK_EVENTS], signing: "standard-webhooks/v1", at_rest: "sealed" },
       /** /triggers: what starts an agent's capped runs with no caller (triggers.ts). */
-      triggers: { routes: true, sources: [...SOURCE_KINDS], targets: [...TARGET_KINDS], min_every_s: MIN_EVERY_S, history_kept: HISTORY_KEPT, catchup_window_s: CATCHUP_WINDOW_S, failures_to_pause: FAILURES_TO_PAUSE, webhook: { signing: "standard-webhooks/v1", signatures: [...SCHEME_NAMES], tolerance_s: HOOK_TOLERANCE_S, max_body_bytes: webhook.push!.maxBodyBytes, payload_kept_bytes: PAYLOAD_KEPT_BYTES, at_rest: sealKeyOf(env[SEAL_KEY_ENV]) ? "sealed" : "unavailable" } },
+      triggers: { routes: true, sources: [...SOURCE_KINDS], targets: [...TARGET_KINDS], min_every_s: MIN_EVERY_S, history_kept: HISTORY_KEPT, catchup_window_s: CATCHUP_WINDOW_S, failures_to_pause: FAILURES_TO_PAUSE, webhook: { signing: "standard-webhooks/v1", signatures: [...SCHEME_NAMES], tolerance_s: HOOK_TOLERANCE_S, max_body_bytes: webhook.push!.maxBodyBytes, payload_kept_bytes: PAYLOAD_KEPT_BYTES, at_rest: "sealed" } },
     },
     regions: [{ id: "local", jurisdiction: null, state: "live" }],
     /** This server's own: where its OpenAPI document is, beside this one. */
@@ -1269,10 +1272,9 @@ async function startHolding(options: ServeOptions, data: string, checked: { maxR
 
   // Schedules: each firing starts its run as POST /agents/{id}/runs does, capped, under the firing's key (triggers.ts).
   // Firings an earlier server left due are driven again now, beside the recovery above.
-  // Connect GitHub: the server's one GitHub App. STOPGAP: this reads the App from a file-era sealed-settings object, which
-  // the store's sealed settings are not; until the github App's settings are read over the store (the store-backed github
-  // source), the App is left unconfigured here and its routes answer github_not_connected.
-  const github = new GitHubConnection(undefined);
+  // Connect GitHub: the server's one GitHub App, in the store's trigger_settings (adapter github, scope server), where the
+  // runner reads it per claim (runner/github-app.ts).
+  const github = new GitHubConnection(triggerSettings.get("github"));
   const githubConnect = new GitHubConnect(github, { ...(options.publicUrl ? { publicUrl: options.publicUrl.replace(/\/+$/, "") } : {}), api: options.githubApi ?? GITHUB_API, say: (fields) => log?.(logLine("github", fields)) });
   /** The connection a GitHub template or the console reads: the App's id, slug and installations, never a secret. */
   const githubConnection = () => github.view();
@@ -2306,10 +2308,11 @@ async function startHolding(options: ServeOptions, data: string, checked: { maxR
       case "archiveAgent":
       case "unarchiveAgent": {
         await needAgent(id);
-        await agents.setArchived("agent", id, found.name === "archiveAgent");
         // No run sweep on archive: a runner reads an archived agent's run rows directly, nothing to sweep.
-        // Archived, every trigger that runs turns off in the store's archive transaction; unarchived, none turns on. Both
-        // answer the triggers off for the archive, each turned on again by PATCH /triggers/{id} {enabled: true}.
+        // The engine archives (or unarchives) the agent itself: archived, every trigger that runs as it turns off with
+        // agent_archived in that same store transaction; unarchived, none turns on. Never archived first by another path,
+        // which would turn its triggers off with no reason and leave the answer empty. Both answer the triggers off for
+        // the archive, each turned on again by PATCH /triggers/{id} {enabled: true}.
         const triggersOff = found.name === "archiveAgent" ? await triggers.agentArchived(id) : await triggers.agentUnarchived(id);
         const entry = await needAgent(id);
         return send(res, 200, { ...agentView(entry, linkOrigin(req), await agentExtra(entry)), triggers_off: triggersOff }, { etag: etagOf(entry) });
@@ -2678,7 +2681,8 @@ async function startHolding(options: ServeOptions, data: string, checked: { maxR
         const view = githubConnection();
         if (!view) throw new ApiError("not_found", "No GitHub App is connected to this server.");
         const settingsUrl = github.settingsUrl();
-        github.remove();
+        // Awaited: the App's rows go before the answer, so a Connect right after never races their removal.
+        await github.remove();
         // Kept, and off: an agent keeps its triggers, which go on again once GitHub is connected again.
         const off = await triggers.turnOff("github", "GitHub was disconnected from this server: connect it again in Settings, then turn the trigger on.");
         log?.(logLine("github", { condition: "github_disconnected", app_id: view.app_id, triggers_off: off }));
@@ -2740,7 +2744,8 @@ async function startHolding(options: ServeOptions, data: string, checked: { maxR
         const run = await needRun(id);
         // The run's learning view over the store (learning-1's runLearningOverStore): its end, the notes it was given and its seed
         // from its launch, what it holds for the owner's OK as the store's run view reads it (no folder), byte-identical to main.
-        return send(res, 200, await runLearningOverStore(store, run.id, secretsShown(serverSecrets()), serverSecrets()));
+        // Cut by the run's one cut, and refused for a withheld run (run-learning-served.ts).
+        return send(res, 200, await servedRunLearning({ serverSecrets, signIns }, store, run.id));
       }
       case "getRunLearningDiff":
         await needRun(id);
@@ -2985,6 +2990,84 @@ async function startHolding(options: ServeOptions, data: string, checked: { maxR
   owner?.attach(options.publicUrl ?? url);
   webhooks.attach(options.publicUrl ?? url);
   mcpServers.attach(options.publicUrl ?? url, url);
+  // A run's end and its wait are the outbound webhook's run.ended and run.needs_input (webhooks.ts). The runners write them
+  // to the store and this server runs no run, so it follows the store: each read takes the runs not final yet and the
+  // newest runs (one that started and ended between two reads is among them). It tells each end it has not told once the
+  // run reads final, and each wait of a run a runner left parked (or let go of) once it reads input_required. The markers
+  // are main's (an end's time, a wait's last row), so each webhook-id is the one it always had, and the ledger tells each
+  // once across restarts; a start first catches up the ends the ledger lacks, which no server was up to see. A store read
+  // of the runs ended (or parked) since a mark would be the cleaner seam than this read of the open runs every 250 ms.
+  const RUN_ENDS_POLL_MS = 250;
+  const RUN_ENDS_NEWEST = 50;
+  const final = (row: RunRow) => (FINAL_STATES as readonly string[]).includes(row.state);
+  const endOf = (row: RunRow) => ({ id: row.id, state: final(row) ? row.state : "running", ...(final(row) && row.endedAt !== null ? { endedAt: new Date(row.endedAt).toISOString() } : {}) });
+  /** The run as the store holds it now, with its notice (the run list's own view of it); null when there is no such run. */
+  const endNotice = async (id: string) => {
+    const row = await store.runs.get(id);
+    const summary = row && (await summaryOverStore(store, id, viewDepsFor(ownOriginOf())));
+    if (!row || !summary) return null;
+    return { ...endOf(row), notice: { run_id: id, agent_id: row.agentId, status: String(summary.status), title: typeof summary.title === "string" ? summary.title : "" } };
+  };
+  const toldEnds = new Map<string, string>();
+  /** Each waiting run's row as it was last read for its wait (its state, epoch and runner): a row that has not moved since
+   *  is not read again, and a new wait comes with a new claim, so a new epoch. */
+  const readWaits = new Map<string, string>();
+  const waitKinds = new Set(["question", "approval", "budget", "browser"]);
+  /** The wait of a run its runner left parked (or let go of), told once as main told it: its marker the run's last row
+   *  that shows (not usage, a phase or learning's), its kind the pending card's (a stop's when it waits on no card). */
+  const tellWait = async (row: RunRow): Promise<void> => {
+    const seen = `${row.state}\n${row.epoch}\n${row.runner ?? ""}`;
+    if (readWaits.get(row.id) === seen) return;
+    const view = await viewOverStore(store, row.id, viewDepsFor(ownOriginOf()));
+    if (view?.status !== "input_required") return void readWaits.set(row.id, seen);
+    const rows = (await timelineOverStore(store, row.id, viewDepsFor(ownOriginOf()))) ?? [];
+    const marker = rows.findLast((r) => r.kind !== "usage" && r.kind !== "phase" && r.agent_label !== LEARNING_LABEL)?.id;
+    if (!marker) return void readWaits.set(row.id, seen);
+    const card = (view.pending as { kind?: unknown } | null | undefined)?.kind;
+    const kind = view.state !== "waiting" ? "stopped" : typeof card === "string" && waitKinds.has(card) ? card : "question";
+    const notice = { run_id: row.id, agent_id: row.agentId, status: "input_required", title: typeof view.title === "string" ? view.title : "", pending: { kind } } as RunNotice;
+    if (webhooks.emit("run.needs_input", notice, marker) !== "unsaved") readWaits.set(row.id, seen);
+  };
+  let openRuns = new Set<string>();
+  let endsTimer: NodeJS.Timeout | undefined;
+  let endsRead: Promise<void> = Promise.resolve();
+  const readEnds = async (): Promise<void> => {
+    const open = new Set<string>();
+    for (const state of ["queued", "running", "parked"] as const) {
+      for (const row of await store.runs.list({ state })) {
+        open.add(row.id);
+        // A run waits on its person once its runner has let it go: parked, or running with no runner.
+        if (!closing && (row.state === "parked" || (row.state === "running" && row.runner === null))) await tellWait(row).catch(() => undefined);
+      }
+    }
+    const newest = await store.runs.list({ limit: RUN_ENDS_NEWEST });
+    for (const id of new Set([...openRuns, ...newest.map((row) => row.id)])) {
+      if (open.has(id) || closing) continue;
+      const now = await endNotice(id).catch(() => undefined);
+      // Unread (a busy store): read again at the next turn, never lost.
+      if (now === undefined) {
+        open.add(id);
+        continue;
+      }
+      readWaits.delete(id);
+      if (!now?.endedAt || toldEnds.get(id) === now.endedAt) continue;
+      if (webhooks.emit("run.ended", now.notice, now.endedAt) !== "unsaved") toldEnds.set(id, now.endedAt);
+    }
+    openRuns = open;
+  };
+  const followEnds = () => {
+    if (closing) return;
+    endsRead = readEnds()
+      .catch((error: Error) => log?.(logLine("webhook", { condition: "run_ends_unread", error: error.message })))
+      .finally(() => {
+        if (!closing) (endsTimer = setTimeout(followEnds, RUN_ENDS_POLL_MS)).unref();
+      });
+  };
+  void store.runs
+    .list({})
+    .then((rows) => webhooks.catchUp(rows.filter((row) => !row.importedFrom).map(endOf), endNotice))
+    .catch((error: Error) => log?.(logLine("webhook", { condition: "catch_up_unread", error: error.message })))
+    .finally(followEnds);
   const setupUrl = owner && !owner.hasPassword() ? owner.setupLink() : undefined;
   /** The server's stop: once (`close` keeps its promise). */
   let stopped: Promise<void> | undefined;
@@ -3014,6 +3097,9 @@ async function startHolding(options: ServeOptions, data: string, checked: { maxR
     await image?.close();
     // The box network proxy goes with the server that owns it (box-egress-vm.ts); its volume stays for the next start.
     await egress?.close();
+    // The ends' follower stops before the webhooks it feeds and the store it reads.
+    clearTimeout(endsTimer);
+    await endsRead;
     await webhooks.close();
     // An upgraded socket is no connection closeAllConnections ends, and server.close waits for it.
     viewers.close();

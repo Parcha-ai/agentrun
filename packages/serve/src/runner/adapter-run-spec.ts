@@ -57,6 +57,7 @@ import type { claimComputer, ComputerDeps } from "../workspace/computer-deps.js"
 import type { RunComputer } from "../workspace/run-tools.js";
 import type { Workspace } from "../workspace/workspace.js";
 import { runnerSecrets, secretRedactor } from "./redact.js";
+import { githubAppAccess } from "./github-app.js";
 
 /** What a claim gives the shared computerForClaim: the run, its epoch, its revision, its place and any computer choice. */
 export interface ClaimLaunch {
@@ -118,6 +119,9 @@ export interface AdapterSpecDeps {
    *  fetch to call it with, spread into the claim's mount. Absent, the real control plane the mount credential names. No
    *  test ever reaches the real Archil control plane. */
   readonly mountControl?: { readonly baseUrl?: string; readonly fetch?: typeof fetch };
+  /** A test runner's fake GitHub API, where the GitHub App's installation tokens are minted (runner/github-app.ts). Absent,
+   *  https://api.github.com: the CLI's runner never sets it, and no environment variable, flag or setting maps onto it. */
+  readonly githubApi?: string;
 }
 
 /** A model as the cap prices it, from the route's catalog cost: its price WITH TIERS (the money rule — a request past a
@@ -242,7 +246,7 @@ export async function adapterRunSpecFromLaunch(launch: RunLaunch, run: AdapterRu
   // credentials opened under the server's seal key into this claim's memory, one gateway for the claim. First, before
   // anything the spec would have to let go: a refusal (a pin that cannot be made, a pinned meta tool) ends the run in its
   // words before the session opens. The seal key is the runner's own (deps.sealKey), not re-read from the environment.
-  const mcp = await mcpForClaim({ claim, store: deps.store, sealKey: deps.sealKey, grants: granted, harness: run.harness, work: () => ws.workspace, launchInput: launch.input });
+  const mcp = await mcpForClaim({ claim, store: deps.store, sealKey: deps.sealKey, grants: granted, harness: run.harness, work: () => ws.workspace, launchInput: launch.input, githubAppAccess: (store, key, input) => githubAppAccess(store, key, input, deps.githubApi ? { api: deps.githubApi } : {}) });
 
   // The run's computer, from the one shared claim-time function (the CLI spec takes the same): none for a runner place, a
   // Docker container for a sandbox, under the claim's epoch (the one fence). It throws computer_unavailable (nothing made)

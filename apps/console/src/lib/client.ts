@@ -293,8 +293,8 @@ export function createClient({ fetch: f = globalThis.fetch.bind(globalThis), bas
     saveMcpPrivateHosts: (hosts: string[]) => call<McpPrivateHosts>("PUT", "/settings/mcp-servers/oauth/private-hosts", { body: { hosts } }),
     /** This server's GitHub App: 404 (github_not_connected) when none is connected. */
     githubConnection: () => call<GitHubConnection>("GET", "/integrations/github"),
-    /** Starts connecting one: the form the browser posts to GitHub. 409 github_already_connected, github_no_public_url or
-     *  github_no_seal_key, in the server's words. */
+    /** Starts connecting one: the form the browser posts to GitHub. 409 github_already_connected or github_no_public_url,
+     *  in the server's words. */
     connectGitHub: (org?: string) => call<GitHubConnectStart>("POST", "/integrations/github/connect", { body: org ? { org } : {} }),
     /** Disconnects it: every GitHub trigger turns off; the note says what to delete on GitHub. */
     disconnectGitHub: () => call<GitHubDisconnected>("DELETE", "/integrations/github"),

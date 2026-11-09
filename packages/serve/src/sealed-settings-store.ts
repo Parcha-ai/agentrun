@@ -17,6 +17,8 @@ export { SERVER_SCOPE, type SettingsSpec } from "./sealed-settings.js";
 /** The store's documented AAD for a trigger setting (store schema `trigger_settings`): the composite row key is in the
  *  AAD, not store/seal.ts's single-row aadOf, which refuses a key holding the separator. */
 const aad = (adapterId: string, scope: string, field: string) => `trigger_settings|${adapterId}|${scope}|${field}`;
+/** A PEM private key, whole: its BEGIN line, its base64 lines, its END line. */
+const PEM = /^-----BEGIN ((?:[A-Z]+ )*)PRIVATE KEY-----\r?\n[A-Za-z0-9+/=\r\n]+-----END \1PRIVATE KEY-----\s*$/;
 
 /** The store slice this layer reads and writes. */
 type SealedSettingsStore = { readonly triggerSettings: Pick<TriggerSettings, "get" | "put" | "removeScope">; flush(): Promise<void> };
@@ -38,6 +40,8 @@ class SealedSettingsOverStore {
   /** Values this store held and no longer does (replaced, or their scope removed): each kept sealed in a retired row too
    *  (retire), read back at load, so the server's redaction list holds them across a restart. Never a setting. */
   private readonly retired = new Set<string>();
+  /** The PEM keys this store held and no longer does (each kept in a retired row too), listed by pemValues. */
+  private readonly retiredPem: string[] = [];
   /** The last retired row's number for each scope, so the next one is new: `retired:<scope>:<n>`. */
   private readonly retiredCount = new Map<string, number>();
   /** The (scope, field) pairs kept here that did not open under this server's seal key at load: unset until set again. */
@@ -47,7 +51,7 @@ class SealedSettingsOverStore {
     private readonly store: SealedSettingsStore,
     private readonly adapterId: string,
     private readonly spec: SettingsSpec,
-    private readonly key: Buffer | undefined,
+    private readonly key: Buffer,
     private readonly say: (fields: Record<string, string>) => void,
   ) {}
 
@@ -55,15 +59,13 @@ class SealedSettingsOverStore {
    *  said once and reads as unset (no row ever stops the start). Awaited once at start. */
   async load(): Promise<void> {
     const rows = await this.store.triggerSettings.get(this.adapterId);
-    if (!this.key && rows.length) this.say({ condition: "trigger_settings_no_seal_key", adapter: this.adapterId, effect: `this server was handed no ${SEAL_KEY_ENV}: none of its sealed settings is read` });
     for (const row of rows) {
-      if (!this.key) continue;
       const retiredOf = retiredScopeOf(row.scope);
       if (retiredOf) this.retiredCount.set(retiredOf.scope, Math.max(this.retiredCount.get(retiredOf.scope) ?? 0, retiredOf.n));
       try {
         const value = unseal(this.key, Buffer.from(row.sealed, "base64"), aad(this.adapterId, row.scope, row.field)).toString("utf8");
         // A retired row is read into the redaction list alone, never as a setting.
-        if (retiredOf) this.retired.add(value);
+        if (retiredOf) this.remember(row.field, value);
         else (this.opened[row.scope] ??= {})[row.field] = value;
       } catch {
         if (retiredOf) {
@@ -89,14 +91,16 @@ class SealedSettingsOverStore {
   async set(scope: string, field: string, value: string): Promise<void> {
     const spec = this.spec.fields[field];
     if (!spec) throw new Error(`${this.adapterId}'s settings keep no ${field}`);
-    if (/\s/.test(value) || Buffer.byteLength(value, "utf8") < 8) throw invalid([{ field, reason: "invalid", message: `${field} is at least 8 bytes, with no whitespace` }]);
+    if (spec.format === "pem" && !PEM.test(value)) throw invalid([{ field, reason: "invalid", message: `${field} is a PEM private key` }]);
+    // A value the redaction list would pass over (whitespace, under 8 bytes) is never kept; a public one is no secret, and a
+    // PEM key is listed by its lines (pemValues).
+    if (!spec.public && spec.format !== "pem" && (/\s/.test(value) || Buffer.byteLength(value, "utf8") < 8)) throw invalid([{ field, reason: "invalid", message: `${field} is at least 8 bytes, with no whitespace` }]);
     if (spec.minBytes === MIN_KEY_BYTES && !value.startsWith(SECRET_PREFIX)) throw invalid([{ field, reason: "invalid", message: `${field} is a Standard Webhooks secret: whsec_ and its key in base64` }]);
     if (spec.minBytes !== undefined && keyBytes(value) < spec.minBytes) throw invalid([{ field, reason: "too_short", message: `${field} holds at least ${spec.minBytes} bytes` }]);
     await this.put(scope, field, value);
   }
 
   private async put(scope: string, field: string, value: string): Promise<void> {
-    this.writable();
     const was = this.opened[scope]?.[field];
     // The value it replaces is kept retired first: a write that fails after it leaves the old one cut, never lost.
     if (was !== undefined && was !== value) await this.retire(scope, field, was);
@@ -110,15 +114,17 @@ class SealedSettingsOverStore {
    *  removal, by (adapter, scope), never matches it), sealed under its own AAD, its updated_at the time it was retired.
    *  Read into the redaction list at every load; kept until no run that started before it is left (not pruned yet). */
   private async retire(scope: string, field: string, value: string): Promise<void> {
+    // A public field is no secret: nothing to keep.
+    if (this.spec.fields[field]?.format !== "pem" && this.secretsOf(field, value).length === 0) return;
     const n = (this.retiredCount.get(scope) ?? 0) + 1;
     await this.store.triggerSettings.put(this.row(retiredScope(scope, n), field, value));
     this.retiredCount.set(scope, n);
-    this.retired.add(value);
+    this.remember(field, value);
   }
 
   /** `value` as `scope`'s `field` row, sealed under that row's own AAD. */
   private row(scope: string, field: string, value: string) {
-    return { adapter: this.adapterId, scope, field, sealed: seal(this.key!, Buffer.from(value, "utf8"), aad(this.adapterId, scope, field)).toString("base64") };
+    return { adapter: this.adapterId, scope, field, sealed: seal(this.key, Buffer.from(value, "utf8"), aad(this.adapterId, scope, field)).toString("base64") };
   }
 
 
@@ -140,7 +146,7 @@ class SealedSettingsOverStore {
     if (!(scope in this.opened) && !unopened.length) return;
     for (const key of unopened) this.unopened.delete(key);
     // Each value it held is retired before its live rows go: a run that quoted it before the removal stays cut.
-    if (this.key) for (const [field, value] of Object.entries(this.opened[scope] ?? {})) await this.retire(scope, field, value);
+    for (const [field, value] of Object.entries(this.opened[scope] ?? {})) await this.retire(scope, field, value);
     await this.store.triggerSettings.removeScope(this.adapterId, scope);
     await this.store.flush();
     delete this.opened[scope];
@@ -149,18 +155,36 @@ class SealedSettingsOverStore {
   /** Every value held open, and every one rotated or removed since this store opened, for the server's list of its own
    *  secrets: a run that echoes a secret after its rotation is cut all the same. */
   values(): string[] {
-    return [...Object.values(this.opened).flatMap((fields) => Object.values(fields)), ...this.retired];
+    return [...Object.values(this.opened).flatMap((fields) => Object.entries(fields).flatMap(([field, value]) => this.secretsOf(field, value))), ...this.retired];
   }
 
-  private writable(): void {
-    if (!this.key) throw new ApiError("no_sealing_key", `This server was handed no seal key (${SEAL_KEY_ENV}), so it keeps no ${this.adapterId} trigger's secret: it never keeps one in the clear.`);
+  /** What of `field`'s `value` is a secret to list with a floor: none for a public field or a PEM key (pemValues lists
+   *  that), else the value. */
+  private secretsOf(field: string, value: string): string[] {
+    const spec = this.spec.fields[field];
+    return spec?.public || spec?.format === "pem" ? [] : [value];
   }
+
+  /** Every PEM key held open, or rotated or removed since this store opened: each whole and each of its base64 lines,
+   *  the short last one too, listed with no floor (server-secrets.ts `whole`). */
+  pemValues(): string[] {
+    const pem = (field: string) => this.spec.fields[field]?.format === "pem";
+    const forms = (value: string) => [value, ...value.split(/\r?\n/).map((line) => line.trim()).filter((line) => line && !line.startsWith("-----"))];
+    return [...Object.values(this.opened).flatMap((fields) => Object.entries(fields).filter(([field]) => pem(field)).flatMap(([, value]) => forms(value))), ...this.retiredPem.flatMap(forms)];
+  }
+
+  /** `field`'s `value`, retired, in this process's redaction list: a PEM key by its lines (pemValues), else its secret. */
+  private remember(field: string, value: string): void {
+    if (this.spec.fields[field]?.format === "pem") this.retiredPem.push(value);
+    else for (const secret of this.secretsOf(field, value)) this.retired.add(secret);
+  }
+
 }
 
 export type { SealedSettingsOverStore };
 
 /** The SealedSettings surface over the one store: the switch swaps `new SealedSettings(data, id, spec, key, say)` for this,
  *  then awaits load() once at start before the first get()/values(). */
-export function sealedSettingsOverStore(store: SealedSettingsStore, adapterId: string, spec: SettingsSpec, key: Buffer | undefined, say: (fields: Record<string, string>) => void): SealedSettingsOverStore {
+export function sealedSettingsOverStore(store: SealedSettingsStore, adapterId: string, spec: SettingsSpec, key: Buffer, say: (fields: Record<string, string>) => void): SealedSettingsOverStore {
   return new SealedSettingsOverStore(store, adapterId, spec, key, say);
 }

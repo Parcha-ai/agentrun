@@ -96,9 +96,12 @@ async function worldWith(t, origin) {
   return { server };
 }
 
-async function rowWhen(server, done, what, ms = 30_000) {
+/** The run's row once `done` holds; a run that ends first, or `ms` passing, fails it. `stop`: a wait another event won
+ *  ends here, quietly. */
+async function rowWhen(server, done, what, ms = 30_000, stop) {
   const from = Date.now();
   for (;;) {
+    if (stop?.aborted) return undefined;
     const row = await server.runs.get("run-1");
     if (done(row)) return row;
     if (["ended", "failed", "stopped"].includes(row.state) || Date.now() - from > ms) assert.fail(`${what}: the run is ${JSON.stringify({ state: row.state, runner: row.runner, summary: row.summary })}`);
@@ -107,10 +110,8 @@ async function rowWhen(server, done, what, ms = 30_000) {
 }
 const pausedRow = (row) => row.state === "parked" && row.runner === null;
 const endedRow = (row) => ["ended", "failed", "stopped"].includes(row.state) && row.runner === null;
-/** Both cases wait on call nodes running on the runner at all: today any workflow with one is refused at its start. */
-const SKIP = { skip: "call nodes don't run on the runner yet: workflow-spec.ts:475 toolsOf returns []" };
 
-test("the control: three call nodes, never paused, each run once and the run ends", SKIP, async (t) => {
+test("the control: three call nodes, never paused, each run once and the run ends", async (t) => {
   const origin = scriptedOrigin();
   const { server } = await worldWith(t, origin);
   const row = await rowWhen(server, endedRow, "the run ends");
@@ -118,13 +119,15 @@ test("the control: three call nodes, never paused, each run once and the run end
   assert.deepEqual(origin.counts, { "CALL-ONE": 1, "CALL-TWO": 1, "CALL-THREE": 1 });
 });
 
-test("a pause during call node 1: it finishes, call node 2 does not start until the resume, and each node runs once", SKIP, async (t) => {
+test("a pause during call node 1: it finishes, call node 2 does not start until the resume, and each node runs once", async (t) => {
   const origin = scriptedOrigin();
   origin.hold("CALL-ONE");
   const arrived = origin.arrived("CALL-ONE");
   const { server } = await worldWith(t, origin);
   // Call node 1's request reaches the origin; a run that fails first is told, never waited on.
-  await Promise.race([arrived, rowWhen(server, () => false, "call node 1's request never came")]);
+  const watch = new AbortController();
+  await Promise.race([arrived, rowWhen(server, () => false, "call node 1's request never came", 30_000, watch.signal)]);
+  watch.abort();
   await server.command("run-1", { kind: "pause", body: {} });
   await sleep(DELIVERED_MS);
   origin.release("CALL-ONE");

@@ -5,8 +5,8 @@
 // then again once the App is installed (installed). Every github trigger, and every GitHub template, uses this one App.
 import { createHash, randomBytes, timingSafeEqual } from "node:crypto";
 import { ApiError, invalid } from "./errors.js";
-import { appJwt, GITHUB_WEB, githubCall, mintInstallationToken } from "./github.js";
-import type { SealedSettings } from "./sealed-settings.js";
+import { appJwt, GITHUB_FIELDS, GITHUB_SCOPE, GITHUB_WEB, githubCall, githubTargetOf, mintInstallationToken } from "./github.js";
+import type { SealedSettingsOverStore } from "./sealed-settings-store.js";
 import { isObject, type Json } from "./validate.js";
 
 /** How long a Connect's state is good for, and the most kept at once. */
@@ -16,7 +16,8 @@ export const CALLBACK_PATH = "/v2/integrations/github/callback";
 export const INSTALLED_PATH = "/v2/integrations/github/installed";
 export const HOOK_PATH = "/v2/hooks/github";
 /** The App's fields in the github source's sealed settings (trigger-github.ts declares them). */
-export const FIELDS = { appId: "app_id", slug: "slug", clientId: "client_id", settingsUrl: "settings_url", privateKey: "private_key", webhookSecret: "webhook_secret", installations: "installations" } as const;
+export const FIELDS = GITHUB_FIELDS;
+export { githubTargetOf };
 /** Where a browser leg sends the owner's browser: the console's GitHub settings (it routes by hash), connected, or with
  *  why not. */
 export const CONNECTED_PAGE = "/#/settings/github?github=connected";
@@ -26,7 +27,7 @@ const failedPage = (reason: LegFailure) => `/#/settings/github?github=error&reas
 const consoleAt = (base: string | undefined, page: string) => `${base ?? ""}${page}`;
 /** A GitHub login (a user or an organization), as GitHub allows one. */
 const LOGIN = /^[A-Za-z0-9](?:[A-Za-z0-9]|-(?=[A-Za-z0-9])){0,38}$/;
-const SCOPE = "server";
+const SCOPE = GITHUB_SCOPE;
 
 export type Installation = { id: number; account: string };
 /** What a caller (a GitHub template, the console) may read of the connection: never a secret. */
@@ -82,7 +83,7 @@ export function startedHere(cookies: string | undefined, port: number | undefine
 
 /** The connection, as the github source's sealed settings hold it. */
 export class GitHubConnection {
-  constructor(private readonly settings: SealedSettings | undefined) {}
+  constructor(private readonly settings: SealedSettingsOverStore | undefined) {}
 
   /** Bumped by every write of the connection or its installations (an event, the installed redirect, a repair): a
    *  repair reads it before it asks GitHub for the list, and takes the answer only when it has not moved. */
@@ -110,11 +111,10 @@ export class GitHubConnection {
     return appId && pem ? { appId, pem } : undefined;
   }
 
-  /** Why nothing can be kept (no seal key, an unreadable file), as its refusal. */
+  /** Why nothing can be kept: this server keeps no github source's settings (no such source here). Its seal key is always
+   *  there (seal-key.ts ensureSealKey). */
   unwritable(): ApiError | undefined {
-    const refusal = this.settings ? this.settings.unwritable() : new ApiError("no_sealing_key", "");
-    if (refusal?.code === "no_sealing_key") return new ApiError("github_no_seal_key", "This server keeps a GitHub App's secrets only sealed, and it has no seal key: set AGENTRUN_SEAL_KEY, restart it, then connect again.");
-    return refusal;
+    return this.settings ? undefined : new ApiError("unavailable", "This server has no GitHub source to keep an App in.");
   }
 
   /** The App's settings page on GitHub, where the person deletes it: its owner's (an organization's, or the user's). */
@@ -123,45 +123,47 @@ export class GitHubConnection {
   }
 
   /** The App GitHub made, kept: its client secret is never. Its installations start empty. */
-  save(app: { id: string; slug: string; clientId: string; pem: string; webhookSecret: string; settingsUrl: string }): void {
+  async save(app: { id: string; slug: string; clientId: string; pem: string; webhookSecret: string; settingsUrl: string }): Promise<void> {
     const settings = this.settings!;
-    settings.set(SCOPE, FIELDS.privateKey, app.pem);
-    settings.set(SCOPE, FIELDS.webhookSecret, app.webhookSecret);
-    settings.set(SCOPE, FIELDS.clientId, app.clientId);
-    settings.set(SCOPE, FIELDS.settingsUrl, app.settingsUrl);
-    settings.set(SCOPE, FIELDS.slug, app.slug);
-    settings.set(SCOPE, FIELDS.installations, "[]");
-    // Last: a connection reads as there only once every field is.
-    settings.set(SCOPE, FIELDS.appId, app.id);
     this.written++;
+    await settings.set(SCOPE, FIELDS.privateKey, app.pem);
+    await settings.set(SCOPE, FIELDS.webhookSecret, app.webhookSecret);
+    await settings.set(SCOPE, FIELDS.clientId, app.clientId);
+    await settings.set(SCOPE, FIELDS.settingsUrl, app.settingsUrl);
+    await settings.set(SCOPE, FIELDS.slug, app.slug);
+    await settings.set(SCOPE, FIELDS.installations, "[]");
+    // Last: a connection reads as there only once every field is.
+    await settings.set(SCOPE, FIELDS.appId, app.id);
   }
 
   /** The installation list as `list`, sorted; whether it changed. */
-  setInstallations(list: Installation[]): boolean {
+  // Each write bumps the version as it begins (before its await): a check whose answer comes while it is under way is
+  // older than it.
+  async setInstallations(list: Installation[]): Promise<boolean> {
     const next = JSON.stringify([...list].sort((a, b) => a.id - b.id));
     if (next === JSON.stringify(installationsIn(this.get(FIELDS.installations)))) return false;
-    this.settings!.set(SCOPE, FIELDS.installations, next);
     this.written++;
+    await this.settings!.set(SCOPE, FIELDS.installations, next);
     return true;
   }
 
-  addInstallation(installation: Installation): void {
-    this.settings!.set(SCOPE, FIELDS.installations, withInstallation(installationsIn(this.get(FIELDS.installations)), installation));
+  async addInstallation(installation: Installation): Promise<void> {
     this.written++;
+    await this.settings!.set(SCOPE, FIELDS.installations, withInstallation(installationsIn(this.get(FIELDS.installations)), installation));
   }
 
   /** Installation `id` gone from the list; how many are left. */
-  removeInstallation(id: number): number {
+  async removeInstallation(id: number): Promise<number> {
     const list = installationsIn(this.get(FIELDS.installations));
-    this.settings!.set(SCOPE, FIELDS.installations, withoutInstallation(list, id));
     this.written++;
+    await this.settings!.set(SCOPE, FIELDS.installations, withoutInstallation(list, id));
     return list.filter((i) => i.id !== id).length;
   }
 
   /** The connection gone from this server: every field. The App itself stays on GitHub. */
-  remove(): void {
-    this.settings?.remove(SCOPE);
+  async remove(): Promise<void> {
     this.written++;
+    await this.settings?.remove(SCOPE);
   }
 }
 
@@ -243,7 +245,7 @@ export class GitHubConnect {
     const owner = isObject(app.owner) && typeof app.owner.login === "string" ? app.owner : undefined;
     const settingsUrl = owner?.type === "Organization" ? `${GITHUB_WEB}/organizations/${owner.login}/settings/apps/${app.slug}` : `${GITHUB_WEB}/settings/apps/${app.slug}`;
     try {
-      this.connection.save({ id: String(app.id), slug: app.slug, clientId: app.client_id, pem: app.pem, webhookSecret: app.webhook_secret, settingsUrl });
+      await this.connection.save({ id: String(app.id), slug: app.slug, clientId: app.client_id, pem: app.pem, webhookSecret: app.webhook_secret, settingsUrl });
     } catch (error) {
       return { location: this.failed("conversion_failed", `the App's credentials were not kept (${(error as Error).message})`) };
     }
@@ -287,7 +289,7 @@ export class GitHubConnect {
       if (this.connection.version === version) break;
       if (asked >= 2) return this.failed("installation_unverified", "the installation list was written again while GitHub was asked twice");
     }
-    this.connection.addInstallation({ id: Number(installationId), account: account! });
+    await this.connection.addInstallation({ id: Number(installationId), account: account! });
     this.options.say({ condition: "github_installed", installation: installationId, account });
     return consoleAt(this.options.publicUrl, CONNECTED_PAGE);
   }
@@ -357,7 +359,7 @@ export class GitHubConnect {
       return noted;
     }
     if (adds) {
-      this.connection.addInstallation({ id: id as number, account });
+      await this.connection.addInstallation({ id: id as number, account });
       return noted;
     }
     // The last one this server tracks: GitHub's own list, asked first, says whether it was the App's last (an event this
@@ -374,12 +376,12 @@ export class GitHubConnect {
       // GitHub's list as it comes, the checked installation included: one unsuspended (or installed again) since its check
       // is active there, and stays.
       if (listed.length) {
-        this.connection.setInstallations(listed);
+        await this.connection.setInstallations(listed);
         this.options.say({ condition: "github_installations_repaired", installations: String(listed.length), was: "1", triggers_off: "0", reason: `installation ${id} ${action === "deleted" ? "deleted" : "suspended"}, and GitHub lists ${listed.some((i) => i.id === id) ? "it active again" : "others"}` });
         return noted;
       }
     }
-    const left = this.connection.removeInstallation(id as number);
+    const left = await this.connection.removeInstallation(id as number);
     const off = left ? 0 : await turnOff(`The GitHub App's last installation left, installation ${id} (${account}), was ${action === "deleted" ? "deleted" : "suspended"} on GitHub: install the App again, then turn the trigger on.`);
     this.options.say({ condition: "github_installation_lost", installation: String(id), account, action, installations_left: String(left), triggers_off: String(off) });
     return noted;
@@ -436,7 +438,7 @@ export class GitHubConnect {
         return;
       }
       const before = this.connection.view()?.installations ?? [];
-      if (!this.connection.setInstallations(found)) return;
+      if (!(await this.connection.setInstallations(found))) return;
       const off = !found.length && before.length ? await turnOff("GitHub holds no installation of the App left (deleted or suspended there): install the App again, then turn the trigger on.") : 0;
       this.options.say({ condition: "github_installations_repaired", installations: String(found.length), was: String(before.length), triggers_off: String(off) });
       return;
@@ -535,22 +537,3 @@ export class GitHubConnect {
   }
 }
 
-const unescapeAttr = (value: string) => value.replace(/&quot;/g, '"').replace(/&lt;/g, "<").replace(/&gt;/g, ">").replace(/&amp;/g, "&");
-const REPO_URL = /https:\/\/github\.com\/([A-Za-z0-9](?:[A-Za-z0-9]|-(?=[A-Za-z0-9])){0,38})\/([A-Za-z0-9._-]{1,100})/;
-
-/** The repository a run is about, from its first message: the GitHub event it was started for (the server's own payload
- *  tag, the first one, with its installation and repository), else the first https://github.com/<owner>/<repo> its owner's
- *  words name, before any payload (a sender's text is never read for it). Undefined when it names none. */
-export function githubTargetOf(content: unknown): { installation?: number; repo: string } | undefined {
-  if (typeof content !== "string") return undefined;
-  const at = content.indexOf("<trigger-payload ");
-  if (at >= 0) {
-    const tag = content.slice(at, content.indexOf(">", at) + 1);
-    const attrs = Object.fromEntries([...tag.matchAll(/ ([a-z][a-z0-9_-]*)="([^"]*)"/g)].map((m) => [m[1]!, unescapeAttr(m[2]!)]));
-    if (attrs.source === "github" && typeof attrs.repo === "string" && /^[^/\s]+\/[^/\s]+$/.test(attrs.repo)) return { repo: attrs.repo, ...(/^\d{1,15}$/.test(attrs.installation ?? "") ? { installation: Number(attrs.installation) } : {}) };
-  }
-  const own = at >= 0 ? content.slice(0, at) : content;
-  const url = REPO_URL.exec(own);
-  // The repository's name ends where the sentence does: trailing punctuation, then a .git, are not part of it.
-  return url ? { repo: `${url[1]}/${url[2]!.replace(/[.,;:)!?]+$/, "").replace(/\.git$/, "")}` } : undefined;
-}
