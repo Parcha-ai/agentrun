@@ -1,17 +1,20 @@
-// A Mode 2 run's spec reads the run's own files through the run's Workspace, on its Archil disk, never from a folder
-// of this machine. Both spec builders, pi's (adapter-run-spec.ts adapterRunSpecFromLaunch) and the CLI harnesses'
-// (cli-run-spec.ts cliRunSpecFromLaunch), are built for a claimed run with the server's Archil settings saved, over the
-// Archil fake. The run's folder on the disk holds the real files; the run's local folder path holds decoys, which a
-// Mode 2 run must never read:
-//   - what the agent learned (withLearned): the learning pin, learning.json, in the run's folder;
-//   - the first message's file manifest (firstMessage): the run's inputs/;
-//   - the gate's file checks (runGate): the turn's origin, turn-origin.json, which keeps a reflect turn's writes out of
-//     .learning/.
-// Each is read under the run's key on the disk (the fake records every read), and nothing comes from the local decoys.
+// A Mode 2 run's spec reads the run's own files through the run's Workspace, on its Archil disk, and never touches a
+// folder of this machine. Both spec builders, pi's (adapter-run-spec.ts adapterRunSpecFromLaunch) and the CLI
+// harnesses' (cli-run-spec.ts cliRunSpecFromLaunch), are built for a claimed run with the server's Archil settings
+// saved, over the Archil fake. The run's folder on the disk holds the real files; the run's local folder path holds
+// decoys:
+//   - the first message's file manifest (firstMessage) lists the run's inputs/ on the disk;
+//   - the gate's file checks (runGate) read the turn's origin, turn-origin.json, on the disk: a reflect turn's write under
+//     .learning/ is refused;
+//   - and nothing at all is read under the run's local folder path while the spec is built and used: every node:fs read
+//     is watched (its CommonJS functions wrapped, then synced into the ESM bindings every module imported), so any lingering
+//     local read fails the test, whoever makes it. (What the agent learned goes to the launch, read with no folder, so it
+//     is not asserted here: it is one of those reads until it moves.)
 import assert from "node:assert/strict";
+import { createRequire, syncBuiltinESMExports } from "node:module";
 import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
-import { join } from "node:path";
+import { join, resolve } from "node:path";
 import { test } from "node:test";
 import { BACKGROUND_CONTEXT as ctx } from "@earendil-works/chord/context";
 import { createModels } from "@earendil-works/pi-ai/models";
@@ -34,12 +37,42 @@ const RUN = "run-1";
 const AGENT = "agent-1";
 const ARCHIL_SETTINGS = { diskId: "dsk-0000000000000001", region: "aws-us-east-1", s3Url: "https://s3.green.us-east-1.aws.prod.archil.com" };
 const KEY = runKey(AGENT, RUN);
-const pin = (section) => JSON.stringify({ seed: null, section });
 const stubRoute = async () => ({ model: "faux-1", provider: { api: "anthropic-messages", origin: "https://route.invalid", credential: () => "not-a-secret" } });
 
+/** Every node:fs read under `folder`, recorded while the watch is on: the CommonJS fs and fs.promises functions that read
+ *  a path are wrapped, then synced into the ESM bindings (syncBuiltinESMExports), so a module's own `import { readFile }`
+ *  is watched too. `off()` puts them back. */
+function watchReads(folder) {
+  const require = createRequire(import.meta.url);
+  const fs = require("node:fs");
+  const under = (path) => typeof path === "string" && (resolve(path) === folder || resolve(path).startsWith(`${folder}/`));
+  const seen = [];
+  const kept = [];
+  const wrap = (owner, name, label) => {
+    const original = owner[name];
+    if (typeof original !== "function") return;
+    kept.push([owner, name, original]);
+    owner[name] = function watched(path, ...rest) {
+      if (under(typeof path === "string" ? path : path?.toString?.())) seen.push(`${label}(${path})`);
+      return original.call(this, path, ...rest);
+    };
+  };
+  for (const name of ["readFileSync", "readdirSync", "statSync", "lstatSync", "existsSync", "openSync", "accessSync", "realpathSync", "readlinkSync", "createReadStream"]) wrap(fs, name, `fs.${name}`);
+  for (const name of ["readFile", "readdir", "stat", "lstat", "open", "access", "realpath", "readlink", "opendir"]) wrap(fs.promises, name, `fs.promises.${name}`);
+  syncBuiltinESMExports();
+  return {
+    seen,
+    off() {
+      for (const [owner, name, original] of kept.reverse()) owner[name] = original;
+      syncBuiltinESMExports();
+    },
+  };
+}
+
 /** A claimed run in Mode 2 over the Archil fake, the run's folder on the disk holding the real files and its local path the
- *  decoys, and `build`'s spec for its claim. */
-async function mode2Spec(t, { harness, build }) {
+ *  decoys, and `build`'s spec for its claim. `watch`: every read under the run's local folder path while the spec is built
+ *  and used (`use`) is recorded. */
+async function mode2Spec(t, { harness, build, watch = false, use = async () => {} }) {
   const dir = mkdtempSync(join(process.env.TMPDIR ?? tmpdir(), "runner-mode2-"));
   const server = await openSqliteStore({ dataDir: dir, role: "server" });
   const store = await openSqliteStore({ dataDir: dir, role: "runner" });
@@ -60,15 +93,13 @@ async function mode2Spec(t, { harness, build }) {
   for (const [name, value] of [[ARCHIL_API_KEY_ROW, "fake-test-key-api-0001"], [ARCHIL_DISK_TOKEN_ROW, "fake-test-key-disk-token-0001"]]) await server.sealedKeys.put(name, sealColumn(SEAL_KEY, sealedAt.sealedKey(name), value));
   await server.flush?.();
 
-  // The run's files on the disk: its learning pin, an input, and a reflect turn's origin.
+  // The run's files on the disk: an input, and a reflect turn's origin.
   const disk = new FakeArchilDisk();
-  disk.files.set(`${KEY}/learning.json`, Buffer.from(pin("Learned FROM THE DISK.")));
   disk.files.set(`${KEY}/inputs/from-disk.txt`, Buffer.from("on the disk"));
   disk.files.set(`${KEY}/turn-origin.json`, Buffer.from(JSON.stringify({ origin: "reflect" })));
   // Decoys at the run's folder path on this machine, which a Mode 2 run never reads.
   const local = runFolder(dir, AGENT, RUN);
   mkdirSync(join(local, "inputs"), { recursive: true });
-  writeFileSync(join(local, "learning.json"), pin("LOCAL DECOY."));
   writeFileSync(join(local, "inputs", "decoy.txt"), "on this machine");
   writeFileSync(join(local, "turn-origin.json"), JSON.stringify({ origin: "person" }));
 
@@ -83,22 +114,23 @@ async function mode2Spec(t, { harness, build }) {
     makeArchilDisk: () => disk,
     computerForClaim: async () => ({ release: async () => {} }),
   };
-  spec = await build(launch, { harness: harnessRun, registry, setModels: (given) => (models = given) }, deps, claim);
-  return { spec, disk };
+  // The run's whole local folder path, the run's directory above its work folder included.
+  const watcher = watch ? watchReads(resolve(local, "..")) : undefined;
+  try {
+    spec = await build(launch, { harness: harnessRun, registry, setModels: (given) => (models = given) }, deps, claim);
+    await use(spec);
+  } finally {
+    watcher?.off();
+  }
+  return { spec, disk, localReads: watcher?.seen ?? [] };
 }
 
 /** The disk's reads of `key`: a get of the file, or a listing of the folder. */
 const readsOf = (disk, key) => disk.calls.filter((call) => (call.key ?? call.prefix ?? call.directory ?? "").startsWith(key));
+/** A reflect turn's write under .learning/, as the adapter loop asks the spec's gate about it. */
+const reflectWrite = { callId: "c1", tool: "write", args: { path: ".learning/notes.md", content: "kept" } };
 
 for (const [name, harness, build] of [["pi's spec", undefined, adapterRunSpecFromLaunch], ["the CLI spec (opencode)", "opencode", cliRunSpecFromLaunch]]) {
-  test(`${name} in Mode 2: what the agent learned is the pin on the run's disk, never the local folder's`, async (t) => {
-    const { spec, disk } = await mode2Spec(t, { harness, build });
-    const system = spec.session.system.join("\n\n");
-    assert.ok(system.includes("Learned FROM THE DISK."), `the learned section is the disk pin's: ${system.slice(-300)}`);
-    assert.ok(!system.includes("LOCAL DECOY."), "nothing from the local folder's pin");
-    assert.ok(readsOf(disk, `${KEY}/learning.json`).length > 0, "the pin was read on the disk, under the run's key");
-  });
-
   test(`${name} in Mode 2: the first message names the run's inputs on its disk, never the local folder's`, async (t) => {
     const { spec, disk } = await mode2Spec(t, { harness, build });
     assert.ok(spec.input.includes("from-disk.txt"), `the manifest names the disk's input: ${spec.input}`);
@@ -108,8 +140,12 @@ for (const [name, harness, build] of [["pi's spec", undefined, adapterRunSpecFro
 
   test(`${name} in Mode 2: the gate's turn-origin check reads the disk: a reflect turn's write under .learning/ is refused`, async (t) => {
     const { spec, disk } = await mode2Spec(t, { harness, build });
-    const answer = spec.gate({ callId: "c1", tool: "write", args: { path: ".learning/notes.md", content: "kept" } });
-    assert.equal(answer, "deny", "the disk says the turn is the end-of-run reflect turn, whose writes under .learning/ are refused");
+    assert.equal(await spec.gate(reflectWrite), "deny", "the disk says the turn is the end-of-run reflect turn, whose writes under .learning/ are refused");
     assert.ok(readsOf(disk, `${KEY}/turn-origin.json`).length > 0, "the turn's origin was read on the disk, under the run's key");
+  });
+
+  test(`${name} in Mode 2: nothing is read under the run's local folder path while its spec is built and used`, async (t) => {
+    const { localReads } = await mode2Spec(t, { harness, build, watch: true, use: async (spec) => void (await spec.gate(reflectWrite)) });
+    assert.deepEqual(localReads, [], `local reads in Mode 2:\n${localReads.join("\n")}`);
   });
 }
