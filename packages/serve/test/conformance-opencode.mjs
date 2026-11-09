@@ -115,12 +115,10 @@ export function openCodeSpec({ script, tools, hooks, agentId }, options = {}) {
 export const openCodeSubject = {
   name: "opencode through the runner",
   createLoop: (setup) => createAdapterLoop(openCodeSpec(setup), { restartLimit: MAX_RESTARTS }),
-  // What its adapter declares (steer false, rerunsStarted false): the suite derives the cases those rule out.
+  // What its adapter declares (steer false, rerunsStarted false, recoversCutAnswers 0): the suite derives the cases those
+  // rule out.
   facts,
   unsupported: {
-    // OpenCode ends its turn at an answer cut at the output limit, as pi does: there is no later answer in the turn to go
-    // on from. (Its facts say so once AdapterFacts gains recoversCutAnswers: 0; then this line goes.)
-    "length-mid-run": "a cut answer ends OpenCode's turn, as pi's does: no answer follows it in the turn",
     "crash-before-intent-process": "the OpenCode stand-in runs only under a test runner, and the conformance runner process is none (the in-process crash case covers the point)",
     "crash-after-intent-process": "the OpenCode stand-in runs only under a test runner, and the conformance runner process is none (the in-process crash case covers the point)",
     "stalled-past-lease-process": "the OpenCode stand-in runs only under a test runner, and the conformance runner process is none",
