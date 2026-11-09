@@ -73,6 +73,22 @@ describe("the Templates page", () => {
     expect(t.went).toEqual(["#/templates/pr-reviewer"]);
   });
 
+  it("never shows a display name's unfilled ${parameters.x}: the card reads … in its place, and Apply fills it as typed", async () => {
+    const CODE: TemplateView = { ...REVIEWER, name: "code-review", display_name: "Code review: ${parameters.repo}" };
+    const list = await open(undefined, { templates: [CODE] });
+    const card = list.host.querySelector("article")!;
+    expect(card.querySelector("h2")!.textContent).toBe("Code review: …");
+    expect(card.getAttribute("aria-label")).toBe("Code review: …");
+    expect(list.host.textContent).not.toContain("${");
+    act(() => root?.unmount()); document.body.innerHTML = "";
+    const apply = await open("code-review", { templates: [CODE] });
+    const title = () => apply.host.querySelector("h1")!.textContent ?? "";
+    expect(title()).toContain("Code review: …");
+    await apply.type(apply.host.querySelector('[data-field="parameters.repo"] input'), "acme/web");
+    expect(title()).toContain("Code review: acme/web");
+    expect(apply.host.textContent).not.toContain("${");
+  });
+
   it("routes #/templates to the list and #/templates/<name> to its Apply screen", () => {
     expect(route("#/templates")).toEqual({ section: "templates" });
     expect(route("#/templates/pr-reviewer")).toEqual({ section: "templates", template: "pr-reviewer" });
