@@ -10,7 +10,7 @@
 // registry is the agreed fixture (workspace-kinds-fixture.mjs).
 import assert from "node:assert/strict";
 import { randomBytes } from "node:crypto";
-import { mkdirSync, mkdtempSync, realpathSync, rmSync } from "node:fs";
+import { mkdirSync, mkdtempSync, readFileSync, realpathSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { after, test } from "node:test";
@@ -289,4 +289,101 @@ test("the composer builds every provider through the one provider builder, and g
   for (const id of ["docker", "daytona", "modal", "e2b", "orgo", "phone-harness", "browserbase", "kernel"]) assert.equal(typeof computerDeps.providers[id], "function", `${id} is built by the provider builder`);
   assert.equal(typeof computerDeps.check?.readBackOf, "function", "the mount check the claim's attach runs");
   assert.equal(typeof computerDeps.spec, "function");
+});
+
+// The Mode 1 default as the runner composes it: an agent with no computer setting gets a sandbox on Docker when Docker
+// answers here (`docker version`, as the Docker provider asks it), else none; Mode 2 none. AGENTRUN_BOXES opts out
+// (none, or empty: no box; a list without docker: no Docker box) without asking Docker. The probe runs once per
+// composition (one runner), bounded, its answer kept. A fake `docker` first on PATH: no Docker is reached.
+
+/** A fake `docker` first on PATH: `version` answers (amd64), fails as a Docker with no daemon does, or is held until the
+ *  test ends (a Docker that never answers). Each call is kept, so a test counts the probes. */
+function dockerProbe(t, how) {
+  const dir = realpathSync(mkdtempSync(join(process.env.TMPDIR ?? tmpdir(), "agentrun-docker-probe-")));
+  dirs.push(dir);
+  const log = join(dir, "calls.jsonl");
+  const gate = join(dir, "released");
+  writeFileSync(log, "");
+  writeFileSync(join(dir, "docker"), `#!${process.execPath}
+const fs = require("node:fs");
+fs.appendFileSync(${JSON.stringify(log)}, JSON.stringify(process.argv.slice(2)) + "\\n");
+if (${JSON.stringify(how)} === "answers") { process.stdout.write("amd64\\n"); process.exit(0); }
+if (${JSON.stringify(how)} === "down") { process.stderr.write("Cannot connect to the Docker daemon at unix:///var/run/docker.sock. Is the docker daemon running?\\n"); process.exit(1); }
+// Held: it answers only once the test has ended and released it.
+const held = () => (fs.existsSync(${JSON.stringify(gate)}) ? process.exit(0) : setTimeout(held, 20));
+held();
+`, { mode: 0o755 });
+  const path = process.env.PATH;
+  process.env.PATH = `${dir}:${path}`;
+  t.after(() => { writeFileSync(gate, ""); process.env.PATH = path; });
+  return { versions: () => readFileSync(log, "utf8").split("\n").filter(Boolean).map((line) => JSON.parse(line)).filter((args) => args[0] === "version").length };
+}
+
+/** The composer as the runner wires it (one per runner), over a sandbox stand-in for every provider; `claim(mode)` claims
+ *  a run with no computer setting and no place, as the spec builders call it. */
+async function noSettingClaims(env, options = {}) {
+  const root = scratch();
+  const sealKey = randomBytes(32);
+  const store = await savedKeysStore(sealKey);
+  const record = { created: [], released: [], loaded: [] };
+  const load = async (id, given) => (record.loaded.push([id, given]), fakeSandbox(root, record));
+  const { computerForClaim, computerDeps } = computerDepsFrom({ env: { ...ENV, ...env }, store, sealKey, kinds: KINDS, load, ...options });
+  let run = 0;
+  const claim = (mode = 1) => computerForClaim({ runId: `run-${++run}`, epoch: 1 }, store, { ...computerDeps, mode, workspace: localWorkspace(root), sealKey });
+  return { claim, record };
+}
+
+test("Mode 1, no setting, Docker answers: the run gets a sandbox on Docker", async (t) => {
+  const docker = dockerProbe(t, "answers");
+  const { claim, record } = await noSettingClaims({});
+  const answer = await claim();
+  assert.equal(answer.computer?.kind, "sandbox");
+  assert.deepEqual(record.loaded.map(([id]) => id), ["docker"], "on Docker");
+  assert.equal(docker.versions(), 1, "Docker was asked once");
+  await answer.release();
+});
+
+test("Mode 1, no setting, Docker does not answer: no computer", async (t) => {
+  const docker = dockerProbe(t, "down");
+  const { claim, record } = await noSettingClaims({});
+  const answer = await claim();
+  assert.equal(answer.computer, undefined);
+  assert.deepEqual(record.loaded, [], "no provider built");
+  assert.equal(docker.versions(), 1);
+});
+
+test("Mode 2, no setting: no computer, and Docker is never asked", async (t) => {
+  const docker = dockerProbe(t, "answers");
+  const { claim, record } = await noSettingClaims({});
+  const answer = await claim(2);
+  assert.equal(answer.computer, undefined);
+  assert.deepEqual(record.loaded, []);
+  assert.equal(docker.versions(), 0);
+});
+
+test("AGENTRUN_BOXES opts out: none, empty, or a list without docker gives no computer though Docker answers, and Docker is never asked", async (t) => {
+  const docker = dockerProbe(t, "answers");
+  for (const boxes of ["none", "", "daytona"]) {
+    const { claim, record } = await noSettingClaims({ AGENTRUN_BOXES: boxes });
+    const answer = await claim();
+    assert.equal(answer.computer, undefined, `AGENTRUN_BOXES=${JSON.stringify(boxes)}`);
+    assert.deepEqual(record.loaded, [], `AGENTRUN_BOXES=${JSON.stringify(boxes)}`);
+  }
+  assert.equal(docker.versions(), 0);
+  const listed = await noSettingClaims({ AGENTRUN_BOXES: "docker" });
+  assert.equal((await listed.claim()).computer?.kind, "sandbox", "docker listed: the default holds");
+});
+
+test("one probe per runner, bounded: two claims against a Docker that never answers ask it once, and each returns within the bound with no computer", async (t) => {
+  const docker = dockerProbe(t, "held");
+  const BOUND_MS = 300;
+  const { claim } = await noSettingClaims({}, { dockerProbeMs: BOUND_MS });
+  for (const which of ["first", "second"]) {
+    const started = Date.now();
+    const answer = await claim();
+    const took = Date.now() - started;
+    assert.equal(answer.computer, undefined, which);
+    assert.ok(took < BOUND_MS + 2_000, `${which} claim took ${took} ms: within the probe's bound, never a stall`);
+  }
+  assert.equal(docker.versions(), 1, "the probe ran once for the runner; its answer is kept");
 });
