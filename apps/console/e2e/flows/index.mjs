@@ -19,6 +19,7 @@ import setupPublic from "./setup-public.mjs";
 import signIn from "./sign-in.mjs";
 import signOutScope from "./sign-out-scope.mjs";
 import signedOutElsewhere from "./signed-out-elsewhere.mjs";
+import reportJson from "./report-json.mjs";
 import runToEnd from "./run-to-end.mjs";
 import takeOver from "./take-over.mjs";
 import templateApply from "./template-apply.mjs";
@@ -37,6 +38,7 @@ export const flows = [
   templateApply,
   templateUnattended,
   runToEnd,
+  reportJson,
   watchLive,
   takeOver,
   signedOutElsewhere,
