@@ -7,6 +7,9 @@ import type { ToolCall, ToolImpl } from "./tools.js";
 export const PERSON_DROVE = "A person used this browser through the live view since your last call, so the page may have changed even where its address did not: take a snapshot before you act on an element by its id.";
 /** Told, before PERSON_DROVE, to a call that waited while the person held the browser. */
 export const PERSON_HAD = "This call waited while the person had the browser: they took it over through the live view and have handed it back.";
+/** Told, instead, to a call that waited through a take the person did not use: no input of theirs reached the page, so the
+ *  snapshot stands and nothing says the page changed. */
+export const PERSON_HAD_UNUSED = "This call waited while the person had the browser: they took it over through the live view and handed it back without using it, so the page is as you left it.";
 
 /** The mark (in a call's result details) of an act the person's take made stale: the person drove the session through the
  *  live view while the call waited, so the snapshot its element ids came from no longer stands. Its timeline row reads
@@ -147,16 +150,22 @@ export function drivingGuard<D extends BrowserDriver, A = unknown>(impl: ToolImp
         if (entered === PERSON_DRIVING) throw new BrowserFailureError(personDrivingFailure());
         held?.release();
         held = { tag, release: entered.release, gate, epoch: epochOf(gate) };
-        return { drove: entered.drove === true, waited, handled: entered.handled === true };
+        return { drove: entered.drove === true, waited, handled: entered.handled };
       }
     };
     /** A person drove: the session's snapshot ids are dropped (an old id then fails as a stale snapshot, whatever the URL), the call is told why,
-     *  and only then is the gate told. A call that took the gate without its session (release, relaunch) tells nothing and uses nothing up. */
-    const told = <S extends { tag: string; driver: D; notice?: string | null }>(attached: S, entered: { drove: boolean; waited: boolean }): S => {
+     *  and only then is the gate told. A take the person did not use (no input of theirs reached the page) keeps the ids: the page
+     *  is as the agent left it, so its next act just works, and the call is told only that it waited, if it did. A call that took
+     *  the gate without its session (release, relaunch) tells nothing and uses nothing up. */
+    const told = <S extends { tag: string; driver: D; notice?: string | null }>(attached: S, entered: { drove: boolean; waited: boolean; handled: boolean }): S => {
       if (!entered.drove && !entered.waited) return attached;
-      try { void Promise.resolve((attached.driver as { forgetSnapshots?: () => unknown }).forgetSnapshots?.()).catch(() => undefined); } catch { /* a driver without snapshot ids has none to drop */ }
+      if (entered.handled) {
+        try { void Promise.resolve((attached.driver as { forgetSnapshots?: () => unknown }).forgetSnapshots?.()).catch(() => undefined); } catch { /* a driver without snapshot ids has none to drop */ }
+      }
       gates(attached.tag).told();
-      return { ...attached, notice: [attached.notice, entered.waited ? PERSON_HAD : null, PERSON_DROVE].filter(Boolean).join(" ") };
+      const said = entered.handled ? [entered.waited ? PERSON_HAD : null, PERSON_DROVE] : [entered.waited ? PERSON_HAD_UNUSED : null];
+      const notice = [attached.notice, ...said].filter(Boolean).join(" ");
+      return notice === (attached.notice ?? "") ? attached : { ...attached, notice };
     };
     /** The session's driver as this call holds it: refused once the browser changes hands. */
     const fenced = <S extends { tag: string; driver: D }>(attached: S): S => (held?.tag === attached.tag && typeof attached.driver === "object" && attached.driver !== null ? { ...attached, driver: epochFenced(attached.driver, held.gate, held.epoch) } : attached);

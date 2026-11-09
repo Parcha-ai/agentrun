@@ -19,7 +19,7 @@ export type DrivingGate = {
   input(): "driving" | "agent_acting";
   /** A model browser call is about to start: a release function, or `person_driving` when a person is driving. `drove` is true when a person has driven
    *  this session and the model has not yet been told (`told`): the page may have changed under the model's last snapshot, whatever its URL says. */
-  model(): { release(): void; drove: boolean; handled?: boolean } | "person_driving";
+  model(): { release(): void; drove: boolean; handled: boolean } | "person_driving";
   /** The model's call has been told a person drove (its snapshot ids dropped, the notice given): `drove` is false until a person drives again. */
   told(): void;
   /** Called with the new state at every change. Returns the unsubscribe. */
@@ -141,7 +141,7 @@ class Gate implements DrivingGate {
     return "driving";
   }
 
-  model(): { release(): void; drove: boolean; handled?: boolean } | "person_driving" {
+  model(): { release(): void; drove: boolean; handled: boolean } | "person_driving" {
     if (this.person || this.hold || this.settling_) return PERSON_DRIVING;
     const drove = this.drove_;
     const handled = this.handled_;
@@ -246,6 +246,7 @@ class Gate implements DrivingGate {
     this.person = false;
     this.viewing_ = false;
     this.drove_ = false;
+    this.handled_ = false;
     this.model_ = 0;
     this.listeners.clear();
     this.forget(this);
