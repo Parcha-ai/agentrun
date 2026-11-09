@@ -4,6 +4,8 @@
 //   - one ready line once it can claim: `Runner <name> ready: store sqlite schema v<N>, <N> loops`;
 //   - exit 2 on bad arguments (runnerArgs' words), 3 on a store the server has not set up (SchemaVersionUnknown), 0 on
 //     SIGTERM after closing;
+//   - each option also as `--option=value` (the bin hands a data directory that starts with "-" as `--data=<dir>`), an
+//     empty value refused in words;
 //   - AGENTRUN_RUNNER_NAME names it, in its lines and in the runs it claims;
 //   - SIGTERM hands a held run back at once, for another runner to claim;
 //   - `--check` passes while its heartbeat file (runner-<name>.alive under --data) is younger than twice its renew
@@ -12,7 +14,7 @@
 //     its password, the seal key, the server's token and API key, the model key.
 import assert from "node:assert/strict";
 import { spawn } from "node:child_process";
-import { mkdtempSync, rmSync, utimesSync, writeFileSync } from "node:fs";
+import { mkdirSync, mkdtempSync, rmSync, utimesSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
 import { createInterface } from "node:readline";
@@ -43,9 +45,9 @@ function scratch(t, name) {
   return dir;
 }
 
-/** A data directory the server set up: agent-1 (pi, granted bash) and `runs` queued, each launched on pi with MODEL. */
-async function serverData(t, runs = []) {
-  const dir = scratch(t, "agentrun-runner-start-");
+/** A data directory the server set up (`dir`, a new scratch one by default): agent-1 (pi, granted bash) and `runs`
+ *  queued, each launched on pi with MODEL. */
+async function serverData(t, runs = [], dir = scratch(t, "agentrun-runner-start-")) {
   const server = await openSqliteStore({ dataDir: dir, role: "server" });
   await server.agents.create({ id: "agent-1", name: "Agent" }, { id: "rev-1", kind: "agentic", body: { instructions: "Answer.", tools: ["bash"] } });
   for (const id of runs) await server.runs.create({ id, agentId: "agent-1", revisionId: "rev-1" }, { body: { input: { content: "Go." }, title: id, place: { mode: "runner" }, harness: "pi", model: MODEL } });
@@ -54,8 +56,8 @@ async function serverData(t, runs = []) {
 }
 
 /** The launcher started as `agentrun-serve runner ...args`, its environment built whole (no NODE_TEST_CONTEXT from this
- *  test runner): its lines on stdout and stderr, and its exit. */
-function runnerChild(t, args, extra = {}) {
+ *  test runner), in `cwd` (this process's by default): its lines on stdout and stderr, and its exit. */
+function runnerChild(t, args, extra = {}, { cwd } = {}) {
   const config = scratch(t, "agentrun-runner-config-");
   const env = {
     PATH: `${dirname(process.execPath)}:/usr/bin:/bin`,
@@ -65,7 +67,7 @@ function runnerChild(t, args, extra = {}) {
     AGENTRUN_SEAL_KEY: SEAL,
     ...extra,
   };
-  const child = spawn("sh", [LAUNCHER, "runner", ...args], { env, stdio: ["ignore", "pipe", "pipe"] });
+  const child = spawn("sh", [LAUNCHER, "runner", ...args], { env, stdio: ["ignore", "pipe", "pipe"], ...(cwd ? { cwd } : {}) });
   const out = [];
   const err = [];
   let notify = () => {};
@@ -101,6 +103,26 @@ test("bad arguments: the runner exits 2 in runnerArgs' words, and claims nothing
   const loops = runnerChild(t, ["--data", "/nowhere", "--loops", "0"]);
   assert.deepEqual(await loops.exited, { code: 2, signal: null });
   assert.match(loops.err.join("\n"), /--loops is a whole number of runs above zero, not "0"/);
+});
+
+test("the equals form: `runner --data=-odd-dir --loops=2 --name=runner-eq` opens that data directory (a name that starts with a dash) under those loops and that name", async (t) => {
+  const parent = scratch(t, "agentrun-runner-eq-");
+  const dir = join(parent, "-odd-dir");
+  mkdirSync(dir);
+  await serverData(t, [], dir);
+  const child = runnerChild(t, ["--data=-odd-dir", "--loops=2", "--name=runner-eq"], {}, { cwd: parent });
+  // Ready only on the store the server set up there: an unset directory exits 3, an argument not taken exits 2.
+  const first = await Promise.race([child.line(READY), child.exited.then((exit) => ({ exit }))]);
+  assert.equal(typeof first, "string", `the runner said it was ready, not ${JSON.stringify({ first, err: child.err })}`);
+  assert.deepEqual(first.match(READY).slice(1), ["runner-eq", String(SCHEMA_VERSION), "2"]);
+  child.child.kill("SIGTERM");
+  assert.deepEqual(await child.exited, { code: 0, signal: null });
+});
+
+test("the equals form with nothing after it: `runner --data=` is refused, exit 2, in words", async (t) => {
+  const child = runnerChild(t, ["--data="]);
+  assert.deepEqual(await child.exited, { code: 2, signal: null });
+  assert.match(child.err.join("\n"), /--data needs a value/);
 });
 
 test("a data directory the server has not set up: the runner exits 3, saying so", async (t) => {

@@ -184,17 +184,21 @@ export function ofStore(make: (store: Store) => LoopFactory): (store: Store) => 
 }
 const isStoreFactory = (made: LoopFactory | ((store: Store) => LoopFactory)): made is (store: Store) => LoopFactory => storeFactories.has(made);
 
-/** The runner process's arguments: `--data D [--loops N] [--name N]`, or `--check --data D [--name N]`. */
+/** The runner process's arguments: `--data D [--loops N] [--name N]`, or `--check --data D [--name N]`. Each option with
+ *  a value is also taken as `--option=value` (the bin hands a data directory that starts with "-" so, never read as an
+ *  option); an empty one is refused like a missing one. */
 export function runnerArgs(argv: readonly string[]): { dataDir: string; loops?: number; name?: string; check?: true } {
   let dataDir: string | undefined;
   let loops: number | undefined;
   let name: string | undefined;
   let check = false;
   for (let i = 0; i < argv.length; i++) {
-    const arg = argv[i];
+    const given = argv[i]!;
+    const equals = /^(--(?:data|loops|name))=(.*)$/s.exec(given);
+    const arg = equals ? equals[1]! : given;
     const value = () => {
-      const next = argv[++i];
-      if (next === undefined) throw new RunnerRefused(`${arg} needs a value`);
+      const next = equals ? equals[2] : argv[++i];
+      if (next === undefined || next === "") throw new RunnerRefused(`${arg} needs a value`);
       return next;
     };
     if (arg === "--data") dataDir = value();
