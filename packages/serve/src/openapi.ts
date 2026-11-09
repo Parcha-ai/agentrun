@@ -1072,6 +1072,8 @@ const EXTENSIONS: Record<string, Record<string, Json>> = {
     },
     delete: {
       operationId: "deleteToolKey", tags: ["local"], summary: "Forget a tool key's stored fields",
+      // A removal has no body to mark a field in: the operation is marked whole, a secret write all the same.
+      "x-agentrun-secret": true,
       description: "409 key_set_by_server when the server is started with every field of it. A secret write: the owner's signed-in session alone (ownerSession), never the token, which is 403 forbidden in words.",
       parameters: [KEY_ID],
       security: [{ ownerSession: [] }],

@@ -155,7 +155,7 @@ export function skillText(commands, hash) {
     'agentrun login --base-url "$AGENTRUN_BASE_URL" < token.txt',
     '```',
     '',
-    'Never print, echo or log the token, and never pass it as an argument; the CLI never prints it. `agentrun logout` removes the config file. A tool key\'s value is read the same way, from stdin or a variable you name: `agentrun tool-keys set KEY_ID FIELD --from-env VAR` (`agentrun tool-keys list` names the keys and fields, never a value).',
+    'Never print, echo or log the token, and never pass it as an argument; the CLI never prints it. `agentrun logout` removes the config file. Keys and other secrets are set in the console, signed in: the token can\'t write one, so no command does (`agentrun tool-keys list` names the keys and fields, and whether each is set, never a value).',
     '',
     ...RECIPES(commands),
     '',
