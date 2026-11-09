@@ -98,7 +98,9 @@ export interface RaiseData {
 /** What a run parked at its cap waits on (the kernel cap's parkOf): its cap, what the cap counted as taken, the least the
  *  refused request needs, the least cap that sends it and the raise offered, in the run's money units (dollars). */
 export interface BudgetData {
-  readonly pending: { readonly kind: "budget"; readonly cap_usd: number; readonly spent_usd: number; readonly needs_usd: number; readonly least_cap_usd: number; readonly suggested_cap_usd: number };
+  /** `bound_usd`: the most a cache miss could have added to the refused step (the refusal's boundUsd; 0 when none), the
+   *  budget card's overshoot bound. */
+  readonly pending: { readonly kind: "budget"; readonly cap_usd: number; readonly spent_usd: number; readonly needs_usd: number; readonly least_cap_usd: number; readonly suggested_cap_usd: number; readonly bound_usd: number };
   /** The cap's words, as the run row's summary says them. */
   readonly words: string;
 }

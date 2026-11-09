@@ -1080,7 +1080,17 @@ async function startHolding(options: ServeOptions, data: string, lock: ServerLoc
     const provider = await making.catch((error: unknown) => { if (pricing === making) pricing = undefined; throw error; });
     return provider.priceOf(model);
   };
-  const runs = new Runs({ installs, dockerAllow: boxNetwork.allow, ...(egress?.volume ? { dockerVolume: egress.volume } : {}), ...(boxPaths ? { dockerPaths: boxPaths } : {}), agents, token, storedKeys, mcpServers: mcpSource, doorTokenFile, doorToken, learning, learningBudget, ...(documents ? { documents: resolve(documents) } : {}), fauxEnv: fauxEnvOf(options), toolSettings: () => settings.get(), ...(runBoxes ? { runBoxes } : {}), ...(remoteBoxes ? { remoteBoxes } : {}), ...(vmBoxes && vmRelayHalf ? { vmBoxes, vmLimits, vmRelay: vmRelayHalf } : {}), ...(remoteBoxes && daytonaApi(env) ? { remoteApi: daytonaApi(env)! } : {}), ...(remoteBoxes ? { boxAllow, onNoBoxList } : {}), ...(options.drainTimeout ? { drainTimeout: options.drainTimeout } : {}), ...(options.carryBackRetry ? { carryBackRetry: options.carryBackRetry } : {}), maxRuns, ...(options.box ? { box: { host: options.box, quarantine: await Quarantine.open(join(data, BOX_QUARANTINE)) } } : {}), ...(options.settleRetryMs ? { settleRetryMs: options.settleRetryMs } : {}), ...(options.readyTimeoutMs ? { readyTimeoutMs: options.readyTimeoutMs } : {}), ...(options.openTimeoutMs ? { openTimeoutMs: options.openTimeoutMs } : {}), ...(options.faux && options.fauxHandedNonce ? { fauxHandedNonce: options.fauxHandedNonce } : {}), ...(options.reflectTimeoutMs ? { reflectTimeoutMs: options.reflectTimeoutMs } : {}), ...(log ? { log: (event: string, fields: Record<string, string | number>) => log(logLine(event, fields)) } : {}), notify: (event, run, marker) => webhooks.emit(event, run, marker), serverSecrets, signIns, approvers: options.accounts === true });
+  /** A trigger's name now, by its id, from the one store (triggers.ts): a run's Timeline row names its trigger. Pushed to
+   *  the runs at a firing's start and on a rename (triggerChanged); read here once when a run is loaded. Undefined for a
+   *  trigger that is gone. */
+  const triggerNameOf = async (id: string): Promise<string | undefined> => {
+    try {
+      return (await triggers.get(id)).name;
+    } catch {
+      return undefined;
+    }
+  };
+  const runs = new Runs({ installs, dockerAllow: boxNetwork.allow, ...(egress?.volume ? { dockerVolume: egress.volume } : {}), ...(boxPaths ? { dockerPaths: boxPaths } : {}), agents, token, storedKeys, mcpServers: mcpSource, doorTokenFile, doorToken, learning, learningBudget, ...(documents ? { documents: resolve(documents) } : {}), fauxEnv: fauxEnvOf(options), toolSettings: () => settings.get(), ...(runBoxes ? { runBoxes } : {}), ...(remoteBoxes ? { remoteBoxes } : {}), ...(vmBoxes && vmRelayHalf ? { vmBoxes, vmLimits, vmRelay: vmRelayHalf } : {}), ...(remoteBoxes && daytonaApi(env) ? { remoteApi: daytonaApi(env)! } : {}), ...(remoteBoxes ? { boxAllow, onNoBoxList } : {}), ...(options.drainTimeout ? { drainTimeout: options.drainTimeout } : {}), ...(options.carryBackRetry ? { carryBackRetry: options.carryBackRetry } : {}), maxRuns, ...(options.box ? { box: { host: options.box, quarantine: await Quarantine.open(join(data, BOX_QUARANTINE)) } } : {}), ...(options.settleRetryMs ? { settleRetryMs: options.settleRetryMs } : {}), ...(options.readyTimeoutMs ? { readyTimeoutMs: options.readyTimeoutMs } : {}), ...(options.openTimeoutMs ? { openTimeoutMs: options.openTimeoutMs } : {}), ...(options.faux && options.fauxHandedNonce ? { fauxHandedNonce: options.fauxHandedNonce } : {}), ...(options.reflectTimeoutMs ? { reflectTimeoutMs: options.reflectTimeoutMs } : {}), ...(log ? { log: (event: string, fields: Record<string, string | number>) => log(logLine(event, fields)) } : {}), notify: (event, run, marker) => webhooks.emit(event, run, marker), serverSecrets, triggerName: (id) => triggerNameOf(id), signIns, approvers: options.accounts === true });
   const daytona = daytonaApi(env);
   const relay = (remoteBoxes && daytona) || vmRelayHalf ? await startBoxRelay({ root: data, tokenOf: (id) => runs.relayToken(id), ...(remoteBoxes && daytona ? daytona : {}), ...(vmRelayHalf ? { vm: vmRelayHalf } : {}), serves: (id) => runs.servesBox(id), ensure: (id) => runs.ensureBox(id) }) : undefined;
   if (relay) stops.push(() => relay.close());
@@ -1189,10 +1199,10 @@ async function startHolding(options: ServeOptions, data: string, lock: ServerLoc
       const uncapped = target.max_cost_usd === undefined && entry.revision.body.maxCostUsd === undefined ? [{ field: "target.max_cost_usd", reason: "missing", message: `Every run a trigger starts is capped: give the target a max_cost_usd or set the agent's (the agent ${target.agent_id} has none).` }] : [];
       return [...uncapped, ...(await explainRun(await inputIssuesOf(entry.revision, target.input), { input: target.input }, entry.revision)).map((issue) => ({ ...issue, field: `target.${issue.field}` }))];
     },
-    async start(target, input, trigger, from) {
+    async start(target, input, trigger, from, title) {
       const entry = await needAgent(target.agent_id);
       // The target's cap, else the agent's default as it stands now: a run a trigger starts is never uncapped.
-      const run = await startRunOf(entry, { input, ...(target.max_cost_usd !== undefined ? { max_cost_usd: target.max_cost_usd } : {}), ...(target.effort ? { effort: target.effort } : {}) }, { trigger, origin: { key: trigger.firing_key }, capped: true, from });
+      const run = await startRunOf(entry, { input, ...(target.max_cost_usd !== undefined ? { max_cost_usd: target.max_cost_usd } : {}), ...(target.effort ? { effort: target.effort } : {}) }, { trigger, origin: { key: trigger.firing_key }, capped: true, from, title });
       return { run_id: run.id };
     },
     async message(target, input, key, from) {
@@ -1626,7 +1636,7 @@ async function startHolding(options: ServeOptions, data: string, lock: ServerLoc
    *  gets that run (the agent store's run_origins). */
   /** `capped`: the run must have a cap (a trigger's), its own or else its agent's default. */
   /** `from`: who the run's first message is from when the person did not write it (a trigger's firing). */
-  async function startRunOf(entry: AgentEntry, body: Json, { trigger, origin, capped = false, from }: { trigger?: RunTrigger; origin?: RunOrigin; capped?: boolean; from?: MessageOrigin } = {}): Promise<Run> {
+  async function startRunOf(entry: AgentEntry, body: Json, { trigger, origin, capped = false, from, title: named }: { trigger?: RunTrigger; origin?: RunOrigin; capped?: boolean; from?: MessageOrigin; title?: string } = {}): Promise<Run> {
     const issues = runBodyIssues(body);
     if (issues.length) {
       // Told from the revision the run would start on (a pinned one, else the current), once it reads as one: a pin that
@@ -1654,7 +1664,8 @@ async function startHolding(options: ServeOptions, data: string, lock: ServerLoc
     // The title shows on the run's page, the runs list and Mission Control: built from its input as shown, each held
     // value redacted before a long one is cut (a cut key could no longer be found), and the run gets its input as given.
     const shown = redactedOutput(input, serverSecrets());
-    const title = revision.kind === "workflow" ? workflowTitle(entry.agent.name || entry.agent.id, isObject(shown) ? shown : {}) : typeof input.content === "string" ? input.content : (Object.values(input).find((v): v is string => typeof v === "string") ?? JSON.stringify(input));
+    // A trigger's run is titled from its trigger (triggers.ts titleOf), never from its input, which may be a sender's.
+    const title = named ?? (revision.kind === "workflow" ? workflowTitle(entry.agent.name || entry.agent.id, isObject(shown) ? shown : {}) : typeof input.content === "string" ? input.content : (Object.values(input).find((v): v is string => typeof v === "string") ?? JSON.stringify(input)));
     return runs.create(entry, revision, version, { input, title, place, ...(typeof body.effort === "string" ? { effort: body.effort } : {}), ...(cap !== undefined ? { maxCostUsd: cap } : {}), ...(capMode !== undefined ? { capMode } : {}), ...(trigger ? { trigger } : {}), ...(origin ? { origin } : {}), ...(from ? { from } : {}), ...(files.length ? { inputs: (work: string) => uploads.copyInto(work, files) } : {}) });
   }
 
@@ -1915,8 +1926,9 @@ async function startHolding(options: ServeOptions, data: string, lock: ServerLoc
     return { password: body.password as string, body };
   }
 
-  /** POST /v2/setup, POST /v2/auth/sign-in, POST /v2/auth/sign-out and GET /v2/auth/session, answered before any
-   *  credential: their own checks are the setup code (or the token), the password, and the session. */
+  /** POST /v2/setup, POST /v2/auth/sign-in, POST /v2/auth/sign-out, POST /v2/auth/sign-out-everywhere and GET
+   *  /v2/auth/session, answered before any credential: their own checks are the setup code (or the token), the password,
+   *  and the session. */
   async function ownerRoute(req: IncomingMessage, res: ServerResponse, path: string, me: Owner): Promise<void> {
     const method = path === "/auth/session" || path === "/setup/import" ? "GET" : "POST";
     if (req.method !== method) throw new ApiError("method_not_allowed", `${req.method} is not a method of /v2${path}`, {}, { allow: method });
@@ -1977,7 +1989,17 @@ async function startHolding(options: ServeOptions, data: string, lock: ServerLoc
         }
         return send(res, 200, { signed_in: true }, { "set-cookie": ownerCookie(req, me.session(), SESSION_S) });
       }
+      // This browser: its session revoked on the server (a copy of its cookie is no session either) and its cookie
+      // cleared; every other browser's session left as it is. A viewer watching with it is cut off.
       case "/auth/sign-out": {
+        fromPage(req);
+        if (!signedIn(req, me)) throw new ApiError("unauthenticated", "this browser is not signed in");
+        for (const value of heldSessions(req)) if (me.valid(value)) me.revoke(value);
+        viewers.recheck();
+        return send(res, 200, { signed_out: true }, { "set-cookie": ownerCookie(req, "", 0) });
+      }
+      // Every browser and phone: the sessions' epoch moves on, so every cookie made before is none, this one's too.
+      case "/auth/sign-out-everywhere": {
         fromPage(req);
         if (!signedIn(req, me)) throw new ApiError("unauthenticated", "this browser is not signed in");
         me.signOutEverywhere();
@@ -2523,9 +2545,9 @@ async function startHolding(options: ServeOptions, data: string, lock: ServerLoc
       case "getGitHubConnection": {
         // Repaired from GitHub's own first, at most once a minute: a missed installation event is put right here.
         await githubConnect.reconcile((detail) => triggers.turnOff("github", detail));
+        // Always a 200: not connected is an answer, never an error a browser logs as one.
         const view = githubConnection();
-        if (!view) throw new ApiError("not_found", "No GitHub App is connected to this server: Connect GitHub in Settings.");
-        return send(res, 200, view);
+        return send(res, 200, view ? { connected: true, ...view } : { connected: false });
       }
       case "disconnectGitHub": {
         const view = githubConnection();
@@ -2648,10 +2670,17 @@ async function startHolding(options: ServeOptions, data: string, lock: ServerLoc
         return send(res, 200, await triggers.rotate(id));
       case "getTrigger":
         return send(res, 200, await triggers.get(id));
-      case "updateTrigger":
-        return send(res, 200, await triggers.update(id, await bodyOf(req)));
+      case "updateTrigger": {
+        const updated = await triggers.update(id, await bodyOf(req));
+        // Its runs' rows name it as it is now (runs.ts servedTriggerRow): the new name, read from the store, pushed to
+        // every live run of the trigger.
+        runs.triggerChanged(id, await triggerNameOf(id));
+        return send(res, 200, updated);
+      }
       case "deleteTrigger":
         await triggers.remove(id);
+        // The trigger is gone: its runs' rows name its id again (triggerChanged with no name).
+        runs.triggerChanged(id, undefined);
         return void res.writeHead(204, { "cache-control": "no-store" }).end();
       case "fireTrigger": {
         const key = req.headers["idempotency-key"];

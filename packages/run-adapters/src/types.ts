@@ -142,8 +142,9 @@ export interface ModelRequest {
   feeUsd?: number;
   /** A paid tool call, no model request (a web search's request, a monid call): held at `feeUsd` alone by the cap's tool
    *  rule, `name` and `basis` in a refusal's words. `call`: the tool call it was booked under, written on its
-   *  runner.request so the run view puts its charge under that call. */
-  paid?: { name: string; basis: string; call?: string };
+   *  runner.request so the run view puts its charge under that call. `charged_by`: who charges for it (the tool's
+   *  provider: parallel, monid, an MCP server, a browser vendor), written there too, as main's charge row names it. */
+  paid?: { name: string; basis: string; call?: string; charged_by?: string };
   /** A side call, never its turn's own: on another model than the session's (a client's title, a summary), or the
    *  host's own request beside the harness's (`host`). */
   side?: true;

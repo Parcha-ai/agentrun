@@ -334,22 +334,38 @@ test("M15: a pinned server removed since an earlier open is dropped from the ste
  *  the wire when `stop` ends the claim's step; then the answer arrives, and the run's next claim opens the server. */
 async function rotatedAcross(t, { expiresAt, stop }) {
   const { store, oauth, claim } = await oauthSetUp(t, { expiresAt });
+  // The first step's store, which says when its refresh's keepRefreshed has committed.
+  let keptNow;
+  const kept = new Promise((resolve) => (keptNow = resolve));
+  const mcp = new Proxy(store.mcp, {
+    get(target, key) {
+      const value = Reflect.get(target, key, target);
+      if (key === "keepRefreshed") return async (...args) => {
+        const out = await value.apply(target, args);
+        keptNow(out);
+        return out;
+      };
+      return typeof value === "function" ? value.bind(target) : value;
+    },
+  });
+  const watched = { where: store.where, mcp, runs: store.runs, settings: store.settings };
   const hold = oauth.holdNext();
   const signal = new AbortController();
   // The fake answers when the test says so (hold.answer()), so this bound only catches a hang; a tight one fails under load.
   const bounds = { requestMs: 60_000, tries: 1 };
-  const first = claimOf(store, claim, ["mcp:fake/add"], { now: () => T0, signal: signal.signal, bounds });
+  const first = claimOf(watched, claim, ["mcp:fake/add"], { now: () => T0, signal: signal.signal, bounds });
   // Behind a token still valid, the step returns before the refresh is answered; an expired one is awaited.
   const step = expiresAt > T0 ? await first : undefined;
   await hold.granted;
   stop({ step, signal });
   hold.answer();
   if (!step) await first.catch(() => undefined);
-  // The granted set kept: the first claim's write of it lands (its lease let go) before the clock jumps past that lease
-  // and the next claim reads the row. On a store with many writers (Postgres) the next claim's read could otherwise come
-  // first, find the lease lapsed on the jumped clock, and take the spent set, which no real refresh (bounded far inside
-  // its lease) could make it do.
-  while ((await store.mcp.server("fake"))?.refreshHolder != null) await new Promise((resolve) => setTimeout(resolve, 2));
+  // What raced: behind a token still valid, nothing awaited the answered refresh's keep, so the next claim could read the
+  // row before keepRefreshed committed. Its clock (T0 + 120 s) is past the lease the store set on its own clock (T0 +
+  // MCP_REFRESH_LEASE_MS), so it read that lease as lapsed and took the old set, past its expiry: "didn't answer". The
+  // answer is kept before the run's next claim comes, as it is outside a test (a claim minutes later); awaited here. (It
+  // is the same race this branch had closed by waiting for the lease's let-go; the base's await of the keep replaces it.)
+  assert.equal((await kept).kept, true, "the answered refresh's set is kept");
   // Later, past the old token's expiry: the next claim needs the rotated set, or a refresh with the spent token.
   const next = await claimOf(store, claim, ["mcp:fake/add"], { now: () => T0 + 120_000, bounds });
   t.after(() => next.release());

@@ -46,6 +46,7 @@ import {
 	type Refusal,
 } from "./provider.js";
 import { type ComputerError, type ComputerErrorCode, fail, ok, type Result } from "./result.js";
+import { daemonWatch, type ScreenWatch, type ScreenWatchHandlers, type WatchOptions } from "./screen-watch.js";
 import { countTested } from "./test-connection.js";
 import { waitUntil } from "./wait.js";
 
@@ -1083,6 +1084,11 @@ export class DaytonaProvider implements ComputerProvider {
 		const sb = found.value;
 		if (!ours(sb) || sb.name !== ref.name || going(sb)) return fail("not_found", `no Daytona computer is ${ref.name} (${ref.id})`);
 		return ok(sb);
+	}
+
+	/** The live view: screen.watch on a connection of the watch's own (daemonWatch); a sandbox has no screen. */
+	watch(ref: ComputerRef, handlers: ScreenWatchHandlers, options?: WatchOptions): Promise<Result<ScreenWatch>> {
+		return daemonWatch(this, ref, handlers, options);
 	}
 
 	async connect(ref: ComputerRef): Promise<Result<ComputerConnection>> {

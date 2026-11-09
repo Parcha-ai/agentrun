@@ -16,7 +16,7 @@ import { KINDS, withdrawnAnswers } from "./journal-kinds.js";
 import { journalEntries } from "./journal-reader.js";
 import { type Claim, type Command, endedBy, type Journal, type Loop, type LoopEnd, type LoopFactory, type StopReason } from "./loop-contract.js";
 import { isFenced, type RunnerStore } from "./store-port.js";
-import { type Redact, runnerSecrets, secretRedactor } from "./redact.js";
+import { heldRedactor, type Redact, runnerSecrets, secretRedactor } from "./redact.js";
 
 /** Most runs a runner holds at once, unless told (RunnerOptions.loops). */
 export const RUNNER_LOOPS = 300;
@@ -131,10 +131,13 @@ export function startRunner(options: RunnerOptions): Runner {
     interruptBackoffMs = 1_000,
     endWaitMs = 5_000,
     onEvent = () => {},
-    redact = secretRedactor(runnerSecrets(process.env)),
+    redact: given = secretRedactor(runnerSecrets(process.env)),
     now = Date.now,
     onBeat = () => {},
   } = options;
+  // The one instance every run's loop gets (LoopDeps.redact), able to hold what each claim opens from the store
+  // (redact.ts holdClaimed): a stored key is cut wherever a key of the runner's environment is.
+  const redact = heldRedactor(given);
   const beat = () => {
     try {
       onBeat();
@@ -169,17 +172,22 @@ export function startRunner(options: RunnerOptions): Runner {
   /** The run's journal with this runner's fence on its one write: after the claim is lost, commit throws ClaimLost. A
    *  commit that lands a final run patch (the loop's own end, which is the run's release) calls `ended` at once: from
    *  then the run is ending, before the loop's teardown, so a renew answered Fenced by that end's epoch is never a lost
-   *  claim. */
+   *  claim. The patch lands exactly when the batch that writes its effect (the record it is staged with) is stored
+   *  (RunStorage.commit): a group commit stores its batches in order up to the first it refuses, so the end's batch can
+   *  land while a later sibling is refused, and an end whose own batch is refused has not landed. */
   const fenced = (journal: Journal, fence: { lost: boolean }, runId: string, ended: () => void): Journal => {
-    let finalStaged = false;
+    /** The effect of the final patch staged and not yet landed, as the store keeps it until a commit stores it. */
+    let finalEffect: number | undefined;
     return new Proxy(journal, {
       get(target, property) {
         const value: unknown = Reflect.get(target, property, target);
         if (typeof value !== "function") return value;
         if (property === "stage") {
-          return (staged: { run?: { state?: string } } | undefined, ...rest: unknown[]) => {
-            if (FINAL.has(staged?.run?.state ?? "")) finalStaged = true;
-            return value.call(target, staged, ...rest);
+          return (staged: { run?: { state?: string }; also?: unknown; effect?: unknown } | undefined, ...rest: unknown[]) => {
+            const result = value.call(target, staged, ...rest);
+            // As the store keeps it: a run patch or rows staged again replace the one staged before.
+            if (staged?.run !== undefined || staged?.also !== undefined) finalEffect = FINAL.has(staged.run?.state ?? "") ? Number(staged.effect) : undefined;
+            return result;
           };
         }
         if (property !== "commit") return value.bind(target);
@@ -187,13 +195,14 @@ export function startRunner(options: RunnerOptions): Runner {
         // so it fails that commit on the path pi already handles, never a throw out of a caller that is not async.
         return (...args: unknown[]) => {
           if (fence.lost) return Promise.reject(new ClaimLost(`run ${runId}: this runner lost its claim; the commit is not written`));
-          // A stage holds for the commit right after it (the loop's Gate, the runner's endRun): read once, then cleared, so
-          // a refused end staged again is read again.
-          const staged = finalStaged;
-          finalStaged = false;
-          const batches = Array.isArray(args[0]) ? args[0].length : 1;
+          const effect = finalEffect;
+          const batches = (Array.isArray(args[0]) ? args[0] : [args[0]]) as unknown[];
+          const at = effect === undefined ? -1 : batches.findIndex((batch) => (Array.isArray(batch) ? batch : [batch]).some((write) => Number((write as { value?: { id?: unknown } } | undefined)?.value?.id) === effect));
           return (value.apply(target, args) as Promise<{ stored?: number }>).then((result) => {
-            if (staged && (result?.stored ?? 0) >= batches) ended();
+            if (at >= 0 && at < (result?.stored ?? 0) && finalEffect === effect) {
+              finalEffect = undefined;
+              ended();
+            }
             return result;
           });
         };
@@ -378,9 +387,11 @@ export function startRunner(options: RunnerOptions): Runner {
       // on as any end does, made durable (a flush) before the runner says released. Any other lost claim writes nothing.
       const endedItself = !threw && (end.state === "ended" || end.state === "stopped" || end.state === "failed");
       if (held.fence.lost && !endedItself) return;
-      // A parked run brought back (a raise, an approval) whose loop could not start stays parked: its waking row keeps
-      // one more try, and the run is claimable again after a backoff; after the last try that row is refused with why.
-      // Never failed: a person can raise again or stop it (#1944-5, the lead's keep list).
+      // A parked run brought back (a raise, an approval) whose loop threw before it could start stays parked: its waking
+      // row keeps one more try, and the run is claimable again after a backoff; after the last try that row is refused
+      // with why, and a person can raise again or stop it (#1944-5). A claim its spec refuses (ClaimRefused: a handed
+      // sign-in that won't read back, an MCP pin refused) never comes here: the loop writes that end itself, final, the run
+      // failed in the refusal's words.
       if (threw && end.state === "failed" && claim.from === "parked") return await resumeFailed(held, end.error.message);
       if (threw && end.state === "failed") {
         // A loop that failed with no end written: a person's stop waiting now is the run's end (stopped, its row taken),
@@ -541,10 +552,15 @@ export function startRunner(options: RunnerOptions): Runner {
       polling = false;
     }
   };
+  /** The poll's claim in flight, if any: close() waits for it, so a runner whose close resolved claims nothing after it. */
+  let claiming: Promise<void> | undefined;
   const poll = () => {
     if (closed || killed) return;
     beat();
-    void claimMore().finally(() => {
+    const claimed = claimMore();
+    claiming = claimed;
+    void claimed.finally(() => {
+      if (claiming === claimed) claiming = undefined;
       if (!closed && !killed) pollTimer = setTimeout(poll, pollMs);
     });
   };
@@ -567,6 +583,9 @@ export function startRunner(options: RunnerOptions): Runner {
       closed = true;
       clearTimeout(pollTimer);
       clearTimeout(commandTimer);
+      // A claim the poll already has in flight lands first: one it makes now is given back at once (claimMore, closed),
+      // all before close resolves, so nothing is claimed by this runner after it (a raise sent then wakes no claim here).
+      await claiming;
       const live = [...runs.values()].filter((held) => !held.fence.lost);
       for (const held of live) {
         if (!held.ending) {

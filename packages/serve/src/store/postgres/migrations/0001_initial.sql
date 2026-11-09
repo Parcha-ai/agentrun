@@ -233,6 +233,7 @@ CREATE TABLE sign_ins (
   name TEXT COLLATE "C" NOT NULL,
   pointer_sealed BYTEA NOT NULL,
   saved_at BIGINT NOT NULL,
+  save BIGINT NOT NULL DEFAULT 1 CHECK (save >= 1),
   verified_at BIGINT,
   PRIMARY KEY (agent_id, provider)
 );

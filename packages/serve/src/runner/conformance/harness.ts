@@ -38,9 +38,10 @@ const TIMING = { leaseMs: 600, renewEveryMs: 150, stopMarginMs: 200, pollMs: 20,
 export const MAX_RESTARTS = 5;
 /** The suite's runner timing, for its runner process too (child.ts). */
 export const CONFORMANCE_TIMING = TIMING;
-/** A lease no missed renew lets lapse within a case: for the cases whose property is not the lease (a claim lost mid-way
- *  changes what they read), so a starved box can't turn them. */
-const STEADY = { leaseMs: 30_000, stopMarginMs: 5_000 };
+/** A lease no missed renew lets lapse within a case: for every case whose property is not the lease (a claim lost
+ *  mid-way changes what they read: a call's status, a count), so a starved box can't turn them. world()'s default; the
+ *  crash cases take the short one (TAKEOVER). */
+const STEADY: Partial<typeof TIMING> = { leaseMs: 60_000, renewEveryMs: 20_000, stopMarginMs: 5_000 };
 const RUN = "run-1";
 /** A case's bound, and the cap on a wait for a runner process's own event: caps on waits for events, never a sleep. */
 const CASE_TIMEOUT_MS = 180_000;
@@ -129,7 +130,11 @@ function crashAt(point: keyof KernelHooks, holder: { runner?: Runner; crashed?: 
 const STORE_URLS = new WeakMap<ConformanceSubject, string>();
 
 /** A store in a data directory of its own, one queued run, and runners started on it (each its own connection). */
-async function world(subject: ConformanceSubject, t: { after(fn: () => unknown): void }, timing: Partial<typeof TIMING> = {}) {
+/** The suite's short lease, for the crash cases: a crashed runner's claim must run out for the second runner to take
+ *  the run over. */
+const TAKEOVER: Partial<typeof TIMING> = {};
+
+async function world(subject: ConformanceSubject, t: { after(fn: () => unknown): void }, timing: Partial<typeof TIMING> = STEADY) {
   const dir = mkdtempSync(join(process.env.TMPDIR ?? tmpdir(), "agentrun-conformance-"));
   // The store the suite was handed (store/open.ts): on Postgres, a schema of this world's own, dropped after it. The URL
   // goes to each opener by hand, and to a runner process in its config, never through an environment (a secret is read
@@ -332,7 +337,7 @@ function saidTakenOver(rows: readonly TimelineEvent[], runner: string): void {
 
 /** A crash at `point` during a call of `tool`, then a second runner's resume: the run ends. */
 async function crashThenResume(subject: ConformanceSubject, t: { after(fn: () => unknown): void }, tool: ToolName, point: keyof KernelHooks) {
-  const w = await world(subject, t);
+  const w = await world(subject, t, TAKEOVER);
   const { tools, ran } = suiteTools();
   const script: ScriptStep[] = [{ call: tool }, { say: "done" }];
   const holder: { runner?: Runner; crashed?: boolean } = {};
@@ -357,7 +362,7 @@ const childEnv = () => {
 /** As crashThenResume, with the first runner a process of its own that SIGKILLs itself at `point`: nothing it had not
  *  committed survives, as in a real crash. The tools count their runs in a file both processes append to. */
 async function processCrashThenResume(subject: ConformanceSubject, t: { after(fn: () => unknown): void }, tool: ToolName, point: keyof KernelHooks, { stall = false }: { stall?: boolean } = {}) {
-  const w = await world(subject, t);
+  const w = await world(subject, t, TAKEOVER);
   const countFile = join(w.dir, "tool-runs");
   const { tools, ran } = suiteTools(countFile);
   const eventsFile = join(w.dir, "runner-process-events.jsonl");
