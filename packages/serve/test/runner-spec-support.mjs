@@ -4,7 +4,6 @@
 // settings; it reads back the spec's tools, its system prompt and its gate. A "runner" place needs no computer, so no
 // Docker is reached.
 import { mkdtempSync, rmSync } from "node:fs";
-import { mkdir } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { BACKGROUND_CONTEXT as ctx } from "@earendil-works/chord/context";
@@ -14,6 +13,7 @@ import { createRegistry, Harness } from "@earendil-works/pi-durable";
 const { openSqliteStore } = await import("../dist/store/sqlite/store.js");
 const { adapterRunSpecFromLaunch } = await import("../dist/runner/adapter-run-spec.js");
 const { runFolder } = await import("../dist/workspace/paths.js");
+const { Uploads } = await import("../dist/uploads.js");
 
 /** A test seal key, no real one: the live-viewer tokens are sealed under it. */
 const SEAL_KEY = Buffer.alloc(32, 7);
@@ -27,8 +27,9 @@ const stubRoute = async () => ({ model: "faux-1", provider: { api: "anthropic-me
  *   launch   the launch body (merged over sane defaults: a runner place, a person's first message)
  *   settings the server's tool settings saved in the one store (store.settings), or none
  *   routeOf  the model route (a stub by default)
+ *   uploads  [{ path, text, contentType? }] reserved and received as ready files, their ids put on launch.files
  */
-export async function specFor(t, { body = {}, launch = {}, settings, routeOf = stubRoute } = {}) {
+export async function specFor(t, { body = {}, launch = {}, settings, routeOf = stubRoute, uploads = [] } = {}) {
   const dir = mkdtempSync(join(process.env.TMPDIR ?? tmpdir(), "runner-spec-"));
   const server = await openSqliteStore({ dataDir: dir, role: "server" });
   const store = await openSqliteStore({ dataDir: dir, role: "runner" });
@@ -43,19 +44,29 @@ export async function specFor(t, { body = {}, launch = {}, settings, routeOf = s
   await server.runs.create({ id: "run-1", agentId: "agent-1", revisionId: "rev-1" });
   if (settings !== undefined) await server.settings.put("tool-settings", settings);
   await server.flush?.();
+  // Ready uploads the run names: reserved and received into the data directory's files/, their ids onto launch.files.
+  const fileIds = [];
+  if (uploads.length) {
+    const up = new Uploads(join(dir, "files"));
+    for (const u of uploads) {
+      const received = await up.take(new URLSearchParams({ path: u.path }), u.contentType ?? "text/plain", [Buffer.from(u.text)]);
+      fileIds.push((await received.commit()).file.file_id);
+    }
+  }
   const [claim] = await store.runs.claimMany("runner-a", 1, { leaseMs: 60_000 });
   if (!claim) throw new Error("the run was not claimed");
-  // The run's Workspace folder, as the server makes it at start before the runner opens it (openRunWorkspace does not make it).
+  // The run's Workspace folder is the runner's to make at the claim (openRunWorkspace / adapterRunSpecFromLaunch), as the
+  // server's start made it before: the test never makes it, so it pins that the runner does.
   const runRow = await store.runs.get("run-1");
-  await mkdir(runFolder(dir, runRow.agentId, claim.runId), { recursive: true });
+  const workFolder = runFolder(dir, runRow.agentId, claim.runId);
   const registry = createRegistry();
   let models = createModels();
   harness = await Harness.open(store.journal(claim), { models: () => models, registry, onReport: () => {} }, ctx);
   const run = { harness, registry, setModels: (given) => (models = given) };
   const deps = { env: {}, data: dir, journal: (c) => store.journal(c), store, sealKey: SEAL_KEY, routeOf };
-  const launchBody = { input: { content: "Do the thing." }, title: "t", place: { mode: "runner" }, model: { provider: "anthropic", modelId: "claude-sonnet-5.5" }, ...launch };
+  const launchBody = { input: { content: "Do the thing." }, title: "t", place: { mode: "runner" }, model: { provider: "anthropic", modelId: "claude-sonnet-5.5" }, ...(fileIds.length ? { files: fileIds } : {}), ...launch };
   const spec = await adapterRunSpecFromLaunch(launchBody, run, deps, claim);
-  return { spec, store, server, claim, dir, run };
+  return { spec, store, server, claim, dir, run, workFolder };
 }
 
 /** The names of a spec's session tools, in order. */

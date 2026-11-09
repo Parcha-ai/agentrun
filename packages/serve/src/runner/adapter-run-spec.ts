@@ -32,6 +32,8 @@ import { promptOf, readsFiles } from "../skills.js";
 import { openRunWorkspace } from "../workspace/run-workspace.js";
 import { runFolder } from "../workspace/paths.js";
 import { runTools, type ToolResults } from "../workspace/run-tools.js";
+import { INPUTS_DIR, UPLOADS_DIR, Uploads } from "../uploads.js";
+import { join } from "node:path";
 import type { AdapterRun, AdapterRunSpec } from "./adapter-loop.js";
 import { piAdapter } from "./adapters/pi.js";
 import { dockerComputer } from "./computer.js";
@@ -108,9 +110,21 @@ export async function adapterRunSpecFromLaunch(launch: RunLaunch, run: AdapterRu
   const revision = { kind: revisionRow.kind, body } as { kind: string; body: { toolSettings?: unknown; harness?: string; approvals?: Approvals } };
   const granted = body.tools ?? [];
 
-  // The run's Workspace at the claim (E4c). Mode 1: the run's local folder under the data directory. Mode 2 (Archil) is
-  // TODO(E2r2): the claim's Archil step (archilClaim) is threaded through the deps when E4c's Mode 2 lands on the runner.
+  // The run's Workspace at the claim (E4c). Mode 1: the run's local folder under the data directory, made here (the server's
+  // start made it before). Mode 2 (Archil) is TODO(E2r2): the claim's Archil step (archilClaim) is threaded through the deps
+  // when E4c's Mode 2 lands on the runner.
   const ws = await openRunWorkspace({ mode: 1, agentId: runRow.agentId, runId: claim.runId, data: deps.data, log });
+
+  // The run's uploaded files, copied into its work/inputs/ before the first turn, as the server's start copied them before
+  // the per-run process ran (uploads.copyInto). Once per run: a fresh run has no inputs/ yet; a resumed claim finds them
+  // copied and skips, so the copy's name-collision suffixes never duplicate a file across claims.
+  if (launch.files?.length) {
+    const copied = await ws.workspace.list(INPUTS_DIR).then(() => true, () => false);
+    if (!copied) {
+      const uploads = new Uploads(join(deps.data, UPLOADS_DIR));
+      await uploads.copyInto(ws.workspace, await uploads.readyFiles(launch.files));
+    }
+  }
 
   // A sandbox run's computer (Mode 1 Docker): D makes a container with the run's folder at /workspace, under the claim's
   // epoch (the one fence). runTools attaches the Workspace to it; the run's release lets it go.
@@ -217,10 +231,6 @@ export async function adapterRunSpecFromLaunch(launch: RunLaunch, run: AdapterRu
     tools: sessionTools,
     context: "fresh",
   };
-
-  // TODO(E2r2): copy launch.files into the workspace before the first turn (uploads' copy), once `files` is on RunLaunch
-  // (E2c cutover-e2c). TODO(E2r2): at a run's sign-in save, store.signIns.verify(agentId, provider, at) (E1b
-  // cutover-e1b): the runner marks the agent's sign-in verified when a session saved to it.
 
   // The person's first message: the start body's content, with the run's file manifest beside it (run-manifest.ts).
   const content = isObject(launch.input) && typeof (launch.input as { content?: unknown }).content === "string" ? (launch.input as { content: string }).content : "";
