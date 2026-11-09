@@ -357,6 +357,9 @@ export async function serve(t, { harnesses: asked, runner: wantRunner = true, ..
 /** `server`'s client with every request sent from the owner's session (ownerSessionOf), as the console sends it: the
  *  password session with accounts on, the launch link's console with accounts off on loopback. */
 export const asOwner = (server) => client(server.baseUrl, server.token, { owner: true });
+/** The owner's session the test client holds for `server` (ownerSessionOf: its cookie and origin), for a request a test
+ *  sends itself as the console does (an approval's answer): one owner per server, never a second password. */
+export const clientOwnerSession = (server) => ownerSessionOf(server.baseUrl, server.token);
 
 export function client(baseUrl, token, { owner = false } = {}) {
   /** A request on a connection of its own, which nothing reuses: a pooled socket the server closes is not its failure. */

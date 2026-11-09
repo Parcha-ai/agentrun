@@ -17,13 +17,12 @@ import { copyStandIn } from "../../run-adapters-codex/test/stand-in.mjs";
 import { McpServers } from "../dist/mcp-servers.js";
 import { systemNetwork } from "../dist/mcp-oauth.js";
 import { network as fakeNetwork } from "./fixtures/fake-network.mjs";
-import { agent, call, cookieOf, flowAgent, follow, runRecordOf, scratch, serve, storeBytes, withEnv } from "./support.mjs";
+import { agent, call, clientOwnerSession, flowAgent, follow, runRecordOf, scratch, serve, storeBytes, withEnv } from "./support.mjs";
 import { startFakeMcp } from "./fixtures/fake-mcp-server.mjs";
 import { startFakeOAuth } from "./fixtures/fake-oauth-server.mjs";
 
 const TOOLS = ["add", "slow_write", "delete_thing", "paid"];
 /** The owner's sign-in phrase, made up for these tests. */
-const PHRASE = "the owner signs in with this phrase";
 const FAUX_MCP = new URL("./fixtures/faux-mcp.mjs", import.meta.url).pathname;
 const CALLBACK = "/v2/settings/mcp-servers/oauth/callback";
 const sealKey = () => randomBytes(32).toString("base64");
@@ -567,9 +566,8 @@ test("pi: an OAuth server's tool with no setting asks: the call parks, nothing r
   const server = await serve(t, { faux: FAUX_MCP, accounts: true, openSetup: true });
   const { api } = server;
   const { mcp } = await fakes(t);
-  const origin = `http://127.0.0.1:${server.port}`;
-  const owner = await call(server.port, { method: "POST", path: "/v2/setup", headers: { "content-type": "application/json", origin }, body: { password: PHRASE } });
-  assert.equal(owner.status, 201, owner.text);
+  // The owner's session the test client holds (its one owner on this server), as the console sends an answer.
+  const { cookie: ownerCookie, origin } = await clientOwnerSession(server);
   const started = await api("POST", "/settings/mcp-servers/docs/oauth/start", { url: mcp.url });
   assert.equal(started.status, 200, JSON.stringify(started.body));
   assert.equal((await approve(started)).headers.get("location"), "/#/settings/mcp?server=docs&sign_in=ok");
@@ -583,7 +581,7 @@ test("pi: an OAuth server's tool with no setting asks: the call parks, nothing r
   assert.deepEqual([pending?.kind, pending?.tool], ["approval", "mcp:docs/add"], JSON.stringify(pending));
   const calls = () => mcp.log.filter((entry) => entry.method === "tools/call").length;
   assert.equal(calls(), 0, "nothing reached the OAuth server while it waits");
-  const allowed = await call(server.port, { method: "POST", path: `/v2/runs/${runId}/approvals/${pending.id}`, headers: { "content-type": "application/json", cookie: cookieOf(owner), origin }, body: { decision: "allow" } });
+  const allowed = await call(server.port, { method: "POST", path: `/v2/runs/${runId}/approvals/${pending.id}`, headers: { "content-type": "application/json", cookie: ownerCookie, origin }, body: { decision: "allow" } });
   assert.equal(allowed.status, 204, allowed.text);
   const { last, rows } = await follow(api, runId, ["completed", "failed"], { deadlineMs: 120_000 });
   const view = (await api("GET", `/runs/${runId}`)).body;
@@ -654,9 +652,8 @@ test("pi: a run whose process went while its call was parked: the owner's allow 
   const { api, data } = server;
   // Every access token is within the launch's refresh margin: each launch refreshes it.
   const { as, mcp } = await fakes(t, { expiresIn: 60 });
-  const origin = `http://127.0.0.1:${server.port}`;
-  const owner = await call(server.port, { method: "POST", path: "/v2/setup", headers: { "content-type": "application/json", origin }, body: { password: PHRASE } });
-  assert.equal(owner.status, 201, owner.text);
+  // The owner's session the test client holds (its one owner on this server), as the console sends an answer.
+  const { cookie: ownerCookie, origin } = await clientOwnerSession(server);
   const started = await api("POST", "/settings/mcp-servers/docs/oauth/start", { url: mcp.url });
   assert.equal((await approve(started)).status, 302);
   assert.equal((await api("POST", "/agents", agent("parker", { tools: ["mcp:docs/add"] }))).status, 201);
@@ -677,7 +674,7 @@ test("pi: a run whose process went while its call was parked: the owner's allow 
   await new Promise((resolve) => setTimeout(resolve, 1_000));
   assert.equal((await api("GET", `/runs/${runId}`)).body.pending?.id, pending.id, "the same approval waits");
   const before = refreshes();
-  const allowed = await call(server.port, { method: "POST", path: `/v2/runs/${runId}/approvals/${pending.id}`, headers: { "content-type": "application/json", cookie: cookieOf(owner), origin }, body: { decision: "allow" } });
+  const allowed = await call(server.port, { method: "POST", path: `/v2/runs/${runId}/approvals/${pending.id}`, headers: { "content-type": "application/json", cookie: ownerCookie, origin }, body: { decision: "allow" } });
   assert.equal(allowed.status, 204, allowed.text);
   await follow(api, runId, ["completed", "failed"], { deadlineMs: 120_000 });
   assert.ok(refreshes() > before, `the launch the allow made refreshed the token first (${before} refreshes before it, ${refreshes()} after)`);
