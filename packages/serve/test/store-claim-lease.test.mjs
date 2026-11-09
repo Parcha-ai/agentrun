@@ -92,9 +92,9 @@ test("a release after the lease ran out is refused, and the run is not stuck: ru
   await queued(store);
   const claim = await store.claim("run-1", "runner-a", { leaseMs: 1_000 });
   clock.now += 1_001;
-  await assert.rejects(store.release(claim, { state: "ended" }), Fenced, "its release");
+  await assert.rejects(store.release(claim, { state: "parked" }), Fenced, "its release");
   const row = await store.runs.get("run-1");
-  assert.deepEqual([row.state, row.epoch], ["running", claim.epoch], "not ended by a claim that ran out");
+  assert.deepEqual([row.state, row.epoch], ["running", claim.epoch], "not parked by a claim that ran out");
   assert.deepEqual(await store.runs.claimable(), ["run-1"], "claimable at once");
 });
 
@@ -115,7 +115,7 @@ test("a write that makes the run final is its release: from that commit the run 
     assert.deepEqual([ended.state, ended.runner, ended.claimedUntil, ended.epoch], ["ended", null, null, claim.epoch + 1], `${how}: released by its end, at the claim's epoch + 1`);
     // The runner's release after it, late (its lease run out) or not: a no-op, no second move of the epoch, no error.
     clock.now += 1_001;
-    await store.release(claim, { state: "ended" });
+    await store.release(claim, {});
     assert.deepEqual(await store.runs.get("run-1"), ended, `${how}: a later release changes nothing`);
     assert.deepEqual(await store.runs.claimable(), [], `${how}: a final run is never claimed`);
   }

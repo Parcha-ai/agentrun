@@ -21,6 +21,7 @@ import {
 } from "./drift.js";
 import { OWN_NETWORK_ONLY, probeOwnNetworkDrift, TOOL_USER } from "./isolation.js";
 import { releaseOlder } from "./janitor.js";
+import type { KindCapabilities } from "./kinds.js";
 import { EPOCH_LABEL, epochOf, RUN_LABEL } from "./labels.js";
 import { checkMount, type MountKind, type MountReadBack, readBackOf } from "./mount.js";
 import {
@@ -55,6 +56,7 @@ import {
 	type Refusal,
 } from "./provider.js";
 import { type ComputerErrorCode, fail, ok, type Result } from "./result.js";
+import { connectionError } from "./test-connection.js";
 import { waitUntil } from "./wait.js";
 
 /** The App sandboxes are made in (modal-client@64880502:js/src/app.ts:32-61). */
@@ -110,7 +112,7 @@ export interface ModalSandbox {
 
 /** The part of the SDK's ModalClient this provider calls. The host passes its own client. */
 export interface ModalSdk {
-	readonly apps: { fromName(name: string, params: { createIfMissing: true }): Promise<ModalApp> };
+	readonly apps: { fromName(name: string, params: { createIfMissing: boolean }): Promise<ModalApp> };
 	/** fromId opens an image Modal already holds (im-..., as box/build-modal.py prints it); a spec naming one needs it. */
 	readonly images: { fromRegistry(tag: string): ModalImage; fromId?(id: string): Promise<ModalImage> };
 	readonly sandboxes: {
@@ -180,6 +182,9 @@ export interface ModalProviderOptions {
 
 /** The mount kinds a Modal computer takes, as capabilities().mount declares them: the run's folder on an Archil disk. */
 export const MOUNT: readonly MountKind[] = ["archil"];
+
+/** The machine kind and groups of its one configuration: a linux computer. */
+export const CAPABILITIES: readonly KindCapabilities[] = [{ kind: "linux", groups: ["exec", "files", "processes"] }];
 
 /** The SDK's default server (modal-client@64880502:js/src/config.ts:143). */
 export const MODAL_DEFAULT_SERVER_URL = "https://api.modal.com:443";
@@ -496,6 +501,8 @@ function codeOf(error: unknown): ComputerErrorCode {
 	const { name, code } = (error ?? {}) as { name?: unknown; code?: unknown };
 	if (name === "NotFoundError" || code === 5) return "not_found";
 	if (name === "InvalidError" || code === 3) return "invalid";
+	// gRPC's UNAUTHENTICATED and PERMISSION_DENIED: a token Modal refused.
+	if (code === 16 || code === 7) return "denied";
 	return "modal";
 }
 
@@ -1149,6 +1156,18 @@ export class ModalProvider implements ComputerProvider {
 		const found = await call(`apps.fromName ${this.#appName}`, () => this.#sdk.apps.fromName(this.#appName, { createIfMissing: true }), this.#timeouts.callMs, signal);
 		if (found.ok) this.#app = found.value;
 		return found;
+	}
+
+	/**
+	 * Settings' test: the provider's app read without making it (createIfMissing false), which makes nothing. An app not
+	 * made yet is a connection all the same: the token was taken, and the first computer makes the app.
+	 */
+	async testConnection({ signal }: CallContext = {}): Promise<Result<{ detail: string }>> {
+		const found = await call(`apps.fromName ${this.#appName}`, () => this.#sdk.apps.fromName(this.#appName, { createIfMissing: false }), this.#timeouts.callMs, signal);
+		if (found.ok) return ok({ detail: `Modal answered: the app ${this.#appName} is there` });
+		if (found.error.code === "not_found") return ok({ detail: `Modal answered: no app ${this.#appName} yet; the first computer makes it` });
+		const error = connectionError(found.error);
+		return fail(error.code, error.message);
 	}
 
 	/** The sandbox with an id and the tags it carries; one Modal does not know is not_found. */

@@ -15,6 +15,7 @@ import { DaemonClient } from "./client.js";
 import { DESKTOP_GROUPS, type DesktopOptions, desktopOf, startDisplay } from "./desktop.js";
 import { COMPUTER_LABEL, DAEMON_IN_COMPUTER, DEADLINE_LABEL, helloDrift, type ProbeReport, probeNetworkDrift, probeNotes, probeReportOf, WORK } from "./drift.js";
 import { releaseOlder } from "./janitor.js";
+import type { KindCapabilities } from "./kinds.js";
 import { RUN_LABEL } from "./labels.js";
 import { checkMount, type MountKind, type MountReadBack, readBackOf } from "./mount.js";
 import {
@@ -54,6 +55,7 @@ import {
 	type Refusal,
 } from "./provider.js";
 import { type ComputerError, type ComputerErrorCode, fail, ok, type Result } from "./result.js";
+import { countTested } from "./test-connection.js";
 import { waitUntil } from "./wait.js";
 
 /** What every SDK call is given: the key, the domain and the API URL explicitly, and debug false (index.mjs:1126-1152). */
@@ -305,6 +307,12 @@ const DEFAULTS: E2BTimeouts = {
 export const MOUNT: readonly MountKind[] = ["archil"];
 /** The user an Archil computer's tools run as: the image's agentrun-tool, with no sudo and no capability. */
 const ARCHIL_USER = `${ARCHIL_TOOL_UID}:${ARCHIL_TOOL_UID}`;
+
+/** The machine kind and groups of each configuration: kind linux (the plain template), and kind desktop (the default). */
+export const CAPABILITIES: readonly KindCapabilities[] = [
+	{ kind: "linux", groups: ["exec", "files", "processes"] },
+	{ kind: "desktop", groups: ["exec", "files", "processes", ...DESKTOP_GROUPS] },
+];
 const RELEASE_POLL_MAX_MS = 5_000;
 const LISTED_POLL_MS = 150;
 const LISTED_ROUNDS = 2;
@@ -1395,6 +1403,26 @@ export class E2BProvider implements ComputerProvider {
 			for (const sb of items.value) if (typeof sb?.sandboxId === "string") found.set(sb.sandboxId, sb);
 		}
 		return ok([...found.values()]);
+	}
+
+	/**
+	 * Settings' test: one page of the account's sandboxes by the provider's own metadata, which makes nothing. The count is
+	 * read from the listing, with no getInfo of each: a busy account answers as fast, and one sandbox's read never fails a
+	 * working key. A further page is "or more".
+	 */
+	async testConnection({ signal }: CallContext = {}): Promise<Result<{ detail: string }>> {
+		const { requestMs } = this.#timeouts;
+		let paginator: E2BPaginator;
+		try {
+			paginator = this.#Sandbox.list({ ...this.#connection, requestTimeoutMs: requestMs, query: { metadata: { [COMPUTER_LABEL]: "1" } }, limit: PAGE });
+		} catch (error) {
+			return countTested("E2B", fail(codeOf(error), `Sandbox.list failed: ${words(error)}`));
+		}
+		const items = await call("Sandbox.list", () => paginator.nextItems({ requestTimeoutMs: requestMs, ...(signal ? { signal } : {}) }), requestMs, signal);
+		if (!items.ok) return countTested("E2B", fail(items.error.code, items.error.message));
+		if (!Array.isArray(items.value)) return countTested("E2B", fail("e2b", "Sandbox.list: a page that is not a list of sandboxes"));
+		const count = items.value.filter((sb) => typeof sb?.sandboxId === "string" && ours(sb.metadata)).length;
+		return countTested("E2B", ok({ count, more: paginator.hasNext }));
 	}
 
 	/**

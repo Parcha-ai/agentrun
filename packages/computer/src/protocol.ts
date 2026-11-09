@@ -27,20 +27,38 @@ export const PROCESS_RETAINED_BYTES = 256 * 1024 * 1024;
 /** The longest a process.read waits for new bytes. */
 export const MAX_READ_WAIT_MS = 30_000;
 
-/** What a computer is: the shape its tools take. Kind sets which groups are Core. */
-export type ComputerKind = "linux" | "desktop" | "android" | "ios";
+/** What a computer is (its machine kind): the shape its tools take. Kind sets which groups are Core. */
+export type ComputerKind = "linux" | "desktop" | "android" | "ios" | "browser";
 
 /** The platform a computer runs, which the key table and exec need. */
 export type ComputerOs = "linux" | "windows" | "macos" | "android" | "ios";
 
 /**
  * What a computer offers, as one flat list: capabilities().groups, repeated in hello.groups. A sub-flag such as
- * input.touch is its own entry. Each is optional unless kind makes it Core.
+ * input.touch is its own entry. Each is optional unless kind makes it Core. cdp, stream and downloads are the
+ * provider's, not computerd's: cdp a browser's CDP target (ComputerConnection.cdp), stream a live view of the screen
+ * (provider.stream()), downloads the files a browser saved; a daemon's hello never lists them.
  */
-export type Group = "exec" | "files" | "processes" | "screen" | "input.pointer" | "input.keys" | "input.touch" | "apps" | "apps.install" | "apps.ui_tree";
+export type Group =
+	| "exec"
+	| "files"
+	| "processes"
+	| "screen"
+	| "input.pointer"
+	| "input.keys"
+	| "input.touch"
+	| "apps"
+	| "apps.install"
+	| "apps.ui_tree"
+	| "cdp"
+	| "stream"
+	| "downloads";
 
 /** Every group, in the order the protocol lists them. */
-export const GROUPS: readonly Group[] = ["exec", "files", "processes", "screen", "input.pointer", "input.keys", "input.touch", "apps", "apps.install", "apps.ui_tree"];
+export const GROUPS: readonly Group[] = ["exec", "files", "processes", "screen", "input.pointer", "input.keys", "input.touch", "apps", "apps.install", "apps.ui_tree", "cdp", "stream", "downloads"];
+
+/** The groups a provider answers itself, which a computerd hello never lists. */
+export const PROVIDER_GROUPS: readonly Group[] = ["cdp", "stream", "downloads"];
 
 export interface HelloParams {
 	/** Who is asking, for the daemon's log: a name and version. */

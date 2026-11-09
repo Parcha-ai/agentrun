@@ -7,7 +7,8 @@ import type { LoopFactory } from "../loop-contract.js";
 /** One step of the model's script: call a tool, say a text, or say the text of the last steer it was given. */
 export type ScriptStep =
   | { readonly call: ToolName; readonly args?: Record<string, unknown> }
-  | { readonly say: string }
+  /** `cut`: the model stops at its output limit as it says it (stopReason "length"): the text is unfinished. */
+  | { readonly say: string; readonly cut?: true }
   | { readonly sayLastSteer: true };
 
 /** The suite's tools. effect changes something outside the run; read does not; slow runs until the suite lets it go
@@ -60,7 +61,9 @@ export type ConformanceCase =
   | "approval-double-click"
   | "message-never-answers"
   | "fault-effects-once"
-  | "fault-restarts-bounded";
+  | "fault-restarts-bounded"
+  | "length-ends-failed"
+  | "length-mid-run";
 
 export interface ConformanceSubject {
   /** The harness's name, as the suite's tests are titled. */

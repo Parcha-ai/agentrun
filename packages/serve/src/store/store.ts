@@ -17,6 +17,8 @@ import type { JournalPage } from "./journal/storage.js";
  *  failed are final. A running run whose runner died is claimable once its claim runs out. */
 export type RunState = "queued" | "running" | "parked" | "ended" | "stopped" | "failed";
 export const FINAL_STATES: readonly RunState[] = ["ended", "stopped", "failed"];
+/** A state a release may leave a run in: never a final one (Store.release). */
+export type ReleasedState = Exclude<RunState, "ended" | "stopped" | "failed">;
 
 /** Why a command row still untaken when its run went final is refused: the write that makes a run final refuses each
  *  such row with these words, in that same transaction (a final run takes no new row, so none is left for good). */
@@ -34,6 +36,9 @@ export interface Claim {
   readonly epoch: number;
   readonly until: number;
   readonly from: RunState;
+  /** The runner that held the run when this claim took it over: its lease ran out with the run still running (that
+   *  runner was lost, or lost its claim). Its loop says so on the run's timeline. Absent for any other claim. */
+  readonly lost?: { readonly runner: string };
 }
 
 /** A command the server wrote for a run (stop, steer, approve, deny, raise): one row, read by the run's runner in id order
@@ -343,8 +348,9 @@ export interface Store {
    *  renewed claim, or Fenced for one whose epoch moved on (nothing written to it; the others renew). */
   renewMany(claims: readonly Claim[], options?: { leaseMs?: number }): Promise<(Claim | Fenced)[]>;
   /** Gives the run back (no runner, no claimed_until; `state` when given; `wakeAt` and `backoffUntil` or none), in a
-   *  durable commit (as flush). Fenced when the epoch moved on. */
-  release(claim: Claim, options?: { state?: RunState; wakeAt?: number | null; backoffUntil?: number | null }): Promise<void>;
+   *  durable commit (as flush). Fenced when the epoch moved on. Never a final state: the run's end commit is the one write
+   *  that makes it final (a release asked for one is refused with a TypeError). */
+  release(claim: Claim, options?: { state?: ReleasedState; wakeAt?: number | null; backoffUntil?: number | null }): Promise<void>;
   /** The run's journal: pi-durable's Storage for this one run, every commit fenced by the claim (store/journal). Its commit
    *  holds the store's one connection while it runs, so it awaits nothing but its own statements, under a deadline. */
   journal(claim: Claim): Journal;

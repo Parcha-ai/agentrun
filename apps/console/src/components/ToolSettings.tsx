@@ -198,7 +198,7 @@ export function AgentToolSettings({ agent, harness, model, tools, choices, gates
       <p className="-mt-1 mb-2 text-[12px] text-muted-foreground">Each of these tools takes this server's setting (its default here) unless it is changed here. {callTools ? "A call node can't wait for an approval: a tool set to ask stops the run from starting. Set it to allow." : "A tool on ask makes the run wait for your approval at each call."}</p>
       <ToolTable label="This agent's tool settings" rows={rows} settings={value} fallbackOf={(t) => t.provider} issues={byTool} onEdit={(edit) => onChange(edit(value))}
         // The server's deny holds over this agent's own setting (rule A): the row stays at deny and says why.
-        refused={(name) => serverDenies(name, gates, agent?.tools)} locked
+        refused={(name) => serverDenies(name, gates, agent?.tools, mcpServers)} locked
         // The agent's own setting for every tool of its MCP server when the form has one; else the server's permission for
         // this agent when its read says it (GET /agents/{id}), else capabilities' or the MCP server read's.
         permissionFallbackOf={(g) => ownWildcard(g.name) ?? read(g.name)?.default_permission ?? g.permission}

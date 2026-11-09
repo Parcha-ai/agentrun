@@ -27,7 +27,7 @@ import {
 	runConformance,
 } from "../dist/index.js";
 import { fakeComputers } from "./fake-computer.mjs";
-import { fakeDevices, fakeFetch, png, pngOf, testClock } from "./fake-device.mjs";
+import { fakeDevices, fakeFetch, png, pngOf, testClock, virtualClock } from "./fake-device.mjs";
 
 const IMAGE = "fixture:image";
 const dir = mkdtempSync(join(tmpdir(), "computer-groups-"));
@@ -146,7 +146,7 @@ test("KEYS is the spec's table, and a key is a name in it or one printable ASCII
 	]);
 	for (const key of ["enter", "f12", "capslock", "a", "A", "1", "/", "~", "!"]) assert.equal(isKey(key), true, key);
 	for (const key of ["Enter", "Return", "Hyper_Q", " ", "\t", "é", "ab", "", "F13", 1, null]) assert.equal(isKey(key), false, JSON.stringify(key));
-	assert.deepEqual(GROUPS, ["exec", "files", "processes", "screen", "input.pointer", "input.keys", "input.touch", "apps", "apps.install", "apps.ui_tree"]);
+	assert.deepEqual(GROUPS, ["exec", "files", "processes", "screen", "input.pointer", "input.keys", "input.touch", "apps", "apps.install", "apps.ui_tree", "cdp", "stream", "downloads"]);
 });
 
 test("checkActions: the whole batch first: its shape, its length, each key, each action's group, a pixel scroll and the summed wait", () => {
@@ -351,6 +351,15 @@ test("lifetime.extend passes a provider whose extend moves the deadline: the com
 	assert.deepEqual(statuses(report), { "lifetime.extend": "pass" }, reasons(report)["lifetime.extend"]);
 });
 
+test("apps.launch-terminate needs apps alone: a phone with no UI tree and no files is seen launching Settings in its screenshot", async () => {
+	const groups = ["screen", "input.touch", "apps"];
+	const seen = await run(fakeDevices({ kind: "android", groups }).provider, ["apps.launch-terminate"]);
+	assert.deepEqual(statuses(seen), { "apps.launch-terminate": "pass" }, reasons(seen)["apps.launch-terminate"]);
+	const hidden = await run(fakeDevices({ kind: "android", groups, broken: "launch-hidden" }).provider, ["apps.launch-terminate"]);
+	assert.deepEqual(statuses(hidden), { "apps.launch-terminate": "fail" });
+	assert.match(reasons(hidden)["apps.launch-terminate"], /^com\.android\.settings shown after apps\.launch: a screenshot other than the one before it/);
+});
+
 /** The lifetimes provider.deadline asked for, in order: the run's shared computer is not the case's. */
 const deadlineLifetimes = (made) => made.filter(({ spec }) => spec.labels?.["agentrun.conformance.case"] === "deadline").map(({ spec }) => spec.lifetimeMs);
 
@@ -359,6 +368,37 @@ test("provider.deadline sees the end of a 45 s lifetime on the run's clock, with
 	const report = await run(provider, ["provider.deadline"]);
 	assert.deepEqual(statuses(report), { "provider.deadline": "pass" }, reasons(report)["provider.deadline"]);
 	assert.deepEqual(deadlineLifetimes(made), [45_000]);
+});
+
+/**
+ * provider.deadline on a host slow to start a computer, measured on a clock that reads no wall clock (virtualClock): the
+ * fake's creates take exactly their createMs on it, so what the case computes from them is exact. The run's shared
+ * computer is made first, at once; createMs then gives each of the case's creates in turn.
+ */
+const slowHost = (createMs) => {
+	const clock = virtualClock();
+	const { provider, made } = fakeDevices({ clock, createMs: [0, ...createMs] });
+	return { made, ran: run(provider, ["provider.deadline"], { clock }) };
+};
+
+test("provider.deadline, when the first create outlasts its 45 s lifetime, asks once more for exactly 45 s past twice what create took, and passes", async () => {
+	// 50 s of a 45 s lifetime fails as Docker's does; the retry asks for 45 + 2 x 50 = 145 s, takes 50 s, and leaves 95 s.
+	const { made, ran } = slowHost([50_000, 50_000]);
+	const report = await ran;
+	assert.deepEqual(statuses(report), { "provider.deadline": "pass" }, reasons(report)["provider.deadline"]);
+	assert.deepEqual(deadlineLifetimes(made), [45_000, 145_000]);
+});
+
+test("provider.deadline skips in words, never passes, when the retry is still too slow for its lifetime", async () => {
+	const { made, ran } = slowHost([50_000, 1_000_000]);
+	const report = await ran;
+	assert.deepEqual(statuses(report), { "provider.deadline": "skip" });
+	assert.equal(
+		reasons(report)["provider.deadline"],
+		"create took 1000 s of a lifetime of 145 s (the first took 50 s of 45 s): this host starts a computer too slowly for the case to watch its deadline; desktop-3's lifetime of 145 s ended before create finished (it took 1000 s)",
+	);
+	assert.deepEqual(deadlineLifetimes(made), [45_000, 145_000]);
+	assert.equal(report.core, "fail", "a Core case that could not run is no pass");
 });
 
 /** For each case: a fake broken the way the case checks for, and what the failure says. */
