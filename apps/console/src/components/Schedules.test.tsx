@@ -482,4 +482,11 @@ describe("the New schedule form's cost cap and one time", () => {
     await t.set("agent", "story");
     expect(cap(t.host).getAttribute("placeholder")).toBe("$0.50, the agent's default");
   });
+
+  it("the cap field is wide enough for its placeholder (16rem: 26 characters of 13px monospace and the padding)", async () => {
+    const t = await open(server().v2, { trigger: null });
+    await t.set("agent", "story");
+    expect(cap(t.host).classList.contains("max-w-64")).toBe(true);
+    expect(cap(t.host).classList.contains("max-w-40")).toBe(false);
+  });
 });
