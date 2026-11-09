@@ -138,17 +138,22 @@ export function startRunner(options: RunnerOptions): Runner {
   /** The run's journal with this runner's fence on its one write: after the claim is lost, commit throws ClaimLost. A
    *  commit that lands a final run patch (the loop's own end, which is the run's release) calls `ended` at once: from
    *  then the run is ending, before the loop's teardown, so a renew answered Fenced by that end's epoch is never a lost
-   *  claim. */
+   *  claim. The patch lands exactly when the batch that writes its effect (the record it is staged with) is stored
+   *  (RunStorage.commit): a group commit stores its batches in order up to the first it refuses, so the end's batch can
+   *  land while a later sibling is refused, and an end whose own batch is refused has not landed. */
   const fenced = (journal: Journal, fence: { lost: boolean }, runId: string, ended: () => void): Journal => {
-    let finalStaged = false;
+    /** The effect of the final patch staged and not yet landed, as the store keeps it until a commit stores it. */
+    let finalEffect: number | undefined;
     return new Proxy(journal, {
       get(target, property) {
         const value: unknown = Reflect.get(target, property, target);
         if (typeof value !== "function") return value;
         if (property === "stage") {
-          return (staged: { run?: { state?: string } } | undefined, ...rest: unknown[]) => {
-            if (FINAL.has(staged?.run?.state ?? "")) finalStaged = true;
-            return value.call(target, staged, ...rest);
+          return (staged: { run?: { state?: string }; also?: unknown; effect?: unknown } | undefined, ...rest: unknown[]) => {
+            const result = value.call(target, staged, ...rest);
+            // As the store keeps it: a run patch or rows staged again replace the one staged before.
+            if (staged?.run !== undefined || staged?.also !== undefined) finalEffect = FINAL.has(staged.run?.state ?? "") ? Number(staged.effect) : undefined;
+            return result;
           };
         }
         if (property !== "commit") return value.bind(target);
@@ -156,13 +161,14 @@ export function startRunner(options: RunnerOptions): Runner {
         // so it fails that commit on the path pi already handles, never a throw out of a caller that is not async.
         return (...args: unknown[]) => {
           if (fence.lost) return Promise.reject(new ClaimLost(`run ${runId}: this runner lost its claim; the commit is not written`));
-          // A stage holds for the commit right after it (the loop's Gate, the runner's endRun): read once, then cleared, so
-          // a refused end staged again is read again.
-          const staged = finalStaged;
-          finalStaged = false;
-          const batches = Array.isArray(args[0]) ? args[0].length : 1;
+          const effect = finalEffect;
+          const batches = (Array.isArray(args[0]) ? args[0] : [args[0]]) as unknown[];
+          const at = effect === undefined ? -1 : batches.findIndex((batch) => (Array.isArray(batch) ? batch : [batch]).some((write) => Number((write as { value?: { id?: unknown } } | undefined)?.value?.id) === effect));
           return (value.apply(target, args) as Promise<{ stored?: number }>).then((result) => {
-            if (staged && (result?.stored ?? 0) >= batches) ended();
+            if (at >= 0 && at < (result?.stored ?? 0) && finalEffect === effect) {
+              finalEffect = undefined;
+              ended();
+            }
             return result;
           });
         };

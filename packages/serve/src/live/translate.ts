@@ -16,6 +16,7 @@ import type { JsonValue } from "@earendil-works/chord";
 import { AgentDoc, type EntryRecord, type SubmissionRecord, UsageDoc } from "@earendil-works/pi-durable";
 import { HOST_PHASE, RUN_RESUMED } from "@parcha/pi-durable-agent/timeline";
 import { type CallEndData, type CallStartData, type EndData, KINDS, type MessageData, type SessionKeyData } from "../runner/journal-kinds.js";
+import { PI_STOP } from "../runner/pi-stop.js";
 import type { JournalCommit } from "../store/journal/storage.js";
 
 export type LiveEvent = { readonly type: string } & Record<string, unknown>;
@@ -102,7 +103,7 @@ function shownResult(entry: EntryRecord): EntryRecord {
   const message = modelOf(entry);
   if (message?.role !== "toolResult") return entry;
   const diagnostics = (entry.data as { diagnostics?: unknown } | undefined)?.diagnostics;
-  const aborted = Array.isArray(diagnostics) && diagnostics.some((diagnostic) => (diagnostic as { code?: unknown } | null)?.code === "aborted");
+  const aborted = Array.isArray(diagnostics) && diagnostics.some((diagnostic) => (diagnostic as { code?: unknown } | null)?.code === PI_STOP.aborted);
   const blocks = Array.isArray(message.content) ? (message.content as { type?: string; text?: unknown }[]) : [];
   const text = typeof message.content === "string" ? message.content : blocks.filter((block) => block?.type === "text" && typeof block.text === "string").map((block) => block.text as string).join("\n");
   const said = aborted ? CUT_BY_YOU : diagnosticOf(text);
