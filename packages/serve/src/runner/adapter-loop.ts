@@ -152,8 +152,9 @@ export interface RunLedger {
   readonly decisions: RunDecisions;
   readonly paid: RunTools;
   /** The session's proxied models for a request the host sends beside the harness's own, under `label` (portModels on
-   *  the session's port); undefined before the session opens. */
-  models(label: string): Promise<PortModels> | undefined;
+   *  the session's port), read at each request: a spec may take them at its build, before the session opens; a request
+   *  made while no port is up (no session, or a harness with none) finds no model. */
+  models(label: string): Promise<PortModels>;
   /** A paid call the run's cap refused that pauses the run (an agent's ask for a person's browser time: main's paidCall
    *  pause): its pause is journaled at once, as a refused request's is (pauseAtCap), and the run's next request is refused
    *  in its words, so the run parks there with the cap's figures. A take-over's refusal pauses nothing: it is not called. */
@@ -527,7 +528,9 @@ function adapterLoop(specOf: (claim: Claim, run: AdapterRun) => AdapterRunSpec |
             spentUsd: () => (paidReady ? paidReady.spentUsd() : earlierPaid),
             heldUsd: () => paidReady?.heldUsd() ?? 0,
           },
-          models: (label) => (session?.port?.(label) ? portModels(() => session?.port?.(label)) : undefined),
+          // Lazy, as main's process takes them (portModels(() => sessionPort?.(...))): a spec takes them at its build, and
+          // each request reads the session's port then, there once the session is open.
+          models: (label) => portModels(() => session?.port?.(label)),
           pause: async (refusal) => {
             await pauseFor?.(refusal);
           },
