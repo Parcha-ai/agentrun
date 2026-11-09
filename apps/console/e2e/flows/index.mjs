@@ -15,6 +15,7 @@ import setupOpen from "./setup-open.mjs";
 import signIn from "./sign-in.mjs";
 import runToEnd from "./run-to-end.mjs";
 import takeOver from "./take-over.mjs";
+import secretsWriteOnly from "./secrets-write-only.mjs";
 import templateApply from "./template-apply.mjs";
 import watchLive from "./watch-live.mjs";
 
@@ -27,5 +28,5 @@ export const flows = [
   runToEnd,
   watchLive,
   takeOver,
-  { name: "secrets-write-only", pending: "waits on the switch slices (session.secrets_writable and the {name, set, source, changed_at} reads): a password session pastes a key; a token-only view has no Paste; a key set in the environment reads greyed; no value appears in any page text" },
+  secretsWriteOnly,
 ];

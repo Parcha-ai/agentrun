@@ -3,7 +3,6 @@
 // sends. Edit the server's document, then run node scripts/generate-clients.mjs; never a wire type here.
 
 import type { components, operations } from "./api.generated";
-import type { PendingKeySecrets } from "./secrets.pending";
 
 type Answer<Id extends keyof operations> = operations[Id]["answer"];
 type Body<Id extends keyof operations> = operations[Id]["body"];
@@ -75,14 +74,17 @@ export type RunFiles = components["RunFileList"];
 export type RunBrowser = Answer<"getRunBrowser">;
 
 /** Tool keys (GET /v2/settings/tool-keys, a serve extension). The server never sends a value. */
-/** PENDING (secrets.pending.ts): the ruled secret read, until the switch slices' generated types replace these. */
-export type { SecretMeta, SessionSecrets } from "./secrets.pending";
+/** A secret as every read says it (SecretMeta): its "<plane>:<id>" name, set or not, where from, and its own last change. */
+export type SecretMeta = components["SecretMeta"];
+/** GET /v2/auth/session's answer, on a server with accounts or without (`accounts`): whether this session may write a
+ *  secret, and why not. */
+export type SessionSecrets = Answer<"getAuthSession">;
 type ServedToolKeys = Answer<"listToolKeys">;
-/** A key with its secrets (PENDING: swapped for the generated alias when the slices land); `fields` as served, for the form. */
-export type ToolKey = ServedToolKeys["keys"][number] & PendingKeySecrets;
-export type ToolKeys = Omit<ServedToolKeys, "keys"> & { keys: ToolKey[] };
+/** A key with its secrets (`secrets`, "tool:<KEY>"/"model:<KEY>"); `fields` as served, for the paste form. */
+export type ToolKey = ServedToolKeys["keys"][number];
+export type ToolKeys = ServedToolKeys;
 export type ToolKeyField = ToolKey["fields"][number];
-/** An MCP server's secret, or secrets (PENDING). */
+/** An MCP server's secret, or secrets (PENDING until tl-mcp's slice: secrets.pending.ts). */
 export type { PendingMcpSecrets } from "./secrets.pending";
 /** A saved key's check with its provider. Null, or absent from a server that does not check, says nothing. */
 export type ToolKeyCheck = NonNullable<ToolKey["check"]>;

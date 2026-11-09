@@ -24,18 +24,17 @@ export const TOKEN_ONLY = "Open the console from the server's link to change sec
 export type SecretsWhyNot = NonNullable<SessionSecrets["secrets_reason"]>;
 export const WHY_NOT_WORDS: Record<SecretsWhyNot, string> = { sign_in: SIGN_IN_TO_CHANGE, no_accounts: NO_ACCOUNTS, token: TOKEN_ONLY };
 
-const sessionOf = (r: { status: number; body: unknown }): SessionSecrets | null => (r.status === 200 && !!r.body && typeof r.body === "object" ? (r.body as SessionSecrets) : null);
+const sessionOf = (r: { status: number; body: unknown }): Partial<SessionSecrets> | null => (r.status === 200 && !!r.body && typeof r.body === "object" ? (r.body as Partial<SessionSecrets>) : null);
 
 /** Whether this session may paste, replace or remove a secret: the server's word alone (secrets_writable), on a server
  *  with accounts or without. Anything else (a token-only browser, no session read, a read that failed) may not. */
 export const secretsWritableOf = (r: { status: number; body: unknown }): boolean => sessionOf(r)?.secrets_writable === true;
 
-/** Why this session may not: the server's reason; else, a server with no accounts (its read 404, or `accounts: false`)
- *  is "no_accounts", any other "sign_in". */
+/** Why this session may not: the server's reason; else, a server with no accounts is "no_accounts", any other "sign_in". */
 export function secretsWhyNot(r: { status: number; body: unknown }): SecretsWhyNot {
   const s = sessionOf(r);
   if (s?.secrets_reason) return s.secrets_reason;
-  return r.status === 404 || s?.accounts === false ? "no_accounts" : "sign_in";
+  return s?.accounts === false ? "no_accounts" : "sign_in";
 }
 
 /** This page's session, read once: whether it may change secrets, and why not. Not writable until the read answers. */

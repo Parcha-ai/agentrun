@@ -4,7 +4,7 @@ import type { AgentLearning, LearningChange, LearningDiff, LearningNote, NotePro
 import type { McpAuth, McpClientFeature, McpPreview, McpRefresh, McpServer } from "./mcp";
 import type { RunGraph } from "./runGraph";
 import { applyPage } from "./timeline";
-import type { ApiError, Firing, RaiseAnswer, Run, RunBrowser, RunFiles, RunStatus, TimelinePage, TimelineRow, ToolKeys, ToolKeysFeature, ToolSettings, Trigger, TriggerCreate, TriggerInput, TriggerMade, TriggerSecret, Webhook, WebhookAttempt, WebhookSaved, WebhooksFeature } from "./v2";
+import type { ApiError, Firing, RaiseAnswer, Run, RunBrowser, RunFiles, RunStatus, TimelinePage, TimelineRow, SessionSecrets, ToolKeys, ToolKeysFeature, ToolSettings, Trigger, TriggerCreate, TriggerInput, TriggerMade, TriggerSecret, Webhook, WebhookAttempt, WebhookSaved, WebhooksFeature } from "./v2";
 
 /** A request AgentRun Server refused: its HTTP status and its typed error (`code`, `message`, `retryable`). */
 export type FieldIssue = { field: string; reason: string; message: string };
@@ -101,11 +101,8 @@ export function createClient({ fetch: f = globalThis.fetch.bind(globalThis), bas
   const noteAccept = { accept: "text/markdown, application/json" };
   return {
     capabilities: () => call<Capabilities>("GET", "/capabilities"),
-    /** The owner's session; its status too, since a server without accounts answers 404. */
-    session: () => callTagged<{ password_set: boolean; signed_in: boolean }>("GET", "/auth/session").then((r) => ({ status: r.status, body: r.body as unknown }), (e) => {
-      if (e instanceof ClientError && e.status === 404) return { status: 404, body: null as unknown };
-      throw e;
-    }),
+    /** The session, on a server with accounts or without (`accounts`), with whether it may write a secret. */
+    session: () => callTagged<SessionSecrets>("GET", "/auth/session").then((r) => ({ status: r.status, body: r.body as unknown })),
     signIn: (password: string) => call<{ signed_in: boolean }>("POST", "/auth/sign-in", { body: { password } }),
     /** Sets the owner's password. `importSessions`: the owner ticked setup's box, so the server imports this machine's
      *  sessions once the password is set; never sent otherwise. */
