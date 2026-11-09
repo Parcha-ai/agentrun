@@ -154,10 +154,6 @@ export async function message(
     await sendCommand(store, moment.id, { kind: "deny", body: { approval: moment.waitingApprovalId, note: content, by: "message" } });
     return { mode: "answer", messageId };
   }
-  // A completed agentic run opens again for a follow-up (the runner reopens it on the steer); every other ended run — a
-  // completed workflow, a failed or a cancelled one — takes no message (as the old path reopened only a completed agentic).
-  const reopenable = moment.kind === "agentic" && moment.terminalKind === "completed";
-  if (moment.terminal && !reopenable) throw finished(moment);
   // Paused at its cap: a message would be refused for the same room, so the cap is raised first.
   if (moment.pausedWords !== undefined) {
     throw new ApiError("budget_reached", `The run is paused at its ${money(moment.maxCostUsd ?? 0)} cap: raise the cap first. ${moment.pausedWords}`, { details: { cap_usd: moment.maxCostUsd ?? null } });
@@ -167,7 +163,20 @@ export async function message(
   if (mode === "answer" && !answers) throw waitingRefusal();
   const messageId = requestId ?? newMessageId();
   const body: Record<string, unknown> = { text: content, ...(answers ? {} : { answers: false }), ...(origin !== undefined ? { origin } : {}) };
-  await sendCommand(store, moment.id, { kind: "steer", body });
+  const command = { kind: "steer", body };
+  try {
+    await sendCommand(store, moment.id, command);
+  } catch (error) {
+    if (!(error instanceof RunFinal)) throw error;
+    // The run has ended, so the store takes no new command on it. The store's reopen decides whether it opens again with this
+    // steer as its next turn, in one transaction; a run it refuses takes no message.
+    try {
+      await store.runs.reopen(moment.id, command);
+    } catch (again) {
+      if (again instanceof RunFinal) throw finished(moment);
+      throw again;
+    }
+  }
   return { mode, messageId };
 }
 
