@@ -24,7 +24,7 @@ import { randomUUID } from "node:crypto";
 import { defineTool, ROOT_CONVERSATION_ID, type ToolRegistration } from "@earendil-works/pi-durable";
 import type { McpCallResult, McpTool, SessionMcp } from "@parcha/agentrun-kernel";
 import { TOOL_COST, TOOL_UNMETERED } from "@parcha/pi-durable-agent/timeline";
-import { holdRefusal, writeHold } from "./paid-calls.js";
+import { holdRefusal, paidLedger, paidStep, writeHold } from "./paid-calls.js";
 import { paidCall } from "./cap.js";
 import { wireName } from "./catalog.js";
 import { metaToolOf } from "./mcp-meta.js";
@@ -408,6 +408,13 @@ export function mcpGateway(options: McpGatewayOptions): McpGateway {
       const result = await call();
       if (commit && went) await record(commit, TOOL_UNMETERED, label).catch(() => undefined);
       return result;
+    }
+    // On the runner's one ledger (paid-calls.ts Ledger.paid): held there at its price before it leaves and settled at its
+    // price once it left (nothing when it never left), in place of this process's spend and the root's marks.
+    const onLedger = paidLedger();
+    if (onLedger) {
+      const stepped = await paidStep(onLedger, callId ?? name, { name, holdUsd: price, basis: `the price its owner set for ${name}` }, () => call(), () => (went ? price : 0));
+      return "refused" in stepped ? said(stepped.refused, true) : stepped.result;
     }
     if (!commit) return said(`${name} was not sent: this call has no run to book its price under.`, true);
     const paid = await paidCall(name, async () => {

@@ -26,7 +26,7 @@ import type { BeforeCreate } from "@parcha/pi-browser/durable";
 import { TOOL_COST } from "@parcha/pi-durable-agent/timeline";
 import { BARRIER, syncNow } from "@parcha/pi-durable-disk";
 import { addSpend, keepHold, paidCall, runCap, SPEND_CAP_REACHED } from "./cap.js";
-import { runJournal } from "./paid-calls.js";
+import { type PaidBooking, paidStep, runJournal } from "./paid-calls.js";
 import { logLine } from "./print.js";
 import { forModel } from "./result.js";
 
@@ -76,7 +76,15 @@ type Row = { tag: string; conversationId: number; state: string; resourceId: str
 /** One run's browser bookings, for its one provider at `price` with pi-browser's idle window `idleS`. `release` lets go of
  *  a conversation's session (pi-browser's release, "close"). `log` takes the line that says a charge went uncounted
  *  (default: the server's stderr). */
-export function browserSpend(provider: string, price: { usdPerHour: number | null; minimumS: number }, idleS: number, release: (conversation: Pick<Conversation, "id" | "commit">, context: Context) => Promise<void>, log: (line: string) => void = (line) => void process.stderr.write(`agentrun-serve: ${line}\n`)) {
+export function browserSpend(provider: string, price: { usdPerHour: number | null; minimumS: number }, idleS: number, release: (conversation: Pick<Conversation, "id" | "commit">, context: Context) => Promise<void>, log: (line: string) => void = (line) => void process.stderr.write(`agentrun-serve: ${line}\n`), ledger: { paid?: PaidBooking } = {}) {
+  /** The runner's one ledger (the kernel cap's paidCalls), when the run has one: each browser call is one paid request on
+   *  it, held at the hold main takes for it and settled at the charges booked under it; a charge under no call (a
+   *  session's release, its top-up to the minute) is one more, settled at that charge. In place of this process's spend. */
+  const paid = ledger.paid;
+  /** Each browser call under way on the ledger: what has been charged under it (null: a charge with no price). */
+  const chargedUnder = new Map<string, number | null>();
+  /** The ledger steps of charges under no call, until they are written (ledgerIdle). */
+  const pending = new Set<Promise<unknown>>();
   const rate = price.usdPerHour;
   const usdOf = (seconds: number) => ((rate ?? 0) * seconds) / 3600;
   const stretchS = price.minimumS + idleS + RELEASE_ALLOWANCE_S;
@@ -129,6 +137,19 @@ export function browserSpend(provider: string, price: { usdPerHour: number | nul
   async function onCharge(charge: SessionCharge, tx: Tx, call?: { callId: string }): Promise<void> {
     if (rate === 0) return;
     const usd = charge.state === "priced" ? charge.usd : null;
+    if (paid) {
+      const under = call?.callId;
+      if (under !== undefined && chargedUnder.has(under)) {
+        const so = chargedUnder.get(under) ?? null;
+        chargedUnder.set(under, so === null || usd === null ? null : so + usd);
+      } else {
+        // A charge under no call under way (the release's, its top-up to the minute): one more paid request on the ledger,
+        // held at nothing (its time is spent already) and settled at the charge.
+        const step = paidStep(paid, `${charge.tag}${charge.final ? "@release" : "@charge"}`, { name: "this browser session's time", holdUsd: 0, basis: `${provider}'s session time, billed as it was charged` }, async () => undefined, () => usd).catch(() => undefined);
+        pending.add(step);
+        void step.finally(() => pending.delete(step));
+      }
+    }
     const data: Booked = { tool: "browser", charged_by: charge.provider, call: call?.callId ?? sessions.get(charge.tag)?.call ?? null, usd, seconds: charge.seconds, tag: charge.tag, conversation: charge.conversationId, at: charge.at, final: charge.final };
     await tx.appendEntry(ROOT_CONVERSATION_ID, { kind: TOOL_COST, data });
   }
@@ -253,6 +274,20 @@ export function browserSpend(provider: string, price: { usdPerHour: number | nul
         // Up to the millionth of a dollar, so the cap's words name a figure never below the hold.
         const usd = microUsd(Math.max(0, usdOf(ranS) - carriedUsd) + 2 * stretch);
         const basis = `${provider}'s session time at $${rate} an hour: the ${Math.round(ranS)} s its session ran since its last charge, and twice the next stretch of ${stretchS} s (its ${price.minimumS} s minimum, the ${idleS} s idle window and ${RELEASE_ALLOWANCE_S} s for its release)`;
+        if (ledger.paid) {
+          // On the runner's one ledger: one paid request, held at that same figure, settled at the charges booked under
+          // this call (a call with none charged nothing; one with an unpriced charge at its hold).
+          chargedUnder.set(api.callId, 0);
+          calls.set(api.callId, { cid: api.conversationId, hold: { usd, drop: () => {} } as Hold });
+          try {
+            // A provider whose time has no price is held at no figure: the cap's rule refuses it for good, as main does.
+            const stepped = await paidStep(ledger.paid, api.callId, { name: "this browser call", holdUsd: rate === null ? Number.NaN : usd, basis }, () => tool.execute(args, api as never, context), () => chargedUnder.get(api.callId) ?? null);
+            return "refused" in stepped ? await refuse(stepped.refused, api, context) : stepped.result;
+          } finally {
+            calls.delete(api.callId);
+            chargedUnder.delete(api.callId);
+          }
+        }
         const paid = await paidCall("this browser call", async () => keepHold(usd), () => undefined, { usd, basis });
         if ("refused" in paid) return refuse(paid.refused, api, context);
         const hold = paid.result;
@@ -326,5 +361,8 @@ export function browserSpend(provider: string, price: { usdPerHour: number | nul
     carried.set(tag, [...(carried.get(tag) ?? []), { hold: keepHold(microUsd(usdOf((to - from) / 1000))), from, to }]);
   }
 
-  return { onCharge, watch, reopened, capped, opening, personTime, carry, stretch };
+  /** Once every ledger step of a charge under no call is written (the runner's one ledger; nothing to wait for without). */
+  const ledgerIdle = async (): Promise<void> => void (await Promise.all([...pending]));
+
+  return { onCharge, watch, reopened, capped, opening, personTime, carry, stretch, ledgerIdle };
 }
