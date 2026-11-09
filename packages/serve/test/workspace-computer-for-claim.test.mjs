@@ -140,12 +140,15 @@ test("a desktop opens one proxied live view under the claim with its hold, and o
   const [hold] = view.holds;
   assert.equal(hold.take(), true, "a person takes the desktop");
   assert.equal(hold.state(), "person");
+  // The agent's ask, open when the computer goes, is let go at once: never left to wait out its own expiry.
+  const asking = hold.ask({ instruction: "Sign in.", completion_condition: "Signed in." }).then(() => "answered", (error) => error.message);
   await answer.release();
   await answer.release("ended");
   assert.deepEqual(view.closed, ["released"], "closed once");
   // A take in force when the computer goes ends released (workspace/computer-hold.ts), and the hold takes nothing after.
   assert.equal(hold.state(), "agent", "the release ends the take: nothing stays parked past the run's computer");
   assert.equal(hold.take(), false, "the hold is closed");
+  assert.equal(await asking, "the run's computer was let go before the person answered");
   assert.deepEqual(record.released, [["c1", "delete"]]);
 });
 
