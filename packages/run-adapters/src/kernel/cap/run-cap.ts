@@ -117,7 +117,8 @@ export function runCap(options: RunCapOptions): RunCap {
 export async function paidCalls(writer: SessionWriter, before: BeforeRequest, options: { flush?: () => Promise<void> } = {}): Promise<RunTools> {
   const steps = await stepsOn(writer, before, options.flush, "paid call", () => {});
   return {
-    admit: (request) => steps.book(request.id, { model: `paid:${request.name}`, inputTokensMax: 0, ...(request.holdUsd > 0 ? { feeUsd: request.holdUsd } : {}), paid: { name: request.name, basis: request.basis } }),
+    // A hold that is no figure (an unpriced browser provider's) goes to the rule as given, which refuses it for good.
+    admit: (request) => steps.book(request.id, { model: `paid:${request.name}`, inputTokensMax: 0, ...(request.holdUsd !== 0 ? { feeUsd: request.holdUsd } : {}), paid: { name: request.name, basis: request.basis } }),
     settle: (id, usd) => steps.settle(id, usd),
     spentUsd: steps.spentUsd,
     heldUsd: steps.heldUsd,

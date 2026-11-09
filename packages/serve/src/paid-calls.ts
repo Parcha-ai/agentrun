@@ -180,6 +180,29 @@ export async function paidRequest(fee: Fee, send: () => Promise<Response>): Prom
 /** Each paid request of this process on the run's one ledger, numbered within its call (one call may make several). */
 let paidSeq = 0;
 
+/** The run's one ledger the current call books on (Ledger.paid), when it has one: the runner's. */
+export const paidLedger = (): PaidBooking | undefined => ledgers.getStore()?.paid;
+
+/** One paid step on the run's one ledger `paid`, under call `call`: admitted at `holdUsd` (refused unsent: the cap's words,
+ *  or why its hold could not be kept), then `run`, then settled at `chargeOf` its outcome (null: at its hold). */
+export async function paidStep<T>(paid: PaidBooking, call: string, fee: { name: string; holdUsd: number; basis: string }, run: () => Promise<T>, chargeOf: (outcome: { result: T } | { thrown: unknown }) => number | null): Promise<{ refused: string } | { result: T }> {
+  const id = `${call}#${(paidSeq += 1)}`;
+  try {
+    await paid.admit({ id, name: fee.name, holdUsd: fee.holdUsd, basis: fee.basis });
+  } catch (error) {
+    return { refused: (error as { code?: unknown })?.code === "spend_cap_reached" ? String((error as Error).message) : holdRefusal(fee.name, error) };
+  }
+  let outcome: { result: T } | { thrown: unknown };
+  try {
+    outcome = { result: await run() };
+  } catch (thrown) {
+    outcome = { thrown };
+  }
+  await paid.settle(id, chargeOf(outcome)).catch(() => undefined);
+  if ("thrown" in outcome) throw outcome.thrown;
+  return outcome;
+}
+
 /** `send` on the run's one ledger (Ledger.paid): admitted at the fee's price (refused unsent in the cap's words), then
  *  sent, then settled at what it may have charged (chargeOf: its price on a 2xx, a 408 or a 5xx or when it threw after
  *  it was sent; $0 on another 4xx). A settle that cannot be written leaves the request at its hold, never less. */
