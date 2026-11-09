@@ -10,7 +10,7 @@ import { BACKGROUND_CONTEXT as ctx } from "@earendil-works/chord/context";
 import { createModels } from "@earendil-works/pi-ai/models";
 import { createRegistry, Harness } from "@earendil-works/pi-durable";
 import { closeOpenSessions, hostTools } from "./conformance-pi-adapter.mjs";
-import { beforeRequestOf, capRun, quiet } from "./adapter-pi-cap-support.mjs";
+import { capRun, quiet } from "./adapter-pi-cap-support.mjs";
 import { startFauxGateway } from "./fixtures/faux-gateway.mjs";
 
 const { piAdapter } = await import("../dist/runner/adapters/pi.js");
@@ -73,7 +73,7 @@ test("acceptance: an openai-responses pi run through serve's gateway, end to end
   const route = await routeOf(undefined, SOURCES.gateway.env(gateway.url), "default", PI_WIRES);
   assert.deepEqual([route.provider.api, route.provider.origin, route.model, route.fetch], ["openai-responses", gateway.url, "team-model", undefined], "the gateway's own Responses route");
   const calls = [];
-  const { row, asked, store } = await capRun(t, { specOf: () => specOn(route, undefined, calls), beforeRequest: () => undefined });
+  const { row, asked, store } = await capRun(t, { specOf: () => specOn(route, undefined, calls), runCap: { capUsd: () => undefined, modelOf: () => undefined } });
   assert.equal(row.state, "ended", JSON.stringify(row));
   assert.deepEqual(calls, ["note"], "the model's call ran the host's tool");
   assert.deepEqual(gateway.requests.map((request) => [request.path, request.headers.authorization]), [["/v1/responses", `Bearer ${KEY}`], ["/v1/responses", `Bearer ${KEY}`]], "both requests on the gateway's Responses route, under its key");
@@ -85,7 +85,7 @@ test("acceptance: an openai-responses pi run through serve's gateway, end to end
   assert.ok(Math.abs((await bookedUsd(store)) - 24e-6) < 1e-12, "both booked on the run's sessions");
 
   const before = gateway.requests.length;
-  const refused = await capRun(t, { specOf: () => specOn(route), beforeRequest: beforeRequestOf({ capUsd: () => 1e-9, modelOf: () => capModelOf(route) }) });
+  const refused = await capRun(t, { specOf: () => specOn(route), runCap: { capUsd: () => 1e-9, modelOf: () => capModelOf(route) } });
   assert.match(refused.asked[0]?.answer?.refuse ?? "", /^spend_cap_reached \(out of budget\): Not sent: /, JSON.stringify(refused.asked[0]?.answer));
   assert.equal(gateway.requests.length, before, "not sent: past the cap");
 });
@@ -98,7 +98,7 @@ test("every source main's pi takes opens on the runner on its wire, offers the s
       const route = await routeOf(source.model, source.env(gateway.url), "default", PI_WIRES, toGateway(gateway.url));
       assert.equal(route.provider.api, source.wire, "its wire");
       assert.equal(typeof route.fetch === "function", Boolean(source.translated), "translated only where pi-ai speaks neither wire");
-      const { row, store } = await capRun(t, { specOf: () => specOn(route, toGateway(gateway.url)), beforeRequest: () => undefined });
+      const { row, store } = await capRun(t, { specOf: () => specOn(route, toGateway(gateway.url)), runCap: { capUsd: () => undefined, modelOf: () => undefined } });
       assert.equal(row.state, "ended", JSON.stringify(row));
       assert.ok(gateway.requests.length >= 1 && gateway.requests.every((request) => request.path.endsWith(source.path)), JSON.stringify(gateway.requests.map((request) => request.path)));
       assert.deepEqual(toolsOf(gateway.requests[0]), ["note"], "the session's tool is offered");
@@ -125,7 +125,7 @@ test("a host tool's image reaches the model on either wire, as that wire carries
       const route = await routeOf(source.model, source.env(gateway.url), "default", PI_WIRES, toGateway(gateway.url));
       assert.equal(route.provider.api, wire);
       const shot = { shot: { name: "shot", replaySafe: true, run: async () => "the page as it looks", images: [{ mimeType: "image/png", data: PIXEL }] } };
-      const { row } = await capRun(t, { specOf: () => specOn(route, toGateway(gateway.url), [], shot), beforeRequest: () => undefined });
+      const { row } = await capRun(t, { specOf: () => specOn(route, toGateway(gateway.url), [], shot), runCap: { capUsd: () => undefined, modelOf: () => undefined } });
       assert.equal(row.state, "ended", JSON.stringify(row));
       assert.ok(gateway.requests.some((request) => carries(request.body)), `a request carries the tool's image: ${JSON.stringify(gateway.requests.map((request) => request.body?.input ?? request.body?.messages)).slice(0, 2000)}`);
     });

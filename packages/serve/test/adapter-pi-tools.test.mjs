@@ -25,7 +25,7 @@ test("pi's tool definitions reach the provider: the request the provider gets of
       hooks: quiet,
       gate: () => "allow",
     }),
-    beforeRequest: () => undefined,
+    runCap: { capUsd: () => undefined, modelOf: () => undefined },
   });
   assert.equal(row.state, "ended", JSON.stringify(row));
   assert.equal(sent.length, 2, "the call's round and the answer's");
