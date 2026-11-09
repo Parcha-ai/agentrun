@@ -83,13 +83,15 @@ const json = (status, body, headers = {}) => new Response(JSON.stringify(body), 
  * a launched app is reported in front (dumpsys) while the screen and the tree still show the launcher; `launchNothing`,
  * `am start` starts nothing at all; `twoPane`, Settings shows two panes, as Android does on a window 600 dp wide or
  * more: a row's page opens beside the list, which stays; `rowTapsMiss`, a tap on a Settings row does nothing. Either
- * leaves touch.tap with run 6's live words, and the case's words must tell them apart.
+ * leaves touch.tap with run 6's live words, and the case's words must tell them apart; `endLag`, a DELETE ends the
+ * session asynchronously, as the live service did in run 7: it stays listed and readable as `closing` for endLag more
+ * reads of it (GET /sessions/{id}), then is gone (404).
  *
  * Tasks are as a live Android 15 keeps them (run 5): Settings' search is another package's activity
  * (com.android.settings.intelligence) on top of Settings' own task. A force-stop of Settings leaves it there, a plain
  * `am start` of Settings resumes that task, search in front, and only `--activity-clear-task` starts Settings afresh.
  */
-export function fakePhoneHarness({ readyAfter = 1, start = "ok", loseAnswer = false, loseRecovery = false, cancelPost, stall, onList, others = [], code, abi = "x86_64", launchHidden = false, launchNothing = false, twoPane = false, rowTapsMiss = false, clock = fakeClock() } = {}) {
+export function fakePhoneHarness({ readyAfter = 1, start = "ok", loseAnswer = false, loseRecovery = false, cancelPost, stall, onList, others = [], code, abi = "x86_64", launchHidden = false, launchNothing = false, twoPane = false, rowTapsMiss = false, endLag = 0, clock = fakeClock() } = {}) {
 	const requests = [];
 	const adbCalls = [];
 	const sessions = new Map(others.map((s) => [s.id, { ...s }]));
@@ -161,8 +163,20 @@ export function fakePhoneHarness({ readyAfter = 1, start = "ok", loseAnswer = fa
 			const s = sessions.get(one[1]);
 			if (!s) return json(404, { error: "no such session" });
 			if (method === "DELETE") {
+				// The end is asynchronous with endLag: the session stays, closing, for endLag more reads of it, then is gone.
+				if (endLag > 0) {
+					if (s.state !== "closing") Object.assign(s, { state: "closing", closingReads: endLag });
+					return json(200, view(s));
+				}
 				sessions.delete(s.id);
 				return json(200, { ...view(s), state: "closing" });
+			}
+			if (method === "GET" && s.state === "closing") {
+				if (s.closingReads-- <= 0) {
+					sessions.delete(s.id);
+					return json(404, { error: "no such session" });
+				}
+				return json(200, view(s));
 			}
 			if (method === "GET") {
 				if (s.state === "provisioning" && ++s.gets >= readyAfter) {
@@ -176,7 +190,7 @@ export function fakePhoneHarness({ readyAfter = 1, start = "ok", loseAnswer = fa
 		return json(404, { error: `no route ${method} ${path}` });
 	}
 
-	const view = ({ gets, ...s }) => ({ ...s, ...(s.state === "provisioning" ? { progress: { phase: "booting" } } : {}) });
+	const view = ({ gets, closingReads, ...s }) => ({ ...s, ...(s.state === "provisioning" ? { progress: { phase: "booting" } } : {}) });
 
 	// --- the phone ---------------------------------------------------------------------------------------------------
 	/** touches: each `input motionevent` the phone took, with the clock's time it took it. */

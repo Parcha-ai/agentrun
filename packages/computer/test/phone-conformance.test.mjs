@@ -56,6 +56,16 @@ test("--kind phone passes the phone harness: a pinch it refuses in words is a Fu
 	assert.equal(fake.sessions.size, 0);
 });
 
+test("the provider cases pass when the service ends a phone asynchronously, as it did live in run 7, and the cleanup is clean", { timeout: 60_000 }, async () => {
+	const fake = fakePhoneHarness({ endLag: 3 });
+	const provider = await create({ apiKey: KEY, fetch: fake.fetch, adb: fake.adb, ledger: memoryLedger(), now: fake.clock.now, sleep: fake.clock.sleep, maxLifetimeMs: 10 * 60_000 });
+	const ids = ["provider.create-release", "provider.list", "provider.attach"];
+	const report = await runConformance(provider, { image: "android", patience: 1000, cases: conformanceCases.filter((c) => ids.includes(c.id)) });
+	for (const id of ids) assert.equal(statuses(report)[id], "pass", `${id}: ${reasonOf(report, id)}`);
+	assert.deepEqual(report.cleanup, { ...report.cleanup, left: [], errors: [] }, "nothing left, and no release refused");
+	assert.ok([...fake.sessions.values()].every((s) => s.state === "closing"), "every phone the run rented is ended or ending");
+});
+
 test("touch.tap's failure says what it saw: the screen in px and dp, what is in front, the tap and the row, and whether the title shows outside the list", { timeout: 60_000 }, async () => {
 	// Two faults that leave run 6's live words alike: a page that opens beside a list that stays, and a tap that misses.
 	const words = {};

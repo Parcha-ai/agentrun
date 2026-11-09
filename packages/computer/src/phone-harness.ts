@@ -84,6 +84,12 @@ export interface PhoneLedgerEntry {
 	 * session whose request_key is exactly this key as the entry's phone.
 	 */
 	request?: string;
+	/**
+	 * When release sent the phone's DELETE, ISO time. The service ends a session asynchronously (live run 7): the
+	 * entry is kept, marked, until the phone's own GET is a 404. A phone so marked is not listed, and attach, connect
+	 * and network answer not_found, as for a deleted computer; a second release of it is ok.
+	 */
+	released?: string;
 }
 
 /** The ledger's id for a create not answered yet. */
@@ -455,9 +461,21 @@ export class PhoneHarnessProvider implements ComputerProvider {
 		return sessionOf(got.value.json, `GET /sessions/${id}`);
 	}
 
+	/**
+	 * DELETE of the phone. The service ends a session asynchronously, so the ledger forgets it only once its own GET is
+	 * a 404. Until then its entry stays, marked released, and a second release of it answers ok.
+	 */
 	async #end(id: string): Promise<Result<void>> {
 		const ended = await this.#api("DELETE", `/sessions/${encodeURIComponent(id)}`);
 		if (!ended.ok && ended.error.code !== "not_found") return ended;
+		if (ended.ok) {
+			const read = await this.#session(id);
+			const entry = await this.#ledger.get(id);
+			if (!(!read.ok && read.error.code === "gone") && entry !== undefined) {
+				await this.#ledger.put({ ...entry, released: entry.released ?? new Date(this.#now()).toISOString() });
+				return ok(undefined);
+			}
+		}
 		await this.#ledger.remove(id);
 		return ok(undefined);
 	}
@@ -572,9 +590,11 @@ export class PhoneHarnessProvider implements ComputerProvider {
 		if ("id" in ref) {
 			entry = await this.#ledger.get(ref.id);
 			if (entry === undefined) return fail("not_found", `${ref.id} is not a phone this provider made`);
+			if (entry.released !== undefined) return fail("not_found", `${ref.id} was released, and the service is ending it`);
 		} else {
-			// A pending entry is a create not answered yet, not a phone: list() adopts it once its phone is seen.
-			const found = (await this.#ledger.list()).filter((one) => one.request === undefined && carries(one.labels, ref.labels));
+			// A pending entry is a create not answered yet, not a phone: list() adopts it once its phone is seen. A released
+			// one is ending.
+			const found = (await this.#ledger.list()).filter((one) => one.request === undefined && one.released === undefined && carries(one.labels, ref.labels));
 			if (found.length === 0) return fail("not_found", `no phone of this provider carries the labels ${show(ref.labels)}`);
 			if (found.length > 1) return fail("invalid", `${found.length} phones of this provider (${found.map((one) => one.id).join(", ")}) carry the labels ${show(ref.labels)}: attach takes one`);
 			entry = found[0];
@@ -625,6 +645,16 @@ export class PhoneHarnessProvider implements ComputerProvider {
 				await this.#ledger.put(entry);
 				await this.#ledger.remove(listed.id);
 			}
+			if (entry.released !== undefined) {
+				// Released, and being ended: never listed. Forgotten once the listing leaves it out and its own GET is a 404,
+				// or once its deadline has passed.
+				if (this.#now() > Date.parse(entry.deadline)) await this.#ledger.remove(entry.id);
+				else if (!live.has(entry.id)) {
+					const read = await this.#session(entry.id, signal);
+					if (!read.ok && read.error.code === "gone") await this.#ledger.remove(entry.id);
+				}
+				continue;
+			}
 			let session = live.get(entry.id);
 			if (session === undefined) {
 				// Not in the listing: its own GET says whether the service ended it (404), and only then is it forgotten.
@@ -649,14 +679,28 @@ export class PhoneHarnessProvider implements ComputerProvider {
 	}
 
 	async #network(ref: ComputerRef, policy?: NetworkSpec): Promise<Result<NetworkPolicy>> {
-		if ((await this.#ledger.get(ref.id)) === undefined) return fail("not_found", `${ref.id} is not a phone this provider made`);
+		const entry = await this.#ledger.get(ref.id);
+		if (entry === undefined) return fail("not_found", `${ref.id} is not a phone this provider made`);
+		if (entry.released !== undefined) return fail("not_found", `${ref.id} was released, and the service is ending it`);
 		if (policy === undefined || policy === "open") return ok("open");
 		return fail("refused", `network ${show(policy)}: a cloud phone's network is open, and it cannot be closed or narrowed`);
 	}
 
 	async #release(ref: ComputerRef, how: "stop" | "delete"): Promise<Result<void>> {
 		if (how === "stop") return fail("unsupported", "a cloud phone has no stop: release it with delete, which ends the session");
-		if ((await this.#ledger.get(ref.id)) === undefined) {
+		const entry = await this.#ledger.get(ref.id);
+		if (entry?.released !== undefined) {
+			// Released already, and the service may still be ending it: ok. Its own GET says whether it is gone, and then it is
+			// forgotten; a phone the service still holds running is sent its DELETE again.
+			const read = await this.#session(ref.id);
+			if (!read.ok && read.error.code === "gone") {
+				await this.#ledger.remove(ref.id);
+				return ok(undefined);
+			}
+			if (!read.ok) return read;
+			return read.value.state === "ready" || read.value.state === "provisioning" ? this.#end(ref.id) : ok(undefined);
+		}
+		if (entry === undefined) {
 			// Not this provider's to end. Its own GET tells a phone already gone (ok, as release is idempotent) from another
 			// session on the account, which is refused and never sent a DELETE.
 			const read = await this.#session(ref.id);
@@ -686,7 +730,9 @@ export class PhoneHarnessProvider implements ComputerProvider {
 	}
 
 	async #connect(ref: ComputerRef): Promise<Result<ComputerConnection>> {
-		if ((await this.#ledger.get(ref.id)) === undefined) return fail("not_found", `${ref.id} is not a phone this provider made`);
+		const entry = await this.#ledger.get(ref.id);
+		if (entry === undefined) return fail("not_found", `${ref.id} is not a phone this provider made`);
+		if (entry.released !== undefined) return fail("not_found", `${ref.id} was released, and the service is ending it`);
 		const session = await this.#session(ref.id);
 		if (!session.ok) return session;
 		if (session.value.state !== "ready") return fail("gone", `${ref.id} is ${session.value.state}, not ready`);

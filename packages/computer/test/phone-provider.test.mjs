@@ -144,6 +144,28 @@ test("release ends only a phone the ledger names: another session on the account
 	assert.deepEqual(fake.requests().filter((r) => r.method === "DELETE"), [], "no DELETE for an id the ledger does not name");
 });
 
+test("a phone whose end is still in flight: a second release is ok, it is neither listed nor attached, and the ledger forgets it once its GET is a 404", async () => {
+	// As the live service did in run 7: after the DELETE the session is still there, closing, for a few reads.
+	const { provider, fake, ledger } = await setup({ endLag: 3 });
+	const { value: ref } = await provider.create({ ...SPEC, labels: { run: "r1" } });
+	assert.deepEqual(await provider.release(ref, "delete"), { ok: true, value: undefined });
+	assert.equal(fake.sessions.get(ref.id)?.state, "closing", "the service is still ending it");
+	assert.deepEqual(await provider.release(ref, "delete"), { ok: true, value: undefined }, "a second delete of the same phone is ok");
+	assert.ok(await ledger.get(ref.id), "the ledger keeps it while it ends");
+	assert.deepEqual((await provider.list({ run: "r1" })).value, [], "a phone being ended is not listed");
+	assert.equal((await provider.attach({ id: ref.id })).error?.code, "not_found", "as for a deleted computer");
+	assert.equal((await provider.attach({ labels: { run: "r1" } })).error?.code, "not_found");
+	assert.equal((await provider.connect(ref)).error?.code, "not_found");
+	// Once its own GET is a 404, a release forgets it, and is still ok.
+	for (let i = 0; i < 5 && (await ledger.get(ref.id)); i++) assert.deepEqual(await provider.release(ref, "delete"), { ok: true, value: undefined });
+	assert.equal(await ledger.get(ref.id), undefined, "forgotten once gone");
+	assert.equal(fake.sessions.has(ref.id), false);
+	// Another session on the account, live, is still refused with no DELETE.
+	fake.sessions.set("sess_other", { id: "sess_other", state: "ready", platform: "android", kind: "emulator", expires_at: fake.clock.now() / 1000 + 600 });
+	assert.equal((await provider.release({ id: "sess_other", name: "sess_other" }, "delete")).error?.code, "not_found");
+	assert.equal(fake.requests().some((r) => r.method === "DELETE" && r.path === "/sessions/sess_other"), false);
+});
+
 test("a session the service ended is gone to attach and list, and the ledger forgets it", async () => {
 	const { provider, fake, ledger } = await setup();
 	const created = await provider.create({ ...SPEC, labels: { run: "r1" } });
@@ -317,8 +339,8 @@ test("a create cancelled after the service admitted its POST recovers the phone 
 	const key = fake.requests().find((r) => r.method === "POST").headers["idempotency-key"];
 	assert.deepEqual(
 		fake.requests().map((r) => `${r.method} ${r.path}`),
-		["POST /sessions", `GET /sessions/requests/${key}`, "DELETE /sessions/sess_0001"],
-		"recovered by its key, never posted again, and ended",
+		["POST /sessions", `GET /sessions/requests/${key}`, "DELETE /sessions/sess_0001", "GET /sessions/sess_0001"],
+		"recovered by its key, never posted again, ended, and its end confirmed by its own GET",
 	);
 	assert.equal(fake.sessions.size, 0, "no phone is left running");
 	assert.deepEqual(await ledger.list(), [], "and the ledger names none");
