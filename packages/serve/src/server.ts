@@ -48,9 +48,12 @@ import { durationMs, logLine } from "./print.js";
 import { knownToolCostOf, type RunMoment, type State, type Status, toolCostOf, WITHHELD_SIGN_IN } from "./run-view.js";
 import { approve, archiveRun, cancel, message, raiseCap, type StartDeps, type StartOptions, startRun, stop as stopRunOverStore, WAITS_ON_A_PERSON } from "./runs-over-store.js";
 import { momentOverStore, summaryOverStore, type ViewDeps, viewOverStore, withheldOverStore } from "./store-view.js";
-import { listRunFiles as listRunFilesOverStore, readRunFile as readRunFileOverStore, runBrowserState, runGraphView, type RunReadsDeps } from "./run-reads-over-store.js";
+import { listRunFiles as listRunFilesOverStore, readRunFile as readRunFileOverStore, runBrowserState, runGraphView, type RunReadsDeps, runTimelines } from "./run-reads-over-store.js";
 import { triggerTargets, type TriggerTargetDeps } from "./trigger-targets.js";
 import { listRuns as listRunsOverStore, readRun as readRunOverStore, runOfOrigin as runOfOriginOverStore } from "./store-reads/runs.js";
+import { runTimeline } from "./store-reads/journal.js";
+import { stats as statsOverStore } from "./store-reads/stats.js";
+import { analytics as analyticsOverStore } from "./store-reads/analytics.js";
 import { BACKGROUND_CONTEXT } from "@earendil-works/chord/context";
 import { type AgenticBody, type NewRevision, openSqliteStore, type RevisionPlace, type RunRow, type Store, StoreBusy, StoreConstraint, type WorkflowBody } from "./store/index.js";
 import { runModelRef } from "./model.js";
@@ -1062,6 +1065,14 @@ async function startHolding(options: ServeOptions, data: string, checked: { maxR
     context: ctx,
     ...(sealKey ? { liveViewer: (runId: string) => liveViewerLink(store, sealKey, runId) } : {}),
   };
+  // The run timeline reader over the store (run-reads-over-store runTimelines): one change-numbered RowLog per run, synced
+  // from its journal (store-reads) on each read, its view (viewOverStore) for status/state/cost and whether it is final.
+  // The route frames the SSE around its `page`, which long-polls the journal, byte-identical to the old live run's page.
+  const timelines = runTimelines({
+    context: ctx,
+    timelineRows: (forStore, runId, context) => runTimeline(forStore, runId, context),
+    runView: (forStore, runId) => viewOverStore(forStore, runId, viewDepsFor(ownOriginOf())),
+  });
   const triggerDeps: TriggerTargetDeps = {
     start: startDeps,
     getAgent: async (agentId: string) => (await getAgent(store, agentId)) ?? undefined,
@@ -1582,10 +1593,42 @@ async function startHolding(options: ServeOptions, data: string, checked: { maxR
     return { runs: page, next_cursor: nextCursor(offset + limit, rows.length) };
   }
 
-  async function timeline(_req: IncomingMessage, _res: ServerResponse, _url: URL, _runId: string): Promise<void> {
-    // TODO(E2c): timelineOverStore — the run's journal page (store-reads) and its SSE, with the live tick from
-    // live/stream.ts watchRun and the learning row read now. The paging/SSE shell above is unchanged behaviour to port.
-    runReadsTodo();
+  async function timeline(req: IncomingMessage, res: ServerResponse, url: URL, runId: string): Promise<void> {
+    const after = integerParam(url.searchParams.get("after"), "after", Number.MAX_SAFE_INTEGER);
+    const waitMs = integerParam(url.searchParams.get("wait_ms"), "wait_ms", MAX_WAIT_MS);
+    // This server's own: a page of at most `limit` rows, for a client that reads a little at a time (the MCP tool's).
+    const asked = url.searchParams.get("limit");
+    if (asked !== null && !(/^\d+$/.test(asked) && Number(asked) >= 1 && Number(asked) <= PAGE_ROWS)) throw new ApiError("bad_request", `limit is an integer from 1 to ${PAGE_ROWS}`);
+    const limit = asked === null ? PAGE_ROWS : Number(asked);
+    // The run's page from the store (runTimelines): run_id/status/state/reset/rows/drop/next_after/unchanged/has_more/final/
+    // cost, byte-identical to the old live page. TODO(learning-row freshness): a learning row approved or retired since the
+    // journal wrote it reads its journal state here (store-view owns the fresh learning view); folded in with learning-1.
+    if (!String(req.headers.accept ?? "").includes("text/event-stream")) {
+      const page = await timelines.page(store, runId, after, waitMs, limit);
+      return send(res, 200, { ...page, poll_after_ms: page.final || page.has_more ? 0 : 1000 });
+    }
+    const last = req.headers["last-event-id"];
+    if (last !== undefined && !/^[0-9]+$/.test(String(last))) throw new ApiError("bad_request", "Last-Event-ID is a change number");
+    let cursor = last !== undefined ? Number(last) : after;
+    res.writeHead(200, { "content-type": "text/event-stream", "cache-control": "no-cache, no-transform", connection: "keep-alive", "x-content-type-options": "nosniff" });
+    const beat = setInterval(() => res.write(": keepalive\n\n"), 15_000);
+    let open = true;
+    res.once("close", () => void (open = false));
+    try {
+      for (let first = true; open; first = false) {
+        const page = await timelines.page(store, runId, cursor, first ? 0 : 15_000, limit);
+        if (!open) break;
+        if (first || !page.unchanged || page.final) res.write(`event: rows\nid: ${page.next_after}\ndata: ${JSON.stringify(page)}\n\n`);
+        cursor = page.next_after;
+        if (page.final && !page.has_more) {
+          res.write(`event: end\ndata: ${JSON.stringify({ reason: "terminal" })}\n\n`);
+          break;
+        }
+      }
+    } finally {
+      clearInterval(beat);
+      res.end();
+    }
   }
 
   // ---- files ----------------------------------------------------------------------------------------------------------
