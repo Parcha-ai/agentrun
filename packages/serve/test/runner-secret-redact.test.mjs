@@ -83,6 +83,52 @@ test("the adapter loop's own failed end: its journal end and the row say why wit
   assert.ok(!JSON.stringify(entries).includes(PLANTED), `no journal entry holds it: ${JSON.stringify(end.data)}`);
 });
 
+test("the runner's log holds no key: a run whose release throws with the key in its error logs the failure with the key cut", async (t) => {
+  // What the runner writes to stderr and the console while the run goes (stdout is the test reporter's, left alone).
+  const lines = [];
+  const write = process.stderr.write.bind(process.stderr);
+  process.stderr.write = (chunk, ...rest) => (lines.push(String(chunk)), write(chunk, ...rest));
+  const consoled = {};
+  for (const level of ["log", "info", "warn", "error", "debug"]) {
+    consoled[level] = console[level];
+    console[level] = (...args) => lines.push(args.map(String).join(" "));
+  }
+  t.after(() => {
+    process.stderr.write = write;
+    for (const [level, f] of Object.entries(consoled)) console[level] = f;
+  });
+  /** A session that answers at once: the run ends, then its release is let go. */
+  const answering = {
+    id: "answering",
+    capabilities: () => ({}),
+    check: () => [],
+    async open() {
+      let state = "new";
+      return {
+        get state() { return state; },
+        async send() { state = "idle"; },
+        async recover() {},
+        async settleOpenTurn() {},
+        turnEnd: async () => ({ status: "completed" }),
+        async interrupt() {},
+        async close() {},
+      };
+    },
+  };
+  const createLoop = createAdapterLoop(() => ({
+    adapter: answering, session: { key: "root", label: "root", system: [], tools: [], context: "fresh" }, input: "Go.", hooks: quiet,
+    release: async () => { throw new Error(`the computer's release was refused for key ${PLANTED}`); },
+  }));
+  const { row } = await runWith(t, createLoop);
+  assert.equal(row.state, "ended", JSON.stringify(row));
+  const log = await until(async () => {
+    const text = lines.join("\n");
+    return text.includes("release failed") && text;
+  }, "the release's failure logged", 10_000);
+  assert.ok(!log.includes(PLANTED), `the runner's log holds no key: ${log.slice(-300)}`);
+  assert.match(log, /release failed: .*\[redacted\]/, "it says the release failed, the key cut");
+});
+
 test("the model route's error text, which pi records, holds no key: the SSE error event is redacted", async () => {
   const models = {
     streamSimple: () => (async function* () {
