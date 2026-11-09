@@ -363,12 +363,19 @@ export interface McpServerRow {
   readonly protocol: string | null;
   readonly tools: unknown;
   readonly prices: unknown;
+  /** The remote server's reported info (its name and version) and its instructions, as it gave them, bounded at save: JSON
+   *  and TEXT, or null when the server gave none. Shown on a read; `instructions` is never handed to the model. */
+  readonly serverInfo: unknown;
+  readonly instructions: string | null;
   readonly sealed: Uint8Array | null;
   /** A refresh in flight: its holder and the lease's end (ms), or null. */
   readonly refreshHolder: string | null;
   readonly refreshUntil: number | null;
   readonly createdAt: number;
   readonly updatedAt: number;
+  /** When the tools were last listed (ms): a refresh moves this, not updatedAt, so a refresh is not read as an owner edit.
+   *  Null for a row written before this column. */
+  readonly listedAt: number | null;
 }
 
 /** A run's MCP pin: what it may call, per granted server (url, tools, prices), written once at its first claim. */
@@ -386,7 +393,7 @@ export const MCP_REFRESH_LEASE_MS = MCP_REFRESH_CALL_MS + 4_000;
 export interface Mcp {
   /** The server's write: the server's row, inserted or replaced by name (its first save's time kept). An owner's save
    *  clears any refresh lease, so a refresh in flight is refused (RefreshLeaseLost) and never overwrites it. */
-  put(server: { name: string; url: string; auth: string; protocol?: string | null; tools: unknown; prices?: unknown; sealed?: Uint8Array | null }): Promise<McpServerRow>;
+  put(server: { name: string; url: string; auth: string; protocol?: string | null; tools: unknown; prices?: unknown; serverInfo?: unknown; instructions?: string | null; sealed?: Uint8Array | null; listedAt?: number; updatedAt?: number }): Promise<McpServerRow>;
   remove(name: string): Promise<void>;
   /** The registry's rows, by name. */
   servers(): Promise<McpServerRow[]>;
@@ -488,6 +495,12 @@ export interface McpOauth {
   get(state: string, now?: number): Promise<McpOauthPendingRow | undefined>;
   /** The pending sign-in `state` goes. */
   remove(state: string): Promise<void>;
+  /** Deletes the pending sign-in `state` and returns it, in one statement (atomic, single-use): the row if it was there and
+   *  is not past its expiry (`now`, else the store's clock), else undefined. The row is deleted whether or not it had
+   *  expired, so a replay and an expired state both read as gone and cannot be retried. The one take path for the OAuth
+   *  callback: two concurrent takes of one state can never both get the row, which a get()+remove() split could not
+   *  promise. The verifier comes back sealed; the caller opens it at its own AAD, so the store opens nothing. */
+  take(state: string, now?: number): Promise<McpOauthPendingRow | undefined>;
   /** Removes every pending sign-in whose expiry is at or before `now`; answers how many went. */
   sweepExpired(now: number): Promise<number>;
 }

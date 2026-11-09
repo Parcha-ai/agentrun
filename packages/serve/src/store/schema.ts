@@ -238,11 +238,16 @@ export const STORE_DDL: readonly string[] = [
     protocol TEXT,
     ${json("tools")},
     ${json("prices")},
+    -- The remote server's reported info and its instructions, as it gave them: untrusted, bounded at save (mcp-store.ts).
+    ${json("server_info", true)},
+    instructions TEXT,
     sealed BLOB,
     refresh_holder TEXT,
     refresh_until INTEGER,
     created_at INTEGER NOT NULL,
-    updated_at INTEGER NOT NULL
+    updated_at INTEGER NOT NULL,
+    -- When the tools were last listed: a refresh moves this, not updated_at, so a refresh is not read as an owner edit.
+    listed_at INTEGER
   ) STRICT`,
   `CREATE TABLE IF NOT EXISTS mcp_oauth_pending (
     state TEXT PRIMARY KEY,
