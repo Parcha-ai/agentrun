@@ -3,8 +3,10 @@
 // run holds the keys it started with). With none open, the run's computer says `none` with its kind, or `off` with why
 // there is no computer here. `hold` is who drives now.
 
-/** A run's computer: its agent's computer kind (`browser` for the browser tool). */
-export type ComputerKind = "browser" | "desktop" | "phone";
+import type { ViewerKind } from "./store/store.js";
+
+/** A run's computer: its agent's computer kind (`browser` for the browser tool), the store's viewer kind. */
+export type ComputerKind = ViewerKind;
 /** Who drives the run's computer now: the agent; `pending`, the person's Take over waits for the agent's step; the person. */
 export type ComputerHold = "agent" | "pending" | "person";
 /** The run's computer as the server reads it: its kind, or why there is none here (in plain words). */

@@ -21,12 +21,15 @@ import { connect } from "node:net";
 import { join } from "node:path";
 import type { Duplex } from "node:stream";
 import { sealColumn, sealedAt, unsealColumn } from "./store/seal.js";
-import type { Claim, LiveViewerRow, Store } from "./store/store.js";
+import type { Claim, LiveViewerRow, Store, ViewerKind } from "./store/store.js";
 
 /** The hand-over directory in the run's directory (never in work/): one file per open session. */
 export const BROWSER_LIVE_DIR = "browser-live";
-/** What the run's process hands the server for one session's viewer; `at`, when (the newest is the one shown). */
-export type LiveHandover = { port: number; id: string; token: string; tag: string; at?: number };
+/** What the run's process hands the server for one session's viewer; `at`, when (the newest is the one shown). `kind`, the
+ *  computer it views, as the store's row says it (a hand-over file is the browser's). */
+export type LiveHandover = { port: number; id: string; token: string; tag: string; at?: number; kind?: ViewerKind };
+/** The computer kinds a store row may name. */
+const VIEWER_KINDS: readonly string[] = ["browser", "desktop", "phone"] satisfies ViewerKind[];
 
 /** Where the run's own viewer listens: its process's loopback address alone. */
 const LOOPBACK = "127.0.0.1"; // key-gate: loopback-rule the one address the run process viewer listens on
@@ -142,18 +145,18 @@ export async function dropLiveViewer(store: LiveViewerStore, claim: Claim, tag?:
 /** Run `runId`'s row as one hand-over, checked as the files were (a viewer's path id, a session's tag, a port, a time), its
  *  token opened and checked; undefined for anything else, a seal that does not open among them (never a throw). */
 function handoverOfRow(sealKey: Buffer, runId: string, row: Partial<LiveViewerRow>): LiveHandover | undefined {
-  if (!(row.kind === "browser" && Number.isInteger(row.port) && row.port! > 0 && row.port! < 65_536 && VIEWER_ID.test(String(row.id)) && typeof row.tag === "string" && TAG.test(row.tag) && Number.isFinite(row.at) && row.sealed instanceof Uint8Array)) return undefined;
+  if (!(typeof row.kind === "string" && VIEWER_KINDS.includes(row.kind) && Number.isInteger(row.port) && row.port! > 0 && row.port! < 65_536 && VIEWER_ID.test(String(row.id)) && typeof row.tag === "string" && TAG.test(row.tag) && Number.isFinite(row.at) && row.sealed instanceof Uint8Array)) return undefined;
   let token: string;
   try {
-    token = unsealColumn(sealKey, sealedAt.liveViewer(runId, "browser", row.tag), row.sealed).toString("utf8");
+    token = unsealColumn(sealKey, sealedAt.liveViewer(runId, row.kind!, row.tag), row.sealed).toString("utf8");
   } catch {
     return undefined;
   }
-  return TOKEN.test(token) ? { port: row.port!, id: row.id!, token, tag: row.tag, at: row.at! } : undefined;
+  return TOKEN.test(token) ? { kind: row.kind!, port: row.port!, id: row.id!, token, tag: row.tag, at: row.at! } : undefined;
 }
 
-/** Run `runId`'s browser viewers as its live claim handed them over, newest first, each token opened with `sealKey`; a row
- *  that is not a browser hand-over (another computer kind among them) is left out. */
+/** Run `runId`'s viewers, of every computer kind, as its live claim handed them over, newest first, each with its kind and
+ *  its token opened with `sealKey` under that kind; a row that is not a hand-over is left out. */
 export async function readLiveViewers(store: LiveViewerStore, sealKey: Buffer, runId: string): Promise<LiveHandover[]> {
   const found = (await store.liveViewers.of(runId)).flatMap((row) => handoverOfRow(sealKey, runId, row) ?? []);
   return found.sort((a, b) => b.at! - a.at! || b.tag.localeCompare(a.tag));
@@ -182,10 +185,9 @@ export function viewerAnswers(handover: LiveHandover, ms = 1_000): Promise<boole
 }
 
 /** The owner's link to run `runId`'s viewer as the server reads it over the store: the newest its runner put whose port
- *  answers (`answers`, viewerAnswers), with its computer's kind; undefined when none does. Kind browser: the store's rows
- *  are the browser's sessions until computer_viewers carries a kind. */
-export async function liveViewerLink(store: LiveViewerStore, sealKey: Buffer, runId: string, answers: (handover: LiveHandover) => Promise<boolean> = viewerAnswers): Promise<{ kind: "browser"; viewer: string } | undefined> {
-  for (const handover of await readLiveViewers(store, sealKey, runId)) if (await answers(handover)) return { kind: "browser", viewer: viewerLink(runId, handover) };
+ *  answers (`answers`, viewerAnswers), whatever its computer's kind, with that kind (the row's); undefined when none does. */
+export async function liveViewerLink(store: LiveViewerStore, sealKey: Buffer, runId: string, answers: (handover: LiveHandover) => Promise<boolean> = viewerAnswers): Promise<{ kind: ViewerKind; viewer: string } | undefined> {
+  for (const handover of await readLiveViewers(store, sealKey, runId)) if (await answers(handover)) return { kind: handover.kind ?? "browser", viewer: viewerLink(runId, handover) };
   return undefined;
 }
 
