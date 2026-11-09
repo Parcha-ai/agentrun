@@ -1772,7 +1772,8 @@ A live run must show:
 
 A browser is a computer of kind `browser`: a vendor's browser session that answers CDP. No computerd runs (daemon
 `none`): the provider answers hello and ping itself, from the vendor's API, and refuses any other method in words, since
-a browser is driven over CDP. `connect(ref)` gives a connection whose `cdp.url` is the vendor's signed CDP URL, which a
+a browser is driven over CDP. `connect(ref)` reads the browser first (one that has ended, or that the vendor no longer
+knows though its URL is held, is `gone`), then gives a connection whose `cdp.url` is the vendor's signed CDP URL, which a
 driver dials; `stream(ref)` gives the vendor's live view. Both URLs are secrets: they are held in memory (a `UrlStore`)
 and are never in a ref, a list, an error's words or a report. `client` stays a `ComputerClient`, so every caller of
 `connect` reads a browser's connection as it reads any other.

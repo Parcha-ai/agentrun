@@ -298,7 +298,7 @@ export class BrowserbaseProvider implements ComputerProvider {
 		return ok({ detail: `Browserbase answered: ${n} running ${n === 1 ? "session" : "sessions"} in the project` });
 	}
 
-	/** The session, when Browserbase still runs it; not_found in words when it does not know it or it has ended. */
+	/** The session, when Browserbase still runs it; not_found in words when it does not know it, gone when it has ended. */
 	async #running(id: string, signal?: AbortSignal): Promise<Result<BrowserbaseSession>> {
 		const problem = idProblem(id, NAME);
 		if (problem) return fail("invalid", problem);
@@ -309,14 +309,14 @@ export class BrowserbaseProvider implements ComputerProvider {
 			return vendorFailure("browserbase", NAME, "GET /v1/sessions/{id}", error);
 		}
 		if (found === undefined) return fail("not_found", `no Browserbase session has the id ${id}`);
-		if (!LIVE.has(found.status ?? "")) return fail("not_found", `the Browserbase session ${id} has ended (${found.status ?? "no status"}): only a running session is attached or connected to`);
+		if (!LIVE.has(found.status ?? "")) return fail("gone", `the Browserbase session ${id} has ended (${found.status ?? "no status"}): only a running session is attached or connected to`);
 		return ok(found);
 	}
 
 	async #alive(id: string, signal?: AbortSignal): Promise<Result<boolean>> {
 		const found = await this.#running(id, signal);
 		if (found.ok) return ok(true);
-		return found.error.code === "not_found" ? ok(false) : found;
+		return found.error.code === "not_found" || found.error.code === "gone" ? ok(false) : found;
 	}
 
 	#attached(s: BrowserbaseSession): AttachedComputer {
@@ -376,16 +376,23 @@ export class BrowserbaseProvider implements ComputerProvider {
 
 	/**
 	 * The session's signed CDP URL, held since create or read from Browserbase, and a client that answers hello and ping.
-	 * Dials nothing: the URL is the driver's to dial.
+	 * The session is read first, held URL or not: one that has ended, or that Browserbase no longer knows though its URL is
+	 * held, is gone, never handed over. Dials nothing: the URL is the driver's to dial.
 	 */
 	async connect(ref: ComputerRef): Promise<Result<ComputerConnection>> {
 		const id = ref?.id;
 		const problem = idProblem(id, NAME);
 		if (problem) return fail("invalid", problem);
 		let url = this.#urls.get(id);
+		const found = await this.#running(id);
+		if (!found.ok) {
+			// A vendor that did not answer leaves the held URL for the next connect; a session it ended takes it along.
+			if (found.error.code !== "not_found" && found.error.code !== "gone") return found;
+			if (url === undefined) return found;
+			this.#urls.delete(id);
+			return fail("gone", found.error.code === "gone" ? found.error.message : `the Browserbase session ${id} is gone: ${found.error.message}`);
+		}
 		if (url === undefined) {
-			const found = await this.#running(id);
-			if (!found.ok) return found;
 			if (typeof found.value.connectUrl !== "string" || found.value.connectUrl === "") return fail("not_found", `the Browserbase session ${id} is not available for connection`);
 			url = found.value.connectUrl;
 		}

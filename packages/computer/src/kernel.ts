@@ -217,7 +217,7 @@ export class KernelProvider implements ComputerProvider {
 		return ok({ detail: `Kernel answered: ${n}${more} active ${n === 1 && more === "" ? "browser" : "browsers"} in the organization` });
 	}
 
-	/** The browser, when Kernel still runs it; not_found in words when it does not know it or it was deleted. */
+	/** The browser, when Kernel still runs it; not_found in words when it does not know it, gone when it was deleted. */
 	async #running(id: string, signal?: AbortSignal): Promise<Result<KernelBrowser>> {
 		const problem = idProblem(id, NAME);
 		if (problem) return fail("invalid", problem);
@@ -229,14 +229,14 @@ export class KernelProvider implements ComputerProvider {
 		}
 		const browser = found.json as KernelBrowser | null;
 		if (found.status === 404 || browser === null || typeof browser !== "object") return fail("not_found", `no Kernel browser has the id ${id}`);
-		if (browser.deleted_at) return fail("not_found", `the Kernel browser ${id} was deleted: only a running browser is attached or connected to`);
+		if (browser.deleted_at) return fail("gone", `the Kernel browser ${id} was deleted: only a running browser is attached or connected to`);
 		return ok(browser);
 	}
 
 	async #alive(id: string, signal?: AbortSignal): Promise<Result<boolean>> {
 		const found = await this.#running(id, signal);
 		if (found.ok) return ok(true);
-		return found.error.code === "not_found" ? ok(false) : found;
+		return found.error.code === "not_found" || found.error.code === "gone" ? ok(false) : found;
 	}
 
 	#attached(id: string): AttachedComputer {
@@ -312,15 +312,25 @@ export class KernelProvider implements ComputerProvider {
 		return found.ok ? ok("open") : found;
 	}
 
-	/** The browser's signed CDP URL, held since create or read from Kernel, and a client that answers hello and ping. */
+	/**
+	 * The browser's signed CDP URL, held since create or read from Kernel, and a client that answers hello and ping. The
+	 * browser is read first, held URL or not: one deleted, or that Kernel no longer knows though its URL is held, is gone,
+	 * never handed over.
+	 */
 	async connect(ref: ComputerRef): Promise<Result<ComputerConnection>> {
 		const id = ref?.id;
 		const problem = idProblem(id, NAME);
 		if (problem) return fail("invalid", problem);
 		let url = this.#urls.get(id);
+		const found = await this.#running(id);
+		if (!found.ok) {
+			// A vendor that did not answer leaves the held URL for the next connect; a browser it deleted takes it along.
+			if (found.error.code !== "not_found" && found.error.code !== "gone") return found;
+			if (url === undefined) return found;
+			this.#urls.delete(id);
+			return fail("gone", found.error.code === "gone" ? found.error.message : `the Kernel browser ${id} is gone: ${found.error.message}`);
+		}
 		if (url === undefined) {
-			const found = await this.#running(id);
-			if (!found.ok) return found;
 			url = text(found.value.cdp_ws_url);
 			if (url === "") return fail("not_found", `the Kernel browser ${id} is not available for connection`);
 		}
