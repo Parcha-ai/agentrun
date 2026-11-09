@@ -1,6 +1,7 @@
 // The MCP registry and OAuth pending sign-ins as store rows (mcp-store.ts over store.mcp / store.mcpOauth), sealed with the
 // store's one rule (§7): the registry credential bound to the url's origin inside the sealed plaintext, the pending
-// verifier sealed by its state. These are the store-backed primitives the cut wires into McpServers / McpSignIns.
+// sign-in's secret parts (its verifier and OAuth client) sealed by its state. These are the store-backed primitives the cut
+// wires into McpServers / McpSignIns.
 import assert from "node:assert/strict";
 import { randomBytes } from "node:crypto";
 import { test } from "node:test";
@@ -39,21 +40,23 @@ test("a credential is refused as damaged when the row's url origin changed since
   assert.equal((await openServerCredential(store, KEY, "github")).unusable, "damaged", "origin mismatch: not sent");
 });
 
-test("a pending sign-in's verifier seals by state and is taken once with its plain working state; another seal key does not open it", async (t) => {
+test("a pending sign-in's verifier and client seal together by state and are taken once with its plain working state; another seal key does not open them", async (t) => {
   const { store, clock } = await storeOn(t);
   const other = Buffer.from(randomBytes(32));
-  const working = { client: { client_id: "c-1" }, discovery: { authorizationServerUrl: "https://as.example" }, url: "https://mcp.example.com/github" };
-  await putPendingSignIn(store, KEY, { state: "st-1", server: "github", verifier: "pkce-verifier-xyz", cookieBinding: "cookie-1", working, expiresAt: clock.now + 600_000 });
-  assert.equal(await takePendingSignIn(store, other, "st-1"), undefined, "another seal key can't open the verifier");
-  await putPendingSignIn(store, KEY, { state: "st-2", server: "github", verifier: "pkce-verifier-xyz", cookieBinding: "cookie-2", working, expiresAt: clock.now + 600_000 });
+  const client = { client_id: "c-1", client_secret: "owner-secret-not-real" };
+  const working = { discovery: { authorizationServerUrl: "https://as.example" }, url: "https://mcp.example.com/github" };
+  await putPendingSignIn(store, KEY, { state: "st-1", server: "github", verifier: "pkce-verifier-xyz", client, working, expiresAt: clock.now + 600_000 });
+  assert.equal(await takePendingSignIn(store, other, "st-1"), undefined, "another seal key can't open the sealed secret parts");
+  await putPendingSignIn(store, KEY, { state: "st-2", server: "github", verifier: "pkce-verifier-xyz", client, working, expiresAt: clock.now + 600_000 });
   const took = await takePendingSignIn(store, KEY, "st-2");
-  assert.deepEqual([took.server, took.verifier, took.cookieBinding], ["github", "pkce-verifier-xyz", "cookie-2"]);
+  assert.deepEqual([took.server, took.verifier], ["github", "pkce-verifier-xyz"]);
+  assert.deepEqual(took.client, client, "the OAuth client, with its secret, comes back from the sealed blob");
   assert.deepEqual(took.working, working, "the plain working state comes back for finish()");
   assert.equal(await takePendingSignIn(store, KEY, "st-2"), undefined, "taken once");
 });
 
 test("takePendingSignIn treats one past its expiry as gone, with a clock", async (t) => {
   const { store, clock } = await storeOn(t);
-  await putPendingSignIn(store, KEY, { state: "st-old", server: "github", verifier: "v", cookieBinding: "c", expiresAt: clock.now + 100 });
+  await putPendingSignIn(store, KEY, { state: "st-old", server: "github", verifier: "v", expiresAt: clock.now + 100 });
   assert.equal(await takePendingSignIn(store, KEY, "st-old", clock.now + 100), undefined, "at expiry, gone");
 });

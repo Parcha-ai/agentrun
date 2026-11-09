@@ -23,11 +23,12 @@ test("a sealed column opens where it was sealed, and only there: another row, co
   assert.throws(() => unsealColumn(randomBytes(32), where, sealed), "under another key");
 });
 
-test("a pending sign-in's PKCE verifier is sealed at mcp_oauth_pending|<state>|verifier", () => {
-  const where = sealedAt.oauthVerifier("state-1");
-  assert.equal(aadOf(where), "mcp_oauth_pending|state-1|verifier");
-  assert.equal(unsealColumn(KEY, where, sealColumn(KEY, where, "verifier-abc")).toString("utf8"), "verifier-abc");
-  assert.throws(() => unsealColumn(KEY, sealedAt.oauthVerifier("state-2"), sealColumn(KEY, where, "verifier-abc")));
+test("a pending sign-in's secret parts seal at mcp_oauth_pending|<state>|sealed", () => {
+  const where = sealedAt.oauthPending("state-1");
+  assert.equal(aadOf(where), "mcp_oauth_pending|state-1|sealed");
+  const secret = JSON.stringify({ verifier: "verifier-abc", client: { client_id: "c", client_secret: "s" } });
+  assert.equal(unsealColumn(KEY, where, sealColumn(KEY, where, secret)).toString("utf8"), secret);
+  assert.throws(() => unsealColumn(KEY, sealedAt.oauthPending("state-2"), sealColumn(KEY, where, secret)));
 });
 
 test("a row key or column with the AAD's separator in it is refused, so no two places share an AAD", () => {
