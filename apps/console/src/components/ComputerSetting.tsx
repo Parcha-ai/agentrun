@@ -7,7 +7,8 @@ const kindName = (kind: string) => kind.charAt(0).toUpperCase() + kind.slice(1);
 
 /** The agent's computer, in the editor's Computer step: a card per kind the server lists (one it can't give here greyed,
  *  with its words and a link to the Computers settings), then the picked kind's providers (one not ready disabled, with
- *  why), and the tools that kind brings its loop, as served. A pick is the computer `onChange` gets. */
+ *  why; a metered one says so, the word only), and the tools that kind brings its loop, as served. A pick is the
+ *  computer `onChange` gets. */
 export function ComputerSetting({ kinds, value, onChange, error, warning }: {
   kinds: ComputerKindView[]; value: Computer; onChange: (computer: Computer) => void; error?: string; warning?: string;
 }) {
@@ -48,7 +49,10 @@ export function ComputerSetting({ kinds, value, onChange, error, warning }: {
                 <label className={cn("flex items-start gap-3 px-4 py-2.5", p.ready ? "cursor-pointer" : "cursor-not-allowed text-muted-foreground")}>
                   <input type="radio" name="computer-provider" value={p.id} checked={value.provider === p.id} disabled={!p.ready && value.provider !== p.id}
                     onChange={() => onChange({ kind: picked.kind, provider: p.id })} className="mt-1 accent-[hsl(var(--primary))]" />
-                  <span className="min-w-0"><span className="block text-[13px] font-semibold">{p.name}</span>{!p.ready && p.why && <span className="mt-0.5 block text-[12px]">{p.why}</span>}</span>
+                  <span className="min-w-0">
+                    <span className="flex flex-wrap items-baseline gap-2"><span className="text-[13px] font-semibold">{p.name}</span>{p.metered && <span className="caps text-[11px] text-muted-foreground">Metered</span>}</span>
+                    {!p.ready && p.why && <span className="mt-0.5 block text-[12px]">{p.why}</span>}
+                  </span>
                 </label>
               </li>
             ))}
