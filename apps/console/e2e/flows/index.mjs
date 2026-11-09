@@ -15,6 +15,7 @@
 import setupOpen from "./setup-open.mjs";
 import setupPublic from "./setup-public.mjs";
 import signIn from "./sign-in.mjs";
+import signedOutElsewhere from "./signed-out-elsewhere.mjs";
 import runToEnd from "./run-to-end.mjs";
 import takeOver from "./take-over.mjs";
 import templateApply from "./template-apply.mjs";
@@ -30,6 +31,7 @@ export const flows = [
   runToEnd,
   watchLive,
   takeOver,
+  signedOutElsewhere,
   serverDeny,
   { name: "box-image-banner", pending: "waits on a server whose Docker box image is still being built or pulled (capabilities.places.boxes state preparing): the e2e servers have no Docker daemon to build one" },
 ];

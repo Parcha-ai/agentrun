@@ -38,15 +38,9 @@ export function placesOf(caps: unknown): Places | null {
  *  keeps no place for it, and it runs on the runner). */
 export const newAgentPlace = (places: Places | null | undefined): Place | undefined => (places?.defaultPlace?.mode === "sandbox" ? places.defaultPlace : undefined);
 
-/** Where a place runs, in words: "Runs in a docker box" or "Runs on the server". None is the server's default place. */
-export function placeWords(place: Place | undefined, places: Places | null): string {
-  const p = place ?? places?.defaultPlace;
-  if (!p) return "Runs where this server's default puts it";
-  return p.mode === "sandbox" ? `Runs in a ${p.box} box` : "Runs on the server";
-}
-
-/** Where an agent runs, as its page's fact: "In a docker box", "On the server", or, for an agent that names no place,
- *  this server's default place (capabilities' default_place, which the page does not read). */
+/** Where an agent runs, as its page's fact: "In a docker box" or "On the server" (agentForm.ts runsWhere: its own place,
+ *  else the server's default for it, which the page marks "(server default)"); with no place known yet, the server's
+ *  default place in words. */
 export const placeLabel = (place: Place | undefined) => (!place ? "Where this server's default place is" : place.mode === "sandbox" ? `In a ${place.box} box` : "On the server");
 
 /** Where a run ran, as its header says it: "in a docker box" or "on the server". Nothing for a run kept without a place

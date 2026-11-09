@@ -13,12 +13,12 @@ import { LearningChips } from "@/components/LearningChips";
 import { Button } from "@/components/ui/button";
 import { Chip } from "@/components/ui/chip";
 import { GraphLegend, WorkflowGraph } from "@/components/WorkflowGraph";
-import type { Agent } from "@/lib/agentForm";
+import { type Agent, runsWhere } from "@/lib/agentForm";
 import { type Client, ClientError } from "@/lib/client";
 import { cost, runEnded, soFar, when } from "@/lib/format";
 import { appendRuns } from "@/lib/idempotency";
 import { harnessDefault, type HarnessInfo, modelLabel, NO_MODEL_YET } from "@/lib/models";
-import { placeLabel, placeOf } from "@/lib/place";
+import { placeLabel, type Places } from "@/lib/place";
 import { type Problem, problem } from "@/lib/problem";
 import { elapsed, metaOf } from "@/lib/runGraph";
 import { cn } from "@/lib/utils";
@@ -33,7 +33,7 @@ type Server = { analytics: boolean };
 /** What the Learning tab takes beside a tab's own: the notes an address points at (`focus`), the server's learning
  *  switch, and the agent as the tab's write left it (`onAgent`, a new revision). `learning` beside the server's: whether
  *  it has learning at all, undefined until its capabilities are read. */
-type LearningTabProps = { focus?: string[]; learning?: "on" | "off" | null; onAgent?: (agent: Agent) => void };
+type LearningTabProps = { focus?: string[]; learning?: "on" | "off" | null; onAgent?: (agent: Agent) => void; places?: Places | null };
 type LearningServer = { learning?: boolean };
 
 /** The page's tabs, in order, each at `#/agents/{id}/{tab}`. A tab shows only on an agent it has content for; a new one
@@ -41,7 +41,7 @@ type LearningServer = { learning?: boolean };
 const TABS: { id: string; label: string; shows: (a: Agent, server: Server & LearningServer) => boolean; Body: (p: TabProps & LearningTabProps) => JSX.Element }[] = [
   { id: "runs", label: "Runs", shows: () => true, Body: RunsTab },
   { id: "workflow", label: "Workflow", shows: (a) => a.kind === "workflow", Body: WorkflowTab },
-  { id: "learning", label: "Learning", shows: (a, server) => a.kind === "agentic" && server.learning !== false, Body: (p) => <LearningTab agent={p.agent} v2={p.v2} focus={p.focus} server={p.learning} onAgent={p.onAgent} /> },
+  { id: "learning", label: "Learning", shows: (a, server) => a.kind === "agentic" && server.learning !== false, Body: (p) => <LearningTab agent={p.agent} v2={p.v2} focus={p.focus} server={p.learning} onAgent={p.onAgent} places={p.places} /> },
   { id: "analytics", label: "Analytics", shows: (_, server) => server.analytics, Body: AnalyticsTab },
 ];
 
@@ -52,8 +52,9 @@ export const agentHash = (id: string, view?: string) => `#/agents/${encodeURICom
 /** One agent's page (`#/agents/{id}`): its current revision's harness, model and thinking, a run bar (none for an archived
  *  agent, which takes no runs), and a tab per thing it has. `efforts` are the server's (capabilities `features.efforts`).
  *  `learning`: the server's learning switch, undefined until its capabilities are read and null when it has none;
- *  `notes`: the notes an address in the Learning tab points at. */
-export function AgentPage({ v2, agentId, defaultModel, modelSource, routePrefix, harnesses, efforts = [], go, tab, limits, learning, notes }: { v2: Client; agentId: string; defaultModel?: string; modelSource?: string; routePrefix?: string | null; harnesses?: HarnessInfo[]; efforts?: string[]; go: (hash: string) => void; tab?: string; limits?: UploadLimits; learning?: "on" | "off" | null; notes?: string[] }) {
+ *  `notes`: the notes an address in the Learning tab points at. `places`: the server's places (capabilities `places`), for
+ *  where a revision that names no place runs. */
+export function AgentPage({ v2, agentId, defaultModel, modelSource, routePrefix, harnesses, efforts = [], go, tab, limits, learning, notes, places }: { v2: Client; agentId: string; defaultModel?: string; modelSource?: string; routePrefix?: string | null; harnesses?: HarnessInfo[]; efforts?: string[]; go: (hash: string) => void; tab?: string; limits?: UploadLimits; learning?: "on" | "off" | null; notes?: string[]; places?: Places | null }) {
   const [agent, setAgent] = useState<Agent | null>(null);
   // The agent's read failed: a 404 is an agent this server has no record of; anything else is said in words.
   const [error, setError] = useState<{ cause: unknown } | null>(null);
@@ -90,8 +91,11 @@ export function AgentPage({ v2, agentId, defaultModel, modelSource, routePrefix,
   // A harness the server can't run: why, where its Run would fail (capabilities' harnesses[].reason).
   const off = workflow ? undefined : harnesses?.find((h) => h.id === (d.harness ?? "pi") && h.available === false);
   const offText = off ? `${off.id} doesn't run on this server${off.reason ? `: ${off.reason}` : "."}` : undefined;
+  // Where it runs: its own place, else the server's default place for it, marked as such (#1790: resolved at each run).
+  const where = runsWhere(agent, places);
+  const runsLabel = `${placeLabel(where?.place)}${where?.byDefault ? " (server default)" : ""}`;
   const facts: [string, string, string?][] = [
-    ...(workflow ? [] : [["Harness", d.harness ?? "pi"], ["Model", model.text, model.title], ["Thinking", d.thinking ?? "default"], ["Runs", placeLabel(placeOf(d.place))]] as [string, string, string?][]),
+    ...(workflow ? [] : [["Harness", d.harness ?? "pi"], ["Model", model.text, model.title], ["Thinking", d.thinking ?? "default"], ["Runs", runsLabel]] as [string, string, string?][]),
     ["Revision", `rev ${d.version} of ${agent.revisions}`],
   ];
   // Until the server's capabilities are read, the Learning tab shows only on its own address, which opens it at once (a
@@ -142,7 +146,7 @@ export function AgentPage({ v2, agentId, defaultModel, modelSource, routePrefix,
         ))}
       </div>
       <div role="tabpanel" aria-label={waiting ? undefined : at.label} className="min-h-0 flex-1 overflow-auto px-5 py-6 md:px-8">
-        {waiting ? <ListSkeleton label="Loading the tab" rows={4} /> : <at.Body agent={agent} v2={v2} go={go} stats={stats} focus={notes} learning={learning} onAgent={setAgent} />}
+        {waiting ? <ListSkeleton label="Loading the tab" rows={4} /> : <at.Body agent={agent} v2={v2} go={go} stats={stats} focus={notes} learning={learning} onAgent={setAgent} places={places} />}
       </div>
     </div>
   );
