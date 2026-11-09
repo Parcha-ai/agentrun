@@ -19,6 +19,7 @@ import { type ModelProxy, type ProviderPolicy, startModelProxy } from "@parcha/a
 import { randomBytes } from "node:crypto";
 import { DEFAULT_HARNESS } from "../../harness.js";
 import { sessionProvider } from "../../port-models.js";
+import { ASK_TOOL, askPerson } from "../../tools.js";
 import { KINDS } from "../journal-kinds.js";
 
 /** What the adapter loop lends pi for one claim: the run's Harness, its registry, and where pi's models go. */
@@ -138,7 +139,11 @@ async function sessionOn(proxy: ModelProxy, options: PiAdapterOptions, spec: Ses
   models.setProvider(sessionProvider(api, proxy, model, { provider: PROVIDER, keyName: "AGENTRUN_SESSION_KEY", ...(like ? { like } : {}), reasoning: false }));
   run.setModels(models);
 
-  const tools = spec.tools.map((tool) => piTool(tool, io));
+  // ask_person is pi's own tool (tools.ts): it goes on the session as a fresh native pi tool, not through piTool, so pi
+  // keeps its control.terminate and ends the turn on the person's question (the loop reads that turn end and parks the run).
+  // A fresh tool per open, never the shared askPerson registration (pi's install reuses the object across opens, which
+  // hangs the second open). piTool drops a tool's control, so every other host tool runs through it unchanged.
+  const tools = spec.tools.map((tool) => (tool.name === ASK_TOOL ? nativeAsk() : piTool(tool, io)));
   // A refused call's words (the gate's deny, main's), by call: its result is those words alone, as main gives them.
   const refusals = new Map<string, string>();
   const extension = defineExtension({
@@ -262,6 +267,22 @@ async function sessionOn(proxy: ModelProxy, options: PiAdapterOptions, spec: Ses
       await root.submit({ type: "input", content: text, whenBusy: mode, ...(id ? { requestId: id } : {}), ...entry } as never, context);
     },
   } satisfies AdapterSession;
+}
+
+/** A fresh pi tool for ask_person, built per session open (never the shared askPerson registration, which pi's install
+ *  reuses across opens): it ends its turn with control.terminate, as main's native ask_person does, so pi ends the turn on
+ *  the person's question and the loop parks the run. */
+function nativeAsk() {
+  return defineTool({
+    name: ASK_TOOL,
+    description: askPerson.description,
+    parameters: { type: "object", additionalProperties: false, properties: { question: { type: "string", minLength: 1, description: "The question, in one or two plain sentences." } }, required: ["question"] } as never,
+    replay: "safe",
+    execute: async (args: unknown) => {
+      const question = String((args as { question?: unknown }).question ?? "");
+      return { output: [{ type: "text", text: `Asked the person: ${question.slice(0, 500)}. Waiting for their answer.` }], control: { terminate: true }, details: { question } } as never;
+    },
+  });
 }
 
 /** A host tool as a pi tool: replay-safe or at most once, its answer the host's text and any images it shows. */

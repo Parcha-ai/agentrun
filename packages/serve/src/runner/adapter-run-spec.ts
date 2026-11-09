@@ -24,7 +24,7 @@ import type { Store } from "../store/store.js";
 import { isObject } from "../validate.js";
 import { type RunFiles, runGate } from "../tool-gate.js";
 import { loadToolSettings, TOOL_PLANE_ENV } from "../tool-plane.js";
-import { type ToolHost, toolOf } from "../tools.js";
+import { ASK_TOOL, askPerson, type ToolHost, toolOf } from "../tools.js";
 import { type HostToolCtx, hostToolOf } from "../host-tools.js";
 import { WEB_FETCH_TOOL } from "../web-fetch.js";
 import { WEB_SEARCH_TOOL } from "../web-search.js";
@@ -485,6 +485,17 @@ async function bindNonHandTools(host: ToolHost, granted: readonly string[], run:
       const tool = hostToolOf(name, registration, ctx);
       if (tool) tools.push(tool);
     }
+  }
+
+  // ask_person is pi's own tool (tools.ts): a run granted it must be offered it on the runner too. Listed in the session's
+  // tools so the model sees it and the policy names it; the pi adapter installs its NATIVE registration in the session's
+  // one extension (not a piTool wrapper and not a second host.install, which would double-register it and hang the open),
+  // so pi keeps its control.terminate — the turn ends and the loop parks the run on the person's question. Its own replay
+  // carries (safe, it reads nothing), since ask_person is kept out of REPLAY (host-tools.ts) so a CLI harness refuses it
+  // (runnable.ts). pi only.
+  if (granted.includes(ASK_TOOL)) {
+    const tool = hostToolOf(ASK_TOOL, askPerson as unknown as Parameters<typeof hostToolOf>[1], ctx, "safe");
+    if (tool) tools.push(tool);
   }
 
   // learned_workflow, listed when the run's pin names learned workflows (as main lists it): its model nodes run on the pi

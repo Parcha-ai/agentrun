@@ -19,7 +19,7 @@ import { type Conversation, type ConversationId, createRegistry, Harness, LiveDo
 import { type AdapterSession, type AgentAdapter, type BeforeRequest, type HostTool, modelPortFor, type Refusal, RUNNER_RECORDS, type SessionRecord, type SessionSpec, sessionSpendOf } from "@parcha/agentrun-kernel";
 import type { KernelHooks, ToolCall } from "./conformance/subject.js";
 import { type AnswerData, type ApprovalPrice, type AskData, type BudgetData, type CallEndData, type CallStartData, type CallStatus, type EndData, KINDS, type MessageData, type RaiseData, withdrawnAnswers } from "./journal-kinds.js";
-import { originOf, RUN_RESUMED } from "@parcha/pi-durable-agent/timeline";
+import { endedOnTurnEndingTool, originOf, RUN_RESUMED } from "@parcha/pi-durable-agent/timeline";
 import { type AlsoRow, type Claim, type Command, type CommandOutcome, deniedText, endedBy, type EndOfRunAnswer, type EndOfRunTurn, type Loop, type LoopDeps, type LoopEnd, type LoopFactory, noteOf, type StopReason } from "./loop-contract.js";
 import { deniedText as setToDenyText } from "../refusal-words.js";
 import { answerText, REFLECT_NOTE_ONLY, reflectRequestId, underLearning, WRITES } from "./end-of-run.js";
@@ -812,6 +812,16 @@ function adapterLoop(specOf: (claim: Claim, run: AdapterRun) => AdapterRunSpec |
           // the loop's own words.
           const said = outcome.error?.trim();
           data = { state: "failed", summary: said ? cutWhole(said, TURN_ERROR_MAX) : `the run gave no answer (${outcome.status})` };
+        }
+        else if (endedOnTurnEndingTool(settledEntries as never)) {
+          // The turn ended on a tool that waits on the person (ask_person): the run parks, never ends. input_required with
+          // its question is the view's to read (the same endedOnTurnEndingTool rule it reads waiting by); the claim is
+          // released and nothing more is booked, the cap park's move (759). The person's reply arrives as the run's next
+          // user message and resumes it on the next claim, as on main — the ask_person tool result stays what pi wrote, so
+          // nothing is re-asked and the question is not billed again.
+          await releaseHost(harness);
+          gate.seal(new Parked());
+          return { state: "parked" };
         }
         else {
           // An answer cut at the model's output limit is unfinished: the run fails, saying so, never ended (loop.ts cutLast,
