@@ -98,7 +98,9 @@ async function claim(setting, { mode = 1, keys = {}, groups = ["exec", "files", 
   for (const [name, value] of Object.entries(keys)) await putSealedKey(store, sealKey, name, value);
   const record = { created: [], released: [], options: [], ...(existing ? { existing } : {}) };
   const providers = Object.fromEntries(["docker", "e2b", "daytona", "phone-harness"].map((id) => [id, (options, extras) => (record.options.push([id, options, typeof extras.ledger.put]), fakeProvider(root, record, groups, machine))]));
-  const run = () => computerForClaim({ runId: "run-1", epoch: 3, computer: setting }, store, { mode, kinds: KINDS, sealKey, providers, spec: SPEC, workspace: localWorkspace(root), check: { readBackOf, epoch: 3 }, ...(view ? { openComputerView: view.open } : {}) });
+  record.revoked = 0;
+  const revokeMount = async () => void (record.revoked += 1);
+  const run = () => computerForClaim({ runId: "run-1", epoch: 3, computer: setting }, store, { mode, kinds: KINDS, sealKey, providers, spec: SPEC, workspace: localWorkspace(root), check: { readBackOf, epoch: 3 }, revokeMount, ...(view ? { openComputerView: view.open } : {}) });
   return { root, record, run };
 }
 
@@ -107,7 +109,7 @@ test("kind none is no computer: nothing made, a release that does nothing", asyn
   const answer = await run();
   assert.equal(answer.computer, undefined);
   await answer.release();
-  assert.deepEqual(record, { created: [], released: [], options: [] });
+  assert.deepEqual(record, { created: [], released: [], options: [], revoked: 0 });
 });
 
 test("a Mode 1 sandbox on Docker is made under the run's labels with the run's folder mounted, and released once", async () => {
@@ -122,6 +124,7 @@ test("a Mode 1 sandbox on Docker is made under the run's labels with the run's f
   await answer.release();
   await answer.release();
   assert.deepEqual(record.released, [["c1", "delete"]], "released once");
+  assert.equal(record.revoked, 1, "the run's mount credential is removed once, after the computer");
 });
 
 test("a desktop opens one proxied live view under the claim, is registered for take-over, and on release closes the view 'released'", async () => {
@@ -172,6 +175,7 @@ test("a fenced view registration is a lost claim, in words: the desktop just mad
   assert.equal(error?.code, "claim_lost");
   assert.match(error.message, /run run-1's claim \(epoch 3\) is no longer this runner's/);
   assert.deepEqual(record.released, [["c1", "delete"]]);
+  assert.equal(record.revoked, 1, "the mount credential goes with it");
   assert.equal(runComputerOf("run-1"), undefined, "never registered");
 });
 
