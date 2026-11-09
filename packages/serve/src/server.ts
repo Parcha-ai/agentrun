@@ -42,7 +42,7 @@ import { BOX_ALLOW_ENV, boxAllowOf, boxLimitsOf, boxNetworkOf, FAUX_BOX_ENV, fau
 import { Owner, passwordProblem, SESSION_MS } from "./owner.js";
 import { answerPage, byOwnerSession, heldSessions, isJson, overHttps, ownerCookie, ownOrigin, sendHostRefused, signedIn } from "./page.js";
 import { hostFix, hostName, loopbackNames } from "./host-check.js";
-import { handoverById, type LiveHandover, liveRest, liveViewer, liveViewerById, liveViewerLink, OpenViewers, proxyLiveUpgrade, readHandover, readHandovers, serveViewerFile, viewerAnswers, viewerLink } from "./browser-live.js";
+import { handoverById, type LiveHandover, liveRest, liveViewer, liveViewerById, liveViewerFor, liveViewerLink, OpenViewers, proxyLiveUpgrade, readHandover, readHandovers, serveViewerFile, viewerAnswers, viewerLink } from "./browser-live.js";
 import { answerAsk } from "./browser-person.js";
 import { durationMs, logLine } from "./print.js";
 import { knownToolCostOf, type RunMoment, type State, type Status, toolCostOf, WITHHELD_SIGN_IN } from "./run-view.js";
@@ -2425,12 +2425,11 @@ async function startHolding(options: ServeOptions, data: string, checked: { maxR
       authFailed(`/v2/runs/${runId}/browser/live`, req.headers.authorization === undefined ? "no_credential" : "browser_without_session");
       throw req.headers.authorization === undefined ? new ApiError("unauthenticated", "a run's live browser view takes the owner's password sign-in in the console") : new ApiError("forbidden", "a run's live browser view takes the owner's password sign-in in the console, never a token");
     }
-    const run = await needRun(runId);
-    const viewer = /^\/v\/([A-Za-z0-9_-]{22})$/.exec(rest)?.[1];
-    // The run's live viewer from the store (the runner's browser tool wrote it under its claim): a named viewer's, else the
-    // run's open one. The store's live-claim filter answers none for a run no runner holds, as hasProcess did; with no seal
-    // key this server serves no live view.
-    const handover = !sealKey || !liveRest(rest) ? undefined : viewer ? await liveViewerById(store, sealKey, run.id, viewer) : await liveViewer(store, sealKey, run.id);
+    await needRun(runId);
+    // The run's live viewer from the store (the runner's browser tool wrote it under its claim; liveViewerFor picks a named
+    // viewer's handover or the run's open one). The store's live-claim filter answers none for a run no runner holds, as
+    // hasProcess did; with no seal key this server serves no live view.
+    const handover = sealKey ? await liveViewerFor(store, sealKey, runId, rest) : undefined;
     if (!handover) throw new ApiError("not_found", "this run's browser has no live view at that address");
     await serveViewerFile(req, res, rest);
   }
