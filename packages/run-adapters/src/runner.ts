@@ -56,6 +56,8 @@ export type BeforeRequest = (request: {
    *  them from its body (ModelRequest). */
   outputTokensAsked?: number;
   outputTokensLeast?: number;
+  /** What it charges beside its tokens (ModelRequest.feeUsd), held with them. */
+  feeUsd?: number;
   /** A side call (ModelRequest.side): on another model than the session's (a client's), or the host's own (`host`). */
   side?: true;
   /** It carries the host's note (ModelRequest.noted), and its input measured without it (`inputTokensMaxWithoutNote`):
@@ -286,7 +288,7 @@ function bookingFor(writer: SessionWriter, options: ModelPortOptions & { records
   let failed: Error | undefined;
   const end = (reason: "turn_limit" | "refused" | "model_error", message?: string): Error =>
     options.stop ? options.stop(reason, message) : new HarnessRunError(reason, turns, 0, { maxTurns: limit, ...(message === undefined ? {} : { message }) });
-  const admit = async ({ model, inputTokensMax: measured, outputTokensAsked, outputTokensLeast, side, noted, inputTokensMaxWithoutNote, host }: ModelRequest): Promise<ModelTicket> => {
+  const admit = async ({ model, inputTokensMax: measured, outputTokensAsked, outputTokensLeast, feeUsd, side, noted, inputTokensMaxWithoutNote, host }: ModelRequest): Promise<ModelTicket> => {
     let inputTokensMax = measured;
     const stopped = options.stopped?.(host === undefined ? {} : { host }) ?? failed;
     if (stopped) throw stopped;
@@ -294,7 +296,7 @@ function bookingFor(writer: SessionWriter, options: ModelPortOptions & { records
     if (pausing) throw pausing;
     if (limit !== null && turns >= limit) throw end("turn_limit");
     const verdict = await options.beforeRequest?.({ ...node, model, turn: turns + 1, maxTurns: limit, ...(options.budgetUsd === undefined ? {} : { budgetUsd: options.budgetUsd }), spentUsd, inFlight: open.map((f) => ({ ...f })), inputTokensMax,
-      ...(outputTokensAsked === undefined ? {} : { outputTokensAsked }), ...(outputTokensLeast === undefined ? {} : { outputTokensLeast }), ...(side ? { side } : {}), ...(noted ? { noted, ...(inputTokensMaxWithoutNote === undefined ? {} : { inputTokensMaxWithoutNote }) } : {}), ...(host === undefined ? {} : { host }) });
+      ...(outputTokensAsked === undefined ? {} : { outputTokensAsked }), ...(outputTokensLeast === undefined ? {} : { outputTokensLeast }), ...(feeUsd ? { feeUsd } : {}), ...(side ? { side } : {}), ...(noted ? { noted, ...(inputTokensMaxWithoutNote === undefined ? {} : { inputTokensMaxWithoutNote }) } : {}), ...(host === undefined ? {} : { host }) });
     if (verdict && "refuse" in verdict) throw end("refused", verdict.refuse);
     const hold = verdict && "holdUsd" in verdict ? heldFigure(verdict.holdUsd) : undefined;
     // What a cache miss adds to the hold: kept beside it, so a request that never answers counts at both (sessionSpendOf).

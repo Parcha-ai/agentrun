@@ -13,6 +13,8 @@ export const facts: AdapterFacts = Object.freeze<AdapterFacts>({
   steer: false,
   // A call that started is never run again (the harness answers it from the log); only the model calls again.
   rerunsStarted: false,
+  // An answer its output limit cut ends the turn: the harness ends it there, before Codex asks for the answer again.
+  recoversCutAnswers: 0,
   // One run's memory, measured with the server's (serve's host.ts): Codex's app-server beside the run's process.
   runMib: 192,
   // OpenAI's reasoning efforts stop at xhigh.
