@@ -328,10 +328,12 @@ function amongClasses(declared: readonly Declared[]): Declared | undefined {
  * Whether a start tag named `name`, holding `inside` (insideOf), hides its element from everyone. Each property is
  * decided on its own: an inline declaration over its classes' (unless a class's !important one it contradicts, then
  * doubt), the classes' over the browser's own (the hidden attribute and a dialog not open, display none). Its classes
- * declare by the page's one-class rules (`page`) and HIDING_CLASSES. Hidden when display or visibility comes to "hide";
- * doubt hides nothing. A class or style value's character references are decoded first (`decode`).
+ * declare by the page's one-class rules (`page`) and HIDING_CLASSES. `why`: "display" when display comes to "hide",
+ * else "visibility" when visibility does, else null; doubt hides nothing. `shows`: the element sets visibility itself
+ * to anything but hidden (or in doubt), so a visibility-hidden ancestor's hiding may not reach it. A class or style
+ * value's character references are decoded first (`decode`).
  */
-function hides(name: string, inside: string, page: PageHiding, decode: Decode): boolean {
+function hides(name: string, inside: string, page: PageHiding, decode: Decode): { why: Showing | null; shows: boolean } {
   let hiddenAttribute = false;
   let open = false;
   let style = "";
@@ -361,7 +363,8 @@ function hides(name: string, inside: string, page: PageHiding, decode: Decode): 
     if (fromClasses) return fromClasses.outcome;
     return property === "display" && browser ? "hide" : undefined;
   };
-  return decided("display") === "hide" || decided("visibility") === "hide";
+  const visibility = decided("visibility");
+  return { why: decided("display") === "hide" ? "display" : visibility === "hide" ? "visibility" : null, shows: visibility === "show" || visibility === "doubt" };
 }
 
 /**
@@ -369,12 +372,18 @@ function hides(name: string, inside: string, page: PageHiding, decode: Decode): 
  * them (dropHidden, all at once). Run on a page its inert blocks are dropped from (InertDrop), with what its own live
  * styles declare (pageHidingOf). A hidden element goes from its start tag to the end tag that closes it, a same-name
  * element inside it counted; one that no end tag closes hides nothing, since where it ends is not known without a full
- * tree. A hidden element that holds no content (VOID) goes alone. Linear: one pass pairs each start tag with its end tag
- * (an open-tag stack per name), then the hidden ranges are cut, the outermost of each nest.
+ * tree. A hidden element that holds no content (VOID) goes alone. Visibility is inherited and a descendant can set it
+ * back: an element hidden by visibility alone goes only if nothing inside it shows itself again (hides' `shows`), and is
+ * kept whole otherwise; display:none is not undone by a descendant, so its element always goes. Linear: one pass pairs
+ * each start tag with its end tag (an open-tag stack per name), marking the innermost open visibility-hidden element
+ * when a start tag inside it shows itself and handing the mark outward as each closes; then the hidden ranges are cut,
+ * the outermost of each nest.
  */
 export class HiddenDrop {
   readonly #next: (at: number) => Tag | null;
-  readonly #open = new Map<string, { lt: number; hidden: boolean }[]>();
+  readonly #open = new Map<string, Opened[]>();
+  /** The visibility-hidden elements open now, outermost first. */
+  readonly #invisible: Opened[] = [];
   readonly #ranges: [number, number][] = [];
   #at = 0;
   #done = false;
@@ -395,10 +404,13 @@ export class HiddenDrop {
       if (!name) continue;
       if (tag.end) {
         const open = this.#open.get(name)?.pop();
-        if (open?.hidden) this.#ranges.push([open.lt, tag.gt + 1]);
+        if (open) this.#close(open, tag.gt + 1);
         continue;
       }
-      const hidden = hides(name, insideOf(html, name, tag.lt, tag.gt), this.page, this.decode);
+      const { why, shows } = hides(name, insideOf(html, name, tag.lt, tag.gt), this.page, this.decode);
+      // It shows itself inside a visibility-hidden element: that element is kept (and, as it closes, those around it).
+      if (shows && this.#invisible.length > 0) this.#invisible.at(-1)!.shown = true;
+      const hidden = why !== null;
       if (VOID.has(name)) { if (hidden) this.#ranges.push([tag.lt, tag.gt + 1]); continue; }
       // Text, not markup, to its end tag (an iframe's fallback, an xmp): its "<" are not tags.
       if (TEXT_ONLY.has(name)) {
@@ -412,9 +424,28 @@ export class HiddenDrop {
       }
       let open = this.#open.get(name);
       if (!open) this.#open.set(name, (open = []));
-      open.push({ lt: tag.lt, hidden });
+      const opened: Opened = { lt: tag.lt, why, shown: false };
+      open.push(opened);
+      if (why === "visibility") this.#invisible.push(opened);
     }
     return this.#done;
+  }
+
+  /** `opened` closed by the end tag that ends at `end`: a display-hidden element goes; a visibility-hidden one goes
+   *  unless something inside it showed itself again, and is then kept with its mark handed to the one around it. One
+   *  closed out of nesting order (by a stray end tag) is kept: where its hiding reaches is in doubt. */
+  #close(opened: Opened, end: number): void {
+    if (opened.why === "display") { this.#ranges.push([opened.lt, end]); return; }
+    if (opened.why !== "visibility") return;
+    const invisible = this.#invisible;
+    if (invisible.at(-1) === opened) invisible.pop();
+    else {
+      const at = invisible.lastIndexOf(opened);
+      if (at >= 0) invisible.splice(at, 1);
+      opened.shown = true;
+    }
+    if (!opened.shown) { this.#ranges.push([opened.lt, end]); return; }
+    if (invisible.length > 0) invisible.at(-1)!.shown = true;
   }
 
   /** The page without its hidden ranges (once step has answered true; the page as it is before that). */
@@ -432,6 +463,10 @@ export class HiddenDrop {
     return kept.join("");
   }
 }
+
+/** An element HiddenDrop holds open: where its start tag is, why it hides (hides), and whether anything inside it has
+ *  shown itself again. */
+type Opened = { lt: number; why: Showing | null; shown: boolean };
 
 /** `html` without the elements it hides from everyone, all at once (see HiddenDrop); `page` and `decode` as there. */
 export function dropHidden(html: string, page: PageHiding, decode: Decode): string {
