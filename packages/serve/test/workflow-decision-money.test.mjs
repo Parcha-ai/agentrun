@@ -7,10 +7,12 @@
 //  - a decision whose hold does not fit the cap is refused for room and parks the run, as main's cap does, and a raise
 //    resumes it.
 import assert from "node:assert/strict";
+import { randomBytes } from "node:crypto";
 import { test } from "node:test";
 import { mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
+import { fileURLToPath } from "node:url";
 import { BACKGROUND_CONTEXT } from "@earendil-works/chord/context";
 import { createRegistry, Harness } from "@earendil-works/pi-durable";
 import { createModels } from "@earendil-works/pi-ai/models";
@@ -23,6 +25,10 @@ const { workflowSpecOf } = await import("../dist/runner/workflow-spec.js");
 const { KINDS } = await import("../dist/runner/journal-kinds.js");
 const { sendCommand } = await import("../dist/runner/commands.js");
 const { holdOf } = await import("../dist/decision-cap.js");
+const { putSealedKey } = await import("../dist/server-keys.js");
+
+/** The faux System One service (serves OpenRouter's Decisions catalog and answers decisions), pointed at under --faux. */
+const FAUX_SYSTEM_ONE = fileURLToPath(new URL("../../decisions/dist/testing/faux-system-one.js", import.meta.url));
 
 const TIMING = { leaseMs: 1_000, renewEveryMs: 250, stopMarginMs: 300, pollMs: 20, commandPollMs: 30 };
 const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
@@ -267,4 +273,74 @@ test("a decision booked before a claim ends still counts after the next claim: t
   assert.equal(ended.state, "ended", `the raise resumes a fresh claim and the run ends: ${JSON.stringify(ended)}`);
   // Both decisions booked once each ($0.40 + $0.40); the first was not re-charged on the resume, and its spend survived.
   assert.ok(Math.abs((ended.costUsd ?? 0) - 0.8) < 1e-9, `the run books $0.40 + $0.40 across the two claims: ${ended.costUsd}`);
+});
+
+/** A one-judge workflow naming `provider`/`model`, for the production decision-provider path. */
+const askProvider = (provider, model) => ({
+  v: 2, name: "asked",
+  schemas: {
+    In: { type: "object", required: ["doc"], properties: { doc: { type: "string" } } },
+    Verdict: { type: "object", additionalProperties: false, required: ["is_coi"], properties: { is_coi: { type: "boolean", description: "Is `doc` a certificate of incorporation?" } } },
+  },
+  input: { schemaId: "In" },
+  output: { schemaId: "Verdict", path: "verdict" },
+  root: { node: "judge", label: "ask", provider, ...(model ? { model } : {}), state: { doc: "{doc}" }, out: "Verdict", as: "verdict" },
+});
+
+/** A store with one queued judge run and a runner whose spec builds the decision providers from the run's SEALED keys
+ *  (claim-secrets.ts + decisionProvidersIn), under --faux so the OpenRouter provider answers through the faux System One.
+ *  `seal` are the provider keys to seal in the store; `capUsd` is omitted (uncapped) by default. */
+async function sealedWorld(t, { seal, flow = askProvider("openrouter", "liquid/d1"), capUsd }) {
+  const dir = mkdtempSync(join(process.env.TMPDIR ?? tmpdir(), "agentrun-wf-sealed-"));
+  const sealKey = randomBytes(32);
+  const server = await openSqliteStore({ dataDir: dir, role: "server" });
+  const store = await openSqliteStore({ dataDir: dir, role: "runner" });
+  let runner;
+  t.after(async () => {
+    await runner?.close();
+    await store.close().catch(() => {});
+    await server.close().catch(() => {});
+    rmSync(dir, { recursive: true, force: true });
+  });
+  for (const [name, value] of Object.entries(seal)) await putSealedKey(store, sealKey, name, value);
+  await server.agents.create({ id: "agent-1", name: "Flow" }, { id: "rev-1", kind: "workflow", body: { workflow: flow } });
+  await server.runs.create({ id: "run-1", agentId: "agent-1", revisionId: "rev-1" }, { body: { input: { doc: "Certificate of incorporation of Example Widgets, Inc." }, title: "t", place: { mode: "runner" }, ...(capUsd !== undefined ? { max_cost_usd: capUsd } : {}) } });
+  // No decisionProvidersOf injected: the spec reads the run's keys from the store (sealKey). The decision keys are never in
+  // this process's environment — only the faux-service pointers are, so a decision that runs got its key from the store.
+  const specOf = workflowSpecOf({ store, sealKey, env: { AGENTRUN_SERVE_FAUX: "1", AGENTRUN_SERVE_FAUX_OPENROUTER: FAUX_SYSTEM_ONE }, providerOf: idleModelProvider() });
+  runner = startRunner({ store, createLoop: createWorkflowLoop(specOf), name: "runner-a", ...TIMING });
+  return { server };
+}
+
+test("a workflow decision on the runner runs on the run's stored provider key (claim secrets)", async (t) => {
+  // The OpenRouter key is only in the store (sealed), never in the runner's environment; the spec reads it per claim and
+  // builds the provider from it, so the decision is answered (through the faux service) and the run completes.
+  const { server } = await sealedWorld(t, { seal: { OPENROUTER_API_KEY: `not-a-secret-${"stored"}` } });
+  const row = await waitRow(server, (r) => r.state !== "running" && r.state !== "queued" && r.runner === null);
+  assert.equal(row.state, "ended", `the decision ran on the run's stored key and the run ended: ${JSON.stringify(row)}`);
+});
+
+/** A chain whose first decision names `provider`, the second Jev: the run's keys cover Jev but not `provider`. */
+const chainProviders = (provider) => ({
+  v: 2, name: "chain",
+  schemas: {
+    In: { type: "object", required: ["doc"], properties: { doc: { type: "string" } } },
+    Verdict: { type: "object", additionalProperties: false, required: ["is_coi"], properties: { is_coi: { type: "boolean", description: "Is `doc` a certificate of incorporation?" } } },
+  },
+  input: { schemaId: "In" },
+  output: { schemaId: "Verdict", path: "verdict2" },
+  root: { node: "chain", steps: [
+    { node: "judge", label: "ask1", provider, state: { doc: "{doc}" }, out: "Verdict", as: "verdict1" },
+    { node: "judge", label: "ask2", provider: "jev", state: { doc: "{doc}" }, out: "Verdict", as: "verdict2" },
+  ] },
+});
+
+test("a run without the decision provider's stored key fails: the provider the run has no key for is refused, as main refuses it", async (t) => {
+  // The run has the Jev key (TypeSafe) but no Parallel key, and its first node names Parallel. The spec builds the provider
+  // registry from the run's own stored keys (Jev only), and the Parallel node is refused by main's decision-provider check
+  // (checkDecisionProviders names the provider it lacks), the decision node's own failure — never asked of another provider
+  // or run on this process's keys. The only difference from the passing run is the missing key, so the key is what gates it.
+  const { server } = await sealedWorld(t, { seal: { TYPESAFE_API_KEY: `not-a-secret-${"jev"}` }, flow: chainProviders("parallel") });
+  const row = await waitRow(server, (r) => r.state !== "running" && r.state !== "queued" && r.runner === null);
+  assert.equal(row.state, "failed", `the run fails without the Parallel key: ${JSON.stringify(row)}`);
 });
