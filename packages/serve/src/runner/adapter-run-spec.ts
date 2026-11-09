@@ -25,6 +25,10 @@ import { isObject } from "../validate.js";
 import { runGate } from "../tool-gate.js";
 import { loadToolSettings } from "../tool-plane.js";
 import type { ToolHost } from "../tools.js";
+import { environmentLine } from "../environment.js";
+import { effortGuidance } from "../effort-guidance.js";
+import { withLearned } from "../learning.js";
+import { promptOf, readsFiles } from "../skills.js";
 import { openRunWorkspace } from "../workspace/run-workspace.js";
 import { runFolder } from "../workspace/paths.js";
 import { runTools, type ToolResults } from "../workspace/run-tools.js";
@@ -83,6 +87,7 @@ type RevisionBody = {
   readonly toolSettings?: unknown;
   readonly harness?: string;
   readonly approvals?: Approvals;
+  readonly skills?: Record<string, unknown>;
 };
 
 /**
@@ -196,12 +201,19 @@ export async function adapterRunSpecFromLaunch(launch: RunLaunch, run: AdapterRu
   const nonHandTools = bindNonHandTools(host, granted);
   const sessionTools = [...handTools, ...nonHandTools];
 
+  // The run's system prompt, as main's per-run process builds it (app.ts): the environment line first (environment.ts, as
+  // pi installs it before every other section), then the revision's instructions with its skills and what the agent learned
+  // folded in (learning.ts withLearned, then skills.ts promptOf, each skill whole or by its file as the run reads its
+  // files), then the effort guidance (the launch's effort, never this process's environment). The one path for every harness.
+  const learned = await withLearned(root, ws.workspace, body.instructions ?? "", Object.keys(body.skills ?? {}));
+  const instructions = await promptOf(learned.instructions, learned.skills, ws.workspace, { onDemand: readsFiles(granted) });
+  const guidance = effortGuidance(launch.effort);
+  const system = [environmentLine(), instructions, guidance].filter((line): line is string => Boolean(line));
+
   const session: SessionSpec = {
     key: `run:${claim.runId}`,
     label: runRow.agentId,
-    // TODO(E2r2): the full system prompt as app.ts builds it (the environment line, the revision's instructions with its
-    // skills, the effort guidance, what the agent learned). The run's instructions alone until then.
-    system: [body.instructions ?? ""].filter((line): line is string => line.length > 0),
+    system,
     tools: sessionTools,
     context: "fresh",
   };
