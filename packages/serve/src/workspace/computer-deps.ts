@@ -14,7 +14,7 @@
 //
 // A key goes into the server-side provider call alone (the provider's create() options): the spec a computer is made
 // with names no key, no account key and no database or Redis credential, and carries no environment at all.
-import { BROWSER_IMAGE, type ComputerSpec, DAYTONA_DEFAULT_SNAPSHOT, DEFAULT_DOCKER_IMAGE, PROVIDERS, readBackOf, servingRefusals, SETTING_KINDS } from "@parcha/agentrun-computer";
+import { BROWSER_IMAGE, type ComputerSpec, DAYTONA_DEFAULT_SNAPSHOT, DEFAULT_DOCKER_IMAGE, DOCKER_RECIPE, PROVIDERS, providerFor, readBackOf, servingRefusals, SETTING_KINDS } from "@parcha/agentrun-computer";
 import { DOCKER_IMAGE_ENV } from "../box-image.js";
 import type { ProviderFactories } from "../computer-keys.js";
 import type { FauxComputers } from "../faux-computers.js";
@@ -113,7 +113,13 @@ export function computerDepsFrom(options: ComputerDepsOptions): { computerForCla
   const { env, store, sealKey, faux } = options;
   // The faux registry is Settings' shape (computers.ts); the claim reads the same data as resolve-computer.ts's.
   const kinds = (faux?.kinds as unknown as KindRegistry | undefined) ?? options.kinds ?? ({ SETTING_KINDS, PROVIDERS, servingRefusals } as unknown as KindRegistry);
-  const providers = computerProviderMakers(options.load ? { load: options.load } : {});
+  // The Docker provider is given its image's source, which it makes ready itself (its image(): built from the recipe
+  // when Docker lacks it, or pulled by name): the owner's AGENTRUN_DOCKER_IMAGE, else the package's recipe. Never the
+  // recipe's bare tag, which no registry has.
+  const named = envValue(env, DOCKER_IMAGE_ENV);
+  const dockerImage = named !== undefined ? { image: named } : { recipe: DOCKER_RECIPE };
+  const load = options.load ?? (providerFor as unknown as ProviderLoad);
+  const providers = computerProviderMakers({ load: (id, given) => load(id, id === "docker" ? { ...given, image: dockerImage } : given) });
   const computerDeps: ComputerDeps = {
     kinds,
     providers,

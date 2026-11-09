@@ -23,6 +23,7 @@ import { sealedAt, unsealColumn } from "../store/seal.js";
 import type { SealedKeys } from "../store/store.js";
 import { type ArchilDisk, type ArchilDiskOptions, type ArchilImage, archilDisk, pinnedImage } from "./archil-disk.js";
 import { type ArchilMountCredentialOptions, type MountCredential, mintMountToken, nicknameOf, removeMountToken, removeOlderMountTokens } from "./archil-mount-credential.js";
+import { COMPUTER_LIFETIME_MS } from "./computer-deps.js";
 
 export { ARCHIL_API_KEY_ROW, type ArchilSettings };
 
@@ -31,10 +32,10 @@ export class ArchilClaimRefused extends Error {
   override name = "ArchilClaimRefused";
 }
 
-/** The credential's safety net, not its lifetime: it's removed at the computer's release, the run's end, a lost claim and a
- *  reclaim; the ttl only ends one whose removal never ran (a crashed server), and by then its only holder, the computer, is
- *  gone. Seven days: longer than any run keeps one computer mounted. */
-export const MOUNT_TTL_MS = 7 * 24 * 60 * 60_000;
+/** The credential's safety net: no longer than its computer can live (COMPUTER_LIFETIME_MS). It's removed at the
+ *  computer's release, the run's end, a lost claim and a reclaim; the ttl only ends one whose removal never ran (a
+ *  crashed server, or a reclaim's list read that missed it), and by then its only holder, the computer, is gone too. */
+export const MOUNT_TTL_MS = COMPUTER_LIFETIME_MS;
 
 export interface ArchilClaimOptions {
   /** The server's Archil settings (loadArchilSettings); undefined when they are not set up. */

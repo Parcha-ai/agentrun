@@ -12,10 +12,10 @@ import assert from "node:assert/strict";
 import { randomBytes } from "node:crypto";
 import { mkdirSync, mkdtempSync, realpathSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
-import { dirname, join } from "node:path";
+import { join } from "node:path";
 import { after, test } from "node:test";
 import { DAYTONA_DEFAULT_SNAPSHOT, providerFor } from "@parcha/agentrun-computer";
-import { fakeDocker } from "../../computer/test/fake-docker.mjs";
+import { dockerHost } from "./docker-host-fake.mjs";
 import { FAUX_VIEW_PATH, fauxComputers } from "../dist/faux-computers.js";
 import { putSealedKey } from "../dist/server-keys.js";
 import * as workspaceModule from "../dist/workspace/index.js";
@@ -135,10 +135,12 @@ async function savedKeysStore(sealKey) {
 }
 
 test("the composer builds a working claim on a docker box: the real Docker provider over a fake docker first on PATH gives a kinded sandbox, and its release ends it", async (t) => {
-  // The computer package's fake docker (it answers run, inspect, exec with the daemon's hello, rm): no Docker is reached.
-  const fake = fakeDocker();
+  // A host that keeps its images (none yet) over the computer package's fake docker (run, inspect, exec with the daemon's
+  // hello, rm): no Docker is reached. The provider builds the recipe's image there first (docker-host-fake.mjs).
+  const host = dockerHost();
+  const fake = { ...host.fake, calls: host.calls };
   const path = process.env.PATH;
-  process.env.PATH = `${dirname(fake.program)}:${path}`;
+  process.env.PATH = `${host.dir}:${path}`;
   t.after(() => { process.env.PATH = path; });
   const root = scratch();
   const sealKey = randomBytes(32);

@@ -128,6 +128,19 @@ function phonePlatform(machine: string | undefined, entry: ProviderEntry | undef
 }
 
 /** The provider's watch of a computer's screen (ComputerProvider.watch), where it has one. */
+/** A provider that makes its computers' image ready itself (Docker's image(): its recipe built when Docker lacks it, or
+ *  its image by name pulled), answering the tag to start from. */
+type ImageMaker = { image(context: { readonly signal?: AbortSignal }): Promise<Result<string>> };
+/** The image `provider` made ready, when it makes its own; undefined for one that does not. A failure is the provider's
+ *  words. */
+async function readyImage(provider: ComputerProvider, signal: AbortSignal | undefined): Promise<string | undefined> {
+  const maker = provider as Partial<ImageMaker>;
+  if (typeof maker.image !== "function") return undefined;
+  const ready = await maker.image(signal ? { signal } : {});
+  if (!ready.ok) throw new Error(ready.error.message);
+  return ready.value;
+}
+
 type Watching = { watch(ref: { readonly id: string; readonly name: string }, context: { readonly signal: AbortSignal }): unknown };
 const watching = (provider: ComputerProvider): Watching | undefined =>
   typeof (provider as Partial<Watching>).watch === "function" ? (provider as unknown as Watching) : undefined;
@@ -221,7 +234,11 @@ export async function computerForClaim(launch: ClaimLaunch, store: Pick<Store, "
       if (!options.ok) throw new Error(options.error.message);
       const provider = await make(options.options, { ledger: storeLedger(store.computerLedger, entry.id) });
       const run: ComputerRun = launch.boxAllow === undefined ? {} : { boxAllow: launch.boxAllow };
-      const spec: ComputerSpec = { ...deps.spec(entry, kind as Exclude<ComputerSettingKind, "none">, run), labels: runLabels(launch.runId, launch.epoch), ...(mount ? { mount } : {}) };
+      // A provider that makes its own image ready (Docker's image(): its recipe built when Docker lacks it, an image by name
+      // pulled) does so first, and the computer starts from the tag it answers: the recipe's tag is in no registry, so a
+      // run of it unbuilt would be refused.
+      const ready = await readyImage(provider, signal);
+      const spec: ComputerSpec = { ...deps.spec(entry, kind as Exclude<ComputerSettingKind, "none">, run), ...(ready ? { image: ready } : {}), labels: runLabels(launch.runId, launch.epoch), ...(mount ? { mount } : {}) };
       const launched = await providerLaunch(provider, launch, spec, signal);
       made = { id: launched.id, machine: launched.machine, ...(launched.watch ? { watch: launched.watch } : {}) };
       madeBy = entry;
