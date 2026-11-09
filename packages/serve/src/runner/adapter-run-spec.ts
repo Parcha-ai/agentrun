@@ -24,6 +24,7 @@ import type { Store } from "../store/store.js";
 import { isObject } from "../validate.js";
 import { type RunFiles, runGate } from "../tool-gate.js";
 import { loadToolSettings, recheckPlane, TOOL_PLANE_ENV } from "../tool-plane.js";
+import { readApprovers } from "../server-approvers.js";
 import { ASK_TOOL, askPerson, type ToolHost, toolOf } from "../tools.js";
 import { type HostToolCtx, hostToolOf } from "../host-tools.js";
 import { WEB_FETCH_TOOL } from "../web-fetch.js";
@@ -189,12 +190,16 @@ type RevisionBody = {
  * the server, which may be another process), so a permission set while the run goes reaches its next call ("applies at the
  * next call, in runs already going too"). A read that fails is unread: the gate holds to its last good read, marked unread
  * (RunGate.serverSettings), so a deny it held still refuses and approvals "never" lifts no ask until the store reads.
+ *
+ * Whether anyone can answer an ask is the store's too (server-approvers.ts), read once at the claim: no one (the
+ * server's accounts off), an asked call is refused at once in words, never parked.
  */
 export async function adapterRunGate(store: Pick<Store, "settings">, claim: Pick<Claim, "runId">, revision: { kind: string; body: { toolSettings?: unknown; harness?: string; approvals?: Approvals } }, root: RunFiles): Promise<NonNullable<AdapterRunSpec["gate"]>> {
   let current = await storeSettings(store);
+  const approvers = await readApprovers(store.settings);
   // A Workspace's paths are in the run's folder: its folder named as a computer names it, for the gate's path checks.
   const folder = typeof root === "string" ? root : COMPUTER_ROOT;
-  const gate = runGate({ root: folder, work: folder }, claim.runId, revision, () => current, root);
+  const gate = runGate({ root: folder, work: folder }, claim.runId, revision, () => current, root, approvers);
   const decide = async (call: Parameters<NonNullable<AdapterRunSpec["gate"]>>[0]) => {
     current = await storeSettings(store);
     return gate.decide(call.tool, call.args);
