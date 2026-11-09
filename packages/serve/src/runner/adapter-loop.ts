@@ -31,6 +31,7 @@ import { isComputerCommand, type JournalHold, journalHold, type RunComputerHold 
 import { COMPUTER_HANDOVER_KIND, COMPUTER_HOLD_KIND } from "../computer-commands.js";
 import { journalSessions } from "./sessions.js";
 import { DECISION_SESSION, runCap, type RunCap, type RunCapOptions, type RunDecisions, type RunTools, TOOL_SESSION } from "@parcha/agentrun-kernel/kernel/cap";
+import { INTERRUPTED_TEXT } from "@parcha/agentrun-kernel/kernel";
 import { portModels, type PortModels } from "../port-models.js";
 
 /** The run's cap as its spec gives it: the kernel runCap's options but its sessions, which the loop's are. */
@@ -235,6 +236,8 @@ interface CliRecord {
   person(text: string): Promise<void>;
   /** A call's start, before it runs (once per call id). */
   start(callId: string, tool: string, input: unknown, replaySafe: boolean): Promise<void>;
+  /** The end the record holds for a call, if any: a call issued again under its id is answered from it, never run. */
+  endOf(callId: string): { status: CallStatus; output?: string } | undefined;
   /** A started call's end (once). */
   end(callId: string, status: CallStatus, output?: string): Promise<void>;
   /** The end-of-run turn starts: what the model says from now on is that turn's answer, never a message on the record. */
@@ -251,19 +254,23 @@ async function openCliRecord(harness: Harness, journal: Gate["journal"], context
   const append = async (kind: string, data: CallStartData | CallEndData | MessageData): Promise<void> => {
     await harness.commit((tx) => tx.appendEntry(root.id, { kind, data: data as unknown as JsonValue }), context);
   };
-  // Each call started on the record: whether it has its end.
+  // Each call started on the record: whether it has its end; and each end, by call id.
   const started = new Map<string, boolean>();
+  const ends = new Map<string, { status: CallStatus; output?: string }>();
   let personWritten = false;
   for (const entry of await entriesOf(journal, root.id, context)) {
-    const data = (entry.data ?? {}) as { callId?: unknown; role?: unknown };
+    const data = (entry.data ?? {}) as { callId?: unknown; role?: unknown; status?: CallStatus; output?: unknown };
     if (entry.kind === KINDS.callStart && typeof data.callId === "string") started.set(data.callId, started.get(data.callId) ?? false);
-    else if (entry.kind === KINDS.callEnd && typeof data.callId === "string") started.set(data.callId, true);
-    else if (entry.kind === KINDS.message && data.role === "person") personWritten = true;
+    else if (entry.kind === KINDS.callEnd && typeof data.callId === "string") {
+      started.set(data.callId, true);
+      ends.set(data.callId, { status: data.status ?? "done", ...(typeof data.output === "string" ? { output: data.output } : {}) });
+    } else if (entry.kind === KINDS.message && data.role === "person") personWritten = true;
   }
   for (const [callId, ended] of started) {
     if (ended) continue;
     await append(KINDS.callEnd, { callId, status: "interrupted" });
     started.set(callId, true);
+    ends.set(callId, { status: "interrupted" });
   }
   let text = "";
   /** The end-of-run turn's answer while that turn runs (answering), else undefined. */
@@ -305,11 +312,13 @@ async function openCliRecord(harness: Harness, journal: Gate["journal"], context
         started.set(callId, false);
       });
     },
+    endOf: (callId) => ends.get(callId),
     end: (callId, status, output) =>
       inTurn(async () => {
         if (started.get(callId) !== false) return;
         await append(KINDS.callEnd, { callId, status, ...(output === undefined ? {} : { output }) });
         started.set(callId, true);
+        ends.set(callId, { status, ...(output === undefined ? {} : { output }) });
       }),
     answering() {
       answer = "";
@@ -711,6 +720,10 @@ function adapterLoop(specOf: (claim: Claim, run: AdapterRun) => AdapterRunSpec |
           // its result, and the loop restarts it. A CLI's call reaches here only once the gate allowed it (its tool
           // bridge asks first), so its record's start is written here, before the flush and the call, and its end after.
           call: async (args, toolContext) => {
+            // A call its CLI issues again under an id the record already ended (after the CLI's own resume) is answered
+            // from that end, never run again.
+            const ended = record?.endOf(toolContext.callId);
+            if (ended) return { text: ended.output ?? (ended.status === "interrupted" ? INTERRUPTED_TEXT : `The ${tool.name} call ended ${ended.status}.`), isError: ended.status !== "done" };
             if (record) await record.start(toolContext.callId, tool.name, args ?? {}, tool.replay === "safe");
             try {
               const answer = await sideEffect({
