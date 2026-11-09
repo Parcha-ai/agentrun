@@ -35,7 +35,6 @@ import { learningWorkspace } from "../learn/folder.js";
 import { learningEndOfRun } from "./learning-end.js";
 import { LEARNED_WORKFLOW_TOOL, learnedWorkflowTool } from "../learned-workflow.js";
 import { PORT_PROVIDER } from "../port-models.js";
-import { createModels } from "@earendil-works/pi-ai/models";
 import { promptOf, readsFiles } from "../skills.js";
 import { openRunWorkspace } from "../workspace/run-workspace.js";
 import { COMPUTER_ROOT, runFolder } from "../workspace/paths.js";
@@ -409,16 +408,6 @@ export async function adapterRunSpecFromLaunch(launch: RunLaunch, run: AdapterRu
   };
 }
 
-/** learned_workflow on a pi run is listed so the dispatch offers main's tool set, but it is not run yet: its model nodes
- *  run on the session's proxied models (run.ledger.models), which pi's adapter has no port for yet (its session exposes
- *  none). Until that port lands it is refused in words, never run as a stub. A CLI harness's session HAS a model port, so
- *  its learned_workflow runs for real (learnedWorkflowHostTool onSessionPort). web_fetch, web_search and monid carry no
- *  such gate: the adapter loop books their paid requests on the run's one ledger (adapter-loop.ts bookedIn,
- *  paid-calls.ts), held at Parallel's or monid's price and settled at the charge, exactly as main does, so they run. */
-function settleLearnedWorkflow(name: string): { refused: string } | undefined {
-  return name === LEARNED_WORKFLOW_TOOL ? { refused: "This tool is not available on the runner yet, so its call was not run." } : undefined;
-}
-
 /** The host-tool ctx a non-hand tool is wrapped with (host-tools.ts hostToolOf): the run's own Harness (its commit,
  *  snapshot, conversation and task reads), the results map, and the run's folder as the api env's cwd (a tool reads no
  *  file environment, so an error names a path relative to it). Shared by the pi spec's bindNonHandTools and the CLI spec's
@@ -441,11 +430,11 @@ export function hostToolCtxOf(run: AdapterRun, context: Context, results: ToolRe
 }
 
 /** The run's learned_workflow tool as a HostTool, listed when its pin names learned workflows (as main lists it, so the
- *  tool set the model sees matches main). `onSessionPort`: the run's session has a model port (the CLI harnesses), so its
+ *  tool set the model sees matches main). Every run's session — pi's and every CLI harness's — has a model port, so its
  *  model nodes run on the session's proxied models (run.ledger.models, port-models.ts: read at each request, labelled
- *  learned_workflow), booked on the run's one ledger and priced by the harness's own policy; false (pi, no port yet)
- *  lists it refused in words (settleLearnedWorkflow). A pin whose learned-workflows file is not on the runner is skipped
- *  (its own seam), never failing the run. Its call nodes run the agent's tools' effects on `env`, the run's scoped keys. */
+ *  learned_workflow), each a request on the run's one route, booked on the run's one ledger and priced by the session's
+ *  policy. A pin whose learned-workflows file is not on the runner is skipped (its own seam), never failing the run. Its
+ *  call nodes run the agent's tools' effects on `env`, the run's scoped keys. */
 export async function learnedWorkflowHostTool(opts: {
   readonly run: AdapterRun;
   readonly granted: readonly string[];
@@ -453,18 +442,12 @@ export async function learnedWorkflowHostTool(opts: {
   readonly env: NodeJS.ProcessEnv;
   readonly work: string;
   readonly ctx: HostToolCtx;
-  readonly onSessionPort: boolean;
 }): Promise<HostTool | undefined> {
   if (!opts.granted.includes(LEARNED_WORKFLOW_TOOL)) return undefined;
   const flows = await pinnedWorkflows(opts.work, await readPin(opts.work)).catch(() => []);
   if (!flows.length) return undefined;
-  const base = { workflows: flows, granted: opts.granted, ...(opts.plane ? { plane: opts.plane } : {}), env: opts.env, work: opts.work };
-  if (!opts.onSessionPort) {
-    const tool = learnedWorkflowTool({ ...base, models: createModels() as never, modelOf: () => undefined });
-    return hostToolOf(LEARNED_WORKFLOW_TOOL, tool as never, { ...opts.ctx, settle: settleLearnedWorkflow }) ?? undefined;
-  }
   const models = await opts.run.ledger.models(LEARNED_WORKFLOW_TOOL);
-  const tool = learnedWorkflowTool({ ...base, models: models as never, modelOf: () => ({ provider: PORT_PROVIDER, modelId: "session" }) });
+  const tool = learnedWorkflowTool({ workflows: flows, granted: opts.granted, ...(opts.plane ? { plane: opts.plane } : {}), env: opts.env, work: opts.work, models: models as never, modelOf: () => ({ provider: PORT_PROVIDER, modelId: "session" }) });
   return hostToolOf(LEARNED_WORKFLOW_TOOL, tool as never, opts.ctx) ?? undefined;
 }
 
@@ -491,10 +474,10 @@ async function bindNonHandTools(host: ToolHost, granted: readonly string[], run:
     }
   }
 
-  // learned_workflow, listed when the run's pin names learned workflows (as main lists it). On pi it is listed but refused
-  // (onSessionPort false: pi's adapter exposes no session port for its model nodes yet); a CLI run lists it for real on the
-  // session's proxied models (cli-run-spec.ts). The agent's scoped keys (host.env) are its call nodes'.
-  const learned = await learnedWorkflowHostTool({ run, granted, plane, env: host.env, work: root, ctx, onSessionPort: false });
+  // learned_workflow, listed when the run's pin names learned workflows (as main lists it): its model nodes run on the pi
+  // session's proxied models (run.ledger.models, pi's adapter now exposes a session port), each a request on the run's one
+  // route labelled learned_workflow. The agent's scoped keys (host.env) are its call nodes'.
+  const learned = await learnedWorkflowHostTool({ run, granted, plane, env: host.env, work: root, ctx });
   if (learned) tools.push(learned);
 
   // TODO (decisions, option (a)): a pi run's decision tools book on the run's ONE cap (runCap's run.decisions), which the
