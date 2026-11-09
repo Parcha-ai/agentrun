@@ -255,3 +255,22 @@ test("native web_search set to ask on claude-agent and codex: under never it is 
     assert.ok((asked.body.warnings ?? []).some((w) => NATIVE_ASKS.test(w.message ?? "")), `${harness}: under ask the warning stands: ${JSON.stringify(asked.body.warnings)}`);
   }
 });
+
+test("approvals takes ask back: a definition put back as it reads (the console's edit) is taken and still reads ask; a never agent edited to ask reads ask; one edited naming none stays never", { timeout: 60_000 }, async (t) => {
+  const { api } = await serve(t);
+  assert.equal((await api("POST", "/agents", agent("plain"))).status, 201);
+  const read = (await api("GET", "/agents/plain")).body.definition;
+  assert.equal(read.approvals, "ask", "none set reads ask");
+  // The console's edit (apps/console agentForm.ts editBody): the definition as read, one field changed, the next version.
+  const echoed = await api("PUT", "/agents/plain/definition", { definition: { ...read, instructions: "Answer in one line.", version: read.version + 1 } });
+  assert.equal(echoed.status, 200, JSON.stringify(echoed.body));
+  assert.equal((await api("GET", "/agents/plain")).body.definition.approvals, "ask", "still ask");
+
+  assert.equal((await api("POST", "/agents", agent("unattended", { approvals: "never" }))).status, 201);
+  const kept = await api("PUT", "/agents/unattended/definition", agent("unattended", { version: 2, instructions: "Answer briefly." }));
+  assert.equal(kept.status, 200, JSON.stringify(kept.body));
+  assert.equal((await api("GET", "/agents/unattended")).body.definition.approvals, "never", "an edit naming none keeps never");
+  const turned = await api("PUT", "/agents/unattended/definition", agent("unattended", { version: 3, approvals: "ask" }));
+  assert.equal(turned.status, 200, JSON.stringify(turned.body));
+  assert.equal((await api("GET", "/agents/unattended")).body.definition.approvals, "ask", "an edit naming ask turns it to ask");
+});
