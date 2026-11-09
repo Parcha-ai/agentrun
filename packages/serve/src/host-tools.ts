@@ -88,8 +88,9 @@ export interface HostToolCtx {
    *  gate, which gates every host-tool call before its intent). */
   readonly gated?: { gate: RunGate; park: Park };
   /** A gate for a tool that cannot be run on the runner yet: undefined to run the call, else the refusal that is its answer,
-   *  so the tool is listed but never run as a stub (runner/adapter-run-spec.ts settleLearnedWorkflow). The paid tools the
-   *  loop can book (web_fetch/web_search/monid) carry no such gate; the adapter loop books their requests (bookedIn). */
+   *  so the tool is listed but never run as a stub. No tool sets it now (learned_workflow runs for real on every session's
+   *  model port); it stays the seam a not-yet-runnable tool refuses through. The paid tools the loop can book
+   *  (web_fetch/web_search/monid) carry no such gate; the adapter loop books their requests (bookedIn). */
   settle?(name: string, args: unknown, callId: string): { refused: string } | undefined;
 }
 
