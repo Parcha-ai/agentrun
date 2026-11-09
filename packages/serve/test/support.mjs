@@ -18,7 +18,7 @@ import { readRunDbSync } from "../dist/run-db.js";
 import { resolve } from "node:path";
 import { openSqliteStore } from "../dist/store/index.js";
 import { startRunner } from "../dist/runner/runner.js";
-import { dispatchRunner } from "../dist/runner/harness-loops.js";
+import { dispatchRunner, sandboxComputerForClaim } from "../dist/runner/harness-loops.js";
 import { routeOf } from "../dist/runner/model-route.js";
 import { FAUX_ENV, withoutFaux } from "../dist/model.js";
 import { SEAL_KEY_ENV } from "../dist/tool-keys.js";
@@ -255,7 +255,15 @@ function withAgents(store) {
       return typeof value === "function" ? value.bind(target) : value;
     },
   });
-  return { triggers, runs: store.runs };
+  // An agent archived through the server is archived in the store too, its row put first when it is not there.
+  const agents = new Proxy(store.agents, {
+    get(target, key) {
+      const value = Reflect.get(target, key, target);
+      if (key === "archive") return async (id, ...rest) => (await ensure(id), value.call(target, id, ...rest));
+      return typeof value === "function" ? value.bind(target) : value;
+    },
+  });
+  return { triggers, runs: store.runs, agents };
 }
 
 /** Trigger stores handed to servers a test starts itself (startServe, not serve()): closed when the file's tests are done,
@@ -296,7 +304,7 @@ export async function startInProcessRunner(data, { faux } = {}) {
   try {
     runner = startRunner({
       store,
-      createLoop: dispatchRunner({ env, data, journal: (claim) => store.journal(claim), store, sealKey, routeOf }),
+      createLoop: dispatchRunner({ env, data, journal: (claim) => store.journal(claim), store, sealKey, routeOf, computerForClaim: sandboxComputerForClaim(env) }),
     });
   } catch (error) {
     await store.close();

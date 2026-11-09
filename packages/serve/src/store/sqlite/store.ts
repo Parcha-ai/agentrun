@@ -2,6 +2,8 @@
 // The only code with SQL in it, besides the schema and the run patch. The file is on local disk, never on Archil: one
 // connection per process, and SQLite's one writer lock serializes the server's and every runner's commits. A unit of work
 // with more than one statement is one transaction (connection.transaction, BEGIN IMMEDIATE): all of it or none of it.
+// The domain code below (the SqliteStore class, storeOver) is written once for SQLite and Postgres (a Postgres store opens
+// it on its own connection): what differs, and the locks Postgres's many writers take, is the connection's Dialect (store/dialect.ts).
 import { existsSync, mkdirSync, readdirSync, statSync } from "node:fs";
 import { join } from "node:path";
 import { DatabaseSync } from "node:sqlite";
@@ -9,7 +11,7 @@ import { claimFence } from "../fence.js";
 import { RunStorage } from "../journal/storage.js";
 import { DDL, SCHEMA_VERSION } from "../schema.js";
 import {
-  CommandTaken, Fenced, RefreshLeaseLost, SchemaVersionUnknown, StoreConstraint, StoreFromEarlierVersion, TriggerFull, type AgentRow, type Agents,
+  AgentArchived, CommandTaken, Fenced, RefreshLeaseLost, SchemaVersionUnknown, StoreConstraint, StoreFromEarlierVersion, TriggerFull, type AgentRow, type Agents,
   type AlsoRow, type Claim, type Command, type FiringChange, type FiringRow, type FiringStatus, type ImportRunInput, type Journal, type NewRevision, type RevisionRow, type RunPatch, type RunRow, type Runs,
   type JournalReads,
   type ReleasedState, type RunState, type Store, type StoreRole, type TemplatePackage, type Templates, type TriggerDef, type TriggerPatch, type TriggerRow, type Triggers, type TriggerScope,
@@ -17,8 +19,9 @@ import {
   type McpOauth, type McpOauthPendingRow, type SealedKeyRow, type SealedKeys, type Settings, type SettingRow, type TriggerSettingRow, type TriggerSettings,
   SignInHandedTo, SignInMissing, SIGN_IN_TOMBSTONES_KEPT, type SignIns, type SignInRow, type SignInTombstoneRow, type ViewerKind,
 } from "../store.js";
-import { Connection, type SqliteExecutor, type SqliteValue, type Statement } from "./connection.js";
-import { applyRunPatch, refuseLeftovers, RUN_COLUMNS, runOf, type RunRecord } from "./run-patch.js";
+import type { Dialect } from "../dialect.js";
+import { Connection, type SqliteExecutor, type SqliteValue, type Statement, type StoreConnection } from "./connection.js";
+import { applyRunPatch, refuseLeftovers, RUN_COLUMNS, runOf, SIGN_IN_HANDED_LOCK, type RunRecord } from "./run-patch.js";
 import { readLaunch, writeLaunch } from "./run-launch.js";
 
 /** A claim's length when the caller names none. */
@@ -89,13 +92,13 @@ const FINAL = FINAL_STATES.map((state) => `'${state}'`).join(", ");
  *  under its claim and is released a few seconds later), with its wake_at passed, an untaken stop or cancel, or an untaken command
  *  that can answer it once its backoff (a failed resume's) has passed. A row marked `answers: false` (a trigger's
  *  follow-up message) answers no park: it waits, untaken, and its loop gets it after the person's answer wakes the run. */
-const CLAIMABLE = `(state = 'queued'
+const claimableIn = (d: Dialect) => `(state = 'queued'
   OR (state = 'running' AND (runner IS NULL OR claimed_until < ?) AND (backoff_until IS NULL OR backoff_until <= ?))
   OR (state = 'parked' AND (runner IS NULL OR claimed_until < ?) AND (
     (wake_at IS NOT NULL AND wake_at <= ?)
     OR EXISTS (SELECT 1 FROM commands WHERE commands.run_id = runs.id AND commands.taken_at IS NULL AND commands.kind IN ('stop', 'cancel'))
     OR ((backoff_until IS NULL OR backoff_until <= ?) AND EXISTS (SELECT 1 FROM commands WHERE commands.run_id = runs.id AND commands.taken_at IS NULL
-      AND json_extract(commands.body, '$.answers') IS NOT 0)))))`;
+      AND ${d.jsonNotFalse("commands.body", ["answers"])})))))`;
 const CLAIMABLE_AT = (at: number): number[] => [at, at, at, at, at];
 /** What a claim sets: the next epoch, the runner and its lease, running, no backoff. */
 const CLAIM_SET = "epoch = epoch + 1, runner = ?, claimed_until = ?, state = 'running', backoff_until = NULL";
@@ -238,7 +241,7 @@ export async function openSqliteStore(options: SqliteStoreOptions): Promise<Stor
     await connection.close().catch(() => undefined);
     throw error;
   }
-  return new SqliteStore(connection, options.now ?? Date.now);
+  return storeOver(connection, options.now ?? Date.now);
 }
 
 /** How many released claims a store remembers, to refuse their journals. */
@@ -252,6 +255,14 @@ function fenced(claim: Claim, sql: string, params: readonly SqliteValue[]): Stat
   return { sql, params, expect: { kind: "fenced", runId: claim.runId, epoch: claim.epoch } };
 }
 
+/** The Store over `connection`, on whichever database it is (SQLite here, Postgres in postgres/store.ts), on the store's
+ *  clock `now` (ms). The opener sets the schema up and checks its version first. */
+export function storeOver(connection: StoreConnection, now: () => number): Store {
+  return new SqliteStore(connection, now);
+}
+
+/** The store's domain code, written once for both databases: its SQL takes `?` parameters, and what a database says
+ *  differently, or must lock where SQLite's one writer serializes, is the connection's Dialect (store/dialect.ts). */
 class SqliteStore implements Store {
   readonly agents: Agents;
   readonly templates: Templates;
@@ -266,8 +277,10 @@ class SqliteStore implements Store {
   readonly triggerSettings: TriggerSettings;
   readonly mcpOauth: McpOauth;
   readonly signIns: SignIns;
-  readonly #db: Connection;
+  readonly #db: StoreConnection;
   readonly #now: () => number;
+  /** The runs a runner may claim (claimableIn), as this store's database says it. */
+  readonly #claimable: string;
   /** Each claim's one journal, until it is closed. */
   readonly #journals = new Map<string, RunStorage>();
   /** Each run's claim this store released last (its epoch): journal() refuses that claim, or an older one, rather than
@@ -277,15 +290,19 @@ class SqliteStore implements Store {
    *  epoch check in its own transaction. The map refuses early; the epoch is what guarantees it. */
   readonly #released = new Map<string, number>();
 
-  constructor(db: Connection, now: () => number) {
+  constructor(db: StoreConnection, now: () => number) {
     this.#db = db;
     this.#now = now;
+    const d = db.dialect;
+    this.#claimable = claimableIn(d);
 
     const insertAgent = (tx: SqliteExecutor, agent: { id: string; name: string; description?: string | null }, at: number) =>
       tx.run("INSERT INTO agents (id, name, description, created_at) VALUES (?, ?, ?, ?)", agent.id, agent.name, agent.description ?? null, at);
     const insertRevision = async (tx: SqliteExecutor, agentId: string, revision: NewRevision, at: number) => {
       // The parent is the agent's current revision now (null for its first): the agent must exist, which its first revision
-      // (create) and a later one (addRevision, upgrade) both guarantee before this.
+      // (create) and a later one (addRevision, upgrade) both guarantee before this. Held, so two revisions added at once
+      // never both name the same parent.
+      await d.lockRow(tx, "agents", "id", agentId);
       const agent = await tx.get<{ current_revision: string | null }>("SELECT current_revision FROM agents WHERE id = ?", agentId);
       if (!agent) throw new StoreConstraint(`no agent ${agentId}`);
       await tx.run("INSERT INTO revisions (id, agent_id, parent_id, kind, body, skills, note, package, created_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)",
@@ -297,6 +314,11 @@ class SqliteStore implements Store {
     const writeScopes = async (tx: SqliteExecutor, triggerId: string, scopes: readonly TriggerScope[]) => {
       await tx.run("DELETE FROM trigger_scopes WHERE trigger_id = ?", triggerId);
       for (const { kind, scope } of scopes) await tx.run("INSERT INTO trigger_scopes (kind, scope, trigger_id) VALUES (?, ?, ?)", kind, scope, triggerId);
+    };
+    /** Refused (AgentArchived) when agent `agentId` is archived: read in the writing transaction, so an archive that
+     *  commits first is seen, and one that commits after finds what this wrote. */
+    const refuseArchived = async (tx: SqliteExecutor, agentId: string) => {
+      if ((await tx.get<{ archived_at: number | null }>("SELECT archived_at FROM agents WHERE id = ?", agentId))?.archived_at != null) throw new AgentArchived(agentId);
     };
     /** Inserts the trigger, or (on its name for the agent) changes it in place, keeping its id; then its scope rows, only
      *  while it is enabled. `insertOnly` (an apply's new agent): no ON CONFLICT, and the package check keeps the names
@@ -330,9 +352,19 @@ class SqliteStore implements Store {
       },
       list: async ({ archived = false } = {}) =>
         (await db.all<AgentRecord>(`SELECT ${AGENT_COLUMNS} FROM agents WHERE archived_at IS ${archived ? "NOT NULL" : "NULL"} ORDER BY created_at, id`)).map(agentOf),
-      archive: async (id, archived) => {
-        await db.write([{ sql: "UPDATE agents SET archived_at = ? WHERE id = ?", params: [archived ? now() : null, id] }]);
-      },
+      archive: async (id, archived, why) =>
+        db.transaction(async (tx) => {
+          const at = now();
+          await tx.run("UPDATE agents SET archived_at = ? WHERE id = ?", archived ? at : null, id);
+          if (!archived) return [];
+          // Its triggers that are on, off in this same commit: a firing's fire reads the archive in its own transaction.
+          const off = await tx.all<{ id: string; name: string }>(
+            "UPDATE triggers SET enabled = 0, next_at = NULL, disabled = ?, updated_at = ? WHERE agent_id = ? AND enabled = 1 RETURNING id, name",
+            why === undefined ? null : json(why), at, id,
+          );
+          for (const t of off) await writeScopes(tx, t.id, []);
+          return off.map(({ id: triggerId, name }) => ({ id: triggerId, name })).sort((a, b) => a.name.localeCompare(b.name));
+        }),
       addRevision: async ({ agentId, ...revision }) => {
         await db.transaction((tx) => insertRevision(tx, agentId, revision, now()));
       },
@@ -354,6 +386,8 @@ class SqliteStore implements Store {
       apply: async (agent, revision, triggers, idempotencyKey) =>
         db.transaction(async (tx) => {
           if (idempotencyKey !== undefined) {
+            // Two applies under one key at once: the second waits for the first, then reads its kept answer.
+            await d.lockKey(tx, `templates.apply|${idempotencyKey}`);
             const kept = await tx.get<{ response: string }>("SELECT response FROM idempotency WHERE scope = 'templates.apply' AND key = ?", idempotencyKey);
             if (kept) return JSON.parse(kept.response) as { agentId: string; revisionId: string };
           }
@@ -391,6 +425,7 @@ class SqliteStore implements Store {
         const row = await db.transaction(async (tx) => {
           // A trigger belongs to an agent the store holds: refused in words, never a bare foreign-key failure.
           if (!(await tx.get<{ id: string }>("SELECT id FROM agents WHERE id = ?", t.agentId))) throw new StoreConstraint(`no agent ${t.agentId}: a trigger belongs to an agent the store holds`);
+          if (t.enabled) await refuseArchived(tx, t.agentId);
           const made = await tx.get<TriggerRecord>(
             `INSERT INTO triggers (id, agent_id, name, enabled, source, target, next_at, catchup_window_s, max_active_runs, created_at, updated_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?) RETURNING ${TRIGGER_COLUMNS}`,
             t.id, t.agentId, t.name, t.enabled ? 1 : 0, json(t.source), json(t.target), t.nextAt, t.catchupWindowS, t.maxActiveRuns ?? null, at, at,
@@ -406,6 +441,8 @@ class SqliteStore implements Store {
           // Moved to another agent (its target re-aimed): one the store holds, refused in words otherwise.
           if (patch.agentId !== undefined && !(await tx.get<{ id: string }>("SELECT id FROM agents WHERE id = ?", patch.agentId))) throw new StoreConstraint(`no agent ${patch.agentId}: a trigger belongs to an agent the store holds`);
           const changed = await tx.get<TriggerRecord>(`UPDATE triggers SET ${set} WHERE id = ? RETURNING ${TRIGGER_COLUMNS}`, ...params, id);
+          // Never left on for an archived agent (turned on, or moved there on): the whole update is undone.
+          if (changed?.enabled === 1) await refuseArchived(tx, changed.agent_id);
           // Scope rows only while it is on: turned off, it holds none; given scopes, they are its rows now.
           if (changed && (changed.enabled === 0 || scopes !== undefined)) await writeScopes(tx, id, changed.enabled === 1 ? (scopes ?? []) : []);
           return changed;
@@ -419,6 +456,9 @@ class SqliteStore implements Store {
       record: async (triggerId, firings, { patch, room } = {}) =>
         db.transaction(async (tx) => {
           const at = now();
+          // The trigger's row held first, in every transaction that reads its firings to write them (record, settle,
+          // message, prune, fire): one at a time per trigger, in one lock order.
+          await d.lockRow(tx, "triggers", "id", triggerId);
           if (!(await tx.get<{ id: string }>("SELECT id FROM triggers WHERE id = ?", triggerId))) return undefined;
           if (room !== undefined && firings.some((f) => f.status === "due")) {
             const due = (await tx.get<{ n: number }>("SELECT COUNT(*) AS n FROM trigger_firings WHERE trigger_id = ? AND status = 'due'", triggerId))!.n;
@@ -445,10 +485,11 @@ class SqliteStore implements Store {
         return row && firingOf(row);
       },
       firings: async (triggerId) =>
-        (await db.all<FiringRecord>(`SELECT ${FIRING_COLUMNS} FROM trigger_firings WHERE trigger_id = ? AND shown = 1 ORDER BY at DESC, rowid DESC`, triggerId)).map(firingOf),
+        (await db.all<FiringRecord>(`SELECT ${FIRING_COLUMNS} FROM trigger_firings WHERE trigger_id = ? AND shown = 1 ORDER BY at DESC, ${d.firingOrder} DESC`, triggerId)).map(firingOf),
       settle: async (triggerId, key, change, streak) =>
         db.transaction(async (tx) => {
           const at = now();
+          await d.lockRow(tx, "triggers", "id", triggerId);
           const was = await tx.get<FiringRecord>(`SELECT ${FIRING_COLUMNS} FROM trigger_firings WHERE trigger_id = ? AND key = ?`, triggerId, key);
           if (!was) return undefined;
           const settled = change.status !== undefined && change.status !== "due";
@@ -493,14 +534,15 @@ class SqliteStore implements Store {
           return { firing: firingOf(row!), paused };
         }),
       pending: async () =>
-        (await db.all<FiringRecord>(`SELECT ${FIRING_COLUMNS} FROM trigger_firings WHERE status = 'due' OR (status = 'failed' AND (notified IS NULL OR notified = 0)) ORDER BY at, rowid`)).map(firingOf),
+        (await db.all<FiringRecord>(`SELECT ${FIRING_COLUMNS} FROM trigger_firings WHERE status = 'due' OR (status = 'failed' AND (notified IS NULL OR notified = 0)) ORDER BY at, ${d.firingOrder}`)).map(firingOf),
       message: async ({ triggerId, key }, runId, command, bound) =>
         db.transaction(async (tx) => {
           const at = now();
+          await d.lockRow(tx, "triggers", "id", triggerId);
           const firing = await tx.get<{ status: string }>("SELECT status FROM trigger_firings WHERE trigger_id = ? AND key = ?", triggerId, key);
           if (!firing || firing.status !== "due") return undefined;
           const waiting = (await tx.get<{ n: number }>(
-            "SELECT COUNT(*) AS n FROM commands WHERE run_id = ? AND taken_at IS NULL AND json_extract(body, '$.origin.trigger_id') = ?", runId, triggerId,
+            `SELECT COUNT(*) AS n FROM commands WHERE run_id = ? AND taken_at IS NULL AND ${d.jsonText("body", ["origin", "trigger_id"])} = ?`, runId, triggerId,
           ))!.n;
           const clear = "retry_at = NULL, waits_on = NULL, payload = NULL, attrs = NULL, attempts = 0";
           if (waiting >= bound.max) {
@@ -513,13 +555,14 @@ class SqliteStore implements Store {
           return { sent: true as const, commandId: row!.id };
         }),
       waiting: async () =>
-        (await db.all<FiringRecord & { free: number }>(
+        (await db.all<FiringRecord & { free: number | boolean }>(
           `SELECT ${FIRING_COLUMNS.split(", ").map((c) => `f.${c}`).join(", ")},
              (SELECT COUNT(*) FROM trigger_firings s JOIN runs r ON r.id = s.run_id
                WHERE s.trigger_id = f.trigger_id AND s.status = 'started' AND r.state NOT IN (${FINAL})) < COALESCE(t.max_active_runs, 1) AS free
            FROM trigger_firings f JOIN triggers t ON t.id = f.trigger_id
-           WHERE f.status = 'due' AND f.waits_on IS NOT NULL ORDER BY f.at, f.rowid`,
-        )).map((r) => ({ ...firingOf(r), free: r.free === 1 })),
+           WHERE f.status = 'due' AND f.waits_on IS NOT NULL ORDER BY f.at, f.${d.firingOrder}`,
+        // A comparison reads 1 on SQLite and true on Postgres.
+        )).map((r) => ({ ...firingOf(r), free: r.free === 1 || r.free === true })),
       soonest: async () => (await db.get<{ at: number | null }>("SELECT MIN(next_at) AS at FROM triggers WHERE enabled = 1 AND next_at IS NOT NULL"))?.at ?? null,
       activeRuns: async (triggerId) =>
         (await db.get<{ n: number }>(
@@ -528,13 +571,14 @@ class SqliteStore implements Store {
       prune: async (triggerId, { history, dayMs, keepByKey, kept }) =>
         db.transaction(async (tx) => {
           const at = now();
+          await d.lockRow(tx, "triggers", "id", triggerId);
           // Past the newest `history` shown firings: never a due one, a failure not yet told, or a started one whose run
           // has not ended. The rest leave the history: kept for their key's day when a sender's key names them, else gone.
           const old = await tx.all<{ key: string; by: string | null }>(
             `SELECT f.key, f.by FROM trigger_firings f LEFT JOIN runs r ON r.id = f.run_id
              WHERE f.trigger_id = ? AND f.shown = 1 AND f.status != 'due' AND NOT (f.status = 'failed' AND (f.notified IS NULL OR f.notified = 0))
                AND NOT (f.status = 'started' AND r.id IS NOT NULL AND r.state NOT IN (${FINAL}))
-               AND f.key NOT IN (SELECT key FROM trigger_firings WHERE trigger_id = ? AND shown = 1 ORDER BY at DESC, rowid DESC LIMIT ?)`,
+               AND f.key NOT IN (SELECT key FROM trigger_firings WHERE trigger_id = ? AND shown = 1 ORDER BY at DESC, ${d.firingOrder} DESC LIMIT ?)`,
             triggerId, triggerId, history,
           );
           for (const { key, by } of old) {
@@ -552,13 +596,15 @@ class SqliteStore implements Store {
             `DELETE FROM trigger_firings WHERE trigger_id = ? AND key IN (
                SELECT key FROM trigger_firings WHERE trigger_id = ? AND shown = 0 AND status != 'due'
                  AND NOT (status = 'started' AND run_id IN (SELECT id FROM runs WHERE state NOT IN (${FINAL})))
-               ORDER BY at DESC, rowid DESC LIMIT -1 OFFSET ?)`,
+               ORDER BY at DESC, ${d.firingOrder} DESC ${d.limitAll} OFFSET ?)`,
             triggerId, triggerId, kept,
           );
         }),
       enable: async (triggerId, scopes) => {
         await db.transaction(async (tx) => {
-          if ((await tx.runCounted("UPDATE triggers SET enabled = 1, disabled = NULL, updated_at = ? WHERE id = ?", now(), triggerId)) === 0) throw new StoreConstraint(`no trigger ${triggerId}`);
+          const on = await tx.get<{ agent_id: string }>("UPDATE triggers SET enabled = 1, disabled = NULL, updated_at = ? WHERE id = ? RETURNING agent_id", now(), triggerId);
+          if (!on) throw new StoreConstraint(`no trigger ${triggerId}`);
+          await refuseArchived(tx, on.agent_id);
           await writeScopes(tx, triggerId, scopes);
         });
       },
@@ -573,6 +619,9 @@ class SqliteStore implements Store {
       fire: async (firing, run, { launch } = {}) =>
         db.transaction(async (tx) => {
           const at = now();
+          await d.lockRow(tx, "triggers", "id", firing.triggerId);
+          // Never a run of an archived agent: the archive's commit is read here, in the transaction that would start it.
+          await refuseArchived(tx, run.agentId);
           const row = await tx.get<RunRecord>(`INSERT INTO runs (id, agent_id, revision_id, state, epoch, started_at) VALUES (?, ?, ?, 'queued', 0, ?) RETURNING ${RUN_COLUMNS}`, run.id, run.agentId, run.revisionId, at);
           // The run's launch row lands with it, through the store's one writer, or neither does.
           if (launch) await writeLaunch(tx, run.id, launch, at);
@@ -634,7 +683,7 @@ class SqliteStore implements Store {
       claimable: async ({ limit } = {}) => {
         const at = now();
         const bounded = typeof limit === "number" && Number.isSafeInteger(limit) && limit >= 0;
-        const rows = await db.all<{ id: string }>(`SELECT id FROM runs WHERE ${CLAIMABLE} ORDER BY started_at, id${bounded ? " LIMIT ?" : ""}`, ...CLAIMABLE_AT(at), ...(bounded ? [limit] : []));
+        const rows = await db.all<{ id: string }>(`SELECT id FROM runs WHERE ${this.#claimable} ORDER BY started_at, id${bounded ? " LIMIT ?" : ""}`, ...CLAIMABLE_AT(at), ...(bounded ? [limit] : []));
         return rows.map((row) => row.id);
       },
       claimMany: (runner, k, { leaseMs = DEFAULT_LEASE_MS } = {}) => this.#claimRuns(runner, leaseMs, { k }),
@@ -643,7 +692,7 @@ class SqliteStore implements Store {
         const { also = [], take = [] } = rows;
         return db.transaction(async (tx) => {
           const at = now();
-          const row = await applyRunPatch(tx, claim, patch, also, at);
+          const row = await applyRunPatch(tx, claim, patch, also, at, d);
           for (const commandId of take) {
             if ((await tx.runCounted("UPDATE commands SET taken_at = ? WHERE id = ? AND run_id = ? AND taken_at IS NULL", at, commandId, claim.runId)) === 0) {
               throw new CommandTaken(claim.runId, commandId);
@@ -656,7 +705,7 @@ class SqliteStore implements Store {
       },
     };
 
-    const server = async (executor: SqliteExecutor, name: string) => {
+    const server = async (executor: Pick<SqliteExecutor, "get">, name: string) => {
       const row = await executor.get<McpServerRecord>(`SELECT ${MCP_SERVER_COLUMNS} FROM mcp_servers WHERE name = ?`, name);
       return row && mcpServerOf(row);
     };
@@ -704,7 +753,7 @@ class SqliteStore implements Store {
         return db.transaction(async (tx) => {
           const at = now();
           const granted = await tx.runCounted(
-            "UPDATE mcp_servers SET refresh_holder = ?, refresh_until = ? WHERE name = ? AND sealed IS ? AND (refresh_until IS NULL OR refresh_until < ?)",
+            `UPDATE mcp_servers SET refresh_holder = ?, refresh_until = ? WHERE name = ? AND ${d.nullSafeEquals("sealed")} AND (refresh_until IS NULL OR refresh_until < ?)`,
             holder, at + ms, name, seen, at,
           );
           const row = await server(tx, name);
@@ -716,7 +765,7 @@ class SqliteStore implements Store {
         db.transaction(async (tx) => {
           const at = now();
           const written = await tx.runCounted(
-            "UPDATE mcp_servers SET sealed = ?, refresh_holder = NULL, refresh_until = NULL, updated_at = max(?, updated_at + 1) WHERE name = ? AND refresh_holder = ?",
+            `UPDATE mcp_servers SET sealed = ?, refresh_holder = NULL, refresh_until = NULL, updated_at = ${d.greatest}(?, updated_at + 1) WHERE name = ? AND refresh_holder = ?`,
             sealed, at, name, holder,
           );
           if (written === 0) throw new RefreshLeaseLost(name, holder);
@@ -729,7 +778,8 @@ class SqliteStore implements Store {
 
     this.live = {
       // One transaction for the tick; each row written only under its run's current epoch and live lease (the SELECT finds
-      // no run row for a stale or lapsed claim, so nothing is inserted or changed). The drop below stays on the epoch.
+      // no run row for a stale or lapsed claim, so nothing is inserted or changed). The drop below stays on the epoch. The
+      // run row is read under the share lock: a put never lands beside a run's end or a new claim still in flight.
       put: (rows) =>
         db.transaction(async (tx) => {
           const at = now();
@@ -738,7 +788,7 @@ class SqliteStore implements Store {
           for (const { claim, state } of rows) {
             const fence = claimFence(claim, at);
             const changed = await tx.runCounted(
-              `INSERT INTO run_live (run_id, state, updated_at) SELECT id, ?, ? FROM runs WHERE ${fence.where}
+              `INSERT INTO run_live (run_id, state, updated_at) SELECT id, ?, ? FROM runs WHERE ${fence.where}${d.shareLock}
                 ON CONFLICT (run_id) DO UPDATE SET state = excluded.state, updated_at = excluded.updated_at`,
               json(state), at, ...fence.params,
             );
@@ -756,7 +806,7 @@ class SqliteStore implements Store {
       },
       drop: async (claim) => {
         await db.write([{
-          sql: "DELETE FROM run_live WHERE run_id = ? AND EXISTS (SELECT 1 FROM runs WHERE id = ? AND epoch = ?)",
+          sql: `DELETE FROM run_live WHERE run_id = ? AND EXISTS (SELECT 1 FROM runs WHERE id = ? AND epoch = ?${d.shareLock})`,
           params: [claim.runId, claim.runId, claim.epoch],
         }]);
       },
@@ -770,7 +820,7 @@ class SqliteStore implements Store {
           const at = now();
           const fence = claimFence(claim, at);
           const changed = await tx.runCounted(
-            `INSERT INTO computer_viewers (run_id, kind, tag, port, viewer_id, sealed, at, runner, epoch) SELECT id, ?, ?, ?, ?, ?, ?, ?, ? FROM runs WHERE ${fence.where}
+            `INSERT INTO computer_viewers (run_id, kind, tag, port, viewer_id, sealed, at, runner, epoch) SELECT id, ?, ?, ?, ?, ?, ?, ?, ? FROM runs WHERE ${fence.where}${d.shareLock}
               ON CONFLICT (run_id, kind, tag) DO UPDATE SET port = excluded.port, viewer_id = excluded.viewer_id, sealed = excluded.sealed, at = excluded.at, runner = excluded.runner, epoch = excluded.epoch`,
             viewer.kind, viewer.tag, viewer.port, viewer.id, viewer.sealed, at, claim.runner, claim.epoch, ...fence.params,
           );
@@ -782,7 +832,7 @@ class SqliteStore implements Store {
         const narrow = kind === undefined ? "" : tag === undefined ? " AND kind = ?" : " AND kind = ? AND tag = ?";
         const narrowParams = kind === undefined ? [] : tag === undefined ? [kind] : [kind, tag];
         await db.write([{
-          sql: `DELETE FROM computer_viewers WHERE run_id = ?${narrow} AND EXISTS (SELECT 1 FROM runs WHERE id = ? AND epoch = ?)`,
+          sql: `DELETE FROM computer_viewers WHERE run_id = ?${narrow} AND EXISTS (SELECT 1 FROM runs WHERE id = ? AND epoch = ?${d.shareLock})`,
           params: [claim.runId, ...narrowParams, claim.runId, claim.epoch],
         }]);
       },
@@ -876,9 +926,9 @@ class SqliteStore implements Store {
     // A running run whose sign_in_handed array holds `hash` (handedHolder), or any running run handed a sign-in at all
     // (handedAny): the one read forget and the runner make, over `runs` alone.
     const handedHolderIn = (tx: Pick<SqliteExecutor, "get">, hash: string) =>
-      tx.get<{ id: string }>("SELECT id FROM runs WHERE state = 'running' AND sign_in_handed IS NOT NULL AND EXISTS (SELECT 1 FROM json_each(sign_in_handed) WHERE value = ?) LIMIT 1", hash);
+      tx.get<{ id: string }>(`SELECT id FROM runs WHERE state = 'running' AND sign_in_handed IS NOT NULL AND ${d.jsonArrayHas("sign_in_handed")} LIMIT 1`, hash);
     const handedAnyIn = (tx: Pick<SqliteExecutor, "get">) =>
-      tx.get<{ id: string }>("SELECT id FROM runs WHERE state = 'running' AND sign_in_handed IS NOT NULL AND json_array_length(sign_in_handed) > 0 LIMIT 1");
+      tx.get<{ id: string }>(`SELECT id FROM runs WHERE state = 'running' AND sign_in_handed IS NOT NULL AND ${d.jsonArrayLength("sign_in_handed")} > 0 LIMIT 1`);
     this.signIns = {
       save: async ({ agentId, provider, name, pointerSealed }) => {
         const at = now();
@@ -905,7 +955,9 @@ class SqliteStore implements Store {
       forget: (agentId, provider, held) =>
         db.transaction(async (tx) => {
           // The hold check and the move are one transaction: a launch writing sign_in_handed is another, and the store's one
-          // writer lock serializes them, so forget never passes a hold a launch took, nor a launch a forget cleared.
+          // writer lock serializes them, so forget never passes a hold a launch took, nor a launch a forget cleared. With many
+          // writers, the lock both take (SIGN_IN_HANDED_LOCK) does.
+          await d.lockKey(tx, SIGN_IN_HANDED_LOCK);
           const holder = held.hash !== undefined ? await handedHolderIn(tx, held.hash) : held.heldUnreadable ? await handedAnyIn(tx) : undefined;
           if (holder) throw new SignInHandedTo(holder.id);
           const live = await tx.get<SignInRecord>(`SELECT ${SIGN_IN_COLUMNS} FROM sign_ins WHERE agent_id = ? AND provider = ?`, agentId, provider);
@@ -939,9 +991,12 @@ class SqliteStore implements Store {
       // lease from now, never comes back already run out.
       const at = this.#now();
       const until = at + leaseMs;
+      // With many claimers (Postgres), the rows picked are locked as they are read, and a row another claimer holds is
+      // skipped (Dialect.claimLock): two claims never pick one run, and neither waits for the other.
+      const lock = this.#db.dialect.claimLock;
       const picked = "runId" in pick
-        ? await tx.all<{ id: string; state: RunState; runner: string | null }>(`SELECT id, state, runner FROM runs WHERE id = ? AND ${CLAIMABLE}`, pick.runId, ...CLAIMABLE_AT(at))
-        : await tx.all<{ id: string; state: RunState; runner: string | null }>(`SELECT id, state, runner FROM runs WHERE ${CLAIMABLE} ORDER BY started_at, id LIMIT ?`, ...CLAIMABLE_AT(at), pick.k);
+        ? await tx.all<{ id: string; state: RunState; runner: string | null }>(`SELECT id, state, runner FROM runs WHERE id = ? AND ${this.#claimable}${lock}`, pick.runId, ...CLAIMABLE_AT(at))
+        : await tx.all<{ id: string; state: RunState; runner: string | null }>(`SELECT id, state, runner FROM runs WHERE ${this.#claimable} ORDER BY started_at, id LIMIT ?${lock}`, ...CLAIMABLE_AT(at), pick.k);
       if (picked.length === 0) return [];
       const rows = await tx.all<{ id: string; epoch: number }>(
         `UPDATE runs SET ${CLAIM_SET} WHERE id IN (${picked.map(() => "?").join(", ")}) RETURNING id, epoch`,
@@ -1048,7 +1103,9 @@ class SqliteStore implements Store {
 
   async command(runId: string, { kind, body = null }: { kind: string; body?: unknown }): Promise<Command> {
     const [result] = await this.#db.write([{
-      sql: `INSERT INTO commands (run_id, kind, body, created_at) SELECT id, ?, ?, ? FROM runs WHERE id = ? AND state NOT IN (${FINAL}) RETURNING ${COMMAND_COLUMNS}`,
+      // The run row read under the share lock: a command never lands while the run's end is in flight, to be left untaken
+      // by an end that refused the run's leftover rows before it (the end waits for it, or it waits for the end).
+      sql: `INSERT INTO commands (run_id, kind, body, created_at) SELECT id, ?, ?, ? FROM runs WHERE id = ? AND state NOT IN (${FINAL})${this.#db.dialect.shareLock} RETURNING ${COMMAND_COLUMNS}`,
       params: [kind, json(body), this.#now(), runId],
       expect: { kind: "final", runId },
     }]);
@@ -1069,7 +1126,7 @@ class SqliteStore implements Store {
     if (cursors.length === 0) return out;
     // One read for every run: each cursor a (run_id, after) row of a VALUES list joined against the commands.
     const rows = await this.#db.all<CommandRecord>(
-      `WITH cursors(run_id, after) AS (VALUES ${cursors.map(() => "(?, ?)").join(", ")})
+      `WITH cursors(run_id, after) AS (VALUES ${cursors.map(() => `(?, ${this.#db.dialect.bigintParam})`).join(", ")})
        SELECT ${COMMAND_COLUMNS.split(", ").map((column) => `commands.${column}`).join(", ")} FROM commands JOIN cursors ON commands.run_id = cursors.run_id AND commands.id > cursors.after ORDER BY commands.id`,
       ...cursors.flatMap((cursor) => [cursor.runId, cursor.after]),
     );

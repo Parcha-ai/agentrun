@@ -251,3 +251,22 @@ test("a trigger secrets file that does not read is never written over: a webhook
   assert.deepEqual((await api("GET", "/triggers")).body.triggers.map((x) => x.source.kind), ["schedule"]);
   assert.equal(await readFile(join(data, "trigger-settings-webhook.json"), "utf8"), garbage, "byte for byte");
 });
+
+test("a webhook trigger's view carries hook_url, where its sender posts: at the public URL when the server has one, else the path; a schedule's has none", { timeout: 60_000 }, async (t) => {
+  withEnv(t, SEAL);
+  for (const publicUrl of ["https://agents.example.test/", undefined]) {
+    const { api } = await serve(t, publicUrl ? { publicUrl } : {});
+    await made(api, "hooked");
+    const created = await api("POST", "/triggers", hooked("hooked"));
+    assert.equal(created.status, 201, JSON.stringify(created.body));
+    const { id } = created.body;
+    const want = `${publicUrl ? "https://agents.example.test" : ""}/v2/hooks/${id}`;
+    assert.equal(created.body.hook_url, want, "create");
+    assert.equal((await api("GET", `/triggers/${id}`)).body.hook_url, want, "get");
+    assert.equal((await api("PATCH", `/triggers/${id}`, { name: "on push 2" })).body.hook_url, want, "patch");
+    assert.equal((await api("GET", "/triggers")).body.triggers.find((x) => x.id === id).hook_url, want, "list");
+    const scheduled = await api("POST", "/triggers", { ...hooked("hooked"), name: "nightly", source: { kind: "schedule", every_s: 600 } });
+    assert.equal(scheduled.status, 201, JSON.stringify(scheduled.body));
+    assert.equal(Object.hasOwn(scheduled.body, "hook_url"), false, "a schedule has no hook");
+  }
+});

@@ -4,19 +4,21 @@
 // is said as such.
 import assert from "node:assert/strict";
 import { randomBytes } from "node:crypto";
-import { mkdir } from "node:fs/promises";
+import { mkdir, writeFile } from "node:fs/promises";
 import { createRequire } from "node:module";
 import { connect } from "node:net";
 import { join } from "node:path";
 import { test } from "node:test";
 import { startServe } from "../dist/index.js";
+import { ApiError } from "../dist/errors.js";
 import { SealedSettings } from "../dist/sealed-settings.js";
 import { headersRefusal, MIN_KEY_BYTES, verify } from "../dist/standard-webhooks.js";
 import { openapiDocument } from "../dist/openapi.js";
 import { TRIGGER_ADAPTERS } from "../dist/trigger-adapters.js";
 import { schemaProblems } from "./schema-support.mjs";
+import { E2, keyOf } from "./trigger-support.mjs";
 import { openSqliteStore } from "../dist/store/sqlite/store.js";
-import { agent, client, FAUX, scratch, withEnv } from "./support.mjs";
+import { agent, client, FAUX, follow, scratch, withEnv } from "./support.mjs";
 import { firings } from "./trigger-support.mjs";
 
 const { Webhook } = createRequire(import.meta.url)("standardwebhooks");
@@ -345,4 +347,91 @@ test("a server-wide hook's documented answers are its own: its firings' by names
   assert.ok(firings && firingBy(firings).includes("ping"), JSON.stringify(body("200")));
   for (const answer of [{ firings: [] }, { challenge: "c-123" }, { ok: "ignored" }, { firings: [{ ok: "duplicate" }] }, { ok: true }, { ok: "ignored", challenge: "c-9" }]) assert.deepEqual(schemaProblems(doc, body("200"), answer), [], JSON.stringify(answer));
   assert.deepEqual(schemaProblems(doc, body("200"), { ok: "maybe" }), [], "an ok answer of the source's own is a handshake");
+});
+
+/** A server-wide source whose triggers each choose their own events (takes), with no scope: one event fires every
+ *  trigger that takes it. */
+const fan = {
+  id: "fan", label: "fan trigger", delivery: "push", owner: false,
+  describe: '{kind: "fan", topic}', fires: "a fan event", schemas: [],
+  settings: { scope: "server", fields: { signing: { minBytes: MIN_KEY_BYTES } } },
+  push: {
+    maxBodyBytes: 4096,
+    key: "signing",
+    headers: headersRefusal,
+    verify,
+    parse(_headers, body) {
+      const doc = JSON.parse(body.toString("utf8"));
+      return [{ key: doc.id, text: doc.text, event: doc.topic, body: doc }];
+    },
+  },
+  // "all" is an event every trigger takes; each event is its own run's, never skipped behind another.
+  takes: (source, event) => (source.topic === event.event || event.event === "all" ? undefined : "another topic"),
+  concurrent: () => true,
+  parse: (value, _now, bad) => (typeof value.topic === "string" ? { kind: "fan", topic: value.topic } : bad("topic", "missing", "topic is a string")),
+  wellFormed: (source) => typeof source.topic === "string",
+};
+
+/** receivePush alone, behind a bare HTTP server, with deps the test holds: what the handler does with a request, apart
+ *  from the server's wiring. */
+async function hookOnly(t, deps) {
+  const { createServer } = await import("node:http");
+  const { receivePush } = await import("../dist/push-handler.js");
+  const server = createServer(async (req, res) => {
+    try {
+      const answer = await receivePush(deps, req, req.url.split("/").pop());
+      res.writeHead(answer.status, { "content-type": "application/json", ...(answer.headers ?? {}) }).end(JSON.stringify(answer.body));
+    } catch (error) {
+      res.writeHead(error.status ?? 500, { "content-type": "application/json", ...(error.headers ?? {}) }).end(JSON.stringify({ code: error.code, message: error.message }));
+    }
+  });
+  await new Promise((resolve) => server.listen(0, "127.0.0.1", resolve));
+  t.after(() => new Promise((resolve) => server.close(resolve)));
+  return `http://127.0.0.1:${server.address().port}`;
+}
+
+/** Deps for the fan source: its server-scoped key, the triggers that listen (id → topic), and what was recorded. */
+function fanDeps(secret, listening, { full = new Set() } = {}) {
+  const received = [];
+  const ignored = [];
+  return {
+    received, ignored,
+    deps: {
+      adapters: [...TRIGGER_ADAPTERS, fan],
+      hooked: async () => undefined,
+      scoped: async () => [],
+      setting: (adapterId, scope, field) => (adapterId === "fan" && scope === "server" && field === "signing" ? secret : undefined),
+      listening: async (kind) => (kind === "fan" ? Object.entries(listening).map(([id, topic]) => ({ id, source: { kind: "fan", topic } })) : []),
+      ignored: async (id, key) => void ignored.push([id, key]),
+      receive: async (id, key) => {
+        if (full.has(id)) throw new ApiError("rate_limited", "20 firings are still due for this trigger.", { retry_after_ms: 30_000 }, { "retry-after": "30" });
+        received.push([id, key]);
+        return { created: true, firing: { key, trigger: id } };
+      },
+      refused: () => {},
+      say: () => {},
+    },
+  };
+}
+
+test("a server-wide source whose triggers each choose their events fires every trigger that takes one event, each its own firing; one that does not take it keeps the event's key; an event none takes is ignored", async (t) => {
+  const secret = `whsec_${randomBytes(32).toString("base64")}`;
+  const { deps, received, ignored } = fanDeps(secret, { a1: "a", a2: "a", b: "b" });
+  const base = await hookOnly(t, deps);
+  const res = await post(base, "/hooks/fan", JSON.stringify({ id: "evt-1", topic: "a", text: "hi" }), { secret });
+  assert.equal(res.status, 202, JSON.stringify(res.body));
+  assert.deepEqual(received, [["a1", "evt-1"], ["a2", "evt-1"]], "each trigger that takes it, its own firing");
+  assert.deepEqual(ignored, [["b", "evt-1"]], "the other keeps the key for its day: the same request relabeled is a duplicate there");
+  const none = await post(base, "/hooks/fan", JSON.stringify({ id: "evt-2", topic: "c", text: "hi" }), { secret });
+  assert.deepEqual([none.status, none.body], [200, { ok: "ignored" }]);
+});
+
+test("an event two triggers take, one of them full, is refused 429 with Retry-After, though the other recorded it", async (t) => {
+  const secret = `whsec_${randomBytes(32).toString("base64")}`;
+  const { deps, received } = fanDeps(secret, { open: "all", full: "all" }, { full: new Set(["full"]) });
+  const base = await hookOnly(t, deps);
+  const res = await post(base, "/hooks/fan", JSON.stringify({ id: "evt-all", topic: "all", text: "hi" }), { secret });
+  assert.equal(res.status, 429, JSON.stringify(res.body));
+  assert.equal(res.headers["retry-after"], "30");
+  assert.deepEqual(received, [["open", "evt-all"]], "the other recorded it: the sender's retry is its duplicate");
 });
