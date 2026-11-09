@@ -95,7 +95,7 @@ function mcpCli(seen) {
   };
 }
 
-async function cliRun(t, { settings = {} } = {}) {
+async function cliRun(t, { settings = {}, grants = ["mcp:fake/add"] } = {}) {
   const dir = mkdtempSync(join(process.env.TMPDIR ?? tmpdir(), "runner-mcp-cli-"));
   const server = await openSqliteStore({ dataDir: dir, role: "server" });
   const store = await openSqliteStore({ dataDir: dir, role: "runner" });
@@ -116,7 +116,7 @@ async function cliRun(t, { settings = {} } = {}) {
   const work = mkdtempSync(join(process.env.TMPDIR ?? tmpdir(), "runner-mcp-cli-work-"));
   t.after(() => rmSync(work, { recursive: true, force: true }));
   const loop = createAdapterLoop(async (claim, run) => {
-    const mcp = await mcpForClaim({ claim, store, sealKey: KEY, grants: ["mcp:fake/add"], harness: run.harness, work: () => work });
+    const mcp = await mcpForClaim({ claim, store, sealKey: KEY, grants, harness: run.harness, work: () => work });
     return {
       adapter: mcpCli(seen),
       session: { key: "root", label: "root", system: [], tools: [lookup], context: "fresh" },
@@ -215,4 +215,11 @@ test("C5: a parked call across a new runner: the runner that parked it goes, ano
   assert.equal(row.runner, null);
   assert.equal(toolCalls(run.fake).length, 1, "run exactly once");
   assert.ok(run.seen.followUps?.[0]?.endsWith("They allowed it, and it ran. Its result:\n5"), run.seen.followUps?.[0]);
+});
+
+test("C6: a run that grants no MCP tool hands its CLI no MCP server, and the server sees nothing", async (t) => {
+  const run = await cliRun(t, { grants: [] });
+  assert.equal(run.row.state, "ended", JSON.stringify(run.row));
+  assert.equal(run.seen.spec.mcp, undefined, "no session MCP, so no /mcp door is mounted");
+  assert.deepEqual(run.fake.log.filter((entry) => ["tools/call", "initialize", "server/discover"].includes(entry.method)), [], "the server saw nothing of the run");
 });
