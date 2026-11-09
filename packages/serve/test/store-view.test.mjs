@@ -9,7 +9,7 @@ import { commitWrites } from "@earendil-works/pi-durable/testing";
 import { storeOn, T0 } from "./store-helpers.mjs";
 
 const { viewOverStore, summaryOverStore, momentOverStore } = await import("../dist/store-view.js");
-const { raiseCap } = await import("../dist/runs-over-store.js");
+const { raiseCap, approve } = await import("../dist/runs-over-store.js");
 
 const context = BACKGROUND_CONTEXT;
 const iso = (ms) => new Date(ms).toISOString();
@@ -228,6 +228,39 @@ test("an answered approval folds into the moment by its decision and clears the 
   const view = await viewOverStore(store, "run-1", deps);
   assert.equal(view.status, "completed");
   assert.equal(view.pending, null);
+});
+
+test("approval ids are unique within a run, and an approve names exactly the call the card shows", async (t) => {
+  const { store } = await storeOn(t);
+  await agent(store);
+  await store.runs.create({ id: "run-1", agentId: "agent-1", revisionId: "rev-1" }, { body: { input: { message: "Do two things." }, title: "Two asks", place: { mode: "runner" } } });
+  const claim = await store.claim("run-1", "runner-a", { leaseMs: 60_000 });
+  const journal = store.journal(claim);
+  const u = { id: await journal.mintId(), conversationId: ROOT, kind: "pi.user", model: [{ role: "user", content: "Do two things.", timestamp: T0 }] };
+  // Two tool calls parked in turn: the first allowed, the second still waiting. Each ask is keyed by its own call id.
+  const ask1 = { id: await journal.mintId(), conversationId: ROOT, kind: "agentrun.ask", data: { callId: "c1", tool: "web_fetch", args: { url: "https://one.test" }, requestedAt: iso(T0 + 1_000), price: 0.01 } };
+  const answer1 = { id: await journal.mintId(), conversationId: ROOT, kind: "agentrun.answer", data: { callId: "c1", approved: true, decision: "allow", answeredAt: iso(T0 + 1_500) } };
+  const ask2 = { id: await journal.mintId(), conversationId: ROOT, kind: "agentrun.ask", data: { callId: "c2", tool: "bash", args: { command: "ls" }, requestedAt: iso(T0 + 2_000), price: "not metered" } };
+  await commitWrites(journal, [{ type: "conversation", value: { id: ROOT } }, { type: "entry", value: u }, { type: "entry", value: ask1 }, { type: "entry", value: answer1 }, { type: "entry", value: ask2 }], context);
+  await store.release(claim);
+
+  const view = await viewOverStore(store, "run-1", deps);
+  assert.equal(view.pending?.kind, "approval");
+  assert.equal(view.pending?.id, "c2");
+  assert.equal(view.pending?.call_id, "c2");
+
+  const moment = await momentOverStore(store, "run-1", deps);
+  // The run's approval ids are its call ids, distinct (unique within the run); the first is answered, the second waits.
+  assert.deepEqual([...moment.approvalIds].sort(), ["c1", "c2"]);
+  assert.equal(moment.approvalIds.size, 2);
+  assert.equal(moment.waitingApprovalId, "c2");
+  assert.deepEqual(moment.answeredApprovals, { c1: { decision: "allow" } });
+
+  // Answering through the write half with the card's id names exactly that call; an id that names no call is refused.
+  await approve(store, moment, view.pending.id, "allow");
+  const approveCmd = (await store.commands("run-1", 0)).find((c) => c.kind === "approve");
+  assert.equal(approveCmd?.body?.approval, "c2");
+  await assert.rejects(approve(store, moment, "nope", "allow"), /no tool call nope waiting for approval/);
 });
 
 // The budget pending a parked run waits on, as its agentrun.budget entry holds it (the kernel cap's parkOf), with the raise
