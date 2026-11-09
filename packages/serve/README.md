@@ -1756,7 +1756,7 @@ An MCP server saved with `auth: {type: "github_app", headers?}` (`PUT /v2/settin
 connected App's tokens and keeps none of its own: only its static headers (such as `X-MCP-Tools`), sealed as written,
 and never an `Authorization`. Its tools are listed with a token narrowed to one repository, of the first of the App's
 installations (in order) that covers one; an installation whose account has none selected is passed over. GitHub that
-does not answer while that token is minted (a 429, a 5xx, no answer) is `502 github_failed`, "GitHub didn't answer: try
+does not answer while that token is minted (a 429, a 5xx, a rate limit's 403, no answer) is `502 github_failed`, "GitHub didn't answer: try
 again", retryable, and the preview, save or refresh changes nothing. At each launch of a run that
 grants its tools (its start, every resume, a relaunch after a crash) the server mints an installation token for that
 run, narrowed to the one repository the run is about, with the App's permissions: a GitHub event's run uses its

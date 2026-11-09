@@ -530,7 +530,7 @@ export class GitHubConnect {
     if ("unusable" in scout || "failed" in scout) return scout;
     try {
       const listed = await githubCall(this.options.api, "/installation/repositories?per_page=1", { jwt: scout.token, ...(signal ? { signal } : {}) }).catch(() => undefined);
-      if (!listed || unanswered(listed.status)) return UNANSWERED;
+      if (!listed || unanswered(listed)) return UNANSWERED;
       if (listed.status !== 200) return {};
       const repo = isObject(listed.json) && Array.isArray(listed.json.repositories) && isObject(listed.json.repositories[0]) ? listed.json.repositories[0].name : undefined;
       return typeof repo === "string" && repo ? { repo } : {};
@@ -542,7 +542,7 @@ export class GitHubConnect {
   private async mint(installation: number, jwt: string, repositories: string[] | undefined, refused: { unusable: string }, signal?: AbortSignal, permissions?: Record<string, string>): Promise<{ token: string; expiresAt: number } | { unusable: string } | Unanswered> {
     const body = { ...(repositories ? { repositories } : {}), ...(permissions ? { permissions } : {}) };
     const answer = await githubCall(this.options.api, `/app/installations/${installation}/access_tokens`, { method: "POST", jwt, ...(Object.keys(body).length ? { body } : {}), ...(signal ? { signal } : {}) }).catch(() => undefined);
-    if (!answer || unanswered(answer.status)) return UNANSWERED;
+    if (!answer || unanswered(answer)) return UNANSWERED;
     const minted = isObject(answer.json) ? answer.json : {};
     if (answer.status !== 201 || typeof minted.token !== "string" || typeof minted.expires_at !== "string") return refused;
     const expiresAt = Date.parse(minted.expires_at);
@@ -552,11 +552,14 @@ export class GitHubConnect {
   }
 }
 
-/** GitHub that did not answer a listing token's call: a 429, a 5xx, or no answer at all. Nothing is learned from it, so
- *  nothing is refused for good: try again (mcp-servers.ts, 502 github_failed). */
+/** GitHub that did not answer a listing token's call: a 429, a 5xx, a rate limit's 403, or no answer at all. Nothing is
+ *  learned from it, so nothing is refused for good: try again (mcp-servers.ts, 502 github_failed). */
 type Unanswered = { failed: string };
 const UNANSWERED: Unanswered = { failed: "GitHub didn't answer: try again." };
-const unanswered = (status: number) => status === 429 || status >= 500;
+const unanswered = (answer: { status: number; json: unknown; headers: Headers }) => answer.status === 429 || answer.status >= 500 || (answer.status === 403 && rateLimited(answer));
+/** A 403 that is GitHub's rate limit, primary or secondary, not a refusal: its words say so, no request is left
+ *  (X-RateLimit-Remaining 0), or it names a wait (Retry-After). A 403 with none of them is a permission's. */
+const rateLimited = ({ json, headers }: { json: unknown; headers: Headers }) => headers.get("x-ratelimit-remaining") === "0" || headers.has("retry-after") || (isObject(json) && typeof json.message === "string" && /rate limit/i.test(json.message));
 
 const unescapeAttr = (value: string) => value.replace(/&quot;/g, '"').replace(/&lt;/g, "<").replace(/&gt;/g, ">").replace(/&amp;/g, "&");
 const REPO_URL = /https:\/\/github\.com\/([A-Za-z0-9](?:[A-Za-z0-9]|-(?=[A-Za-z0-9])){0,38})\/([A-Za-z0-9._-]{1,100})/;
