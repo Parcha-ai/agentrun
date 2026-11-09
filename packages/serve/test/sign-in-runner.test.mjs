@@ -20,6 +20,7 @@ const tools = await import("../dist/tools.js");
 const { TOOLS, FAUX_BROWSER_ENV } = tools;
 const { FAUX_ENV } = await import("../dist/model.js");
 const { TOOL_PLANE_ENV } = await import("../dist/tool-plane.js");
+const { hostLifecycle } = await import("../dist/runner/adapter-loop.js");
 
 const FAUX_BROWSER = new URL("./fixtures/faux-browser.mjs", import.meta.url).pathname;
 /** A test seal key, no real one. */
@@ -199,4 +200,19 @@ test("a run cannot verify another agent's sign-in, nor with a stale or lost clai
   assert.equal((await viewOf(r.store, "agent-a", "browserbase")).verified_at, null);
 });
 
-test.todo("a runner-path run's browser opens its sessions on the handed sign-in end to end (a session's profile, its save on release and the sign-in's verified_at): waits on tl-jobs' install lifecycle (onConversation, beforeResume, beforeRelease) and E2r3's browser binding on the runner");
+test("bound through a host whose lifecycle is the adapter loop's hostLifecycle(), the browser registers exactly one of each hook, and the run's sign-in is read at bind, before any of them runs", async (t) => {
+  const r = await runner(t);
+  const lifecycle = hostLifecycle();
+  const root = join(r.dir, "runs", "run-a");
+  mkdirSync(join(root, "work"), { recursive: true });
+  const env = { [FAUX_ENV]: "faux", [FAUX_BROWSER_ENV]: FAUX_BROWSER, [TOOL_PLANE_ENV]: JSON.stringify({ browser: "browserbase" }) };
+  const host = { where: { root, work: join(root, "work"), ref: { id: "run-a" } }, env, install() {}, ...lifecycle.register, handoverInJournal: true, store: r.store, claim: r.claims["run-a"], sealKey: KEY };
+  const before = readFileSync(r.log, "utf8").split("\n").filter(Boolean).length;
+  await TOOLS.browser.bind(host);
+  assert.deepEqual([lifecycle.onConversation.length, lifecycle.beforeResume.length, lifecycle.beforeRelease.length], [1, 1, 1], "one of each, collected for the loop");
+  const read = readFileSync(r.log, "utf8").split("\n").filter(Boolean).slice(before).map((line) => JSON.parse(line)).filter((line) => line.op === "sign-in");
+  assert.deepEqual(read, [{ op: "sign-in", provider: "browserbase", ref: r.refs.a, save: true, ref_in_env: false }], "the run's sign-in, read at bind, with no hook run yet");
+  assert.deepEqual((await r.store.runs.get("run-a")).signInHanded, [pointerHash(r.refs.a)]);
+});
+
+test.todo("a runner-path run's browser opens its sessions on the handed sign-in end to end through the adapter loop (a session's profile, its viewer handed over, its save on release and the sign-in's verified_at): waits on E2r3: the runner's ToolHost built with hostLifecycle().register (adapter-run-spec.ts host, today no-op hooks), spec.lifecycle passed to the adapter loop, and the browser bound in bindNonHandTools");
