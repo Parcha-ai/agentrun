@@ -1,4 +1,4 @@
-// What GET /runs/{id}/graph serves of each part of a run's graph (runs.ts servedGraph): redacted by a run's answer's rule
+// What GET /runs/{id}/graph serves of each part of a run's graph (servedGraphView, below): redacted by a run's answer's rule
 // (key-refusal.ts redactedOutput, over the values the server holds and handed the run), and only then cut. graph-view.ts
 // makes the view whole, so a key saved after it was made, or kept for a busy store's read, is still found.
 import { createHash } from "node:crypto";
@@ -37,29 +37,50 @@ export function servedPart(kind: PartKind, value: unknown, values: readonly stri
   return out;
 }
 
-/** A graph view as GET /runs/{id}/graph serves it with `values` held (runs.ts servedGraph's rule): its nodes, each
- *  decision and each call through servedPart, each part kept in `cache` by the held set and its own content, so a read
- *  again redacts nothing again and a key saved since makes a new set. Then the WHOLE view is cut last, every string and
- *  every object key (redactedOutput, the same rule over the same values): its workflow, its structure (`graph`, which
- *  echoes the workflow's nodes, their labels and words among them) and any field added later, so no part of it is served
- *  past the cut. What holds no held value (its ids, times and statuses) comes through as it was. */
+/** How many walks servedGraphView made, by what it walked: a part (servedPart over the nodes, a decision or a call) or a
+ *  field of the rest (redactedOutput over one top-level field). Counted for the tests, which read that a read again walks
+ *  nothing, with no clock. */
+export const graphWalks = { part: 0, rest: 0 };
+
+const isRecordOrArray = (value: unknown): boolean => typeof value === "object" && value !== null;
+
+/** A graph view as GET /runs/{id}/graph serves it with `values` held, every field of it cut by the one rule (redactedOutput
+ *  over the same values), the parts by the file path's rule on top:
+ *  - its nodes, each decision and each call through servedPart (a map item's label and an error cut short after);
+ *  - every other top-level field (its run, its workflow, its structure `graph`, which echoes the workflow's nodes and their
+ *    words, its totals, and any field added later) through redactedOutput, each by itself, its keys included;
+ *  - `read_at`, which moves with every read, cut on its own each time, never kept.
+ *  Each part and each field is walked once per content and held set and kept in `cache`, so a poll that reads the same graph
+ *  with the same values walks nothing, and a key saved since makes a new set. What holds no held value (ids, times,
+ *  statuses) comes through as it was. */
 export function servedGraphView<T extends { nodes: unknown; decisions: unknown[]; effects: unknown[] }>(view: T, values: readonly string[], cache?: PartCache): T {
   const digest = (value: unknown): string => createHash("sha256").update(JSON.stringify(value) ?? "").digest("hex");
   const keys = digest([...values].sort());
-  const once = (kind: PartKind, value: unknown): unknown => {
-    const at = `part:${keys}:${kind}:${digest(value)}`;
-    const kept = cache?.get(at);
-    if (kept !== undefined) return kept;
-    const out = servedPart(kind, value, values);
+  const kept = (at: string, walk: () => unknown): unknown => {
+    const hit = cache?.get(at);
+    if (hit !== undefined) return hit;
+    const out = walk();
     cache?.set(at, out, Buffer.byteLength(JSON.stringify(out) ?? ""));
     return out;
   };
-  const parts = { ...view, nodes: once("nodes", view.nodes), decisions: view.decisions.map((value) => once("decision", value)), effects: view.effects.map((value) => once("effect", value)) };
-  return redactedOutput(parts, values) as T;
+  const part = (kind: PartKind, value: unknown): unknown => kept(`part:${keys}:${kind}:${digest(value)}`, () => (graphWalks.part++, servedPart(kind, value, values)));
+  const { nodes, decisions, effects, read_at: readAt, ...rest } = view as T & { read_at?: unknown };
+  const fields: Record<string, unknown> = {};
+  for (const [name, value] of Object.entries(rest)) {
+    const cutName = redactedOutput(name, values) as string;
+    fields[cutName] = isRecordOrArray(value) ? kept(`field:${keys}:${name}:${digest(value)}`, () => (graphWalks.rest++, redactedOutput(value, values))) : redactedOutput(value, values);
+  }
+  return {
+    ...(readAt === undefined ? {} : { read_at: redactedOutput(readAt, values) }),
+    ...fields,
+    nodes: part("nodes", nodes),
+    decisions: decisions.map((value) => part("decision", value)),
+    effects: effects.map((value) => part("effect", value)),
+  } as unknown as T;
 }
 
-/** What every run's graph keeps in serve's memory, in one cache: each part as served (servedPart), and each workflow
- *  run's last whole view, which a busy store's read answers from. */
+/** What every run's graph keeps in serve's memory, in one cache (servedGraphView): each part as served (servedPart) and
+ *  each other top-level field of the view as cut, keyed by the held set and its own content. */
 export const GRAPH_CACHE_BYTES = 32 * 1024 * 1024;
 
 /** A least recently used cache bounded by bytes: an entry read or set is the most recent, and past `maxBytes` the least
