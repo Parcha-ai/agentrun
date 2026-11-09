@@ -5,6 +5,7 @@ import (
 	"net"
 	"os"
 	"path/filepath"
+	"sort"
 	"strings"
 	"testing"
 	"time"
@@ -27,12 +28,21 @@ func shortDir(t *testing.T) string {
 	return real
 }
 
+// listed is the search's sockets as "type path", sorted, so a comparison holds whatever order the temp folders' random
+// names sort in (CI run 42553902900: the named socket's folder sorted before the walked one's).
 func listed(search probe.SocketSearch) string {
 	parts := []string{}
 	for _, socket := range search.Sockets {
 		parts = append(parts, socket.Type+" "+socket.Path)
 	}
+	sort.Strings(parts)
 	return strings.Join(parts, ",")
+}
+
+// set is the same for the sockets a test expects.
+func set(entries ...string) string {
+	sort.Strings(entries)
+	return strings.Join(entries, ",")
 }
 
 // The isolation fence's listing, in computerd so no image lacks it: every unix socket with a path a program can connect
@@ -85,7 +95,7 @@ func TestConnectableSocketsListsThoseThatAcceptByTheirRealPathAndTypeAndNoOther(
 		"0000000000000000: 00000002 00000000 00010000 0001 01 12346 @abstract-name\n"
 
 	search := probe.ConnectableSockets([]string{dir}, netUnix, probe.SocketBounds{Entries: 1000, Depth: 8}, 2*time.Second)
-	want := fmt.Sprintf("dgram %s,seqpacket %s,stream %s,stream %s", dgram, seqpacket, stream, named)
+	want := set("dgram "+dgram, "seqpacket "+seqpacket, "stream "+stream, "stream "+named)
 	if got := listed(search); got != want {
 		t.Fatalf("ConnectableSockets = %s; want %s (not the dead socket, the file, the link again or the abstract name)", got, want)
 	}
