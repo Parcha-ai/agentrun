@@ -34,15 +34,16 @@ import { secret } from "../dist/secrets.js";
 }
 
 /** The secret writes (secret-writes.ts registers them on the server) the client sends from the owner's session, as the
- *  console does: the token can't make one. Another plane's tests add theirs here. */
+ *  console does: the token can't make one. A plane's tests add theirs with secretWritePath, and need no client of their
+ *  own. A path here is matched under /v2, its query left off. */
 export const SECRET_WRITE_PATHS = [
   { methods: ["PUT", "DELETE"], path: /^\/settings\/tool-keys\/[^/]+$/ },
-  // A signing secret this server mints is shown to the owner's session alone (trigger-secrets-shown.ts): a webhook
-  // trigger's at its create and its rotation, the outbound webhook's at its first save. A test that reads one makes it so.
   { methods: ["POST"], path: /^\/triggers$/ },
   { methods: ["POST"], path: /^\/triggers\/[^/]+\/secret$/ },
   { methods: ["PUT"], path: /^\/settings\/webhook$/ },
 ];
+/** Adds a secret write the client sends from the owner's session (`methods` on `path`, a RegExp over the /v2 path). */
+export const secretWritePath = (methods, path) => void SECRET_WRITE_PATHS.push({ methods, path });
 const secretWrite = (method, path) => SECRET_WRITE_PATHS.some((write) => write.methods.includes(method) && write.path.test(path.split("?")[0]));
 /** The owner's password the client sets on a server that has none yet, to make a secret write from its session. */
 const CLIENT_OWNER_PHRASE = `client-owner-${createHash("sha256").update(String(process.pid)).digest("hex").slice(0, 24)}`;
@@ -213,64 +214,6 @@ export async function harnessData(t) {
  *  directory: its owner's after-hook closes them before it removes the directory. */
 const sharing = new Map();
 
-/** Each data directory's trigger store (createServer's `store`), shared by every server serve() starts on it (a restart
- *  reads the triggers the first one made) and closed once the last of them has stopped. */
-const stores = new Map();
-async function storeFor(data) {
-  let held = stores.get(data);
-  if (!held) {
-    const dir = await mkdtemp(join(process.env.TMPDIR ?? tmpdir(), "agentrun-store-"));
-    held = { store: await openSqliteStore({ file: join(dir, "store.sqlite"), role: "server" }), dir, servers: 0 };
-    stores.set(data, held);
-  }
-  held.servers += 1;
-  return held;
-}
-async function storeDone(data, held) {
-  held.servers -= 1;
-  if (held.servers > 0 || stores.get(data) !== held) return;
-  stores.delete(data);
-  await held.store.close();
-  await rm(held.dir, { recursive: true, force: true });
-}
-
-/** `store` as a test server's triggers see it: a trigger's agent is put in the store first when it is not there, since
- *  until the cutover the server keeps its agents in its own files and the store holds only what the triggers write. Test
- *  support only: the store itself refuses a trigger for an agent it does not hold (store-trigger-schema.test.mjs). */
-function withAgents(store) {
-  const ensure = async (agentId) => {
-    if (typeof agentId === "string" && !(await store.agents.get(agentId))) await store.agents.put({ id: agentId, name: agentId });
-  };
-  const triggers = new Proxy(store.triggers, {
-    get(target, key) {
-      const value = Reflect.get(target, key, target);
-      if (key === "create") return async (trigger, ...rest) => (await ensure(trigger?.agentId), value.call(target, trigger, ...rest));
-      if (key === "update") return async (id, patch, ...rest) => (await ensure(patch?.agentId), value.call(target, id, patch, ...rest));
-      return typeof value === "function" ? value.bind(target) : value;
-    },
-  });
-  return { triggers, runs: store.runs };
-}
-
-/** Trigger stores handed to servers a test starts itself (startServe, not serve()): closed when the file's tests are done,
- *  after every server a test closes in its own hooks. */
-const loose = [];
-after(async () => {
-  for (const { store, dir } of loose.splice(0)) {
-    await store.close();
-    await rm(dir, { recursive: true, force: true });
-  }
-});
-/** A store for a server a test starts with startServe (`{ ...options, store: await triggerStore() }`), as serve() gives its
- *  own: the triggers' rows, a trigger's agent put there first. `of`: the same store again for a restart on the same data. */
-export async function triggerStore(of) {
-  if (of) return of;
-  const dir = await mkdtemp(join(process.env.TMPDIR ?? tmpdir(), "agentrun-store-"));
-  const store = await openSqliteStore({ file: join(dir, "store.sqlite"), role: "server" });
-  loose.push({ store, dir });
-  return withAgents(store);
-}
-
 /** A server for test `t`, stopped after it, before its scratch directory goes. On the real models (`faux: undefined`) its
  *  data holds Claude Code and Codex as the first-use installs put them (linkHarnesses; `harnesses: { cli, codex }` to vary
  *  them); `harnesses` says so for any server, `false` for none. */
@@ -336,7 +279,11 @@ export async function serve(t, { harnesses: asked, runner: wantRunner = true, ..
   return { ...server, data, api: client(server.baseUrl, server.token) };
 }
 
-export function client(baseUrl, token) {
+/** `server`'s client with every request sent from the owner's session (ownerSessionOf), as the console sends it: the
+ *  password session with accounts on, the launch link's console with accounts off on loopback. */
+export const asOwner = (server) => client(server.baseUrl, server.token, { owner: true });
+
+export function client(baseUrl, token, { owner = false } = {}) {
   /** A request on a connection of its own, which nothing reuses: a pooled socket the server closes is not its failure. */
   const fresh = (method, path) =>
     new Promise((resolve, reject) => {
@@ -357,7 +304,7 @@ export function client(baseUrl, token) {
    *  once the raise is answered. */
   async function api(method, path, body, headers = {}, { raiseCheck = true } = {}) {
     // A secret write goes from the owner's session, as the console's does (secret-writes.ts): the token is refused one.
-    const session = secretWrite(method, path) && !headers.authorization ? await ownerSessionOf(baseUrl, token) : undefined;
+    const session = (owner || secretWrite(method, path)) && !headers.authorization ? await ownerSessionOf(baseUrl, token) : undefined;
     const sent = { body };
     const res = await fetch(`${baseUrl}${path}`, {
       method,
@@ -377,22 +324,25 @@ export function client(baseUrl, token) {
   };
 }
 
-/** The owner's session on the server at `baseUrl` (its /v2), for the client's secret writes: the client sets the owner's
- *  password the first time (or signs in with it, on a server it set up before a restart). With accounts off, the console's
- *  own session: the cookie the printed link (`/?token=`) sets, which on a loopback-bound server may write a secret
- *  (secret-writes.ts LOOPBACK_CONSOLE_IS_OWNER). Undefined where it can't (an owner the test set up with its own password):
- *  the write then goes with the token, which the server refuses, so such a test makes its own owner's session for it. */
+/** The owner's session on the server at `baseUrl` (its /v2), for the client's secret writes. With accounts on, the client
+ *  sets the owner's password the first time (or signs in with it, on a server it set up before a restart); with accounts
+ *  off, it follows the launch link (`/?token=`, the 303 that sets the console's cookie), whose console is the owner's on a
+ *  loopback server (secret-writes.ts). Undefined where neither works (an owner the test set up with its own password): the
+ *  write then goes with the token, which the server refuses, so such a test makes its own owner's session for it. */
 async function ownerSessionOf(baseUrl, token) {
-  if (ownerCookies.has(baseUrl)) return ownerCookies.get(baseUrl);
+  // By address and token: a server started again on a port another used has its own owner and cookie.
+  const known = `${baseUrl} ${token ?? ""}`;
+  if (ownerCookies.has(known)) return ownerCookies.get(known);
   const origin = new URL(baseUrl).origin;
-  const post = (path) => fetch(`${baseUrl}${path}`, { method: "POST", headers: { "content-type": "application/json", origin }, body: JSON.stringify({ password: CLIENT_OWNER_PHRASE }) });
+  const post = (path) => fetch(`${baseUrl}${path}`, { method: "POST", redirect: "manual", headers: { "content-type": "application/json", origin }, body: JSON.stringify({ password: CLIENT_OWNER_PHRASE }) });
   let res = await post("/setup");
   if (res.status !== 201) res = await post("/auth/sign-in");
-  if (res.status !== 200 && res.status !== 201 && token) res = await fetch(`${origin}/?token=${encodeURIComponent(token)}`, { redirect: "manual" });
-  if (res.status !== 200 && res.status !== 201 && !(res.status === 303 && res.headers.getSetCookie().length)) return undefined;
+  if ((res.status !== 200 && res.status !== 201) && token) res = await fetch(`${origin}/?token=${encodeURIComponent(token)}`, { redirect: "manual" });
+  if (res.status !== 200 && res.status !== 201 && res.status !== 303) return undefined;
   const cookie = res.headers.getSetCookie().map((line) => line.split(";")[0]).join("; ");
+  if (!cookie) return undefined;
   const session = { cookie, origin };
-  ownerCookies.set(baseUrl, session);
+  ownerCookies.set(known, session);
   return session;
 }
 
@@ -445,15 +395,14 @@ export function storeRun(data, runId) {
 }
 
 /** Run `runId` as its claim and its process say it: the record the process keeps in its store (its status, `detail` and
- *  the epoch it ran under as `generation`), and its holder from the run's row — the runner that claimed it, whose name the
- *  runner mints as `<hostname>:<pid>:<uuid>` (runner.ts), so its `pid` is the process now running it; `{}` when there is
- *  neither yet. */
+ *  the epoch it ran under as `generation`), and its holder from the run's row (the process's `pid`, its door as
+ *  `serve`); `{}` when there is neither yet. */
 export function runRecordOf(data, runId) {
   let claim;
   try {
     const db = new DatabaseSync(join(data, "store.sqlite"), { readOnly: true, timeout: 5_000 });
     try {
-      claim = db.prepare("SELECT epoch, runner FROM runs WHERE id = ?").get(runId);
+      claim = db.prepare("SELECT claim_epoch, claim_holder FROM runs WHERE id = ?").get(runId);
     } finally {
       db.close();
     }
@@ -461,9 +410,9 @@ export function runRecordOf(data, runId) {
     claim = undefined;
   }
   let holder;
-  if (typeof claim?.runner === "string") {
-    const pid = Number(/:(\d+):[^:]+$/.exec(claim.runner)?.[1]);
-    if (Number.isInteger(pid)) holder = { pid, runner: claim.runner };
+  if (typeof claim?.claim_holder === "string" && claim.claim_holder.startsWith("{")) {
+    const named = JSON.parse(claim.claim_holder);
+    holder = { ...named, ...(named.door ? { serve: named.door } : {}) };
   }
   let record = {};
   const file = join(runDir(data, runId), "store", "run.sqlite");
@@ -478,7 +427,7 @@ export function runRecordOf(data, runId) {
     }
   }
   const { holder: _kept, ...rest } = record;
-  return { ...rest, ...(holder ? { holder } : {}), ...(claim ? { epoch: Number(claim.epoch) } : {}) };
+  return { ...rest, ...(holder ? { holder } : {}), ...(claim ? { epoch: Number(claim.claim_epoch) } : {}) };
 }
 
 /** Create agent `id` and start one run of it with `content`. */
