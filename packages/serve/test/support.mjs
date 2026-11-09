@@ -15,6 +15,10 @@ import { processAlive } from "@parcha/agentrun-kernel/host";
 import { openStoreReader } from "@parcha/pi-durable-agent";
 import { startServe } from "../dist/index.js";
 import { readRunDbSync } from "../dist/run-db.js";
+import { openSqliteStore } from "../dist/store/index.js";
+import { startRunner } from "../dist/runner/runner.js";
+import { learningLoopOf } from "../dist/runner/learning-dispatch.js";
+import { routeOf } from "../dist/runner/model-route.js";
 
 export const FAUX = new URL("./fixtures/faux-model.mjs", import.meta.url).pathname;
 
@@ -176,12 +180,73 @@ const sharing = new Map();
 /** A server for test `t`, stopped after it, before its scratch directory goes. On the real models (`faux: undefined`) its
  *  data holds Claude Code and Codex as the first-use installs put them (linkHarnesses; `harnesses: { cli, codex }` to vary
  *  them); `harnesses` says so for any server, `false` for none. */
-export async function serve(t, { harnesses: asked, ...options } = {}) {
+/** The run loop the in-process runner builds for each claim, picked by the run's launch harness. A learning run gets the
+ *  learning loop (learningLoopOf), its grade on the runner's one model route — the launch's grade model, else the run's
+ *  agent's own model, as main grades. Every other harness is the server's own dispatch (the computer, tools and model a pi
+ *  or workflow run needs), which is not wired here yet (runner/dispatch.ts, E2r); such a run's loop throws, so a test that
+ *  needs one reads a failed run until it lands. */
+function switchDispatch(store, data, env) {
+  const learning = learningLoopOf({
+    store,
+    data,
+    routeOf: async ({ model, agentId }) => {
+      let chosen = model;
+      if (!chosen) {
+        const agent = await store.agents.get(agentId);
+        const revision = agent?.currentRevision ? await store.agents.revision(agent.currentRevision) : undefined;
+        const body = revision?.body;
+        chosen = body && typeof body === "object" && typeof body.model === "string" ? body.model : undefined;
+      }
+      return routeOf(chosen, env);
+    },
+  });
+  return (deps) => {
+    let inner;
+    return {
+      start: async (claim) => {
+        const launch = await store.runs.launch(claim.runId);
+        const harness = launch?.body && typeof launch.body === "object" ? launch.body.harness : undefined;
+        if (harness === "learning") {
+          inner = learning(deps);
+          return inner.start(claim);
+        }
+        throw new Error("TODO(E2r): the in-process runner's dispatch for pi and workflow runs is not wired here yet (runner/dispatch.ts)");
+      },
+      command: (command) => inner?.command(command),
+      stop: (reason) => inner?.stop(reason),
+    };
+  };
+}
+
+/** Starts an in-process runner beside a test's server on the same data directory, with its own store handle (role runner),
+ *  so a run the server starts is claimed and run as the CLI start's server-and-runner runs it. `createLoop` builds the run
+ *  loop for each claim over the runner's store handle (default: the switch's dispatch — learning wired, pi/workflow the
+ *  server's own, E2r). Returns a close() that stops the runner and closes its store handle. */
+export async function startInProcessRunner(data, createLoop = switchDispatch) {
+  const store = await openSqliteStore({ dataDir: data, role: "runner" });
+  let runner;
+  try {
+    runner = startRunner({ store, createLoop: createLoop(store, data, process.env) });
+  } catch (error) {
+    await store.close();
+    throw error;
+  }
+  return async () => {
+    await runner.close().catch(() => {});
+    await store.close().catch(() => {});
+  };
+}
+
+export async function serve(t, { harnesses: asked, runner: wantRunner = true, ...options } = {}) {
   const harnesses = asked ?? (Object.hasOwn(options, "faux") && options.faux === undefined);
   const dir = options.data ? undefined : await mkdtemp(join(process.env.TMPDIR ?? tmpdir(), "agentrun-serve-"));
   const data = options.data ?? join(dir, "agents");
   if (harnesses) await linkHarnesses(data, harnesses === true ? {} : harnesses);
   const server = await startServe({ data, port: 0, faux: FAUX, drainTimeout: "5s", ...options });
+  // A runner beside the server on the same data (the CLI start's server-and-runner): it claims and runs what the server
+  // starts, so a test reads a run that runs, not one that queues forever. `runner: false` leaves it off for a test that
+  // wants the server alone. Its loop is the switch's dispatch (learning wired; pi/workflow the server's own, E2r).
+  const closeRunner = wantRunner === false ? undefined : await startInProcessRunner(data);
   // A server on another's data (a restart's): its owner's hook closes it before the directory goes.
   if (dir) sharing.set(data, new Set());
   else sharing.get(data)?.add(server);
@@ -189,6 +254,8 @@ export async function serve(t, { harnesses: asked, ...options } = {}) {
   // it, and noted it here.
   const dockerState = process.env.FAKE_DOCKER_STATE;
   t.after(async () => {
+    // The runner releases its claims and closes its store handle before the server's directory goes.
+    if (closeRunner) await closeRunner();
     await server.close();
     // The servers a test started on this one's data close before it goes: node:test runs after-hooks in the order they
     // were added, so this one runs before theirs, and a directory removed under a server still writing there fails with
