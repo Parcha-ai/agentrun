@@ -1,5 +1,5 @@
 // A pi run through the adapter loop on a real catalog model with a price tier (gpt-6-sol, tiered past 272k input tokens),
-// under the cap the runner's pi spec builds: CapModel.price is the catalog's cost WITH its tiers (adapter-run-spec.ts
+// under the run's one cap the runner's pi spec hands the loop (AdapterRunSpec.runCap, its modelOf the route's capModelOf): CapModel.price is the catalog's cost WITH its tiers (adapter-run-spec.ts
 // capModelOf), so a request past the threshold is held and booked at the tier's rates, as main's calculateCost prices it.
 // A $1 cap parks such a run (its tier-priced input does not fit); at base rates the same input would fit, so the park is
 // proof the tier's rates are held. These reuse B2c's capRun harness (adapter-pi-cap-support.mjs).

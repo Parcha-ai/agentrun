@@ -16,7 +16,7 @@ import { BACKGROUND_CONTEXT, withAbortSignal } from "@earendil-works/chord/conte
 import type { Models } from "@earendil-works/pi-ai";
 import { createModels } from "@earendil-works/pi-ai/models";
 import { type Conversation, type ConversationId, createRegistry, Harness, LiveDoc, ROOT_CONVERSATION_ID, type Tx } from "@earendil-works/pi-durable";
-import { type AdapterSession, type AgentAdapter, type BeforeRequest, type HostTool, modelPortFor, type Refusal, type SessionSpec, sessionSpendOf } from "@parcha/agentrun-kernel";
+import { type AdapterSession, type AgentAdapter, type BeforeRequest, type HostTool, modelPortFor, type Refusal, RUNNER_RECORDS, type SessionRecord, type SessionSpec, sessionSpendOf } from "@parcha/agentrun-kernel";
 import type { KernelHooks, ToolCall } from "./conformance/subject.js";
 import { type AnswerData, type ApprovalPrice, type AskData, type BudgetData, type CallEndData, type CallStartData, type CallStatus, type EndData, KINDS, type MessageData, type RaiseData, withdrawnAnswers } from "./journal-kinds.js";
 import { originOf, RUN_RESUMED } from "@parcha/pi-durable-agent/timeline";
@@ -24,7 +24,7 @@ import { type AlsoRow, type Claim, type Command, type CommandOutcome, deniedText
 import { answerText, REFLECT_NOTE_ONLY, reflectRequestId, underLearning, WRITES } from "./end-of-run.js";
 import { approvalOf, CLOSE_MS, CUT_STEP_MS, STOP_SETTLE_MS, commandRequest, cutLast, DEFAULT_RESTART_LIMIT, entriesOf, findData, Gate, heldReporter, Interrupted, KernelFault, Parked, quiet, restartLimited, writesEntry, writesSubmission } from "./loop.js";
 import type { PiRun, PiSessionIO, PreIntentAnswer, PreIntentCall } from "./adapters/pi.js";
-import { HAND_BACK, handBackOf } from "./hand-back.js";
+import { answerOnce, HAND_BACK, handBackOf } from "./hand-back.js";
 import { journalSessions } from "./sessions.js";
 import { DECISION_SESSION, runCap, type RunCap, type RunCapOptions, type RunDecisions, type RunTools, TOOL_SESSION } from "@parcha/agentrun-kernel/kernel/cap";
 import { portModels, type PortModels } from "../port-models.js";
@@ -168,6 +168,9 @@ export interface AdapterLoopOptions {
   readonly now?: () => number;
 }
 
+/** A host check's refusal as the cap's rule reads it (AdapterRunSpec.cap.park). */
+const refusalOf = (refusal: Refusal) => ({ message: refusal.refuse, forGood: refusal.forGood ?? true, ...(refusal.figures ? { figures: refusal.figures } : {}) });
+
 /** The run's visible record, as the loop keeps it for a harness whose own records are resume log only (record: "loop"):
  *  the KINDS entries the one reader reads, on the run's root conversation, each its own commit through the run's Harness
  *  (so the claim fences it like every journal write). */
@@ -276,9 +279,6 @@ async function openCliRecord(harness: Harness, journal: Gate["journal"], context
       }),
   };
 }
-
-/** A host check's refusal as the cap's rule reads it (AdapterRunSpec.cap.park). */
-const refusalOf = (refusal: Refusal) => ({ message: refusal.refuse, forGood: refusal.forGood ?? true, ...(refusal.figures ? { figures: refusal.figures } : {}) });
 
 /** Loops for runs on the adapter contract: `spec(claim, run)` gives each Session what it runs. */
 export function createAdapterLoop(spec: (claim: Claim, run: AdapterRun) => AdapterRunSpec | Promise<AdapterRunSpec>, options: AdapterLoopOptions = {}): LoopFactory {
@@ -401,15 +401,16 @@ function adapterLoop(specOf: (claim: Claim, run: AdapterRun) => AdapterRunSpec |
       await Promise.race([ready, (finished ?? new Promise<never>(() => {})).then(() => undefined, () => undefined)]);
       const [theGate, theHarness, theRoot] = [gate, harness, root];
       if (!theGate || !theHarness || !theRoot) return { refused: handBackOf([], command.body, command.createdAt).refused! };
-      const { write, refused } = handBackOf(await entriesOf(theGate.journal, theRoot.id, context), command.body, command.createdAt);
-      if (write) {
-        const answers = refused === undefined;
-        // The person's answer takes its row in the commit that writes it; an expiry is the ask's own, and takes none.
-        const landed = answers ? theGate.expect(writesEntry(KINDS.handover, (data) => data.id === write.id && data.state === write.state), { take: [command.id] }) : undefined;
-        landed?.catch(() => undefined);
-        await theHarness.commit((tx) => tx.appendEntry(theRoot.id, { kind: KINDS.handover, data: write as unknown as JsonValue }), context);
-        await landed;
-      }
+      // The person's answer takes its row in the commit that writes it: staged for the answer this row would write (its ask,
+      // its outcome, at its own time). Decided and written in one commit (answerOnce), so no other writer's answer (the
+      // browser host's give or expiry) lands between: a row whose commit writes nothing, or the ask's expiry, takes none,
+      // and the staging matches nothing (an answered ask is never answered again).
+      const { ask, outcome } = (command.body ?? {}) as { ask?: unknown; outcome?: unknown };
+      const at = new Date(command.createdAt).toISOString();
+      const landed = typeof ask === "string" ? theGate.expect(writesEntry(KINDS.handover, (data) => data.id === ask && data.state === outcome && data.at === at), { take: [command.id] }) : undefined;
+      landed?.catch(() => undefined);
+      const { write, refused } = await answerOnce((change) => theHarness.commit(change, context), theRoot.id, (entries) => handBackOf(entries, command.body, command.createdAt));
+      if (write && refused === undefined) await landed;
       return refused === undefined ? { taken: true } : { refused };
     });
     handing = turn.catch(() => undefined);
@@ -650,6 +651,7 @@ function adapterLoop(specOf: (claim: Claim, run: AdapterRun) => AdapterRunSpec |
           },
           afterRequest: async (...args) => {
             try {
+              await hooks.beforeBooking?.();
               await port.afterRequest(...args);
             } finally {
               unbooked = Math.max(0, unbooked - 1);
@@ -659,7 +661,18 @@ function adapterLoop(specOf: (claim: Claim, run: AdapterRun) => AdapterRunSpec |
           ...(port.responded ? { responded: port.responded.bind(port) } : {}),
           ...(port.note ? { note: port.note.bind(port) } : {}),
         };
-        const io: PiSessionIO = { writer, models: counted, signal: deps.signal, onEvent: record ? (event) => record.onEvent(event) : () => {}, gate: gateOf };
+        // What the request that just answered cost: its booking (the request's runner.turn record, the latest one once
+        // the session's requests are booked), its figure or null when unknown. A refused request's record is its $0.
+        const bookedCost = async (): Promise<number | null | undefined> => {
+          await bookingsSettled();
+          const records = await writer.read().catch(() => [] as SessionRecord[]);
+          const last = [...records].reverse().find((one) => one.kind === RUNNER_RECORDS.turn);
+          if (!last) return undefined;
+          const turn = last.data as { usd?: unknown; bookedUsd?: unknown };
+          const figure = turn.bookedUsd !== undefined ? turn.bookedUsd : turn.usd;
+          return typeof figure === "number" && Number.isFinite(figure) ? figure : null;
+        };
+        const io: PiSessionIO = { writer, models: counted, signal: deps.signal, onEvent: record ? (event) => record.onEvent(event) : () => {}, gate: gateOf, bookedCost };
         session = await spec.adapter.open({ ...spec.session, tools }, io);
         root = await harness.root(context);
         // A run brought back from a park: the raises its claim has are taken together, once its delivery is done. So is a
@@ -1070,6 +1083,7 @@ function adapterLoop(specOf: (claim: Claim, run: AdapterRun) => AdapterRunSpec |
    *  unbooked reads at its hold and bound, the worst it can have cost. */
   async function bookingsSettled(): Promise<void> {
     if (unbooked === 0) return;
+    specNow?.hooks?.awaitingBookings?.();
     let timer: NodeJS.Timeout | undefined;
     await Promise.race([new Promise<void>((resolve) => bookedAll.push(resolve)), new Promise<void>((resolve) => (timer = setTimeout(resolve, CLOSE_MS)))]);
     clearTimeout(timer);

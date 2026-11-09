@@ -34,7 +34,8 @@ import { keyNeeded } from "./key-words.js";
 import { handedSignIn, hostSecrets } from "./secrets.js";
 import { redactedAnswer } from "./key-refusal.js";
 import { SIGN_IN_KEY, SIGN_IN_SAVED } from "./sign-ins.js";
-import { answerIn } from "./runner/hand-back.js";
+import { answerIn, answerOnce } from "./runner/hand-back.js";
+import type { HandoverAnswered } from "./runner/journal-kinds.js";
 import type { LiveHandover, LiveViewerStore } from "./browser-live.js";
 import type { Claim } from "./store/store.js";
 
@@ -323,6 +324,16 @@ const browserTool: ToolEntry = {
             cursor = page.next;
           }
         }, context)) ?? undefined,
+        // The answer written only when the ask has none, read and written in one commit: exactly one answered entry.
+        answer: async (id: string, data: Record<string, string>) => {
+          if (!opened) throw new Error("the run's journal is not open");
+          const on = opened;
+          const { stood } = await answerOnce((change) => on.commit(change, context), ROOT_CONVERSATION_ID, (entries) => {
+            const found = answerIn(entries, id);
+            return found ? { stood: found } : { write: data as unknown as HandoverAnswered, stood: data as unknown as HandoverAnswered };
+          });
+          return { outcome: stood.state, at: stood.at, ...(stood.reason !== undefined ? { reason: stood.reason } : {}) };
+        },
       } : {}),
       // Tests only (--faux): the process dies once between an ask's record and its row.
       afterRecord: host.env[FAUX_ENV] && host.env[person.FAUX_ASK_DIES_ENV] ? () => {
