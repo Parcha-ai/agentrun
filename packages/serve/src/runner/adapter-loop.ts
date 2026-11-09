@@ -26,6 +26,8 @@ import { approvalOf, CLOSE_MS, CUT_STEP_MS, STOP_SETTLE_MS, commandRequest, cutL
 import type { PiRun, PiSessionIO, PreIntentAnswer, PreIntentCall } from "./adapters/pi.js";
 import { HAND_BACK, handBackOf } from "./hand-back.js";
 import { journalSessions } from "./sessions.js";
+import { paidCalls, TOOL_SESSION } from "@parcha/agentrun-kernel/kernel/cap";
+import { bookedIn } from "../paid-calls.js";
 import { sideEffect } from "./side-effects.js";
 
 /** What a raise meets, as the kernel cap's checkRaise reads it (run-adapters/src/kernel/cap/park.ts): the run's cap, the
@@ -448,6 +450,13 @@ function adapterLoop(specOf: (claim: Claim, run: AdapterRun) => AdapterRunSpec |
         // The host's check is asked with the run's totals, every session of the run summed (the run's one booking), never
         // this session's alone: a cap is the run's. Its last refusal is kept: a turn it ended ends the run in its words.
         const hostCheck = spec.beforeRequest ? runBooking(sessions, spec.beforeRequest) : undefined;
+        // The run's paid tool calls (a web tool's request to Parallel, a monid call) on the same one ledger and rule, as
+        // main books them (paid-calls.ts): held at its price before it is sent, its hold flushed first, and settled at what
+        // it charged, under the call that made it. A later claim reads them from the run's records with the rest.
+        // Opened at the claim's first paid call: a run that makes none writes nothing for them.
+        let paidOpen: ReturnType<typeof paidCalls> | undefined;
+        const paidBooking = () => (paidOpen ??= sessions.open(TOOL_SESSION).then((tools) => paidCalls(tools, hostCheck ?? (async () => undefined), { flush: () => deps.flush() })));
+        const paid = { admit: async (request: Parameters<Awaited<ReturnType<typeof paidCalls>>["admit"]>[0]) => (await paidBooking()).admit(request), settle: async (id: string, usd: number | null) => (await paidBooking()).settle(id, usd) };
         let refused: Refusal | undefined;
         const beforeRequest: BeforeRequest | undefined = hostCheck && (async (request) => {
           const answer = await hostCheck(request);
@@ -482,7 +491,8 @@ function adapterLoop(specOf: (claim: Claim, run: AdapterRun) => AdapterRunSpec |
               const answer = await sideEffect({
                 replaySafe: tool.replay === "safe",
                 flush: () => deps.flush(),
-                route: () => tool.call(args, toolContext),
+                // Its paid requests booked under this call, on the run's one ledger (paid-calls.ts bookedIn, Ledger.paid).
+                route: () => bookedIn({ call: toolContext.callId, record: async () => {}, paid }, () => tool.call(args, toolContext)),
                 beforeResult: async (answer) => {
                   const call: ToolCall = { callId: toolContext.callId, tool: tool.name as never, args: (args ?? {}) as Record<string, unknown> };
                   try {
