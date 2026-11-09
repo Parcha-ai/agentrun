@@ -100,27 +100,73 @@ test("two runners, one queued run: exactly one claims it, and keeps it while it 
   }
 });
 
+/** Waits, by event, until `check(record.commits)` holds: each landed commit the observed store records wakes it. */
+function commitsTold(record) {
+  const waiting = [];
+  const push = record.commits.push.bind(record.commits);
+  record.commits.push = (...commits) => {
+    const length = push(...commits);
+    for (const wake of waiting.splice(0)) wake();
+    return length;
+  };
+  return async (check) => {
+    while (!check(record.commits)) await new Promise((resolve) => waiting.push(resolve));
+  };
+}
+
+// On the clock the test moves, as the renew case: the holder is killed, the clock moves one poll at a time, and each of
+// the other runner's polls is waited for by count. Its claim comes only once the clock is past the holder's claimed_until,
+// at epoch 2; the dead runner's late commit is Fenced; and the new holder's loop commits. No wait reads elapsed time.
 test("the holder is killed: the other reclaims after claimed_until with epoch 2, and the dead one's late commit is Fenced", async (t) => {
   const faux = fauxLoops({ turns: 1_000, turnMs: 20 });
-  const { server, record, runners: [a, b] } = await twoRunners(t, faux.createLoop);
+  const { server, runners: [one, two] } = await stores({ runners: 2 });
   await queue(server, "run-1");
+  const record = recorder();
+  const committed = commitsTold(record);
+  t.mock.timers.enable({ apis: ["setTimeout", "setInterval", "Date"], now: 1_000_000 });
+  const a = told(observed(one, record));
+  const b = told(observed(two, record));
+  const runners = [
+    startRunner({ store: a.store, createLoop: faux.createLoop, name: "runner-a", ...TIMING }),
+    startRunner({ store: b.store, createLoop: faux.createLoop, name: "runner-b", ...TIMING }),
+  ];
+  try {
+    await a.returned("claimMany", 1);
+    await b.returned("claimMany", 1);
+    assert.deepEqual(record.claims.map(({ epoch }) => epoch), [1], JSON.stringify(record.claims));
+    const [holder, other] = record.claims[0].runner === "runner-a" ? [runners[0], runners[1]] : [runners[1], runners[0]];
+    const otherTold = other === runners[0] ? a : b;
+    // One poll interval: the holder's loop commits a turn, and the other runner polls once more, finding nothing.
+    t.mock.timers.tick(TIMING.pollMs);
+    await committed((commits) => commits.some((commit) => commit.epoch === 1));
+    await otherTold.returned("claimMany", 2);
+    holder.kill();
+    const lastUntil = (await server.runs.get("run-1")).claimedUntil;
 
-  const first = await until(() => record.claims[0], "a claim");
-  const holder = first.runner === a.name ? a : b;
-  const other = holder === a ? b : a;
-  await until(() => record.commits.some((commit) => commit.epoch === 1), "the holder's loop commits");
-  holder.kill();
-  const killedAt = Date.now();
-  const lastUntil = (await server.runs.get("run-1")).claimedUntil;
+    // One poll at a time until the other runner claims the run: never while the clock is at or before claimed_until.
+    let polls = otherTold.count("claimMany");
+    const limit = polls + LEASE_MS / TIMING.pollMs + 5;
+    while (record.claims.length < 2) {
+      assert.ok(polls < limit, `the other runner reclaims within ${limit} polls: ${JSON.stringify(record.claims)}`);
+      t.mock.timers.tick(TIMING.pollMs);
+      await otherTold.returned("claimMany", ++polls);
+      if (record.claims.length < 2) continue;
+      assert.ok(Date.now() > lastUntil, `reclaimed only past claimed_until: at ${Date.now()}, until ${lastUntil}`);
+    }
+    const second = record.claims[1];
+    assert.deepEqual([second.runner, second.epoch], [other.name, 2]);
+    assert.ok(second.at > lastUntil, `the reclaim's time ${second.at} is past claimed_until ${lastUntil}`);
 
-  const second = await until(() => record.claims[1], "the reclaim", LEASE_MS * 10);
-  assert.deepEqual([second.runner, second.epoch], [other.name, 2]);
-  assert.ok(second.at > lastUntil, `reclaimed at ${second.at - killedAt} ms after the kill, before claimed_until (${lastUntil - killedAt} ms)`);
-
-  const dead = faux.loops.find((loop) => loop.claim.epoch === 1);
-  await assert.rejects(dead.commitNow(), { name: "Fenced" }, "the dead runner's late commit");
-  assert.equal(record.commits.filter((commit) => commit.epoch === 1 && commit.startedAt > second.at).length, 0, "nothing of epoch 1 lands after the reclaim");
-  await until(() => record.commits.some((commit) => commit.epoch === 2), "the new holder's loop commits");
+    const dead = faux.loops.find((loop) => loop.claim.epoch === 1);
+    await assert.rejects(dead.commitNow(), { name: "Fenced" }, "the dead runner's late commit");
+    assert.equal(record.commits.filter((commit) => commit.epoch === 1 && commit.startedAt > second.at).length, 0, "nothing of epoch 1 lands after the reclaim");
+    // One turn of the new holder's loop.
+    t.mock.timers.tick(TIMING.pollMs);
+    await committed((commits) => commits.some((commit) => commit.epoch === 2));
+  } finally {
+    t.mock.timers.reset();
+    await Promise.all(runners.map((runner) => runner.close()));
+  }
 });
 
 test("a runner that closes stops its loop where it can resume and releases the run, still running; the other claims it at once", async (t) => {
