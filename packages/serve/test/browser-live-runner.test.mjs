@@ -12,7 +12,7 @@ import { mkdir } from "node:fs/promises";
 import { join } from "node:path";
 import { DatabaseSync } from "node:sqlite";
 import { test } from "node:test";
-import { BROWSER_LIVE_DIR, dropLiveViewer, liveViewerById, liveViewerLink, putLiveViewer, readHandovers, readLiveViewers, sessionHandovers } from "../dist/browser-live.js";
+import { BROWSER_LIVE_DIR, dropLiveViewer, liveViewerById, liveViewerFor, liveViewerLink, putLiveViewer, readHandovers, readLiveViewers, sessionHandovers } from "../dist/browser-live.js";
 import { queued, storeOn } from "./store-helpers.mjs";
 
 /** A test seal key, no real one. */
@@ -120,4 +120,25 @@ test("on the runner path the viewer's token is in no browser_viewers column in p
   assert.equal(holds(rows, a.token), false, "no column holds it in plaintext");
   assert.deepEqual(filesUnder(r.dir).filter(([, bytes]) => bytes.includes(a.token)).map(([path]) => path), [], "no file under the data directory holds it");
   assert.equal(JSON.stringify(await r.store.commands("run-1", 0)).includes(a.token), false, "no command row");
+});
+
+test("the live route over the store serves only what the runner put: a viewer's page by its path id, the viewer's files while the run has one open, nothing at any other address, and nothing once released", async (t) => {
+  const r = await runnerRun(t);
+  const handed = sessionHandovers(r.root, r.seam);
+  const a = viewer("ar-run-1-1");
+  const b = viewer("ar-run-1-2");
+  await handed.changed(a.row, "created");
+  r.clock.now += 10;
+  await handed.changed(b.row, "created");
+  const route = async (rest) => (await liveViewerFor(r.store, KEY, "run-1", rest))?.id;
+  assert.equal(await route(`/v/${a.id}`), a.id, "a viewer's page, by its own path id");
+  assert.equal(await route(`/v/${b.id}`), b.id);
+  assert.equal(await route("/viewer.js"), b.id, "the viewer's files, while one is open (the newest)");
+  assert.equal(await route("/viewer.css"), b.id);
+  assert.equal(await route("/v/AAAAAAAAAAAAAAAAAAAAAA"), undefined, "another viewer's path is not served");
+  for (const rest of ["/", "/v/short", `/v/${a.id}/ws`, "/other.js", `/v/${a.id}/../x`]) assert.equal(await route(rest), undefined, `${rest}: no live view at that address`);
+  assert.equal(await liveViewerFor(r.store, KEY, "run-2", "/viewer.js"), undefined, "another run's viewer is never this run's");
+  await handed.released();
+  assert.equal(await route(`/v/${a.id}`), undefined, "none once released");
+  assert.equal(await route("/viewer.js"), undefined);
 });
