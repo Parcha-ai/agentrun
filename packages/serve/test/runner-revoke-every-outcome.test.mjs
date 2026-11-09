@@ -267,7 +267,8 @@ test("a run held when the runner closes keeps its mount credential through the d
   // timers (setTimeout alone, enabled just around close) move it on, so nothing here waits on the wall clock.
   const DRAIN_MS = 30_000;
   const w = await revokeRun(t, { script: [{ call: "slow" }, { say: "never" }] });
-  const runner = w.start({ ...STEADY, drainMs: DRAIN_MS });
+  // live: false, the runner's live ticker off: setTimeout is mocked around close(), so its last write would never settle.
+  const runner = w.start({ ...STEADY, drainMs: DRAIN_MS, live: false });
   await w.slowStarted;
   assert.equal(w.control.users.size, 1, "the run holds its token while it runs");
   const deletes = () => w.control.requests.filter((one) => one.method === "DELETE");
