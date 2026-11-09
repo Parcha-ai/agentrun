@@ -18,8 +18,14 @@ import {
   FINAL_STATES, MCP_REFRESH_CALL_MS, MCP_REFRESH_LEASE_MS, type Learning, type LearningProposal, type Live, type LiveRow, type LiveViewerRow, type LiveViewers, type Mcp, type McpPinRow, type McpServerRow,
   type McpOauth, type McpOauthPendingRow, type SealedKeyRow, type SealedKeys, type Settings, type SettingRow, type TriggerSettingRow, type TriggerSettings,
   SignInHandedTo, SignInMissing, SIGN_IN_TOMBSTONES_KEPT, type SignIns, type SignInRow, type SignInTombstoneRow, type ViewerKind,
-  type ComputerLedger, type ComputerLedgerRow,
+  type ComputerLedger, type ComputerLedgerRow, RUN_CHANGES_PAGE, type RunChangeCursor,
 } from "../store.js";
+
+/** The seq a run-change cursor names (Runs.changedSince): only a cursor this store handed back, a whole number. */
+const seqOf = (cursor: RunChangeCursor): number => {
+  if (!/^(0|[1-9][0-9]{0,15})$/.test(cursor)) throw new TypeError(`${JSON.stringify(cursor)} is not a run-change cursor this store gave`);
+  return Number(cursor);
+};
 import type { Dialect } from "../dialect.js";
 import { Connection, type SqliteExecutor, type SqliteValue, type Statement, type StoreConnection } from "./connection.js";
 import { applyRunPatch, refuseLeftovers, RUN_COLUMNS, runOf, SIGN_IN_HANDED_LOCK, type RunRecord } from "./run-patch.js";
@@ -140,9 +146,9 @@ type TriggerSettingRecord = { adapter: string; scope: string; field: string; sea
 const triggerSettingOf = (r: TriggerSettingRecord): TriggerSettingRow => ({ adapter: r.adapter, scope: r.scope, field: r.field, sealed: r.sealed, updatedAt: r.updated_at });
 type McpOauthRecord = { state: string; server: string; sealed: Uint8Array; working: string | null; expires_at: number };
 const mcpOauthOf = (r: McpOauthRecord): McpOauthPendingRow => ({ state: r.state, server: r.server, sealed: Uint8Array.from(r.sealed), working: r.working === null ? null : JSON.parse(r.working), expiresAt: r.expires_at });
-type SignInRecord = { agent_id: string; provider: string; name: string; pointer_sealed: Uint8Array; saved_at: number; verified_at: number | null };
-const SIGN_IN_COLUMNS = "agent_id, provider, name, pointer_sealed, saved_at, verified_at";
-const signInOf = (r: SignInRecord): SignInRow => ({ agentId: r.agent_id, provider: r.provider, name: r.name, pointerSealed: Uint8Array.from(r.pointer_sealed), savedAt: r.saved_at, verifiedAt: r.verified_at });
+type SignInRecord = { agent_id: string; provider: string; name: string; pointer_sealed: Uint8Array; saved_at: number; save: number; verified_at: number | null };
+const SIGN_IN_COLUMNS = "agent_id, provider, name, pointer_sealed, saved_at, save, verified_at";
+const signInOf = (r: SignInRecord): SignInRow => ({ agentId: r.agent_id, provider: r.provider, name: r.name, pointerSealed: Uint8Array.from(r.pointer_sealed), savedAt: r.saved_at, save: r.save, verifiedAt: r.verified_at });
 type SignInTombstoneRecord = { agent_id: string; provider: string; pointer_sealed: Uint8Array; forgotten_at: number };
 const signInTombstoneOf = (r: SignInTombstoneRecord): SignInTombstoneRow => ({ agentId: r.agent_id, provider: r.provider, pointerSealed: Uint8Array.from(r.pointer_sealed), forgottenAt: r.forgotten_at });
 
@@ -710,6 +716,19 @@ class SqliteStore implements Store {
         const rows = await db.all<RunRecord>(`SELECT ${RUN_COLUMNS} FROM runs ${where.length ? `WHERE ${where.join(" AND ")}` : ""} ORDER BY started_at DESC, id DESC${bounded ? " LIMIT ?" : ""}`, ...params);
         return rows.map(runOf);
       },
+      // The run-change feed: the rows the runs_changed trigger wrote, each in its write's transaction, after the cursor's
+      // seq. One writer numbers them in commit order, so the last one read is the watermark and the cursor is its seq.
+      changedSince: async (cursor, { limit } = {}) => {
+        const after = cursor === undefined ? 0 : seqOf(cursor);
+        const page = typeof limit === "number" && Number.isSafeInteger(limit) && limit > 0 ? limit : RUN_CHANGES_PAGE;
+        const rows = await db.all<{ seq: number; run_id: string; state: RunState; ended_at: number | null; epoch: number; runner: string | null }>(
+          "SELECT seq, run_id, state, ended_at, epoch, runner FROM run_changes WHERE seq > ? ORDER BY seq LIMIT ?",
+          after,
+          page,
+        );
+        const changes = rows.map((row) => ({ id: row.run_id, state: row.state, endedAt: row.ended_at, epoch: row.epoch, runner: row.runner }));
+        return { changes, next: String(rows.length ? rows.at(-1)!.seq : after) };
+      },
       archive: async (runId, archived) => {
         await db.write([{ sql: "UPDATE runs SET archived_at = ? WHERE id = ?", params: [archived ? now() : null, runId] }]);
       },
@@ -991,27 +1010,40 @@ class SqliteStore implements Store {
     this.signIns = {
       save: async ({ agentId, provider, name, pointerSealed }) => {
         const at = now();
-        // A fresh save clears verified_at: the pointer is new, and no run has verified it yet.
+        // A fresh save clears verified_at (the pointer is new, and no run has verified it yet) and numbers the save.
         const [result] = await db.write([{
-          sql: `INSERT INTO sign_ins (agent_id, provider, name, pointer_sealed, saved_at, verified_at) VALUES (?, ?, ?, ?, ?, NULL)
-            ON CONFLICT (agent_id, provider) DO UPDATE SET name = excluded.name, pointer_sealed = excluded.pointer_sealed, saved_at = excluded.saved_at, verified_at = NULL
+          sql: `INSERT INTO sign_ins (agent_id, provider, name, pointer_sealed, saved_at, save, verified_at) VALUES (?, ?, ?, ?, ?, 1, NULL)
+            ON CONFLICT (agent_id, provider) DO UPDATE SET name = excluded.name, pointer_sealed = excluded.pointer_sealed, saved_at = excluded.saved_at, save = sign_ins.save + 1, verified_at = NULL
             RETURNING ${SIGN_IN_COLUMNS}`,
           params: [agentId, provider, name, pointerSealed, at],
         }]);
         return signInOf(result!.rows[0] as SignInRecord);
       },
+      saveIfAbsent: ({ agentId, provider, name, pointerSealed }) =>
+        db.transaction(async (tx) => {
+          // One transaction: the insert that wins or the live row that won before it, never a replace.
+          const inserted = await tx.all<SignInRecord>(
+            `INSERT INTO sign_ins (agent_id, provider, name, pointer_sealed, saved_at, save, verified_at) VALUES (?, ?, ?, ?, ?, 1, NULL)
+              ON CONFLICT (agent_id, provider) DO NOTHING RETURNING ${SIGN_IN_COLUMNS}`,
+            agentId, provider, name, pointerSealed, now(),
+          );
+          if (inserted[0]) return { saved: true, row: signInOf(inserted[0]) };
+          const live = await tx.get<SignInRecord>(`SELECT ${SIGN_IN_COLUMNS} FROM sign_ins WHERE agent_id = ? AND provider = ?`, agentId, provider);
+          return { saved: false, row: signInOf(live!) };
+        }),
       list: async (agentId) =>
         (await db.all<SignInRecord>(`SELECT ${SIGN_IN_COLUMNS} FROM sign_ins WHERE agent_id = ? ORDER BY provider`, agentId)).map(signInOf),
       get: async (agentId, provider) => {
         const row = await db.get<SignInRecord>(`SELECT ${SIGN_IN_COLUMNS} FROM sign_ins WHERE agent_id = ? AND provider = ?`, agentId, provider);
         return row && signInOf(row);
       },
-      verify: async (agentId, provider, at, { ifSavedAt } = {}) => {
-        // With ifSavedAt, stamp only while saved_at is still that one (WHERE saved_at = ?): a save that landed since the
-        // caller checked (allowed while held; it clears verified_at) moved saved_at on, so verify never stamps it stale.
+      verify: async (agentId, provider, at, { ifSave } = {}) => {
+        // With ifSave, stamp only while the row is still that save (WHERE save = ?): a save that landed since the caller
+        // checked (allowed while held; it clears verified_at) numbered itself on, in the same millisecond or not, so verify
+        // never stamps it stale.
         const [result] = await db.write([{
-          sql: `UPDATE sign_ins SET verified_at = ? WHERE agent_id = ? AND provider = ?${ifSavedAt === undefined ? "" : " AND saved_at = ?"}`,
-          params: ifSavedAt === undefined ? [at, agentId, provider] : [at, agentId, provider, ifSavedAt],
+          sql: `UPDATE sign_ins SET verified_at = ? WHERE agent_id = ? AND provider = ?${ifSave === undefined ? "" : " AND save = ?"}`,
+          params: ifSave === undefined ? [at, agentId, provider] : [at, agentId, provider, ifSave],
         }]);
         return result!.changes > 0;
       },

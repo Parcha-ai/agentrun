@@ -1,6 +1,7 @@
-// The store's one schema, version 2 (design 2.1). Nothing migrates into it: the rewrite replaces the old stores, and a store
+// The store's one schema, version 3 (design 2.1). Nothing migrates into it: the rewrite replaces the old stores, and a store
 // an older build made is refused as a version this build does not know. The server sets it up once at its start (a
-// store_meta row holds the version); a runner refuses a version it does not know. Version 2 adds the computer ledger.
+// store_meta row holds the version); a runner refuses a version it does not know. Version 2 adds the computer ledger;
+// version 3 numbers each save of a sign-in (sign_ins.save).
 // Conventions: every time is INTEGER epoch milliseconds; JSON is TEXT checked by json_valid; money is REAL US dollars;
 // sealed columns hold ciphertext only (sealed with the server's key outside the store), so the store never sees a secret
 // in the clear. Foreign keys are on (the connection's pragma).
@@ -12,7 +13,7 @@
 // journal tables, keyed by run_id (store/journal): one schema for every run's journal, so a query joins runs and their
 // journals.
 
-export const SCHEMA_VERSION = 2;
+export const SCHEMA_VERSION = 5;
 
 const json = (column: string, nullable = false) => `${column} TEXT${nullable ? "" : " NOT NULL"} CHECK (${column} IS NULL OR json_valid(${column}))`;
 
@@ -92,6 +93,25 @@ export const STORE_DDL: readonly string[] = [
   `CREATE INDEX IF NOT EXISTS runs_by_agent ON runs (agent_id, started_at)`,
   `CREATE INDEX IF NOT EXISTS runs_by_revision ON runs (revision_id, started_at)`,
   `CREATE INDEX IF NOT EXISTS runs_claimable ON runs (state, started_at)`,
+  // The run-change feed (Runs.changedSince): a row for each run reaching a final state or let go by its runner (parked, or
+  // running with no runner), written by the trigger below in the transaction of the write that made it, so no writer of a
+  // run's state or runner can miss it and none lands without its write. `seq` numbers them in commit order (one writer).
+  `CREATE TABLE IF NOT EXISTS run_changes (
+    seq INTEGER PRIMARY KEY AUTOINCREMENT,
+    run_id TEXT NOT NULL,
+    state TEXT NOT NULL,
+    ended_at INTEGER,
+    epoch INTEGER NOT NULL,
+    runner TEXT
+  ) STRICT`,
+  // A change is a move of the state or the runner into a final state, parked, or running with none: a fence's touch of
+  // the row (epoch = epoch), a claim, a renew and a cost or summary write are none.
+  `CREATE TRIGGER IF NOT EXISTS runs_changed AFTER UPDATE OF state, runner ON runs
+    WHEN (OLD.state IS NOT NEW.state OR OLD.runner IS NOT NEW.runner)
+      AND (NEW.state IN ('ended', 'stopped', 'failed', 'parked') OR (NEW.state = 'running' AND NEW.runner IS NULL))
+    BEGIN
+      INSERT INTO run_changes (run_id, state, ended_at, epoch, runner) VALUES (NEW.id, NEW.state, NEW.ended_at, NEW.epoch, NEW.runner);
+    END`,
   // One run per imported session: Store.importRun is refused a session it already imported (as the old store's
   // UNIQUE (source, session) did).
   `CREATE UNIQUE INDEX IF NOT EXISTS runs_import ON runs (json_extract(imported_from, '$.source'), json_extract(imported_from, '$.session')) WHERE imported_from IS NOT NULL`,
@@ -280,6 +300,9 @@ export const STORE_DDL: readonly string[] = [
     name TEXT NOT NULL,
     pointer_sealed BLOB NOT NULL,
     saved_at INTEGER NOT NULL,
+    -- This save's number: 1 at the first save, one more on every save since. A verify is guarded by it, never by saved_at,
+    -- which two saves in one millisecond share (store.signIns.verify's ifSave).
+    save INTEGER NOT NULL DEFAULT 1 CHECK (save >= 1),
     -- When a run that held this sign-in last verified it (saved a live session back to the vendor): the v2 view's
     -- verified_at. Null when the owner just saved it and no run has verified it since (a fresh save clears it). Written by
     -- the run path (store.signIns.verify) at a run's save, read by the view bridge (sign-ins-store.ts).
