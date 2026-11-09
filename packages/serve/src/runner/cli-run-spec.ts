@@ -25,7 +25,9 @@ import type { Approvals } from "../approvals.js";
 import { effortGuidance } from "../effort-guidance.js";
 import { environmentLine } from "../environment.js";
 import { builtinHarness, type HarnessEntry } from "../harness-table.js";
-import { laidLearned } from "../learning.js";
+import { laidLearned, learningFolderOf } from "../learning.js";
+import { learningWorkspace } from "../learn/folder.js";
+import { learningEndOfRun } from "./learning-end.js";
 import { type ModelRef, providerModels, runModels } from "../model.js";
 import { firstMessage } from "../run-manifest.js";
 import { learningStartOf, type RunLaunch } from "../run-launch.js";
@@ -236,6 +238,18 @@ export async function cliRunSpecFromLaunch(launch: RunLaunch, run: AdapterRun, d
   const content = isObject(launch.input) && typeof (launch.input as { content?: unknown }).content === "string" ? (launch.input as { content: string }).content : "";
   const input = await firstMessage(content, ws.workspace);
 
+  // The run's end-of-run step, when it learns, the same as the pi spec's: the reflect-and-propose turn over the run's
+  // store, its learning folder where the run's place keeps it — Mode 1 under the data directory, Mode 2 on this claim's
+  // Archil disk — so the proposal is checked against the seed in the run's own Workspace, never this machine's local path.
+  const endOfRun = learningEndOfRun(launch, {
+    store: deps.store,
+    data: deps.data,
+    ...(deps.env ? { env: deps.env } : {}),
+    learningFolder: archil === undefined
+      ? (agentId: string) => learningFolderOf(deps.data, agentId)
+      : (agentId: string) => learningWorkspace({ mode: "archil", agentId, archil }),
+  });
+
   return {
     adapter,
     session,
@@ -244,6 +258,8 @@ export async function cliRunSpecFromLaunch(launch: RunLaunch, run: AdapterRun, d
     gate,
     runCap,
     ...(cap ? { cap } : {}),
+    // The run's end-of-run step, when it learns (the spec's, preferred over the loop's deps': adapter-loop.ts stepOf).
+    ...(endOfRun ? { endOfRun } : {}),
     agentId: runRow.agentId,
     workRoot: root,
     // The end's metrics and cost from the run's journal; a CLI run's carry its model.

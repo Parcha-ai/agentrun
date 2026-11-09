@@ -13,7 +13,6 @@ import { adapterRunSpecFromLaunch, type AdapterSpecDeps } from "./adapter-run-sp
 import { createAdapterLoop } from "./adapter-loop.js";
 import { cliRunSpecFromLaunch } from "./cli-run-spec.js";
 import { learningLoopOf } from "./learning-dispatch.js";
-import { learningEndOfRun } from "./learning-end.js";
 import type { LoopFactory } from "./loop-contract.js";
 import { createWorkflowLoop, isWorkflowRevision } from "./workflow-loop.js";
 import { workflowSpecOf } from "./workflow-spec.js";
@@ -46,15 +45,14 @@ export function resolveRunnerLoop(deps: AdapterSpecDeps): (harness: string, laun
     // runs the pi spec (adapterRunSpecFromLaunch). A harness with no entry is unknown here: the dispatch fails it in words.
     const runner = resolveHarness(harness);
     if (runner) {
-      const factory = createAdapterLoop((claim, adapterRun) =>
+      // A run that learns supplies its own end-of-run step (reflect + proposal over its store) from its spec builder now,
+      // where the run's Archil claim is: a Mode 2 run's learning folder is on its claim's disk, not this machine's local
+      // path (adapter-run-spec.ts / cli-run-spec.ts endOfRun). The loop prefers the spec's step over its deps' (stepOf); a
+      // run that does not learn supplies none. The same for the pi and the CLI spec.
+      return createAdapterLoop((claim, adapterRun) =>
         runner.record === "loop"
           ? cliRunSpecFromLaunch(launch, adapterRun, deps, claim)
           : adapterRunSpecFromLaunch(launch, adapterRun, deps, claim));
-      // A run that learns gets the end-of-run step (reflect + proposal over its store, learning-end.ts), from its launch's
-      // learning start; a run that does not learn has none. The same for the pi and the CLI spec. (learningFolder, the Mode
-      // 2 folder dep, is a TODO once tl-places' sha lands.)
-      const end = learningEndOfRun(launch, { store: deps.store, data: deps.data, ...(deps.env ? { env: deps.env } : {}) });
-      return end ? (loopDeps) => factory({ ...loopDeps, endOfRun: end }) : factory;
     }
     return undefined;
   };

@@ -31,7 +31,9 @@ import { WEB_FETCH_TOOL } from "../web-fetch.js";
 import { WEB_SEARCH_TOOL } from "../web-search.js";
 import { environmentLine } from "../environment.js";
 import { effortGuidance } from "../effort-guidance.js";
-import { laidLearned, pinnedWorkflows, readPin } from "../learning.js";
+import { laidLearned, learningFolderOf, pinnedWorkflows, readPin } from "../learning.js";
+import { learningWorkspace } from "../learn/folder.js";
+import { learningEndOfRun } from "./learning-end.js";
 import { LEARNED_WORKFLOW_TOOL, learnedWorkflowTool } from "../learned-workflow.js";
 import { createModels } from "@earendil-works/pi-ai/models";
 import { promptOf, readsFiles } from "../skills.js";
@@ -350,6 +352,20 @@ export async function adapterRunSpecFromLaunch(launch: RunLaunch, run: AdapterRu
   const content = isObject(launch.input) && typeof (launch.input as { content?: unknown }).content === "string" ? (launch.input as { content: string }).content : "";
   const input = await firstMessage(content, ws.workspace);
 
+  // The run's end-of-run step, when it learns (learningEndOfRun from the launch's learning start; none otherwise): the
+  // reflect-and-propose turn over the run's store, asked in the end turn while the claim is held (adapter-loop.ts stepOf).
+  // Its learning folder is where the run's place keeps it — Mode 1 the agent's folder under the data directory, Mode 2 the
+  // agent's folder on THIS claim's Archil disk (the proposal is checked against the seed on the disk, never this machine's
+  // local path) — so the end-of-run step reads the run's own Workspace, the one the run worked in.
+  const endOfRun = learningEndOfRun(launch, {
+    store: deps.store,
+    data: deps.data,
+    ...(deps.env ? { env: deps.env } : {}),
+    learningFolder: archil === undefined
+      ? (agentId: string) => learningFolderOf(deps.data, agentId)
+      : (agentId: string) => learningWorkspace({ mode: "archil", agentId, archil }),
+  });
+
   return {
     adapter,
     session,
@@ -359,6 +375,8 @@ export async function adapterRunSpecFromLaunch(launch: RunLaunch, run: AdapterRu
     gate,
     runCap,
     ...(cap ? { cap } : {}),
+    // The run's end-of-run step, when it learns (the spec's, which the loop prefers over its deps': adapter-loop.ts stepOf).
+    ...(endOfRun ? { endOfRun } : {}),
     // The tool host's install lifecycle (its bindings' onConversation/beforeResume/beforeRelease), run by the adapter loop.
     lifecycle: life,
     agentId: runRow.agentId,
