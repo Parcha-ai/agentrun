@@ -439,3 +439,51 @@ describe("editing a schedule", () => {
     expect(t.went).toEqual(["#/triggers/trg_1"]);
   });
 });
+
+// Tester findings on the New schedule form (11-09): an empty cost cap means the agent's own default, so the field's
+// placeholder says that default as served (definition.max_cost_usd), never a made-up example; and a one time is to the
+// minute, so its field asks for no seconds.
+describe("the New schedule form's cost cap and one time", () => {
+  const cap = (host: Element) => host.querySelector<HTMLInputElement>('input[name="maxCost"]')!;
+
+  it("an agent with a default cap: the cap field's placeholder is that default, as money", async () => {
+    const t = await open(server().v2, { trigger: null });
+    await t.set("agent", "story");
+    expect(cap(t.host).getAttribute("placeholder")).toBe("$0.50, the agent's default");
+  });
+
+  it("an agent with none: no placeholder at all, never an example", async () => {
+    const t = await open(server().v2, { trigger: null });
+    expect(cap(t.host).hasAttribute("placeholder")).toBe(false);
+    await t.set("agent", "triage");
+    expect(cap(t.host).hasAttribute("placeholder")).toBe(false);
+  });
+
+  it("a one time and an interval's start are to the minute; the time sent keeps its shape", async () => {
+    const s = server();
+    const t = await open(s.v2, { trigger: null });
+    await t.choose("at");
+    expect(t.host.querySelector<HTMLInputElement>('input[name="at"]')!.step).toBe("60");
+    await t.set("name", "kyb-once");
+    await t.set("at", "2026-11-09T15:43");
+    await t.set("agent", "triage");
+    await t.set("content", "Run KYB.");
+    await t.set("maxCost", "2");
+    await t.click(/^Create schedule$/);
+    expect((s.calls.find((c) => c.method === "POST")!.body as { source: unknown }).source).toEqual({ kind: "schedule", at: "2026-11-09T15:43:00Z" });
+    act(() => root?.unmount()); document.body.innerHTML = "";
+    const every = await open(server().v2, { trigger: null });
+    await every.choose("every");
+    expect(every.host.querySelector<HTMLInputElement>('input[name="startAt"]')!.step).toBe("60");
+  });
+
+  it("the webhook and GitHub forms say the agent's default the same way", async () => {
+    for (const kind of ["webhook", "github"] as const) {
+      const t = await open(server().v2, { trigger: null, kind });
+      await t.set("agent", "story");
+      if (kind === "github" && !t.host.querySelector('input[name="maxCost"]')) { act(() => root?.unmount()); document.body.innerHTML = ""; continue; }
+      expect(cap(t.host).getAttribute("placeholder")).toBe("$0.50, the agent's default");
+      act(() => root?.unmount()); document.body.innerHTML = "";
+    }
+  });
+});
