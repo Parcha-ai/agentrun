@@ -5,6 +5,7 @@
 // holds too, and one that disagrees with the agent's refuses every call. No key, no network.
 import assert from "node:assert/strict";
 import { randomBytes } from "node:crypto";
+import { mkdirSync, readFileSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { test } from "node:test";
 import { startFakeMcp } from "./fixtures/fake-mcp-server.mjs";
@@ -135,22 +136,19 @@ test("an agent's pin and the server's that fix one argument differently refuse e
   assert.equal(sends().length, 0);
 });
 
-test("a broken pin in the server's tool settings is served as pin_broken, and the console's whole-map save of another tool keeps it broken; a valid pin repairs it", { timeout: 120_000 }, async (t) => {
+test("a broken pin in the server's file is served as pin_broken, and the console's whole-map save of another tool keeps it broken; a valid pin repairs it", { timeout: 120_000 }, async (t) => {
   const data = join(await scratch(t), "agents");
+  mkdirSync(data, { recursive: true });
   const broken = { channel_id: { any: true } };
-  // A pin that does not read, in the server's tool settings row of the store, as the next server to start reads it.
-  const first = await serve(t, { data });
-  await first.store.settings.put("tool-settings", { [SEND]: { permission: "allow", pin: broken } });
-  await first.close();
-  const server = await serve(t, { data });
-  const { api } = server;
+  writeFileSync(join(data, "tool-settings.json"), JSON.stringify({ [SEND]: { permission: "allow", pin: broken } }));
+  const { api } = await serve(t, { data });
   const served = (await api("GET", "/settings/tools")).body;
   assert.deepEqual(served[SEND], { permission: "allow", pin_broken: true });
   // The console saves the whole map it read, with one change elsewhere: 200, and the pin stays broken, in the file too.
   const saved = await api("PUT", "/settings/tools", { ...served, web_search: { provider: "exa-keyless" } });
   assert.equal(saved.status, 200, JSON.stringify(saved.body));
   assert.deepEqual(saved.body[SEND], { permission: "allow", pin_broken: true });
-  assert.deepEqual((await server.store.settings.get("tool-settings"))[SEND], { permission: "allow", pin: broken }, "and in the store");
+  assert.deepEqual(JSON.parse(readFileSync(join(data, "tool-settings.json"), "utf8"))[SEND], { permission: "allow", pin: broken });
   // An agent can't carry the mark.
   const own = await api("POST", "/agents", agent("marked", { tools: [SEND], tool_settings: { [SEND]: { pin_broken: true } } }));
   assert.equal(own.status, 422, JSON.stringify(own.body));
