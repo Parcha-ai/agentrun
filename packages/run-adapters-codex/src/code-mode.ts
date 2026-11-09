@@ -109,6 +109,16 @@ export function imagesNoted(output: unknown): string | undefined {
   return `${outputTextOf(output)}\n\nIt also returned ${count} image${count === 1 ? "" : "s"} (not shown again after the interruption).`;
 }
 
+/** A code-mode script's nested call's answer: its items, then a line saying how many images the tool returned, which are
+ *  not sent (Codex gives a script an image as its data: URL in the result's text); an answer of any other shape, or no
+ *  images, as it is. */
+export function withImagesHeld(answer: unknown, images: readonly unknown[] | undefined): unknown {
+  const items = (answer as { contentItems?: unknown } | null)?.contentItems;
+  if (!images?.length || !Array.isArray(items)) return answer;
+  const count = images.length;
+  return { ...(answer as object), contentItems: [...items, { type: "inputText", text: `${count} image${count === 1 ? "" : "s"} it returned ${count === 1 ? "was" : "were"} not sent: in code mode a tool's image reaches the script only as text.` }] };
+}
+
 /** A dynamic tool call's answer with `images` after its items, each `{ type: "inputImage", imageUrl }` with a data: URL
  *  (Codex 0.164's DynamicToolCallOutputContentItem); an answer of any other shape, or no images, as it is. */
 export function withImages(answer: unknown, images: readonly { mimeType: string; data: string }[] | undefined): unknown {
@@ -242,7 +252,12 @@ export function codeMode(deps: CodeModeDeps) {
           }
           // The harness answers with the result's text; its images follow as `inputImage` items, which Codex 0.164's
           // dynamic tool output takes (DynamicToolCallResponse.contentItems, its app-server schema), each a data: URL.
-          return withImages(await next(req), deps.bridge.takeImages?.(callId));
+          // The call runs first (`next`): its images are kept by the bridge as it answers, and taken after.
+          const answer = await next(req);
+          const images = deps.bridge.takeImages?.(callId);
+          // A script's nested call: Codex hands the script an inputImage as its data: URL inside the result's text, so a
+          // script that prints the result would send the model the base64 as words. No image goes to code mode; a line says so.
+          return NESTED_CALL.test(callId) ? withImagesHeld(answer, images) : withImages(answer, images);
         }
         return next(req);
       };
