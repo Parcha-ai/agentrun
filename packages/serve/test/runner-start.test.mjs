@@ -39,6 +39,8 @@ const PLANT = {
   AGENTRUN_API_KEY: `planted-apikey-${"a1".repeat(10)}`,
   ANTHROPIC_API_KEY: `planted-model-${"k1".repeat(10)}`,
 };
+/** The names of the runner's planted secrets (PLANT and the seal key) whose value is in `text`. */
+const plantedIn = (text) => [...Object.entries(PLANT), ["AGENTRUN_SEAL_KEY", SEAL]].filter(([, value]) => text.includes(value)).map(([name]) => name);
 
 function scratch(t, name) {
   const dir = mkdtempSync(join(process.env.TMPDIR ?? tmpdir(), name));
@@ -235,7 +237,8 @@ test("a box-placed run gets its Docker computer through the runner process (the 
   await server.close();
   const child = runnerChild(t, ["--data", dir, "--loops", "2"], {
     PATH: `${shim}:${dirname(process.execPath)}:/usr/bin:/bin`,
-    ANTHROPIC_BASE_URL: fake.url, ANTHROPIC_API_KEY: PLANT.ANTHROPIC_API_KEY, AGENTRUN_RUNNER_NAME: "runner-box",
+    // Every secret the runner holds, planted (the seal key is runnerChild's own): none may reach the computer.
+    ...PLANT, ANTHROPIC_BASE_URL: fake.url, AGENTRUN_RUNNER_NAME: "runner-box",
   });
   await child.line(READY);
   const states = async () => {
@@ -265,6 +268,9 @@ test("a box-placed run gets its Docker computer through the runner process (the 
   assert.ok(flag(runs[0], "--mount").some((mount) => mount.includes("/runs/run-box/work,dst=/workspace")), `its run's folder at /workspace: ${flag(runs[0], "--mount").join(" ")}`);
   assert.deepEqual(flag(runs[0], "--network"), ["none"], "no box_allow: no network");
   assert.ok(!runs[0].some((arg) => arg.includes("run-here")), "none for the runner-placed run");
+  // Rule 5: a key goes into the server-side provider call alone. Every docker call made for the computer (its argv, so its
+  // labels and its --env too) holds none of the runner's secrets.
+  assert.deepEqual(plantedIn(JSON.stringify(docker.calls())), [], "the computer's argv, labels and env hold none of the runner's secrets");
   // The runner stops with the run held: handed back for the next claim, whose computer releases this one by its lower
   // epoch (the one fence). A release at the run's end is the composer's (workspace-computer-deps: docker rm).
   child.child.kill("SIGTERM");
@@ -281,7 +287,6 @@ test("a run's own process under the started runner holds none of the runner's se
   await until(() => fake.messages().length >= 2, "the run's agent ran `env` and sent its output back", 60_000);
   const shown = Object.values(fake.messages()[1].results ?? {}).join("\n");
   assert.match(shown, /^PATH=/m, `the bash ran env: ${shown.slice(0, 200)}`);
-  const found = [...Object.entries(PLANT), ["AGENTRUN_SEAL_KEY", SEAL]].filter(([, value]) => shown.includes(value)).map(([name]) => name);
-  assert.deepEqual(found, [], "no secret of the runner's in the run's own environment");
+  assert.deepEqual(plantedIn(shown), [], "no secret of the runner's in the run's own environment");
   assert.ok(!/AGENTRUN_STORE_URL|AGENTRUN_SEAL_KEY|AGENTRUN_TOKEN|AGENTRUN_API_KEY/.test(shown), "nor their names");
 });
