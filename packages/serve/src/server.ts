@@ -74,7 +74,7 @@ import { type SealedSettings } from "./sealed-settings.js";
 import { openServerSecrets, type ServerSecrets } from "./server-secrets.js";
 import { HOOK_TOLERANCE_S } from "./standard-webhooks.js";
 import { GitHubConnect, GitHubConnection, githubTargetOf, INSTALLED_PATH, startedHere as gitHubStartedHere, stateCookie } from "./github-connection.js";
-import { GITHUB_API } from "./github.js";
+import { GITHUB_API, GITHUB_MCP_ONLY } from "./github.js";
 import { HookCut, receivePush } from "./push-handler.js";
 import type { TriggerAdapter } from "./trigger-adapter.js";
 import { TRIGGER_ADAPTERS } from "./trigger-adapters.js";
@@ -290,6 +290,8 @@ export type ServeOptions = {
   /** A test's seam: GitHub's API, which Connect GitHub converts its code with and asks of the App's installations
    *  (default https://api.github.com: github.ts GITHUB_API). */
   githubApi?: string;
+  /** A test's seam: the origin a github_app MCP server may have (default GitHub's hosted MCP: github.ts GITHUB_MCP_ORIGIN). */
+  githubMcpOrigin?: string;
   /** A test's seam: how long a hook's body has to arrive, whole (default 30 s: push-handler.ts HOOK_BODY_MS). */
   hookBodyMs?: number;
   /** A test's seam: the folder the template packages are read from, in place of the package's own (templates.ts). */
@@ -792,6 +794,7 @@ async function startHolding(options: ServeOptions, data: string, lock: ServerLoc
   // A stored key that does not open is said once at the start, never a refusal to start.
   toolKeys.view();
   const mcpServers = new McpServers(data, withSecrets(base, "own"), VERSION);
+  if (options.githubMcpOrigin) mcpServers.appOrigin = options.githubMcpOrigin;
   /** Each run's GitHub token for a github_app MCP server, by run and server, minted at its launch (mcpSource.mint): in
    *  this process's memory only, handed to the run over its pipe, and listed among the server's secrets while it lives. */
   const runTokens = new Map<string, ({ token: string; expiresAt: number } | { unusable: string }) & { at: number }>();
@@ -806,6 +809,8 @@ async function startHolding(options: ServeOptions, data: string, lock: ServerLoc
       }
     },
     headers: (name, runId) => {
+      // A github_app server saved at another origin than GitHub's hosted MCP (before that rule): refused, no token.
+      if (mcpServers.appServerElsewhere(name)) return { unopened: `${GITHUB_MCP_ONLY}: save it again at that address` };
       const saved = mcpServers.headers(name);
       if (runId === undefined || !mcpServers.takesAppToken(name) || !saved || "unopened" in saved) return saved;
       // A github_app server: its static headers as written, with the token minted for this run's launch.

@@ -185,28 +185,31 @@ test("a resumed run's token stays narrowed to the repository its first message n
 });
 
 test("an inline preview of a github_app server lists its tools with a token of the App, as a saved one's does", { timeout: 60_000 }, async (t) => {
-  const server = await connectable(t);
-  await connect(server);
+  let server;
   const minted = () => server.github.tokens.map((entry) => `Bearer ${entry.token}`);
   const fake = await startFakeMcp({ token: (authorization) => minted().includes(authorization) });
   t.after(() => fake.close());
+  server = await connectable(t, { githubMcpOrigin: new URL(fake.url).origin });
+  await connect(server);
   const preview = await server.api("POST", "/settings/mcp-servers/preview", { url: fake.url, auth: { type: "github_app", headers: { "X-MCP-Tools": "add" } } });
   assert.equal(preview.status, 200, JSON.stringify(preview.body));
   assert.ok(preview.body.tools.some((tool) => tool.name === "add"));
   assert.equal(server.github.tokens.length, 1, "with one token of the App's installation");
 });
 
-test("a github_app server moved to another origin keeps no static headers: the move is refused in words unless they are sent again, and nothing reaches the new address", { timeout: 60_000 }, async (t) => {
-  const server = await connectable(t);
-  await connect(server);
+test("a github_app server moved off GitHub's hosted MCP is refused on url, and nothing reaches the new address: neither its static headers nor a token", { timeout: 60_000 }, async (t) => {
+  let server;
   const minted = () => server.github.tokens.map((entry) => `Bearer ${entry.token}`);
   const [a, b] = [await startFakeMcp({ token: (authorization) => minted().includes(authorization) }), await startFakeMcp({ token: (authorization) => minted().includes(authorization) })];
   t.after(() => Promise.all([a.close(), b.close()]));
+  server = await connectable(t, { githubMcpOrigin: new URL(a.url).origin });
+  await connect(server);
   assert.equal((await server.api("PUT", "/settings/mcp-servers/gh", { url: a.url, auth: { type: "github_app", headers: { "X-MCP-Tools": "add" } } })).status, 200);
+  const tokens = server.github.tokens.length;
   const moved = await server.api("PUT", "/settings/mcp-servers/gh", { url: b.url, auth: { type: "github_app" } });
-  assert.equal(moved.status, 422, JSON.stringify(moved.body));
-  assert.match(moved.body.error.message, /moved/);
+  assert.deepEqual([moved.status, moved.body.error?.fields?.map((f) => f.field)], [422, ["url"]], JSON.stringify(moved.body));
   assert.deepEqual(b.log, [], "nothing reached the new address");
+  assert.equal(server.github.tokens.length, tokens, "no token minted for it");
 });
 
 test("a pull_request's number and head sha, and a comment's number, ride on the payload's tag from the signed body, whatever the 16 KiB cut leaves of the payload; a comment's tag has no head_sha", { timeout: 120_000 }, async (t) => {

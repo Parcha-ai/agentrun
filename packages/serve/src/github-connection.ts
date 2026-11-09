@@ -502,14 +502,16 @@ export class GitHubConnect {
     const first = view.installations[0];
     if (!first) return { unusable: "The GitHub App is not installed anywhere yet: install it on an account, then save the server." };
     try {
-      return await this.mint(first.id, appJwt(credentials.appId, credentials.pem, this.options.now?.() ?? Date.now()), undefined, { unusable: `GitHub gave no token for the App's installation on ${first.account}.` }, signal);
+      // The least a listing needs: metadata read, never the App's write permissions.
+      return await this.mint(first.id, appJwt(credentials.appId, credentials.pem, this.options.now?.() ?? Date.now()), undefined, { unusable: `GitHub gave no token for the App's installation on ${first.account}.` }, signal, { metadata: "read" });
     } catch (error) {
       return { unusable: `GitHub did not give a token: ${(error as Error).message}.` };
     }
   }
 
-  private async mint(installation: number, jwt: string, repositories: string[] | undefined, refused: { unusable: string }, signal?: AbortSignal): Promise<{ token: string; expiresAt: number } | { unusable: string }> {
-    const answer = await githubCall(this.options.api, `/app/installations/${installation}/access_tokens`, { method: "POST", jwt, ...(repositories ? { body: { repositories } } : {}), ...(signal ? { signal } : {}) });
+  private async mint(installation: number, jwt: string, repositories: string[] | undefined, refused: { unusable: string }, signal?: AbortSignal, permissions?: Record<string, string>): Promise<{ token: string; expiresAt: number } | { unusable: string }> {
+    const body = { ...(repositories ? { repositories } : {}), ...(permissions ? { permissions } : {}) };
+    const answer = await githubCall(this.options.api, `/app/installations/${installation}/access_tokens`, { method: "POST", jwt, ...(Object.keys(body).length ? { body } : {}), ...(signal ? { signal } : {}) });
     const minted = isObject(answer.json) ? answer.json : {};
     if (answer.status !== 201 || typeof minted.token !== "string" || typeof minted.expires_at !== "string") return refused;
     const expiresAt = Date.parse(minted.expires_at);

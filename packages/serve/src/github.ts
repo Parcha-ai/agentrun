@@ -6,6 +6,10 @@ import { createSign } from "node:crypto";
 /** GitHub's REST API, and its site, where a person makes and installs an App. */
 export const GITHUB_API = "https://api.github.com";
 export const GITHUB_WEB = "https://github.com";
+/** GitHub's hosted MCP server: the one origin a github_app MCP server may have, so the App's tokens go to GitHub alone. */
+export const GITHUB_MCP_ORIGIN = "https://api.githubcopilot.com";
+/** Why a github_app server elsewhere is refused, in words. */
+export const GITHUB_MCP_ONLY = "A github_app server is GitHub's hosted MCP (https://api.githubcopilot.com/mcp/) only";
 /** How long a call to GitHub may take, whole. */
 const GITHUB_MS = 15_000;
 
