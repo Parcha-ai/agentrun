@@ -128,7 +128,7 @@ async function sessionRecords(store) {
 
 /** A store with one queued workflow run (its launch body) and a runner on the workflow loop with the money spec.
  *  `providerOf` defaults to the gpt-6-sol provider on a submit origin; a test gives its own (a stalling origin for a stop). */
-async function worldWith(t, { capUsd, question, usage, providerOf }) {
+async function worldWith(t, { capUsd, question, usage, providerOf, workflow = answerFlow() }) {
   const dir = mkdtempSync(join(process.env.TMPDIR ?? tmpdir(), "agentrun-wf-money-"));
   const server = await openSqliteStore({ dataDir: dir, role: "server" });
   const store = await openSqliteStore({ dataDir: dir, role: "runner" });
@@ -139,7 +139,7 @@ async function worldWith(t, { capUsd, question, usage, providerOf }) {
     await server.close().catch(() => {});
     rmSync(dir, { recursive: true, force: true });
   });
-  await server.agents.create({ id: "agent-1", name: "Flow" }, { id: "rev-1", kind: "workflow", body: { workflow: answerFlow() } });
+  await server.agents.create({ id: "agent-1", name: "Flow" }, { id: "rev-1", kind: "workflow", body: { workflow } });
   await server.runs.create({ id: "run-1", agentId: "agent-1", revisionId: "rev-1" }, { body: { input: { question }, title: "t", place: { mode: "runner" }, ...(capUsd !== undefined ? { max_cost_usd: capUsd } : {}) } });
   const specOf = workflowSpecOf({ store, providerOf: providerOf ?? gpt6Provider(submitOrigin(usage)) });
   runner = startRunner({ store, createLoop: createWorkflowLoop(specOf), name: "runner-a", ...TIMING });
@@ -295,4 +295,32 @@ test("a person's stop while a model node streams counts what it streamed and 1,0
   const held = (await sessionRecords(store)).requests[0]?.heldUsd;
   assert.ok(typeof held === "number" && held > 0.5, `the request was held at most of the cap: ${held}`);
   assert.equal(await spendFromRecords(store), eight((14 + 1024) * PER_TOKEN), `14 bytes streamed and 1,024 tokens ($0.1038), not the $${held} held`);
+});
+
+test("a model node on a tier other than the default runs on that tier's model: asked, held and booked at its price", async (t) => {
+  // Each tier its own model and price: the default's output $100 a million, the strong tier's $300. A node that names the
+  // strong tier is asked of the strong model, held by the cap at the strong price, and booked at it, never the default's.
+  const rates = { fast: 50 / 1e6, default: PER_TOKEN, strong: 300 / 1e6 };
+  const asked = [];
+  const tiers = [];
+  const origin = submitOrigin({ input_tokens: 1000, output_tokens: 100 });
+  const fetch = async (url, init = {}) => {
+    asked.push(JSON.parse(String(init.body ?? "{}")).model);
+    return origin(url, init);
+  };
+  const providerOf = (tier) => {
+    tiers.push(tier);
+    const id = `faux-${tier}`;
+    return { modelId: id, api: "anthropic-messages", origin: "https://faux.invalid", credential: () => "not-a-secret-x", policy: anthropicPolicy({ model: id, tools: [] }), price: (_m, u) => (u.output ?? 0) * rates[tier], capModel: { ...PRICED, id, price: { ...PRICED.price, output: rates[tier] * 1e6 } }, fetch };
+  };
+  const workflow = answerFlow();
+  workflow.root.tier = "strong";
+  const { server, store } = await worldWith(t, { capUsd: 100, question: "What is six times seven?", providerOf, workflow });
+  const row = await waitRow(server, (r) => r.state !== "running" && r.state !== "queued" && r.runner === null);
+  assert.equal(row.state, "ended", `the run ends: ${JSON.stringify(row)}`);
+  assert.ok(tiers.includes("strong"), `the strong tier's provider is resolved: ${JSON.stringify(tiers)}`);
+  assert.deepEqual(asked, ["faux-strong"], "the node's request is asked of the strong tier's model");
+  assert.equal(eight(row.costUsd), eight(100 * rates.strong), `booked at the strong price: ${row.costUsd}`);
+  const held = (await sessionRecords(store)).requests[0]?.heldUsd;
+  assert.equal(eight(held), eight(PRICED.outputCeiling * rates.strong), `held at the strong price's bound: ${held}`);
 });
