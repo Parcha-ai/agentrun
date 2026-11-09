@@ -303,6 +303,20 @@ describe("applying a template", () => {
     expect(t.sent[0].body.parameters).toEqual({ post_to: "slack" });
   });
 
+  it("keeps a pattern with a wildcard as a text field, and names an optional choice's default in its empty option", async () => {
+    const T: TemplateView = { ...REVIEWER, name: "mixed", parameters: {
+      host: { type: "string", required: true, description: "a host", pattern: "^(foo.bar|other)$" },
+      post_to: { type: "string", required: false, description: "where it goes", pattern: "^(crm|slack|none)$", default: "crm" },
+    } };
+    const t = await open("mixed", { templates: [T] });
+    // "." matches any character for the server: not a fixed list, so it stays a text field.
+    expect(t.host.querySelector('[data-field="parameters.host"] select')).toBeNull();
+    expect(t.host.querySelector('[data-field="parameters.host"] input[type="text"]')).toBeTruthy();
+    // Left on its empty option, the server applies the default: the option says so.
+    const empty = t.host.querySelector<HTMLOptionElement>('[data-field="parameters.post_to"] select option[value=""]')!;
+    expect(empty.textContent).toBe("crm (default)");
+  });
+
   it("opens the made agent at once when there are no warnings", async () => {
     const t = await open("pr-reviewer");
     await t.type(t.host.querySelector('[data-field="parameters.repo"] input'), "acme/web");
