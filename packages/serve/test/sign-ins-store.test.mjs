@@ -75,6 +75,20 @@ test("two first creates of one agent's sign-in race: exactly one row wins, and t
 
 // verify's guard is the save it was checked against, by number (SignInRow.save, one more on every save of the row), never
 // its saved_at: two saves can land in one millisecond, and a guard on saved_at would stamp the newer one as verified.
+// A save's number restarts at 1 when its row is forgotten and a first save makes it again, so a number alone does not name
+// the save a verify checked: the guard names that save by its number and its sealed pointer together.
+test("a verify guarded by a forgotten sign-in's save never stamps the first save made after the forget, numbered the same", async (t) => {
+  const { store } = await storeOn(t);
+  await agentWithRevision(store, "alpha", "alpha-rev");
+  const { row: first } = await store.signIns.saveIfAbsent({ agentId: "alpha", provider: "browserbase", name: "default", pointerSealed: Uint8Array.from([1, 1]) });
+  await store.signIns.forget("alpha", "browserbase", {});
+  const { row: next } = await store.signIns.saveIfAbsent({ agentId: "alpha", provider: "browserbase", name: "default", pointerSealed: Uint8Array.from([2, 2]) });
+  assert.equal(next.save, first.save, "the save after the forget is numbered as the forgotten one was");
+  const stale = await store.signIns.verify("alpha", "browserbase", first.savedAt + 1, { ifSave: first.save });
+  assert.equal(stale, false, "guarded by the forgotten sign-in's save, verify stamps nothing");
+  assert.equal((await store.signIns.get("alpha", "browserbase")).verifiedAt, null, "the new sign-in stays unverified");
+});
+
 test("a verify guarded by the save it checked never stamps a newer save, even one in the same millisecond", async (t) => {
   const { store } = await storeOn(t);
   await agentWithRevision(store, "alpha", "alpha-rev");
