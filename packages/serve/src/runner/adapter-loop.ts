@@ -578,6 +578,12 @@ function adapterLoop(specOf: (claim: Claim, run: AdapterRun) => AdapterRunSpec |
       }
     }
   };
+  /** The claim's turn has answered and no wait in the claim takes the person's next message: from here to the run's end a
+   *  message is never placed into its session (no turn waits on it there, and the end-of-run turn is not the message's to
+   *  answer). It is left untaken, and the run's end opens the run again with it as a new turn (store run-patch.ts
+   *  refuseLeftovers), as main's does once the end is in. A turn that ended on a question to the person is not answered:
+   *  the wait in the claim (or the park) takes their message. */
+  let answered = false;
   /** The claim's CLI record (record: "loop"), for the end-of-run turn's answer; undefined for an adapter keeping its own. */
   let cliRecord: CliRecord | undefined;
   /** The session's paid requests admitted and not yet booked (its model port's beforeRequest, then its afterRequest), and
@@ -730,9 +736,10 @@ function adapterLoop(specOf: (claim: Claim, run: AdapterRun) => AdapterRunSpec |
     // untaken for the next claim, which hands it on again; never refused for good.
     if (!gate || !session || gate.sealed) return { later: "the run is parking: the steer waits for its resume" };
     // The run's job has answered and it is looking back before its end: a person's message is not the end-of-run turn's
-    // to answer. Left untaken, so the run's end says it came after the answer.
-    if (reflecting) return { later: "the run has answered and is ending: the steer is not placed in its end-of-run turn" };
-    if (handingBack) return { later: "the run has answered and waits for its computer to be handed back before it ends: the steer is not placed" };
+    // to answer. Left untaken, the run's end opens a completed run again with it as a new turn (store run-patch.ts
+    // refuseLeftovers).
+    if (reflecting) return { later: "the run has answered and is ending: the message opens it again as a new turn once its end is in" };
+    if (handingBack) return { later: "the run has answered and waits for its computer to be handed back before it ends: the message opens it again as a new turn once its end is in" };
     const text = typeof (command.body as { text?: unknown } | null)?.text === "string" ? (command.body as { text: string }).text : "";
     const requestId = commandRequest(command.id);
     // A message that answers nothing (a trigger's, answers: false) waits for the turn's end and runs as a turn of its
@@ -743,6 +750,9 @@ function adapterLoop(specOf: (claim: Claim, run: AdapterRun) => AdapterRunSpec |
     // between that choice and the message's placing.
     const askedLast = !reopen && session.state === "idle" && root !== undefined && endedOnTurnEndingTool((await entriesOf(gate.journal, root.id, context)) as never) !== undefined;
     if (!gate || !session || gate.sealed) return { later: "the run is parking: the steer waits for its resume" };
+    // The claim's turn answered, and not on a question to the person (no wait in the claim takes the message, nor the idle
+    // session after the question): no turn here takes it (`answered`).
+    if (answered && !askedLast && !(reopen !== undefined && reopen === waitTurn)) return { later: "the run has answered and is ending: the message opens it again as a new turn once its end is in" };
     // A message that may not answer a person (a trigger's), delivered once the run waits on its person (in its claim, or
     // between the question's turn end and that wait): never the wait's answer, never placed, refused in the words the
     // server refuses one with while the run waits (runs-over-store.ts WAITS_ON_A_PERSON).
@@ -1263,6 +1273,9 @@ function adapterLoop(specOf: (claim: Claim, run: AdapterRun) => AdapterRunSpec |
         let waitingOn: string | undefined;
         for (;;) {
           const end = await Promise.race([turn.then((ended) => (ended === "lapsed" ? ("lapsed" as const) : ("answered" as const))), parking.then(() => "parked" as const), stopping.then(() => "stop" as const), harness.closed.then(() => "closed" as const)]);
+          // The turn answered: a message from here waits for the run's end, which opens the run again with it (steer). A wait
+          // in the claim on the person's answer clears it below.
+          if (end === "answered") answered = true;
           if (end === "parked") {
             // Let the tool host go first (a browser's release, booked under the live claim), then seal.
             await releaseHost(harness);
@@ -1338,6 +1351,7 @@ function adapterLoop(specOf: (claim: Claim, run: AdapterRun) => AdapterRunSpec |
             if (waited) {
               turn = waited.next;
               waitingOn = callId;
+              answered = false;
               continue;
             }
             parkOn = callId;
