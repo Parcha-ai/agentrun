@@ -6,7 +6,9 @@
 // and what the grade spent. What the server keeps on a run before its end (what it was given and read, its seed's
 // notes, its answer's time and costs) is the run's, not this.
 import { BACKGROUND_CONTEXT } from "@earendil-works/chord/context";
-import { type Learning, LEARNING_REASONS } from "../learning.js";
+import { currentLearning, holdsForOk, type Learning, LEARNING_REASONS, type NoteUsed, type Shown } from "../learning.js";
+import { runLearningBody } from "../learning-routes.js";
+import { FINAL_STATES } from "../store/store.js";
 import type { AnalyticsFilter } from "./analytics.js";
 import { journalEntries } from "../runner/journal-reader.js";
 import { KINDS } from "../runner/journal-kinds.js";
@@ -94,4 +96,40 @@ export async function learningCountsOverStore(store: Store, filter: AnalyticsFil
     else out.in_progress += 1;
   }
   return out;
+}
+
+/** An agent's learning counts as its learning view gives them (GET /agents/{id}/learning, learning-run.ts ofAgent's
+ *  counts): how its runs that tried to learn fared, less `runs`, from the one store. Its notes' runs and its impact read
+ *  what a run was given and read and its answer's time and costs, which the store does not record yet. */
+export async function agentLearningCountsOverStore(store: Store, agentId: string): Promise<Omit<LearningCounts, "runs">> {
+  const { runs: _, ...counts } = await learningCountsOverStore(store, { agent: agentId });
+  return counts;
+}
+
+/** What a run's start decides about its learning, recorded on its launch (`body.learning`, the store launch's start
+ *  path): the commit of its agent's learning folder it started from, and the notes it was given. */
+export type LaunchLearning = { readonly seed?: string; readonly given?: readonly NoteUsed[] };
+
+/** Run `runId`'s launch learning: its seed and given notes, or nothing when its launch records none. */
+async function launchLearningOf(store: Store, runId: string): Promise<LaunchLearning> {
+  const launch = await store.runs.launch(runId).catch(() => undefined);
+  const learning = (launch?.body as { learning?: unknown } | undefined)?.learning;
+  if (learning === null || typeof learning !== "object") return {};
+  const { seed, given } = learning as { seed?: unknown; given?: unknown };
+  const notes = Array.isArray(given) ? given.filter((note): note is NoteUsed => typeof note?.file === "string" && typeof note?.name === "string") : undefined;
+  return { ...(typeof seed === "string" ? { seed } : {}), ...(notes ? { given: notes } : {}) };
+}
+
+/** GET /runs/{id}/learning from the one store, in the shape the route gives (learning-routes.ts runLearningBody): the
+ *  run's learning end (runLearningEnd), the notes it was given and the seed it started from as its launch records them,
+ *  what it held for its owner's OK as the store's run view reads it (no statuses: never the learning folder), settled
+ *  once the run is final. Null when the run kept no learning. */
+export async function runLearningOverStore(store: Store, runId: string, shown: Shown, secrets: readonly string[]) {
+  const end = await runLearningEnd(store, runId);
+  if (!end) return null;
+  const started = await launchLearningOf(store, runId);
+  const learning = { ...end, ...(started.given ? { given: [...started.given] } : {}) } as Learning;
+  const current = holdsForOk(learning) ? currentLearning(learning, undefined) : learning;
+  const row = await store.runs.get(runId);
+  return runLearningBody({ id: runId, learning: current, seed: started.seed ?? null, settled: row !== undefined && FINAL_STATES.includes(row.state) }, shown, secrets);
 }
