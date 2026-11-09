@@ -11,7 +11,7 @@ import { tmpdir } from "node:os";
 import { basename, dirname, join } from "node:path";
 import { promisify } from "node:util";
 import test, { after } from "node:test";
-import { daemonCopy } from "../dist/daemon-copy.js";
+import { daemonCopy, defaultDaemonCache } from "../dist/daemon-copy.js";
 import { DockerProvider } from "../dist/index.js";
 import { COPY_NAME, DAEMON_BYTES, fakeDocker, valuesOf } from "./fake-docker.mjs";
 
@@ -72,20 +72,28 @@ test("every create binds the one copy; a copy whose bytes or mode are not the da
 	assert.deepEqual(readdirSync(dirname(bound)), [COPY_NAME], "no temporary file is left");
 });
 
-test("a daemon the provider has not copied yet is copied into XDG_CACHE_HOME/agentrun-computer by default", async () => {
+test("a daemon the provider has not copied yet is copied into ~/.cache/agentrun-computer by default, whatever XDG_CACHE_HOME says: the library reads no environment", async () => {
 	const { daemonPath, program } = fakeDocker({ daemonMode: 0o700 });
-	const cache = fresh();
-	const before = process.env.XDG_CACHE_HOME;
-	process.env.XDG_CACHE_HOME = cache;
+	// os.homedir() is HOME on Linux, so a fresh HOME keeps the test's copy out of the real home.
+	const home = fresh();
+	const xdg = fresh();
+	const before = { HOME: process.env.HOME, XDG_CACHE_HOME: process.env.XDG_CACHE_HOME };
+	process.env.HOME = home;
+	process.env.XDG_CACHE_HOME = xdg;
 	try {
+		assert.equal(defaultDaemonCache(), join(home, ".cache", "agentrun-computer"));
+		assert.equal(defaultDaemonCache({ XDG_CACHE_HOME: xdg }), join(home, ".cache", "agentrun-computer"), "it takes no environment either");
 		const provider = new DockerProvider({ daemonPath, docker: program });
 		assert.equal((await provider.create(SPEC)).ok, true);
 	} finally {
-		if (before === undefined) delete process.env.XDG_CACHE_HOME;
-		else process.env.XDG_CACHE_HOME = before;
+		for (const [name, value] of Object.entries(before)) {
+			if (value === undefined) delete process.env[name];
+			else process.env[name] = value;
+		}
 	}
-	assert.deepEqual(readdirSync(join(cache, "agentrun-computer")), [COPY_NAME]);
-	assert.equal(lstatSync(join(cache, "agentrun-computer")).mode & 0o7777, 0o700);
+	assert.deepEqual(readdirSync(join(home, ".cache", "agentrun-computer")), [COPY_NAME]);
+	assert.equal(lstatSync(join(home, ".cache", "agentrun-computer")).mode & 0o7777, 0o700);
+	assert.deepEqual(readdirSync(xdg), [], "nothing under XDG_CACHE_HOME");
 });
 
 test("processes making the same copy at once each get a whole copy, and leave no temporary file", async () => {

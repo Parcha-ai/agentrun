@@ -80,7 +80,7 @@ import { webhook } from "./trigger-webhook.js";
 import { SCHEME_NAMES } from "./trigger-signatures.js";
 import { permissionFrom } from "./tool-gate.js";
 import { CATCHUP_WINDOW_S, FAILURES_TO_PAUSE, HISTORY_KEPT, MIN_EVERY_S, PAYLOAD_KEPT_BYTES, type RunTrigger, SOURCE_KINDS, TARGET_KINDS, type TriggerClock, Triggers } from "./triggers.js";
-import { applyBodyOf, compiled, type Package, packageModel, packageView, readPackages } from "./templates.js";
+import { applyBodyOf, compiled, madeTriggerIssues, type Package, packageModel, packageView, readPackages } from "./templates.js";
 import { checkDefinitionBody, DEFAULT_INPUT_SCHEMA, definitionBodyIssues, ID, IDEMPOTENCY_TTL_S, inputIssues, isObject, type Json, stable, unknownFields } from "./validate.js";
 import { agentTools, browserKeyRow, isUnavailable, recheckPlane, settingsIssues, ToolSettings, type ToolSettingsMap, whyUnavailable, withDefaults } from "./tool-plane.js";
 import { MAX_FILES_PER_RUN, MAX_UPLOAD_BYTES, Uploads, UPLOADS_DIR } from "./uploads.js";
@@ -743,6 +743,10 @@ async function startHolding(options: ServeOptions, data: string, lock: ServerLoc
   const tokenFile = options.token === undefined ? join(data, TOKEN_FILE) : null;
   const stored = options.token === undefined ? await tokenIn(tokenFile!) : undefined;
   const token = options.token ?? stored!.token;
+  // Given a token (AGENTRUN_TOKEN), a .token an earlier start made holds one this server refuses: it goes, so nothing
+  // (a person told the token is there, a CLI that reads it) takes a dead token from it. A later start without one makes a
+  // new file and token.
+  if (options.token !== undefined) await rm(join(data, TOKEN_FILE), { force: true });
   const doorTokenFile = join(data, DOOR_TOKEN_FILE);
   const { token: doorToken } = await tokenIn(doorTokenFile);
   const log = options.log;
@@ -1262,7 +1266,7 @@ async function startHolding(options: ServeOptions, data: string, lock: ServerLoc
     if (revision?.kind !== "agentic") return { tools: [], gated: {} };
     const [{ learnedDraftTools }, { permissionOf }, { readToolSettings }] = await Promise.all([import("./tools.js"), import("./tool-gate.js"), import("./tool-plane.js")]);
     const server = readToolSettings(agents.dir).settings;
-    return learnedDraftTools(revision.body.tools, (name) => permissionOf(name, server as never, (revision.body.toolSettings ?? {}) as never));
+    return learnedDraftTools(revision.body.tools, (name) => permissionOf(name, server as never, (revision.body.toolSettings ?? {}) as never, revision.body.approvals === "never" ? "never" : "ask"));
   }
   async function needAgent(id: string): Promise<AgentEntry> {
     const entry = ID.test(id) ? await agents.get(id) : null;
@@ -1318,7 +1322,7 @@ async function startHolding(options: ServeOptions, data: string, lock: ServerLoc
   // ---- runs -----------------------------------------------------------------------------------------------------------
 
   /** A workflow revision's shape as runnable.ts checks it: its workflow, tools, harness, place and tool settings. */
-  const workflowShape = ({ workflow, tools, harness, place, toolSettings }: { workflow: unknown; tools?: readonly string[]; harness?: string; place?: RevisionShape["place"]; toolSettings?: RevisionShape["toolSettings"] }): RevisionShape => ({ kind: "workflow", workflow, tools: tools ?? [], ...(harness ? { harness } : {}), ...(place ? { place } : {}), ...(toolSettings ? { toolSettings } : {}) });
+  const workflowShape = ({ workflow, tools, harness, place, toolSettings, approvals }: { workflow: unknown; tools?: readonly string[]; harness?: string; place?: RevisionShape["place"]; toolSettings?: RevisionShape["toolSettings"]; approvals?: "never" }): RevisionShape => ({ kind: "workflow", workflow, tools: tools ?? [], ...(harness ? { harness } : {}), ...(place ? { place } : {}), ...(toolSettings ? { toolSettings } : {}), ...(approvals === "never" ? { approvals } : {}) });
   const shapeOf = (revision: Revision): RevisionShape => (revision.kind === "agentic" ? { kind: "agentic", ...revision.body } : workflowShape(revision.body));
 
   /** What keeps `revision` from running here at `place` (its own, else this host's default), checked before anything
@@ -1398,15 +1402,19 @@ async function startHolding(options: ServeOptions, data: string, lock: ServerLoc
    *  before it are deleted and the agent is archived (an agent store keeps every agent), and the refusal is the answer, a 422's fields under `triggers.<i>`. A webhook
    *  trigger's secret is not in the answer (the Idempotency-Key record would keep it): POST /triggers/{id}/secret makes one. */
   async function applyTemplate(pkg: Package, body: Json) {
-    const { parameters, grants, model: override } = applyBodyOf(pkg, body);
+    const { parameters, grants, model: override, approvals } = applyBodyOf(pkg, body);
     const missing = pkg.secrets.filter((name) => !secret(name, storedKeys));
     const saved = pkg.mcp.filter((need) => mcpSource.server(need.server));
     const unsaved = pkg.mcp.filter((need) => !saved.includes(need));
     const needed = unsaved.filter((need) => need.required);
-    if (missing.length || needed.length) {
+    // A webhook trigger's secret is kept sealed, never in the clear: with no seal key, its create would be refused after
+    // the agent is made, so the apply is refused first, naming each one.
+    const unsealed = sealKeyOf(env[SEAL_KEY_ENV]) ? [] : pkg.triggers.flatMap((trigger, i) => (isObject(trigger.source) && trigger.source.kind === "webhook" ? [i] : []));
+    if (missing.length || needed.length || unsealed.length) {
       const fix = "Add it in Settings → Model keys or Settings → Tool keys, or set it where AgentRun starts, then apply the template again.";
       const server = "Add it in Settings → MCP servers, under that name, then apply the template again.";
-      throw new ApiError("agent_not_runnable", `The ${pkg.name} template needs ${[...missing, ...needed.map((need) => `the MCP server ${need.server}`)].join(" and ")}, which this server does not have. Nothing was created.`, { fields: [...missing.map((name) => ({ field: `secrets.${name}`, reason: NOT_SET_UP, message: `${name} is not set on this server.`, fix })), ...needed.map((need) => ({ field: `mcp.${need.server}`, reason: NOT_SET_UP, message: `No MCP server ${need.server} is saved on this server.`, fix: server }))] });
+      const sealing = `Start the server with its launcher, agentrun-serve, which makes and keeps a seal key, or set ${SEAL_KEY_ENV} (32 random bytes in base64) where AgentRun starts, then apply the template again.`;
+      throw new ApiError("agent_not_runnable", `The ${pkg.name} template needs ${[...missing, ...needed.map((need) => `the MCP server ${need.server}`), ...(unsealed.length ? ["a seal key for its webhook trigger's secret"] : [])].join(" and ")}, which this server does not have. Nothing was created.`, { fields: [...missing.map((name) => ({ field: `secrets.${name}`, reason: NOT_SET_UP, message: `${name} is not set on this server.`, fix })), ...needed.map((need) => ({ field: `mcp.${need.server}`, reason: NOT_SET_UP, message: `No MCP server ${need.server} is saved on this server.`, fix: server })), ...unsealed.map((i) => ({ field: `triggers.${i}`, reason: NOT_SET_UP, message: `This server has no seal key (${SEAL_KEY_ENV}), so it cannot keep the webhook trigger's secret.`, fix: sealing }))] });
     }
     // An MCP server the package can do without is skipped, and said: its tools are not granted.
     const skipped: InputIssue[] = unsaved.map((need) => ({ field: `mcp.${need.server}`, reason: NOT_SET_UP, message: `No MCP server ${need.server} is saved on this server, so the agent was made without its tools (${need.tools.join(", ")}). Save it in Settings → MCP servers and apply again to grant them.` }));
@@ -1417,7 +1425,11 @@ async function startHolding(options: ServeOptions, data: string, lock: ServerLoc
     const server = settings.get() as Parameters<typeof permissionFrom>[1];
     const denied = grants.filter((tool) => { const set = permissionFrom(tool, server); return set.from === "server" && set.permission === "deny"; });
     const kept: InputIssue[] = denied.map((tool) => ({ field: `grants.${tool}`, reason: "not_allowed", message: `${tool} is denied on this server (Settings → Tools), so the agent was not allowed it: its runs are refused it until the owner changes that setting.` }));
-    const made = compiled(pkg, parameters, { ...(harness ? { harness } : {}), ...(model ? { model } : {}), mcp: saved, defaultTools, grants: grants.filter((tool) => !denied.includes(tool)) });
+    const made = compiled(pkg, parameters, { ...(harness ? { harness } : {}), ...(model ? { model } : {}), mcp: saved, defaultTools, grants: grants.filter((tool) => !denied.includes(tool)), ...(approvals ? { approvals } : {}) });
+    // Every trigger is checked as POST /triggers checks it, its parameters filled, before anything is made: a schedule
+    // from a parameter that does not read, or a date that has passed, refuses the apply (422 under triggers.<i>).
+    const refusedTriggers = madeTriggerIssues(made.triggers, Date.now());
+    if (refusedTriggers.length) throw invalid(refusedTriggers);
     // POST /agents' and POST /triggers' own body limit: parameters filled in more than once can grow a package past it.
     for (const one of [made.agent, ...made.triggers]) if (Buffer.byteLength(JSON.stringify(one)) > MAX_BODY) throw new ApiError("payload_too_large", `the ${pkg.name} template, its parameters filled in, makes a body over ${MAX_BODY} bytes`, { details: { limit: "max_body_bytes" } });
     const { entry, warnings } = await createAgentOf(made.agent);
@@ -1867,9 +1879,14 @@ async function startHolding(options: ServeOptions, data: string, lock: ServerLoc
         // The owner's yes, on the box ticked, is kept with the owner: written durably before the password, so a setup that
         // cannot keep it sets no owner and can be tried again, and taken back if the password is not written.
         const along = body.import === true ? { keep: () => writeDurable(importAsked, ""), drop: () => rm(importAsked, { force: true }) } : undefined;
-        const made = await me.setFirst(password, body.code, byToken, along);
+        // The server's API token stands in for the code in the code field too (on Render it is in the Environment tab, the
+        // code only in the log), compared as the header is, in constant time; a wrong one counts as a wrong code.
+        const tokenAsCode = typeof body.code === "string" && body.code !== "" && timingSafeEqual(digest(`Bearer ${body.code}`), expected);
+        const made = await me.setFirst(password, body.code, byToken || tokenAsCode, along);
         if (made === "exists") throw new ApiError("forbidden", "this server has its owner, or is being set up: sign in");
-        if (made === "code") throw new ApiError("forbidden", "that is not the setup code in the server's log, or it has expired");
+        if (made === "missing") throw new ApiError("forbidden", "this server's setup takes the setup code in its log: send it as code");
+        if (made === "wrong") throw new ApiError("forbidden", "that is not the setup code in the server's log");
+        if (made === "new") throw new ApiError("forbidden", "that setup code expired, or five wrong tries voided it: a new one is in the server's log");
         // A new password ends every session from before (a reset in another process cleared the old one).
         viewers.recheck();
         // The count is for the offer, now answered: it stops.
@@ -1915,8 +1932,12 @@ async function startHolding(options: ServeOptions, data: string, lock: ServerLoc
         viewers.recheck();
         return send(res, 200, { signed_out: true }, { "set-cookie": ownerCookie(req, "", 0) });
       }
-      case "/auth/session":
-        return send(res, 200, { password_set: me.hasPassword(), signed_in: signedIn(req, me) });
+      case "/auth/session": {
+        // Before the owner's password is set: whether setup takes the printed code (a server at a public address), so
+        // the page asks for it when opened with no link. Never the code itself.
+        const set = me.hasPassword();
+        return send(res, 200, { password_set: set, signed_in: signedIn(req, me), ...(set ? {} : { setup_code: !me.openSetup }) });
+      }
     }
     throw new ApiError("not_found", `no route /v2${path}`);
   }
@@ -2581,7 +2602,7 @@ async function startHolding(options: ServeOptions, data: string, lock: ServerLoc
     if (owner && (raw === "/v2/setup" || raw === "/v2/setup/import" || raw.startsWith("/v2/auth/"))) return void ownerRoute(req, res, raw.slice(3), owner).catch(fail);
     if (raw === MCP_PATH) return void mcp(req, res).catch(fail);
     if (raw === "/llms.txt") return void answerLlms(req, res).catch(fail);
-    if (answerPage(req, res, raw, { token, dir: data, authFailed, console: options.console, takesBytes, ...(owner ? { owner } : {}) })) return;
+    if (answerPage(req, res, raw, { token, dir: data, authFailed, console: options.console, takesBytes, ...(owner ? { owner } : {}), ...(options.publicUrl ? { publicUrl: options.publicUrl } : {}) })) return;
     if (!raw.startsWith("/v2/")) return fail(new ApiError("not_found", `no route ${raw}; the API is under /v2`));
     // A run's id needs no decoding: one that is not an id as sent (a stray or malformed escape) is no run's, and is never
     // decoded here, where a throw would leave the request listener.
@@ -2610,6 +2631,8 @@ async function startHolding(options: ServeOptions, data: string, lock: ServerLoc
     const sent = String(req.headers.origin ?? "").toLowerCase();
     if (sent === "" || (sent !== ownOrigin(req) && sent !== publicOrigin)) return (authFailed(raw, "live_view_origin"), deny("403 Forbidden"));
     if (!owner || !signedIn(req, owner)) return (authFailed(raw, "live_view_without_session"), deny("401 Unauthorized"));
+    // Once the run's WebSocket is piped to this socket, a failure here only ends it: an HTTP line would land mid-stream.
+    let piping = false;
     void (async () => {
       const run = await runs.get(viewing[1]!);
       const handover = run && runs.hasProcess(run.id) ? await handoverById(run.dir, viewing[2]!.slice(3, -3)) : undefined;
@@ -2622,8 +2645,8 @@ async function startHolding(options: ServeOptions, data: string, lock: ServerLoc
       const admitted = () => held.some((value) => owner.valid(value));
       if (!admitted()) return deny("401 Unauthorized");
       viewers.watch(socket, admitted);
-      proxyLiveUpgrade(req, socket, head, handover, viewing[2]!);
-    })().catch(() => deny("500 Internal Server Error"));
+      proxyLiveUpgrade(req, socket, head, handover, viewing[2]!, () => { piping = true; });
+    })().catch(() => (piping ? void socket.destroy() : deny("500 Internal Server Error")));
   });
   const first = options.port ?? DEFAULT_PORT;
   const last = options.nextFreePort && first !== 0 ? Math.min(first + 99, 65_535) : first;
