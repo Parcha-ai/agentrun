@@ -27,4 +27,5 @@ export {
   type ClaimSide, type ComputerSetting, type ComputerSettingKind, type KindCapabilities, type KindRegistry, type LaunchedComputer, type Port,
   type ProviderEntry, resolveComputer, type ResolvedComputer, type StartedComputer,
 } from "./resolve-computer.js";
+export { type ClaimComputer, type ClaimLaunch, computerForClaim, type ComputerForClaimDeps, type OpenComputerView, type ProviderMakers, sweepComputers, type ViewEnd } from "./computer-for-claim.js";
 export { layRevisionSkills, RUN_SKILLS_DIR } from "./revision-skills.js";
