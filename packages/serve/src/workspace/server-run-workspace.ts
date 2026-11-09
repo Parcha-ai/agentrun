@@ -1,8 +1,7 @@
 // The server's read-only view of a run's folder: what the server reads a run's files through (its file routes), with no
 // runner claim. Mode 1: the run's local folder (runFolder). Mode 2 (the server's Archil settings present): the run's
-// folder on the server's Archil disk (runKey), its account key opened from the store's sealed keys with the server's
-// seal key, as a claim's Archil step opens it (archilClaim) but with no claim around it: no exec, no spill sweep, no disk
-// token, no mount.
+// folder on the server's Archil disk (runKey), its account key by the one resolver (archil-key.ts: the server's
+// ARCHIL_API_KEY, else the sealed row), with no claim around it: no exec, no spill sweep, no mount credential, no mount.
 //
 // Read-only: read, list, stat and grep work as the run's own Workspace answers them (a link is never followed). Every
 // call that would change the folder, run something in it, or put it in a computer is refused with REFUSED in plain words:
@@ -10,8 +9,10 @@
 import { lstat } from "node:fs/promises";
 import { loadArchilSettings } from "../archil-settings.js";
 import type { Store } from "../store/index.js";
-import { ArchilClaimRefused, archilClaim } from "./archil-claim.js";
-import type { ArchilDisk, ArchilDiskOptions } from "./archil-disk.js";
+import type { KeyEnv } from "../key-meta.js";
+import { ArchilClaimRefused } from "./archil-claim.js";
+import { type ArchilDisk, type ArchilDiskOptions, archilDisk } from "./archil-disk.js";
+import { archilApiKey } from "./archil-key.js";
 import { archilWorkspace } from "./archil.js";
 import type { Processes } from "./attach.js";
 import { localWorkspace } from "./local.js";
@@ -28,6 +29,8 @@ export interface ServerRunWorkspaceOptions {
   readonly sealKey: Buffer | undefined;
   /** Makes the Archil disk (default archilDisk): a test's fake. */
   readonly makeDisk?: (options: ArchilDiskOptions) => ArchilDisk;
+  /** The server's environment: an ARCHIL_API_KEY there is the account key, over a saved one. */
+  readonly env?: KeyEnv;
 }
 
 const refuse = async (): Promise<never> => {
@@ -72,20 +75,15 @@ export async function serverRunWorkspace(store: Pick<Store, "runs" | "settings" 
     if (!there?.isDirectory()) return null;
     workspace = localWorkspace(folder);
   } else {
-    // A claim's key-opening without a claim's lifetime: the signal never aborts, and the exec image is left out, since
-    // the server's view runs nothing.
+    // The account key by the one resolver, and the disk made with it as the claim makes it; no exec image, since the
+    // server's view runs nothing.
     let disk: ArchilDisk;
     try {
-      ({ disk } = await archilClaim({
-        settings: { diskId: settings.diskId, region: settings.region, s3Url: settings.s3Url },
-        keys: store.sealedKeys,
-        sealKey: options.sealKey,
-        signal: new AbortController().signal,
-        ...(options.makeDisk ? { makeDisk: options.makeDisk } : {}),
-      }));
+      const { value } = await archilApiKey({ env: options.env ?? {}, keys: store.sealedKeys, sealKey: options.sealKey });
+      disk = (options.makeDisk ?? archilDisk)({ disk: settings.diskId, region: settings.region, s3BaseUrl: settings.s3Url, key: () => value });
     } catch (error) {
       if (error instanceof ArchilClaimRefused) throw new WorkspaceError("UNAVAILABLE", `the server can't read this run's files: ${error.message}`, { cause: error });
-      throw error;
+      throw new WorkspaceError("UNAVAILABLE", `the server can't make this server's Archil disk: ${(error as Error)?.message ?? error}`, { cause: error });
     }
     // A folder of the file API is there when its parent lists it (the root itself always stats as a folder).
     const key = runKey(run.agentId, runId);
