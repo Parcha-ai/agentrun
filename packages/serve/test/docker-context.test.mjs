@@ -38,11 +38,11 @@ test("the image's build context holds the workspace and the console's sources, a
   for (const path of dropped) assert.equal(existsSync(join(out, path)), false, `${path} is not in the context`);
 });
 
-test("both stages build on one digest-pinned node:22 trixie base, and the runtime has git 2.40 or newer", async () => {
+test("both stages build on one digest-pinned node:24 trixie base, and the runtime has git 2.40 or newer", async () => {
   const dockerfile = await readFile(join(ROOT, "packages/serve/docker/Dockerfile"), "utf8");
   const bases = [...dockerfile.matchAll(/^FROM (\S+)/gm)].map(([, image]) => image);
   assert.equal(bases.length, 2, "a build stage and a runtime stage");
-  assert.match(bases[0], /^node:22\.\d+\.\d+-trixie-slim@sha256:[0-9a-f]{64}$/, "pinned by digest");
+  assert.match(bases[0], /^node:24\.\d+\.\d+-trixie-slim@sha256:[0-9a-f]{64}$/, "pinned by digest");
   assert.equal(bases[1], bases[0], "one base for both stages");
   // An agent's learning folder needs git 2.32 (the learning script's floor, learn/learning.sh); the image holds itself to 2.40 by its own choice, and
   // trixie's is 2.47.
