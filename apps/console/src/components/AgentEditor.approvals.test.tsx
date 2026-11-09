@@ -3,7 +3,7 @@ import { createRoot } from "react-dom/client";
 import { afterEach, describe, expect, it } from "vitest";
 import { AgentEditor } from "./AgentEditor";
 import { type Agent, createBody, editBody, toolOffers } from "@/lib/agentForm";
-import { toolGates } from "@/lib/toolSettings";
+import { toolChoices, toolGates } from "@/lib/toolSettings";
 
 // An agent's approvals (definition.approvals): "ask", the default, parks a call its tool gate says ask for the owner's
 // answer; "never" runs it unattended, every tool it has granted (deny and pins still apply). The editor's Tools step sets
@@ -96,5 +96,38 @@ describe("AgentEditor, the agent's approvals while a save is under way and with 
     expect(row.textContent).toContain("Runs without asking: Never ask is on.");
     expect(row.textContent).not.toContain("Each call is refused");
     expect(row.querySelector<HTMLOptionElement>('select[aria-label="bash permission"] option[value="ask"]')!.disabled).toBe(false);
+  });
+});
+
+describe("AgentEditor, the Tool settings words under Never ask", () => {
+  const SEARCH = { name: "web_search", providers: ["auto", "native", "exa-keyless", "parallel", "off"], provider: "auto", default_provider: "auto", available: true, resolves: { pi: "exa-keyless" } };
+  const searchCaps = { ...caps, tools: toolOffers([{ name: "read", available: true }, { name: "web_search", available: true }]) };
+  const GATE = { permission: "ask" as const, permission_from: "default" as const, default_permission: "ask" as const, permissions: ["allow" as const, "ask" as const, "deny" as const] };
+  const searcher = (approvals: "ask" | "never"): Agent => ({ agent_id: "s1", kind: "agentic", revision: "rv1", revisions: 1, archived_at: null,
+    definition: { version: 1, name: "Searcher", instructions: "Look.", harness: "pi", skills: [], tools: ["read", "web_search"], approvals },
+    tools: [{ name: "read", ...GATE }, { name: "web_search", provider: "auto", provider_from: "server", default_provider: "auto", resolved: "exa-keyless", ...GATE }] });
+  const mountSearcher = (approvals: "ask" | "never") => {
+    const host = document.body.appendChild(document.createElement("div"));
+    root = createRoot(host);
+    act(() => root!.render(createElement(AgentEditor, { agent: searcher(approvals), caps: searchCaps, providerChoices: toolChoices([SEARCH]), permissionGates: toolGates([{ name: "web_search", permission: "ask", default_permission: "ask", permissions: ["allow", "ask", "deny"] }]), step: "tools", onSave: async () => null } as never)));
+    const radio = (label: RegExp) => [...host.querySelectorAll<HTMLInputElement>('fieldset[aria-label="Approvals"] input[type="radio"]')].find((r) => label.test(r.closest("label")?.textContent ?? ""));
+    return { host, radio };
+  };
+
+  it("says what ask means under Never ask: a tool on ask runs without waiting, not that the run waits", () => {
+    const t = mountSearcher("never");
+    const intro = t.host.querySelector('section[aria-label="Tool settings"] p')!.textContent ?? "";
+    expect(intro).toContain("Never ask is on: a tool on ask runs without waiting for you.");
+    expect(intro).not.toContain("makes the run wait");
+    act(() => { t.radio(/^Ask me/)!.click(); });
+    expect(t.host.querySelector('section[aria-label="Tool settings"] p')!.textContent).toContain("A tool on ask makes the run wait for your approval at each call.");
+  });
+
+  it("shows a tool's saved resolution only for the approvals it was read under; changed, it resolves once saved", () => {
+    const t = mountSearcher("ask");
+    const resolves = () => t.host.querySelector('tr[data-tool="web_search"]')!.textContent ?? "";
+    expect(resolves()).toContain("pi: Exa keyless");
+    act(() => { t.radio(/^Never ask/)!.click(); });
+    expect(resolves()).toContain("once saved");
   });
 });
