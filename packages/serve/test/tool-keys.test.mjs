@@ -12,7 +12,6 @@ import { startServe } from "../dist/index.js";
 import { secret } from "../dist/secrets.js";
 import { readingOf } from "../dist/server.js";
 import { rowUnlocks, TOOL_KEYS, unlockedBy } from "../dist/tool-keys.js";
-import { openSqliteStore } from "../dist/store/index.js";
 import { schemaProblems } from "./schema-support.mjs";
 import { agent, call, harnessData, client, cookieOf, FAUX, follow, printed, scratch, serve, storeBytes, withEnv } from "./support.mjs";
 
@@ -240,14 +239,16 @@ test("handed no seal key, the server keeps a key under the one it made at its st
   assert.deepEqual((await api("GET", "/capabilities")).body.features.tool_keys, { routes: true, at_rest: "sealed" });
   const value = made();
   assert.equal((await api("PUT", "/settings/tool-keys/monid", { values: { MONID_API_KEY: value } })).status, 204);
-  assert.equal(existsSync(join(data, "tool-keys.json")), false);
-  assert.ok(!storeBytes(data).toString("latin1").includes(value), "sealed, never in the clear");
+  // Sealed, never in the clear, wherever the server keeps it (the store, or its tool-keys file).
+  const kept = existsSync(join(data, "tool-keys.json")) ? readFileSync(join(data, "tool-keys.json"), "latin1") : "";
+  assert.ok(!`${storeBytes(data).toString("latin1")}${kept}`.includes(value), "sealed, never in the clear");
   assert.deepEqual((await api("GET", "/settings/tool-keys")).body.reenter, null);
 });
 
-test("values sealed under another key, under the key a server handed none made, or in a damaged row do not open: the server starts, GET asks for them again with why, the log says so once per condition naming the store and no value, and a PUT seals anew", async (t) => {
+test("values sealed under another key, under the key a server handed none makes, or in a damaged file do not open: the server starts, GET asks for them again with why, the log says so once naming the file and no value, and a PUT seals anew", async (t) => {
   withEnv(t, {}, KEYS);
   const data = join(await scratch(t), "agents");
+  const file = join(data, "tool-keys.json");
   const lines = [];
   const open = new Set();
   t.after(() => Promise.all([...open].map((server) => server.close())));
@@ -267,7 +268,7 @@ test("values sealed under another key, under the key a server handed none made, 
   server = await started(second);
   const parallel = async () => (await server.api("GET", "/capabilities")).body.workflows.decisions.providers.find((p) => p.id === "parallel").available;
   assert.equal(await parallel(), false, "a value that does not open is absent: no key, never a crash or the ciphertext");
-  assert.deepEqual(server.said().map((line) => line.replace(/^at=\S+ /, "")), [`event=tool_keys condition=seal_key_changed file=store:sealed_keys fields=PARALLEL_API_KEY,MONID_API_KEY`], "said once, on the read that found it (tool-keys-store.ts:148)");
+  assert.deepEqual(server.said().map((line) => line.replace(/^at=\S+ /, "")), [`event=tool_keys condition=seal_key_changed file=${file} fields=PARALLEL_API_KEY,MONID_API_KEY`], "said once, at the start");
   const changed = (await server.api("GET", "/settings/tool-keys")).body;
   assert.deepEqual([fieldsOf(changed).PARALLEL_API_KEY, fieldsOf(changed).MONID_API_KEY, changed.reenter], [AGAIN, AGAIN, { reason: "seal_key_changed", fields: ["PARALLEL_API_KEY", "MONID_API_KEY"] }]);
   assert.equal(server.said().length, 1, "not again for the same condition");
@@ -276,37 +277,42 @@ test("values sealed under another key, under the key a server handed none made, 
   assert.equal(await parallel(), true, "sealed anew, it is read at once");
   const resealed = (await server.api("GET", "/settings/tool-keys")).body;
   assert.deepEqual([fieldsOf(resealed).PARALLEL_API_KEY, resealed.reenter], [STORED, { reason: "seal_key_changed", fields: ["MONID_API_KEY"] }], "sealed anew under the current key");
-  assert.equal((await server.api("PUT", "/settings/tool-keys/monid", { values: { MONID_API_KEY: values.MONID_API_KEY } })).status, 204);
-  assert.equal((await server.api("GET", "/settings/tool-keys")).body.reenter, null, "both sealed under the current key");
   await server.close();
 
-  // Handed no seal key, the server makes its own (seal-key.ts): what the others sealed does not open under it.
-  server = await started(undefined);
-  assert.equal(await parallel(), false, "under the key the server made, nothing sealed under another opens");
+  // Handed no seal key, the server never runs without one (seal-key.ts): under a config home with none, it makes its own,
+  // 0600 in a 0700 directory, and prints only its path. What the others sealed does not open under it.
+  const home = join(await scratch(t), "config");
+  const madeAt = join(home, "agentrun", "seal.key");
+  const printedLines = [];
+  const write = process.stderr.write.bind(process.stderr);
+  process.stderr.write = (chunk, ...rest) => (printedLines.push(String(chunk)), write(chunk, ...rest));
+  const config = process.env.XDG_CONFIG_HOME;
+  process.env.XDG_CONFIG_HOME = home;
+  try {
+    server = await started(undefined);
+  } finally {
+    process.env.XDG_CONFIG_HOME = config;
+    process.stderr.write = write;
+  }
+  assert.equal(statSync(madeAt).mode & 0o777, 0o600, "its key is 0600");
+  assert.equal(statSync(join(home, "agentrun")).mode & 0o777, 0o700, "in a 0700 directory");
+  const madeKey = readFileSync(madeAt, "utf8").trim();
+  assert.ok(printedLines.join("").includes(madeAt), `it prints the path: ${printedLines.join("")}`);
+  holdsNone(printedLines.join(""), keyForms(madeKey), "what it printed");
+  assert.equal(await parallel(), false, "under the key it made, nothing sealed under another opens");
   const missing = await server.api("GET", "/settings/tool-keys");
   assert.deepEqual(missing.body.reenter, { reason: "seal_key_changed", fields: ["PARALLEL_API_KEY", "MONID_API_KEY"] });
   await server.close();
 
-  // A damaged row: the key's sealed bytes in the store (tool-keys-store.ts, one sealed_keys row per field) replaced by
-  // bytes that do not open, under the key they were sealed with.
-  {
-    const store = await openSqliteStore({ file: join(data, "store.sqlite"), role: "server", now: Date.now });
-    await store.sealedKeys.put("PARALLEL_API_KEY", Uint8Array.from(Buffer.from("not sealed bytes")));
-    await store.close();
-  }
+  writeFileSync(file, "{ not json");
   server = await started(second);
-  assert.equal((await server.api("GET", "/health")).status, 200, "a damaged row never stops the server");
-  assert.deepEqual((await server.api("GET", "/settings/tool-keys")).body.reenter, { reason: "file_unreadable", fields: ["PARALLEL_API_KEY"] }, "a row that does not open is asked for again, by name");
-  assert.equal(await parallel(), false, "and is absent");
+  assert.equal((await server.api("GET", "/health")).status, 200, "a damaged file never stops the server");
+  assert.deepEqual((await server.api("GET", "/settings/tool-keys")).body.reenter, { reason: "file_unreadable", fields: [] }, "a file that does not read names no field");
   assert.equal((await server.api("PUT", "/settings/tool-keys/parallel", { values: { PARALLEL_API_KEY: values.PARALLEL_API_KEY } })).status, 204, "a PUT replaces it");
   assert.deepEqual((await server.api("GET", "/settings/tool-keys")).body.reenter, null);
   await server.close();
-  // Said once per new condition, on the read that finds it (tool-keys-store.ts:148), never again for the same one.
-  assert.deepEqual(server.said().map((line) => [/condition=(\S+)/.exec(line)[1], /fields=(\S+)/.exec(line)[1]]), [
-    ["seal_key_changed", "PARALLEL_API_KEY,MONID_API_KEY"], ["seal_key_changed", "MONID_API_KEY"],
-    ["seal_key_changed", "PARALLEL_API_KEY,MONID_API_KEY"], ["file_unreadable", "PARALLEL_API_KEY"],
-  ]);
-  for (const forms of [...Object.values(values).map(formsOf), keyForms(first), keyForms(second)]) holdsNone(lines.join("\n"), forms, "the log");
+  assert.deepEqual(server.said().map((line) => /condition=(\S+)/.exec(line)[1]), ["seal_key_changed", "seal_key_changed", "seal_key_changed", "file_unreadable"]);
+  for (const forms of [...Object.values(values).map(formsOf), keyForms(first), keyForms(second), keyForms(madeKey)]) holdsNone(lines.join("\n"), forms, "the log");
 });
 
 test("a key saved is read by name with no restart: capabilities lose the tool's missing names and name its key, a run of it starts and its process gets the key; deleted, it is missing again", { timeout: 60_000 }, async (t) => {
