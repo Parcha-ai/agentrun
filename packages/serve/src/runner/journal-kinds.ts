@@ -61,6 +61,9 @@ export const KINDS = {
    *  whole of it (HandoverAsked); its answer is an entry too (HandoverAnswered): the person's (a browser_hand_back row
    *  the loop applies, taking the row in that commit), or the ask's expiry. The first answer for an ask is its answer. */
   handover: "agent.handover",
+  /** A run waiting on the person: ask_person ended its turn. Its data is the ask_person call's id; its commit carries the
+   *  run parked. A person's message after it answers it. Neither a call nor a message, so the reader passes over it. */
+  personAsked: "agentrun.person.asked",
 } as const;
 
 /** How a browser hand-over ended: the person's two answers, or its expiry. */

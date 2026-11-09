@@ -954,13 +954,15 @@ export function timelineOf(entries: readonly EntryLike[], options: TimelineOptio
   return usage ? [...projector.rows(), usage] : [...projector.rows()];
 }
 
-/** Whether a run's turn ended waiting on a person: its last meaningful row is a successful tool result for a tool that
- *  ends its turn (registerTurnEnding — ask_person is serve's). This is the one rule the view reads a run `input_required`
- *  on a question by (the waiting row withAsks appends sits right after this same result), so the runner's loop parks on
- *  exactly the turn ends the view would call waiting, and the two can never disagree. */
-export function endedOnTurnEndingTool(entries: readonly EntryLike[]): boolean {
+/** The id of the call a run's turn ended waiting on a person by, or undefined: its last meaningful row is a successful tool
+ *  result for a tool that ends its turn (registerTurnEnding — ask_person is serve's). This is the one rule the view reads a
+ *  run `input_required` on a question by (the waiting row withAsks appends sits right after this same result), so the
+ *  runner's loop parks on exactly the turn ends the view would call waiting, and the two can never disagree; the id is the
+ *  call the park entry names. Truthy when it waits, undefined when it does not. */
+export function endedOnTurnEndingTool(entries: readonly EntryLike[]): string | undefined {
   const last = timelineOf(entries, { settled: true }).findLast((row) => row.kind !== "usage" && row.kind !== "phase");
-  return last?.kind === "tool_result" && last.tool_name !== null && last.tool_status === "success" && endsTurn(last.tool_name);
+  if (last?.kind !== "tool_result" || last.tool_name === null || last.tool_status !== "success" || !endsTurn(last.tool_name)) return undefined;
+  return last.tool_use_id ?? undefined;
 }
 
 /** A workflow's decision receipt as its run's store keeps it (`@parcha/agentrun-pi/durable`'s DecisionRow): the fields

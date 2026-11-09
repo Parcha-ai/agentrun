@@ -98,10 +98,8 @@ export interface HostToolCtx {
  *  the gate before the call, the paid-call seam, then the tool on the run's environment and harness, its answer the text a
  *  model reads (the output or the failure, a write's or an error's path named relative to the run's folder). Undefined when
  *  `name` is not one a host runs (REPLAY). */
-export function hostToolOf(name: string, tool: ToolRegistration, ctx: HostToolCtx, replayOf?: "safe" | "never"): HostTool | undefined {
-  // `replayOf` for a tool outside the REPLAY table (ask_person is pi's own, kept out of it so a CLI harness still refuses
-  // it): its own replay, so hostToolOf can list it. Every other host tool reads its policy from REPLAY as before.
-  const replay = replayOf ?? REPLAY[name];
+export function hostToolOf(name: string, tool: ToolRegistration, ctx: HostToolCtx): HostTool | undefined {
+  const replay = REPLAY[name];
   if (!replay) return undefined;
   return {
     name: tool.name,
