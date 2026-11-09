@@ -21,6 +21,7 @@ test("the table: true only for a body that carries an MCP secret value, or the p
     ["saveMcpServer", { url: "https://mcp.example.test/v2/mcp", auth: { type: "headers" } }, false, "a new url, the saved headers kept"],
     ["saveMcpServer", { url: "https://mcp.example.test/mcp", auth: { type: "headers", headers: {} } }, false, "no header named"],
     ["saveMcpServer", { url: "https://mcp.example.test/mcp", auth: { type: "oauth" } }, false, "oauth keeps its sign-in"],
+    ["saveMcpServer", { url: "https://mcp.example.test/mcp", auth: { type: "github_app" } }, false, "a github_app server keeps nothing: its token is minted per run"],
     ["saveMcpServer", null, false, "no body"],
     ["startMcpOAuth", { url: "https://mcp.example.test/mcp", client_id: "corp-app", client_secret: TOKEN }, true, "a client secret"],
     ["startMcpOAuth", { url: "https://mcp.example.test/mcp", client_id: "corp-app" }, false, "a client id alone"],
