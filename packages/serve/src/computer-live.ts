@@ -30,9 +30,13 @@ const LOOPBACK = "127.0.0.1"; // key-gate: loopback-rule the one address the run
 const TAG = /^[A-Za-z0-9._:-]{1,200}$/;
 /** Input messages are small: a whole message over this ends the connection. */
 const MAX_MESSAGE_BYTES = 64 * 1024;
-/** How long a connection may stay silent before its hello, and how many may wait for one. */
-const HELLO_MS = 5_000;
-const MAX_PENDING = 8;
+/** The bounds a viewer is held to (pi-browser's server.ts keeps the same): how long a connection may stay silent before
+ *  its hello and how many may wait for one; past `slowViewerBytes` unsent no frame is sent (nor the watch acked) until the
+ *  socket drains, and past `maxBufferedBytes` the viewer is cut off (refused slow_viewer); at most `maxQueuedInput`
+ *  events wait behind the one being sent, the rest answered held busy. */
+export const VIEWER_LIMITS = { helloMs: 5_000, maxPending: 8, slowViewerBytes: 512 * 1024, maxBufferedBytes: 4 * 1024 * 1024, maxQueuedInput: 32 } as const;
+/** The close code of a viewer cut off for not reading (4000-4999 are the applications'). */
+const SLOW_VIEWER_CLOSE = 4429;
 /** Bounds on what a viewer's event may carry. */
 const COORDINATE = 65_535;
 const WHEEL = 100_000;
@@ -106,8 +110,10 @@ export type OpenComputerView = {
   /** The frames' width at most, and their JPEG quality (the computer's defaults when absent). */
   maxWidth?: number;
   quality?: number;
-  /** For tests: how long a connection may stay silent before its hello. */
-  helloMs?: number;
+  /** For tests: the bounds (VIEWER_LIMITS), the timers the hello's wait runs on, and a socket's unsent bytes as read. */
+  limits?: Partial<typeof VIEWER_LIMITS>;
+  timers?: { set(run: () => void, ms: number): unknown; clear(handle: unknown): void };
+  bufferedOf?: (conn: WsConn) => number;
 };
 
 export type OpenedComputerView = { ok: true; view: ComputerView } | { ok: false; refused: "fenced" | "bad_tag" | "kind"; message: string };
@@ -165,8 +171,8 @@ type ServerMessage =
   | { type: "hold"; held: true }
   | { type: "hold"; held: false; reason: HoldEnd; message?: string }
   | { type: "take_refused"; message: string }
-  | { type: "held"; reason: "not_taken" | "taking" | "bad_message" | "refused" | "failed"; message: string }
-  | { type: "refused"; reason: "unauthorized" | "viewer_in_use" | "released" | "bad_message" }
+  | { type: "held"; reason: "not_taken" | "taking" | "bad_message" | "refused" | "failed" | "busy"; message: string }
+  | { type: "refused"; reason: "unauthorized" | "viewer_in_use" | "released" | "bad_message" | "slow_viewer" }
   | { type: "ended"; reason: "released" | "ended" | "gone" | "unreachable" | "refused" | "unsupported"; message: string };
 
 /** The answer to input outside a hold. */
@@ -176,13 +182,29 @@ const ENDED: Record<"released" | "ended", string> = { released: "This computer w
 
 /** The views open in this process, by run, kind and tag: a relaunch's registration ends the one before it. */
 const opened = new Map<string, { close(why: "released" | "ended"): Promise<void> }>();
+/** The opens of each run, kind and tag, one after another: two at once would each start an endpoint and one be orphaned. */
+const opening = new Map<string, Promise<unknown>>();
 
 export async function openComputerView(input: OpenComputerView): Promise<OpenedComputerView> {
-  const { store, sealKey, claim, kind, tag, watch, hold } = input;
+  const { claim, kind, tag } = input;
   if (!TAG.test(tag)) return { ok: false, refused: "bad_tag", message: "the computer's ref id is not a tag a viewer takes (1 to 200 of A-Z a-z 0-9 . _ : -)" };
   const fits = kind === "desktop" ? input.input === "desktop" : input.input === "android" || input.input === "ios";
   if ((kind !== "desktop" && kind !== "phone") || !fits) return { ok: false, refused: "kind", message: `a ${String(kind)} viewer takes ${kind === "desktop" ? "desktop" : "android or ios"} input, not ${String(input.input)}` };
   const key = `${claim.runId}\n${kind}\n${tag}`;
+  const mine = (opening.get(key) ?? Promise.resolve()).then(() => openOne(input, key));
+  const settled = mine.catch(() => undefined);
+  opening.set(key, settled);
+  void settled.then(() => {
+    if (opening.get(key) === settled) opening.delete(key);
+  });
+  return mine;
+}
+
+async function openOne(input: OpenComputerView, key: string): Promise<OpenedComputerView> {
+  const { store, sealKey, claim, kind, tag, watch, hold } = input;
+  const limits = { ...VIEWER_LIMITS, ...input.limits };
+  const timers = input.timers ?? { set: (run: () => void, ms: number) => setTimeout(run, ms).unref(), clear: (handle: unknown) => clearTimeout(handle as NodeJS.Timeout) };
+  const bufferedOf = input.bufferedOf ?? ((conn: WsConn) => conn.buffered);
   // A relaunch of the same computer: the old view goes first, its row with it, and its viewer is told it ended.
   await opened.get(key)?.close("ended");
 
@@ -191,19 +213,52 @@ export async function openComputerView(input: OpenComputerView): Promise<OpenedC
   let closed = false;
   let origin = "";
   const pending = new Set<WsConn>();
-  let viewer: { conn: WsConn; watch?: ScreenWatch; abort: AbortController; ack?: () => void; chain: Promise<void> } | null = null;
+  type Viewer = { conn: WsConn; watch?: ScreenWatch; abort: AbortController; ack?: () => void; parked?: { frame: ScreenFrame; ack: () => void }; chain: Promise<void>; queued: number };
+  let viewer: Viewer | null = null;
   let state: HoldState = "agent";
+  /** Moves on with every take: an event queued under one hold is never sent under the next. */
+  let epoch = 0;
 
-  const send = (conn: WsConn, message: ServerMessage): void => void conn.send(JSON.stringify(message));
-  const refuse = (conn: WsConn, reason: "unauthorized" | "viewer_in_use" | "released" | "bad_message"): void => {
-    send(conn, { type: "refused", reason });
-    conn.close(CLOSE_CODES[reason], reason);
+  const refuse = (conn: WsConn, reason: "unauthorized" | "viewer_in_use" | "released" | "bad_message" | "slow_viewer"): void => {
+    conn.send(JSON.stringify({ type: "refused", reason }));
+    conn.close(reason === "slow_viewer" ? SLOW_VIEWER_CLOSE : CLOSE_CODES[reason], reason);
+  };
+  /** A reply to the viewer; one that does not read what it is sent is cut off past the hard bound, never buffered on. */
+  const send = (conn: WsConn, message: ServerMessage): void => {
+    if (conn.closed) return;
+    if (bufferedOf(conn) > limits.maxBufferedBytes) return refuse(conn, "slow_viewer");
+    conn.send(JSON.stringify(message), () => resume(conn));
+  };
+  /** The socket took what was waiting: a frame held back for a slow viewer goes now. */
+  const resume = (conn: WsConn): void => {
+    const current = viewer;
+    if (!current || current.conn !== conn || !current.parked || conn.closed || bufferedOf(conn) > limits.slowViewerBytes) return;
+    const { frame, ack } = current.parked;
+    current.parked = undefined;
+    sendFrame(current, frame, ack);
+  };
+  /** One frame to the viewer, its ack held until the viewer drew it; held back whole while the viewer is slow. */
+  const sendFrame = (current: Viewer, frame: ScreenFrame, ack: () => void): void => {
+    const conn = current.conn;
+    if (viewer !== current || conn.closed) return ack();
+    if (bufferedOf(conn) > limits.maxBufferedBytes) return refuse(conn, "slow_viewer");
+    if (bufferedOf(conn) > limits.slowViewerBytes) {
+      current.parked = { frame, ack };
+      return;
+    }
+    // The next frame is asked for once the viewer has drawn this one (its ack).
+    current.ack = ack;
+    if (!conn.send(encodeFrame(frame.bytes, frame.width, frame.height), () => resume(conn))) {
+      current.ack = undefined;
+      ack();
+    }
   };
 
   /** The hold moved: the viewer is told once per change, and each end of a hold with why. */
   const moved = (event: HoldEvent): void => {
     const before = state;
     state = event.state;
+    if (before === "agent" && event.state !== "agent") epoch += 1;
     const conn = viewer?.conn;
     if (!conn) return;
     if (event.state === "person") {
@@ -228,13 +283,7 @@ export async function openComputerView(input: OpenComputerView): Promise<OpenedC
     const current = viewer!;
     const handlers: ScreenWatchHandlers = {
       frame(frame: ScreenFrame, ack: () => void) {
-        if (viewer !== current || conn.closed) return ack();
-        // The next frame is asked for once the viewer has drawn this one (its ack).
-        current.ack = ack;
-        if (!conn.send(encodeFrame(frame.bytes, frame.width, frame.height))) {
-          current.ack = undefined;
-          ack();
-        }
+        sendFrame(current, frame, ack);
       },
       ended(error) {
         if (viewer !== current) return;
@@ -266,15 +315,21 @@ export async function openComputerView(input: OpenComputerView): Promise<OpenedC
     const actions = message.type === "text" ? [{ type: "type" as const, text: message.text }] : toAction(message, input.input);
     if (!Array.isArray(actions)) return send(conn, { type: "held", reason: "refused", message: actions.message });
     if (actions.length === 0) return;
+    // At most so many wait behind the one being sent: the rest are dropped, said, never queued without bound.
+    if (current.queued >= limits.maxQueuedInput) return send(conn, { type: "held", reason: "busy", message: "Too much input at once: that input was dropped." });
     hold.touched?.();
+    current.queued += 1;
+    const under = epoch;
     current.chain = current.chain.then(async () => {
-      // Taken back meanwhile (the hold moved, or the viewer went): nothing more is sent.
-      if (viewer !== current || state !== "person" || !current.watch) {
-        if (viewer === current && !current.watch) send(conn, { type: "held", reason: "failed", message: "The computer's screen is not open yet: try again in a moment." });
-        return;
+      try {
+        // Taken back meanwhile (the hold moved, a new take began, or the viewer went): nothing more is sent.
+        if (viewer !== current || state !== "person" || under !== epoch) return;
+        if (!current.watch) return send(conn, { type: "held", reason: "failed", message: "The computer's screen is not open yet: try again in a moment." });
+        const result = await current.watch.input(actions).catch((error: unknown) => ({ ok: false as const, error: { message: (error as Error)?.message ?? String(error) } }));
+        if (!result.ok && viewer === current) send(conn, { type: "held", reason: "failed", message: redactWords(result.error.message) });
+      } finally {
+        current.queued -= 1;
       }
-      const result = await current.watch.input(actions).catch((error: unknown) => ({ ok: false as const, error: { message: (error as Error)?.message ?? String(error) } }));
-      if (!result.ok && viewer === current) send(conn, { type: "held", reason: "failed", message: redactWords(result.error.message) });
     });
   };
 
@@ -282,6 +337,7 @@ export async function openComputerView(input: OpenComputerView): Promise<OpenedC
     const conn = current.conn;
     try {
       if (which === "take" && state === "person") return send(conn, { type: "hold", held: true });
+      if (which === "take") epoch += 1;
       const answer = which === "take" ? await hold.take() : await hold.give();
       if (viewer === current) moved({ state: answer.hold, ...(which === "give" && answer.hold === "agent" && state !== "agent" ? { ended: "given" as const } : {}) });
     } catch (error) {
@@ -295,7 +351,7 @@ export async function openComputerView(input: OpenComputerView): Promise<OpenedC
     if (message?.type !== "hello" || !tokenMatches(token, message.token) || closed) return refuse(conn, "unauthorized");
     // One viewer per computer, told so, and the first is never replaced.
     if (viewer) return refuse(conn, "viewer_in_use");
-    viewer = { conn, abort: new AbortController(), chain: Promise.resolve() };
+    viewer = { conn, abort: new AbortController(), chain: Promise.resolve(), queued: 0 };
     const current = viewer;
     state = await Promise.resolve(hold.state()).catch(() => state);
     if (viewer !== current) return;
@@ -307,6 +363,8 @@ export async function openComputerView(input: OpenComputerView): Promise<OpenedC
     const current = viewer;
     if (!current || current.conn !== conn) return;
     const message = binary || typeof data !== "string" ? null : parseViewerMessage(data);
+    // Any message from the viewer is a moment to see whether its socket drained.
+    resume(conn);
     if (!message || message.type === "hello") return send(conn, { type: "held", reason: "bad_message", message: "That input was not understood." });
     if (message.type === "ack") {
       const ack = current.ack;
@@ -324,21 +382,21 @@ export async function openComputerView(input: OpenComputerView): Promise<OpenedC
     // The server proxies the viewer's socket here with this endpoint's own origin; anything else is refused.
     if (req.headers.origin !== origin) return deny("403 Forbidden");
     if (path !== `/v/${id}/ws` || closed) return deny("404 Not Found");
-    if (pending.size >= MAX_PENDING) return deny("503 Service Unavailable");
+    if (pending.size >= limits.maxPending) return deny("503 Service Unavailable");
     const conn = acceptWebSocket(req, socket, head, { maxPayload: MAX_MESSAGE_BYTES });
     if (!conn) return;
     pending.add(conn);
-    const timer = setTimeout(() => void (pending.delete(conn) && refuse(conn, "unauthorized")), input.helloMs ?? HELLO_MS);
-    timer.unref();
+    socket.on("drain", () => resume(conn));
+    const timer = timers.set(() => void (pending.delete(conn) && refuse(conn, "unauthorized")), limits.helloMs);
     conn.onClose = () => {
-      clearTimeout(timer);
+      timers.clear(timer);
       pending.delete(conn);
       endViewer(conn);
     };
     conn.onMessage = (data, binary) => {
       if (viewer?.conn === conn) return onMessage(conn, data, binary);
       if (!pending.has(conn)) return;
-      clearTimeout(timer);
+      timers.clear(timer);
       void onHello(conn, data, binary);
     };
   };
@@ -379,7 +437,10 @@ export async function openComputerView(input: OpenComputerView): Promise<OpenedC
       closed = true;
       if (opened.get(key) === view) opened.delete(key);
       unsubscribe();
-      await store.liveViewers.drop(claim, kind, tag).catch(() => undefined);
+      // Only its own row: a relaunch in another process may have put a newer one under the same kind and tag.
+      // TODO(tl-untangle): liveViewers.drop by the row's id in the store, so the read and the drop are one statement.
+      const row = (await store.liveViewers.of(claim.runId).catch(() => [])).find((each) => each.kind === kind && each.tag === tag);
+      if (row?.id === id) await store.liveViewers.drop(claim, kind, tag).catch(() => undefined);
       const reason = why === "released" ? "released" : "ended";
       for (const conn of [...pending, ...(viewer ? [viewer.conn] : [])]) {
         send(conn, { type: "ended", reason, message: ENDED[why] });
