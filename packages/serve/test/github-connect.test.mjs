@@ -7,10 +7,10 @@ import { createHash, createVerify, generateKeyPairSync, randomUUID } from "node:
 import { readFile } from "node:fs/promises";
 import { join } from "node:path";
 import { test } from "node:test";
-import { callback, CONNECTED, connect, connectable, deliver, failedWith, held, install, PUBLIC, SEAL, startConnect } from "./github-support.mjs";
+import { callback, CONNECTED, connect, connectable, deliver, failedWith, fakeGitHub, firstInput, held, install, PUBLIC, SEAL, startConnect, storeOf } from "./github-support.mjs";
 import { schemaProblems } from "./schema-support.mjs";
-import { runDir, serve, withEnv } from "./support.mjs";
-import { E2, firings, keyOf, made } from "./trigger-support.mjs";
+import { runDir, scratch, serve, withEnv } from "./support.mjs";
+import { firings, keyOf, made } from "./trigger-support.mjs";
 
 const target = (agentId, content = "Review it.") => ({ kind: "start_run", agent_id: agentId, input: { content }, max_cost_usd: 0.5 });
 const pr = (extra = {}) => ({ action: "opened", number: 12, pull_request: { number: 12, draft: false, title: "Add a thing" }, repository: { full_name: "acme/widgets" }, installation: { id: 777 }, sender: { login: "dev" }, ...extra });
@@ -78,7 +78,7 @@ test("the callback takes a state once, from the browser that started it: a bad, 
 
   const { app } = server.github;
   // Kept in the store's trigger_settings rows (adapter github, scope server), sealed: the runner reads the App there.
-  const rows = await server.store.triggerSettings.get("github");
+  const rows = await (await storeOf(t, server)).triggerSettings.get("github");
   assert.deepEqual(rows.map((r) => r.field).sort(), ["app_id", "client_id", "installations", "private_key", "settings_url", "slug", "webhook_secret"], "in the store, its client secret never");
   const file = JSON.stringify(rows);
   for (const secret of [app.webhook_secret, app.client_secret, app.pem.split("\n")[1]]) assert.ok(!file.includes(secret), "kept only sealed");
@@ -162,7 +162,7 @@ test("a github trigger needs the connection: 409 github_not_connected, saying to
   assert.deepEqual([extra.status, extra.body.error.fields?.map((f) => f.field)], [422, ["source.signature"]], "no per-trigger secret or signature");
 });
 
-test("demo: one signed pull_request reaches /v2/hooks/github and fires every github trigger whose accept takes it, each its own firing and run, named on the payload's tag; a trigger it does not take fires nothing", { timeout: 120_000, skip: E2 }, async (t) => {
+test("demo: one signed pull_request reaches /v2/hooks/github and fires every github trigger whose accept takes it, each its own firing and run, named on the payload's tag; a trigger it does not take fires nothing", { timeout: 120_000 }, async (t) => {
   const server = await connectable(t);
   for (const id of ["review", "triage", "comments"]) await made(server.api, id);
   await connect(server);
@@ -186,7 +186,7 @@ test("demo: one signed pull_request reaches /v2/hooks/github and fires every git
   assert.deepEqual([one.status, two.status], ["started", "started"]);
   assert.notEqual(one.run_id, two.run_id, "each its own run");
   assert.deepEqual((await server.api("GET", `/triggers/${comments.id}/firings`)).body.firings, [], "not taken, not fired");
-  const { content } = JSON.parse(await readFile(join(runDir(server.data, one.run_id), "serve.json"), "utf8")).input;
+  const { content } = await firstInput(t, server, one.run_id);
   assert.ok(content.includes(`<trigger-payload source="github" scheme="github" event="pull_request" action="opened" delivery="${delivery}" installation="777" repo="acme/widgets" number="12" untrusted>`), content);
 
   const again = await deliver(server.baseUrl, secret, "pull_request", pr());
@@ -430,7 +430,7 @@ test("a server that closes while its start's repair waits on GitHub stops waitin
   await second.close();
   await dropped;
   hold.release();
-  const trigger = await first.store.triggers.get(id);
+  const trigger = await (await storeOf(t, first)).triggers.get(id);
   assert.deepEqual([trigger.enabled, trigger.disabled ?? null], [true, null], "still on");
   assert.deepEqual(lines.filter((line) => /github_installations_repaired|connection_lost/.test(line)), [], "no repair taken");
   assert.deepEqual(unhandled, [], "no unhandled rejection");
@@ -481,7 +481,7 @@ test("a server that closes while an installation event's check waits on GitHub s
   await server.close();
   await dropped;
   hold.release();
-  const trigger = await server.store.triggers.get(id);
+  const trigger = await (await storeOf(t, server)).triggers.get(id);
   assert.deepEqual([trigger.enabled, trigger.disabled ?? null], [true, null], "still on");
   assert.deepEqual(server.lines.filter((line) => /github_installation_lost|connection_lost/.test(line)), [], "the deletion not taken");
   assert.deepEqual(unhandled, [], "no unhandled rejection");

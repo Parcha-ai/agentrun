@@ -16,7 +16,7 @@ import { headersRefusal, MIN_KEY_BYTES, verify } from "../dist/standard-webhooks
 import { openapiDocument } from "../dist/openapi.js";
 import { TRIGGER_ADAPTERS } from "../dist/trigger-adapters.js";
 import { schemaProblems } from "./schema-support.mjs";
-import { E2, keyOf } from "./trigger-support.mjs";
+import { keyOf } from "./trigger-support.mjs";
 import { openSqliteStore } from "../dist/store/sqlite/store.js";
 import { agent, client, FAUX, follow, scratch, withEnv } from "./support.mjs";
 import { firings, RUN_EXEC } from "./trigger-support.mjs";

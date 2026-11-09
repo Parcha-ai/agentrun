@@ -2657,7 +2657,8 @@ async function startHolding(options: ServeOptions, data: string, checked: { maxR
         const view = githubConnection();
         if (!view) throw new ApiError("not_found", "No GitHub App is connected to this server.");
         const settingsUrl = github.settingsUrl();
-        github.remove();
+        // Awaited: the App's rows go before the answer, so a Connect right after never races their removal.
+        await github.remove();
         // Kept, and off: an agent keeps its triggers, which go on again once GitHub is connected again.
         const off = await triggers.turnOff("github", "GitHub was disconnected from this server: connect it again in Settings, then turn the trigger on.");
         log?.(logLine("github", { condition: "github_disconnected", app_id: view.app_id, triggers_off: off }));
