@@ -2,6 +2,7 @@
 import type { MountKind, MountReadBack, MountSpec } from "./mount.js";
 import type { ComputerClient, ComputerKind, ComputerOs, Group, HelloResult } from "./protocol.js";
 import type { Result } from "./result.js";
+import type { ScreenWatch, ScreenWatchHandlers, WatchOptions } from "./screen-watch.js";
 
 export type NetworkSpec = "none" | "open" | { allow: string[] };
 
@@ -234,6 +235,12 @@ export interface ComputerProvider {
 	extend?(ref: ComputerRef, ttlMs: number, context?: CallContext): Promise<Result<{ deadline: Date }>>;
 	/** A URL that shows the screen live, the vendor's own. Optional. */
 	stream?(ref: ComputerRef, options?: { viewOnly?: boolean }, context?: CallContext): Promise<Result<{ url: string; expiresAt?: Date }>>;
+	/**
+	 * The computer's live view, for the runner's viewer (src/screen-watch.ts): frames to handlers.frame, each acked
+	 * before the next; input() and close() on what it answers. Every computerd provider and the phone answer it through
+	 * daemonWatch, on a connection of the watch's own. Optional; a computer with no screen refuses it as unsupported.
+	 */
+	watch?(ref: ComputerRef, handlers: ScreenWatchHandlers, options?: WatchOptions): Promise<Result<ScreenWatch>>;
 	/**
 	 * Removes what this provider's computers left behind outside the computers themselves (Docker: an egress proxy and its
 	 * volume whose computer is gone or whose deadline has passed), with all of these labels, and returns what it removed,

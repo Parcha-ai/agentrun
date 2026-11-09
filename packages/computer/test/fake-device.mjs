@@ -4,7 +4,7 @@
 // `broken` names one behavior that is wrong, so each case of the extension is seen to fail. No Docker, no daemon, no X
 // server, no phone.
 import { deflateSync } from "node:zlib";
-import { checkActions, checkLifetime, FIXTURE_APP_ID, FIXTURE_BUTTON, FIXTURE_COLORS, FIXTURE_WINDOW, fixtureAppLog } from "../dist/index.js";
+import { checkActions, checkLifetime, daemonWatch, FIXTURE_APP_ID, FIXTURE_BUTTON, FIXTURE_COLORS, FIXTURE_WINDOW, fixtureAppLog } from "../dist/index.js";
 
 const ok = (value) => ({ ok: true, value });
 const fail = (code, message) => ({ ok: false, error: { code, message } });
@@ -70,7 +70,8 @@ const shift = ([x, y], dx, dy = 0) => [x + dx, y + dy];
  * screen-region, screen-colors, screen-no-idat, screen-corrupt-idat, screen-region-corrupt, click-offset, type-case,
  * no-precheck, no-stop, no-release, tap-offset, swipe-stuck, pinch-together, terminate-stays, tree-types, extend-noop,
  * extend-past-cap, extend-per-call, extend-shortens, stream-http, fixture-never-ready, screen-huge-size, screen-endless,
- * launch-hidden (apps.list says Settings is in front, and neither the screen nor the tree shows it).
+ * launch-hidden (apps.list says Settings is in front, and neither the screen nor the tree shows it), watch-stale and
+ * watch-size (screen.watch's).
  * `createMs` is how long each create takes on the clock, in turn (the last for every create after): a host slow to
  * start a computer. The lifetime counts from create's start, and a computer whose deadline passed before create
  * finished fails it as Docker's does, timeout.
@@ -251,6 +252,27 @@ export function fakeDevices({
 				const data = c.shot.bytes.subarray(offset, offset + chunk);
 				return ok({ data: data.toString("base64"), eof: offset + data.length >= c.shot.bytes.length });
 			},
+			// The live view's frames, as PNG: a new frame when what the screen shows or the cursor changed (broken:
+			// watch-stale never sees a change after the first; watch-size says a frame one pixel wider than its PNG).
+			"screen.watch": ({ after } = {}) => {
+				c.watch ??= { seq: 0, key: "", bytes: undefined };
+				const w = c.watch;
+				if (!Number.isSafeInteger(after) || after < 0 || after > w.seq) return fail("invalid", `after ${JSON.stringify(after)} is not a seq up to ${w.seq}`);
+				const key = broken === "watch-stale" && w.seq > 0 ? w.key : JSON.stringify([c.cursor, c.foreground, desktopUp()]);
+				if (after === w.seq && w.seq > 0 && key === w.key) return ok({ seq: w.seq, changed: false, width, height });
+				if (after === w.seq) {
+					w.seq += 1;
+					w.key = key;
+					w.bytes = png(width, height, (px, py) => screenColor(px, py));
+				}
+				c.shot = { id: `s${++next}`, bytes: w.bytes };
+				const first = w.bytes.subarray(0, chunk);
+				return ok({
+					seq: w.seq, changed: true, id: c.shot.id, size: w.bytes.length, data: first.toString("base64"), eof: first.length >= w.bytes.length,
+					format: "png", frameWidth: broken === "watch-size" ? width + 1 : width, frameHeight: height, width, height,
+					...(kind === "desktop" ? { cursor: [...c.cursor] } : {}),
+				});
+			},
 			"input.actions": ({ actions }) => {
 				const failed = broken === "no-precheck" ? undefined : checkActions(actions, groups, { pixelScroll: false });
 				if (failed) return ok({ done: 0, failed });
@@ -402,6 +424,8 @@ export function fakeDevices({
 			return ok({ deadline: new Date(at) });
 		};
 	}
+	// The live view, as every computerd provider gives it: daemonWatch over this fake's connect().
+	provider.watch = (ref, handlers, options) => daemonWatch(provider, ref, handlers, options);
 	if (stream) {
 		provider.stream = async (ref) => ok({ url: `${broken === "stream-http" ? "http" : "https"}://stream.example.test/${ref.name}?token=fake` });
 	}

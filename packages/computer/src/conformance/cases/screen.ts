@@ -1,7 +1,10 @@
 // The screen: a shot is a PNG of the size it says, read whole through screen.read, and every pixel of it decodes; a
 // region shot has the region's size and decodes too; on a desktop the fixture's colors are where the fixture paints them.
-// The stream, where a provider offers one, is an https URL that answers.
-import { MAX_CHUNK_BYTES, type Rect, type ScreenShotResult } from "../../protocol.js";
+// The live view (provider.watch, screen.watch underneath): the first frame is an image of the size it says, of the
+// screen screen.shot reads, and a pointer move is a new frame.
+import { MAX_CHUNK_BYTES, type Point, type Rect, type ScreenShotResult } from "../../protocol.js";
+import type { ComputerError } from "../../result.js";
+import type { ScreenFrame, ScreenWatchHandlers } from "../../screen-watch.js";
 import { FIXTURE_COLORS } from "../fixture.js";
 import { MAX_PNG_BYTES, type Png, readPng } from "../png.js";
 import type { Case, CaseContext } from "../types.js";
@@ -68,19 +71,104 @@ export const screenCases: Case[] = [
 		},
 	},
 	{
-		id: "screen.stream",
-		level: "full",
+		id: "screen.watch",
+		level: "core",
 		group: "screen",
-		needs: ["stream"],
+		needs: ["screen"],
 		async run(t) {
-			const stream = t.provider.stream;
-			if (stream === undefined) return t.skip("the provider has no stream()");
-			const streamed = t.ok(await stream.call(t.provider, t.ref, {}, { signal: t.signal }), "stream");
-			const url = t.present(typeof streamed.url === "string" ? URL.parse(streamed.url) : null, `stream's url is a URL, not ${JSON.stringify(streamed.url)}`);
-			// The URL may carry a token: only its origin is ever in the report.
-			t.equal(url.protocol, "https:", `the stream at ${url.origin}: its scheme`);
-			const answered = await t.fetch(url.href);
-			t.equal(answered.status, 200, `GET of the stream at ${url.origin}`);
+			const { shot } = await shoot(t);
+			const watcher = t.provider.watch;
+			t.assert(watcher !== undefined, "the provider has no watch(): a computer with a screen gives its live view through it");
+			// The live view, as the runner's viewer opens it: frames to a handler, each acked before the next.
+			const frames: ScreenFrame[] = [];
+			let ack: (() => void) | undefined;
+			let ended: ComputerError | undefined;
+			let wake: (() => void) | undefined;
+			const handlers: ScreenWatchHandlers = {
+				frame(frame, given) {
+					frames.push(frame);
+					ack = given;
+					wake?.();
+				},
+				ended(error) {
+					ended = error;
+					wake?.();
+				},
+			};
+			const watch = t.ok(await (watcher as NonNullable<typeof watcher>).call(t.provider, t.ref, handlers, { signal: t.signal }), "watch");
+			try {
+				let taken = 0;
+				/** The next frame not yet taken, acking the one taken before it: within ms, or undefined. */
+				const nextWithin = async (ms: number): Promise<ScreenFrame | undefined> => {
+					if (frames.length === taken) {
+						const arrived = new Promise<void>((resolve) => (wake = resolve));
+						// The frame taken last is drawn: ack it, and the next is asked for.
+						const given = ack;
+						ack = undefined;
+						given?.();
+						if (frames.length === taken && ended === undefined) await within(arrived, ms, "a frame");
+					}
+					t.assert(ended === undefined, `the watch ended: ${ended?.code}: ${ended?.message}`);
+					return frames.length > taken ? frames[taken++] : undefined;
+				};
+				const next = async (what: string): Promise<ScreenFrame> => {
+					const got = await nextWithin(t.patience);
+					t.assert(got !== undefined, `${what}: no frame within ${t.patience} ms`);
+					return got as ScreenFrame;
+				};
+				const first = await next("the first frame");
+				t.assert(first.seq >= 1, `the first frame's seq is ${first.seq}, not 1 or more`);
+				t.assert(first.format === "jpeg" || first.format === "png", `the first frame's format is ${JSON.stringify(first.format)}, not jpeg or png`);
+				const [w, h] = imageSize(first.bytes, first.format);
+				t.assert(w === first.frameWidth && h === first.frameHeight, `the first frame's ${first.format.toUpperCase()} is ${w}x${h}, not the ${first.frameWidth}x${first.frameHeight} it says`);
+				t.deepEqual([first.width, first.height], [shot.width, shot.height], "the frame's screen size (the input space), against screen.shot's");
+				t.assert(first.frameWidth <= first.width, `the frame is ${first.frameWidth} wide, wider than the ${first.width}-pixel screen`);
+				// A pointer move is a new frame (the cursor is part of what a frame shows), with the cursor where it went.
+				if (!t.hello.groups.includes("input.pointer")) return;
+				const at: Point = first.cursor?.[0] === Math.floor(first.width / 3) ? [Math.floor(first.width / 3) + 1, Math.floor(first.height / 3)] : [Math.floor(first.width / 3), Math.floor(first.height / 3)];
+				t.deepEqual(t.ok(await watch.input([{ type: "move", at }]), `input: a pointer move to ${at}`), { done: 1 }, `input: a pointer move to ${at}`);
+				let moved: ScreenFrame | undefined;
+				const until = t.clock.now() + t.patience;
+				// A desktop may change on its own (a clock): the frame the move made is the first with the cursor there.
+				while (moved === undefined || (moved.cursor !== undefined && (moved.cursor[0] !== at[0] || moved.cursor[1] !== at[1]))) {
+					const left = until - t.clock.now();
+					const got = left > 0 ? await nextWithin(left) : undefined;
+					t.assert(got !== undefined, `a pointer move to ${at} gave no new frame within ${t.patience} ms`);
+					moved = got as ScreenFrame;
+				}
+				t.assert(moved.seq > first.seq, `the frame after the move is seq ${moved.seq}, not past ${first.seq}`);
+			} finally {
+				await watch.close();
+			}
 		},
 	},
 ];
+
+/** promise's value, or undefined once ms passed first. */
+async function within<T>(promise: Promise<T>, ms: number, _what: string): Promise<T | undefined> {
+	let timer: NodeJS.Timeout | undefined;
+	try {
+		return await Promise.race([promise, new Promise<undefined>((done) => (timer = setTimeout(() => done(undefined), ms)))]);
+	} finally {
+		clearTimeout(timer);
+	}
+}
+
+/** The width and height a JPEG's SOF or a PNG's IHDR names; [0, 0] when the bytes are neither. */
+function imageSize(bytes: Uint8Array, format: "jpeg" | "png"): [number, number] {
+	const b = Buffer.from(bytes.buffer, bytes.byteOffset, bytes.byteLength);
+	if (format === "png") {
+		const signature = [137, 80, 78, 71, 13, 10, 26, 10];
+		return b.length >= 24 && signature.every((v, i) => b[i] === v) ? [b.readUInt32BE(16), b.readUInt32BE(20)] : [0, 0];
+	}
+	if (b.length < 4 || b[0] !== 0xff || b[1] !== 0xd8 || b[b.length - 2] !== 0xff || b[b.length - 1] !== 0xd9) return [0, 0];
+	for (let i = 2; i + 9 < b.length; ) {
+		if (b[i] !== 0xff) return [0, 0];
+		const marker = b[i + 1];
+		const length = b.readUInt16BE(i + 2);
+		// SOF0 to SOF15, but DHT (C4), JPG (C8) and DAC (CC): the frame's height, then its width.
+		if (marker >= 0xc0 && marker <= 0xcf && marker !== 0xc4 && marker !== 0xc8 && marker !== 0xcc) return [b.readUInt16BE(i + 7), b.readUInt16BE(i + 5)];
+		i += 2 + length;
+	}
+	return [0, 0];
+}

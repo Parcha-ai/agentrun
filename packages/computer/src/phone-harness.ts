@@ -9,7 +9,7 @@
 // in memory by default): list, attach, release and the janitor see only the sessions the ledger names, never another
 // session on the same account.
 import { execFile } from "node:child_process";
-import { randomBytes } from "node:crypto";
+import { createHash, randomBytes } from "node:crypto";
 import { readFileSync } from "node:fs";
 import { createConnection } from "node:net";
 import { crc32, deflateSync } from "node:zlib";
@@ -28,6 +28,7 @@ import {
 	MAX_CHUNK_BYTES,
 	MAX_UI_NODES,
 	type Rect,
+	type ScreenWatchResult,
 	type UiNode,
 } from "./protocol.js";
 import {
@@ -46,6 +47,7 @@ import {
 	type Refusal,
 } from "./provider.js";
 import { type ComputerErrorCode, fail, ok, type Result } from "./result.js";
+import { daemonWatch, type ScreenWatch, type ScreenWatchHandlers, type WatchOptions } from "./screen-watch.js";
 import { listTested } from "./test-connection.js";
 
 /** The phone harness's API. */
@@ -515,6 +517,15 @@ export class PhoneHarnessProvider implements ComputerProvider {
 		return ledgerSafe(() => this.#connect(ref));
 	}
 
+	/**
+	 * The live view: the phone client's screen.watch on a connection of the watch's own (daemonWatch), PNG frames from
+	 * screencap. Upright with no rotation of ours: screencap gives the display in its current orientation, and input tap
+	 * and swipe take that same space, so each frame's width and height come from its own screencap, never from wm size.
+	 */
+	watch(ref: ComputerRef, handlers: ScreenWatchHandlers, options?: WatchOptions): Promise<Result<ScreenWatch>> {
+		return daemonWatch(this, ref, handlers, options);
+	}
+
 	async #create(spec: ComputerSpec, { signal }: { signal?: AbortSignal } = {}): Promise<Result<CreatedComputer>> {
 		const refusals = this.check(spec);
 		if (refusals.length > 0) return fail("refused", refusals.map(({ field, message }) => `${field}: ${message}`).join("; "));
@@ -887,6 +898,10 @@ class AdbClient implements ComputerClient {
 	#size: [number, number] = [0, 0];
 	#scale = 1;
 	#held: { id: string; bytes: Buffer } | undefined;
+	/** screen.watch's state: the newest frame's seq, what it was read from (a digest of the pixels), and the frame. */
+	#watch: { seq: number; digest: string; frame?: { bytes: Buffer; frameWidth: number; frameHeight: number; width: number; height: number } } = { seq: 0, digest: "" };
+	/** One screen.watch at a time on this connection. */
+	#watching: Promise<unknown> = Promise.resolve();
 
 	/** The disconnect close started, which the connection's close waits for. */
 	#gone: Promise<unknown> = Promise.resolve();
@@ -966,6 +981,11 @@ class AdbClient implements ComputerClient {
 				return this.#shot(params.region);
 			case "screen.read":
 				return this.#read(params.id, params.offset);
+			case "screen.watch": {
+				const turn = this.#watching.then(() => this.#screenWatch(params, signal));
+				this.#watching = turn.catch(() => undefined);
+				return turn;
+			}
 			case "input.actions":
 				return this.#actions(params.actions, signal);
 			case "apps.list":
@@ -1006,6 +1026,57 @@ class AdbClient implements ComputerClient {
 		this.#held = { id, bytes };
 		const data = bytes.subarray(0, MAX_CHUNK_BYTES);
 		return ok({ id, size: bytes.length, data: data.toString("base64"), eof: data.length === bytes.length, width: rect[2], height: rect[3], scale: this.#scale });
+	}
+
+	/**
+	 * screen.watch: the live view's frames, as computerd answers them but as PNG (format png), read with screencap every
+	 * WATCH_POLL_MS (about 1 a second) while it waits. after is the caller's ack; an older one gets the newest frame at
+	 * once, and one at the newest waits for a change until waitMs passes. maxWidth scales the frame (nearest pixel);
+	 * width and height stay the screen's, the input space. quality is checked and has no effect on a PNG.
+	 */
+	async #screenWatch(params: Record<string, unknown>, signal?: AbortSignal): Promise<Call> {
+		const { after, waitMs = 2_000, maxWidth = 1_280, quality = 60 } = params;
+		const whole = (v: unknown, lo: number, hi: number) => Number.isSafeInteger(v) && (v as number) >= lo && (v as number) <= hi;
+		if (!whole(after, 0, Number.MAX_SAFE_INTEGER)) return refuse("invalid", "screen.watch takes after: the seq of the last frame the caller has, 0 for none");
+		if (!whole(waitMs, 0, 10_000)) return refuse("invalid", `waitMs ${show(waitMs)} is outside 0 to 10000`);
+		if (!whole(maxWidth, 1, 16_384)) return refuse("invalid", `maxWidth ${show(maxWidth)} is outside 1 to 16384`);
+		if (!whole(quality, 1, 100)) return refuse("invalid", `quality ${show(quality)} is outside 1 to 100`);
+		const watch = this.#watch;
+		if ((after as number) > watch.seq) return refuse("invalid", `after ${after} is past the newest frame, ${watch.seq}`);
+		if ((after as number) < watch.seq && watch.frame) return ok(this.#frameAnswer());
+		for (let waited = 0; ; waited += WATCH_POLL_MS) {
+			if (signal?.aborted || this.#closed) return refuse("aborted", "screen.watch was aborted");
+			const raw = await this.#execOut("screencap");
+			if (!raw.ok) return raw;
+			const read = decodeScreencap(raw.value);
+			if (!read.ok) return read;
+			const { width, height, rgba } = read.value;
+			this.#size = [width, height];
+			// The size is in the digest: a phone turned to landscape may give the same pixels, the other way round.
+			const digest = createHash("sha256").update(`${width}x${height}|`).update(rgba).digest("hex");
+			if (watch.seq === 0 || digest !== watch.digest) {
+				const frameWidth = Math.min(width, maxWidth as number);
+				const frameHeight = Math.max(1, Math.floor((height * frameWidth) / width));
+				const pixels = frameWidth === width ? rgba : scaleRgba(rgba, width, height, frameWidth, frameHeight);
+				watch.seq += 1;
+				watch.digest = digest;
+				watch.frame = { bytes: encodePng(pixels, frameWidth, [0, 0, frameWidth, frameHeight]), frameWidth, frameHeight, width, height };
+				return ok(this.#frameAnswer());
+			}
+			if (waited + WATCH_POLL_MS > (waitMs as number)) return ok({ seq: watch.seq, changed: false, width, height });
+			await this.sleep(WATCH_POLL_MS);
+		}
+	}
+
+	/** The newest frame as screen.watch answers it: its first chunk, the rest held for screen.read. */
+	#frameAnswer(): ScreenWatchResult {
+		const { seq, frame } = this.#watch;
+		const { bytes, frameWidth, frameHeight, width, height } = frame as NonNullable<typeof frame>;
+		const data = bytes.subarray(0, MAX_CHUNK_BYTES);
+		const eof = data.length === bytes.length;
+		const id = randomBytes(6).toString("hex");
+		if (!eof) this.#held = { id, bytes };
+		return { seq, changed: true, ...(eof ? {} : { id }), size: bytes.length, data: data.toString("base64"), eof, format: "png", frameWidth, frameHeight, width, height };
 	}
 
 	#read(id: unknown, offset: unknown): Call {
@@ -1215,6 +1286,22 @@ export function decodeScreencap(raw: Buffer): Result<{ width: number; height: nu
 	else if (format === 5) for (let i = 0; i < rgba.length; i += 4) [rgba[i], rgba[i + 2]] = [rgba[i + 2], rgba[i]];
 	else if (format !== 1) return fail("unsupported", `screencap gave pixel format ${format}, which this provider does not read`);
 	return ok({ width, height, rgba });
+}
+
+/** How often a waiting screen.watch reads a phone's screen: about once a second (the user-approved decision, 2026-11-09). */
+const WATCH_POLL_MS = 1_000;
+
+/** A width x height RGBA frame scaled to toWidth x toHeight by the nearest pixel. */
+function scaleRgba(rgba: Buffer, width: number, height: number, toWidth: number, toHeight: number): Buffer {
+	const out = Buffer.alloc(toWidth * toHeight * 4);
+	for (let y = 0; y < toHeight; y++) {
+		const sy = Math.floor((y * height) / toHeight);
+		for (let x = 0; x < toWidth; x++) {
+			const sx = Math.floor((x * width) / toWidth);
+			rgba.copy(out, (y * toWidth + x) * 4, (sy * width + sx) * 4, (sy * width + sx) * 4 + 4);
+		}
+	}
+	return out;
 }
 
 /** An 8-bit RGBA PNG, non-interlaced, of rect of a width-wide RGBA frame. */

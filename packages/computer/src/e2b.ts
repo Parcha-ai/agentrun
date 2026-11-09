@@ -33,6 +33,7 @@ import {
 	type Refusal,
 } from "./provider.js";
 import { type ComputerError, type ComputerErrorCode, fail, ok, type Result } from "./result.js";
+import { daemonWatch, type ScreenWatch, type ScreenWatchHandlers, type WatchOptions } from "./screen-watch.js";
 import { countTested } from "./test-connection.js";
 import { waitUntil } from "./wait.js";
 
@@ -1118,6 +1119,11 @@ export class E2BProvider implements ComputerProvider {
 			// Not the diagnosis: below.
 		}
 		return fail("refused", `${what} wrote what is not its report`);
+	}
+
+	/** The live view: screen.watch on a connection of the watch's own (daemonWatch); a linux computer has no screen. */
+	watch(ref: ComputerRef, handlers: ScreenWatchHandlers, options?: WatchOptions): Promise<Result<ScreenWatch>> {
+		return daemonWatch(this, ref, handlers, options);
 	}
 
 	async connect(ref: ComputerRef): Promise<Result<ComputerConnection>> {
