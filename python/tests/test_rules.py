@@ -596,6 +596,57 @@ class Rules(unittest.TestCase):
         self.assertEqual((upload.method, upload.headers["content-type"], upload.body), ("PUT", "image/png", b"\x89PNG"))
         self.assertEqual((note.headers["content-type"], note.headers["if-none-match"], note.body), ("text/markdown", "*", b"# Policies\n"))
 
+    def test_a_server_that_echoes_the_key_in_what_it_answers_puts_it_in_no_error_no_frame_and_no_chained_exception(self) -> None:
+        # Every echo is cut or not JSON: a 200 that is not JSON, a 4xx that is not JSON, an event that is not JSON, a JSON
+        # answer of the wrong shape, a timeline page that is not one, a redirect to another origin, and a 2xx cut midway.
+        elsewhere = Listener(self)
+
+        def answer(request: Request, reply: Reply) -> Any:
+            if request.url == "/v2/agents":
+                return 200, JSON_HEADERS, f"not json {KEY}"
+            if request.url == "/v2/agents/a":
+                return 400, {"content-type": "text/plain"}, f"{{not json {KEY}"
+            if request.url.startswith("/v2/runs/r1/timeline") and request.headers.get("accept") == "text/event-stream":
+                reply.head(200, {"content-type": "text/event-stream"})
+                reply.end(f"event: rows\ndata: {{{KEY} not json\n\n")
+                return None
+            if request.url.startswith("/v2/runs/r1/timeline"):
+                return json_answer(200, [KEY])
+            if request.url.startswith("/v2/runs/r2/timeline"):
+                return json_answer(200, {"status": 1, "echo": KEY})
+            if request.url == "/v2/runs":
+                return 302, {"location": f"{elsewhere.base}/{KEY}"}, ""
+            whole = json.dumps({"run_id": KEY}).encode()
+            reply.head(200, {**JSON_HEADERS, "content-length": str(len(whole) * 2)})
+            reply.write(whole)
+            reply.destroy()
+            return None
+
+        server = Listener(self, answer)
+        client = AgentRun(base_url=server.base, api_key=KEY, max_retries=0)
+        errors = [
+            self.thrown(client.agents.list),
+            self.thrown(client.agents.get, "a"),
+            self.thrown(lambda: list(client.runs.follow("r1"))),
+            self.thrown(client.runs.wait, "r1"),
+            self.thrown(client.runs.wait, "r2"),
+            self.thrown(client.runs.list),
+            self.thrown(client.runs.start, "a", {"input": {}}),
+        ]
+        self.assertEqual([type(error).__name__ for error in errors], ["AgentRunRefused", "AgentRunRefused", "AgentRunRefused", "AgentRunRefused", "AgentRunRefused", "AgentRunRefused", "AgentRunUnreachable"])
+        for error in errors:
+            chain: list[BaseException] = []
+            at: Optional[BaseException] = error
+            while at is not None and at not in chain:
+                chain.append(at)
+                at = at.__cause__ or at.__context__
+            text = "".join(
+                "".join(traceback.TracebackException.from_exception(link, capture_locals=True).format()) + repr(vars(link)) + repr(link.args)
+                for link in chain
+            )
+            with self.subTest(errors.index(error)):
+                self.assertNotIn(KEY, text, f"{type(error).__name__}: {[type(link).__name__ for link in chain]}")
+
     def test_the_key_is_in_no_traceback_even_one_that_prints_its_locals(self) -> None:
         elsewhere = Listener(self)
         home = Listener(self, lambda request, reply: (302, {"location": f"{elsewhere.base}/agents"}, ""))
