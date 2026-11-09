@@ -116,12 +116,12 @@ test("a bad GitHub signature, a GitHub delivery to a Standard Webhooks trigger, 
   const body = JSON.stringify({ zen: "Keep it logically awesome." });
   const refused = {
     badSignature: await deliver(baseUrl, github.id, "ping", body, { secret: `whsec_${randomBytes(32).toString("base64")}` }),
-    githubToStandard: await deliver(baseUrl, plain.id, "ping", body, { secret: plain.secret }),
-    standardToGithub: await standard(baseUrl, github.id, body, github.secret),
-    bothSignatures: await standard(baseUrl, github.id, body, github.secret, { "x-github-event": "ping", "x-github-delivery": randomUUID(), "x-hub-signature-256": githubSignature(github.secret, body) }),
-    noDelivery: await deliver(baseUrl, github.id, "ping", body, { headers: { "x-github-event": "ping", "x-hub-signature-256": githubSignature(github.secret, body) } }),
+    githubToStandard: await deliver(baseUrl, plain.id, "ping", body, { secret: plain.signing_secret }),
+    standardToGithub: await standard(baseUrl, github.id, body, github.signing_secret),
+    bothSignatures: await standard(baseUrl, github.id, body, github.signing_secret, { "x-github-event": "ping", "x-github-delivery": randomUUID(), "x-hub-signature-256": githubSignature(github.signing_secret, body) }),
+    noDelivery: await deliver(baseUrl, github.id, "ping", body, { headers: { "x-github-event": "ping", "x-hub-signature-256": githubSignature(github.signing_secret, body) } }),
     malformedSignature: await deliver(baseUrl, github.id, "ping", body, { signature: "sha1=00" }),
-    unknown: await deliver(baseUrl, "trg_000000000000000000000000", "ping", body, { secret: github.secret }),
+    unknown: await deliver(baseUrl, "trg_000000000000000000000000", "ping", body, { secret: github.signing_secret }),
   };
   // All of the answer but what differs by request: its time and its request id.
   const strip = (answer) => ({ status: answer.status, headers: { ...answer.headers, date: undefined, "x-request-id": undefined }, error: { ...answer.body.error, request_id: undefined } });
@@ -258,10 +258,10 @@ test("a trigger with accept starts a run per accepted event while its last run i
   const each = await trigger(api, hooked("busy", { signature: "github", accept: [{ event: "pull_request" }] }, hold));
   const once = await trigger(api, hooked("busy", { signature: "github" }, hold));
   for (const trigger of [each, once]) {
-    assert.equal((await deliver(baseUrl, trigger.id, "pull_request", { action: "opened", n: 1 }, { secret: trigger.secret })).status, 202);
+    assert.equal((await deliver(baseUrl, trigger.id, "pull_request", { action: "opened", n: 1 }, { secret: trigger.signing_secret })).status, 202);
     const [first] = await firings(api, trigger.id, 1);
     await follow(api, first.run_id, ["working"]);
-    assert.equal((await deliver(baseUrl, trigger.id, "pull_request", { action: "opened", n: 2 }, { secret: trigger.secret })).status, 202);
+    assert.equal((await deliver(baseUrl, trigger.id, "pull_request", { action: "opened", n: 2 }, { secret: trigger.signing_secret })).status, 202);
   }
   const [second, first] = await firings(api, each.id, 2);
   assert.deepEqual([first.status, second.status], ["started", "started"], JSON.stringify([first, second]));

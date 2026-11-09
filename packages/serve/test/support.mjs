@@ -260,7 +260,8 @@ function withAgents(store) {
       return typeof value === "function" ? value.bind(target) : value;
     },
   });
-  return { triggers, runs: store.runs, agents };
+  // The trigger settings too: the GitHub App is kept there (server.ts, sealed-settings-store.ts).
+  return { triggers, runs: store.runs, agents, triggerSettings: store.triggerSettings, flush: () => store.flush() };
 }
 
 /** Trigger stores handed to servers a test starts itself (startServe, not serve()): closed when the file's tests are done,
@@ -290,7 +291,7 @@ export async function triggerStore(of) {
  *  dispatch (dispatch.ts): each claim's launch picks its harness loop — pi on the kernel's adapter loop with the run's pi
  *  spec, a learning run on the learning loop, its model route the faux model under `faux`. Returns a close() that stops the
  *  runner and closes its store handle. */
-export async function startInProcessRunner(data, { faux, ...switches } = {}) {
+export async function startInProcessRunner(data, { faux, githubApi, ...switches } = {}) {
   const store = await openSqliteStore({ dataDir: data, role: "runner" });
   // The runner's env mirrors the server's faux (model.ts FAUX_ENV): its model route reads the faux model from it, so a run
   // never reaches the network. The seal key is the server's (seal-key.ts), read as the CLI's runner reads it: the one
@@ -306,7 +307,8 @@ export async function startInProcessRunner(data, { faux, ...switches } = {}) {
   try {
     runner = startRunner({
       store,
-      createLoop: dispatchRunner({ env, data, journal: (claim) => store.journal(claim), store, sealKey, routeOf, computerForClaim: computers.computerForClaim, computerDeps: computers.computerDeps }),
+      // A test's fake GitHub, the server's githubApi seam: the runner mints the App's tokens there (never from the env).
+      createLoop: dispatchRunner({ env, data, journal: (claim) => store.journal(claim), store, sealKey, routeOf, computerForClaim: computers.computerForClaim, computerDeps: computers.computerDeps, ...(githubApi ? { githubApi } : {}) }),
     });
   } catch (error) {
     await store.close();

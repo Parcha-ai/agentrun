@@ -713,9 +713,10 @@ function capabilitiesWith(env: NodeJS.ProcessEnv, maxRuns: number, harnesses: Ha
       learning,
       /** /settings/webhook: one URL POSTed, signed by the Standard Webhooks spec, when a run needs its person and when it
        *  ends (webhooks.ts); its secret kept sealed under the same seal key, so with none no webhook is set. */
-      webhooks: { routes: true, events: [...WEBHOOK_EVENTS], signing: "standard-webhooks/v1", at_rest: sealKeyOf(env[SEAL_KEY_ENV]) ? "sealed" : "unavailable" },
+      // Always sealed: the server starts with its seal key (seal-key.ts ensureSealKey), so nothing is kept in the clear.
+      webhooks: { routes: true, events: [...WEBHOOK_EVENTS], signing: "standard-webhooks/v1", at_rest: "sealed" },
       /** /triggers: what starts an agent's capped runs with no caller (triggers.ts). */
-      triggers: { routes: true, sources: [...SOURCE_KINDS], targets: [...TARGET_KINDS], min_every_s: MIN_EVERY_S, history_kept: HISTORY_KEPT, catchup_window_s: CATCHUP_WINDOW_S, failures_to_pause: FAILURES_TO_PAUSE, webhook: { signing: "standard-webhooks/v1", signatures: [...SCHEME_NAMES], tolerance_s: HOOK_TOLERANCE_S, max_body_bytes: webhook.push!.maxBodyBytes, payload_kept_bytes: PAYLOAD_KEPT_BYTES, at_rest: sealKeyOf(env[SEAL_KEY_ENV]) ? "sealed" : "unavailable" } },
+      triggers: { routes: true, sources: [...SOURCE_KINDS], targets: [...TARGET_KINDS], min_every_s: MIN_EVERY_S, history_kept: HISTORY_KEPT, catchup_window_s: CATCHUP_WINDOW_S, failures_to_pause: FAILURES_TO_PAUSE, webhook: { signing: "standard-webhooks/v1", signatures: [...SCHEME_NAMES], tolerance_s: HOOK_TOLERANCE_S, max_body_bytes: webhook.push!.maxBodyBytes, payload_kept_bytes: PAYLOAD_KEPT_BYTES, at_rest: "sealed" } },
     },
     regions: [{ id: "local", jurisdiction: null, state: "live" }],
     /** This server's own: where its OpenAPI document is, beside this one. */
@@ -1270,10 +1271,9 @@ async function startHolding(options: ServeOptions, data: string, checked: { maxR
 
   // Schedules: each firing starts its run as POST /agents/{id}/runs does, capped, under the firing's key (triggers.ts).
   // Firings an earlier server left due are driven again now, beside the recovery above.
-  // Connect GitHub: the server's one GitHub App. STOPGAP: this reads the App from a file-era sealed-settings object, which
-  // the store's sealed settings are not; until the github App's settings are read over the store (the store-backed github
-  // source), the App is left unconfigured here and its routes answer github_not_connected.
-  const github = new GitHubConnection(undefined);
+  // Connect GitHub: the server's one GitHub App, in the store's trigger_settings (adapter github, scope server), where the
+  // runner reads it per claim (runner/github-app.ts).
+  const github = new GitHubConnection(triggerSettings.get("github"));
   const githubConnect = new GitHubConnect(github, { ...(options.publicUrl ? { publicUrl: options.publicUrl.replace(/\/+$/, "") } : {}), api: options.githubApi ?? GITHUB_API, say: (fields) => log?.(logLine("github", fields)) });
   /** The connection a GitHub template or the console reads: the App's id, slug and installations, never a secret. */
   const githubConnection = () => github.view();
@@ -2307,10 +2307,11 @@ async function startHolding(options: ServeOptions, data: string, checked: { maxR
       case "archiveAgent":
       case "unarchiveAgent": {
         await needAgent(id);
-        await agents.setArchived("agent", id, found.name === "archiveAgent");
         // No run sweep on archive: a runner reads an archived agent's run rows directly, nothing to sweep.
-        // Archived, every trigger that runs turns off in the store's archive transaction; unarchived, none turns on. Both
-        // answer the triggers off for the archive, each turned on again by PATCH /triggers/{id} {enabled: true}.
+        // The engine archives (or unarchives) the agent itself: archived, every trigger that runs as it turns off with
+        // agent_archived in that same store transaction; unarchived, none turns on. Never archived first by another path,
+        // which would turn its triggers off with no reason and leave the answer empty. Both answer the triggers off for
+        // the archive, each turned on again by PATCH /triggers/{id} {enabled: true}.
         const triggersOff = found.name === "archiveAgent" ? await triggers.agentArchived(id) : await triggers.agentUnarchived(id);
         const entry = await needAgent(id);
         return send(res, 200, { ...agentView(entry, linkOrigin(req), await agentExtra(entry)), triggers_off: triggersOff }, { etag: etagOf(entry) });
@@ -2679,7 +2680,8 @@ async function startHolding(options: ServeOptions, data: string, checked: { maxR
         const view = githubConnection();
         if (!view) throw new ApiError("not_found", "No GitHub App is connected to this server.");
         const settingsUrl = github.settingsUrl();
-        github.remove();
+        // Awaited: the App's rows go before the answer, so a Connect right after never races their removal.
+        await github.remove();
         // Kept, and off: an agent keeps its triggers, which go on again once GitHub is connected again.
         const off = await triggers.turnOff("github", "GitHub was disconnected from this server: connect it again in Settings, then turn the trigger on.");
         log?.(logLine("github", { condition: "github_disconnected", app_id: view.app_id, triggers_off: off }));

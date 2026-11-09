@@ -47,7 +47,9 @@ export async function openServerSecretsOverStore(
   secrets.add("files", () => [kept(TOKEN_FILE), kept(SESSION_SECRET_FILE)]);
   const webhook = webhookSecretIn(data, env);
   secrets.add("webhook", () => (webhook && "secret" in webhook ? [webhook.secret] : []));
+  // The server always has its seal key (seal-key.ts ensureSealKey, at its start): no setting is ever kept in the clear.
   const key = sealKeyOf(env[SEAL_KEY_ENV]);
+  if (!key) throw new Error(`the server starts with its seal key (${SEAL_KEY_ENV}), made at the first start when none is handed over`);
   const settings = new Map<string, SealedSettingsOverStore>();
   for (const adapter of adapters) {
     if (!adapter.settings) continue;
@@ -55,6 +57,8 @@ export async function openServerSecretsOverStore(
     await adapterSettings.load();
     settings.set(adapter.id, adapterSettings);
     secrets.add(`trigger-settings:${adapter.id}`, () => adapterSettings.values());
+    // A PEM key's lines, its short last one too, and the key whole: listed with no floor.
+    secrets.add(`trigger-settings-pem:${adapter.id}`, () => adapterSettings.pemValues(), { whole: true });
   }
   return { secrets, settings };
 }
