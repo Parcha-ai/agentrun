@@ -238,6 +238,9 @@ export const STORE_DDL: readonly string[] = [
     protocol TEXT,
     ${json("tools")},
     ${json("prices")},
+    -- The remote server's reported info and its instructions, as it gave them: untrusted, bounded at save (mcp-store.ts).
+    ${json("server_info", true)},
+    instructions TEXT,
     sealed BLOB,
     refresh_holder TEXT,
     refresh_until INTEGER,

@@ -363,6 +363,10 @@ export interface McpServerRow {
   readonly protocol: string | null;
   readonly tools: unknown;
   readonly prices: unknown;
+  /** The remote server's reported info (its name and version) and its instructions, as it gave them, bounded at save: JSON
+   *  and TEXT, or null when the server gave none. Shown on a read; `instructions` is never handed to the model. */
+  readonly serverInfo: unknown;
+  readonly instructions: string | null;
   readonly sealed: Uint8Array | null;
   /** A refresh in flight: its holder and the lease's end (ms), or null. */
   readonly refreshHolder: string | null;
@@ -386,7 +390,7 @@ export const MCP_REFRESH_LEASE_MS = MCP_REFRESH_CALL_MS + 4_000;
 export interface Mcp {
   /** The server's write: the server's row, inserted or replaced by name (its first save's time kept). An owner's save
    *  clears any refresh lease, so a refresh in flight is refused (RefreshLeaseLost) and never overwrites it. */
-  put(server: { name: string; url: string; auth: string; protocol?: string | null; tools: unknown; prices?: unknown; sealed?: Uint8Array | null }): Promise<McpServerRow>;
+  put(server: { name: string; url: string; auth: string; protocol?: string | null; tools: unknown; prices?: unknown; serverInfo?: unknown; instructions?: string | null; sealed?: Uint8Array | null }): Promise<McpServerRow>;
   remove(name: string): Promise<void>;
   /** The registry's rows, by name. */
   servers(): Promise<McpServerRow[]>;

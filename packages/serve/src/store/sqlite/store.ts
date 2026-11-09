@@ -77,13 +77,14 @@ const triggerOf = (r: TriggerRecord): TriggerRow => ({
 const json = (value: unknown): string => JSON.stringify(value ?? null);
 
 type McpServerRecord = {
-  name: string; url: string; auth: string; protocol: string | null; tools: string; prices: string; sealed: Uint8Array | null;
+  name: string; url: string; auth: string; protocol: string | null; tools: string; prices: string; server_info: string | null; instructions: string | null; sealed: Uint8Array | null;
   refresh_holder: string | null; refresh_until: number | null; created_at: number; updated_at: number;
 };
 type McpPinRecord = { run_id: string; body: string; pinned_at: number };
-const MCP_SERVER_COLUMNS = "name, url, auth, protocol, tools, prices, sealed, refresh_holder, refresh_until, created_at, updated_at";
+const MCP_SERVER_COLUMNS = "name, url, auth, protocol, tools, prices, server_info, instructions, sealed, refresh_holder, refresh_until, created_at, updated_at";
 const mcpServerOf = (r: McpServerRecord): McpServerRow => ({
   name: r.name, url: r.url, auth: r.auth, protocol: r.protocol, tools: JSON.parse(r.tools), prices: JSON.parse(r.prices),
+  serverInfo: r.server_info === null ? null : JSON.parse(r.server_info), instructions: r.instructions,
   sealed: r.sealed === null ? null : Uint8Array.from(r.sealed), refreshHolder: r.refresh_holder, refreshUntil: r.refresh_until, createdAt: r.created_at, updatedAt: r.updated_at,
 });
 const mcpPinOf = (r: McpPinRecord): McpPinRow => ({ runId: r.run_id, body: JSON.parse(r.body), pinnedAt: r.pinned_at });
@@ -410,14 +411,14 @@ class SqliteStore implements Store {
       return row && mcpServerOf(row);
     };
     this.mcp = {
-      put: async ({ name, url, auth, protocol = null, tools, prices = null, sealed = null }) => {
+      put: async ({ name, url, auth, protocol = null, tools, prices = null, serverInfo = null, instructions = null, sealed = null }) => {
         const at = now();
         const [result] = await db.write([{
-          sql: `INSERT INTO mcp_servers (name, url, auth, protocol, tools, prices, sealed, created_at, updated_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+          sql: `INSERT INTO mcp_servers (name, url, auth, protocol, tools, prices, server_info, instructions, sealed, created_at, updated_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
             ON CONFLICT (name) DO UPDATE SET url = excluded.url, auth = excluded.auth, protocol = excluded.protocol, tools = excluded.tools,
-              prices = excluded.prices, sealed = excluded.sealed, refresh_holder = NULL, refresh_until = NULL, updated_at = excluded.updated_at
+              prices = excluded.prices, server_info = excluded.server_info, instructions = excluded.instructions, sealed = excluded.sealed, refresh_holder = NULL, refresh_until = NULL, updated_at = excluded.updated_at
             RETURNING ${MCP_SERVER_COLUMNS}`,
-          params: [name, url, auth, protocol, json(tools), json(prices), sealed, at, at],
+          params: [name, url, auth, protocol, json(tools), json(prices), serverInfo === null ? null : json(serverInfo), instructions, sealed, at, at],
         }]);
         return mcpServerOf(result!.rows[0] as McpServerRecord);
       },

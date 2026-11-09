@@ -9,16 +9,36 @@ import {
   sealColumn, sealedAt, sealMcpCredential, unsealColumn,
 } from "./store/index.js";
 
+/** The most server-supplied text (server_info JSON, instructions) a row holds: both come from the remote server
+ *  (untrusted), so they are bounded at save, never stored unbounded. */
+export const MCP_META_MAX_BYTES = 16 * 1024;
+
+/** `text` trimmed to MCP_META_MAX_BYTES on a character boundary (never a split UTF-8 char), or null when there is none. */
+function boundedInstructions(text: string | null | undefined): string | null {
+  if (typeof text !== "string") return null;
+  if (Buffer.byteLength(text, "utf8") <= MCP_META_MAX_BYTES) return text;
+  let out = Buffer.from(text, "utf8").subarray(0, MCP_META_MAX_BYTES).toString("utf8");
+  while (Buffer.byteLength(out, "utf8") > MCP_META_MAX_BYTES) out = out.slice(0, -1);
+  return out;
+}
+
+/** `info` as given when its JSON is within the cap, else null: a JSON value can't be truncated without breaking it, so an
+ *  oversized one is dropped rather than stored unbounded or corrupt. */
+function boundedServerInfo(info: unknown): unknown {
+  if (info === null || info === undefined) return null;
+  return Buffer.byteLength(JSON.stringify(info), "utf8") <= MCP_META_MAX_BYTES ? info : null;
+}
+
 /** Saves a server's registry row, its credential sealed (§7): a server with a credential (bearer, headers, or an OAuth
- *  token set) seals it under the row with the url's origin inside; one with none (auth type "none") stores null. Replaces
- *  the file the registry wrote. */
+ *  token set) seals it under the row with the url's origin inside; one with none (auth type "none") stores null. The
+ *  remote server's reported info and instructions are bounded at save (untrusted). Replaces the file the registry wrote. */
 export async function saveMcpServer(
   store: { mcp: Pick<Mcp, "put"> },
   sealKey: Buffer,
-  server: { name: string; url: string; auth: string; protocol?: string | null; tools: unknown; prices?: unknown; credential?: McpCredential },
+  server: { name: string; url: string; auth: string; protocol?: string | null; tools: unknown; prices?: unknown; serverInfo?: unknown; instructions?: string | null; credential?: McpCredential },
 ): Promise<McpServerRow> {
   const sealed = server.credential ? sealMcpCredential(sealKey, server.name, server.credential, server.url) : null;
-  return store.mcp.put({ name: server.name, url: server.url, auth: server.auth, protocol: server.protocol ?? null, tools: server.tools, prices: server.prices ?? null, sealed });
+  return store.mcp.put({ name: server.name, url: server.url, auth: server.auth, protocol: server.protocol ?? null, tools: server.tools, prices: server.prices ?? null, serverInfo: boundedServerInfo(server.serverInfo), instructions: boundedInstructions(server.instructions), sealed });
 }
 
 /** The server's row goes. */
