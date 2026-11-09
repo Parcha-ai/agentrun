@@ -11,6 +11,7 @@ import { DEFAULT_HARNESS, HARNESSES } from "../harness.js";
 import type { RunLaunch } from "../run-launch.js";
 import { adapterRunSpecFromLaunch, type AdapterSpecDeps } from "./adapter-run-spec.js";
 import { createAdapterLoop } from "./adapter-loop.js";
+import { cliRunSpecFromLaunch } from "./cli-run-spec.js";
 import { learningLoopOf } from "./learning-dispatch.js";
 import type { LoopFactory } from "./loop-contract.js";
 import { createWorkflowLoop, isWorkflowRevision } from "./workflow-loop.js";
@@ -43,11 +44,10 @@ export function resolveRunnerLoop(deps: AdapterSpecDeps): (harness: string, laun
       return createAdapterLoop((claim, adapterRun) => adapterRunSpecFromLaunch(launch, adapterRun, deps, claim));
     }
     if ((HARNESSES as readonly string[]).includes(harness)) {
-      // A CLI harness (claude-agent, codex, opencode) runs on the adapter loop with its own adapter (runner/adapters/index.ts
-      // resolveHarness) and record: "loop". TODO: createAdapterLoop(cliRunSpecFromLaunch(...)) once the CLI spec builder
-      // lands (tl-places, untangle/cutover-cli-spec): the host tools, the system prompt with the harness's skillCheck, and
-      // the adapter from resolveHarness(harness) — the non-pi equivalent of adapterRunSpecFromLaunch.
-      return undefined;
+      // A CLI harness (claude-agent, codex, opencode) runs on the adapter loop with its own adapter and record: "loop"
+      // (cli-run-spec.ts, the non-pi equivalent of adapterRunSpecFromLaunch: it resolves the harness through
+      // resolveHarness, builds its host tools and its system prompt with the harness's skillCheck).
+      return createAdapterLoop((claim, adapterRun) => cliRunSpecFromLaunch(launch, adapterRun, deps, claim));
     }
     return undefined;
   };

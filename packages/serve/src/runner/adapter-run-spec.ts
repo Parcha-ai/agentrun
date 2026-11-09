@@ -39,7 +39,7 @@ import { runTools, type ToolResults } from "../workspace/run-tools.js";
 import { INPUTS_DIR, UPLOADS_DIR, Uploads } from "../uploads.js";
 import { claimSecrets } from "./claim-secrets.js";
 import { join } from "node:path";
-import type { AdapterRun, AdapterRunSpec } from "./adapter-loop.js";
+import { type AdapterRun, type AdapterRunSpec, hostLifecycle } from "./adapter-loop.js";
 import { piAdapter } from "./adapters/pi.js";
 import { dockerComputer } from "./computer.js";
 import { entriesOf } from "./loop.js";
@@ -191,6 +191,11 @@ export async function adapterRunSpecFromLaunch(launch: RunLaunch, run: AdapterRu
   // another's on this runner (claim-secrets.ts). MCP credentials are the other per-claim secret and come through mcp-claim.
   const toolEnv = await claimSecrets({ store: deps.store, sealKey: deps.sealKey, env: deps.env }, revisionRow as unknown as Parameters<typeof claimSecrets>[1], launch);
 
+  // The tool host's install lifecycle: what a binding registers to run in each conversation's creating commit, once the
+  // Harness is open before the session, and at the run's end (the browser tool's reconcile and release hang off these). The
+  // adapter loop runs them from the spec's `lifecycle` (adapter-loop.ts hostLifecycle).
+  const life = hostLifecycle();
+
   // The ToolHost the non-hand tools (browser, web, MCP, decisions, monid) bind through, carrying the runner's live-viewer
   // seam: the browser tool's live-viewer writers hand a session's viewer over through the store, not through files. This
   // is the seam tl-browser's live-viewer writers hang off (`liveViewers`).
@@ -202,9 +207,9 @@ export async function adapterRunSpecFromLaunch(launch: RunLaunch, run: AdapterRu
     env: toolEnv,
     coding: { tools: [], extension: { name: "coding", tools: [] } } as unknown as ToolHost["coding"],
     install: (extension) => run.registry.install(extension),
-    onConversation: () => {},
-    beforeResume: () => {},
-    beforeRelease: () => {},
+    onConversation: life.register.onConversation,
+    beforeResume: life.register.beforeResume,
+    beforeRelease: life.register.beforeRelease,
     handoverInJournal: true,
     store: deps.store,
     claim,
@@ -250,6 +255,8 @@ export async function adapterRunSpecFromLaunch(launch: RunLaunch, run: AdapterRu
     gate: (call) => gate.policy(call.tool),
     ...(beforeRequest ? { beforeRequest } : {}),
     ...(cap ? { cap } : {}),
+    // The tool host's install lifecycle (its bindings' onConversation/beforeResume/beforeRelease), run by the adapter loop.
+    lifecycle: life,
     agentId: runRow.agentId,
     workRoot: root,
     // The end's metrics and cost, from the run's journal, as the old per-run end path read them (metrics.ts runMetrics =

@@ -41,6 +41,13 @@ test("an agentic pi revision resolves to the adapter loop", async (t) => {
   assert.equal(typeof (await resolveRunnerLoop(deps)("pi", LAUNCH, "pi-run")), "function");
 });
 
+test("a CLI harness (claude-agent) resolves to the adapter loop", async (t) => {
+  const { store, deps } = await depsOn(t);
+  await store.agents.create({ id: "cli", name: "cli" }, { id: "cli-rev", kind: "agentic", body: { harness: "claude-agent" } });
+  await store.runs.create({ id: "cli-run", agentId: "cli", revisionId: "cli-rev" });
+  assert.equal(typeof (await resolveRunnerLoop(deps)("claude-agent", LAUNCH, "cli-run")), "function", "a CLI harness runs on the adapter loop");
+});
+
 test("an unknown harness resolves to undefined", async (t) => {
   const { store, deps } = await depsOn(t);
   await store.agents.create({ id: "u", name: "u" }, { id: "u-rev", kind: "agentic", body: {} });
