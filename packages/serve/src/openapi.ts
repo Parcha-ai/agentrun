@@ -1025,19 +1025,6 @@ const EXTENSIONS: Record<string, Record<string, Json>> = {
       "x-agentrun-serve": "computer/1",
     },
   },
-  "/runs/{run_id}/computer/hand-back": {
-    post: {
-      operationId: "handBackRunComputer", tags: ["runs"], summary: "Answer the agent's ask for you at its computer",
-      description: "When a run's agent asks for the person at its computer, the run reads input_required/waiting with `pending.kind` `computer` (which computer, what it asks, when it is done, when the ask expires), its timeline shows \"Waiting for you: <instruction>\", and `run.needs_input` fires. The owner does it in the live view (GET /runs/{run_id}/computer: Take over, then Hand back in the viewer, which also answers `done`) and answers here: `done` when it is done, `cancelled` when they will not. The first answer wins, and is the one the agent gets: the same answer again is 200, a different one 409 `handoff_answered` (`details.outcome`, the answer it has); an ask unanswered 15 minutes has expired, and an answer after that is 409 with `outcome` `expired` (\"The agent's hand-over expired before this answer: the agent was told it expired.\"). Any answer hands the computer back to the agent, ending a take-over. 404 when the run's agent has not asked. It takes the owner's password session in the console: never a token (403); no credential is 401. The person's time is held under the run's cap from the ask (the next 15 minutes of session time at the provider's price): with no room the agent is told so and no ask is made.",
-      parameters: [ref("parameters/RunId")],
-      requestBody: { required: true, content: { "application/json": { schema: closed({ outcome: { enum: ["done", "cancelled"], description: "`done`: the person did what the agent asked; `cancelled`: they will not." } }) } } },
-      responses: {
-        "200": json(closed({ outcome: { enum: ["done", "cancelled"], description: "The answer the agent gets: the first one." } }), "The answer, the first one."),
-        ...errors(401, 403, 404, 409, 422, 429, 500),
-      },
-      "x-agentrun-serve": "computer/1",
-    },
-  },
   "/workflows/validate": {
     post: {
       operationId: "validateWorkflow", tags: ["agents"], summary: "Check a workflow definition without saving it",
@@ -1507,19 +1494,6 @@ const PENDING: Json = {
       },
       description: "The run's agent asked for the person in its browser (status input_required, state waiting; its turn waits inside the tool call): POST /runs/{run_id}/browser/hand-back answers it, after the person does it in the live view.",
       "x-agentrun-serve": "liveview/2",
-    },
-    {
-      type: "object", additionalProperties: false, required: ["kind", "computer", "instruction", "completion_condition", "asked_at", "expires_at"],
-      properties: {
-        kind: { const: "computer" },
-        computer: COMPUTER_KIND,
-        instruction: { type: "string", description: "What the agent asks the person to do at its computer, at most 2000 characters." },
-        completion_condition: { type: "string", description: "How the agent will know it is done, at most 2000 characters." },
-        asked_at: { type: "string", format: "date-time" },
-        expires_at: { type: "string", format: "date-time", description: "When the ask expires unanswered (15 minutes after it)." },
-      },
-      description: "The run's agent asked for the person at its computer (status input_required, state waiting; its turn waits inside the tool call): POST /runs/{run_id}/computer/hand-back answers it, after the person does it in the live view.",
-      "x-agentrun-serve": "computer/1",
     },
     { type: "null" },
   ],

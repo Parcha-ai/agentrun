@@ -22,8 +22,8 @@ export async function computerView(deps: {
   viewer(): Promise<{ kind: ComputerKind; viewer: string } | undefined>;
   /** The run's computer, read only when no viewer is open. */
   computer(): ComputerOf;
-  /** Who drives now. TODO(tl-places computer-hold): the run's ViewerHold.state() once the hold is readable from the
-   *  store; until then the agent drives, as no seam answers. */
+  /** Who drives now. TODO(tl-places): hold from computerHoldOf(store, runId) (places/computers-cut); until then the agent
+   *  drives, as no seam answers. */
   hold?(): ComputerHold;
 }): Promise<ComputerAnswer> {
   const hold = deps.hold?.() ?? "agent";

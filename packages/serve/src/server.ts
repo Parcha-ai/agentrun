@@ -390,7 +390,6 @@ export const ROUTES: readonly Route[] = [
   { method: "GET", pattern: /^\/runs\/([^/]+)\/browser$/, name: "getRunBrowser" },
   { method: "POST", pattern: /^\/runs\/([^/]+)\/browser\/hand-back$/, name: "handBackRunBrowser" },
   { method: "GET", pattern: /^\/runs\/([^/]+)\/computer$/, name: "getRunComputer" },
-  { method: "POST", pattern: /^\/runs\/([^/]+)\/computer\/hand-back$/, name: "handBackRunComputer" },
   { method: "GET", pattern: /^\/runs\/([^/]+)\/files\/(.+)$/, name: "readRunFile" },
   { method: "POST", pattern: /^\/files$/, name: "createFile", raw: true },
   { method: "GET", pattern: /^\/files$/, name: "listFiles" },
@@ -2009,7 +2008,7 @@ async function startHolding(options: ServeOptions, data: string, lock: ServerLoc
     }
     // A run's live computer view is a full-control credential for its computer: the owner's signed-in page alone, as
     // approving a note is (never a token a run, an MCP client or a script may hold).
-    if ((found.name === "getRunBrowser" || found.name === "handBackRunBrowser" || found.name === "getRunComputer" || found.name === "handBackRunComputer") && !byOwnerSession(req) && req.headers.authorization !== undefined) {
+    if ((found.name === "getRunBrowser" || found.name === "handBackRunBrowser" || found.name === "getRunComputer") && !byOwnerSession(req) && req.headers.authorization !== undefined) {
       const what = found.name.endsWith("Browser") ? "browser" : "computer";
       authFailed(`/v2${path}`, `${what}_without_session`);
       throw new ApiError("forbidden", owner ? `A run's live ${what} takes the owner's password sign-in in the console, never a token.` : `A run's live ${what} takes the owner's password sign-in, and this server has no accounts (AGENTRUN_ACCOUNTS=0).`);
@@ -2202,14 +2201,13 @@ async function startHolding(options: ServeOptions, data: string, lock: ServerLoc
             return undefined;
           },
           computer: () => computerOf(run, env, family),
-          // TODO(tl-places computer-hold): the run's hold (ViewerHold.state()) once the server can read it; the browser's
-          // driving gate lives in the run's process, which hands the server no hold, so the agent drives here until then.
+          // TODO(tl-places): hold from computerHoldOf(store, runId) (places/computers-cut). Until then the agent drives here:
+          // the browser's driving gate lives in the run's process, which hands the server no hold.
         });
         if (family === "browser") return send(res, 200, view.state === "live" ? { state: "live", viewer: view.viewer } : view.state === "none" ? { state: "none" } : { state: "off", reason: view.why }, { "cache-control": "no-store" });
         return send(res, 200, view, { "cache-control": "no-store" });
       }
-      case "handBackRunBrowser":
-      case "handBackRunComputer": {
+      case "handBackRunBrowser": {
         // The owner's answer to the agent's ask for them in its browser (browser-person.ts): the first answer wins, the same
         // one again is that answer, a different one is 409; an ask past its expiry has `expired`.
         const run = await needRun(id);
