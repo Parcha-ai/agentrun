@@ -126,7 +126,7 @@ if (process.argv[2] === "validate-template") {
 // 0: every case passed; 1: one failed; 2: the flags, the package or a case is wrong, and nothing ran. --data is taken and
 // ignored, as validate-template's is: the npx launcher hands every server command one, and an eval's store is a temp one.
 if (process.argv[2] === "eval-template") {
-  const { CaseError, evalTemplate, markdownReport } = await import("./template-eval.js");
+  const { CaseError, evalTemplate, exitCodeOf, markdownReport } = await import("./template-eval.js");
   const { PackageError } = await import("./templates.js");
   const usage = (message: string): never => (console.error(`agentrun-serve eval-template: ${message}\n\n${USAGE}`), process.exit(2));
   const read = () => {
@@ -185,7 +185,7 @@ if (process.argv[2] === "eval-template") {
     stop.signal.throwIfAborted();
     if (given.report !== undefined) writeFileSync(resolve(given.report), `${JSON.stringify(report, null, 2)}\n`);
     process.stdout.write(markdownReport(report));
-    process.exit(report.pass ? 0 : 1);
+    process.exit(exitCodeOf(report));
   } catch (error) {
     if (stop.signal.aborted) {
       console.error("agentrun-serve eval-template: stopped; no report.");
