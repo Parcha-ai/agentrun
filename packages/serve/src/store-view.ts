@@ -204,7 +204,8 @@ async function storeRunOf(store: Store, runId: string, deps: ViewDeps): Promise<
   // the answers given, which the status, pending and moment views read the same as the file path read them from the run's
   // store entries.
   const approvals = asksOf(records.entries);
-  const answers = answersOf(records.entries);
+  // A final run's unanswered asks read withdrawn (answersOf `final`), by the run's row read before its journal.
+  const answers = answersOf(records.entries, { final: FINAL_STATES.includes(runRow.state) });
   // The rows a person reads: each call that waited for approval in order (held, your approval, what came of it), its
   // arguments and the person's notes through the run's redactor, as the file path's withApprovals served them.
   const rows = withApprovalRows(timeline, approvals, answers, redactorOf(values));
