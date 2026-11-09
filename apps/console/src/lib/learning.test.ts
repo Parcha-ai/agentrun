@@ -1,6 +1,7 @@
 import { describe, expect, it } from "vitest";
-import { approval, bodyOf, change, dropKind, dropWords, fileFor, impactWords, isPending, learnedBy, learningHash, learningLabel, learningSteps, type LearningDiff, lookedBack, money, noteChanges, noteParts, noteText, originOf, pendingBy, provenance, type RunLearning, shortTitle, shownImpact, took, typeLabel, underWay, givenBy, readBy, waitsForOk, waitWords } from "./learning";
+import { approval, bodyOf, change, changeWords, dropKind, dropWords, fileFor, impactWords, isPending, learnedBy, learningHash, learningLabel, learningSteps, type LearningDiff, lookedBack, money, noteChanges, noteParts, noteText, originOf, pendingBy, provenance, type RunLearning, shortTitle, shownImpact, took, typeLabel, underWay, givenBy, readBy, waitsForOk, waitWords } from "./learning";
 import { recorded } from "@/fixtures";
+import type { LastChange } from "./learning";
 import type { TimelineRow } from "./v2";
 
 // What the console reads of a run's and an agent's learning, and the words it says it in.
@@ -302,4 +303,22 @@ describe("lookedBack, a run that kept nothing for a reason", () => {
       expect(said.match(/Not kept/g)).toHaveLength(1);
     });
   }
+});
+
+// Every kind the server serves in an item's last_change (packages/serve/src/openapi.ts, the learning view's
+// `last_change.kind` enum, with "superseded" since #1762) has words of its own: a card never says "undefined by you".
+describe("changeWords, for every served last_change kind", () => {
+  const SERVED: string[] = ["approved", "edited", "created", "retired", "restored", "learned", "superseded"];
+  for (const kind of SERVED) {
+    it(`${kind} has words, by you and by a run`, () => {
+      for (const by of ["person", "run"] as const) {
+        const said = changeWords(kind as LastChange["kind"], by);
+        expect(said).not.toContain("undefined");
+        expect(said).toMatch(by === "person" ? /^[A-Z][a-z]+ by you$/ : /^[A-Z][a-z]+ by a run$/);
+      }
+    });
+  }
+  it("a superseded one reads as replaced", () => {
+    expect(changeWords("superseded" as LastChange["kind"], "person")).toBe("Replaced by you");
+  });
 });

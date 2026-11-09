@@ -483,17 +483,42 @@ describe("notes that wait for the owner's OK", () => {
     return v;
   };
   const APPROVES = { learning: { pending: true, approve: true } };
-  // The host's bash runs as you only off the sandbox: an agent whose definition places it in a box is told nothing of it.
-  it("say a run's bash on the host runs as you only for an agent that runs on the host, not one in the sandbox", async () => {
+  // The host's bash runs as you only where the agent runs on the server (the runner) with a shell (bash in its tools): an
+  // agent in a box, or one with no shell, is told nothing of the host.
+  it("say a run's bash on the host runs as you only for an agent on the runner with bash, not one in a box or without a shell", async () => {
     const HOST = "Runs that use bash on the host run as you.";
-    const boxed = await open(agent(true, { place: { mode: "sandbox", box: "docker" } } as never), { learning: async () => waitingView(), caps: APPROVES });
-    expect(boxed.host.querySelector('section[aria-label="Waiting for your OK"]')!.textContent).not.toContain(HOST);
+    const waiting = () => document.querySelector('section[aria-label="Waiting for your OK"]')!.textContent;
+    await open(agent(true, { place: { mode: "sandbox", box: "docker" }, tools: ["read", "bash"] } as never), { learning: async () => waitingView(), caps: APPROVES });
+    expect(waiting()).toContain("It changes what this agent trusts or skips");
+    expect(waiting()).not.toContain(HOST);
     act(() => root?.unmount()); document.body.innerHTML = "";
-    const runner = await open(agent(true, { place: { mode: "runner" } } as never), { learning: async () => waitingView(), caps: APPROVES });
-    expect(runner.host.querySelector('section[aria-label="Waiting for your OK"]')!.textContent).toContain(HOST);
+    await open(agent(true, { place: { mode: "runner" }, tools: ["read", "bash"] } as never), { learning: async () => waitingView(), caps: APPROVES });
+    expect(waiting()).toContain(HOST);
+    act(() => root?.unmount()); document.body.innerHTML = "";
+    await open(agent(true, { place: { mode: "runner" }, tools: ["read", "write"] } as never), { learning: async () => waitingView(), caps: APPROVES });
+    expect(waiting()).toContain("It changes what this agent trusts or skips");
+    expect(waiting()).not.toContain(HOST);
+  });
+  // An agent that names no place runs where the server's default place is (#1790): in its box, no word of the host; on the
+  // runner, the word only with a shell.
+  it("say the host's bash runs as you for an agent with no place only where the server's default runs it on the host, with bash", async () => {
+    const HOST = "Runs that use bash on the host run as you.";
+    const places = (defaultPlace: NonNullable<LearningProps["places"]>["defaultPlace"]) => ({ modes: ["runner", "sandbox"], boxes: [{ id: "docker", available: true }], defaultPlace });
+    const waiting = () => document.querySelector('section[aria-label="Waiting for your OK"]')!.textContent;
+    const bash = { tools: ["read", "bash"] } as never;
+    await open(agent(true, bash), { learning: async () => waitingView(), caps: APPROVES }, { places: places({ mode: "sandbox", box: "docker" }) });
+    expect(waiting()).toContain("It changes what this agent trusts or skips");
+    expect(waiting()).not.toContain(HOST);
+    act(() => root?.unmount()); document.body.innerHTML = "";
+    await open(agent(true, bash), { learning: async () => waitingView(), caps: APPROVES }, { places: places({ mode: "runner" }) });
+    expect(waiting()).toContain(HOST);
+    act(() => root?.unmount()); document.body.innerHTML = "";
+    await open(agent(true), { learning: async () => waitingView(), caps: APPROVES }, { places: places({ mode: "runner" }) });
+    expect(waiting()).toContain("It changes what this agent trusts or skips");
+    expect(waiting()).not.toContain(HOST);
   });
   it("sit at the top of the tab, under why they wait, and out of the notes in use", async () => {
-    const t = await open(agent(true), { learning: async () => waitingView(), caps: APPROVES });
+    const t = await open(agent(true, { place: { mode: "runner" }, tools: ["read", "bash"] } as never), { learning: async () => waitingView(), caps: APPROVES });
     const box = t.host.querySelector('section[aria-label="Waiting for your OK"]')!;
     expect(box).not.toBeNull();
     expect(t.host.querySelector("section, article")).toBe(box);

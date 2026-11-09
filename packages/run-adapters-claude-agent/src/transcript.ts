@@ -43,6 +43,10 @@ export interface TurnEnd {
    */
   consumed?: string[];
   sessionId?: string;
+  /** The turn's final answer was cut at the model's output limit (`stop_reason` max_tokens on its result): the CLI's
+   *  own recovery of it was spent. With the turn's output tokens, as its result reports them. */
+  stopReason?: 'length';
+  outputTokens?: number;
 }
 
 type Block = { type?: string; text?: string; id?: string; name?: string; input?: unknown };
@@ -61,6 +65,9 @@ export class TranscriptBuilder {
   private readonly asked = new Map<string, { name: string; input: unknown }>();
   /** Calls that reached the session's tool server (`beforeCall`): their error, whatever its text, is theirs, not a refusal. */
   private readonly bridged = new Set<string>();
+  /** The model's last message was cut at its output limit, and the turn has not ended: the CLI resumes it itself, so the
+   *  next text the model says is a message of its own (`text_end` before it). */
+  private cutPending = false;
 
   constructor(private readonly sink: TranscriptSink) {}
 
@@ -68,8 +75,15 @@ export class TranscriptBuilder {
   observe(m: SdkMessage): TurnEnd | undefined {
     if (m.parent_tool_use_id) return undefined;
     if (m.type === 'stream_event') {
-      const ev = m.event as { type?: string; delta?: { type?: string; text?: string } } | undefined;
-      if (ev?.type === 'content_block_delta' && ev.delta?.type === 'text_delta' && ev.delta.text) this.sink.live({ type: 'text', delta: ev.delta.text });
+      const ev = m.event as { type?: string; delta?: { type?: string; text?: string; stop_reason?: string | null } } | undefined;
+      // A message the model's output limit cut: the CLI resumes it in the same turn ("Output token limit hit"), and the
+      // message that follows is the model's next one, not more of this one.
+      if (ev?.type === 'message_delta' && ev.delta?.stop_reason === 'max_tokens') this.cutPending = true;
+      if (ev?.type === 'content_block_delta' && ev.delta?.type === 'text_delta' && ev.delta.text) {
+        if (this.cutPending) this.sink.live({ type: 'text_end' });
+        this.cutPending = false;
+        this.sink.live({ type: 'text', delta: ev.delta.text });
+      }
       return undefined;
     }
     if (m.type === 'assistant') {
@@ -105,9 +119,14 @@ export class TranscriptBuilder {
         : typeof m.user_message_uuid === 'string'
           ? [m.user_message_uuid]
           : undefined;
+      this.cutPending = false;
+      // The turn's final answer still cut: the CLI's recovery of it was spent.
+      const output = (m.usage as { output_tokens?: unknown } | undefined)?.output_tokens;
+      const cut = !isError && m.stop_reason === 'max_tokens' ? { stopReason: 'length' as const, ...(typeof output === 'number' ? { outputTokens: output } : {}) } : {};
       return {
         status: isError ? 'failed' : 'completed',
         ...(error ? { error } : {}),
+        ...cut,
         queued: typeof m.queued_turn_count === 'number' ? m.queued_turn_count : 0,
         ...(consumed ? { consumed } : {}),
         ...(typeof m.session_id === 'string' ? { sessionId: m.session_id } : {}),
@@ -120,10 +139,11 @@ export class TranscriptBuilder {
    * Write the turn's last text and its end. Called at each `result`, or with
    * `interrupted` when the drive stops a turn it cannot finish.
    */
-  endTurn(end: Pick<TurnEnd, 'status' | 'error'> | { status: 'interrupted'; error?: string }): void {
+  endTurn(end: Pick<TurnEnd, 'status' | 'error' | 'stopReason' | 'outputTokens'> | { status: 'interrupted'; error?: string }): void {
     if (this.said) this.sink.message({ type: 'message', role: 'assistant', text: this.said });
     this.said = '';
-    this.sink.message({ type: 'turn', status: end.status, ...(end.error ? { error: end.error } : {}) });
+    const cut = 'stopReason' in end && end.stopReason ? { stopReason: end.stopReason, ...(end.outputTokens !== undefined ? { outputTokens: end.outputTokens } : {}) } : {};
+    this.sink.message({ type: 'turn', status: end.status, ...(end.error ? { error: end.error } : {}), ...cut });
   }
 
   /**

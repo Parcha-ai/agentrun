@@ -56,13 +56,13 @@ const REFUSED = "this route needs a request signed by the webhook trigger's secr
 export type PushDeps = {
   adapters: readonly TriggerAdapter[];
   /** The source of trigger `id`, when it is a trigger of the pushed source `kind` that is on. */
-  hooked(id: string, kind: string): Source | undefined;
+  hooked(id: string, kind: string): Promise<Source | undefined>;
   /** A request trigger `id` ignored, under the key its event would have (triggers.ts ignored): kept for its day. */
-  ignored?(id: string, eventId: string): void;
-  /** Its firing for the event, recorded (triggers.ts receive), with what the source says of it (`attrs`). */
-  receive(id: string, eventId: string, payload: string, attrs?: Record<string, string>): { created: boolean; firing: unknown };
-  /** The triggers of the pushed source `kind`, on, that listen on `scope` (its adapter's scopeOf). */
-  scoped(kind: string, scope: string): string[];
+  ignored?(id: string, eventId: string): Promise<void>;
+  /** Its firing for the event, recorded (triggers.ts receive, in the store), with what the source says of it (`attrs`). */
+  receive(id: string, eventId: string, payload: string, attrs?: Record<string, string>): Promise<{ created: boolean; firing: unknown }>;
+  /** The triggers of the pushed source `kind`, on, that listen on `scope` (their scope rows). */
+  scoped(kind: string, scope: string): Promise<string[]>;
   /** A source's sealed setting (sealed-settings.ts): its key, for a scope. */
   setting(adapterId: string, scope: string, field: string): string | undefined;
   /** A refusal, said: its route and why. */
@@ -90,7 +90,7 @@ export async function receivePush(deps: PushDeps, req: IncomingMessage, segment:
   const early = push.headers?.(req.headers as Headers, now);
   if (early) throw refuse(early);
   const body = await readCapped(req, push.maxBodyBytes);
-  const source = own || !ID.test(name) ? undefined : deps.hooked(name, adapter.id);
+  const source = own || !ID.test(name) ? undefined : await deps.hooked(name, adapter.id);
   const pathTrigger = source ? name : undefined;
   const key = own ? deps.setting(adapter.id, "server", push.key) : pathTrigger && deps.setting(adapter.id, pathTrigger, push.key);
   // Checked against the clock now the body has arrived: a timestamp at the tolerance's edge never passes by a slow body.
@@ -102,7 +102,7 @@ export async function receivePush(deps: PushDeps, req: IncomingMessage, segment:
   // Verified, and not an event its trigger takes: answered, so the sender does not send it again, and said once.
   if (!Array.isArray(events)) {
     deps.say({ condition: "hook_ignored", source: adapter.id, route, ...(pathTrigger ? { trigger: pathTrigger } : {}), reason: events.ignored, ...(events.event ? { event: events.event } : {}) });
-    if (pathTrigger && events.key !== undefined) deps.ignored?.(pathTrigger, events.key);
+    if (pathTrigger && events.key !== undefined) await deps.ignored?.(pathTrigger, events.key);
     return { status: 200, body: { ok: "ignored" } };
   }
   if (!events.length) {
@@ -112,7 +112,8 @@ export async function receivePush(deps: PushDeps, req: IncomingMessage, segment:
   // A trigger's own path: each event is its own firing. One (a webhook's request) is answered as its firing; more, as a
   // server-wide source's are, by the firings they made.
   if (pathTrigger) {
-    const fired = events.map((event) => deps.receive(pathTrigger, event.key, event.text, event.attrs));
+    const fired: { created: boolean; firing: unknown }[] = [];
+    for (const event of events) fired.push(await deps.receive(pathTrigger, event.key, event.text, event.attrs));
     if (fired.length > 1) return { status: fired.some((f) => f.created) ? 202 : 200, body: { firings: fired.map((f) => f.firing) } };
     const { created, firing } = fired[0]!;
     return { status: created ? 202 : 200, body: firing, ...(created ? {} : { headers: { "idempotent-replayed": "true" } }) };
@@ -122,8 +123,8 @@ export async function receivePush(deps: PushDeps, req: IncomingMessage, segment:
   // and is said with their ids, so no event fires twice or reaches whichever came first.
   const fired: { created: boolean; firing: unknown }[] = [];
   for (const event of events) {
-    const ids = event.scope === undefined ? [] : deps.scoped(adapter.id, event.scope);
-    if (ids.length === 1) fired.push(deps.receive(ids[0]!, event.key, event.text, event.attrs));
+    const ids = event.scope === undefined ? [] : await deps.scoped(adapter.id, event.scope);
+    if (ids.length === 1) fired.push(await deps.receive(ids[0]!, event.key, event.text, event.attrs));
     else if (!ids.length) deps.say({ condition: "hook_no_trigger", source: adapter.id, route, scope: String(event.scope ?? "") });
     else deps.say({ condition: "hook_scope_ambiguous", source: adapter.id, route, scope: String(event.scope), triggers: ids.join(",") });
   }

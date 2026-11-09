@@ -97,8 +97,12 @@ export function SignIn({ mode, code = null, codeNeeded = false, onSubmit, proble
             {problem && <p className="font-mono text-[13px] text-destructive-text" role="alert">{problem}</p>}
             {!setup && (
               <p className="text-[12px] leading-relaxed text-[#888]">
-                Forgot it? Where the server runs, <code className="font-mono text-[#ccc]">agentrun-serve reset-password --data DIR</code> clears it
-                (in the image: <code className="font-mono text-[#ccc]">reset-password --data /data</code>); the next visit here sets a new one.
+                {/* The npx wrapper's command first (it takes reset-password, on its own store, ~/.agentrun), then the server's own. The
+                    page is public: the data directory stays a placeholder. */}
+                Forgot it? Where the server runs: <code className="font-mono text-[#ccc]">npx @parcha/agentrun reset-password</code> (add{" "}
+                <code className="font-mono text-[#ccc]">--data DIR</code> if you started it with one). For a server you started yourself:{" "}
+                <code className="font-mono text-[#ccc]">agentrun-serve reset-password --data DIR</code> (in the image:{" "}
+                <code className="font-mono text-[#ccc]">--data /data</code>). The next visit here sets a new one.
               </p>
             )}
           </form>

@@ -272,7 +272,28 @@ function endValue(text: string, key: "usage" | "tool_usage"): unknown {
  * `"incomplete_details":{` after `"response":{` (one JSON object), whatever the JSON's spacing.
  */
 export function filtered(text: string, lineStarts: readonly string[] = []): boolean {
-  let end = terminalResponse(text.split("\n"), false);
+  const end = answerEnd(text, lineStarts);
+  return isPlain(end) && end.status === "incomplete" && isPlain(end.incomplete_details) && end.incomplete_details.reason === "content_filter";
+}
+
+/**
+ * Whether the provider cut the answer at its output limit: its end is an `incomplete` response whose
+ * `incomplete_details.reason` is `max_output_tokens`, with the output tokens its usage reports when the end was read whole.
+ * Read as `filtered` reads its stop, but keyed only on the data's own `type` (`response.incomplete`), never on an `event:`
+ * line: a gateway's Responses stream is data alone. Any other reason (`content_filter`) is no cut. Codex 0.164 takes a cut
+ * answer as a stream error and asks for it again, each time paid; the harness ends the turn first.
+ */
+export function cut(text: string, lineStarts: readonly string[] = []): { outputTokens?: number } | undefined {
+  const end = answerEnd(text, lineStarts, false);
+  if (!(isPlain(end) && end.status === "incomplete" && isPlain(end.incomplete_details) && end.incomplete_details.reason === "max_output_tokens")) return undefined;
+  const output = isPlain(end.usage) ? end.usage.output_tokens : undefined;
+  return typeof output === "number" && Number.isSafeInteger(output) && output >= 0 ? { outputTokens: output } : {};
+}
+
+/** The response an answer ends with: its stream's terminal event's, a whole body's, or a kept line start's (`filtered`).
+ *  `byName`: a kept start an `event: response.incomplete` line names is the stop's too (else only its data's type). */
+function answerEnd(text: string, lineStarts: readonly string[], byName = true): unknown {
+  let end = terminalResponse(text.split("\n"), false, byName);
   if (end === undefined) {
     const whole = text.trimStart();
     if (whole.startsWith("{")) {
@@ -282,19 +303,18 @@ export function filtered(text: string, lineStarts: readonly string[] = []): bool
       } catch {}
     }
   }
-  end ??= terminalResponse(lineStarts, true);
-  return isPlain(end) && end.status === "incomplete" && isPlain(end.incomplete_details) && end.incomplete_details.reason === "content_filter";
+  return end ?? terminalResponse(lineStarts, true, byName);
 }
 
 /** The response of the last terminal event in `lines` (`filtered`), each `data:` line parsed on its own; with `starts`,
- *  the lines are kept starts, and one that is a `response.incomplete` event's (by its name, or its data's type ahead of
- *  its response) is read from its start. */
-function terminalResponse(lines: readonly string[], starts: boolean): unknown {
+ *  the lines are kept starts, and one that is a `response.incomplete` event's (by its name when `byName`, or its data's
+ *  type ahead of its response) is read from its start. */
+function terminalResponse(lines: readonly string[], starts: boolean, byName = true): unknown {
   let end: unknown;
   let named = false;
   for (const line of lines) {
     if (line.startsWith("event:")) {
-      named = line.slice(6).trim() === "response.incomplete";
+      named = byName && line.slice(6).trim() === "response.incomplete";
       continue;
     }
     if (!line.startsWith("data:")) continue;
@@ -613,6 +633,7 @@ export function codexPolicy(options: CodexPolicyOptions): ProviderPolicy {
       return usage && { ...usage, webSearches: webSearchesOf(text) ?? null };
     } : usageOf,
     filtered,
+    cut,
     watch: options.announce ? () => watchResponse(options.announce!) : undefined,
     unwatched: options.announce ? () => options.announce!.failed() : undefined,
     modelOf: (body) => (typeof body.model === "string" ? body.model : undefined),

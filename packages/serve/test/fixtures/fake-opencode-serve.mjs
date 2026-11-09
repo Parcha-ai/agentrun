@@ -150,6 +150,11 @@ async function step(s, tools, system, signal) {
       if (e.type === "response.output_text.delta") out.deltas.push(e.delta);
       if (e.type === "response.output_item.done" && e.item?.type === "function_call") out.calls.push(e.item);
       if (e.type === "response.completed") out.usage = e.response?.usage;
+      // An answer cut at its output limit: OpenCode's finish for it is "length" (its AI SDK's finishReason).
+      if (e.type === "response.incomplete") {
+        out.usage = e.response?.usage;
+        if (e.response?.incomplete_details?.reason === "max_output_tokens") out.finish = "length";
+      }
     }
   }
   out.text = out.deltas.join("");
@@ -216,7 +221,7 @@ async function loop(sid, user) {
         record(sid, "message.part.updated", { sessionID: sid, part: { ...part, state }, time: Date.now() });
       }
       const usage = answer.usage ?? {};
-      record(sid, "message.updated", { sessionID: sid, info: { ...assistant, time: { ...assistant.time, completed: Date.now() }, tokens: { input: usage.input_tokens ?? 0, output: usage.output_tokens ?? 0, reasoning: 0, cache: { read: 0, write: 0 } }, finish: answer.calls.length ? "tool-calls" : "stop" } });
+      record(sid, "message.updated", { sessionID: sid, info: { ...assistant, time: { ...assistant.time, completed: Date.now() }, tokens: { input: usage.input_tokens ?? 0, output: usage.output_tokens ?? 0, reasoning: 0, cache: { read: 0, write: 0 } }, finish: answer.calls.length ? "tool-calls" : (answer.finish ?? "stop") } });
       if (!answer.calls.length) break;
     }
   } catch (err) {
