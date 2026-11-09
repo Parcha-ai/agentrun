@@ -12,14 +12,12 @@ import { randomBytes } from "node:crypto";
 import type { Context } from "@earendil-works/chord";
 import { BACKGROUND_CONTEXT } from "@earendil-works/chord/context";
 import type { Models } from "@earendil-works/pi-ai";
-import { createModels, createProvider } from "@earendil-works/pi-ai/models";
-import { anthropicMessagesApi } from "@earendil-works/pi-ai/api/anthropic-messages.lazy";
+import { createModels } from "@earendil-works/pi-ai/models";
 import { type Extension, type Harness, ROOT_CONVERSATION_ID } from "@earendil-works/pi-durable";
 import type { Revision } from "@parcha/pi-durable-agent";
 import { chargedCost, type DecisionProvider, DecisionProviderError, type LoadImage, type Workflow, type WorkflowDeps } from "@parcha/agentrun-dsl";
 import type { DecisionModelPrice } from "@parcha/agentrun-decisions";
-import { type BeforeRequest, modelPortFor, type Refusal, type RunSessions } from "@parcha/agentrun-kernel";
-import { anthropicPolicy } from "@parcha/agentrun-harness-claude";
+import { type BeforeRequest, modelPortFor, type Refusal, type RunSessions, type Wire } from "@parcha/agentrun-kernel";
 import { type ModelProxy, type ProviderPolicy, type ProxyUsage, startModelProxy } from "@parcha/agentrun-kernel/host";
 import { type CapMode, type CapModel, CapRefused, checkRaise, DECISION_SESSION, type DecisionCapRequest, followUpOf, parkOf, type RaiseState, runCap, type RunDecisions } from "@parcha/agentrun-kernel/kernel/cap";
 import { completer } from "../llm.js";
@@ -33,6 +31,9 @@ import { llmTiers, nodeTiers, type Tier, workflowNodes } from "../model.js";
 import { type EffectRun, toolOf } from "../tools.js";
 import { claimSecrets } from "./claim-secrets.js";
 import { type ModelRoute, routeOf } from "./model-route.js";
+import { PI_WIRES } from "./adapter-run-spec.js";
+import { policyFor } from "./adapters/pi.js";
+import { sessionProvider } from "../port-models.js";
 import { journalSessions } from "./sessions.js";
 import { type BudgetData, type EndData, KINDS, type RaiseData } from "./journal-kinds.js";
 import type { CapRefusal, WorkflowCapRule, WorkflowHostHooks, WorkflowRunSpec } from "./workflow-loop.js";
@@ -55,12 +56,14 @@ type JudgeResult = Awaited<ReturnType<RunJudge>>;
 export interface WorkflowProvider {
   /** The model id the node asks for (the tier's model). */
   readonly modelId: string;
-  /** The provider the proxy forwards to. */
-  readonly api: string;
+  /** The wire the proxy forwards on, and pi-ai's client of it speaks to the proxy (port-models.ts sessionProvider). */
+  readonly api: Wire;
+  /** The catalog's entry for the model (whether it reasons, its window), as pi's session takes it (model-route.ts). */
+  readonly like?: { readonly reasoning?: boolean; readonly contextWindow?: number; readonly maxTokens?: number };
   readonly origin: string;
   readonly credential: () => string | Promise<string>;
   readonly headers?: Readonly<Record<string, string>>;
-  /** The proxy's policy for this provider (anthropicPolicy for an Anthropic Messages model). */
+  /** The proxy's policy for this provider: its wire's, as pi's session takes it (pi.ts policyFor). */
   readonly policy: ProviderPolicy;
   /** The price of an answered request's usage, tiered (pi-ai's calculateCost on the catalog model): the proxy's booking. */
   readonly price: (model: string, usage: ProxyUsage) => number | null;
@@ -74,19 +77,23 @@ export interface WorkflowProvider {
  *  (the pi adapter's path): the route's provider, model and price for the proxy's booking, and the catalog's cost and
  *  output ceiling as the cap prices the hold. So a workflow model node and a pi turn book the same model the same way. */
 export function routeProviderOf(env: NodeJS.ProcessEnv): (tier: Tier) => Promise<WorkflowProvider> {
-  return async (tier) => providerFromRoute(await routeOf(undefined, env, tier));
+  // Asked on pi's wires: a model node speaks the route's wire as a pi turn does; a model on neither keeps the route's
+  // Messages translation (model-route.ts messagesFetch).
+  return async (tier) => providerFromRoute(await routeOf(undefined, env, tier, PI_WIRES));
 }
 
 /** A WorkflowProvider from a resolved model route: its provider for the proxy, its price for the booking, and its catalog
- *  cost and output ceiling as the cap's model (the hold). The proxy's policy speaks the route's Messages API. */
-export function providerFromRoute(route: ModelRoute): WorkflowProvider {
+ *  cost and output ceiling as the cap's model (the hold). The proxy's policy is the route's wire's, as pi's session takes
+ *  it (pi.ts policyFor: claude-agent's on Messages, codex's on Responses, no fork), with no tool of the session's own. */
+export async function providerFromRoute(route: ModelRoute): Promise<WorkflowProvider> {
   return {
     modelId: route.model,
     api: route.provider.api,
+    ...(route.like ? { like: route.like } : {}),
     origin: route.provider.origin,
     credential: route.provider.credential,
     ...(route.provider.headers ? { headers: route.provider.headers } : {}),
-    policy: anthropicPolicy({ model: route.model, tools: [] }),
+    policy: await policyFor(route.provider, route.model, []),
     price: (route.price ?? (() => null)) as (model: string, usage: ProxyUsage) => number | null,
     capModel: { id: route.model, api: route.provider.api, price: route.cost ?? null, outputCeiling: route.outputCeiling ?? null },
     ...(route.fetch ? { fetch: route.fetch } : {}),
@@ -194,13 +201,8 @@ export function workflowSpecOf(deps: WorkflowSpecDeps): (claim: { runId: string 
         ...(provider.fetch ? { fetch: provider.fetch } : {}),
       }, randomBytes(32).toString("base64url"));
       proxies.push(proxy);
-      models.setProvider(createProvider({
-        id: providerId(tier),
-        baseUrl: proxy.url,
-        auth: { apiKey: { name: "AGENTRUN_SESSION_KEY", resolve: async () => ({ auth: { apiKey: proxy.key }, source: "session" }) } },
-        models: [{ id: provider.modelId, name: provider.modelId, api: provider.api, provider: providerId(tier), baseUrl: proxy.url, headers: { authorization: `Bearer ${proxy.key}` }, reasoning: false, input: ["text"], cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0 }, contextWindow: 200_000, maxTokens: 32_000 }],
-        api: anthropicMessagesApi(),
-      } as never));
+      // pi-ai's client of the provider's wire at its proxy (port-models.ts sessionProvider), as pi's session reaches its own.
+      models.setProvider(sessionProvider(provider.api, proxy, provider.modelId, { provider: providerId(tier), keyName: "AGENTRUN_SESSION_KEY", ...(provider.like ? { like: provider.like } : {}), reasoning: false }));
     }
 
     const modelOf = (tier: string | undefined): { provider: string; modelId: string } => {

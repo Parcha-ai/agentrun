@@ -10,6 +10,9 @@
 // answer is the catalog's reading of its usage, for the call's own report (llm.ts); what the run is charged is the
 // session's booking.
 import type { Api, AssistantMessage, AssistantMessageEventStream, Context, Model, SimpleStreamOptions } from "@earendil-works/pi-ai";
+import { anthropicMessagesApi } from "@earendil-works/pi-ai/api/anthropic-messages.lazy";
+import { openAIResponsesApi } from "@earendil-works/pi-ai/api/openai-responses.lazy";
+import { createProvider } from "@earendil-works/pi-ai/models";
 import type { SessionPort } from "@parcha/agentrun-kernel";
 
 /** The provider id the port's one model is listed under. */
@@ -34,6 +37,22 @@ export function sessionModel(api: SessionPort["api"], url: string, model: string
     contextWindow: like?.contextWindow ?? 200_000, maxTokens: like?.maxTokens ?? 32_000,
     ...(api === "openai-responses" ? { compat: { supportsDeveloperRole: false } } : {}),
   } as unknown as Model<Api>;
+}
+
+/** pi-ai's provider for the one model of a session's proxy on its wire: pi-ai's client of `api` (Anthropic's Messages or
+ *  OpenAI's Responses) at the proxy (sessionBaseUrl), its one model `model` (sessionModel), the proxy's session key its
+ *  credential (named `keyName`). The proxy knows a request by `authorization: Bearer <key>`: on Messages that header is set
+ *  on the model, since pi-ai's Anthropic client sends its key as x-api-key, which the proxy does not forward; on Responses
+ *  pi-ai sends the key as that bearer token itself. The one client every runner caller of a session proxy builds: pi's
+ *  sessions, the learning grader, a workflow's model nodes. */
+export function sessionProvider(api: SessionPort["api"], proxy: { readonly url: string; readonly key: string }, model: string, options: { provider: string; keyName: string; like?: Partial<Pick<Model<Api>, "reasoning" | "cost" | "contextWindow" | "maxTokens">>; reasoning: boolean }): ReturnType<typeof createProvider> {
+  return createProvider({
+    id: options.provider,
+    baseUrl: sessionBaseUrl(api, proxy.url),
+    auth: { apiKey: { name: options.keyName, resolve: async () => ({ auth: { apiKey: proxy.key }, source: "session" }) } },
+    models: [sessionModel(api, proxy.url, model, { provider: options.provider, ...(api === "anthropic-messages" ? { headers: { authorization: `Bearer ${proxy.key}` } } : {}), ...(options.like ? { like: options.like } : {}), reasoning: options.reasoning })],
+    api: api === "anthropic-messages" ? anthropicMessagesApi() : openAIResponsesApi(),
+  } as never);
 }
 
 /** The run's models over a session's port, as learned-workflow.ts, llm.ts and hosted-search.ts take them. */
