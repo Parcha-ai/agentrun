@@ -103,7 +103,7 @@ import { mcpServersOverStore } from "./mcp-servers-store.js";
 import { metaToolOf } from "./mcp-meta.js";
 import { MCP_SETTINGS_PAGE, signInCookie, startedHere } from "./mcp-oauth.js";
 import { type RunNotice, WEBHOOK_EVENTS, Webhooks } from "./webhooks.js";
-import { templateTriggerSecret, triggerMade, triggerRotated, webhookSaved, withTriggerSecret } from "./trigger-secrets-shown.js";
+import { templateApplied, templateTriggerSecret, templateWebhookSecrets, triggerMade, triggerRotated, webhookSaved, withTriggerSecret } from "./trigger-secrets-shown.js";
 import { type SealedSettingsOverStore } from "./sealed-settings-store.js";
 import { type ServerSecrets } from "./server-secrets.js";
 import { openServerSecretsOverStore } from "./server-secrets-store.js";
@@ -1686,7 +1686,11 @@ async function startHolding(options: ServeOptions, data: string, checked: { maxR
     const unkept: InputIssue[] = made.unkept.map(({ tool, pin }) => ({ field: `pins.${tool}`, reason: NOT_SET_UP, message: serverPinned.has(tool) ? `${tool} is not pinned to ${pinWords(pin)} for this agent yet (this server's agent store keeps an agent's own pin from the store cutover on); this server's own pin of ${tool} holds its calls meanwhile.` : `${tool} is not pinned to ${pinWords(pin)} for this agent yet: this server's agent store keeps an agent's own pin from the store cutover on. Until then the agent was made with ${tool} set to deny, so nothing it reads can send it elsewhere. Pin it on this server, which holds every agent's calls of ${tool}, and apply again to let it.`, ...(serverPinned.has(tool) ? {} : { fix: `Add ${JSON.stringify({ [tool]: { pin } })} to this server's tool settings (Settings → Tools; PUT /v2/settings/tools replaces the whole map, so send it with the rest).` }) }));
     // A webhook trigger's secret is in no apply answer: each one's warning sends the person to the console for it.
     const hooks = made.triggers.flatMap((trigger, i) => (isObject(trigger.source) && trigger.source.kind === "webhook" ? [templateTriggerSecret(i)] : []));
-    return { template: pkg.name, version: pkg.version, agent_id: entry.agent.id, trigger_ids: ids, warnings: [...skipped, ...kept, ...modelWarnings, ...unpinned, ...unkept, ...warnings, ...hooks] };
+    // Each trigger it made, a webhook trigger's with its secret's metadata; the values go back beside the answer, never in it
+    // (the route adds them to the first answer to the owner's session, after the Idempotency-Key's record is written).
+    const minted = new Map(secrets.map(({ trigger_id, secret }) => [trigger_id, secret]));
+    const applied = { template: pkg.name, version: pkg.version, agent_id: entry.agent.id, trigger_ids: ids, ...templateWebhookSecrets([...minted.keys()], new Date().toISOString()), warnings: [...skipped, ...kept, ...modelWarnings, ...unpinned, ...unkept, ...warnings, ...hooks] };
+    return { applied, minted };
   }
 
   /** A run create's issues told from the input this server checks (explain.ts): an agentic run's `{content: string}`,
@@ -2819,14 +2823,19 @@ async function startHolding(options: ServeOptions, data: string, checked: { maxR
         const pkg = templates.find((t) => t.name === id);
         if (!pkg) throw new ApiError("not_found", `no template ${id}: GET /v2/templates lists them`);
         const body = await bodyOf(req);
-        // A webhook trigger's secret is in no apply answer: each one's warning sends the person to the console for it
-        // (trigger-secrets-shown.ts templateTriggerSecret), as the apply answer carries. The Idempotency-Key's record keeps
-        // the agent and triggers, so a retry under the key gets the same answer.
+        // The Idempotency-Key's record keeps the agent and triggers, so a retry under the key gets the same apply; it never
+        // keeps a webhook trigger's secret (below).
+        let minted = new Map<string, string>();
         const answer = await idempotent(req, `/templates/${pkg.name}/apply`, body, async () => {
-          const applied = await applyTemplate(pkg, body);
-          return { status: 201, body: applied, headers: { location: `/v2/agents/${applied.agent_id}` } };
+          const made = await applyTemplate(pkg, body);
+          minted = made.minted;
+          return { status: 201, body: made.applied, headers: { location: `/v2/agents/${made.applied.agent_id}` } };
         });
-        return send(res, answer.status, answer.body, answer.headers);
+        // Each webhook trigger's secret, to the owner's session in this first answer alone (trigger-secrets-shown.ts
+        // templateApplied): the record above never held it, so a replay under the key shows none.
+        const replayed = answer.headers?.["idempotent-replayed"] === "true";
+        const shown = replayed ? "replay" : mayHoldSecrets(req) ? "first" : "token";
+        return send(res, answer.status, answer.status === 201 ? templateApplied(answer.body as Json, minted, shown) : answer.body, answer.headers);
       }
       case "rotateTriggerSecret":
         // A secret write: the dispatch's one check let only the owner's session this far (trigger-secrets-shown.ts).

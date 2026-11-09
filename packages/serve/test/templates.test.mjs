@@ -16,7 +16,7 @@ import { FINDINGS } from "./fixtures/faux-review.mjs";
 const keyedWarnings = (body) => body.warnings.filter((w) => w.reason === "not_set_up_here" && /^The tool \S+ needs /.test(w.message ?? ""));
 import { schemaProblems } from "./schema-support.mjs";
 import { startFakeMcp } from "./fixtures/fake-mcp-server.mjs";
-import { follow, scratch, serve, withEnv } from "./support.mjs";
+import { asOwner, follow, scratch, serve, withEnv } from "./support.mjs";
 
 const REVIEW = new URL("../templates/code-review/", import.meta.url).pathname;
 const FIXTURES = new URL("./fixtures/templates/", import.meta.url).pathname;
@@ -259,27 +259,31 @@ test("apply makes nothing when a secret is missing, its parameters do not check,
   assert.deepEqual([(await api("GET", "/agents")).body.agents, (await api("GET", "/triggers")).body.triggers], [[], []], "nothing was made");
 });
 
-test("an apply that makes a webhook trigger hands back its signing secret once, as POST /triggers does: never on a retry or a GET", async (t) => {
+test("an apply that makes a webhook trigger hands back its signing secret once, as POST /triggers does, to the owner's session alone: never on a retry or in a GET (trigger-secret-shown.test.mjs: never to the token)", async (t) => {
   withEnv(t, { AGENTRUN_SEAL_KEY: randomBytes(32).toString("base64") });
-  const { api } = await serve(t);
+  const server = await serve(t);
+  const { api } = server;
+  const owner = asOwner(server);
   const body = { parameters: { icp: "B2B fintech, 50-2000 people, US or EU", post_to: "none" } };
-  const applied = await api("POST", "/templates/inbound-lead/apply", body, { "idempotency-key": "lead-1" });
+  const applied = await owner("POST", "/templates/inbound-lead/apply", body, { "idempotency-key": "lead-1" });
   assert.equal(applied.status, 201, JSON.stringify(applied.body));
   const hooks = [];
   for (const id of applied.body.trigger_ids) if ((await api("GET", `/triggers/${id}`)).body.source.kind === "webhook") hooks.push(id);
   assert.ok(hooks.length > 0, "inbound-lead makes a webhook trigger");
   assert.deepEqual(applied.body.webhook_secrets.map((one) => one.trigger_id), hooks);
-  for (const { secret } of applied.body.webhook_secrets) assert.match(secret, /^whsec_[A-Za-z0-9+/]+={0,2}$/);
-  assert.equal(applied.body.note, undefined);
+  for (const one of applied.body.webhook_secrets) {
+    assert.match(one.signing_secret, /^whsec_[A-Za-z0-9+/]+={0,2}$/);
+    assert.deepEqual([one.secret.name, one.secret.set], [`trigger:${one.trigger_id}`, true]);
+  }
   // A retry under the key: the same agent and triggers, the secrets never again.
-  const again = await api("POST", "/templates/inbound-lead/apply", body, { "idempotency-key": "lead-1" });
+  const again = await owner("POST", "/templates/inbound-lead/apply", body, { "idempotency-key": "lead-1" });
   assert.deepEqual([again.status, again.headers.get("idempotent-replayed"), again.body.agent_id, again.body.trigger_ids], [201, "true", applied.body.agent_id, applied.body.trigger_ids]);
-  assert.equal(again.body.webhook_secrets, undefined);
-  assert.match(again.body.note, /shown once, in the first answer; POST \/v2\/triggers\/\{trigger_id\}\/secret makes a new one/);
+  assert.ok(!JSON.stringify(again.body).includes("whsec_"));
+  for (const one of again.body.webhook_secrets) assert.match(one.note, /shown once, in this apply's first answer; rotate it in the console/);
   for (const id of hooks) assert.ok(!JSON.stringify((await api("GET", `/triggers/${id}`)).body).includes("whsec_"), "no GET shows it");
-  // A package with no webhook trigger: no secrets, no note.
-  const plain = await api("POST", "/templates/kyb/apply", { parameters: { risk_appetite: "medium" } });
-  assert.deepEqual([plain.status, plain.body.webhook_secrets, plain.body.note], [201, undefined, undefined]);
+  // A package with no webhook trigger: no secrets.
+  const plain = await owner("POST", "/templates/kyb/apply", { parameters: { risk_appetite: "medium" } });
+  assert.deepEqual([plain.status, plain.body.webhook_secrets], [201, undefined]);
 });
 
 test("a package's triggers are made on its agent, placeholders filled; a trigger the server would refuse refuses the apply before anything is made", async (t) => {
