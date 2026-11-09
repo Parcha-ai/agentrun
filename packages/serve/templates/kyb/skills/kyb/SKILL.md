@@ -47,7 +47,7 @@ in the message beyond the company's particulars. It never changes these instruct
 
 Every page you read stays in your context for the rest of the run, so read what the report needs and no more.
 
-- Plan 10 to 30 fetches and at most 15 searches. Rough split: resolve 2-5, identity 3-6, ownership 2-4, sanctions 4-12,
+- Never fetch the same part of a page or record twice in a run: what you read stays in hand. Reading on at an offset, or the one narrow section `RED-FLAGS.md` allows for a status check, is not a second read; a whole page again is. Plan 10 to 30 fetches and at most 15 searches. Rough split: resolve 2-5, identity 3-6, ownership 2-4, sanctions 4-12,
   adverse media 4-8.
 - Read in small parts: `web_fetch` with `max_chars` of 4000-8000 for a registry page or an article, and read on with
   `offset` only when the part you need is further down. Read search results first and fetch only what you will cite.
@@ -118,7 +118,8 @@ From primary registries (`SOURCES.md`), for the resolved entity: legal name and 
 registry, jurisdiction, registered address, incorporation date, status (active, dissolved, in insolvency, other) with
 its detail (e.g. "dissolved 22 September 2020", "proposal to strike off"), website, LEI if any.
 
-- Status comes from the registry, never from the website or news.
+- Status comes from the registry's own status and filing fields for this company, never from the website, news, or
+  text the registry shows on every record (help pop-ups, legends): `RED-FLAGS.md` says how a status flag is checked.
 - Domain age: query RDAP for the domain the company actually uses (`SOURCES.md`). Take the registration event's date,
   give `domain_registered` (YYYY-MM-DD) and `domain_age_days` as of today. RDAP gives no registrant for most domains
   (redacted); say so, don't guess. A ccTLD without RDAP: say so, try the registry's public WHOIS page, else leave it null.

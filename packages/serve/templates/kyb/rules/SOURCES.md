@@ -78,7 +78,10 @@ SEC pages expect a declared user agent; `www.sec.gov` HTML pages may answer 403 
 Covered on a best-effort basis: OpenCorporates and GLEIF first, then the national registry where it is public and a plain
 fetch reads it. Some that do: New Zealand Companies Office (`https://app.companiesoffice.govt.nz/co/<number>`),
 Australia ABN Lookup (`https://abr.business.gov.au/ABN/View?abn=<abn>`), France's company directory API (JSON: SIREN,
-legal name, head office, directors: `https://recherche-entreprises.api.gouv.fr/search?q=<name>`). Ireland's CRO refuses
+legal name, head office, directors: `https://recherche-entreprises.api.gouv.fr/search?q=<name>`). Canada's federal registry,
+Corporations Canada (`https://ised-isde.canada.ca/cc/lgcy/fdrlCrpSrch.html`, a record by its corporation number): read
+its `Status` and its annual filings table; the record page also carries help pop-ups (a notice of intent to dissolve,
+overdue filings) that every record shows, which are not about the company. Ireland's CRO refuses
 automated reads. Many registries (most of the EU's, the UAE's, offshore centres) need an account, a fee or a browser: name the registry,
 say it was not reached, and list what that leaves unverified. Never present an aggregator's snippet of such a registry
 as its record without saying so.

@@ -19,7 +19,7 @@ mcp:
     # Its review write posts COMMENT reviews only: never APPROVE or REQUEST_CHANGES, and never resolve_thread.
     pin: { pull_request_review_write: { method: [create, submit_pending, delete_pending], event: [null, COMMENT] } }
 parameters:
-  repo: { type: string, required: true, pattern: "^[A-Za-z0-9][A-Za-z0-9-]*/[A-Za-z0-9._-]+$", description: "the GitHub repository to review, as owner/name" }
+  repo: { type: string, required: true, pattern: "^[A-Za-z0-9][A-Za-z0-9-]*/[A-Za-z0-9._-]+$", description: "the GitHub repository to review, as owner/name, like Parcha-ai/agentrun" }
   focus: { type: string, description: "optional: one line on what matters most here (\"auth and money paths\"), read before the repo's own rules" }
 budget: { per_run_usd: 2.00 }
 learning: false

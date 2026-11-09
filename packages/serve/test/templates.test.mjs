@@ -375,6 +375,32 @@ test("code-review's GitHub tools: granted, never allowed by the package itself; 
   assert.deepEqual(consented.body.warnings.filter((w) => w.field.startsWith("grants.")).map((w) => [w.field, w.reason]), [["grants.mcp:github/get_file_contents", "not_allowed"]]);
 });
 
+test("a parameter's enum is a closed set: the list shows it, apply refuses a value outside it, and the validator refuses a bad one", async (t) => {
+  withEnv(t, { AGENTRUN_SEAL_KEY: randomBytes(32).toString("base64") });
+  const { api } = await serve(t);
+  const listed = (await api("GET", "/templates")).body.templates;
+  const lead = listed.find((x) => x.name === "inbound-lead").parameters;
+  assert.deepEqual([lead.post_to.enum, lead.post_to.pattern], [["crm", "slack", "none"], undefined], "a choice, never a pattern");
+  assert.deepEqual(listed.find((x) => x.name === "kyb").parameters.risk_appetite.enum, ["low", "medium", "high"]);
+  // A patterned parameter's description says its format in words.
+  assert.match(lead.slack_channel.description, /^a Slack channel ID like C0123ABCD/);
+  const refused = await api("POST", "/templates/inbound-lead/apply", { parameters: { icp: "B2B fintech", post_to: "email" } });
+  assert.equal(refused.status, 422, JSON.stringify(refused.body));
+  assert.deepEqual(refused.body.error.fields.map((f) => [f.field, f.reason]), [["parameters.post_to", "not_an_option"]]);
+  assert.match(refused.body.error.fields[0].message, /is one of crm, slack, none/);
+  for (const [to, said] of [
+    ["focus: { type: string, enum: [], description: x }", /parameters\.focus\.enum is a list of one or more distinct string values/],
+    ["focus: { type: string, enum: [a, a], description: x }", /parameters\.focus\.enum is a list of one or more distinct string values/],
+    ["focus: { type: string, enum: [a, 2], description: x }", /parameters\.focus\.enum is a list of one or more distinct string values/],
+    ['focus: { type: string, enum: [a, b], pattern: "^a$", description: x }', /parameters\.focus has an enum and a pattern/],
+    ["focus: { type: string, enum: [a, b], default: c, description: x }", /parameters\.focus\.default is not one of its enum/],
+  ]) {
+    const problems = await problemsOf(t, ({ edit }) => edit(/focus: \{ type: string, description: .*\}/, to));
+    assert.ok(problems.some((one) => said.test(one)), `${to}: ${problems.join(" | ")}`);
+  }
+  assert.deepEqual(await problemsOf(t, ({ edit }) => edit(/focus: \{ type: string, description: .*\}/, "focus: { type: string, enum: [auth, money], default: auth, description: x }")), []);
+});
+
 test("every package this server ships applies on a server with nothing saved: no key, no MCP server; what it lacks is a warning, and no tool it grants needs a key", { timeout: 120_000 }, async (t) => {
   withEnv(t, { AGENTRUN_SEAL_KEY: randomBytes(32).toString("base64") }, ["PARALLEL_API_KEY", "MONID_API_KEY", "BROWSERBASE_API_KEY", "KERNEL_API_KEY", "TYPESAFE_API_KEY"]);
   const { api } = await serve(t);
