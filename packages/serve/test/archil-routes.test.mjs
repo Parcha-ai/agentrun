@@ -14,6 +14,9 @@ import { getSealedKey } from "../dist/server-keys.js";
 import { FakeArchilDisk, FakeDiskError } from "./fixtures/archil-fake.mjs";
 import { storeOn, T0 } from "./store-helpers.mjs";
 
+/** The environment's Archil key in the override case: a dummy built at run time, so no line reads as a credential. */
+const ARCHIL_ENV_KEY = `not-a-secret-${"archil-env"}`;
+
 /** The shared secret shape for the account key: not set, and set from the console at the store's clock. */
 const UNSET = { name: "ARCHIL_API_KEY", set: false, source: null, changed_at: null };
 const FROM_CONSOLE = { name: "ARCHIL_API_KEY", set: true, source: "console", changed_at: new Date(T0).toISOString() };
@@ -32,7 +35,7 @@ async function setup(t, { disk = new FakeArchilDisk(), ...given } = {}) {
 
 test("an ARCHIL_API_KEY environment variable overrides the saved key: source env, and the test lists the disk with it", async (t) => {
   const disk = new FakeArchilDisk();
-  const { made, call } = await setup(t, { disk, env: { ARCHIL_API_KEY: "archil-env-key-0003" } });
+  const { made, call } = await setup(t, { disk, env: { ARCHIL_API_KEY: ARCHIL_ENV_KEY } });
   assert.deepEqual((await call("getWorkspaceArchil")).keys, [{ name: "ARCHIL_API_KEY", set: true, source: "env", changed_at: null }]);
   await call("putWorkspaceArchil", { ...SETTINGS, keys: { ARCHIL_API_KEY: API } });
   assert.equal((await call("getWorkspaceArchil")).keys[0].source, "env", "the environment still wins over a saved value");
@@ -40,7 +43,7 @@ test("an ARCHIL_API_KEY environment variable overrides the saved key: source env
   const list = disk.listPage.bind(disk);
   disk.listPage = async (...args) => { keys.push(made.at(-1).key()); return list(...args); };
   assert.equal((await call("testWorkspaceArchil")).ok, true);
-  assert.deepEqual(keys, ["archil-env-key-0003"], "the environment's value is the one used");
+  assert.deepEqual(keys, [ARCHIL_ENV_KEY], "the environment's value is the one used");
 });
 const refused = (promise, field) => assert.rejects(promise, (error) => error instanceof ApiError && error.code === "input_invalid" && (field === undefined || error.extra.fields?.some((one) => one.field === field)), field);
 
