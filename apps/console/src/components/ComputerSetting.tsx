@@ -7,8 +7,8 @@ const kindName = (kind: string) => kind.charAt(0).toUpperCase() + kind.slice(1);
 
 /** The agent's computer, in the editor's Computer step: a card per kind the server lists (one it can't give here greyed,
  *  with its words and a link to the Computers settings), then the picked kind's providers (one not ready disabled, with
- *  why; a metered one says so, the word only), and the tools that kind brings its loop, as served. A pick is the
- *  computer `onChange` gets. */
+ *  why; a metered one says so, with one line that its minutes aren't counted in a run's spending cap), and the tools
+ *  that kind brings its loop, as served. A pick is the computer `onChange` gets. */
 export function ComputerSetting({ kinds, value, onChange, error, warning }: {
   kinds: ComputerKindView[]; value: Computer; onChange: (computer: Computer) => void; error?: string; warning?: string;
 }) {
@@ -51,6 +51,7 @@ export function ComputerSetting({ kinds, value, onChange, error, warning }: {
                     onChange={() => onChange({ kind: picked.kind, provider: p.id })} className="mt-1 accent-[hsl(var(--primary))]" />
                   <span className="min-w-0">
                     <span className="flex flex-wrap items-baseline gap-2"><span className="text-[13px] font-semibold">{p.name}</span>{p.metered && <span className="caps text-[11px] text-muted-foreground">Metered</span>}</span>
+                    {p.metered && <span className="mt-0.5 block text-[12px] text-muted-foreground">This provider bills by the minute, and those minutes aren&apos;t counted in a run&apos;s spending cap.</span>}
                     {!p.ready && p.why && <span className="mt-0.5 block text-[12px]">{p.why}</span>}
                   </span>
                 </label>
