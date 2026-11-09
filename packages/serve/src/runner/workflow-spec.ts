@@ -46,6 +46,7 @@ import { journalSessions } from "./sessions.js";
 import { type BudgetData, type EndData, KINDS, type RaiseData } from "./journal-kinds.js";
 import { type CapRefusal, PAUSED_WORDS, type WorkflowCapRule, type WorkflowHostHooks, type WorkflowRunSpec, type WorkflowSpecRun } from "./workflow-loop.js";
 import { heldRedactor, holdClaimed } from "./redact.js";
+import { holdStored } from "./store-secrets.js";
 import { type DecisionDriver, type WorkflowCap, workflowHost, type WorkflowHostDeps } from "./workflow-host.js";
 import type { Store } from "../store/store.js";
 
@@ -111,12 +112,14 @@ export async function providerFromRoute(route: ModelRoute): Promise<WorkflowProv
 
 /** What the claim-time builder reads and wires. */
 export interface WorkflowSpecDeps {
-  readonly store: Pick<Store, "runs" | "agents" | "flush" | "sealedKeys" | "settings">;
+  readonly store: Pick<Store, "runs" | "agents" | "flush" | "sealedKeys" | "settings" | "sealedSecrets">;
   readonly env?: NodeJS.ProcessEnv;
   /** The runner's seal key, for reading a claim's sealed secrets from the store (claim-secrets.ts). Given in production, so
    *  the default decision providers and image loader read the run's own stored keys; a test that injects decisionProvidersOf
    *  needs none. */
   readonly sealKey?: Buffer;
+  /** The runner's data directory: what the server keeps sealed beside the store is read from it (store-secrets.ts). */
+  readonly data?: string;
   /** Resolves the provider and cap model for each tier the workflow names (byTier's model, its provider, its price).
    *  Absent: the runner's model route (routeProviderOf), so a workflow and a pi run resolve models one way; a test gives a
    *  scripted one. */
@@ -194,6 +197,8 @@ export function workflowSpecOf(deps: WorkflowSpecDeps): (claim: { runId: string 
       return opened;
     };
     const claimed = await readClaim(deps, claim.runId);
+    // Every secret the server keeps sealed (store-secrets.ts) held by the runner's one redactor before the workflow runs.
+    if (run?.redact) await holdStored(heldRedactor(run.redact), deps.store, deps.sealKey, deps.data);
     const tiers = tiersOf(claimed.workflow);
 
     // Each tier's provider and cap model, resolved once; the proxies start here (before the Harness opens, since the models
