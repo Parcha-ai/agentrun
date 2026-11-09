@@ -7,12 +7,13 @@
 import assert from "node:assert/strict";
 import { mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
+import { connect, createServer } from "node:net";
 import { join } from "node:path";
 import { test } from "node:test";
 import { queued, storeOn } from "./store-helpers.mjs";
 import { client, dropSchema, freshSchema, PG_URL, postgresOnly, schemaOf } from "./store-target.mjs";
 
-const { migrate, migrationsIn, openPostgresStore, postgresWhere, openStore, PgConnection, SchemaVersionUnknown, storeTarget, StoreBusy, StoreConstraint, StoreDeadline, StoreOwned } = await import("../dist/store/index.js");
+const { migrate, migrationsIn, openPostgresStore, postgresWhere, openStore, PgConnection, SchemaVersionUnknown, storeTarget, StoreBusy, StoreConstraint, STORE_CONNECT_TIMEOUT_MS, StoreDeadline, StoreOwned } = await import("../dist/store/index.js");
 const { RunnerRefused, startRunnerProcess } = await import("../dist/runner/main.js");
 
 const ONLY = postgresOnly("the Postgres adapter");
@@ -92,6 +93,79 @@ test("a duplicate write on a store with a pool of one client is StoreConstraint 
   assert.ok(error instanceof StoreConstraint, `refused as a constraint, not a deadline: ${error}`);
   assert.deepEqual(error.unique, { table: "agents", columns: ["id"] }, "naming its key");
   assert.equal((await store.agents.get("agent-1"))?.name, "Agent", "and the store's one client is free again");
+});
+
+/** A TCP server on loopback that takes every connection and never says a word (a database host that hangs), closed
+ *  after the test. With `forward`, a connection is piped to the test Postgres instead while `forward.on` is true; set it
+ *  false and every connection open is cut, and new ones hang. */
+async function silentHost(t, forward) {
+  const sockets = new Set();
+  const server = createServer((socket) => {
+    sockets.add(socket);
+    socket.on("close", () => sockets.delete(socket));
+    socket.on("error", () => undefined);
+    if (forward?.on) {
+      const target = new URL(PG_URL);
+      const upstream = connect(Number(target.port || 5432), target.hostname);
+      upstream.on("error", () => socket.destroy());
+      socket.on("close", () => upstream.destroy());
+      upstream.on("close", () => socket.destroy());
+      socket.pipe(upstream).pipe(socket);
+    }
+  });
+  await new Promise((resolve) => server.listen(0, "127.0.0.1", resolve));
+  t.after(() => new Promise((resolve) => {
+    for (const socket of sockets) socket.destroy();
+    server.close(resolve);
+  }));
+  return { port: server.address().port, cut: () => { for (const socket of sockets) socket.destroy(); } };
+}
+
+/** `promise`'s outcome, or "hung" past `ms` on this test's own timer: a call that never settles fails the test, bounded. */
+const within = (promise, ms) => Promise.race([promise.then((value) => ({ value }), (error) => ({ error })), new Promise((resolve) => setTimeout(() => resolve("hung"), ms).unref())]);
+
+test("a store opened on a database host that takes the connection but never answers is refused within its connect deadline (StoreDeadline), naming the host, never the password", async (t) => {
+  const host = await silentHost(t);
+  const secret = "p".repeat(14);
+  const url = `postgres://agentrun:${secret}@127.0.0.1:${host.port}/agentrun`;
+  for (const role of ["server", "runner"]) {
+    const outcome = await within(openPostgresStore({ url, schema: "agentrun", role, connectTimeoutMs: 300 }), 10_000);
+    assert.notEqual(outcome, "hung", `${role}: the open hung past 10 s`);
+    assert.ok(outcome.error instanceof StoreDeadline, `${role}: refused as a deadline: ${outcome.error ?? "opened"}`);
+    assert.match(outcome.error.message, new RegExp(`127\\.0\\.0\\.1:${host.port}/agentrun`), `${role}: names the host`);
+    assert.ok(!outcome.error.message.includes(secret), `${role}: never the password`);
+  }
+});
+
+test("the store's default connect deadline is STORE_CONNECT_TIMEOUT_MS, 10 s", () => {
+  assert.equal(STORE_CONNECT_TIMEOUT_MS, 10_000);
+});
+
+test("a call whose connection the database stops answering mid-life is refused within the connect deadline (StoreDeadline), never left hanging", ONLY, async (t) => {
+  const schema = await schemaFor(t);
+  // The server sets the schema up on the test Postgres; a runner reaches it through a loopback host that forwards, then
+  // stops answering (its open connections cut, new ones hanging).
+  const server = await openPostgresStore({ url: PG_URL, schema });
+  t.after(() => server.close());
+  const forward = { on: true };
+  const host = await silentHost(t, forward);
+  const through = new URL(PG_URL);
+  through.host = `127.0.0.1:${host.port}`;
+  const runner = await openPostgresStore({ url: through.href, schema, role: "runner", connectTimeoutMs: 300 });
+  t.after(() => runner.close().catch(() => undefined));
+  await runner.agents.list();
+  forward.on = false;
+  host.cut();
+  // The pool's client was cut: the next call needs a new connection, which never answers. A first call may meet the cut
+  // client itself (its error said at once); the call after it must connect anew.
+  let outcome;
+  for (let tries = 0; tries < 3; tries++) {
+    outcome = await within(runner.agents.list(), 10_000);
+    if (outcome === "hung" || outcome.error instanceof StoreDeadline) break;
+  }
+  assert.notEqual(outcome, "hung", "the call hung past 10 s");
+  assert.ok(outcome.error instanceof StoreDeadline, `refused as a deadline: ${outcome.error ?? "answered"}`);
+  assert.match(outcome.error.message, new RegExp(`127\\.0\\.0\\.1:${host.port}/`), "names the host");
 });
 
 test("a second server on the same schema is refused (StoreOwned); once the first closes, a server opens it", ONLY, async (t) => {

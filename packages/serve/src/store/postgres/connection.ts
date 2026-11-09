@@ -33,6 +33,30 @@ export interface PgConnectionOptions {
   readonly poolSize?: number;
   /** Deadlines on the store's own (test) clock, bound as parameters, instead of the database's (postgresDialect). */
   readonly testClock?: boolean;
+  /** How long getting a connection may take (STORE_CONNECT_TIMEOUT_MS by default): a new one's connect and startup, or a
+   *  wait for one of the pool's to come free. Past it the call is refused (StoreDeadline, naming the database's place,
+   *  never its URL), never left hanging on a database that does not answer. */
+  readonly connectTimeoutMs?: number;
+}
+
+/** The default bound on getting a connection to the store's Postgres (PgConnectionOptions.connectTimeoutMs), in ms. */
+export const STORE_CONNECT_TIMEOUT_MS = 10_000;
+
+/** pg's and pg-pool's words for a connection not had in time: a connect or startup that never finished, or no pool client
+ *  free. */
+const CONNECT_TIMEOUT = /timeout exceeded when trying to connect|timeout expired|Connection terminated due to connection timeout/i;
+
+/** Whether `error`, or an error it was made from, is a connection not had in time. */
+function connectTimedOut(error: unknown): boolean {
+  for (let e = error as { message?: unknown; cause?: unknown } | undefined, depth = 0; e && depth < 5; e = e.cause as typeof e, depth++) {
+    if (CONNECT_TIMEOUT.test(String(e.message ?? ""))) return true;
+  }
+  return false;
+}
+
+/** The refusal for a connection not had within `ms` from the database at `where` (postgresWhere: no user or password). */
+function connectDeadline(where: string, ms: number): StoreDeadline {
+  return new StoreDeadline(ms, `no connection to the store's Postgres at ${where} within ${ms} ms: it does not answer, or every connection of this store is in use`);
 }
 
 /** int8 as a JavaScript number: every integer the store keeps (ms, ids, epochs, counts) is one, and one outside the safe
@@ -127,6 +151,8 @@ export class PgConnection implements StoreConnection {
   readonly #pool: pg.Pool;
   readonly #owner: pg.Client | undefined;
   readonly #busyTimeoutMs: number;
+  /** The bound on getting a connection (PgConnectionOptions.connectTimeoutMs). */
+  readonly #connectMs: number;
   #closed = false;
   /** Set once the owner lock's connection ended or failed: every call is refused with it from then. */
   #ownerLost: StoreOwned | undefined;
@@ -151,7 +177,8 @@ export class PgConnection implements StoreConnection {
     return columns;
   };
 
-  private constructor(pool: pg.Pool, owner: pg.Client | undefined, schema: string, busyTimeoutMs: number, where: string, testClock: boolean) {
+  private constructor(pool: pg.Pool, owner: pg.Client | undefined, schema: string, busyTimeoutMs: number, where: string, testClock: boolean, connectMs: number) {
+    this.#connectMs = connectMs;
     this.#pool = pool;
     this.#owner = owner;
     this.schema = schema;
@@ -169,16 +196,24 @@ export class PgConnection implements StoreConnection {
   }
 
   /** The pool on `url` in `schema`, and (owner) the owner lock: StoreOwned when another server holds the schema. */
-  static async open({ url, schema, owner = false, busyTimeoutMs = 10_000, poolSize = 10, testClock = false }: PgConnectionOptions): Promise<PgConnection> {
+  static async open({ url, schema, owner = false, busyTimeoutMs = 10_000, poolSize = 10, testClock = false, connectTimeoutMs = STORE_CONNECT_TIMEOUT_MS }: PgConnectionOptions): Promise<PgConnection> {
     if (!SCHEMA_NAME.test(schema)) throw new TypeError(`the store's schema is a lower-case name of letters, digits and underscores, not ${JSON.stringify(schema)}`);
     const session = `-c search_path=${schema} -c lock_timeout=${Math.max(0, Math.floor(busyTimeoutMs))} -c synchronous_commit=on`;
-    const config: pg.PoolConfig = { connectionString: url, options: session, types, max: poolSize, allowExitOnIdle: true, application_name: "agentrun-store" };
+    const connectMs = Math.max(1, Math.floor(connectTimeoutMs));
+    const where = postgresWhere(url, schema);
+    // connectionTimeoutMillis bounds a new connection's connect and startup, and a wait for a pool client to come free.
+    const config: pg.PoolConfig = { connectionString: url, options: session, types, max: poolSize, allowExitOnIdle: true, application_name: "agentrun-store", connectionTimeoutMillis: connectMs };
     let lock: pg.Client | undefined;
     if (owner) {
-      lock = new pg.Client({ connectionString: url, types, application_name: `agentrun-store-owner:${schema}` });
+      lock = new pg.Client({ connectionString: url, types, application_name: `agentrun-store-owner:${schema}`, connectionTimeoutMillis: connectMs });
       // A lost owner connection lets the lock go; the error is not left unhandled.
       lock.on("error", () => undefined);
-      await lock.connect();
+      try {
+        await lock.connect();
+      } catch (error) {
+        await lock.end().catch(() => undefined);
+        throw connectTimedOut(error) ? connectDeadline(where, connectMs) : typed(error);
+      }
       try {
         const held = await lock.query("SELECT pg_try_advisory_lock(hashtext($1), hashtext('owner')) AS held", [schema]);
         if (held.rows[0]?.held !== true) throw new StoreOwned(`another server holds the store in the Postgres schema ${schema}`);
@@ -190,14 +225,17 @@ export class PgConnection implements StoreConnection {
     const pool = new pg.Pool(config);
     // An idle client's error (the server went away) surfaces at its next use, never as an unhandled event.
     pool.on("error", () => undefined);
-    return new PgConnection(pool, lock, schema, busyTimeoutMs, postgresWhere(url, schema), testClock);
+    return new PgConnection(pool, lock, schema, busyTimeoutMs, where, testClock, connectMs);
   }
 
-  /** `work`, counted in flight, refused after close. */
+  /** `work`, counted in flight, refused after close. A connection it never got in time is StoreDeadline, naming the
+   *  database's place. */
   #call<T>(work: () => Promise<T>): Promise<T> {
     if (this.#closed) return Promise.reject(new StoreClosed());
     if (this.#ownerLost) return Promise.reject(this.#ownerLost);
-    const running = work();
+    const running = work().catch((error: unknown) => {
+      throw connectTimedOut(error) ? connectDeadline(this.where, this.#connectMs) : error;
+    });
     this.#inFlight.add(running);
     const done = () => void this.#inFlight.delete(running);
     running.then(done, done);
@@ -317,12 +355,14 @@ export class PgConnection implements StoreConnection {
 
   /** One client of the pool for setup (migrations), released after `work`. */
   async withClient<T>(work: (client: pg.PoolClient) => Promise<T>): Promise<T> {
-    const client = await this.#pool.connect();
-    try {
-      return await work(client);
-    } finally {
-      client.release();
-    }
+    return this.#call(async () => {
+      const client = await this.#pool.connect();
+      try {
+        return await work(client);
+      } finally {
+        client.release();
+      }
+    });
   }
 
   /** How long a statement waits for a lock (lock_timeout). */

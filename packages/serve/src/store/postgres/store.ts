@@ -31,8 +31,12 @@ export interface PostgresStoreOptions {
   readonly testClock?: () => number;
   /** How long a statement waits for another writer's lock before StoreBusy. */
   readonly busyTimeoutMs?: number;
-  /** Most connections the store holds at once. */
+  /** Most connections the store holds at once (10 by default). */
   readonly poolSize?: number;
+  /** How long getting a connection may take, in ms: a new one's connect and startup, or a wait for one of the pool's to
+   *  come free (STORE_CONNECT_TIMEOUT_MS, 10 s, by default). Past it the call, or the open, is refused (StoreDeadline,
+   *  naming the database's host, database and schema, never the URL), never left hanging. */
+  readonly connectTimeoutMs?: number;
   /** Told, at a runner's open, when its clock is more than CLOCK_WARN_MS from the database's. */
   readonly warn?: (message: string) => void;
 }
@@ -52,6 +56,7 @@ export async function openPostgresStore(options: PostgresStoreOptions): Promise<
     url: options.url, schema, owner: role === "server", testClock: options.testClock !== undefined,
     ...(options.busyTimeoutMs === undefined ? {} : { busyTimeoutMs: options.busyTimeoutMs }),
     ...(options.poolSize === undefined ? {} : { poolSize: options.poolSize }),
+    ...(options.connectTimeoutMs === undefined ? {} : { connectTimeoutMs: options.connectTimeoutMs }),
   });
   try {
     const found = await connection.withClient((client) => (role === "server" ? migrate(client, schema, now(), migrations) : versionOf(client, schema)));

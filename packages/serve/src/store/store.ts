@@ -941,8 +941,9 @@ export class CommandTaken extends Error {
 /** An interactive transaction still open at its deadline: rolled back, nothing of it written, and the calls behind it go on. */
 export class StoreDeadline extends Error {
   readonly deadlineMs: number;
-  constructor(deadlineMs: number) {
-    super(`the store's transaction was still open after ${deadlineMs} ms, so it was rolled back and nothing of it was written`);
+  /** `message`: words of its own (a connection the store's database never gave, StoreConnect's); by default a transaction's. */
+  constructor(deadlineMs: number, message?: string) {
+    super(message ?? `the store's transaction was still open after ${deadlineMs} ms, so it was rolled back and nothing of it was written`);
     this.name = "StoreDeadline";
     this.deadlineMs = deadlineMs;
   }
