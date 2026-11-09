@@ -41,14 +41,15 @@ test("no computer: the registry's runner list (read, write, edit, bash), no proc
   assert.ok(!existsSync(join(root, ".agentrun", "tmp")), "the end swept TMPDIR");
 });
 
-test("bash's bound is the registry's: no timeout runs at 120 s; one past the hands' ceiling runs at it and says so; a timeout keeps its output", async () => {
+// The 120 s default with no timeout given is the kernel registry's own (run-adapters/test/kernel-registry.test.mjs).
+test("bash's bound is the registry's, by the hands' ceiling: Archil's 295 s in bash's words; one past it runs at it and says so; a timeout is said as pi says it, its output kept", async () => {
   const run = await runTools(localWorkspace(scratch()), undefined, { mode: 2, context: ctx });
   const [bash] = run.hostTools(["bash"]);
   assert.match(bash.description, /at most 295 s/, "Archil's ceiling, in bash's words");
   const capped = await call([bash], "bash", { command: "echo hi", timeout: 900 });
   assert.equal(capped.text, "hi\n\n\nbash runs a command for at most 295 s: this one ran with 295 s, not the 900 s asked.");
-  const timed = await call([bash], "bash", { command: "echo before; sleep 30", timeout: 1 });
-  assert.deepEqual(timed, { text: "before\n\n\nCommand timed out after 1 seconds", isError: true });
+  const timed = await call([bash], "bash", { command: "echo before; sleep 30", timeout: 0.2 });
+  assert.deepEqual(timed, { text: "before\n\n\nCommand timed out after 0.2 seconds", isError: true });
 });
 
 test("a computer: the registry's computer list, with the five background tools on the attached Workspace's processes", async () => {

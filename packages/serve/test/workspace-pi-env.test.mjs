@@ -2,7 +2,7 @@
 // in a box do (pi's tools on the box's bound folder, coding-tools.ts and bound-files.ts): the same text, the same
 // error, the same files after, case by case. And bash on the Workspace: its output streams, a long one is spilled whole
 // to .agentrun/output/ in the run's folder (read can open it), a signal is 128 + n, the environment is only what it is
-// given, and a timeout, an abort and a cwd outside are said as pi's own environment says them.
+// given, and a cwd outside is said as pi's own environment says it (a timeout's words: workspace-registry.test.mjs).
 import assert from "node:assert/strict";
 import { mkdirSync, mkdtempSync, readdirSync, readFileSync, realpathSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
@@ -91,7 +91,8 @@ test("pi's read, write and edit on the Workspace answer as today's box file tool
   seed(right);
   const [was, now] = [today(left), onWorkspace(right)];
   for (const [name, args] of CASES) {
-    const [expected, actual] = [await call(was, name, args), await call(now, name, args)];
+    // Each side has its own folder: its two calls run at once.
+    const [expected, actual] = await Promise.all([call(was, name, args), call(now, name, args)]);
     assert.deepEqual(actual, expected, `${name} ${JSON.stringify(args)}`);
   }
   assert.deepEqual(files(right), files(left), "the same files after");
@@ -173,13 +174,6 @@ test("bash on the Workspace: a long output keeps its tail, and is spilled whole 
   assert.equal(readFileSync(join(root, rel), "utf8"), Array.from({ length: 5000 }, (_, i) => `${i + 1}\n`).join(""), "the whole output");
   const [read] = hostTools({ env: async () => env }, ["read"], ctx, new Map(), fileTools());
   assert.match((await call([read], "read", { path: full, offset: 5000 })).text, /^5000\n/);
-});
-
-test("bash on the Workspace: a timeout is said as pi says it, its output kept; a cwd outside is refused", async () => {
-  const root = scratch();
-  const { tool } = bashOn(root);
-  const timed = await call([tool], "bash", { command: "echo before; sleep 300", timeout: 1 });
-  assert.deepEqual(timed, { text: "before\n\n\nCommand timed out after 1 seconds", isError: true });
 });
 
 test("bash on the Workspace streams: pi's api.output gets the first line before the command ends", async () => {

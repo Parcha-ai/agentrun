@@ -35,23 +35,31 @@ test("hands.exec: bash -c in the run's folder, with only the run's environment; 
     const hands = handsOf(localWorkspace(root), { maxExecS: MAX_EXEC_S, env: shellEnv({ home: root }) });
     assert.equal(hands.maxExecS, 600);
     const chunks = { stdout: [], stderr: [] };
-    // "é" is 2 bytes: printf its first byte, sleep, then its second, so the port gives them in two chunks.
-    const ran = await hands.exec("cat here.txt; echo; echo \"[$AGENTRUN_HANDS_SENTINEL]\" \"$HOME\" \"$0\"; printf '\\303'; sleep 0.3; printf '\\251\\n'; echo err >&2; exit 3", { timeoutS: 10, onOutput: ({ stream, data }) => chunks[stream].push(data) });
+    const ran = await hands.exec("cat here.txt; echo; echo \"[$AGENTRUN_HANDS_SENTINEL]\" \"$HOME\" \"$0\"; echo err >&2; exit 3", { timeoutS: 10, onOutput: ({ stream, data }) => chunks[stream].push(data) });
     assert.deepEqual(ran, { exitCode: 3, signal: null, timedOut: false });
-    assert.equal(chunks.stdout.join(""), `found\n[] ${root} bash\né\n`);
-    assert.ok(!chunks.stdout.some((chunk) => chunk.includes("�")), "no chunk ends inside a character");
+    assert.equal(chunks.stdout.join(""), `found\n[] ${root} bash\n`);
     assert.equal(chunks.stderr.join(""), "err\n");
   } finally {
     delete process.env.AGENTRUN_HANDS_SENTINEL;
   }
+  // "é" is 2 bytes. A Workspace whose exec gives its first byte in one chunk and the rest in the next: the hands decode
+  // per stream, so the character comes out whole, never cut in two.
+  const split = { ...localWorkspace(root), exec: async (_argv, options) => {
+    options.onOutput({ stream: "stdout", data: Uint8Array.of(0xc3) });
+    options.onOutput({ stream: "stdout", data: Uint8Array.of(0xa9, 0x0a) });
+    return { code: 0, signal: null, timedOut: false };
+  } };
+  const decoded = [];
+  await handsOf(split, { maxExecS: MAX_EXEC_S, env: shellEnv() }).exec("printf é", { timeoutS: 10, onOutput: ({ data }) => decoded.push(data) });
+  assert.deepEqual(decoded, ["é\n"], "no chunk ends inside a character");
 });
 
 test("hands.exec: a signal, a timeout capped at maxExecS, and an abort", async () => {
   const root = scratch();
-  const hands = handsOf(localWorkspace(root), { maxExecS: 1, env: shellEnv() });
+  const hands = handsOf(localWorkspace(root), { maxExecS: 0.2, env: shellEnv() });
   assert.deepEqual(await hands.exec("kill -TERM $$", { timeoutS: 10 }), { exitCode: null, signal: "SIGTERM", timedOut: false });
   const slow = await hands.exec("sleep 300", { timeoutS: 900 });
-  assert.deepEqual([slow.exitCode, slow.timedOut], [null, true], "900 s asked, maxExecS 1 s: it ended at the ceiling");
+  assert.deepEqual([slow.exitCode, slow.timedOut], [null, true], "900 s asked, maxExecS 0.2 s: it ended at the ceiling");
   // Aborted when the command has said it started, not after a clock: had the abort done nothing, the exec would answer
   // at its deadline, not reject.
   const controller = new AbortController();

@@ -51,12 +51,7 @@ test("no computer: the shell is the run's folder, named by its own path; TMPDIR 
   }
 });
 
-test("Mode 2 with no computer: a command runs 295 s at most (Archil's exec)", async () => {
-  const run = await runHands(localWorkspace(scratch()), undefined, { mode: 2, context: ctx });
-  assert.deepEqual([run.shell, run.maxExecS, run.hands.maxExecS], ["local", 295, 295]);
-});
-
-test("Mode 2 with no computer never asks the folder's mount: on Archil that mints the run's mount credential, which only a computer that mounts the folder may ask for", async () => {
+test("Mode 2 with no computer: a command runs 295 s at most (Archil's exec), and the folder's mount is never asked: on Archil that mints the run's mount credential, which only a computer that mounts the folder may ask for", async () => {
   const workspace = localWorkspace(scratch());
   let asked = 0;
   const watched = new Proxy(workspace, {
@@ -67,6 +62,7 @@ test("Mode 2 with no computer never asks the folder's mount: on Archil that mint
     },
   });
   const run = await runHands(watched, undefined, { mode: 2, context: ctx });
+  assert.deepEqual([run.shell, run.maxExecS, run.hands.maxExecS], ["local", 295, 295], "Archil's exec: 295 s at most");
   assert.equal(asked, 0, "no mount asked, so no credential minted");
   assert.equal(run.cwd, "/workspace", "on Archil the folder has no path of this machine: it goes by the computer's name");
 });
