@@ -110,7 +110,7 @@ describe("Settings → GitHub", () => {
     });
   }
 
-  for (const [code, message] of [["github_no_public_url", "GitHub can't reach this server: set its public URL first"], ["github_no_seal_key", "This server can't keep the App's keys: it was started without a seal key."]] as const) {
+  for (const [code, message] of [["github_no_public_url", "GitHub can't reach this server: set its public URL first"]] as const) {
     it(`a ${code} refusal says the server's words and gives the button back`, async () => {
       const { v2 } = server({ connection: null }, { connect: () => refusal(409, code, message) });
       const p = await page(v2);

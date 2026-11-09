@@ -246,3 +246,15 @@ registerPlant({
     return [saved.json.signing_secret];
   },
 });
+
+registerPlant({
+  name: "template apply's webhook trigger secrets",
+  mints: ["applyTemplate"],
+  write: async ({ owner }) => {
+    const applied = await owner("POST", "/v2/templates/inbound-lead/apply", { parameters: { icp: "B2B fintech, 50-2000 people, US or EU; never gambling operators", post_to: "none" } });
+    if (applied.status !== 201) throw new Error(`the template was not applied: ${applied.status} ${applied.text}`);
+    const hooks = (applied.json.webhook_secrets ?? []).filter((made) => made.signing_secret !== undefined);
+    if (!hooks.length) throw new Error(`the apply showed no webhook trigger's secret: ${applied.text}`);
+    return { values: hooks.map((made) => made.signing_secret), ids: { trigger_id: hooks.map((made) => made.trigger_id) } };
+  },
+});

@@ -1,4 +1,5 @@
-// A call that waited for a person's approval reads in order over the one store (store-view.ts timelineOverStore): the call
+// A call that waited for a person's approval reads in order over the one store (run-timeline-served.ts, the Timeline
+// GET /runs/{id}/timeline serves): the call
 // held, then the approval row, then what came of it, from the run's agentrun.ask and agentrun.answer entries, as the
 // file-backed path reads it (runs.ts withApprovals). A Deny's words are "You declined <tool>[: <note>]", an Allow's note is
 // shown nowhere (as on main), and an empty result reads "(no output)". The runner writes an answer as { callId, approved, note? }.
@@ -8,7 +9,9 @@ import { BACKGROUND_CONTEXT as context } from "@earendil-works/chord/context";
 import { commitWrites } from "@earendil-works/pi-durable/testing";
 import { storeOn, T0 } from "./store-helpers.mjs";
 
-const { timelineOverStore } = await import("../dist/store-view.js");
+const { servedTimelineRows } = await import("../dist/run-timeline-served.js");
+/** The run's Timeline rows as GET /runs/{id}/timeline serves them. */
+const timelineOverStore = (store, runId, deps) => servedTimelineRows({ ...deps, keyEnv: () => ({}) }, store, runId, context);
 const { outcomeShows } = await import("../dist/run-view.js");
 
 const iso = (ms) => new Date(ms).toISOString();

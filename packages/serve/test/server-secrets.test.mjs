@@ -112,7 +112,7 @@ test("after a webhook trigger's secret is rotated, or the outbound webhook is de
 // cannot have a crafted error injected — store.runs.update fences it, importRun has no error field, and no raw store write is
 // exposed. Un-skip once the store (or support.mjs) offers a post-end error write, or when the runner can fail a run with a
 // chosen message. Redaction of a webhook key in a run's error is still covered by the redactor tests (user-row-redact).
-test("an ended run the next server holds no Run for, listed from its row alone, shows no webhook trigger's key in its error", { timeout: 120_000, skip: "needs a store write for a crafted error on an ended run (serve.json is gone; update is fenced)" }, async (t) => {
+test("an ended run the next server holds no Run for, listed from its row alone, shows no webhook trigger's key in its error", { timeout: 120_000, skip: "waits on a faux provider failing the run on the runner (slot 4b's harness wiring)" }, async (t) => {
   withEnv(t, { AGENTRUN_SEAL_KEY: sealKey() });
   const first = await serve(t);
   assert.equal((await first.api("POST", "/agents", agent("target"))).status, 201);

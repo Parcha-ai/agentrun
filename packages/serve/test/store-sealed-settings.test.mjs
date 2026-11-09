@@ -91,19 +91,6 @@ test("a value sealed under another seal key does not open here: unset, marked un
   assert.deepEqual((await store.triggerSettings.get("hookish")).map((row) => row.scope), ["trg_one"], "the unopened scope's rows went with it");
 });
 
-test("with no seal key the sealed settings are not read, said once; a set is refused no_sealing_key", async (t) => {
-  const { store } = await storeOn(t);
-  const kept = sealedSettingsOverStore(store, "slackish", spec, KEY, () => {});
-  await kept.load();
-  await kept.set("server", "token", "a-long-enough-token");
-  const said = [];
-  const noKey = sealedSettingsOverStore(store, "slackish", spec, undefined, (f) => said.push(f));
-  await noKey.load();
-  assert.deepEqual(said.map((s) => [s.condition, s.adapter]), [["trigger_settings_no_seal_key", "slackish"]], "one line, not a value");
-  assert.equal(noKey.get("server", "token"), undefined, "not read");
-  await assert.rejects(() => noKey.set("server", "token", "another-token"), (e) => e.code === "no_sealing_key");
-});
-
 test("openServerSecretsOverStore wires each adapter's store settings into the redaction list", async (t) => {
   const { store } = await storeOn(t);
   const data = await mkdtemp(join(process.env.TMPDIR ?? tmpdir(), "server-secrets-store-"));
@@ -114,4 +101,38 @@ test("openServerSecretsOverStore wires each adapter's store settings into the re
   assert.ok(slack, "the adapter's settings are returned");
   await slack.set("server", "token", "a-secret-bot-token-value");
   assert.ok(secrets.values().includes("a-secret-bot-token-value"), "the set value is in the redaction list");
+});
+
+const { privateKey: PEM_KEY } = (await import("node:crypto")).generateKeyPairSync("rsa", { modulusLength: 2048, privateKeyEncoding: { type: "pkcs1", format: "pem" }, publicKeyEncoding: { type: "spki", format: "pem" } });
+const appSpec = { scope: "server", fields: { app_id: { public: true }, installations: { public: true }, private_key: { format: "pem" }, webhook_secret: {} } };
+
+test("a public field is kept sealed of any length and whitespace, and never listed as a secret; a PEM field takes only a PEM key and lists it whole and by its lines", async (t) => {
+  const { store } = await storeOn(t);
+  const settings = sealedSettingsOverStore(store, "github", appSpec, KEY, () => {});
+  await settings.load();
+  await settings.set("server", "app_id", "42");
+  await settings.set("server", "installations", '[{"id":7, "account":"acme"}]');
+  await settings.set("server", "private_key", PEM_KEY);
+  await settings.set("server", "webhook_secret", "a-webhook-secret-of-the-app");
+  await assert.rejects(() => settings.set("server", "private_key", "not a key"), (e) => e.code === "input_invalid" && e.extra.fields[0].field === "private_key");
+  assert.equal(settings.get("server", "app_id"), "42");
+  assert.deepEqual(settings.values(), ["a-webhook-secret-of-the-app"], "public fields and the PEM key are not in the floored list");
+  const lines = PEM_KEY.split("\n").map((l) => l.trim()).filter((l) => l && !l.startsWith("-----"));
+  assert.deepEqual(settings.pemValues(), [PEM_KEY, ...lines], "the key whole and each base64 line, the short last one too");
+  const next = sealedSettingsOverStore(store, "github", appSpec, KEY, () => {});
+  await next.load();
+  assert.equal(next.get("server", "private_key"), PEM_KEY, "read back in the next store");
+  await next.remove("server");
+  assert.deepEqual(next.pemValues(), [PEM_KEY, ...lines], "a removed key is still listed");
+});
+
+test("openServerSecretsOverStore lists a PEM key whole and by its lines, with no floor", async (t) => {
+  const { store } = await storeOn(t);
+  const data = await mkdtemp(join(tmpdir(), "sss-"));
+  t.after(() => rm(data, { recursive: true, force: true }));
+  const adapters = [{ id: "github", settings: appSpec }];
+  const { secrets, settings } = await openServerSecretsOverStore(store, data, { AGENTRUN_SEAL_KEY: KEY.toString("base64") }, adapters, () => {});
+  await settings.get("github").set("server", "private_key", PEM_KEY);
+  const last = PEM_KEY.split("\n").map((l) => l.trim()).filter((l) => l && !l.startsWith("-----")).at(-1);
+  assert.ok(secrets.values().includes(PEM_KEY) && secrets.values().includes(last), "whole, and the short last line");
 });

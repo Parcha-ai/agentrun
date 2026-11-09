@@ -16,7 +16,7 @@ import { headersRefusal, MIN_KEY_BYTES, verify } from "../dist/standard-webhooks
 import { openapiDocument } from "../dist/openapi.js";
 import { TRIGGER_ADAPTERS } from "../dist/trigger-adapters.js";
 import { schemaProblems } from "./schema-support.mjs";
-import { E2, keyOf } from "./trigger-support.mjs";
+import { keyOf } from "./trigger-support.mjs";
 import { openSqliteStore } from "../dist/store/sqlite/store.js";
 import { agent, client, FAUX, follow, scratch, withEnv } from "./support.mjs";
 import { firings, RUN_EXEC } from "./trigger-support.mjs";
@@ -109,14 +109,14 @@ async function signedBy(data, secret) {
   }
 }
 
-async function pingServer(t) {
+async function pingServer(t, extra = {}) {
   withEnv(t, SEAL);
   const data = join(await scratch(t), "agents");
   await mkdir(data, { recursive: true });
   const secret = `whsec_${randomBytes(32).toString("base64")}`;
   await signedBy(data, secret);
   const lines = [];
-  const { server, api, store } = await storedServe(t, { data, triggerAdapters: [...TRIGGER_ADAPTERS, ping], log: (line) => lines.push(line) });
+  const { server, api, store } = await storedServe(t, { data, triggerAdapters: [...TRIGGER_ADAPTERS, ping], log: (line) => lines.push(line), ...extra });
   return { server, api, store, secret, lines };
 }
 
@@ -447,4 +447,22 @@ test("an event two triggers take, one of them full, is refused 429 with Retry-Af
   assert.equal(res.status, 429, JSON.stringify(res.body));
   assert.equal(res.headers["retry-after"], "30");
   assert.deepEqual(received, [["open", "evt-all"]], "the other recorded it: the sender's retry is its duplicate");
+});
+
+test("a hook body that does not arrive whole within the hook's time is 408 at once, its socket closed, never waited on further", { timeout: 60_000 }, async (t) => {
+  const { server } = await pingServer(t, { hookBodyMs: 300 });
+  const { port, hostname: host } = new URL(server.baseUrl);
+  const answer = await new Promise((resolve, reject) => {
+    const socket = connect(Number(port), host);
+    let text = "";
+    socket.on("data", (chunk) => (text += chunk));
+    socket.on("close", () => resolve(text));
+    socket.on("error", reject);
+    // A body of 100 bytes declared, ten sent, the rest never.
+    socket.write(`POST /v2/hooks/ping HTTP/1.1\r\nHost: ${host}\r\nwebhook-id: msg_slow\r\nwebhook-timestamp: ${Math.floor(Date.now() / 1000)}\r\nwebhook-signature: v1,AAAA\r\ncontent-type: application/json\r\ncontent-length: 100\r\n\r\n`);
+    socket.write("x".repeat(10));
+    setTimeout(() => reject(new Error(`no answer and close within 5 s: ${text}`)), 5_000).unref();
+  });
+  assert.match(answer, /^HTTP\/1\.1 408 /, answer);
+  assert.match(answer, /request_timeout/);
 });

@@ -84,7 +84,7 @@ test("a wrong signature, a stale or future timestamp, missing headers, an unknow
     await post(baseUrl, id, "{}", { secret, at: now() + 400 }),
     await post(baseUrl, id, "{}", { headers: {} }),
     await post(baseUrl, "trg_nothing", "{}", { secret }),
-    await post(baseUrl, off.id, "{}", { secret: off.secret }),
+    await post(baseUrl, off.id, "{}", { secret: off.signing_secret }),
     await post(baseUrl, timed.id, "{}", { secret }),
   ];
   for (const answer of refused) {

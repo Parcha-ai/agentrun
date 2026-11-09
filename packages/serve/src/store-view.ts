@@ -44,6 +44,7 @@ import { journalRecords, recordOf } from "./runner/journal-reader.js";
 import { notesReadOf, runLearningEnd, type RunLearning, withNotes } from "./store-reads/learning.js";
 import { runReflect, runTimeline } from "./store-reads/journal.js";
 import { type RunReadState, readRun } from "./store-reads/runs.js";
+import { runCutValues } from "./run-cut.js";
 import { Turns } from "./turns.js";
 import { harnessOfBody } from "./harness.js";
 import { browserAsk as browserAskOf, BROWSER_HANDOVER_KIND } from "./browser-commands.js";
@@ -87,7 +88,20 @@ const reviewAt = (review: SavedReview | null, endedAt: string): (SavedReview & {
 /** A run's facts as statusOf and momentOf read them, built from the run's journal: whether it stands parked at its cap
  *  (an active agentrun.budget park), and the browser ask it waits on (wired next). A terminal run reaches none of them
  *  (its outcome answers first). */
-const factsOf = (run: StoreRun): RunFacts => ({ budgetWaiting: () => run.budget !== undefined, paused: () => false, browserAsk: () => run.browserAsk, computerAsk: () => run.computerAsk });
+const factsOf = (run: StoreRun): RunFacts => ({ budgetWaiting: () => run.budget !== undefined, paused: () => run.paused, browserAsk: () => run.browserAsk, computerAsk: () => run.computerAsk });
+
+// A workflow run paused in its process (the runner's workflow-loop pause): its row is parked with the pause's words and its
+// newest agentrun.pause root entry has no agentrun.resume after it. Read by those kinds and words, as the runner writes them.
+const PAUSE_KIND = "agentrun.pause", RESUME_KIND = "agentrun.resume", PAUSED_WORDS = "Paused.";
+/** Whether the run stands paused in its process now: a parked row with the pause's words, and a newest pause not yet
+ *  resumed (no resume entry after it). As the file-backed view read the workflow's pause file, so the server shows it
+ *  paused (statusOf's `paused` fact), as main shows a paused workflow. */
+function pausedOf(runRow: RunRow, entries: readonly { kind?: string; id?: unknown }[]): boolean {
+  if (runRow.state !== "parked" || runRow.summary !== PAUSED_WORDS) return false;
+  const lastOf = (kind: string) => entries.reduce((max, e) => (e.kind === kind ? Math.max(max, Number(e.id ?? 0)) : max), -1);
+  const pause = lastOf(PAUSE_KIND);
+  return pause >= 0 && pause > lastOf(RESUME_KIND);
+}
 
 /** The run read from the store: the row, its launch, its timeline, its agent's revision count for the version, its
  *  learning end, and the sign-in cut it serves through. Undefined for an unknown run. */
@@ -114,6 +128,8 @@ interface StoreRun {
   /** The budget card the run shows while it stands parked at its cap (pending, kind budget), or undefined when it is not
    *  parked there. Also the source of the `budgetWaiting` fact. */
   readonly budget: Pending | undefined;
+  /** Whether a workflow run stands paused in its process now (pausedOf): the source of the `paused` fact. */
+  readonly paused: boolean;
   /** The browser hand-over the run's agent waits on (the newest ask still waiting), or undefined. Also the `browserAsk`
    *  fact. */
   readonly browserAsk: PendingAsk | undefined;
@@ -140,6 +156,12 @@ async function storeRunOf(store: Store, runId: string, deps: ViewDeps): Promise<
   const runRow = await store.runs.get(runId);
   if (!runRow) return undefined;
   const launch = await launchOf(store, runId);
+  // The run's one cut (run-cut.ts): the pointers it was handed read back and every secret this server never shows, so a
+  // run whose words could repeat one is cut of it, rows and all, or withheld when this server cannot read back what it
+  // was handed (rowShown's choke point).
+  const cut = await runCutValues(deps, store, runId, { runRow, launch });
+  const unshown = cut === "unreadable";
+  const values = cut === "unreadable" ? [] : cut.values;
   const revision = await store.agents.revision(row.revision);
   const harness = launch?.harness ?? harnessOfBody((revision?.body ?? {}) as { harness?: string });
   // Whether the run ran unattended, from the revision it is pinned to (approvals "never"), else the default (ask).
@@ -147,7 +169,7 @@ async function storeRunOf(store: Store, runId: string, deps: ViewDeps): Promise<
   const terminal = row.state !== "running";
   // The timeline, then the waiting row a run asking a question shows (withAsks), as the file path's rows carried it, so a
   // run waiting on a question reads the same status and pending.
-  const timeline = withAsks(await runTimeline(store, runId, context, { settled: terminal }));
+  const timeline = withAsks(await runTimeline(store, runId, context, { settled: terminal, redact: (text) => redacted(text, values) }));
   const revisions = await store.agents.revisions(row.agent);
   const version = revisions.findIndex((r) => r.id === row.revision) + 1;
   const ended = await runLearningEnd(store, runId);
@@ -173,12 +195,6 @@ async function storeRunOf(store: Store, runId: string, deps: ViewDeps): Promise<
   const progress = terminal || row.kind === "workflow" ? undefined : turns.progressAt();
   const lastProgressAt = progress === undefined ? null : iso(progress);
 
-  // The sign-in cut: the pointers the run was handed read back, so a run whose words could repeat one is cut of it, or
-  // withheld when this server cannot read back what it was handed (rowShown's choke point). A run with no mark is cut of
-  // the server's secrets alone.
-  const pointers = await handedValuesOf(deps, store, runId, { runRow, launch });
-  const unshown = pointers === "unreadable";
-  const values = unshown ? [] : [...deps.serverSecrets(), ...pointers.refs.filter((ref) => ref.length >= MIN_SECRET)];
 
   // The tool-call approvals the run waits (or waited) on, from its journal: each call the gate parked for a person, and
   // the answers given, which the status, pending and moment views read the same as the file path read them from the run's
@@ -193,6 +209,9 @@ async function storeRunOf(store: Store, runId: string, deps: ViewDeps): Promise<
   // The budget card the run shows while it stands parked at its cap, from its journal's agentrun.budget park (none once a
   // raise clears it). Read over the same meta cap and rows the card's figures and time come from.
   const budget = budgetOf(records.entries, { meta, rows, updatedAt: iso(updatedAtMs) });
+  // Whether a workflow run stands paused in its process now (its parked row with the pause's words, its newest pause not
+  // resumed), the `paused` fact the status table reads for a paused workflow.
+  const paused = pausedOf(runRow, records.entries);
   // The browser hand-over the agent waits on (E2c's reader over the run's hand-over entries and hand-back commands), read
   // against the server's clock. Only a run with a hand-over entry fetches its commands, so a run with none reads none and
   // makes no extra store read.
@@ -224,7 +243,7 @@ async function storeRunOf(store: Store, runId: string, deps: ViewDeps): Promise<
     ...(budget?.kind === "budget" ? { pausedWords: budget.said } : {}),
     meta,
   };
-  return { row, runRow, launch, rows, version, harness, learningEnd, view, unshown, values, live, updatedAtMs, lastProgressAt, budget, browserAsk, computerAsk, approvalsMode };
+  return { row, runRow, launch, rows, version, harness, learningEnd, view, unshown, values, live, updatedAtMs, lastProgressAt, budget, paused, browserAsk, computerAsk, approvalsMode };
 }
 
 /** A run's learning as the view shows it: its end from the store, in a person's words cut of the host's secrets now, and,
@@ -253,12 +272,6 @@ function costOfView(run: StoreRun): Record<string, unknown> {
 }
 
 /** GET /runs/{id}'s answer from the store, byte-identical to runs.ts's view for the same run. Undefined for an unknown run. */
-/** A run's timeline rows over the one store, as a person reads them (storeRunOf's rows: each call that waited for approval
- *  in order). Undefined for an unknown run. */
-export async function timelineOverStore(store: Store, runId: string, deps: ViewDeps): Promise<readonly TimelineEvent[] | undefined> {
-  return (await storeRunOf(store, runId, deps))?.view.rows;
-}
-
 export async function viewOverStore(store: Store, runId: string, deps: ViewDeps): Promise<Record<string, unknown> | undefined> {
   const run = await storeRunOf(store, runId, deps);
   if (!run) return undefined;
@@ -273,13 +286,18 @@ export async function viewOverStore(store: Store, runId: string, deps: ViewDeps)
   // A workflow run's output reads from its journal (a separate reader); an agentic run has none. Wired with the workflow
   // status.
   const result = status === "completed" ? { output: null, final_answer: servedAnswer(finalAnswer) } : null;
-  const error = status === "failed" ? (unshown ? { code: "run_failed", message: WITHHELD_SIGN_IN, retryable: false } : servedRunErrorWith(shownWords, errorOfRow(row.summary ?? null))) : null;
+  // A failed run's reason in the model's own words when the store holds them: the last model-error row's text (a provider's
+  // refusal, rendered from its pi.assistant error entry), else the run row's summary (the runner's generic "gave no answer").
+  // servedRunErrorWith cuts it of every secret (the view's values), so a key or a pointer the provider quoted never shows,
+  // as main serves the run's error cut.
+  const failedReason = run.rows.findLast((r) => r.kind === "error")?.text ?? row.summary ?? null;
+  const error = status === "failed" ? (unshown ? { code: "run_failed", message: WITHHELD_SIGN_IN, retryable: false } : servedRunErrorWith(shownWords, errorOfRow(failedReason))) : null;
   const review = endedAtMs === null ? null : servedReviewWith(shownWords, unshown, reviewAt(reviewOfRow(row.state, row.summary ?? null), iso(endedAtMs)));
   // The card the run shows while it waits, in the order the file-backed view (runs.ts) picks them: a tool call parked for a
   // person's approval (approvalOf, its arguments shown through the run's redactor), else a run parked at its cap (the budget
   // card), else its agent waiting on a person in its browser (browserPending), else the question its turn ended on (pendingOf).
   const redactor = redactorOf(values);
-  const pending: Pending = status === "input_required" && state === "waiting" ? (approvalOf(view, redactor) ?? run.budget ?? browserPending(run.browserAsk, redactor) ?? computerPending(run.computerAsk, redactor) ?? pendingOf(run.rows)) : null;
+  const pending: Pending = !unshown && status === "input_required" && state === "waiting" ? (approvalOf(view, redactor) ?? run.budget ?? browserPending(run.browserAsk, redactor) ?? computerPending(run.computerAsk, redactor) ?? pendingOf(run.rows)) : null;
   const settled = terminal;
 
   return {
@@ -292,7 +310,7 @@ export async function viewOverStore(store: Store, runId: string, deps: ViewDeps)
     sha: null,
     status,
     state,
-    title: launch?.title ?? "",
+    title: unshown ? WITHHELD_SIGN_IN : shownWords(launch?.title ?? ""),
     place: launch?.place ?? { mode: "runner" },
     // The runner holding the run now, when one does (a running run with a live claim): its id, the claim's count (up one each
     // claim, carried on every write the runner makes), and when the claim runs out. Null when no runner holds the run, so a
@@ -313,7 +331,8 @@ export async function viewOverStore(store: Store, runId: string, deps: ViewDeps)
     archived_at: row.archivedAt ?? null,
     imported_from: runRow.importedFrom ?? null,
     trigger: launch?.trigger ?? null,
-    learning: learningViewOf(run.learningEnd, secretsShown(deps.serverSecrets()), terminal && settled),
+    // Cut by the run's one cut (the pointers it was handed among them), and none for a withheld run, as its words.
+    learning: unshown ? null : learningViewOf(run.learningEnd, secretsShown(values), terminal && settled),
     poll_after_ms: terminal && settled ? 0 : 1000,
     last_progress_at: run.lastProgressAt,
   };
@@ -338,6 +357,14 @@ export async function momentOverStore(store: Store, runId: string, deps: ViewDep
   const run = await storeRunOf(store, runId, deps);
   if (!run) return undefined;
   return momentOf(run.view, factsOf(run), run.live);
+}
+
+/** A run's timeline rows as the VIEW renders them (storeRunOf's view.rows: withAsks, so a run waiting on a question carries
+ *  its `:waiting` row). The run-ended/run-needs-input follower reads these for its wait marker, main's marker and webhook-id.
+ *  The served `/timeline` route uses run-timeline-served.ts (servedTimelineRows) instead; this is the internal view's rows.
+ *  Undefined for an unknown run. */
+export async function timelineOverStore(store: Store, runId: string, deps: ViewDeps): Promise<readonly TimelineEvent[] | undefined> {
+  return (await storeRunOf(store, runId, deps))?.view.rows;
 }
 
 /** Whether a run's served output is withheld: this server can't read the browser sign-in it was handed, so nothing it said
