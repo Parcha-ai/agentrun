@@ -215,8 +215,11 @@ export function asksOf(entries: readonly JournalEntry[]): Map<string, Approval> 
  *  and the pending views read as run.meta.approvals): a person's allow or deny with any note, or a withdrawal taken when
  *  the run was stopped or cancelled while the call waited. The first answer for a call stands, but for a stop's
  *  withdrawal over an allow the call had not finished on (its `superseded`, as main's stop superseded it): that is the
- *  call's answer, keeping the one it overrode. On a `final` run, a call it asked about with no answer reads withdrawn: a
- *  run that ends never waits on a person (its end wrote no withdrawal only when its journal would not take it). */
+ *  call's answer, keeping the one it overrode. A call asked about with no answer that the run's journal ENDED after (an
+ *  agentrun.end follows its ask) reads withdrawn, whatever the run's state is now: a run that ended never waits on that
+ *  call (its end wrote no withdrawal only when its journal would not take it), a reopen of it included. So does every
+ *  unanswered call of a `final` run, whose end its journal may not hold (a stopped end the journal refused, written on
+ *  the run's row alone). A call asked in the turn going now (no end after it, the run not final) waits. */
 export function answersOf(entries: readonly JournalEntry[], { final = false }: { final?: boolean } = {}): Record<string, ApprovalAnswer> {
   const out: Record<string, ApprovalAnswer> = {};
   for (const entry of entries) {
@@ -231,13 +234,12 @@ export function answersOf(entries: readonly JournalEntry[], { final = false }: {
     const superseded = given ? { superseded: { decision: given.decision, answered_at: given.answered_at, ...(given.note !== undefined ? { note: given.note } : {}), ...(given.by ? { by: given.by } : {}) } } : {};
     out[d.callId] = { decision, ...(d.note !== undefined ? { note: d.note } : {}), answered_at: d.answeredAt ?? "", ...superseded };
   }
-  if (final) {
-    for (const entry of entries) {
-      if (entry.kind !== KINDS.ask) continue;
-      const { callId } = dataOf<AskEntry>(entry);
-      if (typeof callId === "string" && !(callId in out)) out[callId] = { decision: "withdrawn", answered_at: "" };
-    }
-  }
+  const lastEnd = final ? entries.length : entries.findLastIndex((entry) => entry.kind === KINDS.end);
+  entries.forEach((entry, at) => {
+    if (entry.kind !== KINDS.ask || at > lastEnd) return;
+    const { callId } = dataOf<AskEntry>(entry);
+    if (typeof callId === "string" && !(callId in out)) out[callId] = { decision: "withdrawn", answered_at: "" };
+  });
   return out;
 }
 
