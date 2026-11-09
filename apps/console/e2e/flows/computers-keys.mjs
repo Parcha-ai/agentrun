@@ -11,7 +11,6 @@ export default {
   // Keys are sealed as in production: a seal key made for this run alone, never printed. --faux fakes the model and the
   // computers, never the seal key.
   server: () => ({ env: { AGENTRUN_SEAL_KEY: randomBytes(32).toString("base64") } }),
-  pending: "waits on the server switch dispatching /v2/computers and --faux's computers (routed, not dispatched, on this base)",
   async run({ page, base }) {
     const fake = `not-a-real-key-${randomBytes(8).toString("hex")}`;
     await page.goto(`${base}/#/settings/computers`);
@@ -21,8 +20,8 @@ export default {
 
     // Faux sandbox: its key by its KEY, Missing, and not ready yet.
     const faux = row("Faux sandbox");
-    await faux.getByText("FAUX_SANDBOX_KEY").waitFor();
     const key = faux.locator('li[data-secret="computer:faux-sandbox:FAUX_SANDBOX_KEY"]');
+    await key.waitFor();
     check((await key.innerText()).includes("Missing"), "Faux sandbox's key does not read Missing before it is saved");
     check(!(await page.locator("main").innerText()).includes("computer:"), "the page shows a secret's full server name");
     check(!(await faux.innerText()).includes("Ready"), "Faux sandbox reads Ready with no key saved");
@@ -51,6 +50,8 @@ export default {
     await broken.getByRole("button", { name: "Test connection", exact: true }).click();
     const failed = broken.locator("[data-test]");
     await failed.waitFor();
-    check(/^Failed · .+ · faux-broken is --faux's broken provider: it never answers$/.test(await failed.innerText()), `Faux broken's test reads ${JSON.stringify(await failed.innerText())}`);
+    // The server's words as it sends them: its own sentence, with the vendor's error in it.
+    const said = await failed.innerText();
+    check(said.startsWith("Failed · ") && said.includes("faux-broken is --faux's broken provider: it never answers"), `Faux broken's test reads ${JSON.stringify(said)}`);
   },
 };
