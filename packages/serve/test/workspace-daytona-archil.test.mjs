@@ -21,6 +21,11 @@ import { storeOn } from "./store-helpers.mjs";
 import { fakeComputer } from "./workspace-fake-computer.mjs";
 import { ARCHIL_KINDS } from "./workspace-kinds-fixture.mjs";
 
+/** The kind registry once #1994 (D6) lands: Daytona's PROVIDERS entry takes mounts ["archil"] and its capabilities()
+ *  declare mount "archil". Until then the cut's own registry has mounts [] for Daytona, and the run is refused (the last
+ *  case). When #1994 is on the cut, the last case flips: the real registry takes the full path, and this stand-in goes. */
+const D6_KINDS = ARCHIL_KINDS;
+
 const dirs = [];
 after(() => { for (const dir of dirs) rmSync(dir, { recursive: true, force: true }); });
 const DAYTONA_KEY = "fake-test-key-daytona-0001";
@@ -40,22 +45,23 @@ test("computerProviderMakers builds each provider through the computer package's
 });
 
 /** A Mode 2 Daytona claim on the fakes: the server's Daytona and Archil keys sealed, a fake control API, a fake disk. */
-async function daytonaClaim(t, kinds = ARCHIL_KINDS) {
-  const control = await archilControlFake();
+async function daytonaClaim(t, kinds = D6_KINDS, { existing = [] } = {}) {
+  const control = await archilControlFake({ existing });
   t.after(() => control.close());
   const { store } = await storeOn(t);
   const sealKey = randomBytes(32);
   await putSealedKey(store, sealKey, "DAYTONA_API_KEY", DAYTONA_KEY);
   await putSealedKey(store, sealKey, "archil.api_key", ARCHIL_KEY);
   const disk = new FakeArchilDisk();
-  const claim = await archilClaim({ settings: SETTINGS, keys: store.sealedKeys, sealKey, signal: new AbortController().signal, makeDisk: () => disk, mount: { runId: "run-1", epoch: 3, ttlMs: 86_400_000, baseUrl: control.baseUrl } });
+  const controller = new AbortController();
+  const claim = await archilClaim({ settings: SETTINGS, keys: store.sealedKeys, sealKey, signal: controller.signal, makeDisk: () => disk, mount: { runId: "run-1", epoch: 3, ttlMs: 86_400_000, baseUrl: control.baseUrl } });
   const workspace = archilWorkspace(disk, "agents/a/runs/run-1/work", { region: SETTINGS.region, mountToken: () => claim.token() });
   const scratch = realpathSync(mkdtempSync(join(process.env.TMPDIR ?? tmpdir(), "agentrun-daytona-")));
   dirs.push(scratch);
   const computer = fakeComputer(scratch);
   const record = { loaded: [], created: [], released: [] };
   const provider = {
-    id: "daytona", version: "0", capabilities: () => ({ lifetime: "vendor" }), check: () => [],
+    id: "daytona", version: "0", capabilities: () => ({ lifetime: "vendor", mount: "archil" }), check: () => [],
     list: async () => ({ ok: true, value: [] }),
     create: async (spec) => (record.created.push(spec), { ok: true, value: { id: "d1", name: "d1" } }),
     connect: async () => ({ ok: true, value: { client: computer.client, hello: { version: "0", os: "linux", kind: "linux", arch: "amd64", groups: ["exec", "files", "processes"] }, close: async () => {} } }),
@@ -68,8 +74,40 @@ async function daytonaClaim(t, kinds = ARCHIL_KINDS) {
     spec: () => ({ image: "agentrun/computer:test", lifetimeMs: 60_000, network: "none" }),
     workspace, check: { readBackOf, epoch: 3 }, revokeMount: () => claim.revoke(),
   });
-  return { run, record, control };
+  return { run, record, control, controller };
 }
+
+/** Waits (bounded) for the remove on its way to land: the fake's users to come to `size`. */
+async function usersAt(control, size) {
+  for (let tries = 0; control.users.size !== size && tries < 2000; tries += 1) await new Promise((resolve) => setTimeout(resolve, 5));
+  return control.users.size;
+}
+
+test("a Daytona run's lost claim removes its token at once; a reclaim removes an earlier claim's before it mints", async (t) => {
+  const lost = await daytonaClaim(t);
+  await lost.run();
+  assert.equal(lost.control.users.size, 1);
+  lost.controller.abort(new Error("the claim was fenced"));
+  assert.equal(await usersAt(lost.control, 0), 0, "removed when the claim was lost");
+  const reclaim = await daytonaClaim(t, D6_KINDS, { existing: [{ identifier: "tok-epoch-2", nickname: "agentrun:run-1:2" }] });
+  const answer = await reclaim.run();
+  const order = reclaim.control.requests.map((one) => one.method);
+  assert.ok(order.indexOf("DELETE") < order.indexOf("POST"), `epoch 2's removed before epoch 3's mint: ${order.join(", ")}`);
+  assert.ok(!reclaim.control.users.has("tok-epoch-2"));
+  await answer.release();
+  assert.equal(reclaim.control.users.size, 0);
+});
+
+test("Settings → Computers' factories are built from the same makers: one place builds a provider", async () => {
+  const { computerProviderFactories } = await import("../dist/workspace/index.js");
+  const loaded = [];
+  const ledgers = [];
+  const factories = computerProviderFactories(computerProviderMakers({ load: async (id, options) => (loaded.push([id, options]), { id }) }), (id) => (ledgers.push(id), { id }));
+  assert.equal((await factories.daytona({ apiKey: DAYTONA_KEY })).id, "daytona");
+  await factories["phone-harness"]({ apiKey: "pk" });
+  assert.deepEqual(loaded, [["daytona", { apiKey: DAYTONA_KEY }], ["phone-harness", { apiKey: "pk", ledger: { id: "phone-harness" } }]]);
+  assert.deepEqual(ledgers, ["daytona", "phone-harness"]);
+});
 
 test("a Mode 2 Daytona sandbox: providerFor with the saved key by name, the Archil mount with the minted token, no key or credential in the box, the kinded sandbox, release removes the token", async (t) => {
   const saved = { DATABASE_URL: process.env.DATABASE_URL, REDIS_URL: process.env.REDIS_URL };
@@ -101,6 +139,7 @@ test("a Mode 2 Daytona sandbox: providerFor with the saved key by name, the Arch
   assert.equal(control.users.size, 0, "the token removed with the computer");
 });
 
+// Flips with #1994: once the cut's registry gives Daytona mounts ["archil"], this run takes the full path above.
 test("on the cut's own registry (Daytona takes no Archil mount until D6) a Mode 2 Daytona sandbox is refused in words, nothing made", async (t) => {
   const { run, record } = await daytonaClaim(t, { SETTING_KINDS, PROVIDERS, servingRefusals });
   const error = await run().then(() => undefined, (thrown) => thrown);
