@@ -175,6 +175,23 @@ test("events end at every line end the format has, LF, CRLF and a bare CR, where
   }
 });
 
+test("no event's name exempts its data: an error under a healthy event name is cut, the host's redactor included, and a healthy event whose data echoes the credential is cut too, wherever a chunk boundary falls", async (t) => {
+  const redact = (text) => text.replaceAll('tok-ORG-123', '[redacted]');
+  const healthy = 'event: message_start\ndata: {"type":"message_start","message":{"id":"m1"}}\n\n';
+  const named = `event: message\ndata: {"error":{"message":"Incorrect API key provided: ${CREDENTIAL}; the org's token tok-ORG-123 has no access"}}\n\n`;
+  const echoed = `event: content_block_delta\ndata: {"type":"content_block_delta","index":0,"delta":{"type":"text_delta","text":"the key is ${CREDENTIAL}"}}\n\n`;
+  for (const event of [named, echoed]) {
+    for (const pieces of [undefined, [...(healthy + event)]]) {
+      const got = await answered(t, 200, healthy + event, redact, { pieces, contentType: 'text/event-stream' });
+      assert.ok(got.text.startsWith(healthy), JSON.stringify(got.text));
+      assert.ok(!got.text.includes(CREDENTIAL) && !got.text.includes('tok-ORG-123') && got.text.includes('[redacted]'), JSON.stringify(got.text));
+    }
+  }
+  // A healthy event with no form in it goes out byte for byte as it ends.
+  const relay = errorCut('events', echoForms([CREDENTIAL]), redact, () => {});
+  assert.equal(relay.push(healthy), healthy);
+});
+
 test("an error answer the cut holds part of reaches the client character for character: the hold never splits a character in two", async (t) => {
   // The window the host's redactor reads would end between the emoji's two halves.
   const body = `a\u{1F600}${'x'.repeat(4095)}`;
