@@ -1,5 +1,5 @@
-// Apply a template that runs on a trigger, picking Never ask on its Apply screen. The agent reads Unattended, and a run of
-// it calls a tool this server sets to ask without waiting for anyone: the call runs, and the run ends. The template is
+// Apply a template that runs on a trigger: its Apply screen opens on Never ask, the template's own default (kyb's on
+// Ask me). The agent reads Unattended, and a run of it calls a tool this server sets to ask without waiting for anyone: the call runs, and the run ends. The template is
 // market-monitor, which the server ships: a weekly schedule, no key and no MCP server it needs, and one required parameter.
 // The faux model's "Read these paths" rule calls read once (packages/serve/test/fixtures/faux-model.mjs), then answers.
 import { check } from "../harness.mjs";
@@ -15,12 +15,19 @@ export default {
     const tools = await api("PUT", "/settings/tools", { read: { permission: "ask" } });
     check(tools.status === 200, `setting read to ask answered ${tools.status}: ${JSON.stringify(tools.body)}`);
 
-    // The Apply screen: the required parameter, Never ask, then Apply.
+    // A template that asks (kyb) opens on Ask me.
+    await page.goto(`${base}/#/templates/kyb`);
+    const kyb = page.getByRole("group", { name: "Approvals" });
+    await kyb.waitFor();
+    check(await kyb.getByRole("radio", { name: /^Ask me/ }).isChecked(), "kyb's Apply screen did not open on Ask me");
+
+    // market-monitor runs unattended by its own default: its Apply screen opens on Never ask, saying what that grants.
     await page.goto(`${base}/#/templates/${TEMPLATE}`);
-    await page.locator('[data-field="parameters.competitors"] input').fill("Acme (acme.com)");
     const approvals = page.getByRole("group", { name: "Approvals" });
-    await approvals.getByRole("radio", { name: /^Never ask/ }).check();
+    await approvals.waitFor();
+    check(await approvals.getByRole("radio", { name: /^Never ask/ }).isChecked(), "market-monitor's Apply screen did not open on Never ask");
     await approvals.getByText("every tool this agent has runs without waiting for you", { exact: false }).waitFor();
+    await page.locator('[data-field="parameters.competitors"] input').fill("Acme (acme.com)");
     const answered = page.waitForResponse((r) => r.request().method() === "POST" && new URL(r.url()).pathname === `/v2/templates/${TEMPLATE}/apply`);
     await page.getByRole("button", { name: "Apply", exact: true }).click();
     const response = await answered;

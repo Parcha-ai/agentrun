@@ -190,6 +190,22 @@ describe("applying a template", () => {
     expect(t.went).toEqual([]);
   });
 
+  it("preselects the template's own approvals: Never ask, with what it grants, for one that runs unattended; Ask me for one that asks", async () => {
+    const MONITOR: TemplateView = { ...REVIEWER, name: "market-monitor", approvals_default: "never" };
+    const radio = (t: Awaited<ReturnType<typeof open>>, label: RegExp) => [...t.host.querySelectorAll<HTMLInputElement>('fieldset[aria-label="Approvals"] input[type="radio"]')].find((r) => label.test(r.closest("label")?.textContent ?? ""));
+    const never = await open("market-monitor", { templates: [MONITOR] });
+    expect(radio(never, /^Never ask/)!.checked).toBe(true);
+    expect(never.host.querySelector('fieldset[aria-label="Approvals"]')!.textContent).toContain("Never ask: every tool this agent has runs without waiting for you.");
+    // Switching still sends the choice.
+    await never.click(radio(never, /^Ask me/));
+    await never.type(never.host.querySelector('[data-field="parameters.repo"] input'), "acme/web");
+    await never.click(never.button(/^Apply/));
+    expect(never.sent[0].body.overrides).toEqual({ approvals: "ask" });
+    act(() => root?.unmount()); document.body.innerHTML = "";
+    const asks = await open("pr-reviewer");
+    expect(radio(asks, /^Ask me/)!.checked).toBe(true);
+  });
+
   it("asks by default; Never ask says what it grants and is sent as the agent's approvals", async () => {
     const t = await open("pr-reviewer");
     const radio = (label: RegExp) => [...t.host.querySelectorAll<HTMLInputElement>('fieldset[aria-label="Approvals"] input[type="radio"]')].find((r) => label.test(r.closest("label")?.textContent ?? ""));
