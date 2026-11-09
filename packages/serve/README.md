@@ -1063,16 +1063,16 @@ process. As a session opens, the run's process runs its viewer on a loopback por
 one file in the run's directory, outside `work/` (`browser-live/<session>.json`, one file per session, 0600), which goes
 when that session ends: a session's end never touches another's, so a relaunch's old session never hides its new one's
 view. A session a restarted process keeps (it was still running at the vendor) gets its viewer handed over again by the
-new process, with a new token, and nobody holding the browser. The browser is one kind of the run's computer, and its
-live view is the computer family's, one for every kind (`browser`, `desktop`, `phone`): `GET /v2/runs/{id}/computer`
-answers `{state: "live", kind: "browser", viewer, hold}` while a session is open (`viewer`, a link on this server with its
-token in the fragment; `hold`, who drives now: `agent`, `pending` or `person`), `{state: "none", kind, hold}` when the run
-has a computer but no session is open, and `{state: "off", hold, why}` when it has none: its agent has no computer (no
-`browser` tool), or its browser resolves unavailable here (the tool plane's words, `a local Chrome is not set up on this
-server`, or for Kernel with no key, that it needs a Kernel key). The old `/browser` routes are gone, with no alias. It takes the owner's
+new process, with a new token, and nobody holding the browser. `GET /v2/runs/{id}/browser` answers `{state: "live", viewer}` while a session is open (`viewer`, a link on this server
+with its token in the fragment), `{state: "none"}` when the run has a browser but no session is open, and
+`{state: "off", reason}` when it has none: its agent has no `browser` tool, or its browser resolves unavailable here (the
+tool plane's words, `a local Chrome is not set up on this server`, or for Kernel with no key, that it needs a Kernel key). The
+same view is the computer family's too, one for every kind (`browser`, `desktop`, `phone`), read through the same code:
+`GET /v2/runs/{id}/computer` answers `{state: "live", kind, viewer, hold}` (the link under `/v2/runs/{id}/computer/live/`),
+`{state: "none", kind, hold}` or `{state: "off", hold, why}`; `hold` says who drives now (`agent`, `pending` or `person`). It takes the owner's
 password session in the console: a token, which a run's process, an MCP client or a script may hold, is `403`.
 
-The viewer lives under `/v2/runs/{id}/computer/live/`. Its page, script and style are this server's own (the files of the
+The viewer lives under `/v2/runs/{id}/browser/live/`. Its page, script and style are this server's own (the files of the
 pi-browser it has installed), framed by this server's own origin alone (`frame-ancestors 'self'`, the console's `'none'`
 everywhere else); only its WebSocket goes to the run's port, taken only from this server's own origin (as the request
 reaches it, or the public address, `AGENTRUN_PUBLIC_URL`, for a TLS proxy that rewrites `Host`) with the owner's session,
@@ -1103,10 +1103,9 @@ the session's next charge books it: take-overs given back with no browser call b
 **The agent asks.** The agent may ask the owner to do something in its browser (`browser_request_handoff`: an instruction
 and how it will know it is done, such as signing in). Its person's time is held the same way first; with no room no ask is
 made, and the tool's result says why. The run then reads `input_required`/`waiting` with
-`pending: {kind: "computer", computer: "browser", instruction, completion_condition, asked_at, expires_at}`, its timeline
-shows "Waiting for you: <instruction>", and the webhook's `run.needs_input` says `pending.kind: "computer"`; the agent's
-turn waits inside the tool call. The owner takes over in the viewer, does it, and answers
-`POST /v2/runs/{id}/computer/hand-back` with
+`pending: {kind: "browser", instruction, completion_condition, asked_at, expires_at}`, its timeline shows "Waiting for you:
+<instruction>", and the webhook's `run.needs_input` says `pending.kind: "browser"`; the agent's turn waits inside the tool
+call. The owner takes over in the viewer, does it, and answers `POST /v2/runs/{id}/browser/hand-back` with
 `{outcome: "done"}` or `{outcome: "cancelled"}` (the owner's password session alone, as above). The first answer wins: the
 same answer again is `200`, a different one `409 handoff_answered` with the answer it has. Any answer hands the browser back
 to the agent. Unanswered for 15 minutes, the ask expires: the agent hears `expired`, and a later answer is `409` with
@@ -1750,8 +1749,9 @@ failed, 2 when nothing ran. The runner, the graders and the report are in
 | `GET /settings/tool-keys`, `PUT` and `DELETE /settings/tool-keys/{id}` | [Tool keys](#tool-keys), this server's own routes (`x-agentrun-serve: "toolkeys/1"`): each key's fields by name and where each is set, never a value; save one sealed, or forget it. |
 | `GET /settings/mcp-servers`, `POST /settings/mcp-servers/preview`, `GET`, `PUT` and `DELETE /settings/mcp-servers/{name}`, `POST .../{name}/refresh`, `POST .../{name}/oauth/start`, `GET /settings/mcp-servers/oauth/callback` and `GET .../oauth/client.json` | [MCP servers](#mcp-servers), this server's own routes (`x-agentrun-serve: "mcpservers/1"`): preview a remote MCP server's tools, save it with its credential sealed, read it back without the credential, refresh its tools, forget it, or [sign in to it with OAuth](#signing-in-with-oauth) (the callback and the client document take no token). |
 | `GET /settings/tools`, `PUT /settings/tools` | This server's own: the providers of `web_search`, `web_fetch` and `browser` ([search and fetch](#search-and-fetch)). |
-| `GET /runs/{id}/computer` | This server's own (`x-agentrun-serve: "computer/1"`): the run's live computer view for the owner, one family for every kind, `{state: "off", hold, why?}`, `{state: "none", kind, hold}` or `{state: "live", kind, viewer, hold}` ([the live view](#the-browsers-live-view)). |
-| `POST /runs/{id}/computer/hand-back` | This server's own (`computer/1`): the owner's answer to the agent's ask for them at its computer, `{outcome: "done" \| "cancelled"}`; the first answer wins, a different one is `409 handoff_answered` ([the live view](#the-browsers-live-view)). |
+| `GET /runs/{id}/browser` | This server's own (`x-agentrun-serve: "liveview/1"`): the run's live browser view for the owner, `{state: "off", reason}`, `{state: "none"}` or `{state: "live", viewer}` ([the live view](#the-browsers-live-view)). |
+| `POST /runs/{id}/browser/hand-back` | This server's own (`liveview/2`): the owner's answer to the agent's ask for them in its browser, `{outcome: "done" \| "cancelled"}`; the first answer wins, a different one is `409 handoff_answered` ([the live view](#the-browsers-live-view)). |
+| `GET /runs/{id}/computer` | This server's own (`computer/1`): the run's live computer view for the owner, one family for every kind, `{state: "off", hold, why?}`, `{state: "none", kind, hold}` or `{state: "live", kind, viewer, hold}`, its viewer under `/runs/{id}/computer/live/`; the browser is kind `browser` here, beside its own route ([the live view](#the-browsers-live-view)). |
 | `GET`, `PUT` and `DELETE /settings/webhook`, `POST /settings/webhook/test`, `GET /settings/webhook/deliveries` and `POST .../deliveries/{webhook_id}/redeliver` | [Webhooks](#webhooks), this server's own routes (`x-agentrun-serve: "webhook/1"`): the URL run notices are POSTed to, signed by the Standard Webhooks spec; never its secret but once. |
 | `GET` and `POST /triggers`, `GET`, `PATCH` and `DELETE /triggers/{id}`, `POST /triggers/{id}/fire`, `GET /triggers/{id}/firings`, `POST /triggers/{id}/secret`, `POST /hooks/{id}` (no token: [signed](#webhook-triggers)) | [Schedules](#schedules), this server's own routes (`x-agentrun-serve: "trigger/1"`): schedules that start an agent's capped runs, each firing once, and their history. |
 | `GET /templates`, `POST /templates/{name}/apply` | [Templates](#templates), this server's own routes (`x-agentrun-serve: "templates/1"`): the template packages it ships, and an apply that makes one's agent and triggers, all or nothing. |
@@ -2721,7 +2721,7 @@ carries no cost at all, as from a provider that does not price the model. The te
   context or profile there.
 - A run's live browser view is a full-control credential for its session: once taken over, it drives the browser. Its
   token lives in the run's process, in one 0600 file in the run's directory (never `work/`) while the session is open, and in
-  the owner's answer to `GET /runs/{id}/computer`, which takes the owner's password session alone, as the hand-back does. The
+  the owner's answer to `GET /runs/{id}/browser`, which takes the owner's password session alone, as the hand-back does. The
   viewer's WebSocket is taken only under the run's path, from this server's own origin, with the owner's session; its page is
   framed by this server's own origin alone; outside a take-over its input is dropped by the run before the browser; the
   vendors' own live-view links never leave the run's process.

@@ -582,7 +582,7 @@ const meaningful = (rows: readonly TimelineEvent[]) => rows.findLast((r) => show
 /** What a run waits on, as `pending` says it (one field for every kind; a tool call waiting on approval is another):
  *  the question a waiting run asked, read from its last meaningful row (withAsks' waiting row), the same row its
  *  status reads, never from a scan of its timeline. */
-type Pending = { kind: "question"; question: string; asked_at: string } | PendingApproval | { kind: "budget"; cap_usd: number; spent_usd?: number; needs_usd?: number; least_cap_usd?: number; suggested_cap_usd?: number; overshoot_bound_usd?: number; said: string; at: string; node?: string | null } | { kind: "computer"; computer: "browser"; instruction: string; completion_condition: string; asked_at: string; expires_at: string } | null;
+type Pending = { kind: "question"; question: string; asked_at: string } | PendingApproval | { kind: "budget"; cap_usd: number; spent_usd?: number; needs_usd?: number; least_cap_usd?: number; suggested_cap_usd?: number; overshoot_bound_usd?: number; said: string; at: string; node?: string | null } | { kind: "browser"; instruction: string; completion_condition: string; asked_at: string; expires_at: string } | null;
 const pendingOf = (rows: readonly TimelineEvent[]): Pending => {
   const last = meaningful(rows);
   return last?.kind === "waiting" ? { kind: "question", question: last.text ?? last.summary ?? "", asked_at: last.timestamp } : null;
@@ -601,12 +601,12 @@ const handoffOpen = (rows: readonly TimelineEvent[]): boolean => {
   const done = new Set(rows.filter((row) => row.kind === "tool_result" && row.tool_name === HANDOFF_TOOL && row.tool_result_size_bytes !== null).map((row) => row.tool_use_id));
   return rows.some((row) => row.kind === "tool_use" && row.tool_name === HANDOFF_TOOL && !done.has(row.tool_use_id));
 };
-/** A run whose agent asked for the person in its browser waits on their hand-back (POST /computer/hand-back): pending.kind
- *  computer, its computer the browser; what it asked them to do, when it is done, and when the ask expires. Never the session's tag or the live view's link. The two texts are the model's, so
+/** A run whose agent asked for the person in its browser waits on their hand-back: what it asked them to do, when it is
+ *  done, and when the ask expires. Never the session's tag or the live view's link. The two texts are the model's, so
  *  redacted with the run's redactor (`redact`), as a tool call's arguments are: a held value it echoes never shows. */
 const browserPending = (run: Run, redact: (text: string) => string): Pending | undefined => {
   const ask = browserAsk(run);
-  return ask && { kind: "computer", computer: "browser", instruction: redact(ask.instruction), completion_condition: redact(ask.completion_condition), asked_at: ask.asked_at, expires_at: ask.expires_at };
+  return ask && { kind: "browser", instruction: redact(ask.instruction), completion_condition: redact(ask.completion_condition), asked_at: ask.asked_at, expires_at: ask.expires_at };
 };
 /** Notes the tool calls that wait for approval in `entries` (the run's stored entries), and those whose answer its process
  *  acted on. */
@@ -2313,12 +2313,12 @@ export class Runs {
     run.waited = waiting;
     if (run.log.setState(`${status}/${state}/${run.settled}`)) run.updatedAt = new Date().toISOString();
     // What it waits on: an ask_person question (waiting), else a stopped turn, for the person's next message.
-    if (status === "input_required") this.notice(run, "run.needs_input", noticeMark(run), { kind: state !== "waiting" ? "stopped" : waitingApproval(run) ? "approval" : pausedAt(run) !== undefined || budgetWaiting(run) ? "budget" : browserAsk(run) ? "computer" : "question" });
+    if (status === "input_required") this.notice(run, "run.needs_input", noticeMark(run), { kind: state !== "waiting" ? "stopped" : waitingApproval(run) ? "approval" : pausedAt(run) !== undefined || budgetWaiting(run) ? "budget" : browserAsk(run) ? "browser" : "question" });
   }
 
   /** Tells webhooks.ts (`notify`) of a moment of the run under `marker`: a wait it reached (mark), or an end the agent store
    *  has (settle, persistLater, reopen). What it already queued it queues no more. */
-  private notice(run: Run, event: "run.needs_input" | "run.ended", marker: string | undefined, pending?: { kind: "question" | "approval" | "stopped" | "budget" | "computer" }): Emitted | undefined {
+  private notice(run: Run, event: "run.needs_input" | "run.ended", marker: string | undefined, pending?: { kind: "question" | "approval" | "stopped" | "budget" | "browser" }): Emitted | undefined {
     if (!this.options.notify || !marker) return undefined;
     try {
       return this.options.notify(event, { run_id: run.id, agent_id: run.agentId, status: statusOf(run).status, title: run.meta.title, ...(pending ? { pending } : {}) }, marker);

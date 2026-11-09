@@ -11,8 +11,8 @@
 // way (refused, the tool's result says why), writes the ask's pending record in the run's directory, outside work/
 // (BROWSER_ASK_DIR/<id>.json, its id a digest of the session's tag and the model's request id, 0600 in 0700: the session's tag, the instruction, the done-when condition, when it was asked
 // and when it expires; never the live view's link or token), and commits a waiting row ("Waiting for you: <instruction>").
-// The server reads the record: the run is input_required/waiting with `pending.kind` computer (its computer the browser),
-// and run.needs_input fires. The owner answers POST /v2/runs/{id}/computer/hand-back, which writes `<id>.answer.json` once (the first answer wins);
+// The server reads the record: the run is input_required/waiting with `pending.kind` browser, and run.needs_input fires.
+// The owner answers POST /v2/runs/{id}/browser/hand-back, which writes `<id>.answer.json` once (the first answer wins);
 // unanswered by `expires_at`, the run's process writes `expired` the same way. pi-browser's wait reads it through
 // `outcome`; a poll here ends any take-over at once and drops the hold. The records outlive a process that dies (the
 // run is started again and its next process takes the wait up, `adopt`), and go when the run ends, or when its process

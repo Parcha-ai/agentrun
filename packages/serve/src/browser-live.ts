@@ -167,8 +167,11 @@ export const liveViewer = async (store: LiveViewerStore, sealKey: Buffer, runId:
 export const liveViewerById = async (store: LiveViewerStore, sealKey: Buffer, runId: string, id: string): Promise<LiveHandover | undefined> =>
   (await readLiveViewers(store, sealKey, runId)).find((handover) => handover.id === id);
 
-/** Where the viewer answers through the server, for run `runId`: the owner's link, its token in the fragment. */
-export const viewerLink = (runId: string, handover: LiveHandover): string => `/v2/runs/${encodeURIComponent(runId)}/computer/live/v/${handover.id}#t=${handover.token}`;
+/** The two addresses a run's viewer answers under: the computer family's, one for every kind, and the browser's own. */
+export type LiveFamily = "computer" | "browser";
+/** Where the viewer answers through the server, for run `runId`, under `family`'s address: the owner's link, its token in
+ *  the fragment. */
+export const viewerLink = (runId: string, handover: LiveHandover, family: LiveFamily = "computer"): string => `/v2/runs/${encodeURIComponent(runId)}/${family}/live/v/${handover.id}#t=${handover.token}`;
 
 /** The run's viewer answers at its port for this session: its page is there (200), not released (404). Bounded: a dead
  *  process's port answers nothing, or another listener's 404. */
