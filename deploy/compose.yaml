@@ -9,7 +9,9 @@
 # publish it anywhere else.
 
 # What the server and every runner are given. AGENTRUN_STORE_URL and AGENTRUN_STORE_SCHEMA with no value are passed only
-# when set here (in .env or the shell), and left unset otherwise. The model keys are the runners' (a runner makes a run's
+# when set here (in .env or the shell), and left unset otherwise. AGENTRUN_STORE_URL holds the database's password, so it
+# is a secret like the seal key: keep it in .env (0600), never written in this file. The launcher moves each secret out of
+# the process environment and hands it to the server or runner over a pipe, so no run's process ever sees it. The model keys are the runners' (a runner makes a run's
 # model requests) and the server's (it checks a model can run before a run starts); each is empty when not set.
 x-agentrun-env: &agentrun-env
   AGENTRUN_SEAL_KEY: ${AGENTRUN_SEAL_KEY:?make deploy/.env with AGENTRUN_SEAL_KEY (openssl rand -base64 32); the server and every runner need the same one}
