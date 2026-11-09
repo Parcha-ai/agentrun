@@ -44,6 +44,9 @@ class SealedSettingsOverStore {
   private readonly retiredPem: string[] = [];
   /** The last retired row's number for each scope, so the next one is new: `retired:<scope>:<n>`. */
   private readonly retiredCount = new Map<string, number>();
+  /** Each scope's writes in flight, one after another (serial): two at once never read the same value as the one they
+   *  replace, nor take the same retired row. */
+  private readonly writing = new Map<string, Promise<void>>();
   /** The (scope, field) pairs kept here that did not open under this server's seal key at load: unset until set again. */
   private readonly unopened = new Set<string>();
 
@@ -100,7 +103,11 @@ class SealedSettingsOverStore {
     await this.put(scope, field, value);
   }
 
-  private async put(scope: string, field: string, value: string): Promise<void> {
+  private put(scope: string, field: string, value: string): Promise<void> {
+    return this.serial(scope, () => this.write(scope, field, value));
+  }
+
+  private async write(scope: string, field: string, value: string): Promise<void> {
     const was = this.opened[scope]?.[field];
     // The value it replaces is kept retired first: a write that fails after it leaves the old one cut, never lost.
     if (was !== undefined && was !== value) await this.retire(scope, field, was);
@@ -116,10 +123,22 @@ class SealedSettingsOverStore {
   private async retire(scope: string, field: string, value: string): Promise<void> {
     // A public field is no secret: nothing to keep.
     if (this.spec.fields[field]?.format !== "pem" && this.secretsOf(field, value).length === 0) return;
+    // Its number is taken before the write, so no other retire of the scope can take it while this one waits.
     const n = (this.retiredCount.get(scope) ?? 0) + 1;
-    await this.store.triggerSettings.put(this.row(retiredScope(scope, n), field, value));
     this.retiredCount.set(scope, n);
     this.remember(field, value);
+    await this.store.triggerSettings.put(this.row(retiredScope(scope, n), field, value));
+  }
+
+  /** `work` on `scope` once every write to it started before has settled, failed or not. */
+  private serial(scope: string, work: () => Promise<void>): Promise<void> {
+    const done = (this.writing.get(scope) ?? Promise.resolve()).then(work, work);
+    const tail = done.then(() => undefined, () => undefined);
+    this.writing.set(scope, tail);
+    void tail.then(() => {
+      if (this.writing.get(scope) === tail) this.writing.delete(scope);
+    });
+    return done;
   }
 
   /** `value` as `scope`'s `field` row, sealed under that row's own AAD. */
@@ -140,7 +159,11 @@ class SealedSettingsOverStore {
   }
 
   /** A scope's settings gone (a deleted trigger's). Durable before it resolves. */
-  async remove(scope: string): Promise<void> {
+  remove(scope: string): Promise<void> {
+    return this.serial(scope, () => this.removeNow(scope));
+  }
+
+  private async removeNow(scope: string): Promise<void> {
     // A scope whose settings did not open here is removed all the same: its rows go with it.
     const unopened = [...this.unopened].filter((key) => key.startsWith(`${scope}\0`));
     if (!(scope in this.opened) && !unopened.length) return;
