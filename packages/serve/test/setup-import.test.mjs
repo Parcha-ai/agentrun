@@ -511,7 +511,7 @@ test("setup's import cuts the secrets this server made and keeps, pasted into a 
   claudeSession(home, site, 1);
   const server = await serve(t, { data, accounts: true, openSetup: true, sessionsHome: { home, temp: join(root, "tmp") } });
   const own = {
-    webhook: set.body.secret,
+    webhook: set.body.signing_secret,
     token: server.token,
     door: readFileSync(join(data, ".door-token"), "utf8").trim(),
     session: readFileSync(join(data, ".session-secret"), "utf8").trim(),

@@ -16,6 +16,7 @@
 //   also declare `mints` on itself, for every write it makes;
 // - `cleanup(ctx, ids)`: run once the harness has read everything, with every plant's ids.
 import { randomBytes } from "node:crypto";
+import { createRequire } from "node:module";
 import { openSqliteStore } from "../../dist/store/sqlite/store.js";
 import { sealKeyOf } from "../../dist/tool-keys.js";
 import { plantedSignIn, SIGN_IN_WRITE_ROUTES } from "../sign-ins-planted.mjs";
@@ -158,6 +159,40 @@ registerPlant({
   },
 });
 
+// ---- the triggers' plants (trigger-secrets-shown.ts): a webhook trigger's minted secret, rotated, with a signed delivery
+// fired under it, so its firing's rows are read too; and the outbound webhook's minted secret, its URL then changed with
+// the token. Each value shows once, in its minting answer to the owner's session alone ----
+
+/** A body signed by `secret` by the Standard Webhooks spec, POSTed with no token to trigger `id`'s hook: its status. */
+async function deliver(server, id, secret) {
+  const { Webhook } = createRequire(import.meta.url)("standardwebhooks");
+  const msg = `msg_${randomBytes(8).toString("hex")}`;
+  const at = new Date();
+  const body = JSON.stringify({ type: "lead.created", data: { company: "Planted Co" } });
+  const res = await fetch(`http://127.0.0.1:${server.port}/v2/hooks/${id}`, { method: "POST", headers: { "content-type": "application/json", "webhook-id": msg, "webhook-timestamp": String(Math.floor(at.getTime() / 1000)), "webhook-signature": new Webhook(secret).sign(msg, at, body) }, body });
+  await res.text();
+  return res.status;
+}
+
+registerPlant({
+  name: "webhook trigger secret",
+  mints: ["createTrigger", "rotateTriggerSecret"],
+  write: async ({ owner, api, server }) => {
+    const agentId = "planted-hook-agent";
+    const agent = await api("POST", "/agents", { definition: { id: agentId, version: 1, name: agentId, instructions: "Answer.", skills: [], tools: [] } });
+    if (agent.status !== 201) throw new Error(`the trigger's agent was not made: ${agent.status} ${JSON.stringify(agent.body)}`);
+    const made = await owner("POST", "/v2/triggers", { name: "planted hook", source: { kind: "webhook" }, target: { kind: "start_run", agent_id: agentId, input: { content: "Triage this event." }, max_cost_usd: 0.5 } });
+    if (made.status !== 201) throw new Error(`the webhook trigger was not made: ${made.status} ${made.text}`);
+    const { id, signing_secret: first } = made.json;
+    const rotated = await owner("POST", `/v2/triggers/${id}/secret`);
+    if (rotated.status !== 200) throw new Error(`the trigger's secret was not rotated: ${rotated.status} ${rotated.text}`);
+    const second = rotated.json.signing_secret;
+    const fired = await deliver(server, id, second);
+    if (fired !== 202) throw new Error(`a delivery signed by the rotated secret was answered ${fired}`);
+    return { values: [first, second], ids: { trigger_id: id } };
+  },
+});
+
 registerPlant({
   name: "Archil account key",
   write: async ({ owner }) => {
@@ -196,5 +231,18 @@ registerPlant({
     } finally {
       await store.close();
     }
+  },
+});
+
+registerPlant({
+  name: "outbound webhook secret",
+  mints: ["saveWebhook"],
+  write: async ({ owner, token }) => {
+    const saved = await owner("PUT", "/v2/settings/webhook", { url: "https://hooks.example.com/planted" });
+    if (saved.status !== 201) throw new Error(`the outbound webhook was not set: ${saved.status} ${saved.text}`);
+    // A later save is no secret write: the token changes the URL, and its answer is read like any other.
+    const moved = await token("PUT", "/v2/settings/webhook", { url: "https://hooks.example.com/planted-2" });
+    if (moved.status !== 200) throw new Error(`the token could not change the webhook's URL: ${moved.status} ${moved.text}`);
+    return [saved.json.signing_secret];
   },
 });
