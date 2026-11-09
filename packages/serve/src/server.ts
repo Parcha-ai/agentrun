@@ -656,8 +656,8 @@ function capabilitiesWith(env: NodeJS.ProcessEnv, maxRuns: number, harnesses: Ha
       /** GET, PUT and DELETE /settings/tool-keys: a tool's key saved by name, kept sealed under the launcher's seal key
        *  (tool-keys.ts); with none handed over, nothing is kept, never in the clear. */
       tool_keys: { routes: true, at_rest: sealKeyOf(env[SEAL_KEY_ENV]) ? "sealed" : "unavailable" },
-      /** /settings/mcp-servers: remote MCP servers previewed and saved, each credential sealed under the same seal key
-       *  (mcp-servers.ts); with none, only servers that take no credential are kept. */
+      /** /settings/mcp-servers: remote MCP servers previewed and saved, each credential sealed under the server's seal key,
+       *  which always exists (seal-key.ts), so MCP credentials are always kept sealed. */
       mcp_client: { transports: ["streamable-http"], auth: [...MCP_AUTH_TYPES], at_rest: "sealed", harnesses: [...MCP_HARNESSES] },
       /** This server's learning switch (`--learning`): on, a run learns when its agent says `learning: true`; off, none does. */
       learning,
