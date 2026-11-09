@@ -42,8 +42,10 @@ test("two runs on one runner get their own keys and never each other's", async (
   assert.equal(a.PARALLEL_API_KEY, undefined, "run A (no web) never sees the Parallel key");
 });
 
-test("the keys come from the store, never from this process's environment", async (t) => {
-  const store = await storeWith(t, {}); // the store holds no key
-  const env = await claimSecrets({ store, sealKey: KEY, env: { MONID_API_KEY: "from-process" } }, rev(["monid.run"]), {});
-  assert.equal(env.MONID_API_KEY, undefined, "a secret in this process's environment is never handed to the run's tools");
+test("the server process's env value wins over the store's by the same name; a store-only key is used; an unneeded key is in neither (rule 4)", async (t) => {
+  const store = await storeWith(t, { MONID_API_KEY: "from-store", PARALLEL_API_KEY: "parallel-store" });
+  const env = await claimSecrets({ store, sealKey: KEY, env: { MONID_API_KEY: "from-env" } }, rev(["monid.run", "web_search"]), WEB_ON_PARALLEL);
+  assert.equal(env.MONID_API_KEY, "from-env", "a key set in both env and the store is the env's value");
+  assert.equal(env.PARALLEL_API_KEY, "parallel-store", "a key only in the store is the store's value");
+  assert.equal(env.TYPESAFE_API_KEY, undefined, "a key the run does not need is in neither");
 });

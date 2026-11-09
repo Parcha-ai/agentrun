@@ -31,11 +31,13 @@ export interface ClaimSecretsDeps {
  *  decision provider keys. A fresh object per claim, so no run's keys reach another's. */
 export async function claimSecrets(deps: ClaimSecretsDeps, revision: Revision, launch: Pick<RunLaunch, "plane">): Promise<NodeJS.ProcessEnv> {
   const base = withoutSecrets(deps.env ?? {});
-  // Every candidate secret the store holds, opened with the seal key into a working environment: what the run needs is
-  // scoped out of it below, so a key the run does not need is never put on the environment its tools run under.
+  // Every candidate secret into a working environment, then scoped to the run below so a key the run does not need is never
+  // put on the environment its tools run under. The server process's own environment value wins over the store's by the same
+  // name (Miguel's rule 4: env always overrides a pasted value), so a key set where the server starts is not shadowed by a
+  // stale one saved in the store.
   const working: NodeJS.ProcessEnv = { ...base };
   for (const name of CANDIDATES) {
-    const value = await getSealedKey(deps.store, deps.sealKey, name);
+    const value = deps.env?.[name] ?? (await getSealedKey(deps.store, deps.sealKey, name));
     if (value !== undefined) working[name] = value;
   }
   const needs = await needsOf(revision);
