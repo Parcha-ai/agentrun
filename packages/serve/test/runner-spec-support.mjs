@@ -63,6 +63,9 @@ export async function specFor(t, { body = {}, launch = {}, settings, routeOf = s
   const registry = createRegistry();
   let models = createModels();
   harness = await Harness.open(store.journal(claim), { models: () => models, registry, onReport: () => {} }, ctx);
+  // The run's root conversation (ROOT_CONVERSATION_ID), as the adapter loop makes it when the session opens: a host tool's
+  // paid mark commits there (paid-calls.ts), so a test that runs a tool needs it, as a claim on the loop has it.
+  await harness.commit((tx) => tx.createRootConversation(), ctx);
   const run = { harness, registry, setModels: (given) => (models = given) };
   // The one shared claim-time computer (none for a runner place); a test gives its own, as the runner would.
   const computerForClaim = async () => ({ release: async () => {} });

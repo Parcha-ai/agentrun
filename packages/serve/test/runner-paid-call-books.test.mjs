@@ -46,7 +46,7 @@ function callLog(t) {
   return file;
 }
 
-test("a web_search that fits the cap runs through Parallel and is counted at Parallel's price on the run's spend", { skip: "tl-tools: web tools read the claim's key per call" }, async (t) => {
+test("a web_search that fits the cap runs through Parallel and is counted at Parallel's price on the run's spend", async (t) => {
   const { spec } = await webSearchSpec(t);
   const file = callLog(t);
   const charges = spend(t, { cap: 1 });
@@ -60,7 +60,7 @@ test("a web_search that fits the cap runs through Parallel and is counted at Par
   assert.ok(Math.abs(charges[0] - parallelSearchFee(5).usd) < 1e-12, `counted at Parallel's price (${parallelSearchFee(5).usd}): ${charges[0]}`);
 });
 
-test("a web_search past the cap is refused before it runs: nothing is sent to Parallel, nothing is counted", { skip: "tl-tools: web tools read the claim's key per call" }, async (t) => {
+test("a web_search past the cap is refused before it runs: nothing is sent to Parallel, nothing is counted", async (t) => {
   const { spec } = await webSearchSpec(t);
   const file = callLog(t);
   // Parallel's fast search is $0.001; a cap with less than that left cannot hold it.
