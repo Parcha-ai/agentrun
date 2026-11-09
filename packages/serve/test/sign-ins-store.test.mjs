@@ -106,7 +106,7 @@ test("forget is refused while a running run was handed the sign-in's pointer; it
   assert.ok(err instanceof SignInHandedTo && err.runId === runId, "refused while handed");
   assert.ok(await store.signIns.get("alpha", "browserbase"), "nothing written: the live row stays");
   // The run ends (its runner releases the claim it holds); the hold is gone, and forget succeeds.
-  await store.release(claim, { state: "ended" });
+  await store.runs.update(claim, { state: "ended" });
   assert.equal(await handedTo(store, hash), undefined);
   const out = await forgetSignIn(store, KEY, fakeVendors(), "alpha", "browserbase");
   assert.equal(out.at_vendor, "deleted");
@@ -122,7 +122,7 @@ test("an unreadable sign-in is refused forget while any running run was handed a
   const err = await forgetSignIn(store, other, fakeVendors(), "alpha", "browserbase").then(() => null, (e) => e);
   assert.ok(err instanceof SignInHandedTo && err.runId === runId, "an unreadable pointer is refused while any run was handed one");
   // With no running handed run, forget of the unreadable sign-in goes; its sealed bytes are kept in the tombstone.
-  await store.release(claim, { state: "ended" });
+  await store.runs.update(claim, { state: "ended" });
   const out = await forgetSignIn(store, other, fakeVendors(), "alpha", "browserbase");
   assert.equal(out.at_vendor, "not_deleted", "its object could not be deleted (the pointer never opened)");
   const gone = await forgottenPointers(store, KEY, "alpha", "browserbase");
