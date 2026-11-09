@@ -150,3 +150,14 @@ test("a template that makes a webhook trigger says so in its apply answer: the c
   for (const w of said) assert.ok(w.message.endsWith(TRIGGER_WORDS), w.message);
   assert.ok(!JSON.stringify(applied.body).includes("whsec_"));
 });
+
+test("removing the outbound webhook takes its secret with it: the API token is refused in the secret-write words and the webhook stays; the owner's session removes it", async (t) => {
+  const { page, token, api } = await owned(t);
+  assert.equal((await page("PUT", "/settings/webhook", { url: "https://hooks.example.com/agentrun" })).status, 201);
+  const refused = await token("DELETE", "/settings/webhook");
+  assert.equal(refused.status, 403, JSON.stringify(refused.body));
+  assert.ok(JSON.stringify(refused.body).includes(REFUSAL), JSON.stringify(refused.body));
+  assert.equal((await api("GET", "/settings/webhook")).body.configured, true, "the webhook stays");
+  assert.equal((await page("DELETE", "/settings/webhook")).status, 204);
+  assert.equal((await api("GET", "/settings/webhook")).body.configured, false);
+});
