@@ -29,11 +29,42 @@ export async function runReflect(store: Store, runId: string, context: Context):
   return { after: from - 1, ...(end ? { until: Number(end.id) } : {}) };
 }
 
-/** A run's timeline rows, the renderer (timelineOf) unchanged, over the one store's entries, the end-of-run turn's rows
- *  labelled as the server labels them (learning-run.ts labelled: learning, its message in the host's words, its answer
- *  never the run's). */
+/** The CLI record (a harness whose own records are resume log only, record "loop": adapter-loop.ts openCliRecord) as the
+ *  pi-shaped entries the timeline renderer reads: a model message is an assistant turn, a person message a user turn, and a
+ *  tool call its assistant tool-call and its result. So a claude-agent / codex / opencode run reads the same rows, words
+ *  and final answer as a pi run of the same conversation. A run's own pi entries and its end-of-run turn (already model
+ *  shaped) pass through unchanged, so a pi run is untouched. */
+function piShaped(entries: readonly EntryLike[]): EntryLike[] {
+  return entries.map((entry) => {
+    const data = (entry.data ?? {}) as Record<string, unknown>;
+    if (entry.kind === KINDS.message) {
+      const text = typeof data.text === "string" ? data.text : "";
+      if (data.role === "person") return { ...entry, kind: "pi.user", model: [{ role: "user", content: text }] };
+      // A model turn's text; its stop reason is the answer's (a cut at the output limit reads "length", as pi's does).
+      const stopReason = data.stopReason === "length" ? "length" : "stop";
+      return { ...entry, kind: "pi.assistant", model: [{ role: "assistant", stopReason, content: [{ type: "text", text }], ...(typeof data.outputTokens === "number" ? { usage: { output: data.outputTokens } } : {}) }] };
+    }
+    if (entry.kind === KINDS.callStart) {
+      return { ...entry, kind: "pi.assistant", model: [{ role: "assistant", stopReason: "tool_use", content: [{ type: "toolCall", id: String(data.callId ?? ""), name: String(data.tool ?? "tool"), arguments: data.input ?? {} }] }] };
+    }
+    if (entry.kind === KINDS.callEnd) {
+      // A call that did not finish done is an error result, as a failed pi tool call is; its output is the result's text.
+      const failed = data.status !== undefined && data.status !== "done";
+      return { ...entry, kind: "pi.tool-result", model: [{ role: "tool", toolCallId: String(data.callId ?? ""), content: data.output ?? "", ...(failed ? { isError: true } : {}) }] };
+    }
+    return entry;
+  });
+}
+
+/** A run's timeline rows, the renderer (timelineOf) unchanged, over the one store's entries, with a CLI harness's record
+ *  rendered as its pi-shaped entries (piShaped). The usage row the renderer folds from the model turns is dropped for a CLI
+ *  run: its record carries no per-request cost, so the run's cost reads from its stored total (costView over no usage row),
+ *  as it did before this rendering existed, never a $0/unknown usage row. The end-of-run turn's rows are labelled as the
+ *  server labels them (learning-run.ts labelled). */
 export async function runTimeline(store: Store, runId: string, context: Context, options: TimelineOptions = {}): Promise<TimelineEvent[]> {
-  const rows = timelineOf(await runEntries(store, runId, context), options);
+  const entries = await runEntries(store, runId, context);
+  const cli = entries.some((entry) => entry.kind === KINDS.message || entry.kind === KINDS.callStart || entry.kind === KINDS.callEnd);
+  const rows = timelineOf(cli ? piShaped(entries) : entries, options).filter((row) => !cli || row.kind !== "usage");
   return labelled((await runReflect(store, runId, context)) as Reflect | undefined, rows);
 }
 
