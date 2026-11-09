@@ -8,7 +8,7 @@ import type { TemplateView } from "./v2";
 /** A template's title: its display name, else its name. A display name's `${parameters.<name>}` (filled by the server at
  *  apply) reads as the value typed for it so far (`values`), else "…": never as the raw placeholder. */
 export const titleOf = (t: TemplateView, values: ParameterText = {}) =>
-  (t.display_name || t.name).replace(/\$\{parameters\.([A-Za-z0-9_]+)\}/g, (_, key: string) => values[key]?.trim() || "…");
+  (t.display_name || t.name).replace(/\$\{parameters\.([A-Za-z0-9_]+)\}/g, (_, key: string) => (Object.hasOwn(values, key) ? values[key].trim() : "") || "…");
 /** A template's Apply screen. */
 export const templateHash = (name: string) => `#/templates/${encodeURIComponent(name)}`;
 

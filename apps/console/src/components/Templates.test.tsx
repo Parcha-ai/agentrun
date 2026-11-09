@@ -90,7 +90,7 @@ describe("the Templates page", () => {
   });
 
   it("reads a placeholder named like an object's own property (constructor) as … too, and the list still shows", async () => {
-    const ODD: TemplateView = { ...REVIEWER, name: "odd", display_name: "Odd: ${parameters.constructor}", parameters: { constructor: { type: "string", required: true, description: "x" } } };
+    const ODD: TemplateView = { ...REVIEWER, name: "odd", display_name: "Odd: ${parameters.constructor}", parameters: { constructor: { type: "string" as const, required: true, description: "x" } } };
     const list = await open(undefined, { templates: [ODD, NOTES] });
     expect([...list.host.querySelectorAll("article h2")].map((h) => h.textContent)).toEqual(["Odd: …", "meeting-notes"]);
   });
