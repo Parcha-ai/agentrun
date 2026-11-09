@@ -339,3 +339,23 @@ test("the names AgentRun's own tools are called by, hands and monid, are no MCP 
     assert.equal((await api("GET", `/settings/mcp-servers/${name}`)).status, 404, `${name}: nothing saved`);
   }
 });
+
+test("the served document's mcp_client.at_rest is exactly const sealed: an MCP credential is always kept sealed", async (t) => {
+  const { api } = await serve(t);
+  const doc = (await api("GET", "/openapi.json")).body;
+  const found = [];
+  const walk = (node) => {
+    if (!node || typeof node !== "object") return;
+    if (node.properties?.mcp_client?.properties?.at_rest) found.push(node.properties.mcp_client.properties.at_rest);
+    for (const value of Object.values(node)) walk(value);
+  };
+  walk(doc);
+  assert.ok(found.length > 0, "the document describes features.mcp_client");
+  for (const atRest of found) assert.deepEqual(atRest, { const: "sealed" });
+});
+
+test("a server started with no seal key in its env answers mcp_client.at_rest sealed: it made one at its start", async (t) => {
+  withEnv(t, {}, ["AGENTRUN_SEAL_KEY"]);
+  const { api } = await serve(t);
+  assert.equal((await api("GET", "/capabilities")).body.features.mcp_client.at_rest, "sealed");
+});

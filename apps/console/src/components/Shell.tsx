@@ -1,5 +1,5 @@
 import { Bot, CalendarClock, History, LayoutDashboard, LayoutTemplate, LogOut, Menu, Monitor, Moon, Settings, Sun, Terminal } from "lucide-react";
-import { type ReactNode, useState } from "react";
+import { type ReactNode, useEffect, useRef, useState } from "react";
 import { ConnectionBanner } from "@/components/Connection";
 import { cn } from "@/lib/utils";
 import { applyTheme, currentTheme, saveTheme, type Theme, THEMES } from "@/lib/theme";
@@ -49,8 +49,19 @@ export function Wordmark() {
  *  the one banner on the link to the server, while it is away and as it comes back, then `banners` (the page's own: no
  *  model yet, an import, a failed sign-out). They sit outside the page's scrolling main, so a full-height page fills what
  *  is left under them and keeps its footer in view. */
-export function Shell({ active, settings = false, triggers = false, onNavigate, onSignOut, banners, children }: { active: Section; settings?: boolean; triggers?: boolean; onNavigate?: (s: Section) => void; onSignOut?: () => void; banners?: ReactNode; children: ReactNode }) {
+/** `onSignOut`: this browser; `onSignOutEverywhere`: every browser and phone signed in to the server, asked first. */
+export function Shell({ active, settings = false, triggers = false, onNavigate, onSignOut, onSignOutEverywhere, banners, children }: { active: Section; settings?: boolean; triggers?: boolean; onNavigate?: (s: Section) => void; onSignOut?: () => void; onSignOutEverywhere?: () => void; banners?: ReactNode; children: ReactNode }) {
   const [open, setOpen] = useState(false);
+  const [everywhere, setEverywhere] = useState(false);
+  // The keyboard's place: the confirm opens on Cancel, and Cancel or Escape gives the focus back to its trigger.
+  const trigger = useRef<HTMLButtonElement>(null);
+  const cancel = useRef<HTMLButtonElement>(null);
+  const reopened = useRef(false);
+  useEffect(() => {
+    if (everywhere) cancel.current?.focus();
+    else if (reopened.current) trigger.current?.focus();
+  }, [everywhere]);
+  const closeEverywhere = () => { reopened.current = true; setEverywhere(false); };
   return (
     <div className="flex h-dvh min-h-0 flex-col overflow-hidden bg-background text-foreground md:flex-row">
       <header className="flex shrink-0 items-center justify-between border-b px-4 py-3 md:hidden">
@@ -72,6 +83,17 @@ export function Shell({ active, settings = false, triggers = false, onNavigate, 
         <button type="button" onClick={onSignOut} className="caps mt-2 flex items-center gap-2.5 border px-3 py-2.5 text-[12px] hover:bg-accent">
           <LogOut className="size-4" aria-hidden /> Sign out
         </button>
+        {onSignOutEverywhere && (everywhere ? (
+          <div role="alertdialog" aria-label="Sign out everywhere?" onKeyDown={(e) => { if (e.key === "Escape") closeEverywhere(); }} className="mt-2 space-y-2 border border-destructive/50 px-3 py-2.5 text-[12px]">
+            <p>Signs out every browser and phone signed in to this server, this one too.</p>
+            <div className="flex gap-2">
+              <button type="button" onClick={() => { setEverywhere(false); onSignOutEverywhere(); }} className="caps border border-destructive/60 px-2 py-1 text-[11px] text-destructive-text hover:bg-destructive/10">Sign out everywhere</button>
+              <button type="button" ref={cancel} onClick={closeEverywhere} className="caps border px-2 py-1 text-[11px] hover:bg-accent">Cancel</button>
+            </div>
+          </div>
+        ) : (
+          <button type="button" ref={trigger} onClick={() => setEverywhere(true)} className="mt-1 px-3 py-1.5 text-left text-[12px] text-muted-foreground hover:text-foreground">Sign out everywhere</button>
+        ))}
       </aside>
       <div className="flex min-h-0 min-w-0 flex-1 flex-col">
         <ConnectionBanner />

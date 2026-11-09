@@ -110,6 +110,10 @@ export function messagesFetch(models: PiModels, target: PiModel, redact: Redact 
     const stream = new ReadableStream<Uint8Array>({
       async start(controller) {
         const send = (event: { type: string; [key: string]: unknown }) => controller.enqueue(encoder.encode(`event: ${event.type}\ndata: ${JSON.stringify(event)}\n\n`));
+        // A failed request's error event carries its words alone, one data line each: pi-ai's Messages client throws an
+        // error event's data as the request's error, so the caller reads the model's own error as main's in-process pi
+        // reports it ("500 {...}"), never this route's envelope around it.
+        const sendError = (words: string) => controller.enqueue(encoder.encode(`event: error\n${words.split(/\r?\n/).map((line) => `data: ${line}`).join("\n")}\n\n`));
         send({ type: "message_start", message: { id: `msg_${Date.now().toString(36)}`, type: "message", role: "assistant", model: body.model ?? target.id, content: [], stop_reason: null, stop_sequence: null, usage: { input_tokens: 0, output_tokens: 0 } } });
         // Messages blocks are numbered as sent; a thinking block of pi-ai's is not sent (it carries no signature here).
         const blockOf = new Map<number, number>();
@@ -147,7 +151,7 @@ export function messagesFetch(models: PiModels, target: PiModel, redact: Redact 
             else if (event.type === "done" || event.type === "error") {
               const message = (event.type === "done" ? event.message : event.error) ?? {};
               if (event.type === "error") {
-                send({ type: "error", error: { type: event.reason === "aborted" ? "request_aborted" : "api_error", message: redact(message.errorMessage ?? event.reason ?? "the model's request failed") } });
+                sendError(redact(message.errorMessage ?? event.reason ?? "the model's request failed"));
                 break;
               }
               const used = message.usage ?? { input: 0, output: 0, cacheRead: 0, cacheWrite: 0 };
@@ -156,7 +160,7 @@ export function messagesFetch(models: PiModels, target: PiModel, redact: Redact 
             }
           }
         } catch (error) {
-          send({ type: "error", error: { type: "api_error", message: redact((error as Error)?.message ?? String(error)) } });
+          sendError(redact((error as Error)?.message ?? String(error)));
         }
         controller.close();
       },

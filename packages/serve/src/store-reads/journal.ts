@@ -64,18 +64,18 @@ function piShaped(entries: readonly EntryLike[]): EntryLike[] {
  *  it ran under (`call`, written by the cap so the view puts the charge under that call); its runner.turn carries the cost (a
  *  priced one a charge, an unpriced one not metered). Each charge is placed right after its call's result, joined by `call`,
  *  as the ledger wrote it there. A run with no paid-tools session reads unchanged. */
-function withPaidCosts(entries: readonly EntryLike[]): EntryLike[] {
+export function withPaidCosts(entries: readonly EntryLike[]): EntryLike[] {
   const session = entries.find((e) => e.kind === KINDS.sessionKey && (e.data as { key?: unknown } | undefined)?.key === TOOL_SESSION);
   const conv = session ? (session.data as { conversation?: unknown }).conversation : undefined;
   if (typeof conv !== "number") return [...entries];
   // Each paid request's tool and the call it ran under, by its turn; then each turn's cost, paired by turn.
-  const named = new Map<number, { tool: string; call?: string }>();
+  const named = new Map<number, { tool: string; call?: string; chargedBy?: string }>();
   for (const e of entries) {
     if (e.conversationId !== conv || e.kind !== RUNNER_RECORDS.request) continue;
-    const d = (e.data ?? {}) as { turn?: number; model?: string; call?: string };
-    if (typeof d.turn === "number" && typeof d.model === "string" && d.model.startsWith("paid:")) named.set(d.turn, { tool: d.model.slice("paid:".length), ...(typeof d.call === "string" ? { call: d.call } : {}) });
+    const d = (e.data ?? {}) as { turn?: number; model?: string; call?: string; charged_by?: string };
+    if (typeof d.turn === "number" && typeof d.model === "string" && d.model.startsWith("paid:")) named.set(d.turn, { tool: d.model.slice("paid:".length), ...(typeof d.call === "string" ? { call: d.call } : {}), ...(typeof d.charged_by === "string" && d.charged_by ? { chargedBy: d.charged_by } : {}) });
   }
-  const charges: { tool: string; call?: string; usd: number | null }[] = [];
+  const charges: { tool: string; call?: string; chargedBy?: string; usd: number | null }[] = [];
   for (const e of entries) {
     if (e.conversationId !== conv || e.kind !== RUNNER_RECORDS.turn) continue;
     const d = (e.data ?? {}) as { turn?: number; usd?: number | null };
@@ -85,10 +85,11 @@ function withPaidCosts(entries: readonly EntryLike[]): EntryLike[] {
   if (!charges.length) return [...entries];
   const out = [...entries];
   for (const charge of charges) {
-    // mcp:<server>/<tool> names the server that charged; another paid provider leaves charged_by to the row's default.
-    const server = charge.tool.startsWith("mcp:") && charge.tool.includes("/") ? charge.tool.slice("mcp:".length, charge.tool.indexOf("/")) : undefined;
+    // Who charged: the request's own charged_by, which the cap writes as main's charge label names it (parallel, monid, an
+    // MCP server, a browser vendor).
+    const by = charge.chargedBy;
     const at = charge.call === undefined ? -1 : out.findIndex((e) => e.kind === "pi.tool-result" && String((e.model?.[0] as { toolCallId?: unknown } | undefined)?.toolCallId ?? "") === charge.call);
-    const data = { tool: charge.tool, ...(server ? { charged_by: server } : {}), ...(charge.call ? { call: charge.call } : {}), ...(charge.usd !== null ? { usd: charge.usd } : {}) };
+    const data = { tool: charge.tool, ...(by ? { charged_by: by } : {}), ...(charge.call ? { call: charge.call } : {}), ...(charge.usd !== null ? { usd: charge.usd } : {}) };
     const entry = { conversationId: at >= 0 ? out[at]!.conversationId : conv, kind: charge.usd !== null ? TOOL_COST : TOOL_UNMETERED, data, id: `paid:${charge.call ?? charge.tool}` } as unknown as EntryLike;
     out.splice(at >= 0 ? at + 1 : out.length, 0, entry);
   }

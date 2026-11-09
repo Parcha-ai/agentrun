@@ -67,7 +67,7 @@ test("mint writes a new secret sealed and returns it once; remove drops a scope'
   assert.equal(settings.get("trg_1", "secret"), minted);
   await settings.remove("trg_1");
   assert.equal(settings.get("trg_1", "secret"), undefined, "gone");
-  assert.equal((await store.triggerSettings.get("slackish")).length, 0, "the row is gone");
+  assert.deepEqual((await store.triggerSettings.get("slackish")).map((row) => row.scope.replace(/:\d+$/, ":<n>")), ["retired:trg_1:<n>"], "its live row is gone; its value is kept retired");
   assert.ok(settings.values().includes(minted), "but the rotated value is still redacted this process's life");
 });
 
@@ -89,6 +89,33 @@ test("a value sealed under another seal key does not open here: unset, marked un
   await here.remove("trg_two");
   assert.equal(here.unopenedAt("trg_two", "secret"), false);
   assert.deepEqual((await store.triggerSettings.get("hookish")).map((row) => row.scope), ["trg_one"], "the unopened scope's rows went with it");
+});
+
+test("store conformance: a retired secret (rotated, or its trigger deleted) is kept sealed in its own retired scope, survives the delete and a restart, and is never a setting", async (t) => {
+  const { store } = await storeOn(t);
+  const minting = { scope: "trigger", fields: { secret: { mint: true, minBytes: MIN_KEY_BYTES } } };
+  const settings = sealedSettingsOverStore(store, "hookish", minting, KEY, () => {});
+  await settings.load();
+  const first = await settings.mint("trg_one", "secret");
+  const second = await settings.mint("trg_one", "secret");
+  const gone = await settings.mint("trg_two", "secret");
+  await settings.remove("trg_two");
+  const rows = await store.triggerSettings.get("hookish");
+  // Retired rows each keep a scope a trigger's delete never matches; no row holds a value in the clear.
+  const retired = rows.filter((row) => row.scope.startsWith("retired:"));
+  assert.deepEqual(retired.map((row) => [row.scope.split(":")[1], row.field]).sort(), [["trg_one", "secret"], ["trg_two", "secret"]]);
+  assert.ok(!JSON.stringify(rows).includes(first.slice("whsec_".length)) && !JSON.stringify(rows).includes(gone.slice("whsec_".length)), "sealed");
+  assert.deepEqual(rows.filter((row) => !row.scope.startsWith("retired:")).map((row) => row.scope), ["trg_one"], "the live rows: trg_one's current secret alone");
+  // The next store (a restart): each retired value is in the redaction list again, and none is a setting.
+  const next = sealedSettingsOverStore(store, "hookish", minting, KEY, () => {});
+  await next.load();
+  for (const value of [first, second, gone]) assert.ok(next.values().includes(value), "redacted after a restart");
+  assert.deepEqual([next.get("trg_one", "secret"), next.get("trg_two", "secret")], [second, undefined], "a retired value is never a setting");
+  assert.ok(![...rows.map((row) => row.scope)].some((scope) => scope.startsWith("retired:") && next.get(scope, "secret") !== undefined), "nor read under its retired scope");
+  // Each retired row is sealed under its own scope: opened under the live row's, it does not open.
+  const aside = sealedSettingsOverStore({ triggerSettings: { get: async () => retired.map((row) => ({ ...row, scope: "trg_one" })), put: async () => {}, removeScope: async () => {} }, flush: async () => {} }, "hookish", minting, KEY, () => {});
+  await aside.load();
+  assert.equal(aside.get("trg_one", "secret"), undefined, "its AAD is its own");
 });
 
 test("openServerSecretsOverStore wires each adapter's store settings into the redaction list", async (t) => {

@@ -6,13 +6,13 @@ import assert from "node:assert/strict";
 import { after, test } from "node:test";
 import { BACKGROUND_CONTEXT } from "@earendil-works/chord/context";
 import { closeOpenSessions, piAdapterSubject } from "./conformance-pi-adapter.mjs";
-import { commandRow, observed, queue, recorder, sleep, stores, until } from "./runner-support.mjs";
+import { commandRow, observed, queue, recorder, sleep, STEADY_LEASE, stores, until } from "./runner-support.mjs";
 
 const { startRunner } = await import("../dist/runner/runner.js");
 const { sendCommand } = await import("../dist/runner/commands.js");
 after(closeOpenSessions);
 const { suiteTools } = await import("../dist/runner/conformance/harness.js");
-const TIMING = { leaseMs: 600, renewEveryMs: 150, stopMarginMs: 200, pollMs: 20, commandPollMs: 30 };
+const TIMING = { ...STEADY_LEASE, pollMs: 20, commandPollMs: 30 };
 const quiet = { beforeIntent: async () => {}, beforeResult: async () => {} };
 
 /** `journal` with every read refused, as a store that cannot be read: pi's Harness cannot open on it. */

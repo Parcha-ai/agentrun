@@ -87,13 +87,19 @@ export function piAdapter(options: PiAdapterOptions): AgentAdapter {
   };
 }
 
+/** The names of the run's pi-native extensions' tools (options.extensions): the model is offered them beside the session's
+ *  own (so it may call one), and pi runs it. Offered and run by one mechanism; sessionOn never also piTool-wraps a session
+ *  tool a native extension already owns, so the name is in the request's tools exactly once. */
+const nativeToolNames = (options: PiAdapterOptions): readonly string[] =>
+  (options.extensions ?? []).flatMap((extension) => extension.tools ?? []).map((tool) => tool.name);
+
 async function openPi(options: PiAdapterOptions, spec: SessionSpec, io: PiSessionIO): Promise<AdapterSession> {
   const { model } = options;
   const context = withAbortSignal(io.signal, BACKGROUND_CONTEXT);
   // The session's route: pi-ai's requests reach the provider only through this proxy, which admits and books each one
   // through the runner's booking (io.models).
   const proxy = await startModelProxy({
-    policy: await policyFor(options.provider, model, spec.tools.map((tool) => tool.name)),
+    policy: await policyFor(options.provider, model, [...spec.tools.map((tool) => tool.name), ...nativeToolNames(options)]),
     hooks: io.models,
     model,
     origin: options.provider.origin,
@@ -144,7 +150,10 @@ async function sessionOn(proxy: ModelProxy, options: PiAdapterOptions, spec: Ses
   models.setProvider(sessionProvider(api, proxy, model, { provider: PROVIDER, keyName: "AGENTRUN_SESSION_KEY", ...(like ? { like } : {}), reasoning: false }));
   run.setModels(models);
 
-  const tools = spec.tools.map((tool) => piTool(tool, io));
+  // A session tool whose name a native extension already owns is run by that extension (pi's own tool task), so it is not
+  // piTool-wrapped here too: one tool by that name on the agent, offered once.
+  const owned = new Set(nativeToolNames(options));
+  const tools = spec.tools.filter((tool) => !owned.has(tool.name)).map((tool) => piTool(tool, io));
   // A refused call's words (the gate's deny, main's), by call: its result is those words alone, as main gives them.
   const refusals = new Map<string, string>();
   const extension = defineExtension({

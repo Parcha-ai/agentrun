@@ -15,8 +15,17 @@ test("a refusal for room parks the run unsent, with pending (least, raise) in th
   const park = parkOf(refusal, 0.05);
   assert.equal(park.outcome, "parked");
   assert.equal(park.error, undefined);
-  assert.deepEqual(park.pending, { kind: "budget", cap_usd: 0.05, spent_usd: 0.01, needs_usd: 0.05286, least_cap_usd: 0.07, suggested_cap_usd: 1 });
+  assert.deepEqual(park.pending, { kind: "budget", cap_usd: 0.05, spent_usd: 0.01, needs_usd: 0.05286, least_cap_usd: 0.07, suggested_cap_usd: 1, bound_usd: microUp(refusal.figures.boundUsd ?? 0) });
   assert.equal(park.words, refusal.message.replace(/^spend_cap_reached \(out of budget\): /, ""));
+});
+
+const microUp = (usd) => Math.ceil(usd * 1e6 - 1e-9) / 1e6 + 0;
+
+test("a park's pending names the refused step's bound (bound_usd), to a millionth rounded up; 0 when the refusal names none", () => {
+  const withBound = new CapRefused("spend_cap_reached (out of budget): Not sent: the next step needs more", { forGood: false, spentUsd: 0.1, figures: { spentUsd: 0.1, needsUsd: 0.2, leastCapUsd: 0.31, boundUsd: 0.0123451 } });
+  assert.equal(parkOf(withBound, 0.25).pending.bound_usd, 0.012346, "the refusal's boundUsd, rounded up to a millionth");
+  const without = new CapRefused("spend_cap_reached (out of budget): Not sent: the next step needs more", { forGood: false, spentUsd: 0.1, figures: { spentUsd: 0.1, needsUsd: 0.2, leastCapUsd: 0.31 } });
+  assert.equal(parkOf(without, 0.25).pending.bound_usd, 0, "none named: 0");
 });
 
 test("a park emits the refusal as a pause event, not an error", async () => {

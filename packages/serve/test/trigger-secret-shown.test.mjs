@@ -5,9 +5,11 @@
 // words, and the secret it would replace still signs.
 import assert from "node:assert/strict";
 import { randomBytes } from "node:crypto";
+import { existsSync, readFileSync } from "node:fs";
 import { createRequire } from "node:module";
+import { join } from "node:path";
 import { test } from "node:test";
-import { call, cookieOf, serve, withEnv } from "./support.mjs";
+import { call, cookieOf, serve, storeBytes, withEnv } from "./support.mjs";
 import { made } from "./trigger-support.mjs";
 
 const { Webhook } = createRequire(import.meta.url)("standardwebhooks");
@@ -31,8 +33,8 @@ async function owned(t) {
   const cookie = cookieOf(set);
   /** A request from the owner's signed-in page: its cookie, its own origin and the JSON type (with no body too), as the
    *  console sends. */
-  const page = async (method, path, body) => {
-    const res = await call(server.port, { method, path: `/v2${path}`, headers: { cookie, origin, ...(method === "GET" ? {} : { "content-type": "application/json" }) }, body });
+  const page = async (method, path, body, headers = {}) => {
+    const res = await call(server.port, { method, path: `/v2${path}`, headers: { cookie, origin, ...(method === "GET" ? {} : { "content-type": "application/json" }), ...headers }, body });
     return { status: res.status, body: res.json ?? res.text, text: res.text };
   };
   /** A request with the API token itself, as a script sends it (the client sends a secret write from a session). */
@@ -160,4 +162,48 @@ test("removing the outbound webhook takes its secret with it: the API token is r
   assert.equal((await api("GET", "/settings/webhook")).body.configured, true, "the webhook stays");
   assert.equal((await page("DELETE", "/settings/webhook")).status, 204);
   assert.equal((await api("GET", "/settings/webhook")).body.configured, false);
+});
+
+const LEAD = { parameters: { icp: "B2B fintech, 50-2000 people, US or EU; never gambling operators", post_to: "none" } };
+const NO_KEYS = ["PARALLEL_API_KEY", "MONID_API_KEY", "BROWSERBASE_API_KEY", "KERNEL_API_KEY", "TYPESAFE_API_KEY"];
+
+test("a template applied from the owner's session shows each webhook trigger it made its signing secret once, as POST /triggers does; a replay under the same key shows none, and the key's record holds none", { timeout: 120_000 }, async (t) => {
+  withEnv(t, {}, NO_KEYS);
+  const { api, page, baseUrl, data } = await owned(t);
+  const applied = await page("POST", "/templates/inbound-lead/apply", LEAD, { "idempotency-key": "lead-1" });
+  assert.equal(applied.status, 201, applied.text);
+  const hooks = applied.body.webhook_secrets ?? [];
+  assert.ok(hooks.length > 0, "inbound-lead makes a webhook trigger");
+  assert.ok(hooks.every((made) => applied.body.trigger_ids.includes(made.trigger_id)), "each a trigger it made");
+  for (const made of hooks) {
+    assert.match(made.signing_secret, /^whsec_/, JSON.stringify(made));
+    assert.deepEqual([made.secret.name, made.secret.set, made.secret.source], [`trigger:${made.trigger_id}`, true, "console"]);
+    assert.notEqual(await signed(baseUrl, made.trigger_id, made.signing_secret), 401, "the secret shown is the one that signs");
+  }
+  const again = await page("POST", "/templates/inbound-lead/apply", LEAD, { "idempotency-key": "lead-1" });
+  assert.equal(again.status, 201, again.text);
+  assert.deepEqual(again.body.trigger_ids, applied.body.trigger_ids, "the same apply, made once");
+  assert.ok(!again.text.includes("whsec_"), "a replay shows no secret");
+  assert.equal(again.body.webhook_secrets.length, hooks.length);
+  for (const made of again.body.webhook_secrets) {
+    assert.deepEqual([made.secret.set, made.secret_set, typeof made.note], [true, true, "string"], JSON.stringify(made));
+    assert.ok(!("signing_secret" in made));
+  }
+  const kept = [join(data, ".idempotency.json")].filter((file) => existsSync(file)).map((file) => readFileSync(file, "utf8")).join("") + storeBytes(data).toString("latin1");
+  for (const made of hooks) assert.ok(!kept.includes(made.signing_secret.slice("whsec_".length)), "the key's record holds no secret");
+  assert.ok(!JSON.stringify((await api("GET", `/triggers/${hooks[0].trigger_id}`)).body).includes("whsec_"));
+});
+
+test("a template applied with the API token shows no secret: each webhook trigger it made says secret_set and the console's words", { timeout: 120_000 }, async (t) => {
+  withEnv(t, {}, NO_KEYS);
+  const { token } = await owned(t);
+  const applied = await token("POST", "/templates/inbound-lead/apply", LEAD);
+  assert.equal(applied.status, 201, JSON.stringify(applied.body));
+  assert.ok(!JSON.stringify(applied.body).includes("whsec_"), "no value");
+  const hooks = applied.body.webhook_secrets ?? [];
+  assert.ok(hooks.length > 0);
+  for (const made of hooks) {
+    assert.deepEqual([made.secret.set, made.secret_set, made.note], [true, true, TRIGGER_WORDS], JSON.stringify(made));
+    assert.ok(!("signing_secret" in made));
+  }
 });

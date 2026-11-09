@@ -111,12 +111,18 @@ export const PAUSED_WORDS = "Paused.";
  *  revision does, an agentic one does not. */
 export const isWorkflowRevision = (revision: { readonly kind: string }): boolean => revision.kind === "workflow";
 
+/** What a claim's spec is built from beside the claim: the runner's one redactor (LoopDeps.redact), which holds the keys
+ *  the claim opens from the store (redact.ts holdClaimed). */
+export interface WorkflowSpecRun {
+  readonly redact?: (text: string) => string;
+}
+
 /** Loops for workflow runs: `spec(claim)` gives each claim's run what it runs (its workflow, input, models and host). */
-export function createWorkflowLoop(specOf: (claim: Claim) => WorkflowRunSpec | Promise<WorkflowRunSpec>): LoopFactory {
+export function createWorkflowLoop(specOf: (claim: Claim, run: WorkflowSpecRun) => WorkflowRunSpec | Promise<WorkflowRunSpec>): LoopFactory {
   return (deps) => workflowLoop(specOf, deps);
 }
 
-function workflowLoop(specOf: (claim: Claim) => WorkflowRunSpec | Promise<WorkflowRunSpec>, deps: LoopDeps): Loop {
+function workflowLoop(specOf: (claim: Claim, run: WorkflowSpecRun) => WorkflowRunSpec | Promise<WorkflowRunSpec>, deps: LoopDeps): Loop {
   let harness: Harness | undefined;
   let workflows: ReturnType<typeof createWorkflowExtension> | undefined;
   let runId: string | undefined;
@@ -290,7 +296,7 @@ function workflowLoop(specOf: (claim: Claim) => WorkflowRunSpec | Promise<Workfl
     const parkController = new AbortController();
     let heldRefusal: CapRefusal | undefined;
     const context = withAbortSignal(AbortSignal.any([deps.signal, parkController.signal]), BACKGROUND_CONTEXT);
-    spec = await specOf(claim);
+    spec = await specOf(claim, deps.redact ? { redact: deps.redact } : {});
     claimNow = claim;
     specReady();
     const revision = { id: spec.revisionId, kind: "workflow" as const, body: { workflow: spec.workflow, tools: [...spec.tools] } };

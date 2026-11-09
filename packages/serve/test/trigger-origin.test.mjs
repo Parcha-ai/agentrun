@@ -69,7 +69,8 @@ for (const harness of ["pi", "claude-agent"]) {
     assert.ok(sent.includes(RULE), "the payload is in the run's input");
     assert.deepEqual(userEntries(data, fired.run_id), [{ text: sent, origin: { kind: "trigger", trigger_id: id, source: "webhook", owner: false } }], "the first input, as the model reads it, is the trigger's");
     assert.equal(rows.filter((r) => r.kind === "user_message").length, 0, `no "You:" row: ${JSON.stringify(rows.map((r) => [r.kind, r.summary]))}`);
-    assert.deepEqual(rows.filter((r) => r.origin === "trigger").map((r) => [r.kind, r.summary]), [["phase", `Trigger ${id}: Triage this event.`]]);
+    assert.deepEqual(rows.filter((r) => r.origin === "trigger").map((r) => [r.kind, r.summary]), [["phase", "Webhook on push: Triage this event."]]);
+    assert.equal((await api("GET", `/runs/${fired.run_id}`)).body.title, "Webhook on push", "titled from its trigger, never its payload's markup");
   });
 }
 
@@ -92,7 +93,7 @@ test("a webhook trigger's message to a run is the trigger's, owner false: the ru
   assert.match(entries[1].text, /^A new event came in\./, "the model reads the firing's text");
   assert.deepEqual(entries[1].origin, { kind: "trigger", trigger_id: id, source: "webhook", owner: false });
   assert.deepEqual(rows.filter((r) => r.kind === "user_message").map((r) => r.summary), ["You: Say hello."]);
-  assert.deepEqual(rows.filter((r) => r.origin === "trigger").map((r) => r.summary), [`Trigger ${id}: A new event came in.`]);
+  assert.deepEqual(rows.filter((r) => r.origin === "trigger").map((r) => r.summary), ["Webhook inbox: A new event came in."]);
 });
 
 test("a schedule's runs take their input as the trigger's, owner true: fired on time and fired by hand", { timeout: 120_000, skip: RUN_EXEC }, async (t) => {

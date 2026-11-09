@@ -33,6 +33,7 @@ import { runGate } from "../tool-gate.js";
 import { callNodeAskText, deniedText } from "../refusal-words.js";
 import { loadToolSettings, planeOf, TOOL_PLANE_ENV } from "../tool-plane.js";
 import { AsyncLocalStorage } from "node:async_hooks";
+import { SUBMIT_TOOL } from "@parcha/agentrun-pi";
 import { type PaidBooking, parallelExtractFee, parallelSearchFee } from "../paid-calls.js";
 import { searchArgs } from "../web-search.js";
 import { money, pricingOf, requestPrice, type RunTools, TOOL_SESSION } from "@parcha/agentrun-kernel/kernel/cap";
@@ -43,7 +44,8 @@ import { policyFor } from "./adapters/pi.js";
 import { sessionProvider } from "../port-models.js";
 import { journalSessions } from "./sessions.js";
 import { type BudgetData, type EndData, KINDS, type RaiseData } from "./journal-kinds.js";
-import { type CapRefusal, PAUSED_WORDS, type WorkflowCapRule, type WorkflowHostHooks, type WorkflowRunSpec } from "./workflow-loop.js";
+import { type CapRefusal, PAUSED_WORDS, type WorkflowCapRule, type WorkflowHostHooks, type WorkflowRunSpec, type WorkflowSpecRun } from "./workflow-loop.js";
+import { heldRedactor, holdClaimed } from "./redact.js";
 import { type DecisionDriver, type WorkflowCap, workflowHost, type WorkflowHostDeps } from "./workflow-host.js";
 import type { Store } from "../store/store.js";
 
@@ -180,11 +182,17 @@ function capRuleOf(capUsd: number): WorkflowCapRule {
 
 /** The claim-time builder: `specOf(claim)` the loop calls. Reads the run's launch and revision, resolves each tier's
  *  provider, and returns the spec. The model proxies and the booking are started per claim (release closes them). */
-export function workflowSpecOf(deps: WorkflowSpecDeps): (claim: { runId: string }) => Promise<WorkflowRunSpec> {
+export function workflowSpecOf(deps: WorkflowSpecDeps): (claim: { runId: string }, run?: WorkflowSpecRun) => Promise<WorkflowRunSpec> {
   const now = deps.now ?? Date.now;
   // The run's models resolve the one way the runner resolves any (routeProviderOf over routeOf), unless a test gives its own.
   const providerOf = deps.providerOf ?? routeProviderOf(deps.env ?? process.env);
-  return async (claim) => {
+  return async (claim, run) => {
+    /** The keys a claim opens, held by the runner's one redactor (run.redact) before a decision can echo one. */
+    const holding = async (opening: Promise<NodeJS.ProcessEnv>): Promise<NodeJS.ProcessEnv> => {
+      const opened = await opening;
+      if (run?.redact) holdClaimed(heldRedactor(run.redact), opened);
+      return opened;
+    };
     const claimed = await readClaim(deps, claim.runId);
     const tiers = tiersOf(claimed.workflow);
 
@@ -198,9 +206,13 @@ export function workflowSpecOf(deps: WorkflowSpecDeps): (claim: { runId: string 
     const hooks = deferredHooks();
     // The call nodes' effects in flight: a model request inside one is not where a pause lands (pauseAtEffects).
     const flight: EffectsInFlight = { count: 0 };
+    // What a model node offers its model: its `submit` and the tools its node names. The session proxy's policy drops every
+    // tool definition it is not given, so it admits this whole set by name (as pi's admits its session's tools); main's
+    // nodes send their requests straight to the provider (app.ts:117), unfiltered.
+    const offered = nodeOffer(claimed.workflow);
     for (const [tier, provider] of providers) {
       const proxy = await startModelProxy({
-        policy: provider.policy,
+        policy: await policyFor({ api: provider.api, origin: provider.origin, credential: provider.credential, ...(provider.headers ? { headers: provider.headers } : {}) }, provider.modelId, offered),
         hooks: hooks.port,
         model: provider.modelId,
         origin: provider.origin,
@@ -236,7 +248,7 @@ export function workflowSpecOf(deps: WorkflowSpecDeps): (claim: { runId: string 
     const decisions = deps.decisionProvidersOf
       ? (await deps.decisionProvidersOf()) ?? undefined
       : deps.sealKey
-        ? (await decisionProvidersIn(await claimSecrets({ store: deps.store, sealKey: deps.sealKey, ...(deps.env ? { env: deps.env } : {}) }, claimed.revision, { plane: claimed.plane }))) ?? undefined
+        ? (await decisionProvidersIn(await holding(claimSecrets({ store: deps.store, sealKey: deps.sealKey, ...(deps.env ? { env: deps.env } : {}) }, claimed.revision, { plane: claimed.plane })))) ?? undefined
         : undefined;
     // A decision's images load from the run's work folder, unless a test gives its own loader.
     const loadImage: LoadImage | undefined = deps.loadImage ?? (decisions ? imageLoader(claimed.workRoot) : undefined);
@@ -699,14 +711,21 @@ const finiteUsd = (usd: unknown): number | null => (typeof usd === "number" && N
 const UNBILLED = new Set(["configuration", "auth", "invalid_request", "rate_limited", "connection"]);
 const unbilled = (error: unknown): boolean => error instanceof DecisionProviderError && (error.unsent === true || UNBILLED.has(error.code));
 
-/** The tiers the workflow's model nodes run on (model.ts): the llm tiers over its nodes, else the default. */
+/** The tiers the workflow's model nodes run on (model.ts): the llm tiers over its nodes, read as toolsOf reads them (its
+ *  inspection's node paths), else the default. */
 function tiersOf(workflow: Workflow): Tier[] {
-  const nodes = workflowNodes(workflow, { nodes: [] } as never);
+  const nodes = workflowNodes(workflow, inspectWorkflow(workflow));
   const tiers = llmTiers(nodes, nodeTiers(nodes));
   return tiers.length ? tiers : ["default"];
 }
 
 /** The tools the workflow may call, for the host to register. */
+/** The tool names a workflow's model node offers its model: the node's `submit` (pi's SUBMIT_TOOL) and every tool the
+ *  workflow's model nodes name. */
+export function nodeOffer(workflow: Workflow): string[] {
+  return [...new Set([SUBMIT_TOOL, ...workflowTools(workflowNodes(workflow, inspectWorkflow(workflow))).nodes])];
+}
+
 function toolsOf(workflow: Workflow): string[] {
   // A call node's tool, as main's per-run process registers it (app.ts:490, the workflow's own): the call tools the
   // workflow names (tools.ts CALL_TOOLS); any other was refused at its start (runnable.ts).

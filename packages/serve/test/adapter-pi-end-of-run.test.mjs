@@ -19,11 +19,13 @@ import { closeOpenSessions, openSessions, piAdapterSpec } from "./conformance-pi
 const { createAdapterLoop } = await import("../dist/runner/adapter-loop.js");
 const quiet = { beforeIntent: async () => {}, beforeResult: async () => {} };
 const TIMING = { leaseMs: 600, renewEveryMs: 150, stopMarginMs: 200, pollMs: 20, commandPollMs: 30 };
+/** A lease no stall of a loaded machine outlasts: for a case whose point is not the lease. */
+const STEADY = { leaseMs: 60_000, renewEveryMs: 1_000, stopMarginMs: 5_000, pollMs: 20, commandPollMs: 30 };
 const WAIT_MS = 15_000;
 const told = (marker) => ({ table: "channel_told", row: { channel: "learning:test", marker } });
 after(closeOpenSessions);
 
-async function setup(t) {
+async function setup(t, timing = TIMING) {
   const dir = mkdtempSync(join(process.env.TMPDIR ?? tmpdir(), "agentrun-adapter-end-of-run-"));
   const server = await openSqliteStore({ dataDir: dir, role: "server" });
   const runners = [];
@@ -39,7 +41,7 @@ async function setup(t) {
   const start = async (createLoop, name) => {
     const store = await openSqliteStore({ dataDir: dir, role: "runner" });
     stores.push(store);
-    const runner = startRunner({ store, createLoop, name, ...TIMING });
+    const runner = startRunner({ store, createLoop, name, ...timing });
     runners.push(runner);
     return runner;
   };
@@ -63,7 +65,9 @@ async function setup(t) {
   const toldRows = () => read("SELECT channel, run_id, marker FROM channel_told ORDER BY marker");
   const entriesOf = (kind) => read("SELECT COUNT(*) AS n FROM pi_entries WHERE run_id = ? AND json_extract(record, '$.kind') = ?", "run-1", kind)[0].n;
   const endEntries = () => entriesOf("agentrun.end");
-  return { server, start, until, toldRows, endEntries, entriesOf };
+  /** Each end entry of the run, its data. */
+  const endsOf = () => read("SELECT json_extract(record, '$.data') AS data FROM pi_entries WHERE run_id = ? AND json_extract(record, '$.kind') = 'agentrun.end'", "run-1").map((row) => JSON.parse(row.data));
+  return { server, start, until, toldRows, endEntries, entriesOf, endsOf };
 }
 
 /** The adapter loop on `spec`, its spec naming the run's agent and carrying `extra` (endPatch, harnessReady), its deps
@@ -166,15 +170,20 @@ test("pi through the adapter: the learning hook asks again once when the parser 
   assert.ok(await server.runs.get("run-1-learning"), "one learning run queued");
 });
 
-/** A journal that refuses the commit that writes the run's end, and every one after it: an end whose commit is fenced. */
-function refusingTheEnd(journal) {
+/** A journal that refuses the commit that writes the run's end, and every one after it: an end whose commit is fenced.
+ *  `refused` counts the end commits it refused. */
+function refusingTheEnd(journal, refused = { ends: 0 }) {
   let refusing = false;
   return new Proxy(journal, {
     get(target, key, receiver) {
       if (key === "commit") {
         return async (batches, receive, context) => {
-          if (batches.some((batch) => batch.some((write) => write.type === "entry" && write.value.kind === "agentrun.end"))) refusing = true;
-          if (refusing) throw new Error("the store refused the end's commit");
+          const isEnd = batches.some((batch) => batch.some((write) => write.type === "entry" && write.value.kind === "agentrun.end"));
+          if (isEnd) refusing = true;
+          if (refusing) {
+            if (isEnd) refused.ends += 1;
+            throw new Error("the store refused the end's commit");
+          }
           return target.commit(batches, receive, context);
         };
       }
@@ -192,15 +201,21 @@ test("pi through the adapter: the end patch (outcome, cost, metrics) lands on th
   assert.deepEqual([row.outcome, row.costUsd, row.metrics], ["escalated", 1.25, { requests: 3 }]);
 });
 
+// The loop's end (ended, with the spec's end patch) is refused, and so is its failed end after it. The runner then ends the
+// run itself (runner.ts endRun): failed with why, in an end entry of its own written through the store, never the loop's,
+// and with none of the loop's patch. Waited for by the run's final state, never by a state the queued run already has; on
+// a lease no stall outlasts, so the claim the loop ends under is the one the runner ends.
 test("pi through the adapter: a fenced end writes neither the end nor its patch", async (t) => {
-  const { start, until, endEntries } = await setup(t);
+  const { start, until, endsOf } = await setup(t, STEADY);
   const endPatch = async () => ({ outcome: "escalated", costUsd: 1.25, metrics: { requests: 3 } });
-  await start(loopWith(piAdapterSpec({ script: [{ say: "done" }], tools: {}, hooks: quiet }), { endPatch }, (deps) => ({ journal: (claim) => refusingTheEnd(deps.journal(claim)) })), "runner-a");
-  // The loop could write no end, so the runner stores the run failed with why, outside the journal.
-  const row = await until((r) => r.state !== "running" && r.runner === null, "the runner did not settle the run");
-  assert.notEqual(row.state, "ended", "the end did not land");
-  assert.equal(endEntries(), 0, "no end entry");
-  assert.deepEqual([row.outcome, row.costUsd, row.metrics], [null, null, null], "nor its patch");
+  const refused = { ends: 0 };
+  await start(loopWith(piAdapterSpec({ script: [{ say: "done" }], tools: {}, hooks: quiet }), { endPatch }, (deps) => ({ journal: (claim) => refusingTheEnd(deps.journal(claim), refused) })), "runner-a");
+  const row = await until((r) => r.state === "failed" && r.runner === null, "the runner did not end the run failed");
+  assert.ok(refused.ends >= 1, `the loop's end was tried and refused: ${refused.ends}`);
+  const ends = endsOf();
+  assert.deepEqual(ends.map((end) => end.state), ["failed"], `one end: the runner's failed one, never the loop's ended one: ${JSON.stringify(ends)}`);
+  assert.match(ends[0].summary ?? "", /refused the end's commit/, "saying why");
+  assert.deepEqual([row.outcome, row.costUsd, row.metrics], [null, null, null], "and none of the loop's patch");
 });
 
 test("pi through the adapter: an end patch whose reader stalls cannot hold a person's stop: the run still ends stopped", async (t) => {
