@@ -344,6 +344,11 @@ async function rotatedAcross(t, { expiresAt, stop }) {
   stop({ step, signal });
   hold.answer();
   if (!step) await first.catch(() => undefined);
+  // The granted set kept: the first claim's write of it lands (its lease let go) before the clock jumps past that lease
+  // and the next claim reads the row. On a store with many writers (Postgres) the next claim's read could otherwise come
+  // first, find the lease lapsed on the jumped clock, and take the spent set, which no real refresh (bounded far inside
+  // its lease) could make it do.
+  while ((await store.mcp.server("fake"))?.refreshHolder != null) await new Promise((resolve) => setTimeout(resolve, 2));
   // Later, past the old token's expiry: the next claim needs the rotated set, or a refresh with the spent token.
   const next = await claimOf(store, claim, ["mcp:fake/add"], { now: () => T0 + 120_000, bounds });
   t.after(() => next.release());
