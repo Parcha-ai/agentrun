@@ -148,6 +148,109 @@ const EVENT_MAX_CHARS = 1 << 22;
 
 /** What of a response reached its client, event by event: each whole server-sent event (up to a blank line) read by
  *  each of `readers`, its bytes added to that reader's sum; a reader the policy does not have counts none. */
+/** What a secret this proxy sent reads as in a provider's error the harness gets. */
+export const REDACTED = "[redacted]";
+
+/** The forms a provider may echo `secrets` in: as sent, JSON-escaped, and with "/" escaped as "\/" (some JSON encoders do),
+ *  the longest first, so a form that holds a shorter one is cut whole. */
+export function echoForms(secrets: readonly string[]): string[] {
+  const forms = secrets.filter((secret) => secret.length > 0).flatMap((secret) => [secret, JSON.stringify(secret).slice(1, -1), secret.replaceAll("/", "\\/")]);
+  return [...new Set(forms)].sort((a, b) => b.length - a.length);
+}
+
+/**
+ * What the harness gets of a provider's answer: as it came, but for the provider's own words in an error, where a secret
+ * this proxy sent (`forms`, echoForms) is cut out and then the host's `redact` runs.
+ *   - `error` (an answer with an error status): every piece, cut as it comes, holding back only the end that could still
+ *     begin a form (an error body the provider never finishes reaches the client as it comes); the body's end, cut, and
+ *     any start of a form it ends on cut too.
+ *   - `events` (a successful streamed answer): each event is read from its first line: an error event (`event: error` or
+ *     `event: response.failed`, or a first data line whose JSON type is `error` or `response.failed`) is held to its end
+ *     and cut whole; every other event passes as it comes, the start of each held only until its first line is whole.
+ *   - `as-is`: every piece as it came.
+ * A `redact` that throws leaves the cut, and is said.
+ */
+export function errorCut(mode: "error" | "events" | "as-is", forms: readonly string[], redact: ((text: string) => string) | undefined, say: (message: string) => void): { push(text: string): string; end(): string } {
+  const cut = (text: string): string => forms.reduce((out, form) => out.split(form).join(REDACTED), text);
+  const redacted = (text: string): string => {
+    if (!text || !redact) return text;
+    try {
+      return redact(text);
+    } catch (error) {
+      say(`the host's redactor threw (${String((error as Error)?.message ?? error).slice(0, 200)}): the error is sent with the proxy's own cut only`);
+      return text;
+    }
+  };
+  if (mode === "as-is" || !forms.length && !redact) return { push: (text) => text, end: () => "" };
+  /** The length of the longest end of `text` that is a proper start of a form. */
+  const startOfForm = (text: string): number => {
+    let longest = 0;
+    for (const form of forms) for (let n = Math.min(form.length - 1, text.length); n > longest; n--) if (text.endsWith(form.slice(0, n))) longest = n;
+    return longest;
+  };
+  if (mode === "error") {
+    let held = "";
+    return {
+      push(text) {
+        const all = cut(held + text);
+        const keep = startOfForm(all);
+        held = all.slice(all.length - keep);
+        return redacted(all.slice(0, all.length - keep));
+      },
+      end() {
+        // A body that ends on the start of a form ends on part of a secret: cut too.
+        const rest = held ? REDACTED : "";
+        held = "";
+        return redacted(rest);
+      },
+    };
+  }
+  const ERROR_EVENT = /^(?:event:\s*(?:error|response\.failed)\s*$|data:\s*\{\s*"type"\s*:\s*"(?:error|response\.failed)")/;
+  /** The event's state: `start` until its first line is whole (that line held), then `raw` or `error` (held whole). */
+  let state: "start" | "raw" | "error" = "start";
+  let line = "";
+  let event = "";
+  return {
+    push(text) {
+      let out = "";
+      for (let at = 0; at < text.length; ) {
+        const end = text.indexOf("\n", at);
+        const piece = end === -1 ? text.slice(at) : text.slice(at, end + 1);
+        at += piece.length;
+        line += piece;
+        if (state === "raw") out += piece;
+        if (end === -1) break;
+        const blank = line === "\n" || line === "\r\n";
+        if (state === "start") {
+          if (blank) out += line;
+          else if (ERROR_EVENT.test(line.replace(/\r?\n$/, ""))) {
+            state = "error";
+            event = line;
+          } else {
+            state = "raw";
+            out += line;
+          }
+        } else if (state === "error") event += line;
+        if (blank && state !== "start") {
+          if (state === "error") out += redacted(cut(event));
+          state = "start";
+          event = "";
+        }
+        line = "";
+      }
+      // An event's first line not yet whole is held; a raw event's partial line went out as it came.
+      return out;
+    },
+    end() {
+      const rest = state === "error" ? redacted(cut(event + line)) : state === "start" ? redacted(cut(line)) : "";
+      line = "";
+      event = "";
+      state = "start";
+      return rest;
+    },
+  };
+}
+
 function eventCounter<K extends string>(readers: Record<K, ((event: string) => number) | undefined>): { push(text: string): void; bytes(of: K): number } {
   const keys = (Object.keys(readers) as K[]).filter((key) => readers[key] !== undefined);
   const sums = Object.fromEntries(keys.map((key) => [key, 0])) as Record<K, number>;
@@ -227,6 +330,11 @@ export interface ModelProxyOptions {
   origin: string;
   /** The provider's credential, read for each request. */
   credential: () => string | Promise<string>;
+  /** The host's redactor, for a provider's own words in an error (an answer with an error status, or an error event inside
+   *  a streamed answer): the harness keeps them, so they pass through it. Before it, and whatever it does, the credential
+   *  this proxy sent and the values of the headers it added are cut out of them (a provider echoes a wrong key back):
+   *  the harness never holds the provider's credential. */
+  redact?: (text: string) => string;
   /** The price of a response, or null when it is unknown. */
   price?: (model: string, usage: ProxyUsage) => number | null;
   log?: (message: string, detail?: Record<string, unknown>) => void;
@@ -853,8 +961,31 @@ export async function startModelProxy(options: ModelProxyOptions, key: string): 
         }
       }
       began = { ok: upstream.ok, status: upstream.status };
-      res.writeHead(upstream.status, { "content-type": upstream.headers.get("content-type") ?? "application/json" });
+      const contentType = upstream.headers.get("content-type") ?? "application/json";
+      res.writeHead(upstream.status, { "content-type": contentType });
       const decoder = new TextDecoder();
+      // The provider's own words in an error reach the harness with the credential this proxy sent, and the values of the
+      // headers it added, cut out, then the host's redactor (errorCut): an error answer, or an error event in a stream.
+      const relay = errorCut(
+        !upstream.ok ? "error" : /^text\/event-stream\b/i.test(contentType) ? "events" : "as-is",
+        echoForms([credential, ...Object.values(hostHeaders).filter((value) => value.length >= 8)]),
+        options.redact,
+        (message) => say(`model proxy (${policy.id}): ${message}`),
+      );
+      const write = async (out: string): Promise<void> => {
+        if (!out || res.destroyed) return;
+        const bytes = Buffer.from(out, "utf8");
+        sentBytes += bytes.byteLength;
+        // A client that reads slowly holds the provider back: nothing more is read until what was written drains.
+        if (!res.write(bytes)) {
+          // One wait, and nothing left behind: whichever comes first takes both listeners off.
+          await new Promise<void>((resolve) => {
+            const done = () => { res.off("drain", done); res.off("close", done); resolve(); };
+            res.on("drain", done);
+            res.on("close", done);
+          });
+        }
+      };
       let watcher: { chunk(text: string): void; failed?(): void; end?(): void } | undefined;
       try {
         // The host's own side requests are never the harness's to watch.
@@ -896,23 +1027,19 @@ export async function startModelProxy(options: ModelProxyOptions, key: string): 
             }
           }
           if (upstream.ok && lines.length > 1) tellStops(window);
-          // A client that reads slowly holds the provider back: nothing more is read until what was written drains. A
-          // client gone after the stop was told is written nothing more: the answer is read on for its usage alone.
-          if (!res.destroyed && !res.write(chunk)) {
-            // One wait, and nothing left behind: whichever comes first takes both listeners off.
-            await new Promise<void>((resolve) => {
-              const done = () => { res.off("drain", done); res.off("close", done); resolve(); };
-              res.on("drain", done);
-              res.on("close", done);
-            });
-          }
+          // A client gone after the stop was told is written nothing more: the answer is read on for its usage alone.
+          const out = relay.push(text);
+          await write(out);
           // The usage is at the start, the end, or both: keep those, not the whole answer.
           length += text.length;
-          sentBytes += chunk.byteLength;
-          sentOf.push(text);
+          sentOf.push(out);
           if (head.length < USAGE_WINDOW) head += text.slice(0, USAGE_WINDOW - head.length);
           tail = (tail + text).slice(-USAGE_WINDOW);
         }
+        // What the relay held at the answer's end: an error event's or an error body's rest, cut.
+        const rest = relay.end();
+        await write(rest);
+        sentOf.push(rest);
       }
       res.end();
       answered = { ok: upstream.ok };

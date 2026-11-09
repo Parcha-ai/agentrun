@@ -90,8 +90,9 @@ const leaks = (text) => [CREDENTIAL, ESCAPED, TAG].some((form) => text.includes(
 test("a provider's error answer that echoes its key reaches the harness with the key cut out, under every policy this server ships", async (t) => {
   for (const [name, shipped] of Object.entries(POLICIES)) {
     await t.test(name, async (t) => {
-      for (const said of [CREDENTIAL, ESCAPED, `${CREDENTIAL} (tag ${TAG})`]) {
-        const got = await received(t, shipped, 401, JSON.stringify(shipped.status(said)));
+      // The key as sent; as an encoder that escapes "/" writes the whole body; and beside a header value the host added.
+      for (const body of [JSON.stringify(shipped.status(CREDENTIAL)), JSON.stringify(shipped.status(CREDENTIAL)).replaceAll("/", "\\/"), JSON.stringify(shipped.status(`${CREDENTIAL} (tag ${TAG})`))]) {
+        const got = await received(t, shipped, 401, body);
         assert.equal(got.status, 401);
         assert.ok(!leaks(got.text), `the error answer reached the harness with a secret in it: ${got.text}`);
         assert.ok(got.text.includes("[redacted]"), got.text);
