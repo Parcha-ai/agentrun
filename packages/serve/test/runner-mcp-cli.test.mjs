@@ -124,6 +124,7 @@ async function cliRun(t, { settings = {}, grants = ["mcp:fake/add"] } = {}) {
       record: "loop",
       hooks: quiet,
       gate: (call) => permissionOf(call.tool, settings),
+      runCap: { capUsd: () => undefined, modelOf: () => undefined },
       ...(mcp ? { mcp } : {}),
     };
   });

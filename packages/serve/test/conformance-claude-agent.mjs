@@ -88,6 +88,7 @@ export function claudeAgentSpec({ script, tools, hooks, agentId }) {
     record: harness.record,
     session: { key: "root", label: "root", system: ["Follow the script."], tools: hostTools(tools), context: "fresh" },
     input: INPUT,
+    runCap: { capUsd: () => undefined, modelOf: () => undefined },
     hooks,
     gate: (call) => (tools[call.tool]?.ask ? "ask" : "allow"),
   });

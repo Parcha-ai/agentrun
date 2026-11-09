@@ -25,7 +25,7 @@ import { randomUUID } from "node:crypto";
 import { defineTool, ROOT_CONVERSATION_ID, type ToolRegistration } from "@earendil-works/pi-durable";
 import type { McpCallResult, McpTool, SessionMcp } from "@parcha/agentrun-kernel";
 import { TOOL_COST, TOOL_UNMETERED } from "@parcha/pi-durable-agent/timeline";
-import { holdRefusal, paidLedger, paidStep, writeHold } from "./paid-calls.js";
+import { holdRefusal, paidLedger, paidPause, paidStep, writeHold } from "./paid-calls.js";
 import { paidCall } from "./cap.js";
 import { wireName } from "./catalog.js";
 import { metaToolOf } from "./mcp-meta.js";
@@ -424,7 +424,11 @@ export function mcpGateway(options: McpGatewayOptions): McpGateway {
     const onLedger = paidLedger();
     if (onLedger) {
       const stepped = await paidStep(onLedger, callId ?? name, { name, holdUsd: price, basis: `the price its owner set for ${name}` }, () => call(), () => (went ? price : 0));
-      return "refused" in stepped ? said(stepped.refused, true) : stepped.result;
+      if (!("refused" in stepped)) return stepped.result;
+      // Refused for room (a raise would send it): the run pauses on the cap's refusal, as main's paidCall paused it (the
+      // run's one pause, ledger.pause); a refusal for good is told to the model and the run goes on.
+      if (stepped.refusal && !stepped.refusal.forGood) await paidPause()?.(stepped.refusal);
+      return said(stepped.refused, true);
     }
     if (!commit) return said(`${name} was not sent: this call has no run to book its price under.`, true);
     const paid = await paidCall(name, async () => {

@@ -32,6 +32,9 @@ export interface RunCapOptions {
   /** The run's priced tools' charges and holds beside its requests (beforeRequestOf's), when it has any. */
   spentUsd?(): number | null;
   heldUsd?(): number | null;
+  /** Told each request the rule judged, with the run's totals it was asked with, and its answer (an observer: a live
+   *  view of the cap, a test's record). */
+  judged?(request: Parameters<BeforeRequest>[0], answer: Awaited<ReturnType<BeforeRequest>>): void;
 }
 
 /** A run's decisions on its one cap: each admitted before it is sent and settled once it answered. */
@@ -61,8 +64,9 @@ export interface RunCap {
 
 /** A run's paid tool calls on its one cap. */
 export interface RunTools {
-  /** Admits the paid request `id` at its price (`holdUsd`): its hold, or CapRefused. */
-  admit(request: { readonly id: string; readonly name: string; readonly holdUsd: number; readonly basis: string }): Promise<Admission>;
+  /** Admits the paid request `id` at its price (`holdUsd`): its hold, or CapRefused. `call`: the tool call it runs under,
+   *  named on its runner.request (none for a step under no call, a person's browser time). */
+  admit(request: { readonly id: string; readonly name: string; readonly holdUsd: number; readonly basis: string; readonly call?: string }): Promise<Admission>;
   /** Settles it at what it charged (null: at its hold; 0: nothing was billed). */
   settle(id: string, usd: number | null): Promise<number | null>;
   spentUsd(): number | null;
@@ -85,7 +89,11 @@ export function runCap(options: RunCapOptions): RunCap {
     ...(options.spentUsd ? { spentUsd: options.spentUsd } : {}),
     ...(options.heldUsd ? { heldUsd: options.heldUsd } : {}),
   });
-  const before = runBooking(options.sessions, rule);
+  const before = runBooking(options.sessions, options.judged ? async (request) => {
+    const answer = await rule(request);
+    options.judged!(request, answer);
+    return answer;
+  } : rule);
 
   const forget = (key: string) => void deciding.delete(key);
   return {
@@ -118,7 +126,7 @@ export async function paidCalls(writer: SessionWriter, before: BeforeRequest, op
   const steps = await stepsOn(writer, before, options.flush, "paid call", () => {});
   return {
     // A hold that is no figure (an unpriced browser provider's) goes to the rule as given, which refuses it for good.
-    admit: (request) => steps.book(request.id, { model: `paid:${request.name}`, inputTokensMax: 0, ...(request.holdUsd !== 0 ? { feeUsd: request.holdUsd } : {}), paid: { name: request.name, basis: request.basis } }),
+    admit: (request) => steps.book(request.id, { model: `paid:${request.name}`, inputTokensMax: 0, ...(request.holdUsd !== 0 ? { feeUsd: request.holdUsd } : {}), paid: { name: request.name, basis: request.basis, ...(request.call === undefined ? {} : { call: request.call }) } }),
     settle: (id, usd) => steps.settle(id, usd),
     spentUsd: steps.spentUsd,
     heldUsd: steps.heldUsd,

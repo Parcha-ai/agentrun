@@ -17,8 +17,8 @@ import { mkdir } from "node:fs/promises";
 import { join } from "node:path";
 import { BACKGROUND_CONTEXT } from "@earendil-works/chord/context";
 import { ROOT_CONVERSATION_ID } from "@earendil-works/pi-durable";
-import { beforeRequestOf, type CapModel, type CapRefused, checkRaise, followUpOf, parkOf } from "@parcha/agentrun-kernel/kernel/cap";
-import type { BeforeRequest, SessionSpec } from "@parcha/agentrun-kernel";
+import { type CapModel, type CapRefused, checkRaise, followUpOf, parkOf } from "@parcha/agentrun-kernel/kernel/cap";
+import type { SessionSpec } from "@parcha/agentrun-kernel";
 import type { AdapterNeeds } from "../adapters.js";
 import { thinkingFor } from "../adapters.js";
 import type { Approvals } from "../approvals.js";
@@ -174,14 +174,14 @@ export async function cliRunSpecFromLaunch(launch: RunLaunch, run: AdapterRun, d
   const listed = chosen.models.getModel(priced.provider, priced.modelId) as { cost?: Partial<CapPrice>; maxTokens?: number } | undefined;
   const capModel = capModelOf(priced.modelId, facts.wire, listed, chosen.unpriced.has(priced.modelId) || listed === undefined);
   const capUsd = launch.maxCostUsd;
-  const beforeRequest: BeforeRequest | undefined = capUsd === undefined
-    ? undefined
-    : beforeRequestOf({
-        capUsd: () => launch.maxCostUsd,
+  // The run's one cap (the loop builds the kernel's runCap from it, on the run's own sessions): every paid request of the
+  // run, its model requests and its paid tool calls, admitted and booked through it. An uncapped run reads no cap.
+  const runCap: AdapterRunSpec["runCap"] = {
+    capUsd: () => launch.maxCostUsd,
         // One model per CLI session: every request it sends is the run's model, whatever id its provider names it by.
-        modelOf: () => capModel,
-        ...(launch.capMode === "strict" ? { mode: "strict" as const } : {}),
-      });
+    modelOf: () => capModel,
+    ...(launch.capMode === "strict" ? { mode: "strict" as const } : {}),
+  };
   const cap = capUsd === undefined
     ? undefined
     : {
@@ -216,7 +216,7 @@ export async function cliRunSpecFromLaunch(launch: RunLaunch, run: AdapterRun, d
     input,
     ...(runner.record ? { record: runner.record } : {}),
     gate: (call) => gate.policy(call.tool),
-    ...(beforeRequest ? { beforeRequest } : {}),
+    runCap,
     ...(cap ? { cap } : {}),
     ...(mcp ? { mcp } : {}),
     agentId: runRow.agentId,

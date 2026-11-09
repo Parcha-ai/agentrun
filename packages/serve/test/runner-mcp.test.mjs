@@ -12,7 +12,7 @@ import { test } from "node:test";
 import { startFakeMcp } from "./fixtures/fake-mcp-server.mjs";
 import { closeOpenSessions, MODEL, piAdapterSpec, scriptedOrigin } from "./conformance-pi-adapter.mjs";
 import { BACKGROUND_CONTEXT } from "@earendil-works/chord/context";
-import { beforeRequestOf, rootEntries, SONNET, specCap } from "./adapter-pi-cap-support.mjs";
+import { rootEntries, SONNET, specCap } from "./adapter-pi-cap-support.mjs";
 
 /** A tool as the registry keeps it: as its server listed it (input_schema). */
 const listed = ({ inputSchema, ...tool }) => ({ ...tool, input_schema: inputSchema });
@@ -91,7 +91,7 @@ async function mcpRun(t, { script, grants, settings = {}, tools = [ADD, PAID], p
       ...(mcp ? { mcp } : {}),
       ...(capUsd === undefined ? {} : {
         cap: specCap(capUsd),
-        beforeRequest: beforeRequestOf({ capUsd: () => capUsd, modelOf: (id) => (id === MODEL ? SONNET : undefined) }),
+        runCap: { capUsd: () => capUsd, modelOf: (id) => (id === MODEL ? SONNET : undefined) },
       }),
     };
   }, { restartLimit: MAX_RESTARTS });
@@ -279,6 +279,9 @@ test("R10: a priced MCP call with room is sent once, held at its price and booke
   assert.equal(held?.data.heldUsd, 0.5, "held at its price before it left");
   const booked = entries.find((entry) => entry.kind === "runner.turn" && entry.conversationId === held.conversationId && entry.data.turn === held.data.turn);
   assert.equal(booked?.data.usd, 0.5, "booked at its price");
+  // Booked once: on the one ledger, never again by the gateway's own marks on the run's root.
+  assert.equal(entries.filter((entry) => entry.kind === "runner.request" && entry.data.model === "paid:mcp:fake/paid").length, 1, "one hold");
+  assert.deepEqual(await entriesOf(server, TOOL_COST), [], "no second booking on the run's root");
 });
 
 test("R11: a command row handed to a running loop makes its MCP credentials fresh again before its next model request", async (t) => {
