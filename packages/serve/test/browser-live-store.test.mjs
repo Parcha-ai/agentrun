@@ -7,7 +7,7 @@
 import assert from "node:assert/strict";
 import { randomBytes } from "node:crypto";
 import { test } from "node:test";
-import { dropLiveViewer, liveViewer, liveViewerById, putLiveViewer, readLiveViewers } from "../dist/browser-live.js";
+import { dropLiveViewer, liveViewer, liveViewerById, liveViewerFor, liveViewerLink, putLiveViewer, readLiveViewers, viewerLink } from "../dist/browser-live.js";
 import { aadOf, sealColumn, sealedAt } from "../dist/store/seal.js";
 import { fakeLiveViewersStore } from "./live-viewers-support.mjs";
 
@@ -176,4 +176,24 @@ test("the token's plaintext reaches no store row: the store is handed the tag, p
     assert.ok(!Buffer.from(v.sealed).includes(given.token), "not in the sealed bytes");
     assert.ok(!JSON.stringify(v).includes(given.token), "nor anywhere in what put was handed");
   }
+});
+
+test("the owner's link over the store is under the run's /computer/live/ path, kind browser: the newest viewer whose port answers, none when none does; the live route finds a viewer's page by its id and the files by the newest", async () => {
+  const store = fakeLiveViewersStore({ start: 1_000 });
+  const claim = store.claim(RUN);
+  const older = handover("ar-run-1-1");
+  const newer = handover("ar-run-1-2");
+  await putLiveViewer(store, KEY, claim, older);
+  store.advance(1_000);
+  await putLiveViewer(store, KEY, claim, newer);
+  assert.equal(viewerLink(RUN, newer), `/v2/runs/${RUN}/computer/live/v/${newer.id}#t=${newer.token}`);
+  assert.deepEqual(await liveViewerLink(store, KEY, RUN, async () => true), { kind: "browser", viewer: `/v2/runs/${RUN}/computer/live/v/${newer.id}#t=${newer.token}` });
+  assert.deepEqual(await liveViewerLink(store, KEY, RUN, async (h) => h.id === older.id), { kind: "browser", viewer: `/v2/runs/${RUN}/computer/live/v/${older.id}#t=${older.token}` }, "the newest whose port answers");
+  assert.equal(await liveViewerLink(store, KEY, RUN, async () => false), undefined, "none answers: none");
+  assert.equal(await liveViewerLink(store, randomBytes(32), RUN, async () => true), undefined, "no seal opens: none");
+  assert.equal((await liveViewerFor(store, KEY, RUN, `/v/${older.id}`))?.id, older.id);
+  assert.equal((await liveViewerFor(store, KEY, RUN, "/viewer.js"))?.id, newer.id);
+  assert.equal((await liveViewerFor(store, KEY, RUN, "/viewer.css"))?.id, newer.id);
+  for (const rest of ["/v/AAAAAAAAAAAAAAAAAAAAAA", "/other.js", `/v/${older.id}/ws`, "/"]) assert.equal(await liveViewerFor(store, KEY, RUN, rest), undefined, rest);
+  assert.equal(await liveViewerFor(store, KEY, "run-2", "/viewer.js"), undefined, "another run's: none");
 });

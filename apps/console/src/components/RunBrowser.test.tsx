@@ -6,7 +6,7 @@ import { messageFeatures, runFixture } from "@/fixtures";
 import { ClientError } from "@/lib/client";
 import type { Run, RunBrowser } from "@/lib/v2";
 
-// The run page's Browser tab, over GET /v2/runs/{id}/browser (owner session only, no-store): `off` (no browser, or it
+// The run page's Browser tab, over GET /v2/runs/{id}/computer (owner session only, no-store): `off` (no browser, or it
 // resolves unavailable) hides it; `none` (one, with no session open yet or any more) waits; `live` embeds the session's
 // viewer. The viewer is a same-origin path whose token is in its fragment: it is the iframe's src and nothing else, never
 // in the address bar, the history, storage, the console or an error.
@@ -21,8 +21,8 @@ afterEach(() => { act(() => root?.unmount()); document.body.innerHTML = ""; vi.r
 const f = runFixture("run.completed.idle.1");
 const working = { ...f.run, kind: "agentic", status: "working", state: "working", result: null } as Run;
 const RUN = working.run_id;
-const VIEWER = `/v2/runs/${RUN}/browser/live/v/AbCdEfGhIjKlMnOpQrStUv#t=SECRET-TOKEN-one-1234567890`;
-const VIEWER2 = `/v2/runs/${RUN}/browser/live/v/ZyXwVuTsRqPoNmLkJiHgFe#t=SECRET-TOKEN-two-0987654321`;
+const VIEWER = `/v2/runs/${RUN}/computer/live/v/AbCdEfGhIjKlMnOpQrStUv#t=SECRET-TOKEN-one-1234567890`;
+const VIEWER2 = `/v2/runs/${RUN}/computer/live/v/ZyXwVuTsRqPoNmLkJiHgFe#t=SECRET-TOKEN-two-0987654321`;
 /** What the iframe frames: the served viewer resolved against this page's origin (a same-origin path, its fragment kept). */
 const FRAMED = (viewer: string) => new URL(viewer, location.origin).href;
 const settle = async (ms = 60) => { await act(async () => { await new Promise((r) => setTimeout(r, ms)); }); };
@@ -149,7 +149,7 @@ describe("the run page's Browser tab", () => {
 
   it("a failed read after a live one keeps the page, and says nothing of the viewer anywhere", async () => {
     let i = 0;
-    const p = await page(async () => { if (i++ === 0) return { state: "live", kind: "browser", viewer: VIEWER, hold: "agent" }; throw new Error(`GET /v2/runs/${RUN}/browser: 502`); }, working, "browser");
+    const p = await page(async () => { if (i++ === 0) return { state: "live", kind: "browser", viewer: VIEWER, hold: "agent" }; throw new Error(`GET /v2/runs/${RUN}/computer: 502`); }, working, "browser");
     await settle(120);
     expect(p.frame()!.getAttribute("src")).toBe(FRAMED(VIEWER));
     nowhereBut(p.frame(), VIEWER);
@@ -315,9 +315,10 @@ describe("the run page's Browser tab", () => {
   // Only a viewer on this page's own origin, under this run's own path, is framed: anything else says so in words, with
   // no iframe, and the served value is not shown.
   for (const [what, viewer] of [
-    ["another origin", `https://elsewhere.example/v2/runs/${RUN}/browser/live/v/AbCd#t=SECRET-TOKEN-foreign-111`],
-    ["another run's path", `/v2/runs/someone-elses-run/browser/live/v/AbCd#t=SECRET-TOKEN-other-222`],
+    ["another origin", `https://elsewhere.example/v2/runs/${RUN}/computer/live/v/AbCd#t=SECRET-TOKEN-foreign-111`],
+    ["another run's path", `/v2/runs/someone-elses-run/computer/live/v/AbCd#t=SECRET-TOKEN-other-222`],
     ["no http(s) URL", `javascript:alert(1)//#t=SECRET-TOKEN-script-333`],
+    ["the old browser path", `/v2/runs/${RUN}/browser/live/v/AbCd#t=SECRET-TOKEN-old-444`],
   ] as const) {
     it(`a viewer on ${what} is never framed: no iframe, a line in its place, and the value nowhere`, async () => {
       const p = await page(async () => ({ state: "live", kind: "browser", viewer, hold: "agent" }), working, "browser");

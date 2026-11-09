@@ -2,7 +2,7 @@
 // through serve's proxy of the run's own viewer, on the fake browser's loopback DevTools endpoint. Outside a hold the run
 // drops the viewer's input; Take over holds the browser for the owner (their time held under the run's cap first, refused
 // in the cap's words without room), their input reaches the browser, the agent's browser call waits and is then told the
-// person had it, and the run stays working. The agent's ask makes the run input_required with pending.kind browser, a
+// person had it, and the run stays working. The agent's ask makes the run input_required with pending.kind computer, a
 // waiting row and run.needs_input; the owner's hand-back answers it, first answer wins; unanswered it expires. The ask's
 // record and the viewer's token are in no row, view, file list or other file. On fakes: no network, no key.
 import assert from "node:assert/strict";
@@ -61,12 +61,12 @@ async function watched(t, { faux, cap, env = {}, hook, settled, viewer = true } 
     const w = { server, origin, cookie, runId, log, after: followed.after, firstRows: followed.rows };
     w.view = async () => (await server.api("GET", `/runs/${runId}`)).body;
     w.rows = async () => (await server.api("GET", `/runs/${runId}/timeline`)).body.rows;
-    w.handBack = (outcome, headers = { cookie }) => call(server.port, { method: "POST", path: `/v2/runs/${runId}/browser/hand-back`, headers: { ...json, origin, ...headers }, body: { outcome } });
+    w.handBack = (outcome, headers = { cookie }) => call(server.port, { method: "POST", path: `/v2/runs/${runId}/computer/hand-back`, headers: { ...json, origin, ...headers }, body: { outcome } });
     return w;
   }
   assert.ok(await until(() => readdir(dir).then((names) => names.some((name) => name.endsWith(".json")), () => false)), "the run's process handed its viewer over");
   const handed = JSON.parse(readFileSync(join(dir, (await readdir(dir)).find((name) => name.endsWith(".json"))), "utf8"));
-  const wsPath = `/v2/runs/${runId}/browser/live/v/${handed.id}/ws`;
+  const wsPath = `/v2/runs/${runId}/computer/live/v/${handed.id}/ws`;
   const w = { server, origin, cookie, runId, handed, wsPath, log, after: followed.after, firstRows: followed.rows };
   /** The viewer, signed in as the owner and past its hello, and its first message; once its stream follows the page. */
   w.viewer = async ({ cookie: as = cookie, headers = {} } = {}) => {
@@ -95,7 +95,7 @@ async function watched(t, { faux, cap, env = {}, hook, settled, viewer = true } 
   };
   w.view = async () => (await server.api("GET", `/runs/${runId}`)).body;
   w.rows = async () => (await server.api("GET", `/runs/${runId}/timeline`)).body.rows;
-  w.handBack = (outcome, headers = { cookie }) => call(server.port, { method: "POST", path: `/v2/runs/${runId}/browser/hand-back`, headers: { ...json, origin, ...headers }, body: { outcome } });
+  w.handBack = (outcome, headers = { cookie }) => call(server.port, { method: "POST", path: `/v2/runs/${runId}/computer/hand-back`, headers: { ...json, origin, ...headers }, body: { outcome } });
   return w;
 }
 
@@ -170,7 +170,12 @@ test("only the owner's signed-in page takes over or answers: a token, or no cred
   assert.equal((await w.viewer({ cookie: null, headers: { authorization: `Bearer ${w.server.token}` } })).status, 401, "a token is no session");
   assert.equal((await w.handBack("done", {})).status, 401);
   assert.equal((await w.handBack("done", { authorization: `Bearer ${w.server.token}` })).status, 403, "a token never answers for the owner");
-  assert.equal((await w.handBack("done")).status, 404, "an agent that asked for nobody");
+  const none = await w.handBack("done");
+  assert.deepEqual([none.status, none.json.error.message], [404, "this run's agent has not asked for you in its browser"], "an agent that asked for nobody");
+  // The browser is kind browser on /computer: its old routes are gone, with no alias.
+  const old = await call(w.server.port, { method: "POST", path: `/v2/runs/${w.runId}/browser/hand-back`, headers: { ...json, origin: w.origin, cookie: w.cookie }, body: { outcome: "done" } });
+  assert.equal(old.status, 404, "no /browser/hand-back");
+  assert.equal((await call(w.server.port, { path: `/v2/runs/${w.runId}/browser`, headers: { cookie: w.cookie } })).status, 404, "no /browser");
 });
 
 test("cap: Take over holds the owner's 15 minutes of session time first, and with no room it is refused in the cap's words and nothing is held; with room, the hold is dropped when they hand back", { timeout: 180_000 }, async (t) => {
@@ -206,7 +211,7 @@ test("cap: Take over holds the owner's 15 minutes of session time first, and wit
   viewer.ws.destroy();
 });
 
-test("the agent asks: input_required with pending.kind browser, a waiting row and run.needs_input; the owner takes over meanwhile; the hand-back answers, first answer wins (409 for another), ends the take, and the agent hears done", { timeout: 180_000 }, async (t) => {
+test("the agent asks: input_required with pending.kind computer (its computer the browser), a waiting row and run.needs_input; the owner takes over meanwhile; the hand-back answers, first answer wins (409 for another), ends the take, and the agent hears done", { timeout: 180_000 }, async (t) => {
   const got = [];
   const receiver = createServer((req, res) => { const chunks = []; req.on("data", (c) => chunks.push(c)); req.on("end", () => { try { got.push(JSON.parse(Buffer.concat(chunks).toString("utf8"))); } catch { /* not a message */ } res.writeHead(200).end(); }); });
   await new Promise((resolve) => receiver.listen(0, "127.0.0.1", resolve));
@@ -214,13 +219,13 @@ test("the agent asks: input_required with pending.kind browser, a waiting row an
   const w = await watched(t, { faux: BROWSE_HANDOFF, env: { AGENTRUN_SEAL_KEY: randomBytes(32).toString("base64") }, hook: { url: `http://127.0.0.1:${receiver.address().port}/hook` } });
   const view = await w.view();
   assert.deepEqual([view.status, view.state], ["input_required", "waiting"]);
-  assert.deepEqual(Object.keys(view.pending).sort(), ["asked_at", "completion_condition", "expires_at", "instruction", "kind"]);
-  assert.deepEqual([view.pending.kind, view.pending.instruction, view.pending.completion_condition], ["browser", ASK.instruction, ASK.completion_condition]);
+  assert.deepEqual(Object.keys(view.pending).sort(), ["asked_at", "completion_condition", "computer", "expires_at", "instruction", "kind"]);
+  assert.deepEqual([view.pending.kind, view.pending.computer, view.pending.instruction, view.pending.completion_condition], ["computer", "browser", ASK.instruction, ASK.completion_condition]);
   assert.equal(Date.parse(view.pending.expires_at) - Date.parse(view.pending.asked_at), 15 * 60_000, "it expires in 15 minutes");
   const waiting = w.firstRows.findLast((row) => row.kind === "waiting");
   assert.equal(waiting?.summary, `Waiting for you: ${ASK.instruction}`);
   const needs = await until(() => got.find((m) => m.type === "run.needs_input" && m.data.run_id === w.runId));
-  assert.deepEqual(needs?.data.pending, { kind: "browser" }, "run.needs_input says the run waits on the browser");
+  assert.deepEqual(needs?.data.pending, { kind: "computer" }, "run.needs_input says the run waits on the person at its computer");
 
   // The record is the run's directory's alone (0600 in 0700, outside work/): its bytes are in no other file, and nothing the
   // API serves names its id. (pi-browser's own store keeps the id, a digest of the session's tag and the model's request
@@ -258,7 +263,7 @@ test("the agent asks: input_required with pending.kind browser, a waiting row an
   assert.match(question, /"outcome":"done"/, `the agent heard done: ${question}`);
   const said = summaries(after.rows);
   assert.deepEqual(said.filter((s) => /took over|handed the browser back|hand-over/.test(s ?? "")), ["You took over the browser", "You handed the browser back"]);
-  assert.equal(got.filter((m) => m.type === "run.needs_input" && m.data.pending?.kind === "browser").length, 1, "one run.needs_input for the ask");
+  assert.equal(got.filter((m) => m.type === "run.needs_input" && m.data.pending?.kind === "computer").length, 1, "one run.needs_input for the ask");
 
   // The viewer's token, and the ask's record, are in no file but their own.
   assert.deepEqual(filesUnder(w.server.data).filter(([, bytes]) => bytes.includes(w.handed.token)).map(([path]) => path), [join(runFolder(w.server.data, w.runId), "browser-live", `${w.handed.tag}.json`)]);
@@ -277,6 +282,7 @@ test("an ask nobody answers expires: the agent hears expired, the timeline says 
   assert.ok(summaries(await w.rows()).includes("The agent's hand-over expired before you answered it"));
   const late = await w.handBack("done");
   assert.deepEqual([late.status, late.json.error.code, late.json.error.details], [409, "handoff_answered", { outcome: "expired" }]);
+  assert.equal(late.json.error.message, "The agent's hand-over expired before this answer: the agent was told it expired.");
 });
 
 /** Kills the run's process while its agent's ask is open (its session kept at the vendor), and waits for the run's next
@@ -287,7 +293,7 @@ async function restartedMidAsk(w) {
   process.kill(first, "SIGKILL");
   assert.ok(await until(() => { const pid = holderOf(); return pid !== undefined && pid !== first; }, 60_000), "the run's process was started again");
   const view = await w.view();
-  assert.deepEqual([view.status, view.pending?.kind], ["input_required", "browser"], "and the run still waits on the person in its browser");
+  assert.deepEqual([view.status, view.pending?.kind, view.pending?.computer], ["input_required", "computer", "browser"], "and the run still waits on the person at its browser");
 }
 
 test("a restart while the ask is open: the new process takes up the wait, and the owner's hand-back reaches the agent", { timeout: 180_000 }, async (t) => {
@@ -316,7 +322,7 @@ test("a restart between the ask's record and its waiting row: the next process c
   const w = await watched(t, { faux: BROWSE_HANDOFF, env: { FAUX_BROWSER_STATE: join(await scratch(t), "vendor-sessions.json"), FAUX_BROWSER_ASK_DIES: died, AGENTRUN_SEAL_KEY: randomBytes(32).toString("base64") }, hook: { url: `http://127.0.0.1:${receiver.address().port}/hook` } });
   assert.ok(existsSync(died), "the first process died between the record and the row");
   const view = await w.view();
-  assert.deepEqual([view.status, view.pending?.kind, view.pending?.instruction], ["input_required", "browser", ASK.instruction]);
+  assert.deepEqual([view.status, view.pending?.kind, view.pending?.computer, view.pending?.instruction], ["input_required", "computer", "browser", ASK.instruction]);
   assert.equal((await w.rows()).filter((row) => row.kind === "waiting").length, 1, "one waiting row");
   assert.ok(await until(() => got.some((body) => body.includes("run.needs_input"))), "run.needs_input sent");
   await sleep(1_500);
@@ -333,7 +339,7 @@ test("an ask whose words echo a value the server holds as a key shows it cut, ne
   t.after(() => new Promise((resolve) => (receiver.close(resolve), receiver.closeAllConnections())));
   const w = await watched(t, { faux: BROWSE_HANDOFF, env: { FAUX_HELD_API_KEY: held, FAUX_ECHO_VALUE: held, AGENTRUN_SEAL_KEY: randomBytes(32).toString("base64") }, hook: { url: `http://127.0.0.1:${receiver.address().port}/hook` } });
   const view = await w.view();
-  assert.equal(view.pending?.kind, "browser");
+  assert.deepEqual([view.pending?.kind, view.pending?.computer], ["computer", "browser"]);
   assert.ok(!view.pending.instruction.includes(held) && view.pending.instruction.includes(ASK.instruction), `pending.instruction: ${view.pending.instruction}`);
   assert.ok(!view.pending.completion_condition.includes(held), `pending.completion_condition: ${view.pending.completion_condition}`);
   const waiting = (await w.rows()).findLast((row) => row.kind === "waiting");
