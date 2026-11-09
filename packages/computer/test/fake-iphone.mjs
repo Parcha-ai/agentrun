@@ -7,11 +7,18 @@
 // The phone is a small iPhone that is never wiped: a home screen and the stock Settings app, whose list scrolls, whose
 // rows open a page, and whose search field takes typed text. screen.capture draws the screen as a PNG, so a scroll or
 // a new screen changes its pixels. Every op is recorded with the token it carried.
+//
+// Taps and drags take points; the capture is Retina, `scale` device pixels a point (default 2), and its bounds give the
+// screen in points, at `origin` (default 0, 0) in the space the taps take. So a client that sent the PNG's pixels as
+// tap points would tap twice as far from the top left, and past an origin it did not add.
 import { crc32, deflateSync } from "node:zlib";
 
 export const IOS_SETTINGS = "com.apple.Preferences";
 export const IOS_HOME = "com.apple.springboard";
+/** The screen in points: the space input.tap and input.drag take. */
 export const IOS_SCREEN = { width: 300, height: 600 };
+/** Device pixels a point in the default capture. */
+export const IOS_SCALE = 2;
 /** The ops the fake lists by default: the vocabulary's iPhone ops, with no tree and no nav.back. */
 export const IOS_OPS = [
 	"screen.capture",
@@ -63,9 +70,11 @@ function png(width, height, color) {
 /**
  * The fake iPhone. Options: `ops`, what GET /ops lists (default IOS_OPS); `tree`, the phone answers the op `tree` (and
  * lists it); `back`, it lists nav.back; `fail`, given each { op, kw }, answers a Response to send in place of the op's
- * own (a test makes an op fail in the vendor's words).
+ * own (a test makes an op fail in the vendor's words); `scale`, the capture's device pixels a point (default 2);
+ * `origin`, where the screen's top left is in the space taps take (default 0, 0). Every tap the phone took, in that
+ * space, is in `phone.taps`.
  */
-export function fakeIphone({ ops = IOS_OPS, tree = false, back = false, fail } = {}) {
+export function fakeIphone({ ops = IOS_OPS, tree = false, back = false, fail, scale = IOS_SCALE, origin = { x: 0, y: 0 } } = {}) {
 	const listed = [...ops, ...(tree ? ["tree"] : []), ...(back ? ["nav.back"] : [])];
 	/** The grants of live sessions: grant -> token. */
 	const grants = new Map();
@@ -74,7 +83,7 @@ export function fakeIphone({ ops = IOS_OPS, tree = false, back = false, fail } =
 	/** The most ops the phone was asked to run at once. */
 	let busy = 0;
 	let mostAtOnce = 0;
-	const phone = { foreground: IOS_HOME, screen: "top", offset: 0, page: "", search: "", focused: false, typed: [], keys: [] };
+	const phone = { foreground: IOS_HOME, screen: "top", offset: 0, page: "", search: "", focused: false, typed: [], keys: [], taps: [] };
 	const maxOffset = Math.max(0, HEADER + ROW * IOS_ITEMS.length - IOS_SCREEN.height);
 
 	const settingsReset = () => Object.assign(phone, { screen: "top", offset: 0, page: "", search: "", focused: false });
@@ -137,12 +146,17 @@ export function fakeIphone({ ops = IOS_OPS, tree = false, back = false, fail } =
 		const number = (name) => (typeof kw[name] === "number" && Number.isFinite(kw[name]) ? kw[name] : undefined);
 		switch (op) {
 			case "screen.capture":
-				return { png_b64: png(IOS_SCREEN.width, IOS_SCREEN.height, color).toString("base64"), bounds: { x: 0, y: 0, w: IOS_SCREEN.width, h: IOS_SCREEN.height } };
+				// Retina: scale device pixels a point; the bounds give the screen in points, where taps take them.
+				return {
+					png_b64: png(IOS_SCREEN.width * scale, IOS_SCREEN.height * scale, (y) => color(Math.floor(y / scale))).toString("base64"),
+					bounds: { x: origin.x, y: origin.y, w: IOS_SCREEN.width, h: IOS_SCREEN.height },
+				};
 			case "screen.bounds":
-				return { x: 0, y: 0, w: IOS_SCREEN.width, h: IOS_SCREEN.height, id: 1 };
+				return { x: origin.x, y: origin.y, w: IOS_SCREEN.width, h: IOS_SCREEN.height, id: 1 };
 			case "input.tap":
 				if (number("x") === undefined || number("y") === undefined) return json(400, { error: "TypeError: input.tap needs x and y" });
-				tap(kw.x, kw.y);
+				phone.taps.push([kw.x, kw.y]);
+				tap(kw.x - origin.x, kw.y - origin.y);
 				return null;
 			case "input.press":
 				return null;

@@ -7,12 +7,12 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import test, { after } from "node:test";
 import { kindRefusals, PROVIDERS } from "../dist/index.js";
-import { IOS_HOME, IOS_ITEMS, IOS_OPS, IOS_SCREEN, IOS_SETTINGS } from "./fake-iphone.mjs";
+import { IOS_HOME, IOS_ITEMS, IOS_OPS, IOS_SCALE, IOS_SCREEN, IOS_SETTINGS } from "./fake-iphone.mjs";
 import { fakePhoneHarness, IPHONE_ID, KEY } from "./fake-phone-harness.mjs";
 
 const phone = await import("../dist/phone-harness.js");
 const { create, memoryLedger, CAPABILITIES, PHONE_GROUPS, IOS_GROUPS } = phone;
-const { controlClient, CONTROL_OPS } = await import("../dist/phone-control.js");
+const { controlClient, CONTROL_OPS, frameMap } = await import("../dist/phone-control.js");
 const conformance = await import("../dist/conformance/phone-harness.js");
 
 const dir = mkdtempSync(join(tmpdir(), "computer-ios-"));
@@ -252,20 +252,22 @@ test("the client answers the iPhone's groups through its ops: a screenshot, a re
 	const { provider, ref, client, fake } = await connected();
 	const ops = () => fake.iphone.ops();
 	const whole = await shot(client);
-	assert.deepEqual({ width: whole.width, height: whole.height, scale: whole.scale }, { width: IOS_SCREEN.width, height: IOS_SCREEN.height, scale: 1 });
-	assert.deepEqual(whole.png, { width: IOS_SCREEN.width, height: IOS_SCREEN.height });
+	// The frame is the capture's own pixels (2x Retina on the fake), never downscaled; the points sent are mapped.
+	const frame = { width: IOS_SCREEN.width * IOS_SCALE, height: IOS_SCREEN.height * IOS_SCALE };
+	assert.deepEqual({ width: whole.width, height: whole.height, scale: whole.scale }, { ...frame, scale: IOS_SCALE });
+	assert.deepEqual(whole.png, frame);
 	assert.deepEqual(ops().at(-1), ["screen.capture", {}]);
 	const part = await shot(client, { region: [10, 20, 30, 40] });
 	assert.deepEqual({ width: part.width, height: part.height }, { width: 30, height: 40 });
 	assert.deepEqual(part.png, { width: 30, height: 40 });
-	assert.equal((await client.call("screen.shot", { region: [0, 0, IOS_SCREEN.width + 1, 10] })).error.code, "invalid");
+	assert.equal((await client.call("screen.shot", { region: [0, 0, frame.width + 1, 10] })).error.code, "invalid");
 
 	const before = ops().length;
 	const ran = await client.call("input.actions", {
 		actions: [
-			{ type: "tap", at: [50, 430], count: 2 },
-			{ type: "long_press", at: [10, 10], ms: 1200 },
-			{ type: "swipe", path: [[150, 500], [150, 200]], ms: 400 },
+			{ type: "tap", at: [100, 860], count: 2 },
+			{ type: "long_press", at: [20, 20], ms: 1200 },
+			{ type: "swipe", path: [[300, 1000], [300, 400]], ms: 400 },
 			{ type: "button", name: "home" },
 			{ type: "button", name: "app_switch" },
 			{ type: "wait", ms: 50 },
@@ -284,7 +286,7 @@ test("the client answers the iPhone's groups through its ops: a screenshot, a re
 	assert.deepEqual(await refusedAction({ type: "button", name: "back" }), { index: 0, kind: "unsupported", message: "action 0: button back: an iPhone has no system Back button, and its control API lists no nav.back" });
 	assert.deepEqual(await refusedAction({ type: "swipe", path: [[1, 1], [2, 2], [3, 3]] }), { index: 0, kind: "unsupported", message: "action 0: swipe: the iPhone's control API drags along one straight line, so a path of 3 points is not offered" });
 	assert.deepEqual(await refusedAction({ type: "pinch", at: [5, 5], scale: 2 }), { index: 0, kind: "unsupported", message: "action 0: pinch: the iPhone's control API takes one finger" });
-	assert.equal((await refusedAction({ type: "tap", at: [IOS_SCREEN.width, 5] })).kind, "invalid", "a point off the screen");
+	assert.equal((await refusedAction({ type: "tap", at: [frame.width, 5] })).kind, "invalid", "a point off the frame");
 	// input.keys is not declared for an iPhone until a live run proves it: a key and typing are refused by the batch check.
 	for (const action of [{ type: "key", keys: ["enter"] }, { type: "type", text: "wifi" }]) {
 		const failed = await refusedAction(action);
@@ -326,7 +328,8 @@ test("apps: the list with what is in front, a launch by the id given, an app tha
 	]);
 	const home = (await shot(client)).bytes;
 	assert.deepEqual((await client.call("apps.launch", { id: IOS_SETTINGS })).value, {});
-	assert.deepEqual(fake.iphone.ops().at(-1), ["apps.launch", { name: IOS_SETTINGS }]);
+	// fresh, as Android's launch clears the task: the app itself comes to the front, not what a never-wiped phone left open.
+	assert.deepEqual(fake.iphone.ops().at(-1), ["apps.launch", { name: IOS_SETTINGS, fresh: true }]);
 	assert.equal((await client.call("apps.list", {})).value.foreground, IOS_SETTINGS);
 	assert.notDeepEqual((await shot(client)).bytes, home, "Settings is on the screen");
 	const missing = await client.call("apps.launch", { id: "ai.agentrun.no.such.app" });
@@ -340,6 +343,50 @@ test("apps: the list with what is in front, a launch by the id given, an app tha
 	assert.notDeepEqual((await shot(client)).bytes, top);
 	assert.ok(IOS_ITEMS.length > 0);
 	await provider.release(ref, "delete");
+});
+
+test("frameMap is the one place a frame's pixels become the points input.tap and input.drag take: Retina scale and the bounds' origin", () => {
+	const retina = frameMap({ width: 600, height: 1200 }, { x: 0, y: 0, w: 300, h: 600 });
+	assert.deepEqual({ width: retina.width, height: retina.height, scale: retina.scale }, { width: 600, height: 1200, scale: 2 });
+	assert.deepEqual(retina.toDevice([300, 600]), { x: 150, y: 300 }, "the frame's middle is the screen's middle in points");
+	assert.deepEqual(retina.toDevice([0, 0]), { x: 0, y: 0 });
+	assert.deepEqual(retina.toDevice([599, 1199]), { x: 300, y: 600 });
+	const offset = frameMap({ width: 900, height: 1800 }, { x: 10, y: 40, w: 300, h: 600 });
+	assert.deepEqual({ scale: offset.scale, middle: offset.toDevice([450, 900]) }, { scale: 3, middle: { x: 160, y: 340 } });
+	// No bounds the map can use: the frame's pixels are the points, as the protocol's own space.
+	for (const bounds of [undefined, null, {}, { x: 0, y: 0, w: 0, h: 600 }, { x: "1", y: 0, w: 300, h: 600 }]) {
+		const plain = frameMap({ width: 600, height: 1200 }, bounds);
+		assert.deepEqual({ scale: plain.scale, middle: plain.toDevice([300, 600]) }, { scale: 1, middle: { x: 300, y: 600 } }, JSON.stringify(bounds));
+	}
+});
+
+test("a tap at the frame's middle lands at the screen's middle in points, on a 2x Retina capture and past a bounds origin, before any screenshot too", async () => {
+	for (const origin of [{ x: 0, y: 0 }, { x: 10, y: 40 }]) {
+		const { provider, ref, client, fake } = await connected({ iphone: { origin } });
+		await client.call("apps.launch", { id: IOS_SETTINGS });
+		// No screen.shot yet: the client captures once to learn the frame's space before it sends a point.
+		const middle = [(IOS_SCREEN.width * IOS_SCALE) / 2, (IOS_SCREEN.height * IOS_SCALE) / 2];
+		assert.deepEqual((await client.call("input.actions", { actions: [{ type: "tap", at: middle }] })).value, { done: 1 });
+		assert.deepEqual(fake.iphone.phone.taps, [[IOS_SCREEN.width / 2 + origin.x, IOS_SCREEN.height / 2 + origin.y]]);
+		// The row under the screen's middle opened: 120 px of header, rows of 50, so the fourth.
+		assert.equal(fake.iphone.phone.page, IOS_ITEMS[3], JSON.stringify(origin));
+		await provider.release(ref, "delete");
+	}
+});
+
+test("an iPhone list adopts a pending entry only for a session of its own platform", async () => {
+	let relabel = false;
+	const fake = fakePhoneHarness({ iphones: [IPHONE_ID], loseAnswer: true, loseRecovery: true, onList: (snapshot) => (relabel ? snapshot.map((s) => ({ ...s, platform: "android" })) : snapshot) });
+	const ledger = memoryLedger();
+	const ios = await create({ apiKey: KEY, platform: "ios", fetch: fake.fetch, ledger, now: fake.clock.now, sleep: fake.clock.sleep });
+	assert.equal((await ios.create(SPEC)).ok, false);
+	relabel = true;
+	assert.deepEqual((await ios.list({})).value, [], "a session the listing names android is not the iPhone's");
+	assert.match((await ledger.list())[0].id, /^pending-/, "and the pending entry is kept");
+	relabel = false;
+	const found = (await ios.list({})).value;
+	assert.equal(found.length, 1);
+	assert.equal((await ios.release(found[0].ref, "delete")).ok, true);
 });
 
 test("the iPhone takes one op at a time: calls made together are sent in turn", async () => {
