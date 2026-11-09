@@ -9,7 +9,10 @@ import { BACKGROUND_CONTEXT } from "@earendil-works/chord/context";
 import { currentLearning, holdsForOk, type Learning, LEARNING_REASONS, type NoteUsed, type Shown } from "../learning.js";
 import { runLearningBody } from "../learning-routes.js";
 import { learningStartOf, readLaunchBody, type RunLaunch } from "../run-launch.js";
-import { notesRead, type Reflect } from "../learning-run.js";
+import { type Impact, type ImpactLearning, learningImpact, noteRuns, notesRead, type Reflect } from "../learning-run.js";
+import type { NoteRuns } from "../learning.js";
+import { type NoteFiles, notesOf } from "../usage.js";
+import type { RunRow } from "@parcha/pi-durable-agent";
 import type { TimelineEvent } from "@parcha/pi-durable-agent/timeline";
 import { runReflect, runTimeline } from "./journal.js";
 import { FINAL_STATES } from "../store/store.js";
@@ -119,11 +122,54 @@ export async function learningCountsOverStore(store: Store, filter: AnalyticsFil
 }
 
 /** An agent's learning counts as its learning view gives them (GET /agents/{id}/learning, learning-run.ts ofAgent's
- *  counts): how its runs that tried to learn fared, less `runs`, from the one store. Its notes' runs and its impact read
- *  what a run was given and read and its answer's time and costs, which the store does not record yet. */
+ *  counts): how its runs that tried to learn fared, less `runs`, from the one store. Its notes' runs and its impact are
+ *  agentLearningOverStore's. */
 export async function agentLearningCountsOverStore(store: Store, agentId: string): Promise<Omit<LearningCounts, "runs">> {
   const { runs: _, ...counts } = await learningCountsOverStore(store, { agent: agentId });
   return counts;
+}
+
+/** Agent `agentId`'s learning view from the one store (GET /agents/{id}/learning, learning-run.ts ofAgent): its counts
+ *  (agentLearningCountsOverStore), each note's runs given it and that read it (noteRuns over notesOf), and what learning
+ *  changed (learningImpact), never a run's files. Each run's part is read from its launch (the notes it was given,
+ *  learningStartOf), its journal once final (the notes its job read, notesReadOf) and its learning end (when its job
+ *  answered and what it and looking back cost, its grade's cost). `seed_notes`, the notes a run started from, is the
+ *  count its launch was given: the store keeps no other. */
+export async function agentLearningOverStore(store: Store, agentId: string): Promise<{ counts: Omit<LearningCounts, "runs">; impact: Impact; notes: NoteRuns }> {
+  const counts = await agentLearningCountsOverStore(store, agentId);
+  const kinds = new Map<string, string | undefined>();
+  const rows: RunRow[] = [];
+  const learnings = new Map<string, ImpactLearning | null>();
+  const files: NoteFiles[] = [];
+  for (const run of await store.runs.list({ agentId })) {
+    if (run.agentId !== agentId) continue;
+    if (!kinds.has(run.revisionId)) kinds.set(run.revisionId, (await store.agents.revision(run.revisionId))?.kind);
+    const final = FINAL_STATES.includes(run.state);
+    const started = await learningStartOfRun(store, run.id);
+    const end = await runLearningEnd(store, run.id);
+    const read = final && started?.given.length ? notesReadOf(started.given, await runReflect(store, run.id, BACKGROUND_CONTEXT), await runTimeline(store, run.id, BACKGROUND_CONTEXT, { settled: true })) : [];
+    if (started || end) files.push(notesOf({ given: started?.given ?? [], read }));
+    // The row learningImpact reads (the file path's RunRow): an ended run is a completed one.
+    rows.push({
+      id: run.id, kind: kinds.get(run.revisionId) === "workflow" ? "workflow" : "agentic", state: run.state === "ended" ? "completed" : run.state,
+      startedAt: new Date(run.startedAt).toISOString(), endedAt: run.endedAt === null ? null : new Date(run.endedAt).toISOString(),
+      costUsd: run.costUsd, importedFrom: run.importedFrom, archivedAt: run.archivedAt === null ? null : new Date(run.archivedAt).toISOString(),
+    } as unknown as RunRow);
+    learnings.set(run.id, end ? impactLearningOf(end, started) : null);
+  }
+  return { counts, impact: learningImpact(rows, (row) => learnings.get(row.id) ?? null), notes: noteRuns(files) };
+}
+
+/** What a run's learning end tells its impact, as ofAgent's learningOf read a held run: how it ended and when, the notes
+ *  it started from; when its job answered and its costs once it looked back (a look-back of 0 for an ended one that did
+ *  not); its grade's cost once it ended (0 when nothing was graded). */
+function impactLearningOf(end: RunLearningEnd, started: RunLaunch["learning"]): ImpactLearning {
+  const over = end.state === "merged" || end.state === "dropped";
+  const looked = end.answered_at !== undefined ? { answered_at: end.answered_at, job_cost_usd: end.job_cost_usd ?? null, look_back_usd: end.look_back_usd ?? null } : over ? { look_back_usd: 0 } : {};
+  return {
+    state: end.state, reason: end.reason, at: end.at, ...(started ? { seed_notes: started.given.length } : {}), ...looked,
+    ...(over ? { grade_usd: end.cost_usd ? end.cost_usd.grade : 0 } : {}),
+  };
 }
 
 /** A run's learning end with the notes its start gave it (`given`, when it started from a seed) and those its job read
