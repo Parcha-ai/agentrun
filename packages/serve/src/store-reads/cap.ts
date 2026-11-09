@@ -2,9 +2,9 @@
 // own database. The same computation — cap.ts spentFrom, unchanged — over the same entries in log order; only where the
 // entries come from changes, so no money behaviour differs (the money-parity rule). A run with no journal spends 0.
 import type { Context } from "@earendil-works/chord";
-import { type Meters, spentFrom } from "../cap.js";
+import { type Meters, meterFiguresFrom, spentFrom } from "../cap.js";
 import type { Store } from "../store/store.js";
-import { runEntries } from "./journal.js";
+import { runEntries, withPaidCosts } from "./journal.js";
 
 /** What a run's model requests cost, as the cap reads it, from the one store's journal: spentFrom over the run's entries. */
 export async function spentOverStore(store: Store, runId: string, context: Context): Promise<number | null> {
@@ -17,8 +17,7 @@ export async function spentOverStore(store: Store, runId: string, context: Conte
  *  where the entries come from changes, so no money behaviour differs (the money-parity rule), as spentOverStore is to
  *  spentIn. A run with no journal reads as a store that was never there: every figure 0, tokens unknown. */
 export async function metersOverStore(store: Store, runId: string, context: Context): Promise<Meters & { known: { tokens: number; browser: number; others: number } }> {
-  // RED: not wired yet. Reads the journal (as the real reader will) but returns empty figures, as the server's stub did;
-  // the next commit computes each meter over these entries.
-  await runEntries(store, runId, context);
-  return { tools: 0, tokens: null, browser: { usd: 0, seconds: 0 }, others: 0, known: { tokens: 0, browser: 0, others: 0 } };
+  const raw = await runEntries(store, runId, context);
+  if (!raw.length) return { tools: 0, tokens: null, browser: { usd: 0, seconds: 0 }, others: 0, known: { tokens: 0, browser: 0, others: 0 } };
+  return meterFiguresFrom(withPaidCosts(raw).map((entry) => ({ conversation: Number(entry.conversationId ?? 0), entry })));
 }
