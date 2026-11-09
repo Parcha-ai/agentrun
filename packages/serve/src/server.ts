@@ -1251,10 +1251,9 @@ async function startHolding(options: ServeOptions, data: string, checked: { maxR
 
   // Schedules: each firing starts its run as POST /agents/{id}/runs does, capped, under the firing's key (triggers.ts).
   // Firings an earlier server left due are driven again now, beside the recovery above.
-  // Connect GitHub: the server's one GitHub App. STOPGAP: this reads the App from a file-era sealed-settings object, which
-  // the store's sealed settings are not; until the github App's settings are read over the store (the store-backed github
-  // source), the App is left unconfigured here and its routes answer github_not_connected.
-  const github = new GitHubConnection(undefined);
+  // Connect GitHub: the server's one GitHub App, in the store's trigger_settings (adapter github, scope server), where the
+  // runner reads it per claim (runner/github-app.ts).
+  const github = new GitHubConnection(triggerSettings.get("github"));
   const githubConnect = new GitHubConnect(github, { ...(options.publicUrl ? { publicUrl: options.publicUrl.replace(/\/+$/, "") } : {}), api: options.githubApi ?? GITHUB_API, say: (fields) => log?.(logLine("github", fields)) });
   /** The connection a GitHub template or the console reads: the App's id, slug and installations, never a secret. */
   const githubConnection = () => github.view();
