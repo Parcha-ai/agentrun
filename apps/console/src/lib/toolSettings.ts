@@ -1,4 +1,4 @@
-import type { Permission, ToolSetting, ToolSettings } from "./v2";
+import type { Permission, ToolPin, ToolSetting, ToolSettings } from "./v2";
 
 /** The harnesses a capability resolves for, in the order the console shows them. */
 export const HARNESS_ORDER = ["pi", "claude-agent", "codex", "opencode"] as const;
@@ -144,3 +144,30 @@ export function issuesFor(fields: Record<string, string>, prefix: string, shown:
   }
   return { byTool, rest };
 }
+
+type PinScalar = Exclude<ToolPin[string], unknown[]>;
+/** A one-of list in the gate's one form (tool-gate.ts canonicalChoices): each value once, null first, then by JSON text. */
+const choicesOf = (value: ToolPin[string]): PinScalar[] => {
+  if (!Array.isArray(value)) return [value];
+  const texts = [...new Set(value.filter((one) => one !== null).map((one) => JSON.stringify(one)))].sort();
+  return [...(value.includes(null) ? [null] : []), ...texts.map((text) => JSON.parse(text) as PinScalar)];
+};
+/** A pinned value in words: text as it is, any other as JSON (tool-gate.ts scalarWords; null is said by pinLine). */
+const valueWords = (one: PinScalar): string => (typeof one === "string" ? one : JSON.stringify(one));
+
+/** A pin in words, in the gate's order (tool-gate.ts pinWords: arguments sorted, each list in its one form), so the screen
+ *  and a refusal read alike: "event must be left out or COMMENT; method must be one of create, delete_pending". */
+export function pinLine(pin: ToolPin): string {
+  return Object.keys(pin).sort().map((arg) => {
+    const values = choicesOf(pin[arg]!);
+    const nullable = values[0] === null;
+    const rest = (nullable ? values.slice(1) : values).map((one) => valueWords(one));
+    if (!rest.length) return `${arg} must be left out`;
+    const of = rest.length === 1 ? rest[0] : `one of ${rest.join(", ")}`;
+    return `${arg} must be ${nullable ? `left out or ${of}` : of}`;
+  }).join("; ");
+}
+/** What every pin says after its words. */
+export const PIN_HOLDS = "Calls outside it are refused before they run or ask.";
+/** A pin that doesn't read (pin_broken): it fails closed. */
+export const PIN_BROKEN = "This pin doesn't read, so every call to this tool is refused. Set the pin again, or remove the tool's setting.";

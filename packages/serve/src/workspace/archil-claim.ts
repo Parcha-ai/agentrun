@@ -14,13 +14,13 @@
 // refused. A row that is missing, or that does not open under the seal key (sealed under another key, or for another
 // row), refuses in words that name the row and never hold a value. Nothing here reads the environment: the settings,
 // the store's sealed keys and the seal key are handed in.
-import { ARCHIL_API_KEY_ROW, ARCHIL_DISK_TOKEN_ROW, type ArchilSettings } from "../archil-settings.js";
+import { ARCHIL_API_KEY_ROW, type ArchilSettings } from "../archil-settings.js";
 import { sealedAt, unsealColumn } from "../store/seal.js";
 import type { SealedKeys } from "../store/store.js";
 import { type ArchilDisk, type ArchilDiskOptions, type ArchilImage, archilDisk, pinnedImage } from "./archil-disk.js";
 import { type ArchilMountCredentialOptions, type MountCredential, mintMountToken, nicknameOf, removeMountToken, removeOlderMountTokens } from "./archil-mount-credential.js";
 
-export { ARCHIL_API_KEY_ROW, ARCHIL_DISK_TOKEN_ROW, type ArchilSettings };
+export { ARCHIL_API_KEY_ROW, type ArchilSettings };
 
 /** A claim this step refused, in words a person reads: no Archil call was made. */
 export class ArchilClaimRefused extends Error {

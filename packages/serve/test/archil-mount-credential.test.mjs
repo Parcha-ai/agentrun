@@ -72,10 +72,10 @@ test("a refusal is in words, and neither the key nor the token is in it, the env
     assert.match(minting.message, /Archil refused to mint the run's mount credential \(500\)/);
     const removing = await removeMountToken(options, "tok-1", { token: TOKEN }).then(() => undefined, (error) => error);
     assert.match(removing.message, /Archil refused to remove the run's mount credential \(500\)/);
-    for (const error of [minting, removing]) {
-      assert.ok(!error.message.includes(KEY) && !error.message.includes(TOKEN), `scrubbed: ${error.message}`);
-      assert.ok(!String(error.stack).includes(KEY) && !String(error.stack).includes(TOKEN));
-    }
+    // A failed mint has no token of the run's to leak: its key is scrubbed. A remove knows the run's token: both are.
+    assert.ok(!minting.message.includes(KEY) && !String(minting.stack).includes(KEY), `scrubbed: ${minting.message}`);
+    assert.ok(!removing.message.includes(KEY) && !removing.message.includes(TOKEN), `scrubbed: ${removing.message}`);
+    assert.ok(!String(removing.stack).includes(KEY) && !String(removing.stack).includes(TOKEN));
   } finally {
     Object.assign(console, saved);
   }

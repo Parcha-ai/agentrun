@@ -6,8 +6,10 @@ import assert from "node:assert/strict";
 import { randomBytes } from "node:crypto";
 import { test } from "node:test";
 import { sealColumn, sealedAt } from "../dist/store/seal.js";
-import { ARCHIL_API_KEY_ROW as SETTINGS_API_ROW, ARCHIL_DISK_TOKEN_ROW as SETTINGS_TOKEN_ROW, loadArchilSettings, saveArchilSettings } from "../dist/archil-settings.js";
-import { ARCHIL_API_KEY_ROW, ARCHIL_DISK_TOKEN_ROW, ArchilClaimRefused, archilClaim } from "../dist/workspace/index.js";
+import * as archilSettings from "../dist/archil-settings.js";
+import { ARCHIL_API_KEY_ROW, ArchilClaimRefused, archilClaim } from "../dist/workspace/index.js";
+
+const { ARCHIL_API_KEY_ROW: SETTINGS_API_ROW, loadArchilSettings, saveArchilSettings } = archilSettings;
 import { archilControlFake } from "./archil-control-fake.mjs";
 import { storeOn } from "./store-helpers.mjs";
 
@@ -57,8 +59,9 @@ test("archil claim: the disk is made from the settings, and its key is the seale
 });
 
 test("archil claim: the key rows are the store's one set of names, and a saved image is pinned by digest or refused", async () => {
-  assert.deepEqual([ARCHIL_API_KEY_ROW, ARCHIL_DISK_TOKEN_ROW], [SETTINGS_API_ROW, SETTINGS_TOKEN_ROW]);
-  assert.deepEqual([ARCHIL_API_KEY_ROW, ARCHIL_DISK_TOKEN_ROW], ["archil.api_key", "archil.disk_token"]);
+  assert.equal(ARCHIL_API_KEY_ROW, SETTINGS_API_ROW);
+  assert.equal(ARCHIL_API_KEY_ROW, "archil.api_key");
+  assert.equal(archilSettings.ARCHIL_DISK_TOKEN_ROW, undefined, "no disk token row: the mount credential is minted per run");
   const { claim } = await claimOf({ settings: { ...SETTINGS, image: PINNED } });
   assert.deepEqual(claim.image, { baseImage: PINNED });
   for (const image of ["debian:trixie", "debian@sha256:short", ""]) {

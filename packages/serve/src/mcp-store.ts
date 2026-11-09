@@ -1,6 +1,7 @@
 // The MCP registry and OAuth sign-ins in flight, in the one store (store.mcp, store.mcpOauth), sealed with the store's one
 // rule (store/seal.ts, the tl-mcp note §7): the registry row's credential under AAD mcp_servers|<name>|sealed with the url
-// origin inside the plaintext, and a pending sign-in's PKCE verifier under AAD mcp_oauth_pending|<state>|verifier. The
+// origin inside the plaintext, and a pending sign-in's secret parts (the PKCE verifier and the OAuth client, with its
+// secret) under AAD mcp_oauth_pending|<state>|sealed. The
 // store-backed replacement for mcp-servers.ts's file store and mcp-oauth.ts's in-memory pending map; the cut wires these
 // into McpServers / McpSignIns, which keep their SDK tool-probe, validation and sign-in flow. The store never opens a
 // credential; only this process (and a runner) does, with the seal key.
@@ -63,19 +64,20 @@ export async function openServerCredential(store: { mcp: Pick<Mcp, "server"> }, 
   return row && openMcpCredential(sealKey, { name: row.name, url: row.url, sealed: row.sealed });
 }
 
-/** Saves an MCP OAuth sign-in in flight, its PKCE verifier sealed (§7, AAD mcp_oauth_pending|<state>|verifier). The rest of
- *  the sign-in's working state (the client, discovery and resource the callback needs) is NOT persisted here — the schema
- *  seals only the verifier; how those survive to the callback is tl-mcp's to settle before McpSignIns is wired. */
+/** Saves an MCP OAuth sign-in in flight, its secret parts sealed (§7, AAD mcp_oauth_pending|<state>|sealed): the PKCE
+ *  verifier and the OAuth `client` (which carries the owner's pre-registered client_secret, and any secret a dynamic
+ *  registration issued) as one sealed JSON blob the store never opens. The rest of the sign-in's working state (discovery,
+ *  resource, url, was, scope, kind) is the plain `working` JSON, which holds no secret. */
 export async function putPendingSignIn(
   store: { mcpOauth: Pick<McpOauth, "put"> },
   sealKey: Buffer,
-  pending: { state: string; server: string; verifier: string; cookieBinding: string; working?: unknown; expiresAt: number },
+  pending: { state: string; server: string; verifier: string; client?: unknown; working?: unknown; expiresAt: number },
 ): Promise<void> {
+  const secret = JSON.stringify({ verifier: pending.verifier, ...(pending.client !== undefined ? { client: pending.client } : {}) });
   await store.mcpOauth.put({
     state: pending.state,
     server: pending.server,
-    verifierSealed: sealColumn(sealKey, sealedAt.oauthVerifier(pending.state), pending.verifier),
-    cookieBinding: pending.cookieBinding,
+    sealed: sealColumn(sealKey, sealedAt.oauthPending(pending.state), secret),
     working: pending.working ?? null,
     expiresAt: pending.expiresAt,
   });
@@ -83,19 +85,20 @@ export async function putPendingSignIn(
 
 /** Takes a pending sign-in at its callback, once: the store deletes and returns it in one atomic statement
  *  (store.mcpOauth.take), gone when past its expiry (with `now`), so a replay or an expired state reads as undefined and no
- *  second callback can take the same one. Its verifier is opened here (at its own AAD), the store never opens it, and its
- *  plain working state is returned; undefined when there is none, it has expired, or the verifier does not open. The old
- *  get()+remove() split is gone: nothing takes a sign-in any other way. */
+ *  second callback can take the same one. Its sealed verifier and client are opened here (at their own AAD), the store never
+ *  opens them, and its plain working state is returned; undefined when there is none, it has expired, or the seal does not
+ *  open. The one take path: nothing reads a pending sign-in any other way. */
 export async function takePendingSignIn(
   store: { mcpOauth: Pick<McpOauth, "take"> },
   sealKey: Buffer,
   state: string,
   now?: number,
-): Promise<{ server: string; verifier: string; cookieBinding: string; working: unknown; expiresAt: number } | undefined> {
+): Promise<{ server: string; verifier: string; client?: unknown; working: unknown; expiresAt: number } | undefined> {
   const row = await store.mcpOauth.take(state, now);
   if (!row) return undefined;
   try {
-    return { server: row.server, verifier: unsealColumn(sealKey, sealedAt.oauthVerifier(state), row.verifierSealed).toString("utf8"), cookieBinding: row.cookieBinding, working: row.working, expiresAt: row.expiresAt };
+    const opened = JSON.parse(unsealColumn(sealKey, sealedAt.oauthPending(state), row.sealed).toString("utf8")) as { verifier: string; client?: unknown };
+    return { server: row.server, verifier: opened.verifier, ...(opened.client !== undefined ? { client: opened.client } : {}), working: row.working, expiresAt: row.expiresAt };
   } catch {
     return undefined;
   }
