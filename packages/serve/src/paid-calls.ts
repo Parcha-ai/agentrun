@@ -147,8 +147,19 @@ export const holdRefusal = (name: string, error: unknown): string =>
 export const settleOnRoot = (kind: string, data: Record<string, string | number | null>): Promise<void> | undefined => rootRecord?.(kind, data);
 
 /** The ledger of a tool call: its id, and its commits to the run's store. Its mark (TOOL_STARTED) is the call's own
- *  commit, so a stopped turn sends nothing new; its settle goes to the run's root when that is set (settleIn). */
-export const ledgerOf = (api: ToolExecutionApi, context: Context): Ledger => ({ call: api.callId, record: (kind, data) => ((kind === TOOL_COST ? settleOnRoot(kind, data) : undefined) ?? api.commit(async (tx) => void (await tx.appendEntry(ROOT_CONVERSATION_ID, { kind, data })), context)) });
+ *  commit, so a stopped turn sends nothing new; its settle goes to the run's root when that is set (settleIn). On the
+ *  runner the call runs inside the run's one ledger (the adapter loop's bookedIn, which carries the run's paid tool calls
+ *  and its pause): its `paid` and `pause` are kept, so a paid request is admitted on the run's cap before it is sent and
+ *  settled there, never booked beside it where the cap does not judge it. */
+export const ledgerOf = (api: ToolExecutionApi, context: Context): Ledger => {
+  const outer = ledgers.getStore();
+  return {
+    call: api.callId,
+    record: (kind, data) => ((kind === TOOL_COST ? settleOnRoot(kind, data) : undefined) ?? api.commit(async (tx) => void (await tx.appendEntry(ROOT_CONVERSATION_ID, { kind, data })), context)),
+    ...(outer?.paid ? { paid: outer.paid } : {}),
+    ...(outer?.pause ? { pause: outer.pause } : {}),
+  };
+};
 
 /** `tool` with each call's paid requests booked under it: its execute runs with the call's ledger set. */
 export function booking<T extends ToolRegistration>(tool: T): T {
