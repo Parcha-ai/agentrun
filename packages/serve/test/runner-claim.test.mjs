@@ -190,7 +190,10 @@ test("a runner that closes stops its loop where it can resume and releases the r
 
   assert.equal(faux.loops[0].stopCalls[0]?.kind, "shutdown", "the loop is stopped for a shutdown");
   assert.match(record.ops.join(" | "), /flush \| release run-1/, "flushed, then released");
-  const second = await until(() => record.claims[1], "the other runner's claim", LEASE_MS * 10);
+  // The other runner's next poll claims it: waited for by that claim alone, with no bound of its own (the test's timeout
+  // bounds it), never a figure a loaded box's slow polls could outlast.
+  while (!record.claims[1]) await sleep(5);
+  const second = record.claims[1];
   // The close's release bumped the epoch to 2: the other runner's claim is 3.
   assert.deepEqual([second.runner, second.epoch], [other.name, 3]);
   assert.ok(second.at < leaseEnd, `claimed ${second.at - closedAt} ms after the close, before the old lease would have run out`);
