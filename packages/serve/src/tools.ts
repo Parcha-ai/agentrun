@@ -380,7 +380,7 @@ const browserTool: ToolEntry = {
     const price = browserPrice(providerName, host.env);
     // On the runner, the run's ledger (host.ledger): each call held and settled on its booking, and a session's release one
     // more request there, never this process's own spend. Undefined on the old per-run process: browserSpend's own then.
-    const spend = browserSpend(providerName, price, DEFAULT_BROWSER_POLICY.idleReleaseS, (conversation, at) => browser.release(conversation as never, "close", at), undefined, { paid: host.ledger?.paid });
+    const spend = browserSpend(providerName, price, DEFAULT_BROWSER_POLICY.idleReleaseS, (conversation, at) => browser.release(conversation as never, "close", at), undefined, { paid: host.ledger?.paid, pause: host.ledger?.pause });
     // browser_downloads is listed only with a workspace to copy into, and only a provider that keeps a session's downloads
     // (Browserbase's; Kernel's keeps none) has any: without one, uploads still read the run's work/, through `files`.
     const downloads = typeof (parts.provider as { downloads?: unknown } | undefined)?.downloads === "object";
