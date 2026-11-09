@@ -18,7 +18,9 @@ const { momentOverStore, timelineOverStore, viewOverStore } = await import("../d
 const { servedTimelineRows } = await import("../dist/run-timeline-served.js");
 const { answersOf, withApprovalRows } = await import("../dist/run-view.js");
 const { approve } = await import("../dist/runs-over-store.js");
-const TIMING = { ...STEADY_LEASE, pollMs: 20, commandPollMs: 30 };
+// A stopped end the journal refuses gives up at once (no retry, no wait at the cap): the run ends stopped on its row
+// alone, the shape this file reads.
+const TIMING = { ...STEADY_LEASE, pollMs: 20, commandPollMs: 30, endRetryBackoffMs: 1, endRetryCapMs: 1, endRetryAtCap: 0 };
 const quiet = { beforeIntent: async () => {}, beforeResult: async () => {} };
 const DEPS = { origin: "", serverSecrets: () => [] };
 const SERVED = { serverSecrets: () => [], keyEnv: () => ({}) };
