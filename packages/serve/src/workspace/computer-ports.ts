@@ -1,11 +1,12 @@
 // A computer's narrow ports, as the kernel registry's kind tools reach them (run-adapters kernel/registry Hands: screen,
 // input, phone), over the computer's computerd client (@parcha/agentrun-computer's ComputerClient): a desktop's screen
 // is screen.shot, read to its end with screen.read; its input is input.actions; a phone's screen is the same shot, its
-// tap, swipe and typing are input.actions of its touch group, and its apps are apps.list and apps.launch. A phone with no
+// structure apps.ui_tree, its tap, swipe, typing and keys are input.actions (back and home its touch group's buttons,
+// enter a key), and its apps are apps.list and apps.launch. A phone with no
 // computerd (daemon none) answers the same methods in process, so one port fits both. A refusal throws the computer's
 // code and words, as the kernel's port says.
-import type { ComputerClient, InputAction as ComputerAction, Result } from "@parcha/agentrun-computer";
-import type { Input, Phone, Screen, Shot } from "@parcha/agentrun-kernel/kernel";
+import type { ComputerClient, InputAction as ComputerAction, Result, UiNode } from "@parcha/agentrun-computer";
+import type { Input, Phone, PhoneKey, PhoneNode, Screen, Shot } from "@parcha/agentrun-kernel/kernel";
 
 /** A computer call's value, or its refusal thrown with the computer's code and words. */
 async function valueOf<T>(call: Promise<Result<T>>): Promise<T> {
@@ -48,12 +49,46 @@ export const inputOf = (client: ComputerClient): Input => ({
   actions: (list) => act(client, list as unknown as readonly ComputerAction[]),
 });
 
-/** A phone: its screen's shot, a tap, a swipe and typing as input.actions of its touch and keys, its apps. */
+/** A node's platform class a model types into: Android's EditText (and its subclasses), iOS's text fields and views. */
+const EDITABLE = /(?:EditText|AutoCompleteTextView)$|^XCUIElementType(?:Secure)?Text(?:Field|View)$|^XCUIElementTypeSearchField$/;
+
+/** The screen's structure (apps.ui_tree), flattened in document order, each node with whether a model can tap it or type
+ *  into it; a node the phone says is not enabled is neither. */
+function flattened(root: UiNode): PhoneNode[] {
+  const out: PhoneNode[] = [];
+  const walk = (node: UiNode) => {
+    const [x, y, w, h] = node.bounds;
+    const editable = node.enabled && EDITABLE.test(node.role);
+    out.push({
+      role: node.role,
+      ...(node.id ? { id: node.id } : {}),
+      ...(node.text ? { text: node.text } : {}),
+      ...(node.label ? { label: node.label } : {}),
+      bounds: { x, y, w, h },
+      clickable: node.enabled && node.clickable === true,
+      editable,
+      ...(node.focused ? { focused: true } : {}),
+    });
+    for (const child of node.children ?? []) walk(child);
+  };
+  walk(root);
+  return out;
+}
+
+/** The keys a phone presses: back and home are its buttons (input.touch's button action), enter a key of the key table. */
+const keyAction = (name: PhoneKey): ComputerAction => (name === "enter" ? { type: "key", keys: ["enter"] } : { type: "button", name });
+
+/** A phone: its screen's shot and structure (apps.ui_tree), a tap, a swipe, typing and its keys as input.actions, its apps. */
 export const phoneOf = (client: ComputerClient): Phone => ({
   shot: () => shotOf(client),
+  async tree() {
+    const tree = await valueOf(client.call("apps.ui_tree", {}));
+    return { nodes: flattened(tree.root), total: tree.nodes, truncated: tree.truncated };
+  },
   tap: (at) => act(client, [{ type: "tap", at: [at.x, at.y] }]),
   swipe: ({ from, to, durationMs }) => act(client, [{ type: "swipe", path: [[from.x, from.y], [to.x, to.y]], ms: durationMs }]),
   type: (text) => act(client, [{ type: "type", text }]),
+  key: (name) => act(client, [keyAction(name)]),
   apps: {
     async list() {
       const listed = await valueOf(client.call("apps.list", {}));

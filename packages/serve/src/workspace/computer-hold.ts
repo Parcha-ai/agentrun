@@ -123,9 +123,11 @@ type ScreenPort = { shot(...args: never[]): Promise<unknown> };
 type InputPort = { actions(...args: never[]): Promise<unknown> };
 type PhonePort = {
   shot(...args: never[]): Promise<unknown>;
+  tree(...args: never[]): Promise<unknown>;
   tap(...args: never[]): Promise<unknown>;
   swipe(...args: never[]): Promise<unknown>;
   type(...args: never[]): Promise<unknown>;
+  key(...args: never[]): Promise<unknown>;
   apps: { list(...args: never[]): Promise<unknown>; open(...args: never[]): Promise<unknown> };
 };
 type WithPorts = Hands & { readonly screen?: ScreenPort; readonly input?: InputPort; readonly phone?: PhonePort };
@@ -141,9 +143,11 @@ export function heldHands<H extends WithPorts>(hands: H, hold: ComputerHold): H 
       phone: {
         ...hands.phone,
         shot: look(hands.phone, "shot", hold),
+        tree: look(hands.phone, "tree", hold),
         tap: act(hands.phone, "tap", hold, "phone", "tap"),
         swipe: act(hands.phone, "swipe", hold, "phone", "swipe"),
         type: act(hands.phone, "type", hold, "phone", "typing"),
+        key: act(hands.phone, "key", hold, "phone", "key press"),
         apps: { ...hands.phone.apps, list: look(hands.phone.apps, "list", hold), open: act(hands.phone.apps, "open", hold, "phone", "app opening") },
       },
     } : {}),

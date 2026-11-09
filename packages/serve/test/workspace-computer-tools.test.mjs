@@ -31,7 +31,7 @@ const names = (run) => run.registry.list().map((def) => def.name);
 const LOCAL = ["read", "write", "edit", "bash"];
 const COMPUTER = [...LOCAL, "bash_background", "bash_output", "bash_input", "bash_signal", "bash_list"];
 const DESKTOP = ["desktop_screen", "desktop_input", "computer_request_handoff"];
-const PHONE = ["phone_screen", "phone_tap", "phone_swipe", "phone_type", "phone_apps", "phone_open", "computer_request_handoff"];
+const PHONE = ["phone_screen", "phone_tree", "phone_tap", "phone_swipe", "phone_type", "phone_key", "phone_apps", "phone_open", "computer_request_handoff"];
 const DESKTOP_GROUPS = ["exec", "files", "processes", "screen", "input.pointer", "input.keys"];
 const PHONE_GROUPS = ["screen", "input.touch", "apps"];
 const PNG = Buffer.from("iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mNk+M9QDwADhgGAWjR9awAAAABJRU5ErkJggg==", "base64");
@@ -108,6 +108,39 @@ test("a phone: the runner's folder and shell, and the phone's tools on its touch
     ["input.actions", { actions: [{ type: "type", text: "hello" }] }],
     ["apps.list", {}],
     ["apps.launch", { id: "com.example.mail" }],
+  ]);
+});
+
+test("a phone's tree is its apps.ui_tree, flattened to the nodes a model can tap or type into; its keys are back and home as the phone's buttons, enter as a key", async () => {
+  const root = scratch();
+  const phone = fakeDesktop(root);
+  const node = (role, extra) => ({ role, enabled: true, children: [], ...extra });
+  phone.overrides["apps.ui_tree"] = () => ({
+    root: node("android.widget.FrameLayout", {
+      bounds: [0, 0, 720, 1280],
+      children: [
+        node("android.widget.EditText", { id: "com.example.mail:id/to", text: "", label: "To", bounds: [20, 150, 680, 80], clickable: true, focused: true }),
+        node("android.widget.LinearLayout", { bounds: [0, 1100, 720, 180], children: [node("android.widget.Button", { text: "Send", bounds: [500, 1150, 200, 80], clickable: true })] }),
+        node("android.widget.TextView", { text: "New message", bounds: [20, 60, 400, 60] }),
+        node("android.widget.Button", { text: "Disabled", bounds: [20, 1150, 200, 80], clickable: true, enabled: false }),
+      ],
+    }),
+    nodes: 6,
+    truncated: false,
+  });
+  const run = await runTools(localWorkspace(root), { kind: "phone", computer: phone, groups: [...PHONE_GROUPS, "apps.ui_tree", "input.keys"] }, { mode: 2, context: ctx });
+  const tools = run.hostTools(["phone_tree", "phone_key"]);
+  assert.deepEqual(await call(tools, "phone_tree", {}), { isError: false, text: [
+    "2 nodes you can tap or type into, of 6 on the screen. Coordinates are a phone_screen screenshot's pixels.",
+    '- EditText "To" [com.example.mail:id/to]: a field, focused; center (360, 190), bounds 20,150 680x80',
+    '- Button "Send": center (600, 1190), bounds 500,1150 200x80',
+  ].join("\n") });
+  for (const key of ["back", "home", "enter"]) await call(tools, "phone_key", { key });
+  assert.deepEqual(phone.calls.filter(([method]) => method === "input.actions" || method === "apps.ui_tree"), [
+    ["apps.ui_tree", {}],
+    ["input.actions", { actions: [{ type: "button", name: "back" }] }],
+    ["input.actions", { actions: [{ type: "button", name: "home" }] }],
+    ["input.actions", { actions: [{ type: "key", keys: ["enter"] }] }],
   ]);
 });
 

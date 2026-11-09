@@ -127,7 +127,7 @@ test("start: an unmounted desktop, a phone and a browser launch with no mount; t
   const root = scratch();
   for (const [setting, mode, tools] of [
     [{ kind: "desktop", provider: "e2b" }, 1, ["desktop_screen", "desktop_input"]],
-    [{ kind: "phone", provider: "phone-harness" }, 2, ["phone_screen", "phone_tap", "phone_swipe", "phone_type", "phone_apps", "phone_open"]],
+    [{ kind: "phone", provider: "phone-harness" }, 2, ["phone_screen", "phone_tree", "phone_tap", "phone_swipe", "phone_type", "phone_key", "phone_apps", "phone_open"]],
   ]) {
     const side = claim(root);
     const started = await (await resolveComputer(setting, mode, KIND_REGISTRY, side)).start({ workspace: localWorkspace(root), check: { readBackOf } });
