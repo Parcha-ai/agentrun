@@ -10,7 +10,8 @@ import { after, test } from "node:test";
 const { openSqliteStore } = await import("../dist/store/index.js");
 const { localWorkspace } = await import("../dist/workspace/index.js");
 const { launchBody } = await import("../dist/run-launch.js");
-const { listRunFiles, readRunFile, runBrowserState } = await import("../dist/run-reads-over-store.js");
+const { BACKGROUND_CONTEXT } = await import("@earendil-works/chord/context");
+const { listRunFiles, readRunFile, runBrowserState, runGraphView } = await import("../dist/run-reads-over-store.js");
 
 const dirs = [];
 after(() => {
@@ -30,7 +31,7 @@ async function freshStore(revisionBody = { instructions: "Answer.", tools: [] })
   return store;
 }
 
-const deps = (over = {}) => ({ env: {}, runWorkspace: async () => null, ...over });
+const deps = (over = {}) => ({ env: {}, runWorkspace: async () => null, runView: async () => undefined, withheld: async () => false, context: BACKGROUND_CONTEXT, ...over });
 
 // ---- listRunFiles ---------------------------------------------------------------------------------------------------
 
@@ -95,4 +96,30 @@ test("runBrowserState is off when a kept browser plane is unavailable here now",
   const answer = await runBrowserState(store, "run-1", deps({ env: {} }));
   assert.equal(answer.state, "off");
   assert.equal(typeof answer.reason, "string");
+});
+
+// ---- runGraphView ---------------------------------------------------------------------------------------------------
+
+test("runGraphView is 404 for an agentic run (only a workflow run has a graph)", async () => {
+  const store = await freshStore();
+  await assert.rejects(
+    () => runGraphView(store, "run-1", deps({ runView: async () => ({ kind: "agentic", status: "working", agent_id: "a1", revision: "r1", created_at: "2026-01-01T00:00:00.000Z", ended_at: null }) })),
+    (e) => e.code === "not_found" && /only a workflow run has a graph/.test(e.message),
+  );
+});
+
+test("runGraphView refuses a run whose output is withheld (403)", async () => {
+  const store = await freshStore();
+  await assert.rejects(
+    () => runGraphView(store, "run-1", deps({ runView: async () => ({ kind: "workflow", status: "completed", agent_id: "a1", revision: "r1", created_at: "2026-01-01T00:00:00.000Z", ended_at: "2026-01-01T00:01:00.000Z" }), withheld: async () => true })),
+    (e) => e.code === "forbidden" && /nothing the run said is shown/.test(e.message),
+  );
+});
+
+test("runGraphView is 404 for an unknown run", async () => {
+  const store = await freshStore();
+  await assert.rejects(
+    () => runGraphView(store, "run-x", deps({ runView: async () => undefined })),
+    (e) => e.code === "not_found",
+  );
 });
