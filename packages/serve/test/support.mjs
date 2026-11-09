@@ -616,7 +616,7 @@ export function call(port, { method = "GET", path = "/", headers = {}, body } = 
         resolve({ status: res.statusCode, headers: res.headers, text, json });
       });
     });
-    req.once("error", reject);
+    req.once("error", (error) => reject(Object.assign(error, { message: `${error.message} on ${method} ${path} (a reused socket: ${req.reusedSocket})` })));
     req.end(body === undefined ? undefined : typeof body === "string" ? body : JSON.stringify(body));
   });
 }
