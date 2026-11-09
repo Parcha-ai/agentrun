@@ -291,6 +291,10 @@ export interface RunView {
   approvals?: ReadonlyMap<string, Approval>;
   capMark?: number;
   capRefusal?: RefusalFigures;
+  /** The words of the cap pause the run stands at, when the view knows them apart from a turn's refusal (the store-backed
+   *  view, from the cap park entry): the moment reads them when `pausedAt` finds no turn refusal, so a run parked at its cap
+   *  reads paused either way. The file-backed view leaves this unset and the moment reads `pausedAt`. */
+  pausedWords?: string;
   meta: RunViewMeta;
 }
 
@@ -525,7 +529,9 @@ export function momentOf(run: RunView, facts: RunFacts, live: boolean): RunMomen
   const { status, state } = statusOf(run, facts);
   const terminal = TERMINAL.has(status);
   const waiting = waitingApproval(run);
-  const pausedWords = pausedAt(run);
+  // The pause words from the turn's refusal (the file-backed view), else the cap park the store-backed view carries, so a
+  // run parked at its cap reads paused and raiseCap resumes it either way.
+  const pausedWords = pausedAt(run) ?? run.pausedWords;
   const answered = run.meta.approvals;
   return {
     id: run.id,

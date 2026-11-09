@@ -9,6 +9,7 @@ import { commitWrites } from "@earendil-works/pi-durable/testing";
 import { storeOn, T0 } from "./store-helpers.mjs";
 
 const { viewOverStore, summaryOverStore, momentOverStore } = await import("../dist/store-view.js");
+const { raiseCap } = await import("../dist/runs-over-store.js");
 
 const context = BACKGROUND_CONTEXT;
 const iso = (ms) => new Date(ms).toISOString();
@@ -305,6 +306,26 @@ test("a run whose cap was raised is no longer parked: the budget card clears and
   assert.equal(view.status, "working");
   assert.equal(view.state, "working");
   assert.equal(view.pending, null);
+});
+
+test("the moment of a run parked at its cap reads paused with the pause words, so raiseCap resumes it as main does", async (t) => {
+  const { store } = await storeOn(t);
+  await agent(store);
+  await store.runs.create({ id: "run-1", agentId: "agent-1", revisionId: "rev-1" }, { body: { input: { message: "Do the big thing." }, title: "Capped run", place: { mode: "runner" }, max_cost_usd: 0.5, cap_mode: "expected" } });
+  const claim = await store.claim("run-1", "runner-a", { leaseMs: 60_000 });
+  const journal = store.journal(claim);
+  const u = { id: await journal.mintId(), conversationId: ROOT, kind: "pi.user", model: [{ role: "user", content: "Do the big thing.", timestamp: T0 + 1_000 }] };
+  const budget = budgetEntry(await journal.mintId());
+  await commitWrites(journal, [{ type: "conversation", value: { id: ROOT } }, { type: "entry", value: u }, { type: "entry", value: budget }], context);
+  await store.release(claim);
+
+  const moment = await momentOverStore(store, "run-1", deps);
+  assert.equal(moment.paused, true);
+  assert.equal(moment.pausedWords, "Out of budget. Raise the cap to at least $1.30 to continue.");
+  assert.equal(moment.maxCostUsd, 0.5);
+  // The write half's raiseCap reads moment.paused to resume the run, as it does for a cap-paused run on main.
+  const result = await raiseCap(store, moment, 11);
+  assert.deepEqual(result, { resumed: true });
 });
 
 test("a run whose agent asked for a person in its browser reads input_required with the browser card", async (t) => {

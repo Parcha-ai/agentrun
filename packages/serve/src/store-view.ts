@@ -218,6 +218,9 @@ async function storeRunOf(store: Store, runId: string, deps: ViewDeps): Promise<
     rows,
     turns,
     ...(approvals.size ? { approvals } : {}),
+    // The cap pause's words, so the moment reads paused for a store budget park (the write half's raiseCap/sendMessage read
+    // moment.paused/pausedWords); the file path's turns-based pausedAt gives nothing over the store.
+    ...(budget?.kind === "budget" ? { pausedWords: budget.said } : {}),
     meta,
   };
   return { row, runRow, launch, rows, version, harness, learningEnd, view, unshown, values, live, updatedAtMs, lastProgressAt, budget, browserAsk, approvalsMode };
