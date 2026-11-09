@@ -5,71 +5,19 @@
 // Timeline rows with it. Each run is real (the faux model answers by repeating its message), and its row is marked as the
 // runner marks a run it hands a sign-in (sign_in_handed, the SHA-256 of each pointer). No sleeps, no process deaths.
 import assert from "node:assert/strict";
-import { createHash, randomBytes } from "node:crypto";
-import { writeFileSync } from "node:fs";
-import { join } from "node:path";
-import { DatabaseSync } from "node:sqlite";
+import { randomBytes } from "node:crypto";
 import { test } from "node:test";
-import { saveSignIn } from "../dist/sign-ins-store.js";
-import { openSqliteStore } from "../dist/store/sqlite/store.js";
 import { WITHHELD_SIGN_IN } from "../dist/run-view.js";
-import { KEY as BB_KEY } from "./fixtures/faux-browserbase-check.mjs";
-import { agent, follow, serve, withEnv } from "./support.mjs";
+import { marked, pointerOf, reads, runSaying as said, saved, server as served, sha } from "./custody-support.mjs";
 
-const FAUX_BROWSER = new URL("./fixtures/faux-browser.mjs", import.meta.url).pathname;
-const FAUX_BROWSERBASE = new URL("./fixtures/faux-browserbase-check.mjs", import.meta.url).pathname;
-const ENV = ["BROWSERBASE_API_KEY", "BROWSERBASE_PROJECT_ID", "BROWSERBASE_BASE_URL", "BROWSERBASE_CONNECT_BASE_URL", "AGENTRUN_SEAL_KEY", "PARALLEL_API_KEY"];
-const sha = (text) => createHash("sha256").update(text, "utf8").digest("hex");
-
-/** A server whose seal key is `seal`, its browser on Browserbase (faux), with one agent `alpha` (its tools `tools`). */
-async function server(t, { seal = randomBytes(32), tools = ["browser"], env = {} } = {}) {
-  withEnv(t, { BROWSERBASE_API_KEY: BB_KEY, BROWSERBASE_PROJECT_ID: "proj-1", AGENTRUN_SEAL_KEY: seal.toString("base64"), ...env }, ENV);
-  const served = await serve(t, { fauxBrowser: FAUX_BROWSER, fauxBrowserbase: FAUX_BROWSERBASE });
-  assert.equal((await served.api("POST", "/agents", agent("alpha", { tools }))).status, 201);
-  return { ...served, seal };
-}
-
-/** A run of `alpha` whose message, and so its title and its answer ("On <message>: done."), holds `said`; ended. */
-async function runSaying({ api, data }, said) {
-  const gate = join(data, "..", `gate-${randomBytes(4).toString("hex")}`);
-  writeFileSync(gate, "");
-  const started = await api("POST", "/agents/alpha/runs", { input: { content: `${said} Hold, then echo, until ${gate}.` } });
-  assert.equal(started.status, 202, JSON.stringify(started.body));
-  await follow(api, started.body.run_id, ["completed", "failed"]);
-  return started.body.run_id;
-}
-
-/** Saves `pointer` as alpha's Browserbase sign-in, as a run's save keeps it. */
-async function saved({ data, seal }, pointer) {
-  const store = await openSqliteStore({ dataDir: data, role: "runner" });
-  try {
-    await saveSignIn(store, seal, { agentId: "alpha", provider: "browserbase", pointer });
-  } finally {
-    await store.close();
-  }
-}
-
-/** Marks run `runId`'s row with `mark` as its sign_in_handed (as the runner writes it at its claim, as JSON; null: none). */
-function marked({ data }, runId, mark) {
-  const db = new DatabaseSync(join(data, "store.sqlite"));
-  try {
-    db.prepare("UPDATE runs SET sign_in_handed = ? WHERE id = ?").run(mark === null ? null : JSON.stringify(mark), runId);
-  } finally {
-    db.close();
-  }
-}
-
-/** What is served of run `runId`: its view, its row in both lists, and its Timeline page. */
-async function reads({ api }, runId) {
-  const view = (await api("GET", `/runs/${runId}`)).body;
-  const lists = [(await api("GET", "/runs")).body, (await api("GET", "/agents/alpha/runs")).body].map((body) => body.runs.find((run) => run.run_id === runId));
-  const timeline = (await api("GET", `/runs/${runId}/timeline`)).body;
-  return { view, lists, timeline };
-}
+/** The shared server, its agent `alpha` of `tools`. */
+const server = (t, { tools = ["browser"], env = {} } = {}) => served(t, { agentTools: tools, env });
+/** A run of alpha repeating `text`, ended: its id. */
+const runSaying = async (s, text) => (await said(s, text)).runId;
 
 test("a run handed its agent's sign-in, on a browser plane, is served cut of the pointer it repeats: its answer, its title in its view and both lists, and every Timeline row", { timeout: 120_000 }, async (t) => {
   const s = await server(t);
-  const pointer = `bb-ctx-CUSTODY-${randomBytes(10).toString("hex")}`;
+  const pointer = pointerOf();
   const runId = await runSaying(s, pointer);
   await saved(s, pointer);
   marked(s, runId, [sha(pointer)]);
@@ -83,10 +31,10 @@ test("a run handed its agent's sign-in, on a browser plane, is served cut of the
 
 test("a run whose hand can't be read back here is withheld: its answer, its title in its view and both lists, and its Timeline's rows, in the view's words", { timeout: 120_000 }, async (t) => {
   const s = await server(t);
-  const pointer = `bb-ctx-CUSTODY-${randomBytes(10).toString("hex")}`;
+  const pointer = pointerOf();
   const runId = await runSaying(s, pointer);
   // The agent's sign-in now is another (replaced since): the run's hash opens to nothing kept.
-  await saved(s, `bb-ctx-OTHER-${randomBytes(10).toString("hex")}`);
+  await saved(s, pointerOf("OTHER"));
   marked(s, runId, [sha(pointer)]);
   const { view, lists, timeline } = await reads(s, runId);
   assert.equal(view.result?.final_answer ?? null, null);
@@ -102,7 +50,7 @@ test("a run whose hand can't be read back here is withheld: its answer, its titl
 
 test("a run marked handed with no vendor browser on its launch is withheld alike: its words, title and Timeline", { timeout: 120_000 }, async (t) => {
   const s = await server(t, { tools: [] });
-  const pointer = `bb-ctx-CUSTODY-${randomBytes(10).toString("hex")}`;
+  const pointer = pointerOf();
   const runId = await runSaying(s, pointer);
   await saved(s, pointer);
   marked(s, runId, [sha(pointer)]);
@@ -116,7 +64,7 @@ test("a run marked handed with no vendor browser on its launch is withheld alike
 
 test("a mark no server writes (a legacy true, one hash alone, an object, an empty array, a hash beside a number) fails closed: the run is withheld, never served uncut", { timeout: 120_000 }, async (t) => {
   const s = await server(t);
-  const pointer = `bb-ctx-CUSTODY-${randomBytes(10).toString("hex")}`;
+  const pointer = pointerOf();
   const runId = await runSaying(s, pointer);
   await saved(s, pointer);
   for (const mark of [true, sha(pointer), { hash: sha(pointer) }, [], [sha(pointer), 5]]) {
