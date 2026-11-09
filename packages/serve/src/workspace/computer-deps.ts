@@ -6,13 +6,15 @@
 // (computer-providers.ts computerProviderMakers, the package's providerFor); the computer's spec by provider and kind
 // (computerSpecOf); the mount check the claim's attach runs (the package's readBackOf); and each provider key read as the
 // server reads it (key-meta.ts keyReader: the environment's value, else the saved one opened with the seal key). Settings
-// → Computers' factories come from the same makers.
+// → Computers' factories come from the same makers. Under --faux, faux-computers.ts's registry, key table, launch and
+// factories stand in for the package's.
 //
 // A key goes into the server-side provider call alone (the provider's create() options): the spec a computer is made
 // with names no key, no account key and no database or Redis credential, and carries no environment at all.
 import { BROWSER_IMAGE, type ComputerSpec, DAYTONA_DEFAULT_SNAPSHOT, DEFAULT_DOCKER_IMAGE, PROVIDERS, readBackOf, servingRefusals, SETTING_KINDS } from "@parcha/agentrun-computer";
 import { DOCKER_IMAGE_ENV } from "../box-image.js";
 import type { ProviderFactories } from "../computer-keys.js";
+import type { FauxComputers } from "../faux-computers.js";
 import { envValue, type KeyEnv, keyReader } from "../key-meta.js";
 import { COMPUTER_LIFETIME_MS } from "../runner/computer.js";
 import type { Store } from "../store/index.js";
@@ -43,6 +45,9 @@ export interface ComputerDepsOptions {
   readonly answers?: ComputerForClaimDeps["answers"];
   /** The live view's registration for a desktop or a phone (proxy-only): absent, no view is opened. */
   readonly openComputerView?: OpenComputerView;
+  /** --faux's computers (faux-computers.ts), in place of the computer package's: their kind registry, key table, launch
+   *  and factories. */
+  readonly faux?: FauxComputers;
 }
 
 /** The spec a computer of `kind` on `entry` is made with, besides its labels and its mount: its provider's image for the
@@ -67,8 +72,9 @@ export function computerSpecOf(env: KeyEnv): (entry: ProviderEntry, kind: Exclud
 
 /** computerForClaim and its process-wide deps, composed once; and Settings → Computers' factories from the same makers. */
 export function computerDepsFrom(options: ComputerDepsOptions): { computerForClaim: typeof computerForClaim; computerDeps: ComputerDeps; factories: ProviderFactories } {
-  const { env, store, sealKey } = options;
-  const kinds = options.kinds ?? ({ SETTING_KINDS, PROVIDERS, servingRefusals } as unknown as KindRegistry);
+  const { env, store, sealKey, faux } = options;
+  // The faux registry is Settings' shape (computers.ts); the claim reads the same data as resolve-computer.ts's.
+  const kinds = (faux?.kinds as unknown as KindRegistry | undefined) ?? options.kinds ?? ({ SETTING_KINDS, PROVIDERS, servingRefusals } as unknown as KindRegistry);
   const providers = computerProviderMakers(options.load ? { load: options.load } : {});
   const computerDeps: ComputerDeps = {
     kinds,
@@ -76,8 +82,11 @@ export function computerDepsFrom(options: ComputerDepsOptions): { computerForCla
     spec: computerSpecOf(env),
     check: { readBackOf },
     keyOf: keyReader(store, sealKey, env),
+    // Under --faux, its launch makes the computer, with its key table: no provider of the package is built.
+    ...(faux ? { keyTable: faux.keyTable, launch: (entry, spec) => faux.launch(entry as never, spec) } : {}),
     ...(options.answers ? { answers: options.answers } : {}),
     ...(options.openComputerView ? { openComputerView: options.openComputerView } : {}),
   };
-  return { computerForClaim, computerDeps, factories: computerProviderFactories(providers, (id) => storeLedger(store.computerLedger, id)) };
+  const factories = faux?.factories ?? computerProviderFactories(providers, (id) => storeLedger(store.computerLedger, id));
+  return { computerForClaim, computerDeps, factories };
 }
