@@ -132,13 +132,24 @@ describe("AgentEditor, the Computer step", () => {
   });
 
   it("under a metered provider, one line says its minutes aren't counted in a run's spending cap; not under one that isn't", () => {
-    const LINE = "This provider bills by the minute, and those minutes aren't counted in a run's spending cap.";
+    const LINE = "This provider bills by the minute through your own vendor account, and those minutes aren't counted in a run's spending cap.";
     const { host, click } = mount({ agent: agent(), caps: listed, step: "computer" });
     click(kindRadio(host, "desktop"));
     expect(providerRadio(host, "orgo")!.closest("label")!.textContent).toContain(LINE);
     expect(providerRadio(host, "e2b")!.closest("label")!.textContent).not.toContain(LINE);
     click(kindRadio(host, "sandbox"));
     expect(providerRadio(host, "docker")!.closest("label")!.textContent).not.toContain(LINE);
+  });
+
+  it("never says it under a metered browser provider: a browser's time is counted in a run's cap", () => {
+    const LINE = "This provider bills by the minute through your own vendor account, and those minutes aren't counted in a run's spending cap.";
+    const browsing = KINDS.map((k) => (k.kind === "browser" ? { kind: "browser", offered: true, groups: ["cdp"], tools: ["browser"], providers: [{ id: "browserbase", name: "Browserbase", keys: [], ready: true, metered: true }] } : k));
+    const { host, click } = mount({ agent: agent(), caps: { ...caps, computers: browsing }, step: "computer" });
+    click(kindRadio(host, "browser"));
+    const browserbase = providerRadio(host, "browserbase")!.closest("label")!;
+    expect(browserbase.textContent).toContain("Metered");
+    expect(browserbase.textContent).not.toContain(LINE);
+    expect(browserbase.textContent).not.toContain("bills by the minute");
   });
 
   it("none is saved with no provider, and shows no provider list", async () => {
