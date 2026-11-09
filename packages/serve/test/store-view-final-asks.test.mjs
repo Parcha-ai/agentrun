@@ -8,6 +8,7 @@
 // answer, not the allow before it.
 import assert from "node:assert/strict";
 import { after, test } from "node:test";
+import { BACKGROUND_CONTEXT } from "@earendil-works/chord/context";
 import { closeOpenSessions, piAdapterSpec, scriptedOrigin } from "./conformance-pi-adapter.mjs";
 import { queue, STEADY_LEASE, stores, until } from "./runner-support.mjs";
 
@@ -59,7 +60,7 @@ async function parkedRun(t, refusing = () => false) {
   const runner = startRunner({ store: refusingEnds(opened.runners[0], refusing), createLoop: loop, name: "runner-a", ...TIMING });
   t.after(() => runner.close());
   await until(async () => (await opened.server.runs.get("run-1")).state === "parked", "the run parked on the call", 30_000);
-  return opened.server;
+  return Object.assign(opened.server, { runnerStore: opened.runners[0], runner });
 }
 
 /** Every reader of the run's one approval: the view's pending, its approval row in the view's timeline and the served
@@ -123,6 +124,36 @@ test("a call the stop's end withdrew reads as it did", { timeout: 60_000 }, asyn
   assert.equal(seen.waiting, null);
 });
 
+test("a run that ended with a call unanswered and was opened again: on every reader the old call reads withdrawn in the end's words, and a call asked in the new turn waits", { timeout: 60_000 }, async (t) => {
+  const server = await parkedRun(t);
+  const first = (await readers(server)).moment.waitingApprovalId;
+  // As a reopen leaves it: the run's journal ended after the first call (a completed end), and the new turn asked a
+  // second call, the run parked on it (not final). Written here under a claim of the test's own (the run's runner closed,
+  // the run woken by a message row the claim takes).
+  await server.runner.close();
+  const woke = await server.command("run-1", { kind: "steer", body: { text: "go on" } });
+  const claim = await server.runnerStore.claim("run-1", "reopen", { leaseMs: 60_000 });
+  assert.ok(claim, "claimed");
+  await server.runnerStore.take(claim, woke.id);
+  const journal = server.runnerStore.journal(claim);
+  const [root] = (await journal.scanConversations({}, 1, undefined, BACKGROUND_CONTEXT)).items;
+  const entry = async (kind, data) => ({ type: "entry", value: { id: await journal.mintId(), conversationId: root.id, kind, data } });
+  const writes = [await entry("agentrun.end", { state: "ended" }), await entry("agentrun.message", { role: "person", text: "go on" }), await entry("agentrun.ask", { callId: "c2", tool: "add", args: { a: 1, b: 1 }, requestedAt: new Date().toISOString(), price: null })];
+  assert.equal((await journal.commit([writes], () => {}, BACKGROUND_CONTEXT)).stored, 1);
+  await server.runnerStore.release(claim, { state: "parked" });
+  const view = await viewOverStore(server, "run-1", DEPS);
+  const byCall = (rows) => Object.fromEntries(rows.filter((row) => row.kind === "tool_approval_requested").map((row) => [row.id.replace(/^approval:/, ""), row.summary.split(":")[0]]));
+  // The second call is an ask with no call row of its own here (written by hand), so it shows as what the run waits on.
+  const expected = { [first]: "Withdrawn when the run ended" };
+  assert.deepEqual(byCall(await timelineOverStore(server, "run-1", DEPS)), expected, "the view's rows");
+  assert.deepEqual(byCall(await servedTimelineRows(SERVED, server, "run-1", {})), expected, "the served rows");
+  assert.equal(view.pending?.kind, "approval");
+  assert.equal(view.pending?.call_id, "c2", "pending is the new call");
+  const moment = await momentOverStore(server, "run-1");
+  assert.equal(moment.waitingApprovalId, "c2");
+  await assert.rejects(approve(server, moment, first, "allow"), { message: `The tool call ${first} was already withdrawn when its run ended.` });
+});
+
 test("a call asked before the run's end reads withdrawn after a reopen, while a call asked in the reopened turn waits", () => {
   const askOf = (callId) => ({ kind: "agentrun.ask", data: { callId, tool: "add", args: { a: 2, b: 3 }, requestedAt: "2026-11-09T00:00:00.000Z" } });
   const end = { kind: "agentrun.end", data: { state: "ended" } };
@@ -133,7 +164,22 @@ test("a call asked before the run's end reads withdrawn after a reopen, while a 
   const asks = new Map(["c1", "c2"].map((id) => [id, { id, tool: "add", call_id: id, args_json: "{\"a\":2,\"b\":3}", requested_at: "2026-11-09T00:00:00.000Z" }]));
   const rows = withApprovalRows(["c1", "c2"].map((id, i) => ({ id: `r${i}`, seq: i, kind: "tool_use", tool_use_id: id, tool_name: "add", summary: "add", text: "" })), asks, answers, (text) => text);
   const said = rows.filter((one) => one.kind === "tool_approval_requested").map((one) => one.summary.split(":")[0]);
-  assert.deepEqual(said, ["Withdrawn when the run was stopped", "Waiting for your approval"]);
+  // The run ended (completed): nobody stopped it.
+  assert.deepEqual(said, ["Withdrawn when the run ended", "Waiting for your approval"]);
+  const callRow = rows.find((one) => one.kind === "tool_use" && one.tool_use_id === "c1");
+  assert.equal(callRow.summary, "Not run: the run ended while it waited");
+});
+
+test("the words follow how the run ended: a stop's end says stopped, a failed or completed end says ended", () => {
+  const ask = { kind: "agentrun.ask", data: { callId: "c1", tool: "add", args: {}, requestedAt: "2026-11-09T00:00:00.000Z" } };
+  const asks = new Map([["c1", { id: "c1", tool: "add", call_id: "c1", args_json: "{}", requested_at: "2026-11-09T00:00:00.000Z" }]]);
+  const head = (answers) => withApprovalRows([{ id: "r0", seq: 0, kind: "tool_use", tool_use_id: "c1", tool_name: "add", summary: "add", text: "" }], asks, answers, (text) => text).find((one) => one.kind === "tool_approval_requested").summary.split(":")[0];
+  for (const [state, words] of [["stopped", "Withdrawn when the run was stopped"], ["failed", "Withdrawn when the run ended"], ["ended", "Withdrawn when the run ended"]]) {
+    assert.equal(head(answersOf([ask, { kind: "agentrun.end", data: { state } }])), words, `an end ${state} in the journal`);
+  }
+  // A final run whose journal holds no end (its end written on its row alone): by the row's state.
+  assert.equal(head(answersOf([ask], { final: "stopped" })), "Withdrawn when the run was stopped");
+  assert.equal(head(answersOf([ask], { final: "failed" })), "Withdrawn when the run ended");
 });
 
 test("a stop's withdrawal over an allow it overrode is the call's answer, keeping the allow it superseded", () => {
