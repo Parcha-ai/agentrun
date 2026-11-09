@@ -2836,7 +2836,7 @@ class _ListTemplatesResponseTemplatesItemMcpItemToolsItemRequired(TypedDict):
 
 
 class ListTemplatesResponseTemplatesItemMcpItemToolsItem(_ListTemplatesResponseTemplatesItemMcpItemToolsItemRequired, total=False):
-    pin: dict[str, str | float | bool | None | list[str | None]]
+    pin: dict[str, str | float | bool | None | list[str | float | bool | None]]
 
 
 class _ListTemplatesResponseTemplatesItemParametersValueRequired(TypedDict):

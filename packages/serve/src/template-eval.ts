@@ -722,7 +722,7 @@ export async function evalTemplate(options: EvalOptions): Promise<Report> {
 async function runCase(ctx: Ctx, one: EvalCase): Promise<CaseResult> {
   const { api, options, log } = ctx;
   const fakes: Fake[] = [];
-  const saved: string[] = [];
+  const saved: { name: string; url: string }[] = [];
   const runs: RunResult[] = [];
   const total = options.runs ?? one.runs;
   try {
@@ -734,7 +734,10 @@ async function runCase(ctx: Ctx, one: EvalCase): Promise<CaseResult> {
       const fake = await startFake(name, fixture);
       fakes.push(fake);
       expectOk(`saving the fake MCP server ${name}`, await api("PUT", `/settings/mcp-servers/${name}`, { url: fake.url, auth: { type: "none" } }));
-      saved.push(name);
+      saved.push({ name, url: fake.url });
+      // Another eval on the same server may have saved its own fake under the name meanwhile: then neither case's calls
+      // can be told apart, and this one fails rather than run on a fake it does not own.
+      if (options.server && !(await ownsFake(api, name, fake.url))) throw new ApiFailure(`another eval saved its own MCP server named ${name} on this server meanwhile: run one eval of this package at a time on a server`);
     }
     for (let n = 1; n <= total; n++) {
       options.signal?.throwIfAborted();
@@ -750,10 +753,13 @@ async function runCase(ctx: Ctx, one: EvalCase): Promise<CaseResult> {
   } finally {
     // Before the next case: no run of this one left going (a wait that failed leaves its run started), no trigger left.
     await cleanUp(api, ctx.made);
-    for (const name of saved) await api("DELETE", `/settings/mcp-servers/${name}`).catch(() => undefined);
+    // Only an entry still this eval's own is removed: another eval's under the same name stays.
+    for (const { name, url } of saved) if (await ownsFake(api, name, url)) await api("DELETE", `/settings/mcp-servers/${name}`).catch(() => undefined);
     for (const fake of fakes) await fake.close();
   }
 }
+/** Whether the server's MCP server `name` is still this eval's fake at `url`. */
+const ownsFake = (api: Api, name: string, url: string): Promise<boolean> => api("GET", `/settings/mcp-servers/${name}`).then((read) => read.status === 200 && isObject(read.body) && read.body.url === url, () => false);
 const caseCost = (runs: readonly RunResult[]) => Math.round(runs.reduce((sum, r) => sum + (r.cost_usd ?? 0) + r.graders.reduce((g, x) => g + (x.cost_usd ?? 0), 0), 0) * 1e6) / 1e6;
 
 /** One run of a case: a fresh agent (so one run's learning never reaches the next), its notes, the run, its grades. */
@@ -775,6 +781,21 @@ async function runOnce(ctx: Ctx, one: EvalCase, n: number, fakes: readonly Fake[
   }
   stopped();
   const runId = await startRun(ctx, agentId, { input: { content: one.input }, ...(one.maxCostUsd !== undefined ? { max_cost_usd: one.maxCostUsd } : {}) }, "starting the run");
+  // A run started is paid for: whatever fails after this (a read, a grade) still gives it a result, with its cost where
+  // the server says it, so the case's total never drops it.
+  try {
+    return await ranOnce(ctx, one, n, fakes, agent, agentId, runId);
+  } catch (error) {
+    if (!(error instanceof ApiFailure)) throw error;
+    const cost = await api("GET", `/runs/${runId}`).then((read) => (read.status === 200 && isObject(read.body) ? costOf(read.body) : null), () => null);
+    return { run: n, agent_id: agentId, run_id: runId, status: "unknown", pass: false, error: `after the run started: ${error.message}`, cost_usd: cost, graders: [] };
+  }
+}
+
+/** The started run `runId` of `agentId` waited on, read and graded. */
+async function ranOnce(ctx: Ctx, one: EvalCase, n: number, fakes: readonly Fake[], agent: Json, agentId: string, runId: string): Promise<RunResult> {
+  const { api, options } = ctx;
+  const stopped = () => options.signal?.throwIfAborted();
   const ended = await waitRun(api, runId, Date.now() + (options.runTimeoutMs ?? RUN_TIMEOUT_MS), options.signal);
   const view = expectOk(`reading run ${runId}`, await api("GET", `/runs/${runId}`));
   // A run that waits on a person (a question, an approval, its cap) is graded as it stands, then cancelled.
@@ -816,7 +837,13 @@ async function runOnce(ctx: Ctx, one: EvalCase, n: number, fakes: readonly Fake[
       graders.push({ grader: grader.file, type: grader.type, pass: false, reason: "not graded: the run did not finish", cost_usd: null });
       continue;
     }
-    graders.push({ grader: grader.file, type: grader.type, ...(await gradeLlm(ctx, await ctx.graderAgent(), graderInput(grader, one.input, record))) });
+    // A grade that fails to read fails that grader alone: the run's own result and cost stay.
+    try {
+      graders.push({ grader: grader.file, type: grader.type, ...(await gradeLlm(ctx, await ctx.graderAgent(), graderInput(grader, one.input, record))) });
+    } catch (error) {
+      if (!(error instanceof ApiFailure)) throw error;
+      graders.push({ grader: grader.file, type: grader.type, pass: false, reason: `not graded: ${error.message}`, cost_usd: null });
+    }
   }
   stopped();
   return { ...base, pass: graded && graders.every((g) => g.pass), ...(error ? { error } : {}), graders };

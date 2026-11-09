@@ -55,7 +55,23 @@ function typesOf() {
     if (values.includes(null)) parts.push('None');
     return parts.join(' | ');
   };
-  const union = (parts) => [...new Set(parts.flatMap((part) => part.split(' | ')))].join(' | ');
+  // A union's members are split at its own level only: a ' | ' inside brackets (list[str | float]) belongs to its member.
+  const members = (text) => {
+    const out = [];
+    let depth = 0;
+    let start = 0;
+    for (let i = 0; i < text.length; i++) {
+      if (text[i] === '[') depth++;
+      else if (text[i] === ']') depth--;
+      else if (depth === 0 && text.startsWith(' | ', i)) {
+        out.push(text.slice(start, i));
+        start = i + 3;
+        i += 2;
+      }
+    }
+    return [...out, text.slice(start)];
+  };
+  const union = (parts) => [...new Set(parts.flatMap(members))].join(' | ');
   /** An allOf as one object: every part's fields and every part's required, the node's own included. */
   function merged(node) {
     const out = { type: 'object', properties: {}, required: [] };
