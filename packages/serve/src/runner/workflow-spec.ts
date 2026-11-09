@@ -44,7 +44,8 @@ import { policyFor } from "./adapters/pi.js";
 import { sessionProvider } from "../port-models.js";
 import { journalSessions } from "./sessions.js";
 import { type BudgetData, type EndData, KINDS, type RaiseData } from "./journal-kinds.js";
-import { type CapRefusal, PAUSED_WORDS, type WorkflowCapRule, type WorkflowHostHooks, type WorkflowRunSpec } from "./workflow-loop.js";
+import { type CapRefusal, PAUSED_WORDS, type WorkflowCapRule, type WorkflowHostHooks, type WorkflowRunSpec, type WorkflowSpecRun } from "./workflow-loop.js";
+import { heldRedactor, holdClaimed } from "./redact.js";
 import { type DecisionDriver, type WorkflowCap, workflowHost, type WorkflowHostDeps } from "./workflow-host.js";
 import type { Store } from "../store/store.js";
 
@@ -181,11 +182,17 @@ function capRuleOf(capUsd: number): WorkflowCapRule {
 
 /** The claim-time builder: `specOf(claim)` the loop calls. Reads the run's launch and revision, resolves each tier's
  *  provider, and returns the spec. The model proxies and the booking are started per claim (release closes them). */
-export function workflowSpecOf(deps: WorkflowSpecDeps): (claim: { runId: string }) => Promise<WorkflowRunSpec> {
+export function workflowSpecOf(deps: WorkflowSpecDeps): (claim: { runId: string }, run?: WorkflowSpecRun) => Promise<WorkflowRunSpec> {
   const now = deps.now ?? Date.now;
   // The run's models resolve the one way the runner resolves any (routeProviderOf over routeOf), unless a test gives its own.
   const providerOf = deps.providerOf ?? routeProviderOf(deps.env ?? process.env);
-  return async (claim) => {
+  return async (claim, run) => {
+    /** The keys a claim opens, held by the runner's one redactor (run.redact) before a decision can echo one. */
+    const holding = async (opening: Promise<NodeJS.ProcessEnv>): Promise<NodeJS.ProcessEnv> => {
+      const opened = await opening;
+      if (run?.redact) holdClaimed(heldRedactor(run.redact), opened);
+      return opened;
+    };
     const claimed = await readClaim(deps, claim.runId);
     const tiers = tiersOf(claimed.workflow);
 
@@ -241,7 +248,7 @@ export function workflowSpecOf(deps: WorkflowSpecDeps): (claim: { runId: string 
     const decisions = deps.decisionProvidersOf
       ? (await deps.decisionProvidersOf()) ?? undefined
       : deps.sealKey
-        ? (await decisionProvidersIn(await claimSecrets({ store: deps.store, sealKey: deps.sealKey, ...(deps.env ? { env: deps.env } : {}) }, claimed.revision, { plane: claimed.plane }))) ?? undefined
+        ? (await decisionProvidersIn(await holding(claimSecrets({ store: deps.store, sealKey: deps.sealKey, ...(deps.env ? { env: deps.env } : {}) }, claimed.revision, { plane: claimed.plane })))) ?? undefined
         : undefined;
     // A decision's images load from the run's work folder, unless a test gives its own loader.
     const loadImage: LoadImage | undefined = deps.loadImage ?? (decisions ? imageLoader(claimed.workRoot) : undefined);

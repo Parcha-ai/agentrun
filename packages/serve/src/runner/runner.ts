@@ -16,7 +16,7 @@ import { KINDS, withdrawnAnswers } from "./journal-kinds.js";
 import { journalEntries } from "./journal-reader.js";
 import { type Claim, type Command, endedBy, type Journal, type Loop, type LoopEnd, type LoopFactory, type StopReason } from "./loop-contract.js";
 import { isFenced, type RunnerStore } from "./store-port.js";
-import { type Redact, runnerSecrets, secretRedactor } from "./redact.js";
+import { heldRedactor, type Redact, runnerSecrets, secretRedactor } from "./redact.js";
 
 /** Most runs a runner holds at once, unless told (RunnerOptions.loops). */
 export const RUNNER_LOOPS = 300;
@@ -131,10 +131,13 @@ export function startRunner(options: RunnerOptions): Runner {
     interruptBackoffMs = 1_000,
     endWaitMs = 5_000,
     onEvent = () => {},
-    redact = secretRedactor(runnerSecrets(process.env)),
+    redact: given = secretRedactor(runnerSecrets(process.env)),
     now = Date.now,
     onBeat = () => {},
   } = options;
+  // The one instance every run's loop gets (LoopDeps.redact), able to hold what each claim opens from the store
+  // (redact.ts holdClaimed): a stored key is cut wherever a key of the runner's environment is.
+  const redact = heldRedactor(given);
   const beat = () => {
     try {
       onBeat();

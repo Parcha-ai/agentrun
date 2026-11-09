@@ -55,7 +55,7 @@ import type { ComputerSetting } from "../computer-setting.js";
 import type { claimComputer, ComputerDeps } from "../workspace/computer-deps.js";
 import type { RunComputer } from "../workspace/run-tools.js";
 import type { Workspace } from "../workspace/workspace.js";
-import { runnerSecrets, secretRedactor } from "./redact.js";
+import { heldRedactor, holdClaimed, runnerSecrets, secretRedactor } from "./redact.js";
 
 /** What a claim gives the shared computerForClaim: the run, its epoch, its revision, its place and any computer choice. */
 export interface ClaimLaunch {
@@ -204,8 +204,8 @@ export async function adapterRunSpecFromLaunch(launch: RunLaunch, run: AdapterRu
   const context = BACKGROUND_CONTEXT;
   // The runner's one redactor (the loop's, LoopDeps.redact), for every text a secret could reach: the spec's log lines
   // (a release, a workspace's end), the model route's translation and the session's model proxy. A spec built with no
-  // runner around it cuts every secret the runner's env holds.
-  const cut = run.redact ?? secretRedactor(runnerSecrets(deps.env));
+  // runner around it cuts every secret the runner's env holds. It holds the keys the claim opens (below), too.
+  const cut = heldRedactor(run.redact ?? secretRedactor(runnerSecrets(deps.env)));
   const log = (line: string) => (deps.log ?? (() => {}))(cut(line));
   const runRow = await deps.store.runs.get(claim.runId);
   if (!runRow) throw new Error(`run ${claim.runId}: its row is gone from the store`);
@@ -311,6 +311,8 @@ export async function adapterRunSpecFromLaunch(launch: RunLaunch, run: AdapterRu
   // tools unlock and its model needs, scoped to the run as the old per-run environment was, so one run's keys never reach
   // another's on this runner (claim-secrets.ts). MCP credentials are the other per-claim secret and come through mcp-claim.
   const toolEnv = await claimSecrets({ store: deps.store, sealKey: deps.sealKey, env: deps.env }, revisionRow as unknown as Parameters<typeof claimSecrets>[1], launch);
+  // The keys it opened join the run's one redactor before any tool or model request can echo one.
+  holdClaimed(cut, toolEnv);
   // The run's resolved tool plane (its web_search/web_fetch/browser providers), as main hands its per-run process (runs.ts):
   // the web tools read it (tool-plane.ts planeOf) to pick Parallel where the run resolves to it, the model provider's native
   // search, or the guarded direct fetch. Not a secret; without it the runner's web tools would ignore the run's plane and
@@ -355,7 +357,9 @@ export async function adapterRunSpecFromLaunch(launch: RunLaunch, run: AdapterRu
   // Workspace and computer (runTools.hostTools); the gate is the adapter loop's own (spec.gate), so they run as asked.
   const results: ToolResults = new Map();
   const handTools = tools.hostTools(granted, undefined, results);
-  const nonHandTools = await bindNonHandTools(host, granted, run, context, results, root, launch.plane);
+  // The non-hand tools run on the claim's keys (host.env), so a vendor's error may echo one: each answer, and a throw's
+  // words, pass the run's one redactor before the harness, the model or the record has them.
+  const nonHandTools = (await bindNonHandTools(host, granted, run, context, results, root, launch.plane)).map((tool) => answersCut(tool, cut));
   const sessionTools = [...handTools, ...nonHandTools];
 
   // The run's system prompt, as main's per-run process builds it (app.ts): the environment line first (environment.ts, as
@@ -484,6 +488,26 @@ export async function learnedWorkflowHostTool(opts: {
  *  (bookedIn), as main books them, so they run. The browser (through host.liveViewers), MCP (the MCP claim step's
  *  mcpForClaim(claim, store, sealKey, pin) -> { sessionMcp, redactions, release }), the learned workflow and decisions are
  *  each a named todo, added as their seams land. */
+/** `tool` with its answer's text, and a throw's message, cut by `cut` (the run's one redactor). */
+export function answersCut(tool: HostTool, cut: (text: string) => string): HostTool {
+  return {
+    ...tool,
+    call: async (args, context) => {
+      try {
+        const answer = await tool.call(args, context);
+        return { ...answer, text: cut(answer.text) };
+      } catch (error) {
+        if (error instanceof Error) {
+          error.message = cut(error.message);
+          if (error.stack) error.stack = cut(error.stack);
+          throw error;
+        }
+        throw new Error(cut(String(error)));
+      }
+    },
+  };
+}
+
 async function bindNonHandTools(host: ToolHost, granted: readonly string[], run: AdapterRun, context: Context, results: ToolResults, root: string, plane: RunLaunch["plane"]): Promise<AdapterRunSpec["session"]["tools"]> {
   const names = granted.filter((name) => name === WEB_FETCH_TOOL || name === WEB_SEARCH_TOOL || name.startsWith("monid."));
   // Fail closed (browserListed): the browser binds only on the native route (BROWSER_ON_RUNNER) and with the claim's
