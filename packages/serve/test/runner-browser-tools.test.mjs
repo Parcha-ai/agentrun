@@ -60,3 +60,5 @@ test("a run whose browser keys are gone since its start lists what main lists th
   const { spec } = await specFor(t, { body: { tools: ["browser"] }, launch: { plane }, env: FAUX, keys: {} });
   assert.deepEqual(runnerTools(spec), await mainTools(t, plane, {}));
 });
+
+test.todo("a person's take-over and the agent's held ask are held and booked on the run's one ledger (main's personTime holds and carriedSince booking): waits on spendcap-1's browser-cost ledger change");
