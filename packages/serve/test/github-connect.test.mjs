@@ -514,3 +514,25 @@ test("PATCH keeps a trigger's source kind: a webhook given a github source is re
   const moved = await server.api("PATCH", `/triggers/${made1.body.id}`, { source: { kind: "github", accept: [{ event: "pull_request" }] }, enabled: true });
   assert.deepEqual([moved.status, moved.body.error?.fields?.map((f) => f.field)], [422, ["source.kind"]], JSON.stringify(moved.body));
 });
+
+test("a confirmed suspension of the last installation the server tracks takes GitHub's fresh list as it comes: the same installation listed active there (unsuspended meanwhile) stays, and no trigger turns off", { timeout: 60_000 }, async (t) => {
+  const server = await connectable(t);
+  await made(server.api, "review");
+  await connect(server);
+  const id = (await server.api("POST", "/triggers", { name: "a", source: { kind: "github", accept: [{ event: "pull_request" }] }, target: target("review") })).body.id;
+  const { webhook_secret: secret } = server.github.app;
+  const installation = { id: 777, account: { login: "acme" }, app_id: 4242 };
+  // Suspended when the suspend's check asks (its answer held), active again by the time GitHub's list is asked.
+  server.github.installations.set(777, { account: "acme", suspended_at: "2026-06-01T00:00:00Z" });
+  const hold = held();
+  server.github.holds.installationOnce = hold.promise;
+  const asked = server.github.asked("/app/installations/777");
+  const suspend = deliver(server.baseUrl, secret, "installation", { action: "suspend", installation });
+  await asked;
+  server.github.installations.set(777, { account: "acme", suspended_at: null });
+  hold.release();
+  assert.equal((await suspend).status, 200);
+  const trigger = (await server.api("GET", `/triggers/${id}`)).body;
+  assert.deepEqual([trigger.enabled, trigger.disabled], [true, null], JSON.stringify(trigger));
+  assert.deepEqual((await server.api("GET", "/integrations/github")).body.installations, [{ id: 777, account: "acme" }], "still listed");
+});
