@@ -210,13 +210,16 @@ export type Seen = { type?: string; at?: number; epoch?: number; name?: string; 
 
 /**
  * The claim's fence, as the stalled process's own events show it: once it went on (`continuedAt`, its lease run out and no
- * one holding the run yet), its old loop's writes under its first epoch are each refused by the fence, by name (ClaimLost
+ * one holding the run yet), its old loop's writes under the claim it was held under are each refused by the fence, by name (ClaimLost
  * or Fenced), or, with none tried, the runner said its claim was lost once it went on (its loop stopped before any write).
  * A landed one names how long after its claim was lost it landed.
  */
 export function fenceHeld(events: readonly Seen[], continuedAt: number): void {
   const history = JSON.stringify(events);
-  const first = events.find((event) => event.type === "claimed")?.claim?.epoch;
+  // The claim the held loop ran under: the process's last claim before it stopped at the point. A starved box can lose the
+  // process's first claim before the point and take the run again, so the held loop's epoch need not be its first.
+  const heldFrom = events.find((event) => event.type === "stopping")?.at ?? continuedAt;
+  const first = events.filter((event) => event.type === "claimed" && (event.at ?? 0) <= heldFrom).at(-1)?.claim?.epoch;
   const old = events.filter((event) => (event.at ?? 0) >= continuedAt && event.epoch === first && (event.type === "commit-landed" || event.type === "commit-refused"));
   const lost = events.find((event) => event.type === "claim-lost" && event.epoch === first);
   for (const landed of old.filter((event) => event.type === "commit-landed")) {
@@ -334,7 +337,7 @@ async function processCrashThenResume(subject: ConformanceSubject, t: { after(fn
     continuedAt = Date.now();
     child.kill("SIGCONT");
     // The fence first, before anything waits on the process's death: its old loop's first write once it went on (landed or
-    // refused), or the process's end, bounded. The old loop's epoch is the process's first claim's.
+    // refused), or the process's end, bounded. The old loop's epoch is the claim it was held under.
     const outcome = (event: Seen) => (event.at ?? 0) >= continuedAt && (event.type === "commit-landed" || event.type === "commit-refused");
     await until(() => child.exitCode !== null || child.signalCode !== null || childEvents(eventsFile).some((event) => outcome(event as Seen)), "the old loop writes once it goes on, or the process ends", 15_000);
     fenceHeld(childEvents(eventsFile) as Seen[], continuedAt);
