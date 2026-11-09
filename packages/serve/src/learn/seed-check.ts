@@ -4,13 +4,14 @@
 // learning script at that commit.
 import { type Base, type Change, checkProposal, type Problem } from "./check.js";
 import { type DraftReader } from "./skills.js";
-import { folderAt, readLearning, readSnapshot, type Snapshot, snapshotAt, snapshotNotes, topOf } from "./folder.js";
+import { FolderBusy, folderAt, readLearning, readSnapshot, type Snapshot, snapshotAt, snapshotNotes, topOf } from "./folder.js";
 import { INDEX_FILE } from "./notes.js";
 import type { Workspace } from "../workspace/index.js";
 
 /** What the seed holds as the checker reads it: every path at its top and in its learned folders, and its active notes.
- *  `kept`: the skills' and drafts' files whose text there has a status (a person's call), which a run never changes. */
-function baseOf(snapshot: Snapshot): { base: Base; kept: string[] } {
+ *  `kept`: the skills' and drafts' files whose text there has a status (a person's call), which a run never changes.
+ *  proposeRun takes it from the snapshot it read the seed's texts with, so the base costs no second read. */
+export function baseOf(snapshot: Snapshot): { base: Base; kept: string[] } {
   const learned = [...snapshot.skills, ...snapshot.workflows];
   return {
     base: { files: [...topOf(snapshot), ...learned.flatMap((item) => item.files.map((file) => file.path))], active: snapshotNotes(snapshot).filter((note) => note.status === "active") },
@@ -71,6 +72,10 @@ export async function readSeed(lw: Workspace, seed: string | null): Promise<{ ok
         // The folder moved on as it was read: read at the seed below.
         if (snapshot?.main !== seed) return undefined;
         return Promise.all(laid(snapshot).map(async ({ path, oid }) => ({ path, text: await body(path, oid) })));
+      }).catch((error: unknown) => {
+        // A working tree whose bodies are not main's (a write in flight, or a hand edit): git's own read at the seed.
+        if (error instanceof FolderBusy) return undefined;
+        throw error;
       });
       if (files) return { ok: true, files: [...files, ...(now.index.bytes ? [] : [{ path: INDEX_FILE, text: "" }])].sort((a, b) => (a.path < b.path ? -1 : a.path > b.path ? 1 : 0)), refused: refusedOf(now) };
     }

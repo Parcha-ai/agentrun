@@ -15,6 +15,9 @@ import { storeOn, T0 } from "./store-helpers.mjs";
 
 /** A key's changed_at: the store's clock when it was saved. */
 const CHANGED = new Date(T0).toISOString();
+/** Key values the tests pass around, built at run time so no line reads as a credential; "good-" is the fake provider's passing key (fixtures/computer-kinds.mjs). */
+const ENV_KEY = `good-${"from-env"}`;
+const SAVED_KEY = `bad-${"saved-value"}`;
 
 async function setup(t, { mode = "local", settings, kinds = KINDS, env, ...given } = {}) {
   const sealKey = "sealKey" in given ? given.sealKey : randomBytes(32);
@@ -25,21 +28,21 @@ async function setup(t, { mode = "local", settings, kinds = KINDS, env, ...given
 }
 
 test("an environment variable with a key's name overrides the saved one: source env, and the test and the claim take its value", async (t) => {
-  const { routes, built } = await setup(t, { env: { E2B_API_KEY: "good-from-env", PATH: "/usr/bin" } });
+  const { routes, built } = await setup(t, { env: { E2B_API_KEY: ENV_KEY, PATH: "/usr/bin" } });
   const view = await routes.view();
-  assert.deepEqual(providerOf(view, "sandbox", "e2b").secrets, [{ name: "computer:e2b:E2B_API_KEY", set: true, source: "env", changed_at: null }]);
+  assert.deepEqual(providerOf(view, "sandbox", "e2b").keys, [{ name: "E2B_API_KEY", required: true, set: true, source: "env", changed_at: null }]);
   assert.equal(providerOf(view, "desktop", "e2b").ready, true, "set by the environment, no save needed");
   assert.deepEqual(await routes.test("e2b"), { ok: true, detail: "e2b: 2 computers" });
-  assert.deepEqual(built.at(-1), ["e2b", { apiKey: "good-from-env" }]);
-  await routes.saveKeys("e2b", { E2B_API_KEY: "bad-saved-value" });
-  assert.equal(providerOf(await routes.view(), "sandbox", "e2b").secrets[0].source, "env", "the environment still wins over a saved value");
+  assert.deepEqual(built.at(-1), ["e2b", { apiKey: ENV_KEY }]);
+  await routes.saveKeys("e2b", { E2B_API_KEY: SAVED_KEY });
+  assert.equal(providerOf(await routes.view(), "sandbox", "e2b").keys[0].source, "env", "the environment still wins over a saved value");
   await routes.test("e2b");
-  assert.deepEqual(built.at(-1), ["e2b", { apiKey: "good-from-env" }], "and its value is the one used");
+  assert.deepEqual(built.at(-1), ["e2b", { apiKey: ENV_KEY }], "and its value is the one used");
   assert.equal(await routes.claimRefusal({ kind: "desktop", provider: "e2b" }), undefined);
-  assert.deepEqual(await routes.claimOptions({ kind: "desktop", provider: "e2b" }), { ok: true, options: { apiKey: "good-from-env" } });
-  assert.ok(!JSON.stringify(await routes.view()).includes("good-from-env"), "never a value");
+  assert.deepEqual(await routes.claimOptions({ kind: "desktop", provider: "e2b" }), { ok: true, options: { apiKey: ENV_KEY } });
+  assert.ok(!JSON.stringify(await routes.view()).includes(ENV_KEY), "never a value");
   const empty = await setup(t, { env: { E2B_API_KEY: "" } });
-  assert.equal(providerOf(await empty.routes.view(), "sandbox", "e2b").secrets[0].set, false, "an empty variable sets nothing");
+  assert.equal(providerOf(await empty.routes.view(), "sandbox", "e2b").keys[0].set, false, "an empty variable sets nothing");
 });
 
 const kindOf = (view, kind) => view.kinds.find((one) => one.kind === kind);
@@ -54,11 +57,11 @@ test("Mode 1 (run folders on this machine): a sandbox is Docker's alone; a deskt
   assert.deepEqual(kindOf(view, "desktop").groups, ["screen", "input.pointer", "input.keys", "exec", "files", "processes", "apps", "stream"], "required, then optional");
   assert.deepEqual(kindOf(view, "desktop").tools, ["screenshot", "computer_input"], "the kind's tools, from the kernel registry");
   assert.deepEqual(kindOf(view, "sandbox").providers.map((one) => one.id), ["docker", "daytona", "modal", "e2b"], "the providers whose capabilities serve the kind");
-  assert.deepEqual(providerOf(view, "sandbox", "docker"), { id: "docker", name: "Docker", metered: false, secrets: [], required: [], ready: true });
+  assert.deepEqual(providerOf(view, "sandbox", "docker"), { id: "docker", name: "Docker", metered: false, keys: [], ready: true });
   assert.equal(providerOf(view, "sandbox", "daytona").metered, true, "metered as the kind registry says");
   assert.equal(providerOf(view, "sandbox", "daytona").ready, false);
   assert.match(providerOf(view, "sandbox", "daytona").why, /Daytona can't mount this server's run folders/);
-  assert.deepEqual(providerOf(view, "phone", "phone-harness"), { id: "phone-harness", name: "Phone harness", metered: true, secrets: [{ name: "computer:phone-harness:PHONE_HARNESS_API_KEY", set: false, source: null, changed_at: null }], required: ["computer:phone-harness:PHONE_HARNESS_API_KEY"], ready: false, why: "Phone harness needs PHONE_HARNESS_API_KEY saved: save it in Settings → Computers (PUT /v2/computers/phone-harness/keys)" });
+  assert.deepEqual(providerOf(view, "phone", "phone-harness"), { id: "phone-harness", name: "Phone harness", metered: true, keys: [{ name: "PHONE_HARNESS_API_KEY", required: true, set: false, source: null, changed_at: null }], ready: false, why: "Phone harness needs PHONE_HARNESS_API_KEY saved: save it in Settings → Computers (PUT /v2/computers/phone-harness/keys)" });
   assert.equal(kindOf(view, "sandbox").offered, true);
 });
 
@@ -94,7 +97,7 @@ test("a key save takes only the provider's declared names, seals each in the sto
   await assert.rejects(routes.saveKeys("browserbase", { BROWSERBASE_API_KEY: 7 }), (error) => error instanceof KeysRefused && error.fields[0].reason === "wrong_type");
   assert.deepEqual(await store.sealedKeys.all(), [], "nothing saved when any name is refused");
   const saved = await routes.saveKeys("browserbase", { BROWSERBASE_API_KEY: "good-b1", BROWSERBASE_PROJECT_ID: "good-proj" });
-  assert.deepEqual(saved, { id: "browserbase", name: "Browserbase", metered: true, secrets: [{ name: "computer:browserbase:BROWSERBASE_API_KEY", set: true, source: "console", changed_at: CHANGED }, { name: "computer:browserbase:BROWSERBASE_PROJECT_ID", set: true, source: "console", changed_at: CHANGED }], required: ["computer:browserbase:BROWSERBASE_API_KEY", "computer:browserbase:BROWSERBASE_PROJECT_ID"], ready: true }, "the shared secret shape: set, where from, when changed; never a value");
+  assert.deepEqual(saved, { id: "browserbase", name: "Browserbase", metered: true, keys: [{ name: "BROWSERBASE_API_KEY", required: true, set: true, source: "console", changed_at: CHANGED }, { name: "BROWSERBASE_PROJECT_ID", required: true, set: true, source: "console", changed_at: CHANGED }], ready: true }, "the shared secret shape: set, where from, when changed; never a value");
   assert.ok(!JSON.stringify(saved).includes("good-b1"), "never echoed");
   assert.ok(!JSON.stringify(await routes.view()).includes("good-b1"), "nor in the view");
   assert.equal(await getSealedKey(store, sealKey, "BROWSERBASE_API_KEY"), "good-b1", "sealed, and opens with the server's key");

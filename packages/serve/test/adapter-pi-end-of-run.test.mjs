@@ -235,14 +235,23 @@ test("pi through the adapter: a mark committed through harnessReady's commit is 
 
 test("pi through the adapter: a run's release is called once, after its session closed, when the run ends; one that throws leaves the end standing", async (t) => {
   const { start, until } = await setup(t);
+  // The end's commit is the run's release in the store (its row reads ended, its runner null), and the loop closes the
+  // session and calls the release after it, in its pass's finally: the row can read ended before the release is called.
+  // So the test waits for the release itself, by its event (its own bound fails one never called), never at the row.
+  let releaseCalled = () => {};
+  const called = new Promise((resolve) => (releaseCalled = resolve));
   const released = [];
   const release = async () => {
     released.push({ sessionsOpen: openSessions.size });
+    releaseCalled();
     throw new Error("the cleanup failed");
   };
   await start(loopWith(piAdapterSpec({ script: [{ say: "done" }], tools: {}, hooks: quiet }), { release }), "runner-a");
   const row = await until((r) => r.state === "ended" && r.runner === null, "the run did not end");
   assert.equal(row.state, "ended", "a release that throws leaves the end standing");
+  let timer;
+  await Promise.race([called, new Promise((_, reject) => (timer = setTimeout(() => reject(new Error("the run's release was never called")), 10_000)))]);
+  clearTimeout(timer);
   assert.deepEqual(released, [{ sessionsOpen: 0 }], "released once, with the session already closed");
 });
 

@@ -28,6 +28,11 @@ export class ArchilClaimRefused extends Error {
   override name = "ArchilClaimRefused";
 }
 
+/** The credential's safety net, not its lifetime: it's removed at the computer's release, the run's end, a lost claim and a
+ *  reclaim; the ttl only ends one whose removal never ran (a crashed server), and by then its only holder, the computer, is
+ *  gone. Seven days: longer than any run keeps one computer mounted. */
+export const MOUNT_TTL_MS = 7 * 24 * 60 * 60_000;
+
 export interface ArchilClaimOptions {
   /** The server's Archil settings (loadArchilSettings); undefined when they are not set up. */
   readonly settings: ArchilSettings | undefined;

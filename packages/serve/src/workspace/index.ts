@@ -21,10 +21,9 @@ export {
   ARCHIL_CONTROL_URLS, type ArchilMountCredentialOptions, ArchilMountCredentialError, listTokenUsers, mintMountToken, type MountCredential, nicknameOf, removeMountToken,
   removeOlderMountTokens,
 } from "./archil-mount-credential.js";
-export { ARCHIL_API_KEY_ENV, archilApiKey, type ArchilKeyOptions } from "./archil-key.js";
 export { openRunWorkspace, type RunWorkspace, type RunWorkspaceOptions } from "./run-workspace.js";
 export { readOnlyWorkspace, SERVER_READS_ONLY, serverRunWorkspace, type ServerRunWorkspaceOptions } from "./server-run-workspace.js";
-export { type LedgerEntry, type PhoneLedger, type PhoneLedgerEntry, phoneLedger, type ProviderLedger, storeLedger } from "./computer-ledger.js";
+export { type LedgerEntry, type ProviderLedger, storeLedger } from "./computer-ledger.js";
 export { type LearningPlace, type LearningWorkspace, learningWorkspace, type LearningWorkspaceOptions } from "./learning-workspace.js";
 export { ARCHIL_MAX_EXEC_S, type Hands, handsOf, MAX_EXEC_S, processesOf, shellEnv } from "./hands.js";
 export { type RunBrowser, type RunComputer, type RunHold, runTools, type RunTools } from "./run-tools.js";
@@ -34,6 +33,6 @@ export {
   type ProviderEntry, resolveComputer, type ResolvedComputer, type StartedComputer,
 } from "./resolve-computer.js";
 export { computerProviderFactories, computerProviderMakers, type ProviderLoad } from "./computer-providers.js";
-export { type ClaimComputer, type ClaimLaunch, computerForClaim, type ComputerForClaimDeps, type OpenComputerView, type ProviderMakers, sweepComputers, type ViewEnd } from "./computer-for-claim.js";
+export { claimComputer, type ComputerDeps, computerDepsFrom, type ComputerDepsOptions, computerSpecOf, DEFAULT_IMAGE } from "./computer-deps.js";
+export { type ClaimComputer, type ClaimLaunch, computerForClaim, type ComputerForClaimDeps, type ComputerRun, type OpenComputerView, type ProviderMakers, sweepComputers, type ViewEnd } from "./computer-for-claim.js";
 export { layRevisionSkills, RUN_SKILLS_DIR } from "./revision-skills.js";
-export { KIND_SKILLS, type KindSkill, kindSkillOf, type SkillKind } from "./kind-skills.js";

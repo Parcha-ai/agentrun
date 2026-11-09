@@ -18,7 +18,8 @@ import { readRunDbSync } from "../dist/run-db.js";
 import { resolve } from "node:path";
 import { openSqliteStore } from "../dist/store/index.js";
 import { startRunner } from "../dist/runner/runner.js";
-import { dispatchRunner, runnerPlaceComputer } from "../dist/runner/harness-loops.js";
+import { dispatchRunner } from "../dist/runner/harness-loops.js";
+import { computerDepsFrom } from "../dist/workspace/index.js";
 import { routeOf } from "../dist/runner/model-route.js";
 import { FAUX_ENV, withoutFaux } from "../dist/model.js";
 import { SEAL_KEY_ENV, sealKeyOf } from "../dist/tool-keys.js";
@@ -268,11 +269,14 @@ export async function startInProcessRunner(data, { faux } = {}) {
   // a server with none never serves a live view, so a stand-in is enough to satisfy the spec.
   const env = { ...withoutFaux(process.env), ...(faux ? { [FAUX_ENV]: resolve(faux) } : {}) };
   const sealKey = sealKeyOf(env[SEAL_KEY_ENV]) ?? Buffer.alloc(32);
+  // The run's claim-time computer, composed once the one way (workspace/computer-deps.ts computerDepsFrom): none for the
+  // runner's place, the real kinds otherwise, keys read from this env then the store's sealed rows.
+  const computers = computerDepsFrom({ env, store, sealKey });
   let runner;
   try {
     runner = startRunner({
       store,
-      createLoop: dispatchRunner({ env, data, journal: (claim) => store.journal(claim), store, sealKey, routeOf, computerForClaim: runnerPlaceComputer, computerDeps: {} }),
+      createLoop: dispatchRunner({ env, data, journal: (claim) => store.journal(claim), store, sealKey, routeOf, computerForClaim: computers.computerForClaim, computerDeps: computers.computerDeps }),
     });
   } catch (error) {
     await store.close();

@@ -51,6 +51,9 @@ export async function applyRunPatch(tx: Pick<SqliteExecutor, "run" | "get">, cla
   if (patch.signInHanded !== undefined) set("sign_in_handed", patch.signInHanded === null ? null : JSON.stringify([...patch.signInHanded]));
   if (patch.endedAt !== undefined) set("ended_at", patch.endedAt);
   else if (patch.state !== undefined && FINAL_STATES.includes(patch.state)) set("ended_at", now);
+  // When the run leaves 'running' (parks or ends), stamp when: a Browserbase sign-in it held keeps its save lease for the
+  // settle window after this (runs.update's save decision reads left_running_at). Queued is never set through a patch.
+  if (patch.state !== undefined && patch.state !== "running" && patch.state !== "queued") set("left_running_at", now);
   // A write that makes the run final is its release, in the same statement: no runner, no lease, the epoch moved on by one
   // as release() moves it. From this commit the run reads ended and released at once, and a later release is a no-op.
   const ending = patch.state !== undefined && FINAL_STATES.includes(patch.state);

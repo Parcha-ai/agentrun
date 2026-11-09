@@ -6,13 +6,13 @@
 // What it spent is that booking's, and its tokens the answer's usage: the grade's cost_usd and tokens.
 import { randomBytes } from "node:crypto";
 import { BACKGROUND_CONTEXT, withAbortSignal } from "@earendil-works/chord/context";
-import { anthropicMessagesApi } from "@earendil-works/pi-ai/api/anthropic-messages.lazy";
-import { createModels, createProvider } from "@earendil-works/pi-ai/models";
+import { createModels } from "@earendil-works/pi-ai/models";
 import { createRegistry, Harness } from "@earendil-works/pi-durable";
-import { anthropicPolicy } from "@parcha/agentrun-harness-claude";
-import { type BeforeRequest, modelPortFor, type Refusal, runBooking } from "@parcha/agentrun-kernel";
+import { type BeforeRequest, modelPortFor, type Refusal, runBooking, type Wire } from "@parcha/agentrun-kernel";
 import { startModelProxy } from "@parcha/agentrun-kernel/host";
 import type { Tokens } from "../learning.js";
+import { sessionProvider } from "../port-models.js";
+import { policyFor } from "./adapters/pi.js";
 import type { LearningLoopDeps } from "./learning-loop.js";
 import { journalSessions } from "./sessions.js";
 
@@ -20,10 +20,14 @@ import { journalSessions } from "./sessions.js";
 export const GRADE_SESSION = "learning.grade";
 const PROVIDER = "agentrun-grade";
 
-/** Where the grader's request goes: Anthropic's Messages API at `origin`, for `model`, priced by `price`. */
+/** Where the grader's request goes: the route's wire (`api`, Anthropic's Messages or OpenAI's Responses) at `origin`, for
+ *  `model`, priced by `price`. A model on neither wire comes as the route's Messages translation (model-route.ts
+ *  messagesFetch, its `fetch`). */
 export interface GraderRoute {
-  readonly provider: { readonly api: "anthropic-messages"; readonly origin: string; readonly credential: () => string | Promise<string>; readonly headers?: Readonly<Record<string, string>> };
+  readonly provider: { readonly api: Wire; readonly origin: string; readonly credential: () => string | Promise<string>; readonly headers?: Readonly<Record<string, string>>; readonly auth?: "bearer" | "x-api-key" };
   readonly model: string;
+  /** The catalog's entry for the model (whether it reasons, its window), as pi's session takes it (model-route.ts). */
+  readonly like?: { readonly reasoning?: boolean; readonly contextWindow?: number; readonly maxTokens?: number };
   /** A request's price from its usage (the proxy's booking reads it). */
   readonly price?: (model: string, usage: { input: number; output: number; cacheRead: number; cacheWrite: number }) => number | null;
   /** The upstream fetch (a test's scripted origin). */
@@ -77,8 +81,10 @@ export function bookedAsk(options: BookedAskOptions): LearningLoopDeps["ask"] {
       // A grade request an earlier attempt sent and a crash cut is booked first, at its held figure.
       await booking.bookCut();
       const before = booking.spentUsd();
+      // The policy of the route's wire, as pi's session takes it (pi.ts policyFor: claude-agent's on Messages, codex's on
+      // Responses, no fork); the grade offers no tool.
       const proxy = await startModelProxy({
-        policy: anthropicPolicy({ model, tools: [] }),
+        policy: await policyFor(options.provider, model, []),
         hooks: booking.models,
         model,
         origin: options.provider.origin,
@@ -88,14 +94,9 @@ export function bookedAsk(options: BookedAskOptions): LearningLoopDeps["ask"] {
         ...(options.fetch ? { fetch: options.fetch } : {}),
       }, randomBytes(32).toString("base64url"));
       try {
+        // pi-ai's client of the route's wire at the proxy (port-models.ts sessionProvider), as pi's session reaches its own.
         const models = createModels();
-        models.setProvider(createProvider({
-          id: PROVIDER,
-          baseUrl: proxy.url,
-          auth: { apiKey: { name: "AGENTRUN_GRADE_KEY", resolve: async () => ({ auth: { apiKey: proxy.key }, source: "session" }) } },
-          models: [{ id: model, name: model, api: "anthropic-messages", provider: PROVIDER, baseUrl: proxy.url, headers: { authorization: `Bearer ${proxy.key}` }, reasoning: false, input: ["text"], cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0 }, contextWindow: 200_000, maxTokens: request.maxTokens }],
-          api: anthropicMessagesApi(),
-        } as never));
+        models.setProvider(sessionProvider(options.provider.api, proxy, model, { provider: PROVIDER, keyName: "AGENTRUN_GRADE_KEY", like: { ...options.like, maxTokens: request.maxTokens }, reasoning: false }));
         const target = models.getModel(PROVIDER, model);
         const answer = (await models.completeSimple(target as never, { messages: [{ role: "user", content: request.prompt, timestamp: Date.now() }] } as never, { signal, maxTokens: request.maxTokens } as never)) as unknown as Answer;
         if (refused) throw new Error(refused.refuse);
