@@ -23,6 +23,7 @@ const { cannotWait } = await import("../dist/mcp-gateway.js");
 const { KINDS } = await import("../dist/runner/journal-kinds.js");
 const { journalRecords } = await import("../dist/runner/journal-reader.js");
 const { TOOL_UNMETERED } = await import("@parcha/pi-durable-agent/timeline");
+const { mcpForClaim } = await import("../dist/runner/mcp-run.js");
 
 const KEY = randomBytes(32);
 const TOKEN = `not-a-secret-${"runner-mcp-cli-bearer-for-the-scan"}`;
@@ -99,15 +100,20 @@ async function cliRun(t, { settings = {} } = {}) {
   await server.runs.create({ id: "run-1", agentId: "agent-1", revisionId: "rev-1" });
   const seen = {};
   const lookup = { name: "lookup", description: "Look it up.", inputSchema: { type: "object" }, replay: "never", call: async () => ({ text: "found" }) };
-  const loop = createAdapterLoop(() => ({
-    adapter: mcpCli(seen),
-    session: { key: "root", label: "root", system: [], tools: [lookup], context: "fresh" },
-    input: "Add them.",
-    record: "loop",
-    hooks: quiet,
-    gate: (call) => permissionOf(call.tool, settings),
-    mcp: { grants: ["mcp:fake/add"], store, sealKey: KEY },
-  }));
+  const work = mkdtempSync(join(process.env.TMPDIR ?? tmpdir(), "runner-mcp-cli-work-"));
+  t.after(() => rmSync(work, { recursive: true, force: true }));
+  const loop = createAdapterLoop(async (claim, run) => {
+    const mcp = await mcpForClaim({ claim, store, sealKey: KEY, grants: ["mcp:fake/add"], harness: run.harness, work: () => work });
+    return {
+      adapter: mcpCli(seen),
+      session: { key: "root", label: "root", system: [], tools: [lookup], context: "fresh" },
+      input: "Add them.",
+      record: "loop",
+      hooks: quiet,
+      gate: (call) => permissionOf(call.tool, settings),
+      ...(mcp ? { mcp } : {}),
+    };
+  });
   runner = startRunner({ store, createLoop: loop, name: "runner-a", ...STEADY });
   const from = Date.now();
   let row;

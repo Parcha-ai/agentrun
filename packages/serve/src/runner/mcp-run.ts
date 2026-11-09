@@ -1,141 +1,130 @@
-// A claimed run's remote MCP servers in the runner's loop (tl-mcp's note, sections 4 to 6). The adapter loop opens this
-// once per claim, after its Harness is open and before its session: the claim step (mcp-claim.ts: the pin made or read
-// and checked, the pinned servers' credentials opened into this loop's memory), then ONE gateway (mcp-gateway.ts) for
-// the loop, never shared with another, reading the step's credentials live. The session reaches it one way per harness:
-// - pi (no MCP client of its own): one host tool per pinned tool, under its wire name (`mcp__<server>__<tool>`) with the
-//   pinned description and schema, as main's mcpRegistrations named them. Its calls take the loop's path for every host
-//   tool: the gate before the intent (allow, ask and park, deny), the flush before the side effect, then the gateway.
-// - a harness with its own MCP client (AdapterCapabilities.mcpClient): the session's MCP (`session`), which its adapter
-//   mounts once on its model proxy at `/mcp/<server>`. Each call asks the loop's gate first, then runs the same host
-//   tool, as the loop wrapped it. Such a harness cannot yet hold a call for a person's answer across a park: an asked
-//   call is answered so (cannotWait), nothing sent.
-// The gateway itself holds no gate here: the loop's is the run's one gate. It keeps the rest as it is: the pin, the meta
-// refusal, the unopened refusal, the URL check per call, prices under the run's cap and the not-metered booking, each
-// written on the run's root through the loop's own Harness commit. A priced call goes through the run's priced-step cap
-// (RunMcp.cap); one refused for room is answered in the cap's words, unsent, and the run's next model request is refused
-// with the same refusal, so the turn ends and the run parks on a raise (main's takePaidRefusal).
-import { randomUUID } from "node:crypto";
-import type { HostTool, McpCallResult, Refusal, SessionMcp } from "@parcha/agentrun-kernel";
-import { type Cap, CapRefused } from "@parcha/agentrun-kernel/kernel/cap";
+// A claimed run's remote MCP servers on the runner (tl-mcp's note, sections 4 to 6). A spec builder calls mcpForClaim once
+// per claim, inside the adapter loop's spec step: after the loop's Gate and Harness are open, before its session. It runs
+// the claim step (mcp-claim.ts: the pin made at the first claim or read as written, checked against the meta tools known
+// now, the pinned servers' credentials opened into this claim's memory) and builds ONE gateway (mcp-gateway.ts) for the
+// claim, never shared with another, reading those credentials live. The builder puts what it returns in its spec
+// (AdapterRunSpec.mcp); the loop does the rest:
+// - pi (no MCP client of its own) gets one host tool per pinned tool (`tools`), under its wire name with the pinned
+//   description and schema, as main's mcpRegistrations named them, on the loop's path for every host tool: the gate
+//   before the intent (allow, ask and park, deny), the flush, the record, the run's one ledger for a priced call.
+// - a harness with its own MCP client gets the session's MCP (`session`), which its adapter mounts once on its model
+//   proxy at `/mcp/<server>`: each call asks the loop's gate first, then runs the same host tool as the loop wrapped it.
+//   Such a harness cannot yet hold a call across a park: an asked call is answered so (cannotWait), nothing sent.
+// - a command row handed to the running loop makes the credentials fresh again (`fresh`, on the same pin) before its
+//   next model request; the loop calls `release` when its pass ends, the claim is lost or its signal aborts.
+// The gateway holds no gate here (the loop's is the run's one gate) and keeps the rest as it is: the meta refusal, the
+// unopened refusal, the URL check per call, the scrub of each call's credentials held only while that call is out, prices
+// on the run's one ledger and the not-metered booking on the run's root.
+import type { HostTool, McpCallResult, SessionMcp } from "@parcha/agentrun-kernel";
+import { BACKGROUND_CONTEXT } from "@earendil-works/chord/context";
+import type { Harness } from "@earendil-works/pi-durable";
 import { wireName } from "../catalog.js";
-import { mcpGateway, type McpPaid, noCallId } from "../mcp-gateway.js";
-import { type ApprovalPrice, mcpToolName, type Park } from "../tool-gate.js";
+import { mcpGateway, type McpGatewayOptions, noCallId } from "../mcp-gateway.js";
+import type { OAuthNetwork } from "../mcp-oauth.js";
+import type { Store, TriggerSettings } from "../store/index.js";
+import { type ApprovalPrice, mcpToolName } from "../tool-gate.js";
 import type { Claim } from "./loop-contract.js";
-import { mcpClaim, type McpClaimOptions, type McpClaimStep } from "./mcp-claim.js";
+import { mcpClaim, type McpClaimStep } from "./mcp-claim.js";
+import type { GithubAppAccess, GithubTimer } from "./mcp-github.js";
 
-/** A run's remote MCP servers, as its spec names them (AdapterRunSpec.mcp). */
-export interface RunMcp {
+/** The GitHub App access for a claim (runner/github-app.ts githubAppAccess, tl-triggers'): the server's App, read from
+ *  the store with the runner's seal key, bound to the repository the run's launch input names. */
+export type GithubAppAccessOf = (store: { readonly triggerSettings: Pick<TriggerSettings, "get"> }, sealKey: Buffer | undefined, launchInput: unknown) => Promise<GithubAppAccess | undefined>;
+
+export interface McpForClaimOptions {
+  /** The claim this pass holds: the pin is written under its fence, and a refresh is confirmed against its epoch. */
+  readonly claim: Claim;
+  /** The one store: the registry's rows, the run's pin row and its run row (the epoch), and the GitHub App's settings. */
+  readonly store: Pick<Store, "mcp" | "runs" | "triggerSettings">;
+  /** The runner's seal key (the server's): undefined when it was started without one (every sealed credential refused). */
+  readonly sealKey: Buffer | undefined;
   /** The run's granted tools, by catalog name (`mcp:<server>/<tool>` among them), as its revision grants them. */
   readonly grants: readonly string[];
-  /** Where the claim step reads the registry and writes the run's pin. */
-  readonly store: McpClaimOptions["store"];
-  /** The runner's seal key (the server's): undefined when it was started without one. */
-  readonly sealKey: Buffer | undefined;
-  readonly githubApp?: McpClaimOptions["githubApp"];
-  readonly network?: McpClaimOptions["network"];
-  /** A refresh's bound (mcp-claim.ts). */
-  readonly bounds?: McpClaimOptions["bounds"];
-  /** The run's priced-step cap (the kernel's createCap, on the same cap figure as the run's model booking, whose rule
-   *  reads its spentUsd and heldUsd, as workflow-spec.ts wires its decisions'). A priced call is admitted and settled on
-   *  it. Absent on a run with a cap (AdapterRunSpec.cap): a priced call is refused unsent, having nowhere to be held. */
-  readonly cap?: Cap;
-  /** For tests: the gateway's upstream fetch, and its bounds on one call and a server's first connection. */
+  /** The loop's Harness for this pass (AdapterRun.harness): a call's records (not metered) go on the run's root through it. */
+  readonly harness: Pick<Harness, "commit">;
+  /** The run's work folder, where an answer too long for the model is filed. */
+  readonly work: McpGatewayOptions["work"];
+  /** What the run was started with (its launch body's input): the repository a github_app server's token is made for. */
+  readonly launchInput?: unknown;
+  /** The GitHub App access for a github_app server (githubAppAccess). None: such a server's calls are refused in words
+   *  (GITHUB_UNUSABLE.noAccess). */
+  readonly githubAppAccess?: GithubAppAccessOf;
+  /** For tests: the authorization servers' network, a refresh's bound, the gateway's upstream fetch and bounds, and the
+   *  timer a github_app token's refresh is armed on. */
+  readonly network?: OAuthNetwork;
+  readonly bounds?: { requestMs?: number; tries?: number };
   readonly fetch?: typeof fetch;
   readonly callBounds?: { callMs?: number; connectMs?: number };
-}
-
-export interface RunMcpOptions {
-  readonly claim: Claim;
-  /** The claim's signal: the step's credentials are dropped when it aborts. */
-  readonly signal: AbortSignal;
-  /** The run's work folder, where an answer too long for the model is filed. */
-  readonly work: () => string;
-  /** The run's commit through its current Harness, once open. */
-  readonly commit: () => Park["commit"] | undefined;
-  /** The run's barrier (the store's flush): a priced call's hold is durable through it before the call is sent. */
-  readonly flush: () => Promise<void>;
-  /** Whether the run has a cap (AdapterRunSpec.cap). */
-  readonly capped: boolean;
+  readonly githubTimer?: GithubTimer;
 }
 
 /** A call as the loop's gate is asked about it: the tool by its catalog name. */
 export type McpGateCall = { readonly callId: string; readonly tool: string; readonly args: Record<string, unknown> };
 
-/** A claim's MCP, open: its step, the tools the session reaches the gateway by, and what the loop asks of it. */
-export interface RunMcpOpen {
-  readonly step: McpClaimStep;
-  /** One host tool per pinned tool, under its wire name. */
+/** A claim's MCP (AdapterRunSpec.mcp): what the loop reaches the gateway by, and the claim step's own hooks. */
+export interface ClaimMcp {
+  /** The gateway as the session's MCP: the pinned servers and their tools, each call sent with no gate of its own. */
+  readonly sessionMcp: SessionMcp;
+  /** One host tool per pinned tool, under its wire name: pi's tools, and what `session`'s calls run. */
   readonly tools: readonly HostTool[];
   /** A pinned tool's catalog name (`mcp:<server>/<tool>`) by its wire name; undefined for any other tool. */
   catalogOf(tool: string): string | undefined;
-  /** What an asked call of a pinned tool costs on its card (main's: its price, else "not metered"); undefined for any
-   *  other tool. */
+  /** What an asked call of a pinned tool costs on its card (main's: its price, else "not metered"); undefined otherwise. */
   priceOf(name: string): ApprovalPrice | undefined;
   /** The session's MCP for a harness with its own client: each call through `gate` (undefined: let go; a text: refused
-   *  in those words, nothing sent), then its host tool from `tools`, as the loop wrapped it. */
-  session(tools: ReadonlyMap<string, HostTool>, gate: (call: McpGateCall) => Promise<string | undefined>): SessionMcp;
-  /** The refusal for room a priced call met, taken once: the run's next model request is refused with it. */
-  takeRefusal(): Refusal | undefined;
-  /** Drops every credential held: the loop ended, or the claim is lost. */
+   *  in those words, nothing sent), then its host tool from `wrapped`, as the loop wrapped it. */
+  session(wrapped: ReadonlyMap<string, HostTool>, gate: (call: McpGateCall) => Promise<string | undefined>): SessionMcp;
+  /** The credential values the gateway's calls in flight hold, for a redaction: each call's for as long as it is out,
+   *  with any token refreshed while it was; none when idle. */
+  redactions(): string[];
+  /** The claim step's credentials opened again on the same pin (an expired OAuth token refreshed), then the claim
+   *  confirmed: before a resumed loop's next model request. */
+  fresh(): Promise<void>;
+  /** Drops every credential held: the pass ended, the claim is lost, or its signal aborted. */
   release(): void;
 }
 
 const said = (text: string, isError = false): McpCallResult => ({ content: [{ type: "text", text }], ...(isError ? { isError: true } : {}) });
 
-/** The run's MCP for one claim: undefined when it grants no MCP tool. Throws McpClaimRefused (the claim refused in words,
- *  nothing sent) or Fenced (the claim lost while a refresh was awaited). */
-export async function openRunMcp(spec: RunMcp, options: RunMcpOptions): Promise<RunMcpOpen | undefined> {
-  const step = await mcpClaim({
-    store: spec.store,
-    claim: options.claim,
-    grants: spec.grants,
-    sealKey: spec.sealKey,
-    signal: options.signal,
-    ...(spec.bounds ? { bounds: spec.bounds } : {}),
-    ...(spec.network ? { network: spec.network } : {}),
-    ...(spec.githubApp ? { githubApp: spec.githubApp } : {}),
-  });
+/** The run's MCP for one claim: undefined when it grants no MCP tool. Throws McpClaimRefused (a pin that cannot be made,
+ *  a pinned tool that is a meta tool now: the loop ends the run in those words, before its session opens) or Fenced (the
+ *  claim lost while a refresh was awaited: the loop ends interrupted). A builder calls it before it takes anything it
+ *  would have to let go, since a throw here leaves its spec unbuilt and its release uncalled. */
+export async function mcpForClaim(options: McpForClaimOptions): Promise<ClaimMcp | undefined> {
+  // The step's own signal: aborted by release(), which the loop calls when its pass ends, the claim is lost or its
+  // signal aborts.
+  const held = new AbortController();
+  const githubApp = options.githubAppAccess ? await options.githubAppAccess(options.store, options.sealKey, options.launchInput) : undefined;
+  let step: McpClaimStep;
+  try {
+    step = await mcpClaim({
+      store: options.store,
+      claim: options.claim,
+      grants: options.grants,
+      sealKey: options.sealKey,
+      signal: held.signal,
+      ...(options.bounds ? { bounds: options.bounds } : {}),
+      ...(options.network ? { network: options.network } : {}),
+      ...(githubApp ? { githubApp } : {}),
+      ...(options.githubTimer ? { githubTimer: options.githubTimer } : {}),
+    });
+  } catch (error) {
+    held.abort();
+    throw error;
+  }
   const pin = step.pin;
   if (!pin) {
-    step.release();
+    held.abort();
     return undefined;
   }
-  let refusal: Refusal | undefined;
-  const paid: McpPaid["call"] = async (name, call, charge, hold) => {
-    const cap = spec.cap;
-    // No cap: the call runs, and books at its price (main's paidCall with no spend). A capped run with no priced-step
-    // cap to hold it on: refused unsent, never run past the cap.
-    if (!cap) return options.capped ? { refused: `${name} was not sent: this call has no run to book its price under.` } : { result: await call() };
-    const id = `mcp:${randomUUID()}`;
-    try {
-      await cap.admit({ kind: "tool", id, name, holdUsd: hold.usd, basis: hold.basis });
-    } catch (error) {
-      if (!(error instanceof CapRefused)) throw error;
-      // Refused for room: a raise would send it, so the run's next model request is refused with it and the run parks.
-      if (!error.forGood && error.figures) refusal = { refuse: error.message, forGood: false, figures: error.figures };
-      return { refused: error.message, ...(error.figures ? { leastCapUsd: error.figures.leastCapUsd } : {}) };
-    }
-    let result: Awaited<ReturnType<typeof call>>;
-    try {
-      result = await call();
-    } catch (error) {
-      // It may have charged its hold.
-      await cap.settle(id, { end: "charged", usd: null });
-      throw error;
-    }
-    const usd = charge(result);
-    await cap.settle(id, { end: "charged", usd: usd === undefined ? 0 : usd });
-    return { result };
-  };
   const gateway = mcpGateway({
     pin,
     credentials: step.credentials,
     liveCredentials: true,
     work: options.work,
-    commit: options.commit,
-    paid: { call: paid as McpPaid["call"], sync: options.flush },
-    ...(spec.fetch ? { fetch: spec.fetch } : {}),
-    ...(spec.callBounds ? { bounds: spec.callBounds } : {}),
+    commit: () => <T>(change: (tx: unknown) => Promise<T>) => options.harness.commit(change as never, BACKGROUND_CONTEXT) as Promise<T>,
+    ...(options.fetch ? { fetch: options.fetch } : {}),
+    ...(options.callBounds ? { bounds: options.callBounds } : {}),
   });
   const catalog = new Map<string, string>();
   const tools: HostTool[] = [];
@@ -158,7 +147,7 @@ export async function openRunMcp(spec: RunMcp, options: RunMcpOptions): Promise<
     }
   }
   return {
-    step,
+    sessionMcp: { servers: gateway.servers, call: (server, tool, args, context) => gateway.call(server, tool, args, context) },
     tools,
     catalogOf: (tool) => catalog.get(tool),
     priceOf(name) {
@@ -181,11 +170,8 @@ export async function openRunMcp(spec: RunMcp, options: RunMcpOptions): Promise<
         return said(answer.text, answer.isError === true);
       },
     }),
-    takeRefusal() {
-      const taken = refusal;
-      refusal = undefined;
-      return taken;
-    },
-    release: () => step.release(),
+    redactions: () => gateway.heldValues(),
+    fresh: () => step.fresh(),
+    release: () => held.abort(),
   };
 }

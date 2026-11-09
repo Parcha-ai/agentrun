@@ -26,13 +26,13 @@ import { approvalOf, CLOSE_MS, CUT_STEP_MS, STOP_SETTLE_MS, commandRequest, cutL
 import type { PiRun, PiSessionIO, PreIntentAnswer, PreIntentCall } from "./adapters/pi.js";
 import { HAND_BACK, handBackOf } from "./hand-back.js";
 import { journalSessions } from "./sessions.js";
-import { paidCalls, TOOL_SESSION } from "@parcha/agentrun-kernel/kernel/cap";
+import { CapRefused, paidCalls, TOOL_SESSION } from "@parcha/agentrun-kernel/kernel/cap";
 import { bookedIn } from "../paid-calls.js";
 import { sideEffect } from "./side-effects.js";
 import { cannotWait } from "../mcp-gateway.js";
 import { McpClaimRefused } from "./mcp-claim.js";
 import { Fenced } from "../store/index.js";
-import { openRunMcp, type RunMcp, type RunMcpOpen } from "./mcp-run.js";
+import type { ClaimMcp } from "./mcp-run.js";
 
 /** What a raise meets, as the kernel cap's checkRaise reads it (run-adapters/src/kernel/cap/park.ts): the run's cap, the
  *  pause it waits at (none while it works) and its last raise, with the pause that one answered. */
@@ -97,9 +97,10 @@ export interface AdapterRunSpec {
    *  Harness is open and before anything in it resumes, and when the claim lets the run go (its end, a park, a
    *  shutdown) with the Harness still open. hostLifecycle() collects them as a ToolHost registers them. */
   readonly lifecycle?: HostLifecycle;
-  /** The run's remote MCP servers (runner/mcp-run.ts): opened once per claim, after the Harness and before the session,
-   *  its tools reached through the loop's gate. Absent: the run grants no MCP tool. */
-  readonly mcp?: RunMcp;
+  /** The claim's remote MCP servers, as the spec builder's mcpForClaim opened them (runner/mcp-run.ts): their tools reach
+   *  the session through the loop's gate, a command row makes them fresh again, and the pass's end lets them go. Absent:
+   *  the run grants no MCP tool. */
+  readonly mcp?: ClaimMcp;
 }
 
 /** A tool host's lifecycle, as its bindings registered it: run by the adapter loop (AdapterRunSpec.lifecycle). */
@@ -301,9 +302,9 @@ function adapterLoop(specOf: (claim: Claim, run: AdapterRun) => AdapterRunSpec |
   /** The raises this claim has: the state the ones before left (the kernel cap's takeRaises, in arrival order), the rows
    *  to take in the raise entry's commit, whether any resumes a paused run, and the budget it answered. */
   const raising: { state?: RaiseState; takes: number[]; resumes: boolean; capUsd?: number; budget?: BudgetData; resuming: boolean } = { takes: [], resumes: false, resuming: false };
-  /** The claim's MCP (spec.mcp), open from its claim step until the loop ends; and whether a command row came since its
-   *  credentials were last made fresh (a parked token may have expired meanwhile). */
-  let mcp: RunMcpOpen | undefined;
+  /** The pass's MCP (spec.mcp), until the pass ends; and whether a command row came since its credentials were last made
+   *  fresh (a parked token may have expired meanwhile). */
+  let mcp: ClaimMcp | undefined;
   let mcpStale = false;
 
   /** The run's raise state, read from its root: the newest budget entry with no raise entry after it is the pause it
@@ -427,7 +428,11 @@ function adapterLoop(specOf: (claim: Claim, run: AdapterRun) => AdapterRunSpec |
       delivered = true;
       wakeInbox();
     });
-    const signalAbort = () => gate?.seal(new Interrupted("its claim's signal aborted"));
+    const signalAbort = () => {
+      gate?.seal(new Interrupted("its claim's signal aborted"));
+      // A lost claim's MCP credentials go at once, a call still out among them.
+      mcp?.release();
+    };
     deps.signal.addEventListener("abort", signalAbort, { once: true });
     let fault: KernelFault | undefined;
     try {
@@ -447,34 +452,22 @@ function adapterLoop(specOf: (claim: Claim, run: AdapterRun) => AdapterRunSpec |
           },
         }, context);
         const runOf: AdapterRun = { harness, registry, setModels: (given) => (models = given) };
-        const spec = await specOf(claim, runOf);
+        // The spec, its MCP claim step among it (mcpForClaim, before the session opens). A refusal there ends the run in its
+        // words with nothing sent; a claim lost during its refresh ends the loop with nothing more written.
+        let spec: AdapterRunSpec;
+        try {
+          spec = await specOf(claim, runOf);
+        } catch (error) {
+          if (error instanceof Fenced) return await interrupted("its claim was lost while its MCP credentials were made fresh");
+          if (error instanceof McpClaimRefused) return await writeEnd(harness, await harness.root(context), gate, { state: "failed", summary: error.message }, []);
+          throw error;
+        }
+        mcp = spec.mcp;
         specNow = spec;
         releaseNow = spec.release;
         // A mark of the run's commits through its own Harness, under its fence.
         const opened_ = harness;
         spec.harnessReady?.((change, ctx) => opened_.commit(change, ctx));
-        // The run's MCP, once per claim, before its session: the claim step (its pin made or checked, its credentials
-        // opened into this loop's memory) and one gateway for this loop. A refusal fails the run in its words, nothing sent.
-        if (spec.mcp && restarts === 0) {
-          try {
-            mcp = await openRunMcp(spec.mcp, {
-              claim,
-              signal: deps.signal,
-              work: () => {
-                if (spec.workRoot === undefined) throw new Error("the run names no work folder");
-                return spec.workRoot;
-              },
-              commit: () => harness && (<T>(change: (tx: unknown) => Promise<T>) => harness!.commit(change as never, context) as Promise<T>),
-              flush: () => deps.flush(),
-              capped: spec.cap !== undefined,
-            });
-          } catch (error) {
-            // The claim moved on while a refresh was awaited: nothing more is written, and the next claim resumes it.
-            if (error instanceof Fenced) return await interrupted("its claim was lost while its MCP credentials were made fresh");
-            if (!(error instanceof McpClaimRefused)) throw error;
-            return await writeEnd(harness, await harness.root(context), gate, { state: "failed", summary: error.message }, []);
-          }
-        }
         // A tool host's beforeResume: the Harness is open and nothing in it has resumed (pi schedules a task only once a
         // submit, a wait or the session's open asks for progress, all below).
         for (const settle of spec.lifecycle?.beforeResume ?? []) await settle(harness);
@@ -490,12 +483,25 @@ function adapterLoop(specOf: (claim: Claim, run: AdapterRun) => AdapterRunSpec |
         // Opened at the claim's first paid call: a run that makes none writes nothing for them.
         let paidOpen: ReturnType<typeof paidCalls> | undefined;
         const paidBooking = () => (paidOpen ??= sessions.open(TOOL_SESSION).then((tools) => paidCalls(tools, hostCheck ?? (async () => undefined), { flush: () => deps.flush() })));
-        const paid = { admit: async (request: Parameters<Awaited<ReturnType<typeof paidCalls>>["admit"]>[0]) => (await paidBooking()).admit(request), settle: async (id: string, usd: number | null) => (await paidBooking()).settle(id, usd) };
+        // A paid call refused for room (a raise would send it): kept for the next model request, which is refused with it.
+        let paidRoom: Refusal | undefined;
+        const paid = {
+          admit: async (request: Parameters<Awaited<ReturnType<typeof paidCalls>>["admit"]>[0]) => {
+            try {
+              return await (await paidBooking()).admit(request);
+            } catch (error) {
+              if (error instanceof CapRefused && !error.forGood && error.figures) paidRoom = { refuse: error.message, forGood: false, figures: error.figures };
+              throw error;
+            }
+          },
+          settle: async (id: string, usd: number | null) => (await paidBooking()).settle(id, usd),
+        };
         let refused: Refusal | undefined;
-        const beforeRequest: BeforeRequest | undefined = (hostCheck || mcp) && (async (request) => {
-          // A priced MCP call refused for room since the last request: this one is refused with it, so the turn ends on the
-          // refusal and the run parks on a raise, its model never given a turn to route around it.
-          const answer = mcp?.takeRefusal() ?? (hostCheck ? await hostCheck(request) : undefined);
+        const beforeRequest: BeforeRequest | undefined = hostCheck && (async (request) => {
+          // A paid call refused for room since the last request: this one is refused with it, so the turn ends on the
+          // refusal and the run parks on a raise, its model never given a turn to route around it (main's takePaidRefusal).
+          const answer = paidRoom ?? (await hostCheck(request));
+          paidRoom = undefined;
           if (answer && "refuse" in answer) refused = answer;
           return answer;
         });
@@ -559,7 +565,7 @@ function adapterLoop(specOf: (claim: Claim, run: AdapterRun) => AdapterRunSpec |
             // A command row since the MCP credentials were made fresh: made fresh again before this request.
             if (mcpStale && mcp) {
               mcpStale = false;
-              await mcp.step.fresh();
+              await mcp.fresh();
             }
             const ticket = await port.beforeRequest(request);
             unbooked += 1;
@@ -724,9 +730,6 @@ function adapterLoop(specOf: (claim: Claim, run: AdapterRun) => AdapterRunSpec |
         }
       }
       await closeSession();
-      // The claim's credentials go with it.
-      mcp?.release();
-      mcp = undefined;
     }
   }
 
@@ -854,6 +857,9 @@ function adapterLoop(specOf: (claim: Claim, run: AdapterRun) => AdapterRunSpec |
     await Promise.race([closing, new Promise<void>((resolve) => (timer = setTimeout(resolve, CLOSE_MS)))]);
     clearTimeout(timer);
     session = undefined;
+    // The pass's MCP credentials go with it.
+    mcp?.release();
+    mcp = undefined;
     // The pass's resources go once nothing more is written through them (AdapterRunSpec.release), once each.
     const release = releaseNow;
     releaseNow = undefined;

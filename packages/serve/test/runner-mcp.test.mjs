@@ -12,7 +12,7 @@ import { test } from "node:test";
 import { startFakeMcp } from "./fixtures/fake-mcp-server.mjs";
 import { closeOpenSessions, MODEL, piAdapterSpec, scriptedOrigin } from "./conformance-pi-adapter.mjs";
 import { BACKGROUND_CONTEXT } from "@earendil-works/chord/context";
-import { beforeRequestOf, cap as kernelCap, rootEntries, SONNET, specCap } from "./adapter-pi-cap-support.mjs";
+import { beforeRequestOf, rootEntries, SONNET, specCap } from "./adapter-pi-cap-support.mjs";
 
 const { openSqliteStore, sealMcpCredential } = await import("../dist/store/index.js");
 const { startRunner } = await import("../dist/runner/runner.js");
@@ -25,6 +25,8 @@ const { META_REASON } = await import("../dist/mcp-meta.js");
 const { UNUSABLE } = await import("../dist/mcp-servers.js");
 const { TOOL_COST, TOOL_UNMETERED } = await import("@parcha/pi-durable-agent/timeline");
 const { journalRecords } = await import("../dist/runner/journal-reader.js");
+const { mcpForClaim } = await import("../dist/runner/mcp-run.js");
+const { GITHUB_UNUSABLE } = await import("../dist/runner/mcp-github.js");
 
 test.after(() => closeOpenSessions());
 
@@ -32,6 +34,7 @@ const KEY = randomBytes(32);
 const TOKEN = `not-a-secret-${"runner-mcp-bearer-for-the-scan"}`;
 const object = (properties) => ({ type: "object", properties, required: Object.keys(properties), additionalProperties: false });
 const ADD = { name: "add", title: "Add", description: "Add two numbers.", inputSchema: object({ a: { type: "number" }, b: { type: "number" } }), annotations: { readOnlyHint: true } };
+const SLOW = { name: "slow_write", description: "Write a line after a wait.", inputSchema: object({ line: { type: "string" }, seconds: { type: "number" } }) };
 const PAID = { name: "paid", description: "A call the server bills.", inputSchema: object({ query: { type: "string" } }) };
 const META = { name: "COMPOSIO_MULTI_EXECUTE_TOOL", description: "Run any tool by slug.", inputSchema: { type: "object", properties: {} } };
 const STEADY = { leaseMs: 60_000, renewEveryMs: 1_000, stopMarginMs: 5_000, pollMs: 20, commandPollMs: 30 };
@@ -50,11 +53,11 @@ const lastResult = (sent) => {
  * `script` with the run's MCP (`grants`), its gate the tool gate's permissions over `settings` (an mcp: tool asks by
  * default). Runs until the run is not running, or `until(row)` says so.
  */
-async function mcpRun(t, { script, grants, settings = {}, tools = [ADD, PAID], prices, seal = headers, capUsd, before, until, ms = 20_000, hostTools = {}, events }) {
+async function mcpRun(t, { script, grants, settings = {}, tools = [ADD, PAID], prices, seal = headers, capUsd, before, until, ms = 20_000, hostTools = {}, events, auth = "bearer", fakeToken = TOKEN, githubAppAccess, launchInput, timing = STEADY, opened = [], renewing }) {
   const dir = mkdtempSync(join(process.env.TMPDIR ?? tmpdir(), "runner-mcp-"));
   const server = await openSqliteStore({ dataDir: dir, role: "server" });
   const store = await openSqliteStore({ dataDir: dir, role: "runner" });
-  const fake = await startFakeMcp({ token: TOKEN });
+  const fake = await startFakeMcp({ token: fakeToken });
   let runner;
   t.after(async () => {
     await runner?.close();
@@ -63,7 +66,7 @@ async function mcpRun(t, { script, grants, settings = {}, tools = [ADD, PAID], p
     await server.close().catch(() => {});
     rmSync(dir, { recursive: true, force: true });
   });
-  await server.mcp.put({ name: "fake", url: fake.url, auth: "bearer", tools, ...(prices ? { prices } : {}), sealed: seal(fake.url) });
+  await server.mcp.put({ name: "fake", url: fake.url, auth, tools, ...(prices ? { prices } : {}), sealed: auth === "github_app" ? null : seal(fake.url) });
   await server.agents.create({ id: "agent-1", name: "Mcp" }, { id: "rev-1", kind: "agentic", body: {} });
   await server.runs.create({ id: "run-1", agentId: "agent-1", revisionId: "rev-1" });
   await before?.({ server, store, fake });
@@ -76,20 +79,23 @@ async function mcpRun(t, { script, grants, settings = {}, tools = [ADD, PAID], p
   const work = mkdtempSync(join(process.env.TMPDIR ?? tmpdir(), "runner-mcp-work-"));
   t.after(() => rmSync(work, { recursive: true, force: true }));
   const loop = createAdapterLoop(async (claim, run) => {
-    // The run's priced-step cap beside the model booking's, one spend for both (as workflow-spec.ts wires its decisions').
-    const toolCap = capUsd === undefined ? undefined : kernelCap.createCap({ capUsd: () => capUsd });
+    // As a spec builder does: the claim's MCP first (mcpForClaim), before anything the spec would have to let go.
+    const mcp = await mcpForClaim({ claim, store: { mcp: registry, runs: store.runs, triggerSettings: store.triggerSettings }, sealKey: KEY, grants, harness: run.harness, work: () => work, ...(githubAppAccess ? { githubAppAccess, launchInput } : {}) });
+    if (mcp) opened.push(mcp);
     return {
       ...(await base(claim, run)),
       workRoot: work,
       gate: (call) => permissionOf(call.tool, settings),
-      mcp: { grants, store: { mcp: registry, runs: store.runs }, sealKey: KEY, ...(toolCap ? { cap: toolCap } : {}) },
+      ...(mcp ? { mcp } : {}),
       ...(capUsd === undefined ? {} : {
         cap: specCap(capUsd),
-        beforeRequest: beforeRequestOf({ capUsd: () => capUsd, modelOf: (id) => (id === MODEL ? SONNET : undefined), spentUsd: () => toolCap.spentUsd(), heldUsd: () => toolCap.heldUsd() }),
+        beforeRequest: beforeRequestOf({ capUsd: () => capUsd, modelOf: (id) => (id === MODEL ? SONNET : undefined) }),
       }),
     };
   }, { restartLimit: MAX_RESTARTS });
-  runner = startRunner({ store, createLoop: loop, name: "runner-a", ...STEADY });
+  // `renewing.renew`: while true, the runner's renewals fail (its claim is lost at its renew deadline).
+  const runnerStore = renewing ? new Proxy(store, { get: (target, key) => (key === "renewMany" ? async (...args) => { if (renewing.renew) throw new Error("the store is out of reach"); return target.renewMany(...args); } : typeof target[key] === "function" ? target[key].bind(target) : target[key]) }) : store;
+  runner = startRunner({ store: runnerStore, createLoop: loop, name: "runner-a", ...timing });
   const settle = async (done = (row) => row.state !== "running" && row.state !== "queued" && row.runner === null) => {
     const from = Date.now();
     for (;;) {
@@ -101,6 +107,34 @@ async function mcpRun(t, { script, grants, settings = {}, tools = [ADD, PAID], p
   };
   const row = await settle(until);
   return { row, sent, fake, server, store, dir, settle };
+}
+
+/** Every line written to stdout, stderr or the console from here until the test ends. */
+function captureLines(t) {
+  const lines = [];
+  const write = process.stderr.write.bind(process.stderr);
+  const writeOut = process.stdout.write.bind(process.stdout);
+  const log = console.log, error = console.error, warn = console.warn;
+  process.stderr.write = (chunk, ...rest) => (lines.push(String(chunk)), write(chunk, ...rest));
+  process.stdout.write = (chunk, ...rest) => (lines.push(String(chunk)), writeOut(chunk, ...rest));
+  console.log = console.error = console.warn = (...args) => lines.push(args.join(" "));
+  t.after(() => ((process.stderr.write = write), (process.stdout.write = writeOut), (console.log = log), (console.error = error), (console.warn = warn)));
+  return lines;
+}
+
+/** No byte of `secret` in any file of the data directory (the store file, its WAL) or in `lines`. */
+async function assertNowhere(secret, { store, server, dir }, lines) {
+  await store.flush();
+  await server.flush();
+  const { readdirSync } = await import("node:fs");
+  let read = 0;
+  for (const name of readdirSync(dir)) {
+    const bytes = readFileSync(join(dir, name));
+    read += 1;
+    assert.equal(bytes.includes(Buffer.from(secret, "utf8")), false, `no byte of the credential in ${name}`);
+  }
+  assert.ok(read > 0, "the store's files were read");
+  assert.deepEqual(lines.filter((line) => line.includes(secret)), [], "nor in any log line");
 }
 
 /** Every entry of run-1's journal, read without a claim of its own. */
@@ -163,30 +197,14 @@ test("R4: a set-to-deny MCP call is refused in words before its intent, and noth
 });
 
 test("R5: no byte of a credential in the store file, its WAL, or any log line after a run that called the server", async (t) => {
-  const lines = [];
-  const write = process.stderr.write.bind(process.stderr);
-  const writeOut = process.stdout.write.bind(process.stdout);
-  const log = console.log, error = console.error, warn = console.warn;
-  process.stderr.write = (chunk, ...rest) => (lines.push(String(chunk)), write(chunk, ...rest));
-  process.stdout.write = (chunk, ...rest) => (lines.push(String(chunk)), writeOut(chunk, ...rest));
-  console.log = console.error = console.warn = (...args) => lines.push(args.join(" "));
-  t.after(() => ((process.stderr.write = write), (process.stdout.write = writeOut), (console.log = log), (console.error = error), (console.warn = warn)));
+  const lines = captureLines(t);
   const script = [{ call: "mcp__fake__add", args: { a: 2, b: 2 } }, { sayLastResult: true }];
-  const { row, fake, store, server, dir } = await mcpRun(t, { script, grants: ["mcp:fake/add"], settings: { "mcp:fake/add": { permission: "allow" } } });
-  assert.equal(row.state, "ended");
-  assert.equal(toolCalls(fake, "add")[0]?.authorization, true, "the call went with its credential");
-  await store.flush();
-  await server.flush();
-  const { readdirSync } = await import("node:fs");
-  let read = 0;
-  for (const name of readdirSync(dir)) {
-    const bytes = readFileSync(join(dir, name));
-    read += 1;
-    assert.equal(bytes.includes(Buffer.from(TOKEN, "utf8")), false, `no byte of the credential in ${name}`);
-  }
-  assert.ok(read > 0, "the store's files were read");
-  assert.deepEqual(lines.filter((line) => line.includes(TOKEN)), [], "nor in any log line");
+  const run = await mcpRun(t, { script, grants: ["mcp:fake/add"], settings: { "mcp:fake/add": { permission: "allow" } } });
+  assert.equal(run.row.state, "ended");
+  assert.equal(toolCalls(run.fake, "add")[0]?.authorization, true, "the call went with its credential");
+  await assertNowhere(TOKEN, run, lines);
 });
+
 
 test("R6: a credential that does not open refuses the call unsent, in words", async (t) => {
   const script = [{ call: "mcp__fake__add", args: { a: 2, b: 3 } }, { sayLastResult: true }];
@@ -244,17 +262,21 @@ test("R9: a priced MCP call the run's cap has no room for is refused unsent and 
   const [budget] = await entriesOf(server, KINDS.budget);
   assert.ok(budget, "parked at its cap with a pending budget");
   assert.ok(budget.pending.least_cap_usd >= 0.5, JSON.stringify(budget));
-  assert.deepEqual(await entriesOf(server, TOOL_COST), [], "nothing booked");
+  assert.equal((await journalOf(server)).some((entry) => entry.kind === "runner.turn" && entry.data.usd === 0.5), false, "nothing booked");
 });
 
-test("R10: a priced MCP call with room is sent once and booked at its price on the run's root", async (t) => {
+test("R10: a priced MCP call with room is sent once, held at its price and booked at it on the run's one ledger", async (t) => {
   const script = [{ call: "mcp__fake__paid", args: { query: "q" } }, { sayLastResult: true }];
   const { row, sent, fake, server } = await mcpRun(t, { script, grants: ["mcp:fake/paid"], settings: { "mcp:fake/paid": { permission: "allow" } }, prices: { paid: 0.5 }, capUsd: 5 });
   assert.equal(row.state, "ended", JSON.stringify(row));
   assert.equal(lastResult(sent), "paid for q");
   assert.equal(toolCalls(fake, "paid").length, 1);
-  const costs = await entriesOf(server, TOOL_COST);
-  assert.deepEqual(costs.map((data) => ({ tool: data.tool, usd: data.usd })), [{ tool: "mcp:fake/paid", usd: 0.5 }]);
+  // The run's paid calls' session (the kernel cap's TOOL_SESSION): its hold before it left, then its booking.
+  const entries = await journalOf(server);
+  const held = entries.find((entry) => entry.kind === "runner.request" && entry.data.model === "paid:mcp:fake/paid");
+  assert.equal(held?.data.heldUsd, 0.5, "held at its price before it left");
+  const booked = entries.find((entry) => entry.kind === "runner.turn" && entry.conversationId === held.conversationId && entry.data.turn === held.data.turn);
+  assert.equal(booked?.data.usd, 0.5, "booked at its price");
 });
 
 test("R11: a command row handed to a running loop makes its MCP credentials fresh again before its next model request", async (t) => {
@@ -277,4 +299,78 @@ test("R11: a command row handed to a running loop makes its MCP credentials fres
   const next = events.indexOf("request", tool);
   assert.ok(next > tool, JSON.stringify(events));
   assert.deepEqual(events.slice(tool + 1, next), ["read"], "made fresh again before the next request");
+});
+
+test("R12: a resumed claim calls the tools its run was pinned with, read as written, after the registry changed", async (t) => {
+  const script = [{ call: "mcp__fake__add", args: { a: 4, b: 5 } }, { sayLastResult: true }];
+  const run = await mcpRun(t, { script, grants: ["mcp:fake/add"] });
+  assert.equal(run.row.state, "parked", JSON.stringify(run.row));
+  // While the run waits, a refresh of the server lists other tools: `add` is gone from the registry.
+  await run.server.mcp.put({ name: "fake", url: run.fake.url, auth: "bearer", tools: [PAID], sealed: headers(run.fake.url) });
+  const [ask] = await asks(run.server);
+  await run.server.command("run-1", { kind: "approve", body: { approval: ask.callId } });
+  const row = await run.settle((r) => r.state === "ended" || r.state === "failed");
+  assert.equal(row.state, "ended", JSON.stringify(row));
+  assert.equal(lastResult(run.sent), "9", "the pinned tool ran");
+  assert.equal(toolCalls(run.fake, "add").length, 1, "once");
+  assert.deepEqual((await run.server.mcp.pin("run-1")).body.fake.tools.map((tool) => tool.name), ["add"], "the pin row is as written");
+});
+
+test("R13: a claim lost while a call is out drops the gateway's credentials at once: the call is cut upstream, nothing held, and the next claim never sends it again", async (t) => {
+  const opened = [];
+  const block = { renew: false };
+  let server;
+  let fakeRef;
+  const script = [{ call: "mcp__fake__slow_write", args: { line: "x", seconds: 5 } }, { say: "done" }];
+  const running = mcpRun(t, {
+    script, grants: ["mcp:fake/slow_write"], settings: { "mcp:fake/slow_write": { permission: "allow" } }, tools: [SLOW], opened,
+    timing: { leaseMs: 600, renewEveryMs: 100, stopMarginMs: 200, pollMs: 20, commandPollMs: 20 },
+    before: async (got) => void ((server = got.server), (fakeRef = got.fake)),
+    renewing: block,
+  });
+  for (const from = Date.now(); !(fakeRef && toolCalls(fakeRef, "slow_write").length) && Date.now() - from < 10_000; ) await sleep(10);
+  assert.equal(toolCalls(fakeRef, "slow_write").length, 1, "the call is out");
+  assert.ok(opened[0].redactions().some((value) => value.includes(TOKEN)), "held for its scrub while it is out");
+  // Renewals now fail: the runner self-stops at its renew deadline, and the claim is lost mid-call.
+  block.renew = true;
+  for (const from = Date.now(); !fakeRef.log.some((entry) => entry.closed === "slow_write") && Date.now() - from < 10_000; ) await sleep(10);
+  assert.ok(fakeRef.log.some((entry) => entry.closed === "slow_write"), "the call was cut upstream");
+  assert.deepEqual(opened[0].redactions(), [], "nothing held once the claim is lost");
+  const after = await opened[0].sessionMcp.call("fake", "slow_write", { line: "y", seconds: 0 }, { signal: new AbortController().signal, callId: "late" });
+  assert.equal(after.isError, true, "a dropped claim's gateway sends nothing");
+  assert.equal(toolCalls(fakeRef, "slow_write").length, 1, "nothing more reached the server");
+  block.renew = false;
+  const { row } = await running;
+  assert.equal(row.state, "ended", JSON.stringify(row));
+  assert.ok(opened.length >= 2, "the next claim opened its own MCP");
+  assert.equal(toolCalls(fakeRef, "slow_write").length, 1, "the cut call is never sent again");
+  void server;
+});
+
+const GH_TOKEN = `not-a-secret-${"github-installation-token"}`;
+
+test("R14: a github_app server's token is minted for the claim from the run's launch input and the call answers; the token is in no store file or log line", async (t) => {
+  const lines = captureLines(t);
+  const asked = [];
+  const githubAppAccess = async (store, sealKey, input) => {
+    asked.push({ input, sealKey: sealKey !== undefined, reads: typeof store.triggerSettings?.get === "function" });
+    return { mint: async (target) => (asked.push({ target }), { ok: true, token: GH_TOKEN, expires_at: Date.now() + 3_600_000 }), target: { repo: "acme/widgets" } };
+  };
+  const launchInput = { content: "Fix https://github.com/acme/widgets" };
+  const script = [{ call: "mcp__fake__add", args: { a: 2, b: 3 } }, { sayLastResult: true }];
+  const run = await mcpRun(t, { script, grants: ["mcp:fake/add"], settings: { "mcp:fake/add": { permission: "allow" } }, auth: "github_app", fakeToken: GH_TOKEN, githubAppAccess, launchInput });
+  assert.equal(run.row.state, "ended", JSON.stringify(run.row));
+  assert.equal(lastResult(run.sent), "5");
+  assert.deepEqual(asked[0], { input: launchInput, sealKey: true, reads: true }, "asked with the store, the seal key and the launch input");
+  assert.deepEqual(asked[1], { target: { repo: "acme/widgets" } }, "minted for the run's repository");
+  assert.equal(toolCalls(run.fake, "add")[0]?.authorization, true);
+  await assertNowhere(GH_TOKEN, run, lines);
+});
+
+test("R15: a github_app server on a server with no GitHub App refuses the call unsent, in GITHUB_UNUSABLE.noAccess's words", async (t) => {
+  const script = [{ call: "mcp__fake__add", args: { a: 2, b: 3 } }, { sayLastResult: true }];
+  const run = await mcpRun(t, { script, grants: ["mcp:fake/add"], settings: { "mcp:fake/add": { permission: "allow" } }, auth: "github_app", fakeToken: GH_TOKEN, githubAppAccess: async () => undefined, launchInput: { content: "go" } });
+  assert.equal(run.row.state, "ended", JSON.stringify(run.row));
+  assert.equal(lastResult(run.sent), `The MCP server fake's credential can't be used right now: ${GITHUB_UNUSABLE.noAccess}.`);
+  assert.equal(toolCalls(run.fake).length, 0, "nothing sent");
 });
