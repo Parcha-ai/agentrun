@@ -8,18 +8,25 @@
 //      Strict-Transport-Security.
 //   3. No public address (open setup, loopback): no code field, and no Strict-Transport-Security.
 //   4. AGENTRUN_PUBLIC_URL set: the server's API token, typed into the Setup code field, sets the password.
+// With --url URL --setup-code-file F --password-file P, it starts nothing and checks a server already running (a hosted
+// one, at its public address): the plain address shows the Setup code field and its note; the setup code (or the
+// server's API token) in F, with the owner's password in P, sets the password and signs in; over https the page carries
+// Strict-Transport-Security. Neither file's content is printed.
 // No fixed sleeps: every wait is for a condition, with a bound. Exits 0 when every check holds, else 1.
-// Needs the repository built (npm run build). Chrome: CHROME_BIN, else playwright's own; playwright-core: PLAYWRIGHT_CORE,
-// else the package `playwright-core`.
+// Needs the repository built (npm run build). Chrome: CHROME_BIN, else playwright's own; playwright-core: PLAYWRIGHT_CORE
+// (its index.mjs or its index.js: either loads), else the package `playwright-core`.
 import { spawn } from "node:child_process";
-import { mkdtemp, rm } from "node:fs/promises";
+import { mkdtemp, readFile, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { fileURLToPath } from "node:url";
 
 const ROOT = fileURLToPath(new URL("../../../", import.meta.url));
 const CLI = join(ROOT, "packages/serve/dist/cli.js");
-const { chromium } = await import(process.env.PLAYWRIGHT_CORE ?? "playwright-core");
+// index.mjs exports `chromium`; the CommonJS index.js, imported, has it only on its default export.
+const playwright = await import(process.env.PLAYWRIGHT_CORE ?? "playwright-core");
+const chromium = playwright.chromium ?? playwright.default?.chromium;
+if (!chromium) throw new Error(`no chromium in ${process.env.PLAYWRIGHT_CORE ?? "playwright-core"}`);
 const NOTE = "Find the setup code in the server's log (on Render, the Logs tab), or open the link the log prints. The server's API token (AGENTRUN_TOKEN) works here too.";
 const PASSWORD = ["not", "a", "secret", "e2e", "setup"].join("-");
 const HSTS = "max-age=31536000";
@@ -88,12 +95,44 @@ async function open(url) {
   return { page, errors, headers: response?.headers() ?? {} };
 }
 const codeField = (page) => page.locator("label", { has: page.locator("span", { hasText: /^Setup code$/ }) });
-const fill = async (page, code) => {
+const fill = async (page, code, password = PASSWORD) => {
   if (code !== undefined) await codeField(page).locator("input").fill(code);
-  await page.fill('input[aria-label="New password"]', PASSWORD);
-  await page.fill('input[aria-label="Password again"]', PASSWORD);
+  await page.fill('input[aria-label="New password"]', password);
+  await page.fill('input[aria-label="Password again"]', password);
 };
+/** Whether the server says this browser is signed in, within 30 s: settles, rejecting at the bound. */
 const signedIn = (page) => page.waitForFunction(async () => (await (await fetch("/v2/auth/session")).json()).signed_in === true, null, { timeout: 30_000 });
+
+const arg = (name) => { const at = process.argv.indexOf(name); return at > 1 ? process.argv[at + 1] : undefined; };
+const hosted = arg("--url");
+// A --url given empty (an unset variable) never falls back to the local servers: that would pass without checking it.
+if (process.argv.includes("--url") && !hosted) { console.error("--url needs the server's address"); process.exit(2); }
+if (hosted) {
+  try {
+    const code = (await readFile(arg("--setup-code-file") ?? "", "utf8")).trim();
+    // The password as the file holds it, spaces kept; only a final line ending is not part of it.
+    const password = (await readFile(arg("--password-file") ?? "", "utf8")).replace(/\r?\n$/, "");
+    check("a setup code (or token) and a password of 12 characters or more were given", code.length > 0 && password.length >= 12);
+    const url = hosted.replace(/\/+$/, "");
+    const { page, errors, headers } = await open(`${url}/`);
+    if (url.startsWith("https://")) check("the page carries HSTS over https", headers["strict-transport-security"] === HSTS, headers["strict-transport-security"] ?? "none");
+    else console.log("--   HSTS not checked: the --url is not https");
+    const field = codeField(page);
+    check("the plain address shows the Setup code field", (await field.count()) === 1);
+    check("with its note", ((await field.textContent()) ?? "").includes(NOTE));
+    await fill(page, code, password);
+    await page.click('button[type="submit"]');
+    check("the setup code (or token) sets the password and signs in", await signedIn(page).then(() => true, () => false));
+    check("no console errors", errors.length === 0, errors.join(" | "));
+  } catch (error) {
+    check("the walk ran to its end", false, error instanceof Error ? error.message.split("\n")[0] : String(error));
+  } finally {
+    await browser.close();
+  }
+  const passed = checks.length > 0 && checks.every(Boolean);
+  console.log(`${passed ? "PASS" : "FAIL"} setup-code e2e (--url): ${checks.filter(Boolean).length}/${checks.length}`);
+  process.exit(passed ? 0 : 1);
+}
 
 try {
   // 1. A public address over http: the plain address.
@@ -125,8 +164,7 @@ try {
     check("a wrong code is refused in words", ((await page.textContent('[role="alert"]')) ?? "").includes("That setup code is not the one in the server's log."));
     await fill(page, code);
     await page.click('button[type="submit"]');
-    await signedIn(page);
-    check("the code from the server's log sets the password and signs in", true);
+    check("the code from the server's log sets the password and signs in", await signedIn(page).then(() => true, () => false));
     check("server 1 page: no console errors", errors.length === 0, errors.join(" | "));
   } finally { await a.stop(); }
 
@@ -140,8 +178,7 @@ try {
     check("and leaves the address without the code", !page.url().includes(code));
     await fill(page);
     await page.click('button[type="submit"]');
-    await signedIn(page);
-    check("the link's code sets the password and signs in", true);
+    check("the link's code sets the password and signs in", await signedIn(page).then(() => true, () => false));
     check("server 2 page: no console errors", errors.length === 0, errors.join(" | "));
   } finally { await b.stop(); }
 
@@ -162,8 +199,7 @@ try {
     const { page, errors } = await open(`${d.base}/`);
     await fill(page, token);
     await page.click('button[type="submit"]');
-    await signedIn(page);
-    check("the server's API token in the Setup code field sets the password and signs in", true);
+    check("the server's API token in the Setup code field sets the password and signs in", await signedIn(page).then(() => true, () => false));
     check("server 4 page: no console errors", errors.length === 0, errors.join(" | "));
   } finally { await d.stop(); }
 } catch (error) {

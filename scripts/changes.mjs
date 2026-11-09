@@ -318,15 +318,19 @@ export async function fold(root, version, date, base) {
 }
 
 /** The workspace packages whose manifest version differs from the merge base's. A package the base does not have is new, not bumped,
- *  and one on its own version line (`ownVersionPackages`) is not a release's bump. */
+ *  and one on its own version line (`ownVersionPackages`) is not a release's bump. Nor is one that moves to the workspace version the
+ *  base already holds (the root package.json's, which release-preflight checks every package against): it came in behind and catches
+ *  up. A release moves the workspace version too, so its packages move past the base's and are bumped. */
 async function bumpedPackages(root, mergeBase) {
+  const workspace = await gitShow(root, mergeBase, 'package.json');
+  const workspaceVersion = workspace === null ? undefined : JSON.parse(workspace).version;
   const bumped = [];
   for (const directory of (await workspacePackages(root)).keys()) {
     if (ownVersionPackages.includes(directory)) continue;
     const was = await gitShow(root, mergeBase, `packages/${directory}/package.json`);
     if (was === null) continue;
     const is = JSON.parse(await readFile(join(root, 'packages', directory, 'package.json'), 'utf8')).version;
-    if (JSON.parse(was).version !== is) bumped.push(directory);
+    if (JSON.parse(was).version !== is && (workspaceVersion === undefined || is !== workspaceVersion)) bumped.push(directory);
   }
   return bumped;
 }

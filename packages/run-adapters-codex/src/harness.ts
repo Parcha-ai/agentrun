@@ -909,6 +909,8 @@ export function codexHarness(options: CodexHarnessOptions = {}): Harness {
       const carry: Submission[] = [];
       /** One Codex turn, to its end line. The session's turn ends in `turn`. */
       const codexTurn = async (text: string, clientId: string): Promise<TurnOutcome> => {
+        // A Codex turn of its own: the model proxy, which refuses answer requests once a turn's answer stopped, admits them.
+        machine.openTurn?.();
         // The invocation's first message carries, once, what the model must hear about the sandbox (its files were lost).
         if (notes) {
           if (!clientId.startsWith(RECOVER_PREFIX)) journal.message({ type: 'message', role: 'user', text: notes, synthetic: 'environment' });

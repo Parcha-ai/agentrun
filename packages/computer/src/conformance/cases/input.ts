@@ -1,9 +1,11 @@
 // Input on a desktop, checked against the fixture's own log with no model: a click lands where and as often as asked,
 // typed text arrives exactly, a batch with an unknown key runs nothing, and a batch stops at its first failure and
-// releases the button it pressed.
+// releases the button it pressed. On a phone that takes no fixture file, typed text is read back from Settings' search
+// field in its UI tree instead (settings.ts).
 import type { Group, InputAction, InputActionsResult, Point } from "../../protocol.js";
 import type { FixtureEvent, StartedFixture } from "../fixture.js";
 import type { Case, CaseContext } from "../types.js";
+import { openSearch, openSettings, searchText, throughSettings } from "./settings.js";
 
 /** A point inside the fixture, at these fractions of its width and height. */
 export const pointIn = ({ bounds: [x, y, w, h] }: StartedFixture, fx: number, fy: number): Point => [Math.floor(x + fx * w), Math.floor(y + fy * h)];
@@ -57,6 +59,17 @@ export const inputCases: Case[] = [
 		);
 	}),
 	input("type-text", ["input.keys"], async (t) => {
+		if (throughSettings(t)) {
+			await openSettings(t);
+			await openSearch(t);
+			allRan(t, await act(t, [{ type: "type", text: TYPED }]), 1, `typing ${JSON.stringify(TYPED)} into Settings' search field`);
+			const typed = await t.until(async () => {
+				const text = await searchText(t);
+				return text !== undefined && text.length >= TYPED.length ? text : undefined;
+			}, `${TYPED.length} characters in Settings' search field`);
+			t.equal(typed, TYPED, "the text in Settings' search field");
+			return;
+		}
 		const fixture = await t.fixture();
 		const before = (await fixture.events()).length;
 		allRan(t, await act(t, [{ type: "type", text: TYPED }]), 1, `typing ${JSON.stringify(TYPED)}`);
@@ -64,6 +77,23 @@ export const inputCases: Case[] = [
 		t.equal(text(events), TYPED, "the text the fixture got");
 	}),
 	input("key-table-refuses-unknown", ["input.keys"], async (t) => {
+		if (throughSettings(t)) {
+			await openSettings(t);
+			await openSearch(t);
+			const refused = await act(t, [{ type: "key", keys: ["a"] }, { type: "key", keys: ["Hyper_Q"] }]);
+			t.equal(refused.done, 0, "done, for a batch whose second action names a key not in KEYS");
+			t.equal(refused.failed?.index, 1, "failed.index");
+			t.equal(refused.failed?.kind, "invalid", "failed.kind");
+			t.assert(typeof refused.failed?.message === "string" && refused.failed.message !== "", "the failure is in words");
+			// A later batch that lands shows the refused one ran nothing before it: the field holds "z" alone, no "a".
+			allRan(t, await act(t, [{ type: "type", text: "z" }]), 1, 'typing "z" after the refused batch');
+			const typed = await t.until(async () => {
+				const text = await searchText(t);
+				return text?.includes("z") ? text : undefined;
+			}, '"z" in Settings\' search field');
+			t.equal(typed, "z", "the text in Settings' search field: the refused batch's first action did not run");
+			return;
+		}
 		const fixture = await t.fixture();
 		const before = (await fixture.events()).length;
 		// The spec's click when the computer has a pointer, else a key: either way the first action is valid.
