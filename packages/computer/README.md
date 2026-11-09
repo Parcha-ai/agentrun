@@ -1841,11 +1841,16 @@ the API's control URL) is a later change: `platform: "ios"` is refused in words.
   a client in this process that answers each protocol method with adb commands:
   - `screen.shot`/`screen.read`: a raw `screencap`, cropped to the region and encoded as an RGBA PNG; `scale` is the
     density over 160;
-  - `input.actions`: checked whole first (`checkActions`). Then tap, long press, swipe (`input swipe`, or
-    `input motionevent` for a path of three points or more, its `ms` shared between the moves by each segment's length
-    as `sleep`s, so it lasts `ms` at least), the back, home and app switch buttons, `type`
-    (`input text`, ASCII and line breaks; a literal `%s` is split across two calls, so it is not read as a space) and one key at a time (`input keyevent`), and `wait`. A cancelled batch
-    stops at the action it is on, a `wait` included, and answers failed, kind `aborted`, there;
+  - `input.actions`: checked whole first (`checkActions`). Then:
+    - tap and long press;
+    - swipe: `input swipe`, or `input motionevent` for a path of three points or more. Its `ms` is shared between the
+      moves as `sleep`s, by each segment's length, so it lasts `ms` at least;
+    - the back, home and app switch buttons;
+    - `type`, by `input text`: ASCII and line breaks. A literal `%s` is split across two calls, so it is not read as
+      a space;
+    - one key at a time (`input keyevent`), and `wait`.
+
+    A cancelled batch stops at the action it is on, a `wait` included, and answers failed, kind `aborted`, there;
   - `apps.list` (`pm list packages`, and the app in front from `dumpsys activity activities`), `apps.launch` (its
     launcher activity, `am start -W --activity-clear-task`, so the app named is in front and not what its task last
     held: on Android 15 Settings' task keeps search, another package, on top) and `apps.terminate` (`am force-stop`);
