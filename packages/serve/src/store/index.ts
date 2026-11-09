@@ -2,7 +2,7 @@
 export { CommandTaken, endedReason, FINAL_STATES, Fenced, MCP_REFRESH_CALL_MS, MCP_REFRESH_LEASE_MS, RunFinal, SchemaVersionUnknown, StoreBusy, StoreClosed, StoreConstraint, StoreDeadline, StoreFromEarlierVersion, StoreLaunchMissing, StoreOwned, StoreWorkerLost, RefreshLeaseLost } from "./store.js";
 export type {
   AgentRow, Agents, AlsoRow, ChannelPost, Claim, Command, Firing, Journal, Live, LiveRow, Mcp, McpOauth, McpOauthPendingRow, McpPinRow,
-  McpServerRow, NewRevision, RevisionRow, RunPatch, RunRow, Runs, RunState, SealedKeyRow, SealedKeys, SettingRow, Settings, Staged,
+  McpServerRow, NewRevision, ReleasedState, RevisionRow, RunPatch, RunRow, Runs, RunState, SealedKeyRow, SealedKeys, SettingRow, Settings, Staged,
   StagedTake, Store, StoreRole, TemplatePackage, Templates, TriggerDef, TriggerRow, Triggers, TriggerScope, TriggerSettingRow,
   TriggerSettings, ImportedFrom, ImportSource, ImportRunInput, JournalReads, RunOrigin, RunOutcome, RunLaunchInput, RunLaunchRow, Learning,
   LearningProposal,

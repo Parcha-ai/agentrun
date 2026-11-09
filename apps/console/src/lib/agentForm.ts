@@ -1,4 +1,4 @@
-import type { Place, Places } from "./place";
+import { type Place, type Places, placeOf } from "./place";
 import type { ClientError } from "./client";
 import type { NoteProblem } from "./learning";
 import type { AgentTool, ToolSettings } from "./v2";
@@ -142,6 +142,19 @@ const RUNNER_ONLY: ReadonlySet<string> = new Set(["browser"]);
  *  picker and its tool checks both read it, so they agree with the server and with each other. */
 export const defaultPlaceOf = (workflow: boolean, tools: readonly string[], places: Places | null | undefined): Place =>
   workflow || tools.some((tool) => RUNNER_ONLY.has(tool)) ? { mode: "runner" } : (places?.defaultPlace ?? { mode: "runner" });
+
+/** Where an agent's current revision runs: its own place, else where the server resolves one that names none
+ *  (defaultPlaceOf), with `byDefault` saying so. Undefined for a revision that names no place while the server's places are
+ *  not read yet (and it names no runner-only tool), whose place is not known. The agent page's fact and the Learning
+ *  tab's host-bash line both read it. */
+export function runsWhere(agent: Pick<Agent, "kind" | "definition">, places: Places | null | undefined): { place: Place; byDefault: boolean } | undefined {
+  const own = placeOf(agent.definition.place);
+  if (own) return { place: own, byDefault: false };
+  const workflow = agent.kind === "workflow";
+  const tools = agent.definition.tools ?? [];
+  if (!workflow && !tools.some((tool) => RUNNER_ONLY.has(tool)) && !places?.defaultPlace) return undefined;
+  return { place: defaultPlaceOf(workflow, tools, places), byDefault: true };
+}
 
 /** A new agent's tools: on by default, every tool its harness runs here that the server can run now. In a sandbox `place`
  *  (the server's default for a new agent, where it has a box) a sandbox-only one (bash) too, and never a runner-only one
