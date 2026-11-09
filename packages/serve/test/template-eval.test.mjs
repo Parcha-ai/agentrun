@@ -5,7 +5,7 @@
 import assert from "node:assert/strict";
 import { spawn } from "node:child_process";
 import { createServer } from "node:http";
-import { cpSync, existsSync, readFileSync, watch, writeFileSync } from "node:fs";
+import { chmodSync, cpSync, existsSync, readFileSync, watch, writeFileSync } from "node:fs";
 import { basename, dirname, join } from "node:path";
 import { test } from "node:test";
 import { Client, StreamableHTTPClientTransport } from "@modelcontextprotocol/client";
@@ -388,6 +388,10 @@ test("agentrun-serve eval-template: exit 0 when every case passes, 1 when one fa
   assert.match(heldErr, /stopping: cancelling the run in progress[\s\S]*stopped; no report\./);
   assert.throws(() => readFileSync(join(dir, "stopped.json")), { code: "ENOENT" });
 
+  // A report path that exists and can't be written: refused before anything runs.
+  const readOnly = join(dir, "read-only.json");
+  writeFileSync(readOnly, "{}");
+  chmodSync(readOnly, 0o444);
   for (const [args, said] of [
     [[PKG, "--case", "nope", "--faux", FAUX], /evals\/nope: no such case/],
     [[PKG, "--runs", "0"], /--runs takes a whole number/],
@@ -397,6 +401,7 @@ test("agentrun-serve eval-template: exit 0 when every case passes, 1 when one fa
     [[join(PKG, "evals")], /is not a valid package/],
     [[], /it takes one package folder/],
     [[PKG, "--faux", FAUX, "--report", join(dir, "no-such-folder", "report.json")], /--report's folder .*no-such-folder is not a folder this command can write in/],
+    [[PKG, "--faux", FAUX, "--report", readOnly], /--report's folder .* or a file it can't write/],
   ]) {
     const refused = await run(args);
     assert.equal(refused.code, 2, `${args.join(" ")}: ${refused.err}`);

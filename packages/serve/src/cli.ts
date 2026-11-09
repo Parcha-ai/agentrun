@@ -147,12 +147,15 @@ if (process.argv[2] === "eval-template") {
     const writable = (() => {
       try {
         accessSync(folder, fsConstants.W_OK);
-        return statSync(folder).isDirectory() && !(statSync(resolve(given.report), { throwIfNoEntry: false })?.isDirectory() ?? false);
+        const existing = statSync(resolve(given.report), { throwIfNoEntry: false });
+        // A report already there is written over: it must be a file this command can write.
+        if (existing) accessSync(resolve(given.report), fsConstants.W_OK);
+        return statSync(folder).isDirectory() && !(existing?.isDirectory() ?? false);
       } catch {
         return false;
       }
     })();
-    if (!writable) usage(`--report's folder ${folder} is not a folder this command can write in, or the report's path is a folder.`);
+    if (!writable) usage(`--report's folder ${folder} is not a folder this command can write in, or the report's path is a folder or a file it can't write.`);
   }
   // The first Ctrl-C (or a stop) cancels the run in progress and cleans up what the eval made, as its end does: a run
   // left going would go on spending. A second one leaves at once; one within a second of the first is the same Ctrl-C,
