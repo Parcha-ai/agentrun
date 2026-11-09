@@ -13,7 +13,7 @@ export default {
   pending: "waits on #1975 (the Templates page and its Apply screen)",
   async run({ page, base, api }) {
     await page.goto(`${base}/#/templates`);
-    // The list: the kyb card by its title, the package's display name with its placeholder unfilled.
+    // The list: the kyb card by its title, the package's display name with "…" for its unfilled parameter.
     const card = page.locator('article[aria-label^="KYB due diligence"]');
     await card.getByRole("button", { name: "Apply", exact: true }).click();
     await page.waitForURL((url) => url.hash === `#/templates/${TEMPLATE}`);

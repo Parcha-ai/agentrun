@@ -108,7 +108,7 @@ function ApplyTemplate({ v2, template: t, go }: Props & { template: TemplateView
   if (made) {
     return (
       <section aria-label="Applied" className="max-w-3xl">
-        <h1 className="mb-4 flex items-center gap-2 font-mono text-2xl font-semibold"><Check className="size-5 text-success-text" aria-hidden /> {titleOf(t)} applied</h1>
+        <h1 className="mb-4 flex items-center gap-2 font-mono text-2xl font-semibold"><Check className="size-5 text-success-text" aria-hidden /> {titleOf(t, values)} applied</h1>
         <p className="mb-3 text-[14px]">The agent is made. The server says:</p>
         <ul className="mb-5 space-y-2 border bg-card px-4 py-3 text-[13px]" role="status" aria-label="Warnings">
           {made.warnings.map((w, i) => <li key={`${w.field}:${i}`}><span className="font-mono text-[12px] text-muted-foreground">{w.field}</span> {w.message}{w.fix ? <span className="block text-muted-foreground">{w.fix}</span> : null}</li>)}
@@ -120,7 +120,7 @@ function ApplyTemplate({ v2, template: t, go }: Props & { template: TemplateView
   return (
     <div className="max-w-3xl">
       <a href="#/templates" className="caps mb-4 inline-flex items-center gap-1.5 text-[12px] text-muted-foreground hover:text-foreground"><ArrowLeft className="size-3.5" aria-hidden /> Templates</a>
-      <h1 className="font-mono text-2xl font-semibold">{titleOf(t)} <span className="text-[14px] font-normal text-muted-foreground">{t.version}</span></h1>
+      <h1 className="font-mono text-2xl font-semibold">{titleOf(t, values)} <span className="text-[14px] font-normal text-muted-foreground">{t.version}</span></h1>
       <p className="mt-2 text-[14px] leading-[1.6]">{t.description}</p>
 
       {params.length > 0 && (

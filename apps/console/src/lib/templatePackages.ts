@@ -5,8 +5,10 @@ import type { TemplateView } from "./v2";
 // The server's templates (GET /v2/templates), as the Templates page reads them. (lib/templates.ts is Mission Control's
 // first-run starters, made in the console; these are the server's.)
 
-/** A template's title: its display name, else its name. */
-export const titleOf = (t: TemplateView) => t.display_name || t.name;
+/** A template's title: its display name, else its name. A display name's `${parameters.<name>}` (filled by the server at
+ *  apply) reads as the value typed for it so far (`values`), else "…": never as the raw placeholder. */
+export const titleOf = (t: TemplateView, values: ParameterText = {}) =>
+  (t.display_name || t.name).replace(/\$\{parameters\.([A-Za-z0-9_]+)\}/g, (_, key: string) => values[key]?.trim() || "…");
 /** A template's Apply screen. */
 export const templateHash = (name: string) => `#/templates/${encodeURIComponent(name)}`;
 
