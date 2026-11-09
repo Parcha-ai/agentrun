@@ -12,7 +12,7 @@ import { isMessageRow } from "@parcha/pi-durable-agent/timeline";
 import { ownSecrets } from "../dist/import.js";
 import { schemaProblems } from "./schema-support.mjs";
 import { follow, runDir, scratch, serve, withEnv } from "./support.mjs";
-import { E2, E2_RUN, firings, keyOf, made } from "./trigger-support.mjs";
+import { MESSAGE_RUN, RUN_EXEC, firings, keyOf, made } from "./trigger-support.mjs";
 
 // The spec's own library, in the lockfile through the Anthropic SDK: what a sender would install.
 const { Webhook } = createRequire(import.meta.url)("standardwebhooks");
@@ -32,7 +32,7 @@ async function post(baseUrl, triggerId, body, { secret, id = `msg_${randomBytes(
   return { status: res.status, headers: res.headers, body: json ?? text, id };
 }
 
-test("demo: a body the spec's library signs fires once, with no token; the same webhook-id again is the same firing and no second run; the payload reaches the agent marked untrusted; the secret is shown once and kept only sealed", { timeout: 120_000, skip: E2 }, async (t) => {
+test("demo: a body the spec's library signs fires once, with no token; the same webhook-id again is the same firing and no second run; the payload reaches the agent marked untrusted; the secret is shown once and kept only sealed", { timeout: 120_000, skip: RUN_EXEC }, async (t) => {
   withEnv(t, SEAL);
   const { api, baseUrl, data } = await serve(t);
   await made(api, "triage");
@@ -67,7 +67,7 @@ test("demo: a body the spec's library signs fires once, with no token; the same 
   await follow(api, fired.run_id, ["completed"]);
 });
 
-test("a wrong signature, a stale or future timestamp, missing headers, an unknown trigger, one that is off and one that is not a webhook's are one and the same 401; a body past 256 KiB is 413", { timeout: 120_000, skip: E2 }, async (t) => {
+test("a wrong signature, a stale or future timestamp, missing headers, an unknown trigger, one that is off and one that is not a webhook's are one and the same 401; a body past 256 KiB is 413", { timeout: 120_000 }, async (t) => {
   withEnv(t, SEAL);
   const lines = [];
   const { api, baseUrl } = await serve(t, { log: (line) => lines.push(line) });
@@ -104,7 +104,7 @@ test("a wrong signature, a stale or future timestamp, missing headers, an unknow
   await follow(api, fired.run_id, ["completed"]);
 });
 
-test("a rotated secret signs from then on, and the old one is refused; with no seal key no webhook trigger is made", { timeout: 120_000, skip: E2 }, async (t) => {
+test("a rotated secret signs from then on, and the old one is refused; with no seal key no webhook trigger is made", { timeout: 120_000 }, async (t) => {
   withEnv(t, SEAL);
   const { api, baseUrl } = await serve(t);
   await made(api, "triage");
@@ -126,7 +126,7 @@ test("a rotated secret signs from then on, and the old one is refused; with no s
   assert.deepEqual((await bare.api("GET", "/triggers")).body.triggers, []);
 });
 
-test("a message_run trigger sends each firing to its run, which takes it once: a completed run opens again and answers", { timeout: 120_000, skip: E2_RUN }, async (t) => {
+test("a message_run trigger sends each firing to its run, which takes it once: a completed run opens again and answers", { timeout: 120_000, skip: MESSAGE_RUN }, async (t) => {
   withEnv(t, SEAL);
   const { api, baseUrl } = await serve(t);
   await made(api, "chat");
@@ -149,7 +149,7 @@ test("a message_run trigger sends each firing to its run, which takes it once: a
   assert.deepEqual([missing.status, missing.body.error.fields.map((f) => f.field)], [422, ["target.run_id"]]);
 });
 
-test("a payload past 16 KiB is cut at a character's start and says so; its closing tag cannot end the untrusted block early", { timeout: 120_000, skip: E2 }, async (t) => {
+test("a payload past 16 KiB is cut at a character's start and says so; its closing tag cannot end the untrusted block early", { timeout: 120_000, skip: RUN_EXEC }, async (t) => {
   withEnv(t, SEAL);
   const { api, baseUrl, data } = await serve(t);
   await made(api, "triage");
@@ -167,7 +167,7 @@ test("a payload past 16 KiB is cut at a character's start and says so; its closi
   await follow(api, fired.run_id, ["completed"]);
 });
 
-test("a message_run firing to a run that is working waits for its turn to end, never queued behind it, then reaches it as a follow-up", { timeout: 120_000, skip: E2_RUN }, async (t) => {
+test("a message_run firing to a run that is working waits for its turn to end, never queued behind it, then reaches it as a follow-up", { timeout: 120_000, skip: RUN_EXEC }, async (t) => {
   withEnv(t, SEAL);
   const { api, baseUrl } = await serve(t);
   await made(api, "busy");
@@ -191,7 +191,7 @@ test("a message_run firing to a run that is working waits for its turn to end, n
   assert.equal(rows.filter(isMessageRow).length, 2, "its message, once, after the turn it waited for");
 });
 
-test("a webhook trigger holds at most 20 events due to a busy run: the 21st is refused 429 with Retry-After, written nowhere and logged, and a sender's retry once one is sent goes in", { timeout: 180_000, skip: E2_RUN }, async (t) => {
+test("a webhook trigger holds at most 20 events due to a busy run: the 21st is refused 429 with Retry-After, written nowhere and logged, and a sender's retry once one is sent goes in", { timeout: 180_000, skip: RUN_EXEC }, async (t) => {
   withEnv(t, SEAL);
   const lines = [];
   const { api, baseUrl, data } = await serve(t, { log: (line) => lines.push(line) });
@@ -213,7 +213,7 @@ test("a webhook trigger holds at most 20 events due to a busy run: the 21st is r
   await follow(api, run.run_id, ["completed"]);
 });
 
-test("an event's webhook-id, after 200 later events moved its firing out of the history, still answers that firing for a day: it never fires again", { timeout: 300_000, skip: E2 }, async (t) => {
+test("an event's webhook-id, after 200 later events moved its firing out of the history, still answers that firing for a day: it never fires again", { timeout: 300_000, skip: RUN_EXEC }, async (t) => {
   withEnv(t, SEAL);
   const { api, baseUrl } = await serve(t);
   await made(api, "parked", { tools: ["ask_person"] });

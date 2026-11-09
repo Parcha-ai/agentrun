@@ -17,7 +17,7 @@ import { TRIGGER_ADAPTERS } from "../dist/trigger-adapters.js";
 import { schemaProblems } from "./schema-support.mjs";
 import { openSqliteStore } from "../dist/store/sqlite/store.js";
 import { agent, client, FAUX, scratch, withEnv } from "./support.mjs";
-import { firings } from "./trigger-support.mjs";
+import { firings, RUN_EXEC } from "./trigger-support.mjs";
 
 const { Webhook } = createRequire(import.meta.url)("standardwebhooks");
 const sealKey = randomBytes(32);
@@ -74,7 +74,7 @@ async function post(baseUrl, path, body, { secret, headers } = {}) {
 
 /** A server whose triggers live in a store of their own (createServer's store), with an api whose POST /agents also puts
  *  the agent in that store, where a trigger's row names it. Until the server opens its own store, a firing that starts a
- *  run needs the run port's insert into it (E2): those cases wait on that. */
+ *  run needs the run port's insert into it: those cases wait on running the fired run on a runner. */
 async function storedServe(t, options) {
   const store = await openSqliteStore({ file: join(await scratch(t), "store.sqlite"), role: "server" });
   const server = await startServe({ port: 0, faux: FAUX, drainTimeout: "5s", ...options, store });
@@ -105,9 +105,9 @@ async function pingServer(t) {
   return { server, api, store, secret, lines };
 }
 
-// Its event starts a run: the store's firing row names that run, which E2's start inserts into the store (run_id's foreign
+// Its event starts a run: the store's firing row names that run, which the server's start inserts into the store (run_id's foreign
 // key). Until then this case is todo, never skipped: it still runs.
-test("a pushed source is one adapter: served at /v2/hooks/<its id> with no token and no edit of the server, verified with its own settings, and its event fires its trigger once", { timeout: 120_000, skip: "E2's start inserts the store run (trigger_firings.run_id FK)" }, async (t) => {
+test("a pushed source is one adapter: served at /v2/hooks/<its id> with no token and no edit of the server, verified with its own settings, and its event fires its trigger once", { timeout: 120_000, skip: RUN_EXEC }, async (t) => {
   const { server, api, secret } = await pingServer(t);
   assert.equal((await api("POST", "/agents", agent("pinged"))).status, 201);
   const made = await api("POST", "/triggers", { name: "pings", source: { kind: "ping", channel: "c1" }, target: { kind: "start_run", agent_id: "pinged", input: { content: "A ping." }, max_cost_usd: 0.5 } });
@@ -250,8 +250,8 @@ test("a signature is checked against the clock when the body has arrived, not wh
   assert.match(answer, /^HTTP\/1\.1 401 /, answer);
 });
 
-// Its events start runs: todo until E2's start inserts the store run (run_id's foreign key), as the case above.
-test("a trigger's own hook path takes every event its source parses from one request: each is its own firing, and the answer lists them", { timeout: 120_000, skip: "E2's start inserts the store run (trigger_firings.run_id FK)" }, async (t) => {
+// Its events start runs on a runner (dispatch and command delivery): the case waits on that, as the one above.
+test("a trigger's own hook path takes every event its source parses from one request: each is its own firing, and the answer lists them", { timeout: 120_000, skip: RUN_EXEC }, async (t) => {
   // A source whose settings are a trigger's and whose request holds a list of events, each with its id.
   const pair = {
     id: "pair", label: "pair trigger", delivery: "push", owner: false, describe: '{kind: "pair"}', fires: "a pair", schemas: [],

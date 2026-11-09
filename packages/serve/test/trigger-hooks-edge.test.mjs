@@ -11,7 +11,7 @@ import { test } from "node:test";
 import { isMessageRow } from "@parcha/pi-durable-agent/timeline";
 import { ROUTES } from "../dist/server.js";
 import { call, follow, runDir, scratch, serve, withEnv } from "./support.mjs";
-import { E2, E2_RUN, firings, made } from "./trigger-support.mjs";
+import { RUN_EXEC, firings, made } from "./trigger-support.mjs";
 import { fauxTable } from "./fixtures/faux-table.mjs";
 
 const { Webhook } = createRequire(import.meta.url)("standardwebhooks");
@@ -32,7 +32,7 @@ const errorOf = (answer) => {
   return error;
 };
 
-test("no route but POST /v2/hooks/{id} (and capabilities, the document and health) answers without the token: every other operation is 401, and a path that only looks like a hook is never served", { timeout: 120_000, skip: E2 }, async (t) => {
+test("no route but POST /v2/hooks/{id} (and capabilities, the document and health) answers without the token: every other operation is 401, and a path that only looks like a hook is never served", { timeout: 120_000 }, async (t) => {
   withEnv(t, SEAL);
   const { api, baseUrl } = await serve(t);
   await made(api, "triage");
@@ -119,7 +119,7 @@ test("malformed, duplicated or oversized webhook headers, a webhook-id past 255 
   assert.deepEqual((await api("GET", `/triggers/${id}/firings`)).body.firings, [], "none fired");
 });
 
-test("the signature covers the exact bytes: a body serialised again differently fails; the content type is not trusted; a signed body that is no JSON fires with its raw text as the payload; the 401's log line holds no signature, secret or body", { timeout: 120_000, skip: E2 }, async (t) => {
+test("the signature covers the exact bytes: a body serialised again differently fails; the content type is not trusted; a signed body that is no JSON fires with its raw text as the payload; the 401's log line holds no signature, secret or body", { timeout: 120_000, skip: RUN_EXEC }, async (t) => {
   withEnv(t, SEAL);
   const lines = [];
   const { api, baseUrl, data } = await serve(t, { log: (line) => lines.push(line) });
@@ -149,7 +149,7 @@ test("the signature covers the exact bytes: a body serialised again differently 
 
 // pi keeps a message under its request id; another harness's door keeps its admission under `door <request id>`.
 for (const [harness, options] of [["pi", {}], ["claude-agent", { harnessTable: fauxTable(FAUX_HARNESS) }]])
-test(`a message a run already took (${harness}), its firing left due by a restart, settles sent without sending it again or opening the completed run`, { timeout: 180_000, skip: E2_RUN }, async (t) => {
+test(`a message a run already took (${harness}), its firing left due by a restart, settles sent without sending it again or opening the completed run`, { timeout: 180_000, skip: RUN_EXEC }, async (t) => {
   withEnv(t, SEAL);
   const data = join(await scratch(t), "agents");
   const first = await serve(t, { data, ...options });
@@ -200,7 +200,7 @@ const userMessages = (rows) => rows.filter(isMessageRow).length;
 
 // A harness's door (claude-agent here; codex and opencode take the same door) refuses a firing's message while a turn
 // works. The refusal is not the request's outcome: the retry after the turn ends reaches the run.
-test("a busy claude-agent run refuses a firing's message and keeps no refusal: once its turn ends, the retried firing's message reaches it, once", { timeout: 180_000, skip: E2_RUN }, async (t) => {
+test("a busy claude-agent run refuses a firing's message and keeps no refusal: once its turn ends, the retried firing's message reaches it, once", { timeout: 180_000, skip: RUN_EXEC }, async (t) => {
   withEnv(t, SEAL);
   const { api, baseUrl } = await serve(t, { harnessTable: fauxTable(FAUX_HARNESS), fauxWeb: FAUX_WEB_HOLD });
   const go = join(await scratch(t), "go");
@@ -213,7 +213,7 @@ test("a busy claude-agent run refuses a firing's message and keeps no refusal: o
   assert.ok(rows.some((row) => row.summary === "Answer 2."), "and answered");
 });
 
-test("a server that stops after a busy claude-agent run refused a firing's message sends it on its next start: a refusal is not a message the run took", { timeout: 240_000, skip: E2_RUN }, async (t) => {
+test("a server that stops after a busy claude-agent run refused a firing's message sends it on its next start: a refusal is not a message the run took", { timeout: 240_000, skip: RUN_EXEC }, async (t) => {
   withEnv(t, SEAL);
   const data = join(await scratch(t), "agents");
   const go = join(await scratch(t), "go");
