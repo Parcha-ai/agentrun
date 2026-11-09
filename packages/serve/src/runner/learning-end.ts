@@ -8,7 +8,11 @@
 //   - what the person said in the run and a trigger's input (heard.ts Hearing over its entries, the end-of-run turn's
 //     own left out), as learning-run.ts turnOf reads them;
 //   - the checks: propose.ts proposeRun against the seed it started from, the server's one rule, which keeps the
-//     proposal the hook stores beside the run's end (learning_proposals).
+//     proposal the hook stores beside the run's end (learning_proposals);
+//   - what the run must never learn (learning-run.ts refused): the runner's secrets, the keys its claim handed it, and
+//     the sign-in pointers its row says it was handed, read back from the store (handed-values.ts handedValuesOf). A run
+//     whose pointers can't be read back learns nothing (the hook drops it, saying why), never over a shorter list. A
+//     runner's run has no door token: its loop runs in the runner's process.
 // A proposal queues the learning run (learning_run), which the runner's dispatch runs on the learning loop
 // (harness-loops.ts: harness "learning"), to grade and merge it. A run whose seed could not be read keeps that drop.
 import { mkdtemp, readFile, rm } from "node:fs/promises";
@@ -17,21 +21,24 @@ import { join } from "node:path";
 import { BACKGROUND_CONTEXT } from "@earendil-works/chord/context";
 import { Hearing } from "../heard.js";
 import type { LearningFolder } from "../learn/folder.js";
+import { handedValuesOf } from "../handed-values.js";
+import { MIN_SECRET } from "../learn/secrets.js";
 import { gradeModelOf, PROPOSAL } from "../learning.js";
 import { reflects, type Reflect } from "../learning-run.js";
 import { said, STOPPED } from "../learning-words.js";
 import { proposeRun } from "../propose.js";
 import { learningStartOf, type RunLaunch } from "../run-launch.js";
-import { costOf } from "../run-view.js";
-import { hostSecrets } from "../secrets.js";
+import { costOf, type SignInReader } from "../run-view.js";
 import type { Store } from "../store/store.js";
 import { runEntries, runReflect, runTimeline } from "../store-reads/journal.js";
 import type { EndOfRunTurn } from "./loop-contract.js";
 import { type Checked, createReflectHook, type ReflectTurn } from "./reflect-hook.js";
+import { runnerSecrets } from "./redact.js";
 
 /** What the step reads: the run's store, the data directory (the server's tool settings a draft's tools are read with),
- *  the agent's learning folder (where the run's place keeps it), and the runner's environment (the host's secrets a
- *  proposal is refused for; the grade model it names). */
+ *  the agent's learning folder (where the run's place keeps it), the runner's environment (the host's secrets a
+ *  proposal is refused for; the grade model it names), and what the run was handed (its claim's keys, its sign-in's
+ *  pointers through `signIns`), which it never learns. */
 export interface LearningEndDeps {
   readonly store: Store;
   readonly data: string;
@@ -39,6 +46,12 @@ export interface LearningEndDeps {
    *  in Mode 1, { mode: "archil", agentId, archil } in Mode 2. Opened for each check, and ended after it. */
   readonly learningFolder: (agentId: string) => LearningFolder;
   readonly env?: NodeJS.ProcessEnv;
+  /** The agent's sign-ins, opened (sign-ins-store.ts signInReads over the store and the seal key): the pointers the run's
+   *  row says it was handed are read back through them and never learned. Absent, a run marked as handed one learns
+   *  nothing (its pointers can't be read back). */
+  readonly signIns?: SignInReader;
+  /** The secret values the run's claim handed it (claim-secrets.ts: its tool and model keys), never learned. */
+  readonly handed?: readonly string[];
   /** The grade model the server names (learning.ts gradeModelOf); none, from `env` as the server reads it. */
   readonly gradeModel?: string;
 }
@@ -67,9 +80,16 @@ export function learningEndOfRun(launch: RunLaunch, deps: LearningEndDeps): EndO
       const triggered = heard.flatMap(({ text, source }) => (source === undefined ? [] : [{ source, text }]));
       return { asked: heard.filter((one) => one.source === undefined).map(({ text }) => text), ...(triggered.length ? { triggered } : {}) };
     },
-    check: async ({ runId, agentId, turn, outcome }) => {
+    // learning-run.ts refused(run): the runner's secrets, what the claim handed the run, and the sign-in pointers it was
+    // handed (each at least MIN_SECRET long, as every cut takes them); `unreadable` when those can't be read back.
+    refuse: async (runId) => {
+      const pointers = await handedValuesOf(deps, deps.store, runId);
+      if (pointers === "unreadable") return "unreadable";
+      return runnerSecrets(env, [...(deps.handed ?? []), ...pointers.refs.filter((ref) => ref.length >= MIN_SECRET)]);
+    },
+    check: async ({ runId, agentId, turn, outcome, refuse }) => {
       if (start.seed === null) throw new Error("the run's learning start names no commit of main to propose against");
-      return checkedOf(deps, { runId, agentId, seed: start.seed, turn, outcome, refuse: hostSecrets(env) });
+      return checkedOf(deps, { runId, agentId, seed: start.seed, turn, outcome, refuse });
     },
     // The learning run's id, one per run: a replayed end queues the same one (the store adds it once).
     newRunId: () => `${runId}-learning`,
