@@ -10,6 +10,10 @@
 //     is watched (its CommonJS functions wrapped, then synced into the ESM bindings every module imported), so any lingering
 //     local read fails the test, whoever makes it. (What the agent learned goes to the launch, read with no folder, so it
 //     is not asserted here: it is one of those reads until it moves.)
+// The run's mount credential is minted per run at Archil's control plane, lazily (the lead's ruling): a run with no
+// computer makes no control call at all; a computer that mounts the folder mints one at the claim, and it is removed at
+// the run's end. The control plane is ws-c3's loopback fake (archil-control-fake.mjs), given through the spec's
+// mountControl; any fetch to a host other than this machine's loopback fails the test, so none reaches Archil.
 import assert from "node:assert/strict";
 import { createRequire, syncBuiltinESMExports } from "node:module";
 import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
@@ -30,6 +34,7 @@ const { sealColumn, sealedAt } = await import("../dist/store/seal.js");
 const { OPENCODE_STANDIN_ENV } = await import("../dist/adapters.js");
 const { NOTE_ONLY_TEXT } = await import("../dist/tool-gate.js");
 const { FakeArchilDisk } = await import("./fixtures/archil-fake.mjs");
+const { archilControlFake } = await import("./archil-control-fake.mjs");
 
 process.env.AGENTRUN_OPENCODE_STANDIN = "1";
 const STAND_IN = new URL("./fixtures/fake-opencode-serve.mjs", import.meta.url).pathname;
@@ -70,17 +75,45 @@ function watchReads(folder) {
   };
 }
 
+/** Every fetch to a host other than this machine's loopback, refused and recorded while the guard is on: no test here may
+ *  reach Archil's control plane (or anything else). `off()` puts fetch back. */
+function guardFetch() {
+  const original = globalThis.fetch;
+  const outbound = [];
+  globalThis.fetch = async (input, init) => {
+    const url = new URL(typeof input === "string" ? input : input.url ?? String(input));
+    if (url.hostname !== "127.0.0.1" && url.hostname !== "localhost") {
+      outbound.push(`${init?.method ?? "GET"} ${url.origin}${url.pathname}`);
+      throw new Error(`a test reached ${url.origin}: no call leaves this machine`);
+    }
+    return original(input, init);
+  };
+  return { outbound, off: () => void (globalThis.fetch = original) };
+}
+
+/** A computer that mounts the run's folder, as a mounting provider's start does (resolve-computer.ts asks the folder's
+ *  mount for the computer's spec), and lets the mount credential go at its release (computerForClaim's revokeMount). */
+const mountingComputer = async (_launch, _store, given) => {
+  await given.workspace.mountSpec();
+  return { release: async () => void (await given.revokeMount?.()) };
+};
+
 /** A claimed run in Mode 2 over the Archil fake, the run's folder on the disk holding the real files and its local path the
  *  decoys, and `build`'s spec for its claim. `watch`: every read under the run's local folder path while the spec is built
- *  and used (`use`) is recorded. */
-async function mode2Spec(t, { harness, build, watch = false, use = async () => {} }) {
+ *  and used (`use`) is recorded. `computer`: the run's computerForClaim (none by default). The control plane is the
+ *  loopback fake (`control`), and every outbound fetch is refused (`outbound`). */
+async function mode2Spec(t, { harness, build, watch = false, use = async () => {}, computer = async () => ({ release: async () => {} }) }) {
   const dir = mkdtempSync(join(process.env.TMPDIR ?? tmpdir(), "runner-mode2-"));
   const server = await openSqliteStore({ dataDir: dir, role: "server" });
   const store = await openSqliteStore({ dataDir: dir, role: "runner" });
+  const control = await archilControlFake();
+  const guard = guardFetch();
   let spec;
   let harnessRun;
   t.after(async () => {
     await spec?.release?.().catch(() => {});
+    guard.off();
+    await control.close();
     await harnessRun?.close(ctx).catch(() => {});
     await store.close().catch(() => {});
     await server.close().catch(() => {});
@@ -112,9 +145,10 @@ async function mode2Spec(t, { harness, build, watch = false, use = async () => {
   const env = { AGENT_MODEL_BASE_URL: "http://127.0.0.1:9", AGENT_MODEL_API_KEY: `not-a-secret-${"gateway"}`, [OPENCODE_STANDIN_ENV]: JSON.stringify({ command: process.execPath, args: [STAND_IN] }) };
   const deps = {
     env, data: dir, journal: (c) => store.journal(c), store, sealKey: SEAL_KEY, routeOf: stubRoute,
-    // The run's Archil disk is the fake (Mode 2's disk, for both builders); no computer for a runner place.
+    // The run's Archil disk is the fake (Mode 2's disk, for both builders), and its control plane the loopback fake.
     makeArchilDisk: () => disk,
-    computerForClaim: async () => ({ release: async () => {} }),
+    mountControl: { baseUrl: control.baseUrl },
+    computerForClaim: computer,
   };
   // The run's whole local folder path, the run's directory above its work folder included.
   const watcher = watch ? watchReads(resolve(local, "..")) : undefined;
@@ -124,8 +158,11 @@ async function mode2Spec(t, { harness, build, watch = false, use = async () => {
   } finally {
     watcher?.off();
   }
-  return { spec, disk, localReads: watcher?.seen ?? [] };
+  return { spec, disk, control, outbound: guard.outbound, localReads: watcher?.seen ?? [] };
 }
+
+/** The control plane's requests, as method and path (the disk's id kept). */
+const callsOf = (control) => control.requests.map((request) => `${request.method} ${request.path}${request.query.identifier ? `?identifier=${request.query.identifier}` : ""}`);
 
 /** The disk's reads of `key`: a get of the file, or a listing of the folder. */
 const readsOf = (disk, key) => disk.calls.filter((call) => (call.key ?? call.prefix ?? call.directory ?? "").startsWith(key));
@@ -150,5 +187,23 @@ for (const [name, harness, build] of [["pi's spec", undefined, adapterRunSpecFro
   test(`${name} in Mode 2: nothing is read under the run's local folder path while its spec is built and used`, async (t) => {
     const { localReads } = await mode2Spec(t, { harness, build, watch: true, use: async (spec) => void (await spec.gate(reflectWrite)) });
     assert.deepEqual(localReads, [], `local reads in Mode 2:\n${localReads.join("\n")}`);
+  });
+
+  test(`${name} in Mode 2 with no computer: the run's mount credential is never minted, so Archil's control plane hears nothing, from its build to its end`, async (t) => {
+    const { spec, control, outbound } = await mode2Spec(t, { harness, build, use: async (built) => void (await built.gate(reflectWrite)) });
+    await spec.release();
+    assert.deepEqual(callsOf(control), [], "no list, no mint, no remove");
+    assert.deepEqual(outbound, [], "and nothing left this machine");
+  });
+
+  test(`${name} in Mode 2 with a computer that mounts the folder: one mount credential minted at the claim, named for the run and its epoch, and removed at the run's end`, async (t) => {
+    const { spec, control, outbound } = await mode2Spec(t, { harness, build, computer: mountingComputer });
+    const disk = `/api/disks/${ARCHIL_SETTINGS.diskId}`;
+    assert.deepEqual(callsOf(control), [`GET ${disk}`, `POST ${disk}/users`], "an earlier claim's credentials looked for, then one minted");
+    assert.equal(control.requests[1].authorization, "Bearer fake-test-key-api-0001", "minted with the account key");
+    assert.match(control.requests[1].body?.nickname ?? "", new RegExp(RUN), "named for the run");
+    await spec.release();
+    assert.deepEqual(callsOf(control).slice(2), [`DELETE ${disk}/users/token?identifier=tok-1`], "removed once at the end: the computer's release and the run's end revoke it, idempotently");
+    assert.deepEqual(outbound, [], "nothing left this machine");
   });
 }
