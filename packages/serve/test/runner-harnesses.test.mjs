@@ -20,13 +20,14 @@ const launch = (extra = {}) => ({
   ...extra,
 });
 
-test("runner harnesses: pi keeps its own record; claude-agent's is the loop's; an unknown harness has none", () => {
+test("runner harnesses: pi keeps its own record; each CLI's (claude-agent, codex, opencode) is the loop's; an unknown harness has none", () => {
   assert.equal(resolveHarness("pi").record, undefined);
   assert.equal(resolveHarness("claude-agent").record, "loop");
+  assert.equal(resolveHarness("codex").record, "loop");
   assert.equal(resolveHarness("opencode").record, "loop");
   assert.equal(resolveHarness("no-such-harness"), undefined);
   assert.equal(resolveHarness("__proto__"), undefined, "a name is looked up as data, never through the prototype");
-  assert.deepEqual(Object.keys(RUNNER_HARNESSES).sort(), ["claude-agent", "opencode", "pi"]);
+  assert.deepEqual(Object.keys(RUNNER_HARNESSES).sort(), ["claude-agent", "codex", "opencode", "pi"]);
 });
 
 test("runner harnesses: each builds its adapter from the launch", async () => {
@@ -39,6 +40,9 @@ test("runner harnesses: each builds its adapter from the launch", async () => {
   } finally {
     delete process.env.AGENTRUN_CLAUDE_AGENT_STANDIN;
   }
+  // A stand-in app-server is a test's own option too: no Codex binary is looked for.
+  const codex = await resolveHarness("codex").adapter(launch({ model: "gpt-test" }), { standIn: { command: process.execPath } });
+  assert.equal(codex.id, "codex");
   process.env.AGENTRUN_OPENCODE_STANDIN = "1";
   try {
     // OpenCode's stand-in for `opencode serve` is a test's own option, passed on as given.

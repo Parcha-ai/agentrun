@@ -3,6 +3,7 @@
 // Changed by Parcha, and AgentRun's own since the port from upstream froze on 2026-11-07.
 import { AsyncLocalStorage } from 'node:async_hooks';
 import { dirname } from 'node:path';
+import type { GateAnswer, GateCall } from '@parcha/agentrun-kernel';
 import { type DriveContext, type EffectRecord, type Harness, type HostTool, type ReplayPolicy, type SessionState, type Submission, Unavailable, UNAVAILABLE_STEP } from './host/kernel.js';
 import {
   type AcquireMachine,
@@ -21,6 +22,7 @@ import {
   placeSubmissions,
   recoveryNote,
   restartEvent,
+  resumeUnstartedCalls,
   type SessionMachine,
   type SessionProcess,
   settleAbandonedModelSteps,
@@ -33,6 +35,7 @@ import {
 import { acknowledgeInDrive, attachInDrive, cliPath, CODEX_CLI, DriveFiles, SANDBOX_DOC } from './host/sandbox.js';
 import { AppServer, type RpcNotification, type RpcServerRequest } from './app-server.js';
 import { codeMode } from './code-mode.js';
+import { danglingCalls, settleCall } from './transcript.js';
 import { BUILTINS_ON, checkConfig, codexConfig, type TomlValue, toToml } from './config.js';
 import {
   callIdOf,
@@ -120,6 +123,12 @@ export interface CodexHarnessOptions {
    * next to the built-ins. Default none.
    */
   tools?: HostTool[];
+  /**
+   * The host's gate (SessionIO.gate), asked by the tool bridge about each call
+   * of `tools` before its intent: a deny is the call's result in the host's
+   * words, nothing written and nothing run; a park holds it. Default none.
+   */
+  gate?: (call: GateCall) => Promise<GateAnswer>;
   /**
    * Codex's own shell and `apply_patch` (and `view_image`), on `/workspace`
    * in the session's VM. Default false (tool-less: `tools` are its only
@@ -405,13 +414,16 @@ export function codexHarness(options: CodexHarnessOptions = {}): Harness {
     const thread = journal.records<ThreadRecord>(THREAD_STREAM).at(-1)?.data;
     const restored = thread ? (await journal.read<string>(rolloutStream(thread.threadId))).map((r) => r.data) : [];
     const resume = thread && isSessionMeta(restored[0]) && isRolloutPath(thread.path, thread.threadId) ? thread : undefined;
-    const lines = resume ? restored : [];
-    const rolloutBytes = new TextEncoder().encode(rolloutText(lines));
+    // Settled before Codex starts (below): a host call the rollout left with no output gets one.
+    let lines = resume ? restored : [];
+    let rolloutBytes = new TextEncoder().encode(rolloutText(lines));
 
     // Codex's key: the attach's model key, which the relay checks (its hash armed the relay; only the attach's processes may use it). Never a credential: the handler adds that.
     const key = machine.modelKey;
     // A `never` tool waits for the journal: its call is in the log before its intent (the barrier ran first, below).
-    const bridge = toolBridge(ctx, tools, { beforeNever: () => journal.flush() });
+    // The host's gate first, inside the bridge: after the call's line is in the log (the barrier) and before its intent, so
+    // a refused or parked call leaves no intent, and a parked one's line is there for the resume to settle it.
+    const bridge = toolBridge(ctx, tools, { beforeNever: () => journal.flush(), ...(options.gate ? { gate: options.gate } : {}) });
     /** What the model must hear about this attach (a lost Drive), once per invocation, with its first message; acknowledged after that turn. */
     let notes = machine.notes.length && !invocation.notesShown ? machine.notes.map((n) => `[Sandbox] ${n}`).join('\n') : undefined;
     let proc: SessionProcess | undefined;
@@ -421,6 +433,20 @@ export function codexHarness(options: CodexHarnessOptions = {}): Harness {
     let builtins: BuiltinCalls | undefined;
     const clamps = new Map<string, ReturnType<typeof setTimeout>>();
     try {
+      if (resume) {
+        // A resumed thread's host calls with no output, before Codex starts on it: one that never started (no intent in
+        // the session's records) runs now through the bridge under its own id (gate, intent, run, result); one the log
+        // finished is answered with its recorded result; one with an intent and no outcome is left to the recovery below,
+        // never run again. Each answer is its function_call_output line in the mirrored rollout, which Codex resumes from.
+        // A call the gate parks rejects here, nothing written.
+        await resumeUnstartedCalls(ctx, bridge, danglingCalls(lines), async (call, outcome) => {
+          const settled = settleCall(lines, call.callId, outcome);
+          journal.append(rolloutStream(resume.threadId), settled.at(-1));
+          await journal.flush();
+          lines = settled;
+        });
+        rolloutBytes = new TextEncoder().encode(rolloutText(lines));
+      }
       // The log wins: the VM's cache dirs are wiped, and CODEX_HOME rebuilt from the log.
       await machine.files.wipe();
       let sandboxMode: NonNullable<CodexHarnessOptions['sandboxMode']> = 'read-only';
@@ -732,8 +758,12 @@ export function codexHarness(options: CodexHarnessOptions = {}): Harness {
           case 'item/tool/call': {
             const callId = String(p.callId ?? '');
             const tool = bridge.get(String(p.tool));
-            // A `never` tool's call: its own line in the log first (the barrier), else it is declined, never run.
-            if (tool?.replay === 'never' && callId && !ctx.isMemoized(toolKey(callId)) && !(await barrier(callId))) {
+            // A `never` tool's call: its own line in the log first (the barrier), else it is declined, never run. With the
+            // host's gate, every fresh call's line goes in first too: a park seals the run's log, and a resume settles a
+            // parked call only from its line (a replay-safe call whose line lags is still asked, as before).
+            const fresh = Boolean(callId) && !ctx.isMemoized(toolKey(callId));
+            const inLog = fresh && (tool?.replay === 'never' || options.gate) ? await barrier(callId) : true;
+            if (tool?.replay === 'never' && !inLog) {
               return { contentItems: [{ type: 'inputText', text: LAGGING_RESULT }], success: false };
             }
             mirror();

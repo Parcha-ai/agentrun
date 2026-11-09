@@ -12,7 +12,7 @@ import { fileURLToPath } from "node:url";
 const { createAdapterLoop } = await import("../dist/runner/adapter-loop.js");
 const { resolveHarness } = await import("../dist/runner/adapters/index.js");
 const { facts } = await import("../dist/harness-opencode/facts.js");
-const { MAX_RESTARTS } = await import("../dist/runner/conformance/harness.js");
+const { CLI_OUTPUT_LIMIT_UNSUPPORTED, MAX_RESTARTS } = await import("../dist/runner/conformance/harness.js");
 
 process.env.AGENTRUN_OPENCODE_STANDIN = "1";
 const STAND_IN = fileURLToPath(new URL("./fixtures/fake-opencode-serve.mjs", import.meta.url));
@@ -92,11 +92,12 @@ function tracked(adapter) {
 /** The adapter loop's spec for the suite's setup: OpenCode as the runner's harnesses give it (resolveHarness), on the
  *  stand-in, its model through the session's proxy to the script, the run's visible record kept by the loop. One
  *  sessions folder per loop: a resume on another runner opens the session from the run's journal. */
-export function openCodeSpec({ script, tools, hooks }, options = {}) {
+export function openCodeSpec({ script, tools, hooks, agentId }, options = {}) {
   const sessionsDir = mkdtempSync(join(process.env.TMPDIR ?? tmpdir(), "agentrun-opencode-conformance-"));
   dirs.push(sessionsDir);
   const harness = resolveHarness("opencode");
   return async (_claim, run) => ({
+    ...(agentId ? { agentId } : {}),
     adapter: tracked(await harness.adapter(
       { run, model: MODEL, provider: { origin: "https://provider.invalid", credential: () => `not-a-secret-${"x"}` }, price: () => 0, sessionsDir, fetch: options.fetch ?? scriptedResponses(script, options.requests) },
       { standIn: { command: process.execPath, args: [STAND_IN] } },
@@ -117,6 +118,7 @@ export const openCodeSubject = {
   // What its adapter declares (steer false, rerunsStarted false): the suite derives the cases those rule out.
   facts,
   unsupported: {
+    ...CLI_OUTPUT_LIMIT_UNSUPPORTED,
     "crash-before-intent-process": "the OpenCode stand-in runs only under a test runner, and the conformance runner process is none (the in-process crash case covers the point)",
     "crash-after-intent-process": "the OpenCode stand-in runs only under a test runner, and the conformance runner process is none (the in-process crash case covers the point)",
     "stalled-past-lease-process": "the OpenCode stand-in runs only under a test runner, and the conformance runner process is none",

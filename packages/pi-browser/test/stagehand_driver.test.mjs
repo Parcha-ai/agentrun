@@ -152,3 +152,73 @@ test("a failed open names the host the process dialed, and keeps the cause so th
   assert.ok(error.cause instanceof Error, "the original error is the cause");
   assert.equal(error.message.includes("SECRETKEY"), false, "the host only: never the path or the signing query");
 });
+
+test("a run of several actions on a real Chrome stops before an action that would land on a new document; a pushState move keeps the document and runs on", { skip: NO_CHROME, timeout: 120_000 }, async (t) => {
+  const http = await import("node:http");
+  // Each page: a link (the batch's first action) and a field at the same place (its second), so an old snapshot's xpath
+  // for the field finds a field on the next page too, and a fill that ran there is seen in the page's own value.
+  const body = (link) => `<!doctype html><title>t</title><body>${link}<input id="name" aria-label="Name"></body>`;
+  const server = http.createServer((req, res) => {
+    res.setHeader("content-type", "text/html");
+    const path = new URL(req.url, "http://x").pathname;
+    if (path === "/new") return res.end(body(`<a href="/other">Next page</a>`));
+    if (path === "/other") return res.end(body(`<a href="/new">Back</a>`));
+    if (path.startsWith("/push")) return res.end(body(`<a href="#" onclick="history.pushState({}, '', '/push/step-2'); return false;">Next step</a>`));
+    if (path === "/reload") return res.end(body(`<a href="#" onclick="location.reload(); return false;">Reload</a>`));
+    res.writeHead(404); res.end();
+  });
+  await new Promise((resolve) => server.listen(0, "127.0.0.1", resolve));
+  t.after(() => server.close(), { timeout: 30_000 });
+  const base = `http://127.0.0.1:${server.address().port}`;
+  const root = await scratch(t, "stagehand-doc-");
+  const provider = cdpProvider({ chrome: { executablePath: CHROME, profileRoot: root, args: [LOOPBACK_ONLY] } });
+  const signal = new AbortController().signal;
+  const ref = await provider.create(spec("driver-doc"), signal);
+  let driver;
+  try {
+    try { driver = await stagehandDriver()(await provider.attach(ref), signal, { batchTimeoutMs: 10_000 }); }
+    catch (error) { if (skipIncapable(t, error)) return; throw error; }
+    const gates = createDrivingGates();
+    const idOf = (tree, pattern) => tree.split("\n").map((line) => line.match(/^\s*\[([^\]]+)\]\s*(.*)$/)).find((m) => m && pattern.test(m[2]))?.[1];
+    /** At `path`: a snapshot, then one model call of a click on its link and a fill of its field. */
+    const clickThenFill = async (path, tag) => {
+      await driver.run({ code: `await page.goto(${JSON.stringify(`${base}${path}`)}); return true;` });
+      const tree = await driver.snapshot({});
+      const actions = [{ op: "click", id: idOf(tree, /^link/i) }, { op: "fill", id: idOf(tree, /^textbox/i), value: "Ada" }];
+      assert.ok(actions.every((a) => a.id), `ids on ${path}: ${tree}`);
+      const port = { session: async () => ({ tag, driver, notice: null }), relaunch: async () => ({ tag, driver }), release: async () => ({ released: true, sessionId: null }) };
+      const out = await drivingGuard(async (_a, p) => {
+        const s = await p.session();
+        try { return { content: [{ type: "text", text: JSON.stringify(await s.driver.run({ actions })) }] }; }
+        catch (error) { return { content: [{ type: "text", text: JSON.stringify(error.failure ?? { message: error.message }) }], isError: true }; }
+      }, gates)({}, port, {});
+      // Settle, then read the page the browser shows: its address and whether the fill reached its field.
+      await new Promise((r) => setTimeout(r, 500));
+      const now = await driver.run({ code: `return await page.evaluate(() => ({ url: location.href, value: document.getElementById("name").value }));` });
+      return { out: JSON.parse(out.content[0].text), isError: out.isError === true, now };
+    };
+
+    await t.test("a link to another page: the fill is never sent to it", async () => {
+      const { out, isError, now } = await clickThenFill("/new", "driver-doc-1");
+      assert.equal(isError, true, JSON.stringify(out));
+      assert.deepEqual([out.code, out.effect, out.completed], ["stale_snapshot", "partial", 1], JSON.stringify(out));
+      assert.match(out.message, /snapshot again/);
+      assert.deepEqual(now, { url: `${base}/other`, value: "" }, "on the new page, and its field untouched");
+    });
+    await t.test("a pushState move: the same document, and the fill runs", async () => {
+      const { out, isError, now } = await clickThenFill("/push", "driver-doc-2");
+      assert.equal(isError, false, JSON.stringify(out));
+      assert.equal(out.completed, 2);
+      assert.deepEqual(now, { url: `${base}/push/step-2`, value: "Ada" });
+    });
+    await t.test("a reload: a new document at the same address, and the fill is never sent", async () => {
+      const { out, isError, now } = await clickThenFill("/reload", "driver-doc-3");
+      assert.equal(isError, true, JSON.stringify(out));
+      assert.deepEqual([out.code, out.completed], ["stale_snapshot", 1], JSON.stringify(out));
+      assert.deepEqual(now, { url: `${base}/reload`, value: "" });
+    });
+  } finally {
+    await driver?.close?.().catch(() => undefined);
+    await provider.release(ref);
+  }
+});
