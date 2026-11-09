@@ -371,8 +371,10 @@ export interface Runs {
    *  stop the runner applies itself ends the run with its stop row taken, or neither). Refused, nothing written: Fenced when
    *  the run's epoch is not the claim's; CommandTaken when a command in `take` is taken already, or not the run's. When the
    *  patch writes `signInHanded` (the runner's bind), the answer carries `save`: whether this run holds the sign-in's save
-   *  lease, decided in this same transaction so two binds of one sign-in never both save (no other run holds a handed pointer). */
-  update(claim: Claim, patch: RunPatch, rows?: { readonly also?: readonly AlsoRow[]; readonly take?: readonly number[] }): Promise<UpdatedRun>;
+   *  lease, decided in this same transaction so two binds of one sign-in never both save — no other run holds a handed
+   *  pointer, counting a running run and (within `signInSettleMs` of leaving running, a vendor's settle window) one that
+   *  recently left running. `signInSettleMs` defaults to 0 (other vendors free the lease the instant a run leaves running). */
+  update(claim: Claim, patch: RunPatch, rows?: { readonly also?: readonly AlsoRow[]; readonly take?: readonly number[]; readonly signInSettleMs?: number }): Promise<UpdatedRun>;
 }
 
 /** A saved MCP server: its listed tools (each with whether it can be granted, and why not), the owner's prices, and its
@@ -562,8 +564,10 @@ export interface SignIns {
    *  no live sign-in for the provider. */
   forget(agentId: string, provider: string, held: { hash?: string; heldUnreadable?: boolean }): Promise<SignInTombstoneRow>;
   /** The id of a running run whose sign_in_handed holds `hash`, if one does; undefined otherwise. The check the runner
-   *  makes before it serves a run's output, and forget makes before it removes a sign-in. */
-  handedHolder(hash: string): Promise<string | undefined>;
+   *  makes before it serves a run's output, and forget makes before it removes a sign-in. With `settleMs` (a vendor's settle
+   *  window, from the store clock or `at`), a run that left running (ended or parked) less than that ago also counts as
+   *  holding it, so a new run does not save over a context write-back still in flight. */
+  handedHolder(hash: string, options?: { settleMs?: number; at?: number }): Promise<string | undefined>;
   /** The id of a running run that was handed any sign-in (a non-empty sign_in_handed), if one was: for a pointer that does
    *  not open here, which any such run may hold. */
   handedAny(): Promise<string | undefined>;

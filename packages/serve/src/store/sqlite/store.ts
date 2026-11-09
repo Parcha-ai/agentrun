@@ -267,19 +267,24 @@ class SqliteStore implements Store {
     };
 
     // A run whose sign_in_handed holds one of `hashes` (handedHolderIn), or any running run handed a sign-in at all
-    // (handedAnyIn): the reads forget, the view, the runner's bind and its output check make, over `runs` alone. `not`
-    // drops one run id (a bind's own, so a run is never its own blocker).
+    // (handedAnyIn): the reads forget, the view, the runner's bind and its output check make, over `runs` alone. By default
+    // only a running run holds it; `settleMs` (a vendor's settle window, measured from the store clock `at`) also counts a
+    // run that left running (ended or parked) less than that ago, so a new run does not save over a context write-back in
+    // flight. `not` drops one run id (a bind's own, so a run is never its own blocker).
     const handedHolderIn = (
       tx: Pick<SqliteExecutor, "get">,
       hashes: string | readonly string[],
-      { not }: { not?: string } = {},
+      { not, settleMs = 0, at = 0 }: { not?: string; settleMs?: number; at?: number } = {},
     ): Promise<{ id: string } | undefined> => {
       const list = typeof hashes === "string" ? [hashes] : [...hashes];
       if (list.length === 0) return Promise.resolve(undefined);
+      const settle = settleMs > 0 ? " OR (left_running_at IS NOT NULL AND left_running_at > ?)" : "";
       return tx.get<{ id: string }>(
-        `SELECT id FROM runs WHERE state = 'running' AND sign_in_handed IS NOT NULL${not === undefined ? "" : " AND id != ?"}
+        `SELECT id FROM runs WHERE sign_in_handed IS NOT NULL${not === undefined ? "" : " AND id != ?"}
+           AND (state = 'running'${settle})
            AND EXISTS (SELECT 1 FROM json_each(sign_in_handed) WHERE value IN (${list.map(() => "?").join(", ")})) LIMIT 1`,
         ...(not === undefined ? [] : [not]),
+        ...(settleMs > 0 ? [at - settleMs] : []),
         ...list,
       );
     };
@@ -428,8 +433,8 @@ class SqliteStore implements Store {
       },
       claimMany: (runner, k, { leaseMs = DEFAULT_LEASE_MS } = {}) => this.#claimRuns(runner, leaseMs, { k }),
       update: async (claim, patch, rows = {}) => {
-        if (Array.isArray(rows) || typeof rows !== "object" || rows === null) throw new TypeError("runs.update's third argument is { also?, take? }");
-        const { also = [], take = [] } = rows;
+        if (Array.isArray(rows) || typeof rows !== "object" || rows === null) throw new TypeError("runs.update's third argument is { also?, take?, signInSettleMs? }");
+        const { also = [], take = [], signInSettleMs = 0 } = rows;
         return db.transaction(async (tx): Promise<UpdatedRun> => {
           const at = now();
           const row = await applyRunPatch(tx, claim, patch, also, at);
@@ -439,10 +444,11 @@ class SqliteStore implements Store {
             }
           }
           // The bind's save lease, in this same transaction as the sign_in_handed write just made (applyRunPatch): this run
-          // saves unless another run already holds one of the handed pointers. Excludes this run (it just wrote them), so a
-          // run is never its own blocker. Two binds of one sign-in in one tick thus never both save.
+          // saves unless another run already holds one of the handed pointers (a running run, or — within signInSettleMs of
+          // leaving running, a vendor's settle window — one that left running less than that ago). Excludes this run (it just
+          // wrote them), so a run is never its own blocker. Two binds of one sign-in in one tick thus never both save.
           if (patch.signInHanded !== undefined && patch.signInHanded !== null && patch.signInHanded.length > 0) {
-            const holder = await handedHolderIn(tx, patch.signInHanded, { not: claim.runId });
+            const holder = await handedHolderIn(tx, patch.signInHanded, { not: claim.runId, settleMs: signInSettleMs, at });
             return { ...row, save: holder === undefined };
           }
           return row;
@@ -666,7 +672,7 @@ class SqliteStore implements Store {
           await tx.run("DELETE FROM sign_in_tombstones WHERE agent_id = ? AND id NOT IN (SELECT id FROM sign_in_tombstones WHERE agent_id = ? ORDER BY id DESC LIMIT ?)", agentId, agentId, SIGN_IN_TOMBSTONES_KEPT);
           return signInTombstoneOf(tomb!);
         }),
-      handedHolder: async (hash) => (await handedHolderIn(db, hash))?.id,
+      handedHolder: async (hash, options) => (await handedHolderIn(db, hash, { settleMs: options?.settleMs ?? 0, at: options?.at ?? now() }))?.id,
       handedAny: async () => (await handedAnyIn(db))?.id,
     };
   }
@@ -727,12 +733,15 @@ class SqliteStore implements Store {
 
   async release(claim: Claim, { state, wakeAt = null, backoffUntil = null }: { state?: RunState; wakeAt?: number | null; backoffUntil?: number | null } = {}): Promise<void> {
     const ending = state !== undefined && FINAL_STATES.includes(state);
+    // A release that gives the run back with no state keeps it 'running' (its runner shut down): it still holds its
+    // sign-in. One that parks or ends it leaves 'running', so stamp when — the Browserbase settle window reads it.
+    const leaving = state !== undefined && state !== "running";
     await this.#db.write([fenced(
       claim,
       // The epoch moves on at a release: the released claim is dead everywhere (its journal, its run updates, its takes),
       // never live until the next claim.
-      `UPDATE runs SET epoch = epoch + 1, runner = NULL, claimed_until = NULL, wake_at = ?, backoff_until = ?, state = coalesce(?, state)${ending ? ", ended_at = coalesce(ended_at, ?)" : ""} WHERE id = ? AND epoch = ? AND runner = ?`,
-      [wakeAt, backoffUntil, state ?? null, ...(ending ? [this.#now()] : []), claim.runId, claim.epoch, claim.runner],
+      `UPDATE runs SET epoch = epoch + 1, runner = NULL, claimed_until = NULL, wake_at = ?, backoff_until = ?, state = coalesce(?, state)${ending ? ", ended_at = coalesce(ended_at, ?)" : ""}${leaving ? ", left_running_at = ?" : ""} WHERE id = ? AND epoch = ? AND runner = ?`,
+      [wakeAt, backoffUntil, state ?? null, ...(ending ? [this.#now()] : []), ...(leaving ? [this.#now()] : []), claim.runId, claim.epoch, claim.runner],
     )], { full: true });
     // The released claim's journal is dead (its epoch moved on): the store keeps it no longer, and refuses it from now.
     this.#journals.delete(journalKey(claim));

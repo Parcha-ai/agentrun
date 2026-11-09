@@ -42,6 +42,9 @@ export async function applyRunPatch(tx: Pick<SqliteExecutor, "run" | "get">, cla
   if (patch.signInHanded !== undefined) set("sign_in_handed", patch.signInHanded === null ? null : JSON.stringify([...patch.signInHanded]));
   if (patch.endedAt !== undefined) set("ended_at", patch.endedAt);
   else if (patch.state !== undefined && FINAL_STATES.includes(patch.state)) set("ended_at", now);
+  // When the run leaves 'running' (parks or ends), stamp when: a Browserbase sign-in it held keeps its save lease for the
+  // settle window after this (runs.update's save decision reads left_running_at). Queued is never set through a patch.
+  if (patch.state !== undefined && patch.state !== "running" && patch.state !== "queued") set("left_running_at", now);
   // Nothing to change still proves the claim: the row comes back only under it.
   const assignments = sets.length ? sets.join(", ") : "epoch = epoch";
   const row = await tx.get<RunRecord>(`UPDATE runs SET ${assignments} WHERE id = ? AND epoch = ? RETURNING ${RUN_COLUMNS}`, ...params, claim.runId, claim.epoch);

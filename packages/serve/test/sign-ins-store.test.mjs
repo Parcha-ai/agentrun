@@ -165,9 +165,14 @@ test("signInsOverStore.view: the old SignInView shape; ready, then held/held_by 
   assert.ok(!JSON.stringify(await bridge.view("alpha")).includes("ctx-1"), "the view never holds the pointer");
   // A run verifies it (E2's run path through store.signIns.verify): verified_at shows that time, as ISO.
   clock.now += 1000;
-  await store.signIns.verify("alpha", "browserbase", clock.now);
+  const verifiedAt = clock.now;
+  await store.signIns.verify("alpha", "browserbase", verifiedAt);
   await store.release(claim, { state: "ended" });
-  assert.deepEqual(await bridge.view("alpha"), [{ key: "default", provider: "browserbase", state: "ready", held_by: null, verified_at: new Date(clock.now).toISOString() }]);
+  // Browserbase keeps its save lease the settle window past the run's end (the context is still being written back): the
+  // view matches, staying held and named by that run until the window passes, then ready.
+  assert.deepEqual(await bridge.view("alpha"), [{ key: "default", provider: "browserbase", state: "held", held_by: runId, verified_at: new Date(verifiedAt).toISOString() }]);
+  clock.now += 10_000 + 1; // past BROWSERBASE_SETTLE_MS
+  assert.deepEqual(await bridge.view("alpha"), [{ key: "default", provider: "browserbase", state: "ready", held_by: null, verified_at: new Date(verifiedAt).toISOString() }]);
 });
 
 test("signInsOverStore.view: an unreadable sign-in reads unreadable with held_by null; peek and forgotten carry the old shapes", async (t) => {
