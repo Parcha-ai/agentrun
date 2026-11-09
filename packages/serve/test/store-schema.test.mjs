@@ -73,6 +73,35 @@ test("a server open drops a stale browser_viewers table a prior build left, and 
   }
 });
 
+test("one answer per approval: a second approve or deny command for one approval of a run is refused; another approval, another run, and every other kind are not; a server open adds the index to a store an earlier build made", async (t) => {
+  const { store, file } = await storeOn(t);
+  await queued(store, "run-1");
+  await queued(store, "run-2");
+  await store.command("run-1", { kind: "approve", body: { approval: "call-1" } });
+  await assert.rejects(store.command("run-1", { kind: "approve", body: { approval: "call-1" } }), StoreConstraint, "the same answer twice");
+  await assert.rejects(store.command("run-1", { kind: "deny", body: { approval: "call-1", note: "no" } }), StoreConstraint, "another answer");
+  await store.command("run-1", { kind: "deny", body: { approval: "call-2" } });
+  await store.command("run-2", { kind: "approve", body: { approval: "call-1" } });
+  await store.command("run-1", { kind: "steer", body: { content: "a" } });
+  await store.command("run-1", { kind: "steer", body: { content: "a" } });
+  assert.deepEqual((await store.commands("run-1", 0)).map((c) => [c.kind, c.body.approval ?? null]), [["approve", "call-1"], ["deny", "call-2"], ["steer", null], ["steer", null]]);
+  await store.close();
+
+  // A store file an earlier build of this version wrote has no such index: a server open adds it.
+  const raw = new DatabaseSync(file);
+  try {
+    raw.exec("DROP INDEX IF EXISTS commands_one_answer");
+  } finally {
+    raw.close();
+  }
+  const reopened = await openSqliteStore({ file, role: "server", now: () => T0 });
+  try {
+    await assert.rejects(reopened.command("run-2", { kind: "deny", body: { approval: "call-1" } }), StoreConstraint, "after the open, one answer again");
+  } finally {
+    await reopened.close();
+  }
+});
+
 test("a run update carries rows in the same commit (an outbox post, a told marker); a fenced one writes none", async (t) => {
   const { store, clock, file } = await storeOn(t);
   await queued(store);

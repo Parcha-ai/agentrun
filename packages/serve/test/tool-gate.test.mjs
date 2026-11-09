@@ -21,6 +21,7 @@ import { BOX_WORK } from "../dist/place.js";
 import { deniedText, RESUME_PREFIX, RunGate, TURN_ORIGIN_FILE, waitingText } from "../dist/tool-gate.js";
 import { permissionsOf, resolveCapability, settingsIssues } from "../dist/tool-plane.js";
 import { TOOLS } from "../dist/tools.js";
+import { openSqliteStore } from "../dist/store/index.js";
 import { schemaProblems } from "./schema-support.mjs";
 import { KEY as MONID_KEY } from "./fixtures/faux-monid.mjs";
 import { REQUESTS_ENV, requestsOf, rolesOf } from "./fixtures/faux-requests.mjs";
@@ -320,6 +321,31 @@ async function askedOn(t, harnesses) {
 }
 
 test("web_fetch set to ask on pi: the run parks with its pending approval; answered more than a minute later by the owner's session, allow runs the call once and resumes with one message naming it, deny with a note resumes with the refusal; a token is 403; a second, conflicting answer is 409", { timeout: 240_000 }, (t) => askedOn(t, ["pi"]));
+
+test("two conflicting answers to one parked call at once, by the owner's session: exactly one is taken (204), the other is 409 already_answered with its decision, the store holds one answer, and the call runs at most once", { timeout: 240_000 }, async (t) => {
+  const dialled = await network(t);
+  const server = await serve(t, GATE);
+  const { api } = server;
+  const answer = await owner(server);
+  assert.equal((await api("PUT", "/settings/tools", { web_fetch: { permission: "ask" } })).status, 200);
+  const runId = await fetching(api, "race-pi", "pi");
+  const { view } = await parked(api, runId);
+  const id = view.pending.id;
+  const [allow, deny] = await Promise.all([answer(runId, id, { decision: "allow" }), answer(runId, id, { decision: "deny", note: "no" })]);
+  const statuses = [allow.status, deny.status].sort();
+  assert.deepEqual(statuses, [204, 409], `one answer is taken, the other refused: ${JSON.stringify([allow, deny])}`);
+  const [won, lost] = allow.status === 204 ? ["allow", deny] : ["deny", allow];
+  assert.deepEqual([lost.body.error.code, lost.body.error.details], ["not_continuable", { reason: "already_answered", decision: won }]);
+  const store = await openSqliteStore({ dataDir: server.data, role: "runner" });
+  try {
+    const rows = (await store.commands(runId, 0)).filter((c) => (c.kind === "approve" || c.kind === "deny") && c.body.approval === id);
+    assert.deepEqual(rows.map((c) => c.kind), [won === "allow" ? "approve" : "deny"], "one answer row");
+  } finally {
+    await store.close();
+  }
+  await follow(api, runId, ["completed"], { deadlineMs: 120_000 });
+  assert.deepEqual(await dialled(), won === "allow" ? [PAGE] : [], "the call ran once if allowed, never if denied");
+});
 
 test("web_fetch set to ask on claude-agent and codex at once: each run parks and is answered as on pi", { timeout: 240_000, skip: "waits on the runner building a CLI run's adapter on the server's data directory and the run's harness table (edbdea047c)" }, (t) => askedOn(t, ["claude-agent", "codex"]));
 
