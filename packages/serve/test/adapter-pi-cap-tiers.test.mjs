@@ -60,3 +60,27 @@ test("the same run goes at a $3 cap: the tier price fits, and the request is hel
   // The base worst case for this input is about $0.8; held above $1 is the tier's rates, not the base's.
   assert.ok(answer.holdUsd > 1, `held at the tier, not the base: ${answer.holdUsd}`);
 });
+
+// A catalog model with no maxTokens has no output ceiling here (model-route.ts routeOf sets outputCeiling only from a
+// model's maxTokens, never a guess). Its output is priced, so what a request may cost has no bound: the cap refuses it,
+// rather than send a request whose cost it cannot keep the run's cap by (kernel cap rule noCeiling).
+test("a model with no maxTokens leaves the route's output ceiling undefined and the cap model's null: never a guess", async () => {
+  const route = await routeOf("openai/gpt-6-sol", { OPENAI_API_KEY: KEY });
+  assert.equal(typeof route.outputCeiling, "number", "a model the catalog bounds carries its own ceiling");
+  // The same model as a catalog with no maxTokens would list it: the route carries no ceiling, and capModelOf invents none.
+  const model = capModelOf({ ...route, outputCeiling: undefined });
+  assert.equal(model.outputCeiling, null, "no maxTokens -> a null ceiling, not a guessed figure");
+  assert.ok(model.price && model.price.output > 0, "its output is still priced");
+});
+
+test("a priced-output request on a model with no output ceiling is refused before it leaves: its cost has no bound to keep the cap by", async (t) => {
+  const route = await routeOf("openai/gpt-6-sol", { OPENAI_API_KEY: KEY });
+  const { row, asked, sent } = await capRun(t, {
+    specOf: (got) => specWith(scriptedOrigin([{ say: "done" }], got), "hi"),
+    beforeRequest: beforeRequestOf({ capUsd: () => 1, modelOf: () => capModelOf({ ...route, outputCeiling: undefined }) }),
+    cap: specCap(1),
+  });
+  assert.equal(sent.length, 0, "refused before the request left");
+  assert.match(asked[0]?.answer?.refuse ?? "", /no output ceiling here and its output is priced/, `refused for no bound: ${JSON.stringify(asked[0]?.answer)}`);
+  assert.equal(row.state, "failed", `a refusal no raise can fix fails the run: ${JSON.stringify(row)}`);
+});
