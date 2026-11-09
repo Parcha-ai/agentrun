@@ -28,6 +28,13 @@ export function needsOf(t: TemplateView, { secrets = true, mcp = true } = {}): [
   return out;
 }
 
+/** The values a parameter takes, when its pattern is a plain anchored alternation of words (`^(crm|slack|none)$`): the
+ *  form offers those as a choice. Any other pattern is the server's to check, and is never shown. */
+export function choicesOf(p: TemplateView["parameters"][string]): string[] | null {
+  const m = p.pattern ? /^\^\(([A-Za-z0-9_.-]+(?:\|[A-Za-z0-9_.-]+)+)\)\$$/.exec(p.pattern) : null;
+  return m ? m[1].split("|") : null;
+}
+
 /** The parameters form's text, by parameter name ("true"/"false" for a boolean). */
 export type ParameterText = Record<string, string>;
 
