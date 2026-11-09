@@ -36,6 +36,17 @@ export const UNUSABLE = {
 export const REFRESH_MARGIN_MS = 5 * 60_000;
 /** How long an access token given with no expiry is taken to last: it is refreshed within the margin of then. */
 export const UNKNOWN_EXPIRY_MS = 60 * 60_000;
+
+/** How much of an OAuth credential's access token is left (ms), measured by the writer that is about to save it, on the
+ *  same clock that stamped its set's expires_at and obtained_at (this process's: mcp-oauth.ts stamps them so). It is a
+ *  duration, so the store lays it on its own clock (token_until) and a claim on any machine judges the token by the
+ *  store's. Null for a credential with no token set (headers). */
+export function tokenLeftOf(credential: { readonly type: string; readonly set?: unknown } | undefined, now: number = Date.now()): number | null {
+  if (credential?.type !== "oauth") return null;
+  const set = credential.set as { expires_at?: unknown; obtained_at?: unknown } | undefined;
+  const end = typeof set?.expires_at === "string" ? Date.parse(set.expires_at) : typeof set?.obtained_at === "string" ? Date.parse(set.obtained_at) + UNKNOWN_EXPIRY_MS : Number.NaN;
+  return Number.isFinite(end) ? end - now : null;
+}
 const SCOPE = /^[\x21\x23-\x5b\x5d-\x7e]{1,128}$/;
 const REQUEST_MS = 15_000;
 const PREVIEW_MS = 30_000;

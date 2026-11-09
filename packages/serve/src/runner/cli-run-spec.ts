@@ -37,6 +37,7 @@ import { INPUTS_DIR, UPLOADS_DIR, Uploads } from "../uploads.js";
 import { isObject } from "../validate.js";
 import { runFolder, scratchFolder } from "../workspace/paths.js";
 import { openRunWorkspace } from "../workspace/run-workspace.js";
+import { layOwnSkills } from "../workspace/revision-skills.js";
 import { runTools, type ToolResults } from "../workspace/run-tools.js";
 import { archilClaim, MOUNT_TTL_MS } from "../workspace/archil-claim.js";
 import { loadArchilSettings } from "../archil-settings.js";
@@ -130,7 +131,7 @@ export async function cliRunSpecFromLaunch(launch: RunLaunch, run: AdapterRun, d
   // The run's MCP for this claim (mcp-run.ts mcpForClaim): its pin made at the first claim or read as written, its
   // credentials opened under the runner's seal key (deps.sealKey) into this claim's memory, one gateway for the claim.
   // First, before the session opens: a refusal (a pin that cannot be made, a pinned meta tool) ends the run in its words.
-  const mcp = await mcpForClaim({ claim, store: deps.store, sealKey: deps.sealKey, grants: granted, harness: run.harness, work: () => runFolder(deps.data, runRow.agentId, claim.runId), launchInput: launch.input, githubAppAccess: (store, key, input) => githubAppAccess(store, key, input, deps.githubApi ? { api: deps.githubApi } : {}) });
+  const mcp = await mcpForClaim({ claim, store: deps.store, sealKey: deps.sealKey, grants: granted, harness: run.harness, work: () => runFolder(deps.data, runRow.agentId, claim.runId), launchInput: launch.input, githubAppAccess: (store, key, input) => githubAppAccess(store, key, input, deps.githubApi ? { api: deps.githubApi } : {}), ...(deps.githubMcpOrigin ? { githubMcpOrigin: deps.githubMcpOrigin } : {}) });
 
   // The harness: the launch's, else the revision's. Its table entry (facts, model choice, adapter, skill check), read from
   // the run's environment table as main does (harnessOf: the built-in entries, a test's module merged over them under a
@@ -192,6 +193,8 @@ export async function cliRunSpecFromLaunch(launch: RunLaunch, run: AdapterRun, d
   const start = learningStartOf(launch);
   const laid = start ? laidLearned(body.instructions ?? "", start.section) : (body.instructions ?? "");
   const check = await entry.skillCheck?.();
+  // The revision's own skills laid before they are read, as the pi spec lays them (adapter-run-spec.ts).
+  await layOwnSkills(ws.workspace, (revisionRow.skills ?? {}) as Record<string, string>, { computer: (launch as { computer?: ComputerSetting }).computer?.kind });
   const { system: instructions, native } = await systemOf(laid, Object.keys(body.skills ?? {}), ws.workspace, check, { onDemand: readsFiles(granted) });
   const guidance = effortGuidance(launch.effort);
 
