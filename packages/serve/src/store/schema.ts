@@ -1,7 +1,8 @@
-// The store's one schema, version 3 (design 2.1). Nothing migrates into it: the rewrite replaces the old stores, and a store
+// The store's one schema, version 5 (design 2.1). Nothing migrates into it: the rewrite replaces the old stores, and a store
 // an older build made is refused as a version this build does not know. The server sets it up once at its start (a
 // store_meta row holds the version); a runner refuses a version it does not know. Version 2 adds the computer ledger;
-// version 3 numbers each save of a sign-in (sign_ins.save).
+// version 3 numbers each save of a sign-in (sign_ins.save); version 4 stamps an MCP token's end (mcp_servers.token_until);
+// version 5 maps an externally owned agent (agents.external_ref, revisions.external_version).
 // Conventions: every time is INTEGER epoch milliseconds; JSON is TEXT checked by json_valid; money is REAL US dollars;
 // sealed columns hold ciphertext only (sealed with the server's key outside the store), so the store never sees a secret
 // in the clear. Foreign keys are on (the connection's pragma).
@@ -13,7 +14,7 @@
 // journal tables, keyed by run_id (store/journal): one schema for every run's journal, so a query joins runs and their
 // journals.
 
-export const SCHEMA_VERSION = 4;
+export const SCHEMA_VERSION = 5;
 
 const json = (column: string, nullable = false) => `${column} TEXT${nullable ? "" : " NOT NULL"} CHECK (${column} IS NULL OR json_valid(${column}))`;
 
@@ -26,14 +27,19 @@ export const STORE_DDL: readonly string[] = [
 
   // Agents and their revisions. A revision made from a template keeps its package: {name, version (SemVer), source
   // builtin|git, ref, sha, parameters}.
+  // `external_ref`: when the agent mirrors one owned by another system, its reference there, "<source>:<kind>:<id>" (e.g.
+  // "grep:expert:42"), unique across agents. The agent is written on the first run that names it and is read-only from here;
+  // null for an agent created here.
   `CREATE TABLE IF NOT EXISTS agents (
     id TEXT PRIMARY KEY,
     name TEXT NOT NULL,
     description TEXT,
     current_revision TEXT,
     created_at INTEGER NOT NULL,
-    archived_at INTEGER
+    archived_at INTEGER,
+    external_ref TEXT
   ) STRICT`,
+  `CREATE UNIQUE INDEX IF NOT EXISTS agents_external ON agents (external_ref) WHERE external_ref IS NOT NULL`,
   // A revision's skills (the P4 fold of the old agent store's skill table): the revision's own skill files, a JSON object
   // keyed by the skill's path under `.agents/skills/` to its text. The body's `skills` map keeps the path to the text's
   // SHA-256 (so two revisions with the same files are one body, and a view can show each file's size), and this column
@@ -50,9 +56,13 @@ export const STORE_DDL: readonly string[] = [
     ${json("skills", true)},
     ${json("package", true)},
     note TEXT,
+    external_version TEXT,
     created_at INTEGER NOT NULL
   ) STRICT`,
   `CREATE INDEX IF NOT EXISTS revisions_by_agent ON revisions (agent_id, created_at)`,
+  // `external_version`: for a revision of an externally owned agent, the version it maps there (one revision per version),
+  // unique per agent; null for a revision committed here.
+  `CREATE UNIQUE INDEX IF NOT EXISTS revisions_external_version ON revisions (agent_id, external_version) WHERE external_version IS NOT NULL`,
 
   // Runs: a parked run holds no claim (its runner flushed and released it); it is claimable again when a command row lands
   // or wake_at passes.

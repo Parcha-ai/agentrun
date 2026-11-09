@@ -62,6 +62,9 @@ export interface AgentRow {
   readonly currentRevision: string | null;
   readonly createdAt: number;
   readonly archivedAt: number | null;
+  /** The reference of the agent this one mirrors in another system ("<source>:<kind>:<id>"), or null for one made here. An
+   *  agent with a reference is read-only from here: it is written on the first run that names it and never edited. */
+  readonly externalRef: string | null;
 }
 
 /** A template's package, kept on the revision made from it. */
@@ -84,6 +87,8 @@ export interface NewRevision {
   /** The optional note the revision is committed with (the v2 note), or none. */
   readonly note?: string;
   readonly package?: TemplatePackage;
+  /** The version this revision maps in an externally owned agent, set only on an inline-agent run's revision. */
+  readonly externalVersion?: string;
 }
 
 export interface RevisionRow {
@@ -100,6 +105,8 @@ export interface RevisionRow {
   readonly note: string | null;
   readonly package: TemplatePackage | null;
   readonly createdAt: number;
+  /** The version this revision maps in the agent's owning system (one revision per version), or null for one committed here. */
+  readonly externalVersion: string | null;
 }
 
 /** How an ended run (state 'ended') ended apart from being done: 'escalated' (it finished its work and waits for a person,
@@ -415,12 +422,24 @@ export class AgentArchived extends Error {
   }
 }
 
+/** An inline-agent run whose body differs from the one already stored for its external reference and version: refused,
+ *  nothing written (Runs.createInline). A version's body is immutable; a changed body needs a new version. */
+export class ExternalBodyConflict extends Error {
+  override name = "ExternalBodyConflict";
+  constructor(readonly ref: string, readonly version: string) {
+    super(`a different body is already stored for ${ref} version ${version}`);
+  }
+}
+
 export interface Agents {
   /** Creates the agent, or renames it (name, description) when it exists. */
   put(agent: { id: string; name: string; description?: string | null }): Promise<void>;
   /** The agent row and its first revision, current, in one transaction: both or neither. */
   create(agent: { id: string; name: string; description?: string | null }, firstRevision: NewRevision): Promise<void>;
   get(id: string): Promise<AgentRow | undefined>;
+  /** The agent an external reference ("<source>:<kind>:<id>") maps to (Runs.createInline), or undefined before its first
+   *  run. */
+  byExternal(ref: string): Promise<AgentRow | undefined>;
   list(options?: { archived?: boolean }): Promise<AgentRow[]>;
   /** Archives the agent, or unarchives it. Archived, every trigger of it that is on is turned off in the same transaction
    *  (`disabled` set to `why`, JSON; its scope rows dropped), and those are the answer: from its commit no firing starts a
@@ -508,6 +527,18 @@ export interface Runs {
    *  (StoreConstraint), and nothing is written. With `launch`, its launch row is written in the same transaction too (all
    *  or nothing). */
   create(run: { id: string; agentId: string; revisionId: string; origin?: RunOrigin }, launch?: RunLaunchInput): Promise<RunRow>;
+  /** A run whose agent is given inline and mapped to a source system by `agent.ref` and `revision.version`. In one
+   *  transaction: the agent (one per `ref`, written on its first run, its name and description brought up to the version
+   *  whose first use this is) and the revision (one per `version`, made current on its first use) are written or read, then
+   *  the run, its origin and its launch. Idempotent — a later run under the same (`ref`, `version`) reuses that revision and
+   *  changes nothing; a different body under an existing version is refused (ExternalBodyConflict), nothing written. The
+   *  revision's `note` is kept by its first use, as an edit's note is; it is not part of its body. */
+  createInline(input: {
+    agent: { id: string; name: string; description?: string | null; ref: string };
+    revision: { id: string; version: string; kind: string; body: unknown; skills?: unknown; note?: string };
+    run: { id: string; origin?: RunOrigin };
+    launch: RunLaunchInput;
+  }): Promise<RunRow>;
   get(id: string): Promise<RunRow | undefined>;
   /** The run's launch row (the runner reads it at its claim; the server for views). StoreLaunchMissing when the run has
    *  none (it was not started with one), never a default. */
