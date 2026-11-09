@@ -116,8 +116,10 @@ export function useAttachments({ upload, remove, limits = {}, frozen = false }: 
 export type Attachments = ReturnType<typeof useAttachments>;
 
 /** The start screens' file picker: a button and a drop zone, each picked file a chip with its size (and how much is sent
- *  while it is), a way to remove it, the limits under it, and any refusal in the server's words. */
-export function FilePicker({ attachments, limits = {}, disabled }: { attachments: Attachments; limits?: UploadLimits; disabled?: boolean }) {
+ *  while it is), a way to remove it, the limits under it, and any refusal in the server's words. `compact`: on a phone
+ *  (< 640 px) the drop zone folds to its button alone, an icon with the limits in its title (a phone drops no files); the
+ *  chips and refusals still show under it. 640 px and up are unchanged. */
+export function FilePicker({ attachments, limits = {}, disabled, compact = false }: { attachments: Attachments; limits?: UploadLimits; disabled?: boolean; compact?: boolean }) {
   const input = useRef<HTMLInputElement>(null);
   const [over, setOver] = useState(false);
   const { items, refusals, add, drop } = attachments;
@@ -126,7 +128,7 @@ export function FilePicker({ attachments, limits = {}, disabled }: { attachments
   const said = [limits.max_files_per_run !== undefined ? `up to ${limits.max_files_per_run} files` : null, limits.max_upload_bytes !== undefined ? `${bytes(limits.max_upload_bytes)} each` : null].filter(Boolean).join(", ");
   return (
     <div
-      className={cn("border border-dashed px-3 py-2.5", over ? "border-primary bg-primary/5" : "border-border")}
+      className={cn("border border-dashed px-3 py-2.5", over ? "border-primary bg-primary/5" : "border-border", compact && "max-sm:border-0 max-sm:p-0")}
       onDragOver={(e) => { if (off) return; e.preventDefault(); setOver(true); }}
       onDragLeave={() => setOver(false)}
       onDrop={(e) => { e.preventDefault(); setOver(false); if (!off) add([...e.dataTransfer.files]); }}
@@ -134,8 +136,10 @@ export function FilePicker({ attachments, limits = {}, disabled }: { attachments
       aria-label="Files for the run"
     >
       <div className="flex flex-wrap items-center gap-2">
-        <Button type="button" size="sm" onClick={() => input.current?.click()} disabled={off}><Paperclip aria-hidden /> Attach files</Button>
-        <span className="text-[12px] text-muted-foreground">or drop them here{said ? ` (${said})` : ""}. The run finds them in inputs/.</span>
+        <Button type="button" size="sm" onClick={() => input.current?.click()} disabled={off} title={compact ? `Attach files${said ? ` (${said})` : ""}` : undefined} className={cn(compact && "max-sm:h-10 max-sm:w-10 max-sm:px-0")}>
+          <Paperclip aria-hidden /> <span className={cn(compact && "max-sm:sr-only")}>Attach files</span>
+        </Button>
+        <span className={cn("text-[12px] text-muted-foreground", compact && "max-sm:hidden")}>or drop them here{said ? ` (${said})` : ""}. The run finds them in inputs/.</span>
         <input ref={input} type="file" multiple hidden aria-label="Pick files" onChange={(e) => { add([...(e.target.files ?? [])]); e.target.value = ""; }} />
       </div>
       {items.length > 0 && (

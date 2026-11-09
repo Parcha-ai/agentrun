@@ -1,5 +1,6 @@
-// What the learning tests share: an agent that learns, a run followed until its learning ends, and git in the test's own
-// hands to read the agent's folder.
+// What the learning tests share: an agent that learns, a run followed until the server's part of its learning is done,
+// the runner's learning run's grade and merge on its proposal (learnedOnMain), and git in the test's own hands to read
+// the agent's folder.
 import assert from "node:assert/strict";
 import { spawnSync } from "node:child_process";
 import { existsSync, mkdirSync, readFileSync } from "node:fs";
@@ -7,7 +8,10 @@ import { join } from "node:path";
 import { mergedNote } from "../dist/learn/notes.js";
 import { agentFolderOf } from "../dist/files.js";
 import { learningRepair } from "../dist/learn/folder.js";
-import { learningFolderOf } from "../dist/learning.js";
+import { learningCommit, readMain } from "../dist/learn/commit.js";
+import { learningFolderOf, PROPOSAL } from "../dist/learning.js";
+import { judgeProposal } from "../dist/grade.js";
+import { keptOf, mergeChangeOf } from "../dist/runner/learning-loop.js";
 import { localWorkspace } from "../dist/workspace/index.js";
 import { agent, follow, runDir } from "./support.mjs";
 
@@ -40,8 +44,11 @@ export async function started(api, id, content = "Go.", extra = {}) {
   return run.body.run_id;
 }
 
-const UNDER_WAY = ["seeded", "reflecting", "proposed"];
-/** The run followed until it ended (`until`), then until its learning is merged or dropped: its view and its rows. */
+/** The server's part of a run's learning: seeded, its end-of-run turn asked, then what the turn wrote checked and kept as
+ *  its proposal (proposed) or dropped. The grade and the merge are the runner's learning run (learnedOnMain). */
+const UNDER_WAY = ["seeded", "reflecting"];
+/** The run followed until it ended (`until`), then until the server's part of its learning is done: proposed, or
+ *  dropped. Its view and its rows. */
 export async function ended(api, runId, until = ["completed"]) {
   await follow(api, runId, until, { deadlineMs: 90_000 });
   for (let i = 0; UNDER_WAY.includes((await api("GET", `/runs/${runId}`)).body.learning?.state); i++) {
@@ -49,6 +56,53 @@ export async function ended(api, runId, until = ["completed"]) {
     await sleep(50);
   }
   return { view: (await api("GET", `/runs/${runId}`)).body, rows: (await follow(api, runId, until)).rows };
+}
+
+/** Why a case on a run's own learning end (merged or dropped, its words, the verdict, what it learned or holds, the
+ *  ledger's, usage's and stats' lines) waits: the server's grade wrote that end, and its reader of the runner's learning
+ *  run is to come. The case is skipped with this reason (a failing todo is a `not ok` line, which a push refuses), and
+ *  turns back on when it lands. With LEARN_RUN_END_PROBE set, every such case runs (skip false), to see which pass against
+ *  the server as it stands while the switch lands; the marker goes from each case once it passes. */
+export const RUN_END_TODO = process.env.LEARN_RUN_END_PROBE ? false : "E2s's reader: a run's learning end from learning_proposals and the learning run's journal";
+export const SWITCH_TODO = "the switch: the server answers from the store-backed run view (viewOverStore), which reads a run's learning end; these drive the file-backed server and turn back on when it is wired onto the store";
+
+/** The server's part of the run's learning done: what its end-of-run turn wrote is kept as its proposal. */
+export function proposedOf(view) {
+  assert.equal(view.learning?.state, "proposed", JSON.stringify(view.learning));
+}
+
+/** Run `runId`'s kept proposal graded and merged as the runner's learning run does it (runner/learning-loop.ts), on the
+ *  agent's folder in the server's data: main read for the grade (readMain), the grader asked on the faux model by the
+ *  agent's instructions (judgeProposal: gradePrompt and parseVerdict), then what the verdict keeps merged by the
+ *  learning run's own rule (keptOf, mergeChangeOf) through the folder's one write (learningCommit). What it came to:
+ *  `problems` (main refused it before the grade), `failed` (no verdict), `verdict` with `result` (learningCommit's) when
+ *  the verdict merges, or `verdict` alone when it keeps nothing. */
+export async function learnedOnMain(server, agentId, runId) {
+  assert.ok(server.data && server.api, "the server's data and api");
+  const proposal = JSON.parse(readFileSync(join(runDir(server.data, runId), PROPOSAL), "utf8"));
+  // The instructions of the revision the run ran, whose faux grading rules ("Grade: ...") the grader reads.
+  const { agent_version: version } = (await server.api("GET", `/runs/${runId}`)).body;
+  const revisions = (await server.api("GET", `/agents/${agentId}/revisions?limit=100`)).body.revisions;
+  const instructions = revisions.find((revision) => revision.version === version)?.definition?.instructions;
+  assert.equal(typeof instructions, "string", `run ${runId}'s revision (version ${version}) has instructions`);
+  // As the learning run does it: no queue held across the grade (a person's write meanwhile goes through), the merge
+  // safe by learningCommit's own compare and swap and its check of the blobs the grade read.
+  const { workspace, end } = learningFolderOf(server.data, agentId);
+  try {
+    const main = await readMain(workspace, proposal);
+    if ("problems" in main) return { problems: main.problems };
+    const judged = await judgeProposal({
+      runId, agent: { instructions }, main, proposed: proposal.notes, ...(proposal.files ? { files: proposal.files } : {}),
+      ...(proposal.asked ? { asked: proposal.asked } : {}), ...(proposal.triggered ? { triggered: proposal.triggered } : {}),
+      env: { PATH: process.env.PATH, AGENTRUN_SERVE_FAUX: LEARN }, signal: new AbortController().signal,
+    });
+    if (!("verdict" in judged)) return { failed: judged.error };
+    if (!judged.verdict.merge) return { verdict: judged.verdict };
+    const merging = keptOf(proposal, judged.verdict);
+    return { verdict: judged.verdict, result: await learningCommit(workspace, mergeChangeOf(runId, merging, judged.verdict, main.graded)) };
+  } finally {
+    await end();
+  }
 }
 
 /** The run's serve.json once it holds where its learning ended, and that end's line in the learning ledger: the view

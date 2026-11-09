@@ -18,8 +18,8 @@ const handover = (tag) => ({ port: 40000, id: randomBytes(16).toString("base64ur
 /** What the readers give for `given`, put at `at`. */
 const read = (given, at) => ({ port: given.port, id: given.id, token: given.token, tag: given.tag, at });
 
-test("the AAD a viewer's token is sealed under is browser_viewers|<run>/<tag>|sealed", () => {
-  assert.equal(aadOf(sealedAt.liveViewer("run-1", "ar-run-1-1")), "browser_viewers|run-1/ar-run-1-1|sealed");
+test("the AAD a viewer's token is sealed under is computer_viewers|<run>/<kind>:<tag>|sealed", () => {
+  assert.equal(aadOf(sealedAt.liveViewer("run-1", "browser", "ar-run-1-1")), "computer_viewers|run-1/browser:ar-run-1-1|sealed");
 });
 
 test("a session's viewer put under the run's claim reads back whole, newest first, at the store's time: liveViewer is the newest, liveViewerById finds one by its path id", async () => {
@@ -117,13 +117,13 @@ test("a row whose seal does not open reads as no viewer, never a throw: tampered
   const good = handover("ar-run-1-good");
   await putLiveViewer(store, KEY, claim, good);
   const token = () => randomBytes(32).toString("base64url");
-  const tampered = sealColumn(KEY, sealedAt.liveViewer(RUN, "ar-run-1-tampered"), token());
+  const tampered = sealColumn(KEY, sealedAt.liveViewer(RUN, "browser", "ar-run-1-tampered"), token());
   tampered[tampered.length - 1] ^= 1;
   const rows = [
     { tag: "ar-run-1-tampered", sealed: tampered },
-    { tag: "ar-run-1-moved", sealed: sealColumn(KEY, sealedAt.liveViewer(RUN, "ar-run-1-elsewhere"), token()) },
-    { tag: "ar-run-1-run", sealed: sealColumn(KEY, sealedAt.liveViewer("run-2", "ar-run-1-run"), token()) },
-    { tag: "ar-run-1-key", sealed: sealColumn(randomBytes(32), sealedAt.liveViewer(RUN, "ar-run-1-key"), token()) },
+    { tag: "ar-run-1-moved", sealed: sealColumn(KEY, sealedAt.liveViewer(RUN, "browser", "ar-run-1-elsewhere"), token()) },
+    { tag: "ar-run-1-run", sealed: sealColumn(KEY, sealedAt.liveViewer("run-2", "browser", "ar-run-1-run"), token()) },
+    { tag: "ar-run-1-key", sealed: sealColumn(randomBytes(32), sealedAt.liveViewer(RUN, "browser", "ar-run-1-key"), token()) },
     { tag: "ar-run-1-short", sealed: new Uint8Array(3) },
     { tag: "ar-run-1-none", sealed: null },
   ];
@@ -136,7 +136,7 @@ test("the readers leave out a row that is no hand-over: a bad path id, token, ta
   const claim = store.claim(RUN);
   const good = handover("ar-run-1-good");
   await putLiveViewer(store, KEY, claim, good);
-  const row = (tag, patch = {}, plain = randomBytes(32).toString("base64url")) => ({ tag, port: 40000, id: randomBytes(16).toString("base64url"), sealed: sealColumn(KEY, sealedAt.liveViewer(RUN, tag), plain), ...patch });
+  const row = (tag, patch = {}, plain = randomBytes(32).toString("base64url")) => ({ tag, port: 40000, id: randomBytes(16).toString("base64url"), sealed: sealColumn(KEY, sealedAt.liveViewer(RUN, "browser", tag), plain), ...patch });
   const bad = [
     row("ar-run-1-id", { id: "short" }),
     row("ar-run-1-token", {}, "x".repeat(42)),
@@ -162,7 +162,7 @@ test("a put whose tag is not a session's is refused before the store, in words t
   assert.deepEqual(store.received, [], "the store was handed nothing");
 });
 
-test("the token's plaintext reaches no store row: the store is handed the tag, port, path id and the sealed token alone", async () => {
+test("the token's plaintext reaches no store row: the store is handed the kind, tag, port, path id and the sealed token alone", async () => {
   const store = fakeLiveViewersStore();
   const claim = store.claim(RUN);
   const given = handover("ar-run-1-1");
@@ -171,7 +171,8 @@ test("the token's plaintext reaches no store row: the store is handed the tag, p
   assert.equal(await putLiveViewer(store, KEY, claim, given), false);
   assert.equal(store.received.length, 2);
   for (const { v } of store.received) {
-    assert.deepEqual(Object.keys(v).sort(), ["id", "port", "sealed", "tag"]);
+    assert.deepEqual(Object.keys(v).sort(), ["id", "kind", "port", "sealed", "tag"]);
+    assert.equal(v.kind, "browser");
     assert.ok(v.sealed instanceof Uint8Array);
     assert.ok(!Buffer.from(v.sealed).includes(given.token), "not in the sealed bytes");
     assert.ok(!JSON.stringify(v).includes(given.token), "nor anywhere in what put was handed");

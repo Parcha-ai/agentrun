@@ -40,6 +40,9 @@ export interface ReflectDeps {
   readonly check: (input: { runId: string; agentId: string; turn: ReflectTurn; outcome: "completed" | "failed" }) => Promise<Checked>;
   /** A new run's id, for the learning run. */
   readonly newRunId: () => string;
+  /** The grade model the server names (learning.ts gradeModelOf: --grade-model, AGENTRUN_SERVE_GRADE_MODEL, else
+   *  AGENT_MODEL_STRONG), carried on the learning run's launch; none, the agent's own model grades it, as main's. */
+  readonly gradeModel?: string;
   /** The turn's deadline. Default REFLECT_TIMEOUT_MS. Its re-ask is inside it. */
   readonly deadlineMs?: number;
   /** For tests: the clock the turn's deadline is measured by. Default Date.now. */
@@ -102,7 +105,7 @@ export function createReflectHook(deps: ReflectDeps): EndOfRunTurn {
     return {
       also: [
         { table: "learning_proposals", row: { turn, proposal: { ...checked, detail: said.proposed(checked.notes, checked.skills, checked.workflows) } } },
-        { table: "learning_run", row: { id: deps.newRunId() } },
+        { table: "learning_run", row: { id: deps.newRunId(), ...(deps.gradeModel ? { model: deps.gradeModel } : {}) } },
       ],
     };
   };
