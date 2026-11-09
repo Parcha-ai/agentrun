@@ -11,7 +11,7 @@ import { homedir, tmpdir } from "node:os";
 import { basename, dirname, join, sep } from "node:path";
 import { parseArgs } from "node:util";
 import { BACKGROUND_CONTEXT as ctx } from "@earendil-works/chord/context";
-import { AssistantEntry, createRegistry, Harness, ROOT_CONVERSATION_ID, ToolResultEntry, UserEntry } from "@earendil-works/pi-durable";
+import { AssistantEntry, createRegistry, Harness, ROOT_CONVERSATION_ID, type StorageWrite, ToolResultEntry, UserEntry } from "@earendil-works/pi-durable";
 import { openNodeSqliteStorage } from "@earendil-works/pi-durable/storage/sqlite/node";
 import { type AgentStore, type AgentStoreReader, type NewRevision, openStore, openStoreReader, type Revision, STORE_FILE, type StoredMetrics } from "@parcha/pi-durable-agent";
 import { type EntryLike, REQUEST_COST, type RunMetrics, runMetricsOf } from "@parcha/pi-durable-agent/timeline";
@@ -758,6 +758,36 @@ function measured(session: Session, children: readonly Session[] = []): Pick<Fou
     metrics: { ...metricsOf(session, children), activeMs: session.activeMs },
     hours: hoursOf(session.turns.flatMap((turn) => (turn.role === "assistant" ? [turn.at] : []))),
   };
+}
+
+/** The run's transcript as pi-durable write batches for Store.importRun: the root conversation, then one entry per turn,
+ *  its subagents' requests after them (subagentMarks), each string with the environment's key values cut out. Built
+ *  directly (as the runner builds its own writes), so no run database is opened; the ids are a run's own, from the root.
+ *  Returns the batches and the same entries the old per-run store read back, for the run's metrics and estimate. */
+export function transcriptOf(
+  session: Session,
+  cut: (value: unknown) => unknown,
+  children: readonly Session[] = [],
+): { batches: StorageWrite[][]; entries: EntryLike[] } {
+  const root = ROOT_CONVERSATION_ID;
+  const writes: StorageWrite[] = [{ type: "conversation", value: { id: root } } as StorageWrite];
+  const entries: EntryLike[] = [];
+  let id = Number(root) + 1;
+  for (const turn of session.turns) {
+    const { entry, model, data } = message(turn, session.model);
+    const m = cut(model);
+    const d = data === undefined ? undefined : cut(data);
+    writes.push({ type: "entry", value: { id, conversationId: root, kind: entry.kind, model: [m], ...(d !== undefined ? { data: d } : {}) } } as unknown as StorageWrite);
+    entries.push({ kind: entry.kind, model: [m], ...(d !== undefined ? { data: d } : {}) } as EntryLike);
+    id += 1;
+  }
+  for (const mark of subagentMarks(children)) {
+    const d = mark.data === undefined ? undefined : cut(mark.data);
+    writes.push({ type: "entry", value: { id, conversationId: root, kind: mark.kind, ...(d !== undefined ? { data: d } : {}) } } as unknown as StorageWrite);
+    entries.push({ kind: mark.kind, ...(d !== undefined ? { data: d } : {}) } as EntryLike);
+    id += 1;
+  }
+  return { batches: [writes], entries };
 }
 
 /** The run's transcript, into a store file at `storePath`, each string with the environment's key values cut out, its
