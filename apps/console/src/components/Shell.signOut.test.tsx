@@ -41,4 +41,19 @@ describe("Shell's sign-outs", () => {
     act(() => [...dialog.querySelectorAll("button")].find((b) => b.textContent?.trim() === "Sign out everywhere")!.click());
     expect(p.said).toEqual(["everywhere"]);
   });
+
+  it("keeps the keyboard's place: opening it focuses Cancel, Cancel or Escape closes it and focuses its trigger again", () => {
+    const p = mount();
+    act(() => p.button("Sign out everywhere")[0]!.click());
+    expect((document.activeElement as HTMLElement | null)?.textContent?.trim()).toBe("Cancel");
+    act(() => p.button("Cancel")[0]!.click());
+    expect(p.host.querySelector('[role="alertdialog"]')).toBeNull();
+    expect((document.activeElement as HTMLElement | null)?.textContent?.trim()).toBe("Sign out everywhere");
+    act(() => p.button("Sign out everywhere")[0]!.click());
+    const dialog = p.host.querySelector('[role="alertdialog"]') as HTMLElement;
+    act(() => { dialog.dispatchEvent(new KeyboardEvent("keydown", { key: "Escape", bubbles: true })); });
+    expect(p.host.querySelector('[role="alertdialog"]')).toBeNull();
+    expect((document.activeElement as HTMLElement | null)?.textContent?.trim()).toBe("Sign out everywhere");
+    expect(p.said).toEqual([]);
+  });
 });
