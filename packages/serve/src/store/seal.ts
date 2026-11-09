@@ -29,8 +29,8 @@ export const sealedAt = {
     for (const part of [agentId, provider]) if (part.includes(":")) throw new Error(`a sign-in's agent and provider never hold ":": ${JSON.stringify(part)}`);
     return { table: "sign_ins", row: `${agentId}:${provider}`, column: "pointer" };
   },
-  /** A run's browser session's live viewer token (browser-live.ts): one row per run and session tag. */
-  liveViewer: (runId: string, tag: string): SealedAt => ({ table: "browser_viewers", row: `${runId}/${tag}`, column: "sealed" }),
+  /** A run's computer session's live viewer token (browser-live.ts): one row per run, computer kind and session tag. */
+  liveViewer: (runId: string, kind: string, tag: string): SealedAt => ({ table: "computer_viewers", row: `${runId}/${kind}:${tag}`, column: "sealed" }),
 };
 
 /** The AAD a value at `at` is sealed under. A part with the separator in it is refused: no two places share an AAD. */

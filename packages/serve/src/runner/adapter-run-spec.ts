@@ -11,7 +11,7 @@
 // run's revision's tool settings, read through runGate (approvals "never" among them), the adapter loop asking it.
 import type { Context } from "@earendil-works/chord";
 import { BACKGROUND_CONTEXT } from "@earendil-works/chord/context";
-import { ROOT_CONVERSATION_ID } from "@earendil-works/pi-durable";
+import { ROOT_CONVERSATION_ID, type ToolExecutionApi } from "@earendil-works/pi-durable";
 import type { ComputerProvider } from "@parcha/agentrun-computer";
 import { beforeRequestOf, type CapModel, type CapRefused, checkRaise, followUpOf, parkOf } from "@parcha/agentrun-kernel/kernel/cap";
 import type { BeforeRequest, HostTool, SessionSpec } from "@parcha/agentrun-kernel";
@@ -385,6 +385,10 @@ async function bindNonHandTools(host: ToolHost, granted: readonly string[], run:
     // relative to it (host-tools.ts workspaceRelative).
     env: async () => ({ cwd: root }) as never,
     commit: (change, at, options) => run.harness.commit(change, at, options),
+    // The run's own Harness, read at the call as commit's is: a document, conversation or task of this run only.
+    snapshot: ((...args: unknown[]) => Reflect.apply(run.harness.snapshot, run.harness, args)) as ToolExecutionApi["snapshot"],
+    conversation: ((id, at) => run.harness.conversation(id, at)) as ToolExecutionApi["conversation"],
+    waitForTask: (id, at) => run.harness.waitForTask(id, at),
     agent: async (at) => {
       const conversation = await run.harness.conversation(ROOT_CONVERSATION_ID, at);
       if (!conversation) throw new Error("the run has no root conversation");
