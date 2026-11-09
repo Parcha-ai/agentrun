@@ -29,7 +29,7 @@ async function writtenRun(server, runId) {
     await entry(KINDS.message, { role: "model", text: "Booked." }),
   ], context);
   await journal.close(context);
-  await server.release(claim, { state: "ended" });
+  await server.release(claim);
   return runId;
 }
 

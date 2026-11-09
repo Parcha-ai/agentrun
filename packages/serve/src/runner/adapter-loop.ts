@@ -19,7 +19,7 @@ import { type Conversation, type ConversationId, createRegistry, Harness, LiveDo
 import { type AdapterSession, type AgentAdapter, type BeforeRequest, type HostTool, modelPortFor, type Refusal, runBooking, type SessionSpec } from "@parcha/agentrun-kernel";
 import type { KernelHooks, ToolCall } from "./conformance/subject.js";
 import { type AnswerData, type ApprovalPrice, type AskData, type BudgetData, type CallEndData, type CallStartData, type CallStatus, type EndData, KINDS, type MessageData, type RaiseData, withdrawnAnswers } from "./journal-kinds.js";
-import { originOf } from "@parcha/pi-durable-agent/timeline";
+import { originOf, RUN_RESUMED } from "@parcha/pi-durable-agent/timeline";
 import { type AlsoRow, type Claim, type Command, type CommandOutcome, deniedText, endedBy, type EndOfRunAnswer, type Loop, type LoopDeps, type LoopEnd, type LoopFactory, noteOf, type StopReason } from "./loop-contract.js";
 import { answerText, REFLECT_NOTE_ONLY, reflectRequestId, underLearning, WRITES } from "./end-of-run.js";
 import { approvalOf, CLOSE_MS, CUT_STEP_MS, STOP_SETTLE_MS, commandRequest, cutLast, DEFAULT_RESTART_LIMIT, entriesOf, findData, Gate, heldReporter, Interrupted, KernelFault, Parked, quiet, restartLimited, writesEntry, writesSubmission } from "./loop.js";
@@ -535,6 +535,8 @@ function adapterLoop(specOf: (claim: Claim, run: AdapterRun) => AdapterRunSpec |
           raising.resuming = true;
           raising.state ??= await raiseStateOf();
         }
+        // Taken over from a runner whose lease ran out mid-run: said on the run's timeline once, at this claim's first pass.
+        if (restarts === 0 && claim.lost) await noteTakenOver(harness, root, claim.lost.runner);
         opened();
         await reportHeld(harness, root.id);
         if (restarts > restartLimit + 1) {
@@ -921,6 +923,17 @@ function adapterLoop(specOf: (claim: Claim, run: AdapterRun) => AdapterRunSpec |
     let timer: NodeJS.Timeout | undefined;
     await Promise.race([new Promise<void>((resolve) => bookedAll.push(resolve)), new Promise<void>((resolve) => (timer = setTimeout(resolve, CLOSE_MS)))]);
     clearTimeout(timer);
+  }
+
+  /** The run's timeline says it went on after its runner was lost (RUN_RESUMED, `after: runner_lost`): one root entry,
+   *  no run patch. A journal sealed meanwhile (the claim lost again, a shutdown) refuses it, and the loop goes on as it
+   *  would: the next claim says it. */
+  async function noteTakenOver(on: Harness, conversation: Conversation, runner: string): Promise<void> {
+    try {
+      await on.commit((tx) => tx.appendEntry(conversation.id, { kind: RUN_RESUMED, data: { after: "runner_lost", runner, at: Date.now() } }), context);
+    } catch (error) {
+      if (!gate?.sealed) throw error;
+    }
   }
 
   /** The end commit: an `agentrun.end` entry carrying the run row's final patch (the spec's end patch in it), the rows

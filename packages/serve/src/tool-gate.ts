@@ -195,9 +195,11 @@ export function pinRefusal(name: string, args: unknown, server: PermissionSettin
   return { text: `${name} may only be called with ${pinWords(pin)}: its destination is fixed by ${by}. ${what}`, mismatched };
 }
 
-/** `name`'s permission in force and the layer it came from, most specific first: the agent's exact key, the agent's
- *  server wildcard, the server's exact key, the server's server wildcard, then the default. A call's arguments
- *  are held only by a pin (pinRefusal), which adds to a setting and is never a permission. `approvals` "never" (an agent run unattended) turns the ask that is left into an allow, from
+/** `name`'s permission in force and the layer it came from. A deny set on this server, under the tool's own key or its MCP
+ *  server's wildcard (bash's for a shell tool), is absolute: it refuses on this server over any setting of the agent's.
+ *  Otherwise most specific first: the agent's exact key, the agent's server wildcard, the server's exact key, the
+ *  server's server wildcard, then the default. A call's arguments are held only by a pin (pinRefusal), which adds to a
+ *  setting and is never a permission. `approvals` "never" (an agent run unattended) turns the ask that is left into an allow, from
  *  "unattended", as the last step, and only where nothing stands behind that ask (standsBehind): never past a deny in any
  *  layer, nor an ask that stands in for a setting that does not read. Nor is anything RunGate.enter refuses before it
  *  decides between running and parking ever lifted (a template's pin, among them). Without never, the answer is as it
@@ -234,8 +236,14 @@ function settingOf(name: string, server: PermissionSettings, agent: PermissionSe
 }
 
 /** permissionFrom's own read, and whether the permission is `written`: a valid one set in a layer as it reads there, not
- *  a stand-in. A value that is no permission at all reads ask, never the value. */
+ *  a stand-in. A value that is no permission at all reads ask, never the value. A deny set on this server is absolute:
+ *  where the server's own answer for the tool (its most specific key set there: the tool's own, else its MCP server's
+ *  wildcard) is deny, that is the answer, from the server, before the agent's own settings are read, so no ask or allow
+ *  of the agent's reaches past it. The server's own exact allow under its wildcard deny is its answer, as before.
+ *  Otherwise the agent's own setting comes first, then the server's, then the default. */
 function settingFrom(name: string, server: PermissionSettings, agent: PermissionSettings): { permission: Permission; from: "agent" | "server" | "default"; written: boolean } {
+  const own = permissionKeys(name).map((key) => server[key]).find((setting) => setting?.permission !== undefined);
+  if (own?.permission === "deny") return { permission: "deny", from: "server", written: own.fallback !== true };
   for (const [from, layer] of [["agent", agent], ["server", server]] as const) {
     for (const key of permissionKeys(name)) {
       const setting = layer[key];
