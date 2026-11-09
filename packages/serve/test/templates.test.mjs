@@ -123,7 +123,7 @@ test("the validator refuses a malformed package, naming each problem", async (t)
   await refused(scheduled("${parameters.cron}", "  cron: { type: string, default: 7, description: the schedule }"), /parameters\.cron\.default is a string/);
   assert.deepEqual(await problemsOf(t, scheduled("${parameters.cron}", '  cron: { type: string, default: "0 8 * * 1", description: the schedule }')), [], "a schedule from parameters with good defaults reads");
   await refused(({ edit }) => trigger('{ kind: schedule, cron: "${parameters.repo}" }')(edit), /parameters\.repo is used in triggers\[0\]\.source\.cron, so it needs a default/);
-  await refused(({ edit }) => edit("learning: false", 'learning: false\ntriggers:\n  - name: "nightly ${parameters.repo}"\n    source: { kind: schedule, cron: "0 9 * * *" }\n    target: { kind: start_run, input: { content: Go. } }'), /triggers\[0\]\.name holds \$\{parameters\.repo\}: a placeholder goes in display_name, the instructions, a trigger's target\.input, a schedule's cron and timezone, or an mcp pin's values/);
+  await refused(({ edit }) => edit("learning: false", 'learning: false\ntriggers:\n  - name: "nightly ${parameters.repo}"\n    source: { kind: schedule, cron: "0 9 * * *" }\n    target: { kind: start_run, input: { content: Go. } }'), /triggers\[0\]\.name holds \$\{parameters\.repo\}: a placeholder goes in display_name, the instructions, a trigger's target\.input, a schedule's cron and timezone, a github trigger's where in values, or an mcp pin's values/);
   await refused(({ edit }) => edit("tools: [read]", "tools: [read, bassh]"), /tools: bassh is not a tool this server binds/);
   await refused(({ dir }) => writeFileSync(join(dir, "skills", "review", "a\\b.md"), "x"), /skills\/review\/a\\b\.md: the skill path/);
   // An MCP tool is one tool by its name: `*`, the server's wildcard, is none; and a package asks allow only of its own.
@@ -611,7 +611,7 @@ test("an mcp entry's pin is checked: each tool one of the entry's, 1 to 8 argume
   await refused("    pin: [slack_send_message]", /mcp\[0\]\.pin is \{<tool>: \{<argument>:/);
   // A placeholder is still refused anywhere else in a trigger, and the refusal names a pin as a place one goes.
   const { problems } = await pinProblems(t, "    pin: { slack_send_message: { channel_id: x } }\ntriggers:\n  - name: hook\n    source: { kind: webhook, name: \"${parameters.channel}\" }\n    target: { kind: start_run }\nbudget: { per_run_usd: 1 }");
-  assert.ok(problems.some((problem) => /a placeholder goes in display_name, the instructions, a trigger's target\.input, a schedule's cron and timezone, or an mcp pin's values/.test(problem)), JSON.stringify(problems));
+  assert.ok(problems.some((problem) => /a placeholder goes in display_name, the instructions, a trigger's target\.input, a schedule's cron and timezone, a github trigger's where in values, or an mcp pin's values/.test(problem)), JSON.stringify(problems));
 });
 
 test("market-monitor's sends are pinned to its channel: the consent screen shows each pin, apply writes it filled, and with no channel the sends are denied with a warning", async (t) => {
