@@ -213,3 +213,33 @@ test("the run's cut on the browser's answers (c): another tool's key the claim h
   assert.ok(r.requests.some((body) => JSON.stringify(body).includes("The page shows")), "the page's text reached the model");
   noPieceOf(r, key, "Parallel's key");
 });
+
+test("the agent's hand-over on the runner: browser_request_handoff writes its waiting ask while the run holds its claim and session; the person's hand-back (a browser_hand_back row) answers it, first answer wins, and the call returns done", { timeout: 120_000 }, async (t) => {
+  const answered = { row: undefined, second: undefined };
+  const r = await piRun(t, {
+    body: { tools: ["browser"] },
+    script: [{ call: "snapshot" }, { call: "browser_request_handoff", args: { request_id: "8a6b2c1e-3f4d-4b5a-9c7e-1d2f3a4b5c6d", instruction: "Sign in for me.", completion_condition: "Signed in." } }, { sayLastResult: true }],
+    // While the run waits on the person: its ask in the journal, the run still running (its claim held), then the
+    // person's answer as the server writes it (a command row); a second answer is refused.
+    during: async (opened) => {
+      const ask = await until(async () => {
+        const row = await opened.server.runs.get(RUN);
+        if (row.state === "queued") return undefined;
+        if (row.state !== "running") return { gone: row.state };
+        const { entries } = await journalRecords(opened.server.readJournal ? opened.server.readJournal(RUN) : opened.server.journal({ runId: RUN, runner: "reader", epoch: row.epoch, until: 0, from: row.state }), ctx);
+        return entries.map((entry) => entry.data).find((data) => data?.state === "waiting" && typeof data.id === "string");
+      }, "the hand-over's waiting ask");
+      assert.ok(!ask.gone, `the run waited on the person, still running: ended ${ask.gone}`);
+      answered.row = await opened.server.command(RUN, { kind: "browser_hand_back", body: { ask: ask.id, outcome: "done" } });
+      answered.second = await opened.server.command(RUN, { kind: "browser_hand_back", body: { ask: ask.id, outcome: "cancelled" } });
+      return ask;
+    },
+  });
+  assert.equal(r.row.state, "ended", JSON.stringify(r.row));
+  const kinds = r.records.entries.filter((entry) => entry.kind === "agent.handover").map((entry) => entry.data.state);
+  assert.deepEqual(kinds, ["waiting", "done"], "asked, then answered done once");
+  const commands = await r.opened.server.commands(RUN, 0);
+  assert.notEqual(commands.find((row) => row.id === answered.row.id)?.takenAt, null, "the hand-back was taken");
+  assert.match(String(commands.find((row) => row.id === answered.second.id)?.refused), /already answered done/, "a second answer is refused: first wins");
+  assert.ok(r.requests.some((body) => /done/i.test(JSON.stringify(body))), "the call returned done to the model");
+});
