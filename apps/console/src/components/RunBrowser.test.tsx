@@ -6,7 +6,7 @@ import { messageFeatures, runFixture } from "@/fixtures";
 import { ClientError } from "@/lib/client";
 import type { Run, RunBrowser } from "@/lib/v2";
 
-// The run page's Browser tab, over GET /v2/runs/{id}/browser (owner session only, no-store): `off` (no browser, or it
+// The run page's Browser tab, over GET /v2/runs/{id}/computer (owner session only, no-store): `off` (no browser, or it
 // resolves unavailable) hides it; `none` (one, with no session open yet or any more) waits; `live` embeds the session's
 // viewer. The viewer is a same-origin path whose token is in its fragment: it is the iframe's src and nothing else, never
 // in the address bar, the history, storage, the console or an error.
@@ -21,8 +21,8 @@ afterEach(() => { act(() => root?.unmount()); document.body.innerHTML = ""; vi.r
 const f = runFixture("run.completed.idle.1");
 const working = { ...f.run, kind: "agentic", status: "working", state: "working", result: null } as Run;
 const RUN = working.run_id;
-const VIEWER = `/v2/runs/${RUN}/browser/live/v/AbCdEfGhIjKlMnOpQrStUv#t=SECRET-TOKEN-one-1234567890`;
-const VIEWER2 = `/v2/runs/${RUN}/browser/live/v/ZyXwVuTsRqPoNmLkJiHgFe#t=SECRET-TOKEN-two-0987654321`;
+const VIEWER = `/v2/runs/${RUN}/computer/live/v/AbCdEfGhIjKlMnOpQrStUv#t=SECRET-TOKEN-one-1234567890`;
+const VIEWER2 = `/v2/runs/${RUN}/computer/live/v/ZyXwVuTsRqPoNmLkJiHgFe#t=SECRET-TOKEN-two-0987654321`;
 /** What the iframe frames: the served viewer resolved against this page's origin (a same-origin path, its fragment kept). */
 const FRAMED = (viewer: string) => new URL(viewer, location.origin).href;
 const settle = async (ms = 60) => { await act(async () => { await new Promise((r) => setTimeout(r, ms)); }); };
@@ -64,7 +64,7 @@ describe("the run page reads the run's browser, whatever its capabilities list",
       getRun: async () => base, listFiles: async () => ({ run_id: RUN, files: [], complete: true, truncated: false }),
       getTimeline: async () => ({ run_id: RUN, status: "working", state: "working", rows: [], drop: [], reset: true, unchanged: false, final: false, has_more: false, next_after: 0 }),
       listRevisions: async () => ({ revisions: [], next_cursor: null }),
-      runBrowser: async (id: string) => { reads.push(id); return { state: "live", viewer: VIEWER }; },
+      runBrowser: async (id: string) => { reads.push(id); return { state: "live", kind: "browser", viewer: VIEWER, hold: "agent" }; },
     };
     const { LiveRun } = await import("./LiveRun");
     const host = document.body.appendChild(document.createElement("div"));
@@ -82,7 +82,7 @@ describe("the run page reads the run's browser, whatever its capabilities list",
 
 describe("the run page's Browser tab", () => {
   it("is not there for a run with no browser (state off)", async () => {
-    const p = await page(async () => ({ state: "off", reason: "no browser key" }));
+    const p = await page(async () => ({ state: "off", hold: "agent", why: "no browser key" }));
     expect(p.tabButton()).toBeUndefined();
     expect(p.frame()).toBeNull();
   });
@@ -94,7 +94,7 @@ describe("the run page's Browser tab", () => {
 
   it("signed out (401) while watching: the tab stays and says why, with no frame left and nothing read again", async () => {
     let n = 0;
-    const p = await page(async () => { n += 1; if (n === 1) return { state: "live", viewer: VIEWER }; throw new ClientError(401, "unauthenticated", "sign in first", false); });
+    const p = await page(async () => { n += 1; if (n === 1) return { state: "live", kind: "browser", viewer: VIEWER, hold: "agent" }; throw new ClientError(401, "unauthenticated", "sign in first", false); });
     await p.open();
     await settle(120);
     const reads = n;
@@ -107,14 +107,14 @@ describe("the run page's Browser tab", () => {
 
   it("a 404 is a failed read like any other: it reads again, and the tab comes once the route answers", async () => {
     let n = 0;
-    const p = await page(async () => { n += 1; if (n === 1) throw new ClientError(404, "not_found", "no", false); return { state: "live", viewer: VIEWER }; });
+    const p = await page(async () => { n += 1; if (n === 1) throw new ClientError(404, "not_found", "no", false); return { state: "live", kind: "browser", viewer: VIEWER, hold: "agent" }; });
     await settle(120);
     expect(n).toBeGreaterThan(1);
     expect(p.tabButton()?.textContent).toBe("Watch live");
   });
 
   it("waits for the browser when the run has one and no page is open yet: the tab reads Browser", async () => {
-    const p = await page(async () => ({ state: "none" }));
+    const p = await page(async () => ({ state: "none", kind: "browser", hold: "agent" }));
     expect(p.tabButton()!.textContent).toBe("Browser");
     await p.open();
     expect(p.host.textContent).toContain("Waiting for the browser");
@@ -122,7 +122,7 @@ describe("the run page's Browser tab", () => {
   });
 
   it("embeds the live session's viewer under Watch live: the iframe's src is the viewer on this origin, and the viewer is nowhere else", async () => {
-    const p = await page(async () => ({ state: "live", viewer: VIEWER }));
+    const p = await page(async () => ({ state: "live", kind: "browser", viewer: VIEWER, hold: "agent" }));
     expect(p.tabButton()!.textContent).toBe("Watch live");
     await p.open();
     expect(p.frame()!.getAttribute("src")).toBe(FRAMED(VIEWER));
@@ -131,13 +131,13 @@ describe("the run page's Browser tab", () => {
   });
 
   it("frames the viewer with only what its page needs: its own scripts, its own origin for the WebSocket and the cookie, and its address bar's form", async () => {
-    const p = await page(async () => ({ state: "live", viewer: VIEWER }), working, "browser");
+    const p = await page(async () => ({ state: "live", kind: "browser", viewer: VIEWER, hold: "agent" }), working, "browser");
     expect(p.frame()!.getAttribute("sandbox")?.split(/\s+/).sort()).toEqual(["allow-forms", "allow-same-origin", "allow-scripts"]);
     expect(p.frame()!.getAttribute("referrerpolicy")).toBe("no-referrer");
   });
 
   it("follows the session: live, then none at release, then live again with the new viewer, never the old one", async () => {
-    const answers: RunBrowser[] = [{ state: "live", viewer: VIEWER }, { state: "none" }, { state: "live", viewer: VIEWER2 }];
+    const answers: RunBrowser[] = [{ state: "live", kind: "browser", viewer: VIEWER, hold: "agent" }, { state: "none", kind: "browser", hold: "agent" }, { state: "live", kind: "browser", viewer: VIEWER2, hold: "agent" }];
     let i = 0;
     const p = await page(async () => answers[Math.min(i++, answers.length - 1)], working, "browser");
     for (let n = 0; n < 20 && i < answers.length; n++) await settle(30);
@@ -150,7 +150,7 @@ describe("the run page's Browser tab", () => {
   it("a newer session while one is live (no none between) moves the iframe to the newer viewer at once", async () => {
     // The server answers the newest live session (#1685: one hand-over per session; GET /browser the newest that answers).
     let newer = false;
-    const p = await page(async () => ({ state: "live", viewer: newer ? VIEWER2 : VIEWER }), working, "browser");
+    const p = await page(async () => ({ state: "live", kind: "browser", viewer: newer ? VIEWER2 : VIEWER, hold: "agent" }), working, "browser");
     expect(p.frame()!.getAttribute("src")).toBe(FRAMED(VIEWER));
     newer = true;
     await settle(120);
@@ -162,7 +162,7 @@ describe("the run page's Browser tab", () => {
 
   it("a failed read after a live one keeps the page, and says nothing of the viewer anywhere", async () => {
     let i = 0;
-    const p = await page(async () => { if (i++ === 0) return { state: "live", viewer: VIEWER }; throw new Error(`GET /v2/runs/${RUN}/browser: 502`); }, working, "browser");
+    const p = await page(async () => { if (i++ === 0) return { state: "live", kind: "browser", viewer: VIEWER, hold: "agent" }; throw new Error(`GET /v2/runs/${RUN}/computer: 502`); }, working, "browser");
     await settle(120);
     expect(p.frame()!.getAttribute("src")).toBe(FRAMED(VIEWER));
     nowhereBut(p.frame(), VIEWER);
@@ -171,7 +171,7 @@ describe("the run page's Browser tab", () => {
   it("on an ended run, none reads that the browser closed, never that it waits; nothing more is read", async () => {
     let reads = 0;
     const done = { ...working, status: "completed", state: "idle", ended_at: "2026-11-05T09:12:00Z" } as Run;
-    const p = await page(async () => { reads++; return { state: "none" }; }, done, "browser");
+    const p = await page(async () => { reads++; return { state: "none", kind: "browser", hold: "agent" }; }, done, "browser");
     await settle(150);
     const text = p.host.querySelector('section[aria-label="Browser"]')?.textContent ?? "";
     expect(text).toContain("The browser closed when the run ended.");
@@ -181,11 +181,11 @@ describe("the run page's Browser tab", () => {
 
   it("a follow-up's line shows only where the run takes one: a completed run does, a cancelled one does not", async () => {
     const completed = { ...working, status: "completed", state: "idle", ended_at: "2026-11-05T09:12:00Z" } as Run;
-    const p = await page(async () => ({ state: "none" }), completed, "browser");
+    const p = await page(async () => ({ state: "none", kind: "browser", hold: "agent" }), completed, "browser");
     expect(p.host.textContent).toContain("A follow-up opens a new one if the agent needs it.");
     act(() => root?.unmount()); document.body.innerHTML = "";
     const cancelled = { ...working, status: "cancelled", state: "idle", ended_at: "2026-11-05T09:12:00Z" } as Run;
-    const q = await page(async () => ({ state: "none" }), cancelled, "browser");
+    const q = await page(async () => ({ state: "none", kind: "browser", hold: "agent" }), cancelled, "browser");
     expect(q.host.textContent).toContain("The browser closed when the run ended.");
     expect(q.host.textContent).not.toContain("A follow-up opens");
   });
@@ -193,7 +193,7 @@ describe("the run page's Browser tab", () => {
   it("while the run waits on its question with its session held, it still reads and still waits for the browser", async () => {
     let reads = 0;
     const asking = { ...working, status: "input_required", state: "waiting" } as Run;
-    const p = await page(async () => { reads++; return { state: "none" }; }, asking, "browser");
+    const p = await page(async () => { reads++; return { state: "none", kind: "browser", hold: "agent" }; }, asking, "browser");
     await settle(150);
     expect(p.host.textContent).toContain("Waiting for the browser");
     expect(reads).toBeGreaterThan(1);
@@ -217,7 +217,7 @@ describe("the run page's Browser tab", () => {
 
   it("a failed last read and then the end show the same, and nothing more is read after the end", async () => {
     let failing = false;
-    const p = await moving(async () => { if (failing) throw new Error("502"); return { state: "live", viewer: VIEWER }; });
+    const p = await moving(async () => { if (failing) throw new Error("502"); return { state: "live", kind: "browser", viewer: VIEWER, hold: "agent" }; });
     failing = true;
     await settle(60);
     await p.show(ended);
@@ -230,7 +230,7 @@ describe("the run page's Browser tab", () => {
 
   it("a paused workflow is not over: its live browser keeps its iframe and is read on; once the run ends it shows closed and nothing more is read", async () => {
     const paused = { ...working, kind: "workflow", status: "paused", state: "idle" } as Run;
-    const p = await moving(async () => ({ state: "live", viewer: VIEWER }), paused);
+    const p = await moving(async () => ({ state: "live", kind: "browser", viewer: VIEWER, hold: "agent" }), paused);
     const before = p.reads();
     await settle(150);
     expect(p.frame(), "a pause blocks new work, and the browser can stay open").not.toBeNull();
@@ -247,7 +247,7 @@ describe("the run page's Browser tab", () => {
 
   it("a paused workflow with no page open waits for the browser, never says it closed with the run", async () => {
     const paused = { ...working, kind: "workflow", status: "paused", state: "idle" } as Run;
-    const p = await moving(async () => ({ state: "none" }), paused);
+    const p = await moving(async () => ({ state: "none", kind: "browser", hold: "agent" }), paused);
     await settle(80);
     expect(p.section()).toContain("Waiting for the browser");
     expect(p.section()).not.toContain("closed when the run ended");
@@ -255,7 +255,7 @@ describe("the run page's Browser tab", () => {
 
   it("an ended run that answered off is read again once a follow-up makes it go: its new browser shows under Watch live", async () => {
     let restored = false;
-    const p = await moving(async () => (restored ? { state: "live", viewer: VIEWER } : { state: "off", reason: "no browser key" }), ended);
+    const p = await moving(async () => (restored ? { state: "live", kind: "browser", viewer: VIEWER, hold: "agent" } : { state: "off", hold: "agent", why: "no browser key" }), ended);
     await settle(80);
     const stoppedAt = p.reads();
     expect(stoppedAt, "an ended run that says off is read once").toBe(1);
@@ -270,7 +270,7 @@ describe("the run page's Browser tab", () => {
 
   it("an ended run that answered off, went again with a live browser and then ended: its browser shows closed, with no iframe, and nothing more is read", async () => {
     let restored = false;
-    const p = await moving(async () => (restored ? { state: "live", viewer: VIEWER } : { state: "off", reason: "no browser key" }), ended);
+    const p = await moving(async () => (restored ? { state: "live", kind: "browser", viewer: VIEWER, hold: "agent" } : { state: "off", hold: "agent", why: "no browser key" }), ended);
     await settle(80);
     restored = true;
     await p.show({ ...ended, status: "working", state: "working", ended_at: null } as Run);
@@ -288,7 +288,7 @@ describe("the run page's Browser tab", () => {
 
   it("a Browser tab that goes away while selected (the next read says off) leaves the run's default tab selected, with its content", async () => {
     let off = false;
-    const p = await moving(async () => (off ? { state: "off", reason: "no browser key" } : { state: "live", viewer: VIEWER }));
+    const p = await moving(async () => (off ? { state: "off", hold: "agent", why: "no browser key" } : { state: "live", kind: "browser", viewer: VIEWER, hold: "agent" }));
     expect(p.selected()).toBe("Watch live");
     off = true;
     await settle(120);
@@ -311,14 +311,14 @@ describe("the run page's Browser tab", () => {
 
   it("off while the run is going hides the tab, and the next read still comes: the run's process may still open a browser with the key it launched with", async () => {
     let n = 0;
-    const p = await page(async () => (++n <= 2 ? { state: "off", reason: "no browser key" } : { state: "live", viewer: VIEWER }));
+    const p = await page(async () => (++n <= 2 ? { state: "off", hold: "agent", why: "no browser key" } : { state: "live", kind: "browser", viewer: VIEWER, hold: "agent" }));
     await settle(150);
     expect(n).toBeGreaterThan(2);
     expect(p.tabButton()?.textContent).toBe("Watch live");
   });
 
   it("has no controls of its own: taking over and handing back are the viewer's", async () => {
-    const p = await page(async () => ({ state: "live", viewer: VIEWER }), working, "browser");
+    const p = await page(async () => ({ state: "live", kind: "browser", viewer: VIEWER, hold: "agent" }), working, "browser");
     const panel = p.host.querySelector('section[aria-label="Browser"]') as HTMLElement;
     expect(panel).toBeTruthy();
     expect(panel.querySelector("[data-browser-actions]")).toBeNull();
@@ -328,12 +328,13 @@ describe("the run page's Browser tab", () => {
   // Only a viewer on this page's own origin, under this run's own path, is framed: anything else says so in words, with
   // no iframe, and the served value is not shown.
   for (const [what, viewer] of [
-    ["another origin", `https://elsewhere.example/v2/runs/${RUN}/browser/live/v/AbCd#t=SECRET-TOKEN-foreign-111`],
-    ["another run's path", `/v2/runs/someone-elses-run/browser/live/v/AbCd#t=SECRET-TOKEN-other-222`],
+    ["another origin", `https://elsewhere.example/v2/runs/${RUN}/computer/live/v/AbCd#t=SECRET-TOKEN-foreign-111`],
+    ["another run's path", `/v2/runs/someone-elses-run/computer/live/v/AbCd#t=SECRET-TOKEN-other-222`],
     ["no http(s) URL", `javascript:alert(1)//#t=SECRET-TOKEN-script-333`],
+    ["the browser's own path (the console reads /computer)", `/v2/runs/${RUN}/browser/live/v/AbCd#t=SECRET-TOKEN-old-444`],
   ] as const) {
     it(`a viewer on ${what} is never framed: no iframe, a line in its place, and the value nowhere`, async () => {
-      const p = await page(async () => ({ state: "live", viewer }), working, "browser");
+      const p = await page(async () => ({ state: "live", kind: "browser", viewer, hold: "agent" }), working, "browser");
       expect(p.frame()).toBeNull();
       const panel = p.host.querySelector('section[aria-label="Browser"]') as HTMLElement;
       expect(panel.textContent).toContain("The live view can't be shown here.");

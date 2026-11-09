@@ -20,6 +20,7 @@
 //   close
 import { parentPort } from "node:worker_threads";
 import { DatabaseSync, type SQLInputValue } from "node:sqlite";
+import { inMemory } from "./memory.js";
 
 export type Params = readonly SQLInputValue[];
 /** What a statement that changes no row means: `fenced` (the claim's epoch is not the run's) or `final` (a final or unknown
@@ -147,8 +148,11 @@ function errorOf(error: unknown): WorkerError {
   return { kind: "sql", message };
 }
 
-/** The store's owner lock: an exclusive lock on `<file>.owner` that a second owner cannot take. */
+/** The store's owner lock: an exclusive lock on `<file>.owner` that a second owner cannot take. An in-memory database is
+ *  this connection's own data, which no other server can open: it takes none (a lock file would be left in the working
+ *  directory, named after no file). */
 function takeOwnerLock(file: string): void {
+  if (inMemory(file)) return;
   const lock = new DatabaseSync(`${file}.owner`);
   try {
     lock.exec("PRAGMA busy_timeout = 0");

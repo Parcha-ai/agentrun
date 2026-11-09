@@ -16,7 +16,7 @@ import { BACKGROUND_CONTEXT, withAbortSignal } from "@earendil-works/chord/conte
 import type { Models } from "@earendil-works/pi-ai";
 import { createModels } from "@earendil-works/pi-ai/models";
 import { type Conversation, type ConversationId, createRegistry, Harness, LiveDoc, ROOT_CONVERSATION_ID, type Tx } from "@earendil-works/pi-durable";
-import { type AdapterSession, type AgentAdapter, type BeforeRequest, type HostTool, modelPortFor, type Refusal, runBooking, type SessionSpec } from "@parcha/agentrun-kernel";
+import { type AdapterSession, type AgentAdapter, type BeforeRequest, type HostTool, modelPortFor, type Refusal, runBooking, RUNNER_RECORDS, type SessionRecord, type SessionSpec } from "@parcha/agentrun-kernel";
 import type { KernelHooks, ToolCall } from "./conformance/subject.js";
 import { type AnswerData, type ApprovalPrice, type AskData, type BudgetData, type CallEndData, type CallStartData, type CallStatus, type EndData, KINDS, type MessageData, type RaiseData, withdrawnAnswers } from "./journal-kinds.js";
 import { originOf, RUN_RESUMED } from "@parcha/pi-durable-agent/timeline";
@@ -24,7 +24,7 @@ import { type AlsoRow, type Claim, type Command, type CommandOutcome, deniedText
 import { answerText, REFLECT_NOTE_ONLY, reflectRequestId, underLearning, WRITES } from "./end-of-run.js";
 import { approvalOf, CLOSE_MS, CUT_STEP_MS, STOP_SETTLE_MS, commandRequest, cutLast, DEFAULT_RESTART_LIMIT, entriesOf, findData, Gate, heldReporter, Interrupted, KernelFault, Parked, quiet, restartLimited, writesEntry, writesSubmission } from "./loop.js";
 import type { PiRun, PiSessionIO, PreIntentAnswer, PreIntentCall } from "./adapters/pi.js";
-import { HAND_BACK, handBackOf } from "./hand-back.js";
+import { answerOnce, HAND_BACK, handBackOf } from "./hand-back.js";
 import { journalSessions } from "./sessions.js";
 import { paidCalls, TOOL_SESSION } from "@parcha/agentrun-kernel/kernel/cap";
 import { bookedIn } from "../paid-calls.js";
@@ -38,6 +38,9 @@ export type RaiseCheck =
   | { raised: true; resumes: boolean; pause?: string; refused?: undefined; retry?: undefined }
   | { retry: true; resumed: boolean; raised?: undefined; refused?: undefined }
   | { refused: string; raised?: undefined; retry?: undefined };
+
+/** The gate's answer for a call: run it, ask a person, or refuse it (with the words the model reads, or generic ones). */
+export type GateAnswer = "allow" | "ask" | "deny" | { readonly deny: string };
 
 /** What one claimed run's adapter loop runs. */
 export interface AdapterRunSpec {
@@ -53,7 +56,7 @@ export interface AdapterRunSpec {
   readonly hooks?: KernelHooks;
   /** The gate's answer for a call, before its intent: run it, refuse it, or ask a person (the run parks). A refusal may
    *  carry the words the model reads (`{ deny }`: where the deny was set, a pin's words); a bare "deny" gets generic ones. */
-  readonly gate?: (call: ToolCall) => "allow" | "ask" | "deny" | { readonly deny: string };
+  readonly gate?: (call: ToolCall) => GateAnswer | Promise<GateAnswer>;
   /** What an asked call costs, for its approval card (main's tool gate options.price): dollars, or "not metered";
    *  undefined when it has none (the ask says null). */
   readonly approvalPrice?: (call: ToolCall) => ApprovalPrice | undefined;
@@ -136,6 +139,9 @@ export interface AdapterLoopOptions {
   /** The gate's clock (epoch ms): when an ask was asked and answered. Default Date.now. */
   readonly now?: () => number;
 }
+
+/** A host check's refusal as the cap's rule reads it (AdapterRunSpec.cap.park). */
+const refusalOf = (refusal: Refusal) => ({ message: refusal.refuse, forGood: refusal.forGood ?? true, ...(refusal.figures ? { figures: refusal.figures } : {}) });
 
 /** The run's visible record, as the loop keeps it for a harness whose own records are resume log only (record: "loop"):
  *  the KINDS entries the one reader reads, on the run's root conversation, each its own commit through the run's Harness
@@ -344,15 +350,16 @@ function adapterLoop(specOf: (claim: Claim, run: AdapterRun) => AdapterRunSpec |
       await Promise.race([ready, (finished ?? new Promise<never>(() => {})).then(() => undefined, () => undefined)]);
       const [theGate, theHarness, theRoot] = [gate, harness, root];
       if (!theGate || !theHarness || !theRoot) return { refused: handBackOf([], command.body, command.createdAt).refused! };
-      const { write, refused } = handBackOf(await entriesOf(theGate.journal, theRoot.id, context), command.body, command.createdAt);
-      if (write) {
-        const answers = refused === undefined;
-        // The person's answer takes its row in the commit that writes it; an expiry is the ask's own, and takes none.
-        const landed = answers ? theGate.expect(writesEntry(KINDS.handover, (data) => data.id === write.id && data.state === write.state), { take: [command.id] }) : undefined;
-        landed?.catch(() => undefined);
-        await theHarness.commit((tx) => tx.appendEntry(theRoot.id, { kind: KINDS.handover, data: write as unknown as JsonValue }), context);
-        await landed;
-      }
+      // The person's answer takes its row in the commit that writes it: staged for the answer this row would write (its ask,
+      // its outcome, at its own time). Decided and written in one commit (answerOnce), so no other writer's answer (the
+      // browser host's give or expiry) lands between: a row whose commit writes nothing, or the ask's expiry, takes none,
+      // and the staging matches nothing (an answered ask is never answered again).
+      const { ask, outcome } = (command.body ?? {}) as { ask?: unknown; outcome?: unknown };
+      const at = new Date(command.createdAt).toISOString();
+      const landed = typeof ask === "string" ? theGate.expect(writesEntry(KINDS.handover, (data) => data.id === ask && data.state === outcome && data.at === at), { take: [command.id] }) : undefined;
+      landed?.catch(() => undefined);
+      const { write, refused } = await answerOnce((change) => theHarness.commit(change, context), theRoot.id, (entries) => handBackOf(entries, command.body, command.createdAt));
+      if (write && refused === undefined) await landed;
       return refused === undefined ? { taken: true } : { refused };
     });
     handing = turn.catch(() => undefined);
@@ -459,9 +466,27 @@ function adapterLoop(specOf: (claim: Claim, run: AdapterRun) => AdapterRunSpec |
         const paidBooking = () => (paidOpen ??= sessions.open(TOOL_SESSION).then((tools) => paidCalls(tools, hostCheck ?? (async () => undefined), { flush: () => deps.flush() })));
         const paid = { admit: async (request: Parameters<Awaited<ReturnType<typeof paidCalls>>["admit"]>[0]) => (await paidBooking()).admit(request), settle: async (id: string, usd: number | null) => (await paidBooking()).settle(id, usd) };
         let refused: Refusal | undefined;
+        /** The pause a refusal for room journaled before pi heard of it (pauseAtCap), the run parked with it. */
+        let pausedAtRefusal = false;
         const beforeRequest: BeforeRequest | undefined = hostCheck && (async (request) => {
           const answer = await hostCheck(request);
-          if (answer && "refuse" in answer) refused = answer;
+          if (answer && "refuse" in answer) {
+            refused = answer;
+            // A refusal a raise could fix (the cap's rule, parkOf) journals its pause, the run parked, before the refusal
+            // reaches pi: pi stores the refused turn only after it, so a claim lost in between leaves the pause, and the next
+            // claim resumes the run parked (an unanswered pause), never ends it as a failed turn. One that cannot land (the
+            // journal sealed) is left to the turn's end, as before.
+            const park = spec.cap?.park(refusalOf(answer));
+            if (park?.outcome === "parked" && !pausedAtRefusal && harness && gate && !gate.sealed) {
+              const on = gate;
+              try {
+                await pauseAtCap(harness, root ?? (await harness.root(context)), on, { pending: park.pending, words: park.words });
+                pausedAtRefusal = true;
+              } catch {
+                // Not landed: the turn's end parks the run, or the claim's next holder does.
+              }
+            }
+          }
           return answer;
         });
         // The rule before a side effect for every paid model request, on the path every adapter's requests take: the
@@ -527,6 +552,7 @@ function adapterLoop(specOf: (claim: Claim, run: AdapterRun) => AdapterRunSpec |
           },
           afterRequest: async (...args) => {
             try {
+              await hooks.beforeBooking?.();
               await port.afterRequest(...args);
             } finally {
               unbooked = Math.max(0, unbooked - 1);
@@ -536,7 +562,18 @@ function adapterLoop(specOf: (claim: Claim, run: AdapterRun) => AdapterRunSpec |
           ...(port.responded ? { responded: port.responded.bind(port) } : {}),
           ...(port.note ? { note: port.note.bind(port) } : {}),
         };
-        const io: PiSessionIO = { writer, models: counted, signal: deps.signal, onEvent: record ? (event) => record.onEvent(event) : () => {}, gate: gateOf };
+        // What the request that just answered cost: its booking (the request's runner.turn record, the latest one once
+        // the session's requests are booked), its figure or null when unknown. A refused request's record is its $0.
+        const bookedCost = async (): Promise<number | null | undefined> => {
+          await bookingsSettled();
+          const records = await writer.read().catch(() => [] as SessionRecord[]);
+          const last = [...records].reverse().find((one) => one.kind === RUNNER_RECORDS.turn);
+          if (!last) return undefined;
+          const turn = last.data as { usd?: unknown; bookedUsd?: unknown };
+          const figure = turn.bookedUsd !== undefined ? turn.bookedUsd : turn.usd;
+          return typeof figure === "number" && Number.isFinite(figure) ? figure : null;
+        };
+        const io: PiSessionIO = { writer, models: counted, signal: deps.signal, onEvent: record ? (event) => record.onEvent(event) : () => {}, gate: gateOf, bookedCost };
         session = await spec.adapter.open({ ...spec.session, tools }, io);
         root = await harness.root(context);
         // A run brought back from a park: the raises its claim has are taken together, once its delivery is done. So is a
@@ -632,7 +669,12 @@ function adapterLoop(specOf: (claim: Claim, run: AdapterRun) => AdapterRunSpec |
           // A turn the host's check refused: what that does to the run is the cap's rule (parkOf), as on main. A refusal a
           // raise could fix parks the run on a raise; one no raise could fix (or a check with no cap) fails it, in the
           // check's own words, never as a run with no answer.
-          const park = spec.cap?.park({ message: refused.refuse, forGood: refused.forGood ?? true, ...(refused.figures ? { figures: refused.figures } : {}) });
+          const park = spec.cap?.park(refusalOf(refused));
+          if (park?.outcome === "parked" && pausedAtRefusal) {
+            // Its pause and the run parked landed before pi heard of the refusal.
+            gate.seal(new Parked());
+            return { state: "parked" };
+          }
           if (park?.outcome === "parked") return await parkAtCap(harness, root, gate, { pending: park.pending, words: park.words });
           data = { state: "failed", summary: park?.outcome === "failed" ? park.error : refused.refuse };
         } else if (outcome.status !== "completed") data = { state: "failed", summary: `the run gave no answer (${outcome.status})` };
@@ -684,7 +726,7 @@ function adapterLoop(specOf: (claim: Claim, run: AdapterRun) => AdapterRunSpec |
       // The end-of-run turn's notes are kept only from its answer: a write there is refused before its intent.
       if (reflecting && WRITES.has(call.tool) && underLearning(spec.workRoot, call.args)) return { deny: REFLECT_NOTE_ONLY };
       await hooks.beforeIntent(kernelCall);
-      const decision = spec.gate?.(kernelCall) ?? "allow";
+      const decision = (await spec.gate?.(kernelCall)) ?? "allow";
       if (typeof decision === "object") return { deny: decision.deny };
       if (decision === "deny") return { deny: `Permission denied: ${call.tool} is set to deny.` };
       if (decision === "allow") return "allow";
@@ -913,6 +955,13 @@ function adapterLoop(specOf: (claim: Claim, run: AdapterRun) => AdapterRunSpec |
   /** The run parked at its cap: its pending budget as an agentrun.budget entry, in one commit with the run parked in the
    *  cap's words (as the ask park's entry and state), and the loop ends parked: a raise row wakes it. */
   async function parkAtCap(on: Harness, conversation: Conversation, theGate: Gate, data: BudgetData): Promise<LoopEnd> {
+    await pauseAtCap(on, conversation, theGate, data);
+    theGate.seal(new Parked());
+    return { state: "parked" };
+  }
+
+  /** The run's pause at its cap: its agentrun.budget entry, in one commit with the run parked in the cap's words. */
+  async function pauseAtCap(on: Harness, conversation: Conversation, theGate: Gate, data: BudgetData): Promise<void> {
     const parkedAt = theGate.expect(writesEntry(KINDS.budget), { run: { state: "parked", summary: data.words } });
     // A seal while the commit is in flight fails it before it is awaited: handled here, read below.
     parkedAt.catch(() => undefined);
@@ -923,8 +972,6 @@ function adapterLoop(specOf: (claim: Claim, run: AdapterRun) => AdapterRunSpec |
       throw error;
     }
     await parkedAt;
-    theGate.seal(new Parked());
-    return { state: "parked" };
   }
 
   /** Waits, at most CLOSE_MS, until every paid request the session admitted is booked: a person's stop is booked at what
@@ -932,6 +979,7 @@ function adapterLoop(specOf: (claim: Claim, run: AdapterRun) => AdapterRunSpec |
    *  unbooked reads at its hold and bound, the worst it can have cost. */
   async function bookingsSettled(): Promise<void> {
     if (unbooked === 0) return;
+    specNow?.hooks?.awaitingBookings?.();
     let timer: NodeJS.Timeout | undefined;
     await Promise.race([new Promise<void>((resolve) => bookedAll.push(resolve)), new Promise<void>((resolve) => (timer = setTimeout(resolve, CLOSE_MS)))]);
     clearTimeout(timer);

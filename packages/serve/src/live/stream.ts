@@ -3,12 +3,22 @@
 // stored commit (live/translate.ts), in commit order, each batch naming its commit's seq so a reader that comes back
 // resumes from it; and beside them, never inside a commit's batch, what the runner holds before pi stores it (the run's
 // run_live row: a running tool, a partial answer), in the same vocabulary.
+import { RUN_RESUMED } from "@parcha/pi-durable-agent/timeline";
 import { BACKGROUND_CONTEXT } from "@earendil-works/chord/context";
 import type { HeldState } from "../runner/loop-contract.js";
 import { FINAL_STATES, type RunState, type Store } from "../store/store.js";
 import { emptyState, type LiveEvent, type LiveState, snapshotOf, translate } from "./translate.js";
 
 export type { LiveEvent } from "./translate.js";
+
+/** The events delivered to a live reader, with a runner-lost resume note (RUN_RESUMED) dropped. The note joins the run's
+ *  record — translate still appends it to the state the snapshot reads (snapshotOf), and the timeline renders its phase
+ *  row — but it is not a live stream event: a takeover ends the door's watch, so a reader meets the note only in a
+ *  reconnect's snapshot, never as a commit on the open stream. The live view polls across a takeover, so without this it
+ *  would stream the note's entry_appended; dropping it keeps a run taken over mid-turn streaming the same events as one
+ *  that was not. The note stays in state.entries (translate pushed it before returning), so the next snapshot carries it. */
+const delivered = (events: LiveEvent[]): LiveEvent[] =>
+  events.filter((event) => !(event.type === "entry_appended" && (event.entry as { readonly kind?: unknown } | undefined)?.kind === RUN_RESUMED));
 
 /** Where a batch came from: a stored commit (its seq), or the run's held state. */
 export type LiveBatchMeta = { readonly seq: number; readonly held?: undefined } | { readonly held: true; readonly seq?: undefined };
@@ -129,7 +139,9 @@ export async function watchRun(store: LiveStore, runId: string, options: WatchRu
     for (;;) {
       const page = await journal.commitsAfter(seq, PAGE, context);
       for (const commit of page.commits) {
-        const events = translate(state, commit);
+        // translate moves `state` (its entries feed the snapshot) and returns the commit's events; a resume note is dropped
+        // from what the stream delivers, never from the state the snapshot reads.
+        const events = delivered(translate(state, commit));
         seq = commit.seq;
         if (events.length > 0) await to(events, { seq: commit.seq });
         if (ended) return;

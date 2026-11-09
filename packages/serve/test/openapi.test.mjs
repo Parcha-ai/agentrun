@@ -734,3 +734,14 @@ test("what this server always sends is required in the document: a run's revisio
     assert.notDeepEqual(schemaProblems(doc, answer, { ...read, source: without }), [], `an answer without ${filled} is not the document's`);
   }
 });
+
+test("every InputIssue reason the MCP registry sends is one the document's InputIssue lists (a URL's redirect among them)", async () => {
+  const { openapiDocument } = await import("../dist/openapi.js");
+  const listed = openapiDocument(() => undefined).components.schemas.InputIssue.properties.reason.enum;
+  const sent = new Set();
+  for (const file of ["mcp-probe.ts", "mcp-servers-store.ts", "mcp-private-hosts.ts"]) {
+    for (const [, reason] of (await readFile(new URL(`../src/${file}`, import.meta.url), "utf8")).matchAll(/reason: "([a-z_]+)"/g)) sent.add(reason);
+  }
+  assert.ok(sent.has("redirect"), "the registry refuses a redirect with reason redirect");
+  assert.deepEqual([...sent].filter((reason) => !listed.includes(reason)).sort(), []);
+});
