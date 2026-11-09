@@ -544,7 +544,8 @@ export const releaseCallHold = async (): Promise<void> => {
 type CallPolicy = (tool: string) => Promise<{ permission: "allow" | "ask" | "deny"; denyFrom: Parameters<typeof deniedText>[2] }>;
 function callPolicyOf(store: Pick<Store, "settings">, runId: string, claimed: Claimed): CallPolicy {
   let current: Awaited<ReturnType<typeof loadToolSettings>> = { settings: {}, problems: [] } as never;
-  const gate = runGate({ root: claimed.workRoot, work: claimed.workRoot }, runId, claimed.revision as never, () => current);
+  // Only the permission is read here: a workflow never parks, so whether anyone can answer an ask plays no part.
+  const gate = runGate({ root: claimed.workRoot, work: claimed.workRoot }, runId, claimed.revision as never, () => current, undefined, true);
   return async (tool) => {
     try {
       current = await loadToolSettings(store);

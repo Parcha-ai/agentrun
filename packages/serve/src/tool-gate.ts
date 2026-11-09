@@ -451,9 +451,11 @@ export function resumeText(request: Pick<ApprovalRequest, "tool" | "call_id">, s
 /** The gate of the run `runId` at `where` (its directory, under the data directory's runs/), on its pinned revision:
  *  an agentic run's parks an asked call; a workflow's model node cannot. `serverSettings`: where the server's tool
  *  settings are read from, read at each call as the gate reads them; absent, the file beside the run's data directory (the
- *  old per-run process). The runner gives the one store's (tool-plane.ts loadToolSettings), read once at the claim. */
-export function runGate(where: { root: string; work: string }, runId: string, revision: { kind: string; body: { toolSettings?: unknown; harness?: string; approvals?: Approvals } }, serverSettings?: () => ReturnType<typeof readToolSettings>, files?: RunFiles): RunGate {
-  return new RunGate({ root: where.root, work: where.work, data: dataOfRun(where.root), runId, harness: revision.body.harness ?? DEFAULT_HARNESS }, (revision.body.toolSettings ?? {}) as PermissionSettings, revision.kind === "agentic", process.env[NO_APPROVER_ENV] !== "1", approvalsOf(revision.body.approvals), serverSettings, files);
+ *  old per-run process). The runner gives the one store's (tool-plane.ts loadToolSettings), read once at the claim.
+ *  `approvers`: whether anyone can answer an ask here. The runner gives the store's (server-approvers.ts, read at each
+ *  claim); absent, the old per-run process's environment says (NO_APPROVER_ENV, set for it by runs.ts). */
+export function runGate(where: { root: string; work: string }, runId: string, revision: { kind: string; body: { toolSettings?: unknown; harness?: string; approvals?: Approvals } }, serverSettings?: () => ReturnType<typeof readToolSettings>, files?: RunFiles, approvers: boolean = process.env[NO_APPROVER_ENV] !== "1"): RunGate {
+  return new RunGate({ root: where.root, work: where.work, data: dataOfRun(where.root), runId, harness: revision.body.harness ?? DEFAULT_HARNESS }, (revision.body.toolSettings ?? {}) as PermissionSettings, revision.kind === "agentic", approvers, approvalsOf(revision.body.approvals), serverSettings, files);
 }
 
 /** Where a gate reads the run's own files (the turn's origin): the run's Workspace (Mode 2: its folder on the run's disk,
@@ -496,8 +498,8 @@ export class RunGate {
    *  loops, pi's and the CLI harnesses'): run it, ask a person, or refuse it with the words the model reads. `enter`'s
    *  order: the end-of-run turn's write under .learning/ (learningRefusal), the deny (with where it was set, and that
    *  nothing was sent or charged), a pin, then the allow, then the ask, so an allow that approvals "never" made is decided
-   *  only after every refusal. Where no one can approve (accounts off: NO_APPROVER_ENV), the ask is refused at once in
-   *  words, never parked, as `enter` refuses it. */
+   *  only after every refusal. Where no one can approve (accounts off: the store's approvers row a runner reads at each
+   *  claim, server-approvers.ts), the ask is refused at once in words, never parked, as `enter` refuses it. */
   async decide(name: string, args: unknown): Promise<"allow" | "ask" | { deny: string }> {
     const key = settingsKeyOf(this.where.harness ?? DEFAULT_HARNESS, name, this.where.mcpServers) ?? name;
     const tool = this.askedAs(name);
