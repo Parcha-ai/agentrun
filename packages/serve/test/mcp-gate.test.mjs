@@ -567,9 +567,9 @@ test("a person's stop of a run parked on an MCP call leaves it input_required an
   const stop = await api("POST", `/runs/${runId}/stop`, {});
   assert.deepEqual([stop.status, stop.body.stopped], [200, true], JSON.stringify(stop.body));
   const { rows } = await stoppedRun(server, runId, "pi");
+  // The run's row keeps its stopped state, with the outcome a person's stop gives it; the view reads as main's stop left it.
   const row = await server.store.runs.get(runId);
-  const { entries } = await journalRecords(server.store.journal({ runId, runner: "reader", epoch: row.epoch, until: 0, from: row.state }), BACKGROUND_CONTEXT);
-  assert.equal(entries.findLast((entry) => entry.kind === "agentrun.end")?.data?.outcome, "stopped", "the end's outcome");
+  assert.deepEqual([row.state, row.outcome], ["stopped", "stopped"], "the run's row");
   const view = (await api("GET", `/runs/${runId}`)).body;
   assert.deepEqual([view.status, view.state, view.pending], ["input_required", "idle", null]);
   assert.match(rows.find((one) => one.kind === "tool_approval_requested")?.summary ?? "", /^Withdrawn when the run was stopped: mcp:fake\/add /);
