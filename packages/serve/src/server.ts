@@ -111,7 +111,7 @@ import { agentTools, browserKeyRow, isUnavailable, recheckPlane, settingsIssues,
 import { toolSettingsOverStore } from "./tool-settings-store.js";
 import { MAX_FILES_PER_RUN, MAX_UPLOAD_BYTES, Uploads, UPLOADS_DIR } from "./uploads.js";
 import { entryAt, listFiles, sendFile as sendWorkspaceFile, viewOf } from "./run-files.js";
-import { COMPUTER_ROUTES } from "./computer-view.js";
+import { COMPUTER_ROUTES, computerRoute } from "./computer-view.js";
 import { PROVIDERS as COMPUTER_PROVIDERS, providerFor as computerProviderFor, providerIds as computerProviderIds, SETTING_KINDS, servingRefusals } from "@parcha/agentrun-computer";
 import { capabilityToolDefs, hostToolDefs } from "@parcha/agentrun-kernel/kernel";
 import { archilRoute, createArchilRoutes } from "./archil-routes.js";
@@ -433,7 +433,6 @@ export const ROUTES: readonly Route[] = [
   { method: "GET", pattern: /^\/runs\/([^/]+)\/files$/, name: "listRunFiles" },
   { method: "GET", pattern: /^\/runs\/([^/]+)\/browser$/, name: "getRunBrowser" },
   { method: "POST", pattern: /^\/runs\/([^/]+)\/browser\/hand-back$/, name: "handBackRunBrowser" },
-  { method: "GET", pattern: /^\/runs\/([^/]+)\/computer$/, name: "getRunComputer" },
   { method: "POST", pattern: /^\/runs\/([^/]+)\/computer\/take-over$/, name: "takeOverRunComputer" },
   { method: "POST", pattern: /^\/runs\/([^/]+)\/computer\/hand-back$/, name: "handBackRunComputer" },
   // Settings → Computers (computers.ts settingsComputerRoute) and the owner's Archil settings (archil-routes.ts
@@ -2269,14 +2268,16 @@ async function startHolding(options: ServeOptions, data: string, checked: { maxR
         const answered = await browserHandBack(store, run.id, body.outcome as "done" | "cancelled", target, Date.now(), async () => (await runEntries(store, run.id, ctx)) as unknown as Parameters<typeof handBackTarget>[0]);
         return send(res, 200, { outcome: answered.outcome }, { "cache-control": "no-store" });
       }
-      case "getRunComputer":
       case "takeOverRunComputer":
       case "handBackRunComputer": {
-        // TODO(take-over over the store, k2): a run's desktop or phone view, take-over and hand-back read and write the
-        // run's computer through the store, as its runner holds it; computer-view.ts's in-memory register belongs to the
-        // pre-cut server and is not ported. Until k2's store-backed work lands, these routes refuse in words.
-        await needRun(id);
-        throw unsupported("computer.take_over", "A run's desktop or phone view, take-over and hand-back are not wired on this server yet: they move to the store with the runner's computer (the store-backed take-over).");
+        // The owner's take-over of a run's desktop or phone, and the hand-back for every kind (computer-view.ts), over the
+        // store: the hold is the run's journal, a take-over and a hand-back are command rows its runner applies; a browser's
+        // hand-back is the browser's own answer row, as POST .../browser/hand-back writes it.
+        const run = await needRun(id);
+        const answer = await computerRoute(found.name, run.id, {
+          ownerSession: byOwnerSession(req), token: req.headers.authorization !== undefined, accounts: owner !== undefined, body: await bodyOf(req),
+        }, store, { context: ctx });
+        return send(res, 200, answer, { "cache-control": "no-store" });
       }
       case "listComputers":
       case "saveComputerKeys":

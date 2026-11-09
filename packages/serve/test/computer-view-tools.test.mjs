@@ -1,5 +1,6 @@
-// The owner's take-over reaching the run's own tools (computer-view.ts, workspace/computer-hold.ts, through the run's
-// tools as runTools builds them for a desktop): the run's hold is given to runTools (`hold`), so the desktop's ports the
+// The owner's take-over reaching the run's own tools (workspace/computer-hold.ts, through the run's tools as runTools
+// builds them for a desktop; the routes that make the take are computer-takeover-store.test.mjs's, over the store): the
+// run's hold is given to runTools (`hold`), so the desktop's ports the
 // registry's desktop_screen and desktop_input run on are parked while the owner holds the computer. A screenshot asked
 // meanwhile waits and then runs on the screen as the owner left it; an input waits and then is not done, answered as an
 // error in the take-over's words; with nobody holding it, both run. The desktop is a loopback fake: nothing leaves this
@@ -10,7 +11,6 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { after, test } from "node:test";
 import { BACKGROUND_CONTEXT as ctx } from "@earendil-works/chord/context";
-import { computerRoute, registerRunComputer } from "../dist/computer-view.js";
 import { localWorkspace, runTools } from "../dist/workspace/index.js";
 import { computerHold, heldHands, personHadWords } from "../dist/workspace/computer-hold.js";
 import { fakeComputer } from "./workspace-fake-computer.mjs";
@@ -26,7 +26,6 @@ function scratch() {
 }
 const PNG = Buffer.from("iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mNk+M9QDwADhgGAWjR9awAAAABJRU5ErkJggg==", "base64");
 const DESKTOP_GROUPS = ["screen", "input.pointer", "input.keys"];
-const OWNER = { ownerSession: true, token: false, accounts: true };
 const call = (tools, name, args) => tools.find((tool) => tool.name === name).call(args, { callId: `c-${name}-${Math.random()}`, signal: new AbortController().signal });
 
 /** A loopback desktop: computerd's screen.shot answers one PNG, input.actions runs every action; each call recorded. */
@@ -50,22 +49,22 @@ test("the owner's take-over parks the run's desktop tools: a screenshot waits an
   const desktop = fakeDesktop(root);
   const hold = computerHold();
   const run = await runTools(localWorkspace(root), { kind: "desktop", computer: desktop, groups: DESKTOP_GROUPS }, { mode: 1, context: ctx, hold: (ports) => heldHands(ports, hold) });
-  const runId = "run-desktop-tools";
-  t.after(registerRunComputer(runId, { kind: "desktop", hold, live: () => true, stream: async ({ viewOnly }) => ({ url: `https://stream.example/${viewOnly ? "view" : "drive"}` }) }));
   const tools = run.hostTools(["desktop_screen", "desktop_input"]);
   const sent = () => desktop.methods().filter((method) => method === "screen.shot" || method === "input.actions");
 
   assert.equal((await call(tools, "desktop_input", { actions: [{ type: "move", at: [1, 1] }] })).isError, false, "nobody holds it: the input runs");
   assert.deepEqual(sent(), ["input.actions"]);
 
-  assert.equal((await computerRoute("takeOverRunComputer", runId, { ...OWNER, body: {} })).taken_over, true);
+  assert.equal(hold.take(), true);
+  assert.equal(hold.state(), "person", "no agent call in flight: the owner drives at once");
   const looking = call(tools, "desktop_screen", {});
   const acting = call(tools, "desktop_input", { actions: [{ type: "move", at: [2, 2] }] });
   assert.equal(await settled(looking), false, "the screenshot waits while the owner holds the desktop");
   assert.equal(await settled(acting), false, "so does the input");
   assert.deepEqual(sent(), ["input.actions"], "neither reached the desktop");
 
-  assert.equal((await computerRoute("handBackRunComputer", runId, { ...OWNER, body: {} })).taken_over, false);
+  assert.equal(hold.give(), true);
+  assert.equal(hold.state(), "agent");
   const look = await looking;
   assert.equal(look.isError, false, look.text);
   assert.deepEqual(look.images?.map((image) => image.mimeType), ["image/png"], "the screenshot ran after the hand-back");

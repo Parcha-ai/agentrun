@@ -13,7 +13,6 @@ import { join } from "node:path";
 import { after, test } from "node:test";
 import { readBackOf } from "@parcha/agentrun-computer";
 import { putSealedKey } from "../dist/server-keys.js";
-import { runComputerOf } from "../dist/computer-view.js";
 import { computerForClaim, localWorkspace } from "../dist/workspace/index.js";
 import { fakeComputer } from "./workspace-fake-computer.mjs";
 import { KINDS } from "./workspace-kinds-fixture.mjs";
@@ -127,7 +126,7 @@ test("a Mode 1 sandbox on Docker is made under the run's labels with the run's f
   assert.equal(record.revoked, 1, "the run's mount credential is removed once, after the computer");
 });
 
-test("a desktop opens one proxied live view under the claim, is registered for take-over, and on release closes the view 'released'", async () => {
+test("a desktop opens one proxied live view under the claim, is held for take-over, and on release closes the view 'released' and its hold", async () => {
   const view = views();
   const { record, run } = await claim({ kind: "desktop", provider: "e2b" }, { keys: { E2B_API_KEY: "ek-test" }, groups: ["screen", "input.pointer", "input.keys"], view });
   const answer = await run();
@@ -135,16 +134,15 @@ test("a desktop opens one proxied live view under the claim, is registered for t
   assert.equal(record.created[0].mount, undefined, "E2B mounts nothing in Mode 1");
   assert.deepEqual(record.options[0].slice(0, 2), ["e2b", { apiKey: "ek-test" }], "made with its key, by the option it fills");
   assert.deepEqual(view.opened, [{ kind: "desktop", input: "desktop", tag: "c1", claim: { runId: "run-1", epoch: 3 }, sealKey: true, hold: "function", watched: true }], "one view, tagged with the computer's ref id, fed by the provider's watch");
-  const registered = runComputerOf("run-1");
-  assert.equal(registered?.kind, "desktop");
-  assert.equal(registered.live(), true);
-  assert.equal(registered.stream, undefined, "proxy-only: no vendor's URL is registered");
+  assert.equal(answer.held?.kind, "desktop", "the hold and its kind, for the spec's AdapterRunSpec.computer");
   assert.equal(typeof answer.hold, "function", "the person's hold on its ports, for runTools");
+  // A take in force when the computer goes ends released, and the hold takes nothing after.
+  assert.equal(answer.held.hold.take(), true);
   await answer.release();
   await answer.release("ended");
   assert.deepEqual(view.closed, ["released"], "closed once");
-  assert.equal(runComputerOf("run-1"), undefined, "no longer shown");
-  assert.equal(registered.live(), false);
+  assert.equal(answer.held.hold.state(), "agent", "the take ended released");
+  assert.equal(answer.held.hold.take(), false, "the hold is closed");
   assert.deepEqual(record.released, [["c1", "delete"]]);
 });
 
@@ -176,7 +174,6 @@ test("a fenced view registration is a lost claim, in words: the desktop just mad
   assert.match(error.message, /run run-1's claim \(epoch 3\) is no longer this runner's/);
   assert.deepEqual(record.released, [["c1", "delete"]]);
   assert.equal(record.revoked, 1, "the mount credential goes with it");
-  assert.equal(runComputerOf("run-1"), undefined, "never registered");
 });
 
 test("a sandbox opens no live view", async () => {
