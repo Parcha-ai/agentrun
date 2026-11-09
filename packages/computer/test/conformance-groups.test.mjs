@@ -431,6 +431,10 @@ const BROKEN = [
 	["lifetime.extend", { broken: "extend-per-call" }, /^extend to 7170 s, past create \+ maxLifetimeMs \(7200000 ms\): expected an error, got ok/],
 	["screen.watch", { broken: "watch-stale" }, /a pointer move to \d+,\d+ gave no new frame/],
 	["screen.watch", { broken: "watch-size" }, /the first frame's (JPEG|PNG) is \d+x\d+, not the \d+x\d+ it says/],
+	// Review (missing cursors pass; unreadable frames pass): a move must show the cursor where it went, and a frame decodes.
+	["screen.watch", { broken: "watch-no-cursor" }, /a pointer move to \d+,\d+ gave no frame with the cursor there/],
+	["screen.watch", { broken: "watch-corrupt-png" }, /^the first frame's PNG does not decode: the screenshot's PNG does not inflate/],
+	["screen.watch", { broken: "watch-corrupt-jpeg" }, /^the first frame's JPEG does not decode: .*no scan/],
 ];
 
 for (const [id, options, words] of BROKEN) {
