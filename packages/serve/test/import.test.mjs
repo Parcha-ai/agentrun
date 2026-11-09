@@ -8,6 +8,7 @@ import { spawnSync } from "node:child_process";
 import { createHash, generateKeyPairSync, randomBytes } from "node:crypto";
 import { appendFileSync, chmodSync, existsSync, mkdirSync, readdirSync, readFileSync, rmSync, statSync, symlinkSync, utimesSync, writeFileSync } from "node:fs";
 import { dirname, join } from "node:path";
+import { DatabaseSync } from "node:sqlite";
 import { test } from "node:test";
 import { BACKGROUND_CONTEXT as ctx } from "@earendil-works/chord/context";
 import { runMetricsOf, timelineOf } from "@parcha/pi-durable-agent/timeline";
@@ -1843,4 +1844,29 @@ test("a moved session's copy holding only copies still has its subagents' folder
     assert.deepEqual(runs.map(({ metrics }) => [metrics.requests, metrics.input + metrics.output]), [[6, 88 + 60 + 60]], moved);
     assert.equal(measured, imported, moved);
   }
+});
+
+test("the import refuses a data directory whose store an earlier version wrote, in words naming it, and writes nothing into it", async (t) => {
+  const root = await scratch(t);
+  const at = join(root, "home");
+  const site = join(at, "code", "app");
+  mkdirSync(site, { recursive: true });
+  claudeSession(at, site, 1, { prompt: "Build it." });
+  const data = join(root, "agents");
+  mkdirSync(data, { recursive: true });
+  // A real earlier-version store: a store.sqlite with the file-era agent store's tables and no store_meta row.
+  const file = join(data, "store.sqlite");
+  const earlier = new DatabaseSync(file);
+  earlier.exec("CREATE TABLE agents (id TEXT PRIMARY KEY, body_json TEXT NOT NULL)");
+  earlier.prepare("INSERT INTO agents (id, body_json) VALUES ('held', '{}')").run();
+  earlier.close();
+  const before = readFileSync(file);
+  const ran = spawnSync(process.execPath, [CLI, "import", "--data", data, "--all"], { env: { ...process.env, HOME: at }, encoding: "utf8" });
+  assert.equal(ran.status, 1, ran.stdout + ran.stderr);
+  assert.match(ran.stderr, /store\.sqlite/, "the refusal names the earlier version's store");
+  assert.match(ran.stderr, /earlier version's data/);
+  assert.match(ran.stderr, /new, empty directory/, "and says the one next step");
+  // Nothing written: the earlier store is byte for byte as it was, and no store of this version was made beside it.
+  assert.ok(readFileSync(file).equals(before), "the earlier version's store is untouched");
+  assert.deepEqual(readdirSync(data).sort(), ["store.sqlite"], "nothing else was written into the directory");
 });

@@ -29,7 +29,7 @@ import { WEBHOOK_FILE, webhookSecretIn } from "./webhooks.js";
 import { TRIGGER_ADAPTERS } from "./trigger-adapters.js";
 import { type RefusedReason, readWorkBytes, WorkRefused, walkWork } from "./workspace.js";
 import { journalEntries } from "./runner/journal-reader.js";
-import { bodyOf, type NewRevision, openSqliteStore, type Store } from "./store/index.js";
+import { bodyOf, type NewRevision, openSqliteStore, type Store, StoreFromEarlierVersion, StoreOwned } from "./store/index.js";
 import { STORE_FILE } from "./store/sqlite/store.js";
 import { foundOverStore } from "./store-reads/import-summary.js";
 
@@ -1143,7 +1143,19 @@ export async function importCommand(
       for (const line of summaryLines(found, open, { dryRun: true })) out(line);
       return 0;
     }
-    const store = await openSqliteStore({ dataDir: dir, role: "server" });
+    // A data directory an earlier version wrote (its store a file-era store.sqlite, or its settings files), or one a running
+    // server holds: the import refuses it in the store's own words — which name the directory and what was found — writes
+    // nothing into it (the refusal is before the store is opened or made), and does not wait on a running server.
+    let store: Store;
+    try {
+      store = await openSqliteStore({ dataDir: dir, role: "server" });
+    } catch (error) {
+      if (error instanceof StoreFromEarlierVersion || error instanceof StoreOwned) {
+        warnings.push(`agentrun-serve import: ${error.message}`);
+        return 1;
+      }
+      throw error;
+    }
     try {
       const options = await optionsFrom(store);
       const plan = await planImport(options, store);
