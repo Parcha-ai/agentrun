@@ -93,4 +93,17 @@ describe("SecretRow", () => {
     expect(r.li.textContent).toContain("Bearer token");
     expect(r.li.textContent).not.toContain("mcp:");
   });
+
+  it("inside a form, Paste, Replace and Remove never submit it", () => {
+    const onSubmit = vi.fn((e: Event) => e.preventDefault());
+    const host = document.body.appendChild(document.createElement("div"));
+    root = createRoot(host);
+    const missing = field({ name: "tool:MONID_API_KEY", set: false, source: null, changed_at: null });
+    act(() => root!.render(createElement("form", { onSubmit }, createElement("ul", null,
+      createElement(SecretRow, { field: field({}), writable: true, onPaste: () => {}, onRemove: () => {} }),
+      createElement(SecretRow, { field: missing, writable: true, onPaste: () => {} })))));
+    for (const b of host.querySelectorAll("button")) act(() => { b.click(); });
+    expect([...host.querySelectorAll("button")].map((b) => b.textContent?.trim())).toEqual(["Replace", "Remove", "Paste"]);
+    expect(onSubmit).not.toHaveBeenCalled();
+  });
 });
