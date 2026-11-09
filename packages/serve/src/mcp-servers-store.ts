@@ -300,6 +300,8 @@ export class McpServersOverStore {
       name,
       url: row.url,
       ...listed,
+      // Each priced tool's price in USD a call, as the owner saved them (main's file registry served them on every read).
+      ...(prices && Object.keys(prices).length ? { prices } : {}),
       tools: listed.tools.map((tool) => ({ ...tool, ...serverGate(`mcp:${name}/${tool.name}`, settings) })),
       ...(unmetered.length ? { not_metered: unmetered } : {}),
       auth: { type: row.auth, ...(row.auth === "headers" ? { headers: Object.keys((cred?.type === "headers" ? cred.headers : {}) as HeaderMap) } : {}) },

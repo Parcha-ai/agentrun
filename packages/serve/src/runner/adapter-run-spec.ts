@@ -13,8 +13,8 @@ import type { Context } from "@earendil-works/chord";
 import { BACKGROUND_CONTEXT } from "@earendil-works/chord/context";
 import { ROOT_CONVERSATION_ID, type ToolExecutionApi } from "@earendil-works/pi-durable";
 import type { ComputerProvider } from "@parcha/agentrun-computer";
-import { beforeRequestOf, type CapModel, type CapRefused, checkRaise, followUpOf, parkOf } from "@parcha/agentrun-kernel/kernel/cap";
-import type { BeforeRequest, HostTool, SessionSpec } from "@parcha/agentrun-kernel";
+import { type CapModel, type CapRefused, checkRaise, followUpOf, parkOf } from "@parcha/agentrun-kernel/kernel/cap";
+import type { HostTool, SessionSpec } from "@parcha/agentrun-kernel";
 import type { Approvals } from "../approvals.js";
 import type { LiveHandover, LiveViewerStore } from "../browser-live.js";
 import { dropLiveViewer, putLiveViewer } from "../browser-live.js";
@@ -37,6 +37,8 @@ import { createModels } from "@earendil-works/pi-ai/models";
 import { promptOf, readsFiles } from "../skills.js";
 import { openRunWorkspace } from "../workspace/run-workspace.js";
 import { runFolder } from "../workspace/paths.js";
+import { SEAL_KEY_ENV, sealKeyOf } from "../tool-keys.js";
+import { mcpForClaim } from "./mcp-run.js";
 import { runTools, type ToolResults } from "../workspace/run-tools.js";
 import { INPUTS_DIR, UPLOADS_DIR, Uploads } from "../uploads.js";
 import { claimSecrets } from "./claim-secrets.js";
@@ -117,6 +119,12 @@ export async function adapterRunSpecFromLaunch(launch: RunLaunch, run: AdapterRu
   const revision = { kind: revisionRow.kind, body } as { kind: string; body: { toolSettings?: unknown; harness?: string; approvals?: Approvals } };
   const granted = body.tools ?? [];
 
+  // The run's MCP for this claim (mcp-run.ts mcpForClaim): its pin made at the first claim or read as written, its
+  // credentials opened under the server's seal key into this claim's memory, one gateway for the claim. First, before
+  // anything the spec would have to let go: a refusal (a pin that cannot be made, a pinned meta tool) ends the run in its
+  // words before the session opens.
+  const mcp = await mcpForClaim({ claim, store: deps.store, sealKey: sealKeyOf(deps.env[SEAL_KEY_ENV]), grants: granted, harness: run.harness, work: () => runFolder(deps.data, runRow.agentId, claim.runId), launchInput: launch.input });
+
   // The run's Workspace at the claim (E4c). Mode 1: the run's local folder under the data directory, made here (the server's
   // start made it before). Mode 2 (Archil) is TODO(E2r2): the claim's Archil step (archilClaim) is threaded through the deps
   // when E4c's Mode 2 lands on the runner.
@@ -168,17 +176,17 @@ export async function adapterRunSpecFromLaunch(launch: RunLaunch, run: AdapterRu
   const serverSettings = await loadToolSettings(deps.store);
   const gate = runGate({ root, work: root }, claim.runId, revision, () => serverSettings);
 
-  // The run's cap (its launch's maxCostUsd): the host's check before each paid request (beforeRequestOf), and what a
+  // The run's cap (its launch's maxCostUsd): the one cap every paid request is admitted through (runCap), and what a
   // refusal does to the run (parkOf), with the kernel's raise rule.
   const capUsd = launch.maxCostUsd;
   const capModel = capModelOf(route);
-  const beforeRequest: BeforeRequest | undefined = capUsd === undefined
-    ? undefined
-    : beforeRequestOf({
-        capUsd: () => launch.maxCostUsd,
-        modelOf: (id) => (id === route.model ? capModel : undefined),
-        ...(launch.capMode === "strict" ? { mode: "strict" as const } : {}),
-      });
+  // The run's one cap (the loop builds the kernel's runCap from it, on the run's own sessions): every paid request of the
+  // run, its model requests and its paid tool calls, admitted and booked through it. An uncapped run reads no cap.
+  const runCap: AdapterRunSpec["runCap"] = {
+    capUsd: () => launch.maxCostUsd,
+    modelOf: (id) => (id === route.model ? capModel : undefined),
+    ...(launch.capMode === "strict" ? { mode: "strict" as const } : {}),
+  };
   const cap = capUsd === undefined
     ? undefined
     : {
@@ -257,8 +265,9 @@ export async function adapterRunSpecFromLaunch(launch: RunLaunch, run: AdapterRu
     // The gate's answer with its words (RunGate.decide): a deny names where it was set and that nothing was sent or charged,
     // and a pinned MCP tool's call outside its pin is refused before it is asked or sent, as the old per-run gate did.
     gate: (call) => gate.decide(call.tool, call.args),
-    ...(beforeRequest ? { beforeRequest } : {}),
+    runCap,
     ...(cap ? { cap } : {}),
+    ...(mcp ? { mcp } : {}),
     // The tool host's install lifecycle (its bindings' onConversation/beforeResume/beforeRelease), run by the adapter loop.
     lifecycle: life,
     agentId: runRow.agentId,
@@ -295,7 +304,7 @@ function settlePaidCall(name: string): { refused: string } | undefined {
 /** The run's non-hand tools as HostTool[], bound through the ToolHost seam and wrapped as the hands are (host-tools.ts
  *  hostToolOf): web_fetch, web_search and monid, each by its catalog name under the adapter loop's one gate (`spec.gate`;
  *  `gated` is undefined here, as for the hands), its paid call's money through settlePaidCall. The browser (tl-browser,
- *  through host.liveViewers), MCP (tl-mcp's mcpForClaim(claim, store, sealKey, pin) -> { sessionMcp, redactions, release }),
+ *  through host.liveViewers), MCP (opened at the top of adapterRunSpecFromLaunch by mcp-run.ts mcpForClaim and handed to the loop as spec.mcp),
  *  the learned workflow and decisions are each a named todo, added as their seams land. */
 async function bindNonHandTools(host: ToolHost, granted: readonly string[], run: AdapterRun, context: Context, results: ToolResults, root: string, plane: RunLaunch["plane"]): Promise<AdapterRunSpec["session"]["tools"]> {
   const names = granted.filter((name) => name === WEB_FETCH_TOOL || name === WEB_SEARCH_TOOL || name.startsWith("monid."));

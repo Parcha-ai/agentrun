@@ -11,6 +11,8 @@ import { test } from "node:test";
 import { startFakeMcp } from "./fixtures/fake-mcp-server.mjs";
 import { queued, storeOn, T0 } from "./store-helpers.mjs";
 
+/** A tool as the registry keeps it: as its server listed it (input_schema). */
+const listed = ({ inputSchema, ...tool }) => ({ ...tool, input_schema: inputSchema });
 const { mcpClaim } = await import("../dist/runner/mcp-claim.js");
 const { mcpGateway } = await import("../dist/mcp-gateway.js");
 
@@ -27,7 +29,7 @@ async function setUp(t, { answers = [] } = {}) {
   t.after(() => fake.close());
   const opened = await storeOn(t);
   const { store, clock } = opened;
-  await store.mcp.put({ name: "gh", url: fake.url, auth: "github_app", tools: [ADD], sealed: null });
+  await store.mcp.put({ name: "gh", url: fake.url, auth: "github_app", tools: [listed(ADD)], sealed: null });
   await queued(store, "run-1");
   const claim = await store.claim("run-1", "runner-a", { leaseMs: 60_000 });
   const mints = [];

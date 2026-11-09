@@ -1,6 +1,7 @@
 // A run's remote MCP servers, in the run's process: the one place every harness's MCP call goes through. pi calls it
 // in-process, as the tools it binds for each granted `mcp:<server>/<tool>` (mcpRegistrations); a harness with its own
-// MCP client calls it through the session proxy's /mcp/<server> (@parcha/agentrun-kernel/host mcpRoute).
+// MCP client calls it through the session proxy's /mcp/<server> (@parcha/agentrun-kernel/host mcpRoute). On the runner a
+// claimed run's spec builds one per claim from its MCP claim step (runner/mcp-run.ts mcpForClaim).
 //  - What a run may call is pinned at its first launch (runs.ts writes MCP_PIN in the run's directory): each granted
 //    tool as the server listed it when its owner saved it, and the server's URL then. A later refresh of the server
 //    never changes a running agent's tools.
@@ -208,9 +209,11 @@ export interface McpGatewayOptions {
   fetch?: typeof fetch;
   /** For tests: the bound on one call (CALL_MS) and on a server's first connection (CONNECT_MS). */
   bounds?: { callMs?: number; connectMs?: number };
-  /** The run's tool gate, which every run's process passes (app.ts): each call enters it here, the only place an MCP
-   *  call is gated (pi's wrapper and the harnesses' hooks leave MCP calls to it). Only a test omits it, and then every
-   *  call is let go. Its `executor` and `spill`, where it has them, run an approved call and pass a result through. */
+  /** The run's tool gate, which a run that is its own process passes (app.ts): each call enters it here, the only place
+   *  an MCP call is gated there (pi's wrapper and the harnesses' hooks leave MCP calls to it). The runner passes none: its
+   *  adapter loop's gate asks before each call's intent, and the call reaches here allowed. A test may omit it too, and
+   *  then every call is let go. Its `executor` and `spill`, where it has them, run an approved call and pass a result
+   *  through. */
   gate?: Pick<Gate, "enter"> & Partial<Pick<Gate, "executor" | "spill">>;
   /** The run's commit to its store, once it is open: a parked call's request, a priced call's mark and charge, and an
    *  unpriced call's "not metered" are written on its root. None: a priced call is refused unsent, as a paid call with
@@ -223,12 +226,19 @@ export interface McpGatewayOptions {
   liveCredentials?: true;
 }
 
+/** What a call with no call id answers where a gate must know it by one: nothing was sent. */
+export const noCallId = (name: string): string => `The ${name} call was not sent: it came with no call id, so it cannot wait for a person's approval.`;
+/** What a call that needs a person's approval answers from a harness that cannot wait for one: nothing was sent. */
+export const cannotWait = (name: string): string => `The ${name} call needs a person's approval, which this harness can't wait for yet; nothing was sent.`;
+
 /** The gateway: a session's servers, and a call that takes the gate's `park` of the harness it came from (its journal's
  *  commit, and how it ends a parked call's turn); none, the run's root commit. */
 export type McpGateway = Omit<SessionMcp, "call"> & {
   call(server: string, tool: string, args: Record<string, unknown>, context: { signal: AbortSignal; callId?: string; park?: Park }): Promise<McpCallResult>;
   /** How many credential values the calls in flight hold for their scrub: each call's go when it ends (0 when idle). */
   heldCredentials(): number;
+  /** The credential values the calls in flight hold for their scrub, every call's together (none when idle). */
+  heldValues(): string[];
 };
 
 /** The gateways that hold their run's gate: each of their calls enters it, in `call`. */
@@ -447,19 +457,20 @@ export function mcpGateway(options: McpGatewayOptions): McpGateway {
   const gateway: McpGateway = {
     servers: [...pins].map(([name, pinned]) => ({ name, tools: pinned.tools })),
     heldCredentials: () => [...inFlight.values()].reduce((sum, calls) => sum + [...calls].reduce((n, values) => n + values.size, 0), 0),
+    heldValues: () => [...new Set([...inFlight.values()].flatMap((calls) => [...calls].flatMap((values) => [...values])))],
     async call(server, tool, args, { signal, callId, park: given }) {
       const why = unsendable(server, tool);
       if (why) return said(why, true);
       const gate = options.gate;
       // A parked call is answered and resumed by its id, the harness's own: a call with none is never parked.
-      if (gate && !callId) return said(`The ${mcpToolName(server, tool)} call was not sent: it came with no call id, so it cannot wait for a person's approval.`, true);
+      if (gate && !callId) return said(noCallId(mcpToolName(server, tool)), true);
       const id = callId ?? `mcp_${randomUUID()}`;
       if (gate) {
         const name = mcpToolName(server, tool);
         // A call parks only where its harness can end the turn on it (a park with `parked`). Anywhere else the gate's
         // commit of the request is refused, so an ask leaves no approval waiting, and the call is answered so.
         const park: Park = given?.parked ? given : { commit: () => Promise.reject(new CannotPark()) };
-        const cannot = said(`The ${name} call needs a person's approval, which this harness can't wait for yet; nothing was sent.`, true);
+        const cannot = said(cannotWait(name), true);
         let entered: Awaited<ReturnType<Gate["enter"]>>;
         try {
           // The approval card shows the call's declared price, or that it is not metered.

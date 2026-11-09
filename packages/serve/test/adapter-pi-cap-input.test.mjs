@@ -28,7 +28,7 @@ test("pi's input is bounded by its request's UTF-8 bytes, never pi's average: a 
   // $1 per million input tokens and nothing for output: a request's worst case is its input bound; the cap sits between.
   const inputOnly = { ...SONNET, price: { input: 1, output: 0, cacheRead: 0, cacheWrite: 0 } };
   const capUsd = (average + bytes) / 2 / 1e6;
-  const { asked, sent } = await capRun(t, { specOf: (got) => specWith(async (url, init) => (got.push(init), sse([])), dense), beforeRequest: beforeRequestOf({ capUsd: () => capUsd, modelOf: () => inputOnly }) });
+  const { asked, sent } = await capRun(t, { specOf: (got) => specWith(async (url, init) => (got.push(init), sse([])), dense), runCap: ({ capUsd: () => capUsd, modelOf: () => inputOnly }) });
   assert.ok(asked[0]?.request.inputTokensMax >= bytes, `the bound is at least the input's bytes: ${asked[0]?.request.inputTokensMax} of ${bytes}`);
   assert.match(asked[0]?.answer?.refuse ?? "", /^spend_cap_reached \(out of budget\): Not sent: /, JSON.stringify(asked[0]?.answer));
   assert.equal(sent.length, 0, "not sent: its byte bound passes the cap");

@@ -12,7 +12,7 @@ const ROOM = "spend_cap_reached (out of budget): ";
 const CAP = 0.01;
 
 test("a refusal for room parks the run in the cap's words, with its pending budget in an agentrun.budget entry: the least cap that sends the request, and the raise offered", async (t) => {
-  const { row, asked, sent, store } = await capRun(t, { script: [{ say: "never sent" }], cap: specCap(CAP), beforeRequest: beforeRequestOf({ capUsd: () => CAP, modelOf: () => SONNET }) });
+  const { row, asked, sent, store } = await capRun(t, { script: [{ say: "never sent" }], cap: specCap(CAP), runCap: ({ capUsd: () => CAP, modelOf: () => SONNET }) });
   const refusal = asked[0]?.answer?.refuse ?? "";
   assert.ok(refusal.startsWith(ROOM), `a refusal for room: ${refusal}`);
   assert.equal(sent.length, 0, "nothing reached the provider");
@@ -28,7 +28,7 @@ test("a refusal for room parks the run in the cap's words, with its pending budg
 });
 
 test("with a cap in the spec, a refusal no raise could fix (the run's spend unknown) still fails the run in the cap's words, never parked", async (t) => {
-  const { row, store } = await capRun(t, { script: [{ say: "never sent" }], cap: specCap(1), beforeRequest: beforeRequestOf({ capUsd: () => 1, modelOf: () => SONNET, spentUsd: () => null }) });
+  const { row, store } = await capRun(t, { script: [{ say: "never sent" }], cap: specCap(1), runCap: ({ capUsd: () => 1, modelOf: () => SONNET, spentUsd: () => null }) });
   assert.deepEqual([row.state, row.summary], ["failed", "spend_cap_reached: Not sent: what the run has spent is unknown, so its cap of $1 cannot be kept: the run is out of budget."], JSON.stringify(row));
   assert.deepEqual(await rootEntries(store, "agentrun.budget"), [], "no budget entry");
 });
