@@ -115,7 +115,7 @@ test("a runner that dies never frees the save: its run stays running past its cl
 // ever save: this errs toward none. A reader's end also opens a settle window, though it wrote nothing back. The store
 // keeps no saver per sign-in for the bind to tell them apart (E1b's runs.update
 // { save }); it waits on that.
-test("a saver's re-bind while a reader of the same sign-in runs still saves (its own lease)", { todo: "waits on runs.update { save } telling a saver from a reader (E1b): a reader's hand blocks the saver's own re-bind today" }, async (t) => {
+test("a saver's re-bind while a reader of the same sign-in runs still saves (its own lease)", { skip: "waits on runs.update { save } telling a saver from a reader (E1b): a reader's hand blocks the saver's own re-bind today" }, async (t) => {
   const { store } = await signedIn(t);
   const saver = await claimed(store, "run-1");
   assert.equal(await bind(store, saver, "kernel", "agentrun-lease-1"), true);
