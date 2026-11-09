@@ -592,7 +592,9 @@ function adapterLoop(specOf: (claim: Claim, run: AdapterRun) => AdapterRunSpec |
       // not be written (pi's Harness could not open): the runner stores that one failed with why. Returning "failed" with
       // no end would leave it running, released and claimed again at once.
       if (claim.from !== "parked" && harness && root && gate && !gate.sealed) {
-        const ended = await writeEnd(harness, root, gate, { state: "failed", summary: (error as Error)?.message ?? String(error) }, [], specNow ? await cutRows(claim, specNow, "faulted") : []).catch(() => undefined);
+        // Why, cut of every secret the runner holds (an error's text may echo one): it is stored in the end and the row.
+        const why = (error as Error)?.message ?? String(error);
+        const ended = await writeEnd(harness, root, gate, { state: "failed", summary: deps.redact ? deps.redact(why) : why }, [], specNow ? await cutRows(claim, specNow, "faulted") : []).catch(() => undefined);
         if (ended) return ended;
       }
       throw error;
