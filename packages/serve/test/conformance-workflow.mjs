@@ -93,6 +93,7 @@ export function workflowSubject() {
       "steer-mid-turn": person, "steer-origin": person, "deny-note": person, "park-on-ask": person, "cancel-parked": person,
       "approval-names-its-call": person, "approval-double-click": person, "message-never-answers": person,
       "length-ends-failed": cut, "length-mid-run": cut,
+      "end-of-run-answer": "a workflow revision does not learn (the agent definition's learning applies to agentic revisions only), so a workflow run has no end-of-run turn to answer",
     },
     readCalls,
   };
