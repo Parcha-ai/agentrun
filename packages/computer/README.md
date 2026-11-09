@@ -1843,7 +1843,8 @@ the API's control URL) is a later change: `platform: "ios"` is refused in words.
     density over 160;
   - `input.actions`: checked whole first (`checkActions`). Then tap, long press, swipe (`input swipe`, or
     `input motionevent` for a path of three points or more), the back, home and app switch buttons, `type`
-    (`input text`, ASCII and line breaks) and one key at a time (`input keyevent`), and `wait`;
+    (`input text`, ASCII and line breaks) and one key at a time (`input keyevent`), and `wait`. A cancelled batch
+    stops at the action it is on, a `wait` included, and answers failed, kind `aborted`, there;
   - `apps.list` (`pm list packages`, and the app in front from `dumpsys activity activities`), `apps.launch` (its
     launcher activity, `am start -W --activity-clear-task`, so the app named is in front and not what its task last
     held: on Android 15 Settings' task keeps search, another package, on top) and `apps.terminate` (`am force-stop`);
@@ -1857,13 +1858,19 @@ the API's control URL) is a later change: `platform: "ios"` is refused in words.
 - **create** asks for `timeout_seconds` = the lifetime, and the phone harness ends the session then, whatever happens.
   The lifetime includes the boot, so a phone ready past its deadline fails `timeout`.
   - Each POST carries an Idempotency-Key, and a create whose answer was lost is found by it, never sent twice.
+  - A create cancelled during its POST is recovered by its key all the same, and the phone the service made is ended.
   - A phone that fails, or is not ready within `readyMs` (240 s), is ended.
+  - Each request has a bound of its own, `requestMs` (30 s), beside the caller's signal, and a readiness read takes no
+    longer than `readyMs` has left. A request cut off by its bound is treated as a lost answer. The `timeout` option is
+    the timer (default `AbortSignal.timeout`).
+  - Once the phone's id is known, a ledger write that fails ends the phone, and create answers in words.
   - The service's refusals keep their words (`limit` for `phones_busy` and `session_limit`, `denied` for the key or
     credit) and never hold the key.
 - **The ledger.** The phone harness keeps no labels on a session, so the provider keeps each phone's labels, image and
   deadline in its `ledger` option: `{ put, get, list, remove }`. It is in memory by default; serve passes a store-backed
   one, and the conformance module a JSON file. `list`, `attach`, `network`, `connect`, `release` and the janitor see
-  only the phones it names, never another session on the account, and forget a phone the service ended.
+  only the phones it names, never another session on the account, and forget a phone the service ended. release of an
+  id the ledger does not name sends no DELETE: it answers `not_found` while that session runs, and ok once it is gone.
   - create puts an entry under `pending-<Idempotency-Key>` before its POST, and replaces it by the session's id once
     known; a refused POST forgets it.
   - If the POST's answer and its recovery (`GET /sessions/requests/<key>`) are both lost, the entry stays. `list()`
