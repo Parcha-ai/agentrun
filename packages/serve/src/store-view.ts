@@ -28,6 +28,7 @@ import {
   WITHHELD_SIGN_IN,
   costView,
   soFarOf,
+  withAsks,
 } from "./run-view.js";
 import { reflects, type Reflect } from "./learning-run.js";
 import { journalRecords, recordOf } from "./runner/journal-reader.js";
@@ -131,7 +132,9 @@ async function storeRunOf(store: Store, runId: string, deps: ViewDeps): Promise<
   const revision = await store.agents.revision(row.revision);
   const harness = launch?.harness ?? harnessOfBody((revision?.body ?? {}) as { harness?: string });
   const terminal = row.state !== "running";
-  const rows = await runTimeline(store, runId, context, { settled: terminal });
+  // The timeline, then the waiting row a run asking a question shows (withAsks), as the file path's rows carried it, so a
+  // run waiting on a question reads the same status and pending.
+  const rows = withAsks(await runTimeline(store, runId, context, { settled: terminal }));
   const revisions = await store.agents.revisions(row.agent);
   const version = revisions.findIndex((r) => r.id === row.revision) + 1;
   const learningEnd = await runLearningEnd(store, runId);

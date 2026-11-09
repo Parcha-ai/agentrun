@@ -3,7 +3,7 @@
 // merges it (runner/learning-loop.ts), here through learn-support's learnedOnMain, its grader on the faux model. No
 // injection screen runs: the grader's Planted question decides. The cases on a run's own learning end (its words, the
 // verdict, what the grade spent in the ledger, /v2/usage and /v2/stats) wait for the reader of the learning run's end
-// (RUN_END_TODO).
+// (SWITCH_TODO).
 import assert from "node:assert/strict";
 import { chmodSync, existsSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { createHash, randomBytes } from "node:crypto";
@@ -13,7 +13,7 @@ import { test } from "node:test";
 import { judgeProposal } from "../dist/grade.js";
 import { CANARY } from "./fixtures/faux-jev.mjs";
 import { note } from "./fixtures/faux-learn.mjs";
-import { ended, git, LEARN, learnedOnMain, learner, ledgerOf, made, mergesOf, proposedOf, repoOf, RUN_END_TODO, savedOf, settled, sleep, started } from "./learn-support.mjs";
+import { ended, git, LEARN, learnedOnMain, learner, ledgerOf, made, mergesOf, proposedOf, repoOf, SWITCH_TODO, savedOf, settled, sleep, started } from "./learn-support.mjs";
 import { agent, follow, runDir, runsFolders, scratch, serve, withEnv } from "./support.mjs";
 import { fauxTable } from "./fixtures/faux-table.mjs";
 
@@ -23,7 +23,7 @@ const FAUX_MONID = new URL("./fixtures/faux-monid.mjs", import.meta.url).pathnam
 const PLAN = [["check-units.md", note("Check units", "Convert every amount to one unit before comparing")]];
 const callsIn = (file) => (existsSync(file) ? readFileSync(file, "utf8").trim().split("\n").filter(Boolean).map((line) => JSON.parse(line)) : []);
 
-test("the grader's verdict decides: a drop, a merge that keeps no note and an answer that is no verdict are dropped as grader, with the verdict kept; a model that fails is grade_failed", { timeout: 150_000, skip: RUN_END_TODO }, async (t) => {
+test("the grader's verdict decides: a drop, a merge that keeps no note and an answer that is no verdict are dropped as grader, with the verdict kept; a model that fails is grade_failed", { timeout: 150_000, skip: SWITCH_TODO }, async (t) => {
   const calls = join(await scratch(t), "calls.jsonl");
   withEnv(t, { AGENTRUN_TEST_FAUX_CALLS: calls }, ["AGENTRUN_TEST_FAUX_GRADE_HOLD", "TYPESAFE_API_KEY", "OPENROUTER_API_KEY"]);
   const { api, data } = await serve(t, { learning: "on", faux: LEARN });
@@ -54,7 +54,7 @@ test("the grader's verdict decides: a drop, a merge that keeps no note and an an
   assert.equal(callsIn(calls).filter((call) => call.kind === "grade").length, cases.length + 1, "one grader call a run, two for the unread one");
 });
 
-test("what is read from a partial answer goes through the grader like any answer: a note beside an opening never closed is graded, alone, before it merges or drops", { timeout: 150_000, skip: RUN_END_TODO }, async (t) => {
+test("what is read from a partial answer goes through the grader like any answer: a note beside an opening never closed is graded, alone, before it merges or drops", { timeout: 150_000, skip: SWITCH_TODO }, async (t) => {
   const calls = join(await scratch(t), "calls.jsonl");
   withEnv(t, { AGENTRUN_TEST_FAUX_CALLS: calls }, ["AGENTRUN_TEST_FAUX_GRADE_HOLD", "TYPESAFE_API_KEY", "OPENROUTER_API_KEY"]);
   const { api, data } = await serve(t, { learning: "on", faux: LEARN });
@@ -74,7 +74,7 @@ test("what is read from a partial answer goes through the grader like any answer
   }
 });
 
-test("an answer the host cannot read is asked once more with the same prompt: a readable second answer decides, and each ask's spend is booked once; two unreadable answers drop, with the last kept on the run cut of secrets and in size, and never served", { timeout: 150_000, skip: RUN_END_TODO }, async (t) => {
+test("an answer the host cannot read is asked once more with the same prompt: a readable second answer decides, and each ask's spend is booked once; two unreadable answers drop, with the last kept on the run cut of secrets and in size, and never served", { timeout: 150_000, skip: SWITCH_TODO }, async (t) => {
   const calls = join(await scratch(t), "calls.jsonl");
   // A value saved as a tool key before the runs: the grader's answer holds it, and the run's learning never does.
   // It holds a space, as a tool key may: an answer cut before it is cut of secrets could keep one half of it.
@@ -123,7 +123,7 @@ test("an answer the host cannot read is asked once more with the same prompt: a 
   assert.ok(!served.includes("Looks fine to me") && !served.includes("word word"), "the answer is never served");
 });
 
-test("the grader runs on the model the server names for it, --grade-model (AGENTRUN_SERVE_GRADE_MODEL) before its strong tier (AGENT_MODEL_STRONG), whatever the agent's own model; with neither, on the agent's own", { timeout: 180_000, skip: RUN_END_TODO }, async (t) => {
+test("the grader runs on the model the server names for it, --grade-model (AGENTRUN_SERVE_GRADE_MODEL) before its strong tier (AGENT_MODEL_STRONG), whatever the agent's own model; with neither, on the agent's own", { timeout: 180_000, skip: SWITCH_TODO }, async (t) => {
   const calls = join(await scratch(t), "calls.jsonl");
   withEnv(t, { AGENTRUN_TEST_FAUX_CALLS: calls }, ["AGENTRUN_TEST_FAUX_GRADE_HOLD", "TYPESAFE_API_KEY", "OPENROUTER_API_KEY", "AGENT_MODEL_STRONG", "AGENTRUN_SERVE_GRADE_MODEL"]);
   const named = [];
@@ -382,7 +382,7 @@ for (const at of ["proposed", "reflecting"]) {
   });
 }
 
-test("a grader that never answers is cut off at its bound: the run's learning is grade_failed, and what the grade spent is unknown (null), never $0, on the run, in the ledger and on /v2/usage", { timeout: 120_000, skip: RUN_END_TODO }, async (t) => {
+test("a grader that never answers is cut off at its bound: the run's learning is grade_failed, and what the grade spent is unknown (null), never $0, on the run, in the ledger and on /v2/usage", { timeout: 120_000, skip: SWITCH_TODO }, async (t) => {
   const calls = join(await scratch(t), "calls.jsonl");
   withEnv(t, { AGENTRUN_TEST_FAUX_GRADE_HOLD: "never", AGENTRUN_TEST_FAUX_CALLS: calls }, ["TYPESAFE_API_KEY", "OPENROUTER_API_KEY"]);
   const { api, data } = await serve(t, { learning: "on", faux: LEARN, gradeTimeoutMs: 1_500 });
@@ -401,7 +401,7 @@ test("a grader that never answers is cut off at its bound: the run's learning is
 // GET /v2/usage on one server with both kinds of spend outside a run's tokens: a run whose paid tool charged (monid's
 // `tools`, from S2) and a run whose grade spent (the learning ledger's `learning`). Each groups the same way, and the
 // total is every line once.
-test("GET /v2/usage books a run's tool charge as tools and a grade as learning, beside the runs' tokens: by meter, agent and day the lines sum to the same total", { timeout: 180_000, skip: RUN_END_TODO }, async (t) => {
+test("GET /v2/usage books a run's tool charge as tools and a grade as learning, beside the runs' tokens: by meter, agent and day the lines sum to the same total", { timeout: 180_000, skip: SWITCH_TODO }, async (t) => {
   const saved = ["not-a-secret", "monid", randomBytes(6).toString("hex")].join("-");
   withEnv(t, { AGENTRUN_SEAL_KEY: randomBytes(32).toString("base64"), AGENTRUN_TEST_FAUX_MONID_CALLS: join(await scratch(t), "monid.jsonl"), AGENTRUN_TEST_FAUX_MONID_ACCEPTS: createHash("sha256").update(saved).digest("hex") }, ["MONID_API_KEY", "TYPESAFE_API_KEY", "OPENROUTER_API_KEY"]);
   const { api, data } = await serve(t, { learning: "on", faux: LEARN, harnessTable: fauxTable(FAUX_HARNESS), fauxMonid: FAUX_MONID });
@@ -441,7 +441,7 @@ test("GET /v2/usage books a run's tool charge as tools and a grade as learning, 
   assert.deepEqual(caps.features.usage.meters, ["tokens", "tools", "browser_time", "learning"]);
 });
 
-test("GET /v2/usage books each grade under the meter learning, by agent and by day; GET /v2/stats counts the runs that tried to learn, over its filters, from the ledger, and a restarted server counts the same with runs/ unreadable", { timeout: 180_000, skip: RUN_END_TODO }, async (t) => {
+test("GET /v2/usage books each grade under the meter learning, by agent and by day; GET /v2/stats counts the runs that tried to learn, over its filters, from the ledger, and a restarted server counts the same with runs/ unreadable", { timeout: 180_000, skip: SWITCH_TODO }, async (t) => {
   withEnv(t, {}, ["TYPESAFE_API_KEY", "OPENROUTER_API_KEY", "AGENTRUN_TEST_FAUX_GRADE_HOLD", "AGENTRUN_TEST_FAUX_CALLS"]);
   const first = await serve(t, { learning: "on", faux: LEARN });
   const { api, data } = first;
@@ -492,7 +492,7 @@ test("GET /v2/usage books each grade under the meter learning, by agent and by d
   assert.equal(ledgerOf(data).length, 3, "the restart wrote no line again");
 });
 
-test("a note the checks refuse is left out and the rest of the proposal goes on: the good note is graded and merged, the bad one named with its problem; a secret in any note still drops every note", { timeout: 150_000, skip: RUN_END_TODO }, async (t) => {
+test("a note the checks refuse is left out and the rest of the proposal goes on: the good note is graded and merged, the bad one named with its problem; a secret in any note still drops every note", { timeout: 150_000, skip: SWITCH_TODO }, async (t) => {
   withEnv(t, {}, ["AGENTRUN_TEST_FAUX_GRADE_HOLD", "AGENTRUN_TEST_FAUX_CALLS", "TYPESAFE_API_KEY", "OPENROUTER_API_KEY"]);
   const { api, data } = await serve(t, { learning: "on", faux: LEARN });
   const GOOD = note("Check units", "Convert every amount to one unit before comparing");

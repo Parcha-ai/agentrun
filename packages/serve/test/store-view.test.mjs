@@ -147,6 +147,34 @@ test("a working run reads working/working and live, its updated_at and last_prog
   assert.equal(moment.terminal, false);
 });
 
+test("a run that asked the person a question reads input_required with a question pending", async (t) => {
+  const { store } = await storeOn(t);
+  await agent(store);
+  await store.runs.create({ id: "run-1", agentId: "agent-1", revisionId: "rev-1" }, { body: { input: { message: "Help me." }, title: "Ask run", place: { mode: "runner" } } });
+  const claim = await store.claim("run-1", "runner-a", { leaseMs: 60_000 });
+  const journal = store.journal(claim);
+  const u = { id: await journal.mintId(), conversationId: ROOT, kind: "pi.user", model: [{ role: "user", content: "Help me.", timestamp: T0 }] };
+  const a = { id: await journal.mintId(), conversationId: ROOT, kind: "pi.assistant", model: [{ role: "assistant", stopReason: "tool_use", content: [{ type: "toolCall", id: "c1", name: "ask_person", arguments: { question: "What is your budget?" } }], usage: { cost: { total: 0.05 } }, timestamp: T0 + 1_000 }] };
+  const r = { id: await journal.mintId(), conversationId: ROOT, kind: "pi.tool-result", model: [{ role: "tool", toolCallId: "c1", content: [{ type: "text", text: "ok" }], timestamp: T0 + 2_000 }] };
+  await commitWrites(journal, [{ type: "conversation", value: { id: ROOT } }, { type: "entry", value: u }, { type: "entry", value: a }, { type: "entry", value: r }], context);
+  // The run waits on the person: its runner let go of the claim, so it is not live.
+  await store.release(claim);
+
+  const view = await viewOverStore(store, "run-1", deps);
+  assert.equal(view.status, "input_required");
+  assert.equal(view.state, "waiting");
+  assert.deepEqual(view.pending, { kind: "question", question: "What is your budget?", asked_at: iso(T0 + 2_000) });
+  assert.deepEqual(view.cost, { usd: 0.05, basis: "estimate", charge_state: null, cap_usd: null });
+  assert.equal(view.result, null);
+  assert.equal(view.error, null);
+  assert.equal(view.ended_at, null);
+  assert.equal(view.last_progress_at, null);
+  assert.equal(view.poll_after_ms, 1000);
+  const moment = await momentOverStore(store, "run-1");
+  assert.equal(moment.awaitingAnswer, true);
+  assert.equal(moment.waitsOnPerson, true);
+});
+
 test("a failed run's view serves its error from the row, with an unknown cost", async (t) => {
   const { store } = await storeOn(t);
   await agent(store);

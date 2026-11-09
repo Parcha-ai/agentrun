@@ -9,9 +9,10 @@ import { join } from "node:path";
 import { after, test } from "node:test";
 
 const { openSqliteStore } = await import("../dist/store/index.js");
-const { archiveRun, approve, cancel, message, raiseCap, startRun, stop, WAITS_ON_A_PERSON } = await import("../dist/runs-over-store.js");
+const { archiveRun, approve, cancel, message, pause, raiseCap, resume, startRun, stop, WAITS_ON_A_PERSON } = await import("../dist/runs-over-store.js");
 const { sendCommand } = await import("../dist/runner/commands.js");
-const { readLaunchBody } = await import("../dist/run-launch.js");
+const { readLaunchBody, learningStartOf } = await import("../dist/run-launch.js");
+const { givenOf, learnedOf } = await import("../dist/learning.js");
 
 const dirs = [];
 after(() => {
@@ -402,6 +403,44 @@ test("startRun under an origin key starts one run; a retry under the same key ge
   assert.equal((await store.runs.list({ agentId: "a1" })).length, 1);
 });
 
+// ---- learning start -------------------------------------------------------------------------------------------------
+
+const shown = () => ({ text: (t) => t, name: (n) => n, holds: () => false });
+/** A learning seed with one active note. */
+const learningSeed = () => ({ sha: "seed-abc", notes: { "a.md": "# A\n\nlearned a thing" }, files: [], skipped: [], recent: ["a.md"] });
+const learningDeps = (over = {}) => startDeps({ learning: "on", learningBudget: 8000, shown, seedFor: async () => ({ seed: learningSeed() }), pinnedOf: async () => ({ revision: revisionOf({ learning: true, tools: ["read"] }), version: 1 }), ...over });
+
+test("startRun records the exact given notes, seed and # Learned section a learning agent's start would", async () => {
+  const store = await freshStore();
+  const run = await startRun(store, learningDeps(), entryOf(), { input: { content: "hi" }, max_cost_usd: 1 });
+  const launch = readLaunchBody((await store.runs.launch(run.id)).body);
+  const options = { budget: 8000, read: true, shown: shown() };
+  const expected = { given: givenOf(learningSeed(), options), seed: "seed-abc", section: learnedOf(learningSeed(), options) ?? "" };
+  assert.deepEqual(launch.learning, expected);
+  assert.deepEqual(learningStartOf(launch), expected);
+  // Each given entry carries its name, not just a file.
+  assert.ok(launch.learning.given.every((n) => typeof n.file === "string" && typeof n.name === "string"));
+});
+
+test("startRun records no learning for a non-learning run", async () => {
+  const store = await freshStore();
+  // The same deps, but the revision does not learn.
+  const run = await startRun(store, learningDeps({ pinnedOf: async () => ({ revision: revisionOf({ learning: false, tools: ["read"] }), version: 1 }) }), entryOf(), { input: { content: "hi" } });
+  assert.equal(readLaunchBody((await store.runs.launch(run.id)).body).learning, undefined);
+});
+
+test("startRun records the server's learning off as no learning", async () => {
+  const store = await freshStore();
+  const run = await startRun(store, learningDeps({ learning: "off" }), entryOf(), { input: { content: "hi" } });
+  assert.equal(readLaunchBody((await store.runs.launch(run.id)).body).learning, undefined);
+});
+
+test("a learning run whose seed cannot be read starts with nothing (given empty, seed null, section empty)", async () => {
+  const store = await freshStore();
+  const run = await startRun(store, learningDeps({ seedFor: async () => ({ failed: "no git here" }) }), entryOf(), { input: { content: "hi" } });
+  assert.deepEqual(readLaunchBody((await store.runs.launch(run.id)).body).learning, { given: [], seed: null, section: "" });
+});
+
 // ---- cancel ---------------------------------------------------------------------------------------------------------
 
 test("cancel writes one cancel command and returns true for a live run", async () => {
@@ -431,25 +470,58 @@ test("cancel returns false and writes nothing for a run already ended or ending"
   assert.equal((await commandsOf(store, id)).length, 0);
 });
 
+// ---- pause / resume -------------------------------------------------------------------------------------------------
+
+test("pause writes a pause command for a workflow run; resume writes a resume command", async () => {
+  const store = await freshStore();
+  const id = await queuedRun(store);
+  assert.deepEqual(await pause(store, moment({ kind: "workflow" })), { run_id: id, paused: true });
+  assert.deepEqual(await resume(store, moment({ kind: "workflow" })), { run_id: id, paused: false });
+  const rows = await commandsOf(store, id);
+  assert.deepEqual(rows.map((r) => r.kind), ["pause", "resume"]);
+});
+
+test("pause of an agentic run is 501 unsupported here, nothing written", async () => {
+  const store = await freshStore();
+  const id = await queuedRun(store);
+  await assert.rejects(
+    () => pause(store, moment({ kind: "agentic" })),
+    (e) => e.code === "unsupported_here" && /Only a workflow run pauses here: an agentic run's turn is stopped with POST \/runs\/\{id\}\/stop\./.test(e.message),
+  );
+  assert.equal((await commandsOf(store, id)).length, 0);
+});
+
+test("pause of an ended run is 409 not_continuable, nothing written", async () => {
+  const store = await freshStore();
+  const id = await queuedRun(store);
+  await assert.rejects(
+    () => pause(store, moment({ kind: "workflow", terminal: true, terminalKind: "completed" })),
+    (e) => e.code === "not_continuable",
+  );
+  assert.equal((await commandsOf(store, id)).length, 0);
+});
+
 // ---- command shapes pinned against the runner's parser --------------------------------------------------------------
 
 test("every command this module writes is one the runner's parser accepts", async () => {
   const store = await freshStore();
   // The runner reads commands through sendCommand's parser (runner/commands.ts); each kind/body a writer here emits must
-  // pass it, so the runner takes exactly what we write. (cancel's kind is tl-jobs' to add; it is written through the store.)
+  // pass it, so the runner takes exactly what we write.
   await queuedRun(store, "steer-run");
   await queuedRun(store, "steer-trg");
   await queuedRun(store, "deny-run");
   await queuedRun(store, "approve-run");
   await queuedRun(store, "raise-run");
   await queuedRun(store, "stop-run");
+  await queuedRun(store, "cancel-run");
   await sendCommand(store, "steer-run", { kind: "steer", body: { text: "hi" } });
-  await sendCommand(store, "steer-trg", { kind: "steer", body: { text: "hi", answers: false, origin: { kind: "trigger" } } });
+  await sendCommand(store, "steer-trg", { kind: "steer", body: { text: "hi", answers: false, origin: { kind: "trigger", trigger_id: "t1", source: "schedule", owner: true } } });
   await sendCommand(store, "deny-run", { kind: "deny", body: { approval: "call-1", note: "no" } });
   await sendCommand(store, "approve-run", { kind: "approve", body: { approval: "call-1" } });
   await sendCommand(store, "raise-run", { kind: "raise", body: { capUsd: 5 } });
   await sendCommand(store, "stop-run", { kind: "stop", body: {} });
-  for (const id of ["steer-run", "steer-trg", "deny-run", "approve-run", "raise-run", "stop-run"]) {
+  await sendCommand(store, "cancel-run", { kind: "cancel", body: {} });
+  for (const id of ["steer-run", "steer-trg", "deny-run", "approve-run", "raise-run", "stop-run", "cancel-run"]) {
     assert.equal((await commandsOf(store, id)).length, 1);
   }
 });
