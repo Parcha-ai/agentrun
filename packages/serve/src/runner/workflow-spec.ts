@@ -36,7 +36,7 @@ import { policyFor } from "./adapters/pi.js";
 import { sessionProvider } from "../port-models.js";
 import { journalSessions } from "./sessions.js";
 import { type BudgetData, type EndData, KINDS, type RaiseData } from "./journal-kinds.js";
-import type { CapRefusal, WorkflowCapRule, WorkflowHostHooks, WorkflowRunSpec } from "./workflow-loop.js";
+import { type CapRefusal, PAUSED_WORDS, type WorkflowCapRule, type WorkflowHostHooks, type WorkflowRunSpec } from "./workflow-loop.js";
 import { type DecisionDriver, type WorkflowCap, workflowHost, type WorkflowHostDeps } from "./workflow-host.js";
 import type { Store } from "../store/store.js";
 
@@ -249,7 +249,7 @@ export function workflowSpecOf(deps: WorkflowSpecDeps): (claim: { runId: string 
       ...(claimed.capUsd !== undefined ? { cap: capRuleOf(claimed.capUsd) } : {}),
       endPatch: async () => endPatchOf(booking, decisionCap),
       build: (loopHooks: WorkflowHostHooks) => {
-        hooks.setPark(loopHooks.park);
+        hooks.setPark(loopHooks);
         const hostDeps: WorkflowHostDeps = {
           modelOf,
           sharedExtensions: [],
@@ -261,7 +261,7 @@ export function workflowSpecOf(deps: WorkflowSpecDeps): (claim: { runId: string 
           // parks the run through the loop's hook, the same as a model node's. The cap is wired at harnessReady, so the
           // wrapper reaches it through the deferred reference. With no decision provider the workflow runs none.
           ...(decisions ? { decisionProviders: decisions, ...(loadImage ? { loadImage } : {}) } : {}),
-          cap: decisions ? decisionWorkflowCap(() => decisionCap, decisions, hooks.park) : identityWorkflowCap(),
+          cap: decisions ? decisionWorkflowCap(() => decisionCap, decisions, hooks) : identityWorkflowCap(),
         };
         return workflowHost(hostDeps) as { extensions: readonly Extension[]; host: never };
       },
@@ -279,7 +279,7 @@ export function workflowSpecOf(deps: WorkflowSpecDeps): (claim: { runId: string 
           key: SESSION,
           label: SESSION,
           // The model booking is the run's rule itself (no second booking); a refusal parks the run through the loop's hook.
-          beforeRequest: parkOnRefusal(run.before, hooks.park),
+          beforeRequest: parkOnRefusal(run.before, hooks),
           onEvent: async (event) => { if (event.type === "request_start") await deps.store.flush(); },
         });
         // The run's decisions book on the same cap, under their own session (DECISION_SESSION); created now the Harness is
@@ -299,8 +299,15 @@ export function workflowSpecOf(deps: WorkflowSpecDeps): (claim: { runId: string 
 /** The run's rule with a park on a refusal: `before` (runCap's one rule for the model session) is asked, and on a refusal
  *  the run parks through the loop's hook (parkOf decides room vs for good from the refusal), the same as the pi adapter's
  *  parkAtCap. It still returns the refusal, so the proxy refuses the request and the node's turn ends. */
-function parkOnRefusal(before: BeforeRequest, park: (refusal: CapRefusal) => void): BeforeRequest {
+function parkOnRefusal(before: BeforeRequest, hooks: Pick<WorkflowHostHooks, "park" | "paused" | "pause">): BeforeRequest {
+  const park = hooks.park;
   return async (request) => {
+    // A person's pause in force parks the run here, before the request is sent, as a refusal does: the request is
+    // refused unsent, and the resume's claim goes on from the journal (main's pause gate before each model call).
+    if (hooks.paused()) {
+      hooks.pause();
+      return { refuse: PAUSED_WORDS, forGood: false } as Refusal;
+    }
     const verdict = await before(request);
     if (verdict && "refuse" in verdict) {
       const refusal = verdict as Refusal;
@@ -315,7 +322,7 @@ function parkOnRefusal(before: BeforeRequest, park: (refusal: CapRefusal) => voi
  *  set at build, which a cap refusal calls. */
 function deferredHooks() {
   let port: { beforeRequest(r: unknown): Promise<unknown>; afterRequest(u: unknown, t?: unknown, e?: unknown): Promise<void>; responded?(ids: unknown, t?: unknown): Promise<void>; note?(m: string, r?: unknown): string | undefined } | undefined;
-  let park: ((refusal: CapRefusal) => void) | undefined;
+  let loop: WorkflowHostHooks | undefined;
   return {
     port: {
       beforeRequest: (request: never) => (port ?? missing()).beforeRequest(request),
@@ -324,8 +331,11 @@ function deferredHooks() {
       note: (model: never, request?: never) => (port ?? missing()).note?.(model, request),
     },
     setPort: (p: typeof port) => { port = p; },
-    park: (refusal: CapRefusal) => park?.(refusal),
-    setPark: (p: (refusal: CapRefusal) => void) => { park = p; },
+    park: (refusal: CapRefusal) => loop?.park(refusal),
+    // A person's pause, asked where the cap is (the loop's hooks): none before the loop hands its hooks over.
+    paused: (): boolean => loop?.paused() ?? false,
+    pause: (): void => loop?.pause(),
+    setPark: (hooks: WorkflowHostHooks) => { loop = hooks; },
   };
 }
 const missing = (): never => { throw new Error("a workflow model request left before its run's booking was wired"); };
@@ -366,8 +376,8 @@ async function endPatchOf(booking: Awaited<ReturnType<typeof modelPortFor>> | un
 /** The run's one cap as a WorkflowCap: model nodes and call nodes pass through (their money is on the proxy), and a
  *  decision node is admitted and settled through the run's decisions (`getCap`, wired at harnessReady), priced as main
  *  holds it. The reference is deferred because the cap is not built until the Harness opens. */
-function decisionWorkflowCap(getCap: () => RunDecisions | undefined, providers: DecisionProviders, park: (refusal: CapRefusal) => void): WorkflowCap {
-  return { node: (fn) => fn, effect: (fn) => fn, judge: <F>(fn: F, driver?: DecisionDriver): F => decisionJudge(fn, { getCap, providers, park, driver }) };
+function decisionWorkflowCap(getCap: () => RunDecisions | undefined, providers: DecisionProviders, hooks: Pick<WorkflowHostHooks, "park" | "paused" | "pause">): WorkflowCap {
+  return { node: (fn) => fn, effect: (fn) => fn, judge: <F>(fn: F, driver?: DecisionDriver): F => decisionJudge(fn, { getCap, providers, park: hooks.park, hooks, driver }) };
 }
 
 /** A decision wrapped over the DSL driver's judge (the host's `recovered.runJudge`): it prices the request as main does
@@ -376,10 +386,15 @@ function decisionWorkflowCap(getCap: () => RunDecisions | undefined, providers: 
  *  run through the loop's hook (as a model node's does); a refusal for no price fails it; a price the catalog could not
  *  read fails the decision node as a connection error, never the cap's stop. A request the driver answers from what it
  *  decided before (a route's, or one an earlier process admitted that did not fail) holds nothing (askedBefore). */
-function decisionJudge<F>(inner: F, deps: { getCap: () => RunDecisions | undefined; providers: DecisionProviders; park: (refusal: CapRefusal) => void; driver?: DecisionDriver }): F {
+function decisionJudge<F>(inner: F, deps: { getCap: () => RunDecisions | undefined; providers: DecisionProviders; park: (refusal: CapRefusal) => void; hooks?: Pick<WorkflowHostHooks, "paused" | "pause">; driver?: DecisionDriver }): F {
   const judge = inner as (params: JudgeParams) => Promise<JudgeResult>;
   return (async (params: JudgeParams) => {
     if (deps.driver && askedBefore(deps.driver, params)) return judge(params);
+    // A person's pause in force parks the run before a new decision is held or sent, as a refusal for room does.
+    if (deps.hooks?.paused()) {
+      deps.hooks.pause();
+      throw new Error(PAUSED_WORDS);
+    }
     const id = params.provider ?? deps.providers.default;
     const provider = Object.hasOwn(deps.providers.providers, id) ? deps.providers.providers[id] : undefined;
     // A provider the host lacks is refused by the judge itself (configuration), before anything is held.

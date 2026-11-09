@@ -191,6 +191,54 @@ test("a pause during a model node: the request in flight finishes and is booked 
   assert.equal(eight(row.costUsd), eight(3 * PER_REQUEST), `booked once each: ${row.costUsd}`);
 });
 
+test("a pause sent before the run starts: it parks with no request sent, and a resume runs it whole", async (t) => {
+  const origin = scriptedOrigin();
+  const dir = mkdtempSync(join(process.env.TMPDIR ?? tmpdir(), "agentrun-wf-pause-early-"));
+  const server = await openSqliteStore({ dataDir: dir, role: "server" });
+  t.after(async () => {
+    await server.close().catch(() => {});
+    rmSync(dir, { recursive: true, force: true });
+  });
+  await server.agents.create({ id: "agent-1", name: "Flow" }, { id: "rev-1", kind: "workflow", body: { workflow: twoNodes() } });
+  await server.runs.create({ id: "run-1", agentId: "agent-1", revisionId: "rev-1" }, { body: { input: { question: "Go." }, title: "t", place: { mode: "runner" }, max_cost_usd: 100 } });
+  await send(server, "pause");
+  const store = await openSqliteStore({ dataDir: dir, role: "runner" });
+  const providerOf = () => ({
+    modelId: "faux-priced", api: "anthropic-messages", origin: "https://faux.invalid", credential: () => `not-a-secret-${"p"}`,
+    policy: anthropicPolicy({ model: "faux-priced", tools: [] }), price: (_model, usage) => (usage.output ?? 0) * 100 / 1e6, capModel: PRICED, fetch: origin.fetch,
+  });
+  const runner = startRunner({ store, createLoop: createWorkflowLoop(workflowSpecOf({ store, providerOf })), name: "runner-a", ...TIMING });
+  t.after(async () => {
+    await runner.close();
+    await store.close().catch(() => {});
+  });
+  await rowWhen(server, (row) => row.epoch >= 1 && pausedRow(row), "the run parks, paused, before its first step");
+  assert.deepEqual(origin.counts, { "first.1": 0, "first.2": 0, "second.1": 0 }, "no request sent");
+  await send(server, "resume");
+  const row = await rowWhen(server, endedRow, "the resumed run ends");
+  assert.equal(row.state, "ended", JSON.stringify({ state: row.state, summary: row.summary }));
+  assert.deepEqual(origin.counts, { "first.1": 1, "first.2": 1, "second.1": 1 });
+  assert.equal(eight(row.costUsd), eight(3 * PER_REQUEST));
+});
+
+test("an agentic run's pause and resume rows are refused in main's words (runs.ts pause), and the run goes on", async (t) => {
+  const { capRun } = await import("./adapter-pi-cap-support.mjs");
+  const { row, server } = await capRun(t, {
+    script: [{ say: "Done." }],
+    runCap: { capUsd: () => undefined, modelOf: () => undefined },
+    during: async (server) => {
+      await server.command("run-1", { kind: "pause", body: {} });
+      await server.command("run-1", { kind: "resume", body: {} });
+    },
+  });
+  assert.equal(row.state, "ended", JSON.stringify({ state: row.state, summary: row.summary }));
+  const rows = (await server.commands("run-1", 0)).filter((command) => command.kind === "pause" || command.kind === "resume");
+  assert.deepEqual(rows.map((command) => [command.kind, command.refused]), [
+    ["pause", "Only a workflow run pauses here: an agentic run's turn is stopped with POST /runs/{id}/stop."],
+    ["resume", "Only a workflow run pauses here: an agentic run's turn is stopped with POST /runs/{id}/stop."],
+  ]);
+});
+
 test("paused stays paused: a raise that wakes it is taken, and the run parks again without sending a request; a resume then finishes it", async (t) => {
   const origin = scriptedOrigin();
   origin.hold("first.2");
