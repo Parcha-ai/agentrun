@@ -33,6 +33,7 @@ import { runGate } from "../tool-gate.js";
 import { callNodeAskText, deniedText } from "../refusal-words.js";
 import { loadToolSettings, planeOf, TOOL_PLANE_ENV } from "../tool-plane.js";
 import { AsyncLocalStorage } from "node:async_hooks";
+import { SUBMIT_TOOL } from "@parcha/agentrun-pi";
 import { type PaidBooking, parallelExtractFee, parallelSearchFee } from "../paid-calls.js";
 import { searchArgs } from "../web-search.js";
 import { money, pricingOf, requestPrice, type RunTools, TOOL_SESSION } from "@parcha/agentrun-kernel/kernel/cap";
@@ -198,9 +199,13 @@ export function workflowSpecOf(deps: WorkflowSpecDeps): (claim: { runId: string 
     const hooks = deferredHooks();
     // The call nodes' effects in flight: a model request inside one is not where a pause lands (pauseAtEffects).
     const flight: EffectsInFlight = { count: 0 };
+    // What a model node offers its model: its `submit` and the tools its node names. The session proxy's policy drops every
+    // tool definition it is not given, so it admits this whole set by name (as pi's admits its session's tools); main's
+    // nodes send their requests straight to the provider (app.ts:117), unfiltered.
+    const offered = nodeOffer(claimed.workflow);
     for (const [tier, provider] of providers) {
       const proxy = await startModelProxy({
-        policy: provider.policy,
+        policy: await policyFor({ api: provider.api, origin: provider.origin, credential: provider.credential, ...(provider.headers ? { headers: provider.headers } : {}) }, provider.modelId, offered),
         hooks: hooks.port,
         model: provider.modelId,
         origin: provider.origin,
@@ -707,6 +712,12 @@ function tiersOf(workflow: Workflow): Tier[] {
 }
 
 /** The tools the workflow may call, for the host to register. */
+/** The tool names a workflow's model node offers its model: the node's `submit` (pi's SUBMIT_TOOL) and every tool the
+ *  workflow's model nodes name. */
+export function nodeOffer(workflow: Workflow): string[] {
+  return [...new Set([SUBMIT_TOOL, ...workflowTools(workflowNodes(workflow, inspectWorkflow(workflow))).nodes])];
+}
+
 function toolsOf(workflow: Workflow): string[] {
   // A call node's tool, as main's per-run process registers it (app.ts:490, the workflow's own): the call tools the
   // workflow names (tools.ts CALL_TOOLS); any other was refused at its start (runnable.ts).
