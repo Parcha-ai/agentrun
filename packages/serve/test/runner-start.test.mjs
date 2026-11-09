@@ -29,7 +29,7 @@ import { dirname, join } from "node:path";
 import { createInterface } from "node:readline";
 import { test } from "node:test";
 import { fileURLToPath } from "node:url";
-import { fakeDocker } from "../../computer/test/fake-docker.mjs";
+import { dockerHost } from "./docker-host-fake.mjs";
 import { openPostgresStore, openSqliteStore } from "../dist/store/index.js";
 import { until } from "./runner-support.mjs";
 import { dropSchema, freshSchema, onPostgres, PG_URL, postgresOnly } from "./store-target.mjs";
@@ -259,13 +259,12 @@ test("the heartbeat check, on an injected clock and file times: younger than twi
 const DAEMON = fileURLToPath(new URL(`../../computer/dist/computerd-linux-amd64`, import.meta.url));
 
 test("a box-placed run gets its Docker computer through the runner process (the composer's claim): made under its run's labels with its folder mounted, never refused; a runner-placed run beside it gets none", { skip: !existsSync(DAEMON) && "no computerd-linux-amd64: run npm run build:daemon -w @parcha/agentrun-computer (CI's build job does)" }, async (t) => {
-  // The computer package's fake docker, first on the runner's PATH: it answers run, inspect, exec (the daemon's hello) and
-  // rm as the docker CLI does. No Docker is reached. Its daemon answers hello and no file call, so the box-placed run
-  // holds once its computer is attached: the case reads what the runner made, then stops the runner.
-  const docker = fakeDocker();
-  // `docker version` (the provider's create asks Docker its architecture) answers amd64; every other call is the fake's.
-  const shim = scratch(t, "agentrun-runner-docker-");
-  writeFileSync(join(shim, "docker"), `#!/bin/sh\nif [ "$1" = version ]; then echo amd64; exit 0; fi\nexec ${JSON.stringify(docker.program)} "$@"\n`, { mode: 0o755 });
+  // A fresh host first on the runner's PATH (docker-host-fake.mjs): it keeps its images (none yet; the provider builds the
+  // recipe's there first) over the computer package's fake docker, which answers run, inspect, exec (the daemon's hello)
+  // and rm. No Docker is reached. The daemon answers hello and no file call, so the box-placed run holds once its computer
+  // is attached: the case reads what the runner made, then stops the runner.
+  const docker = dockerHost();
+  const shim = docker.dir;
   const fake = await fakeAnthropic({ reply: () => ({ text: "Done." }) });
   t.after(() => fake.close());
   const { dir, kind, plant, open } = await storePlant(t, {
