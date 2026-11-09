@@ -22,7 +22,13 @@ const { CONFORMANCE_TIMING } = await import("../dist/runner/conformance/harness.
 const { journalRecords, messagesOf } = await import("../dist/runner/journal-reader.js");
 const { OPENCODE_STANDIN_ENV } = await import("../dist/adapters.js");
 const { DATA_ENV } = await import("../dist/server-fs.js");
-const { runFolder, scratchFolder } = await import("../dist/workspace/paths.js");
+const { runFolder, runKey, scratchFolder } = await import("../dist/workspace/paths.js");
+const { saveArchilSettings } = await import("../dist/archil-settings.js");
+const { ARCHIL_API_KEY_ROW, ARCHIL_DISK_TOKEN_ROW } = await import("../dist/workspace/index.js");
+const { sealColumn, sealedAt } = await import("../dist/store/seal.js");
+const { FakeArchilDisk } = await import("./fixtures/archil-fake.mjs");
+/** The server's Archil settings (archil-settings.ts): their presence is Mode 2. */
+const ARCHIL_SETTINGS = { diskId: "dsk-0000000000000001", region: "aws-us-east-1", s3Url: "https://s3.green.us-east-1.aws.prod.archil.com" };
 const { fakeAnthropic } = await import("@parcha/agentrun-harness-claude/testing");
 const { linkHarnesses } = await import("./support.mjs");
 const spec = await import("../dist/runner/cli-run-spec.js").catch(() => ({}));
@@ -102,7 +108,7 @@ async function runOn(t, { harness, model, env: envOf, prepare }) {
 
 /** A stored `harness` run's spec, built for its claim as the dispatch builds it (no session opened), with the CLI's
  *  working directory (the run's scratch). OpenCode on its stand-in: building its adapter starts nothing. */
-async function specOn(t, harness) {
+async function specOn(t, harness, { archil } = {}) {
   const dir = mkdtempSync(join(process.env.TMPDIR ?? tmpdir(), "runner-cli-spec-"));
   const server = await openSqliteStore({ dataDir: dir, role: "server" });
   const store = await openSqliteStore({ dataDir: dir, role: "runner" });
@@ -115,16 +121,21 @@ async function specOn(t, harness) {
     await server.close().catch(() => {});
     rmSync(dir, { recursive: true, force: true });
   });
-  await server.agents.create({ id: "agent-1", name: "Agent" }, { id: "rev-1", kind: "agentic", body: { instructions: "Answer.", harness, tools: ["read", "write"] } });
+  await server.agents.create({ id: "agent-1", name: "Agent" }, { id: "rev-1", kind: "agentic", body: { instructions: "Answer.", harness, tools: ["read", "write", "bash"] } });
   const launch = { input: { content: "Write a file." }, title: "t", place: { mode: "runner" }, harness, model: { provider: "openai", modelId: "gpt-5" } };
   await server.runs.create({ id: RUN, agentId: "agent-1", revisionId: "rev-1" }, { body: launch });
+  // Mode 2: the server's Archil settings row, and its two keys sealed under the runner's seal key, as the server saves them.
+  if (archil) {
+    await saveArchilSettings(server, ARCHIL_SETTINGS);
+    for (const [name, value] of [[ARCHIL_API_KEY_ROW, "fake-test-key-api-0001"], [ARCHIL_DISK_TOKEN_ROW, "fake-test-key-disk-token-0001"]]) await server.sealedKeys.put(name, sealColumn(SEAL_KEY, sealedAt.sealedKey(name), value));
+  }
   await server.flush?.();
   const [claim] = await store.runs.claimMany("runner-a", 1, { leaseMs: 60_000 });
   const registry = createRegistry();
   let models = createModels();
   harnessRun = await Harness.open(store.journal(claim), { models: () => models, registry, onReport: () => {} }, ctx);
   const env = { AGENT_MODEL_BASE_URL: "http://127.0.0.1:9", AGENT_MODEL_API_KEY: `not-a-secret-${"gateway"}`, [OPENCODE_STANDIN_ENV]: JSON.stringify({ command: process.execPath, args: [STAND_IN] }) };
-  const deps = { env, data: dir, journal: (c) => store.journal(c), store, sealKey: SEAL_KEY, routeOf: async () => assert.fail("no pi route"), computerForClaim: noComputer().forClaim };
+  const deps = { env, data: dir, journal: (c) => store.journal(c), store, sealKey: SEAL_KEY, routeOf: async () => assert.fail("no pi route"), computerForClaim: noComputer().forClaim, ...(archil ? { makeArchilDisk: () => archil } : {}) };
   built = await spec.cliRunSpecFromLaunch(launch, { harness: harnessRun, registry, setModels: (given) => (models = given) }, deps, claim);
   return { spec: built, dir, cwd: scratchFolder(dir, "agent-1", RUN) };
 }
@@ -196,4 +207,21 @@ test("a CLI's absolute path under its working directory is the run's folder: a w
   const outside = await call({ path: join(dir, "elsewhere.txt"), content: "no" });
   assert.equal(outside.isError, true, "a path outside the run's folder and the CLI's cwd is refused");
   assert.equal(existsSync(join(dir, "elsewhere.txt")), false);
+  const bash = built.session.tools.find((tool) => tool.name === "bash");
+  assert.match(bash.description, /at most 600 s/, "Mode 1's bash: the local shell's ceiling");
+});
+
+test("Mode 2 (the server's Archil settings saved): the CLI still works in the run's scratch on this machine, a write to <cwd>/x.txt lands as x.txt in the run's folder on the Archil disk, and bash runs as Archil exec, at most 295 s", async (t) => {
+  const disk = new FakeArchilDisk();
+  const { spec: built, cwd } = await specOn(t, "opencode", { archil: disk });
+  const call = (name, args) => built.session.tools.find((tool) => tool.name === name).call(args, { callId: `c-${Math.random()}`, signal: new AbortController().signal });
+  const landed = await call("write", { path: join(cwd, "x.txt"), content: "from the CLI" });
+  assert.equal(landed.isError, false, landed.text);
+  assert.equal(Buffer.from(disk.files.get(`${runKey("agent-1", RUN)}/x.txt`) ?? "").toString("utf8"), "from the CLI", "on the disk, in the run's folder");
+  const bash = built.session.tools.find((tool) => tool.name === "bash");
+  assert.match(bash.description, /at most 295 s/, "Archil's serverless exec's ceiling");
+  const ran = await call("bash", { command: "printf hi > y.txt" });
+  assert.equal(ran.isError, false, ran.text);
+  assert.ok(disk.calls.some((one) => one.op === "exec"), "bash ran as the disk's exec");
+  assert.equal(Buffer.from(disk.files.get(`${runKey("agent-1", RUN)}/y.txt`) ?? "").toString("utf8"), "hi");
 });
