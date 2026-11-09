@@ -47,19 +47,28 @@ test("a parked run with a raise and a stop waiting, whose resume fails, ends sto
   assert.deepEqual(events.filter((event) => event.type === "error"), [], "no error on the way");
 });
 
-test("a renew answered Fenced right after the loop's own end commit is no lost claim: the end is flushed and released before the runner says released", async (t) => {
+test("the loop's own end commit makes its run ending at once, its teardown included: no renew meets the end's epoch, no lost claim is said, and the end is flushed and released before the runner says released", async (t) => {
   const faux = fauxLoops({ turns: 1, turnMs: 10 });
   const { server, runners: [store] } = await stores({ runners: 1 });
   const record = recorder();
   const events = [];
+  let freeOther = () => {};
+  const otherHeld = new Promise((resolve) => (freeOther = resolve));
+  t.after(() => freeOther());
   const createLoop = (deps) => {
     const loop = faux.createLoop(deps);
     const start = loop.start;
     loop.start = async (claim) => {
+      // run-2 keeps the runner renewing all the while: held until the case is done, then given back.
+      if (claim.runId === "run-2") {
+        await otherHeld;
+        return { state: "interrupted" };
+      }
       const end = await start(claim);
-      // Held until a renew after the end commit has been answered and the runner has acted on it: the end released the
-      // run, so that renew is Fenced and the runner marks the claim lost. Only then does the loop come back with its end.
-      await until(() => events.some((event) => event.type === "claim-lost" && event.why === "fenced"), "precondition: a renew after the end commit is answered Fenced (claim-lost)");
+      // The loop's teardown, held until two renews of the runner's other run came after run-1's end commit landed (the
+      // second only once the first was answered): a renew of run-1 in that window would meet its end's epoch.
+      const after = record.calls.length;
+      await until(() => record.calls.slice(after).filter((call) => call.op === "renew" && call.runId === "run-2").length >= 2, "precondition: two renews after run-1's end commit");
       return end;
     };
     return loop;
@@ -67,8 +76,10 @@ test("a renew answered Fenced right after the loop's own end commit is no lost c
   const runner = startRunner({ store: observed(store, record), createLoop, name: "runner-a", ...TIMING, onEvent: (event) => events.push(event) });
   t.after(() => runner.close());
   await queue(server, "run-1");
-  await until(() => events.some((event) => event.type === "released"), "precondition: the runner says released");
-  // The property: made durable before it is said released (the end, a flush, the release), whatever the renew said.
+  await queue(server, "run-2");
+  await until(() => events.some((event) => event.type === "released" && event.runId === "run-1"), "precondition: the runner says run-1 released");
+  // The property: its own end is no lost claim, and it is made durable before it is said released.
+  assert.deepEqual(events.filter((event) => event.type === "claim-lost" && event.runId === "run-1"), [], "run-1's own end is never said a lost claim");
   assert.match(record.ops.join(" | "), /ended run-1 \| flush \| release run-1/, `the end, then a flush, then the release: ${record.ops.join(" | ")}`);
   const run = await server.runs.get("run-1");
   assert.deepEqual([run.state, run.runner], ["ended", null]);

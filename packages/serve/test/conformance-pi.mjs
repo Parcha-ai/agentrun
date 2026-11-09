@@ -21,7 +21,8 @@ export function scriptedModel(script) {
     // A said step ends the model's turn (in the suite's scripts it is always the last); sayLastSteer says the newest person
     // message, which is the steer once one was placed.
     const text = "say" in next ? next.say : textOf([...context.messages].reverse().find((message) => message.role === "user"));
-    return fauxAssistantMessage([fauxText(text)], { stopReason: "stop" });
+    // A cut step: the model stops at its output limit as it says it.
+    return fauxAssistantMessage([fauxText(text)], { stopReason: next.cut ? "length" : "stop" });
   };
   faux.setResponses(Array.from({ length: 64 }, () => answer));
   const models = createModels();
@@ -56,6 +57,9 @@ export function piSpec({ script, tools, hooks }) {
 /** The subject the suite runs: pi loops for `setup`. */
 export const piSubject = {
   name: "pi",
+  // pi ends a turn at a length stop (its generation answers with it), so no step of the same turn follows a cut answer:
+  // a run goes on from one only on a later message, and the run's end still reads its last answer (runner/loop.ts cutLast).
+  unsupported: { "length-mid-run": "a cut answer ends pi's turn, so no later step of the same turn can follow it" },
   process: { module: import.meta.url, export: "piSubject" },
   createLoop: (setup) => createPiLoop(piSpec(setup)),
 };

@@ -50,8 +50,8 @@ export type LearnedItem = { name: string; file: string; readme?: string; descrip
  *  changes. */
 export type Retired = { at: string; by: "person" | "run" };
 /** The newest change to an item's file, as the server names it (absent when it names none). */
-export type LastChange = { kind: "approved" | "edited" | "created" | "retired" | "restored" | "learned"; by: "person" | "run"; at: string };
-const VERBS: Record<LastChange["kind"], string> = { approved: "Approved", edited: "Edited", created: "Created", retired: "Retired", restored: "Restored", learned: "Learned" };
+export type LastChange = { kind: "approved" | "edited" | "created" | "retired" | "restored" | "learned" | "superseded"; by: "person" | "run"; at: string };
+const VERBS: Record<LastChange["kind"], string> = { approved: "Approved", edited: "Edited", created: "Created", retired: "Retired", restored: "Restored", learned: "Learned", superseded: "Replaced" };
 /** A change in words: "Approved by you", "Retired by a run". */
 export const changeWords = (kind: LastChange["kind"], by: LastChange["by"]) => `${VERBS[kind]} by ${by === "person" ? "you" : "a run"}`;
 /** The file that says whether a skill or a workflow is in use, which an approval and a retire name: a skill's SKILL.md, a
