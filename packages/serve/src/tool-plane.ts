@@ -381,16 +381,16 @@ export const withDefaults = (map: ToolSettingsMap): ToolSettingsMap & Record<Pic
 /** The server's tool settings, beside the agent store in its data directory: not a secret, and not in store.sqlite,
  *  which runs hold open. Read once at the start, written whole and durably (0600) at each PUT; a missing file is every
  *  default, and so is one it cannot read, which it says in one line. */
-/** The tool settings in `dir` as the server and the tool gate read them, failing closed: each entry that reads is kept;
- *  one that does not is dropped, but a known tool keeps what of it reads, and its permission, when not one offered,
- *  reads ask (deny where ask is not offered), never its allow default. `problems`: one line for each entry dropped or
- *  changed, naming the file and the field, never a value. `unreadable`: the file as a whole does not read (none, a
- *  missing file is every default). */
 /** An empty settings map marked as standing for a file that does not read (SETTINGS_UNREAD, tool-gate.ts): every caller of
  *  readToolSettings inherits the mark, a direct read too (learning's draft check, the learned-draft tools), so none lifts an
  *  ask over a file whose deny it cannot see. */
 const unreadMap = (): ToolSettingsMap => Object.assign({}, { [SETTINGS_UNREAD]: true }) as ToolSettingsMap;
 
+/** The tool settings in `dir` as the server and the tool gate read them, failing closed: each entry that reads is kept;
+ *  one that does not is dropped, but a known tool keeps what of it reads, and its permission, when not one offered,
+ *  reads ask (deny where ask is not offered), never its allow default. `problems`: one line for each entry dropped or
+ *  changed, naming the file and the field, never a value. `unreadable`: the file as a whole does not read (none, a
+ *  missing file is every default). */
 export function readToolSettings(dir: string): { settings: ToolSettingsMap; problems: string[]; unreadable?: true } {
   const file = join(dir, ToolSettings.FILE);
   let read: unknown;
