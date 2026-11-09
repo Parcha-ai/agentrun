@@ -25,6 +25,7 @@ import {
   approvalOf,
   asksOf,
   answersOf,
+  budgetOf,
   redactorOf,
   servedRunErrorWith,
   servedReviewWith,
@@ -77,9 +78,10 @@ type SavedReview = { kind: string | null; node: string | null; reason: string };
 const reviewOfRow = (state: RunReadState, summary: string | null): SavedReview | null => (state !== "escalated" ? null : { kind: null, node: null, reason: summary ?? "The workflow escalated." });
 const reviewAt = (review: SavedReview | null, endedAt: string): (SavedReview & { at: string }) | null => (review ? { kind: review.kind, node: review.node, reason: review.reason, at: endedAt } : null);
 
-/** A run's facts as statusOf reads them from the store. A terminal run reaches none of them (its outcome answers first);
- *  the running statuses fill these from the journal. */
-const terminalFacts: RunFacts = { budgetWaiting: () => false, paused: () => false, browserAsk: () => undefined };
+/** A run's facts as statusOf and momentOf read them, built from the run's journal: whether it stands parked at its cap
+ *  (an active agentrun.budget park), and the browser ask it waits on (wired next). A terminal run reaches none of them
+ *  (its outcome answers first). */
+const factsOf = (run: StoreRun): RunFacts => ({ budgetWaiting: () => run.budget !== undefined, paused: () => false, browserAsk: () => undefined });
 
 /** The run read from the store: the row, its launch, its timeline, its agent's revision count for the version, its
  *  learning end, and the sign-in cut it serves through. Undefined for an unknown run. */
@@ -103,6 +105,9 @@ interface StoreRun {
   readonly updatedAtMs: number;
   /** When the turn of a message still open last wrote (the live tick), as ISO; null when none is open. */
   readonly lastProgressAt: string | null;
+  /** The budget card the run shows while it stands parked at its cap (pending, kind budget), or undefined when it is not
+   *  parked there. Also the source of the `budgetWaiting` fact. */
+  readonly budget: Pending | undefined;
 }
 
 /** A runner holds the run's claim now: it is not in a final state, a runner is named on its row, and its lease has not run
@@ -176,6 +181,9 @@ async function storeRunOf(store: Store, runId: string, deps: ViewDeps): Promise<
   const answers = answersOf(records.entries);
 
   const meta: RunViewMeta = { ...(launch?.maxCostUsd !== undefined ? { max_cost_usd: launch.maxCostUsd } : {}), ...(Object.keys(answers).length ? { approvals: answers } : {}) };
+  // The budget card the run shows while it stands parked at its cap, from its journal's agentrun.budget park (none once a
+  // raise clears it). Read over the same meta cap and rows the card's figures and time come from.
+  const budget = budgetOf(records.entries, { meta, rows, updatedAt: iso(updatedAtMs) });
   const outcome = terminal ? STATUS_OF[row.state as Exclude<RunReadState, "running">] : undefined;
   const view: RunView = {
     id: row.id,
@@ -194,7 +202,7 @@ async function storeRunOf(store: Store, runId: string, deps: ViewDeps): Promise<
     ...(approvals.size ? { approvals } : {}),
     meta,
   };
-  return { row, runRow, launch, rows, version, harness, learningEnd, view, unshown, values, live, updatedAtMs, lastProgressAt };
+  return { row, runRow, launch, rows, version, harness, learningEnd, view, unshown, values, live, updatedAtMs, lastProgressAt, budget };
 }
 
 /** A run's learning as the view shows it: its end from the store, in a person's words cut of the host's secrets now, and,
@@ -227,7 +235,7 @@ export async function viewOverStore(store: Store, runId: string, deps: ViewDeps)
   const run = await storeRunOf(store, runId, deps);
   if (!run) return undefined;
   const { row, runRow, launch, view, unshown, values } = run;
-  const { status, state } = statusOf(view, terminalFacts);
+  const { status, state } = statusOf(view, factsOf(run));
   const terminal = TERMINAL.has(status);
   const endedAtMs = terminal ? (runRow.endedAt ?? runRow.startedAt) : null;
   const shownWords = (text: string): string => withoutLoopback(redacted(text, values));
@@ -239,11 +247,11 @@ export async function viewOverStore(store: Store, runId: string, deps: ViewDeps)
   const result = status === "completed" ? { output: null, final_answer: servedAnswer(finalAnswer) } : null;
   const error = status === "failed" ? (unshown ? { code: "run_failed", message: WITHHELD_SIGN_IN, retryable: false } : servedRunErrorWith(shownWords, errorOfRow(row.summary ?? null))) : null;
   const review = endedAtMs === null ? null : servedReviewWith(shownWords, unshown, reviewAt(reviewOfRow(row.state, row.summary ?? null), iso(endedAtMs)));
-  // The card the run shows while it waits: a tool call parked for a person's approval (approvalOf, its arguments shown
-  // through the run's redactor), else the question its turn ended on (pendingOf). The budget and browser cards join this
-  // chain next, in the order the file-backed view (runs.ts) picks them.
+  // The card the run shows while it waits, in the order the file-backed view (runs.ts) picks them: a tool call parked for a
+  // person's approval (approvalOf, its arguments shown through the run's redactor), else a run parked at its cap (the budget
+  // card), else the question its turn ended on (pendingOf). The browser card joins this chain next.
   const redactor = redactorOf(values);
-  const pending: Pending = status === "input_required" && state === "waiting" ? (approvalOf(view, redactor) ?? pendingOf(run.rows)) : null;
+  const pending: Pending = status === "input_required" && state === "waiting" ? (approvalOf(view, redactor) ?? run.budget ?? pendingOf(run.rows)) : null;
   const settled = terminal;
 
   return {
@@ -295,7 +303,7 @@ export async function summaryOverStore(store: Store, runId: string, deps: ViewDe
 export async function momentOverStore(store: Store, runId: string, deps: ViewDeps = { origin: "", serverSecrets: () => [] }): Promise<RunMoment | undefined> {
   const run = await storeRunOf(store, runId, deps);
   if (!run) return undefined;
-  return momentOf(run.view, terminalFacts, run.live);
+  return momentOf(run.view, factsOf(run), run.live);
 }
 
 /** Re-export so a caller need not reach into run-view for the type. */

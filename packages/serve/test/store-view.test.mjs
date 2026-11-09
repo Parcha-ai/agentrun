@@ -228,6 +228,84 @@ test("an answered approval folds into the moment by its decision and clears the 
   assert.equal(view.pending, null);
 });
 
+// The budget pending a parked run waits on, as its agentrun.budget entry holds it (the kernel cap's parkOf), with the raise
+// that would send its refused step. Both an agentic and a workflow run park the same way.
+const budgetEntry = (id, { cap_usd = 0.5, spent_usd = 0.3, needs_usd = 1, least_cap_usd = 1.3, suggested_cap_usd = 11, words = "Out of budget. Raise the cap to at least $1.30 to continue." } = {}) =>
+  ({ id, conversationId: ROOT, kind: "agentrun.budget", data: { pending: { kind: "budget", cap_usd, spent_usd, needs_usd, least_cap_usd, suggested_cap_usd }, words } });
+
+test("a run parked at its cap reads input_required with the budget pending card", async (t) => {
+  const { store } = await storeOn(t);
+  await agent(store);
+  await store.runs.create({ id: "run-1", agentId: "agent-1", revisionId: "rev-1" }, { body: { input: { message: "Do the big thing." }, title: "Capped run", place: { mode: "runner" }, max_cost_usd: 0.5, cap_mode: "expected" } });
+  const claim = await store.claim("run-1", "runner-a", { leaseMs: 60_000 });
+  const journal = store.journal(claim);
+  const u = { id: await journal.mintId(), conversationId: ROOT, kind: "pi.user", model: [{ role: "user", content: "Do the big thing.", timestamp: T0 + 1_000 }] };
+  // The cap refused the next request for room, so the run parked on it (the final agentrun.budget shape), and let go.
+  const budget = budgetEntry(await journal.mintId());
+  await commitWrites(journal, [{ type: "conversation", value: { id: ROOT } }, { type: "entry", value: u }, { type: "entry", value: budget }], context);
+  await store.release(claim);
+
+  const view = await viewOverStore(store, "run-1", deps);
+  assert.equal(view.status, "input_required");
+  assert.equal(view.state, "waiting");
+  // overshoot_bound_usd is microUp(0) === -0, byte-identical to the file-backed card when the cap kept no cache-miss bound.
+  assert.deepEqual(view.pending, { kind: "budget", cap_usd: 0.5, spent_usd: 0.3, needs_usd: 1, least_cap_usd: 1.3, suggested_cap_usd: 11, overshoot_bound_usd: -0, said: "Out of budget. Raise the cap to at least $1.30 to continue.", at: iso(T0 + 1_000) });
+  assert.deepEqual(view.cost, { usd: 0, basis: "estimate", charge_state: null, cap_usd: 0.5, overshoot_bound_usd: 0 });
+  assert.equal(view.cap_mode, "expected");
+  assert.equal(view.result, null);
+  assert.equal(view.error, null);
+  const moment = await momentOverStore(store, "run-1");
+  assert.equal(moment.awaitingAnswer, true);
+  assert.equal(moment.terminal, false);
+});
+
+test("a workflow run parked at its cap reads input_required with the budget pending card", async (t) => {
+  const { store } = await storeOn(t);
+  await agent(store, { kind: "workflow" });
+  await store.runs.create({ id: "run-1", agentId: "agent-1", revisionId: "rev-1" }, { body: { input: {}, title: "Capped workflow", place: { mode: "runner" }, max_cost_usd: 0.5, cap_mode: "expected" } });
+  const claim = await store.claim("run-1", "runner-a", { leaseMs: 60_000 });
+  const journal = store.journal(claim);
+  const u = { id: await journal.mintId(), conversationId: ROOT, kind: "pi.user", model: [{ role: "user", content: "Run the workflow.", timestamp: T0 + 1_000 }] };
+  const budget = budgetEntry(await journal.mintId());
+  await commitWrites(journal, [{ type: "conversation", value: { id: ROOT } }, { type: "entry", value: u }, { type: "entry", value: budget }], context);
+  await store.release(claim);
+
+  const view = await viewOverStore(store, "run-1", deps);
+  assert.equal(view.status, "input_required");
+  assert.equal(view.state, "waiting");
+  assert.equal(view.pending?.kind, "budget");
+  assert.equal(view.pending?.cap_usd, 0.5);
+  assert.equal(view.pending?.suggested_cap_usd, 11);
+  assert.equal(view.pending?.said, "Out of budget. Raise the cap to at least $1.30 to continue.");
+});
+
+test("a run whose cap was raised is no longer parked: the budget card clears and it reads working", async (t) => {
+  const { store, clock } = await storeOn(t);
+  await agent(store);
+  await store.runs.create({ id: "run-1", agentId: "agent-1", revisionId: "rev-1" }, { body: { input: { message: "Do the big thing." }, title: "Raised run", place: { mode: "runner" }, max_cost_usd: 11, cap_mode: "expected" } });
+  const claim = await store.claim("run-1", "runner-a", { leaseMs: 60_000 });
+  const journal = store.journal(claim);
+  const userId = await journal.mintId();
+  const budget = budgetEntry(await journal.mintId());
+  // The cap was raised: an agentrun.raise entry after the budget park clears it, and the resumed run works again.
+  const raise = { id: await journal.mintId(), conversationId: ROOT, kind: "agentrun.raise", data: { capUsd: 11, takes: [1] } };
+  await commitWrites(journal, [
+    { type: "conversation", value: { id: ROOT } },
+    { type: "entry", value: { id: userId, conversationId: ROOT, kind: "pi.user", model: [{ role: "user", content: "Do the big thing.", timestamp: T0 + 1_000 }] } },
+    { type: "entry", value: budget },
+    { type: "entry", value: raise },
+    { type: "submission", value: { type: "input", id: await journal.mintId(), conversationId: ROOT, status: "placed", entry: userId } },
+  ], context);
+  clock.now = T0 + 10_000;
+  await store.live.put([{ claim, state: {} }]);
+  const liveDeps = { ...deps, now: () => clock.now };
+
+  const view = await viewOverStore(store, "run-1", liveDeps);
+  assert.equal(view.status, "working");
+  assert.equal(view.state, "working");
+  assert.equal(view.pending, null);
+});
+
 test("a failed run's view serves its error from the row, with an unknown cost", async (t) => {
   const { store } = await storeOn(t);
   await agent(store);

@@ -220,6 +220,43 @@ export function answersOf(entries: readonly JournalEntry[]): Record<string, Appr
   return out;
 }
 
+/** An `agentrun.budget` entry's data: the pending budget the kernel cap parked the run with (parkOf), and the cap's words
+ *  as the run row's summary says them. */
+type BudgetEntry = { pending: { kind: "budget"; cap_usd: number; spent_usd?: number; needs_usd?: number; least_cap_usd?: number; suggested_cap_usd?: number }; words: string };
+
+/** The run's active cap park, from its journal: the last agentrun.budget entry the cap wrote when it parked the run for
+ *  room, unless an agentrun.raise after it cleared the pause (the run goes on at the raised cap then). A re-park writes a
+ *  fresh budget entry, which a raise before it does not clear, so the last of the two in log order decides. */
+function activeBudget(entries: readonly JournalEntry[]): BudgetEntry | undefined {
+  let mark: BudgetEntry | undefined;
+  for (const entry of entries) {
+    if (entry.kind === KINDS.budget) mark = dataOf<BudgetEntry>(entry);
+    else if (entry.kind === KINDS.raise) mark = undefined;
+  }
+  return mark;
+}
+
+/** Whether the run stands parked at its cap now (an active agentrun.budget park, no raise since): the store-backed fact the
+ *  status table reads (RunFacts.budgetWaiting), as the file-backed view read a workflow's pause file and an agentic run's
+ *  turn refusal. */
+export const budgetWaitingOf = (entries: readonly JournalEntry[]): boolean => activeBudget(entries) !== undefined;
+
+/** The budget card a run parked at its cap shows (pending, kind budget), from its agentrun.budget entry, the same way the
+ *  file-backed view built it from the run's pause mark (runs.ts workflowBudgetPending): its cap (the run's launch cap, else
+ *  the park's), what the cap counted as taken and the least the refused step needs, the raise offered (recomputed from
+ *  those by the view's one formula), and the cap's words at the run's last meaningful row. The overshoot bound reads 0: the
+ *  kernel cap's parkOf keeps no cache-miss bound. Undefined when no park is active. */
+export function budgetOf(entries: readonly JournalEntry[], run: Pick<RunView, "meta" | "rows" | "updatedAt">): Pending | undefined {
+  const mark = activeBudget(entries);
+  if (!mark) return undefined;
+  const p = mark.pending;
+  const cap = run.meta.max_cost_usd ?? p.cap_usd;
+  const figures = p.spent_usd !== undefined && p.needs_usd !== undefined
+    ? { spent_usd: micro(p.spent_usd), needs_usd: micro(p.needs_usd), ...(p.least_cap_usd !== undefined ? { least_cap_usd: p.least_cap_usd } : {}), suggested_cap_usd: suggestedCap(cap, p.spent_usd, p.needs_usd), overshoot_bound_usd: microUp(0) }
+    : {};
+  return { kind: "budget", cap_usd: cap, ...figures, said: mark.words, at: meaningful(run.rows)?.timestamp ?? run.updatedAt };
+}
+
 /** The run's meta the status and pending views read: a structural subset of RunMeta, so the server passes its live
  *  run.meta and the store-backed view a value built from the run's row. */
 export type RunViewMeta = {
@@ -410,6 +447,10 @@ export function statusOf(run: RunView, facts: RunFacts): { status: Status; state
     if (waitingApproval(run)) return { status: "input_required", state: "waiting" };
     if (actingOn(run)) return { status: "working", state: "working" };
   }
+  // Parked at its cap, as the store-backed view's fact says it (an active agentrun.budget park, no raise since): it waits
+  // for the cap to be raised. The file-backed view reads an agentic run's pause from the turn's refusal (refusedAt, below),
+  // where this fact is always false, so this is a no-op there; a workflow run reads it through the facts above.
+  if (facts.budgetWaiting()) return { status: "input_required", state: "waiting" };
   // Every message's turn is over and the newest one's ended interrupted, with no stop of the person's saying so (the
   // harness ended it on its own): the run waits for the person, as after a stop, never working for good.
   if (run.kind === "agentic" && run.submitted === 0 && run.turns.end()?.status === "interrupted") return { status: "input_required", state: "idle" };
