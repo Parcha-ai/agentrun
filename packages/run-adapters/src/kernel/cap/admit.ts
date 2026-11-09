@@ -8,7 +8,7 @@ import type { CapMarks, StartMark } from "./marks.js";
 import { ownCostsOf, spendOf, toldIn } from "./recover.js";
 import { capRule, noteFor, priced } from "./rule.js";
 import { CapRefused, DecisionPriceUnreadable } from "./errors.js";
-import type { Admission, Cap, CapMode, CapOptions, CapRequest, DecisionCapRequest, ModelCapRequest, Settled } from "./types.js";
+import type { Admission, Cap, CapMode, CapModel, CapOptions, CapRequest, DecisionCapRequest, ModelCapRequest, Settled } from "./types.js";
 
 export { CapRefused, DecisionPriceUnreadable };
 
@@ -36,17 +36,21 @@ export const DECISION_IMAGE_TOKENS = 3_300;
  *  DECISION_OUTPUT_TOKENS a question under "expected", whatever its model's most output (so a model with none is admitted
  *  so); its model's most completion tokens under "strict" (none, and its output priced: no bound, refused); its images'
  *  tokens in its input; its fees (per request, per image) beside its tokens. */
-const asModel = (request: DecisionCapRequest, mode: CapMode): ModelCapRequest => {
+export function decisionAsk(request: DecisionCapRequest, mode: CapMode): { model: CapModel; inputTokens: number; output: number | null; feeUsd: number } {
   if (request.model === "unreadable") throw new DecisionPriceUnreadable();
   const images = request.images ?? 0;
   const output = mode === "strict" ? request.model.outputCeiling : request.questions * DECISION_OUTPUT_TOKENS;
   const model = mode === "strict" ? request.model : { ...request.model, outputCeiling: output };
   const feeUsd = (request.requestUsd ?? 0) + (request.imageUsd ?? 0) * images;
+  return { model, inputTokens: request.inputTokens + images * DECISION_IMAGE_TOKENS, output, feeUsd };
+}
+const asModel = (request: DecisionCapRequest, mode: CapMode): ModelCapRequest => {
+  const { model, inputTokens, output, feeUsd } = decisionAsk(request, mode);
   return {
     kind: "model",
     id: request.id,
     model,
-    inputTokens: request.inputTokens + images * DECISION_IMAGE_TOKENS,
+    inputTokens,
     ...(feeUsd > 0 ? { feeUsd } : {}),
     ...(output === null ? {} : { outputAsked: output, outputTokensLeast: output }),
   };

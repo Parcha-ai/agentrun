@@ -138,6 +138,8 @@ export interface ModelRequest {
   /** The least output it may be limited to and still answer: its answer's 1,024 tokens, plus the least thinking its
    *  provider takes when it thinks (the proxy's policy says). Absent: 1,024. */
   outputTokensLeast?: number;
+  /** What it charges beside its tokens (a decision's per-request and per-image prices), in USD: held with them. */
+  feeUsd?: number;
   /** A side call, never its turn's own: on another model than the session's (a client's title, a summary), or the
    *  host's own request beside the harness's (`host`). */
   side?: true;

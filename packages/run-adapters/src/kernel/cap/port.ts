@@ -50,6 +50,7 @@ export function beforeRequestOf(options: BeforeRequestOptions): BeforeRequest {
       ...(request.outputTokensAsked === undefined ? {} : { outputAsked: request.outputTokensAsked }),
       ...(request.outputTokensLeast === undefined ? {} : { outputTokensLeast: request.outputTokensLeast }),
       ...(previous ? { previous } : {}),
+      ...(isFigure(request.feeUsd) && request.feeUsd > 0 ? { feeUsd: request.feeUsd } : {}),
       ...(request.side ? { side: true } : {}),
     };
     // Each request in flight at what the host held for it, else its worst case at the limit it was admitted with; one with
