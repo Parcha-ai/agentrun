@@ -154,7 +154,9 @@ export async function mcpClaim(options: McpClaimOptions): Promise<McpClaimStep> 
       // Waiting before the read, so a holder that lets go between the read and the wait still wakes it.
       const wait = settledOf(store.where, name, MCP_SETTLE_POLL_MS, stop, timer);
       const row = await store.mcp.server(name);
-      const lapsed = row?.refreshUntil != null && row.refreshUntil <= now();
+      // The lease is the store's: judged by the store's clock (refreshLapsed), never this claim's, which on another
+      // machine may run ahead of it and read a live lease as lapsed.
+      const lapsed = row?.refreshLapsed === true;
       if (!row || row.refreshHolder === null || lapsed || stop.aborted) return wait.cancel(), row;
       await wait.done;
     }

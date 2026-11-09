@@ -547,6 +547,10 @@ export interface McpServerRow {
   /** A refresh in flight: its holder and the lease's end (ms), or null. */
   readonly refreshHolder: string | null;
   readonly refreshUntil: number | null;
+  /** Whether that lease has run out, judged by the store's own clock when the row was read: the clock leaseRefresh writes
+   *  and grants it by. A reader judges the lease by this, never by its own clock against refreshUntil: on another machine
+   *  its clock may run ahead of the store's, and a live lease would read as lapsed. False with no lease. */
+  readonly refreshLapsed: boolean;
   readonly createdAt: number;
   readonly updatedAt: number;
   /** When the tools were last listed (ms): a refresh moves this, not updatedAt, so a refresh is not read as an owner edit.

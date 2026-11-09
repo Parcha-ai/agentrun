@@ -123,10 +123,14 @@ type McpServerRecord = {
 };
 type McpPinRecord = { run_id: string; body: string; pinned_at: number };
 const MCP_SERVER_COLUMNS = "name, url, auth, protocol, tools, prices, server_info, instructions, sealed, refresh_holder, refresh_until, created_at, updated_at, listed_at, credential_changed_at";
-const mcpServerOf = (r: McpServerRecord): McpServerRow => ({
+/** The row as read at `at`, the store's own clock: its refresh lease judged by that clock (refreshLapsed), the one
+ *  leaseRefresh writes and grants it by, with its rule: a lease has run out once its refresh_until is before now. */
+const mcpServerOf = (r: McpServerRecord, at: number): McpServerRow => ({
   name: r.name, url: r.url, auth: r.auth, protocol: r.protocol, tools: JSON.parse(r.tools), prices: JSON.parse(r.prices),
   serverInfo: r.server_info === null ? null : JSON.parse(r.server_info), instructions: r.instructions,
-  sealed: r.sealed === null ? null : Uint8Array.from(r.sealed), refreshHolder: r.refresh_holder, refreshUntil: r.refresh_until, createdAt: r.created_at, updatedAt: r.updated_at, listedAt: r.listed_at, credentialChangedAt: r.credential_changed_at,
+  sealed: r.sealed === null ? null : Uint8Array.from(r.sealed), refreshHolder: r.refresh_holder, refreshUntil: r.refresh_until,
+  refreshLapsed: r.refresh_until !== null && r.refresh_until < at,
+  createdAt: r.created_at, updatedAt: r.updated_at, listedAt: r.listed_at, credentialChangedAt: r.credential_changed_at,
 });
 const mcpPinOf = (r: McpPinRecord): McpPinRow => ({ runId: r.run_id, body: JSON.parse(r.body), pinnedAt: r.pinned_at });
 
@@ -751,7 +755,7 @@ class SqliteStore implements Store {
 
     const server = async (executor: Pick<SqliteExecutor, "get">, name: string) => {
       const row = await executor.get<McpServerRecord>(`SELECT ${MCP_SERVER_COLUMNS} FROM mcp_servers WHERE name = ?`, name);
-      return row && mcpServerOf(row);
+      return row && mcpServerOf(row, now());
     };
     this.mcp = {
       put: async ({ name, url, auth, protocol = null, tools, prices = null, serverInfo = null, instructions = null, sealed = null, listedAt, updatedAt, credentialChangedAt }) => {
@@ -770,12 +774,15 @@ class SqliteStore implements Store {
             RETURNING ${MCP_SERVER_COLUMNS}`,
           params: [name, url, auth, protocol, json(tools), json(prices), serverInfo === null ? null : json(serverInfo), instructions, sealed, at, updated, listed, credentialAt],
         }]);
-        return mcpServerOf(result!.rows[0] as McpServerRecord);
+        return mcpServerOf(result!.rows[0] as McpServerRecord, at);
       },
       remove: async (name) => {
         await db.write([{ sql: "DELETE FROM mcp_servers WHERE name = ?", params: [name] }]);
       },
-      servers: async () => (await db.all<McpServerRecord>(`SELECT ${MCP_SERVER_COLUMNS} FROM mcp_servers ORDER BY name`)).map(mcpServerOf),
+      servers: async () => {
+        const at = now();
+        return (await db.all<McpServerRecord>(`SELECT ${MCP_SERVER_COLUMNS} FROM mcp_servers ORDER BY name`)).map((row) => mcpServerOf(row, at));
+      },
       server: (name) => server(db, name),
       pin: async (runId) => {
         const row = await db.get<McpPinRecord>("SELECT run_id, body, pinned_at FROM mcp_pins WHERE run_id = ?", runId);
