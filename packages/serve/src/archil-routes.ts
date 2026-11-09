@@ -11,7 +11,7 @@
 // archilRoute holds the routes' rules, so serve's dispatch only calls it and sends the answer, or the ApiError's status.
 import { ARCHIL_API_KEY_ROW, type ArchilSettings, clearArchilSettings, loadArchilSettings, saveArchilSettings } from "./archil-settings.js";
 import { ApiError, type InputIssue, invalid } from "./errors.js";
-import { type KeyEnv, type KeyMeta, keyMetaOf } from "./key-meta.js";
+import { type KeyEnv, type KeyMeta, keyMetaOf, secretName } from "./key-meta.js";
 import { putSealedKey, removeSealedKey } from "./server-keys.js";
 import type { Store } from "./store/index.js";
 import { unknownFields } from "./validate.js";
@@ -25,8 +25,11 @@ export const ARCHIL_ROUTES: ReadonlySet<string> = new Set(["getWorkspaceArchil",
 /** The key the owner gives, by the name the API takes, and the sealed-key row it is kept in. */
 const KEYS: readonly { readonly name: string; readonly row: string }[] = [{ name: ARCHIL_API_KEY_ENV, row: ARCHIL_API_KEY_ROW }];
 
-/** The Archil settings as the owner reads them: the key in the shared secret shape (key-meta.ts), never a value. */
-export type ArchilView = { on: boolean; diskId?: string; region?: string; s3Url?: string; image?: string; keys: KeyMeta[] };
+/** The account key as its one SecretMeta: named "workspace:archil", set by ARCHIL_API_KEY or its sealed row. */
+const SECRET = { secret: secretName("workspace", "archil"), env: ARCHIL_API_KEY_ENV, row: ARCHIL_API_KEY_ROW };
+
+/** The Archil settings as the owner reads them: the account key as `secret`, its SecretMeta, never a value. */
+export type ArchilView = { on: boolean; diskId?: string; region?: string; s3Url?: string; image?: string; secret: KeyMeta };
 export type ArchilTest = { ok: true; detail: string } | { ok: false; why: string };
 
 export interface ArchilRoutesOptions {
@@ -53,7 +56,7 @@ export function createArchilRoutes(options: ArchilRoutesOptions) {
 
   async function view(): Promise<ArchilView> {
     const settings = await loadArchilSettings(store);
-    return { on: settings !== undefined, ...(settings ?? {}), keys: await keyMetaOf(store, KEYS, env) };
+    return { on: settings !== undefined, ...(settings ?? {}), secret: (await keyMetaOf(store, [SECRET], env))[0]! };
   }
 
   /** The settings row replaced and the keys given sealed, once every field is right; nothing is saved when one is not. */

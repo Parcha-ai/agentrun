@@ -11,7 +11,7 @@ import { KEY_TABLE, type KeyTable, type OptionsAnswer, type ProviderFactories, t
 import { COMPUTER_KINDS, type ComputerKind, type ComputerSetting } from "./computer-setting.js";
 import { inArchilMode } from "./archil-settings.js";
 import { ApiError, invalid } from "./errors.js";
-import { type KeyEnv, type KeyMeta, keyMetaOf, envValue } from "./key-meta.js";
+import { type KeyEnv, type KeyMeta, keyMetaOf, envValue, secretName } from "./key-meta.js";
 import { getSealedKey, putSealedKey, removeSealedKey, sealedKeyNames } from "./server-keys.js";
 import type { Store } from "./store/index.js";
 
@@ -48,10 +48,10 @@ export interface ComputerRoutesOptions {
   readonly env?: KeyEnv;
 }
 
-/** A provider's key, as Settings shows it: the shared secret shape (key-meta.ts), and whether the provider needs it. */
-export type KeyView = KeyMeta & { required: boolean };
-/** A provider as Settings shows it: `metered` straight from the kind registry (its computers are billed by the vendor). */
-export type ProviderView = { id: string; name: string; metered: boolean; keys: KeyView[]; ready: boolean; why?: string };
+/** A provider as Settings shows it: `metered` straight from the kind registry (its computers are billed by the vendor);
+ *  its keys as SecretMeta under `secrets`, each named "computer:<provider>:<KEY>", and `required`, the names of the ones
+ *  it needs. */
+export type ProviderView = { id: string; name: string; metered: boolean; secrets: KeyMeta[]; required: string[]; ready: boolean; why?: string };
 export type KindView = { kind: ComputerKind; offered: boolean; why?: string; groups: string[]; tools: string[]; providers: ProviderView[] };
 export type TestView = { ok: true; detail: string } | { ok: false; why: string };
 
@@ -98,9 +98,11 @@ export function createComputerRoutes(options: ComputerRoutesOptions) {
    *  that serves it, with its keys (saved or not, never a value) and whether a run could have it now. */
   async function view(): Promise<{ kinds: KindView[] }> {
     const mode = await modeNow();
-    const names = [...new Set(kinds.PROVIDERS.flatMap((provider) => provider.keys.map((key) => key.name)))];
-    const metas = new Map((await keyMetaOf(store, names.map((name) => ({ name, row: name })), env)).map((meta) => [meta.name, meta]));
-    const saved = new Set([...metas.values()].filter((meta) => meta.set).map((meta) => meta.name));
+    // Every provider's keys in one read: each a SecretMeta named for its provider, set by the environment or the store row
+    // of its key's name.
+    const slots = kinds.PROVIDERS.flatMap((provider) => provider.keys.map((key) => ({ secret: secretName("computer", provider.id, key.name), env: key.name, row: key.name })));
+    const metas = new Map((await keyMetaOf(store, slots, env)).map((meta) => [meta.name, meta]));
+    const saved = new Set(slots.filter((slot) => metas.get(slot.secret)!.set).map((slot) => slot.env));
     return {
       kinds: COMPUTER_KINDS.map((kind): KindView => {
         const spec = kinds.SETTING_KINDS[kind];
@@ -108,7 +110,7 @@ export function createComputerRoutes(options: ComputerRoutesOptions) {
         const providers = serving.map((provider): ProviderView => {
           const missing = missingKeys(provider, saved);
           const why = modeRefusal(kind, provider, mode) ?? (missing.length ? keysWhy(provider, missing) : undefined);
-          return { id: provider.id, name: provider.label, metered: provider.metered, keys: provider.keys.map((key) => ({ ...metas.get(key.name)!, required: key.required })), ready: why === undefined, ...(why ? { why } : {}) };
+          return { id: provider.id, name: provider.label, metered: provider.metered, secrets: provider.keys.map((key) => metas.get(secretName("computer", provider.id, key.name))!), required: provider.keys.filter((key) => key.required).map((key) => secretName("computer", provider.id, key.name)), ready: why === undefined, ...(why ? { why } : {}) };
         });
         const offered = kind === "none" || serving.some((provider) => modeRefusal(kind, provider, mode) === undefined);
         const why = offered ? undefined : serving.length ? `no provider of a ${kind} computer can reach this server's run folders` : `no provider serves a ${kind} computer`;
