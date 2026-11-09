@@ -174,7 +174,7 @@ test("a pi run through the runner whose agent runs `env` in its bash: the shell 
   assert.deepEqual(found(logs()), [], "the runner's log holds none");
 });
 
-test("pdf_pages: its programs run with no planted secret in their environment (pdf-pages.ts runs them with this process's whole environment: red until it passes one of its own)", async (t) => {
+test("pdf_pages: its programs run with no planted secret in their environment (red on cli-spec, where pdf-pages.ts runs them with this process's whole environment; fixed by untangle/tools-pdf-env 7aa36b1826, main #2016 fb70182f39: helperEnv)", async (t) => {
   const dir = mkdtempSync(join(process.env.TMPDIR ?? tmpdir(), "secret-edge-pdf-"));
   t.after(() => rmSync(dir, { recursive: true, force: true }));
   // A pdfinfo first on the PATH that writes down its environment, then fails, as a broken PDF would.

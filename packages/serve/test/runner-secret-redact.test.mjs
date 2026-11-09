@@ -83,6 +83,96 @@ test("the adapter loop's own failed end: its journal end and the row say why wit
   assert.ok(!JSON.stringify(entries).includes(PLANTED), `no journal entry holds it: ${JSON.stringify(end.data)}`);
 });
 
+test("the runner's log holds no key: a run whose release throws with the key in its error logs the failure with the key cut", async (t) => {
+  // What the runner writes to stderr and the console while the run goes (stdout is the test reporter's, left alone).
+  const lines = [];
+  const write = process.stderr.write.bind(process.stderr);
+  process.stderr.write = (chunk, ...rest) => (lines.push(String(chunk)), write(chunk, ...rest));
+  const consoled = {};
+  for (const level of ["log", "info", "warn", "error", "debug"]) {
+    consoled[level] = console[level];
+    console[level] = (...args) => lines.push(args.map(String).join(" "));
+  }
+  t.after(() => {
+    process.stderr.write = write;
+    for (const [level, f] of Object.entries(consoled)) console[level] = f;
+  });
+  /** A session that answers at once: the run ends, then its release is let go. */
+  const answering = {
+    id: "answering",
+    capabilities: () => ({}),
+    check: () => [],
+    async open() {
+      let state = "new";
+      return {
+        get state() { return state; },
+        async send() { state = "idle"; },
+        async recover() {},
+        async settleOpenTurn() {},
+        turnEnd: async () => ({ status: "completed" }),
+        async interrupt() {},
+        async close() {},
+      };
+    },
+  };
+  const createLoop = createAdapterLoop(() => ({
+    adapter: answering, session: { key: "root", label: "root", system: [], tools: [], context: "fresh" }, input: "Go.", hooks: quiet,
+    release: async () => { throw new Error(`the computer's release was refused for key ${PLANTED}`); },
+  }));
+  const { row } = await runWith(t, createLoop);
+  assert.equal(row.state, "ended", JSON.stringify(row));
+  const log = await until(async () => {
+    const text = lines.join("\n");
+    return text.includes("release failed") && text;
+  }, "the release's failure logged", 10_000);
+  assert.ok(!log.includes(PLANTED), `the runner's log holds no key: ${log.slice(-300)}`);
+  assert.match(log, /release failed: .*\[redacted\]/, "it says the release failed, the key cut");
+});
+
+test("a run spec's own log lines hold no key: a CLI run's computer release refused with the key in the env logs the failure with it cut", async (t) => {
+  const { mkdtempSync, rmSync } = await import("node:fs");
+  const { tmpdir } = await import("node:os");
+  const { join } = await import("node:path");
+  const { fileURLToPath } = await import("node:url");
+  const { createModels } = await import("@earendil-works/pi-ai/models");
+  const { createRegistry, Harness } = await import("@earendil-works/pi-durable");
+  const { openSqliteStore } = await import("../dist/store/sqlite/store.js");
+  const { OPENCODE_STANDIN_ENV } = await import("../dist/adapters.js");
+  const { cliRunSpecFromLaunch } = await import("../dist/runner/cli-run-spec.js");
+  process.env.AGENTRUN_OPENCODE_STANDIN = "1";
+  const dir = mkdtempSync(join(process.env.TMPDIR ?? tmpdir(), "runner-spec-redact-"));
+  const server = await openSqliteStore({ dataDir: dir, role: "server" });
+  const store = await openSqliteStore({ dataDir: dir, role: "runner" });
+  let harness;
+  t.after(async () => {
+    await harness?.close(ctx).catch(() => {});
+    await store.close().catch(() => {});
+    await server.close().catch(() => {});
+    rmSync(dir, { recursive: true, force: true });
+  });
+  await server.agents.create({ id: "agent-1", name: "Agent" }, { id: "rev-1", kind: "agentic", body: { instructions: "Answer.", harness: "opencode", tools: ["read"] } });
+  const launch = { input: { content: "Go." }, title: "t", place: { mode: "runner" }, harness: "opencode", model: { provider: "openai", modelId: "gpt-5" } };
+  await server.runs.create({ id: "run-1", agentId: "agent-1", revisionId: "rev-1" }, { body: launch });
+  await server.flush?.();
+  const [claim] = await store.runs.claimMany("runner-a", 1, { leaseMs: 60_000 });
+  const registry = createRegistry();
+  let models = createModels();
+  harness = await Harness.open(store.journal(claim), { models: () => models, registry, onReport: () => {} }, ctx);
+  const standIn = fileURLToPath(new URL("./fixtures/fake-opencode-serve.mjs", import.meta.url));
+  // The runner's environment holds the key; the computer's release echoes it.
+  const env = { AGENT_MODEL_BASE_URL: "http://127.0.0.1:9", AGENT_MODEL_API_KEY: PLANTED, [OPENCODE_STANDIN_ENV]: JSON.stringify({ command: process.execPath, args: [standIn] }) };
+  const logged = [];
+  const deps = {
+    env, data: dir, journal: (c) => store.journal(c), store, sealKey: Buffer.alloc(32, 7), routeOf: async () => assert.fail("no pi route"), log: (line) => logged.push(line),
+    computerForClaim: async () => ({ release: async () => { throw new Error(`the computer refused to go, key ${PLANTED}`); } }),
+  };
+  const built = await cliRunSpecFromLaunch(launch, { harness, registry, setModels: (given) => (models = given) }, deps, claim);
+  await built.release?.();
+  const text = logged.join("\n");
+  assert.match(text, /computer could not be let go/, `the release's failure is logged: ${text}`);
+  assert.ok(!text.includes(PLANTED) && text.includes("[redacted]"), `the spec's log holds no key: ${text}`);
+});
+
 test("the model route's error text, which pi records, holds no key: the SSE error event is redacted", async () => {
   const models = {
     streamSimple: () => (async function* () {
