@@ -590,12 +590,18 @@ export class PhoneHarnessProvider implements ComputerProvider {
 		return ok({ id, name: id, spec: { image: (entry as PhoneLedgerEntry).image, user: SHELL_USER, network: "open", deadline, kind: "android" } });
 	}
 
-	/** Settings' test: one GET /sessions, the account's sessions joined to the ledger, which rents nothing. */
+	/**
+	 * Settings' test: one GET /sessions, the account's sessions joined to the ledger, and a GET of any phone of the
+	 * ledger the listing leaves out. It rents nothing.
+	 */
 	async testConnection(context: CallContext = {}): Promise<Result<{ detail: string }>> {
 		return listTested("Phone harness", await this.list({}, context));
 	}
 
 	async #list(labels: Record<string, string>, { signal }: CallContext = {}): Promise<Result<ComputerInfo[]>> {
+		// The ledger is read before the account's sessions: a phone whose entry is read was made before the GET, so it is
+		// in its answer unless it is gone. An entry a create writes later is not seen by this list, and so not forgotten.
+		const entries = await this.#ledger.list();
 		const got = await this.#api("GET", "/sessions", signal ? { signal } : {});
 		if (!got.ok) return got;
 		if (!Array.isArray(got.value.json)) return fail("phone", `GET /sessions answered ${show(got.value.json).slice(0, 200)}, not a list`);
@@ -605,7 +611,7 @@ export class PhoneHarnessProvider implements ComputerProvider {
 			if (session.ok) live.set(session.value.id, session.value);
 		}
 		const out: ComputerInfo[] = [];
-		for (const listed of await this.#ledger.list()) {
+		for (const listed of entries) {
 			let entry = listed;
 			if (entry.request !== undefined) {
 				// A create not answered yet: its phone is the account's session whose request_key is exactly its key.
@@ -619,11 +625,16 @@ export class PhoneHarnessProvider implements ComputerProvider {
 				await this.#ledger.put(entry);
 				await this.#ledger.remove(listed.id);
 			}
-			const session = live.get(entry.id);
+			let session = live.get(entry.id);
 			if (session === undefined) {
-				// The service ended it: the ledger forgets it.
-				await this.#ledger.remove(entry.id);
-				continue;
+				// Not in the listing: its own GET says whether the service ended it (404), and only then is it forgotten.
+				const read = await this.#session(entry.id, signal);
+				if (!read.ok && read.error.code === "gone") {
+					await this.#ledger.remove(entry.id);
+					continue;
+				}
+				if (!read.ok) return read;
+				session = read.value;
 			}
 			if (!carries(entry.labels, labels)) continue;
 			out.push({

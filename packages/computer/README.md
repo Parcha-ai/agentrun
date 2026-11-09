@@ -1884,10 +1884,13 @@ the API's control URL) is a later change: `platform: "ios"` is refused in words.
     janitor's sweep and release find and end a phone made under a lost create.
   - A pending entry with no such session is kept while a create may still be under way, and forgotten after its
     deadline.
+  - `list()` reads the ledger before `GET /sessions`, so it never forgets a phone a create records while it runs. It
+    forgets a phone the listing leaves out only once that phone's own `GET /sessions/<id>` is a 404.
 - **adb** is an option too: a transport, `{ run(args, { input }), server(service) }` (tests give a fake), or the path of
   the `adb` CLI (Android platform-tools; default `adb` on PATH), whose server it starts and speaks to on the loopback
   (port 5037, adb's own). Without it, connect says so in words.
-- **testConnection** is one `GET /sessions` joined to the ledger, which rents nothing and reaches no phone: ok with the
+- **testConnection** is list(): one `GET /sessions` joined to the ledger, and a GET of any phone the listing leaves out.
+  It rents nothing and reaches no phone: ok with the
   count of this provider's phones, `unauthorized` for a refused key, `unreachable` when the phone harness is not
   reached.
 
