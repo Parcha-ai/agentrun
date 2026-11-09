@@ -24,6 +24,8 @@ const USAGE = `usage: agentrun-serve [--data DIR] [--listen ADDR] [--port N] [--
        agentrun-serve validate-template DIR
        agentrun-serve eval-template DIR [--case NAME ...] [--runs N] [--server URL] [--grader-model PROVIDER/MODEL] [--report FILE] [--faux MODULE]
        agentrun-serve import [--data DIR] [--from claude-code,codex,pi] [--dry-run] [--include-deleted] [--all] [--verbose] [--port N]
+       agentrun-serve runner --data DIR [--loops N] [--name NAME]
+       agentrun-serve runner --check --data DIR [--name NAME]
 
   --data DIR        the agent store and its runs (default ~/.local/share/agentrun/agents); the token is DIR/.token, mode 0600
   --listen ADDR     the address to listen on (default 127.0.0.1); on any other, every Host name is served and the token
@@ -176,6 +178,14 @@ if (process.argv[2] === "eval-template") {
     console.error(error.message);
     process.exit(2);
   }
+}
+
+// The runner process (runner/main.ts): beside the server, its own store connection in --data, claiming runs until SIGTERM
+// or SIGINT. Its exit: 2 bad arguments, 3 a store schema it does not know, 1 anything else, 0 closed. `--check` reads its
+// heartbeat (0 fresh, 1 not).
+if (process.argv[2] === "runner") {
+  const { runnerMain } = await import("./runner/main.js");
+  process.exit(await runnerMain(process.argv.slice(3)));
 }
 
 if (process.argv[2] === "import") {

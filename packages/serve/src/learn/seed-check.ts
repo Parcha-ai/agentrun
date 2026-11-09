@@ -9,8 +9,9 @@ import { INDEX_FILE } from "./notes.js";
 import type { Workspace } from "../workspace/index.js";
 
 /** What the seed holds as the checker reads it: every path at its top and in its learned folders, and its active notes.
- *  `kept`: the skills' and drafts' files whose text there has a status (a person's call), which a run never changes. */
-function baseOf(snapshot: Snapshot): { base: Base; kept: string[] } {
+ *  `kept`: the skills' and drafts' files whose text there has a status (a person's call), which a run never changes.
+ *  proposeRun takes it from the snapshot it read the seed's texts with, so the base costs no second read. */
+export function baseOf(snapshot: Snapshot): { base: Base; kept: string[] } {
   const learned = [...snapshot.skills, ...snapshot.workflows];
   return {
     base: { files: [...topOf(snapshot), ...learned.flatMap((item) => item.files.map((file) => file.path))], active: snapshotNotes(snapshot).filter((note) => note.status === "active") },

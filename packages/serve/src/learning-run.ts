@@ -20,7 +20,7 @@ import { type AnalyticsFilter, type Revision, runDirIn, type RunRow, type Starte
 import type { TimelineEvent } from "@parcha/pi-durable-agent/timeline";
 import { CAP_REFUSAL_PREFIX, SPEND_CAP_REACHED } from "./cap.js";
 import { readJson, RUN_META, runDoorToken } from "./files.js";
-import { activeOf, currentLearning, detailShown, dropSeed, holdsForOk, keepTurn, KEPT_LEARNING, layLearned, layPinnedSkills, LEARNED_DIR, type Learning, LEARNING_BUDGET, type NoteRuns, LEARNING_LABEL, LEARNING_REASONS, type LearningReason, type LearningState, learningTestHooks, learningView, pinSeed, readPin, readTurn, secretsShown, type Seed, seedAt, seedOf, shortLearning, type Shown, skillsAt, type Turn } from "./learning.js";
+import { activeOf, currentLearning, detailShown, dropSeed, holdsForOk, keepTurn, KEPT_LEARNING, layLearned, layPinnedSkills, LEARNED_DIR, type Learning, LEARNING_BUDGET, type NoteRuns, LEARNING_LABEL, LEARNING_REASONS, learningFolderOf, type LearningReason, type LearningState, learningTestHooks, learningView, pinSeed, readPin, readTurn, secretsShown, type Seed, seedAt, seedOf, shortLearning, type Shown, skillsAt, type Turn } from "./learning.js";
 import { statusesOf } from "./learning-routes.js";
 import { cutStrings, redacted } from "./key-refusal.js";
 import { servedOnly } from "./served-only.js";
@@ -763,7 +763,15 @@ export class LearningRuns {
       const { proposeRun } = await import("./propose.js");
       // The secrets this server holds, wherever its launcher put them, the keys saved on it, what each launch handed the
       // run, and its own tokens. How the job ended, before its end-of-run turn: only a completed run keeps a skill.
-      const proposed = await proposeRun({ data: this.options.agents.dir, agentId: run.agentId, runDir: run.dir, seed: pin.seed, turn: await readTurn(run.dir), refuse: this.refused(run), ...(run.meta.reflect ? { outcome: run.meta.reflect.outcome } : {}), ...(await this.draftTools(run)) });
+      const turn = await readTurn(run.dir);
+      const drafts = await this.draftTools(run);
+      const folder = learningFolderOf(this.options.agents.dir, run.agentId);
+      let proposed;
+      try {
+        proposed = await proposeRun({ folder: folder.workspace, runDir: run.dir, seed: pin.seed, turn, refuse: this.refused(run), ...(run.meta.reflect ? { outcome: run.meta.reflect.outcome } : {}), ...drafts });
+      } finally {
+        await folder.end();
+      }
       // What the checks left out goes on with it (`problems`), to be said with what it learned.
       if (proposed.state === "proposed") this.setLearning(run, "proposed", null, said.proposed(proposed.notes, proposed.skills, proposed.workflows), proposed.left ? { problems: proposed.left } : {});
       else if (proposed.reason === "empty") this.setLearning(run, "dropped", "empty", said.empty);

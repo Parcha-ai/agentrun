@@ -47,6 +47,10 @@ export function resolveRunnerLoop(deps: AdapterSpecDeps): (harness: string, laun
     // runs the pi spec (adapterRunSpecFromLaunch). A harness with no entry is unknown here: the dispatch fails it in words.
     const runner = resolveHarness(harness);
     if (runner) {
+      // A run that learns supplies its own end-of-run step (reflect + proposal over its store) from its spec builder now,
+      // where the run's Archil claim is: a Mode 2 run's learning folder is on its claim's disk, not this machine's local
+      // path (adapter-run-spec.ts / cli-run-spec.ts endOfRun). The loop prefers the spec's step over its deps' (stepOf); a
+      // run that does not learn supplies none. The same for the pi and the CLI spec.
       return createAdapterLoop((claim, adapterRun) =>
         runner.record === "loop"
           ? cliRunSpecFromLaunch(launch, adapterRun, deps, claim)

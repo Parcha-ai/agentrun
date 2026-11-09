@@ -15,6 +15,7 @@
 // tool books without the call passed down to it.
 import { AsyncLocalStorage } from "node:async_hooks";
 import type { Context } from "@earendil-works/chord";
+import type { Refusal } from "@parcha/agentrun-kernel";
 import { ROOT_CONVERSATION_ID, type ToolExecutionApi, type ToolRegistration } from "@earendil-works/pi-durable";
 import { TOOL_COST, TOOL_STARTED } from "@parcha/pi-durable-agent/timeline";
 import { BARRIER, JOURNAL_SYNCHRONOUS, syncNow, type SyncTarget } from "@parcha/pi-durable-disk";
@@ -66,10 +67,29 @@ export type Ledger = {
    *  settled there, in the run's runner records, in place of this process's run spend (cap.ts paidCall) and the root's
    *  TOOL_STARTED/TOOL_COST marks. */
   paid?: PaidBooking;
+  /** The run's pause on the runner (the adapter loop's RunLedger.pause): a paid step of the agent's own that `paid`
+   *  refused for room is handed to it, so the run pauses at its next request in the cap's words, as main's paidCall
+   *  pauses by default. A person's take-over books through no paid step (browser-cost.ts personTime) and never pauses. */
+  pause?: (refusal: LedgerRefusal) => Promise<void>;
+};
+/** A cap refusal as the run's pause reads it: its words, and for room its figures. */
+export type LedgerRefusal = Refusal;
+/** `error`, a refusal of the run's one ledger, as its pause takes it: the cap's refusal for room (a raise would send
+ *  the step) with its figures; undefined for anything else (a refusal for good, a hold that could not be kept). */
+const roomOf = (error: unknown): LedgerRefusal | undefined => {
+  const given = error as { code?: unknown; message?: unknown; forGood?: unknown; figures?: LedgerRefusal["figures"] } | undefined;
+  if (given?.code !== "spend_cap_reached" || given.forGood !== false || !given.figures) return undefined;
+  return { refuse: String(given.message), forGood: false, figures: given.figures };
+};
+/** A paid step refused for room pauses the run, through the call's ledger (Ledger.pause), before its refusal is told. */
+const pauseOn = async (error: unknown): Promise<void> => {
+  const room = roomOf(error);
+  const pause = ledgers.getStore()?.pause;
+  if (room && pause) await pause(room);
 };
 /** The kernel cap's booking of a run's paid calls (RunTools), as a paid request uses it. */
 export type PaidBooking = {
-  admit(request: { id: string; name: string; holdUsd: number; basis: string }): Promise<unknown>;
+  admit(request: { id: string; name: string; holdUsd: number; basis: string; call?: string }): Promise<unknown>;
   settle(id: string, usd: number | null): Promise<unknown>;
 };
 const ledgers = new AsyncLocalStorage<Ledger>();
@@ -152,7 +172,7 @@ export async function paidRequest(fee: Fee, send: () => Promise<Response>): Prom
   if (!ledger) throw new PaidRefused(`${fee.name} was not sent: this request has no call to book it under`);
   const label = { tool: fee.tool, charged_by: fee.by, call: ledger.call };
   const chargeOf = (sent: Sent) => ("unmarked" in sent ? undefined : "thrown" in sent || billed(sent.response.status) ? fee.usd : 0);
-  if (ledger.paid) return paidOn(ledger.paid, `${ledger.call}#${(paidSeq += 1)}`, fee, send, chargeOf);
+  if (ledger.paid) return paidOn(ledger.paid, ledger.call, fee, send, chargeOf);
   const sent = async (): Promise<Sent> => {
     try {
       await writeHold(ledger.record, { ...label, heldUsd: fee.usd });
@@ -188,8 +208,9 @@ export const paidLedger = (): PaidBooking | undefined => ledgers.getStore()?.pai
 export async function paidStep<T>(paid: PaidBooking, call: string, fee: { name: string; holdUsd: number; basis: string }, run: () => Promise<T>, chargeOf: (outcome: { result: T } | { thrown: unknown }) => number | null): Promise<{ refused: string } | { result: T }> {
   const id = `${call}#${(paidSeq += 1)}`;
   try {
-    await paid.admit({ id, name: fee.name, holdUsd: fee.holdUsd, basis: fee.basis });
+    await paid.admit({ id, name: fee.name, holdUsd: fee.holdUsd, basis: fee.basis, call });
   } catch (error) {
+    await pauseOn(error);
     return { refused: (error as { code?: unknown })?.code === "spend_cap_reached" ? String((error as Error).message) : holdRefusal(fee.name, error) };
   }
   let outcome: { result: T } | { thrown: unknown };
@@ -206,10 +227,12 @@ export async function paidStep<T>(paid: PaidBooking, call: string, fee: { name: 
 /** `send` on the run's one ledger (Ledger.paid): admitted at the fee's price (refused unsent in the cap's words), then
  *  sent, then settled at what it may have charged (chargeOf: its price on a 2xx, a 408 or a 5xx or when it threw after
  *  it was sent; $0 on another 4xx). A settle that cannot be written leaves the request at its hold, never less. */
-async function paidOn(paid: PaidBooking, id: string, fee: Fee, send: () => Promise<Response>, chargeOf: (sent: Sent) => number | undefined): Promise<Response> {
+async function paidOn(paid: PaidBooking, call: string, fee: Fee, send: () => Promise<Response>, chargeOf: (sent: Sent) => number | undefined): Promise<Response> {
+  const id = `${call}#${(paidSeq += 1)}`;
   try {
-    await paid.admit({ id, name: fee.name, holdUsd: fee.usd, basis: fee.basis });
+    await paid.admit({ id, name: fee.name, holdUsd: fee.usd, basis: fee.basis, call });
   } catch (error) {
+    await pauseOn(error);
     const said = String((error as Error)?.message ?? error);
     throw new PaidRefused((error as { code?: unknown })?.code === "spend_cap_reached" ? said : holdRefusal(fee.name, error));
   }
