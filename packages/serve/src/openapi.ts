@@ -672,12 +672,15 @@ const TEMPLATE_APPLY = {
     overrides: { type: "object", additionalProperties: false, properties: { model: { type: "string", pattern: MODEL_REF.source, description: "The agent's model in place of the one the package's tier and preference pick, \"provider/model-id\"." }, approvals: { enum: ["ask", "never"], description: "The agent's approvals (its definition's): never runs it unattended (each tool that would ask allowed, a deny still refusing), ask makes it ask. Absent: the package's `approvals_default` (`ask` only when it names none).", "x-agentrun-serve": "unattended/1" } } },
   },
 };
-const TEMPLATE_APPLIED = closed({
+const TEMPLATE_APPLIED = closedWith({
   template: { type: "string" },
   version: { type: "string" },
   agent_id: { type: "string", description: "The agent made (GET /agents/{agent_id})." },
   trigger_ids: { type: "array", items: { type: "string" }, description: "Its triggers, in the package's order (GET /triggers/{trigger_id})." },
   warnings: { type: "array", items: ref("schemas/InputIssue"), description: "What this host still lacks for the agent to run, as POST /agents answers it." },
+}, {
+  webhook_secrets: { type: "array", items: closed({ trigger_id: { type: "string" }, secret: TRIGGER_SECRET }), description: "Each webhook trigger the apply made, with its signing secret, shown this once, as POST /triggers shows its own: give it to the sender. Absent when no webhook trigger was made, and on a retry under the same Idempotency-Key (then `note` says so); POST /triggers/{trigger_id}/secret makes a new one." },
+  note: { type: "string", description: "On a retry under the same Idempotency-Key, in place of `webhook_secrets`: they were shown once, in the first answer." },
 });
 const TRIGGER_ERRORS = "409 store_unreadable when triggers.json in the data directory does not read: nothing fires, and nothing is written over it.";
 const RUN_LEARNING = {

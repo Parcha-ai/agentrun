@@ -1440,10 +1440,15 @@ async function startHolding(options: ServeOptions, data: string, lock: ServerLoc
     for (const one of [made.agent, ...made.triggers]) if (Buffer.byteLength(JSON.stringify(one)) > MAX_BODY) throw new ApiError("payload_too_large", `the ${pkg.name} template, its parameters filled in, makes a body over ${MAX_BODY} bytes`, { details: { limit: "max_body_bytes" } });
     const { entry, warnings } = await createAgentOf(made.agent);
     const ids: string[] = [];
+    // Each webhook trigger's signing secret, minted as it is made: handed back in the apply's first answer alone, as POST
+    // /triggers hands back its own, so the owner can give it to the sender.
+    const secrets: { trigger_id: string; secret: string }[] = [];
     try {
       for (const [i, trigger] of made.triggers.entries()) {
         try {
-          ids.push((await triggers.create({ ...trigger, target: { ...(trigger.target as Json), agent_id: entry.agent.id } })).id);
+          const { id: madeId, secret } = await triggers.create({ ...trigger, target: { ...(trigger.target as Json), agent_id: entry.agent.id } });
+          ids.push(madeId);
+          if (secret) secrets.push({ trigger_id: madeId, secret });
         } catch (error) {
           if (error instanceof ApiError && error.code === "input_invalid" && error.extra.fields) throw told(new ApiError("input_invalid", error.message, { ...error.extra, fields: error.extra.fields.map((f) => ({ ...f, field: `triggers.${i}.${f.field}` })) }));
           throw error;
@@ -1465,7 +1470,7 @@ async function startHolding(options: ServeOptions, data: string, lock: ServerLoc
     // A pin this server's agent store does not keep yet (tool-plane.ts AGENT_LAYER_PINS): said, with the setting that holds
     // the send to its destination meanwhile, the server's.
     const unkept: InputIssue[] = made.unkept.map(({ tool, pin }) => ({ field: `pins.${tool}`, reason: NOT_SET_UP, message: serverPinned.has(tool) ? `${tool} is not pinned to ${pinWords(pin)} for this agent yet (this server's agent store keeps an agent's own pin from the store cutover on); this server's own pin of ${tool} holds its calls meanwhile.` : `${tool} is not pinned to ${pinWords(pin)} for this agent yet: this server's agent store keeps an agent's own pin from the store cutover on. Until then the agent was made with ${tool} set to deny, so nothing it reads can send it elsewhere. Pin it on this server, which holds every agent's calls of ${tool}, and apply again to let it.`, ...(serverPinned.has(tool) ? {} : { fix: `Add ${JSON.stringify({ [tool]: { pin } })} to this server's tool settings (Settings → Tools; PUT /v2/settings/tools replaces the whole map, so send it with the rest).` }) }));
-    return { template: pkg.name, version: pkg.version, agent_id: entry.agent.id, trigger_ids: ids, warnings: [...skipped, ...kept, ...unpinned, ...unkept, ...warnings] };
+    return { applied: { template: pkg.name, version: pkg.version, agent_id: entry.agent.id, trigger_ids: ids, warnings: [...skipped, ...kept, ...unpinned, ...unkept, ...warnings] }, secrets };
   }
 
   /** A run create's issues told from the input this server checks (explain.ts): an agentic run's `{content: string}`,
@@ -2514,11 +2519,19 @@ async function startHolding(options: ServeOptions, data: string, lock: ServerLoc
         const pkg = templates.find((t) => t.name === id);
         if (!pkg) throw new ApiError("not_found", `no template ${id}: GET /v2/templates lists them`);
         const body = await bodyOf(req);
+        // Its webhook triggers' secrets are in its first answer alone, as POST /triggers' is: the Idempotency-Key's record
+        // keeps the agent, the triggers and a note, so a retry under the key gets the same ones and never a secret.
+        let secrets: { trigger_id: string; secret: string }[] = [];
         const answer = await idempotent(req, `/templates/${pkg.name}/apply`, body, async () => {
-          const applied = await applyTemplate(pkg, body);
-          return { status: 201, body: applied, headers: { location: `/v2/agents/${applied.agent_id}` } };
+          const made = await applyTemplate(pkg, body);
+          secrets = made.secrets;
+          const note = secrets.length ? { note: `Its webhook triggers' secrets were shown once, in the first answer; POST /v2/triggers/{trigger_id}/secret makes a new one.` } : {};
+          return { status: 201, body: { ...made.applied, ...note }, headers: { location: `/v2/agents/${made.applied.agent_id}` } };
         });
-        return send(res, answer.status, answer.body, answer.headers);
+        const replayed = answer.headers?.["idempotent-replayed"] === "true";
+        if (!secrets.length || replayed) return send(res, answer.status, answer.body, answer.headers);
+        const { note: _, ...first } = answer.body as Json;
+        return send(res, answer.status, { ...first, webhook_secrets: secrets }, answer.headers);
       }
       case "rotateTriggerSecret":
         return send(res, 200, triggers.rotate(id));
