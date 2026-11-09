@@ -47,7 +47,7 @@ test("a run started by a GitHub event mints for the event's installation and rep
   const access = await githubAppAccess(store, KEY, { content }, { api: github.api });
   assert.deepEqual(access.target, { installation: 777, repo: "acme/widgets" });
   assert.deepEqual(await access.mint(access.target), { ok: true, token: "not-a-secret-ghs-token", expires_at: Date.parse("2026-11-08T06:00:00Z") });
-  assert.deepEqual(github.asked.map((a) => [a.method, a.url, a.iss]), [["POST", "/app/installations/777/access_tokens", 4242]]);
+  assert.deepEqual(github.asked.map((a) => [a.method, a.url, a.iss]), [["POST", "/app/installations/777/access_tokens", "4242"]]);
   assert.deepEqual(JSON.parse(github.asked[0].body), { repositories: ["widgets"] }, "narrowed to the run's one repository");
 });
 
