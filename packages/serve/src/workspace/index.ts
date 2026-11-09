@@ -10,16 +10,27 @@ export {
   agentDirName, agentFolder, agentHomeFolder, agentLearningFolder, COMPUTER_ROOT, DISK_DIR, homeKey, learningKey, portPath,
   relativePath, relativeSegments, runFolder, runKey, scratchFolder,
 } from "./paths.js";
-export { type Available, type Place, type Registry, type Resolved, resolvePlace } from "./place.js";
+export type { Place } from "./place.js";
 export { localWorkspace, workspaceAt } from "./local.js";
 export { archilWorkspace, type ArchilWorkspaceOptions } from "./archil.js";
 export { archilDisk, type ArchilDisk, type ArchilDiskOptions, type ArchilImage } from "./archil-disk.js";
 export {
-  ARCHIL_API_KEY_ROW, ARCHIL_DISK_TOKEN_ROW, type ArchilClaim, archilClaim, type ArchilClaimOptions, ArchilClaimRefused, type ArchilSettings,
+  ARCHIL_API_KEY_ROW, type ArchilClaim, archilClaim, type ArchilClaimOptions, ArchilClaimRefused, type ArchilSettings,
 } from "./archil-claim.js";
+export {
+  ARCHIL_CONTROL_URLS, type ArchilMountCredentialOptions, ArchilMountCredentialError, listTokenUsers, mintMountToken, type MountCredential, nicknameOf, removeMountToken,
+  removeOlderMountTokens,
+} from "./archil-mount-credential.js";
 export { openRunWorkspace, type RunWorkspace, type RunWorkspaceOptions } from "./run-workspace.js";
 export { readOnlyWorkspace, SERVER_READS_ONLY, serverRunWorkspace, type ServerRunWorkspaceOptions } from "./server-run-workspace.js";
+export { type LedgerEntry, type ProviderLedger, storeLedger } from "./computer-ledger.js";
 export { type LearningPlace, type LearningWorkspace, learningWorkspace, type LearningWorkspaceOptions } from "./learning-workspace.js";
 export { ARCHIL_MAX_EXEC_S, type Hands, handsOf, MAX_EXEC_S, processesOf, shellEnv } from "./hands.js";
-export { type RunComputer, runTools, type RunTools } from "./run-tools.js";
+export { type RunBrowser, type RunComputer, type RunHold, runTools, type RunTools } from "./run-tools.js";
+export { inputOf, phoneOf, screenOf } from "./computer-ports.js";
+export {
+  type ClaimSide, type ComputerSetting, type ComputerSettingKind, type KindCapabilities, type KindRegistry, type LaunchedComputer, type Port,
+  type ProviderEntry, resolveComputer, type ResolvedComputer, type StartedComputer,
+} from "./resolve-computer.js";
+export { type ClaimComputer, type ClaimLaunch, computerForClaim, type ComputerForClaimDeps, type OpenComputerView, type ProviderMakers, sweepComputers, type ViewEnd } from "./computer-for-claim.js";
 export { layRevisionSkills, RUN_SKILLS_DIR } from "./revision-skills.js";

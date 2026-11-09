@@ -86,6 +86,7 @@ import { checkDefinitionBody, DEFAULT_INPUT_SCHEMA, definitionBodyIssues, ID, ID
 import { agentTools, browserKeyRow, isUnavailable, recheckPlane, settingsIssues, ToolSettings, type ToolSettingsMap, whyUnavailable, withDefaults } from "./tool-plane.js";
 import { MAX_FILES_PER_RUN, MAX_UPLOAD_BYTES, Uploads, UPLOADS_DIR } from "./uploads.js";
 import { entryAt, listFiles, sendFile as sendWorkspaceFile, viewOf } from "./run-files.js";
+import { COMPUTER_ROUTES, computerRoute } from "./computer-view.js";
 import { writesHeld } from "./workspace.js";
 import { agentHomeFolder, isWorkspaceError, localWorkspace, runFolder, type Workspace } from "./workspace/index.js";
 import { markRunning, markStopping, type ServerLock, takeServerLockAfterStop } from "./server-lock.js";
@@ -399,6 +400,18 @@ export const ROUTES: readonly Route[] = [
   { method: "GET", pattern: /^\/runs\/([^/]+)\/files$/, name: "listRunFiles" },
   { method: "GET", pattern: /^\/runs\/([^/]+)\/browser$/, name: "getRunBrowser" },
   { method: "POST", pattern: /^\/runs\/([^/]+)\/browser\/hand-back$/, name: "handBackRunBrowser" },
+  { method: "GET", pattern: /^\/runs\/([^/]+)\/computer$/, name: "getRunComputer" },
+  { method: "POST", pattern: /^\/runs\/([^/]+)\/computer\/take-over$/, name: "takeOverRunComputer" },
+  { method: "POST", pattern: /^\/runs\/([^/]+)\/computer\/hand-back$/, name: "handBackRunComputer" },
+  // Settings → Computers (computers.ts settingsComputerRoute) and the owner's Archil settings (archil-routes.ts
+  // archilRoute): the server switch dispatches them, once the server opens its store.
+  { method: "GET", pattern: /^\/computers$/, name: "listComputers" },
+  { method: "PUT", pattern: /^\/computers\/([^/]+)\/keys$/, name: "saveComputerKeys" },
+  { method: "POST", pattern: /^\/computers\/([^/]+)\/test$/, name: "testComputer" },
+  { method: "GET", pattern: /^\/workspace\/archil$/, name: "getWorkspaceArchil" },
+  { method: "PUT", pattern: /^\/workspace\/archil$/, name: "putWorkspaceArchil" },
+  { method: "DELETE", pattern: /^\/workspace\/archil$/, name: "deleteWorkspaceArchil" },
+  { method: "POST", pattern: /^\/workspace\/archil\/test$/, name: "testWorkspaceArchil" },
   { method: "GET", pattern: /^\/runs\/([^/]+)\/files\/(.+)$/, name: "readRunFile" },
   { method: "POST", pattern: /^\/files$/, name: "createFile", raw: true },
   { method: "GET", pattern: /^\/files$/, name: "listFiles" },
@@ -2009,6 +2022,8 @@ async function startHolding(options: ServeOptions, data: string, lock: ServerLoc
       authFailed(`/v2${path}`, "browser_without_session");
       throw new ApiError("forbidden", owner ? "A run's live browser takes the owner's password sign-in in the console, never a token." : "A run's live browser takes the owner's password sign-in, and this server has no accounts (AGENTRUN_ACCOUNTS=0).");
     }
+    // A run's desktop or phone view drives it once taken over: the owner's signed-in page alone (computer-view.ts decides).
+    if (COMPUTER_ROUTES.has(found.name) && !byOwnerSession(req) && req.headers.authorization !== undefined) authFailed(`/v2${path}`, "computer_without_session");
     // Answering a tool call that waits for approval (tool-gate.ts) is the same: the owner's signed-in page alone, never a
     // token, which the run's own process, an agent's MCP client or a script may hold.
     if (found.name === "answerApproval" && !byOwnerSession(req) && req.headers.authorization !== undefined) {
@@ -2209,6 +2224,18 @@ async function startHolding(options: ServeOptions, data: string, lock: ServerLoc
         if (answered.outcome !== body.outcome) throw new ApiError("handoff_answered", answered.outcome === "expired" ? "The agent's hand-over expired before this answer: the agent was told it expired." : `The agent's hand-over was already answered ${answered.outcome}.`, { details: { outcome: answered.outcome } });
         if (answered.first) runs.remark(run.id);
         return send(res, 200, { outcome: answered.outcome }, { "cache-control": "no-store" });
+      }
+      case "getRunComputer":
+      case "takeOverRunComputer":
+      case "handBackRunComputer": {
+        // A run's desktop or phone: its view, the owner's take-over and hand-back (computer-view.ts).
+        const run = await needRun(id);
+        const answer = await computerRoute(found.name, run.id, {
+          ownerSession: byOwnerSession(req), token: req.headers.authorization !== undefined, accounts: owner !== undefined,
+          ...(found.name === "getRunComputer" ? {} : { body: await bodyOf(req) }),
+        });
+        if (found.name !== "getRunComputer") runs.remark(run.id);
+        return send(res, 200, answer, { "cache-control": "no-store" });
       }
       case "listRunFiles": {
         const run = await needRun(id);
