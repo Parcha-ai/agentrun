@@ -342,8 +342,8 @@ interface Session {
 	adb?: { host?: string; port?: number; code?: string } | null;
 	/** An iPhone's control grant (docs, guides/iphone): a URL whose path is the grant, and its token. */
 	control?: { url?: unknown; token?: unknown; expires_at?: unknown } | null;
-	/** The screen's size in device pixels. */
-	screen?: { w?: unknown; h?: unknown } | null;
+	/** What the phone is: android or ios. */
+	platform?: string;
 	/** The Idempotency-Key the session was made under. */
 	request_key?: string;
 }
@@ -717,8 +717,9 @@ export class PhoneHarnessProvider implements ComputerProvider {
 		for (const listed of entries) {
 			let entry = listed;
 			if (entry.request !== undefined) {
-				// A create not answered yet: its phone is the account's session whose request_key is exactly its key.
-				const made = [...live.values()].find((session) => session.request_key === entry.request);
+				// A create not answered yet: its phone is the account's session whose request_key is exactly its key, and
+				// whose platform, when the listing names one, is this provider's.
+				const made = [...live.values()].find((session) => session.request_key === entry.request && (session.platform === undefined || session.platform === this.#platform));
 				if (made === undefined) {
 					// Still being made, or never made: after its deadline nothing of it can be alive, and it is forgotten.
 					if (this.#now() > Date.parse(entry.deadline)) await this.#ledger.remove(entry.id);
@@ -839,9 +840,7 @@ export class PhoneHarnessProvider implements ComputerProvider {
 		if (where.origin !== api.origin) {
 			return fail("phone", `the phone harness gave the iPhone ${id} a control URL on ${where.host}, not ${api.host}: its token is sent only to the API's own host`);
 		}
-		const { w, h } = session.screen ?? {};
-		const screen = typeof w === "number" && typeof h === "number" ? { w, h } : undefined;
-		const client = controlClient({ url, token, groups: IOS_GROUPS, fetch: this.#fetch, sleep: this.#sleep, timeout: this.#timeout, ...(screen ? { screen } : {}) });
+		const client = controlClient({ url, token, groups: IOS_GROUPS, fetch: this.#fetch, sleep: this.#sleep, timeout: this.#timeout });
 		const opened = await client.open(this.#daemonVersion);
 		if (!opened.ok) {
 			client.close();

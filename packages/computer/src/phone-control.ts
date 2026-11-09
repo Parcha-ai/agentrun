@@ -9,9 +9,14 @@
 // checks the URL), and never into a result, an error or a log. The URL's path is the grant itself, so the words name only
 // its host. The phone takes one op at a time (the docs: operations on one phone are serialized), and so does the client.
 //
-// Open until the first live run on a real iPhone, each kept to one place here: which ops the phone lists; the
-// coordinate space (taps are sent in the screenshot's pixels, as the protocol's input is); whether apps are named by
-// bundle id or by name; the key names input.keys takes; and whether a double tap as two input.tap ops is one.
+// One space: a frame's width and height are the capture's own pixels (never downscaled), and every point the protocol
+// sends is in them. frameMap, the one place they meet the phone, turns a frame's pixel into the point input.tap and
+// input.drag take, by the capture's bounds (the screen in points, where taps take them): Retina scale and an origin.
+// So a viewer and a model see only the frame's space.
+//
+// Open until the first live run on a real iPhone, each kept to one place here: which ops the phone lists; the capture's
+// real scale and origin against the taps (frameMap); whether apps are named by bundle id or by name, and what launch's
+// fresh does; the key names input.keys takes; and whether a double tap as two input.tap ops is one.
 import { randomBytes } from "node:crypto";
 import { checkActions } from "./actions.js";
 import { cropPng, MAX_PNG_BYTES, readPng } from "./png.js";
@@ -65,6 +70,27 @@ const IOS_CHAR = /^[a-z0-9]$/;
 
 const show = (value: unknown) => JSON.stringify(value) ?? String(value);
 
+/** A frame's space and the phone's: the frame's size in pixels, its scale, and a pixel as the point a tap takes. */
+export interface FrameMap {
+	width: number;
+	height: number;
+	/** Device pixels a point: the capture's pixels over its bounds' size; 1 when the bounds give no size. */
+	scale: number;
+	toDevice(point: readonly [number, number]): { x: number; y: number };
+}
+
+/**
+ * The map from a capture of width x height pixels to the points its bounds ({ x, y, w, h }, the screen in the space taps
+ * take) name. Bounds with no usable size map the frame's pixels to themselves.
+ */
+export function frameMap({ width, height }: { width: number; height: number }, bounds: unknown): FrameMap {
+	const b = (typeof bounds === "object" && bounds !== null ? bounds : {}) as Record<string, unknown>;
+	const finite = (value: unknown): value is number => typeof value === "number" && Number.isFinite(value);
+	const usable = finite(b.x) && finite(b.y) && finite(b.w) && finite(b.h) && b.w > 0 && b.h > 0;
+	const [x0, y0, sx, sy] = usable ? [b.x as number, b.y as number, width / (b.w as number), height / (b.h as number)] : [0, 0, 1, 1];
+	return { width, height, scale: sx, toDevice: ([x, y]) => ({ x: Math.round(x / sx + x0), y: Math.round(y / sy + y0) }) };
+}
+
 /** The last shot a phone client took, read back in chunks by screen.read; a new shot replaces it. */
 export class HeldShot {
 	#held: { id: string; bytes: Buffer } | undefined;
@@ -105,8 +131,6 @@ export interface ControlClientOptions {
 	sleep?: (ms: number) => Promise<void>;
 	/** A signal that fires after ms, which bounds an op; default AbortSignal.timeout. */
 	timeout?: (ms: number) => AbortSignal;
-	/** The screen's size in pixels, when the session gives it (session.screen); a shot gives it after that. */
-	screen?: { w: number; h: number };
 }
 
 /** The in-process client of one cloud iPhone over its control API. */
@@ -133,7 +157,8 @@ export class ControlClient implements ComputerClient {
 	readonly #shot = new HeldShot();
 	#ops = new Set<string>();
 	#hello: HelloResult | undefined;
-	#size: [number, number] | undefined;
+	/** The latest capture's map: a point is sent only through it. */
+	#map: FrameMap | undefined;
 	#closed = false;
 	/** The op in flight: the next waits for it, so the phone takes one at a time. */
 	#queue: Promise<unknown> = Promise.resolve();
@@ -148,7 +173,6 @@ export class ControlClient implements ComputerClient {
 		this.#fetch = options.fetch ?? globalThis.fetch;
 		this.#sleep = options.sleep ?? ((ms) => new Promise((resolve) => setTimeout(resolve, ms)));
 		this.#timeout = options.timeout ?? ((ms) => AbortSignal.timeout(ms));
-		if (options.screen && options.screen.w > 0 && options.screen.h > 0) this.#size = [options.screen.w, options.screen.h];
 	}
 
 	/** Words without the token or the grant, whatever the vendor echoed: the URL is named by its host alone. */
@@ -274,10 +298,11 @@ export class ControlClient implements ComputerClient {
 
 	// --- screen ----------------------------------------------------------------------------------------------------
 
-	async #screenShot(region: unknown, signal?: AbortSignal): Promise<Result<unknown>> {
+	/** One screen.capture: its PNG, read, and the frame's map, which every later point goes through. */
+	async #capture(signal?: AbortSignal): Promise<Result<{ bytes: Buffer; png: ReturnType<typeof readPng>; map: FrameMap }>> {
 		const captured = await this.#op("screen.capture", {}, OP_MS, signal);
 		if (!captured.ok) return captured;
-		const { png_b64: b64, bounds } = (captured.value ?? {}) as { png_b64?: unknown; bounds?: { w?: unknown } };
+		const { png_b64: b64, bounds } = (captured.value ?? {}) as { png_b64?: unknown; bounds?: unknown };
 		if (typeof b64 !== "string" || b64.length > (MAX_PNG_BYTES * 4) / 3 + 4) return fail("phone", "screen.capture answered no PNG");
 		const bytes = Buffer.from(b64, "base64");
 		let png: ReturnType<typeof readPng>;
@@ -286,11 +311,15 @@ export class ControlClient implements ComputerClient {
 		} catch (error) {
 			return fail("phone", `screen.capture: ${error instanceof Error ? error.message : String(error)}`);
 		}
-		const { width, height } = png;
-		this.#size = [width, height];
-		// Pixels per unit of the capture's bounds: 1 when the PNG and its bounds agree, as the fake's do. Which space the
-		// phone's taps take is open until a live run; until then taps go in the PNG's pixels.
-		const scale = typeof bounds?.w === "number" && bounds.w > 0 ? width / bounds.w : 1;
+		this.#map = frameMap(png, bounds);
+		return ok({ bytes, png, map: this.#map });
+	}
+
+	async #screenShot(region: unknown, signal?: AbortSignal): Promise<Result<unknown>> {
+		const captured = await this.#capture(signal);
+		if (!captured.ok) return captured;
+		const { bytes, png, map } = captured.value;
+		const { width, height, scale } = map;
 		if (region === undefined) return ok(this.#shot.hold(bytes, width, height, scale));
 		const r = region as number[];
 		if (!(Array.isArray(r) && r.length === 4 && r.every((v) => Number.isSafeInteger(v)) && r[0]! >= 0 && r[1]! >= 0 && r[2]! > 0 && r[3]! > 0 && r[0]! + r[2]! <= width && r[1]! + r[3]! <= height)) {
@@ -317,9 +346,9 @@ export class ControlClient implements ComputerClient {
 		return { op: "input.keys", kw: { combo: [...modifiers.map((one) => IOS_MODIFIERS[one]), key].join("+") } };
 	}
 
-	/** A protocol point as the phone's op takes it: the screenshot's pixels (open until a live run). */
-	#point([x, y]: [number, number]): { x: number; y: number } {
-		return { x: Math.round(x), y: Math.round(y) };
+	/** A frame's point as the phone's op takes it, through the latest capture's map (#actions has made one first). */
+	#point(at: [number, number]): { x: number; y: number } {
+		return (this.#map as FrameMap).toDevice(at);
 	}
 
 	/** One action's ops, or why the phone cannot do it. */
@@ -379,18 +408,23 @@ export class ControlClient implements ComputerClient {
 		const refused = checkActions(actions, this.#groups);
 		if (refused !== undefined) return ok({ done: 0, failed: refused });
 		const list = actions as InputAction[];
+		const pointsOf = (action: InputAction) => (action.type === "tap" || action.type === "long_press" ? [action.at] : action.type === "swipe" ? action.path : []);
+		// A point goes only through a capture's map: with none yet, one capture first, which only looks.
+		const first = list.findIndex((action) => pointsOf(action).length > 0);
+		if (first !== -1 && this.#map === undefined) {
+			const captured = await this.#capture(signal);
+			if (!captured.ok) return ok({ done: 0, failed: { index: first, kind: kindOf(captured), message: `action ${first}: the frame's space could not be read: ${captured.error.message}` } });
+		}
 		const plans: Plan[] = [];
 		for (const [index, action] of list.entries()) {
-			const plan = this.#plan(action);
-			if (typeof plan === "string") return ok({ done: 0, failed: { index, kind: "unsupported", message: `action ${index}: ${plan}` } });
-			const size = this.#size;
-			if (size !== undefined) {
-				for (const at of action.type === "tap" || action.type === "long_press" ? [action.at] : action.type === "swipe" ? action.path : []) {
-					if (at[0] < 0 || at[1] < 0 || at[0] >= size[0] || at[1] >= size[1]) {
-						return ok({ done: 0, failed: { index, kind: "invalid", message: `action ${index}: ${show(at)} is off the ${size[0]}x${size[1]} screen` } });
-					}
+			const map = this.#map;
+			for (const at of map === undefined ? [] : pointsOf(action)) {
+				if (at[0] < 0 || at[1] < 0 || at[0] >= map!.width || at[1] >= map!.height) {
+					return ok({ done: 0, failed: { index, kind: "invalid", message: `action ${index}: ${show(at)} is off the ${map!.width}x${map!.height} screen` } });
 				}
 			}
+			const plan = this.#plan(action);
+			if (typeof plan === "string") return ok({ done: 0, failed: { index, kind: "unsupported", message: `action ${index}: ${plan}` } });
 			plans.push(plan);
 		}
 		const cancelled = (index: number) => ok({ done: index, failed: { index, kind: "aborted" as const, message: `action ${index}: the batch was aborted; actions ${index} on did not run` } });
@@ -422,9 +456,10 @@ export class ControlClient implements ComputerClient {
 	}
 
 	async #launch(id: unknown, signal?: AbortSignal): Promise<Result<unknown>> {
-		// Whether the phone takes a bundle id or an app's name is open until a live run; either is sent as given.
+		// Whether the phone takes a bundle id or an app's name is open until a live run; either is sent as given. fresh, as
+		// Android's launch clears the app's task: the app itself comes to the front, not what a never-wiped phone left open.
 		if (typeof id !== "string" || id === "" || id.length > MAX_APP_ID || /[\x00-\x1f\x7f]/.test(id)) return fail("invalid", `id ${show(id).slice(0, 80)} is not an app's id: a line of at most ${MAX_APP_ID} characters`);
-		const launched = await this.#op("apps.launch", { name: id }, APPS_MS, signal);
+		const launched = await this.#op("apps.launch", { name: id, fresh: true }, APPS_MS, signal);
 		return launched.ok ? ok({}) : launched;
 	}
 }

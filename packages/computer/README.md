@@ -1956,20 +1956,25 @@ guides/iphone, and its open client).
   request); no result, error or log holds it, nor the URL's path, which is the grant. `GET <url>/ops` lists what the
   phone takes, and connect refuses a phone that lacks an op a declared group needs, naming each one. Then a client in
   this process answers each method with `POST <url>/op { op, kw }`, one op at a time:
-  - `screen.shot`: `screen.capture`'s PNG, cropped locally for a region;
+  - `screen.shot`: `screen.capture`'s PNG, its own pixels (never downscaled), cropped locally for a region; `scale` is
+    its pixels over its bounds' size, the Retina factor;
   - `input.actions`: tap (`input.tap`), long press (`input.press`), a swipe of two points (`input.drag`), the home and
     app switch buttons (`nav.home`, `nav.recents`), back only where the phone lists `nav.back` (an iPhone has no system
-    Back button), and `wait`. A swipe of more points, pinch and hold are refused in words;
+    Back button), and `wait`. A swipe of more points, pinch and hold are refused in words. Every point is in the
+    frame's pixels, and one function, `frameMap`, turns it into the point the op takes, by the capture's bounds (the
+    screen in points): divided by the scale, plus the bounds' origin. A batch sent before any screenshot captures once
+    first to learn that space, so a viewer and a model only ever see the frame's;
   - `apps.list` (`apps.list`, and the app in front from `apps.current`) and `apps.launch` (`apps.launch` with the id
-    as given). An app that is not there is `not_found`. `apps.terminate` is refused: the control API has no op that
-    ends an app.
+    as given and `fresh`, as Android's launch clears the task). An app that is not there is `not_found`.
+    `apps.terminate` is refused: the control API has no op that ends an app.
 - **Capabilities.** Kind and os `ios`, groups `screen`, `input.touch` and `apps`. `input.keys` (typing is
   `input.text`, keys are `input.keys` in the vendor's names) and `apps.ui_tree` (`tree`) are coded behind groups an
   iPhone does not declare until a live run on one shows the ops take them; until then a key or a tree is refused in
   words.
-- **Open until the first live run on a real iPhone:** which ops it lists; the coordinate space (taps go in the
-  screenshot's pixels); whether apps are named by bundle id or name; the key names; whether pasted text lands in a
-  field; whether two quick taps are a double tap; and whether a control URL is ever on another host.
+- **Open until the first live run on a real iPhone:** which ops it lists; the capture's real scale and origin against
+  the taps (`frameMap` assumes the bounds are the screen in tap points); whether apps are named by bundle id or name,
+  and what `fresh` does; the key names; whether pasted text lands in a field; whether two quick taps are a double tap;
+  and whether a control URL is ever on another host.
 
 Conformance (`src/conformance/phone-harness.ts`) reads `COMPUTER_PHONE_HARNESS_API_KEY`,
 `COMPUTER_PHONE_HARNESS_PLATFORM`, `COMPUTER_PHONE_HARNESS_DEVICE`, `COMPUTER_PHONE_HARNESS_ADB`,
