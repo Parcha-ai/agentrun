@@ -223,8 +223,9 @@ function secretAt(method: string, url: string): Operation | undefined {
 
 /** A refused answer as its outcome. The server's error object is kept with every copy of the key cut from it; after a
  *  secret body, with the body's values cut too, only its code, and a code that held one is no code. Its text is never
- *  read into a message. A caller's abort while the body is still coming is thrown as the caller's own reason: cancelled
- *  work is never reported as a refusal or a bad key. */
+ *  read into a message. A caller's abort while the body is still coming is thrown as the caller's own reason, and a read
+ *  that ends at or past the exchange's deadline (a wait's timeout) as LATE: cancelled or late work is never reported as a
+ *  refusal or a bad key. */
 async function refusal(x: Exchange, response: Response, apiKey: string): Promise<AgentRunError> {
   let error: ServerError | undefined;
   try {
@@ -232,6 +233,7 @@ async function refusal(x: Exchange, response: Response, apiKey: string): Promise
     if (parsed?.error && typeof parsed.error === "object" && !Array.isArray(parsed.error)) error = scrubberOf([apiKey, ...(x.secrets ?? [])])(parsed.error as ServerError);
   } catch {
     if (x.signal?.aborted) throw x.signal.reason;
+    if (Date.now() >= (x.deadline ?? Infinity)) throw LATE;
     error = undefined;
   }
   const code = typeof error?.code === "string" && /^[a-z0-9_]+$/.test(error.code) ? error.code : undefined;

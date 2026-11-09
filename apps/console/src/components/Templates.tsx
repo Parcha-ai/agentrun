@@ -82,6 +82,8 @@ function ApplyTemplate({ v2, template: t, go }: Props & { template: TemplateView
   const [issues, setIssues] = useState<FieldIssue[]>([]);
   const [said, setSaid] = useState<string | null>(null);
   const [made, setMade] = useState<TemplateApplied | null>(null);
+  // The parameters an apply sent: what its "applied" title names, whatever was typed while it was under way.
+  const [sentValues, setSentValues] = useState<ParameterText>({});
   const keys = useRef(keeper()).current;
   // The MCP servers saved here (GET /v2/settings/mcp-servers): which of the template's servers are set up.
   useEffect(() => {
@@ -93,11 +95,13 @@ function ApplyTemplate({ v2, template: t, go }: Props & { template: TemplateView
   const at = (field: string) => issuesAt(issues, field);
   const apply = async () => {
     setApplying(true); setIssues([]); setSaid(null);
-    const body = { parameters: parametersOf(t, values), ...(grants.length ? { grants } : {}), overrides: { approvals } };
+    const sending = values;
+    const body = { parameters: parametersOf(t, sending), ...(grants.length ? { grants } : {}), overrides: { approvals } };
     try {
       const done = await v2.applyTemplate(t.name, body, keys.keyFor(t.name, body));
       keys.done();
       if (!done.warnings.length) { go(`#/agents/${encodeURIComponent(done.agent_id)}`); return; }
+      setSentValues(sending);
       setMade(done);
     } catch (e) {
       if (e instanceof ClientError && e.fields?.length) { setIssues(e.fields); setSaid(e.message); }
@@ -110,7 +114,7 @@ function ApplyTemplate({ v2, template: t, go }: Props & { template: TemplateView
   if (made) {
     return (
       <section aria-label="Applied" className="max-w-3xl">
-        <h1 className="mb-4 flex items-center gap-2 font-mono text-2xl font-semibold"><Check className="size-5 text-success-text" aria-hidden /> {titleOf(t)} applied</h1>
+        <h1 className="mb-4 flex items-center gap-2 font-mono text-2xl font-semibold"><Check className="size-5 text-success-text" aria-hidden /> {titleOf(t, sentValues)} applied</h1>
         <p className="mb-3 text-[14px]">The agent is made. The server says:</p>
         <ul className="mb-5 space-y-2 border bg-card px-4 py-3 text-[13px]" role="status" aria-label="Warnings">
           {made.warnings.map((w, i) => <li key={`${w.field}:${i}`}><span className="font-mono text-[12px] text-muted-foreground">{w.field}</span> {w.message}{w.fix ? <span className="block text-muted-foreground">{w.fix}</span> : null}</li>)}
@@ -122,7 +126,7 @@ function ApplyTemplate({ v2, template: t, go }: Props & { template: TemplateView
   return (
     <div className="max-w-3xl">
       <a href="#/templates" className="caps mb-4 inline-flex items-center gap-1.5 text-[12px] text-muted-foreground hover:text-foreground"><ArrowLeft className="size-3.5" aria-hidden /> Templates</a>
-      <h1 className="font-mono text-2xl font-semibold">{titleOf(t)} <span className="text-[14px] font-normal text-muted-foreground">{t.version}</span></h1>
+      <h1 className="font-mono text-2xl font-semibold">{titleOf(t, values)} <span className="text-[14px] font-normal text-muted-foreground">{t.version}</span></h1>
       <p className="mt-2 text-[14px] leading-[1.6]">{t.description}</p>
 
       {params.length > 0 && (
