@@ -270,26 +270,30 @@ test("a trigger holds at most 20 firings due: an event past them is refused, ret
   assert.equal(rest.filter((f) => f.status === "due").length, 20);
 });
 
-test("a trigger whose cron line or zone no longer reads, or whose source kind this server lacks, is turned off with why at start, and every other schedule goes on firing; nothing is retried for it", async (t) => {
+test("a trigger whose cron line, zone or every_s no longer reads, or whose source kind this server lacks, is turned off with why at start, and every other schedule goes on firing; nothing is retried for it", async (t) => {
   const first = await engine(t, {});
   const good = await first.triggers.create({ ...body({ cron: "*/5 * * * *" }), name: "good" });
   const zoned = await first.triggers.create({ ...body({ cron: "*/5 * * * *", timezone: "Europe/Madrid" }), name: "zoned" });
   const later = await first.triggers.create({ ...body({ cron: "0 9 * * *" }), name: "later" });
+  const stepless = await first.triggers.create({ ...body({ every_s: 600 }), name: "stepless" });
   first.triggers.close();
   // What a croner or an ICU that no longer reads them leaves: a zone and a cron line the store holds but nothing takes.
   await first.store.triggers.update(zoned.id, { source: { kind: "schedule", cron: "*/5 * * * *", timezone: "Mars/Olympus_Mons" } });
   await first.store.triggers.update(later.id, { source: { kind: "schedule", cron: "61 * * * *", timezone: "UTC" } });
+  // A hand edit of the row: an every_s no request could set (0, which would fire on every tick).
+  await first.store.triggers.update(stepless.id, { source: { ...(await first.store.triggers.get(stepless.id)).source, every_s: 0 } });
   const said = [];
   const starts = [];
   const second = await engine(t, { say: (fields) => said.push(fields), start: async (target, input, origin) => (starts.push(origin.id), { run_id: `run-${starts.length}` }) }, { on: first, at: "2026-06-01T00:05:00Z" });
   await until(() => starts.length === 1, "the good schedule's run");
   assert.deepEqual(starts, [good.id]);
-  for (const id of [zoned.id, later.id]) {
+  for (const id of [zoned.id, later.id, stepless.id]) {
     const off = await second.triggers.get(id);
     assert.deepEqual([off.enabled, off.next_at, off.disabled?.reason], [false, null, "source_unreadable"], id);
     assert.equal(typeof off.disabled.detail, "string");
   }
-  assert.deepEqual(said.filter((s) => s.condition === "trigger_source_unreadable").map((s) => s.trigger).sort(), [zoned.id, later.id].sort());
+  assert.equal((await second.triggers.get(stepless.id)).disabled.detail, "every_s 0 is not 60 to 31622400 seconds");
+  assert.deepEqual(said.filter((s) => s.condition === "trigger_source_unreadable").map((s) => s.trigger).sort(), [zoned.id, later.id, stepless.id].sort());
   await until(() => second.clock.timer?.at === Date.parse("2026-06-01T00:10:00Z"), "armed for the good one's next time alone");
   assert.equal((await second.store.triggers.get(zoned.id)).disabled.reason, "source_unreadable", "written down");
   // On again with no new source is refused by field; with one it goes on.
@@ -610,6 +614,73 @@ test("a trigger's run cap counts every run it started that still works, however 
   assert.deepEqual([third.status, runs.started.length], ["due", 252], JSON.stringify(third));
 });
 
+test("archiving an agent turns off every trigger that runs as it (a start_run of it, a message_run to its run) in the archive's one store write, with why; another agent's stays on; while it is archived none is turned on or made on, 409 agent_archived; unarchived, they stay off until each is turned on", async (t) => {
+  const said = [];
+  const { store, triggers } = await engine(t, { say: (fields) => said.push(fields) });
+  await store.agents.put({ id: "a", name: "Alpha" });
+  await run9(store);
+  const scheduled = await triggers.create(body({ every_s: 600 }));
+  const inbox = await triggers.create({ ...hookBody, target: toRun9 });
+  const other = await triggers.create({ ...body({ every_s: 600 }), target: { ...body({}).target, agent_id: "b" } });
+  const off = await triggers.agentArchived("a");
+  assert.deepEqual(off, [{ id: inbox.id, name: "inbox" }, { id: scheduled.id, name: "nightly" }], "the triggers it turned off");
+  assert.notEqual((await store.agents.get("a")).archivedAt, null, "the agent archived in the same write");
+  for (const id of [scheduled.id, inbox.id]) {
+    const now = await triggers.get(id);
+    assert.deepEqual([now.enabled, now.next_at, now.disabled?.reason, now.disabled?.detail], [false, null, "agent_archived", "The agent Alpha is archived: unarchive it, then turn the trigger on."], id);
+  }
+  assert.equal((await triggers.get(other.id)).enabled, true, "another agent's stays on");
+  assert.deepEqual(said.filter((f) => f.condition === "trigger_agent_archived").map((f) => f.trigger).sort(), [scheduled.id, inbox.id].sort());
+  const archivedRefusal = (error) => error.code === "agent_archived" && error.status === 409 && error.message === "The agent Alpha is archived: unarchive it, then turn the trigger on.";
+  await assert.rejects(triggers.update(scheduled.id, { enabled: true }), archivedRefusal, "not turned on while archived");
+  await assert.rejects(triggers.create({ ...body({ every_s: 600 }), name: "new" }), archivedRefusal, "nor a new one made on");
+  await assert.rejects(triggers.update(other.id, { target: body({}).target }), archivedRefusal, "nor one moved onto it on");
+  assert.equal((await triggers.create({ ...body({ every_s: 600 }), name: "new", enabled: false })).enabled, false, "one made off is fine");
+  const back = await triggers.agentUnarchived("a");
+  assert.deepEqual(back, [{ id: inbox.id, name: "inbox" }, { id: scheduled.id, name: "nightly" }], "unarchiving turns none on: those still off");
+  assert.equal((await store.agents.get("a")).archivedAt, null);
+  const on = await triggers.update(scheduled.id, { enabled: true });
+  assert.deepEqual([on.enabled, on.disabled], [true, null]);
+  assert.deepEqual(await triggers.agentUnarchived("a"), [{ id: inbox.id, name: "inbox" }], "the one turned on is no longer listed");
+});
+
+test("a firing claimed before its agent's archive starts no run after it: one waiting on its cap is skipped, saying so, when it is driven; one whose start meets the archive is skipped too, and no run of the agent is in the store", async (t) => {
+  const first = await hookEngine(t, {}, new Set(["run-1"]));
+  const { store, clock, triggers, runs } = first;
+  await store.agents.put({ id: "a", name: "Alpha" });
+  const capped = await triggers.create({ ...hookBody, source: { kind: "webhook", accept: [{ event: "push" }] }, max_active_runs: 1 });
+  await triggers.receive(capped.id, "evt-1", "{}");
+  await triggers.receive(capped.id, "evt-2", "{}");
+  const of = async (id) => (await triggers.firings(id)).firings;
+  await until(async () => /max_active_runs/.test((await of(capped.id))[0].reason ?? ""), "the second waiting on the cap");
+  // The archive, as the store commits it (the engine's own archive is the case above).
+  const why = { at: "2026-06-01T00:00:00.000Z", reason: "agent_archived", detail: "The agent Alpha is archived." };
+  await store.agents.archive("a", true, why);
+  await store.runs.update(await store.claim("run-1", "runner-a", { leaseMs: 60_000 }), { state: "ended" });
+  for (let step = 1; step <= 4 && (await of(capped.id))[0].status === "due"; step++) {
+    const at = new Date(Date.parse("2026-06-01T00:00:00Z") + step * 500).toISOString();
+    await armed(clock, at);
+    clock.to(at);
+    for (const end = Date.now() + 2_000; Date.now() < end && (await of(capped.id))[0].status === "due"; ) await sleep(5);
+  }
+  const [waited] = await of(capped.id);
+  assert.deepEqual([waited.status, waited.reason], ["skipped", "The agent Alpha is archived."], JSON.stringify(waited));
+  assert.deepEqual(runs.started, ["run-1"], "its start never asked");
+  // The archive commits between the engine's own read and the run's start: the start is refused in the store's
+  // transaction, and the firing reads skipped, not failed.
+  await store.agents.archive("a", false);
+  const raced = await triggers.create({ ...body({ every_s: 600 }), name: "raced" });
+  triggers.close();
+  const asked = [];
+  const racing = await engine(t, { start: async (target, input, origin) => (asked.push(origin.firing_key), await store.agents.archive("a", true, why), { run_id: "run-raced" }) }, { on: first, at: "2026-06-01T00:00:02Z" });
+  racing.clock.to((await racing.triggers.get(raced.id)).next_at);
+  await until(async () => (await of(raced.id)).some((f) => f.status !== "due"), "the raced firing settled");
+  const [settled] = await of(raced.id);
+  assert.deepEqual([asked.length, settled.status, settled.reason, settled.run_id], [1, "skipped", "The agent Alpha is archived.", null], JSON.stringify(settled));
+  assert.equal(await store.runs.get("run-raced"), undefined, "no run of the archived agent");
+  assert.equal((await triggers.get(raced.id)).failures_in_a_row, 0, "no failure counted");
+});
+
 test("a create or a PATCH answers once its timer is armed: the clock moved right after the answer fires the trigger", async (t) => {
   const { clock, triggers } = await engine(t, {});
   const made = await triggers.create(body({ at: "2026-06-01T00:05:00Z" }));
@@ -663,13 +734,34 @@ test("a webhook with accept starts a run per firing: its last run still working 
   assert.equal(runs.started.length, 3);
 });
 
-test("max_active_runs is only for a source whose firings each start a run: a schedule, or a webhook with no accept, is refused it; null clears it", async (t) => {
-  const { triggers } = await engine(t, {});
-  for (const made of [body({ every_s: 600 }), hookBody]) {
-    await assert.rejects(triggers.create({ ...made, max_active_runs: 2 }), (error) => error.code === "input_invalid" && JSON.stringify(error.extra).includes('"max_active_runs"') && JSON.stringify(error.extra).includes("not_allowed"));
+test("max_active_runs is for a start_run trigger of a pushed source, with or without accept: a webhook with no accept and a cap of 2 starts a run per event while two work, holds the third due (never skipped) and starts it once one ends; a schedule or a message_run target is refused it; null clears it", async (t) => {
+  const { store, clock, triggers, runs } = await hookEngine(t, { statusOf: async () => "working" }, new Set(["run-2"]));
+  const capped = await triggers.create({ ...hookBody, max_active_runs: 2 });
+  assert.equal(capped.max_active_runs, 2, "a webhook with no accept takes a cap");
+  for (const n of [1, 2, 3]) assert.equal((await triggers.receive(capped.id, `evt-${n}`, "{}")).created, true, `event ${n}`);
+  const of = async (status) => (await triggers.firings(capped.id)).firings.filter((f) => f.status === status);
+  await until(async () => (await of("started")).length === 2 && /max_active_runs/.test((await of("due"))[0]?.reason ?? ""), "two started, the third waiting");
+  assert.deepEqual(await of("skipped"), [], "never skipped behind the last run");
+  await runs.ended();
+  // Woken by the wait's poll once run-1 has ended.
+  for (let step = 1; step <= 4 && (await of("started")).length < 3; step++) {
+    const at = new Date(Date.parse("2026-06-01T00:00:00Z") + step * 500).toISOString();
+    await armed(clock, at);
+    clock.to(at);
+    for (const end = Date.now() + 2_000; Date.now() < end && (await of("started")).length < 3; ) await sleep(5);
   }
-  const capped = await triggers.create({ ...hookBody, source: { kind: "webhook", accept: [{ event: "push" }] }, max_active_runs: 3 });
-  await assert.rejects(triggers.update(capped.id, { source: { kind: "webhook" } }), (error) => error.code === "input_invalid" && JSON.stringify(error.extra).includes("not_allowed"));
-  const cleared = await triggers.update(capped.id, { source: { kind: "webhook" }, max_active_runs: null });
-  assert.equal(cleared.max_active_runs, null);
+  assert.deepEqual([(await of("started")).length, runs.started], [3, ["run-1", "run-2", "run-3"]], "the third started once one ended");
+  // Without a cap a webhook with no accept keeps the overlap skip (the case above, on a webhook with accept); a cap
+  // bounds the runs a trigger starts, so a schedule (overlap skip) and a message_run target (starts none) are refused it.
+  await run9(store);
+  const refusal = (error) => error.code === "input_invalid" && JSON.stringify(error.extra).includes('"max_active_runs"') && JSON.stringify(error.extra).includes("not_allowed");
+  for (const made of [{ ...body({ every_s: 600 }), name: "nightly" }, { ...hookBody, name: "to-run", target: toRun9 }]) {
+    await assert.rejects(triggers.create({ ...made, max_active_runs: 2 }), refusal, made.name);
+  }
+  // A cap needs no accept: taking accept away keeps it; aiming it at a run is refused unless the cap goes with it.
+  const filtered = await triggers.create({ ...hookBody, name: "filtered", source: { kind: "webhook", accept: [{ event: "push" }] }, max_active_runs: 3 });
+  assert.equal((await triggers.update(filtered.id, { source: { kind: "webhook" } })).max_active_runs, 3);
+  await assert.rejects(triggers.update(filtered.id, { target: toRun9 }), refusal);
+  const cleared = await triggers.update(filtered.id, { target: toRun9, max_active_runs: null });
+  assert.deepEqual([cleared.max_active_runs, cleared.target.kind], [null, "message_run"]);
 });

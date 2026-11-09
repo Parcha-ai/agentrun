@@ -371,6 +371,14 @@ export class TriggerFull extends Error {
   }
 }
 
+/** A run of an archived agent, or a trigger of it made on or turned on: refused, nothing written (Agents.archive). */
+export class AgentArchived extends Error {
+  override name = "AgentArchived";
+  constructor(readonly agentId: string) {
+    super(`the agent ${agentId} is archived`);
+  }
+}
+
 export interface Agents {
   /** Creates the agent, or renames it (name, description) when it exists. */
   put(agent: { id: string; name: string; description?: string | null }): Promise<void>;
@@ -378,7 +386,11 @@ export interface Agents {
   create(agent: { id: string; name: string; description?: string | null }, firstRevision: NewRevision): Promise<void>;
   get(id: string): Promise<AgentRow | undefined>;
   list(options?: { archived?: boolean }): Promise<AgentRow[]>;
-  archive(id: string, archived: boolean): Promise<void>;
+  /** Archives the agent, or unarchives it. Archived, every trigger of it that is on is turned off in the same transaction
+   *  (`disabled` set to `why`, JSON; its scope rows dropped), and those are the answer: from its commit no firing starts a
+   *  run of the agent (triggers.fire refuses it, AgentArchived), and none of its triggers is made on or turned on.
+   *  Unarchived, none turns on again: the answer is empty. */
+  archive(id: string, archived: boolean, why?: unknown): Promise<{ id: string; name: string }[]>;
   /** Adds a revision and makes it the agent's current one, in one commit. */
   addRevision(revision: NewRevision & { agentId: string }): Promise<void>;
   revision(id: string): Promise<RevisionRow | undefined>;
@@ -401,20 +413,23 @@ export interface Triggers {
   /** Every trigger, oldest first. */
   all(): Promise<TriggerRow[]>;
   /** The trigger and, while it is enabled, its scope rows (`scopes`), in one transaction: a scope another enabled trigger
-   *  holds is refused (StoreConstraint on trigger_scopes), nothing written. */
+   *  holds is refused (StoreConstraint on trigger_scopes), nothing written; one made on for an archived agent too
+   *  (AgentArchived). */
   create(trigger: NewTrigger, scopes?: readonly TriggerScope[]): Promise<TriggerRow>;
   /** The fields given changed, `updatedAt` set: undefined when there is no such trigger. With `scopes`, its scope rows
-   *  rewritten in the same transaction (none while it is off); a patch that turns it off drops them. */
+   *  rewritten in the same transaction (none while it is off); a patch that turns it off drops them. One that leaves it
+   *  on for an archived agent, turned on or moved there, is refused (AgentArchived), nothing written. */
   update(id: string, patch: TriggerPatch, scopes?: readonly TriggerScope[]): Promise<TriggerRow | undefined>;
   /** The trigger, its scope rows and its firings gone. */
   remove(id: string): Promise<void>;
-  /** Enables the trigger and writes its scope rows, in one transaction. */
+  /** Enables the trigger and writes its scope rows, in one transaction; refused for an archived agent's (AgentArchived). */
   enable(triggerId: string, scopes: readonly TriggerScope[]): Promise<void>;
   /** Disables the trigger (with why, JSON) and deletes its scope rows, in one transaction. */
   disable(triggerId: string, why?: unknown): Promise<void>;
   /** The firing starts a run: the queued run, the `started` firing that names it (the due firing's row, or a new one) and
    *  the trigger's last_run_id, with its failure streak reset, in one transaction; with `launch`, the run's launch row in
-   *  that same transaction (the store's one writeLaunch). */
+   *  that same transaction (the store's one writeLaunch). A run of an archived agent is refused in it (AgentArchived),
+   *  nothing written: a firing claimed before the archive committed starts no run after it. */
   fire(firing: Firing, run: { id: string; agentId: string; revisionId: string }, options?: { launch?: RunLaunchInput }): Promise<RunRow>;
   /** The enabled triggers listening on (`kind`, `scope`): its scope rows. */
   scoped(kind: string, scope: string): Promise<string[]>;
