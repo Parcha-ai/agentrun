@@ -247,9 +247,7 @@ export async function triggerStore(of) {
 
 /** A server for test `t`, stopped after it, before its scratch directory goes. On the real models (`faux: undefined`) its
  *  data holds Claude Code and Codex as the first-use installs put them (linkHarnesses; `harnesses: { cli, codex }` to vary
- *  them); `harnesses` says so for any server, `false` for none. Its triggers live in a store of their own, one per data
- *  directory (`store: false` for none). A runner beside it (startInProcessRunner, `runner: false` for none) claims and
- *  runs what it starts. */
+ *  them); `harnesses` says so for any server, `false` for none. */
 /** Starts an in-process runner beside a test's server on the same data directory, with its own store handle (role runner),
  *  so a run the server starts is claimed and run as the CLI start's server-and-runner runs it. Its loop is the runner's
  *  dispatch (dispatch.ts): each claim's launch picks its harness loop — pi on the kernel's adapter loop with the run's pi
@@ -278,19 +276,15 @@ export async function startInProcessRunner(data, { faux } = {}) {
   };
 }
 
-export async function serve(t, { harnesses: asked, store: stored, runner: wantRunner = true, ...options } = {}) {
+export async function serve(t, { harnesses: asked, runner: wantRunner = true, ...options } = {}) {
   const harnesses = asked ?? (Object.hasOwn(options, "faux") && options.faux === undefined);
   const dir = options.data ? undefined : await mkdtemp(join(process.env.TMPDIR ?? tmpdir(), "agentrun-serve-"));
   const data = options.data ?? join(dir, "agents");
   if (harnesses) await linkHarnesses(data, harnesses === true ? {} : harnesses);
-  const held = stored === false ? undefined : await storeFor(data);
-  const server = await startServe({ data, port: 0, faux: FAUX, drainTimeout: "5s", ...options, ...(held ? { store: withAgents(held.store) } : {}) }).catch(async (error) => {
-    if (held) await storeDone(data, held);
-    throw error;
-  });
+  const server = await startServe({ data, port: 0, faux: FAUX, drainTimeout: "5s", ...options });
   // A runner beside the server on the same data (the CLI start's server-and-runner): it claims and runs what the server
   // starts, so a test reads a run that runs, not one that queues forever. `runner: false` leaves it off for a test that
-  // wants the server alone. Its loop is the switch's dispatch.
+  // wants the server alone. Its loop is the switch's dispatch (learning wired; pi/workflow the server's own, E2r).
   const closeRunner = wantRunner === false ? undefined : await startInProcessRunner(data, { faux: Object.hasOwn(options, "faux") ? options.faux : FAUX });
   // A server on another's data (a restart's): its owner's hook closes it before the directory goes.
   if (dir) sharing.set(data, new Set());
@@ -309,12 +303,11 @@ export async function serve(t, { harnesses: asked, store: stored, runner: wantRu
       for (const other of sharing.get(data) ?? []) await other.close();
       sharing.delete(data);
     }
-    if (held) await storeDone(data, held);
     const sudo = dockerState ? (await import("./fixtures/sudo-stand-in.mjs")).sudoStandIn(dockerState).calls() : [];
     if (dir) await writableTree(dir).then(() => rm(dir, { recursive: true, force: true }));
     if (sudo.length) throw new Error(`a box command ran sudo on this machine (the stand-in refused it): ${sudo.join("; ")}`);
   });
-  return { ...server, data, api: client(server.baseUrl, server.token), ...(held ? { store: held.store } : {}) };
+  return { ...server, data, api: client(server.baseUrl, server.token) };
 }
 
 export function client(baseUrl, token) {

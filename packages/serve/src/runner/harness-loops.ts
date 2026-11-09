@@ -11,8 +11,8 @@ import { DEFAULT_HARNESS, HARNESSES } from "../harness.js";
 import type { RunLaunch } from "../run-launch.js";
 import { adapterRunSpecFromLaunch, type AdapterSpecDeps } from "./adapter-run-spec.js";
 import { createAdapterLoop } from "./adapter-loop.js";
-import { cliRunSpecFromLaunch } from "./cli-run-spec.js";
 import { createDispatchLoop } from "./dispatch.js";
+import { cliRunSpecFromLaunch } from "./cli-run-spec.js";
 import { learningLoopOf } from "./learning-dispatch.js";
 import type { LoopFactory } from "./loop-contract.js";
 import { createWorkflowLoop, isWorkflowRevision } from "./workflow-loop.js";
@@ -32,22 +32,12 @@ export function resolveRunnerLoop(deps: AdapterSpecDeps): (harness: string, laun
       return createWorkflowLoop(workflowSpecOf({ store: deps.store, ...(deps.env ? { env: deps.env } : {}) }));
     }
     if (harness === "learning") {
-      // A built-in learning run grades on the runner's one model route: the launch's grade model, else the agent of the
-      // run that learned reads its own model (as main grades). ModelRoute carries the grader's route fields, so the one
-      // routeOf serves the grade.
+      // A built-in learning run on the learning loop: its grade goes through the runner's one model route, on the grade
+      // model its launch names (none: the agent's own), at that route's price (learning-dispatch.ts).
       return learningLoopOf({
         store: deps.store,
         data: deps.data,
-        routeOf: async ({ model, agentId }) => {
-          let chosen = model;
-          if (chosen === undefined) {
-            const agent = await deps.store.agents.get(agentId);
-            const revision = agent?.currentRevision ? await deps.store.agents.revision(agent.currentRevision) : undefined;
-            const body = revision?.body as { model?: string } | undefined;
-            chosen = typeof body?.model === "string" ? body.model : undefined;
-          }
-          return deps.routeOf(chosen, deps.env);
-        },
+        routeOf: (grade) => deps.routeOf(grade.model, deps.env),
         ...(deps.log ? { log: deps.log } : {}),
       });
     }

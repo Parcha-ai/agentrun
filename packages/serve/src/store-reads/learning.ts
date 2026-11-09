@@ -8,6 +8,13 @@
 import { BACKGROUND_CONTEXT } from "@earendil-works/chord/context";
 import { currentLearning, holdsForOk, type Learning, LEARNING_REASONS, type NoteUsed, type Shown } from "../learning.js";
 import { runLearningBody } from "../learning-routes.js";
+import { learningStartOf, readLaunchBody, type RunLaunch } from "../run-launch.js";
+import { type Impact, type ImpactLearning, learningImpact, noteRuns, notesRead, type Reflect } from "../learning-run.js";
+import type { NoteRuns } from "../learning.js";
+import { type NoteFiles, notesOf } from "../usage.js";
+import type { RunRow } from "@parcha/pi-durable-agent";
+import type { TimelineEvent } from "@parcha/pi-durable-agent/timeline";
+import { runReflect, runTimeline } from "./journal.js";
 import { FINAL_STATES } from "../store/store.js";
 import type { AnalyticsFilter } from "./analytics.js";
 import { journalEntries } from "../runner/journal-reader.js";
@@ -16,18 +23,34 @@ import { keptOf, learnedOf, lostOf, type DroppedData, type GradedData, type Kept
 import type { Store } from "../store/store.js";
 
 /** A run's learning end: the Learning fields its end sets. */
-export type RunLearningEnd = Pick<Learning, "state" | "reason" | "detail" | "at" | "problems" | "verdict" | "graded" | "merged" | "cost_usd" | "tokens" | "learned" | "pending" | "skills" | "workflows" | "lost">;
+export type RunLearningEnd = Pick<Learning, "state" | "reason" | "detail" | "at" | "problems" | "verdict" | "graded" | "merged" | "cost_usd" | "tokens" | "learned" | "pending" | "skills" | "workflows" | "lost" | "answered_at" | "job_cost_usd" | "look_back_usd">;
 
-/** The kept row as the end-of-run hook writes it (runner/reflect-hook.ts): proposed with the proposal, or dropped. */
-type KeptRow = { readonly state?: string; readonly reason?: string; readonly detail?: string; readonly problems?: Learning["problems"]; readonly left?: Learning["problems"]; readonly proposal?: KeptProposal };
+/** The kept row as the end-of-run hook writes it (runner/reflect-hook.ts): proposed with the proposal, or dropped, with
+ *  when the job answered, its cost and what looking back cost once the run looked back. */
+type KeptRow = {
+  readonly state?: string; readonly reason?: string; readonly detail?: string; readonly problems?: Learning["problems"]; readonly left?: Learning["problems"]; readonly proposal?: KeptProposal;
+  readonly answered_at?: unknown; readonly job_cost_usd?: unknown; readonly look_back_usd?: unknown;
+};
 
 const timeOf = (ms: number) => new Date(ms).toISOString();
+const usdOrNull = (value: unknown): number | null => (typeof value === "number" && Number.isFinite(value) ? value : null);
+
+/** What a kept row says of a run that looked back (learning-run.ts closeLearning's fields): none for one that did not. */
+function answeredOf(row: KeptRow): Pick<Learning, "answered_at" | "job_cost_usd" | "look_back_usd"> {
+  if (typeof row.answered_at !== "string") return {};
+  return { answered_at: row.answered_at, job_cost_usd: usdOrNull(row.job_cost_usd), look_back_usd: usdOrNull(row.look_back_usd) };
+}
 
 /** Run `runId`'s learning end; null when the run kept no learning. Proposed while its learning run has not ended. */
 export async function runLearningEnd(store: Store, runId: string): Promise<RunLearningEnd | null> {
   const kept = await store.learning.proposal(runId);
   if (!kept) return null;
   const row = (kept.proposal ?? {}) as KeptRow;
+  return { ...(await endOfKept(store, kept, row)), ...answeredOf(row) };
+}
+
+/** The learning end a kept row and its learning run's journal say. */
+async function endOfKept(store: Store, kept: NonNullable<Awaited<ReturnType<Store["learning"]["proposal"]>>>, row: KeptRow): Promise<RunLearningEnd> {
   const at = timeOf(kept.createdAt);
   // Dropped before it was proposed (a cut run, nothing to keep, the checks): its end is the kept row's.
   if (row.state !== "proposed" || !row.proposal) {
@@ -99,25 +122,84 @@ export async function learningCountsOverStore(store: Store, filter: AnalyticsFil
 }
 
 /** An agent's learning counts as its learning view gives them (GET /agents/{id}/learning, learning-run.ts ofAgent's
- *  counts): how its runs that tried to learn fared, less `runs`, from the one store. Its notes' runs and its impact read
- *  what a run was given and read and its answer's time and costs, which the store does not record yet. */
+ *  counts): how its runs that tried to learn fared, less `runs`, from the one store. Its notes' runs and its impact are
+ *  agentLearningOverStore's. */
 export async function agentLearningCountsOverStore(store: Store, agentId: string): Promise<Omit<LearningCounts, "runs">> {
   const { runs: _, ...counts } = await learningCountsOverStore(store, { agent: agentId });
   return counts;
 }
 
-/** What a run's start decides about its learning, recorded on its launch (`body.learning`, the store launch's start
- *  path): the commit of its agent's learning folder it started from, and the notes it was given. */
-export type LaunchLearning = { readonly seed?: string; readonly given?: readonly NoteUsed[] };
+/** Agent `agentId`'s learning view from the one store (GET /agents/{id}/learning, learning-run.ts ofAgent): its counts
+ *  (agentLearningCountsOverStore), each note's runs given it and that read it (noteRuns over notesOf), and what learning
+ *  changed (learningImpact), never a run's files. Each run's part is read from its launch (the notes it was given,
+ *  learningStartOf), its journal once final (the notes its job read, notesReadOf) and its learning end (when its job
+ *  answered and what it and looking back cost, its grade's cost). `seed_notes`, the notes a run started from, is the
+ *  count its launch was given: the store keeps no other. */
+export async function agentLearningOverStore(store: Store, agentId: string): Promise<{ counts: Omit<LearningCounts, "runs">; impact: Impact; notes: NoteRuns }> {
+  const counts = await agentLearningCountsOverStore(store, agentId);
+  const kinds = new Map<string, string | undefined>();
+  const rows: RunRow[] = [];
+  const learnings = new Map<string, ImpactLearning | null>();
+  const files: NoteFiles[] = [];
+  for (const run of await store.runs.list({ agentId })) {
+    if (run.agentId !== agentId) continue;
+    if (!kinds.has(run.revisionId)) kinds.set(run.revisionId, (await store.agents.revision(run.revisionId))?.kind);
+    const final = FINAL_STATES.includes(run.state);
+    const started = await learningStartOfRun(store, run.id);
+    const end = await runLearningEnd(store, run.id);
+    const read = final && started?.given.length ? notesReadOf(started.given, await runReflect(store, run.id, BACKGROUND_CONTEXT), await runTimeline(store, run.id, BACKGROUND_CONTEXT, { settled: true })) : [];
+    if (started || end) files.push(notesOf({ given: started?.given ?? [], read }));
+    // The row learningImpact reads (the file path's RunRow): an ended run is a completed one.
+    rows.push({
+      id: run.id, kind: kinds.get(run.revisionId) === "workflow" ? "workflow" : "agentic", state: run.state === "ended" ? "completed" : run.state,
+      startedAt: new Date(run.startedAt).toISOString(), endedAt: run.endedAt === null ? null : new Date(run.endedAt).toISOString(),
+      costUsd: run.costUsd, importedFrom: run.importedFrom, archivedAt: run.archivedAt === null ? null : new Date(run.archivedAt).toISOString(),
+    } as unknown as RunRow);
+    learnings.set(run.id, end ? impactLearningOf(end, started) : null);
+  }
+  return { counts, impact: learningImpact(rows, (row) => learnings.get(row.id) ?? null), notes: noteRuns(files) };
+}
 
-/** Run `runId`'s launch learning: its seed and given notes, or nothing when its launch records none. */
-async function launchLearningOf(store: Store, runId: string): Promise<LaunchLearning> {
-  const launch = await store.runs.launch(runId).catch(() => undefined);
-  const learning = (launch?.body as { learning?: unknown } | undefined)?.learning;
-  if (learning === null || typeof learning !== "object") return {};
-  const { seed, given } = learning as { seed?: unknown; given?: unknown };
-  const notes = Array.isArray(given) ? given.filter((note): note is NoteUsed => typeof note?.file === "string" && typeof note?.name === "string") : undefined;
-  return { ...(typeof seed === "string" ? { seed } : {}), ...(notes ? { given: notes } : {}) };
+/** What a run's learning end tells its impact, as ofAgent's learningOf read a held run: how it ended and when, the notes
+ *  it started from; when its job answered and its costs once it looked back (a look-back of 0 for an ended one that did
+ *  not); its grade's cost once it ended (0 when nothing was graded). */
+function impactLearningOf(end: RunLearningEnd, started: RunLaunch["learning"]): ImpactLearning {
+  const over = end.state === "merged" || end.state === "dropped";
+  const looked = end.answered_at !== undefined ? { answered_at: end.answered_at, job_cost_usd: end.job_cost_usd ?? null, look_back_usd: end.look_back_usd ?? null } : over ? { look_back_usd: 0 } : {};
+  return {
+    state: end.state, reason: end.reason, at: end.at, ...(started ? { seed_notes: started.given.length } : {}), ...looked,
+    ...(over ? { grade_usd: end.cost_usd ? end.cost_usd.grade : 0 } : {}),
+  };
+}
+
+/** A run's learning end with the notes its start gave it (`given`, when it started from a seed) and those its job read
+ *  (`read`, only when it read one): what a run view and GET /runs/{id}/learning show beside the end. */
+export type RunLearning = RunLearningEnd & { readonly given?: NoteUsed[]; readonly read?: NoteUsed[] };
+
+/** The notes a run's job read (learning-run.ts noteRead's rule, over the runner's journal rows): its own successful
+ *  `read` calls on a file of its copy of the folder, the end-of-run turn's (`reflect`) left out, keyed on the notes it was
+ *  `given` and named as given. A file it was not given (MEMORY.md, one it wrote, one not in its seed) is not one of them. */
+export function notesReadOf(given: readonly NoteUsed[] | undefined, reflect: Pick<Reflect, "after" | "until"> | undefined, rows: readonly TimelineEvent[]): NoteUsed[] {
+  if (!given?.length) return [];
+  const names = new Map(given.map((note) => [note.file, note.name]));
+  return notesRead(reflect as Reflect | undefined, rows).flatMap((file) => (names.has(file) ? [{ file, name: names.get(file)! }] : []));
+}
+
+/** `end` with its run's given notes (from its launch's learning start) and the notes its job read. */
+export function withNotes(end: RunLearningEnd, started: RunLaunch["learning"], read: readonly NoteUsed[]): RunLearning {
+  return {
+    ...end,
+    ...(started ? { given: started.given.map((note): NoteUsed => ({ file: note.file, name: note.name })) } : {}),
+    ...(read.length ? { read: [...read] } : {}),
+  };
+}
+
+/** Run `runId`'s learning start as its launch records it (run-launch.ts learningStartOf, the one reader): its given notes,
+ *  its seed sha and its # Learned section; undefined when the run does not learn or has no launch. */
+async function learningStartOfRun(store: Store, runId: string): Promise<RunLaunch["learning"]> {
+  const row = await store.runs.launch(runId).catch(() => undefined);
+  const launch = row ? readLaunchBody(row.body) : undefined;
+  return launch ? learningStartOf(launch) : undefined;
 }
 
 /** GET /runs/{id}/learning from the one store, in the shape the route gives (learning-routes.ts runLearningBody): the
@@ -127,9 +209,11 @@ async function launchLearningOf(store: Store, runId: string): Promise<LaunchLear
 export async function runLearningOverStore(store: Store, runId: string, shown: Shown, secrets: readonly string[]) {
   const end = await runLearningEnd(store, runId);
   if (!end) return null;
-  const started = await launchLearningOf(store, runId);
-  const learning = { ...end, ...(started.given ? { given: [...started.given] } : {}) } as Learning;
-  const current = holdsForOk(learning) ? currentLearning(learning, undefined) : learning;
+  const started = await learningStartOfRun(store, runId);
   const row = await store.runs.get(runId);
-  return runLearningBody({ id: runId, learning: current, seed: started.seed ?? null, settled: row !== undefined && FINAL_STATES.includes(row.state) }, shown, secrets);
+  const settled = row !== undefined && FINAL_STATES.includes(row.state);
+  const read = started?.given.length ? notesReadOf(started.given, await runReflect(store, runId, BACKGROUND_CONTEXT), await runTimeline(store, runId, BACKGROUND_CONTEXT, { settled })) : [];
+  const learning = withNotes(end, started, read) as Learning;
+  const current = holdsForOk(learning) ? currentLearning(learning, undefined) : learning;
+  return runLearningBody({ id: runId, learning: current, seed: started?.seed ?? null, settled }, shown, secrets);
 }
