@@ -91,8 +91,10 @@ async function piRun(t, { body, script, settings, before, during, until: want = 
   return { row, requests, records, seen, opened };
 }
 
-/** The browser.release tasks the journal holds, each its status. */
+/** The browser.release tasks the journal holds. */
 const releaseTasks = (records) => records.tasks.filter((task) => task.kind === "browser.release");
+/** A task that ran to its end and completed (its record's terminal state). */
+const completed = (task) => task.state?.status === "terminal" && task.state.outcome?.status === "completed";
 
 test("a pi root with the run's booking and the browser granted carries pi-browser's durable extension: the model is offered each of its nine tools exactly once", { timeout: 120_000 }, async (t) => {
   const r = await piRun(t, { body: { tools: ["read", "browser"] }, script: [{ say: "done" }] });
@@ -131,7 +133,7 @@ test("the drain at the run's end: the release that lets its sessions go waits fo
   assert.equal(r.row.state, "ended", JSON.stringify(r.row));
   const released = releaseTasks(r.records);
   assert.ok(released.length >= 1, `the session's release task is in the journal: ${JSON.stringify(r.records.tasks.map((task) => task.kind))}`);
-  assert.ok(released.every((task) => task.status === "terminal"), `each completed before the seal: ${JSON.stringify(released.map((task) => task.status))}`);
+  assert.ok(released.every(completed), `each completed before the seal: ${JSON.stringify(released.map((task) => task.state))}`);
 });
 
 test("the drain at a park: the release that lets the run's sessions go waits for the browser.release task, which completes before the park is sealed", { timeout: 120_000 }, async (t) => {
@@ -140,7 +142,7 @@ test("the drain at a park: the release that lets the run's sessions go waits for
   assert.equal(r.row.state, "parked", JSON.stringify(r.row));
   const released = releaseTasks(r.records);
   assert.ok(released.length >= 1, `the session's release task is in the journal: ${JSON.stringify(r.records.tasks.map((task) => task.kind))}`);
-  assert.ok(released.every((task) => task.status === "terminal"), `each completed before the seal: ${JSON.stringify(released.map((task) => task.status))}`);
+  assert.ok(released.every(completed), `each completed before the seal: ${JSON.stringify(released.map((task) => task.state))}`);
 });
 
 test("end to end on the runner: a run handed its agent's saved sign-in opens its session on the profile to save, hands its viewer over through the store, saves on release (verified_at), and books its time on the run's ledger", { timeout: 120_000 }, async (t) => {
@@ -165,5 +167,9 @@ test("end to end on the runner: a run handed its agent's saved sign-in opens its
   assert.equal(r.seen, true, "its viewer was handed over through the store while it ran");
   assert.deepEqual(await r.opened.server.liveViewers.of(RUN), [], "and gone with the run");
   assert.ok((await signInViews(r.opened.server, SEAL_KEY, "agent-1"))[0]?.verified_at, "its release saved: the sign-in verified");
-  assert.ok((r.row.costUsd ?? 0) > 0, `its session time booked on the run's ledger: ${JSON.stringify(r.row.metrics)}`);
+  // Its money on the run's one ledger (the paid tools' session): the browser call held and settled there, and its
+  // session's release one more request there.
+  const paid = r.records.entries.filter((entry) => entry.kind === "runner.request").map((entry) => entry.data?.model);
+  assert.ok(paid.includes("paid:this browser call"), `the browser call booked on the run's ledger: ${JSON.stringify(paid)}`);
+  assert.ok(paid.includes("paid:this browser session's time"), `its release booked there too: ${JSON.stringify(paid)}`);
 });

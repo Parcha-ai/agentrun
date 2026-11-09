@@ -11,7 +11,7 @@
 // run's revision's tool settings, read through runGate (approvals "never" among them), the adapter loop asking it.
 import type { Context } from "@earendil-works/chord";
 import { BACKGROUND_CONTEXT } from "@earendil-works/chord/context";
-import { ROOT_CONVERSATION_ID, type ToolExecutionApi } from "@earendil-works/pi-durable";
+import { type Extension, ROOT_CONVERSATION_ID, type ToolExecutionApi } from "@earendil-works/pi-durable";
 import { beforeRequestOf, type CapModel, type CapRefused, checkRaise, followUpOf, parkOf } from "@parcha/agentrun-kernel/kernel/cap";
 import type { BeforeRequest, HostTool, SessionSpec, Wire } from "@parcha/agentrun-kernel";
 import type { Approvals } from "../approvals.js";
@@ -90,10 +90,10 @@ export const PI_WIRES: readonly Wire[] = Object.freeze(["anthropic-messages", "o
 
 /** The browser's catalog name (tools.ts TOOLS.browser). */
 const BROWSER_TOOL = "browser";
-/** Whether the runner offers the browser at all. Its calls read the tool task's own api (memo, taskId among them), which a
- *  host tool's api does not give, so every call would fail: off until the native route lands. */
-export const BROWSER_ON_RUNNER = false; // TODO(costsofar-4 native route): pi-browser as a durable pi extension in the claim's registry; flip with host.ledger.paid present
-/** Whether the runner lists the browser for a run whose revision grants `granted`, fail closed: only on the native route
+/** Whether the runner offers the browser at all: on pi's native route (PiAdapterOptions.extensions), where pi-browser's
+ *  durable extension runs in the claim's Harness, its tools pi's own tool tasks (their memo, task and conversations). */
+export const BROWSER_ON_RUNNER = true;
+/** Whether the runner installs the browser for a run whose revision grants `granted`, fail closed: only on the native route
  *  (BROWSER_ON_RUNNER), and only with the run's ledger booking on its ToolHost (host.ledger.paid), so no browser call is
  *  held on this process's own spend. */
 export const browserListed = (host: Pick<ToolHost, "ledger">, granted: readonly string[]): boolean => BROWSER_ON_RUNNER && host.ledger?.paid !== undefined && granted.includes(BROWSER_TOOL);
@@ -271,8 +271,12 @@ export async function adapterRunSpecFromLaunch(launch: RunLaunch, run: AdapterRu
   // The runner's one redactor (run.redact) goes to the route's translation and to the session's model proxy: a provider's
   // error that echoes a secret reaches pi's record with none in it, on any route.
   const route = await deps.routeOf(launch.model ? `${launch.model.provider}/${launch.model.modelId}` : undefined, deps.env, "default", PI_WIRES, undefined, cut);
+  // The run's pi-native extensions: the browser's durable extension, when the run gets one (bindNonHandTools, below, before
+  // the session opens). piAdapter installs them in the claim's registry and on the root agent, offers their tools once.
+  const native: Extension[] = [];
   const adapter = piAdapter({
     run,
+    extensions: native,
     model: route.model,
     provider: route.provider,
     redact: cut,
@@ -363,7 +367,7 @@ export async function adapterRunSpecFromLaunch(launch: RunLaunch, run: AdapterRu
   const handTools = tools.hostTools(granted, undefined, results);
   // The non-hand tools run on the claim's keys (host.env), so a vendor's error may echo one: each answer, and a throw's
   // words, pass the run's one redactor before the harness, the model or the record has them.
-  const nonHandTools = (await bindNonHandTools(host, granted, run, context, results, root, launch.plane)).map((tool) => answersCut(tool, cut));
+  const nonHandTools = (await bindNonHandTools(host, granted, run, context, results, root, launch.plane, native)).map((tool) => answersCut(tool, cut));
   const sessionTools = [...handTools, ...nonHandTools];
 
   // The run's system prompt, as main's per-run process builds it (app.ts): the environment line first (environment.ts, as
@@ -512,10 +516,10 @@ export function answersCut(tool: HostTool, cut: (text: string) => string): HostT
   };
 }
 
-async function bindNonHandTools(host: ToolHost, granted: readonly string[], run: AdapterRun, context: Context, results: ToolResults, root: string, plane: RunLaunch["plane"]): Promise<AdapterRunSpec["session"]["tools"]> {
+async function bindNonHandTools(host: ToolHost, granted: readonly string[], run: AdapterRun, context: Context, results: ToolResults, root: string, plane: RunLaunch["plane"], native: Extension[]): Promise<AdapterRunSpec["session"]["tools"]> {
   const names = granted.filter((name) => name === WEB_FETCH_TOOL || name === WEB_SEARCH_TOOL || name.startsWith("monid."));
   // Fail closed (browserListed): the browser binds only on the native route (BROWSER_ON_RUNNER) and with the claim's
-  // one-ledger booking on its ToolHost (host.ledger.paid); otherwise none of its tools is listed. No early return on an
+  // one-ledger booking on its ToolHost (host.ledger.paid); otherwise its extension is not installed. No early return on an
   // empty `names`: learned_workflow binds below without a web tool, so a learned run with no web tool still lists it.
   const browser = browserListed(host, granted);
   // The host-tool ctx the non-hand tools are wrapped with (hostToolCtxOf): the run's own Harness and the run's folder as
@@ -539,20 +543,18 @@ async function bindNonHandTools(host: ToolHost, granted: readonly string[], run:
   const learned = await learnedWorkflowHostTool({ run, granted, plane, env: host.env, work: root, ctx });
   if (learned) tools.push(learned);
 
-  // The browser (tl-browser): tools.ts's own binding on this run's ToolHost (its store, claim and seal key, its live viewers
-  // through the store, its sign-in read under the claim), its vendor the launch's plane checked again against the keys
-  // this claim read from the store, as main's launch hands its process the plane (runs.ts TOOL_PLANE_ENV). Each of its
-  // tools as a HostTool under the loop's one gate, with its own replay policy.
+  // The browser (tl-browser), on pi's native route: tools.ts's own binding on this run's ToolHost (its store, claim and seal
+  // key, its live viewers through the store, its sign-in read under the claim, its money on host.ledger), its vendor the
+  // launch's plane checked again against the keys this claim read from the store, as main's launch hands its process the
+  // plane (runs.ts relaunchPlane). Its durable extension goes to piAdapter (`native`), never wrapped as a HostTool and never
+  // installed here too (piAdapter installs it once); its lifecycle (the Config per conversation, reconcile, the release
+  // drain) through the host's hooks into the spec's lifecycle.
   if (browser) {
     const checked = plane ? recheckPlane(plane, host.env) : {};
     const env = { ...host.env };
     delete env[TOOL_PLANE_ENV];
     if (Object.keys(checked).length) env[TOOL_PLANE_ENV] = JSON.stringify(checked);
-    const binding = await toolOf(BROWSER_TOOL)!.bind({ ...host, env });
-    for (const registration of binding.tools) {
-      const tool = hostToolOf(BROWSER_TOOL, registration, ctx, (registration as { replay?: string }).replay === "safe" ? "safe" : "never");
-      if (tool) tools.push(tool);
-    }
+    await toolOf(BROWSER_TOOL)!.bind({ ...host, env, install: (extension) => void native.push(extension) });
   }
 
   // TODO (decisions, option (a)): a pi run's decision tools book on the run's ONE cap (runCap's run.decisions), which the
