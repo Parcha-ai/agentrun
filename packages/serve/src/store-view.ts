@@ -359,6 +359,14 @@ export async function momentOverStore(store: Store, runId: string, deps: ViewDep
   return momentOf(run.view, factsOf(run), run.live);
 }
 
+/** A run's timeline rows as the VIEW renders them (storeRunOf's view.rows: withAsks, so a run waiting on a question carries
+ *  its `:waiting` row). The run-ended/run-needs-input follower reads these for its wait marker, main's marker and webhook-id.
+ *  The served `/timeline` route uses run-timeline-served.ts (servedTimelineRows) instead; this is the internal view's rows.
+ *  Undefined for an unknown run. */
+export async function timelineOverStore(store: Store, runId: string, deps: ViewDeps): Promise<readonly TimelineEvent[] | undefined> {
+  return (await storeRunOf(store, runId, deps))?.view.rows;
+}
+
 /** Whether a run's served output is withheld: this server can't read the browser sign-in it was handed, so nothing it said
  *  is shown (storeRunOf's `unshown`). The run read routes refuse a withheld run's graph, as the file-backed route did; a
  *  run with no such mark, or no such run, is not withheld. Reads anew on each call: a run withheld while its key was missing

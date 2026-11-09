@@ -33,7 +33,7 @@ import { healthOf, hostMemory, maxRunsOf, MIN_FREE_MIB, runsThatFit } from "./ho
 import { IMPORT_ASKED } from "./import.js";
 import type { ImportAnswer, ImportTask } from "./import-worker.js";
 import type { MessageOrigin } from "@parcha/pi-durable-agent/timeline";
-import { gradeModelOf, learningBudgetOf, type LearningMode, learningOf } from "./learning.js";
+import { gradeModelOf, LEARNING_LABEL, learningBudgetOf, type LearningMode, learningOf } from "./learning.js";
 import { agentLearning, learningLog, learningNotes, noteBody, pendingCount, readNote, secretsShown, sendNote, writeNote } from "./learning-routes.js";
 import { answerLlms, MCP_PATH, mcpEndpoint } from "./mcp.js";
 import { openapiDocument, servedOpenapi, UNSUPPORTED } from "./openapi.js";
@@ -48,7 +48,7 @@ import { type ComputerOf, computerView } from "./computer-view.js";
 import { durationMs, logLine } from "./print.js";
 import { knownToolCostOf, redactorOf, type RunMoment, type State, type Status, toolCostOf } from "./run-view.js";
 import { approve, archiveRun, cancel, message, raiseCap, type StartDeps, type StartOptions, startRun, stop as stopRunOverStore, WAITS_ON_A_PERSON } from "./runs-over-store.js";
-import { momentOverStore, summaryOverStore, type ViewDeps, viewOverStore, withheldOverStore } from "./store-view.js";
+import { momentOverStore, summaryOverStore, timelineOverStore, type ViewDeps, viewOverStore, withheldOverStore } from "./store-view.js";
 import { servedTimelineRows } from "./run-timeline-served.js";
 import { servedRunLearning } from "./run-learning-served.js";
 import { runCutValues } from "./run-cut.js";
@@ -62,6 +62,7 @@ import { stats as statsOverStore } from "./store-reads/stats.js";
 import { analytics as analyticsOverStore } from "./store-reads/analytics.js";
 import { BACKGROUND_CONTEXT } from "@earendil-works/chord/context";
 import { type AgenticBody, type NewRevision, openSqliteStore, type RevisionPlace, type RunRow, type Store, StoreBusy, StoreConstraint, type WorkflowBody } from "./store/index.js";
+import { FINAL_STATES } from "./store/store.js";
 import { runModelRef } from "./model.js";
 // The v2 run statuses, as the run view names them (run-view.ts Status), for the list filter's validation. */
 const STATUSES = ["queued", "working", "paused", "input_required", "completed", "failed", "cancelled"] as const;
@@ -100,7 +101,7 @@ import { MCP_AUTH_TYPES, type McpTool } from "./mcp-probe.js";
 import { mcpServersOverStore } from "./mcp-servers-store.js";
 import { metaToolOf } from "./mcp-meta.js";
 import { MCP_SETTINGS_PAGE, signInCookie, startedHere } from "./mcp-oauth.js";
-import { WEBHOOK_EVENTS, Webhooks } from "./webhooks.js";
+import { type RunNotice, WEBHOOK_EVENTS, Webhooks } from "./webhooks.js";
 import { templateTriggerSecret, triggerMade, triggerRotated, webhookSaved, withTriggerSecret } from "./trigger-secrets-shown.js";
 import { type SealedSettingsOverStore } from "./sealed-settings-store.js";
 import { type ServerSecrets } from "./server-secrets.js";
@@ -2989,6 +2990,84 @@ async function startHolding(options: ServeOptions, data: string, checked: { maxR
   owner?.attach(options.publicUrl ?? url);
   webhooks.attach(options.publicUrl ?? url);
   mcpServers.attach(options.publicUrl ?? url, url);
+  // A run's end and its wait are the outbound webhook's run.ended and run.needs_input (webhooks.ts). The runners write them
+  // to the store and this server runs no run, so it follows the store: each read takes the runs not final yet and the
+  // newest runs (one that started and ended between two reads is among them). It tells each end it has not told once the
+  // run reads final, and each wait of a run a runner left parked (or let go of) once it reads input_required. The markers
+  // are main's (an end's time, a wait's last row), so each webhook-id is the one it always had, and the ledger tells each
+  // once across restarts; a start first catches up the ends the ledger lacks, which no server was up to see. A store read
+  // of the runs ended (or parked) since a mark would be the cleaner seam than this read of the open runs every 250 ms.
+  const RUN_ENDS_POLL_MS = 250;
+  const RUN_ENDS_NEWEST = 50;
+  const final = (row: RunRow) => (FINAL_STATES as readonly string[]).includes(row.state);
+  const endOf = (row: RunRow) => ({ id: row.id, state: final(row) ? row.state : "running", ...(final(row) && row.endedAt !== null ? { endedAt: new Date(row.endedAt).toISOString() } : {}) });
+  /** The run as the store holds it now, with its notice (the run list's own view of it); null when there is no such run. */
+  const endNotice = async (id: string) => {
+    const row = await store.runs.get(id);
+    const summary = row && (await summaryOverStore(store, id, viewDepsFor(ownOriginOf())));
+    if (!row || !summary) return null;
+    return { ...endOf(row), notice: { run_id: id, agent_id: row.agentId, status: String(summary.status), title: typeof summary.title === "string" ? summary.title : "" } };
+  };
+  const toldEnds = new Map<string, string>();
+  /** Each waiting run's row as it was last read for its wait (its state, epoch and runner): a row that has not moved since
+   *  is not read again, and a new wait comes with a new claim, so a new epoch. */
+  const readWaits = new Map<string, string>();
+  const waitKinds = new Set(["question", "approval", "budget", "browser"]);
+  /** The wait of a run its runner left parked (or let go of), told once as main told it: its marker the run's last row
+   *  that shows (not usage, a phase or learning's), its kind the pending card's (a stop's when it waits on no card). */
+  const tellWait = async (row: RunRow): Promise<void> => {
+    const seen = `${row.state}\n${row.epoch}\n${row.runner ?? ""}`;
+    if (readWaits.get(row.id) === seen) return;
+    const view = await viewOverStore(store, row.id, viewDepsFor(ownOriginOf()));
+    if (view?.status !== "input_required") return void readWaits.set(row.id, seen);
+    const rows = (await timelineOverStore(store, row.id, viewDepsFor(ownOriginOf()))) ?? [];
+    const marker = rows.findLast((r) => r.kind !== "usage" && r.kind !== "phase" && r.agent_label !== LEARNING_LABEL)?.id;
+    if (!marker) return void readWaits.set(row.id, seen);
+    const card = (view.pending as { kind?: unknown } | null | undefined)?.kind;
+    const kind = view.state !== "waiting" ? "stopped" : typeof card === "string" && waitKinds.has(card) ? card : "question";
+    const notice = { run_id: row.id, agent_id: row.agentId, status: "input_required", title: typeof view.title === "string" ? view.title : "", pending: { kind } } as RunNotice;
+    if (webhooks.emit("run.needs_input", notice, marker) !== "unsaved") readWaits.set(row.id, seen);
+  };
+  let openRuns = new Set<string>();
+  let endsTimer: NodeJS.Timeout | undefined;
+  let endsRead: Promise<void> = Promise.resolve();
+  const readEnds = async (): Promise<void> => {
+    const open = new Set<string>();
+    for (const state of ["queued", "running", "parked"] as const) {
+      for (const row of await store.runs.list({ state })) {
+        open.add(row.id);
+        // A run waits on its person once its runner has let it go: parked, or running with no runner.
+        if (!closing && (row.state === "parked" || (row.state === "running" && row.runner === null))) await tellWait(row).catch(() => undefined);
+      }
+    }
+    const newest = await store.runs.list({ limit: RUN_ENDS_NEWEST });
+    for (const id of new Set([...openRuns, ...newest.map((row) => row.id)])) {
+      if (open.has(id) || closing) continue;
+      const now = await endNotice(id).catch(() => undefined);
+      // Unread (a busy store): read again at the next turn, never lost.
+      if (now === undefined) {
+        open.add(id);
+        continue;
+      }
+      readWaits.delete(id);
+      if (!now?.endedAt || toldEnds.get(id) === now.endedAt) continue;
+      if (webhooks.emit("run.ended", now.notice, now.endedAt) !== "unsaved") toldEnds.set(id, now.endedAt);
+    }
+    openRuns = open;
+  };
+  const followEnds = () => {
+    if (closing) return;
+    endsRead = readEnds()
+      .catch((error: Error) => log?.(logLine("webhook", { condition: "run_ends_unread", error: error.message })))
+      .finally(() => {
+        if (!closing) (endsTimer = setTimeout(followEnds, RUN_ENDS_POLL_MS)).unref();
+      });
+  };
+  void store.runs
+    .list({})
+    .then((rows) => webhooks.catchUp(rows.filter((row) => !row.importedFrom).map(endOf), endNotice))
+    .catch((error: Error) => log?.(logLine("webhook", { condition: "catch_up_unread", error: error.message })))
+    .finally(followEnds);
   const setupUrl = owner && !owner.hasPassword() ? owner.setupLink() : undefined;
   /** The server's stop: once (`close` keeps its promise). */
   let stopped: Promise<void> | undefined;
@@ -3018,6 +3097,9 @@ async function startHolding(options: ServeOptions, data: string, checked: { maxR
     await image?.close();
     // The box network proxy goes with the server that owns it (box-egress-vm.ts); its volume stays for the next start.
     await egress?.close();
+    // The ends' follower stops before the webhooks it feeds and the store it reads.
+    clearTimeout(endsTimer);
+    await endsRead;
     await webhooks.close();
     // An upgraded socket is no connection closeAllConnections ends, and server.close waits for it.
     viewers.close();
