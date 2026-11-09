@@ -78,12 +78,36 @@ export type Input = { actions(list: readonly InputAction[]): Promise<void> };
 /** A point on a phone's screen, in its screenshot's pixels. */
 export type PhonePoint = { readonly x: number; readonly y: number };
 
-/** A phone: its screen, a tap, a swipe, typing into the field in focus, and its apps. */
+/** A node of a phone screen's structure, flattened: its platform class, its id, text and label where it has them, its
+ *  bounds in screenshot pixels, and whether a model can tap it or type into it. */
+export type PhoneNode = {
+  readonly role: string;
+  readonly id?: string;
+  readonly text?: string;
+  readonly label?: string;
+  readonly bounds: { readonly x: number; readonly y: number; readonly w: number; readonly h: number };
+  readonly clickable: boolean;
+  readonly editable: boolean;
+  readonly focused?: boolean;
+  /** A node with no text or label of its own, named by its first inner text (else label): an Android list row, a
+   *  clickable layout whose title sits on a child that is not clickable. */
+  readonly inner?: string;
+};
+
+/** A key a phone presses: its back and home buttons, and enter. */
+export type PhoneKey = "back" | "home" | "enter";
+
+/** A phone: its screen and the screen's structure, a tap, a swipe, typing into the field in focus, its keys, and its apps. */
 export type Phone = {
   shot(): Promise<Shot>;
+  /** The screen's structure, flattened (`total` the nodes the phone gave, `truncated` when it gave only part); absent on a
+   *  phone that does not offer it. */
+  tree?(): Promise<{ readonly nodes: readonly PhoneNode[]; readonly total: number; readonly truncated: boolean }>;
   tap(at: PhonePoint): Promise<void>;
   swipe(spec: { readonly from: PhonePoint; readonly to: PhonePoint; readonly durationMs: number }): Promise<void>;
   type(text: string): Promise<void>;
+  /** Absent on a phone that does not offer its keys. */
+  key?(name: PhoneKey): Promise<void>;
   readonly apps: {
     list(): Promise<{ readonly apps: readonly { readonly id: string; readonly name?: string }[]; readonly foreground: string | null }>;
     open(id: string): Promise<void>;

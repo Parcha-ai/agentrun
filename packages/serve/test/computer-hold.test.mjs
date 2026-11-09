@@ -33,7 +33,7 @@ function ports() {
     },
     phone: {
       maxExecS: 600,
-      phone: { shot: record("phone.shot", { png: new Uint8Array([2]), width: 1, height: 1 }), tap: record("phone.tap"), swipe: record("phone.swipe"), type: record("phone.type"), apps: { list: record("phone.apps.list", ["mail"]), open: record("phone.apps.open") } },
+      phone: { shot: record("phone.shot", { png: new Uint8Array([2]), width: 1, height: 1 }), tree: record("phone.tree", { nodes: [], total: 0, truncated: false }), tap: record("phone.tap"), swipe: record("phone.swipe"), type: record("phone.type"), key: record("phone.key"), apps: { list: record("phone.apps.list", ["mail"]), open: record("phone.apps.open") } },
     },
   };
 }
@@ -87,21 +87,22 @@ test("while held, a desktop's look waits and then runs, and its act waits and th
   assert.equal((await hands.exec("true", { timeoutS: 1 })).exitCode, 0, "exec passes through, held or not");
 });
 
-test("a phone's looks (its screen, its apps) wait and run; its acts (tap, swipe, typing, opening an app) wait and are not done", async () => {
+test("a phone's looks (its screen, its structure, its apps) wait and run; its acts (tap, swipe, typing, a key, opening an app) wait and are not done", async () => {
   const { calls, phone } = ports();
   const hold = computerHold();
   const hands = heldHands(phone, hold);
   hold.take();
-  const parked = [hands.phone.shot(), hands.phone.apps.list(), hands.phone.tap({ x: 1, y: 2 }), hands.phone.swipe({ from: { x: 0, y: 0 }, to: { x: 1, y: 1 }, durationMs: 1 }), hands.phone.type("x"), hands.phone.apps.open("mail")];
+  const parked = [hands.phone.shot(), hands.phone.tree(), hands.phone.apps.list(), hands.phone.tap({ x: 1, y: 2 }), hands.phone.swipe({ from: { x: 0, y: 0 }, to: { x: 1, y: 1 }, durationMs: 1 }), hands.phone.type("x"), hands.phone.key("back"), hands.phone.apps.open("mail")];
   for (const call of parked) assert.equal(await settled(call), false);
   hold.give();
   const answers = await Promise.allSettled(parked);
-  assert.deepEqual(answers.slice(0, 2).map((a) => a.status), ["fulfilled", "fulfilled"]);
-  assert.deepEqual(answers.slice(2).map((a) => [a.status, a.reason?.code, a.reason?.message]), [
+  assert.deepEqual(answers.slice(0, 3).map((a) => a.status), ["fulfilled", "fulfilled", "fulfilled"]);
+  assert.deepEqual(answers.slice(3).map((a) => [a.status, a.reason?.code, a.reason?.message]), [
     ["rejected", TAKEN_OVER, personHadWords("phone", "tap")], ["rejected", TAKEN_OVER, personHadWords("phone", "swipe")],
-    ["rejected", TAKEN_OVER, personHadWords("phone", "typing")], ["rejected", TAKEN_OVER, personHadWords("phone", "app opening")],
+    ["rejected", TAKEN_OVER, personHadWords("phone", "typing")], ["rejected", TAKEN_OVER, personHadWords("phone", "key press")],
+    ["rejected", TAKEN_OVER, personHadWords("phone", "app opening")],
   ]);
-  assert.deepEqual(calls.map(([name]) => name), ["phone.shot", "phone.apps.list"], "only the looks reached the phone");
+  assert.deepEqual(calls.map(([name]) => name), ["phone.shot", "phone.tree", "phone.apps.list"], "only the looks reached the phone");
 });
 
 test("a wait for the hand-back stops at its signal's abort", async () => {
