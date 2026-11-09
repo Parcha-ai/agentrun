@@ -270,26 +270,30 @@ test("a trigger holds at most 20 firings due: an event past them is refused, ret
   assert.equal(rest.filter((f) => f.status === "due").length, 20);
 });
 
-test("a trigger whose cron line or zone no longer reads, or whose source kind this server lacks, is turned off with why at start, and every other schedule goes on firing; nothing is retried for it", async (t) => {
+test("a trigger whose cron line, zone or every_s no longer reads, or whose source kind this server lacks, is turned off with why at start, and every other schedule goes on firing; nothing is retried for it", async (t) => {
   const first = await engine(t, {});
   const good = await first.triggers.create({ ...body({ cron: "*/5 * * * *" }), name: "good" });
   const zoned = await first.triggers.create({ ...body({ cron: "*/5 * * * *", timezone: "Europe/Madrid" }), name: "zoned" });
   const later = await first.triggers.create({ ...body({ cron: "0 9 * * *" }), name: "later" });
+  const stepless = await first.triggers.create({ ...body({ every_s: 600 }), name: "stepless" });
   first.triggers.close();
   // What a croner or an ICU that no longer reads them leaves: a zone and a cron line the store holds but nothing takes.
   await first.store.triggers.update(zoned.id, { source: { kind: "schedule", cron: "*/5 * * * *", timezone: "Mars/Olympus_Mons" } });
   await first.store.triggers.update(later.id, { source: { kind: "schedule", cron: "61 * * * *", timezone: "UTC" } });
+  // A hand edit of the row: an every_s no request could set (0, which would fire on every tick).
+  await first.store.triggers.update(stepless.id, { source: { ...(await first.store.triggers.get(stepless.id)).source, every_s: 0 } });
   const said = [];
   const starts = [];
   const second = await engine(t, { say: (fields) => said.push(fields), start: async (target, input, origin) => (starts.push(origin.id), { run_id: `run-${starts.length}` }) }, { on: first, at: "2026-06-01T00:05:00Z" });
   await until(() => starts.length === 1, "the good schedule's run");
   assert.deepEqual(starts, [good.id]);
-  for (const id of [zoned.id, later.id]) {
+  for (const id of [zoned.id, later.id, stepless.id]) {
     const off = await second.triggers.get(id);
     assert.deepEqual([off.enabled, off.next_at, off.disabled?.reason], [false, null, "source_unreadable"], id);
     assert.equal(typeof off.disabled.detail, "string");
   }
-  assert.deepEqual(said.filter((s) => s.condition === "trigger_source_unreadable").map((s) => s.trigger).sort(), [zoned.id, later.id].sort());
+  assert.equal((await second.triggers.get(stepless.id)).disabled.detail, "every_s 0 is not 60 to 31622400 seconds");
+  assert.deepEqual(said.filter((s) => s.condition === "trigger_source_unreadable").map((s) => s.trigger).sort(), [zoned.id, later.id, stepless.id].sort());
   await until(() => second.clock.timer?.at === Date.parse("2026-06-01T00:10:00Z"), "armed for the good one's next time alone");
   assert.equal((await second.store.triggers.get(zoned.id)).disabled.reason, "source_unreadable", "written down");
   // On again with no new source is refused by field; with one it goes on.
