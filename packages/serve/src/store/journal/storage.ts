@@ -39,7 +39,7 @@ import {
 import { PI_TABLE as T } from "../schema.js";
 import { type Dialect, SQLITE } from "../dialect.js";
 import type { StoreConnection } from "../sqlite/connection.js";
-import { claimFence } from "../fence.js";
+import { claimFence, storeNow } from "../fence.js";
 import { applyRunPatch, refuseLeftovers } from "../sqlite/run-patch.js";
 import { type Claim, CommandTaken, Fenced, type Journal, type Staged } from "../store.js";
 
@@ -329,9 +329,18 @@ export class RunStorage implements Journal {
     // only its own statements, never a model or a tool.
     await this.#transaction(async (tx) => {
       // The claim's fence (store/fence.ts): its epoch, and its lease not run out on the store's clock, read here inside the
-      // transaction so the check and the commit are one.
-      const fence = claimFence({ runId: this.#runId, epoch: this.#epoch }, this.#now());
-      if ((await tx.runCounted(`UPDATE runs SET epoch = epoch WHERE ${fence.where}`, ...fence.params)) === 0) {
+      // transaction so the check and the commit are one, once the run's row is held (a no-op on SQLite's one writer). Held
+      // shared (dialect shareLock): a claim, a release or the run's end, which move the epoch, waits for this commit; a
+      // renew, which moves only the lease, never does. A commit whose staged patch moves the run's state (an end, a park)
+      // holds the row as every other state or epoch move does (lockRow "update"): a command's or a put's insert, which
+      // holds it shared, waits for it and reads the run as it leaves it, never lands beside an end.
+      if (staged?.run?.state !== undefined) await this.#dialect.lockRow(tx, "runs", "id", this.#runId, "update");
+      else await tx.run(`SELECT 1 FROM runs WHERE id = ?${this.#dialect.shareLock}`, this.#runId);
+      // The journal's ids and seqs are read and moved on by one commit of the run at a time (the run's journal key, never
+      // its row, so a renew stays free): two commits in flight never take one seq.
+      await this.#dialect.lockKey(tx, `journal:${this.#runId}`);
+      const fence = claimFence({ runId: this.#runId, epoch: this.#epoch }, storeNow(this.#dialect, this.#now));
+      if ((await tx.get(`SELECT 1 AS held FROM runs WHERE ${fence.where}`, ...fence.params)) === undefined) {
         throw new Fenced(this.#runId, this.#epoch);
       }
       const metadata = await this.#readMetadata(tx);
@@ -419,9 +428,9 @@ export class RunStorage implements Journal {
    * transaction rolls back. A refused batch throws, so an import is all or nothing. Returns the seqs stored. Never
    * interleave it with commit() on the same journal: it is for a fresh run's single import, not a live run's loop.
    */
-  async applyIn(tx: SqliteExecutor, batches: readonly (readonly StorageWrite[])[], insertedHere: number): Promise<Seq[]> {
+  async applyIn(tx: SqliteExecutor, batches: readonly (readonly StorageWrite[])[], insertedHere: number | "this-transaction"): Promise<Seq[]> {
     this.#assertOpen();
-    const fence = claimFence({ runId: this.#runId, epoch: this.#epoch }, this.#now(), { insertedHere });
+    const fence = claimFence({ runId: this.#runId, epoch: this.#epoch }, storeNow(this.#dialect, this.#now), { insertedHere });
     if ((await tx.runCounted(`UPDATE runs SET epoch = epoch WHERE ${fence.where}`, ...fence.params)) === 0) {
       throw new Fenced(this.#runId, this.#epoch);
     }

@@ -4,7 +4,9 @@
 import { after, test } from "node:test";
 import { registerHarnessConformance } from "../dist/runner/conformance/harness.js";
 import { claudeAgentSubject, closeOpenSessions } from "./conformance-claude-agent.mjs";
+import { PG_URL } from "./store-target.mjs";
 
-registerHarnessConformance(claudeAgentSubject, { test });
+// On the test Postgres when AGENTRUN_TEST_PG_URL names one, handed to the suite by hand; else SQLite.
+registerHarnessConformance(claudeAgentSubject, { test, storeUrl: PG_URL });
 // The crash cases' frozen loops never close their sessions: their CLIs and proxies close here, so the file can exit.
 after(closeOpenSessions);
