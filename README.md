@@ -92,6 +92,9 @@ about the agent.
 | browser | Browse, with you able to take over at any point | Browserbase, Kernel | live |
 | GPU box | A sandbox with a GPU attached | not yet chosen | next |
 
+Every provider but Docker bills by the minute through your own account with the vendor, and those minutes aren't
+counted in a run's spending cap.
+
 We mark a provider live only after it passes the conformance suite for its kind against the vendor's real service. You
 can run the same suite yourself:
 
