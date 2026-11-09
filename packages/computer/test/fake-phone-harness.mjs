@@ -9,8 +9,11 @@
 
 export const KEY = "fake-test-key";
 export const SETTINGS = "com.android.settings";
+/** Settings' search: another package, whose activity a live Android 15 puts on top of Settings' task (run 5). */
+export const SEARCH_PKG = "com.android.settings.intelligence";
 export const LAUNCHER = "com.google.android.apps.nexuslauncher";
-export const SEARCH_FIELD = "com.android.settings.intelligence:id/search_src_text";
+/** Settings' search field's id, as phone probe 2 read it live: the platform's own SearchView text field. */
+export const SEARCH_FIELD = "android:id/search_src_text";
 export const ITEMS = [
 	"Network & internet",
 	"Connected devices",
@@ -30,7 +33,9 @@ export const ITEMS = [
 export const SCREEN = { width: 360, height: 640 };
 const HEADER = 96;
 const ROW = 64;
-const ADB_CODE = "424242";
+/** The phone's adb endpoint and unlock code in the vendor's own shapes (OpenAPI SessionAdb): a DNS name, and ph_ with 26 base32 letters. */
+export const ADB_HOST = "live.phone-harness.test";
+export const ADB_CODE = "ph_mfwcc5nknqaod7a4nwojzw2lzq";
 
 /** A clock whose sleep() moves time on at once: no test waits on the wall clock. */
 export function fakeClock(start = Date.now()) {
@@ -43,16 +48,48 @@ export function fakeClock(start = Date.now()) {
 	};
 }
 
+/**
+ * What `input text <arg>` types, as AOSP's InputShellCommand.sendText reads its argument: a `%` followed by `s` is a
+ * space, and every other character, a lone `%` included, is itself.
+ */
+function inputText(arg) {
+	const out = [...arg];
+	let escaped = false;
+	for (let i = 0; i < out.length; i++) {
+		if (escaped) {
+			escaped = false;
+			if (out[i] === "s") {
+				out[i] = " ";
+				out.splice(--i, 1);
+			}
+		}
+		if (out[i] === "%") escaped = true;
+	}
+	return out.join("");
+}
+
 const json = (status, body, headers = {}) => new Response(JSON.stringify(body), { status, headers: { "content-type": "application/json", ...headers } });
 
 /**
  * The fake. Options: `readyAfter`, how many GETs a new session stays provisioning (default 1); `start`, what a create
  * meets ("ok", "busy", "limit", "credit", "error": the session fails while provisioning); `loseAnswer`, the POST is
  * admitted and then its answer is lost (fetch rejects); `others`, sessions on the account this provider never made;
+ * `loseRecovery`, the GET that recovers a create by its key is lost too; `cancelPost`, called once a POST /sessions is
+ * admitted (a test aborts the create's signal in it), after which that fetch rejects as an aborted one does; `stall`,
+ * called with each request's { method, path }: when it answers true, the request is never answered, and only its
+ * signal ends it; `onList`, given GET /sessions' snapshot once it is taken and before it is answered, answers the
+ * list to send (a test makes a phone in between, or leaves a live one out, as a lagging listing would);
  * `code`, the unlock code the phone takes (default the one the API gives); `abi`, what getprop reports; `launchHidden`,
- * a launched app is reported in front (dumpsys) while the screen and the tree still show the launcher.
+ * a launched app is reported in front (dumpsys) while the screen and the tree still show the launcher; `launchNothing`,
+ * `am start` starts nothing at all; `twoPane`, Settings shows two panes, as Android does on a window 600 dp wide or
+ * more: a row's page opens beside the list, which stays; `rowTapsMiss`, a tap on a Settings row does nothing. Either
+ * leaves touch.tap with run 6's live words, and the case's words must tell them apart.
+ *
+ * Tasks are as a live Android 15 keeps them (run 5): Settings' search is another package's activity
+ * (com.android.settings.intelligence) on top of Settings' own task. A force-stop of Settings leaves it there, a plain
+ * `am start` of Settings resumes that task, search in front, and only `--activity-clear-task` starts Settings afresh.
  */
-export function fakePhoneHarness({ readyAfter = 1, start = "ok", loseAnswer = false, others = [], code, abi = "x86_64", launchHidden = false, clock = fakeClock() } = {}) {
+export function fakePhoneHarness({ readyAfter = 1, start = "ok", loseAnswer = false, loseRecovery = false, cancelPost, stall, onList, others = [], code, abi = "x86_64", launchHidden = false, launchNothing = false, twoPane = false, rowTapsMiss = false, clock = fakeClock() } = {}) {
 	const requests = [];
 	const adbCalls = [];
 	const sessions = new Map(others.map((s) => [s.id, { ...s }]));
@@ -64,6 +101,14 @@ export function fakePhoneHarness({ readyAfter = 1, start = "ok", loseAnswer = fa
 		const headers = Object.fromEntries(Object.entries(init.headers ?? {}).map(([k, v]) => [k.toLowerCase(), v]));
 		const body = init.body === undefined ? undefined : JSON.parse(init.body);
 		requests.push({ method, path: u.pathname, headers, body });
+		if (stall?.({ method, path: u.pathname })) {
+			// A request that never answers: only its signal ends it, as an aborted fetch rejects.
+			return new Promise((_, reject) => {
+				const stop = () => reject(init.signal.reason ?? new DOMException("This operation was aborted", "AbortError"));
+				if (init.signal?.aborted) stop();
+				else init.signal?.addEventListener("abort", stop, { once: true });
+			});
+		}
 		if (headers.authorization !== `Bearer ${KEY}`) return json(401, { error: "invalid API key" });
 		const path = u.pathname;
 		if (method === "GET" && path === "/me") return json(200, { id: "acct_1", available: [] });
@@ -87,11 +132,20 @@ export function fakePhoneHarness({ readyAfter = 1, start = "ok", loseAnswer = fa
 			};
 			sessions.set(id, session);
 			if (loseAnswer) throw new TypeError("fetch failed: the connection was reset");
+			if (cancelPost) {
+				// The caller cancels once the service has admitted the request: fetch rejects as it does on an abort.
+				cancelPost();
+				if (init.signal?.aborted) throw init.signal.reason ?? new DOMException("This operation was aborted", "AbortError");
+			}
 			return json(202, view(session));
 		}
-		if (method === "GET" && path === "/sessions") return json(200, [...sessions.values()].map(view));
+		if (method === "GET" && path === "/sessions") {
+			const snapshot = [...sessions.values()].map(view);
+			return json(200, onList ? await onList(snapshot) : snapshot);
+		}
 		const byKey = /^\/sessions\/requests\/([^/]+)$/.exec(path);
 		if (method === "GET" && byKey) {
+			if (loseRecovery) throw new TypeError("fetch failed: the connection was reset");
 			const found = [...sessions.values()].find((s) => s.request_key === byKey[1]);
 			return found ? json(200, view(found)) : json(404, { error: "no such request" });
 		}
@@ -99,7 +153,8 @@ export function fakePhoneHarness({ readyAfter = 1, start = "ok", loseAnswer = fa
 		if (method === "POST" && adb) {
 			const s = sessions.get(adb[1]);
 			if (!s) return json(404, { error: "no such session" });
-			return json(200, { host: "203.0.113.7", port: 40000 + Number(s.id.slice(5)), code: ADB_CODE });
+			// The vendor's AdbConnection, unwrapped: 201, enabled, transport, host, port, code, expires_at.
+			return json(201, { enabled: true, transport: "adb", host: ADB_HOST, port: 22220 + Number(s.id.slice(5)), code: ADB_CODE, expires_at: s.expires_at });
 		}
 		const one = /^\/sessions\/([^/]+)$/.exec(path);
 		if (one) {
@@ -124,7 +179,8 @@ export function fakePhoneHarness({ readyAfter = 1, start = "ok", loseAnswer = fa
 	const view = ({ gets, ...s }) => ({ ...s, ...(s.state === "provisioning" ? { progress: { phase: "booting" } } : {}) });
 
 	// --- the phone ---------------------------------------------------------------------------------------------------
-	const phone = { connected: new Set(), unlocked: new Set(), foreground: LAUNCHER, running: new Set([LAUNCHER]), screen: "top", offset: 0, page: "", search: "" };
+	/** touches: each `input motionevent` the phone took, with the clock's time it took it. */
+	const phone = { connected: new Set(), unlocked: new Set(), foreground: LAUNCHER, running: new Set([LAUNCHER]), screen: "top", offset: 0, page: "", search: "", touches: [] };
 	const expected = code ?? ADB_CODE;
 	const maxOffset = Math.max(0, HEADER + ROW * ITEMS.length - SCREEN.height);
 
@@ -142,25 +198,49 @@ export function fakePhoneHarness({ readyAfter = 1, start = "ok", loseAnswer = fa
 		}
 		const pkg = { package: SETTINGS };
 		if (phone.screen === "top") {
+			// Two panes: the list keeps the left half, and a row's page opens in the right half beside it.
+			const listWidth = twoPane ? SCREEN.width / 2 : SCREEN.width;
 			const rows = [];
 			for (const [i, title] of ITEMS.entries()) {
 				const y = HEADER + i * ROW - phone.offset;
 				if (y < HEADER || y + ROW > SCREEN.height) continue;
-				rows.push(node("android.widget.LinearLayout", { clickable: "true", bounds: box([0, y, SCREEN.width, ROW]), ...pkg }, [node("android.widget.TextView", { text: title, "resource-id": "android:id/title", bounds: box([72, y + 16, 240, 32]), ...pkg })]));
+				rows.push(node("android.widget.LinearLayout", { clickable: "true", bounds: box([0, y, listWidth, ROW]), ...pkg }, [node("android.widget.TextView", { text: title, "resource-id": "android:id/title", bounds: box(twoPane ? [16, y + 16, listWidth - 32, 32] : [72, y + 16, 240, 32]), ...pkg })]));
 			}
+			const detail = twoPane && phone.page !== ""
+				? [node("android.widget.FrameLayout", { bounds: box([listWidth, 16, SCREEN.width - listWidth, SCREEN.height - 16]), ...pkg }, [node("android.widget.TextView", { text: phone.page, "resource-id": "com.android.settings:id/collapsing_toolbar", bounds: box([listWidth + 16, 24, listWidth - 32, 40]), ...pkg })])]
+				: [];
+			// As a live Android 15 Settings shows it (run 4): the search entry is the list's first item, a clickable bar
+			// whose text is on a child, inside the scrollable list beside the rows.
+			const search = node("android.widget.LinearLayout", { "resource-id": "com.android.settings:id/search_action_bar", clickable: "true", bounds: box([16, 24, 328, 56]), ...pkg }, [
+				node("android.widget.TextView", { text: "Search settings", "resource-id": "com.android.settings:id/search_action_bar_title", bounds: box([72, 40, 200, 24]), ...pkg }),
+			]);
 			return node("android.widget.FrameLayout", { bounds: box(full), ...pkg }, [
-				node("android.widget.TextView", { text: "Search settings", "resource-id": "com.android.settings:id/search_action_bar_title", clickable: "true", bounds: box([16, 16, 328, 56]), ...pkg }),
-				node("androidx.recyclerview.widget.RecyclerView", { scrollable: "true", bounds: box([0, HEADER, SCREEN.width, SCREEN.height - HEADER]), ...pkg }, rows),
+				node("androidx.recyclerview.widget.RecyclerView", { scrollable: "true", bounds: box([0, 16, listWidth, SCREEN.height - 16]), ...pkg }, [search, ...rows]),
+				...detail,
 			]);
 		}
 		if (phone.screen === "page") {
+			// As phone probe 3 read it live on Android 15: the page's title is no text in the tree, only the collapsing
+			// toolbar's content-desc. The toolbar is inside the page's scrollable container, above the page's own items.
 			return node("android.widget.FrameLayout", { bounds: box(full), ...pkg }, [
-				node("android.widget.ImageButton", { "content-desc": "Navigate up", clickable: "true", bounds: box([0, 16, 56, 56]), ...pkg }),
-				node("android.widget.TextView", { text: phone.page, "resource-id": "com.android.settings:id/collapsing_toolbar", bounds: box([72, 24, 260, 40]), ...pkg }),
+				node("android.widget.ScrollView", { "resource-id": "com.android.settings:id/content_parent", scrollable: "true", bounds: box([0, 16, SCREEN.width, SCREEN.height - 16]), ...pkg }, [
+					node("android.widget.FrameLayout", { "resource-id": "com.android.settings:id/collapsing_toolbar", "content-desc": phone.page, bounds: box([0, 16, SCREEN.width, 180]), ...pkg }, [
+						node("android.view.ViewGroup", { "resource-id": "com.android.settings:id/action_bar", bounds: box([0, 16, SCREEN.width, 56]), ...pkg }, [
+							node("android.widget.ImageButton", { "content-desc": "Navigate up", clickable: "true", bounds: box([0, 16, 56, 56]), ...pkg }),
+						]),
+					]),
+					...["Internet", "Airplane mode"].map((title, i) =>
+						node("android.widget.LinearLayout", { clickable: "true", bounds: box([0, 200 + i * ROW, SCREEN.width, ROW]), ...pkg }, [node("android.widget.TextView", { text: title, "resource-id": "android:id/title", bounds: box([72, 216 + i * ROW, 240, 32]), ...pkg })]),
+					),
+				]),
 			]);
 		}
-		return node("android.widget.FrameLayout", { bounds: box(full), package: "com.android.settings.intelligence" }, [
-			node("android.widget.EditText", { text: phone.search, "resource-id": SEARCH_FIELD, focused: "true", clickable: "true", bounds: box([56, 16, 288, 56]), package: "com.android.settings.intelligence" }),
+		// As phone probe 2 read it live: a SearchView holding an AutoCompleteTextView, focused, in Settings' search package.
+		const search = { package: SEARCH_PKG };
+		return node("android.widget.FrameLayout", { bounds: box(full), ...search }, [
+			node("android.widget.SearchView", { "resource-id": "com.android.settings.intelligence:id/search_view", bounds: box([48, 16, 304, 56]), ...search }, [
+				node("android.widget.AutoCompleteTextView", { text: phone.search, "resource-id": SEARCH_FIELD, focused: "true", clickable: "true", bounds: box([56, 16, 288, 56]), ...search }),
+			]),
 		]);
 	}
 
@@ -191,22 +271,30 @@ export function fakePhoneHarness({ readyAfter = 1, start = "ok", loseAnswer = fa
 		const n = hit(x, y);
 		if (!n) return;
 		if (phone.foreground === LAUNCHER) return launch(SETTINGS);
-		if (phone.screen === "top" && n.attrs.text === "Search settings") return Object.assign(phone, { screen: "search", search: "" });
-		if (phone.screen === "top" && n.cls === "android.widget.LinearLayout") return Object.assign(phone, { screen: "page", page: n.children[0].attrs.text });
+		// Search is another package's activity, put on top of Settings' own task.
+		if (phone.screen === "top" && n.attrs["resource-id"] === "com.android.settings:id/search_action_bar") return Object.assign(phone, { screen: "search", search: "", foreground: SEARCH_PKG });
+		if (phone.screen === "top" && n.cls === "android.widget.LinearLayout") {
+			if (rowTapsMiss) return;
+			return Object.assign(phone, { screen: twoPane ? "top" : "page", page: n.children[0].attrs.text });
+		}
 		if (phone.screen === "page" && n.attrs["content-desc"] === "Navigate up") phone.screen = "top";
 	}
 
 	function back() {
-		if (phone.foreground === SETTINGS && phone.screen !== "top") phone.screen = "top";
+		if (phone.foreground === SEARCH_PKG && phone.screen === "search") Object.assign(phone, { screen: "top", foreground: SETTINGS });
+		else if (twoPane && phone.foreground === SETTINGS && phone.page !== "") phone.page = "";
+		else if (phone.foreground === SETTINGS && phone.screen !== "top") phone.screen = "top";
 		else phone.foreground = LAUNCHER;
 	}
 
-	function launch(pkg) {
-		if (!phone.running.has(pkg)) {
-			phone.running.add(pkg);
-			if (pkg === SETTINGS) settingsReset();
-		}
-		phone.foreground = pkg;
+	/**
+	 * `am start` of pkg: it resumes the app's task, so Settings' task with search on top comes back with search in front;
+	 * clear (--activity-clear-task) starts the app's task afresh.
+	 */
+	function launch(pkg, clear = false) {
+		if (pkg === SETTINGS && (clear || (!phone.running.has(SETTINGS) && phone.screen !== "search"))) settingsReset();
+		phone.running.add(pkg);
+		phone.foreground = pkg === SETTINGS && phone.screen === "search" ? SEARCH_PKG : pkg;
 	}
 
 	/** The words of a shell command, as the device's sh splits it: single quotes kept together. */
@@ -219,12 +307,28 @@ export function fakePhoneHarness({ readyAfter = 1, start = "ok", loseAnswer = fa
 	const KEYS = { KEYCODE_HOME: () => (phone.foreground = LAUNCHER), KEYCODE_BACK: back, KEYCODE_APP_SWITCH: () => {}, KEYCODE_DEL: () => (phone.search = phone.search.slice(0, -1)) };
 
 	function shell(command) {
-		const w = words(command);
 		const ok = (stdout = "") => ({ exitCode: 0, stdout: Buffer.from(stdout), stderr: "" });
+		// A chain of commands, as sh runs `a;b`: each in turn (the fake splits only a chain with no quoted words).
+		if (command.includes(";") && !command.includes("'")) {
+			let out = "";
+			for (const part of command.split(";")) {
+				const one = shell(part.trim());
+				if (one.exitCode !== 0) return one;
+				out += one.stdout.toString("utf8");
+			}
+			return ok(out);
+		}
+		const w = words(command);
+		// toybox's sleep takes a decimal fraction of a second; it moves the shared clock on, as every wait here does.
+		if (w[0] === "sleep" && /^\d+(\.\d+)?$/.test(w[1] ?? "")) {
+			clock.sleep(Math.round(Number(w[1]) * 1000));
+			return ok();
+		}
 		if (w[0] === "echo") return ok(`${w.slice(1).join(" ")}\n`);
 		if (w[0] === "unlock") {
-			if (w[1] === expected) phone.unlockedNow = true;
-			return ok("");
+			if (w[1] !== expected) return ok("wrong code\n");
+			phone.unlockedNow = true;
+			return ok("unlocked\n");
 		}
 		if (w[0] === "getprop" && w[1] === "ro.product.cpu.abi") return ok(`${abi}\n`);
 		if (w[0] === "wm" && w[1] === "size") return ok(`Physical size: ${SCREEN.width}x${SCREEN.height}\n`);
@@ -239,15 +343,18 @@ export function fakePhoneHarness({ readyAfter = 1, start = "ok", loseAnswer = fa
 			if (phone.foreground === SETTINGS && phone.screen === "top") phone.offset = Math.min(maxOffset, Math.max(0, phone.offset + (y1 - y2)));
 			return ok();
 		}
-		if (w[0] === "input" && w[1] === "motionevent") return ok();
+		if (w[0] === "input" && w[1] === "motionevent") {
+			phone.touches.push({ action: w[2], at: [Number(w[3]), Number(w[4])], ms: clock.now() });
+			return ok();
+		}
 		if (w[0] === "input" && w[1] === "text") {
-			if (phone.foreground === SETTINGS && phone.screen === "search") phone.search += w[2].replaceAll("%s", " ");
+			if (phone.foreground === SEARCH_PKG && phone.screen === "search") phone.search += inputText(w[2]);
 			return ok();
 		}
 		if (w[0] === "input" && w[1] === "keyevent") {
 			const k = w[2];
 			if (KEYS[k]) KEYS[k]();
-			else if (/^KEYCODE_[A-Z0-9]$/.test(k) && phone.screen === "search") phone.search += k.slice(8).toLowerCase();
+			else if (/^KEYCODE_[A-Z0-9]$/.test(k) && phone.foreground === SEARCH_PKG && phone.screen === "search") phone.search += k.slice(8).toLowerCase();
 			return ok();
 		}
 		if (w[0] === "pm" && w[1] === "list" && w[2] === "packages") return ok([SETTINGS, LAUNCHER, "com.android.chrome"].map((p) => `package:${p}`).join("\n") + "\n");
@@ -258,12 +365,14 @@ export function fakePhoneHarness({ readyAfter = 1, start = "ok", loseAnswer = fa
 		}
 		if (w[0] === "am" && w[1] === "start") {
 			const comp = w.at(-1);
-			launch(comp.split("/")[0]);
+			if (!launchNothing) launch(comp.split("/")[0], w.includes("--activity-clear-task"));
 			return ok("Starting: Intent { cmp=" + comp + " }\nStatus: ok\n");
 		}
 		if (w[0] === "am" && w[1] === "force-stop") {
 			phone.running.delete(w[2]);
-			if (phone.foreground === w[2]) phone.foreground = LAUNCHER;
+			// Settings' own activities go; search, another package's activity on top of its task, stays there.
+			if (w[2] === SETTINGS && phone.screen !== "search") settingsReset();
+			if (phone.foreground === w[2] || (w[2] === SETTINGS && phone.foreground === SEARCH_PKG)) phone.foreground = LAUNCHER;
 			return ok();
 		}
 		if (w[0] === "dumpsys" && w[1] === "activity" && w[2] === "activities") {
@@ -279,38 +388,115 @@ export function fakePhoneHarness({ readyAfter = 1, start = "ok", loseAnswer = fa
 		header.writeUInt32LE(1, 8);
 		header.writeUInt32LE(0, 12);
 		const pixels = Buffer.alloc(SCREEN.width * SCREEN.height * 4);
-		for (let i = 0; i < pixels.length; i += 4) pixels.set([phone.foreground === SETTINGS && !launchHidden ? 30 : 200, 60, 90, 255], i);
+		for (let i = 0; i < pixels.length; i += 4) pixels.set([phone.foreground !== LAUNCHER && !launchHidden ? 30 : 200, 60, 90, 255], i);
 		return Buffer.concat([header, pixels]);
 	}
 
-	/** The adb runner the provider takes: (args, { timeoutMs, signal }) => Result<{ exitCode, stdout, stderr }>. */
-	async function adb(args, options = {}) {
-		adbCalls.push({ args: [...args], timeoutMs: options.timeoutMs });
-		const ok = (stdout, exitCode = 0, stderr = "") => ({ ok: true, value: { exitCode, stdout: Buffer.from(stdout), stderr } });
-		if (args[0] === "connect") {
-			phone.connected.add(args[1]);
-			return ok(`connected to ${args[1]}\n`);
-		}
-		if (args[0] === "disconnect") {
-			phone.connected.delete(args[1]);
-			return ok("");
-		}
-		if (args[0] !== "-s") return ok("", 1, "adb: usage");
-		const serial = args[1];
-		if (!phone.connected.has(serial)) return ok("", 1, `adb: device '${serial}' not found`);
-		if (args[2] === "exec-out" && args[3] === "screencap") return ok(screencap());
-		if (args[2] === "exec-out" && args[3] === "uiautomator dump /dev/tty") return ok(dump());
-		if (args[2] !== "shell") return ok("", 1, "adb: unknown command");
-		const command = args.slice(3).join(" ");
-		if (!phone.unlocked.has(serial) && !command.startsWith("unlock") && !command.startsWith("echo")) return ok("", 1, "error: device locked");
-		if (command.startsWith("echo") && !phone.unlocked.has(serial)) return ok("");
-		const ran = shell(command);
+	// --- adb: the spawned CLI (run, every argv recorded) and the local adb server's socket protocol (server) --------------
+	/** Each connected endpoint's transport id, as `adb devices -l` names it. */
+	const transports = new Map();
+	let nextTransport = 0;
+	/** Every shell command the phone ran, from an argv or from stdin, in order. */
+	const ran = [];
+	const result = (stdout, exitCode = 0, stderr = "") => ({ ok: true, value: { exitCode, stdout: Buffer.from(stdout), stderr } });
+	/** What a locked connection answers every shell, in the vendor's words (phone probe 1, 2026-11-08). */
+	const LOCKED = "locked: run `adb shell unlock <code>` first\n";
+
+	/**
+	 * The adb server's one TCP transport per endpoint: a second connect reuses it, with its lock state, as the live run
+	 * showed ("already connected to …"). The vendor's lock is per TCP connection, so a reused transport is still unlocked.
+	 */
+	function connectTo(endpoint) {
+		if (phone.connected.has(endpoint)) return `already connected to ${endpoint}`;
+		phone.connected.add(endpoint);
+		if (!transports.has(endpoint)) transports.set(endpoint, String(++nextTransport));
+		return `connected to ${endpoint}`;
+	}
+	function disconnectFrom(endpoint) {
+		phone.connected.delete(endpoint);
+		phone.unlocked.delete(endpoint);
+		transports.delete(endpoint);
+		return `disconnected ${endpoint}`;
+	}
+
+	/**
+	 * One shell service on the phone at serial, by its command string, as the vendor's endpoint answers it (docs,
+	 * guides/connect-adb): until the connection is unlocked by the command `unlock <code>`, every shell answers `locked`.
+	 */
+	function shellOn(serial, command) {
+		ran.push(command);
+		if (!phone.unlocked.has(serial) && !/^unlock /.test(command)) return result(LOCKED);
+		// Once unlocked, the vendor's endpoint passes every shell through, `unlock` included, to the phone's own sh, which
+		// has no such command (live run 4).
+		if (phone.unlocked.has(serial) && /^unlock /.test(command)) return result("/system/bin/sh: unlock: inaccessible or not found\n", 127);
+		const out = shell(command);
 		if (phone.unlockedNow) {
 			phone.unlocked.add(serial);
 			phone.unlockedNow = false;
 		}
-		return { ok: true, value: ran };
+		return { ok: true, value: out };
 	}
+
+	/** The spawned adb CLI: args (each recorded, as /proc would show them), and stdin when given. */
+	async function run(args, options = {}) {
+		adbCalls.push({ args: [...args], timeoutMs: options.timeoutMs, input: options.input });
+		if (args[0] === "start-server") return result("");
+		// The old ways to name a device and to connect, by argv.
+		if (args[0] === "connect") return result(`${connectTo(args[1])}\n`);
+		if (args[0] === "disconnect") return result(`${disconnectFrom(args[1])}\n`);
+		let serial;
+		if (args[0] === "-s") serial = args[1];
+		else if (args[0] === "-t") serial = [...transports].find(([, id]) => id === args[1])?.[0];
+		else return result("", 1, "adb: usage");
+		if (serial === undefined || !phone.connected.has(serial)) return result("", 1, `adb: device '${args[1]}' not found`);
+		const rest = args.slice(2);
+		if (rest[0] === "exec-out" && rest[1] === "screencap") return result(screencap());
+		if (rest[0] === "exec-out" && rest[1] === "uiautomator dump /dev/tty") return result(dump());
+		if (rest[0] !== "shell") return result("", 1, "adb: unknown command");
+		// adb shell -T with no command: a shell service with no command string, which a locked connection answers
+		// `locked` without reading stdin; an unlocked one runs stdin's lines.
+		if (rest[1] === "-T" && rest.length === 2) {
+			ran.push(`(stdin) ${String(options.input ?? "").split("\n")[0].split(" ")[0]}`);
+			if (!phone.unlocked.has(serial)) return result(LOCKED);
+			let out = "";
+			for (const line of String(options.input ?? "").split("\n")) {
+				if (line.trim() === "" || line.trim() === "exit") continue;
+				const one = shellOn(serial, line);
+				out += one.value.stdout.toString("utf8");
+			}
+			return result(out);
+		}
+		return shellOn(serial, rest.slice(1).join(" "));
+	}
+
+	/**
+	 * The local adb server, by its socket protocol: host:connect:<endpoint>, host:disconnect:<endpoint>, host:devices-l;
+	 * and with { transport }, a socket bound to that phone first (host:transport-id:<id>), then a shell service with its
+	 * command string (shell:<command>, or shell,v2,raw:<command>), answered with the command's output.
+	 */
+	async function server(service, options = {}) {
+		serverCalls.push(options.transport === undefined ? service : `host:transport-id:${options.transport} ${service.replace(/unlock \S+/, "unlock [code]")}`);
+		if (options.transport !== undefined) {
+			const serial = [...transports].find(([, id]) => id === options.transport)?.[0];
+			if (serial === undefined || !phone.connected.has(serial)) return { ok: false, error: { code: "phone", message: `the adb server refused host:transport-id: device not found` } };
+			const shellService = /^shell(?:,v2)?(?:,raw)?:(.*)$/s.exec(service);
+			if (!shellService) return { ok: false, error: { code: "phone", message: `the adb server does not know ${service.split(":")[0]}` } };
+			const ran = shellOn(serial, shellService[1]);
+			return { ok: true, value: ran.value.stdout.toString("utf8") };
+		}
+		const connect = /^host:connect:(.+)$/.exec(service);
+		if (connect) return { ok: true, value: connectTo(connect[1]) };
+		const disconnect = /^host:disconnect:(.+)$/.exec(service);
+		if (disconnect) return { ok: true, value: disconnectFrom(disconnect[1]) };
+		if (service === "host:devices-l") {
+			return { ok: true, value: [...transports].map(([endpoint, id]) => `${endpoint}          device product:sdk_gphone64_x86_64 model:sdk_gphone64_x86_64 device:emu64xa transport_id:${id}\n`).join("") };
+		}
+		return { ok: false, error: { code: "phone", message: `the adb server does not know ${service}` } };
+	}
+	const serverCalls = [];
+
+	/** The provider's adb: callable as the old runner, and the transport (run, server). */
+	const adb = Object.assign((args, options) => run(args, options), { run, server });
 
 	return {
 		fetch,
@@ -320,10 +506,14 @@ export function fakePhoneHarness({ readyAfter = 1, start = "ok", loseAnswer = fa
 		sessions,
 		/** Every API request, as { method, path, headers, body }. */
 		requests: () => requests,
-		/** Every adb call's argv. */
+		/** Every spawned adb's argv. */
 		adbCalls: () => adbCalls.map((c) => c.args),
-		/** The shell commands sent, in order. */
-		shells: () => adbCalls.filter((c) => c.args[2] === "shell").map((c) => c.args.slice(3).join(" ")),
+		/** Every spawned adb's argv, with the bound it was given. */
+		adbRuns: () => adbCalls.map((c) => ({ args: c.args, timeoutMs: c.timeoutMs })),
+		/** Every request to the local adb server. */
+		serverCalls: () => [...serverCalls],
+		/** The shell commands the phone ran, in order, from an argv or from stdin. */
+		shells: () => [...ran],
 		dump,
 	};
 }

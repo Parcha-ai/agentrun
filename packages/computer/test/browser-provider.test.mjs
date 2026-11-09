@@ -36,6 +36,24 @@ const VENDORS = {
 		heldLabels: { agentrun_run: "run-1", job: "j-42" },
 		lifetime: (fake, id) => fake.sessions.get(id).expiresAt,
 		creates: (fake) => fake.only("POST", "/v1/sessions"),
+		/** The domain its CDP URL is on, as read live on 11-08. */
+		domain: "browserbase.com",
+		/** A fake vendor whose create answers this CDP URL (undefined: none). */
+		answering: (url) => fakeBrowserbase({ connectUrl: () => url }),
+		/** Sets the CDP URL the vendor holds for a session, as a later read gives it. */
+		holds: (fake, id, url) => {
+			fake.sessions.get(id).connectUrl = url;
+		},
+		/** Whether every session the fake made was released. */
+		allReleased: (fake) => [...fake.sessions.values()].every((s) => s.status !== "RUNNING"),
+		/** Whether the fake still runs this session. */
+		running: (fake, id) => fake.sessions.get(id).status === "RUNNING",
+		/** The label query each list read asked by: Browserbase's q, a metadata key as list writes it (dots as "_"). */
+		asked: (fake) => fake.only("GET", "/v1/sessions").map((call) => call.query.q),
+		/** The query a list by this label asks, as list() asks it. */
+		query: (key, value) => `user_metadata['${key.replaceAll(".", "_")}']:'${value}'`,
+		/** The create label's value a create wrote. */
+		createdBy: (call) => call.body.userMetadata.agentrun_create,
 	},
 	kernel: {
 		fake: fakeKernel,
@@ -58,6 +76,17 @@ const VENDORS = {
 		heldLabels: { "agentrun.run": "run-1", job: "j-42" },
 		lifetime: (fake, id) => fake.browsers.get(id).timeout,
 		creates: (fake) => fake.only("POST", "/browsers"),
+		domain: "kernel.sh",
+		answering: (url) => fakeKernel({ cdpUrl: () => url }),
+		holds: (fake, id, url) => {
+			fake.browsers.get(id).cdp = url;
+		},
+		allReleased: (fake) => [...fake.browsers.values()].every((b) => b.deletedAt !== undefined),
+		running: (fake, id) => fake.browsers.get(id).deletedAt === undefined,
+		/** The tag filter each list read asked by. */
+		asked: (fake) => fake.only("GET", "/browsers").map((call) => Object.entries(call.query).filter(([key]) => key.startsWith("tags[")).map(([key, v]) => `${key}=${v}`).join("&")),
+		query: (key, value) => `tags[${key}]=${value}`,
+		createdBy: (call) => call.body.tags["agentrun.create"],
 	},
 };
 
@@ -127,7 +156,9 @@ for (const [id, vendor] of Object.entries(VENDORS)) {
 		const provider = await vendor.make(fake);
 		const created = value(await provider.create(spec()), "create");
 		assert.deepEqual(Object.keys(created).sort(), ["id", "name"]);
-		assert.deepEqual(vendor.held(fake, created.id), vendor.heldLabels, "the labels, as the vendor holds them");
+		const { agentrun_create: byMetadata, "agentrun.create": byTags, ...held } = vendor.held(fake, created.id);
+		assert.deepEqual(held, vendor.heldLabels, "the labels, as the vendor holds them");
+		assert.match(byMetadata ?? byTags, /^[0-9a-f]{16}$/, "beside them, the create label: a value of this create's own");
 		assert.equal(vendor.lifetime(fake, created.id) !== undefined, true, "the lifetime rides the create");
 		value(await provider.create(spec({ labels: { "agentrun.run": "run-2" } })), "another run's");
 		const byId = value(await provider.attach({ id: created.id }), "attach by id");
@@ -171,6 +202,145 @@ for (const [id, vendor] of Object.entries(VENDORS)) {
 		const viewOnly = await provider.stream(ref, { viewOnly: true });
 		assert.equal(viewOnly.ok, false, "the vendor's live view takes input: a view-only one is refused, never handed over as one");
 		assert.equal(viewOnly.error.code, "unsupported");
+	});
+
+	test(`${id}: connect reads the browser before it hands over a held CDP URL: one released elsewhere is gone, in words with no URL`, async () => {
+		const fake = vendor.fake();
+		const holder = await vendor.make(fake);
+		const ref = value(await holder.create(spec()), "create");
+		// Another instance of the provider (its own URL cache) ends the browser; the holder still has its URL.
+		value(await (await vendor.make(fake)).release(ref, "delete"), "release through another instance");
+		const connected = await holder.connect(ref);
+		assert.equal(connected.ok, false, "a browser that is gone is not handed over");
+		assert.equal(connected.error.code, "gone", connected.error.message);
+		assert.ok(connected.error.message.includes(ref.id), connected.error.message);
+		assert.doesNotMatch(JSON.stringify(connected), SECRET);
+		// A browser the vendor never had is not_found, as before.
+		const never = await holder.connect({ id: `${ref.id}0`, name: `${ref.id}0` });
+		assert.equal(never.ok, false);
+		assert.equal(never.error.code, "not_found", never.error.message);
+	});
+
+	test(`${id}: the check behind a held CDP URL never puts the URL in its words: gone, or a vendor read that failed, which keeps the URL held`, async () => {
+		let failReads = false;
+		const fake = vendor.fake();
+		// A vendor whose read of one browser answers 500 while failReads is set.
+		const fetch = async (input, init) => {
+			const url = new URL(typeof input === "string" ? input : input.url);
+			if (failReads && (init?.method ?? "GET") === "GET" && /^\/(v1\/sessions|browsers)\/[^/]+$/.test(url.pathname)) return new Response(JSON.stringify({ error: "down" }), { status: 500 });
+			return fake.fetch(input, init);
+		};
+		const provider = await vendor.make(fake, { fetch });
+		const ref = value(await provider.create(spec()), "create");
+		const held = value(await provider.connect(ref), "connect").cdp.url;
+		assert.match(held, SECRET, "the fake's URL carries its signing secret");
+		failReads = true;
+		const failed = await provider.connect(ref);
+		assert.equal(failed.ok, false, "a browser not read is not handed over");
+		assert.ok(!["gone", "not_found"].includes(failed.error.code), `a vendor that did not answer is not a browser gone: ${failed.error.code}`);
+		for (const words of [failed.error.message, JSON.stringify(failed)]) {
+			assert.ok(!words.includes(held), "the held URL is not in the failure");
+			assert.doesNotMatch(words, /wss:|SECRET/);
+		}
+		failReads = false;
+		assert.equal(value(await provider.connect(ref), "connect once the vendor answers").cdp.url, held, "the held URL was kept");
+		value(await (await vendor.make(fake)).release(ref, "delete"), "release through another instance");
+		const gone = await provider.connect(ref);
+		assert.equal(gone.error.code, "gone");
+		for (const words of [gone.error.message, JSON.stringify(gone)]) {
+			assert.ok(!words.includes(held), "the held URL is not in the gone");
+			assert.doesNotMatch(words, /wss:|SECRET/);
+		}
+	});
+
+	test(`${id}: a lost create is looked for by the labels it was made with, through list's own label query, and another browser of the same run is left running`, async () => {
+		const knobs = {};
+		const fake = vendor.fake(knobs);
+		const provider = await vendor.make(fake);
+		const sibling = value(await provider.create(spec()), "a browser of the same run");
+		const before = vendor.asked(fake).length;
+		knobs.loseCreate = () => undefined;
+		const lost = await provider.create(spec());
+		assert.equal(lost.ok, false);
+		assert.match(lost.error.message, /released/, lost.error.message);
+		assert.ok(vendor.running(fake, sibling.id), "the run's other browser, which carries the same run labels, still runs");
+		const createdBy = vendor.createdBy(vendor.creates(fake)[1]);
+		const asked = vendor.asked(fake).slice(before);
+		assert.ok(asked.length > 0, "the lost create was looked for");
+		assert.ok(asked.every((q) => q === vendor.query("agentrun.create", createdBy)), `each read asks by the create label as list() maps a label key: ${asked.join(", ")}`);
+		assert.deepEqual(value(await provider.list({ "agentrun.run": "run-1" }), "list").map((info) => info.ref.id), [sibling.id]);
+	});
+
+	/** CDP URLs a driver must never be handed: none, not wss:, or not on the vendor's own domain. */
+	const unusable = (domain) => [
+		undefined,
+		"",
+		"not a url SECRET",
+		`ws://cdp.${domain}/x?k=SECRET`,
+		`https://cdp.${domain}/x?k=SECRET`,
+		"wss://evil.example/x?k=SECRET",
+		`wss://${domain}.evil.example/x?k=SECRET`,
+		`wss://evil${domain}/x?k=SECRET`,
+	];
+
+	test(`${id}: a create answered with no usable CDP URL fails, and the session it made is released; the words say so and carry no URL`, async () => {
+		for (const url of unusable(vendor.domain)) {
+			const fake = vendor.answering(url);
+			const provider = await vendor.make(fake);
+			const made = await provider.create(spec());
+			assert.equal(made.ok, false, `${JSON.stringify(url)}: create fails`);
+			assert.equal(vendor.creates(fake).length, 1, "one create");
+			assert.ok(vendor.allReleased(fake), `${JSON.stringify(url)}: the paid session it made is released, not left to its timeout`);
+			assert.match(made.error.message, /released/, made.error.message);
+			assert.doesNotMatch(JSON.stringify(made), SECRET);
+		}
+	});
+
+	test(`${id}: a create whose reply is lost, or whose caller cancels it, finds the browser it made by its create label and releases it`, async () => {
+		for (const cancel of [false, true]) {
+			const controller = new AbortController();
+			const fake = vendor.fake({ loseCreate: () => (cancel ? controller.abort() : undefined) });
+			const provider = await vendor.make(fake);
+			const made = await provider.create(spec(), { signal: controller.signal });
+			const what = cancel ? "a cancelled create" : "a create whose reply was lost";
+			assert.equal(made.ok, false, what);
+			if (cancel) assert.equal(made.error.code, "aborted", made.error.message);
+			assert.equal(vendor.creates(fake).length, 1, `${what}: one create, never a second`);
+			assert.ok(vendor.allReleased(fake), `${what}: the browser it made is released, not left billing to its timeout`);
+			assert.match(made.error.message, /released/, made.error.message);
+			assert.doesNotMatch(JSON.stringify(made), SECRET);
+			// The create label each create carries is the provider's own: no list or attach shows it.
+			const { body } = vendor.creates(fake)[0];
+			assert.equal(Object.keys(body.userMetadata ?? body.tags).length, 3, "the spec's two labels and the create label");
+		}
+		// A create the vendor refused (a 4xx) made nothing: nothing is looked for.
+		const refused = vendor.fake({ failCreate: 422 });
+		const failed = await (await vendor.make(refused)).create(spec());
+		assert.equal(failed.ok, false);
+		assert.equal(refused.calls.filter((c) => c.method === "GET").length, 0, "no search after a refusal");
+	});
+
+	test(`${id}: the create label is the provider's own: check() refuses it in a spec, and list and attach never show it`, async () => {
+		const fake = vendor.fake();
+		const provider = await vendor.make(fake);
+		assert.ok(provider.check(spec({ labels: { "agentrun.create": "mine" } })).some((r) => r.field === "labels" && /agentrun\.create/.test(r.message)));
+		const ref = value(await provider.create(spec()), "create");
+		const [info] = value(await provider.list({ "agentrun.run": "run-1" }), "list");
+		assert.deepEqual(info.labels, { "agentrun.run": "run-1", job: "j-42" });
+		assert.equal(info.ref.id, ref.id);
+	});
+
+	test(`${id}: connect hands over a CDP URL only when it is wss: on the vendor's own domain; one the vendor reads back otherwise is refused in words with no URL`, async () => {
+		for (const url of unusable(vendor.domain).filter((u) => u !== undefined && u !== "")) {
+			const fake = vendor.fake();
+			const ref = value(await (await vendor.make(fake)).create(spec()), "create");
+			vendor.holds(fake, ref.id, url);
+			// A provider with nothing held reads the URL from the vendor.
+			const connected = await (await vendor.make(fake)).connect(ref);
+			assert.equal(connected.ok, false, `${JSON.stringify(url)}: connect refuses it`);
+			assert.doesNotMatch(JSON.stringify(connected), SECRET);
+			assert.ok(connected.error.message.includes(`wss: on ${vendor.domain}`), connected.error.message);
+		}
 	});
 
 	test(`${id}: release is idempotent, and attach, connect and ping after it fail in words that carry no URL`, async () => {
@@ -252,12 +422,43 @@ for (const [id, vendor] of Object.entries(VENDORS)) {
 	});
 }
 
+test("kernel: a lost create whose browser is still starting, which status=active does not list, is found by every state not deleted and released", async () => {
+	const knobs = {};
+	const fake = fakeKernel(knobs);
+	// The browser is made, its reply lost, and it is still starting when the provider looks for it.
+	knobs.loseCreate = (bid) => {
+		fake.browsers.get(bid).starting = true;
+	};
+	const provider = await VENDORS.kernel.make(fake);
+	const lost = await provider.create(spec());
+	assert.equal(lost.ok, false);
+	const [made] = [...fake.browsers.values()];
+	assert.equal(made.deletedAt !== undefined, true, `the starting browser is released, not left billing: ${lost.error.message}`);
+	assert.match(lost.error.message, /released/);
+	const statuses = fake.only("GET", "/browsers").map((call) => call.query.status);
+	assert.ok(statuses.length > 0 && statuses.every((s) => s === "all"), `the recovery reads every state, and keeps those not deleted: ${statuses.join(", ")}`);
+});
+
+test("kernel: list and attach by labels show a browser still starting, as Browserbase lists a PENDING session; a deleted one never", async () => {
+	const fake = fakeKernel();
+	const provider = await VENDORS.kernel.make(fake);
+	const starting = value(await provider.create(spec()), "create");
+	fake.browsers.get(starting.id).starting = true;
+	const gone = value(await provider.create(spec({ labels: { "agentrun.run": "run-1", job: "j-43" } })), "create");
+	value(await provider.release(gone, "delete"), "release");
+	assert.deepEqual(value(await provider.list({ "agentrun.run": "run-1" }), "list").map((info) => info.ref.id), [starting.id]);
+	assert.equal(value(await provider.attach({ labels: { job: "j-42" } }), "attach by labels").id, starting.id);
+	const statuses = fake.only("GET", "/browsers").map((call) => call.query.status);
+	assert.ok(statuses.every((s) => s === "all"), `list reads every state and keeps those not deleted: ${statuses.join(", ")}`);
+});
+
 test("browserbase: a label's dots ride as underscores in userMetadata, which Browserbase refuses a dot in; list and attach read them back as labels", async () => {
 	const fake = fakeBrowserbase();
 	const provider = await VENDORS.browserbase.make(fake);
 	const labels = { "agentrun.conformance": "abc123", "agentrun.conformance.case": "labels", job: "j-42" };
 	const created = value(await provider.create(spec({ labels })), "create with dotted label keys");
-	assert.deepEqual(fake.sessions.get(created.id).userMetadata, { agentrun_conformance: "abc123", agentrun_conformance_case: "labels", job: "j-42" });
+	const { agentrun_create: _, ...held } = fake.sessions.get(created.id).userMetadata;
+	assert.deepEqual(held, { agentrun_conformance: "abc123", agentrun_conformance_case: "labels", job: "j-42" });
 	const listed = value(await provider.list({ "agentrun.conformance": "abc123" }), "list by a dotted label");
 	assert.deepEqual(listed.map((info) => info.ref), [created]);
 	assert.deepEqual(listed[0].labels, labels, "the labels read back as they were given");

@@ -45,6 +45,48 @@ test("a cloud Android with no fixture passes Core through Settings: tap, swipe, 
 	assert.equal(fake.sessions.size, 0, "every phone the run rented is ended");
 });
 
+test("--kind phone passes the phone harness: a pinch it refuses in words is a Full case, which no required group owes", { timeout: 120_000 }, async () => {
+	const fake = fakePhoneHarness();
+	const options = { apiKey: KEY, fetch: fake.fetch, adb: fake.adb, ledger: memoryLedger(), now: fake.clock.now, sleep: fake.clock.sleep, maxLifetimeMs: 10 * 60_000 };
+	const provider = await create(options);
+	const drifted = await create({ ...options, daemonVersion: "0.0.0-drift" });
+	const report = await runConformance(provider, { image: "android", kind: "phone", drifted: () => drifted, patience: 5000 });
+	assert.equal(statuses(report)["touch.pinch"], "skip", "the run still tries the pinch, and says why it skipped");
+	assert.deepEqual(report.kindVerdict, { kind: "phone", verdict: "pass", reasons: [] }, formatReport(report));
+	assert.equal(fake.sessions.size, 0);
+});
+
+test("touch.tap's failure says what it saw: the screen in px and dp, what is in front, the tap and the row, and whether the title shows outside the list", { timeout: 60_000 }, async () => {
+	// Two faults that leave run 6's live words alike: a page that opens beside a list that stays, and a tap that misses.
+	const words = {};
+	for (const fault of ["twoPane", "rowTapsMiss"]) {
+		const fake = fakePhoneHarness({ [fault]: true });
+		const provider = await create({ apiKey: KEY, fetch: fake.fetch, adb: fake.adb, ledger: memoryLedger(), now: fake.clock.now, sleep: fake.clock.sleep, maxLifetimeMs: 10 * 60_000 });
+		const report = await runConformance(provider, { image: "android", patience: 1000, cases: conformanceCases.filter((c) => c.id === "touch.tap") });
+		assert.equal(statuses(report)["touch.tap"], "fail", fault);
+		words[fault] = reasonOf(report, "touch.tap");
+		assert.match(words[fault], /^the page of "Network & internet" after a tap on its row: its title, as a text or a label, and not the row "Connected devices": still not so after/, fault);
+		assert.equal(fake.sessions.size, 0);
+	}
+	assert.match(
+		words.twoPane,
+		/ \(screen 360x640 px, 360x640 dp; in front: com\.android\.settings; the tap at 90,128 on the row's bounds \[0,96,180,64\]; its title outside the list: yes, at \[196,24,148,40\]; the row "Connected devices": still shown\)$/,
+	);
+	assert.match(
+		words.rowTapsMiss,
+		/ \(screen 360x640 px, 360x640 dp; in front: com\.android\.settings; the tap at 180,128 on the row's bounds \[0,96,360,64\]; its title outside the list: no; the row "Connected devices": still shown\)$/,
+	);
+});
+
+test("apps.launch-terminate fails a phone that launches nothing: the case is no pass by default", { timeout: 60_000 }, async () => {
+	const fake = fakePhoneHarness({ launchNothing: true });
+	const provider = await create({ apiKey: KEY, fetch: fake.fetch, adb: fake.adb, ledger: memoryLedger(), now: fake.clock.now, sleep: fake.clock.sleep, maxLifetimeMs: 10 * 60_000 });
+	const report = await runConformance(provider, { image: "android", patience: 1000, cases: conformanceCases.filter((c) => c.id === "apps.launch-terminate") });
+	assert.equal(statuses(report)["apps.launch-terminate"], "fail");
+	assert.match(reasonOf(report, "apps.launch-terminate"), /^com\.android\.settings in front after apps\.launch: still not so/);
+	assert.equal(fake.sessions.size, 0);
+});
+
 test("apps.launch-terminate fails a phone whose apps.list says Settings is in front while its tree still shows the launcher", { timeout: 60_000 }, async () => {
 	const fake = fakePhoneHarness({ launchHidden: true });
 	const provider = await create({ apiKey: KEY, fetch: fake.fetch, adb: fake.adb, ledger: memoryLedger(), now: fake.clock.now, sleep: fake.clock.sleep, maxLifetimeMs: 10 * 60_000 });

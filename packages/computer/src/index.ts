@@ -41,8 +41,10 @@ export {
 	BROWSER_IMAGE,
 	type BrowserStream,
 	BrowserVendorError,
+	CREATE_LABEL,
 	causeOf,
 	memoryUrls,
+	RECOVER_MS,
 	type ReleaseConfirm,
 	type RestReply,
 	type UrlStore,
@@ -75,6 +77,8 @@ export {
 	type ProviderOptions,
 	providers,
 } from "./providers.js";
+// Types only: the phone ledger serve backs with its store. The provider itself loads through the registry.
+export type { PhoneLedger, PhoneLedgerEntry } from "./phone-harness.js";
 export {
 	type ComputerSettingKind,
 	type KindCapabilities,

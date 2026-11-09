@@ -16,13 +16,18 @@
 // ' or \ is refused too, since list's query quotes it.
 import { readFileSync } from "node:fs";
 import {
+	cdpUrlProblem,
 	BROWSER_IMAGE,
 	type BrowserStream,
 	browserClient,
 	browserHello,
 	BrowserVendorError,
+	CREATE_LABEL,
 	carries,
+	causeOf,
 	checkBrowser,
+	createLabelValue,
+	createUncertain,
 	DEFAULT_CONFIRM,
 	defaultSleep,
 	httpsBase,
@@ -32,10 +37,13 @@ import {
 	memoryUrls,
 	queryable,
 	type ReleaseConfirm,
+	recoverCreate,
 	releaseConfirmed,
 	restCall,
 	type UrlStore,
+	vendorFail,
 	vendorFailure,
+	withoutCreateLabel,
 } from "./browser.js";
 import type { KindCapabilities } from "./kinds.js";
 import type { MountKind } from "./mount.js";
@@ -59,6 +67,9 @@ import { connectionError } from "./test-connection.js";
 const VERSION: string = JSON.parse(readFileSync(new URL("../package.json", import.meta.url), "utf8")).version;
 const NAME = "Browserbase";
 export const BROWSERBASE_API_URL = "https://api.browserbase.com";
+/** The domain a Browserbase CDP URL is on (wss://connect.browserbase.com, read live 11-08): cdpUrlProblem holds it there. */
+export const BROWSERBASE_CDP_DOMAIN = "browserbase.com";
+const CDP_DOMAIN = BROWSERBASE_CDP_DOMAIN;
 /** Browserbase's longest session: a timeout of 21,600 s. */
 export const BROWSERBASE_MAX_LIFETIME_MS = 6 * 60 * 60_000;
 /** Browserbase's shortest session timeout: 60 s. */
@@ -76,8 +87,10 @@ export const labelKey = (metadataKey: string) => metadataKey.replaceAll("_", "."
 
 /** Labels as userMetadata. */
 const toMetadata = (labels: Record<string, string> = {}) => Object.fromEntries(Object.entries(labels).map(([key, value]) => [metadataKey(key), value]));
-/** userMetadata as labels: its string entries, each key read back. */
-const fromMetadata = (held: unknown): Record<string, string> => Object.fromEntries(Object.entries(labelsOf(held)).map(([key, value]) => [labelKey(key), value]));
+/** userMetadata as labels: its string entries, each key read back, the create label among them (what a match reads). */
+const metadataLabels = (held: unknown): Record<string, string> => Object.fromEntries(Object.entries(labelsOf(held)).map(([key, value]) => [labelKey(key), value]));
+/** userMetadata as the labels list and attach show: without the provider's create label. */
+const fromMetadata = (held: unknown): Record<string, string> => withoutCreateLabel(metadataLabels(held));
 
 /** Why labels cannot ride a Browserbase session's userMetadata, in words naming the label; undefined when they can. */
 export function browserbaseLabelsProblem(labels: unknown): string | undefined {
@@ -252,24 +265,47 @@ export class BrowserbaseProvider implements ComputerProvider {
 		const refusals = this.check(spec);
 		if (refusals.length > 0) return fail("refused", refusals.map(({ field, message }) => `${field}: ${message}`).join("; "));
 		if (signal?.aborted) return fail("aborted", "create was aborted before Browserbase was called");
+		const written = { [CREATE_LABEL]: createLabelValue(), ...spec.labels };
 		const body = {
 			...settings,
 			timeout: Math.ceil(spec.lifetimeMs / 1000),
 			keepAlive: true,
-			userMetadata: toMetadata(spec.labels),
+			userMetadata: toMetadata(written),
 			...(this.#projectId ? { projectId: this.#projectId } : {}),
 		};
 		let made: BrowserbaseSession;
 		try {
 			made = await this.#api.create(body, signal);
 		} catch (error) {
-			return vendorFailure("browserbase", NAME, "POST /v1/sessions", error);
+			const failed = vendorFailure("browserbase", NAME, "POST /v1/sessions", error);
+			if (failed.ok || !createUncertain(error)) return failed;
+			// The session may have been made though its answer never came: found by its create label, never made again.
+			return vendorFail(failed.error.code, `${failed.error.message}; ${await this.#recover(written)}`, causeOf(failed));
 		}
-		if (idProblem(made?.id, NAME) !== undefined || typeof made.connectUrl !== "string" || made.connectUrl === "") {
-			return fail("browserbase", "Browserbase POST /v1/sessions answered with no session to connect to");
+		if (idProblem(made?.id, NAME) !== undefined) {
+			return fail("browserbase", `Browserbase POST /v1/sessions answered with no session id, so there is no session to connect to; ${await this.#recover(written)}`);
 		}
-		this.#urls.set(made.id, made.connectUrl);
+		const unusable = cdpUrlProblem(made.connectUrl, NAME, CDP_DOMAIN);
+		if (unusable !== undefined) {
+			// The session is made and billed (keepAlive, up to its timeout): released here, not left to a later sweep.
+			const released = await this.release(refOf(made), "delete");
+			return fail("browserbase", `Browserbase POST /v1/sessions made a session with no CDP URL to hand over: ${unusable}; ${released.ok ? "the session was released" : `the session was not released (${released.error.code}), and its labels let a sweep find it`}`);
+		}
+		this.#urls.set(made.id, made.connectUrl as string);
 		return ok(refOf(made));
+	}
+
+	/**
+	 * The sessions a lost create made, released: what recoverCreate says of them. They are found as list finds any, by
+	 * the labels the create wrote (its create label first, so the query names it, then the run's), through #sessions and
+	 * its metadata-key mapping: another session of the same run carries a create label of its own and is left alone.
+	 */
+	#recover(labels: Record<string, string>): Promise<string> {
+		const find = async (signal: AbortSignal): Promise<Result<string[]>> => {
+			const found = await this.#sessions(labels, signal);
+			return found.ok ? ok(found.value.map((s) => s.id)) : found;
+		};
+		return recoverCreate("session", find, (id) => this.release({ id, name: id }, "delete"), this.#sleep);
 	}
 
 	/**
@@ -290,7 +326,7 @@ export class BrowserbaseProvider implements ComputerProvider {
 		return ok({ detail: `Browserbase answered: ${n} running ${n === 1 ? "session" : "sessions"} in the project` });
 	}
 
-	/** The session, when Browserbase still runs it; not_found in words when it does not know it or it has ended. */
+	/** The session, when Browserbase still runs it; not_found in words when it does not know it, gone when it has ended. */
 	async #running(id: string, signal?: AbortSignal): Promise<Result<BrowserbaseSession>> {
 		const problem = idProblem(id, NAME);
 		if (problem) return fail("invalid", problem);
@@ -301,14 +337,14 @@ export class BrowserbaseProvider implements ComputerProvider {
 			return vendorFailure("browserbase", NAME, "GET /v1/sessions/{id}", error);
 		}
 		if (found === undefined) return fail("not_found", `no Browserbase session has the id ${id}`);
-		if (!LIVE.has(found.status ?? "")) return fail("not_found", `the Browserbase session ${id} has ended (${found.status ?? "no status"}): only a running session is attached or connected to`);
+		if (!LIVE.has(found.status ?? "")) return fail("gone", `the Browserbase session ${id} has ended (${found.status ?? "no status"}): only a running session is attached or connected to`);
 		return ok(found);
 	}
 
 	async #alive(id: string, signal?: AbortSignal): Promise<Result<boolean>> {
 		const found = await this.#running(id, signal);
 		if (found.ok) return ok(true);
-		return found.error.code === "not_found" ? ok(false) : found;
+		return found.error.code === "not_found" || found.error.code === "gone" ? ok(false) : found;
 	}
 
 	#attached(s: BrowserbaseSession): AttachedComputer {
@@ -350,7 +386,7 @@ export class BrowserbaseProvider implements ComputerProvider {
 			return vendorFailure("browserbase", NAME, "GET /v1/sessions", error);
 		}
 		const seen = new Set<string>();
-		return ok(pages.flat().filter((s) => typeof s?.id === "string" && LIVE.has(s.status ?? "") && carries(fromMetadata(s.userMetadata), labels) && !seen.has(s.id) && seen.add(s.id)));
+		return ok(pages.flat().filter((s) => typeof s?.id === "string" && LIVE.has(s.status ?? "") && carries(metadataLabels(s.userMetadata), labels) && !seen.has(s.id) && seen.add(s.id)));
 	}
 
 	async list(labels: Record<string, string>, { signal }: CallContext = {}): Promise<Result<ComputerInfo[]>> {
@@ -368,20 +404,30 @@ export class BrowserbaseProvider implements ComputerProvider {
 
 	/**
 	 * The session's signed CDP URL, held since create or read from Browserbase, and a client that answers hello and ping.
-	 * Dials nothing: the URL is the driver's to dial.
+	 * The session is read first, held URL or not: one that has ended, or that Browserbase no longer knows though its URL is
+	 * held, is gone, never handed over. Dials nothing: the URL is the driver's to dial.
 	 */
 	async connect(ref: ComputerRef): Promise<Result<ComputerConnection>> {
 		const id = ref?.id;
 		const problem = idProblem(id, NAME);
 		if (problem) return fail("invalid", problem);
 		let url = this.#urls.get(id);
+		const found = await this.#running(id);
+		if (!found.ok) {
+			// A vendor that did not answer leaves the held URL for the next connect; a session it ended takes it along.
+			if (found.error.code !== "not_found" && found.error.code !== "gone") return found;
+			if (url === undefined) return found;
+			this.#urls.delete(id);
+			return fail("gone", found.error.code === "gone" ? found.error.message : `the Browserbase session ${id} is gone: ${found.error.message}`);
+		}
 		if (url === undefined) {
-			const found = await this.#running(id);
-			if (!found.ok) return found;
 			if (typeof found.value.connectUrl !== "string" || found.value.connectUrl === "") return fail("not_found", `the Browserbase session ${id} is not available for connection`);
 			url = found.value.connectUrl;
-			this.#urls.set(id, url);
 		}
+		// Whatever held it (create, a read, a host's url store), a URL a driver would dial is wss: on Browserbase's own domain.
+		const unusable = cdpUrlProblem(url, NAME, CDP_DOMAIN);
+		if (unusable !== undefined) return fail("browserbase", `the Browserbase session ${id} is not handed over: ${unusable}`);
+		this.#urls.set(id, url);
 		const hello = browserHello(VERSION, this.capabilities().groups);
 		const client = browserClient(hello, (signal) => this.#alive(id, signal));
 		return ok({ client, hello, cdp: { url }, close: async () => client.close() });

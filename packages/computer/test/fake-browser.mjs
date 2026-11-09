@@ -42,6 +42,16 @@ function browsers() {
 }
 
 /**
+ * A create whose browser is made and whose reply never reaches the caller: knobs.loseCreate(id) runs once the browser
+ * exists (a test may abort the caller's signal there), then the request fails as fetch fails, aborted if its signal was.
+ */
+async function lost(loseCreate, id, init) {
+	await loseCreate(id);
+	if (init?.signal?.aborted) throw new DOMException("This operation was aborted", "AbortError");
+	throw new TypeError("fetch failed");
+}
+
+/**
  * A fake CDP dialer for every browser a fake vendor made: it opens only a running browser's URL, and answers
  * Browser.getVersion, Target.createTarget, Target.attachToTarget, Target.closeTarget, Page.enable, Page.navigate (a data:
  * URL's HTML becomes the page, and Page.loadEventFired follows the answer, as Chrome sends it) and Runtime.evaluate
@@ -64,7 +74,7 @@ function cdpDialer(known, knobs) {
 		let open = true;
 		return {
 			event(method, sessionId) {
-				return new Promise((resolve, reject) => (open ? waiting.push({ method, sessionId, resolve }) : reject(new Error(`CDP ${method}: the socket is closed`))));
+				return new Promise((resolve, reject) => (open ? waiting.push({ method, sessionId, resolve, reject }) : reject(new Error(`CDP ${method}: the socket is closed`))));
 			},
 			async send(method, params = {}, sessionId) {
 				if (!open) throw new Error(`CDP ${method}: the socket is closed`);
@@ -91,7 +101,9 @@ function cdpDialer(known, knobs) {
 					case "Page.navigate": {
 						const page = pages.get(sessions.get(sessionId));
 						if (page === undefined) throw new Error("CDP Page.navigate: no such session");
-						if (!params.url.startsWith("data:text/html,")) return { frameId: "F", errorText: "net::ERR_FAILED" };
+						// knobs.navigate: "throws" (the call is refused) or "errorText" (answered with a failed load), and no load event.
+						if (knobs.navigate === "throws") throw new Error("CDP Page.navigate: Cannot navigate to invalid URL");
+						if (knobs.navigate === "errorText" || !params.url.startsWith("data:text/html,")) return { frameId: "F", errorText: "net::ERR_FAILED" };
 						page.html = decodeURIComponent(params.url.slice("data:text/html,".length));
 						// As Chrome does: the load event comes after the navigate is answered, to a session that enabled Page.
 						if (enabled.has(sessionId)) queueMicrotask(() => emit("Page.loadEventFired", sessionId, { timestamp: 1 }));
@@ -111,6 +123,8 @@ function cdpDialer(known, knobs) {
 			},
 			close() {
 				open = false;
+				// As dialCdp's failAll: an event still awaited is rejected when the socket closes.
+				for (const waiter of waiting.splice(0)) waiter.reject(new Error(`CDP ${waiter.method}: the socket closed`));
 			},
 		};
 	};
@@ -139,7 +153,8 @@ function recorder(base) {
 
 /**
  * A fake Browserbase. knobs: failCreate (a status the create answers, with ECHO in its body), releaseLag (reads that
- * still say RUNNING after a release), product and title (what the fake browser says).
+ * still say RUNNING after a release), product and title (what the fake browser says), navigate ("throws" or
+ * "errorText": a navigate that fails), loseCreate (see lost).
  */
 export function fakeBrowserbase(knobs = {}) {
 	const rec = recorder(BROWSERBASE_URL);
@@ -182,11 +197,13 @@ export function fakeBrowserbase(knobs = {}) {
 				expiresAt: new Date(now + call.body.timeout * 1000).toISOString(),
 				keepAlive: call.body.keepAlive === true,
 				userMetadata: { ...call.body.userMetadata },
-				connectUrl: `wss://connect.browserbase.test/${sid}?signingKey=SECRET-${sid}`,
+				// Browserbase's own shape, wss: on browserbase.com (read live 11-08); knobs.connectUrl(sid) answers another, or none.
+				connectUrl: knobs.connectUrl ? knobs.connectUrl(sid) : `wss://connect.browserbase.com/${sid}?signingKey=SECRET-${sid}`,
 				lag: 0,
 			};
 			sessions.set(sid, s);
 			known.add(s.connectUrl, () => s.status === "RUNNING");
+			if (knobs.loseCreate) return lost(knobs.loseCreate, sid, init);
 			return json(201, view(s));
 		}
 		if (call.method === "GET" && call.path === "/v1/sessions") {
@@ -217,7 +234,10 @@ export function fakeBrowserbase(knobs = {}) {
 	return { fetch, cdp: cdp.dial, dialed: cdp.dialed, sessions, calls: rec.calls, only: rec.only };
 }
 
-/** A fake Kernel. knobs: failCreate (a status the create answers, with ECHO in its body), pageSize (rows per list page). */
+/**
+ * A fake Kernel. knobs: failCreate (a status the create answers, with ECHO in its body), pageSize (rows per list page),
+ * loseCreate (see lost), and the fake browser's product, title and navigate, as fakeBrowserbase's.
+ */
 export function fakeKernel(knobs = {}) {
 	const rec = recorder(KERNEL_URL);
 	const known = browsers();
@@ -244,7 +264,8 @@ export function fakeKernel(knobs = {}) {
 			const bid = `kb_${++seq}`;
 			const b = {
 				id: bid,
-				cdp: `wss://browser.kernel.test/cdp/${bid}?jwt=SECRET-${bid}`,
+				// Kernel's own shape, wss: on kernel.sh, port 8443 (read live 11-08); knobs.cdpUrl(bid) answers another, or none.
+				cdp: knobs.cdpUrl ? knobs.cdpUrl(bid) : `wss://cdp.kernel.sh:8443/${bid}?jwt=SECRET-${bid}`,
 				live: `https://live.kernel.test/${bid}?jwt=SECRET-live-${bid}`,
 				createdAt: new Date(Date.parse("2026-11-08T12:00:00.000Z") + seq * 1000).toISOString(),
 				timeout: call.body.timeout_seconds,
@@ -253,14 +274,19 @@ export function fakeKernel(knobs = {}) {
 			};
 			browsersById.set(bid, b);
 			known.add(b.cdp, () => b.deletedAt === undefined);
+			if (knobs.loseCreate) return lost(knobs.loseCreate, bid, init);
 			return json(200, view(b));
 		}
 		if (call.method === "GET" && call.path === "/browsers") {
 			const filters = Object.entries(call.query)
 				.map(([key, value]) => [/^tags\[(.+)\]$/.exec(key)?.[1], value])
 				.filter(([key]) => key !== undefined);
+			// Kernel's status filter (API reference, GET /browsers): "active" (the default), "deleted" (soft-deleted) or
+			// "all". A browser still starting (b.starting) is not deleted, yet the fake lists it under "all" alone: what
+			// a provider that asks only for active browsers would miss.
+			const status = call.query.status ?? "active";
 			const rows = [...browsersById.values()]
-				.filter((b) => call.query.status !== "active" || b.deletedAt === undefined)
+				.filter((b) => (status === "all" ? true : status === "deleted" ? b.deletedAt !== undefined : b.deletedAt === undefined && !b.starting))
 				.filter((b) => filters.every(([key, value]) => b.tags[key] === value));
 			const offset = Number(call.query.offset ?? 0);
 			const size = knobs.pageSize ?? Number(call.query.limit ?? 100);

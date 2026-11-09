@@ -352,8 +352,10 @@ in the kernel's tool registry, keyed by these groups.
   in each configuration, to its entry's capabilities. browserbase and kernel are data until their provider file joins
   the registry; that test then holds each to its file.
 - `testConnection()` (optional on `ComputerProvider`) is Settings' test of a provider's keys: ONE account-level read
-  that never creates a computer, so it never spends. Docker, Daytona and E2B list by the provider's own label, Orgo reads
-  its workspace's computers; Modal reads its app without making it (an app not made yet is still a connection). It answers `{ detail }` in words, or an
+  that never creates a computer, so it never spends. Docker (one `docker ps`), Daytona and E2B (one listing page) count
+  the provider's own computers by its label from that one answer, never reading each back, so a busy account answers as
+  fast and one computer's read never fails a working key; a further page reads "or more". Orgo reads its workspace's
+  computers; Modal reads its app without making it (an app not made yet is still a connection). It answers `{ detail }` in words, or an
   error: `unauthorized` for a key the vendor refused, `unreachable` for a vendor not reached in time, else the read's
   own code; no message carries a key. A full live check (create, then the kind's conformance) is the QA board's.
   `TestConnection` is the serve side's signature, `(providerId, { keys, signal })`, keys by their serve-side names.
@@ -1772,7 +1774,8 @@ A live run must show:
 
 A browser is a computer of kind `browser`: a vendor's browser session that answers CDP. No computerd runs (daemon
 `none`): the provider answers hello and ping itself, from the vendor's API, and refuses any other method in words, since
-a browser is driven over CDP. `connect(ref)` gives a connection whose `cdp.url` is the vendor's signed CDP URL, which a
+a browser is driven over CDP. `connect(ref)` reads the browser first (one that has ended, or that the vendor no longer
+knows though its URL is held, is `gone`), then gives a connection whose `cdp.url` is the vendor's signed CDP URL, which a
 driver dials; `stream(ref)` gives the vendor's live view. Both URLs are secrets: they are held in memory (a `UrlStore`)
 and are never in a ref, a list, an error's words or a report. `client` stays a `ComputerClient`, so every caller of
 `connect` reads a browser's connection as it reads any other.
@@ -1794,13 +1797,21 @@ downloads, but the protocol has no method that reads them, so the group waits fo
 pi-browser's Browserbase and Kernel providers call today. `check()` refuses an image other than `chromium`, a lifetime past
 the cap, a network other than open, and any size, user, workdir or mount, before a vendor call. `list` and attach by
 labels take at least one label (a vendor account holds sessions no provider made), ask the vendor by status and by the
-first label a query carries as it is, and match every label themselves. A release is idempotent: one already ended or
+first label a query carries as it is, and match every label themselves. They show every browser that has not ended:
+Browserbase's `RUNNING` and `PENDING`, Kernel's `status=all` with the deleted dropped (Kernel's filter takes one value,
+and `active` may leave out a browser still starting). A release is idempotent: one already ended or
 unknown to the vendor is released.
 
 A vendor call is one request, never retried where a retry could open a second paid browser, and a failure names the
 call and the HTTP status alone, never the vendor's words. A host that already talks to the vendor (pi-browser's SDK
 client) passes its own transport: `BrowserbaseApi` or `KernelRequest`. Its thrown error rides the failure as a hidden
 cause (`causeOf(result)`), not enumerable, so it is in no JSON.
+
+Each create writes one more label beside the spec's, `agentrun.create` (`CREATE_LABEL`), with a value of its own. A
+create whose outcome is unknown (its reply lost, cut short, answered 5xx or with no browser, or the caller's signal
+aborted it) never sends a second create: it finds the browsers carrying that label as list does, in every state not
+ended, under a signal of its own bounded at `RECOVER_MS`, releases each, and its failure says so. A 4xx refusal made
+nothing, so nothing is looked for. The label is the provider's own: `check()` refuses it in a spec, and no list or attach shows it.
 
 The conformance CLI runs the browser case set for a provider of kind browser: the health cases, then `browser.*`
 (check past the cap, attach by id and by labels, list, CDP `Browser.getVersion` and `Runtime.evaluate` on a `data:`
@@ -1828,15 +1839,32 @@ const made = await phones.create({ image: "android", lifetimeMs: 10 * 60_000, ne
 the API's control URL) is a later change: `platform: "ios"` is refused in words.
 
 - **No daemon.** Nothing runs on the phone. `connect()` asks the phone harness for the session's adb link, runs
-  `adb connect`, unlocks the phone with the session's code (never in a result or an error) and probes it. Then it gives
+  connects to it, unlocks the phone with the session's code (never in a result or an error) and probes it.
+  - Neither the endpoint nor the code is ever in a spawned adb's argv, which `/proc` shows to every user of the host.
+    The endpoint goes to the local adb server over its socket protocol (`host:connect`, `host:devices-l`,
+    `host:disconnect`). The unlock is the vendor's shell command `unlock <code>`, once per connection; every shell
+    answers `locked` before it. It is sent as that shell service's own string, `shell:unlock <code>`, on a socket the
+    adb server bound to the phone (`host:transport-id:<id>`), as `adb shell unlock <code>` would send it. Every
+    spawned adb names the phone by the adb server's transport id (`-t <id>`). A shell's stdin cannot carry the unlock:
+    a shell with no command string is answered `locked` (live run 3); the socket path unlocked a phone live (probe 1).
+
+  Then it gives
   a client in this process that answers each protocol method with adb commands:
   - `screen.shot`/`screen.read`: a raw `screencap`, cropped to the region and encoded as an RGBA PNG; `scale` is the
     density over 160;
-  - `input.actions`: checked whole first (`checkActions`). Then tap, long press, swipe (`input swipe`, or
-    `input motionevent` for a path of three points or more), the back, home and app switch buttons, `type`
-    (`input text`, ASCII and line breaks) and one key at a time (`input keyevent`), and `wait`;
+  - `input.actions`: checked whole first (`checkActions`). Then:
+    - tap and long press;
+    - swipe: `input swipe`, or `input motionevent` for a path of three points or more. Its `ms` is shared between the
+      moves as `sleep`s, by each segment's length, so it lasts `ms` at least;
+    - the back, home and app switch buttons;
+    - `type`, by `input text`: ASCII and line breaks. A literal `%s` is split across two calls, so it is not read as
+      a space;
+    - one key at a time (`input keyevent`), and `wait`.
+
+    A cancelled batch stops at the action it is on, a `wait` included, and answers failed, kind `aborted`, there;
   - `apps.list` (`pm list packages`, and the app in front from `dumpsys activity activities`), `apps.launch` (its
-    launcher activity, `am start -W`) and `apps.terminate` (`am force-stop`);
+    launcher activity, `am start -W --activity-clear-task`, so the app named is in front and not what its task last
+    held: on Android 15 Settings' task keeps search, another package, on top) and `apps.terminate` (`am force-stop`);
   - `apps.ui_tree`: `uiautomator dump`.
 
   exec, files, processes and tar are refused in words: a phone has no shell in the computer protocol. So are pinch
@@ -1847,16 +1875,33 @@ the API's control URL) is a later change: `platform: "ios"` is refused in words.
 - **create** asks for `timeout_seconds` = the lifetime, and the phone harness ends the session then, whatever happens.
   The lifetime includes the boot, so a phone ready past its deadline fails `timeout`.
   - Each POST carries an Idempotency-Key, and a create whose answer was lost is found by it, never sent twice.
+  - A create cancelled during its POST is recovered by its key all the same, and the phone the service made is ended.
   - A phone that fails, or is not ready within `readyMs` (240 s), is ended.
+  - Each request has a bound of its own, `requestMs` (30 s), beside the caller's signal, and a readiness read takes no
+    longer than `readyMs` has left. A request cut off by its bound is treated as a lost answer. The `timeout` option is
+    the timer (default `AbortSignal.timeout`).
+  - Once the phone's id is known, a ledger write that fails ends the phone, and create answers in words.
   - The service's refusals keep their words (`limit` for `phones_busy` and `session_limit`, `denied` for the key or
     credit) and never hold the key.
 - **The ledger.** The phone harness keeps no labels on a session, so the provider keeps each phone's labels, image and
   deadline in its `ledger` option: `{ put, get, list, remove }`. It is in memory by default; serve passes a store-backed
   one, and the conformance module a JSON file. `list`, `attach`, `network`, `connect`, `release` and the janitor see
-  only the phones it names, never another session on the account, and forget a phone the service ended.
-- **adb** is an option too: a runner (tests give a fake), or the path of the `adb` CLI (Android platform-tools; default
-  `adb` on PATH). Without it, connect says so in words.
-- **testConnection** is one `GET /sessions` joined to the ledger, which rents nothing and reaches no phone: ok with the
+  only the phones it names, never another session on the account, and forget a phone the service ended. release of an
+  id the ledger does not name sends no DELETE: it answers `not_found` while that session runs, and ok once it is gone.
+  - create puts an entry under `pending-<Idempotency-Key>` before its POST, and replaces it by the session's id once
+    known; a refused POST forgets it.
+  - If the POST's answer and its recovery (`GET /sessions/requests/<key>`) are both lost, the entry stays. `list()`
+    takes as its phone the one account session whose `request_key` equals that key exactly, and nothing else, so the
+    janitor's sweep and release find and end a phone made under a lost create.
+  - A pending entry with no such session is kept while a create may still be under way, and forgotten after its
+    deadline.
+  - `list()` reads the ledger before `GET /sessions`, so it never forgets a phone a create records while it runs. It
+    forgets a phone the listing leaves out only once that phone's own `GET /sessions/<id>` is a 404.
+- **adb** is an option too: a transport, `{ run(args, { input }), server(service) }` (tests give a fake), or the path of
+  the `adb` CLI (Android platform-tools; default `adb` on PATH), whose server it starts and speaks to on the loopback
+  (port 5037, adb's own). Without it, connect says so in words.
+- **testConnection** is list(): one `GET /sessions` joined to the ledger, and a GET of any phone the listing leaves out.
+  It rents nothing and reaches no phone: ok with the
   count of this provider's phones, `unauthorized` for a refused key, `unreachable` when the phone harness is not
   reached.
 
@@ -1868,7 +1913,10 @@ Conformance (`src/conformance/phone-harness.ts`) reads `COMPUTER_PHONE_HARNESS_A
 
 With no fixture app (it takes no files), the touch, keys and apps cases drive the stock Settings app and read back
 through `apps.ui_tree` (`src/conformance/cases/settings.ts`):
-- `touch.tap`: a tap on a row opens its page, which shows the row's title, and back comes back;
+- `touch.tap`: a tap on a row opens its page: the row's title shows, as a text or a label (Android 15's page has it
+  only as its toolbar's content-desc), and the next row is gone. Back comes back. When the page does not
+  come, its words say what it saw: the screen in px and dp, what is in front, the tap point and the row's bounds,
+  whether the title shows outside the list, and whether the next row is still shown;
 - `touch.swipe`: a swipe up moves the list up;
 - `input.type-text` and `input.key-table-refuses-unknown`: the text read back from the search field;
 - `apps.launch-terminate`, which needs the apps group alone: Settings is listed; once launched it is in front, and
@@ -1926,10 +1974,13 @@ those that need no group (health, provider, drift) among them. The report carrie
 reasons }`), the text report ends on `kind <kind> PASS` or `kind <kind> FAIL: <why>`, and the CLI exits on it: 0 when
 the provider passes the kind, 1 when it does not. A provider passes a kind only when it serves it (by its
 capabilities), no case of the run failed (a declared optional group that fails would hand a loop a broken tool),
-every required group has at least one passing case and none skipped but for an optional group the computer does not
-declare, and the run left nothing behind. `none` is no computer, and `--kind` refuses it in words; `browser` runs, and
-fails `no case of cdp passed` until the suite has CDP cases. `kindCases` and `kindVerdict` are exported, so the serve
-side reads the same table.
+every required group has at least one passing case and no Core case skipped but for an optional group the computer does
+not declare, and the run left nothing behind. A Full case that skips is owed by no group: a provider may refuse in
+words what its kind does not require, as the phone harness refuses `touch.pinch`, and the report still shows the skip.
+`none` is no computer, and `--kind` refuses it in words. Given no cases, a run takes `casesFor(machineKind)`: a
+browser's own cases (`browserCases`), every other kind the suite's (`conformanceCases`), in the library as in the CLI;
+`kindCases` draws from the same by kind. `kindCases`, `kindVerdict` and `casesFor` are exported, so the serve side reads
+the same table.
 
 What a module given by path implements: either a provider file's `create(options)` (see
 [Adding a computer](#adding-a-computer)), given the CLI's provider options but the env and run with no drifted

@@ -81,6 +81,9 @@ export const browserOnlyCases: Case[] = [
 				await cdp.send("Page.enable", {}, sessionId);
 				// Asked before the navigate, so a load that comes before navigate's answer is not missed.
 				const loaded = cdp.event("Page.loadEventFired", sessionId);
+				// Handled at once: a navigate that fails leaves before the await below, and the socket's close at the case's
+				// end then rejects the event, which must not go unhandled. The await still sees a rejection.
+				loaded.catch(() => undefined);
 				const navigated = await cdp.send<{ errorText?: string }>("Page.navigate", { url: DATA_URL }, sessionId);
 				t.assert(navigated.errorText === undefined, `Page.navigate to a data: URL failed: ${navigated.errorText}`);
 				await bounded(loaded, t.patience, "Page.loadEventFired after the navigate to the data: page");

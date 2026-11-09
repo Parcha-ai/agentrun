@@ -7,7 +7,7 @@ import type { MountKind } from "../mount.js";
 import { type ComputerClient, type ExecRunParams, type Group, GROUPS, type HelloResult } from "../protocol.js";
 import type { ComputerConnection, ComputerProvider, ComputerRef, ComputerSpec, CreatedComputer } from "../provider.js";
 import { type ComputerErrorCode, fail, ok, type Result } from "../result.js";
-import { conformanceCases } from "./cases/index.js";
+import { casesFor } from "./cases/index.js";
 import { type CdpSocket, dialCdp } from "./cdp.js";
 import { type StartedFixture, startFixture } from "./fixture.js";
 import { kindCases, kindRunProblem, kindVerdict } from "./kind.js";
@@ -94,7 +94,8 @@ function whenAborted(signal: AbortSignal): Promise<never> {
  * or is named in the cleanup, and a computer that arrives after its case ended is deleted when it arrives.
  */
 export async function runConformance(provider: ComputerProvider, options: ConformanceOptions): Promise<ConformanceReport> {
-	const { image, only, kind, signal, cases = conformanceCases, drifted, mountFor, onResult, notes, caseTimeoutMs = 180_000, patience = 30_000, cleanupTimeoutMs = 60_000, fixture } = options;
+	// Given no cases, the run takes its computer's suite: a browser's own cases, as the CLI does, else the suite's.
+	const { image, only, kind, signal, cases = casesFor(provider.capabilities().kind), drifted, mountFor, onResult, notes, caseTimeoutMs = 180_000, patience = 30_000, cleanupTimeoutMs = 60_000, fixture } = options;
 	if (kind !== undefined && only !== undefined) throw new TypeError("a run takes kind and only apart: a kind runs its own cases");
 	const kindProblem = kind === undefined ? undefined : kindRunProblem(kind);
 	if (kindProblem !== undefined) throw new TypeError(kindProblem);

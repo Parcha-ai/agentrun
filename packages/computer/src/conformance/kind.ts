@@ -3,7 +3,7 @@
 // only when it serves it and every case of each required group passes, at least one of them.
 import { type ComputerSettingKind, type KindCapabilities, SETTING_KIND_NAMES, SETTING_KINDS, servingRefusals } from "../kinds.js";
 import { GROUPS, type Group } from "../protocol.js";
-import { conformanceCases } from "./cases/index.js";
+import { casesFor } from "./cases/index.js";
 import type { Case, ConformanceReport } from "./types.js";
 
 /** A kind's verdict: pass, or fail with why, in words. */
@@ -23,11 +23,15 @@ export function kindRunProblem(kind: ComputerSettingKind): string | undefined {
 	return undefined;
 }
 
+/** The cases a kind draws from when it is given none: a browser kind the browser cases, any other the suite's. */
+const suiteOf = (kind: ComputerSettingKind): Case[] =>
+	casesFor(Object.hasOwn(SETTING_KINDS, kind) && SETTING_KINDS[kind].machineKinds.includes("browser") ? "browser" : undefined);
+
 /**
  * The cases a kind runs: each whose protocol groups the kind requires or allows, those that need no group (health,
- * provider, drift) among them. None for kind none.
+ * provider, drift) among them. None for kind none. Drawn from cases, by default the kind's suite (casesFor).
  */
-export function kindCases(kind: ComputerSettingKind, cases: readonly Case[] = conformanceCases): Case[] {
+export function kindCases(kind: ComputerSettingKind, cases: readonly Case[] = suiteOf(kind)): Case[] {
 	if (kindRunProblem(kind) !== undefined) return [];
 	const allowed: readonly Group[] = [...SETTING_KINDS[kind].required, ...SETTING_KINDS[kind].optional];
 	return cases.filter((c) => groupsOf(c).every((group) => allowed.includes(group)));
@@ -36,10 +40,11 @@ export function kindCases(kind: ComputerSettingKind, cases: readonly Case[] = co
 /**
  * Whether the provider whose capabilities these are passes the kind, by the run's report and its cases (the kind's): it
  * serves the kind; no case of the run failed (a declared optional group that fails would give a loop a broken tool);
- * for each required group, at least one case that needs it passed and none was skipped but for an optional group the
- * computer does not declare; and the run left nothing behind.
+ * for each required group, at least one case that needs it passed and no Core case was skipped but for an optional group
+ * the computer does not declare; and the run left nothing behind. A Full case's skip is owed by no group: a provider may
+ * refuse in words what its kind does not require (a phone's pinch), and it is still tried and reported.
  */
-export function kindVerdict(kind: ComputerSettingKind, capabilities: KindCapabilities, report: ConformanceReport, cases: readonly Case[] = conformanceCases): KindVerdict {
+export function kindVerdict(kind: ComputerSettingKind, capabilities: KindCapabilities, report: ConformanceReport, cases: readonly Case[] = suiteOf(kind)): KindVerdict {
 	const problem = kindRunProblem(kind);
 	if (problem !== undefined) return { kind, verdict: "fail", reasons: [problem] };
 	const reasons = [...servingRefusals(capabilities, kind)];
@@ -48,7 +53,7 @@ export function kindVerdict(kind: ComputerSettingKind, capabilities: KindCapabil
 	for (const group of SETTING_KINDS[kind].required) {
 		const ofGroup = report.results.filter((result) => byId.get(result.id)?.needs.includes(group));
 		for (const result of ofGroup) {
-			if (result.status === "skip" && result.undeclared === undefined) reasons.push(`${result.id} was skipped: ${result.reason ?? "no reason given"}`);
+			if (result.status === "skip" && result.undeclared === undefined && byId.get(result.id)?.level === "core") reasons.push(`${result.id} was skipped: ${result.reason ?? "no reason given"}`);
 		}
 		if (!ofGroup.some((result) => result.status === "pass")) reasons.push(`no case of ${group} passed`);
 	}

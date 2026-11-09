@@ -2,7 +2,7 @@
 // no fixture app can be installed on it; the touch, keys and apps cases then drive Settings instead and check what
 // they did in its tree, with no model. Settings shows a list of rows, each a clickable row holding its title. A tap on
 // one opens a page that shows its title, and its search field shows the text typed into it.
-import type { ComputerKind, Rect, UiNode, UiTreeResult } from "../../protocol.js";
+import type { ComputerKind, Point, Rect, UiNode, UiTreeResult } from "../../protocol.js";
 import type { CaseContext } from "../types.js";
 
 /** The stock Settings app of each phone kind this suite knows. */
@@ -27,8 +27,45 @@ export async function openSettings(t: CaseContext): Promise<string> {
 	const app = settingsApp(t);
 	t.deepEqual(await t.call("apps.terminate", { id: app }), {}, `apps.terminate ${app}`);
 	t.deepEqual(await t.call("apps.launch", { id: app }), {}, `apps.launch ${app}`);
-	await t.until(async () => (await foreground(t)) === app, `${app} in front after apps.launch`);
+	// What is in front instead, the last time it was read, goes in the words: a live run showed only the wait.
+	let seen: string | null = null;
+	try {
+		await t.until(async () => (seen = await foreground(t)) === app, `${app} in front after apps.launch`);
+	} catch (error) {
+		throw new Error(`${error instanceof Error ? error.message : String(error)} (in front: ${seen ?? "nothing"})`);
+	}
 	return app;
+}
+
+/**
+ * What a tap on a row met, in words for a failure: the screen in px and in dp (px over the shot's scale; Settings shows
+ * two panes from 600 dp wide), what is in front, the tap point and the row's bounds, whether the row's title shows
+ * outside the list (a page opened beside it), and whether the next row is still shown. A part that cannot be read
+ * says so; none of it throws.
+ */
+export async function tapScene(t: CaseContext, { at, row, next, tree }: { at: Point; row: Row; next: Row; tree: UiTreeResult | undefined }): Promise<string> {
+	const unread = (error: unknown) => `unread (${error instanceof Error ? error.message : String(error)})`;
+	let screen: string;
+	try {
+		const { width, height, scale } = await t.call("screen.shot", {});
+		screen = `screen ${width}x${height} px${scale > 0 ? `, ${Math.round(width / scale)}x${Math.round(height / scale)} dp` : ""}`;
+	} catch (error) {
+		screen = `screen ${unread(error)}`;
+	}
+	let front: string;
+	try {
+		front = (await foreground(t)) ?? "nothing";
+	} catch (error) {
+		front = unread(error);
+	}
+	const tap = `the tap at ${at} on the row's bounds ${JSON.stringify(row.bounds)}`;
+	if (tree === undefined) return `${screen}; in front: ${front}; ${tap}; no tree was read`;
+	const list = listOf(tree);
+	const inList = new Set(list === undefined ? [] : nodesOf(list));
+	const outside = nodesOf(tree.root).find((node) => names(node, row.text) && !inList.has(node));
+	const title = `its title outside the list: ${outside === undefined ? "no" : `yes, at ${JSON.stringify(outside.bounds)}`}`;
+	const shown = `the row ${JSON.stringify(next.text)}: ${textsOf(tree).includes(next.text) ? "still shown" : "gone"}`;
+	return `${screen}; in front: ${front}; ${tap}; ${title}; ${shown}`;
 }
 
 /** Every node of a tree, depth first. */
@@ -41,6 +78,15 @@ export function nodesOf(root: UiNode): UiNode[] {
 	walk(root);
 	return out;
 }
+
+/** Whether a node shows a name: as its text, or as its label (content-desc). */
+const names = (node: UiNode, name: string) => node.text === name || node.label === name;
+
+/**
+ * Whether a tree shows a name anywhere, as a text or a label. A live Android 15 Settings page shows its title only as
+ * its collapsing toolbar's content-desc (phone probe 3), with no text node holding it.
+ */
+export const showsName = (tree: UiTreeResult, name: string) => nodesOf(tree.root).some((node) => names(node, name));
 
 /** The texts a tree shows. */
 export const textsOf = (tree: UiTreeResult) => nodesOf(tree.root).flatMap((node) => (node.text ? [node.text] : []));
@@ -58,14 +104,20 @@ export function listOf(tree: UiTreeResult): UiNode | undefined {
 	return nodesOf(tree.root).find((node) => node.scrollable === true);
 }
 
-/** The rows of a tree's list: each clickable node in it, whole inside it, with the first text it holds. */
+/** Whether a node, or one under it, says search: its text, its label or its id. */
+const saysSearch = (node: UiNode) => nodesOf(node).some((one) => /search/i.test(`${one.text ?? ""} ${one.label ?? ""} ${one.id ?? ""}`));
+
+/**
+ * The rows of a tree's list: each clickable node in it, whole inside it, with the first text it holds. Settings' search
+ * entry is not a row, though a live Settings shows it as the list's first item.
+ */
 export function rowsOf(tree: UiTreeResult): Row[] {
 	const list = listOf(tree);
 	if (list === undefined) return [];
 	const [lx, ly, lw, lh] = list.bounds;
 	const rows: Row[] = [];
 	for (const node of nodesOf(list).slice(1)) {
-		if (node.clickable !== true) continue;
+		if (node.clickable !== true || saysSearch(node)) continue;
 		const [x, y, w, h] = node.bounds;
 		if (x < lx || y < ly || x + w > lx + lw || y + h > ly + lh || w === 0 || h === 0) continue;
 		const text = nodesOf(node).find((one) => one.text)?.text;
@@ -83,20 +135,22 @@ export async function settingsRows(t: CaseContext, count: number): Promise<{ tre
 	}, `Settings' list with ${count} rows in apps.ui_tree`);
 }
 
-/** The node a field of text is typed into: an EditText. */
-const isField = (node: UiNode) => /EditText$/.test(node.role);
+/**
+ * A node text is typed into: any editable field, by its class, an EditText or a subclass the platform names apart
+ * (AutoCompleteTextView, MultiAutoCompleteTextView, ExtractEditText). A live Android 15's Settings search field is an
+ * AutoCompleteTextView (phone probe 2).
+ */
+const isField = (node: UiNode) => /(EditText|AutoCompleteTextView)$/.test(node.role);
 
 /**
- * Settings' search field, opened from its list: the case taps the search entry (a clickable node outside the list whose
- * text or label says search) and waits for the field. An empty field may show its hint as its text, so only the field
- * is waited for.
+ * Settings' search field, opened from its list: the case taps the search entry (the first clickable node that says
+ * search, by its own text, label or id or a child's; a live Settings shows it inside the list, its text on a child) and
+ * waits for the field. An empty field may show its hint as its text, so only the field is waited for.
  */
 export async function openSearch(t: CaseContext): Promise<void> {
 	const { tree } = await settingsRows(t, 1);
-	const list = listOf(tree);
-	const inList = new Set(list ? nodesOf(list) : []);
 	const entry = t.present(
-		nodesOf(tree.root).find((node) => !inList.has(node) && node.clickable === true && /search/i.test(`${node.text ?? ""} ${node.label ?? ""}`)),
+		nodesOf(tree.root).find((node) => node.clickable === true && saysSearch(node)),
 		"Settings' search entry (a clickable node saying search) in apps.ui_tree",
 	);
 	const at = middle(entry.bounds);

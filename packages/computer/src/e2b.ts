@@ -33,7 +33,7 @@ import {
 	type Refusal,
 } from "./provider.js";
 import { type ComputerError, type ComputerErrorCode, fail, ok, type Result } from "./result.js";
-import { listTested } from "./test-connection.js";
+import { countTested } from "./test-connection.js";
 import { waitUntil } from "./wait.js";
 
 /** What every SDK call is given: the key, the domain and the API URL explicitly, and debug false (index.mjs:1126-1152). */
@@ -1237,9 +1237,24 @@ export class E2BProvider implements ComputerProvider {
 		return ok([...found.values()]);
 	}
 
-	/** Settings' test: a list by the provider's own metadata, one read of the account's sandboxes, which makes nothing. */
-	async testConnection(context: CallContext = {}): Promise<Result<{ detail: string }>> {
-		return listTested("E2B", await this.list({}, context));
+	/**
+	 * Settings' test: one page of the account's sandboxes by the provider's own metadata, which makes nothing. The count is
+	 * read from the listing, with no getInfo of each: a busy account answers as fast, and one sandbox's read never fails a
+	 * working key. A further page is "or more".
+	 */
+	async testConnection({ signal }: CallContext = {}): Promise<Result<{ detail: string }>> {
+		const { requestMs } = this.#timeouts;
+		let paginator: E2BPaginator;
+		try {
+			paginator = this.#Sandbox.list({ ...this.#connection, requestTimeoutMs: requestMs, query: { metadata: { [COMPUTER_LABEL]: "1" } }, limit: PAGE });
+		} catch (error) {
+			return countTested("E2B", fail(codeOf(error), `Sandbox.list failed: ${words(error)}`));
+		}
+		const items = await call("Sandbox.list", () => paginator.nextItems({ requestTimeoutMs: requestMs, ...(signal ? { signal } : {}) }), requestMs, signal);
+		if (!items.ok) return countTested("E2B", fail(items.error.code, items.error.message));
+		if (!Array.isArray(items.value)) return countTested("E2B", fail("e2b", "Sandbox.list: a page that is not a list of sandboxes"));
+		const count = items.value.filter((sb) => typeof sb?.sandboxId === "string" && ours(sb.metadata)).length;
+		return countTested("E2B", ok({ count, more: paginator.hasNext }));
 	}
 
 	/**

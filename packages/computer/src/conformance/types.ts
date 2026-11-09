@@ -228,7 +228,7 @@ export interface ConformanceOptions {
 	 */
 	kind?: ComputerSettingKind;
 	signal?: AbortSignal;
-	/** The cases to run; default every case of the suite. */
+	/** The cases to run; default casesFor the provider's machine kind: a browser's own cases, else every case of the suite. */
 	cases?: Case[];
 	/** The same provider with a daemon that reports another version, for the drift cases. */
 	drifted?: () => Promise<ComputerProvider> | ComputerProvider;

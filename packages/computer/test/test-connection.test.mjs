@@ -5,7 +5,7 @@ import test from "node:test";
 import { DaytonaProvider, ModalProvider } from "../dist/index.js";
 import { E2BProvider } from "../dist/e2b.js";
 import { fakeDaytona, KEY as DAYTONA_KEY, API } from "./fake-daytona.mjs";
-import { fakeDocker } from "./fake-docker.mjs";
+import { container, fakeDocker } from "./fake-docker.mjs";
 import { fakeE2B, KEY as E2B_KEY } from "./fake-e2b.mjs";
 import { fakeModal } from "./fake-modal.mjs";
 import { PhoneHarnessProvider } from "../dist/phone-harness.js";
@@ -52,6 +52,41 @@ test("E2B: a list by the provider's metadata; ok with the count; a refused key i
 	assert.equal(refused.ok, false);
 	assert.equal(refused.error.code, "unauthorized");
 	assert.ok(!refused.error.message.includes(E2B_KEY));
+});
+
+/** Three computers of this provider's making by name, and one other: a key test counts the three from one listing. */
+const NAMES = ["computer-00000000000a", "computer-00000000000b", "computer-00000000000c"];
+
+test("Docker: on a host with several computers, one docker ps counts them, and no container is inspected", async () => {
+	const { provider, calls } = fakeDocker({ containers: [...NAMES.map((name) => container({ name })), container({ name: "postgres" })] });
+	const tested = await provider.testConnection();
+	assert.equal(tested.ok, true, JSON.stringify(tested));
+	assert.match(tested.value.detail, /^Docker answered: 3 computers of this provider$/);
+	assert.deepEqual(calls().map((args) => args[0]), ["ps"], "one read: no inspect of each computer");
+});
+
+test("Daytona: on an account with several computers, one listing page counts them, and no sandbox is read back", async () => {
+	const fake = fakeDaytona({ listBack: () => ({ networkBlockAll: undefined }) });
+	for (const name of NAMES) fake.seed({ name, labels: { "agentrun.computer": "1" } });
+	fake.seed({ name: "someone-else", labels: { "agentrun.computer": "1" } });
+	const provider = new DaytonaProvider({ apiKey: DAYTONA_KEY, apiUrl: API, daemonPath: "/nonexistent/computerd", fetch: fake.fetch, webSocket: fake.webSocket });
+	// A read of one sandbox that fails would fail the key: none is made.
+	fake.knobs.fail = [{ method: "GET", path: /^\/api\/sandbox\/[^/]+$/, status: 500, times: 10 }];
+	const tested = await provider.testConnection();
+	assert.equal(tested.ok, true, JSON.stringify(tested));
+	assert.match(tested.value.detail, /^Daytona answered: 3 computers of this provider$/);
+	assert.deepEqual(fake.requests.map((r) => `${r.method} ${r.path}`), ["GET /api/sandbox"], "one read: no sandbox read back");
+});
+
+test("E2B: on an account with several computers, one listing page counts them, and getInfo reads none", async () => {
+	const fake = fakeE2B();
+	for (const name of NAMES) fake.add({ metadata: { "agentrun.computer": "1", "agentrun.computer.name": name } });
+	fake.add({ metadata: { "agentrun.computer": "1", "agentrun.computer.name": "someone-else" } });
+	const provider = new E2BProvider({ apiKey: E2B_KEY, Sandbox: fake.Sandbox });
+	const tested = await provider.testConnection();
+	assert.equal(tested.ok, true, JSON.stringify(tested));
+	assert.match(tested.value.detail, /^E2B answered: 3 computers of this provider$/);
+	assert.deepEqual(fake.names(), ["Sandbox.list", "paginator.nextItems"], "one page: getInfo reads no sandbox");
 });
 
 test("Modal: the provider's app read without creating it; ok whether it exists or not yet; an unauthenticated token is unauthorized", async () => {

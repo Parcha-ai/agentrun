@@ -11,6 +11,7 @@
 import { execFile } from "node:child_process";
 import { randomBytes } from "node:crypto";
 import { readFileSync } from "node:fs";
+import { createConnection } from "node:net";
 import { crc32, deflateSync } from "node:zlib";
 import { checkActions } from "./actions.js";
 import type { KindCapabilities } from "./kinds.js";
@@ -59,6 +60,8 @@ export const CAPABILITIES: readonly KindCapabilities[] = [{ kind: "android", gro
 export const DEFAULT_MAX_LIFETIME_MS = 30 * 60_000;
 /** How long create waits for a phone to be ready by default: the service's own CLI waits 240 s. */
 export const DEFAULT_READY_MS = 240_000;
+/** How long one API request may take by default: a stalled request is cut off, and create's own calls stay bounded. */
+const DEFAULT_REQUEST_MS = 30_000;
 /** How long one adb call may take. */
 const ADB_TIMEOUT_MS = 30_000;
 /** The user every shell command on an Android runs as: shell, 2000. */
@@ -75,7 +78,16 @@ export interface PhoneLedgerEntry {
 	image: string;
 	/** When the service ends the session, ISO time. */
 	deadline: string;
+	/**
+	 * The Idempotency-Key of a create not answered yet: the entry is put before the POST, under the id pending-<key>,
+	 * so a phone made under a create whose answer and recovery were both lost is still found. list() takes the account's
+	 * session whose request_key is exactly this key as the entry's phone.
+	 */
+	request?: string;
 }
+
+/** The ledger's id for a create not answered yet. */
+const pendingId = (requestKey: string) => `pending-${requestKey}`;
 
 /** Where the provider keeps its phones' labels: the vendor keeps none. Each call may be sync or async. */
 export interface PhoneLedger {
@@ -96,6 +108,38 @@ export function memoryLedger(): PhoneLedger {
 	};
 }
 
+/** A ledger call that threw: the store could not be read or written. */
+class LedgerFailure extends Error {}
+
+/** The ledger with every throw, sync or async, made a LedgerFailure in words. */
+function guardedLedger(ledger: PhoneLedger): PhoneLedger {
+	const guard =
+		<A extends unknown[], T>(how: "read" | "written", call: (...args: A) => T | Promise<T>) =>
+		async (...args: A): Promise<T> => {
+			try {
+				return await call(...args);
+			} catch (error) {
+				throw new LedgerFailure(`the phone ledger could not be ${how}: ${error instanceof Error ? error.message : String(error)}`);
+			}
+		};
+	return {
+		put: guard("written", (entry: PhoneLedgerEntry) => ledger.put(entry)),
+		get: guard("read", (id: string) => ledger.get(id)),
+		list: guard("read", () => ledger.list()),
+		remove: guard("written", (id: string) => ledger.remove(id)),
+	};
+}
+
+/** fn's result, or a ledger that failed as a result in words: a provider's calls answer, never throw. */
+async function ledgerSafe<T>(fn: () => Promise<Result<T>>): Promise<Result<T>> {
+	try {
+		return await fn();
+	} catch (error) {
+		if (error instanceof LedgerFailure) return fail("phone", error.message);
+		throw error;
+	}
+}
+
 /** What one adb call gave: its exit code and output. */
 export interface AdbResult {
 	exitCode: number;
@@ -104,16 +148,39 @@ export interface AdbResult {
 }
 
 /**
- * Runs adb with args. A result in words when adb could not run at all (missing, timed out); otherwise its exit code
- * and output, whatever they are. The words never hold the args: an unlock code is one of them.
+ * How the provider reaches adb. A spawned process's argv is in /proc for every user of the host, so no secret goes
+ * there: the phone's endpoint goes only to the local adb server, over its socket (server), and the unlock code only
+ * through a spawned adb's stdin (run's input). A spawned adb names its device by the adb server's transport id.
  */
-export type AdbRunner = (args: string[], options: { timeoutMs: number; signal?: AbortSignal }) => Promise<Result<AdbResult>>;
+export interface AdbTransport {
+	/**
+	 * Runs adb with args, and input on its stdin when given. A result in words when adb could not run at all (missing,
+	 * timed out); otherwise its exit code and output, whatever they are. The words never hold the args or the input.
+	 */
+	run(args: string[], options: { timeoutMs: number; signal?: AbortSignal; input?: string }): Promise<Result<AdbResult>>;
+	/**
+	 * One request to the local adb server by its socket protocol (host:connect:<endpoint>, host:disconnect:<endpoint>,
+	 * host:devices-l), starting the server first if need be: the answer's words. With transport, the socket is bound to
+	 * that phone first (host:transport-id:<id>) and the service is one of the phone's (shell:<command>), answered with
+	 * its output: how the unlock code reaches the phone with no argv holding it. The words never hold the request.
+	 */
+	server(service: string, options: { timeoutMs: number; transport?: string }): Promise<Result<string>>;
+}
 
-/** The adb CLI (Android platform-tools) at path, by execFile, never a shell. */
-export function adbCli(path = "adb"): AdbRunner {
-	return (args, { timeoutMs, signal }) =>
+/** One adb call on a connected phone: the args after its -t <transport id>, a bound, and stdin. */
+type AdbRun = (args: string[], options?: { timeoutMs?: number; signal?: AbortSignal }) => Promise<Result<AdbResult>>;
+
+/** The adb server's port when none is given: adb's own default. */
+export const ADB_SERVER_PORT = 5037;
+
+/**
+ * The adb CLI (Android platform-tools) at path, by execFile, never a shell, and the adb server it starts, on the
+ * loopback at port (adb's own default), spoken to by its socket protocol.
+ */
+export function adbCli(path = "adb", { port = ADB_SERVER_PORT }: { port?: number } = {}): AdbTransport {
+	const run: AdbTransport["run"] = (args, { timeoutMs, signal, input }) =>
 		new Promise((resolve) => {
-			execFile(path, args, { encoding: "buffer", timeout: timeoutMs, killSignal: "SIGKILL", maxBuffer: 64 * 1024 * 1024, ...(signal ? { signal } : {}) }, (error, stdout, stderr) => {
+			const child = execFile(path, args, { encoding: "buffer", timeout: timeoutMs, killSignal: "SIGKILL", maxBuffer: 64 * 1024 * 1024, ...(signal ? { signal } : {}) }, (error, stdout, stderr) => {
 				const code = (error as NodeJS.ErrnoException | null)?.code;
 				if (code === "ENOENT") {
 					return resolve(fail("not_found", `the phone provider needs adb (Android platform-tools) on this machine: ${path} is not there; install platform-tools or give the provider's adb option`));
@@ -123,7 +190,71 @@ export function adbCli(path = "adb"): AdbRunner {
 				if (error && typeof (error as { code?: unknown }).code !== "number") return resolve(fail("phone", `adb could not run: ${error.message.split("\n")[0]}`));
 				resolve(ok({ exitCode: typeof code === "number" ? code : error ? 1 : 0, stdout: Buffer.from(stdout), stderr: Buffer.from(stderr).toString("utf8") }));
 			});
+			// stdin always ends, so no adb waits on it; it carries the input when there is one.
+			child.stdin?.on("error", () => undefined);
+			child.stdin?.end(input ?? "");
 		});
+	let started: Promise<Result<AdbResult>> | undefined;
+	const server: AdbTransport["server"] = async (service, { timeoutMs, transport }) => {
+		const what = serviceWords(service);
+		started ??= run(["start-server"], { timeoutMs });
+		const start = await started;
+		if (!start.ok || start.value.exitCode !== 0) {
+			started = undefined;
+			return start.ok ? fail("phone", `adb start-server failed: ${start.value.stderr.trim().split("\n")[0] || `exit code ${start.value.exitCode}`}`) : start;
+		}
+		const frame = (request: string) => `${Buffer.byteLength(request).toString(16).padStart(4, "0")}${request}`;
+		return new Promise((resolve) => {
+			let buffer = Buffer.alloc(0);
+			let settled = false;
+			// With a transport: first host:transport-id, whose OKAY binds the socket to the phone; then the service.
+			let bound = transport === undefined;
+			const done = (result: Result<string>) => {
+				if (settled) return;
+				settled = true;
+				clearTimeout(timer);
+				socket.destroy();
+				resolve(result);
+			};
+			const socket = createConnection({ host: "127.0.0.1", port });
+			const timer = setTimeout(() => done(fail("timeout", `the adb server did not answer ${what} within ${timeoutMs / 1000} s`)), timeoutMs);
+			socket.on("connect", () => socket.write(frame(bound ? service : `host:transport-id:${transport}`)));
+			socket.on("data", (chunk) => {
+				buffer = Buffer.concat([buffer, chunk]);
+				if (bound || buffer.length < 4) return;
+				const status = buffer.subarray(0, 4).toString("latin1");
+				if (status !== "OKAY") return done(adbAnswer(buffer, `host:transport-id:${transport}`));
+				buffer = buffer.subarray(4);
+				bound = true;
+				socket.write(frame(service));
+			});
+			socket.on("error", (error) => done(fail("phone", `the adb server on 127.0.0.1:${port} could not be reached for ${what}: ${error.message}`)));
+			socket.on("close", () => {
+				if (!bound) return done(fail("phone", `the adb server closed host:transport-id:${transport} before it answered`));
+				// A phone's service answers OKAY and then its output, with no length: the output is what follows.
+				if (transport !== undefined && buffer.subarray(0, 4).toString("latin1") === "OKAY") return done(ok(buffer.subarray(4).toString("utf8")));
+				done(adbAnswer(buffer, what));
+			});
+		});
+	};
+	return { run, server };
+}
+
+/** A service as error words name it: its kind and first word, never the rest (a shell command's code, an endpoint). */
+export function serviceWords(service: string): string {
+	const [kind, rest = ""] = service.split(/:(.*)/s);
+	return `${kind}:${rest.split(/[\s:]/)[0]}`;
+}
+
+/** The adb server's answer: OKAY, or FAIL and its words, each optionally followed by a length-prefixed message. */
+export function adbAnswer(raw: Buffer, what: string): Result<string> {
+	const status = raw.subarray(0, 4).toString("latin1");
+	const rest = raw.subarray(4);
+	const length = rest.length >= 4 ? Number.parseInt(rest.subarray(0, 4).toString("latin1"), 16) : Number.NaN;
+	const message = Number.isSafeInteger(length) && length >= 0 && rest.length >= 4 + length ? rest.subarray(4, 4 + length).toString("utf8") : rest.toString("utf8");
+	if (status === "OKAY") return ok(message);
+	if (status === "FAIL") return fail("phone", `the adb server refused ${what}: ${message.trim()}`);
+	return fail("phone", `the adb server answered ${what} with ${JSON.stringify(raw.subarray(0, 40).toString("latin1"))}, not OKAY or FAIL`);
 }
 
 export interface PhoneProviderOptions {
@@ -135,8 +266,8 @@ export interface PhoneProviderOptions {
 	baseUrl?: string;
 	/** fetch; default the global one. Tests give a fake. */
 	fetch?: typeof globalThis.fetch;
-	/** The adb runner, or the adb CLI's path; default adbCli("adb"). */
-	adb?: AdbRunner | string;
+	/** How adb is reached (AdbTransport), or the adb CLI's path; default adbCli("adb"). */
+	adb?: AdbTransport | string;
 	/** Where the provider's phones and their labels are kept; default memoryLedger(). */
 	ledger?: PhoneLedger;
 	/** The longest lifetime; default 30 min. */
@@ -145,9 +276,13 @@ export interface PhoneProviderOptions {
 	readyMs?: number;
 	/** How often create asks whether the phone is ready; default 2 s. */
 	pollMs?: number;
+	/** The longest one API request may take; default 30 s. A readiness read takes no longer than readyMs has left. */
+	requestMs?: number;
 	/** The clock: ms since the epoch, and a wait. Tests give a fake that moves at once. */
 	now?: () => number;
 	sleep?: (ms: number) => Promise<void>;
+	/** A signal that fires after ms, which bounds a request; default AbortSignal.timeout. Tests give one they fire. */
+	timeout?: (ms: number) => AbortSignal;
 	/** The version the phone's hello reports; default the provider's. Only the conformance drift case sets another. */
 	daemonVersion?: string;
 }
@@ -176,6 +311,8 @@ interface Session {
 	expires_at?: number;
 	error?: string;
 	adb?: { host?: string; port?: number; code?: string } | null;
+	/** The Idempotency-Key the session was made under. */
+	request_key?: string;
 }
 
 export class PhoneHarnessProvider implements ComputerProvider {
@@ -184,14 +321,18 @@ export class PhoneHarnessProvider implements ComputerProvider {
 	readonly #apiKey: string;
 	readonly #baseUrl: string;
 	readonly #fetch: typeof globalThis.fetch;
-	readonly #adb: AdbRunner;
+	readonly #adb: AdbTransport;
 	readonly #ledger: PhoneLedger;
 	readonly #maxLifetimeMs: number;
 	readonly #readyMs: number;
 	readonly #pollMs: number;
 	readonly #now: () => number;
 	readonly #sleep: (ms: number) => Promise<void>;
+	readonly #requestMs: number;
+	readonly #timeout: (ms: number) => AbortSignal;
 	readonly #daemonVersion: string;
+	/** How many open connections hold each endpoint's adb transport: the last to let go disconnects it. */
+	readonly #holders = new Map<string, number>();
 
 	constructor(options: PhoneProviderOptions) {
 		const { apiKey, platform = "android" } = options ?? ({} as PhoneProviderOptions);
@@ -201,14 +342,21 @@ export class PhoneHarnessProvider implements ComputerProvider {
 		this.#apiKey = apiKey;
 		this.#baseUrl = (options.baseUrl ?? PHONE_HARNESS_URL).replace(/\/+$/, "");
 		this.#fetch = options.fetch ?? globalThis.fetch;
-		this.#adb = typeof options.adb === "function" ? options.adb : adbCli(options.adb ?? "adb");
-		this.#ledger = options.ledger ?? memoryLedger();
+		const adb = options.adb;
+		if (adb !== undefined && typeof adb !== "string" && !(typeof adb?.run === "function" && typeof adb?.server === "function")) {
+			throw new Error("options.adb is the adb CLI's path, or a transport with run() and server()");
+		}
+		this.#adb = adb === undefined || typeof adb === "string" ? adbCli(adb ?? "adb") : adb;
+		this.#ledger = guardedLedger(options.ledger ?? memoryLedger());
 		this.#maxLifetimeMs = options.maxLifetimeMs ?? DEFAULT_MAX_LIFETIME_MS;
 		if (!(Number.isSafeInteger(this.#maxLifetimeMs) && this.#maxLifetimeMs > 0)) throw new Error(`maxLifetimeMs ${show(options.maxLifetimeMs)} is not a whole number of milliseconds above 0`);
 		this.#readyMs = options.readyMs ?? DEFAULT_READY_MS;
 		this.#pollMs = options.pollMs ?? 2000;
 		this.#now = options.now ?? (() => Date.now());
 		this.#sleep = options.sleep ?? ((ms) => new Promise((resolve) => setTimeout(resolve, ms)));
+		this.#requestMs = options.requestMs ?? DEFAULT_REQUEST_MS;
+		if (!(Number.isSafeInteger(this.#requestMs) && this.#requestMs > 0)) throw new Error(`requestMs ${show(options.requestMs)} is not a whole number of milliseconds above 0`);
+		this.#timeout = options.timeout ?? ((ms) => AbortSignal.timeout(ms));
 		this.#daemonVersion = options.daemonVersion ?? VERSION;
 	}
 
@@ -245,20 +393,41 @@ export class PhoneHarnessProvider implements ComputerProvider {
 		return text.replaceAll(this.#apiKey, "[the key]");
 	}
 
-	async #api(method: string, path: string, body?: unknown, headers: Record<string, string> = {}, signal?: AbortSignal): Promise<Result<{ status: number; json: unknown }> & { thrown?: boolean }> {
+	/**
+	 * One request, bounded by ms (default requestMs) and by the caller's signal. A request cut off by its bound is
+	 * `thrown`, like a lost answer: the service may have acted on it.
+	 */
+	async #api(
+		method: string,
+		path: string,
+		{ body, headers = {}, signal, ms = this.#requestMs }: { body?: unknown; headers?: Record<string, string>; signal?: AbortSignal; ms?: number } = {},
+	): Promise<Result<{ status: number; json: unknown }> & { thrown?: boolean }> {
+		const bound = this.#timeout(Math.max(1, Math.ceil(ms)));
+		const either = signal ? AbortSignal.any([signal, bound]) : bound;
+		const cut = (error: unknown): Result<never> & { thrown?: boolean } => {
+			if (signal?.aborted) return fail("aborted", `${method} ${path} was aborted`);
+			if (bound.aborted) return { ...fail("timeout", `${method} ${path}: the phone harness did not answer within ${Math.round(ms / 100) / 10} s`), thrown: true };
+			return { ...fail("unreachable", `${method} ${path}: the phone harness could not be reached: ${this.#clean((error as Error)?.message ?? String(error))}`), thrown: true };
+		};
 		let response: Response;
 		try {
 			response = await this.#fetch(`${this.#baseUrl}${path}`, {
 				method,
 				headers: { Authorization: `Bearer ${this.#apiKey}`, Accept: "application/json", ...(body === undefined ? {} : { "Content-Type": "application/json" }), ...headers },
 				...(body === undefined ? {} : { body: JSON.stringify(body) }),
-				...(signal ? { signal } : {}),
+				signal: either,
 			});
 		} catch (error) {
-			if (signal?.aborted) return fail("aborted", `${method} ${path} was aborted`);
-			return { ...fail("unreachable", `${method} ${path}: the phone harness could not be reached: ${this.#clean((error as Error).message)}`), thrown: true };
+			return cut(error);
 		}
-		const text = await response.text().catch(() => "");
+		let text: string;
+		try {
+			text = await response.text();
+		} catch (error) {
+			// The answer's body stalled or broke: as a lost answer when it was cut off, else no words.
+			if (signal?.aborted || bound.aborted) return cut(error);
+			text = "";
+		}
 		let json: unknown;
 		try {
 			json = text === "" ? undefined : JSON.parse(text);
@@ -280,8 +449,8 @@ export class PhoneHarnessProvider implements ComputerProvider {
 		return fail("phone", `${where}: ${said} (${response.status}${answer.code ? `, ${answer.code}` : ""})`);
 	}
 
-	async #session(id: string, signal?: AbortSignal): Promise<Result<Session>> {
-		const got = await this.#api("GET", `/sessions/${encodeURIComponent(id)}`, undefined, {}, signal);
+	async #session(id: string, signal?: AbortSignal, ms?: number): Promise<Result<Session>> {
+		const got = await this.#api("GET", `/sessions/${encodeURIComponent(id)}`, { ...(signal ? { signal } : {}), ...(ms === undefined ? {} : { ms }) });
 		if (!got.ok) return got.error.code === "not_found" ? fail("gone", `${id} has ended`) : got;
 		return sessionOf(got.value.json, `GET /sessions/${id}`);
 	}
@@ -299,33 +468,88 @@ export class PhoneHarnessProvider implements ComputerProvider {
 
 	// --- the provider ----------------------------------------------------------------------------------------------
 
-	async create(spec: ComputerSpec, { signal }: { signal?: AbortSignal } = {}): Promise<Result<CreatedComputer>> {
+	create(spec: ComputerSpec, context: { signal?: AbortSignal } = {}): Promise<Result<CreatedComputer>> {
+		return ledgerSafe(() => this.#create(spec, context));
+	}
+
+	attach(ref: { id: string } | { labels: Record<string, string> }, context: CallContext = {}): Promise<Result<AttachedComputer>> {
+		return ledgerSafe(() => this.#attach(ref, context));
+	}
+
+	list(labels: Record<string, string>, context: CallContext = {}): Promise<Result<ComputerInfo[]>> {
+		return ledgerSafe(() => this.#list(labels, context));
+	}
+
+	network(ref: ComputerRef, policy?: NetworkSpec): Promise<Result<NetworkPolicy>> {
+		return ledgerSafe(() => this.#network(ref, policy));
+	}
+
+	release(ref: ComputerRef, how: "stop" | "delete"): Promise<Result<void>> {
+		return ledgerSafe(() => this.#release(ref, how));
+	}
+
+	connect(ref: ComputerRef): Promise<Result<ComputerConnection>> {
+		return ledgerSafe(() => this.#connect(ref));
+	}
+
+	async #create(spec: ComputerSpec, { signal }: { signal?: AbortSignal } = {}): Promise<Result<CreatedComputer>> {
 		const refusals = this.check(spec);
 		if (refusals.length > 0) return fail("refused", refusals.map(({ field, message }) => `${field}: ${message}`).join("; "));
 		if (signal?.aborted) return fail("aborted", "create was aborted before the phone harness was asked");
 		const from = this.#now();
 		const requestKey = randomBytes(16).toString("hex");
 		const body = { platform: "android", kind: "emulator", timeout_seconds: Math.ceil(spec.lifetimeMs / 1000) };
-		let posted = await this.#api("POST", "/sessions", body, { "Idempotency-Key": requestKey }, signal);
-		if (!posted.ok && posted.thrown) {
-			// The request may have been admitted though its answer was lost: ask by its key, never POST again.
+		// The key goes into the ledger before the POST: whatever answers are lost, list() can find the phone by it.
+		const pending = pendingId(requestKey);
+		await this.#ledger.put({ id: pending, labels: { ...(spec.labels ?? {}) }, image: spec.image, deadline: new Date(from + spec.lifetimeMs).toISOString(), request: requestKey });
+		let posted = await this.#api("POST", "/sessions", { body, headers: { "Idempotency-Key": requestKey }, ...(signal ? { signal } : {}) });
+		const cancelled = !posted.ok && posted.error.code === "aborted";
+		if (!posted.ok && (posted.thrown || cancelled)) {
+			// The request may have been admitted though its answer was lost or cancelled: ask by its key, never POST again.
+			// The ask is create's own, not under the caller's signal, which may have fired; a phone it finds is ended below.
 			const recovered = await this.#api("GET", `/sessions/requests/${requestKey}`);
-			if (!recovered.ok) return fail("phone", `${posted.error.message}; and the service has no session for the request: ${recovered.error.message}`);
+			if (!recovered.ok) {
+				return fail(cancelled ? "aborted" : "phone", `${posted.error.message}; and the service has no session for the request: ${recovered.error.message}; the ledger keeps the request's key, so list() finds the phone if it was made`);
+			}
 			posted = recovered;
 		}
-		if (!posted.ok) return posted;
+		if (!posted.ok) {
+			// The phone harness refused the request: nothing was made, and the key is forgotten.
+			await this.#ledger.remove(pending);
+			return posted;
+		}
 		const first = sessionOf(posted.value.json, "POST /sessions");
 		if (!first.ok) return first;
 		const id = first.value.id;
-		await this.#ledger.put({ id, labels: { ...(spec.labels ?? {}) }, image: spec.image, deadline: this.#deadlineOf(first.value, from + spec.lifetimeMs) });
+		/** A ledger write about the phone, or the phone ended in words: a phone its ledger cannot record would bill unseen. */
+		const record = async (write: () => void | Promise<void>): Promise<Result<void>> => {
+			try {
+				await write();
+				return ok(undefined);
+			} catch (error) {
+				// Ended at once, by the API alone: the ledger has just failed.
+				const ended = await this.#api("DELETE", `/sessions/${encodeURIComponent(id)}`);
+				const after = ended.ok || ended.error.code === "not_found" ? "the phone was ended" : `the phone ${id} could not be ended (${ended.error.message})`;
+				return fail("phone", `${error instanceof Error ? error.message : String(error)}; ${after}`);
+			}
+		};
+		const named = await record(async () => {
+			await this.#ledger.put({ id, labels: { ...(spec.labels ?? {}) }, image: spec.image, deadline: this.#deadlineOf(first.value, from + spec.lifetimeMs) });
+			await this.#ledger.remove(pending);
+		});
+		if (!named.ok) return named;
 		const ended = async (code: ComputerErrorCode, words: string) => {
 			const gone = await this.#end(id);
 			return fail(code, `${words}; ${gone.ok ? "it was ended" : `it could not be ended (${gone.error.message})`}`);
 		};
+		if (cancelled) return ended("aborted", `create was aborted during POST /sessions, after the service made the phone ${id}`);
 		let session = first.value;
 		for (;;) {
 			if (signal?.aborted) return ended("aborted", `create was aborted while the phone ${id} started`);
-			const read = await this.#session(id, signal);
+			// A read takes no longer than readyMs has left, so a stalled one cannot hold create past it.
+			const left = this.#readyMs - (this.#now() - from);
+			const read = await this.#session(id, signal, Math.max(1, Math.min(this.#requestMs, left)));
+			if (!read.ok && read.error.code === "timeout") return ended("timeout", `the phone ${id} was not ready within ${this.#readyMs / 1000} s: ${read.error.message}`);
 			if (!read.ok) return ended(read.error.code === "gone" ? "phone" : read.error.code, `the phone ${id} did not start: ${read.error.message}`);
 			session = read.value;
 			if (session.state === "ready") break;
@@ -334,7 +558,8 @@ export class PhoneHarnessProvider implements ComputerProvider {
 			await this.#sleep(this.#pollMs);
 		}
 		const deadline = this.#deadlineOf(session, from + spec.lifetimeMs);
-		await this.#ledger.put({ id, labels: { ...(spec.labels ?? {}) }, image: spec.image, deadline });
+		const kept = await record(() => this.#ledger.put({ id, labels: { ...(spec.labels ?? {}) }, image: spec.image, deadline }));
+		if (!kept.ok) return kept;
 		const took = this.#now() - from;
 		if (this.#now() >= Date.parse(deadline)) {
 			return ended("timeout", `the phone ${id}'s lifetime of ${spec.lifetimeMs / 1000} s ended before it was ready (it took ${Math.round(took / 100) / 10} s)`);
@@ -342,13 +567,14 @@ export class PhoneHarnessProvider implements ComputerProvider {
 		return ok({ id, name: id });
 	}
 
-	async attach(ref: { id: string } | { labels: Record<string, string> }, { signal }: CallContext = {}): Promise<Result<AttachedComputer>> {
+	async #attach(ref: { id: string } | { labels: Record<string, string> }, { signal }: CallContext = {}): Promise<Result<AttachedComputer>> {
 		let entry: PhoneLedgerEntry | undefined;
 		if ("id" in ref) {
 			entry = await this.#ledger.get(ref.id);
 			if (entry === undefined) return fail("not_found", `${ref.id} is not a phone this provider made`);
 		} else {
-			const found = (await this.#ledger.list()).filter((one) => carries(one.labels, ref.labels));
+			// A pending entry is a create not answered yet, not a phone: list() adopts it once its phone is seen.
+			const found = (await this.#ledger.list()).filter((one) => one.request === undefined && carries(one.labels, ref.labels));
 			if (found.length === 0) return fail("not_found", `no phone of this provider carries the labels ${show(ref.labels)}`);
 			if (found.length > 1) return fail("invalid", `${found.length} phones of this provider (${found.map((one) => one.id).join(", ")}) carry the labels ${show(ref.labels)}: attach takes one`);
 			entry = found[0];
@@ -364,13 +590,19 @@ export class PhoneHarnessProvider implements ComputerProvider {
 		return ok({ id, name: id, spec: { image: (entry as PhoneLedgerEntry).image, user: SHELL_USER, network: "open", deadline, kind: "android" } });
 	}
 
-	/** Settings' test: one GET /sessions, the account's sessions joined to the ledger, which rents nothing. */
+	/**
+	 * Settings' test: one GET /sessions, the account's sessions joined to the ledger, and a GET of any phone of the
+	 * ledger the listing leaves out. It rents nothing.
+	 */
 	async testConnection(context: CallContext = {}): Promise<Result<{ detail: string }>> {
 		return listTested("Phone harness", await this.list({}, context));
 	}
 
-	async list(labels: Record<string, string>, { signal }: CallContext = {}): Promise<Result<ComputerInfo[]>> {
-		const got = await this.#api("GET", "/sessions", undefined, {}, signal);
+	async #list(labels: Record<string, string>, { signal }: CallContext = {}): Promise<Result<ComputerInfo[]>> {
+		// The ledger is read before the account's sessions: a phone whose entry is read was made before the GET, so it is
+		// in its answer unless it is gone. An entry a create writes later is not seen by this list, and so not forgotten.
+		const entries = await this.#ledger.list();
+		const got = await this.#api("GET", "/sessions", signal ? { signal } : {});
 		if (!got.ok) return got;
 		if (!Array.isArray(got.value.json)) return fail("phone", `GET /sessions answered ${show(got.value.json).slice(0, 200)}, not a list`);
 		const live = new Map<string, Session>();
@@ -379,12 +611,30 @@ export class PhoneHarnessProvider implements ComputerProvider {
 			if (session.ok) live.set(session.value.id, session.value);
 		}
 		const out: ComputerInfo[] = [];
-		for (const entry of await this.#ledger.list()) {
-			const session = live.get(entry.id);
+		for (const listed of entries) {
+			let entry = listed;
+			if (entry.request !== undefined) {
+				// A create not answered yet: its phone is the account's session whose request_key is exactly its key.
+				const made = [...live.values()].find((session) => session.request_key === entry.request);
+				if (made === undefined) {
+					// Still being made, or never made: after its deadline nothing of it can be alive, and it is forgotten.
+					if (this.#now() > Date.parse(entry.deadline)) await this.#ledger.remove(entry.id);
+					continue;
+				}
+				entry = { id: made.id, labels: { ...entry.labels }, image: entry.image, deadline: this.#deadlineOf(made, Date.parse(entry.deadline)) };
+				await this.#ledger.put(entry);
+				await this.#ledger.remove(listed.id);
+			}
+			let session = live.get(entry.id);
 			if (session === undefined) {
-				// The service ended it: the ledger forgets it.
-				await this.#ledger.remove(entry.id);
-				continue;
+				// Not in the listing: its own GET says whether the service ended it (404), and only then is it forgotten.
+				const read = await this.#session(entry.id, signal);
+				if (!read.ok && read.error.code === "gone") {
+					await this.#ledger.remove(entry.id);
+					continue;
+				}
+				if (!read.ok) return read;
+				session = read.value;
 			}
 			if (!carries(entry.labels, labels)) continue;
 			out.push({
@@ -398,18 +648,44 @@ export class PhoneHarnessProvider implements ComputerProvider {
 		return ok(out);
 	}
 
-	async network(ref: ComputerRef, policy?: NetworkSpec): Promise<Result<NetworkPolicy>> {
+	async #network(ref: ComputerRef, policy?: NetworkSpec): Promise<Result<NetworkPolicy>> {
 		if ((await this.#ledger.get(ref.id)) === undefined) return fail("not_found", `${ref.id} is not a phone this provider made`);
 		if (policy === undefined || policy === "open") return ok("open");
 		return fail("refused", `network ${show(policy)}: a cloud phone's network is open, and it cannot be closed or narrowed`);
 	}
 
-	async release(ref: ComputerRef, how: "stop" | "delete"): Promise<Result<void>> {
+	async #release(ref: ComputerRef, how: "stop" | "delete"): Promise<Result<void>> {
 		if (how === "stop") return fail("unsupported", "a cloud phone has no stop: release it with delete, which ends the session");
+		if ((await this.#ledger.get(ref.id)) === undefined) {
+			// Not this provider's to end. Its own GET tells a phone already gone (ok, as release is idempotent) from another
+			// session on the account, which is refused and never sent a DELETE.
+			const read = await this.#session(ref.id);
+			if (!read.ok) return read.error.code === "gone" ? ok(undefined) : read;
+			return fail("not_found", `${ref.id} is not a phone this provider made: it is not ended`);
+		}
 		return this.#end(ref.id);
 	}
 
-	async connect(ref: ComputerRef): Promise<Result<ComputerConnection>> {
+	/**
+	 * The adb server's transport id of the phone at endpoint, from host:devices-l, once it is a device: a connected
+	 * phone may show as offline for a moment first.
+	 */
+	async #transportOf(endpoint: string): Promise<Result<string>> {
+		let last = "not listed";
+		for (let tries = 0; tries < 10; tries++) {
+			if (tries > 0) await this.#sleep(500);
+			const listed = await this.#adb.server("host:devices-l", { timeoutMs: ADB_TIMEOUT_MS });
+			if (!listed.ok) return listed;
+			const line = listed.value.split("\n").find((one) => one.trim().split(/\s+/)[0] === endpoint);
+			const state = line?.trim().split(/\s+/)[1];
+			const id = /\btransport_id:(\d+)\b/.exec(line ?? "")?.[1];
+			if (state === "device" && id !== undefined) return ok(id);
+			last = state ?? "not listed";
+		}
+		return fail("phone", `adb connected to the phone, and the adb server still lists it as ${last}, not a device`);
+	}
+
+	async #connect(ref: ComputerRef): Promise<Result<ComputerConnection>> {
 		if ((await this.#ledger.get(ref.id)) === undefined) return fail("not_found", `${ref.id} is not a phone this provider made`);
 		const session = await this.#session(ref.id);
 		if (!session.ok) return session;
@@ -421,29 +697,75 @@ export class PhoneHarnessProvider implements ComputerProvider {
 			link = asked.value.json as Session["adb"];
 		}
 		const { host, port, code } = link ?? {};
-		if (typeof host !== "string" || !/^[A-Za-z0-9.:-]+$/.test(host) || !Number.isSafeInteger(port) || typeof code !== "string" || !/^[A-Za-z0-9]+$/.test(code)) {
+		// The vendor's shapes (OpenAPI SessionAdb): a DNS name, a port, and a code ph_ and base32 letters. Anything outside
+		// these characters is refused rather than passed to adb.
+		if (typeof host !== "string" || !/^[A-Za-z0-9.:-]+$/.test(host) || !Number.isSafeInteger(port) || typeof code !== "string" || !/^[A-Za-z0-9_-]{1,128}$/.test(code)) {
 			return fail("phone", `the phone harness gave ${ref.id} no adb link this provider can use (a host, a port and an unlock code)`);
 		}
-		const serial = `${host}:${port}`;
-		const adb = (args: string[], timeoutMs = ADB_TIMEOUT_MS) => this.#adb(args, { timeoutMs });
-		const connected = await adb(["connect", serial]);
-		if (!connected.ok) return connected;
-		const said = connected.value.stdout.toString("utf8").trim();
-		if (!said.includes("connected") || /cannot|failed|unable/i.test(said)) return fail("phone", `adb could not reach the phone at ${serial}: ${said.split("\n")[0] || connected.value.stderr.trim()}`);
-		const unlocked = await adb(["-s", serial, "shell", `unlock ${code}`]);
-		if (!unlocked.ok) return unlocked;
-		const probe = await adb(["-s", serial, "shell", "echo ph-ok"]);
-		if (!probe.ok) return probe;
-		if (!probe.value.stdout.toString("utf8").includes("ph-ok")) return fail("phone", `the phone at ${serial} stayed locked after its unlock code`);
-		const client = new AdbClient(serial, adb, this.#sleep);
+		// The endpoint and the code never reach an argv: the endpoint goes to the adb server over its socket, the unlock as
+		// a shell service on a socket the server bound to the phone, and every spawned adb names the phone by its transport id.
+		const endpoint = `${host}:${port}`;
+		const server = (service: string) => this.#adb.server(service, { timeoutMs: ADB_TIMEOUT_MS });
+		const onPhone = (service: string, id: string) => this.#adb.server(service, { timeoutMs: ADB_TIMEOUT_MS, transport: id });
+		const connected = await server(`host:connect:${endpoint}`);
+		if (!connected.ok) {
+			// This connect holds nothing: it drops the transport only when no other connection of this provider holds it.
+			if (!this.#holders.get(endpoint)) await server(`host:disconnect:${endpoint}`).catch(() => undefined);
+			return connected;
+		}
+		// The adb server keeps one transport per endpoint, and a second connect reuses it ("already connected"): every
+		// connection to the phone holds it, and only the last to let go disconnects it (live run 4).
+		this.#holders.set(endpoint, (this.#holders.get(endpoint) ?? 0) + 1);
+		let held = true;
+		const release = async () => {
+			if (!held) return;
+			held = false;
+			const left = (this.#holders.get(endpoint) ?? 1) - 1;
+			if (left > 0) return void this.#holders.set(endpoint, left);
+			this.#holders.delete(endpoint);
+			await server(`host:disconnect:${endpoint}`).catch(() => undefined);
+		};
+		const letGo = async <T>(failed: Result<T>): Promise<Result<T>> => {
+			await release();
+			return failed;
+		};
+		const said = connected.value.trim();
+		if (!said.includes("connected") || /cannot|failed|unable/i.test(said)) return letGo(fail("phone", `adb could not reach the phone of ${ref.id}: ${said.split("\n")[0]}`));
+		const transport = await this.#transportOf(endpoint);
+		if (!transport.ok) return letGo(transport);
+		const id = transport.value;
+		const adb: AdbRun = (args, { timeoutMs = ADB_TIMEOUT_MS, signal } = {}) => this.#adb.run(["-t", id, ...args], { timeoutMs, ...(signal ? { signal } : {}) });
+		// Ask first: the vendor's lock is per TCP connection, so a transport another connection unlocked answers at once,
+		// and an `unlock` on it would reach the phone's own sh ("unlock: inaccessible or not found", live run 4).
+		const asked = await onPhone("shell:echo ph-ok", id);
+		if (!asked.ok) return letGo(asked);
+		if (!asked.value.includes("ph-ok")) {
+			if (!/^locked\b/.test(asked.value.trim())) return letGo(fail("phone", `the phone of ${ref.id} answered neither ph-ok nor locked: ${asked.value.trim().split("\n")[0]}`));
+			// The vendor's unlock is the shell command `unlock <code>`, once per connection (docs, guides/connect-adb): the
+			// shell service's own string, sent over the adb server's socket bound to the phone, so no argv holds the code.
+			// Probe 1 (2026-11-08) showed it live: "unlocked", and getprop answered after it.
+			const unlocked = await onPhone(`shell:unlock ${code}`, id);
+			if (!unlocked.ok) return letGo(unlocked);
+			// Another connect may have unlocked the transport meanwhile: the probe below is the judge, the answer only words.
+			const probe = await adb(["shell", "echo ph-ok"]);
+			if (!probe.ok) return letGo(probe);
+			if (!probe.value.stdout.toString("utf8").includes("ph-ok")) {
+				const words = unlocked.value.trim().split("\n")[0].replace(code, "[code]");
+				return letGo(fail("phone", /\bunlocked\b/.test(unlocked.value) ? `the phone of ${ref.id} stayed locked after its unlock code` : `the phone of ${ref.id} refused its unlock code: ${words}`));
+			}
+		}
+		const client = new AdbClient(id, adb, release, this.#sleep);
 		const opened = await client.open(this.#daemonVersion);
-		if (!opened.ok) return opened;
+		if (!opened.ok) {
+			await client.closed();
+			return opened;
+		}
 		const hello = opened.value;
 		if (hello.version !== this.version) {
-			client.close();
+			await client.closed();
 			return fail("refused", `hello: the daemon reports version ${hello.version}, expected ${this.version}`);
 		}
-		return ok({ client, hello, close: async () => client.close() });
+		return ok({ client, hello, close: () => client.closed() });
 	}
 }
 
@@ -485,6 +807,8 @@ const KEYCODES: Record<string, string> = {
 const BUTTON_KEYS = { back: "BACK", home: "HOME", app_switch: "APP_SWITCH" } as const;
 
 type Call = Result<unknown>;
+/** One action's shell commands; waitMs, a wait before them; busyMs, how long they take on the phone by design. */
+type Plan = { commands: string[]; waitMs?: number; busyMs?: number };
 const refuse = (code: ComputerErrorCode, message: string): Call => fail(code, message);
 
 /** The in-process client of one cloud Android: each protocol method is one or more adb commands. */
@@ -495,9 +819,15 @@ class AdbClient implements ComputerClient {
 	#scale = 1;
 	#held: { id: string; bytes: Buffer } | undefined;
 
+	/** The disconnect close started, which the connection's close waits for. */
+	#gone: Promise<unknown> = Promise.resolve();
+
 	constructor(
-		readonly serial: string,
-		readonly adb: (args: string[], timeoutMs?: number) => Promise<Result<AdbResult>>,
+		/** The adb server's transport id of the phone: no secret, so it may be in an argv. */
+		readonly transport: string,
+		readonly adb: AdbRun,
+		/** Lets the adb server drop the phone's transport, by its endpoint over the server's socket. */
+		readonly disconnect: () => Promise<unknown>,
 		readonly sleep: (ms: number) => Promise<void>,
 	) {}
 
@@ -511,7 +841,7 @@ class AdbClient implements ComputerClient {
 		if (!density.ok) return density;
 		const sizes = [...size.value.matchAll(/(\d+)x(\d+)/g)];
 		const last = sizes.at(-1);
-		if (!last) return fail("phone", `the phone at ${this.serial} did not say its screen's size: ${size.value.trim().slice(0, 100)}`);
+		if (!last) return fail("phone", `the phone (adb transport ${this.transport}) did not say its screen's size: ${size.value.trim().slice(0, 100)}`);
 		this.#size = [Number(last[1]), Number(last[2])];
 		const dpi = [...density.value.matchAll(/(\d+)/g)].at(-1);
 		this.#scale = dpi ? Number(dpi[1]) / 160 : 1;
@@ -524,12 +854,18 @@ class AdbClient implements ComputerClient {
 		if (this.#closed) return;
 		this.#closed = true;
 		this.#held = undefined;
-		void this.adb(["disconnect", this.serial]).catch(() => undefined);
+		this.#gone = this.disconnect().catch(() => undefined);
+	}
+
+	/** Closes, and waits until the adb server has let the phone's transport go. */
+	async closed(): Promise<void> {
+		this.close();
+		await this.#gone;
 	}
 
 	/** One shell command on the phone: its stdout, or the failure in words. */
-	async #shell(command: string): Promise<Result<string>> {
-		const ran = await this.adb(["-s", this.serial, "shell", command]);
+	async #shell(command: string, signal?: AbortSignal, timeoutMs?: number): Promise<Result<string>> {
+		const ran = await this.adb(["shell", command], { ...(signal ? { signal } : {}), ...(timeoutMs === undefined ? {} : { timeoutMs }) });
 		if (!ran.ok) return ran;
 		if (ran.value.exitCode !== 0) {
 			const why = (ran.value.stderr.trim() || ran.value.stdout.toString("utf8").trim()).split("\n")[0] || `exit code ${ran.value.exitCode}`;
@@ -539,7 +875,7 @@ class AdbClient implements ComputerClient {
 	}
 
 	async #execOut(command: string): Promise<Result<Buffer>> {
-		const ran = await this.adb(["-s", this.serial, "exec-out", command], 60_000);
+		const ran = await this.adb(["exec-out", command], { timeoutMs: 60_000 });
 		if (!ran.ok) return ran;
 		if (ran.value.exitCode !== 0) return fail("phone", `${command.split(" ")[0]} on the phone failed: ${ran.value.stderr.trim().split("\n")[0] || `exit code ${ran.value.exitCode}`}`);
 		return ok(ran.value.stdout);
@@ -548,10 +884,10 @@ class AdbClient implements ComputerClient {
 	async call<M extends DaemonMethod>(method: M, params: DaemonMethods[M]["params"], options: { signal?: AbortSignal } = {}): Promise<Result<DaemonMethods[M]["result"]>> {
 		if (this.#closed) return fail("gone", "the connection to the phone is closed");
 		if (options.signal?.aborted) return fail("aborted", `${method} was aborted`);
-		return (await this.#answer(method as string, (params ?? {}) as Record<string, unknown>)) as Result<DaemonMethods[M]["result"]>;
+		return (await this.#answer(method as string, (params ?? {}) as Record<string, unknown>, options.signal)) as Result<DaemonMethods[M]["result"]>;
 	}
 
-	async #answer(method: string, params: Record<string, unknown>): Promise<Call> {
+	async #answer(method: string, params: Record<string, unknown>, signal?: AbortSignal): Promise<Call> {
 		switch (method) {
 			case "hello":
 				return ok(this.#hello);
@@ -562,7 +898,7 @@ class AdbClient implements ComputerClient {
 			case "screen.read":
 				return this.#read(params.id, params.offset);
 			case "input.actions":
-				return this.#actions(params.actions);
+				return this.#actions(params.actions, signal);
 			case "apps.list":
 				return this.#appsList();
 			case "apps.launch":
@@ -615,19 +951,35 @@ class AdbClient implements ComputerClient {
 
 	// --- input ---------------------------------------------------------------------------------------------------
 
-	/** The shell commands of one action, or why the phone cannot do it. */
-	#commands(action: InputAction): { commands: string[]; waitMs?: number } | { kind: DaemonErrorKind; message: string } {
+	/** The shell commands of one action, or why the phone cannot do it. Its adb call gets busyMs on top of its bound. */
+	#commands(action: InputAction): Plan | { kind: DaemonErrorKind; message: string } {
 		const point = ([x, y]: [number, number]) => `${Math.round(x)} ${Math.round(y)}`;
 		switch (action.type) {
 			case "tap":
 				return { commands: Array.from({ length: action.count ?? 1 }, () => `input tap ${point(action.at)}`) };
 			case "long_press":
-				return { commands: [`input swipe ${point(action.at)} ${point(action.at)} ${action.ms ?? 800}`] };
+				return { commands: [`input swipe ${point(action.at)} ${point(action.at)} ${action.ms ?? 800}`], busyMs: action.ms ?? 800 };
 			case "swipe": {
 				const path = action.path;
-				if (path.length === 2) return { commands: [`input swipe ${point(path[0])} ${point(path[1])} ${action.ms ?? 300}`] };
+				if (path.length === 2) return { commands: [`input swipe ${point(path[0])} ${point(path[1])} ${action.ms ?? 300}`], busyMs: action.ms ?? 300 };
 				const last = path[path.length - 1];
-				return { commands: [[`input motionevent DOWN ${point(path[0])}`, ...path.slice(1).map((p) => `input motionevent MOVE ${point(p)}`), `input motionevent UP ${point(last)}`].join(";")] };
+				// input motionevent has no duration, so ms goes between the moves as toybox sleeps. Each segment takes its
+				// share by length, evenly when the path has none. Each motionevent takes time of its own, so the swipe
+				// lasts ms at least.
+				const lengths = path.slice(1).map((p, i) => Math.hypot(p[0] - path[i][0], p[1] - path[i][1]));
+				const total = lengths.reduce((sum, one) => sum + one, 0);
+				const steps = [`input motionevent DOWN ${point(path[0])}`];
+				let gone = 0;
+				let walked = 0;
+				for (const [i, p] of path.slice(1).entries()) {
+					walked += total > 0 ? lengths[i] : 1;
+					const by = action.ms === undefined ? 0 : Math.round((action.ms * walked) / (total > 0 ? total : lengths.length));
+					if (by > gone) steps.push(`sleep ${(by - gone) / 1000}`);
+					gone = by;
+					steps.push(`input motionevent MOVE ${point(p)}`);
+				}
+				steps.push(`input motionevent UP ${point(last)}`);
+				return { commands: [steps.join(";")], busyMs: gone };
 			}
 			case "button":
 				return { commands: [`input keyevent KEYCODE_${BUTTON_KEYS[action.name]}`] };
@@ -636,7 +988,13 @@ class AdbClient implements ComputerClient {
 				const commands: string[] = [];
 				for (const [i, line] of action.text.split("\n").entries()) {
 					if (i > 0) commands.push("input keyevent KEYCODE_ENTER");
-					if (line !== "") commands.push(`input text ${quote(line.replaceAll(" ", "%s"))}`);
+					// input text reads a % followed by s as a space, and nothing else. A space is sent as %s; a literal %s
+					// is split across two calls, so its % ends one and its s starts the next and the two never meet.
+					const pieces = line.split("%s");
+					for (const [j, piece] of pieces.entries()) {
+						const part = `${j > 0 ? "s" : ""}${piece}${j < pieces.length - 1 ? "%" : ""}`;
+						if (part !== "") commands.push(`input text ${quote(part.replaceAll(" ", "%s"))}`);
+					}
 				}
 				return { commands };
 			}
@@ -657,11 +1015,28 @@ class AdbClient implements ComputerClient {
 		}
 	}
 
-	async #actions(actions: unknown): Promise<Call> {
+	/** A wait of ms, which ends early when signal fires. */
+	async #pause(ms: number, signal?: AbortSignal): Promise<void> {
+		if (signal === undefined) return this.sleep(ms);
+		if (signal.aborted) return;
+		let stop = () => {};
+		// The listener is on before the sleep starts, so a cancel during it is never missed.
+		const stopped = new Promise<void>((resolve) => {
+			stop = resolve;
+			signal.addEventListener("abort", stop, { once: true });
+		});
+		try {
+			await Promise.race([this.sleep(ms), stopped]);
+		} finally {
+			signal.removeEventListener("abort", stop);
+		}
+	}
+
+	async #actions(actions: unknown, signal?: AbortSignal): Promise<Call> {
 		const refused = checkActions(actions, PHONE_GROUPS);
 		if (refused !== undefined) return ok({ done: 0, failed: refused } satisfies InputActionsResult);
 		const list = actions as InputAction[];
-		const plans: Array<{ commands: string[]; waitMs?: number }> = [];
+		const plans: Plan[] = [];
 		for (const [index, action] of list.entries()) {
 			const plan = this.#commands(action);
 			if ("kind" in plan) return ok({ done: 0, failed: { index, kind: plan.kind, message: `action ${index}: ${plan.message}` } } satisfies InputActionsResult);
@@ -672,10 +1047,18 @@ class AdbClient implements ComputerClient {
 			}
 			plans.push(plan);
 		}
+		// A cancel stops the batch at the action it is on: before its wait, after it, and before each command.
+		const cancelled = (index: number): Call => ok({ done: index, failed: { index, kind: "aborted", message: `action ${index}: the batch was aborted; actions ${index} on did not run` } } satisfies InputActionsResult);
 		for (const [index, plan] of plans.entries()) {
-			if (plan.waitMs !== undefined) await this.sleep(plan.waitMs);
+			if (signal?.aborted) return cancelled(index);
+			if (plan.waitMs !== undefined) {
+				await this.#pause(plan.waitMs, signal);
+				// A wait the cancel cut short is not done.
+				if (signal?.aborted) return cancelled(index);
+			}
 			for (const command of plan.commands) {
-				const ran = await this.#shell(command);
+				if (signal?.aborted) return cancelled(index);
+				const ran = await this.#shell(command, signal, ADB_TIMEOUT_MS + (plan.busyMs ?? 0));
 				if (!ran.ok) {
 					const kind: DaemonErrorKind = ran.error.code === "timeout" || ran.error.code === "aborted" || ran.error.code === "not_found" ? ran.error.code : "invalid";
 					return ok({ done: index, failed: { index, kind, message: `action ${index}: ${ran.error.message}` } } satisfies InputActionsResult);
@@ -717,7 +1100,9 @@ class AdbClient implements ComputerClient {
 			.reverse()
 			.find((line) => COMPONENT.test(line));
 		if (component === undefined) return refuse("not_found", `${id} has no activity to launch: is it installed?`);
-		const started = await this.#shell(`am start -W -n ${component}`);
+		// The app named comes to the front, not whatever its task last held: on Android 15 Settings' task keeps search (another
+		// package) on top, and a plain start resumes it there. A cleared task starts the app itself (phone probe 2).
+		const started = await this.#shell(`am start -W --activity-clear-task -n ${component}`);
 		if (!started.ok) return started;
 		if (/Error:|Exception/.test(started.value)) return refuse("phone", `am start of ${component}: ${started.value.trim().split("\n").at(-1)}`);
 		return ok({});
