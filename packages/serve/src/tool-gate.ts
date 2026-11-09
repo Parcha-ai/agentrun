@@ -56,7 +56,7 @@ import { DEFAULT_HARNESS } from "./harness.js";
 import { durableSessions } from "./sessions.js";
 import { SHELL_TOOLS } from "./background.js";
 import { readToolSettings, SERVE_OWN_TOOLS, TABLE_TOOLS } from "./tool-plane.js";
-import { deniedText, modelNodeAskText, NOT_RUN, RAN_UNKNOWN, refusedText, type SettingFrom } from "./refusal-words.js";
+import { alreadyWaitsText, deniedText, modelNodeAskText, NOT_RUN, RAN_UNKNOWN, refusedText, type SettingFrom } from "./refusal-words.js";
 import { type Approvals, approvalsOf } from "./approvals.js";
 
 /** What the gate does with a tool's calls. */
@@ -490,15 +490,18 @@ export class RunGate {
    *  loops, pi's and the CLI harnesses'): run it, ask a person, or refuse it with the words the model reads. `enter`'s
    *  order: the end-of-run turn's write under .learning/ (learningRefusal), the deny (with where it was set, and that
    *  nothing was sent or charged), a pin, then the allow, then the ask, so an allow that approvals "never" made is decided
-   *  only after every refusal. */
-  async decide(name: string, args: unknown): Promise<"allow" | "ask" | { deny: string }> {
+   *  only after every refusal. `replayed`: the call is run again after an earlier attempt that may have been sent (a
+   *  replay-safe call rerun after a crash), so a refusal says whether it took effect is not known, never that nothing was
+   *  sent (enter's `replayed`). */
+  async decide(name: string, args: unknown, options: { readonly replayed?: boolean } = {}): Promise<"allow" | "ask" | { deny: string }> {
     const key = settingsKeyOf(this.where.harness ?? DEFAULT_HARNESS, name, this.where.mcpServers) ?? name;
     const tool = this.askedAs(name);
     const learning = await this.learningRefusal(key, args);
     if (learning) return { deny: learning };
+    const ran = options.replayed ? "unknown" : "no";
     const verdict = this.policy(name);
-    if (verdict === "deny") return { deny: deniedText(tool, key, this.denyFrom(name), "no") };
-    const pinned = this.pinned(key, args, "no");
+    if (verdict === "deny") return { deny: deniedText(tool, key, this.denyFrom(name), ran) };
+    const pinned = this.pinned(key, args, ran);
     if (pinned) return { deny: pinned.text };
     return verdict === "allow" ? "allow" : "ask";
   }
@@ -606,7 +609,7 @@ export class RunGate {
     // Named by the call, so a call run again after a crash parks as the same request.
     const id = `ap_${createHash("sha256").update(JSON.stringify([callId, tool, args ?? null])).digest("hex").slice(0, 16)}`;
     const other = [...this.requests.values()].find((held) => !held.resolved && held.id !== id);
-    if (other) return { text: `This ${tool} call was not run: the ${other.tool} call ${other.call_id} already waits for a person's approval. Call it again once that one is answered.`, isError: true };
+    if (other) return { text: alreadyWaitsText(tool, { tool: other.tool, callId: other.call_id }), isError: true };
     if (!this.requests.has(id)) {
       const turn = park.turn?.();
       const request: ApprovalRequest = { id, tool, call_id: callId, args: args ?? null, args_preview: argsPreview(args), requested_at: new Date().toISOString(), ...(turn !== undefined ? { turn } : {}), ...(options.price !== undefined ? { price: options.price } : {}), ...(options.replayed ? { replayed: true as const } : {}) };

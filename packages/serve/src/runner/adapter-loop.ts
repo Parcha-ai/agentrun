@@ -21,7 +21,7 @@ import type { KernelHooks, ToolCall } from "./conformance/subject.js";
 import { type AnswerData, type ApprovalPrice, type AskData, type BudgetData, type CallEndData, type CallStartData, type CallStatus, type EndData, KINDS, type MessageData, type RaiseData, withdrawnAnswers } from "./journal-kinds.js";
 import { endedOnTurnEndingTool, type MessageOrigin, originOf, RUN_RESUMED } from "@parcha/pi-durable-agent/timeline";
 import { type AlsoRow, type Claim, ClaimRefused, type Command, type CommandOutcome, deniedText, endedBy, type EndOfRunAnswer, type EndOfRunTurn, type Loop, type LoopDeps, type LoopEnd, type LoopFactory, noteOf, type StopReason } from "./loop-contract.js";
-import { deniedText as setToDenyText } from "../refusal-words.js";
+import { alreadyWaitsText, deniedText as setToDenyText } from "../refusal-words.js";
 import { ADAPTER_API } from "../turn-end.js";
 import { answerText, REFLECT_NOTE_ONLY, reflectRequestId, underLearning, WRITES } from "./end-of-run.js";
 import { approvalOf, CLOSE_MS, CUT_STEP_MS, STOP_SETTLE_MS, commandRequest, cutLast, DEFAULT_RESTART_LIMIT, entriesOf, findData, Gate, heldReporter, Interrupted, KernelFault, Parked, quiet, restartLimited, writesEntry, writesSubmission } from "./loop.js";
@@ -51,8 +51,9 @@ export type RaiseCheck =
 /** The gate's answer for a call: run it, ask a person, or refuse it (with the words the model reads, or generic ones). */
 export type GateAnswer = "allow" | "ask" | "deny" | { readonly deny: string };
 /** The gate before a call's intent; `askedAs`, when it has one, names a call as a person is asked about it (its settings
- *  key, as main's pending approval names it), else the call is asked about by its own name. */
-export type SpecGate = ((call: ToolCall) => GateAnswer | Promise<GateAnswer>) & { readonly askedAs?: (tool: string) => string };
+ *  key, as main's pending approval names it), else the call is asked about by its own name. `replayed`: asked again for a
+ *  call run again after an earlier attempt that may have been sent, so a refusal's words never say nothing was sent. */
+export type SpecGate = ((call: ToolCall, options?: { readonly replayed?: boolean }) => GateAnswer | Promise<GateAnswer>) & { readonly askedAs?: (tool: string) => string };
 
 /** What one claimed run's adapter loop runs. */
 export interface AdapterRunSpec {
@@ -409,6 +410,8 @@ function adapterLoop(specOf: (claim: Claim, run: AdapterRun) => AdapterRunSpec |
   let context: Context = BACKGROUND_CONTEXT;
   /** Approve or deny rows refused because they named no call waiting for its answer. */
   let refusals = 0;
+  /** The call of this pass that waits for a person's answer (anotherWaits): one at a time, as main's gate. */
+  let waiting: { callId: string; tool: string } | undefined;
   /** The claim's first delivery is done (LoopDeps.delivered): every row the runner read is with the loop. */
   let delivered = false;
   /** The run is parking at its cap (the early pause, from its commit on): a raise row is left for the next claim. */
@@ -601,6 +604,8 @@ function adapterLoop(specOf: (claim: Claim, run: AdapterRun) => AdapterRunSpec |
     try {
       for (let restarts = 0; ; restarts += 1) {
         fault = undefined;
+        // A new pass: the call a torn-down pass held waiting is the journal's to say now (anotherWaits).
+        waiting = undefined;
         gate = new Gate(deps.journal(claim));
         if (deps.signal.aborted) gate.seal(new Interrupted("its claim's signal aborted"));
         const registry = createRegistry();
@@ -745,6 +750,15 @@ function adapterLoop(specOf: (claim: Claim, run: AdapterRun) => AdapterRunSpec |
           // its result, and the loop restarts it. A CLI's call reaches here only once the gate allowed it (its tool
           // bridge asks first), so its record's start is written here, before the flush and the call, and its end after.
           call: async (args, toolContext) => {
+            // A call run again after an earlier attempt (the harness's rerun of a replay-safe call after a crash: its
+            // attempt above 0) never passed the gate before its intent this time: the gate is asked again here, so a deny
+            // set since the first attempt refuses the rerun, in words saying the earlier attempt may have taken effect.
+            if ((toolContext.attempt ?? 0) > 0 && spec.gate) {
+              const asked = spec.gate.askedAs?.(tool.name) ?? tool.name;
+              const now = await spec.gate({ callId: toolContext.callId, tool: tool.name as never, args: (args ?? {}) as Record<string, unknown> }, { replayed: true });
+              if (now === "deny") return { text: setToDenyText(asked, undefined, "server", "unknown"), isError: true };
+              if (typeof now === "object") return { text: now.deny, isError: true };
+            }
             if (record) await record.start(toolContext.callId, tool.name, args ?? {}, tool.replay === "safe");
             try {
               const answer = await sideEffect({
@@ -1015,6 +1029,8 @@ function adapterLoop(specOf: (claim: Claim, run: AdapterRun) => AdapterRunSpec |
       // Main's words for a tool set to deny (tool-gate's deniedText, from its one copy in refusal-words.ts).
       if (decision === "deny") return { deny: setToDenyText(asked) };
       if (decision === "allow") return "allow";
+      const other = await anotherWaits(call.callId, asked);
+      if (other) return { deny: alreadyWaitsText(asked, other) };
       const answer = await answerOf(call, spec.approvalPrice?.(kernelCall) ?? null, asked);
       if (answer === "park") return { park: true };
       return answer.approved ? "allow" : { deny: deniedText(asked, answer.note) };
@@ -1060,6 +1076,7 @@ function adapterLoop(specOf: (claim: Claim, run: AdapterRun) => AdapterRunSpec |
         const approved = row.kind === "approve";
         const data: AnswerData = { callId: call.callId, approved, decision: approved ? "allow" : "deny", answeredAt: isoNow(), ...noteOf(row), ...((row.body as { by?: unknown } | null)?.by === "message" && !approved ? { by: "message" as const } : {}) };
         if (!(await entryLands(KINDS.answer, data, { take: [row.id] }))) return "park";
+        if (waiting?.callId === call.callId) waiting = undefined;
         return data;
       }
       if (stopReason) return "park";
@@ -1072,6 +1089,32 @@ function adapterLoop(specOf: (claim: Claim, run: AdapterRun) => AdapterRunSpec |
       }
       await new Promise<void>((resolve) => (wakeInbox = resolve));
     }
+  }
+
+  /** One call of the run waits for a person at a time, as main's gate: the call that waits already, when it is another
+   *  than `callId` (asked in this pass and not answered, held in the tick of this look after the journal's read, since pi
+   *  runs a turn's calls in parallel; or asked on the journal and not answered), else undefined, and `callId` is the one
+   *  that waits from here. A call the journal has answered never waits. Its refusal is main's words: the model calls it
+   *  again once that one is answered. */
+  async function anotherWaits(callId: string, asked: string): Promise<{ callId: string; tool: string } | undefined> {
+    const conversation = await harness!.root(context);
+    const entries = await entriesOf(gate!.journal, conversation.id, context);
+    if (findData<AnswerData>(entries, KINDS.answer, (data) => data.callId === callId)) return undefined;
+    const other = waiting !== undefined && waiting.callId !== callId ? waiting : waitingOn(entries, callId);
+    if (other) return other;
+    waiting = { callId, tool: asked };
+    return undefined;
+  }
+
+  /** Another call than `callId` the journal has asked and not answered: the one that waits, by its asked name. */
+  function waitingOn(entries: readonly { readonly kind: string; readonly data?: unknown }[], callId: string): { callId: string; tool: string } | undefined {
+    const answered = new Set(entries.filter((entry) => entry.kind === KINDS.answer).map((entry) => (entry.data as AnswerData).callId));
+    for (const entry of entries) {
+      if (entry.kind !== KINDS.ask) continue;
+      const ask = entry.data as AskData;
+      if (ask.callId !== callId && !answered.has(ask.callId)) return { callId: ask.callId, tool: ask.tool };
+    }
+    return undefined;
   }
 
   /** Whether a call of this run waits for the answer `approval` names: asked, and not answered yet. */

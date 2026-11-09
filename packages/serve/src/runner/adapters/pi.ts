@@ -153,7 +153,11 @@ async function sessionOn(proxy: ModelProxy, options: PiAdapterOptions, spec: Ses
   // A session tool whose name a native extension already owns is run by that extension (pi's own tool task), so it is not
   // piTool-wrapped here too: one tool by that name on the agent, offered once.
   const owned = new Set(nativeToolNames(options));
-  const tools = spec.tools.filter((tool) => !owned.has(tool.name)).map((tool) => piTool(tool, io));
+  // The calls the gate let through in this session, before their intent. pi runs a call's beforeTool only before its
+  // intent: a call it runs with no pass here is one it reruns after a crash (a replay-safe call whose intent an earlier
+  // attempt stored), told to the host tool as an attempt above 0, so the loop asks the gate about it again.
+  const passed = new Set<string>();
+  const tools = spec.tools.filter((tool) => !owned.has(tool.name)).map((tool) => piTool(tool, io, (callId) => (io.gate ? (passed.has(callId) ? 0 : 1) : undefined)));
   // A refused call's words (the gate's deny, main's), by call: its result is those words alone, as main gives them.
   const refusals = refusalWords();
   const extension = defineExtension({
@@ -164,7 +168,10 @@ async function sessionOn(proxy: ModelProxy, options: PiAdapterOptions, spec: Ses
         beforeTool: async (call, _api, hookContext: Context) => {
           if (!io.gate) return undefined;
           const answer = await io.gate({ callId: call.id, tool: call.name, args: (call.arguments ?? {}) as Record<string, unknown> }, hookContext);
-          if (answer === "allow") return undefined;
+          if (answer === "allow") {
+            passed.add(call.id);
+            return undefined;
+          }
           if ("deny" in answer) {
             refusals.refuse(call.id, answer.deny);
             return { block: answer.deny };
@@ -303,7 +310,7 @@ export function refusalWords() {
 }
 
 /** A host tool as a pi tool: replay-safe or at most once, its answer the host's text and any images it shows. */
-function piTool(tool: HostTool, io: PiSessionIO) {
+function piTool(tool: HostTool, io: PiSessionIO, attemptOf: (callId: string) => number | undefined = () => undefined) {
   return defineTool({
     name: tool.name,
     description: tool.description,
@@ -311,7 +318,8 @@ function piTool(tool: HostTool, io: PiSessionIO) {
     replay: tool.replay === "safe" ? "safe" : "unsafe",
     execute: async (args: unknown, api, toolContext: Context) => {
       io.onEvent({ type: "tool_start", callId: api.callId, name: tool.name, args });
-      const answer = await tool.call(args ?? {}, { callId: api.callId, signal: toolContext.abortSignal ?? io.signal });
+      const attempt = attemptOf(api.callId);
+      const answer = await tool.call(args ?? {}, { callId: api.callId, signal: toolContext.abortSignal ?? io.signal, ...(attempt === undefined ? {} : { attempt }) });
       io.onEvent({ type: "tool_end", callId: api.callId, name: tool.name, isError: Boolean(answer.isError), result: answer.text });
       const images = (answer.images ?? []).map((image) => ({ type: "image" as const, data: image.data, mimeType: image.mimeType }));
       return { output: [{ type: "text" as const, text: answer.text }, ...images], ...(answer.isError ? { isError: true } : {}) } as never;
