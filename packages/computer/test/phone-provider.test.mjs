@@ -178,6 +178,35 @@ test("a session the service ended is gone to attach and list, and the ledger for
 	assert.deepEqual(await ledger.list(), [], "and list the other");
 });
 
+test("list names a phone once while create swaps its pending key for the session's entry", async () => {
+	// The list runs inside create's put of the session's entry: the ledger holds the entry and the pending key at once.
+	const base = memoryLedger();
+	let provider;
+	let during;
+	let listing = false;
+	const ledger = {
+		...base,
+		put: async (entry) => {
+			await base.put(entry);
+			// Once, at create's first put of a session's entry: the list's own puts come back here and pass through.
+			if (entry.request === undefined && !listing) {
+				listing = true;
+				during = await provider.list({ run: "r1" });
+			}
+		},
+	};
+	provider = (await setup({}, { ledger })).provider;
+	const created = await provider.create({ ...SPEC, labels: { run: "r1" } });
+	assert.equal(created.ok, true, JSON.stringify(created));
+	assert.equal(during.ok, true, JSON.stringify(during));
+	assert.deepEqual(
+		during.value.map((info) => info.ref.id),
+		[created.value.id],
+		"one phone, once",
+	);
+	assert.deepEqual((await provider.list({ run: "r1" })).value.map((info) => info.ref.id), [created.value.id]);
+});
+
 test("list loses no phone a create records while list runs, and forgets one only once its own GET says it is gone", async () => {
 	// A create finishes between list's GET /sessions and its read of the ledger.
 	let provider;
