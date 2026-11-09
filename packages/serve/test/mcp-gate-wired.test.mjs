@@ -1,9 +1,10 @@
-// Every MCP tool call passes the run's one tool gate, on pi, claude-agent and codex, through the API: with the server's
-// mcp:fake/* set to deny the call is refused and the fake MCP server sees nothing; with no setting it asks, parks, and
-// the owner's allow runs it exactly once; set to allow it runs once with no one asked. claude-agent runs the pinned
-// Agent SDK and Claude CLI against a scripted Messages endpoint; codex the stand-in for Codex's app-server, whose MCP
-// client calls the session proxy as Codex does, its "model" the turn's text said through serve's gateway. No key, no
-// network.
+// Every MCP tool call passes the run's one tool gate on a harness with its own MCP client, claude-agent and codex,
+// through the API: with the server's mcp:fake/* set to deny the call is refused and the fake MCP server sees nothing;
+// with no setting it asks, parks, and the owner's allow runs it exactly once; set to allow it runs once with no one
+// asked. pi's rows are mcp-gate.test.mjs's (deny by key and by mcp:fake/*, the ask, allow by key and by mcp:fake/*).
+// claude-agent runs the pinned Agent SDK and Claude CLI against a scripted Messages endpoint; codex the stand-in for
+// Codex's app-server, whose MCP client calls the session proxy as Codex does, its "model" the turn's text said through
+// serve's gateway. No key, no network.
 import assert from "node:assert/strict";
 import { randomBytes } from "node:crypto";
 import { existsSync } from "node:fs";
@@ -15,10 +16,9 @@ import { startFakeMcp } from "./fixtures/fake-mcp-server.mjs";
 import { copyStandIn } from "../../run-adapters-codex/test/stand-in.mjs";
 import { agent, call, clientOwnerSession, follow, scratch, serve as serveOf, withEnv } from "./support.mjs";
 
-const FAUX_MCP = new URL("./fixtures/faux-mcp.mjs", import.meta.url).pathname;
 const TOKEN = `not-a-secret-${"mcp-gate-wired-0123"}`;
 const json = { "content-type": "application/json" };
-const HARNESSES = ["pi", ...(existsSync("/usr/bin/setpriv") ? ["claude-agent"] : []), "codex"];
+const HARNESSES = [...(existsSync("/usr/bin/setpriv") ? ["claude-agent"] : []), "codex"];
 const calls = (fake) => fake.log.filter((entry) => entry.method === "tools/call");
 
 /** serve's gateway on loopback for codex's stand-in: each Responses request answered with the text it carries; `seen`
@@ -42,8 +42,8 @@ async function echoGateway(t) {
 /** A server for `harness` with the fake MCP server saved, an owner who can answer approvals, and the run's prompt. */
 async function setup(t, harness) {
   withEnv(t, { AGENTRUN_SEAL_KEY: randomBytes(32).toString("base64") });
-  let extra = {};
-  let content = 'Call mcp__fake__add with {"a":2,"b":3}';
+  let extra;
+  let content;
   if (harness === "claude-agent") {
     const anthropic = await fakeAnthropic({
       reply: (request) => {
@@ -79,7 +79,7 @@ async function setup(t, harness) {
     extra = { harness: "codex" };
     content = 'mcp fake add {"a":2,"b":3}';
   }
-  const server = await serveOf(t, { faux: harness === "pi" ? FAUX_MCP : undefined, accounts: true, openSetup: true });
+  const server = await serveOf(t, { faux: undefined, accounts: true, openSetup: true });
   const fake = await startFakeMcp({ token: TOKEN });
   t.after(() => fake.close());
   const saved = await server.api("PUT", "/settings/mcp-servers/fake", { url: fake.url, auth: { type: "bearer", token: TOKEN } });
