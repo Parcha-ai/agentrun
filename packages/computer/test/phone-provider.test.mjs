@@ -495,6 +495,53 @@ test("two connections to one phone share its adb transport: the second does not 
 	await third.value.close();
 });
 
+/** A promise and its resolve: a gate a test opens. */
+function gate() {
+	let open;
+	const promise = new Promise((resolve) => (open = resolve));
+	return { promise, open };
+}
+/** Every step that can run without a held request has run: the microtask queue is drained (no timer, no clock). */
+const settled = () => new Promise((resolve) => setImmediate(resolve));
+
+test("a connect and the last holder's release never race the transport: the holder count and the disconnect are one critical section", async () => {
+	const endpoint = `${ADB_HOST}:${22220 + 1}`;
+	let hold;
+	const onServer = (service, stage) => (hold && hold.service === service && hold.stage === stage ? (hold.reached.open(), hold.release.promise) : undefined);
+	const { provider, fake } = await setup({ onServer });
+	const { value: ref } = await provider.create(SPEC);
+	const works = async (connection, what) => {
+		const listed = await connection.client.call("apps.list", {});
+		assert.equal(listed.ok, true, `${what}: ${JSON.stringify(listed)}`);
+	};
+
+	// (a) A connect while the last holder's disconnect is on its way: the connect waits for it, then connects afresh.
+	const first = (await provider.connect(ref)).value;
+	hold = { service: `host:disconnect:${endpoint}`, stage: "before", reached: gate(), release: gate() };
+	const closing = first.close();
+	await hold.reached.promise;
+	const second = provider.connect(ref);
+	await settled();
+	hold.release.open();
+	await closing;
+	const connected = await second;
+	assert.equal(connected.ok, true, JSON.stringify(connected));
+	await works(connected.value, "(a) the connect made during the disconnect");
+
+	// (b) The last holder lets go while a new connect's host:connect has been handled and its answer is on its way: the
+	// release sees the new holder and keeps the transport.
+	hold = { service: `host:connect:${endpoint}`, stage: "after", reached: gate(), release: gate() };
+	const third = provider.connect(ref);
+	await hold.reached.promise;
+	await connected.value.close();
+	hold.release.open();
+	const after = await third;
+	assert.equal(after.ok, true, JSON.stringify(after));
+	await works(after.value, "(b) the connect whose answer crossed the release");
+	await after.value.close();
+	assert.equal(fake.phone.connected.size, 0, "the last close lets the transport go");
+});
+
 test("no spawned adb's argv holds the unlock code or the phone's endpoint, which /proc shows to every user of the host", async () => {
 	const { provider, fake } = await setup();
 	const { value: ref } = await provider.create(SPEC);
