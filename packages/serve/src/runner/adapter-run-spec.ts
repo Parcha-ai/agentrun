@@ -43,11 +43,40 @@ import { claimSecrets } from "./claim-secrets.js";
 import { join } from "node:path";
 import { type AdapterRun, type AdapterRunSpec, hostLifecycle } from "./adapter-loop.js";
 import { piAdapter } from "./adapters/pi.js";
-import { dockerComputer } from "./computer.js";
 import { entriesOf } from "./loop.js";
 import type { Claim, Journal } from "./loop-contract.js";
 import { runMetrics } from "./metrics.js";
 import type { ModelRoute, RouteCost } from "./model-route.js";
+import { archilClaim, type ArchilClaimOptions } from "../workspace/archil-claim.js";
+import { loadArchilSettings } from "../archil-settings.js";
+import type { RunComputer } from "../workspace/run-tools.js";
+import type { Workspace } from "../workspace/workspace.js";
+
+/** What a claim gives the shared computerForClaim: the run, its epoch, its revision, its place and any computer choice. */
+export interface ClaimLaunch {
+  readonly runId: string;
+  readonly epoch: number;
+  readonly revisionId: string;
+  readonly place?: unknown;
+  readonly computer?: unknown;
+}
+/** What the spec gives computerForClaim of its own: the run's mode, its Workspace and the runner's seal key (the runner
+ *  gives the rest once, `computerDeps`). */
+export interface ClaimDeps {
+  readonly mode: 1 | 2;
+  readonly workspace: Workspace;
+  readonly sealKey: Buffer | undefined;
+  readonly signal?: AbortSignal;
+}
+/** The run's computer at the claim: none for a runner place; its release, after the run's tools' end. A computer that
+ *  cannot be had throws (computer_unavailable). */
+export interface ClaimComputer {
+  readonly computer?: RunComputer;
+  readonly hold?: unknown;
+  release(): Promise<void>;
+}
+/** The one shared claim-time computer every spec takes (computer-for-claim.ts), passed in by the runner. */
+export type ComputerForClaim = (launch: ClaimLaunch, store: AdapterSpecDeps["store"], deps: ClaimDeps & Readonly<Record<string, unknown>>) => Promise<ClaimComputer>;
 
 /** What the runner hands the spec builder, beside the claim and the loop's own Harness (the AdapterRun): the store (its
  *  agent and run reads, and the live-viewer seam the browser tool writes through), the data directory a Mode 1 run folder
@@ -69,6 +98,13 @@ export interface AdapterSpecDeps {
   readonly log?: (message: string) => void;
   /** D's docker provider for a sandbox run's computer; a test gives its own (computer.ts dockerComputer default). */
   readonly makeProvider?: () => Promise<ComputerProvider>;
+  /** The one shared claim-time computer (computer-for-claim.ts), for both the pi and the CLI spec: none for a runner place.
+   *  The runner gives it; a test gives its own. */
+  readonly computerForClaim: ComputerForClaim;
+  /** What the runner gives computerForClaim once (its kind registry, provider makers, computer spec, keys and settings). */
+  readonly computerDeps?: Readonly<Record<string, unknown>>;
+  /** A Mode 2 claim's Archil disk (a test's fake); absent, the real disk the Archil settings name. */
+  readonly makeArchilDisk?: ArchilClaimOptions["makeDisk"];
 }
 
 /** A model as the cap prices it, from the route's catalog cost: its price WITH TIERS (the money rule — a request past a
@@ -149,10 +185,19 @@ export async function adapterRunSpecFromLaunch(launch: RunLaunch, run: AdapterRu
   const revision = { kind: revisionRow.kind, body } as { kind: string; body: { toolSettings?: unknown; harness?: string; approvals?: Approvals } };
   const granted = body.tools ?? [];
 
-  // The run's Workspace at the claim (E4c). Mode 1: the run's local folder under the data directory, made here (the server's
-  // start made it before). Mode 2 (Archil) is TODO(E2r2): the claim's Archil step (archilClaim) is threaded through the deps
-  // when E4c's Mode 2 lands on the runner.
-  const ws = await openRunWorkspace({ mode: 1, agentId: runRow.agentId, runId: claim.runId, data: deps.data, log });
+  // The run's mode is the server's: Mode 2 where its Archil settings are saved (archil-settings.ts), the run's folder then
+  // on the claim's Archil disk (archil-claim.ts: its keys from the store's sealed rows, under the runner's seal key, in this
+  // claim's memory only); else Mode 1, the run's local folder. The same for the pi and the CLI spec.
+  const archilSettings = await loadArchilSettings(deps.store);
+  const mode: 1 | 2 = archilSettings === undefined ? 1 : 2;
+  const archil = archilSettings === undefined
+    ? undefined
+    : await archilClaim({ settings: archilSettings, keys: deps.store.sealedKeys, sealKey: deps.sealKey, signal: new AbortController().signal, ...(deps.makeArchilDisk ? { makeDisk: deps.makeArchilDisk } : {}) });
+  // The run's Workspace at the claim: Mode 1 the run's local folder (made here, the server's start made it before); Mode 2
+  // the run's folder on the disk.
+  const ws = archil === undefined
+    ? await openRunWorkspace({ mode: 1, agentId: runRow.agentId, runId: claim.runId, data: deps.data, log })
+    : await openRunWorkspace({ mode: 2, agentId: runRow.agentId, runId: claim.runId, archil, log });
 
   // The run's uploaded files, copied into its work/inputs/ before the first turn, as the server's start copied them before
   // the per-run process ran (uploads.copyInto). Once per run: a fresh run has no inputs/ yet; a resumed claim finds them
@@ -165,18 +210,17 @@ export async function adapterRunSpecFromLaunch(launch: RunLaunch, run: AdapterRu
     }
   }
 
-  // A sandbox run's computer (Mode 1 Docker): D makes a container with the run's folder at /workspace, under the claim's
-  // epoch (the one fence). runTools attaches the Workspace to it; the run's release lets it go.
-  const computer = launch.place.mode === "sandbox"
-    ? await dockerComputer(ws.workspace, {
-        runId: claim.runId,
-        epoch: claim.epoch,
-        ...(launch.boxAllow !== undefined ? { boxAllow: launch.boxAllow } : {}),
-        ...(deps.env.AGENTRUN_DOCKER_IMAGE ? { image: deps.env.AGENTRUN_DOCKER_IMAGE } : {}),
-      }, deps.makeProvider)
-    : undefined;
+  // The run's computer, from the one shared claim-time function (the CLI spec takes the same): none for a runner place, a
+  // Docker container for a sandbox, under the claim's epoch (the one fence). It throws computer_unavailable (nothing made)
+  // when the computer cannot be had: the run fails in its words.
+  const computer = await deps.computerForClaim(
+    { runId: claim.runId, epoch: claim.epoch, revisionId: runRow.revisionId, place: launch.place, ...((launch as { computer?: unknown }).computer !== undefined ? { computer: (launch as { computer?: unknown }).computer } : {}) },
+    deps.store,
+    { ...deps.computerDeps, mode, workspace: ws.workspace, sealKey: deps.sealKey },
+  );
 
-  const tools = await runTools(ws.workspace, computer?.run, { mode: 1, context });
+  // The run's mode bounds its shell: 600 s locally or on a computer, 295 s on Archil's serverless exec (Mode 2, none).
+  const tools = await runTools(ws.workspace, computer.computer, { mode, context });
 
   // The run's model route: its model through routeOf (NEVER re-resolved — the launch's model, pinned at start), the catalog
   // price with tiers for the cap, and the proxy's price (pi-ai calculateCost, tiered).
@@ -275,9 +319,10 @@ export async function adapterRunSpecFromLaunch(launch: RunLaunch, run: AdapterRu
     context: "fresh",
   };
 
-  // The person's first message: the start body's content, with the run's file manifest beside it (run-manifest.ts).
+  // The person's first message: the start body's content, with the run's file manifest beside it (run-manifest.ts), read
+  // through the run's Workspace (Mode 2: its inputs/ on the disk, never a folder of this machine).
   const content = isObject(launch.input) && typeof (launch.input as { content?: unknown }).content === "string" ? (launch.input as { content: string }).content : "";
-  const input = await firstMessage(content, root);
+  const input = await firstMessage(content, ws.workspace);
 
   return {
     adapter,
@@ -303,7 +348,7 @@ export async function adapterRunSpecFromLaunch(launch: RunLaunch, run: AdapterRu
     // scratch swept), its computer let go, then its Workspace's end (Mode 2 sweeps the exec spill).
     release: async () => {
       await tools.end().catch((error: unknown) => log(`the run's tools' end failed: ${(error as Error)?.message ?? String(error)}`));
-      if (computer) await computer.release().catch((error: unknown) => log(`the run's computer could not be let go: ${(error as Error)?.message ?? String(error)}`));
+      await computer.release().catch((error: unknown) => log(`the run's computer could not be let go: ${(error as Error)?.message ?? String(error)}`));
       await ws.end().catch((error: unknown) => log(`the run's workspace end failed: ${(error as Error)?.message ?? String(error)}`));
     },
   };

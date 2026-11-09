@@ -30,61 +30,27 @@ import { type ModelRef, providerModels, runModels } from "../model.js";
 import { firstMessage } from "../run-manifest.js";
 import type { RunLaunch } from "../run-launch.js";
 import { readsFiles, systemOf } from "../skills.js";
-import { runGate } from "../tool-gate.js";
-import { loadToolSettings } from "../tool-plane.js";
 import { INPUTS_DIR, UPLOADS_DIR, Uploads } from "../uploads.js";
 import { isObject } from "../validate.js";
 import { runFolder, scratchFolder } from "../workspace/paths.js";
 import { openRunWorkspace } from "../workspace/run-workspace.js";
-import { type RunComputer, runTools, type ToolResults } from "../workspace/run-tools.js";
-import { archilClaim, type ArchilClaimOptions } from "../workspace/archil-claim.js";
+import { runTools, type ToolResults } from "../workspace/run-tools.js";
+import { archilClaim } from "../workspace/archil-claim.js";
 import { loadArchilSettings } from "../archil-settings.js";
 import type { Workspace } from "../workspace/workspace.js";
 import type { AdapterRun, AdapterRunSpec } from "./adapter-loop.js";
-import type { AdapterSpecDeps } from "./adapter-run-spec.js";
+import { adapterRunGate, type AdapterSpecDeps } from "./adapter-run-spec.js";
 import { resolveHarness } from "./adapters/index.js";
 import { entriesOf } from "./loop.js";
 import type { Claim } from "./loop-contract.js";
 import { runMetrics } from "./metrics.js";
 
-/** The launch as the shared claim-time computer reads it (workspace/computer-for-claim.ts ClaimLaunch). */
-export interface ClaimLaunch {
-  readonly runId: string;
-  readonly epoch: number;
-  readonly revisionId?: string;
-  readonly computer?: unknown;
-  readonly place?: unknown;
-}
+/** The shared claim-time computer types live on the base spec (adapter-run-spec.ts), re-exported for this module's API. */
+export type { ClaimComputer, ClaimDeps, ClaimLaunch, ComputerForClaim } from "./adapter-run-spec.js";
 
-/** What the spec gives the shared computerForClaim of its own (the run's mode, Workspace and the runner's seal key),
- *  beside what the runner gives it once (`computerDeps`: the kind registry, the provider makers, the computer spec, the
- *  key table and settings, the mount check, a --faux launch: ComputerForClaimDeps). */
-export interface ClaimDeps {
-  readonly mode: 1 | 2;
-  readonly workspace: Workspace;
-  readonly sealKey: Buffer | undefined;
-  readonly signal?: AbortSignal;
-}
-
-/** The run's computer at the claim (computer-for-claim.ts ClaimComputer): none for a runner place; `hold`, a desktop's or
- *  a phone's take-over; its release, after the run's tools' end. A computer that cannot be had throws (computer_unavailable). */
-export interface ClaimComputer {
-  readonly computer?: RunComputer;
-  readonly hold?: unknown;
-  release(): Promise<void>;
-}
-
-/** The one shared claim-time computer every spec takes: computerForClaim(launch, store, deps), as computer-for-claim.ts
- *  exports it (passed in by the runner, which also gives `computerDeps`). */
-export type ComputerForClaim = (launch: ClaimLaunch, store: AdapterSpecDeps["store"], deps: ClaimDeps & Readonly<Record<string, unknown>>) => Promise<ClaimComputer>;
-
-/** What the runner hands the CLI spec builder: the pi spec's deps, the shared claim-time computer and the runner's part of
- *  its deps, and (a test's) the Archil disk a Mode 2 claim makes. One per runner. */
-export type CliSpecDeps = AdapterSpecDeps & {
-  readonly computerForClaim: ComputerForClaim;
-  readonly computerDeps?: Readonly<Record<string, unknown>>;
-  readonly makeArchilDisk?: ArchilClaimOptions["makeDisk"];
-};
+/** What the runner hands the CLI spec builder: the same deps the pi spec takes (computerForClaim, computerDeps and
+ *  makeArchilDisk are on AdapterSpecDeps, shared by both). One per runner. */
+export type CliSpecDeps = AdapterSpecDeps;
 
 /** The revision's body, as the fields the spec reads of it. */
 type RevisionBody = {
@@ -233,9 +199,10 @@ export async function cliRunSpecFromLaunch(launch: RunLaunch, run: AdapterRun, d
         followUpOf: (raised: number) => followUpOf(raised),
       };
 
-  // The gate before a call's intent: the revision's tool settings over the store's, read once at the claim.
-  const serverSettings = await loadToolSettings(deps.store);
-  const gate = runGate({ root, work: root }, claim.runId, revision, () => serverSettings);
+  // The gate before a call's intent, the same as the pi spec: the revision's tool settings over the store's, read from the
+  // store at each decide, and the turn's origin read through the run's Workspace (Mode 2: on the run's disk) — adapterRunGate
+  // (RunGate.decide: the reflect-turn .learning refusal, deny with its words, a pin, allow, ask).
+  const gate = await adapterRunGate(deps.store, claim, revision, ws.workspace);
 
   // The run's tools: the kernel registry's hands on its Workspace (and computer). TODO, as the pi spec's: the non-hand
   // tools (web_fetch, web_search, monid, the learned workflow) as host tools under the run's gate.
@@ -250,14 +217,14 @@ export async function cliRunSpecFromLaunch(launch: RunLaunch, run: AdapterRun, d
   };
 
   const content = isObject(launch.input) && typeof (launch.input as { content?: unknown }).content === "string" ? (launch.input as { content: string }).content : "";
-  const input = await firstMessage(content, root);
+  const input = await firstMessage(content, ws.workspace);
 
   return {
     adapter,
     session,
     input,
     ...(runner.record ? { record: runner.record } : {}),
-    gate: (call) => gate.policy(call.tool),
+    gate,
     ...(beforeRequest ? { beforeRequest } : {}),
     ...(cap ? { cap } : {}),
     agentId: runRow.agentId,
