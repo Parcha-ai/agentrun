@@ -103,7 +103,7 @@ export async function fakeGitHub(t) {
         const asked = JSON.parse(body || "{}");
         if ((asked.repositories ?? []).some((name) => !INSTALLED.has(`acme/${name}`))) return answer(422, { message: "There is at least one repository that does not exist or is not accessible to the parent installation." });
         const token = `ghs_test${randomBytes(18).toString("hex")}`;
-        tokens.push({ token, installation: Number(minting[1]), repositories: asked.repositories, at: Date.now() });
+        tokens.push({ token, installation: Number(minting[1]), repositories: asked.repositories, permissions: asked.permissions, at: Date.now() });
         return answer(201, { token, expires_at: new Date(Date.now() + app.tokenMs).toISOString(), permissions: { pull_requests: "write", contents: "read", metadata: "read", issues: "read" }, repository_selection: "selected" });
       }
       const covering = /^\/repos\/([^/]+)\/([^/]+)\/installation$/.exec(req.url);

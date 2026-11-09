@@ -10,8 +10,8 @@ import { createRequire } from "node:module";
 import { join } from "node:path";
 import { test } from "node:test";
 import { startFakeMcp } from "./fixtures/fake-mcp-server.mjs";
-import { connect, connectable, deliver, INSTALLED } from "./github-support.mjs";
-import { agent, follow, runDir } from "./support.mjs";
+import { connect, connectable, deliver, INSTALLED, PUBLIC } from "./github-support.mjs";
+import { agent, follow, runDir, serve } from "./support.mjs";
 import { firings } from "./trigger-support.mjs";
 
 const FAUX_MCP = new URL("./fixtures/faux-mcp.mjs", import.meta.url).pathname;
@@ -21,12 +21,14 @@ const pr = { action: "opened", number: 12, pull_request: { draft: false }, repos
 /** A connected server with an MCP server `gh` on the App's tokens: the fake takes only a token GitHub minted, and keeps
  *  what each request's Authorization and X-MCP-Tools said. */
 async function withGitHubMcp(t) {
-  const server = await connectable(t, { faux: FAUX_MCP, harnesses: true });
-  await connect(server);
   const seen = [];
+  let server;
   const minted = () => server.github.tokens.map((entry) => `Bearer ${entry.token}`);
   const fake = await startFakeMcp({ token: (authorization) => minted().includes(authorization), inspect: (headers) => seen.push({ authorization: headers.authorization, tools: headers["x-mcp-tools"] }) });
   t.after(() => fake.close());
+  // The fake stands in for GitHub's hosted MCP: its origin is the one a github_app server may have (the server's seam).
+  server = await connectable(t, { faux: FAUX_MCP, harnesses: true, githubMcpOrigin: new URL(fake.url).origin });
+  await connect(server);
   // A tool that answers what it was called with: the credential, as a careless server might echo it.
   fake.tools.whoami = { description: "Say who called.", input: { type: "object", properties: {}, additionalProperties: false }, run: () => ({ content: [{ type: "text", text: String(seen.at(-1)?.authorization) }] }) };
   const saved = await server.api("PUT", "/settings/mcp-servers/gh", { url: fake.url, auth: { type: "github_app", headers: { "X-MCP-Tools": "add,whoami" } } });
@@ -256,4 +258,38 @@ test("a repository named in the owner's words ends where the sentence does: trai
     ["Use https://github.com/acme/my.widgets: it has it", "acme/my.widgets"],
     ["https://github.com/acme/widgets/pull/7", "acme/widgets"],
   ]) assert.deepEqual(githubTargetOf(words), { repo }, words);
+});
+
+test("a github_app server is GitHub's hosted MCP only: a preview or a save at any other origin is 422 on url, and no token of the App is minted or sent", { timeout: 60_000 }, async (t) => {
+  const server = await connectable(t);
+  await connect(server);
+  const before = server.github.requests.filter((r) => r.url.endsWith("/access_tokens")).length;
+  const elsewhere = { url: "https://mcp.example.com/mcp", auth: { type: "github_app" } };
+  for (const [method, path] of [["POST", "/settings/mcp-servers/preview"], ["PUT", "/settings/mcp-servers/gh"]]) {
+    const res = await server.api(method, path, elsewhere);
+    assert.deepEqual([res.status, res.body.error?.fields?.map((f) => f.field)], [422, ["url"]], `${method} ${path}: ${JSON.stringify(res.body)}`);
+    assert.match(res.body.error.fields[0].message, /api\.githubcopilot\.com/);
+  }
+  assert.equal(server.github.requests.filter((r) => r.url.endsWith("/access_tokens")).length, before, "no token minted for it");
+});
+
+test("the token that lists a github_app server's tools as it is saved asks for the least: metadata read", { timeout: 60_000 }, async (t) => {
+  const { server } = await withGitHubMcp(t);
+  const listing = server.github.tokens.filter((entry) => !entry.repositories);
+  assert.equal(listing.length, 1);
+  assert.deepEqual(listing[0].permissions, { metadata: "read" });
+});
+
+test("a github_app server saved at an origin that is no longer GitHub's hosted MCP gets no token: its preview by name is refused, and a run's launch mints none", { timeout: 120_000 }, async (t) => {
+  const { server } = await withGitHubMcp(t);
+  await server.close();
+  // The same data on a server whose hosted-MCP origin is GitHub's own: the row saved before is at another origin.
+  const again = await serve(t, { data: server.data, publicUrl: PUBLIC, githubApi: server.github.url, faux: FAUX_MCP, harnesses: true });
+  const preview = await again.api("POST", "/settings/mcp-servers/preview", { name: "gh" });
+  assert.deepEqual([preview.status, preview.body.error?.fields?.map((f) => f.field)], [422, ["url"]], JSON.stringify(preview.body));
+  const before = server.github.tokens.length;
+  assert.equal((await again.api("POST", "/agents", agent("review", { tools: ["mcp:gh/add"], tool_settings: ALLOW }))).status, 201);
+  const run = await again.api("POST", "/agents/review/runs", { input: { content: 'Call mcp__gh__add with {"a":2,"b":3} for https://github.com/acme/widgets.' }, max_cost_usd: 1 });
+  await follow(again.api, run.body.run_id, ["completed", "failed"], { deadlineMs: 60_000 });
+  assert.equal(server.github.tokens.length, before, "no token minted for the run");
 });
