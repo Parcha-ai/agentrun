@@ -45,18 +45,15 @@ test("Connect GitHub starts GitHub's app-manifest flow: the manifest names the s
   assert.deepEqual(schemaProblems(doc, doc.paths["/integrations/github/connect"].post.responses["200"].content["application/json"].schema, started.body), []);
 });
 
-test("with no public URL, or no seal key, Connect GitHub is refused in words: GitHub could not reach the hook, or its secrets could not be kept", { timeout: 60_000 }, async (t) => {
+// The cutover's server always has a seal key at its start (it makes one when none is given), so only the public URL can
+// be missing here.
+test("with no public URL, Connect GitHub is refused in words: GitHub could not reach the hook", { timeout: 60_000 }, async (t) => {
   withEnv(t, SEAL);
   const bare = await serve(t);
   const refused = await bare.api("POST", "/integrations/github/connect", {});
   assert.deepEqual([refused.status, refused.body.error.code], [409, "github_no_public_url"], JSON.stringify(refused.body));
   assert.match(refused.body.error.message, /^GitHub can't reach this server: set its public URL first/);
   assert.match(refused.body.error.message, /AGENTRUN_PUBLIC_URL/);
-  withEnv(t, {}, ["AGENTRUN_SEAL_KEY"]);
-  const unsealed = await serve(t, { publicUrl: PUBLIC });
-  const noKey = await startConnect(unsealed, {});
-  assert.deepEqual([noKey.status, noKey.body.error.code], [409, "github_no_seal_key"], JSON.stringify(noKey.body));
-  assert.match(noKey.body.error.message, /AGENTRUN_SEAL_KEY/, "names the setting");
 });
 
 test("the callback takes a state once, from the browser that started it: a bad, a replayed or another browser's state sends the browser to the console with state_invalid, a code GitHub does not convert with conversion_failed; a good one converts the code, seals the App's fields, drops its client secret, logs and answers no secret, and sends the browser to install the App", { timeout: 60_000 }, async (t) => {
