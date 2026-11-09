@@ -46,7 +46,8 @@ async function runWith(t, calls, { ended = true } = {}) {
 const fetchCall = (id, answer, result) => ({ id, tool: "web_fetch", args: { url: "https://example.test" }, ...(answer ? { answer, result } : {}) });
 /** The rows of call `id`, then the next two rows: what a person reads for that call. */
 function readFor(rows, id) {
-  const own = rows.filter((row) => row.tool_use_id === id);
+  // The call's own rows: its call's and its result's (the approval row carries the call's id too, as runs.ts's does).
+  const own = rows.filter((row) => row.tool_use_id === id && (row.kind === "tool_use" || row.kind === "tool_result"));
   const last = rows.indexOf(own.at(-1));
   return { own: own.map((row) => [row.kind, row.summary]), after: rows.slice(last + 1, last + 3) };
 }
