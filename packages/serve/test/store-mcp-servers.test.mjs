@@ -86,5 +86,4 @@ test("save, preview and oauthStart refuse a bad body before any network probe", 
 test("the registry is never made without a seal key (the server never starts without one): it refuses in words, and there is no keyless mode", async (t) => {
   const { store } = await storeOn(t);
   for (const given of [{}, { AGENTRUN_SEAL_KEY: "not a key" }]) assert.throws(() => reg(store, given), /MCP servers' credentials are kept under the server's seal key \(AGENTRUN_SEAL_KEY\), and none was handed over/);
-  assert.equal(reg(store).atRest, "sealed");
 });

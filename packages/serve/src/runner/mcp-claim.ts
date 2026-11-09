@@ -11,9 +11,10 @@
 // The credentials. The pinned servers' credentials are unsealed (store/seal.ts openMcpCredential) into this step's
 // memory only: handed to the run's gateway, never written to the journal, a command row, the timeline or a log line. The
 // redaction set is fed from the same map. Both are dropped at release(), at the loop's end, or when the claim's signal
-// aborts. A credential that can't be used gives its server's calls a reason (mcp-servers.ts UNUSABLE) and they are refused
-// unsent: no seal key (checked before any refresh, so none is sent), sealed under another key or for another origin than
-// its row's url (damaged), a sign-in refused or expired (signedOut), a refresh that got no answer (silent).
+// aborts. A credential that can't be used gives its server's calls a reason (mcp-probe.ts UNUSABLE) and they are refused
+// unsent: sealed under another key or for another origin than its row's url (damaged), a sign-in refused or expired
+// (signedOut), a refresh that got no answer (silent), an address the check refuses (blocked). A runner never starts
+// without the seal key (seal-key.ts ensureSealKey), so a claim always has one.
 //
 // fresh(). After the pin check and before the loop, and again on a command-row resume: an OAuth access token past its
 // expiry is refreshed, bounded (4 s a request, two tries), under the server's refresh lease (leaseRefresh, then the
@@ -47,8 +48,8 @@ export interface McpClaimOptions {
   claim: Pick<Claim, "runId" | "epoch">;
   /** The run's granted tools, by catalog name (`mcp:<server>/<tool>` among them). */
   grants: readonly string[];
-  /** The runner's seal key (the server's): undefined when it was started without one. */
-  sealKey: Buffer | undefined;
+  /** The runner's seal key (the server's): a runner never starts without one (seal-key.ts ensureSealKey). */
+  sealKey: Buffer;
   /** The claim's signal: aborted when the claim is lost or the runner stops. */
   signal: AbortSignal;
   /** A refresh's bound: each request's time and how many tries (REFRESH_REQUEST_MS, two). */
@@ -153,7 +154,7 @@ export async function mcpClaim(options: McpClaimOptions): Promise<McpClaimStep> 
   const keep = async (row: McpServerRow, credential: OAuthCredential): Promise<boolean> => {
     const { origin: _origin, ...plain } = credential as OAuthCredential & { origin?: string };
     try {
-      await store.mcp.refreshToken(row.name, { holder, sealed: sealMcpCredential(sealKey!, row.name, plain as McpCredential, row.url) });
+      await store.mcp.refreshToken(row.name, { holder, sealed: sealMcpCredential(sealKey, row.name, plain as McpCredential, row.url) });
       return true;
     } catch (error) {
       if (error instanceof RefreshLeaseLost) return false;
@@ -182,7 +183,6 @@ export async function mcpClaim(options: McpClaimOptions): Promise<McpClaimStep> 
     if (row.auth === "github_app") return await github.open(name, entry), { awaited: true };
     if (row.sealed === null) return entry({}), { awaited: false };
     // A seal problem first: no refresh is ever sent for a credential this runner cannot open.
-    if (!sealKey) return entry({ unopened: UNUSABLE.noSealKey }), { awaited: false };
     const opened = openMcpCredential(sealKey, row);
     if (!("credential" in opened)) return entry(opened.unusable === "none" ? {} : { unopened: UNUSABLE.damaged }), { awaited: false };
     const credential = opened.credential;

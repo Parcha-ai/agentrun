@@ -95,11 +95,6 @@ export class McpServersOverStore {
     this.signIns = new McpSignIns(network, pendingOverStore(store, sealKey), () => privateOAuthHosts(store));
   }
 
-  /** Every credential here is kept sealed (capabilities' features.mcp_client.at_rest). */
-  get atRest(): "sealed" {
-    return "sealed";
-  }
-
   /** This server's address as a browser reaches it and where it listens (McpServers.attach). */
   attach(base: string, listening: string): void {
     this.signIns.base = base.replace(/\/+$/, "");
