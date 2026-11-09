@@ -652,35 +652,8 @@ function integerParam(value: string | null, name: string, max: number): number {
   return Number(value);
 }
 
-/** The agent homes 0.1.0-beta.26 and earlier kept in the data directory (`<data>/<agent>/agent.sqlite`, an agent named
- *  `runs` or a symlinked home included), which this version's store does not read: their agents and runs would not
- *  show. This version keeps no `agent.sqlite` under the data directory. */
-async function oldHomes(data: string): Promise<string[]> {
-  const found: string[] = [];
-  for (const name of await readdir(data)) {
-    const file = join(data, name, "agent.sqlite");
-    if (await stat(file).then((info) => info.isFile(), () => false)) found.push(file);
-  }
-  return found.sort();
-}
-
-/** Why the data directory is one an earlier version wrote, which keeps its runs outside the disk: a `runs/` folder at
- *  its top (0.1.0-beta.27 to this version's last, `<data>/runs/<id>/`), or a store.sqlite of store version 1. This
- *  version keeps every run on the disk (`<data>/disk/agents/<agent>/runs/<run>/`), and moves nothing: undefined when
- *  neither is there. */
-async function oldLayout(data: string): Promise<string | undefined> {
-  if (await stat(join(data, "runs")).then((info) => info.isDirectory(), () => false)) return `${join(data, "runs")} holds runs in an earlier version's layout`;
-  const file = join(data, STORE_FILE);
-  if (!(await stat(file).then((info) => info.isFile(), () => false))) return undefined;
-  const { DatabaseSync } = await import("node:sqlite");
-  const db = new DatabaseSync(file, { readOnly: true });
-  try {
-    const version = Number((db.prepare("PRAGMA user_version").get() as { user_version: number }).user_version);
-    return version === 1 ? `${file} is an earlier version's store (store version 1)` : undefined;
-  } finally {
-    db.close();
-  }
-}
+// A data directory an earlier version wrote (old agent homes, an old runs/ layout, or an earlier store version) is refused
+// by the store itself when it opens (StoreFromEarlierVersion), in words, to start fresh: no pre-open scan, no migration.
 
 export async function startServe(options: ServeOptions): Promise<Serve> {
   // A harness table module is the server's to name, from `harnessTable` alone, for itself and its runs: one in its own
