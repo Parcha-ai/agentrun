@@ -16,6 +16,8 @@ const { TOOL_PLANE_ENV } = await import("../dist/tool-plane.js");
 const { bookedIn } = await import("../dist/paid-calls.js");
 
 const KEYED_PARALLEL = new URL("./fixtures/faux-parallel-keys.mjs", import.meta.url).pathname;
+/** The faux web the public-host guard resolves hosts through under --faux (as web-fetch.test.mjs uses it). */
+const FAUX_WEB = new URL("./fixtures/faux-web.mjs", import.meta.url).pathname;
 const KEYS_ENV = "AGENTRUN_TEST_FAUX_PARALLEL_KEYS";
 const newKey = () => `par-test-${randomBytes(8).toString("hex")}`;
 /** A claim's tool environment as the runner hands it: its own Parallel key and a plane resolving the web tools to Parallel. */
@@ -62,8 +64,9 @@ test("two claims in one process each call Parallel on their own key, in either o
 test("the pages a run fetched serve that run alone: another claim's fetch of the same page is its own request, on its own key", inCall(async (t) => {
   const sent = keyLog(t);
   const [a, b] = [newKey(), newKey()];
-  const [toolA, toolB] = [webFetchTool(claimEnv(a)), webFetchTool(claimEnv(b))];
-  const url = "https://public.example/shared-page";
+  const withWeb = (key) => ({ ...claimEnv(key), AGENTRUN_SERVE_FAUX_WEB: FAUX_WEB });
+  const [toolA, toolB] = [webFetchTool(withWeb(a)), webFetchTool(withWeb(b))];
+  const url = "http://public.example/notes.txt";
   const read = async (tool) => (await tool.execute({ url }, {}, {})).details;
   const first = await read(toolA);
   assert.equal(first.ok, true, `run A read the page: ${JSON.stringify(first)}`);
