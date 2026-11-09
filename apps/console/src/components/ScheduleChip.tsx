@@ -15,7 +15,7 @@ export function ScheduleChip({ run }: { run: Pick<Run, "trigger"> }) {
   const label = `Schedule: ${names.get(id) ?? id}`;
   // Inside a runs-list row, which opens the run on a click: the chip opens the schedule instead.
   return (
-    <a href={`#/schedules/${encodeURIComponent(id)}`} onClick={(e) => e.stopPropagation()} className="inline-flex max-w-full" title={label}>
+    <a href={`#/triggers/${encodeURIComponent(id)}`} onClick={(e) => e.stopPropagation()} className="inline-flex max-w-full" title={label}>
       <Chip className="max-w-full"><CalendarClock className="size-3 shrink-0" aria-hidden /><span className="truncate">{label}</span></Chip>
     </a>
   );

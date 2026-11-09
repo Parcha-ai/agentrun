@@ -678,123 +678,81 @@ test("an ask whose waiting row cannot be written fails, and says so: nothing is 
   assert.equal(askShown(root, [{ kind: "waiting", session: "ar-run-51-1" }])?.id, second.interactionId, "the owner sees it");
 });
 
-/** A run's process side on `root` that records every person-time hold it asks for (`what`, `seconds`, `from`), and can
- *  refuse while `refuse` is set: the clock, timers and gates are the caller's. */
-function recordingHands(root, { timers, now, holdMs }) {
-  const calls = [];
-  const state = { refuse: null };
+test("a take-over in the run's timeline reads as it happened (Manuel's walk of #1703): the take and the hand-back at their own times, the agent's call parked behind the hold between them, saying it waited for the person and how long", async (t) => {
+  const { createDrivingGates } = await import("@parcha/pi-browser/live-view");
+  const { HOST_PHASE, timelineOf } = await import("@parcha/pi-durable-agent/timeline");
+  const T0 = Date.UTC(2026, 10, 3, 9, 0, 0);
+  const clock = fakeClock(T0);
+  const tag = "ar-run-61-1";
+  const gates = createDrivingGates({ timers: clock.timers });
+  // The run's log, as its store keeps it: the server's notes in the order they are committed, the agent's own entries
+  // as pi writes them (a model message at its request's start, a tool's result at its end).
+  let id = 1;
+  const log = [];
+  const entry = (kind, model, data) => log.push({ kind, id: id++, conversationId: 1, ...(model ? { model: [model] } : {}), ...(data ? { data } : {}) });
   const person = personHands({
-    root, gates: () => ({ give: () => false }), timers, now, holdMs, pollMs: 60_000,
-    personTime: async (what, seconds, options = {}) => {
-      calls.push({ what, seconds, from: options.from });
-      if (state.refuse) return { refused: state.refuse };
-      return { drop() {} };
-    },
-    note: async () => {},
+    root: await scratch(t), gates, timers: clock.timers, now: clock.now, pollMs: 60_000,
+    personTime: async () => ({ drop() {} }),
+    note: async (kind, data) => void entry(kind, undefined, data),
   });
-  return { person, calls, state };
-}
-
-test("a re-hold after the cap refused starts from max(where coverage ends, now): the idle gap since it lapsed is not held again", async (t) => {
-  const root = await scratch(t);
-  const clock = fakeClock();
-  const holdMs = 15 * 60_000;
-  const { person, calls, state } = recordingHands(root, { timers: clock.timers, now: clock.now, holdMs });
   t.after(() => person.close());
-  const tag = "ar-run-rehold-1";
-  // The take holds the first stretch from t=0; its coverage reaches holdMs.
+  const page = "https://www.bundesarchiv.de/DE/Navigation/Finden/finden.html";
+
+  // 0 s: the agent's snapshot returns, and its next request starts. 1 s: the person takes the browser (the live view's
+  // take, its hold started on the session's gate as the viewer's server starts it).
+  entry("pi.assistant", { role: "assistant", content: [{ type: "toolCall", id: "c0", name: "snapshot", arguments: {} }], stopReason: "toolUse", timestamp: T0 - 3_000 });
+  entry("pi.tool-result", { role: "toolResult", toolCallId: "c0", toolName: "snapshot", content: [{ type: "text", text: "[1] the page" }], isError: false, timestamp: T0 });
+  const requested = T0 + 200;
+  await clock.tick(1_000);
   const take = await person.take(tag);
-  assert.ok("end" in take);
-  assert.equal(calls.at(-1).from, 0, "the first hold is from now");
-  // At holdMs the re-hold is refused: the ledger is marked refused, its coverage still ending at holdMs.
-  state.refuse = "spend_cap_reached: no room";
-  await clock.tick(holdMs);
-  assert.equal(calls.at(-1).from, holdMs, "again() re-holds from where coverage ends (equal to now here), not from the past");
-  // 100 s pass past the lapse; a newcomer (an ask) joins with room again and re-holds the refused ledger. The gap
-  // [until, now] is idle time with no users, already covered by the reserve and calls, so it is not held again: the
-  // re-hold is a bare holdMs from now. Holding from `until` (the earlier bug) would hold that idle gap twice and could
-  // falsely refuse a person returning long after a refusal.
-  state.refuse = null;
-  await clock.tick(100_000);
-  await person.handoff.request(ask(1, tag));
-  const rehold = calls.at(-1);
-  assert.equal(rehold.from, clock.now(), `the re-hold starts from now, not the lapsed coverage end: ${JSON.stringify(rehold)}`);
-  assert.equal(rehold.seconds, holdMs / 1000, "a bare window from now");
+  assert.ok(gates(tag).take((why) => take.end(why), () => take.started()));
+  // The request's answer asks to open a page: the call parks behind the hold.
+  entry("pi.assistant", { role: "assistant", content: [{ type: "toolCall", id: "c1", name: "run", arguments: { code: `await page.goto("${page}")` } }], stopReason: "toolUse", timestamp: requested });
+  const parkedAt = clock.now();
+  const parked = gates(tag).untilFree().then(() => clock.now() - parkedAt);
+  // 12 s: the person hands back (the viewer's give); the call goes on, opens the page, and returns at 14.4 s with the wait
+  // in its details, as pi-browser's driving guard writes it.
+  await clock.tick(11_000);
+  gates(tag).give("given");
+  const waited = await parked;
+  await clock.tick(2_400);
+  entry("pi.tool-result", { role: "toolResult", toolCallId: "c1", toolName: "run", content: [{ type: "text", text: "{\"ok\":true}" }], isError: false, details: { waited_for_person_ms: waited }, timestamp: clock.now() });
+  await sleep(5);
+
+  const rows = timelineOf(log, { settled: true });
+  const told = rows.filter((row) => ["You took over the browser", "You handed the browser back"].includes(row.summary) || (row.kind === "tool_use" && row.tool_name === "run"));
+  const at = (s) => new Date(T0 + s * 1000).toISOString();
+  assert.deepEqual(told.map((row) => row.summary.replace(/ www\..*$/, "")), ["You took over the browser", "Waited for you 11 s, then opened", "You handed the browser back"], "in the order it happened, the call saying it waited");
+  assert.deepEqual([told[0].timestamp, told[2].timestamp], [at(1), at(12)], "the take and the hand-back each at its own time: the hold reads 11 s, as long as it was");
+  assert.ok(log.filter((e) => e.kind === HOST_PHASE).every((e) => typeof e.data.at === "number"), "each phase note carries its time");
 });
 
-test("a person returning long after a refusal is held, not refused, when the cap has room for exactly one window", async (t) => {
+test("the hand-back row of a give that answers the session's open ask is at the hand-back's time; one the console's Done answers, at the answer's", async (t) => {
+  const clock = fakeClock(Date.UTC(2026, 10, 3, 9, 0, 0));
+  const notes = [];
   const root = await scratch(t);
-  const clock = fakeClock();
-  const holdMs = 15 * 60_000;
-  const calls = [];
-  // The cap has room for exactly one window (holdMs of seconds): a hold is granted only when it asks for no more.
-  let refuseAll = false;
-  const window = holdMs / 1000;
   const person = personHands({
-    root, gates: () => ({ give: () => false }), timers: clock.timers, now: clock.now, holdMs, pollMs: 60_000,
-    personTime: async (what, seconds, options = {}) => {
-      calls.push({ what, seconds, from: options.from });
-      if (refuseAll || seconds > window + 1e-9) return { refused: "spend_cap_reached: no room" };
-      return { drop() {} };
-    },
-    note: async () => {},
+    root, gates: () => ({ give: () => false }), timers: clock.timers, now: clock.now, pollMs: 60_000,
+    personTime: async () => ({ drop() {} }),
+    note: async (kind, data) => void notes.push({ kind, ...data }),
   });
   t.after(() => person.close());
-  const tag = "ar-run-rehold-3";
-  await person.take(tag);
-  // The re-hold at holdMs is refused: the ledger is marked refused.
-  refuseAll = true;
-  await clock.tick(holdMs);
-  // Thirty minutes later, with room again for exactly one window, a person comes back. Held from now (one window);
-  // starting from the lapsed coverage end would ask for the window plus the 30 idle minutes and be refused.
-  refuseAll = false;
-  await clock.tick(30 * 60_000);
-  const asked = await person.handoff.request(ask(3, tag));
-  assert.ok("interactionId" in asked, `held, not refused: ${JSON.stringify(asked)}`);
-});
+  const asked = await person.handoff.request(ask(62, "ar-run-62-1"));
+  const take = await person.take("ar-run-62-1");
+  await clock.tick(1_000);
+  take.started();
+  await clock.tick(9_000);
+  take.end("given");
+  assert.equal(await person.handoff.outcome(asked.interactionId), "done");
+  const phases = notes.filter((note) => note.kind === "agentrun.phase").map((note) => [note.summary, note.at - clock.now()]);
+  assert.deepEqual(phases, [["You took over the browser", -9_000], ["You handed the browser back", 0]]);
 
-test("two newcomers on a refused ledger in one tick re-hold the person's time once, not once each", async (t) => {
-  const root = await scratch(t);
-  const clock = fakeClock();
-  const holdMs = 15 * 60_000;
-  const { person, calls, state } = recordingHands(root, { timers: clock.timers, now: clock.now, holdMs });
-  t.after(() => person.close());
-  const tag = "ar-run-rehold-2";
-  await person.take(tag);
-  state.refuse = "spend_cap_reached: no room";
-  await clock.tick(holdMs);
-  state.refuse = null;
-  const before = calls.length;
-  // Two newcomers at once on the refused ledger: an ask and a second take-over, racing through the same turn.
-  await Promise.all([person.handoff.request(ask(2, tag)), person.take(tag)]);
-  const reholds = calls.slice(before).filter((call) => call.seconds > 0);
-  assert.equal(reholds.length, 1, `the refused ledger is re-held once for both newcomers: ${JSON.stringify(calls.slice(before))}`);
-});
-
-test("a refusal-path re-hold while coverage still runs past now holds from where it ends, so [now, until] is not held twice", async (t) => {
-  const root = await scratch(t);
-  const clock = fakeClock();
-  const holdMs = 15 * 60_000;
-  const { person, calls, state } = recordingHands(root, { timers: clock.timers, now: clock.now, holdMs });
-  t.after(() => person.close());
-  const tag = "ar-run-rehold-4";
-  // The take holds [0, holdMs]; its again() timer is set to fire at holdMs.
-  await person.take(tag);
-  // Five minutes in, an ask extends coverage to now + holdMs (1,200,000), past where the again() timer fires.
-  await clock.tick(5 * 60_000); // now = 300,000
-  await person.handoff.request(ask(4, tag)); // reach 1,200,000 > until 900,000: until becomes 1,200,000
-  // The again() timer fires at 900,000 with coverage still reaching to 1,200,000; its re-hold of the tail is refused, so the
-  // ledger is marked refused while until (1,200,000) is still ahead of now (900,000).
-  state.refuse = "spend_cap_reached: no room";
-  await clock.tick(10 * 60_000); // now = 900,000; again() fires and is refused
-  state.refuse = null;
-  const before = calls.length;
-  // A newcomer joins the refused ledger while coverage still runs past now.
-  await person.take(tag);
-  const rehold = calls.slice(before).find((call) => call.seconds > 0);
-  assert.ok(rehold, `a re-hold happened: ${JSON.stringify(calls.slice(before))}`);
-  // Held from where coverage ends (until), not from now, for now + holdMs - until seconds: the already-covered gap
-  // [now, until] is never held a second time.
-  assert.equal(rehold.from, 1_200_000, "from where coverage ends (until), not from now");
-  assert.equal(rehold.seconds, (clock.now() + holdMs - 1_200_000) / 1000, "for now + holdMs - until seconds");
+  // The console's Done, answered at its own time: this process reads it a minute later and writes the row at the answer's.
+  notes.length = 0;
+  const other = await person.handoff.request(ask(63, "ar-run-63-1"));
+  const doneAt = clock.now() + 5_000;
+  assert.deepEqual(answerAsk(root, "done", doneAt), { outcome: "done", first: true });
+  await clock.tick(60_000);
+  assert.equal(await person.handoff.outcome(other.interactionId), "done");
+  assert.deepEqual(notes.filter((note) => note.kind === "agentrun.phase").map((note) => [note.summary, note.at]), [["You handed the browser back", doneAt]]);
 });
