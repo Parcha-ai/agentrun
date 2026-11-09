@@ -56,7 +56,8 @@ import type { ComputerSetting } from "../computer-setting.js";
 import type { claimComputer, ComputerDeps } from "../workspace/computer-deps.js";
 import type { RunComputer } from "../workspace/run-tools.js";
 import type { Workspace } from "../workspace/workspace.js";
-import { heldRedactor, holdClaimed, runnerSecrets, secretRedactor } from "./redact.js";
+import { type HeldRedact, heldRedactor, holdClaimed, runnerSecrets, secretRedactor } from "./redact.js";
+import { holdStored } from "./store-secrets.js";
 
 /** What a claim gives the shared computerForClaim: the run, its epoch, its revision, its place and any computer choice. */
 export interface ClaimLaunch {
@@ -317,6 +318,8 @@ export async function adapterRunSpecFromLaunch(launch: RunLaunch, run: AdapterRu
   const toolEnv = await claimSecrets({ store: deps.store, sealKey: deps.sealKey, env: deps.env }, revisionRow as unknown as Parameters<typeof claimSecrets>[1], launch);
   // The keys it opened join the run's one redactor before any tool or model request can echo one.
   holdClaimed(cut, toolEnv);
+  // And every secret the server keeps sealed (store-secrets.ts): a run's text may quote one it was never handed.
+  await holdStored(cut, deps.store, deps.sealKey, deps.data);
   // The run's resolved tool plane (its web_search/web_fetch/browser providers), as main hands its per-run process (runs.ts):
   // the web tools read it (tool-plane.ts planeOf) to pick Parallel where the run resolves to it, the model provider's native
   // search, or the guarded direct fetch. Not a secret; without it the runner's web tools would ignore the run's plane and
@@ -351,10 +354,7 @@ export async function adapterRunSpecFromLaunch(launch: RunLaunch, run: AdapterRu
     // browser holds and settles its calls here (host.ledger.paid), never on this process's own spend, and a refusal at the
     // cap parks the run (pause). browserListed reads it to fail closed.
     ledger: run.ledger,
-    liveViewers: {
-      put: (handover: LiveHandover) => putLiveViewer(deps.store, deps.sealKey, claim, handover),
-      drop: (tag?: string) => dropLiveViewer(deps.store, claim, tag),
-    },
+    liveViewers: liveViewersOf(deps.store, deps.sealKey, claim, cut),
   };
 
   // The run's tools. The hands (read/write/edit/bash and the background tools) are the kernel registry's over the run's
@@ -496,6 +496,18 @@ export async function learnedWorkflowHostTool(opts: {
  *  (bookedIn), as main books them, so they run. The browser (through host.liveViewers), MCP (the MCP claim step's
  *  mcpForClaim(claim, store, sealKey, pin) -> { sessionMcp, redactions, release }), the learned workflow and decisions are
  *  each a named todo, added as their seams land. */
+/** The run's live-viewer writers over the store (browser-live.ts): a session's hand-over written sealed, and gone. Its
+ *  viewer token, minted in the run, is held by `cut`, the run's one redactor, as it is handed over, before it is written. */
+export function liveViewersOf(store: LiveViewerStore, sealKey: Buffer, claim: Claim, cut: HeldRedact): { put(handover: LiveHandover): Promise<boolean>; drop(tag?: string): Promise<void> } {
+  return {
+    put: (handover) => {
+      cut.hold([handover.token]);
+      return putLiveViewer(store, sealKey, claim, handover);
+    },
+    drop: (tag) => dropLiveViewer(store, claim, tag),
+  };
+}
+
 /** `tool` with its answer's text, and a throw's message, cut by `cut` (the run's one redactor). */
 export function answersCut(tool: HostTool, cut: (text: string) => string): HostTool {
   return {
