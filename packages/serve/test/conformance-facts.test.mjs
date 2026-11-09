@@ -28,12 +28,13 @@ test("a harness that steers and reruns a started call has nothing ruled out", ()
   assert.deepEqual(factsRuleOut(undefined), {});
 });
 
-test("claude-agent's own facts rule out the four cases", () => {
-  assert.deepEqual(Object.keys(factsRuleOut(claudeFacts)).sort(), ["fault-restarts-bounded", "replay-safe-rerun", "steer-mid-turn", "steer-origin"]);
+test("claude-agent's own facts rule out the five cases: its CLI resumes a cut answer itself, so a single cut never ends its run", () => {
+  assert.deepEqual(Object.keys(factsRuleOut(claudeFacts)).sort(), ["fault-restarts-bounded", "length-ends-failed", "replay-safe-rerun", "steer-mid-turn", "steer-origin"]);
+  assert.match(factsRuleOut(claudeFacts)["length-ends-failed"], /up to 3 times in one turn/);
 });
 
-test("codex's own facts rule out the four cases", () => {
-  assert.deepEqual(Object.keys(factsRuleOut(codexFacts)).sort(), ["fault-restarts-bounded", "replay-safe-rerun", "steer-mid-turn", "steer-origin"]);
+test("codex's own facts rule out the five cases: a cut ends its turn, so no later step of the turn follows one", () => {
+  assert.deepEqual(Object.keys(factsRuleOut(codexFacts)).sort(), ["fault-restarts-bounded", "length-mid-run", "replay-safe-rerun", "steer-mid-turn", "steer-origin"]);
 });
 
 test("registered, a ruled-out case is skipped saying it is by design; the rest run", () => {
