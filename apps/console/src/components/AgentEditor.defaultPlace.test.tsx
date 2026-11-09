@@ -23,7 +23,7 @@ function mount(places: ReturnType<typeof placesOf>) {
   let saved: Record<string, unknown> | undefined;
   const host = document.body.appendChild(document.createElement("div"));
   root = createRoot(host);
-  act(() => root!.render(createElement(AgentEditor, { caps: capsWith(places), step: "settings", onSave: async (f: Record<string, unknown>) => { saved = f; return null; } } as never)));
+  act(() => root!.render(createElement(AgentEditor, { caps: capsWith(places), step: "computer", onSave: async (f: Record<string, unknown>) => { saved = f; return null; } } as never)));
   const click = (el: Element | null | undefined) => act(() => { (el as HTMLElement).click(); });
   const input = (sel: string) => host.querySelector(sel) as HTMLInputElement | null;
   const step = (label: RegExp) => click([...host.querySelectorAll("button")].find((b) => label.test(b.textContent ?? "")));

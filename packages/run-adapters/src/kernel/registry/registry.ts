@@ -23,8 +23,10 @@ export type Registry = {
 
 /** The registry of a run's host tools, by where its shell is, and its computer's kinds (`kinds`: none, or the desktop,
  *  the phone or the browser it is), with the host's executors. `browserTools`: pi-browser's BROWSER_TOOLS, as the host
- *  lists them for this run; needed with the browser kind, and naming them in a refusal without it. */
-export function createRegistry(options: { maxExecS: number; shell: ShellPlace; kinds?: readonly CapabilityKind[]; executors: HostExecutors; browserTools?: readonly BrowserContract[] }): Registry {
+ *  lists them for this run; needed with the browser kind, and naming them in a refusal without it. `without`: a kind's
+ *  tools this run's computer does not offer (its capabilities lack them: an iPhone's tree and keys, say), not listed to
+ *  the model; one called anyway runs, and its port's absence answers in words. */
+export function createRegistry(options: { maxExecS: number; shell: ShellPlace; kinds?: readonly CapabilityKind[]; executors: HostExecutors; browserTools?: readonly BrowserContract[]; without?: readonly string[] }): Registry {
   const { shell, executors } = options;
   const kinds = CAPABILITY_KINDS.filter((kind) => options.kinds?.includes(kind));
   const own = hostToolDefs({ maxExecS: options.maxExecS, shell });
@@ -39,10 +41,12 @@ export function createRegistry(options: { maxExecS: number; shell: ShellPlace; k
   const defs = [...own];
   for (const kind of kinds) {
     for (const def of capabilityToolDefs(kind, options.browserTools ? { browserTools: options.browserTools } : {})) {
+      // A tool two kinds share (the hand-over) is listed once, as the first kind gives it.
+      if (runs.has(def.name)) continue;
       const run = kind === "desktop" ? DESKTOP_EXECUTORS[def.name] : kind === "phone" ? PHONE_EXECUTORS[def.name] : executors.browser?.[def.name];
       if (!run) throw new Error(`the registry has no executor for ${def.name}, a ${kind} tool the model sees: the host gives the browser's runs`);
       runs.set(def.name, run);
-      defs.push(def);
+      if (!options.without?.includes(def.name)) defs.push(def);
     }
   }
   // Every kind's tool by name, the run's or not, for the refusal of one it does not have.

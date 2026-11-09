@@ -59,7 +59,6 @@ export const ERROR_STATUS = {
   github_not_connected: 409,
   github_already_connected: 409,
   github_no_public_url: 409,
-  github_no_seal_key: 409,
   github_wrong_origin: 409,
   github_failed: 502,
 } as const;

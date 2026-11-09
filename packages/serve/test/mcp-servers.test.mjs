@@ -5,14 +5,13 @@
 import assert from "node:assert/strict";
 import { randomBytes } from "node:crypto";
 import { spawnSync } from "node:child_process";
-import { chmodSync, existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, statSync, writeFileSync } from "node:fs";
+import { chmodSync, existsSync, mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { createServer } from "node:http";
 import { join } from "node:path";
 import { test } from "node:test";
-import { unseal } from "@parcha/pi-durable-agent";
 import { startServe } from "../dist/index.js";
-import { client, FAUX, scratch, serve, withEnv } from "./support.mjs";
+import { client, FAUX, scratch, serve, storeBytes, withEnv } from "./support.mjs";
 import { startFakeMcp } from "./fixtures/fake-mcp-server.mjs";
 
 const TOOLS = ["add", "slow_write", "delete_thing", "paid"];
@@ -192,15 +191,9 @@ test("PUT seals the credential: reads say `sealed` and never hold it, nor does t
   assert.deepEqual(all.body.servers.map((s) => [s.name, s.url, s.credential]), [["fake", server.url, "sealed"]]);
   holdsNone(JSON.stringify([saved.body, one.body, all.body]), token, "a read");
 
-  const file = join(data, "mcp-servers.json");
-  assert.equal(statSync(file).mode & 0o777, 0o600);
-  const text = readFileSync(file, "utf8");
-  holdsNone(text, token, "mcp-servers.json");
-  const record = JSON.parse(text);
-  assert.equal(record.format, "mcp-servers/1");
-  const sealed = Buffer.from(record.servers.fake.auth.sealed.authorization, "base64");
-  assert.equal(unseal(Buffer.from(key, "base64"), sealed, "mcp:fake:authorization").toString("utf8"), `Bearer ${token}`, "sealed under the seal key, bound to its server and header");
-  assert.throws(() => unseal(Buffer.from(key, "base64"), sealed, "mcp:other:authorization"), "moved to another server it does not open");
+  // Sealed at rest: no store byte (the DB and its WAL/shm) holds the credential in the clear. How it is sealed in its row,
+  // bound to its server and header, and told apart from another's is store-mcp-servers' (the store path).
+  holdsNone(storeBytes(data), token, "the store");
 
   // Rotation without the credential: the sealed one is kept, and still reaches the server.
   const before = server.log.length;
@@ -219,7 +212,8 @@ test("PUT seals the credential: reads say `sealed` and never hold it, nor does t
   assert.deepEqual([refreshed.body.added, refreshed.body.removed, refreshed.body.changed], [["multiply"], ["paid"], ["add"]]);
   assert.deepEqual(refreshed.body.server.tools.map((tool) => tool.name).sort(), ["add", "delete_thing", "multiply", "slow_write"]);
   assert.deepEqual((await api("GET", "/settings/mcp-servers/fake")).body.tools.map((tool) => tool.name).sort(), ["add", "delete_thing", "multiply", "slow_write"]);
-  holdsNone(JSON.stringify(refreshed.body) + readFileSync(file, "utf8"), token, "after a refresh");
+  holdsNone(JSON.stringify(refreshed.body), token, "after a refresh");
+  holdsNone(storeBytes(data), token, "the store after a refresh");
 
   for (const inherited of ["constructor", "tostring"]) {
     assert.equal((await api("GET", `/settings/mcp-servers/${inherited}`)).status, 404, `${inherited} is no saved server`);
@@ -231,7 +225,7 @@ test("PUT seals the credential: reads say `sealed` and never hold it, nor does t
   assert.equal((await api("POST", "/settings/mcp-servers/fake/refresh")).status, 404);
 });
 
-test("what is refused before any connection: no seal key for a credential (409), a bad name, OAuth (not yet), plain http off loopback; and a read without the seal key says so", async (t) => {
+test("what is refused before any connection: a bad name, OAuth (not yet), plain http off loopback; and a server handed no seal key keeps a credential under the one it made, reading one sealed under the other as unreadable", async (t) => {
   const data = join(await scratch(t), "agents");
   const token = made();
   const server = await fake(t, { token });
@@ -258,18 +252,15 @@ test("what is refused before any connection: no seal key for a credential (409),
   assert.equal(typeless.status, 422, "a new server's bearer comes with its token");
   await first.close();
 
+  // Handed no seal key, the server makes its own (seal-key.ts): a credential sealed under the first does not open under
+  // it, and a new one is sealed under it.
   delete process.env.AGENTRUN_SEAL_KEY;
   const { api } = await serve(t, { data });
-  const before = server.log.length;
-  const refused = await api("PUT", "/settings/mcp-servers/again", { url: server.url, auth: { type: "bearer", token } });
-  assert.equal(refused.status, 409, JSON.stringify(refused.body));
-  assert.equal(refused.body.error.code, "no_sealing_key");
-  assert.match(refused.body.error.message, /launcher, agentrun-serve, which keeps one in agentrun\/seal\.key under \$XDG_CONFIG_HOME .*0600 in a 0700 directory; or hand it AGENTRUN_SEAL_KEY/, "it says how to get a seal key");
-  assert.deepEqual(server.log.slice(before), [], "refused before the server is contacted");
-  assert.equal((await api("PUT", "/settings/mcp-servers/open", { url: open.url })).status, 200, "a server with no credential needs no seal key");
+  assert.equal((await api("PUT", "/settings/mcp-servers/again", { url: server.url, auth: { type: "bearer", token } })).status, 200, "kept under the key the server made");
+  assert.equal((await api("PUT", "/settings/mcp-servers/open", { url: open.url })).status, 200);
   const listed = (await api("GET", "/settings/mcp-servers")).body.servers;
-  assert.deepEqual(listed.map((s) => [s.name, s.credential]), [["guarded", "seal_key_missing"], ["open", null]]);
-  assert.equal((await api("GET", "/capabilities")).body.features.mcp_client.at_rest, "unavailable");
+  assert.deepEqual(listed.map((s) => [s.name, s.credential]), [["again", "sealed"], ["guarded", "unreadable"], ["open", null]]);
+  assert.equal((await api("GET", "/capabilities")).body.features.mcp_client.at_rest, "sealed");
 });
 
 test("a saved credential sealed under another key reads as unreadable, and a PUT must send it again", async (t) => {
@@ -287,26 +278,6 @@ test("a saved credential sealed under another key reads as unreadable, and a PUT
   assert.equal(again.status, 422, JSON.stringify(again.body));
   assert.equal(again.body.error.fields[0].field, "auth.token");
   assert.equal((await api("PUT", "/settings/mcp-servers/fake", { url: server.url, auth: { type: "bearer", token } })).body.credential, "sealed");
-});
-
-test("a saved-servers file that does not read is never written over: reads say so, and every write is refused, the file unchanged", async (t) => {
-  withEnv(t, { AGENTRUN_SEAL_KEY: sealKey() });
-  const { api, data } = await serve(t);
-  const server = await fake(t);
-  const file = join(data, "mcp-servers.json");
-  for (const damaged of ['{"format": "mcp-servers/1", "servers": {"fake": ', JSON.stringify({ format: "mcp-servers/9", servers: {} })]) {
-    writeFileSync(file, damaged, { mode: 0o600 });
-    const listed = await api("GET", "/settings/mcp-servers");
-    assert.equal(listed.status, 200);
-    assert.deepEqual(listed.body, { servers: [], file_unreadable: true });
-    for (const [method, path, body] of [["PUT", "/settings/mcp-servers/other", { url: server.url }], ["DELETE", "/settings/mcp-servers/fake"], ["POST", "/settings/mcp-servers/fake/refresh"], ["GET", "/settings/mcp-servers/fake"]]) {
-      const refused = await api(method, path, body);
-      assert.equal(refused.status, 409, `${method} ${path}: ${JSON.stringify(refused.body)}`);
-      assert.equal(refused.body.error.code, "store_unreadable");
-      assert.equal(readFileSync(file, "utf8"), damaged, `${method} ${path} left the file as it was`);
-    }
-  }
-  assert.deepEqual(server.log, [], "a PUT refused for the file contacts nothing");
 });
 
 test("a server's tool snapshot is capped at 500 tools and 1 MiB: past either, 422 in plain words, the listing stops early, and nothing is kept", async (t) => {
@@ -329,7 +300,6 @@ test("a server's tool snapshot is capped at 500 tools and 1 MiB: past either, 42
   assert.equal(kept.status, 200, "500 tools across pages fit");
   assert.equal(kept.body.tools.length, 500);
   assert.deepEqual((await api("GET", "/settings/mcp-servers")).body.servers.map((s) => s.name), ["fits"], "neither refused server was kept");
-  assert.ok(statSync(join(data, "mcp-servers.json")).size < 2 ** 20);
 });
 
 test("names an empty object would inherit are no saved servers: 404 on every route, and no file is written", async (t) => {
@@ -368,4 +338,24 @@ test("the names AgentRun's own tools are called by, hands and monid, are no MCP 
     assert.match(refused.body.error.fields[0].message, new RegExp(`'${name}' is reserved for AgentRun's own tools`));
     assert.equal((await api("GET", `/settings/mcp-servers/${name}`)).status, 404, `${name}: nothing saved`);
   }
+});
+
+test("the served document's mcp_client.at_rest is exactly const sealed: an MCP credential is always kept sealed", async (t) => {
+  const { api } = await serve(t);
+  const doc = (await api("GET", "/openapi.json")).body;
+  const found = [];
+  const walk = (node) => {
+    if (!node || typeof node !== "object") return;
+    if (node.properties?.mcp_client?.properties?.at_rest) found.push(node.properties.mcp_client.properties.at_rest);
+    for (const value of Object.values(node)) walk(value);
+  };
+  walk(doc);
+  assert.ok(found.length > 0, "the document describes features.mcp_client");
+  for (const atRest of found) assert.deepEqual(atRest, { const: "sealed" });
+});
+
+test("a server started with no seal key in its env answers mcp_client.at_rest sealed: it made one at its start", async (t) => {
+  withEnv(t, {}, ["AGENTRUN_SEAL_KEY"]);
+  const { api } = await serve(t);
+  assert.equal((await api("GET", "/capabilities")).body.features.mcp_client.at_rest, "sealed");
 });

@@ -17,6 +17,7 @@ import { seal, unseal } from "@parcha/pi-durable-agent";
 import { ApiError, invalid } from "./errors.js";
 import { writeDurableSync } from "./files.js";
 import { mintSecret, signatureOf } from "./standard-webhooks.js";
+import { webhookSecretMeta } from "./trigger-secrets-shown.js";
 import { SEAL_KEY_ENV, sealKeyOf } from "./tool-keys.js";
 import type { TriggerFailed } from "./triggers.js";
 import { isObject, unknownFields } from "./validate.js";
@@ -51,7 +52,8 @@ const MAX_URL = 2048;
  *  `closed`, the server is stopping. */
 export type Emitted = "queued" | "unsaved" | "off" | "closed";
 export type RunNotice = { run_id: string; agent_id: string; status: string; title: string; pending?: { kind: "question" | "approval" | "stopped" | "budget" | "browser" } };
-type Config = { url: string; secret: string; updated_at: string; disabled?: { at: string; reason: string } };
+/** `secret_at`: when the secret was made, its own time (a URL change keeps it); absent in a file from before it was kept. */
+type Config = { url: string; secret: string; secret_at?: string; updated_at: string; disabled?: { at: string; reason: string } };
 type Message = { id: string; type: MessageType; body: string; created_at: string; status: "pending" | "delivered" | "failed"; attempts: number; next_at: number | null };
 /** What the outbox queued of one run: its end (its time), and the wait it stands at (its mark), kept until the run moves
  *  past it: a new wait replaces it, and it goes with the end that came after it, once that end is no longer due. */
@@ -160,12 +162,13 @@ export class Webhooks {
   /** signingSecret's last reading: read again after any write of the webhook's file, which only this server makes. */
   private signing?: { value: string | undefined };
 
-  /** GET: the URL, whether the secret signs here, and why the webhook is off, if it is; never the secret. */
+  /** GET: the URL, whether the secret signs here, and why the webhook is off, if it is; its secret's metadata (secret-writes.ts
+   *  SecretMeta), never the secret. */
   view() {
     const config = this.config();
-    if (!config) return { configured: false as const };
+    if (!config) return { configured: false as const, secret: webhookSecretMeta(false, null) };
     const opened = this.secret(config);
-    return { configured: true as const, url: config.url, signing: ("secret" in opened ? "sealed" : opened.signing) as Signing, disabled: config.disabled ?? null, updated_at: config.updated_at };
+    return { configured: true as const, url: config.url, signing: ("secret" in opened ? "sealed" : opened.signing) as Signing, secret: webhookSecretMeta(true, config.secret_at ?? null), disabled: config.disabled ?? null, updated_at: config.updated_at };
   }
 
   /** PUT: the URL, and the webhook on again. The first makes the secret and answers it, once; a later one keeps it. */
@@ -179,7 +182,9 @@ export class Webhooks {
     const was = this.config();
     if (!was && !this.key) throw new ApiError("no_sealing_key", `This server was handed no seal key (${SEAL_KEY_ENV}), so it keeps no webhook secret: it never keeps one in the clear.`);
     const secret = was ? undefined : mintSecret();
-    this.write({ url: url!.href, secret: was?.secret ?? seal(this.key!, Buffer.from(secret!, "utf8"), aad).toString("base64"), updated_at: new Date().toISOString() });
+    const now = new Date().toISOString();
+    const secretAt = was ? was.secret_at : now;
+    this.write({ url: url!.href, secret: was?.secret ?? seal(this.key!, Buffer.from(secret!, "utf8"), aad).toString("base64"), ...(secretAt ? { secret_at: secretAt } : {}), updated_at: now });
     return { created: !was, view: this.view(), ...(secret ? { secret } : {}) };
   }
 

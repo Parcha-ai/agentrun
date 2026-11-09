@@ -11,11 +11,15 @@ import { deniedText, RunGate, settingsKeyOf } from "../dist/tool-gate.js";
 import { KIND_KEYS, permissionsOf, settingsIssues } from "../dist/tool-plane.js";
 import { scratch } from "./support.mjs";
 
-const KINDS = [...DESKTOP_TOOL_DEFS.map((def) => [def.name, "desktop"]), ...PHONE_TOOL_DEFS.map((def) => [def.name, "phone"])];
+/** The hand-over both kinds have: held to the stricter of the two keys (the gate does not know the run's kind), named by
+ *  the desktop's in words. */
+const SHARED = "computer_request_handoff";
+const KINDS = [...DESKTOP_TOOL_DEFS.map((def) => [def.name, "desktop"]), ...PHONE_TOOL_DEFS.filter((def) => def.name !== SHARED).map((def) => [def.name, "phone"])];
 
 test("each desktop tool is held to desktop and each phone tool to phone, by every harness's name for it", () => {
   assert.deepEqual([...KIND_KEYS], ["desktop", "phone"]);
-  assert.equal(KINDS.length, 8);
+  assert.ok(KINDS.some(([name]) => name === SHARED), "the hand-over is a kind tool");
+  assert.ok(KINDS.some(([name]) => name === "phone_tree") && KINDS.some(([name]) => name === "phone_key"), "the phone's tree and keys are kind tools");
   for (const [name, key] of KINDS) {
     for (const harness of ["pi", "claude-agent", "codex", "opencode"]) {
       assert.equal(settingsKeyOf(harness, name), key, `${harness} ${name}`);
@@ -42,4 +46,15 @@ test("desktop set to deny refuses every desktop tool at the gate, and phone to d
   for (const [name, key] of KINDS) {
     assert.deepEqual(await gate.enter(name, {}, `c-${name}`, park), { text: deniedText(key), isError: true }, name);
   }
+});
+
+test("the hand-over both kinds share is held to the stricter of desktop and phone: either set to deny refuses it", async (t) => {
+  const gateWith = async (settings) => {
+    const [root, work, data] = [await scratch(t), await scratch(t), await scratch(t)];
+    await writeFile(join(data, "tool-settings.json"), JSON.stringify(settings));
+    return new RunGate({ root, work, data, runId: "r1", harness: "pi" });
+  };
+  assert.equal((await gateWith({})).policy(SHARED), "allow", "both allowed by default");
+  assert.equal((await gateWith({ desktop: { permission: "deny" } })).policy(SHARED), "deny");
+  assert.equal((await gateWith({ phone: { permission: "deny" } })).policy(SHARED), "deny");
 });

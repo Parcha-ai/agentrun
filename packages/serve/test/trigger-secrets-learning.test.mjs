@@ -31,9 +31,9 @@ test("a note holding a webhook trigger's signing secret is refused, by its value
   const created = await api("POST", "/triggers", hooked);
   assert.equal(created.status, 201, JSON.stringify(created.body));
   // The value it holds now and another server's, at once (two agents, each its own run); then, rotated, the new value.
-  const [leaky, foreign] = await Promise.all([proposing(api, data, "leaky", created.body.secret), proposing(api, data, "foreign", `whsec_${randomBytes(32).toString("base64")}`)]);
+  const [leaky, foreign] = await Promise.all([proposing(api, data, "leaky", created.body.signing_secret), proposing(api, data, "foreign", `whsec_${randomBytes(32).toString("base64")}`)]);
   assert.ok(leaky.includes("secret_value"), "the value this server holds");
   assert.ok(foreign.includes("secret_shape"), "a whsec_ secret this server never made");
-  const rotated = (await api("POST", `/triggers/${created.body.id}/secret`)).body.secret;
+  const rotated = (await api("POST", `/triggers/${created.body.id}/secret`)).body.signing_secret;
   assert.ok((await proposing(api, data, "rotated", rotated)).includes("secret_value"), "the new value, read as it is now");
 });
