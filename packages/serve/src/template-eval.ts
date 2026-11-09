@@ -714,7 +714,7 @@ export async function evalTemplate(options: EvalOptions): Promise<Report> {
     server: options.server ? { kind: "remote", base_url: v2Base(options.server.baseUrl) } : { kind: "in_process" },
     grader_model: options.graderModel ?? null,
     started_at: started, finished_at: new Date().toISOString(),
-    pass: results.every((c) => c.pass), passed: results.filter((c) => c.pass).length, cases: results,
+    pass: exitCodeOf({ cases: results }) === 0, passed: results.filter((c) => c.pass).length, cases: results,
     cost_usd: { runs: runCost, graders: graderCost, total: sum([runCost, graderCost]), unknown: runs.filter((r) => r.run_id && r.cost_usd === null).length + graders.filter((g) => g.run_id && g.cost_usd === null).length },
   };
 }
@@ -961,11 +961,11 @@ function removeTree(dir: string): void {
 const usd = (value: number) => `$${value > 0 && value < 0.01 ? value.toFixed(6) : value.toFixed(4)}`;
 const cell = (text: string) => text.replace(/\|/g, "\\|").replace(/\s*\n\s*/g, " ");
 
-/** The report as markdown: a line per case, then each failure with every grader that failed and why. */
 /** The eval's exit code from its report (the CLI's, agentrun-serve eval-template): 0 when every case passed, 1 when
  *  any case failed, however many passed beside it. (2: nothing ran, and 130: stopped, are the CLI's own.) */
 export const exitCodeOf = (report: Pick<Report, "cases">): 0 | 1 => (report.cases.every((c) => c.pass) ? 0 : 1);
 
+/** The report as markdown: a line per case, then each failure with every grader that failed and why. */
 export function markdownReport(report: Report): string {
   const lines = [
     `# Evals: ${report.package.name} ${report.package.version}`,
