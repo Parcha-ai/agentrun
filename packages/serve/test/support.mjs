@@ -263,7 +263,8 @@ function withAgents(store) {
       return typeof value === "function" ? value.bind(target) : value;
     },
   });
-  return { triggers, runs: store.runs, agents };
+  // The trigger settings too: the GitHub App is kept there (server.ts, sealed-settings-store.ts).
+  return { triggers, runs: store.runs, agents, triggerSettings: store.triggerSettings, flush: () => store.flush() };
 }
 
 /** Trigger stores handed to servers a test starts itself (startServe, not serve()): closed when the file's tests are done,

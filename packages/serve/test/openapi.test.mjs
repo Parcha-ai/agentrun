@@ -68,7 +68,9 @@ test("every route the server serves is in the document, and every operation in i
     assert.match(sample(found[0].path), route.pattern, `${route.name}: the document's path ${found[0].path} is the route's`);
   }
   for (const { path, method, op } of ops) {
-    const route = ROUTES.find((r) => r.name === op.operationId && r.method.toLowerCase() === method);
+    // A server-wide pushed source's own hook (receiveHook_<source>) is the one hook route's, at its source's path.
+    const name = /^receiveHook_[a-z][a-z0-9-]*$/.test(op.operationId) ? "receiveHook" : op.operationId;
+    const route = ROUTES.find((r) => r.name === name && r.method.toLowerCase() === method);
     assert.ok(route, `${method.toUpperCase()} ${path} (${op.operationId}) is a route of this server`);
     if (route.capability) assert.deepEqual(Object.keys(op["x-agentrun-serve-unsupported"] ?? {}).sort(), ["capability", "reason"], `${op.operationId} is marked unsupported`);
     else assert.equal(op["x-agentrun-serve-unsupported"], undefined, `${op.operationId} is served`);

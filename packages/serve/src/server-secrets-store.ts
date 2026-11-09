@@ -55,6 +55,8 @@ export async function openServerSecretsOverStore(
     await adapterSettings.load();
     settings.set(adapter.id, adapterSettings);
     secrets.add(`trigger-settings:${adapter.id}`, () => adapterSettings.values());
+    // A PEM key's lines, its short last one too, and the key whole: listed with no floor.
+    secrets.add(`trigger-settings-pem:${adapter.id}`, () => adapterSettings.pemValues(), { whole: true });
   }
   return { secrets, settings };
 }
