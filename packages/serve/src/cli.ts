@@ -19,45 +19,8 @@ import { banner, boxImageLine } from "./print.js";
 import type { LearningMode } from "./learning.js";
 import { DEFAULT_PORT, type Serve, startServe } from "./server.js";
 import { SEAL_KEY_ENV } from "./tool-keys.js";
+import { runnerBeside } from "./runner/beside.js";
 
-/** A runner beside the server on the same data directory (the CLI start's server-and-runner, and the `runner` subcommand):
- *  its own store handle (role runner), and the runner's dispatch (dispatch.ts) for each claimed run — pi on the kernel's
- *  adapter loop, a learning run on the learning loop. Returns the runner and a close() that stops it and closes its store. */
-async function runnerBeside(dataDir: string, loops?: number): Promise<{ runner: Awaited<ReturnType<typeof import("./runner/runner.js")["startRunner"]>>; close: () => Promise<void> }> {
-  const { startRunner } = await import("./runner/runner.js");
-  const { dispatchRunner } = await import("./runner/harness-loops.js");
-  const { routeOf } = await import("./runner/model-route.js");
-  const { RunnerRefused, runEnv } = await import("./runner/main.js");
-  const { computerDepsFrom } = await import("./workspace/index.js");
-  const { openSqliteStore, SchemaVersionUnknown } = await import("./store/index.js");
-  let store: Awaited<ReturnType<typeof openSqliteStore>>;
-  try {
-    store = await openSqliteStore({ dataDir, role: "runner" });
-  } catch (error) {
-    if (error instanceof SchemaVersionUnknown) {
-      throw new RunnerRefused(
-        error.found === null
-          ? `The store in ${dataDir} is not set up yet: start the server on this data directory first, then the runner.`
-          : `The store in ${dataDir} is at schema version ${error.found}, and this runner knows ${error.known}: run a runner of the same release as the server.`,
-        { cause: error },
-      );
-    }
-    throw error;
-  }
-  // The server's seal key (seal-key.ts): the one handed over (read through secrets.js, which moves it out of the
-  // environment as it loads), else the one the server keeps under the config home. A runner never starts without it: it
-  // seals the live-viewer tokens, and there is no stand-in key.
-  const { ensureSealKey, sealKeyHome } = await import("./seal-key.js");
-  const sealKey = ensureSealKey(secret(SEAL_KEY_ENV), { configHome: sealKeyHome(process.env) }).key;
-  // The beside-runner sees the server's environment as a separate runner would (runEnv, not withoutFaux): so an API run on
-  // a --faux server reaches the faux gateway and its computers. The run's claim-time computer is composed once, the one way
-  // (workspace/computer-deps.ts computerDepsFrom), from that same environment.
-  const runs = runEnv(process.env);
-  const computers = computerDepsFrom({ env: runs, store, sealKey });
-  const createLoop = dispatchRunner({ env: runs, data: dataDir, journal: (claim) => store.journal(claim), store, sealKey, routeOf, computerForClaim: computers.computerForClaim, computerDeps: computers.computerDeps });
-  const runner = startRunner({ store, createLoop, ...(loops !== undefined ? { loops } : {}) });
-  return { runner, close: async () => { await runner.close(); await store.close(); } };
-}
 
 const USAGE = `usage: agentrun-serve [--data DIR] [--listen ADDR] [--port N] [--open] [--faux MODULE] [--faux-browser MODULE] [--allow-host NAME ...] [--max-runs N] [--drain-timeout D] [--documents DIR] [--allow-code-nodes] [--learning on|off] [--learning-budget BYTES] [--grade-model MODEL] [--no-runner]
        agentrun-serve reset-password [--data DIR]
