@@ -134,7 +134,7 @@ export function AgentToolSettings({ agent, harness, model, tools, choices, gates
    *  (the server's in force, and those offered) from its server's read, which neither capabilities nor the agent's read
    *  list. */
   mcpServers?: readonly McpServer[];
-  /** A tool to focus the permission of as this opens (a legacy name at its settings key's row). */
+  /** A tool to focus the permission of as this opens. */
   focus?: string;
   /** A workflow agent's: the tools its call nodes call (callNodeTools). Its rows are those alone, each with a permission as
    *  this server lists it; no catalog tool, which no call node runs. */
