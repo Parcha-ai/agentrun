@@ -9,10 +9,9 @@ import { runLink } from "./console-links.js";
 import { redacted, redactedAnswer, withoutLoopback } from "./key-refusal.js";
 import { currentLearning, holdsForOk, type Learning, learningView, LEARNING_LABEL, secretsShown, shortOf, type Shown } from "./learning.js";
 import { MIN_SECRET } from "./learn/secrets.js";
-import { learningStartOf, type RunLaunch, readLaunchBody } from "./run-launch.js";
+import { handedValuesOf, launchOf } from "./handed-values.js";
+import { learningStartOf, type RunLaunch } from "./run-launch.js";
 import {
-  type Handed,
-  handedPointers,
   momentOf,
   type Pending,
   pendingOf,
@@ -45,7 +44,6 @@ import { journalRecords, recordOf } from "./runner/journal-reader.js";
 import { notesReadOf, runLearningEnd, type RunLearning, withNotes } from "./store-reads/learning.js";
 import { runReflect, runTimeline } from "./store-reads/journal.js";
 import { type RunReadState, readRun } from "./store-reads/runs.js";
-import { keptVendor, type Plane } from "./tool-plane.js";
 import { runCutValues } from "./run-cut.js";
 import { Turns } from "./turns.js";
 import { harnessOfBody } from "./harness.js";
@@ -134,19 +132,6 @@ interface StoreRun {
 function liveOf(runRow: RunRow, now: number): boolean {
   return !FINAL_STATES.includes(runRow.state) && runRow.runner !== null && runRow.claimedUntil !== null && runRow.claimedUntil >= now;
 }
-
-/** The run's launch body read back, or undefined when it has none (an old run, or one not started with one). */
-async function launchOf(store: Store, runId: string): Promise<RunLaunch | undefined> {
-  try {
-    const row = await store.runs.launch(runId);
-    return readLaunchBody(row.body);
-  } catch {
-    return undefined;
-  }
-}
-
-/** The pointers a run was handed, as its row kept them (never the pointers, their SHA-256). */
-const handedOf = (runRow: RunRow): Handed | undefined => (runRow.signInHanded && runRow.signInHanded.length > 0 ? [...runRow.signInHanded] : undefined);
 
 /** Reads the run from the store and builds the RunView the view functions read. */
 async function storeRunOf(store: Store, runId: string, deps: ViewDeps): Promise<StoreRun | undefined> {

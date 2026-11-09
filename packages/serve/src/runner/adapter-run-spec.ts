@@ -40,6 +40,7 @@ import { openRunWorkspace } from "../workspace/run-workspace.js";
 import { COMPUTER_ROOT, runFolder } from "../workspace/paths.js";
 import { runTools, type ToolResults } from "../workspace/run-tools.js";
 import { INPUTS_DIR, UPLOADS_DIR, Uploads } from "../uploads.js";
+import { signInReads } from "../sign-ins-store.js";
 import { claimSecrets } from "./claim-secrets.js";
 import { mcpForClaim } from "./mcp-run.js";
 import { join } from "node:path";
@@ -375,6 +376,10 @@ export async function adapterRunSpecFromLaunch(launch: RunLaunch, run: AdapterRu
     store: deps.store,
     data: deps.data,
     ...(deps.env ? { env: deps.env } : {}),
+    // What the run must never learn beside the runner's secrets: the keys its claim handed it, and its sign-in's pointers,
+    // read back from the store's sign-ins under the seal key (learning-run.ts refused, on the runner).
+    signIns: signInReads(deps.store, deps.sealKey),
+    handed: runnerSecrets(toolEnv),
     learningFolder: archil === undefined
       ? (agentId: string) => learningFolderOf(deps.data, agentId)
       : (agentId: string) => learningWorkspace({ mode: "archil", agentId, archil }),

@@ -44,6 +44,7 @@ import type { Workspace } from "../workspace/workspace.js";
 import type { ComputerSetting } from "../computer-setting.js";
 import type { AdapterRun, AdapterRunSpec, RunCapConfig } from "./adapter-loop.js";
 import { adapterRunGate, type AdapterSpecDeps, hostToolCtxOf, learnedWorkflowHostTool } from "./adapter-run-spec.js";
+import { signInReads } from "../sign-ins-store.js";
 import { claimSecrets } from "./claim-secrets.js";
 import { mcpForClaim } from "./mcp-run.js";
 import { LEARNED_WORKFLOW_TOOL } from "../learned-workflow.js";
@@ -241,8 +242,11 @@ export async function cliRunSpecFromLaunch(launch: RunLaunch, run: AdapterRun, d
   // own host tools are still a TODO, as the pi spec binds them.)
   const results: ToolResults = new Map();
   let learnedTool: Awaited<ReturnType<typeof learnedWorkflowHostTool>>;
+  // The keys the claim hands the run (its learned workflow's call nodes run on them): never learned (learningEndOfRun).
+  let handedKeys: string[] = [];
   if (granted.includes(LEARNED_WORKFLOW_TOOL)) {
     const toolEnv = await claimSecrets({ store: deps.store, sealKey: deps.sealKey, env: deps.env }, revisionRow as unknown as Parameters<typeof claimSecrets>[1], launch);
+    handedKeys = runnerSecrets(toolEnv);
     delete toolEnv[TOOL_PLANE_ENV];
     if (launch.plane && Object.keys(launch.plane).length) toolEnv[TOOL_PLANE_ENV] = JSON.stringify(launch.plane);
     learnedTool = await learnedWorkflowHostTool({ run, granted, plane: launch.plane, env: toolEnv, work: root, ctx: hostToolCtxOf(run, context, results, root) });
@@ -266,6 +270,10 @@ export async function cliRunSpecFromLaunch(launch: RunLaunch, run: AdapterRun, d
     store: deps.store,
     data: deps.data,
     ...(deps.env ? { env: deps.env } : {}),
+    // What the run must never learn beside the runner's secrets: the keys its claim handed it, and its sign-in's pointers,
+    // read back from the store's sign-ins under the seal key (learning-run.ts refused, on the runner).
+    signIns: signInReads(deps.store, deps.sealKey),
+    handed: handedKeys,
     learningFolder: archil === undefined
       ? (agentId: string) => learningFolderOf(deps.data, agentId)
       : (agentId: string) => learningWorkspace({ mode: "archil", agentId, archil }),
