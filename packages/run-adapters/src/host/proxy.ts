@@ -281,6 +281,9 @@ export interface ModelProxy {
    *  it is never the turn's answer request (a content-filter stop on it never halts the turn) and never watched. It opens
    *  the model routes only: the session's MCP door stays behind the session's key. */
   sideKey(label: string): string;
+  /** The harness opened its next turn: once the proxy has told it a turn's answer stopped (onCut, onFiltered), it refuses
+   *  the session's answer requests, unsent and unbooked, until this is called. */
+  openTurn(): void;
   close(): Promise<void>;
 }
 
@@ -476,6 +479,10 @@ export async function startModelProxy(options: ModelProxyOptions, key: string): 
   const forward = options.fetch ?? fetch;
   const origin = baseOf(options.origin);
   const refusedStatus = policy.refusedStatus ?? 400;
+  /** Why the turn's answer stopped, once the harness was told (onCut, onFiltered): the session's answer requests are
+   *  refused, unsent and unbooked, until it opens its next turn (openTurn). A client that asks again (Codex retries an
+   *  incomplete stream) is never paid for, whether or not the harness's own stop beat it. */
+  let stopTold: string | undefined;
   const inflight = new Set<AbortController>();
   /** The requests whose answer the provider stopped on its content filter, read on for their usage, each until booked. */
   const draining = new Map<AbortController, Promise<void>>();
@@ -666,6 +673,17 @@ export async function startModelProxy(options: ModelProxyOptions, key: string): 
       return refuse(res, 500, "the provider's credential headers could not be built", req);
     }
     if (closing) return refuse(res, 503, "the model proxy is closing", req);
+    /** Whether this request is the turn's answer request (`ProviderPolicy.answers`): a side call's stop ends nothing, and
+     *  a side call is never refused for the turn's. */
+    let answering = host === undefined;
+    try {
+      if (host === undefined) answering = policy.answers ? policy.answers(body) : true;
+    } catch (error) {
+      say(`model proxy (${policy.id}): whether the request is the turn's could not be read; taken as the turn's`, { error: String((error as Error)?.message ?? error).slice(0, 200) });
+    }
+    // The turn's answer stopped and the harness was told: its client asking again is refused (no retry), never sent, never
+    // admitted or booked, until the harness opens its next turn.
+    if (answering && !route.free && stopTold !== undefined) return refuse(res, refusedStatus, `refused: the turn's answer was ${stopTold}, and the turn ends there`, req);
     // This request's own admission, handed back to its booking (requests may be in flight together).
     let ticket: unknown;
     try {
@@ -747,13 +765,6 @@ export async function startModelProxy(options: ModelProxyOptions, key: string): 
     let reported: number | undefined;
     /** Whether the provider's content-filter stop was read (once an answer). */
     let filteredTold = false;
-    /** Whether this request is the turn's answer request (`ProviderPolicy.answers`): a side call's stop ends nothing. */
-    let answering = host === undefined;
-    try {
-      if (host === undefined) answering = policy.answers ? policy.answers(body) : true;
-    } catch (error) {
-      say(`model proxy (${policy.id}): whether the request is the turn's could not be read; taken as the turn's`, { error: String((error as Error)?.message ?? error).slice(0, 200) });
-    }
     /** Called once the request is booked, when its answer was read on after its stop (the proxy's close waits for it). */
     let drained: (() => void) | undefined;
     const settled = (): void => {
@@ -782,6 +793,8 @@ export async function startModelProxy(options: ModelProxyOptions, key: string): 
         return;
       }
       say(`model proxy (${policy.id}): the provider stopped the answer on its content filter`);
+      // The harness ends the turn: until it opens its next, the session's answer requests are refused.
+      if (options.onFiltered) stopTold = "stopped on the provider's content filter";
       // Read on to the answer's end for its usage, though the client goes; the proxy's close waits for it, bounded.
       keepReading = true;
       draining.set(controller, new Promise<void>((resolve) => (drained = resolve)));
@@ -806,6 +819,8 @@ export async function startModelProxy(options: ModelProxyOptions, key: string): 
       if (!stop) return;
       cutTold = true;
       say(`model proxy (${policy.id}): the provider cut the answer at its output limit`);
+      // The harness ends the turn: until it opens its next, the session's answer requests are refused.
+      stopTold = "cut at the model's output limit";
       try {
         options.onCut(stop);
       } catch (error) {
@@ -1009,6 +1024,9 @@ export async function startModelProxy(options: ModelProxyOptions, key: string): 
       let minted = sideKeys.get(label);
       if (!minted) sideKeys.set(label, (minted = randomBytes(32).toString("base64url")));
       return minted;
+    },
+    openTurn: () => {
+      stopTold = undefined;
     },
     close: async () => {
       closing = true;
