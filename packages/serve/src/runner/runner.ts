@@ -738,6 +738,8 @@ export function startRunner(options: RunnerOptions): Runner {
       killed = true;
       closed = true;
       stopTimers();
+      // A crash writes nothing more: the live view's ticker stops at once, beside a new holder of its runs.
+      ticker?.stop();
     },
   };
 }

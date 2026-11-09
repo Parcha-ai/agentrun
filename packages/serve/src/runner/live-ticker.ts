@@ -16,6 +16,8 @@ export interface LiveTicker {
   readonly createLoop: LoopFactory;
   /** Writes what is pending and stops ticking. */
   close(): Promise<void>;
+  /** Stops ticking at once and writes nothing more, what is pending included: a runner killed (a crash) lets nothing go. */
+  stop(): void;
 }
 
 /** Wraps `createLoop` so its loops' held states reach run_live, batched per tick. */
@@ -84,6 +86,11 @@ export function withLiveTicker(store: { readonly live: Live }, createLoop: LoopF
       closed = true;
       clearInterval(timer);
       await tick();
+    },
+    stop: () => {
+      closed = true;
+      clearInterval(timer);
+      changed.clear();
     },
   };
 }
