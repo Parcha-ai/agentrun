@@ -433,6 +433,26 @@ test("a failed run's view serves its error from the row, with an unknown cost", 
   assert.equal(moment.terminalKind, "failed");
 });
 
+test("a failed run serves the provider's refusal text from its journal, cut of secrets, not the runner's generic summary", async (t) => {
+  const { store } = await storeOn(t);
+  await agent(store);
+  await store.runs.create({ id: "run-1", agentId: "agent-1", revisionId: "rev-1" }, { body: { input: {}, title: "Fail", place: { mode: "runner" } } });
+  const claim = await store.claim("run-1", "runner-a", { leaseMs: 60_000 });
+  const journal = store.journal(claim);
+  const u = { id: await journal.mintId(), conversationId: ROOT, kind: "pi.user", model: [{ role: "user", content: "go", timestamp: T0 }] };
+  // The model request failed with the provider's refusal (a pi.assistant error entry), which quotes a held key.
+  const err = { id: await journal.mintId(), conversationId: ROOT, kind: "pi.assistant", model: [{ role: "assistant", stopReason: "error", errorMessage: "The model provider refused: 401 Unauthorized. Its key sk-SECRET is not valid.", content: [], timestamp: T0 + 1_000 }] };
+  await commitWrites(journal, [{ type: "conversation", value: { id: ROOT } }, { type: "entry", value: u }, { type: "entry", value: err }], context);
+  // The runner wrote a generic summary; the provider's words live only in the journal.
+  await store.runs.update(claim, { state: "failed", summary: "the run gave no answer (failed)", endedAt: T0 + 2_000 });
+
+  const view = await viewOverStore(store, "run-1", { ...deps, serverSecrets: () => ["sk-SECRET"] });
+  assert.equal(view.status, "failed");
+  assert.equal(view.error.code, "run_failed");
+  assert.match(view.error.message, /The model provider refused: 401 Unauthorized/, "the provider's words, so the person sees why it failed");
+  assert.doesNotMatch(view.error.message, /sk-SECRET/, "the held key is cut");
+});
+
 test("an escalated run reads completed with a review, and keeps its answer", async (t) => {
   const { store } = await storeOn(t);
   await agent(store);

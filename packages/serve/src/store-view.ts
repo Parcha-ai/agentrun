@@ -289,7 +289,12 @@ export async function viewOverStore(store: Store, runId: string, deps: ViewDeps)
   // A workflow run's output reads from its journal (a separate reader); an agentic run has none. Wired with the workflow
   // status.
   const result = status === "completed" ? { output: null, final_answer: servedAnswer(finalAnswer) } : null;
-  const error = status === "failed" ? (unshown ? { code: "run_failed", message: WITHHELD_SIGN_IN, retryable: false } : servedRunErrorWith(shownWords, errorOfRow(row.summary ?? null))) : null;
+  // A failed run's reason in the model's own words when the store holds them: the last model-error row's text (a provider's
+  // refusal, rendered from its pi.assistant error entry), else the run row's summary (the runner's generic "gave no answer").
+  // servedRunErrorWith cuts it of every secret (the view's values), so a key or a pointer the provider quoted never shows,
+  // as main serves the run's error cut.
+  const failedReason = run.rows.findLast((r) => r.kind === "error")?.text ?? row.summary ?? null;
+  const error = status === "failed" ? (unshown ? { code: "run_failed", message: WITHHELD_SIGN_IN, retryable: false } : servedRunErrorWith(shownWords, errorOfRow(failedReason))) : null;
   const review = endedAtMs === null ? null : servedReviewWith(shownWords, unshown, reviewAt(reviewOfRow(row.state, row.summary ?? null), iso(endedAtMs)));
   // The card the run shows while it waits, in the order the file-backed view (runs.ts) picks them: a tool call parked for a
   // person's approval (approvalOf, its arguments shown through the run's redactor), else a run parked at its cap (the budget
