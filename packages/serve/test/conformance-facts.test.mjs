@@ -17,6 +17,12 @@ test("steer false and rerunsStarted false rule out their cases, each with why", 
   assert.match(out["steer-origin"], /steer false/);
 });
 
+test("recoversCutAnswers rules out one output-limit case: above 0 the cut final answer, 0 the run going on from a cut", () => {
+  assert.deepEqual(Object.keys(factsRuleOut({ id: "a-cli", steer: true, recoversCutAnswers: 3 })), ["length-ends-failed"]);
+  assert.match(factsRuleOut({ id: "a-cli", steer: true, recoversCutAnswers: 3 })["length-ends-failed"], /up to 3 times in one turn/);
+  assert.deepEqual(Object.keys(factsRuleOut({ id: "a-cli", steer: true, recoversCutAnswers: 0 })), ["length-mid-run"]);
+});
+
 test("a harness that steers and reruns a started call has nothing ruled out", () => {
   assert.deepEqual(factsRuleOut({ id: "pi", steer: true }), {});
   assert.deepEqual(factsRuleOut(undefined), {});

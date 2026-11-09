@@ -84,7 +84,7 @@ export interface ConformanceSubject {
   readonly process?: { readonly module: string; readonly export: string };
   /** The facts its adapter declares (AdapterFacts), the cases they rule out derived from them (harness.ts, `factsRuleOut`):
    *  a fact the adapter changes moves its cases with it, never a list kept by hand. */
-  readonly facts?: { readonly id: string; readonly steer: boolean; readonly rerunsStarted?: false };
+  readonly facts?: { readonly id: string; readonly steer: boolean; readonly rerunsStarted?: false; readonly recoversCutAnswers?: number };
   /** Cases this harness cannot model yet, each with why: reported as skipped with that reason, never as passed. */
   readonly unsupported?: Partial<Record<ConformanceCase, string>>;
 }

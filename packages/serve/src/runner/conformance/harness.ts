@@ -744,6 +744,12 @@ export function factsRuleOut(facts: ConformanceSubject["facts"]): Partial<Record
     // steer-origin steers the turn in flight too: its message is taken mid-turn, or never.
     ...(facts.steer ? {} : { "steer-mid-turn": noSteer, "steer-origin": noSteer }),
     ...(facts.rerunsStarted === false ? { "replay-safe-rerun": CLI_NEVER_RERUNS, "fault-restarts-bounded": CLI_NEVER_RERUNS } : {}),
+    // A harness that resumes a cut answer itself never ends a turn on the cut; one whose cut ends its turn never goes on
+    // from it in the same turn.
+    ...(facts.recoversCutAnswers !== undefined && facts.recoversCutAnswers > 0
+      ? { "length-ends-failed": `${facts.id} resumes an answer its output limit cut itself, up to ${facts.recoversCutAnswers} times in one turn (its adapter's facts: recoversCutAnswers ${facts.recoversCutAnswers})` }
+      : {}),
+    ...(facts.recoversCutAnswers === 0 ? { "length-mid-run": `a cut ends ${facts.id}'s turn, as pi's does (its adapter's facts: recoversCutAnswers 0)` } : {}),
   };
 }
 

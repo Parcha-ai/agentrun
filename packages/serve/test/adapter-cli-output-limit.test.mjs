@@ -14,8 +14,10 @@ const { cutAtLimit } = await import("../dist/runner/loop-contract.js");
 const TIMING = { leaseMs: 600, renewEveryMs: 150, stopMarginMs: 200, pollMs: 20, commandPollMs: 30 };
 const quiet = { beforeIntent: async () => {}, beforeResult: async () => {} };
 
-/** A CLI stand-in whose one turn says `text` and ends with `end` (turn_end's own fields beside its status). */
+/** A CLI stand-in whose one turn says `text` (a list: a message boundary, text_end, between pieces) and ends with `end`
+ *  (turn_end's own fields beside its status). */
 function standInCli(text, end) {
+  const pieces = Array.isArray(text) ? text : [text];
   return {
     id: "stand-in-cli",
     capabilities: () => ({}),
@@ -28,7 +30,10 @@ function standInCli(text, end) {
         async send() {
           await io.writer.append([{ kind: "stand-in.sent", data: null }]);
           turn = (async () => {
-            io.onEvent({ type: "text", delta: text });
+            for (const [index, piece] of pieces.entries()) {
+              if (index > 0) io.onEvent({ type: "text_end" });
+              io.onEvent({ type: "text", delta: piece });
+            }
             io.onEvent({ type: "turn_end", status: "completed", ...end });
             return { status: "completed" };
           })();
@@ -67,6 +72,12 @@ test("a CLI turn whose final answer the output limit cut ends the run failed, sa
   const { row, said } = await runOnce(t, "The answer is", { stopReason: "length", outputTokens: 7 });
   assert.deepEqual([row.state, row.summary], ["failed", cutAtLimit(7)]);
   assert.deepEqual(said, [{ role: "model", text: "The answer is", stopReason: "length", outputTokens: 7 }]);
+});
+
+test("a CLI that resumes a cut answer inside its turn marks the boundary (text_end): two messages, and the run ends as its last says", async (t) => {
+  const { row, said } = await runOnce(t, ["Part of it", "done"], {});
+  assert.deepEqual([row.state, row.summary], ["ended", null]);
+  assert.deepEqual(said, [{ role: "model", text: "Part of it" }, { role: "model", text: "done" }]);
 });
 
 test("a CLI turn that ends without a cut ends the run as its answer says", async (t) => {

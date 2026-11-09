@@ -147,20 +147,22 @@ async function openCliRecord(harness: Harness, journal: Gate["journal"], context
   let chain: Promise<void> = Promise.resolve();
   const inTurn = (work: () => Promise<void>): Promise<void> => (chain = chain.then(work, work));
   /** What was said since the last boundary as a model message; at a turn's end, with the cut its adapter reported. */
-  const flushText = (cut?: { stopReason?: "length"; outputTokens?: number }) =>
-    inTurn(async () => {
-      if (text === "") return;
-      const said = text;
-      text = "";
+  const flushText = (cut?: { stopReason?: "length"; outputTokens?: number }) => {
+    // Taken at the boundary, not when its write's turn comes: text said after it is the next message's.
+    const said = text;
+    text = "";
+    return inTurn(async () => {
+      if (said === "") return;
       const length = cut?.stopReason === "length" ? { stopReason: "length" as const, ...(cut.outputTokens === undefined ? {} : { outputTokens: cut.outputTokens }) } : {};
       await append(KINDS.message, { role: "model", text: said, ...length });
     });
+  };
   return {
     onEvent(event) {
       if (event.type === "text") {
         if (answer === undefined) text += event.delta;
         else answer += event.delta;
-      } else if (event.type === "tool_start") void flushText().catch(() => undefined);
+      } else if (event.type === "tool_start" || event.type === "text_end") void flushText().catch(() => undefined);
       else if (event.type === "turn_end") void flushText(event).catch(() => undefined);
     },
     flushText,

@@ -250,6 +250,9 @@ export type GateAnswer = "allow" | { readonly deny: string } | { readonly park: 
  *  `tool_end`: its turn's `turn_end` closes it. */
 export type AdapterEvent =
   | { type: "text"; delta: string }
+  /** The model's message ended inside the turn, and another may follow in it (a CLI that resumes a cut answer itself):
+   *  what it said so far is one message. */
+  | { type: "text_end" }
   | { type: "tool_start"; callId: string; name: string; args: unknown; parent?: string }
   | { type: "tool_end"; callId: string; name: string; isError: boolean; result?: string; truncated?: true }
   /** `stopReason: "length"` only when the turn's final answer was cut at the model's output limit (unfinished), with that
@@ -323,6 +326,10 @@ export interface AdapterFacts {
    *  holds the turn, and only its model calls again (a CLI). Absent: a restart reruns a replay-safe call, by the
    *  kernel's rule. */
   readonly rerunsStarted?: false;
+  /** How many times the harness resumes an answer its model's output limit cut, itself, inside one turn (a CLI's own
+   *  recovery): above 0, a turn never ends on such a cut until those run out; 0, a cut ends its turn, as pi's does.
+   *  Absent: not declared. */
+  readonly recoversCutAnswers?: number;
   /** What one run of it holds in memory, in MiB: the host admits runs by it. */
   readonly runMib: number;
   /** Whether it binds a session's remote MCP servers (its own MCP client, at the session's gateway). */
