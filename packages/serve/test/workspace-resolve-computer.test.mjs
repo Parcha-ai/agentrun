@@ -114,7 +114,7 @@ test("start: a mounted desktop launches with the run's folder as its mount and o
   const started = await resolved.start({ workspace: localWorkspace(root), check: { readBackOf } });
   assert.deepEqual(side.launched, [["docker", { kind: "desktop", keys: {}, mount: { kind: "bind", path: root } }]]);
   const run = await runTools(localWorkspace(root), started.computer, { mode: 1, context: ctx });
-  assert.deepEqual(run.registry.list().map((def) => def.name), ["read", "write", "edit", "bash", "bash_background", "bash_output", "bash_input", "bash_signal", "bash_list", "desktop_screen", "desktop_input"]);
+  assert.deepEqual(run.registry.list().map((def) => def.name), ["read", "write", "edit", "bash", "bash_background", "bash_output", "bash_input", "bash_signal", "bash_list", "desktop_screen", "desktop_input", "computer_request_handoff"]);
   await started.release();
   assert.deepEqual(side.launched.at(-1), ["released", "fake-1"]);
   // A remote sandbox gets its declared keys and nothing else saved beside them.
@@ -126,8 +126,8 @@ test("start: a mounted desktop launches with the run's folder as its mount and o
 test("start: an unmounted desktop, a phone and a browser launch with no mount; their runs keep the runner's folder", async () => {
   const root = scratch();
   for (const [setting, mode, tools] of [
-    [{ kind: "desktop", provider: "e2b" }, 1, ["desktop_screen", "desktop_input"]],
-    [{ kind: "phone", provider: "phone-harness" }, 2, ["phone_screen", "phone_tree", "phone_tap", "phone_swipe", "phone_type", "phone_key", "phone_apps", "phone_open"]],
+    [{ kind: "desktop", provider: "e2b" }, 1, ["desktop_screen", "desktop_input", "computer_request_handoff"]],
+    [{ kind: "phone", provider: "phone-harness" }, 2, ["phone_screen", "phone_tree", "phone_tap", "phone_swipe", "phone_type", "phone_key", "phone_apps", "phone_open", "computer_request_handoff"]],
   ]) {
     const side = claim(root);
     const started = await (await resolveComputer(setting, mode, KIND_REGISTRY, side)).start({ workspace: localWorkspace(root), check: { readBackOf } });
