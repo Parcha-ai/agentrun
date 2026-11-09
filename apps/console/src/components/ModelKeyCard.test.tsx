@@ -11,10 +11,10 @@ import type { ToolKey, ToolKeys } from "@/lib/v2";
 
 /** An obvious fake: not a key anywhere. */
 const FAKE = "not-a-real-key-0123456789";
-const model = (id: ToolKey["id"], label: string, name: string, source: "server" | "stored" | null = null): ToolKey => ({ id, kind: "model", label, fields: [{ name, set: source !== null, source }], unlocks: [], harnesses: ["pi"], check: null });
+const model = (id: ToolKey["id"], label: string, name: string, source: "env" | "console" | null = null): ToolKey => ({ id, kind: "model", label, fields: [{ name, set: source !== null, source, changed_at: null }], unlocks: [], harnesses: ["pi"], check: null });
 const VIEW: ToolKeys = {
   keys: [
-    { id: "parallel", kind: "tool", label: "Parallel", fields: [{ name: "PARALLEL_API_KEY", set: false, source: null }], unlocks: ["web_fetch"], harnesses: ["pi"], check: null },
+    { id: "parallel", kind: "tool", label: "Parallel", fields: [{ name: "PARALLEL_API_KEY", set: false, source: null, changed_at: null }], unlocks: ["web_fetch"], harnesses: ["pi"], check: null },
     model("anthropic", "Anthropic", "ANTHROPIC_API_KEY"), model("openai", "OpenAI", "OPENAI_API_KEY"), model("openrouter", "OpenRouter", "OPENROUTER_API_KEY"),
   ],
   reenter: null,
@@ -38,7 +38,7 @@ afterEach(() => { act(() => root?.unmount()); document.body.innerHTML = ""; });
 async function open(props: Omit<Parameters<typeof ModelKeyCard>[0], "v2">, v2: ReturnType<typeof createClient>) {
   const host = document.body.appendChild(document.createElement("div"));
   root = createRoot(host);
-  act(() => root!.render(createElement(ModelKeyCard, { v2, ...props })));
+  act(() => root!.render(createElement(ModelKeyCard, { v2, writable: true, ...props })));
   const settle = async () => { for (let i = 0; i < 10; i++) await act(async () => { await new Promise((r) => setTimeout(r, 0)); }); };
   await settle();
   const button = (label: RegExp) => [...host.querySelectorAll("button")].find((b) => label.test((b.textContent ?? "").trim()));
