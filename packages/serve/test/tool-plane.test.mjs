@@ -13,6 +13,7 @@ import { CANARY } from "./fixtures/faux-parallel.mjs";
 import { schemaProblems } from "./schema-support.mjs";
 import { agent, answerFlow, flowAgent, follow, runDir, scratch, serve, withEnv } from "./support.mjs";
 import { blockersOf } from "../dist/runnable.js";
+import { SETTINGS_UNREAD } from "../dist/tool-gate.js";
 
 const base = { gateway: false, parallelKey: false };
 
@@ -289,10 +290,14 @@ test("a kept plane at a later launch: as it was, but Parallel with its key gone 
   const dir = await scratch(t);
   const said = [];
   assert.deepEqual(new ToolSettings(dir, (line) => said.push(line)).get(), {}, "no file: the defaults, nothing said");
-  for (const text of ["{not json", JSON.stringify({ web_search: { provider: "bing" } })]) {
-    await writeFile(join(dir, "tool-settings.json"), text);
-    assert.deepEqual(new ToolSettings(dir, (line) => said.push(line)).get(), {}, text);
-  }
+  // A file that does not read gives the defaults, its map marked unread (SETTINGS_UNREAD: approvals never lifts no ask
+  // over it); a file that reads with an entry dropped gives the defaults for that entry, unmarked.
+  await writeFile(join(dir, "tool-settings.json"), "{not json");
+  const unread = new ToolSettings(dir, (line) => said.push(line)).get();
+  assert.deepEqual(Object.keys(unread), [], "not JSON: the defaults");
+  assert.equal(unread[SETTINGS_UNREAD], true, "not JSON: marked unread");
+  await writeFile(join(dir, "tool-settings.json"), JSON.stringify({ web_search: { provider: "bing" } }));
+  assert.deepEqual(new ToolSettings(dir, (line) => said.push(line)).get(), {}, "an entry dropped: the defaults, unmarked (the file reads)");
   assert.equal(said.length, 2);
   assert.match(said[0], /tool-settings\.json does not read as JSON; every tool takes its defaults until a PUT/);
   assert.match(said[1], /tool-settings\.json: web_search\.provider not_an_option; that entry is dropped/);
