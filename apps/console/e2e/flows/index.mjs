@@ -13,6 +13,7 @@
 //   signedIn                                                 the page starts signed in (the owner set first if it has none)
 //   pending                                                  what the flow waits on; it doesn't run until then
 import connectGitHub from "./connect-github.mjs";
+import githubTrigger from "./github-trigger.mjs";
 import setupOpen from "./setup-open.mjs";
 import setupPublic from "./setup-public.mjs";
 import signIn from "./sign-in.mjs";
@@ -29,6 +30,8 @@ export const flows = [
   setupPublic,
   signIn,
   connectGitHub,
+  githubTrigger,
+  { name: "github-trigger-create", pending: "waits on a connected GitHub App without GitHub: the server's GitHub API (githubApi) is a programmatic option only, not a flag the built server takes" },
   templateApply,
   templateUnattended,
   runToEnd,
