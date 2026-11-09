@@ -52,9 +52,9 @@ async function bookedUsd(store) {
 }
 
 /** pi on `route` (its fetch, or `upstream` when the route sends to the network), with the host tool `note`. */
-const specOn = (route, upstream, calls = []) => (_claim, run) => ({
+const specOn = (route, upstream, calls = [], tools = { note: { name: "note", replaySafe: true, run: async () => (calls.push("note"), "noted") } }) => (_claim, run) => ({
   adapter: piAdapter({ run, model: route.model, provider: route.provider, ...(route.like ? { like: route.like } : {}), price: route.price, fetch: route.fetch ?? upstream }),
-  session: { key: "root", label: "root", system: ["Follow the script."], tools: hostTools({ note: { name: "note", replaySafe: true, run: async () => (calls.push("note"), "noted") } }), context: "fresh" },
+  session: { key: "root", label: "root", system: ["Follow the script."], tools: hostTools(tools), context: "fresh" },
   input: "Follow the script.",
   hooks: quiet,
   gate: () => "allow",
@@ -103,6 +103,31 @@ test("every source main's pi takes opens on the runner on its wire, offers the s
       assert.ok(gateway.requests.length >= 1 && gateway.requests.every((request) => request.path.endsWith(source.path)), JSON.stringify(gateway.requests.map((request) => request.path)));
       assert.deepEqual(toolsOf(gateway.requests[0]), ["note"], "the session's tool is offered");
       assert.ok((await bookedUsd(store)) > 0, "booked on the run's ledger");
+    });
+  }
+});
+
+/** A 1x1 PNG, as a screenshot tool would answer. */
+const PIXEL = "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mNk+M9QDwADhgGAWjR9awAAAABJRU5ErkJggg==";
+/** On each wire, a source that speaks it to the gateway, and whether a request carries the tool's image as that API
+ *  carries an image: Messages' image block of the tool result, Responses' input_image as a data URL. */
+const IMAGE_WIRES = {
+  "anthropic-messages": { source: SOURCES.anthropic, carries: (body) => (body.messages ?? []).some((message) => Array.isArray(message.content) && message.content.some((part) => part.type === "tool_result" && Array.isArray(part.content) && part.content.some((block) => block.type === "image" && block.source?.data === PIXEL))) },
+  "openai-responses": { source: SOURCES.gateway, carries: (body) => JSON.stringify(body.input ?? []).includes(`"input_image"`) && JSON.stringify(body.input ?? []).includes(PIXEL) },
+};
+
+test("a host tool's image reaches the model on either wire, as that wire carries an image", async (t) => {
+  assert.deepEqual(Object.keys(IMAGE_WIRES).sort(), Object.keys(WIRES).sort(), "every wire");
+  for (const [wire, { source, carries }] of Object.entries(IMAGE_WIRES)) {
+    await t.test(wire, async (t) => {
+      const gateway = await startFauxGateway({ call: (request) => (JSON.stringify(request.body ?? {}).includes("the page as it looks") ? undefined : { name: "shot", input: {} }) });
+      t.after(() => gateway.close());
+      const route = await routeOf(source.model, source.env(gateway.url), "default", PI_WIRES, toGateway(gateway.url));
+      assert.equal(route.provider.api, wire);
+      const shot = { shot: { name: "shot", replaySafe: true, run: async () => "the page as it looks", images: [{ mimeType: "image/png", data: PIXEL }] } };
+      const { row } = await capRun(t, { specOf: () => specOn(route, toGateway(gateway.url), [], shot), beforeRequest: () => undefined });
+      assert.equal(row.state, "ended", JSON.stringify(row));
+      assert.ok(gateway.requests.some((request) => carries(request.body)), `a request carries the tool's image: ${JSON.stringify(gateway.requests.map((request) => request.body?.input ?? request.body?.messages)).slice(0, 2000)}`);
     });
   }
 });
