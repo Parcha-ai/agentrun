@@ -204,7 +204,7 @@ export async function cliRunSpecFromLaunch(launch: RunLaunch, run: AdapterRun, d
   await layOwnSkills(ws.workspace, (revisionRow.skills ?? {}) as Record<string, string>, { computer: (launch as { computer?: ComputerSetting }).computer?.kind });
   // A learning run's seed laid as the pi spec lays it (runner/learning-seed.ts), its learned skills then in the skill list
   // the harness is handed (its native skills, or the prompt's).
-  const seedLaid = start
+  const seedLaid = start && !seedFailed(start)
     ? await layLearningSeed({
       work: ws.workspace,
       seed: start.seed,

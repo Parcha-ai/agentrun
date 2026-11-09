@@ -404,7 +404,7 @@ export async function adapterRunSpecFromLaunch(launch: RunLaunch, run: AdapterRu
   // A learning run's seed, read once from its learning folder where the run's place keeps it: its notes in .learning/
   // and its learned skills beside the revision's own (runner/learning-seed.ts), cut of the server's secrets, the learned
   // skills then in the skill list the prompt names. A learning fault lays nothing and the run goes on.
-  const seedLaid = start
+  const seedLaid = start && !seedFailed(start)
     ? await layLearningSeed({
       work: ws.workspace,
       seed: start.seed,
