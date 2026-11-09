@@ -55,6 +55,14 @@ function dispatchLoop(deps: DispatchDeps, loopDeps: LoopDeps): Loop {
   /** start()'s promise, so stop() for a run whose inner loop is not chosen yet resolves only once start() settles (the
    *  inner loop has been told to stop, or the run failed to choose one and writes nothing). */
   let started: Promise<LoopEnd> | undefined;
+  /** Resolved once the commands buffered before the inner loop was chosen have been replayed through its command(). */
+  let replayed: () => void = () => {};
+  const earlyReplayed = new Promise<void>((resolve) => (replayed = resolve));
+  // The inner loop's `delivered` must not resolve until the runner's first delivery is done AND every command this
+  // dispatch buffered before the inner loop was chosen has reached its command(): a loop that parks on `delivered` (the
+  // adapter loop) would otherwise wake with a buffered answer still held here and park again, never ending. The runner's
+  // delivered sees this dispatch's command() return at once for a buffered row, so the wait for the replay is added here.
+  const innerDeps: LoopDeps = { ...loopDeps, delivered: Promise.all([loopDeps.delivered ?? Promise.resolve(), earlyReplayed]).then(() => undefined) };
 
   async function begin(claim: Claim): Promise<LoopEnd> {
     const row = await deps.launchOf(claim.runId);
@@ -65,9 +73,14 @@ function dispatchLoop(deps: DispatchDeps, loopDeps: LoopDeps): Loop {
     if (!factory) throw new UnknownHarness(harness);
     // Set the inner loop and start it before anything awaits: a command() or stop() that interleaves here sees it, so no
     // buffered row and no buffered stop is lost between choosing the loop and replaying what was buffered.
-    inner = factory(loopDeps);
+    inner = factory(innerDeps);
     const end = inner.start(claim);
-    for (const command of early.splice(0)) void inner.command(command);
+    // Replay the buffered commands through the inner loop in order, each awaited, then let its `delivered` resolve.
+    const buffered = early.splice(0);
+    void (async () => {
+      for (const command of buffered) await inner!.command(command);
+      replayed();
+    })();
     if (earlyStop) void inner.stop(earlyStop);
     return end;
   }

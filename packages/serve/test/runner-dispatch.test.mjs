@@ -51,8 +51,12 @@ test("dispatch picks the harness the launch names and runs the run on its loop",
   inner.finish();
   assert.deepEqual(await run, { state: "ended" });
   assert.deepEqual(inner.log, [["start", "run-1"]]);
-  // The inner loop runs on the dispatch's own LoopDeps, so the runner's fence, flush and signal reach it unchanged.
-  assert.equal(inner.depsOf(), deps);
+  // The inner loop runs on the runner's own journal, flush and signal; the dispatch only wraps `delivered` so it also
+  // waits for the commands it buffered to be replayed.
+  const inDeps = inner.depsOf();
+  assert.equal(inDeps.journal, deps.journal, "the runner's journal reaches the inner loop");
+  assert.equal(inDeps.flush, deps.flush, "the runner's flush reaches the inner loop");
+  assert.equal(inDeps.signal, deps.signal, "the runner's signal reaches the inner loop");
 });
 
 test("the default harness (pi) is chosen when the launch body names none", async () => {
