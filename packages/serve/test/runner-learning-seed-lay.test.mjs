@@ -1,11 +1,15 @@
 // A learning run's claim lays its seed (the commit its learning start pinned, read once from the agent's learning folder)
-// into the run's work under .learning/, through the run's Workspace, on both spec builders: pi's (adapterRunSpecFromLaunch)
-// and the CLI harnesses' (cliRunSpecFromLaunch: claude-agent, codex). MEMORY.md, each active note and each active learned
-// skill's files land at .learning/<path as the seed read gives it>, and the run's own read tool reads them. Mode 2 lays
-// them on the run's Archil disk under the run's key. The lay only writes: what is there already stays. A run with no
-// learning start lays nothing; a seed the folder no longer has lays nothing, logs one line, and the claim goes on.
+// into the run's work through the run's Workspace, on both spec builders: pi's (adapterRunSpecFromLaunch) and the CLI
+// harnesses' (cliRunSpecFromLaunch: claude-agent, codex), as main's start laid it (learning.ts pinSeed, minus the pin):
+// - .learning/, made fresh: the served index (MEMORY.md) and each active note, each cut of the server's secrets (the
+//   runner's own and every key saved on the server); the run's own read tool reads a note there;
+// - each active learned skill at .agents/skills/<name>/ (its SKILL.md as a harness is served it), in the skill list the
+//   harness is handed (pi's prompt; codex's native skills), unless a revision skill has its name;
+// - Mode 2: both on the run's Archil disk under the run's key, from the disk's learning folder, nothing on this machine.
+// A run with no learning start lays nothing; a seed the folder no longer has lays nothing, logs one line, and the claim
+// goes on.
 import assert from "node:assert/strict";
-import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { existsSync, mkdtempSync, readFileSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { test } from "node:test";
@@ -22,6 +26,7 @@ const { runFolder, runKey } = await import("../dist/workspace/paths.js");
 const { learningWorkspace, ARCHIL_API_KEY_ROW } = await import("../dist/workspace/index.js");
 const { learningCommit } = await import("../dist/learn/commit.js");
 const { folderTestHooks } = await import("../dist/learn/folder.js");
+const { servedSkill } = await import("../dist/learn/skills.js");
 const { seedOf } = await import("../dist/learning.js");
 const { saveArchilSettings } = await import("../dist/archil-settings.js");
 const { sealColumn, sealedAt } = await import("../dist/store/seal.js");
@@ -33,16 +38,20 @@ const RUN = "run-1";
 const SEAL_KEY = Buffer.alloc(32, 7);
 const ARCHIL_SETTINGS = { diskId: "dsk-0000000000000001", region: "aws-us-east-1", s3Url: "https://s3.green.us-east-1.aws.prod.archil.com" };
 const STAND_IN = new URL("./fixtures/fake-opencode-serve.mjs", import.meta.url).pathname;
+/** A key saved on the server, plainly a test value, never a real one. */
+const SAVED = { name: "SOME_SERVICE_KEY", value: "saved-value-for-the-cut-0001" };
 const NOTE = "---\nname: Retry slowly\ndescription: Back off between retries\ntype: reference\n---\nWait a little longer after each failed call.\n";
+const LEAKY = `---\nname: Use the key\ndescription: Call the service\ntype: reference\n---\nCall it with ${SAVED.value} in the header.\n`;
 const SKILL = "---\nname: weekly-summary\ndescription: Summarize the week.\n---\nList the week's items, newest first.\n";
 const scratch = (name) => mkdtempSync(join(process.env.TMPDIR ?? tmpdir(), name));
+const skillAt = (work) => join(work, ".agents", "skills", "weekly-summary", "SKILL.md");
 
-/** Lands the seed in `data`'s learning folder for the agent (a note, and a learned skill unless `skill` is false), and
+/** Lands the seed in `data`'s learning folder for the agent (a note, a learned skill, and `more` notes by file), and
  *  answers its commit: the sha a run's learning start pins. */
-async function landSeed(data, { skill = true } = {}) {
+async function landSeed(data, { note = NOTE, more = {} } = {}) {
   const folder = learningWorkspace({ mode: "local", data, agentId: AGENT });
   try {
-    for (const [file, text] of [["retry-slowly.md", NOTE], ...(skill ? [["skills/weekly-summary/SKILL.md", SKILL]] : [])]) {
+    for (const [file, text] of [["retry-slowly.md", note], ["skills/weekly-summary/SKILL.md", SKILL], ...Object.entries(more)]) {
       const made = await learningCommit(folder.workspace, { kind: "person", action: "created", file, text, ifMatch: null });
       assert.equal(made.ok, true, JSON.stringify(made));
     }
@@ -63,24 +72,20 @@ async function readThrough(spec, path) {
 }
 
 /** pi's spec for a learning run claimed through runner-spec-support; `seed`: "landed" (the seed is in the folder),
- *  "gone" (the start pins a commit the folder does not have), or "none" (no learning start). `work`: files put in the
- *  run's work before the claim, by path. */
-async function piSpec(t, { seed = "landed", work = {} } = {}) {
+ *  "gone" (the start pins a commit the folder does not have), or "none" (no learning start). `skills`: the revision's
+ *  own skills. `more`: more seed notes. */
+async function piSpec(t, { seed = "landed", skills, more } = {}) {
   const launch = {};
-  const built = await specFor(t, {
+  return specFor(t, {
     body: { learning: true, tools: ["read"] },
+    ...(skills ? { skills } : {}),
+    keys: { [SAVED.name]: SAVED.value },
     launch,
     before: async (_server, _key, dir) => {
-      if (seed === "landed") launch.learning = startAt(await landSeed(dir));
+      if (seed === "landed") launch.learning = startAt(await landSeed(dir, { more }));
       if (seed === "gone") launch.learning = startAt("0".repeat(40));
-      for (const [path, text] of Object.entries(work)) {
-        const at = join(runFolder(dir, AGENT, RUN), path);
-        mkdirSync(join(at, ".."), { recursive: true });
-        writeFileSync(at, text);
-      }
     },
   });
-  return { ...built, workFolder: built.workFolder };
 }
 
 /** A CLI harness's spec for a learning run, built for its claim as the dispatch builds it (no session opened), the way
@@ -105,12 +110,7 @@ async function cliSpec(t, harness, { seed = "landed", archil } = {}) {
   // decoy note of other text in the local data directory, which a Mode 2 run must never lay.
   const sha = seed === "landed" ? await landSeed(diskFolder ?? dir) : seed === "gone" ? "0".repeat(40) : undefined;
   if (archil) {
-    const folder = learningWorkspace({ mode: "local", data: dir, agentId: AGENT });
-    try {
-      await learningCommit(folder.workspace, { kind: "person", action: "created", file: "retry-slowly.md", text: NOTE.replace("Wait a little longer", "Call again at once"), ifMatch: null });
-    } finally {
-      await folder.end();
-    }
+    await landSeed(dir, { note: NOTE.replace("Wait a little longer", "Call again at once") });
     folderTestHooks.workspace = (place) => learningWorkspace({ mode: "local", data: place.mode === "archil" ? diskFolder : place.data, agentId: place.agentId });
   }
   const model = harness === "claude-agent" ? { provider: "anthropic", modelId: "claude-haiku-4-5" } : { provider: "openai", modelId: "gpt-5" };
@@ -141,46 +141,56 @@ async function cliSpec(t, harness, { seed = "landed", archil } = {}) {
   return { spec: built, dir, log, workFolder: runFolder(dir, AGENT, RUN) };
 }
 
-test("pi: a learning run's claim lays its seed under .learning/ (MEMORY.md, the note, the learned skill's file), and the run's read tool reads the note", async (t) => {
+test("pi: a learning run's claim lays .learning/ (the index, the note), the learned skill into .agents/skills, names it in the prompt, and the read tool reads the note", async (t) => {
   const { spec, workFolder } = await piSpec(t);
   assert.equal(readFileSync(join(workFolder, ".learning", "retry-slowly.md"), "utf8"), NOTE);
-  assert.equal(readFileSync(join(workFolder, ".learning", "skills", "weekly-summary", "SKILL.md"), "utf8"), SKILL, "a learned skill's files are laid too");
-  assert.ok(existsSync(join(workFolder, ".learning", "MEMORY.md")), "the index");
+  assert.ok(existsSync(join(workFolder, ".learning", "MEMORY.md")), "the served index");
+  assert.equal(existsSync(join(workFolder, ".learning", "skills")), false, "a learned skill is no file of .learning/");
+  assert.equal(readFileSync(skillAt(workFolder), "utf8"), servedSkill(SKILL), "the learned skill, as a harness is served it");
+  assert.match(spec.session.system.join("\n"), /weekly-summary/, "pi's prompt names the learned skill");
   const read = await readThrough(spec, ".learning/retry-slowly.md");
   assert.equal(read.isError, false, read.text);
   assert.match(read.text, /Wait a little longer after each failed call\./);
 });
 
 for (const harness of ["claude-agent", "codex"]) {
-  test(`${harness}: a learning run's claim lays its seed under .learning/, and the run's read tool reads the note`, async (t) => {
+  test(`${harness}: a learning run's claim lays .learning/ and the learned skill, and the run's read tool reads the note`, async (t) => {
     const { spec, workFolder } = await cliSpec(t, harness);
     assert.equal(readFileSync(join(workFolder, ".learning", "retry-slowly.md"), "utf8"), NOTE);
-    assert.equal(readFileSync(join(workFolder, ".learning", "skills", "weekly-summary", "SKILL.md"), "utf8"), SKILL);
+    assert.equal(readFileSync(skillAt(workFolder), "utf8"), servedSkill(SKILL));
     const read = await readThrough(spec, ".learning/retry-slowly.md");
     assert.equal(read.isError, false, read.text);
     assert.match(read.text, /Wait a little longer after each failed call\./);
   });
 }
 
-test("Mode 2: the seed from the disk's learning folder is laid on the run's Archil disk under the run's key, never in this machine's run folder", async (t) => {
+test("Mode 2: the seed from the disk's learning folder lands on the run's Archil disk under the run's key, never on this machine", async (t) => {
   const disk = new FakeArchilDisk();
   const { workFolder } = await cliSpec(t, "codex", { archil: disk });
   const key = runKey(AGENT, RUN);
   assert.equal(disk.files.get(`${key}/.learning/retry-slowly.md`)?.toString("utf8"), NOTE, "the disk's seed, not the local decoy");
-  assert.equal(disk.files.get(`${key}/.learning/skills/weekly-summary/SKILL.md`)?.toString("utf8"), SKILL);
+  assert.equal(disk.files.get(`${key}/.agents/skills/weekly-summary/SKILL.md`)?.toString("utf8"), servedSkill(SKILL));
   assert.equal(existsSync(join(workFolder, ".learning")), false, "nothing laid on this machine for a Mode 2 run");
 });
 
-test("the lay only writes: a .learning/ file already in the run's work (an earlier claim's, the run's own) stays as it is", async (t) => {
-  const { workFolder } = await piSpec(t, { work: { ".learning/retry-slowly.md": "as the run left it\n", ".learning/kept.md": "the run's own\n" } });
-  assert.equal(readFileSync(join(workFolder, ".learning", "retry-slowly.md"), "utf8"), "as the run left it\n", "not written over");
-  assert.equal(readFileSync(join(workFolder, ".learning", "kept.md"), "utf8"), "the run's own\n", "nothing removed");
-  assert.equal(readFileSync(join(workFolder, ".learning", "skills", "weekly-summary", "SKILL.md"), "utf8"), SKILL, "a missing one is laid");
+test("a note holding a key saved on the server is laid cut of it", async (t) => {
+  const { workFolder } = await piSpec(t, { more: { "use-the-key.md": LEAKY } });
+  const laid = readFileSync(join(workFolder, ".learning", "use-the-key.md"), "utf8");
+  assert.equal(laid.includes(SAVED.value), false, "the saved key's value is cut");
+  assert.match(laid, /Call it with .* in the header\./, "the rest of the note is there");
 });
 
-test("a run with no learning start lays nothing under .learning/", async (t) => {
+test("a revision skill named like a learned one is the revision's: the learned one is not laid over it", async (t) => {
+  const own = "---\nname: weekly-summary\ndescription: The revision's own.\n---\nOurs.\n";
+  const { workFolder } = await piSpec(t, { skills: { "weekly-summary/SKILL.md": own } });
+  assert.equal(readFileSync(skillAt(workFolder), "utf8"), own);
+  assert.equal(readFileSync(join(workFolder, ".learning", "retry-slowly.md"), "utf8"), NOTE, "the notes are laid all the same");
+});
+
+test("a run with no learning start lays nothing: no .learning/, no learned skill", async (t) => {
   const { workFolder } = await piSpec(t, { seed: "none" });
   assert.equal(existsSync(join(workFolder, ".learning")), false);
+  assert.equal(existsSync(skillAt(workFolder)), false);
 });
 
 test("a seed the learning folder no longer has lays nothing, logs one line, and the claim goes on", async (t) => {
@@ -190,7 +200,8 @@ test("a seed the learning folder no longer has lays nothing, logs one line, and 
   const cli = await cliSpec(t, "codex", { seed: "gone" });
   assert.ok(cli.spec.session, "the CLI spec is still built");
   assert.equal(existsSync(join(cli.workFolder, ".learning")), false);
-  const said = cli.log.filter((line) => /\.learning|learning seed|learned/.test(line));
+  assert.equal(existsSync(skillAt(cli.workFolder)), false);
+  const said = cli.log.filter((line) => /learn/.test(line));
   assert.equal(said.length, 1, JSON.stringify(cli.log));
   assert.match(said[0], /gone/);
 });
