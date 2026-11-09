@@ -127,31 +127,33 @@ export type LiveViewerStore = Pick<Store, "liveViewers">;
 export async function putLiveViewer(store: LiveViewerStore, sealKey: Buffer, claim: Claim, handover: LiveHandover): Promise<boolean> {
   if (!TAG.test(handover.tag)) throw new Error("a hand-over's tag is not a session's tag");
   const { tag, port, id, token } = handover;
-  return store.liveViewers.put(claim, { tag, port, id, sealed: sealColumn(sealKey, sealedAt.liveViewer(claim.runId, tag), token) });
+  // Every viewer this file hands over is the browser kind: pi-browser's own viewer. Other computer kinds (desktop, phone)
+  // get their own hand-over; the store's viewer table carries the kind so the kinds never collide on a shared tag.
+  return store.liveViewers.put(claim, { kind: "browser", tag, port, id, sealed: sealColumn(sealKey, sealedAt.liveViewer(claim.runId, "browser", tag), token) });
 }
 
 /** Session `tag`'s hand-over goes, and no other's; with no tag, every one of the run's (its runner let its sessions go). A
  *  tag that is not a session's names no row. */
 export async function dropLiveViewer(store: LiveViewerStore, claim: Claim, tag?: string): Promise<void> {
-  if (tag === undefined) return store.liveViewers.drop(claim);
-  if (TAG.test(tag)) await store.liveViewers.drop(claim, tag);
+  if (tag === undefined) return store.liveViewers.drop(claim, "browser");
+  if (TAG.test(tag)) await store.liveViewers.drop(claim, "browser", tag);
 }
 
 /** Run `runId`'s row as one hand-over, checked as the files were (a viewer's path id, a session's tag, a port, a time), its
  *  token opened and checked; undefined for anything else, a seal that does not open among them (never a throw). */
 function handoverOfRow(sealKey: Buffer, runId: string, row: Partial<LiveViewerRow>): LiveHandover | undefined {
-  if (!(Number.isInteger(row.port) && row.port! > 0 && row.port! < 65_536 && VIEWER_ID.test(String(row.id)) && typeof row.tag === "string" && TAG.test(row.tag) && Number.isFinite(row.at) && row.sealed instanceof Uint8Array)) return undefined;
+  if (!(row.kind === "browser" && Number.isInteger(row.port) && row.port! > 0 && row.port! < 65_536 && VIEWER_ID.test(String(row.id)) && typeof row.tag === "string" && TAG.test(row.tag) && Number.isFinite(row.at) && row.sealed instanceof Uint8Array)) return undefined;
   let token: string;
   try {
-    token = unsealColumn(sealKey, sealedAt.liveViewer(runId, row.tag), row.sealed).toString("utf8");
+    token = unsealColumn(sealKey, sealedAt.liveViewer(runId, "browser", row.tag), row.sealed).toString("utf8");
   } catch {
     return undefined;
   }
   return TOKEN.test(token) ? { port: row.port!, id: row.id!, token, tag: row.tag, at: row.at! } : undefined;
 }
 
-/** Run `runId`'s viewers as its live claim handed them over, newest first, each token opened with `sealKey`; a row that is
- *  not a hand-over is left out. */
+/** Run `runId`'s browser viewers as its live claim handed them over, newest first, each token opened with `sealKey`; a row
+ *  that is not a browser hand-over (another computer kind among them) is left out. */
 export async function readLiveViewers(store: LiveViewerStore, sealKey: Buffer, runId: string): Promise<LiveHandover[]> {
   const found = (await store.liveViewers.of(runId)).flatMap((row) => handoverOfRow(sealKey, runId, row) ?? []);
   return found.sort((a, b) => b.at! - a.at! || b.tag.localeCompare(a.tag));

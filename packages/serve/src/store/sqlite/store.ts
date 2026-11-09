@@ -15,6 +15,7 @@ import {
   type RunState, type Store, type StoreRole, type TemplatePackage, type Templates, type TriggerDef, type TriggerRow, type Triggers, type TriggerScope,
   FINAL_STATES, MCP_REFRESH_CALL_MS, MCP_REFRESH_LEASE_MS, type Learning, type LearningProposal, type Live, type LiveRow, type LiveViewerRow, type LiveViewers, type Mcp, type McpPinRow, type McpServerRow,
   type McpOauth, type McpOauthPendingRow, type SealedKeyRow, type SealedKeys, type Settings, type SettingRow, type TriggerSettingRow, type TriggerSettings,
+  type ViewerKind,
 } from "../store.js";
 import { Connection, type SqliteExecutor, type SqliteValue, type Statement } from "./connection.js";
 import { applyRunPatch, refuseLeftovers, RUN_COLUMNS, runOf, type RunRecord } from "./run-patch.js";
@@ -184,6 +185,9 @@ export async function openSqliteStore(options: SqliteStoreOptions): Promise<Stor
       found = await versionOf(connection);
     }
     if (found !== SCHEMA_VERSION) throw new SchemaVersionUnknown(file, found, SCHEMA_VERSION);
+    // The per-run viewer table was renamed browser_viewers → computer_viewers (schema.ts). Its rows are ephemeral, so none
+    // migrate; the server drops a stale browser_viewers an earlier build of this version left, so none lingers beside it.
+    if (role === "server") await connection.write([{ sql: "DROP TABLE IF EXISTS browser_viewers" }], { full: true });
   } catch (error) {
     await connection.close().catch(() => undefined);
     throw error;
@@ -517,28 +521,30 @@ class SqliteStore implements Store {
           const at = now();
           const fence = claimFence(claim, at);
           const changed = await tx.runCounted(
-            `INSERT INTO browser_viewers (run_id, tag, port, viewer_id, sealed, at, runner, epoch) SELECT id, ?, ?, ?, ?, ?, ?, ? FROM runs WHERE ${fence.where}
-              ON CONFLICT (run_id, tag) DO UPDATE SET port = excluded.port, viewer_id = excluded.viewer_id, sealed = excluded.sealed, at = excluded.at, runner = excluded.runner, epoch = excluded.epoch`,
-            viewer.tag, viewer.port, viewer.id, viewer.sealed, at, claim.runner, claim.epoch, ...fence.params,
+            `INSERT INTO computer_viewers (run_id, kind, tag, port, viewer_id, sealed, at, runner, epoch) SELECT id, ?, ?, ?, ?, ?, ?, ?, ? FROM runs WHERE ${fence.where}
+              ON CONFLICT (run_id, kind, tag) DO UPDATE SET port = excluded.port, viewer_id = excluded.viewer_id, sealed = excluded.sealed, at = excluded.at, runner = excluded.runner, epoch = excluded.epoch`,
+            viewer.kind, viewer.tag, viewer.port, viewer.id, viewer.sealed, at, claim.runner, claim.epoch, ...fence.params,
           );
           return changed > 0;
         }),
       // On the claim's epoch alone, as run_live's drop: a runner clearing its own rows after its lease ran out takes no
-      // one else's.
-      drop: async (claim, tag) => {
+      // one else's. No kind clears the whole run; a kind with no tag that kind's rows; a kind and a tag that one row.
+      drop: async (claim, kind, tag) => {
+        const narrow = kind === undefined ? "" : tag === undefined ? " AND kind = ?" : " AND kind = ? AND tag = ?";
+        const narrowParams = kind === undefined ? [] : tag === undefined ? [kind] : [kind, tag];
         await db.write([{
-          sql: `DELETE FROM browser_viewers WHERE run_id = ?${tag === undefined ? "" : " AND tag = ?"} AND EXISTS (SELECT 1 FROM runs WHERE id = ? AND epoch = ?)`,
-          params: [claim.runId, ...(tag === undefined ? [] : [tag]), claim.runId, claim.epoch],
+          sql: `DELETE FROM computer_viewers WHERE run_id = ?${narrow} AND EXISTS (SELECT 1 FROM runs WHERE id = ? AND epoch = ?)`,
+          params: [claim.runId, ...narrowParams, claim.runId, claim.epoch],
         }]);
       },
       // The server's read: only the run's epoch, under a live lease on the store's clock, written by the run's runner.
       of: async (runId) => {
-        const rows = await db.all<{ tag: string; port: number; viewer_id: string; sealed: Uint8Array; at: number; runner: string }>(
-          `SELECT v.tag, v.port, v.viewer_id, v.sealed, v.at, v.runner FROM browser_viewers v JOIN runs r ON r.id = v.run_id
+        const rows = await db.all<{ kind: ViewerKind; tag: string; port: number; viewer_id: string; sealed: Uint8Array; at: number; runner: string }>(
+          `SELECT v.kind, v.tag, v.port, v.viewer_id, v.sealed, v.at, v.runner FROM computer_viewers v JOIN runs r ON r.id = v.run_id
             WHERE v.run_id = ? AND v.epoch = r.epoch AND r.claimed_until >= ? AND v.runner = r.runner ORDER BY v.at DESC, v.tag`,
           runId, now(),
         );
-        return rows.map((row): LiveViewerRow => ({ tag: row.tag, port: row.port, id: row.viewer_id, sealed: new Uint8Array(row.sealed), at: row.at, runner: row.runner }));
+        return rows.map((row): LiveViewerRow => ({ kind: row.kind, tag: row.tag, port: row.port, id: row.viewer_id, sealed: new Uint8Array(row.sealed), at: row.at, runner: row.runner }));
       },
     };
 
@@ -641,8 +647,8 @@ class SqliteStore implements Store {
         runner, until, ...picked.map((row) => row.id),
       );
       const epochs = new Map(rows.map((row) => [row.id, row.epoch]));
-      // A take or reclaim leaves no viewer of an older claim behind: its rows go in this transaction.
-      for (const row of rows) await tx.run("DELETE FROM browser_viewers WHERE run_id = ? AND epoch < ?", row.id, row.epoch);
+      // A take or reclaim leaves no viewer of an older claim behind: its rows go in this transaction, every kind.
+      for (const row of rows) await tx.run("DELETE FROM computer_viewers WHERE run_id = ? AND epoch < ?", row.id, row.epoch);
       // A newer claim of a run supersedes its release here: journal() refuses by epoch, and the newer epoch passes.
       for (const { id } of picked) this.#released.delete(id);
       return picked.map(({ id, state }) => ({ runId: id, runner, epoch: epochs.get(id)!, until, from: state }));

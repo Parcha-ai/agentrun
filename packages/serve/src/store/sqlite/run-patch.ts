@@ -55,8 +55,8 @@ export async function applyRunPatch(tx: Pick<SqliteExecutor, "run" | "get">, cla
   // Released, the run holds nothing a runner showed: its run_live row goes in the same transaction, so a run read ended
   // never shows a running tool or a partial answer beside it.
   if (ending) await tx.run("DELETE FROM run_live WHERE run_id = ?", claim.runId);
-  // And its browser sessions' viewer hand-overs: a run read ended never names a viewer.
-  if (ending) await tx.run("DELETE FROM browser_viewers WHERE run_id = ?", claim.runId);
+  // And its computer sessions' viewer hand-overs, every kind: a run read ended never names a viewer.
+  if (ending) await tx.run("DELETE FROM computer_viewers WHERE run_id = ?", claim.runId);
   for (const each of also) {
     switch (each.table) {
       case "channel_posts": {

@@ -285,11 +285,13 @@ export const STORE_DDL: readonly string[] = [
     updated_at INTEGER NOT NULL
   ) STRICT`,
 
-  // A run's browser sessions' viewer hand-overs (store.liveViewers, browser-live.ts): one row per run and session tag,
-  // the viewer token sealed (sealedAt.liveViewer), written under the claim of `runner` at `epoch`. Gone with the run's
-  // end, a take or reclaim at a newer epoch, and the run.
-  `CREATE TABLE IF NOT EXISTS browser_viewers (
-    run_id TEXT NOT NULL REFERENCES runs (id) ON DELETE CASCADE,
+  // A run's computer sessions' viewer hand-overs (store.liveViewers, browser-live.ts): one row per run, computer kind
+  // (browser, desktop, phone) and session tag, the viewer token sealed (sealedAt.liveViewer), written under the claim of
+  // `runner` at `epoch`. Gone with the run's end, a take or reclaim at a newer epoch, and the run. The predecessor table
+  // browser_viewers is dropped at a server's open (sqlite/store.ts): its rows are ephemeral, so none migrate.
+  `CREATE TABLE IF NOT EXISTS computer_viewers (
+    run_id TEXT NOT NULL REFERENCES runs ON DELETE CASCADE,
+    kind TEXT NOT NULL CHECK (kind IN ('browser', 'desktop', 'phone')),
     tag TEXT NOT NULL,
     port INTEGER NOT NULL,
     viewer_id TEXT NOT NULL,
@@ -297,7 +299,7 @@ export const STORE_DDL: readonly string[] = [
     at INTEGER NOT NULL,
     runner TEXT NOT NULL,
     epoch INTEGER NOT NULL,
-    PRIMARY KEY (run_id, tag)
+    PRIMARY KEY (run_id, kind, tag)
   ) STRICT`,
 
   // Learning on the runner: what a run's end-of-run turn kept (the turn it asked and answered, and the proposal checked from
