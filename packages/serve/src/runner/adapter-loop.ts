@@ -98,6 +98,8 @@ function adapterLoop(specOf: (claim: Claim, run: AdapterRun) => AdapterRunSpec |
   let refusals = 0;
   /** The claim's first delivery is done (LoopDeps.delivered): every row the runner read is with the loop. */
   let delivered = false;
+  /** The run is parking at its cap (the early pause, from its commit on): a raise row is left for the next claim. */
+  let pausing = false;
   /** Resolved once the claim's Harness is open and its root known: a command's check reads the journal through it. */
   let opened: () => void = () => {};
   const ready = new Promise<void>((resolve) => (opened = resolve));
@@ -136,6 +138,9 @@ function adapterLoop(specOf: (claim: Claim, run: AdapterRun) => AdapterRunSpec |
    *  it woke (raises taken together resume it once). */
   const raise = async (command: Command): Promise<CommandOutcome> => {
     await ready;
+    // Parking at its cap: the pause is (being) journaled with the run parked, and this claim ends parked without a
+    // follow-up. The row is left untaken, so it wakes the run and the next claim resumes it from the pause.
+    if (pausing) return { later: "the run is parking at its cap: the raise resumes it on its next claim" };
     const check = specNow?.cap?.checkRaise;
     if (!check) return { refused: "This run has no cap to raise: a cap is named when a run starts." };
     raising.state ??= await raiseStateOf();
@@ -240,6 +245,9 @@ function adapterLoop(specOf: (claim: Claim, run: AdapterRun) => AdapterRunSpec |
             const park = spec.cap?.park(refusalOf(answer));
             if (park?.outcome === "parked" && !pausedAtRefusal && harness && gate && !gate.sealed) {
               const on = gate;
+              // From here a raise row waits for the next claim (raise): one taken now would answer no pause this claim
+              // resumes, and the run would be left parked with nothing to wake it.
+              pausing = true;
               try {
                 await pauseAtCap(harness, root ?? (await harness.root(context)), on, { pending: park.pending, words: park.words });
                 pausedAtRefusal = true;
