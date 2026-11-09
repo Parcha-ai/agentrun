@@ -352,8 +352,10 @@ in the kernel's tool registry, keyed by these groups.
   in each configuration, to its entry's capabilities. browserbase and kernel are data until their provider file joins
   the registry; that test then holds each to its file.
 - `testConnection()` (optional on `ComputerProvider`) is Settings' test of a provider's keys: ONE account-level read
-  that never creates a computer, so it never spends. Docker, Daytona and E2B list by the provider's own label, Orgo reads
-  its workspace's computers; Modal reads its app without making it (an app not made yet is still a connection). It answers `{ detail }` in words, or an
+  that never creates a computer, so it never spends. Docker (one `docker ps`), Daytona and E2B (one listing page) count
+  the provider's own computers by its label from that one answer, never reading each back, so a busy account answers as
+  fast and one computer's read never fails a working key; a further page reads "or more". Orgo reads its workspace's
+  computers; Modal reads its app without making it (an app not made yet is still a connection). It answers `{ detail }` in words, or an
   error: `unauthorized` for a key the vendor refused, `unreachable` for a vendor not reached in time, else the read's
   own code; no message carries a key. A full live check (create, then the kind's conformance) is the QA board's.
   `TestConnection` is the serve side's signature, `(providerId, { keys, signal })`, keys by their serve-side names.

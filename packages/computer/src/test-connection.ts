@@ -10,9 +10,17 @@ export function connectionError(error: ComputerError): ComputerError {
 	return error;
 }
 
+/**
+ * One listing by the provider's own label, as testConnection answers it: how many computers of this provider it found,
+ * "or more" when the vendor has another page the test did not read.
+ */
+export function countTested(vendor: string, counted: Result<{ count: number; more?: boolean }>): Result<{ detail: string }> {
+	if (!counted.ok) return fail(connectionError(counted.error).code, connectionError(counted.error).message);
+	const { count, more = false } = counted.value;
+	return ok({ detail: `${vendor} answered: ${count}${more ? " or more" : ""} ${count === 1 && !more ? "computer" : "computers"} of this provider` });
+}
+
 /** A list by the provider's own label, as testConnection answers it: how many computers of this provider it found. */
 export function listTested(vendor: string, listed: Result<readonly unknown[]>): Result<{ detail: string }> {
-	if (!listed.ok) return fail(connectionError(listed.error).code, connectionError(listed.error).message);
-	const n = listed.value.length;
-	return ok({ detail: `${vendor} answered: ${n} ${n === 1 ? "computer" : "computers"} of this provider` });
+	return countTested(vendor, listed.ok ? ok({ count: listed.value.length }) : listed);
 }

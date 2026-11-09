@@ -28,7 +28,7 @@ import {
 	type Refusal,
 } from "./provider.js";
 import { type ComputerError, type ComputerErrorCode, fail, ok, type Result } from "./result.js";
-import { listTested } from "./test-connection.js";
+import { countTested } from "./test-connection.js";
 import { waitUntil } from "./wait.js";
 
 /** The longest each kind of call may take, and the pauses between polls and retries. */
@@ -1083,9 +1083,20 @@ export class DaytonaProvider implements ComputerProvider {
 		return ok({ status: answer.value.status, ...(typeof state === "string" ? { state } : {}) });
 	}
 
-	/** Settings' test: a list by the provider's own label, one read of the account's sandboxes, which makes nothing. */
-	async testConnection(context: CallContext = {}): Promise<Result<{ detail: string }>> {
-		return listTested("Daytona", await this.list({}, context));
+	/**
+	 * Settings' test: one page of the account's sandboxes by the provider's own label, which makes nothing. The count is
+	 * read from the listing, with no read of each sandbox: a busy account answers as fast, and one sandbox's read never
+	 * fails a working key. A further page is "or more".
+	 */
+	async testConnection({ signal }: CallContext = {}): Promise<Result<{ detail: string }>> {
+		const query = new URLSearchParams({ labels: JSON.stringify({ [COMPUTER_LABEL]: "1" }), limit: "100" });
+		const answer = await this.#rest.json("GET", `${this.#rest.sandbox()}?${query}`, { retry: true }, signal);
+		if (!answer.ok) return countTested("Daytona", answer);
+		const value = answer.value as { items?: unknown; nextCursor?: unknown } | Sandbox[] | null;
+		const items = Array.isArray(value) ? value : Array.isArray(value?.items) ? (value.items as Sandbox[]) : undefined;
+		if (items === undefined) return countTested("Daytona", fail("daytona", "GET /sandbox: the listing is not a page of sandboxes"));
+		const next = Array.isArray(value) ? undefined : value?.nextCursor;
+		return countTested("Daytona", ok({ count: items.filter((item) => ours(item) && !going(item)).length, more: typeof next === "string" && next !== "" }));
 	}
 
 	async list(labels: Record<string, string>, { signal }: CallContext = {}): Promise<Result<ComputerInfo[]>> {

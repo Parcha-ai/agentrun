@@ -71,7 +71,7 @@ import {
 	type Refusal,
 } from "./provider.js";
 import { fail, ok, type Result } from "./result.js";
-import { listTested } from "./test-connection.js";
+import { countTested } from "./test-connection.js";
 
 /**
  * A Docker desktop: an image with an X server (test/fixtures/desktop/Dockerfile is the smallest, Debian and Xvfb).
@@ -768,9 +768,16 @@ export class DockerProvider implements ComputerProvider {
 		return this.#attached(report, signal);
 	}
 
-	/** Settings' test: a list by the provider's own label on this Docker host, which makes nothing. */
-	async testConnection(context: CallContext = {}): Promise<Result<{ detail: string }>> {
-		return listTested("Docker", await this.list({}, context));
+	/**
+	 * Settings' test: one docker ps by the provider's own label on this Docker host, which makes nothing. The count is the
+	 * names of its making that ps lists, with no inspect of each.
+	 */
+	async testConnection({ signal }: CallContext = {}): Promise<Result<{ detail: string }>> {
+		const ran = await this.#run(["ps", "-a", "--no-trunc", "--filter", `label=${COMPUTER_LABEL}=1`, "--format", "{{.Names}}"], signal);
+		if (!ran.ok) return countTested("Docker", ran);
+		if (ran.value.exitCode !== 0) return countTested("Docker", fail("docker", `docker ps failed: ${ran.value.stderr.trim()}`));
+		const names = ran.value.stdout.split("\n").map((line) => line.trim());
+		return countTested("Docker", ok({ count: names.filter((name) => NAME.test(name)).length }));
 	}
 
 	async list(labels: Record<string, string>, { signal }: CallContext = {}): Promise<Result<ComputerInfo[]>> {
