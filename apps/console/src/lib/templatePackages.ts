@@ -45,6 +45,12 @@ export function parametersOf(t: TemplateView, text: ParameterText): Record<strin
   return out;
 }
 
+/** The parameters form as it opens: each boolean at its served default ("true"/"false"), unticked with none; text and
+ *  numbers empty (their default is shown as a hint, and the server applies it when the field is left out). */
+export function startValues(t: TemplateView): ParameterText {
+  return Object.fromEntries(Object.entries(t.parameters).flatMap(([key, p]) => (p.type === "boolean" && typeof p.default === "boolean" ? [[key, String(p.default)]] : [])));
+}
+
 /** The gate names the owner ticked, in the template's order: the consent an apply sends (`grants`), nothing else. */
 export const grantsOf = (t: TemplateView, ticked: ReadonlySet<string>) => t.mcp.flatMap((m) => m.tools.map((x) => x.tool)).filter((g) => ticked.has(g));
 

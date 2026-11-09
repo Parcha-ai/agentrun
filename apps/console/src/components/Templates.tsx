@@ -7,7 +7,7 @@ import { Chip } from "@/components/ui/chip";
 import { type Client, ClientError, type FieldIssue } from "@/lib/client";
 import { keeper } from "@/lib/idempotency";
 import { type Problem, problem } from "@/lib/problem";
-import { grantsOf, issuesAt, needsOf, parametersOf, type ParameterText, templateHash, titleOf } from "@/lib/templatePackages";
+import { grantsOf, issuesAt, needsOf, parametersOf, type ParameterText, startValues, templateHash, titleOf } from "@/lib/templatePackages";
 import type { TemplateApplied, TemplateView } from "@/lib/v2";
 
 type Props = { v2: Client; go: (hash: string) => void };
@@ -71,7 +71,9 @@ const input = "w-full border bg-background px-3 py-2 font-mono text-[13px] outli
  *  ticks it), and what it needs. Apply sends the parameters as typed and the ticks as `grants`, under one Idempotency-Key a
  *  retry reuses. A refusal is the server's words at its field; a made agent opens, or, with warnings, they show first. */
 function ApplyTemplate({ v2, template: t, go }: Props & { template: TemplateView }) {
-  const [values, setValues] = useState<ParameterText>({});
+  // The form starts at the template's served defaults for its checkboxes (a box shows what is sent); a text field
+  // starts empty, its default as its hint, and is left out untouched for the server to apply that default.
+  const [values, setValues] = useState<ParameterText>(() => startValues(t));
   const [ticked, setTicked] = useState<Set<string>>(new Set());
   const [servers, setServers] = useState<Set<string> | null>(null);
   const [applying, setApplying] = useState(false);
@@ -130,7 +132,7 @@ function ApplyTemplate({ v2, template: t, go }: Props & { template: TemplateView
                 <span className="mb-1.5 block text-[12px] text-muted-foreground">{p.description}{p.pattern ? ` (as ${p.pattern})` : ""}</span>
                 {p.type === "boolean"
                   ? <input type="checkbox" checked={values[key] === "true"} onChange={(e) => setValues((v) => ({ ...v, [key]: e.target.checked ? "true" : "false" }))} />
-                  : <input className={input} type={p.type === "string" ? "text" : "number"} step={p.type === "integer" ? 1 : "any"} value={values[key] ?? ""} required={p.required}
+                  : <input className={input} type={p.type === "string" ? "text" : "number"} step={p.type === "integer" ? 1 : "any"} value={values[key] ?? ""} required={p.required} placeholder={p.default === undefined ? undefined : String(p.default)}
                       onChange={(e) => setValues((v) => ({ ...v, [key]: e.target.value }))} />}
               </label>
               <Issues issues={at(`parameters.${key}`)} />
