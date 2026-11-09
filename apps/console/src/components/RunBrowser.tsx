@@ -24,7 +24,7 @@ export function useRunBrowser(read: (() => Promise<RunBrowser>) | undefined, goi
   const has = !!read;
   useEffect(() => {
     if (!has || refused) return;
-    if (!going && answered.current) { setNow((prev) => (prev ? { state: "none" } : prev)); return; }
+    if (!going && answered.current) { setNow((prev) => (prev ? closed(prev) : prev)); return; }
     let alive = true;
     let timer: ReturnType<typeof setTimeout> | undefined;
     const once = async () => {
@@ -34,7 +34,7 @@ export function useRunBrowser(read: (() => Promise<RunBrowser>) | undefined, goi
         answered.current = true;
         if (next.state === "off") setNow(null);
         // An ended run's browser is closed, whatever it last said.
-        else if (!going) setNow({ state: "none" });
+        else if (!going) setNow(closed(next));
         // A same answer keeps the same object, so a live viewer's iframe is not touched by a poll.
         else setNow((prev) => (prev && prev.state === next.state && (prev.state !== "live" || (next.state === "live" && prev.viewer === next.viewer)) ? prev : next));
       } catch (e) {
@@ -48,6 +48,9 @@ export function useRunBrowser(read: (() => Promise<RunBrowser>) | undefined, goi
   }, [has, going, every, refused]);
   return now;
 }
+
+/** A computer that closed with its run: `none`, of the same kind, the agent's. */
+const closed = (from: RunBrowser): RunBrowser => (from.state === "off" ? from : { state: "none", kind: from.kind, hold: "agent" });
 
 /** The Browser tab: the agent's live page, watched through the session's viewer, or that it waits for its first page.
  *  The viewer (a same-origin path, its token in the fragment) is the iframe's src and nothing else: never the address

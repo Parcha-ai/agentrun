@@ -385,8 +385,8 @@ export const ROUTES: readonly Route[] = [
   { method: "POST", pattern: /^\/runs\/([^/]+)\/pause$/, name: "pauseRun" },
   { method: "POST", pattern: /^\/runs\/([^/]+)\/resume$/, name: "resumeRun" },
   { method: "GET", pattern: /^\/runs\/([^/]+)\/files$/, name: "listRunFiles" },
-  { method: "GET", pattern: /^\/runs\/([^/]+)\/browser$/, name: "getRunBrowser" },
-  { method: "POST", pattern: /^\/runs\/([^/]+)\/browser\/hand-back$/, name: "handBackRunBrowser" },
+  { method: "GET", pattern: /^\/runs\/([^/]+)\/computer$/, name: "getRunComputer" },
+  { method: "POST", pattern: /^\/runs\/([^/]+)\/computer\/hand-back$/, name: "handBackRunComputer" },
   { method: "GET", pattern: /^\/runs\/([^/]+)\/files\/(.+)$/, name: "readRunFile" },
   { method: "POST", pattern: /^\/files$/, name: "createFile", raw: true },
   { method: "GET", pattern: /^\/files$/, name: "listFiles" },
@@ -1992,7 +1992,7 @@ async function startHolding(options: ServeOptions, data: string, lock: ServerLoc
     }
     // A run's live browser view is a full-control credential for its browser: the owner's signed-in page alone, as approving
     // a note is (never a token a run, an MCP client or a script may hold).
-    if ((found.name === "getRunBrowser" || found.name === "handBackRunBrowser") && !byOwnerSession(req) && req.headers.authorization !== undefined) {
+    if ((found.name === "getRunComputer" || found.name === "handBackRunComputer") && !byOwnerSession(req) && req.headers.authorization !== undefined) {
       authFailed(`/v2${path}`, "browser_without_session");
       throw new ApiError("forbidden", owner ? "A run's live browser takes the owner's password sign-in in the console, never a token." : "A run's live browser takes the owner's password sign-in, and this server has no accounts (AGENTRUN_ACCOUNTS=0).");
     }
@@ -2166,7 +2166,7 @@ async function startHolding(options: ServeOptions, data: string, lock: ServerLoc
         if (found.name === "archiveRun") await runs.archived();
         return send(res, 200, await runs.view(run, linkOrigin(req)));
       }
-      case "getRunBrowser": {
+      case "getRunComputer": {
         const run = await needRun(id);
         // The run's open viewer first: its process holds the keys it started with, so a key deleted here since (the server's
         // keys now) never hides a browser that runs. Only the run's live process serves its view: a file one that is gone
@@ -2183,7 +2183,7 @@ async function startHolding(options: ServeOptions, data: string, lock: ServerLoc
         if (browser === undefined || isUnavailable(browser)) return send(res, 200, { state: "off", reason: browser === undefined ? "this run's agent has no browser tool" : whyUnavailable(browser) }, { "cache-control": "no-store" });
         return send(res, 200, { state: "none" }, { "cache-control": "no-store" });
       }
-      case "handBackRunBrowser": {
+      case "handBackRunComputer": {
         // The owner's answer to the agent's ask for them in its browser (browser-person.ts): the first answer wins, the same
         // one again is that answer, a different one is 409; an ask past its expiry has `expired`.
         const run = await needRun(id);

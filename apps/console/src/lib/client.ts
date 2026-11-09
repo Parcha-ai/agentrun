@@ -173,8 +173,8 @@ export function createClient({ fetch: f = globalThis.fetch.bind(globalThis), bas
     getRun: (id: string) => call<Run>("GET", run(id)),
     /** What the run's learning changed in its agent's notes, file by file (each with its patch, or why it is withheld). */
     runLearningDiff: (id: string) => call<LearningDiff>("GET", `${run(id)}/learning/diff`),
-    /** The run's browser: off, none or live with its viewer (RunBrowser). */
-    runBrowser: (id: string) => call<RunBrowser>("GET", `${run(id)}/browser`),
+    /** The run's computer: off, none or live with its viewer (RunBrowser, GET /v2/runs/{id}/computer). */
+    runBrowser: (id: string) => call<RunBrowser>("GET", `${run(id)}/computer`),
     /** Hides a run from the runs list (or shows it again), its history kept. The answer is the run. */
     archiveRun: (id: string) => call<Run>("POST", `${run(id)}/archive`, { body: {} }),
     unarchiveRun: (id: string) => call<Run>("POST", `${run(id)}/unarchive`, { body: {} }),
