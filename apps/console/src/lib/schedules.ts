@@ -1,3 +1,4 @@
+import cronstrue from "cronstrue";
 import { ClientError } from "./client";
 import { clock, when } from "./format";
 import type { Firing, Trigger, TriggerCreate, TriggerInput, TriggerSource, TriggerTarget } from "./v2";
@@ -35,9 +36,19 @@ export function span(seconds: number): string {
   return n === 1 ? unit : `${n} ${unit}s`;
 }
 
+/** A cron line in words, by cronstrue (MIT, no dependencies) on a 24-hour clock: "0 8 * * 1" is "At 08:00, only on
+ *  Monday". One it can't read stays as it is, said as a cron line. */
+export function cronWords(cron: string): string {
+  try {
+    return cronstrue.toString(cron, { use24HourTimeFormat: true, throwExceptionOnParseError: true, verbose: false });
+  } catch {
+    return `Cron ${cron}`;
+  }
+}
+
 /** When a schedule fires: its cron line and zone, its one time, or its interval. */
 export function whenWords(source: Schedule["source"]): string {
-  if ("cron" in source) return `Cron ${source.cron} · ${source.timezone}`;
+  if ("cron" in source) return `${cronWords(source.cron)} · ${source.timezone}`;
   if ("at" in source) return `Once, ${when(source.at)}`;
   return `Every ${span(source.every_s)}`;
 }
