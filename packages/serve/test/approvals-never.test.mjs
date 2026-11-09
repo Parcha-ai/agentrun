@@ -166,14 +166,18 @@ test("approvals takes ask or never: anything else is a 422 naming the field", as
   assert.match(field.message, /ask.*never/);
 });
 
-test("an apply's overrides.approvals sets the agent's approvals; none given asks; a wrong value is a 422", async (t) => {
+test("an apply's overrides.approvals sets the agent's approvals; none given takes the package's own; a wrong value is a 422", async (t) => {
   const { api } = await serve(t);
   const applied = await api("POST", "/templates/code-review/apply", { parameters: { repo: "Parcha-ai/agentrun" }, overrides: { approvals: "never" } });
   assert.equal(applied.status, 201, JSON.stringify(applied.body));
   assert.equal((await api("GET", `/agents/${applied.body.agent_id}`)).body.definition.approvals, "never");
+  // None given: the package's own (code-review runs unattended; kyb asks).
   const plain = await api("POST", "/templates/code-review/apply", { parameters: { repo: "Parcha-ai/agentrun" } });
   assert.equal(plain.status, 201, JSON.stringify(plain.body));
-  assert.equal((await api("GET", `/agents/${plain.body.agent_id}`)).body.definition.approvals, "ask", "none given: the agent asks");
+  assert.equal((await api("GET", `/agents/${plain.body.agent_id}`)).body.definition.approvals, "never", "none given: code-review's own default");
+  const kyb = await api("POST", "/templates/kyb/apply", { parameters: { risk_appetite: "medium" } });
+  assert.equal(kyb.status, 201, JSON.stringify(kyb.body));
+  assert.equal((await api("GET", `/agents/${kyb.body.agent_id}`)).body.definition.approvals ?? "ask", "ask", "none given: kyb asks");
   const wrong = await api("POST", "/templates/code-review/apply", { parameters: { repo: "Parcha-ai/agentrun" }, overrides: { approvals: "sometimes" } });
   assert.equal(wrong.status, 422, JSON.stringify(wrong.body));
   assert.equal(wrong.body.error.fields.find((f) => f.field === "overrides.approvals")?.reason, "not_an_option", JSON.stringify(wrong.body.error.fields));
