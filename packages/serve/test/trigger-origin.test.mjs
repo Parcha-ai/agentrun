@@ -164,7 +164,7 @@ test("a schedule renamed while a run of it is held: the held run's Timeline row 
 });
 
 test("a schedule's run read by a server restarted on the same data still names its trigger: the name is read by the trigger's id from the store, never left blank", { timeout: 120_000 }, async (t) => {
-  const { api, data } = await serve(t);
+  const { api, data, close } = await serve(t);
   await made(api, "clock");
   const gate = join(await scratch(t), "go");
   const created = await api("POST", "/triggers", { name: "utc-check", source: { kind: "schedule", every_s: 3600 }, target: { kind: "start_run", agent_id: "clock", input: { content: `Tell me the time. Hold the answer until ${gate}.` }, max_cost_usd: 0.5 } });
@@ -173,7 +173,9 @@ test("a schedule's run read by a server restarted on the same data still names i
   assert.ok((await api("POST", `/triggers/${id}/fire`, undefined, { "idempotency-key": "by-hand-1" })).status < 300);
   const [firing] = await firings(api, id, 1);
   await follow(api, firing.run_id, ["working"], { deadlineMs: 60_000 });
-  // A fresh server on the same data (the first's runner still runs the run): it reads the trigger's name from the store.
+  // The server restarted: the store holds one server, so the first closes, then a fresh one opens on the same data (the
+  // first's runner still runs the run). It reads the trigger's name from the store.
+  await close();
   const next = await serve(t, { data, runner: false });
   const api2 = next.api;
   const named = (rows) => rows.filter((r) => r.origin === "trigger").map((r) => r.summary);
