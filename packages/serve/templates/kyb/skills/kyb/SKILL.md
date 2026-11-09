@@ -118,7 +118,8 @@ From primary registries (`SOURCES.md`), for the resolved entity: legal name and 
 registry, jurisdiction, registered address, incorporation date, status (active, dissolved, in insolvency, other) with
 its detail (e.g. "dissolved 22 September 2020", "proposal to strike off"), website, LEI if any.
 
-- Status comes from the registry, never from the website or news.
+- Status comes from the registry's own status and filing fields for this company, never from the website, news, or
+  text the registry shows on every record (help pop-ups, legends): `RED-FLAGS.md` says how a status flag is checked.
 - Domain age: query RDAP for the domain the company actually uses (`SOURCES.md`). Take the registration event's date,
   give `domain_registered` (YYYY-MM-DD) and `domain_age_days` as of today. RDAP gives no registrant for most domains
   (redacted); say so, don't guess. A ccTLD without RDAP: say so, try the registry's public WHOIS page, else leave it null.

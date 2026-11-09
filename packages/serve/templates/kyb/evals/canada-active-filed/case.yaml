@@ -1,0 +1,4 @@
+# Applied with these parameters (POST /v2/templates/kyb/apply). Pass: 3 of 3 runs.
+parameters:
+  risk_appetite: medium
+  jurisdictions_of_interest: ""
