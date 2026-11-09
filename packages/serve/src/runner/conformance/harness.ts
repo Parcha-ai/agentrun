@@ -349,6 +349,17 @@ async function crashThenResume(subject: ConformanceSubject, t: { after(fn: () =>
   return { ...(await w.read()), ran };
 }
 
+/** Whether process `pid` is stopped (SIGSTOP), by the kernel's own word: the state field of /proc/<pid>/stat is "T". */
+function processStopped(pid: number): boolean {
+  try {
+    const stat = readFileSync(`/proc/${pid}/stat`, "utf8");
+    // The state follows the command name, which is in parentheses and may itself hold spaces or parentheses.
+    return stat.slice(stat.lastIndexOf(")") + 1).trim().split(" ")[0] === "T";
+  } catch {
+    return false;
+  }
+}
+
 /** The runner process the process cases start (child.ts), and its environment: never a test runner's own. */
 const CHILD = fileURLToPath(new URL("./child.js", import.meta.url));
 const childEnv = () => {
@@ -381,6 +392,9 @@ async function processCrashThenResume(subject: ConformanceSubject, t: { after(fn
   let continuedAt = 0;
   if (stall) {
     await until(() => childEvents(eventsFile).some((event) => (event as { type?: string }).type === "stopping"), `the runner process stops at ${point}`, EVENT_WAIT_MS);
+    // Its word is not the stop: a SIGCONT sent between the two is lost, and the process stays stopped for good. It goes
+    // on only once the kernel says it is stopped.
+    await until(() => processStopped(child.pid!), `the runner process is stopped (its state "T") at ${point}`, EVENT_WAIT_MS);
     w.runOut();
     continuedAt = Date.now();
     child.kill("SIGCONT");
