@@ -148,23 +148,41 @@ const EVENT_MAX_CHARS = 1 << 22;
 /** What a secret this proxy sent reads as in a provider's error the harness gets. */
 export const REDACTED = "[redacted]";
 
-/** The forms a provider may echo `secrets` in: as sent, JSON-escaped, and with "/" escaped as "\/" (some JSON encoders do),
- *  the longest first, so a form that holds a shorter one is cut whole. */
+/** The forms a provider may echo `secrets` in: as sent, JSON-escaped, with "/" escaped as "\/" (some JSON encoders do), and
+ *  both at once, the longest first, so a form that holds a shorter one is cut whole. */
 export function echoForms(secrets: readonly string[]): string[] {
-  const forms = secrets.filter((secret) => secret.length > 0).flatMap((secret) => [secret, JSON.stringify(secret).slice(1, -1), secret.replaceAll("/", "\\/")]);
+  const slashed = (text: string) => text.replaceAll("/", "\\/");
+  const forms = secrets.filter((secret) => secret.length > 0).flatMap((secret) => {
+    const escaped = JSON.stringify(secret).slice(1, -1);
+    return [secret, escaped, slashed(secret), slashed(escaped)];
+  });
   return [...new Set(forms)].sort((a, b) => b.length - a.length);
 }
+
+/** The most of an error the cut holds back while the host's redactor may still be reading a value it knows across the
+ *  pieces: no secret it holds is longer. */
+export const REDACT_WINDOW = 4096;
+/** The most of an event the relay holds while it cannot yet tell whether the event is an error's: past it, the event is
+ *  told from what came of it, and nothing of it is held whole. */
+export const EVENT_HOLD = 64 * 1024;
+/** The names, and data types, an error event has: Messages' and Responses' `error`, Responses' `response.failed`. */
+const ERROR_TYPES: ReadonlySet<string> = new Set(["error", "response.failed"]);
+/** A data line's JSON whose type comes first, as most providers write it: its type, readable before the line ends. */
+const TYPE_FIRST = /^\s*\{\s*"type"\s*:\s*"([^"]*)"/;
 
 /**
  * What the harness gets of a provider's answer: as it came, but for the provider's own words in an error, where a secret
  * this proxy sent (`forms`, echoForms) is cut out and then the host's `redact` runs.
- *   - `error` (an answer with an error status): every piece, cut as it comes, holding back only the end that could still
- *     begin a form (an error body the provider never finishes reaches the client as it comes); the body's end, cut, and
- *     any start of a form it ends on cut too.
- *   - `events` (a successful streamed answer): each event is read from its first line: an error event (`event: error` or
- *     `event: response.failed`, or a first data line whose JSON type is `error` or `response.failed`, or a gateway's
- *     `data: {"error": ...}`) is held to its end and cut whole; every other event passes as it comes, the start of each
- *     held only while it could still be an error event's (a stream with no line ends is never held).
+ *   - `error` (an answer with an error status): cut as it comes. What goes out is what can no longer change: the end that
+ *     could still begin a form is held, and, with a host redactor, the last REDACT_WINDOW characters too, so a value it
+ *     knows is never split between two of its readings. An error body the provider never finishes still reaches the
+ *     client as it comes, past what is held. The body's end is cut, and a start of a form it ends on is cut too.
+ *   - `events` (a successful streamed answer): each event is told from its fields, whatever their order: its `event:`
+ *     name, or its data's JSON (a type of `error` or `response.failed`, or an `error`), an `id:`, `retry:` or comment line
+ *     read past. An error event is cut as an error answer is, as it comes; every other event passes byte for byte. An
+ *     event is held only until it can be told (its name, or its data line whole), and at most EVENT_HOLD of it: past that
+ *     it is told from what came (a data line whose type comes first), and one that still cannot be is cut as an error's.
+ *     Nothing a healthy event sent is kept.
  *   - `as-is`: every piece as it came.
  * A `redact` that throws leaves the cut, and is said.
  */
@@ -186,39 +204,103 @@ export function errorCut(mode: "error" | "events" | "as-is", forms: readonly str
     for (const form of forms) for (let n = Math.min(form.length - 1, text.length); n > longest; n--) if (text.endsWith(form.slice(0, n))) longest = n;
     return longest;
   };
-  if (mode === "error") {
+  /** An error's text cut as it comes: all that came, cut and redacted again each time (both leave cut text as it is), less
+   *  the end that could still change: the start of a form, and with a host redactor the last REDACT_WINDOW characters. */
+  const cutter = () => {
     let held = "";
     return {
-      push(text) {
-        const all = cut(held + text);
-        const keep = startOfForm(all);
+      push(text: string): string {
+        const all = redacted(cut(held + text));
+        const keep = Math.min(all.length, Math.max(startOfForm(all), redact ? REDACT_WINDOW : 0));
         held = all.slice(all.length - keep);
-        return redacted(all.slice(0, all.length - keep));
+        return all.slice(0, all.length - keep);
       },
-      end() {
-        // A body that ends on the start of a form ends on part of a secret: cut too.
-        const rest = held ? REDACTED : "";
+      end(): string {
+        const rest = held;
         held = "";
-        return redacted(rest);
+        // Text that ends on the start of a form ends on part of a secret: cut too.
+        const part = startOfForm(rest);
+        return part ? `${rest.slice(0, rest.length - part)}${REDACTED}` : rest;
       },
     };
-  }
-  /** How an error event's first line starts, its whitespace taken out: Messages' and Responses' named events, a data line
-   *  whose JSON type is one, and a gateway's Chat Completions error (`data: {"error": ...}`). */
-  const ERROR_STARTS = ["event:error\n", "event:response.failed\n", 'data:{"type":"error"', 'data:{"type":"response.failed"', 'data:{"error"'];
-  const squeezed = (text: string) => text.replace(/[ \t\r\f\v]+/g, "");
-  /** Whether a whole first line is an error event's. */
-  const isError = (whole: string): boolean => ERROR_STARTS.some((start) => squeezed(whole).startsWith(start));
-  /** Whether a first line not yet whole could still be an error event's: it is the start of one of them, or holds one. */
-  const mayBeError = (part: string): boolean => {
-    const now = squeezed(part);
-    return ERROR_STARTS.some((start) => start.startsWith(now) || now.startsWith(start));
   };
-  /** The event's state: `start` until its first line shows what the event is (held while it could still be an error
-   *  event's), then `raw` (passed as it comes) or `error` (held whole). */
-  let state: "start" | "raw" | "error" = "start";
-  let line = "";
-  let event = "";
+  if (mode === "error") return cutter();
+
+  /** An event's field lines, `id:`, `retry:`, comments and unknown fields read past: its name, and its data's lines. */
+  const fieldsOf = (lines: readonly string[]): { name?: string; data: string[] } => {
+    const out: { name?: string; data: string[] } = { data: [] };
+    for (const raw of lines) {
+      const line = raw.replace(/\r$/, "");
+      if (!line || line.startsWith(":")) continue;
+      const at = line.indexOf(":");
+      const field = at === -1 ? line : line.slice(0, at);
+      const value = at === -1 ? "" : line.slice(at + 1).replace(/^ /, "");
+      if (field === "event") out.name = value.trim();
+      else if (field === "data") out.data.push(value);
+    }
+    return out;
+  };
+  /** Whether a data payload is an error's: its JSON's type is one, or it carries an `error`. Undefined when it does not
+   *  read as JSON (yet). */
+  const dataSays = (data: string): "error" | "raw" | undefined => {
+    let value: unknown;
+    try {
+      value = JSON.parse(data);
+    } catch {
+      return undefined;
+    }
+    if (typeof value !== "object" || value === null || Array.isArray(value)) return "raw";
+    const json = value as Record<string, unknown>;
+    return (typeof json.type === "string" && ERROR_TYPES.has(json.type)) || (json.error !== undefined && json.error !== null) ? "error" : "raw";
+  };
+  /** What an event not yet whole is, from its whole lines (`whole`) and the line still coming (`part`), if it can be told:
+   *  its name, else its first data line once that reads; past EVENT_HOLD, from a data line whose type comes first, else
+   *  an error's (a data line that cannot be told is cut) or a healthy event's (no data yet: nothing to cut). */
+  const verdict = (whole: readonly string[], part: string, held: number): "error" | "raw" | undefined => {
+    const fields = fieldsOf(whole);
+    if (fields.name !== undefined) return ERROR_TYPES.has(fields.name) ? "error" : "raw";
+    for (const data of fields.data) {
+      const said = dataSays(data);
+      if (said) return said;
+    }
+    if (held <= EVENT_HOLD) return undefined;
+    const coming = part.replace(/\r$/, "");
+    if (coming.startsWith("data:")) {
+      const type = TYPE_FIRST.exec(coming.slice(5))?.[1];
+      return type === undefined ? "error" : ERROR_TYPES.has(type) ? "error" : "raw";
+    }
+    return fields.data.length ? "error" : "raw";
+  };
+  /** A whole event that was never told: an error's when its name or its data says so, or it holds a form. */
+  const wholeIsError = (event: string): boolean => {
+    const fields = fieldsOf(event.split("\n"));
+    if (fields.name !== undefined && ERROR_TYPES.has(fields.name)) return true;
+    if (fields.data.length && dataSays(fields.data.join("\n")) === "error") return true;
+    return forms.some((form) => event.includes(form));
+  };
+
+  /** The event's state: `hold` until it can be told (its text so far in `held`, at most EVENT_HOLD and a piece), then
+   *  `raw` (passed as it comes, nothing kept) or `error` (cut as it comes). `lineChars`: the characters of the line coming,
+   *  for telling a blank line, which ends the event; nothing a raw event sent is kept. */
+  let state: "hold" | "raw" | "error" = "hold";
+  let held = "";
+  let lineChars = 0;
+  let errorCutter: ReturnType<typeof cutter> | undefined;
+  const decide = (to: "error" | "raw"): string => {
+    const text = held;
+    held = "";
+    state = to;
+    if (to === "raw") return text;
+    errorCutter = cutter();
+    return errorCutter.push(text);
+  };
+  const eventEnds = (): string => {
+    const out = state === "hold" ? (wholeIsError(held) ? redacted(cut(held)) : held) : state === "error" ? errorCutter!.end() : "";
+    state = "hold";
+    held = "";
+    errorCutter = undefined;
+    return out;
+  };
   return {
     push(text) {
       let out = "";
@@ -226,42 +308,29 @@ export function errorCut(mode: "error" | "events" | "as-is", forms: readonly str
         const end = text.indexOf("\n", at);
         const piece = end === -1 ? text.slice(at) : text.slice(at, end + 1);
         at += piece.length;
-        line += piece;
+        lineChars += (end === -1 ? piece : piece.slice(0, -1)).replace(/\r$/, "").length;
         if (state === "raw") out += piece;
-        if (end === -1) break;
-        const blank = line === "\n" || line === "\r\n";
-        if (state === "start") {
-          if (blank) out += line;
-          else if (isError(line)) {
-            state = "error";
-            event = line;
-          } else {
-            state = "raw";
-            out += line;
+        else if (state === "error") out += errorCutter!.push(piece);
+        else held += piece;
+        if (end !== -1) {
+          const blank = lineChars === 0;
+          lineChars = 0;
+          if (blank) {
+            out += eventEnds();
+            continue;
           }
-        } else if (state === "error") event += line;
-        if (blank && state !== "start") {
-          if (state === "error") out += redacted(cut(event));
-          state = "start";
-          event = "";
         }
-        line = "";
-      }
-      // An event's first line not yet whole is held only while it could still be an error event's; once it cannot, the
-      // event is raw and what came of it goes out now (a stream with no line ends is never held). A raw event's partial
-      // line went out as it came.
-      if (state === "start" && line && !mayBeError(line)) {
-        state = "raw";
-        out += line;
+        if (state === "hold" && (end !== -1 || held.length > EVENT_HOLD)) {
+          const lines = held.split("\n");
+          const part = lines.pop() ?? "";
+          const told = verdict(lines, part, held.length);
+          if (told) out += decide(told);
+        }
       }
       return out;
     },
     end() {
-      const rest = state === "error" ? redacted(cut(event + line)) : state === "start" ? redacted(cut(line)) : "";
-      line = "";
-      event = "";
-      state = "start";
-      return rest;
+      return eventEnds();
     },
   };
 }
