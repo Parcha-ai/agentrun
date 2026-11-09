@@ -98,9 +98,10 @@ export type ToolHost = {
   claim?: Claim;
   /** The key the live-viewer tokens are sealed under before they go to the store (store/seal.ts). */
   sealKey?: Buffer;
-  /** The claim's one-ledger booking (the kernel cap's paidCalls, paid-calls.ts PaidBooking), handed by the adapter loop:
-   *  the runner binds the browser only with it (browserSpend's `paid`), so no browser call is held on this process's own
-   *  spend. Absent today (the loop does not hand it yet), so the runner lists no browser tool. */
+  /** The claim's one-ledger booking (the kernel cap's paidCalls, paid-calls.ts PaidBooking), handed by the adapter loop.
+   *  The browser passes it to browserSpend (`{ paid }`), so its calls are held and settled there and a session's release
+   *  is booked there, never on this process's own spend. The runner binds the browser only with it (bindNonHandTools):
+   *  the loop does not hand it yet, so today the runner lists no browser tool. */
   paid?: PaidBooking;
 };
 
@@ -364,7 +365,9 @@ const browserTool: ToolEntry = {
     // Its session time is the run's spend, at its provider's price, and held under the run's cap (browser-cost.ts).
     const providerName = (parts.provider as { name?: string } | undefined)?.name ?? vendor;
     const price = browserPrice(providerName, host.env);
-    const spend = browserSpend(providerName, price, DEFAULT_BROWSER_POLICY.idleReleaseS, (conversation, at) => browser.release(conversation as never, "close", at));
+    // On the runner, the claim's one ledger (host.paid): each call held and settled there, and a session's release one more
+    // request there, never this process's own spend. Undefined on the old per-run process: browserSpend's own then.
+    const spend = browserSpend(providerName, price, DEFAULT_BROWSER_POLICY.idleReleaseS, (conversation, at) => browser.release(conversation as never, "close", at), undefined, { paid: host.paid });
     // browser_downloads is listed only with a workspace to copy into, and only a provider that keeps a session's downloads
     // (Browserbase's; Kernel's keeps none) has any: without one, uploads still read the run's work/, through `files`.
     const downloads = typeof (parts.provider as { downloads?: unknown } | undefined)?.downloads === "object";
@@ -429,6 +432,9 @@ const browserTool: ToolEntry = {
           if (conversation) await browser.release(conversation as never, "close", context);
         }
         await browser.drain(harness as never, context);
+        // The releases' charges are booked on the claim's one ledger before the run's release returns, so the run's end
+        // commit, which ends the claim, never fences one (nothing to wait for off the ledger).
+        await spend.ledgerIdle();
       } finally {
         // Every viewer's token dies with the process's hold on its sessions, and the hand-over with it; the person's
         // holds go, and the asks with them.
