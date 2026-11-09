@@ -32,10 +32,11 @@ test("Mode 1 (run folders on this machine): a sandbox is Docker's alone; a deskt
   assert.deepEqual(kindOf(view, "desktop").groups, ["screen", "input.pointer", "input.keys", "exec", "files", "processes", "apps", "stream"], "required, then optional");
   assert.deepEqual(kindOf(view, "desktop").tools, ["screenshot", "computer_input"], "the kind's tools, from the kernel registry");
   assert.deepEqual(kindOf(view, "sandbox").providers.map((one) => one.id), ["docker", "daytona", "modal", "e2b"], "the providers whose capabilities serve the kind");
-  assert.deepEqual(providerOf(view, "sandbox", "docker"), { id: "docker", name: "Docker", keys: [], ready: true });
+  assert.deepEqual(providerOf(view, "sandbox", "docker"), { id: "docker", name: "Docker", metered: false, keys: [], ready: true });
+  assert.equal(providerOf(view, "sandbox", "daytona").metered, true, "metered as the kind registry says");
   assert.equal(providerOf(view, "sandbox", "daytona").ready, false);
   assert.match(providerOf(view, "sandbox", "daytona").why, /Daytona can't mount this server's run folders/);
-  assert.deepEqual(providerOf(view, "phone", "phone-harness"), { id: "phone-harness", name: "Phone harness", keys: [{ name: "PHONE_HARNESS_API_KEY", required: true, saved: false }], ready: false, why: "Phone harness needs PHONE_HARNESS_API_KEY saved: save it in Settings → Computers (PUT /v2/computers/phone-harness/keys)" });
+  assert.deepEqual(providerOf(view, "phone", "phone-harness"), { id: "phone-harness", name: "Phone harness", metered: true, keys: [{ name: "PHONE_HARNESS_API_KEY", required: true, saved: false }], ready: false, why: "Phone harness needs PHONE_HARNESS_API_KEY saved: save it in Settings → Computers (PUT /v2/computers/phone-harness/keys)" });
   assert.equal(kindOf(view, "sandbox").offered, true);
 });
 
@@ -71,7 +72,7 @@ test("a key save takes only the provider's declared names, seals each in the sto
   await assert.rejects(routes.saveKeys("browserbase", { BROWSERBASE_API_KEY: 7 }), (error) => error instanceof KeysRefused && error.fields[0].reason === "wrong_type");
   assert.deepEqual(await store.sealedKeys.all(), [], "nothing saved when any name is refused");
   const saved = await routes.saveKeys("browserbase", { BROWSERBASE_API_KEY: "good-b1", BROWSERBASE_PROJECT_ID: "good-proj" });
-  assert.deepEqual(saved, { id: "browserbase", name: "Browserbase", keys: [{ name: "BROWSERBASE_API_KEY", required: true, saved: true }, { name: "BROWSERBASE_PROJECT_ID", required: true, saved: true }], ready: true });
+  assert.deepEqual(saved, { id: "browserbase", name: "Browserbase", metered: true, keys: [{ name: "BROWSERBASE_API_KEY", required: true, saved: true }, { name: "BROWSERBASE_PROJECT_ID", required: true, saved: true }], ready: true });
   assert.ok(!JSON.stringify(saved).includes("good-b1"), "never echoed");
   assert.ok(!JSON.stringify(await routes.view()).includes("good-b1"), "nor in the view");
   assert.equal(await getSealedKey(store, sealKey, "BROWSERBASE_API_KEY"), "good-b1", "sealed, and opens with the server's key");
