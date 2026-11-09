@@ -25,9 +25,9 @@ const fromServer = (row: TimelineRow) => row.origin === "server";
 /** A trigger's message, a webhook's input or a schedule's (served `origin: "trigger"`): the trigger's, never the person's. */
 const fromTrigger = (row: TimelineRow) => row.origin === "trigger";
 /** The title a row shows: its summary without the kind's own prefix ("Thinking: ", "You: ", a server message's
- *  "AgentRun: ", a trigger's "Trigger <its id>: "). */
+ *  "AgentRun: ", a trigger's "<Source> <its name>: ", e.g. "Webhook inbound-lead: "). */
 const title = (row: TimelineRow) => {
-  const text = (row.summary ?? "").replace(fromServer(row) ? /^AgentRun:\s*/ : fromTrigger(row) ? /^Trigger [^:]+:\s*/ : /^(You|Thinking|Asked you|Waiting for you):\s*/, "");
+  const text = (row.summary ?? "").replace(fromServer(row) ? /^AgentRun:\s*/ : fromTrigger(row) ? /^[^:]+:\s*/ : /^(You|Thinking|Asked you|Waiting for you):\s*/, "");
   // A workflow run's input is a JSON object: show its fields, not its braces.
   if (row.kind === "user_message" && text.startsWith("{")) {
     try { return Object.entries(JSON.parse(text) as Record<string, unknown>).map(([k, v]) => `${k}: ${typeof v === "string" ? v : JSON.stringify(v)}`).join(" · "); } catch { /* not whole JSON: as is */ }
