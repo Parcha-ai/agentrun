@@ -4,7 +4,7 @@
 // with more than one statement is one transaction (connection.transaction, BEGIN IMMEDIATE): all of it or none of it.
 // The domain code below (the SqliteStore class, storeOver) is written once for SQLite and Postgres (a Postgres store opens
 // it on its own connection): what differs, and the locks Postgres's many writers take, is the connection's Dialect (store/dialect.ts).
-import { existsSync, mkdirSync, readdirSync, statSync } from "node:fs";
+import { existsSync, mkdirSync, readdirSync, realpathSync, statSync } from "node:fs";
 import { join } from "node:path";
 import { DatabaseSync } from "node:sqlite";
 import { claimFence } from "../fence.js";
@@ -21,6 +21,7 @@ import {
 } from "../store.js";
 import type { Dialect } from "../dialect.js";
 import { Connection, type SqliteExecutor, type SqliteValue, type Statement, type StoreConnection, type Tx } from "./connection.js";
+import { inMemory } from "./memory.js";
 import { applyRunPatch, refuseLeftovers, RUN_COLUMNS, runOf, SIGN_IN_HANDED_LOCK, type RunRecord } from "./run-patch.js";
 import { readLaunch, writeLaunch } from "./run-launch.js";
 
@@ -200,6 +201,16 @@ function isThisVersionsStore(file: string): boolean {
   }
 }
 
+/** In-memory stores opened in this process: each is its own data, so each gets its own `where`. */
+let memoryStores = 0;
+
+/** A SQLite store's identity (Store.where): its database file's real path, so two instances over one file (two roles, a
+ *  path given two ways) share it; an in-memory database is its own data, never another's. */
+function whereOf(file: string): string {
+  if (inMemory(file)) return `sqlite:memory:${++memoryStores}`;
+  return `sqlite:${realpathSync(file)}`;
+}
+
 /** Opens the store in `dataDir` (its file is STORE_FILE there), or at `file` (the store's own tests). As the server (the
  *  default): makes the data directory, takes the owner lock (StoreOwned when another server holds it) and, on a store with
  *  no schema yet, sets schema SCHEMA_VERSION up in one durable commit. As a runner: makes and sets up nothing. Either
@@ -241,7 +252,7 @@ export async function openSqliteStore(options: SqliteStoreOptions): Promise<Stor
     await connection.close().catch(() => undefined);
     throw error;
   }
-  return storeOver(connection, options.now ?? Date.now);
+  return storeOver(connection, options.now ?? Date.now, whereOf(file));
 }
 
 /** How many released claims a store remembers, to refuse their journals. */
@@ -256,9 +267,9 @@ function fenced(claim: Claim, sql: string, params: readonly SqliteValue[]): Stat
 }
 
 /** The Store over `connection`, on whichever database it is (SQLite here, Postgres in postgres/store.ts), on the store's
- *  clock `now` (ms). The opener sets the schema up and checks its version first. */
-export function storeOver(connection: StoreConnection, now: () => number): Store {
-  return new SqliteStore(connection, now);
+ *  clock `now` (ms), its identity `where` (Store.where). The opener sets the schema up and checks its version first. */
+export function storeOver(connection: StoreConnection, now: () => number, where: string): Store {
+  return new SqliteStore(connection, now, where);
 }
 
 /** The store's domain code, written once for both databases: its SQL takes `?` parameters, and what a database says
@@ -281,6 +292,7 @@ class SqliteStore implements Store {
   readonly #now: () => number;
   /** The runs a runner may claim (claimableIn), as this store's database says it. */
   readonly #claimable: string;
+  readonly where: string;
   /** Each claim's one journal, until it is closed. */
   readonly #journals = new Map<string, RunStorage>();
   /** Each run's claim this store released last (its epoch): journal() refuses that claim, or an older one, rather than
@@ -290,9 +302,10 @@ class SqliteStore implements Store {
    *  epoch check in its own transaction. The map refuses early; the epoch is what guarantees it. */
   readonly #released = new Map<string, number>();
 
-  constructor(db: StoreConnection, now: () => number) {
+  constructor(db: StoreConnection, now: () => number, where: string) {
     this.#db = db;
     this.#now = now;
+    this.where = where;
     const d = db.dialect;
     this.#claimable = claimableIn(d);
 

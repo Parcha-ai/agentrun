@@ -44,6 +44,20 @@ test("a Postgres store's place names its host, database and schema, never the UR
   assert.equal(postgresWhere("postgres://127.0.0.1/agentrun", "t_1"), "postgres:127.0.0.1/agentrun/t_1");
 });
 
+test("a Postgres store's where is its place: the server and a runner on one schema share it, another schema's differs", ONLY, async (t) => {
+  const schema = await schemaFor(t);
+  const server = await openPostgresStore({ url: PG_URL, schema });
+  t.after(() => server.close());
+  const runner = await openPostgresStore({ url: PG_URL, schema, role: "runner" });
+  t.after(() => runner.close());
+  assert.equal(server.where, postgresWhere(PG_URL, schema));
+  assert.equal(runner.where, server.where, "one data, one where");
+  const other = await schemaFor(t);
+  const elsewhere = await openPostgresStore({ url: PG_URL, schema: other });
+  t.after(() => elsewhere.close());
+  assert.notEqual(elsewhere.where, server.where);
+});
+
 test("a second server on the same schema is refused (StoreOwned); once the first closes, a server opens it", ONLY, async (t) => {
   const schema = await schemaFor(t);
   const first = await openPostgresStore({ url: PG_URL, schema, role: "server" });

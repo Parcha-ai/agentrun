@@ -752,6 +752,11 @@ export interface LiveViewers {
 export type StoreRole = "server" | "runner";
 
 export interface Store {
+  /** Where this store's data is, as an identity two instances over the same data share and two over different data never
+   *  do: "sqlite:" and the database file's real path, or "sqlite:memory:<n>" for an in-memory one (each its own data);
+   *  a store over a database server names its host, database and schema, never a user, a password or a credential.
+   *  What waits on another claim's work in this process keys on it (mcp-claim.ts), not on an object. */
+  readonly where: string;
   readonly agents: Agents;
   readonly templates: Templates;
   readonly triggers: Triggers;

@@ -66,5 +66,5 @@ export async function openPostgresStore(options: PostgresStoreOptions): Promise<
     await connection.close().catch(() => undefined);
     throw error;
   }
-  return storeOver(connection, now);
+  return storeOver(connection, now, postgresWhere(options.url, schema));
 }
