@@ -8,6 +8,7 @@ import { mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { fileURLToPath } from "node:url";
+import { strictOptions } from "./strict-options.mjs";
 
 const { createAdapterLoop } = await import("../dist/runner/adapter-loop.js");
 const { resolveHarness } = await import("../dist/runner/adapters/index.js");
@@ -92,7 +93,10 @@ function tracked(adapter) {
 /** The adapter loop's spec for the suite's setup: OpenCode as the runner's harnesses give it (resolveHarness), on the
  *  stand-in, its model through the session's proxy to the script, the run's visible record kept by the loop. One
  *  sessions folder per loop: a resume on another runner opens the session from the run's journal. */
-export function openCodeSpec({ script, tools, hooks, agentId }, options = {}) {
+export function openCodeSpec(setup, options = {}) {
+  strictOptions("openCodeSpec's setup", setup, ["script", "tools", "hooks", "agentId"]);
+  strictOptions("openCodeSpec", options, ["fetch", "requests"]);
+  const { script, tools, hooks, agentId } = setup;
   const sessionsDir = mkdtempSync(join(process.env.TMPDIR ?? tmpdir(), "agentrun-opencode-conformance-"));
   dirs.push(sessionsDir);
   const harness = resolveHarness("opencode");
