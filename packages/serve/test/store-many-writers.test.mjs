@@ -6,10 +6,12 @@
 // read from Postgres itself (pg_blocking_pids), never from a timer, and no test sleeps.
 import assert from "node:assert/strict";
 import { test } from "node:test";
+import { BACKGROUND_CONTEXT } from "@earendil-works/chord/context";
+import { commitWrites } from "@earendil-works/pi-durable/testing";
 import { queued, storeOn } from "./store-helpers.mjs";
 import { client, postgresOnly, schemaOf } from "./store-target.mjs";
 
-const { endedReason, RunFinal, SignInHandedTo, TriggerFull } = await import("../dist/store/index.js");
+const { endedReason, Fenced, RunFinal, SignInHandedTo, TriggerFull } = await import("../dist/store/index.js");
 
 const ONLY = postgresOnly("the many-writer locks (SQLite's one writer lock serializes these)");
 
@@ -39,6 +41,92 @@ async function watcherOf(t) {
   t.after(() => c.end().catch(() => undefined));
   return c;
 }
+
+/** The pid of the session `holder`'s lock holds up, once one is: a store call stopped mid-transaction at what `holder`
+ *  locked, everything before that point (its run-row lock among it) already held. */
+async function heldUp(watcher, holder) {
+  for (;;) {
+    const blocked = await watcher.query("SELECT pid FROM pg_stat_activity WHERE $1 = ANY(pg_blocking_pids(pid)) LIMIT 1", [holder.pid]);
+    if (blocked.rows[0]) return blocked.rows[0].pid;
+    await new Promise((resolve) => setImmediate(resolve));
+  }
+}
+
+/** A journal commit of run-1 under `claim`, in flight: its first commit landed (the journal open), then a second one held up
+ *  past its fence at the journal's metadata table, which another session holds. Returns the commit, its session's pid,
+ *  the journal, and `letGo()`, which ends the hold. */
+async function commitInFlight(t, store, file, claim, watcher) {
+  const journal = store.journal(claim);
+  await commitWrites(journal, [{ type: "conversation", value: { id: 1 } }], BACKGROUND_CONTEXT);
+  const entry = { id: await journal.mintId(), conversationId: 1, kind: "pi.user", model: [{ role: "user", content: "Go." }] };
+  const table = await otherWriter(t, file);
+  await table.sql("LOCK TABLE pi_metadata IN ACCESS EXCLUSIVE MODE");
+  const commit = commitWrites(journal, [{ type: "entry", value: entry }], BACKGROUND_CONTEXT);
+  commit.catch(() => undefined);
+  const pid = await heldUp(watcher, table);
+  return { commit, pid, journal, letGo: () => table.sql("ROLLBACK") };
+}
+
+test("a renew never waits for a journal commit in flight on its run: the commit holds the run's row shared, never against a lease's move", ONLY, async (t) => {
+  const { store, file } = await storeOn(t);
+  await queued(store);
+  const claim = await store.claim("run-1", "runner-a", { leaseMs: 30_000 });
+  const watcher = await watcherOf(t);
+  const inFlight = await commitInFlight(t, store, file, claim, watcher);
+  const renew = store.renew(claim, { leaseMs: 30_000 });
+  const seen = await whileHeld(renew, inFlight.pid, watcher);
+  await inFlight.letGo();
+  await inFlight.commit;
+  await renew;
+  assert.equal(seen.settled, "resolved", `the renew went through while the commit was in flight (it ${seen.settled})`);
+});
+
+test("a takeover of a run whose lease ran out while its journal commit is in flight waits for that commit, and the old claim's next commit is refused", ONLY, async (t) => {
+  const { store, file, clock } = await storeOn(t);
+  await queued(store);
+  const claim = await store.claim("run-1", "runner-a", { leaseMs: 1_000 });
+  const watcher = await watcherOf(t);
+  const inFlight = await commitInFlight(t, store, file, claim, watcher);
+  clock.now += 2_000;
+  const takeover = store.claim("run-1", "runner-b", { leaseMs: 30_000 });
+  const seen = await whileHeld(takeover, inFlight.pid, watcher);
+  await inFlight.letGo();
+  await inFlight.commit;
+  const taken = await takeover;
+  assert.equal(seen.settled, "waits", `the takeover waited for the commit in flight (it ${seen.settled})`);
+  assert.deepEqual([taken?.runner, taken?.epoch], ["runner-b", 2], "then took the run at the next epoch");
+  await assert.rejects(commitWrites(inFlight.journal, [{ type: "conversation", value: { id: 2 } }], BACKGROUND_CONTEXT), Fenced, "the old claim commits nothing more");
+});
+
+test("a release while its run's journal commit is in flight waits for that commit, then moves the epoch on", ONLY, async (t) => {
+  const { store, file } = await storeOn(t);
+  await queued(store);
+  const claim = await store.claim("run-1", "runner-a", { leaseMs: 30_000 });
+  const watcher = await watcherOf(t);
+  const inFlight = await commitInFlight(t, store, file, claim, watcher);
+  const release = store.release(claim, { state: "parked" });
+  const seen = await whileHeld(release, inFlight.pid, watcher);
+  await inFlight.letGo();
+  await inFlight.commit;
+  await release;
+  assert.equal(seen.settled, "waits", `the release waited for the commit in flight (it ${seen.settled})`);
+  await assert.rejects(commitWrites(inFlight.journal, [{ type: "conversation", value: { id: 2 } }], BACKGROUND_CONTEXT), Fenced, "the released claim commits nothing more");
+});
+
+test("a run's end while its journal commit is in flight waits for that commit, then ends the run", ONLY, async (t) => {
+  const { store, file } = await storeOn(t);
+  await queued(store);
+  const claim = await store.claim("run-1", "runner-a", { leaseMs: 30_000 });
+  const watcher = await watcherOf(t);
+  const inFlight = await commitInFlight(t, store, file, claim, watcher);
+  const end = store.runs.update(claim, { state: "ended", outcome: "completed", summary: "done", costUsd: 0 });
+  const seen = await whileHeld(end, inFlight.pid, watcher);
+  await inFlight.letGo();
+  await inFlight.commit;
+  await end;
+  assert.equal(seen.settled, "waits", `the end waited for the commit in flight (it ${seen.settled})`);
+  assert.equal((await store.runs.get("run-1"))?.state, "ended", "then ended the run");
+});
 
 test("a second claimer takes the next run while the first holds one, without waiting for it", ONLY, async (t) => {
   const { store, file } = await storeOn(t);
@@ -105,8 +193,10 @@ test("a command written while the run's end is open is refused, never left untak
   await queued(store);
   await store.claim("run-1", "runner-a", { leaseMs: 30_000 });
   const watcher = await watcherOf(t);
-  // The run's end in flight: its fenced final write and its refusal of the rows it leaves (run-patch.ts), not committed.
+  // The run's end in flight: the run's row held as an epoch's move holds it (runs.update, dialect lockRow "update"), its
+  // fenced final write and its refusal of the rows it leaves (run-patch.ts), not committed.
   const end = await otherWriter(t, file);
+  await end.sql("SELECT 1 FROM runs WHERE id = 'run-1' FOR UPDATE");
   await end.sql("UPDATE runs SET state = 'ended', ended_at = $1, runner = NULL, claimed_until = NULL, epoch = epoch + 1 WHERE id = 'run-1'", clock.now);
   await end.sql("UPDATE commands SET taken_at = $1, refused = $2 WHERE run_id = 'run-1' AND taken_at IS NULL", clock.now, endedReason("ended"));
   const command = store.command("run-1", { kind: "steer", body: { text: "and then" } });
@@ -124,7 +214,9 @@ test("a live put while the run's end is open waits, then writes nothing beside t
   await queued(store);
   const claim = await store.claim("run-1", "runner-a", { leaseMs: 30_000 });
   const watcher = await watcherOf(t);
+  // The run's end in flight, its row held as an epoch's move holds it (dialect lockRow "update").
   const end = await otherWriter(t, file);
+  await end.sql("SELECT 1 FROM runs WHERE id = 'run-1' FOR UPDATE");
   await end.sql("UPDATE runs SET state = 'ended', ended_at = $1, runner = NULL, claimed_until = NULL, epoch = epoch + 1 WHERE id = 'run-1'", clock.now);
   await end.sql("DELETE FROM run_live WHERE run_id = 'run-1'");
   const put = store.live.put([{ claim, state: { tool: "search" } }]);

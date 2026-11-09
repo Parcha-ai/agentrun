@@ -104,6 +104,18 @@ const CLAIMABLE_AT = (at: number): number[] => [at, at, at, at, at];
 /** What a claim sets: the next epoch, the runner and its lease, running, no backoff. */
 const CLAIM_SET = "epoch = epoch + 1, runner = ?, claimed_until = ?, state = 'running', backoff_until = NULL";
 
+/** A write under `claim` that keeps the run's epoch (a take, a retry, a pin; the journal's commit does the same): holds the
+ *  run's row shared (dialect shareLock), so a write that moves the epoch waits for it and a renew never does, then checks
+ *  the claim's fence on the store's clock read once the row is held. Fenced when the claim no longer holds the run.
+ *  Returns that clock reading. */
+async function underClaim(tx: Tx, claim: Claim, now: () => number): Promise<number> {
+  await tx.run(`SELECT 1 FROM runs WHERE id = ?${tx.dialect.shareLock}`, claim.runId);
+  const at = now();
+  const fence = claimFence(claim, at);
+  if ((await tx.get(`SELECT 1 AS held FROM runs WHERE ${fence.where}`, ...fence.params)) === undefined) throw new Fenced(claim.runId, claim.epoch);
+  return at;
+}
+
 const agentOf = (r: AgentRecord): AgentRow => ({ id: r.id, name: r.name, description: r.description, currentRevision: r.current_revision, createdAt: r.created_at, archivedAt: r.archived_at });
 const revisionOf = (r: RevisionRecord): RevisionRow => ({
   id: r.id, agentId: r.agent_id, parent: r.parent_id, kind: r.kind, body: JSON.parse(r.body), skills: r.skills === null ? null : JSON.parse(r.skills),
@@ -722,7 +734,8 @@ class SqliteStore implements Store {
         if (Array.isArray(rows) || typeof rows !== "object" || rows === null) throw new TypeError("runs.update's third argument is { also?, take?, signInSettleMs? }");
         const { also = [], take = [], signInSettleMs = 0 } = rows;
         return db.transaction(async (tx): Promise<UpdatedRun> => {
-          await d.lockRow(tx, "runs", "id", claim.runId);
+          // A run update may end the run, moving its epoch on: held against every write under the claim (dialect lockRow).
+          await d.lockRow(tx, "runs", "id", claim.runId, "update");
           const at = now();
           const row = await applyRunPatch(tx, claim, patch, also, at, d);
           for (const commandId of take) {
@@ -785,9 +798,7 @@ class SqliteStore implements Store {
       pinOnce: (claim, body) =>
         db.transaction(async (tx) => {
           // Under the claim's epoch and its lease: a runner paused past its lease pins nothing.
-          await d.lockRow(tx, "runs", "id", claim.runId);
-          const fence = claimFence(claim, now());
-          await tx.step(fenced(claim, `UPDATE runs SET epoch = epoch WHERE ${fence.where}`, fence.params));
+          await underClaim(tx, claim, now);
           await tx.run("INSERT INTO mcp_pins (run_id, body, pinned_at) VALUES (?, ?, ?) ON CONFLICT (run_id) DO NOTHING", claim.runId, json(body), now());
           return mcpPinOf((await tx.get<McpPinRecord>("SELECT run_id, body, pinned_at FROM mcp_pins WHERE run_id = ?", claim.runId))!);
         }),
@@ -1128,8 +1139,9 @@ class SqliteStore implements Store {
     const leaving = state !== undefined && state !== "running";
     await this.#db.transaction(async (tx) => {
       // A run its end already made final was released by that end (applyRunPatch): this release is a no-op, no second
-      // move of its epoch and no error, whatever its claim's lease says now.
-      await this.#holdRun(tx, claim.runId);
+      // move of its epoch and no error, whatever its claim's lease says now. The release moves the epoch: the row is held
+      // against every write under the claim (dialect lockRow "update"), so one in flight lands first.
+      await this.#db.dialect.lockRow(tx, "runs", "id", claim.runId, "update");
       const final = await tx.get<{ state: RunState; runner: string | null }>("SELECT state, runner FROM runs WHERE id = ?", claim.runId);
       if (final && FINAL_STATES.includes(final.state) && final.runner === null) return;
       const now = this.#now();
@@ -1241,19 +1253,14 @@ class SqliteStore implements Store {
   async take(claim: Claim, commandId: number, outcome: "taken" | "refused" = "taken", reason?: string): Promise<void> {
     // The clock is read inside the transaction, so the lease check and the write are one.
     await this.#db.transaction(async (tx) => {
-      await this.#holdRun(tx, claim.runId);
-      const now = this.#now();
-      const fence = claimFence(claim, now);
-      await tx.step(fenced(claim, `UPDATE runs SET epoch = epoch WHERE ${fence.where}`, fence.params));
+      const now = await underClaim(tx, claim, this.#now);
       await tx.run("UPDATE commands SET taken_at = ?, refused = ? WHERE id = ? AND run_id = ? AND taken_at IS NULL", now, outcome === "refused" ? (reason ?? "refused") : null, commandId, claim.runId);
     });
   }
 
   async retry(claim: Claim, commandId: number): Promise<number> {
     const counted = await this.#db.transaction(async (tx) => {
-      await this.#holdRun(tx, claim.runId);
-      const fence = claimFence(claim, this.#now());
-      await tx.step(fenced(claim, `UPDATE runs SET epoch = epoch WHERE ${fence.where}`, fence.params));
+      await underClaim(tx, claim, this.#now);
       return tx.all<{ tries: number }>("UPDATE commands SET tries = tries + 1 WHERE id = ? AND run_id = ? AND taken_at IS NULL RETURNING tries", commandId, claim.runId);
     });
     const row = counted[0];

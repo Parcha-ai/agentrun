@@ -40,12 +40,15 @@ export interface Dialect {
   /** After the SELECT of the one run a claim names (claim(runId)): lock its row, waiting for a write in flight on it, so a
    *  run whose holder is merely writing is read as it is once that write ends, never skipped as held. */
   readonly claimOneLock: string;
-  /** After a SELECT of a run row a write depends on: hold it, so a writer of the row (a run's end, a claim) waits, and this
-   *  waits for one in flight, then reads its outcome. */
+  /** After a SELECT of a run row a write depends on (a command's insert, a live or viewer put, a fenced write that keeps
+   *  the epoch: a journal commit, a take, a retry, a pin): hold it shared, so a write that moves the run's epoch (a claim,
+   *  a release, a run's end, each of which takes the row `lockRow(..., "update")`) waits for this one, and this waits for
+   *  one in flight, then reads its outcome. A renew, which moves only the lease, never waits for it. */
   readonly shareLock: string;
   /** Holds the row `table`.`column` = `value` until the transaction ends: a read-modify-write of what hangs off it (a
-   *  trigger's firings, an agent's current revision) is not interleaved with another. */
-  lockRow(tx: LockExecutor, table: string, column: string, value: string): Promise<void>;
+   *  trigger's firings, an agent's current revision) is not interleaved with another. `"update"`: the run row of a write
+   *  that moves its epoch (a release, a run's end), held against every write under the claim (`shareLock`) as well. */
+  lockRow(tx: LockExecutor, table: string, column: string, value: string, mode?: "update"): Promise<void>;
   /** Holds the named lock until the transaction ends: two transactions that each check, then write what the other checks. */
   lockKey(tx: LockExecutor, key: string): Promise<void>;
 }

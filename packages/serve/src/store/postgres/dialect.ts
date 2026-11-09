@@ -26,11 +26,14 @@ export function postgresDialect(schema: string): Dialect {
     insertedRow: "NULL",
     claimLock: " FOR UPDATE SKIP LOCKED",
     claimOneLock: " FOR UPDATE",
-    shareLock: " FOR SHARE",
+    // FOR KEY SHARE: conflicts only with FOR UPDATE (an epoch's move: lockRow "update", a claim), never with a renew's
+    // FOR NO KEY UPDATE, so a renew never waits behind a journal commit or a command in flight.
+    shareLock: " FOR KEY SHARE",
     // `table` and `column` are the store's own names, never input. FOR NO KEY UPDATE: as an UPDATE of the row's other
-    // columns locks it, so a row hanging off it (a command, a firing) is still written meanwhile.
-    lockRow: async (tx: LockExecutor, table: string, column: string, value: string) => {
-      await tx.run(`SELECT 1 FROM ${table} WHERE ${column} = ? FOR NO KEY UPDATE`, value);
+    // columns locks it, so a row hanging off it (a command, a firing) is still written meanwhile. FOR UPDATE ("update"): a
+    // write that moves a run's epoch, which waits for every write under the claim holding the row shared.
+    lockRow: async (tx: LockExecutor, table: string, column: string, value: string, mode?: "update") => {
+      await tx.run(`SELECT 1 FROM ${table} WHERE ${column} = ? FOR ${mode === "update" ? "UPDATE" : "NO KEY UPDATE"}`, value);
     },
     lockKey: async (tx: LockExecutor, key: string) => {
       await tx.run("SELECT pg_advisory_xact_lock(hashtext(?), hashtext(?))", schema, key);

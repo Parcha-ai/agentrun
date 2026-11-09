@@ -329,10 +329,12 @@ export class RunStorage implements Journal {
     // only its own statements, never a model or a tool.
     await this.#transaction(async (tx) => {
       // The claim's fence (store/fence.ts): its epoch, and its lease not run out on the store's clock, read here inside the
-      // transaction so the check and the commit are one, once the run's row is held (a no-op on SQLite's one writer).
-      await this.#dialect.lockRow(tx, "runs", "id", this.#runId);
+      // transaction so the check and the commit are one, once the run's row is held (a no-op on SQLite's one writer). Held
+      // shared (dialect shareLock): a claim, a release or the run's end, which move the epoch, waits for this commit; a
+      // renew, which moves only the lease, never does.
+      await tx.run(`SELECT 1 FROM runs WHERE id = ?${this.#dialect.shareLock}`, this.#runId);
       const fence = claimFence({ runId: this.#runId, epoch: this.#epoch }, this.#now());
-      if ((await tx.runCounted(`UPDATE runs SET epoch = epoch WHERE ${fence.where}`, ...fence.params)) === 0) {
+      if ((await tx.get(`SELECT 1 AS held FROM runs WHERE ${fence.where}`, ...fence.params)) === undefined) {
         throw new Fenced(this.#runId, this.#epoch);
       }
       const metadata = await this.#readMetadata(tx);
