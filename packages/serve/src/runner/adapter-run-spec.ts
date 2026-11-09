@@ -92,6 +92,18 @@ type RevisionBody = {
  * and registry (AdapterRun); `deps` is the runner's store, data directory, model route and seal key; `claim` is the claim
  * this pass holds.
  */
+/**
+ * The run's gate before a call's intent, as the adapter loop asks it: the revision's tool settings and approvals over the
+ * server's, from the one store (loadToolSettings), through RunGate (decide: deny with its words, a pin, allow, ask). The
+ * adapter loop handles the ask/park/answer on the journal itself, so only the answer is read here, never RunGate's own
+ * file-based approval flow. `root`: the run's folder. The server's settings are read once, at the claim.
+ */
+export async function adapterRunGate(store: Pick<Store, "settings">, claim: Pick<Claim, "runId">, revision: { kind: string; body: { toolSettings?: unknown; harness?: string; approvals?: Approvals } }, root: string): Promise<NonNullable<AdapterRunSpec["gate"]>> {
+  const serverSettings = await loadToolSettings(store);
+  const gate = runGate({ root, work: root }, claim.runId, revision, () => serverSettings);
+  return (call) => gate.decide(call.tool, call.args);
+}
+
 export async function adapterRunSpecFromLaunch(launch: RunLaunch, run: AdapterRun, deps: AdapterSpecDeps, claim: Claim): Promise<AdapterRunSpec> {
   const context = BACKGROUND_CONTEXT;
   const log = deps.log ?? (() => {});
@@ -135,12 +147,7 @@ export async function adapterRunSpecFromLaunch(launch: RunLaunch, run: AdapterRu
   // ask it leaves into an allow). The adapter loop asks `gate` and handles the ask/park/answer on the journal itself, so
   // only the permission is read here, never runGate's own file-based approval flow.
   const root = runFolder(deps.data, runRow.agentId, claim.runId);
-  // The server's tool settings are the one store's (loadToolSettings), read once at the claim, never a file beside the data
-  // directory (the old per-run process's readToolSettings). The gate's approvals "never" lifts an ask to an allow only where
-  // the settings read non-undefined, and the store always reads (no row is every default), so an unattended run goes at an
-  // ask it would park on were the settings a file that never read.
-  const serverSettings = await loadToolSettings(deps.store);
-  const gate = runGate({ root, work: root }, claim.runId, revision, () => serverSettings);
+  const gate = await adapterRunGate(deps.store, claim, revision, root);
 
   // The run's cap (its launch's maxCostUsd): the host's check before each paid request (beforeRequestOf), and what a
   // refusal does to the run (parkOf), with the kernel's raise rule.
@@ -218,9 +225,9 @@ export async function adapterRunSpecFromLaunch(launch: RunLaunch, run: AdapterRu
     adapter,
     session,
     input,
-    // The gate's answer with its words (RunGate.decide): a deny names where it was set and that nothing was sent or charged,
-    // and a pinned MCP tool's call outside its pin is refused before it is asked or sent, as the old per-run gate did.
-    gate: (call) => gate.decide(call.tool, call.args),
+    // The gate's answer with its words (adapterRunGate, RunGate.decide): a deny names where it was set and that nothing was
+    // sent or charged, and a pinned MCP tool's call outside its pin is refused before it is asked or sent.
+    gate,
     ...(beforeRequest ? { beforeRequest } : {}),
     ...(cap ? { cap } : {}),
     agentId: runRow.agentId,
