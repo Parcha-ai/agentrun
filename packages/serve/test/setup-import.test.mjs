@@ -584,22 +584,21 @@ test("a key saved on the Tool keys page is cut out of everything setup's import 
   const start = () => startServe({ data, port: 0, faux: FAUX, drainTimeout: "5s", accounts: true, openSetup: true, sessionsHome: { home, temp: join(root, "tmp") } });
   let server = await start();
   t.after(() => server.close());
-  const kept = await call(server.port, { method: "PUT", path: "/v2/settings/tool-keys/monid", headers: { ...json, authorization: `Bearer ${server.token}` }, body: { values: { MONID_API_KEY: saved } } });
+  // On the switch a secret takes the owner's signed-in session, not the API token: set the owner (the box unticked, so no
+  // import yet), then save the key on the Tool keys page under that session.
+  const made = await call(server.port, { method: "POST", path: "/v2/setup", headers: page(server), body: { password: PASSWORD } });
+  assert.deepEqual([made.status, made.json], [201, { signed_in: true }], made.text);
+  const kept = await call(server.port, { method: "PUT", path: "/v2/settings/tool-keys/monid", headers: { ...page(server), cookie: cookieOf(made) }, body: { values: { MONID_API_KEY: saved } } });
   assert.equal(kept.status, 204, kept.text);
-  // The server starts again with a MONID_API_KEY of its own, a different value: the saved one stays in the page's file.
+  // The server starts again with a MONID_API_KEY of its own, a different value: the saved one stays in the store. The owner's
+  // yes (as a setup stopped mid-import leaves it) drives the import at the next start, with the key already saved.
   await server.close();
   process.env.MONID_API_KEY = own;
+  writeFileSync(join(data, ".import-at-setup"), "", { mode: 0o600 });
   server = await start();
-  // Setup's count, by the ids as the import keeps them.
-  const read = () => call(server.port, { path: "/v2/setup/import", headers: { "sec-fetch-site": "same-origin" } });
-  let counted = await read();
-  for (const deadline = Date.now() + 30_000; counted.status === 202 && Date.now() < deadline; ) (await sleep(100), (counted = await read()));
-  assert.deepEqual([counted.status, counted.json], [200, { projects: 1, sessions: 2 }]);
-  const made = await call(server.port, { method: "POST", path: "/v2/setup", headers: page(server), body: { password: PASSWORD, import: true } });
-  assert.deepEqual([made.status, made.json], [201, { signed_in: true, importing: true }], made.text);
-  const state = async () => (await call(server.port, { path: "/v2/setup/import", headers: { cookie: cookieOf(made) } })).json;
-  for (const deadline = Date.now() + 30_000; (await state()).state === "running" && Date.now() < deadline; ) await sleep(100);
-  assert.deepEqual(await state(), { state: "done", agents: 1, runs: 2, skipped: 0 });
+  for (const deadline = Date.now() + 30_000; existsSync(join(data, ".import-at-setup")) && Date.now() < deadline; ) await sleep(100);
+  assert.equal(existsSync(join(data, ".import-at-setup")), false, "the import ran at the next start");
+  assert.equal((await runsOf(data)).length, 2, "both sessions imported");
   const nowhere = (when) => {
     const names = [];
     const walk = (at) => {
