@@ -918,6 +918,32 @@ test("a file ledger takes a dead writer's lock at once, however fresh", async ()
 	assert.throws(() => readFileSync(`${path}.lock`), /ENOENT/, "and lets it go after its write");
 });
 
+test("a writer that finds a dead lock while a live breaker holds .break waits, gives up at waitMs in words, and never blocks the process", async () => {
+	// The writer runs in a child process: a writer that spins without awaiting blocks every timer of its process, the
+	// test's own included, and only the parent can stop it (the kill below is a bound on a failure, not a timing).
+	const path = join(dir, "paused-breaker-ledger.json");
+	writeFileSync(`${path}.lock`, `${await deadPid()} a-dead-writer\n`);
+	// A breaker that is alive (this test's own process) and paused while it holds .break.
+	writeFileSync(`${path}.lock.break`, `${process.pid} a-paused-breaker\n`);
+	const module = new URL("../dist/conformance/phone-harness.js", import.meta.url).href;
+	const script = `
+		const { fileLedger } = await import(process.argv[1]);
+		let ticks = 0;
+		const timer = setInterval(() => ticks++, 1);
+		let error = "";
+		try { await fileLedger(process.argv[2], { waitMs: 200 }).put({ id: "p1", labels: {}, image: "android", deadline: "2026-11-08T12:00:00.000Z" }); } catch (e) { error = e.message; }
+		clearInterval(timer);
+		console.log(JSON.stringify({ error, ticked: ticks > 0 }));`;
+	const ran = await new Promise((resolve) => execFile(process.execPath, ["--input-type=module", "-e", script, module, path], { timeout: 30_000, killSignal: "SIGKILL" }, (error, stdout, stderr) => resolve({ error, stdout, stderr })));
+	assert.equal(ran.error, null, `the writer ended on its own: ${ran.error?.killed ? "it was killed, spinning" : ran.stderr}`);
+	const { error, ticked } = JSON.parse(ran.stdout);
+	assert.match(error, /stayed locked by another writer for 0\.2 s/);
+	assert.equal(ticked, true, "its process's timers ran while it waited");
+	assert.equal(readFileSync(`${path}.lock.break`, "utf8"), `${process.pid} a-paused-breaker\n`, "the live breaker's lock is untouched");
+	rmSync(`${path}.lock.break`);
+	rmSync(`${path}.lock`);
+});
+
 test("a dead writer's lock, broken by many processes at once, is broken once: every entry lands", async () => {
 	// Two waiters that each find the lock stale could each remove it, the second removing the lock the first had just
 	// taken: two writers at once, and an entry dropped.
