@@ -15,6 +15,27 @@ import type { SessionPort } from "@parcha/agentrun-kernel";
 /** The provider id the port's one model is listed under. */
 export const PORT_PROVIDER = "agentrun-session";
 
+/** Where pi-ai's client of `api` is pointed to reach a session's proxy at `url`: Anthropic's SDK adds /v1/messages to its
+ *  base; OpenAI's adds /responses to a base that holds /v1. The one rule for the port's models and pi's own (runner
+ *  adapters/pi.ts). */
+export const sessionBaseUrl = (api: SessionPort["api"], url: string): string => (api === "anthropic-messages" ? url : `${url}/v1`);
+
+/** The one model of a session's route as pi-ai lists it, for the port's requests and for pi's own (runner adapters/pi.ts):
+ *  `model` in `api` at the proxy `url` (sessionBaseUrl), under `provider`, with `headers` (the session key as the proxy
+ *  reads one, a bearer token), its reasoning, limits and price from `like` (the catalog's entry), `reasoning` when it
+ *  says none. OpenAI's Responses through a gateway takes no developer role (pi-ai sends its system prompt as a system
+ *  message). */
+export function sessionModel(api: SessionPort["api"], url: string, model: string, options: { provider: string; headers?: Readonly<Record<string, string | null>>; like?: Partial<Pick<Model<Api>, "reasoning" | "cost" | "contextWindow" | "maxTokens">>; reasoning: boolean }): Model<Api> {
+  const { like } = options;
+  return {
+    id: model, name: model, api, provider: options.provider, baseUrl: sessionBaseUrl(api, url), ...(options.headers ? { headers: options.headers } : {}),
+    reasoning: like?.reasoning ?? options.reasoning, input: ["text"],
+    cost: like?.cost ?? { input: 0, output: 0, cacheRead: 0, cacheWrite: 0 },
+    contextWindow: like?.contextWindow ?? 200_000, maxTokens: like?.maxTokens ?? 32_000,
+    ...(api === "openai-responses" ? { compat: { supportsDeveloperRole: false } } : {}),
+  } as unknown as Model<Api>;
+}
+
 /** The run's models over a session's port, as learned-workflow.ts, llm.ts and hosted-search.ts take them. */
 export type PortModels = {
   getModel(provider: string, id: string): Model<Api> | undefined;
@@ -39,18 +60,11 @@ export async function portModels(port: () => SessionPort | undefined, like?: Par
     if (!now) return undefined;
     const at = `${now.url} ${now.key} ${now.model} ${now.api}`;
     if (built?.at === at) return built;
-    // Anthropic's SDK adds /v1/messages to its base; OpenAI's adds /responses to a base that holds /v1.
-    const baseUrl = now.api === "anthropic-messages" ? now.url : `${now.url}/v1`;
+    const baseUrl = sessionBaseUrl(now.api, now.url);
     // The side key as the proxy reads a key (a bearer token), and no beta header pi-ai would add of its own: the session's
     // policy admits the betas its harness sends, and these requests need none.
-    const headers = { authorization: `Bearer ${now.key}`, ...(now.api === "anthropic-messages" ? { "anthropic-beta": null } : {}) } as unknown as Record<string, string>;
-    const model = {
-      id: now.model, name: now.model, api: now.api, provider: PORT_PROVIDER, baseUrl, headers,
-      reasoning: like?.reasoning ?? true, input: ["text"],
-      cost: like?.cost ?? { input: 0, output: 0, cacheRead: 0, cacheWrite: 0 },
-      contextWindow: like?.contextWindow ?? 200_000, maxTokens: like?.maxTokens ?? 32_000,
-      ...(now.api === "openai-responses" ? { compat: { supportsDeveloperRole: false } } : {}),
-    } as unknown as Model<Api>;
+    const headers = { authorization: `Bearer ${now.key}`, ...(now.api === "anthropic-messages" ? { "anthropic-beta": null } : {}) };
+    const model = sessionModel(now.api, now.url, now.model, { provider: PORT_PROVIDER, headers, ...(like ? { like } : {}), reasoning: true });
     const models = createModels({});
     models.setProvider(createProvider({
       id: PORT_PROVIDER, baseUrl,

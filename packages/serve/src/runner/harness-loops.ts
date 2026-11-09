@@ -13,6 +13,7 @@ import { adapterRunSpecFromLaunch, type AdapterSpecDeps } from "./adapter-run-sp
 import { createAdapterLoop } from "./adapter-loop.js";
 import { cliRunSpecFromLaunch } from "./cli-run-spec.js";
 import { learningLoopOf } from "./learning-dispatch.js";
+import { messagesRoute } from "./model-route.js";
 import type { LoopFactory } from "./loop-contract.js";
 import { createWorkflowLoop, isWorkflowRevision } from "./workflow-loop.js";
 import { workflowSpecOf } from "./workflow-spec.js";
@@ -36,7 +37,8 @@ export function resolveRunnerLoop(deps: AdapterSpecDeps): (harness: string, laun
       return learningLoopOf({
         store: deps.store,
         data: deps.data,
-        routeOf: (grade) => deps.routeOf(grade.model, deps.env),
+        // The grader speaks Messages alone (learning-ask.ts), so its route is asked on that wire only.
+        routeOf: async (grade) => messagesRoute(await deps.routeOf(grade.model, deps.env, "default", ["anthropic-messages"])),
         ...(deps.log ? { log: deps.log } : {}),
       });
     }

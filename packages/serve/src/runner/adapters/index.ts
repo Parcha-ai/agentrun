@@ -3,7 +3,7 @@
 // adapter and who keeps the run's visible record. pi keeps its own (its tasks and entries); a CLI harness's own records
 // are resume log only, so the loop keeps its record (record: "loop"). A CLI package is loaded when its harness is first
 // asked for, as serve loads it today (it may install on first use).
-import type { AgentAdapter } from "@parcha/agentrun-kernel";
+import type { AgentAdapter, Wire } from "@parcha/agentrun-kernel";
 import type { AdapterRun } from "../adapter-loop.js";
 import { piAdapter } from "./pi.js";
 
@@ -14,8 +14,9 @@ export interface HarnessLaunch {
   /** The model the run asks for, as the launch names it. */
   readonly model: string;
   /** Where the session's model proxy forwards: the provider's origin, its credential (asked for when a request leaves)
-   *  and any headers the launch's provider takes. */
-  readonly provider: { readonly origin: string; readonly credential: () => string | Promise<string>; readonly headers?: Readonly<Record<string, string>> };
+   *  and any headers the launch's provider takes; `api`, the wire it speaks (pi's proxy policy and client follow it; a CLI
+   *  harness speaks its own, AdapterFacts.wire). Absent: Anthropic's Messages. */
+  readonly provider: { readonly api?: Wire; readonly origin: string; readonly credential: () => string | Promise<string>; readonly headers?: Readonly<Record<string, string>>; readonly auth?: "bearer" | "x-api-key" };
   /** The price of a request's usage, for the proxy's booking (the runner's one ledger). */
   readonly price?: (model: string, usage: never) => number | null;
   /** Where a CLI session keeps its private directory (its HOME and the CLI's own files), one per session key. */
@@ -45,7 +46,7 @@ export const RUNNER_HARNESSES: Readonly<Record<string, RunnerHarness>> = {
       piAdapter({
         run: launch.run,
         model: launch.model,
-        provider: { api: "anthropic-messages", origin: launch.provider.origin, credential: launch.provider.credential, ...(launch.provider.headers ? { headers: launch.provider.headers } : {}) },
+        provider: { api: launch.provider.api ?? "anthropic-messages", origin: launch.provider.origin, credential: launch.provider.credential, ...(launch.provider.headers ? { headers: launch.provider.headers } : {}), ...(launch.provider.auth ? { auth: launch.provider.auth } : {}) },
         ...(launch.price ? { price: launch.price } : {}),
         ...(launch.fetch ? { fetch: launch.fetch } : {}),
       }),
