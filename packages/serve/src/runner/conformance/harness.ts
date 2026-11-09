@@ -648,8 +648,10 @@ const CLI_NEVER_RERUNS = "a CLI never reruns a call that started; only the model
 /** The cases a harness's declared facts rule out, each with why: what it does by design, not what it cannot model yet. */
 export function factsRuleOut(facts: ConformanceSubject["facts"]): Partial<Record<ConformanceCase, string>> {
   if (!facts) return {};
+  const noSteer = `${facts.id} takes no message mid-turn (its adapter's facts: steer false), so the loop refuses a steer for it in words`;
   return {
-    ...(facts.steer ? {} : { "steer-mid-turn": `${facts.id} takes no message mid-turn (its adapter's facts: steer false), so the loop refuses a steer for it in words` }),
+    // steer-origin steers the turn in flight too: its message is taken mid-turn, or never.
+    ...(facts.steer ? {} : { "steer-mid-turn": noSteer, "steer-origin": noSteer }),
     ...(facts.rerunsStarted === false ? { "replay-safe-rerun": CLI_NEVER_RERUNS, "fault-restarts-bounded": CLI_NEVER_RERUNS } : {}),
   };
 }

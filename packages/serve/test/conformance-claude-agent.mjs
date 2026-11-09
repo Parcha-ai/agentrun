@@ -65,7 +65,8 @@ function standInScript(script) {
   return {
     // The input, alone or after a note the harness put before it (as the CLI is handed it).
     script: (text) => ((text === INPUT || text.endsWith(`\n\n${INPUT}`)) && first && "call" in first ? `call ${first.call} ${JSON.stringify(first.args ?? {})}` : undefined),
-    reply: ({ steers }) => (next && "sayLastSteer" in next ? (steers.at(-1) ?? "") : next && "say" in next ? next.say : ""),
+    reply: ({ result, steers }) =>
+      next && "sayLastSteer" in next ? (steers.at(-1) ?? "") : next && "sayLastResult" in next ? result : next && "say" in next ? next.say : "",
   };
 }
 
