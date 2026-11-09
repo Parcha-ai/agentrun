@@ -71,6 +71,41 @@ describe("an answer that ends in a JSON object", () => {
   });
 });
 
+describe("the closing record, wherever the answer's other blocks are", () => {
+  it("an earlier code block before the closing json block: the record still reads as fields, the earlier block as Markdown", async () => {
+    const p = await report(`Run this first:\n\n\`\`\`sh\necho hi\n\`\`\`\n\nThe record:\n\n\`\`\`json\n${JSON.stringify(RECORD, null, 2)}\n\`\`\``);
+    expect(p.fields(), "the fields").not.toBeNull();
+    expect(p.fields()!.textContent).toContain("Dana Whitfield");
+    expect(p.host.querySelector("article pre")?.textContent).toContain("echo hi");
+    expect(p.host.textContent).toContain("The record:");
+  });
+
+  it("a fenced record with Windows line endings reads as fields", async () => {
+    const p = await report(`Here is the lead.\r\n\r\n\`\`\`json\r\n${JSON.stringify(RECORD, null, 2).replace(/\n/g, "\r\n")}\r\n\`\`\``);
+    expect(p.fields(), "the fields").not.toBeNull();
+    expect(p.fields()!.textContent).toContain("Dana Whitfield");
+  });
+});
+
+describe("list items and labels follow the same rules as fields", () => {
+  it("a null in a list is \"—\", and a string in a list keeps its line breaks and wraps", async () => {
+    const p = await report(JSON.stringify({ items: ["a", null, "line one\nline two"] }));
+    const items = [...p.fields()!.querySelectorAll('[data-json="array"] li')];
+    expect(items.map((li) => li.textContent)).toEqual(["a", "—", "line one\nline two"]);
+    const multi = items[2].querySelector("[data-json-value]") as HTMLElement;
+    expect(multi.className).toContain("whitespace-pre-wrap");
+    expect(multi.className).toMatch(/break-words|\[overflow-wrap:anywhere\]/);
+  });
+
+  it("a long key with nothing to break at wraps its label", async () => {
+    const key = `https://example.com/${"a".repeat(120)}`;
+    const p = await report(JSON.stringify({ [key]: "v" }));
+    const label = [...p.fields()!.querySelectorAll("dt")].find((dt) => dt.textContent === key) as HTMLElement;
+    expect(label).toBeTruthy();
+    expect(label.className).toMatch(/break-words|\[overflow-wrap:anywhere\]/);
+  });
+});
+
 describe("answers that stay Markdown", () => {
   it("a JSON array, broken JSON, or an object in the middle of the words is Markdown as before", async () => {
     for (const answer of ["[1, 2, 3]", "```json\n{\"a\": 1,\n```", "Before {\"a\": 1} after."]) {
