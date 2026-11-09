@@ -4,7 +4,7 @@
 // `broken` names one behavior that is wrong, so each case of the extension is seen to fail. No Docker, no daemon, no X
 // server, no phone.
 import { deflateSync } from "node:zlib";
-import { checkActions, checkLifetime, FIXTURE_APP_ID, FIXTURE_BUTTON, FIXTURE_COLORS, FIXTURE_WINDOW, fixtureAppLog } from "../dist/index.js";
+import { checkActions, checkLifetime, daemonWatch, FIXTURE_APP_ID, FIXTURE_BUTTON, FIXTURE_COLORS, FIXTURE_WINDOW, fixtureAppLog } from "../dist/index.js";
 
 const ok = (value) => ({ ok: true, value });
 const fail = (code, message) => ({ ok: false, error: { code, message } });
@@ -59,6 +59,11 @@ export function png(width, height, color) {
 
 /** The shot a fake broken in its pixels gives: a valid IHDR for width x height, and no IDAT or one that is not zlib. */
 const undecodable = (width, height, broken) => pngOf({ width, height, idat: broken === "screen-no-idat" ? undefined : Buffer.from("these bytes are not zlib") });
+/** A JPEG with its start, a baseline SOF naming width x height, and its end: a size to read, and no pixels. */
+function headerOnlyJpeg(width, height) {
+	const sof = Buffer.from([0xff, 0xc0, 0x00, 0x0b, 8, height >> 8, height & 0xff, width >> 8, width & 0xff, 1, 1, 0x11, 0]);
+	return Buffer.concat([Buffer.from([0xff, 0xd8]), sof, Buffer.from([0xff, 0xd9])]);
+}
 
 const inside = ([x, y], [rx, ry, rw, rh]) => x >= rx && y >= ry && x < rx + rw && y < ry + rh;
 const shift = ([x, y], dx, dy = 0) => [x + dx, y + dy];
@@ -70,7 +75,8 @@ const shift = ([x, y], dx, dy = 0) => [x + dx, y + dy];
  * screen-region, screen-colors, screen-no-idat, screen-corrupt-idat, screen-region-corrupt, click-offset, type-case,
  * no-precheck, no-stop, no-release, tap-offset, swipe-stuck, pinch-together, terminate-stays, tree-types, extend-noop,
  * extend-past-cap, extend-per-call, extend-shortens, stream-http, fixture-never-ready, screen-huge-size, screen-endless,
- * launch-hidden (apps.list says Settings is in front, and neither the screen nor the tree shows it).
+ * launch-hidden (apps.list says Settings is in front, and neither the screen nor the tree shows it), watch-stale,
+ * watch-size, watch-no-cursor, watch-corrupt-png and watch-corrupt-jpeg (screen.watch's).
  * `createMs` is how long each create takes on the clock, in turn (the last for every create after): a host slow to
  * start a computer. The lifetime counts from create's start, and a computer whose deadline passed before create
  * finished fails it as Docker's does, timeout.
@@ -251,6 +257,34 @@ export function fakeDevices({
 				const data = c.shot.bytes.subarray(offset, offset + chunk);
 				return ok({ data: data.toString("base64"), eof: offset + data.length >= c.shot.bytes.length });
 			},
+			// The live view's frames, as PNG: a new frame when what the screen shows or the cursor changed (broken:
+			// watch-stale never sees a change after the first; watch-size says a frame one pixel wider than its PNG;
+			// watch-no-cursor gives no cursor; watch-corrupt-png's pixels do not inflate; watch-corrupt-jpeg is a JPEG of
+			// the right size with no scan).
+			"screen.watch": ({ after } = {}) => {
+				c.watch ??= { seq: 0, key: "", bytes: undefined };
+				const w = c.watch;
+				if (!Number.isSafeInteger(after) || after < 0 || after > w.seq) return fail("invalid", `after ${JSON.stringify(after)} is not a seq up to ${w.seq}`);
+				const key = broken === "watch-stale" && w.seq > 0 ? w.key : JSON.stringify([c.cursor, c.foreground, desktopUp()]);
+				if (after === w.seq && w.seq > 0 && key === w.key) return ok({ seq: w.seq, changed: false, width, height });
+				if (after === w.seq) {
+					w.seq += 1;
+					w.key = key;
+					w.bytes =
+						broken === "watch-corrupt-png"
+							? undecodable(width, height, "screen-corrupt-idat")
+							: broken === "watch-corrupt-jpeg"
+								? headerOnlyJpeg(width, height)
+								: png(width, height, (px, py) => screenColor(px, py));
+				}
+				c.shot = { id: `s${++next}`, bytes: w.bytes };
+				const first = w.bytes.subarray(0, chunk);
+				return ok({
+					seq: w.seq, changed: true, id: c.shot.id, size: w.bytes.length, data: first.toString("base64"), eof: first.length >= w.bytes.length,
+					format: broken === "watch-corrupt-jpeg" ? "jpeg" : "png", frameWidth: broken === "watch-size" ? width + 1 : width, frameHeight: height, width, height,
+					...(kind === "desktop" && broken !== "watch-no-cursor" ? { cursor: [...c.cursor] } : {}),
+				});
+			},
 			"input.actions": ({ actions }) => {
 				const failed = broken === "no-precheck" ? undefined : checkActions(actions, groups, { pixelScroll: false });
 				if (failed) return ok({ done: 0, failed });
@@ -402,6 +436,8 @@ export function fakeDevices({
 			return ok({ deadline: new Date(at) });
 		};
 	}
+	// The live view, as every computerd provider gives it: daemonWatch over this fake's connect().
+	provider.watch = (ref, handlers, options) => daemonWatch(provider, ref, handlers, options);
 	if (stream) {
 		provider.stream = async (ref) => ok({ url: `${broken === "stream-http" ? "http" : "https"}://stream.example.test/${ref.name}?token=fake` });
 	}

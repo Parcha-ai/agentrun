@@ -71,6 +71,7 @@ import {
 	type Refusal,
 } from "./provider.js";
 import { fail, ok, type Result } from "./result.js";
+import { daemonWatch, type ScreenWatch, type ScreenWatchHandlers, type WatchOptions } from "./screen-watch.js";
 import { countTested } from "./test-connection.js";
 
 /**
@@ -689,6 +690,11 @@ export class DockerProvider implements ComputerProvider {
 		const { image, network: read, cpus, memoryMb, pids, workdir } = spec;
 		const readBack = { image, user, network: read, cpus, memoryMb, pids, workdir, deadline: new Date(at), ...(kind === undefined ? {} : { kind }), ...(bind === undefined ? {} : { mount: bind }) };
 		return ok({ ...ref, spec: readBack });
+	}
+
+	/** The live view: screen.watch on a connection of the watch's own (daemonWatch); a linux computer has no screen. */
+	watch(ref: ComputerRef, handlers: ScreenWatchHandlers, options?: WatchOptions): Promise<Result<ScreenWatch>> {
+		return daemonWatch(this, ref, handlers, options);
 	}
 
 	async connect(ref: ComputerRef): Promise<Result<ComputerConnection>> {

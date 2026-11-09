@@ -23,8 +23,8 @@ const assistant = (text: string) => ({ kind: "pi.assistant", id: id++, conversat
 const marker = (data: unknown) => ({ kind: "agentrun.message_origin", id: id++, conversationId: 1, data });
 const ENTRIES = [user(BODY, { data: { origin: WEBHOOK } }), assistant("Done."), marker({ origin: SCHEDULE, text: "Check the queue." }), user("Check the queue."), assistant("Checked."), user("Thanks.")];
 
-function render() {
-  const rows = timelineOf(ENTRIES as never) as unknown as TimelineRow[];
+function render(entries: unknown[] = ENTRIES, served: (row: TimelineRow) => TimelineRow = (row) => row) {
+  const rows = (timelineOf(entries as never) as unknown as TimelineRow[]).map(served);
   const host = document.body.appendChild(document.createElement("div"));
   root = createRoot(host);
   act(() => root!.render(createElement(Timeline, { rows, live: false })));
@@ -43,5 +43,21 @@ describe("Timeline, a trigger's message", () => {
     ]);
     // Only the person's own message is theirs.
     expect(shown.filter((s) => s.label === "You").map((s) => s.title)).toEqual(["Thanks."]);
+  });
+
+  // serve names the trigger as it is now: "<Source> <its name>: <first line>", the name on the row's trigger too. A name
+  // and a message may each hold a colon: the title drops exactly the prefix the name makes, and with no name (a trigger
+  // gone, named by its id) the prefix up to the first ": ".
+  it("drops exactly the '<Source> <name>: ' prefix when the name holds a colon, and keeps the message's own", () => {
+    const entries = [user("Check: it.", { data: { origin: WEBHOOK } }), assistant("Done.")];
+    const named = (name?: string) => (row: TimelineRow) => {
+      if (row.origin !== "trigger") return row;
+      const trigger = row.trigger as Record<string, unknown>;
+      return { ...row, summary: `Webhook ${name ?? trigger.id}: Check: it.`, trigger: name === undefined ? trigger : { ...trigger, name } } as TimelineRow;
+    };
+    expect(render(entries, named("reviews: dev")).filter((s) => s.label === "Trigger").map((s) => s.title)).toEqual(["Check: it."]);
+    act(() => root?.unmount());
+    document.body.innerHTML = "";
+    expect(render(entries, named()).filter((s) => s.label === "Trigger").map((s) => s.title)).toEqual(["Check: it."]);
   });
 });

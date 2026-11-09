@@ -196,8 +196,20 @@ export async function cliRunSpecFromLaunch(launch: RunLaunch, run: AdapterRun, d
   const chosen = await modelsOf(entry, env, ref);
   const built = await entry.adapter(env, { model: chosen.model, models: chosen.models, unpriced: chosen.unpriced, ...(native.length ? { skills: native } : {}) });
   // The harness's own session options, its private directory and its working directory (SessionIO's dir and cwd, which
-  // every CLI adapter reads), set on its open here, so the loop lends the session nothing of its own.
-  const adapter: typeof built = { ...built, open: (spec, io) => built.open(spec, { ...io, dir, cwd: scratch }) };
+  // every CLI adapter reads), set on its open here, so the loop lends the session nothing of its own. A turn that ends on
+  // the CLI's own error names the harness first, as main words it (harness-app.ts: `<harness>: <error>`), so the run's
+  // error and its Timeline row say which CLI said it.
+  const adapter: typeof built = {
+    ...built,
+    open: async (spec, io) => {
+      const session = await built.open(spec, { ...io, dir, cwd: scratch });
+      const turnEnd = session.turnEnd.bind(session);
+      return Object.assign(session, { turnEnd: async () => {
+        const end = await turnEnd();
+        return end.error ? { ...end, error: `${name}: ${end.error}` } : end;
+      } });
+    },
+  };
 
   // The run's cap (its launch's maxCostUsd): the kernel's check before each paid request, at the catalog price of the
   // model that bills the run, and what a refusal does to the run, with the kernel's raise rule.
