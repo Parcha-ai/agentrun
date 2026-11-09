@@ -351,8 +351,10 @@ interface Session {
 /** What each platform is, as capabilities() and attach read it back. */
 const PLATFORMS = {
 	android: { kind: "android", groups: PHONE_GROUPS, user: SHELL_USER, image: "a cloud Android has no image to choose" },
-	// iOS runs apps as its user mobile, 501:501.
-	ios: { kind: "ios", groups: IOS_GROUPS, user: "501:501", image: "a cloud iPhone has no image to choose" },
+	// The user is ASSUMED: iOS's mobile user, 501:501, which apps run as. Nothing on the control API reports it; the first
+	// live run on a real iPhone reads what it can, and this follows. The provider names one iPhone (deviceId, or the
+	// account's only one), which one session at a time holds: one computer at once.
+	ios: { kind: "ios", groups: IOS_GROUPS, user: "501:501", image: "a cloud iPhone has no image to choose", maxComputers: 1 },
 } as const;
 
 export class PhoneHarnessProvider implements ComputerProvider {
@@ -406,16 +408,17 @@ export class PhoneHarnessProvider implements ComputerProvider {
 	}
 
 	capabilities(): ComputerCapabilities {
-		const { kind, groups } = PLATFORMS[this.#platform];
+		const platform = PLATFORMS[this.#platform];
 		return {
-			kind,
-			os: kind,
+			kind: platform.kind,
+			os: platform.kind,
 			daemon: "none",
 			lifetime: "vendor",
 			network: ["open"],
 			isolation: "vm",
-			groups: [...groups],
+			groups: [...platform.groups],
 			maxLifetimeMs: this.#maxLifetimeMs,
+			...("maxComputers" in platform ? { maxComputers: platform.maxComputers } : {}),
 			release: ["delete"],
 		};
 	}

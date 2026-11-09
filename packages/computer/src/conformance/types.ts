@@ -16,8 +16,9 @@ export type CaseGroup = "health" | "exec" | "files" | "process" | "provider" | "
 /**
  * What a case needs: a group (declared by both the provider's capabilities().groups and the computer's hello), a
  * network the provider declares, the janitor as the keeper of deadlines, a spec.user the provider takes, a release that
- * stops a computer and keeps it, a mount kind capabilities().mount declares, or a provider method that is optional
- * (extend, stream), declared by being there.
+ * stops a computer and keeps it, a mount kind capabilities().mount declares, a provider method that is optional
+ * (extend, stream), declared by being there, or N computers held at once (computers:N, counting the run's shared one
+ * when the case uses it), which only a provider that declares maxComputers below N cannot give.
  */
 export type Capability =
 	| Group
@@ -31,7 +32,8 @@ export type Capability =
 	| "mount:bind"
 	| "mount:archil"
 	| "extend"
-	| "stream";
+	| "stream"
+	| `computers:${number}`;
 
 /**
  * A fresh run's folder for one mount kind, made by the provider's conformance module: the mount that reaches it, and its
@@ -174,6 +176,11 @@ export interface CaseResult {
 	 * these does not fail Core; any other skip of a Core case does.
 	 */
 	undeclared?: Capability[];
+	/**
+	 * true when the case itself skipped as owed to undeclared (t.skip with undeclared), not the runner for a need the
+	 * case lists: the report shows it apart, so a reader sees why Core passed.
+	 */
+	owed?: true;
 }
 
 export interface ConformanceReport {

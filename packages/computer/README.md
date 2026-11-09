@@ -1970,7 +1970,8 @@ guides/iphone, and its open client).
 - **Capabilities.** Kind and os `ios`, groups `screen`, `input.touch` and `apps`. `input.keys` (typing is
   `input.text`, keys are `input.keys` in the vendor's names) and `apps.ui_tree` (`tree`) are coded behind groups an
   iPhone does not declare until a live run on one shows the ops take them; until then a key or a tree is refused in
-  words.
+  words. `maxComputers` is 1: one session at a time holds an iPhone. attach reports user `501:501`, which is assumed
+  (iOS's mobile user) until a live run reads it.
 - **Open until the first live run on a real iPhone:** which ops it lists; the capture's real scale and origin against
   the taps (`frameMap` assumes the bounds are the screen in tap points); whether apps are named by bundle id or name,
   and what `fresh` does; the key names; whether pasted text lands in a field; whether two quick taps are a double tap;
@@ -2003,6 +2004,17 @@ checked on Settings' screen: `touch.swipe` sees Settings' list scroll in the scr
 only looks, launches, scrolls and goes home: it taps nothing, types nothing and changes no setting. Settings is
 `com.apple.Preferences` there.
 
+A case may skip itself as owed to groups the computer does not declare (`t.skip(reason, { undeclared })`); a group in
+it that the computer declares, or anything but a group, makes it a plain skip, which Core counts. The report shows such
+a skip apart, `- touch.tap: owed to undeclared files, apps.ui_tree: ...`, and counts it apart in its last line (`1 Core
+case skipped, owed to undeclared files apps.ui_tree`), with `owed: true` on the result, so a reader sees why Core passed.
+
+A provider that holds few computers at once declares `maxComputers` (a cloud iPhone: 1). The runner ends its shared
+computer before a case that makes its own would pass the limit with it, and makes it again when a case next uses it. A
+case that holds N computers at once needs `computers:N` (provider.attach 2, provider.release-older and provider.janitor
+4), and skips in words, as not declared, where N is over the limit: "the case holds 2 computers at once, and the
+provider holds at most 1 (maxComputers)".
+
 ## Conformance
 
 A provider for another vendor passes the same suite as Docker's, with one command. The suite is data: each case in
@@ -2033,7 +2045,7 @@ An id is resolved through the provider registry, and only there; the usage lists
 resolved from the directory npm was run in. It exits 0 when Core passes, 1 when it fails, 2 on a
 usage error, and 3 on a partial run; `--json` prints the report object (`{ provider, providerVersion, kind,
 daemonMode, image, daemon: { version, os, arch }, only?, coreNotRun?, results: [{ id, level, group, status, reason?,
-undeclared? }], core, undeclared, cleanup, notes?, computerNotes? }`). A failure is listed under its line with what the
+undeclared?, owed? }], core, undeclared, cleanup, notes?, computerNotes? }`). A failure is listed under its line with what the
 case found. `computerNotes` (`[{ computer, note }]`, absent when empty) holds every note a `create` returned beside its
 ref, such as a probe target that accepted and sent nothing back, naming the computer, in the order they came; the text
 report prints each as `note <computer>: <words>` above the verdict, so a run that passes Core never hides one. Notes an
