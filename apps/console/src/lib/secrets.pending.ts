@@ -9,10 +9,11 @@ export type SecretField = {
   /** When it last changed; null where nothing set it here (the environment's, or none). */
   changed_at: string | null;
 };
-/** GET /v2/auth/session's additions (PENDING, proposed to tl-tools 11-09): `secrets_writable`, true only for the session
- *  that may paste a secret (the owner's password session; on a server with no accounts, the console session the launcher
- *  opened on loopback); `secrets_reason`, why not; `accounts: false`, a server with no accounts answering the read. */
-export type SessionSecrets = { secrets_writable?: boolean; secrets_reason?: "sign_in" | "no_accounts"; accounts?: false };
+/** GET /v2/auth/session's additions (PENDING, tl-tools' slice, 11-09): it answers on every server. `accounts`: false on a
+ *  server with no accounts (then no user fields); `secrets_writable`, true only for the session that may paste a secret
+ *  (the owner's password session; with no accounts, the console session the launcher opened on loopback); and, only when
+ *  false, `secrets_reason`: "sign_in", "no_accounts" (not on loopback), or "token" (a browser on the API token alone). */
+export type SessionSecrets = { accounts?: boolean; secrets_writable?: boolean; secrets_reason?: "sign_in" | "no_accounts" | "token" };
 /** A tool or model key's fields, in the ruled shape (`stored_unreadable`: saved here, and it no longer opens). */
 export type PendingKeyField = SecretField & { stored_unreadable?: true };
 /** An MCP server's credential values (its bearer token, each header's value), in the ruled shape. */

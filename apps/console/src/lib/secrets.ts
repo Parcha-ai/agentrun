@@ -7,8 +7,10 @@ export const SOURCE_WORDS: Record<NonNullable<SecretField["source"]>, string> = 
  *  password session; or a server with no accounts that isn't on loopback. */
 export const SIGN_IN_TO_CHANGE = "Sign in with your password to change secrets.";
 export const NO_ACCOUNTS = "This server has no accounts: set secrets in its environment, or turn accounts on to change them here.";
+/** A browser on the API token alone: the token never writes a secret; the launcher's link opens a session that may. */
+export const TOKEN_ONLY = "Open the console from the server's link to change secrets.";
 export type SecretsWhyNot = NonNullable<SessionSecrets["secrets_reason"]>;
-export const WHY_NOT_WORDS: Record<SecretsWhyNot, string> = { sign_in: SIGN_IN_TO_CHANGE, no_accounts: NO_ACCOUNTS };
+export const WHY_NOT_WORDS: Record<SecretsWhyNot, string> = { sign_in: SIGN_IN_TO_CHANGE, no_accounts: NO_ACCOUNTS, token: TOKEN_ONLY };
 
 const sessionOf = (r: { status: number; body: unknown }): SessionSecrets | null => (r.status === 200 && !!r.body && typeof r.body === "object" ? (r.body as SessionSecrets) : null);
 

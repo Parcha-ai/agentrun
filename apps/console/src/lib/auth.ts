@@ -6,7 +6,7 @@ export type AuthMode = "signed_in" | "sign_in" | "setup" | "token_link";
  *  session (sign in), or signed in. A server without accounts has no session route (404): it is reached through the
  *  link it printed, which carries its token once, unless `probe` (the status of a protected read) says the browser is
  *  in already. */
-/** A server with no accounts: its session read is 404, or answers `accounts: false` (one that says secrets_writable). */
+/** A server with no accounts: its session read answers `accounts: false` (tl-tools' slice), or, before that, 404. */
 export const noAccounts = (r: { status: number; body: unknown }): boolean => r.status === 404 || (r.body as { accounts?: unknown } | null)?.accounts === false;
 
 export function authMode(r: { status: number; body: unknown }, probe?: number): AuthMode {
