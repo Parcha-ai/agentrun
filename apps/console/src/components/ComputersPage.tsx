@@ -24,6 +24,8 @@ const apiError = (e: unknown): ApiError => (e instanceof ClientError ? e.toApiEr
 /** Said on a metered provider of a kind that bills by the minute: its minutes are the vendor's, outside the run's cap. */
 const METERED = "This provider bills by the minute through your own vendor account, and those minutes aren't counted in a run's spending cap.";
 const BY_THE_MINUTE: ReadonlySet<string> = new Set(["sandbox", "desktop", "phone"]);
+/** A provider's secret is named "computer:<provider>:<KEY>"; its PUT takes the KEY. */
+const keyOf = (name: string) => name.slice(name.lastIndexOf(":") + 1);
 /** A key's form (paste or replace) or its removal's confirm, open under one row. */
 type Opened = { paste: string } | { remove: string };
 
@@ -31,7 +33,7 @@ type Opened = { paste: string } | { remove: string };
 type Tested = { ok: boolean; words: string; at: string };
 
 /** Settings → Computers: every kind of computer an agent can be given, as GET /v2/computers answers it. A kind this
- *  server doesn't offer says the server's why. Each provider shows under every kind it serves, with its keys as
+ *  server doesn't offer says the server's why. Each provider shows under every kind it serves, with its secrets as
  *  SecretRows (the KEY, Set or Missing, Optional unless required, where from and when, never a value), whether a run
  *  could have it now (and the server's why not), Paste or Replace of one key (PUT …/keys with that KEY), a removal
  *  (null), and Test connection (POST …/test). A save or removal reads the whole page again: a key can make a provider
@@ -167,26 +169,27 @@ function ProviderRow({ kind, provider: p, writable, serves, tested, testing, ope
           </p>
           {!p.ready && p.why && <p className="mt-1.5 font-mono text-[12px] text-muted-foreground">{p.why}</p>}
           {p.metered && BY_THE_MINUTE.has(kind) && <p className="mt-1.5 text-[12px] text-muted-foreground">{METERED}</p>}
-          {p.keys.length > 0 && (
+          {p.secrets.length > 0 && (
             <ul className="mt-3 space-y-1.5">
-              {/* This base names a key by its KEY alone, which is the page's label for it too. A row's buttons wait while
-                  its form or confirm is open. */}
-              {p.keys.map((key) => (
-                <SecretRow key={key.name} field={key} label={key.name} required={key.required} writable={writable && !open}
-                  onPaste={() => onOpen({ paste: key.name })} onRemove={() => onOpen({ remove: key.name })} />
-              ))}
+              {/* SecretRow says a secret by its KEY (secretLabel); the PUT takes the KEY too. A row's buttons wait while its
+                  form or confirm is open. */}
+              {p.secrets.map((secret) => {
+                const key = keyOf(secret.name);
+                return <SecretRow key={secret.name} field={secret} required={p.required.includes(secret.name)} writable={writable && !open}
+                  onPaste={() => onOpen({ paste: key })} onRemove={() => onOpen({ remove: key })} />;
+              })}
             </ul>
           )}
           {tested && (
             <p data-test className={`mt-2 text-[12px] ${tested.ok ? "text-success-text" : "text-destructive-text"}`}>{`${tested.ok ? "Passed" : "Failed"} · ${clock(tested.at)} · ${tested.words}`}</p>
           )}
-          <p className="mt-2 text-[12px] text-muted-foreground">{p.keys.length ? "" : "No key. "}Serves: {serves.join(", ")}</p>
+          <p className="mt-2 text-[12px] text-muted-foreground">{p.secrets.length ? "" : "No key. "}Serves: {serves.join(", ")}</p>
         </div>
         <div className="flex gap-2">
           <Button size="sm" onClick={onTest} disabled={testing}>{testing ? "Testing…" : "Test connection"}</Button>
         </div>
       </div>
-      {writable && pasting && <ComputerKeyForm provider={p.name} name={pasting} set={p.keys.some((key) => key.name === pasting && key.set)} onSave={onSave} onCancel={() => onOpen(null)} />}
+      {writable && pasting && <ComputerKeyForm provider={p.name} name={pasting} set={p.secrets.some((secret) => keyOf(secret.name) === pasting && secret.set)} onSave={onSave} onCancel={() => onOpen(null)} />}
       {writable && removing && (
         <div data-confirm className="mt-4 flex flex-wrap items-center gap-3 border bg-card p-3">
           <p className="min-w-0 flex-1 text-[13px]">Remove {removing} saved on this server?</p>

@@ -18,9 +18,9 @@ export function secretLabel(name: string, label?: string): string {
 /** Said once on a page holding secrets when this session may not change them. */
 export const SIGN_IN_TO_CHANGE = "Sign in with your password to change secrets.";
 
-/** Whether this session may paste, replace or remove a secret. BASE DEFAULT: this base's session read has no
- *  secrets_writable and its server does not gate secret writes yet, so a session may unless the read says false; the
- *  secrets slice drops this `?? true` in a named commit when it lands. */
+/** Whether this session may paste, replace or remove a secret. BASE DEFAULT: a session may unless its read says
+ *  secrets_writable: false (a read that fails too); the secrets line replaces this with the server's word alone, in a
+ *  named commit. */
 export function useSecretsWritable(v2: { session: () => Promise<{ status: number; body: unknown }> }): boolean {
   const [writable, setWritable] = useState(true);
   useEffect(() => {
