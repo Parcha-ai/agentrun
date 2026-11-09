@@ -32,6 +32,7 @@ test("a cloud Android with no fixture passes Core through Settings: tap, swipe, 
 		"input.type-text",
 		"input.key-table-refuses-unknown",
 		"apps.launch-terminate",
+		"apps.launch",
 		"apps.ui-tree-shape",
 	]) {
 		assert.equal(got[id], "pass", `${id}: ${reasonOf(report, id)}`);

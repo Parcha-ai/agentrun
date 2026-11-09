@@ -15,7 +15,7 @@ const IMAGE = "debian:bookworm-slim";
 const HERE = fileURLToPath(new URL(".", import.meta.url));
 const CLI = fileURLToPath(new URL("../dist/conformance/cli.js", import.meta.url));
 const GROUPS = ["health", "exec", "files", "process", "provider", "drift", "mount", "screen", "input", "touch", "apps", "lifetime"];
-const PROTOCOL_GROUPS = ["exec", "files", "processes", "screen", "input.pointer", "input.keys", "input.touch", "apps", "apps.install", "apps.ui_tree"];
+const PROTOCOL_GROUPS = ["exec", "files", "processes", "screen", "input.pointer", "input.keys", "input.touch", "apps", "apps.terminate", "apps.install", "apps.ui_tree"];
 const CAPABILITIES = [...PROTOCOL_GROUPS, "network:none", "network:open", "network:allow", "lifetime:janitor", "user:root", "user:uid", "release:stop", "extend", "stream", "mount:bind", "mount:archil"];
 /** Groups with no Core case: lifetime's extend and the mount of the run's folder are optional for every kind. */
 const OPTIONAL_GROUPS = ["lifetime", "mount"];

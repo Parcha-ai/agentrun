@@ -1,0 +1,65 @@
+// The conformance suite on the phone-harness provider's cloud iPhone (machine ios), over its fakes
+// (test/fake-phone-harness.mjs, test/fake-iphone.mjs): an iPhone that declares screen, input.touch and apps, with no
+// tree, no keys, no terminate and no fixture, passes Core and --kind phone through the stock Settings app and the
+// screen. On the owner's iPhone, which is never wiped, the run only navigates: it launches, scrolls and goes home, and
+// changes no setting.
+import assert from "node:assert/strict";
+import test from "node:test";
+import { conformanceCases, formatReport, runConformance } from "../dist/index.js";
+import { fakePhoneHarness, IPHONE_ID, KEY } from "./fake-phone-harness.mjs";
+
+const { create, memoryLedger } = await import("../dist/phone-harness.js");
+
+const statuses = (report) => Object.fromEntries(report.results.map((r) => [r.id, r.status]));
+const reasonOf = (report, id) => report.results.find((r) => r.id === id)?.reason ?? "";
+/** The ops a run on the owner's iPhone may send: looking, launching, scrolling and going home. */
+const NAVIGATION = new Set(["screen.capture", "apps.list", "apps.current", "apps.launch", "input.drag", "nav.home"]);
+
+/**
+ * The fake account holds one iPhone, and the suite keeps the run's shared computer while a case makes its own: the
+ * docs' one session per iPhone (409 profile_running) would refuse the second. Here the fake lets them run side by side,
+ * so the cases are judged on the provider; how a live run on one iPhone takes them is a question for the first live run.
+ */
+async function iphoneProvider(fakeOptions = {}) {
+	const fake = fakePhoneHarness({ iphones: [IPHONE_ID], onePerPhone: false, ...fakeOptions });
+	const options = { apiKey: KEY, platform: "ios", fetch: fake.fetch, ledger: memoryLedger(), now: fake.clock.now, sleep: fake.clock.sleep, maxLifetimeMs: 10 * 60_000 };
+	return { fake, provider: await create(options), drifted: await create({ ...options, daemonVersion: "0.0.0-drift" }) };
+}
+
+test("a cloud iPhone passes Core through Settings and the screen: launch, a swipe that scrolls, the screenshot; what it does not declare skips", { timeout: 120_000 }, async () => {
+	const { fake, provider, drifted } = await iphoneProvider();
+	const report = await runConformance(provider, { image: "ios", drifted: () => drifted, patience: 5000, cases: conformanceCases });
+	assert.equal(report.core, "pass", formatReport(report));
+	const got = statuses(report);
+	for (const id of ["health.hello", "health.kind-consistent", "provider.create-release", "provider.list", "provider.attach", "drift.version", "screen.screenshot-size", "touch.swipe", "apps.launch"]) {
+		assert.equal(got[id], "pass", `${id}: ${reasonOf(report, id)}`);
+	}
+	assert.equal(got["touch.tap"], "skip");
+	assert.equal(reasonOf(report, "touch.tap"), "no way to observe a tap on this phone: it declares neither files nor apps.ui_tree");
+	assert.ok(report.results.find((r) => r.id === "touch.tap").undeclared.includes("apps.ui_tree"), "a skip owed to a group the iPhone does not declare");
+	for (const id of ["apps.launch-terminate", "apps.install-launch", "apps.ui-tree-shape", "input.type-text", "input.key-table-refuses-unknown", "exec.argv", "files.home"]) {
+		assert.equal(got[id], "skip", `${id} needs a group an iPhone does not declare: ${reasonOf(report, id)}`);
+	}
+	assert.match(reasonOf(report, "apps.launch-terminate"), /does not declare apps\.terminate/);
+	for (const group of ["input.keys", "apps.terminate", "apps.ui_tree"]) assert.ok(report.undeclared.includes(group), group);
+	assert.deepEqual(report.cleanup.left, []);
+	assert.equal(fake.sessions.size, 0, "every session the run started is ended");
+	const sent = new Set(fake.iphone.ops().map(([op]) => op));
+	assert.deepEqual([...sent].filter((op) => !NAVIGATION.has(op)), [], "the run only looks, launches, scrolls and goes home: no tap, no typing, no setting changed");
+});
+
+test("--kind phone passes the iPhone: every case of the required groups that runs passes, and apps.terminate's case skips as undeclared", { timeout: 120_000 }, async () => {
+	const { fake, provider, drifted } = await iphoneProvider();
+	const report = await runConformance(provider, { image: "ios", kind: "phone", drifted: () => drifted, patience: 5000 });
+	assert.deepEqual(report.kindVerdict, { kind: "phone", verdict: "pass", reasons: [] }, formatReport(report));
+	assert.equal(statuses(report)["apps.launch"], "pass");
+	assert.equal(fake.sessions.size, 0);
+});
+
+test("apps.launch fails an iPhone whose launch shows nothing new on the screen", { timeout: 60_000 }, async () => {
+	const { fake, provider } = await iphoneProvider({ iphone: { fail: ({ op }) => (op === "apps.launch" ? new Response(JSON.stringify({ result: "com.apple.Preferences" }), { status: 200, headers: { "content-type": "application/json" } }) : undefined) } });
+	const report = await runConformance(provider, { image: "ios", patience: 1000, cases: conformanceCases.filter((c) => c.id === "apps.launch") });
+	assert.equal(statuses(report)["apps.launch"], "fail");
+	assert.match(reasonOf(report, "apps.launch"), /^com\.apple\.Preferences in front after apps\.launch: still not so/);
+	assert.equal(fake.sessions.size, 0);
+});

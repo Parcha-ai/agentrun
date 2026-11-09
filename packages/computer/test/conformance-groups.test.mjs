@@ -76,7 +76,7 @@ test("the suite has the extension's 13 new cases, each at its level and with the
 		"touch.tap": ["core", ["input.touch"]],
 		"touch.swipe": ["core", ["input.touch"]],
 		"touch.pinch": ["full", ["input.touch"]],
-		"apps.install-launch": ["core", ["apps.install", "apps", "files"]],
+		"apps.install-launch": ["core", ["apps.install", "apps", "apps.terminate", "files"]],
 		"apps.ui-tree-shape": ["core", ["apps.ui_tree"]],
 		"lifetime.extend": ["full", ["extend"]],
 	});
@@ -145,7 +145,7 @@ test("KEYS is the spec's table, and a key is a name in it or one printable ASCII
 	]);
 	for (const key of ["enter", "f12", "capslock", "a", "A", "1", "/", "~", "!"]) assert.equal(isKey(key), true, key);
 	for (const key of ["Enter", "Return", "Hyper_Q", " ", "\t", "é", "ab", "", "F13", 1, null]) assert.equal(isKey(key), false, JSON.stringify(key));
-	assert.deepEqual(GROUPS, ["exec", "files", "processes", "screen", "input.pointer", "input.keys", "input.touch", "apps", "apps.install", "apps.ui_tree", "cdp", "stream", "downloads"]);
+	assert.deepEqual(GROUPS, ["exec", "files", "processes", "screen", "input.pointer", "input.keys", "input.touch", "apps", "apps.terminate", "apps.install", "apps.ui_tree", "cdp", "stream", "downloads"]);
 });
 
 test("checkActions: the whole batch first: its shape, its length, each key, each action's group, a pixel scroll and the summed wait", () => {
@@ -309,16 +309,16 @@ test("a linux computer with computerd as PID 1, as Docker declares, skips every 
 		"touch.tap": ["the provider does not declare input.touch", ["input.touch"]],
 		"touch.swipe": ["the provider does not declare input.touch", ["input.touch"]],
 		"touch.pinch": ["the provider does not declare input.touch", ["input.touch"]],
-		"apps.install-launch": ["the provider does not declare apps.install", ["apps.install", "apps"]],
+		"apps.install-launch": ["the provider does not declare apps.install", ["apps.install", "apps", "apps.terminate"]],
 		"apps.ui-tree-shape": ["the provider does not declare apps.ui_tree", ["apps.ui_tree"]],
 		"lifetime.extend": ["the provider has no extend()", ["extend"]],
 	});
 	assert.deepEqual(statuses(report)["health.kind-consistent"], "pass", reasons(report)["health.kind-consistent"]);
 	assert.deepEqual(statuses(report)["provider.check-refuses"], "pass", reasons(report)["provider.check-refuses"]);
 	assert.equal(report.core, "pass", formatReport(report));
-	assert.deepEqual(report.undeclared, ["screen", "stream", "input.pointer", "input.keys", "input.touch", "apps.install", "apps", "apps.ui_tree", "extend"]);
+	assert.deepEqual(report.undeclared, ["screen", "stream", "input.pointer", "input.keys", "input.touch", "apps.install", "apps", "apps.terminate", "apps.ui_tree", "extend"]);
 	const text = formatReport(report).trimEnd().split("\n");
-	assert.equal(text.at(-1), "core PASS 2/2 · 9 optional cases skipped, not declared · full 0/3 · screen stream input.pointer input.keys input.touch apps.install apps apps.ui_tree extend not declared");
+	assert.equal(text.at(-1), "core PASS 2/2 · 9 optional cases skipped, not declared · full 0/3 · screen stream input.pointer input.keys input.touch apps.install apps apps.terminate apps.ui_tree extend not declared");
 	// A case its kind does not require is never filed under core: a linux computer's report has no core screen line.
 	assert.deepEqual(text.filter((line) => /^core (screen|input|touch|apps) /.test(line)), [], text.join("\n"));
 	assert.ok(text.some((line) => /^optional screen +screenshot-size +- 1$/.test(line)), text.join("\n"));
@@ -350,10 +350,12 @@ test("lifetime.extend passes a provider whose extend moves the deadline: the com
 	assert.deepEqual(statuses(report), { "lifetime.extend": "pass" }, reasons(report)["lifetime.extend"]);
 });
 
-test("apps.launch-terminate needs apps alone: a phone with no UI tree and no files is seen launching Settings in its screenshot", async () => {
-	const groups = ["screen", "input.touch", "apps"];
+test("apps.launch-terminate needs apps and apps.terminate: a phone with no UI tree and no files is seen launching Settings in its screenshot", async () => {
+	const groups = ["screen", "input.touch", "apps", "apps.terminate"];
 	const seen = await run(fakeDevices({ kind: "android", groups }).provider, ["apps.launch-terminate"]);
 	assert.deepEqual(statuses(seen), { "apps.launch-terminate": "pass" }, reasons(seen)["apps.launch-terminate"]);
+	const unended = await run(fakeDevices({ kind: "android", groups: ["screen", "input.touch", "apps"] }).provider, ["apps.launch-terminate"]);
+	assert.deepEqual(unended.results.map((r) => [r.id, r.status, r.reason, r.undeclared]), [["apps.launch-terminate", "skip", "the provider does not declare apps.terminate", ["apps.terminate"]]]);
 	const hidden = await run(fakeDevices({ kind: "android", groups, broken: "launch-hidden" }).provider, ["apps.launch-terminate"]);
 	assert.deepEqual(statuses(hidden), { "apps.launch-terminate": "fail" });
 	assert.match(reasons(hidden)["apps.launch-terminate"], /^com\.android\.settings shown after apps\.launch: a screenshot other than the one before it/);
@@ -469,12 +471,22 @@ test("a Core case whose group the kind requires fails when it is not declared; a
 	assert.match(formatReport(optional), /^optional touch +tap +- 1$/m);
 });
 
-test("a phone that declares neither files nor apps.ui_tree skips the touch cases: no way to observe the effect", async () => {
+test("a phone that declares neither files nor apps.ui_tree skips the touch cases it cannot observe, owed to those two undeclared groups; with apps, a swipe is seen on Settings' screen", async () => {
 	const { provider } = fakeDevices({ kind: "android", groups: ["screen", "input.touch"] });
 	const report = await run(provider, ["touch.tap", "touch.swipe"]);
 	assert.deepEqual(statuses(report), { "touch.tap": "skip", "touch.swipe": "skip" });
-	assert.equal(reasons(report)["touch.tap"], "no way to observe the effect: declare files or apps.ui_tree");
-	assert.equal(report.core, "fail", "a skip for no way to observe is not a skip for an undeclared group: Core cannot pass on it");
+	assert.equal(reasons(report)["touch.tap"], "no way to observe a tap on this phone: it declares neither files nor apps.ui_tree");
+	assert.equal(reasons(report)["touch.swipe"], "no way to observe a swipe on this phone: it declares neither files nor apps.ui_tree");
+	for (const r of report.results) assert.deepEqual(r.undeclared, ["files", "apps.ui_tree"], r.id);
+	assert.equal(report.core, "fail", "no Core case ran, so Core cannot pass");
+	// A skip that names a group the computer declares is a plain one: Core counts it.
+	const plain = await runConformance(fakeDevices({ kind: "android", groups: ["screen", "input.touch", "files"] }).provider, {
+		image: IMAGE,
+		patience: 1000,
+		cases: [{ id: "touch.owed", level: "core", group: "touch", needs: [], run: async (t) => t.skip("owed to files, which it declares", { undeclared: ["files"] }) }],
+	});
+	assert.deepEqual(plain.results.map((r) => [r.status, r.undeclared]), [["skip", undefined]]);
+	assert.equal(plain.core, "fail");
 });
 
 test("a case that needs the fixture skips in words when the run was given none, and Core cannot pass on that skip", async () => {

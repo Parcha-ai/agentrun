@@ -10,7 +10,7 @@ const ok = (value) => ({ ok: true, value });
 const fail = (code, message) => ({ ok: false, error: { code, message } });
 
 const DESKTOP_GROUPS = ["exec", "files", "processes", "screen", "input.pointer", "input.keys"];
-const ANDROID_GROUPS = ["files", "screen", "input.touch", "apps", "apps.install", "apps.ui_tree"];
+const ANDROID_GROUPS = ["files", "screen", "input.touch", "apps", "apps.terminate", "apps.install", "apps.ui_tree"];
 const BACKGROUND = [40, 40, 40];
 /** A phone's stock Settings app, and the color its screen is while it is in front. */
 const SETTINGS_APP = "com.android.settings";
