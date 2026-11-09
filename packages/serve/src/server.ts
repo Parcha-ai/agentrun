@@ -62,7 +62,7 @@ import { stats as statsOverStore } from "./store-reads/stats.js";
 import { analytics as analyticsOverStore } from "./store-reads/analytics.js";
 import { BACKGROUND_CONTEXT } from "@earendil-works/chord/context";
 import { type AgenticBody, type NewRevision, openSqliteStore, type RevisionPlace, type RunRow, type Store, StoreBusy, StoreConstraint, type WorkflowBody } from "./store/index.js";
-import { FINAL_STATES } from "./store/store.js";
+import { FINAL_STATES, RUN_CHANGES_PAGE, type RunChange, type RunChangeCursor } from "./store/store.js";
 import { runModelRef } from "./model.js";
 // The v2 run statuses, as the run view names them (run-view.ts Status), for the list filter's validation. */
 const STATUSES = ["queued", "working", "paused", "input_required", "completed", "failed", "cancelled"] as const;
@@ -2991,15 +2991,14 @@ async function startHolding(options: ServeOptions, data: string, checked: { maxR
   webhooks.attach(options.publicUrl ?? url);
   mcpServers.attach(options.publicUrl ?? url, url);
   // A run's end and its wait are the outbound webhook's run.ended and run.needs_input (webhooks.ts). The runners write them
-  // to the store and this server runs no run, so it follows the store: each read takes the runs not final yet and the
-  // newest runs (one that started and ended between two reads is among them). It tells each end it has not told once the
-  // run reads final, and each wait of a run a runner left parked (or let go of) once it reads input_required. The markers
-  // are main's (an end's time, a wait's last row), so each webhook-id is the one it always had, and the ledger tells each
-  // once across restarts; a start first catches up the ends the ledger lacks, which no server was up to see. A store read
-  // of the runs ended (or parked) since a mark would be the cleaner seam than this read of the open runs every 250 ms.
-  const RUN_ENDS_POLL_MS = 250;
-  const RUN_ENDS_NEWEST = 50;
-  const final = (row: RunRow) => (FINAL_STATES as readonly string[]).includes(row.state);
+  // to the store and this server runs no run, so it follows the store's run-change feed (Store.runs.changedSince): every
+  // run reaching a final state, or let go by its runner (parked, or running with none), once, in order, under a cursor
+  // kept in this process. It tells each end once the run reads final, and each wait of a run let go once it reads
+  // input_required. The markers are main's (an end's time, a wait's last row), so each webhook-id is the one it always
+  // had, and the ledger tells each once across restarts. The feed is read every 250 ms; a store that woke its readers on a
+  // change would be the next seam.
+  const RUN_CHANGES_POLL_MS = 250;
+  const final = (row: { state: string }) => (FINAL_STATES as readonly string[]).includes(row.state);
   const endOf = (row: RunRow) => ({ id: row.id, state: final(row) ? row.state : "running", ...(final(row) && row.endedAt !== null ? { endedAt: new Date(row.endedAt).toISOString() } : {}) });
   /** The run as the store holds it now, with its notice (the run list's own view of it); null when there is no such run. */
   const endNotice = async (id: string) => {
@@ -3014,60 +3013,98 @@ async function startHolding(options: ServeOptions, data: string, checked: { maxR
   const readWaits = new Map<string, string>();
   const waitKinds = new Set(["question", "approval", "budget", "browser"]);
   /** The wait of a run its runner left parked (or let go of), told once as main told it: its marker the run's last row
-   *  that shows (not usage, a phase or learning's), its kind the pending card's (a stop's when it waits on no card). */
-  const tellWait = async (row: RunRow): Promise<void> => {
+   *  that shows (not usage, a phase or learning's), its kind the pending card's (a stop's when it waits on no card). False
+   *  when it is not done (a read that failed, or its notice not saved): it is read again. */
+  const tellWait = async (row: RunRow): Promise<boolean> => {
     const seen = `${row.state}\n${row.epoch}\n${row.runner ?? ""}`;
-    if (readWaits.get(row.id) === seen) return;
+    if (readWaits.get(row.id) === seen) return true;
     const view = await viewOverStore(store, row.id, viewDepsFor(ownOriginOf()));
-    if (view?.status !== "input_required") return void readWaits.set(row.id, seen);
+    if (view?.status !== "input_required") return (readWaits.set(row.id, seen), true);
     const rows = (await timelineOverStore(store, row.id, viewDepsFor(ownOriginOf()))) ?? [];
     const marker = rows.findLast((r) => r.kind !== "usage" && r.kind !== "phase" && r.agent_label !== LEARNING_LABEL)?.id;
-    if (!marker) return void readWaits.set(row.id, seen);
+    if (!marker) return (readWaits.set(row.id, seen), true);
     const card = (view.pending as { kind?: unknown } | null | undefined)?.kind;
     const kind = view.state !== "waiting" ? "stopped" : typeof card === "string" && waitKinds.has(card) ? card : "question";
     const notice = { run_id: row.id, agent_id: row.agentId, status: "input_required", title: typeof view.title === "string" ? view.title : "", pending: { kind } } as RunNotice;
-    if (webhooks.emit("run.needs_input", notice, marker) !== "unsaved") readWaits.set(row.id, seen);
+    if (webhooks.emit("run.needs_input", notice, marker) === "unsaved") return false;
+    readWaits.set(row.id, seen);
+    return true;
   };
-  let openRuns = new Set<string>();
+  /** A run's end, told once the run reads final. False when it is not done (a read that failed, or its notice not saved). */
+  const tellEnd = async (id: string): Promise<boolean> => {
+    const now = await endNotice(id).catch(() => undefined);
+    if (now === undefined) return false;
+    readWaits.delete(id);
+    if (!now?.endedAt || toldEnds.get(id) === now.endedAt) return true;
+    if (webhooks.emit("run.ended", now.notice, now.endedAt) === "unsaved") return false;
+    toldEnds.set(id, now.endedAt);
+    return true;
+  };
+  /** A run's row as the store holds it now: undefined when there is no such run, UNREAD when the read failed. */
+  const UNREAD = Symbol("unread");
+  const rowNow = (id: string) => store.runs.get(id).catch((): typeof UNREAD => UNREAD);
+  const letGo = (row: RunRow) => row.state === "parked" || (row.state === "running" && row.runner === null);
+  /** One change of the feed, handled: an end told, a wait told, or nothing to tell. False: not done, read again. A wait is
+   *  read from the run as it is now (a run gone since, or moved on, has none to tell). */
+  const handle = async (change: RunChange): Promise<boolean> => {
+    if (final(change)) return tellEnd(change.id);
+    if (change.state === "parked" || (change.state === "running" && change.runner === null)) {
+      const row = await rowNow(change.id);
+      if (row === UNREAD) return false;
+      return row === undefined || !letGo(row) || (await tellWait(row).catch(() => false));
+    }
+    return true;
+  };
+  /** Where the feed is read on from: past each page whose every change is handled. A change not done stops the read with
+   *  the cursor before its page, so the next read gives that page again; the changes before it on that page are told
+   *  again, which the ledger (and toldEnds, readWaits) answers as already told. None is dropped, and none is skipped. */
+  let changesCursor: RunChangeCursor | undefined;
+  /** The runs whose wait the start could not tell (a read that failed, or a notice not saved): before the feed's head, so
+   *  no change of the feed brings them back. Each read tries them first, until each is done. */
+  const waitsLeft = new Set<string>();
+  const readChanges = async (): Promise<void> => {
+    for (const id of [...waitsLeft]) {
+      if (closing) return;
+      const row = await rowNow(id);
+      if (row === UNREAD) continue;
+      if (row === undefined || !letGo(row) || (await tellWait(row).catch(() => false))) waitsLeft.delete(id);
+    }
+    for (;;) {
+      const page = await store.runs.changedSince(changesCursor, { limit: RUN_CHANGES_PAGE });
+      for (const change of page.changes) if (closing || !(await handle(change))) return;
+      changesCursor = page.next;
+      if (page.changes.length < RUN_CHANGES_PAGE) return;
+    }
+  };
   let endsTimer: NodeJS.Timeout | undefined;
   let endsRead: Promise<void> = Promise.resolve();
-  const readEnds = async (): Promise<void> => {
-    const open = new Set<string>();
-    for (const state of ["queued", "running", "parked"] as const) {
-      for (const row of await store.runs.list({ state })) {
-        open.add(row.id);
-        // A run waits on its person once its runner has let it go: parked, or running with no runner.
-        if (!closing && (row.state === "parked" || (row.state === "running" && row.runner === null))) await tellWait(row).catch(() => undefined);
-      }
-    }
-    const newest = await store.runs.list({ limit: RUN_ENDS_NEWEST });
-    for (const id of new Set([...openRuns, ...newest.map((row) => row.id)])) {
-      if (open.has(id) || closing) continue;
-      const now = await endNotice(id).catch(() => undefined);
-      // Unread (a busy store): read again at the next turn, never lost.
-      if (now === undefined) {
-        open.add(id);
-        continue;
-      }
-      readWaits.delete(id);
-      if (!now?.endedAt || toldEnds.get(id) === now.endedAt) continue;
-      if (webhooks.emit("run.ended", now.notice, now.endedAt) !== "unsaved") toldEnds.set(id, now.endedAt);
-    }
-    openRuns = open;
-  };
-  const followEnds = () => {
+  const followChanges = () => {
     if (closing) return;
-    endsRead = readEnds()
-      .catch((error: Error) => log?.(logLine("webhook", { condition: "run_ends_unread", error: error.message })))
+    endsRead = readChanges()
+      .catch((error: Error) => log?.(logLine("webhook", { condition: "run_changes_unread", error: error.message })))
       .finally(() => {
-        if (!closing) (endsTimer = setTimeout(followEnds, RUN_ENDS_POLL_MS)).unref();
+        if (!closing) (endsTimer = setTimeout(followChanges, RUN_CHANGES_POLL_MS)).unref();
       });
   };
-  void store.runs
-    .list({})
-    .then((rows) => webhooks.catchUp(rows.filter((row) => !row.importedFrom).map(endOf), endNotice))
+  /** The start, in this order, so no change is lost between its steps: the feed's head first (read to its end, untold),
+   *  then what the store holds now (the ends the ledger lacks, webhooks.ts catchUp, and the waits of the runs let go: the
+   *  feed has none from before its table, and none from a time no server read it), then the feed from that head. A change
+   *  after the head is read by the feed even when the store's rows already showed it, and the ledger tells it once. */
+  const startFollowing = async () => {
+    let head: RunChangeCursor | undefined;
+    for (;;) {
+      const page = await store.runs.changedSince(head, { limit: RUN_CHANGES_PAGE });
+      head = page.next;
+      if (page.changes.length < RUN_CHANGES_PAGE) break;
+    }
+    changesCursor = head;
+    const rows = await store.runs.list({});
+    await webhooks.catchUp(rows.filter((row) => !row.importedFrom).map(endOf), endNotice);
+    for (const row of rows) if (!closing && letGo(row) && !(await tellWait(row).catch(() => false))) waitsLeft.add(row.id);
+  };
+  void startFollowing()
     .catch((error: Error) => log?.(logLine("webhook", { condition: "catch_up_unread", error: error.message })))
-    .finally(followEnds);
+    .finally(followChanges);
   const setupUrl = owner && !owner.hasPassword() ? owner.setupLink() : undefined;
   /** The server's stop: once (`close` keeps its promise). */
   let stopped: Promise<void> | undefined;
