@@ -11,12 +11,12 @@ import { claimFence } from "../fence.js";
 import { RunStorage } from "../journal/storage.js";
 import { DDL, SCHEMA_VERSION } from "../schema.js";
 import {
-  AgentArchived, CommandTaken, ExternalBodyConflict, Fenced, SchemaVersionUnknown, STORE_WRITE_DEADLINE_MS, StoreConstraint, StoreFromEarlierVersion, TriggerFull, type AgentRow, type Agents,
+  AgentArchived, CommandTaken, ExternalBodyConflict, Fenced, RunFinal, SchemaVersionUnknown, STORE_WRITE_DEADLINE_MS, StoreConstraint, StoreFromEarlierVersion, TriggerFull, type AgentRow, type Agents,
   type AlsoRow, type Claim, type Command, type FiringChange, type FiringRow, type FiringStatus, type ImportRunInput, type Journal, type NewRevision, type RevisionRow, type RunPatch, type RunRow, type Runs,
   type JournalReads, type UpdatedRun,
   type ReleasedState, type RunState, type Store, type StoreRole, type TemplatePackage, type Templates, type TriggerDef, type TriggerPatch, type TriggerRow, type Triggers, type TriggerScope,
   FINAL_STATES, MCP_REFRESH_CALL_MS, MCP_REFRESH_LEASE_MS, type Learning, type LearningProposal, type Live, type LiveRow, type LiveViewerRow, type LiveViewers, type Mcp, type McpPinRow, type McpServerRow,
-  type McpOauth, type McpOauthPendingRow, type SealedKeyRow, type SealedKeys, type Settings, type SettingRow, type TriggerSettingRow, type TriggerSettings,
+  type McpOauth, type McpOauthPendingRow, type SealedKeyRow, type SealedKeys, type SealedSecretRow, type SealedSecrets, type Settings, type SettingRow, type TriggerSettingRow, type TriggerSettings,
   SignInHandedTo, SignInMissing, SIGN_IN_TOMBSTONES_KEPT, type SignIns, type SignInRow, type SignInTombstoneRow, type ViewerKind,
   type ComputerLedger, type ComputerLedgerRow,
 } from "../store.js";
@@ -25,6 +25,7 @@ import { Connection, type SqliteExecutor, type SqliteValue, type Statement, type
 import { applyRunPatch, refuseLeftovers, RUN_COLUMNS, runOf, SIGN_IN_HANDED_LOCK, type RunRecord } from "./run-patch.js";
 import { readLaunch, writeLaunch } from "./run-launch.js";
 import { canonical } from "../agent-body.js";
+import { aadOf, sealedAt } from "../seal.js";
 
 /** A claim's length when the caller names none. */
 export const DEFAULT_LEASE_MS = 30_000;
@@ -120,14 +121,19 @@ const json = (value: unknown): string => JSON.stringify(value ?? null);
 
 type McpServerRecord = {
   name: string; url: string; auth: string; protocol: string | null; tools: string; prices: string; server_info: string | null; instructions: string | null; sealed: Uint8Array | null;
-  refresh_holder: string | null; refresh_until: number | null; created_at: number; updated_at: number; listed_at: number | null; credential_changed_at: number | null;
+  refresh_holder: string | null; refresh_until: number | null; created_at: number; updated_at: number; listed_at: number | null; credential_changed_at: number | null; token_until: number | null;
 };
 type McpPinRecord = { run_id: string; body: string; pinned_at: number };
-const MCP_SERVER_COLUMNS = "name, url, auth, protocol, tools, prices, server_info, instructions, sealed, refresh_holder, refresh_until, created_at, updated_at, listed_at, credential_changed_at";
-const mcpServerOf = (r: McpServerRecord): McpServerRow => ({
+const MCP_SERVER_COLUMNS = "name, url, auth, protocol, tools, prices, server_info, instructions, sealed, refresh_holder, refresh_until, created_at, updated_at, listed_at, credential_changed_at, token_until";
+/** The row as read at `at`, the store's own clock: its refresh lease judged by that clock (refreshLapsed), the one
+ *  leaseRefresh writes and grants it by, with its rule: a lease has run out once its refresh_until is before now. */
+const mcpServerOf = (r: McpServerRecord, at: number): McpServerRow => ({
   name: r.name, url: r.url, auth: r.auth, protocol: r.protocol, tools: JSON.parse(r.tools), prices: JSON.parse(r.prices),
   serverInfo: r.server_info === null ? null : JSON.parse(r.server_info), instructions: r.instructions,
-  sealed: r.sealed === null ? null : Uint8Array.from(r.sealed), refreshHolder: r.refresh_holder, refreshUntil: r.refresh_until, createdAt: r.created_at, updatedAt: r.updated_at, listedAt: r.listed_at, credentialChangedAt: r.credential_changed_at,
+  sealed: r.sealed === null ? null : Uint8Array.from(r.sealed), refreshHolder: r.refresh_holder, refreshUntil: r.refresh_until,
+  refreshLapsed: r.refresh_until !== null && r.refresh_until < at,
+  tokenLeftMs: r.token_until === null ? null : r.token_until - at,
+  createdAt: r.created_at, updatedAt: r.updated_at, listedAt: r.listed_at, credentialChangedAt: r.credential_changed_at,
 });
 const mcpPinOf = (r: McpPinRecord): McpPinRow => ({ runId: r.run_id, body: JSON.parse(r.body), pinnedAt: r.pinned_at });
 
@@ -284,6 +290,7 @@ class SqliteStore implements Store {
   readonly triggerSettings: TriggerSettings;
   readonly mcpOauth: McpOauth;
   readonly signIns: SignIns;
+  readonly sealedSecrets: SealedSecrets;
   readonly #db: StoreConnection;
   readonly #now: () => number;
   /** Where this store's data is: its connection's (StoreConnection.where). */
@@ -745,6 +752,21 @@ class SqliteStore implements Store {
       archive: async (runId, archived) => {
         await db.write([{ sql: "UPDATE runs SET archived_at = ? WHERE id = ?", params: [archived ? now() : null, runId] }]);
       },
+      reopen: async (runId, { kind, body = null }) =>
+        db.transaction(async (tx) => {
+          // Back to running, released: the epoch, the journal, cost_usd and metrics stay (its next turn is booked on what it
+          // spent); the end's own fields go. Only an agentic run that ended completed, not imported, not a learning run.
+          const reopened = await tx.runCounted(
+            `UPDATE runs SET state = 'running', runner = NULL, claimed_until = NULL, wake_at = NULL, backoff_until = NULL, ended_at = NULL, summary = NULL, outcome = NULL
+              WHERE id = ? AND state = 'ended' AND imported_from IS NULL
+                AND EXISTS (SELECT 1 FROM revisions WHERE revisions.id = runs.revision_id AND revisions.kind = 'agentic')
+                AND NOT EXISTS (SELECT 1 FROM run_launch WHERE run_launch.run_id = runs.id AND ${d.jsonText("run_launch.body", ["harness"])} = 'learning')`,
+            runId,
+          );
+          if (reopened === 0) throw new RunFinal(runId);
+          const row = await tx.get<CommandRecord>(`INSERT INTO commands (run_id, kind, body, created_at) VALUES (?, ?, ?, ?) RETURNING ${COMMAND_COLUMNS}`, runId, kind, json(body), now());
+          return commandOf(row!);
+        }),
       claimable: async ({ limit } = {}) => {
         const at = now();
         const bounded = typeof limit === "number" && Number.isSafeInteger(limit) && limit >= 0;
@@ -785,11 +807,13 @@ class SqliteStore implements Store {
 
     const server = async (executor: Pick<SqliteExecutor, "get">, name: string) => {
       const row = await executor.get<McpServerRecord>(`SELECT ${MCP_SERVER_COLUMNS} FROM mcp_servers WHERE name = ?`, name);
-      return row && mcpServerOf(row);
+      return row && mcpServerOf(row, now());
     };
     this.mcp = {
-      put: async ({ name, url, auth, protocol = null, tools, prices = null, serverInfo = null, instructions = null, sealed = null, listedAt, updatedAt, credentialChangedAt }) => {
+      put: async ({ name, url, auth, protocol = null, tools, prices = null, serverInfo = null, instructions = null, sealed = null, listedAt, updatedAt, credentialChangedAt, tokenLeftMs = null }) => {
         const at = now();
+        // The access token's end on this store's clock: the writer's measure of its life laid on now (token_until).
+        const tokenUntil = sealed !== null && typeof tokenLeftMs === "number" && Number.isFinite(tokenLeftMs) ? at + tokenLeftMs : null;
         // updated_at defaults to now (a save or a sign-in); a refresh passes the kept one so it is not read as an edit.
         // listed_at is the tools' listing time, now unless given.
         const updated = updatedAt ?? at;
@@ -798,18 +822,21 @@ class SqliteStore implements Store {
         // time given back); null with none. A token refresh (keepRefreshed) never moves it.
         const credentialAt = sealed === null ? null : credentialChangedAt === undefined ? at : credentialChangedAt;
         const [result] = await db.write([{
-          sql: `INSERT INTO mcp_servers (name, url, auth, protocol, tools, prices, server_info, instructions, sealed, created_at, updated_at, listed_at, credential_changed_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+          sql: `INSERT INTO mcp_servers (name, url, auth, protocol, tools, prices, server_info, instructions, sealed, created_at, updated_at, listed_at, credential_changed_at, token_until) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
             ON CONFLICT (name) DO UPDATE SET url = excluded.url, auth = excluded.auth, protocol = excluded.protocol, tools = excluded.tools,
-              prices = excluded.prices, server_info = excluded.server_info, instructions = excluded.instructions, sealed = excluded.sealed, refresh_holder = NULL, refresh_until = NULL, updated_at = excluded.updated_at, listed_at = excluded.listed_at, credential_changed_at = excluded.credential_changed_at
+              prices = excluded.prices, server_info = excluded.server_info, instructions = excluded.instructions, sealed = excluded.sealed, refresh_holder = NULL, refresh_until = NULL, updated_at = excluded.updated_at, listed_at = excluded.listed_at, credential_changed_at = excluded.credential_changed_at, token_until = excluded.token_until
             RETURNING ${MCP_SERVER_COLUMNS}`,
-          params: [name, url, auth, protocol, json(tools), json(prices), serverInfo === null ? null : json(serverInfo), instructions, sealed, at, updated, listed, credentialAt],
+          params: [name, url, auth, protocol, json(tools), json(prices), serverInfo === null ? null : json(serverInfo), instructions, sealed, at, updated, listed, credentialAt, tokenUntil],
         }]);
-        return mcpServerOf(result!.rows[0] as McpServerRecord);
+        return mcpServerOf(result!.rows[0] as McpServerRecord, at);
       },
       remove: async (name) => {
         await db.write([{ sql: "DELETE FROM mcp_servers WHERE name = ?", params: [name] }]);
       },
-      servers: async () => (await db.all<McpServerRecord>(`SELECT ${MCP_SERVER_COLUMNS} FROM mcp_servers ORDER BY name`)).map(mcpServerOf),
+      servers: async () => {
+        const at = now();
+        return (await db.all<McpServerRecord>(`SELECT ${MCP_SERVER_COLUMNS} FROM mcp_servers ORDER BY name`)).map((row) => mcpServerOf(row, at));
+      },
       server: (name) => server(db, name),
       pin: async (runId) => {
         const row = await db.get<McpPinRecord>("SELECT run_id, body, pinned_at FROM mcp_pins WHERE run_id = ?", runId);
@@ -841,16 +868,18 @@ class SqliteStore implements Store {
       },
       // One statement compares the credential and writes: no read between, so no other write lands in a gap. The lease is
       // cleared only by its own holder (a waiter that took a lapsed lease keeps it, and reads ours at its re-read).
-      keepRefreshed: (name, { seen, sealed, holder }) =>
+      keepRefreshed: (name, { seen, sealed, holder, tokenLeftMs = null }) =>
         db.transaction(async (tx) => {
           const at = now();
+          // The refreshed token's end on this store's clock (token_until), from the refresher's measure of its life.
+          const tokenUntil = typeof tokenLeftMs === "number" && Number.isFinite(tokenLeftMs) ? at + tokenLeftMs : null;
           const written = await tx.runCounted(
-            `UPDATE mcp_servers SET sealed = ?,
+            `UPDATE mcp_servers SET sealed = ?, token_until = ?,
               refresh_until = CASE WHEN refresh_holder = ? THEN NULL ELSE refresh_until END,
               refresh_holder = CASE WHEN refresh_holder = ? THEN NULL ELSE refresh_holder END,
               updated_at = ${d.greatest}(?, updated_at + 1)
              WHERE name = ? AND ${d.nullSafeEquals("sealed")}`,
-            sealed, holder, holder, at, name, seen,
+            sealed, tokenUntil, holder, holder, at, name, seen,
           );
           return { kept: written === 1, row: await server(tx, name) };
         }, { deadlineMs: STORE_WRITE_DEADLINE_MS, fromCall: true }),
@@ -1018,6 +1047,41 @@ class SqliteStore implements Store {
       },
       sweepExpired: async (at) => (await db.write([{ sql: "DELETE FROM mcp_oauth_pending WHERE expires_at <= ?", params: [at] }]))[0]!.changes,
       count: async (at) => (await db.get<{ n: number }>("SELECT count(*) AS n FROM mcp_oauth_pending WHERE expires_at > ?", at))!.n,
+    };
+
+    // Every sealed column of every table, each with the AAD it was sealed under: the one read a runner's redaction set takes.
+    this.sealedSecrets = {
+      all: async () => {
+        const out: SealedSecretRow[] = [];
+        const bytes = (value: Uint8Array) => Uint8Array.from(value);
+        for (const row of await db.all<{ name: string; sealed: Uint8Array }>("SELECT name, sealed FROM sealed_keys ORDER BY name")) {
+          out.push({ plane: "sealed_keys", where: { name: row.name }, aad: aadOf(sealedAt.sealedKey(row.name)), sealed: bytes(row.sealed) });
+        }
+        for (const row of await db.all<{ name: string; sealed: Uint8Array }>("SELECT name, sealed FROM mcp_servers WHERE sealed IS NOT NULL ORDER BY name")) {
+          out.push({ plane: "mcp_servers", where: { name: row.name }, aad: aadOf(sealedAt.mcpServer(row.name)), sealed: bytes(row.sealed) });
+        }
+        for (const row of await db.all<{ state: string; sealed: Uint8Array }>("SELECT state, sealed FROM mcp_oauth_pending ORDER BY state")) {
+          out.push({ plane: "mcp_oauth_pending", where: { state: row.state }, aad: aadOf(sealedAt.oauthPending(row.state)), sealed: bytes(row.sealed) });
+        }
+        for (const row of await db.all<{ adapter: string; scope: string; field: string; sealed: string }>("SELECT adapter, scope, field, sealed FROM trigger_settings ORDER BY adapter, scope, field")) {
+          // Base64 text in this column (sealed-settings-store.ts), under the table's documented composite-key AAD.
+          out.push({ plane: "trigger_settings", where: { adapter: row.adapter, scope: row.scope, field: row.field }, aad: `trigger_settings|${row.adapter}|${row.scope}|${row.field}`, sealed: Uint8Array.from(Buffer.from(row.sealed, "base64")) });
+        }
+        for (const row of await db.all<{ agent_id: string; provider: string; pointer_sealed: Uint8Array }>("SELECT agent_id, provider, pointer_sealed FROM sign_ins ORDER BY agent_id, provider")) {
+          out.push({ plane: "sign_ins", where: { agentId: row.agent_id, provider: row.provider }, aad: aadOf(sealedAt.signIn(row.agent_id, row.provider)), sealed: bytes(row.pointer_sealed) });
+        }
+        // A tombstone keeps the pointer's sealed bytes under the live row's binding (store/seal.ts signIn).
+        for (const row of await db.all<{ id: number; agent_id: string; provider: string; pointer_sealed: Uint8Array }>("SELECT id, agent_id, provider, pointer_sealed FROM sign_in_tombstones ORDER BY id")) {
+          out.push({ plane: "sign_in_tombstones", where: { id: String(row.id), agentId: row.agent_id, provider: row.provider }, aad: aadOf(sealedAt.signIn(row.agent_id, row.provider)), sealed: bytes(row.pointer_sealed) });
+        }
+        for (const row of await db.all<{ run_id: string; kind: string; tag: string; sealed: Uint8Array }>("SELECT run_id, kind, tag, sealed FROM computer_viewers ORDER BY run_id, kind, tag")) {
+          out.push({ plane: "computer_viewers", where: { runId: row.run_id, kind: row.kind, tag: row.tag }, aad: aadOf(sealedAt.liveViewer(row.run_id, row.kind, row.tag)), sealed: bytes(row.sealed) });
+        }
+        for (const row of await db.all<{ run_id: string; sealed: Uint8Array }>("SELECT run_id, sealed FROM run_launch WHERE sealed IS NOT NULL ORDER BY run_id")) {
+          out.push({ plane: "run_launch", where: { runId: row.run_id }, aad: aadOf({ table: "run_launch", row: row.run_id, column: "sealed" }), sealed: bytes(row.sealed) });
+        }
+        return out;
+      },
     };
 
     this.signIns = {

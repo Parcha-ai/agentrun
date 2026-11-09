@@ -151,6 +151,35 @@ test("a keep held past the old 12 s lease: a claim waiting on the lease never ta
   assert.equal(bearer(stepB), `Bearer ${FRESH}`, "the waiter read the set the keep landed");
 });
 
+test("a claim whose clock runs ahead of the store's still sees a live lease as live: it waits on it and reads the set once it lands, never refusing the call", async (t) => {
+  // The lease is the store's: written and judged by the store's clock. The store's clock stays at T0 (the lease, 18 s from
+  // then, holds); the waiting claim's own clock runs a minute ahead, past where the lease would end on it.
+  const { store, one, two } = await setUp(t);
+  const net = network();
+  const held = heldKeep(store);
+  const a = stepOf(held.store, one, { network: net, timer: manualTimer() });
+  await net.reached;
+  net.answer();
+  await held.entered;
+  const timer = manualTimer();
+  const b = stepOf(store, two, { network: net, timer, now: () => T0 + 60 * SECOND });
+  let bound;
+  const reached = await Promise.race([
+    timer.armed.then(() => "waits"),
+    b.then(() => "went on"),
+    new Promise((resolve) => (bound = setTimeout(() => resolve("neither"), 30_000))),
+  ]);
+  clearTimeout(bound);
+  assert.equal(reached, "waits", "the claim waits on the live lease, its own clock notwithstanding");
+  held.release();
+  await held.done;
+  timer.fireAll();
+  const [stepA, stepB] = await Promise.all([a, b]);
+  t.after(() => (stepA.release(), stepB.release()));
+  assert.equal(net.fetches, 1, "one refresh in all");
+  assert.equal(bearer(stepB), `Bearer ${FRESH}`, "the claim reads the set the keep landed, never refused");
+});
+
 test("the lease lapses with the keep held, and another claim takes it: our keep lands on the unchanged credential, and the other reads it without spending the old token", async (t) => {
   const { store, clock, one, two } = await setUp(t);
   const net = network();

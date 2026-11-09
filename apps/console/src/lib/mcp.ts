@@ -1,5 +1,5 @@
 import { ClientError } from "./client";
-import type { Permission } from "./v2";
+import type { Permission, SecretMeta } from "./v2";
 
 /** A tool as a remote MCP server lists it (`tools/list`, through the server's preview). */
 /** A tool as a server lists it; on a saved server's read, with its permission as this server applies it to an agent that
@@ -12,7 +12,7 @@ export type McpServer = {
   /** The tools it lists that no price meters (the read's `not_metered`): absent when every tool has a price. */
   not_metered?: string[];
   /** Its credential as every secret is read: set or not, how it came, when it last changed. Never a value. */
-  secret?: { name: string; set: boolean; source: "env" | "console" | "sign-in" | null; changed_at: string | null };
+  secret?: SecretMeta;
   name: string; url: string; auth: { type: McpAuthType; headers?: string[] }; tools: McpTool[]; protocol?: string; listed_at?: string; updated_at?: string;
   credential: "sealed" | "unreadable" | "expired" | null;
   oauth?: { expires_at?: string; scopes: string[]; client: string; client_id?: string };

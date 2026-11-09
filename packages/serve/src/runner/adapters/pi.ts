@@ -245,7 +245,9 @@ async function sessionOn(proxy: ModelProxy, options: PiAdapterOptions, spec: Ses
     },
     async send(text, options) {
       // The run's first input under INPUT_REQUEST; a follow-up (a raised run's turn) under its own id, a turn of its own.
-      input = await root.submit({ type: "input", content: text, requestId: options?.id ?? INPUT_REQUEST }, context);
+      // With `origin` (a trigger's first input), the host's input entry carries it, as a trigger's steer's does.
+      const entry = options?.origin ? { entry: { kind: KINDS.input, data: { origin: options.origin } as JsonValue } } : {};
+      input = await root.submit({ type: "input", content: text, requestId: options?.id ?? INPUT_REQUEST, ...entry } as never, context);
       state = "open_turn";
       watch(input);
     },

@@ -540,6 +540,13 @@ export interface Runs {
   list(filter: { agentId?: string; revisionId?: string; state?: RunState; archived?: boolean; limit?: number }): Promise<RunRow[]>;
   /** Archives the run (its own archive time), or unarchives it: idempotent. */
   archive(runId: string, archived: boolean): Promise<void>;
+  /** A person's follow-up to a run that ended completed: in one transaction, the run goes back to running with no runner
+   *  (released, so a runner claims it at once by the claimable rule's released branch), its end's own fields cleared
+   *  (ended_at, summary, outcome, its waits) and everything it did kept (its epoch, its journal, its cost and metrics,
+   *  so its next turn is booked on top of what it spent), and `command` (the follow-up's steer) is written untaken for it.
+   *  Only an agentic run that ended completed (state 'ended'), not imported and not a learning run, reopens: a workflow,
+   *  a failed, stopped or cancelled run, any other, or none is RunFinal, and nothing is written. */
+  reopen(runId: string, command: { kind: string; body?: unknown }): Promise<Command>;
   /** The runs a runner may claim, oldest first: queued; parked with an untaken command or its wake_at passed; running with
    *  no runner (released at a runner's shutdown: it stays running, a run that started keeps that fact) or its claim run
    *  out. */
@@ -574,6 +581,15 @@ export interface McpServerRow {
   /** A refresh in flight: its holder and the lease's end (ms), or null. */
   readonly refreshHolder: string | null;
   readonly refreshUntil: number | null;
+  /** Whether that lease has run out, judged by the store's own clock when the row was read: the clock leaseRefresh writes
+   *  and grants it by. A reader judges the lease by this, never by its own clock against refreshUntil: on another machine
+   *  its clock may run ahead of the store's, and a live lease would read as lapsed. False with no lease. */
+  readonly refreshLapsed: boolean;
+  /** How much of the credential's access token is left (ms; negative once run out), by the store's own clock when the row
+   *  was read: the store stamps its end when the credential is written (token_until). A claim judges the token by this,
+   *  never by its own clock against the set's expires_at, which the writer stamped on its clock. Null when the writer
+   *  gave no measure of the token's life. */
+  readonly tokenLeftMs: number | null;
   readonly createdAt: number;
   readonly updatedAt: number;
   /** When the tools were last listed (ms): a refresh moves this, not updatedAt, so a refresh is not read as an owner edit.
@@ -605,8 +621,9 @@ export const MCP_REFRESH_LEASE_MS = MCP_REFRESH_CALL_MS + STORE_WRITE_DEADLINE_M
 export interface Mcp {
   /** The server's write: the server's row, inserted or replaced by name (its first save's time kept). An owner's save
    *  clears any refresh lease and changes the credential, so a refresh in flight is dropped (keepRefreshed's `kept: false`)
-   *  and never overwrites it. */
-  put(server: { name: string; url: string; auth: string; protocol?: string | null; tools: unknown; prices?: unknown; serverInfo?: unknown; instructions?: string | null; sealed?: Uint8Array | null; listedAt?: number; updatedAt?: number; credentialChangedAt?: number | null }): Promise<McpServerRow>;
+   *  and never overwrites it. `tokenLeftMs`: the writer's measure of the credential's access token's remaining life (a
+   *  duration, on its own clock); the store stamps the token's end on its clock from it (token_until), none without it. */
+  put(server: { name: string; url: string; auth: string; protocol?: string | null; tools: unknown; prices?: unknown; serverInfo?: unknown; instructions?: string | null; sealed?: Uint8Array | null; listedAt?: number; updatedAt?: number; credentialChangedAt?: number | null; tokenLeftMs?: number | null }): Promise<McpServerRow>;
   remove(name: string): Promise<void>;
   /** The registry's rows, by name. */
   servers(): Promise<McpServerRow[]>;
@@ -630,7 +647,7 @@ export interface Mcp {
    *  holds it. `kept: false` (nothing written) when the credential changed meanwhile (a newer set landed, or the owner saved
    *  one): ours is dropped, and no refresh is tried again with any token. Under one deadline from its call
    *  (STORE_WRITE_DEADLINE_MS). `row`: the server as it is after, undefined when it is no longer saved. */
-  keepRefreshed(name: string, keep: { seen: Uint8Array | null; sealed: Uint8Array; holder: string }): Promise<{ kept: boolean; row: McpServerRow | undefined }>;
+  keepRefreshed(name: string, keep: { seen: Uint8Array | null; sealed: Uint8Array; holder: string; tokenLeftMs?: number | null }): Promise<{ kept: boolean; row: McpServerRow | undefined }>;
   /** Gives the lease back without a new credential (the refresh failed or got no answer), so the next claim may try at once. */
   releaseRefresh(name: string, holder: string): Promise<void>;
 }
@@ -659,6 +676,25 @@ export interface SealedKeyRow {
   readonly name: string;
   readonly sealed: Uint8Array;
   readonly updatedAt: number;
+}
+
+/** The tables the store keeps a sealed value in: each a plane of the server's secrets. */
+export type SealedPlane = "sealed_keys" | "mcp_servers" | "mcp_oauth_pending" | "trigger_settings" | "sign_ins" | "sign_in_tombstones" | "computer_viewers" | "run_launch";
+
+/** One sealed value the store keeps: its plane, where in it (its row's key, by column), the AAD it was sealed under (the
+ *  store's documented one for that table: store/seal.ts aadOf, or trigger_settings|<adapter>|<scope>|<field>), and its
+ *  sealed bytes. The store never opens it. */
+export interface SealedSecretRow {
+  readonly plane: SealedPlane;
+  readonly where: Readonly<Record<string, string>>;
+  readonly aad: string;
+  readonly sealed: Uint8Array;
+}
+
+/** Every sealed value the store keeps, across all its planes, in one read: what a runner's redaction set holds at each
+ *  claim (runner/store-secrets.ts), so a run's text that quotes any secret the server keeps is cut when it is written. */
+export interface SealedSecrets {
+  all(): Promise<SealedSecretRow[]>;
 }
 
 export interface SealedKeys {
@@ -880,6 +916,8 @@ export interface Store {
   /** Each agent's saved browser sign-ins (design 2.1): one live row per agent and provider, its pointer sealed, with the
    *  forgotten pointers kept as tombstones. */
   readonly signIns: SignIns;
+  /** Every sealed value the store keeps, across all its planes, in one read (a runner's redaction set at each claim). */
+  readonly sealedSecrets: SealedSecrets;
   /** Claims the run for `runner` until now + `leaseMs`: the run's epoch + 1 when it is claimable (runs.claimable); null when
    *  another claim holds it, or it is final, or parked with nothing to wake it. A queued or parked run becomes running. */
   claim(runId: string, runner: string, options?: { leaseMs?: number }): Promise<Claim | null>;
