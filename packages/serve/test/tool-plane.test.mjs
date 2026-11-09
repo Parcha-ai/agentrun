@@ -3,12 +3,13 @@
 // agent's own (definition.tool_settings), capabilities' tools (the one catalog) and an agent's projection of it (GET
 // /v2/agents/{id}'s tools), each answer as the served document says.
 import assert from "node:assert/strict";
-import { readFile, stat, writeFile } from "node:fs/promises";
+import { readFile, writeFile } from "node:fs/promises";
 import { join } from "node:path";
 import { randomBytes } from "node:crypto";
 import { test } from "node:test";
 import { BOUND_TOOLS, TOOLS, toolsView } from "../dist/tools.js";
-import { CAPABILITIES, explainCapability, explainsView, planeFor, PROVIDERS, recheckPlane, relaunchPlane, resolveCapability, settingsIssues, TABLE_TOOLS, ToolSettings } from "../dist/tool-plane.js";
+import { CAPABILITIES, explainCapability, explainsView, planeFor, PROVIDERS, recheckPlane, relaunchPlane, resolveCapability, settingsIssues, TABLE_TOOLS, TOOL_SETTINGS_KEY, ToolSettings } from "../dist/tool-plane.js";
+import { openSqliteStore, STORE_FILE } from "../dist/store/sqlite/store.js";
 import { CANARY } from "./fixtures/faux-parallel.mjs";
 import { schemaProblems } from "./schema-support.mjs";
 import { agent, answerFlow, flowAgent, follow, runDir, scratch, serve, withEnv } from "./support.mjs";
@@ -210,7 +211,7 @@ test("settings are checked before anything is kept: an unknown tool, a provider 
   assert.deepEqual(settingsIssues([]).map((i) => [i.field, i.reason]), [["body", "wrong_type"]]);
 });
 
-test("GET and PUT /v2/settings/tools: the defaults, a PUT that replaces them, kept 0600 beside the store across a restart; refusals by field; capabilities, the one catalog, and an agent's projection of it say what they resolve to at once", async (t) => {
+test("GET and PUT /v2/settings/tools: the defaults, a PUT that replaces them, kept as the store's tool-settings row across a restart; refusals by field; capabilities, the one catalog, and an agent's projection of it say what they resolve to at once", async (t) => {
   withEnv(t, { AGENT_MODEL: "anthropic/claude-sonnet-4-5" }, ["PARALLEL_API_KEY", "AGENT_MODEL_BASE_URL"]);
   const first = await serve(t);
   const { api } = first;
@@ -243,7 +244,13 @@ test("GET and PUT /v2/settings/tools: the defaults, a PUT that replaces them, ke
   assert.deepEqual(tools.web_search, { pi: "exa-keyless", "claude-agent": "exa-keyless", codex: "exa-keyless", opencode: "exa-keyless" }, "recomputed with no restart");
   assert.deepEqual((await api("GET", "/capabilities")).body.tools.filter((tool) => tool.providers).map((tool) => [tool.provider, tool.default_provider]), [["kernel", "kernel"], ["exa-keyless", "auto"], ["auto", "auto"]], "the server's pick, and the built-in default");
   assert.equal(tools.read, undefined, "a tool with no provider choice resolves nothing");
-  assert.equal((await stat(join(first.data, "tool-settings.json"))).mode & 0o777, 0o600);
+  // Kept as the store's row (tool-plane.ts saveToolSettings), read as a runner opens the store beside the live server.
+  const beside = await openSqliteStore({ file: join(first.data, STORE_FILE), role: "runner" });
+  try {
+    assert.deepEqual(await beside.settings.get(TOOL_SETTINGS_KEY), { web_search: { provider: "exa-keyless" } }, "the row holds the PUT as written");
+  } finally {
+    await beside.close();
+  }
 
   // An agent's own settings: over the server's, kept in its revision and shown in its definition.
   // Granted out of the table's order: listed in capabilities' order.

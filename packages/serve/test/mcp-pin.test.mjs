@@ -5,11 +5,12 @@
 // holds too, and one that disagrees with the agent's refuses every call. No key, no network.
 import assert from "node:assert/strict";
 import { randomBytes } from "node:crypto";
-import { mkdirSync, readFileSync, writeFileSync } from "node:fs";
+import { mkdirSync } from "node:fs";
 import { join } from "node:path";
 import { test } from "node:test";
 import { startFakeMcp } from "./fixtures/fake-mcp-server.mjs";
-import { AGENT_LAYER_PINS } from "../dist/tool-plane.js";
+import { AGENT_LAYER_PINS, TOOL_SETTINGS_KEY } from "../dist/tool-plane.js";
+import { openSqliteStore, STORE_FILE } from "../dist/store/sqlite/store.js";
 import { agent, call, cookieOf, follow, scratch, serve, withEnv } from "./support.mjs";
 
 /** An agent's own pin is kept from the store cutover on (tool-plane.ts AGENT_LAYER_PINS): its tests run from then. */
@@ -139,19 +140,32 @@ test("an agent's pin and the server's that fix one argument differently refuse e
   assert.equal(sends().length, 0);
 });
 
-test("a broken pin in the server's file is served as pin_broken, and the console's whole-map save of another tool keeps it broken; a valid pin repairs it", { timeout: 120_000 }, async (t) => {
+/** The server's tool-settings row in the store at `data`, read as a runner opens the store beside a live server. */
+async function storedToolSettings(data) {
+  const store = await openSqliteStore({ file: join(data, STORE_FILE), role: "runner" });
+  try {
+    return await store.settings.get(TOOL_SETTINGS_KEY);
+  } finally {
+    await store.close();
+  }
+}
+
+test("a broken pin in the server's stored tool settings is served as pin_broken, and the console's whole-map save of another tool keeps it broken; a valid pin repairs it", { timeout: 120_000 }, async (t) => {
   const data = join(await scratch(t), "agents");
   mkdirSync(data, { recursive: true });
   const broken = { channel_id: { any: true } };
-  writeFileSync(join(data, "tool-settings.json"), JSON.stringify({ [SEND]: { permission: "allow", pin: broken } }));
+  // The row as an older or hand-edited store holds it, put before the server starts (it reads the row once, at start).
+  const planted = await openSqliteStore({ file: join(data, STORE_FILE), role: "server" });
+  await planted.settings.put(TOOL_SETTINGS_KEY, { [SEND]: { permission: "allow", pin: broken } });
+  await planted.close();
   const { api } = await serve(t, { data });
   const served = (await api("GET", "/settings/tools")).body;
   assert.deepEqual(served[SEND], { permission: "allow", pin_broken: true });
-  // The console saves the whole map it read, with one change elsewhere: 200, and the pin stays broken, in the file too.
+  // The console saves the whole map it read, with one change elsewhere: 200, and the pin stays broken, in the row too.
   const saved = await api("PUT", "/settings/tools", { ...served, web_search: { provider: "exa-keyless" } });
   assert.equal(saved.status, 200, JSON.stringify(saved.body));
   assert.deepEqual(saved.body[SEND], { permission: "allow", pin_broken: true });
-  assert.deepEqual(JSON.parse(readFileSync(join(data, "tool-settings.json"), "utf8"))[SEND], { permission: "allow", pin: broken });
+  assert.deepEqual((await storedToolSettings(data))?.[SEND], { permission: "allow", pin: broken });
   // An agent can't carry the mark.
   const own = await api("POST", "/agents", agent("marked", { tools: [SEND], tool_settings: { [SEND]: { pin_broken: true } } }));
   assert.equal(own.status, 422, JSON.stringify(own.body));
