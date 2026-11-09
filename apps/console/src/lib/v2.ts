@@ -116,3 +116,9 @@ export type ComputerKeysBody = pending.KeysBody;
 export type ComputerTest = pending.TestView;
 /** A run's `computer`: its kind, provider, state and why. */
 export type RunComputerField = pending.RunComputerField;
+/** GET /v2/workspace/archil: Archil (Mode 2) on or off, its disk settings, and its keys by name, never a value. */
+export type Archil = pending.ArchilView;
+/** PUT /v2/workspace/archil's body. */
+export type ArchilBody = pending.ArchilBody;
+/** POST /v2/workspace/archil/test's answer. */
+export type ArchilTest = pending.ArchilTest;

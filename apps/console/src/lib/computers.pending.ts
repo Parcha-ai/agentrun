@@ -1,6 +1,6 @@
-// TEMPORARY. The computers shapes the server answers but its OpenAPI doesn't document yet: copied as they are from the
-// serve branch places/computers (packages/serve/src/computers.ts, computer-setting.ts and run-computer.ts), until the
-// server switch registers and documents those routes. Imported only through v2.ts's aliases. Before any PR opens, those
+// TEMPORARY. The computers and Archil shapes the server answers but its OpenAPI doesn't document yet: copied as they are
+// from the serve branch places/computers (packages/serve/src/computers.ts, computer-setting.ts, run-computer.ts and
+// archil-routes.ts), until the server switch registers and documents those routes. Imported only through v2.ts's aliases. Before any PR opens, those
 // aliases point at api.generated.ts and this file is deleted. Nothing else imports it.
 
 /** computer-setting.ts COMPUTER_KINDS. */
@@ -22,3 +22,10 @@ export type TestView = { ok: true; detail: string } | { ok: false; why: string }
 /** run-computer.ts ComputerState and RunComputerField: a run's `computer`. */
 export type ComputerState = "starting" | "ready" | "taken_over" | "ended" | "failed";
 export type RunComputerField = { kind: ComputerKind; provider: string; state: ComputerState; why?: string };
+
+/** archil-routes.ts ArchilView: GET /v2/workspace/archil. `on` is Mode 2; each key saved or not, never a value. */
+export type ArchilView = { on: boolean; diskId?: string; region?: string; s3Url?: string; image?: string; keys: { name: string; saved: boolean }[] };
+/** PUT /v2/workspace/archil's body: the settings row replaced; keys given are sealed, null removes one. */
+export type ArchilBody = { diskId: string; region: string; s3Url: string; image?: string; keys?: Record<string, string | null> };
+/** archil-routes.ts ArchilTest: POST /v2/workspace/archil/test. */
+export type ArchilTest = { ok: true; detail: string } | { ok: false; why: string };
