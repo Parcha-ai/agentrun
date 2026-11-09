@@ -42,7 +42,7 @@ import { BOX_ALLOW_ENV, boxAllowOf, boxLimitsOf, boxNetworkOf, FAUX_BOX_ENV, fau
 import { Owner, passwordProblem, SESSION_MS } from "./owner.js";
 import { answerPage, byOwnerSession, heldSessions, isJson, overHttps, ownerCookie, ownOrigin, sendHostRefused, signedIn } from "./page.js";
 import { hostFix, hostName, loopbackNames } from "./host-check.js";
-import { handoverById, type LiveHandover, liveRest, OpenViewers, proxyLiveUpgrade, readHandover, readHandovers, serveViewerFile, viewerAnswers, viewerLink } from "./browser-live.js";
+import { handoverById, type LiveHandover, liveRest, liveViewer, liveViewerById, liveViewerLink, OpenViewers, proxyLiveUpgrade, readHandover, readHandovers, serveViewerFile, viewerAnswers, viewerLink } from "./browser-live.js";
 import { answerAsk } from "./browser-person.js";
 import { durationMs, logLine } from "./print.js";
 import { knownToolCostOf, type RunMoment, type State, type Status, toolCostOf, WITHHELD_SIGN_IN } from "./run-view.js";
@@ -1050,15 +1050,17 @@ async function startHolding(options: ServeOptions, data: string, checked: { maxR
   const ownOriginOf = (): string => options.publicUrl ?? url;
   // The run read routes (a run's files, its browser state, its workflow graph) over the one store (run-reads-over-store):
   // a run's files through the server's read-only Workspace of its folder (serverRunWorkspace, no runner claim), its view
-  // and withheld verdict from store-view. The live browser viewer reads the runner's published handover once that lands
-  // (brw-viewer-store); until then `liveViewer` is unset and the live branch is never taken. The timeline route keeps its
-  // own stub (store-reads journal + SSE) until E2c's timeline lands.
+  // and withheld verdict from store-view. The live browser viewer reads the runner's published handover from the store
+  // (liveViewerLink, the one the runner's browser tool wrote under its claim), when this server has the seal key its token
+  // is sealed under; with no seal key no live view is ever served, so the live branch is left off. The timeline route keeps
+  // its own stub (store-reads journal + SSE) until E2c's timeline lands.
   const runReadsDeps: RunReadsDeps = {
     runWorkspace: (_store, runId) => serverRunWorkspace(store, runId, { data, sealKey }),
     env,
     runView: (_store, runId) => viewOverStore(store, runId, viewDepsFor(ownOriginOf())),
     withheld: (_store, runId) => withheldOverStore(store, runId, viewDepsFor(ownOriginOf())),
     context: ctx,
+    ...(sealKey ? { liveViewer: (runId: string) => liveViewerLink(store, sealKey, runId) } : {}),
   };
   const triggerDeps: TriggerTargetDeps = {
     start: startDeps,
@@ -2423,10 +2425,14 @@ async function startHolding(options: ServeOptions, data: string, checked: { maxR
       authFailed(`/v2/runs/${runId}/browser/live`, req.headers.authorization === undefined ? "no_credential" : "browser_without_session");
       throw req.headers.authorization === undefined ? new ApiError("unauthenticated", "a run's live browser view takes the owner's password sign-in in the console") : new ApiError("forbidden", "a run's live browser view takes the owner's password sign-in in the console, never a token");
     }
-    await needRun(runId);
-    // TODO(E2c): the live viewer page/files over the store (live/stream watchRun gives whether a run has a live view now,
-    // in place of runs.hasProcess + the per-run handover files). Not wired yet.
-    runReadsTodo();
+    const run = await needRun(runId);
+    const viewer = /^\/v\/([A-Za-z0-9_-]{22})$/.exec(rest)?.[1];
+    // The run's live viewer from the store (the runner's browser tool wrote it under its claim): a named viewer's, else the
+    // run's open one. The store's live-claim filter answers none for a run no runner holds, as hasProcess did; with no seal
+    // key this server serves no live view.
+    const handover = !sealKey || !liveRest(rest) ? undefined : viewer ? await liveViewerById(store, sealKey, run.id, viewer) : await liveViewer(store, sealKey, run.id);
+    if (!handover) throw new ApiError("not_found", "this run's browser has no live view at that address");
+    await serveViewerFile(req, res, rest);
   }
 
   /** The origin of the address people open (`publicUrl`, AGENTRUN_PUBLIC_URL), lowercased; none, undefined. */
@@ -2504,12 +2510,23 @@ async function startHolding(options: ServeOptions, data: string, checked: { maxR
     const sent = String(req.headers.origin ?? "").toLowerCase();
     if (sent === "" || (sent !== ownOrigin(req) && sent !== publicOrigin)) return (authFailed(raw, "live_view_origin"), deny("403 Forbidden"));
     if (!owner || !signedIn(req, owner)) return (authFailed(raw, "live_view_without_session"), deny("401 Unauthorized"));
-    // TODO(E2c): the live viewer WebSocket over the store (live/stream watchRun gives the run's live viewer handover in
-    // place of runs.hasProcess + the per-run handover files). Until then no live view is served; the socket is denied.
+    // Once the run's WebSocket is piped to this socket, a failure here only ends it: an HTTP line would land mid-stream.
+    let piping = false;
     void (async () => {
+      const run = ID.test(viewing[1]!) ? await momentOverStore(store, viewing[1]!, viewDepsFor(ownOriginOf())) : undefined;
+      // The run's live viewer from the store (the runner's browser tool wrote it under its claim): the store's live-claim
+      // filter answers none for a run no runner holds, as hasProcess did; with no seal key no live view is served.
+      const handover = run && sealKey ? await liveViewerById(store, sealKey, run.id, viewing[2]!.slice(3, -3)) : undefined;
+      if (!handover) return deny("404 Not Found");
+      // Gone during the lookup, or the server is closing and has ended its viewers, or is about to.
       if (socket.destroyed || closing) return void socket.destroy();
-      return deny("404 Not Found");
-    })().catch(() => deny("500 Internal Server Error"));
+      // Checked again after the lookup, then for as long as the socket is open: the sessions that let it in, and no other.
+      const held = heldSessions(req);
+      const admitted = () => held.some((value) => owner.valid(value));
+      if (!admitted()) return deny("401 Unauthorized");
+      viewers.watch(socket, admitted);
+      proxyLiveUpgrade(req, socket, head, handover, viewing[2]!, () => { piping = true; });
+    })().catch(() => (piping ? void socket.destroy() : deny("500 Internal Server Error")));
   });
   const first = options.port ?? DEFAULT_PORT;
   const last = options.nextFreePort && first !== 0 ? Math.min(first + 99, 65_535) : first;
