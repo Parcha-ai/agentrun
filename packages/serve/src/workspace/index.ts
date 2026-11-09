@@ -21,6 +21,7 @@ export {
   ARCHIL_CONTROL_URLS, type ArchilMountCredentialOptions, ArchilMountCredentialError, listTokenUsers, mintMountToken, type MountCredential, nicknameOf, removeMountToken,
   removeOlderMountTokens,
 } from "./archil-mount-credential.js";
+export { ARCHIL_API_KEY_ENV, archilApiKey, type ArchilKeyOptions } from "./archil-key.js";
 export { openRunWorkspace, type RunWorkspace, type RunWorkspaceOptions } from "./run-workspace.js";
 export { readOnlyWorkspace, SERVER_READS_ONLY, serverRunWorkspace, type ServerRunWorkspaceOptions } from "./server-run-workspace.js";
 export { type LedgerEntry, type ProviderLedger, storeLedger } from "./computer-ledger.js";
