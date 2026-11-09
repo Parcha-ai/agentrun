@@ -62,6 +62,32 @@ test("a runner given no redactor, as the runner process starts one, cuts the key
   assert.ok(!JSON.stringify(events).includes(PLANTED), "no event carries it");
 });
 
+test("the default redactor cuts only what the environment names a secret: PATH, NODE_ENV and a short flag survive in an error's text beside a planted key", async (t) => {
+  // runnerSecrets reads the launcher's secret names and any *_KEY/_TOKEN/_SECRET/_PASSWORD name, values of 8 or more
+  // characters: never every env value, so an ordinary one stays readable in an error.
+  const saved = { AGENT_MODEL_API_KEY: process.env.AGENT_MODEL_API_KEY, NODE_ENV: process.env.NODE_ENV, AGENTRUN_FLAG: process.env.AGENTRUN_FLAG };
+  process.env.AGENT_MODEL_API_KEY = PLANTED;
+  process.env.NODE_ENV = "production";
+  process.env.AGENTRUN_FLAG = "true";
+  t.after(() => {
+    for (const [name, value] of Object.entries(saved)) value === undefined ? delete process.env[name] : (process.env[name] = value);
+  });
+  const path = process.env.PATH;
+  assert.ok(path && path.length >= 8, "a PATH long enough that only its name keeps it");
+  const opened = await stores({ runners: 1 });
+  await queue(opened.server, "run-1");
+  const createLoop = () => {
+    throw new Error(`could not start in production with PATH ${path}, flag true, key ${PLANTED}`);
+  };
+  const runner = startRunner({ store: opened.runners[0], createLoop, name: "runner-a", ...TIMING });
+  t.after(() => runner.close());
+  const row = await settled(opened, "run-1");
+  const summary = String(row.summary);
+  assert.ok(!summary.includes(PLANTED) && summary.includes("[redacted]"), `the key is cut: ${summary}`);
+  assert.ok(summary.includes(`PATH ${path}`), `PATH's value survives: ${summary}`);
+  assert.ok(summary.includes("in production") && summary.includes("flag true"), `NODE_ENV's value and the flag survive: ${summary}`);
+});
+
 test("a loop that throws with no end written: the runner ends the run failed (endRun), its row saying why without the key", async (t) => {
   const { row } = await runWith(t, () => ({
     start: async () => {
