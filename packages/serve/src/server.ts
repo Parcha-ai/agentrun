@@ -79,7 +79,8 @@ import { CAP_MODES, type CapMode, meterFiguresIn } from "./cap.js";
 import { type Blocker, blockersOf, CODE_NODES_ENV, issueOf, MCP_HARNESSES, NOT_SET_UP, type RevisionShape } from "./runnable.js";
 import { hostSecrets, SECRET_NAMES, secret, type StoredKeys, withSecrets } from "./secrets.js";
 import { redactedOutput } from "./key-refusal.js";
-import { analyticsFilter, analyticsView, pendingOf, statsView } from "./stats.js";
+import { analyticsFilter, analyticsView, learningStats, statsView } from "./stats.js";
+import { runLearningEnd } from "./store-reads/learning.js";
 import { outcomes } from "./usage.js";
 import { keyOf, SEAL_KEY_ENV, sealKeyOf, TOOL_FIELDS, ToolKeys } from "./tool-keys.js";
 import { SIGN_INS_DIR, vendorsOver } from "./sign-ins.js";
@@ -1745,8 +1746,8 @@ async function startHolding(options: ServeOptions, data: string, checked: { maxR
     for (const row of await agents.request(() => agents.store.listRuns())) {
       const at = Date.parse(row.startedAt);
       if (!(at >= from && at < to)) continue;
-      // TODO(E3/store-reads): a running run's booked-so-far cost comes from store-reads (spentOverStore); until the usage
-      // route is wired over the store, a run reads its stored cost (null while running counts as unpriced).
+      // A running run's cost is its booked-so-far spend (store-reads/runs listRuns reads it over the store with
+      // spentOverStore); an ended run's is its stored cost. A null cost (a running run with none yet) counts unpriced.
       const usd = row.costUsd ?? null;
       const key = group === "agent" ? row.agent : group === "day" ? row.startedAt.slice(0, 10) : group === "meter" ? "tokens" : "local";
       // By meter, what a run's paid tools charged (monid's) is `tools`, its browser session time `browser_time`, the rest
@@ -2302,10 +2303,20 @@ async function startHolding(options: ServeOptions, data: string, checked: { maxR
       case "getUsage":
         return send(res, 200, await usage(url));
       case "getStats": {
-        analyticsFilter(url);
-        // TODO(E3/store-reads): stats and analytics over the store (store-reads/stats + store-reads/analytics), with the
-        // learning counts from the ledger — no per-process pending set, no live Runs. Not wired yet.
-        return runReadsTodo();
+        const filter = analyticsFilter(url);
+        // The store's counts and cost sums (store-reads/stats), the runs' metrics summed (store-reads/analytics), and the
+        // runs over the store for the learning counts. No in-process pending set and no held Runs: the runner writes a
+        // run's end to the store before it lets it go.
+        const [s, a, rows] = await Promise.all([statsOverStore(store), analyticsOverStore(store, { ...filter }), listRunsOverStore(store, {}, ctx)]);
+        // Each running row's status over the store (viewOverStore), for the active/needs_input/unknown buckets.
+        const vd = viewDepsFor(ownOriginOf());
+        const runningStatus = new Map<string, Status>();
+        await Promise.all(s.running.map(async (id) => { const v = await viewOverStore(store, id, vd); if (v?.status) runningStatus.set(id, v.status as Status); }));
+        // How the runs that tried to learn fared: each run's learning end over the store (store-reads/learning runLearningEnd),
+        // the same figures the ledger gave; no held run's learning from memory.
+        const ends = new Map(await Promise.all(rows.map(async (row) => [row.id, await runLearningEnd(store, row.id)] as const)));
+        const learning = learningStats(rows, filter, (row) => { const end = ends.get(row.id); return end ? { state: end.state, reason: (end.reason ?? null) as string | null } : null; });
+        return send(res, 200, { ...statsView(s, (id) => runningStatus.get(id)), analytics: analyticsView(a, filter), learning });
       }
       case "listToolKeys":
         // The offers the server holds, not capabilities': a model key's row names the harnesses its key would run too.
