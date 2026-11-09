@@ -27,7 +27,7 @@ const NONE = ["read", "write", "edit"];
 const LOCAL = ["read", "write", "edit", "bash"];
 const answer = (text) => async () => ({ text });
 /** The ruled refusal of every background tool with no computer, in Mode 1 or Mode 2. */
-const NEEDS_A_COMPUTER = "Background programs need a computer: run this agent with place sandbox (Docker in Mode 1, or a remote computer in Mode 2).";
+const NEEDS_A_COMPUTER = "Background programs need a computer: run this agent with a sandbox computer (Settings → Computers; place sandbox in the v2 API).";
 /** A call's failure, in its words: an executor answers a failure, and only an abort throws. */
 const errorOf = async (call) => (await call).error;
 const injected = { read: answer("read"), write: answer("write"), edit: answer("edit"), bash: answer("bash") };

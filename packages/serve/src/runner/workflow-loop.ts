@@ -210,7 +210,9 @@ function workflowLoop(specOf: (claim: Claim) => WorkflowRunSpec | Promise<Workfl
       }
       return patch ?? {};
     } catch (error) {
-      console.warn(`[runner] ${runId}: its end's patch failed: ${(error as Error).message}`);
+      // Cut of every secret the runner holds (LoopDeps.redact): an error's text may echo one.
+      const text = (error as Error)?.message ?? String(error);
+      console.warn(`[runner] ${runId}: its end's patch failed: ${deps.redact ? deps.redact(text) : text}`);
       return {};
     } finally {
       clearTimeout(timer);

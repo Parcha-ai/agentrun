@@ -54,3 +54,14 @@ test("an unknown harness resolves to undefined", async (t) => {
   await store.runs.create({ id: "u-run", agentId: "u", revisionId: "u-rev" });
   assert.equal(await resolveRunnerLoop(deps)("made-up-harness", LAUNCH, "u-run"), undefined);
 });
+
+test("a learning launch gets the end-of-run step the dispatch wires; a non-learning one gets none", async (t) => {
+  const { deps } = await depsOn(t);
+  const { learningEndOfRun } = await import("../dist/runner/learning-end.js");
+  // The dispatch wires endOfRun = learningEndOfRun(launch, ...) into the loop for a pi or CLI run that learns (its launch
+  // carries a learning start), and nothing for one that does not. The step itself is proven end-to-end in
+  // runner-learning-end.test.mjs; this pins the dispatch's learning-vs-not decision.
+  const learning = { ...LAUNCH, learning: { given: [], seed: null, section: "" } };
+  assert.equal(typeof learningEndOfRun(learning, { store: deps.store, data: deps.data, env: {} }), "function", "a learning launch has the end-of-run step");
+  assert.equal(learningEndOfRun(LAUNCH, { store: deps.store, data: deps.data, env: {} }), undefined, "a non-learning launch has none");
+});

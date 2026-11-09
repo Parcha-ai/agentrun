@@ -27,7 +27,7 @@ import { DEFINITION_FIELDS, MODEL_REF, NOT_KEPT } from "./validate.js";
 import { GRADER_TYPES, MODEL_TIERS, PARAMETER_TYPES } from "./templates.js";
 import { NOT_SET_UP } from "./runnable.js";
 import { APPROVAL_ROW, ARGS_PREVIEW_BYTES, MAX_PIN_ARGS, MAX_PIN_CHOICES, PERMISSIONS } from "./tool-gate.js";
-import { MAX_PIN_TEXT, permissionsOf, type Pickable, PICKABLE, PROVIDERS, TABLE_TOOLS } from "./tool-plane.js";
+import { KIND_KEYS, MAX_PIN_TEXT, permissionsOf, type Pickable, PICKABLE, PROVIDERS, TABLE_TOOLS } from "./tool-plane.js";
 
 type Json = Record<string, unknown>;
 
@@ -295,8 +295,8 @@ const PERMISSION = {
   enum: [...PERMISSIONS],
   description: "What the tool gate does with each call a model makes: allow runs it; ask parks the run until the owner answers (POST /runs/{run_id}/approvals/{approval_id}); deny refuses it at once, and the model reads why. The owner's defaults: allow for this server's tools, ask for a catalog tool (monid.<tool>, mcp:<server>/<tool>). ask is offered for the tools whose approved call the kernel runs itself (read, write, edit, bash, web_fetch, web_search, learned_workflow) and for catalog tools; any other is allow or deny.",
 };
-/** The table's tools a setting may name. */
-const SETTINGS_TOOLS = TABLE_TOOLS;
+/** The table's tools a setting may name, and a computer kind's keys (desktop, phone), each holding its kind's tools. */
+const SETTINGS_TOOLS = [...TABLE_TOOLS, ...KIND_KEYS];
 /** A catalog tool's settings key, or an MCP server's wildcard, which sets each of its tools. */
 const CATALOG_KEY = { type: "string", pattern: "^(monid\\.[^/]+|mcp:[^/]+/.+)$" };
 /** A pinned scalar. */
@@ -555,8 +555,70 @@ const RUN_NOTES: Record<string, Json> = {
 };
 /** `properties` as a closed object, its `optional` ones left out of `required`. */
 const closedWith = (properties: Record<string, Json>, optional: Record<string, Json>) => ({ ...closed(properties), properties: { ...properties, ...optional } });
-/** computer/1: a run's computer, one live view family for every kind (GET /runs/{run_id}/computer). */
-const COMPUTER_KIND: Json = { enum: ["browser", "desktop", "phone"], description: "The run's computer: its agent's computer kind (`browser` for the browser tool)." };
+/** A secret as every view shows it (key-meta.ts): never a value, a prefix, a length or a hash. */
+const SECRET_META = {
+  set: { type: "boolean", description: "Whether a value is set: the value itself is never shown." },
+  source: { enum: ["env", "console", "sign-in", null], description: "Where the value comes from: `env`, the server's environment (by the key's name; it wins over a saved one); `console`, saved through this server's routes, sealed; `sign-in`, obtained by a sign-in or Connect; null when it is not set." },
+  changed_at: { type: ["string", "null"], format: "date-time", description: "When the saved value last changed; null when it is not set, or comes from the environment." },
+};
+/** computer/1: an agent's computer kind, as Settings → Computers and the run read name it (computer-setting.ts). */
+const COMPUTER_KIND = { enum: ["none", "sandbox", "desktop", "phone", "browser"] };
+/** A provider in Settings → Computers (computers.ts ProviderView). */
+const COMPUTER_PROVIDER = closedWith({
+  id: { type: "string", description: "The provider's id, as an agent's `computer.provider` names it (PUT /computers/{provider}/keys)." },
+  name: { type: "string", description: "Its name in words." },
+  metered: { type: "boolean", description: "Whether its computers are billed by the vendor." },
+  keys: { type: "array", items: closed({ name: { type: "string", description: "The key's name, as PUT /computers/{provider}/keys takes it, and the environment variable that sets it." }, required: { type: "boolean", description: "Whether the provider needs it; an optional key may stay unset." }, ...SECRET_META }) },
+  ready: { type: "boolean", description: "Whether a run could have its computer of this kind here now: it fits this server's folder mode and every required key is saved." },
+}, {
+  why: { type: "string", description: "Why it is not ready, in words naming the setting to fill." },
+});
+/** GET /computers' answer (computers.ts view). */
+const COMPUTERS_VIEW = closed({
+  kinds: {
+    type: "array",
+    items: closedWith({
+      kind: COMPUTER_KIND,
+      offered: { type: "boolean", description: "Whether this server offers the kind now: `none` always; another when a provider that serves it fits this server's folder mode." },
+      groups: { type: "array", items: { type: "string" }, description: "The capability groups the kind needs, then those it brings when a provider declares them." },
+      tools: { type: "array", items: { type: "string" }, description: "The model's tools the kind brings, by name." },
+      providers: { type: "array", items: COMPUTER_PROVIDER, description: "The providers that serve the kind." },
+    }, { why: { type: "string", description: "Why it is not offered." } }),
+  },
+});
+/** POST /computers/{provider}/test's and POST /workspace/archil/test's answer. */
+const ACCOUNT_TEST = {
+  oneOf: [
+    closed({ ok: { const: true }, detail: { type: "string", description: "What the one account-level read found." } }),
+    closed({ ok: { const: false }, why: { type: "string", description: "Why the test did not pass, in plain words naming what to check: never a key." } }),
+  ],
+};
+/** A run's computer, on the run read (run-computer.ts runComputerField). */
+const RUN_COMPUTER = {
+  ...closedWith({
+    kind: { enum: ["sandbox", "desktop", "phone", "browser"] },
+    provider: { type: "string" },
+    state: { enum: ["starting", "ready", "taken_over", "ended", "failed"], description: "`taken_over` while the owner holds the run's desktop or phone (POST /runs/{run_id}/computer/take-over); `failed` when the run could not have its computer (error code `computer_unavailable`)." },
+  }, { why: { type: "string", description: "With `failed`: the server's words, naming the setting to fill." } }),
+  description: "The run's computer, its agent's `computer` setting: absent for a run with none.",
+  "x-agentrun-serve": "computer/1",
+};
+/** archil/1: GET, PUT and DELETE /workspace/archil's answer (archil-routes.ts view). */
+const ARCHIL_VIEW = closedWith({
+  on: { type: "boolean", description: "Whether Mode 2 is on: run folders on this Archil disk. Off, they are on this server's own disk (Mode 1)." },
+  keys: { type: "array", items: closed({ name: { enum: ["ARCHIL_API_KEY"] }, ...SECRET_META }) },
+}, {
+  diskId: { type: "string" },
+  region: { type: "string" },
+  s3Url: { type: "string", format: "uri" },
+  image: { type: "string", description: "The exec image, pinned by digest (`<name>@sha256:<64 hex>`); absent, Archil's default." },
+});
+const COMPUTER_MARK = { "x-agentrun-serve": "computer/1" };
+const ARCHIL_MARK = { "x-agentrun-serve": "archil/1" };
+const PROVIDER_PARAM = { name: "provider", in: "path", required: true, description: "The provider's id (GET /computers lists them).", schema: { type: "string", minLength: 1 } };
+/** computer/1 (the live view): a run's computer, one live view family for every kind (GET /runs/{run_id}/computer). The
+ *  COMPUTER_KIND above is the agent-setting enum (the kinds a run may be set to); this is the live-view kind. */
+const RUN_COMPUTER_KIND: Json = { enum: ["browser", "desktop", "phone"], description: "The run's computer: its agent's computer kind (`browser` for the browser tool)." };
 /** Who drives the run's computer now. */
 const COMPUTER_HOLD: Json = { enum: ["agent", "pending", "person"], description: "Who drives the computer now: `agent`; `pending`, the person's Take over waits for the agent's step in flight; `person`, taken over." };
 /** trigger/1: triggers, a schedule or a signed webhook, that start an agent's capped runs or message a run (triggers.ts). */
@@ -1040,13 +1102,33 @@ const EXTENSIONS: Record<string, Record<string, Json>> = {
       "x-agentrun-serve": "liveview/2",
     },
   },
+  "/runs/{run_id}/computer/take-over": {
+    post: {
+      operationId: "takeOverRunComputer", tags: ["runs"], summary: "Take over the run's desktop or phone",
+      description: "Not served yet: 501 `unsupported_here`, after the owner check (it takes the owner's password session in the console, never a token: 403) and the body check (an empty JSON object, else 422). The take-over comes with the store-backed take-over, where the server writes it and the runner holding the run applies it.",
+      parameters: [ref("parameters/RunId")],
+      requestBody: { required: false, content: { "application/json": { schema: closed({}) } } },
+      responses: { ...errors(401, 403, 404, 422, 429, 500, 501) },
+      "x-agentrun-serve": "computer/1",
+    },
+  },
+  "/runs/{run_id}/computer/hand-back": {
+    post: {
+      operationId: "handBackRunComputer", tags: ["runs"], summary: "Hand the run's desktop or phone back to the agent",
+      description: "Not served yet: 501 `unsupported_here`, after the owner check (403 for a token) and the body check (422). The hand-back comes with the store-backed take-over.",
+      parameters: [ref("parameters/RunId")],
+      requestBody: { required: false, content: { "application/json": { schema: closed({}) } } },
+      responses: { ...errors(401, 403, 404, 422, 429, 500, 501) },
+      "x-agentrun-serve": "computer/1",
+    },
+  },
   "/runs/{run_id}/computer": {
     get: {
       operationId: "getRunComputer", tags: ["runs"], summary: "Watch the run's computer live and take it over: its viewer link, for the owner",
       description: "The live view of the run's computer, one family for every kind (`browser`, `desktop`, `phone`: the run's agent's computer). `live` with `viewer`, a link on this server (`/v2/runs/{run_id}/computer/live/v/<id>#t=<token>`) to open, or frame, in the console, while a viewer is open; `none` when the run has a computer but no session is up (or it ended); `off` when there is no computer here (its agent has none, or its computer resolves unavailable here), with `why` in plain words. `kind` is the run's computer, on every answer but `off`. `hold` says who drives now: `agent`; `pending`, the person's Take over waits for the agent's step; `person`. The viewer watches until its Take over, then drives until its Hand back, both in the viewer's own bar: outside a hold the run drops its input. The token is in the link's fragment alone, never in a request line, a Referer or a log; the viewer's page sends it once, in its WebSocket hello. It opens that one session's view, and drives it once taken over: it dies with the computer (its release), the run's end, or the owner's sign-out (the socket closes), and a second viewer of the same session is refused (viewer_in_use). The viewer's page is served under the link's path with `frame-ancestors 'self'`, and its WebSocket is taken only from this server's own origin (or its public address, AGENTRUN_PUBLIC_URL) with the owner's cookie. It takes the owner's password session in the console: never a token, which a run's process, an MCP client or a script may hold (403); no credential is 401. The vendors' own live-view links never leave the run's process.",
       parameters: [ref("parameters/RunId")],
       responses: {
-        "200": json({ oneOf: [closedWith({ state: { const: "off" }, hold: COMPUTER_HOLD }, { why: { type: "string", description: "Why there is no computer view here, in plain words." } }), closed({ state: { const: "none" }, kind: COMPUTER_KIND, hold: COMPUTER_HOLD }), closed({ state: { const: "live" }, kind: COMPUTER_KIND, viewer: { type: "string", description: "The viewer's link on this server, `/v2/runs/{run_id}/computer/live/v/<id>#t=<token>`: its token in the fragment alone." }, hold: COMPUTER_HOLD })] }, "The run's live view, none open, or no computer here."),
+        "200": json({ oneOf: [closedWith({ state: { const: "off" }, hold: COMPUTER_HOLD }, { why: { type: "string", description: "Why there is no computer view here, in plain words." } }), closed({ state: { const: "none" }, kind: RUN_COMPUTER_KIND, hold: COMPUTER_HOLD }), closed({ state: { const: "live" }, kind: RUN_COMPUTER_KIND, viewer: { type: "string", description: "The viewer's link on this server, `/v2/runs/{run_id}/computer/live/v/<id>#t=<token>`: its token in the fragment alone." }, hold: COMPUTER_HOLD })] }, "The run's live view, none open, or no computer here."),
         ...errors(401, 403, 404, 429, 500),
       },
       "x-agentrun-serve": "computer/1",
@@ -1091,6 +1173,67 @@ const EXTENSIONS: Record<string, Record<string, Json>> = {
       description: "501 unsupported_here for an agentic run, which never pauses here; 409 not_continuable for an ended one.",
       parameters: [ref("parameters/RunId")],
       responses: { "200": json(PAUSED, "The run, going again."), ...errors(401, 404, 409, 429, 500, 501) },
+    },
+  },
+  "/computers": {
+    get: {
+      operationId: "listComputers", tags: ["local"], summary: "Settings → Computers: the kinds of computer this server offers, each provider and whether its keys are saved",
+      description: "Each kind an agent's `computer` may name (none, sandbox, desktop, phone, browser): whether this server offers it now and why not, the capability groups and model tools it brings, and each provider that serves it, with its key names and whether each is saved (never a value), whether it is metered, and whether a run could have it here now. A sandbox holds the run's folder: on this server's own disk (Mode 1) only a provider that binds a local folder serves it; on the owner's Archil disk (Mode 2, PUT /workspace/archil) only one that mounts the disk.",
+      responses: { "200": json(COMPUTERS_VIEW, "The kinds, each with its providers."), ...errors(401, 429, 500) },
+      ...COMPUTER_MARK,
+    },
+  },
+  "/computers/{provider}/keys": {
+    put: {
+      operationId: "saveComputerKeys", tags: ["local"], summary: "Save a computer provider's keys, sealed",
+      description: "Each key the provider declares (GET /computers names them) is sealed under the server's seal key; null removes one. A name it does not declare, a value that is not a non-empty string, or any key on a server with no seal key is 422 input_invalid with its fields, and nothing is saved. The answer is the provider as GET /computers shows it: never a value.",
+      parameters: [PROVIDER_PARAM],
+      requestBody: { required: true, content: { "application/json": { schema: { type: "object", additionalProperties: { type: ["string", "null"] }, description: "The provider's key names, each its value, or null to remove it." } } } },
+      responses: { "200": json(COMPUTER_PROVIDER, "The provider, its keys saved or not."), ...errors(401, 404, 422, 429, 500) },
+      ...COMPUTER_MARK,
+    },
+  },
+  "/computers/{provider}/test": {
+    post: {
+      operationId: "testComputer", tags: ["local"], summary: "Test a computer provider's account with its saved keys",
+      description: "One account-level read with the provider's saved keys (a list by label, the vendor's own check): it never makes a computer, so it never spends. ok with what it read; else why, in plain words naming what to check (a key not saved, a key the vendor refused, a vendor not reached), never a key.",
+      parameters: [PROVIDER_PARAM],
+      responses: { "200": json(ACCOUNT_TEST, "The test's answer."), ...errors(401, 404, 429, 500) },
+      ...COMPUTER_MARK,
+    },
+  },
+  "/workspace/archil": {
+    get: {
+      operationId: "getWorkspaceArchil", tags: ["local"], summary: "Whether run folders are on an Archil disk (Mode 2), its settings, and whether its keys are saved",
+      responses: { "200": json(ARCHIL_VIEW, "The Archil settings, never a key."), ...errors(401, 429, 500) },
+      ...ARCHIL_MARK,
+    },
+    put: {
+      operationId: "putWorkspaceArchil", tags: ["local"], summary: "Turn Mode 2 on: run folders on this Archil disk",
+      description: "Replaces the Archil settings (the disk, its region and S3 URL, and an exec image pinned by digest when given) and seals the account key (ARCHIL_API_KEY) under the server's seal key when given; null removes it, and a key not given is kept. No disk token is kept: a computer's mount credential is minted per run from the account key, so ARCHIL_DISK_TOKEN is refused like any field Archil does not take. A field that is not right, an image not pinned by digest, or a key on a server with no seal key is 422 input_invalid with its fields, and nothing is saved. The answer never holds a key.",
+      requestBody: {
+        required: true,
+        content: { "application/json": { schema: closedWith({ diskId: { type: "string", minLength: 1 }, region: { type: "string", minLength: 1 }, s3Url: { type: "string", format: "uri", pattern: "^https://" } }, {
+          image: { type: "string", pattern: "^[^\\s@]+@sha256:[0-9a-f]{64}$" },
+          keys: { type: "object", additionalProperties: false, properties: { ARCHIL_API_KEY: { type: ["string", "null"], minLength: 1 } } },
+        }) } },
+      },
+      responses: { "200": json(ARCHIL_VIEW, "The Archil settings, saved."), ...errors(401, 422, 429, 500) },
+      ...ARCHIL_MARK,
+    },
+    delete: {
+      operationId: "deleteWorkspaceArchil", tags: ["local"], summary: "Turn Mode 2 off: run folders on this server's own disk",
+      description: "Removes the Archil settings. Its saved keys are kept, for turning it on again.",
+      responses: { "200": json(ARCHIL_VIEW, "The Archil settings, off."), ...errors(401, 429, 500) },
+      ...ARCHIL_MARK,
+    },
+  },
+  "/workspace/archil/test": {
+    post: {
+      operationId: "testWorkspaceArchil", tags: ["local"], summary: "Test the Archil disk with its saved account key",
+      description: "One listing of the disk's root through its file API, with the saved account key. ok, or why in plain words: Archil is off, the key is not saved, Archil refused it, no such disk, or Archil was not reached. Never a key.",
+      responses: { "200": json(ACCOUNT_TEST, "The test's answer."), ...errors(401, 429, 500) },
+      ...ARCHIL_MARK,
     },
   },
   "/settings/tool-keys": {
@@ -1640,6 +1783,7 @@ const FIELD_EXTENSIONS: Record<string, Record<string, Json>> = {
       "x-agentrun-serve": "claim/1",
     },
     place: RUN_PLACE,
+    computer: RUN_COMPUTER,
     learning: LEARNING,
     review: REVIEW,
     pending: PENDING,
@@ -1721,6 +1865,15 @@ const FIELD_EXTENSIONS: Record<string, Record<string, Json>> = {
       ],
       description: "Where the revision's runs execute: `runner` (no box and no shell) or `sandbox` (the agent's file and shell tools run in the box; its loop, its log and every key stay on the server). Absent on a create of an agentic revision, the place this server gives a new agent (capabilities.places.default_place): the Docker box where this server has docker, ready or preparing, written on the revision so an answer shows it, with tools [\"bash\", \"bash_background\", \"bash_output\", \"bash_input\", \"bash_signal\", \"bash_list\"] when the definition names no tools (a list it names, an empty one included, is kept as named); where docker is unavailable, or the definition names a tool a box refuses (browser), none, as before. A revision saved with no place runs where this server's capabilities.places.default_place says at each run (the Docker box where docker is available or preparing now, else the runner); a workflow, and one that names a tool a box refuses, on the runner. A revision keeps the place it names, runner included. An edit that names none keeps the agent's. A box this server does not have saves with a warning, and its runs are 409 agent_not_runnable naming it (capabilities.places.boxes). Only an agentic revision in a sandbox place may name `bash` or a background tool (`bash_background`, `bash_output`, `bash_input`, `bash_signal`, `bash_list`); a workflow revision's place is runner or none (a sandbox place is 422).",
       "x-agentrun-serve": "place/1",
+    },
+    computer: {
+      type: "object", additionalProperties: false, required: ["kind"],
+      properties: {
+        kind: { enum: ["none", "sandbox", "desktop", "phone", "browser"] },
+        provider: { type: "string", description: "The provider that serves the kind, from GET /computers. Absent for `none`." },
+      },
+      description: "The computer the revision's runs are given (Settings → Computers): its kind and the provider that serves it. `place` is its v2 view where it can say it: `{kind: none}` is `place {mode: runner}`, `{kind: sandbox, provider: X}` is `place {mode: sandbox, box: X}`; a desktop, phone or browser computer leaves the run's folder on the runner, so its place reads runner. Writing either sets both, and both given must agree (422). Absent on a create, the server's default (as `place`); an edit that names neither keeps the agent's.",
+      "x-agentrun-serve": "computer/1",
     },
     tool_settings: { ...TOOL_SETTINGS, description: "The agent's own tool settings (web_search's, web_fetch's and browser's provider, any tool's permission, an MCP server's wildcard mcp:<server>/*, an MCP tool's pin), over the server's (GET /settings/tools), except a deny set on the server, which is absolute: the tool is refused on this server whatever this agent sets; absent, the server's. A pin is not over the server's: both hold. A grant in tools names the capability, never a provider.", "x-agentrun-serve": "providers/1" },
     approvals: { enum: ["ask", "never"], default: "ask", description: "Whether the agent's runs ask a person or run unattended. `ask`, the default: a tool set to ask parks the run for an approval, as its tool settings say. `never`: the agent runs unattended, and each tool that would ask is allowed instead, decided by the tool gate at each call, so a tool granted later and an MCP tool (`mcp:<server>/<tool>`, which asks by default) are covered on every harness. It never lifts a deny, whether set on this server or in the agent's own tool_settings, nor a pin, nor anything else the gate refuses before it decides between running and asking. A workflow's call node on a tool set to ask runs under `never`. Absent on a request: ask. An edit that leaves it out asks, so no edit makes an agent unattended by saying nothing. Every answer names it.", "x-agentrun-serve": "unattended/1" },
@@ -1876,6 +2029,12 @@ const FIELD_EXTENSIONS: Record<string, Record<string, Json>> = {
       },
       description: "The owner watches a run's browser live from the console (GET /runs/{run_id}/browser), takes it over and hands it back.",
       "x-agentrun-serve": "liveview/2",
+    },
+    computers: {
+      type: "object", additionalProperties: false, required: ["kinds"],
+      properties: { kinds: { type: "array", items: COMPUTER_KIND, description: "The kinds of computer this server offers now (GET /computers says why another is not)." } },
+      description: "Settings → Computers: the computer kinds an agent's `computer` may name here.",
+      ...COMPUTER_MARK,
     },
     tool_keys: {
       type: "object", additionalProperties: false, required: ["routes", "at_rest"],

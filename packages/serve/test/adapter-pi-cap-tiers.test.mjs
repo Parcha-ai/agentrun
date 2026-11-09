@@ -1,12 +1,12 @@
 // A pi run through the adapter loop on a real catalog model with a price tier (gpt-6-sol, tiered past 272k input tokens),
-// under the cap the runner's pi spec builds: CapModel.price is the catalog's cost WITH its tiers (adapter-run-spec.ts
+// under the run's one cap the runner's pi spec hands the loop (AdapterRunSpec.runCap, its modelOf the route's capModelOf): CapModel.price is the catalog's cost WITH its tiers (adapter-run-spec.ts
 // capModelOf), so a request past the threshold is held and booked at the tier's rates, as main's calculateCost prices it.
 // A $1 cap parks such a run (its tier-priced input does not fit); at base rates the same input would fit, so the park is
 // proof the tier's rates are held. These reuse B2c's capRun harness (adapter-pi-cap-support.mjs).
 import assert from "node:assert/strict";
 import { after, test } from "node:test";
 import { closeOpenSessions, hostTools, MODEL, scriptedOrigin } from "./conformance-pi-adapter.mjs";
-import { beforeRequestOf, capRun, quiet, specCap } from "./adapter-pi-cap-support.mjs";
+import { capRun, quiet, specCap } from "./adapter-pi-cap-support.mjs";
 
 const { routeOf } = await import("../dist/runner/model-route.js");
 const { capModelOf } = await import("../dist/runner/adapter-run-spec.js");
@@ -40,7 +40,7 @@ test("a run on a tiered model past its threshold parks at a $1 cap: the tier's r
   const route = await routeOf("openai/gpt-6-sol", { OPENAI_API_KEY: KEY });
   const { row, sent } = await capRun(t, {
     specOf: (got) => specWith(scriptedOrigin([{ say: "done" }], got), PAST_TIER),
-    beforeRequest: beforeRequestOf({ capUsd: () => 1, modelOf: () => capModelOf(route) }),
+    runCap: { capUsd: () => 1, modelOf: () => capModelOf(route) },
     cap: specCap(1),
   });
   assert.equal(row.state, "parked", "the tier-priced request does not fit $1: the run parks for a raise (at base rates it would fit)");
@@ -51,7 +51,7 @@ test("the same run goes at a $3 cap: the tier price fits, and the request is hel
   const route = await routeOf("openai/gpt-6-sol", { OPENAI_API_KEY: KEY });
   const { row, asked } = await capRun(t, {
     specOf: (got) => specWith(scriptedOrigin([{ say: "done" }], got), PAST_TIER),
-    beforeRequest: beforeRequestOf({ capUsd: () => 3, modelOf: () => capModelOf(route) }),
+    runCap: { capUsd: () => 3, modelOf: () => capModelOf(route) },
     cap: specCap(3),
   });
   assert.notEqual(row.state, "parked", "the tier-priced request fits $3");
@@ -77,7 +77,7 @@ test("a priced-output request on a model with no output ceiling is refused befor
   const route = await routeOf("openai/gpt-6-sol", { OPENAI_API_KEY: KEY });
   const { row, asked, sent } = await capRun(t, {
     specOf: (got) => specWith(scriptedOrigin([{ say: "done" }], got), "hi"),
-    beforeRequest: beforeRequestOf({ capUsd: () => 1, modelOf: () => capModelOf({ ...route, outputCeiling: undefined }) }),
+    runCap: { capUsd: () => 1, modelOf: () => capModelOf({ ...route, outputCeiling: undefined }) },
     cap: specCap(1),
   });
   assert.equal(sent.length, 0, "refused before the request left");

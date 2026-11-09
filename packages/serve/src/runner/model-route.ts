@@ -1,16 +1,21 @@
 // The runner's model route: where a model's requests go, on which id, at what price. A model is resolved as main
 // resolves a run's (model.ts chooseModel and runModels: the faux module under --faux, the gateway, or each provider on
-// its own key), and every route speaks Anthropic's Messages API, the shape the kernel's model proxy forwards (the pi
-// adapter's path and the learning grader's):
+// its own key), and a route speaks a wire its caller speaks (`wires`: the pi adapter speaks both of main's, provider.ts;
+// the learning grader and a workflow's model nodes speak Anthropic's Messages alone):
 // - an Anthropic model goes to Anthropic itself (its catalog origin, ANTHROPIC_BASE_URL's when set), its key read by
 //   name when a request goes, never held by the route;
+// - a model pi-ai speaks OpenAI's Responses to (OpenAI's own on its key, serve's gateway), for a caller that speaks
+//   Responses, goes there itself, where provider.ts providerFor sends it (the origin, the key, the id on the wire);
 // - any other model answers through the route's own fetch: the Messages request runs on pi-ai's model of it (the faux
 //   core under --faux, never the network; another provider's or the gateway's on its key from `env`), and its events
 //   come back as a Messages stream.
 // Its price is pi-ai's calculateCost on the catalog's cost, tiers included (a request past a model's tier is priced at
 // the tier, as its provider bills it), and its cost is that catalog entry, tiers included, for the cap's judgement.
 import { calculateCost } from "@earendil-works/pi-ai";
+import type { Wire } from "@parcha/agentrun-kernel";
 import { chooseModel, runModels, type Tier } from "../model.js";
+import { providerFor } from "../provider.js";
+import { keepText, type Redact, runnerSecrets, secretRedactor } from "./redact.js";
 
 /** What a request on a model costs, USD per million tokens, as pi-ai's catalog lists it (tiers included). */
 export type RouteCost = {
@@ -24,12 +29,16 @@ export type RouteCost = {
 /** A request's token usage, as the proxy's booking prices it. */
 export type RouteUsage = { input: number; output: number; cacheRead: number; cacheWrite: number };
 
-/** Where a model's requests go: Anthropic's Messages API at `origin` (the shape the kernel's model proxy forwards), for
- *  `model`, priced by `price`; `fetch`, the route's own upstream when its model does not speak Messages. The fields of the
- *  learning grader's route (learning-ask.ts GraderRoute), and `cost` beside them. */
+/** Where a model's requests go: the API `provider.api` names at `origin` (the shape the kernel's model proxy forwards), its
+ *  credential sent as `auth` says, for `model` (its id on that wire), priced by `price`; `fetch`, the route's own upstream
+ *  when its model speaks no wire of the caller's. The fields of the learning grader's route (learning-ask.ts GraderRoute),
+ *  and `cost` beside them. */
 export interface ModelRoute {
-  readonly provider: { readonly api: "anthropic-messages"; readonly origin: string; readonly credential: () => string | Promise<string>; readonly headers?: Readonly<Record<string, string>> };
+  readonly provider: { readonly api: Wire; readonly origin: string; readonly credential: () => string | Promise<string>; readonly headers?: Readonly<Record<string, string>>; readonly auth?: "bearer" | "x-api-key" };
   readonly model: string;
+  /** The catalog's entry for the model on a wire that carries its reasoning (Responses): whether it reasons, its window
+   *  and its output ceiling, as pi-ai's model of it takes them. */
+  readonly like?: { readonly reasoning?: boolean; readonly contextWindow?: number; readonly maxTokens?: number };
   /** A request's price from its usage (the proxy's booking reads it): pi-ai's calculateCost, tiers included. */
   readonly price?: (model: string, usage: RouteUsage) => number | null;
   /** The upstream fetch: the route's own, for a model that does not speak Messages. Absent: the network. */
@@ -40,17 +49,28 @@ export interface ModelRoute {
   readonly outputCeiling?: number | null;
 }
 
+/** `route` as a Messages-only caller takes it (the learning grader, a workflow's model nodes), asked on that wire alone:
+ *  any other is a wrong ask, refused in words. */
+export function messagesRoute(route: ModelRoute): ModelRoute & { readonly provider: ModelRoute["provider"] & { readonly api: "anthropic-messages" } } {
+  if (route.provider.api !== "anthropic-messages") throw new Error(`a Messages-only caller was given a ${route.provider.api} route for ${route.model}`);
+  return route as ModelRoute & { readonly provider: ModelRoute["provider"] & { readonly api: "anthropic-messages" } };
+}
+
 /** The origin a route with its own fetch names: nothing is ever sent there, its fetch answers every request. */
 export const ROUTE_ORIGIN = "https://model-route.invalid";
 
-type PiModel = { id: string; provider: string; api: string; baseUrl?: string; cost: RouteCost; maxTokens?: number };
+type PiModel = { id: string; provider: string; api: string; baseUrl?: string; cost: RouteCost; maxTokens?: number; reasoning?: boolean; contextWindow?: number };
+/** The wires a caller of routeOf speaks when it names none: Anthropic's Messages alone. */
+const MESSAGES_ONLY: readonly Wire[] = ["anthropic-messages"];
 type PiModels = { getModel(provider: string, id: string): unknown; streamSimple(model: never, context: never, options?: never): AsyncIterable<PiEvent> };
 type PiEvent = { type: string; contentIndex?: number; delta?: string; partial?: { content?: { type: string; id?: string; name?: string }[] }; toolCall?: { id: string; name: string; arguments: unknown }; reason?: string; message?: PiMessage; error?: PiMessage };
 type PiMessage = { usage?: RouteUsage; stopReason?: string; errorMessage?: string };
 
 /** The route of `model` ("provider/model-id"; undefined for the host's model of `tier`), resolved from `env` as main
- *  resolves a run's model. Refuses, in main's words, a model this host cannot run. */
-export async function routeOf(model: string | undefined, env: NodeJS.ProcessEnv = process.env, tier: Tier = "default"): Promise<ModelRoute> {
+ *  resolves a run's model, on a wire of `wires` (the caller's; default Messages alone). `upstream`: what the route's own
+ *  translation sends with (a test's stand-in for the provider); absent, the network. Refuses, in main's words, a model
+ *  this host cannot run. */
+export async function routeOf(model: string | undefined, env: NodeJS.ProcessEnv = process.env, tier: Tier = "default", wires: readonly Wire[] = MESSAGES_ONLY, upstream?: typeof fetch): Promise<ModelRoute> {
   const chosen = await chooseModel(env, model, tier);
   if ("why" in chosen) throw new Error(chosen.why);
   const { models } = await runModels(env, tier === "default" ? model : undefined, [tier]);
@@ -65,11 +85,22 @@ export async function routeOf(model: string | undefined, env: NodeJS.ProcessEnv 
   if (chosen.model.provider === "anthropic") {
     return { ...route, provider: { api: "anthropic-messages", origin: target.baseUrl ?? "https://api.anthropic.com", credential: () => env.ANTHROPIC_API_KEY ?? env.ANTHROPIC_AUTH_TOKEN ?? "" } };
   }
-  return { ...route, provider: { api: "anthropic-messages", origin: ROUTE_ORIGIN, credential: () => "model-route" }, fetch: messagesFetch(models as unknown as PiModels, target) };
+  // A model pi-ai speaks Responses to, for a caller that speaks it: that wire itself, where main sends it (provider.ts).
+  if (target.api === "openai-responses" && wires.includes("openai-responses")) {
+    const to = providerFor("openai-responses", env, chosen.model, "pi");
+    return {
+      ...route, model: to.modelId,
+      provider: { api: "openai-responses", origin: to.origin, credential: to.credential, auth: to.auth },
+      like: { ...(target.reasoning !== undefined ? { reasoning: target.reasoning } : {}), ...(target.contextWindow ? { contextWindow: target.contextWindow } : {}), ...(target.maxTokens ? { maxTokens: target.maxTokens } : {}) },
+    };
+  }
+  return { ...route, provider: { api: "anthropic-messages", origin: ROUTE_ORIGIN, credential: () => "model-route" }, fetch: messagesFetch(models as unknown as PiModels, target, secretRedactor(runnerSecrets(env)), upstream) };
 }
 
-/** A fetch that answers Anthropic Messages requests on `target`, through pi-ai's `models`. */
-export function messagesFetch(models: PiModels, target: PiModel): typeof fetch {
+/** A fetch that answers Anthropic Messages requests on `target`, through pi-ai's `models`. A provider's error text, which
+ *  pi records, goes through `redact` (the runner's one redactor): a provider that echoes its key leaves none there.
+ *  `upstream`: the route's own fetch, for a model that does not speak Messages (absent: the network). */
+export function messagesFetch(models: PiModels, target: PiModel, redact: Redact = keepText, upstream?: typeof fetch): typeof fetch {
   // A tool call's id as Messages carries it (letters, digits, _ and -), and back to the provider's own on its result.
   const providerIds = new Map<string, string>();
   const messagesId = (id: string): string => {
@@ -80,7 +111,7 @@ export function messagesFetch(models: PiModels, target: PiModel): typeof fetch {
   return (async (_url: unknown, init: { body?: unknown; signal?: AbortSignal } = {}) => {
     const body = JSON.parse(String(init.body ?? "{}")) as MessagesRequest;
     const context = contextOf(body, target, (id) => providerIds.get(id) ?? id);
-    const events = models.streamSimple(target as never, context as never, { ...(body.max_tokens ? { maxTokens: body.max_tokens } : {}), ...(init.signal ? { signal: init.signal } : {}) } as never);
+    const events = models.streamSimple(target as never, context as never, { ...(body.max_tokens ? { maxTokens: body.max_tokens } : {}), ...(init.signal ? { signal: init.signal } : {}), ...(upstream ? { fetch: upstream } : {}) } as never);
     const encoder = new TextEncoder();
     const stream = new ReadableStream<Uint8Array>({
       async start(controller) {
@@ -122,7 +153,7 @@ export function messagesFetch(models: PiModels, target: PiModel): typeof fetch {
             else if (event.type === "done" || event.type === "error") {
               const message = (event.type === "done" ? event.message : event.error) ?? {};
               if (event.type === "error") {
-                send({ type: "error", error: { type: event.reason === "aborted" ? "request_aborted" : "api_error", message: message.errorMessage ?? event.reason ?? "the model's request failed" } });
+                send({ type: "error", error: { type: event.reason === "aborted" ? "request_aborted" : "api_error", message: redact(message.errorMessage ?? event.reason ?? "the model's request failed") } });
                 break;
               }
               const used = message.usage ?? { input: 0, output: 0, cacheRead: 0, cacheWrite: 0 };
@@ -131,7 +162,7 @@ export function messagesFetch(models: PiModels, target: PiModel): typeof fetch {
             }
           }
         } catch (error) {
-          send({ type: "error", error: { type: "api_error", message: (error as Error)?.message ?? String(error) } });
+          send({ type: "error", error: { type: "api_error", message: redact((error as Error)?.message ?? String(error)) } });
         }
         controller.close();
       },

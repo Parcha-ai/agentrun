@@ -92,5 +92,5 @@ export async function dockerComputer(
   };
   // The check carries the claim's epoch (D6): a disk read-back under another epoch is refused. Docker's bind read-back
   // carries no epoch, so the fence there is the computer's epoch label; the epoch here is for a disk mount.
-  return { run: { computer, check: { readBackOf, epoch: options.epoch } }, release };
+  return { run: { kind: "sandbox", computer, check: { readBackOf, epoch: options.epoch } }, release };
 }

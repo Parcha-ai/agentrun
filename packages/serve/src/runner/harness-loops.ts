@@ -13,6 +13,7 @@ import { adapterRunSpecFromLaunch, type AdapterSpecDeps } from "./adapter-run-sp
 import { createAdapterLoop } from "./adapter-loop.js";
 import { cliRunSpecFromLaunch } from "./cli-run-spec.js";
 import { learningLoopOf } from "./learning-dispatch.js";
+import { messagesRoute } from "./model-route.js";
 import type { LoopFactory } from "./loop-contract.js";
 import { createWorkflowLoop, isWorkflowRevision } from "./workflow-loop.js";
 import { workflowSpecOf } from "./workflow-spec.js";
@@ -36,7 +37,8 @@ export function resolveRunnerLoop(deps: AdapterSpecDeps): (harness: string, laun
       return learningLoopOf({
         store: deps.store,
         data: deps.data,
-        routeOf: (grade) => deps.routeOf(grade.model, deps.env),
+        // The grader speaks Messages alone (learning-ask.ts), so its route is asked on that wire only.
+        routeOf: async (grade) => messagesRoute(await deps.routeOf(grade.model, deps.env, "default", ["anthropic-messages"])),
         ...(deps.log ? { log: deps.log } : {}),
       });
     }
@@ -45,6 +47,10 @@ export function resolveRunnerLoop(deps: AdapterSpecDeps): (harness: string, laun
     // runs the pi spec (adapterRunSpecFromLaunch). A harness with no entry is unknown here: the dispatch fails it in words.
     const runner = resolveHarness(harness);
     if (runner) {
+      // A run that learns supplies its own end-of-run step (reflect + proposal over its store) from its spec builder now,
+      // where the run's Archil claim is: a Mode 2 run's learning folder is on its claim's disk, not this machine's local
+      // path (adapter-run-spec.ts / cli-run-spec.ts endOfRun). The loop prefers the spec's step over its deps' (stepOf); a
+      // run that does not learn supplies none. The same for the pi and the CLI spec.
       return createAdapterLoop((claim, adapterRun) =>
         runner.record === "loop"
           ? cliRunSpecFromLaunch(launch, adapterRun, deps, claim)

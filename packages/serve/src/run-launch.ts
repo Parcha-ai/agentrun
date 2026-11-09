@@ -44,9 +44,10 @@ export interface RunLaunch {
   /** The run's learning start, when its agent learns and the server's learning is on, decided once here so the runner reads
    *  no learning folder or git: `given`, the notes its # Learned section names (each `{file, name}`, as /runs/{id}/learning
    *  shows them); `seed`, the learning commit's sha (or null when the seed could not be read); and `section`, the exact
-   *  # Learned text to lay into the prompt for those notes (what the old layLearned laid), within the learning budget. Absent
-   *  when the run does not learn. */
-  readonly learning?: { readonly given: readonly { readonly file: string; readonly name: string }[]; readonly seed: string | null; readonly section: string };
+   *  # Learned text to lay into the prompt for those notes (what the old layLearned laid), within the learning budget; and
+   *  `seedNotes`, the count of all notes in the seed before the budget picked `given` (present with a read seed; absent when
+   *  the seed could not be read). Absent when the run does not learn. */
+  readonly learning?: { readonly given: readonly { readonly file: string; readonly name: string }[]; readonly seed: string | null; readonly section: string; readonly seedNotes?: number };
   /** The trigger and firing that started the run, or none for a person's run. */
   readonly trigger?: RunTrigger;
   /** Who the first message is from, when not the person: kept only through the fail-safe below. */
@@ -104,7 +105,7 @@ export function launchBody(launch: RunLaunch): Json {
     ...(launch.documents !== undefined ? { documents: launch.documents } : {}),
     ...(launch.boxAllow !== undefined ? { box_allow: launch.boxAllow } : {}),
     ...(launch.files?.length ? { files: launch.files } : {}),
-    ...(launch.learning ? { learning: { given: launch.learning.given.map((note) => ({ file: note.file, name: note.name })), seed: launch.learning.seed, section: launch.learning.section } } : {}),
+    ...(launch.learning ? { learning: { given: launch.learning.given.map((note) => ({ file: note.file, name: note.name })), seed: launch.learning.seed, section: launch.learning.section, ...(launch.learning.seedNotes !== undefined ? { seedNotes: launch.learning.seedNotes } : {}) } } : {}),
     ...(launch.trigger ? { trigger: launch.trigger } : {}),
     ...(launch.inputOrigin ? { input_origin: launch.inputOrigin } : {}),
     ...(launch.followUp ? { follow_up: true } : {}),
@@ -113,12 +114,12 @@ export function launchBody(launch: RunLaunch): Json {
 
 /** The learning start a launch body names, as read back: its given notes (each {file, name}), its seed sha and its # Learned
  *  section text, or undefined when the body names none (a run that does not learn). */
-function readLearning(value: unknown): { given: readonly { file: string; name: string }[]; seed: string | null; section: string } | undefined {
+function readLearning(value: unknown): { given: readonly { file: string; name: string }[]; seed: string | null; section: string; seedNotes?: number } | undefined {
   if (!isObject(value)) return undefined;
   const given = Array.isArray(value.given) ? value.given.flatMap((note) => (isObject(note) && typeof note.file === "string" && typeof note.name === "string" ? [{ file: note.file, name: note.name }] : [])) : [];
   const seed = typeof value.seed === "string" ? value.seed : null;
   const section = typeof value.section === "string" ? value.section : "";
-  return { given, seed, section };
+  return { given, seed, section, ...(typeof value.seedNotes === "number" ? { seedNotes: value.seedNotes } : {}) };
 }
 
 /** A launch body read back into a `RunLaunch`, with the input-origin fail-safe applied through the body's own trigger, or
