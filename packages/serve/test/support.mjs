@@ -327,6 +327,8 @@ export async function serve(t, { harnesses: asked, runner: wantRunner = true, ..
   // starts, so a test reads a run that runs, not one that queues forever. `runner: false` leaves it off for a test that
   // wants the server alone. Its loop is the switch's dispatch (learning wired; pi/workflow the server's own, E2r).
   const closeRunner = wantRunner === false ? undefined : await startInProcessRunner(data, { faux: Object.hasOwn(options, "faux") ? options.faux : FAUX });
+  // A handle of the test's own on the server's store (as a runner's), for what a test reads of its rows: server.store.
+  const store = await openSqliteStore({ dataDir: data, role: "runner" });
   // A server on another's data (a restart's): its owner's hook closes it before the directory goes.
   if (dir) sharing.set(data, new Set());
   else sharing.get(data)?.add(server);
@@ -336,6 +338,7 @@ export async function serve(t, { harnesses: asked, runner: wantRunner = true, ..
   t.after(async () => {
     // The runner releases its claims and closes its store handle before the server's directory goes.
     if (closeRunner) await closeRunner();
+    await store.close().catch(() => {});
     await server.close();
     // The servers a test started on this one's data close before it goes: node:test runs after-hooks in the order they
     // were added, so this one runs before theirs, and a directory removed under a server still writing there fails with
@@ -348,7 +351,7 @@ export async function serve(t, { harnesses: asked, runner: wantRunner = true, ..
     if (dir) await writableTree(dir).then(() => rm(dir, { recursive: true, force: true }));
     if (sudo.length) throw new Error(`a box command ran sudo on this machine (the stand-in refused it): ${sudo.join("; ")}`);
   });
-  return { ...server, data, api: client(server.baseUrl, server.token) };
+  return { ...server, data, store, api: client(server.baseUrl, server.token) };
 }
 
 /** `server`'s client with every request sent from the owner's session (ownerSessionOf), as the console sends it: the

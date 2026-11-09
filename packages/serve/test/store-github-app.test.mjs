@@ -108,7 +108,8 @@ test("a claimed run whose agent grants a github_app server's tools gets the App'
   const claim = await store.claim("run-1", "runner-a", { leaseMs: 60_000 });
   const content = 'Review it.\n\n<trigger-payload source="github" installation="777" repo="acme/widgets" number="7">{}</trigger-payload>';
   const githubApp = await githubAppAccess(store, KEY, { content }, { api: github.api });
-  const step = await mcpClaim({ store, claim, grants: ["mcp:gh/add"], sealKey: KEY, signal: new AbortController().signal, githubApp });
+  // The fake MCP server stands in for GitHub's hosted one (githubMcpOrigin, the claim's test-only seam).
+  const step = await mcpClaim({ store, claim, grants: ["mcp:gh/add"], sealKey: KEY, signal: new AbortController().signal, githubApp, githubMcpOrigin: new URL(fake.url).origin });
   t.after(() => step.release());
   assert.equal(step.credentials.gh?.headers?.authorization, "Bearer not-a-secret-ghs-token");
   assert.ok(step.secrets.has("Bearer not-a-secret-ghs-token"), "in the run's redaction set");
