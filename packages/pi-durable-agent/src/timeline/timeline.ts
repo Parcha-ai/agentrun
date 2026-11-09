@@ -122,7 +122,8 @@ export const TOOL_STARTED = "agentrun.tool_started";
  *  first call's end). It shows as that answer's, and is no request: no count, no cost, no tokens. */
 export const REQUEST_CONTINUED = "agentrun.request_continued";
 /** A host's own step, in its words (`summary`), such as a box waiting for its image: one `phase` row with that summary,
- *  cut at CAPS.summary. No request, no cost; one without a summary shows nothing. */
+ *  cut at CAPS.summary, at `at` (ms) when the host gave the time it happened, else at the time of the log before it. No
+ *  request, no cost; one without a summary shows nothing. */
 export const HOST_PHASE = "agentrun.phase";
 const COMPACTION = "compaction";
 const isCompaction = (entry: EntryLike) => obj(entry.data)?.request === COMPACTION;
@@ -469,6 +470,19 @@ function diagnosticOf(text: string): string | undefined {
   return first ? (first[2] ?? "") : (inner[0] ?? "");
 }
 
+/** A browser call that waited for the person to hand the browser back (pi-browser's `waited_for_person_ms` in its
+ *  result's details) says so first, and for how long: its row spans the person's take-over, and without it the call
+ *  reads as the agent acting while the person had the browser. "then <what it did>" only for a call that succeeded: one
+ *  that failed after its wait reads "Waited for you 11 s: <its label> failed: …", never as having acted. */
+const WAITED_FOR_PERSON = "waited_for_person_ms";
+const waitedFirst = (tool: string, result: ToolResultView | undefined, said: string): string => {
+  const ms = obj(result?.details)?.[WAITED_FOR_PERSON];
+  if (!BROWSER_STEPS.has(tool) || typeof ms !== "number" || !Number.isFinite(ms) || ms <= 0) return said;
+  const long = ms < 1000 ? `${Math.round(ms)} ms` : `${Math.round(ms / 1000)} s`;
+  if (callFailed(tool, result!)) return `Waited for you ${long}: ${said}`;
+  return `Waited for you ${long}, then ${said.charAt(0).toLowerCase()}${said.slice(1)}`;
+};
+
 /** One place turns entries into rows, whether they come from a released store or from live events. */
 function createProjector(options: TimelineOptions) {
   const redactedWhy = redactOf(options);
@@ -479,7 +493,7 @@ function createProjector(options: TimelineOptions) {
     const named = (value: unknown) => (typeof value === "string" && value ? options.path!(value) : value);
     return "path" in args || "file_path" in args ? { ...args, ...("path" in args ? { path: named(args.path) } : {}), ...("file_path" in args ? { file_path: named(args.file_path) } : {}) } : args;
   };
-  const label = (tool: string, args: Obj, result?: ToolResultView) => labelOf(tool, shown(args), result, options.labels);
+  const label = (tool: string, args: Obj, result?: ToolResultView) => waitedFirst(tool, result, labelOf(tool, shown(args), result, options.labels));
   const seen = new Set<string>();
   const calls = new Map<string, OpenCall>();
   // Results stored before their call (a harness bridge once wrote a result before the answer holding its call), by
@@ -785,6 +799,10 @@ function createProjector(options: TimelineOptions) {
     } else if (entry.kind === "pi.compaction") {
       add(make("phase", conv, base, { summary: "Summarized older context", text: textOf(message) || null }));
     } else if (entry.kind === HOST_PHASE) {
+      // A step the host stamped (`at`, ms) shows at that time: written as it happened, it can sit after a message whose time
+      // is earlier (a model request's start), and the time of the log before it would not be its own.
+      const at = obj(entry.data)?.at;
+      if (typeof at === "number" && Math.abs(at) <= 8.64e15) stamp = at;
       const summary = str(obj(entry.data)?.summary);
       if (summary) add(make("phase", conv, base, { summary: firstLine(summary) }));
     } else if (entry.kind === RUN_RESUMED) {
