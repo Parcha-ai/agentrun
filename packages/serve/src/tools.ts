@@ -87,7 +87,7 @@ export type ToolHost = {
    *  session's viewer over (its token sealed under the run's `sealKey`), `drop` takes one (or all of the run's) back. The
    *  three fields below are what builds these (the one store, the claim the row is written under, the seal key); a tool's
    *  binding reads `liveViewers`, never them directly. Absent on the server path, where the viewer lives in the run's
-   *  directory (live.writeHandover/dropHandover). */
+   *  directory (browser-live.ts sessionHandovers: writeHandover/dropHandover). */
   liveViewers?: { put(handover: LiveHandover): Promise<boolean>; drop(tag?: string): Promise<void> };
   /** The one store, for the live-viewer seam above (and the sign-in verify the runner saves). */
   store?: LiveViewerStore;
@@ -338,12 +338,10 @@ const browserTool: ToolEntry = {
       if (refused) throw refused;
       return watched as never;
     };
-    // Each session's viewer reaches the server in the run's directory, never work/: written as it launches, gone as it ends.
-    const onSession = async (row: { session: { tag: string }; liveView: { fullscreen: string } | null }, change: string) => {
-      if (change === "released") return live.dropHandover(host.where.root, row.session.tag);
-      const handover = row.liveView ? live.handoverOf(row.liveView.fullscreen, row.session.tag) : undefined;
-      if (handover) await live.writeHandover(host.where.root, handover);
-    };
+    // Each session's viewer reaches the server as it launches, and goes as it ends: on the runner through the store, under
+    // the run's claim (host.liveViewers); on the old per-run process, in the run's directory, never work/.
+    const viewers = live.sessionHandovers(host.where.root, host.liveViewers);
+    const onSession = (row: { session: { tag: string }; liveView: { fullscreen: string } | null }, change: string) => viewers.changed(row, change);
     // Its session time is the run's spend, at its provider's price, and held under the run's cap (browser-cost.ts).
     const providerName = (parts.provider as { name?: string } | undefined)?.name ?? vendor;
     const price = browserPrice(providerName, host.env);
@@ -390,8 +388,7 @@ const browserTool: ToolEntry = {
       for (const row of kept.filter((r) => (r.state === "live" || r.state === "held") && r.resourceId !== null)) {
         try {
           const opened = await watched?.liveView?.({ id: row.resourceId!, tag: row.tag });
-          const handover = opened?.fullscreen ? live.handoverOf(opened.fullscreen, row.tag) : undefined;
-          if (handover) await live.writeHandover(host.where.root, handover);
+          await viewers.reopened(row.tag, opened?.fullscreen);
         } catch {
           // A browser that cannot be reached has no view to give: the owner reads none, as for any session without one.
         }
@@ -411,7 +408,7 @@ const browserTool: ToolEntry = {
         // holds go, and the asks with them.
         await view.close();
         hands.close();
-        await live.dropHandover(host.where.root);
+        await viewers.released();
         person.dropAsks(host.where.root);
       }
     });
