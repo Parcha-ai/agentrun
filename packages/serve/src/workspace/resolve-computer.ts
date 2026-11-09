@@ -37,6 +37,9 @@ export type ProviderEntry = {
   readonly keys: readonly { readonly name: string; readonly required: boolean }[];
   readonly mounts: readonly MountKind[];
   readonly capabilities: readonly KindCapabilities[];
+  /** The image a computer of each setting kind starts from when its setting names none (the module's
+   *  PROVIDERS[].defaultImage); a kind with none has no default here. */
+  readonly defaultImage?: Readonly<Partial<Record<ComputerSettingKind, string>>>;
 };
 
 /** The computer module's kind registry (src/kinds.ts), by its own names: the setting kinds, why a machine does not serve
