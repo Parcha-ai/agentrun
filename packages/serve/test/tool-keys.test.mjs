@@ -23,6 +23,9 @@ const KEYS = ["PARALLEL_API_KEY", "MONID_API_KEY", "BROWSERBASE_API_KEY", "BROWS
 const sealKey = () => randomBytes(32).toString("base64");
 /** A throwaway value: none is a real key. */
 const made = () => `not-a-secret-${randomBytes(12).toString("hex")}`;
+/** The log line a start says once when saved keys no longer open under its seal key: where the keys are kept (the store) and
+ *  what a person does about it, never a table's name. */
+const changedLine = (fields) => `event=tool_keys condition=seal_key_changed kept=store fields=${fields} said="these saved keys were sealed under another seal key, so they do not open: save them again in Settings → Tool keys"`;
 /** Each form a value could plausibly leak in: as text, base64, base64url and hex, and its random part's first 8. */
 const formsOf = (value) => [value, ...["base64", "base64url", "hex"].map((code) => Buffer.from(value).toString(code)), value.slice(13, 21)];
 /** A seal key's forms: its base64 text, its bytes, and those as hex and base64url. */
@@ -314,8 +317,6 @@ test("handed no seal key, the server keeps a key under the one it made at its st
 test("values sealed under another key, under the key a server handed none makes, or in a damaged row do not open: the server starts, GET asks for them again with why, the log says so once naming where they are kept and no value, and a PUT seals anew", async (t) => {
   withEnv(t, {}, KEYS);
   const data = join(await scratch(t), "agents");
-  // Where the log says the keys are kept: the store's sealed_keys rows (tool-keys-store.ts, the reenter line).
-  const kept = "store:sealed_keys";
   const lines = [];
   const open = new Set();
   t.after(() => Promise.all([...open].map((server) => server.close())));
@@ -335,7 +336,7 @@ test("values sealed under another key, under the key a server handed none makes,
   server = await started(second);
   const parallel = async () => (await server.api("GET", "/capabilities")).body.workflows.decisions.providers.find((p) => p.id === "parallel").available;
   assert.equal(await parallel(), false, "a value that does not open is absent: no key, never a crash or the ciphertext");
-  assert.deepEqual(server.said().map((line) => line.replace(/^at=\S+ /, "")), [`event=tool_keys condition=seal_key_changed file=${kept} fields=PARALLEL_API_KEY,MONID_API_KEY`], "said once, at the start");
+  assert.deepEqual(server.said().map((line) => line.replace(/^at=\S+ /, "")), [changedLine("PARALLEL_API_KEY,MONID_API_KEY")], "said once, at the start");
   const changed = (await server.api("GET", "/settings/tool-keys")).body;
   assert.deepEqual([fieldsOf(changed).PARALLEL_API_KEY, fieldsOf(changed).MONID_API_KEY, changed.reenter], [AGAIN, AGAIN, { reason: "seal_key_changed", fields: ["PARALLEL_API_KEY", "MONID_API_KEY"] }]);
   assert.equal(server.said().length, 1, "not again for the same condition");
@@ -494,11 +495,12 @@ test("under its launcher the seal key is made once, outside the data directory, 
   const lost = (await server.api("GET", "/settings/tool-keys")).body;
   assert.deepEqual(lost.reenter, { reason: "seal_key_changed", fields: Object.keys(values) }, "missing shows as changed: the launcher made another");
   said.push(JSON.stringify(lost), await server.stop());
-  assert.ok(said.at(-1).includes(`event=tool_keys condition=seal_key_changed file=${join(data, "tool-keys.json")} fields=${Object.keys(values).join(",")}`), said.at(-1));
+  assert.ok(said.at(-1).includes(changedLine(Object.keys(values).join(","))), said.at(-1));
   assert.deepEqual(readdirSync(join(config, "agentrun")), ["seal.key"], "nothing else beside it");
 
   const files = readdirSync(data, { recursive: true, withFileTypes: true }).filter((entry) => entry.isFile()).map((entry) => join(entry.parentPath, entry.name));
-  assert.ok(files.some((file) => file.endsWith("tool-keys.json")) && files.some((file) => file.endsWith("store.sqlite")), files.join(" "));
+  // The keys are the store's rows: the store is there, and no tool-keys file beside it.
+  assert.ok(files.some((file) => file.endsWith("store.sqlite")) && !files.some((file) => file.endsWith("tool-keys.json")), files.join(" "));
   const forms = [...Object.values(values).flatMap(formsOf), ...keyForms(first), ...keyForms(second)];
   // The positive control: the same check finds the key in the file that does hold it, and a value written out plain.
   assert.throws(() => holdsNone(readFileSync(keyFile), forms, "seal.key"));
