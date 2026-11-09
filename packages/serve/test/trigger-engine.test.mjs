@@ -765,3 +765,34 @@ test("max_active_runs is for a start_run trigger of a pushed source, with or wit
   const cleared = await triggers.update(filtered.id, { target: toRun9, max_active_runs: null });
   assert.deepEqual([cleared.max_active_runs, cleared.target.kind], [null, "message_run"]);
 });
+
+test("a source whose connection goes turns every trigger of its kind that is on off, with why, and says each; the rest stay as they are; listening names the ones of a kind that are on", async (t) => {
+  const said = [];
+  const { triggers } = await engine(t, { say: (fields) => said.push(fields) });
+  const on = await triggers.create({ ...body({ every_s: 600 }), name: "one" });
+  const two = await triggers.create({ ...body({ every_s: 600 }), name: "two" });
+  const off = await triggers.create({ ...body({ every_s: 600 }), name: "off", enabled: false });
+  assert.deepEqual((await triggers.listening("schedule")).map((x) => x.id).sort(), [on.id, two.id].sort(), "the ones that are on");
+  assert.deepEqual(await triggers.listening("webhook"), [], "none of another kind");
+  assert.equal(await triggers.turnOff("webhook", "gone"), 0, "nothing of a kind none is");
+  assert.equal(await triggers.turnOff("schedule", "The connection went."), 2);
+  for (const id of [on.id, two.id]) {
+    const now = await triggers.get(id);
+    assert.deepEqual([now.enabled, now.next_at, now.disabled?.reason, now.disabled?.detail], [false, null, "connection_lost", "The connection went."], id);
+  }
+  assert.equal((await triggers.get(off.id)).disabled, null, "one already off keeps its own state");
+  assert.deepEqual(said.filter((f) => f.condition === "trigger_connection_lost").map((f) => f.trigger).sort(), [on.id, two.id].sort());
+  assert.deepEqual(await triggers.listening("schedule"), [], "none on now");
+});
+
+test("a source whose connection is not there refuses a trigger of its kind made on, or turned on, in its own words; one made off is kept, and another kind is not asked", async (t) => {
+  const asked = [];
+  const refusal = new ApiError("unavailable", "The connection this source needs is not there.");
+  const { triggers } = await engine(t, { unavailable: (kind) => (asked.push(kind), kind === "schedule" ? refusal : undefined) });
+  await assert.rejects(triggers.create(body({ every_s: 600 })), (error) => error === refusal, "made on");
+  const kept = await triggers.create({ ...body({ every_s: 600 }), enabled: false });
+  assert.equal(kept.enabled, false, "made off: nothing to refuse");
+  await assert.rejects(triggers.update(kept.id, { enabled: true }), (error) => error === refusal, "turned on");
+  await triggers.update(kept.id, { name: "renamed" });
+  assert.deepEqual(asked, ["schedule", "schedule"], "asked only when it would be on");
+});
