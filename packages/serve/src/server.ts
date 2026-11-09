@@ -124,6 +124,7 @@ import { applyBodyOf, compiled, madeTriggerIssues, type Package, packageModel, p
 import { checkDefinitionBody, DEFAULT_INPUT_SCHEMA, type DefinitionBody, definitionBodyIssues, ID, IDEMPOTENCY_TTL_S, inputIssues, isObject, type Json, stable, unknownFields } from "./validate.js";
 import { agentTools, browserKeyRow, isUnavailable, keptVendor, type Plane, recheckPlane, settingsIssues, ToolSettings, type ToolSettingsMap, whyUnavailable, withDefaults } from "./tool-plane.js";
 import { toolSettingsOverStore } from "./tool-settings-store.js";
+import { writeApprovers } from "./server-approvers.js";
 import { MAX_FILES_PER_RUN, MAX_UPLOAD_BYTES, Uploads, UPLOADS_DIR } from "./uploads.js";
 import { entryAt, listFiles, sendFile as sendWorkspaceFile, viewOf } from "./run-files.js";
 import { COMPUTER_ROUTES, computerHoldOf, computerRoute } from "./computer-routes.js";
@@ -878,6 +879,9 @@ async function startHolding(options: ServeOptions, data: string, checked: { maxR
   // once here.
   const settings = toolSettingsOverStore(store);
   await settings.load();
+  // Whether anyone can answer an ask here (accounts on), for the runners, which read it from the store at each claim
+  // (server-approvers.ts): the one way a runner learns it.
+  await writeApprovers(store.settings, options.accounts === true);
   mcpServers.toolSettings = () => settings.get();
   // The server's reading, in parts: `env`, its environment with its secrets, saved keys among them (storedKeys);
   // `offers`, what each harness offers, probed from env without the tool keys (offersEnvOf), the one slow part (each

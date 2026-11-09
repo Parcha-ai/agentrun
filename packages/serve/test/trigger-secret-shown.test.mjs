@@ -14,8 +14,8 @@ import { made } from "./trigger-support.mjs";
 
 const { Webhook } = createRequire(import.meta.url)("standardwebhooks");
 const SEAL = { AGENTRUN_SEAL_KEY: randomBytes(32).toString("base64") };
-/** A test password, no real one. */
-const PASSWORD = "not-a-secret-owner";
+/** A test password, no real one: one of the source export's declared fakes, and 12 characters, the owner's minimum. */
+const PASSWORD = "not-a-secret";
 
 const TRIGGER_WORDS = "Open the console to see this trigger's signing secret once: rotate it there.";
 const WEBHOOK_WORDS = "Open the console to see this webhook's signing secret once: remove it and save it again there.";
