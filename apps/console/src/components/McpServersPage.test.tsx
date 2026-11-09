@@ -130,6 +130,20 @@ describe("Settings → MCP servers, adding one", () => {
     expect(p.opened).toEqual(["http://127.0.0.1:4300/authorize?state=x"]);
   });
 
+  it("after a Preview finds OAuth, choosing Sign in with OAuth shows one Sign in button, not two", async () => {
+    const s = server([[]], (c) => (c.path.endsWith("/preview") ? refusal(422, "auth_required", "The MCP server asks for a credential (HTTP 401).", { details: { auth: "oauth", status: 401 } }) : undefined));
+    const p = await open(s.v2);
+    await p.click(/^Add server$/);
+    await p.type("mcp-name", "docs");
+    await p.type("mcp-url", VARS.oauth_url);
+    await p.click(/^Preview$/);
+    expect([...p.host.querySelectorAll("form button")].filter((b) => b.textContent?.trim() === "Sign in")).toHaveLength(1);
+    await p.pick("oauth");
+    await p.settle();
+    expect(p.text()).toContain("This server signs in with OAuth");
+    expect([...p.host.querySelectorAll("form button")].filter((b) => b.textContent?.trim() === "Sign in")).toHaveLength(1);
+  });
+
   it("drops a preview's answer when the address changed while it ran: Save waits for a preview of what is typed", async () => {
     let answer: (r: Response) => void = () => {};
     const s = server([[]], (c) => (c.path.endsWith("/preview") ? (new Promise<Response>((done) => { answer = done; }) as unknown as Response) : undefined));
@@ -207,13 +221,13 @@ describe("Settings → MCP servers, the saved ones", () => {
     expect(p.opened).toEqual(["http://127.0.0.1:4300/authorize?state=z"]);
   });
 
-  it("a change keeps the tools' prices: a save sends the saved ones for the tools it still lists", async () => {
+  it("a change sends no prices: the server keeps the saved ones for the tools it still lists (a PUT with none keeps them)", async () => {
     const priced = saved({ prices: { add: 0.05, gone: 1 } });
     const s = server([[priced]], (c) => (c.method === "PUT" ? json(200, priced) : undefined));
     const p = await open(s.v2);
     await p.click(/^Change$/, p.row("fake"));
     await p.click(/^Save$/);
-    expect(s.writes()).toEqual([{ method: "PUT", path: "/v2/settings/mcp-servers/fake", body: { url: VARS.url, auth: { type: "bearer" }, prices: { add: 0.05 } } }]);
+    expect(s.writes()).toEqual([{ method: "PUT", path: "/v2/settings/mcp-servers/fake", body: { url: VARS.url, auth: { type: "bearer" } } }]);
   });
 
   it("a save that lands after its form was closed and another opened leaves the other form open, with what was typed", async () => {
@@ -258,6 +272,14 @@ describe("Settings → MCP servers, the saved ones", () => {
     await p.type("mcp-url", "http://127.0.0.1:4100/v2/mcp");
     await p.click(/^Save$/);
     expect(t.writes()).toEqual([{ method: "PUT", path: "/v2/settings/mcp-servers/docs", body: { url: "http://127.0.0.1:4100/v2/mcp", auth: { type: "oauth" } } }]);
+  });
+
+  it("marks a server whose read says some of its tools are not metered, and each such tool", async () => {
+    const s = server([[saved({ prices: { add: 0.05 }, not_metered: ["slow_write"] }), saved({ name: "paid", prices: { add: 0.05, slow_write: 0 } })]]);
+    const p = await open(s.v2);
+    expect(p.row("fake").textContent).toContain("not metered");
+    expect([...p.row("fake").querySelectorAll("details li")].map((li) => li.textContent)).toEqual(["add · $0.05 a call", "slow_write · not metered"]);
+    expect(p.row("paid").textContent).not.toContain("not metered");
   });
 
   it("refreshes one and says what was added, removed and changed", async () => {
@@ -315,8 +337,22 @@ describe("Settings → MCP servers, back from a sign-in", () => {
     const failed = route("#/settings/mcp?server=docs&sign_in=failed&error=access_denied");
     expect(failed.signIn).toEqual({ server: "docs", ok: false, error: "access_denied" });
     p = await open(server([[]]).v2, { signIn: failed.signIn });
-    expect(p.text()).toContain("Signing in to docs failed");
-    expect(p.text()).toContain("access_denied");
+    expect(p.text()).toContain("Signing in to docs failed: the sign-in was declined on its approval page.");
+    expect(p.text()).not.toContain("access_denied");
+  });
+
+  it("says every failure code in words from the one table, and one it doesn't know in general words: never a code on screen", async () => {
+    for (const [code, words] of [
+      ["invalid_grant", "its authorization server didn't take the sign-in's code (it expired, or was used already): sign in again."],
+      ["changed_meanwhile", "the server was changed or removed while you signed in, so nothing was saved."],
+      ["upstream_failed", "the MCP server or its authorization server failed: try again."],
+      ["a_code_nobody_knows", "the sign-in didn't finish: try again."],
+    ]) {
+      const p = await open(server([[]]).v2, { signIn: { server: "docs", ok: false, error: code } });
+      expect(p.text()).toContain(`Signing in to docs failed: ${words}`);
+      expect(p.text()).not.toContain(code);
+      act(() => root?.unmount()); document.body.innerHTML = "";
+    }
   });
 });
 
