@@ -33,12 +33,13 @@ export const T0 = Date.parse("2026-11-08T06:00:00.000Z");
 /** A run moment's post to a channel, staged beside a commit (the channel outbox). */
 export const postOf = (runId, moment = "done", body = { costUsd: 0.42 }) => ({ table: "channel_posts", row: { id: `post-${runId}-${moment}`, channel: "slack:C1", moment, body } });
 
-/** A run row `id` claimed at `epoch` (state running), with the agent and revision it belongs to. */
+/** A run row `id` claimed at `epoch` (state running), its lease held for the test's span as a claim leaves it, with the
+ *  agent and revision it belongs to. */
 export async function runRow(db, id, epoch = 1) {
   const at = T0;
   await db.run("INSERT INTO agents (id, name, created_at) VALUES ('agent-1', 'Agent', ?) ON CONFLICT (id) DO NOTHING", at);
   await db.run("INSERT INTO revisions (id, agent_id, kind, body, created_at) VALUES ('rev-1', 'agent-1', 'agentic', '{}', ?) ON CONFLICT (id) DO NOTHING", at);
-  await db.run("INSERT INTO runs (id, agent_id, revision_id, state, epoch, runner, started_at) VALUES (?, 'agent-1', 'rev-1', 'running', ?, 'runner-1', ?)", id, epoch, at);
+  await db.run("INSERT INTO runs (id, agent_id, revision_id, state, epoch, runner, claimed_until, started_at) VALUES (?, 'agent-1', 'rev-1', 'running', ?, 'runner-1', ?, ?)", id, epoch, at + 10 * 365 * 86_400_000, at);
   return { runId: id, epoch };
 }
 

@@ -20,13 +20,13 @@ describe("a run a schedule started", () => {
   it("names the schedule in the runs list and links to it", () => {
     const html = inNames(createElement(RunsList, { runs: [run({ trigger: { id: "trg_1", firing_key: "fir_1" } }), run({ run_id: "r2", trigger: null })], agentName: (id: string) => id, onOpen: () => {} }));
     expect(text(html)).toContain("Schedule: nightly triage");
-    expect(html).toContain('href="#/schedules/trg_1"');
+    expect(html).toContain('href="#/triggers/trg_1"');
     expect(text(html).match(/Schedule: /g)).toHaveLength(1);
   });
   it("names it on the run's page", () => {
     const html = inNames(createElement(RunHeader, { run: run({ trigger: { id: "trg_1", firing_key: "fir_1" } }), agentName: "Triage" }));
     expect(text(html)).toContain("Schedule: nightly triage");
-    expect(html).toContain('href="#/schedules/trg_1"');
+    expect(html).toContain('href="#/triggers/trg_1"');
   });
   it("names it by its id when the schedule is not in the list (deleted since, or not read yet)", () => {
     expect(text(inNames(createElement(RunHeader, { run: run({ trigger: { id: "trg_gone", firing_key: "fir_1" } }), agentName: "Triage" })))).toContain("Schedule: trg_gone");

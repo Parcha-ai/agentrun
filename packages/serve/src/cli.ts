@@ -19,7 +19,7 @@ import { banner, boxImageLine } from "./print.js";
 import type { LearningMode } from "./learning.js";
 import { DEFAULT_PORT, type Serve, startServe } from "./server.js";
 
-const USAGE = `usage: agentrun-serve [--data DIR] [--listen ADDR] [--port N] [--open] [--faux MODULE] [--allow-host NAME ...] [--max-runs N] [--drain-timeout D] [--documents DIR] [--allow-code-nodes] [--learning on|off] [--learning-budget BYTES] [--grade-model MODEL]
+const USAGE = `usage: agentrun-serve [--data DIR] [--listen ADDR] [--port N] [--open] [--faux MODULE] [--faux-browser MODULE] [--allow-host NAME ...] [--max-runs N] [--drain-timeout D] [--documents DIR] [--allow-code-nodes] [--learning on|off] [--learning-budget BYTES] [--grade-model MODEL]
        agentrun-serve reset-password [--data DIR]
        agentrun-serve validate-template DIR
        agentrun-serve import [--data DIR] [--from claude-code,codex,pi] [--dry-run] [--include-deleted] [--all] [--verbose] [--port N]
@@ -31,6 +31,9 @@ const USAGE = `usage: agentrun-serve [--data DIR] [--listen ADDR] [--port N] [--
   --open            open the console in this machine's browser once the server listens (not in CI, nor on Linux with no
                     display)
   --faux MODULE     answer every model request from MODULE's default export: no key, no network
+  --faux-browser MODULE
+                    with --faux only: the browser tool's provider and driver from MODULE's default export (a fake
+                    browser, no vendor, no key), for the console's real-browser tests
   --allow-host NAME another Host name to accept (repeatable)
   --max-runs N      the most runs at once (default AGENTRUN_MAX_RUNS, else as many pi runs as this host's memory
                     holds); each run also reserves its harness's memory, and over either a new run is 429
@@ -121,6 +124,7 @@ try {
       port: { type: "string" },
       open: { type: "boolean", default: false },
       faux: { type: "string" },
+      "faux-browser": { type: "string" },
       "allow-host": { type: "string", multiple: true, default: [] },
       "max-runs": { type: "string" },
       "drain-timeout": { type: "string" },
@@ -157,6 +161,10 @@ if (publicName) {
   }
   publicUrl = parsed.href.replace(/\/+$/, "");
 }
+if (values["faux-browser"] && !values.faux) {
+  console.error(`--faux-browser goes with --faux\n\n${USAGE}`);
+  process.exit(2);
+}
 const budget = values["learning-budget"];
 if (budget !== undefined && !/^\d+$/.test(budget)) {
   console.error(`--learning-budget takes a whole number of bytes\n\n${USAGE}`);
@@ -185,7 +193,7 @@ let serve: Serve;
 try {
   serve = await startServe({
     onBoxImage,
-    data, port, ...(values.port === undefined ? { nextFreePort: true } : {}), ...(values.listen ? { host: values.listen } : {}), ...(given ? { token: given } : {}), ...(values.faux ? { faux: values.faux } : {}), allowHosts: values["allow-host"],
+    data, port, ...(values.port === undefined ? { nextFreePort: true } : {}), ...(values.listen ? { host: values.listen } : {}), ...(given ? { token: given } : {}), ...(values.faux ? { faux: values.faux } : {}), ...(values["faux-browser"] ? { fauxBrowser: values["faux-browser"] } : {}), allowHosts: values["allow-host"],
     ...(values["max-runs"] !== undefined ? { maxRuns: Number(values["max-runs"]) } : {}),
     ...(values["drain-timeout"] ? { drainTimeout: values["drain-timeout"] } : {}), ...(values.documents ? { documents: values.documents } : {}), ...(values["allow-code-nodes"] ? { allowCodeNodes: true } : {}), ...(values.learning !== undefined ? { learning: values.learning as LearningMode } : {}), ...(values["grade-model"] ? { gradeModel: values["grade-model"] } : {}), ...(budget !== undefined ? { learningBudget: Number(budget) } : {}), log: (line) => void process.stdout.write(`${line}\n`),
     // The public address is the server's with accounts on or off: the Host names it serves, the webhook URLs it gives.
