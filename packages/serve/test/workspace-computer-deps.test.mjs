@@ -14,11 +14,10 @@ import { mkdirSync, mkdtempSync, realpathSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { after, test } from "node:test";
-import { DAYTONA_DEFAULT_SNAPSHOT, providerFor } from "@parcha/agentrun-computer";
+import { DAYTONA_DEFAULT_SNAPSHOT, DEFAULT_DOCKER_IMAGE, PROVIDERS, providerFor } from "@parcha/agentrun-computer";
 import { dockerHost } from "./docker-host-fake.mjs";
 import { FAUX_VIEW_PATH, fauxComputers } from "../dist/faux-computers.js";
 import { putSealedKey } from "../dist/server-keys.js";
-import * as workspaceModule from "../dist/workspace/index.js";
 import { computerDepsFrom, computerSpecOf, localWorkspace } from "../dist/workspace/index.js";
 import { fakeComputer } from "./workspace-fake-computer.mjs";
 import { KINDS } from "./workspace-kinds-fixture.mjs";
@@ -92,7 +91,8 @@ async function desktopOn(provider) {
   const record = { created: [], released: [], loaded: [] };
   // The provider builder's load (providerFor in production): what the server-side provider call is given.
   const load = async (id, options) => (record.loaded.push([id, structuredClone(options)]), fakeDesktop(root, record));
-  const { computerForClaim, computerDeps } = computerDepsFrom({ env: ENV, store, sealKey, kinds: KINDS, load });
+  // On the computer package's own registry (the composer's default), whose entries carry each provider's default image.
+  const { computerForClaim, computerDeps } = computerDepsFrom({ env: ENV, store, sealKey, load });
   // As the spec builders call it: the composer's deps, then the claim's own.
   const answer = await computerForClaim({ runId: "run-1", epoch: 3, computer: { kind: "desktop", provider } }, store, { ...computerDeps, mode: 1, workspace: localWorkspace(root), sealKey });
   return { answer, record };
@@ -232,10 +232,10 @@ test("for a sandbox place the composer's claim makes a Docker computer that reac
 // The computer's spec by kind (computerSpecOf): box_allow is a sandbox's egress list, so a sandbox with none (or "none")
 // has no network; a browser, a desktop or a phone with none has its provider's own network ("open": a browser or a
 // vendor desktop with no network is a broken kind); an explicit list applies to any kind. Each provider's image for a
-// kind is one exported table (DEFAULT_IMAGE); a Docker desktop has none of its own, so with no image the owner named it
-// is refused in words, never made from the sandbox recipe, which has no X server.
-const entryOf = (id) => KINDS.PROVIDERS.find((one) => one.id === id);
-const DEFAULT_IMAGE = workspaceModule.DEFAULT_IMAGE ?? {};
+// kind is its registry entry's (the computer package's PROVIDERS[].defaultImage); Docker's sandbox is the package's
+// recipe, and a Docker desktop has none, so with no image the owner named it is refused in words, never made from the
+// sandbox recipe, which has no X server. Any other kind with no default image is refused, naming the provider.
+const entryOf = (id) => PROVIDERS.find((one) => one.id === id);
 const DOCKER_DESKTOP_WORDS = "A Docker desktop needs an image with an X server; set one for desktops.";
 
 test("box_allow is a sandbox's egress list: a sandbox with none has no network, a browser or a desktop with none has its provider's own, and an explicit list applies to a Docker desktop", () => {
@@ -243,7 +243,7 @@ test("box_allow is a sandbox's egress list: a sandbox with none has no network, 
   const spec = computerSpecOf({ AGENTRUN_DOCKER_IMAGE: named });
   assert.equal(spec(entryOf("docker"), "sandbox", {}).network, "none", "a sandbox with no box_allow");
   assert.equal(spec(entryOf("docker"), "sandbox", {}).image, named, "Docker's image: the one the owner named");
-  assert.equal(computerSpecOf({})(entryOf("docker"), "sandbox", {}).image, DEFAULT_IMAGE.docker.sandbox, "else the package's recipe");
+  assert.equal(computerSpecOf({})(entryOf("docker"), "sandbox", {}).image, DEFAULT_DOCKER_IMAGE, "else the package's recipe");
   assert.equal(spec(entryOf("docker"), "sandbox", {}).lifetimeMs, 24 * 60 * 60_000, "the leak bound: a day");
   assert.deepEqual(spec(entryOf("docker"), "sandbox", { boxAllow: ["api.example.com"] }).network, { allow: ["api.example.com"] }, "a sandbox's allow-list");
   assert.equal(spec(entryOf("docker"), "sandbox", { boxAllow: "none" }).network, "none");
@@ -255,13 +255,19 @@ test("box_allow is a sandbox's egress list: a sandbox with none has no network, 
   assert.equal(spec(entryOf("e2b"), "desktop", { boxAllow: "none" }).network, "none", "an explicit none applies to any kind");
 });
 
-test("each provider's image for a kind is one exported table; a Docker desktop with no image the owner named is refused in words", async () => {
-  assert.equal(DEFAULT_IMAGE.daytona.sandbox, DAYTONA_DEFAULT_SNAPSHOT);
-  assert.equal(DEFAULT_IMAGE.docker.desktop, undefined, "the sandbox recipe has no X server: no desktop image of Docker's own");
+test("each provider's default image comes from the computer package's registry (PROVIDERS[].defaultImage); a Docker desktop with no image the owner named is refused in words", async () => {
   const spec = computerSpecOf({});
+  // A value only the registry entry has: the spec reads the entry it is given, no table of serve's own.
+  assert.equal(spec({ ...entryOf("daytona"), defaultImage: { sandbox: "registry-only/snapshot-7f3a" } }, "sandbox", {}).image, "registry-only/snapshot-7f3a");
+  // Every default the package's registry declares is the image of that provider's computer of that kind.
+  const declared = PROVIDERS.flatMap((entry) => Object.entries(entry.defaultImage ?? {}).map(([kind, image]) => [entry.id, kind, image]));
+  assert.ok(declared.length >= 8, `the registry declares the vendors' defaults: ${JSON.stringify(declared)}`);
+  for (const [id, kind, image] of declared) assert.equal(spec(entryOf(id), kind, {}).image, image, `${id} ${kind}`);
   assert.equal(spec(entryOf("daytona"), "sandbox", {}).image, DAYTONA_DEFAULT_SNAPSHOT);
-  assert.equal(spec(entryOf("e2b"), "desktop", {}).image, DEFAULT_IMAGE.e2b.desktop);
+  assert.equal(entryOf("docker").defaultImage?.desktop, undefined, "the sandbox recipe has no X server: no desktop image of Docker's own");
   assert.throws(() => spec(entryOf("docker"), "desktop", {}), { message: DOCKER_DESKTOP_WORDS });
+  // Any other kind with no default image: refused, naming the provider.
+  assert.throws(() => spec({ ...entryOf("e2b"), defaultImage: { desktop: "desktop" } }, "sandbox", {}), { code: "computer_unavailable", message: /^E2B has no image for a sandbox computer here/ });
   assert.equal(computerSpecOf({ AGENTRUN_DOCKER_IMAGE: "example.org/x@sha256:" + "b".repeat(64) })(entryOf("docker"), "desktop", {}).image, "example.org/x@sha256:" + "b".repeat(64), "the image the owner named");
   // Through the claim: refused before anything is made, computer_unavailable in those words.
   const root = scratch();
