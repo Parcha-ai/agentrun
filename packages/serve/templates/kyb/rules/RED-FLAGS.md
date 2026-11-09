@@ -4,6 +4,13 @@ Go through every row against what you found. A row that applies becomes a red fl
 appetite column, the row's code, why it matters for this relationship, and the sources behind it. A row with no source
 behind it does not apply. Where a row says "per item" or "per person", raise one flag for each.
 
+**A status flag rests on the company's own record.** RF09, RF10 and any insolvency or dissolution flag apply only when
+the record's own status or filing fields say so for this company: its status line, its filing table (a year overdue,
+a date missed), or a dated notice naming it. Text every record of that registry carries (help pop-ups, legends,
+glossaries, "what this means" boxes, text the page hides) is the page's, never a finding. Before such a flag moves the
+verdict, read the record's status and filing table again and quote the field in the flag's `why_it_matters`; when the
+fields say active and filed, the flag does not apply.
+
 The risk appetite is applied once, here. `low` is for regulated onboarding (customers of a financial institution,
 investments), `high` for low-exposure vendors.
 
