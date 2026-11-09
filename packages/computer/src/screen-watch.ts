@@ -12,6 +12,8 @@
 // unreachable, refused or unsupported; close() and the signal end it with no ended(). Every computerd provider and the
 // phone answer watch() through daemonWatch, on a connection of the watch's own: computerd gives JPEG frames, the phone
 // client PNG ones. No error in either layer holds a URL or a secret.
+// The most characters one typed text holds, on every kind: computerd's MaxTypeRunes, which checkActions enforces too.
+import { MAX_TYPE_CHARACTERS } from "./actions.js";
 import type { Button, InputAction, InputActionsResult, Point } from "./protocol.js";
 import type { ComputerConnection, ComputerRef, Refusal } from "./provider.js";
 import { type ComputerError, type ComputerErrorCode, fail, ok, type Result } from "./result.js";
@@ -350,8 +352,6 @@ const MODIFIER_KEYS = new Set(["Shift", "Control", "Alt", "Meta", "CapsLock", "A
 /** The modifiers of a key event (CDP's mask: Alt 1, Control 2, Meta 4, Shift 8) as combo keys, in order. */
 const comboOf = (modifiers: number) => [...(modifiers & 2 ? ["ctrl"] : []), ...(modifiers & 1 ? ["alt"] : []), ...(modifiers & 8 ? ["shift"] : []), ...(modifiers & 4 ? ["super"] : [])];
 
-/** The most characters one typed text holds: computerd's MaxTypeRunes, on every kind. */
-const MAX_TYPE_CHARACTERS = 64 << 10;
 /** The longest swipe a viewer asks for, in ms. */
 const MAX_SWIPE_MS = 1_000;
 /** The most wheel clicks one event moves, each way. */
