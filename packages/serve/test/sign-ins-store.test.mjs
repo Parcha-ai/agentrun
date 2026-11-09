@@ -7,8 +7,9 @@ import assert from "node:assert/strict";
 import { randomBytes } from "node:crypto";
 import { test } from "node:test";
 import {
-  forgetSignIn, forgottenPointers, handedTo, openSavedPointer, pointerHash, savedSignIns, saveSignIn, SignInHandedTo, SignInMissing,
+  forgetSignIn, forgottenPointers, handedTo, openSavedPointer, pointerHash, savedSignIns, saveSignIn, signInsOverStore, SignInHandedTo, SignInMissing,
 } from "../dist/sign-ins-store.js";
+import { ApiError } from "../dist/errors.js";
 import { agentWithRevision, storeOn } from "./store-helpers.mjs";
 
 const KEY = randomBytes(32);
@@ -148,4 +149,57 @@ test("a ':' in the agent or the provider is refused", async (t) => {
   const { store } = await storeOn(t);
   await assert.rejects(saveSignIn(store, KEY, { agentId: "a:b", provider: "browserbase", pointer: "x" }), /never hold ":"/);
   await assert.rejects(saveSignIn(store, KEY, { agentId: "alpha", provider: "a:b", pointer: "x" }), /never hold ":"/);
+});
+
+// The view bridge: the old SignIns shapes (view/peek/forgotten/forget), byte for byte, so the v2 API answers unchanged.
+
+test("signInsOverStore.view: the old SignInView shape; ready, then held/held_by while a live run holds the hash, and verified_at from the store", async (t) => {
+  const { store, clock } = await storeOn(t);
+  await agentWithRevision(store, "alpha", "alpha-rev");
+  await saveSignIn(store, KEY, { agentId: "alpha", provider: "browserbase", pointer: "ctx-1" });
+  const bridge = signInsOverStore(store, KEY, fakeVendors());
+  assert.deepEqual(await bridge.view("alpha"), [{ key: "default", provider: "browserbase", state: "ready", held_by: null, verified_at: null }]);
+  // A live run handed the pointer's hash: held, held_by names it.
+  const { runId, claim } = await runningRun(store, { hashes: [pointerHash("ctx-1")] });
+  assert.deepEqual(await bridge.view("alpha"), [{ key: "default", provider: "browserbase", state: "held", held_by: runId, verified_at: null }]);
+  assert.ok(!JSON.stringify(await bridge.view("alpha")).includes("ctx-1"), "the view never holds the pointer");
+  // A run verifies it (E2's run path through store.signIns.verify): verified_at shows that time, as ISO.
+  clock.now += 1000;
+  await store.signIns.verify("alpha", "browserbase", clock.now);
+  await store.release(claim, { state: "ended" });
+  assert.deepEqual(await bridge.view("alpha"), [{ key: "default", provider: "browserbase", state: "ready", held_by: null, verified_at: new Date(clock.now).toISOString() }]);
+});
+
+test("signInsOverStore.view: an unreadable sign-in reads unreadable with held_by null; peek and forgotten carry the old shapes", async (t) => {
+  const { store } = await storeOn(t);
+  await agentWithRevision(store, "alpha", "alpha-rev");
+  await saveSignIn(store, KEY, { agentId: "alpha", provider: "browserbase", pointer: "ctx-1" });
+  const other = signInsOverStore(store, randomBytes(32), fakeVendors());
+  assert.deepEqual(await other.view("alpha"), [{ key: "default", provider: "browserbase", state: "unreadable", held_by: null, verified_at: null }]);
+  // peek maps a browser resolution to { ref } / "unreadable" / undefined.
+  const bridge = signInsOverStore(store, KEY, fakeVendors());
+  assert.deepEqual(await bridge.peek("alpha", "browserbase"), { ref: "ctx-1" });
+  assert.equal(await other.peek("alpha", "browserbase"), "unreadable");
+  assert.equal(await bridge.peek("alpha", "chrome"), undefined, "a local Chrome keeps none");
+  assert.equal(await bridge.peek("alpha", "kernel"), undefined, "no kernel sign-in here");
+});
+
+test("signInsOverStore.forget: the old {key, removed} shape; 404 for an unknown key; 409 sign_in_held while handed; forgotten lists the tombstone", async (t) => {
+  const { store } = await storeOn(t);
+  await agentWithRevision(store, "alpha", "alpha-rev");
+  await saveSignIn(store, KEY, { agentId: "alpha", provider: "browserbase", pointer: "ctx-1" });
+  const vendors = fakeVendors();
+  const bridge = signInsOverStore(store, KEY, vendors);
+  // 409 while a live run holds it, nothing removed.
+  const held = await runningRun(store, { hashes: [pointerHash("ctx-1")] });
+  const refused = await bridge.forget("alpha", "default").then(() => null, (e) => e);
+  assert.ok(refused instanceof ApiError && refused.code === "sign_in_held" && refused.extra.details.handed_to === held.runId, "409 sign_in_held with handed_to (ApiError.extra.details, which the v2 body spreads)");
+  assert.deepEqual(vendors.removed, [], "nothing removed while held");
+  // The run ends; forget returns the old shape and the vendor object is deleted.
+  await store.release(held.claim, { state: "ended" });
+  assert.deepEqual(await bridge.forget("alpha", "default"), { key: "default", removed: [{ provider: "browserbase", at_vendor: "deleted" }] });
+  assert.deepEqual(vendors.removed, [["browserbase", "ctx-1"]]);
+  assert.deepEqual(await bridge.forgotten("alpha", "browserbase"), { refs: ["ctx-1"], unreadable: false });
+  // 404 when the agent has no sign-in by that key.
+  await assert.rejects(bridge.forget("alpha", "default"), (e) => e instanceof ApiError && e.code === "not_found");
 });
