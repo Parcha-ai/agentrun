@@ -1042,7 +1042,7 @@ function adapterLoop(specOf: (claim: Claim, run: AdapterRun) => AdapterRunSpec |
       if (row) {
         inbox.splice(inbox.indexOf(row), 1);
         const approved = row.kind === "approve";
-        const data: AnswerData = { callId: call.callId, approved, decision: approved ? "allow" : "deny", answeredAt: isoNow(), ...noteOf(row) };
+        const data: AnswerData = { callId: call.callId, approved, decision: approved ? "allow" : "deny", answeredAt: isoNow(), ...noteOf(row), ...((row.body as { by?: unknown } | null)?.by === "message" && !approved ? { by: "message" as const } : {}) };
         if (!(await entryLands(KINDS.answer, data, { take: [row.id] }))) return "park";
         return data;
       }

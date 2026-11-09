@@ -34,6 +34,7 @@ import {
   servedReviewWith,
   statusOf,
   WITHHELD_SIGN_IN,
+  WITHHELD_TITLE,
   costView,
   soFarOf,
   withAsks,
@@ -204,7 +205,9 @@ async function storeRunOf(store: Store, runId: string, deps: ViewDeps): Promise<
   // the answers given, which the status, pending and moment views read the same as the file path read them from the run's
   // store entries.
   const approvals = asksOf(records.entries);
-  const answers = answersOf(records.entries);
+  // A call asked before an end in the journal reads withdrawn in that end's words; a stopped or failed run's (states no
+  // reopen leaves) whose journal holds no end, by its row (answersOf `final`).
+  const answers = answersOf(records.entries, { final: runRow.state === "stopped" || runRow.state === "failed" ? runRow.state : undefined });
   // The rows a person reads: each call that waited for approval in order (held, your approval, what came of it), its
   // arguments and the person's notes through the run's redactor, as the file path's withApprovals served them.
   const rows = withApprovalRows(timeline, approvals, answers, redactorOf(values));
@@ -317,7 +320,9 @@ export async function viewOverStore(store: Store, runId: string, deps: ViewDeps)
     sha: null,
     status,
     state,
-    title: unshown ? WITHHELD_SIGN_IN : shownWords(launch?.title ?? ""),
+    // A withheld run's title is a short fixed line (WITHHELD_TITLE), never its stored title: the title can repeat the
+    // sign-in this server can't read back to cut, so it is not served. The full withheld sentence is in error and review.
+    title: unshown ? WITHHELD_TITLE : shownWords(launch?.title ?? ""),
     place: launch?.place ?? { mode: "runner" },
     // The runner holding the run now, when one does (a running run with a live claim): its id, the claim's count (up one each
     // claim, carried on every write the runner makes), and when the claim runs out. Null when no runner holds the run, so a

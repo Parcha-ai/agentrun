@@ -145,4 +145,19 @@ test("the GitHub API base has one way in, a test runner's option: no api_url (or
   assert.ok(!/githubApi|GITHUB_API_URL|github-api/.test(text["cli.ts"]), "the CLI maps nothing onto it");
   assert.deepEqual(files.filter((f) => /process\.env\.[A-Z_]*GITHUB|env\[["'][A-Z_]*GITHUB/.test(text[f])), [], "no environment variable names it");
   assert.match(text["github.ts"], /export const GITHUB_API = "https:\/\/api\.github\.com";/);
+  // The GitHub MCP origin likewise: a test's seam alone. Only a test's in-process runner sets the runner's
+  // githubMcpOrigin (test/support.mjs startInProcessRunner); the CLI and the runner's main never name it; no environment
+  // variable or flag maps onto it; absent, GitHub's hosted MCP.
+  const githubMcpOrigin = files.filter((f) => /\bgithubMcpOrigin\b/.test(text[f])).sort();
+  assert.deepEqual(githubMcpOrigin, ["mcp-servers-store.ts", "mcp-store.ts", "runner/adapter-run-spec.ts", "runner/cli-run-spec.ts", "runner/mcp-claim.ts", "runner/mcp-run.ts", "server.ts"], "the claim step's and registries' seam, the spec deps and mcpForClaim that hand it on, and the server's own test seam");
+  for (const f of ["cli.ts", "runner/main.ts"]) assert.ok(!/githubMcpOrigin|GITHUB_MCP_ORIGIN|mcp-origin/i.test(text[f]), `${f} maps nothing onto it`);
+  const lines = Object.entries(text).flatMap(([f, body]) => body.split("\n").map((line) => [f, line]));
+  assert.deepEqual(lines.filter(([, line]) => /githubMcpOrigin|GITHUB_MCP_ORIGIN/.test(line) && /process\.env|\benv\[|\bargv\b|--[a-z]/.test(line)), [], "no environment variable or flag names it");
+  const testDir = new URL("./", import.meta.url).pathname;
+  const tests = (await readdir(testDir, { recursive: true })).filter((f) => /\.(mjs|js|ts)$/.test(f));
+  const setters = [];
+  for (const f of tests) for (const line of (await readFile(testDir + f, "utf8")).split("\n")) if (/dispatchRunner\(/.test(line) && /githubMcpOrigin/.test(line)) setters.push(f);
+  assert.deepEqual(setters, ["support.mjs"], "its one setter on a runner: the test's startInProcessRunner");
+  assert.deepEqual(lines.filter(([, line]) => /dispatchRunner\(/.test(line) && /githubMcpOrigin/.test(line)), [], "no runner the server or the CLI starts sets it");
+  assert.match(text["github.ts"], /export const GITHUB_MCP_ORIGIN = "https:\/\/api\.githubcopilot\.com";/);
 });
