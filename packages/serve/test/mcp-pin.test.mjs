@@ -126,6 +126,27 @@ test("the server's pin is kept and served; a pin that is not one is 422", { time
   assert.deepEqual(fields(onRead), [["definition.tool_settings.read.pin", "not_allowed"]]);
 });
 
+test("an unattended agent (approvals never) never lifts a pin: a call not as pinned is refused, unsent and unasked; one as pinned runs at once", { timeout: 240_000 }, async (t) => {
+  const { api, sends, send } = await setup(t);
+  // The send left at the owner's default (an MCP tool asks), the agent unattended, and the destination pinned on the
+  // server: never turns the ask into an allow, and the pin, checked before that, still refuses another channel.
+  const made = await api("POST", "/agents", agent("unattended", { tools: [SEND], approvals: "never" }));
+  assert.equal(made.status, 201, JSON.stringify(made.body));
+  assert.equal((await api("PUT", "/settings/tools", { [SEND]: { pin: { channel_id: "C0123" } } })).status, 200);
+
+  const elsewhere = await send("unattended", "C0EVIL");
+  const { last } = await follow(api, elsewhere, ["completed", "failed", "input_required"], { deadlineMs: 180_000 });
+  assert.equal(last.status, "completed", "no approval was raised");
+  assert.match(await answerOf(api, elsewhere), /mcp:fake\/send_message may only be called with channel_id = C0123: its destination is fixed by this server's settings\./);
+  assert.equal(sends().length, 0, "a call not as pinned never reached the server");
+
+  const pinned = await send("unattended", "C0123");
+  const done = await follow(api, pinned, ["completed", "failed", "input_required"], { deadlineMs: 180_000 });
+  assert.equal(done.last.status, "completed", "it ran unasked");
+  assert.match(await answerOf(api, pinned), /posted to C0123/);
+  assert.equal(sends().length, 1, "sent exactly once, to the pinned channel");
+});
+
 test("a broken pin in the server's stored settings is served as pin_broken, and the console's whole-map save of another tool keeps it broken; a valid pin repairs it", { timeout: 120_000 }, async (t) => {
   // The server's tool settings are the store's row (tool-settings-store.ts), read once at its start: the broken pin is
   // written there before the server starts, as a row an older or hand-edited store holds.
