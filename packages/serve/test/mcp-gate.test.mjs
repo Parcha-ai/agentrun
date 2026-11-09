@@ -258,6 +258,40 @@ test("pi: a paid call that ran before a crash keeps its result when its tool is 
   assert.equal(calls(fake, "paid").length, 1, "never run again");
 });
 
+test("pi: an approved MCP call whose runner goes after the call is sent and before its result is answered interrupted on the next runner: sent once, never asked again, and the run goes on", { timeout: 240_000 }, async (t) => {
+  // The tool asks (no setting); the owner allows; the server holds the call; the runner holding the run goes mid-call and
+  // another claims it.
+  const server = await serve(t, { runner: false });
+  const { api, data } = server;
+  const answer = await owner(server);
+  const fake = await addFake(t, api);
+  const closeFirst = await startInProcessRunner(data, { faux: FAUX_MCP });
+  let firstClosed = false;
+  t.after(() => (firstClosed ? undefined : closeFirst()));
+  const runId = await started(api, "approved-then-gone", ["mcp:fake/slow_write"], 'Call mcp__fake__slow_write with {"line":"once","seconds":60}');
+  const pending = await parked(api, runId);
+  assert.equal(await answer(runId, pending.id, { decision: "allow" }), 204);
+  for (let i = 0; calls(fake, "slow_write").length === 0; i++) {
+    assert.ok(i < 600, "the approved call reaches the server");
+    await new Promise((resolve) => setTimeout(resolve, 100));
+  }
+  await closeFirst();
+  firstClosed = true;
+  const closeSecond = await startInProcessRunner(data, { faux: FAUX_MCP });
+  t.after(() => closeSecond());
+  const { rows, last } = await follow(api, runId, ["completed", "failed", "input_required"], { deadlineMs: 150_000 });
+  assert.equal(last.status, "completed", `the run goes on to its answer: ${JSON.stringify(rows.at(-1))}`);
+  const result = rows.find((row) => row.kind === "tool_result" && row.tool_name === "mcp__fake__slow_write");
+  assert.match(`${result?.summary} ${result?.tool_result_preview}`, /interrupted/i, JSON.stringify(rows.filter((row) => row.kind.startsWith("tool"))));
+  assert.match((await answerOf(api, runId)) ?? "", /interrupted/i, "the model is told the call was interrupted");
+  assert.equal(calls(fake, "slow_write").length, 1, "the call was never sent again");
+  // Asked once: one ask and its one answer in the run's journal, one approval row, never parked on it again.
+  const row = await server.store.runs.get(runId);
+  const { entries } = await journalRecords(server.store.journal({ runId, runner: "reader", epoch: row.epoch, until: 0, from: row.state }), BACKGROUND_CONTEXT);
+  assert.deepEqual(["agentrun.ask", "agentrun.answer"].map((kind) => entries.filter((entry) => entry.kind === kind && entry.data?.callId === pending.call_id).length), [1, 1], "one ask, one answer");
+  assert.equal(rows.filter((one) => one.kind === "tool_approval_requested").length, 1, "one approval row");
+});
+
 test("pi: a priced MCP call is never sent or charged on any deny, and the model reads so plainly: the owner's deny, a deny setting, and a declining message", { timeout: 180_000 }, async (t) => {
   const NOT_RUN = "It was not run: nothing was sent and nothing was charged.";
   const server = await serve(t);
