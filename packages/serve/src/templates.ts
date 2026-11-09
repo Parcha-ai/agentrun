@@ -426,10 +426,12 @@ export function applyBodyOf(p: Package, body: Json): { parameters: Record<string
   return { parameters, grants, ...(isObject(overrides) && typeof overrides.model === "string" ? { model: overrides.model } : {}) };
 }
 
-/** The model a package's agent gets here: its `prefer` when this server runs it on `harness` (a key for its provider, or
- *  a gateway), else the server's model for its tier (hostModel: AGENT_MODEL_FAST, AGENT_MODEL or AGENT_MODEL_STRONG,
- *  else the default of a model key it holds). Undefined when the package names none, or the server has none: the agent
- *  then runs on the server's default, as one made with no model does. */
+/** The model a package's agent gets here, as `{model?, warning?}`: its `prefer` when this server runs it on `harness`
+ *  with a key for its provider, but never through a gateway (AGENT_MODEL_BASE_URL), which never said it serves it: then
+ *  a warning says so. Else the server's model for its tier (hostModel: AGENT_MODEL_FAST, AGENT_MODEL or
+ *  AGENT_MODEL_STRONG, else the default of a model key it holds), unless that is a gateway's own id with no provider,
+ *  which no definition can name: then no model, and the agent runs on the server's default (a warning when the tier's
+ *  model is not that default). No model either when the package names none or the server has none. */
 export async function packageModel(env: NodeJS.ProcessEnv, model: Package["model"], harness: string): Promise<{ model?: string; warning?: string }> {
   if (!model) return {};
   // Through a gateway, only the gateway knows what it serves: a preferred model it never named is not picked, and the
