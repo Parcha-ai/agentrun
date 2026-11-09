@@ -177,8 +177,8 @@ export class KernelProvider implements ComputerProvider {
 		const refusals = this.check(spec);
 		if (refusals.length > 0) return fail("refused", refusals.map(({ field, message }) => `${field}: ${message}`).join("; "));
 		if (signal?.aborted) return fail("aborted", "create was aborted before Kernel was called");
-		const createdBy = createLabelValue();
-		const body = { ...settings, timeout_seconds: Math.ceil(spec.lifetimeMs / 1000), tags: { ...spec.labels, [CREATE_LABEL]: createdBy } };
+		const written = { [CREATE_LABEL]: createLabelValue(), ...spec.labels };
+		const body = { ...settings, timeout_seconds: Math.ceil(spec.lifetimeMs / 1000), tags: written };
 		let made: RestReply;
 		try {
 			made = await this.#request("POST", "/browsers", { body, ...(signal ? { signal } : {}) });
@@ -186,7 +186,7 @@ export class KernelProvider implements ComputerProvider {
 			const failed = vendorFailure("kernel", NAME, "POST /browsers", error);
 			if (failed.ok || !createUncertain(error)) return failed;
 			// The browser may have been made though its answer never came: found by its create label, never made again.
-			return vendorFail(failed.error.code, `${failed.error.message}; ${await this.#recover(createdBy)}`, causeOf(failed));
+			return vendorFail(failed.error.code, `${failed.error.message}; ${await this.#recover(written)}`, causeOf(failed));
 		}
 		const browser = (made.json ?? {}) as KernelBrowser;
 		const id = text(browser.session_id);
@@ -194,7 +194,7 @@ export class KernelProvider implements ComputerProvider {
 		if (made.status === 404) return vendorFailure("kernel", NAME, "POST /browsers", new BrowserVendorError(NAME, "POST /browsers", made.status, "no_session"));
 		if (idProblem(id, NAME) !== undefined) {
 			const failed = vendorFailure("kernel", NAME, "POST /browsers", new BrowserVendorError(NAME, "POST /browsers", made.status, "no_session"));
-			return failed.ok ? failed : fail(failed.error.code, `${failed.error.message}; ${await this.#recover(createdBy)}`);
+			return failed.ok ? failed : fail(failed.error.code, `${failed.error.message}; ${await this.#recover(written)}`);
 		}
 		const unusable = cdpUrlProblem(url, NAME, CDP_DOMAIN);
 		if (unusable !== undefined) {
@@ -208,19 +208,15 @@ export class KernelProvider implements ComputerProvider {
 		return ok(refOf(id));
 	}
 
-	/** The browsers a create tagged createdBy made, released: what recoverCreate says of them. */
-	#recover(createdBy: string): Promise<string> {
+	/**
+	 * The browsers a lost create made, released: what recoverCreate says of them. They are found as list finds any, by the
+	 * tags the create wrote (its create label first, so the query names it, then the run's), through #browsers: another
+	 * browser of the same run carries a create label of its own and is left alone.
+	 */
+	#recover(labels: Record<string, string>): Promise<string> {
 		const find = async (signal: AbortSignal): Promise<Result<string[]>> => {
-			const call = "GET /browsers";
-			let page: RestReply;
-			try {
-				page = await this.#request("GET", "/browsers", { query: new URLSearchParams({ status: "active", [`tags[${CREATE_LABEL}]`]: createdBy, limit: "100", offset: "0" }), signal });
-			} catch (error) {
-				return vendorFailure("kernel", NAME, call, error);
-			}
-			if (page.status === 404 || !Array.isArray(page.json)) return vendorFailure("kernel", NAME, call, new BrowserVendorError(NAME, call, page.status, "not_a_list"));
-			const ids = (page.json as KernelBrowser[]).filter((row) => !row?.deleted_at && labelsOf(row?.tags)[CREATE_LABEL] === createdBy).map((row) => text(row.session_id));
-			return ok([...new Set(ids.filter((one) => one !== ""))]);
+			const found = await this.#browsers(labels, signal);
+			return found.ok ? ok(found.value.map((b) => b.id)) : found;
 		};
 		return recoverCreate("browser", find, (id) => this.release(refOf(id), "delete"), this.#sleep);
 	}

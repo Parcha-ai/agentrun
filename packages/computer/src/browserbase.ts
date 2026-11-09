@@ -87,9 +87,10 @@ export const labelKey = (metadataKey: string) => metadataKey.replaceAll("_", "."
 
 /** Labels as userMetadata. */
 const toMetadata = (labels: Record<string, string> = {}) => Object.fromEntries(Object.entries(labels).map(([key, value]) => [metadataKey(key), value]));
-/** userMetadata as labels: its string entries, each key read back. */
-const fromMetadata = (held: unknown): Record<string, string> =>
-	withoutCreateLabel(Object.fromEntries(Object.entries(labelsOf(held)).map(([key, value]) => [labelKey(key), value])));
+/** userMetadata as labels: its string entries, each key read back, the create label among them (what a match reads). */
+const metadataLabels = (held: unknown): Record<string, string> => Object.fromEntries(Object.entries(labelsOf(held)).map(([key, value]) => [labelKey(key), value]));
+/** userMetadata as the labels list and attach show: without the provider's create label. */
+const fromMetadata = (held: unknown): Record<string, string> => withoutCreateLabel(metadataLabels(held));
 
 /** Why labels cannot ride a Browserbase session's userMetadata, in words naming the label; undefined when they can. */
 export function browserbaseLabelsProblem(labels: unknown): string | undefined {
@@ -264,12 +265,12 @@ export class BrowserbaseProvider implements ComputerProvider {
 		const refusals = this.check(spec);
 		if (refusals.length > 0) return fail("refused", refusals.map(({ field, message }) => `${field}: ${message}`).join("; "));
 		if (signal?.aborted) return fail("aborted", "create was aborted before Browserbase was called");
-		const createdBy = createLabelValue();
+		const written = { [CREATE_LABEL]: createLabelValue(), ...spec.labels };
 		const body = {
 			...settings,
 			timeout: Math.ceil(spec.lifetimeMs / 1000),
 			keepAlive: true,
-			userMetadata: toMetadata({ ...spec.labels, [CREATE_LABEL]: createdBy }),
+			userMetadata: toMetadata(written),
 			...(this.#projectId ? { projectId: this.#projectId } : {}),
 		};
 		let made: BrowserbaseSession;
@@ -279,10 +280,10 @@ export class BrowserbaseProvider implements ComputerProvider {
 			const failed = vendorFailure("browserbase", NAME, "POST /v1/sessions", error);
 			if (failed.ok || !createUncertain(error)) return failed;
 			// The session may have been made though its answer never came: found by its create label, never made again.
-			return vendorFail(failed.error.code, `${failed.error.message}; ${await this.#recover(createdBy)}`, causeOf(failed));
+			return vendorFail(failed.error.code, `${failed.error.message}; ${await this.#recover(written)}`, causeOf(failed));
 		}
 		if (idProblem(made?.id, NAME) !== undefined) {
-			return fail("browserbase", `Browserbase POST /v1/sessions answered with no session id, so there is no session to connect to; ${await this.#recover(createdBy)}`);
+			return fail("browserbase", `Browserbase POST /v1/sessions answered with no session id, so there is no session to connect to; ${await this.#recover(written)}`);
 		}
 		const unusable = cdpUrlProblem(made.connectUrl, NAME, CDP_DOMAIN);
 		if (unusable !== undefined) {
@@ -294,18 +295,15 @@ export class BrowserbaseProvider implements ComputerProvider {
 		return ok(refOf(made));
 	}
 
-	/** The sessions a create labelled createdBy made, released: what recoverCreate says of them. */
-	#recover(createdBy: string): Promise<string> {
-		const key = metadataKey(CREATE_LABEL);
+	/**
+	 * The sessions a lost create made, released: what recoverCreate says of them. They are found as list finds any, by
+	 * the labels the create wrote (its create label first, so the query names it, then the run's), through #sessions and
+	 * its metadata-key mapping: another session of the same run carries a create label of its own and is left alone.
+	 */
+	#recover(labels: Record<string, string>): Promise<string> {
 		const find = async (signal: AbortSignal): Promise<Result<string[]>> => {
-			let pages: BrowserbaseSession[][];
-			try {
-				pages = await Promise.all((["RUNNING", "PENDING"] as const).map((status) => this.#api.list({ status, q: `user_metadata['${key}']:'${createdBy}'` }, signal)));
-			} catch (error) {
-				return vendorFailure("browserbase", NAME, "GET /v1/sessions", error);
-			}
-			const ids = pages.flat().filter((s) => typeof s?.id === "string" && s.userMetadata?.[key] === createdBy).map((s) => s.id);
-			return ok([...new Set(ids)]);
+			const found = await this.#sessions(labels, signal);
+			return found.ok ? ok(found.value.map((s) => s.id)) : found;
 		};
 		return recoverCreate("session", find, (id) => this.release({ id, name: id }, "delete"), this.#sleep);
 	}
@@ -388,7 +386,7 @@ export class BrowserbaseProvider implements ComputerProvider {
 			return vendorFailure("browserbase", NAME, "GET /v1/sessions", error);
 		}
 		const seen = new Set<string>();
-		return ok(pages.flat().filter((s) => typeof s?.id === "string" && LIVE.has(s.status ?? "") && carries(fromMetadata(s.userMetadata), labels) && !seen.has(s.id) && seen.add(s.id)));
+		return ok(pages.flat().filter((s) => typeof s?.id === "string" && LIVE.has(s.status ?? "") && carries(metadataLabels(s.userMetadata), labels) && !seen.has(s.id) && seen.add(s.id)));
 	}
 
 	async list(labels: Record<string, string>, { signal }: CallContext = {}): Promise<Result<ComputerInfo[]>> {
