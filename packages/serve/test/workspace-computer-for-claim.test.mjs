@@ -1,7 +1,7 @@
 // The run's computer at its claim (serve/src/workspace/computer-for-claim.ts computerForClaim), the one call the runner's
 // specs make: the agent's setting resolved in the server's mode, its provider made with its sealed keys, the computer
-// started under the run's labels (the run's folder mounted only where the provider mounts it), a desktop registered for
-// its owner's view and take-over with the provider's stream, and released once at the run's end. Kind none is no
+// started under the run's labels (the run's folder mounted only where the provider mounts it), a desktop's live view
+// opened with its hold, and released once at the run's end (the hold ended with it). Kind none is no
 // computer; a provider with no key, Mode 1's non-Docker sandbox and Mode 2's Docker are refused in words with code
 // computer_unavailable, before anything is made. Every provider here is a loopback fake; the kind registry is the
 // agreed stand-in (workspace-kinds-fixture.mjs).
@@ -13,7 +13,6 @@ import { join } from "node:path";
 import { after, test } from "node:test";
 import { readBackOf } from "@parcha/agentrun-computer";
 import { putSealedKey } from "../dist/server-keys.js";
-import { runComputerOf } from "../dist/computer-view.js";
 import { computerForClaim, localWorkspace } from "../dist/workspace/index.js";
 import { fakeComputer } from "./workspace-fake-computer.mjs";
 import { KINDS } from "./workspace-kinds-fixture.mjs";
@@ -83,12 +82,14 @@ const SPEC = () => ({ image: "agentrun/computer:test", lifetimeMs: 60_000, netwo
 function views(refusal) {
   const opened = [];
   const closed = [];
+  const holds = [];
   const open = async (args) => {
+    holds.push(args.hold);
     opened.push({ kind: args.kind, input: args.input, tag: args.tag, claim: args.claim, sealKey: Buffer.isBuffer(args.sealKey), hold: typeof args.hold?.take, watched: args.watch(new AbortController().signal) !== undefined });
     if (refusal) return { ok: false, refused: refusal, message: `the store refused the viewer (${refusal})` };
     return { ok: true, view: { close: (why) => void closed.push(why) } };
   };
-  return { open, opened, closed };
+  return { open, opened, closed, holds };
 }
 
 async function claim(setting, { mode = 1, keys = {}, groups = ["exec", "files", "processes"], existing, view, machine } = {}) {
@@ -127,7 +128,7 @@ test("a Mode 1 sandbox on Docker is made under the run's labels with the run's f
   assert.equal(record.revoked, 1, "the run's mount credential is removed once, after the computer");
 });
 
-test("a desktop opens one proxied live view under the claim, is registered for take-over, and on release closes the view 'released'", async () => {
+test("a desktop opens one proxied live view under the claim with its hold, and on release closes the view 'released' and ends the hold", async () => {
   const view = views();
   const { record, run } = await claim({ kind: "desktop", provider: "e2b" }, { keys: { E2B_API_KEY: "ek-test" }, groups: ["screen", "input.pointer", "input.keys"], view });
   const answer = await run();
@@ -135,16 +136,14 @@ test("a desktop opens one proxied live view under the claim, is registered for t
   assert.equal(record.created[0].mount, undefined, "E2B mounts nothing in Mode 1");
   assert.deepEqual(record.options[0].slice(0, 2), ["e2b", { apiKey: "ek-test" }], "made with its key, by the option it fills");
   assert.deepEqual(view.opened, [{ kind: "desktop", input: "desktop", tag: "c1", claim: { runId: "run-1", epoch: 3 }, sealKey: true, hold: "function", watched: true }], "one view, tagged with the computer's ref id, fed by the provider's watch");
-  const registered = runComputerOf("run-1");
-  assert.equal(registered?.kind, "desktop");
-  assert.equal(registered.live(), true);
-  assert.equal(registered.stream, undefined, "proxy-only: no vendor's URL is registered");
   assert.equal(typeof answer.hold, "function", "the person's hold on its ports, for runTools");
+  const [hold] = view.holds;
+  assert.equal(hold.take(), true, "a person takes the desktop");
+  assert.equal(hold.state().held, true);
   await answer.release();
   await answer.release("ended");
   assert.deepEqual(view.closed, ["released"], "closed once");
-  assert.equal(runComputerOf("run-1"), undefined, "no longer shown");
-  assert.equal(registered.live(), false);
+  assert.equal(hold.state().held, false, "the release ends the hold: nothing stays parked past the run's computer");
   assert.deepEqual(record.released, [["c1", "delete"]]);
 });
 
@@ -176,7 +175,6 @@ test("a fenced view registration is a lost claim, in words: the desktop just mad
   assert.match(error.message, /run run-1's claim \(epoch 3\) is no longer this runner's/);
   assert.deepEqual(record.released, [["c1", "delete"]]);
   assert.equal(record.revoked, 1, "the mount credential goes with it");
-  assert.equal(runComputerOf("run-1"), undefined, "never registered");
 });
 
 test("a sandbox opens no live view", async () => {

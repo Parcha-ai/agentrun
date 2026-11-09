@@ -9,7 +9,6 @@ import type { TriggerAdapter } from "./trigger-adapter.js";
 import { TRIGGER_ADAPTERS } from "./trigger-adapters.js";
 import { NOTE_ORIGINS, NOTE_STATUSES, NOTE_TYPES } from "./learn/index.js";
 import { ERROR_STATUS } from "./errors.js";
-import { TAKE_OVER_MINUTES } from "./computer-view.js";
 import { LAUNCH_LOST, SETUP_LOST } from "./files.js";
 import { HARNESSES } from "./harness.js";
 import { LEARNING_LABEL, LEARNING_MODES, LEARNING_REASONS, LEARNING_STATES } from "./learning.js";
@@ -541,16 +540,6 @@ const RUN_NOTES: Record<string, Json> = {
 /** `properties` as a closed object, its `optional` ones left out of `required`. */
 const closedWith = (properties: Record<string, Json>, optional: Record<string, Json>) => ({ ...closed(properties), properties: { ...properties, ...optional } });
 
-/** A run's desktop or phone, as GET /runs/{run_id}/computer and its take-over and hand-back answer it (computer-view.ts). */
-const COMPUTER_VIEW = closedWith({
-  kind: { enum: ["desktop", "phone", null], description: "The run's computer's kind; null when it has none here." },
-  state: { enum: ["live", "none", "off"], description: "`live`: up, watchable (or taken over); `none`: the run has a desktop or phone that is not up now; `off`: it has none." },
-  taken_over: { type: "boolean", description: "Whether the owner holds it now: the agent's screen, input and phone calls wait meanwhile." },
-  viewer: { oneOf: [{ type: "null" }, closed({ url: { type: "string", description: "The provider's own live stream of the screen: view-only, or one that drives while the owner holds it." } })], description: "The live view, while the computer is up and its provider streams its screen; null otherwise." },
-}, {
-  taken_until: { type: "string", format: "date-time", description: "When an owner's take-over goes back to the agent on its own, without a hand-back." },
-  why: { type: "string", description: "Why there is nothing to watch, in the server's words: with state `off` (the run has no desktop or phone) and `none` (it is not up now)." },
-});
 /** A secret as every view shows it (key-meta.ts): never a value, a prefix, a length or a hash. */
 const SECRET_META = {
   set: { type: "boolean", description: "Whether a value is set: the value itself is never shown." },
@@ -1082,32 +1071,23 @@ const EXTENSIONS: Record<string, Record<string, Json>> = {
       "x-agentrun-serve": "liveview/2",
     },
   },
-  "/runs/{run_id}/computer": {
-    get: {
-      operationId: "getRunComputer", tags: ["runs"], summary: "Watch the run's desktop or phone live: its kind, its state and its viewer, for the owner",
-      description: "A run whose computer is a desktop or a phone: `live` with `viewer`, the provider's own live stream of its screen (view-only while the agent works; once the owner takes it over, one that drives), while the computer is up; `none` when the run has such a computer that is not up now; `off` when it has none (a browser is watched at GET /runs/{run_id}/browser). `taken_over` says whether the owner holds it now, and `taken_until` when it goes back to the agent on its own. It takes the owner's password session in the console: never a token (403); no credential is 401.",
-      parameters: [ref("parameters/RunId")],
-      responses: { "200": json(COMPUTER_VIEW, "The run's computer, as its owner sees it."), ...errors(401, 403, 404, 429, 500) },
-      "x-agentrun-serve": "computer/1",
-    },
-  },
   "/runs/{run_id}/computer/take-over": {
     post: {
       operationId: "takeOverRunComputer", tags: ["runs"], summary: "Take over the run's desktop or phone",
-      description: `The owner holds the run's desktop or phone: the answer's viewer drives it, and the agent's screen, input and phone calls wait meanwhile. At the hand-back a look (a screenshot, the app list) runs on the screen as the owner left it; an act (input, a tap, a swipe, typing, opening an app) is not done, and the agent is told the person had the computer and to look again. The hold goes back to the agent on its own after ${TAKE_OVER_MINUTES} minutes with no hand-back, or at the run's end. Taking one already taken is the same answer. 404 when the run has no desktop or phone up; 409 \`computer_not_live\` when it is not up now. The run stays working. It takes the owner's password session in the console: never a token (403).`,
+      description: "Not served yet: 501 `unsupported_here`, after the owner check (it takes the owner's password session in the console, never a token: 403) and the body check (an empty JSON object, else 422). The take-over comes with the store-backed take-over, where the server writes it and the runner holding the run applies it.",
       parameters: [ref("parameters/RunId")],
       requestBody: { required: false, content: { "application/json": { schema: closed({}) } } },
-      responses: { "200": json(COMPUTER_VIEW, "The run's computer, taken over."), ...errors(401, 403, 404, 409, 422, 429, 500) },
+      responses: { ...errors(401, 403, 404, 422, 429, 500, 501) },
       "x-agentrun-serve": "computer/1",
     },
   },
   "/runs/{run_id}/computer/hand-back": {
     post: {
       operationId: "handBackRunComputer", tags: ["runs"], summary: "Hand the run's desktop or phone back to the agent",
-      description: "The owner's hold ends and the agent's waiting calls go on. Handing back one nobody holds is the same answer. 404 when the run has no desktop or phone up. It takes the owner's password session in the console: never a token (403).",
+      description: "Not served yet: 501 `unsupported_here`, after the owner check (403 for a token) and the body check (422). The hand-back comes with the store-backed take-over.",
       parameters: [ref("parameters/RunId")],
       requestBody: { required: false, content: { "application/json": { schema: closed({}) } } },
-      responses: { "200": json(COMPUTER_VIEW, "The run's computer, back with the agent."), ...errors(401, 403, 404, 422, 429, 500) },
+      responses: { ...errors(401, 403, 404, 422, 429, 500, 501) },
       "x-agentrun-serve": "computer/1",
     },
   },
