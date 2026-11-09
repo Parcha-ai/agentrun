@@ -29,7 +29,7 @@ test("no planted secret shows in any GET, the store's bytes, the log or an expor
   const write = process.stderr.write.bind(process.stderr);
   process.stderr.write = (chunk, ...rest) => (stderr.push(String(chunk)), write(chunk, ...rest));
   t.after(() => (process.stderr.write = write));
-  const server = await serve(t, { runner: false, accounts: true, log: (line) => logs.push(line) });
+  const server = await serve(t, { runner: false, accounts: true, openSetup: true, log: (line) => logs.push(line) });
   const origin = `http://127.0.0.1:${server.port}`;
   const setup = await call(server.port, { method: "POST", path: "/v2/setup", headers: { ...json, origin }, body: { password: `owner-${randomBytes(12).toString("hex")}` } });
   assert.equal(setup.status, 201, setup.text);

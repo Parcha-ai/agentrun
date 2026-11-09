@@ -33,7 +33,9 @@ function lstatOf(path: string): Stats | undefined {
   try {
     return lstatSync(path);
   } catch (error) {
-    if ((error as NodeJS.ErrnoException).code === "ENOENT") return undefined;
+    // Absent, or under a path that is a file (ENOTDIR): nothing there; making it then fails, in words.
+    const code = (error as NodeJS.ErrnoException).code;
+    if (code === "ENOENT" || code === "ENOTDIR") return undefined;
     throw error;
   }
 }

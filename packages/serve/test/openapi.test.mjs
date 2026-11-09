@@ -213,6 +213,14 @@ test("the contract's operations are as vendored; this server's own are added and
   // Every property this server adds is marked with the addition that made it, and listed; without them, the
   // contract's components are as vendored.
   const components = structuredClone(doc.components);
+  // A schema this server adds whole is its own, marked (SecretMeta, the one shape a secret's view answers): set aside,
+  // as an added security scheme is below.
+  for (const [name, schema] of Object.entries(components.schemas)) {
+    if (!(name in VENDORED.components.schemas)) {
+      assert.notEqual(schema["x-agentrun-serve"], undefined, `${name}, a schema this server adds, is marked x-agentrun-serve`);
+      delete components.schemas[name];
+    }
+  }
   const marked = [];
   // Names taken out of a schema's `required` with the property they name: only the fields this server always sends
   // (RUN_FIELDS_SENT) may be, so a required addition anywhere else still fails this comparison.

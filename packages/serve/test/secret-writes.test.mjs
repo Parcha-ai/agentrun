@@ -76,7 +76,7 @@ test("the one decision: the owner's password session writes; the accounts-off co
 
 test("accounts on: the owner's password session saves and removes a tool key and a model key; the token is refused in the one text", async (t) => {
   withEnv(t, SEAL);
-  const server = await serve(t, { runner: false, accounts: true });
+  const server = await serve(t, { runner: false, accounts: true, openSetup: true });
   const mod = await secretWrites();
   assert.ok(mod, "secret-writes.js exists");
   const { cookie, origin } = await ownerSession(server);
@@ -101,7 +101,7 @@ test("accounts on: the owner's password session saves and removes a tool key and
 
 test("accounts on: GET /v2/auth/session answers accounts, secrets_writable, and secrets_reason (sign_in, token) only when it is false", async (t) => {
   withEnv(t, SEAL);
-  const server = await serve(t, { runner: false, accounts: true });
+  const server = await serve(t, { runner: false, accounts: true, openSetup: true });
   const before = await call(server.port, { path: "/v2/auth/session" });
   assert.deepEqual([before.json?.accounts, before.json?.secrets_writable, before.json?.secrets_reason], [true, false, "sign_in"], `no session: ${before.text}`);
   const { cookie, origin } = await ownerSession(server);
@@ -150,7 +150,7 @@ test("accounts off on a server bound off loopback: its console session is refuse
 
 test("the gate decides by the operation's body: a route no plane registered (a token's tool-settings edit) is not a secret write", async (t) => {
   withEnv(t, SEAL);
-  const server = await serve(t, { runner: false, accounts: true });
+  const server = await serve(t, { runner: false, accounts: true, openSetup: true });
   const mod = await secretWrites();
   assert.ok(mod, "secret-writes.js exists");
   assert.equal(mod.writesSecret("putToolSettings", { web_fetch: { permission: "ask" } }), false, "no plane registered it");
