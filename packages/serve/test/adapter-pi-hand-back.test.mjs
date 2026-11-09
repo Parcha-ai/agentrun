@@ -19,11 +19,15 @@ import { ROOT_CONVERSATION_ID } from "@earendil-works/pi-durable";
 import { openSqliteStore, RunFinal } from "../dist/store/index.js";
 import { startRunner } from "../dist/runner/runner.js";
 import { closeOpenSessions, piAdapterSpec } from "./conformance-pi-adapter.mjs";
+import { STEADY_LEASE } from "./runner-support.mjs";
 
 const { createAdapterLoop } = await import("../dist/runner/adapter-loop.js");
 const { COMMAND_KINDS, sendCommand } = await import("../dist/runner/commands.js");
 const quiet = { beforeIntent: async () => {}, beforeResult: async () => {} };
-const TIMING = { leaseMs: 600, renewEveryMs: 150, stopMarginMs: 200, pollMs: 20, commandPollMs: 30 };
+// One runner throughout, never meant to lose its claim: a lease no stall outlasts (a short one lapses on a loaded
+// machine, and the takeover's reads are then what the test sees). A hand-over's lapse here is its own expiry, at the
+// times its rows give, never a lease's.
+const TIMING = { ...STEADY_LEASE, pollMs: 20, commandPollMs: 30 };
 const WAIT_MS = 15_000;
 const T0 = Date.parse("2001-02-03T04:05:06.007Z");
 const iso = (ms) => new Date(ms).toISOString();

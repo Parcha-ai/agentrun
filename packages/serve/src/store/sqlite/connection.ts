@@ -3,7 +3,10 @@
 // so the journal (store/journal) runs on it as written. Every call is a message to the worker, answered in order, on one
 // queue: a call starts when the one before it has answered, and a transaction holds every other call until it commits or
 // rolls back. Errors come back typed: Fenced, RunFinal, StoreBusy, StoreConstraint, StoreClosed, StoreOwned.
+import { realpathSync } from "node:fs";
 import { Worker } from "node:worker_threads";
+import { type Dialect, SQLITE } from "../dialect.js";
+import { inMemory } from "./memory.js";
 import { Fenced, RunFinal, StoreBusy, StoreClosed, StoreConstraint, StoreDeadline, StoreOwned, StoreWorkerLost } from "../store.js";
 import type { Mode, Params, Reply, Request, Statement, StatementResult, WorkerError } from "./worker.js";
 
@@ -31,6 +34,36 @@ export interface SqliteDatabase extends SqliteExecutor {
  *  `expect` (a fence, a final run) rolls the transaction back when it changes no row. */
 export interface Tx extends SqliteExecutor {
   step(statement: Statement): Promise<StatementResult>;
+  /** What this database's SQL says differently, and its locks (store/dialect.ts). */
+  readonly dialect: Dialect;
+}
+
+/** A transaction's options: `full`, a durable commit (as flush); `read`, one snapshot that only reads; `deadlineMs`, how
+ *  long it may stay open before it is rolled back (StoreDeadline). */
+export interface TransactionOptions {
+  readonly full?: boolean;
+  readonly read?: boolean;
+  readonly deadlineMs?: number;
+}
+
+/** The store's connection as its shared domain code (store.ts here, run-patch.ts, journal/storage.ts) uses it, whichever
+ *  database is under it: this file's Connection on SQLite, postgres/connection.ts on Postgres. Statements take `?`
+ *  parameters; a statement's `expect` (a fence, a final run) rolls its transaction back when it changes no row. */
+export interface StoreConnection {
+  readonly dialect: Dialect;
+  /** Where this connection's data is (Store.where): an identity two connections to the same data share and two to
+   *  different data never do. SQLite: "sqlite:" and the database file's real path, or "sqlite:memory:<n>" for each
+   *  in-memory database. A database server's: its kind, host, database and schema, never a user, a password or any
+   *  credential. An in-process key only: never printed in a log line, an error or an answer. */
+  readonly where: string;
+  get<T extends object>(sql: string, ...params: SqliteValue[]): Promise<T | undefined>;
+  all<T extends object>(sql: string, ...params: SqliteValue[]): Promise<T[]>;
+  /** One write transaction of fixed statements, in order; `full`: a durable commit. */
+  write(statements: readonly Statement[], options?: { full?: boolean }): Promise<StatementResult[]>;
+  /** A transaction the callback steps through its handle; it commits when the callback resolves, rolls back when it
+   *  rejects. */
+  transaction<T>(callback: (transaction: Tx) => Promise<T>, options?: TransactionOptions): Promise<T>;
+  close(): Promise<void>;
 }
 
 function typed(error: WorkerError): Error {
@@ -50,7 +83,45 @@ function typed(error: WorkerError): Error {
   }
 }
 
-export class Connection implements SqliteDatabase {
+/** In-memory databases opened in this process: each is its own data, so each gets its own `where`. */
+let memoryDatabases = 0;
+
+/** A SQLite database's identity (StoreConnection.where): its file's real path, so two connections to one file (two roles,
+ *  a path given two ways) share it; an in-memory database is its own data, never another's. */
+function whereOf(file: string): string {
+  if (inMemory(file)) return `sqlite:memory:${++memoryDatabases}`;
+  return `sqlite:${realpathSync(file)}`;
+}
+
+/** The flags the store's worker is given when this process was started with code on its command line: this process's
+ *  less those that apply only to that code (`--input-type`, `-e`/`--eval` and `-p`/`--print` with their code). A worker
+ *  from a file refuses them ("--input-type can only be used with string input via --eval"), and the server's launcher
+ *  starts Node exactly so (`node --input-type=module -e '…'`), so a store opened under it would have no worker. Undefined
+ *  when there are none to drop: the worker then inherits this process's flags as Node gives them, untouched (a list given
+ *  to Worker is checked flag by flag, and one a worker may not take, a process-wide one, is refused). */
+export function workerExecArgv(given: readonly string[]): string[] | undefined {
+  const codeOnly = given.some((flag) => flag.startsWith("--input-type") || flag === "-e" || flag === "--eval" || flag === "-p" || flag === "--print" || flag.startsWith("--eval=") || flag.startsWith("--print="));
+  if (!codeOnly) return undefined;
+  const out: string[] = [];
+  for (let i = 0; i < given.length; i++) {
+    const flag = given[i]!;
+    if (flag.startsWith("--input-type")) continue;
+    if (flag === "-e" || flag === "--eval" || flag === "-p" || flag === "--print") {
+      i++;
+      continue;
+    }
+    if (flag.startsWith("--eval=") || flag.startsWith("--print=")) continue;
+    out.push(flag);
+  }
+  return out;
+}
+
+export class Connection implements SqliteDatabase, StoreConnection {
+  readonly dialect: Dialect = SQLITE;
+  #where = "";
+  get where(): string {
+    return this.#where;
+  }
   readonly #worker: Worker;
   #next = 1;
   readonly #waiting = new Map<number, { resolve: (value: unknown) => void; reject: (error: Error) => void }>();
@@ -94,10 +165,13 @@ export class Connection implements SqliteDatabase {
 
   /** Starts the worker and opens `file` in it; `owner` takes the store's owner lock too (StoreOwned when another holds it). */
   static async open(file: string, { busyTimeoutMs = 10_000, owner = false }: { busyTimeoutMs?: number; owner?: boolean } = {}): Promise<Connection> {
-    const worker = new Worker(new URL("./worker.js", import.meta.url));
+    const execArgv = workerExecArgv(process.execArgv);
+    const worker = new Worker(new URL("./worker.js", import.meta.url), execArgv ? { execArgv } : {});
     const connection = new Connection(worker);
     try {
       await connection.#send({ op: "open", file, busyTimeoutMs, owner });
+      // Opened, the file exists: its real path names it.
+      connection.#where = whereOf(file);
     } catch (error) {
       await worker.terminate();
       throw error;
@@ -135,6 +209,7 @@ export class Connection implements SqliteDatabase {
       if (!live()) throw new Error("the store's transaction is over: its handle takes no more statements");
     };
     return {
+      dialect: this.dialect,
       step: async (statement) => (check(), (await this.#send({ op: "step", statement })) as StatementResult),
       exec: async (sql) => (check(), void (await this.#send({ op: "exec", sql }))),
       run: async (sql, ...params) => (check(), void (await this.#stmt(sql, params, "run"))),
@@ -172,7 +247,8 @@ export class Connection implements SqliteDatabase {
    *  waits for it, so the callback awaits nothing but its own statements (no model or tool call inside), and a transaction
    *  still open `deadlineMs` after it began is rolled back and rejects with StoreDeadline: a later statement of its callback
    *  is refused, and the calls behind it go on. */
-  transaction<T>(callback: (transaction: Tx) => Promise<T>, { full = false, read = false, deadlineMs = DEFAULT_TRANSACTION_DEADLINE_MS }: { full?: boolean; /** A read: one snapshot in a deferred transaction, taking no writer lock (its statements only read). */ read?: boolean; deadlineMs?: number } = {}): Promise<T> {
+  transaction<T>(callback: (transaction: Tx) => Promise<T>, { full = false, read = false, deadlineMs = DEFAULT_TRANSACTION_DEADLINE_MS }: TransactionOptions = {}): Promise<T> {
+    // `read`: one snapshot in a deferred transaction, taking no writer lock (its statements only read).
     return this.#queued(async () => {
       await this.#send({ op: "begin", full, ...(read ? { read } : {}) });
       let live = true;

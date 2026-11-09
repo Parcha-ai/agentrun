@@ -4,7 +4,7 @@
 // learning script at that commit.
 import { type Base, type Change, checkProposal, type Problem } from "./check.js";
 import { type DraftReader } from "./skills.js";
-import { folderAt, readLearning, readSnapshot, type Snapshot, snapshotAt, snapshotNotes, topOf } from "./folder.js";
+import { FolderBusy, folderAt, readLearning, readSnapshot, type Snapshot, snapshotAt, snapshotNotes, topOf } from "./folder.js";
 import { INDEX_FILE } from "./notes.js";
 import type { Workspace } from "../workspace/index.js";
 
@@ -72,6 +72,10 @@ export async function readSeed(lw: Workspace, seed: string | null): Promise<{ ok
         // The folder moved on as it was read: read at the seed below.
         if (snapshot?.main !== seed) return undefined;
         return Promise.all(laid(snapshot).map(async ({ path, oid }) => ({ path, text: await body(path, oid) })));
+      }).catch((error: unknown) => {
+        // A working tree whose bodies are not main's (a write in flight, or a hand edit): git's own read at the seed.
+        if (error instanceof FolderBusy) return undefined;
+        throw error;
       });
       if (files) return { ok: true, files: [...files, ...(now.index.bytes ? [] : [{ path: INDEX_FILE, text: "" }])].sort((a, b) => (a.path < b.path ? -1 : a.path > b.path ? 1 : 0)), refused: refusedOf(now) };
     }
