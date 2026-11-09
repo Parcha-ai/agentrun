@@ -505,19 +505,35 @@ export async function loadToolSettings(store: { settings: Pick<Settings, "get"> 
   return checkToolSettings(read, "the stored tool settings");
 }
 
-/** Replaces the server's tool settings in the one store, as ToolSettings.put does to the file: a tool `map` leaves out
- *  takes its defaults, and a fail-closed stand-in sent back unchanged (a permission equal to the one it stood in for) stays
- *  a stand-in, the row keeping the value as written. Answers the settings as served (the stand-in marks within). The
- *  store-backed replacement for ToolSettings.put; the cut wires it. */
-export async function saveToolSettings(store: { settings: Pick<Settings, "get" | "put"> }, map: ToolSettingsMap): Promise<ToolSettingsMap> {
-  const { settings: current } = await loadToolSettings(store);
+/** A save of the server's tool settings: `map` (a tool it leaves out takes its defaults) over the settings read before it
+ *  (`current`), as kept (the marks within) and as written (the raw values, which a read turns back into those marks).
+ *  The one rule both writers keep (ToolSettings.put to the file, saveToolSettings to the store), so they cannot drift:
+ *  - a pin is kept as given, as a pin is a gate fence (tool-gate.ts pinRefusal);
+ *  - a broken pin (one that did not read) is kept by every save that keeps the tool's key and sets no pin of its own (a
+ *    console's whole map sends the key back, marked pin_broken): only a valid pin, or the key left out, clears it, so an
+ *    unrelated save never leaves an allowed tool with no argument limits;
+ *  - a stand-in sent back as served (a client saves the whole map) is no choice: it stays a stand-in, and the written
+ *    form keeps the value as written, so neither this save nor a restart turns it into a permission set (tool-gate.ts
+ *    SHELL_WATCHERS). A different permission is a choice, written as given. */
+export function keptSettings(map: ToolSettingsMap, current: ToolSettingsMap): { kept: ToolSettingsMap; written: Record<string, Record<string, unknown>> } {
   const kept: ToolSettingsMap = Object.fromEntries(Object.entries(map).flatMap(([name, setting]) => {
-    const set: ToolSetting = { ...(setting?.provider ? { provider: setting.provider } : {}), ...(setting?.permission ? { permission: setting.permission } : {}) };
+    const set: ToolSetting = { ...(setting?.provider ? { provider: setting.provider } : {}), ...(setting?.permission ? { permission: setting.permission } : {}), ...(setting?.pin ? { pin: setting.pin } : {}) };
     const before = current[name];
     if (before?.fallback && set.permission === before.permission) Object.assign(set, { fallback: true, raw: before.raw });
+    if (before?.brokenPin && !set.pin) Object.assign(set, { brokenPin: true, rawPin: before.rawPin });
     return Object.keys(set).length ? [[name, set]] : [];
   }));
-  const written = Object.fromEntries(Object.entries(kept).map(([name, setting]) => [name, { ...(setting!.provider ? { provider: setting!.provider } : {}), ...(setting!.fallback ? { permission: setting!.raw } : setting!.permission ? { permission: setting!.permission } : {}) }]));
+  const written = Object.fromEntries(Object.entries(kept).map(([name, setting]) => [name, { ...(setting!.provider ? { provider: setting!.provider } : {}), ...(setting!.fallback ? { permission: setting!.raw } : setting!.permission ? { permission: setting!.permission } : {}), ...(setting!.pin ? { pin: setting!.pin } : setting!.brokenPin ? { pin: setting!.rawPin } : {}) }]));
+  return { kept, written };
+}
+
+/** Replaces the server's tool settings in the one store, as ToolSettings.put does to the file, by the same rule
+ *  (keptSettings): a tool `map` leaves out takes its defaults, a pin is kept, a broken pin is kept until a valid one or the
+ *  key left out clears it, and a stand-in sent back unchanged stays a stand-in. Answers the settings as served (the marks
+ *  within). The store-backed replacement for ToolSettings.put; the cut wires it. */
+export async function saveToolSettings(store: { settings: Pick<Settings, "get" | "put"> }, map: ToolSettingsMap): Promise<ToolSettingsMap> {
+  const { settings: current } = await loadToolSettings(store);
+  const { kept, written } = keptSettings(map, current);
   await store.settings.put(TOOL_SETTINGS_KEY, written);
   return structuredClone(kept);
 }
@@ -535,22 +551,10 @@ export class ToolSettings {
     return structuredClone(this.current);
   }
 
-  /** Replaces the settings: a tool `map` leaves out takes its defaults. Durable before it returns. */
+  /** Replaces the settings: a tool `map` leaves out takes its defaults; pins, broken pins and stand-ins by the one rule
+   *  the store's save keeps too (keptSettings). Durable before it returns. */
   put(map: ToolSettingsMap): ToolSettingsMap {
-    const kept: ToolSettingsMap = Object.fromEntries(Object.entries(map).flatMap(([name, setting]) => {
-      const set: ToolSetting = { ...(setting?.provider ? { provider: setting.provider } : {}), ...(setting?.permission ? { permission: setting.permission } : {}), ...(setting?.pin ? { pin: setting.pin } : {}) };
-      // A broken pin (readToolSettings) is kept by every save that keeps the tool's key and sets no pin of its own (a
-      // console's whole map sends the key back, marked pin_broken): only a valid pin, or the key left out, clears it, so
-      // an unrelated save never leaves an allowed tool with no argument limits.
-      // A stand-in sent back as served (a client saves the whole map) is no choice: it stays a stand-in, and the file keeps
-      // the value as written, so neither this save nor a restart turns it into a permission set (tool-gate.ts
-      // SHELL_WATCHERS). A different permission is a choice, written as given.
-      const before = this.current[name];
-      if (before?.fallback && set.permission === before.permission) Object.assign(set, { fallback: true, raw: before.raw });
-      if (before?.brokenPin && !set.pin) Object.assign(set, { brokenPin: true, rawPin: before.rawPin });
-      return Object.keys(set).length ? [[name, set]] : [];
-    }));
-    const written = Object.fromEntries(Object.entries(kept).map(([name, setting]) => [name, { ...(setting!.provider ? { provider: setting!.provider } : {}), ...(setting!.fallback ? { permission: setting!.raw } : setting!.permission ? { permission: setting!.permission } : {}), ...(setting!.pin ? { pin: setting!.pin } : setting!.brokenPin ? { pin: setting!.rawPin } : {}) }]));
+    const { kept, written } = keptSettings(map, this.current);
     writeDurableSync(join(this.dir, ToolSettings.FILE), `${JSON.stringify(written)}\n`);
     this.current = kept;
     return this.get();
