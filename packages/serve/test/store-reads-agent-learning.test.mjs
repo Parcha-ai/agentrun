@@ -46,9 +46,9 @@ test("an agent's notes' runs and its impact from the store: given and read by no
   // Two runs before any note (learning not started), then two that started from notes and looked back.
   await run(store, clock, { id: "r1", start: T0, seconds: 10, usd: 0.1 });
   await run(store, clock, { id: "r2", start: T0 + 100_000, seconds: 20, usd: 0.3 });
-  const both = { given: [{ file: "a.md", name: "Alpha" }, { file: "b.md", name: "Beta" }], seed: "a".repeat(40), section: "# Learned\n" };
+  const both = { given: [{ file: "a.md", name: "Alpha" }, { file: "b.md", name: "Beta" }], seed: "a".repeat(40), section: "# Learned\n", seedNotes: 2 };
   await run(store, clock, { id: "r3", start: T0 + 1_000_000, seconds: 45, usd: 0.25, learning: both, read: ["a.md"], kept: lookedBack(T0 + 1_000_000, 30, 0.2, 0.05) });
-  const one = { given: [{ file: "a.md", name: "Alpha" }], seed: "a".repeat(40), section: "# Learned\n" };
+  const one = { given: [{ file: "a.md", name: "Alpha" }], seed: "a".repeat(40), section: "# Learned\n", seedNotes: 2 };
   await run(store, clock, { id: "r4", start: T0 + 2_000_000, seconds: 70, usd: 0.47, learning: one, kept: lookedBack(T0 + 2_000_000, 50, 0.4, 0.07) });
 
   const view = await agentLearningOverStore(store, "agent-1");
@@ -60,4 +60,20 @@ test("an agent's notes' runs and its impact from the store: given and read by no
     after: { runs: 2, median_duration_s: 40, median_cost_usd: 0.3, cost_runs: 2, median_learning_usd: 0.06 },
   });
   assert.deepEqual(view.counts, { merged: 0, dropped: { empty: 2 }, in_progress: 0 }, "its counts, as before");
+});
+
+test("a run started from a seed of notes counts on the after side by the seed's notes (main's seed_notes), though its budget gave it none", async (t) => {
+  const { store, clock } = await storeOn(t);
+  await store.agents.create({ id: "agent-1", name: "Agent" }, { id: "rev-1", kind: "agentic", body: { instructions: "Answer.", tools: ["read"], learning: true } });
+  await run(store, clock, { id: "r1", start: T0, seconds: 10, usd: 0.1 });
+  await run(store, clock, { id: "r2", start: T0 + 100_000, seconds: 20, usd: 0.3 });
+  // The seed held three notes; its budget laid one in the first run's prompt, and none in the second's.
+  const some = { given: [{ file: "a.md", name: "Alpha" }], seed: "a".repeat(40), section: "# Learned\n", seedNotes: 3 };
+  await run(store, clock, { id: "r3", start: T0 + 1_000_000, seconds: 45, usd: 0.25, learning: some, kept: lookedBack(T0 + 1_000_000, 30, 0.2, 0.05) });
+  const none = { given: [], seed: "a".repeat(40), section: "", seedNotes: 3 };
+  await run(store, clock, { id: "r4", start: T0 + 2_000_000, seconds: 70, usd: 0.47, learning: none, kept: lookedBack(T0 + 2_000_000, 50, 0.4, 0.07) });
+
+  const { impact } = await agentLearningOverStore(store, "agent-1");
+  assert.equal(impact?.after.runs, 2, `both started from the seed's three notes: ${JSON.stringify(impact)}`);
+  assert.equal(impact?.before.runs, 2);
 });

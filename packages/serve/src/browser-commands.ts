@@ -11,14 +11,14 @@
 // without a command (the live view's give, or its own expiry), the runner commits { state: "done" | "cancelled" |
 // "expired", id, at } (at: ms, when it was answered). The person's answer through the API is a hand-over command (kind
 // BROWSER_HAND_BACK, body { ask, outcome, at }, at: ms, the person's own answer time); the runner applies the first and
-// commits the matching answered entry, and its phase row (HOST_PHASE) shows at `at`, not when the runner read the row (tl-browser
-// #1991). First answer wins.
+// commits the matching answered entry, and its phase row (HOST_PHASE) shows at `at`, not when the runner read the row.
+// First answer wins.
 import type { AskOutcome, PendingAsk } from "./browser-person.js";
 import { ApiError } from "./errors.js";
 import { RunFinal, type Command, type Store } from "./store/index.js";
 
-/** The command kind for a person's browser hand-over answer. The runner reads it (its kind is tl-jobs' to add to
- *  runner/commands.ts COMMAND_KINDS and its reader); until then the server writes it through the store directly. */
+/** The command kind for a person's browser hand-over answer. The runner reads it (its kind is added to runner/commands.ts
+ *  COMMAND_KINDS and its reader on the runner side); until then the server writes it through the store directly. */
 export const BROWSER_HAND_BACK = "browser_hand_back";
 
 /** The journal entry kind the runner commits for a hand-over (the agent.handover note, carrying the whole record in its
