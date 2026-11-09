@@ -1,0 +1,130 @@
+// Settings → Computers' keys, serve side (computer-keys.ts): a provider's saved keys, by the kind registry's names, as that
+// provider's create() options, and the registry's testConnection over them, its coded errors in plain words. Fakes
+// only: every provider here is a stand-in, and nothing leaves the process.
+import assert from "node:assert/strict";
+import { test } from "node:test";
+import { PROVIDERS } from "@parcha/agentrun-computer";
+import { PROVIDER_KEYS, providerOptions, testConnection } from "../dist/computer-keys.js";
+
+// The kind registry's key names per provider (the computer package's PROVIDERS): the map must take exactly these, no
+// more and no fewer, with the same required flags.
+const REGISTRY_KEYS = Object.fromEntries(PROVIDERS.map((one) => [one.id, one.keys.map((key) => [key.name, key.required])]));
+
+const KEY = "fake-test-key-0001";
+const SECRET = "fake-test-key-secret-0002";
+
+test("computer keys: every provider takes exactly the registry's key names, with the same required flags", () => {
+  assert.deepEqual(Object.keys(PROVIDER_KEYS).sort(), Object.keys(REGISTRY_KEYS).sort());
+  for (const [id, keys] of Object.entries(REGISTRY_KEYS)) {
+    assert.deepEqual(PROVIDER_KEYS[id].map((key) => [key.name, key.required]), keys, id);
+  }
+});
+
+test("computer keys: the saved keys become each provider's create() options; a name it does not declare is never passed on", () => {
+  const cases = [
+    ["docker", {}, {}],
+    ["daytona", { DAYTONA_API_KEY: KEY }, { apiKey: KEY }],
+    ["daytona", { DAYTONA_API_KEY: KEY, DAYTONA_API_URL: "https://daytona.example/api", DAYTONA_TARGET: "eu" }, { apiKey: KEY, apiUrl: "https://daytona.example/api", target: "eu" }],
+    ["modal", { MODAL_TOKEN_ID: KEY, MODAL_TOKEN_SECRET: SECRET }, { tokenId: KEY, tokenSecret: SECRET, app: "agentrun" }],
+    ["e2b", { E2B_API_KEY: KEY }, { apiKey: KEY }],
+    ["orgo", { ORGO_API_KEY: KEY }, { apiKey: KEY }],
+    ["phone-harness", { PHONE_HARNESS_API_KEY: KEY }, { apiKey: KEY }],
+    ["browserbase", { BROWSERBASE_API_KEY: KEY, BROWSERBASE_PROJECT_ID: "proj-1" }, { apiKey: KEY, projectId: "proj-1" }],
+    ["kernel", { KERNEL_API_KEY: KEY }, { apiKey: KEY }],
+  ];
+  for (const [id, keys, options] of cases) {
+    assert.deepEqual(providerOptions(id, { ...keys, OPENAI_API_KEY: KEY, E2B_API_KEY_X: "x" }), { ok: true, options }, id);
+  }
+  assert.deepEqual(providerOptions("modal", { MODAL_TOKEN_ID: KEY, MODAL_TOKEN_SECRET: SECRET }, { modalApp: "acme-boxes" }), { ok: true, options: { tokenId: KEY, tokenSecret: SECRET, app: "acme-boxes" } });
+  assert.deepEqual(providerOptions("daytona", { DAYTONA_API_KEY: KEY, DAYTONA_TARGET: "" }), { ok: true, options: { apiKey: KEY } }, "an empty optional key is left out");
+});
+
+test("computer keys: a required key not saved, or an unknown provider, is refused in words that name what to save", () => {
+  const modal = providerOptions("modal", { MODAL_TOKEN_ID: KEY });
+  assert.equal(modal.ok, false);
+  assert.equal(modal.error.code, "missing_key");
+  assert.match(modal.error.message, /^Modal needs MODAL_TOKEN_SECRET saved: save it in Settings → Computers/);
+  const bb = providerOptions("browserbase", {});
+  assert.match(bb.error.message, /^Browserbase needs BROWSERBASE_API_KEY and BROWSERBASE_PROJECT_ID saved: save them in Settings → Computers/);
+  assert.equal(providerOptions("daytona", { DAYTONA_API_KEY: "  " }).ok, false, "a blank key is no key");
+  const unknown = providerOptions("vmware", { KEY });
+  assert.deepEqual([unknown.ok, unknown.error.code], [false, "unsupported"]);
+  assert.match(unknown.error.message, /vmware is not a computer provider/);
+});
+
+/** A fake provider module: create(options) records what it was given and answers testConnection with `answer`. */
+function fakeModule(answer) {
+  const made = [];
+  const asked = [];
+  return {
+    made,
+    asked,
+    create: async (options) => {
+      made.push(options);
+      return { testConnection: async (context) => { asked.push(context); return typeof answer === "function" ? answer() : answer; } };
+    },
+  };
+}
+
+test("computer keys: testConnection makes the provider from its options, asks it once, and passes its words through", async () => {
+  const daytona = fakeModule({ ok: true, value: { detail: "Daytona answered: 2 computers of this provider" } });
+  const signal = new AbortController().signal;
+  const answer = await testConnection("daytona", { keys: { DAYTONA_API_KEY: KEY }, signal }, { daytona: daytona.create });
+  assert.deepEqual(answer, { ok: true, value: { detail: "Daytona answered: 2 computers of this provider" } });
+  assert.deepEqual(daytona.made, [{ apiKey: KEY }]);
+  assert.equal(daytona.asked.length, 1);
+  assert.equal(daytona.asked[0].signal, signal, "the caller's signal goes to the provider");
+});
+
+test("computer keys: each coded error comes back in plain words naming the provider, its code kept, never with a key", async () => {
+  const words = {
+    unauthorized: /^E2B refused the saved key: check E2B_API_KEY in Settings → Computers\. \(the vendor said: bad key \[the key\]\)$/,
+    unreachable: /^E2B could not be reached: try again in a moment\. \(/,
+    timeout: /^E2B could not be reached: try again in a moment\. \(/,
+    aborted: /^The test of E2B was cancelled\.$/,
+    refused: /^E2B refused the request\. \(/,
+    denied: /^E2B refused the request\. \(/,
+    limit: /^E2B says the account is at a limit\. \(/,
+    invalid: /^E2B's settings are not valid\. \(/,
+    unsupported: /^E2B can't be tested here\. \(/,
+    e2b: /^E2B answered with an error\. \(/,
+    gone: /^The test of E2B failed\. \(/,
+  };
+  for (const [code, pattern] of Object.entries(words)) {
+    const module = fakeModule({ ok: false, error: { code, message: `bad key ${KEY}` } });
+    const answer = await testConnection("e2b", { keys: { E2B_API_KEY: KEY } }, { e2b: module.create });
+    assert.equal(answer.ok, false, code);
+    assert.equal(answer.error.code, code, "the code is kept");
+    assert.match(answer.error.message, pattern, code);
+    assert.ok(!answer.error.message.includes(KEY), `${code}: no key in the words`);
+  }
+});
+
+test("computer keys: a provider that cannot be made, or that throws, is a failed test in words; a detail holding a key is scrubbed", async () => {
+  const throwing = { modal: async () => { throw new Error(`the Modal provider refuses ${SECRET}`); } };
+  const made = await testConnection("modal", { keys: { MODAL_TOKEN_ID: KEY, MODAL_TOKEN_SECRET: SECRET } }, throwing);
+  assert.deepEqual([made.ok, made.error.code], [false, "invalid"]);
+  assert.match(made.error.message, /^Modal's settings are not valid\. \(the vendor said: the Modal provider refuses \[the key\]\)$/);
+  const exploding = fakeModule(() => { throw new Error(`socket closed near ${KEY}`); });
+  const thrown = await testConnection("orgo", { keys: { ORGO_API_KEY: KEY } }, { orgo: exploding.create });
+  assert.deepEqual([thrown.ok, thrown.error.code], [false, "unreachable"]);
+  assert.ok(!thrown.error.message.includes(KEY));
+  const leaky = fakeModule({ ok: true, value: { detail: `token ${KEY} works` } });
+  const ok = await testConnection("kernel", { keys: { KERNEL_API_KEY: KEY } }, { kernel: leaky.create });
+  assert.deepEqual(ok, { ok: true, value: { detail: "token [the key] works" } });
+});
+
+test("computer keys: a provider with no module on this server, or keys missing, answers before anything is made", async () => {
+  const daytona = fakeModule({ ok: true, value: { detail: "unused" } });
+  const missing = await testConnection("daytona", { keys: {} }, { daytona: daytona.create });
+  assert.deepEqual([missing.ok, missing.error.code], [false, "missing_key"]);
+  assert.deepEqual(daytona.made, [], "nothing was made without its key");
+  for (const id of ["browserbase", "kernel"]) {
+    const keys = id === "browserbase" ? { BROWSERBASE_API_KEY: KEY, BROWSERBASE_PROJECT_ID: "p" } : { KERNEL_API_KEY: KEY };
+    const answer = await testConnection(id, { keys }, {});
+    assert.deepEqual([answer.ok, answer.error.code], [false, "unsupported"]);
+    assert.match(answer.error.message, /connection test isn't available on this server yet/);
+  }
+  const noTest = await testConnection("docker", { keys: {} }, { docker: async () => ({}) });
+  assert.deepEqual([noTest.ok, noTest.error.code], [false, "unsupported"]);
+});

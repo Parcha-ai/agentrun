@@ -46,24 +46,34 @@ const hostId = (value: unknown): value is string => typeof value === "string" &&
 export type PromptVariant = { role: "base" | "overlay" | "generic" | "question"; label: string; text: string; when?: { question: string; option: string; threshold: number }; criteria?: Record<string, string> };
 
 export type RevisionPlace = { mode: string; box?: string };
+/** A revision's computer (computer-setting.ts): its kind and the provider that serves it, ids its host knows; `place` is
+ *  its v2 view. */
+export type RevisionComputer = { kind: string; provider?: string };
 /** A revision's tool settings as its body keeps them: a map of a tool's key to its settings ({provider?, permission?,
  *  pin?}), checked and made canonical by the caller (agents-store.ts, through tool-plane's settingsIssues +
  *  canonicalToolSettings, the one copy). The store body holds it as it is given; this validator never reimplements it. */
 export type ToolSettings = Record<string, unknown>;
-export type AgenticBody = { instructions: string; skills: Record<string, string>; tools: string[]; model?: string; thinking?: string; prompts?: Record<string, PromptVariant>; harness?: string; place?: RevisionPlace; learning?: boolean; toolSettings?: ToolSettings; maxCostUsd?: number; capMode?: string; approvals?: "ask" | "never" };
-export type WorkflowBody = { workflow: Record<string, unknown>; skills: Record<string, string>; tools: string[]; harness?: string; place?: RevisionPlace; toolSettings?: ToolSettings; maxCostUsd?: number; capMode?: string; approvals?: "ask" | "never" };
+export type AgenticBody = { instructions: string; skills: Record<string, string>; tools: string[]; model?: string; thinking?: string; prompts?: Record<string, PromptVariant>; harness?: string; place?: RevisionPlace; computer?: RevisionComputer; learning?: boolean; toolSettings?: ToolSettings; maxCostUsd?: number; capMode?: string; approvals?: "ask" | "never" };
+export type WorkflowBody = { workflow: Record<string, unknown>; skills: Record<string, string>; tools: string[]; harness?: string; place?: RevisionPlace; computer?: RevisionComputer; toolSettings?: ToolSettings; maxCostUsd?: number; capMode?: string; approvals?: "ask" | "never" };
 
 /** The input a revision's body is built from (the control plane's, in the store's own shape). `toolSettings` is already
  *  checked and canonical (agents-store.ts via tool-plane's one copy); this validator keeps it as given. */
 export type RevisionBodyInput =
-  | { kind: "agentic"; instructions: string; skills?: Record<string, string>; tools?: string[]; model?: string; thinking?: string; prompts?: Record<string, PromptVariant>; harness?: string; place?: unknown; learning?: boolean; toolSettings?: ToolSettings; maxCostUsd?: number; capMode?: string; approvals?: "ask" | "never" }
-  | { kind: "workflow"; workflow: unknown; skills?: Record<string, string>; tools?: string[]; harness?: string; place?: unknown; toolSettings?: ToolSettings; maxCostUsd?: number; capMode?: string; approvals?: "ask" | "never" };
+  | { kind: "agentic"; instructions: string; skills?: Record<string, string>; tools?: string[]; model?: string; thinking?: string; prompts?: Record<string, PromptVariant>; harness?: string; place?: unknown; computer?: unknown; learning?: boolean; toolSettings?: ToolSettings; maxCostUsd?: number; capMode?: string; approvals?: "ask" | "never" }
+  | { kind: "workflow"; workflow: unknown; skills?: Record<string, string>; tools?: string[]; harness?: string; place?: unknown; computer?: unknown; toolSettings?: ToolSettings; maxCostUsd?: number; capMode?: string; approvals?: "ask" | "never" };
 
 /** A place as a body keeps it: `{mode, box?}`, nothing else. */
 function placeOf(place: unknown): RevisionPlace {
   if (!isObject(place) || !hostId(place.mode) || (place.box !== undefined && !hostId(place.box)) || Object.keys(place).some((key) => key !== "mode" && key !== "box")) invalid("the place is not {mode, box?}, each an id (lowercase letters, digits and dashes)");
   const ok = place as { mode: string; box?: string };
   return { mode: ok.mode, ...(ok.box !== undefined ? { box: ok.box } : {}) };
+}
+
+/** A computer as a body keeps it: `{kind, provider?}`, each an id, nothing else. */
+function computerOf(computer: unknown): RevisionComputer {
+  if (!isObject(computer) || !hostId(computer.kind) || (computer.provider !== undefined && !hostId(computer.provider)) || Object.keys(computer).some((key) => key !== "kind" && key !== "provider")) invalid("the computer is not {kind, provider?}, each an id (lowercase letters, digits and dashes)");
+  const ok = computer as { kind: string; provider?: string };
+  return { kind: ok.kind, ...(ok.provider !== undefined ? { provider: ok.provider } : {}) };
 }
 
 /** The body of a new revision and the text of each skill it names (path to text), everything checked here, before any
@@ -92,6 +102,7 @@ export function bodyOf(input: RevisionBodyInput): { body: AgenticBody | Workflow
   const host = {
     ...(input.harness !== undefined ? { harness: input.harness } : {}),
     ...(input.place !== undefined ? { place: placeOf(input.place) } : {}),
+    ...(input.computer !== undefined ? { computer: computerOf(input.computer) } : {}),
     ...(toolSettings ? { toolSettings } : {}),
   };
 
