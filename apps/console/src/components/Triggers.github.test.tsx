@@ -7,7 +7,8 @@ import type { Firing, Trigger } from "@/lib/v2";
 
 // Making a GitHub trigger (serve's trigger-github): a trigger of kind github takes the events its `accept` names from the
 // server's one GitHub App, keeps no secret and has no URL of its own (its page: Triggers.githubDetail.test). The console offers one only while GitHub is connected
-// (GET /v2/integrations/github answers 200); with none (404) it says to connect GitHub first and links Settings → GitHub.
+// (GET /v2/integrations/github names the App, its app_id); with none (a 404, or {connected: false}) it says to connect
+// GitHub first and links Settings → GitHub.
 (globalThis as { IS_REACT_ACT_ENVIRONMENT?: boolean }).IS_REACT_ACT_ENVIRONMENT = true;
 
 const NIGHTLY: Trigger = {
