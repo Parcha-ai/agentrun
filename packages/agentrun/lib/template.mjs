@@ -2,7 +2,7 @@
 // the one a server runs on the packages it ships at its start. The server installed with this command checks it
 // (agentrun-serve validate-template), as it runs import and reset-password: this command reaches the server through its
 // launcher and its API alone. Nothing in the package runs.
-import { spawnSync } from "node:child_process";
+import { spawn, spawnSync } from "node:child_process";
 import { resolve } from "node:path";
 
 export const TEMPLATE_VALIDATE = {
@@ -56,13 +56,20 @@ export const TEMPLATE_EVAL = {
       argv.push("--server", base);
       childEnv = { ...env, AGENTRUN_API_KEY: token };
     }
-    // A Ctrl-C reaches the eval too, which cancels its run and cleans up before it exits: this command waits for it.
-    const wait = () => undefined;
-    process.on("SIGINT", wait);
+    // A stop sent to this command alone (a job runner's SIGTERM, a SIGHUP) is passed on to the eval, which cancels its
+    // run and cleans up before it exits, as it does on the Ctrl-C a terminal sends both: this command waits for that.
+    const child = spawn(launcher, argv, { stdio: "inherit", env: childEnv });
+    const signals = { SIGINT: 130, SIGTERM: 143, SIGHUP: 129 };
+    // The eval stops on SIGINT and SIGTERM; a hangup is passed on as a SIGTERM, which it cleans up after.
+    const pass = Object.fromEntries(Object.keys(signals).map((signal) => [signal, () => child.kill(signal === "SIGHUP" ? "SIGTERM" : signal)]));
+    for (const [signal, on] of Object.entries(pass)) process.on(signal, on);
     try {
-      return spawnSync(launcher, argv, { stdio: "inherit", env: childEnv }).status ?? 1;
+      return await new Promise((done) => {
+        child.on("error", () => done(1));
+        child.on("exit", (code, signal) => done(code ?? signals[signal] ?? 1));
+      });
     } finally {
-      process.off("SIGINT", wait);
+      for (const [signal, on] of Object.entries(pass)) process.off(signal, on);
     }
   },
 };
