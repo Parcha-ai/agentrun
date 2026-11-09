@@ -21,5 +21,8 @@ export const deniedText = (tool: string, heldTo?: string, from: SettingFrom = "s
   const what = ran === "no" ? NOT_RUN : RAN_UNKNOWN;
   return heldTo && heldTo !== tool ? `Permission denied: ${tool} follows ${heldTo}'s setting, which is deny ${denyPlace(from)}. ${what} Don't retry it.` : `Permission denied: ${tool} is set to deny ${denyPlace(from)}. ${what} Don't retry it.`;
 };
+/** A workflow call node's tool set to ask: a call node cannot wait for a person's approval, so it is refused unrun
+ *  (main's per-run process and the runner's workflow spec, the same words). */
+export const callNodeAskText = (tool: string): string => `This ${tool} call needs a person's approval, which a workflow's call node cannot wait for; it was not run.`;
 /** A call a person denied, with their reason when they gave one. */
 export const refusedText = (tool: string, note?: string, ran: "no" | "unknown" = "no"): string => `The user denied this ${tool} call. ${ran === "no" ? NOT_RUN : RAN_UNKNOWN}${note ? ` Reason: ${note}` : ""}`;

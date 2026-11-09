@@ -59,8 +59,56 @@ async function paidRun(t, status) {
     if (Date.now() > deadline) throw new Error(`the run did not end: ${JSON.stringify(row)}; asked ${JSON.stringify(asked)}; the call ${JSON.stringify(answers)}`);
     await new Promise((resolve) => setTimeout(resolve, 20));
   }
-  return { asked, answers };
+  return { asked, answers, requests: await paidRequestsOf(store) };
 }
+
+/** Each paid runner.request in run-1's records (its model "paid:<name>"), every session read. */
+async function paidRequestsOf(store) {
+  const { BACKGROUND_CONTEXT: ctx } = await import("@earendil-works/chord/context");
+  const { createModels } = await import("@earendil-works/pi-ai/models");
+  const { createRegistry, Harness } = await import("@earendil-works/pi-durable");
+  const { journalSessions } = await import("../dist/runner/sessions.js");
+  const row = await store.runs.get("run-1");
+  const harness = await Harness.open(store.journal({ runId: "run-1", runner: "test-reader", epoch: row.epoch, until: 0, from: row.state }), { models: createModels(), registry: createRegistry(), onReport: () => {} }, ctx);
+  try {
+    const sessions = journalSessions(harness, ctx, store);
+    const out = [];
+    for (const key of await sessions.keys()) {
+      for (const record of await sessions.read(key)) if (record.kind === "runner.request" && String(record.data?.model ?? "").startsWith("paid:")) out.push(record.data);
+    }
+    return out;
+  } finally {
+    await harness.close(ctx);
+  }
+}
+
+test("a paid web_search's runner.request names who charges for it (charged_by: parallel), beside its call", async (t) => {
+  const { requests } = await paidRun(t, 200);
+  assert.equal(requests.length, 1, `one paid request: ${JSON.stringify(requests)}`);
+  assert.equal(requests[0].charged_by, "parallel", `its provider, as main's charge row names it: ${JSON.stringify(requests[0])}`);
+  assert.ok(typeof requests[0].call === "string" && requests[0].call !== "", "and the call it was booked under");
+});
+
+test("a paid monid run is admitted on the run's ledger naming monid as who charges for it", async () => {
+  const { mkdtempSync: scratch } = await import("node:fs");
+  const { BACKGROUND_CONTEXT: ctx } = await import("@earendil-works/chord/context");
+  const { monidRegistration } = await import("../dist/monid.js");
+  const { bookedIn } = await import("../dist/paid-calls.js");
+  const { localWorkspace } = await import("../dist/workspace/index.js");
+  const { KEY } = await import("./fixtures/faux-monid.mjs");
+  const env = { AGENTRUN_SERVE_FAUX: "1", AGENTRUN_SERVE_FAUX_MONID: new URL("./fixtures/faux-monid.mjs", import.meta.url).pathname, MONID_API_KEY: KEY };
+  const work = scratch(join(process.env.TMPDIR ?? tmpdir(), "agentrun-monid-charged-by-"));
+  const admitted = [];
+  const paid = { admit: async (request) => void admitted.push(request), settle: async () => undefined };
+  const tool = monidRegistration("run", env, () => localWorkspace(work));
+  try {
+    await bookedIn({ call: "call-1", record: async () => {}, paid }, () => tool.execute({ provider: "faux", endpoint: "/person/enrich", input: {} }, { callId: "call-1" }, ctx));
+  } finally {
+    rmSync(work, { recursive: true, force: true });
+  }
+  assert.equal(admitted.length, 1, `one paid step: ${JSON.stringify(admitted)}`);
+  assert.equal(admitted[0].chargedBy, "monid", `monid charges for it, as main's charge row names it: ${JSON.stringify(admitted[0])}`);
+});
 
 test("a paid call on the adapter loop answered 200 is charged its price on the run's one ledger: the next request is asked with $0.001", async (t) => {
   const { asked, answers } = await paidRun(t, 200);

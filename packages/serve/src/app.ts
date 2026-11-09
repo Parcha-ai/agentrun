@@ -50,6 +50,7 @@ import { effortGuidance } from "./effort-guidance.js";
 import { isObject } from "./validate.js";
 import { mirrorWrites } from "./workspace.js";
 import { deniedText, runGate } from "./tool-gate.js";
+import { callNodeAskText } from "./refusal-words.js";
 
 // The workflow adapters this host gives every run moved to the runner side (runner/workflow-adapters.ts); re-exported
 // here so readers that still take it from this module are unchanged.
@@ -381,7 +382,7 @@ export default async function app(where: AppContext): Promise<AppOptions> {
       // for an approval. Neither runs.
       const permission = toolGate.policy(node.tool!);
       if (permission === "deny") throw new Error(deniedText(node.tool!, undefined, toolGate.denyFrom(node.tool!)));
-      if (permission === "ask") throw new Error(`This ${node.tool} call needs a person's approval, which a workflow's call node cannot wait for; it was not run.`);
+      if (permission === "ask") throw new Error(callNodeAskText(node.tool!));
       // Booked in the run's store, through the harness beforeResume took: a call node a resumed workflow runs before onOpen
       // is booked as on a first run.
       const harness = runHarness;

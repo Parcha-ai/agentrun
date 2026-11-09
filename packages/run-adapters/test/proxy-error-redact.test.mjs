@@ -204,6 +204,45 @@ test("a credential too short to be told from text by chance leaves a healthy str
   assert.ok(relay.push(failed).includes('bad [redacted]ey [redacted]'));
 });
 
+test("a short value the proxy sent (a 6-character header the host added) is cut from an error answer and an error event, and a healthy event carrying it passes as it came", async (t) => {
+  const SHORT = 'tg-6q2';
+  assert.equal(SHORT.length, 6);
+  const failed = await answered(t, 401, JSON.stringify({ error: { message: `unknown tag ${SHORT}` } }), undefined, { headers: { 'x-host-tag': SHORT } });
+  assert.ok(!failed.text.includes(SHORT) && failed.text.includes('unknown tag [redacted]'), failed.text);
+  const healthy = `event: message_start\ndata: {"type":"message_start","message":{"id":"m1","note":"${SHORT}"}}\n\n`;
+  const errorEvent = `event: error\ndata: {"type":"error","error":{"message":"unknown tag ${SHORT}"}}\n\n`;
+  const streamed = await answered(t, 200, healthy + errorEvent, undefined, { contentType: 'text/event-stream', headers: { 'x-host-tag': SHORT } });
+  assert.ok(streamed.text.startsWith(healthy), `the healthy event passes as it came: ${JSON.stringify(streamed.text)}`);
+  assert.equal(streamed.text.slice(healthy.length), errorEvent.replace(SHORT, '[redacted]'));
+});
+
+test("a short header value of '1' leaves \"code\":401 in a 401 body as it came: a short value is cut only as a whole token", async (t) => {
+  const body = JSON.stringify({ error: { code: 401, message: 'not allowed' } });
+  const got = await answered(t, 401, body, undefined, { headers: { 'x-host-flag': '1' } });
+  assert.equal(got.text, body);
+});
+
+test("a short header value of 'data' leaves an error event's data: field readable: no field name or line structure is cut", async (t) => {
+  const errorEvent = 'event: error\ndata: {"type":"error","error":{"message":"overloaded"}}\n\n';
+  const got = await answered(t, 200, errorEvent, undefined, { contentType: 'text/event-stream', headers: { 'x-host-kind': 'data' } });
+  assert.equal(got.text, errorEvent);
+});
+
+test("a 6-character header value standing alone in an error message is cut, whole or one character at a time, and the same value in a healthy event passes as it came", async (t) => {
+  const SHORT = 'abc123';
+  const body = JSON.stringify({ error: { message: `tenant ${SHORT} refused` } });
+  for (const pieces of [undefined, [...body]]) {
+    const got = await answered(t, 403, body, undefined, { pieces, headers: { 'x-host-tenant': SHORT } });
+    assert.equal(got.text, body.replace(SHORT, '[redacted]'));
+  }
+  const healthy = `event: message_start\ndata: {"type":"message_start","message":{"id":"m1","tenant":"${SHORT}"}}\n\n`;
+  const errorEvent = `event: error\ndata: {"type":"error","error":{"message":"tenant ${SHORT} refused"}}\n\n`;
+  for (const pieces of [undefined, [...(healthy + errorEvent)]]) {
+    const got = await answered(t, 200, healthy + errorEvent, undefined, { pieces, contentType: 'text/event-stream', headers: { 'x-host-tenant': SHORT } });
+    assert.equal(got.text, healthy + errorEvent.replace(SHORT, '[redacted]'));
+  }
+});
+
 test("an error answer the cut holds part of reaches the client character for character: the hold never splits a character in two", async (t) => {
   // The window the host's redactor reads would end between the emoji's two halves.
   const body = `a\u{1F600}${'x'.repeat(4095)}`;
