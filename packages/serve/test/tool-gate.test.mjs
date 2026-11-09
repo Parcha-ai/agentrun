@@ -76,7 +76,7 @@ async function parked(api, runId) {
 }
 
 /** The rows of the gate's resume messages in `rows`: the server's, never a person's message. */
-const resumeRows = (rows) => rows.filter((row) => row.origin === "server" && /^AgentRun: \S+ (ran once you allowed it|was refused)/.test(row.summary ?? ""));
+const resumeRows = (rows) => rows.filter((row) => row.origin === "server" && /^AgentRun: (\S+ ran once you allowed it|You declined \S+|Your message declined \S+)/.test(row.summary ?? ""));
 
 /** The one message that resumed run `runId` once it completed, its final answer and its rows. The gate's resume is the
  *  server's row (a phase, "AgentRun: …"), never "You: …". */
@@ -108,7 +108,7 @@ function readsInOrder(rows, callId, at, { answered = true } = {}) {
   const shown = bySeq.map((r) => `${r.kind}: ${r.summary}`);
   assert.ok(own.length > 0 && ask > Math.max(...own), `${at}: the approval row follows the call's own rows: ${JSON.stringify(shown)}`);
   if (!answered) return;
-  const resume = bySeq.findIndex((r) => r.origin === "server" && /^AgentRun: \S+ (ran once you allowed it|was refused)/.test(r.summary ?? ""));
+  const resume = bySeq.findIndex((r) => r.origin === "server" && /^AgentRun: (\S+ ran once you allowed it|You declined \S+|Your message declined \S+)/.test(r.summary ?? ""));
   assert.ok(resume > ask, `${at}: the outcome (the resume row) follows the approval row: ${JSON.stringify(shown)}`);
   assert.deepEqual(own.map((i) => bySeq[i].summary), own.map(() => "Held for your approval"), `${at}: the call's own rows say only that it was held`);
 }
@@ -281,13 +281,13 @@ test("web_fetch set to ask on pi, claude-agent and codex at once: each run parks
     // Its row is the server's (#1656's origin, as a raised cap's follow-up), and reads as the approval's outcome: what
     // ran, or what was refused.
     assert.equal(resume.origin, "server", `${at}: the server's row`);
-    assert.equal(resume.summary, run.decision === "allow" ? "AgentRun: web_fetch ran once you allowed it; its result went to the agent" : `AgentRun: web_fetch was refused: you declined it: ${note}`, at);
+    assert.equal(resume.summary, run.decision === "allow" ? "AgentRun: web_fetch ran once you allowed it; its result went to the agent" : `AgentRun: You declined web_fetch: ${note}`, at);
     // The model's message keeps the call's id (pi echoes its first line below); what a person reads on the row is the
     // outcome and the result or refusal, with no call id and no "[tool approval]" head.
     const head = `[tool approval] This answers your web_fetch call ${run.callId} (arguments {"url":"http://public.example/"}), which waited for a person's approval; it is not a new message from them.`;
     assert.ok(!message.includes(run.callId) && !message.includes("[tool approval]"), `${at}: the row's text is a person's, no call id: ${message}`);
     if (run.decision === "allow") assert.match(message, /^web_fetch ran once you allowed it\. Its result:\n\{"ok":true,"url":"http:\/\/public\.example\/","status":200/, at);
-    else assert.equal(message, "web_fetch was refused: you declined it.\nThe user denied this web_fetch call. It was not run: nothing was sent and nothing was charged. Reason: That host is off limits.", at);
+    else assert.equal(message, "You declined web_fetch.\nThe user denied this web_fetch call. It was not run: nothing was sent and nothing was charged. Reason: That host is off limits.", at);
     assert.equal(rows.filter((r) => r.kind === "user_message").length, 1, `${at}: the person's one message; the resume is the server's`);
     // Never the person's, on every harness (claude-agent included): no "[tool approval]" user_message, and no row's summary
     // carries the call's id (the id is the model's, in its message only).
@@ -771,8 +771,8 @@ test("a person's message while an approval waits declines the call, with the mes
     // One turn: the gate's message, the refusal with the person's words as its reason; no separate turn of theirs.
     const persons = rows.filter((row) => row.kind === "user_message");
     assert.deepEqual([persons.length, persons[1]?.text], [2, said], `${harness}: the first message, and their words as theirs`);
-    assert.deepEqual([resumeRows(rows).length, resumeRows(rows)[0]?.origin, resumeRows(rows)[0]?.summary], [1, "server", "AgentRun: web_fetch was refused: your message declined it"], `${harness}: the resume is the server's row`);
-    assert.match(message, new RegExp(`^web_fetch was refused: your message declined it\\.\\nThe user denied this web_fetch call\\. It was not run: nothing was sent and nothing was charged\\. Reason: ${said}$`), harness);
+    assert.deepEqual([resumeRows(rows).length, resumeRows(rows)[0]?.origin, resumeRows(rows)[0]?.summary], [1, "server", "AgentRun: Your message declined web_fetch."], `${harness}: the resume is the server's row`);
+    assert.match(message, new RegExp(`^Your message declined web_fetch\\.\\nThe user denied this web_fetch call\\. It was not run: nothing was sent and nothing was charged\\. Reason: ${said}$`), harness);
     if (harness === "pi") assert.match(final, new RegExp(`Reason: ${said}$`), "the model read the refusal and the message together");
     const row = rows.find((r) => r.kind === "tool_approval_requested");
     assert.match(row.summary, /^Declined by your message: web_fetch /, harness);
