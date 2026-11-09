@@ -279,6 +279,8 @@ class SqliteStore implements Store {
   readonly signIns: SignIns;
   readonly #db: StoreConnection;
   readonly #now: () => number;
+  /** Where this store's data is: its connection's (StoreConnection.where). */
+  readonly where: string;
   /** The runs a runner may claim (claimableIn), as this store's database says it. */
   readonly #claimable: string;
   /** Each claim's one journal, until it is closed. */
@@ -293,6 +295,7 @@ class SqliteStore implements Store {
   constructor(db: StoreConnection, now: () => number) {
     this.#db = db;
     this.#now = now;
+    this.where = db.where;
     const d = db.dialect;
     this.#claimable = claimableIn(d);
 
