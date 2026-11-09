@@ -4,10 +4,14 @@
 // a workflow's decision rows among them by time, each
 // shown through the same set (decision-rows.ts withDecisions); and each error row read as the run's error is (main's
 // servedError): a refused key in plain words (key-refusal.ts keyRefusal), else the provider's words in the error's one
-// rule (shownOf: no held value, no loopback address). A run whose hand can't be read back here serves no row.
+// rule (shownOf: no held value, no loopback address); and its learning row once its learning ended (main's withLearning).
+// A run whose hand can't be read back here serves no row.
 import type { Context } from "@earendil-works/chord";
 import type { TimelineEvent } from "@parcha/pi-durable-agent/timeline";
 import { withDecisions } from "./decision-rows.js";
+import { currentLearning, holdsForOk, type Learning, secretsShown } from "./learning.js";
+import { withLearning } from "./learning-run.js";
+import { runLearningEnd } from "./store-reads/learning.js";
 import { redacted } from "./key-refusal.js";
 import { runCutValues, runErrorWordsOf } from "./run-cut.js";
 import { answersOf, asksOf, type SignInReader, shownOf, withApprovalRows } from "./run-view.js";
@@ -50,9 +54,15 @@ export async function servedTimelineRows(deps: ServedTimelineDeps, store: Store,
   const workflow = (await readRun(store, runId, context))?.kind === "workflow";
   const words = await runErrorWordsOf(deps, store, runId, { workflow });
   if (words === "unreadable") return [];
+  // The run's learning row, once its learning was proposed, merged or dropped (learning-run.ts withLearning, main's row):
+  // its end from the store (runLearningEnd), what it held for the owner's OK read as the run's view reads it (no folder),
+  // its words cut by the same set.
+  const end = await runLearningEnd(store, runId);
+  const learning = end ? (holdsForOk(end as Learning) ? currentLearning(end as Learning, undefined) : (end as Learning)) : undefined;
+  const learned = withLearning(own, learning, secretsShown(values));
   // A refused key's plain words are its summary and its text alike; any other error keeps each in the one rule.
   const shown = shownOf(values);
-  return own.map((row) => {
+  return learned.map((row) => {
     if (row.kind !== "error") return row;
     const said = row.text ? words(row.text) : undefined;
     if (said !== undefined && said !== shown(row.text!)) return { ...row, summary: said, text: said };
