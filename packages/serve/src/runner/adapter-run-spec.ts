@@ -20,7 +20,7 @@ import type { LiveHandover, LiveViewerStore } from "../browser-live.js";
 import { dropLiveViewer, putLiveViewer } from "../browser-live.js";
 import type { Tier } from "../model.js";
 import { firstMessage } from "../run-manifest.js";
-import type { RunLaunch } from "../run-launch.js";
+import { learningStartOf, type RunLaunch } from "../run-launch.js";
 import type { Store } from "../store/store.js";
 import { isObject } from "../validate.js";
 import { type RunFiles, runGate } from "../tool-gate.js";
@@ -31,7 +31,7 @@ import { WEB_FETCH_TOOL } from "../web-fetch.js";
 import { WEB_SEARCH_TOOL } from "../web-search.js";
 import { environmentLine } from "../environment.js";
 import { effortGuidance } from "../effort-guidance.js";
-import { pinnedWorkflows, readPin, withLearned } from "../learning.js";
+import { laidLearned, pinnedWorkflows, readPin } from "../learning.js";
 import { LEARNED_WORKFLOW_TOOL, learnedWorkflowTool } from "../learned-workflow.js";
 import { createModels } from "@earendil-works/pi-ai/models";
 import { promptOf, readsFiles } from "../skills.js";
@@ -309,11 +309,13 @@ export async function adapterRunSpecFromLaunch(launch: RunLaunch, run: AdapterRu
   const sessionTools = [...handTools, ...nonHandTools];
 
   // The run's system prompt, as main's per-run process builds it (app.ts): the environment line first (environment.ts, as
-  // pi installs it before every other section), then the revision's instructions with its skills and what the agent learned
-  // folded in (learning.ts withLearned, then skills.ts promptOf, each skill whole or by its file as the run reads its
-  // files), then the effort guidance (the launch's effort, never this process's environment). The one path for every harness.
-  const learned = await withLearned(root, ws.workspace, body.instructions ?? "", Object.keys(body.skills ?? {}));
-  const instructions = await promptOf(learned.instructions, learned.skills, ws.workspace, { onDemand: readsFiles(granted) });
+  // pi installs it before every other section), then the revision's instructions with what the agent learned laid in
+  // (learning.ts laidLearned, from the launch's learning start — the # Learned section decided once at launch, so the runner
+  // reads no learning folder), its own skills through skills.ts promptOf, then the effort guidance (the launch's effort,
+  // never this process's environment). The one path for every harness.
+  const start = learningStartOf(launch);
+  const laid = start ? laidLearned(body.instructions ?? "", start.section) : (body.instructions ?? "");
+  const instructions = await promptOf(laid, Object.keys(body.skills ?? {}), ws.workspace, { onDemand: readsFiles(granted) });
   const guidance = effortGuidance(launch.effort);
   const system = [environmentLine(), instructions, guidance].filter((line): line is string => Boolean(line));
 

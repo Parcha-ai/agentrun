@@ -25,10 +25,10 @@ import type { Approvals } from "../approvals.js";
 import { effortGuidance } from "../effort-guidance.js";
 import { environmentLine } from "../environment.js";
 import { builtinHarness, type HarnessEntry } from "../harness-table.js";
-import { withLearned } from "../learning.js";
+import { laidLearned } from "../learning.js";
 import { type ModelRef, providerModels, runModels } from "../model.js";
 import { firstMessage } from "../run-manifest.js";
-import type { RunLaunch } from "../run-launch.js";
+import { learningStartOf, type RunLaunch } from "../run-launch.js";
 import { readsFiles, systemOf } from "../skills.js";
 import { INPUTS_DIR, UPLOADS_DIR, Uploads } from "../uploads.js";
 import { isObject } from "../validate.js";
@@ -161,11 +161,13 @@ export async function cliRunSpecFromLaunch(launch: RunLaunch, run: AdapterRun, d
   const root = runFolder(deps.data, runRow.agentId, claim.runId);
 
   // The system prompt, as main's harness branch builds it: the environment line, the instructions with what the agent
-  // learned folded in, and its skills through systemOf with the harness's own check (a harness that loads skills itself
-  // keeps in the prompt only those it would refuse, and is handed the rest), then the effort guidance.
-  const learned = await withLearned(root, ws.workspace, body.instructions ?? "", Object.keys(body.skills ?? {}));
+  // learned laid in (learning.ts laidLearned, from the launch's learning start, so the runner reads no learning folder), its
+  // own skills through systemOf with the harness's own check (a harness that loads skills itself keeps in the prompt only
+  // those it would refuse, and is handed the rest), then the effort guidance.
+  const start = learningStartOf(launch);
+  const laid = start ? laidLearned(body.instructions ?? "", start.section) : (body.instructions ?? "");
   const check = await entry.skillCheck?.();
-  const { system: instructions, native } = await systemOf(learned.instructions, learned.skills, ws.workspace, check, { onDemand: readsFiles(granted) });
+  const { system: instructions, native } = await systemOf(laid, Object.keys(body.skills ?? {}), ws.workspace, check, { onDemand: readsFiles(granted) });
   const guidance = effortGuidance(launch.effort);
 
   // The run's model (the launch's, pinned at start, else the revision's) and its adapter, as main builds them.
