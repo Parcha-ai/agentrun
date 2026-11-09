@@ -157,3 +157,20 @@ test("the relay holds a bounded part of a long answer: a successful stream with 
   const failed = mostHeld(errorCut('events', echoForms([CREDENTIAL]), (text) => text, (m) => said.push(m)), ['event: error\ndata: {"type":"error","message":"', `bad key ${CREDENTIAL} `, ...Array.from({ length: 64 }, () => piece)]);
   assert.ok(failed.most <= 128 * 1024, `an error event that never ends: at most ${failed.most} characters held`);
 });
+
+test("events end at every line end the format has, LF, CRLF and a bare CR, wherever a chunk boundary falls: a healthy event goes out as it ends, and an error event is cut", () => {
+  for (const nl of ['\n', '\r\n', '\r']) {
+    const healthy = `data: {"type":"response.created"}${nl}${nl}`;
+    const failed = `event: error${nl}data: {"type":"error","message":"bad key ${CREDENTIAL}"}${nl}${nl}`;
+    for (let split = 0; split <= healthy.length + failed.length; split++) {
+      const answer = healthy + failed;
+      const relay = errorCut('events', echoForms([CREDENTIAL]), undefined, () => {});
+      const first = relay.push(answer.slice(0, split));
+      const out = first + relay.push(answer.slice(split));
+      // Whole by the time the answer's last piece is in: nothing waits for an end the stream never sends.
+      assert.ok(out.startsWith(healthy), `${JSON.stringify(nl)} split ${split}: the healthy event went out: ${JSON.stringify(out)}`);
+      assert.ok(out.includes('[redacted]') && !out.includes(CREDENTIAL), `${JSON.stringify(nl)} split ${split}: the error event went out cut: ${JSON.stringify(out)}`);
+      assert.equal(relay.end(), '', `${JSON.stringify(nl)} split ${split}: nothing left for the end`);
+    }
+  }
+});
