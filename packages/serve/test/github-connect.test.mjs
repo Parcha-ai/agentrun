@@ -83,7 +83,7 @@ test("the callback takes a state once, from the browser that started it: a bad, 
   const file = JSON.stringify(rows);
   for (const secret of [app.webhook_secret, app.client_secret, app.pem.split("\n")[1]]) assert.ok(!file.includes(secret), "kept only sealed");
   const view = await server.api("GET", "/integrations/github");
-  assert.deepEqual(view.body, { app_id: "4242", slug: "agentrun-test-app", installations: [] });
+  assert.deepEqual([view.status, view.body], [200, { connected: true, app_id: "4242", slug: "agentrun-test-app", installations: [] }]);
   const shown = JSON.stringify([started.body, view.body, server.lines]);
   for (const secret of [app.webhook_secret, app.client_secret, app.pem.split("\n")[1], app.client_id]) assert.ok(!shown.includes(secret), "never shown or logged");
   assert.ok(server.lines.some((line) => line.includes("condition=github_connected") && line.includes("app_id=4242")), "said, by its id");
@@ -99,7 +99,8 @@ test("a code GitHub does not convert sends the browser to the console with conve
   const cookie = String(started.headers.get("set-cookie")).split(";")[0];
   const back = await fetch(`${server.baseUrl}/integrations/github/callback?code=code-unknown&state=${started.body.state}`, { redirect: "manual", headers: { cookie } });
   assert.deepEqual([back.status, back.headers.get("location")], [302, failedWith("conversion_failed")]);
-  assert.equal((await server.api("GET", "/integrations/github")).status, 404, "nothing kept");
+  const none = await server.api("GET", "/integrations/github");
+  assert.deepEqual([none.status, none.body], [200, { connected: false }], "nothing kept: not connected is a 200, so a browser logs no error for it");
 });
 
 test("a state is good for an hour, then refused", async () => {
@@ -141,7 +142,10 @@ test("an installation is recorded only as GitHub says it is the App's, asked wit
   const gone = await server.api("DELETE", "/integrations/github");
   assert.equal(gone.status, 200, JSON.stringify(gone.body));
   assert.deepEqual(gone.body, { disconnected: true, triggers_off: 1, note: "Delete the App itself on GitHub: https://github.com/organizations/acme/settings/apps/agentrun-test-app" }, "the App itself is GitHub's to delete");
-  assert.equal((await server.api("GET", "/integrations/github")).status, 404);
+  const after = await server.api("GET", "/integrations/github");
+  assert.deepEqual([after.status, after.body], [200, { connected: false }], "not connected any more");
+  const twice = await server.api("DELETE", "/integrations/github");
+  assert.deepEqual([twice.status, twice.body.error?.code], [404, "not_found"], "a disconnect with nothing connected keeps its 404");
   const off = (await server.api("GET", `/triggers/${made1.body.id}`)).body;
   assert.deepEqual([off.enabled, off.disabled?.reason], [false, "connection_lost"], JSON.stringify(off));
   assert.match(off.disabled.detail, /GitHub/);
@@ -285,7 +289,7 @@ test("an installation checked while GitHub is disconnected and connected again, 
   hold.release();
   const answer = await installing;
   assert.deepEqual([answer.status, answer.headers.get("location")], [302, failedWith("installation_unverified")]);
-  assert.deepEqual((await server.api("GET", "/integrations/github")).body, { app_id: "4343", slug: "agentrun-test-app-2", installations: [] }, "the new App holds no installation of the old one");
+  assert.deepEqual((await server.api("GET", "/integrations/github")).body, { connected: true, app_id: "4343", slug: "agentrun-test-app-2", installations: [] }, "the new App holds no installation of the old one");
 });
 
 test("Connect started at an address other than the public URL is refused before any state, 409 github_wrong_origin, naming where to open the server", { timeout: 60_000 }, async (t) => {

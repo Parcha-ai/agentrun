@@ -28,3 +28,32 @@ export function secretRedactor(values: readonly string[]): Redact {
   if (kept.length === 0) return keepText;
   return (text) => (text ? redactedAnswer(text, kept) : text);
 }
+
+/** A redactor that takes more values as the runner opens them (`hold`): the runner's one is this, so a key a claim opens
+ *  from the store (claim-secrets.ts) is cut everywhere the runner's redactor reaches, as a key in its environment is. */
+export interface HeldRedact extends Redact {
+  /** Cut `values` too from here on, each in every form; one shorter than MIN_SECRET, whitespace aside, is left out. */
+  hold(values: readonly string[]): void;
+}
+
+const isHeld = (redact: Redact): redact is HeldRedact => typeof (redact as Partial<HeldRedact>).hold === "function";
+
+/** `base`, then every value held since (`hold`). One that holds already is itself: wrapped once, the one instance. */
+export function heldRedactor(base: Redact): HeldRedact {
+  if (isHeld(base)) return base;
+  const held = new Set<string>();
+  const cut = ((text: string) => {
+    const once = base(text);
+    return once && held.size ? redactedAnswer(once, [...held]) : once;
+  }) as HeldRedact;
+  cut.hold = (values) => {
+    for (const value of values) if (value.replace(/\s+/g, "").length >= MIN_SECRET) held.add(value);
+  };
+  return cut;
+}
+
+/** The secrets a claim opened from the store (`env`, claimSecrets' environment for the run) held by `redact`, the run's
+ *  one redactor, so a host tool's or a provider's error that echoes one is cut in the run's record, its end and its logs. */
+export function holdClaimed(redact: HeldRedact, env: NodeJS.ProcessEnv): void {
+  redact.hold(runnerSecrets(env));
+}

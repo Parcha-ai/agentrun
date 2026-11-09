@@ -35,6 +35,7 @@ import { boundTool, type McpTool } from "../mcp-probe.js";
 import { privateOAuthHosts } from "../mcp-private-hosts.js";
 import { GITHUB_MCP_ONLY, GITHUB_MCP_ORIGIN, githubMcpUrl } from "../github.js";
 import { type GithubAppAccess, type GithubTimer, githubTokens } from "./mcp-github.js";
+import { ClaimRefused } from "./loop-contract.js";
 import { REFRESH_MARGIN_MS, UNKNOWN_EXPIRY_MS, UNUSABLE } from "../mcp-servers.js";
 import { openMcpCredential, sealMcpCredential, type McpCredential } from "../store/seal.js";
 import { type Claim, Fenced, MCP_REFRESH_CALL_MS, type McpServerRow, type Store } from "../store/index.js";
@@ -43,7 +44,7 @@ import { type Claim, Fenced, MCP_REFRESH_CALL_MS, type McpServerRow, type Store 
 const sameSealed = (a: Uint8Array | null, b: Uint8Array | null): boolean => (a === null || b === null ? a === b : Buffer.from(a).equals(Buffer.from(b)));
 
 /** A claim the MCP step refused, in the words a person reads: nothing was sent. */
-export class McpClaimRefused extends Error {
+export class McpClaimRefused extends ClaimRefused {
   override name = "McpClaimRefused";
 }
 

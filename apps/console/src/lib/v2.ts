@@ -121,8 +121,10 @@ export type WebhookAttempt = Answer<"listWebhookDeliveries">["attempts"][number]
 /** `capabilities.features.webhooks`. */
 export type WebhooksFeature = NonNullable<components["Features"]["webhooks"]>;
 
-/** This server's GitHub App (GET /v2/integrations/github; 404 when none is connected): never a secret. */
-export type GitHubConnection = Answer<"getGitHubConnection">;
+/** GET /v2/integrations/github's answer, always a 200: `{connected: false}` with no App, else the App. */
+export type GitHubStatus = Answer<"getGitHubConnection">;
+/** This server's GitHub App, connected (`connected: true`): never a secret. */
+export type GitHubConnection = Extract<GitHubStatus, { connected: true }>;
 /** POST /v2/integrations/github/connect's answer: where the browser posts the App's manifest (`action` carries ?state=). */
 export type GitHubConnectStart = Answer<"connectGitHub">;
 /** DELETE /v2/integrations/github's answer: how many GitHub triggers went off, and what to delete on GitHub. */

@@ -53,6 +53,14 @@ const fingerprint = (key: Buffer): string => createHmac("sha256", key).update("a
  *  save writes it, so the row's time is the credential's own). */
 type Snapshot = { fields: Map<string, Opened>; checks: Map<string, KeyCheck>; seals: Map<string, string>; changed: Map<string, number> };
 
+/** What the start's log line says to a person when saved keys do not open, by why: where they are kept is the server's
+ *  store (`kept=store`), and what to do is to save them again in the console's Settings. */
+export const REENTER_SAID: Readonly<Record<(typeof UNREADABLE)[number], string>> = {
+  seal_key_changed: "these saved keys were sealed under another seal key, so they do not open: save them again in Settings → Tool keys",
+  seal_key_missing: "no seal key opens these saved keys: start the server with its seal key, or save them again in Settings → Tool keys",
+  file_unreadable: "these saved keys do not read: save them again in Settings → Tool keys",
+};
+
 /** The store-backed ToolKeys. `toolKeysOverStore` builds it; the switch awaits load() once before the first read. */
 class ToolKeysOverStore {
   private readonly key: Buffer | undefined;
@@ -145,7 +153,7 @@ class ToolKeysOverStore {
     const reason = UNREADABLE.find((why) => again.some((field) => field.why === why));
     const reenter = reason ? { reason, fields: again.map((field) => field.name) } : null;
     const said = JSON.stringify(reenter);
-    if (reenter && said !== this.said) this.say({ condition: reenter.reason, file: "store:sealed_keys", fields: reenter.fields.join(",") || "unknown" });
+    if (reenter && said !== this.said) this.say({ condition: reenter.reason, kept: "store", fields: reenter.fields.join(",") || "unknown", said: REENTER_SAID[reenter.reason] });
     this.said = said;
     return { keys, reenter };
   }

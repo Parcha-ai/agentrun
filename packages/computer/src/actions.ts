@@ -33,6 +33,9 @@ const GROUP_OF: Record<InputAction["type"], Group | "input"> = {
 	wait: "input",
 };
 
+/** The most characters one type action takes: computerd's MaxTypeRunes (daemon/internal/desktop/check.go). */
+export const MAX_TYPE_CHARACTERS = 64 << 10;
+
 /** The actions whose ms is a duration, checked by shapeOf and summed toward MAX_BATCH_WAIT_MS. */
 const TIMED: ReadonlySet<InputAction["type"]> = new Set(["wait", "hold", "long_press", "swipe", "pinch"]);
 
@@ -101,7 +104,8 @@ function shapeOf(action: Record<string, unknown>): string | undefined {
  * The first reason the whole batch must not run, with its index, or undefined when it may. Nothing runs on a failure:
  * the reply is { done: 0, failed }. The batch's shape and length come first, then each action in order: its shape
  * (`invalid`), its keys (`invalid`), its group against groups (`unsupported`), a pixel scroll where there is none
- * (`unsupported`), a key's repeat over MAX_KEY_REPEAT (`limit`), and the summed durations (`limit`).
+ * (`unsupported`), a key's repeat over MAX_KEY_REPEAT (`limit`), a type's text over MAX_TYPE_CHARACTERS (`limit`), and
+ * the summed durations (`limit`).
  */
 export function checkActions(actions: unknown, groups: readonly Group[], { pixelScroll = true }: CheckActionsOptions = {}): ActionFailure | undefined {
 	if (!Array.isArray(actions)) return { index: 0, kind: "invalid", message: "actions is not a list" };
@@ -129,6 +133,10 @@ export function checkActions(actions: unknown, groups: readonly Group[], { pixel
 		}
 		if (type === "key" && (given.repeat as number | undefined) !== undefined && (given.repeat as number) > MAX_KEY_REPEAT) {
 			return { index, kind: "limit", message: `action ${index}: repeat ${given.repeat} is over ${MAX_KEY_REPEAT}` };
+		}
+		if (type === "type") {
+			const characters = [...(given.text as string)].length;
+			if (characters > MAX_TYPE_CHARACTERS) return { index, kind: "limit", message: `action ${index}: text of ${characters} characters; one type takes at most ${MAX_TYPE_CHARACTERS}` };
 		}
 		// Every duration counts: wait and hold, and the ms of a long press, a swipe or a pinch. Only these five: shapeOf
 		// checks ms on them alone, so an ms on any other action (which may be negative) never enters the sum.

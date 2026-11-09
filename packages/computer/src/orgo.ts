@@ -39,6 +39,7 @@ import {
 	type Refusal,
 } from "./provider.js";
 import { type ComputerError, fail, ok, type Result } from "./result.js";
+import { daemonWatch, type ScreenWatch, type ScreenWatchHandlers, type WatchOptions } from "./screen-watch.js";
 import { listTested } from "./test-connection.js";
 
 /** The mount kinds an Orgo computer takes: none yet (an Archil mount needs an Orgo template that bakes the helper). */
@@ -117,8 +118,9 @@ const NAME_MAX = 80;
 const NAME = /^computer-([0-9a-f]{12})(?:-r([a-z2-7]{16}))?(?:-e(0|[1-9][0-9]{0,15}))?$/;
 /** An Orgo template: namespace/name@version. */
 const TEMPLATE = /^[a-z0-9][a-z0-9_.-]{0,63}\/[a-z0-9][a-z0-9_.-]{0,63}@[A-Za-z0-9][A-Za-z0-9._+-]{0,63}$/;
-/** The base image, no template. */
-const BASE = "linux";
+/** Orgo's base desktop, no template: the image a spec names for a plain Linux desktop, and the default for kind desktop. */
+export const ORGO_BASE_IMAGE = "linux";
+const BASE = ORGO_BASE_IMAGE;
 const COMPUTER_ID = /^[A-Za-z0-9][A-Za-z0-9_-]{0,127}$/;
 const WORKSPACE_ID = /^[A-Za-z0-9][A-Za-z0-9_-]{0,127}$/;
 const USER = /^(\d+):(\d+)$/;
@@ -340,7 +342,7 @@ export class OrgoProvider implements ComputerProvider {
 		const refuse = (field: string, message: string) => refusals.push({ field, message });
 		const given = (typeof spec === "object" && spec !== null ? spec : {}) as unknown as Record<string, unknown>;
 		const { image, lifetimeMs, network, cpus, memoryMb, labels, mount } = given;
-		if (image !== BASE && !(typeof image === "string" && TEMPLATE.test(image))) refuse("image", `an image is "linux" (Orgo's base desktop) or an Orgo template, namespace/name@version`);
+		if (image !== BASE && !(typeof image === "string" && TEMPLATE.test(image))) refuse("image", `an image is "${BASE}" (Orgo's base desktop) or an Orgo template, namespace/name@version`);
 		refusals.push(...checkLifetime(lifetimeMs, this.capabilities()));
 		if (network !== "none") refuse("network", NETWORK);
 		if (memoryMb !== undefined && !RAM_GB.some((gb) => gb * 1024 === memoryMb)) refuse("memoryMb", "memoryMb is one of Orgo's sizes: 4096, 8192, 16384 or 32768");
@@ -630,6 +632,11 @@ export class OrgoProvider implements ComputerProvider {
 		const desktops = read.value?.desktops;
 		if (!Array.isArray(desktops)) return fail("orgo", `Orgo's workspace ${this.#workspaceId} lists no computers array`);
 		return ok(desktops.filter((one): one is OrgoComputer => typeof one?.id === "string" && typeof one.name === "string").map((one) => ({ ...one, workspace_id: this.#workspaceId })));
+	}
+
+	/** The live view: screen.watch on a connection of the watch's own (daemonWatch), never Orgo's VNC (proxy only). */
+	watch(ref: ComputerRef, handlers: ScreenWatchHandlers, options?: WatchOptions): Promise<Result<ScreenWatch>> {
+		return daemonWatch(this, ref, handlers, options);
 	}
 
 	async connect(ref: ComputerRef): Promise<Result<ComputerConnection>> {

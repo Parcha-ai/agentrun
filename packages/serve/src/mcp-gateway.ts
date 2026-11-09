@@ -430,7 +430,7 @@ export function mcpGateway(options: McpGatewayOptions): McpGateway {
     // price once it left (nothing when it never left), in place of this process's spend and the root's marks.
     const onLedger = paidLedger();
     if (onLedger) {
-      const stepped = await paidStep(onLedger, callId ?? name, { name, holdUsd: price, basis: `the price its owner set for ${name}` }, () => call(), () => (went ? price : 0));
+      const stepped = await paidStep(onLedger, callId ?? name, { name, holdUsd: price, basis: `the price its owner set for ${name}`, by: label.charged_by }, () => call(), () => (went ? price : 0));
       return "refused" in stepped ? said(stepped.refused, true) : stepped.result;
     }
     if (!commit) return said(`${name} was not sent: this call has no run to book its price under.`, true);

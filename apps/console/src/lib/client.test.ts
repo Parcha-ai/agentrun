@@ -280,12 +280,12 @@ describe("the owner's session", () => {
     const { fn } = fakeFetch(() => json(200, { accounts: false, secrets_writable: true }));
     expect(await createClient({ fetch: fn }).session()).toEqual({ status: 200, body: { accounts: false, secrets_writable: true } });
   });
-  it("signs in and sets up as same-origin JSON, and signs out", async () => {
+  it("signs in and sets up as same-origin JSON, signs this browser out, and signs out everywhere", async () => {
     const { fn, calls } = fakeFetch(() => json(200, { signed_in: true }));
     const v2 = createClient({ fetch: fn });
-    await v2.signIn("pw-1"); await v2.setup("pw-2", "c-1"); await v2.signOut();
+    await v2.signIn("pw-1"); await v2.setup("pw-2", "c-1"); await v2.signOut(); await v2.signOutEverywhere();
     expect(calls.map((c) => `${c.init?.method} ${c.url} ${c.init?.body}`)).toEqual([
-      'POST /v2/auth/sign-in {"password":"pw-1"}', 'POST /v2/setup {"password":"pw-2","code":"c-1"}', "POST /v2/auth/sign-out {}",
+      'POST /v2/auth/sign-in {"password":"pw-1"}', 'POST /v2/setup {"password":"pw-2","code":"c-1"}', "POST /v2/auth/sign-out {}", "POST /v2/auth/sign-out-everywhere {}",
     ]);
     expect(calls.every((c) => c.init?.credentials === "same-origin")).toBe(true);
   });

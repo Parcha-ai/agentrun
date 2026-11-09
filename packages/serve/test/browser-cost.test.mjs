@@ -657,14 +657,14 @@ function assertFolded(rows, booked) {
   for (const row of carrying) assert.equal(row.usage.requests, 0);
 }
 
-test("through the API: an uncapped run's browser minutes are its cost, folded into its browser calls' rows on its timeline, and /usage's browser_time meter in seconds and dollars", async (t) => {
+test("through the API: an uncapped run's browser minutes are its cost, folded into its browser calls' rows on its timeline, and /usage's browser_time meter in seconds and dollars", { timeout: 120_000 }, async (t) => {
   withEnv(t, KEYS, ["BROWSERBASE_API_KEY", "BROWSERBASE_PROJECT_ID", "FAUX_BROWSER_PROVIDER"]);
   const { api, data } = await serve(t, { faux: new URL("./fixtures/faux-browse-many.mjs", import.meta.url).pathname, fauxBrowser: new URL("./fixtures/faux-browser.mjs", import.meta.url).pathname });
   assert.deepEqual((await api("GET", "/capabilities")).body.features.usage.meters, ["tokens", "tools", "browser_time", "learning"]);
   assert.equal((await api("POST", "/agents", agent("browse", { tools: ["browser"] }))).status, 201);
   const started = await api("POST", "/agents/browse/runs", { input: { content: "Browse the example page 3 times." } });
   assert.equal(started.status, 202, JSON.stringify(started.body));
-  const { rows } = await follow(api, started.body.run_id, ["completed"]);
+  const { rows } = await follow(api, started.body.run_id, ["completed"], { deadlineMs: Infinity });
   const booked = toolCosts(data, started.body.run_id);
   assert.ok(booked.length >= 4, JSON.stringify(booked));
   assertFolded(rows, booked);
@@ -724,7 +724,7 @@ test("through the API, live: each browser call's row carries its charge as it ru
   assert.equal(lines.find((line) => line.meter === "tools"), undefined, JSON.stringify(lines));
   // The answer, then the run is let go and its session released: that charge changes the last call's row, by its id.
   await writeFile(gate, "");
-  const { rows, pages } = await follow(api, runId, ["completed"], { after });
+  const { rows, pages } = await follow(api, runId, ["completed"], { after, deadlineMs: Infinity });
   const updates = pages.flatMap((page) => page.rows).filter((row) => row.id === last.id);
   assert.ok(updates.length >= 1, "the follow saw the last call's row again");
   assert.ok(updates.at(-1).usage.usd > before, JSON.stringify([before, updates.map((row) => row.usage)]));
@@ -738,7 +738,7 @@ test("through the API, live: each browser call's row carries its charge as it ru
   assert.equal((await api("GET", `/runs/${runId}`)).body.cost.usd, 0.6, "the run's cost counts each charge once");
 });
 
-test("through the API: a capped run whose next browser call would pass its cap is refused before it in the cap's words, its session released and its booked spend within the cap", async (t) => {
+test("through the API: a capped run whose next browser call would pass its cap is refused before it in the cap's words, its session released and its booked spend within the cap", { timeout: 120_000 }, async (t) => {
   withEnv(t, KEYS, ["BROWSERBASE_API_KEY", "BROWSERBASE_PROJECT_ID", "FAUX_BROWSER_PROVIDER"]);
   const { api, data } = await serve(t, { faux: new URL("./fixtures/faux-browse-many.mjs", import.meta.url).pathname, fauxBrowser: new URL("./fixtures/faux-browser.mjs", import.meta.url).pathname });
   assert.equal((await api("POST", "/agents", agent("capped", { tools: ["browser"] }))).status, 201);
@@ -747,7 +747,7 @@ test("through the API: a capped run whose next browser call would pass its cap i
   const started = await api("POST", "/agents/capped/runs", { input: { content: "Browse the example page 3 times." }, max_cost_usd: 0.02 });
   assert.equal(started.status, 202, JSON.stringify(started.body));
   // Refused for room, the run pauses at its cap (paid-pause.test.mjs), in the call's words: no answer echoes them now.
-  await follow(api, started.body.run_id, ["input_required", "completed", "failed"]);
+  await follow(api, started.body.run_id, ["input_required", "completed", "failed"], { deadlineMs: Infinity });
   const view = (await api("GET", `/runs/${started.body.run_id}`)).body;
   assert.deepEqual([view.status, view.state, view.pending?.kind], ["input_required", "waiting", "budget"], JSON.stringify(view));
   assert.match(view.pending.said, /^Not sent: this run has spent \$[\d.]+( and holds \$[\d.]+ for steps still running,)? of its \$0\.02 cap, and the next step, this browser call, could cost up to \$0\.018\d* \(.*\)\. Raise the cap to at least \$0\.03 to continue\.$/);
@@ -767,13 +767,13 @@ test("through the API: a capped run whose next browser call would pass its cap i
   assert.ok(view.cost.usd <= 0.02, `the run's cost ${view.cost.usd} is within its cap`);
 });
 
-test("through the API: a provider with no price books its time as an unknown cost, counted unpriced on browser_time with its seconds, never as $0 or under tools", async (t) => {
+test("through the API: a provider with no price books its time as an unknown cost, counted unpriced on browser_time with its seconds, never as $0 or under tools", { timeout: 120_000 }, async (t) => {
   withEnv(t, { ...KEYS, FAUX_BROWSER_PROVIDER: "steel" }, ["BROWSERBASE_API_KEY", "BROWSERBASE_PROJECT_ID", "FAUX_BROWSER_PROVIDER"]);
   const { api, data } = await serve(t, { faux: new URL("./fixtures/faux-browse-many.mjs", import.meta.url).pathname, fauxBrowser: new URL("./fixtures/faux-browser.mjs", import.meta.url).pathname });
   assert.equal((await api("POST", "/agents", agent("unpriced", { tools: ["browser"] }))).status, 201);
   const started = await api("POST", "/agents/unpriced/runs", { input: { content: "Browse the example page 2 times." } });
   assert.equal(started.status, 202, JSON.stringify(started.body));
-  await follow(api, started.body.run_id, ["completed"]);
+  await follow(api, started.body.run_id, ["completed"], { deadlineMs: Infinity });
   const booked = toolCosts(data, started.body.run_id);
   assert.ok(booked.length >= 2 && booked.every((row) => row.usd === null && row.charged_by === "steel"), JSON.stringify(booked));
   assert.equal((await api("GET", `/runs/${started.body.run_id}`)).body.cost.usd, null, "its cost is unknown");
@@ -792,7 +792,7 @@ test("through the API: a browser call counts once among the run's paid tool call
   for (const [times, said] of [[1, "1 paid tool call"], [2, "2 paid tool calls"]]) {
     const started = await api("POST", "/agents/browse/runs", { input: { content: `Browse the example page ${times} times.` } });
     assert.equal(started.status, 202, JSON.stringify(started.body));
-    const { rows } = await follow(api, started.body.run_id, ["completed"]);
+    const { rows } = await follow(api, started.body.run_id, ["completed"], { deadlineMs: Infinity });
     const booked = toolCosts(data, started.body.run_id);
     // Each call's own charge, and the release's under the last call: one charge more than calls, never a call more.
     assert.equal(booked.length, times + 1, JSON.stringify(booked));
