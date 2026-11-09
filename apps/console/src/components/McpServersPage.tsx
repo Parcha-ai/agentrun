@@ -88,6 +88,8 @@ function ServerRow({ v2, server: s, writable, signIn, onChange, onChanged }: { v
   const run = async (work: () => Promise<void>) => { setBusy(true); setProblem(null); try { await work(); } catch (e) { setProblem(mcpProblem(e)); } setBusy(false); };
   const [said, tone] = s.credential ? CREDENTIAL[s.credential] ?? [s.credential, "plain"] : ["no credential", "plain" as const];
   const oauth = s.auth.type === "oauth";
+  // Its credential: one secret ("mcp:<server>", a bearer token or a sign-in) or several ("mcp:<server>:<header>").
+  const metas = s.secrets ?? (s.secret ? [s.secret] : []);
   const changes = note && [["Added", note.added], ["Removed", note.removed], ["Changed", note.changed]].filter(([, names]) => names.length).map(([what, names]) => `${what} ${(names as string[]).join(", ")}`);
   return (
     <li data-server={s.name} className="border-b p-4 last:border-b-0">
@@ -102,7 +104,7 @@ function ServerRow({ v2, server: s, writable, signIn, onChange, onChanged }: { v
             <ul className="mt-1 space-y-0.5">{s.tools.map((t) => <li key={t.name} className="font-mono text-[12px]">{t.name}{s.prices?.[t.name] !== undefined && <span className="text-muted-foreground"> · ${s.prices[t.name]} a call</span>}</li>)}</ul>
           </details>
           {/* Its credential's values (the token, each header's), each as a secret row: Replace opens the server's form. */}
-          {!!s.secrets?.length && <ul className="mt-2 space-y-1.5">{s.secrets.map((f) => <SecretRow key={f.name} field={f} writable={writable} onPaste={f.source === "sign-in" ? undefined : onChange} />)}</ul>}
+          {metas.length > 0 && <ul className="mt-2 space-y-1.5">{metas.map((m) => <SecretRow key={m.name} field={m} label={AUTH_LABEL[s.auth.type]} writable={writable} onPaste={m.source === "sign-in" ? undefined : onChange} />)}</ul>}
           {changes && <p className="mt-2 font-mono text-[12px]" role="status">{changes.length ? changes.join(" · ") : "No change: it lists the same tools."}</p>}
         </div>
         {!confirm && (
@@ -130,6 +132,8 @@ function ServerRow({ v2, server: s, writable, signIn, onChange, onChanged }: { v
 const input = "w-full border bg-background px-3 py-2.5 font-mono text-[13px] outline-none focus:border-border-strong";
 const secret = { type: "password", autoComplete: "new-password", spellCheck: false, autoCapitalize: "off", autoCorrect: "off", "data-1p-ignore": true, "data-lpignore": "true", className: input } as const;
 const AUTH: [McpAuth["type"], string][] = [["none", "None"], ["bearer", "Bearer token"], ["headers", "Headers"], ["oauth", "Sign in with OAuth"]];
+/** A server's one secret ("mcp:<server>"), as its row says it: by the kind of credential it is. */
+const AUTH_LABEL: Record<McpAuth["type"], string> = { none: "Credential", bearer: "Bearer token", headers: "Headers", oauth: "OAuth sign-in" };
 
 /** Add a server, or change a saved one (`saved`: its name stays, and a credential left empty is the sealed one kept).
  *  A new server is previewed before it can be saved; any change of its address or credential asks for another. */

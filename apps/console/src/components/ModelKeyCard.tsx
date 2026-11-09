@@ -4,7 +4,7 @@ import { KeyForm } from "@/components/KeysPage";
 import { RunError } from "@/components/RunError";
 import { Button } from "@/components/ui/button";
 import { type Client, ClientError } from "@/lib/client";
-import { type SecretsWhyNot, WHY_NOT_WORDS } from "@/lib/secrets";
+import { secretLabel, type SecretsWhyNot, WHY_NOT_WORDS } from "@/lib/secrets";
 import type { ApiError, ToolKey } from "@/lib/v2";
 
 const apiError = (e: unknown): ApiError => (e instanceof ClientError ? e.toApiError() : { code: "network", message: e instanceof Error ? e.message : String(e), retryable: false });
@@ -36,7 +36,8 @@ export function ModelKeyCard({ v2, needs, model, atRest, onSaved, writable, whyN
   const offered = required ? [required] : rows;
   const cantStore = atRest === "unavailable" || noSealing;
   const picked = rows?.find((k) => k.id === pick);
-  const own = picked?.fields.filter((f) => f.source !== "env") ?? [];
+  // The fields this card may set: any not set in the environment (its secret, "model:<KEY>", says), which wins.
+  const own = picked?.fields.filter((f) => picked.secrets.find((s) => secretLabel(s.name) === f.name)?.source !== "env") ?? [];
 
   return (
     <section className="border-b bg-card px-5 py-5 md:px-8" aria-label="Model key">

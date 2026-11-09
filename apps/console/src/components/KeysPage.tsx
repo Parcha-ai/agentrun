@@ -7,8 +7,8 @@ import { Button } from "@/components/ui/button";
 import { Chip } from "@/components/ui/chip";
 import { type Client, ClientError } from "@/lib/client";
 import { when } from "@/lib/format";
-import { type SecretsWhyNot, WHY_NOT_WORDS } from "@/lib/secrets";
-import type { ApiError, ToolKey, ToolKeyCheck, ToolKeyField, ToolKeys, ToolKeysReenter } from "@/lib/v2";
+import { secretLabel, type SecretsWhyNot, WHY_NOT_WORDS } from "@/lib/secrets";
+import type { ApiError, SecretMeta, ToolKey, ToolKeyCheck, ToolKeyField, ToolKeys, ToolKeysReenter } from "@/lib/v2";
 
 const REASON: Record<ToolKeysReenter["reason"], string> = {
   seal_key_missing: "This server was started without its seal key, so the keys saved here can't be opened.",
@@ -149,8 +149,12 @@ type RowProps = {
 };
 
 function KeyRow({ tool: k, cantStore, writable, again, open, problem, onOpen, onSave, onRemove }: RowProps) {
-  const own = k.fields.filter((f) => f.source !== "env");
-  const setCount = k.fields.filter((f) => f.set).length;
+  // Each field's secret ("tool:<KEY>"), and each secret's field (the form's input, and whether a saved one still opens).
+  const secretOf = (f: ToolKeyField) => k.secrets.find((s) => secretLabel(s.name) === f.name);
+  const fieldOf = (s: SecretMeta) => k.fields.find((f) => f.name === secretLabel(s.name));
+  // The fields this page may set: any not set in the environment, which wins.
+  const own = k.fields.filter((f) => secretOf(f)?.source !== "env");
+  const setCount = k.secrets.filter((s) => s.set).length;
   return (
     <li className="border-b p-4 last:border-b-0">
       <div className="flex flex-wrap items-start gap-3">
@@ -158,7 +162,7 @@ function KeyRow({ tool: k, cantStore, writable, again, open, problem, onOpen, on
         <div className="min-w-0 flex-1">
           <p className="flex flex-wrap items-center gap-2">
             <span className="font-mono text-[15px] font-semibold">{k.label}</span>
-            <Chip tone={setCount === k.fields.length ? "success" : "plain"}>{setCount === k.fields.length ? "set" : setCount ? `${setCount} of ${k.fields.length} set` : "not set"}</Chip>
+            <Chip tone={setCount === k.secrets.length ? "success" : "plain"}>{setCount === k.secrets.length ? "set" : setCount ? `${setCount} of ${k.secrets.length} set` : "not set"}</Chip>
             {again && <Chip tone="warning">enter again</Chip>}
           </p>
           <p className="mt-1.5 font-mono text-[12px] text-muted-foreground">
@@ -170,9 +174,9 @@ function KeyRow({ tool: k, cantStore, writable, again, open, problem, onOpen, on
           {/* Paste and Replace open the key's form (a key's fields go together); Remove asks to remove what is saved here.
               None while a form or a confirm is open. */}
           <ul className="mt-3 space-y-1.5">
-            {k.fields.map((f) => (
-              <SecretRow key={f.name} field={f} writable={writable && open === null} disabled={cantStore} note={f.stored_unreadable ? UNREADABLE : undefined}
-                onPaste={() => onOpen("edit")} onRemove={f.source === "console" ? () => onOpen("remove") : undefined} />
+            {k.secrets.map((s) => (
+              <SecretRow key={s.name} field={s} writable={writable && open === null} disabled={cantStore} note={fieldOf(s)?.stored_unreadable ? UNREADABLE : undefined}
+                onPaste={() => onOpen("edit")} onRemove={s.source === "console" ? () => onOpen("remove") : undefined} />
             ))}
           </ul>
           {!own.length && <p className="mt-3 text-[12px] text-muted-foreground">Set when the server starts, and that one wins: change it where the server is started.</p>}
@@ -181,7 +185,7 @@ function KeyRow({ tool: k, cantStore, writable, again, open, problem, onOpen, on
       {open === "edit" && <KeyForm tool={k} fields={own} cantStore={cantStore} onSave={onSave} onCancel={() => onOpen(null)} />}
       {open === "remove" && (
         <div className="mt-4 flex flex-wrap items-center gap-3 border bg-card p-3">
-          <p className="min-w-0 flex-1 text-[13px]">Remove the {k.label} key saved here?{k.fields.some((f) => f.source === "env") ? " The one set in the environment stays." : ""}</p>
+          <p className="min-w-0 flex-1 text-[13px]">Remove the {k.label} key saved here?{k.secrets.some((s) => s.source === "env") ? " The one set in the environment stays." : ""}</p>
           <Button size="sm" variant="destructive" onClick={() => void onRemove()}>Remove</Button>
           <Button size="sm" onClick={() => onOpen(null)}>Keep</Button>
         </div>

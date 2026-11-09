@@ -3,7 +3,7 @@
 // sends. Edit the server's document, then run node scripts/generate-clients.mjs; never a wire type here.
 
 import type { components, operations } from "./api.generated";
-import type { PendingKeyField } from "./secrets.pending";
+import type { PendingKeySecrets } from "./secrets.pending";
 
 type Answer<Id extends keyof operations> = operations[Id]["answer"];
 type Body<Id extends keyof operations> = operations[Id]["body"];
@@ -76,13 +76,13 @@ export type RunBrowser = Answer<"getRunBrowser">;
 
 /** Tool keys (GET /v2/settings/tool-keys, a serve extension). The server never sends a value. */
 /** PENDING (secrets.pending.ts): the ruled secret read, until the switch slices' generated types replace these. */
-export type { SecretField, SessionSecrets } from "./secrets.pending";
+export type { SecretMeta, SessionSecrets } from "./secrets.pending";
 type ServedToolKeys = Answer<"listToolKeys">;
-/** A key's fields in the ruled secret shape (PENDING: swapped for the generated alias when the slices land). */
-export type ToolKey = Omit<ServedToolKeys["keys"][number], "fields"> & { fields: PendingKeyField[] };
+/** A key with its secrets (PENDING: swapped for the generated alias when the slices land); `fields` as served, for the form. */
+export type ToolKey = ServedToolKeys["keys"][number] & PendingKeySecrets;
 export type ToolKeys = Omit<ServedToolKeys, "keys"> & { keys: ToolKey[] };
 export type ToolKeyField = ToolKey["fields"][number];
-/** An MCP server's credential values as secret fields (PENDING). */
+/** An MCP server's secret, or secrets (PENDING). */
 export type { PendingMcpSecrets } from "./secrets.pending";
 /** A saved key's check with its provider. Null, or absent from a server that does not check, says nothing. */
 export type ToolKeyCheck = NonNullable<ToolKey["check"]>;

@@ -57,7 +57,7 @@ describe("SecretRow", () => {
   });
 
   it("a secret from a sign-in says so", () => {
-    expect(row(field({ name: "mcp:linear", source: "sign-in" }), true, undefined, "OAuth sign-in", true).li.textContent).toContain("From sign-in");
+    expect(row(field({ name: "mcp:linear", source: "sign-in" }), true, undefined, "OAuth sign-in").li.textContent).toContain("From sign-in");
   });
 
   it("not on a password session: the state only, no Paste, Replace or Remove", () => {

@@ -1,8 +1,20 @@
 import { useEffect, useState } from "react";
-import type { SecretField, SessionSecrets } from "./v2";
+import type { SecretMeta, SessionSecrets } from "./v2";
 
 /** Where a secret comes from, as every page says it. */
-export const SOURCE_WORDS: Record<NonNullable<SecretField["source"]>, string> = { env: "Set in the environment", console: "Pasted here", "sign-in": "From sign-in" };
+export const SOURCE_WORDS: Record<NonNullable<SecretMeta["source"]>, string> = { env: "Set in the environment", console: "Pasted here", "sign-in": "From sign-in" };
+/** Where a secret's name ("<plane>:<id>") has its field: after the plane for a key (tool:<KEY>, model:<KEY>), after the
+ *  plane and its owner for the others (mcp:<server>:<field>, computer:<provider>:<KEY>, source:<adapter>:<field>). */
+const FIELD_AT: Record<string, number> = { tool: 1, model: 1, mcp: 2, computer: 2, source: 2 };
+/** A secret as a page says it, never its "<plane>:<id>" name: the field the name ends in (BROWSERBASE_API_KEY,
+ *  X-Api-Key), else the page's own label ("Bearer token", "Signing secret"), else its id without the plane. */
+export function secretLabel(name: string, label?: string): string {
+  const parts = name.split(":");
+  const at = FIELD_AT[parts[0]!];
+  const field = at === undefined ? "" : parts.slice(at).join(":");
+  return field || label || parts.slice(1).join(":");
+}
+
 /** Said once on a page holding secrets when this session may not change them, by why: accounts on and not the owner's
  *  password session; or a server with no accounts that isn't on loopback. */
 export const SIGN_IN_TO_CHANGE = "Sign in with your password to change secrets.";
