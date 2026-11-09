@@ -62,7 +62,7 @@ export async function tapScene(t: CaseContext, { at, row, next, tree }: { at: Po
 	if (tree === undefined) return `${screen}; in front: ${front}; ${tap}; no tree was read`;
 	const list = listOf(tree);
 	const inList = new Set(list === undefined ? [] : nodesOf(list));
-	const outside = nodesOf(tree.root).find((node) => node.text === row.text && !inList.has(node));
+	const outside = nodesOf(tree.root).find((node) => names(node, row.text) && !inList.has(node));
 	const title = `its title outside the list: ${outside === undefined ? "no" : `yes, at ${JSON.stringify(outside.bounds)}`}`;
 	const shown = `the row ${JSON.stringify(next.text)}: ${textsOf(tree).includes(next.text) ? "still shown" : "gone"}`;
 	return `${screen}; in front: ${front}; ${tap}; ${title}; ${shown}`;
@@ -78,6 +78,15 @@ export function nodesOf(root: UiNode): UiNode[] {
 	walk(root);
 	return out;
 }
+
+/** Whether a node shows a name: as its text, or as its label (content-desc). */
+const names = (node: UiNode, name: string) => node.text === name || node.label === name;
+
+/**
+ * Whether a tree shows a name anywhere, as a text or a label. A live Android 15 Settings page shows its title only as
+ * its collapsing toolbar's content-desc (phone probe 3), with no text node holding it.
+ */
+export const showsName = (tree: UiTreeResult, name: string) => nodesOf(tree.root).some((node) => names(node, name));
 
 /** The texts a tree shows. */
 export const textsOf = (tree: UiTreeResult) => nodesOf(tree.root).flatMap((node) => (node.text ? [node.text] : []));
