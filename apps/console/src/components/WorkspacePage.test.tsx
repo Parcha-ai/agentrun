@@ -72,7 +72,9 @@ describe("Settings → Workspace", () => {
     const { host } = await open(v2);
     expect(host.querySelector("h1")?.textContent).toBe("Workspace");
     expect(host.textContent).toContain(COPY);
-    expect(host.querySelector("[data-state]")?.textContent).toBe("Off");
+    // Archil's on or off is one mark, not the key row's state (SecretRow's own data-state).
+    expect(host.querySelectorAll("[data-archil-state]")).toHaveLength(1);
+    expect(host.querySelector("[data-archil-state]")?.textContent).toBe("Off");
     // One key, said by the name the write takes, never the server's full secret name.
     expect([...host.querySelectorAll("li[data-secret]")].map((li) => li.getAttribute("data-secret"))).toEqual(["workspace:archil"]);
     expect(host.querySelector('li[data-secret="workspace:archil"] > span')?.textContent).toBe("ARCHIL_API_KEY");
@@ -86,7 +88,7 @@ describe("Settings → Workspace", () => {
   it("says Archil is on with its disk and region, and fills the fields from the server", async () => {
     const { v2 } = server([on]);
     const { host, input } = await open(v2);
-    expect(host.querySelector("[data-state]")?.textContent).toBe("On");
+    expect(host.querySelector("[data-archil-state]")?.textContent).toBe("On");
     expect(host.querySelector("[data-disk]")?.textContent).toBe("dsk-test-1 · aws-us-east-1");
     expect(input("diskId").value).toBe("dsk-test-1");
     expect(input("region").value).toBe("aws-us-east-1");
@@ -118,7 +120,7 @@ describe("Settings → Workspace", () => {
     await type("ARCHIL_API_KEY", FAKE);
     await submit();
     expect(calls.filter((c) => c.method === "PUT")).toEqual([{ method: "PUT", path: "/v2/workspace/archil", type: "application/json", body: { diskId: "dsk-test-1", region: "aws-us-east-1", s3Url: "https://s3.example.test", keys: { ARCHIL_API_KEY: FAKE } } }]);
-    expect(host.querySelector("[data-state]")?.textContent).toBe("On");
+    expect(host.querySelector("[data-archil-state]")?.textContent).toBe("On");
     expect(host.innerHTML).not.toContain(FAKE);
     expect([...host.querySelectorAll("input")].map((i) => i.value)).not.toContain(FAKE);
   });
@@ -159,7 +161,7 @@ describe("Settings → Workspace", () => {
     expect(said("s3Url")).toBe("s3Url is the disk's S3 endpoint, an https URL");
     expect(said("ARCHIL_API_KEY")).toBe("ARCHIL_API_KEY is a non-empty string, or null to remove it");
     expect(input("diskId").value).toBe("dsk-test-1");
-    expect(host.querySelector("[data-state]")?.textContent).toBe("Off");
+    expect(host.querySelector("[data-archil-state]")?.textContent).toBe("Off");
   });
 
   it("tests Archil: the server's detail, or its why as given", async () => {
@@ -204,7 +206,7 @@ describe("Settings → Workspace", () => {
     expect(confirm.textContent).toContain("Turn Archil off?");
     await click(/^Turn off$/, confirm);
     expect(calls.filter((c) => c.method === "DELETE")).toEqual([{ method: "DELETE", path: "/v2/workspace/archil", type: "application/json", body: undefined }]);
-    expect(host.querySelector("[data-state]")?.textContent).toBe("Off");
+    expect(host.querySelector("[data-archil-state]")?.textContent).toBe("Off");
     expect(host.querySelector('li[data-secret="workspace:archil"]')!.textContent).toContain("Set");
   });
 
@@ -238,6 +240,6 @@ describe("Settings → Workspace", () => {
     expect(host.querySelector("[role=alert]")?.textContent).toContain("Archil's settings could not be read: internal: the store is busy");
     await click(/^Try again$/);
     expect(calls.filter((c) => c.method === "GET")).toHaveLength(2);
-    expect(host.querySelector("[data-state]")?.textContent).toBe("Off");
+    expect(host.querySelector("[data-archil-state]")?.textContent).toBe("Off");
   });
 });
