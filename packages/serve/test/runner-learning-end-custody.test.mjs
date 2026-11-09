@@ -11,6 +11,7 @@ import { randomBytes, randomUUID } from "node:crypto";
 import { mkdtempSync, readdirSync, readFileSync, rmSync, statSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
+import { DatabaseSync } from "node:sqlite";
 import { after, test } from "node:test";
 import { openSqliteStore } from "../dist/store/index.js";
 import { startRunner } from "../dist/runner/runner.js";
@@ -44,9 +45,10 @@ const KEEP = JSON.stringify({ merge: true, reason: "Worth keeping.", items: [{ f
 
 /** A store in a directory of its own; agent-1 learns and has a saved Browserbase sign-in; run-1 starts from its seed on
  *  a Browserbase plane, the person's words quoting the pointer. The runner runs run-1 on the adapter loop (bound to the
- *  pointer whose hash is `handed` at its claim, as the runner's bind writes it) with the learning end over the store's
+ *  pointer whose hash is `handed` at its claim, as the runner's bind writes it; or, with `mark`, its row's
+ *  sign_in_handed set to that value as written, which no writer writes) with the learning end over the store's
  *  sign-ins, and any learning run it queues on the learning loop, whose grader keeps everything. */
-async function world(t, { handed }) {
+async function world(t, { handed, mark }) {
   const dir = mkdtempSync(join(process.env.TMPDIR ?? tmpdir(), "agentrun-learning-custody-"));
   const server = await openSqliteStore({ dataDir: dir, role: "server" });
   const runners = [];
@@ -67,7 +69,12 @@ async function world(t, { handed }) {
   stores.push(store);
   const script = piAdapterSpec({ script: [{ say: `Logged in on ${POINTER}.` }, { say: REFLECTED }], tools: {}, hooks: quiet });
   const spec = async (claim, run) => {
-    await store.runs.update(claim, { signInHanded: [handed] });
+    if (mark === undefined) await store.runs.update(claim, { signInHanded: [handed] });
+    else {
+      const db = new DatabaseSync(join(dir, "store.sqlite"));
+      db.prepare("UPDATE runs SET sign_in_handed = ? WHERE id = ?").run(JSON.stringify(mark), claim.runId);
+      db.close();
+    }
     return { ...(await script(claim, run)), agentId: "agent-1", input: launch.input.content };
   };
   const signIns = signInsOverStore(store, KEY, { remove: async () => {} });
@@ -147,3 +154,18 @@ test("a run whose handed mark can't be read back here learns nothing: its learni
   assert.deepEqual(holds(JSON.stringify(kept)), [], "its kept learning holds no pointer");
   for (const [path, text] of Object.entries(folderFiles(w.dir))) assert.deepEqual(holds(text), [], `${path} holds the pointer`);
 });
+
+// A mark no writer writes (main's handedMark: anything but a non-empty array of SHA-256 hashes) can't say what the run
+// was handed: the run learns nothing, as for a mark that can't be read back.
+for (const [what, markOf] of [["a legacy true", () => true], ["an object", (hash) => ({ hash })], ["the empty array", () => []], ["an array with a non-hash entry", (hash) => [hash, "not a hash"]]]) {
+  test(`a run whose sign_in_handed is ${what} learns nothing: dropped saying why, no learning run, no pointer kept`, { timeout: 120_000 }, async (t) => {
+    const w = await world(t, { mark: markOf(pointerHash(POINTER)) });
+    const kept = await w.learned();
+    assert.ok(kept, "the run kept its learning's end");
+    assert.deepEqual([kept.proposal?.state, kept.proposal?.reason], ["dropped", "propose_failed"], JSON.stringify(kept.proposal));
+    assert.match(kept.proposal?.detail ?? "", /sign-in/, "the drop says why");
+    assert.ok(!kept.learningRunId, "no learning run queued");
+    assert.deepEqual(holds(JSON.stringify(kept)), [], "its kept learning holds no pointer");
+    for (const [path, text] of Object.entries(folderFiles(w.dir))) assert.deepEqual(holds(text), [], `${path} holds the pointer`);
+  });
+}
