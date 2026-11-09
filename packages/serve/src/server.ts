@@ -59,6 +59,7 @@ import { stats as statsOverStore } from "./store-reads/stats.js";
 import { analytics as analyticsOverStore } from "./store-reads/analytics.js";
 import { BACKGROUND_CONTEXT } from "@earendil-works/chord/context";
 import { type AgenticBody, type NewRevision, openSqliteStore, type RevisionPlace, type RunRow, type Store, StoreBusy, StoreConstraint, type WorkflowBody } from "./store/index.js";
+import { FINAL_STATES } from "./store/store.js";
 import { runModelRef } from "./model.js";
 // The v2 run statuses, as the run view names them (run-view.ts Status), for the list filter's validation. */
 const STATUSES = ["queued", "working", "paused", "input_required", "completed", "failed", "cancelled"] as const;
@@ -2931,6 +2932,56 @@ async function startHolding(options: ServeOptions, data: string, checked: { maxR
   owner?.attach(options.publicUrl ?? url);
   webhooks.attach(options.publicUrl ?? url);
   mcpServers.attach(options.publicUrl ?? url, url);
+  // A run's end is the outbound webhook's run.ended (webhooks.ts). The runners write ends to the store and this server runs
+  // no run, so it follows the store: each read takes the runs not final yet and the newest runs (one that started and
+  // ended between two reads is among them), and tells each end it has not told once it reads final. The marker is the
+  // end's time, so the webhook-id is the one an end always had, and the ledger tells an end once across restarts; a start
+  // first catches up the ends the ledger lacks, which no server was up to see.
+  const RUN_ENDS_POLL_MS = 250;
+  const RUN_ENDS_NEWEST = 50;
+  const final = (row: RunRow) => (FINAL_STATES as readonly string[]).includes(row.state);
+  const endOf = (row: RunRow) => ({ id: row.id, state: final(row) ? row.state : "running", ...(final(row) && row.endedAt !== null ? { endedAt: new Date(row.endedAt).toISOString() } : {}) });
+  /** The run as the store holds it now, with its notice (the run list's own view of it); null when there is no such run. */
+  const endNotice = async (id: string) => {
+    const row = await store.runs.get(id);
+    const summary = row && (await summaryOverStore(store, id, viewDepsFor(ownOriginOf())));
+    if (!row || !summary) return null;
+    return { ...endOf(row), notice: { run_id: id, agent_id: row.agentId, status: String(summary.status), title: typeof summary.title === "string" ? summary.title : "" } };
+  };
+  const toldEnds = new Map<string, string>();
+  let openRuns = new Set<string>();
+  let endsTimer: NodeJS.Timeout | undefined;
+  let endsRead: Promise<void> = Promise.resolve();
+  const readEnds = async (): Promise<void> => {
+    const open = new Set<string>();
+    for (const state of ["queued", "running", "parked"] as const) for (const row of await store.runs.list({ state })) open.add(row.id);
+    const newest = await store.runs.list({ limit: RUN_ENDS_NEWEST });
+    for (const id of new Set([...openRuns, ...newest.map((row) => row.id)])) {
+      if (open.has(id) || closing) continue;
+      const now = await endNotice(id).catch(() => undefined);
+      // Unread (a busy store): read again at the next turn, never lost.
+      if (now === undefined) {
+        open.add(id);
+        continue;
+      }
+      if (!now?.endedAt || toldEnds.get(id) === now.endedAt) continue;
+      if (webhooks.emit("run.ended", now.notice, now.endedAt) !== "unsaved") toldEnds.set(id, now.endedAt);
+    }
+    openRuns = open;
+  };
+  const followEnds = () => {
+    if (closing) return;
+    endsRead = readEnds()
+      .catch((error: Error) => log?.(logLine("webhook", { condition: "run_ends_unread", error: error.message })))
+      .finally(() => {
+        if (!closing) (endsTimer = setTimeout(followEnds, RUN_ENDS_POLL_MS)).unref();
+      });
+  };
+  void store.runs
+    .list({})
+    .then((rows) => webhooks.catchUp(rows.filter((row) => !row.importedFrom).map(endOf), endNotice))
+    .catch((error: Error) => log?.(logLine("webhook", { condition: "catch_up_unread", error: error.message })))
+    .finally(followEnds);
   const setupUrl = owner && !owner.hasPassword() ? owner.setupLink() : undefined;
   /** The server's stop: once (`close` keeps its promise). */
   let stopped: Promise<void> | undefined;
@@ -2960,6 +3011,9 @@ async function startHolding(options: ServeOptions, data: string, checked: { maxR
     await image?.close();
     // The box network proxy goes with the server that owns it (box-egress-vm.ts); its volume stays for the next start.
     await egress?.close();
+    // The ends' follower stops before the webhooks it feeds and the store it reads.
+    clearTimeout(endsTimer);
+    await endsRead;
     await webhooks.close();
     // An upgraded socket is no connection closeAllConnections ends, and server.close waits for it.
     viewers.close();
