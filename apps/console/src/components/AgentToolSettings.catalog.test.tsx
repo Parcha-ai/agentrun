@@ -17,8 +17,9 @@ let root: ReturnType<typeof createRoot> | undefined;
 afterEach(() => { act(() => root?.unmount()); document.body.innerHTML = ""; });
 
 const ALL = ["allow", "ask", "deny"] as ("allow" | "ask" | "deny")[];
-const GATES = [{ name: "read", permission: "allow", default_permission: "allow", permissions: ALL }, { name: "web_fetch", permission: "allow", default_permission: "allow", permissions: ALL }];
-const CAPS = { harnesses: [{ id: "pi", available: true }], thinking: [], tools: toolOffers([{ name: "read", available: true }, { name: "web_fetch", available: true }]), mcp: true, mcpHarnesses: ["pi"] };
+// As capabilities give each tool (serve's toolsView, serverGate): monid's catalog tools among them, ask by default.
+const GATES = [{ name: "read", permission: "allow", default_permission: "allow", permissions: ALL }, { name: "web_fetch", permission: "allow", default_permission: "allow", permissions: ALL }, { name: "monid.discover", permission: "deny", default_permission: "ask", permissions: ALL }];
+const CAPS = { harnesses: [{ id: "pi", available: true }], thinking: [], tools: toolOffers([{ name: "read", available: true }, { name: "web_fetch", available: true }, { name: "monid.discover", available: true }]), mcp: true, mcpHarnesses: ["pi"] };
 // As a saved server's read gives a tool: with its permission in force under the server's tool settings (`inForce`).
 const tool = (name: string, inForce?: "allow" | "ask" | "deny") => ({ name, description: `${name}.`, input_schema: { type: "object" }, ...(inForce ? { permission: inForce, default_permission: "ask" as const, permissions: ALL } : {}) });
 const github = (inForce?: "allow" | "ask" | "deny"): McpServer => ({ name: "github", url: "https://mcp.example.test/mcp", auth: { type: "bearer" }, credential: "sealed", tools: [tool("list_issues", inForce), tool("create_issue", inForce)], protocol: "2026-07-28" });
@@ -110,6 +111,13 @@ describe("the Tools step, an MCP tool ticked and not saved yet", () => {
     expect(page.shown("mcp:github/list_issues")?.value).toBe("allow");
     expect(page.row("mcp:github/list_issues")!.textContent).toContain("default: deny");
     expect(page.shown("mcp:github/create_issue")).toEqual({ value: "deny", label: "deny (default)" });
+  });
+
+  it("a monid tool ticked and not saved: its row is there at once with the permission capabilities give it in force", async () => {
+    const page = await open(github("allow"));
+    expect(page.row("monid.discover")).toBeNull();
+    await page.tick("monid.discover");
+    expect(page.shown("monid.discover")).toEqual({ value: "deny", label: "deny (default)" });
   });
 
   it("a server whose read gives no permission (an older one): the row waits for the save, as before", async () => {
