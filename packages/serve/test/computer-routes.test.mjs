@@ -1,6 +1,6 @@
 // A run's desktop or phone through our two routes (computer-routes.ts): POST /v2/runs/{id}/computer/take-over and
 // POST .../hand-back, owner-only, driven at the route's own handler (computerRoute) as serve's dispatch calls it, and the
-// store-backed read tl-browser's GET builds on (computerViewOf, computerHoldOf): no server, no socket, no port. Everything
+// store-backed read the unified GET /computer builds on (computerViewOf, computerHoldOf): no server, no socket, no port. Everything
 // is read from the store: the run's journal entries (given here as the runner would commit them, computer-commands.ts's
 // contract) and its command rows (a real store in a temp dir). A token is refused; a run with no desktop or phone is off;
 // one whose computer is not up is none; the agent's ask is answered by a hand-back, the first answer winning; a hand-back
@@ -52,12 +52,14 @@ async function world(t, computer = { kind: "desktop", provider: "e2b" }) {
 
 const ask = (id, over = {}) => ({ kind: COMPUTER_HANDOVER_KIND, data: { state: "waiting", id, computer: "desktop", instruction: "Sign in to the bank", completion_condition: "the statements show", asked_at: new Date(NOW - 60_000).toISOString(), expires_at: new Date(NOW + 60_000).toISOString(), reason: "Sign in to the bank", ...over } });
 
-test("serve's route table and document carry our two routes, and no GET of ours: tl-browser's GET /computer replaces it", () => {
+test("serve's route table and document carry our two routes; the GET /computer is the unified live view's, not ours", () => {
   const table = Object.fromEntries(ROUTES.filter((route) => COMPUTER_ROUTES.has(route.name)).map((route) => [route.name, route.method]));
   assert.deepEqual(table, { takeOverRunComputer: "POST", handBackRunComputer: "POST" });
-  assert.equal(ROUTES.some((route) => route.name === "getRunComputer"), false);
+  // computer-routes.ts owns only the two POSTs: the GET /computer is the unified live view (one family for every computer
+  // kind: browser, desktop, phone), registered in serve's own route table, never in COMPUTER_ROUTES.
+  assert.equal(COMPUTER_ROUTES.has("getRunComputer"), false);
   const doc = openapiDocument(() => undefined);
-  assert.equal(doc.paths["/runs/{run_id}/computer"], undefined);
+  assert.equal(doc.paths["/runs/{run_id}/computer"].get.operationId, "getRunComputer");
   assert.equal(doc.paths["/runs/{run_id}/computer/take-over"].post.operationId, "takeOverRunComputer");
   const answered = doc.paths["/runs/{run_id}/computer/hand-back"].post.responses["200"].content["application/json"].schema;
   assert.deepEqual(answered.properties.hold.enum, ["agent", "pending", "person"], "the answer is who drives, exactly these three");

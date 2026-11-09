@@ -35,6 +35,7 @@ test("the schema has every table, and every time column is an INTEGER", async (t
     assert.ok(times.some(([table, name]) => table === "runs" && name === "wake_at"), "runs.wake_at");
     assert.ok(raw.prepare("PRAGMA table_info(revisions)").all().some((column) => column.name === "package"), "revisions.package");
     assert.ok(raw.prepare("PRAGMA table_info(commands)").all().some((column) => column.name === "refused"), "commands.refused");
+    assert.ok(times.some(([table, name]) => table === "mcp_servers" && name === "credential_changed_at"), "mcp_servers.credential_changed_at");
   } finally {
     raw.close();
   }

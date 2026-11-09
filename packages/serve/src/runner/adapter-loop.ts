@@ -16,7 +16,7 @@ import { BACKGROUND_CONTEXT, withAbortSignal } from "@earendil-works/chord/conte
 import type { Models } from "@earendil-works/pi-ai";
 import { createModels } from "@earendil-works/pi-ai/models";
 import { type Conversation, type ConversationId, createRegistry, Harness, LiveDoc, ROOT_CONVERSATION_ID, type Tx } from "@earendil-works/pi-durable";
-import { type AdapterSession, type AgentAdapter, type BeforeRequest, type HostTool, modelPortFor, type Refusal, type SessionSpec, sessionSpendOf } from "@parcha/agentrun-kernel";
+import { type AdapterSession, type AgentAdapter, type BeforeRequest, type HostTool, modelPortFor, type Refusal, RUNNER_RECORDS, type SessionRecord, type SessionSpec, sessionSpendOf } from "@parcha/agentrun-kernel";
 import type { KernelHooks, ToolCall } from "./conformance/subject.js";
 import { type AnswerData, type ApprovalPrice, type AskData, type BudgetData, type CallEndData, type CallStartData, type CallStatus, type EndData, KINDS, type MessageData, type RaiseData, withdrawnAnswers } from "./journal-kinds.js";
 import { originOf, RUN_RESUMED } from "@parcha/pi-durable-agent/timeline";
@@ -24,7 +24,7 @@ import { type AlsoRow, type Claim, type Command, type CommandOutcome, deniedText
 import { answerText, REFLECT_NOTE_ONLY, reflectRequestId, underLearning, WRITES } from "./end-of-run.js";
 import { approvalOf, CLOSE_MS, CUT_STEP_MS, STOP_SETTLE_MS, commandRequest, cutLast, DEFAULT_RESTART_LIMIT, entriesOf, findData, Gate, heldReporter, Interrupted, KernelFault, Parked, quiet, restartLimited, writesEntry, writesSubmission } from "./loop.js";
 import type { PiRun, PiSessionIO, PreIntentAnswer, PreIntentCall } from "./adapters/pi.js";
-import { HAND_BACK, handBackOf } from "./hand-back.js";
+import { answerOnce, HAND_BACK, handBackOf } from "./hand-back.js";
 import { isComputerCommand, type JournalHold, journalHold, type RunComputerHold } from "./computer-journal.js";
 import { COMPUTER_HANDOVER_KIND, COMPUTER_HOLD_KIND } from "../computer-commands.js";
 import { journalSessions } from "./sessions.js";
@@ -48,6 +48,9 @@ export type RaiseCheck =
   | { retry: true; resumed: boolean; raised?: undefined; refused?: undefined }
   | { refused: string; raised?: undefined; retry?: undefined };
 
+/** The gate's answer for a call: run it, ask a person, or refuse it (with the words the model reads, or generic ones). */
+export type GateAnswer = "allow" | "ask" | "deny" | { readonly deny: string };
+
 /** What one claimed run's adapter loop runs. */
 export interface AdapterRunSpec {
   readonly adapter: AgentAdapter;
@@ -62,7 +65,7 @@ export interface AdapterRunSpec {
   readonly hooks?: KernelHooks;
   /** The gate's answer for a call, before its intent: run it, refuse it, or ask a person (the run parks). A refusal may
    *  carry the words the model reads (`{ deny }`: where the deny was set, a pin's words); a bare "deny" gets generic ones. */
-  readonly gate?: (call: ToolCall) => "allow" | "ask" | "deny" | { readonly deny: string };
+  readonly gate?: (call: ToolCall) => GateAnswer | Promise<GateAnswer>;
   /** What an asked call costs, for its approval card (main's tool gate options.price): dollars, or "not metered";
    *  undefined when it has none (the ask says null). */
   readonly approvalPrice?: (call: ToolCall) => ApprovalPrice | undefined;
@@ -174,6 +177,9 @@ export interface AdapterLoopOptions {
   readonly now?: () => number;
 }
 
+/** A host check's refusal as the cap's rule reads it (AdapterRunSpec.cap.park). */
+const refusalOf = (refusal: Refusal) => ({ message: refusal.refuse, forGood: refusal.forGood ?? true, ...(refusal.figures ? { figures: refusal.figures } : {}) });
+
 /** The run's visible record, as the loop keeps it for a harness whose own records are resume log only (record: "loop"):
  *  the KINDS entries the one reader reads, on the run's root conversation, each its own commit through the run's Harness
  *  (so the claim fences it like every journal write). */
@@ -284,7 +290,6 @@ async function openCliRecord(harness: Harness, journal: Gate["journal"], context
 }
 
 /** A host check's refusal as the cap's rule reads it (AdapterRunSpec.cap.park). */
-const refusalOf = (refusal: Refusal) => ({ message: refusal.refuse, forGood: refusal.forGood ?? true, ...(refusal.figures ? { figures: refusal.figures } : {}) });
 
 /** Loops for runs on the adapter contract: `spec(claim, run)` gives each Session what it runs. */
 export function createAdapterLoop(spec: (claim: Claim, run: AdapterRun) => AdapterRunSpec | Promise<AdapterRunSpec>, options: AdapterLoopOptions = {}): LoopFactory {
@@ -407,15 +412,16 @@ function adapterLoop(specOf: (claim: Claim, run: AdapterRun) => AdapterRunSpec |
       await Promise.race([ready, (finished ?? new Promise<never>(() => {})).then(() => undefined, () => undefined)]);
       const [theGate, theHarness, theRoot] = [gate, harness, root];
       if (!theGate || !theHarness || !theRoot) return { refused: handBackOf([], command.body, command.createdAt).refused! };
-      const { write, refused } = handBackOf(await entriesOf(theGate.journal, theRoot.id, context), command.body, command.createdAt);
-      if (write) {
-        const answers = refused === undefined;
-        // The person's answer takes its row in the commit that writes it; an expiry is the ask's own, and takes none.
-        const landed = answers ? theGate.expect(writesEntry(KINDS.handover, (data) => data.id === write.id && data.state === write.state), { take: [command.id] }) : undefined;
-        landed?.catch(() => undefined);
-        await theHarness.commit((tx) => tx.appendEntry(theRoot.id, { kind: KINDS.handover, data: write as unknown as JsonValue }), context);
-        await landed;
-      }
+      // The person's answer takes its row in the commit that writes it: staged for the answer this row would write (its ask,
+      // its outcome, at its own time). Decided and written in one commit (answerOnce), so no other writer's answer (the
+      // browser host's give or expiry) lands between: a row whose commit writes nothing, or the ask's expiry, takes none,
+      // and the staging matches nothing (an answered ask is never answered again).
+      const { ask, outcome } = (command.body ?? {}) as { ask?: unknown; outcome?: unknown };
+      const at = new Date(command.createdAt).toISOString();
+      const landed = typeof ask === "string" ? theGate.expect(writesEntry(KINDS.handover, (data) => data.id === ask && data.state === outcome && data.at === at), { take: [command.id] }) : undefined;
+      landed?.catch(() => undefined);
+      const { write, refused } = await answerOnce((change) => theHarness.commit(change, context), theRoot.id, (entries) => handBackOf(entries, command.body, command.createdAt));
+      if (write && refused === undefined) await landed;
       return refused === undefined ? { taken: true } : { refused };
     });
     handing = turn.catch(() => undefined);
@@ -696,6 +702,7 @@ function adapterLoop(specOf: (claim: Claim, run: AdapterRun) => AdapterRunSpec |
           },
           afterRequest: async (...args) => {
             try {
+              await hooks.beforeBooking?.();
               await port.afterRequest(...args);
             } finally {
               unbooked = Math.max(0, unbooked - 1);
@@ -705,7 +712,18 @@ function adapterLoop(specOf: (claim: Claim, run: AdapterRun) => AdapterRunSpec |
           ...(port.responded ? { responded: port.responded.bind(port) } : {}),
           ...(port.note ? { note: port.note.bind(port) } : {}),
         };
-        const io: PiSessionIO = { writer, models: counted, signal: deps.signal, onEvent: record ? (event) => record.onEvent(event) : () => {}, gate: gateOf };
+        // What the request that just answered cost: its booking (the request's runner.turn record, the latest one once
+        // the session's requests are booked), its figure or null when unknown. A refused request's record is its $0.
+        const bookedCost = async (): Promise<number | null | undefined> => {
+          await bookingsSettled();
+          const records = await writer.read().catch(() => [] as SessionRecord[]);
+          const last = [...records].reverse().find((one) => one.kind === RUNNER_RECORDS.turn);
+          if (!last) return undefined;
+          const turn = last.data as { usd?: unknown; bookedUsd?: unknown };
+          const figure = turn.bookedUsd !== undefined ? turn.bookedUsd : turn.usd;
+          return typeof figure === "number" && Number.isFinite(figure) ? figure : null;
+        };
+        const io: PiSessionIO = { writer, models: counted, signal: deps.signal, onEvent: record ? (event) => record.onEvent(event) : () => {}, gate: gateOf, bookedCost };
         // The MCP tools: pi's own (host tools, through the gate above); for a harness with its own MCP client, the session's
         // MCP its adapter mounts on its proxy, each call asking the gate first (an ask parks the run, nothing sent).
         const mcpNames = new Set(mcp?.tools.map((tool) => tool.name));
@@ -779,8 +797,9 @@ function adapterLoop(specOf: (claim: Claim, run: AdapterRun) => AdapterRunSpec |
           const follow = await parkedFollowUp(mcp!, {
             entries: await entriesOf(gate.journal, root.id, context),
             answer: (call, price) => answerOf(call, price),
-            deniedNow: (call) => {
-              const now = spec.gate?.({ callId: call.callId, tool: call.tool as never, args: call.args });
+            deniedNow: async (call) => {
+              // The gate is Promise-capable on purpose (run-cap's and the approvals' gates may look things up), so await it.
+              const now = await spec.gate?.({ callId: call.callId, tool: call.tool as never, args: call.args });
               return now === "deny" ? `Permission denied: ${call.tool} is set to deny.` : typeof now === "object" ? now.deny : undefined;
             },
             run: (call) => wrapped.get(mcp!.tools.find((tool) => mcp!.catalogOf(tool.name) === call.tool)!.name)!.call(call.args, { callId: call.callId, signal: deps.signal }),
@@ -906,7 +925,7 @@ function adapterLoop(specOf: (claim: Claim, run: AdapterRun) => AdapterRunSpec |
       // The end-of-run turn's notes are kept only from its answer: a write there is refused before its intent.
       if (reflecting && WRITES.has(call.tool) && underLearning(spec.workRoot, call.args)) return { deny: REFLECT_NOTE_ONLY };
       await hooks.beforeIntent(kernelCall);
-      const decision = spec.gate?.(kernelCall) ?? "allow";
+      const decision = (await spec.gate?.(kernelCall)) ?? "allow";
       if (typeof decision === "object") return { deny: decision.deny };
       if (decision === "deny") return { deny: `Permission denied: ${tool} is set to deny.` };
       if (decision === "allow") return "allow";
@@ -1163,6 +1182,7 @@ function adapterLoop(specOf: (claim: Claim, run: AdapterRun) => AdapterRunSpec |
    *  unbooked reads at its hold and bound, the worst it can have cost. */
   async function bookingsSettled(): Promise<void> {
     if (unbooked === 0) return;
+    specNow?.hooks?.awaitingBookings?.();
     let timer: NodeJS.Timeout | undefined;
     await Promise.race([new Promise<void>((resolve) => bookedAll.push(resolve)), new Promise<void>((resolve) => (timer = setTimeout(resolve, CLOSE_MS)))]);
     clearTimeout(timer);

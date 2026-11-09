@@ -11,7 +11,7 @@ const runLaunchOf = (r: RunLaunchRecord): RunLaunchRow => ({ runId: r.run_id, bo
 
 /** Writes a run's launch row inside `tx` (the same transaction as the queued run it belongs to): the run path and the
  *  trigger path both call it, so the row lands with its run or not at all. */
-export function writeLaunch(tx: SqliteExecutor, runId: string, launch: RunLaunchInput, at: number): Promise<void> {
+export function writeLaunch(tx: Pick<SqliteExecutor, "run">, runId: string, launch: RunLaunchInput, at: number): Promise<void> {
   return tx.run("INSERT INTO run_launch (run_id, body, sealed, created_at) VALUES (?, ?, ?, ?)", runId, JSON.stringify(launch.body ?? null), launch.sealed ?? null, at);
 }
 

@@ -26,7 +26,7 @@ import { withoutFaux } from "./model.js";
  *  adapter loop, a learning run on the learning loop. Returns the runner and a close() that stops it and closes its store. */
 async function runnerBeside(dataDir: string, loops?: number): Promise<{ runner: Awaited<ReturnType<typeof import("./runner/runner.js")["startRunner"]>>; close: () => Promise<void> }> {
   const { startRunner } = await import("./runner/runner.js");
-  const { dispatchRunner } = await import("./runner/harness-loops.js");
+  const { dispatchRunner, runnerPlaceComputer } = await import("./runner/harness-loops.js");
   const { routeOf } = await import("./runner/model-route.js");
   const { RunnerRefused } = await import("./runner/main.js");
   const { openSqliteStore, SchemaVersionUnknown } = await import("./store/index.js");
@@ -47,7 +47,9 @@ async function runnerBeside(dataDir: string, loops?: number): Promise<{ runner: 
   // A server with no seal key never serves a live view, so a stand-in satisfies the spec's live-viewer seam; a server with
   // one seals its live-viewer tokens with it.
   const sealKey = sealKeyOf(process.env[SEAL_KEY_ENV]) ?? Buffer.alloc(32);
-  const createLoop = dispatchRunner({ env: withoutFaux(process.env), data: dataDir, journal: (claim) => store.journal(claim), store, sealKey, routeOf });
+  // STOPGAP (named in the commit): computerForClaim refuses any box-place claim in words and computerDeps is the empty
+  // none-form, until tl-places' composer (computerDepsFrom) lands through the base — then this is one line each.
+  const createLoop = dispatchRunner({ env: withoutFaux(process.env), data: dataDir, journal: (claim) => store.journal(claim), store, sealKey, routeOf, computerForClaim: runnerPlaceComputer, computerDeps: {} });
   const runner = startRunner({ store, createLoop, ...(loops !== undefined ? { loops } : {}) });
   return { runner, close: async () => { await runner.close(); await store.close(); } };
 }

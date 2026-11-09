@@ -28,6 +28,9 @@ export type ToolPin = NonNullable<PinnedSetting["pin"]>;
 /** Tool settings by settings key: the server's (PUT /v2/settings/tools, which replaces the whole map) and an agent's own
  *  (`definition.tool_settings`), over the server's. */
 export type ToolSettings = Record<string, ToolSetting>;
+/** The private-network hosts an MCP server's authorization server may be on (none by default): GET and PUT
+ *  /v2/settings/mcp-servers/oauth/private-hosts. Only the owner's password session writes it. */
+export type McpPrivateHosts = Answer<"getMcpPrivateHosts">;
 /** GET /v2/agents/{id}'s `tools`: each tool the agent grants, with its permission and provider in force. */
 export type AgentTool = NonNullable<components["Agent"]["tools"]>[number];
 
@@ -79,10 +82,10 @@ export type TimelinePage = components["TimelinePage"];
 
 export type RunFile = components["RunFile"];
 export type RunFiles = components["RunFileList"];
-/** GET /v2/runs/{id}/browser (owner session only, no-store): `off`, the run has no browser or it resolves unavailable;
- *  `none`, it has one with no session open (yet, or any more); `live`, a session is open, watched through `viewer`, a
- *  same-origin path whose token is in its fragment (never sent to a server). */
-export type RunBrowser = Answer<"getRunBrowser">;
+/** GET /v2/runs/{id}/computer (owner session only, no-store): `off`, the run has no computer here (`why`); `none`, it has
+ *  one (`kind`) with no session up (yet, or any more); `live`, a session is open, watched through `viewer`, a same-origin
+ *  path whose token is in its fragment (never sent to a server). `hold`: who drives now. */
+export type RunBrowser = Answer<"getRunComputer">;
 
 /** Tool keys (GET /v2/settings/tool-keys, a serve extension). The server never sends a value. */
 export type ToolKeys = Answer<"listToolKeys">;

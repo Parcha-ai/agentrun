@@ -452,6 +452,25 @@ test("a date that is no date, and an interval past a year, are 422 on their fiel
   assert.equal(year.body.next_at, "2027-01-02T00:00:00.000Z");
 });
 
+test("archiving an agent answers the triggers it turned off; while it is archived turning one on is 409 agent_archived; unarchiving answers those still off, which stay off until each is turned on", { timeout: 60_000 }, async (t) => {
+  const { api } = await serve(t);
+  await made(api, "weekly");
+  const trigger = (await api("POST", "/triggers", schedule("weekly", { every_s: 604_800 }))).body;
+  const archived = await api("POST", "/agents/weekly/archive");
+  assert.equal(archived.status, 200, JSON.stringify(archived.body));
+  assert.deepEqual([archived.body.agent_id, archived.body.triggers_off], ["weekly", [{ id: trigger.id, name: trigger.name }]]);
+  const off = (await api("GET", `/triggers/${trigger.id}`)).body;
+  assert.deepEqual([off.enabled, off.disabled?.reason], [false, "agent_archived"]);
+  const refused = await api("PATCH", `/triggers/${trigger.id}`, { enabled: true });
+  assert.deepEqual([refused.status, refused.body.error?.code], [409, "agent_archived"], JSON.stringify(refused.body));
+  const back = await api("POST", "/agents/weekly/unarchive");
+  assert.equal(back.status, 200, JSON.stringify(back.body));
+  assert.deepEqual(back.body.triggers_off, [{ id: trigger.id, name: trigger.name }], "still off: unarchiving turns none on");
+  assert.equal((await api("PATCH", `/triggers/${trigger.id}`, { enabled: true })).body.enabled, true);
+  assert.deepEqual((await api("POST", "/agents/weekly/archive")).body.triggers_off.length, 1, "on again, the next archive turns it off again");
+  assert.deepEqual((await api("POST", "/agents/weekly/unarchive")).body.triggers_off.length, 1);
+});
+
 // Superseded: "a triggers file holding a malformed trigger leaves the server up". The triggers keep no file: their rows
 // are the store's STRICT tables, which refuse a malformed row at its write (store-trigger-schema), and a data directory an
 // earlier build left is refused at the store's open (store-earlier-version).

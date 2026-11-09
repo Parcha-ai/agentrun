@@ -47,8 +47,11 @@ export interface RunReadsDeps {
 }
 
 /** A run's files, through its Workspace (listRunFiles): every file, path-sorted, cut at the cap. A run with no folder lists
- *  none. The same shape the route answered. */
+ *  none; a run whose output is withheld refuses (403), as its graph does. The same shape the route answered. */
 export async function listRunFiles(store: RunReadsStore, runId: string, deps: RunReadsDeps): Promise<{ run_id: string; files: FileView[]; complete: true; truncated: boolean }> {
+  // Withheld (its browser sign-in this server can't read) refuses its files too, before any is read: a page it saved signed
+  // in is what it saw (store-view's `unshown`), as the graph refuses and the base's filesShown did.
+  if (await deps.withheld(store, runId)) throw new ApiError("forbidden", WITHHELD_SIGN_IN);
   const workspace = await deps.runWorkspace(store, runId);
   const { files, deep } = workspace ? await listFiles(workspace, FILE_LIST_CAP) : { files: [] as FileView[], deep: false };
   files.sort((a, b) => a.path.localeCompare(b.path));
@@ -56,8 +59,9 @@ export async function listRunFiles(store: RunReadsStore, runId: string, deps: Ru
 }
 
 /** One of a run's files, through its Workspace (readRunFile): streamed to `res` as the route streams it, with the route's
- *  path check and its 404 words. */
+ *  path check and its 404 words; a withheld run refuses (403) before anything is streamed. */
 export async function readRunFile(store: RunReadsStore, runId: string, rawPath: string, req: IncomingMessage, res: ServerResponse, url: URL, deps: RunReadsDeps): Promise<void> {
+  if (await deps.withheld(store, runId)) throw new ApiError("forbidden", WITHHELD_SIGN_IN);
   const rel = checkedPath(decodedPath(rawPath), "the run's own, not a file it wrote");
   const workspace = await deps.runWorkspace(store, runId);
   if (!workspace) throw new ApiError("not_found", "no such file");

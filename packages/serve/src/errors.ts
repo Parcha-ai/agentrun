@@ -14,6 +14,8 @@ export const ERROR_STATUS = {
   method_not_allowed: 405,
   agent_exists: 409,
   name_taken: 409,
+  // A trigger made on, turned on, or aimed while on, for an archived agent (triggers.ts).
+  agent_archived: 409,
   agent_not_runnable: 409,
   home_busy: 409,
   idempotency_mismatch: 409,

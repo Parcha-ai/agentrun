@@ -30,6 +30,8 @@ export const UNUSABLE = {
   signedOut: `its sign-in expired or was revoked: ${SIGN_IN_AGAIN}`,
   /** An access token past its expiry whose refresh got no answer: the sign-in itself is fine. */
   silent: "the sign-in server didn't answer; try again",
+  /** An access token past its expiry whose refresh the address check refused unsent (mcp-oauth.ts), followed by its words. */
+  blocked: "its sign-in server's address is refused here",
 } as const;
 export const REFRESH_MARGIN_MS = 5 * 60_000;
 /** How long an access token given with no expiry is taken to last: it is refreshed within the margin of then. */

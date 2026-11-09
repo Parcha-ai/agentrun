@@ -28,7 +28,7 @@ export default {
     const started = await api("POST", "/agents/watch/runs", { input: { content: "Browse the example page." } });
     check(started.status === 202, `starting the run answered ${started.status}`);
     const runId = started.body.run_id;
-    const livePath = `/v2/runs/${encodeURIComponent(runId)}/browser/live/`;
+    const livePath = `/v2/runs/${encodeURIComponent(runId)}/computer/live/`;
 
     // The run's page, loaded again so the violation listener is in it from the start.
     await page.goto(`${origin}/#/runs/${encodeURIComponent(runId)}`);

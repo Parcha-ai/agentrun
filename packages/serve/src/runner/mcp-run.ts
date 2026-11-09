@@ -40,7 +40,7 @@ export interface McpForClaimOptions {
   readonly claim: Claim;
   /** The one store: the registry's rows, the run's pin row and its run row (the epoch), the GitHub App's settings, and
    *  where it is (Store.where: the claims waiting on a server's refresh lease meet by it). */
-  readonly store: Pick<Store, "mcp" | "runs" | "triggerSettings" | "where">;
+  readonly store: Pick<Store, "mcp" | "runs" | "settings" | "triggerSettings" | "where">;
   /** The runner's seal key (the server's): undefined when it was started without one (every sealed credential refused). */
   readonly sealKey: Buffer | undefined;
   /** The run's granted tools, by catalog name (`mcp:<server>/<tool>` among them), as its revision grants them. */
@@ -192,7 +192,7 @@ export async function mcpForClaim(options: McpForClaimOptions): Promise<ClaimMcp
 export interface ParkedFollowUpOptions {
   readonly entries: readonly { readonly kind: string; readonly data?: unknown }[];
   answer(call: McpGateCall, price: ApprovalPrice | null): Promise<AnswerData | "park">;
-  deniedNow(call: McpGateCall): string | undefined;
+  deniedNow(call: McpGateCall): Promise<string | undefined>;
   run(call: McpGateCall): Promise<{ text: string; isError?: boolean }>;
 }
 
@@ -226,7 +226,7 @@ export async function parkedFollowUp(mcp: ClaimMcp, options: ParkedFollowUpOptio
     if (!answer.approved) result = { text: deniedText(call.tool, answer.note), isError: true };
     else {
       const done = ended.get(call.callId);
-      const denied = options.deniedNow(call);
+      const denied = await options.deniedNow(call);
       result = done ? { text: typeof done.output === "string" ? done.output : `The ${call.tool} call ended ${done.status}.`, isError: done.status !== "done" } : denied !== undefined ? { text: denied, isError: true } : await options.run(call);
     }
     texts.push(resumeText({ tool: call.tool, call_id: call.callId }, argsPreview(call.args), answer.approved ? "allow" : "deny", { text: result.text, isError: result.isError === true }));
