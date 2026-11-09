@@ -5,6 +5,9 @@
     "previewMcpServer": ["url", "auth.type", "name"],
     "startMcpOAuth": ["url", "scopes.[]", "client_id"]
   },
+  "bodyFill": {
+    "callMcp": { "id": 1 }
+  },
   "multiSegment": {
     "readRunFile": "path",
     "readHomeFile": "path",

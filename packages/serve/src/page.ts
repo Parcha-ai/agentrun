@@ -17,6 +17,16 @@ import { hostRefusedPage } from "./host-check.js";
 const CSP = "default-src 'self'; script-src 'self'; style-src 'self'; img-src 'self' data:; base-uri 'none'; form-action 'none'; frame-ancestors 'none'";
 const SECURITY = { "content-security-policy": CSP, "x-content-type-options": "nosniff", "referrer-policy": "no-referrer", "cache-control": "no-store" };
 const HTML = "text/html; charset=utf-8";
+/** Strict-Transport-Security for a server whose public address (AGENTRUN_PUBLIC_URL) is https: a browser that saw it
+ *  once opens the address over https only, for a year. None over http or with no public address (a browser would pin
+ *  the loopback address to https and lose the console). */
+export function hstsHeaders(publicUrl: string | undefined): Record<string, string> {
+  try {
+    return publicUrl && new URL(publicUrl).protocol === "https:" ? { "strict-transport-security": "max-age=31536000" } : {};
+  } catch {
+    return {};
+  }
+}
 /** The console's build, beside the server. */
 const CONSOLE_DIR = fileURLToPath(new URL("./console/", import.meta.url));
 /** The kinds of file Vite builds the console into; any other is not served. */
@@ -60,7 +70,8 @@ const refuse = (req: IncomingMessage, res: ServerResponse, error: ApiError) =>
   send(req, res, error.status, "application/json", JSON.stringify(error.body(String(res.getHeader("x-request-id") ?? ""))), error.headers);
 
 /** `takesBytes`: whether a request of `method` to `path` (under /v2) goes to a route whose body is bytes (server.ts). */
-type PageServer = { token: string; dir: string; authFailed?: (route: string, reason: string) => void; owner?: Owner; console?: string | undefined; takesBytes?: (method: string | undefined, path: string) => boolean };
+/** `publicUrl`: the address people open (AGENTRUN_PUBLIC_URL); an https one adds HSTS to every page answer (hstsHeaders). */
+type PageServer = { token: string; dir: string; authFailed?: (route: string, reason: string) => void; owner?: Owner; console?: string | undefined; takesBytes?: (method: string | undefined, path: string) => boolean; publicUrl?: string };
 
 const redirect = (res: ServerResponse, location: string, headers: Record<string, string> = {}) => (res.writeHead(303, { ...SECURITY, location, "content-length": 0, ...headers }), void res.end());
 
@@ -136,6 +147,8 @@ export function answerPage(req: IncomingMessage, res: ServerResponse, raw: strin
     return false;
   }
   if (raw !== "/" && !raw.startsWith("/assets/") && !raw.startsWith("/api/") && !MOVED.has(raw)) return false;
+  // Every page answer (the console, its assets, its redirects, the store's data) at an https public address: HSTS.
+  for (const [name, value] of Object.entries(hstsHeaders(server.publicUrl))) res.setHeader(name, value);
   answer(req, res, raw, server, held).catch(() => {
     if (!res.headersSent) refuse(req, res, new ApiError("internal", "the console could not be read"));
     else res.destroy();
