@@ -89,7 +89,7 @@ async function mcpRun(t, { script, grants, settings = {}, tools = [ADD, PAID], p
     return {
       ...(await base(claim, run)),
       workRoot: work,
-      // `settings` as a function: the run's own gate as the spec builders make it (adapterRunGate over the store's
+      // `settings` as a function: the run's own gate as a run's spec makes it (adapterRunGate over the store's
       // settings), made for the claim; else the plain permission of `settings`.
       gate: typeof settings === "function" ? await settings({ store, claim, work }) : (call) => permissionOf(call.tool, settings),
       ...(mcp ? { mcp } : {}),
@@ -203,8 +203,8 @@ test("R4: a set-to-deny MCP call is refused in words before its intent, and noth
 });
 
 test("R4b: an MCP call outside its server's argument pin is refused in the pin's words before it is asked or sent, through the run's own gate", async (t) => {
-  // The server's setting allows the tool pinned to a = 2; the model calls it with a = 5. The gate is the one the spec
-  // builders give a run (adapterRunGate, over the store's tool settings).
+  // The server's setting allows the tool pinned to a = 2; the model calls it with a = 5. The gate is the one a run's spec
+  // gives it (adapterRunGate, over the store's tool settings).
   const script = [{ call: "mcp__fake__add", args: { a: 5, b: 1 } }, { sayLastResult: true }];
   const { row, sent, fake } = await mcpRun(t, {
     script,

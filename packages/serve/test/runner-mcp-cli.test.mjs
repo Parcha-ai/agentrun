@@ -126,7 +126,7 @@ async function cliRun(t, { settings = {}, grants = ["mcp:fake/add"], before, gat
       input: "Add them.",
       record: "loop",
       hooks: quiet,
-      // `gateOf`: the run's own gate as the spec builders make it (adapterRunGate over the store's settings), else the plain
+      // `gateOf`: the run's own gate as a run's spec makes it (adapterRunGate over the store's settings), else the plain
       // permission of `settings`.
       gate: gateOf ? await gateOf({ store, claim, work }) : (call) => permissionOf(call.tool, settings),
       runCap: { capUsd: () => undefined, modelOf: () => undefined },
