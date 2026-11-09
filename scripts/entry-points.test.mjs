@@ -76,6 +76,7 @@ const bare = new Map([
   ['packages/pi-durable-agent/test/fixtures/serve-sample.mjs', ownPackage],
   ['packages/pi-durable-agent/test/fixtures/store-sample.mjs', ownPackage],
   ['packages/pi-durable-disk/test/fixtures/paid-api.ts', ownPackage],
+  ['packages/serve/test/record-door-one-input.mjs', ownPackage],
 ]);
 const readsMain = (source) => source.includes('import.meta.main');
 const unasked = (sources) => sources.filter(([file, source]) => readsMain(source) && !bare.has(file)).map(([file]) => file);

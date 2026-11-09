@@ -41,13 +41,14 @@ test("a run's end lands in the same commit as its last journal batch: state, cos
   const storage = await RunStorage.open(db.connection, await runRow(db, "run-end", 1));
   await commitWrites(storage, [{ type: "conversation", value: { id: ROOT } }], context);
   const endId = await storage.mintId();
-  storage.stage({ run: { state: "ended", costUsd: 0.42, metrics: { requests: 3 }, summary: "Answered.", endedAt: ENDED_AT }, also: [done("run-end")] });
+  storage.stage({ run: { state: "ended", costUsd: 0.42, metrics: { requests: 3 }, summary: "Answered.", endedAt: ENDED_AT }, also: [done("run-end")], effect: endId });
   await commitWrites(storage, [{ type: "entry", value: { id: endId, conversationId: ROOT, kind: "message", end: true } }], context);
   assert.equal((await storage.entry(endId, context))?.entry.end, true, "the end's journal row");
   assert.deepEqual({ ...(await db.get("SELECT state, cost_usd, metrics, summary, ended_at FROM runs WHERE id = ?", "run-end")) }, { state: "ended", cost_usd: 0.42, metrics: JSON.stringify({ requests: 3 }), summary: "Answered.", ended_at: ENDED_AT }, "and the run row's end, in that commit");
   assert.deepEqual((await db.all("SELECT run_id, moment, body FROM channel_posts")).map((row) => ({ ...row })), [{ run_id: "run-end", moment: "done", body: JSON.stringify({ costUsd: 0.42 }) }], "and its outbox row");
-  // Committed, the staged rows are cleared: the next commit carries none of them.
-  await commitWrites(storage, [{ type: "entry", value: { id: await storage.mintId(), conversationId: ROOT, kind: "message" } }], context);
+  // The end released the run (a write that makes it final is its release): its claim writes nothing more, so no commit can
+  // carry its rows twice.
+  await assert.rejects(commitWrites(storage, [{ type: "entry", value: { id: await storage.mintId(), conversationId: ROOT, kind: "message" } }], context), { name: "Fenced" }, "the claim is spent");
   assert.equal(Number((await db.get("SELECT COUNT(*) AS n FROM channel_posts")).n), 1, "the outbox row once");
 });
 
@@ -56,8 +57,9 @@ test("a final state staged with no end time is stamped in that commit, on the st
   const at = T0 + 90_000;
   const storage = await RunStorage.open(db.connection, await runRow(db, "run-stamp", 1), () => at);
   await commitWrites(storage, [{ type: "conversation", value: { id: ROOT } }], context);
-  storage.stage({ run: { state: "stopped" } });
-  await commitWrites(storage, [{ type: "entry", value: { id: await storage.mintId(), conversationId: ROOT, kind: "message" } }], context);
+  const stop = await storage.mintId();
+  storage.stage({ run: { state: "stopped" }, effect: stop });
+  await commitWrites(storage, [{ type: "entry", value: { id: stop, conversationId: ROOT, kind: "message" } }], context);
   const row = await db.get("SELECT state, ended_at FROM runs WHERE id = ?", "run-stamp");
   assert.deepEqual([row.state, row.ended_at], ["stopped", at], "ended_at stamped, epoch ms");
 });
@@ -69,7 +71,7 @@ test("a crash between the journal's writes and the run row's leaves none of them
   const storage = await RunStorage.open(connection, claim);
   await commitWrites(storage, [{ type: "conversation", value: { id: ROOT } }], context);
   const endId = await storage.mintId();
-  storage.stage({ run: { state: "ended", costUsd: 0.42, endedAt: ENDED_AT }, also: [done("run-crash")] });
+  storage.stage({ run: { state: "ended", costUsd: 0.42, endedAt: ENDED_AT }, also: [done("run-crash")], effect: endId });
   armed.on = true;
   await assert.rejects(commitWrites(storage, [{ type: "entry", value: { id: endId, conversationId: ROOT, kind: "message", end: true } }], context), /injected crash/);
   assert.equal(await db.get("SELECT 1 AS found FROM pi_entries WHERE run_id = ? AND id = ?", "run-crash", endId), undefined, "no journal row of the end");

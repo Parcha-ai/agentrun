@@ -1,6 +1,6 @@
 import { Fragment, type ReactNode, useEffect, useRef } from "react";
 import { Button } from "@/components/ui/button";
-import { HARNESS_ORDER, issuesFor, providerHelp, providerLabel, resolution, type ToolChoice, type ToolGate, withPermission, withProvider } from "@/lib/toolSettings";
+import { HARNESS_ORDER, issuesFor, providerHelp, providerLabel, resolution, SERVER_DENY, serverDenies, type ToolChoice, type ToolGate, withPermission, withProvider } from "@/lib/toolSettings";
 import { cn } from "@/lib/utils";
 import type { Agent } from "@/lib/agentForm";
 import { grantOf, type McpServer } from "@/lib/mcp";
@@ -28,8 +28,10 @@ export const ASK_OFF = "Ask is off on this server: approving a call takes the ow
  *  ask, deny), where the server offers one, the layer's default named. A setting unlike the layer's default
  *  (`fallbackOf` for a provider, `permissionFallbackOf` for a permission: the built-in default for the server's, the
  *  server's for an agent's) is marked; a provider's row can be reset, a permission goes back by choosing its default.
- *  Ask, where it can't be answered here (`ask_needs`), is offered disabled, with why. */
-export function ToolTable({ label, rows, settings, fallbackOf, permissionFallbackOf = (g) => g.default_permission, resolvesOf, issues, busy = false, onEdit }: {
+ *  Ask, where it can't be answered here (`ask_needs`), is offered disabled, with why. `refused`: whether a row's tool is
+ *  refused by the server's deny, which holds for every agent (SERVER_DENY, said under it); `locked`, whether that also
+ *  holds its permission at deny here (an agent's table: its own setting holds nothing over it). */
+export function ToolTable({ label, rows, settings, fallbackOf, permissionFallbackOf = (g) => g.default_permission, resolvesOf, issues, busy = false, refused = () => false, locked = false, onEdit }: {
   label: string;
   rows: ToolRow[];
   settings: ToolSettings;
@@ -38,6 +40,8 @@ export function ToolTable({ label, rows, settings, fallbackOf, permissionFallbac
   resolvesOf: (row: ToolChoice, provider: string) => ReactNode;
   issues: Record<string, string[]>;
   busy?: boolean;
+  refused?: (name: string, permission: Permission) => boolean;
+  locked?: boolean;
   /** A person's change of one key's one field, as an edit of the whole map: applied to the map as it is when it is
    *  saved (a read-modify-write), so every other key and field is written back as it was. */
   onEdit: (edit: (current: ToolSettings) => ToolSettings) => void;
@@ -66,18 +70,22 @@ export function ToolTable({ label, rows, settings, fallbackOf, permissionFallbac
               const gateFallback = gate ? permissionFallbackOf(gate) : "allow";
               const ownPermission = settings[name]?.permission;
               const permissionSet = gate !== undefined && ownPermission !== undefined && ownPermission !== gateFallback;
-              const permission = permissionSet ? ownPermission : gateFallback;
+              const chosen = permissionSet ? ownPermission : gateFallback;
+              const denied = gate !== undefined && refused(name, chosen);
+              const held = denied && locked;
+              const permission = held ? "deny" : chosen;
               return (
                 <Fragment key={name}>
                   <tr data-tool={name} data-set={set || permissionSet ? "" : undefined} className="border-b align-top last:border-b-0">
                     <td className="px-3 py-2.5 font-mono text-[13px]">{name}</td>
                     {permissions && <td className="px-3 py-2">
                       {gate ? <>
-                        <select aria-label={`${name} permission`} value={permission} disabled={busy} onChange={(e) => { const chosen = e.target.value as Permission; onEdit((current) => withPermission(current, name, chosen, gateFallback)); }}
+                        <select aria-label={`${name} permission`} value={permission} disabled={busy || held} onChange={(e) => { const chosen = e.target.value as Permission; onEdit((current) => withPermission(current, name, chosen, gateFallback)); }}
                           className={cn("border bg-background px-2 py-1.5 font-mono text-[12px] outline-none focus:border-border-strong disabled:opacity-60", permissionSet && "border-primary text-primary")}>
                           {gate.permissions.map((p) => <option key={p} value={p} disabled={p === "ask" && gate.ask_needs === "password"}>{p}{p === gateFallback ? " (default)" : ""}</option>)}
                         </select>
-                        {permissionSet && <span className="mt-1 block font-mono text-[11px] text-muted-foreground">default: {gateFallback}</span>}
+                        {permissionSet && !held && <span className="mt-1 block font-mono text-[11px] text-muted-foreground">default: {gateFallback}</span>}
+                        {denied && <span className="mt-1 block max-w-[260px] text-[11px] text-warning-text">{SERVER_DENY}</span>}
                         {permission === "ask" && gate.ask_needs === "password" && <span className="mt-1 block max-w-[220px] text-[11px] text-warning-text">Each call is refused: no one can approve it here.</span>}
                       </> : none}
                     </td>}
@@ -189,6 +197,8 @@ export function AgentToolSettings({ agent, harness, model, tools, choices, gates
           wait, so the server refuses the start (its asks blocker, runnable.ts), in the same words. */}
       <p className="-mt-1 mb-2 text-[12px] text-muted-foreground">Each of these tools takes this server's setting (its default here) unless it is changed here. {callTools ? "A call node can't wait for an approval: a tool set to ask stops the run from starting. Set it to allow." : "A tool on ask makes the run wait for your approval at each call."}</p>
       <ToolTable label="This agent's tool settings" rows={rows} settings={value} fallbackOf={(t) => t.provider} issues={byTool} onEdit={(edit) => onChange(edit(value))}
+        // The server's deny holds over this agent's own setting (rule A): the row stays at deny and says why.
+        refused={(name) => serverDenies(name, gates, agent?.tools)} locked
         // The agent's own setting for every tool of its MCP server when the form has one; else the server's permission for
         // this agent when its read says it (GET /agents/{id}), else capabilities' or the MCP server read's.
         permissionFallbackOf={(g) => ownWildcard(g.name) ?? read(g.name)?.default_permission ?? g.permission}

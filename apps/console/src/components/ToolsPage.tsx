@@ -86,11 +86,12 @@ export function ToolsPage({ v2, choices, gates = [], onSaved, onOpen }: { v2: Cl
           <p className="caps text-[11px] text-muted-foreground">Settings</p>
           <h1 className="mt-1 text-2xl font-semibold">Tools</h1>
           <p className="mt-2 text-[14px] text-muted-foreground">This server's provider for each tool that has a choice, and what it resolves to on each harness. A change is saved at once and applies to every run launched from then on. An agent with a provider of its own keeps it.</p>
-          {gates.length > 0 && <p className="mt-2 text-[14px] text-muted-foreground">Each tool's permission: <span className="font-mono text-[13px]">allow</span> runs it, <span className="font-mono text-[13px]">ask</span> makes the run wait for your approval at each call, <span className="font-mono text-[13px]">deny</span> refuses it and tells the agent why. A permission applies at the next call, in runs already going too. An agent with a permission of its own keeps it.</p>}
+          {gates.length > 0 && <p className="mt-2 text-[14px] text-muted-foreground">Each tool's permission: <span className="font-mono text-[13px]">allow</span> runs it, <span className="font-mono text-[13px]">ask</span> makes the run wait for your approval at each call, <span className="font-mono text-[13px]">deny</span> refuses it and tells the agent why. A permission applies at the next call, in runs already going too. An agent's own allow or ask takes the place of this server's; deny here refuses it for every agent.</p>}
         </div>
         <section aria-label="This server's providers">
           {rows.length ? (
             <ToolTable label="This server's tool settings" rows={rows} settings={own} fallbackOf={(t) => t.default_provider} issues={byTool} busy={busy} onEdit={(edit) => void save(edit)}
+              refused={(_, permission) => permission === "deny"}
               resolvesOf={(t, provider) => (provider === t.provider && readFor(t.name) ? <PerHarness choice={t} />
                 : capsRead === "reading" ? <span className="block font-mono text-[12px] text-muted-foreground">reading…</span>
                 : <span className="block text-[12px] text-muted-foreground">{capsRead === "failed" ? "What it resolves to couldn't be read." : "It changed while this page read it."} <button type="button" onClick={retry} disabled={busy} className="caps ml-1 border px-2 py-0.5 text-[11px] hover:bg-accent disabled:opacity-45">Retry</button></span>)} />

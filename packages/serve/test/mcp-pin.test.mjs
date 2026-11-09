@@ -93,6 +93,23 @@ test("under ask, a call not as pinned is refused and never asks; one as pinned a
   assert.equal(sends().length, 1, "sent exactly once");
 });
 
+test("a call approved under ask is checked against the pin in force when it is approved: a pin set while it waited refuses it, unsent", { timeout: 240_000 }, async (t) => {
+  const { api, sends, send, answer } = await setup(t);
+  const made = await api("POST", "/agents", agent("waits", { tools: [SEND] }));
+  assert.equal(made.status, 201, JSON.stringify(made.body));
+  // No pin yet: the call to C0EVIL is as pinned as any, and parks on its ask.
+  const run = await send("waits", "C0EVIL");
+  await follow(api, run, ["input_required"], { deadlineMs: 180_000 });
+  const pending = (await api("GET", `/runs/${run}`)).body.pending;
+  assert.deepEqual([pending?.kind, pending?.tool], ["approval", SEND], JSON.stringify(pending));
+  // The owner pins the send to C0123 while the call waits, then approves it: the pin in force refuses it.
+  assert.equal((await api("PUT", "/settings/tools", { [SEND]: { pin: { channel_id: "C0123" } } })).status, 200);
+  assert.equal(await answer(run, pending.id, { decision: "allow" }), 204);
+  await follow(api, run, ["completed", "failed"], { deadlineMs: 180_000 });
+  assert.match(await answerOf(api, run), /may only be called with channel_id = C0123: its destination is fixed by this server's settings/);
+  assert.equal(sends().length, 0, "the approved call never reached the server");
+});
+
 test("the server's pin alone binds an allowed send, kept and served; a pin that is not one is 422", { timeout: 240_000 }, async (t) => {
   const { api, sends, make, send } = await setup(t);
   await make("allowed", { permission: "allow" });
