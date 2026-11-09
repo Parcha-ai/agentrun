@@ -27,11 +27,11 @@ const filesUnder = (dir) => readdirSync(dir, { withFileTypes: true }).flatMap((e
   const path = join(dir, entry.name);
   return entry.isDirectory() ? filesUnder(path) : entry.isFile() ? [[path, readFileSync(path)]] : [];
 });
-/** Every browser_viewers row, every column, raw. */
+/** Every computer_viewers row, every column, raw. */
 const rawRows = (file) => {
   const db = new DatabaseSync(file, { readOnly: true, timeout: 5_000 });
   try {
-    return db.prepare("SELECT * FROM browser_viewers ORDER BY run_id, tag").all();
+    return db.prepare("SELECT * FROM computer_viewers ORDER BY run_id, kind, tag").all();
   } finally {
     db.close();
   }
@@ -107,7 +107,7 @@ test("the server reads what the runner put: liveViewerLink names the newest view
   assert.equal(await liveViewerById(r.store, KEY, "run-1", a.id), undefined);
 });
 
-test("on the runner path the viewer's token is in no browser_viewers column in plaintext and in no file under the data directory: the store's file (its journal and command rows among its tables) and the run's directory hold none of it", async (t) => {
+test("on the runner path the viewer's token is in no computer_viewers column in plaintext and in no file under the data directory: the store's file (its journal and command rows among its tables) and the run's directory hold none of it", async (t) => {
   const r = await runnerRun(t);
   const handed = sessionHandovers(r.root, r.seam);
   const a = viewer("ar-run-1-1");

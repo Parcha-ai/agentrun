@@ -10,6 +10,16 @@ async function withTrigger(store) {
   await store.templates.apply({ id: "agent-1", name: "One" }, { id: "rev-1", kind: "agentic", body: {} }, [{ id: "trg-1", name: "weekly", source: { kind: "schedule" }, target: {}, scopes: [{ kind: "schedule", scope: "trg-1" }] }]);
 }
 
+test("a trigger belongs to an agent the store holds: one made, or moved, for an agent it does not hold is refused in words and writes nothing", async (t) => {
+  const { store } = await storeOn(t);
+  await withTrigger(store);
+  const ghost = { id: "trg-2", agentId: "agent-ghost", name: "nightly", enabled: true, source: { kind: "schedule" }, target: {}, nextAt: null, catchupWindowS: 3600 };
+  await assert.rejects(store.triggers.create(ghost), (error) => error instanceof StoreConstraint && error.message === "no agent agent-ghost: a trigger belongs to an agent the store holds");
+  assert.equal(await store.triggers.get("trg-2"), undefined, "nothing made");
+  await assert.rejects(store.triggers.update("trg-1", { agentId: "agent-ghost", name: "moved" }), (error) => error instanceof StoreConstraint && /^no agent agent-ghost: /.test(error.message));
+  assert.deepEqual([(await store.triggers.get("trg-1")).agentId, (await store.triggers.get("trg-1")).name], ["agent-1", "weekly"], "nothing moved");
+});
+
 test("fire: the queued run, the started firing and the trigger's last run in one transaction; a firing key taken twice starts no second run", async (t) => {
   const { store, clock } = await storeOn(t);
   await withTrigger(store);

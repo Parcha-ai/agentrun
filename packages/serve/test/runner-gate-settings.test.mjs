@@ -7,12 +7,15 @@ import assert from "node:assert/strict";
 import { test } from "node:test";
 import { specFor } from "./runner-spec-support.mjs";
 
+/** The gate's decision for a call: "allow", "ask", or "deny" (a refusal carries its words: `{ deny }`). */
+const decision = (answer) => (typeof answer === "string" ? answer : "deny");
+
 test("the runner's gate honors a deny the owner saved in the store: a file-based read would never see it on a runner", async (t) => {
   const { spec } = await specFor(t, {
     body: { tools: ["web_search", "monid.run"], approvals: "ask" },
     settings: { web_search: { permission: "deny" } },
   });
-  assert.equal(spec.gate({ tool: "web_search" }), "deny", "the store's deny reaches the gate, over the tool's allow default");
+  assert.equal(decision(spec.gate({ tool: "web_search" })), "deny", "the store's deny reaches the gate, over the tool's allow default");
   assert.equal(spec.gate({ tool: "monid.run" }), "ask", "a tool the owner set nothing for keeps its default (monid asks)");
 });
 
@@ -26,5 +29,5 @@ test("a deny the owner saved stands even under approvals 'never': a never-approv
     body: { tools: ["monid.run"], approvals: "never" },
     settings: { "monid.run": { permission: "deny" } },
   });
-  assert.equal(spec.gate({ tool: "monid.run" }), "deny", "approvals never lifts an ask, never a deny from the store");
+  assert.equal(decision(spec.gate({ tool: "monid.run" })), "deny", "approvals never lifts an ask, never a deny from the store");
 });

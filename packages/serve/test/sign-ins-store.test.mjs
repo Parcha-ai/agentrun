@@ -107,7 +107,7 @@ test("forget is refused while a running run was handed the sign-in's pointer; it
   assert.ok(err instanceof SignInHandedTo && err.runId === runId, "refused while handed");
   assert.ok(await store.signIns.get("alpha", "browserbase"), "nothing written: the live row stays");
   // The run ends (its runner releases the claim it holds); the hold is gone, and forget succeeds.
-  await store.release(claim, { state: "ended" });
+  await store.runs.update(claim, { state: "ended" });
   assert.equal(await handedTo(store, hash), undefined);
   const out = await forgetSignIn(store, KEY, fakeVendors(), "alpha", "browserbase");
   assert.equal(out.at_vendor, "deleted");
@@ -123,7 +123,7 @@ test("an unreadable sign-in is refused forget while any running run was handed a
   const err = await forgetSignIn(store, other, fakeVendors(), "alpha", "browserbase").then(() => null, (e) => e);
   assert.ok(err instanceof SignInHandedTo && err.runId === runId, "an unreadable pointer is refused while any run was handed one");
   // With no running handed run, forget of the unreadable sign-in goes; its sealed bytes are kept in the tombstone.
-  await store.release(claim, { state: "ended" });
+  await store.runs.update(claim, { state: "ended" });
   const out = await forgetSignIn(store, other, fakeVendors(), "alpha", "browserbase");
   assert.equal(out.at_vendor, "not_deleted", "its object could not be deleted (the pointer never opened)");
   const gone = await forgottenPointers(store, KEY, "alpha", "browserbase");
@@ -166,7 +166,7 @@ test("signInsOverStore.view: the old SignInView shape; ready, then held/held_by 
   // A run verifies it (E2's run path through store.signIns.verify): verified_at shows that time, as ISO.
   clock.now += 1000;
   await store.signIns.verify("alpha", "browserbase", clock.now);
-  await store.release(claim, { state: "ended" });
+  await store.runs.update(claim, { state: "ended" });
   assert.deepEqual(await bridge.view("alpha"), [{ key: "default", provider: "browserbase", state: "ready", held_by: null, verified_at: new Date(clock.now).toISOString() }]);
 });
 
@@ -196,7 +196,7 @@ test("signInsOverStore.forget: the old {key, removed} shape; 404 for an unknown 
   assert.ok(refused instanceof ApiError && refused.code === "sign_in_held" && refused.extra.details.handed_to === held.runId, "409 sign_in_held with handed_to (ApiError.extra.details, which the v2 body spreads)");
   assert.deepEqual(vendors.removed, [], "nothing removed while held");
   // The run ends; forget returns the old shape and the vendor object is deleted.
-  await store.release(held.claim, { state: "ended" });
+  await store.runs.update(held.claim, { state: "ended" });
   assert.deepEqual(await bridge.forget("alpha", "default"), { key: "default", removed: [{ provider: "browserbase", at_vendor: "deleted" }] });
   assert.deepEqual(vendors.removed, [["browserbase", "ctx-1"]]);
   assert.deepEqual(await bridge.forgotten("alpha", "browserbase"), { refs: ["ctx-1"], unreadable: false });

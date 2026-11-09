@@ -19,13 +19,15 @@ import { type Conversation, type ConversationId, createRegistry, Harness, LiveDo
 import { type AdapterSession, type AgentAdapter, type BeforeRequest, type HostTool, modelPortFor, type Refusal, runBooking, type SessionSpec } from "@parcha/agentrun-kernel";
 import type { KernelHooks, ToolCall } from "./conformance/subject.js";
 import { type AnswerData, type ApprovalPrice, type AskData, type BudgetData, type CallEndData, type CallStartData, type CallStatus, type EndData, KINDS, type MessageData, type RaiseData, withdrawnAnswers } from "./journal-kinds.js";
-import { originOf } from "@parcha/pi-durable-agent/timeline";
+import { originOf, RUN_RESUMED } from "@parcha/pi-durable-agent/timeline";
 import { type AlsoRow, type Claim, type Command, type CommandOutcome, deniedText, endedBy, type EndOfRunAnswer, type Loop, type LoopDeps, type LoopEnd, type LoopFactory, noteOf, type StopReason } from "./loop-contract.js";
 import { answerText, REFLECT_NOTE_ONLY, reflectRequestId, underLearning, WRITES } from "./end-of-run.js";
 import { approvalOf, CLOSE_MS, CUT_STEP_MS, STOP_SETTLE_MS, commandRequest, cutLast, DEFAULT_RESTART_LIMIT, entriesOf, findData, Gate, heldReporter, Interrupted, KernelFault, Parked, quiet, restartLimited, writesEntry, writesSubmission } from "./loop.js";
 import type { PiRun, PiSessionIO, PreIntentAnswer, PreIntentCall } from "./adapters/pi.js";
 import { HAND_BACK, handBackOf } from "./hand-back.js";
 import { journalSessions } from "./sessions.js";
+import { paidCalls, TOOL_SESSION } from "@parcha/agentrun-kernel/kernel/cap";
+import { bookedIn } from "../paid-calls.js";
 import { sideEffect } from "./side-effects.js";
 
 /** What a raise meets, as the kernel cap's checkRaise reads it (run-adapters/src/kernel/cap/park.ts): the run's cap, the
@@ -49,8 +51,9 @@ export interface AdapterRunSpec {
    *  (its text events, at each call and turn boundary), and ends interrupted a call a crash or a fault left open. */
   readonly record?: "loop";
   readonly hooks?: KernelHooks;
-  /** The gate's answer for a call, before its intent: run it, refuse it, or ask a person (the run parks). */
-  readonly gate?: (call: ToolCall) => "allow" | "ask" | "deny";
+  /** The gate's answer for a call, before its intent: run it, refuse it, or ask a person (the run parks). A refusal may
+   *  carry the words the model reads (`{ deny }`: where the deny was set, a pin's words); a bare "deny" gets generic ones. */
+  readonly gate?: (call: ToolCall) => "allow" | "ask" | "deny" | { readonly deny: string };
   /** What an asked call costs, for its approval card (main's tool gate options.price): dollars, or "not metered";
    *  undefined when it has none (the ask says null). */
   readonly approvalPrice?: (call: ToolCall) => ApprovalPrice | undefined;
@@ -448,6 +451,13 @@ function adapterLoop(specOf: (claim: Claim, run: AdapterRun) => AdapterRunSpec |
         // The host's check is asked with the run's totals, every session of the run summed (the run's one booking), never
         // this session's alone: a cap is the run's. Its last refusal is kept: a turn it ended ends the run in its words.
         const hostCheck = spec.beforeRequest ? runBooking(sessions, spec.beforeRequest) : undefined;
+        // The run's paid tool calls (a web tool's request to Parallel, a monid call) on the same one ledger and rule, as
+        // main books them (paid-calls.ts): held at its price before it is sent, its hold flushed first, and settled at what
+        // it charged, under the call that made it. A later claim reads them from the run's records with the rest.
+        // Opened at the claim's first paid call: a run that makes none writes nothing for them.
+        let paidOpen: ReturnType<typeof paidCalls> | undefined;
+        const paidBooking = () => (paidOpen ??= sessions.open(TOOL_SESSION).then((tools) => paidCalls(tools, hostCheck ?? (async () => undefined), { flush: () => deps.flush() })));
+        const paid = { admit: async (request: Parameters<Awaited<ReturnType<typeof paidCalls>>["admit"]>[0]) => (await paidBooking()).admit(request), settle: async (id: string, usd: number | null) => (await paidBooking()).settle(id, usd) };
         let refused: Refusal | undefined;
         const beforeRequest: BeforeRequest | undefined = hostCheck && (async (request) => {
           const answer = await hostCheck(request);
@@ -482,7 +492,8 @@ function adapterLoop(specOf: (claim: Claim, run: AdapterRun) => AdapterRunSpec |
               const answer = await sideEffect({
                 replaySafe: tool.replay === "safe",
                 flush: () => deps.flush(),
-                route: () => tool.call(args, toolContext),
+                // Its paid requests booked under this call, on the run's one ledger (paid-calls.ts bookedIn, Ledger.paid).
+                route: () => bookedIn({ call: toolContext.callId, record: async () => {}, paid }, () => tool.call(args, toolContext)),
                 beforeResult: async (answer) => {
                   const call: ToolCall = { callId: toolContext.callId, tool: tool.name as never, args: (args ?? {}) as Record<string, unknown> };
                   try {
@@ -535,6 +546,8 @@ function adapterLoop(specOf: (claim: Claim, run: AdapterRun) => AdapterRunSpec |
           raising.resuming = true;
           raising.state ??= await raiseStateOf();
         }
+        // Taken over from a runner whose lease ran out mid-run: said on the run's timeline once, at this claim's first pass.
+        if (restarts === 0 && claim.lost) await noteTakenOver(harness, root, claim.lost.runner);
         opened();
         await reportHeld(harness, root.id);
         if (restarts > restartLimit + 1) {
@@ -672,6 +685,7 @@ function adapterLoop(specOf: (claim: Claim, run: AdapterRun) => AdapterRunSpec |
       if (reflecting && WRITES.has(call.tool) && underLearning(spec.workRoot, call.args)) return { deny: REFLECT_NOTE_ONLY };
       await hooks.beforeIntent(kernelCall);
       const decision = spec.gate?.(kernelCall) ?? "allow";
+      if (typeof decision === "object") return { deny: decision.deny };
       if (decision === "deny") return { deny: `Permission denied: ${call.tool} is set to deny.` };
       if (decision === "allow") return "allow";
       const answer = await answerOf(call, spec.approvalPrice?.(kernelCall) ?? null);
@@ -921,6 +935,17 @@ function adapterLoop(specOf: (claim: Claim, run: AdapterRun) => AdapterRunSpec |
     let timer: NodeJS.Timeout | undefined;
     await Promise.race([new Promise<void>((resolve) => bookedAll.push(resolve)), new Promise<void>((resolve) => (timer = setTimeout(resolve, CLOSE_MS)))]);
     clearTimeout(timer);
+  }
+
+  /** The run's timeline says it went on after its runner was lost (RUN_RESUMED, `after: runner_lost`): one root entry,
+   *  no run patch. A journal sealed meanwhile (the claim lost again, a shutdown) refuses it, and the loop goes on as it
+   *  would: the next claim says it. */
+  async function noteTakenOver(on: Harness, conversation: Conversation, runner: string): Promise<void> {
+    try {
+      await on.commit((tx) => tx.appendEntry(conversation.id, { kind: RUN_RESUMED, data: { after: "runner_lost", runner, at: Date.now() } }), context);
+    } catch (error) {
+      if (!gate?.sealed) throw error;
+    }
   }
 
   /** The end commit: an `agentrun.end` entry carrying the run row's final patch (the spec's end patch in it), the rows
