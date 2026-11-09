@@ -4,7 +4,7 @@ import { Button } from "@/components/ui/button";
 import { Chip } from "@/components/ui/chip";
 import { problem, ProblemCard } from "@/components/learningProblem";
 import { LearningSwitch } from "@/components/LearningSwitch";
-import { type Agent, editBody, noteSaveError } from "@/lib/agentForm";
+import { type Agent, editBody, noteSaveError, runsWhere } from "@/lib/agentForm";
 import { type Client, ClientError } from "@/lib/client";
 import { markdown, runLabel, when } from "@/lib/format";
 import {
@@ -12,12 +12,13 @@ import {
   APPROVE_LATER, APPROVE_SIGN_IN, type Approval, approval, CHANGED, changeWords, HOST_RUNS, type LastChange, RESTORE_SIGN_IN, RESTORES, type Retired, isPending, NO_VERSION, type NoteProblem, originOf, WAITS_WHY, notes, noteText, NOTE_TYPES, provenance, runsWord, seenVersion, shortTitle, shownImpact, took, TYPE_HINT, typeLabel,
   counted, type LearnedItem, learnedItems, statusFile,
 } from "@/lib/learning";
-import { placeOf } from "@/lib/place";
+import type { Places } from "@/lib/place";
 import { cn } from "@/lib/utils";
 import type { Run } from "@/lib/v2";
 
-/** `server`: the server's own learning switch (capabilities `features.learning`); "off" means no run learns there. */
-export type LearningProps = { agent: Agent; v2: Client; focus?: string[]; server?: "on" | "off" | null; onAgent?: (agent: Agent) => void };
+/** `server`: the server's own learning switch (capabilities `features.learning`); "off" means no run learns there.
+ *  `places`: the server's places (capabilities `places`), for where an agent that names no place runs. */
+export type LearningProps = { agent: Agent; v2: Client; focus?: string[]; server?: "on" | "off" | null; onAgent?: (agent: Agent) => void; places?: Places | null };
 
 /** A failed write in the problem card's words, under its own title ("The note was not saved."). */
 const failed = (e: unknown, what: string, title: string) => ({ ...problem(e, what), title });
@@ -34,7 +35,7 @@ const field = "w-full border bg-background px-3 py-2 font-mono text-[13px] outli
  *  shows where it came from and how often it was used, and a person edits it (its version named, so a change made since
  *  is never written over), retires it, or adds one. Beside them: the learning switch, what runs did not keep and why, the
  *  before and after once there is one, and what the next run reads. */
-export function LearningTab({ agent, v2, focus = [], server, onAgent }: LearningProps) {
+export function LearningTab({ agent, v2, focus = [], server, onAgent, places }: LearningProps) {
   const [view, setView] = useState<AgentLearning | null>(null);
   const [error, setError] = useState<unknown>(null);
   const [runs, setRuns] = useState<Run[]>([]);
@@ -131,8 +132,9 @@ export function LearningTab({ agent, v2, focus = [], server, onAgent }: Learning
         <section className="border border-warning/50" aria-label="Waiting for your OK">
           <h2 className="caps flex items-baseline gap-2 border-b border-warning/50 px-4 py-3 text-[12px] font-semibold">Waiting for your OK<span className="font-mono font-normal text-muted-foreground">{waiting.length}</span></h2>
           <p className="px-4 pt-3 text-[13px] text-muted-foreground">{WAITS_WHY}</p>
-          {/* Only off the sandbox: an agent its definition places in a box runs no bash on the host. */}
-          {placeOf(agent.definition.place)?.mode !== "sandbox" && <p className="px-4 pt-1 text-[13px] text-muted-foreground">{HOST_RUNS}</p>}
+          {/* Only on the host with a shell: an agent that runs on the server (its own place or the server's default for it) with
+              bash in its tools. One in a box, or with no shell, runs no bash on the host. */}
+          {runsWhere(agent, places)?.place.mode === "runner" && (agent.definition.tools ?? []).includes("bash") && <p className="px-4 pt-1 text-[13px] text-muted-foreground">{HOST_RUNS}</p>}
           <ul className="space-y-3 p-4">
             {waiting.map((x) => (
               <li key={x.file}>
