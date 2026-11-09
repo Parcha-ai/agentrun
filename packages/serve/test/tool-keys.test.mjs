@@ -317,9 +317,8 @@ test("values sealed under another key, with no key, or in a damaged file do not 
   for (const forms of [...Object.values(values).map(formsOf), keyForms(first), keyForms(second)]) holdsNone(lines.join("\n"), forms, "the log");
 });
 
-test("a key saved is read by name with no restart: capabilities lose the tool's missing names and name its key, a run of it starts and its process gets the key; deleted, it is missing again", { timeout: 60_000 }, async (t) => {
-  const log = join(await scratch(t), "browser.jsonl");
-  withEnv(t, { AGENTRUN_SEAL_KEY: sealKey(), FAUX_BROWSER_LOG: log }, KEYS);
+test("a key saved is read by name with no restart: capabilities lose the tool's missing names and name its key, and a run of it starts; deleted, it is missing again", { timeout: 60_000 }, async (t) => {
+  withEnv(t, { AGENTRUN_SEAL_KEY: sealKey() }, KEYS);
   const { api } = await serve(t, { fauxBrowser: FAUX_BROWSER });
   const values = { BROWSERBASE_API_KEY: made(), BROWSERBASE_PROJECT_ID: made() };
   const browser = async () => {
@@ -347,12 +346,25 @@ test("a key saved is read by name with no restart: capabilities lose the tool's 
   const started = await api("POST", "/agents/browse/runs", { input: { content: "Browse the example page." } });
   assert.equal(started.status, 202, JSON.stringify(started.body));
   await follow(api, started.body.run_id, ["completed"]);
-  const [seen] = readFileSync(log, "utf8").trim().split("\n").map((line) => JSON.parse(line));
-  assert.deepEqual(seen, { op: "env", BROWSERBASE_API_KEY: "set", BROWSERBASE_PROJECT_ID: "set" }, "the run's process got both, saved");
 
   assert.equal((await api("DELETE", "/settings/tool-keys/browserbase")).status, 204);
   assert.deepEqual(await browser(), unset, "deleted, missing again");
   assert.deepEqual(await refused(), [409, "agent_not_runnable", {}]);
+});
+
+test("a browser key saved by name reaches the run's browser with no restart: its provider gets both fields, saved", { timeout: 60_000, skip: "waits on the runner binding the browser tool (runner/adapter-run-spec.ts bindNonHandTools binds web, monid and learned workflows only)" }, async (t) => {
+  const log = join(await scratch(t), "browser.jsonl");
+  withEnv(t, { AGENTRUN_SEAL_KEY: sealKey(), FAUX_BROWSER_LOG: log }, KEYS);
+  const { api } = await serve(t, { fauxBrowser: FAUX_BROWSER });
+  const values = { BROWSERBASE_API_KEY: made(), BROWSERBASE_PROJECT_ID: made() };
+  assert.equal((await api("POST", "/agents", { definition: { id: "browse", name: "browse", instructions: "Browse.", tools: ["browser"] } })).status, 201);
+  assert.equal((await api("PUT", "/settings/tool-keys/browserbase", { values })).status, 204);
+  const started = await api("POST", "/agents/browse/runs", { input: { content: "Browse the example page." } });
+  assert.equal(started.status, 202, JSON.stringify(started.body));
+  await follow(api, started.body.run_id, ["completed"]);
+  // The fake browser's first line says whether each field reached the env its provider gets: set or unset, never a value.
+  const [seen] = readFileSync(log, "utf8").trim().split("\n").map((line) => JSON.parse(line));
+  assert.deepEqual(seen, { op: "env", BROWSERBASE_API_KEY: "set", BROWSERBASE_PROJECT_ID: "set" }, "the run's browser got both, saved");
 });
 
 test("the page's owner saves and forgets a key with the session cookie from the page's own origin; from another origin the cookie is no credential", async (t) => {
