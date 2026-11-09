@@ -14,11 +14,11 @@ afterEach(() => { act(() => root?.unmount()); document.body.innerHTML = ""; });
 
 const NOW = Date.parse("2026-11-09T12:00:00Z");
 const field = (over: Partial<SecretField>): SecretField => ({ name: "PARALLEL_API_KEY", set: true, source: "console", changed_at: "2026-11-09T09:00:00Z", ...over });
-function row(f: SecretField, writable: boolean) {
+function row(f: SecretField, writable: boolean, required?: boolean) {
   const onPaste = vi.fn(), onRemove = vi.fn();
   const host = document.body.appendChild(document.createElement("div"));
   root = createRoot(host);
-  act(() => root!.render(createElement("ul", null, createElement(SecretRow, { field: f, writable, now: () => NOW, onPaste, onRemove }))));
+  act(() => root!.render(createElement("ul", null, createElement(SecretRow, { field: f, writable, now: () => NOW, onPaste, onRemove, ...(required === undefined ? {} : { required }) }))));
   const li = host.querySelector(`[data-secret="${f.name}"]`)!;
   const buttons = () => [...li.querySelectorAll("button")].map((b) => b.textContent?.trim());
   return { li, buttons, onPaste, onRemove, click: (label: string) => act(() => { [...li.querySelectorAll("button")].find((b) => b.textContent?.trim() === label)!.click(); }) };
@@ -61,5 +61,15 @@ describe("SecretRow", () => {
     expect(row(field({}), false).buttons()).toEqual([]);
     act(() => root?.unmount()); document.body.innerHTML = "";
     expect(row(field({ set: false, source: null, changed_at: null }), false).buttons()).toEqual([]);
+  });
+
+  it("a key a provider doesn't need (required false): Optional, and missing it is no warning", () => {
+    const r = row(field({ name: "KERNEL_PROJECT", set: false, source: null, changed_at: null }), true, false);
+    expect(r.li.textContent).toContain("Optional");
+    expect(r.li.querySelector('[data-state]')!.getAttribute("data-state")).toBe("optional-missing");
+    act(() => root?.unmount()); document.body.innerHTML = "";
+    const needed = row(field({ name: "KERNEL_API_KEY", set: false, source: null, changed_at: null }), true, true);
+    expect(needed.li.textContent).not.toContain("Optional");
+    expect(needed.li.querySelector('[data-state]')!.getAttribute("data-state")).toBe("missing");
   });
 });
