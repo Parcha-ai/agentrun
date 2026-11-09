@@ -24,7 +24,7 @@ import type { TSchema } from "typebox";
 import { defineTool, type ToolRegistration } from "@earendil-works/pi-durable";
 import type { PublicFetchOptions } from "@parcha/pi-browser";
 import { type CapRefusal, capRefusals } from "./cap.js";
-import { FAUX_PARALLEL_ENV, fauxFetch, handedKeys, PARALLEL_KEY_ENV } from "./decisions.js";
+import { FAUX_PARALLEL_ENV, fauxFetch, parallelKeyOf } from "./decisions.js";
 import { clip, fetchOptions, HTML_READ_CHARS, linksWithin, MAX_CHARS_MIN, PAGE_CHARS, PAGE_READ_MAX_CHARS, type Page, type Part, partOfRead, partProblem, type Read, readDirect, TEXT_CAP, TIMEOUT_MS, TITLE_CAP, textOf, type Unread, URL_MAX, URL_PARAMETERS } from "./web-fetch-direct.js";
 import { FAUX_ENV } from "./model.js";
 import { PaidRefused, paidRequest, parallelFeeOf } from "./paid-calls.js";
@@ -226,15 +226,21 @@ export async function webFetch(url: unknown, { parallel, pages, checkMs = TIMEOU
   return { ...partOfRead(page, { offset, maxChars }), via, ...(why ? { parallel: why } : {}) };
 }
 
-let parallel: Extract | null | undefined;
+/** Each run's Parallel extract, by the environment its calls are given: one object per run (main's run process hands
+ *  process.env; the runner hands each claim its own, claim-secrets.ts), so one claim's key or client never serves another. */
+const parallels = new WeakMap<NodeJS.ProcessEnv, Extract | null>();
 /** The pages this run read (Pages): its process is the run's, so the agent's tool and a call node's web_fetch share them. */
 export const runPages: Pages = new Map();
-/** The run's Parallel extract, made once in its process so a refused key holds for the rest of the run: on the Parallel
- *  key the server handed it (handedKeys, the read the decision providers share), null without one. */
+/** The run's Parallel extract, made once for the environment its calls are given, so a refused key holds for the rest of
+ *  the run: on the Parallel key that environment holds (parallelKeyOf: the per-run pipe, or the claim's own), null
+ *  without one. */
 export function parallelOf(env: NodeJS.ProcessEnv): Extract | null {
-  if (parallel !== undefined) return parallel;
-  const key = handedKeys(env)[PARALLEL_KEY_ENV];
-  return (parallel = key === undefined ? null : parallelExtract(key, async (...args) => ((await fauxFetch(env, FAUX_PARALLEL_ENV)) ?? fetch)(...args)));
+  const made = parallels.get(env);
+  if (made !== undefined) return made;
+  const key = parallelKeyOf(env);
+  const extract = key === undefined ? null : parallelExtract(key, async (...args) => ((await fauxFetch(env, FAUX_PARALLEL_ENV)) ?? fetch)(...args));
+  parallels.set(env, extract);
+  return extract;
 }
 
 /** The part `options` names of the page at `url` by the provider the run's plane resolves web_fetch to: Parallel's
