@@ -586,6 +586,24 @@ export interface Live {
   drop(claim: Claim): Promise<void>;
 }
 
+/** One open browser session's viewer as the store keeps it: one row per (run, session tag), its token sealed
+ *  (sealedAt.liveViewer), `at` the store's clock when it was put, `runner` the claim's holder. */
+export type LiveViewerRow = { tag: string; port: number; id: string; sealed: Uint8Array; at: number; runner: string };
+
+/** The browser sessions' viewer hand-overs (browser-live.ts): the runner puts and drops them under its claim, the server
+ *  reads them. The rows go with the run's end (its end commit), a take or reclaim of the run (a newer epoch, in the
+ *  claim's transaction), and the run's delete (on delete cascade). */
+export interface LiveViewers {
+  /** The runner's put under its claim, upsert on (run_id, tag), `at` stamped by the store: false when the claim is stale
+   *  (its epoch moved on, or its lease ran out), and nothing written. */
+  put(claim: Claim, viewer: { tag: string; port: number; id: string; sealed: Uint8Array }): Promise<boolean>;
+  /** The runner's drop, fenced by its claim's epoch: session `tag`'s row, or with no tag every row of the run. */
+  drop(claim: Claim, tag?: string): Promise<void>;
+  /** The server's read: the run's rows, newest first, only those of its epoch, under a live claim, by its runner (a runner
+   *  that died, or a claim lost, names no viewer). */
+  of(runId: string): Promise<LiveViewerRow[]>;
+}
+
 /** Who opens the store. The server sets the schema up at its start and holds the store's owner lock (one server per
  *  store); a runner never sets anything up, and refuses a schema version it does not know. */
 export type StoreRole = "server" | "runner";
@@ -597,6 +615,7 @@ export interface Store {
   readonly runs: Runs;
   readonly mcp: Mcp;
   readonly live: Live;
+  readonly liveViewers: LiveViewers;
   readonly learning: Learning;
   /** The server's tool settings and any other server setting it keeps (design 2.1): one JSON value per key. */
   readonly settings: Settings;

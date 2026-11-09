@@ -27,11 +27,37 @@ export async function openCap(options: CapOptions & { marks: CapMarks }): Promis
   return createCap({ ...options, spentUsd: options.spentUsd === undefined ? spent : options.spentUsd }, { costs: ownCostsOf(read), told: toldIn(read) });
 }
 
-/** A decision held as a model request is, at its fixed output: all of it or refused, never clamped. */
-const asModel = (request: DecisionCapRequest): ModelCapRequest => {
+/** The output a decision is expected to take, a question (main's DECISION_OUTPUT_TOKENS). */
+export const DECISION_OUTPUT_TOKENS = 256;
+/** An image's input allowance, in tokens (main's DECISION_IMAGE_TOKENS: a 1568 px square at 750 pixels a token). */
+export const DECISION_IMAGE_TOKENS = 3_300;
+
+/** A decision held as a model request is, at its fixed output (all of it or refused, never clamped), as main holds it:
+ *  DECISION_OUTPUT_TOKENS a question under "expected", whatever its model's most output (so a model with none is admitted
+ *  so); its model's most completion tokens under "strict" (none, and its output priced: no bound, refused); its images'
+ *  tokens in its input; its fees (per request, per image) beside its tokens. */
+const asModel = (request: DecisionCapRequest, mode: CapMode): ModelCapRequest => {
   if (request.model === "unreadable") throw new DecisionPriceUnreadable();
-  return { kind: "model", id: request.id, model: request.model, inputTokens: request.inputTokens, outputAsked: request.outputTokens, outputTokensLeast: request.outputTokens };
+  const images = request.images ?? 0;
+  const output = mode === "strict" ? request.model.outputCeiling : request.questions * DECISION_OUTPUT_TOKENS;
+  const model = mode === "strict" ? request.model : { ...request.model, outputCeiling: output };
+  const feeUsd = (request.requestUsd ?? 0) + (request.imageUsd ?? 0) * images;
+  return {
+    kind: "model",
+    id: request.id,
+    model,
+    inputTokens: request.inputTokens + images * DECISION_IMAGE_TOKENS,
+    ...(feeUsd > 0 ? { feeUsd } : {}),
+    ...(output === null ? {} : { outputAsked: output, outputTokensLeast: output }),
+  };
 };
+/** A decision under no cap: not priced (main lets it go unpriced), so nothing is read and nothing refused. */
+const unpriced = (request: DecisionCapRequest): ModelCapRequest => ({
+  kind: "model",
+  id: request.id,
+  model: { id: request.model === "unreadable" ? "unreadable" : request.model.id, api: "decision", price: null, outputCeiling: null },
+  inputTokens: request.inputTokens,
+});
 
 export function createCap(options: CapOptions, seed: { costs?: { model: string; usd: number }[]; told?: boolean } = {}): Cap {
   const mode: CapMode = options.mode ?? "expected";
@@ -79,14 +105,14 @@ export function createCap(options: CapOptions, seed: { costs?: { model: string; 
 
   return {
     async admit(input: CapRequest): Promise<Admission> {
-      const request = input.kind === "decision" ? asModel(input) : input;
+      // Read before every check: a raise holds from the next paid step. A decision under no cap is not priced.
+      const capUsd = options.capUsd();
+      const request = input.kind !== "decision" ? input : capUsd === undefined ? unpriced(input) : asModel(input, mode);
       // An id whose last step's marks are not all written is not used again until its settle is retried: else that retry
       // finds the new step's hold and settles it at the old step's figure.
       const last = settlements.get(request.id);
       if (marks && last && (!last.endWritten || (last.tells && !last.toldWritten))) throw new StepNotSettled(request.id);
       const extra: Partial<StartMark> = request.kind === "tool" ? { tool: request.name } : { model: request.model.id, ...(request.side ? { side: true as const } : {}) };
-      // Read before every check: a raise holds from the next paid step.
-      const capUsd = options.capUsd();
       let admission: Admission;
       if (capUsd === undefined) {
         admission = NO_HOLD(request.id);

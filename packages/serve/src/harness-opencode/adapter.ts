@@ -11,7 +11,7 @@
 import { createHash, randomBytes, randomUUID } from "node:crypto";
 import { join } from "node:path";
 import { READ_SKILL_FILE, readSkillFileTool, skillProblems, toolSchemaProblems, type HostSkill } from "@parcha/agentrun-kernel";
-import type { AdapterEvent, AdapterSession, AgentAdapter, HostTool, SessionSpec, TurnStatus } from "@parcha/agentrun-kernel";
+import type { AdapterEvent, AdapterSession, AgentAdapter, GateCall, HostTool, SessionSpec, TurnStatus } from "@parcha/agentrun-kernel";
 import { abortedOutcome, openDrive, pendingSubmissions, SessionHalt, type Drive, type HostTool as KernelTool } from "@parcha/agentrun-kernel/kernel";
 import { recoveryNote, settleTurn, transcriptOf } from "@parcha/agentrun-kernel/process";
 import { serialWriter, startModelProxy, type ModelProxyOptions } from "@parcha/agentrun-kernel/host";
@@ -184,6 +184,8 @@ export function openCodeAdapter(options: OpenCodeAdapterOptions): AgentAdapter {
         ...(options.eventConnectMs ? { eventConnectMs: options.eventConnectMs } : {}),
         ...(options.log ? { log: options.log } : {}),
         ...(options.fetch ? { fetch: options.fetch } : {}),
+        // The host's gate, asked by the kernel's tool bridge before anything of a call is written.
+        ...(io.gate ? { gate: (call: GateCall) => io.gate!(call) } : {}),
       }, (c) => void (control = c));
 
       const live = (event: unknown) => {
