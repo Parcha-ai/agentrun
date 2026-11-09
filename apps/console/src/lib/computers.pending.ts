@@ -9,7 +9,7 @@ export type ComputerKind = "none" | "sandbox" | "desktop" | "phone" | "browser";
 /** computers.ts KeyView: a provider's key by name, saved or not, never a value. */
 export type KeyView = { name: string; required: boolean; saved: boolean };
 /** computers.ts ProviderView. */
-export type ProviderView = { id: string; name: string; keys: KeyView[]; ready: boolean; why?: string };
+export type ProviderView = { id: string; name: string; metered: boolean; keys: KeyView[]; ready: boolean; why?: string };
 /** computers.ts KindView. */
 export type KindView = { kind: ComputerKind; offered: boolean; why?: string; groups: string[]; tools: string[]; providers: ProviderView[] };
 /** GET /v2/computers (computers.ts view()). */
