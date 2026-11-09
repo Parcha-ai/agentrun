@@ -4,7 +4,7 @@
 // upload goes through envd's file API and init starts as a background command, dropped to a user with no capabilities;
 // connect() carries stdio over a background command's stdin and stdout. Every SDK fact used here is cited in the
 // README's E2B section, from e2b@2.63.0 (dist/index.mjs) and e2b-dev/infra@ff3922213 (envd).
-import { createHash, randomBytes, randomInt } from "node:crypto";
+import { createHash, randomBytes } from "node:crypto";
 import { readFileSync } from "node:fs";
 import { resolve } from "node:path";
 import { PassThrough, Writable } from "node:stream";
@@ -37,8 +37,7 @@ import {
 	recordedMount,
 	syncingClient,
 } from "./mount-archil.js";
-import { listProcesses } from "./processes.js";
-import type { HelloResult, ProcessExit } from "./protocol.js";
+import type { HelloResult } from "./protocol.js";
 import {
 	type AttachedComputer,
 	type CallContext,
@@ -124,10 +123,9 @@ export interface E2BRunOptions {
 	signal?: AbortSignal;
 }
 
-/** The part of a connected Sandbox called here: commands, files and getHost (index.mjs:5917-5989, 6194-6196). */
+/** The part of a connected Sandbox called here: commands and files (index.mjs:5917-5989). */
 export interface E2BSandbox {
 	readonly sandboxId: string;
-	getHost(port: number): string;
 	readonly files: { write(path: string, data: ArrayBuffer, options: { user: "root"; requestTimeoutMs: number; signal?: AbortSignal }): Promise<unknown> };
 	readonly commands: {
 		run(command: string, options: E2BRunOptions & { background?: false }): Promise<E2BCommandResult>;
@@ -205,12 +203,6 @@ export interface E2BProviderOptions {
 	 * holds: init refuses to start while another process does.
 	 */
 	daemonUser?: string;
-	/**
-	 * Refused for now, in words: computers would take public traffic, so stream() gave a URL a browser opens, but the
-	 * daemon's programs run in a network of their own (init --own-network), which E2B's proxy cannot reach, and a public
-	 * stream's network is open, which a remote computer does not take yet. Default false.
-	 */
-	publicStream?: boolean;
 	timeouts?: Partial<E2BTimeouts>;
 	/**
 	 * The addresses the probe tries, to show none of them answers a computer with network none: host:port over TCP, or
@@ -338,22 +330,11 @@ const STAGING = "/tmp/agentrun-computerd-";
 const DEFAULT_PROBE_TARGETS = ["1.1.1.1:443", "8.8.8.8:443", "[2606:4700:4700::1111]:443", "1.1.1.1:53/udp", "[2606:4700:4700::1111]:53/udp"];
 /** A probe target: host:port, over TCP, or host:port/udp, a DNS query over UDP. */
 const TARGET = /^(?:\[[0-9A-Fa-f:.]+\]|[A-Za-z0-9.-]+):[0-9]{1,5}(?:\/udp)?$/;
-/** The desktop template's VNC server and its noVNC page (@e2b/desktop@2.5.0 dist/index.mjs:426-437, 471, 502). */
-const VNC_PORT = 5900;
-const STREAM_PORT = 6080;
-const STREAM_PASSWORD_FILE = `${WORK}/.agentrun-stream-password`;
-const STREAM_WAIT_MS = 30_000;
-/** How long stream() waits for an old stream server to end after its kill. */
-const STREAM_STOP_MS = 10_000;
-const NOVNC = "/opt/noVNC/utils/novnc_proxy";
-/** The programs a stream runs, which the next stream() stops first. */
-const STREAM_PROGRAMS = ["x11vnc", NOVNC];
-const ALNUM = "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789";
 const SPEC_FIELDS = new Set(["image", "lifetimeMs", "network", "labels", "mount"]);
 const NUL = "a NUL byte cannot be sent to E2B";
 const FIXED = "an E2B computer's network is fixed at create: create a new computer";
 const PUBLIC =
-	"publicStream is refused: the daemon's programs, the stream's servers among them, run in a network of their own (their loopback alone, out of reach of envd, which runs commands as root), which E2B's proxy cannot reach; and a public stream lets anyone with the computer's address reach any port in it, so its network is open, which a remote computer does not take yet";
+	"publicStream is no longer an option: an E2B computer never takes public traffic, which would open every port in it to anyone with its address, and its screen is streamed through agentrun, never a vendor URL";
 /** envd's port in the sandbox (e2b@2.63.0 dist/index.mjs:1213, ConnectionConfig.envdPort). */
 const ENVD_PORT = 49983;
 const STOP = "an E2B computer has no stop that this provider declares: release it with delete";
@@ -494,10 +475,10 @@ const clearOf = (created: number) => created + END_SLACK_MS + 1_000;
 
 /**
  * A sandbox's network as E2B reports it. None is no internet access (E2B: the same as denyOut 0.0.0.0/0,
- * index.d.mts:10179) with no allow list and no public traffic in; open is internet access with none of those either,
- * or, with publicStream, public traffic in. Anything else is another network in words, never one it might widen to.
+ * index.d.mts:10179) with no allow list and no public traffic in; open is internet access with none of those either.
+ * Anything else is another network in words, never one it might widen to.
  */
-function networkOf(info: E2BSandboxInfo, publicStream: boolean): NetworkPolicy {
+function networkOf(info: E2BSandboxInfo): NetworkPolicy {
 	const network = info.network ?? {};
 	if (network.egressProxy !== undefined && network.egressProxy !== null) return { other: "an egress proxy is set on it" };
 	if (Array.isArray(network.allowOut) && network.allowOut.length > 0) return { other: `an allowOut list (${network.allowOut.length} entries), which this provider never makes` };
@@ -505,7 +486,7 @@ function networkOf(info: E2BSandboxInfo, publicStream: boolean): NetworkPolicy {
 	const denied = Array.isArray(network.denyOut) ? network.denyOut : [];
 	const blocked = info.allowInternetAccess === false || denied.includes("0.0.0.0/0");
 	if (!blocked && denied.length > 0) return { other: `a denyOut list short of all traffic (${denied.join(", ")})` };
-	if (network.allowPublicTraffic !== false && !(publicStream && network.allowPublicTraffic === true && !blocked)) {
+	if (network.allowPublicTraffic !== false) {
 		return { other: network.allowPublicTraffic === true ? "public traffic is let in" : "E2B did not report allowPublicTraffic false: public traffic may be let in" };
 	}
 	return blocked ? "none" : "open";
@@ -581,8 +562,6 @@ function refProblem(ref: ComputerRef): string | undefined {
 export class E2BProvider implements ComputerProvider {
 	readonly id = "e2b";
 	readonly version = VERSION;
-	/** Only with publicStream: a URL that shows the screen live, through the template's noVNC. */
-	readonly stream?: (ref: ComputerRef, options?: { viewOnly?: boolean }, context?: CallContext) => Promise<Result<{ url: string }>>;
 	readonly #Sandbox: E2BSandboxClass;
 	readonly #connection: E2BConnectionOptions;
 	readonly #daemonPath: string;
@@ -591,30 +570,30 @@ export class E2BProvider implements ComputerProvider {
 	readonly #maxLifetimeMs: number;
 	readonly #uid: string;
 	readonly #gid: string;
-	readonly #publicStream: boolean;
 	readonly #timeouts: E2BTimeouts;
 	readonly #probeTargets: string[];
 	readonly #onNote: ProviderNote | undefined;
 	/** Each computer's last extend, by sandbox id, while one runs: the next waits for it. */
 	readonly #extending = new Map<string, Promise<void>>();
 
-	constructor({
-		apiKey,
-		onNote,
-		Sandbox,
-		domain = DEFAULT_DOMAIN,
-		daemonPath = DEFAULT_DAEMON_PATH,
-		kind = "desktop",
-		desktop = {},
-		maxLifetimeMs = HOBBY_MAX_MS,
-		daemonUser = TOOL_USER,
-		publicStream = false,
-		timeouts = {},
-		probeTargets = DEFAULT_PROBE_TARGETS,
-	}: E2BProviderOptions) {
+	constructor(options: E2BProviderOptions) {
+		// A caller who still names the option is told it is gone, whatever its value: it once let public traffic in.
+		if (typeof options === "object" && options !== null && Object.hasOwn(options, "publicStream")) throw new Error(PUBLIC);
+		const {
+			apiKey,
+			onNote,
+			Sandbox,
+			domain = DEFAULT_DOMAIN,
+			daemonPath = DEFAULT_DAEMON_PATH,
+			kind = "desktop",
+			desktop = {},
+			maxLifetimeMs = HOBBY_MAX_MS,
+			daemonUser = TOOL_USER,
+			timeouts = {},
+			probeTargets = DEFAULT_PROBE_TARGETS,
+		} = options;
 		this.#onNote = onNote;
 		if (typeof apiKey !== "string" || apiKey === "") throw new Error("an E2B API key is required");
-		if (publicStream === true) throw new Error(PUBLIC);
 		const lacks = ["create", "connect", "getInfo", "setTimeout", "kill", "list"].filter((name) => typeof (Sandbox as unknown as Record<string, unknown>)?.[name] !== "function");
 		if (lacks.length > 0) throw new Error(`options.Sandbox must be the e2b SDK's Sandbox class; it lacks ${lacks.join(", ")}`);
 		const ambient = ambientProblem();
@@ -644,12 +623,8 @@ export class E2BProvider implements ComputerProvider {
 		this.#desktop = kind === "desktop" ? desktopOf(desktop) : undefined;
 		this.#maxLifetimeMs = maxLifetimeMs;
 		[this.#uid, this.#gid] = [String(Number(user[1])), String(Number(user[2]))];
-		// Refused above while the daemon's programs have a network of their own; the stream's code stays for the inbound
-		// forward that lifts the refusal (loop/PR-NOTES.md, known gaps).
-		this.#publicStream = false;
 		this.#timeouts = merged;
 		this.#probeTargets = [...probeTargets];
-		if (this.#publicStream && this.#desktop) this.stream = (ref, options, context) => this.#stream(ref, options, context);
 	}
 
 	/**
@@ -762,7 +737,7 @@ export class E2BProvider implements ComputerProvider {
 			// own, read back by the probe from inside, as the tool user, like every network none here.
 			allowInternetAccess: spec.network === "open" || spec.mount?.kind === "archil",
 			// Explicit: a project's default may let public traffic in (E2B docs, network/restrict-public-access).
-			network: { allowPublicTraffic: this.#publicStream },
+			network: { allowPublicTraffic: false },
 			// Explicit kill at the timeout, never a pause that keeps the computer (index.mjs:5674-5699).
 			lifecycle: { onTimeout: "kill" },
 		};
@@ -1060,7 +1035,7 @@ export class E2BProvider implements ComputerProvider {
 			found.push(`template: declared ${show(spec.image)}, read back ${show(info.templateId)} (${alias})`);
 		}
 		for (const [key, value] of Object.entries(metadata)) if (info.metadata?.[key] !== value) mismatch(`label ${key}`, value, info.metadata?.[key]);
-		const network = networkOf(info, this.#publicStream);
+		const network = networkOf(info);
 		// An Archil computer's vendor network is open, for root to reach Archil; its tools' none is read from inside.
 		const vendor = spec.mount?.kind === "archil" ? "open" : (spec.network as NetworkPolicy);
 		if (network !== vendor) found.push(`network: declared ${policyWords(vendor)}${spec.mount?.kind === "archil" ? " (E2B's, for root to reach Archil)" : ""}, read back ${policyWords(network)}`);
@@ -1524,7 +1499,7 @@ export class E2BProvider implements ComputerProvider {
 	 * root's, to reach Archil: its tools' network is init's own, none, which network() and attach read from inside.
 	 */
 	#toolsNetwork(info: E2BSandboxInfo): NetworkPolicy {
-		const vendor = networkOf(info, this.#publicStream);
+		const vendor = networkOf(info);
 		if (recordedArchil(info.metadata) === undefined) return vendor;
 		if (vendor === "open") return "none";
 		return { other: `an Archil computer whose E2B network reads ${policyWords(vendor)}, not the open one create makes for root to reach Archil` };
@@ -1710,89 +1685,5 @@ export class E2BProvider implements ComputerProvider {
 			await pause(Math.min(LISTED_POLL_MS, LISTED_POLL_MAX_MS, this.#timeouts.pollMs), signal);
 			if (signal?.aborted) return fail("aborted", "create was aborted while it waited for the listing");
 		}
-	}
-
-	/**
-	 * The template's VNC stream: x11vnc on the display, on loopback only, with a fresh password from a file the
-	 * computer's user alone reads, and noVNC in front of it (as @e2b/desktop@2.5.0 starts them, dist/index.mjs:463-506),
-	 * both started through the daemon, so they run as the computer's user and end with it. Each call starts them anew, so
-	 * a URL given before stops working. The URL carries the password (noVNC's `password` parameter): it is a bearer
-	 * secret, never logged and never in an error.
-	 */
-	async #stream(ref: ComputerRef, { viewOnly = false }: { viewOnly?: boolean } = {}, { signal }: CallContext = {}): Promise<Result<{ url: string }>> {
-		const problem = refProblem(ref);
-		if (problem) return fail("invalid", problem);
-		const desktop = this.#desktop as Required<DesktopOptions>;
-		const found = await this.#own(ref, signal);
-		if (!found.ok) return found;
-		if (found.value.state !== "running") return fail("refused", `${ref.name} is ${found.value.state}, not running`);
-		const sandbox = await this.#connected(found.value, signal);
-		if (!sandbox.ok) return sandbox;
-		const opened = await this.#open(sandbox.value, ref.name, signal);
-		if (!opened.ok) return opened;
-		const { client } = opened.value;
-		const bound = () => this.#bounded(this.#timeouts.helloMs, signal);
-		// RFB's password check uses its first 8 characters only (VNC authentication is DES keyed by them).
-		const password = Array.from({ length: 8 }, () => ALNUM[randomInt(ALNUM.length)]).join("");
-		try {
-			// Every page of the process table: the old servers may be past the first.
-			const listed = await listProcesses(client, { signal: bound() });
-			if (!listed.ok) return fail(listed.error.code, `listing the computer's processes: ${listed.error.message}`);
-			const old = listed.value.filter((one) => one.running && STREAM_PROGRAMS.includes(one.argv[0] as string));
-			for (const one of old) {
-				const killed = await client.call("process.signal", { id: one.id, signal: "KILL" }, { signal: bound() });
-				if (!killed.ok) return fail(killed.error.code, `stopping the old stream's ${one.argv[0]} (${one.id}): ${killed.error.message}`);
-			}
-			// A signal is only sent: an old server holds its port until it has ended, and a new one could not bind it.
-			for (const one of old) {
-				const ended = await client.call("process.wait", { id: one.id, timeoutMs: STREAM_STOP_MS }, { signal: this.#bounded(STREAM_STOP_MS + CALL_SLACK_MS, signal) });
-				if (!ended.ok) return fail(ended.error.code, `waiting for the old stream's ${one.argv[0]} (${one.id}) to end: ${ended.error.message}`);
-				if (ended.value.running) return fail("timeout", `the old stream's ${one.argv[0]} (${one.id}) did not end within ${seconds(STREAM_STOP_MS)} of its kill`);
-			}
-			const written = await client.call("files.write", { path: STREAM_PASSWORD_FILE, data: Buffer.from(`${password}\n`).toString("base64"), mode: 0o600 }, { signal: bound() });
-			if (!written.ok) return fail(written.error.code, `writing the stream's password file: ${written.error.message}`);
-			// x11vnc listens on the computer's own loopback, IPv4 alone, and noVNC reaches it there.
-			const listen = "localhost"; // key-gate: loopback-rule the VNC server listens inside the computer only
-			const vnc = ["x11vnc", "-display", desktop.display, "-forever", "-shared", "-listen", listen, "-noipv6", "-rfbport", String(VNC_PORT), "-passwdfile", STREAM_PASSWORD_FILE, ...(viewOnly ? ["-viewonly"] : [])];
-			const novnc = [NOVNC, "--vnc", `${listen}:${VNC_PORT}`, "--listen", String(STREAM_PORT), "--web", "/opt/noVNC"];
-			const servers: Array<{ id: string; program: string }> = [];
-			for (const argv of [vnc, novnc]) {
-				const started = await client.call("process.start", { argv, cwd: "/opt/noVNC/utils" }, { signal: bound() });
-				if (!started.ok) return fail(started.error.code, `starting ${argv[0]}: ${started.error.message}`);
-				servers.push({ id: started.value.id, program: argv[0] as string });
-			}
-			// Ready is both new servers running and both ports listening: with the old servers ended, the listeners are theirs.
-			const until = Date.now() + STREAM_WAIT_MS;
-			const ports = `netstat -tln 2>/dev/null | grep -q ':${VNC_PORT} ' && netstat -tln 2>/dev/null | grep -q ':${STREAM_PORT} '`;
-			for (;;) {
-				const up = await client.call("exec.run", { argv: ["sh", "-c", ports], timeoutMs: 5_000 }, { signal: bound() });
-				for (const server of servers) {
-					const state = await client.call("process.wait", { id: server.id, timeoutMs: 0 }, { signal: bound() });
-					if (!state.ok) return fail(state.error.code, `reading the new ${server.program} (${server.id}): ${state.error.message}`);
-					// Awaited here, inside the try: the finally closes the connection its read goes over.
-					if (!state.value.running) return await this.#serverEnded(client, server, state.value, bound());
-				}
-				if (up.ok && up.value.exitCode === 0) break;
-				if (Date.now() >= until) return fail("timeout", `the stream did not listen on ports ${VNC_PORT} and ${STREAM_PORT} within ${seconds(STREAM_WAIT_MS)}`);
-				await pause(250, signal);
-				if (signal?.aborted) return fail("aborted", "stream was aborted");
-			}
-		} finally {
-			await opened.value.close();
-		}
-		const url = new URL(`https://${sandbox.value.getHost(STREAM_PORT)}/vnc.html`);
-		url.searchParams.set("autoconnect", "true");
-		url.searchParams.set("resize", "scale");
-		if (viewOnly) url.searchParams.set("view_only", "true");
-		url.searchParams.set("password", password);
-		return ok({ url: url.href });
-	}
-
-	/** A new stream server that ended before the stream was up, in words, with its last lines of stderr. */
-	async #serverEnded(client: ComputerConnection["client"], server: { id: string; program: string }, exit: ProcessExit, signal: AbortSignal): Promise<Result<never>> {
-		const read = await client.call("process.read", { id: server.id, stream: "stderr", offset: 0 }, { signal });
-		const said = read.ok ? Buffer.from(read.value.data, "base64").toString("utf8").trim().split("\n").slice(-3).join("; ") : "";
-		const how = exit.signal ? `signal ${exit.signal}` : `exit code ${exit.exitCode}`;
-		return fail("e2b", `the stream's new ${server.program} ended with ${how} before the stream was up${said ? `: ${said}` : ""}`);
 	}
 }
