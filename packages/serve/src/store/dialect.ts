@@ -34,8 +34,12 @@ export interface Dialect {
   /** What a run row's INSERT returns to name the row it inserted (fence.ts, the inserted-here form): SQLite's rowid; on
    *  Postgres nothing (NULL), since the fence names it by the inserting transaction. */
   readonly insertedRow: string;
-  /** After a SELECT of runs to claim: lock the rows picked, skipping any another claimer holds. */
+  /** After a SELECT of runs to claim (claimMany, a poll over many): lock the rows picked, skipping any another claimer
+   *  holds. */
   readonly claimLock: string;
+  /** After the SELECT of the one run a claim names (claim(runId)): lock its row, waiting for a write in flight on it, so a
+   *  run whose holder is merely writing is read as it is once that write ends, never skipped as held. */
+  readonly claimOneLock: string;
   /** After a SELECT of a run row a write depends on: hold it, so a writer of the row (a run's end, a claim) waits, and this
    *  waits for one in flight, then reads its outcome. */
   readonly shareLock: string;
@@ -71,6 +75,7 @@ export const SQLITE: Dialect = {
   onConflictIgnore: "",
   insertedRow: "rowid",
   claimLock: "",
+  claimOneLock: "",
   shareLock: "",
   lockRow: async () => undefined,
   lockKey: async () => undefined,

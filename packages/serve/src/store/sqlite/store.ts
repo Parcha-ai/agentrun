@@ -1019,9 +1019,11 @@ class SqliteStore implements Store {
       // lease from now, never comes back already run out.
       const at = this.#now();
       const until = at + leaseMs;
-      // With many claimers (Postgres), the rows picked are locked as they are read, and a row another claimer holds is
-      // skipped (Dialect.claimLock): two claims never pick one run, and neither waits for the other.
-      const lock = this.#db.dialect.claimLock;
+      // With many claimers (Postgres), the rows picked are locked as they are read. A poll over many (claimMany) skips a
+      // row another claimer holds (Dialect.claimLock): two claims never pick one run, and neither waits for the other. A
+      // claim of one named run waits for a write in flight on its row (Dialect.claimOneLock), then reads it as it is: a
+      // run whose holder is merely writing is never answered held.
+      const lock = "runId" in pick ? this.#db.dialect.claimOneLock : this.#db.dialect.claimLock;
       const picked = "runId" in pick
         ? await tx.all<{ id: string; state: RunState; runner: string | null }>(`SELECT id, state, runner FROM runs WHERE id = ? AND ${this.#claimable}${lock}`, pick.runId, ...CLAIMABLE_AT(at))
         : await tx.all<{ id: string; state: RunState; runner: string | null }>(`SELECT id, state, runner FROM runs WHERE ${this.#claimable} ORDER BY started_at, id LIMIT ?${lock}`, ...CLAIMABLE_AT(at), pick.k);

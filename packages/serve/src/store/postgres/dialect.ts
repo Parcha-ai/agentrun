@@ -25,6 +25,7 @@ export function postgresDialect(schema: string): Dialect {
     onConflictIgnore: " ON CONFLICT DO NOTHING",
     insertedRow: "NULL",
     claimLock: " FOR UPDATE SKIP LOCKED",
+    claimOneLock: " FOR UPDATE",
     shareLock: " FOR SHARE",
     // `table` and `column` are the store's own names, never input. FOR NO KEY UPDATE: as an UPDATE of the row's other
     // columns locks it, so a row hanging off it (a command, a firing) is still written meanwhile.

@@ -56,6 +56,23 @@ test("a second claimer takes the next run while the first holds one, without wai
   await second;
 });
 
+test("a claim of one run whose lease ran out waits for a write in flight on its row, then claims it, never answering it held", ONLY, async (t) => {
+  const { store, file, clock } = await storeOn(t);
+  await queued(store);
+  await store.claim("run-1", "runner-a", { leaseMs: 1_000 });
+  clock.now += 2_000;
+  const watcher = await watcherOf(t);
+  // The lapsed holder's write in flight: its transaction holds the run's row (as a journal commit or a renew does).
+  const holder = await otherWriter(t, file);
+  await holder.sql("SELECT 1 FROM runs WHERE id = 'run-1' FOR NO KEY UPDATE");
+  const claim = store.claim("run-1", "runner-b", { leaseMs: 30_000 });
+  const seen = await whileHeld(claim, holder.pid, watcher);
+  await holder.sql("ROLLBACK");
+  const taken = await claim;
+  assert.equal(seen.settled, "waits", `the claim waited for the write in flight (it ${seen.settled}${seen.value === null ? ": null, read as held" : ""})`);
+  assert.deepEqual([taken?.runner, taken?.epoch], ["runner-b", 2], "then claimed the run its lapsed holder no longer holds");
+});
+
 test("a renew that waits for another writer of its run runs its lease from when it holds the row, never from before", ONLY, async (t) => {
   const { store, file, clock } = await storeOn(t);
   await queued(store);
