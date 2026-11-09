@@ -315,9 +315,10 @@ test("the MCP SDK's own client connects, lists the ten tools and calls one", asy
   assert.deepEqual((await client.callTool({ name: "agents_list", arguments: {} })).structuredContent, { agents: [], next_cursor: null });
 });
 
-test("the timeline's limit, read while an answered run's end is carried back: its pages are the whole timeline, and the same rows once the run is final", async (t) => {
-  // The run's process cannot exit while the gate's file is missing: the reads below land between the answer and the
-  // carry back, the window "GET /v2/runs/{id}/timeline takes a limit" can land in on a loaded machine.
+test("the timeline is final once an answered run's end is in the store, even while its process is still exiting: its pages are the whole timeline, and the same rows after", async (t) => {
+  // On the switch a run is settled once its end is in the store (store-view.ts:301, settled = terminal): a process lingering
+  // on a held SIGTERM is cleanup the store does not see, so the timeline is final as soon as the end is written, not only
+  // once the process exits. The gate keeps that process alive across the first read, then lets it exit before the server stops.
   const gate = join(await scratch(t), "gate");
   withEnv(t, { EXIT_GATE: gate });
   const server = await serve(t, { faux: new URL("./fixtures/faux-answer-slow-exit.mjs", import.meta.url).pathname });
@@ -333,13 +334,13 @@ test("the timeline's limit, read while an answered run's end is carried back: it
     assert.deepEqual([...first.rows, ...rest.rows].map((r) => r.id).sort(), whole.rows.map((r) => r.id).sort());
     return { ids: whole.rows.map((r) => r.id), final: whole.final };
   };
+  // Read while the run's process still lingers (its end is in the store; the gate is still missing): final already.
   const answered = await read();
-  assert.equal(answered.final, false, "read before the run's end is carried back");
+  assert.equal(answered.final, true, "final once the end is in the store (store-view.ts:301); the lingering process is cleanup the store does not see");
   await writeFile(gate, "");
-  for (const end = Date.now() + 30_000; !(await v2(server, "GET", `/runs/${run_id}/timeline?wait_ms=1000`)).body.final; ) assert.ok(Date.now() < end, "the run's end is carried back");
   const ended = await read();
   assert.equal(ended.final, true);
-  assert.deepEqual(ended.ids, answered.ids, "no row a reader saw goes when the run's end is carried back");
+  assert.deepEqual(ended.ids, answered.ids, "no row a reader saw goes");
 });
 
 test("a run paused at its spend cap: the instructions, runs_get and runs_respond say it waits for its cap to be raised and is not answered; runs_get gives pending kind budget, and runs_respond is refused 409 budget_reached", async (t) => {
