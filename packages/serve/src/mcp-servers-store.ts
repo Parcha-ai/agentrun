@@ -22,6 +22,7 @@ import "./mcp-secret-writes.js";
 import { type SecretMeta, secretMeta, secretName } from "./secret-writes.js";
 import { type ClientKind, MAX_PENDING, MCP_SETTINGS_PAGE, McpSignIns, type OAuthNetwork, type Pending, type PendingStore, reasonOf, SIGN_IN_AGAIN, systemNetwork, type TokenSet } from "./mcp-oauth.js";
 import { SEAL_KEY_ENV, sealKeyOf } from "./tool-keys.js";
+import { GITHUB_MCP_ONLY, GITHUB_MCP_ORIGIN, githubMcpUrl } from "./github.js";
 import { serverGate, type ToolSettingsMap } from "./tool-plane.js";
 import { type McpCredential, type Mcp, type McpOauth, type McpServerRow, type Settings, type Store } from "./store/index.js";
 import { isObject, unknownFields } from "./validate.js";
@@ -72,6 +73,13 @@ function pendingOverStore(store: McpServersStore, sealKey: Buffer): PendingStore
 type Opened = { headers: HeaderMap; credential: McpCredential & { origin: string } };
 
 export class McpServersOverStore {
+  /** The connected GitHub App's installation token for listing a `github_app` server's tools as it is previewed, saved
+   *  or refreshed (github-connection.ts tokenForListing); a run's own is minted at its claim (runner/mcp-claim.ts). Set by
+   *  the server; absent, such a server's tools can't be listed (github_not_connected). */
+  appToken?: (signal?: AbortSignal) => Promise<{ token: string } | { unusable: string }>;
+  /** The one origin a github_app server may have (GITHUB_MCP_ORIGIN; a test's fake through the server's seam): the App's
+   *  tokens are minted for, and sent to, nothing else. */
+  appOrigin = GITHUB_MCP_ORIGIN;
   private readonly sealKey: Buffer;
   private readonly signIns: McpSignIns;
   /** The callbacks under way, which close() waits out before the server lets its data go. */
@@ -150,11 +158,13 @@ export class McpServersOverStore {
       if (issues.length) throw invalid(issues);
       const name = String(body.name);
       const kept = await this.need(name);
-      return marked(kept.url, await this.listServer(new URL(kept.url), (await this.opened(name, kept, "name")).headers, stop));
+      const url = new URL(kept.url);
+      return marked(kept.url, await this.listServer(url, await this.withAppToken(kept.auth, url, (await this.opened(name, kept, "name")).headers, stop), stop));
     }
     const { url, auth } = this.admit(body);
-    if (auth.type !== "none" && !auth.headers) throw invalid([credentialMissing(auth.type, "A preview needs the credential it is to connect with.")]);
-    return marked(url.href, await this.listServer(url, auth.headers ?? {}, stop));
+    // A github_app server's credential is a token of the App, minted here, as for a saved one: its static headers are optional.
+    if (auth.type !== "none" && auth.type !== "github_app" && !auth.headers) throw invalid([credentialMissing(auth.type, "A preview needs the credential it is to connect with.")]);
+    return marked(url.href, await this.listServer(url, await this.withAppToken(auth.type, url, auth.headers ?? {}, stop), stop));
   }
 
   /** PUT: preview, then keep the server with the tools listed. A body with no credential keeps the sealed one, while the
@@ -167,7 +177,18 @@ export class McpServersOverStore {
     // The sealed credential kept (no new one sent) keeps its own time (credential_changed_at); a new one moves it.
     let kept: number | null | undefined;
     let headers = auth.headers;
-    if (auth.type !== "none" && !headers) {
+    if (auth.type === "github_app") {
+      // Its own headers are only its static ones (its token is minted): new ones are kept; none sent keeps the saved ones,
+      // at the same origin only, as any saved credential.
+      if (headers) credential = { type: "headers", headers };
+      else if (was?.auth === "github_app" && was.sealed !== null) {
+        if (new URL(was.url).origin !== url.origin) throw invalid([credentialMissing(auth.type, `The address moved from ${new URL(was.url).origin} to ${url.origin}: send the headers again, so saved ones never go to another origin.`)]);
+        const open = await this.opened(name, was, "auth.headers");
+        credential = open.credential;
+        headers = open.headers;
+        kept = was.credentialChangedAt;
+      }
+    } else if (auth.type !== "none" && !headers) {
       if (!was || was.auth !== auth.type) throw invalid([credentialMissing(auth.type, `The server ${name} has no saved ${auth.type} credential to keep.`)]);
       if (new URL(was.url).origin !== url.origin) throw invalid([credentialMissing(auth.type, `The address moved from ${new URL(was.url).origin} to ${url.origin}: send the credential again, so a saved one never goes to another origin.`)]);
       const open = await this.opened(name, was, credentialMissing(auth.type, "").field);
@@ -177,7 +198,7 @@ export class McpServersOverStore {
     } else if (auth.type !== "none") {
       credential = { type: "headers", headers: headers! };
     }
-    const listed = await this.listServer(url, headers ?? {}, stop);
+    const listed = await this.listServer(url, await this.withAppToken(auth.type, url, headers ?? {}, stop), stop);
     const unlisted = Object.keys(prices ?? {}).filter((tool) => !listed.tools.some((listedTool) => listedTool.name === tool));
     if (unlisted.length) throw invalid(unlisted.map((tool) => ({ field: `prices.${tool}`, reason: "not_an_option", message: `The server ${name} lists no tool ${tool}; its tools are ${listed.tools.map((t) => t.name).join(", ") || "none"}.` })));
     // A body with no `prices` keeps the saved ones, for the tools still listed at the same address.
@@ -185,7 +206,7 @@ export class McpServersOverStore {
     const saved = await saveMcpServer(this.store, this.sealKey, {
       name, url: url.href, auth: auth.type, protocol: listed.protocol, tools: listed.tools, serverInfo: listed.server_info, instructions: listed.instructions ?? null,
       ...(priced && Object.keys(priced).length ? { prices: priced } : {}), ...(credential ? { credential } : {}), ...(kept !== undefined ? { credentialChangedAt: kept } : {}),
-    });
+    }, { githubMcpOrigin: this.appOrigin });
     await this.store.flush();
     return this.view(saved);
   }
@@ -194,17 +215,17 @@ export class McpServersOverStore {
   async refresh(name: string, stop?: AbortSignal) {
     const was = await this.need(name);
     const open = await this.opened(name, was, "name");
-    const listed = await this.listServer(new URL(was.url), open.headers, stop);
+    const listed = await this.listServer(new URL(was.url), await this.withAppToken(was.auth, new URL(was.url), open.headers, stop), stop);
     const before = new Map((was.tools as McpTool[]).map((tool) => [tool.name, canonical(tool)]));
     const after = new Map(listed.tools.map((tool) => [tool.name, canonical(tool)]));
     const prices = pricesListed((was.prices ?? undefined) as McpPrices | undefined, listed.tools);
     const saved = await saveMcpServer(this.store, this.sealKey, {
       name, url: was.url, auth: was.auth, protocol: listed.protocol, tools: listed.tools, serverInfo: listed.server_info, instructions: listed.instructions ?? null,
-      ...(Object.keys(prices).length ? { prices } : {}), ...(was.auth !== "none" ? { credential: open.credential } : {}),
+      ...(Object.keys(prices).length ? { prices } : {}), ...(was.sealed !== null ? { credential: open.credential } : {}),
       // A refresh re-lists the tools; it keeps updated_at (not an owner edit) and the credential's time, and lets
       // listed_at move to now.
       updatedAt: was.updatedAt, credentialChangedAt: was.credentialChangedAt,
-    });
+    }, { githubMcpOrigin: this.appOrigin });
     await this.store.flush();
     return {
       added: [...after.keys()].filter((tool) => !before.has(tool)),
@@ -286,7 +307,8 @@ export class McpServersOverStore {
 
   /** The saved credential opened, or the refusal that asks for it again (McpServers.opened). */
   private async opened(name: string, row: McpServerRow, field: string): Promise<Opened> {
-    if (row.auth === "none") return { headers: {}, credential: { type: "headers", headers: {}, origin: new URL(row.url).origin } };
+    // No credential kept: none for a server that takes none, nor for a github_app server with no static headers.
+    if (row.auth === "none" || row.sealed === null) return { headers: {}, credential: { type: "headers", headers: {}, origin: new URL(row.url).origin } };
     const open = await openServerCredential(this.store, this.sealKey, name);
     if (!open || !("credential" in open)) throw invalid([{ field, reason: "missing", message: `The saved credential of ${name} does not open here (sealed under another seal key, or damaged): send it again.` }]);
     const credential = open.credential;
@@ -311,7 +333,7 @@ export class McpServersOverStore {
     const prices = (row.prices ?? undefined) as McpPrices | undefined;
     const listed = marked(row.url, { protocol: row.protocol ?? "unknown", server_info: row.serverInfo ?? null, ...(typeof row.instructions === "string" ? { instructions: row.instructions } : {}), tools });
     const unmetered = tools.filter((tool) => !(prices && Object.hasOwn(prices, tool.name))).map((tool) => tool.name);
-    const opened = row.auth === "none" ? null : await openServerCredential(this.store, this.sealKey, name);
+    const opened = row.auth === "none" || (row.auth === "github_app" && row.sealed === null) ? null : await openServerCredential(this.store, this.sealKey, name);
     const cred = opened && "credential" in opened ? opened.credential : undefined;
     const set = cred?.type === "oauth" ? (cred.set as TokenSet) : undefined;
     const expired = cred?.type === "oauth" && (cred as { expired?: true }).expired === true;
@@ -326,8 +348,8 @@ export class McpServersOverStore {
       tools: listed.tools.map((tool) => ({ ...tool, ...serverGate(`mcp:${name}/${tool.name}`, settings) })),
       ...(prices && Object.keys(prices).length ? { prices } : {}),
       ...(unmetered.length ? { not_metered: unmetered } : {}),
-      auth: { type: row.auth, ...(row.auth === "headers" ? { headers: Object.keys((cred?.type === "headers" ? cred.headers : {}) as HeaderMap) } : {}) },
-      credential: row.auth === "none" ? null : !cred ? ("unreadable" as const) : expired ? ("expired" as const) : ("sealed" as const),
+      auth: { type: row.auth, ...(row.auth === "headers" || row.auth === "github_app" ? { headers: Object.keys((cred?.type === "headers" ? cred.headers : {}) as HeaderMap) } : {}) },
+      credential: opened === null ? null : !cred ? ("unreadable" as const) : expired ? ("expired" as const) : ("sealed" as const),
       ...(set ? { oauth: { ...(set.expires_at ? { expires_at: set.expires_at } : {}), scopes: (set.tokens.scope ?? "").split(" ").filter(Boolean), client: set.kind, ...(set.client?.client_id ? { client_id: set.client.client_id } : {}) } } : {}),
       listed_at: listedAt,
       updated_at: updatedAt,
@@ -341,8 +363,21 @@ export class McpServersOverStore {
     const url = urlOf(body.url, issues);
     const auth = authOf(body.auth, issues);
     const prices = pricesOf(body.prices, issues);
+    // The App's tokens go to GitHub alone: a github_app server is GitHub's hosted MCP, nothing else, refused in that rule's
+    // words in place of any other its URL drew.
+    if (url && auth?.type === "github_app" && !githubMcpUrl(url, this.appOrigin)) issues.splice(0, issues.length, ...issues.filter((issue) => issue.field !== "url"), { field: "url", reason: "not_allowed", message: GITHUB_MCP_ONLY });
     if (issues.length) throw invalid(issues);
     return { url: url!, auth: auth!, ...(prices ? { prices } : {}) };
+  }
+
+  /** `headers` and, for a github_app server, an installation token of the connected App to list its tools with. Its URL
+   *  is checked first (githubMcpUrl), so a row saved at another address never gets a token minted or sent. */
+  private async withAppToken(type: string, url: URL, headers: HeaderMap, stop?: AbortSignal): Promise<HeaderMap> {
+    if (type !== "github_app") return headers;
+    if (!githubMcpUrl(url, this.appOrigin)) throw invalid([{ field: "url", reason: "not_allowed", message: GITHUB_MCP_ONLY }]);
+    const minted = this.appToken ? await this.appToken(stop) : { unusable: "This server has no GitHub App: Connect GitHub in Settings." };
+    if ("unusable" in minted) throw new ApiError("github_not_connected", minted.unusable);
+    return { ...headers, authorization: `Bearer ${minted.token}` };
   }
 }
 
@@ -360,6 +395,6 @@ export function mcpServersOverStore(store: McpServersStore, env: NodeJS.ProcessE
  *  bearer token or headers; "sign-in": an OAuth sign-in; null: none), and the credential's own last change. Never a value.
  *  An MCP credential never comes from the server's environment. */
 function secretOf(row: McpServerRow): SecretMeta {
-  const set = row.sealed !== null && (row.auth === "bearer" || row.auth === "headers" || row.auth === "oauth");
+  const set = row.sealed !== null && row.auth !== "none";
   return secretMeta(secretName("mcp", row.name), { set, source: row.auth === "oauth" ? "sign-in" : "console", changedAt: row.credentialChangedAt === null ? null : new Date(row.credentialChangedAt) });
 }

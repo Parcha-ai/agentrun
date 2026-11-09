@@ -30,6 +30,7 @@ import { EndpointRefused, REFRESH_REQUEST_MS, refreshed, refused, systemNetwork,
 import { type McpCredentials, type McpPin, mcpPinOf } from "../mcp-gateway.js";
 import { META_REASON, metaToolOf } from "../mcp-meta.js";
 import { privateOAuthHosts } from "../mcp-private-hosts.js";
+import { GITHUB_MCP_ONLY, GITHUB_MCP_ORIGIN, githubMcpUrl } from "../github.js";
 import { type GithubAppAccess, type GithubTimer, githubTokens } from "./mcp-github.js";
 import { REFRESH_MARGIN_MS, UNKNOWN_EXPIRY_MS, UNUSABLE } from "../mcp-servers.js";
 import { openMcpCredential, sealMcpCredential, type McpCredential } from "../store/seal.js";
@@ -59,6 +60,9 @@ export interface McpClaimOptions {
   /** For a github_app server (auth github_app, nothing sealed): the server's GitHub App mint and the run's repository
    *  (runner/mcp-github.ts). None: such a server's calls are refused in words. */
   githubApp?: GithubAppAccess;
+  /** For tests only (no environment or CLI flag maps onto it): the one origin a github_app server may have, a fake for
+   *  GitHub's hosted MCP (GITHUB_MCP_ORIGIN). */
+  githubMcpOrigin?: string;
   /** For tests: the timer a github_app token's refresh and expiry are armed on. */
   githubTimer?: GithubTimer;
 }
@@ -259,12 +263,18 @@ export async function mcpClaim(options: McpClaimOptions): Promise<McpClaimStep> 
 }
 
 /** The run's pin: read, and checked against the meta tools known now; or made at its first claim and written once. */
-async function pinOf({ store, claim, grants }: McpClaimOptions): Promise<McpPin | undefined> {
+async function pinOf({ store, claim, grants, githubMcpOrigin = GITHUB_MCP_ORIGIN }: McpClaimOptions): Promise<McpPin | undefined> {
+  // A github_app server anywhere but GitHub's hosted MCP ends the run here, before any token is minted or anything sent:
+  // the App's tokens go to GitHub alone (github.ts githubMcpUrl, the one check).
+  const offGithub = (server: string, url: string, auth: string | undefined) => {
+    if (auth === "github_app" && !githubMcpUrl(url, githubMcpOrigin)) throw new McpClaimRefused(`The MCP server ${server} (${url}) can't be used: ${GITHUB_MCP_ONLY}. Nothing was sent.`);
+  };
   const stored = await store.mcp.pin(claim.runId);
   if (stored) {
     const pinned = stored.body as McpPin;
     for (const [server, { url, tools }] of Object.entries(pinned)) {
       for (const tool of tools) if (metaToolOf(url, tool.name)) throw new McpClaimRefused(`mcp:${server}/${tool.name} can't be granted: ${META_REASON}`);
+      offGithub(server, url, (await store.mcp.server(server))?.auth);
     }
     return pinned;
   }
@@ -283,6 +293,7 @@ async function pinOf({ store, claim, grants }: McpClaimOptions): Promise<McpPin 
     throw new McpClaimRefused((error as Error).message);
   }
   if (!Object.keys(made).length) return undefined;
+  for (const [server, { url }] of Object.entries(made)) offGithub(server, url, rows.get(server)?.auth);
   return (await store.mcp.pinOnce(claim as Claim, made)).body as McpPin;
 }
 

@@ -57,7 +57,8 @@ async function setUp(t, { answers = [] } = {}) {
   const work = mkdtempSync(join(tmpdir(), "mcp-github-"));
   t.after(() => rmSync(work, { recursive: true, force: true }));
   const claimOf = (access = { mint, target: { installation: 7, repo: "acme/widgets" } }) =>
-    mcpClaim({ store, claim, grants: ["mcp:gh/add"], sealKey: undefined, signal: new AbortController().signal, now: () => clock.now, githubApp: access, githubTimer });
+    // The fake MCP server stands in for GitHub's hosted one (githubMcpOrigin, the claim's test-only seam).
+    mcpClaim({ store, claim, grants: ["mcp:gh/add"], sealKey: undefined, signal: new AbortController().signal, now: () => clock.now, githubApp: access, githubTimer, githubMcpOrigin: new URL(fake.url).origin });
   const call = (step) => mcpGateway({ pin: step.pin, credentials: step.credentials, work: () => work, liveCredentials: true }).call("gh", "add", { a: 1, b: 1 }, { signal: new AbortController().signal });
   return { store, clock, fake, valid, mints, timers, to, claimOf, call, mint };
 }
