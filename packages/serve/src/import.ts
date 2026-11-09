@@ -22,8 +22,9 @@ import { launchBody } from "./run-launch.js";
 import { DEFAULT_PORT } from "./server.js";
 import { REDACTED, secretCut, secretsIn } from "./secret-cut.js";
 import { SECRET_NAMES, withSecrets } from "./secrets.js";
-import { SEAL_KEY_ENV, ToolKeys } from "./tool-keys.js";
-import { openServerSecrets } from "./server-secrets.js";
+import { SEAL_KEY_ENV } from "./tool-keys.js";
+import { toolKeysOverStore } from "./tool-keys-store.js";
+import { openServerSecretsOverStore } from "./server-secrets-store.js";
 import { WEBHOOK_FILE, webhookSecretIn } from "./webhooks.js";
 import { TRIGGER_ADAPTERS } from "./trigger-adapters.js";
 import { type RefusedReason, readWorkBytes, WorkRefused, walkWork } from "./workspace.js";
@@ -849,17 +850,17 @@ async function revisionFor(
   return { id, create: { id, kind: "agentic", body, skills, note } };
 }
 
-/** The secrets this server made and keeps in data directory `data`, by value: its API token (`ar_local_...`) and its
- *  door token (server.ts), its sign-in sessions' secret (owner.ts), its webhook's signing secret (`whsec_...`;
- *  webhooks.ts) and every value a trigger source keeps sealed (sealed-settings.ts), opened with the seal key of `env`, so left out when that key is not there; each signing secret's key in every spelling too (standard-webhooks.ts secretForms). One pasted into a session is
- *  this server's own, so an import cuts it wherever it is, as it cuts the environment's keys. Not among them: a run's own
- *  door token (one file a run; not read at each import), and a key-shaped value this server did not make (a `whsec_`
- *  from elsewhere). A webhook secret that does not open is said to `say`, as ToolKeys says a saved key that does not:
- *  the import goes on, and does not cut it. */
-export function ownSecrets(data: string, env: NodeJS.ProcessEnv, say: (fields: Record<string, string>) => void = () => {}): string[] {
+/** The secrets this server made and keeps, by value: its API token and its sign-in sessions' secret (still files beside the
+ *  store), its webhook's signing secret (`whsec_...`; webhooks.ts) and every value a trigger source keeps sealed, which the
+ *  switch keeps as store rows (server-secrets-store.ts), opened with the seal key of `env`, so left out when that key is not
+ *  there; each signing secret's key in every spelling too. One pasted into a session is this server's own, so an import cuts
+ *  it wherever it is, as it cuts the environment's keys. Not among them: a key-shaped value this server did not make (a
+ *  `whsec_` from elsewhere). The per-run door token is gone (the runner cutover deleted it). A webhook secret that does not
+ *  open is said to `say`: the import goes on, and does not cut it. */
+export async function ownSecrets(store: Store, data: string, env: NodeJS.ProcessEnv, say: (fields: Record<string, string>) => void = () => {}): Promise<string[]> {
   const webhook = webhookSecretIn(data, env);
   if (webhook && "signing" in webhook) say({ condition: webhook.signing, name: SEAL_KEY_ENV, file: join(data, WEBHOOK_FILE), effect: "this server's webhook secret cannot be read, so the import does not cut it" });
-  return openServerSecrets(data, env, TRIGGER_ADAPTERS, say).secrets.values();
+  return (await openServerSecretsOverStore(store, data, env, TRIGGER_ADAPTERS, say)).secrets.values();
 }
 
 /** The plan, into `store`: the agents it does not hold, and the runs it does not. Each run is written whole in one atomic
@@ -1097,31 +1098,39 @@ export async function importCommand(
       return 2;
     }
     const dir = values.data ?? defaultData({ ...env, HOME: home });
-    // The tool keys the server keeps in this directory, opened here on the host with the seal key this process was handed:
-    // an imported transcript keeps none of them. One that does not open is not known here, so not cut: said, as the
-    // server says it at its start.
-    const keys = new ToolKeys(dir, env, say("tool_keys"));
-    keys.view();
-    const options: ImportOptions = {
-      home,
-      sources: sources as Source[],
-      all: values.all === true,
-      deleted: values["include-deleted"] === true,
-      temp,
-      env,
-      stored: keys.values(),
-      own: ownSecrets(dir, env, say("webhook_secret")),
+    // The import's options, built from the open store: the tool keys the server keeps as sealed rows (tool-keys-store.ts),
+    // opened here with the seal key this process was handed, and this server's own secrets (server-secrets-store.ts). One
+    // that does not open is not known here, so not cut: said, as the server says it at its start. A dry run on a data
+    // directory with no store yet reads neither (none is there).
+    const optionsFrom = async (store: Store | undefined): Promise<ImportOptions> => {
+      const keys = store ? toolKeysOverStore(store, env, say("tool_keys")) : undefined;
+      if (keys) {
+        await keys.load();
+        keys.view();
+      }
+      const options: ImportOptions = {
+        home,
+        sources: sources as Source[],
+        all: values.all === true,
+        deleted: values["include-deleted"] === true,
+        temp,
+        env,
+        stored: keys ? keys.values() : {},
+        own: store ? await ownSecrets(store, dir, env, say("webhook_secret")) : [],
+      };
+      // What it prints is cut with the saved keys too, and with every key the import (or the dry run) finds, as what it
+      // keeps is.
+      printed.add(Object.values(options.stored ?? {}));
+      options.onKeys = (found) => printed.add(found);
+      return options;
     };
-    // What it prints is cut with the saved keys too, and with every key the import (or the dry run) finds, as what it
-    // keeps is.
-    printed.add(Object.values(options.stored ?? {}));
-    options.onKeys = (keys) => printed.add(keys);
     if (values["dry-run"]) {
       // A dry run writes nothing: a store there already is opened read-only (role runner), one that is not is left unmade.
       const reader = existsSync(join(dir, STORE_FILE)) ? await openSqliteStore({ dataDir: dir, role: "runner" }) : undefined;
       let plan: Plan;
       let found: Found[];
       try {
+        const options = await optionsFrom(reader);
         plan = await planImport({ ...options, measure: true }, reader);
         for (const line of await describePlan(plan, reader, { verbose: values.verbose === true })) out(line);
         found = [...plan.found!, ...(reader ? await foundAll(reader, plan.held) : []), ...(await untiedFound(plan))];
@@ -1136,6 +1145,7 @@ export async function importCommand(
     }
     const store = await openSqliteStore({ dataDir: dir, role: "server" });
     try {
+      const options = await optionsFrom(store);
       const plan = await planImport(options, store);
       const report = await runImport(store, plan, options);
       for (const agent of report.agents) out(`${agent.cwd}  ${agent.created ? "new agent" : "agent held"} ${agent.id}  imported ${agent.runs}${agent.already ? `, already imported ${agent.already}` : ""}`);

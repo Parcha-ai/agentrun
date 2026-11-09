@@ -18,7 +18,7 @@ import { summaryLines } from "../dist/import-summary.js";
 import { openSqliteStore } from "../dist/store/index.js";
 import { listRuns } from "../dist/store-reads/runs.js";
 import { runEntries } from "../dist/store-reads/journal.js";
-import { ToolKeys } from "../dist/tool-keys.js";
+import { toolKeysOverStore } from "../dist/tool-keys-store.js";
 import { at as minute, claudeSession, claudeSubagent, codexSession, piSession, sessionId, writeSession } from "./fixtures/import-sessions.mjs";
 import { schemaProblems } from "./schema-support.mjs";
 import { agent, client, FAUX, scratch, triggerStore } from "./support.mjs";
@@ -38,6 +38,17 @@ async function agentOf(store, id) {
 const entriesOf = (store, id) => runEntries(store, id, ctx);
 /** The runs as the old listRuns gave them (view rows: state completed/stopped, ISO times, importedFrom {source, session}). */
 const rowsOf = (store, agentId) => listRuns(store, agentId ? { agent: agentId } : {}, ctx);
+/** A saved tool key, sealed into the store under `seal` (the switch keeps tool keys in the store, not a tool-keys.json file). */
+async function seedToolKey(data, seal, id, values) {
+  const store = await openData(data);
+  try {
+    const keys = toolKeysOverStore(store, { AGENTRUN_SEAL_KEY: seal }, () => {});
+    await keys.load();
+    await keys.save(id, { values });
+  } finally {
+    await store.close();
+  }
+}
 
 const CLI = new URL("../dist/cli.js", import.meta.url).pathname;
 const CANARY = "CANARY-VALUE-7f3e9d2c1b0a6e5d";
@@ -478,7 +489,7 @@ test("keys an environment holds and sessions of each harness hold too are each c
   for (const [name, value] of Object.entries(keys)) assert.deepEqual(keptUnder(data).filter(([, bytes]) => bytes.includes(value)).map(([path]) => path.slice(data.length + 1)), [], `${name}'s value`);
 });
 
-test("this server's own secrets, pasted into sessions, are cut out of what the import keeps and prints, and counted: its webhook signing secret, its two tokens and its sign-in sessions' secret", async (t) => {
+test("this server's own secrets, pasted into sessions, are cut out of what the import keeps and prints, and counted: its webhook signing secret, its token and its sign-in sessions' secret", async (t) => {
   const root = await scratch(t);
   const data = join(root, "agents");
   const seal = { AGENTRUN_SEAL_KEY: randomBytes(32).toString("base64") };
@@ -495,10 +506,11 @@ test("this server's own secrets, pasted into sessions, are cut out of what the i
   assert.equal(set.status, 201, JSON.stringify(set.body));
   await server.close();
   open = false;
+  // The per-run door token is gone (the runner cutover deleted it): the server keeps its API token, its sign-in session
+  // secret and the webhook's signing secret.
   const own = {
     webhook: set.body.secret,
     token: server.token,
-    door: readFileSync(join(data, ".door-token"), "utf8").trim(),
     session: readFileSync(join(data, ".session-secret"), "utf8").trim(),
   };
   for (const [name, value] of Object.entries(own)) assert.ok(typeof value === "string" && value.length >= 32, `${name}: ${typeof value}`);
@@ -506,7 +518,7 @@ test("this server's own secrets, pasted into sessions, are cut out of what the i
   const site = join(at, "code", "hooks");
   mkdirSync(site, { recursive: true });
   claudeSession(at, site, 1, { prompt: `The webhook's secret is ${own.webhook}, check the receiver.`, output: `token ${own.token}` });
-  codexSession(at, site, 2, { prompt: `cat .door-token says ${own.door}` });
+  codexSession(at, site, 2, { prompt: `The API token is ${own.token}.` });
   piSession(at, site, 3, { prompt: `The session secret is ${own.session}.` });
   // What was there before the import: the server's own files, which hold them as the server keeps them.
   const had = new Map(keptUnder(data));
@@ -515,8 +527,8 @@ test("this server's own secrets, pasted into sessions, are cut out of what the i
     assert.equal(await importCommand(["--data", data, "--all", ...args], "usage", { home: at, env, out: (line) => lines.push(line) }), 0);
     return lines;
   };
-  // With no seal key, the webhook's secret does not open: the other three are cut all the same.
-  assert.deepEqual((await run(["--dry-run"], { PATH: "/usr/bin" })).filter((l) => /removed/.test(l)), ["3 secrets would be removed"]);
+  // With no seal key, the webhook's secret does not open: the other two are cut all the same.
+  assert.deepEqual((await run(["--dry-run"], { PATH: "/usr/bin" })).filter((l) => /removed/.test(l)), ["2 secrets would be removed"]);
   const dry = await run(["--dry-run"]);
   const lines = await run([]);
   const wrote = keptUnder(data).filter(([path, bytes]) => !had.get(path)?.equals(bytes));
@@ -525,8 +537,8 @@ test("this server's own secrets, pasted into sessions, are cut out of what the i
     assert.deepEqual(wrote.filter(([, bytes]) => bytes.includes(value)).map(([path]) => path.slice(data.length + 1)), [], `${name}: in no byte the import wrote`);
     assert.ok(![...dry, ...lines].some((line) => line.includes(value)), `${name}: in no printed line`);
   }
-  assert.ok(dry.includes("4 secrets would be removed"), dry.filter((l) => /removed/.test(l)).join(" "));
-  assert.ok(lines.includes("4 secrets removed"), lines.filter((l) => /removed/.test(l)).join(" "));
+  assert.ok(dry.includes("3 secrets would be removed"), dry.filter((l) => /removed/.test(l)).join(" "));
+  assert.ok(lines.includes("3 secrets removed"), lines.filter((l) => /removed/.test(l)).join(" "));
 });
 
 test("a webhook trigger's key or the outbound webhook's, pasted into sessions as base64, base64url or hex, is cut out of what the import keeps and prints", async (t) => {
@@ -851,7 +863,7 @@ test("what the CLI prints is cut with the saved tool keys too: a skipped file na
   utimesSync(named, new Date(minute(10)), new Date(minute(10)));
   const data = join(root, "agents");
   mkdirSync(data, { recursive: true });
-  new ToolKeys(data, { AGENTRUN_SEAL_KEY: seal }, () => undefined).save("monid", { values: { MONID_API_KEY: saved } });
+  await seedToolKey(data, seal, "monid", { MONID_API_KEY: saved });
   // The default output (its left-out counts and reasons), then --verbose, which names the skipped file.
   const quiet = [];
   const lines = [];
@@ -1499,9 +1511,9 @@ test("a tool key saved through the settings API is cut from every file the impor
   const into = async (name, env) => {
     const data = join(root, name);
     mkdirSync(data, { recursive: true });
-    new ToolKeys(data, { AGENTRUN_SEAL_KEY: seal }, () => undefined).save("monid", { values: { MONID_API_KEY: saved } });
+    await seedToolKey(data, seal, "monid", { MONID_API_KEY: saved });
     assert.equal(await importCommand(["--data", data, "--all"], "usage", { home: h.at, env, out: () => undefined }), 0);
-    const files = readdirSync(data, { recursive: true, withFileTypes: true }).filter((entry) => entry.isFile() && entry.name !== "tool-keys.json").map((entry) => join(entry.parentPath, entry.name));
+    const files = readdirSync(data, { recursive: true, withFileTypes: true }).filter((entry) => entry.isFile()).map((entry) => join(entry.parentPath, entry.name));
     return files.filter((file) => readFileSync(file).includes(saved));
   };
   assert.deepEqual(await into("agents", { ...ENV, AGENTRUN_SEAL_KEY: seal }), [], "cut from every file the import writes");

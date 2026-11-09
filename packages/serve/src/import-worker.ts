@@ -36,8 +36,8 @@ const answer = async (): Promise<ImportAnswer> => {
   // server's one open store replaces this second opener; until then it opens its own.)
   const store = await openSqliteStore({ dataDir: data, role: "server" });
   try {
-    // The secrets this server made and keeps, read as the import starts: cut by their values too.
-    const taking = { ...options, own: ownSecrets(data, env) };
+    // The secrets this server made and keeps, read from the store as the import starts: cut by their values too.
+    const taking = { ...options, own: await ownSecrets(store, data, env) };
     const report = await runImport(store, await planImport(taking, store), taking);
     const took = { agents: report.agents.filter((a) => a.runs > 0).map((a) => a.id), runs: report.agents.reduce((n, a) => n + a.runs, 0), skipped: report.skipped.length };
     return stop.signal.aborted ? { took, stopped: true } : { took };
