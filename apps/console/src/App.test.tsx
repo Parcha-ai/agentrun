@@ -215,7 +215,7 @@ describe("App, Settings", () => {
     expect([...page.host.querySelectorAll('nav[aria-label="Settings"] a')].map((a) => a.textContent?.trim())).toEqual(["Tools", "MCP servers", "GitHub", "Computers", "Workspace"]);
   });
 
-  // Secrets (Miguel, 11-09): an accounts-off loopback server's console session counts as the owner's, so the server says
+  // Secrets (the owner's ruling on accounts-off loopback servers): their console session counts as the owner's, so the server says
   // secrets_writable there too; the console reads it on every server, and words a "no" by the server's reason.
   it("accounts off, the server saying the session may write secrets: Paste shows, with no sign-in or setup", async () => {
     const page = await open({ tool_keys: { routes: true, at_rest: "sealed" } }, "#/settings/keys", [], { accounts: false, secrets_writable: true });
