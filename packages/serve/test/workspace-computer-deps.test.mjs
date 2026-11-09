@@ -14,11 +14,12 @@ import { mkdirSync, mkdtempSync, realpathSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
 import { after, test } from "node:test";
-import { providerFor } from "@parcha/agentrun-computer";
+import { DAYTONA_DEFAULT_SNAPSHOT, providerFor } from "@parcha/agentrun-computer";
 import { fakeDocker } from "../../computer/test/fake-docker.mjs";
 import { FAUX_VIEW_PATH, fauxComputers } from "../dist/faux-computers.js";
 import { putSealedKey } from "../dist/server-keys.js";
-import { computerDepsFrom, localWorkspace } from "../dist/workspace/index.js";
+import * as workspaceModule from "../dist/workspace/index.js";
+import { computerDepsFrom, computerSpecOf, localWorkspace } from "../dist/workspace/index.js";
 import { fakeComputer } from "./workspace-fake-computer.mjs";
 import { KINDS } from "./workspace-kinds-fixture.mjs";
 
@@ -224,6 +225,48 @@ test("for a sandbox place the composer's claim makes a Docker computer that reac
     assert.equal(closed.record.created[0].network, "none", `box_allow ${JSON.stringify(boxAllow)}: no network`);
     await closed.answer.release();
   }
+});
+
+// The computer's spec by kind (computerSpecOf): box_allow is a sandbox's egress list, so a sandbox with none (or "none")
+// has no network; a browser, a desktop or a phone with none has its provider's own network ("open": a browser or a
+// vendor desktop with no network is a broken kind); an explicit list applies to any kind. Each provider's image for a
+// kind is one exported table (DEFAULT_IMAGE); a Docker desktop has none of its own, so with no image the owner named it
+// is refused in words, never made from the sandbox recipe, which has no X server.
+const entryOf = (id) => KINDS.PROVIDERS.find((one) => one.id === id);
+const DEFAULT_IMAGE = workspaceModule.DEFAULT_IMAGE ?? {};
+const DOCKER_DESKTOP_WORDS = "A Docker desktop needs an image with an X server; set one for desktops.";
+
+test("box_allow is a sandbox's egress list: a sandbox with none has no network, a browser or a desktop with none has its provider's own, and an explicit list applies to a Docker desktop", () => {
+  const spec = computerSpecOf({ AGENTRUN_DOCKER_IMAGE: "example.org/desktop@sha256:" + "a".repeat(64) });
+  assert.equal(spec(entryOf("docker"), "sandbox", {}).network, "none", "a sandbox with no box_allow");
+  assert.equal(spec(entryOf("docker"), "sandbox", { boxAllow: "none" }).network, "none");
+  assert.equal(spec(entryOf("browserbase"), "browser", {}).network, "open", "a browser with no box_allow: its provider's own network");
+  assert.equal(spec(entryOf("kernel"), "browser", {}).network, "open");
+  assert.equal(spec(entryOf("e2b"), "desktop", {}).network, "open", "a vendor desktop with no box_allow");
+  assert.equal(spec(entryOf("phone-harness"), "phone", {}).network, "open");
+  assert.deepEqual(spec(entryOf("docker"), "desktop", { boxAllow: ["example.com"] }).network, { allow: ["example.com"] }, "an explicit list applies to a Docker desktop");
+  assert.equal(spec(entryOf("e2b"), "desktop", { boxAllow: "none" }).network, "none", "an explicit none applies to any kind");
+});
+
+test("each provider's image for a kind is one exported table; a Docker desktop with no image the owner named is refused in words", async () => {
+  assert.equal(DEFAULT_IMAGE.daytona.sandbox, DAYTONA_DEFAULT_SNAPSHOT);
+  assert.equal(DEFAULT_IMAGE.docker.desktop, undefined, "the sandbox recipe has no X server: no desktop image of Docker's own");
+  const spec = computerSpecOf({});
+  assert.equal(spec(entryOf("daytona"), "sandbox", {}).image, DAYTONA_DEFAULT_SNAPSHOT);
+  assert.equal(spec(entryOf("e2b"), "desktop", {}).image, DEFAULT_IMAGE.e2b.desktop);
+  assert.throws(() => spec(entryOf("docker"), "desktop", {}), { message: DOCKER_DESKTOP_WORDS });
+  assert.equal(computerSpecOf({ AGENTRUN_DOCKER_IMAGE: "example.org/x@sha256:" + "b".repeat(64) })(entryOf("docker"), "desktop", {}).image, "example.org/x@sha256:" + "b".repeat(64), "the image the owner named");
+  // Through the claim: refused before anything is made, computer_unavailable in those words.
+  const root = scratch();
+  const sealKey = randomBytes(32);
+  const store = await savedKeysStore(sealKey);
+  const record = { created: [], released: [], loaded: [] };
+  const { computerForClaim, computerDeps } = computerDepsFrom({ env: {}, store, sealKey, kinds: KINDS, load: async (id, options) => (record.loaded.push(id), fakeDesktop(root, record)) });
+  await assert.rejects(
+    computerForClaim({ runId: "run-1", epoch: 3, computer: { kind: "desktop", provider: "docker" } }, store, { ...computerDeps, mode: 1, workspace: localWorkspace(root), sealKey }),
+    (error) => error.code === "computer_unavailable" && error.message.includes(DOCKER_DESKTOP_WORDS),
+  );
+  assert.deepEqual(record.created, [], "nothing was made");
 });
 
 test("the composer builds every provider through the one provider builder, and gives the claim the mount check", async () => {
