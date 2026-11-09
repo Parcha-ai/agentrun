@@ -29,6 +29,10 @@ import { NOT_SET_UP } from "./runnable.js";
 import { APPROVAL_ROW, ARGS_PREVIEW_BYTES, MAX_PIN_ARGS, MAX_PIN_CHOICES, PERMISSIONS } from "./tool-gate.js";
 import { KIND_KEYS, MAX_PIN_TEXT, permissionsOf, type Pickable, PICKABLE, PROVIDERS, TABLE_TOOLS } from "./tool-plane.js";
 import { SECRET_META_SCHEMA } from "./secret-writes.js";
+// The modules that own the computer and Archil key writes: loading the document loads their secret-write predicates
+// (secret-writes.ts registerSecretWrite), so every operation the document marks has its predicate wherever it is read.
+import "./computers.js";
+import { ARCHIL_KEY_NAMES } from "./archil-routes.js";
 
 type Json = Record<string, unknown>;
 
@@ -552,12 +556,10 @@ const COMPUTER_VIEW = closedWith({
   taken_until: { type: "string", format: "date-time", description: "When an owner's take-over goes back to the agent on its own, without a hand-back." },
   why: { type: "string", description: "Why there is nothing to watch, in the server's words: with state `off` (the run has no desktop or phone) and `none` (it is not up now)." },
 });
-/** A secret as every view shows it (key-meta.ts): never a value, a prefix, a length or a hash. */
-const SECRET_META = {
-  set: { type: "boolean", description: "Whether a value is set: the value itself is never shown." },
-  source: { enum: ["env", "console", "sign-in", null], description: "Where the value comes from: `env`, the server's environment (by the key's name; it wins over a saved one); `console`, saved through this server's routes, sealed; `sign-in`, obtained by a sign-in or Connect; null when it is not set." },
-  changed_at: { type: ["string", "null"], format: "date-time", description: "When the saved value last changed; null when it is not set, or comes from the environment." },
-};
+/** A secret's set, source and changed_at, from the one shared shape (secret-writes.ts SECRET_META_SCHEMA): never a value,
+ *  a prefix, a length or a hash. */
+const { set: SECRET_SET, source: SECRET_SOURCE, changed_at: SECRET_CHANGED_AT } = SECRET_META_SCHEMA.properties;
+const SECRET_META = { set: SECRET_SET, source: SECRET_SOURCE, changed_at: SECRET_CHANGED_AT };
 /** One secret's SecretMeta, exactly { name, set, source, changed_at }: its name is "<plane>:<id>". */
 const SECRET_ITEM = (nameDescription: string) => closed({ name: { type: "string", description: nameDescription }, ...SECRET_META });
 /** computer/1: an agent's computer kind, as Settings → Computers and the run read name it (computer-setting.ts). */
@@ -1167,10 +1169,10 @@ const EXTENSIONS: Record<string, Record<string, Json>> = {
   "/computers/{provider}/keys": {
     put: {
       operationId: "saveComputerKeys", tags: ["local"], summary: "Save a computer provider's keys, sealed",
-      description: "Each key the provider declares (GET /computers names them) is sealed under the server's seal key; null removes one. A name it does not declare, a value that is not a non-empty string, or any key on a server with no seal key is 422 input_invalid with its fields, and nothing is saved. The answer is the provider as GET /computers shows it: never a value.",
+      description: "Each key the provider declares (GET /computers names them) is sealed under the server's seal key; null removes one. Saving or removing a key is a secret write: it takes the owner's signed-in session, and the API token is 403. A name it does not declare, a value that is not a non-empty string, or any key on a server with no seal key is 422 input_invalid with its fields, and nothing is saved. The answer is the provider as GET /computers shows it: never a value.",
       parameters: [PROVIDER_PARAM],
-      requestBody: { required: true, content: { "application/json": { schema: { type: "object", additionalProperties: { type: ["string", "null"] }, description: "The provider's key names, each its value, or null to remove it." } } } },
-      responses: { "200": json(COMPUTER_PROVIDER, "The provider, its keys saved or not."), ...errors(401, 404, 422, 429, 500) },
+      requestBody: { required: true, content: { "application/json": { schema: { type: "object", additionalProperties: { type: ["string", "null"], "x-agentrun-secret": true }, description: "The provider's key names, each its value, or null to remove it." } } } },
+      responses: { "200": json(COMPUTER_PROVIDER, "The provider, its keys saved or not."), ...errors(401, 403, 404, 422, 429, 500) },
       ...COMPUTER_MARK,
     },
   },
@@ -1191,15 +1193,15 @@ const EXTENSIONS: Record<string, Record<string, Json>> = {
     },
     put: {
       operationId: "putWorkspaceArchil", tags: ["local"], summary: "Turn Mode 2 on: run folders on this Archil disk",
-      description: "Replaces the Archil settings (the disk, its region and S3 URL, and an exec image pinned by digest when given) and seals the account key (ARCHIL_API_KEY) under the server's seal key when given; null removes it, and a key not given is kept. No disk token is kept: a computer's mount credential is minted per run from the account key, so ARCHIL_DISK_TOKEN is refused like any field Archil does not take. A field that is not right, an image not pinned by digest, or a key on a server with no seal key is 422 input_invalid with its fields, and nothing is saved. The answer never holds a key.",
+      description: "Replaces the Archil settings (the disk, its region and S3 URL, and an exec image pinned by digest when given) and seals the account key (ARCHIL_API_KEY) under the server's seal key when given; null removes it, and a key not given is kept. No disk token is kept: a computer's mount credential is minted per run from the account key, so ARCHIL_DISK_TOKEN is refused like any field Archil does not take. Giving or removing the account key is a secret write: it takes the owner's signed-in session, and the API token is 403; the disk, region, S3 URL and image alone stay editable with the token. A field that is not right, an image not pinned by digest, or a key on a server with no seal key is 422 input_invalid with its fields, and nothing is saved. The answer never holds a key.",
       requestBody: {
         required: true,
         content: { "application/json": { schema: closedWith({ diskId: { type: "string", minLength: 1 }, region: { type: "string", minLength: 1 }, s3Url: { type: "string", format: "uri", pattern: "^https://" } }, {
           image: { type: "string", pattern: "^[^\\s@]+@sha256:[0-9a-f]{64}$" },
-          keys: { type: "object", additionalProperties: false, properties: { ARCHIL_API_KEY: { type: ["string", "null"], minLength: 1 } } },
+          keys: { type: "object", additionalProperties: false, properties: Object.fromEntries(ARCHIL_KEY_NAMES.map((name) => [name, { type: ["string", "null"], minLength: 1, "x-agentrun-secret": true }])) },
         }) } },
       },
-      responses: { "200": json(ARCHIL_VIEW, "The Archil settings, saved."), ...errors(401, 422, 429, 500) },
+      responses: { "200": json(ARCHIL_VIEW, "The Archil settings, saved."), ...errors(401, 403, 422, 429, 500) },
       ...ARCHIL_MARK,
     },
     delete: {

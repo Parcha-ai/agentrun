@@ -57,9 +57,10 @@ test("on the server: the token is 403 for a computer key's save or removal and f
   // A provider that declares a key, as GET /v2/computers names it.
   const listed = await call(server.port, { path: "/v2/computers", headers: bearer });
   assert.equal(listed.status, 200, listed.text);
-  const provider = listed.json.kinds.flatMap((kind) => kind.providers).find((p) => p.keys.length > 0);
+  const provider = listed.json.kinds.flatMap((kind) => kind.providers).find((p) => (p.secrets ?? []).length > 0);
   assert.ok(provider, `a provider with a key: ${listed.text}`);
-  const key = provider.keys[0].name;
+  // Its SecretMeta's name is "computer:<provider>:<KEY>": KEY is the name the PUT takes.
+  const key = provider.secrets[0].name.split(":").at(-1);
   const keysPath = `/v2/computers/${provider.id}/keys`;
 
   for (const [what, body] of [["a save", { [key]: planted() }], ["a removal", { [key]: null }]]) {

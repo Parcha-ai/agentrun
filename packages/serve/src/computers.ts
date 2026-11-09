@@ -12,8 +12,13 @@ import { COMPUTER_KINDS, type ComputerKind, type ComputerSetting } from "./compu
 import { inArchilMode } from "./archil-settings.js";
 import { ApiError, invalid } from "./errors.js";
 import { type KeyEnv, type KeyMeta, keyMetaOf, envValue, secretName } from "./key-meta.js";
+import { registerSecretWrite } from "./secret-writes.js";
 import { getSealedKey, putSealedKey, removeSealedKey, sealedKeyNames } from "./server-keys.js";
 import type { Store } from "./store/index.js";
+
+// A key save is a secret write (secret-writes.ts): any named key, a value or a null (a removal counts), so the server's one
+// dispatch check keeps it to the owner's session. The view and the connection test write none.
+registerSecretWrite("saveComputerKeys", (body) => typeof body === "object" && body !== null && !Array.isArray(body) && Object.keys(body).length > 0);
 
 export type { KindCapabilities, ProviderEntry, SettingKindSpec };
 
