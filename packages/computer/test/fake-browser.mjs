@@ -281,8 +281,12 @@ export function fakeKernel(knobs = {}) {
 			const filters = Object.entries(call.query)
 				.map(([key, value]) => [/^tags\[(.+)\]$/.exec(key)?.[1], value])
 				.filter(([key]) => key !== undefined);
+			// Kernel's status filter (API reference, GET /browsers): "active" (the default), "deleted" (soft-deleted) or
+			// "all". A browser still starting (b.starting) is not deleted, yet the fake lists it under "all" alone: what
+			// a provider that asks only for active browsers would miss.
+			const status = call.query.status ?? "active";
 			const rows = [...browsersById.values()]
-				.filter((b) => call.query.status !== "active" || b.deletedAt === undefined)
+				.filter((b) => (status === "all" ? true : status === "deleted" ? b.deletedAt !== undefined : b.deletedAt === undefined && !b.starting))
 				.filter((b) => filters.every(([key, value]) => b.tags[key] === value));
 			const offset = Number(call.query.offset ?? 0);
 			const size = knobs.pageSize ?? Number(call.query.limit ?? 100);

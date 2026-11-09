@@ -1807,8 +1807,9 @@ cause (`causeOf(result)`), not enumerable, so it is in no JSON.
 
 Each create writes one more label beside the spec's, `agentrun.create` (`CREATE_LABEL`), with a value of its own. A
 create whose outcome is unknown (its reply lost, cut short, answered 5xx or with no browser, or the caller's signal
-aborted it) never sends a second create: it asks the vendor for the browsers carrying that label, under a signal of
-its own bounded at `RECOVER_MS`, releases each, and its failure says so. A 4xx refusal made nothing, so nothing is looked
+aborted it) never sends a second create: it asks the vendor for the browsers carrying that label in every state not
+ended (Browserbase `RUNNING` and `PENDING`; Kernel `status=all`, the deleted dropped, so one still starting is found),
+under a signal of its own bounded at `RECOVER_MS`, releases each, and its failure says so. A 4xx refusal made nothing, so nothing is looked
 for. The label is the provider's own: `check()` refuses it in a spec, and no list or attach shows it.
 
 The conformance CLI runs the browser case set for a provider of kind browser: the health cases, then `browser.*`

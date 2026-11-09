@@ -422,6 +422,23 @@ for (const [id, vendor] of Object.entries(VENDORS)) {
 	});
 }
 
+test("kernel: a lost create whose browser is still starting, which status=active does not list, is found by every state not deleted and released", async () => {
+	const knobs = {};
+	const fake = fakeKernel(knobs);
+	// The browser is made, its reply lost, and it is still starting when the provider looks for it.
+	knobs.loseCreate = (bid) => {
+		fake.browsers.get(bid).starting = true;
+	};
+	const provider = await VENDORS.kernel.make(fake);
+	const lost = await provider.create(spec());
+	assert.equal(lost.ok, false);
+	const [made] = [...fake.browsers.values()];
+	assert.equal(made.deletedAt !== undefined, true, `the starting browser is released, not left billing: ${lost.error.message}`);
+	assert.match(lost.error.message, /released/);
+	const statuses = fake.only("GET", "/browsers").map((call) => call.query.status);
+	assert.ok(statuses.length > 0 && statuses.every((s) => s === "all"), `the recovery reads every state, and keeps those not deleted: ${statuses.join(", ")}`);
+});
+
 test("browserbase: a label's dots ride as underscores in userMetadata, which Browserbase refuses a dot in; list and attach read them back as labels", async () => {
 	const fake = fakeBrowserbase();
 	const provider = await VENDORS.browserbase.make(fake);
