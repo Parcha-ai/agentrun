@@ -25,7 +25,9 @@ import type { Approvals } from "../approvals.js";
 import { effortGuidance } from "../effort-guidance.js";
 import { environmentLine } from "../environment.js";
 import { type HarnessEntry, harnessOf } from "../harness-table.js";
-import { laidLearned, learningFolderOf } from "../learning.js";
+import { laidLearned, learningFolderOf, secretsShown } from "../learning.js";
+import { layLearningSeed } from "./learning-seed.js";
+import { savedKeyValues } from "../server-keys.js";
 import { learningWorkspace } from "../learn/folder.js";
 import { learningEndOfRun } from "./learning-end.js";
 import { type ModelRef, providerModels, runModels } from "../model.js";
@@ -188,7 +190,19 @@ export async function cliRunSpecFromLaunch(launch: RunLaunch, run: AdapterRun, d
   const check = await entry.skillCheck?.();
   // The revision's own skills laid before they are read, as the pi spec lays them (adapter-run-spec.ts).
   await layOwnSkills(ws.workspace, (revisionRow.skills ?? {}) as Record<string, string>);
-  const { system: instructions, native } = await systemOf(laid, Object.keys(body.skills ?? {}), ws.workspace, check, { onDemand: readsFiles(granted) });
+  // A learning run's seed laid as the pi spec lays it (runner/learning-seed.ts), its learned skills then in the skill list
+  // the harness is handed (its native skills, or the prompt's).
+  const seedLaid = start
+    ? await layLearningSeed({
+      work: ws.workspace,
+      seed: start.seed,
+      folder: () => (archil === undefined ? learningFolderOf(deps.data, runRow.agentId) : learningWorkspace({ mode: "archil", agentId: runRow.agentId, archil })),
+      own: Object.keys(revisionRow.skills ?? {}),
+      shown: async () => secretsShown(runnerSecrets(deps.env, await savedKeyValues(deps.store, deps.sealKey))),
+      log,
+    })
+    : undefined;
+  const { system: instructions, native } = await systemOf(laid, [...Object.keys(body.skills ?? {}), ...(seedLaid?.skills ?? [])], ws.workspace, check, { onDemand: readsFiles(granted) });
   const guidance = effortGuidance(launch.effort);
 
   // The run's model (the launch's, pinned at start, else the revision's) and its adapter, as main builds them, on the

@@ -168,8 +168,13 @@ test("Mode 2: the seed from the disk's learning folder lands on the run's Archil
   const disk = new FakeArchilDisk();
   const { workFolder } = await cliSpec(t, "codex", { archil: disk });
   const key = runKey(AGENT, RUN);
-  assert.equal(disk.files.get(`${key}/.learning/retry-slowly.md`)?.toString("utf8"), NOTE, "the disk's seed, not the local decoy");
-  assert.equal(disk.files.get(`${key}/.agents/skills/weekly-summary/SKILL.md`)?.toString("utf8"), servedSkill(SKILL));
+  // The fake keeps each file's bytes as a Uint8Array.
+  const text = (path) => {
+    const bytes = disk.files.get(`${key}/${path}`);
+    return bytes === undefined ? undefined : Buffer.from(bytes).toString("utf8");
+  };
+  assert.equal(text(".learning/retry-slowly.md"), NOTE, "the disk's seed, not the local decoy");
+  assert.equal(text(".agents/skills/weekly-summary/SKILL.md"), servedSkill(SKILL));
   assert.equal(existsSync(join(workFolder, ".learning")), false, "nothing laid on this machine for a Mode 2 run");
 });
 
