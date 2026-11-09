@@ -4,7 +4,7 @@
 // shown once, kept only sealed, and a rotation retires it.
 import assert from "node:assert/strict";
 import { randomBytes } from "node:crypto";
-import { mkdir, readFile, writeFile } from "node:fs/promises";
+import { readFile, writeFile } from "node:fs/promises";
 import { createRequire } from "node:module";
 import { join } from "node:path";
 import { test } from "node:test";
@@ -233,18 +233,30 @@ test("an event's webhook-id, after 200 later events moved its firing out of the 
   assert.equal((await api("GET", "/agents/parked/runs")).body.runs.length, 1, "no work started for it");
 });
 
-test("a trigger secrets file that does not read is never written over: a webhook trigger is refused, a schedule is made, and the rest works", { timeout: 60_000 }, async (t) => {
+test("a webhook trigger's secret sealed under another seal key does not open here: a signed delivery is the one 401, said in words, fires nothing, and the trigger's view says why; a rotation from the owner's session signs again", { timeout: 120_000 }, async (t) => {
   withEnv(t, SEAL);
   const data = join(await scratch(t), "agents");
-  await mkdir(data, { recursive: true });
-  const garbage = "{ not json";
-  await writeFile(join(data, "trigger-settings-webhook.json"), garbage);
-  const { api } = await serve(t, { data });
-  await made(api, "triage");
-  const refused = await api("POST", "/triggers", hooked("triage"));
-  assert.deepEqual([refused.status, refused.body.error.code], [409, "store_unreadable"], JSON.stringify(refused.body));
-  assert.match(refused.body.error.message, /trigger-settings-webhook\.json/);
-  assert.equal((await api("POST", "/triggers", { ...hooked("triage"), source: { kind: "schedule", every_s: 600 } })).status, 201, "a schedule needs no secret");
-  assert.deepEqual((await api("GET", "/triggers")).body.triggers.map((x) => x.source.kind), ["schedule"]);
-  assert.equal(await readFile(join(data, "trigger-settings-webhook.json"), "utf8"), garbage, "byte for byte");
+  const first = await serve(t, { data });
+  await made(first.api, "triage");
+  const { id, signing_secret: secret } = (await first.api("POST", "/triggers", hooked("triage"))).body;
+  assert.match(secret, /^whsec_/);
+  await first.close();
+  // Another seal key: the trigger's secret is still in the store, sealed, and does not open here.
+  withEnv(t, { AGENTRUN_SEAL_KEY: randomBytes(32).toString("base64") });
+  const lines = [];
+  const { api, baseUrl } = await serve(t, { data, log: (line) => lines.push(line) });
+  const refused = await post(baseUrl, id, "{}", { secret });
+  assert.equal(refused.status, 401, JSON.stringify(refused.body));
+  assert.equal(refused.body.error.message, "this route needs a request signed by the webhook trigger's secret", "the one 401");
+  assert.ok(lines.some((line) => line.includes(id) && /does not open/.test(line)), `said in words, naming the trigger: ${JSON.stringify(lines)}`);
+  assert.deepEqual((await api("GET", `/triggers/${id}/firings`)).body.firings, [], "fires nothing");
+  const read = (await api("GET", `/triggers/${id}`)).body;
+  assert.deepEqual(read.secret, { name: `trigger:${id}`, set: false, source: null, changed_at: null });
+  assert.equal(read.note, "Its signing secret does not open under this server's seal key: rotate it in the console.");
+  assert.ok(!JSON.stringify(read).includes(secret.slice("whsec_".length, "whsec_".length + 16)));
+  const rotated = await api("POST", `/triggers/${id}/secret`);
+  assert.equal(rotated.status, 200, JSON.stringify(rotated.body));
+  assert.equal((await post(baseUrl, id, "{}", { secret: rotated.body.signing_secret })).status, 202, "the new secret signs");
+  const after = (await api("GET", `/triggers/${id}`)).body;
+  assert.deepEqual([after.secret.set, after.note], [true, undefined]);
 });
