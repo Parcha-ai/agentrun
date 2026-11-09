@@ -22,6 +22,7 @@ const { createAdapterLoop } = await import("../dist/runner/adapter-loop.js");
 const { MAX_RESTARTS } = await import("../dist/runner/conformance/harness.js");
 const { permissionOf } = await import("../dist/tool-gate.js");
 const { deniedText } = await import("../dist/runner/loop-contract.js");
+const { deniedText: setToDenyText } = await import("../dist/refusal-words.js");
 const { KINDS } = await import("../dist/runner/journal-kinds.js");
 const { META_REASON } = await import("../dist/mcp-meta.js");
 const { UNUSABLE } = await import("../dist/mcp-servers.js");
@@ -185,8 +186,8 @@ test("R3: a denied MCP call is told in words, and nothing is sent", async (t) =>
   await run.server.command("run-1", { kind: "deny", body: { approval: ask.callId, note: "not today" } });
   const row = await run.settle((r) => r.state === "ended" || r.state === "failed");
   assert.equal(row.state, "ended", JSON.stringify(row));
-  // pi frames a blocked call's words as its harness's error; the words are the loop's.
-  assert.ok(lastResult(run.sent).includes(`Tool call blocked: ${deniedText("mcp:fake/add", "not today")}`), lastResult(run.sent));
+  // The call's error result is main's words, by the call's catalog name.
+  assert.equal(lastResult(run.sent), deniedText("mcp:fake/add", "not today"));
   assert.equal(toolCalls(run.fake).length, 0, "nothing sent");
 });
 
@@ -194,7 +195,7 @@ test("R4: a set-to-deny MCP call is refused in words before its intent, and noth
   const script = [{ call: "mcp__fake__add", args: { a: 1, b: 1 } }, { sayLastResult: true }];
   const { row, sent, fake } = await mcpRun(t, { script, grants: ["mcp:fake/add"], settings: { "mcp:fake/add": { permission: "deny" } } });
   assert.equal(row.state, "ended", JSON.stringify(row));
-  assert.ok(lastResult(sent).includes("Tool call blocked: Permission denied: mcp:fake/add is set to deny."), lastResult(sent));
+  assert.equal(lastResult(sent), setToDenyText("mcp:fake/add"));
   assert.equal(toolCalls(fake).length, 0);
 });
 
