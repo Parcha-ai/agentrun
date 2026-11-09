@@ -77,6 +77,8 @@ async function runOf(t, hooks = {}, { permission = "ask", parks = true, before }
   const now = () => Date.now() + opened.clock.skewMs;
   // Each claim whose loop started: a claim that only ends the run starts none.
   const starts = [];
+  // The runners' polls for claimable runs (and renewals) so far: a test waits on them, never on the wall clock.
+  const beats = { count: 0 };
   const counted = (deps) => {
     const made = loop(deps);
     const start = made.start.bind(made);
@@ -85,13 +87,13 @@ async function runOf(t, hooks = {}, { permission = "ask", parks = true, before }
   };
   /** A runner on the run's store, its loop the run's own (its model requests and its tool's runs counted as one). */
   const spawn = (name) => {
-    const runner = startRunner({ store: watched(opened.runners[0], hooks), createLoop: counted, name, now, onEvent: (event) => events.push(event), ...TIMING });
+    const runner = startRunner({ store: watched(opened.runners[0], hooks), createLoop: counted, name, now, onEvent: (event) => events.push(event), onBeat: () => beats.count++, ...TIMING });
     t.after(() => runner.close());
     return runner;
   };
   const runner = spawn("runner-a");
   if (parks) await until(async () => (await opened.server.runs.get("run-1")).state === "parked", "the run parked on the call", 30_000);
-  return { server: opened.server, runnerStore: opened.runners[0], runner, spawn, clock: opened.clock, now, sent, requests, events, starts };
+  return { server: opened.server, runnerStore: opened.runners[0], runner, spawn, clock: opened.clock, now, sent, requests, events, starts, beats };
 }
 
 /** The run's journal entries as they stand. */
@@ -167,6 +169,34 @@ test("a stop of a run parked on a call ends it withdrawn in one write: every rea
   go();
   await cancelled(server);
   await staysWithdrawn(server, sent);
+});
+
+test("a refused stopped end of a run claimed from parked is not claimed again before its backoff: one claim and one refusal per backoff step, never a burst", { timeout: 60_000 }, async (t) => {
+  const { server, clock, events, beats } = await runOf(t, { onEnd: async () => {
+    throw new Error("the journal refused the end (a test's refusal)");
+  } });
+  // A claim and its release each move the run's epoch on by one: claims are counted by it (a retried end's claim starts
+  // no loop, so it is no `claimed` event).
+  const epoch = async () => (await server.runs.get("run-1")).epoch;
+  // Parked under its claim, then released: counted from the release.
+  await until(async () => (await server.runs.get("run-1")).runner === null, "the parked run released", 30_000);
+  const parkedAt = await epoch();
+  await server.command("run-1", { kind: "stop" });
+  await releasedAfter(server, 1);
+  assert.equal(events.filter((event) => event.type === "claimed" && event.claim.runId === "run-1").at(-1).claim.from, "parked", "the refused end's claim took the run from parked");
+  assert.equal((await epoch()) - parkedAt, 2, "one claim (and its release) for the first refusal");
+  // Released after its first refusal: it reads running (the branch of claimable that honours backoff_until), and through
+  // 20 more polls of the runner on an unmoved clock it is claimed no more.
+  assert.equal((await server.runs.get("run-1")).state, "running");
+  const [at, said, polled] = [await epoch(), waitsSaid(events).length, beats.count];
+  await until(() => beats.count >= polled + 20, "20 more polls", 30_000);
+  assert.deepEqual([(await epoch()) - at, waitsSaid(events).length - said], [0, 0], "no claim and no refusal inside the backoff");
+  // The clock past the backoff: exactly one more claim and one more refusal, then quiet again until the next step.
+  clock.skewMs += BACKOFF_MS;
+  await releasedAfter(server, 2);
+  const polledAgain = beats.count;
+  await until(() => beats.count >= polledAgain + 20, "20 more polls", 30_000);
+  assert.deepEqual([(await epoch()) - at, waitsSaid(events).length - said], [2, 1], "one claim (and its release) and one refusal for the step");
 });
 
 test("a stop whose end the journal refuses never leaves the run cancelled with its call waiting: it is released with a backoff, said by name, and the next claim only ends it, withdrawn", { timeout: 60_000 }, async (t) => {
