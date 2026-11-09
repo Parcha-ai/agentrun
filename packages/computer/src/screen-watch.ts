@@ -79,12 +79,32 @@ export interface ScreenWatch {
 	close(): Promise<void>;
 }
 
-/** Words with no URL and no secret: a URL of any scheme, a secret-named parameter and a key-shaped token are taken out. */
+/** The largest frame a watch reads: a frame that says more is refused before any of it is read. */
+const MAX_FRAME_BYTES = 64 << 20;
+/** The most input calls a watch has in flight at once: one more is refused as limit, never queued. */
+const MAX_INPUTS_IN_FLIGHT = 8;
+
+/**
+ * Words with no URL and no secret: a URL of any scheme, a login, a bearer, a secret-named parameter, a key- or
+ * token-shaped value and an endpoint (a host or an IPv4 address with a port) are taken out.
+ */
 export function redactWords(words: string): string {
-	return words
-		.replace(/\b[a-z][a-z0-9+.-]*:\/\/[^\s"'<>]+/gi, "[a URL]")
-		.replace(/\b(?:token|password|passwd|secret|key|jwt|auth|code|signingKey)=[^\s&"';,]+/gi, "[a secret]")
-		.replace(/\b(?:sk|pk|pck|ph|tok|pw|jwt)_[A-Za-z0-9_-]{6,}/g, "[a secret]");
+	return (
+		words
+			.replace(/\b[a-z][a-z0-9+.-]*:\/\/[^\s"'<>]+/gi, "[a URL]")
+			// A login in a host's place: user:password@host.
+			.replace(/[\w.+-]+:[^\s@/'"]+@[\w.-]+/g, "[a login]")
+			.replace(/\b(?:Bearer|Basic)\s+[A-Za-z0-9._~+/=-]+/gi, "[a secret]")
+			// A secret-named parameter, its name with a prefix or suffix too: api_key=, access_token=, client_secret=.
+			.replace(/\b[\w-]*(?:token|password|passwd|secret|key|jwt|auth|code|signingKey|credential)[\w-]*=[^\s&"';,]+/gi, "[a secret]")
+			.replace(/\beyJ[A-Za-z0-9_-]+\.[A-Za-z0-9._-]*/g, "[a secret]")
+			.replace(/\b(?:sk|pk|rk)-[A-Za-z0-9_-]{8,}/g, "[a secret]")
+			.replace(/\bgh[pousr]_[A-Za-z0-9]{16,}/g, "[a secret]")
+			.replace(/\b(?:sk|pk|pck|ph|tok|pw|jwt)_[A-Za-z0-9_-]{6,}/g, "[a secret]")
+			// An endpoint: a DNS name or an IPv4 address with a port, as adb names a phone's.
+			.replace(/\b(?:[A-Za-z0-9-]+\.)+[A-Za-z]{2,}:\d{1,5}\b/g, "[an endpoint]")
+			.replace(/\b\d{1,3}(?:\.\d{1,3}){3}(?::\d{1,5})?\b/g, "[an endpoint]")
+	);
 }
 
 /** The code a watch ends with for an error the computer gave. */
@@ -136,9 +156,16 @@ export function watchScreen(connection: ComputerConnection, options: WatchOption
 				await new Promise((resolve) => setImmediate(resolve));
 				continue;
 			}
+			// The frame is read by the size it says: never past it, never over the largest frame, and whole at the end. A
+			// missing eof is never taken as the end: the size says whether there is more.
+			const said = answer.size;
+			const sized = typeof said === "number" && Number.isSafeInteger(said) && said >= 0;
+			if (sized && said > MAX_FRAME_BYTES) throw new ScreenWatchError("invalid", `frame ${answer.seq} says ${said} bytes, more than the largest frame, ${MAX_FRAME_BYTES}`);
 			const parts = [Buffer.from(answer.data ?? "", "base64")];
 			let size = parts[0].length;
-			for (let eof = answer.eof ?? true; !eof; ) {
+			const past = () => new ScreenWatchError("invalid", `frame ${answer.seq} gave ${size} bytes, past the ${said} bytes it said`);
+			if (sized && size > said) throw past();
+			for (let eof = answer.eof ?? (!sized || size >= said); !eof; ) {
 				const read = await client.call("screen.read", { id: answer.id ?? "", offset: size }, { signal: stop.signal });
 				if (ended) return;
 				if (!read.ok) throw new ScreenWatchError(read.error.code, redactWords(read.error.message));
@@ -146,8 +173,10 @@ export function watchScreen(connection: ComputerConnection, options: WatchOption
 				if (part.length === 0 && !read.value.eof) throw new ScreenWatchError("invalid", `screen.read of frame ${answer.seq} at ${size} gave no bytes and no eof`);
 				parts.push(part);
 				size += part.length;
+				if (sized ? size > said : size > MAX_FRAME_BYTES) throw past();
 				eof = read.value.eof;
 			}
+			if (sized && size !== said) throw new ScreenWatchError("invalid", `frame ${answer.seq} ended at ${size} bytes of the ${said} it said`);
 			after = answer.seq;
 			yield {
 				seq: answer.seq,
@@ -162,15 +191,25 @@ export function watchScreen(connection: ComputerConnection, options: WatchOption
 		}
 	}
 	const generator = frames();
+	let inFlight = 0;
 
 	return {
 		frames: { [Symbol.asyncIterator]: () => generator },
 		async act(actions, { signal } = {}) {
 			if (ended === "closed") return fail("gone", "the screen watch is closed: nothing more is sent to the computer");
 			if (ended === "aborted") return fail("aborted", "the screen watch was aborted: nothing more is sent to the computer");
-			const either = signal ? AbortSignal.any([signal, stop.signal]) : stop.signal;
-			const done = await client.call("input.actions", { actions }, { signal: either });
-			return done.ok ? done : fail(done.error.code, redactWords(done.error.message));
+			if (inFlight >= MAX_INPUTS_IN_FLIGHT) return fail("limit", `${MAX_INPUTS_IN_FLIGHT} inputs are in flight on this watch: send the next once one has answered`);
+			inFlight += 1;
+			try {
+				const either = signal ? AbortSignal.any([signal, stop.signal]) : stop.signal;
+				const done = await client.call("input.actions", { actions }, { signal: either });
+				if (!done.ok) return fail(done.error.code, redactWords(done.error.message));
+				// A failed action's words may carry a device's stderr: redacted as an error's are.
+				const failed = done.value.failed;
+				return failed ? ok({ ...done.value, failed: { ...failed, message: redactWords(failed.message) } }) : done;
+			} finally {
+				inFlight -= 1;
+			}
 		},
 		async close() {
 			options.signal?.removeEventListener("abort", onAbort);
@@ -311,72 +350,137 @@ const MODIFIER_KEYS = new Set(["Shift", "Control", "Alt", "Meta", "CapsLock", "A
 /** The modifiers of a key event (CDP's mask: Alt 1, Control 2, Meta 4, Shift 8) as combo keys, in order. */
 const comboOf = (modifiers: number) => [...(modifiers & 2 ? ["ctrl"] : []), ...(modifiers & 1 ? ["alt"] : []), ...(modifiers & 8 ? ["shift"] : []), ...(modifiers & 4 ? ["super"] : [])];
 
-const pointOf = (x: number, y: number): Point | undefined => (Number.isFinite(x) && Number.isFinite(y) ? [Math.round(x), Math.round(y)] : undefined);
-const notAPoint = (x: number, y: number): Refusal => ({ field: "x", message: `${x},${y} is not a point on the screen` });
+/** The most characters one typed text holds: computerd's MaxTypeRunes, on every kind. */
+const MAX_TYPE_CHARACTERS = 64 << 10;
+/** The longest swipe a viewer asks for, in ms. */
+const MAX_SWIPE_MS = 1_000;
+/** The most wheel clicks one event moves, each way. */
+const MAX_WHEEL_CLICKS = 20;
+/** The longest key name a viewer sends (KeyboardEvent.key). */
+const MAX_KEY_LENGTH = 64;
 
-/** The key event's input actions, the same for every kind: a printable key's down types nothing (its char does). */
-function keyActions(event: Extract<ViewerEvent, { type: "key" }>): InputAction[] | Refusal {
+const show = (value: unknown) => (typeof value === "string" ? JSON.stringify(value.slice(0, 40)) : String(value));
+const isNumber = (value: unknown): value is number => typeof value === "number" && Number.isFinite(value);
+/** A field's number, or a Refusal naming it. */
+const numberOf = (event: Record<string, unknown>, field: string): number | Refusal =>
+	isNumber(event[field]) ? (event[field] as number) : { field, message: `${field} ${show(event[field])} is not a number` };
+const isRefusal = (value: unknown): value is Refusal => typeof value === "object" && value !== null && "field" in value;
+/** The event's point at fields x and y (or x1/y1, x2/y2), rounded to whole pixels, or a Refusal naming the field. */
+function pointAt(event: Record<string, unknown>, x: string, y: string): Point | Refusal {
+	const px = numberOf(event, x);
+	if (isRefusal(px)) return { field: x, message: `${show(event[x])},${show(event[y])} is not a point on the screen` };
+	const py = numberOf(event, y);
+	if (isRefusal(py)) return { field: y, message: `${show(event[x])},${show(event[y])} is not a point on the screen` };
+	return [Math.round(px), Math.round(py)];
+}
+/** The event's modifiers (CDP's mask), or a Refusal. */
+const modifiersOf = (event: Record<string, unknown>): number | Refusal => {
+	const m = event.modifiers ?? 0;
+	return Number.isInteger(m) && (m as number) >= 0 && (m as number) <= 15 ? (m as number) : { field: "modifiers", message: `modifiers ${show(m)} is not CDP's mask, a whole number 0 to 15` };
+};
+
+/** The key event's input actions: a printable key's down types nothing (its char does); see toAction. */
+function keyActions(event: Record<string, unknown>, kind: "desktop" | "android" | "ios"): InputAction[] | Refusal {
+	if (!["down", "up", "char"].includes(event.action as string)) return { field: "action", message: `a key's action ${show(event.action)} is not down, up or char` };
+	if (typeof event.key !== "string" || event.key.length > MAX_KEY_LENGTH) return { field: "key", message: `key ${show(event.key)} is not a key name of ${MAX_KEY_LENGTH} characters at most` };
+	if (event.text !== undefined && typeof event.text !== "string") return { field: "text", message: `text ${show(event.text)} is not a string` };
+	const modifiers = modifiersOf(event);
+	if (isRefusal(modifiers)) return modifiers;
+	const key = event.key;
 	if (event.action === "up") return [];
 	if (event.action === "char") {
-		const text = event.text ?? event.key;
+		const text = (event.text as string | undefined) ?? key;
+		const characters = [...text].length;
+		if (characters > MAX_TYPE_CHARACTERS) return { field: "text", message: `text of ${characters} characters: one typed text holds at most ${MAX_TYPE_CHARACTERS} characters` };
 		return text === "" ? [] : [{ type: "type", text }];
 	}
-	if (MODIFIER_KEYS.has(event.key)) return [];
-	const named = KEY_NAMES[event.key];
-	const printable = /^[\x21-\x7e]$/.test(event.key);
-	const combo = comboOf(event.modifiers ?? 0);
-	const held = combo.filter((k) => k !== "shift");
-	if (named === undefined && !printable) return { field: "key", message: `${event.key} is not a key this computer takes` };
-	// A printable character with no ctrl, alt or super held is typed by its char event, which carries the layout's text.
-	if (named === undefined && held.length === 0) return [];
-	const key = named ?? event.key.toLowerCase();
-	return [{ type: "key", keys: [...(named === undefined ? held : combo), key] } as InputAction];
+	if (MODIFIER_KEYS.has(key)) return [];
+	const named = KEY_NAMES[key];
+	const printable = /^[\x21-\x7e]$/.test(key);
+	const combo = comboOf(modifiers);
+	if (named === undefined && !printable) return { field: "key", message: `${key} is not a key this computer takes` };
+	// A viewer never ends or switches the display (the X server's own key combos), whatever the desktop.
+	if (kind === "desktop" && modifiers & 2 && modifiers & 1) {
+		if (key === "Backspace") return { field: "key", message: "ctrl+alt+backspace would end the display: the live view does not send it" };
+		if (/^F([1-9]|1[0-2])$/.test(key)) return { field: "key", message: `ctrl+alt+${key} would switch the display: the live view does not send it` };
+	}
+	// A printable character with no ctrl, alt or super held is typed by its char event, which carries the layout's text;
+	// with one held it is a shortcut, Shift kept: ctrl+shift+s is not ctrl+s.
+	if (named === undefined && !(modifiers & (1 | 2 | 4))) return [];
+	return [{ type: "key", keys: [...combo, named ?? key.toLowerCase()] } as InputAction];
 }
 
 /**
  * The viewer's event as input actions for a computer of this kind, in the screen's upright pixels: the space the
  * frames' width and height give. Points are rounded to whole pixels. What a kind cannot take is a Refusal in words,
- * naming the event's field.
+ * naming the event's field, and so is an event whose fields are not what its type says: it never throws.
+ *
+ * Bounds: a typed text holds 65,536 characters at most (refused past it); a swipe takes 0 to 1,000 ms (clamped); one
+ * wheel event moves 20 clicks at most each way (clamped). A shortcut keeps Shift (ctrl+shift+s). A click with a
+ * modifier held is one click with its keys, on the up; its down only moves. A desktop never gets ctrl+alt+backspace or
+ * ctrl+alt+F1 to F12: they end or switch the X display.
  */
 export function toAction(event: ViewerEvent, kind: "desktop" | "android" | "ios"): InputAction[] | Refusal {
-	if (event.type === "key") return keyActions(event);
+	// The event comes from a browser page: every field is checked here, whatever its type says.
+	if (typeof event !== "object" || event === null || Array.isArray(event)) return { field: "type", message: "an event is an object with a type" };
+	const e = event as unknown as Record<string, unknown>;
+	const type = e.type;
+	if (!["mouse", "wheel", "key", "tap", "swipe", "button"].includes(type as string)) return { field: "type", message: `${show(type)} is not an event the live view sends` };
+	if (type === "key") return keyActions(e, kind);
 	if (kind === "desktop") {
-		switch (event.type) {
+		switch (type) {
 			case "mouse": {
-				const at = pointOf(event.x, event.y);
-				if (!at) return notAPoint(event.x, event.y);
-				if (event.action === "move") return [{ type: "move", at }];
-				const button = BUTTONS[event.button];
-				if (!button) return { field: "button", message: `mouse button ${event.button} is not left (0), middle (1) or right (2)` };
-				return [{ type: "move", at }, { type: event.action, button }];
+				if (!["down", "up", "move"].includes(e.action as string)) return { field: "action", message: `a mouse action ${show(e.action)} is not down, up or move` };
+				const at = pointAt(e, "x", "y");
+				if (isRefusal(at)) return at;
+				const modifiers = modifiersOf(e);
+				if (isRefusal(modifiers)) return modifiers;
+				if (e.action === "move") return [{ type: "move", at }];
+				const button = typeof e.button === "number" ? BUTTONS[e.button] : undefined;
+				if (!button) return { field: "button", message: `mouse button ${show(e.button)} is not left (0), middle (1) or right (2)` };
+				if (modifiers === 0) return [{ type: "move", at }, { type: e.action as "down" | "up", button }];
+				// A modified click keeps its modifiers: the protocol holds keys through a click, not across a down and an up,
+				// so the down only moves and the up clicks with the keys held (a modified drag is not sent).
+				if (e.action === "down") return [{ type: "move", at }];
+				const count = Number.isInteger(e.clickCount) && (e.clickCount as number) >= 2 && (e.clickCount as number) <= 3 ? (e.clickCount as 2 | 3) : undefined;
+				return [{ type: "move", at }, { type: "click", at, button, ...(count ? { count } : {}), keys: comboOf(modifiers) } as InputAction];
 			}
 			case "wheel": {
-				const at = pointOf(event.x, event.y);
-				if (!at) return notAPoint(event.x, event.y);
-				if (!Number.isFinite(event.dx) || !Number.isFinite(event.dy)) return { field: "dx", message: `the wheel's delta ${event.dx},${event.dy} is not two numbers` };
-				// A wheel notch is about 120 pixels of delta; X scrolls by clicks, so any movement is one click at least.
-				const clicks = (d: number) => (d === 0 ? 0 : Math.sign(d) * Math.max(1, Math.round(Math.abs(d) / 120)));
-				return [{ type: "scroll", at, dx: clicks(event.dx), dy: clicks(event.dy), unit: "clicks" }];
+				const at = pointAt(e, "x", "y");
+				if (isRefusal(at)) return at;
+				const dx = numberOf(e, "dx");
+				if (isRefusal(dx)) return dx;
+				const dy = numberOf(e, "dy");
+				if (isRefusal(dy)) return dy;
+				// A wheel notch is about 120 pixels of delta; X scrolls by clicks, so any movement is one click at least, and
+				// one event moves MAX_WHEEL_CLICKS at most.
+				const clicks = (d: number) => (d === 0 ? 0 : Math.sign(d) * Math.min(MAX_WHEEL_CLICKS, Math.max(1, Math.round(Math.abs(d) / 120))));
+				return [{ type: "scroll", at, dx: clicks(dx), dy: clicks(dy), unit: "clicks" }];
 			}
 			default:
-				return { field: "type", message: `a desktop takes the mouse, the wheel and keys, not a ${event.type}` };
+				return { field: "type", message: `a desktop takes the mouse, the wheel and keys, not a ${type}` };
 		}
 	}
-	switch (event.type) {
+	switch (type) {
 		case "tap": {
-			const at = pointOf(event.x, event.y);
-			return at ? [{ type: "tap", at }] : notAPoint(event.x, event.y);
+			const at = pointAt(e, "x", "y");
+			return isRefusal(at) ? at : [{ type: "tap", at }];
 		}
 		case "swipe": {
-			const from = pointOf(event.x1, event.y1);
-			const to = pointOf(event.x2, event.y2);
-			if (!from || !to) return { field: "x1", message: `a swipe from ${event.x1},${event.y1} to ${event.x2},${event.y2} is not two points on the screen` };
-			const ms = Number.isFinite(event.ms) && event.ms >= 0 ? Math.round(event.ms) : 300;
-			return [{ type: "swipe", path: [from, to], ms }];
+			const from = pointAt(e, "x1", "y1");
+			if (isRefusal(from)) return from;
+			const to = pointAt(e, "x2", "y2");
+			if (isRefusal(to)) return to;
+			const ms = numberOf(e, "ms");
+			if (isRefusal(ms)) return ms;
+			return [{ type: "swipe", path: [from, to], ms: Math.min(MAX_SWIPE_MS, Math.max(0, Math.round(ms))) }];
 		}
-		case "button":
-			return [{ type: "button", name: event.name === "recents" ? "app_switch" : event.name }];
+		case "button": {
+			const name = e.name;
+			if (name !== "back" && name !== "home" && name !== "recents") return { field: "name", message: `button ${show(name)} is not back, home or recents` };
+			return [{ type: "button", name: name === "recents" ? "app_switch" : name }];
+		}
 		default:
-			return { field: "type", message: `a phone takes taps, swipes, its buttons and keys, not the ${event.type}` };
+			return { field: "type", message: `a phone takes taps, swipes, its buttons and keys, not the ${type}` };
 	}
 }
