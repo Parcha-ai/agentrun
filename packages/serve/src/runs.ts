@@ -1710,17 +1710,19 @@ export class Runs {
     const placing = run.raiseFailedRow ? [...waitingPlace, raiseFailedRow(run.raiseFailedRow)] : waitingPlace;
     // A trigger's row names the trigger as it is now (its name, else its id), here alone: every page, the stream and the
     // final rows are read from this view.
-    const view = withLearning(placing, run.meta.learning, this.learning.shown()).map((row) => (row.trigger ? this.servedTriggerRow(row) : row));
+    const view = withLearning(placing, run.meta.learning, this.learning.shown()).map((row) => (row.trigger ? this.servedTriggerRow(run, row) : row));
     // Every row only this view makes, remembered by id, so the live path's keep never holds one once it is no longer made.
     servedOnlyIds(view, (run.madeHere ??= new Set()));
     if (run.log.sync(view, run.keep)) run.updatedAt = new Date().toISOString();
   }
 
   /** A trigger's row as served: "<label> <its name>: <its first line>" for a trigger that has a name now; as the timeline
-   *  wrote it, "<label> <its id>: …", for one that is gone. */
-  private servedTriggerRow(row: TimelineEvent): TimelineEvent {
+   *  wrote it, "<label> <its id>: …", for one that is gone. The name is put in after the run's rows were redacted, so it
+   *  is redacted here with the run's redactor: a key pasted into a trigger's name never shows on its runs' rows. */
+  private servedTriggerRow(run: Run, row: TimelineEvent): TimelineEvent {
     const { id, source } = row.trigger!;
-    const name = this.options.triggerName?.(id)?.replace(/\s+/g, " ").trim();
+    const given = this.options.triggerName?.(id);
+    const name = given === undefined ? undefined : this.redactor(run)(given).replace(/\s+/g, " ").trim();
     const label = TRIGGER_LABELS[source];
     const written = `${label} ${id}: `;
     return name && row.summary?.startsWith(written) ? { ...row, summary: `${label} ${name}: ${row.summary.slice(written.length)}` } : row;
