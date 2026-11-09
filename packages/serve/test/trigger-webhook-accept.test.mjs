@@ -317,7 +317,7 @@ test("X-GitHub-Delivery is not signed, so it keys nothing: the same signed body 
   await follow(api, fired.run_id, ["completed"]);
 });
 
-test("a trigger with accept may cap its own active runs (max_active_runs): at the cap a firing waits due and is tried again, never skipped; only such a trigger takes it", { timeout: 180_000, skip: E2 }, async (t) => {
+test("a trigger with accept may cap its own active runs (max_active_runs): at the cap a firing waits due and is tried again, never skipped; a schedule takes no cap", { timeout: 180_000, skip: E2 }, async (t) => {
   withEnv(t, SEAL);
   const { api, baseUrl } = await serve(t);
   await made(api, "busy");
@@ -327,7 +327,7 @@ test("a trigger with accept may cap its own active runs (max_active_runs): at th
   assert.equal(made1.status, 201, JSON.stringify(made1.body));
   assert.equal(made1.body.max_active_runs, 1);
   const { id, secret } = made1.body;
-  for (const [bad, field] of [[{ ...body, max_active_runs: 0 }, "max_active_runs"], [{ ...body, max_active_runs: 101 }, "max_active_runs"], [{ ...body, max_active_runs: 1.5 }, "max_active_runs"], [{ ...hooked("busy", { signature: "github" }), max_active_runs: 2 }, "max_active_runs"]]) {
+  for (const [bad, field] of [[{ ...body, max_active_runs: 0 }, "max_active_runs"], [{ ...body, max_active_runs: 101 }, "max_active_runs"], [{ ...body, max_active_runs: 1.5 }, "max_active_runs"], [{ ...hooked("busy", {}), source: { kind: "schedule", every_s: 600 }, max_active_runs: 2 }, "max_active_runs"]]) {
     const res = await api("POST", "/triggers", bad);
     assert.deepEqual([res.status, res.body.error?.fields?.map((f) => f.field)], [422, [field]], JSON.stringify(res.body));
   }
@@ -345,7 +345,9 @@ test("a trigger with accept may cap its own active runs (max_active_runs): at th
   assert.match(held.reason, /max_active_runs/);
   assert.equal((await api("GET", "/agents/busy/runs")).body.runs.length, 1, "one run while at the cap");
   const unfiltered = await api("PATCH", `/triggers/${id}`, { source: { kind: "webhook", signature: "github" } });
-  assert.deepEqual([unfiltered.status, unfiltered.body.error?.fields?.map((f) => f.field)], [422, ["max_active_runs"]], "taking accept away while a cap is kept is refused");
+  assert.deepEqual([unfiltered.status, unfiltered.body.max_active_runs], [200, 1], "a cap needs no accept: taking accept away keeps it");
+  const refiltered = await api("PATCH", `/triggers/${id}`, { source: body.source });
+  assert.equal(refiltered.status, 200, "accept back before the cap goes: with neither, the held firing would meet the overlap skip");
   assert.equal((await api("PATCH", `/triggers/${id}`, { max_active_runs: 100 })).body.max_active_runs, 100, "100 is the most");
   const raised = await api("PATCH", `/triggers/${id}`, { max_active_runs: null });
   assert.deepEqual([raised.status, raised.body.max_active_runs], [200, null], JSON.stringify(raised.body));

@@ -17,6 +17,7 @@ import { CAP_TOLERANCE, money } from "./cap.js";
 import { ApiError, type InputIssue, invalid, unsupported } from "./errors.js";
 import { harnessOfBody } from "./harness.js";
 import { redacted, redactedOutput } from "./key-refusal.js";
+import { givenOf, LEARNING_BUDGET, learnedOf, type LearningMode, type NoteUsed, type Seed, type Shown } from "./learning.js";
 import { type Place, resolvePlace } from "./place.js";
 import { launchBody, type RunLaunch } from "./run-launch.js";
 import type { ApprovalDecision, RunMoment } from "./run-view.js";
@@ -104,8 +105,8 @@ export async function cancel(store: RunsStore, moment: RunMoment): Promise<boole
 /** Pauses a workflow run, or resumes it (pauseRun/resumeRun): a pause or resume command the run's runner reads and applies.
  *  Verbatim from runs.ts pause: an agentic run has no pause here (501, a turn is stopped instead), an ended or cancelling one
  *  takes none (409). Returns the run id and whether it is paused; the route adds the run's status from its view.
- *  (The runner's "pause"/"resume" command kinds are tl-jobs'; written through the store directly until they are in
- *  runner/commands.ts's COMMAND_KINDS, then this routes through sendCommand like the others — a named TODO.) */
+ *  (The runner's "pause"/"resume" command kinds are added on the runner side; written through the store directly until they
+ *  are in runner/commands.ts's COMMAND_KINDS, then this routes through sendCommand like the others — a named TODO.) */
 async function pauseOrResume(store: RunsStore, moment: RunMoment, paused: boolean): Promise<{ run_id: string; paused: boolean }> {
   if (moment.kind !== "workflow") throw unsupported("runs.pause", "Only a workflow run pauses here: an agentic run's turn is stopped with POST /runs/{id}/stop.");
   if (moment.terminal || moment.cancelled) throw finished(moment);
@@ -225,7 +226,7 @@ function uuidv7(now = Date.now()): string {
 
 /** The revision's body fields a start reads: its default cap and cap mode, its place, and (agentic) its tools, for the
  *  place fallback. Read with the shapes the old start read them with. */
-type StartBody = { readonly maxCostUsd?: number; readonly capMode?: string; readonly place?: unknown; readonly tools?: readonly unknown[] };
+type StartBody = { readonly maxCostUsd?: number; readonly capMode?: string; readonly place?: unknown; readonly tools?: readonly unknown[]; readonly learning?: boolean };
 
 /** The pieces a start needs that live in the server's request layer, not here: the leaf validators (the create body's field
  *  issues, the revision a run pins, a run's input against its schema, the hint told from the revision, a revision this host
@@ -271,6 +272,16 @@ export interface StartDeps {
    *  (app.ts's runModels / wireModels over revision.body.model on its harness). The runner reads launch.model alone, so one
    *  resolution happens, here. Required. */
   modelOf(entry: AgentEntry, revision: Revision): { provider: string; modelId: string } | undefined;
+  /** The server's learning switch (learning.ts LearningMode): a run learns only when it is not "off" and its revision says
+   *  so. Absent, no run learns. */
+  readonly learning?: LearningMode;
+  /** The agent's learning seed, read now (learning-run.ts seedFor): the learning commit a run starts from, or a reason it
+   *  could not be read. Only read for a run that learns. */
+  seedFor?(agentId: string): Promise<{ seed: Seed } | { failed: string }>;
+  /** The learning budget in bytes (learning.ts LEARNING_BUDGET), for which notes fit a run's # Learned section. */
+  readonly learningBudget?: number;
+  /** The host's secrets as they are shown now (learning-run.ts shown), for cutting the notes a run is given. */
+  shown?(): Shown;
 }
 
 /** How a run is asked to start, beyond its create body: a trigger and its firing, an idempotency or firing origin, whether
@@ -280,6 +291,26 @@ export interface StartOptions {
   readonly origin?: RunOrigin;
   readonly capped?: boolean;
   readonly from?: MessageOrigin;
+}
+
+/** A no-op redactor, when the server gives none: no secret is cut (the switch wires the real shown for a learning run). */
+const noShown: Shown = { text: (text) => text, name: (name) => name, holds: () => false };
+
+/** The run's learning start as the old start decided it (learning-run.ts onStart): undefined when the run does not learn (the
+ *  server's learning off, a workflow revision, or its revision does not say learning), else the notes its # Learned section
+ *  names (givenOf, the one decision the runner puts in the prompt), the # Learned text (learnedOf), the seed sha it starts
+ *  from and the count of all the seed's notes before the budget picked `given` (seedNotes) — or given empty, seed null and no
+ *  seedNotes when its seed cannot be read (a learning fault never refuses a run). */
+async function learningStartFor(deps: StartDeps, entry: AgentEntry, revision: Revision, rbody: StartBody): Promise<{ given: NoteUsed[]; seed: string | null; section: string; seedNotes?: number } | undefined> {
+  const learns = deps.learning !== undefined && deps.learning !== "off" && revision.kind === "agentic" && rbody.learning === true;
+  if (!learns || !deps.seedFor) return undefined;
+  const seeded = await deps.seedFor(entry.agent.id);
+  if (!("seed" in seeded)) return { given: [], seed: null, section: "" };
+  const options = { budget: deps.learningBudget ?? LEARNING_BUDGET, read: Array.isArray(rbody.tools) && rbody.tools.includes("read"), shown: deps.shown ? deps.shown() : noShown };
+  // The notes and the # Learned text are the old start's one decision (learnedParts): givenOf and learnedOf over the same
+  // seed and options, so the runner lays exactly this section for exactly these notes and reads no learning folder. seedNotes
+  // is the whole seed's note count, before the budget narrowed `given` (as the old seed_notes was).
+  return { given: givenOf(seeded.seed, options), seed: seeded.seed.sha, section: learnedOf(seeded.seed, options) ?? "", seedNotes: Object.keys(seeded.seed.notes).length };
 }
 
 /** Starts a run of `entry`'s agent from a create body, as POST /agents/{id}/runs starts it: every check the old start made
@@ -326,6 +357,11 @@ export async function startRun(store: Pick<Store, "runs" | "runOfOrigin">, deps:
   const plane: Plane = tooling ? planeFor(deps.planeEnv(), tooling, deps.toolSettings(), { capped: cap !== undefined, run: true }) : {};
   // The run's model, resolved once, at start (the runner reads launch.model only).
   const model = deps.modelOf(entry, revision);
+  // The run's learning start, decided here as the old start did (learning-run.ts onStart): a run learns when the server's
+  // learning is on and its revision says so; then its seed is read now and the notes its # Learned section names (givenOf,
+  // the one decision) are pinned in the launch for the runner to put in the prompt. A seed that cannot be read starts it with
+  // nothing (given empty, seed null); the end state is the runner's.
+  const learning = await learningStartFor(deps, entry, revision, rbody);
   const launch: RunLaunch = {
     input,
     title: clip(redacted(title.trim().replace(/\s+/g, " "), deps.serverSecrets()), 80),
@@ -339,6 +375,7 @@ export async function startRun(store: Pick<Store, "runs" | "runOfOrigin">, deps:
     ...(deps.documents !== undefined ? { documents: deps.documents } : {}),
     ...(deps.boxAllow !== undefined ? { boxAllow: deps.boxAllow } : {}),
     ...(fileIds.length ? { files: fileIds } : {}),
+    ...(learning ? { learning } : {}),
     ...(trigger ? { trigger } : {}),
     ...(from ? { inputOrigin: from } : {}),
     ...(model ? { model } : {}),

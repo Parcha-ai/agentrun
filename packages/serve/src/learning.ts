@@ -3,12 +3,12 @@
 // (learn/notes.ts): `MEMORY.md`, the index, one line per active note, and one `<slug>.md` per note. It is plain
 // git with main checked out, so any reader sees its files, reached through its Workspace (learningWorkspace). Every
 // write to main is one exec of the learning script (learn/folder.ts: a run's merge, a person's write, the first commit),
-// which also writes `.agentrun/snapshot.json`, what the routes read. The seed's reads below still run git on the local
-// folder (each with hooks, fsmonitor, replace refs and lazy fetches off and no system or global config, in the agent's
-// queue in this process) until the seed reads the snapshot (tl-places' e4b).
+// which also writes `.agentrun/snapshot.json`, what the routes read. A run's seed is the script's read too (seedFrom over
+// learn/seed-check.ts readSeed): no git runs in this process for it. The host-git reads left below (git, readBlobs,
+// readSeed, agentFolder) are propose.ts's alone, until it reads the seed through the folder too.
 //
 // When a run of such an agent is made the server makes the folder if it is absent (the script's init: one host commit
-// on main, holding an empty `MEMORY.md`), resolves main's commit and reads it with plumbing, never the working tree. It copies that commit's
+// on main, holding an empty `MEMORY.md`), and reads main's commit through the script, never the working tree. It copies that commit's
 // index and active notes into the run's `work/.learning/` and pins the commit in the run's directory (`learning.json`),
 // with what the run reads under `# Learned` (learnedOf): each active note whole while they fit the server's learning
 // budget, else the index and the notes changed last, whole, while they fit; every text cut of the server's secrets, the
@@ -19,25 +19,25 @@
 // (grade.ts). The copy in the run's work is only for reading: nothing the run writes there is ever kept.
 //
 // The skills the agent wrote are in the folder too, one folder each under `skills/` (SKILLS_DIR). A run
-// gets those of its commit beside its revision's own, in `work/.agents/skills/`, read with plumbing as its notes are: a
+// gets those of its commit beside its revision's own, in `work/.agents/skills/`, read as its notes are: a
 // skill named like one of the revision's is the revision's, and the learned ones fit their own budget
 // (LEARNED_SKILLS_BUDGET) within what the revision's leave of the adapters' cap on a run's skills, so they never push the
 // revision's out of a harness's own loading (skills.ts splitSkills). One that does not fit is left out, and the pin
-// names it. A link at `skills/` or anywhere under it is never followed: the run starts with nothing learned.
+// names it. A link at `skills/` or anywhere under it is never followed: the skill it is in is left out, with a warning.
 //
-// The host never follows a symbolic link into the folder (agentFolder): a link at the agent's home, at its `learning/`
-// or at `learning/.git`, or a `MEMORY.md` that is one when the host writes it, is refused, and the run starts with
-// nothing learned. The end-of-run turn's seed, its proposal's check, its grade and its merge reach the folder the same
-// way, and a link there drops what the run learned. A person's reads and writes (learning-routes.ts) check it the same
+// The host never follows a symbolic link into the folder (learn/folder.ts learningWorkspace, and the script): a link at
+// the agent's home, at its `learning/` or at `learning/.git`, or a `MEMORY.md` that is one when the script writes it, is
+// refused, and the run starts with nothing learned. Its proposal's check (agentFolder) refuses one the same way, and a
+// link there drops what the run learned. A person's reads and writes (learning-routes.ts) check it the same
 // way (learn/folder.ts learningWorkspace), and a link there is an error.
 import { spawn } from "node:child_process";
-import { existsSync } from "node:fs";
-import { lstat, mkdir, readFile, rm, writeFile } from "node:fs/promises";
+import { lstat, mkdir, readFile, rm } from "node:fs/promises";
 import { dirname, join, posix, relative } from "node:path";
 import { SKILL_BYTES } from "@parcha/agentrun-kernel";
 import { INDEX_FILE, type LearnedNote, loadedIndex, NOTE_FILE, parseNoteFile, type Problem, redactSecrets, secretShapes, servedSkill, SKILLS_DIR, valueMatcher, type Verdict, WORKFLOW_NAME, WORKFLOWS_DIR } from "./learn/index.js";
 import { DISK_DIR } from "@parcha/pi-durable-agent";
-import { learningInit, type LearningFolder, learningWorkspace } from "./learn/folder.js";
+import { FolderBusy, learningInit, type LearningFolder, learningWorkspace, readLearning, readSnapshot, type Snapshot } from "./learn/folder.js";
+import { readSeed as readFolderSeed } from "./learn/seed-check.js";
 import { agentFolderOf, serialBy, writeDurable } from "./files.js";
 import { DETAIL_MAX, LIST_DETAIL, said, short, wordsOf } from "./learning-words.js";
 import { isObject } from "./validate.js";
@@ -317,21 +317,9 @@ const SKILL_FILE_PATH = /^(?:[A-Za-z0-9_][A-Za-z0-9._-]{0,99}\/){0,4}[A-Za-z0-9_
 /** A skill the agent wrote, as a seed holds it: its name, its files' bytes together, and each file's text by its path
  *  inside the skill, read only when the skill could fit a run's budget at all. */
 export type LearnedSkill = { name: string; bytes: number; files?: Record<string, string> };
-/** The `status` a SKILL.md's front matter sets, quotes dropped, or undefined when it sets none. The host alone sets one
- *  (`status: pending` on a skill held for its owner's OK); the checker refuses a run's skill that does. */
-const statusOf = (text: string | undefined): string | undefined => {
-  const lf = (text ?? "").replace(/\r\n/g, "\n");
-  const end = lf.startsWith("---\n") ? lf.indexOf("\n---\n", 3) : -1;
-  const line = end < 0 ? undefined : lf.slice(4, end).split("\n").find((entry) => entry.startsWith("status:"));
-  return line?.slice("status:".length).trim().replace(/^(["'])(.*)\1$/, "$2");
-};
-
 /** A file main holds over this is not read: a note is short, and the index is read only so far (loadedIndex). */
 const FILE_CAP = 1 << 20;
 const IDENTITY = { name: "agentrun-serve", email: "serve@agentrun.invalid" };
-/** The floor of git this server's learning needs: what its own calls need, 2.32 (GIT_CONFIG_GLOBAL, which every call
- *  sets to keep a host's global config out). A stock serverless exec image has 2.34. */
-const MIN_GIT = [2, 32] as const;
 /** How long one git call may take before it is killed: a hung call would hold its agent's queue. */
 const GIT_TIMEOUT_MS = 60_000;
 
@@ -438,30 +426,6 @@ export function git(cwd: string, repo: string | undefined, args: readonly string
   });
 }
 
-const gitChecks = new Map<string, Promise<string | undefined>>();
-
-/** Why this host keeps no learning folder, or undefined when it can: git MIN_GIT or later on `env`'s PATH. */
-export function learningBlocker(env: NodeJS.ProcessEnv = process.env): Promise<string | undefined> {
-  const key = env.PATH ?? "";
-  let check = gitChecks.get(key);
-  if (!check) {
-    const floor = MIN_GIT.join(".");
-    check = new Promise<string | undefined>((resolve) => {
-      const child = spawn("git", ["--version"], { env: { PATH: key }, stdio: ["ignore", "pipe", "ignore"], timeout: GIT_TIMEOUT_MS });
-      let out = "";
-      child.stdout.on("data", (chunk: Buffer) => (out += chunk.toString("utf8")));
-      child.once("error", () => resolve(`learning needs git ${floor} or later on PATH, and this host has none`));
-      child.once("close", (code) => {
-        const [major = 0, minor = 0] = (/(\d+)\.(\d+)/.exec(out) ?? []).slice(1).map(Number);
-        if (code !== 0) resolve(`learning needs git ${floor} or later on PATH, and this host has none`);
-        else resolve(major > MIN_GIT[0] || (major === MIN_GIT[0] && minor >= MIN_GIT[1]) ? undefined : `learning needs git ${floor} or later, and this host has ${out.trim()}`);
-      });
-    });
-    gitChecks.set(key, check);
-  }
-  return check;
-}
-
 const queues = new Map<string, Promise<unknown>>();
 
 /** Runs `work` once every call queued before it on the agent's folder has finished: one at a time per agent, in this
@@ -530,158 +494,6 @@ export async function readSeed(cwd: string, repo: string, sha: string): Promise<
   return seed;
 }
 
-/** The skills commit `sha` holds under SKILLS_DIR, read with plumbing, by name. A skill is read when its folder's
- *  name and each of its files' paths are in shape, it holds a SKILL.md, and each file is a regular one (mode 100644) in
- *  UTF-8; else it is named in `skipped`. Only an active skill is a run's, one whose SKILL.md sets no status (or
- *  `active`): one held for its owner's OK (`status: pending`), or with any other status, is left out as a note that is
- *  not active is (readSeed). One over LEARNED_SKILLS_BUDGET, which no run could get, is held with its bytes and none of
- *  its files. A symbolic link or a submodule at SKILLS_DIR or anywhere under it throws, as a read
- *  git fails does: the run starts with nothing learned, and no link is ever laid in its work or followed. */
-export async function readSkills(cwd: string, repo: string, sha: string): Promise<{ skills: LearnedSkill[]; skipped: string[] }> {
-  const listed = (await git(cwd, repo, ["ls-tree", "-r", "-t", "-l", "-z", "--full-tree", sha, "--", SKILLS_DIR])).toString("utf8").split("\0").filter(Boolean);
-  const found = new Map<string, { path: string; oid: string; size: number }[]>();
-  const refused = new Set<string>();
-  const skipped: string[] = [];
-  for (const entry of listed) {
-    const tab = entry.indexOf("\t");
-    const [mode, type, oid, size] = entry.slice(0, tab).split(/\s+/);
-    const path = entry.slice(tab + 1);
-    if (path !== SKILLS_DIR && !path.startsWith(`${SKILLS_DIR}/`)) continue;
-    if (mode === "120000" || mode === "160000") throw new Error(`the learning folder's ${path} is a ${mode === "120000" ? "symbolic link" : "submodule"}, and the host never lays one in a run`);
-    if (type === "tree") continue;
-    if (path === SKILLS_DIR) {
-      skipped.push(`${path} (not a folder)`);
-      continue;
-    }
-    const [name = "", ...rest] = path.slice(SKILLS_DIR.length + 1).split("/");
-    const file = rest.join("/");
-    const why = !SKILL_NAME.test(name) || !file ? "not in a skill's folder named in lowercase letters, digits and dashes" : !SKILL_FILE_PATH.test(file) ? "not a plain path inside a skill" : mode !== "100644" || type !== "blob" || !oid ? `mode ${mode}` : undefined;
-    if (why) {
-      refused.add(name);
-      skipped.push(`${path} (${why})`);
-    } else (found.get(name) ?? found.set(name, []).get(name)!).push({ path: file, oid, size: Number(size) });
-  }
-  const skills: LearnedSkill[] = [];
-  for (const [name, files] of [...found].sort(([a], [b]) => (a < b ? -1 : a > b ? 1 : 0))) {
-    if (refused.has(name)) continue;
-    if (!files.some(({ path }) => path === "SKILL.md")) {
-      skipped.push(`${SKILLS_DIR}/${name} (no SKILL.md)`);
-      continue;
-    }
-    const bytes = files.reduce((sum, { size }) => sum + size, 0);
-    if (bytes > LEARNED_SKILLS_BUDGET) {
-      skills.push({ name, bytes });
-      continue;
-    }
-    const blobs = await readBlobs(cwd, repo, files.map(({ oid }) => oid));
-    let texts: Record<string, string>;
-    try {
-      texts = Object.fromEntries(files.map(({ path }, i) => [path, utf8.decode(blobs[i]!)]));
-    } catch {
-      skipped.push(`${SKILLS_DIR}/${name} (not UTF-8)`);
-      continue;
-    }
-    const status = statusOf(texts["SKILL.md"]);
-    if (status === undefined || status === "active") skills.push({ name, bytes, files: texts });
-  }
-  return { skills, skipped };
-}
-
-/** The workflows commit `sha` holds under WORKFLOWS_DIR, read with plumbing, by name: each a folder with a workflow.json
- *  and a README.md, each a regular file (mode 100644) of at most FILE_CAP bytes in UTF-8; else named in `skipped`. Only an
- *  active one is a run's, by the rule a skill is (readSkills): its README.md sets no status, or `active`; one held for
- *  its owner's OK, or retired, is left out. A symbolic link or a submodule under WORKFLOWS_DIR throws. */
-export async function readWorkflows(cwd: string, repo: string, sha: string): Promise<{ workflows: LearnedWorkflow[]; skipped: string[] }> {
-  const listed = (await git(cwd, repo, ["ls-tree", "-r", "-t", "-l", "-z", "--full-tree", sha, "--", WORKFLOWS_DIR])).toString("utf8").split("\0").filter(Boolean);
-  const found = new Map<string, Record<string, string>>();
-  const refused = new Set<string>();
-  const skipped: string[] = [];
-  for (const entry of listed) {
-    const tab = entry.indexOf("\t");
-    const [mode, type, oid, size] = entry.slice(0, tab).split(/\s+/);
-    const path = entry.slice(tab + 1);
-    if (path !== WORKFLOWS_DIR && !path.startsWith(`${WORKFLOWS_DIR}/`)) continue;
-    if (mode === "120000" || mode === "160000") throw new Error(`the learning folder's ${path} is a ${mode === "120000" ? "symbolic link" : "submodule"}, and the host never reads one for a run`);
-    if (type === "tree") continue;
-    const [name = "", file = "", ...more] = path.slice(WORKFLOWS_DIR.length + 1).split("/");
-    const why = !WORKFLOW_NAME.test(name) || more.length || (file !== "workflow.json" && file !== "README.md") ? "not a workflow's workflow.json or README.md" : mode !== "100644" || type !== "blob" || !oid ? `mode ${mode}` : Number(size) > FILE_CAP ? `over ${FILE_CAP} bytes` : undefined;
-    if (why) {
-      refused.add(name);
-      skipped.push(`${path} (${why})`);
-    } else (found.get(name) ?? found.set(name, {}).get(name)!)[file] = oid!;
-  }
-  const workflows: LearnedWorkflow[] = [];
-  for (const [name, oids] of [...found].sort(([a], [b]) => (a < b ? -1 : a > b ? 1 : 0))) {
-    if (refused.has(name)) continue;
-    if (!oids["workflow.json"] || !oids["README.md"]) {
-      skipped.push(`${WORKFLOWS_DIR}/${name} (no ${oids["workflow.json"] ? "README.md" : "workflow.json"})`);
-      continue;
-    }
-    const [json, readme] = await readBlobs(cwd, repo, [oids["workflow.json"], oids["README.md"]]);
-    let texts: [string, string];
-    try {
-      texts = [utf8.decode(json!), utf8.decode(readme!)];
-    } catch {
-      skipped.push(`${WORKFLOWS_DIR}/${name} (not UTF-8)`);
-      continue;
-    }
-    // Its README read one way only, or not at all: one whose front matter is not closed, or holds a line that is no key
-    // at its left edge, could hold a status a reader other than this one sees, so it is never read as active.
-    const front = readmeFront(texts[1]);
-    if (!front) {
-      skipped.push(`${WORKFLOWS_DIR}/${name} (its README.md's front matter does not read one way)`);
-      continue;
-    }
-    const status = front.get("status");
-    if (status !== undefined && status !== "active") continue;
-    workflows.push({ name, description: front.get("description") ?? "", workflow: texts[0] });
-  }
-  return { workflows, skipped };
-}
-
-/** A learned workflow README's front matter, each key to its value (quotes dropped; a `>` or `|` value's indented lines
- *  joined by spaces), or undefined when it does not read one way: no front matter, none closed (`---` on a line of its
- *  own, the last line or not), a line that is neither a key at its left edge, a comment, blank, nor a line of a `>` or
- *  `|` value, or a key set twice. */
-export function readmeFront(text: string): Map<string, string> | undefined {
-  const lf = text.replace(/\r\n/g, "\n");
-  if (!lf.startsWith("---\n")) return undefined;
-  const close = /\n---(?:\n|$)/.exec(lf.slice(3));
-  if (!close) return undefined;
-  const front = new Map<string, string>();
-  let block: string | undefined;
-  for (const line of lf.slice(4, 3 + close.index).split("\n")) {
-    if (block !== undefined && (/^\s+\S/.test(line) || line.trim() === "")) {
-      if (line.trim()) front.set(block, `${front.get(block)} ${line.trim()}`.trim());
-      continue;
-    }
-    block = undefined;
-    if (line.trim() === "" || line.startsWith("#")) continue;
-    const pair = /^([A-Za-z_][\w-]*):(?:\s+(.*))?$/.exec(line);
-    if (!pair || front.has(pair[1]!)) return undefined;
-    const value = (pair[2] ?? "").trim();
-    if (/^[>|][-+]?$/.test(value)) {
-      block = pair[1]!;
-      front.set(block, "");
-    } else front.set(pair[1]!, value.replace(/^(["'])(.*)\1$/, "$2"));
-  }
-  return front;
-}
-
-/** Each file's place in main's first-parent log from `sha`, by the newest commit that changed it: 0 for those the newest
- *  commit changed, and so on, so two changes in one second keep their order. A run's notes (seedOf) and a person's view
- *  of them (learning-routes.ts) are in this order, the one changed last first. */
-export async function changedOrder(cwd: string, repo: string, sha: string): Promise<Map<string, number>> {
-  const walked = (await git(cwd, repo, ["log", "--first-parent", "-z", "--name-only", "--format=%x1e", sha])).toString("utf8");
-  const order = new Map<string, number>();
-  walked.split("\x1e").slice(1).forEach((record, i) => {
-    const end = record.indexOf("\0");
-    if (end < 0) return;
-    for (const file of record.slice(end + 1).split("\0").map((name) => name.replace(/^\n/, "")).filter(Boolean)) if (!order.has(file)) order.set(file, i);
-  });
-  return order;
-}
-
 /** What the learning folder's read at a commit gives a run's seed (the folder's script's read op, through the agent's
  *  learning Workspace): each file of its index, its active notes and its active skills, by its path from the folder's
  *  root, and each skill it left out whole and why (`refused`, always there: a skill holding a tracked link); or why it
@@ -731,47 +543,103 @@ export async function seedFrom(commit: string | null, read: SeedReader, { order,
   return seed;
 }
 
-/** The seed of a run of agent `agentId` about to be made: main's commit, the folder made first when it is absent, and
- *  what that commit holds, its active notes in the order they changed on main, the one changed last first (then by
- *  name). In the agent's queue. */
-export function seedOf(data: string, agentId: string): Promise<Seed> {
-  return withAgentRepo(data, agentId, async () => {
-    const repo = await agentFolder(data, agentId);
-    const home = agentFolderOf(data, agentId);
-    // The folder made, when it is not, by the learning script's init: its first commit and its snapshot.
-    const folder = learningFolderOf(data, agentId);
-    const sha = await learningInit(folder.workspace).finally(() => folder.end());
-    const seed = await readSeed(home, repo, sha);
-    const order = await changedOrder(home, repo, sha);
-    const place = (file: string) => order.get(file) ?? Number.POSITIVE_INFINITY;
-    seed.recent = Object.keys(seed.notes).sort((a, b) => place(a) - place(b) || (a < b ? -1 : a > b ? 1 : 0));
-    const { skills, skipped } = await readSkills(home, repo, sha);
-    // A skill's place is its file changed last's; by name (readSkills' order) among skills changed in one commit.
-    const skillPlace = new Map<string, number>();
-    for (const [file, at] of order) {
-      const name = file.startsWith(`${SKILLS_DIR}/`) ? file.slice(SKILLS_DIR.length + 1).split("/")[0]! : undefined;
-      if (name !== undefined && at < (skillPlace.get(name) ?? Number.POSITIVE_INFINITY)) skillPlace.set(name, at);
+/** What seedFrom reads through the agent's learning folder: the script's read at a commit, or the snapshot and its
+ *  bodies when the commit is main's (learn/seed-check.ts readSeed). No git in this process. */
+const readerOf = (ws: Workspace): SeedReader => async (commit) => {
+  const got = await readFolderSeed(ws, commit);
+  return got.ok ? { ok: true, files: got.files, refused: got.refused } : { ok: false, why: got.reason };
+};
+/** The places a seed can't read from its files alone, from the folder's snapshot: each note's and each skill's. */
+const orderOf = (snapshot: Snapshot | undefined): SeedOrder | undefined =>
+  snapshot ? { notes: snapshot.notes.map(({ file, order }) => ({ file, order })), skills: snapshot.skills.map(({ name, order }) => ({ name, order })) } : undefined;
+
+/** A learned workflow README's front matter, each key to its value (quotes dropped; a `>` or `|` value's indented lines
+ *  joined by spaces), or undefined when it does not read one way: no front matter, none closed (`---` on a line of its
+ *  own, the last line or not), a line that is neither a key at its left edge, a comment, blank, nor a line of a `>` or
+ *  `|` value, or a key set twice. */
+export function readmeFront(text: string): Map<string, string> | undefined {
+  const lf = text.replace(/\r\n/g, "\n");
+  if (!lf.startsWith("---\n")) return undefined;
+  const close = /\n---(?:\n|$)/.exec(lf.slice(3));
+  if (!close) return undefined;
+  const front = new Map<string, string>();
+  let block: string | undefined;
+  for (const line of lf.slice(4, 3 + close.index).split("\n")) {
+    if (block !== undefined && (/^\s+\S/.test(line) || line.trim() === "")) {
+      if (line.trim()) front.set(block, `${front.get(block)} ${line.trim()}`.trim());
+      continue;
     }
-    const placeOf = (skill: LearnedSkill) => skillPlace.get(skill.name) ?? Number.POSITIVE_INFINITY;
-    seed.skills = [...skills].sort((a, b) => placeOf(a) - placeOf(b) || 0);
-    seed.skipped.push(...skipped);
-    const flows = await readWorkflows(home, repo, sha);
-    seed.workflows = flows.workflows;
-    seed.skipped.push(...flows.skipped);
-    return seed;
+    block = undefined;
+    if (line.trim() === "" || line.startsWith("#")) continue;
+    const pair = /^([A-Za-z_][\w-]*):(?:\s+(.*))?$/.exec(line);
+    if (!pair || front.has(pair[1]!)) return undefined;
+    const value = (pair[2] ?? "").trim();
+    if (/^[>|][-+]?$/.test(value)) {
+      block = pair[1]!;
+      front.set(block, "");
+    } else front.set(pair[1]!, value.replace(/^(["'])(.*)\1$/, "$2"));
+  }
+  return front;
+}
+
+/** The active learned workflows of the folder's snapshot, each with its workflow.json whole, by name, and what was
+ *  left out. One whose README's front matter does not read one way (readmeFront) could hold a status another reader
+ *  sees: never read as active, and named in `skipped`. */
+const workflowsOf = (ws: Workspace): Promise<{ workflows: LearnedWorkflow[]; skipped: string[] }> => readLearning(ws, async ({ snapshot, body }) => {
+  const workflows: LearnedWorkflow[] = [];
+  const skipped: string[] = [];
+  for (const item of (snapshot?.workflows ?? []).filter((one) => one.status === "active")) {
+    const json = item.files.find(({ path }) => path === `${WORKFLOWS_DIR}/${item.name}/workflow.json`);
+    if (!json) continue;
+    const front = readmeFront(await body(item.file, item.oid));
+    if (!front) {
+      skipped.push(`${WORKFLOWS_DIR}/${item.name} (its README.md's front matter does not read one way)`);
+      continue;
+    }
+    if ((front.get("status") ?? "active") !== "active") continue;
+    workflows.push({ name: item.name, description: front.get("description") ?? "", workflow: await body(json.path, json.oid) });
+  }
+  return { workflows, skipped };
+});
+/** The seed's learned workflows: none while a body is not main's (a write in flight), so the run starts without them. */
+const workflowsNow = (ws: Workspace): Promise<{ workflows: LearnedWorkflow[]; skipped: string[] }> => workflowsOf(ws).catch((error: unknown) => {
+  if (error instanceof FolderBusy) return { workflows: [], skipped: [] };
+  throw error;
+});
+
+/** The seed of a run of agent `agentId` about to be made: main's commit, the folder made first when it is absent (the
+ *  learning script's init), and what main holds for a run (seedFrom over the folder's read): its index, its active
+ *  notes the one changed last first, its active skills, and its active learned workflows. A skill the read refused is
+ *  said through `warn`. In the agent's queue. No git in this process: the folder's own script and file API. */
+export function seedOf(data: string, agentId: string, warn?: (line: string) => void): Promise<Seed> {
+  return withAgentRepo(data, agentId, async () => {
+    const { workspace, end } = learningFolderOf(data, agentId);
+    try {
+      const main = await learningInit(workspace);
+      const seed = await seedFrom(main, readerOf(workspace), { order: orderOf(await readSnapshot(workspace)), ...(warn ? { warn } : {}) });
+      const flows = await workflowsNow(workspace);
+      seed.workflows = flows.workflows;
+      seed.skipped.push(...flows.skipped);
+      return seed;
+    } finally {
+      await end();
+    }
   });
 }
 
-/** The skills the agent wrote at commit `sha` (readSkills): what a run's pin names, laid again. In the agent's queue,
- *  through agentFolder. No commit (a pin of an empty seed) holds none. */
-export const skillsAt = async (data: string, agentId: string, sha: string | null): Promise<LearnedSkill[]> =>
-  sha === null ? [] : withAgentRepo(data, agentId, async () => (await readSkills(agentFolderOf(data, agentId), await agentFolder(data, agentId), sha)).skills);
+/** What commit `sha` of the agent's folder holds for a run, as seedOf reads main: a run's seed, read again (a follow-up's
+ *  copy, the names of the notes it read). No commit (a pin of an empty seed) is the empty seed. */
+export const seedAt = async (data: string, agentId: string, sha: string | null): Promise<Seed> => {
+  const { workspace, end } = learningFolderOf(data, agentId);
+  try {
+    return await seedFrom(sha, readerOf(workspace));
+  } finally {
+    await end();
+  }
+};
 
-/** What commit `sha` of the agent's folder holds for a run, as seedOf reads main: a run's seed, read again. In the
- *  agent's queue, through agentFolder. No commit (a pin of an empty seed) is the empty seed. */
-export const seedAt = async (data: string, agentId: string, sha: string | null): Promise<Seed> =>
-  sha === null ? { sha: null, notes: {}, files: [], skipped: [] } :
-  withAgentRepo(data, agentId, async () => readSeed(agentFolderOf(data, agentId), await agentFolder(data, agentId), sha));
+/** The skills the agent wrote at commit `sha` (seedAt's): what a run's pin names, laid again. */
+export const skillsAt = async (data: string, agentId: string, sha: string | null): Promise<LearnedSkill[]> => (await seedAt(data, agentId, sha)).skills ?? [];
 /** The active notes of a seed, parsed. */
 export const activeOf = (seed: Pick<Seed, "notes">): LearnedNote[] => Object.entries(seed.notes).flatMap(([file, text]) => {
   const note = parseNoteFile(file, text);
@@ -1086,6 +954,13 @@ const LEARNS = "You learn from your runs. When this run ends you are asked what 
 /** What a run that starts with no note is told in place of what it learned. */
 const NOTHING_YET = "Nothing learned yet.";
 
+/** A run's instructions with its # Learned section laid in main's position: the revision's instructions, then the heading,
+ *  LEARNS, and the section text — "Nothing learned yet." when the run learns but its section is empty (no notes yet, or a
+ *  seed that could not be read). Shared so the runner (laying launch.learning.section, read with no folder) and app.ts
+ *  (withLearned) lay the same bytes. */
+export const laidLearned = (instructions: string, section: string | undefined): string =>
+  `${instructions.trim()}\n\n${LEARNED_HEADING}\n\n${LEARNS}\n\n${section || NOTHING_YET}`;
+
 /** A run's instructions, with `# Learned` after them when its pin in `runDir` says it learns: that it learns, then what
  *  the pin says it learned, or that it has learned nothing yet. A run with no pin (its agent does not learn, its seed
  *  failed, a workflow's run) is never asked what to keep, so it is told nothing. And its skill files: the revision's
@@ -1107,7 +982,7 @@ export async function withLearned(runDir: string, given: Workspace | string, ins
     else process.stderr.write(`agentrun-serve: the skill ${name} its agent learned is no longer whole in the run's work, so the run goes on without it\n`);
   }
   return {
-    instructions: pin ? `${instructions.trim()}\n\n${LEARNED_HEADING}\n\n${LEARNS}\n\n${section ?? NOTHING_YET}` : instructions,
+    instructions: pin ? laidLearned(instructions, section) : instructions,
     skills: [...own, ...learned.filter((path) => whole.has(path.split("/")[0]!))],
   };
 }

@@ -1,5 +1,6 @@
-// The store's one schema, version 1 (design 2.1). Nothing migrates into it: the rewrite replaces the old stores. The server
-// sets it up once at its start (a store_meta row holds the version); a runner refuses a version it does not know.
+// The store's one schema, version 2 (design 2.1). Nothing migrates into it: the rewrite replaces the old stores, and a store
+// an older build made is refused as a version this build does not know. The server sets it up once at its start (a
+// store_meta row holds the version); a runner refuses a version it does not know. Version 2 adds the computer ledger.
 // Conventions: every time is INTEGER epoch milliseconds; JSON is TEXT checked by json_valid; money is REAL US dollars;
 // sealed columns hold ciphertext only (sealed with the server's key outside the store), so the store never sees a secret
 // in the clear. Foreign keys are on (the connection's pragma).
@@ -7,10 +8,11 @@
 // STORE_DDL is the control plane and the runs: agents and revisions (with a template's package), runs (state, the claim's
 // epoch, runner, claimed_until and wake_at, cost, metrics, summary), commands, idempotency, triggers (their scopes,
 // firings, conversations and settings), the channel outbox and told ledger, the review ledger, settings, sealed keys,
-// learning state, the MCP registry, pending MCP sign-ins and each run's MCP pin. PI_DDL is pi-durable's journal tables,
-// keyed by run_id (store/journal): one schema for every run's journal, so a query joins runs and their journals.
+// learning state, the MCP registry, pending MCP sign-ins, each run's MCP pin, and the computer ledger. PI_DDL is pi-durable's
+// journal tables, keyed by run_id (store/journal): one schema for every run's journal, so a query joins runs and their
+// journals.
 
-export const SCHEMA_VERSION = 1;
+export const SCHEMA_VERSION = 2;
 
 const json = (column: string, nullable = false) => `${column} TEXT${nullable ? "" : " NOT NULL"} CHECK (${column} IS NULL OR json_valid(${column}))`;
 
@@ -79,6 +81,11 @@ export const STORE_DDL: readonly string[] = [
     -- pointer hashes to one of these is in use by it, so forgetting it is refused (sign-ins-store.ts), and its served
     -- output is redacted by every handed pointer. Null when the run was handed none.
     ${json("sign_in_handed", true)},
+    -- When the run last left 'running' (parked or ended): a Browserbase sign-in it held keeps its save lease for the
+    -- settle window after this (the context is still being written back), so a run that binds within it does not save over
+    -- the write-back (sign-ins-store.ts / runs.update's save decision). Null until it first leaves running. Other vendors
+    -- free the lease the instant it leaves running (no settle window), so this is read only with one.
+    left_running_at INTEGER,
     started_at INTEGER NOT NULL,
     ended_at INTEGER
   ) STRICT`,
@@ -242,6 +249,17 @@ export const STORE_DDL: readonly string[] = [
     sealed BLOB NOT NULL,
     updated_at INTEGER NOT NULL
   ) STRICT`,
+  // The computer ledger: a provider whose sessions carry no labels of their own (a phone provider's) keeps ours here, by
+  // its session id (the run, the claim's epoch...), so its list, an attach by labels and the janitor outlive a restart.
+  // detail is the rest of the provider's entry for the session, as it gave it (a phone's image and deadline).
+  `CREATE TABLE IF NOT EXISTS computer_ledger (
+    provider TEXT NOT NULL,
+    session_id TEXT NOT NULL,
+    ${json("labels")},
+    ${json("detail")},
+    updated_at INTEGER NOT NULL,
+    PRIMARY KEY (provider, session_id)
+  ) STRICT`,
   `CREATE TABLE IF NOT EXISTS learning (
     agent_id TEXT NOT NULL REFERENCES agents (id),
     key TEXT NOT NULL,
@@ -296,7 +314,11 @@ export const STORE_DDL: readonly string[] = [
     created_at INTEGER NOT NULL,
     updated_at INTEGER NOT NULL,
     -- When the tools were last listed: a refresh moves this, not updated_at, so a refresh is not read as an owner edit.
-    listed_at INTEGER
+    listed_at INTEGER,
+    -- When the sealed credential was last set: a save with a new credential or an OAuth sign-in moves it. A save that
+    -- keeps the sealed one, a refresh of the tools, and a token refresh (the server keeping the sign-in) leave it.
+    -- Null with no credential.
+    credential_changed_at INTEGER
   ) STRICT`,
   `CREATE TABLE IF NOT EXISTS mcp_oauth_pending (
     state TEXT PRIMARY KEY,

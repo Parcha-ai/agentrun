@@ -170,7 +170,22 @@ test("only the owner's signed-in page takes over or answers: a token, or no cred
   assert.equal((await w.viewer({ cookie: null, headers: { authorization: `Bearer ${w.server.token}` } })).status, 401, "a token is no session");
   assert.equal((await w.handBack("done", {})).status, 401);
   assert.equal((await w.handBack("done", { authorization: `Bearer ${w.server.token}` })).status, 403, "a token never answers for the owner");
-  assert.equal((await w.handBack("done")).status, 404, "an agent that asked for nobody");
+  const none = await w.handBack("done");
+  assert.deepEqual([none.status, none.json.error.message], [404, "this run's agent has not asked for you in its browser"], "an agent that asked for nobody");
+  // The computer's hand-back (computer-routes.ts) is a route of its own, never the browser's: its body is empty, and on
+  // this build it answers 501 in TAKE_OVER_NOT_YET's words until the store-backed take-over.
+  const computerHandBack = await call(w.server.port, { method: "POST", path: `/v2/runs/${w.runId}/computer/hand-back`, headers: { ...json, origin: w.origin, cookie: w.cookie }, body: {} });
+  assert.equal(computerHandBack.status, 501, "the computer's hand-back is not served on this build");
+  assert.equal(computerHandBack.json.error.code, "unsupported_here");
+  // GET /computer keeps its shape: the run's computer, its kind, and who holds it.
+  const computer = await call(w.server.port, { path: `/v2/runs/${w.runId}/computer`, headers: { cookie: w.cookie } });
+  assert.deepEqual(Object.keys(computer.json).sort(), ["hold", "kind", "state", "viewer"]);
+  assert.deepEqual([computer.json.state, computer.json.kind, computer.json.hold], ["live", "browser", "agent"]);
+  // The browser's own routes and the computer family's both answer the owner, and refuse a token alike.
+  for (const path of [`/v2/runs/${w.runId}/browser`, `/v2/runs/${w.runId}/computer`]) {
+    assert.equal((await call(w.server.port, { path, headers: { cookie: w.cookie } })).status, 200, path);
+    assert.equal((await call(w.server.port, { path, headers: { authorization: `Bearer ${w.server.token}` } })).status, 403, `${path} with a token`);
+  }
 });
 
 test("cap: Take over holds the owner's 15 minutes of session time first, and with no room it is refused in the cap's words and nothing is held; with room, the hold is dropped when they hand back", { timeout: 180_000 }, async (t) => {
@@ -277,6 +292,7 @@ test("an ask nobody answers expires: the agent hears expired, the timeline says 
   assert.ok(summaries(await w.rows()).includes("The agent's hand-over expired before you answered it"));
   const late = await w.handBack("done");
   assert.deepEqual([late.status, late.json.error.code, late.json.error.details], [409, "handoff_answered", { outcome: "expired" }]);
+  assert.equal(late.json.error.message, "The agent's hand-over expired before this answer: the agent was told it expired.");
 });
 
 /** Kills the run's process while its agent's ask is open (its session kept at the vendor), and waits for the run's next

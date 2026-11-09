@@ -5,6 +5,7 @@ import { mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { MODEL, piAdapterSpec, scriptedOrigin } from "./conformance-pi-adapter.mjs";
+import { strictOptions } from "./strict-options.mjs";
 
 const { openSqliteStore } = await import("../dist/store/index.js");
 const { startRunner } = await import("../dist/runner/runner.js");
@@ -24,9 +25,12 @@ export const quiet = { beforeIntent: async () => {}, beforeResult: async () => {
 export const SONNET = Object.freeze({ id: MODEL, api: "anthropic-messages", price: { input: 3, output: 15, cacheRead: 0.3, cacheWrite: 3.75 }, outputCeiling: 64_000 });
 export const sleep = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
 
-/** A store with one queued run, a runner on the adapter loop running `script` with `beforeRequest`, until the run is
- *  not running or `ms` passes. `asked`: each request the host was asked about; `sent`: each body the provider got. */
-export async function capRun(t, { script, beforeRequest, cap: runCap, specOf, during, journalOf, ms = 20_000 }) {
+/** A store with one queued run, a runner on the adapter loop running `script` on the run's one cap of `runCap` (the kernel
+ *  runCap's options), until the run is not running or `ms` passes. `asked`: each request the cap judged, with its answer;
+ *  `sent`: each body the provider got. */
+export async function capRun(t, options) {
+  strictOptions("capRun", options, ["script", "runCap", "cap", "specOf", "during", "journalOf", "ms"]);
+  const { script, runCap, cap: parkCap, specOf, during, journalOf, ms = 20_000 } = options;
   const dir = mkdtempSync(join(process.env.TMPDIR ?? tmpdir(), "agentrun-adapter-cap-"));
   const server = await openSqliteStore({ dataDir: dir, role: "server" });
   const store = await openSqliteStore({ dataDir: dir, role: "runner" });
@@ -45,12 +49,9 @@ export async function capRun(t, { script, beforeRequest, cap: runCap, specOf, du
   const spec = specOf ? specOf(sent) : piAdapterSpec({ script, tools: {}, hooks: quiet }, { fetch: scriptedOrigin(script, sent) });
   const loop = createAdapterLoop(async (claim, run) => ({
     ...(await spec(claim, run)),
-    ...(runCap ? { cap: runCap } : {}),
-    beforeRequest: async (request) => {
-      const answer = await beforeRequest(request);
-      asked.push({ request, answer });
-      return answer;
-    },
+    ...(parkCap ? { cap: parkCap } : {}),
+    // The run's one cap, built by the loop from these options: each request it judged is recorded with its answer.
+    runCap: { ...runCap, judged: (request, answer) => void asked.push({ request, answer }) },
   }), { restartLimit: MAX_RESTARTS });
   // `journalOf(journal)`: the claim's journal as the loop sees it (a test's commit hook), else the store's own.
   const createLoop = journalOf ? (deps) => loop({ ...deps, journal: (claim) => journalOf(deps.journal(claim)) }) : loop;

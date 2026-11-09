@@ -66,6 +66,7 @@ test("a CLI run's record: the person's input, the call's start and end around it
     adapter: standInCli("lookup"),
     session: { key: "root", label: "root", system: [], tools: [lookup], context: "fresh" },
     input: "Find it.",
+    runCap: { capUsd: () => undefined, modelOf: () => undefined },
     record: "loop",
     hooks: quiet,
     gate: () => "allow",
@@ -96,6 +97,7 @@ test("a call a fault cut off after it ran ends interrupted when the session open
     adapter: standInCli("lookup"),
     session: { key: "root", label: "root", system: [], tools: [lookup], context: "fresh" },
     input: "Find it.",
+    runCap: { capUsd: () => undefined, modelOf: () => undefined },
     record: "loop",
     hooks,
     gate: () => "allow",
@@ -120,6 +122,7 @@ test("a pi-style run (the adapter keeps its own record) gets no call or message 
     adapter: standInCli("lookup"),
     session: { key: "root", label: "root", system: [], tools: [lookup], context: "fresh" },
     input: "Find it.",
+    runCap: { capUsd: () => undefined, modelOf: () => undefined },
     hooks: quiet,
   }));
   const runner = startRunner({ store: observed(opened.runners[0], recorder()), createLoop, name: "runner-a", ...TIMING });

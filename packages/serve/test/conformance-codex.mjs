@@ -9,6 +9,7 @@ import { mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { fileURLToPath } from "node:url";
+import { strictOptions } from "./strict-options.mjs";
 
 const { createAdapterLoop } = await import("../dist/runner/adapter-loop.js");
 const { resolveHarness } = await import("../dist/runner/adapters/index.js");
@@ -92,7 +93,10 @@ function tracked(adapter) {
 /** The adapter loop's spec for the suite's setup: Codex as the runner's harnesses give it, its model through the
  *  session's proxy to the script, on the stand-in app-server. One sessions folder per loop: a resume on another runner
  *  opens the session from the run's journal. */
-export function codexSpec({ script, tools, hooks, agentId }, options = {}) {
+export function codexSpec(setup, options = {}) {
+  strictOptions("codexSpec's setup", setup, ["script", "tools", "hooks", "agentId"]);
+  strictOptions("codexSpec", options, ["fetch", "requests"]);
+  const { script, tools, hooks, agentId } = setup;
   const sessionsDir = mkdtempSync(join(process.env.TMPDIR ?? tmpdir(), "agentrun-codex-conformance-"));
   dirs.push(sessionsDir);
   const harness = resolveHarness("codex");
@@ -111,6 +115,7 @@ export function codexSpec({ script, tools, hooks, agentId }, options = {}) {
     )),
     session: { key: "root", label: "root", system: ["Follow the script."], tools: hostTools(tools), context: "fresh" },
     input: "Follow the script.",
+    runCap: { capUsd: () => undefined, modelOf: () => undefined },
     // Codex's own records are its resume log only: the loop keeps the run's visible record (its calls and messages).
     record: harness.record,
     hooks,

@@ -112,6 +112,9 @@ export interface LoopDeps {
    *  The ticker writes it to the run's run_live row, one store transaction per tick for all its loops, never into the
    *  journal. Absent: not reported. */
   live?: (read: () => HeldState | undefined) => void;
+  /** The runner's one redactor (redact.ts): an error's text the loop writes to its run's end goes through it, so no
+   *  secret the runner holds is stored. Absent: none cut. */
+  redact?: (text: string) => string;
 }
 
 /** A run's held state: what pi shows before it stores it. The live view (live/stream.ts) streams it beside the stored

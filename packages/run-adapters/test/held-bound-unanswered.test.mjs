@@ -61,6 +61,25 @@ test("a request whose claim was lost before its answer was written counts for th
   near(asked[0], 0.01 + HOLD + BOUND, "the next request's cap check sees it");
 });
 
+// A request its path saw lost (a broken stream, a gateway's 504 or 524) is booked at its hold (booking.ts), but nothing
+// says it was not billed at a cache miss: for the cap it counts at its hold plus its bound, in its own process and on the
+// next claim, as a request with no answer does.
+test("a request booked lost (a gateway's timeout) counts for the cap at its hold plus its bound, in its process and on the next claim", async () => {
+  const store = memorySessionStore();
+  const first = await port(store);
+  await first.models.beforeRequest({ model: "m" });
+  await first.models.afterRequest({ input: 0, output: 0, cacheRead: 0, usd: null }, undefined, { end: "lost", label: "gateway_timeout" });
+  const turn = (await records(store)).find((r) => r.kind === RUNNER_RECORDS.turn)?.data;
+  assert.equal(turn?.bookedUsd, HOLD, `booked at its hold: ${JSON.stringify(turn)}`);
+  near(first.spentUsd(), HOLD + BOUND, "its own process's spend");
+  near(sessionSpendOf(await records(store)).spentUsd, HOLD + BOUND, "read from the records");
+  const asked = [];
+  const second = await port(store, asked);
+  near(second.spentUsd(), HOLD + BOUND, "the next claim's spend");
+  await second.models.beforeRequest({ model: "m" });
+  near(asked[0], HOLD + BOUND, "the next request's cap check sees it");
+});
+
 test("the run's cost with a request that has no answer is unknown, with the known part so far beside it; answered alone it is known", async () => {
   const store = memorySessionStore();
   const first = await port(store);
