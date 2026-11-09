@@ -49,6 +49,11 @@ harness adapter the way they run on Pi, durable in AgentRun's own store.
   recovery note, the tool bridge, the built-ins' hook-pair calls, the inbox (and `waitForSubmissions`, for a harness that
   waits for input while a turn runs), `zodShapeFromJsonSchema`, for harness SDKs whose tool APIs take zod, and
   `settleTurn`, the transcript's end for a turn a session settles (`settleOpenTurn`).
+- `./kernel/cap` is the one spend cap every harness books through, the same rule and words for each: it admits a paid step
+  (a model request on any harness, a decision, a priced tool) under the run's cap at the catalog's price, tiers included,
+  holds and books it, and a step that does not fit parks the run for a raise. `beforeRequestOf` is the check on the
+  runner's booking (the model proxy's requests); `createCap`/`openCap` is the host's own ledger (decisions, priced tools);
+  `parkOf`, `checkRaise` and `followUpOf` decide what a refusal and a raise do to the run.
 - `./host` is the session's model proxy, provider-neutral: on the loopback interface, it admits only the session's key,
   only the routes a `ProviderPolicy` lists (by exact path text, with no query or one the route lists exactly; a route
   may also be answered by the proxy, or be free, like a token count), and strict JSON, has the policy shape or refuse the

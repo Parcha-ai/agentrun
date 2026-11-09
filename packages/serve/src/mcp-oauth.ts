@@ -19,7 +19,8 @@ export const MCP_SETTINGS_PAGE = "/#/settings/mcp";
 /** What a person is told when a sign-in no longer works. */
 export const SIGN_IN_AGAIN = "sign in again in Settings → MCP servers";
 const STATE_MS = 10 * 60_000;
-const MAX_PENDING = 64;
+/** The most sign-ins that may be in flight at once: the in-memory map evicts to it, and the store-backed one refuses past it. */
+export const MAX_PENDING = 64;
 const REQUEST_MS = 15_000;
 /** How long a token refresh's request may take: a run's start waits for it, two tries at most (mcp-servers.ts), so an
  *  authorization server that never answers holds a start's answer no more than about eight seconds, well under a
@@ -29,7 +30,15 @@ export const REFRESH_REQUEST_MS = 4_000;
 export type ClientKind = "pre-registered" | "metadata-document" | "dynamic";
 /** What is sealed: the tokens and all a refresh needs. */
 export type TokenSet = { tokens: OAuthTokens; obtained_at: string; expires_at?: string; client: StoredOAuthClientInformation; kind: ClientKind; discovery: OAuthDiscoveryState; resource?: string };
-type Pending = { name: string; url: string; was: string | null; scope?: string; kind: ClientKind; client?: StoredOAuthClientInformation; verifier?: string; discovery?: OAuthDiscoveryState; resource?: string; expires: number };
+export type Pending = { name: string; url: string; was: string | null; scope?: string; kind: ClientKind; client?: StoredOAuthClientInformation; verifier?: string; discovery?: OAuthDiscoveryState; resource?: string; expires: number };
+
+/** Where sign-ins in flight are kept between start and callback. The default is in-memory (one server per process); the
+ *  store-backed server (mcp-servers-store.ts) passes one over store.mcpOauth, so a sign-in survives a restart and the
+ *  verifier is sealed at rest. `set` evicts what has expired (and enforces the cap) before it writes. */
+export interface PendingStore {
+  set(state: string, entry: Pending): Promise<void>;
+  take(state: string): Promise<Pending | undefined>;
+}
 
 const sdk = () => import("@modelcontextprotocol/client");
 /** How the authorization server of an MCP server off loopback is reached: every address a name resolves to, and a
@@ -198,7 +207,9 @@ const expiresAt = (tokens: OAuthTokens) => (tokens.expires_in !== undefined ? ne
 const LOOPBACK = /^(?:localhost|\[::1\]|127(?:[.]\d{1,3}){3})$/; // key-gate: loopback-rule CIMD is never offered from loopback, and only a loopback MCP server may name loopback endpoints
 
 export class McpSignIns {
-  constructor(private readonly network: OAuthNetwork = systemNetwork) {}
+  /** `pendingStore`: where sign-ins in flight are kept. Omitted, an in-memory map (the file server); the store server
+   *  passes one over store.mcpOauth. */
+  constructor(private readonly network: OAuthNetwork = systemNetwork, private readonly pendingStore?: PendingStore) {}
 
   private readonly pending = new Map<string, Pending>();
   /** This server's address as a browser reaches it (AGENTRUN_PUBLIC_URL, else where it listens), no trailing slash:
@@ -233,7 +244,7 @@ export class McpSignIns {
   /** Discovery, the client, PKCE and the state: the URL the owner opens to say yes. */
   async start(name: string, url: URL, options: { was: string | null; scope?: string; client?: StoredOAuthClientInformation; kind?: ClientKind }): Promise<string> {
     const now = Date.now();
-    for (const [state, entry] of this.pending) if (entry.expires <= now || this.pending.size >= MAX_PENDING) this.pending.delete(state);
+    if (!this.pendingStore) for (const [state, entry] of this.pending) if (entry.expires <= now || this.pending.size >= MAX_PENDING) this.pending.delete(state);
     const state = randomBytes(32).toString("base64url");
     const entry: Pending = { name, url: url.href, was: options.was, ...(options.scope ? { scope: options.scope } : {}), kind: options.kind ?? "dynamic", ...(options.client ? { client: options.client } : {}), expires: now + STATE_MS };
     let opened: URL | undefined;
@@ -249,7 +260,8 @@ export class McpSignIns {
     }
     if (!opened) throw new ApiError("upstream_failed", `The sign-in to ${url.origin} did not start: its authorization server gave no page to open.`);
     if (entry.client?.client_id === provider.clientMetadataUrl) entry.kind = "metadata-document";
-    this.pending.set(state, entry);
+    if (this.pendingStore) await this.pendingStore.set(state, entry);
+    else this.pending.set(state, entry);
     return opened.href;
   }
 
@@ -258,6 +270,14 @@ export class McpSignIns {
   take(state: string | null): Pending {
     const entry = state ? this.pending.get(state) : undefined;
     if (state) this.pending.delete(state);
+    if (!entry || entry.expires <= Date.now()) throw new ApiError("bad_request", `This sign-in link was used already, is older than ${STATE_MS / 60_000} minutes, or is not this server's: start the sign-in again in Settings → MCP servers.`);
+    return entry;
+  }
+
+  /** take() over the pending store (the store server), async: the callback's sign-in, by its state, once and only within
+   *  ten minutes of its start. The same refusal as take() when it is used, expired or unknown. */
+  async takePending(state: string | null): Promise<Pending> {
+    const entry = state && this.pendingStore ? await this.pendingStore.take(state) : undefined;
     if (!entry || entry.expires <= Date.now()) throw new ApiError("bad_request", `This sign-in link was used already, is older than ${STATE_MS / 60_000} minutes, or is not this server's: start the sign-in again in Settings → MCP servers.`);
     return entry;
   }

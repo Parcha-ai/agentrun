@@ -385,12 +385,19 @@ export interface McpServerRow {
   readonly protocol: string | null;
   readonly tools: unknown;
   readonly prices: unknown;
+  /** The remote server's reported info (its name and version) and its instructions, as it gave them, bounded at save: JSON
+   *  and TEXT, or null when the server gave none. Shown on a read; `instructions` is never handed to the model. */
+  readonly serverInfo: unknown;
+  readonly instructions: string | null;
   readonly sealed: Uint8Array | null;
   /** A refresh in flight: its holder and the lease's end (ms), or null. */
   readonly refreshHolder: string | null;
   readonly refreshUntil: number | null;
   readonly createdAt: number;
   readonly updatedAt: number;
+  /** When the tools were last listed (ms): a refresh moves this, not updatedAt, so a refresh is not read as an owner edit.
+   *  Null for a row written before this column. */
+  readonly listedAt: number | null;
 }
 
 /** A run's MCP pin: what it may call, per granted server (url, tools, prices), written once at its first claim. */
@@ -408,7 +415,7 @@ export const MCP_REFRESH_LEASE_MS = MCP_REFRESH_CALL_MS + 4_000;
 export interface Mcp {
   /** The server's write: the server's row, inserted or replaced by name (its first save's time kept). An owner's save
    *  clears any refresh lease, so a refresh in flight is refused (RefreshLeaseLost) and never overwrites it. */
-  put(server: { name: string; url: string; auth: string; protocol?: string | null; tools: unknown; prices?: unknown; sealed?: Uint8Array | null }): Promise<McpServerRow>;
+  put(server: { name: string; url: string; auth: string; protocol?: string | null; tools: unknown; prices?: unknown; serverInfo?: unknown; instructions?: string | null; sealed?: Uint8Array | null; listedAt?: number; updatedAt?: number }): Promise<McpServerRow>;
   remove(name: string): Promise<void>;
   /** The registry's rows, by name. */
   servers(): Promise<McpServerRow[]>;
@@ -490,15 +497,14 @@ export interface TriggerSettings {
   removeScope(adapter: string, scope: string): Promise<void>;
 }
 
-/** An MCP OAuth sign-in in flight (store schema `mcp_oauth_pending`): its state the key, the server it is for, the PKCE
- *  verifier sealed (store/seal.ts, AAD mcp_oauth_pending|<state>|verifier) as bytes the store never opens, the cookie it is
- *  bound to, the non-secret working state the callback needs (`working`: the client, discovery, kind, scope, resource and
- *  url, plain JSON — not sealed), and when it expires (ms). */
+/** An MCP OAuth sign-in in flight (store schema `mcp_oauth_pending`): its state the key, the server it is for, its secret
+ *  parts (the PKCE verifier and the OAuth client, with its secret) sealed together (store/seal.ts, AAD
+ *  mcp_oauth_pending|<state>|sealed) as bytes the store never opens, the non-secret working state the callback needs
+ *  (`working`: discovery, kind, scope, resource and url, plain JSON — no secret), and when it expires (ms). */
 export interface McpOauthPendingRow {
   readonly state: string;
   readonly server: string;
-  readonly verifierSealed: Uint8Array;
-  readonly cookieBinding: string;
+  readonly sealed: Uint8Array;
   readonly working: unknown;
   readonly expiresAt: number;
 }
@@ -506,12 +512,16 @@ export interface McpOauthPendingRow {
 export interface McpOauth {
   /** Saves a pending sign-in, inserted or replaced by its state. */
   put(pending: McpOauthPendingRow): Promise<void>;
-  /** The pending sign-in `state`, or undefined; with `now`, one whose expiry has passed (expiresAt <= now) reads as gone. */
-  get(state: string, now?: number): Promise<McpOauthPendingRow | undefined>;
-  /** The pending sign-in `state` goes. */
-  remove(state: string): Promise<void>;
+  /** Deletes the pending sign-in `state` and returns it, in one statement (atomic, single-use): the row if it was there and
+   *  is not past its expiry (`now`, else the store's clock), else undefined. The row is deleted whether or not it had
+   *  expired, so a replay and an expired state both read as gone and cannot be retried. The one way to read a pending
+   *  sign-in: two concurrent takes of one state can never both get the row, which a get()+remove() split could not
+   *  promise. The secret parts come back sealed; the caller opens them at their own AAD, so the store opens nothing. */
+  take(state: string, now?: number): Promise<McpOauthPendingRow | undefined>;
   /** Removes every pending sign-in whose expiry is at or before `now`; answers how many went. */
   sweepExpired(now: number): Promise<number>;
+  /** How many pending sign-ins are still live (expiry after `now`): the server caps the rows in flight by it. */
+  count(now: number): Promise<number>;
 }
 
 /** A saved browser sign-in as the store holds it (store schema `sign_ins`): one live row per agent and provider, its
@@ -579,6 +589,24 @@ export interface Live {
   drop(claim: Claim): Promise<void>;
 }
 
+/** One open browser session's viewer as the store keeps it: one row per (run, session tag), its token sealed
+ *  (sealedAt.liveViewer), `at` the store's clock when it was put, `runner` the claim's holder. */
+export type LiveViewerRow = { tag: string; port: number; id: string; sealed: Uint8Array; at: number; runner: string };
+
+/** The browser sessions' viewer hand-overs (browser-live.ts): the runner puts and drops them under its claim, the server
+ *  reads them. The rows go with the run's end (its end commit), a take or reclaim of the run (a newer epoch, in the
+ *  claim's transaction), and the run's delete (on delete cascade). */
+export interface LiveViewers {
+  /** The runner's put under its claim, upsert on (run_id, tag), `at` stamped by the store: false when the claim is stale
+   *  (its epoch moved on, or its lease ran out), and nothing written. */
+  put(claim: Claim, viewer: { tag: string; port: number; id: string; sealed: Uint8Array }): Promise<boolean>;
+  /** The runner's drop, fenced by its claim's epoch: session `tag`'s row, or with no tag every row of the run. */
+  drop(claim: Claim, tag?: string): Promise<void>;
+  /** The server's read: the run's rows, newest first, only those of its epoch, under a live claim, by its runner (a runner
+   *  that died, or a claim lost, names no viewer). */
+  of(runId: string): Promise<LiveViewerRow[]>;
+}
+
 /** Who opens the store. The server sets the schema up at its start and holds the store's owner lock (one server per
  *  store); a runner never sets anything up, and refuses a schema version it does not know. */
 export type StoreRole = "server" | "runner";
@@ -590,6 +618,7 @@ export interface Store {
   readonly runs: Runs;
   readonly mcp: Mcp;
   readonly live: Live;
+  readonly liveViewers: LiveViewers;
   readonly learning: Learning;
   /** The server's tool settings and any other server setting it keeps (design 2.1): one JSON value per key. */
   readonly settings: Settings;

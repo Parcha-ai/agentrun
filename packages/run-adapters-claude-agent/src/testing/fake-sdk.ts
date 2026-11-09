@@ -45,6 +45,9 @@ import type { ClaudeAgentSdk } from '../harness.js';
  *   call and exits at once (the CLI dying mid-call).
  * - `mirror-error` yields the SDK's `system/mirror_error` (a dropped mirror
  *   batch), then answers as usual.
+ * - `cut <json answers>` says each answer in one turn; one the output limit
+ *   cut (stop_reason max_tokens) the CLI resumes with its recovery note, up
+ *   to 3 times, as Claude Code does, and the result says the last stop.
  */
 
 interface FakeTool {
@@ -70,7 +73,14 @@ export interface FakeSdkOptions {
    * Commands, one per user message the fake consumes, in place of the message's text: a runner sends its own prompts
    * (the node's, then a nudge), so a test scripts what the "model" does instead. Past the end, the message's text.
    */
-  script?: readonly string[];
+  script?: readonly string[] | ((text: string) => string | undefined);
+  /**
+   * What the "model" says after a `call` returns, in place of `<tool> returned: <result>`: given the tool, its result and
+   * the steers folded into the turn. Said as text events too (as with `remoteModel`), so a host's record of what the
+   * model said carries it. Also the first reply of a resumed session whose transcript ends on a result the host wrote
+   * there (a call that ran on the resume): the model reads that result on its next turn, as the CLI's does.
+   */
+  reply?: (call: { name: string; result: string; steers: readonly string[] }) => string;
   /** Each `PreToolUse` decision a built-in got (with the input the hook rewrote, if it did). */
   onDecision?: (call: { id: string; name: string; decision: string; updatedInput?: Record<string, unknown>; reason?: string }) => void;
 }
@@ -125,6 +135,10 @@ rl.on('line', (line) => {
 });
 rl.on('close', () => process.exit(0));
 `;
+
+/** How many times Claude Code resumes an answer its output limit cut, in the same turn, and the note it resumes with. */
+const RECOVER_CUTS = 3;
+const RECOVERY_NOTE = 'Output token limit hit. Resume directly — no apology, no recap of what you were doing. Pick up mid-thought if that is where the cut happened. Break remaining work into smaller pieces.';
 
 /** The fake "CLI" with built-ins off: it lives until its stdin closes (the SDK closing the CLI). */
 const IDLE = `process.stdin.on('data', () => {}).on('end', () => process.exit(0))`;
@@ -204,6 +218,8 @@ export function fakeSdk(fake: FakeSdkOptions = {}): FakeSdk {
       const signal: AbortSignal | undefined = options.abortController?.signal;
       let calls = 0;
       let parent: string | undefined;
+      /** A host-written result the resumed transcript ends on (with `reply`): what the next turn's reply reads. */
+      let readBack: { name: string; result: string } | undefined;
       const uuid = () => randomUUID();
       const entry = (type: string, body: Record<string, unknown>): { type: string; uuid: string; message: any; [k: string]: unknown } => {
         const e = { type, uuid: uuid(), parentUuid: parent ?? null, sessionId, message: undefined, ...body };
@@ -343,10 +359,15 @@ export function fakeSdk(fake: FakeSdkOptions = {}): FakeSdk {
           // The CLI's own repair of a dangling call.
           const last = loaded.findLast((e) => e.type === 'assistant');
           const dangling = last?.message?.content?.find((c: any) => c.type === 'tool_use');
-          if (dangling && !loaded.some((e) => e.type === 'user' && e.message?.content?.[0]?.tool_use_id === dangling.id)) {
+          const answered = dangling && loaded.findLast((e) => e.type === 'user' && e.message?.content?.[0]?.tool_use_id === dangling.id);
+          if (dangling && !answered) {
             await mirror([
               entry('user', { message: { role: 'user', content: [{ type: 'tool_result', tool_use_id: dangling.id, is_error: true, content: '[Tool call interrupted]' }] } }),
             ]);
+          } else if (answered && fake.reply && answered === loaded.findLast((e) => e.type === 'user' || e.type === 'assistant')) {
+            // A call whose result the host wrote into the transcript before this resume: the model reads it on its next turn.
+            const content = answered.message.content[0].content;
+            readBack = { name: String(dangling.name ?? '').replace(/^mcp__hands__/, ''), result: Array.isArray(content) ? content.map((c: any) => c?.text ?? '').join('') : String(content ?? '') };
           }
         }
         for (;;) {
@@ -360,7 +381,10 @@ export function fakeSdk(fake: FakeSdkOptions = {}): FakeSdk {
           parent = u.uuid;
           await mirror([{ type: 'queue-operation', operation: 'enqueue' }, u]);
           // A note the harness put before the message (the sandbox's: a lost Drive) is not part of the command.
-          const command = fake.script && scripted < fake.script.length ? fake.script[scripted++]! : text.replace(/^(?!(?:builtin|exit-during-builtin|exit-during|call) )[^\n]*\n\n/, '');
+          // A script as a function decides by the message's own text (a resumed CLI is handed the same words again), a
+          // list by how many messages this fake consumed.
+          const scriptedCommand = typeof fake.script === 'function' ? fake.script(text) : fake.script && scripted < fake.script.length ? fake.script[scripted++] : undefined;
+          const command = scriptedCommand ?? text.replace(/^(?!(?:builtin|exit-during-builtin|exit-during|call) )[^\n]*\n\n/, '');
           const builtin = /^(builtin|exit-during-builtin) (\S+) (.*)$/s.exec(command);
           if (builtin) {
             const id = `toolu_${randomUUID().slice(0, 8)}_${++calls}`;
@@ -397,6 +421,31 @@ export function fakeSdk(fake: FakeSdkOptions = {}): FakeSdk {
             void tools.then((t) => t.get(dying[1]!)?.handler(JSON.parse(dying[2]!), { _meta: { 'claudecode/toolUseId': id } }));
             return;
           }
+          // `cut <json>`: the model's answers in this turn, in order, each `{ text, cut? }`. A cut answer stops at the output
+          // limit (stop_reason max_tokens), and the CLI, as Claude Code does, asks again with its recovery note, up to
+          // RECOVER_CUTS times; past the list the model is cut again with nothing said. The result says the last answer's
+          // stop, with the turn's output tokens.
+          const cutting = /^cut (.*)$/s.exec(command);
+          if (cutting) {
+            const answers = JSON.parse(cutting[1]!) as { text: string; cut?: boolean }[];
+            let recovered = 0;
+            let stop = 'end_turn';
+            for (let at = 0; ; at++) {
+              const answer = answers[at] ?? { text: '', cut: true };
+              if (answer.text) yield* speak(answer.text);
+              stop = answer.cut ? 'max_tokens' : 'end_turn';
+              yield { type: 'stream_event', parent_tool_use_id: null, event: { type: 'message_delta', delta: { stop_reason: stop, stop_sequence: null }, usage: { output_tokens: 12 } } };
+              const b = entry('assistant', { message: { role: 'assistant', content: answer.text ? [{ type: 'text', text: answer.text }] : [], stop_reason: stop } });
+              await mirror([b]);
+              yield { type: 'assistant', parent_tool_use_id: null, uuid: b.uuid, session_id: sessionId, message: b.message };
+              if (!answer.cut || recovered >= RECOVER_CUTS) break;
+              recovered++;
+              await mirror([entry('user', { isMeta: true, message: { role: 'user', content: RECOVERY_NOTE } })]);
+            }
+            yield { type: 'result', subtype: 'success', is_error: false, result: 'ok', stop_reason: stop, usage: { output_tokens: 12 }, session_id: sessionId, user_message_uuids: consumed, queued_turn_count: 0 };
+            await mirror([{ type: 'last-prompt' }]);
+            continue;
+          }
           const call = /^call (\S+) (.*)$/s.exec(command);
           if (call) {
             const id = `toolu_${randomUUID().slice(0, 8)}_${++calls}`;
@@ -415,9 +464,11 @@ export function fakeSdk(fake: FakeSdkOptions = {}): FakeSdk {
             await mirror([r]);
             yield { type: 'user', parent_tool_use_id: null, message: r.message };
             // A steer sent while the call ran is folded into this turn.
+            const steers: string[] = [];
             for (let i = inbox.findIndex((x) => x.priority === 'next'); i >= 0; i = inbox.findIndex((x) => x.priority === 'next')) {
               const s = inbox.splice(i, 1)[0];
               consumed.push(s.uuid);
+              steers.push(s.message.content);
               fake.onMessage?.({ uuid: s.uuid, text: s.message.content, priority: s.priority });
               // As the CLI does: a message taken in mid-turn is a queued_command attachment naming it, not a user entry.
               await mirror([
@@ -425,13 +476,17 @@ export function fakeSdk(fake: FakeSdkOptions = {}): FakeSdk {
                 entry('attachment', { attachment: { type: 'queued_command', prompt: s.message.content, source_uuid: s.uuid } }),
               ]);
             }
-            const reply = `${name} returned: ${result.content[0]?.text}${consumed.length > 1 ? ' (and I read your steer)' : ''}`;
-            if (fake.remoteModel) yield* speak(reply);
+            const reply = fake.reply
+              ? fake.reply({ name, result: String(result.content[0]?.text ?? ''), steers })
+              : `${name} returned: ${result.content[0]?.text}${consumed.length > 1 ? ' (and I read your steer)' : ''}`;
+            if (fake.remoteModel || fake.reply) yield* speak(reply);
             const b = entry('assistant', { message: { role: 'assistant', content: [{ type: 'text', text: reply }] } });
             await mirror([b]);
             yield { type: 'assistant', parent_tool_use_id: null, uuid: b.uuid, session_id: sessionId, message: b.message };
           } else {
-            const reply = text.startsWith('[Recovery]') ? 'Recovered from the log.' : `echo: ${text}`;
+            const read = readBack;
+            readBack = undefined;
+            const reply = read && fake.reply ? fake.reply({ ...read, steers: [] }) : text.startsWith('[Recovery]') ? 'Recovered from the log.' : `echo: ${text}`;
             yield* speak(reply);
             const b = entry('assistant', { message: { role: 'assistant', content: [{ type: 'text', text: reply }] } });
             await mirror([b]);

@@ -276,17 +276,24 @@ export const STORE_DDL: readonly string[] = [
     protocol TEXT,
     ${json("tools")},
     ${json("prices")},
+    -- The remote server's reported info and its instructions, as it gave them: untrusted, bounded at save (mcp-store.ts).
+    ${json("server_info", true)},
+    instructions TEXT,
     sealed BLOB,
     refresh_holder TEXT,
     refresh_until INTEGER,
     created_at INTEGER NOT NULL,
-    updated_at INTEGER NOT NULL
+    updated_at INTEGER NOT NULL,
+    -- When the tools were last listed: a refresh moves this, not updated_at, so a refresh is not read as an owner edit.
+    listed_at INTEGER
   ) STRICT`,
   `CREATE TABLE IF NOT EXISTS mcp_oauth_pending (
     state TEXT PRIMARY KEY,
     server TEXT NOT NULL,
-    verifier_sealed BLOB NOT NULL,
-    cookie_binding TEXT NOT NULL,
+    -- The sign-in's secret parts, the PKCE verifier and the OAuth client (with its secret), sealed together (store/seal.ts,
+    -- AAD mcp_oauth_pending|<state>|sealed): bytes the store never opens, so no sign-in secret is ever in the clear here.
+    sealed BLOB NOT NULL,
+    -- The sign-in's non-secret working state the callback rebuilds (url, was, scope, kind, discovery, resource): no secret.
     ${json("working", true)},
     expires_at INTEGER NOT NULL
   ) STRICT`,
@@ -314,6 +321,21 @@ export const STORE_DDL: readonly string[] = [
     run_id TEXT PRIMARY KEY REFERENCES runs (id),
     ${json("state")},
     updated_at INTEGER NOT NULL
+  ) STRICT`,
+
+  // A run's browser sessions' viewer hand-overs (store.liveViewers, browser-live.ts): one row per run and session tag,
+  // the viewer token sealed (sealedAt.liveViewer), written under the claim of `runner` at `epoch`. Gone with the run's
+  // end, a take or reclaim at a newer epoch, and the run.
+  `CREATE TABLE IF NOT EXISTS browser_viewers (
+    run_id TEXT NOT NULL REFERENCES runs (id) ON DELETE CASCADE,
+    tag TEXT NOT NULL,
+    port INTEGER NOT NULL,
+    viewer_id TEXT NOT NULL,
+    sealed BLOB NOT NULL,
+    at INTEGER NOT NULL,
+    runner TEXT NOT NULL,
+    epoch INTEGER NOT NULL,
+    PRIMARY KEY (run_id, tag)
   ) STRICT`,
 
   // Learning on the runner: what a run's end-of-run turn kept (the turn it asked and answered, and the proposal checked from
