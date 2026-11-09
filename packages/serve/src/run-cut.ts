@@ -2,39 +2,20 @@
 // its Timeline's rows, its error), or `unreadable` when what the run was handed of its agent's browser sign-in can't be read back
 // here, so nothing it said may be shown. The set is every secret this server never shows (serverSecrets: its own keys,
 // the tool and model keys it keeps, trigger and source secrets) and every sign-in pointer the run was handed, live or
-// forgotten, read back by the hashes its row keeps. Read anew at each call: a key rotated or a seal key restored is
+// forgotten, read back by the hashes its row keeps (handed-values.ts). Read anew at each call: a key rotated or a seal key restored is
 // honoured at once.
+import { handedValuesOf } from "./handed-values.js";
 import { keyRefusal, runKeyOf } from "./key-refusal.js";
 import { MIN_SECRET } from "./learn/secrets.js";
-import { readLaunchBody } from "./run-launch.js";
-import { handedPointers, type SignInReader, shownOf } from "./run-view.js";
-import type { Store } from "./store/store.js";
-import { keptVendor, type Plane } from "./tool-plane.js";
-
-const SHA256 = /^[0-9a-f]{64}$/;
-
-/** The pointers run `runId` was handed, read back by the hashes its row keeps: `{ refs }` (none for a run handed none),
- *  or `unreadable` when what it was handed can't be read back here. Its mark, as main's handedMark read it: absent (null)
- *  is no mark; a non-empty array of SHA-256 hashes is the hashes; anything else (a legacy `true`, one hash alone, an
- *  object, an empty array, a damaged value) is a mark of an unknown hand, so unreadable: fails closed. A mark with no
- *  vendor browser kept on the run's launch beside it is unreadable too (handedPointers), and so is a run with no row.
- *  The hashes are read once each.
- *  TODO(tl-learning handedValuesOf): replace with the extracted helper. */
-export async function handedValuesOf(deps: { signIns?: SignInReader }, store: Pick<Store, "runs">, runId: string): Promise<{ refs: string[] } | "unreadable"> {
-  const run = await store.runs.get(runId);
-  if (!run) return "unreadable";
-  const mark: unknown = run.signInHanded;
-  if (mark === null || mark === undefined) return { refs: [] };
-  if (!Array.isArray(mark) || mark.length === 0 || !mark.every((hash) => typeof hash === "string" && SHA256.test(hash))) return "unreadable";
-  const launch = await store.runs.launch(runId).then((row) => readLaunchBody(row.body), () => undefined);
-  const browser = launch?.plane ? keptVendor(launch.plane as Plane).browser : undefined;
-  return handedPointers(deps.signIns, run.agentId, browser, [...new Set(mark as string[])]);
-}
+import { type RunLaunch, readLaunchBody } from "./run-launch.js";
+import { type SignInReader, shownOf } from "./run-view.js";
+import type { RunRow, Store } from "./store/store.js";
 
 /** Run `runId`'s cut set: the values everything served of it is cut of (its view's words, its title, its Timeline's
- *  rows, its error), or `unreadable` when what it was handed can't be read back here, so it is withheld. */
-export async function runCutValues(deps: { serverSecrets: () => string[]; signIns?: SignInReader }, store: Pick<Store, "runs">, runId: string): Promise<{ values: string[] } | "unreadable"> {
-  const handed = await handedValuesOf(deps, store, runId);
+ *  rows, its error), or `unreadable` when what it was handed can't be read back here (handed-values.ts handedValuesOf),
+ *  so it is withheld. `known`: its row and launch, when the caller has read them. */
+export async function runCutValues(deps: { serverSecrets: () => string[]; signIns?: SignInReader }, store: Pick<Store, "runs">, runId: string, known?: { readonly runRow: RunRow; readonly launch: RunLaunch | undefined }): Promise<{ values: string[] } | "unreadable"> {
+  const handed = await handedValuesOf(deps, store, runId, known);
   if (handed === "unreadable") return "unreadable";
   return { values: [...deps.serverSecrets(), ...handed.refs.filter((ref) => ref.length >= MIN_SECRET)] };
 }

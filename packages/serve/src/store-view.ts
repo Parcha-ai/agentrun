@@ -177,7 +177,7 @@ async function storeRunOf(store: Store, runId: string, deps: ViewDeps): Promise<
   // The sign-in cut: the pointers the run was handed read back, so a run whose words could repeat one is cut of it, or
   // withheld when this server cannot read back what it was handed (rowShown's choke point). A run with no mark is cut of
   // the server's secrets alone.
-  const cut = await runCutValues(deps, store, runId);
+  const cut = await runCutValues(deps, store, runId, { runRow, launch });
   const unshown = cut === "unreadable";
   const values = cut === "unreadable" ? [] : cut.values;
 
