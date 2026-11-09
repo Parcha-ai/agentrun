@@ -210,6 +210,8 @@ const TOOL_KEYS_VIEW = closed({
   },
 });
 const KEY_ID = { name: "key_id", in: "path", required: true, description: "The tool key: one of GET /settings/tool-keys' ids.", schema: { type: "string" } };
+/** The InputIssue reasons a saved MCP server's refusals give that the contract's enum lacks (mcp-probe.ts). */
+const MCP_ISSUE_REASONS = ["redirect", "not_https", "too_many_tools", "tools_too_large", "reserved", "expired"] as const;
 /** The private-network hosts an MCP server's authorization server may be on (mcp-private-hosts.ts). */
 const PRIVATE_HOSTS = closed({ hosts: { type: "array", maxItems: MAX_PRIVATE_HOSTS, items: { type: "string", minLength: 1, maxLength: 253 }, description: "Host names or IP addresses, as kept: lowercase, every final dot dropped, an IPv6 address in brackets." } });
 const PRIVATE_HOSTS_RULE = "A listed host may resolve to private-network addresses (10/8, 172.16/12, 192.168/16, 100.64/10, fc00::/7), and still only over https; every address it resolves to is checked, and the request goes to an address checked. Loopback, link-local (cloud metadata among them), unspecified, multicast and broadcast addresses, this machine's and this server's own are refused whatever the list says. The server's sign-in and a runner's token refresh read the list at each use.";
@@ -2103,6 +2105,14 @@ export function openapiDocument(capabilityOf: (operationId: string) => string | 
     issueReason.enum = [...issueReason.enum, NOT_SET_UP];
     issueReason["x-agentrun-serve"] = "runnable/1";
     fields.push(`InputIssue.reason.${NOT_SET_UP}`);
+  }
+  // mcpservers/1: the reasons a saved MCP server's 422 gives beside the contract's (mcp-probe.ts): a URL that redirects
+  // (never followed) or is plain http off loopback, a server listing too many tools or too much of them, a name kept for
+  // AgentRun's own tools, a sign-in that expired.
+  for (const reason of MCP_ISSUE_REASONS) {
+    if (!Array.isArray(issueReason.enum) || issueReason.enum.includes(reason)) continue;
+    issueReason.enum = [...issueReason.enum, reason];
+    fields.push(`InputIssue.reason.${reason}`);
   }
   // A paid tool's charges (monid's) are a meter of their own on /usage, beside the model's tokens.
   const meter = schemas.Meter as Json & { enum?: string[] };
