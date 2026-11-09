@@ -28,6 +28,7 @@ const { saveArchilSettings } = await import("../dist/archil-settings.js");
 const { ARCHIL_API_KEY_ROW, ARCHIL_DISK_TOKEN_ROW } = await import("../dist/workspace/index.js");
 const { sealColumn, sealedAt } = await import("../dist/store/seal.js");
 const { OPENCODE_STANDIN_ENV } = await import("../dist/adapters.js");
+const { NOTE_ONLY_TEXT } = await import("../dist/tool-gate.js");
 const { FakeArchilDisk } = await import("./fixtures/archil-fake.mjs");
 
 process.env.AGENTRUN_OPENCODE_STANDIN = "1";
@@ -140,7 +141,8 @@ for (const [name, harness, build] of [["pi's spec", undefined, adapterRunSpecFro
 
   test(`${name} in Mode 2: the gate's turn-origin check reads the disk: a reflect turn's write under .learning/ is refused`, async (t) => {
     const { spec, disk } = await mode2Spec(t, { harness, build });
-    assert.equal(await spec.gate(reflectWrite), "deny", "the disk says the turn is the end-of-run reflect turn, whose writes under .learning/ are refused");
+    // The gate's own refusal of a reflect turn's write under .learning/: the one text the model reads (NOTE_ONLY_TEXT).
+    assert.equal((await spec.gate(reflectWrite))?.deny, NOTE_ONLY_TEXT, "the disk says the turn is the end-of-run reflect turn, whose writes under .learning/ are refused in the note-only words");
     assert.ok(readsOf(disk, `${KEY}/turn-origin.json`).length > 0, "the turn's origin was read on the disk, under the run's key");
   });
 
