@@ -9,7 +9,7 @@
 import assert from "node:assert/strict";
 import { randomBytes } from "node:crypto";
 import { existsSync } from "node:fs";
-import { mkdtemp, readFile, writeFile } from "node:fs/promises";
+import { mkdtemp, readFile } from "node:fs/promises";
 import { createServer } from "node:http";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
@@ -20,7 +20,8 @@ import { notedRequests, REQUESTS_ENV, rolesOf } from "./fixtures/faux-requests.m
 import { noApproverText } from "../dist/tool-gate.js";
 import { schemaProblems } from "./schema-support.mjs";
 import { copyStandIn } from "../../run-adapters-codex/test/stand-in.mjs";
-import { agent, call, clientOwnerSession, follow, runDir, runRecordOf, scratch, serve as serveOf, withEnv } from "./support.mjs";
+import { agent, call, clientOwnerSession, follow, runDir, runRecordOf, scratch, serve as serveOf, startInProcessRunner, withEnv } from "./support.mjs";
+import { HOLD_ENV } from "./fixtures/faux-mcp.mjs";
 
 const FAUX_MCP = new URL("./fixtures/faux-mcp.mjs", import.meta.url).pathname;
 const TOKEN = `not-a-secret-${"mcp-gate-bearer-0123"}`;
@@ -211,22 +212,31 @@ test("pi: the run's process killed while a call is parked loses nothing: the sam
 });
 
 test("pi: a paid call that ran before a crash keeps its result when its tool is set to deny before the run reopens: the model gets the saved result, never that nothing was charged, and it is booked once", { timeout: 240_000 }, async (t) => {
+  // On the runner: the runner holding the run goes after the call ran and before the model read its result (the faux
+  // model holds that request until the runner lets it go), and another runner claims the run and resumes it.
   const crashed = join(await mkdtemp(join(tmpdir(), "gate-crash-")), "crashed");
-  withEnv(t, { AGENTRUN_SERVE_TEST_CRASH_AFTER_CALL: crashed });
-  const server = await serve(t);
-  const { api } = server;
+  withEnv(t, { [HOLD_ENV]: crashed });
+  const server = await serve(t, { runner: false });
+  const { api, data } = server;
   const answer = await owner(server);
   const fake = await addFake(t, api, { paid: 0.05 });
+  const closeFirst = await startInProcessRunner(data, { faux: FAUX_MCP });
+  let firstClosed = false;
+  t.after(() => (firstClosed ? undefined : closeFirst()));
   const runId = await started(api, "ran-then-deny", ["mcp:fake/paid"], PAID);
   const pending = await parked(api, runId);
   assert.equal(await answer(runId, pending.id, { decision: "allow" }), 204);
-  for (let i = 0; calls(fake, "paid").length === 0; i++) {
-    assert.ok(i < 600, "the approved call reaches the server");
+  for (let i = 0; !existsSync(crashed); i++) {
+    assert.ok(i < 600, "the approved call runs and the model is asked to read its result");
     await new Promise((resolve) => setTimeout(resolve, 100));
   }
-  // The call ran and its outcome is in the journal; its tool is set to deny before the process goes and the run reopens.
+  assert.equal(calls(fake, "paid").length, 1, "the approved call reached the server");
+  // The call ran and its outcome is in the journal; its tool is set to deny before the runner goes and the run reopens.
   assert.equal((await api("PUT", "/settings/tools", { "mcp:fake/paid": { permission: "deny" } })).status, 200);
-  await writeFile(`${crashed}.go`, "");
+  await closeFirst();
+  firstClosed = true;
+  const closeSecond = await startInProcessRunner(data, { faux: FAUX_MCP });
+  t.after(() => closeSecond());
   const { rows } = await follow(api, runId, ["completed", "failed"], { deadlineMs: 150_000 });
   assert.ok(existsSync(crashed), "the process went between the call and its resume");
   const said = (await answerOf(api, runId)) ?? "";
