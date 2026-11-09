@@ -22,6 +22,7 @@ import { dispatchRunner } from "../dist/runner/harness-loops.js";
 import { routeOf } from "../dist/runner/model-route.js";
 import { FAUX_ENV, withoutFaux } from "../dist/model.js";
 import { SEAL_KEY_ENV, sealKeyOf } from "../dist/tool-keys.js";
+import { HARNESS_TABLE_ENV } from "../dist/harness-table.js";
 
 export const FAUX = new URL("./fixtures/faux-model.mjs", import.meta.url).pathname;
 
@@ -253,12 +254,14 @@ export async function triggerStore(of) {
  *  dispatch (dispatch.ts): each claim's launch picks its harness loop — pi on the kernel's adapter loop with the run's pi
  *  spec, a learning run on the learning loop, its model route the faux model under `faux`. Returns a close() that stops the
  *  runner and closes its store handle. */
-export async function startInProcessRunner(data, { faux, approvers } = {}) {
+export async function startInProcessRunner(data, { faux, approvers, harnessTable } = {}) {
   const store = await openSqliteStore({ dataDir: data, role: "runner" });
   // The runner's env mirrors the server's faux (model.ts FAUX_ENV): its model route reads the faux model from it, so a run
   // never reaches the network. The seal key, when the server has one, seals the live-viewer tokens the browser tool writes;
   // a server with none never serves a live view, so a stand-in is enough to satisfy the spec.
-  const env = { ...withoutFaux(process.env), ...(faux ? { [FAUX_ENV]: resolve(faux) } : {}) };
+  // A test's harness table (startServe's `harnessTable`) too, as the server names it for its own runs: the runner builds a
+  // CLI harness's adapter from the table its env names.
+  const env = { ...withoutFaux(process.env), ...(faux ? { [FAUX_ENV]: resolve(faux) } : {}), ...(harnessTable ? { [HARNESS_TABLE_ENV]: resolve(harnessTable) } : {}) };
   const sealKey = sealKeyOf(env[SEAL_KEY_ENV]) ?? Buffer.alloc(32);
   let runner;
   try {
@@ -286,7 +289,7 @@ export async function serve(t, { harnesses: asked, runner: wantRunner = true, ..
   // A runner beside the server on the same data (the CLI start's server-and-runner): it claims and runs what the server
   // starts, so a test reads a run that runs, not one that queues forever. `runner: false` leaves it off for a test that
   // wants the server alone. Its loop is the switch's dispatch (learning wired; pi/workflow the server's own, E2r).
-  const closeRunner = wantRunner === false ? undefined : await startInProcessRunner(data, { faux: Object.hasOwn(options, "faux") ? options.faux : FAUX, approvers: options.accounts === true });
+  const closeRunner = wantRunner === false ? undefined : await startInProcessRunner(data, { faux: Object.hasOwn(options, "faux") ? options.faux : FAUX, approvers: options.accounts === true, ...(options.harnessTable ? { harnessTable: options.harnessTable } : {}) });
   // A server on another's data (a restart's): its owner's hook closes it before the directory goes.
   if (dir) sharing.set(data, new Set());
   else sharing.get(data)?.add(server);
