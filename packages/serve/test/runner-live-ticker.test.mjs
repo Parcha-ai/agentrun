@@ -122,6 +122,41 @@ test("a draining runner keeps writing a run's live view until its loop ends", as
   await closing;
 });
 
+test("a killed runner writes no more of its runs' live view, though its loops still report (a crash: nothing let go)", async (t) => {
+  const dir = dataDir(t);
+  const server = await serverWithRun(t, dir);
+  const store = await openSqliteStore({ dataDir: dir, role: "runner" });
+  t.after(() => store.close().catch(() => {}));
+  const puts = [];
+  // The loop reports a fresh chunk every 20 ms, counted, and never ends on its own: kill() stops nothing of it.
+  let reports = 0;
+  let reporting;
+  let release = () => {};
+  const createLoop = (deps) => ({
+    start: async () => {
+      reporting = setInterval(() => { reports += 1; deps.live?.(() => held(`chunk ${reports}\n`)); }, 20);
+      await new Promise((resolve) => (release = resolve));
+      clearInterval(reporting);
+      return { state: "interrupted" };
+    },
+    command: async () => ({ refused: "this loop takes no commands" }),
+    stop: async () => release(),
+  });
+  const runner = startRunner({ store: countingPuts(store, puts), createLoop, live: { tickMs: 20 }, name: "runner-a", leaseMs: 60_000, renewEveryMs: 1_000, stopMarginMs: 5_000, pollMs: 20, commandPollMs: 30 });
+  t.after(() => {
+    clearInterval(reporting);
+    release();
+  });
+  await until(async () => (await liveRow(server))?.state?.tools?.length === 1, "the run's live row while it runs", 15_000);
+  runner.kill();
+  const killedAt = Date.now();
+  // Ten more reports after the kill: the 20 ms tick had ten chances to put one.
+  const after = reports;
+  await until(() => reports >= after + 10, "the loop went on reporting after the kill");
+  const late = puts.filter((put) => put.at > killedAt);
+  assert.deepEqual(late, [], `no live row put after the kill: ${late.length} put`);
+});
+
 test("a runner that loses its claim writes no more of the run's live view, though its loop still reports while it stops", async (t) => {
   const dir = dataDir(t);
   const server = await serverWithRun(t, dir);
