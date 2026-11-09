@@ -18,6 +18,7 @@
 // unopened refusal, the URL check per call, the scrub of each call's credentials held only while that call is out, prices
 // on the run's one ledger and the not-metered booking on the run's root.
 import type { HostTool, McpCallResult, SessionMcp } from "@parcha/agentrun-kernel";
+import { INTERRUPTED_TEXT } from "@parcha/agentrun-kernel/kernel";
 import { BACKGROUND_CONTEXT } from "@earendil-works/chord/context";
 import type { Harness } from "@earendil-works/pi-durable";
 import { wireName } from "../catalog.js";
@@ -228,7 +229,9 @@ export async function parkedFollowUp(mcp: ClaimMcp, options: ParkedFollowUpOptio
     else {
       const done = ended.get(call.callId);
       const denied = await options.deniedNow(call);
-      result = done ? { text: typeof done.output === "string" ? done.output : `The ${call.tool} call ended ${done.status}.`, isError: done.status !== "done" } : denied !== undefined ? { text: denied, isError: true } : await options.run(call);
+      // A call a crash cut (its end interrupted, no output) may or may not have taken effect: the kernel's words say so.
+      const endedText = (end: CallEndData) => (typeof end.output === "string" ? end.output : end.status === "interrupted" ? INTERRUPTED_TEXT : `The ${call.tool} call ended ${end.status}.`);
+      result = done ? { text: endedText(done), isError: done.status !== "done" } : denied !== undefined ? { text: denied, isError: true } : await options.run(call);
     }
     texts.push(resumeText({ tool: call.tool, call_id: call.callId }, argsPreview(call.args), answer.approved ? "allow" : "deny", { text: result.text, isError: result.isError === true }));
     callIds.push(call.callId);
