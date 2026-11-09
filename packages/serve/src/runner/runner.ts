@@ -16,7 +16,7 @@ import { KINDS, withdrawnAnswers } from "./journal-kinds.js";
 import { journalEntries } from "./journal-reader.js";
 import { type Claim, type Command, endedBy, type Journal, type Loop, type LoopEnd, type LoopFactory, type StopReason } from "./loop-contract.js";
 import { isFenced, type RunnerStore } from "./store-port.js";
-import { keepText, type Redact } from "./redact.js";
+import { type Redact, runnerSecrets, secretRedactor } from "./redact.js";
 
 /** The untaken row a run ends on when no loop can: a cancel before a stop (it ends the run for good, in its words). */
 const endingRow = (untaken: readonly Command[]): Command | undefined => untaken.find((row) => row.kind === "cancel") ?? untaken.find((row) => row.kind === "stop");
@@ -57,7 +57,8 @@ export interface RunnerOptions {
    *  Date.now. */
   now?: () => number;
   /** The one redactor (redact.ts secretRedactor over the secrets the runner holds): every error text this runner writes
-   *  to a run's row or end, or emits, passes through it, and each loop gets it (LoopDeps.redact). Default: none cut. */
+   *  to a run's row or end, or emits, passes through it, and each loop gets it (LoopDeps.redact). Default: the one over every secret this process's environment holds (runnerSecrets), so a runner
+   *  started with none (runner/main.ts) still cuts the keys it was started with. */
   redact?: Redact;
 }
 
@@ -117,7 +118,7 @@ export function startRunner(options: RunnerOptions): Runner {
     interruptBackoffMs = 1_000,
     endWaitMs = 5_000,
     onEvent = () => {},
-    redact = keepText,
+    redact = secretRedactor(runnerSecrets(process.env)),
     now = Date.now,
   } = options;
   if (!(stopMarginMs < leaseMs && renewEveryMs < leaseMs - stopMarginMs)) {
