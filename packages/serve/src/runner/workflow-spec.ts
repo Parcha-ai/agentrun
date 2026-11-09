@@ -518,6 +518,13 @@ const settleReservation = async (held: Reservation, usd: number | null): Promise
   held.settled = true;
   await held.paid.settle(held.id, usd).catch(() => undefined);
 };
+/** The hold let go unused: nothing was sent under it and nothing charged. Settled marked given back (RunTools.settle's
+ *  `givenBack`), so its record is never read as a $0 charge or an unpriced one: the run's timeline shows no row for it. */
+const giveBack = async (held: Reservation): Promise<void> => {
+  if (held.settled) return;
+  held.settled = true;
+  await held.paid.settle(held.id, 0, { givenBack: true }).catch(() => undefined);
+};
 
 /** The run's one ledger as a call node's paid request books on it (Ledger.paid) under its call's reservation: its
  *  request is admitted on the hold taken before the call (never a second hold), and settled there at what it charged. A
@@ -528,6 +535,11 @@ function reservedBooking(held: Reservation): PaidBooking {
     admit: async (request) => {
       if (held.taken || request.holdUsd > held.hold.usd + 1e-12) {
         throw new CapRefused(`Not sent: ${request.name} would cost ${money(request.holdUsd)}, above the ${money(held.hold.usd)} this call held before it ran.`, { forGood: true, spentUsd: null });
+      }
+      // The hold's record names who charges (its admit's chargedBy); a request charged by anyone else would book under the
+      // wrong name, so it is refused unsent (a plane that sent the call to another provider than the hold priced).
+      if ((request.chargedBy ?? undefined) !== (held.hold.chargedBy ?? undefined)) {
+        throw new CapRefused(`Not sent: ${request.name} is charged by ${request.chargedBy ?? "no one named"}, not ${held.hold.chargedBy ?? "no one named"}, whom this call's hold was taken for.`, { forGood: true, spentUsd: null });
       }
       held.taken = true;
       return undefined;
@@ -577,7 +589,9 @@ export function holdAtEffects(cap: WorkflowCap, deps: { readonly paid: () => Run
           }
           return value;
         } finally {
-          await settleReservation(held, held.taken ? null : 0);
+          // Taken and left unsettled: at its hold (the request went, its charge unknown). Never taken: given back unused.
+          if (held.taken) await settleReservation(held, null);
+          else await giveBack(held);
         }
       }) as unknown as F;
     },
@@ -586,9 +600,16 @@ export function holdAtEffects(cap: WorkflowCap, deps: { readonly paid: () => Run
 
 /** The reservation of the call node this request runs under, given back as the request is judged on its own (an `llm`
  *  call's model request): its hold is the request's from here. */
+/** The ledger a call node's paid request books on while its effect runs: its call's reservation (reservedBooking), or
+ *  undefined outside one. */
+export const heldBooking = (): { readonly call: string; readonly paid: PaidBooking } | undefined => {
+  const held = reservations.getStore();
+  return held ? { call: held.call, paid: reservedBooking(held) } : undefined;
+};
+
 export const releaseCallHold = async (): Promise<void> => {
   const held = reservations.getStore();
-  if (held && !held.taken) await settleReservation(held, 0);
+  if (held && !held.taken) await giveBack(held);
 };
 
 /** A call tool's permission now, as main's per-run process read it at each call node (app.ts:382-384, the gate's
@@ -642,9 +663,9 @@ function runEffectOf(claimed: Claimed, complete: ReturnType<typeof completer>, e
   return (async ({ node, input, signal, executionPath }: { node: { label: string; via: string; tool?: string }; input: Record<string, unknown>; signal: AbortSignal; executionPath?: string }) => {
     // The call's ledger: its paid request books on the run's one ledger, on the hold taken before the call (holdAtEffects)
     // when it has one. No pause: a refusal inside an admitted effect fails the call, never parks the run there.
-    const held = reservations.getStore();
+    const held = heldBooking();
     const paid = paidTools();
-    const ledger = held ? { call: held.call, record: async () => {}, paid: reservedBooking(held) } : paid ? { call: `${node.label}@${executionPath ?? ""}`, record: async () => {}, paid } : undefined;
+    const ledger = held ? { call: held.call, record: async () => {}, paid: held.paid } : paid ? { call: `${node.label}@${executionPath ?? ""}`, record: async () => {}, paid } : undefined;
     const effect = node.via === "tool" && node.tool ? toolOf(node.tool)?.effect : undefined;
     if (!effect) throw new Error(`call node "${node.label}": agentrun-serve runs no tool ${node.tool ?? `via ${node.via}`}`);
     // Its tool's permission now (main's app.ts:382-384): a deny set since the run started is refused in the gate's words,
