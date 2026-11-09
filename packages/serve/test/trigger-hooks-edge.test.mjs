@@ -39,7 +39,9 @@ test("no route but POST /v2/hooks/{id} (and capabilities, the document and healt
   const { id, signing_secret: secret } = (await api("POST", "/triggers", hooked("triage"))).body;
   const at = port(baseUrl);
   // mcpOAuthClient: the OAuth client metadata document an authorization server fetches, public by design (mcp-oauth.ts).
-  const open = new Set(["getCapabilities", "getOpenapi", "getHealth", "receiveHook", "mcpOAuthClient"]);
+  // getAuthSession: the session read, public by design: the console reads it before sign-in (accounts, and whether this
+  // caller may write secrets), and it names no one (owner-auth.test.mjs pins its shapes).
+  const open = new Set(["getCapabilities", "getOpenapi", "getHealth", "receiveHook", "mcpOAuthClient", "getAuthSession"]);
   for (const route of ROUTES) {
     const path = `/v2${route.pattern.source.replace(/^\^|\$$/g, "").replace(/\\\//g, "/").replace(/\\\./g, ".").replace(/\(\[\^\/\]\+\)|\(\.\+\)/g, "x-id")}`;
     const answer = await raw(at, { method: route.method, path, headers: { "content-type": "application/json" }, body: ["POST", "PUT", "PATCH"].includes(route.method) ? "{}" : undefined });

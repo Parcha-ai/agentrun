@@ -301,6 +301,8 @@ test("handed no seal key, the server keeps a key under the one it made at its st
   withEnv(t, {}, KEYS);
   const { api, data } = await serve(t);
   assert.deepEqual((await api("GET", "/capabilities")).body.features.tool_keys, { routes: true, at_rest: "sealed" });
+  // Always sealed, so the document says only that: there is no state in which a key is kept unsealed or not at all.
+  assert.deepEqual((await api("GET", "/openapi.json")).body.components.schemas.Features.properties.tool_keys.properties.at_rest, { const: "sealed" });
   const value = made();
   assert.equal((await api("PUT", "/settings/tool-keys/monid", { values: { MONID_API_KEY: value } })).status, 204);
   // Sealed, never in the clear, wherever the server keeps it (the store, or its tool-keys file).
