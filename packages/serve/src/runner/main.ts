@@ -14,7 +14,6 @@ import { openSqliteStore, SchemaVersionUnknown, type Store } from "../store/inde
 import { SCHEMA_VERSION } from "../store/schema.js";
 import { SEAL_KEY_ENV, sealKeyOf } from "../tool-keys.js";
 import { computerDepsFrom } from "../workspace/computer-deps.js";
-import type { ComputerForClaim } from "./adapter-run-spec.js";
 import { createDispatchLoop } from "./dispatch.js";
 import { resolveRunnerLoop } from "./harness-loops.js";
 import type { LoopFactory } from "./loop-contract.js";
@@ -100,7 +99,7 @@ export function runnerLoop(store: Store, dataDir: string, env: NodeJS.ProcessEnv
   const computers = computerDepsFrom({ env: runs, store, sealKey });
   const deps = {
     env: runs, data: dataDir, journal: (claim: Parameters<Store["journal"]>[0]) => store.journal(claim), store, sealKey, routeOf,
-    computerForClaim: computers.computerForClaim as unknown as ComputerForClaim, computerDeps: computers.computerDeps,
+    computerForClaim: computers.computerForClaim, computerDeps: computers.computerDeps,
   };
   return createDispatchLoop({ launchOf: (runId) => store.runs.launch(runId), resolve: resolveRunnerLoop(deps) });
 }

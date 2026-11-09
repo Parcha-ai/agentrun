@@ -51,6 +51,8 @@ import { runMetrics } from "./metrics.js";
 import type { ModelRoute, RouteCost } from "./model-route.js";
 import { archilClaim, type ArchilClaimOptions, MOUNT_TTL_MS } from "../workspace/archil-claim.js";
 import { loadArchilSettings } from "../archil-settings.js";
+import type { ComputerSetting } from "../computer-setting.js";
+import type { claimComputer, ComputerDeps } from "../workspace/computer-deps.js";
 import type { RunComputer } from "../workspace/run-tools.js";
 import type { Workspace } from "../workspace/workspace.js";
 import { runnerSecrets, secretRedactor } from "./redact.js";
@@ -78,8 +80,9 @@ export interface ClaimComputer {
   readonly hold?: unknown;
   release(): Promise<void>;
 }
-/** The one shared claim-time computer every spec takes (computer-for-claim.ts), passed in by the runner. */
-export type ComputerForClaim = (launch: ClaimLaunch, store: AdapterSpecDeps["store"], deps: ClaimDeps & Readonly<Record<string, unknown>>) => Promise<ClaimComputer>;
+/** The one shared claim-time computer every spec takes (computer-for-claim.ts), passed in by the runner: the composer's
+ *  (workspace/computer-deps.ts computerDepsFrom), or a test's stand-in. */
+export type ComputerForClaim = typeof claimComputer;
 
 /** The wires pi speaks on the runner: main's pi's (provider.ts), Anthropic's Messages and OpenAI's Responses. */
 export const PI_WIRES: readonly Wire[] = Object.freeze(["anthropic-messages", "openai-responses"]);
@@ -107,7 +110,7 @@ export interface AdapterSpecDeps {
    *  The runner gives it; a test gives its own. */
   readonly computerForClaim: ComputerForClaim;
   /** What the runner gives computerForClaim once (its kind registry, provider makers, computer spec, keys and settings). */
-  readonly computerDeps?: Readonly<Record<string, unknown>>;
+  readonly computerDeps: ComputerDeps;
   /** A Mode 2 claim's Archil disk (a test's fake); absent, the real disk the Archil settings name. */
   readonly makeArchilDisk?: ArchilClaimOptions["makeDisk"];
   /** The Archil mount credential's control plane, for a test's loopback fake (archilControlFake): its base URL and the
@@ -233,7 +236,7 @@ export async function adapterRunSpecFromLaunch(launch: RunLaunch, run: AdapterRu
   // Docker container for a sandbox, under the claim's epoch (the one fence). It throws computer_unavailable (nothing made)
   // when the computer cannot be had: the run fails in its words.
   const computer = await deps.computerForClaim(
-    { runId: claim.runId, epoch: claim.epoch, revisionId: runRow.revisionId, place: launch.place, ...((launch as { computer?: unknown }).computer !== undefined ? { computer: (launch as { computer?: unknown }).computer } : {}) },
+    { runId: claim.runId, epoch: claim.epoch, revisionId: runRow.revisionId, place: launch.place, ...((launch as { computer?: ComputerSetting }).computer !== undefined ? { computer: (launch as { computer?: ComputerSetting }).computer } : {}) },
     deps.store,
     // revokeMount removes the run's Archil mount credential when the computer is released (and if a start fails after a mint);
     // the run's end revokes it too (below), so it goes on every outcome even when no computer is made. Idempotent.
