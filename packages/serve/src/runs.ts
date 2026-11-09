@@ -16,7 +16,7 @@ import { processAlive } from "@parcha/agentrun-kernel/host";
 import { doorKey, doorTook } from "@parcha/pi-durable-disk";
 import { RUN_STATUS_TABLE } from "@parcha/pi-durable-disk/internals";
 import { AgentHomeError, type Revision, runDirIn, type RevisionKind, type RunOrigin, type RunRow, type RunState, type StoredMetrics } from "@parcha/pi-durable-agent";
-import { endedUsage, isMessageRow, MESSAGE_ORIGIN, type MessageOrigin, NOTE_SUFFIX, originOf, registerLabel, registerTurnEnding, REQUEST_STARTED, type RunMetrics, runMetricsWithDecisions, scrubUrls, type TimelineEvent, timelineOf, timelineReducer } from "@parcha/pi-durable-agent/timeline";
+import { endedUsage, isMessageRow, MESSAGE_ORIGIN, type MessageOrigin, NOTE_SUFFIX, originOf, REQUEST_STARTED, type RunMetrics, runMetricsWithDecisions, scrubUrls, type TimelineEvent, timelineOf, timelineReducer } from "@parcha/pi-durable-agent/timeline";
 import { HARNESS_LOG_EVENT, harnessModelKeys, thinkingFor } from "./adapters.js";
 import { runLink } from "./console-links.js";
 import { harnessOfBody } from "./harness.js";
@@ -69,7 +69,7 @@ import { removeEgressDir, RUN_BOX_ALLOW_ENV } from "./box-egress.js";
 import { BehindReadError, checkpointRunDb, MonotonicReads, readRunDb } from "./run-db.js";
 import { holderLives, holderOfClaim, holderOfProcess, holderState, killHolder, LAUNCH_HOLDER, RUN_EPOCH_ENV, RUN_LAUNCH_ENV, type RunHolder, signal } from "./run-holder.js";
 import { firstDoorLine, untilOpened, verifyDoor } from "./door-line.js";
-import { BUDGET_PAUSED, type Approval, type ApprovalAnswer, actingOn, approvalOf, browserPending, budgetPending, cents, centsUp, continuationOf, costOf, costView, type Handed, handedPointers as handedPointersOf, knownToolCostOf, MALFORMED, meaningful, micro, microUp, overByMiss, pauseOf, pausedAt, type Pending, pendingOf, raisedToGo, redactorOf, refusedValuesOf, rowShown as rowShownOf, servedReviewWith, servedRunErrorWith, shownOf, type SoFar, soFarOf, type State, type Status, statusOf as statusOfView, stopped, stoppedAt, SUGGESTED_RAISE_FACTOR, suggestedCap, shownArgs, toolCostOf, usersOf, waitingApproval, WITHHELD_SIGN_IN, withdrawn, withOverCap, withPaused } from "./run-view.js";
+import { BUDGET_PAUSED, type Approval, type ApprovalAnswer, actingOn, approvalOf, browserPending, budgetPending, cents, centsUp, continuationOf, costOf, costView, type Handed, handedPointers as handedPointersOf, knownToolCostOf, MALFORMED, meaningful, micro, microUp, overByMiss, pauseOf, pausedAt, type Pending, pendingOf, raisedToGo, redactorOf, refusedValuesOf, rowShown as rowShownOf, servedReviewWith, servedRunErrorWith, shownOf, type SoFar, soFarOf, type State, type Status, statusOf as statusOfView, stopped, stoppedAt, SUGGESTED_RAISE_FACTOR, suggestedCap, shownArgs, toolCostOf, usersOf, waitingApproval, WITHHELD_SIGN_IN, withAsks, withdrawn, withOverCap, withPaused } from "./run-view.js";
 // The cost reads, the served row transforms, the status and pending views and the redaction choke point kept their import
 // path here for the server routes and tests that read them from this module.
 export { costOf, costView, knownToolCostOf, soFarOf, type SoFar, toolCostOf, withOverCap, withPaused, stoppedAt, suggestedCap, SUGGESTED_RAISE_FACTOR, type State, type Status, WITHHELD_SIGN_IN };
@@ -483,26 +483,8 @@ export type Run = {
    *  entries say them (bounds.ts). */
   bounds?: RequestBounds;
 };
-const ASKED = "Asked you: ";
-registerLabel(ASK_TOOL, (args) => `${ASKED}${typeof args.question === "string" ? args.question : ""}`, undefined, { name: "Ask you a question" });
-// ask_person ends its turn (tools.ts): the person's reply is their next message, never a steer.
-registerTurnEnding(ASK_TOOL);
-
-/** The waiting row after each answered `ask_person` call, which the timeline module does not know. The question comes
- *  from the call's row, whose label this module registers. */
-export function withAsks(rows: readonly TimelineEvent[]): TimelineEvent[] {
-  const out: TimelineEvent[] = [];
-  const questions = new Map<string, string>();
-  for (const row of rows) {
-    out.push(row);
-    if (row.kind === "tool_use" && row.tool_name === ASK_TOOL && row.tool_use_id && row.summary?.startsWith(ASKED)) questions.set(row.tool_use_id, row.summary.slice(ASKED.length));
-    if (row.kind === "tool_result" && row.tool_name === ASK_TOOL && row.tool_status === "success") {
-      const question = questions.get(row.tool_use_id ?? "") || "the agent asked you a question";
-      out.push({ ...row, id: `${row.id}:waiting`, kind: "waiting", summary: `Waiting for you: ${clip(question, 480)}`, text: clip(question, 2000), tool_name: null, tool_use_id: null, tool_status: null, tool_input_preview: null, tool_result_preview: null, tool_result_size_bytes: null });
-    }
-  }
-  return out;
-}
+// ask_person's label, its turn-ending rule and withAsks moved to run-view.ts (the store-backed view uses them too); this
+// module imports withAsks from there, and run-view's load registers the label.
 
 /** The over-cap row and the cent-rounding its words use move to run-view.ts (over the run's rows), unchanged. */
 

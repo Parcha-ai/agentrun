@@ -87,14 +87,13 @@ export async function stop(store: RunsStore, runId: string): Promise<boolean> {
 /** Cancels the run: one cancel command row, which the run's runner reads and applies (it ends the run cancelled, aborting
  *  the turn in flight and cancelling a tool call waiting for approval). Returns whether a cancel was requested — the old
  *  cancel's checks and their result, verbatim: an imported run, or one already ended or ending, has none to cancel (false,
- *  nothing written). A run's first end is its last, so a cancel that races the end is the runner's to drop. (The runner's
- *  "cancel" command kind is tl-jobs'; this writes the row through the store directly until it is in runner/commands.ts.) */
+ *  nothing written). A run's first end is its last, so a cancel that races the end is the runner's to drop. */
 export async function cancel(store: RunsStore, moment: RunMoment): Promise<boolean> {
   if (moment.importedSource !== undefined) return false;
   // Already ended, or already ending (an outcome being written, or a cancel in flight): a run's first end is its last.
   if (moment.terminal || moment.cancelled) return false;
   try {
-    await store.command(moment.id, { kind: "cancel", body: {} });
+    await sendCommand(store, moment.id, { kind: "cancel", body: {} });
     return true;
   } catch (error) {
     if (error instanceof RunFinal) return false;

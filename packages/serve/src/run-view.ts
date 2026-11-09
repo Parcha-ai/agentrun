@@ -6,18 +6,20 @@
 // The pieces here so far: the cost reads (a run's cost, its paid tools' charges, the cost a view shows, what it has cost so
 // far when the total is unknown) and the served row transforms a view applies to the timeline (the over-cap row, the
 // paused run's waiting row). All read the same rows the timeline renders.
-import { NOTE_SUFFIX, type TimelineEvent, chargedTool, isMessageRow } from "@parcha/pi-durable-agent/timeline";
+import { NOTE_SUFFIX, type TimelineEvent, chargedTool, isMessageRow, registerLabel, registerTurnEnding } from "@parcha/pi-durable-agent/timeline";
 import type { RevisionKind } from "@parcha/pi-durable-agent";
 import { CAP_TOLERANCE, FIT_TOLERANCE, money, type RefusalFigures, roomRefusal } from "./cap.js";
 import { servedOnly } from "./served-only.js";
 import type { Turns } from "./turns.js";
 import type { PendingAsk } from "./browser-person.js";
 import { type PendingApproval, previewOf } from "./tool-gate.js";
+import { ASK_TOOL } from "./tools.js";
 import { LEARNING_LABEL } from "./learning.js";
 import { builtinHarness } from "./harness-table.js";
 import { cutStrings, redacted, withoutLoopback } from "./key-refusal.js";
 import { pointerHash, type SignIns } from "./sign-ins.js";
 import { MIN_SECRET } from "./learn/secrets.js";
+import { KINDS } from "./runner/journal-kinds.js";
 
 /** The run's newest usage row, which carries its cost. */
 const usageOf = (rows: readonly TimelineEvent[]) => rows.findLast((r) => r.kind === "usage");
@@ -119,6 +121,31 @@ export function withPaused(rows: readonly TimelineEvent[]): TimelineEvent[] {
   return [...rows.slice(0, at + 1), paused, ...rows.slice(at + 1)];
 }
 
+/** A text clipped to `max` characters, with an ellipsis where it is cut (runs.ts' clip). */
+const clip = (text: string, max: number): string => (text.length > max ? `${text.slice(0, max - 1)}…` : text);
+const ASKED = "Asked you: ";
+// ask_person's label and that it ends its turn: a person's reply is their next message, never a steer (runs.ts). Registered
+// here so both the file path and the store-backed view render the call the same, whichever module loads first.
+registerLabel(ASK_TOOL, (args) => `${ASKED}${typeof args.question === "string" ? args.question : ""}`, undefined, { name: "Ask you a question" });
+registerTurnEnding(ASK_TOOL);
+
+/** The waiting row after each answered `ask_person` call, which the timeline module does not know. The question comes from
+ *  the call's row, whose label this module registers. The server fed its rows through this; the store-backed view feeds the
+ *  same rows through it, so a run waiting on a question reads the same pending. */
+export function withAsks(rows: readonly TimelineEvent[]): TimelineEvent[] {
+  const out: TimelineEvent[] = [];
+  const questions = new Map<string, string>();
+  for (const row of rows) {
+    out.push(row);
+    if (row.kind === "tool_use" && row.tool_name === ASK_TOOL && row.tool_use_id && row.summary?.startsWith(ASKED)) questions.set(row.tool_use_id, row.summary.slice(ASKED.length));
+    if (row.kind === "tool_result" && row.tool_name === ASK_TOOL && row.tool_status === "success") {
+      const question = questions.get(row.tool_use_id ?? "") || "the agent asked you a question";
+      out.push({ ...row, id: `${row.id}:waiting`, kind: "waiting", summary: `Waiting for you: ${clip(question, 480)}`, text: clip(question, 2000), tool_name: null, tool_use_id: null, tool_status: null, tool_input_preview: null, tool_result_preview: null, tool_result_size_bytes: null });
+    }
+  }
+  return out;
+}
+
 // --- A run's status and what it waits on, as pure functions over the run's rows, its turns and its store entries (its
 // approvals and cap marks), with the file-backed facts (a workflow's pause, the browser ask) passed in. The server feeds
 // these from its live Run; the store-backed view (viewOverStore) feeds the same functions from a row and the journal, so
@@ -137,6 +164,98 @@ export type Approval = { id: string; tool: string; call_id: string; args_json: s
 export type ApprovalAnswer = { decision: "allow" | "deny" | "canceled" | "withdrawn"; note?: string; answered_at: string; args_shown?: string; by?: "message"; superseded?: { decision: string; answered_at: string; note?: string; by?: "message" } };
 /** A call withdrawn with its run (a cancel, or a stop while it waited): never run, and an answer after is 409. */
 export const withdrawn = (answer: ApprovalAnswer | undefined) => answer?.decision === "canceled" || answer?.decision === "withdrawn";
+
+// --- The approvals a store-backed run waits (or waited) on, read from its journal, where the file-backed path read them
+// from the run's own store entries (runs.ts noteApprovals). The runner writes an `agentrun.ask` entry for each tool call
+// the gate parked the run on, and an `agentrun.answer` entry for the person's answer, taken by the commit that takes the
+// approve or deny row. These build the Approval map and the answers the status, pending and moment views read, so the
+// card and the answered state a person sees stay the same. An approval is keyed by the call's id throughout (the answer
+// command names the call), so the card's id is the call's id. ---
+
+/** An `agentrun.ask` entry's data: the tool call the gate parked for a person, as the runner wrote it. */
+type AskEntry = { callId: string; tool: string; args: unknown; requestedAt: string; price?: number | "not metered" | null };
+/** An `agentrun.answer` entry's data: the person's answer the runner wrote, or a withdrawal when the run was stopped or
+ *  cancelled while the call waited. */
+type AnswerEntry = { callId: string; approved: boolean; decision: "allow" | "deny" | "withdrawn"; answeredAt: string; note?: string };
+/** The least a journal entry a reader here reads is: its kind and its data. */
+type JournalEntry = { kind?: string; data?: unknown };
+const dataOf = <T>(entry: JournalEntry): T => entry.data as T;
+
+/** The tool calls a run waits (or waited) for a person's approval on, from its journal's `agentrun.ask` entries, by the
+ *  call's id: a re-ask of the same call keeps the first request, as the gate's park did; one with an answer is resolved,
+ *  so the run waits on it no more (the file path's `resolved` once its process acted). The card's id and call id are both
+ *  the call's id, and its arguments are kept as JSON (shown cut and redacted by the view), as the file path kept them. */
+export function asksOf(entries: readonly JournalEntry[]): Map<string, Approval> {
+  const answered = new Set<string>();
+  for (const entry of entries) if (entry.kind === KINDS.answer) { const d = dataOf<AnswerEntry>(entry); if (typeof d?.callId === "string") answered.add(d.callId); }
+  const map = new Map<string, Approval>();
+  for (const entry of entries) {
+    if (entry.kind !== KINDS.ask) continue;
+    const d = dataOf<AskEntry>(entry);
+    if (typeof d?.callId !== "string" || map.has(d.callId)) continue;
+    map.set(d.callId, {
+      id: d.callId,
+      tool: d.tool,
+      call_id: d.callId,
+      args_json: JSON.stringify(d.args ?? {}) ?? "{}",
+      requested_at: d.requestedAt,
+      ...(typeof d.price === "number" || d.price === "not metered" ? { price: d.price } : {}),
+      ...(answered.has(d.callId) ? { resolved: true as const } : {}),
+    });
+  }
+  return map;
+}
+
+/** The answers a run got to its asks, from its journal's `agentrun.answer` entries, by the call's id (the key the moment
+ *  and the pending views read as run.meta.approvals): a person's allow or deny with any note, or a withdrawal taken when
+ *  the run was stopped or cancelled while the call waited. The first answer for a call stands. */
+export function answersOf(entries: readonly JournalEntry[]): Record<string, ApprovalAnswer> {
+  const out: Record<string, ApprovalAnswer> = {};
+  for (const entry of entries) {
+    if (entry.kind !== KINDS.answer) continue;
+    const d = dataOf<AnswerEntry>(entry);
+    if (typeof d?.callId !== "string" || d.callId in out) continue;
+    out[d.callId] = { decision: d.decision, ...(d.note !== undefined ? { note: d.note } : {}), answered_at: d.answeredAt };
+  }
+  return out;
+}
+
+/** An `agentrun.budget` entry's data: the pending budget the kernel cap parked the run with (parkOf), and the cap's words
+ *  as the run row's summary says them. */
+type BudgetEntry = { pending: { kind: "budget"; cap_usd: number; spent_usd?: number; needs_usd?: number; least_cap_usd?: number; suggested_cap_usd?: number }; words: string };
+
+/** The run's active cap park, from its journal: the last agentrun.budget entry the cap wrote when it parked the run for
+ *  room, unless an agentrun.raise after it cleared the pause (the run goes on at the raised cap then). A re-park writes a
+ *  fresh budget entry, which a raise before it does not clear, so the last of the two in log order decides. */
+function activeBudget(entries: readonly JournalEntry[]): BudgetEntry | undefined {
+  let mark: BudgetEntry | undefined;
+  for (const entry of entries) {
+    if (entry.kind === KINDS.budget) mark = dataOf<BudgetEntry>(entry);
+    else if (entry.kind === KINDS.raise) mark = undefined;
+  }
+  return mark;
+}
+
+/** Whether the run stands parked at its cap now (an active agentrun.budget park, no raise since): the store-backed fact the
+ *  status table reads (RunFacts.budgetWaiting), as the file-backed view read a workflow's pause file and an agentic run's
+ *  turn refusal. */
+export const budgetWaitingOf = (entries: readonly JournalEntry[]): boolean => activeBudget(entries) !== undefined;
+
+/** The budget card a run parked at its cap shows (pending, kind budget), from its agentrun.budget entry, the same way the
+ *  file-backed view built it from the run's pause mark (runs.ts workflowBudgetPending): its cap (the run's launch cap, else
+ *  the park's), what the cap counted as taken and the least the refused step needs, the raise offered (recomputed from
+ *  those by the view's one formula), and the cap's words at the run's last meaningful row. The overshoot bound reads 0: the
+ *  kernel cap's parkOf keeps no cache-miss bound. Undefined when no park is active. */
+export function budgetOf(entries: readonly JournalEntry[], run: Pick<RunView, "meta" | "rows" | "updatedAt">): Pending | undefined {
+  const mark = activeBudget(entries);
+  if (!mark) return undefined;
+  const p = mark.pending;
+  const cap = run.meta.max_cost_usd ?? p.cap_usd;
+  const figures = p.spent_usd !== undefined && p.needs_usd !== undefined
+    ? { spent_usd: micro(p.spent_usd), needs_usd: micro(p.needs_usd), ...(p.least_cap_usd !== undefined ? { least_cap_usd: p.least_cap_usd } : {}), suggested_cap_usd: suggestedCap(cap, p.spent_usd, p.needs_usd), overshoot_bound_usd: microUp(0) }
+    : {};
+  return { kind: "budget", cap_usd: cap, ...figures, said: mark.words, at: meaningful(run.rows)?.timestamp ?? run.updatedAt };
+}
 
 /** The run's meta the status and pending views read: a structural subset of RunMeta, so the server passes its live
  *  run.meta and the store-backed view a value built from the run's row. */
@@ -172,6 +291,10 @@ export interface RunView {
   approvals?: ReadonlyMap<string, Approval>;
   capMark?: number;
   capRefusal?: RefusalFigures;
+  /** The words of the cap pause the run stands at, when the view knows them apart from a turn's refusal (the store-backed
+   *  view, from the cap park entry): the moment reads them when `pausedAt` finds no turn refusal, so a run parked at its cap
+   *  reads paused either way. The file-backed view leaves this unset and the moment reads `pausedAt`. */
+  pausedWords?: string;
   meta: RunViewMeta;
 }
 
@@ -328,6 +451,10 @@ export function statusOf(run: RunView, facts: RunFacts): { status: Status; state
     if (waitingApproval(run)) return { status: "input_required", state: "waiting" };
     if (actingOn(run)) return { status: "working", state: "working" };
   }
+  // Parked at its cap, as the store-backed view's fact says it (an active agentrun.budget park, no raise since): it waits
+  // for the cap to be raised. The file-backed view reads an agentic run's pause from the turn's refusal (refusedAt, below),
+  // where this fact is always false, so this is a no-op there; a workflow run reads it through the facts above.
+  if (facts.budgetWaiting()) return { status: "input_required", state: "waiting" };
   // Every message's turn is over and the newest one's ended interrupted, with no stop of the person's saying so (the
   // harness ended it on its own): the run waits for the person, as after a stop, never working for good.
   if (run.kind === "agentic" && run.submitted === 0 && run.turns.end()?.status === "interrupted") return { status: "input_required", state: "idle" };
@@ -402,7 +529,9 @@ export function momentOf(run: RunView, facts: RunFacts, live: boolean): RunMomen
   const { status, state } = statusOf(run, facts);
   const terminal = TERMINAL.has(status);
   const waiting = waitingApproval(run);
-  const pausedWords = pausedAt(run);
+  // The pause words from the turn's refusal (the file-backed view), else the cap park the store-backed view carries, so a
+  // run parked at its cap reads paused and raiseCap resumes it either way.
+  const pausedWords = pausedAt(run) ?? run.pausedWords;
   const answered = run.meta.approvals;
   return {
     id: run.id,

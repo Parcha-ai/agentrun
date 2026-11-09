@@ -89,10 +89,14 @@ export function bodyOf(input: RevisionBodyInput): { body: AgenticBody | Workflow
   if (set !== undefined && !isObject(set)) invalid("the tool settings are not an object of tools to their settings");
   const toolSettings = set && Object.keys(set).length ? (set as ToolSettings) : undefined;
 
+  // Unattended (approvals "never") is the one value kept: ask, the default, is kept as nothing, so an agent that asks is
+  // one body with an agent that names the default.
+  if (input.approvals !== undefined && input.approvals !== "never") invalid('the approvals is "never", or absent (ask)');
   const host = {
     ...(input.harness !== undefined ? { harness: input.harness } : {}),
     ...(input.place !== undefined ? { place: placeOf(input.place) } : {}),
     ...(toolSettings ? { toolSettings } : {}),
+    ...(input.approvals === "never" ? { approvals: "never" as const } : {}),
   };
 
   // A default spend cap, and how it prices a request, for a revision of either kind.

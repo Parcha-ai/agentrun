@@ -436,20 +436,22 @@ test("cancel returns false and writes nothing for a run already ended or ending"
 test("every command this module writes is one the runner's parser accepts", async () => {
   const store = await freshStore();
   // The runner reads commands through sendCommand's parser (runner/commands.ts); each kind/body a writer here emits must
-  // pass it, so the runner takes exactly what we write. (cancel's kind is tl-jobs' to add; it is written through the store.)
+  // pass it, so the runner takes exactly what we write.
   await queuedRun(store, "steer-run");
   await queuedRun(store, "steer-trg");
   await queuedRun(store, "deny-run");
   await queuedRun(store, "approve-run");
   await queuedRun(store, "raise-run");
   await queuedRun(store, "stop-run");
+  await queuedRun(store, "cancel-run");
   await sendCommand(store, "steer-run", { kind: "steer", body: { text: "hi" } });
-  await sendCommand(store, "steer-trg", { kind: "steer", body: { text: "hi", answers: false, origin: { kind: "trigger" } } });
+  await sendCommand(store, "steer-trg", { kind: "steer", body: { text: "hi", answers: false, origin: { kind: "trigger", trigger_id: "t1", source: "schedule", owner: true } } });
   await sendCommand(store, "deny-run", { kind: "deny", body: { approval: "call-1", note: "no" } });
   await sendCommand(store, "approve-run", { kind: "approve", body: { approval: "call-1" } });
   await sendCommand(store, "raise-run", { kind: "raise", body: { capUsd: 5 } });
   await sendCommand(store, "stop-run", { kind: "stop", body: {} });
-  for (const id of ["steer-run", "steer-trg", "deny-run", "approve-run", "raise-run", "stop-run"]) {
+  await sendCommand(store, "cancel-run", { kind: "cancel", body: {} });
+  for (const id of ["steer-run", "steer-trg", "deny-run", "approve-run", "raise-run", "stop-run", "cancel-run"]) {
     assert.equal((await commandsOf(store, id)).length, 1);
   }
 });
