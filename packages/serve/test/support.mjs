@@ -34,8 +34,16 @@ import { secret } from "../dist/secrets.js";
 }
 
 /** The secret writes (secret-writes.ts registers them on the server) the client sends from the owner's session, as the
- *  console does: the token can't make one. Another plane's tests add theirs here. */
-export const SECRET_WRITE_PATHS = [{ methods: ["PUT", "DELETE"], path: /^\/settings\/tool-keys\/[^/]+$/ }];
+ *  console does: the token can't make one. A plane's tests add theirs with secretWritePath, and need no client of their
+ *  own. A path here is matched under /v2, its query left off. */
+export const SECRET_WRITE_PATHS = [
+  { methods: ["PUT", "DELETE"], path: /^\/settings\/tool-keys\/[^/]+$/ },
+  { methods: ["POST"], path: /^\/triggers$/ },
+  { methods: ["POST"], path: /^\/triggers\/[^/]+\/secret$/ },
+  { methods: ["PUT"], path: /^\/settings\/webhook$/ },
+];
+/** Adds a secret write the client sends from the owner's session (`methods` on `path`, a RegExp over the /v2 path). */
+export const secretWritePath = (methods, path) => void SECRET_WRITE_PATHS.push({ methods, path });
 const secretWrite = (method, path) => SECRET_WRITE_PATHS.some((write) => write.methods.includes(method) && write.path.test(path.split("?")[0]));
 /** The owner's password the client sets on a server that has none yet, to make a secret write from its session. */
 const CLIENT_OWNER_PHRASE = `client-owner-${createHash("sha256").update(String(process.pid)).digest("hex").slice(0, 24)}`;
@@ -271,7 +279,11 @@ export async function serve(t, { harnesses: asked, runner: wantRunner = true, ..
   return { ...server, data, api: client(server.baseUrl, server.token) };
 }
 
-export function client(baseUrl, token) {
+/** `server`'s client with every request sent from the owner's session (ownerSessionOf), as the console sends it: the
+ *  password session with accounts on, the launch link's console with accounts off on loopback. */
+export const asOwner = (server) => client(server.baseUrl, server.token, { owner: true });
+
+export function client(baseUrl, token, { owner = false } = {}) {
   /** A request on a connection of its own, which nothing reuses: a pooled socket the server closes is not its failure. */
   const fresh = (method, path) =>
     new Promise((resolve, reject) => {
@@ -292,7 +304,7 @@ export function client(baseUrl, token) {
    *  once the raise is answered. */
   async function api(method, path, body, headers = {}, { raiseCheck = true } = {}) {
     // A secret write goes from the owner's session, as the console's does (secret-writes.ts): the token is refused one.
-    const session = secretWrite(method, path) && !headers.authorization ? await ownerSessionOf(baseUrl) : undefined;
+    const session = (owner || secretWrite(method, path)) && !headers.authorization ? await ownerSessionOf(baseUrl, token) : undefined;
     const sent = { body };
     const res = await fetch(`${baseUrl}${path}`, {
       method,
@@ -312,18 +324,21 @@ export function client(baseUrl, token) {
   };
 }
 
-/** The owner's session on the server at `baseUrl` (its /v2), for the client's secret writes: the client sets the owner's
- *  password the first time (or signs in with it, on a server it set up before a restart). Undefined where it can't (accounts
- *  off, or an owner the test set up with its own password): the write then goes with the token, which the server refuses,
- *  so such a test makes its own owner's session for it. */
-async function ownerSessionOf(baseUrl) {
+/** The owner's session on the server at `baseUrl` (its /v2), for the client's secret writes. With accounts on, the client
+ *  sets the owner's password the first time (or signs in with it, on a server it set up before a restart); with accounts
+ *  off, it follows the launch link (`/?token=`, the 303 that sets the console's cookie), whose console is the owner's on a
+ *  loopback server (secret-writes.ts). Undefined where neither works (an owner the test set up with its own password): the
+ *  write then goes with the token, which the server refuses, so such a test makes its own owner's session for it. */
+async function ownerSessionOf(baseUrl, token) {
   if (ownerCookies.has(baseUrl)) return ownerCookies.get(baseUrl);
   const origin = new URL(baseUrl).origin;
-  const post = (path) => fetch(`${baseUrl}${path}`, { method: "POST", headers: { "content-type": "application/json", origin }, body: JSON.stringify({ password: CLIENT_OWNER_PHRASE }) });
+  const post = (path) => fetch(`${baseUrl}${path}`, { method: "POST", redirect: "manual", headers: { "content-type": "application/json", origin }, body: JSON.stringify({ password: CLIENT_OWNER_PHRASE }) });
   let res = await post("/setup");
   if (res.status !== 201) res = await post("/auth/sign-in");
-  if (res.status !== 200 && res.status !== 201) return undefined;
+  if ((res.status !== 200 && res.status !== 201) && token) res = await fetch(`${origin}/?token=${encodeURIComponent(token)}`, { redirect: "manual" });
+  if (res.status !== 200 && res.status !== 201 && res.status !== 303) return undefined;
   const cookie = res.headers.getSetCookie().map((line) => line.split(";")[0]).join("; ");
+  if (!cookie) return undefined;
   const session = { cookie, origin };
   ownerCookies.set(baseUrl, session);
   return session;

@@ -9,7 +9,7 @@ import { randomBytes } from "node:crypto";
 import { request } from "node:http";
 import { networkInterfaces } from "node:os";
 import { test } from "node:test";
-import { call, cookieOf, serve, withEnv } from "./support.mjs";
+import { asOwner, call, cookieOf, serve, withEnv } from "./support.mjs";
 
 const SEAL = { AGENTRUN_SEAL_KEY: randomBytes(32).toString("base64") };
 const json = { "content-type": "application/json" };
@@ -130,6 +130,20 @@ test("accounts off on loopback: the launch link's console saves a tool key, and 
   assert.deepEqual(tokenSession.json, { accounts: false, secrets_writable: false, secrets_reason: "token" });
   const stranger = await call(server.port, { path: "/v2/auth/session" });
   assert.deepEqual(stranger.json, { accounts: false, secrets_writable: false, secrets_reason: "sign_in" }, "a browser that didn't follow the launch link");
+});
+
+test("the test client sends a secret write from the owner's session on either kind of server: the launch link's console with accounts off, the password's with accounts on", async (t) => {
+  withEnv(t, SEAL);
+  for (const options of [{}, { accounts: true, openSetup: true }]) {
+    const server = await serve(t, { runner: false, ...options });
+    const kind = options.accounts ? "accounts on" : "accounts off";
+    assert.equal((await server.api("PUT", "/settings/tool-keys/monid", { values: { MONID_API_KEY: planted() } })).status, 204, `${kind}: the client's own save goes from the session`);
+    assert.equal((await server.api("DELETE", "/settings/tool-keys/monid")).status, 204, `${kind}: so does its removal`);
+    const owner = asOwner(server);
+    assert.equal((await owner("PUT", "/settings/tool-keys/openrouter", { values: { OPENROUTER_API_KEY: planted() } })).status, 204, `${kind}: asOwner saves`);
+    const session = await owner("GET", "/auth/session");
+    assert.equal(session.body.secrets_writable, true, `${kind}: asOwner reads as the owner: ${JSON.stringify(session.body)}`);
+  }
 });
 
 test("accounts off on a server bound off loopback: its console session is refused every secret write, and its session says no_accounts", async (t) => {
