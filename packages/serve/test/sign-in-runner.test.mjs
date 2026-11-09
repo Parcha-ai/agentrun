@@ -215,4 +215,21 @@ test("bound through a host whose lifecycle is the adapter loop's hostLifecycle()
   assert.deepEqual((await r.store.runs.get("run-a")).signInHanded, [pointerHash(r.refs.a)]);
 });
 
+test("two binds of one agent's sign-in at once, on one runner with two claims: exactly one of them saves to it, decided in the bind's own write", async (t) => {
+  const r = await runner(t);
+  const both = await Promise.all([signIns.runSignIn(r.store, KEY, r.claims["run-a"], "browserbase"), signIns.runSignIn(r.store, KEY, r.claims["run-a2"], "browserbase")]);
+  assert.deepEqual(both.map((handed) => handed?.ref), [r.refs.a, r.refs.a], "both are handed the agent's pointer");
+  assert.equal(both.filter((handed) => handed?.save === true).length, 1, `exactly one saves: ${JSON.stringify(both.map((handed) => handed?.save))}`);
+});
+
+test("an owner who saves the sign-in afresh between the run's pointer check and its verify gets no stale verified_at on the new one", async (t) => {
+  const r = await runner(t);
+  const handed = await signIns.runSignIn(r.store, KEY, r.claims["run-a"], "browserbase");
+  assert.equal(handed.save, true);
+  // The owner saves a new pointer once the run's check has read the old one, before its verify stamps.
+  const racing = { ...r.store, runs: { ...r.store.runs, update: async (...args) => { const row = await r.store.runs.update(...args); r.clock.now += 1; await saveSignIn(r.store, KEY, { agentId: "agent-a", provider: "browserbase", pointer: pointer("bb-context-new") }); return row; } } };
+  assert.equal(await signIns.verifyRunSignIn(racing, KEY, r.claims["run-a"], handed, Date.parse("2026-11-09T10:15:30.000Z")), false, "nothing stamped");
+  assert.equal((await viewOf(r.store, "agent-a", "browserbase")).verified_at, null, "the new sign-in is not marked verified by the old one's save");
+});
+
 test.todo("a runner-path run's browser opens its sessions on the handed sign-in end to end through the adapter loop (a session's profile, its viewer handed over, its save on release and the sign-in's verified_at): waits on E2r3: the runner's ToolHost built with hostLifecycle().register (adapter-run-spec.ts host, today no-op hooks) and spec.lifecycle passed to the adapter loop; and on the host tool's api giving the browser's calls the tool task's own members (memo, snapshot, waitForTask, conversation, taskId), which HOST_API_MEMBERS does not");
