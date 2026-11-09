@@ -41,13 +41,9 @@ async function approved(authorizationUrl) {
   return new URLSearchParams({ code: back.searchParams.get("code"), state: back.searchParams.get("state") });
 }
 
-test("a pre-registered sign-in's client secret is sealed in the pending row: it is nowhere in the DB file", async (t) => {
-  const { store, file, mcp, reg } = await signIns(t);
-  const started = await reg().oauthStart("crm", { url: mcp.url, client_id: "owner-app", client_secret: SECRET });
-  assert.match(started.authorization_url, /\/authorize\?/, "the owner is sent to the authorization server");
+/** The store file and its WAL hold no byte of any value in `secrets`. */
+async function noSecretInStore(store, file, secrets) {
   await store.flush();
-  // The sign-in is in flight: its row is live. The client secret the owner gave is a secret the store must never hold in
-  // the clear, so it is sealed in the row like the registry credential is.
   for (const path of [file, `${file}-wal`]) {
     let bytes;
     try {
@@ -55,6 +51,73 @@ test("a pre-registered sign-in's client secret is sealed in the pending row: it 
     } catch {
       continue;
     }
-    assert.equal(bytes.includes(Buffer.from(SECRET, "utf8")), false, `the client secret is not in ${path.endsWith("-wal") ? "the WAL" : "the DB file"}`);
+    for (const secret of secrets) assert.equal(bytes.includes(Buffer.from(secret, "utf8")), false, `a secret is not in ${path.endsWith("-wal") ? "the WAL" : "the DB file"}`);
   }
+}
+
+test("a pre-registered sign-in's client secret is sealed in the pending row: it is nowhere in the DB file", async (t) => {
+  const { store, file, mcp, reg } = await signIns(t);
+  const started = await reg().oauthStart("crm", { url: mcp.url, client_id: "owner-app", client_secret: SECRET });
+  assert.match(started.authorization_url, /\/authorize\?/, "the owner is sent to the authorization server");
+  // The sign-in is in flight: its row is live. The client secret the owner gave is a secret the store must never hold in
+  // the clear, so it is sealed in the row like the registry credential is.
+  await noSecretInStore(store, file, [SECRET]);
+});
+
+test("a sign-in over the store: start, approve and the callback seal the token set and list the tools; no token is in the clear", async (t) => {
+  const { store, file, oauth, mcp, reg } = await signIns(t);
+  const r = reg();
+  const started = await r.oauthStart("docs", { url: mcp.url, scopes: ["read"] });
+  assert.equal(new URL(started.authorization_url).searchParams.get("scope"), "read");
+  const back = await r.oauthCallback(await approved(started.authorization_url));
+  assert.equal(back, "/#/settings/mcp?server=docs&sign_in=ok", "the owner is sent back to the console, signed in");
+  const view = await r.get("docs");
+  assert.equal(view.auth.type, "oauth");
+  assert.equal(view.credential, "sealed", "the token set is kept sealed");
+  assert.deepEqual(view.oauth.scopes, ["read"]);
+  assert.deepEqual(view.tools.map((tool) => tool.name).sort(), ["add", "delete_thing", "paid", "slow_write"], "its tools are listed at sign-in");
+  assert.ok(!JSON.stringify(view).includes(oauth.issued[0]), "no token is in a read");
+  await noSecretInStore(store, file, oauth.issued);
+});
+
+test("a replayed callback is refused in the words: the state is single-use", async (t) => {
+  const { mcp, reg } = await signIns(t);
+  const r = reg();
+  const started = await r.oauthStart("docs", { url: mcp.url });
+  const query = await approved(started.authorization_url);
+  assert.equal(await r.oauthCallback(query), "/#/settings/mcp?server=docs&sign_in=ok");
+  await assert.rejects(() => r.oauthCallback(query), (e) => e.code === "bad_request" && /used already/.test(e.message), "the same callback again is refused");
+});
+
+test("an expired state is refused in the words: a callback after ten minutes takes nothing", async (t) => {
+  const { mcp, reg } = await signIns(t);
+  const r = reg();
+  const started = await r.oauthStart("docs", { url: mcp.url });
+  const query = await approved(started.authorization_url);
+  t.mock.timers.enable({ apis: ["Date"], now: Date.now() + 11 * 60_000 });
+  await assert.rejects(() => r.oauthCallback(query), (e) => e.code === "bad_request");
+  t.mock.timers.reset();
+  await assert.rejects(() => r.get("docs"), (e) => e.code === "not_found", "nothing was written for the expired sign-in");
+});
+
+test("a sign-in survives a restart mid-flight: a fresh registry on the same store finishes the callback", async (t) => {
+  const { mcp, reg } = await signIns(t);
+  const started = await reg().oauthStart("docs", { url: mcp.url }); // one registry (a process) starts the sign-in
+  const query = await approved(started.authorization_url);
+  const back = await reg().oauthCallback(query); // a fresh registry (the server restarted) finishes it from the store row
+  assert.equal(back, "/#/settings/mcp?server=docs&sign_in=ok");
+  assert.equal((await reg().get("docs")).credential, "sealed", "the token set was sealed and kept across the restart");
+});
+
+test("the cookie check binds a callback to the browser that started the sign-in (server.ts applies it to this class too)", () => {
+  // The store registry's oauthCallback does not read cookies: server.ts gates both the file and the store registry with
+  // startedHere before it calls the callback, so a sign-in started in another browser never reaches it. These are the
+  // exported functions it uses; the end-to-end 403 is server.ts's, carried by the serve() integration test the switch
+  // repoints at the store registry.
+  const port = 7700;
+  const state = "state-abc";
+  const cookie = signInCookie(port, state, false).split(";")[0];
+  assert.ok(startedHere(cookie, port, state), "the start's own cookie matches its state");
+  assert.ok(!startedHere("", port, state), "no cookie: refused");
+  assert.ok(!startedHere(signInCookie(port, "other-state", false).split(";")[0], port, state), "another sign-in's cookie does not match");
 });
