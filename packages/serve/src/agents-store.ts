@@ -8,6 +8,7 @@
 // The run counts an agent view shows (runs.count, runs.live) are E3's run reads, not this module's; agentView takes them.
 import { randomBytes } from "node:crypto";
 import { agentLink } from "./console-links.js";
+import { approvalsOf } from "./approvals.js";
 import { ApiError, invalid } from "./errors.js";
 import { harnessOfBody } from "./harness.js";
 import { storedHarness } from "./harness-table.js";
@@ -288,14 +289,16 @@ export function definitionOf(agent: AgentRow, revision: RevisionRow, version: nu
     ...(body.capMode !== undefined ? { cap_mode: body.capMode } : {}),
   };
   const kindBody = revision.kind === "agentic"
-    ? { instructions: (body as AgenticBody).instructions, ...((body as AgenticBody).model ? { model: (body as AgenticBody).model } : {}), ...((body as AgenticBody).thinking ? { thinking: (body as AgenticBody).thinking } : {}), ...((body as AgenticBody).learning !== undefined ? { learning: (body as AgenticBody).learning } : {}), ...((body as AgenticBody).approvals !== undefined ? { approvals: (body as AgenticBody).approvals } : {}), ...common }
-    : { workflow: (body as WorkflowBody).workflow, ...((body as WorkflowBody).approvals !== undefined ? { approvals: (body as WorkflowBody).approvals } : {}), ...common };
+    ? { instructions: (body as AgenticBody).instructions, ...((body as AgenticBody).model ? { model: (body as AgenticBody).model } : {}), ...((body as AgenticBody).thinking ? { thinking: (body as AgenticBody).thinking } : {}), ...((body as AgenticBody).learning !== undefined ? { learning: (body as AgenticBody).learning } : {}), ...common }
+    : { workflow: (body as WorkflowBody).workflow, ...common };
   return {
     id: agent.id,
     version,
     name: agent.name,
     ...(agent.description !== null && agent.description !== undefined ? { description: agent.description } : {}),
     ...kindBody,
+    // Its approvals, of either kind: "ask" where none is set, as main's definition read says it (agents.ts definitionOf).
+    approvals: approvalsOf((body as { approvals?: unknown }).approvals),
     harness: harnessOfBody(body),
     ...(body.place ? { place: body.place } : {}),
     // A revision's computer as the API shows it: its own, else the one its place says (a revision saved before the
