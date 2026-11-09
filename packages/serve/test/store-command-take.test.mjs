@@ -42,7 +42,7 @@ test("a take of a command already taken refuses the whole commit with CommandTak
   await commandRow(db, 8, "run-twice");
   await commandRow(db, 9, "run-twice", TAKEN_BEFORE);
   const effect = await storage.mintId();
-  storage.stage({ run: { state: "ended" }, also: [postOf("run-twice")], take: [{ command: 8, effect }, { command: 9, effect }] });
+  storage.stage({ run: { state: "ended" }, also: [postOf("run-twice")], effect, take: [{ command: 8, effect }, { command: 9, effect }] });
   await assert.rejects(
     commitWrites(storage, [{ type: "entry", value: { id: effect, conversationId: ROOT, kind: "message" } }], context),
     (error) => error instanceof CommandTaken && error.runId === "run-twice" && error.commandId === 9,
@@ -167,7 +167,7 @@ test("a later stage keeps the takes still waiting for their effects", async (t) 
   await commandRow(db, 13, "run-restage");
   const effect = await storage.mintId();
   storage.stage({ take: [{ command: 13, effect }] });
-  storage.stage({ run: { state: "running" } });
+  storage.stage({ run: { state: "running" }, effect });
   await commitWrites(storage, [{ type: "entry", value: { id: effect, conversationId: ROOT, kind: "message" } }], context);
   assert.equal(await takenAt(db, 13), NOW, "the take staged first still lands with its effect");
 });
