@@ -11,7 +11,7 @@
 import { setImmediate as yieldToLoop } from "node:timers/promises";
 import { Worker } from "node:worker_threads";
 import { decodeEntities } from "./entities.js";
-import { cutHtml, HiddenDrop, hidingClassesOf, InertDrop, PageScan } from "./page-scan.js";
+import { cutHtml, HiddenDrop, InertDrop, type PageHiding, pageHidingOf, PageScan } from "./page-scan.js";
 import type { Job } from "./read-page-worker.js";
 
 /** The most of a page's HTML that is read, counted once its script, style, svg, noscript and template blocks and its
@@ -44,9 +44,10 @@ type Answer = { text: string; title?: string; links?: string[]; truncated?: true
 export async function readPage(html: string, url: string, { deadlineMs = READ_DEADLINE_MS, signal }: ReadPageOptions = {}): Promise<PageRead> {
   signal?.throwIfAborted();
   // What the page hides from everyone who reads it (a help pop-up until its link is clicked, a closed dialog) is not
-  // its text: the classes its own style hides are read before its style elements go.
-  const hiding = hidingClassesOf(html);
-  const kept = await dropHiddenOnLoop(await dropOnLoop(html, signal), hiding, signal);
+  // its text: what its own live style elements declare is read from those the inert drop took out.
+  const inert = new InertDrop(html);
+  await stepsOnLoop(inert, signal);
+  const kept = await dropHiddenOnLoop(inert.result(), pageHidingOf(inert.styles()), signal);
   const read = cutHtml(kept, READ_MAX_CHARS);
   const cut = read.length < kept.length ? { truncated: true as const, html_chars: html.length } : {};
   await yieldToLoop();
@@ -92,21 +93,23 @@ function inWorker(job: Job, deadlineMs: number, signal: AbortSignal | undefined)
 /** `html` without its inert blocks (InertDrop), STEP_CHARS at a time with the loop yielded between steps. */
 export async function dropOnLoop(html: string, signal?: AbortSignal): Promise<string> {
   const drop = new InertDrop(html);
-  while (!drop.step(STEP_CHARS)) {
-    await yieldToLoop();
-    signal?.throwIfAborted();
-  }
+  await stepsOnLoop(drop, signal);
   return drop.result();
 }
 
-/** `html` without the elements it hides from everyone (HiddenDrop), with `classes` the ones its own style hid,
- *  STEP_CHARS at a time with the loop yielded between steps. */
-async function dropHiddenOnLoop(html: string, classes: ReadonlySet<string>, signal?: AbortSignal): Promise<string> {
-  const drop = new HiddenDrop(html, classes);
-  while (!drop.step(STEP_CHARS)) {
+/** Runs `pass` STEP_CHARS at a time, the loop yielded between steps, to its end. */
+async function stepsOnLoop(pass: { step(chars: number): boolean }, signal?: AbortSignal): Promise<void> {
+  while (!pass.step(STEP_CHARS)) {
     await yieldToLoop();
     signal?.throwIfAborted();
   }
+}
+
+/** `html` without the elements it hides from everyone (HiddenDrop), with `page` what its own live styles declare
+ *  (pageHidingOf), STEP_CHARS at a time with the loop yielded between steps. */
+async function dropHiddenOnLoop(html: string, page: PageHiding, signal?: AbortSignal): Promise<string> {
+  const drop = new HiddenDrop(html, page, decodeEntities);
+  await stepsOnLoop(drop, signal);
   return drop.result();
 }
 

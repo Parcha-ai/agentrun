@@ -17,6 +17,9 @@ const TEXT_ONLY = new Set(["script", "style", "noscript", "textarea", "title", "
 const KEPT_TEXT = new Set(["textarea", "title"]);
 const CLOSER: Record<string, RegExp> = Object.fromEntries([...TEXT_ONLY, "svg", "template"].map((name) => [name, new RegExp(`</${name}(?=[\\s/>])[^>]*>?`, "gi")]));
 
+/** A style element of a page: what its start tag holds between its name and its ">" (insideOf), and its text. */
+export type Style = { inside: string; css: string };
+
 /** InertDrop's one pass over a page's template tags, from its first template: `open` the start tags of the templates
  *  it holds open, innermost last; `seen` every start it met; `ends`, for each it saw closed, the offset just past the
  *  end tag that closed it; `done` once it has read the page to its end. */
@@ -36,6 +39,7 @@ export class InertDrop {
   readonly #next: (at: number) => Tag | null;
   readonly #unclosed = new Map<string, number>();
   readonly #kept: string[] = [];
+  readonly #styles: Style[] = [];
   /** Where the scan is, and where the HTML kept since the last block dropped starts. */
   #at = 0;
   #from = 0;
@@ -81,8 +85,11 @@ export class InertDrop {
           if (close === undefined) break;
           end = close >= 0 ? close : html.length;
         } else {
-          const close = this.#endTagEnd(name, end);
-          end = close >= 0 ? close : name === "svg" ? end : html.length;
+          const close = this.#endTag(name, end);
+          // A style element of the page itself: never one inside a comment, a script, a template, a noscript or an svg,
+          // since each of those goes whole, its insides unread.
+          if (name === "style") this.#styles.push({ inside: insideOf(html, name, tag.lt, tag.gt), css: html.slice(end, close ? close.start : html.length) });
+          end = close ? close.end : name === "svg" ? end : html.length;
         }
       }
       this.#kept.push(html.slice(this.#from, tag.lt));
@@ -151,6 +158,9 @@ export class InertDrop {
 
   /** The page as dropped so far (the whole of it once step has answered true). */
   result(): string { return this.#kept.length === 1 ? this.#kept[0]! : this.#kept.join(""); }
+
+  /** The page's own style elements dropped so far, in page order: what each start tag holds (insideOf) and its text. */
+  styles(): readonly Style[] { return this.#styles; }
 }
 
 /** `html` without its inert blocks, all at once (see InertDrop). */
@@ -164,101 +174,200 @@ export function dropInert(html: string): string {
  * The classes common frameworks hide an element from everyone with, whatever the page's own style says (it is often an
  * external stylesheet a page read never fetches): mfp-hide (Magnific Popup: a pop-up's content until it opens, as on
  * Canada.ca's record pages), modal (Bootstrap: a modal until it opens), d-none (Bootstrap 4+), hidden (Tailwind, Bootstrap
- * 3), hide (Bootstrap 2), invisible (Tailwind, Bootstrap), is-hidden (Bulma), u-hidden (SUIT utilities). The classes
- * that hide text from the screen only (sr-only, visually-hidden, wb-inv, screen-reader-text) are not here: a screen
- * reader reads them, and they are often a record's field labels and table captions, the words its values hang on.
- * aria-hidden is read for the same reason the other way: it hides from a screen reader only, and is usually shown.
+ * 3), hide (Bootstrap 2), invisible (Tailwind, Bootstrap: visibility), is-hidden (Bulma), u-hidden (SUIT utilities). The
+ * classes that hide text from the screen only (sr-only, visually-hidden, wb-inv, screen-reader-text) are not here: a
+ * screen reader reads them, and they are often a record's field labels and table captions, the words its values hang
+ * on. aria-hidden is read for the same reason the other way: it hides from a screen reader only, and is usually shown.
  */
 export const HIDING_CLASSES: ReadonlySet<string> = new Set(["mfp-hide", "modal", "d-none", "hidden", "hide", "invisible", "is-hidden", "u-hidden"]);
-/** The most of a page's style text read for the classes it hides (hidingClassesOf). */
+/** The most of a page's style text read for what it hides (pageHidingOf). */
 const STYLE_READ_CHARS = 1_000_000;
-const STYLE_START = /<style(?=[\s/>])[^>]*>/gi;
-/** A declaration list that hides its element: display:none or visibility:hidden, a custom property's name aside. */
-const HIDES = /(?:^|[;\s])(?:display\s*:\s*none|visibility\s*:\s*hidden)\s*(?:!\s*important\s*)?(?:;|$)/i;
+/** A selector of one class alone (`.x`), and every class a selector names. */
 const ONE_CLASS = /^\s*\.(-?[_a-zA-Z][_a-zA-Z0-9-]*)\s*$/;
+const CLASSES_IN = /\.(-?[_a-zA-Z][_a-zA-Z0-9-]*)/g;
 /** Elements that never hold content: hidden, only the tag itself goes. */
 const VOID = new Set(["area", "base", "br", "col", "embed", "hr", "img", "input", "link", "meta", "param", "source", "track", "wbr"]);
+/** The media a style element counts for here: none named, or the screen among them. */
+const SCREEN_MEDIA = new Set(["", "all", "screen", "only screen", "only all"]);
 
-/**
- * The classes `html`'s own style elements hide: those a rule at the top level of a style sets display:none or
- * visibility:hidden on with a selector of that one class (`.x` in `.x, .y { display: none }`). A rule inside an at-rule
- * (`@media print`) and a selector that is not one class alone (`.a .b`, `div.x`) hide nothing here. One pass over at
- * most STYLE_READ_CHARS of style text, run on the page before its style elements are dropped.
- */
-export function hidingClassesOf(html: string): Set<string> {
-  const classes = new Set<string>();
-  let read = 0;
-  const closer = CLOSER.style!;
-  STYLE_START.lastIndex = 0;
-  for (let start = STYLE_START.exec(html); start && read < STYLE_READ_CHARS; start = STYLE_START.exec(html)) {
-    closer.lastIndex = STYLE_START.lastIndex;
-    const close = closer.exec(html);
-    const css = html.slice(STYLE_START.lastIndex, close ? close.index : html.length).slice(0, STYLE_READ_CHARS - read);
-    read += css.length;
-    rulesOf(css, (selectors, declarations) => {
-      if (!HIDES.test(declarations)) return;
-      for (const selector of selectors.split(",")) {
-        const one = ONE_CLASS.exec(selector);
-        if (one) classes.add(one[1]!);
-      }
-    });
-    if (!close) break;
-    STYLE_START.lastIndex = close.index + close[0].length;
-  }
-  return classes;
+/** The two properties that hide an element from everyone. */
+type Showing = "display" | "visibility";
+/** What a property comes to: "hide" (display none, visibility hidden or collapse), "show" (any other value that
+ *  decides it), or "doubt" (a value that hands it elsewhere, or declarations whose winner is unclear). */
+type Outcome = "hide" | "show" | "doubt";
+/** A property's last declaration: its outcome, and whether it was !important. */
+type Declared = { outcome: Outcome; important: boolean };
+/** What a declaration list, a class or an element declares of each property it sets. */
+export type Declarations = Partial<Record<Showing, Declared>>;
+/** What a page's own live styles declare of each class, by its one-class rules in page order. */
+export type PageHiding = ReadonlyMap<string, Declarations>;
+
+const DEFERRING = new Set(["inherit", "unset", "revert", "revert-layer"]);
+/** What `value` of `property` comes to. */
+function outcomeOf(property: Showing, value: string): Outcome {
+  if (!value || DEFERRING.has(value)) return "doubt";
+  if (property === "display") return value === "none" ? "hide" : "show";
+  return value === "hidden" || value === "collapse" ? "hide" : value === "visible" ? "show" : "doubt";
 }
 
-/** Each rule at the top level of `css` (comments dropped): its selector text and its declarations; an at-rule's block
- *  is passed whole. One pass, counting braces. */
-function rulesOf(css: string, rule: (selectors: string, declarations: string) => void): void {
-  const text = css.includes("/*") ? css.replace(/\/\*[\s\S]*?(?:\*\/|$)/g, " ") : css;
-  let from = 0;
-  /** Whether the text from `from` starts (past its spaces) with "@": a statement at-rule ("@import …;") or an at-rule's
-   *  block. Reads only the spaces it passes. */
-  const atRule = () => {
-    let at = from;
-    while (at < text.length && isSpace(text.charCodeAt(at))) at += 1;
-    return text.charCodeAt(at) === 64;
+/** `next` declared after `prior` of one property, as the cascade takes it among declarations of equal weight: the later
+ *  wins, but an earlier !important one that a later plain one contradicts makes it doubt (that mix is not modelled). */
+function after(prior: Declared | undefined, next: Declared): Declared {
+  if (!prior) return next;
+  if (prior.outcome === "doubt" || next.outcome === "doubt") return { outcome: "doubt", important: prior.important || next.important };
+  if (prior.important && !next.important && prior.outcome !== next.outcome) return { outcome: "doubt", important: true };
+  return next;
+}
+
+/** What a declaration list (a style attribute's value, a rule's block) declares of display and visibility, each
+ *  property's declarations taken in order (after). One pass over `text`. */
+function declarationsOf(text: string): Declarations {
+  const declared: Declarations = {};
+  for (const part of text.split(";")) {
+    const colon = part.indexOf(":");
+    if (colon < 0) continue;
+    const property = part.slice(0, colon).trim().toLowerCase();
+    if (property !== "display" && property !== "visibility") continue;
+    let value = part.slice(colon + 1).trim().toLowerCase();
+    const important = /!\s*important$/.test(value);
+    if (important) value = value.replace(/!\s*important$/, "").trim();
+    declared[property] = after(declared[property], { outcome: outcomeOf(property, value), important });
+  }
+  return declared;
+}
+
+/** Whether a style element whose start tag holds `inside` applies to the screen: no media named, or one of them all or
+ *  screen (a media query, or a value written with references, does not count: in doubt its rules hide nothing). */
+function forScreen(inside: string): boolean {
+  let media: string | null = null;
+  eachAttribute(inside, (name, value) => {
+    if (name.toLowerCase() !== "media") return false;
+    media = value;
+    return true;
+  });
+  if (media === null) return true;
+  return (media as string).split(",").some((one) => SCREEN_MEDIA.has(one.trim().toLowerCase().replace(/\s+/g, " ")));
+}
+
+/**
+ * What `styles` (a page's own live style elements, InertDrop's styles) declare of each class's display and visibility:
+ * a rule at the top level whose selector is that one class (`.x` in `.x, .y { … }`) declares for it, a later rule's
+ * declaration after an earlier one's (after); a class a selector names otherwise (`.open .x`, `.x:hover`, `div.x`) is in
+ * doubt for each property that rule sets, since when it applies is not known here. A rule inside an at-rule (`@media`)
+ * is passed, and a style element not for the screen (forScreen) counts for nothing. Its style text is read once, at
+ * most STYLE_READ_CHARS of it, each character a bounded number of times.
+ */
+export function pageHidingOf(styles: readonly Style[]): PageHiding {
+  const hiding = new Map<string, Declarations>();
+  const declare = (name: string, declared: Declarations) => {
+    const known = hiding.get(name) ?? {};
+    for (const property of ["display", "visibility"] as const) {
+      const next = declared[property];
+      if (next) known[property] = after(known[property], next);
+    }
+    hiding.set(name, known);
   };
-  for (let at = 0; at < text.length; at += 1) {
+  let read = 0;
+  for (const { inside, css } of styles) {
+    if (read >= STYLE_READ_CHARS) break;
+    const text = css.slice(0, STYLE_READ_CHARS - read);
+    read += text.length;
+    if (!forScreen(inside)) continue;
+    rulesOf(text, (selectors, block) => {
+      const declared = declarationsOf(block);
+      if (!declared.display && !declared.visibility) return;
+      for (const selector of selectors.split(",")) {
+        const one = ONE_CLASS.exec(selector);
+        if (one) { declare(one[1]!, declared); continue; }
+        const doubt: Declarations = {};
+        for (const property of ["display", "visibility"] as const) if (declared[property]) doubt[property] = { outcome: "doubt", important: false };
+        for (const named of selector.matchAll(CLASSES_IN)) declare(named[1]!, doubt);
+      }
+    });
+  }
+  return hiding;
+}
+
+/** Each rule at the top level of `css` (its comments dropped): its selector text and its declaration block; an at-rule
+ *  (a statement to its ";", or its block whole) is passed. One forward pass: each character is read once. */
+function rulesOf(css: string, rule: (selectors: string, block: string) => void): void {
+  const text = css.includes("/*") ? css.replace(/\/\*[\s\S]*?(?:\*\/|$)/g, " ") : css;
+  const { length } = text;
+  for (let at = 0; at < length;) {
     const code = text.charCodeAt(at);
-    if (code === 59 && atRule()) { from = at + 1; continue; }
-    if (code !== 123) continue; // "{"
-    const isAt = atRule();
-    const head = isAt ? "" : text.slice(from, at);
+    // Between rules: spaces, and a stray ";" or "}".
+    if (isSpace(code) || code === 59 || code === 125) { at += 1; continue; }
+    const start = at;
+    let stop = at;
+    while (stop < length && text.charCodeAt(stop) !== 123 && text.charCodeAt(stop) !== 59) stop += 1;
+    if (stop >= length) break;
+    // A ";" before any "{": an at-rule statement ("@import …;"), or text that is no rule: passed.
+    if (text.charCodeAt(stop) === 59) { at = stop + 1; continue; }
     let depth = 1;
-    let end = at + 1;
-    for (; end < text.length && depth > 0; end += 1) {
+    let end = stop + 1;
+    for (; end < length && depth > 0; end += 1) {
       const c = text.charCodeAt(end);
       if (c === 123) depth += 1;
       else if (c === 125) depth -= 1;
     }
-    if (!isAt) rule(head, text.slice(at + 1, depth === 0 ? end - 1 : end));
-    from = at = end;
-    at -= 1;
+    if (code !== 64) rule(text.slice(start, stop), text.slice(stop + 1, depth === 0 ? end - 1 : end));
+    at = end;
   }
 }
 
-/** Whether a start tag named `name`, holding `inside` (insideOf), hides its element from everyone: the hidden attribute,
- *  an inline display:none or visibility:hidden, a dialog not open, or a class in HIDING_CLASSES or `classes`. */
-function hides(name: string, inside: string, classes: ReadonlySet<string>): boolean {
-  let hidden = false;
+/** One property's outcome among an element's classes: theirs where every class that declares it agrees and none is in
+ *  doubt; doubt where they disagree (which rule comes last across classes is not modelled), !important if any is. */
+function amongClasses(declared: readonly Declared[]): Declared | undefined {
+  if (declared.length === 0) return undefined;
+  const important = declared.some((one) => one.important);
+  const outcomes = new Set(declared.map((one) => one.outcome));
+  return { outcome: outcomes.size === 1 ? declared[0]!.outcome : "doubt", important };
+}
+
+/**
+ * Whether a start tag named `name`, holding `inside` (insideOf), hides its element from everyone. Each property is
+ * decided on its own: an inline declaration over its classes' (unless a class's !important one it contradicts, then
+ * doubt), the classes' over the browser's own (the hidden attribute and a dialog not open, display none). Its classes
+ * declare by the page's one-class rules (`page`) and HIDING_CLASSES. Hidden when display or visibility comes to "hide";
+ * doubt hides nothing. A class or style value's character references are decoded first (`decode`).
+ */
+function hides(name: string, inside: string, page: PageHiding, decode: Decode): boolean {
+  let hiddenAttribute = false;
   let open = false;
+  let style = "";
+  let classes = "";
   eachAttribute(inside, (named, value) => {
     const attribute = named.toLowerCase();
-    if (attribute === "hidden") hidden = true;
+    if (attribute === "hidden") hiddenAttribute = true;
     else if (attribute === "open") open = true;
-    else if (attribute === "style") hidden = HIDES.test(value);
-    else if (attribute === "class") hidden = value.split(/\s+/).some((one) => HIDING_CLASSES.has(one) || classes.has(one));
-    return hidden;
+    else if (attribute === "style" && !style) style = value.includes("&") ? decode(value) : value;
+    else if (attribute === "class" && !classes) classes = value.includes("&") ? decode(value) : value;
+    return false;
   });
-  return hidden || (name === "dialog" && !open);
+  const inline = style ? declarationsOf(style) : {};
+  const byClass: Record<Showing, Declared[]> = { display: [], visibility: [] };
+  for (const one of classes.split(/\s+/)) {
+    if (!one) continue;
+    if (HIDING_CLASSES.has(one)) byClass[one === "invisible" ? "visibility" : "display"].push({ outcome: "hide", important: false });
+    const declared = page.get(one);
+    if (declared?.display) byClass.display.push(declared.display);
+    if (declared?.visibility) byClass.visibility.push(declared.visibility);
+  }
+  const browser = hiddenAttribute || (name === "dialog" && !open);
+  const decided = (property: Showing): Outcome | undefined => {
+    const own = inline[property];
+    const fromClasses = amongClasses(byClass[property]);
+    if (own) return fromClasses?.important && !own.important && fromClasses.outcome !== own.outcome ? "doubt" : own.outcome;
+    if (fromClasses) return fromClasses.outcome;
+    return property === "display" && browser ? "hide" : undefined;
+  };
+  return decided("display") === "hide" || decided("visibility") === "hide";
 }
 
 /**
  * A page without the elements it hides from everyone (hides), in steps so a caller on the event loop can yield between
- * them (dropHidden, all at once). Run on a page its inert blocks are dropped from (InertDrop), with the classes its own
- * style hid (hidingClassesOf). A hidden element goes from its start tag to the end tag that closes it, a same-name
+ * them (dropHidden, all at once). Run on a page its inert blocks are dropped from (InertDrop), with what its own live
+ * styles declare (pageHidingOf). A hidden element goes from its start tag to the end tag that closes it, a same-name
  * element inside it counted; one that no end tag closes hides nothing, since where it ends is not known without a full
  * tree. A hidden element that holds no content (VOID) goes alone. Linear: one pass pairs each start tag with its end tag
  * (an open-tag stack per name), then the hidden ranges are cut, the outermost of each nest.
@@ -270,7 +379,7 @@ export class HiddenDrop {
   #at = 0;
   #done = false;
 
-  constructor(readonly html: string, readonly classes: ReadonlySet<string>) {
+  constructor(readonly html: string, readonly page: PageHiding, readonly decode: Decode) {
     this.#next = tagsOf(html);
   }
 
@@ -289,7 +398,7 @@ export class HiddenDrop {
         if (open?.hidden) this.#ranges.push([open.lt, tag.gt + 1]);
         continue;
       }
-      const hidden = hides(name, insideOf(html, name, tag.lt, tag.gt), this.classes);
+      const hidden = hides(name, insideOf(html, name, tag.lt, tag.gt), this.page, this.decode);
       if (VOID.has(name)) { if (hidden) this.#ranges.push([tag.lt, tag.gt + 1]); continue; }
       // Text, not markup, to its end tag (an iframe's fallback, an xmp): its "<" are not tags.
       if (TEXT_ONLY.has(name)) {
@@ -324,9 +433,9 @@ export class HiddenDrop {
   }
 }
 
-/** `html` without the elements it hides from everyone, all at once (see HiddenDrop). */
-export function dropHidden(html: string, classes: ReadonlySet<string>): string {
-  const drop = new HiddenDrop(html, classes);
+/** `html` without the elements it hides from everyone, all at once (see HiddenDrop); `page` and `decode` as there. */
+export function dropHidden(html: string, page: PageHiding, decode: Decode): string {
+  const drop = new HiddenDrop(html, page, decode);
   drop.step(Number.POSITIVE_INFINITY);
   return drop.result();
 }
