@@ -197,21 +197,54 @@ test("a runner that closes stops its loop where it can resume and releases the r
   assert.equal(faux.loops[1].claim.epoch, 3, "a new loop resumes it");
 });
 
+// The end, then a lease's worth of polls on a clock the test moves: the run ends and is released on real timers (a lease no
+// stall outlasts, each step waited for by its event), then the runners' timers are mocked and the clock moves past one
+// lease, a step at a time, each runner's poll waited for by count. No poll claims the ended run.
 test("a run that ends is flushed and released, and never claimed again", async (t) => {
+  const timing = { ...TIMING, leaseMs: 60_000, renewEveryMs: 1_000, stopMarginMs: 5_000 };
   const faux = fauxLoops({ turns: 2, turnMs: 10 });
-  const { server, record, events, runners } = await twoRunners(t, faux.createLoop);
+  const { server, runners: [one, two] } = await stores({ runners: 2 });
+  const record = recorder();
+  const events = [];
+  let released = () => {};
+  const releasedNow = new Promise((resolve) => (released = resolve));
+  const onEvent = (event) => {
+    events.push(event);
+    if (event.type === "released" && event.runId === "run-1") released();
+  };
   // A slow flush, as on a loaded machine: the end commit already reads released on the row, so only the runner's own
   // "released" says the flush and the release are done.
   record.flushDelayMs = 150;
-  await queue(server, "run-1");
+  const a = told(observed(one, record));
+  const b = told(observed(two, record));
+  const runners = [
+    startRunner({ store: a.store, createLoop: faux.createLoop, name: "runner-a", onEvent, ...timing }),
+    startRunner({ store: b.store, createLoop: faux.createLoop, name: "runner-b", onEvent, ...timing }),
+  ];
+  try {
+    await queue(server, "run-1");
+    await releasedNow;
+    assert.equal((await server.runs.get("run-1")).runner, null, "the end commit released the row");
+    assert.match(record.ops.join(" | "), /ended run-1 \| flush \| release run-1/, "the end commit, then a flush, then the release");
+    const run = await server.runs.get("run-1");
+    assert.ok(run.endedAt !== null, "the end commit stamped ended_at");
 
-  await until(() => events.some((event) => event.type === "released" && event.runId === "run-1"), "the runner says released");
-  assert.equal((await server.runs.get("run-1")).runner, null, "the end commit released the row");
-  assert.match(record.ops.join(" | "), /ended run-1 \| flush \| release run-1/, "the end commit, then a flush, then the release");
-  const run = await server.runs.get("run-1");
-  assert.ok(run.endedAt !== null, "the end commit stamped ended_at");
-  await sleep(LEASE_MS);
-  assert.equal(record.claims.length, 1, "an ended run is final");
-  assert.deepEqual(runners.flatMap((runner) => runner.held()), [], "no runner holds it");
-  assert.deepEqual(await server.runs.claimable({ limit: 10 }), []);
+    // From each runner's next poll on, its timers are the test's: that poll is the last on a real timer.
+    t.mock.timers.enable({ apis: ["setTimeout", "setInterval", "Date"], now: Date.now() });
+    const polled = [a.count("claimMany") + 1, b.count("claimMany") + 1];
+    await a.returned("claimMany", polled[0]);
+    await b.returned("claimMany", polled[1]);
+    // Past one lease, a quarter lease a step; each step, each runner polls once and claims nothing.
+    for (let step = 1; step <= 5; step += 1) {
+      t.mock.timers.tick(timing.leaseMs / 4);
+      await a.returned("claimMany", (polled[0] += 1));
+      await b.returned("claimMany", (polled[1] += 1));
+      assert.equal(record.claims.length, 1, `step ${step}: an ended run is final: ${JSON.stringify(record.claims)}`);
+    }
+    assert.deepEqual(runners.flatMap((runner) => runner.held()), [], "no runner holds it");
+    assert.deepEqual(await server.runs.claimable({ limit: 10 }), []);
+  } finally {
+    t.mock.timers.reset();
+    await Promise.all(runners.map((runner) => runner.close()));
+  }
 });
