@@ -28,11 +28,32 @@ test("the computer and Archil key fields are marked in the document, and each ma
   for (const field of ["diskId", "region", "s3Url", "image"]) assert.equal(archilBody.properties[field]?.["x-agentrun-secret"], undefined, `${field} is no secret`);
 });
 
-test("saveComputerKeys: any named key, a value or a null (a removal is a secret write too), writes a secret", () => {
+test("saveComputerKeys: every request to a computer's keys is a secret write, whatever its body: a value, a null (a removal), an empty body or none", () => {
   assert.equal(writesSecret("saveComputerKeys", { E2B_API_KEY: "e2b-value" }), true);
   assert.equal(writesSecret("saveComputerKeys", { E2B_API_KEY: null }), true);
-  assert.equal(writesSecret("saveComputerKeys", {}), false);
-  assert.equal(writesSecret("saveComputerKeys", undefined), false);
+  assert.equal(writesSecret("saveComputerKeys", {}), true);
+  assert.equal(writesSecret("saveComputerKeys", undefined), true);
+});
+
+test("on the server: the token's PUT to a computer's keys with an empty body or none is 403 in the one text, before any provider is looked up (an unknown one included); the owner's session gets 404 for an unknown provider", async (t) => {
+  withEnv(t, SEAL);
+  const server = await serve(t, { runner: false, accounts: true, openSetup: true });
+  const origin = `http://127.0.0.1:${server.port}`;
+  const setup = await call(server.port, { method: "POST", path: "/v2/setup", headers: { ...json, origin }, body: { password: `owner-${randomBytes(12).toString("hex")}` } });
+  assert.equal(setup.status, 201, setup.text);
+  const owner = { cookie: cookieOf(setup), origin };
+  const bearer = { authorization: `Bearer ${server.token}` };
+  const provider = (await call(server.port, { path: "/v2/computers", headers: bearer })).json.kinds.flatMap((kind) => kind.providers)[0].id;
+  // A token learns nothing of which providers exist: a known and an unknown one answer alike.
+  for (const id of [provider, "x"]) {
+    for (const [what, sent] of [["an empty body", { headers: { ...json, ...bearer }, body: {} }], ["no body", { headers: bearer }]]) {
+      const res = await call(server.port, { method: "PUT", path: `/v2/computers/${id}/keys`, ...sent });
+      assert.equal(res.status, 403, `${id}, ${what}, by the token: ${res.text}`);
+      assert.equal(res.json?.error?.message, SECRET_WRITE_REFUSAL);
+    }
+  }
+  const unknown = await call(server.port, { method: "PUT", path: "/v2/computers/x/keys", headers: { ...json, ...owner }, body: {} });
+  assert.equal(unknown.status, 404, `the owner's session reaches the provider lookup: ${unknown.text}`);
 });
 
 test("putWorkspaceArchil: only the account key, a value or a null, writes a secret; the settings alone stay token-editable", () => {
