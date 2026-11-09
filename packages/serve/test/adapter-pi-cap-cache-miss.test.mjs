@@ -75,4 +75,9 @@ test("a cache miss on a request admitted at its expected cost books its real cos
   assert.equal(row.state, "parked", JSON.stringify(row));
   const [budget] = await rootEntries(store, "agentrun.budget");
   assert.equal(budget?.pending?.spent_usd, Math.round(spent * 1e6) / 1e6, "the park says what the records say was spent");
+  // The most a cache miss could add to the refused step: the refusal's boundUsd, to a millionth rounded up, as main's
+  // overshoot bound is (the budget card shows it).
+  const boundUsd = second.answer.figures?.boundUsd;
+  assert.ok(typeof boundUsd === "number" && boundUsd > 0, `the refused step had a bound: ${JSON.stringify(second.answer.figures)}`);
+  assert.equal(budget?.pending?.bound_usd, Math.ceil(boundUsd * 1e6 - 1e-9) / 1e6, `the budget entry names the refused step's bound: ${JSON.stringify(budget?.pending)}`);
 });
