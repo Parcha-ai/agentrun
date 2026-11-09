@@ -15,13 +15,13 @@ test("the runner's gate honors a deny the owner saved in the store: a file-based
     body: { tools: ["web_search", "monid.run"], approvals: "ask" },
     settings: { web_search: { permission: "deny" } },
   });
-  assert.equal(decision(spec.gate({ tool: "web_search" })), "deny", "the store's deny reaches the gate, over the tool's allow default");
-  assert.equal(spec.gate({ tool: "monid.run" }), "ask", "a tool the owner set nothing for keeps its default (monid asks)");
+  assert.equal(decision(await spec.gate({ tool: "web_search" })), "deny", "the store's deny reaches the gate, over the tool's allow default");
+  assert.equal(await spec.gate({ tool: "monid.run" }), "ask", "a tool the owner set nothing for keeps its default (monid asks)");
 });
 
 test("approvals 'never' lifts a default-ask tool to an allow: an unattended run does not park on it", async (t) => {
   const { spec } = await specFor(t, { body: { tools: ["monid.run"], approvals: "never" } });
-  assert.equal(spec.gate({ tool: "monid.run" }), "allow", "an ask nothing stands behind is an allow under approvals never");
+  assert.equal(await spec.gate({ tool: "monid.run" }), "allow", "an ask nothing stands behind is an allow under approvals never");
 });
 
 test("a deny the owner saved stands even under approvals 'never': a never-approvals run cannot run a denied tool", async (t) => {
@@ -29,5 +29,5 @@ test("a deny the owner saved stands even under approvals 'never': a never-approv
     body: { tools: ["monid.run"], approvals: "never" },
     settings: { "monid.run": { permission: "deny" } },
   });
-  assert.equal(decision(spec.gate({ tool: "monid.run" })), "deny", "approvals never lifts an ask, never a deny from the store");
+  assert.equal(decision(await spec.gate({ tool: "monid.run" })), "deny", "approvals never lifts an ask, never a deny from the store");
 });

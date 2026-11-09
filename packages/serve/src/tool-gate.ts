@@ -215,6 +215,10 @@ export function permissionFrom(name: string, server: PermissionSettings, agent: 
  *  carried by a spread, never by JSON (it is never served) nor by Object.entries (no reader takes it for a tool). */
 export const SETTINGS_UNREAD: unique symbol = Symbol("agentrun.tool-settings.unread");
 
+/** `settings` marked unread (SETTINGS_UNREAD), a copy: what a gate holds to while its settings' read fails, its last good
+ *  read's denies and pins still refusing and no ask lifted. */
+const unreadOf = (settings: PermissionSettings): PermissionSettings => Object.assign({ ...settings }, { [SETTINGS_UNREAD]: true as const });
+
 /** Whether something stands behind `name`'s ask that approvals "never" must not lift: the server's settings unread
  *  (SETTINGS_UNREAD: a deny may be in the file), or in either layer, under any key the tool is read by (its own, its MCP
  *  server's wildcard; a shell tool's, bash's), a deny, a value that is no permission, or a setting marked as not read as
@@ -526,8 +530,10 @@ export class RunGate {
 
   private lastGood?: PermissionSettings;
   private readonly told = new Set<string>();
-  /** The server's settings now: read at each call, so a change reaches a live run; a file that does not read keeps the
-   *  last good (undefined: none read yet). Each problem is said once, by file and field, never a value. */
+  /** The server's settings now: read at each call, so a change reaches a live run; settings that do not read keep the
+   *  last good, marked unread (SETTINGS_UNREAD): its denies and pins still refuse, and approvals "never" lifts no ask
+   *  while the read fails, as a deny may be in what did not read (undefined: none read yet, every tool asks). Each problem
+   *  is said once, by file and field, never a value. */
   private serverSettings(): PermissionSettings | undefined {
     const read = this.readServerSettings ? this.readServerSettings() : readToolSettings(this.where.data);
     for (const line of read.problems) {
@@ -535,7 +541,7 @@ export class RunGate {
       this.told.add(line);
       process.stderr.write(`agentrun-serve: the tool gate: ${line}\n`);
     }
-    if (read.unreadable) return this.lastGood;
+    if (read.unreadable) return this.lastGood === undefined ? undefined : unreadOf(this.lastGood);
     this.lastGood = read.settings as PermissionSettings;
     return this.lastGood;
   }

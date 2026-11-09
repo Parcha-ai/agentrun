@@ -96,12 +96,29 @@ type RevisionBody = {
  * The run's gate before a call's intent, as the adapter loop asks it: the revision's tool settings and approvals over the
  * server's, from the one store (loadToolSettings), through RunGate (decide: deny with its words, a pin, allow, ask). The
  * adapter loop handles the ask/park/answer on the journal itself, so only the answer is read here, never RunGate's own
- * file-based approval flow. `root`: the run's folder. The server's settings are read once, at the claim.
+ * file-based approval flow. `root`: the run's folder.
+ *
+ * The server's settings are read again at each call, from the store (a row of the local store: no cache, no signal from
+ * the server, which may be another process), so a permission set while the run goes reaches its next call ("applies at the
+ * next call, in runs already going too"). A read that fails is unread: the gate holds to its last good read, marked unread
+ * (RunGate.serverSettings), so a deny it held still refuses and approvals "never" lifts no ask until the store reads.
  */
 export async function adapterRunGate(store: Pick<Store, "settings">, claim: Pick<Claim, "runId">, revision: { kind: string; body: { toolSettings?: unknown; harness?: string; approvals?: Approvals } }, root: string): Promise<NonNullable<AdapterRunSpec["gate"]>> {
-  const serverSettings = await loadToolSettings(store);
-  const gate = runGate({ root, work: root }, claim.runId, revision, () => serverSettings);
-  return (call) => gate.decide(call.tool, call.args);
+  let current = await storeSettings(store);
+  const gate = runGate({ root, work: root }, claim.runId, revision, () => current);
+  return async (call) => {
+    current = await storeSettings(store);
+    return gate.decide(call.tool, call.args);
+  };
+}
+
+/** The server's tool settings from the store now; a read that throws is unread (no value of it said). */
+async function storeSettings(store: Pick<Store, "settings">): Promise<Awaited<ReturnType<typeof loadToolSettings>>> {
+  try {
+    return await loadToolSettings(store);
+  } catch {
+    return { settings: {}, problems: ["the stored tool settings could not be read"], unreadable: true };
+  }
 }
 
 export async function adapterRunSpecFromLaunch(launch: RunLaunch, run: AdapterRun, deps: AdapterSpecDeps, claim: Claim): Promise<AdapterRunSpec> {

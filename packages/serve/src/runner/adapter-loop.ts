@@ -37,6 +37,9 @@ export type RaiseCheck =
   | { retry: true; resumed: boolean; raised?: undefined; refused?: undefined }
   | { refused: string; raised?: undefined; retry?: undefined };
 
+/** The gate's answer for a call: run it, ask a person, or refuse it (with the words the model reads, or generic ones). */
+export type GateAnswer = "allow" | "ask" | "deny" | { readonly deny: string };
+
 /** What one claimed run's adapter loop runs. */
 export interface AdapterRunSpec {
   readonly adapter: AgentAdapter;
@@ -51,7 +54,7 @@ export interface AdapterRunSpec {
   readonly hooks?: KernelHooks;
   /** The gate's answer for a call, before its intent: run it, refuse it, or ask a person (the run parks). A refusal may
    *  carry the words the model reads (`{ deny }`: where the deny was set, a pin's words); a bare "deny" gets generic ones. */
-  readonly gate?: (call: ToolCall) => "allow" | "ask" | "deny" | { readonly deny: string };
+  readonly gate?: (call: ToolCall) => GateAnswer | Promise<GateAnswer>;
   /** What an asked call costs, for its approval card (main's tool gate options.price): dollars, or "not metered";
    *  undefined when it has none (the ask says null). */
   readonly approvalPrice?: (call: ToolCall) => ApprovalPrice | undefined;
@@ -608,7 +611,7 @@ function adapterLoop(specOf: (claim: Claim, run: AdapterRun) => AdapterRunSpec |
       // The end-of-run turn's notes are kept only from its answer: a write there is refused before its intent.
       if (reflecting && WRITES.has(call.tool) && underLearning(spec.workRoot, call.args)) return { deny: REFLECT_NOTE_ONLY };
       await hooks.beforeIntent(kernelCall);
-      const decision = spec.gate?.(kernelCall) ?? "allow";
+      const decision = (await spec.gate?.(kernelCall)) ?? "allow";
       if (typeof decision === "object") return { deny: decision.deny };
       if (decision === "deny") return { deny: `Permission denied: ${call.tool} is set to deny.` };
       if (decision === "allow") return "allow";
