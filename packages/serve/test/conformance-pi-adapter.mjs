@@ -52,7 +52,8 @@ export function scriptedOrigin(script, requests = []) {
       { type: "content_block_start", index: 0, content_block: { type: "text", text: "" } },
       { type: "content_block_delta", index: 0, delta: { type: "text_delta", text } },
       { type: "content_block_stop", index: 0 },
-      { type: "message_delta", delta: { stop_reason: "end_turn", stop_sequence: null }, usage: { output_tokens: usage.output_tokens } },
+      // A cut step: the model stops at its output limit as it says it (Anthropic's max_tokens, pi's stopReason "length").
+      { type: "message_delta", delta: { stop_reason: next?.cut ? "max_tokens" : "end_turn", stop_sequence: null }, usage: { output_tokens: usage.output_tokens } },
       { type: "message_stop" },
     ]);
   };
@@ -107,6 +108,9 @@ export function piAdapterSpec({ script, tools, hooks }, options = {}) {
 /** The subject the suite runs: pi through the adapter. */
 export const piAdapterSubject = {
   name: "pi through the adapter",
+  // pi ends a turn at a length stop (its generation answers with it), so no step of the same turn follows a cut answer:
+  // a run goes on from one only on a later message, and the run's end still reads its last answer (adapter-loop cutLast).
+  unsupported: { "length-mid-run": "a cut answer ends pi's turn, so no later step of the same turn can follow it" },
   process: { module: import.meta.url, export: "piAdapterSubject" },
   createLoop: (setup) => createAdapterLoop(piAdapterSpec(setup), { restartLimit: MAX_RESTARTS }),
 };
