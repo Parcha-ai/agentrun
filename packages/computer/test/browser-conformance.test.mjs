@@ -112,6 +112,31 @@ for (const [id, vendor] of Object.entries(VENDORS)) {
 		assert.deepEqual(run.report.cleanup.left, [], "what the run made is released all the same");
 	});
 
+	test(`conformance --provider ${id}: a navigate that fails or is refused fails browser.cdp in words, and no rejection goes unhandled`, async () => {
+		const unhandled = [];
+		const listen = (reason) => unhandled.push(reason);
+		process.on("unhandledRejection", listen);
+		try {
+			for (const [navigate, words] of [
+				["errorText", /Page\.navigate to a data: URL failed: net::ERR_FAILED/],
+				["throws", /Page\.navigate: Cannot navigate to invalid URL/],
+			]) {
+				const fake = vendor.fake({ navigate });
+				const run = await conformance(id, fake);
+				assert.equal(run.code, 1, run.stdout);
+				const cdp = run.report.results.find((r) => r.id === "browser.cdp");
+				assert.equal(cdp.status, "fail", `${navigate}: ${cdp.reason}`);
+				assert.match(cdp.reason, words);
+				assert.deepEqual(run.report.cleanup.left, []);
+				// The case's socket is closed at its end: an event still awaited is rejected then, and must be handled.
+				await new Promise((resolve) => setImmediate(resolve));
+			}
+		} finally {
+			process.off("unhandledRejection", listen);
+		}
+		assert.deepEqual(unhandled.map(String), [], "no unhandled rejection");
+	});
+
 	test(`conformance --provider ${id} needs its live switch before anything else`, async () => {
 		const { [`AGENTRUN_COMPUTER_LIVE_${id.toUpperCase()}`]: _, ...env } = vendor.env;
 		const fake = vendor.fake();

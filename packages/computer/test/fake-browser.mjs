@@ -64,7 +64,7 @@ function cdpDialer(known, knobs) {
 		let open = true;
 		return {
 			event(method, sessionId) {
-				return new Promise((resolve, reject) => (open ? waiting.push({ method, sessionId, resolve }) : reject(new Error(`CDP ${method}: the socket is closed`))));
+				return new Promise((resolve, reject) => (open ? waiting.push({ method, sessionId, resolve, reject }) : reject(new Error(`CDP ${method}: the socket is closed`))));
 			},
 			async send(method, params = {}, sessionId) {
 				if (!open) throw new Error(`CDP ${method}: the socket is closed`);
@@ -91,7 +91,9 @@ function cdpDialer(known, knobs) {
 					case "Page.navigate": {
 						const page = pages.get(sessions.get(sessionId));
 						if (page === undefined) throw new Error("CDP Page.navigate: no such session");
-						if (!params.url.startsWith("data:text/html,")) return { frameId: "F", errorText: "net::ERR_FAILED" };
+						// knobs.navigate: "throws" (the call is refused) or "errorText" (answered with a failed load), and no load event.
+						if (knobs.navigate === "throws") throw new Error("CDP Page.navigate: Cannot navigate to invalid URL");
+						if (knobs.navigate === "errorText" || !params.url.startsWith("data:text/html,")) return { frameId: "F", errorText: "net::ERR_FAILED" };
 						page.html = decodeURIComponent(params.url.slice("data:text/html,".length));
 						// As Chrome does: the load event comes after the navigate is answered, to a session that enabled Page.
 						if (enabled.has(sessionId)) queueMicrotask(() => emit("Page.loadEventFired", sessionId, { timestamp: 1 }));
@@ -111,6 +113,8 @@ function cdpDialer(known, knobs) {
 			},
 			close() {
 				open = false;
+				// As dialCdp's failAll: an event still awaited is rejected when the socket closes.
+				for (const waiter of waiting.splice(0)) waiter.reject(new Error(`CDP ${waiter.method}: the socket closed`));
 			},
 		};
 	};
@@ -139,7 +143,8 @@ function recorder(base) {
 
 /**
  * A fake Browserbase. knobs: failCreate (a status the create answers, with ECHO in its body), releaseLag (reads that
- * still say RUNNING after a release), product and title (what the fake browser says).
+ * still say RUNNING after a release), product and title (what the fake browser says), navigate ("throws" or
+ * "errorText": a navigate that fails).
  */
 export function fakeBrowserbase(knobs = {}) {
 	const rec = recorder(BROWSERBASE_URL);
@@ -218,7 +223,10 @@ export function fakeBrowserbase(knobs = {}) {
 	return { fetch, cdp: cdp.dial, dialed: cdp.dialed, sessions, calls: rec.calls, only: rec.only };
 }
 
-/** A fake Kernel. knobs: failCreate (a status the create answers, with ECHO in its body), pageSize (rows per list page). */
+/**
+ * A fake Kernel. knobs: failCreate (a status the create answers, with ECHO in its body), pageSize (rows per list page),
+ * and the fake browser's product, title and navigate, as fakeBrowserbase's.
+ */
 export function fakeKernel(knobs = {}) {
 	const rec = recorder(KERNEL_URL);
 	const known = browsers();
