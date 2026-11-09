@@ -20,6 +20,7 @@ import {
   servingRefusals,
 } from "@parcha/agentrun-computer";
 import type { AttachableComputer } from "../workspace/attach.js";
+import { type ServingRefusals, servedGroups } from "../workspace/computer-serves.js";
 import type { RunComputer } from "../workspace/run-tools.js";
 import type { Workspace } from "../workspace/workspace.js";
 
@@ -83,10 +84,7 @@ export async function dockerComputer(
     client = connected.value.client;
     // What the computer says it is (its hello), read against the kind registry: one that does not serve the run's kind
     // is refused in the registry's words, never handed on.
-    const { hello } = connected.value;
-    groups = hello.groups;
-    const refusals = servingRefusals({ kind: hello.kind, groups: hello.groups }, kind);
-    if (refusals.length > 0) throw new Error(`the run's computer can't serve a ${kind}: ${refusals.join("; ")}`);
+    groups = servedGroups(connected.value.hello, kind, servingRefusals as ServingRefusals) as typeof connected.value.hello.groups;
   } catch (error) {
     await release();
     throw error;
