@@ -259,6 +259,11 @@ export function fakeSdk(fake: FakeSdkOptions = {}): FakeSdk {
             } catch {}
           }
         });
+        // The "CLI" died (its session's machine stopped it): as the SDK's stream does when the CLI exits, a model request
+        // still answering ends in an error, never left waiting.
+        child.on?.('exit', () => {
+          for (const [, request] of said) request.end('the CLI exited');
+        });
       }
       const runBash = (id: string, command: string) => {
         const done = new Promise<{ code: number; stdout: string; stderr: string }>((r) => reports.set(id, r));
