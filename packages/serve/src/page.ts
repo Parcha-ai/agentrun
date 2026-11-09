@@ -2,15 +2,13 @@
 // hashed assets under /assets/, public, under one strict CSP. The console signs a person in itself. With accounts it
 // takes the owner's session cookie (owner.ts); without, the server's token as a cookie that the printed link (`/?token=`)
 // sets once. Either stands in for the Bearer header on /v2, and for a write only from this origin with a JSON body, or
-// with any body on a route that takes bytes (a PUT or POST marked `raw` in server.ts). The
-// store's read-only JSON (/api/*, pi-durable-agent's store page's data) answers the Bearer token or either cookie.
+// with any body on a route that takes bytes (a PUT or POST marked `raw` in server.ts).
 import { createHash, createHmac, timingSafeEqual } from "node:crypto";
 import { readFile, realpath, stat } from "node:fs/promises";
 import type { IncomingMessage, ServerResponse } from "node:http";
 import { extname, join, sep } from "node:path";
 import type { Owner } from "./owner.js";
 import { fileURLToPath } from "node:url";
-import { storeApi } from "@parcha/pi-durable-agent/serve";
 import { ApiError } from "./errors.js";
 import { hostRefusedPage } from "./host-check.js";
 
@@ -71,7 +69,7 @@ const refuse = (req: IncomingMessage, res: ServerResponse, error: ApiError) =>
 
 /** `takesBytes`: whether a request of `method` to `path` (under /v2) goes to a route whose body is bytes (server.ts). */
 /** `publicUrl`: the address people open (AGENTRUN_PUBLIC_URL); an https one adds HSTS to every page answer (hstsHeaders). */
-type PageServer = { token: string; dir: string; authFailed?: (route: string, reason: string) => void; owner?: Owner; console?: string | undefined; takesBytes?: (method: string | undefined, path: string) => boolean; publicUrl?: string };
+type PageServer = { token: string; authFailed?: (route: string, reason: string) => void; owner?: Owner; console?: string | undefined; takesBytes?: (method: string | undefined, path: string) => boolean; publicUrl?: string };
 
 const redirect = (res: ServerResponse, location: string, headers: Record<string, string> = {}) => (res.writeHead(303, { ...SECURITY, location, "content-length": 0, ...headers }), void res.end());
 
@@ -90,17 +88,8 @@ async function file(req: IncomingMessage, res: ServerResponse, raw: string, dir:
   send(req, res, status, type, await readFile(real), { "cache-control": rel.startsWith("assets/") ? "public, max-age=31536000, immutable" : "no-store" });
 }
 
-async function answer(req: IncomingMessage, res: ServerResponse, raw: string, server: PageServer, held: boolean): Promise<void> {
+async function answer(req: IncomingMessage, res: ServerResponse, raw: string, server: PageServer): Promise<void> {
   if (req.method !== "GET" && req.method !== "HEAD") return refuse(req, res, new ApiError("method_not_allowed", `the console answers GET and HEAD; ${req.method} is not one`, {}, { allow: "GET, HEAD" }));
-  if (raw.startsWith("/api/")) {
-    if (!held && !same(String(req.headers.authorization ?? ""), `Bearer ${server.token}`)) {
-      server.authFailed?.(raw, req.headers.authorization === undefined ? "no_credential" : "wrong_token");
-      return refuse(req, res, new ApiError("unauthenticated", "the page's data needs the cookie the printed link sets, or Authorization: Bearer <the token>"));
-    }
-    const url = new URL(req.url ?? "/", "http://serve");
-    const { status, value } = await storeApi({ dir: server.dir })(url.pathname, url.searchParams);
-    return send(req, res, status, "application/json; charset=utf-8", JSON.stringify(value));
-  }
   const dir = server.console ?? CONSOLE_DIR;
   if (MOVED.has(raw)) return redirect(res, `/${(req.url ?? "").slice(raw.length)}`);
   if (raw !== "/") return file(req, res, raw, dir, raw.slice(1));
@@ -132,8 +121,7 @@ const consoleSessions = new WeakSet<IncomingMessage>();
 export const byConsoleSession = (req: IncomingMessage): boolean => consoleSessions.has(req);
 
 /**
- * Answers the console's paths ("/" and its /assets/*, and the addresses that moved to "/") and the store's /api/*, and
- * returns true; returns false for every other path. On a /v2 path with no Authorization header, the browser's cookie
+ * Answers the console's paths ("/" and its /assets/*, and the addresses that moved to "/"), and returns true; returns false for every other path. On a /v2 path with no Authorization header, the browser's cookie
  * becomes the Bearer header for a GET or HEAD, and for any other method only when the request's Origin is this server's
  * own origin and its body is application/json, or the request is a PUT or POST to a route that takes bytes, with any
  * content type.
@@ -152,10 +140,10 @@ export function answerPage(req: IncomingMessage, res: ServerResponse, raw: strin
     }
     return false;
   }
-  if (raw !== "/" && !raw.startsWith("/assets/") && !raw.startsWith("/api/") && !MOVED.has(raw)) return false;
-  // Every page answer (the console, its assets, its redirects, the store's data) at an https public address: HSTS.
+  if (raw !== "/" && !raw.startsWith("/assets/") && !MOVED.has(raw)) return false;
+  // Every page answer (the console, its assets, its redirects) at an https public address: HSTS.
   for (const [name, value] of Object.entries(hstsHeaders(server.publicUrl))) res.setHeader(name, value);
-  answer(req, res, raw, server, held).catch(() => {
+  answer(req, res, raw, server).catch(() => {
     if (!res.headersSent) refuse(req, res, new ApiError("internal", "the console could not be read"));
     else res.destroy();
   });

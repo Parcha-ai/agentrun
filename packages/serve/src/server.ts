@@ -2969,7 +2969,7 @@ async function startHolding(options: ServeOptions, data: string, checked: { maxR
     if (owner && (raw === "/v2/setup" || raw === "/v2/setup/import" || raw.startsWith("/v2/auth/"))) return void ownerRoute(req, res, raw.slice(3), owner).catch(fail);
     if (raw === MCP_PATH) return void mcp(req, res).catch(fail);
     if (raw === "/llms.txt") return void answerLlms(req, res).catch(fail);
-    if (answerPage(req, res, raw, { token, dir: data, authFailed, console: options.console, takesBytes, ...(owner ? { owner } : {}), ...(options.publicUrl ? { publicUrl: options.publicUrl } : {}) })) return;
+    if (answerPage(req, res, raw, { token, authFailed, console: options.console, takesBytes, ...(owner ? { owner } : {}), ...(options.publicUrl ? { publicUrl: options.publicUrl } : {}) })) return;
     // Under --faux only: a faux desktop's live view, a page on this server's own address (faux-computers.ts viewPage), so
     // a run's take-over has a viewer to open in the console's real-browser flows. Gone after the computer's release.
     if (options.faux && raw.startsWith(`${FAUX_VIEW_PATH}/`)) {
