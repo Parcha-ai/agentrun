@@ -1,0 +1,9 @@
+---
+packages: @parcha/agentrun-computer
+kind: feature
+---
+A computer's live view, as frames over the protocol (Miguel's decisions, 2026-11-09: proxy only, and every desktop's and phone's frames on one path). `screen.watch` gives the next frame after the caller's ack, once the screen changed, and `watchScreen` is the seam the runner's viewer reads it through.
+- computerd's `screen.watch({ after, waitMs?, maxWidth?, quality? })`: `after` is the seq of the last frame the caller has whole; the answer is the next frame once the screen's pixels or the pointer's place changed, else `changed: false` when `waitMs` (default 2 s, at most 10 s) is over, and an older `after` gets the newest frame at once. A frame is a JPEG scaled to `maxWidth` (default 1280) at `quality` (default 60), with its own size, the screen's size (the input space) and the cursor; one over a chunk is read on with `screen.read`. A waiting watch reads the screen every 200 ms and holds the display only for each read, so `input.actions` and `screen.shot` go on meanwhile on the same connection. One watch per connection; a cancel ends it as `aborted`.
+- The Android phone answers `screen.watch` itself, as PNG frames from `screencap`, read about once a second.
+- `watchScreen(connection, { signal?, maxWidth?, quality? })` gives `{ frames, act, close }`: `frames` is pull-paced (each `next()` is the ack of the frame before it), `act(actions)` sends `input.actions` on the same connection, and `close()` or the signal end both, after which `act()` refuses in words. No error holds a URL or a secret (`redactWords`).
+- Conformance: `screen.stream` (Full, a vendor's URL) is replaced by `screen.watch`, Core in the screen group: the first frame is an image of the size it says, of the screen `screen.shot` reads, and a pointer move is a new frame with the cursor where it went.

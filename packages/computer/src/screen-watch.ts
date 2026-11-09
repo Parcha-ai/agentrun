@@ -88,7 +88,11 @@ export function watchScreen(connection: ComputerConnection, options: ScreenWatch
 			if (ended) return;
 			if (!asked.ok) throw new ScreenWatchError(asked.error.code, redactWords(asked.error.message));
 			const answer = asked.value;
-			if (!answer.changed) continue;
+			if (!answer.changed) {
+				// The daemon waited its waitMs; one that answers at once must not spin: timers and the signal run first.
+				await new Promise((resolve) => setImmediate(resolve));
+				continue;
+			}
 			const parts = [Buffer.from(answer.data ?? "", "base64")];
 			let size = parts[0].length;
 			for (let eof = answer.eof ?? true; !eof; ) {

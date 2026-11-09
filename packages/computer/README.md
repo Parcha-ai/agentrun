@@ -421,12 +421,20 @@ provider declares, either way.
 
 | group | methods |
 | --- | --- |
-| `screen` | `screen.shot({ region? })`: a PNG (8-bit, non-interlaced), its first `MAX_CHUNK_BYTES` in `data`, with `width`, `height` (the image's pixels, the input coordinate space, never downscaled), `scale` and `cursor?`; `screen.read({ id, offset })` for the rest. One shot is held, until its eof or the next shot. |
+| `screen` | `screen.shot({ region? })`: a PNG (8-bit, non-interlaced), its first `MAX_CHUNK_BYTES` in `data`, with `width`, `height` (the image's pixels, the input coordinate space, never downscaled), `scale` and `cursor?`; `screen.read({ id, offset })` for the rest. One shot is held, until its eof or the next shot. `screen.watch({ after, waitMs?, maxWidth?, quality? })`: the live view's frames, paced by the caller's ack (`after`, the seq of the last frame it has whole; an older one gets the newest frame at once): the next frame once the screen or the pointer changed, else `changed: false` when `waitMs` (default 2000, at most 10000) is over. A frame is `{ seq, changed, format, frameWidth, frameHeight, width, height, cursor? }` and its bytes as a shot's (`data`, `id` and `screen.read`); `format` is `jpeg` from computerd (scaled to `maxWidth`, default 1280, at `quality`, default 60) and `png` from the phone client. One watch per connection. |
 | `input.pointer` | `input.actions`: `move`, `down`, `up`, `click` (`count` 1-3, held `keys`), `drag` (a path of 2 or more points), `scroll` (`unit` clicks or px) |
 | `input.keys` | `input.actions`: `key` (one key pressed, or a combo released in reverse; `repeat`), `hold` (`ms`), `type` |
 | `input.touch` | `input.actions`: `tap`, `long_press`, `swipe`, `pinch` (`scale` above 1 apart, below together), `button` (back, home, app_switch) |
 | `apps`, `apps.install` | `apps.list` (`{ apps, foreground }`), `apps.launch`, `apps.terminate`; `apps.install({ path })` of a file already in the computer |
 | `apps.ui_tree` | `apps.ui_tree`: `{ root: UiNode, nodes, truncated }`, at most 5000 nodes; a node has `role`, `id?`, `text?`, `label?`, `bounds` in screenshot pixels, `enabled`, the optional booleans and `children` |
+
+**The live view's seam.** `watchScreen(connection, { signal?, maxWidth?, quality? })` (`src/screen-watch.ts`) is what
+the runner's viewer reads a computer through: `frames`, an async iterable of whole `ScreenFrame`s (`{ seq, format,
+bytes, frameWidth, frameHeight, width, height, cursor? }`), pull-paced so that each `next()` is the ack of the frame
+before it and nothing is asked for before it; `act(actions)`, the viewer's events already mapped to input actions,
+sent as `input.actions` on the same connection; and `close()`, which with the signal cancels the waiting ask, ends the
+frames and makes `act()` refuse in words. No error it gives holds a URL or a secret (`redactWords`). Every computer
+that answers `screen.watch` has a live view through it: computerd's desktops and the Android phone.
 
 Points are `[x, y]` in the full screenshot's pixels, origin top left; a region shot never changes that space. A key is a
 name in `KEYS` (enter, tab, space, backspace, delete, escape, insert, the arrows, home, end, pageup, pagedown, f1-f12,
@@ -1874,6 +1882,8 @@ the API's control URL) is a later change: `platform: "ios"` is refused in words.
   a client in this process that answers each protocol method with adb commands:
   - `screen.shot`/`screen.read`: a raw `screencap`, cropped to the region and encoded as an RGBA PNG; `scale` is the
     density over 160;
+  - `screen.watch`: PNG frames (`format: "png"`) from `screencap`, read about once a second while it waits, a new frame
+    only when the pixels changed; `maxWidth` scales by the nearest pixel, and `quality` has no effect on a PNG;
   - `input.actions`: checked whole first (`checkActions`). Then:
     - tap and long press;
     - swipe: `input swipe`, or `input motionevent` for a path of three points or more. Its `ms` is shared between the
@@ -1978,7 +1988,7 @@ full lifetime  extend                                       - 1
 optional screen screenshot-size                              - 1
   - screen.screenshot-size: the provider does not declare screen
 ...
-core PASS 54/54 · 9 optional cases skipped, not declared · full 10/14 · mount:archil screen stream input.pointer input.keys input.touch apps.install apps apps.ui_tree extend not declared
+core PASS 54/54 · 10 optional cases skipped, not declared · full 10/13 · mount:archil screen input.pointer input.keys input.touch apps.install apps apps.ui_tree extend not declared
 ```
 
 An id is resolved through the provider registry, and only there; the usage lists every id it holds. A module path is
@@ -2070,8 +2080,11 @@ Core and Full follow the Kubernetes agent-sandbox conformance levels (KEP-539.2)
   moving apart), `lifetime.extend` (`extend`: made with 45 s and extended to 120 s, at 60 s it answers ping with a
   process started earlier still running and `list()` shows the new deadline; three extends are refused with the
   deadline unchanged: to an earlier deadline, to maxLifetimeMs + 1, and, 60 s after create, to maxLifetimeMs less 30 s,
-  within the cap on its own but past create + maxLifetimeMs; a cap under 3 min skips it) and `screen.stream`
-  (`stream`: an https URL that answers 200; only its origin is ever reported).
+  within the cap on its own but past create + maxLifetimeMs; a cap under 3 min skips it).
+- **`screen.watch` is Core in the screen group**: through `watchScreen` on a connection of its own, the first frame is
+  an image (JPEG or PNG) of the size it says, of the screen `screen.shot` reads; on a computer with `input.pointer`, a
+  pointer move through `act()` is a new frame with the cursor where it went. It replaced `screen.stream`, which
+  checked a vendor's URL: the live view is proxy only (Miguel's decision, 2026-11-09).
 - **The mount group is Full**, optional for every kind until the cutover decides. "Mounts the run's folder",
   `mount.run-folder-bind` and `mount.run-folder-archil` (`mount:bind`, `mount:archil`, from `capabilities().mount`):
   on a computer of its own made with the run folder `mountFor(kind)` gives, `check` takes the spec, `attach` and `list`
