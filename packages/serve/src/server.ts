@@ -80,7 +80,7 @@ import { type Blocker, blockersOf, CODE_NODES_ENV, issueOf, MCP_HARNESSES, NOT_S
 import { hostSecrets, SECRET_NAMES, secret, type StoredKeys, withSecrets } from "./secrets.js";
 import { redactedOutput } from "./key-refusal.js";
 import { analyticsFilter, analyticsView, statsView } from "./stats.js";
-import { agentLearningCountsOverStore, learningCountsOverStore, runLearningOverStore } from "./store-reads/learning.js";
+import { agentLearningOverStore, learningCountsOverStore, runLearningOverStore } from "./store-reads/learning.js";
 import { outcomes } from "./usage.js";
 import { keyOf, SEAL_KEY_ENV, sealKeyOf, TOOL_FIELDS } from "./tool-keys.js";
 import { toolKeysOverStore } from "./tool-keys-store.js";
@@ -2414,18 +2414,19 @@ async function startHolding(options: ServeOptions, data: string, checked: { maxR
       // they are now; a write as the definition's: an archived agent's too.
       case "getAgentLearning": {
         await needAgent(id);
-        // The agent's learning view: its notes, skills, workflows and log from its learning folder; its run-fared counts over the
-        // store (learning-1's agentLearningCountsOverStore). Each note's runs and the impact are named gaps until learning-1 records
-        // a run's given/read notes and its answer times in the store.
-        const counts = await agentLearningCountsOverStore(store, id);
-        return send(res, 200, await agentLearning(data, id, secretsShown(serverSecrets()), counts, null));
+        // The agent's learning view: its notes, skills, workflows and log from its learning folder; its run-fared counts, each
+        // note's runs (given it and that read it) and its impact over the one store (agentLearningOverStore), from each run's
+        // launch, journal and learning end.
+        const { counts, impact, notes } = await agentLearningOverStore(store, id);
+        return send(res, 200, await agentLearning(data, id, secretsShown(serverSecrets()), counts, impact, notes));
       }
       case "listLearningNotes":
       case "listLearningLog":
         await needAgent(id);
         if (found.name === "listLearningNotes") {
-          // The notes from the agent's learning folder; each note's runs are a named gap until learning-1 records them in the store.
-          return send(res, 200, await learningNotes(data, id, url.searchParams, secretsShown(serverSecrets())));
+          // The notes from the agent's learning folder, each with its runs over the one store (agentLearningOverStore's noteRuns).
+          const { notes } = await agentLearningOverStore(store, id);
+          return send(res, 200, await learningNotes(data, id, url.searchParams, secretsShown(serverSecrets()), notes));
         }
         return send(res, 200, await learningLog(data, id, url.searchParams, secretsShown(serverSecrets())));
       case "readLearningFile":
