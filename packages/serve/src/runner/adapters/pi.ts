@@ -12,7 +12,7 @@ import { BACKGROUND_CONTEXT, withAbortSignal } from "@earendil-works/chord/conte
 import type { Models } from "@earendil-works/pi-ai";
 import { createModels, createProvider } from "@earendil-works/pi-ai/models";
 import { anthropicMessagesApi } from "@earendil-works/pi-ai/api/anthropic-messages.lazy";
-import { type Conversation, defineExtension, defineTool, type Harness, hook, type Registry, type Submission, ToolTask } from "@earendil-works/pi-durable";
+import { type Conversation, defineExtension, defineTool, GenerationTask, type Harness, hook, type Registry, type Submission, ToolTask } from "@earendil-works/pi-durable";
 import { anthropicPolicy } from "@parcha/agentrun-harness-claude";
 import type { AdapterSession, AgentAdapter, HostTool, SessionIO, SessionSpec, TurnStatus } from "@parcha/agentrun-kernel";
 import { type ModelProxy, startModelProxy } from "@parcha/agentrun-kernel/host";
@@ -39,7 +39,12 @@ export interface PreIntentCall {
 export type PreIntentAnswer = "allow" | { readonly deny: string } | { readonly park: true };
 
 /** SessionIO with the gate asked before a call's intent (SessionIO.gate in the adapter contract: "allow", a deny, or a park). */
-export type PiSessionIO = SessionIO & { gate?: (call: PreIntentCall, context: Context) => Promise<PreIntentAnswer> };
+export type PiSessionIO = SessionIO & {
+  gate?: (call: PreIntentCall, context: Context) => Promise<PreIntentAnswer>;
+  /** What the request that just answered cost, as the runner's booking wrote it (the session's ledger): its figure, null
+   *  when unknown, undefined when none was booked. pi's own price for the model is none (the adapter does not know it). */
+  bookedCost?: () => Promise<number | null | undefined>;
+};
 
 export interface PiAdapterOptions {
   readonly run: PiRun;
@@ -125,6 +130,17 @@ async function sessionOn(proxy: ModelProxy, options: PiAdapterOptions, spec: Ses
             if (signal?.aborted) return reject(new Error("parked"));
             signal?.addEventListener("abort", () => reject(new Error("parked")), { once: true });
           });
+        },
+      }),
+      // An answer's cost is the runner's booking of its request, never pi's $0 for a model it has no price for: set on
+      // the answer before pi stores it, so the answer, pi.usage and the live timeline carry it; unknown stays unknown.
+      hook(GenerationTask, {
+        afterResponse: async (message) => {
+          if (!io.bookedCost) return;
+          const usd = await io.bookedCost();
+          if (usd === undefined) return;
+          const cost = (message.usage as { cost?: Record<string, unknown> } | undefined)?.cost;
+          if (cost) cost.total = usd;
         },
       }),
     ],
