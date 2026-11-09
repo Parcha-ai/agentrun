@@ -12,7 +12,7 @@ const waiting = (id = "run-1") => ({ id, approvalIds: new Set([CALL]) });
 const answers = async (store, runId = "run-1") => (await store.commands(runId, 0)).filter((c) => c.kind === "approve" || c.kind === "deny").map((c) => [c.kind, c.body.approval]);
 const alreadyAnswered = (decision) => (error) => {
   assert.equal(error.code, "not_continuable");
-  assert.deepEqual(error.details, { reason: "already_answered", decision });
+  assert.deepEqual(error.extra.details, { reason: "already_answered", decision });
   return true;
 };
 
