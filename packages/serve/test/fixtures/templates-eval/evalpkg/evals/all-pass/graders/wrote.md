@@ -1,5 +1,5 @@
 ---
 type: tool_used
 tool: write
-count: 1
+count: 2
 ---

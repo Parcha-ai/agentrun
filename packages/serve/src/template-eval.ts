@@ -582,6 +582,17 @@ async function filesOf(api: Api, runId: string): Promise<string[]> {
   }
 }
 
+/** Each path a file_exists grader names that the run's work folder holds, read one by one (GET /runs/{id}/files/{path}):
+ *  the listing is capped (its `truncated`), so a file past its cap or depth is never taken for absent. */
+async function presentOf(api: Api, runId: string, paths: readonly string[]): Promise<string[]> {
+  const present: string[] = [];
+  for (const path of new Set(paths)) {
+    const read = await api("GET", `/runs/${runId}/files/${path.split("/").map(encodeURIComponent).join("/")}`);
+    if (read.status === 200) present.push(path);
+  }
+  return present;
+}
+
 const costOf = (view: Json): number | null => (isObject(view.cost) && typeof view.cost.usd === "number" ? view.cost.usd : null);
 
 // ---- the eval ---------------------------------------------------------------------------------------------------------
@@ -770,7 +781,11 @@ async function runOnce(ctx: Ctx, one: EvalCase, n: number, fakes: readonly Fake[
     answer: typeof result.final_answer === "string" ? result.final_answer : "",
     calls: callsOf(ended.rows, harness, Object.keys(one.mcp)),
     mcpCalls: fakes.flatMap((fake) => fake.calls.map((call) => ({ ...call }))),
-    files: await filesOf(api, runId),
+    files: await (async () => {
+      const listed = await filesOf(api, runId);
+      const named = one.graders.flatMap((grader) => (grader.type === "file_exists" ? [grader.path] : []));
+      return [...listed, ...(await presentOf(api, runId, named.filter((path) => !listed.includes(path))))];
+    })(),
   };
   stopped();
   const base = { run: n, agent_id: agentId, run_id: runId, status: ended.status, cost_usd: costOf(view) };

@@ -117,7 +117,9 @@ test("a case whose answer meets a grader of every type passes, each llm grader a
   assert.deepEqual(new Set(run.graders.map((g) => g.type)), new Set(["schema", "regex", "tool_used", "file_exists", "llm"]));
   assert.ok(run.graders.every((g) => g.pass), JSON.stringify(run.graders));
   assert.match(graderOf(run, "file.md").reason, /work folder holds notes\/out\.md/);
-  assert.match(graderOf(run, "wrote.md").reason, /^1 call of write; the grader expects exactly 1$/);
+  assert.match(graderOf(run, "wrote.md").reason, /^2 calls of write; the grader expects exactly 2$/);
+  // A file past the listing's depth (WALK_DEPTH) is read by its path, never taken for absent.
+  assert.match(graderOf(run, "deep-file.md").reason, /work folder holds d1\/d2\/.*\/deep\.md/);
   assert.match(graderOf(run, "target.md").reason, /the answer's summary matches/);
   // Each run's cost and each llm grade's, from the run records: known, and in the case's total.
   const llm = run.graders.filter((g) => g.type === "llm");

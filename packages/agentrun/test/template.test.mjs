@@ -3,9 +3,9 @@
 // and exits 1), and its eval runner.
 import assert from "node:assert/strict";
 import { spawn, spawnSync } from "node:child_process";
-import { cpSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { cpSync, existsSync, mkdtempSync, readFileSync, rmSync, watch, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
-import { join } from "node:path";
+import { basename, dirname, join } from "node:path";
 import { test } from "node:test";
 
 const BIN = new URL("../bin/agentrun.mjs", import.meta.url).pathname;
@@ -53,6 +53,30 @@ test("template eval runs a package's cases on a server of its own and exits as t
   const refused = evaluate([EVALPKG, "--case", "nope"], env);
   assert.equal(refused.status, 2, refused.stderr);
   assert.match(refused.stderr, /evals\/nope: no such case/);
+});
+
+test("template eval passes a stop sent to it alone on to the eval, which cancels its run and cleans up: 130, no report", { timeout: 300_000 }, async (t) => {
+  const dir = mkdtempSync(join(tmpdir(), "agentrun-template-eval-"));
+  t.after(() => rmSync(dir, { recursive: true, force: true }));
+  const holding = join(dir, "holding");
+  const child = spawn(process.execPath, [BIN, "template", "eval", EVALPKG, "--case", "held", "--faux", EVAL_FAUX, "--report", join(dir, "stopped.json")], { env: { ...evalEnv(dir), AGENTRUN_TEST_EVAL_HOLD: holding }, stdio: ["ignore", "pipe", "pipe"] });
+  let err = "";
+  child.stderr.on("data", (chunk) => (err += chunk));
+  child.stdout.resume();
+  const closed = new Promise((resolve) => child.on("close", resolve));
+  // The held run writes the file once it is in its turn, and holds there until it is stopped.
+  await new Promise((resolve) => {
+    const done = () => (watcher.close(), resolve());
+    const watcher = watch(dirname(holding), (_, name) => name === basename(holding) && existsSync(holding) && done());
+    if (existsSync(holding)) done();
+    closed.then(done, done);
+  });
+  assert.ok(existsSync(holding), `the held run reached its turn: ${err}`);
+  // A job runner's SIGTERM to this command's process alone, never its group: the eval hears it only if it is passed on.
+  child.kill("SIGTERM");
+  assert.equal(await closed, 130, err);
+  assert.match(err, /stopping: cancelling the run in progress[\s\S]*stopped; no report\./);
+  assert.ok(!existsSync(join(dir, "stopped.json")));
 });
 
 test("template eval --server runs on that server with the token in AGENTRUN_API_KEY, and never prints it", { timeout: 300_000 }, async (t) => {
