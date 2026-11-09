@@ -278,7 +278,9 @@ test("code-review's GitHub tools: granted, never allowed by the package itself; 
     assert.deepEqual(pinned.map((w) => [w.field, w.reason]), [["pins.mcp:github/pull_request_review_write", "not_set_up_here"]]);
     assert.match(pinned[0].message, /^mcp:github\/pull_request_review_write is not pinned to event in \(absent \| COMMENT\), method in \(create \| delete_pending \| submit_pending\) for this agent yet/);
   }
-  assert.deepEqual(await permissions(plain.body.agent_id), Object.fromEntries(GITHUB_TOOLS.map((name) => [name, name === "pull_request_review_write" && !AGENT_LAYER_PINS ? "deny" : "ask"])));
+  // code-review runs unattended by default (approvals never): its asks are allows, except the pinned write, which is
+  // deny until its pin is kept (the agent's own, from the cutover on, or this server's).
+  assert.deepEqual(await permissions(plain.body.agent_id), Object.fromEntries(GITHUB_TOOLS.map((name) => [name, name === "pull_request_review_write" && !AGENT_LAYER_PINS ? "deny" : "allow"])));
 
   // The owner's grants, and only those, become allow; one the package does not list is refused, and nothing is made.
   const reads = GITHUB_READS.map((name) => `mcp:github/${name}`);
@@ -293,7 +295,7 @@ test("code-review's GitHub tools: granted, never allowed by the package itself; 
   const consented = await api("POST", "/templates/code-review/apply", { parameters: { repo: "Parcha-ai/agentrun" }, grants: reads });
   assert.equal(consented.status, 201, JSON.stringify(consented.body));
   assert.deepEqual((await api("GET", `/agents/${consented.body.agent_id}`)).body.definition.tool_settings, { ...Object.fromEntries(reads.filter((tool) => tool !== "mcp:github/get_file_contents").map((tool) => [tool, { permission: "allow" }])), ...(AGENT_LAYER_PINS ? {} : { "mcp:github/pull_request_review_write": { permission: "deny" } }) });
-  assert.deepEqual(await permissions(consented.body.agent_id), { pull_request_read: "allow", get_file_contents: "deny", search_code: "allow", get_repository_tree: "allow", pull_request_review_write: AGENT_LAYER_PINS ? "ask" : "deny", add_comment_to_pending_review: "ask" });
+  assert.deepEqual(await permissions(consented.body.agent_id), { pull_request_read: "allow", get_file_contents: "deny", search_code: "allow", get_repository_tree: "allow", pull_request_review_write: AGENT_LAYER_PINS ? "ask" : "deny", add_comment_to_pending_review: "allow" }, "unattended by default: the unpinned comment write runs unasked (bounded by the pinned review write it adds to)");
   assert.deepEqual(consented.body.warnings.filter((w) => w.field.startsWith("grants.")).map((w) => [w.field, w.reason]), [["grants.mcp:github/get_file_contents", "not_allowed"]]);
 });
 
@@ -438,6 +440,16 @@ test("every shipped package's agent gets its answer schema beside its skill, and
       assert.match(p.skills[`${skill}/SKILL.md`], new RegExp(p.output.schema.replace(/\./g, "\\.")), `${p.name}: the ${skill} skill names its schema`);
     }
   }
+});
+
+test("an apply's approvals: the override, else the package's own (a trigger template runs unattended), else ask", async (t) => {
+  const { api } = await serve(t);
+  const approvalsOf = async (applied) => { assert.equal(applied.status, 201, JSON.stringify(applied.body)); return (await api("GET", `/agents/${applied.body.agent_id}`)).body.definition.approvals ?? "ask"; };
+  const review = { parameters: { repo: "Parcha-ai/agentrun" } };
+  assert.equal(await approvalsOf(await api("POST", "/templates/code-review/apply", review)), "never", "code-review's own default");
+  assert.equal(await approvalsOf(await api("POST", "/templates/code-review/apply", { ...review, overrides: { approvals: "ask" } })), "ask", "the owner's override");
+  assert.equal(await approvalsOf(await api("POST", "/templates/kyb/apply", { parameters: { risk_appetite: "medium" } })), "ask", "kyb asks");
+  assert.equal(await approvalsOf(await api("POST", "/templates/kyb/apply", { parameters: { risk_appetite: "medium" }, overrides: { approvals: "never" } })), "never");
 });
 
 test("a parameter is read from the caller's own fields: a required one named constructor is missing from {parameters: {}}", async (t) => {

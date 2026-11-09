@@ -1266,7 +1266,7 @@ async function startHolding(options: ServeOptions, data: string, lock: ServerLoc
     if (revision?.kind !== "agentic") return { tools: [], gated: {} };
     const [{ learnedDraftTools }, { permissionOf }, { readToolSettings }] = await Promise.all([import("./tools.js"), import("./tool-gate.js"), import("./tool-plane.js")]);
     const server = readToolSettings(agents.dir).settings;
-    return learnedDraftTools(revision.body.tools, (name) => permissionOf(name, server as never, (revision.body.toolSettings ?? {}) as never));
+    return learnedDraftTools(revision.body.tools, (name) => permissionOf(name, server as never, (revision.body.toolSettings ?? {}) as never, revision.body.approvals === "never" ? "never" : "ask"));
   }
   async function needAgent(id: string): Promise<AgentEntry> {
     const entry = ID.test(id) ? await agents.get(id) : null;
@@ -1322,7 +1322,7 @@ async function startHolding(options: ServeOptions, data: string, lock: ServerLoc
   // ---- runs -----------------------------------------------------------------------------------------------------------
 
   /** A workflow revision's shape as runnable.ts checks it: its workflow, tools, harness, place and tool settings. */
-  const workflowShape = ({ workflow, tools, harness, place, toolSettings }: { workflow: unknown; tools?: readonly string[]; harness?: string; place?: RevisionShape["place"]; toolSettings?: RevisionShape["toolSettings"] }): RevisionShape => ({ kind: "workflow", workflow, tools: tools ?? [], ...(harness ? { harness } : {}), ...(place ? { place } : {}), ...(toolSettings ? { toolSettings } : {}) });
+  const workflowShape = ({ workflow, tools, harness, place, toolSettings, approvals }: { workflow: unknown; tools?: readonly string[]; harness?: string; place?: RevisionShape["place"]; toolSettings?: RevisionShape["toolSettings"]; approvals?: "never" }): RevisionShape => ({ kind: "workflow", workflow, tools: tools ?? [], ...(harness ? { harness } : {}), ...(place ? { place } : {}), ...(toolSettings ? { toolSettings } : {}), ...(approvals === "never" ? { approvals } : {}) });
   const shapeOf = (revision: Revision): RevisionShape => (revision.kind === "agentic" ? { kind: "agentic", ...revision.body } : workflowShape(revision.body));
 
   /** What keeps `revision` from running here at `place` (its own, else this host's default), checked before anything
@@ -1402,7 +1402,7 @@ async function startHolding(options: ServeOptions, data: string, lock: ServerLoc
    *  before it are deleted and the agent is archived (an agent store keeps every agent), and the refusal is the answer, a 422's fields under `triggers.<i>`. A webhook
    *  trigger's secret is not in the answer (the Idempotency-Key record would keep it): POST /triggers/{id}/secret makes one. */
   async function applyTemplate(pkg: Package, body: Json) {
-    const { parameters, grants, model: override } = applyBodyOf(pkg, body);
+    const { parameters, grants, model: override, approvals } = applyBodyOf(pkg, body);
     const missing = pkg.secrets.filter((name) => !secret(name, storedKeys));
     const saved = pkg.mcp.filter((need) => mcpSource.server(need.server));
     const unsaved = pkg.mcp.filter((need) => !saved.includes(need));
@@ -1427,8 +1427,11 @@ async function startHolding(options: ServeOptions, data: string, lock: ServerLoc
     const kept: InputIssue[] = denied.map((tool) => ({ field: `grants.${tool}`, reason: "not_allowed", message: `${tool} is denied on this server (Settings → Tools), so the agent was not allowed it: its runs are refused it until the owner changes that setting.` }));
     // The tools this server's own settings pin (or hold refused for a pin that does not read): a package's pin the agent
     // store can't keep yet is covered there, so its grant stands; any other such tool is made deny (compiled).
+    // The agent's approvals: the apply's override, else the package's own (a template whose job runs on triggers says
+    // never), else ask. Deny and pins hold either way.
+    const chosenApprovals = approvals ?? pkg.approvals;
     const serverPinned = new Set(Object.entries(settings.get()).filter(([, one]) => one?.pin || one?.brokenPin).map(([name]) => name));
-    const made = compiled(pkg, parameters, { ...(harness ? { harness } : {}), ...(model ? { model } : {}), mcp: saved, defaultTools, grants: grants.filter((tool) => !denied.includes(tool)), serverPinned });
+    const made = compiled(pkg, parameters, { ...(harness ? { harness } : {}), ...(model ? { model } : {}), mcp: saved, defaultTools, grants: grants.filter((tool) => !denied.includes(tool)), serverPinned, ...(chosenApprovals ? { approvals: chosenApprovals } : {}) });
     // Every trigger is checked as POST /triggers checks it, its parameters filled, before anything is made: a schedule
     // from a parameter that does not read, or a date that has passed, refuses the apply (422 under triggers.<i>).
     const refusedTriggers = madeTriggerIssues(made.triggers, Date.now());
