@@ -109,6 +109,10 @@ A tool call waiting for approval (`pending.kind` `approval`) is answered by the 
 - 4: no token, the token was refused, or the config file, the local server's record or its token file was refused (open to others, or not what it should hold).
 - 8: the run waits on a person: a question, its spend cap, a stopped turn, or a paused workflow. stderr says what to run next.
 
+## From a program
+
+Two clients call the same API from code, with the same server and token. Neither is published yet: each installs from this repository. `@parcha/agentrun-client` (packages/client) is the TypeScript one, `new AgentRun({ baseUrl, apiKey })`. `parcha-agentrun` (python/) is the Python one, `AgentRun(base_url=..., api_key=...)` from the `agentrun` module; `pip install "git+https://github.com/Parcha-ai/agentrun#subdirectory=python"` installs it. Both default to `AGENTRUN_BASE_URL` and `AGENTRUN_API_KEY` and read no config file. Each command here is a method, grouped the same way: `agentrun runs start` is `client.runs.start`, and `client.runs.wait` and `client.runs.follow` do what `--wait` and `--follow` do.
+
 ## Commands
 
 - `agentrun agents`: archive, create, forget-sign-in, get, list, runs, unarchive, update
