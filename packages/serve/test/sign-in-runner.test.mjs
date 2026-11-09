@@ -16,7 +16,8 @@ import { withEnv } from "./support.mjs";
 
 const signIns = await import("../dist/sign-ins-store.js");
 const { pointerHash, saveSignIn } = signIns;
-const { TOOLS, FAUX_BROWSER_ENV } = await import("../dist/tools.js");
+const tools = await import("../dist/tools.js");
+const { TOOLS, FAUX_BROWSER_ENV } = tools;
 const { FAUX_ENV } = await import("../dist/model.js");
 const { TOOL_PLANE_ENV } = await import("../dist/tool-plane.js");
 
@@ -140,6 +141,62 @@ test("runSignIn: the run's agent's pointer for the vendor under the claim, or no
   r.clock.now += LEASE + 1;
   const stale = await runSignIn(r.store, KEY, r.claims["run-a2"], "browserbase").then((value) => ({ value }), (error) => ({ error }));
   assert.deepEqual(stale, { value: undefined }, "a stale claim: none, never a throw");
+});
+
+/** The agent's sign-in for `provider` as the agent's sign-ins API shows it. */
+const viewOf = async (store, agentId, provider) => (await signIns.signInViews(store, KEY, agentId)).find((view) => view.provider === provider);
+/** A session's row as pi-browser hands its change: released by the run (`reason`), at `endedAt`. */
+const released = (reason = "close", endedAt = "2026-11-09T10:15:30.000Z", resourceId = "bb-session-1") => ({ session: { tag: "ar-1", resourceId, releaseReason: reason, endedAt } });
+
+test("a runner-path run that saves its sign-in fills its verified_at with the save's own time, as the lease's end does on main", async (t) => {
+  const r = await runner(t);
+  assert.equal(typeof tools.runSignInSaved, "function", "tools.ts exports runSignInSaved");
+  const kept = await signIns.runSignIn(r.store, KEY, r.claims["run-a"], "browserbase");
+  assert.equal(kept.save, true);
+  assert.equal((await viewOf(r.store, "agent-a", "browserbase")).verified_at, null, "not verified yet");
+  const saved = tools.runSignInSaved(r.store, KEY, r.claims["run-a"], kept);
+  assert.equal(await saved(released("close", "2026-11-09T10:15:30.000Z"), "released"), true);
+  assert.equal((await viewOf(r.store, "agent-a", "browserbase")).verified_at, "2026-11-09T10:15:30.000Z", "the save's own time, not the clock's");
+  assert.equal(await saved(released("idle", "2026-11-09T10:20:00.000Z"), "released"), true, "a later save moves it");
+  assert.equal((await viewOf(r.store, "agent-a", "browserbase")).verified_at, "2026-11-09T10:20:00.000Z");
+});
+
+test("a run that saved nothing leaves verified_at as it was: no save asked, a session the vendor lost or never made, a change that is no release", async (t) => {
+  const r = await runner(t);
+  const first = await signIns.runSignIn(r.store, KEY, r.claims["run-a"], "browserbase");
+  const second = await signIns.runSignIn(r.store, KEY, r.claims["run-a2"], "browserbase");
+  assert.equal(second.save, false, "run-a2 reads, run-a saves");
+  const reader = tools.runSignInSaved(r.store, KEY, r.claims["run-a2"], second);
+  assert.equal(await reader(released(), "released"), false, "a run that did not ask to save");
+  const saver = tools.runSignInSaved(r.store, KEY, r.claims["run-a"], first);
+  for (const [row, change] of [[released("lost"), "released"], [released("create_failed"), "released"], [released("close", "2026-11-09T10:15:30.000Z", null), "released"], [released(), "live"], [{ session: { tag: "ar-1", resourceId: "bb-session-1", releaseReason: null, endedAt: null } }, "released"]]) {
+    assert.equal(await saver(row, change), false, `${JSON.stringify(row.session)} ${change}: no save`);
+  }
+  assert.equal((await viewOf(r.store, "agent-a", "browserbase")).verified_at, null, "unchanged");
+});
+
+test("a run cannot verify another agent's sign-in, nor with a stale or lost claim", async (t) => {
+  const r = await runner(t);
+  const a = await signIns.runSignIn(r.store, KEY, r.claims["run-a"], "browserbase");
+  // Another run's claim, handed agent a's sign-in by hand: its agent is b, which saved no such pointer.
+  assert.equal(await signIns.verifyRunSignIn(r.store, KEY, r.claims["run-b"], a, Date.parse("2026-11-09T10:15:30.000Z")), false, "another claim");
+  assert.equal(await signIns.verifyRunSignIn(r.store, KEY, r.claims["run-c"], a, Date.parse("2026-11-09T10:15:30.000Z")), false, "a run never handed it");
+  assert.equal((await viewOf(r.store, "agent-a", "browserbase")).verified_at, null);
+  const b = await signIns.runSignIn(r.store, KEY, r.claims["run-b"], "kernel");
+  // Stale: the lease ran out; lost: another runner took the run since.
+  r.clock.now += LEASE + 1;
+  assert.equal(await tools.runSignInSaved(r.store, KEY, r.claims["run-a"], a)(released(), "released"), false, "a lapsed claim");
+  const taken = await r.store.claim("run-b", "runner-2", { leaseMs: LEASE });
+  assert.ok(taken);
+  assert.equal(await tools.runSignInSaved(r.store, KEY, r.claims["run-b"], b)(released(), "released"), false, "a lost claim");
+  assert.equal((await viewOf(r.store, "agent-a", "browserbase")).verified_at, null);
+  assert.equal((await viewOf(r.store, "agent-b", "kernel")).verified_at, null);
+  // A sign-in saved afresh since the run was handed the old one is not the one it saved: not verified by it.
+  const fresh = await r.store.claim("run-a", "runner-2", { leaseMs: LEASE });
+  const handed = await signIns.runSignIn(r.store, KEY, fresh, "browserbase");
+  await signIns.saveSignIn(r.store, KEY, { agentId: "agent-a", provider: "browserbase", pointer: pointer("bb-context-new") });
+  assert.equal(await signIns.verifyRunSignIn(r.store, KEY, fresh, handed, Date.parse("2026-11-09T10:15:30.000Z")), false, "a pointer replaced since");
+  assert.equal((await viewOf(r.store, "agent-a", "browserbase")).verified_at, null);
 });
 
 test.todo("a runner-path run's browser opens its sessions on the handed sign-in end to end (a session's profile, its save on release and the sign-in's verified_at): waits on tl-jobs' install lifecycle (onConversation, beforeResume, beforeRelease) and E2r3's browser binding on the runner");
