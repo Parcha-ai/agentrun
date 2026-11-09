@@ -249,8 +249,8 @@ export async function archilMount({ root, mount, self: computer, releaseOlder, t
 const MUTATING = new Set<DaemonMethod>(["files.write", "files.move", "files.remove", "files.mkdir", "tar.push.end", "exec.run", "process.start", "process.write", "process.signal", "process.wait"]);
 
 /**
- * A computerd client whose every call that may change the folder (files.write, move, remove and mkdir; tar.push.end;
- * exec.run; process.start, which makes its log and the folders above it; process.write and signal; a process seen
+ * A computerd client whose every call that may change the folder (files.write, move, remove and mkdir; tar.push.end, and
+ * a tar.push.write that failed, which ends the push with no tar.push.end once its extraction stops; exec.run; process.start, which makes its log and the folders above it; process.write and signal; a process seen
  * ended, by process.wait or a process.read that says so) syncs before it answers, through mount.sync, coalesced: a
  * call during a sync in flight waits for it, then shares one more. A failed sync fails the call in words; a call that
  * failed still syncs, and answers its own error. A caller whose signal fires stops waiting, answered "aborted" in words
@@ -284,7 +284,10 @@ export function syncingClient(client: ComputerClient): ComputerClient {
 		async call<M extends DaemonMethod>(method: M, params: DaemonMethods[M]["params"], options?: { signal?: AbortSignal }) {
 			const result = await client.call(method, params, options);
 			const ended = method === "process.read" && result.ok && (result.value as DaemonMethods["process.read"]["result"]).exited;
-			if (!MUTATING.has(method) && !ended) return result;
+			// A push write that failed has ended the push (the daemon drops it once its extraction stops): no tar.push.end
+			// will come to sync what it wrote before.
+			const pushEnded = method === "tar.push.write" && !result.ok;
+			if (!MUTATING.has(method) && !ended && !pushEnded) return result;
 			// The sync is shared and goes on whatever this caller does; a caller whose signal fires stops waiting for it.
 			const shared = sync();
 			const signal = options?.signal;
