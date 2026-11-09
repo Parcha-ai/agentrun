@@ -12,7 +12,7 @@ import { fileURLToPath } from "node:url";
 const { createAdapterLoop } = await import("../dist/runner/adapter-loop.js");
 const { resolveHarness } = await import("../dist/runner/adapters/index.js");
 const { facts } = await import("../dist/harness-opencode/facts.js");
-const { MAX_RESTARTS } = await import("../dist/runner/conformance/harness.js");
+const { CLI_OUTPUT_LIMIT_UNSUPPORTED, MAX_RESTARTS } = await import("../dist/runner/conformance/harness.js");
 
 process.env.AGENTRUN_OPENCODE_STANDIN = "1";
 const STAND_IN = fileURLToPath(new URL("./fixtures/fake-opencode-serve.mjs", import.meta.url));
@@ -116,6 +116,7 @@ export const openCodeSubject = {
   // What its adapter declares (steer false, rerunsStarted false): the suite derives the cases those rule out.
   facts,
   unsupported: {
+    ...CLI_OUTPUT_LIMIT_UNSUPPORTED,
     "crash-before-intent-process": "the OpenCode stand-in runs only under a test runner, and the conformance runner process is none (the in-process crash case covers the point)",
     "crash-after-intent-process": "the OpenCode stand-in runs only under a test runner, and the conformance runner process is none (the in-process crash case covers the point)",
     "stalled-past-lease-process": "the OpenCode stand-in runs only under a test runner, and the conformance runner process is none",
