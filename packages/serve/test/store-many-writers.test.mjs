@@ -9,7 +9,7 @@ import { test } from "node:test";
 import { BACKGROUND_CONTEXT } from "@earendil-works/chord/context";
 import { commitWrites } from "@earendil-works/pi-durable/testing";
 import { queued, storeOn } from "./store-helpers.mjs";
-import { client, postgresOnly, schemaOf } from "./store-target.mjs";
+import { client, postgresOnly, raw, schemaOf } from "./store-target.mjs";
 
 const { endedReason, Fenced, RunFinal, SignInHandedTo, TriggerFull } = await import("../dist/store/index.js");
 
@@ -66,6 +66,67 @@ async function commitInFlight(t, store, file, claim, watcher) {
   const pid = await heldUp(watcher, table);
   return { commit, pid, journal, letGo: () => table.sql("ROLLBACK") };
 }
+
+/** Once two sessions wait behind `holder`: both blocked by its locks, or one blocked by them and the other by that one. */
+async function twoHeldUp(watcher, holder) {
+  for (;;) {
+    const seen = await watcher.query(
+      `SELECT count(*)::int AS n FROM pg_stat_activity w WHERE $1 = ANY(pg_blocking_pids(w.pid))
+         OR EXISTS (SELECT 1 FROM pg_stat_activity f WHERE $1 = ANY(pg_blocking_pids(f.pid)) AND f.pid = ANY(pg_blocking_pids(w.pid)))`,
+      [holder.pid],
+    );
+    if (seen.rows[0].n >= 2) return;
+    await new Promise((resolve) => setImmediate(resolve));
+  }
+}
+
+test("two commits of one run's journal at once each take a seq of their own: the second reads the journal's seq only after the first has moved it on", ONLY, async (t) => {
+  const { store, file } = await storeOn(t);
+  await queued(store);
+  const claim = await store.claim("run-1", "runner-a", { leaseMs: 30_000 });
+  const watcher = await watcherOf(t);
+  const journal = store.journal(claim);
+  await commitWrites(journal, [{ type: "conversation", value: { id: 1 } }], BACKGROUND_CONTEXT);
+  const entry = async () => ({ type: "entry", value: { id: await journal.mintId(), conversationId: 1, kind: "pi.user", model: [{ role: "user", content: "Go." }] } });
+  const [first, second] = [await entry(), await entry()];
+  // The journal's own tables held by another session: each commit stops past what it reads first, until they are let go.
+  const tables = await otherWriter(t, file);
+  await tables.sql("LOCK TABLE pi_entries, pi_record_ids IN ACCESS EXCLUSIVE MODE");
+  const both = Promise.all([commitWrites(journal, [first], BACKGROUND_CONTEXT), commitWrites(journal, [second], BACKGROUND_CONTEXT)]);
+  both.catch(() => undefined);
+  await twoHeldUp(watcher, tables);
+  await tables.sql("ROLLBACK");
+  await both;
+  const db = await raw(file);
+  const metadata = await db.get("SELECT next_seq FROM pi_metadata WHERE run_id = 'run-1'");
+  await db.close();
+  assert.equal(Number(metadata.next_seq), 4, "three commits, three seqs (1, 2, 3): none taken twice");
+});
+
+test("a command written while a journal commit that ends the run is in flight waits for that commit, then is refused, never left beside the ended run", ONLY, async (t) => {
+  const { store, file } = await storeOn(t);
+  await queued(store);
+  const claim = await store.claim("run-1", "runner-a", { leaseMs: 30_000 });
+  const watcher = await watcherOf(t);
+  const journal = store.journal(claim);
+  await commitWrites(journal, [{ type: "conversation", value: { id: 1 } }], BACKGROUND_CONTEXT);
+  const end = await journal.mintId();
+  journal.stage({ run: { state: "ended" }, effect: end });
+  // The ending commit held up past its run row's end (run-patch.ts deletes the run's live row next) by another session.
+  const live = await otherWriter(t, file);
+  await live.sql("LOCK TABLE run_live IN ACCESS EXCLUSIVE MODE");
+  const commit = commitWrites(journal, [{ type: "entry", value: { id: end, conversationId: 1, kind: "agentrun.end", data: { state: "ended" } } }], BACKGROUND_CONTEXT);
+  commit.catch(() => undefined);
+  const committing = await heldUp(watcher, live);
+  const command = store.command("run-1", { kind: "steer", body: { text: "and then" } });
+  const seen = await whileHeld(command, committing, watcher);
+  await live.sql("ROLLBACK");
+  await commit;
+  const outcome = await command.then(() => "written", (error) => error);
+  assert.equal(seen.settled, "waits", `the command waited for the ending commit (it ${seen.settled})`);
+  assert.ok(outcome instanceof RunFinal, `then it was refused, the run final: ${outcome}`);
+  assert.deepEqual((await store.commands("run-1", 0)).filter((row) => row.takenAt === null), [], "no command of the ended run is left untaken");
+});
 
 test("a renew never waits for a journal commit in flight on its run: the commit holds the run's row shared, never against a lease's move", ONLY, async (t) => {
   const { store, file } = await storeOn(t);

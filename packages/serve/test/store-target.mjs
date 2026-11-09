@@ -26,8 +26,11 @@ export const postgresOnly = (what) => ({ skip: onPostgres ? false : `Postgres on
 const pg = onPostgres ? (await import("pg")).default : undefined;
 const { numberParams } = onPostgres ? await import("../dist/store/postgres/connection.js") : {};
 
-/** This test file's tag in its schemas' names: the same for every run of the file, so a later run sweeps an earlier one's. */
+/** This test file's tag in its schemas' names: the same for every run of the file, so a later run sweeps an earlier one's
+ *  (a process no longer running; sweep). */
 const fileTag = createHash("sha256").update(basename(process.argv[1] ?? "unknown")).digest("hex").slice(0, 10);
+/** This file's tag, as its schemas' names carry it (a test of the sweep makes such names). */
+export const schemaTag = fileTag;
 let made = 0;
 let swept;
 
@@ -43,13 +46,27 @@ export async function client(schema) {
   return c;
 }
 
-/** Drops the schemas an earlier run of this file left (once per process). */
+/** Whether process `pid` on this host is still running: its schemas are in use (another run of the same file at once). */
+function running(pid) {
+  try {
+    process.kill(pid, 0);
+    return true;
+  } catch (error) {
+    return error?.code === "EPERM";
+  }
+}
+
+/** Drops the schemas an earlier run of this file left (once per process): only those of a process no longer running, never
+ *  those of another run of the file going on at the same time. Each schema's name carries its process's pid. */
 function sweep() {
   swept ??= (async () => {
     const c = await client();
     try {
       const left = await c.query("SELECT nspname FROM pg_namespace WHERE nspname LIKE $1", [`t\\_${fileTag}\\_%`]);
-      for (const { nspname } of left.rows) if (!nspname.includes(`_${process.pid}_`)) await c.query(`DROP SCHEMA IF EXISTS ${nspname} CASCADE`);
+      for (const { nspname } of left.rows) {
+        const pid = Number(new RegExp(`^t_${fileTag}_(\\d+)_\\d+$`).exec(nspname)?.[1]);
+        if (Number.isSafeInteger(pid) && pid !== process.pid && !running(pid)) await c.query(`DROP SCHEMA IF EXISTS ${nspname} CASCADE`);
+      }
     } finally {
       await c.end();
     }

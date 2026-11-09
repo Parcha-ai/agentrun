@@ -128,14 +128,18 @@ export class PgConnection implements StoreConnection {
   readonly #owner: pg.Client | undefined;
   readonly #busyTimeoutMs: number;
   #closed = false;
+  /** Set once the owner lock's connection ended or failed: every call is refused with it from then. */
+  #ownerLost: StoreOwned | undefined;
   /** Calls in flight: close waits for them. */
   readonly #inFlight = new Set<Promise<unknown>>();
   /** Each unique index's columns, in its order, read from the catalog once (a unique violation names its index). */
   readonly #indexColumns = new Map<string, Promise<string[]>>();
-  readonly #columnsOf = (index: string): Promise<string[]> => {
+  /** `index`'s columns, read through `via` (the pool, or a transaction's own client once rolled back: a pool of one has no
+   *  second client to read it on). */
+  readonly #columnsOf = (index: string, via: Queryable = this.#pool): Promise<string[]> => {
     let columns = this.#indexColumns.get(index);
     if (!columns) {
-      columns = this.#pool.query(
+      columns = via.query(
         `SELECT a.attname AS column FROM pg_index x JOIN pg_class i ON i.oid = x.indexrelid JOIN pg_namespace n ON n.oid = i.relnamespace
            CROSS JOIN LATERAL unnest(x.indkey) WITH ORDINALITY AS k(attnum, ord) JOIN pg_attribute a ON a.attrelid = x.indrelid AND a.attnum = k.attnum
            WHERE n.nspname = $1 AND i.relname = $2 ORDER BY k.ord`,
@@ -154,6 +158,14 @@ export class PgConnection implements StoreConnection {
     this.where = where;
     this.#busyTimeoutMs = busyTimeoutMs;
     this.dialect = postgresDialect(schema, { testClock });
+    // The owner lock lives on its own connection: when that connection ends or fails (the database went away, or killed
+    // it), the lock is gone and another server may take the schema. From then this store refuses every call (StoreOwned),
+    // never writing beside the server that holds the schema now.
+    const lost = () => {
+      if (!this.#closed) this.#ownerLost ??= new StoreOwned(`the owner lock on the Postgres schema ${schema} was lost (its connection ended): this server no longer holds the store`);
+    };
+    owner?.on("error", lost);
+    owner?.on("end", lost);
   }
 
   /** The pool on `url` in `schema`, and (owner) the owner lock: StoreOwned when another server holds the schema. */
@@ -163,7 +175,7 @@ export class PgConnection implements StoreConnection {
     const config: pg.PoolConfig = { connectionString: url, options: session, types, max: poolSize, allowExitOnIdle: true, application_name: "agentrun-store" };
     let lock: pg.Client | undefined;
     if (owner) {
-      lock = new pg.Client({ connectionString: url, types, application_name: "agentrun-store-owner" });
+      lock = new pg.Client({ connectionString: url, types, application_name: `agentrun-store-owner:${schema}` });
       // A lost owner connection lets the lock go; the error is not left unhandled.
       lock.on("error", () => undefined);
       await lock.connect();
@@ -184,6 +196,7 @@ export class PgConnection implements StoreConnection {
   /** `work`, counted in flight, refused after close. */
   #call<T>(work: () => Promise<T>): Promise<T> {
     if (this.#closed) return Promise.reject(new StoreClosed());
+    if (this.#ownerLost) return Promise.reject(this.#ownerLost);
     const running = work();
     this.#inFlight.add(running);
     const done = () => void this.#inFlight.delete(running);
@@ -229,10 +242,22 @@ export class PgConnection implements StoreConnection {
       const check = () => {
         if (!live) throw new Error("the store's transaction is over: its handle takes no more statements");
       };
+      // A unique violation names its index; its columns are read on this transaction's own client once it is rolled back,
+      // never on a second client of the pool, which a pool of one does not have (the read would wait out the deadline).
+      let rolledBack = false;
+      const columnsOf = async (index: string) => {
+        if (!rolledBack) {
+          rolledBack = true;
+          await client.query("ROLLBACK");
+        }
+        return this.#columnsOf(index, client);
+      };
       const run = async (statement: Statement) => {
         check();
+        // A statement that failed has aborted the transaction (or rolled it back): no later statement of it runs.
+        if (broken) throw broken;
         try {
-          return await step(client, statement, this.#columnsOf, deadlineMs);
+          return await step(client, statement, columnsOf, deadlineMs);
         } catch (error) {
           // A statement that failed has aborted the transaction: no later statement of it runs.
           broken ??= error as Error;

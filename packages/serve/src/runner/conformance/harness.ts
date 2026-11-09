@@ -353,6 +353,12 @@ async function crashThenResume(subject: ConformanceSubject, t: { after(fn: () =>
 
 /** The runner process the process cases start (child.ts), and its environment: never a test runner's own. */
 const CHILD = fileURLToPath(new URL("./child.js", import.meta.url));
+
+/** How a process case starts its runner process: its config (`config`) on argv, and the store's URL, which may hold a
+ *  password, on stdin, never argv or the environment, which another process of the user reads (ps, /proc). */
+export function processLaunch(config: object, storeUrl: string): { args: string[]; stdin: string } {
+  return { args: [CHILD, JSON.stringify(config)], stdin: `${JSON.stringify({ storeUrl })}\n` };
+}
 const childEnv = () => {
   const env = { ...process.env };
   delete env.NODE_TEST_CONTEXT;
@@ -366,8 +372,10 @@ async function processCrashThenResume(subject: ConformanceSubject, t: { after(fn
   const countFile = join(w.dir, "tool-runs");
   const { tools, ran } = suiteTools(countFile);
   const eventsFile = join(w.dir, "runner-process-events.jsonl");
-  const config = { dataDir: w.dir, storeUrl: w.storeUrl, storeEnv: w.storeEnv, module: subject.process!.module, export: subject.process!.export, tool, point, countFile, eventsFile, ...(stall ? { stopOnce: true } : {}) };
-  const child = spawn(process.execPath, [CHILD, JSON.stringify(config)], { env: childEnv(), stdio: ["ignore", "ignore", "pipe"] });
+  const config = { dataDir: w.dir, storeEnv: w.storeEnv, module: subject.process!.module, export: subject.process!.export, tool, point, countFile, eventsFile, ...(stall ? { stopOnce: true } : {}) };
+  const launch = processLaunch(config, w.storeUrl);
+  const child = spawn(process.execPath, launch.args, { env: childEnv(), stdio: ["pipe", "ignore", "pipe"] });
+  child.stdin!.end(launch.stdin);
   // Its end, listened for from its start: a process that ends while the case waits on something else (the fence's wait
   // returns on that end) is never missed by the wait for its death below.
   const exited = once(child, "exit").catch((error: unknown) => ["error", String(error)]) as Promise<[number | string | null, string | null]>;

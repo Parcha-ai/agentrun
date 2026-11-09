@@ -12,7 +12,7 @@ import { test } from "node:test";
 import { queued, storeOn } from "./store-helpers.mjs";
 import { client, dropSchema, freshSchema, PG_URL, postgresOnly, schemaOf } from "./store-target.mjs";
 
-const { migrate, migrationsIn, openPostgresStore, postgresWhere, openStore, PgConnection, SchemaVersionUnknown, storeTarget, StoreBusy, StoreDeadline, StoreOwned } = await import("../dist/store/index.js");
+const { migrate, migrationsIn, openPostgresStore, postgresWhere, openStore, PgConnection, SchemaVersionUnknown, storeTarget, StoreBusy, StoreConstraint, StoreDeadline, StoreOwned } = await import("../dist/store/index.js");
 const { RunnerRefused, startRunnerProcess } = await import("../dist/runner/main.js");
 
 const ONLY = postgresOnly("the Postgres adapter");
@@ -56,6 +56,42 @@ test("a Postgres store's where is its place: the server and a runner on one sche
   const elsewhere = await openPostgresStore({ url: PG_URL, schema: other });
   t.after(() => elsewhere.close());
   assert.notEqual(elsewhere.where, server.where);
+});
+
+test("a server whose owner lock's connection is lost refuses every call from then (StoreOwned), and another server takes the schema", ONLY, async (t) => {
+  const schema = await schemaFor(t);
+  const server = await openPostgresStore({ url: PG_URL, schema });
+  t.after(() => server.close());
+  await server.agents.put({ id: "agent-1", name: "Agent" });
+  // The owner lock's connection ended from outside (the database restarted it, an operator killed it): the lock is gone.
+  // Found by the lock it holds: the advisory lock (hashtext(schema), hashtext('owner')).
+  const killed = await sql(schema, `SELECT pg_terminate_backend(pid) AS gone FROM pg_locks WHERE locktype = 'advisory' AND granted AND objsubid = 2
+    AND classid::bigint = (hashtext($1)::bigint & 4294967295) AND objid::bigint = (hashtext('owner')::bigint & 4294967295)`, schema);
+  assert.deepEqual(killed.map((row) => row.gone), [true], "the owner lock's one connection ended");
+  // The store hears of it when the connection's end reaches it: each try before that is a write that still lands. Bounded by
+  // its own clock, never a sleep: a store that never hears of it fails here.
+  const deadline = Date.now() + 10_000;
+  let refused;
+  while (!refused && Date.now() < deadline) {
+    refused = await server.agents.put({ id: "agent-1", name: "Agent" }).then(() => undefined, (error) => error);
+    if (!refused) await new Promise((resolve) => setImmediate(resolve));
+  }
+  assert.ok(refused instanceof StoreOwned, `the next write is refused: ${refused}`);
+  await assert.rejects(server.agents.get("agent-1"), StoreOwned, "and so is a read");
+  const next = await openPostgresStore({ url: PG_URL, schema });
+  t.after(() => next.close());
+  assert.equal((await next.agents.get("agent-1"))?.name, "Agent", "another server holds the schema now");
+});
+
+test("a duplicate write on a store with a pool of one client is StoreConstraint naming its unique key, never a wait for a second client", ONLY, async (t) => {
+  const schema = await schemaFor(t);
+  const store = await openPostgresStore({ url: PG_URL, schema, poolSize: 1 });
+  t.after(() => store.close());
+  await store.agents.create({ id: "agent-1", name: "Agent" }, { id: "rev-1", kind: "agentic", body: { instructions: "Answer." } });
+  const error = await store.agents.create({ id: "agent-1", name: "Agent" }, { id: "rev-2", kind: "agentic", body: { instructions: "Answer." } }).then(() => null, (e) => e);
+  assert.ok(error instanceof StoreConstraint, `refused as a constraint, not a deadline: ${error}`);
+  assert.deepEqual(error.unique, { table: "agents", columns: ["id"] }, "naming its key");
+  assert.equal((await store.agents.get("agent-1"))?.name, "Agent", "and the store's one client is free again");
 });
 
 test("a second server on the same schema is refused (StoreOwned); once the first closes, a server opens it", ONLY, async (t) => {
