@@ -69,6 +69,14 @@ export type LearningCommitResult =
   | { readonly ok: false; readonly reason: "conflict" | "refused"; readonly problems: readonly Problem[] }
   | { readonly ok: false; readonly reason: "unavailable"; readonly error: string };
 
+/** What the grader's call is lent for one claim: a journal of the learning run under that claim, its own to open and
+ *  close (where its request is booked: runBooking over the run's sessions), and the flush that makes a request's record
+ *  durable before it leaves. */
+export interface GraderRun {
+  journal(): Journal;
+  flush(): Promise<void>;
+}
+
 export interface LearningLoopDeps {
   /** The run that learned, from the learning run's launch row (its input's runId). */
   sourceOf(learningRunId: string): Promise<{ readonly runId: string; readonly agentId: string; readonly instructions?: string } | undefined>;
@@ -80,7 +88,7 @@ export interface LearningLoopDeps {
   /** Main as the grader reads it, from the folder's snapshot; problems when the proposal can't be graded on it. */
   readMain(ws: unknown, proposal: KeptProposal): Promise<GradeMain | { readonly problems: readonly Problem[] }>;
   /** One grader call, through the kernel's model proxy and the cap, booked to the agent's learning meter. */
-  ask(request: { readonly prompt: string; readonly maxTokens: number }, signal: AbortSignal): Promise<{ readonly text: unknown; readonly usd: number | null; readonly tokens?: Tokens | null }>;
+  ask(request: { readonly prompt: string; readonly maxTokens: number }, signal: AbortSignal, run: GraderRun): Promise<{ readonly text: unknown; readonly usd: number | null; readonly tokens?: Tokens | null }>;
   /** The folder's one write. */
   commit(ws: unknown, change: MergeChange): Promise<LearningCommitResult>;
   /** The clock (epoch ms), for a parked run's wake. */
@@ -246,7 +254,7 @@ export function createLearningLoop(learning: LearningLoopDeps): (deps: LoopDeps)
               const timer = AbortSignal.timeout(GRADE_TIMEOUT_MS);
               let answer: Awaited<ReturnType<LearningLoopDeps["ask"]>>;
               try {
-                answer = await learning.ask({ prompt, maxTokens: GRADE_MAX_TOKENS }, AbortSignal.any([deps.signal, timer]));
+                answer = await learning.ask({ prompt, maxTokens: GRADE_MAX_TOKENS }, AbortSignal.any([deps.signal, timer]), { journal: () => deps.journal(claim), flush: () => deps.flush() });
               } catch (error) {
                 usd = null;
                 tokens = null;
