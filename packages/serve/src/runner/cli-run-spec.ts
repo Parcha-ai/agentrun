@@ -30,6 +30,7 @@ import { type ModelRef, providerModels, runModels } from "../model.js";
 import { firstMessage } from "../run-manifest.js";
 import { learningStartOf, type RunLaunch } from "../run-launch.js";
 import { readsFiles, systemOf } from "../skills.js";
+import { DATA_ENV } from "../server-fs.js";
 import { INPUTS_DIR, UPLOADS_DIR, Uploads } from "../uploads.js";
 import { isObject } from "../validate.js";
 import { runFolder, scratchFolder } from "../workspace/paths.js";
@@ -175,17 +176,20 @@ export async function cliRunSpecFromLaunch(launch: RunLaunch, run: AdapterRun, d
   const { system: instructions, native } = await systemOf(laid, Object.keys(body.skills ?? {}), ws.workspace, check, { onDemand: readsFiles(granted) });
   const guidance = effortGuidance(launch.effort);
 
-  // The run's model (the launch's, pinned at start, else the revision's) and its adapter, as main builds them.
+  // The run's model (the launch's, pinned at start, else the revision's) and its adapter, as main builds them, on the
+  // environment main's server gives its runs: the server's data directory named (DATA_ENV), so the CLI's install is
+  // looked up there (the data's harnesses directory), never under the runner's HOME.
+  const env: NodeJS.ProcessEnv = { ...deps.env, [DATA_ENV]: deps.data };
   const ref = launch.model ? `${launch.model.provider}/${launch.model.modelId}` : body.model;
-  const chosen = await modelsOf(entry, deps.env, ref);
-  const built = await entry.adapter(deps.env, { model: chosen.model, models: chosen.models, unpriced: chosen.unpriced, ...(native.length ? { skills: native } : {}) });
+  const chosen = await modelsOf(entry, env, ref);
+  const built = await entry.adapter(env, { model: chosen.model, models: chosen.models, unpriced: chosen.unpriced, ...(native.length ? { skills: native } : {}) });
   // The harness's own session options, its private directory and its working directory (SessionIO's dir and cwd, which
   // every CLI adapter reads), set on its open here, so the loop lends the session nothing of its own.
   const adapter: typeof built = { ...built, open: (spec, io) => built.open(spec, { ...io, dir, cwd: scratch }) };
 
   // The run's cap (its launch's maxCostUsd): the kernel's check before each paid request, at the catalog price of the
   // model that bills the run, and what a refusal does to the run, with the kernel's raise rule.
-  const priced = entry.priceModel(deps.env, chosen.model);
+  const priced = entry.priceModel(env, chosen.model);
   const listed = chosen.models.getModel(priced.provider, priced.modelId) as { cost?: Partial<CapPrice>; maxTokens?: number } | undefined;
   const capModel = capModelOf(priced.modelId, facts.wire, listed, chosen.unpriced.has(priced.modelId) || listed === undefined);
   const capUsd = launch.maxCostUsd;

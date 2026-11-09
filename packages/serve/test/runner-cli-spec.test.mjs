@@ -109,8 +109,9 @@ async function runOn(t, { harness, model, env: envOf, prepare }) {
 
 /** A stored `harness` run's spec, built for its claim as the dispatch builds it (no session opened), with the CLI's
  *  working directory (the run's scratch). OpenCode on its stand-in: building its adapter starts nothing. `archil`: Mode 2
- *  over that disk fake, Archil's control plane the loopback fake (`control`, its requests recorded). */
-async function specOn(t, harness, { archil } = {}) {
+ *  over that disk fake, Archil's control plane the loopback fake (`control`, its requests recorded). `env`: more of the
+ *  runner's environment; `model`: the launch's model. */
+async function specOn(t, harness, { archil, env: more = {}, model = { provider: "openai", modelId: "gpt-5" } } = {}) {
   const control = archil ? await archilControlFake() : undefined;
   if (control) t.after(() => control.close());
   const dir = mkdtempSync(join(process.env.TMPDIR ?? tmpdir(), "runner-cli-spec-"));
@@ -126,7 +127,7 @@ async function specOn(t, harness, { archil } = {}) {
     rmSync(dir, { recursive: true, force: true });
   });
   await server.agents.create({ id: "agent-1", name: "Agent" }, { id: "rev-1", kind: "agentic", body: { instructions: "Answer.", harness, tools: ["read", "write", "bash"] } });
-  const launch = { input: { content: "Write a file." }, title: "t", place: { mode: "runner" }, harness, model: { provider: "openai", modelId: "gpt-5" } };
+  const launch = { input: { content: "Write a file." }, title: "t", place: { mode: "runner" }, harness, model };
   await server.runs.create({ id: RUN, agentId: "agent-1", revisionId: "rev-1" }, { body: launch });
   // Mode 2: the server's Archil settings row, and its account key sealed under the runner's seal key, as the server saves
   // them. No disk token is kept: a computer's mount credential is minted per run from the account key.
@@ -139,7 +140,7 @@ async function specOn(t, harness, { archil } = {}) {
   const registry = createRegistry();
   let models = createModels();
   harnessRun = await Harness.open(store.journal(claim), { models: () => models, registry, onReport: () => {} }, ctx);
-  const env = { AGENT_MODEL_BASE_URL: "http://127.0.0.1:9", AGENT_MODEL_API_KEY: `not-a-secret-${"gateway"}`, [OPENCODE_STANDIN_ENV]: JSON.stringify({ command: process.execPath, args: [STAND_IN] }) };
+  const env = { AGENT_MODEL_BASE_URL: "http://127.0.0.1:9", AGENT_MODEL_API_KEY: `not-a-secret-${"gateway"}`, [OPENCODE_STANDIN_ENV]: JSON.stringify({ command: process.execPath, args: [STAND_IN] }), ...more };
   const deps = { env, data: dir, journal: (c) => store.journal(c), store, sealKey: SEAL_KEY, routeOf: async () => assert.fail("no pi route"), computerForClaim: noComputer().forClaim, ...(archil ? { makeArchilDisk: () => archil, mountControl: { baseUrl: control.baseUrl } } : {}) };
   built = await spec.cliRunSpecFromLaunch(launch, { harness: harnessRun, registry, setModels: (given) => (models = given) }, deps, claim);
   return { spec: built, dir, cwd: scratchFolder(dir, "agent-1", RUN), control };
@@ -202,6 +203,18 @@ test("an opencode run, claimed by the runner, runs its first turn through the di
   // The release follows the run's end commit (the loop lets its resources go after it), so it is waited for, not raced.
   await until(() => computers.released() === 1, "the computer's release");
   assert.equal(computers.released(), 1, "released once");
+});
+
+test("a CLI's install is looked up in the server's data directory (deps.data), as main's server names it to its runs (AGENTRUN_SERVE_DATA), never under the runner's HOME/.local/share", async (t) => {
+  // The runner's own environment names no data directory, and its HOME is a folder of the test's: claude-agent's Agent SDK
+  // is installed in neither, so building the spec says where it looked.
+  const home = mkdtempSync(join(process.env.TMPDIR ?? tmpdir(), "runner-cli-home-"));
+  t.after(() => rmSync(home, { recursive: true, force: true }));
+  const env = { HOME: home, XDG_DATA_HOME: "", [DATA_ENV]: "", ANTHROPIC_API_KEY: `not-a-secret-${"anthropic"}` };
+  const failed = await specOn(t, "claude-agent", { env, model: { provider: "anthropic", modelId: "claude-haiku-4-5" } }).then(() => undefined, (error) => error);
+  assert.ok(failed, "the Agent SDK is installed nowhere here, so the spec is refused");
+  assert.match(failed.message, new RegExp(`${join(process.env.TMPDIR ?? tmpdir(), "runner-cli-spec-").replace(/[.*+?^${}()|[\]\\]/g, "\\$&")}[^/\\s]+/harnesses/claude-agent`), `looked up under the server's data: ${failed.message}`);
+  assert.ok(!failed.message.includes(join(home, ".local", "share")), `nothing under the runner's HOME/.local/share: ${failed.message}`);
 });
 
 test("a CLI's absolute path under its working directory is the run's folder: a write to <cwd>/x.txt lands as the workspace's x.txt, and a path outside both is refused", async (t) => {
