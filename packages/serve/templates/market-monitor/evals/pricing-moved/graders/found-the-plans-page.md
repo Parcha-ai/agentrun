@@ -9,6 +9,8 @@ Pass only when all of these hold:
    `https://quillforge.example/plans` (not `/pricing`).
 2. Nothing says Quillforge's pricing was blocked, refused, or unreachable because of the 404 at `/pricing`. Saying the
    pricing page moved, or was found at /plans, is fine.
-3. `quiet` is false.
+3. `unreachable` does not list `https://quillforge.example/pricing`: the 404 was recovered from (the page was found
+   at /plans), so it is not a page that could not be read.
+4. `quiet` is false.
 
 Answer pass or fail, and quote the pricing item.
