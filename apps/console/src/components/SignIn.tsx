@@ -64,12 +64,9 @@ export function SignIn({ mode, code = null, codeNeeded = false, onSubmit, proble
         <p className="mb-6 text-[15px] leading-relaxed text-[#aaa]">{COPY[mode].body}</p>
         {mode !== "token_link" && (
           <form className="space-y-5" onSubmit={(e) => { e.preventDefault(); void submit(); }}>
-            {/* The owner, for a password manager: it takes the text field before a password field as the login's username,
-                and would fill a saved login into the Setup code field (whose "off" it ignores). Never seen, never sent. */}
-            <input type="text" name="username" autoComplete="username" value="owner" readOnly tabIndex={-1} aria-hidden="true" className="sr-only" />
             {asksCode && (
               <Field label="Setup code" note="Find the setup code in the server's log (on Render, the Logs tab), or open the link the log prints. The server's API token (AGENTRUN_TOKEN) works here too.">
-                <input name="setup-code" value={setupCode} onChange={(e) => setSetupCode(e.target.value)} autoComplete="one-time-code" spellCheck={false} className={input} />
+                <input id="setup-code" name="setup-code" value={setupCode} onChange={(e) => setSetupCode(e.target.value)} autoComplete="one-time-code" spellCheck={false} className={input} />
               </Field>
             )}
             <Field label={FIELD[mode].label} note={setup ? "12 characters or more." : undefined}>

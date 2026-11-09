@@ -31,6 +31,10 @@ describe("signInProblem", () => {
     expect(signInProblem(err(wrong as never))).toBe("That is not the password.");
     expect(signInProblem(Object.assign(new ClientError(429, "rate_limited", "too many sign-ins; try again later"), {}))).toBe("Too many sign-ins from here. Try again in 15 minutes.");
   });
+  it("on setup: a refused code, from the link or typed, says what to do: the newest link in the server's log, or the token", () => {
+    const refused = new ClientError(403, "forbidden", "that is not the setup code in the server's log");
+    expect(signInProblem(refused)).toBe("That setup code was refused: open the newest setup link in the server's log, or paste the server's token (AGENTRUN_TOKEN) here.");
+  });
   it("on setup: a password the server refuses names why, and an owner already set says to sign in", () => {
     expect(signInProblem(err(short as never))).toBe((short.body.error as { fields?: { message: string }[] }).fields?.[0]?.message ?? short.body.error.message);
     expect(signInProblem(err(again as never))).toBe("This server has its owner already: sign in.");
@@ -41,6 +45,16 @@ describe("takeSetupCode", () => {
   it("takes the setup code from the fragment once and leaves the rest of it", () => {
     expect(takeSetupCode("#code=abc-123")).toEqual({ code: "abc-123", rest: "" });
     expect(takeSetupCode("#code=abc&x=1")).toEqual({ code: "abc", rest: "#x=1" });
+  });
+  it("keeps only the printed code's base64url run: a character a chat app added after it (or an invisible one) is no part of it", () => {
+    expect(takeSetupCode("#code=abc-123.").code).toBe("abc-123");
+    expect(takeSetupCode("#code=abc_9)").code).toBe("abc_9");
+    expect(takeSetupCode("#code=Abc123%E2%80%8B").code).toBe("Abc123");
+    expect(takeSetupCode("#code=Abc123%E2%81%A0").code).toBe("Abc123");
+    expect(takeSetupCode("#code=Abc123%EF%BB%BF").code).toBe("Abc123");
+    // One inside the code ends the run there: what follows is not sent, and the server says the code was refused.
+    expect(takeSetupCode("#code=Abc%E2%80%8B123").code).toBe("Abc");
+    expect(takeSetupCode("#code=abc-123.&x=1")).toEqual({ code: "abc-123", rest: "#x=1" });
   });
   it("is nothing when the fragment has no code (a console route)", () => {
     expect(takeSetupCode("#/runs/r1")).toEqual({ code: null, rest: "#/runs/r1" });
