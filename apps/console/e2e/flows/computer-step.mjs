@@ -42,7 +42,7 @@ export default {
     const listed = await api("GET", "/computers");
     const tools = listed.body.kinds.find((k) => k.kind === "sandbox").tools.join(", ");
     check((await page.getByLabel("The loop gets").innerText()).includes(tools), `the step's tools are not the served ${JSON.stringify(tools)}`);
-    const saved = page.waitForResponse((r) => r.request().method() === "PUT" && new URL(r.url()).pathname === `/v2/agents/${encodeURIComponent(id)}`);
+    const saved = page.waitForResponse((r) => r.request().method() === "PUT" && new URL(r.url()).pathname === `/v2/agents/${encodeURIComponent(id)}/definition`);
     await page.getByRole("button", { name: "Save revision", exact: true }).click();
     const response = await saved;
     check(response.ok(), `the save answered ${response.status()}: ${await response.text()}`);
