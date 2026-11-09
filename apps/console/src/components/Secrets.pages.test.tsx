@@ -120,7 +120,7 @@ describe("MCP servers and their credentials", () => {
   const radio = (host: Element, value: string) => host.querySelector<HTMLInputElement>(`input[name="mcp-auth"][value="${value}"]`)!;
 
   it("one row per server's secret, said as what it is, with no second line of its own", async () => {
-    const host = await mount(createElement(McpServersPage, { v2: v2(), atRest: "sealed", writable: true }));
+    const host = await mount(createElement(McpServersPage, { v2: v2(), writable: true }));
     for (const name of ["linear", "fake", "gh"]) expect(host.querySelectorAll(`[data-server="${name}"] [data-secret]`)).toHaveLength(1);
     expect(host.querySelector('[data-secret="mcp:fake"]')!.textContent).toContain("Bearer token");
     expect(host.querySelector('[data-secret="mcp:linear"]')!.textContent).toContain("Headers");
@@ -130,14 +130,14 @@ describe("MCP servers and their credentials", () => {
   });
 
   it("bearer and headers: Replace opens the server's form on the password session; off it, no way to type one", async () => {
-    const on = await mount(createElement(McpServersPage, { v2: v2(), atRest: "sealed", writable: true }));
+    const on = await mount(createElement(McpServersPage, { v2: v2(), writable: true }));
     const row = on.querySelector('[data-secret="mcp:linear"]')!;
     expect(labels(row)).toEqual(["Replace"]);
     await act(async () => { [...row.querySelectorAll("button")].find((b) => b.textContent?.trim() === "Replace")!.click(); });
     expect(on.querySelector('input[name="mcp-header-value-0"]')).not.toBeNull();
     act(() => root?.unmount()); document.body.innerHTML = "";
 
-    const off = await mount(createElement(McpServersPage, { v2: v2(), atRest: "sealed", writable: false }));
+    const off = await mount(createElement(McpServersPage, { v2: v2(), writable: false }));
     expect(labels(off.querySelector('[data-secret="mcp:linear"]')!)).toEqual([]);
     expect(off.textContent).toContain(SIGN_IN_TO_CHANGE);
     await act(async () => { [...off.querySelectorAll("button")].find((b) => b.textContent?.trim() === "Add server")!.click(); });
@@ -146,14 +146,14 @@ describe("MCP servers and their credentials", () => {
   });
 
   it("OAuth: no Paste or Replace; its one Sign in is the write, on the password session only", async () => {
-    const on = await mount(createElement(McpServersPage, { v2: v2(), atRest: "sealed", writable: true }));
+    const on = await mount(createElement(McpServersPage, { v2: v2(), writable: true }));
     const gh = on.querySelector('[data-server="gh"]')!;
     expect(labels(gh.querySelector('[data-secret="mcp:gh"]')!)).toEqual([]);
     expect(gh.querySelector('[data-secret="mcp:gh"]')!.textContent).toContain("From sign-in");
     expect(labels(gh).filter((l) => /^Sign in/.test(l ?? ""))).toEqual(["Sign in again"]);
     act(() => root?.unmount()); document.body.innerHTML = "";
 
-    const off = await mount(createElement(McpServersPage, { v2: v2(), atRest: "sealed", writable: false, whyNot: "token" }));
+    const off = await mount(createElement(McpServersPage, { v2: v2(), writable: false, whyNot: "token" }));
     expect(labels(off.querySelector('[data-server="gh"]')!).filter((l) => /^Sign in/.test(l ?? ""))).toEqual([]);
     expect(off.textContent).toContain("Open the console from the server's link to change secrets.");
   });

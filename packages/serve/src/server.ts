@@ -33,7 +33,7 @@ import { healthOf, hostMemory, maxRunsOf, MIN_FREE_MIB, runsThatFit } from "./ho
 import { IMPORT_ASKED } from "./import.js";
 import type { ImportAnswer, ImportTask } from "./import-worker.js";
 import type { MessageOrigin } from "@parcha/pi-durable-agent/timeline";
-import { gradeModelOf, LEARNING_LABEL, learningBudgetOf, type LearningMode, learningOf } from "./learning.js";
+import { gradeModelOf, LEARNING_LABEL, learningBudgetOf, type LearningMode, learningOf, seedOf } from "./learning.js";
 import { agentLearning, learningLog, learningNotes, noteBody, pendingCount, readNote, secretsShown, sendNote, writeNote } from "./learning-routes.js";
 import { answerLlms, MCP_PATH, mcpEndpoint } from "./mcp.js";
 import { openapiDocument, servedOpenapi, UNSUPPORTED } from "./openapi.js";
@@ -57,6 +57,7 @@ import { listRunFiles as listRunFilesOverStore, readRunFile as readRunFileOverSt
 import { triggerTargets, type TriggerTargetDeps } from "./trigger-targets.js";
 import { listRuns as listRunsOverStore, readRun as readRunOverStore, runOfOrigin as runOfOriginOverStore } from "./store-reads/runs.js";
 import { runEntries, runTimeline } from "./store-reads/journal.js";
+import { metersOverStore } from "./store-reads/cap.js";
 import { watchRun } from "./live/stream.js";
 import { stats as statsOverStore } from "./store-reads/stats.js";
 import { analytics as analyticsOverStore } from "./store-reads/analytics.js";
@@ -81,7 +82,7 @@ import { startBoxRelay } from "./box-relay.js";
 import { vmRelay, type VmSdk } from "./box-relay-vm.js";
 import { memoryMbOf } from "./run-box.js";
 import { DOCUMENTS_ENV } from "./pdf-pages.js";
-import { CAP_MODES, type CapMode, meterFiguresIn } from "./cap.js";
+import { CAP_MODES, type CapMode } from "./cap.js";
 import { type Blocker, blockersOf, CODE_NODES_ENV, issueOf, MCP_HARNESSES, NOT_SET_UP, type RevisionShape } from "./runnable.js";
 import { handedSecret, holdMadeSecret, hostSecrets, SECRET_NAMES, secret, type StoredKeys, withSecrets } from "./secrets.js";
 import { isSecretWriteOperation, SECRET_WRITE_REFUSAL, secretsWritableFields, secretWriterFacts, writesSecret, writesSecretsAllowed } from "./secret-writes.js";
@@ -102,7 +103,7 @@ import { mcpServersOverStore } from "./mcp-servers-store.js";
 import { metaToolOf } from "./mcp-meta.js";
 import { MCP_SETTINGS_PAGE, signInCookie, startedHere } from "./mcp-oauth.js";
 import { type RunNotice, WEBHOOK_EVENTS, Webhooks } from "./webhooks.js";
-import { templateTriggerSecret, triggerMade, triggerRotated, webhookSaved, withTriggerSecret } from "./trigger-secrets-shown.js";
+import { templateApplied, templateTriggerSecret, templateWebhookSecrets, triggerMade, triggerRotated, webhookSaved, withTriggerSecret } from "./trigger-secrets-shown.js";
 import { type SealedSettingsOverStore } from "./sealed-settings-store.js";
 import { type ServerSecrets } from "./server-secrets.js";
 import { openServerSecretsOverStore } from "./server-secrets-store.js";
@@ -707,9 +708,9 @@ function capabilitiesWith(env: NodeJS.ProcessEnv, maxRuns: number, harnesses: Ha
       /** GET, PUT and DELETE /settings/tool-keys: a tool's key saved by name, kept sealed under the launcher's seal key
        *  (tool-keys.ts); with none handed over, nothing is kept, never in the clear. */
       tool_keys: { routes: true, at_rest: "sealed" },
-      /** /settings/mcp-servers: remote MCP servers previewed and saved, each credential sealed under the same seal key
-       *  (mcp-servers.ts); with none, only servers that take no credential are kept. */
-      mcp_client: { transports: ["streamable-http"], auth: [...MCP_AUTH_TYPES], at_rest: sealKeyOf(env[SEAL_KEY_ENV]) ? "sealed" : "unavailable", harnesses: [...MCP_HARNESSES] },
+      /** /settings/mcp-servers: remote MCP servers previewed and saved, each credential sealed under the server's seal key,
+       *  which always exists (seal-key.ts), so MCP credentials are always kept sealed. */
+      mcp_client: { transports: ["streamable-http"], auth: [...MCP_AUTH_TYPES], at_rest: "sealed", harnesses: [...MCP_HARNESSES] },
       /** This server's learning switch (`--learning`): on, a run learns when its agent says `learning: true`; off, none does. */
       learning,
       /** /settings/webhook: one URL POSTed, signed by the Standard Webhooks spec, when a run needs its person and when it
@@ -1179,11 +1180,32 @@ async function startHolding(options: ServeOptions, data: string, checked: { maxR
     ...(documents ? { documents: resolve(documents) } : {}),
     ...(boxAllow !== undefined ? { boxAllow } : {}),
     modelOf,
+    // The run's learning start, decided at start as the old file-backed start decided it (learning-run.ts onStart/seedFor):
+    // the server's learning switch, the budget its # Learned section fits, the agent's seed read now from its learning folder
+    // (git), and the host's secrets as they are shown now to cut the notes a run is given. runs-over-store.learningStartFor
+    // pins the result (given/seed/section/seedNotes) in the launch for the runner; a seed that cannot be read starts the run
+    // with nothing learned (a fault never refuses it). INERT until the runner installs learning-1's learningEndOfRun as its
+    // endOfRun (cutover-learning-end 283008bb05, E2r3's one-line spec-builder hookup); land this in that same round.
+    learning,
+    learningBudget,
+    seedFor: async (agentId: string) => {
+      // The switch runs no git in this process (learning.ts seedOf: the folder's own script and file API, which checks git
+      // itself); a git or folder fault surfaces here as a seedOf error, so the run starts with nothing learned, never refused.
+      return seedOf(data, agentId).then(
+        (seed) => ({ seed }),
+        (error: Error) => {
+          process.stderr.write(`agentrun-serve: the agent ${agentId}'s learning folder could not be read, so its run starts with nothing learned: ${error.message}\n`);
+          return { failed: error.message };
+        },
+      );
+    },
+    shown: () => secretsShown(serverSecrets()),
   };
   // A run's served view and its live moment, from the store (store-view): `origin` is where this request reaches the
   // console, the secrets are cut live, and the sign-ins give the handed-pointer cut. Trigger and background reads (no
   // request) use the server's public address, else its own.
-  const viewDepsFor = (origin: string): ViewDeps => ({ origin, serverSecrets, signIns });
+  // The run's key read from this server's environment with the keys a person saved, as its Timeline reads it (keyEnv below).
+  const viewDepsFor = (origin: string): ViewDeps => ({ origin, serverSecrets, signIns, keyEnv: () => withSecrets(process.env, "all", storedKeys) });
   const ownOriginOf = (): string => options.publicUrl ?? url;
   // The run read routes (a run's files, its browser state, its workflow graph) over the one store (run-reads-over-store):
   // a run's files through the server's read-only Workspace of its folder (serverRunWorkspace, no runner claim), its view
@@ -1664,7 +1686,11 @@ async function startHolding(options: ServeOptions, data: string, checked: { maxR
     const unkept: InputIssue[] = made.unkept.map(({ tool, pin }) => ({ field: `pins.${tool}`, reason: NOT_SET_UP, message: serverPinned.has(tool) ? `${tool} is not pinned to ${pinWords(pin)} for this agent yet (this server's agent store keeps an agent's own pin from the store cutover on); this server's own pin of ${tool} holds its calls meanwhile.` : `${tool} is not pinned to ${pinWords(pin)} for this agent yet: this server's agent store keeps an agent's own pin from the store cutover on. Until then the agent was made with ${tool} set to deny, so nothing it reads can send it elsewhere. Pin it on this server, which holds every agent's calls of ${tool}, and apply again to let it.`, ...(serverPinned.has(tool) ? {} : { fix: `Add ${JSON.stringify({ [tool]: { pin } })} to this server's tool settings (Settings → Tools; PUT /v2/settings/tools replaces the whole map, so send it with the rest).` }) }));
     // A webhook trigger's secret is in no apply answer: each one's warning sends the person to the console for it.
     const hooks = made.triggers.flatMap((trigger, i) => (isObject(trigger.source) && trigger.source.kind === "webhook" ? [templateTriggerSecret(i)] : []));
-    return { template: pkg.name, version: pkg.version, agent_id: entry.agent.id, trigger_ids: ids, warnings: [...skipped, ...kept, ...modelWarnings, ...unpinned, ...unkept, ...warnings, ...hooks] };
+    // Each trigger it made, a webhook trigger's with its secret's metadata; the values go back beside the answer, never in it
+    // (the route adds them to the first answer to the owner's session, after the Idempotency-Key's record is written).
+    const minted = new Map(secrets.map(({ trigger_id, secret }) => [trigger_id, secret]));
+    const applied = { template: pkg.name, version: pkg.version, agent_id: entry.agent.id, trigger_ids: ids, ...templateWebhookSecrets([...minted.keys()], new Date().toISOString()), warnings: [...skipped, ...kept, ...modelWarnings, ...unpinned, ...unkept, ...warnings, ...hooks] };
+    return { applied, minted };
   }
 
   /** A run create's issues told from the input this server checks (explain.ts): an agentic run's `{content: string}`,
@@ -1875,9 +1901,10 @@ async function startHolding(options: ServeOptions, data: string, checked: { maxR
 
   // ---- usage ----------------------------------------------------------------------------------------------------------
 
-  // Each ended run's meters, from its store (meterFiguresIn): kept, as its store no longer changes, keyed by its end, so a run
-  // opened again and ended again is read again. A store that cannot be read leaves it all tokens.
-  const endedMeters = new Map<string, ReturnType<typeof meterFiguresIn>>();
+  // Each ended run's meters, over the one store (store-reads/cap metersOverStore, cap.ts meterFiguresFrom over A's journal):
+  // kept, as a settled run's journal no longer changes, keyed by its end, so a run opened again and ended again is read
+  // again. A run whose journal cannot be read leaves it all tokens.
+  const endedMeters = new Map<string, Awaited<ReturnType<typeof metersOverStore>>>();
   // Each ended run's spend so far as it saved it at its end (serve.json's cost_so_far: every conversation's charges and
   // its decisions' receipts, which its root store alone does not hold), kept as its meters are; undefined when it saved
   // none (a run whose cost is known, or one ended before the figure was kept).
@@ -1895,13 +1922,14 @@ async function startHolding(options: ServeOptions, data: string, checked: { maxR
     }
     return endedSoFar.get(key);
   };
-  const metersOf = (row: { id: string; endedAt?: string | null }) => {
+  const metersOf = async (row: { id: string; endedAt?: string | null }) => {
     const key = `${row.id} ${row.endedAt}`;
     let meters = endedMeters.get(key);
     if (!meters) {
-      // TODO(E3/store-reads): an ended run's meter figures come from store-reads (store-reads/stats over its journal), not
-      // a per-run store file (runStorePath is gone). Empty until the usage route is wired over the store.
-      meters = { tools: 0, tokens: null, browser: { usd: 0, seconds: 0 }, others: 0, known: { tokens: 0, browser: 0, others: 0 } };
+      // An ended run's meter figures over the one store: cap.ts meterFiguresFrom over A's journal, its paid tools' charges
+      // folded back from the paid-tools session (store-reads/journal withPaidCosts), as meterFiguresIn read a file-backed
+      // run's own database — the same figures (the money-parity rule).
+      meters = await metersOverStore(store, row.id, ctx);
       endedMeters.set(key, meters);
     }
     return meters;
@@ -1944,8 +1972,10 @@ async function startHolding(options: ServeOptions, data: string, checked: { maxR
       // `tokens`, all from the same records: a live run's rows (a call still marked is no charge), else its store as it
       // ended (a call a crash cut makes `tools` unknown, never `tokens`). An unknown meter counts the run as unpriced on it.
       // An ended run's are its store's figures (metersOf keeps them, never its timeline), read for its lines by meter and,
-      // by any group, for what a run of unknown cost is known to have spent.
-      const read = (group === "meter" && usd !== 0) || usd === null ? metersOf(row) : undefined;
+      // by any group, for what a run of unknown cost is known to have spent. Read once per run (the store read is async): by
+      // meter (its lines and its not-metered calls), and for any group of a run of unknown cost (its known so-far).
+      const all = group === "meter" || usd === null ? await metersOf(row) : undefined;
+      const read = (group === "meter" && usd !== 0) || usd === null ? all : undefined;
       // A run whose cost is unknown still spent what is known of it (so_far: each meter's known dollars): that is in the
       // total and its lines, and the run is counted unpriced, so a total is never below a line of its own and reads as
       // the lower bound unpriced_runs says it is.
@@ -1955,7 +1985,7 @@ async function startHolding(options: ServeOptions, data: string, checked: { maxR
       // Its parts of the lines (usage-lines.ts): an unknown one counts the run unpriced there and adds what is known of it.
       // An unpriced MCP call is in none of them: counted apart as not metered on the tools line, which a $0 run shows only
       // when it made one.
-      const unmetered = group !== "meter" ? 0 : (metersOf(row).notMetered ?? 0);
+      const unmetered = group !== "meter" ? 0 : (all?.notMetered ?? 0);
       notMetered += unmetered;
       if (unmetered && !lines.has("tools")) lines.set("tools", { usd: 0, unpriced: 0 });
       for (const part of runLines({ usd, soFar, key, meters })) {
@@ -2793,14 +2823,19 @@ async function startHolding(options: ServeOptions, data: string, checked: { maxR
         const pkg = templates.find((t) => t.name === id);
         if (!pkg) throw new ApiError("not_found", `no template ${id}: GET /v2/templates lists them`);
         const body = await bodyOf(req);
-        // A webhook trigger's secret is in no apply answer: each one's warning sends the person to the console for it
-        // (trigger-secrets-shown.ts templateTriggerSecret), as the apply answer carries. The Idempotency-Key's record keeps
-        // the agent and triggers, so a retry under the key gets the same answer.
+        // The Idempotency-Key's record keeps the agent and triggers, so a retry under the key gets the same apply; it never
+        // keeps a webhook trigger's secret (below).
+        let minted = new Map<string, string>();
         const answer = await idempotent(req, `/templates/${pkg.name}/apply`, body, async () => {
-          const applied = await applyTemplate(pkg, body);
-          return { status: 201, body: applied, headers: { location: `/v2/agents/${applied.agent_id}` } };
+          const made = await applyTemplate(pkg, body);
+          minted = made.minted;
+          return { status: 201, body: made.applied, headers: { location: `/v2/agents/${made.applied.agent_id}` } };
         });
-        return send(res, answer.status, answer.body, answer.headers);
+        // Each webhook trigger's secret, to the owner's session in this first answer alone (trigger-secrets-shown.ts
+        // templateApplied): the record above never held it, so a replay under the key shows none.
+        const replayed = answer.headers?.["idempotent-replayed"] === "true";
+        const shown = replayed ? "replay" : mayHoldSecrets(req) ? "first" : "token";
+        return send(res, answer.status, answer.status === 201 ? templateApplied(answer.body as Json, minted, shown) : answer.body, answer.headers);
       }
       case "rotateTriggerSecret":
         // A secret write: the dispatch's one check let only the owner's session this far (trigger-secrets-shown.ts).

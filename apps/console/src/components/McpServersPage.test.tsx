@@ -55,7 +55,7 @@ async function open(v2: ReturnType<typeof createClient>, props: Record<string, u
   const host = document.body.appendChild(document.createElement("div"));
   root = createRoot(host);
   const opened: string[] = [];
-  act(() => root!.render(createElement(McpServersPage, { v2, atRest: "sealed", writable: true, open: (u: string) => opened.push(u), ...props })));
+  act(() => root!.render(createElement(McpServersPage, { v2, writable: true, open: (u: string) => opened.push(u), ...props })));
   const settle = async () => { for (let i = 0; i < 10; i++) await act(async () => { await new Promise((r) => setTimeout(r, 0)); }); };
   await settle();
   const button = (label: RegExp, within: Element = host) => [...within.querySelectorAll("button")].find((b) => label.test((b.textContent ?? "").trim()));
@@ -170,7 +170,6 @@ describe("Settings → MCP servers, adding one", () => {
       [refusal(422, "not_mcp", "Nothing it answered was MCP."), "This address doesn't speak MCP"],
       [refusal(422, "input_invalid", "invalid", { fields: [{ field: "url", reason: "redirect", message: "The MCP server answered 302, pointing to https://example.com/mcp." }] }), "This address redirects; use the final address"],
       [refusal(424, "upstream_failed", "The MCP server could not be reached: connection refused.", { retryable: true }), "The server failed: The MCP server could not be reached: connection refused."],
-      [refusal(409, "no_sealing_key", "This server was handed no seal key."), "no seal key"],
       [refusal(409, "wrong_origin", "This server's sign-in comes back to http://127.0.0.1:7340.", { details: { open: "http://127.0.0.1:7340/#/settings/mcp" } }), "Open http://127.0.0.1:7340/#/settings/mcp and sign in from it."],
     ];
     for (const [answer, words] of cases) {
@@ -336,9 +335,13 @@ describe("Settings → MCP servers, the saved ones", () => {
     expect(p.text()).toContain("No MCP server is saved here yet");
   });
 
-  it("explains a launcher with no seal key before anything is typed", async () => {
-    const p = await open(server([[]]).v2, { atRest: "unavailable" });
-    expect(p.text()).toContain("no seal key");
+  it("offers every credential type at once: a credential is always kept sealed, so nothing waits on a seal key", async () => {
+    const p = await open(server([[]]).v2);
+    await p.click(/^Add server$/);
+    const radios = [...p.host.querySelectorAll('input[name="mcp-auth"]')] as HTMLInputElement[];
+    expect(radios.map((r) => r.value)).toEqual(["none", "bearer", "headers", "oauth"]);
+    expect(radios.every((r) => !r.disabled)).toBe(true);
+    expect(p.text()).not.toContain("seal key");
   });
 });
 

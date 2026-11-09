@@ -73,3 +73,21 @@ export function withTriggerSecret<T extends { id: string; source: { kind: string
   const state = held(adapter!.id, view.id, field);
   return { ...view, secret: triggerSecretMeta(view.id, state === "set"), ...(state === "unopened" ? { note: TRIGGER_SECRET_UNOPENED } : {}) };
 }
+
+/** The words a replayed apply says of each webhook trigger it made: its secret was in the first answer alone. */
+export const TEMPLATE_SECRET_SHOWN = "Its signing secret was shown once, in this apply's first answer; rotate it in the console for a new one.";
+
+/** An apply's webhook triggers as its answer keeps them (the Idempotency-Key's record): each one's id and its secret's
+ *  metadata, never a value. None when it made no webhook trigger. */
+export const templateWebhookSecrets = (ids: readonly string[], at: string) => (ids.length ? { webhook_secrets: ids.map((id) => ({ trigger_id: id, secret: triggerSecretMeta(id, true, at) })) } : {});
+
+/** An apply's answer as this caller reads it: the first answer to a caller that may hold secrets shows each webhook
+ *  trigger's `signing_secret` (`minted`, by trigger id), once; a token's answer, or a replay, says secret_set and its
+ *  words in each one's place. `body` is the record's. */
+export function templateApplied(body: Record<string, unknown>, minted: ReadonlyMap<string, string>, shown: "first" | "token" | "replay"): Record<string, unknown> {
+  const made = body.webhook_secrets as { trigger_id: string; secret: unknown }[] | undefined;
+  if (!made) return body;
+  const said = (one: { trigger_id: string; secret: unknown }) =>
+    shown === "first" && minted.has(one.trigger_id) ? { ...one, signing_secret: minted.get(one.trigger_id)! } : { ...one, secret_set: true as const, note: shown === "replay" ? TEMPLATE_SECRET_SHOWN : TRIGGER_SECRET_WORDS };
+  return { ...body, webhook_secrets: made.map(said) };
+}

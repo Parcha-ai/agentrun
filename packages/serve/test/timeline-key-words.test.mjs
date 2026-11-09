@@ -49,6 +49,18 @@ for (const harness of ["claude-agent", "codex"]) {
   });
 }
 
+test("claude-agent on an OpenRouter key saved in Settings, none in the environment: the run's error and its Timeline row name the refused key in plain words, never its value", { timeout: 60_000 }, async (t) => {
+  withEnv(t, {}, NAMES);
+  const { api } = await serve(t, { harnessTable: fauxTable(FAUX_HARNESS) });
+  assert.equal((await api("PUT", "/settings/tool-keys/openrouter", { values: { OPENROUTER_API_KEY: KEY } })).status, 204);
+  const { run, timeline } = await failedRun(t, api, "claude-agent", SAID["claude-agent"]);
+  assert.equal(run.error?.message, OPENROUTER, JSON.stringify(run.error));
+  const rows = errorRows(timeline.rows);
+  assert.ok(rows.length > 0, JSON.stringify(timeline.rows.map((r) => r.kind)));
+  for (const row of rows) assert.deepEqual([row.summary, row.text], [OPENROUTER, OPENROUTER], JSON.stringify(row));
+  assert.ok(!JSON.stringify(run).includes(KEY) && !JSON.stringify(timeline).includes(KEY), "the saved key's value is nowhere served");
+});
+
 test("codex: an error that is no refused key keeps its words, without serve's loopback proxy address, on the Timeline and in the run's error", { timeout: 60_000 }, async (t) => {
   withEnv(t, { OPENROUTER_API_KEY: KEY }, NAMES);
   const { api } = await serve(t, { harnessTable: fauxTable(FAUX_HARNESS) });
