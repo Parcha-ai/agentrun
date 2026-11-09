@@ -80,13 +80,20 @@ test("a Mode 2 Daytona sandbox: providerFor with the saved key by name, the Arch
   const answer = await run();
   assert.deepEqual(record.loaded, [["daytona", { apiKey: DAYTONA_KEY }]], "built by providerFor('daytona') from the saved DAYTONA_API_KEY");
   const spec = record.created[0];
-  assert.equal(spec.mount.kind, "archil", "the run's folder, as an Archil mount");
-  assert.deepEqual([spec.mount.disk, spec.mount.region], [SETTINGS.diskId, SETTINGS.region]);
-  assert.equal(spec.mount.token, "fake-minted-token-1", "the per-run minted token");
+  // The mount's exact shape (the computer package's archil mount, #1994): the per-run minted token goes only here.
+  assert.deepEqual(spec.mount, { kind: "archil", disk: SETTINGS.diskId, region: SETTINGS.region, folder: "agents/a/runs/run-1/work", token: "fake-minted-token-1" });
+  // The labels are the run's and the claim epoch's (runLabels), and never agentrun.mount, which the provider writes itself.
+  assert.deepEqual(spec.labels, { "agentrun.run": "run-1", "agentrun.epoch": "3" });
+  assert.ok(!Object.hasOwn(spec.labels, "agentrun.mount"), "agentrun.mount is the provider's own label");
   assert.equal(spec.env, undefined, "the box is given no environment of ours");
+  const outsideMount = JSON.stringify({ ...spec, mount: undefined });
+  assert.ok(!outsideMount.includes("fake-minted-token-1"), "the token is in the mount alone: not in labels, env or anything else");
   const text = JSON.stringify(spec);
   for (const secret of [DAYTONA_KEY, ARCHIL_KEY, "sentinel-db-credential", "sentinel-redis-credential"]) assert.ok(!text.includes(secret), `no ${secret} in the box's spec`);
   assert.equal(answer.computer.kind, "sandbox");
+  // The mount check reads back under the claim's epoch (readBackOf(mount, epoch)).
+  assert.equal(answer.computer.check.epoch, 3);
+  assert.deepEqual(answer.computer.check.readBackOf(spec.mount, 3), { kind: "archil", disk: SETTINGS.diskId, region: SETTINGS.region, folder: "agents/a/runs/run-1/work", exclusive: true, epoch: 3 });
   assert.deepEqual([...answer.computer.computer.client ? ["client"] : []], ["client"]);
   assert.equal(control.users.size, 1, "one token user while the run holds its computer");
   await answer.release();
