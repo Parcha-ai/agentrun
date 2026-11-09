@@ -1,13 +1,12 @@
 // The console at "/" and how a browser holds the token without accounts: the link the server prints sets a cookie once,
 // and the cookie stands in for the Bearer header on /v2 (a write only from the server's own origin, with a JSON body).
-// The console is public; without the cookie it asks for the link itself. The old page is gone; the store's read-only data
-// (/api/*) stays, for the cookie or the token.
+// The console is public; without the cookie it asks for the link itself. The old page is gone, and so is its read-only
+// data (/api/*): everything the console shows comes through /v2.
 import assert from "node:assert/strict";
 import { spawn } from "node:child_process";
 import { request } from "node:http";
 import { join } from "node:path";
 import { test } from "node:test";
-import { openStore } from "@parcha/pi-durable-agent";
 import { agent, builtConsole, CONSOLE_INDEX, scratch, serve } from "./support.mjs";
 
 /** One request with every header the caller names, Host and Origin included (fetch sets those itself). */
@@ -30,22 +29,17 @@ function call(port, { method = "GET", path = "/", headers = {}, body } = {}) {
   });
 }
 
-/** A server whose data directory also holds an agent store with one agent, and the cookie its printed link sets. */
+/** A server with one agent, made through its API, and the cookie its printed link sets. */
 async function served(t) {
   const server = await serve(t, { console: await builtConsole(t) });
-  const store = openStore(server.data);
-  try {
-    store.createAgent({ id: "calc", name: "Calc" });
-    await store.commitRevision("calc", { kind: "agentic", instructions: "Answer.", tools: [] }, { setCurrent: true });
-  } finally {
-    store.close();
-  }
+  const made = await call(server.port, { method: "POST", path: "/v2/agents", headers: { authorization: `Bearer ${server.token}`, "content-type": "application/json" }, body: agent("calc", { name: "Calc" }) });
+  assert.equal(made.status, 201, JSON.stringify(made.json));
   const opened = await call(server.port, { path: `/?token=${server.token}` });
   const cookie = opened.headers["set-cookie"]?.[0]?.split(";")[0];
   return { ...server, opened, cookie, origin: `http://127.0.0.1:${server.port}` };
 }
 
-test("without the cookie / is still the console, which asks for the printed link itself; a wrong token is a 401 that sets nothing; the console's files are public, the store's data and /v2 are not", async (t) => {
+test("without the cookie / is still the console, which asks for the printed link itself; a wrong token is a 401 that sets nothing; the console's files are public, /v2 is not, and the old page's data is gone", async (t) => {
   const { port, token } = await served(t);
   const open = await call(port, { path: "/" });
   assert.deepEqual([open.status, open.text], [200, CONSOLE_INDEX], "the console reads /v2 and shows its own screen for a browser the server does not know");
@@ -57,11 +51,8 @@ test("without the cookie / is still the console, which asks for the printed link
     assert.ok(!res.text.includes(token), "the page never holds the token");
   }
   for (const path of ["/assets/index-Ab12Cd34.js", "/assets/index-Ef56Gh78.css"]) assert.equal((await call(port, { path })).status, 200, path);
-  const data = await call(port, { path: "/api/store" });
-  assert.equal(data.status, 401);
-  assert.equal(data.json.error.code, "unauthenticated");
   assert.equal((await call(port, { path: "/v2/agents" })).status, 401);
-  for (const path of ["/page.js", "/serve.js"]) assert.equal((await call(port, { path })).json.error.code, "not_found", `${path}: the old page is gone`);
+  for (const path of ["/page.js", "/serve.js", "/api/store", "/api/agents/calc", "/api/runs"]) assert.equal((await call(port, { path })).json.error.code, "not_found", `${path}: the old page is gone`);
   assert.equal((await call(port, { path: "/nothing" })).json.error.code, "not_found", "a path that is not the console's is the API's 404");
 });
 
@@ -95,7 +86,7 @@ test("the console's CSP lets a form post to https://github.com, as Connect GitHu
   for (const other of ["http://github.com/settings/apps/new", "https://evil.example/settings/apps/new", "https://api.github.com/x", "https://github.com.evil.example/"]) assert.ok(!formMayPost(sources, other), `no form to ${other}`);
 });
 
-test("with the cookie: / is the console under the CSP, and the cookie reads /v2 for it; /api is the store's, for the cookie or the token; a wrong cookie is no cookie", async (t) => {
+test("with the cookie: / is the console under the CSP, and the cookie reads /v2 for it; /api/* is gone, for the cookie or the token; a wrong cookie is no cookie", async (t) => {
   const { port, cookie, token } = await served(t);
   const page = await call(port, { headers: { cookie } });
   assert.deepEqual([page.status, page.text], [200, CONSOLE_INDEX]);
@@ -106,15 +97,16 @@ test("with the cookie: / is the console under the CSP, and the cookie reads /v2 
   const agents = await call(port, { path: "/v2/agents", headers: { cookie } });
   assert.equal(agents.status, 200);
   assert.deepEqual(agents.json.agents.map((a) => a.agent_id), ["calc"]);
-  const store = await call(port, { path: "/api/store", headers: { cookie } });
-  assert.equal(store.status, 200);
-  assert.deepEqual(store.json.agents.map((a) => [a.id, a.name, a.currentKind]), [["calc", "Calc", "agentic"]]);
-  assert.equal((await call(port, { path: "/api/agents/calc", headers: { cookie } })).json.agent.id, "calc");
-  assert.equal((await call(port, { path: "/api/runs", headers: { cookie } })).status, 200);
-  assert.equal((await call(port, { path: "/api/store", headers: { authorization: `Bearer ${token}` } })).status, 200, "a script reads it with the token");
+  assert.deepEqual(agents.json.agents.map((a) => [a.agent_id, a.definition.name, a.kind]), [["calc", "Calc", "agentic"]]);
+  // The old page's read-only data is gone: /api/* is the API's 404, for the cookie or the token alike.
+  for (const path of ["/api/store", "/api/agents/calc", "/api/runs"]) {
+    for (const headers of [{ cookie }, { authorization: `Bearer ${token}` }]) {
+      const gone = await call(port, { path, headers });
+      assert.deepEqual([gone.status, gone.json?.error?.code], [404, "not_found"], `${path} with ${Object.keys(headers)[0]}`);
+    }
+  }
   const wrong = cookie.replace(/=./, (m) => (m === "=A" ? "=B" : "=A"));
   assert.equal((await call(port, { headers: { cookie: wrong } })).status, 200, "the console's files need no cookie");
-  assert.equal((await call(port, { path: "/api/store", headers: { cookie: wrong } })).status, 401);
   assert.equal((await call(port, { path: "/v2/agents", headers: { cookie: wrong } })).status, 401);
   assert.equal((await call(port, { method: "POST", headers: { cookie } })).status, 405, "/ takes GET and HEAD");
 });
