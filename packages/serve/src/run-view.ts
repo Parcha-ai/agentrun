@@ -19,6 +19,11 @@ import { builtinHarness } from "./harness-table.js";
 import { cutStrings, redacted, withoutLoopback } from "./key-refusal.js";
 import { pointerHash, type SignIns } from "./sign-ins.js";
 import { MIN_SECRET } from "./learn/secrets.js";
+
+/** The sign-in read surface a run's served view needs: a run's handed-pointer cut reads only `peek` (the agent's saved
+ *  pointer) and `forgotten` (its tombstoned ones). Both the old `new SignIns(...)` and the store-backed bridge
+ *  (sign-ins-store.ts signInsOverStore) satisfy it, so a view reads either path with no knowledge of which. */
+export type SignInReader = Pick<SignIns, "peek" | "forgotten">;
 import { KINDS } from "./runner/journal-kinds.js";
 
 /** The run's newest usage row, which carries its cost. */
@@ -596,7 +601,7 @@ export const servedReviewWith = <R extends { reason: string }>(shown: (text: str
  *  seal key or none, one forgotten and dropped past MAX_FORGOTTEN, the sign-ins file gone). Fails closed: a marked run is
  *  cut of every pointer it was handed, or withheld, never served uncut. Read anew at each call: nothing caches this
  *  verdict, so a run withheld while its key was missing is shown once it opens. */
-export async function handedPointers(signIns: SignIns | undefined, agentId: string, browser: string | undefined, handed: Handed | undefined): Promise<{ refs: string[] } | "unreadable"> {
+export async function handedPointers(signIns: SignInReader | undefined, agentId: string, browser: string | undefined, handed: Handed | undefined): Promise<{ refs: string[] } | "unreadable"> {
   if (handed === undefined) return { refs: [] };
   if (handed === MALFORMED || !signIns || !browser) return "unreadable";
   const live = await signIns.peek(agentId, browser).catch(() => "unreadable" as const);
@@ -612,7 +617,7 @@ export async function handedPointers(signIns: SignIns | undefined, agentId: stri
  *  (handedPointers); `withheld` when that can't be read back here, as a load would hide the run. `browser` and `handed`
  *  come from the run's record (its plane's vendor browser and its `sign_in_handed` mark); `damaged` when the record was
  *  there but unreadable, so what it was handed went with it. This is the summary choke point. */
-export async function rowShown(deps: { serverSecrets: () => string[]; signIns: SignIns | undefined }, agentId: string, browser: string | undefined, handed: Handed | undefined, damaged = false): Promise<((text: string) => string) | "withheld"> {
+export async function rowShown(deps: { serverSecrets: () => string[]; signIns: SignInReader | undefined }, agentId: string, browser: string | undefined, handed: Handed | undefined, damaged = false): Promise<((text: string) => string) | "withheld"> {
   if (damaged) return "withheld";
   const pointers = await handedPointers(deps.signIns, agentId, browser, handed);
   if (pointers === "unreadable") return "withheld";

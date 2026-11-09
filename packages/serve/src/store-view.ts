@@ -20,6 +20,7 @@ import {
   type RunMoment,
   type RunView,
   type RunViewMeta,
+  type SignInReader,
   type State,
   type Status,
   approvalOf,
@@ -47,7 +48,6 @@ import { harnessOfBody } from "./harness.js";
 import { browserAsk as browserAskOf, BROWSER_HANDOVER_KIND } from "./browser-commands.js";
 import type { PendingAsk } from "./browser-person.js";
 import { approvalsOf, type Approvals } from "./approvals.js";
-import type { SignIns } from "./sign-ins.js";
 import { FINAL_STATES, type RunRow, type Store } from "./store/store.js";
 
 /** What the store-backed view needs beside the store: where its console lives, every secret it never shows (read now, so
@@ -56,7 +56,7 @@ import { FINAL_STATES, type RunRow, type Store } from "./store/store.js";
 export interface ViewDeps {
   readonly origin: string;
   readonly serverSecrets: () => string[];
-  readonly signIns?: SignIns;
+  readonly signIns?: SignInReader;
   /** The server's clock (ms), for the claim-lease check that decides a run is live; defaults to Date.now. The server
    *  passes the same clock the store uses, so a test on a moved clock reads a fresh claim as live. */
   readonly now?: () => number;
