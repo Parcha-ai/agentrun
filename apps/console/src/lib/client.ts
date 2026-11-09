@@ -126,7 +126,10 @@ export function createClient({ fetch: f = globalThis.fetch.bind(globalThis), bas
       if (e instanceof ClientError && (e.status === 404 || e.status === 403)) return null;
       throw e;
     }),
+    /** Signs this browser out; every other browser stays signed in. */
     signOut: () => call<{ signed_out: boolean }>("POST", "/auth/sign-out", { body: {} }),
+    /** Signs out every browser and phone signed in to this server, this one too. */
+    signOutEverywhere: () => call<{ signed_out: boolean }>("POST", "/auth/sign-out-everywhere", { body: {} }),
     /** Counts and sums from the server's store, for Mission Control (`GET /v2/stats`, a serve extension). */
     stats: () => call<Stats>("GET", "/stats"),
     listRuns: (limit = 50, cursor?: string | null, filter?: RunsFilter) => call<{ runs: Run[]; next_cursor: string | null }>("GET", `/runs${runsQuery(limit, cursor, filter)}`),

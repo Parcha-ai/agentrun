@@ -15,6 +15,7 @@
 import setupOpen from "./setup-open.mjs";
 import setupPublic from "./setup-public.mjs";
 import signIn from "./sign-in.mjs";
+import signOutScope from "./sign-out-scope.mjs";
 import signedOutElsewhere from "./signed-out-elsewhere.mjs";
 import runToEnd from "./run-to-end.mjs";
 import takeOver from "./take-over.mjs";
@@ -26,6 +27,7 @@ export const flows = [
   setupOpen,
   setupPublic,
   signIn,
+  signOutScope,
   { name: "connect-github", pending: "waits on #1980 (Connect GitHub, its CSP form-action fix)" },
   templateApply,
   runToEnd,

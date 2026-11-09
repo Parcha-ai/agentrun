@@ -309,7 +309,7 @@ test("with accounts on, the token link signs no browser in: it sets no cookie, a
   assert.deepEqual([kept.status, kept.headers.location], [303, "/?view=runs"], "other parameters stay");
   assert.deepEqual([(await call(server.port, { path: "/" })).text], [CONSOLE_INDEX], "then the console, which asks for the password");
   const tokenCookie = `agentrun-${server.port}=${createHmac("sha256", server.token).update("agentrun-serve page").digest("base64url")}`;
-  const out = await call(server.port, { method: "POST", path: "/v2/auth/sign-out", headers: { ...page(server), cookie: server.cookie }, body: {} });
+  const out = await call(server.port, { method: "POST", path: "/v2/auth/sign-out-everywhere", headers: { ...page(server), cookie: server.cookie }, body: {} });
   assert.equal(out.status, 200, out.text);
   for (const cookie of [tokenCookie, `${tokenCookie}; ${server.cookie}`]) {
     assert.equal((await agents(server, cookie)).status, 401, "the token's page cookie outlives no sign-out");

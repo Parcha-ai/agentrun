@@ -1863,8 +1863,9 @@ async function startHolding(options: ServeOptions, data: string, lock: ServerLoc
     return { password: body.password as string, body };
   }
 
-  /** POST /v2/setup, POST /v2/auth/sign-in, POST /v2/auth/sign-out and GET /v2/auth/session, answered before any
-   *  credential: their own checks are the setup code (or the token), the password, and the session. */
+  /** POST /v2/setup, POST /v2/auth/sign-in, POST /v2/auth/sign-out, POST /v2/auth/sign-out-everywhere and GET
+   *  /v2/auth/session, answered before any credential: their own checks are the setup code (or the token), the password,
+   *  and the session. */
   async function ownerRoute(req: IncomingMessage, res: ServerResponse, path: string, me: Owner): Promise<void> {
     const method = path === "/auth/session" || path === "/setup/import" ? "GET" : "POST";
     if (req.method !== method) throw new ApiError("method_not_allowed", `${req.method} is not a method of /v2${path}`, {}, { allow: method });
@@ -1925,7 +1926,14 @@ async function startHolding(options: ServeOptions, data: string, lock: ServerLoc
         }
         return send(res, 200, { signed_in: true }, { "set-cookie": ownerCookie(req, me.session(), SESSION_S) });
       }
+      // This browser: its cookie cleared, every other browser's session left as it is.
       case "/auth/sign-out": {
+        fromPage(req);
+        if (!signedIn(req, me)) throw new ApiError("unauthenticated", "this browser is not signed in");
+        return send(res, 200, { signed_out: true }, { "set-cookie": ownerCookie(req, "", 0) });
+      }
+      // Every browser and phone: the sessions' epoch moves on, so every cookie made before is none, this one's too.
+      case "/auth/sign-out-everywhere": {
         fromPage(req);
         if (!signedIn(req, me)) throw new ApiError("unauthenticated", "this browser is not signed in");
         me.signOutEverywhere();
