@@ -408,6 +408,8 @@ export const ROUTES: readonly Route[] = [
   { method: "POST", pattern: /^\/settings\/mcp-servers\/([^/]+)\/oauth\/start$/, name: "startMcpOAuth" },
   { method: "GET", pattern: /^\/settings\/mcp-servers\/oauth\/callback$/, name: "mcpOAuthCallback" },
   { method: "GET", pattern: /^\/settings\/mcp-servers\/oauth\/client\.json$/, name: "mcpOAuthClient" },
+  { method: "GET", pattern: /^\/settings\/mcp-servers\/oauth\/private-hosts$/, name: "getMcpPrivateHosts" },
+  { method: "PUT", pattern: /^\/settings\/mcp-servers\/oauth\/private-hosts$/, name: "putMcpPrivateHosts" },
   { method: "GET", pattern: /^\/settings\/tools$/, name: "getToolSettings" },
   { method: "PUT", pattern: /^\/settings\/tools$/, name: "putToolSettings" },
   { method: "GET", pattern: /^\/settings\/webhook$/, name: "getWebhook" },
@@ -1990,6 +1992,13 @@ async function startHolding(options: ServeOptions, data: string, lock: ServerLoc
       authFailed(`/v2${path}`, "approve_without_session");
       throw new ApiError("forbidden", owner ? "Approving a note takes the owner's password sign-in in the console, never a token." : "Approving a note takes the owner's password sign-in, and this server has no accounts (AGENTRUN_ACCOUNTS=0).");
     }
+    // Allowing an MCP server's authorization server onto a private network widens where this server and its runners send
+    // a sign-in's code and refresh tokens: the owner's signed-in page alone, CSRF-checked as every page write, as approving
+    // a note is (never a token, which a run's process, an agent's MCP client or a script may hold).
+    if (found.name === "putMcpPrivateHosts" && !byOwnerSession(req) && req.headers.authorization !== undefined) {
+      authFailed(`/v2${path}`, "private_hosts_without_session");
+      throw new ApiError("forbidden", owner ? "Allowing private-network hosts takes the owner's password sign-in in the console, never a token." : "Allowing private-network hosts takes the owner's password sign-in, and this server has no accounts (AGENTRUN_ACCOUNTS=0).");
+    }
     // A run's live browser view is a full-control credential for its browser: the owner's signed-in page alone, as approving
     // a note is (never a token a run, an MCP client or a script may hold).
     if ((found.name === "getRunBrowser" || found.name === "handBackRunBrowser") && !byOwnerSession(req) && req.headers.authorization !== undefined) {
@@ -2369,6 +2378,10 @@ async function startHolding(options: ServeOptions, data: string, lock: ServerLoc
         const state = new URL(started.authorization_url).searchParams.get("state") ?? "";
         return send(res, 200, started, { "set-cookie": signInCookie(req.socket.localPort, state, overHttps(req)) });
       }
+      case "getMcpPrivateHosts":
+        return send(res, 200, await mcpServers.privateHosts(), { "cache-control": "no-store" });
+      case "putMcpPrivateHosts":
+        return send(res, 200, await mcpServers.setPrivateHosts(await bodyOf(req)), { "cache-control": "no-store" });
       case "deleteMcpServer":
         mcpServers.remove(id);
         return void res.writeHead(204, { "cache-control": "no-store" }).end();

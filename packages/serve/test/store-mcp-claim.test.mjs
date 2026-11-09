@@ -346,7 +346,7 @@ test("M17: claims waiting on another claim's refresh read the server's row O(1) 
       return typeof value === "function" ? value.bind(target) : value;
     },
   });
-  const counted = { mcp, runs: store.runs };
+  const counted = { mcp, runs: store.runs, settings: store.settings };
   const hold = oauth.holdNext();
   const CLAIMS = 300;
   const steps = Array.from({ length: CLAIMS }, () => claimOf(counted, claim, ["mcp:fake/add"], { now: () => T0, bounds: { requestMs: 5_000, tries: 1 } }));

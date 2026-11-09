@@ -16,17 +16,18 @@ import {
   type McpTool, nameOf, notFound, oauthValueValid, pricesListed, pricesOf, SEAL_KEY_HOW, scopesValid, urlOf,
 } from "./mcp-probe.js";
 import { listMcpServers, openServerCredential, putPendingSignIn, removeMcpServer, saveMcpServer, takePendingSignIn } from "./mcp-store.js";
+import { checkPrivateHosts, privateOAuthHosts, savePrivateOAuthHosts } from "./mcp-private-hosts.js";
 import { type ClientKind, MCP_SETTINGS_PAGE, McpSignIns, type OAuthNetwork, type Pending, type PendingStore, reasonOf, SIGN_IN_AGAIN, systemNetwork, type TokenSet } from "./mcp-oauth.js";
 import { SEAL_KEY_ENV, sealKeyOf } from "./tool-keys.js";
 import { serverGate, type ToolSettingsMap } from "./tool-plane.js";
-import { type McpCredential, type Mcp, type McpOauth, type McpServerRow, type Store } from "./store/index.js";
+import { type McpCredential, type Mcp, type McpOauth, type McpServerRow, type Settings, type Store } from "./store/index.js";
 import { isObject, unknownFields } from "./validate.js";
 
 const SCOPE_LIST = "scopes is a list of 1 to 32 OAuth scopes.";
 const MAX_VALUE_BYTES = MAX_OAUTH_VALUE_BYTES;
 
-/** The store slice this layer reads and writes. */
-type McpServersStore = { readonly mcp: Mcp; readonly mcpOauth: McpOauth; flush: Store["flush"] };
+/** The store slice this layer reads and writes; `settings` for the private-network OAuth hosts the owner allows. */
+type McpServersStore = { readonly mcp: Mcp; readonly mcpOauth: McpOauth; readonly settings: Pick<Settings, "get" | "put">; flush: Store["flush"] };
 
 /** The sign-ins in flight over the store (store.mcpOauth): the verifier sealed by its state, the rest of the sign-in's
  *  working state plain JSON the callback rebuilds. The read and the remove are two calls, not one atomic take, so a store
@@ -71,7 +72,7 @@ export class McpServersOverStore {
 
   constructor(private readonly store: McpServersStore, env: NodeJS.ProcessEnv, private readonly version: string, network: OAuthNetwork = systemNetwork) {
     this.sealKey = sealKeyOf(env[SEAL_KEY_ENV]);
-    this.signIns = new McpSignIns(network, this.sealKey ? pendingOverStore(store, this.sealKey) : undefined);
+    this.signIns = new McpSignIns(network, this.sealKey ? pendingOverStore(store, this.sealKey) : undefined, () => privateOAuthHosts(store));
   }
 
   get atRest(): "sealed" | "unavailable" {
@@ -105,6 +106,19 @@ export class McpServersOverStore {
     this.inflight.add(work);
     void work.then(() => this.inflight.delete(work), () => this.inflight.delete(work));
     return work;
+  }
+
+  /** GET .../oauth/private-hosts: the private-network hosts an authorization server may be on (none by default). */
+  async privateHosts(): Promise<{ hosts: string[] }> {
+    return { hosts: await privateOAuthHosts(this.store) };
+  }
+
+  /** PUT .../oauth/private-hosts: the list replaced in store.settings, durable before it answers; or 422 in words. */
+  async setPrivateHosts(body: Record<string, unknown>): Promise<{ hosts: string[] }> {
+    const hosts = checkPrivateHosts(body);
+    await savePrivateOAuthHosts(this.store, hosts);
+    await this.store.flush();
+    return { hosts };
   }
 
   async list() {

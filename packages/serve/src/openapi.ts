@@ -17,6 +17,7 @@ import { BOX_IDS, BOX_NETWORKS, BOX_STATES } from "./boxes.js";
 import { PLACE_MODES } from "./place.js";
 import { TOOL_KEYS, UNREADABLE } from "./tool-keys.js";
 import { MCP_AUTH_TYPES, MCP_SERVER_NAME } from "./mcp-servers.js";
+import { MAX_PRIVATE_HOSTS } from "./mcp-private-hosts.js";
 import { MCP_SETTINGS_PAGE } from "./mcp-oauth.js";
 import { ATTEMPTS_KEPT, MESSAGE_TYPES, WEBHOOK_EVENTS } from "./webhooks.js";
 import { DEFAULT_SCHEME, SCHEME_NAMES, SIGNATURE_SCHEMES } from "./trigger-signatures.js";
@@ -209,6 +210,9 @@ const TOOL_KEYS_VIEW = closed({
   },
 });
 const KEY_ID = { name: "key_id", in: "path", required: true, description: "The tool key: one of GET /settings/tool-keys' ids.", schema: { type: "string" } };
+/** The private-network hosts an MCP server's authorization server may be on (mcp-private-hosts.ts). */
+const PRIVATE_HOSTS = closed({ hosts: { type: "array", maxItems: MAX_PRIVATE_HOSTS, items: { type: "string", minLength: 1, maxLength: 253 }, description: "Host names or IP addresses, as kept: lowercase, every final dot dropped, an IPv6 address in brackets." } });
+const PRIVATE_HOSTS_RULE = "A listed host may resolve to private-network addresses (10/8, 172.16/12, 192.168/16, 100.64/10, fc00::/7), and still only over https; every address it resolves to is checked, and the request goes to an address checked. Loopback, link-local (cloud metadata among them), unspecified, multicast and broadcast addresses, this machine's and this server's own are refused whatever the list says. The server's sign-in and a runner's token refresh read the list at each use.";
 /** A remote MCP server's tools as it listed them (mcp-servers.ts), and the server as saved: never its credential. */
 const MCP_TOOL = {
   type: "object", additionalProperties: false, required: ["name", "input_schema"],
@@ -1146,6 +1150,22 @@ const EXTENSIONS: Record<string, Record<string, Json>> = {
       operationId: "mcpOAuthClient", tags: ["local"], summary: "This server's OAuth client metadata document", security: [{}],
       description: "Its own URL is its client id (CIMD): `redirect_uris` is the callback, `token_endpoint_auth_method` none. Readable without a credential, for an authorization server to fetch.",
       responses: { "200": json({ type: "object" }, "The document."), ...errors(429, 500) },
+      "x-agentrun-serve": "mcpservers/1",
+    },
+  },
+  "/settings/mcp-servers/oauth/private-hosts": {
+    get: {
+      operationId: "getMcpPrivateHosts", tags: ["local"], summary: "The private-network hosts an MCP server's authorization server may be on",
+      description: `An MCP server's authorization server (its discovery, registration, token and refresh endpoints) is refused on a private network unless its host is on this list, which is empty by default. ${PRIVATE_HOSTS_RULE}`,
+      responses: { "200": json(PRIVATE_HOSTS, "The list."), ...errors(401, 429, 500) },
+      "x-agentrun-serve": "mcpservers/1",
+    },
+    put: {
+      operationId: "putMcpPrivateHosts", tags: ["local"], summary: "Replace the private-network hosts an MCP server's authorization server may be on",
+      description: `Replaces the list; an empty list allows none. Each entry is a host name or an IP address, matched exactly (lowercase, every final dot dropped, an IPv6 address as a URL writes it, in brackets): no wildcards, address ranges, ports or schemes, at most ${MAX_PRIVATE_HOSTS}. 422 with each entry that is not one, or that names an address no listing could allow. ${PRIVATE_HOSTS_RULE} Only the owner, signed in with their password, changes it: the route takes the console's password session alone, from this server's own origin with a JSON body (as every page write), and answers 403 \`forbidden\` to every token, the server's own included, since a run's process, an agent's MCP client or a script may hold one, and to every request on a server with accounts off; with no credential at all it is 401, as every route.`,
+      security: [{ ownerSession: [] }],
+      requestBody: { required: true, content: { "application/json": { schema: PRIVATE_HOSTS } } },
+      responses: { "200": json(PRIVATE_HOSTS, "The list, as kept."), ...errors(400, 401, 403, 415, 422, 429, 500, 503) },
       "x-agentrun-serve": "mcpservers/1",
     },
   },
