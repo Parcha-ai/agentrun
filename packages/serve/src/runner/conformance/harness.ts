@@ -729,10 +729,6 @@ const CASES: readonly Case[] = [
   },
 ];
 
-/** The output-limit cases a CLI subject cannot model yet, with why (stated once, for each CLI subject's unsupported list):
- *  the loop reads a cut answer from its entry's stop reason (loop.ts cutLast), and a CLI's record carries none yet. */
-export const CLI_NO_STOP_REASON = "the CLI adapters don't report a turn cut at the model's output limit (stopReason length) yet, and the CLI record carries no stop reason for the loop to read";
-export const CLI_OUTPUT_LIMIT_UNSUPPORTED: Partial<Record<ConformanceCase, string>> = Object.freeze({ "length-ends-failed": CLI_NO_STOP_REASON, "length-mid-run": CLI_NO_STOP_REASON });
 
 const CLI_NEVER_RERUNS = "a CLI never reruns a call that started; only the model calls again (its adapter's facts: rerunsStarted false)";
 
