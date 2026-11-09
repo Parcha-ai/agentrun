@@ -69,3 +69,35 @@ test("adbCli on adb's default port names it too: the CLI would follow ANDROID_AD
 	assert.equal(ran.ok, true, JSON.stringify(ran));
 	assert.deepEqual(JSON.parse(readFileSync(log, "utf8").trim()), ["-P", String(ADB_SERVER_PORT), "-t", "1", "shell", "echo ok"]);
 });
+
+test("adbCli spawns adb with no ADB_* or ANDROID_ADB_* variable, so nothing in the environment points the CLI at another server", async () => {
+	// A poisoned environment: each of these could send the spawned CLI to another server than the socket requests reach.
+	const poison = {
+		ADB_SERVER_SOCKET: "tcp:203.0.113.7:5037",
+		ANDROID_ADB_SERVER_SOCKET: "tcp:203.0.113.7:5037",
+		ANDROID_ADB_SERVER_ADDRESS: "203.0.113.7",
+		ANDROID_ADB_SERVER_PORT: "1",
+		ANDROID_SERIAL: "another-device",
+		ADB_VENDOR_KEYS: "/elsewhere",
+	};
+	const saved = Object.fromEntries(Object.keys(poison).map((name) => [name, process.env[name]]));
+	Object.assign(process.env, poison, { AGENTRUN_UNRELATED: "kept" });
+	try {
+		const log = join(dir, "env.log");
+		const script = join(dir, "adb-env");
+		writeFileSync(
+			script,
+			`#!${process.execPath}\nconst names = Object.keys(process.env).filter((n) => /ADB|ANDROID_SERIAL|AGENTRUN_UNRELATED/.test(n)).sort();\nrequire("node:fs").writeFileSync(${JSON.stringify(log)}, JSON.stringify(names));\n`,
+		);
+		chmodSync(script, 0o755);
+		const ran = await adbCli(script).run(["-t", "1", "shell", "echo ok"], { timeoutMs: 10_000 });
+		assert.equal(ran.ok, true, JSON.stringify(ran));
+		assert.deepEqual(JSON.parse(readFileSync(log, "utf8")), ["AGENTRUN_UNRELATED"], "every adb variable is cleared, and the rest of the environment is kept");
+	} finally {
+		for (const [name, value] of Object.entries(saved)) {
+			if (value === undefined) delete process.env[name];
+			else process.env[name] = value;
+		}
+		delete process.env.AGENTRUN_UNRELATED;
+	}
+});
