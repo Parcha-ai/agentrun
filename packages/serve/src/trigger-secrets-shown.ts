@@ -52,10 +52,20 @@ export function webhookSaved(view: Record<string, unknown>, minted: string | und
 const mintedField = (adapter: TriggerAdapter | undefined): string | undefined =>
   adapter?.settings?.scope === "trigger" ? Object.entries(adapter.settings.fields).find(([, field]) => field.mint)?.[0] : undefined;
 
+/** What a trigger's view says of a secret its sealed settings keep but that does not open here (sealed under another seal
+ *  key): unset, and why. */
+export const TRIGGER_SECRET_UNOPENED = "Its signing secret does not open under this server's seal key: rotate it in the console.";
+
+/** Where a trigger's minted secret stands here: held and open, kept but not opening under this seal key, or none. */
+export type SecretHeld = "set" | "unopened" | "unset";
+
 /** A trigger's view with its minted secret's metadata (GET and list): `secret` for a trigger whose source's adapter mints
- *  one, set when its sealed settings hold it here; a trigger that mints none is answered as it is. */
-export function withTriggerSecret<T extends { id: string; source: { kind: string } }>(view: T, adapters: readonly TriggerAdapter[], holds: (adapterId: string, scope: string, field: string) => boolean): T | (T & { secret: SecretMeta }) {
+ *  one, set when its sealed settings hold it open here; one kept that does not open adds `note`, the words for why. A
+ *  trigger that mints none is answered as it is. */
+export function withTriggerSecret<T extends { id: string; source: { kind: string } }>(view: T, adapters: readonly TriggerAdapter[], held: (adapterId: string, scope: string, field: string) => SecretHeld): T | (T & { secret: SecretMeta; note?: string }) {
   const adapter = adapters.find((one) => one.id === view.source.kind);
   const field = mintedField(adapter);
-  return field === undefined ? view : { ...view, secret: triggerSecretMeta(view.id, holds(adapter!.id, view.id, field)) };
+  if (field === undefined) return view;
+  const state = held(adapter!.id, view.id, field);
+  return { ...view, secret: triggerSecretMeta(view.id, state === "set"), ...(state === "unopened" ? { note: TRIGGER_SECRET_UNOPENED } : {}) };
 }

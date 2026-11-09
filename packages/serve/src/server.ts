@@ -1128,7 +1128,11 @@ async function startHolding(options: ServeOptions, data: string, checked: { maxR
   /** Whether `req` may be shown a secret this server mints (trigger-secrets-shown.ts): the caller that may write one. */
   const mayHoldSecrets = (req: IncomingMessage) => writesSecretsAllowed(req, { accounts: owner !== undefined, loopbackBound: isLoopback(host) });
   /** A trigger's view with its minted secret's metadata, never the secret (trigger-secrets-shown.ts). */
-  const withSecretOf = <T extends { id: string; source: { kind: string } }>(view: T) => withTriggerSecret(view, adapters, (adapterId, scope, field) => triggerSettings.get(adapterId)?.get(scope, field) !== undefined);
+  const withSecretOf = <T extends { id: string; source: { kind: string } }>(view: T) =>
+    withTriggerSecret(view, adapters, (adapterId, scope, field) => {
+      const settings = triggerSettings.get(adapterId);
+      return settings?.get(scope, field) !== undefined ? "set" : settings?.unopenedAt(scope, field) ? "unopened" : "unset";
+    });
   // The owner's open live views (browser-live.ts): each closes once no session that let it in holds.
   const viewers = new OpenViewers();
   // A saved key is read by name from here, past the checks that refuse a start and before any run (a recovered one too)
