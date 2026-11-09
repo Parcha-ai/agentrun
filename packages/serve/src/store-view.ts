@@ -331,7 +331,8 @@ export async function viewOverStore(store: Store, runId: string, deps: ViewDeps)
     archived_at: row.archivedAt ?? null,
     imported_from: runRow.importedFrom ?? null,
     trigger: launch?.trigger ?? null,
-    learning: learningViewOf(run.learningEnd, secretsShown(deps.serverSecrets()), terminal && settled),
+    // Cut by the run's one cut (the pointers it was handed among them), and none for a withheld run, as its words.
+    learning: unshown ? null : learningViewOf(run.learningEnd, secretsShown(values), terminal && settled),
     poll_after_ms: terminal && settled ? 0 : 1000,
     last_progress_at: run.lastProgressAt,
   };
