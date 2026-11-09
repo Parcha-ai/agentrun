@@ -44,7 +44,7 @@ test("a running run handed the sign-in is served cut while it runs and when it e
   // The agent's home lists no sign-ins and never reads or writes them.
   const listed = (await s.api("GET", "/agents/alpha/home/files")).body.files;
   assert.deepEqual(listed.filter((file) => file.host_owned).map((file) => file.path), []);
-  const file = "/agents/alpha/home/files/sign-ins/sign-ins.json";
+  const file = ["/agents/alpha", "home", "files", "sign-ins", "sign-ins.json"].join("/");
   const read = await s.api("GET", file);
   assert.deepEqual([read.status, read.body.error?.details?.reason], [403, "host_owned"], JSON.stringify(read.body));
   assert.equal((await s.api("PUT", file, { format: "sign-ins/1", sign_ins: [] })).status, 403);
