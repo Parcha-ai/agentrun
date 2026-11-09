@@ -83,12 +83,12 @@ test("archil claim: the mount credential is minted when a mount first asks, once
   assert.equal(fake.requests.length, 0, "nothing minted before a mount asks");
   assert.equal(await claim.token(), TOKEN);
   assert.equal(await claim.token(), TOKEN);
-  assert.deepEqual(fake.requests.map((one) => [one.method, one.body?.nickname, one.body?.ttl]), [["GET", undefined, undefined], ["POST", "agentrun:run-1:3", "86400s"]], "the disk's users read, then minted once, named for the run and its epoch, with its lifetime bound");
+  assert.deepEqual(fake.requests.map((one) => [one.method, one.body?.nickname, one.body?.ttl]), [["GET", undefined, undefined], ["POST", "agentrun:run-1:3", "86400s"], ["GET", undefined, undefined]], "the disk's users read, then minted once, named for the run and its epoch, with its lifetime bound, then read again for an earlier epoch's");
   assert.deepEqual(asked, [ARCHIL_API_KEY_ROW], "no disk token row is read");
   assert.deepEqual([...claim.secrets].sort(), [API, TOKEN].sort());
   await claim.revoke();
   await claim.revoke();
-  assert.deepEqual(fake.requests.slice(2).map((one) => [one.method, one.query.identifier]), [["DELETE", "tok-1"]], "removed once by its identifier; a second revoke has nothing to remove");
+  assert.deepEqual(fake.requests.slice(3).map((one) => [one.method, one.query.identifier]), [["DELETE", "tok-1"], ["GET", undefined]], "removed once by its identifier, then the run's earlier epochs looked for; a second revoke has nothing to remove");
   assert.equal(fake.users.size, 0);
   assert.ok(!claim.secrets.has(TOKEN), "the token is no longer held");
 });
@@ -99,7 +99,7 @@ test("archil claim: an ARCHIL_API_KEY in the server's environment is the account
   const { claim, asked, made } = await claimOf({ mount, rows: new Map(), env: { ARCHIL_API_KEY: ENV_KEY } });
   assert.equal(await made[0].key(), ENV_KEY, "the disk's key");
   await claim.token();
-  assert.deepEqual(fake.requests.map((one) => one.authorization), [`Bearer ${ENV_KEY}`, `Bearer ${ENV_KEY}`], "the same key lists and mints");
+  assert.deepEqual(fake.requests.map((one) => one.authorization), [`Bearer ${ENV_KEY}`, `Bearer ${ENV_KEY}`, `Bearer ${ENV_KEY}`], "the same key lists, mints and lists again");
   assert.deepEqual(asked, [], "no saved row is read");
   // An empty variable is no key: the saved one is read.
   const saved = await claimOf({ mount, env: { ARCHIL_API_KEY: "  " } });
@@ -173,8 +173,38 @@ test("archil claim: a reclaim removes the run's token users of an earlier epoch 
     ["DELETE", "tok-old"],
     ["DELETE", "tok-older"],
     ["POST", "agentrun:run-1:3"],
-  ], "the earlier claims' removed first, then this claim's minted");
+    ["GET", undefined],
+  ], "the earlier claims' removed first, then this claim's minted, then the list read again for one the first missed");
   assert.deepEqual([...fake.users.keys()].sort(), ["tok-1", "tok-other-run", "tok-person"]);
+});
+
+test("archil claim: a reclaim whose list, read before its mint, lags the earlier epoch's mint still removes that user: the read after its own mint holds it", async (t) => {
+  // mint-4, live: the read right after epoch 1's mint lacked it; the read after epoch 2's POST held both. Two reads lag
+  // here: epoch 1's own after its mint, and epoch 2's before its mint; epoch 2's after its mint holds it.
+  const { fake, mount } = await controlOn(t, { lagging: 2 });
+  const first = await claimOf({ mount: { ...mount, epoch: 1 } });
+  await first.claim.token();
+  // A crashed runner: epoch 1's claim is neither revoked nor released. Epoch 2's first list misses its user.
+  const second = await claimOf({ mount: { ...mount, epoch: 2 } });
+  await second.claim.token();
+  assert.deepEqual([...fake.users.values()].map((one) => one.nickname), ["agentrun:run-1:2"], "epoch 1's user is gone once epoch 2's token is out, epoch 2's kept");
+  const at = (method, what) => fake.requests.findIndex((one) => one.method === method && (one.query.identifier ?? one.body?.nickname) === what);
+  assert.ok(at("POST", "agentrun:run-1:2") >= 0 && at("DELETE", "tok-1") > at("POST", "agentrun:run-1:2"), "the list before the mint missed it; the one after removed it");
+});
+
+test("archil claim: a reclaim whose every list lags the earlier epoch's mint misses its user; the newer claim's revoke removes it with its own", async (t) => {
+  // Lagging until settled: both of the reclaim's reads miss epoch 1's user; by the run's end the list holds it.
+  const { fake, mount } = await controlOn(t, { lagging: Infinity });
+  const first = await claimOf({ mount: { ...mount, epoch: 1 } });
+  await first.claim.token();
+  const second = await claimOf({ mount: { ...mount, epoch: 2 } });
+  await second.claim.token();
+  assert.deepEqual([...fake.users.values()].map((one) => one.nickname).sort(), ["agentrun:run-1:1", "agentrun:run-1:2"], "the reclaim's lists missed epoch 1's user");
+  fake.settle();
+  // The newer claim's revoke removes its own, then the run's earlier epochs.
+  await second.claim.revoke();
+  assert.deepEqual([...fake.users.keys()], [], "epoch 2's user and epoch 1's are both gone");
+  assert.deepEqual(fake.requests.filter((one) => one.method === "DELETE").map((one) => one.query.identifier), ["tok-2", "tok-1"]);
 });
 
 test("archil claim: a lost claim removes the run's mount credential at once, not at its ttl", async (t) => {
@@ -184,10 +214,11 @@ test("archil claim: a lost claim removes the run's mount credential at once, not
   await claim.token();
   assert.equal(fake.users.size, 1);
   controller.abort(new Error("the claim was fenced"));
-  // The remove is a request on its way: wait for it to land (bounded), not for a time.
-  for (let tries = 0; fake.users.size > 0 && tries < 2000; tries += 1) await new Promise((resolve) => setTimeout(resolve, 5));
+  // The remove, and the list read after it, are requests on their way: wait for both to land (bounded), not for a time.
+  const settled = () => fake.users.size === 0 && fake.requests.at(-1)?.method === "GET";
+  for (let tries = 0; !settled() && tries < 2000; tries += 1) await new Promise((resolve) => setTimeout(resolve, 5));
   assert.equal(fake.users.size, 0, "removed when the claim was lost");
-  assert.deepEqual(fake.requests.at(-1).method, "DELETE");
+  assert.deepEqual(fake.requests.slice(-2).map((one) => one.method), ["DELETE", "GET"], "its own removed, then the run's earlier epochs looked for");
   assert.equal(claim.secrets.size, 0);
 });
 
