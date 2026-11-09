@@ -160,28 +160,27 @@ test("SKILL.md: its front matter, its size, and each recipe block run in order a
     assert.equal(readFileSync(join(other, "agentrun-cli", "SKILL.md"), "utf8"), "---\nname: something-else\n---\n", "left as it was");
   });
 
-  await t.test("tool-keys set: the value from stdin or --from-env reaches the server, and is in no output", () => {
+  await t.test("tool-keys set: the value from stdin or --from-env goes to the server, which refuses the token a secret write in its one sentence; the value is in no output", () => {
     const outputs = [];
     const cli = cliOf(server.env, outputs);
     const value = `not-a-secret-${randomBytes(12).toString("hex")}`;
     const unset = cli(["tool-keys", "list"]).json().keys.find((key) => key.id === "parallel");
     assert.deepEqual(unset.fields.map((f) => f.set), [false]);
-
-    const piped = cli(["tool-keys", "set", "parallel", "PARALLEL_API_KEY"], { input: `${value}\n` });
-    assert.equal(piped.code, 0, piped.err);
+    // A secret is written only from the owner's session in the console (the server's secret-writes.ts): the CLI holds the
+    // token, so every save and removal is refused, saying where to do it.
+    const refused = (res, what) => {
+      assert.equal(res.code, 1, `${what}: ${res.err}`);
+      assert.match(res.err, /forbidden/, what);
+      assert.match(res.err, /owner's signed-in session in the console/, what);
+    };
+    refused(cli(["tool-keys", "set", "parallel", "PARALLEL_API_KEY"], { input: `${value}\n` }), "from stdin");
     const field = () => cli(["tool-keys", "list"]).json().keys.find((key) => key.id === "parallel").fields[0];
-    assert.equal(field().set, true);
-    assert.equal(cli(["tool-keys", "delete", "parallel"]).code, 0);
-    assert.equal(field().set, false);
-
-    const fromEnv = cli(["tool-keys", "set", "parallel", "PARALLEL_API_KEY", "--from-env", "KEY_VALUE"], { extra: { KEY_VALUE: value } });
-    assert.equal(fromEnv.code, 0, fromEnv.err);
-    assert.equal(field().set, true);
-
-    // A field the key does not have: the server's refusal, and still not the value.
-    const wrongField = cli(["tool-keys", "set", "parallel", "NO_SUCH_FIELD"], { input: value });
-    assert.equal(wrongField.code, 1);
-    assert.match(wrongField.err, /input_invalid/);
+    assert.equal(field().set, false, "nothing saved");
+    refused(cli(["tool-keys", "delete", "parallel"]), "a removal");
+    refused(cli(["tool-keys", "set", "parallel", "PARALLEL_API_KEY", "--from-env", "KEY_VALUE"], { extra: { KEY_VALUE: value } }), "from the environment");
+    assert.equal(field().set, false, "nothing saved");
+    // A field the key does not have: refused the same, before its body is read, and still not the value.
+    refused(cli(["tool-keys", "set", "parallel", "NO_SUCH_FIELD"], { input: value }), "another field");
     // On the command line, it is one argument too many: refused, nothing sent, and not echoed.
     assert.equal(cli(["tool-keys", "set", "parallel", "PARALLEL_API_KEY", value]).code, 2);
     assert.equal(cli(["tool-keys", "set", "parallel", "PARALLEL_API_KEY", "--from-env", "NOT_SET_HERE"]).code, 2);
