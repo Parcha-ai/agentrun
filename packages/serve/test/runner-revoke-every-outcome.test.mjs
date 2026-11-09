@@ -123,23 +123,44 @@ test("stopped: a person's stop ends the run stopped, and its token is removed", 
   await w.tokensGone();
 });
 
-test("parked at its cap: the parked claim lets its token go (nothing lives across a park)", async (t) => {
-  const capUsd = 0.01;
+/** The token users minted so far, by their nicknames (agentrun:<run>:<epoch>). */
+const mintedNames = (control) => control.requests.filter((one) => one.method === "POST").map((one) => one.body?.nickname);
+
+test("parked at its cap: the parked claim lets its token go; a raise's resume mints a new one under its higher epoch, removed at its end", async (t) => {
+  let capUsd = 0.01;
   const w = await revokeRun(t, {
-    script: [{ say: "never asked" }],
-    extra: () => ({ cap: { capUsd, park: (refusal) => cap.parkOf(refusal, capUsd), checkRaise: cap.checkRaise, followUpOf: cap.followUpOf }, runCap: { capUsd: () => capUsd, modelOf: () => SONNET } }),
+    script: [{ say: "done" }, { say: "done after the raise" }],
+    extra: () => ({ cap: { get capUsd() { return capUsd; }, park: (refusal) => cap.parkOf(refusal, capUsd), checkRaise: cap.checkRaise, followUpOf: cap.followUpOf }, runCap: { capUsd: () => capUsd, modelOf: () => SONNET } }),
   });
   w.start(STEADY);
   await w.settled("parked");
   assert.deepEqual(w.minted, [1]);
   await w.tokensGone();
+  // The resume: the person raises the cap; the next claim (a higher epoch) mints its own, and its end removes it.
+  capUsd = 5;
+  await sendCommand(w.server, "run-1", { kind: "raise", body: { capUsd } });
+  await w.settled("ended");
+  assert.equal(w.minted.length, 2, `one mint per claim: ${JSON.stringify(w.minted)}`);
+  assert.ok(w.minted[1] > w.minted[0], `the resume's claim is a higher epoch: ${JSON.stringify(w.minted)}`);
+  assert.deepEqual(mintedNames(w.control), w.minted.map((epoch) => `agentrun:run-1:${epoch}`));
+  await w.tokensGone();
 });
 
-test("parked at an ask: the parked claim lets its token go (nothing lives across a park)", async (t) => {
+test("parked at an ask: the parked claim lets its token go; a steer's resume mints a new one under its higher epoch, removed when it parks again", async (t) => {
   const w = await revokeRun(t, { script: [{ call: "asked" }, { say: "done" }] });
   w.start(STEADY);
-  await w.settled("parked");
+  const first = await w.settled("parked");
   assert.deepEqual(w.minted, [1]);
+  await w.tokensGone();
+  // A steer wakes it with no answer for its asked call: the resume's claim mints its own, then parks again and lets it go.
+  await sendCommand(w.server, "run-1", { kind: "steer", body: { text: "any news?" } });
+  await until(async () => {
+    const now = await w.row();
+    return now.state === "parked" && now.runner === null && now.epoch > first.epoch;
+  }, "parked again after the steer", async () => JSON.stringify(await w.row()));
+  assert.equal(w.minted.length, 2, `one mint per claim: ${JSON.stringify(w.minted)}`);
+  assert.ok(w.minted[1] > w.minted[0], `the resume's claim is a higher epoch: ${JSON.stringify(w.minted)}`);
+  assert.deepEqual(mintedNames(w.control), w.minted.map((epoch) => `agentrun:run-1:${epoch}`));
   await w.tokensGone();
 });
 
