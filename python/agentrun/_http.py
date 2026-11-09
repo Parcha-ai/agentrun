@@ -65,7 +65,7 @@ def parse_json(data: Union[bytes, str]) -> Any:
     which is gone by the time any error is raised."""
     try:
         return json.loads(data.decode("utf-8") if isinstance(data, bytes) else data)
-    except ValueError:  # JSONDecodeError and UnicodeDecodeError both
+    except (ValueError, RecursionError):  # JSONDecodeError, UnicodeDecodeError, and a nesting past the parser's depth
         return NOT_JSON
 
 

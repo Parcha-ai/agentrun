@@ -177,7 +177,12 @@ def _answer_of(op: Operation, response: Response, scrub: Optional[Callable[[Any]
     kind = response.headers.get("content-type") or ""
     if scrub is not None or ("json" in op.answer and (JSON_TYPE.match(kind) or op.answer == "json")):
         value = parse_json(data) if JSON_TYPE.match(kind) else NOT_JSON
-        return value if value is NOT_JSON or scrub is None else scrub(value)
+        if value is NOT_JSON or scrub is None:
+            return value
+        try:
+            return scrub(value)
+        except Exception:  # noqa: BLE001 - an answer whose secrets cannot be cut is no answer: it is never handed out whole
+            return NOT_JSON
     if "text" in op.answer and (re.match(r"text/", kind, re.IGNORECASE) or "bytes" not in op.answer):
         return data.decode("utf-8", errors="replace")
     return data
@@ -284,7 +289,7 @@ class AgentRun(Resources):
                 else:
                     try:
                         text = json.dumps(body, ensure_ascii=False, allow_nan=False, separators=(",", ":"))
-                    except (TypeError, ValueError):
+                    except (TypeError, ValueError, RecursionError):
                         raise AgentRunUsage(f"The body of {route} cannot be sent as JSON.") from None
                     headers["content-type"] = "application/json"
                     sent = text.encode("utf-8")
@@ -386,11 +391,14 @@ class AgentRun(Resources):
             data = response.read()
         except Exception:  # noqa: BLE001 - a body that cannot be read is no error object
             return None, True
-        parsed = parse_json(data)
-        found: object = cast(Dict[str, Any], parsed).get("error") if isinstance(parsed, dict) else None
-        if not isinstance(found, dict):
+        try:
+            parsed = parse_json(data)
+            found: object = cast(Dict[str, Any], parsed).get("error") if isinstance(parsed, dict) else None
+            if not isinstance(found, dict):
+                return None, False
+            return scrubber_of([self._key.reveal(), *x.secrets])(cast(ServerError, found)), False
+        except Exception:  # noqa: BLE001 - an error object that cannot be read whole is none: the refusal keeps its status
             return None, False
-        return scrubber_of([self._key.reveal(), *x.secrets])(cast(ServerError, found)), False
 
     def _refusal(self, x: Exchange, response: Response, last: bool, deadline: float) -> AgentRunError:
         """A refused answer as its outcome. The server's error object is kept with every copy of the key cut from it;

@@ -5,7 +5,7 @@ with its structure and every other value kept. As packages/client/src/scrub.ts, 
 from __future__ import annotations
 
 import json
-from typing import Any, Callable, Iterable, List, Sequence, TypeVar
+from typing import Any, Callable, Dict, Iterable, List, Sequence, Tuple, TypeVar, cast
 from urllib.parse import quote
 
 T = TypeVar("T")
@@ -36,22 +36,35 @@ def scrubber_of(secrets: Iterable[str]) -> Callable[[T], T]:
             string = string.replace(form, HIDDEN)
         return string
 
-    def value(node: Any) -> Any:
-        if isinstance(node, str):
-            return text(node)
-        if isinstance(node, list):
-            return [value(child) for child in node]  # pyright: ignore[reportUnknownVariableType]
-        if isinstance(node, dict):
-            out: dict[str, Any] = {}
-            for key, child in node.items():  # pyright: ignore[reportUnknownVariableType]
-                name = cut = text(str(key))  # pyright: ignore[reportUnknownArgumentType]
+    def value(root: Any) -> Any:
+        # A walk with a stack of its own, not recursion: a value nested as deep as the parser reads is cut, never a
+        # RecursionError. Each container is copied empty when it is met and filled when it comes off the stack.
+        pending: List[Tuple[Any, Any]] = []
+
+        def copy(node: Any) -> Any:
+            if isinstance(node, str):
+                return text(node)
+            if isinstance(node, (list, dict)):
+                out: Any = [] if isinstance(node, list) else {}
+                pending.append((cast(Any, node), out))
+                return out
+            return node
+
+        top = copy(root)
+        while pending:
+            node, out = pending.pop()
+            if isinstance(node, list):
+                for child in cast(List[Any], node):
+                    out.append(copy(child))
+                continue
+            for key, child in cast(Dict[Any, Any], node).items():
+                name = cut = text(str(key))
                 n = 2
                 while name in out:
                     name = f"{cut} ({n})"
                     n += 1
-                out[name] = value(child)
-            return out
-        return node
+                out[name] = copy(child)
+        return top
 
     def scrub(node: T) -> T:
         return value(node) if forms else node
@@ -65,21 +78,19 @@ def secrets_of(body: str, public_fields: Sequence[str]) -> List[str]:
     its key. A body that is not JSON is one secret whole."""
     try:
         parsed = json.loads(body)
-    except ValueError:
+    except (ValueError, RecursionError):  # not JSON, or nested past the parser's depth: one secret whole
         return [body]
     open_ = {tuple(field.split(".")) for field in public_fields}
     found: List[str] = []
-
-    def walk(node: Any, path: tuple[str, ...]) -> None:
+    # A walk with a stack of its own, not recursion, in the body's order: any depth the parser read is walked.
+    pending: List[Tuple[Any, Tuple[str, ...]]] = [(parsed, ())]
+    while pending:
+        node, path = pending.pop()
         if isinstance(node, str):
             if path not in open_:
                 found.append(node)
         elif isinstance(node, list):
-            for child in node:  # pyright: ignore[reportUnknownVariableType]
-                walk(child, (*path, "[]"))
+            pending.extend(reversed([(child, (*path, "[]")) for child in cast(List[Any], node)]))
         elif isinstance(node, dict):
-            for key, child in node.items():  # pyright: ignore[reportUnknownVariableType]
-                walk(child, (*path, str(key)))  # pyright: ignore[reportUnknownArgumentType]
-
-    walk(parsed, ())
+            pending.extend(reversed([(child, (*path, str(key))) for key, child in cast(Dict[Any, Any], node).items()]))
     return found
