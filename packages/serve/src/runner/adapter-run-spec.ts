@@ -55,7 +55,7 @@ import type { ComputerSetting } from "../computer-setting.js";
 import type { claimComputer, ComputerDeps } from "../workspace/computer-deps.js";
 import type { RunComputer } from "../workspace/run-tools.js";
 import type { Workspace } from "../workspace/workspace.js";
-import { heldRedactor, holdClaimed, runnerSecrets, secretRedactor } from "./redact.js";
+import { type HeldRedact, heldRedactor, holdClaimed, runnerSecrets, secretRedactor } from "./redact.js";
 
 /** What a claim gives the shared computerForClaim: the run, its epoch, its revision, its place and any computer choice. */
 export interface ClaimLaunch {
@@ -333,10 +333,7 @@ export async function adapterRunSpecFromLaunch(launch: RunLaunch, run: AdapterRu
     store: deps.store,
     claim,
     sealKey: deps.sealKey,
-    liveViewers: {
-      put: (handover: LiveHandover) => putLiveViewer(deps.store, deps.sealKey, claim, handover),
-      drop: (tag?: string) => dropLiveViewer(deps.store, claim, tag),
-    },
+    liveViewers: liveViewersOf(deps.store, deps.sealKey, claim, cut),
   };
 
   // The run's tools. The hands (read/write/edit/bash and the background tools) are the kernel registry's over the run's
@@ -474,6 +471,15 @@ export async function learnedWorkflowHostTool(opts: {
  *  (bookedIn), as main books them, so they run. The browser (through host.liveViewers), MCP (the MCP claim step's
  *  mcpForClaim(claim, store, sealKey, pin) -> { sessionMcp, redactions, release }), the learned workflow and decisions are
  *  each a named todo, added as their seams land. */
+/** The run's live-viewer writers over the store (browser-live.ts): a session's hand-over written sealed, and gone. */
+export function liveViewersOf(store: LiveViewerStore, sealKey: Buffer, claim: Claim, cut: HeldRedact): { put(handover: LiveHandover): Promise<boolean>; drop(tag?: string): Promise<void> } {
+  void cut;
+  return {
+    put: (handover) => putLiveViewer(store, sealKey, claim, handover),
+    drop: (tag) => dropLiveViewer(store, claim, tag),
+  };
+}
+
 /** `tool` with its answer's text, and a throw's message, cut by `cut` (the run's one redactor). */
 export function answersCut(tool: HostTool, cut: (text: string) => string): HostTool {
   return {
