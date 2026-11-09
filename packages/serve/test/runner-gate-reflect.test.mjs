@@ -11,7 +11,9 @@ import { test } from "node:test";
 const { adapterRunGate } = await import("../dist/runner/adapter-run-spec.js");
 const { NOTE_ONLY_TEXT, TURN_ORIGIN_FILE } = await import("../dist/tool-gate.js");
 const { REFLECT_NOTE_ONLY } = await import("../dist/runner/end-of-run.js");
-const { readFileSync } = await import("node:fs");
+const { readFileSync, mkdirSync } = await import("node:fs");
+const { runFolder } = await import("../dist/workspace/paths.js");
+const { specFor } = await import("./runner-spec-support.mjs");
 
 /** A store whose server tool settings are none (every default). */
 const noSettings = { settings: { get: async () => undefined } };
@@ -63,4 +65,21 @@ test("through the local folder's path: the end-of-run turn's write under .learni
   writeFileSync(join(root, TURN_ORIGIN_FILE), reflect);
   assert.deepEqual(await decision(gate, "write", { path: join(root, ".learning", "notes.md"), content: "x" }), { decision: "deny", text: NOTE_ONLY_TEXT }, "a reflect turn: refused first");
   assert.equal(readFileSync(join(root, TURN_ORIGIN_FILE), "utf8"), reflect, "the gate only reads the run's files");
+});
+
+// Mirrors the assertions of the Mode 2 acceptance red (runner-mode2-root-reads.test.mjs on the CLI-spec branch) on this
+// base, where the spec builder is Mode 1 only and cliRunSpecFromLaunch is not yet merged: pi's spec, built for a claimed
+// run as the dispatch builds it, gives its gate the run's Workspace, and a reflect turn's write under .learning/ is
+// refused with the one text. (The acceptance red asserts the bare string "deny"; this gate refuses with its words, which
+// the loop passes to the model: { deny: NOTE_ONLY_TEXT }.)
+const reflectWrite = { callId: "c1", tool: "write", args: { path: ".learning/notes.md", content: "kept" } };
+test("pi's spec (adapterRunSpecFromLaunch): the gate reads the turn's origin from the run's Workspace: a reflect turn's write under .learning/ is refused with the one text", async (t) => {
+  const { spec, dir } = await specFor(t, { body: { tools: ["read", "write"] } });
+  const folder = runFolder(dir, "agent-1", "run-1");
+  mkdirSync(folder, { recursive: true });
+  writeFileSync(join(folder, TURN_ORIGIN_FILE), reflect);
+  const given = await spec.gate(reflectWrite);
+  assert.deepEqual(given, { deny: NOTE_ONLY_TEXT }, `refused with the one text: ${JSON.stringify(given)}`);
+  writeFileSync(join(folder, TURN_ORIGIN_FILE), `${JSON.stringify({ origin: "person" })}\n`);
+  assert.equal(await spec.gate(reflectWrite), "allow", "a person's turn: the write follows its permission");
 });
