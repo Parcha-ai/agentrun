@@ -14,7 +14,8 @@ import { harnessDefault, modelLabel, NO_DEFAULT } from "@/lib/models";
 import type { McpServer } from "@/lib/mcp";
 import { newAgentPlace, placeOf } from "@/lib/place";
 import type { Places } from "@/lib/place";
-import { callNodeTools, type ToolChoice, type ToolGate } from "@/lib/toolSettings";
+import type { ToolSettings } from "@/lib/v2";
+import { callNodeTools, SERVER_DENY, serverDenies, type ToolChoice, type ToolGate } from "@/lib/toolSettings";
 import { cn } from "@/lib/utils";
 
 /** A revision as GET /v2/agents/{id}/revisions lists it; `definition` is what it holds (a workflow revision's workflow). */
@@ -47,6 +48,8 @@ export type EditorProps = {
   providerChoices?: ToolChoice[];
   /** The saved MCP servers, when `caps.mcp`: null while read, "failed" when they could not be. */
   mcpServers?: McpServer[] | null | "failed";
+  /** This server's tool settings (GET /v2/settings/tools), for the pins it sets: said beside an agent's own. */
+  serverToolSettings?: ToolSettings;
   /** Reads the MCP servers again, after a read that failed. */
   onRetryMcp?: () => void;
   /** Each tool's permission on this server (approvals/1), from capabilities: an agent's own is set over it. */
@@ -77,7 +80,7 @@ const STEPS: { id: Step; label: string; note: string; Icon: typeof FileText }[] 
 /** The hosted console's agent builder, over AgentRun Server's agents: a numbered step rail, one step at a time, and a
  *  save that makes a new revision. A save made on a revision that is no longer current is refused (If-Match), and the
  *  editor says so instead of overwriting the other save. */
-export function AgentEditor({ agent, revisions = [], caps, onSave, onMakeCurrent, onArchive, onReload, onBack, step: initialStep, problem: initialProblem = null, notice, draft, validate, providerChoices = [], permissionGates = [], focusTool, mcpServers = null, onRetryMcp }: EditorProps) {
+export function AgentEditor({ agent, revisions = [], caps, onSave, onMakeCurrent, onArchive, onReload, onBack, step: initialStep, problem: initialProblem = null, notice, draft, validate, providerChoices = [], permissionGates = [], focusTool, mcpServers = null, serverToolSettings, onRetryMcp }: EditorProps) {
   const creating = !agent;
   const d = agent?.definition;
   const [step, setStep] = useState<Step>(initialStep ?? (agent?.kind === "workflow" ? "workflow" : "context"));
@@ -262,7 +265,7 @@ export function AgentEditor({ agent, revisions = [], caps, onSave, onMakeCurrent
                     const choice = providerChoices.find((c) => c.name === t.name);
                     const ownPick = (f.tool_settings ?? d?.tool_settings ?? {})[t.name]?.provider;
                     const pickedOver = !!choice && ownPick !== undefined && ownPick !== choice.provider;
-                    const why = t.call_only && !workflow ? "Workflow-only: a workflow's call node runs it, not an agent" : !runs ? `Not on ${f.harness ?? "pi"} on this server` : sandboxReason(t, f.place ?? placeOf(d?.place) ?? defaultPlaceOf(workflow, f.tools ?? [], caps.places)) ?? (!t.available && !pickedOver ? (choice?.reason ?? t.reason ?? `Needs ${(t.missing ?? []).join(", ")}`) : undefined);
+                    const why = serverDenies(t.name, permissionGates, agent?.tools) ? SERVER_DENY : t.call_only && !workflow ? "Workflow-only: a workflow's call node runs it, not an agent" : !runs ? `Not on ${f.harness ?? "pi"} on this server` : sandboxReason(t, f.place ?? placeOf(d?.place) ?? defaultPlaceOf(workflow, f.tools ?? [], caps.places)) ?? (!t.available && !pickedOver ? (choice?.reason ?? t.reason ?? `Needs ${(t.missing ?? []).join(", ")}`) : undefined);
                     return (
                       <li key={t.name}><label title={why} className={cn("flex items-center gap-3 border px-3 py-2.5 font-mono text-[13px]", on && "border-foreground", why && !on ? "cursor-not-allowed opacity-60" : "cursor-pointer")}>
                         <input type="checkbox" value={t.name} checked={on} disabled={!!why && !on} onChange={() => { setToolsTouched(true); set({ tools: on ? f.tools!.filter((x) => x !== t.name) : [...(f.tools ?? []), t.name] }); }} className="accent-[hsl(var(--primary))]" />
@@ -281,7 +284,7 @@ export function AgentEditor({ agent, revisions = [], caps, onSave, onMakeCurrent
               {/* A workflow agent's tools have no provider here (a call node runs the tool as the server resolves it), but each
                   one's permission is this agent's to set: a call node refused for a tool set to deny or ask is fixed here. */}
               {(
-                <AgentToolSettings agent={agent} harness={f.harness ?? "pi"} model={f.model} tools={f.tools ?? []} choices={workflow ? [] : providerChoices} gates={permissionGates} mcpServers={Array.isArray(mcpServers) ? mcpServers : undefined} focus={focusTool} callTools={workflow ? callNodeTools(parsedWorkflow(f.workflowText) ?? d?.workflow) : undefined}
+                <AgentToolSettings agent={agent} harness={f.harness ?? "pi"} model={f.model} tools={f.tools ?? []} choices={workflow ? [] : providerChoices} gates={permissionGates} mcpServers={Array.isArray(mcpServers) ? mcpServers : undefined} serverSettings={serverToolSettings} focus={focusTool} callTools={workflow ? callNodeTools(parsedWorkflow(f.workflowText) ?? d?.workflow) : undefined}
                   value={f.tool_settings ?? d?.tool_settings ?? {}} issues={problem?.kind === "invalid" ? problem.fields : {}}
                   // Settings equal to the definition's are no change of the form's. While a save is under way the definition is
                   // about to be what it sent, so every change is kept: the save's answer drops it only if it equals what was sent.

@@ -50,6 +50,7 @@ export function beforeRequestOf(options: BeforeRequestOptions): BeforeRequest {
       ...(request.outputTokensAsked === undefined ? {} : { outputAsked: request.outputTokensAsked }),
       ...(request.outputTokensLeast === undefined ? {} : { outputTokensLeast: request.outputTokensLeast }),
       ...(previous ? { previous } : {}),
+      ...(isFigure(request.feeUsd) && request.feeUsd > 0 ? { feeUsd: request.feeUsd } : {}),
       ...(request.side ? { side: true } : {}),
     };
     // Each request in flight at what the host held for it, else its worst case at the limit it was admitted with; one with
@@ -68,6 +69,17 @@ export function beforeRequestOf(options: BeforeRequestOptions): BeforeRequest {
     const spentUsd = isFigure(request.spentUsd) && isFigure(toolSpent) ? request.spentUsd + toolSpent : null;
     const toolHeld = options.heldUsd ? options.heldUsd() : 0;
     const heldUsd = isFigure(toolHeld) ? inFlight + toolHeld : null;
+    // A paid tool call (a web search's request, a monid call): held at its price, by the rule's tool judgement (main's
+    // paidCall), its words naming it, beside the run's spend and holds.
+    if (request.paid) {
+      try {
+        const judged = capRule.judge({ kind: "tool", id: `turn-${request.turn}`, name: request.paid.name, holdUsd: request.feeUsd ?? 0, basis: request.paid.basis }, { capUsd, spentUsd, heldUsd, mode, now: now() });
+        return { holdUsd: judged.heldUsd };
+      } catch (error) {
+        if (error instanceof CapRefused) return { refuse: error.message, forGood: error.forGood, ...(error.figures ? { figures: error.figures } : {}) };
+        throw error;
+      }
+    }
     const judge = (input: number | undefined) => {
       try {
         const judged = capRule.judge({ ...asked, inputTokens: input }, { capUsd, spentUsd, heldUsd, mode, now: now() });

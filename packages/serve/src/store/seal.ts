@@ -19,10 +19,18 @@ export interface SealedAt {
 /** The sealed columns the store has. */
 export const sealedAt = {
   mcpServer: (name: string): SealedAt => ({ table: "mcp_servers", row: name, column: "sealed" }),
-  oauthVerifier: (state: string): SealedAt => ({ table: "mcp_oauth_pending", row: state, column: "verifier" }),
+  /** A pending sign-in's sealed column: its PKCE verifier and the OAuth client (with its secret) as one sealed JSON blob. */
+  oauthPending: (state: string): SealedAt => ({ table: "mcp_oauth_pending", row: state, column: "sealed" }),
   sealedKey: (name: string): SealedAt => ({ table: "sealed_keys", row: name, column: "sealed" }),
-  /** A run's browser session's live viewer token (browser-live.ts): one row per run and session tag. */
-  liveViewer: (runId: string, tag: string): SealedAt => ({ table: "browser_viewers", row: `${runId}/${tag}`, column: "sealed" }),
+  // A saved browser sign-in's pointer: the one sealed column of the agent-and-provider row, bound to both by a composite
+  // row key. A ":" in either part is refused, so agent:provider names one pair only. A tombstone keeps the same sealed
+  // bytes under this same binding, so a forgotten pointer still opens.
+  signIn: (agentId: string, provider: string): SealedAt => {
+    for (const part of [agentId, provider]) if (part.includes(":")) throw new Error(`a sign-in's agent and provider never hold ":": ${JSON.stringify(part)}`);
+    return { table: "sign_ins", row: `${agentId}:${provider}`, column: "pointer" };
+  },
+  /** A run's computer session's live viewer token (browser-live.ts): one row per run, computer kind and session tag. */
+  liveViewer: (runId: string, kind: string, tag: string): SealedAt => ({ table: "computer_viewers", row: `${runId}/${kind}:${tag}`, column: "sealed" }),
 };
 
 /** The AAD a value at `at` is sealed under. A part with the separator in it is refused: no two places share an AAD. */

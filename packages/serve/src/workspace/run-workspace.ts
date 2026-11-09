@@ -7,6 +7,7 @@
 // and again at its end. A cleanup that leaves spill files (onCleanupFailed), or a sweep that fails, goes to the run's
 // log in words and never fails the run: the next sweep takes what is left.
 // Mode 1: the run's local folder (runFolder). Its end does nothing here; the tools' end clears what they keep in it.
+import { mkdir } from "node:fs/promises";
 import type { ArchilClaim } from "./archil-claim.js";
 import { archilWorkspace } from "./archil.js";
 import { localWorkspace } from "./local.js";
@@ -33,7 +34,12 @@ export interface RunWorkspace {
 export async function openRunWorkspace(options: RunWorkspaceOptions): Promise<RunWorkspace> {
   const { agentId, runId, log } = options;
   if (options.mode === 1) {
-    return { workspace: localWorkspace(runFolder(options.data, agentId, runId)), end: async () => {} };
+    // The run's folder, made here at the claim (the server's start made it before the per-run process ran): a fresh run has
+    // none yet, and its Workspace, its tools and its first turn all open over it. Recursive and private, left as it is when
+    // it is already there (a resumed claim).
+    const folder = runFolder(options.data, agentId, runId);
+    await mkdir(folder, { recursive: true, mode: 0o700 });
+    return { workspace: localWorkspace(folder), end: async () => {} };
   }
   const claim = options.archil;
   if (claim === undefined) throw new TypeError("a Mode 2 run's Workspace is opened with its claim's Archil claim (archilClaim)");
@@ -54,6 +60,9 @@ export async function openRunWorkspace(options: RunWorkspaceOptions): Promise<Ru
       say(`the run's exec spill folder could not be swept at the run's ${when} (the next sweep takes what is left): ${(error as Error)?.message ?? error}`);
     }
   };
+  // The run's folder on the disk (its run key), ensured at the claim as Mode 1's is: a fresh run has none yet. A write would
+  // make its prefix anyway, so a failure here never fails the run; it is the next write's.
+  await workspace.mkdir("").catch((error: unknown) => say(`the run's folder could not be made on the disk (a write will make it): ${(error as Error)?.message ?? error}`));
   await sweep("start");
   let ended: Promise<void> | undefined;
   return { workspace, end: () => (ended ??= sweep("end")) };
