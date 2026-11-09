@@ -264,9 +264,9 @@ export async function computerForClaim(launch: ClaimLaunch, store: Pick<Store, "
       }
       view = opened.view;
     }
-    // The run's end releases the take: the take-over hold (workspace/computer-hold.ts) records it as `released` (the
-    // computer goes), the one hold-end that module keeps, onto which the composer's `ended` ViewEnd maps.
-    endHold = () => theHold.give("released");
+    // The run's end closes the hold (workspace/computer-hold.ts close()): a take in force ends `released` (the computer
+    // goes; the composer's `ended` ViewEnd maps onto it), the agent's open ask is let go at once, and nothing is taken after.
+    endHold = () => theHold.close();
     hold = (ports) => heldHands(ports as never, theHold);
   }
   let released: Promise<void> | undefined;
