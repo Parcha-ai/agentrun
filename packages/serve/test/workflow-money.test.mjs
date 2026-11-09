@@ -13,6 +13,7 @@ import { createModels } from "@earendil-works/pi-ai/models";
 import { calculateCost } from "@earendil-works/pi-ai";
 import { builtinModels } from "@earendil-works/pi-ai/providers/all";
 import { anthropicPolicy } from "@parcha/agentrun-harness-claude";
+import { sessionSpendOf } from "@parcha/agentrun-kernel";
 
 const { openSqliteStore } = await import("../dist/store/index.js");
 const { startRunner } = await import("../dist/runner/runner.js");
@@ -125,8 +126,9 @@ async function sessionRecords(store) {
   }
 }
 
-/** A store with one queued workflow run (its launch body) and a runner on the workflow loop with the money spec. */
-async function worldWith(t, { capUsd, question, usage }) {
+/** A store with one queued workflow run (its launch body) and a runner on the workflow loop with the money spec.
+ *  `providerOf` defaults to the gpt-6-sol provider on a submit origin; a test gives its own (a stalling origin for a stop). */
+async function worldWith(t, { capUsd, question, usage, providerOf }) {
   const dir = mkdtempSync(join(process.env.TMPDIR ?? tmpdir(), "agentrun-wf-money-"));
   const server = await openSqliteStore({ dataDir: dir, role: "server" });
   const store = await openSqliteStore({ dataDir: dir, role: "runner" });
@@ -139,9 +141,77 @@ async function worldWith(t, { capUsd, question, usage }) {
   });
   await server.agents.create({ id: "agent-1", name: "Flow" }, { id: "rev-1", kind: "workflow", body: { workflow: answerFlow() } });
   await server.runs.create({ id: "run-1", agentId: "agent-1", revisionId: "rev-1" }, { body: { input: { question }, title: "t", place: { mode: "runner" }, ...(capUsd !== undefined ? { max_cost_usd: capUsd } : {}) } });
-  const specOf = workflowSpecOf({ store, providerOf: gpt6Provider(submitOrigin(usage)) });
+  const specOf = workflowSpecOf({ store, providerOf: providerOf ?? gpt6Provider(submitOrigin(usage)) });
   runner = startRunner({ store, createLoop: createWorkflowLoop(specOf), name: "runner-a", ...TIMING });
   return { server, store };
+}
+
+/** The faux model as the cap prices it for the stop test: free input, output at $100 a million, 16,384 at most. */
+const PRICED = Object.freeze({ id: "faux-priced", api: "anthropic-messages", price: { input: 0, output: 100, cacheRead: 0, cacheWrite: 0 }, outputCeiling: 16_384 });
+const PER_TOKEN = 100 / 1e6;
+const eight = (usd) => Math.round(usd * 1e8) / 1e8;
+
+/** An origin whose first answer streams `text`, resolves `streamed`, and holds open until the request is aborted. */
+function stallingOrigin(text) {
+  let said = () => {};
+  const streamed = new Promise((resolve) => (said = resolve));
+  const fetch = async (_url, init = {}) => {
+    const body = JSON.parse(String(init.body ?? "{}"));
+    const encoder = new TextEncoder();
+    const frame = (event) => encoder.encode(`event: ${event.type}\ndata: ${JSON.stringify(event)}\n\n`);
+    const stream = new ReadableStream({
+      start(controller) {
+        controller.enqueue(frame({ type: "message_start", message: { id: "msg_0", type: "message", role: "assistant", model: body.model, content: [], stop_reason: null, usage: { input_tokens: 100, output_tokens: 1 } } }));
+        if (text) {
+          controller.enqueue(frame({ type: "content_block_start", index: 0, content_block: { type: "text", text: "" } }));
+          controller.enqueue(frame({ type: "content_block_delta", index: 0, delta: { type: "text_delta", text } }));
+        }
+        const abort = () => controller.error(Object.assign(new Error("aborted"), { name: "AbortError" }));
+        if (init.signal?.aborted) abort();
+        else init.signal?.addEventListener("abort", abort, { once: true });
+        said();
+      },
+    });
+    return new Response(stream, { status: 200, headers: { "content-type": "text/event-stream" } });
+  };
+  return { fetch, streamed };
+}
+
+/** A provider priced as PRICED (free input, output $100/M), on `fetch`. */
+function pricedProvider(fetch) {
+  return () => ({ modelId: "faux-priced", api: "anthropic-messages", origin: "https://faux.invalid", credential: () => "not-a-secret-x", policy: anthropicPolicy({ model: "faux-priced", tools: [] }), price: (_m, u) => (u.output ?? 0) * PER_TOKEN, capModel: PRICED, fetch });
+}
+
+/** Every record of the "workflow" session conversation, in order (kind + data), for sessionSpendOf. */
+async function rawSessionRecords(store) {
+  const { harness } = await openRead(store);
+  try {
+    const root = await harness.root(BACKGROUND_CONTEXT);
+    let conv;
+    for (let cursor; conv === undefined; ) {
+      const page = await root.entries({ order: "ascending" }, 500, cursor, BACKGROUND_CONTEXT);
+      for (const e of page.items) if (e.kind === KINDS.sessionKey && e.data?.key === "workflow") conv = e.data.conversation;
+      if (page.next === undefined) break;
+      cursor = page.next;
+    }
+    if (conv === undefined) return [];
+    const conversation = await harness.conversation(conv, BACKGROUND_CONTEXT);
+    const out = [];
+    for (let cursor; ; ) {
+      const page = await conversation.entries({ order: "ascending" }, 500, cursor, BACKGROUND_CONTEXT);
+      for (const e of page.items) out.push({ kind: e.kind, data: e.data });
+      if (page.next === undefined) break;
+      cursor = page.next;
+    }
+    return out;
+  } finally {
+    await harness.close(BACKGROUND_CONTEXT);
+  }
+}
+
+/** The run's spend from its session records, as a reopened run reads it (sessionSpendOf). */
+async function spendFromRecords(store) {
+  return eight(sessionSpendOf(await rawSessionRecords(store)).spentUsd ?? 0);
 }
 
 /** Waits until `read()` of the run row satisfies `done`, or `ms` passes. */
@@ -205,4 +275,24 @@ test("a step the cap holds parks the run with the cap's figures; a raise resumes
   const ended = await waitRow(server, (r) => r.state === "ended" && r.runner === null);
   assert.equal(ended.state, "ended", `the raise resumes the run to its end: ${JSON.stringify(ended)}`);
   assert.equal((await rootEntries(store, KINDS.raise)).length >= 1, true, "the resume wrote a raise entry");
+});
+
+test("a person's stop while a model node streams counts what it streamed and 1,024 tokens, never the hold", async (t) => {
+  // A model node's request streams some text, then a person stops the run before it finishes: the stopped request's cost
+  // is unknown, so the run books it at what it can have cost — its (free) input, each streamed byte as a token, and 1,024
+  // tokens more — never past what the cap held for it. The stop-booking fix (on the money-gate base) lands the booking
+  // before the run's end commit, so the records read it, not the hold.
+  const origin = stallingOrigin("Half of one.md"); // 14 bytes streamed
+  const { server, store } = await worldWith(t, { capUsd: 1, question: "Take your time.", providerOf: pricedProvider(origin.fetch) });
+  const acting = (async () => {
+    await origin.streamed;
+    await sendCommand(server, "run-1", { kind: "stop", body: {} });
+  })();
+  acting.catch(() => {});
+  const row = await waitRow(server, (r) => r.state !== "running" && r.state !== "queued" && r.runner === null);
+  await acting;
+  assert.equal(row.state, "stopped", `the person's stop ends the run: ${JSON.stringify(row)}`);
+  const held = (await sessionRecords(store)).requests[0]?.heldUsd;
+  assert.ok(typeof held === "number" && held > 0.5, `the request was held at most of the cap: ${held}`);
+  assert.equal(await spendFromRecords(store), eight((14 + 1024) * PER_TOKEN), `14 bytes streamed and 1,024 tokens ($0.1038), not the $${held} held`);
 });
