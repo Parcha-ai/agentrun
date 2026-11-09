@@ -315,6 +315,43 @@ jobs:
         run: node scripts/ci-build-output.mjs unpack "$RUNNER_TEMP/build"
       - run: npm run test:chrome -w @parcha/pi-browser
 
+  console-e2e:
+    # The console's flows in a real browser against the built server (apps/console/e2e): the page loads with the server's own
+    # headers, CSP, cookies and redirects, which jsdom never sees. Each flow starts its own server on loopback with a fresh
+    # data dir; nothing leaves loopback. The same pinned Chrome for Testing as real-chrome, from the same cache.
+    needs: [build]
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    env:
+      CHROME_FOR_TESTING: '155.0.8059.39'
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '22.23.2'
+          cache: npm
+      - uses: actions/cache@v4
+        with:
+          path: ~/chrome-for-testing
+          key: chrome-for-testing-${{ runner.os }}-${{ env.CHROME_FOR_TESTING }}
+      - name: Install the pinned Chrome for Testing
+        run: |
+          installed=$(npx --yes @puppeteer/browsers@3.2.3 install "chrome@${CHROME_FOR_TESTING}" --path "$HOME/chrome-for-testing")
+          chrome="${installed#* }"
+          echo "CHROME_PATH=${chrome}" >> "$GITHUB_ENV"
+          "${chrome}" --version
+      - name: Let an unprivileged Chrome start its sandbox
+        run: sudo sysctl -w kernel.apparmor_restrict_unprivileged_userns=0
+      - run: npm install --global npm@11.21.0 --ignore-scripts
+      - run: node scripts/npm-ci-retry.mjs --ignore-scripts
+      - uses: actions/download-artifact@v4
+        with:
+          name: build-22.23.2
+          path: ${{ runner.temp }}/build
+      - name: The build job's output, for this tree and this Node
+        run: node scripts/ci-build-output.mjs unpack "$RUNNER_TEMP/build"
+      - run: npm run test:e2e
+
   stranger:
     # A package installed from its packed tarball into an empty directory, with an empty environment and home, runs the one command
     # its README gives with no key (scripts/stranger/<name>.json). Each spec runs on its own runner. A spec that says the package has

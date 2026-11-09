@@ -7,7 +7,7 @@ import { commitWrites } from "@earendil-works/pi-durable/testing";
 
 const { callsOf, journalEntries, messagesOf } = await import("../dist/runner/journal-reader.js");
 const { KINDS } = await import("../dist/runner/journal-kinds.js");
-const { deniedText, endedBy, noteOf } = await import("../dist/runner/loop-contract.js");
+const { cutAtLimit, deniedText, endedBy, noteOf } = await import("../dist/runner/loop-contract.js");
 const { MAX_RESTARTS } = await import("../dist/runner/conformance/harness.js");
 
 /** A task that kept faulting: the run fails, saying so. */
@@ -171,7 +171,7 @@ function referenceLoop({ script, tools, hooks }, deps) {
                 await waitForCommand();
               }
               inbox.splice(inbox.indexOf(answer), 1);
-              await append(KINDS.answer, { callId, approved: answer.kind === "approve", ...noteOf(answer) }, { take: [answer.id] });
+              await append(KINDS.answer, { callId, approved: answer.kind === "approve", decision: answer.kind === "approve" ? "allow" : "deny", answeredAt: new Date().toISOString(), ...noteOf(answer) }, { take: [answer.id] });
               if (answer.kind === "deny") continue;
             }
           }
@@ -188,6 +188,13 @@ function referenceLoop({ script, tools, hooks }, deps) {
           const text = "say" in next ? next.say : "sayLastResult" in next ? lastResult(await journalEntries(journal, context)) : [...messagesOf(await journalEntries(journal, context))].reverse().find((m) => m.role === "steer")?.text ?? "";
           if (MUTANT === "steer-at-end") await writeSteersNow();
           const last = step === script.length - 1;
+          // The run's last answer cut at the model's output limit is unfinished: the run ends failed, saying so (a mutant
+          // ends it as ever). One the run goes on from is a message like any other.
+          if (last && next.cut && MUTANT !== "length-ended") {
+            const summary = cutAtLimit();
+            await append(KINDS.message, { role: "model", text }, { run: { state: "failed", summary } });
+            return { state: "failed", error: { code: "length", message: summary } };
+          }
           await append(KINDS.message, { role: "model", text }, last ? { run: { state: "ended" } } : undefined);
           if (last) return { state: "ended" };
         }

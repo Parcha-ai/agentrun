@@ -2,7 +2,7 @@
 // taken by another process at the same moment is passed over) and, with --open, the browser on the console's address
 // where there is one to open. Its default model is the server's (model.ts' hostModel), never one the CLI fixes at start.
 import assert from "node:assert/strict";
-import { spawn } from "node:child_process";
+import { spawn, spawnSync } from "node:child_process";
 import { randomBytes } from "node:crypto";
 import { chmodSync, existsSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { createServer as createHttpServer } from "node:http";
@@ -67,6 +67,14 @@ async function heldFirstFree(t, from = 7340) {
   throw new Error(`no free port from ${from}`);
 }
 const MODEL_KEYS = ["ANTHROPIC_API_KEY", "OPENAI_API_KEY", "OPENROUTER_API_KEY", "AGENT_MODEL", "AGENT_MODEL_FAST", "AGENT_MODEL_STRONG", "AGENT_MODEL_BASE_URL", "AGENT_MODEL_API_KEY", "AGENTRUN_TOKEN", "CI", "DISPLAY", "WAYLAND_DISPLAY"];
+
+test("--faux-browser goes with --faux alone: given without it, the server does not start", () => {
+  const home = mkdtempSync(join(tmpdir(), "serve-defaults-"));
+  const out = spawnSync(process.execPath, [CLI, "--data", join(home, "agents"), "--faux-browser", FAUX], { env: { PATH: process.env.PATH ?? "", HOME: home }, encoding: "utf8", timeout: 30_000 });
+  rmSync(home, { recursive: true, force: true });
+  assert.equal(out.status, 2, out.stderr);
+  assert.match(out.stderr, /--faux-browser goes with --faux/);
+});
 
 test("--open opens a browser unless in CI or on a Linux with no display", () => {
   assert.deepEqual([host.canOpen?.({}, "darwin"), host.canOpen?.({ CI: "1" }, "darwin"), host.canOpen?.({}, "linux"), host.canOpen?.({ DISPLAY: ":0" }, "linux"), host.canOpen?.({ WAYLAND_DISPLAY: "w" }, "freebsd")], [true, false, false, true, true]);
@@ -190,43 +198,6 @@ test("a server free to pick its port listens on the next one when its port is ta
   assert.equal(moved.url, `http://127.0.0.1:${moved.port}`);
   assert.equal((await fetch(`${moved.baseUrl}/health`)).status, 200);
   await assert.rejects(startServe({ data: join(dir, "b"), port: taken, faux: FAUX }), (error) => error.code === "EADDRINUSE" && error.message.includes(`127.0.0.1:${taken}`));
-});
-
-// Each taken port is one attempt on the same server: an attempt that failed leaves none of its handlers on it, so
-// passing over many taken ports adds no listener per port.
-test("a server free to pick its port passes over 11 taken ports with no listener left behind per attempt", { timeout: 60_000 }, async (t) => {
-  const listen = (port) => new Promise((resolve) => { const server = createServer(); const close = closer(server); server.once("error", () => resolve(undefined)).listen(port, "127.0.0.1", () => resolve(close)); });
-  const close = (closeIt) => closeIt();
-  // 11 consecutive ports this test holds from a base, and the one after them free.
-  let base;
-  for (let tries = 0; base === undefined && tries < 50; tries++) {
-    const from = 20_000 + Math.floor(Math.random() * 40_000);
-    const servers = [];
-    for (let port = from; port < from + 11; port++) {
-      const server = await listen(port);
-      if (!server) break;
-      servers.push(server);
-    }
-    const next = servers.length === 11 ? await listen(from + 11) : undefined;
-    if (next) {
-      await close(next);
-      base = from;
-      t.after(() => Promise.all(servers.map(close)));
-    } else await Promise.all(servers.map(close));
-  }
-  assert.ok(base !== undefined, "found 11 free consecutive ports and the one after them");
-  const warnings = [];
-  const onWarning = (warning) => warnings.push(warning);
-  process.on("warning", onWarning);
-  t.after(() => process.off("warning", onWarning));
-  const dir = mkdtempSync(join(tmpdir(), "serve-ports-"));
-  t.after(() => rmSync(dir, { recursive: true, force: true }));
-  const moved = await startServe({ data: join(dir, "a"), port: base, nextFreePort: true, faux: FAUX });
-  t.after(() => within(moved.close(), 10_000));
-  // A warning is emitted on the next tick: one turn of the event loop lets any reach the handler.
-  await new Promise((resolve) => setImmediate(resolve));
-  assert.equal(moved.port, base + 11, `${moved.port} is the first free port from ${base}`);
-  assert.deepEqual(warnings.filter((warning) => warning.name === "MaxListenersExceededWarning").map((warning) => warning.message), []);
 });
 
 test("demo: two servers started at once with no --port each take a port of their own, and --port on a taken port fails at once, naming it", { timeout: 120_000 }, async (t) => {

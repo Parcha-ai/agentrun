@@ -59,6 +59,7 @@ const INPUT_REQUEST = "agentrun:input";
 /** pi as an AgentAdapter for one claim's run. */
 export function piAdapter(options: PiAdapterOptions): AgentAdapter {
   return {
+    // pi is the default harness: its id is the harness table's, never a literal of its own.
     id: DEFAULT_HARNESS,
     capabilities: () => ({}),
     check: () => [],
