@@ -1018,7 +1018,8 @@ test("the provider writes nowhere but its results: create and release log nothin
 		return made;
 	});
 	assert.equal(made.ok, true, made.ok ? "" : made.error.message);
-	assert.ok(!text.includes(KEY), "nothing logged the key");
+	// Review (#2029, PRRT_kwDOUmdVMs61Qo9W): nothing at all, not merely nothing holding the key.
+	assert.equal(text, "", "create and release wrote nothing to the console or stderr");
 	const source = readFileSync(new URL("../dist/e2b.js", import.meta.url), "utf8");
 	assert.doesNotMatch(source, /\bconsole\.|process\.(stdout|stderr)/, "the provider writes nowhere but its results");
 });
