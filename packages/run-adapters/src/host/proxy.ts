@@ -172,6 +172,10 @@ export const EVENT_HOLD = 64 * 1024;
 const ERROR_TYPES: ReadonlySet<string> = new Set(["error", "response.failed"]);
 /** A data line's JSON whose type comes first, as most providers write it: its type, readable before the line ends. */
 const TYPE_FIRST = /^\s*\{\s*"type"\s*:\s*"([^"]*)"/;
+/** A line's end in an event stream: LF, CRLF or a bare CR, as the format has them. */
+const LINE_END = /\r\n|\r|\n/;
+/** The next line end of a piece, searched from `lastIndex`. */
+const LINE_BREAK = /\r\n|\r|\n/g;
 
 /**
  * What the harness gets of a provider's answer: as it came, but for the provider's own words in an error, where a secret
@@ -232,8 +236,7 @@ export function errorCut(mode: "error" | "events" | "as-is", forms: readonly str
   /** An event's field lines, `id:`, `retry:`, comments and unknown fields read past: its name, and its data's lines. */
   const fieldsOf = (lines: readonly string[]): { name?: string; data: string[] } => {
     const out: { name?: string; data: string[] } = { data: [] };
-    for (const raw of lines) {
-      const line = raw.replace(/\r$/, "");
+    for (const line of lines) {
       if (!line || line.startsWith(":")) continue;
       const at = line.indexOf(":");
       const field = at === -1 ? line : line.slice(0, at);
@@ -267,7 +270,7 @@ export function errorCut(mode: "error" | "events" | "as-is", forms: readonly str
       if (said) return said;
     }
     if (held <= EVENT_HOLD) return undefined;
-    const coming = part.replace(/\r$/, "");
+    const coming = part;
     if (coming.startsWith("data:")) {
       const type = TYPE_FIRST.exec(coming.slice(5))?.[1];
       return type === undefined ? "error" : ERROR_TYPES.has(type) ? "error" : "raw";
@@ -276,7 +279,7 @@ export function errorCut(mode: "error" | "events" | "as-is", forms: readonly str
   };
   /** A whole event that was never told: an error's when its name or its data says so, or it holds a form. */
   const wholeIsError = (event: string): boolean => {
-    const fields = fieldsOf(event.split("\n"));
+    const fields = fieldsOf(event.split(LINE_END));
     if (fields.name !== undefined && ERROR_TYPES.has(fields.name)) return true;
     if (fields.data.length && dataSays(fields.data.join("\n")) === "error") return true;
     return forms.some((form) => event.includes(form));
@@ -304,17 +307,41 @@ export function errorCut(mode: "error" | "events" | "as-is", forms: readonly str
     errorCutter = undefined;
     return out;
   };
+  /** Whether the last piece ended on a CR: its line ended there, and a LF that begins the next piece is that CR's (a CRLF
+   *  split between pieces), not a line of its own. */
+  let afterCr = false;
+  const feed = (piece: string): string => {
+    if (state === "raw") return piece;
+    if (state === "error") return errorCutter!.push(piece);
+    held += piece;
+    return "";
+  };
   return {
     push(text) {
       let out = "";
-      for (let at = 0; at < text.length; ) {
-        const end = text.indexOf("\n", at);
-        const piece = end === -1 ? text.slice(at) : text.slice(at, end + 1);
+      let at = 0;
+      if (afterCr && text.startsWith("\n")) {
+        // The rest of a line end that came already: a blank line's goes out with the event it ended; any other's is the
+        // event's, as it is now.
+        out += state === "hold" && !held ? "\n" : feed("\n");
+        at = 1;
+      }
+      afterCr = false;
+      while (at < text.length) {
+        // A line ends at LF, CRLF or a bare CR, as the format has them; a CR that ends the piece ends its line now.
+        LINE_BREAK.lastIndex = at;
+        const found = LINE_BREAK.exec(text);
+        let end = -1;
+        let content = text.length - at;
+        if (found) {
+          content = found.index - at;
+          end = found.index + found[0].length;
+          if (found[0] === "\r" && end === text.length) afterCr = true;
+        }
+        const piece = end === -1 ? text.slice(at) : text.slice(at, end);
         at += piece.length;
-        lineChars += (end === -1 ? piece : piece.slice(0, -1)).replace(/\r$/, "").length;
-        if (state === "raw") out += piece;
-        else if (state === "error") out += errorCutter!.push(piece);
-        else held += piece;
+        lineChars += content;
+        out += feed(piece);
         if (end !== -1) {
           const blank = lineChars === 0;
           lineChars = 0;
@@ -324,7 +351,7 @@ export function errorCut(mode: "error" | "events" | "as-is", forms: readonly str
           }
         }
         if (state === "hold" && (end !== -1 || held.length > EVENT_HOLD)) {
-          const lines = held.split("\n");
+          const lines = held.split(LINE_END);
           const part = lines.pop() ?? "";
           const told = verdict(lines, part, held.length);
           if (told) out += decide(told);
