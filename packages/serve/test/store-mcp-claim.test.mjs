@@ -380,20 +380,29 @@ test("M17: claims waiting on another claim's refresh read the server's row O(1) 
     },
   });
   const counted = { where: store.where, mcp, runs: store.runs, settings: store.settings };
+  // The steps' waits on the lease (and their re-reads of the row) are armed on this timer, which the test never fires:
+  // a waiter that wakes did so at the holder's let-go, never at a timer's.
+  const armed = [];
+  const timer = (fire, ms) => {
+    const one = { fire, ms, cleared: false };
+    armed.push(one);
+    return { clear: () => void (one.cleared = true) };
+  };
+  const waiting = () => armed.filter((one) => !one.cleared).length;
   const hold = oauth.holdNext();
   const CLAIMS = 300;
-  const steps = Array.from({ length: CLAIMS }, () => claimOf(counted, claim, ["mcp:fake/add"], { now: () => T0, bounds: { requestMs: 5_000, tries: 1 } }));
+  const steps = Array.from({ length: CLAIMS }, () => claimOf(counted, claim, ["mcp:fake/add"], { now: () => T0, bounds: { requestMs: 5_000, tries: 1 }, timer }));
   await hold.granted;
-  // The holder's answer takes a while; every other claim waits on its lease meanwhile.
-  await new Promise((resolve) => setTimeout(resolve, 600));
-  const answered = Date.now();
+  // Every other claim waits on the holder's lease: its wait armed, before the holder answers.
+  for (let i = 0; i < 20_000 && waiting() < CLAIMS - 1; i++) await new Promise((resolve) => setImmediate(resolve));
+  assert.equal(waiting(), CLAIMS - 1, "every other claim waits on the lease");
   hold.answer();
-  const opened = await Promise.all(steps);
-  const took = Date.now() - answered;
+  // Bounded only for a failing run: a waiter no let-go wakes would sleep on a timer that never fires.
+  const opened = await Promise.race([Promise.all(steps), new Promise((resolve) => setTimeout(() => resolve("asleep"), 20_000).unref())]);
+  assert.notEqual(opened, "asleep", "every waiting claim woke at the holder's let-go, not at its lease's end");
   t.after(() => opened.forEach((step) => step.release()));
   assert.equal(refreshes(oauth), 1, "one refresh");
   assert.equal(new Set(opened.map(bearer)).size, 1, "every claim holds the one refreshed token");
   assert.ok(oauth.accepts(bearer(opened[0])), "a token the server takes");
   assert.ok(reads <= 4 * CLAIMS, `the server's row read at most 4 times a claim: ${reads} reads for ${CLAIMS} claims`);
-  assert.ok(took < 3_000, `every waiting claim woke when the holder let the lease go, not at the lease's end: ${took} ms`);
 });

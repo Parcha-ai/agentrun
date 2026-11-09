@@ -13,7 +13,7 @@ import { SECRET_NAMES, secret } from "../secrets.js";
 import { migrationsIn, openStore, SchemaVersionUnknown, type Store, storePlace, storeTarget } from "../store/index.js";
 import { SCHEMA_VERSION } from "../store/schema.js";
 import { SEAL_KEY_ENV, sealKeyOf } from "../tool-keys.js";
-import type { ComputerForClaim } from "./adapter-run-spec.js";
+import { computerDepsFrom } from "../workspace/computer-deps.js";
 import { createDispatchLoop } from "./dispatch.js";
 import { resolveRunnerLoop } from "./harness-loops.js";
 import type { LoopFactory } from "./loop-contract.js";
@@ -103,18 +103,16 @@ export function runEnv(env: NodeJS.ProcessEnv = process.env): NodeJS.ProcessEnv 
 export function runnerLoop(store: Store, dataDir: string, env: NodeJS.ProcessEnv = process.env): LoopFactory {
   const sealKey = sealKeyOf(secret(SEAL_KEY_ENV) ?? env[SEAL_KEY_ENV]);
   if (!sealKey) throw new RunnerRefused(`A runner needs the server's seal key (${SEAL_KEY_ENV}): start it through the server's launcher, which hands it over.`);
-  const deps = { env: runEnv(env), data: dataDir, journal: (claim: Parameters<Store["journal"]>[0]) => store.journal(claim), store, sealKey, routeOf, computerForClaim: runnerPlaceComputer };
+  const runs = runEnv(env);
+  // The run's computer at its claim, composed once (workspace/computer-deps.ts): none for the runner's place, a box's
+  // computer by the agent's setting, its keys read from the run environment first, then the store's sealed rows.
+  const computers = computerDepsFrom({ env: runs, store, sealKey });
+  const deps = {
+    env: runs, data: dataDir, journal: (claim: Parameters<Store["journal"]>[0]) => store.journal(claim), store, sealKey, routeOf,
+    computerForClaim: computers.computerForClaim, computerDeps: computers.computerDeps,
+  };
   return createDispatchLoop({ launchOf: (runId) => store.runs.launch(runId), resolve: resolveRunnerLoop(deps) });
 }
-
-/** The run's computer at its claim (AdapterSpecDeps.computerForClaim) as this runner process has it today: a run in the
- *  runner's place needs none; a run whose place is a box is refused in words, nothing made, until the shared claim-time
- *  computer (computer-for-claim.ts) is wired here. */
-const runnerPlaceComputer: ComputerForClaim = async (launch) => {
-  const mode = typeof launch.place === "object" && launch.place !== null ? (launch.place as { mode?: unknown }).mode : undefined;
-  if (mode === undefined || mode === "runner") return { release: async () => {} };
-  throw new Error(`computer_unavailable: this runner process runs only runs in the runner's place, and run ${launch.runId}'s place is ${JSON.stringify(mode)}: start a runner that has its computers, or give the agent the runner's place.`);
-};
 
 /** Where runner `name` writes its heartbeat in `dataDir`. */
 export const heartbeatFile = (dataDir: string, name: string): string => join(dataDir, `runner-${name.replace(/[^A-Za-z0-9._:-]/g, "_")}.alive`);
@@ -195,17 +193,21 @@ export function ofStore(make: (store: Store) => LoopFactory): (store: Store) => 
 }
 const isStoreFactory = (made: LoopFactory | ((store: Store) => LoopFactory)): made is (store: Store) => LoopFactory => storeFactories.has(made);
 
-/** The runner process's arguments: `--data D [--loops N] [--name N]`, or `--check --data D [--name N]`. */
+/** The runner process's arguments: `--data D [--loops N] [--name N]`, or `--check --data D [--name N]`. Each option with
+ *  a value is also taken as `--option=value` (the bin hands a data directory that starts with "-" so, never read as an
+ *  option); an empty one is refused like a missing one. */
 export function runnerArgs(argv: readonly string[]): { dataDir: string; loops?: number; name?: string; check?: true } {
   let dataDir: string | undefined;
   let loops: number | undefined;
   let name: string | undefined;
   let check = false;
   for (let i = 0; i < argv.length; i++) {
-    const arg = argv[i];
+    const given = argv[i]!;
+    const equals = /^(--(?:data|loops|name))=(.*)$/s.exec(given);
+    const arg = equals ? equals[1]! : given;
     const value = () => {
-      const next = argv[++i];
-      if (next === undefined) throw new RunnerRefused(`${arg} needs a value`);
+      const next = equals ? equals[2] : argv[++i];
+      if (next === undefined || next === "") throw new RunnerRefused(`${arg} needs a value`);
       return next;
     };
     if (arg === "--data") dataDir = value();

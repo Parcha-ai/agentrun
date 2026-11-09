@@ -34,7 +34,7 @@ export type Request =
   | { op: "exec"; sql: string }
   | { op: "stmt"; statement: Statement; mode: Mode }
   | { op: "write"; statements: readonly Statement[]; full?: boolean }
-  | { op: "begin"; full?: boolean; read?: boolean }
+  | { op: "begin"; full?: boolean; read?: boolean; busyMs?: number }
   | { op: "step"; statement: Statement }
   | { op: "commit" }
   | { op: "rollback" }
@@ -89,15 +89,24 @@ function step(statement: Statement): StatementResult {
   return result;
 }
 
-/** A transaction: BEGIN IMMEDIATE for a write; for `read`, a deferred one that takes no writer lock (one snapshot). */
-function begin(full: boolean, read = false): void {
+/** The connection's own busy wait (its open's busyTimeoutMs): what a begin given a shorter one goes back to. */
+let busyTimeout = 0;
+
+/** A transaction: BEGIN IMMEDIATE for a write; for `read`, a deferred one that takes no writer lock (one snapshot).
+ *  `busyMs`: the most this begin waits for the database's write lock, when the transaction's deadline leaves less than
+ *  the connection's own busy wait (Connection.transaction's `fromCall`); the connection's own is set back after it. */
+function begin(full: boolean, read = false, busyMs?: number): void {
   const conn = opened();
   if (full) conn.exec(FULL);
+  const bounded = busyMs !== undefined && busyMs < busyTimeout;
+  if (bounded) conn.exec(`PRAGMA busy_timeout = ${Math.max(0, Math.floor(busyMs))}`);
   try {
     conn.exec(read ? "BEGIN DEFERRED" : "BEGIN IMMEDIATE");
   } catch (error) {
     if (full) conn.exec(NORMAL);
     throw error;
+  } finally {
+    if (bounded) conn.exec(`PRAGMA busy_timeout = ${busyTimeout}`);
   }
   inTx = true;
   txFull = full;
@@ -176,7 +185,8 @@ function handle(request: Request): unknown {
     case "open": {
       if (request.owner) takeOwnerLock(request.file);
       db = new DatabaseSync(request.file);
-      db.exec(`PRAGMA busy_timeout = ${Math.max(0, Math.floor(request.busyTimeoutMs))}`);
+      busyTimeout = Math.max(0, Math.floor(request.busyTimeoutMs));
+      db.exec(`PRAGMA busy_timeout = ${busyTimeout}`);
       db.exec("PRAGMA journal_mode = WAL");
       db.exec(NORMAL);
       db.exec("PRAGMA foreign_keys = ON");
@@ -205,7 +215,7 @@ function handle(request: Request): unknown {
       }
     }
     case "begin":
-      begin(request.full === true, request.read === true);
+      begin(request.full === true, request.read === true, request.busyMs);
       return null;
     case "step":
       if (!inTx) throw new Error("a step outside a transaction");

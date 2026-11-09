@@ -11,16 +11,14 @@
 import type { Context, JsonValue } from "@earendil-works/chord";
 import { BACKGROUND_CONTEXT, withAbortSignal } from "@earendil-works/chord/context";
 import type { Models } from "@earendil-works/pi-ai";
-import { createModels, createProvider } from "@earendil-works/pi-ai/models";
-import { anthropicMessagesApi } from "@earendil-works/pi-ai/api/anthropic-messages.lazy";
-import { openAIResponsesApi } from "@earendil-works/pi-ai/api/openai-responses.lazy";
+import { createModels } from "@earendil-works/pi-ai/models";
 import { type Conversation, defineExtension, defineTool, GenerationTask, type Harness, hook, type Registry, type Submission, ToolTask } from "@earendil-works/pi-durable";
 import { anthropicPolicy } from "@parcha/agentrun-harness-claude";
 import type { AdapterSession, AgentAdapter, HostTool, SessionIO, SessionSpec, TurnStatus, Wire } from "@parcha/agentrun-kernel";
 import { type ModelProxy, type ProviderPolicy, startModelProxy } from "@parcha/agentrun-kernel/host";
 import { randomBytes } from "node:crypto";
 import { DEFAULT_HARNESS } from "../../harness.js";
-import { sessionBaseUrl, sessionModel } from "../../port-models.js";
+import { sessionProvider } from "../../port-models.js";
 import { KINDS } from "../journal-kinds.js";
 
 /** What the adapter loop lends pi for one claim: the run's Harness, its registry, and where pi's models go. */
@@ -130,20 +128,15 @@ async function sessionOn(proxy: ModelProxy, options: PiAdapterOptions, spec: Ses
   const { run, model, like } = options;
   const { api } = options.provider;
   const models = createModels();
-  models.setProvider(createProvider({
-    id: PROVIDER,
-    baseUrl: sessionBaseUrl(api, proxy.url),
-    auth: { apiKey: { name: "AGENTRUN_SESSION_KEY", resolve: async () => ({ auth: { apiKey: proxy.key }, source: "session" }) } },
-    // The proxy knows the session by `authorization: Bearer <key>` (either policy's keyOf). On Messages pi-ai's own
-    // x-api-key stays here, since the proxy forwards only its routes' listed headers; on Responses pi-ai sends the key as
-    // that bearer token itself. pi prices nothing itself (the proxy's booking does), so the model's cost stays $0. Image
-    // input on either wire (sessionModel): a host tool's images (a screenshot) reach the model in its tool result.
-    models: [sessionModel(api, proxy.url, model, { provider: PROVIDER, ...(api === "anthropic-messages" ? { headers: { authorization: `Bearer ${proxy.key}` } } : {}), ...(like ? { like } : {}), reasoning: false })],
-    api: api === "anthropic-messages" ? anthropicMessagesApi() : openAIResponsesApi(),
-  } as never));
+  // pi-ai's client of the session's wire at its proxy (port-models.ts sessionProvider). pi prices nothing itself (the
+  // proxy's booking does), so the model's cost stays $0. Image input on either wire (sessionModel): a host tool's images
+  // (a screenshot) reach the model in its tool result.
+  models.setProvider(sessionProvider(api, proxy, model, { provider: PROVIDER, keyName: "AGENTRUN_SESSION_KEY", ...(like ? { like } : {}), reasoning: false }));
   run.setModels(models);
 
   const tools = spec.tools.map((tool) => piTool(tool, io));
+  // A refused call's words (the gate's deny, main's), by call: its result is those words alone, as main gives them.
+  const refusals = new Map<string, string>();
   const extension = defineExtension({
     name: `agentrun-session-${spec.key}`,
     tools,
@@ -153,13 +146,25 @@ async function sessionOn(proxy: ModelProxy, options: PiAdapterOptions, spec: Ses
           if (!io.gate) return undefined;
           const answer = await io.gate({ callId: call.id, tool: call.name, args: (call.arguments ?? {}) as Record<string, unknown> }, hookContext);
           if (answer === "allow") return undefined;
-          if ("deny" in answer) return { block: answer.deny };
+          if ("deny" in answer) {
+            refusals.set(call.id, answer.deny);
+            return { block: answer.deny };
+          }
           // Parked: held until pi closes the Session, so the call never reaches its intent in this process.
           return new Promise<never>((_, reject) => {
             const signal = hookContext.abortSignal;
             if (signal?.aborted) return reject(new Error("parked"));
             signal?.addEventListener("abort", () => reject(new Error("parked")), { once: true });
           });
+        },
+        // A call the gate refused: its result is main's words alone, an error, never pi's framing of a blocked call (its
+        // diagnostic, which the model reads as "<harness>[error] Tool call blocked: ..."). Every other result is pi's.
+        afterTool: async (call, result) => {
+          const words = refusals.get(call.id);
+          const blocked = result.diagnostics?.some((diagnostic) => diagnostic.code === "blocked");
+          if (words === undefined || !blocked) return undefined;
+          refusals.delete(call.id);
+          return { output: [{ type: "text" as const, text: words }], isError: true } as never;
         },
       }),
       // An answer's cost is the runner's booking of its request, never pi's $0 for a model it has no price for: set on
