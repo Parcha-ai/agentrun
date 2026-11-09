@@ -34,7 +34,6 @@ const STEADY = { leaseMs: 60_000, renewEveryMs: 20_000, stopMarginMs: 5_000, pol
 const DIES = { leaseMs: 5_000, renewEveryMs: 150, stopMarginMs: 1_000, pollMs: 20, commandPollMs: 30 };
 const SETTINGS = { diskId: "dsk-00000000000fake0", region: "aws-us-east-1", s3Url: "https://s3.green.us-east-1.aws.prod.archil.com" };
 const sleep = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
-
 /** `promise`, or a failure named `what` if it has not settled by `ms`: a bound that names the hang, not a wait. */
 function within(promise, what, ms = 20_000) {
   let timer;
@@ -283,7 +282,7 @@ test("a run held when the runner closes keeps its mount credential through the d
   const w = await revokeRun(t, { script: [{ call: "slow" }, { say: "never" }] });
   // The end's release answers late (800 turns), as a loaded machine's store did in round 115.
   const runner = w.start({ ...STEADY, drainMs: DRAIN_MS }, lateRelease(800));
-  await w.slowStarted;
+  await within(w.slowStarted, "the run's first claim never reached its slow call");
   assert.equal(w.control.users.size, 1, "the run holds its token while it runs");
   const deletes = () => w.control.requests.filter((one) => one.method === "DELETE");
   const calls = () => w.control.requests.map((one) => `${one.method}${one.query?.identifier ? ` ${one.query.identifier}` : ""}${one.body?.nickname ? ` ${one.body.nickname}` : ""}`);
@@ -305,14 +304,18 @@ test("a run held when the runner closes keeps its mount credential through the d
     // The bound: close() stops the loop for the shutdown and aborts the claim's signal; the loop's release revokes it,
     // and the revoke's sweep then reads the list for an earlier epoch's left.
     t.mock.timers.tick(1);
-    for (let i = 0; i < 400 && calls().length < minting.length + 2; i += 1) await turns(t, 1, 100);
+    // The drain's bound has fired (its callback ran in tick), and close() goes on in later turns. The mock is reset here,
+    // before that: every bound the shutdown then waits on (the session's close bound, the end's wait, close()'s own) is the
+    // real setTimeout, as in production, and the mocked clock never runs ahead of the shutdown's real work (its store
+    // writes) or past the claim's lapse. The waits below are for the events themselves, each under a named bound (within,
+    // whose setTimeout is real again).
+    t.mock.timers.reset();
+    const swept = w.control.seen((one, index, all) => one.method === "GET" && all.slice(0, index).some((before) => before.method === "DELETE"));
+    await within(swept, "the run's token was never revoked after the abort");
     assert.deepEqual(calls(), [...minting, "DELETE tok-1", "GET"], "the DELETE right after the abort, then the revoke's sweep");
     assert.equal(w.control.users.size, 0, "no token left with the control plane");
-    // close() itself ends once the loop is done (its own bound, leaseMs - stopMarginMs, is mocked too).
-    let closed = false;
-    void closing.then(() => (closed = true));
-    for (let i = 0; i < 400 && !closed; i += 1) await turns(t, 1, 100);
-    assert.ok(closed, "the runner closed");
+    // close() ends once the run's end has landed (its release written to the store), however long that takes.
+    await within(closing, "the runner never closed");
   } finally {
     t.mock.timers.reset();
   }
