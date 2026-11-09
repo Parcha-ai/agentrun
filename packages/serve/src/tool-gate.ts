@@ -431,9 +431,11 @@ export function resumeText(request: Pick<ApprovalRequest, "tool" | "call_id">, s
 }
 
 /** The gate of the run `runId` at `where` (its directory, under the data directory's runs/), on its pinned revision:
- *  an agentic run's parks an asked call; a workflow's model node cannot. */
-export function runGate(where: { root: string; work: string }, runId: string, revision: { kind: string; body: { toolSettings?: unknown; harness?: string; approvals?: Approvals } }): RunGate {
-  return new RunGate({ root: where.root, work: where.work, data: dataOfRun(where.root), runId, harness: revision.body.harness ?? DEFAULT_HARNESS }, (revision.body.toolSettings ?? {}) as PermissionSettings, revision.kind === "agentic", process.env[NO_APPROVER_ENV] !== "1", approvalsOf(revision.body.approvals));
+ *  an agentic run's parks an asked call; a workflow's model node cannot. `serverSettings`: where the server's tool
+ *  settings are read from, read at each call as the gate reads them; absent, the file beside the run's data directory (the
+ *  old per-run process). The runner gives the one store's (tool-plane.ts loadToolSettings), read once at the claim. */
+export function runGate(where: { root: string; work: string }, runId: string, revision: { kind: string; body: { toolSettings?: unknown; harness?: string; approvals?: Approvals } }, serverSettings?: () => ReturnType<typeof readToolSettings>): RunGate {
+  return new RunGate({ root: where.root, work: where.work, data: dataOfRun(where.root), runId, harness: revision.body.harness ?? DEFAULT_HARNESS }, (revision.body.toolSettings ?? {}) as PermissionSettings, revision.kind === "agentic", process.env[NO_APPROVER_ENV] !== "1", approvalsOf(revision.body.approvals), serverSettings);
 }
 
 /** The gate in a run's process, park mode: its policy, the turn's origin, the calls that wait, and the answers acted on. */
@@ -461,7 +463,7 @@ export class RunGate {
    *  own; `parks`: whether an asked call parks the run (an agentic run's), which a workflow's model node cannot;
    *  `approvers`: whether anyone can answer an ask here (the owner's password session: accounts on); `approvals`: the
    *  pinned revision's (definition.approvals): "never" runs the agent unattended, an ask allowed (permissionFrom). */
-  constructor(private readonly where: { root: string; work: string; data: string; runId: string; harness?: string; mcpServers?: readonly string[] }, private readonly overrides: PermissionSettings = {}, private readonly parks = true, private readonly approvers = true, private readonly approvals: Approvals = "ask") {}
+  constructor(private readonly where: { root: string; work: string; data: string; runId: string; harness?: string; mcpServers?: readonly string[] }, private readonly overrides: PermissionSettings = {}, private readonly parks = true, private readonly approvers = true, private readonly approvals: Approvals = "ask", private readonly readServerSettings?: () => ReturnType<typeof readToolSettings>) {}
 
   /** A tool's permission now (permissionOf): the revision's own over the server's setting, read at each call, so a change
    *  reaches a live run at its next call; under approvals "never", an ask is an allow. */
@@ -498,7 +500,7 @@ export class RunGate {
   /** The server's settings now: read at each call, so a change reaches a live run; a file that does not read keeps the
    *  last good (undefined: none read yet). Each problem is said once, by file and field, never a value. */
   private serverSettings(): PermissionSettings | undefined {
-    const read = readToolSettings(this.where.data);
+    const read = this.readServerSettings ? this.readServerSettings() : readToolSettings(this.where.data);
     for (const line of read.problems) {
       if (this.told.has(line)) continue;
       this.told.add(line);

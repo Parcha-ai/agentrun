@@ -23,6 +23,7 @@ import type { RunLaunch } from "../run-launch.js";
 import type { Store } from "../store/store.js";
 import { isObject } from "../validate.js";
 import { runGate } from "../tool-gate.js";
+import { loadToolSettings } from "../tool-plane.js";
 import type { ToolHost } from "../tools.js";
 import { openRunWorkspace } from "../workspace/run-workspace.js";
 import { runFolder } from "../workspace/paths.js";
@@ -134,7 +135,12 @@ export async function adapterRunSpecFromLaunch(launch: RunLaunch, run: AdapterRu
   // ask it leaves into an allow). The adapter loop asks `gate` and handles the ask/park/answer on the journal itself, so
   // only the permission is read here, never runGate's own file-based approval flow.
   const root = runFolder(deps.data, runRow.agentId, claim.runId);
-  const gate = runGate({ root, work: root }, claim.runId, revision);
+  // The server's tool settings are the one store's (loadToolSettings), read once at the claim, never a file beside the data
+  // directory (the old per-run process's readToolSettings). The gate's approvals "never" lifts an ask to an allow only where
+  // the settings read non-undefined, and the store always reads (no row is every default), so an unattended run goes at an
+  // ask it would park on were the settings a file that never read.
+  const serverSettings = await loadToolSettings(deps.store);
+  const gate = runGate({ root, work: root }, claim.runId, revision, () => serverSettings);
 
   // The run's cap (its launch's maxCostUsd): the host's check before each paid request (beforeRequestOf), and what a
   // refusal does to the run (parkOf), with the kernel's raise rule.
