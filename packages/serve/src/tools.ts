@@ -368,12 +368,17 @@ const browserTool: ToolEntry = {
     // A session that saved to the sign-in, let go: its time, for the sign-in's verified_at when the run's lease ends.
     // On the runner, the store's verified_at under the run's claim (runSignInSaved), never a mark in the run's directory.
     const verify = kept?.save && host.claim && host.store ? runSignInSaved(host.store, host.sealKey, host.claim, kept as RunSignIn) : undefined;
+    // Awaited by the session's change, so the release that lets a run's sessions go (beforeRelease) returns only once its
+    // last save is verified: the run's end commit, which ends the claim, never fences it.
     const saved = kept?.save
-      ? (row: Parameters<typeof savedOnRelease>[0], change: string) => void (verify ? verify(row, change) : savedOnRelease(row, change) && writeFileSync(join(host.where.root, SIGN_IN_SAVED), new Date().toISOString(), { mode: 0o600 }))
+      ? async (row: Parameters<typeof savedOnRelease>[0], change: string): Promise<void> => {
+          if (verify) await verify(row, change);
+          else if (savedOnRelease(row, change)) writeFileSync(join(host.where.root, SIGN_IN_SAVED), new Date().toISOString(), { mode: 0o600 });
+        }
       : undefined;
     // Both hosts of a session's changes: the live view's hand-over, and the sign-in's saved mark.
     const onSessions = async (row: Parameters<typeof savedOnRelease>[0] & Parameters<typeof onSession>[0], change: string) => {
-      saved?.(row, change);
+      await saved?.(row, change);
       await onSession(row, change);
     };
     // The pointer is cut from everything the browser hands the model (its results, their details, its failures): a
