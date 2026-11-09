@@ -254,12 +254,6 @@ function costOfView(run: StoreRun): Record<string, unknown> {
 }
 
 /** GET /runs/{id}'s answer from the store, byte-identical to runs.ts's view for the same run. Undefined for an unknown run. */
-/** A run's timeline rows over the one store, as a person reads them (storeRunOf's rows: each call that waited for approval
- *  in order). Undefined for an unknown run. */
-export async function timelineOverStore(store: Store, runId: string, deps: ViewDeps): Promise<readonly TimelineEvent[] | undefined> {
-  return (await storeRunOf(store, runId, deps))?.view.rows;
-}
-
 export async function viewOverStore(store: Store, runId: string, deps: ViewDeps): Promise<Record<string, unknown> | undefined> {
   const run = await storeRunOf(store, runId, deps);
   if (!run) return undefined;

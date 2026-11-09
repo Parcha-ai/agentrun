@@ -1,6 +1,7 @@
 // A run's Timeline as the store path serves it: its journal's rows (store-reads/journal.ts runTimeline) shown by the run's
 // one cut (run-cut.ts) the way main's served view showed them (runs.ts show): every row cut of the cut set in the
-// renderer (timelineOf's redact, so a cut never leaves a key's head); a workflow's decision rows among them by time, each
+// renderer (timelineOf's redact, so a cut never leaves a key's head); each call that waited for approval in order;
+// a workflow's decision rows among them by time, each
 // shown through the same set (decision-rows.ts withDecisions); and each error row read as the run's error is (main's
 // servedError): a refused key in plain words (key-refusal.ts keyRefusal), else the provider's words in the error's one
 // rule (shownOf: no held value, no loopback address). A run whose hand can't be read back here serves no row.
@@ -9,7 +10,8 @@ import type { TimelineEvent } from "@parcha/pi-durable-agent/timeline";
 import { withDecisions } from "./decision-rows.js";
 import { redacted } from "./key-refusal.js";
 import { runCutValues, runErrorWordsOf } from "./run-cut.js";
-import { type SignInReader, shownOf } from "./run-view.js";
+import { answersOf, asksOf, type SignInReader, shownOf, withApprovalRows } from "./run-view.js";
+import { journalRecords } from "./runner/journal-reader.js";
 import { decisionsOverStore } from "./store-reads/decisions.js";
 import { readRun } from "./store-reads/runs.js";
 import { runTimeline } from "./store-reads/journal.js";
@@ -28,7 +30,11 @@ export async function servedTimelineRows(deps: ServedTimelineDeps, store: Store,
   const cut = await runCutValues(deps, store, runId);
   if (cut === "unreadable") return [];
   const { values } = cut;
-  const rows = await runTimeline(store, runId, context, { redact: (text) => redacted(text, values) });
+  const redact = (text: string) => redacted(text, values);
+  // The rows a person reads: each call that waited for approval in order (held, your approval, what came of it), its
+  // arguments and the person's notes through the cut (run-view.ts withApprovalRows), as main's served Timeline read them.
+  const records = await journalRecords(store.readJournal(runId), context);
+  const rows = withApprovalRows(await runTimeline(store, runId, context, { redact }), asksOf(records.entries), answersOf(records.entries), redact);
   const run = await store.runs.get(runId);
   const ended = run ? FINAL_STATES.includes(run.state) : false;
   // A workflow's decisions: their rows among the model nodes' by time, each text shown through the cut set, with as many
