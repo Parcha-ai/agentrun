@@ -64,9 +64,10 @@ export const saved = (s, pointer) => overStore(s, (store) => saveSignIn(store, s
 /** Forgets alpha's Browserbase sign-in: its pointer to a tombstone, kept only for cutting. */
 export const forgotten = (s) => overStore(s, (store) => forgetSignIn(store, s.seal, { remove: async () => undefined }, "alpha", "browserbase"));
 
-/** Writes `sql` with `params` on the server's store file (a row as the runner writes it). */
+/** Writes `sql` with `params` on the server's store file (a row as the runner writes it), waiting its turn behind the
+ *  store's own writers (SQLite's busy timeout) as any second writer on the file does. */
 export function written({ data }, sql, ...params) {
-  const db = new DatabaseSync(join(data, "store.sqlite"));
+  const db = new DatabaseSync(join(data, "store.sqlite"), { timeout: 10_000 });
   try {
     db.prepare(sql).run(...params);
   } finally {

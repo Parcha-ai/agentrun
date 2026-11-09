@@ -44,17 +44,7 @@ const RUN_READS = {
 
 /** What a case that can't pass on this line yet waits on, by operation, and by "<operation> (<run>)" where it is that run's
  *  alone. */
-const TIMELINE = "waits on the run timeline cutting the view's own secrets (the run timeline's redactor), and withholding a withheld run";
-const TITLE = "waits on the run title being cut with the view's full cut set (handed pointers, server and trigger secrets, stored keys) and withheld in the view's words for a withheld run, on getRun, listRuns and listAllRuns (the run timeline's redactor fix)";
-const WAITS = {
-  getTimeline: TIMELINE,
-  "getRun (handed)": TITLE,
-  "getRun (withheld)": TITLE,
-  "listRuns (handed)": TITLE,
-  "listRuns (withheld)": TITLE,
-  "listAllRuns (handed)": TITLE,
-  "listAllRuns (withheld)": TITLE,
-};
+const WAITS = {};
 const waitOf = (operation, kind) => WAITS[`${operation} (${kind})`] ?? WAITS[operation] ?? false;
 
 /** The one run read the zero-hits rule exempts, and why: a run's file is served as it was written, uncut. Its case asserts
