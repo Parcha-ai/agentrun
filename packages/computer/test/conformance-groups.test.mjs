@@ -8,7 +8,8 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { after } from "node:test";
 import { deflateSync } from "node:zlib";
-import test from "node:test";
+import nodeTest from "node:test";
+import { onFakeTime } from "./fake-time.mjs";
 import {
 	checkActions,
 	checkLifetime,
@@ -29,6 +30,16 @@ import {
 import { fakeComputers } from "./fake-computer.mjs";
 import { fakeDevices, fakeFetch, png, pngOf, testClock, virtualClock } from "./fake-device.mjs";
 
+/**
+ * Every test here runs on the fake clock (fake-time.mjs): a broken fake's case waits its patience out by the fake
+ * clock's Date. t.until's poll is node:timers/promises, which the runner imports before any clock is taken, so each poll
+ * is a real 200 ms: a patience wait costs one poll, not the patience.
+ */
+const test = Object.assign((name, ...rest) => {
+	const body = rest.pop();
+	return nodeTest(name, ...rest, (t) => onFakeTime(() => body(t)));
+}, nodeTest);
+
 const IMAGE = "fixture:image";
 const dir = mkdtempSync(join(tmpdir(), "computer-groups-"));
 after(() => rmSync(dir, { recursive: true, force: true }));
@@ -44,12 +55,6 @@ const byId = (...ids) => {
 	return found;
 };
 const run = (provider, ids, extra = {}) => runConformance(provider, { image: IMAGE, cases: byId(...ids), fixture: FIXTURE, fetch: fakeFetch, clock: testClock, patience: 1000, ...extra });
-/**
- * The patience of a run against a broken fake, whose case waits it out to fail: a few of t.until's 200 ms polls, not a
- * second. Each such run's words pin the failure it must find, so a run cut short another way turns it red, never green.
- */
-const BROKEN_PATIENCE = 300;
-
 const NEW_CASES = [
 	"health.kind-consistent",
 	"screen.screenshot-size",
@@ -445,7 +450,7 @@ const BROKEN = [
 for (const [id, options, words] of BROKEN) {
 	test(`${id} fails a fake that is broken (${JSON.stringify(options)})`, async () => {
 		const { provider } = fakeDevices(options);
-		const report = await run(provider, [id], { patience: BROKEN_PATIENCE });
+		const report = await run(provider, [id]);
 		assert.equal(statuses(report)[id], "fail", `${id}: ${reasons(report)[id] ?? "passed"}`);
 		assert.match(reasons(report)[id], words);
 	});
@@ -505,7 +510,7 @@ test("a fixture that starts but never logs ready is stopped when its case fails,
 		{ id: "input.with-fixture", level: "core", group: "input", needs: [], run: async (t) => void (await t.fixture()) },
 		{ id: "input.after-it", level: "core", group: "input", needs: [], run: async (t) => void (afterwards = readPng(Buffer.from((await t.call("screen.shot", {})).data, "base64")).rgb(50, 50)) },
 	];
-	const desktopReport = await runConformance(desktop.provider, { image: IMAGE, cases: desktopCases, fixture: FIXTURE, patience: BROKEN_PATIENCE });
+	const desktopReport = await runConformance(desktop.provider, { image: IMAGE, cases: desktopCases, fixture: FIXTURE, patience: 1000 });
 	assert.deepEqual(statuses(desktopReport), { "input.with-fixture": "fail", "input.after-it": "pass" }, JSON.stringify(reasons(desktopReport)));
 	assert.match(reasons(desktopReport)["input.with-fixture"], /^the desktop fixture logged ready: still not so/);
 	assert.deepEqual(afterwards, [40, 40, 40], "the bare screen after the case whose fixture never logged ready: the fixture was stopped");
@@ -516,7 +521,7 @@ test("a fixture that starts but never logs ready is stopped when its case fails,
 		{ id: "apps.with-fixture", level: "core", group: "apps", needs: [], run: async (t) => void (await t.fixture()) },
 		{ id: "apps.after-it", level: "core", group: "apps", needs: [], run: async (t) => void ({ foreground } = await t.call("apps.list", {})) },
 	];
-	const phoneReport = await runConformance(phone.provider, { image: IMAGE, cases: phoneCases, fixture: FIXTURE, patience: BROKEN_PATIENCE });
+	const phoneReport = await runConformance(phone.provider, { image: IMAGE, cases: phoneCases, fixture: FIXTURE, patience: 1000 });
 	assert.deepEqual(statuses(phoneReport), { "apps.with-fixture": "fail", "apps.after-it": "pass" }, JSON.stringify(reasons(phoneReport)));
 	assert.match(reasons(phoneReport)["apps.with-fixture"], /^the fixture app logged ready: still not so/);
 	assert.equal(foreground, null, "the app in front after the case whose fixture app never logged ready: it was terminated");

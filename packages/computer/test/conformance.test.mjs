@@ -6,10 +6,26 @@ import { chmodSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { fileURLToPath, pathToFileURL } from "node:url";
-import test from "node:test";
+import nodeTest from "node:test";
 import { conformanceCases, formatReport, runConformance } from "../dist/index.js";
 import { main } from "../dist/conformance/cli.js";
 import { fakeComputers } from "./fake-computer.mjs";
+import { onFakeTime } from "./fake-time.mjs";
+
+/**
+ * Every test here runs on the fake clock (fake-time.mjs): the runner's case and cleanup bounds, the fake's create delays
+ * and the tests' own pauses all wait in order at no wall-clock cost. t.until's poll is node:timers/promises, which the
+ * runner imports before any clock is taken: each poll is a real 200 ms, its deadline the fake clock's. test.real is for
+ * a test whose wait is another process's (the CLI as a process, a docker stand-in that sleeps): that time is real.
+ */
+const test = Object.assign(
+	(name, ...rest) => {
+		const body = rest.pop();
+		return nodeTest(name, ...rest, (t) => onFakeTime(() => body(t)));
+	},
+	nodeTest,
+	{ real: nodeTest },
+);
 
 const IMAGE = "debian:bookworm-slim";
 const HERE = fileURLToPath(new URL(".", import.meta.url));
@@ -231,7 +247,9 @@ test("an aborted run ends what it made and reports the cases it did not run as f
 });
 
 // Its own timeout: a regression fails here in 10 s, not after the 180 s case timeout it guards against.
-test("an abort while the run's shared computer is still being made ends the wait at once, not at the case timeout", { timeout: 10_000 }, async () => {
+// The runner's create, connect and release bounds (within, bounded) are node:timers/promises: real time, on no clock a
+// test can take. The tests of those bounds run real.
+test.real("an abort while the run's shared computer is still being made ends the wait at once, not at the case timeout", { timeout: 10_000 }, async () => {
 	// Ctrl-C during setup: the provider's create never answers, so only the run's signal can end the wait.
 	const fake = fakeComputers({ createHangs: true });
 	const controller = new AbortController();
@@ -345,7 +363,7 @@ test("the CLI exits 2 on a usage error, and says what is wrong", async () => {
 	}
 });
 
-test("the CLI as a process: a usage error exits 2; a provider that cannot make a computer fails Core and exits 1", async () => {
+test.real("the CLI as a process: a usage error exits 2; a provider that cannot make a computer fails Core and exits 1", async () => {
 	const run = (args) =>
 		new Promise((resolve) => {
 			execFile(process.execPath, [CLI, ...args], { cwd: HERE, env: { ...process.env, INIT_CWD: HERE } }, (error, stdout, stderr) =>
@@ -397,7 +415,7 @@ async function ends(run) {
 	}
 }
 
-test("a provider whose create never answers gives a failed report in bounded time", async () => {
+test.real("a provider whose create never answers gives a failed report in bounded time", async () => {
 	const fake = fakeComputers({ createHangs: true });
 	const report = await ends(
 		runConformance(fake.provider, {
@@ -412,7 +430,7 @@ test("a provider whose create never answers gives a failed report in bounded tim
 	assert.equal(report.core, "fail");
 });
 
-test("a provider whose release never answers gives a failed report naming it, and the run ends", async () => {
+test.real("a provider whose release never answers gives a failed report naming it, and the run ends", async () => {
 	const fake = fakeComputers({ releaseHangs: true });
 	const report = await ends(runConformance(fake.provider, { image: IMAGE, caseTimeoutMs: 300, cleanupTimeoutMs: 300, cases: [pass("health.ping")] }));
 	assert.equal(statuses(report)["health.ping"], "pass");
@@ -422,14 +440,14 @@ test("a provider whose release never answers gives a failed report naming it, an
 });
 
 test("a computer whose create answers after its case ended is deleted, and the report names it", async () => {
-	const fake = fakeComputers({ createDelays: [0, 150] });
+	const fake = fakeComputers({ createDelays: [0, 600] });
 	const report = await runConformance(fake.provider, {
 		image: IMAGE,
-		caseTimeoutMs: 50,
+		caseTimeoutMs: 300,
 		cleanupTimeoutMs: 5000,
 		cases: [pass("provider.slow", { run: async (t) => void (await t.create()) })],
 	});
-	assert.match(reasons(report)["provider.slow"], /did not finish within 0\.05 s/);
+	assert.match(reasons(report)["provider.slow"], /did not finish within 0\.3 s/);
 	// Deleted before runConformance returned: the run waits for its late creates within cleanupTimeoutMs.
 	assert.deepEqual(fake.alive(), [], "the late computer was deleted");
 	assert.deepEqual(report.cleanup.late, ["fake-2"]);
@@ -547,7 +565,7 @@ test("the CLI's main resolves only once its report is written out", async () => 
 	assert.deepEqual(events, ["written", "resolved"]);
 });
 
-test("the CLI as a process prints a report of more than 1 MiB whole through a pipe", async () => {
+test.real("the CLI as a process prints a report of more than 1 MiB whole through a pipe", async () => {
 	const { code, stdout, stderr } = await new Promise((resolve) => {
 		execFile(
 			process.execPath,
@@ -621,7 +639,7 @@ test("provider.network-switch (Full, network:open) applies or refuses a change t
 	assert.equal(reasons(closed)["provider.network-switch"], "the provider does not declare network:open");
 });
 
-test("a docker CLI that never answers `docker version` fails the docker run in bounded time, naming the call", { timeout: 180_000 }, async () => {
+test.real("a docker CLI that never answers `docker version` fails the docker run in bounded time, naming the call", { timeout: 180_000 }, async () => {
 	const dir = mkdtempSync(join(tmpdir(), "computer-hung-docker-"));
 	try {
 		writeFileSync(join(dir, "docker"), "#!/bin/sh\nexec sleep 600\n");
@@ -645,18 +663,18 @@ process.exitCode = await main(["--provider", "docker"], { providerOptions: { tim
 });
 
 test("a create that answers after its case ended, from provider.check-refuses or drift.version, is released and named in cleanup.late", async () => {
-	const fake = fakeComputers({ createIgnoresCheck: true, lifetime: "vendor", createDelays: [150] });
-	const report = await runConformance(fake.provider, { image: IMAGE, caseTimeoutMs: 50, cleanupTimeoutMs: 10_000, cases: byId("provider.check-refuses") });
-	assert.match(reasons(report)["provider.check-refuses"], /did not finish within 0\.05 s/);
+	const fake = fakeComputers({ createIgnoresCheck: true, lifetime: "vendor", createDelays: [600] });
+	const report = await runConformance(fake.provider, { image: IMAGE, caseTimeoutMs: 300, cleanupTimeoutMs: 10_000, cases: byId("provider.check-refuses") });
+	assert.match(reasons(report)["provider.check-refuses"], /did not finish within 0\.3 s/);
 	assert.deepEqual(report.cleanup.late, ["fake-1"], "the late computer is in the report the run returned");
 	assert.deepEqual(fake.alive(), [], "and deleted before the run returned");
 	assert.ok(fake.calls.some(([kind, name, how]) => kind === "release" && name === "fake-1" && how === "delete"));
 
 	const own = fakeComputers({ lifetime: "vendor" });
-	const other = fakeComputers({ version: "0.9.0", lifetime: "vendor", createDelays: [150] });
-	const drift = { ...byId("drift.version")[0], timeoutMs: 50 };
+	const other = fakeComputers({ version: "0.9.0", lifetime: "vendor", createDelays: [600] });
+	const drift = { ...byId("drift.version")[0], timeoutMs: 300 };
 	const drifted = await runConformance(own.provider, { image: IMAGE, cleanupTimeoutMs: 10_000, cases: [drift], drifted: () => other.provider });
-	assert.match(reasons(drifted)["drift.version"], /did not finish within 0\.05 s/);
+	assert.match(reasons(drifted)["drift.version"], /did not finish within 0\.3 s/);
 	assert.deepEqual(drifted.cleanup.late, ["fake-1"]);
 	assert.deepEqual(other.alive(), [], "the drifted provider's late computer was deleted through it");
 });
@@ -778,7 +796,7 @@ test("provider.network-switch-allow (Full, network:allow) checks an allowlist ch
 	assert.match(reasons(lied)["provider.network-switch-allow"], /read back after it/);
 });
 
-test("a create still pending when the cleanup bound runs out is named in cleanup.errors, and Core fails", async () => {
+test.real("a create still pending when the cleanup bound runs out is named in cleanup.errors, and Core fails", async () => {
 	const fake = fakeComputers({ createHangs: true, lifetime: "vendor" });
 	const report = await ends(
 		runConformance(fake.provider, {

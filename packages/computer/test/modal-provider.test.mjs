@@ -6,10 +6,25 @@ import { createHash, randomBytes } from "node:crypto";
 import { chmodSync, existsSync, mkdirSync, mkdtempSync, readFileSync, renameSync, rmSync, statSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import test from "node:test";
+import nodeTest from "node:test";
 import { checkLifetime, kindRefusals, ModalProvider, sweep } from "../dist/index.js";
 import * as modal from "../dist/modal.js";
+import { onFakeTime } from "./fake-time.mjs";
 import { DAEMON, DAEMON_IMAGE, deferred, ENTRYPOINT_MARK, fakeModal, GVISOR_KERNEL, HELLO, UPLOAD_MARK, VERSION } from "./fake-modal.mjs";
+
+/**
+ * Every test here runs on the fake clock (fake-time.mjs): the provider's bounds, the fake's latencies and the tests'
+ * own pauses all wait in order at no wall-clock cost. test.real is for a test whose wait is another process's (the
+ * entrypoint and upload scripts run by sh): that time is real.
+ */
+const test = Object.assign(
+	(name, ...rest) => {
+		const body = rest.pop();
+		return nodeTest(name, ...rest, (t) => onFakeTime(() => body(t)));
+	},
+	nodeTest,
+	{ real: nodeTest },
+);
 
 const SPEC = { image: "debian:bookworm-slim", lifetimeMs: 600_000, network: "none" };
 const APP = "computers";
@@ -678,7 +693,7 @@ function runLocally(argv, { input, onSpawn } = {}) {
 	});
 }
 
-test("the entrypoint's wait is bounded: with no daemon it exits nonzero in words once its seconds run out", async () => {
+test.real("the entrypoint's wait is bounded: with no daemon it exits nonzero in words once its seconds run out", async () => {
 	const dir = mkdtempSync(join(tmpdir(), "computer-modal-entry-"));
 	try {
 		const daemon = join(dir, "opt", "computerd");
@@ -688,17 +703,17 @@ test("the entrypoint's wait is bounded: with no daemon it exits nonzero in words
 		assert.equal(ran.code, 3, JSON.stringify(ran));
 		assert.match(ran.stderr, /the daemon did not arrive at .*computerd within 1 s/);
 		assert.ok(took >= 900 && took < 5_000, `it waited ${took} ms`);
-		// A file there that is not executable is not the daemon: still bounded (its own seconds, 0 here, are proven above).
+		// A file there that is not executable is not the daemon: still bounded.
 		mkdirSync(join(dir, "opt"));
 		writeFileSync(daemon, "not yet\n", { mode: 0o644 });
-		const half = await runLocally(modalCommands({ waitSeconds: 0, daemon }).entrypoint);
+		const half = await runLocally(modalCommands({ waitSeconds: 1, daemon }).entrypoint);
 		assert.equal(half.code, 3, JSON.stringify(half));
 	} finally {
 		rmSync(dir, { recursive: true, force: true });
 	}
 });
 
-test("the entrypoint execs the daemon once it is moved into place: same process, its arguments, HOME", async () => {
+test.real("the entrypoint execs the daemon once it is moved into place: same process, its arguments, HOME", async () => {
 	const dir = mkdtempSync(join(tmpdir(), "computer-modal-entry-"));
 	try {
 		mkdirSync(join(dir, "opt"));
@@ -719,7 +734,7 @@ test("the entrypoint execs the daemon once it is moved into place: same process,
 	}
 });
 
-test("the upload script refuses a daemon path that is not root's alone, and writes nothing there", async () => {
+test.real("the upload script refuses a daemon path that is not root's alone, and writes nothing there", async () => {
 	// Run here as the test's own user under a temp directory that user owns: the path is not root's, so the upload must
 	// refuse before it reads the daemon. The success and sha256-mismatch paths run as root in the Docker commands test.
 	const dir = mkdtempSync(join(tmpdir(), "computer-modal-upload-sh-"));

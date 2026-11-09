@@ -7,7 +7,8 @@ import { createHash } from "node:crypto";
 import { mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import test from "node:test";
+import nodeTest from "node:test";
+import { onFakeTime } from "./fake-time.mjs";
 import { checkLifetime, kindRefusals } from "../dist/index.js";
 import * as registry from "../dist/providers.js";
 import { DAEMON, DESKTOP_GROUPS, fakeE2B, KEY, LINUX_GROUPS, TimeoutError, VERSION } from "./fake-e2b.mjs";
@@ -29,6 +30,16 @@ const HOUR = 3_600_000;
 /** What create and attach record of a computer with network none whose IPv4 probe targets E2B's firewall accepted. */
 const ACCEPTED_NOTE = "network: none; accepted with no answer (no bytes came back): 1.1.1.1:443, 8.8.8.8:443";
 const BARE = "e2b_bare_key_must_never_be_used";
+/**
+ * Every test here runs on the fake clock (fake-time.mjs): the provider's bounds, the fake's latencies and the tests'
+ * own pauses all wait in order at no wall-clock cost. The bounds that AbortSignal.timeout holds (hello, probe and
+ * deadline.extend) stay real: the provider takes no clock, and none is added for a test.
+ */
+const test = Object.assign((name, ...rest) => {
+	const body = rest.pop();
+	return nodeTest(name, ...rest, (t) => onFakeTime(() => body(t)));
+}, nodeTest);
+
 const dir = mkdtempSync(join(tmpdir(), "computer-e2b-"));
 const DAEMON_PATH = join(dir, "computerd");
 const DAEMON_BYTES = Buffer.from("a stand-in for computerd, linux/amd64\n");
@@ -421,8 +432,7 @@ test("an install that fails, init that never listens, or an X server that dies e
 		[{ display: "dies" }, /X server .* ended with exit code 1 .*Cannot establish any listening sockets/],
 		[{ display: "never" }, /was not up within/],
 	]) {
-		// The provider's own bounds, short: init that never listens is given up at helloMs, the display at its timeoutMs.
-		const { provider, fake } = setup({ desktop: { timeoutMs: 50 }, timeouts: { ...TIMEOUTS, helloMs: 300 } }, options);
+		const { provider, fake } = setup({ desktop: { timeoutMs: 200 } }, options);
 		const made = await provider.create(SPEC);
 		assert.equal(made.ok, false, JSON.stringify(options));
 		assert.match(made.error.message, pattern);

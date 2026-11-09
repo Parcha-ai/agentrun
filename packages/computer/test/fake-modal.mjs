@@ -14,7 +14,8 @@
 // it. No Modal client is ever constructed here, and nothing reaches the network.
 import { createHash } from "node:crypto";
 import { readFileSync } from "node:fs";
-import { setTimeout as sleep } from "node:timers/promises";
+/** The fake's latencies, on the global timers (read at each call), so a test's fake clock (fake-time.mjs) moves them. */
+const sleep = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
 
 export const VERSION = JSON.parse(await (await import("node:fs/promises")).readFile(new URL("../package.json", import.meta.url), "utf8")).version;
 export const DAEMON = "/opt/agentrun/computerd";
