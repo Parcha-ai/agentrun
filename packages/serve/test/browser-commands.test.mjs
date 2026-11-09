@@ -160,3 +160,23 @@ test("two answers reading open with the same outcome: one first, the other not, 
   assert.deepEqual(a, { outcome: "done", first: true });
   assert.deepEqual(b, { outcome: "done", first: false });
 });
+
+test("a live view's give that lands between the read and the write wins over the command (409)", async () => {
+  const store = await freshStore();
+  // The caller read the ask open; a give commits "done" to the journal before this write lands.
+  const fresh = async () => [answered("ask-1", "done")];
+  const lost = await browserHandBack(store, "run-1", "cancelled", { id: "ask-1" }, NOW, fresh).catch((e) => e);
+  assert.ok(lost instanceof Error && lost.code === "handoff_answered" && /already answered done/.test(lost.message), "the give's outcome wins, not the command's");
+});
+
+test("a give with the caller's own outcome is not-first, not a lie", async () => {
+  const store = await freshStore();
+  const same = await browserHandBack(store, "run-1", "done", { id: "ask-1" }, NOW, async () => [answered("ask-1", "done")]);
+  assert.deepEqual(same, { outcome: "done", first: false });
+});
+
+test("with no give in the journal, the command still wins", async () => {
+  const store = await freshStore();
+  const won = await browserHandBack(store, "run-1", "done", { id: "ask-1" }, NOW, async () => []);
+  assert.deepEqual(won, { outcome: "done", first: true });
+});

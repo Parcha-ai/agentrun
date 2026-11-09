@@ -125,6 +125,12 @@ export function handBackTarget(entries: readonly JournalEntry[], commands: reado
 const answeredRefusal = (outcome: AskOutcome): ApiError =>
   new ApiError("handoff_answered", outcome === "expired" ? "The agent's hand-over expired before this answer: the agent was told it expired." : `The agent's hand-over was already answered ${outcome}.`, { details: { outcome } });
 
+/** The run's committed journal answer for ask `ask` (a live view's give, or its expiry), if any: the journal entries alone,
+ *  not the pending commands. A give the runner committed has answered the ask over any command. */
+function journalGiven(entries: readonly JournalEntry[], ask: string): AskOutcome | undefined {
+  return answersOf(entries, []).get(ask)?.outcome;
+}
+
 /** The hand-over answer that wins for ask `ask`: the lowest-id done/cancelled command, which the runner applies. */
 function handBackWinner(commands: readonly Command[], ask: string): { id: number; outcome: AskOutcome } | undefined {
   const rows = commands
@@ -142,8 +148,9 @@ function handBackWinner(commands: readonly Command[], ask: string): { id: number
  *  winner's caller `first`, another with the winner's outcome not-`first`, another with a different outcome 409. A run its
  *  agent never asked in is 404, and an ask already answered or expired is 409, in the old route's words. `target` is the ask
  *  and how it stands (handBackTarget); `at` is the person's own answer time (ms), carried on the row so the runner's phase row
- *  shows when they answered, not when it read the row. */
-export async function browserHandBack(store: BrowserCommandStore, runId: string, outcome: "done" | "cancelled", target: { id: string; answer?: AskOutcome } | undefined, at: number = Date.now()): Promise<{ outcome: AskOutcome; first: boolean }> {
+ *  shows when they answered, not when it read the row. `freshEntries` re-reads the run's journal after the write: a live view's
+ *  own give that committed an answer between the read and the write has answered the ask already, over any command. */
+export async function browserHandBack(store: BrowserCommandStore, runId: string, outcome: "done" | "cancelled", target: { id: string; answer?: AskOutcome } | undefined, at: number = Date.now(), freshEntries?: () => Promise<readonly JournalEntry[]>): Promise<{ outcome: AskOutcome; first: boolean }> {
   if (!target) throw new ApiError("not_found", "this run's agent has not asked for you in its browser");
   // Already answered when this read it (the runner's committed answer, or a command this read already saw): no new write.
   if (target.answer !== undefined) {
@@ -159,6 +166,14 @@ export async function browserHandBack(store: BrowserCommandStore, runId: string,
     // The run ended between the read and the write: no ask of a run that is gone is still waiting.
     if (error instanceof RunFinal) throw new ApiError("not_found", "this run's agent has not asked for you in its browser");
     throw error;
+  }
+  // A live view's give that committed its answer between the read and the write has answered the ask over any command.
+  if (freshEntries) {
+    const given = journalGiven(await freshEntries(), target.id);
+    if (given !== undefined) {
+      if (given === outcome) return { outcome: given, first: false };
+      throw answeredRefusal(given);
+    }
   }
   const winner = handBackWinner(await store.commands(runId, 0), target.id);
   if (!winner || winner.id === mine.id) return { outcome, first: true };
