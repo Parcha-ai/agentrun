@@ -89,6 +89,8 @@ export type Package = {
   /** POST /v2/triggers bodies, placeholders unfilled, each target a start_run with no agent_id. */
   triggers: Json[];
   output?: { schema: string };
+  /** The output schema's JSON, parsed (GET /v2/templates shows it). */
+  outputSchema?: Json;
   checks: string[];
   instructions: string;
   /** Skill files by path under the agent's skills folder (`review/SKILL.md`), each rule beside each SKILL.md. */
@@ -238,11 +240,13 @@ export function readPackage(dir: string): Package {
     if (!isObject(target) || target.kind !== "start_run" || target.agent_id !== undefined) bad(MANIFEST, `triggers[${i}].target is a start_run with no agent_id: the agent is the one the package makes`);
   });
   if (triggers.length && f.budget === undefined) bad(MANIFEST, "budget is required when the package has triggers: {per_run_usd}, each run's cap");
+  let outputSchema: unknown;
   if (f.output !== undefined) {
     if (!isObject(f.output) || unknownFields(f.output, ["schema"]).length || !inside(f.output.schema)) bad(MANIFEST, "output is {schema: a JSON Schema file in the package}");
     else {
       try {
-        if (!isObject(JSON.parse(text(f.output.schema as string)))) throw new Error();
+        outputSchema = JSON.parse(text(f.output.schema as string));
+        if (!isObject(outputSchema)) throw new Error();
       } catch {
         bad(f.output.schema as string, "is not a JSON object");
       }
@@ -342,7 +346,7 @@ export function readPackage(dir: string): Package {
     ...(typeof f.license === "string" ? { license: f.license } : {}), ...(isObject(f.author) ? { author: f.author } : {}), ...(typeof f.repository === "string" ? { repository: f.repository } : {}),
     ...(harness ? { harness } : {}), ...(isObject(f.model) ? { model: f.model as { tier: string; prefer?: string } } : {}), ...(typeof f.effort === "string" ? { effort: f.effort } : {}),
     ...(tools ? { tools } : {}), mcp, parameters, secrets, ...(isObject(f.budget) ? { budget: { per_run_usd: f.budget.per_run_usd as number } } : {}), ...(typeof f.learning === "boolean" ? { learning: f.learning } : {}),
-    triggers: triggers as Json[], ...(isObject(f.output) ? { output: { schema: f.output.schema as string } } : {}), checks, instructions, skills, evals,
+    triggers: triggers as Json[], ...(isObject(f.output) ? { output: { schema: f.output.schema as string } } : {}), ...(isObject(outputSchema) ? { outputSchema } : {}), checks, instructions, skills, evals,
   };
   // What an apply makes, made here with each parameter's default, else a sample of its type, and checked as POST
   // /v2/agents and POST /v2/triggers check their bodies (all but the agent the trigger names, which an apply makes). A
@@ -377,7 +381,8 @@ export function readPackages(dir: string = TEMPLATES_DIR): Package[] {
 /** A package as GET /v2/templates lists it: what an apply asks for and makes. */
 export function packageView(p: Package) {
   return {
-    name: p.name, display_name: p.displayName ?? null, version: p.version, description: p.description, license: p.license ?? null, repository: p.repository ?? null,
+    name: p.name, display_name: p.displayName ?? null, version: p.version, description: p.description, license: p.license ?? null, author: p.author ?? null, repository: p.repository ?? null,
+    output: p.output ? { schema: p.output.schema, json_schema: p.outputSchema ?? null } : null,
     harness: p.harness ?? null, model: p.model ?? null, effort: p.effort ?? null, tools: p.tools ?? null,
     mcp: p.mcp.map(({ server, tools, required, allow }) => ({ server, required, tools: tools.map((name) => ({ name, tool: mcpToolName(server, name), asks: allow.includes(name) ? "allow" : "ask" })) })), parameters: p.parameters, secrets: p.secrets,
     budget: p.budget ?? null, learning: p.learning ?? false, triggers: p.triggers, skills: Object.keys(p.skills).filter((path) => /^[^/]+\/SKILL\.md$/.test(path)).map((path) => path.slice(0, -"/SKILL.md".length)), evals: p.evals,
@@ -423,14 +428,30 @@ export function applyBodyOf(p: Package, body: Json): { parameters: Record<string
   return { parameters, grants, ...(isObject(overrides) && typeof overrides.model === "string" ? { model: overrides.model } : {}), ...(isObject(overrides) && (overrides.approvals === "ask" || overrides.approvals === "never") ? { approvals: overrides.approvals } : {}) };
 }
 
-/** The model a package's agent gets here: its `prefer` when this server runs it on `harness` (a key for its provider, or
- *  a gateway), else the server's model for its tier (hostModel: AGENT_MODEL_FAST, AGENT_MODEL or AGENT_MODEL_STRONG,
- *  else the default of a model key it holds). Undefined when the package names none, or the server has none: the agent
- *  then runs on the server's default, as one made with no model does. */
-export async function packageModel(env: NodeJS.ProcessEnv, model: Package["model"], harness: string): Promise<string | undefined> {
-  if (!model) return undefined;
-  if (model.prefer && harnessRuns(env, model.prefer, harness) && !("why" in (await chooseModel(env, model.prefer, "default", harness)))) return model.prefer;
-  return hostModel(env, MODEL_TIERS[model.tier], harness);
+/** The model a package's agent gets here, as `{model?, warning?}`: its `prefer` when this server runs it on `harness`
+ *  with a key for its provider, but never through a gateway (AGENT_MODEL_BASE_URL), which never said it serves it: then
+ *  a warning says so. Else the server's model for its tier (hostModel: AGENT_MODEL_FAST, AGENT_MODEL or
+ *  AGENT_MODEL_STRONG, else the default of a model key it holds), unless that is a gateway's own id with no provider,
+ *  which no definition can name: then no model, and the agent runs on the server's default (a warning when the tier's
+ *  model is not that default). No model either when the package names none or the server has none. */
+export async function packageModel(env: NodeJS.ProcessEnv, model: Package["model"], harness: string): Promise<{ model?: string; warning?: string }> {
+  if (!model) return {};
+  // Through a gateway, only the gateway knows what it serves: a preferred model it never named is not picked, and the
+  // owner is told (overrides.model picks one it serves).
+  const gateway = Boolean(env.AGENT_MODEL_BASE_URL);
+  const skipped = model.prefer && gateway ? `model.prefer ${model.prefer} is not used: this server reaches its models through a gateway, which has not said it serves that model.` : undefined;
+  if (!skipped && model.prefer && harnessRuns(env, model.prefer, harness) && !("why" in (await chooseModel(env, model.prefer, "default", harness)))) return { model: model.prefer };
+  const tier = MODEL_TIERS[model.tier]!;
+  const id = hostModel(env, tier, harness);
+  // A gateway's own id (no provider) is no "provider/model-id" a definition can name: the agent is left to the server's
+  // default, which is the gateway's model, and a tier model other than the default is said. The warning says the one
+  // model the agent runs on, never the tier's when it is left out.
+  const bare = Boolean(id && !MODEL_REF.test(id));
+  const runsOn = bare && id !== env.AGENT_MODEL ? `The ${model.tier} tier's model ${id} is this gateway's own id, which an agent's definition can't name, so the agent runs on this server's default model.`
+    : skipped ? (bare || !id ? "The agent runs on this server's default model." : `The agent runs on this server's model for the ${model.tier} tier.`)
+    : undefined;
+  const warning = [skipped, runsOn, skipped ? "overrides.model picks another the gateway serves." : undefined].filter(Boolean).join(" ");
+  return { ...(id && !bare ? { model: id } : {}), ...(warning ? { warning } : {}) };
 }
 
 /** The bodies an apply makes: POST /v2/agents' (its definition and skill files) and each trigger's, with no agent_id,

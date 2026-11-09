@@ -19,7 +19,7 @@ mcp:
 parameters:
   repo: { type: string, required: true, pattern: "^[A-Za-z0-9][A-Za-z0-9-]*/[A-Za-z0-9._-]+$", description: "the GitHub repository to review, as owner/name" }
   focus: { type: string, description: "optional: one line on what matters most here (\"auth and money paths\"), read before the repo's own rules" }
-budget: { per_run_usd: 0.50 }
+budget: { per_run_usd: 2.00 }
 learning: false
 output: { schema: findings.schema.json }
 ---
