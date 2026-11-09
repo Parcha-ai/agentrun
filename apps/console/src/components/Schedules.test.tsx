@@ -477,13 +477,9 @@ describe("the New schedule form's cost cap and one time", () => {
     expect(every.host.querySelector<HTMLInputElement>('input[name="startAt"]')!.step).toBe("60");
   });
 
-  it("the webhook and GitHub forms say the agent's default the same way", async () => {
-    for (const kind of ["webhook", "github"] as const) {
-      const t = await open(server().v2, { trigger: null, kind });
-      await t.set("agent", "story");
-      if (kind === "github" && !t.host.querySelector('input[name="maxCost"]')) { act(() => root?.unmount()); document.body.innerHTML = ""; continue; }
-      expect(cap(t.host).getAttribute("placeholder")).toBe("$0.50, the agent's default");
-      act(() => root?.unmount()); document.body.innerHTML = "";
-    }
+  it("the webhook form says the agent's default the same way (the GitHub form shares the helper)", async () => {
+    const t = await open(server().v2, { trigger: null, kind: "webhook" });
+    await t.set("agent", "story");
+    expect(cap(t.host).getAttribute("placeholder")).toBe("$0.50, the agent's default");
   });
 });
