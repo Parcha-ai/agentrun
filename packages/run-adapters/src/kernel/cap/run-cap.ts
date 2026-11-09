@@ -7,7 +7,7 @@
 // Decisions book under their own session (DECISION_SESSION), priced as main holds them (decisionAsk).
 import { runBooking, type RunSessions } from "../../run-booking.js";
 import { type BeforeRequest, modelPortFor } from "../../runner.js";
-import type { ModelTicket, SessionWriter } from "../../types.js";
+import type { ModelRequest, ModelTicket, SessionWriter } from "../../types.js";
 import { decisionAsk } from "./admit.js";
 import { CapRefused, DecisionPriceUnreadable } from "./errors.js";
 import { beforeRequestOf } from "./port.js";
@@ -32,6 +32,9 @@ export interface RunCapOptions {
   /** The run's priced tools' charges and holds beside its requests (beforeRequestOf's), when it has any. */
   spentUsd?(): number | null;
   heldUsd?(): number | null;
+  /** Told each request the rule judged, with the run's totals it was asked with, and its answer (an observer: a live
+   *  view of the cap, a test's record). */
+  judged?(request: Parameters<BeforeRequest>[0], answer: Awaited<ReturnType<BeforeRequest>>): void;
 }
 
 /** A run's decisions on its one cap: each admitted before it is sent and settled once it answered. */
@@ -53,7 +56,25 @@ export interface RunCap {
    *  journal holds survive a lost box, awaited once a decision's hold is written and before it is sent, as a model
    *  request's is (request_start), so a decision sent and then lost with its box still counts after the next claim. */
   decisions(writer: SessionWriter, options?: { flush?: () => Promise<void> }): Promise<RunDecisions>;
+  /** The run's paid tool calls (a web search's or fetch's request, a monid call), booked on `writer` (the run's
+   *  TOOL_SESSION) under the same rule: each held at its price before it is sent (flushed when `flush` is given) and
+   *  settled at what it charged, as main's paidRequest books it. */
+  tools(writer: SessionWriter, options?: { flush?: () => Promise<void> }): Promise<RunTools>;
 }
+
+/** A run's paid tool calls on its one cap. */
+export interface RunTools {
+  /** Admits the paid request `id` at its price (`holdUsd`): its hold, or CapRefused. `call`: the tool call it runs under,
+   *  named on its runner.request (none for a step under no call, a person's browser time). */
+  admit(request: { readonly id: string; readonly name: string; readonly holdUsd: number; readonly basis: string; readonly call?: string }): Promise<Admission>;
+  /** Settles it at what it charged (null: at its hold; 0: nothing was billed). */
+  settle(id: string, usd: number | null): Promise<number | null>;
+  spentUsd(): number | null;
+  heldUsd(): number;
+}
+
+/** The session a run's paid tool calls book under. */
+export const TOOL_SESSION = "paid-tools";
 
 export function runCap(options: RunCapOptions): RunCap {
   const mode: CapMode = options.mode ?? "expected";
@@ -68,28 +89,17 @@ export function runCap(options: RunCapOptions): RunCap {
     ...(options.spentUsd ? { spentUsd: options.spentUsd } : {}),
     ...(options.heldUsd ? { heldUsd: options.heldUsd } : {}),
   });
-  const before = runBooking(options.sessions, rule);
+  const before = runBooking(options.sessions, options.judged ? async (request) => {
+    const answer = await rule(request);
+    options.judged!(request, answer);
+    return answer;
+  } : rule);
 
+  const forget = (key: string) => void deciding.delete(key);
   return {
     before,
     async decisions(writer, decisionOptions = {}) {
-      /** The verdict of the decision being admitted (admissions run one at a time on the booking), for its refusal. */
-      let verdict: Verdict | undefined;
-      const lastVerdict = (): Verdict | undefined => verdict;
-      const booking = await modelPortFor(writer, {
-        key: writer.key,
-        label: writer.key,
-        beforeRequest: async (request) => {
-          const answer = await before(request);
-          verdict = (answer ?? undefined) as Verdict | undefined;
-          return answer;
-        },
-        // Its hold durable before it leaves: the booking awaits request_start once its runner.request is written.
-        ...(decisionOptions.flush ? { onEvent: async (event: { type: string }) => { if (event.type === "request_start") await decisionOptions.flush!(); } } : {}),
-      });
-      // A decision an earlier claim admitted and that never answered: booked cut, counted at its hold and its bound.
-      await booking.bookCut();
-      const open = new Map<string, { ticket: ModelTicket; key: string; heldUsd: number }>();
+      const steps = await stepsOn(writer, before, decisionOptions.flush, "decision", forget);
       return {
         async admit(request) {
           const capUsd = options.capUsd();
@@ -98,38 +108,83 @@ export function runCap(options: RunCapOptions): RunCap {
           const asked = capUsd === undefined || request.model === "unreadable" ? undefined : decisionAsk(request, mode);
           const key = `decision:${request.id}`;
           if (asked) deciding.set(key, { ...asked.model, id: key });
-          verdict = undefined;
-          let ticket: ModelTicket | void;
-          try {
-            ticket = await booking.models.beforeRequest({
-              model: key,
-              ...(asked ? { inputTokensMax: asked.inputTokens, ...(asked.output === null ? {} : { outputTokensAsked: asked.output, outputTokensLeast: asked.output }), ...(asked.feeUsd > 0 ? { feeUsd: asked.feeUsd } : {}) } : { inputTokensMax: request.inputTokens }),
-            });
-          } catch (error) {
-            deciding.delete(key);
-            const refused = lastVerdict();
-            if (refused?.refuse !== undefined) throw new CapRefused(refused.refuse, { forGood: refused.forGood ?? true, spentUsd: refused.figures?.spentUsd ?? null, ...(refused.figures ? { figures: refused.figures } : {}) });
-            throw error;
-          }
-          if (!ticket) throw new Error(`decision ${request.id}: its booking gave it no ticket`);
-          const admitted = lastVerdict();
-          const held = typeof admitted?.holdUsd === "number" ? admitted.holdUsd : 0;
-          const bound = typeof admitted?.boundUsd === "number" ? admitted.boundUsd : 0;
-          open.set(request.id, { ticket, key, heldUsd: held });
-          return { id: request.id, heldUsd: held, boundUsd: bound, worstUsd: held + bound, stoppedUsd: () => held };
+          return steps.book(request.id, { model: key, ...(asked ? { inputTokensMax: asked.inputTokens, ...(asked.output === null ? {} : { outputTokensAsked: asked.output, outputTokensLeast: asked.output }), ...(asked.feeUsd > 0 ? { feeUsd: asked.feeUsd } : {}) } : { inputTokensMax: request.inputTokens }) });
         },
-        async settle(id, settled) {
-          const step = open.get(id);
-          if (!step) throw new Error(`no decision ${id} is under way on this claim`);
-          const usd = "usd" in settled ? settled.usd : null;
-          open.delete(id);
-          deciding.delete(step.key);
-          await booking.models.afterRequest({ input: 0, output: 0, cacheRead: 0, usd }, step.ticket);
-          return usd ?? step.heldUsd;
-        },
-        spentUsd: () => booking.spentUsd(),
-        heldUsd: () => [...open.values()].reduce((sum, step) => sum + step.heldUsd, 0),
+        settle: (id, settled) => steps.settle(id, "usd" in settled ? settled.usd : null),
+        spentUsd: steps.spentUsd,
+        heldUsd: steps.heldUsd,
       };
     },
+    tools: (writer, toolOptions = {}) => paidCalls(writer, before, toolOptions),
   };
+}
+
+/** A run's paid tool calls booked on `writer` (its TOOL_SESSION) under `before`, the run's one rule (runCap's, or the
+ *  adapter loop's runBooking over its spec's check): each held at its price before it is sent (main's paidCall, by the
+ *  rule's tool judgement), flushed first when `flush` is given, and settled at what it charged. */
+export async function paidCalls(writer: SessionWriter, before: BeforeRequest, options: { flush?: () => Promise<void> } = {}): Promise<RunTools> {
+  const steps = await stepsOn(writer, before, options.flush, "paid call", () => {});
+  return {
+    // A hold that is no figure (an unpriced browser provider's) goes to the rule as given, which refuses it for good.
+    admit: (request) => steps.book(request.id, { model: `paid:${request.name}`, inputTokensMax: 0, ...(request.holdUsd !== 0 ? { feeUsd: request.holdUsd } : {}), paid: { name: request.name, basis: request.basis, ...(request.call === undefined ? {} : { call: request.call }) } }),
+    settle: (id, usd) => steps.settle(id, usd),
+    spentUsd: steps.spentUsd,
+    heldUsd: steps.heldUsd,
+  };
+}
+
+/** Steps that are no model request of the run's own (its decisions, its paid tool calls) booked on `writer` under `before`:
+ *  each a runner.request before it is sent (flushed when `flush` is given) and a runner.turn once settled. */
+async function stepsOn(writer: SessionWriter, before: BeforeRequest, flush: (() => Promise<void>) | undefined, what: string, forget: (key: string) => void) {
+  {
+    /** The verdict of the step being admitted (admissions run one at a time on the booking), for its refusal. */
+    let verdict: Verdict | undefined;
+    const lastVerdict = (): Verdict | undefined => verdict;
+    const booking = await modelPortFor(writer, {
+      key: writer.key,
+      label: writer.key,
+      beforeRequest: async (request) => {
+        const answer = await before(request);
+        verdict = (answer ?? undefined) as Verdict | undefined;
+        return answer;
+      },
+      // Its hold durable before it leaves: the booking awaits request_start once its runner.request is written.
+      ...(flush ? { onEvent: async (event: { type: string }) => { if (event.type === "request_start") await flush(); } } : {}),
+    });
+    // A step an earlier claim admitted and that never answered: booked cut, counted at its hold and its bound.
+    await booking.bookCut();
+    const open = new Map<string, { ticket: ModelTicket; key: string; heldUsd: number }>();
+    return {
+      /** Books step `id`, asked as `asked` (its model key a decision's priced model, or a paid call's name). */
+      async book(id: string, asked: ModelRequest): Promise<Admission> {
+        const key = asked.model;
+        verdict = undefined;
+        let ticket: ModelTicket | void;
+        try {
+          ticket = await booking.models.beforeRequest(asked);
+        } catch (error) {
+          forget(key);
+          const refused = lastVerdict();
+          if (refused?.refuse !== undefined) throw new CapRefused(refused.refuse, { forGood: refused.forGood ?? true, spentUsd: refused.figures?.spentUsd ?? null, ...(refused.figures ? { figures: refused.figures } : {}) });
+          throw error;
+        }
+        if (!ticket) throw new Error(`${what} ${id}: its booking gave it no ticket`);
+        const admitted = lastVerdict();
+        const held = typeof admitted?.holdUsd === "number" ? admitted.holdUsd : 0;
+        const bound = typeof admitted?.boundUsd === "number" ? admitted.boundUsd : 0;
+        open.set(id, { ticket, key, heldUsd: held });
+        return { id, heldUsd: held, boundUsd: bound, worstUsd: held + bound, stoppedUsd: () => held };
+      },
+      async settle(id: string, usd: number | null): Promise<number | null> {
+        const step = open.get(id);
+        if (!step) throw new Error(`no ${what} ${id} is under way on this claim`);
+        open.delete(id);
+        forget(step.key);
+        await booking.models.afterRequest({ input: 0, output: 0, cacheRead: 0, usd }, step.ticket);
+        return usd ?? step.heldUsd;
+      },
+      spentUsd: () => booking.spentUsd(),
+      heldUsd: () => [...open.values()].reduce((sum, step) => sum + step.heldUsd, 0),
+    };
+  }
 }

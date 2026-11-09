@@ -3,7 +3,7 @@
 export { CapRefused, createCap, DECISION_IMAGE_TOKENS, DECISION_OUTPUT_TOKENS, DecisionPriceUnreadable, END_MARK_WAIT_MS, END_NOT_WRITTEN, MARK_NOT_WRITTEN, openCap } from "./admit.js";
 export { capRule, noteFor, type Judged, type JudgeState, type NoteState } from "./rule.js";
 export { beforeRequestOf, type BeforeRequestOptions } from "./port.js";
-export { DECISION_SESSION, runCap, type RunCap, type RunCapOptions, type RunDecisions } from "./run-cap.js";
+export { DECISION_SESSION, paidCalls, runCap, TOOL_SESSION, type RunCap, type RunCapOptions, type RunDecisions, type RunTools } from "./run-cap.js";
 export { ANSWER_TOKENS_LEAST, CACHE_WARM_MS, CAP_TOLERANCE, FIT_TOLERANCE, STOP_ALLOWANCE_TOKENS, THINKING_BUDGET_LEAST, expectedInput, inputBound, mostOutput, pricingOf, ratesFor, requestPrice } from "./price.js";
 export { CAP_REFUSAL_CODE, SPEND_CAP_REACHED, SUGGESTED_RAISE_FACTOR, centsMoney, leastMoney, money, overCapWords, raiseFigure, raiseTo, suggestedRaise } from "./words.js";
 export { checkRaise, followUpOf, parkOf, takeRaises, type BudgetPending, type Park, type RaiseCheck, type RaiseState } from "./park.js";

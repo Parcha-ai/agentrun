@@ -33,7 +33,7 @@ import { builtinHarness, harnessOf } from "./harness-table.js";
 import { viaOpenRouter, WIRES } from "./provider.js";
 import { savedIn } from "./secrets.js";
 import { hostModel } from "./model.js";
-import { canonicalPin, defaultPermission, isCatalogTool, isMcpTool, MAX_PIN_ARGS, MAX_PIN_CHOICES, type Permission, PERMISSIONS, permissionFrom, permissionOf, type Pin, SHELL_FAMILY } from "./tool-gate.js";
+import { canonicalPin, defaultPermission, isCatalogTool, isMcpTool, MAX_PIN_ARGS, MAX_PIN_CHOICES, type Permission, PERMISSIONS, permissionFrom, permissionOf, type Pin, SETTINGS_UNREAD, SHELL_FAMILY } from "./tool-gate.js";
 
 /**
  * The capabilities a pack or a revision may grant, by name: the tools the kernel gives a run, bound from serve's closed
@@ -69,10 +69,15 @@ export const serverGate = (name: string, settings: ToolSettingsMap) => ({ permis
 /** The run's own tools beyond the table, each its own settings key, allowed by default like a table tool: the learned
  *  workflow a run's pin names runs as `learned_workflow` (learned-workflow.ts LEARNED_WORKFLOW_TOOL). */
 export const SERVE_OWN_TOOLS: readonly string[] = ["learned_workflow"];
+/** A computer kind's tools, one settings key per kind, as `browser` holds the browser's family: every desktop tool is
+ *  held to `desktop`, every phone tool to `phone` (the kernel registry's definitions name the key; tool-gate.ts
+ *  settingsKeyOf reads it there). Allowed by default like a table tool; allow or deny. */
+export const KIND_KEYS: readonly string[] = ["desktop", "phone"];
 
-/** A settings key: a tool of the table, one of the run's own tools (SERVE_OWN_TOOLS), a catalog tool (`monid.<tool>`,
- *  `mcp:<server>/<tool>`), or an MCP server's wildcard (`mcp:<server>/*`), which sets each of its tools. */
-const isSettingsKey = (name: string): boolean => isToolSettingsKey(name) && (TABLE_TOOLS.includes(name) || SERVE_OWN_TOOLS.includes(name) || isCatalogTool(name) || /^mcp:[^/]+\/\*$/.test(name));
+/** A settings key: a tool of the table, one of the run's own tools (SERVE_OWN_TOOLS), a computer kind's (KIND_KEYS), a
+ *  catalog tool (`monid.<tool>`, `mcp:<server>/<tool>`), or an MCP server's wildcard (`mcp:<server>/*`), which sets each
+ *  of its tools. */
+const isSettingsKey = (name: string): boolean => isToolSettingsKey(name) && (TABLE_TOOLS.includes(name) || SERVE_OWN_TOOLS.includes(name) || KIND_KEYS.includes(name) || isCatalogTool(name) || /^mcp:[^/]+\/\*$/.test(name));
 /** One tool's settings: its provider (a capability that has a choice), its permission, and an MCP tool's pin (the
  *  arguments its calls must carry, tool-gate.ts pinRefusal). */
 export type ToolSetting = { provider?: string; permission?: Permission; pin?: Pin; /** Read as a stand-in for a value not offered (readToolSettings); never shown or written. */ fallback?: true; /** The stand-in's value as written in the file, which a save that keeps the stand-in writes back (ToolSettings.put). Never shown. */ raw?: unknown; /** A pin in the file that does not read (readToolSettings): the gate refuses every call of the tool, and a save keeps it (ToolSettings.put) until the owner sets a valid pin or removes the tool's setting. Served as `pin_broken: true`. */ brokenPin?: true; /** The broken pin as written in the file, which a save that keeps it writes back. Never shown. */ rawPin?: unknown };
@@ -392,7 +397,7 @@ export function settingsIssues(value: unknown, at = "", layer: "server" | "agent
   if (!isPlain(value)) return [{ field: at || "body", reason: "wrong_type", message: `${at || "the body"} is an object of tools to their settings` }];
   return Object.entries(value).flatMap(([name, setting]): InputIssue[] => {
     const pickable = Object.hasOwn(PROVIDERS, name);
-    if (!isSettingsKey(name)) return [{ field: field(name), reason: "not_allowed", message: `Tool settings are kept for this server's tools (${[...TABLE_TOOLS, ...SERVE_OWN_TOOLS].join(", ")}), catalog tools (monid.<tool>, mcp:<server>/<tool>) and an MCP server's tools (mcp:<server>/*); ${name} is none of them.` }];
+    if (!isSettingsKey(name)) return [{ field: field(name), reason: "not_allowed", message: `Tool settings are kept for this server's tools (${[...TABLE_TOOLS, ...SERVE_OWN_TOOLS, ...KIND_KEYS].join(", ")}), catalog tools (monid.<tool>, mcp:<server>/<tool>) and an MCP server's tools (mcp:<server>/*); ${name} is none of them.` }];
     if (!isPlain(setting)) return [{ field: field(name), reason: "wrong_type", message: `${field(name)} is an object, {${pickable ? "provider, " : ""}permission${isMcpTool(name) ? ", pin" : ""}}` }];
     return Object.entries(setting).flatMap(([key, given]): InputIssue[] => {
       if (key === "pin") return pinIssues(given, field(name, key), name);
@@ -502,7 +507,12 @@ export const TOOL_SETTINGS_KEY = "tool-settings";
 export async function loadToolSettings(store: { settings: Pick<Settings, "get"> }): Promise<{ settings: ToolSettingsMap; problems: string[]; unreadable?: true }> {
   const read = await store.settings.get(TOOL_SETTINGS_KEY);
   if (read === undefined) return { settings: {}, problems: [] };
-  return checkToolSettings(read, "the stored tool settings");
+  const checked = checkToolSettings(read, "the stored tool settings");
+  // A stored row that does not read carries SETTINGS_UNREAD (tool-gate.ts), as ToolSettings.get does for the file: wherever
+  // these settings go (the plane's providers, an agent's tools, a save's blockers) approvals "never" lifts no ask over a
+  // deny the row may hold. A save over it (saveToolSettings) writes a row that reads.
+  if (checked.unreadable) (checked.settings as { [SETTINGS_UNREAD]?: true })[SETTINGS_UNREAD] = true;
+  return checked;
 }
 
 /** A save of the server's tool settings: `map` (a tool it leaves out takes its defaults) over the settings read before it
@@ -541,14 +551,22 @@ export async function saveToolSettings(store: { settings: Pick<Settings, "get" |
 export class ToolSettings {
   static readonly FILE = "tool-settings.json";
   private current: ToolSettingsMap;
+  /** The file was present but did not read at the start: every tool takes its defaults until a PUT replaces it. */
+  private unread: boolean;
   constructor(private readonly dir: string, warn: (line: string) => void = (line) => void process.stderr.write(`${line}\n`)) {
     const { settings, problems, unreadable } = readToolSettings(dir);
     for (const line of problems) warn(`agentrun-serve: ${line}; ${unreadable ? "every tool takes its defaults" : "that entry is dropped (a permission that is not offered reads ask)"} until a PUT /v2/settings/tools`);
     this.current = settings;
+    this.unread = unreadable === true;
   }
 
+  /** The settings now. While the file does not read, the map carries SETTINGS_UNREAD (tool-gate.ts), so wherever it goes
+   *  (the gate's permission, the plane's providers, an agent's tools, a save's blockers) approvals "never" lifts no ask
+   *  over a deny the file may hold, as the gate itself fails closed. */
   get(): ToolSettingsMap {
-    return structuredClone(this.current);
+    const map = structuredClone(this.current);
+    if (this.unread) (map as { [SETTINGS_UNREAD]?: true })[SETTINGS_UNREAD] = true;
+    return map;
   }
 
   /** Replaces the settings: a tool `map` leaves out takes its defaults; pins, broken pins and stand-ins by the one rule
@@ -557,6 +575,8 @@ export class ToolSettings {
     const { kept, written } = keptSettings(map, this.current);
     writeDurableSync(join(this.dir, ToolSettings.FILE), `${JSON.stringify(written)}\n`);
     this.current = kept;
+    // The file is the one just written: it reads.
+    this.unread = false;
     return this.get();
   }
 }

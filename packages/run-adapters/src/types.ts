@@ -140,6 +140,10 @@ export interface ModelRequest {
   outputTokensLeast?: number;
   /** What it charges beside its tokens (a decision's per-request and per-image prices), in USD: held with them. */
   feeUsd?: number;
+  /** A paid tool call, no model request (a web search's request, a monid call): held at `feeUsd` alone by the cap's tool
+   *  rule, `name` and `basis` in a refusal's words. `call`: the tool call it was booked under, written on its
+   *  runner.request so the run view puts its charge under that call. */
+  paid?: { name: string; basis: string; call?: string };
   /** A side call, never its turn's own: on another model than the session's (a client's title, a summary), or the
    *  host's own request beside the harness's (`host`). */
   side?: true;

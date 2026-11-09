@@ -16,17 +16,18 @@ import {
   type McpTool, nameOf, notFound, oauthValueValid, pricesListed, pricesOf, SEAL_KEY_HOW, scopesValid, urlOf,
 } from "./mcp-probe.js";
 import { listMcpServers, openServerCredential, putPendingSignIn, removeMcpServer, saveMcpServer, takePendingSignIn } from "./mcp-store.js";
+import { checkPrivateHosts, privateOAuthHosts, savePrivateOAuthHosts } from "./mcp-private-hosts.js";
 import { type ClientKind, MAX_PENDING, MCP_SETTINGS_PAGE, McpSignIns, type OAuthNetwork, type Pending, type PendingStore, reasonOf, SIGN_IN_AGAIN, systemNetwork, type TokenSet } from "./mcp-oauth.js";
 import { SEAL_KEY_ENV, sealKeyOf } from "./tool-keys.js";
 import { serverGate, type ToolSettingsMap } from "./tool-plane.js";
-import { type McpCredential, type Mcp, type McpOauth, type McpServerRow, type Store } from "./store/index.js";
+import { type McpCredential, type Mcp, type McpOauth, type McpServerRow, type Settings, type Store } from "./store/index.js";
 import { isObject, unknownFields } from "./validate.js";
 
 const SCOPE_LIST = "scopes is a list of 1 to 32 OAuth scopes.";
 const MAX_VALUE_BYTES = MAX_OAUTH_VALUE_BYTES;
 
-/** The store slice this layer reads and writes. */
-type McpServersStore = { readonly mcp: Mcp; readonly mcpOauth: McpOauth; flush: Store["flush"] };
+/** The store slice this layer reads and writes; `settings` for the private-network OAuth hosts the owner allows. */
+type McpServersStore = { readonly mcp: Mcp; readonly mcpOauth: McpOauth; readonly settings: Pick<Settings, "get" | "put">; flush: Store["flush"] };
 
 /** The sign-ins in flight over the store (store.mcpOauth): the sign-in's secret parts (the PKCE verifier and the OAuth
  *  client, with its secret) sealed together by its state, the rest of its working state plain JSON the callback rebuilds.
@@ -76,7 +77,7 @@ export class McpServersOverStore {
 
   constructor(private readonly store: McpServersStore, env: NodeJS.ProcessEnv, private readonly version: string, network: OAuthNetwork = systemNetwork) {
     this.sealKey = sealKeyOf(env[SEAL_KEY_ENV]);
-    this.signIns = new McpSignIns(network, this.sealKey ? pendingOverStore(store, this.sealKey) : undefined);
+    this.signIns = new McpSignIns(network, this.sealKey ? pendingOverStore(store, this.sealKey) : undefined, () => privateOAuthHosts(store));
   }
 
   get atRest(): "sealed" | "unavailable" {
@@ -112,6 +113,19 @@ export class McpServersOverStore {
     return work;
   }
 
+  /** GET .../oauth/private-hosts: the private-network hosts an authorization server may be on (none by default). */
+  async privateHosts(): Promise<{ hosts: string[] }> {
+    return { hosts: await privateOAuthHosts(this.store) };
+  }
+
+  /** PUT .../oauth/private-hosts: the list replaced in store.settings, durable before it answers; or 422 in words. */
+  async setPrivateHosts(body: Record<string, unknown>): Promise<{ hosts: string[] }> {
+    const hosts = checkPrivateHosts(body);
+    await savePrivateOAuthHosts(this.store, hosts);
+    await this.store.flush();
+    return { hosts };
+  }
+
   async list() {
     const rows = await listMcpServers(this.store);
     return { servers: await Promise.all(rows.slice().sort((a, b) => a.name.localeCompare(b.name)).map((row) => this.view(row))) };
@@ -143,6 +157,8 @@ export class McpServersOverStore {
     if (auth.type !== "none" && !this.sealKey) throw new ApiError("no_sealing_key", `This server was handed no seal key (${SEAL_KEY_ENV}), so it keeps no MCP server credential: it never keeps one in the clear. ${SEAL_KEY_HOW}`);
     const was = await this.store.mcp.server(name);
     let credential: McpCredential | undefined;
+    // The sealed credential kept (no new one sent) keeps its own time (credential_changed_at); a new one moves it.
+    let kept: number | null | undefined;
     let headers = auth.headers;
     if (auth.type !== "none" && !headers) {
       if (!was || was.auth !== auth.type) throw invalid([credentialMissing(auth.type, `The server ${name} has no saved ${auth.type} credential to keep.`)]);
@@ -150,6 +166,7 @@ export class McpServersOverStore {
       const open = await this.opened(name, was, credentialMissing(auth.type, "").field);
       credential = open.credential;
       headers = open.headers;
+      kept = was.credentialChangedAt;
     } else if (auth.type !== "none") {
       credential = { type: "headers", headers: headers! };
     }
@@ -160,7 +177,7 @@ export class McpServersOverStore {
     const priced = prices ?? (was?.url === url.href ? pricesListed((was.prices ?? undefined) as McpPrices | undefined, listed.tools) : undefined);
     const saved = await saveMcpServer(this.store, this.sealKey!, {
       name, url: url.href, auth: auth.type, protocol: listed.protocol, tools: listed.tools, serverInfo: listed.server_info, instructions: listed.instructions ?? null,
-      ...(priced && Object.keys(priced).length ? { prices: priced } : {}), ...(credential ? { credential } : {}),
+      ...(priced && Object.keys(priced).length ? { prices: priced } : {}), ...(credential ? { credential } : {}), ...(kept !== undefined ? { credentialChangedAt: kept } : {}),
     });
     await this.store.flush();
     return this.view(saved);
@@ -177,8 +194,9 @@ export class McpServersOverStore {
     const saved = await saveMcpServer(this.store, this.sealKey!, {
       name, url: was.url, auth: was.auth, protocol: listed.protocol, tools: listed.tools, serverInfo: listed.server_info, instructions: listed.instructions ?? null,
       ...(Object.keys(prices).length ? { prices } : {}), ...(was.auth !== "none" ? { credential: open.credential } : {}),
-      // A refresh re-lists the tools; it keeps updated_at (not an owner edit) and lets listed_at move to now.
-      updatedAt: was.updatedAt,
+      // A refresh re-lists the tools; it keeps updated_at (not an owner edit) and the credential's time, and lets
+      // listed_at move to now.
+      updatedAt: was.updatedAt, credentialChangedAt: was.credentialChangedAt,
     });
     await this.store.flush();
     return {
@@ -300,6 +318,8 @@ export class McpServersOverStore {
       name,
       url: row.url,
       ...listed,
+      // Each priced tool's price in USD a call, as the owner saved them (main's file registry served them on every read).
+      ...(prices && Object.keys(prices).length ? { prices } : {}),
       tools: listed.tools.map((tool) => ({ ...tool, ...serverGate(`mcp:${name}/${tool.name}`, settings) })),
       ...(unmetered.length ? { not_metered: unmetered } : {}),
       auth: { type: row.auth, ...(row.auth === "headers" ? { headers: Object.keys((cred?.type === "headers" ? cred.headers : {}) as HeaderMap) } : {}) },
@@ -307,6 +327,7 @@ export class McpServersOverStore {
       ...(set ? { oauth: { ...(set.expires_at ? { expires_at: set.expires_at } : {}), scopes: (set.tokens.scope ?? "").split(" ").filter(Boolean), client: set.kind, ...(set.client?.client_id ? { client_id: set.client.client_id } : {}) } } : {}),
       listed_at: listedAt,
       updated_at: updatedAt,
+      secret: secretOf(row),
     };
   }
 
@@ -329,4 +350,12 @@ const saving = (row: McpServerRow) => `${row.url} ${row.updatedAt}`;
  *  needed — every read goes to the store (the runner also writes the OAuth state), so a read is always current. */
 export function mcpServersOverStore(store: McpServersStore, env: NodeJS.ProcessEnv, version: string, network?: OAuthNetwork): McpServersOverStore {
   return new McpServersOverStore(store, env, version, network);
+}
+
+/** The server's credential as every secret is read (SECRETS-PLAN.md): set or not, how it came ("console": pasted, a
+ *  bearer token or headers; "sign-in": an OAuth sign-in; null: none), and the credential's own last change. Never a value.
+ *  An MCP credential never comes from the server's environment. */
+function secretOf(row: McpServerRow): { name: string; set: boolean; source: "console" | "sign-in" | null; changed_at: string | null } {
+  const set = row.sealed !== null && (row.auth === "bearer" || row.auth === "headers" || row.auth === "oauth");
+  return { name: `mcp:${row.name}`, set, source: !set ? null : row.auth === "oauth" ? "sign-in" : "console", changed_at: set && row.credentialChangedAt !== null ? new Date(row.credentialChangedAt).toISOString() : null };
 }

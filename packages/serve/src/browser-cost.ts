@@ -20,13 +20,14 @@
 // was down while it held a session (spent before any process could hold it) can pass the cap, by that much, booked and
 // shown.
 import type { Context } from "@earendil-works/chord";
+import type { Refusal } from "@parcha/agentrun-kernel";
 import { ROOT_CONVERSATION_ID, type Conversation, type Session, type ToolExecutionApi, type ToolRegistration, type Tx } from "@earendil-works/pi-durable";
 import type { SessionCharge } from "@parcha/pi-browser";
 import type { BeforeCreate } from "@parcha/pi-browser/durable";
 import { TOOL_COST } from "@parcha/pi-durable-agent/timeline";
 import { BARRIER, syncNow } from "@parcha/pi-durable-disk";
 import { addSpend, keepHold, paidCall, runCap, SPEND_CAP_REACHED } from "./cap.js";
-import { runJournal } from "./paid-calls.js";
+import { type PaidBooking, paidStep, runJournal } from "./paid-calls.js";
 import { logLine } from "./print.js";
 import { forModel } from "./result.js";
 
@@ -65,6 +66,8 @@ export function browserPrice(provider: string, env: NodeJS.ProcessEnv): { usdPer
 }
 
 type Hold = ReturnType<typeof keepHold>;
+/** A cap refusal as the run's pause reads it (its words; for good, or for room with its figures). */
+type LedgerRefusal = Refusal;
 /** Up to the millionth of a dollar, so the cap's words name a figure never below the hold. */
 const microUsd = (usd: number) => Math.ceil(Math.round(usd * 1e12) / 1e6) / 1e6;
 /** A browser charge as its TOOL_COST holds it. */
@@ -76,7 +79,53 @@ type Row = { tag: string; conversationId: number; state: string; resourceId: str
 /** One run's browser bookings, for its one provider at `price` with pi-browser's idle window `idleS`. `release` lets go of
  *  a conversation's session (pi-browser's release, "close"). `log` takes the line that says a charge went uncounted
  *  (default: the server's stderr). */
-export function browserSpend(provider: string, price: { usdPerHour: number | null; minimumS: number }, idleS: number, release: (conversation: Pick<Conversation, "id" | "commit">, context: Context) => Promise<void>, log: (line: string) => void = (line) => void process.stderr.write(`agentrun-serve: ${line}\n`)) {
+export function browserSpend(provider: string, price: { usdPerHour: number | null; minimumS: number }, idleS: number, release: (conversation: Pick<Conversation, "id" | "commit">, context: Context) => Promise<void>, log: (line: string) => void = (line) => void process.stderr.write(`agentrun-serve: ${line}\n`), ledger: { paid?: PaidBooking; pause?: (refusal: LedgerRefusal) => Promise<void> } = {}) {
+  /** The runner's one ledger (the kernel cap's paidCalls), when the run has one: each browser call is one paid request on
+   *  it, held at the hold main takes for it and settled at the charges booked under it; a charge under no call (a
+   *  session's release, its top-up to the minute) is one more, settled at that charge. In place of this process's spend. */
+  const paid = ledger.paid;
+  /** Each browser call under way on the ledger: what has been charged under it (null: a charge with no price). */
+  const chargedUnder = new Map<string, number | null>();
+  /** The ledger steps of charges under no call, until they are written (ledgerIdle). */
+  const pending = new Set<Promise<unknown>>();
+  let ledgerSeq = 0;
+  /** A hold of `usd` under `name`: on the run's one ledger when it is given (a held paid step, settled at nothing when the
+   *  hold is let go, the time it held being booked by the session's own charge), else in this process's holds (keepHold).
+   *  On the ledger nothing is written to this process's holds or spend. `admitted`: the ledger's answer (refused in the
+   *  cap's words when it has no room). */
+  const holdOf = (name: string, usd: number, basis: string): { hold: Hold; admitted: Promise<{ refused?: string; refusal?: LedgerRefusal }> } => {
+    if (!paid) return { hold: keepHold(usd), admitted: Promise.resolve({}) };
+    const booking = paid;
+    const id = `browser:${name}#${(ledgerSeq += 1)}`;
+    const admitted: Promise<{ refused?: string; refusal?: LedgerRefusal }> = booking.admit({ id, name, holdUsd: usd, basis }).then(
+      () => ({}),
+      (error: unknown) => {
+        const capped = (error as { code?: unknown })?.code === "spend_cap_reached";
+        const refused = capped ? String((error as Error).message) : `${name} could not be held: ${String((error as Error)?.message ?? error)}`;
+        // The cap's own refusal, as the run's pause reads it (a room refusal's figures; a refusal for good).
+        const given = error as { forGood?: boolean; figures?: LedgerRefusal["figures"] };
+        return { refused, ...(capped ? { refusal: { refuse: refused, forGood: given.forGood ?? true, ...(given.figures ? { figures: given.figures } : {}) } } : {}) };
+      },
+    );
+    pending.add(admitted);
+    void admitted.finally(() => pending.delete(admitted));
+    let dropped = false;
+    const hold = {
+      usd,
+      drop: () => {
+        if (dropped) return;
+        dropped = true;
+        const settled = admitted.then((answer) => (answer.refused === undefined ? booking.settle(id, 0) : undefined)).catch(() => undefined);
+        pending.add(settled);
+        void settled.finally(() => pending.delete(settled));
+      },
+    };
+    return { hold, admitted };
+  };
+  /** A charge joins this process's spend only off the ledger: on it, the charge is the ledger's (its own paid step). */
+  const spendIn = (usd: number | null): void => {
+    if (!paid) addSpend(usd);
+  };
   const rate = price.usdPerHour;
   const usdOf = (seconds: number) => ((rate ?? 0) * seconds) / 3600;
   const stretchS = price.minimumS + idleS + RELEASE_ALLOWANCE_S;
@@ -129,6 +178,19 @@ export function browserSpend(provider: string, price: { usdPerHour: number | nul
   async function onCharge(charge: SessionCharge, tx: Tx, call?: { callId: string }): Promise<void> {
     if (rate === 0) return;
     const usd = charge.state === "priced" ? charge.usd : null;
+    if (paid) {
+      const under = call?.callId;
+      if (under !== undefined && chargedUnder.has(under)) {
+        const so = chargedUnder.get(under) ?? null;
+        chargedUnder.set(under, so === null || usd === null ? null : so + usd);
+      } else {
+        // A charge under no call under way (the release's, its top-up to the minute): one more paid request on the ledger,
+        // held at nothing (its time is spent already) and settled at the charge.
+        const step = paidStep(paid, `${charge.tag}${charge.final ? "@release" : "@charge"}`, { name: "this browser session's time", holdUsd: 0, basis: `${provider}'s session time, billed as it was charged` }, async () => undefined, () => usd).catch(() => undefined);
+        pending.add(step);
+        void step.finally(() => pending.delete(step));
+      }
+    }
     const data: Booked = { tool: "browser", charged_by: charge.provider, call: call?.callId ?? sessions.get(charge.tag)?.call ?? null, usd, seconds: charge.seconds, tag: charge.tag, conversation: charge.conversationId, at: charge.at, final: charge.final };
     await tx.appendEntry(ROOT_CONVERSATION_ID, { kind: TOOL_COST, data });
   }
@@ -138,7 +200,7 @@ export function browserSpend(provider: string, price: { usdPerHour: number | nul
   function booked(data: Booked): void {
     const usd = data.usd ?? 0;
     const session = sessions.get(data.tag);
-    addSpend(data.usd);
+    spendIn(data.usd);
     const through = Date.parse(data.at);
     // The part of this charge that is a kept session's person time, run since its last charge up to the charge's own
     // through: that part is held elsewhere already (carried, or still under way) and the call's hold left it out
@@ -162,7 +224,7 @@ export function browserSpend(provider: string, price: { usdPerHour: number | nul
       Object.assign(session, { at: through, call: data.call ?? session.call });
     } else {
       take(data.call === null ? undefined : calls.get(data.call)?.hold, usd + stretch);
-      sessions.set(data.tag, { cid: data.conversation, reserve: keepHold(stretch), at: through, call: data.call });
+      sessions.set(data.tag, { cid: data.conversation, reserve: holdOf("this browser session's reserve", stretch, `${provider}'s next stretch of session time, held until its release is booked`).hold, at: through, call: data.call });
     }
   }
 
@@ -180,7 +242,7 @@ export function browserSpend(provider: string, price: { usdPerHour: number | nul
       if (!Number.isFinite(at) || record?.spent.final) continue;
       // Its reserve carries the down time, so its calls count what it runs from here (`at` now), not the down time again.
       const now = Date.now();
-      sessions.set(row.tag, { cid: row.conversationId, reserve: keepHold(stretch + usdOf(Math.max(0, now - at) / 1000)), at: now, call: null });
+      sessions.set(row.tag, { cid: row.conversationId, reserve: holdOf("this browser session's reserve", stretch + usdOf(Math.max(0, now - at) / 1000), `${provider}'s session time since its last charge and its next stretch, held from the reopen`).hold, at: now, call: null });
     }
   }
 
@@ -195,7 +257,7 @@ export function browserSpend(provider: string, price: { usdPerHour: number | nul
       if (rate === 0 || row.state !== "releasing" || row.resourceId !== null || sessions.has(row.tag)) continue;
       const usd = usdOf(CREATE_DEADLINE_S + stretchS);
       take([...calls.values()].find((c) => c.cid === row.conversationId)?.hold, usd);
-      sessions.set(row.tag, { cid: row.conversationId, reserve: keepHold(usd), at: Date.now(), call: null });
+      sessions.set(row.tag, { cid: row.conversationId, reserve: holdOf("this browser session's delayed release", usd, `${provider}'s session time for its create's deadline and a stretch, until its release is billed`).hold, at: Date.now(), call: null });
     }
   }
 
@@ -213,7 +275,8 @@ export function browserSpend(provider: string, price: { usdPerHour: number | nul
     // listener error, which only a throw out of advance could cause, is unknown at once.
     let said = false;
     const uncounted = (why: string) => {
-      addSpend(null);
+      // On the run's one ledger a charge is booked in the commit that bills it (onCharge), never from here.
+      spendIn(null);
       if (said) return;
       said = true;
       log(logLine("browser_spend_uncounted", { said: `a browser charge was not counted in this process (${why.slice(0, 200)}): the run's spend is unknown from here` }));
@@ -259,6 +322,20 @@ export function browserSpend(provider: string, price: { usdPerHour: number | nul
         // Up to the millionth of a dollar, so the cap's words name a figure never below the hold.
         const usd = microUsd(Math.max(0, usdOf(ranS) - carriedUsd) + 2 * stretch);
         const basis = `${provider}'s session time at $${rate} an hour: the ${Math.round(ranS)} s its session ran since its last charge, and twice the next stretch of ${stretchS} s (its ${price.minimumS} s minimum, the ${idleS} s idle window and ${RELEASE_ALLOWANCE_S} s for its release)`;
+        if (ledger.paid) {
+          // On the runner's one ledger: one paid request, held at that same figure, settled at the charges booked under
+          // this call (a call with none charged nothing; one with an unpriced charge at its hold).
+          chargedUnder.set(api.callId, 0);
+          calls.set(api.callId, { cid: api.conversationId, hold: { usd, drop: () => {} } as Hold });
+          try {
+            // A provider whose time has no price is held at no figure: the cap's rule refuses it for good, as main does.
+            const stepped = await paidStep(ledger.paid, api.callId, { name: "this browser call", holdUsd: rate === null ? Number.NaN : usd, basis }, () => tool.execute(args, api as never, context), () => chargedUnder.get(api.callId) ?? null);
+            return "refused" in stepped ? await refuse(stepped.refused, api, context) : stepped.result;
+          } finally {
+            calls.delete(api.callId);
+            chargedUnder.delete(api.callId);
+          }
+        }
         const paid = await paidCall("this browser call", async () => keepHold(usd), () => undefined, { usd, basis });
         if ("refused" in paid) return refuse(paid.refused, api, context);
         const hold = paid.result;
@@ -303,9 +380,26 @@ export function browserSpend(provider: string, price: { usdPerHour: number | nul
     const basis = `${provider}'s session time at $${rate} an hour for the ${Math.round(seconds / 60)} minutes it may last`;
     // A refusal pauses the run at its next request (paidCall) only for the agent's own step (an ask); `pauses: false` for a
     // person's take-over, which is no step of the agent's.
-    const paid = await paidCall(what, async () => keepHold(usd), () => undefined, { usd, basis }, { pauses: options.pauses });
-    if ("refused" in paid) return { refused: paid.refused };
-    const hold = paid.result;
+    let hold: Hold;
+    if (ledger.paid) {
+      // On the run's one ledger: held there up front, refused in the cap's words when it has no room (an unpriced
+      // provider's time held at no figure, which the rule refuses for good); let go at its end, the time itself booked by
+      // the session's next charge.
+      const held = holdOf(what, rate === null ? Number.NaN : usd, basis);
+      const answer = await held.admitted;
+      if (answer.refused !== undefined) {
+        // The agent's own step (an ask) refused at the cap pauses the run, as main's paidCall pause does: its pause is
+        // journaled now and the run's next request is refused in its words. A person's take-over (pauses: false) pauses
+        // nothing.
+        if (options.pauses !== false && answer.refusal && ledger.pause) await ledger.pause(answer.refusal);
+        return { refused: answer.refused };
+      }
+      hold = held.hold;
+    } else {
+      const paidHere = await paidCall(what, async () => keepHold(usd), () => undefined, { usd, basis }, { pauses: options.pauses });
+      if ("refused" in paidHere) return { refused: paidHere.refused };
+      hold = paidHere.result;
+    }
     const tag = options.tag;
     if (tag === undefined || !rate) return hold;
     const from = options.from ?? Date.now();
@@ -329,8 +423,13 @@ export function browserSpend(provider: string, price: { usdPerHour: number | nul
     const to = Date.now();
     const from = Math.max(to - seconds * 1000, sessions.get(tag)?.at ?? -Infinity);
     if (!(to > from)) return;
-    carried.set(tag, [...(carried.get(tag) ?? []), { hold: keepHold(microUsd(usdOf((to - from) / 1000))), from, to }]);
+    // Spent at the provider already: held on the run's ledger (or this process's holds) until a charge books it.
+    const { hold } = holdOf("a person's time in the browser", microUsd(usdOf((to - from) / 1000)), `${provider}'s session time a person used, until the session's next charge books it`);
+    carried.set(tag, [...(carried.get(tag) ?? []), { hold, from, to }]);
   }
 
-  return { onCharge, watch, reopened, capped, opening, personTime, carry, stretch };
+  /** Once every ledger step of a charge under no call is written (the runner's one ledger; nothing to wait for without). */
+  const ledgerIdle = async (): Promise<void> => void (await Promise.all([...pending]));
+
+  return { onCharge, watch, reopened, capped, opening, personTime, carry, stretch, ledgerIdle };
 }

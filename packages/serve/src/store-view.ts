@@ -9,7 +9,7 @@ import { runLink } from "./console-links.js";
 import { redacted, redactedAnswer, withoutLoopback } from "./key-refusal.js";
 import { currentLearning, holdsForOk, type Learning, learningView, LEARNING_LABEL, secretsShown, shortOf, type Shown } from "./learning.js";
 import { MIN_SECRET } from "./learn/secrets.js";
-import { type RunLaunch, readLaunchBody } from "./run-launch.js";
+import { learningStartOf, type RunLaunch, readLaunchBody } from "./run-launch.js";
 import {
   type Handed,
   handedPointers,
@@ -28,6 +28,8 @@ import {
   answersOf,
   budgetOf,
   browserPending,
+  type ComputerAsk,
+  computerPending,
   redactorOf,
   servedRunErrorWith,
   servedReviewWith,
@@ -40,13 +42,14 @@ import {
 } from "./run-view.js";
 import { reflects, type Reflect } from "./learning-run.js";
 import { journalRecords, recordOf } from "./runner/journal-reader.js";
-import { runLearningEnd } from "./store-reads/learning.js";
+import { notesReadOf, runLearningEnd, type RunLearning, withNotes } from "./store-reads/learning.js";
 import { runReflect, runTimeline } from "./store-reads/journal.js";
 import { type RunReadState, readRun } from "./store-reads/runs.js";
 import { keptVendor, type Plane } from "./tool-plane.js";
 import { Turns } from "./turns.js";
 import { harnessOfBody } from "./harness.js";
 import { browserAsk as browserAskOf, BROWSER_HANDOVER_KIND } from "./browser-commands.js";
+import { computerAsk as computerAskOf, COMPUTER_HANDOVER_KIND } from "./computer-commands.js";
 import type { PendingAsk } from "./browser-person.js";
 import { approvalsOf, type Approvals } from "./approvals.js";
 import { FINAL_STATES, type RunRow, type Store } from "./store/store.js";
@@ -86,7 +89,7 @@ const reviewAt = (review: SavedReview | null, endedAt: string): (SavedReview & {
 /** A run's facts as statusOf and momentOf read them, built from the run's journal: whether it stands parked at its cap
  *  (an active agentrun.budget park), and the browser ask it waits on (wired next). A terminal run reaches none of them
  *  (its outcome answers first). */
-const factsOf = (run: StoreRun): RunFacts => ({ budgetWaiting: () => run.budget !== undefined, paused: () => false, browserAsk: () => run.browserAsk });
+const factsOf = (run: StoreRun): RunFacts => ({ budgetWaiting: () => run.budget !== undefined, paused: () => false, browserAsk: () => run.browserAsk, computerAsk: () => run.computerAsk });
 
 /** The run read from the store: the row, its launch, its timeline, its agent's revision count for the version, its
  *  learning end, and the sign-in cut it serves through. Undefined for an unknown run. */
@@ -97,7 +100,7 @@ interface StoreRun {
   readonly rows: TimelineEvent[];
   readonly version: number;
   readonly harness: string;
-  readonly learningEnd: Awaited<ReturnType<typeof runLearningEnd>>;
+  readonly learningEnd: RunLearning | null;
   readonly view: RunView;
   /** The run's error text is withheld while this server can't read the sign-in it was handed. */
   readonly unshown: boolean;
@@ -116,6 +119,9 @@ interface StoreRun {
   /** The browser hand-over the run's agent waits on (the newest ask still waiting), or undefined. Also the `browserAsk`
    *  fact. */
   readonly browserAsk: PendingAsk | undefined;
+  /** The agent's ask on its desktop or phone the run waits on (computer-commands.ts), or undefined. Also the `computerAsk`
+   *  fact. */
+  readonly computerAsk: ComputerAsk | undefined;
   /** Whether the run ran unattended, as its revision kept it (approvals "never"), else the default (ask): the run read's
    *  `approvals` field, as runs.ts serves it. Named to stand apart from the approval-request map on the view. */
   readonly approvalsMode: Approvals;
@@ -159,7 +165,7 @@ async function storeRunOf(store: Store, runId: string, deps: ViewDeps): Promise<
   const timeline = withAsks(await runTimeline(store, runId, context, { settled: terminal }));
   const revisions = await store.agents.revisions(row.agent);
   const version = revisions.findIndex((r) => r.id === row.revision) + 1;
-  const learningEnd = await runLearningEnd(store, runId);
+  const ended = await runLearningEnd(store, runId);
 
   // Whether a runner holds the run now, and the time of its latest change: the live tick while it runs (store.live, the
   // runner's own tick), its end once ended, its start before either.
@@ -173,6 +179,9 @@ async function storeRunOf(store: Store, runId: string, deps: ViewDeps): Promise<
   const records = await journalRecords(store.readJournal(runId), context);
   const reflectRange = (await runReflect(store, runId, context)) as Reflect | undefined;
   const skip = reflectRange ? (id: number) => reflects(reflectRange, id) : undefined;
+  // The run's learning end with the notes its start gave it and those its job read (its own reads, keyed on the given).
+  const started = launch ? learningStartOf(launch) : undefined;
+  const learningEnd = ended && withNotes(ended, started, notesReadOf(started?.given, reflectRange, timeline));
   const turns = new Turns();
   turns.note(recordOf(records.entries), records.submissions ?? [], skip, liveRow?.updatedAt ?? deps.now?.() ?? Date.now());
   const working = live && turns.open > 0;
@@ -206,6 +215,10 @@ async function storeRunOf(store: Store, runId: string, deps: ViewDeps): Promise<
   const browserAsk = records.entries.some((e) => e.kind === BROWSER_HANDOVER_KIND)
     ? browserAskOf(records.entries as unknown as Parameters<typeof browserAskOf>[0], await store.commands(runId, 0), deps.now?.() ?? Date.now())
     : undefined;
+  // The agent's ask on its desktop or phone, read the same way (computer-commands.ts): only a run with one fetches its rows.
+  const computerAsk = records.entries.some((e) => e.kind === COMPUTER_HANDOVER_KIND)
+    ? computerAskOf(records.entries as unknown as Parameters<typeof computerAskOf>[0], await store.commands(runId, 0), deps.now?.() ?? Date.now())
+    : undefined;
   const outcome = terminal ? STATUS_OF[row.state as Exclude<RunReadState, "running">] : undefined;
   const view: RunView = {
     id: row.id,
@@ -227,13 +240,13 @@ async function storeRunOf(store: Store, runId: string, deps: ViewDeps): Promise<
     ...(budget?.kind === "budget" ? { pausedWords: budget.said } : {}),
     meta,
   };
-  return { row, runRow, launch, rows, version, harness, learningEnd, view, unshown, values, live, updatedAtMs, lastProgressAt, budget, browserAsk, approvalsMode };
+  return { row, runRow, launch, rows, version, harness, learningEnd, view, unshown, values, live, updatedAtMs, lastProgressAt, budget, browserAsk, computerAsk, approvalsMode };
 }
 
 /** A run's learning as the view shows it: its end from the store, in a person's words cut of the host's secrets now, and,
  *  for an ended run, the notes it read. A learning still held for the owner's OK reads as it stands; an ended one (merged,
  *  dropped) reads as it was written. */
-function learningViewOf(learningEnd: Awaited<ReturnType<typeof runLearningEnd>>, shown: Shown, settled: boolean): unknown {
+function learningViewOf(learningEnd: RunLearning | null, shown: Shown, settled: boolean): unknown {
   if (!learningEnd) return null;
   const learning = holdsForOk(learningEnd as Learning) ? currentLearning(learningEnd as Learning, undefined) : (learningEnd as Learning);
   return learningView(learning, shown, settled);
@@ -282,7 +295,7 @@ export async function viewOverStore(store: Store, runId: string, deps: ViewDeps)
   // person's approval (approvalOf, its arguments shown through the run's redactor), else a run parked at its cap (the budget
   // card), else its agent waiting on a person in its browser (browserPending), else the question its turn ended on (pendingOf).
   const redactor = redactorOf(values);
-  const pending: Pending = status === "input_required" && state === "waiting" ? (approvalOf(view, redactor) ?? run.budget ?? browserPending(run.browserAsk, redactor) ?? pendingOf(run.rows)) : null;
+  const pending: Pending = status === "input_required" && state === "waiting" ? (approvalOf(view, redactor) ?? run.budget ?? browserPending(run.browserAsk, redactor) ?? computerPending(run.computerAsk, redactor) ?? pendingOf(run.rows)) : null;
   const settled = terminal;
 
   return {

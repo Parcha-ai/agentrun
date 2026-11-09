@@ -30,6 +30,8 @@ export const UNUSABLE = {
   signedOut: `its sign-in expired or was revoked: ${SIGN_IN_AGAIN}`,
   /** An access token past its expiry whose refresh got no answer: the sign-in itself is fine. */
   silent: "the sign-in server didn't answer; try again",
+  /** An access token past its expiry whose refresh the address check refused unsent (mcp-oauth.ts), followed by its words. */
+  blocked: "its sign-in server's address is refused here",
 } as const;
 export const REFRESH_MARGIN_MS = 5 * 60_000;
 /** How long an access token given with no expiry is taken to last: it is refreshed within the margin of then. */
@@ -55,6 +57,11 @@ const LOOPBACK = (host: string) => LOOPBACK_NAMES.includes(host) || LOOPBACK_V4.
 
 export type AuthType = (typeof MCP_AUTH_TYPES)[number];
 export type McpTool = { name: string; title?: string; description?: string; input_schema: unknown; output_schema?: unknown; annotations?: unknown };
+/** A registry tool (input_schema, as the server listed it) in the harnesses' shape (the kernel's McpTool: inputSchema),
+ *  as a run is pinned to it and a session binds it. */
+export function boundTool(tool: McpTool): { name: string; title?: string; description?: string; inputSchema: Record<string, unknown>; annotations?: Record<string, unknown> } {
+  return { name: tool.name, ...(tool.title ? { title: tool.title } : {}), ...(tool.description ? { description: tool.description } : {}), inputSchema: (tool.input_schema ?? {}) as Record<string, unknown>, ...(tool.annotations ? { annotations: tool.annotations as Record<string, unknown> } : {}) };
+}
 export type Listed = { protocol: string; server_info: unknown; instructions?: string; tools: McpTool[] };
 /** A tool's declared price in USD a call, by its name: what a run's cap holds and books for each call (mcp-gateway.ts). */
 export type McpPrices = Record<string, number>;

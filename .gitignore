@@ -31,3 +31,9 @@ precap.md
 # Lean build output
 spec/lean/.lake/
 
+
+# Python bytecode, and what `pip install ./python` leaves beside the source
+__pycache__/
+*.pyc
+python/build/
+*.egg-info/

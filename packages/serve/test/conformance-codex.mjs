@@ -111,6 +111,7 @@ export function codexSpec({ script, tools, hooks, agentId }, options = {}) {
     )),
     session: { key: "root", label: "root", system: ["Follow the script."], tools: hostTools(tools), context: "fresh" },
     input: "Follow the script.",
+    runCap: { capUsd: () => undefined, modelOf: () => undefined },
     // Codex's own records are its resume log only: the loop keeps the run's visible record (its calls and messages).
     record: harness.record,
     hooks,

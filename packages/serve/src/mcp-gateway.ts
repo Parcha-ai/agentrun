@@ -1,6 +1,7 @@
 // A run's remote MCP servers, in the run's process: the one place every harness's MCP call goes through. pi calls it
 // in-process, as the tools it binds for each granted `mcp:<server>/<tool>` (mcpRegistrations); a harness with its own
-// MCP client calls it through the session proxy's /mcp/<server> (@parcha/agentrun-kernel/host mcpRoute).
+// MCP client calls it through the session proxy's /mcp/<server> (@parcha/agentrun-kernel/host mcpRoute). On the runner a
+// claimed run's spec builds one per claim from its MCP claim step (runner/mcp-run.ts mcpForClaim).
 //  - What a run may call is pinned at its first launch (runs.ts writes MCP_PIN in the run's directory): each granted
 //    tool as the server listed it when its owner saved it, and the server's URL then. A later refresh of the server
 //    never changes a running agent's tools.
@@ -24,7 +25,7 @@ import { randomUUID } from "node:crypto";
 import { defineTool, ROOT_CONVERSATION_ID, type ToolRegistration } from "@earendil-works/pi-durable";
 import type { McpCallResult, McpTool, SessionMcp } from "@parcha/agentrun-kernel";
 import { TOOL_COST, TOOL_UNMETERED } from "@parcha/pi-durable-agent/timeline";
-import { holdRefusal, writeHold } from "./paid-calls.js";
+import { holdRefusal, paidLedger, paidStep, writeHold } from "./paid-calls.js";
 import { paidCall } from "./cap.js";
 import { wireName } from "./catalog.js";
 import { metaToolOf } from "./mcp-meta.js";
@@ -183,10 +184,11 @@ function unreachable(error: unknown): string {
 
 const said = (text: string, isError = false): McpCallResult => ({ content: [{ type: "text", text }], ...(isError ? { isError: true } : {}) });
 
-/** `text` with every credential value in `values` replaced, with or without its `Bearer `: an upstream answer or error
- *  that echoes a header never shows it to the model, the harness or the run's files. */
+/** `text` with every credential value in `values` replaced, whole and as its bare token (with any one-word scheme, such
+ *  as `Bearer ` or `Basic `, taken off): an upstream answer or error that echoes a header, or only its token, never shows
+ *  it to the model, the harness or the run's files. */
 const scrub = (text: string, values: Iterable<string>) =>
-  [...values].flatMap((value) => [value, value.replace(/^Bearer\s+/i, "")]).sort((a, b) => b.length - a.length).reduce((out, value) => (value.length >= 8 ? out.split(value).join("[redacted]") : out), text);
+  [...values].flatMap((value) => [value, value.replace(/^[A-Za-z][A-Za-z0-9_-]*\s+(?=\S+$)/, "")]).sort((a, b) => b.length - a.length).reduce((out, value) => (value.length >= 8 ? out.split(value).join("[redacted]") : out), text);
 
 /** `work` until `signal` aborts: a connection shared by calls is never held by one that stopped. */
 const until = <T>(work: Promise<T>, signal: AbortSignal): Promise<T> =>
@@ -207,9 +209,11 @@ export interface McpGatewayOptions {
   fetch?: typeof fetch;
   /** For tests: the bound on one call (CALL_MS) and on a server's first connection (CONNECT_MS). */
   bounds?: { callMs?: number; connectMs?: number };
-  /** The run's tool gate, which every run's process passes (app.ts): each call enters it here, the only place an MCP
-   *  call is gated (pi's wrapper and the harnesses' hooks leave MCP calls to it). Only a test omits it, and then every
-   *  call is let go. Its `executor` and `spill`, where it has them, run an approved call and pass a result through. */
+  /** The run's tool gate, which a run that is its own process passes (app.ts): each call enters it here, the only place
+   *  an MCP call is gated there (pi's wrapper and the harnesses' hooks leave MCP calls to it). The runner passes none: its
+   *  adapter loop's gate asks before each call's intent, and the call reaches here allowed. A test may omit it too, and
+   *  then every call is let go. Its `executor` and `spill`, where it has them, run an approved call and pass a result
+   *  through. */
   gate?: Pick<Gate, "enter"> & Partial<Pick<Gate, "executor" | "spill">>;
   /** The run's commit to its store, once it is open: a parked call's request, a priced call's mark and charge, and an
    *  unpriced call's "not metered" are written on its root. None: a priced call is refused unsent, as a paid call with
@@ -222,9 +226,20 @@ export interface McpGatewayOptions {
   liveCredentials?: true;
 }
 
+/** What a call with no call id answers where a gate must know it by one: nothing was sent. */
+export const noCallId = (name: string): string => `The ${name} call was not sent: it came with no call id, so it cannot wait for a person's approval.`;
+/** What a call that needs a person's approval answers from a harness that cannot wait for one: nothing was sent. */
+export const cannotWait = (name: string): string => `The ${name} call needs a person's approval, which this harness can't wait for yet; nothing was sent.`;
+
 /** The gateway: a session's servers, and a call that takes the gate's `park` of the harness it came from (its journal's
  *  commit, and how it ends a parked call's turn); none, the run's root commit. */
-export type McpGateway = Omit<SessionMcp, "call"> & { call(server: string, tool: string, args: Record<string, unknown>, context: { signal: AbortSignal; callId?: string; park?: Park }): Promise<McpCallResult> };
+export type McpGateway = Omit<SessionMcp, "call"> & {
+  call(server: string, tool: string, args: Record<string, unknown>, context: { signal: AbortSignal; callId?: string; park?: Park }): Promise<McpCallResult>;
+  /** How many credential values the calls in flight hold for their scrub: each call's go when it ends (0 when idle). */
+  heldCredentials(): number;
+  /** The credential values the calls in flight hold for their scrub, every call's together (none when idle). */
+  heldValues(): string[];
+};
 
 /** The gateways that hold their run's gate: each of their calls enters it, in `call`. */
 const gating = new WeakSet<McpGateway>();
@@ -240,19 +255,33 @@ export function mcpGateway(options: McpGatewayOptions): McpGateway {
   /** Each server's last HTTP status, which tells a refused credential from another failure. */
   const statuses = new Map<string, { last?: number }>();
   const send = options.fetch ?? fetch;
-  /** Every credential value each server's calls took or sent while this gateway lives: with liveCredentials a refresh
-   *  can swap a token between a call taking its headers and a request leaving, so what an answer or an error is scrubbed
-   *  of is all of them, never only the headers the call took. A token refreshed every 55 minutes adds one an hour. */
-  const held = new Map<string, Set<string>>();
+  /** The credential values each call in flight took or its server's requests sent while it was out, one set per call, by
+   *  server: with liveCredentials a refresh can swap a token between a call taking its headers and a request leaving, so
+   *  what its answer or error is scrubbed of is every one of them, never only the headers it took. A call's set goes when
+   *  the call ends, so nothing held outlives the calls that sent it. */
+  const inFlight = new Map<string, Set<Set<string>>>();
   const hold = (server: string, headers: Record<string, string>): Record<string, string> => {
-    let values = held.get(server);
-    if (!values) held.set(server, (values = new Set()));
-    for (const value of Object.values(headers)) values.add(value);
+    for (const values of inFlight.get(server) ?? []) for (const value of Object.values(headers)) values.add(value);
     return headers;
   };
-  /** A call's scrub: the headers it took, every value its server's requests took or sent, and its credential now. */
-  const scrubberOf = (server: string, headers: Record<string, string>) => (text: string) =>
-    scrub(text, [...Object.values(headers), ...(held.get(server) ?? []), ...Object.values(credentials.get(server)?.headers ?? {})]);
+  /** A call's own set, held while it is out (released by the call's end). */
+  const callSet = (server: string): { values: Set<string>; release(): void } => {
+    const values = new Set<string>();
+    let calls = inFlight.get(server);
+    if (!calls) inFlight.set(server, (calls = new Set()));
+    calls.add(values);
+    return {
+      values,
+      release: () => {
+        calls.delete(values);
+        if (calls.size === 0 && inFlight.get(server) === calls) inFlight.delete(server);
+      },
+    };
+  };
+  /** A call's scrub: the headers it took, every value its server's requests took or sent while it was out, and its
+   *  credential now. */
+  const scrubberOf = (server: string, headers: Record<string, string>, values: Set<string>) => (text: string) =>
+    scrub(text, [...Object.values(headers), ...values, ...Object.values(credentials.get(server)?.headers ?? {})]);
 
   /** The fetch one server's client sends with: its credential added, no redirect followed, at most MAX_RESPONSE read. */
   const guarded = (server: string, headers: Record<string, string> | (() => Record<string, string>), status: { last?: number }) => async (input: string | URL | Request, init: RequestInit = {}) => {
@@ -321,7 +350,8 @@ export function mcpGateway(options: McpGatewayOptions): McpGateway {
   const forward = async (server: string, url: string, headers: Record<string, string>, tool: McpTool, args: Record<string, unknown>, signal: AbortSignal, sending?: () => Promise<string | undefined>): Promise<McpCallResult> => {
     let connected = false;
     // Read at each use: a token refreshed while the call is out, and sent, is scrubbed with the one it took.
-    const clean = scrubberOf(server, hold(server, headers));
+    const held = callSet(server);
+    const clean = scrubberOf(server, hold(server, headers), held.values);
     try {
       const upstream = await until(connect(server, url, headers), signal);
       connected = true;
@@ -344,6 +374,8 @@ export function mcpGateway(options: McpGatewayOptions): McpGateway {
       if (!connected && status === undefined) return said(`The MCP server ${server} could not be reached at ${URL.parse(url)?.origin ?? "its address"} (${clean(unreachable(error))}); nothing was sent.`, true);
       const why = clean(String((error as Error)?.message ?? error)).slice(0, 300);
       return said(`The MCP server ${server} failed${status && status >= 400 ? ` (HTTP ${status})` : ""}: ${why}`, true);
+    } finally {
+      held.release();
     }
   };
 
@@ -387,6 +419,13 @@ export function mcpGateway(options: McpGatewayOptions): McpGateway {
       if (commit && went) await record(commit, TOOL_UNMETERED, label).catch(() => undefined);
       return result;
     }
+    // On the runner's one ledger (paid-calls.ts Ledger.paid): held there at its price before it leaves and settled at its
+    // price once it left (nothing when it never left), in place of this process's spend and the root's marks.
+    const onLedger = paidLedger();
+    if (onLedger) {
+      const stepped = await paidStep(onLedger, callId ?? name, { name, holdUsd: price, basis: `the price its owner set for ${name}` }, () => call(), () => (went ? price : 0));
+      return "refused" in stepped ? said(stepped.refused, true) : stepped.result;
+    }
     if (!commit) return said(`${name} was not sent: this call has no run to book its price under.`, true);
     const paid = await paidCall(name, async () => {
       // Held at its price meanwhile; marked right before it leaves, and settled at its price once it left, whatever it
@@ -417,19 +456,21 @@ export function mcpGateway(options: McpGatewayOptions): McpGateway {
 
   const gateway: McpGateway = {
     servers: [...pins].map(([name, pinned]) => ({ name, tools: pinned.tools })),
+    heldCredentials: () => [...inFlight.values()].reduce((sum, calls) => sum + [...calls].reduce((n, values) => n + values.size, 0), 0),
+    heldValues: () => [...new Set([...inFlight.values()].flatMap((calls) => [...calls].flatMap((values) => [...values])))],
     async call(server, tool, args, { signal, callId, park: given }) {
       const why = unsendable(server, tool);
       if (why) return said(why, true);
       const gate = options.gate;
       // A parked call is answered and resumed by its id, the harness's own: a call with none is never parked.
-      if (gate && !callId) return said(`The ${mcpToolName(server, tool)} call was not sent: it came with no call id, so it cannot wait for a person's approval.`, true);
+      if (gate && !callId) return said(noCallId(mcpToolName(server, tool)), true);
       const id = callId ?? `mcp_${randomUUID()}`;
       if (gate) {
         const name = mcpToolName(server, tool);
         // A call parks only where its harness can end the turn on it (a park with `parked`). Anywhere else the gate's
         // commit of the request is refused, so an ask leaves no approval waiting, and the call is answered so.
         const park: Park = given?.parked ? given : { commit: () => Promise.reject(new CannotPark()) };
-        const cannot = said(`The ${name} call needs a person's approval, which this harness can't wait for yet; nothing was sent.`, true);
+        const cannot = said(cannotWait(name), true);
         let entered: Awaited<ReturnType<Gate["enter"]>>;
         try {
           // The approval card shows the call's declared price, or that it is not metered.

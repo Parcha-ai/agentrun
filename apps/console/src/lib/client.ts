@@ -4,10 +4,12 @@ import type { AgentLearning, LearningChange, LearningDiff, LearningNote, NotePro
 import type { McpAuth, McpClientFeature, McpPreview, McpRefresh, McpServer } from "./mcp";
 import type { RunGraph } from "./runGraph";
 import { applyPage } from "./timeline";
-import type { ApiError, Firing, RaiseAnswer, Run, RunBrowser, RunFiles, RunStatus, TimelinePage, TimelineRow, ToolKeys, ToolKeysFeature, ToolSettings, Trigger, TriggerCreate, TriggerInput, TriggerMade, TriggerSecret, Webhook, WebhookAttempt, WebhookSaved, WebhooksFeature } from "./v2";
+import type { ApiError, Firing, InputIssue, McpPrivateHosts, TemplateApplied, TemplateApply, TemplateView, RaiseAnswer, Run, RunBrowser, RunFiles, RunStatus, TimelinePage, TimelineRow, ToolKeys, ToolKeysFeature, ToolSettings, Trigger, TriggerCreate, TriggerInput, TriggerMade, TriggerSecret, Webhook, WebhookAttempt, WebhookSaved, WebhooksFeature } from "./v2";
 
 /** A request AgentRun Server refused: its HTTP status and its typed error (`code`, `message`, `retryable`). */
-export type FieldIssue = { field: string; reason: string; message: string };
+/** A refusal's issue at one field, as the server names it (with its `fix`, when it says one). Its `reason` is any string, as
+ *  ApiError's `code` is: the server also sends reasons its document does not list yet (an MCP server's `url` "redirect"). */
+export type FieldIssue = Omit<InputIssue, "reason"> & { reason: InputIssue["reason"] | (string & {}) };
 
 export class ClientError extends Error {
   /** A 422's issues, by field, as the server names them. */
@@ -57,9 +59,14 @@ const runsQuery = (limit: number, cursor: string | null | undefined, { status, a
 export type Capabilities = { harnesses: { id: string; available: boolean; reason?: string; steer?: boolean }[]; features: { messages: { steer: boolean; answer: boolean; follow_up: boolean; steer_workflow_runs: boolean }; tool_keys?: ToolKeysFeature; webhooks?: WebhooksFeature; mcp_client?: McpClientFeature; triggers?: { routes: boolean; min_every_s?: number; history_kept?: number } }; limits?: { max_upload_bytes?: number; max_files_per_run?: number }; models?: { default?: string | null; ready?: boolean; needs?: "key" | "model" | null; source?: "faux" | "gateway" | "providers" } };
 export type Client = ReturnType<typeof createClient>;
 
+/** The paths whose 401 is the answer to signing in (a wrong password, a wrong setup code), not a session that ended. */
+const SIGNING_IN = new Set(["/auth/sign-in", "/setup"]);
+
 /** The console's client for `agentrun.v2/0`, on the page's own origin: the server's HttpOnly cookie is the session, and
- *  every write is same-origin JSON (the server refuses a cookie write from another origin). */
-export function createClient({ fetch: f = globalThis.fetch.bind(globalThis), base = "/v2" }: { fetch?: typeof fetch; base?: string } = {}) {
+ *  every write is same-origin JSON (the server refuses a cookie write from another origin). `onSignedOut`: called on
+ *  every 401 but signing in's own, so the console knows its session ended (a sign-out in another tab, an expiry) at
+ *  the first read the server refuses, whichever page made it. */
+export function createClient({ fetch: f = globalThis.fetch.bind(globalThis), base = "/v2", onSignedOut }: { fetch?: typeof fetch; base?: string; onSignedOut?: () => void } = {}) {
   async function call<T>(method: string, path: string, opts: { body?: unknown; headers?: Record<string, string>; signal?: AbortSignal; text?: boolean } = {}): Promise<T> {
     return (await callTagged<T>(method, path, opts)).body;
   }
@@ -76,6 +83,7 @@ export function createClient({ fetch: f = globalThis.fetch.bind(globalThis), bas
       body: body === undefined ? undefined : JSON.stringify(body),
     });
     if (!res.ok) {
+      if (res.status === 401 && !SIGNING_IN.has(path)) onSignedOut?.();
       const e = ((await res.json().catch(() => null)) as { error?: ApiError & { fields?: FieldIssue[]; retry_after_ms?: number; problems?: NoteProblem[] } } | null)?.error;
       const err = new ClientError(res.status, e?.code ?? "http_error", e?.message ?? `${method} ${path}: ${res.status}`, e?.retryable ?? false, e?.request_id);
       if (e?.fields) err.fields = e.fields;
@@ -173,8 +181,8 @@ export function createClient({ fetch: f = globalThis.fetch.bind(globalThis), bas
     getRun: (id: string) => call<Run>("GET", run(id)),
     /** What the run's learning changed in its agent's notes, file by file (each with its patch, or why it is withheld). */
     runLearningDiff: (id: string) => call<LearningDiff>("GET", `${run(id)}/learning/diff`),
-    /** The run's browser: off, none or live with its viewer (RunBrowser). */
-    runBrowser: (id: string) => call<RunBrowser>("GET", `${run(id)}/browser`),
+    /** The run's computer: off, none or live with its viewer (RunBrowser, GET /v2/runs/{id}/computer). */
+    runBrowser: (id: string) => call<RunBrowser>("GET", `${run(id)}/computer`),
     /** Hides a run from the runs list (or shows it again), its history kept. The answer is the run. */
     archiveRun: (id: string) => call<Run>("POST", `${run(id)}/archive`, { body: {} }),
     unarchiveRun: (id: string) => call<Run>("POST", `${run(id)}/unarchive`, { body: {} }),
@@ -250,13 +258,23 @@ export function createClient({ fetch: f = globalThis.fetch.bind(globalThis), bas
     /** The server's provider per capability that has a choice (its default where it sets none). */
     /** Remote MCP servers (a serve extension): a read shows a credential's state, never its value. A preview stores
      *  nothing; a save with no credential in `auth` keeps the sealed one. */
+    /** The templates this server offers. */
+    listTemplates: () => call<{ templates: TemplateView[] }>("GET", "/templates"),
+    /** Makes a template's agent (and its triggers) under one Idempotency-Key: the same request again answers what it did. */
+    applyTemplate: (name: string, body: TemplateApply, idempotencyKey: string) =>
+      call<TemplateApplied>("POST", `/templates/${encodeURIComponent(name)}/apply`, { body, headers: { "idempotency-key": idempotencyKey } }),
     listMcpServers: () => call<{ servers: McpServer[]; file_unreadable?: true }>("GET", "/settings/mcp-servers"),
     previewMcpServer: (url: string, auth: McpAuth) => call<McpPreview>("POST", "/settings/mcp-servers/preview", { body: { url, auth } }),
-    saveMcpServer: (name: string, url: string, auth: McpAuth, prices?: Record<string, number>) => call<McpServer>("PUT", mcpServer(name), { body: { url, auth, ...(prices ? { prices } : {}) } }),
+    /** Sends no prices: the server keeps the saved ones for the tools still listed at the same address. */
+    saveMcpServer: (name: string, url: string, auth: McpAuth) => call<McpServer>("PUT", mcpServer(name), { body: { url, auth } }),
     refreshMcpServer: (name: string) => call<McpRefresh>("POST", `${mcpServer(name)}/refresh`, { body: {} }),
     deleteMcpServer: (name: string) => call<unknown>("DELETE", mcpServer(name)),
     /** Starts an OAuth sign-in to the server at `url`: the page the person opens to approve it. */
     startMcpSignIn: (name: string, body: { url: string; scopes?: string[]; client_id?: string; client_secret?: string }) => call<{ authorization_url: string }>("POST", `${mcpServer(name)}/oauth/start`, { body }),
+    /** The private-network hosts an MCP server's authorization server may be on; none by default. */
+    mcpPrivateHosts: () => call<McpPrivateHosts>("GET", "/settings/mcp-servers/oauth/private-hosts"),
+    /** Replaces them (the owner's password session alone): the list as the server keeps it. */
+    saveMcpPrivateHosts: (hosts: string[]) => call<McpPrivateHosts>("PUT", "/settings/mcp-servers/oauth/private-hosts", { body: { hosts } }),
     toolSettings: () => call<ToolSettings>("GET", "/settings/tools"),
     /** Replaces the server's providers: a capability the body leaves out takes its default. The answer is each one's now. */
     saveToolSettings: (settings: ToolSettings) => call<ToolSettings>("PUT", "/settings/tools", { body: settings }),

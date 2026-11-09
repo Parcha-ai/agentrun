@@ -6,8 +6,9 @@
 // and the token dies with it (pi-browser kills it then); a session's release never touches another's file, so an old
 // session's release that crosses a new one's launch (a relaunch) leaves the new one handed over.
 //
-// The server reads the newest for the owner alone (GET /v2/runs/{id}/browser) and answers the viewer under the run's path
-// (/v2/runs/{id}/browser/live/*). The viewer's code (its page, script and style) is always this server's own, the files of
+// The server reads the newest for the owner alone (GET /v2/runs/{id}/browser, and GET /v2/runs/{id}/computer, the computer
+// family's, the browser as kind browser there) and answers the viewer under the run's path (/v2/runs/{id}/browser/live/*,
+// and /v2/runs/{id}/computer/live/*, one route for both). The viewer's code (its page, script and style) is always this server's own, the files of
 // the pi-browser it has installed, never anything a run's port answers: a run's port only ever carries the viewer's
 // WebSocket, data and no code, proxied to that port alone and only from this server's own origin. The page is served
 // under a CSP whose frame-ancestors is 'self' (the console's own origin). The token is never in a record, a timeline row, a run's view, its files (work/ alone is served), the model's
@@ -21,12 +22,15 @@ import { connect } from "node:net";
 import { join } from "node:path";
 import type { Duplex } from "node:stream";
 import { sealColumn, sealedAt, unsealColumn } from "./store/seal.js";
-import type { Claim, LiveViewerRow, Store } from "./store/store.js";
+import type { Claim, LiveViewerRow, Store, ViewerKind } from "./store/store.js";
 
 /** The hand-over directory in the run's directory (never in work/): one file per open session. */
 export const BROWSER_LIVE_DIR = "browser-live";
-/** What the run's process hands the server for one session's viewer; `at`, when (the newest is the one shown). */
-export type LiveHandover = { port: number; id: string; token: string; tag: string; at?: number };
+/** What the run's process hands the server for one session's viewer; `at`, when (the newest is the one shown). `kind`, the
+ *  computer it views, as the store's row says it (a hand-over file is the browser's). */
+export type LiveHandover = { port: number; id: string; token: string; tag: string; at?: number; kind?: ViewerKind };
+/** The computer kinds a store row may name. */
+const VIEWER_KINDS: readonly string[] = ["browser", "desktop", "phone"] satisfies ViewerKind[];
 
 /** Where the run's own viewer listens: its process's loopback address alone. */
 const LOOPBACK = "127.0.0.1"; // key-gate: loopback-rule the one address the run process viewer listens on
@@ -127,31 +131,33 @@ export type LiveViewerStore = Pick<Store, "liveViewers">;
 export async function putLiveViewer(store: LiveViewerStore, sealKey: Buffer, claim: Claim, handover: LiveHandover): Promise<boolean> {
   if (!TAG.test(handover.tag)) throw new Error("a hand-over's tag is not a session's tag");
   const { tag, port, id, token } = handover;
-  return store.liveViewers.put(claim, { tag, port, id, sealed: sealColumn(sealKey, sealedAt.liveViewer(claim.runId, tag), token) });
+  // Every viewer this file hands over is the browser kind: pi-browser's own viewer. Other computer kinds (desktop, phone)
+  // get their own hand-over; the store's viewer table carries the kind so the kinds never collide on a shared tag.
+  return store.liveViewers.put(claim, { kind: "browser", tag, port, id, sealed: sealColumn(sealKey, sealedAt.liveViewer(claim.runId, "browser", tag), token) });
 }
 
 /** Session `tag`'s hand-over goes, and no other's; with no tag, every one of the run's (its runner let its sessions go). A
  *  tag that is not a session's names no row. */
 export async function dropLiveViewer(store: LiveViewerStore, claim: Claim, tag?: string): Promise<void> {
-  if (tag === undefined) return store.liveViewers.drop(claim);
-  if (TAG.test(tag)) await store.liveViewers.drop(claim, tag);
+  if (tag === undefined) return store.liveViewers.drop(claim, "browser");
+  if (TAG.test(tag)) await store.liveViewers.drop(claim, "browser", tag);
 }
 
 /** Run `runId`'s row as one hand-over, checked as the files were (a viewer's path id, a session's tag, a port, a time), its
  *  token opened and checked; undefined for anything else, a seal that does not open among them (never a throw). */
 function handoverOfRow(sealKey: Buffer, runId: string, row: Partial<LiveViewerRow>): LiveHandover | undefined {
-  if (!(Number.isInteger(row.port) && row.port! > 0 && row.port! < 65_536 && VIEWER_ID.test(String(row.id)) && typeof row.tag === "string" && TAG.test(row.tag) && Number.isFinite(row.at) && row.sealed instanceof Uint8Array)) return undefined;
+  if (!(typeof row.kind === "string" && VIEWER_KINDS.includes(row.kind) && Number.isInteger(row.port) && row.port! > 0 && row.port! < 65_536 && VIEWER_ID.test(String(row.id)) && typeof row.tag === "string" && TAG.test(row.tag) && Number.isFinite(row.at) && row.sealed instanceof Uint8Array)) return undefined;
   let token: string;
   try {
-    token = unsealColumn(sealKey, sealedAt.liveViewer(runId, row.tag), row.sealed).toString("utf8");
+    token = unsealColumn(sealKey, sealedAt.liveViewer(runId, row.kind!, row.tag), row.sealed).toString("utf8");
   } catch {
     return undefined;
   }
-  return TOKEN.test(token) ? { port: row.port!, id: row.id!, token, tag: row.tag, at: row.at! } : undefined;
+  return TOKEN.test(token) ? { kind: row.kind!, port: row.port!, id: row.id!, token, tag: row.tag, at: row.at! } : undefined;
 }
 
-/** Run `runId`'s viewers as its live claim handed them over, newest first, each token opened with `sealKey`; a row that is
- *  not a hand-over is left out. */
+/** Run `runId`'s viewers, of every computer kind, as its live claim handed them over, newest first, each with its kind and
+ *  its token opened with `sealKey` under that kind; a row that is not a hand-over is left out. */
 export async function readLiveViewers(store: LiveViewerStore, sealKey: Buffer, runId: string): Promise<LiveHandover[]> {
   const found = (await store.liveViewers.of(runId)).flatMap((row) => handoverOfRow(sealKey, runId, row) ?? []);
   return found.sort((a, b) => b.at! - a.at! || b.tag.localeCompare(a.tag));
@@ -162,8 +168,11 @@ export const liveViewer = async (store: LiveViewerStore, sealKey: Buffer, runId:
 export const liveViewerById = async (store: LiveViewerStore, sealKey: Buffer, runId: string, id: string): Promise<LiveHandover | undefined> =>
   (await readLiveViewers(store, sealKey, runId)).find((handover) => handover.id === id);
 
-/** Where the viewer answers through the server, for run `runId`: the owner's link, its token in the fragment. */
-export const viewerLink = (runId: string, handover: LiveHandover): string => `/v2/runs/${encodeURIComponent(runId)}/browser/live/v/${handover.id}#t=${handover.token}`;
+/** The two addresses a run's viewer answers under: the computer family's, one for every kind, and the browser's own. */
+export type LiveFamily = "computer" | "browser";
+/** Where the viewer answers through the server, for run `runId`, under `family`'s address: the owner's link, its token in
+ *  the fragment. */
+export const viewerLink = (runId: string, handover: LiveHandover, family: LiveFamily = "browser"): string => `/v2/runs/${encodeURIComponent(runId)}/${family}/live/v/${handover.id}#t=${handover.token}`;
 
 /** The run's viewer answers at its port for this session: its page is there (200), not released (404). Bounded: a dead
  *  process's port answers nothing, or another listener's 404. */
@@ -179,12 +188,26 @@ export function viewerAnswers(handover: LiveHandover, ms = 1_000): Promise<boole
   });
 }
 
-/** The owner's link to run `runId`'s viewer as the server reads it over the store: the newest its runner put whose port
- *  answers (`answers`, viewerAnswers), as `{ viewer }`; undefined when none does. What run-reads-over-store's
- *  runBrowserState takes as its `liveViewer` dep. */
-export async function liveViewerLink(store: LiveViewerStore, sealKey: Buffer, runId: string, answers: (handover: LiveHandover) => Promise<boolean> = viewerAnswers): Promise<{ viewer: string } | undefined> {
-  for (const handover of await readLiveViewers(store, sealKey, runId)) if (await answers(handover)) return { viewer: viewerLink(runId, handover) };
+/** The newest viewer of run `runId` its runner put over the store whose port answers (`answers`, viewerAnswers), whatever
+ *  its computer's kind; undefined when none does. */
+async function answeringViewer(store: LiveViewerStore, sealKey: Buffer, runId: string, answers: (handover: LiveHandover) => Promise<boolean>): Promise<LiveHandover | undefined> {
+  for (const handover of await readLiveViewers(store, sealKey, runId)) if (await answers(handover)) return handover;
   return undefined;
+}
+
+/** The owner's link to run `runId`'s viewer as the server reads it over the store, under the browser's own address
+ *  (/browser/live): the newest its runner put whose port answers (`answers`, viewerAnswers), as `{ viewer }`; undefined
+ *  when none does. What run-reads-over-store's runBrowserState takes as its `liveViewer` dep. */
+export async function liveViewerLink(store: LiveViewerStore, sealKey: Buffer, runId: string, answers: (handover: LiveHandover) => Promise<boolean> = viewerAnswers): Promise<{ viewer: string } | undefined> {
+  const handover = await answeringViewer(store, sealKey, runId, answers);
+  return handover && { viewer: viewerLink(runId, handover, "browser") };
+}
+
+/** The same viewer for GET /computer: its link under the computer family's address (/computer/live), with its computer's
+ *  kind, the row's. */
+export async function computerViewerLink(store: LiveViewerStore, sealKey: Buffer, runId: string, answers: (handover: LiveHandover) => Promise<boolean> = viewerAnswers): Promise<{ kind: ViewerKind; viewer: string } | undefined> {
+  const handover = await answeringViewer(store, sealKey, runId, answers);
+  return handover && { kind: handover.kind ?? "browser", viewer: viewerLink(runId, handover, "computer") };
 }
 
 /** The tool host's live-viewer seam on the runner (ToolHost.liveViewers: put and drop under the run's claim, the token

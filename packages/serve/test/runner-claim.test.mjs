@@ -6,38 +6,98 @@
 import assert from "node:assert/strict";
 import { test } from "node:test";
 import { startRunner } from "../dist/runner/runner.js";
-import { fauxLoops, observed, queue, recorder, sleep, stores, until } from "./runner-support.mjs";
+import { fauxLoops, observed, queue, recorder, sleep, STEADY_LEASE, stores, until } from "./runner-support.mjs";
 
 const LEASE_MS = 400;
 const TIMING = { leaseMs: LEASE_MS, renewEveryMs: 100, stopMarginMs: 150, pollMs: 20, commandPollMs: 20 };
 
-async function twoRunners(t, createLoop) {
+/** The steady lease, for a case whose point is not a lapse (a close's early release): a claim lost to a stall would turn
+ *  it into the lapse case. */
+const STEADY = { ...STEADY_LEASE, pollMs: 20, commandPollMs: 20 };
+
+async function twoRunners(t, createLoop, timing = TIMING) {
   const { server, runners: [one, two] } = await stores({ runners: 2 });
   const record = recorder();
   const events = [];
   const onEvent = (event) => events.push(event);
   const started = [
-    startRunner({ store: observed(one, record), createLoop, name: "runner-a", onEvent, ...TIMING }),
-    startRunner({ store: observed(two, record), createLoop, name: "runner-b", onEvent, ...TIMING }),
+    startRunner({ store: observed(one, record), createLoop, name: "runner-a", onEvent, ...timing }),
+    startRunner({ store: observed(two, record), createLoop, name: "runner-b", onEvent, ...timing }),
   ];
   t.after(() => Promise.all(started.map((runner) => runner.close())));
   return { server, record, events, runners: started };
 }
 
-test("two runners, one queued run: exactly one claims it, and keeps it while it renews", async (t) => {
-  const faux = fauxLoops({ turns: 1_000, turnMs: 20 });
-  const { server, record } = await twoRunners(t, faux.createLoop);
-  await queue(server, "run-1");
+/** An observed store whose claims and renews are told as they return: `returned(op, n)` waits until `op` (claimMany or
+ *  renewMany) has returned `n` times, then for one turn of the event loop, so the runner's own continuation of that call
+ *  has run. It waits on the calls, never on time. */
+function told(store) {
+  const counts = { claimMany: 0, renewMany: 0 };
+  const waiting = [];
+  const tell = (op) => {
+    counts[op] += 1;
+    for (const wake of waiting.splice(0)) wake();
+  };
+  const after = (op, call) => async (...args) => {
+    try {
+      return await call(...args);
+    } finally {
+      tell(op);
+    }
+  };
+  return {
+    store: { ...store, runs: { ...store.runs, claimMany: after("claimMany", store.runs.claimMany) }, renewMany: after("renewMany", store.renewMany) },
+    count: (op) => counts[op],
+    async returned(op, n) {
+      while (counts[op] < n) await new Promise((resolve) => waiting.push(resolve));
+      await new Promise((resolve) => setImmediate(resolve));
+    },
+  };
+}
 
-  await until(() => record.claims.length > 0, "a claim");
-  // Three leases long: a holder that renews is never reclaimed.
-  await sleep(LEASE_MS * 3);
-  assert.equal(record.claims.length, 1, JSON.stringify(record.claims));
-  assert.equal(record.claims[0].epoch, 1);
-  assert.equal(faux.loops.length, 1, "one loop runs the run");
-  const run = await server.runs.get("run-1");
-  assert.deepEqual([run.state, run.epoch, run.runner], ["running", 1, record.claims[0].runner]);
-  assert.ok(run.claimedUntil > Date.now(), "the claim is live: renewed past its first until");
+// The renew on a clock the test moves: the runners' timers (their polls, renews and claim deadlines) and every clock
+// (the runners' and the stores') are node:test's mocked ones, so nothing moves unless a step moves it, and a box's load
+// can neither starve a renew nor run a lease out. Each step moves the clock one renew interval, waits for the holder's
+// renew to return (by count, never by elapsed time), and reads that the claim moved with it.
+test("two runners, one queued run: exactly one claims it, and keeps it while it renews, each renew moving its claimed_until", async (t) => {
+  const faux = fauxLoops({ turns: 1_000, turnMs: 20 });
+  const { server, runners: [one, two] } = await stores({ runners: 2 });
+  await queue(server, "run-1");
+  const record = recorder();
+  const events = [];
+  const onEvent = (event) => events.push(event);
+  t.mock.timers.enable({ apis: ["setTimeout", "setInterval", "Date"], now: 1_000_000 });
+  const a = told(observed(one, record));
+  const b = told(observed(two, record));
+  const runners = [
+    startRunner({ store: a.store, createLoop: faux.createLoop, name: "runner-a", onEvent, ...TIMING }),
+    startRunner({ store: b.store, createLoop: faux.createLoop, name: "runner-b", onEvent, ...TIMING }),
+  ];
+  try {
+    // Each runner polls once as it starts: both ask, exactly one gets the run.
+    await a.returned("claimMany", 1);
+    await b.returned("claimMany", 1);
+    assert.deepEqual(record.claims.map(({ runId, epoch }) => [runId, epoch]), [["run-1", 1]], JSON.stringify(record.claims));
+    const name = record.claims[0].runner;
+    const [holder, other] = name === "runner-a" ? [a, b] : [b, a];
+    // Three leases long, one renew interval a step: each step's renew lands and moves the claim to now + the lease.
+    const steps = (LEASE_MS * 3) / TIMING.renewEveryMs;
+    for (let step = 1; step <= steps; step += 1) {
+      t.mock.timers.tick(TIMING.renewEveryMs);
+      await holder.returned("renewMany", step);
+      const run = await server.runs.get("run-1");
+      assert.deepEqual([run.state, run.epoch, run.runner, run.claimedUntil], ["running", 1, name, Date.now() + LEASE_MS], `step ${step}: the renew landed and moved the claim`);
+    }
+    assert.equal(holder.count("renewMany"), steps, "one renew a step");
+    assert.equal(other.count("renewMany"), 0, "the other runner holds nothing to renew");
+    assert.equal(record.claims.length, 1, `never reclaimed: ${JSON.stringify(record.claims)}`);
+    assert.equal(faux.loops.length, 1, "one loop runs the run");
+    assert.deepEqual(events.filter((event) => event.type === "claim-lost"), [], "no claim lost");
+  } finally {
+    // Real timers again before the runners close: their close waits on timers of its own.
+    t.mock.timers.reset();
+    await Promise.all(runners.map((runner) => runner.close()));
+  }
 });
 
 test("the holder is killed: the other reclaims after claimed_until with epoch 2, and the dead one's late commit is Fenced", async (t) => {
@@ -65,14 +125,21 @@ test("the holder is killed: the other reclaims after claimed_until with epoch 2,
 
 test("a runner that closes stops its loop where it can resume and releases the run, still running; the other claims it at once", async (t) => {
   const faux = fauxLoops({ turns: 1_000, turnMs: 20 });
-  const { server, record, runners: [a, b] } = await twoRunners(t, faux.createLoop);
+  // Its point is a close's early release, never a lapse: the steady lease (its "before the old lease ran out" holds
+  // only more plainly on it).
+  const { server, record, runners: [a, b] } = await twoRunners(t, faux.createLoop, STEADY);
   await queue(server, "run-1");
 
   const first = await until(() => record.claims[0], "a claim");
   const holder = first.runner === a.name ? a : b;
   const other = holder === a ? b : a;
   const leaseEnd = (await server.runs.get("run-1")).claimedUntil;
-  await holder.close();
+  // A starved machine as the close goes: close() has stopped the loop, then the process blocks 600 ms (no renew runs), so
+  // a lease shorter than the stall runs out before the close's release, and the runner lets the claim go unreleased.
+  const closing = holder.close();
+  const until600 = Date.now() + 600;
+  while (Date.now() < until600);
+  await closing;
   const closedAt = Date.now();
 
   assert.equal(faux.loops[0].stopCalls[0]?.kind, "shutdown", "the loop is stopped for a shutdown");

@@ -1,7 +1,12 @@
 // Every model-visible host tool's definition: its name, words, schema and replay, as main shows them today. read, write,
 // edit and bash are pi's (pi 1.5.0's coding tools, MIT), with serve's additions: bash's timeout words and read's image
 // sentence on a computer. The five background tools are serve's (background.ts). A test holds every one of them, in
-// order, to serve's own on main.
+// order, to serve's own on main. A computer of a kind past files and a shell adds its own tools after them
+// (capabilityToolDefs): the desktop's, the phone's, the browser's.
+import { browserToolDefs, type BrowserContract } from "./browser.js";
+import { DESKTOP_TOOL_DEFS } from "./desktop.js";
+import type { CapabilityKind } from "./hands.js";
+import { PHONE_TOOL_DEFS } from "./phone.js";
 import { BACKGROUND_INPUT_BYTES, BACKGROUND_LIST_MAX, BACKGROUND_LOG_BYTES, BACKGROUND_MAX, BACKGROUND_PAGE_BYTES, BACKGROUND_SIGNALS, BASH_DEFAULT_TIMEOUT_S } from "./limits.js";
 
 /** Where the run's shell is: on a computer (bash and the background tools run there), on this machine in the run's
@@ -157,4 +162,15 @@ export function hostToolDefs(options: { maxExecS: number; shell: ShellPlace }): 
   if (shell === "local") return defs;
   for (const tool of BACKGROUND_DEFS) defs.push(host(tool.name, "shell", tool.description, tool.parameters, tool.replaySafe, tool.name === "bash_output" || tool.name === "bash_list" || tool.name === "bash_signal"));
   return defs;
+}
+
+/** The kinds, in the order their tools follow the host tools. */
+export const CAPABILITY_KINDS: readonly CapabilityKind[] = Object.freeze(["desktop", "phone", "browser"]);
+
+/** A computer kind's own tools, which a run of that kind sees after its host tools: the desktop's (desktop.ts), the
+ *  phone's (phone.ts), or the browser's, pi-browser's contracts the host passes (browser.ts). */
+export function capabilityToolDefs(kind: CapabilityKind, options: { readonly browserTools?: readonly BrowserContract[] } = {}): readonly ToolDef[] {
+  if (kind === "desktop") return DESKTOP_TOOL_DEFS;
+  if (kind === "phone") return PHONE_TOOL_DEFS;
+  return browserToolDefs(options.browserTools);
 }

@@ -42,12 +42,14 @@ import { BOX_ALLOW_ENV, boxAllowOf, boxLimitsOf, boxNetworkOf, FAUX_BOX_ENV, fau
 import { Owner, passwordProblem, SESSION_MS } from "./owner.js";
 import { answerPage, byOwnerSession, heldSessions, isJson, overHttps, ownerCookie, ownOrigin, sendHostRefused, signedIn } from "./page.js";
 import { hostFix, hostName, loopbackNames } from "./host-check.js";
-import { handoverById, type LiveHandover, liveRest, liveViewer, liveViewerById, liveViewerFor, liveViewerLink, OpenViewers, proxyLiveUpgrade, readHandover, readHandovers, serveViewerFile, viewerAnswers, viewerLink } from "./browser-live.js";
+import { computerViewerLink, handoverById, type LiveFamily, type LiveHandover, liveRest, liveViewer, liveViewerById, liveViewerFor, liveViewerLink, OpenViewers, proxyLiveUpgrade, readHandover, readHandovers, serveViewerFile, viewerAnswers, viewerLink } from "./browser-live.js";
 import { browserHandBack, handBackTarget } from "./browser-commands.js";
+import { type ComputerOf, computerView } from "./computer-view.js";
 import { durationMs, logLine } from "./print.js";
-import { knownToolCostOf, type RunMoment, type State, type Status, toolCostOf, WITHHELD_SIGN_IN } from "./run-view.js";
+import { knownToolCostOf, type RunMoment, type State, type Status, toolCostOf } from "./run-view.js";
 import { approve, archiveRun, cancel, message, raiseCap, type StartDeps, type StartOptions, startRun, stop as stopRunOverStore, WAITS_ON_A_PERSON } from "./runs-over-store.js";
 import { momentOverStore, summaryOverStore, type ViewDeps, viewOverStore, withheldOverStore } from "./store-view.js";
+import { readLaunchBody } from "./run-launch.js";
 import { listRunFiles as listRunFilesOverStore, readRunFile as readRunFileOverStore, runBrowserState, runGraphView, type RunReadsDeps, runTimelines } from "./run-reads-over-store.js";
 import { triggerTargets, type TriggerTargetDeps } from "./trigger-targets.js";
 import { listRuns as listRunsOverStore, readRun as readRunOverStore, runOfOrigin as runOfOriginOverStore } from "./store-reads/runs.js";
@@ -82,7 +84,7 @@ import { isSecretWriteOperation, SECRET_WRITE_REFUSAL, secretsWritableFields, se
 import { ensureSealKey, SealKeyRefused, sealKeyHome, sealKeyLine } from "./seal-key.js";
 import { redactedOutput } from "./key-refusal.js";
 import { analyticsFilter, analyticsView, statsView } from "./stats.js";
-import { agentLearningCountsOverStore, learningCountsOverStore, runLearningOverStore } from "./store-reads/learning.js";
+import { agentLearningOverStore, learningCountsOverStore, runLearningOverStore } from "./store-reads/learning.js";
 import { outcomes } from "./usage.js";
 import { keyOf, SEAL_KEY_ENV, sealKeyOf, TOOL_FIELDS } from "./tool-keys.js";
 import { toolKeysOverStore } from "./tool-keys-store.js";
@@ -109,12 +111,20 @@ import { permissionFrom, pinWords } from "./tool-gate.js";
 import { CATCHUP_WINDOW_S, FAILURES_TO_PAUSE, HISTORY_KEPT, MIN_EVERY_S, PAYLOAD_KEPT_BYTES, type RunTrigger, SOURCE_KINDS, TARGET_KINDS, type TriggerClock, Triggers } from "./triggers.js";
 import { applyBodyOf, compiled, madeTriggerIssues, type Package, packageModel, packageView, readPackages } from "./templates.js";
 import { checkDefinitionBody, DEFAULT_INPUT_SCHEMA, type DefinitionBody, definitionBodyIssues, ID, IDEMPOTENCY_TTL_S, inputIssues, isObject, type Json, stable, unknownFields } from "./validate.js";
-import { agentTools, browserKeyRow, isUnavailable, recheckPlane, settingsIssues, type ToolSettingsMap, whyUnavailable, withDefaults } from "./tool-plane.js";
+import { agentTools, browserKeyRow, isUnavailable, keptVendor, type Plane, recheckPlane, settingsIssues, type ToolSettingsMap, whyUnavailable, withDefaults } from "./tool-plane.js";
 import { toolSettingsOverStore } from "./tool-settings-store.js";
 import { MAX_FILES_PER_RUN, MAX_UPLOAD_BYTES, Uploads, UPLOADS_DIR } from "./uploads.js";
 import { entryAt, listFiles, sendFile as sendWorkspaceFile, viewOf } from "./run-files.js";
+import { COMPUTER_ROUTES, computerHoldOf, computerRoute } from "./computer-routes.js";
+import { PROVIDERS as COMPUTER_PROVIDERS, SETTING_KINDS, servingRefusals } from "@parcha/agentrun-computer";
+import { capabilityToolDefs, hostToolDefs } from "@parcha/agentrun-kernel/kernel";
+import { archilRoute, createArchilRoutes } from "./archil-routes.js";
+import { computerOfPlace, type ComputerKind, type ComputerSetting, type PlaceView } from "./computer-setting.js";
+import { computerCapabilities, type ComputerRoutes, createComputerRoutes, folderModeOf, type KindRegistry, settingsComputerRoute } from "./computers.js";
+import { FAUX_VIEW_PATH, type FauxComputers, fauxComputers } from "./faux-computers.js";
+import { runComputerField } from "./run-computer.js";
 import { writesHeld } from "./workspace.js";
-import { agentHomeFolder, isWorkspaceError, localWorkspace, runFolder, serverRunWorkspace, type Workspace } from "./workspace/index.js";
+import { agentHomeFolder, computerProviderFactories, computerProviderMakers, isWorkspaceError, localWorkspace, runFolder, serverRunWorkspace, storeLedger, type Workspace } from "./workspace/index.js";
 // server-lock.ts is gone: the store's EXCLUSIVE connection is the one-server lock (StoreOwned refuses a second server).
 
 export const CONTRACT = "agentrun.v2/0";
@@ -125,8 +135,9 @@ const workerArgs = (args: readonly string[]): string[] =>
 export const DEFAULT_PORT = 7340;
 const VERSION: string = JSON.parse(await readFile(new URL("../package.json", import.meta.url), "utf8")).version;
 const IDEMPOTENCY_FILE = ".idempotency.json";
-/** A run's live browser viewer, under the run's path (browser-live.ts): its run id, then its page, files or WebSocket. */
-const LIVE_PATH = /^\/v2\/runs\/([^/]+)\/browser\/live(\/.*)$/;
+/** A run's live viewer, under the run's path (browser-live.ts): its run id, the family's address (`computer`, one for every
+ *  computer kind; `browser`, the browser's own), then its page, files or WebSocket. Both are served by the same code. */
+const LIVE_PATH = /^\/v2\/runs\/([^/]+)\/(computer|browser)\/live(\/.*)$/;
 const MAX_BODY = 1 << 20;
 const MAX_MESSAGE = 20_000;
 const MAX_WAIT_MS = 25_000;
@@ -313,6 +324,9 @@ export type ServeOptions = {
   learningBudget?: number;
   /** A test's seam: the triggers' clock and timer (triggers.ts), in place of Date.now and setTimeout. */
   triggerClock?: TriggerClock;
+  /** The server's store (store/index.ts), where the triggers and their firings live, with the agents they run as. Without
+   *  it the trigger routes answer unavailable and nothing fires. */
+  store?: Pick<Store, "triggers" | "runs" | "agents">;
   /** A test's seam: the trigger sources this server has (default the registry, trigger-adapters.ts). */
   triggerAdapters?: readonly TriggerAdapter[];
   /** A test's seam: the folder the template packages are read from, in place of the package's own (templates.ts). */
@@ -362,6 +376,7 @@ async function tokenIn(file: string): Promise<{ token: string; made: boolean }> 
 const digest = (text: string) => createHash("sha256").update(text).digest();
 /** Why a trigger never messages a run: it has no spend cap, and every turn a trigger drives is capped. */
 const NO_CAP = "The run has no spend cap: a trigger only messages a run with one, as every turn it drives is capped.";
+
 const sha256Hex = (text: string) => createHash("sha256").update(text).digest("hex");
 const SESSION_S = SESSION_MS / 1000;
 
@@ -416,6 +431,18 @@ export const ROUTES: readonly Route[] = [
   { method: "GET", pattern: /^\/runs\/([^/]+)\/files$/, name: "listRunFiles" },
   { method: "GET", pattern: /^\/runs\/([^/]+)\/browser$/, name: "getRunBrowser" },
   { method: "POST", pattern: /^\/runs\/([^/]+)\/browser\/hand-back$/, name: "handBackRunBrowser" },
+  { method: "GET", pattern: /^\/runs\/([^/]+)\/computer$/, name: "getRunComputer" },
+  { method: "POST", pattern: /^\/runs\/([^/]+)\/computer\/take-over$/, name: "takeOverRunComputer" },
+  { method: "POST", pattern: /^\/runs\/([^/]+)\/computer\/hand-back$/, name: "handBackRunComputer" },
+  // Settings → Computers (computers.ts settingsComputerRoute) and the owner's Archil settings (archil-routes.ts
+  // archilRoute): the server switch dispatches them, once the server opens its store.
+  { method: "GET", pattern: /^\/computers$/, name: "listComputers" },
+  { method: "PUT", pattern: /^\/computers\/([^/]+)\/keys$/, name: "saveComputerKeys" },
+  { method: "POST", pattern: /^\/computers\/([^/]+)\/test$/, name: "testComputer" },
+  { method: "GET", pattern: /^\/workspace\/archil$/, name: "getWorkspaceArchil" },
+  { method: "PUT", pattern: /^\/workspace\/archil$/, name: "putWorkspaceArchil" },
+  { method: "DELETE", pattern: /^\/workspace\/archil$/, name: "deleteWorkspaceArchil" },
+  { method: "POST", pattern: /^\/workspace\/archil\/test$/, name: "testWorkspaceArchil" },
   { method: "GET", pattern: /^\/runs\/([^/]+)\/files\/(.+)$/, name: "readRunFile" },
   { method: "POST", pattern: /^\/files$/, name: "createFile", raw: true },
   { method: "GET", pattern: /^\/files$/, name: "listFiles" },
@@ -437,6 +464,10 @@ export const ROUTES: readonly Route[] = [
   { method: "POST", pattern: /^\/settings\/mcp-servers\/([^/]+)\/oauth\/start$/, name: "startMcpOAuth" },
   { method: "GET", pattern: /^\/settings\/mcp-servers\/oauth\/callback$/, name: "mcpOAuthCallback" },
   { method: "GET", pattern: /^\/settings\/mcp-servers\/oauth\/client\.json$/, name: "mcpOAuthClient" },
+  // Served over the store-backed registry (mcp-private-hosts.ts privateHostsRoute) once the server runs on the one store:
+  // until then they answer 404, as an unmatched route does.
+  { method: "GET", pattern: /^\/settings\/mcp-servers\/oauth\/private-hosts$/, name: "getMcpPrivateHosts" },
+  { method: "PUT", pattern: /^\/settings\/mcp-servers\/oauth\/private-hosts$/, name: "putMcpPrivateHosts" },
   { method: "GET", pattern: /^\/settings\/tools$/, name: "getToolSettings" },
   { method: "PUT", pattern: /^\/settings\/tools$/, name: "putToolSettings" },
   { method: "GET", pattern: /^\/settings\/webhook$/, name: "getWebhook" },
@@ -473,8 +504,30 @@ export const ROUTES: readonly Route[] = [
 
 /** Where agent `agentId`'s host-owned path is read on this server: its route, when ROUTES has one (the learning API, for
  *  learning/); sign-ins/ only as the agent's `sign_ins`, never a pointer. */
-// A run's files were refused while it was hidden (the browser sign-in it was handed can't be read back): that cut is the
-// store-backed run view's now (run-reads-over-store, E2c), over the run's handed pointers. Removed here with the file route.
+/** A run's computer as GET /computer reads it with no viewer open: kind browser where its agent has the browser tool, its
+ *  kept plane's (a run from before the plane names none, and is Browserbase's where it grants the tool) checked again as a
+ *  launch would be; off, saying why, where it has none or its browser resolves unavailable here.
+ *  TODO(tl-computer): the agent's own `computer: {kind, provider?}` setting once definitions carry it (desktop, phone). */
+function computerOf(kept: Plane["browser"], env: NodeJS.ProcessEnv, family: LiveFamily = "computer"): ComputerOf {
+  const browser = kept === undefined ? undefined : recheckPlane({ browser: kept }, env).browser;
+  if (browser === undefined) return { off: family === "browser" ? "this run's agent has no browser tool" : "this run's agent has no computer" };
+  return isUnavailable(browser) ? { off: whyUnavailable(browser) } : { kind: "browser" };
+}
+
+/** The run's kept browser vendor, over the store, as computerOf reads it: the vendor its launch plane resolved at start
+ *  (the same source the runner's claim reads), normalized to the vendor name (keptVendor) so recheckPlane re-resolves it as
+ *  a vendor, not a stored no-key sentinel; with no browser in the plane, the default vendor when the run's revision grants
+ *  the browser tool, else none. */
+async function keptBrowserOf(store: Store, runId: string): Promise<Plane["browser"]> {
+  const row = await store.runs.launch(runId).catch(() => undefined);
+  const plane = row ? readLaunchBody(row.body)?.plane : undefined;
+  const kept = plane ? keptVendor(plane).browser : undefined;
+  if (kept !== undefined) return kept;
+  const runRow = await store.runs.get(runId);
+  const revision = runRow ? await store.agents.revision(runRow.revisionId) : undefined;
+  const granted = ((revision?.body as { tools?: readonly string[] } | undefined)?.tools ?? []).includes("browser");
+  return granted ? "browserbase" : undefined;
+}
 
 const ownedReadAt = (agentId: string): OwnedReadAt => (owned) => (owned === SIGN_INS_DIR ? `/v2/agents/${agentId}` : ROUTES.some((r) => r.method === "GET" && r.pattern.test(`/agents/${agentId}/${owned}`)) ? `/v2/agents/${agentId}/${owned}` : undefined);
 
@@ -620,8 +673,9 @@ function capabilitiesWith(env: NodeJS.ProcessEnv, maxRuns: number, harnesses: Ha
       /** A tool setting's `permission` (definition.tool_settings, /v2/settings/tools): allow, ask or deny, which the tool
        *  gate holds every tool call to (tool-gate.ts); an ask is answered at POST /runs/{id}/approvals/{approval_id}. */
       tool_permissions: true,
-      /** The owner watches a run's browser live (GET /runs/{id}/browser, browser-live.ts), takes it over from the viewer and
-       *  hands it back, and answers the agent's ask for them (POST /runs/{id}/browser/hand-back, browser-person.ts). */
+      /** The owner watches a run's browser live (GET /runs/{id}/browser, and GET /runs/{id}/computer, browser-live.ts), takes
+       *  it over from the viewer and hands it back, and answers the agent's ask for them (POST /runs/{id}/browser/hand-back,
+       *  browser-person.ts). */
       browser_live: { read_only: false, take_over: true, ask: true },
       /** An agent's browser stays signed in between its runs (sign-ins.ts): with a seal key to keep each pointer under, and a
        *  browser vendor here (Browserbase's or Kernel's; local Chrome keeps none). */
@@ -964,6 +1018,40 @@ async function startHolding(options: ServeOptions, data: string, checked: { maxR
   const adapters = options.triggerAdapters ?? TRIGGER_ADAPTERS;
   const openapi = openapiDocument((operationId) => ROUTES.find((r) => r.name === operationId)?.capability, adapters);
   const sealKey = sealKeyOf(withSecrets(base, "own")[SEAL_KEY_ENV]);
+  // Settings → Computers and the owner's Archil settings, over the one store (computers.ts, archil-routes.ts), built once
+  // at the first request, when the server's own address is known (--faux's desktop view is a page on it). The real kind
+  // registry and each provider's create() are the computer package's (kinds.ts, providers.ts providerFor); under --faux,
+  // faux-computers.ts's three providers stand in. The folder mode is read at each call (folderModeOf), so turning Archil
+  // on or off needs no rebuild; a key named in the server's environment wins over a saved one.
+  const browserToolNames = (await import("@parcha/pi-browser")).BROWSER_TOOLS.map((tool: { name: string }) => tool.name);
+  const localTools = new Set(hostToolDefs({ maxExecS: 600, shell: "local" }).map((def) => def.name));
+  const kindTools = (kind: ComputerKind): readonly string[] =>
+    kind === "none" ? [] : kind === "sandbox" ? hostToolDefs({ maxExecS: 600, shell: "computer" }).map((def) => def.name).filter((name) => !localTools.has(name))
+      : kind === "browser" ? browserToolNames : capabilityToolDefs(kind).map((def) => def.name);
+  let faux: FauxComputers | undefined;
+  const fauxOf = (): FauxComputers => (faux ??= fauxComputers({ viewerBase: ownOriginOf() }));
+  let computerRoutes: ComputerRoutes | undefined;
+  const computersOf = (): ComputerRoutes => (computerRoutes ??= createComputerRoutes({
+    store, sealKey, tools: kindTools, mode: folderModeOf(store), env: process.env,
+    ...(options.faux
+      ? { kinds: fauxOf().kinds, factories: fauxOf().factories, keyTable: fauxOf().keyTable }
+      : {
+        kinds: { SETTING_KINDS, PROVIDERS: COMPUTER_PROVIDERS, servingRefusals } as unknown as KindRegistry,
+        // The one place serve builds a provider (workspace/computer-providers.ts), the claim's makers' own.
+        factories: computerProviderFactories(computerProviderMakers(), (id) => storeLedger(store.computerLedger, id)),
+      }),
+  }));
+  const archil = createArchilRoutes({ store, sealKey, env: process.env });
+  /** A run's computer on its read: its revision's computer setting, else the one its place says; absent for none. */
+  const runComputerOf = async (runId: string, view: Record<string, unknown>): Promise<Record<string, unknown>> => {
+    const run = await store.runs.get(runId);
+    const body = run ? ((await store.agents.revision(run.revisionId))?.body as { computer?: ComputerSetting; place?: PlaceView } | undefined) : undefined;
+    const setting = body?.computer ?? (body?.place ? computerOfPlace(body.place) : undefined);
+    if (!setting) return {};
+    const error = view.error as { code?: unknown; message?: unknown } | null | undefined;
+    const field = runComputerField(setting, { id: runId, status: String(view.status), ...(error && typeof error.code === "string" ? { error: { code: error.code, message: String(error.message ?? "") } } : {}) });
+    return field ? { computer: field } : {};
+  };
   // The agents accessor the routes call, over the one store (module A): the agents-store functions, with the run-row reads
   // the server makes (store-reads) under `.store`. `.request` is a thin pass-through — the store runs its own transactions,
   // so a call needs no outer serialization. The old Agents class and its per-agent home store are gone.
@@ -1147,8 +1235,12 @@ async function startHolding(options: ServeOptions, data: string, checked: { maxR
 
   // Schedules: each firing starts its run as POST /agents/{id}/runs does, capped, under the firing's key (triggers.ts).
   // Firings an earlier server left due are driven again now, beside the recovery above.
-  const triggers: Triggers = new Triggers(data, {
+  const triggers: Triggers = new Triggers({
+    // The server's own store (the one it opened) holds the triggers a person writes and reads; a test may inject another
+    // (startServe's `store`).
+    store: options.store ?? store,
     clock: options.triggerClock,
+    ...(options.publicUrl ? { publicUrl: options.publicUrl.replace(/\/+$/, "") } : {}),
     adapters,
     say: (fields) => (log ? log(logLine("trigger", fields)) : void process.stderr.write(`agentrun-serve: ${logLine("trigger", fields)}\n`)),
     // The trigger target policy (what a trigger may start or message, and in what words it is refused) is the one store's
@@ -1159,7 +1251,9 @@ async function startHolding(options: ServeOptions, data: string, checked: { maxR
     notify: (failed, key) => webhooks.emitTrigger(failed, key),
   });
   stops.push(async () => triggers.close());
-  triggers.start();
+  // The firing loop runs against the server's own opened store: due firings start their runs through the run write half,
+  // times missed while it was down are recorded, and the timer is armed for the next. (A test may inject its own store.)
+  void triggers.start().catch((error: Error) => void process.stderr.write(`agentrun-serve: the triggers' start: ${error.message}\n`));
 
   // Setup's import of this machine's sessions: offered by a server on this machine only (no public address, listening
   // on loopback), counted once (a listing, no transcript kept), run once, each on a worker thread (import-worker.ts) so
@@ -1541,7 +1635,7 @@ async function startHolding(options: ServeOptions, data: string, checked: { maxR
 
   async function createRun(req: IncomingMessage, agentId: string) {
     const entry = await needAgent(agentId);
-    if (entry.agent.archivedAt) throw new ApiError("agent_not_runnable", `The agent ${agentId} is archived: unarchive it to run it.`, { details: { archived_at: entry.agent.archivedAt } });
+    if (entry.agent.archivedAt) throw new ApiError("agent_not_runnable", `The agent ${agentId} is archived: unarchive it to run it.`, { details: { archived_at: new Date(entry.agent.archivedAt).toISOString() } });
     const body = await bodyOf(req);
     return idempotent(req, `/agents/${agentId}/runs`, body, async (origin) => {
       // A run the store started under this key, though no answer was kept (its server went down first): that run, as it is now.
@@ -1976,7 +2070,12 @@ async function startHolding(options: ServeOptions, data: string, checked: { maxR
     if (!matching.length) throw new ApiError("not_found", path.startsWith("/v2/") ? `no route /v2${path}: /v2 is in it twice. A path an answer gives (upload.url, a Location) starts at the server's root: send it to the server's address, not after the /v2 base.` : `no route ${path}`);
     const found = matching.find((r) => r.method === req.method || (req.method === "HEAD" && r.method === "GET"));
     if (!found) throw new ApiError("method_not_allowed", `${req.method} is not a method of ${path}`, {}, { allow: [...new Set(matching.map((r) => r.method))].join(", ") });
-    if (found.name === "getCapabilities") return send(res, 200, forCaller(caps, byOwnerSession(req)));
+    if (found.name === "getCapabilities") {
+      // features.computers: the computer kinds this server offers now (computers.ts), read at each answer, since turning
+      // Archil on or off, or saving a key, changes them.
+      const answer = forCaller(caps, byOwnerSession(req));
+      return send(res, 200, { ...answer, features: { ...answer.features, computers: await computerCapabilities(computersOf()) } });
+    }
     if (found.name === "getOpenapi") return send(res, 200, servedOpenapi(openapi, req.socket.localPort));
     // With accounts off there is no owner, and the console still asks whether it may save a secret: secret-writes.ts'
     // verdict over the request the page just marked, never a signed-in user it doesn't have.
@@ -2019,12 +2118,15 @@ async function startHolding(options: ServeOptions, data: string, checked: { maxR
       authFailed(`/v2${path}`, "approve_without_session");
       throw new ApiError("forbidden", owner ? "Approving a note takes the owner's password sign-in in the console, never a token." : "Approving a note takes the owner's password sign-in, and this server has no accounts (AGENTRUN_ACCOUNTS=0).");
     }
-    // A run's live browser view is a full-control credential for its browser: the owner's signed-in page alone, as approving
-    // a note is (never a token a run, an MCP client or a script may hold).
-    if ((found.name === "getRunBrowser" || found.name === "handBackRunBrowser") && !byOwnerSession(req) && req.headers.authorization !== undefined) {
-      authFailed(`/v2${path}`, "browser_without_session");
-      throw new ApiError("forbidden", owner ? "A run's live browser takes the owner's password sign-in in the console, never a token." : "A run's live browser takes the owner's password sign-in, and this server has no accounts (AGENTRUN_ACCOUNTS=0).");
+    // A run's live computer view is a full-control credential for its computer: the owner's signed-in page alone, as
+    // approving a note is (never a token a run, an MCP client or a script may hold).
+    if ((found.name === "getRunBrowser" || found.name === "handBackRunBrowser" || found.name === "getRunComputer") && !byOwnerSession(req) && req.headers.authorization !== undefined) {
+      const what = found.name.endsWith("Browser") ? "browser" : "computer";
+      authFailed(`/v2${path}`, `${what}_without_session`);
+      throw new ApiError("forbidden", owner ? `A run's live ${what} takes the owner's password sign-in in the console, never a token.` : `A run's live ${what} takes the owner's password sign-in, and this server has no accounts (AGENTRUN_ACCOUNTS=0).`);
     }
+    // A run's desktop or phone view drives it once taken over: the owner's signed-in page alone (computer-routes.ts decides).
+    if (COMPUTER_ROUTES.has(found.name) && !byOwnerSession(req) && req.headers.authorization !== undefined) authFailed(`/v2${path}`, "computer_without_session");
     // Answering a tool call that waits for approval (tool-gate.ts) is the same: the owner's signed-in page alone, never a
     // token, which the run's own process, an agent's MCP client or a script may hold.
     if (found.name === "answerApproval" && !byOwnerSession(req) && req.headers.authorization !== undefined) {
@@ -2061,7 +2163,7 @@ async function startHolding(options: ServeOptions, data: string, checked: { maxR
         const limit = limitOf(url.searchParams.get("limit"));
         const offset = cursorOf(url.searchParams.get("cursor"));
         const archived = archivedParam(url);
-        const all = (await agents.list()).filter((entry) => Boolean(entry.agent.archivedAt) === archived);
+        const all = await agents.list({ archived });
         return send(res, 200, { agents: await Promise.all(all.slice(offset, offset + limit).map(async (entry) => agentView(entry, linkOrigin(req), await agentExtra(entry)))), next_cursor: nextCursor(offset + limit, all.length) });
       }
       case "getAgent": {
@@ -2115,8 +2217,11 @@ async function startHolding(options: ServeOptions, data: string, checked: { maxR
         await needAgent(id);
         await agents.setArchived("agent", id, found.name === "archiveAgent");
         // No run sweep on archive: a runner reads an archived agent's run rows directly, nothing to sweep.
+        // Archived, every trigger that runs turns off in the store's archive transaction; unarchived, none turns on. Both
+        // answer the triggers off for the archive, each turned on again by PATCH /triggers/{id} {enabled: true}.
+        const triggersOff = found.name === "archiveAgent" ? await triggers.agentArchived(id) : await triggers.agentUnarchived(id);
         const entry = await needAgent(id);
-        return send(res, 200, agentView(entry, linkOrigin(req), await agentExtra(entry)), { etag: etagOf(entry) });
+        return send(res, 200, { ...agentView(entry, linkOrigin(req), await agentExtra(entry)), triggers_off: triggersOff }, { etag: etagOf(entry) });
       }
       case "forgetSignIn": {
         await needAgent(id);
@@ -2143,7 +2248,7 @@ async function startHolding(options: ServeOptions, data: string, checked: { maxR
       case "getRun": {
         const view = await viewOverStore(store, id, viewDepsFor(linkOrigin(req)));
         if (!view) throw new ApiError("not_found", `no run ${id}`);
-        return send(res, 200, view);
+        return send(res, 200, { ...view, ...(await runComputerOf(id, view)) });
       }
       case "getTimeline":
         await needRun(id);
@@ -2209,11 +2314,30 @@ async function startHolding(options: ServeOptions, data: string, checked: { maxR
         await archiveRun(store, run.id, found.name === "archiveRun");
         return send(res, 200, await viewOverStore(store, run.id, viewDepsFor(linkOrigin(req))));
       }
-      case "getRunBrowser": {
-        await needRun(id);
-        // The run's browser state over the store: its runner's live viewer when it serves one (liveViewer, unset until
-        // the runner publishes the handover), else its kept plane re-checked, as a launch would, for `off`/`none`.
-        return send(res, 200, await runBrowserState(store, id, runReadsDeps));
+      case "getRunBrowser":
+      case "getRunComputer": {
+        // One read for both families, over the one store: the computer family's answer, and the browser's own in its base
+        // shape (its link under /browser/live, no kind or hold, off's why as `reason`).
+        const run = await needRun(id);
+        const family: LiveFamily = found.name === "getRunBrowser" ? "browser" : "computer";
+        // The run's open viewer, from the store's sealed viewer rows the runner publishes its hand-over into (browser-live.ts
+        // liveViewerLink/computerViewerLink, under the seal key); who drives, from the cut's computerHoldOf over the store.
+        const hold = await computerHoldOf(store, run.id);
+        const kept = await keptBrowserOf(store, run.id);
+        const view = await computerView({
+          viewer: async () => {
+            if (sealKey === undefined) return undefined;
+            if (family === "browser") {
+              const link = await liveViewerLink(store, sealKey, run.id);
+              return link === undefined ? undefined : { kind: "browser" as const, viewer: link.viewer };
+            }
+            return computerViewerLink(store, sealKey, run.id);
+          },
+          computer: () => computerOf(kept, env, family),
+          hold: () => hold,
+        });
+        if (family === "browser") return send(res, 200, view.state === "live" ? { state: "live", viewer: view.viewer } : view.state === "none" ? { state: "none" } : { state: "off", reason: view.why }, { "cache-control": "no-store" });
+        return send(res, 200, view, { "cache-control": "no-store" });
       }
       case "handBackRunBrowser": {
         // The owner's answer to the agent's ask for them in its browser (browser-commands.ts): the first answer wins, the same
@@ -2225,16 +2349,48 @@ async function startHolding(options: ServeOptions, data: string, checked: { maxR
         if (body.outcome !== "done" && body.outcome !== "cancelled") issues.push({ field: "outcome", reason: body.outcome === undefined ? "missing" : "not_an_option", message: "outcome is done or cancelled" });
         if (issues.length) throw invalid(issues);
         // The ask this answer targets, read over the run's hand-over entries and the hand-back commands before this write;
-        // browserHandBack writes the answer, then lets the lowest-id command win, re-reading the journal for a live view's own give.
+        // browserHandBack writes the answer (its not_found and handoff_answered words, with details.outcome, as the console
+        // and tests read them), then lets the lowest-id command win, re-reading the journal for a live view's own give.
         const entries = (await runEntries(store, run.id, ctx)) as unknown as Parameters<typeof handBackTarget>[0];
         const target = handBackTarget(entries, await store.commands(run.id, 0));
         const answered = await browserHandBack(store, run.id, body.outcome as "done" | "cancelled", target, Date.now(), async () => (await runEntries(store, run.id, ctx)) as unknown as Parameters<typeof handBackTarget>[0]);
         return send(res, 200, { outcome: answered.outcome }, { "cache-control": "no-store" });
       }
+      case "takeOverRunComputer":
+      case "handBackRunComputer": {
+        // The owner's take-over of a run's desktop or phone, and the hand-back for every kind (computer-routes.ts), over the
+        // store: the hold is the run's journal, a take-over and a hand-back are command rows its runner applies; a browser's
+        // hand-back is the browser's own answer row, as POST .../browser/hand-back writes it.
+        const run = await needRun(id);
+        const answer = await computerRoute(found.name, run.id, {
+          ownerSession: byOwnerSession(req), token: req.headers.authorization !== undefined, accounts: owner !== undefined, body: await bodyOf(req),
+        }, store, { context: ctx });
+        return send(res, 200, answer, { "cache-control": "no-store" });
+      }
+      case "listComputers":
+      case "saveComputerKeys":
+      case "testComputer": {
+        // Settings → Computers (computers.ts): the rules are the handler's; this sends its answer.
+        const provider = found.name === "listComputers" ? undefined : id;
+        const body = found.name === "saveComputerKeys" ? await bodyOf(req) : undefined;
+        const controller = new AbortController();
+        req.once("close", () => controller.abort());
+        return send(res, 200, await settingsComputerRoute(computersOf(), found.name, { ...(provider !== undefined ? { provider } : {}), ...(body !== undefined ? { body } : {}), signal: controller.signal }), { "cache-control": "no-store" });
+      }
+      case "getWorkspaceArchil":
+      case "putWorkspaceArchil":
+      case "deleteWorkspaceArchil":
+      case "testWorkspaceArchil": {
+        // The owner's Archil settings, Mode 2 on and off (archil-routes.ts): the rules are the handler's.
+        const body = found.name === "putWorkspaceArchil" ? await bodyOf(req) : undefined;
+        const controller = new AbortController();
+        req.once("close", () => controller.abort());
+        return send(res, 200, await archilRoute(archil, found.name, { ...(body !== undefined ? { body } : {}), signal: controller.signal }), { "cache-control": "no-store" });
+      }
       case "listRunFiles": {
         await needRun(id);
         // A run's files through the server's read-only Workspace of its folder (serverRunWorkspace); a run with no folder
-        // lists none. Same shape and cap the file route answered.
+        // lists none, a withheld run refuses (403), as the base did (filesShown). Same shape and cap the file route answered.
         return send(res, 200, await listRunFilesOverStore(store, id, runReadsDeps));
       }
       // An archived agent's home is read and written as any other's: as its definition is.
@@ -2314,8 +2470,8 @@ async function startHolding(options: ServeOptions, data: string, checked: { maxR
       }
       case "readRunFile": {
         await needRun(id);
-        // One of a run's files through the server's read-only Workspace, streamed as the file route streams it; the path
-        // check and 404 words are the reader's own.
+        // One of a run's files through the server's read-only Workspace, streamed as the file route streams it; a withheld
+        // run refuses (403, as filesShown did), the path check and 404 words are the reader's own.
         return readRunFileOverStore(store, id, second!, req, res, url, runReadsDeps);
       }
       case "createFile": {
@@ -2436,18 +2592,19 @@ async function startHolding(options: ServeOptions, data: string, checked: { maxR
       // they are now; a write as the definition's: an archived agent's too.
       case "getAgentLearning": {
         await needAgent(id);
-        // The agent's learning view: its notes, skills, workflows and log from its learning folder; its run-fared counts over the
-        // store (learning-1's agentLearningCountsOverStore). Each note's runs and the impact are named gaps until learning-1 records
-        // a run's given/read notes and its answer times in the store.
-        const counts = await agentLearningCountsOverStore(store, id);
-        return send(res, 200, await agentLearning(data, id, secretsShown(serverSecrets()), counts, null));
+        // The agent's learning view: its notes, skills, workflows and log from its learning folder; its run-fared counts, each
+        // note's runs (given it and that read it) and its impact over the one store (agentLearningOverStore), from each run's
+        // launch, journal and learning end.
+        const { counts, impact, notes } = await agentLearningOverStore(store, id);
+        return send(res, 200, await agentLearning(data, id, secretsShown(serverSecrets()), counts, impact, notes));
       }
       case "listLearningNotes":
       case "listLearningLog":
         await needAgent(id);
         if (found.name === "listLearningNotes") {
-          // The notes from the agent's learning folder; each note's runs are a named gap until learning-1 records them in the store.
-          return send(res, 200, await learningNotes(data, id, url.searchParams, secretsShown(serverSecrets())));
+          // The notes from the agent's learning folder, each with its runs over the one store (agentLearningOverStore's noteRuns).
+          const { notes } = await agentLearningOverStore(store, id);
+          return send(res, 200, await learningNotes(data, id, url.searchParams, secretsShown(serverSecrets()), notes));
         }
         return send(res, 200, await learningLog(data, id, url.searchParams, secretsShown(serverSecrets())));
       case "readLearningFile":
@@ -2494,7 +2651,7 @@ async function startHolding(options: ServeOptions, data: string, checked: { maxR
       case "redeliverWebhook":
         return send(res, 200, await webhooks.redeliver(id));
       case "listTriggers":
-        return send(res, 200, triggers.list());
+        return send(res, 200, await triggers.list());
       case "createTrigger": {
         const body = await bodyOf(req);
         // A webhook trigger's secret is in its first answer alone: the Idempotency-Key's record keeps the trigger and a
@@ -2524,7 +2681,7 @@ async function startHolding(options: ServeOptions, data: string, checked: { maxR
       case "rotateTriggerSecret":
         return send(res, 200, await triggers.rotate(id));
       case "getTrigger":
-        return send(res, 200, triggers.get(id));
+        return send(res, 200, await triggers.get(id));
       case "updateTrigger":
         return send(res, 200, await triggers.update(id, await bodyOf(req)));
       case "deleteTrigger":
@@ -2537,7 +2694,7 @@ async function startHolding(options: ServeOptions, data: string, checked: { maxR
         return send(res, fired.created ? 202 : 200, fired.firing, fired.created ? {} : { "idempotent-replayed": "true" });
       }
       case "listTriggerFirings":
-        return send(res, 200, triggers.firings(id));
+        return send(res, 200, await triggers.firings(id));
     }
     throw new ApiError("not_found", `no route ${path}`);
   }
@@ -2551,21 +2708,22 @@ async function startHolding(options: ServeOptions, data: string, checked: { maxR
     res.end(text);
   }
 
-  /** A run's live viewer's page and files (browser-live.ts): the owner's signed-in page alone, GET or HEAD, for a viewer the
-   *  run's live process has handed over. The bytes are this server's own copy of pi-browser's viewer, never the run's port's:
+  /** A run's live viewer's page and files (browser-live.ts, /v2/runs/{id}/computer/live/*): the owner's signed-in page
+   *  alone, GET or HEAD, for a viewer the run's live process has handed over. The bytes are this server's own copy of pi-browser's viewer, never the run's port's:
    *  only the viewer's WebSocket reaches the run. */
-  async function liveRoute(req: IncomingMessage, res: ServerResponse, runId: string, rest: string): Promise<void> {
+  async function liveRoute(req: IncomingMessage, res: ServerResponse, runId: string, family: LiveFamily, rest: string): Promise<void> {
     if (req.method !== "GET" && req.method !== "HEAD") throw new ApiError("method_not_allowed", `${req.method} is not a method of a run's live view`, {}, { allow: "GET, HEAD" });
     if (!byOwnerSession(req)) {
-      authFailed(`/v2/runs/${runId}/browser/live`, req.headers.authorization === undefined ? "no_credential" : "browser_without_session");
-      throw req.headers.authorization === undefined ? new ApiError("unauthenticated", "a run's live browser view takes the owner's password sign-in in the console") : new ApiError("forbidden", "a run's live browser view takes the owner's password sign-in in the console, never a token");
+      authFailed(`/v2/runs/${runId}/${family}/live`, req.headers.authorization === undefined ? "no_credential" : `${family}_without_session`);
+      throw req.headers.authorization === undefined ? new ApiError("unauthenticated", `a run's live ${family} view takes the owner's password sign-in in the console`) : new ApiError("forbidden", `a run's live ${family} view takes the owner's password sign-in in the console, never a token`);
     }
     await needRun(runId);
-    // The run's live viewer from the store (the runner's browser tool wrote it under its claim; liveViewerFor picks a named
-    // viewer's handover or the run's open one). The store's live-claim filter answers none for a run no runner holds, as
-    // hasProcess did; with no seal key this server serves no live view.
+    // The run's live viewer from the store (the runner's browser/computer tool wrote it under its claim; liveViewerFor picks
+    // a named viewer's handover or the run's open one). None for a run no runner holds; with no seal key this server serves
+    // no live view. A /computer/live path reaches only a computer-kind viewer, a /browser/live path a browser one.
     const handover = sealKey ? await liveViewerFor(store, sealKey, runId, rest) : undefined;
-    if (!handover) throw new ApiError("not_found", "this run's browser has no live view at that address");
+    const browserKind = handover !== undefined && (handover.kind ?? "browser") === "browser";
+    if (handover === undefined || browserKind !== (family === "browser")) throw new ApiError("not_found", `this run's ${family} has no live view at that address`);
     await serveViewerFile(req, res, rest);
   }
 
@@ -2616,18 +2774,26 @@ async function startHolding(options: ServeOptions, data: string, checked: { maxR
     if (raw === MCP_PATH) return void mcp(req, res).catch(fail);
     if (raw === "/llms.txt") return void answerLlms(req, res).catch(fail);
     if (answerPage(req, res, raw, { token, dir: data, authFailed, console: options.console, takesBytes, ...(owner ? { owner } : {}), ...(options.publicUrl ? { publicUrl: options.publicUrl } : {}) })) return;
+    // Under --faux only: a faux desktop's live view, a page on this server's own address (faux-computers.ts viewPage), so
+    // a run's take-over has a viewer to open in the console's real-browser flows. Gone after the computer's release.
+    if (options.faux && raw.startsWith(`${FAUX_VIEW_PATH}/`)) {
+      const page = fauxOf().viewPage(raw);
+      if (page === undefined) return fail(new ApiError("not_found", `no faux desktop at ${raw}`));
+      res.writeHead(200, { "content-type": "text/html; charset=utf-8", "cache-control": "no-store" }).end(req.method === "HEAD" ? undefined : page);
+      return;
+    }
     if (!raw.startsWith("/v2/")) return fail(new ApiError("not_found", `no route ${raw}; the API is under /v2`));
     // A run's id needs no decoding: one that is not an id as sent (a stray or malformed escape) is no run's, and is never
     // decoded here, where a throw would leave the request listener.
     const viewing = LIVE_PATH.exec(raw);
-    if (viewing) return ID.test(viewing[1]!) ? void liveRoute(req, res, viewing[1]!, viewing[2]!).catch(fail) : fail(new ApiError("not_found", "no run's live view at that address"));
+    if (viewing) return ID.test(viewing[1]!) ? void liveRoute(req, res, viewing[1]!, viewing[2] as LiveFamily, viewing[3]!).catch(fail) : fail(new ApiError("not_found", "no run's live view at that address"));
     route(req, res, url, raw.slice(3)).catch(fail);
   });
   // A request's headers come within 10 s, whatever its route: nothing sends more than a few kilobytes of them. Its body
   // keeps Node's 5-minute request timeout, which an upload of a large file needs; the token-less hook route has its own
   // 30 s for its body (push-handler.ts HOOK_BODY_MS), so dribbling senders hold no socket for long.
   server.headersTimeout = 10_000;
-  // The one upgrade this server takes: a run's live browser viewer's WebSocket (browser-live.ts). Every other is refused.
+  // The one upgrade this server takes: a run's live computer viewer's WebSocket (browser-live.ts). Every other is refused.
   server.on("upgrade", (req: IncomingMessage, socket: Duplex, head: Buffer) => {
     socket.on("error", () => socket.destroy());
     const raw = (req.url ?? "/").split("?")[0]!;
@@ -2637,7 +2803,7 @@ async function startHolding(options: ServeOptions, data: string, checked: { maxR
     // address sends its own name as Origin too, which the Origin check below would take, so its Host is what gives it
     // away. Its name alone, on any port, as the HTTP routes check it.
     if (names && !names.has(hostName(req.headers.host) ?? "")) return deny("403 Forbidden");
-    if (!viewing || !ID.test(viewing[1]!) || !/^\/v\/[A-Za-z0-9_-]{22}\/ws$/.test(viewing[2]!)) return deny("404 Not Found");
+    if (!viewing || !ID.test(viewing[1]!) || !/^\/v\/[A-Za-z0-9_-]{22}\/ws$/.test(viewing[3]!)) return deny("404 Not Found");
     // A browser always sends its page's origin on a WebSocket, which no other page's script can forge: this server's own
     // (as this request reaches it, or its public address, which a TLS proxy that rewrites Host or drops
     // X-Forwarded-Proto leaves as the only one the owner's page has), and the owner signed in, or nothing.
@@ -2648,9 +2814,12 @@ async function startHolding(options: ServeOptions, data: string, checked: { maxR
     let piping = false;
     void (async () => {
       const run = ID.test(viewing[1]!) ? await momentOverStore(store, viewing[1]!, viewDepsFor(ownOriginOf())) : undefined;
-      // The run's live viewer from the store (the runner's browser tool wrote it under its claim): the store's live-claim
-      // filter answers none for a run no runner holds, as hasProcess did; with no seal key no live view is served.
-      const handover = run && sealKey ? await liveViewerById(store, sealKey, run.id, viewing[2]!.slice(3, -3)) : undefined;
+      // The run's live viewer from the store (the runner's browser/computer tool wrote it under its claim): none for a run no
+      // runner holds; with no seal key no live view is served. The family (viewing[2]) holds a /computer/live socket to a
+      // computer-kind viewer and a /browser/live socket to a browser one.
+      const liveFamily = viewing[2] as LiveFamily;
+      const viewerHandover = run && sealKey ? await liveViewerById(store, sealKey, run.id, viewing[3]!.slice(3, -3)) : undefined;
+      const handover = viewerHandover !== undefined && (((viewerHandover.kind ?? "browser") === "browser") === (liveFamily === "browser")) ? viewerHandover : undefined;
       if (!handover) return deny("404 Not Found");
       // Gone during the lookup, or the server is closing and has ended its viewers, or is about to.
       if (socket.destroyed || closing) return void socket.destroy();
@@ -2659,7 +2828,7 @@ async function startHolding(options: ServeOptions, data: string, checked: { maxR
       const admitted = () => held.some((value) => owner.valid(value));
       if (!admitted()) return deny("401 Unauthorized");
       viewers.watch(socket, admitted);
-      proxyLiveUpgrade(req, socket, head, handover, viewing[2]!, () => { piping = true; });
+      proxyLiveUpgrade(req, socket, head, handover, viewing[3]!, () => { piping = true; });
     })().catch(() => (piping ? void socket.destroy() : deny("500 Internal Server Error")));
   });
   const first = options.port ?? DEFAULT_PORT;

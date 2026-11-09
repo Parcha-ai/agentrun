@@ -1,6 +1,7 @@
 import type { ReactNode } from "react";
 import { cn } from "@/lib/utils";
 import { grantOf, grantProblem, type McpServer, mcpGrant, staleGrants } from "@/lib/mcp";
+import { SERVER_DENY } from "@/lib/toolSettings";
 
 /** The Tools step's MCP servers: a group per saved server with a box per tool it lists, ticked when `tools` grants
  *  `mcp:<server>/<tool>`; then each grant that no saved server answers for (its server deleted, or the tool no longer
@@ -12,7 +13,7 @@ export function McpToolPicker({ servers, tools, harness, harnesses, onChange, on
   const granted = tools.filter((t) => grantOf(t));
   const runs = !harnesses || harnesses.includes(harness);
   // A grant the server's save refuses (by harness, or by name) can't be ticked; one already granted stays, to untick.
-  const box = (grant: string, label: string, note?: string, warn?: string, refused?: string) => {
+  const box = (grant: string, label: ReactNode, note?: string, warn?: string, refused?: string) => {
     const on = tools.includes(grant);
     const off = (!runs || !!refused) && !on;
     const said = warn ?? refused ?? (on && !runs ? `Won't run on ${harness}.` : undefined);
@@ -43,7 +44,8 @@ export function McpToolPicker({ servers, tools, harness, harnesses, onChange, on
       {servers.map((s) => (
         <section key={s.name} aria-label={`MCP server ${s.name}`}>
           <p className="caps mb-2 text-[11px] font-semibold text-muted-foreground">{s.name} · MCP server</p>
-          {grid(s.tools.map((t) => box(mcpGrant(s.name, t.name), t.name, [t.title, t.description].filter(Boolean).join(": ") || undefined, undefined, grantProblem(s.name, t, harness))))}
+          {/* A tool its server's read says no price meters: its calls run outside the run's cost and cap. */}
+          {grid(s.tools.map((t) => box(mcpGrant(s.name, t.name), s.not_metered?.includes(t.name) ? <>{t.name}<span className="ml-2 font-sans text-[11px] text-muted-foreground">not metered</span></> : t.name, [t.title, t.description].filter(Boolean).join(": ") || undefined, undefined, grantProblem(s.name, t, harness) ?? (t.permission === "deny" ? SERVER_DENY : undefined))))}
         </section>
       ))}
       {stale.length > 0 && (

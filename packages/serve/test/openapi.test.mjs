@@ -731,7 +731,8 @@ test("what this server always sends is required in the document: a run's revisio
   const answer = doc.paths["/triggers/{trigger_id}"].get.responses["200"].content["application/json"].schema;
   const write = doc.paths["/triggers"].post.requestBody.content["application/json"].schema;
   for (const [source, filled] of [[{ cron: "30 1 * * *" }, "timezone"], [{ every_s: 600 }, "start_at"]]) {
-    const body = schedule("nightly", source);
+    // One name per trigger of an agent (the store's UNIQUE (agent_id, name)): each its own.
+    const body = schedule("nightly", source, { name: `nightly ${filled}` });
     assert.deepEqual(schemaProblems(doc, write, body), [], `a write may leave ${filled} out`);
     const created = await api("POST", "/triggers", body);
     assert.equal(created.status, 201, JSON.stringify(created.body));
@@ -741,4 +742,15 @@ test("what this server always sends is required in the document: a run's revisio
     const { [filled]: _, ...without } = read.source;
     assert.notDeepEqual(schemaProblems(doc, answer, { ...read, source: without }), [], `an answer without ${filled} is not the document's`);
   }
+});
+
+test("every InputIssue reason the MCP registry sends is one the document's InputIssue lists (a URL's redirect among them)", async () => {
+  const { openapiDocument } = await import("../dist/openapi.js");
+  const listed = openapiDocument(() => undefined).components.schemas.InputIssue.properties.reason.enum;
+  const sent = new Set();
+  for (const file of ["mcp-probe.ts", "mcp-servers-store.ts", "mcp-private-hosts.ts"]) {
+    for (const [, reason] of (await readFile(new URL(`../src/${file}`, import.meta.url), "utf8")).matchAll(/reason: "([a-z_]+)"/g)) sent.add(reason);
+  }
+  assert.ok(sent.has("redirect"), "the registry refuses a redirect with reason redirect");
+  assert.deepEqual([...sent].filter((reason) => !listed.includes(reason)).sort(), []);
 });

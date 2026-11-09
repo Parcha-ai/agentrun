@@ -70,10 +70,21 @@ export function createReflectHook(deps: ReflectDeps): EndOfRunTurn {
     const deadlineMs = deps.deadlineMs ?? REFLECT_TIMEOUT_MS;
     const now = deps.now ?? Date.now;
     const started = now();
+    // When the job answered and what it cost (learning-run.ts setLearning "reflecting"): as the turn starts, the run's
+    // spend so far is the job's.
+    const answeredAt = new Date(started).toISOString();
+    const job = facts.costUsd;
     const end = await input.ask(reflectPrompt({ dir: LEARNED_DIR, active, tools }), { origin: "reflect", deadlineMs });
+    // closeLearning: what looking back cost, the run's spend once the turn closed (its re-ask included) less the job's,
+    // unknown when either is. Kept with every end the turn reaches from here, beside when the job answered and its cost.
+    const looked = async (rows: { readonly also: readonly AlsoRow[] }) => {
+      const total = (await deps.facts(input.runId)).costUsd;
+      const answered = { answered_at: answeredAt, job_cost_usd: job, look_back_usd: total === null || job === null ? null : Math.max(0, Math.round((total - job) * 1e9) / 1e9) };
+      return { also: rows.also.map((row): AlsoRow => (row.table === "learning_proposals" ? { ...row, row: { ...row.row, proposal: { ...(row.row as { proposal: object }).proposal, ...answered } } } : row)) };
+    };
     // closeLearning: how the turn ended.
-    if ("timedOut" in end) return { also: [droppedRow(null, "reflect_timeout", said.stopped(STOPPED.timedOut))] };
-    if ("failed" in end) return { also: [CAP_REFUSAL.test(end.failed.message) ? droppedRow(null, "no_budget", said.noBudget) : droppedRow(null, "reflect_failed", said.stopped(STOPPED.failed))] };
+    if ("timedOut" in end) return looked({ also: [droppedRow(null, "reflect_timeout", said.stopped(STOPPED.timedOut))] });
+    if ("failed" in end) return looked({ also: [CAP_REFUSAL.test(end.failed.message) ? droppedRow(null, "no_budget", said.noBudget) : droppedRow(null, "reflect_failed", said.stopped(STOPPED.failed))] });
     const said_ = await deps.asked(input.runId);
     const turnOf = (answer: string): ReflectTurn => ({ answer, asked: [...said_.asked], ...(said_.triggered?.length ? { triggered: said_.triggered } : {}) });
     const checkOf = async (turn: ReflectTurn): Promise<Checked | undefined> => {
@@ -85,7 +96,7 @@ export function createReflectHook(deps: ReflectDeps): EndOfRunTurn {
     };
     let turn = turnOf(end.answer);
     let checked = await checkOf(turn);
-    if (!checked) return { also: [droppedRow(turn, "propose_failed", said.stopped(STOPPED.notChecked))] };
+    if (!checked) return looked({ also: [droppedRow(turn, "propose_failed", said.stopped(STOPPED.notChecked))] });
     // An answer the parser refused is asked for again once, in the same turn, saying why in the parser's own words: the
     // second answer is checked as the first was, and refused again it is dropped as before. Never a third time, and only
     // within the turn's own deadline; a re-ask that times out or fails leaves the first answer's drop.
@@ -95,18 +106,18 @@ export function createReflectHook(deps: ReflectDeps): EndOfRunTurn {
       if (again && "ended" in again) {
         turn = turnOf(again.answer);
         checked = await checkOf(turn);
-        if (!checked) return { also: [droppedRow(turn, "propose_failed", said.stopped(STOPPED.notChecked))] };
+        if (!checked) return looked({ also: [droppedRow(turn, "propose_failed", said.stopped(STOPPED.notChecked))] });
       }
     }
     if (checked.state === "dropped") {
       const detail = checked.reason === "empty" ? said.empty : checked.reason === "unparsed" ? said.unparsed : said.checker(checked.problems as never);
-      return { also: [droppedRow(turn, checked.reason, detail, checked)] };
+      return looked({ also: [droppedRow(turn, checked.reason, detail, checked)] });
     }
-    return {
+    return looked({
       also: [
         { table: "learning_proposals", row: { turn, proposal: { ...checked, detail: said.proposed(checked.notes, checked.skills, checked.workflows) } } },
         { table: "learning_run", row: { id: deps.newRunId(), ...(deps.gradeModel ? { model: deps.gradeModel } : {}) } },
       ],
-    };
+    });
   };
 }

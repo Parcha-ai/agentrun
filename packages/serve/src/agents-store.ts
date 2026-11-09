@@ -13,9 +13,10 @@ import { harnessOfBody } from "./harness.js";
 import { storedHarness } from "./harness-table.js";
 import {
   AgentBodyInvalid, type AgenticBody, type AgentRow, bodyOf, canonical, isObject, type NewRevision, type RevisionBodyInput,
-  type RevisionPlace, type RevisionRow, type Store, StoreConstraint, type ToolSettings, type WorkflowBody,
+  type RevisionComputer, type RevisionPlace, type RevisionRow, type Store, StoreConstraint, type ToolSettings, type WorkflowBody,
 } from "./store/index.js";
 import { canonicalToolSettings, settingsIssues, type ToolSettingsMap } from "./tool-plane.js";
+import { computerOfPlace, type PlaceView, settingOfDefinition } from "./computer-setting.js";
 import { type DefinitionBody, type Json, skillIssues, skillNames } from "./validate.js";
 
 /** A UUIDv7: time-ordered, so a listing by created_at is stable, and unique per revision and per minted agent. */
@@ -75,7 +76,9 @@ function revisionInputOf(definition: Json, files: Record<string, string>): Revis
   // The default harness is never stored: naming pi and naming none are one revision.
   const stored = typeof definition.harness === "string" ? storedHarness(definition.harness) : undefined;
   const harness = stored ? { harness: stored } : {};
-  const place = isObject(definition.place) ? { place: definition.place as RevisionPlace } : {};
+  // The computer and its place are one setting (computer-setting.ts): naming either keeps both, and both given must agree.
+  const setting = settingOfDefinition(definition);
+  const place = setting ? { place: setting.place as RevisionPlace, computer: setting.computer as RevisionComputer } : {};
   // Tool settings go through the one copy (tool-plane.ts): settingsIssues checks them (providers, permissions, keys, and
   // an MCP tool's pin via pinIssues), then canonicalToolSettings makes the one form (sorted keys, empty tools dropped, a
   // pin's arguments sorted) so two revisions that say the same are one body. The store never reimplements it.
@@ -163,7 +166,7 @@ export async function createAgent(
   if (given !== undefined && !ID_PATTERN.test(given)) throw invalid([{ field: "definition.id", reason: "invalid", message: `definition.id does not match ${ID_PATTERN.source}` }]);
   if (given !== undefined && (await store.agents.get(given))) throw new ApiError("agent_exists", `an agent ${given} exists here`);
   // Stamped on the revision now, never resolved at run time: an agent saved with no place keeps running on the runner.
-  const stamped = options.fresh && definition.place === undefined && !isObject(definition.workflow)
+  const stamped = options.fresh && definition.place === undefined && definition.computer === undefined && !isObject(definition.workflow)
     ? { place: options.fresh.place, ...(definition.tools === undefined ? { tools: [...options.fresh.tools] } : {}) }
     : {};
   const revision = makeRevision({ ...definition, ...stamped }, skills, note);
@@ -224,7 +227,8 @@ export async function commitAgent(
   const carried = current
     ? {
         ...(definition.harness === undefined && currentBody.harness ? { harness: currentBody.harness } : {}),
-        ...(definition.place === undefined && currentBody.place ? { place: currentBody.place } : {}),
+        // The computer and its place go together: an edit naming neither keeps both (the computer, else the place).
+        ...(definition.place === undefined && definition.computer === undefined ? (currentBody.computer ? { computer: currentBody.computer } : currentBody.place ? { place: currentBody.place } : {}) : {}),
         ...(definition.learning === undefined && current.kind === "agentic" && !isObject(definition.workflow) && (currentBody as AgenticBody).learning !== undefined ? { learning: (currentBody as AgenticBody).learning } : {}),
         ...(definition.approvals === undefined && current.kind === "agentic" && !isObject(definition.workflow) && (currentBody as AgenticBody).approvals !== undefined ? { approvals: (currentBody as AgenticBody).approvals } : {}),
         ...(definition.max_cost_usd === undefined && currentBody.maxCostUsd !== undefined ? { max_cost_usd: currentBody.maxCostUsd } : {}),
@@ -291,6 +295,9 @@ export function definitionOf(agent: AgentRow, revision: RevisionRow, version: nu
     ...kindBody,
     harness: harnessOfBody(body),
     ...(body.place ? { place: body.place } : {}),
+    // A revision's computer as the API shows it: its own, else the one its place says (a revision saved before the
+    // setting keeps its place alone); none when it names neither (the host's default applies).
+    ...(body.computer ? { computer: body.computer } : body.place ? { computer: computerOfPlace(body.place as PlaceView) } : {}),
     skills: skillNames(Object.keys(body.skills ?? {})),
     tools: body.tools,
     ...(body.toolSettings ? { tool_settings: body.toolSettings } : {}),
@@ -318,7 +325,7 @@ export function agentView(
     runs: extra.runs ?? { count: 0, live: 0 },
     region: "local",
     home_etag: etagOf(entry),
-    archived_at: agent.archivedAt ?? null,
+    archived_at: agent.archivedAt == null ? null : new Date(agent.archivedAt).toISOString(),
     console_url: agentLink(origin, agent.id),
     ...(extra.learning ? { learning: extra.learning } : {}),
     created_at: new Date(agent.createdAt).toISOString(),

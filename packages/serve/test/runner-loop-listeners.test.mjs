@@ -20,7 +20,22 @@ const quiet = { beforeIntent: async () => {}, beforeResult: async () => {} };
 // these tests do not read. The runs end themselves, so nothing here waits on the lease.
 const TIMING = { leaseMs: 60_000, renewEveryMs: 1_000, stopMarginMs: 5_000, pollMs: 20, commandPollMs: 30 };
 
-async function runOnce(t, script, endState) {
+/** `journal` whose commit of the run's end returns `ms` after it landed: a loaded machine, where the loop's teardown
+ *  runs late after the end commit, which is the run's release (the row reads released before the loop has settled). */
+const endReturnsLate = (journal, ms) =>
+  new Proxy(journal, {
+    get(target, key) {
+      const value = Reflect.get(target, key, target);
+      if (key !== "commit") return typeof value === "function" ? value.bind(target) : value;
+      return async (batches, ...rest) => {
+        const result = await value.call(target, batches, ...rest);
+        if (batches.flat().some((write) => write.type === "entry" && write.value?.kind === "agentrun.end")) await new Promise((resolve) => setTimeout(resolve, ms));
+        return result;
+      };
+    },
+  });
+
+async function runOnce(t, script, endState, { endLateMs } = {}) {
   const dir = mkdtempSync(join(process.env.TMPDIR ?? tmpdir(), "agentrun-loop-listeners-"));
   const server = await openSqliteStore({ dataDir: dir, role: "server" });
   const store = await openSqliteStore({ dataDir: dir, role: "runner" });
@@ -34,9 +49,24 @@ async function runOnce(t, script, endState) {
   await server.agents.create({ id: "agent-1", name: "Listeners" }, { id: "rev-1", kind: "agentic", body: {} });
   await server.runs.create({ id: "run-1", agentId: "agent-1", revisionId: "rev-1" });
   const signals = [];
+  // Each loop's start(), settled: the loop's own end, after its teardown (the property is about start() settling; the
+  // row reads released at the end commit, before that).
+  const settled = [];
   const { tools } = suiteTools();
   const inner = piAdapterSubject.createLoop({ script, tools, hooks: quiet });
-  runner = startRunner({ store, createLoop: (deps) => (signals.push(deps.signal), inner(deps)), name: "runner-a", ...TIMING });
+  const journalOf = (deps) => (endLateMs ? { ...deps, journal: (claim) => endReturnsLate(deps.journal(claim), endLateMs) } : deps);
+  const createLoop = (deps) => {
+    signals.push(deps.signal);
+    const loop = inner(journalOf(deps));
+    const start = loop.start.bind(loop);
+    loop.start = (claim) => {
+      const end = start(claim);
+      settled.push(Promise.resolve(end).then(() => undefined, () => undefined));
+      return end;
+    };
+    return loop;
+  };
+  runner = startRunner({ store, createLoop, name: "runner-a", ...TIMING });
   const deadline = Date.now() + 15_000;
   for (;;) {
     const row = await server.runs.get("run-1");
@@ -45,11 +75,20 @@ async function runOnce(t, script, endState) {
     await new Promise((resolve) => setTimeout(resolve, 20));
   }
   assert.equal(signals.length, 1, "one loop");
+  // Read once the loop's start() has settled; the bound only fails a loop that never settles.
+  let timer;
+  await Promise.race([Promise.all(settled), new Promise((_, reject) => (timer = setTimeout(() => reject(new Error("the loop's start() never settled")), 15_000)))]);
+  clearTimeout(timer);
   return signals[0];
 }
 
 test("a pi loop that ended leaves no abort listener on its claim's signal", async (t) => {
   const signal = await runOnce(t, [{ call: "read" }, { say: "done" }], "ended");
+  assert.equal(getEventListeners(signal, "abort").length, 0);
+});
+
+test("a pi loop that ended leaves no abort listener on its claim's signal, its teardown late (a loaded machine)", async (t) => {
+  const signal = await runOnce(t, [{ call: "read" }, { say: "done" }], "ended", { endLateMs: 1_500 });
   assert.equal(getEventListeners(signal, "abort").length, 0);
 });
 

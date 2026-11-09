@@ -1,0 +1,291 @@
+// The run's computer at its claim, the one call both runner specs make (the adapter loop's and the CLI's): the agent's
+// computer setting, resolved in the server's mode against the computer module's kind registry (resolveComputer), started
+// for this run under this claim (labels agentrun.run and agentrun.epoch, the run's folder mounted only where the provider
+// mounts it), held for its owner's take-over when it is a desktop or a phone (a computer hold the run's spec hands the
+// adapter loop as AdapterRunSpec.computer, which records it in the run's journal for the server to read), and released
+// once at the run's end. A computer that cannot be had is refused in words
+// with code computer_unavailable; kind none, or no setting where the server's default is none, is no computer.
+//
+// A provider is made with its keys from the store's sealed keys, by the names the registry declares, through serve's own
+// map of key names to options (computer-keys.ts providerOptions); a provider that keeps sessions with no labels of their
+// own (the phone's) is given the store's computer ledger. Nothing here knows a vendor: the registry, the providers' create
+// and a test's stand-ins are passed in.
+import type { ComputerProvider, ComputerSpec, MountReadBack, Result, Swept } from "@parcha/agentrun-computer";
+import { releaseOlder, runLabels, sweep } from "@parcha/agentrun-computer";
+import { computerOfPlace, type ComputerSetting as RevisionComputer, type PlaceView } from "../computer-setting.js";
+import { KEY_TABLE, type KeyTable, type ProviderSettings, providerOptions } from "../computer-keys.js";
+import { getSealedKey } from "../server-keys.js";
+import type { Store } from "../store/index.js";
+import type { MountCheck } from "./attach.js";
+import { computerHold, type HeldComputer, heldHands } from "./computer-hold.js";
+import { type ServingRefusals, servedGroups } from "./computer-serves.js";
+import { type ProviderLedger, storeLedger } from "./computer-ledger.js";
+import { type ClaimSide, type ComputerSetting, type ComputerSettingKind, type KindRegistry, type LaunchedComputer, type ProviderEntry, resolveComputer } from "./resolve-computer.js";
+import type { RunComputer, RunHold } from "./run-tools.js";
+import type { Workspace } from "./workspace.js";
+
+/** What the claim knows of the run: its id, the claim's epoch, and where its computer setting is (the launch's own, else
+ *  the revision's, else the launch's place, its v2 view). */
+export interface ClaimLaunch {
+  readonly runId: string;
+  readonly epoch: number;
+  /** The claim itself, as the live view's registration fences on it (absent: its run and epoch). */
+  readonly claim?: unknown;
+  readonly revisionId?: string;
+  readonly computer?: ComputerSetting;
+  readonly place?: PlaceView;
+}
+
+/** A provider module's create(), by provider id: its options from the saved keys, and the store's ledger for a provider
+ *  that keeps one (the phone's `ledger` option). The computer package's providers, or a test's stand-in. */
+export type ProviderMakers = Readonly<Partial<Record<string, (options: Record<string, string>, extras: { readonly ledger: ProviderLedger }) => ComputerProvider | Promise<ComputerProvider>>>>;
+
+/** Why a live view ends: the computer was released, or the run ended. */
+export type ViewEnd = "released" | "ended";
+
+/** The live view of a desktop or a phone, proxy-only, as its registration (tl-browser's computer-live.ts
+ *  openComputerView, taken as a dep until it is on the base) opens it at the claim: fenced on the claim, tagged with the
+ *  computer's ref id, fed by the provider's watch, and held by the run's take-over hold. */
+export type OpenComputerView = (args: {
+  readonly store: unknown;
+  readonly sealKey: Buffer | undefined;
+  readonly claim: unknown;
+  readonly kind: "desktop" | "phone";
+  /** How the viewer's input is made into actions: a desktop's, or the phone's platform (its machine kind). */
+  readonly input: "desktop" | "android" | "ios";
+  readonly tag: string;
+  readonly watch: (signal: AbortSignal) => unknown;
+  readonly hold: unknown;
+}) => Promise<{ readonly ok: true; readonly view: { close(why: ViewEnd): unknown } } | { readonly ok: false; readonly refused: "fenced" | "bad_tag" | "kind"; readonly message: string }>;
+
+export interface ComputerForClaimDeps {
+  /** The server's folder mode: 1, a folder of this machine; 2, Archil. */
+  readonly mode: 1 | 2;
+  /** The computer module's kind registry (or --faux's). */
+  readonly kinds: KindRegistry;
+  /** The server's seal key: absent, no key is opened, so a provider that needs one is refused in words. */
+  readonly sealKey: Buffer | undefined;
+  readonly providers: ProviderMakers;
+  /** What a computer of `kind` is made with, besides its labels and its mount: image, lifetime, network. */
+  readonly spec: (entry: ProviderEntry, kind: Exclude<ComputerSettingKind, "none">) => Omit<ComputerSpec, "labels" | "mount">;
+  /** The map from key names to options: serve's own unless given (--faux's). */
+  readonly keyTable?: KeyTable;
+  readonly settings?: ProviderSettings;
+  /** Whether a provider that binds a folder of this machine answers here now (Docker): the Mode 1 default asks it. */
+  readonly answers?: (provider: string) => Promise<boolean>;
+  /** A launch of the server's own in place of the providers' (--faux's desktop). */
+  readonly launch?: ClaimSide["launch"];
+  /** The run's folder (mounted only where the provider mounts it) and the mount check attach runs. */
+  readonly workspace: Workspace;
+  readonly check: MountCheck;
+  /** Removes the run's Archil mount credential (the Archil claim's revoke): called once the computer is released, and
+   *  when a start fails after a mount was minted. Absent: nothing was minted (Mode 1). */
+  readonly revokeMount?: () => Promise<void>;
+  /** The live view's registration for a desktop or a phone (proxy-only). Absent: no view is opened. */
+  readonly openComputerView?: OpenComputerView;
+  readonly signal?: AbortSignal;
+}
+
+/** The run's computer at its claim: what runTools takes, the person's hold on a desktop's or phone's ports (`hold`, for
+ *  runTools; `held`, the hold itself and its kind, for the spec's AdapterRunSpec.computer), and its release
+ *  (idempotent): the live view closed ("released" when the computer goes before the run's end, "ended" at the run's
+ *  end), the hold closed (a take in force ends released), then the computer. */
+export interface ClaimComputer {
+  readonly computer?: RunComputer;
+  readonly hold?: RunHold;
+  readonly held?: HeldComputer;
+  release(why?: ViewEnd): Promise<void>;
+}
+
+/** A computer that cannot be had, with the code the run fails with and the server's words. */
+const unavailable = (words: string): Error => Object.assign(new Error(words), { code: "computer_unavailable" });
+/** The claim was lost (its live view's registration was fenced): the run's process holds it no more. */
+const claimLost = (words: string): Error => Object.assign(new Error(words), { code: "claim_lost" });
+const noop = async (): Promise<void> => {};
+
+/** The agent's computer setting: the launch's, else its revision's (computer, else place), else the launch's place. */
+async function settingOf(launch: ClaimLaunch, store: Pick<Store, "agents">): Promise<ComputerSetting | undefined> {
+  if (launch.computer) return launch.computer;
+  const body = launch.revisionId ? ((await store.agents.revision(launch.revisionId))?.body as { computer?: RevisionComputer; place?: PlaceView } | undefined) : undefined;
+  if (body?.computer) return body.computer;
+  if (body?.place) return computerOfPlace(body.place);
+  return launch.place ? computerOfPlace(launch.place) : undefined;
+}
+
+/** A phone's platform: what the phone says it is, else its provider's phone configuration's machine kind; android when
+ *  neither says ios. */
+function phonePlatform(machine: string | undefined, entry: ProviderEntry | undefined): "android" | "ios" {
+  const said = machine ?? entry?.capabilities.find((one) => one.kind === "android" || one.kind === "ios")?.kind;
+  return said === "ios" ? "ios" : "android";
+}
+
+/** The provider's watch of a computer's screen (tl-computer's ComputerProvider.watch), where it has one. */
+type Watching = { watch(ref: { readonly id: string; readonly name: string }, context: { readonly signal: AbortSignal }): unknown };
+const watching = (provider: ComputerProvider): Watching | undefined =>
+  typeof (provider as Partial<Watching>).watch === "function" ? (provider as unknown as Watching) : undefined;
+
+/** `entry`'s computer started through its provider: the run's computers of a lower claim epoch released first (the
+ *  janitor's releaseOlder: one claim's computer at a time), then made with the run's labels (and the run's folder, when
+ *  it mounts), connected, its groups from its hello; its read-back is the provider's own; its release deletes it. */
+async function providerLaunch(
+  provider: ComputerProvider,
+  claim: { readonly runId: string; readonly epoch: number },
+  spec: ComputerSpec,
+  signal: AbortSignal | undefined,
+): Promise<LaunchedComputer & { machine: string; watch?: (signal: AbortSignal) => unknown }> {
+  const older = await releaseOlder(provider, claim.runId, claim.epoch, signal ? { signal } : {});
+  if (!older.ok) throw new Error(older.error.message);
+  const created = await provider.create(spec, signal ? { signal } : {});
+  if (!created.ok) throw new Error(created.error.message);
+  const ref = { id: created.value.id, name: created.value.name };
+  const release = async () => {
+    const released = await provider.release(ref, "delete");
+    if (!released.ok) throw new Error(released.error.message);
+  };
+  const connected = await provider.connect(ref);
+  if (!connected.ok) {
+    await release().catch(() => undefined);
+    throw new Error(connected.error.message);
+  }
+  const { client, hello } = connected.value;
+  return {
+    id: ref.id,
+    groups: hello.groups,
+    // What the machine says it is (a phone's android or ios): its live view's input platform.
+    machine: hello.kind,
+    client,
+    async readBack(): Promise<Result<MountReadBack>> {
+      const attached = await provider.attach({ id: ref.id });
+      if (!attached.ok) return attached;
+      return attached.value.spec.mount ? { ok: true, value: attached.value.spec.mount } : { ok: false, error: { code: "not_found", message: "nothing is mounted in this computer" } };
+    },
+    // The provider's watch of the screen (tl-computer's provider.watch), which feeds the run's proxied live view.
+    ...(watching(provider) ? { watch: (signal: AbortSignal) => watching(provider)!.watch(ref, { signal }) } : {}),
+    async release() {
+      await connected.value.close().catch(() => undefined);
+      await release();
+    },
+  };
+}
+
+/** The runner's start: every computer of `providers` with all of `labels` whose deadline (its agentrun.computer.deadline
+ *  label) has passed is ended, once (the janitor's sweep), each provider apart. A provider whose vendor ends its own
+ *  computers answers its refusal in words; nothing throws. */
+export async function sweepComputers(providers: readonly ComputerProvider[], labels: Readonly<Record<string, string>>, now: Date = new Date()): Promise<{ readonly provider: string; readonly swept: Result<Swept> }[]> {
+  const out: { provider: string; swept: Result<Swept> }[] = [];
+  for (const provider of providers) {
+    const swept = await sweep(provider, { labels: { ...labels }, now }).catch((error: unknown): Result<Swept> => ({ ok: false, error: { code: "refused", message: error instanceof Error ? error.message : String(error) } }));
+    out.push({ provider: provider.id, swept });
+  }
+  return out;
+}
+
+/** The run's computer for this claim, started and registered; `{ computer: undefined }` for none. Throws with code
+ *  computer_unavailable and the server's words when the agent's computer cannot be had here. */
+export async function computerForClaim(launch: ClaimLaunch, store: Pick<Store, "agents" | "sealedKeys" | "computerLedger">, deps: ComputerForClaimDeps): Promise<ClaimComputer> {
+  const table = deps.keyTable ?? KEY_TABLE;
+  /** What a started computer says it is (its hello's machine kind, else its provider's configuration of the kind, and the
+   *  groups it declares), read against the kind registry by the one shared check (servedGroups): one that does not serve
+   *  the setting's kind is released and refused in the registry's words. */
+  const serves = async (launched: LaunchedComputer, machine: string | undefined, entry: ProviderEntry, kind: ComputerSettingKind): Promise<void> => {
+    const said = machine ?? entry.capabilities.find((one) => deps.kinds.servingRefusals(one, kind).length === 0)?.kind ?? "unknown";
+    try {
+      servedGroups({ kind: String(said), groups: launched.groups.map(String) }, kind, deps.kinds.servingRefusals as unknown as ServingRefusals);
+    } catch (error) {
+      await launched.release().catch(() => undefined);
+      throw error;
+    }
+  };
+  /** The computer this claim started (one per claim): its ref id tags its live view, and its watch feeds it. */
+  let made: { readonly id: string; readonly machine?: string; readonly watch?: (signal: AbortSignal) => unknown } | undefined;
+  /** The provider entry it was started from: a phone's platform where the computer did not say it. */
+  let madeBy: ProviderEntry | undefined;
+  const side: ClaimSide = {
+    async keysOf(provider) {
+      const entry = deps.kinds.PROVIDERS.find((one) => one.id === provider);
+      const keys: Record<string, string> = {};
+      for (const key of entry?.keys ?? []) {
+        const value = deps.sealKey ? await getSealedKey(store, deps.sealKey, key.name) : undefined;
+        if (value !== undefined) keys[key.name] = value;
+      }
+      return keys;
+    },
+    answers: deps.answers ?? (async () => false),
+    async launch(entry, { kind, keys, mount, signal }) {
+      if (deps.launch) {
+        const own = await deps.launch(entry, { kind, keys, ...(mount ? { mount } : {}), ...(signal ? { signal } : {}) });
+        await serves(own, undefined, entry, kind);
+        const ownWatch = (own as unknown as { watch?: (signal: AbortSignal) => unknown }).watch;
+        made = { id: own.id, ...(ownWatch ? { watch: ownWatch } : {}) };
+        madeBy = entry;
+        return own;
+      }
+      const make = Object.hasOwn(deps.providers, entry.id) ? deps.providers[entry.id] : undefined;
+      if (!make) throw new Error(`this server has no ${entry.label} provider to start one with`);
+      const options = providerOptions(entry.id, keys, deps.settings ?? {}, table);
+      if (!options.ok) throw new Error(options.error.message);
+      const provider = await make(options.options, { ledger: storeLedger(store.computerLedger, entry.id) });
+      const spec: ComputerSpec = { ...deps.spec(entry, kind as Exclude<ComputerSettingKind, "none">), labels: runLabels(launch.runId, launch.epoch), ...(mount ? { mount } : {}) };
+      const launched = await providerLaunch(provider, launch, spec, signal);
+      await serves(launched, launched.machine, entry, kind);
+      made = { id: launched.id, machine: launched.machine, ...(launched.watch ? { watch: launched.watch } : {}) };
+      madeBy = entry;
+      return launched;
+    },
+  };
+
+  const resolved = await resolveComputer(await settingOf(launch, store), deps.mode, deps.kinds, side);
+  if ("refused" in resolved) throw unavailable(resolved.refused);
+  if (resolved.kind === "none") return { computer: undefined, release: noop };
+
+  // The run's mount credential (Mode 2), minted when the mount was made: removed with the computer, or at once when the
+  // start fails after it was minted.
+  const revoke = async (): Promise<void> => { await deps.revokeMount?.(); };
+  let started: Awaited<ReturnType<typeof resolved.start>>;
+  try {
+    started = await resolved.start({ workspace: deps.workspace, check: deps.check, ...(deps.signal ? { signal: deps.signal } : {}) });
+  } catch (error) {
+    await revoke().catch(() => undefined);
+    throw error;
+  }
+  const computer = started.computer;
+  // A desktop's or a phone's: the owner's take-over (its hold parking the run's ports, recorded in the run's journal by
+  // the adapter loop) and its live view, proxy-only (no vendor's URL reaches a person), opened under this claim. A fenced
+  // registration is a lost claim.
+  let hold: RunHold | undefined;
+  let held: ClaimComputer["held"];
+  let view: { close(why: ViewEnd): unknown } | undefined;
+  if (computer && (computer.kind === "desktop" || computer.kind === "phone")) {
+    const theHold = computerHold();
+    if (deps.openComputerView && made?.watch) {
+      const watch = made.watch;
+      const input = computer.kind === "desktop" ? "desktop" : phonePlatform(made.machine, madeBy);
+      const opened = await deps.openComputerView({ store, sealKey: deps.sealKey, claim: launch.claim ?? { runId: launch.runId, epoch: launch.epoch }, kind: computer.kind, input, tag: made.id, watch: (signal) => watch(signal), hold: theHold });
+      if (!opened.ok) {
+        await started.release().catch(() => undefined);
+        await revoke().catch(() => undefined);
+        if (opened.refused === "fenced") throw claimLost(`run ${launch.runId}'s claim (epoch ${launch.epoch}) is no longer this runner's, so its ${computer.kind} was released: ${opened.message}`);
+        throw unavailable(`the ${computer.kind}'s live view could not be opened: ${opened.message}`);
+      }
+      view = opened.view;
+    }
+    held = { kind: computer.kind, hold: theHold };
+    hold = (ports) => heldHands(ports as never, theHold);
+  }
+  let released: Promise<void> | undefined;
+  return {
+    ...(computer ? { computer } : {}),
+    ...(hold ? { hold } : {}),
+    ...(held ? { held } : {}),
+    release: (why: ViewEnd = "released") =>
+      (released ??= (async () => {
+        await Promise.resolve(view?.close(why)).catch(() => undefined);
+        held?.hold.close();
+        try {
+          await started.release();
+        } finally {
+          await revoke();
+        }
+      })()),
+  };
+}

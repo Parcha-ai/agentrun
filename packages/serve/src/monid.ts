@@ -23,7 +23,7 @@ import { registerLabel, TOOL_COST } from "@parcha/pi-durable-agent/timeline";
 import { paidCall } from "./cap.js";
 import { wireName } from "./catalog.js";
 import { fauxFetch } from "./decisions.js";
-import { holdRefusal, settleOnRoot, writeHold } from "./paid-calls.js";
+import { holdRefusal, paidLedger, paidStep, settleOnRoot, writeHold } from "./paid-calls.js";
 import { forModel } from "./result.js";
 import type { ToolEntry } from "./tools.js";
 import { isObject, type Json } from "./validate.js";
@@ -206,8 +206,15 @@ const SPECS: Record<Kind, { summary: string; description: string; properties: Js
  *  purpose. A crash between sending a run and recording its charge leaves the cap counting it, so a cap errs toward
  *  refusing sooner, never toward passing unseen. */
 export const MONID_RUN_ALLOWANCE_USD = 1;
-/** Each endpoint's per-call price in USD, as an inspect in this run's process quoted it. */
-const quoted = new Map<string, number>();
+/** Each run's quotes, by the environment its calls are given (one object per run: main's run process hands process.env,
+ *  the runner hands each claim its own), so one run's inspect never prices another run's call. */
+const quotesByRun = new WeakMap<NodeJS.ProcessEnv, Map<string, number>>();
+/** Each endpoint's per-call price in USD, as an inspect in the run whose calls are given `env` quoted it. */
+const quotesOf = (env: NodeJS.ProcessEnv): Map<string, number> => {
+  let quotes = quotesByRun.get(env);
+  if (!quotes) quotesByRun.set(env, (quotes = new Map()));
+  return quotes;
+};
 const quoteKey = (args: unknown) => JSON.stringify([(args as Json).provider, (args as Json).endpoint]);
 /** A record on the run's root, where its spend is read on every harness (cap.ts, harness-app.ts). */
 const record = (api: ToolExecutionApi, kind: string, data: Record<string, string | number | null>, context: Context) => api.commit(async (tx) => void (await tx.appendEntry(ROOT_CONVERSATION_ID, { kind, data })), context);
@@ -229,7 +236,7 @@ export function monidRegistration(kind: Kind, env: NodeJS.ProcessEnv, work: () =
       const call = () => client[kind](args as never, context?.abortSignal);
       const label = { tool: "monid.run", charged_by: "monid", call: api.callId };
       // What the run is held at, under the cap and on its mark: the price an inspect quoted, else the allowance.
-      const quote = quoted.get(quoteKey(args));
+      const quote = quotesOf(env).get(quoteKey(args));
       const held = quote ?? MONID_RUN_ALLOWANCE_USD;
       const basis = quote !== undefined ? `the price ${INSPECT} quoted` : `no price was quoted for it in this run, so it counts at the $${MONID_RUN_ALLOWANCE_USD} allowance; ${INSPECT} gives its price`;
       const send = async (): Promise<MonidAnswer> => {
@@ -247,11 +254,20 @@ export function monidRegistration(kind: Kind, env: NodeJS.ProcessEnv, work: () =
         await (settleOnRoot(TOOL_COST, settle) ?? record(api, TOOL_COST, settle, context)).catch(() => undefined);
         return answer;
       };
-      const paid = kind === "run" ? await paidCall(RUN, send, chargeOf, { usd: held, basis }) : { result: await call() };
+      // On the runner's one ledger (paid-calls.ts Ledger.paid): held there at the same figure and settled at the same charge
+      // ($0 when monid charged nothing, at its hold when it may have and did not say), in place of this process's spend.
+      const onLedger = kind === "run" ? paidLedger() : undefined;
+      const paid = onLedger
+        ? await paidStep(onLedger, api.callId, { name: RUN, holdUsd: held, basis }, call, (outcome) => {
+          if (!("result" in outcome)) return null;
+          const usd = chargeOf(outcome.result);
+          return usd === undefined ? 0 : usd;
+        })
+        : kind === "run" ? await paidCall(RUN, send, chargeOf, { usd: held, basis }) : { result: await call() };
       if ("refused" in paid) return forModel(JSON.stringify({ error: paid.refused }), { isError: true });
       const answer = paid.result;
       const price = kind === "inspect" && isObject(answer.price) && answer.price.type === "PER_CALL" ? money(answer.price.amount) : undefined;
-      if (price?.currency === "USD") quoted.set(quoteKey(args), price.value);
+      if (price?.currency === "USD") quotesOf(env).set(quoteKey(args), price.value);
       const cost = money(answer.cost);
       return forModel(await monidText(answer, work(), kind), { isError: answer.error !== undefined, ...(cost ? { details: { cost } } : {}) });
     },

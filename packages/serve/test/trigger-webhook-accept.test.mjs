@@ -14,7 +14,7 @@ import { test } from "node:test";
 import { setTimeout as sleep } from "node:timers/promises";
 import { schemaProblems } from "./schema-support.mjs";
 import { follow, runDir, scratch, serve, withEnv } from "./support.mjs";
-import { firings, keyOf, made } from "./trigger-support.mjs";
+import { RUN_EXEC, firings, keyOf, made } from "./trigger-support.mjs";
 
 const { Webhook } = createRequire(import.meta.url)("standardwebhooks");
 const SEAL = { AGENTRUN_SEAL_KEY: randomBytes(32).toString("base64") };
@@ -26,7 +26,9 @@ const githubSignature = (secret, body) => `sha256=${createHmac("sha256", Buffer.
 const bodyKey = (triggerId, body) => keyOf("webhook", triggerId, `sha256:${createHash("sha256").update(body).digest("hex")}`);
 
 const PR_RULE = { event: "pull_request", actions: ["opened", "synchronize"], where: [{ pointer: "/pull_request/draft", in: [false] }] };
-const hooked = (agentId, source, input = "Review this pull request.") => ({ name: "reviews", source: { kind: "webhook", ...source }, target: { kind: "start_run", agent_id: agentId, input: { content: input }, max_cost_usd: 0.5 } });
+// Each its own name: an agent names each of its triggers once (the store's UNIQUE (agent_id, name)).
+let hookedCount = 0;
+const hooked = (agentId, source, input = "Review this pull request.") => ({ name: `reviews ${++hookedCount}`, source: { kind: "webhook", ...source }, target: { kind: "start_run", agent_id: agentId, input: { content: input }, max_cost_usd: 0.5 } });
 
 /** A trigger made from `body`: 201, with its id and its secret. */
 async function trigger(api, body) {
@@ -77,7 +79,7 @@ test("GitHub's published example verifies under the webhook trigger's GitHub che
   assert.equal(webhook.push.verify(secret, headers, Buffer.from("Hello, World?"), Date.now(), source), "bad_signature", "over the raw body");
 });
 
-test("demo: a GitHub delivery signed with the trigger's whole secret fires once, keyed by its signed body, its scheme, event, action and delivery id named on the payload's tag; the same delivery again is that firing and no second run", { timeout: 120_000 }, async (t) => {
+test("demo: a GitHub delivery signed with the trigger's whole secret fires once, keyed by its signed body, its scheme, event, action and delivery id named on the payload's tag; the same delivery again is that firing and no second run", { timeout: 120_000, skip: RUN_EXEC }, async (t) => {
   withEnv(t, SEAL);
   const { api, baseUrl, data } = await serve(t);
   await made(api, "review");
@@ -192,7 +194,7 @@ test("GitHub's ping, and any verified delivery no accept rule takes, is 200 {ok:
   for (const f of fired) await follow(api, f.run_id, ["completed"]);
 });
 
-test("a Standard Webhooks trigger's accept reads the body's type as the event, and its action; the tag names them, a sender's quotes and brackets escaped", { timeout: 120_000 }, async (t) => {
+test("a Standard Webhooks trigger's accept reads the body's type as the event, and its action; the tag names them, a sender's quotes and brackets escaped", { timeout: 120_000, skip: RUN_EXEC }, async (t) => {
   withEnv(t, SEAL);
   const { api, baseUrl, data } = await serve(t);
   await made(api, "review");
@@ -271,7 +273,7 @@ test("a trigger with accept starts a run per accepted event while its last run i
   for (const runId of [first.run_id, second.run_id, ran.run_id]) await follow(api, runId, ["completed"]);
 });
 
-test("a trigger with accept on a full server: the start refused rate_limited stays due and is tried again, then starts once a place is free", { timeout: 180_000 }, async (t) => {
+test("a trigger with accept on a full server: the start refused rate_limited stays due and is tried again, then starts once a place is free", { timeout: 180_000, skip: RUN_EXEC }, async (t) => {
   withEnv(t, SEAL);
   const { api, baseUrl } = await serve(t, { maxRuns: 1 });
   await made(api, "busy");
@@ -315,7 +317,7 @@ test("X-GitHub-Delivery is not signed, so it keys nothing: the same signed body 
   await follow(api, fired.run_id, ["completed"]);
 });
 
-test("a trigger with accept may cap its own active runs (max_active_runs): at the cap a firing waits due and is tried again, never skipped; only such a trigger takes it", { timeout: 180_000 }, async (t) => {
+test("a trigger with accept may cap its own active runs (max_active_runs): at the cap a firing waits due and is tried again, never skipped; only such a trigger takes it", { timeout: 180_000, skip: RUN_EXEC }, async (t) => {
   withEnv(t, SEAL);
   const { api, baseUrl } = await serve(t);
   await made(api, "busy");
@@ -325,7 +327,7 @@ test("a trigger with accept may cap its own active runs (max_active_runs): at th
   assert.equal(made1.status, 201, JSON.stringify(made1.body));
   assert.equal(made1.body.max_active_runs, 1);
   const { id, secret } = made1.body;
-  for (const [bad, field] of [[{ ...body, max_active_runs: 0 }, "max_active_runs"], [{ ...body, max_active_runs: 101 }, "max_active_runs"], [{ ...body, max_active_runs: 1.5 }, "max_active_runs"], [{ ...hooked("busy", { signature: "github" }), max_active_runs: 2 }, "max_active_runs"]]) {
+  for (const [bad, field] of [[{ ...body, max_active_runs: 0 }, "max_active_runs"], [{ ...body, max_active_runs: 101 }, "max_active_runs"], [{ ...body, max_active_runs: 1.5 }, "max_active_runs"], [{ ...hooked("busy", {}), source: { kind: "schedule", every_s: 600 }, max_active_runs: 2 }, "max_active_runs"]]) {
     const res = await api("POST", "/triggers", bad);
     assert.deepEqual([res.status, res.body.error?.fields?.map((f) => f.field)], [422, [field]], JSON.stringify(res.body));
   }
@@ -343,7 +345,9 @@ test("a trigger with accept may cap its own active runs (max_active_runs): at th
   assert.match(held.reason, /max_active_runs/);
   assert.equal((await api("GET", "/agents/busy/runs")).body.runs.length, 1, "one run while at the cap");
   const unfiltered = await api("PATCH", `/triggers/${id}`, { source: { kind: "webhook", signature: "github" } });
-  assert.deepEqual([unfiltered.status, unfiltered.body.error?.fields?.map((f) => f.field)], [422, ["max_active_runs"]], "taking accept away while a cap is kept is refused");
+  assert.deepEqual([unfiltered.status, unfiltered.body.max_active_runs], [200, 1], "a cap needs no accept: taking accept away keeps it");
+  const refiltered = await api("PATCH", `/triggers/${id}`, { source: body.source });
+  assert.equal(refiltered.status, 200, "accept back before the cap goes: with neither, the held firing would meet the overlap skip");
   assert.equal((await api("PATCH", `/triggers/${id}`, { max_active_runs: 100 })).body.max_active_runs, 100, "100 is the most");
   const raised = await api("PATCH", `/triggers/${id}`, { max_active_runs: null });
   assert.deepEqual([raised.status, raised.body.max_active_runs], [200, null], JSON.stringify(raised.body));

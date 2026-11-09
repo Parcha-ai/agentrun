@@ -15,6 +15,7 @@ import type { Models } from "@earendil-works/pi-ai";
 import { createModels, createProvider } from "@earendil-works/pi-ai/models";
 import { anthropicMessagesApi } from "@earendil-works/pi-ai/api/anthropic-messages.lazy";
 import { type Extension, type Harness, ROOT_CONVERSATION_ID } from "@earendil-works/pi-durable";
+import type { Revision } from "@parcha/pi-durable-agent";
 import { chargedCost, type DecisionProvider, DecisionProviderError, type LoadImage, type Workflow, type WorkflowDeps } from "@parcha/agentrun-dsl";
 import type { DecisionModelPrice } from "@parcha/agentrun-decisions";
 import { type BeforeRequest, modelPortFor, type Refusal, type RunSessions } from "@parcha/agentrun-kernel";
@@ -25,8 +26,12 @@ import { completer } from "../llm.js";
 // The serve decision-provider list prices and the replay check, shared with main's decision cap. They move to the new
 // path when the old per-run decision cap (decision-cap.ts) is deleted in the cutover; one source of truth until then.
 import { askedBefore, JEV_INPUT_USD, PARALLEL_DECISION_USD } from "../decision-cap.js";
+import { decisionProvidersIn } from "../decisions.js";
+import { imageLoader } from "../pdf-pages.js";
+import type { RunLaunch } from "../run-launch.js";
 import { llmTiers, nodeTiers, type Tier, workflowNodes } from "../model.js";
 import { type EffectRun, toolOf } from "../tools.js";
+import { claimSecrets } from "./claim-secrets.js";
 import { type ModelRoute, routeOf } from "./model-route.js";
 import { journalSessions } from "./sessions.js";
 import { type BudgetData, type EndData, KINDS, type RaiseData } from "./journal-kinds.js";
@@ -90,17 +95,22 @@ export function providerFromRoute(route: ModelRoute): WorkflowProvider {
 
 /** What the claim-time builder reads and wires. */
 export interface WorkflowSpecDeps {
-  readonly store: Pick<Store, "runs" | "agents" | "flush">;
+  readonly store: Pick<Store, "runs" | "agents" | "flush" | "sealedKeys">;
   readonly env?: NodeJS.ProcessEnv;
+  /** The runner's seal key, for reading a claim's sealed secrets from the store (claim-secrets.ts). Given in production, so
+   *  the default decision providers and image loader read the run's own stored keys; a test that injects decisionProvidersOf
+   *  needs none. */
+  readonly sealKey?: Buffer;
   /** Resolves the provider and cap model for each tier the workflow names (byTier's model, its provider, its price).
    *  Absent: the runner's model route (routeProviderOf), so a workflow and a pi run resolve models one way; a test gives a
    *  scripted one. */
   readonly providerOf?: (tier: Tier) => WorkflowProvider | Promise<WorkflowProvider>;
-  /** The run's decision providers (jev, parallel, openrouter) and the one a node that names none gets, as the server
-   *  resolves them for the run (decisions.ts decisionProvidersOf); absent, or resolving to none, the workflow runs no
-   *  decision node. A test gives a scripted resolver. */
+  /** The run's decision providers (jev, parallel, openrouter) and the one a node that names none gets. Absent: built from
+   *  the claim's own sealed keys (claim-secrets.ts + decisions.ts decisionProvidersIn) when `sealKey` is given, so a workflow
+   *  decision runs on the run's stored provider key; a test gives a scripted resolver. */
   readonly decisionProvidersOf?: () => DecisionProviders | undefined | Promise<DecisionProviders | undefined>;
-  /** How a decision's images load (pdf-pages.ts imageLoader on the run's work folder); absent: a decision carries none. */
+  /** How a decision's images load. Absent: pdf-pages.ts imageLoader on the run's work folder, when the workflow has a
+   *  decision node; a test gives its own. */
   readonly loadImage?: LoadImage;
   readonly now?: () => number;
 }
@@ -115,11 +125,14 @@ interface DecisionProviders {
 interface Claimed {
   readonly agentId: string;
   readonly revisionId: string;
+  readonly revision: Revision;
   readonly workflow: Workflow;
   readonly input: Record<string, unknown>;
   readonly capUsd: number | undefined;
   readonly mode: CapMode;
   readonly workRoot: string;
+  /** The launch's tool plane (which web tools resolve to Parallel), for scoping the run's decision keys. */
+  readonly plane: RunLaunch["plane"];
 }
 
 /** The newest raise's cap on the run's root, else none: the effective cap after takeRaises wrote this claim's raise, read
@@ -204,10 +217,18 @@ export function workflowSpecOf(deps: WorkflowSpecDeps): (claim: { runId: string 
     // The cap read against every request: the run's cap, raised in place once harnessReady reads this claim's raise.
     let effectiveCapUsd = claimed.capUsd;
 
-    // The run's decision providers, when its workflow has a decision node; the decisions book on the run's ONE cap
-    // (runCap), created with the model booking once the Harness is open (harnessReady). A decision node runs after that, so
-    // it reaches the cap through this reference, which harnessReady sets.
-    const decisions = (await deps.decisionProvidersOf?.()) ?? undefined;
+    // The run's decision providers, when its workflow has a decision node: the scripted resolver a test gives, else built
+    // from the claim's own sealed keys (claim-secrets.ts reads the run's provider keys from the store into a scoped
+    // environment; decisionProvidersIn builds the providers on them), so a decision runs on the run's stored key and never
+    // another run's or this process's. The decisions book on the run's ONE cap (runCap), created with the model booking once
+    // the Harness is open (harnessReady); a decision node runs after that, so it reaches the cap through a deferred reference.
+    const decisions = deps.decisionProvidersOf
+      ? (await deps.decisionProvidersOf()) ?? undefined
+      : deps.sealKey
+        ? (await decisionProvidersIn(await claimSecrets({ store: deps.store, sealKey: deps.sealKey, ...(deps.env ? { env: deps.env } : {}) }, claimed.revision, { plane: claimed.plane }))) ?? undefined
+        : undefined;
+    // A decision's images load from the run's work folder, unless a test gives its own loader.
+    const loadImage: LoadImage | undefined = deps.loadImage ?? (decisions ? imageLoader(claimed.workRoot) : undefined);
     let decisionCap: RunDecisions | undefined;
 
     // The run's completer for a call node's `llm` tool: one completion on the run's models, its tier's model (the proxy
@@ -237,7 +258,7 @@ export function workflowSpecOf(deps: WorkflowSpecDeps): (claim: { runId: string 
           // A decision node books through the run's one cap (admitted and settled as main holds it); a cap refusal for room
           // parks the run through the loop's hook, the same as a model node's. The cap is wired at harnessReady, so the
           // wrapper reaches it through the deferred reference. With no decision provider the workflow runs none.
-          ...(decisions ? { decisionProviders: decisions, ...(deps.loadImage ? { loadImage: deps.loadImage } : {}) } : {}),
+          ...(decisions ? { decisionProviders: decisions, ...(loadImage ? { loadImage } : {}) } : {}),
           cap: decisions ? decisionWorkflowCap(() => decisionCap, decisions, hooks.park) : identityWorkflowCap(),
         };
         return workflowHost(hostDeps) as { extensions: readonly Extension[]; host: never };
@@ -448,12 +469,12 @@ async function readClaim(deps: WorkflowSpecDeps, runId: string): Promise<Claimed
   const revision = await deps.store.agents.revision(run.revisionId);
   if (!revision || revision.kind !== "workflow") throw new Error(`run ${runId} is not a workflow run`);
   const launchRow = await deps.store.runs.launch(runId);
-  const launch = launchRow.body as { input?: unknown; max_cost_usd?: unknown; cap_mode?: unknown; documents?: unknown } | null;
+  const launch = launchRow.body as { input?: unknown; max_cost_usd?: unknown; cap_mode?: unknown; documents?: unknown; plane?: unknown } | null;
   const input = launch && typeof launch.input === "object" && launch.input !== null ? (launch.input as Record<string, unknown>) : {};
   const capUsd = typeof launch?.max_cost_usd === "number" ? launch.max_cost_usd : undefined;
   const mode: CapMode = launch?.cap_mode === "strict" ? "strict" : "expected";
   const workRoot = typeof launch?.documents === "string" ? launch.documents : "/tmp";
-  return { agentId: run.agentId, revisionId: run.revisionId, workflow: (revision.body as { workflow: Workflow }).workflow, input, capUsd, mode, workRoot };
+  return { agentId: run.agentId, revisionId: run.revisionId, revision: revision as unknown as Revision, workflow: (revision.body as { workflow: Workflow }).workflow, input, capUsd, mode, workRoot, plane: (launch?.plane as RunLaunch["plane"]) };
 }
 
 export { BACKGROUND_CONTEXT };

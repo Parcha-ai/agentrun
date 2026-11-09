@@ -1,5 +1,6 @@
-// The store's one schema, version 1 (design 2.1). Nothing migrates into it: the rewrite replaces the old stores. The server
-// sets it up once at its start (a store_meta row holds the version); a runner refuses a version it does not know.
+// The store's one schema, version 2 (design 2.1). Nothing migrates into it: the rewrite replaces the old stores, and a store
+// an older build made is refused as a version this build does not know. The server sets it up once at its start (a
+// store_meta row holds the version); a runner refuses a version it does not know. Version 2 adds the computer ledger.
 // Conventions: every time is INTEGER epoch milliseconds; JSON is TEXT checked by json_valid; money is REAL US dollars;
 // sealed columns hold ciphertext only (sealed with the server's key outside the store), so the store never sees a secret
 // in the clear. Foreign keys are on (the connection's pragma).
@@ -7,10 +8,11 @@
 // STORE_DDL is the control plane and the runs: agents and revisions (with a template's package), runs (state, the claim's
 // epoch, runner, claimed_until and wake_at, cost, metrics, summary), commands, idempotency, triggers (their scopes,
 // firings, conversations and settings), the channel outbox and told ledger, the review ledger, settings, sealed keys,
-// learning state, the MCP registry, pending MCP sign-ins and each run's MCP pin. PI_DDL is pi-durable's journal tables,
-// keyed by run_id (store/journal): one schema for every run's journal, so a query joins runs and their journals.
+// learning state, the MCP registry, pending MCP sign-ins, each run's MCP pin, and the computer ledger. PI_DDL is pi-durable's
+// journal tables, keyed by run_id (store/journal): one schema for every run's journal, so a query joins runs and their
+// journals.
 
-export const SCHEMA_VERSION = 1;
+export const SCHEMA_VERSION = 2;
 
 const json = (column: string, nullable = false) => `${column} TEXT${nullable ? "" : " NOT NULL"} CHECK (${column} IS NULL OR json_valid(${column}))`;
 
@@ -123,7 +125,11 @@ export const STORE_DDL: readonly string[] = [
     created_at INTEGER NOT NULL
   ) STRICT`,
 
-  // Triggers (module E's), their scopes (rows only while enabled), firings, conversations and adapter settings.
+  // Triggers (module E's), their scopes (rows only while enabled), firings, conversations and adapter settings. A trigger's
+  // firings are one table: its history (shown 1, the newest HISTORY_KEPT), the due queue, and the keys kept only for their
+  // day (shown 0: a run now's or a delivery's, an ignored delivery's included). A due firing keeps its next try in
+  // retry_at under the engine's one backoff table, or waits for its trigger's room (waits_on: the run it waits behind).
+  // max_active_runs: the most of the trigger's started runs not yet ended (a JOIN on runs), none past it.
   `CREATE TABLE IF NOT EXISTS triggers (
     id TEXT PRIMARY KEY,
     agent_id TEXT NOT NULL REFERENCES agents (id),
@@ -132,10 +138,11 @@ export const STORE_DDL: readonly string[] = [
     ${json("source")},
     ${json("target")},
     next_at INTEGER,
-    last_run_id TEXT REFERENCES runs (id),
+    last_run_id TEXT REFERENCES runs (id) ON DELETE SET NULL,
     catchup_window_s INTEGER,
     failures_in_a_row INTEGER NOT NULL DEFAULT 0,
     ${json("disabled", true)},
+    max_active_runs INTEGER CHECK (max_active_runs IS NULL OR max_active_runs BETWEEN 1 AND 100),
     created_at INTEGER NOT NULL,
     updated_at INTEGER NOT NULL,
     UNIQUE (agent_id, name)
@@ -152,9 +159,9 @@ export const STORE_DDL: readonly string[] = [
     key TEXT NOT NULL,
     by TEXT,
     nominal_at INTEGER,
-    status TEXT NOT NULL CHECK (status IN ('due', 'started', 'skipped', 'failed', 'missed')),
+    status TEXT NOT NULL CHECK (status IN ('due', 'started', 'sent', 'skipped', 'failed', 'missed', 'ignored')),
     at INTEGER NOT NULL,
-    run_id TEXT REFERENCES runs (id),
+    run_id TEXT REFERENCES runs (id) ON DELETE SET NULL,
     reason TEXT,
     ${json("error", true)},
     count INTEGER,
@@ -164,7 +171,9 @@ export const STORE_DDL: readonly string[] = [
     catch_up INTEGER,
     paused INTEGER,
     payload TEXT,
+    ${json("attrs", true)},
     shown INTEGER,
+    waits_on TEXT,
     PRIMARY KEY (trigger_id, key)
   ) STRICT`,
   `CREATE INDEX IF NOT EXISTS trigger_firings_retry ON trigger_firings (status, retry_at)`,
@@ -235,6 +244,17 @@ export const STORE_DDL: readonly string[] = [
     sealed BLOB NOT NULL,
     updated_at INTEGER NOT NULL
   ) STRICT`,
+  // The computer ledger: a provider whose sessions carry no labels of their own (a phone provider's) keeps ours here, by
+  // its session id (the run, the claim's epoch...), so its list, an attach by labels and the janitor outlive a restart.
+  // detail is the rest of the provider's entry for the session, as it gave it (a phone's image and deadline).
+  `CREATE TABLE IF NOT EXISTS computer_ledger (
+    provider TEXT NOT NULL,
+    session_id TEXT NOT NULL,
+    ${json("labels")},
+    ${json("detail")},
+    updated_at INTEGER NOT NULL,
+    PRIMARY KEY (provider, session_id)
+  ) STRICT`,
   `CREATE TABLE IF NOT EXISTS learning (
     agent_id TEXT NOT NULL REFERENCES agents (id),
     key TEXT NOT NULL,
@@ -289,7 +309,11 @@ export const STORE_DDL: readonly string[] = [
     created_at INTEGER NOT NULL,
     updated_at INTEGER NOT NULL,
     -- When the tools were last listed: a refresh moves this, not updated_at, so a refresh is not read as an owner edit.
-    listed_at INTEGER
+    listed_at INTEGER,
+    -- When the sealed credential was last set: a save with a new credential or an OAuth sign-in moves it. A save that
+    -- keeps the sealed one, a refresh of the tools, and a token refresh (the server keeping the sign-in) leave it.
+    -- Null with no credential.
+    credential_changed_at INTEGER
   ) STRICT`,
   `CREATE TABLE IF NOT EXISTS mcp_oauth_pending (
     state TEXT PRIMARY KEY,
@@ -327,11 +351,13 @@ export const STORE_DDL: readonly string[] = [
     updated_at INTEGER NOT NULL
   ) STRICT`,
 
-  // A run's browser sessions' viewer hand-overs (store.liveViewers, browser-live.ts): one row per run and session tag,
-  // the viewer token sealed (sealedAt.liveViewer), written under the claim of `runner` at `epoch`. Gone with the run's
-  // end, a take or reclaim at a newer epoch, and the run.
-  `CREATE TABLE IF NOT EXISTS browser_viewers (
-    run_id TEXT NOT NULL REFERENCES runs (id) ON DELETE CASCADE,
+  // A run's computer sessions' viewer hand-overs (store.liveViewers, browser-live.ts): one row per run, computer kind
+  // (browser, desktop, phone) and session tag, the viewer token sealed (sealedAt.liveViewer), written under the claim of
+  // `runner` at `epoch`. Gone with the run's end, a take or reclaim at a newer epoch, and the run. The predecessor table
+  // browser_viewers is dropped at a server's open (sqlite/store.ts): its rows are ephemeral, so none migrate.
+  `CREATE TABLE IF NOT EXISTS computer_viewers (
+    run_id TEXT NOT NULL REFERENCES runs ON DELETE CASCADE,
+    kind TEXT NOT NULL CHECK (kind IN ('browser', 'desktop', 'phone')),
     tag TEXT NOT NULL,
     port INTEGER NOT NULL,
     viewer_id TEXT NOT NULL,
@@ -339,7 +365,7 @@ export const STORE_DDL: readonly string[] = [
     at INTEGER NOT NULL,
     runner TEXT NOT NULL,
     epoch INTEGER NOT NULL,
-    PRIMARY KEY (run_id, tag)
+    PRIMARY KEY (run_id, kind, tag)
   ) STRICT`,
 
   // Learning on the runner: what a run's end-of-run turn kept (the turn it asked and answered, and the proposal checked from

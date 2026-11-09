@@ -223,7 +223,7 @@ test("reset-password clears the password and ends every session; the next visit 
   assert.equal((await call(server.port, { method: "POST", path: "/v2/auth/reset-password", headers: page(server), body: {} })).status, 404, "never an HTTP route");
 });
 
-test("every route, called with no credential, is a 401 but capabilities, the contract, health and an MCP server's OAuth callback and client document; the owner's session and the token are let into every one but the MCP endpoint, which takes the token only, approving a note, answering a tool call's approval, a run's live browser view or its hand-back, which take the session only, and a webhook trigger's hook, which takes its signature only", async (t) => {
+test("every route, called with no credential, is a 401 but capabilities, the contract, health and an MCP server's OAuth callback and client document; the owner's session and the token are let into every one but the MCP endpoint, which takes the token only, approving a note, answering a tool call's approval, a run's live computer view or its hand-back, which take the session only, and a webhook trigger's hook, which takes its signature only", async (t) => {
   const server = await owned(t);
   for (const route of ROUTES) {
     const path = `/v2${route.pattern.source.replace(/^\^\\\//, "/").replace(/\$$/, "").replace(/\(\[\^\/\]\+\)/g, "x").replace(/\\\//g, "/").replace(/\\\./g, ".")}`;
@@ -245,9 +245,9 @@ test("every route, called with no credential, is a 401 but capabilities, the con
       else if (route.name === "receiveHook") assert.equal(res.status, 401, `${route.method} ${path} with ${headers.cookie ? "the session" : "the token"}: ${res.status} ${res.text}`);
       // Approving or restoring a note and answering a tool call's approval take the owner's session alone: a token,
       // whoever holds it, is 403 (learn-pending.test.mjs, learn-restore.test.mjs, tool-gate.test.mjs). So does a run's live
-      // browser view, a full-control credential for its session, and its hand-back (browser-live.test.mjs,
+      // computer view, a full-control credential for its session, and its hand-back (browser-live.test.mjs,
       // browser-take-over.test.mjs).
-      else if ((route.name === "approveLearningFile" || route.name === "restoreLearningFile" || route.name === "answerApproval" || route.name === "getRunBrowser" || route.name === "handBackRunBrowser") && !headers.cookie) assert.equal(res.status, 403, `${route.method} ${path} with the token: ${res.status} ${res.text}`);
+      else if ((route.name === "approveLearningFile" || route.name === "restoreLearningFile" || route.name === "answerApproval" || route.name === "getRunBrowser" || route.name === "handBackRunBrowser" || route.name === "getRunComputer") && !headers.cookie) assert.equal(res.status, 403, `${route.method} ${path} with the token: ${res.status} ${res.text}`);
       // A secret write takes the owner's session alone (secret-writes.ts): the token is 403 on it.
       else if (isSecretWriteOperation(route.name) && !headers.cookie) assert.equal(res.status, 403, `${route.method} ${path} with the token: ${res.status} ${res.text}`);
       // An OAuth callback takes neither: only the cookie its own start set in the browser that started it.
