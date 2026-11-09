@@ -81,13 +81,15 @@ const json = (status, body, headers = {}) => new Response(JSON.stringify(body), 
  * list to send (a test makes a phone in between, or leaves a live one out, as a lagging listing would);
  * `code`, the unlock code the phone takes (default the one the API gives); `abi`, what getprop reports; `launchHidden`,
  * a launched app is reported in front (dumpsys) while the screen and the tree still show the launcher; `launchNothing`,
- * `am start` starts nothing at all.
+ * `am start` starts nothing at all; `twoPane`, Settings shows two panes, as Android does on a window 600 dp wide or
+ * more: a row's page opens beside the list, which stays; `rowTapsMiss`, a tap on a Settings row does nothing. Either
+ * leaves touch.tap with run 6's live words, and the case's words must tell them apart.
  *
  * Tasks are as a live Android 15 keeps them (run 5): Settings' search is another package's activity
  * (com.android.settings.intelligence) on top of Settings' own task. A force-stop of Settings leaves it there, a plain
  * `am start` of Settings resumes that task, search in front, and only `--activity-clear-task` starts Settings afresh.
  */
-export function fakePhoneHarness({ readyAfter = 1, start = "ok", loseAnswer = false, loseRecovery = false, cancelPost, stall, onList, others = [], code, abi = "x86_64", launchHidden = false, launchNothing = false, clock = fakeClock() } = {}) {
+export function fakePhoneHarness({ readyAfter = 1, start = "ok", loseAnswer = false, loseRecovery = false, cancelPost, stall, onList, others = [], code, abi = "x86_64", launchHidden = false, launchNothing = false, twoPane = false, rowTapsMiss = false, clock = fakeClock() } = {}) {
 	const requests = [];
 	const adbCalls = [];
 	const sessions = new Map(others.map((s) => [s.id, { ...s }]));
@@ -196,19 +198,25 @@ export function fakePhoneHarness({ readyAfter = 1, start = "ok", loseAnswer = fa
 		}
 		const pkg = { package: SETTINGS };
 		if (phone.screen === "top") {
+			// Two panes: the list keeps the left half, and a row's page opens in the right half beside it.
+			const listWidth = twoPane ? SCREEN.width / 2 : SCREEN.width;
 			const rows = [];
 			for (const [i, title] of ITEMS.entries()) {
 				const y = HEADER + i * ROW - phone.offset;
 				if (y < HEADER || y + ROW > SCREEN.height) continue;
-				rows.push(node("android.widget.LinearLayout", { clickable: "true", bounds: box([0, y, SCREEN.width, ROW]), ...pkg }, [node("android.widget.TextView", { text: title, "resource-id": "android:id/title", bounds: box([72, y + 16, 240, 32]), ...pkg })]));
+				rows.push(node("android.widget.LinearLayout", { clickable: "true", bounds: box([0, y, listWidth, ROW]), ...pkg }, [node("android.widget.TextView", { text: title, "resource-id": "android:id/title", bounds: box(twoPane ? [16, y + 16, listWidth - 32, 32] : [72, y + 16, 240, 32]), ...pkg })]));
 			}
+			const detail = twoPane && phone.page !== ""
+				? [node("android.widget.FrameLayout", { bounds: box([listWidth, 16, SCREEN.width - listWidth, SCREEN.height - 16]), ...pkg }, [node("android.widget.TextView", { text: phone.page, "resource-id": "com.android.settings:id/collapsing_toolbar", bounds: box([listWidth + 16, 24, listWidth - 32, 40]), ...pkg })])]
+				: [];
 			// As a live Android 15 Settings shows it (run 4): the search entry is the list's first item, a clickable bar
 			// whose text is on a child, inside the scrollable list beside the rows.
 			const search = node("android.widget.LinearLayout", { "resource-id": "com.android.settings:id/search_action_bar", clickable: "true", bounds: box([16, 24, 328, 56]), ...pkg }, [
 				node("android.widget.TextView", { text: "Search settings", "resource-id": "com.android.settings:id/search_action_bar_title", bounds: box([72, 40, 200, 24]), ...pkg }),
 			]);
 			return node("android.widget.FrameLayout", { bounds: box(full), ...pkg }, [
-				node("androidx.recyclerview.widget.RecyclerView", { scrollable: "true", bounds: box([0, 16, SCREEN.width, SCREEN.height - 16]), ...pkg }, [search, ...rows]),
+				node("androidx.recyclerview.widget.RecyclerView", { scrollable: "true", bounds: box([0, 16, listWidth, SCREEN.height - 16]), ...pkg }, [search, ...rows]),
+				...detail,
 			]);
 		}
 		if (phone.screen === "page") {
@@ -255,12 +263,16 @@ export function fakePhoneHarness({ readyAfter = 1, start = "ok", loseAnswer = fa
 		if (phone.foreground === LAUNCHER) return launch(SETTINGS);
 		// Search is another package's activity, put on top of Settings' own task.
 		if (phone.screen === "top" && n.attrs["resource-id"] === "com.android.settings:id/search_action_bar") return Object.assign(phone, { screen: "search", search: "", foreground: SEARCH_PKG });
-		if (phone.screen === "top" && n.cls === "android.widget.LinearLayout") return Object.assign(phone, { screen: "page", page: n.children[0].attrs.text });
+		if (phone.screen === "top" && n.cls === "android.widget.LinearLayout") {
+			if (rowTapsMiss) return;
+			return Object.assign(phone, { screen: twoPane ? "top" : "page", page: n.children[0].attrs.text });
+		}
 		if (phone.screen === "page" && n.attrs["content-desc"] === "Navigate up") phone.screen = "top";
 	}
 
 	function back() {
 		if (phone.foreground === SEARCH_PKG && phone.screen === "search") Object.assign(phone, { screen: "top", foreground: SETTINGS });
+		else if (twoPane && phone.foreground === SETTINGS && phone.page !== "") phone.page = "";
 		else if (phone.foreground === SETTINGS && phone.screen !== "top") phone.screen = "top";
 		else phone.foreground = LAUNCHER;
 	}
