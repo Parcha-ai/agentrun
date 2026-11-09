@@ -14,7 +14,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { after, test } from "node:test";
 import { closeOpenSessions, piAdapterSpec, scriptedOrigin } from "./conformance-pi-adapter.mjs";
-import { beforeRequestOf, cap, quiet, rootEntries, SONNET, sleep, STEADY, TIMING } from "./adapter-pi-cap-support.mjs";
+import { beforeRequestOf, cap, quiet, rootEntries, SONNET, sleep, STEADY } from "./adapter-pi-cap-support.mjs";
 
 after(closeOpenSessions);
 const { openSqliteStore } = await import("../dist/store/index.js");
@@ -25,6 +25,19 @@ const { MAX_RESTARTS } = await import("../dist/runner/conformance/harness.js");
 
 const CAP = 0.01;
 const RAISED = 5;
+/** The bound on a wait for a runner's own event: it caps the wait, it never orders anything. */
+const EVENT_WAIT_MS = 30_000;
+
+/** `event`, or a failure naming `what` once EVENT_WAIT_MS passes without it: a run that never gets there (its raise not
+ *  taken, its follow-up never sent) fails the case in words, never hangs it. */
+async function reached(event, what) {
+  let timer;
+  try {
+    return await Promise.race([event, new Promise((_, reject) => (timer = setTimeout(() => reject(new Error(`not within ${EVENT_WAIT_MS} ms: ${what}`)), EVENT_WAIT_MS)))]);
+  } finally {
+    clearTimeout(timer);
+  }
+}
 const FOLLOW_UP = cap.followUpOf(RAISED).text;
 const isFollowUp = (write) => write.type === "submission" && String(write.value?.requestId ?? "").startsWith("agentrun:raise:");
 
@@ -59,8 +72,12 @@ function stoppingAt(point) {
 
 async function crashedRaise(t, point, { short = false } = {}) {
   const dir = mkdtempSync(join(process.env.TMPDIR ?? tmpdir(), "agentrun-adapter-raise-crash-"));
-  const server = await openSqliteStore({ dataDir: dir, role: "server" });
-  const stores = [await openSqliteStore({ dataDir: dir, role: "runner" }), await openSqliteStore({ dataDir: dir, role: "runner" })];
+  // The stores' clock: real time plus `clock.skewMs`, so the killed runner's claim runs out when the case moves the
+  // store's now past its until, never by waiting for a short real lease.
+  const clock = { skewMs: 0 };
+  const now = () => Date.now() + clock.skewMs;
+  const server = await openSqliteStore({ dataDir: dir, role: "server", now });
+  const stores = [await openSqliteStore({ dataDir: dir, role: "runner", now }), await openSqliteStore({ dataDir: dir, role: "runner", now })];
   const runners = [];
   const stop = stoppingAt(point);
   t.after(async () => {
@@ -84,7 +101,7 @@ async function crashedRaise(t, point, { short = false } = {}) {
   }), { restartLimit: MAX_RESTARTS });
   // The first runner's journal stops at the point; the second's is the store's own.
   const first = (deps) => loop({ ...deps, journal: (claim) => stop.wrap(deps.journal(claim)) });
-  runners.push(startRunner({ store: stores[0], createLoop: first, name: "runner-a", ...TIMING }));
+  runners.push(startRunner({ store: stores[0], createLoop: first, name: "runner-a", ...STEADY }));
   const settled = async (state, ms = 20_000) => {
     const from = Date.now();
     for (;;) {
@@ -102,12 +119,14 @@ async function crashedRaise(t, point, { short = false } = {}) {
   const to = short ? Number(((CAP + budget.pending.least_cap_usd) / 2).toFixed(6)) : RAISED;
   capUsd = to;
   const raise = await sendCommand(server, "run-1", { kind: "raise", body: { capUsd: to } });
-  await stop.stopped;
+  await reached(stop.stopped, `the first runner reaches its stop point (${point}) once raised`);
   runners[0].kill();
-  // The second runner on a lease no stall of a loaded machine outlasts: the run moves from the first runner to it by the
-  // first's loss alone. On the short lease a stall could lose its own claim while its follow-up's request was out, and
-  // the claim that took it again would send that request once more (the lost one booked cut): a second request this
-  // test would read as a follow-up sent twice. That path is its own case below, forced, never left to the clock.
+  // The killed runner's claim runs out: the store's now moves past its until (both runners hold a lease no stall of a
+  // loaded machine outlasts, so no claim is lost but the one the case loses). On a short lease a stall could lose
+  // runner-b's own claim while its follow-up's request was out, and the claim that took it again would send that request
+  // once more (the lost one booked cut): a second request this test would read as a follow-up sent twice. That path is its
+  // own case below, forced, never left to the clock.
+  clock.skewMs = STEADY.leaseMs * 2;
   runners.push(startRunner({ store: stores[1], createLoop: loop, name: "runner-b", ...STEADY }));
   const row = await settled(short ? "parked" : "ended").catch(async (error) => {
     throw new Error(`${error.message}; raises ${JSON.stringify(await rootEntries(stores[1], "agentrun.raise"))}`);
@@ -137,8 +156,11 @@ for (const [point, words] of [["submission", "before its follow-up's submission 
 // follow-up request until the first runner is gone and the second has sent its own.
 test("a raised run whose runner is lost while its follow-up's request is out: that request is booked cut, the next claim sends it once more, and the run ends", async (t) => {
   const dir = mkdtempSync(join(process.env.TMPDIR ?? tmpdir(), "agentrun-adapter-raise-lost-request-"));
-  const server = await openSqliteStore({ dataDir: dir, role: "server" });
-  const stores = [await openSqliteStore({ dataDir: dir, role: "runner" }), await openSqliteStore({ dataDir: dir, role: "runner" })];
+  // The stores' clock, as crashedRaise's: the killed runner's claim runs out when the case moves the store's now past it.
+  const clock = { skewMs: 0 };
+  const storeNow = () => Date.now() + clock.skewMs;
+  const server = await openSqliteStore({ dataDir: dir, role: "server", now: storeNow });
+  const stores = [await openSqliteStore({ dataDir: dir, role: "runner", now: storeNow }), await openSqliteStore({ dataDir: dir, role: "runner", now: storeNow })];
   const runners = [];
   let release = () => {};
   const held = new Promise((resolve) => (release = resolve));
@@ -173,7 +195,7 @@ test("a raised run whose runner is lost while its follow-up's request is out: th
   const spec = piAdapterSpec({ script, tools: {}, hooks: quiet }, { fetch });
   const parkRule = { get capUsd() { return capUsd; }, park: (refusal) => cap.parkOf(refusal, capUsd), checkRaise: cap.checkRaise, followUpOf: cap.followUpOf };
   const loop = createAdapterLoop(async (claim, run) => ({ ...(await spec(claim, run)), cap: parkRule, runCap: { capUsd: () => capUsd, modelOf: () => SONNET } }), { restartLimit: MAX_RESTARTS });
-  runners.push(startRunner({ store: stores[0], createLoop: loop, name: "runner-a", ...TIMING }));
+  runners.push(startRunner({ store: stores[0], createLoop: loop, name: "runner-a", ...STEADY }));
   const settled = async (state, ms = 20_000) => {
     const from = Date.now();
     for (;;) {
@@ -187,8 +209,10 @@ test("a raised run whose runner is lost while its follow-up's request is out: th
   capUsd = RAISED;
   await sendCommand(server, "run-1", { kind: "raise", body: { capUsd: RAISED } });
   // The first runner's follow-up request is out (held at the provider): the runner is lost there.
-  await out;
+  await reached(out, "the first runner's follow-up request goes out once raised");
   runners[0].kill();
+  // Its claim runs out: the store's now moved past its until, never a short real lease.
+  clock.skewMs = STEADY.leaseMs * 2;
   runners.push(startRunner({ store: stores[1], createLoop: loop, name: "runner-b", ...STEADY }));
   const row = await settled("ended");
   release();

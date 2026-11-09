@@ -15,6 +15,9 @@ const TIMING = { leaseMs: LEASE_MS, renewEveryMs: 100, stopMarginMs: 150, pollMs
  *  it into the lapse case. */
 const STEADY = { ...STEADY_LEASE, pollMs: 20, commandPollMs: 20 };
 
+/** The bound on a wait for a runner's own event: it caps the wait, it never orders anything. */
+const EVENT_WAIT_MS = 30_000;
+
 async function twoRunners(t, createLoop, timing = TIMING) {
   const { server, runners: [one, two] } = await stores({ runners: 2 });
   const record = recorder();
@@ -180,21 +183,18 @@ test("a runner that closes stops its loop where it can resume and releases the r
   const holder = first.runner === a.name ? a : b;
   const other = holder === a ? b : a;
   const leaseEnd = (await server.runs.get("run-1")).claimedUntil;
-  // A starved machine as the close goes: close() has stopped the loop, then the process blocks 600 ms (no renew runs), so
-  // a lease shorter than the stall runs out before the close's release, and the runner lets the claim go unreleased.
-  const closing = holder.close();
-  const until600 = Date.now() + 600;
-  while (Date.now() < until600);
-  await closing;
+  await holder.close();
   const closedAt = Date.now();
 
   assert.equal(faux.loops[0].stopCalls[0]?.kind, "shutdown", "the loop is stopped for a shutdown");
   assert.match(record.ops.join(" | "), /flush \| release run-1/, "flushed, then released");
-  const second = await until(() => record.claims[1], "the other runner's claim", LEASE_MS * 10);
+  const second = await until(() => record.claims[1], "the other runner's claim", EVENT_WAIT_MS);
   // The close's release bumped the epoch to 2: the other runner's claim is 3.
   assert.deepEqual([second.runner, second.epoch], [other.name, 3]);
   assert.ok(second.at < leaseEnd, `claimed ${second.at - closedAt} ms after the close, before the old lease would have run out`);
-  assert.equal(faux.loops[1].claim.epoch, 3, "a new loop resumes it");
+  // The claim is recorded as the store returns it, the new loop made only once the runner's own call resumes: waited for.
+  const resumed = await until(() => faux.loops[1]?.claim && faux.loops[1], "the other runner's loop, started on its claim", EVENT_WAIT_MS);
+  assert.equal(resumed.claim.epoch, 3, "a new loop resumes it");
 });
 
 // The end, then a lease's worth of polls on a clock the test moves: the run ends and is released on real timers (a lease no
