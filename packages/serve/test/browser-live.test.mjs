@@ -346,9 +346,9 @@ test("a viewer already watching is cut off when the owner signs out everywhere: 
   const w = await watched(t);
   const handed = JSON.parse(readFileSync(w.file, "utf8"));
   const ws = await watching(w, handed);
-  const out = await call(w.server.port, { method: "POST", path: "/v2/auth/sign-out", headers: { ...json, origin: w.origin, cookie: w.cookie }, body: {} });
+  const out = await call(w.server.port, { method: "POST", path: "/v2/auth/sign-out-everywhere", headers: { ...json, origin: w.origin, cookie: w.cookie }, body: {} });
   assert.equal(out.status, 200, out.text);
-  await closesWithin(ws, 2_000, "the viewer's socket closes at sign-out");
+  await closesWithin(ws, 2_000, "the viewer's socket closes at sign-out everywhere");
   const signed = await call(w.server.port, { method: "POST", path: "/v2/auth/sign-in", headers: { ...json, origin: w.origin }, body: { password: PASSWORD } });
   await takenAgain(w, handed, cookieOf(signed));
 });

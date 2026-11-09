@@ -1,5 +1,6 @@
 // The owner: one person, one password. The first visit sets it (with the printed code at a public address), a signed
-// session cookie carries the sign-in for 30 days, signing out ends every session, and reset-password clears it. The token
+// session cookie carries the sign-in for 30 days, signing out signs out this browser, signing out everywhere ends every
+// session, and reset-password clears it. The token
 // stays the way in for scripts and the CLI. Every route but capabilities, the contract and health needs one or the other.
 import assert from "node:assert/strict";
 import { spawnSync } from "node:child_process";
@@ -173,23 +174,37 @@ test("every cookie write is the page's: sign-in, setup and sign-out from another
   const evil = { ...json, origin: "https://evil.example" };
   assert.equal((await signIn(server, PASSWORD, evil)).status, 403);
   assert.equal((await call(server.port, { method: "POST", path: "/v2/auth/sign-out", headers: { ...evil, cookie: server.cookie }, body: {} })).status, 403);
+  assert.equal((await call(server.port, { method: "POST", path: "/v2/auth/sign-out-everywhere", headers: { ...evil, cookie: server.cookie }, body: {} })).status, 403);
   assert.equal((await call(server.port, { method: "POST", path: "/v2/auth/sign-in", headers: { "content-type": "application/x-www-form-urlencoded", origin: page(server).origin }, body: "password=x" })).status, 415);
   const write = (headers) => call(server.port, { method: "POST", path: "/v2/agents", headers: { cookie: server.cookie, ...headers }, body: { definition: { id: "a1", name: "a1", instructions: "Answer.", tools: [] } } });
   assert.equal((await write(evil)).status, 401, "a cookie from another origin is no credential");
   assert.equal((await write(page(server))).status, 201);
 });
 
-test("signing out ends every session: a copy of the cookie made before is a 401 after, on every browser", async (t) => {
+test("signing out signs out this browser only: its cookie is cleared, and another browser stays signed in", async (t) => {
+  const server = await owned(t);
+  const other = cookieOf(await signIn(server, PASSWORD));
+  const out = await call(server.port, { method: "POST", path: "/v2/auth/sign-out", headers: { ...page(server), cookie: server.cookie }, body: {} });
+  assert.equal(out.status, 200, out.text);
+  assert.match(out.headers["set-cookie"][0], /Max-Age=0/, "this browser's cookie is cleared");
+  assert.equal((await agents(server, other)).status, 200, "another browser's session stays");
+  assert.deepEqual((await call(server.port, { path: "/v2/auth/session", headers: { cookie: other } })).json, { password_set: true, signed_in: true });
+  assert.equal((await call(server.port, { method: "POST", path: "/v2/auth/sign-out", headers: { ...page(server) }, body: {} })).status, 401, "a browser with no session has none to end");
+});
+
+test("signing out everywhere ends every session: a copy of the cookie made before is a 401 after, on every browser", async (t) => {
   const server = await owned(t);
   const other = cookieOf(await signIn(server, PASSWORD));
   assert.equal((await agents(server, other)).status, 200);
-  const out = await call(server.port, { method: "POST", path: "/v2/auth/sign-out", headers: { ...page(server), cookie: server.cookie }, body: {} });
+  const out = await call(server.port, { method: "POST", path: "/v2/auth/sign-out-everywhere", headers: { ...page(server), cookie: server.cookie }, body: {} });
   assert.equal(out.status, 200, out.text);
+  assert.deepEqual(out.json, { signed_out: true });
   assert.match(out.headers["set-cookie"][0], /Max-Age=0/);
   assert.equal((await agents(server, server.cookie)).status, 401);
   assert.equal((await agents(server, other)).status, 401, "another browser's session ended too");
   const session = await call(server.port, { path: "/v2/auth/session", headers: { cookie: other } });
   assert.deepEqual(session.json, { password_set: true, signed_in: false });
+  assert.equal((await call(server.port, { method: "POST", path: "/v2/auth/sign-out-everywhere", headers: { ...page(server) }, body: {} })).status, 401, "it takes a session");
   assert.equal((await signIn(server, PASSWORD)).status, 200, "and the password still signs in");
 });
 
