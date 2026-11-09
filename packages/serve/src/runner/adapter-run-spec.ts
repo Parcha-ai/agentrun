@@ -105,6 +105,10 @@ export interface AdapterSpecDeps {
   readonly computerDeps?: Readonly<Record<string, unknown>>;
   /** A Mode 2 claim's Archil disk (a test's fake); absent, the real disk the Archil settings name. */
   readonly makeArchilDisk?: ArchilClaimOptions["makeDisk"];
+  /** The Archil mount credential's control plane, for a test's loopback fake (archilControlFake): its base URL and the
+   *  fetch to call it with, spread into the claim's mount. Absent, the real control plane the mount credential names. No
+   *  test ever reaches the real Archil control plane. */
+  readonly mountControl?: { readonly baseUrl?: string; readonly fetch?: typeof fetch };
 }
 
 /** A model as the cap prices it, from the route's catalog cost: its price WITH TIERS (the money rule — a request past a
@@ -196,7 +200,10 @@ export async function adapterRunSpecFromLaunch(launch: RunLaunch, run: AdapterRu
     // the account key from the server's environment first, then the sealed row; named for the run and this claim's epoch, with
     // a 24 h ttl as the safety net if revoke never comes (revoke normally runs at the run's end, below). A run with no
     // mounting computer never mints one.
-    : await archilClaim({ settings: archilSettings, keys: deps.store.sealedKeys, sealKey: deps.sealKey, signal: new AbortController().signal, env: deps.env, mount: { runId: claim.runId, epoch: claim.epoch, ttlMs: 86_400_000 }, ...(deps.makeArchilDisk ? { makeDisk: deps.makeArchilDisk } : {}) });
+    // mountControl (a test's loopback control-plane fake) is spread into the mount, so no test reaches the real control plane.
+    // TODO(k2 lazy mint): the mint moves into computerForClaim (a mounting computer only), with the ttl the run's lifetime
+    // bound (not this fixed figure), and no mint/list/remove for a run with no computer.
+    : await archilClaim({ settings: archilSettings, keys: deps.store.sealedKeys, sealKey: deps.sealKey, signal: new AbortController().signal, env: deps.env, mount: { runId: claim.runId, epoch: claim.epoch, ttlMs: 86_400_000, ...(deps.mountControl ?? {}) }, ...(deps.makeArchilDisk ? { makeDisk: deps.makeArchilDisk } : {}) });
   // The run's Workspace at the claim: Mode 1 the run's local folder (made here, the server's start made it before); Mode 2
   // the run's folder on the disk.
   const ws = archil === undefined

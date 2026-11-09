@@ -129,10 +129,11 @@ export async function cliRunSpecFromLaunch(launch: RunLaunch, run: AdapterRun, d
   const mode: 1 | 2 = archilSettings === undefined ? 1 : 2;
   const archil = archilSettings === undefined
     ? undefined
-    // The run's mount credential, minted per run the first time a computer's mount asks (account key from the server's
-    // environment first, then the sealed row), named for the run and this claim's epoch, 24 h ttl safety net; revoke at the
-    // run's end (below). As the pi spec does.
-    : await archilClaim({ settings: archilSettings, keys: deps.store.sealedKeys, sealKey: deps.sealKey, signal: new AbortController().signal, env: deps.env, mount: { runId: claim.runId, epoch: claim.epoch, ttlMs: 86_400_000 }, ...(deps.makeArchilDisk ? { makeDisk: deps.makeArchilDisk } : {}) });
+    // The run's mount credential, minted per run (account key from the server's environment first, then the sealed row),
+    // named for the run and this claim's epoch; revoke at the run's end (below). mountControl (a test's loopback control-plane
+    // fake) is spread into the mount, so no test reaches the real control plane. TODO(k2 lazy mint): the mint moves into
+    // computerForClaim (a mounting computer only), with the ttl the run's lifetime bound (not this fixed figure). As pi does.
+    : await archilClaim({ settings: archilSettings, keys: deps.store.sealedKeys, sealKey: deps.sealKey, signal: new AbortController().signal, env: deps.env, mount: { runId: claim.runId, epoch: claim.epoch, ttlMs: 86_400_000, ...(deps.mountControl ?? {}) }, ...(deps.makeArchilDisk ? { makeDisk: deps.makeArchilDisk } : {}) });
   // The run's Workspace at the claim, and its uploaded files copied into work/inputs/ once.
   const ws = archil === undefined
     ? await openRunWorkspace({ mode: 1, agentId: runRow.agentId, runId: claim.runId, data: deps.data, log })
