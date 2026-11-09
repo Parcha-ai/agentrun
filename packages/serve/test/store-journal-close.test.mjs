@@ -2,11 +2,11 @@
 // id namespace before it queues its transaction) resolves, and its rows are kept, though the journal and then the store
 // are closed right after it was asked for. The journal's close never closes the store's shared connection.
 import assert from "node:assert/strict";
-import { DatabaseSync } from "node:sqlite";
 import { test } from "node:test";
 import { BACKGROUND_CONTEXT } from "@earendil-works/chord/context";
 import { commitWrites } from "@earendil-works/pi-durable/testing";
 import { queued, storeOn } from "./store-helpers.mjs";
+import { raw } from "./store-target.mjs";
 
 const context = BACKGROUND_CONTEXT;
 
@@ -20,11 +20,11 @@ test("a commit asked of a fresh journal before its close resolves, and its rows 
   await journal.close(context);
   await store.close();
   assert.equal(await committed, "resolved", "the commit asked before the close resolves");
-  const db = new DatabaseSync(file, { readOnly: true });
+  const db = await raw(file, { readOnly: true });
   try {
-    assert.equal(Number(db.prepare("SELECT COUNT(*) AS n FROM pi_conversations WHERE run_id = ?").get("run-1").n), 1, "and its row is kept");
+    assert.equal(Number((await db.get("SELECT COUNT(*) AS n FROM pi_conversations WHERE run_id = ?", "run-1")).n), 1, "and its row is kept");
   } finally {
-    db.close();
+    await db.close();
   }
 });
 
@@ -37,11 +37,11 @@ test("a fresh journal's first commit in flight when the store closes (no journal
   const committed = commitWrites(journal, [{ type: "conversation", value: { id: 1 } }], context).then(() => "resolved", (error) => `rejected: ${error?.name}: ${error?.message}`);
   await store.close();
   assert.equal(await committed, "resolved", "the commit asked before the store's close resolves");
-  const db = new DatabaseSync(file, { readOnly: true });
+  const db = await raw(file, { readOnly: true });
   try {
-    assert.equal(Number(db.prepare("SELECT COUNT(*) AS n FROM pi_conversations WHERE run_id = ?").get("run-1").n), 1, "and its row is kept");
+    assert.equal(Number((await db.get("SELECT COUNT(*) AS n FROM pi_conversations WHERE run_id = ?", "run-1")).n), 1, "and its row is kept");
   } finally {
-    db.close();
+    await db.close();
   }
 });
 

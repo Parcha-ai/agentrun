@@ -5,7 +5,9 @@
 import { after, test } from "node:test";
 import { registerHarnessConformance } from "../dist/runner/conformance/harness.js";
 import { closeOpenSessions, codexSubject } from "./conformance-codex.mjs";
+import { PG_URL } from "./store-target.mjs";
 
-registerHarnessConformance(codexSubject, { test });
+// On the test Postgres when AGENTRUN_TEST_PG_URL names one, handed to the suite by hand; else SQLite.
+registerHarnessConformance(codexSubject, { test, storeUrl: PG_URL });
 // The crash cases' frozen loops never close their sessions: their app-servers and model proxies close here.
 after(closeOpenSessions);

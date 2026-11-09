@@ -6,7 +6,7 @@
 import { endedReason, FINAL_STATES, Fenced, type AlsoRow, type Claim, type ImportedFrom, type RunOutcome, type RunPatch, type RunRow, type RunState } from "../store.js";
 import { type Dialect, SQLITE } from "../dialect.js";
 import type { SqliteExecutor, SqliteValue } from "./connection.js";
-import { claimFence } from "../fence.js";
+import { claimFence, storeNow, type StoreNow } from "../fence.js";
 import { writeLaunch } from "./run-launch.js";
 
 /** A learning run's launch body: the learning harness, the run that learned as its input, and where it runs (on the
@@ -37,8 +37,9 @@ export const runOf = (r: RunRecord): RunRow => ({
 /** Applies `patch` to the claim's run, then writes `also`, through `tx` (an open transaction's handle). Fenced, with nothing
  *  of it written once the caller rolls back, when the run's epoch is not the claim's or the claim's lease ran out before
  *  `now` (the store's clock, read in the transaction). A final state with no `endedAt` is stamped `now`, and releases the
- *  run in the same statement. `dialect`: the connection's (store/dialect.ts), SQLite's by default. */
-export async function applyRunPatch(tx: Pick<SqliteExecutor, "run" | "get">, claim: Pick<Claim, "runId" | "epoch">, patch: RunPatch, also: readonly AlsoRow[], now: number, dialect: Dialect = SQLITE): Promise<RunRow> {
+ *  run in the same statement. `dialect`: the connection's (store/dialect.ts), SQLite's by default. `clock`: the deadlines'
+ *  clock (fence.ts storeNow) the fence and left_running_at read; `now` bound by default. */
+export async function applyRunPatch(tx: Pick<SqliteExecutor, "run" | "get">, claim: Pick<Claim, "runId" | "epoch">, patch: RunPatch, also: readonly AlsoRow[], now: number, dialect: Dialect = SQLITE, clock: StoreNow = storeNow(dialect, () => now)): Promise<RunRow> {
   const sets: string[] = [];
   const params: SqliteValue[] = [];
   const set = (column: string, value: SqliteValue) => (sets.push(`${column} = ?`), params.push(value));
@@ -53,7 +54,7 @@ export async function applyRunPatch(tx: Pick<SqliteExecutor, "run" | "get">, cla
   else if (patch.state !== undefined && FINAL_STATES.includes(patch.state)) set("ended_at", now);
   // When the run leaves 'running' (parks or ends), stamp when: a Browserbase sign-in it held keeps its save lease for the
   // settle window after this (runs.update's save decision reads left_running_at). Queued is never set through a patch.
-  if (patch.state !== undefined && patch.state !== "running" && patch.state !== "queued") set("left_running_at", now);
+  if (patch.state !== undefined && patch.state !== "running" && patch.state !== "queued") sets.push(`left_running_at = ${clock.sql}`), params.push(...clock.params);
   // A write that makes the run final is its release, in the same statement: no runner, no lease, the epoch moved on by one
   // as release() moves it. From this commit the run reads ended and released at once, and a later release is a no-op.
   const ending = patch.state !== undefined && FINAL_STATES.includes(patch.state);
@@ -61,7 +62,7 @@ export async function applyRunPatch(tx: Pick<SqliteExecutor, "run" | "get">, cla
   // Nothing to change still proves the claim: the row comes back only under it, its epoch the claim's and its lease not
   // run out (claimed_until on this store's clock, the one that set it).
   const assignments = sets.length ? sets.join(", ") : "epoch = epoch";
-  const fence = claimFence(claim, now);
+  const fence = claimFence(claim, clock);
   // A write of the handed hashes and a sign-in's forget (which checks them) never interleave (SIGN_IN_HANDED_LOCK).
   if (patch.signInHanded !== undefined) await dialect.lockKey(tx, SIGN_IN_HANDED_LOCK);
   const row = await tx.get<RunRecord>(`UPDATE runs SET ${assignments} WHERE ${fence.where} RETURNING ${RUN_COLUMNS}`, ...params, ...fence.params);

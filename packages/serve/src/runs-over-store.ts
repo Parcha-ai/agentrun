@@ -144,10 +144,11 @@ export async function message(
   if (!answers && moment.waitsOnPerson) throw waitingRefusal();
   // A person's message while a tool call waits for approval declines it, with the message as the reason: a deny the run's
   // gate acts on as any deny, resuming the session with the refusal and the person's words in one turn. A trigger's never
-  // does (answers false, refused above).
+  // does (answers false, refused above). Marked as the person's message (`by`), so its approval reads "Declined by your
+  // message", as main's declineBy kept it.
   if (answers && moment.kind === "agentic" && moment.waitingApprovalId !== undefined) {
     const messageId = newMessageId();
-    await sendCommand(store, moment.id, { kind: "deny", body: { approval: moment.waitingApprovalId, note: content } });
+    await sendCommand(store, moment.id, { kind: "deny", body: { approval: moment.waitingApprovalId, note: content, by: "message" } });
     return { mode: "answer", messageId };
   }
   if (moment.terminal) throw finished(moment);
