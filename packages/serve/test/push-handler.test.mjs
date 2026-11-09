@@ -10,7 +10,7 @@ import { connect } from "node:net";
 import { join } from "node:path";
 import { test } from "node:test";
 import { startServe } from "../dist/index.js";
-import { SealedSettings } from "../dist/sealed-settings.js";
+import { sealedSettingsOverStore } from "../dist/sealed-settings-store.js";
 import { headersRefusal, MIN_KEY_BYTES, verify } from "../dist/standard-webhooks.js";
 import { openapiDocument } from "../dist/openapi.js";
 import { TRIGGER_ADAPTERS } from "../dist/trigger-adapters.js";
@@ -94,12 +94,25 @@ async function storedServe(t, options) {
   return { server, api, store };
 }
 
+/** The ping source's server-wide signing secret, sealed in the trigger_settings rows of the store the server opens in
+ *  `data` (its own, where it reads every source's settings at its start), before the server starts. */
+async function signedBy(data, secret) {
+  const own = await openSqliteStore({ dataDir: data, role: "server" });
+  try {
+    const settings = sealedSettingsOverStore(own, "ping", ping.settings, sealKey, () => {});
+    await settings.load();
+    await settings.set("server", "signing", secret);
+  } finally {
+    await own.close();
+  }
+}
+
 async function pingServer(t) {
   withEnv(t, SEAL);
   const data = join(await scratch(t), "agents");
   await mkdir(data, { recursive: true });
   const secret = `whsec_${randomBytes(32).toString("base64")}`;
-  new SealedSettings(data, "ping", ping.settings, sealKey, () => {}).set("server", "signing", secret);
+  await signedBy(data, secret);
   const lines = [];
   const { server, api, store } = await storedServe(t, { data, triggerAdapters: [...TRIGGER_ADAPTERS, ping], log: (line) => lines.push(line) });
   return { server, api, store, secret, lines };
@@ -303,7 +316,7 @@ test("with no log, what the push handler says goes to stderr, as the triggers' o
   const data = join(await scratch(t), "agents");
   await mkdir(data, { recursive: true });
   const secret = `whsec_${randomBytes(32).toString("base64")}`;
-  new SealedSettings(data, "ping", ping.settings, sealKey, () => {}).set("server", "signing", secret);
+  await signedBy(data, secret);
   const { server } = await storedServe(t, { data, triggerAdapters: [...TRIGGER_ADAPTERS, ping] });
   const written = [];
   const write = process.stderr.write;
