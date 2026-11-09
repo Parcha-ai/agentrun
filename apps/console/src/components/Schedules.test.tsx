@@ -440,6 +440,57 @@ describe("editing a schedule", () => {
   });
 });
 
+// Tester findings on the New schedule form (11-09): an empty cost cap means the agent's own default, so the field's
+// placeholder says that default as served (definition.max_cost_usd), never a made-up example; and a one time is to the
+// minute, so its field asks for no seconds.
+describe("the New schedule form's cost cap and one time", () => {
+  const cap = (host: Element) => host.querySelector<HTMLInputElement>('input[name="maxCost"]')!;
+
+  it("an agent with a default cap: the cap field's placeholder is that default, as money", async () => {
+    const t = await open(server().v2, { trigger: null });
+    await t.set("agent", "story");
+    expect(cap(t.host).getAttribute("placeholder")).toBe("$0.50, the agent's default");
+  });
+
+  it("an agent with none: no placeholder at all, never an example", async () => {
+    const t = await open(server().v2, { trigger: null });
+    expect(cap(t.host).hasAttribute("placeholder")).toBe(false);
+    await t.set("agent", "triage");
+    expect(cap(t.host).hasAttribute("placeholder")).toBe(false);
+  });
+
+  it("a one time and an interval's start are to the minute; the time sent keeps its shape", async () => {
+    const s = server();
+    const t = await open(s.v2, { trigger: null });
+    await t.choose("at");
+    expect(t.host.querySelector<HTMLInputElement>('input[name="at"]')!.step).toBe("60");
+    await t.set("name", "kyb-once");
+    await t.set("at", "2026-11-09T15:43");
+    await t.set("agent", "triage");
+    await t.set("content", "Run KYB.");
+    await t.set("maxCost", "2");
+    await t.click(/^Create schedule$/);
+    expect((s.calls.find((c) => c.method === "POST")!.body as { source: unknown }).source).toEqual({ kind: "schedule", at: "2026-11-09T15:43:00Z" });
+    act(() => root?.unmount()); document.body.innerHTML = "";
+    const every = await open(server().v2, { trigger: null });
+    await every.choose("every");
+    expect(every.host.querySelector<HTMLInputElement>('input[name="startAt"]')!.step).toBe("60");
+  });
+
+  it("the webhook form says the agent's default the same way (the GitHub form shares the helper)", async () => {
+    const t = await open(server().v2, { trigger: null, kind: "webhook" });
+    await t.set("agent", "story");
+    expect(cap(t.host).getAttribute("placeholder")).toBe("$0.50, the agent's default");
+  });
+
+  it("the cap field is wide enough for its placeholder (16rem: 26 characters of 13px monospace and the padding)", async () => {
+    const t = await open(server().v2, { trigger: null });
+    await t.set("agent", "story");
+    expect(cap(t.host).classList.contains("max-w-64")).toBe(true);
+    expect(cap(t.host).classList.contains("max-w-40")).toBe(false);
+  });
+});
+
 // A one-time schedule that has run (its source is a one time `at`, it has a last firing, and no next time) is done: it
 // reads "Done · ran <when>" on the list and its page, with no Resume. A paused recurring schedule keeps Resume: done is
 // never read from `enabled` alone.
