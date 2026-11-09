@@ -213,6 +213,14 @@ test("the contract's operations are as vendored; this server's own are added and
   // Every property this server adds is marked with the addition that made it, and listed; without them, the
   // contract's components are as vendored.
   const components = structuredClone(doc.components);
+  // A schema this server adds whole is its own, marked (SecretMeta, the one shape a secret's view answers): set aside,
+  // as an added security scheme is below.
+  for (const [name, schema] of Object.entries(components.schemas)) {
+    if (!(name in VENDORED.components.schemas)) {
+      assert.notEqual(schema["x-agentrun-serve"], undefined, `${name}, a schema this server adds, is marked x-agentrun-serve`);
+      delete components.schemas[name];
+    }
+  }
   const marked = [];
   // Names taken out of a schema's `required` with the property they name: only the fields this server always sends
   // (RUN_FIELDS_SENT, SIGN_IN_FIELDS_SENT) may be, so a required addition anywhere else still fails this comparison.
@@ -615,7 +623,8 @@ test("an agent's home is its own addition, home/1: its routes and capabilities.h
 test("a tool key's save documents every status it answers, 503 unavailable among them: a save still checking its key when the server closes keeps nothing", async (t) => {
   const { doc } = await served(t);
   const save = doc.paths["/settings/tool-keys/{key_id}"].put;
-  assert.deepEqual(Object.keys(save.responses).sort(), ["204", "400", "401", "409", "415", "422", "429", "500", "503"]);
+  // 403: the token, never the owner's session (secret-writes.ts), is refused a secret write.
+  assert.deepEqual(Object.keys(save.responses).sort(), ["204", "400", "401", "403", "409", "415", "422", "429", "500", "503"]);
   assert.equal(save.responses["503"]?.$ref, "#/components/responses/Unavailable");
 });
 

@@ -108,8 +108,20 @@ export const hostSecrets = (env: NodeJS.ProcessEnv, stored?: StoredKeys): string
   return [...new Set([...held, ...named])].filter((value) => value.replace(/\s+/g, "").length >= MIN_SECRET);
 };
 
-/** A secret this process was started with: as handed over, else (no launcher) as its environment has it now. */
-const own = (name: string): string | undefined => held.get(name) ?? process.env[name];
+/** The secrets this process made itself for want of one it was handed: the seal key a start keeps under the config home
+ *  (seal-key.ts) when none was given. Read last, after the handed and the environment's, so a given one always wins;
+ *  never in the environment, so no child inherits it. */
+const made = new Map<string, string>();
+
+/** Holds a secret this process made (seal-key.ts' generated seal key), read by name like one it was handed. */
+export function holdMadeSecret(name: string, value: string): void {
+  if (!SECRET_NAMES.includes(name)) throw new Error(`${name} is not a secret the launcher lists`);
+  made.set(name, value);
+}
+
+/** A secret this process was started with: as handed over, else (no launcher) as its environment has it now, else one it
+ *  made itself (holdMadeSecret). */
+const own = (name: string): string | undefined => held.get(name) ?? process.env[name] ?? made.get(name);
 
 /** A secret's value: this process's own, which wins (tool-keys.ts' `source: "server"` is exactly these), else a key
  *  saved on the server `stored` reads for, opened now. One that does not open is absent, never a crash. */

@@ -11,10 +11,10 @@ import type { ToolKey, ToolKeys } from "@/lib/v2";
 
 /** An obvious fake: not a key anywhere. */
 const FAKE = "not-a-real-key-0123456789";
-const model = (id: ToolKey["id"], label: string, name: string, source: "server" | "stored" | null = null): ToolKey => ({ id, kind: "model", label, fields: [{ name, set: source !== null, source }], unlocks: [], harnesses: ["pi"], check: null });
+const model = (id: ToolKey["id"], label: string, name: string, source: "server" | "stored" | null = null): ToolKey => ({ id, kind: "model", label, fields: [{ name, set: source !== null, source }], unlocks: [], harnesses: ["pi"], secrets: [], check: null });
 const VIEW: ToolKeys = {
   keys: [
-    { id: "parallel", kind: "tool", label: "Parallel", fields: [{ name: "PARALLEL_API_KEY", set: false, source: null }], unlocks: ["web_fetch"], harnesses: ["pi"], check: null },
+    { id: "parallel", kind: "tool", label: "Parallel", fields: [{ name: "PARALLEL_API_KEY", set: false, source: null }], unlocks: ["web_fetch"], harnesses: ["pi"], secrets: [], check: null },
     model("anthropic", "Anthropic", "ANTHROPIC_API_KEY"), model("openai", "OpenAI", "OPENAI_API_KEY"), model("openrouter", "OpenRouter", "OPENROUTER_API_KEY"),
   ],
   reenter: null,
