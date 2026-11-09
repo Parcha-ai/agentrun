@@ -47,6 +47,7 @@ async function watched(t, options = {}) {
 }
 
 const computerOf = (w, headers) => call(w.server.port, { path: `/v2/runs/${w.runId}/computer`, headers });
+const browserOf = (w, headers) => call(w.server.port, { path: `/v2/runs/${w.runId}/browser`, headers });
 /** A WebSocket to `path`: from the server's own origin (null: none) with the owner's cookie (null: none), unless told. */
 const liveWs = (w, path, { origin = w.origin, cookie = w.cookie, headers = {} } = {}) => connect(`ws://127.0.0.1:${w.server.port}${path}`, { origin: origin ?? undefined, headers: { ...(cookie ? { cookie } : {}), ...headers } });
 
@@ -78,9 +79,6 @@ test("the owner's signed-in page alone gets the viewer's link; the page is frame
   assert.equal((await call(w.server.port, { path: `/v2/runs/${w.runId}/computer/live/viewer.js`, headers: { cookie: w.cookie } })).status, 200);
   assert.equal((await call(w.server.port, { path: `/v2/runs/${w.runId}/computer/live/v/AAAAAAAAAAAAAAAAAAAAAA`, headers: { cookie: w.cookie } })).status, 404, "another viewer's path is not proxied");
   assert.match((await call(w.server.port, { path: "/", headers: { cookie: w.cookie } })).headers["content-security-policy"], /frame-ancestors 'none'/, "the console is never framed");
-  // The browser is kind browser on /computer: its old routes are gone, with no alias.
-  for (const old of [`/v2/runs/${w.runId}/browser`, `/v2/runs/${w.runId}/browser/live/v/${handed.id}`, `/v2/runs/${w.runId}/browser/live/viewer.js`]) assert.equal((await call(w.server.port, { path: old, headers: { cookie: w.cookie } })).status, 404, old);
-  assert.equal((await liveWs(w, `/v2/runs/${w.runId}/browser/live/v/${handed.id}/ws`)).status, 404, "no /browser/live socket");
 
   // The WebSocket: this server's own origin and the owner's session, or nothing.
   const wsPath = `${pagePath}/ws`;
@@ -108,6 +106,40 @@ test("the owner's signed-in page alone gets the viewer's link; the page is frame
   first.ws.destroy();
 });
 
+test("the browser's own routes answer as on the base, beside the computer family, through the same code: GET /browser's link is under /browser/live, whose page and WebSocket keep every refusal; both links open the same viewer", { timeout: 120_000 }, async (t) => {
+  const w = await watched(t);
+  const handed = JSON.parse(readFileSync(w.file, "utf8"));
+  assert.equal((await browserOf(w, {})).status, 401);
+  assert.equal((await browserOf(w, { authorization: `Bearer ${w.server.token}` })).status, 403, "a token never opens the browser");
+  const answer = await browserOf(w, { cookie: w.cookie });
+  assert.equal(answer.status, 200, answer.text);
+  assert.deepEqual(answer.json, { state: "live", viewer: `/v2/runs/${w.runId}/browser/live/v/${handed.id}#t=${handed.token}` });
+  assert.equal(answer.headers["cache-control"], "no-store");
+  const pagePath = `/v2/runs/${w.runId}/browser/live/v/${handed.id}`;
+  assert.equal((await call(w.server.port, { path: pagePath })).status, 401);
+  assert.equal((await call(w.server.port, { path: pagePath, headers: { authorization: `Bearer ${w.server.token}` } })).status, 403);
+  const viewerPage = await call(w.server.port, { path: pagePath, headers: { cookie: w.cookie } });
+  assert.equal(viewerPage.status, 200, viewerPage.text);
+  assert.match(viewerPage.headers["content-security-policy"], /frame-ancestors 'self'/);
+  assert.equal((await call(w.server.port, { path: `/v2/runs/${w.runId}/browser/live/viewer.css`, headers: { cookie: w.cookie } })).status, 200);
+  assert.equal((await call(w.server.port, { path: `/v2/runs/${w.runId}/browser/live/v/AAAAAAAAAAAAAAAAAAAAAA`, headers: { cookie: w.cookie } })).status, 404);
+  const wsPath = `${pagePath}/ws`;
+  assert.equal((await liveWs(w, wsPath, { origin: "http://evil.example" })).status, 403, "another origin");
+  assert.equal((await liveWs(w, wsPath, { origin: null })).status, 403, "no origin");
+  assert.equal((await liveWs(w, wsPath, { cookie: null })).status, 401, "no session");
+  assert.equal((await liveWs(w, `/v2/runs/${w.runId}/browser/live/v/AAAAAAAAAAAAAAAAAAAAAA/ws`)).status, 404);
+  const first = await liveWs(w, wsPath);
+  assert.equal(first.status, 101);
+  first.ws.sendJson({ type: "hello", token: handed.token });
+  assert.equal(JSON.parse((await first.ws.next(5_000)).data).type, "ready");
+  // The same viewer through the computer family's address: one viewer per session, whichever address.
+  const second = await liveWs(w, `/v2/runs/${w.runId}/computer/live/v/${handed.id}/ws`);
+  assert.equal(second.status, 101);
+  second.ws.sendJson({ type: "hello", token: handed.token });
+  assert.deepEqual(JSON.parse((await second.ws.next(5_000)).data), { type: "refused", reason: "viewer_in_use" });
+  first.ws.destroy();
+});
+
 test("the viewer's token and its file are in no record, row, view, file list, home or log; it dies with the session: the route says none and the old link is refused", { timeout: 120_000 }, async (t) => {
   const w = await watched(t);
   const handed = JSON.parse(readFileSync(w.file, "utf8"));
@@ -118,11 +150,13 @@ test("the viewer's token and its file are in no record, row, view, file list, ho
     said.push(path);
     assert.ok(!JSON.stringify(res.body).includes(handed.token) && !JSON.stringify(res.body).includes(handed.id), `${path} holds no token and no viewer id`);
   }
-  // Only the owner's GET /computer carries the token: its refusals (no credential, a token) and the hand-back's answer never do.
-  for (const res of [await computerOf(w, {}), await computerOf(w, { authorization: `Bearer ${w.server.token}` }), await call(w.server.port, { method: "POST", path: `/v2/runs/${w.runId}/computer/hand-back`, headers: { ...json, origin: w.origin, cookie: w.cookie }, body: { outcome: "done" } }), await call(w.server.port, { method: "POST", path: `/v2/runs/${w.runId}/computer/hand-back`, headers: { ...json, authorization: `Bearer ${w.server.token}` }, body: { outcome: "done" } })]) {
+  // Only the owner's GET /computer and GET /browser carry the token: their refusals (no credential, a token) and the
+  // hand-back's answer never do.
+  for (const res of [await computerOf(w, {}), await computerOf(w, { authorization: `Bearer ${w.server.token}` }), await browserOf(w, {}), await browserOf(w, { authorization: `Bearer ${w.server.token}` }), await call(w.server.port, { method: "POST", path: `/v2/runs/${w.runId}/browser/hand-back`, headers: { ...json, origin: w.origin, cookie: w.cookie }, body: { outcome: "done" } }), await call(w.server.port, { method: "POST", path: `/v2/runs/${w.runId}/browser/hand-back`, headers: { ...json, authorization: `Bearer ${w.server.token}` }, body: { outcome: "done" } })]) {
     assert.ok(!res.text.includes(handed.token) && !JSON.stringify(res.headers).includes(handed.token), `${res.status} holds no token`);
   }
   assert.ok((await computerOf(w, { cookie: w.cookie })).text.includes(handed.token), "the owner's own read does");
+  assert.ok((await browserOf(w, { cookie: w.cookie })).text.includes(handed.token), "and on the browser's own route");
   for (const path of [`/runs/${w.runId}/files/..%2Fbrowser-live/${handed.tag}.json`, `/runs/${w.runId}/files/../browser-live/${handed.tag}.json`, `/runs/${w.runId}/files/browser-live/${handed.tag}.json`]) {
     const res = await w.server.api("GET", path);
     assert.ok(res.status >= 400 && !JSON.stringify(res.body).includes(handed.token), `${path}: ${res.status}`);
@@ -168,6 +202,9 @@ test("the route says whether a run has a browser at all: off with why when its a
   const browsed = await ran("browse", ["browser"], "Browse the example page.");
   assert.deepEqual((await browserOfRun(first, cookieOf(made), plain)).json, { state: "off", hold: "agent", why: "this run's agent has no computer" });
   assert.deepEqual((await browserOfRun(first, cookieOf(made), browsed)).json, { state: "none", kind: "browser", hold: "agent" }, "a browser, its session released with the run");
+  const onBrowser = (server, cookie, runId) => call(server.port, { path: `/v2/runs/${runId}/browser`, headers: { cookie } });
+  assert.deepEqual((await onBrowser(first, cookieOf(made), plain)).json, { state: "off", reason: "this run's agent has no browser tool" }, "the browser's own route, as on the base");
+  assert.deepEqual((await onBrowser(first, cookieOf(made), browsed)).json, { state: "none" });
   await first.close();
   // Its browser resolving unavailable at the next start (its vendor's key gone): off, in the plane's words.
   const file = join(runFolder(first.data, browsed), "serve.json");
@@ -177,6 +214,7 @@ test("the route says whether a run has a browser at all: off with why when its a
   const signed = await call(again.port, { method: "POST", path: "/v2/auth/sign-in", headers: own(again), body: { password: PASSWORD } });
   assert.equal(signed.status, 200, signed.text);
   assert.deepEqual((await browserOfRun(again, cookieOf(signed), browsed)).json, { state: "off", hold: "agent", why: "kernel is picked, and it needs a Kernel key: save one in Settings → Tool keys (or set KERNEL_API_KEY where the server starts)" });
+  assert.deepEqual((await call(again.port, { path: `/v2/runs/${browsed}/browser`, headers: { cookie: cookieOf(signed) } })).json, { state: "off", reason: "kernel is picked, and it needs a Kernel key: save one in Settings → Tool keys (or set KERNEL_API_KEY where the server starts)" });
 });
 
 test("a run whose browser key is deleted while it runs keeps its live viewer: its process holds the key it started with, so the link is still served while the process lives, and off once it ends", { timeout: 180_000 }, async (t) => {
