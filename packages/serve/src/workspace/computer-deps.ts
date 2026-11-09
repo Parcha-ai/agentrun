@@ -27,8 +27,26 @@ import { storeLedger } from "./computer-ledger.js";
 import { computerProviderFactories, computerProviderMakers, type ProviderLoad } from "./computer-providers.js";
 import type { ComputerSettingKind, KindRegistry } from "./resolve-computer.js";
 
-/** What a Modal sandbox starts from: a registry image (Modal builds it on its side). */
-const MODAL_IMAGE = "debian:bookworm-slim";
+type ComputerKindOf = Exclude<ComputerSettingKind, "none">;
+
+/** Each provider's own image for each kind it makes, by provider id: the one table serve reads a computer's image from
+ *  (until the computer package's registry carries its own). A kind a provider has none for here is refused in words.
+ *  Docker's sandbox is the package's recipe; a Docker desktop needs an image with an X server, which the recipe lacks,
+ *  so it has none here: the owner names one (AGENTRUN_DOCKER_IMAGE). Modal's is a registry image Modal builds on its
+ *  side; E2B's are its templates, Orgo's its base desktop, Daytona's its default snapshot. */
+export const DEFAULT_IMAGE: Readonly<Record<string, Readonly<Partial<Record<ComputerKindOf, string>>>>> = {
+  docker: { sandbox: DEFAULT_DOCKER_IMAGE },
+  e2b: { sandbox: "base", desktop: "desktop" },
+  orgo: { desktop: "linux" },
+  daytona: { sandbox: DAYTONA_DEFAULT_SNAPSHOT },
+  modal: { sandbox: "debian:bookworm-slim" },
+  browserbase: { browser: BROWSER_IMAGE },
+  kernel: { browser: BROWSER_IMAGE },
+  "phone-harness": { phone: "android" },
+};
+
+/** A computer this server cannot make here, with the code the run fails with and its words. */
+const refused = (words: string): Error => Object.assign(new Error(words), { code: "computer_unavailable" });
 
 /** The deps computerForClaim takes once per process: all but the claim's own. */
 export type ComputerDeps = Omit<ComputerForClaimDeps, "mode" | "workspace" | "sealKey" | "revokeMount" | "signal">;
@@ -54,28 +72,24 @@ export interface ComputerDepsOptions {
   readonly faux?: FauxComputers;
 }
 
-/** The spec a computer of `kind` on `entry` is made with, besides its labels and its mount: its provider's image for the
- *  kind (Docker's: the owner's AGENTRUN_DOCKER_IMAGE, else the package's own), the leak bound for its lifetime (its clean
- *  end is the run's release), and what the run's launch lets it reach (box_allow: a list is an allow-list; "none" or
- *  none given, no network). No key and no environment. */
+/** The spec a computer of `kind` on `entry` is made with, besides its labels and its mount: its image (Docker's: the
+ *  owner's AGENTRUN_DOCKER_IMAGE when set; else DEFAULT_IMAGE's for the provider and kind, a kind with none refused in
+ *  words), the leak bound for its lifetime (its clean end is the run's release), and its network. box_allow is a
+ *  sandbox's egress list: a sandbox with none, or "none", has no network; a browser, desktop or phone with none has its
+ *  provider's own ("open"); an explicit list or "none" applies to any kind. No key and no environment. */
 export function computerSpecOf(env: KeyEnv): ComputerForClaimDeps["spec"] {
-  const docker = envValue(env, DOCKER_IMAGE_ENV) ?? DEFAULT_DOCKER_IMAGE;
-  const imageOf = (id: string, kind: Exclude<ComputerSettingKind, "none">): string => {
-    switch (id) {
-      case "e2b": return kind === "desktop" ? "desktop" : "base";
-      case "orgo": return "linux";
-      case "daytona": return DAYTONA_DEFAULT_SNAPSHOT;
-      case "modal": return MODAL_IMAGE;
-      case "browserbase":
-      case "kernel": return BROWSER_IMAGE;
-      case "phone-harness": return "android";
-      default: return docker;
-    }
+  const named = envValue(env, DOCKER_IMAGE_ENV);
+  const imageOf = (entry: { readonly id: string; readonly label: string }, kind: ComputerKindOf): string => {
+    if (entry.id === "docker" && named !== undefined) return named;
+    const image = Object.hasOwn(DEFAULT_IMAGE, entry.id) ? DEFAULT_IMAGE[entry.id]![kind] : undefined;
+    if (image !== undefined) return image;
+    if (entry.id === "docker" && kind === "desktop") throw refused("A Docker desktop needs an image with an X server; set one for desktops.");
+    throw refused(`${entry.label} has no image for a ${kind} computer here: pick another provider for this agent's computer in Settings → Computers.`);
   };
   return (entry, kind, run) => ({
-    image: imageOf(entry.id, kind),
+    image: imageOf(entry, kind),
     lifetimeMs: COMPUTER_LIFETIME_MS,
-    network: run.boxAllow === undefined || run.boxAllow === "none" ? "none" : { allow: [...run.boxAllow] },
+    network: run.boxAllow === undefined ? (kind === "sandbox" ? "none" : "open") : run.boxAllow === "none" ? "none" : { allow: [...run.boxAllow] },
   });
 }
 
