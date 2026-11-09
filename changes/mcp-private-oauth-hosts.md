@@ -1,0 +1,5 @@
+---
+packages: @parcha/agentrun-serve
+kind: feature
+---
+An owner can allow named private-network hosts for an MCP server's OAuth sign-in, in Settings → MCP servers → Private network hosts (`GET`/`PUT /v2/settings/mcp-servers/oauth/private-hosts`). The list is empty by default, so an authorization server on a private network is refused as before, now in words that name the host and where to allow it. A listed host (exact match, at most 32, no wildcards, ranges, ports or schemes) may resolve to 10/8, 172.16/12, 192.168/16, 100.64/10 or fc00::/7, still only over https; loopback, link-local (cloud metadata), unspecified, multicast and broadcast addresses, and this machine's and this server's own, stay refused whatever the list says. The server's sign-in and a runner's token refresh read the same setting from the store. Changing it takes the owner's password session in the console: a token's `PUT` is 403. A runner refresh the address check refuses is no longer reported as a sign-in server that didn't answer: its calls are refused unsent in the check's words.
