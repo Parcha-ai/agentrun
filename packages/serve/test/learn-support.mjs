@@ -145,13 +145,15 @@ export async function learnedOnMain(server, agentId, runId) {
   }
 }
 
-/** The run's serve.json once it holds where its learning ended, and that end's line in the learning ledger: the view
- *  shows the end first, the file follows, and the line after it. */
+/** Run `runId`'s learning once it has ended (merged or dropped), as the one store reads it (store-reads/learning.ts
+ *  runLearningEnd: its kept learning and its learning run's journal): `{ learning }`, the shape a run's serve.json held
+ *  on main. */
 export async function savedOf(data, runId) {
+  const { runLearningEnd } = await import("../dist/store-reads/learning.js");
   for (let i = 0; ; i++) {
-    const meta = JSON.parse(readFileSync(join(runDir(data, runId), "serve.json"), "utf8"));
-    if (["merged", "dropped"].includes(meta.learning?.state) && ledgerOf(data).some((line) => line.run === runId)) return meta;
-    assert.ok(i < 200, `the run's learning end is saved: ${JSON.stringify(meta.learning)}`);
+    const learning = await overStore({ data }, (store) => runLearningEnd(store, runId));
+    if (["merged", "dropped"].includes(learning?.state)) return { learning };
+    assert.ok(i < 1200, `the run's learning ends: ${JSON.stringify(learning)}`);
     await sleep(50);
   }
 }

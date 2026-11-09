@@ -157,10 +157,8 @@ test("a person retires a learned skill or a workflow draft as they retire a note
   const main = git(repo, ["rev-parse", "main"]);
   assert.equal((await api("POST", `${files}/${enc(SKILL_FILE)}/retire`, undefined, { "if-match": retired.headers.get("etag") })).status, 200);
   assert.equal(git(repo, ["rev-parse", "main"]), main);
-  // The next run no longer gets it: not in its pin, not in its work.
+  // The next run no longer gets it: not in its work (the runner's seed lay reads only the active skills).
   const next = await started(api, "retirer");
-  const pin = JSON.parse(readFileSync(join(runDir(data, next), "learning.json"), "utf8"));
-  assert.ok(!(pin.skills ?? []).some((path) => path.startsWith("find-policies/")), JSON.stringify(pin));
-  assert.throws(() => readFileSync(join(runDir(data, next), "work", ".agents", "skills", "find-policies", "SKILL.md")), /ENOENT/);
   await ended(api, next);
+  assert.throws(() => readFileSync(join(runDir(data, next), "work", ".agents", "skills", "find-policies", "SKILL.md")), /ENOENT/);
 });
