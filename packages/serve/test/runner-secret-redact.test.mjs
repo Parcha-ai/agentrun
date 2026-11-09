@@ -43,6 +43,25 @@ test("a loop the runner cannot make fails the run without the key in its row or 
   assert.ok(!JSON.stringify(events).includes(PLANTED), "no event carries it");
 });
 
+test("a runner given no redactor, as the runner process starts one, cuts the keys its own environment holds", async (t) => {
+  // runner/main.ts starts the runner with no redact option: the keys it was started with must be cut all the same.
+  const before = process.env.AGENT_MODEL_API_KEY;
+  process.env.AGENT_MODEL_API_KEY = PLANTED;
+  t.after(() => (before === undefined ? delete process.env.AGENT_MODEL_API_KEY : (process.env.AGENT_MODEL_API_KEY = before)));
+  const opened = await stores({ runners: 1 });
+  await queue(opened.server, "run-1");
+  const events = [];
+  const createLoop = () => {
+    throw new Error(`could not start: the provider refused key ${PLANTED}`);
+  };
+  const runner = startRunner({ store: opened.runners[0], createLoop, name: "runner-a", ...TIMING, onEvent: (event) => events.push(event) });
+  t.after(() => runner.close());
+  const row = await settled(opened, "run-1");
+  assert.equal(row.state, "failed");
+  assert.ok(!String(row.summary).includes(PLANTED) && String(row.summary).includes("[redacted]"), `the row: ${row.summary}`);
+  assert.ok(!JSON.stringify(events).includes(PLANTED), "no event carries it");
+});
+
 test("a loop that throws with no end written: the runner ends the run failed (endRun), its row saying why without the key", async (t) => {
   const { row } = await runWith(t, () => ({
     start: async () => {
