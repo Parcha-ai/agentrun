@@ -1,7 +1,7 @@
 import { useEffect, useState } from "react";
 import { ApprovalCard } from "@/components/ApprovalCard";
 import { Button } from "@/components/ui/button";
-import { cost, soFar } from "@/lib/format";
+import { cost, soFar, runTitle } from "@/lib/format";
 import { ago, choicesOf, failureGroups } from "@/lib/needs";
 import { elapsed } from "@/lib/runGraph";
 import { NO_MESSAGES, runState } from "@/lib/runState";
@@ -210,7 +210,7 @@ function Failure({ message, runs: all, agentName, at, onRunAgain }: { message: s
         {!one && (
           <details className="mt-1 text-[13px]">
             <summary className="cursor-pointer font-mono text-[12px] text-muted-foreground">The runs</summary>
-            <ul className="mt-1 space-y-1">{runs.map((r) => <li key={r.run_id}><a href={runHref(r.run_id)} className="hover:underline">{r.title}</a> <span className="font-mono text-[12px] text-muted-foreground">· {agentName(r.agent_id)}</span></li>)}</ul>
+            <ul className="mt-1 space-y-1">{runs.map((r) => <li key={r.run_id}><a href={runHref(r.run_id)} className="hover:underline">{runTitle(r.title)}</a> <span className="font-mono text-[12px] text-muted-foreground">· {agentName(r.agent_id)}</span></li>)}</ul>
           </details>
         )}
         {problem && <p className="mt-1 font-mono text-[12px] text-destructive-text" role="alert">{problem}</p>}

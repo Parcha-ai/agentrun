@@ -8,7 +8,7 @@ import { StatusBadge } from "@/components/StatusBadge";
 import { Button } from "@/components/ui/button";
 import { Chip } from "@/components/ui/chip";
 import { goBack } from "@/lib/back";
-import { cost, isEstimate, runEnded, runLabel, soFar, soFarNote, when } from "@/lib/format";
+import { cost, isEstimate, runEnded, runLabel, soFar, soFarNote, when, runTitle } from "@/lib/format";
 import { NO_MESSAGES, runState } from "@/lib/runState";
 import type { RaiseAnswer, Run } from "@/lib/v2";
 import { placeOf, runPlaceWords } from "@/lib/place";
@@ -54,7 +54,7 @@ export function RunHeader({ run, agentName, actions = {}, costText }: { run: Run
       <div data-phone-row className="mt-3 flex flex-col items-start gap-x-6 gap-y-3 max-sm:mt-2 max-sm:flex-row max-sm:flex-wrap max-sm:items-center max-sm:gap-x-3 max-sm:gap-y-2 sm:flex-row">
         <div className="min-w-0 flex-1 self-stretch max-sm:contents">
           {/* A workflow run's title can be its input as JSON: then the agent's name reads better. */}
-          <h1 className="break-words text-2xl font-semibold leading-tight max-sm:line-clamp-2 max-sm:basis-full max-sm:text-lg" title={run.title}>{run.kind === "workflow" && /^[[{]/.test(run.title.trim()) ? agentName : run.title}</h1>
+          <h1 className="break-words text-2xl font-semibold leading-tight max-sm:line-clamp-2 max-sm:basis-full max-sm:text-lg" title={runTitle(run.title)}>{run.kind === "workflow" && /^[[{]/.test(run.title.trim()) ? agentName : runTitle(run.title)}</h1>
           <div className="mt-2 flex flex-wrap items-center gap-x-4 gap-y-2 text-[12px] text-muted-foreground max-sm:contents">
             <StatusBadge run={run} />
             {archived && <Chip tone="muted">Archived</Chip>}

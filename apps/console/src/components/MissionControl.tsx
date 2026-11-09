@@ -1,7 +1,7 @@
 import { agentHash } from "@/components/AgentPage";
 import { LearningChips } from "@/components/LearningChips";
 import { StatusBadge } from "@/components/StatusBadge";
-import { cost, runEnded, soFar, when } from "@/lib/format";
+import { cost, runEnded, soFar, when, runTitle } from "@/lib/format";
 import type { MissionView } from "@/lib/mission";
 import { cn } from "@/lib/utils";
 import { AnalyticsFilter, MissionAnalytics } from "@/components/MissionAnalytics";
@@ -82,7 +82,7 @@ export function MissionControl({ view, error, onRetry, scope, needsYou, asking, 
                 <li key={r.run_id} className="border-b last:border-b-0"><a href={`#/runs/${encodeURIComponent(r.run_id)}`} className="flex items-center gap-3 px-4 py-3 hover:bg-accent">
                   <StatusBadge run={r} />
                   {/* The run's title, then its chips (what it learned and used) right after it. */}
-                  <span className="flex min-w-0 flex-1 items-center gap-2"><span className="min-w-0 truncate text-[14px]">{r.title}</span><LearningChips run={r} className="hidden sm:inline-flex" />
+                  <span className="flex min-w-0 flex-1 items-center gap-2"><span className="min-w-0 truncate text-[14px]">{runTitle(r.title)}</span><LearningChips run={r} className="hidden sm:inline-flex" />
                     {stoppedRun(r) && <span className="shrink-0 text-[12px] text-muted-foreground">send a message to continue</span>}</span>
                   <span className="hidden shrink-0 text-[13px] text-muted-foreground md:inline">{name(r.agent_id)}</span>
                   {r.ended_at && <span className="hidden font-mono text-[12px] text-muted-foreground sm:inline" title="How long it ran">{elapsed(Date.parse(r.ended_at) - Date.parse(r.created_at))}</span>}
