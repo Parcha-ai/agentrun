@@ -296,6 +296,29 @@ describe("applying a template", () => {
     expect(empty.textContent).toBe("crm (default)");
   });
 
+  it("offers a parameter's enum as a choice of its values, sends an integer one as a number, and shows not_an_option under it", async () => {
+    const T: TemplateView = { ...REVIEWER, name: "inbound-lead", parameters: {
+      post_to: { type: "string", required: true, description: "where each brief goes", enum: ["crm", "slack", "none"] },
+      depth: { type: "integer", required: false, description: "how many pages to read", enum: [1, 3, 7], default: 3 },
+    } };
+    const refusal = Object.assign(new ClientError(422, "input_invalid", "The template's input is not valid."), { fields: [
+      { field: "parameters.post_to", reason: "not_an_option", message: "parameters.post_to is one of crm, slack, none: where each brief goes" },
+    ] });
+    const t = await open("inbound-lead", { templates: [T], apply: async () => { throw refusal; } });
+    const post = t.host.querySelector<HTMLSelectElement>('[data-field="parameters.post_to"] select')!;
+    expect(post).toBeTruthy();
+    expect(t.host.querySelector('[data-field="parameters.post_to"] input')).toBeNull();
+    expect([...post.options].map((o) => o.value).filter(Boolean)).toEqual(["crm", "slack", "none"]);
+    const depth = t.host.querySelector<HTMLSelectElement>('[data-field="parameters.depth"] select')!;
+    expect([...depth.options].map((o) => o.value).filter(Boolean)).toEqual(["1", "3", "7"]);
+    expect(depth.querySelector('option[value=""]')!.textContent).toBe("3 (default)");
+    await act(async () => { post.value = "slack"; post.dispatchEvent(new Event("change", { bubbles: true })); });
+    await act(async () => { depth.value = "7"; depth.dispatchEvent(new Event("change", { bubbles: true })); });
+    await t.click(t.button(/^Apply/));
+    expect(t.sent[0].body.parameters).toEqual({ post_to: "slack", depth: 7 });
+    expect(t.host.querySelector('[data-field="parameters.post_to"]')!.textContent).toContain("parameters.post_to is one of crm, slack, none: where each brief goes");
+  });
+
   it("opens the made agent at once when there are no warnings", async () => {
     const t = await open("pr-reviewer");
     await t.type(t.host.querySelector('[data-field="parameters.repo"] input'), "acme/web");
