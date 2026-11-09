@@ -57,26 +57,30 @@ export function RunBar({ agent, efforts, v2, go, blocked, limits, upload = sendU
   // A 422 names its fields; each one whose message says more than the refusal's is listed under it.
   const more = (problem?.fields ?? []).filter((f) => f.message !== problem?.message);
   return (
-    <section className="border-b px-5 py-4 md:px-8" aria-label="Start a run">
-      <div className="flex flex-col gap-3 lg:flex-row lg:items-start">
-        <textarea value={text} onChange={(e) => setText(e.target.value)} rows={workflow ? 6 : 2} spellCheck={!workflow}
-          aria-label={workflow ? "The run's input, as JSON" : "The run's first message"}
-          placeholder={workflow ? "The workflow's input, as JSON" : "The run's first message"}
-          onKeyDown={(e) => { if (e.key === "Enter" && (e.metaKey || e.ctrlKey)) { e.preventDefault(); void start(); } }}
-          className={cn("min-w-0 flex-1 resize-y border bg-background px-3 py-2.5 font-mono text-[13px] outline-none placeholder:text-muted-foreground focus:border-border-strong", workflow && "leading-[1.6]")} />
-        <div className="flex shrink-0 items-center gap-3">
-          {efforts.length > 0 && (
-            <label className="flex items-center gap-2" title="How hard the model thinks before it answers. default leaves it to the agent.">
-              <span className="flex flex-col leading-tight"><span className="caps text-[11px] text-muted-foreground">Effort</span><span className="text-[11px] text-muted-foreground">How hard the model thinks</span></span>
-              <select value={effort} onChange={(e) => setEffort(e.target.value)} aria-label="Effort" className="h-10 border bg-background px-3 font-mono text-[13px]">
-                {["", ...efforts].map((e) => <option key={e || "default"} value={e}>{e || "default"}</option>)}
-              </select>
-            </label>
-          )}
-          <Button variant="solid" onClick={() => void start()} disabled={!built.ok || sending || !!blocked || attachments.busy} title={blocked ?? (attachments.busy ? "Waiting for the files to be sent" : undefined)}><Play aria-hidden /> {sending ? "Starting" : "Run"}</Button>
+    <section className="border-b px-5 py-4 max-sm:py-3 md:px-8" aria-label="Start a run">
+      {/* On a phone the message box is one line (a workflow's JSON keeps its height), and the file button sits in the
+          row with Effort and Run: the textarea and the controls come out of their box, so the three wrap as one row. */}
+      <div data-phone-row className="max-sm:flex max-sm:flex-wrap max-sm:items-center max-sm:gap-x-2 max-sm:gap-y-2">
+        <div className="flex flex-col gap-3 max-sm:contents lg:flex-row lg:items-start">
+          <textarea value={text} onChange={(e) => setText(e.target.value)} rows={workflow ? 6 : 2} spellCheck={!workflow}
+            aria-label={workflow ? "The run's input, as JSON" : "The run's first message"}
+            placeholder={workflow ? "The workflow's input, as JSON" : "The run's first message"}
+            onKeyDown={(e) => { if (e.key === "Enter" && (e.metaKey || e.ctrlKey)) { e.preventDefault(); void start(); } }}
+            className={cn("min-w-0 flex-1 resize-y border bg-background px-3 py-2.5 font-mono text-[13px] outline-none placeholder:text-muted-foreground focus:border-border-strong max-sm:order-first max-sm:basis-full", workflow ? "leading-[1.6]" : "max-sm:h-10")} />
+          <div className="flex shrink-0 items-center gap-3 max-sm:order-last max-sm:gap-2">
+            {efforts.length > 0 && (
+              <label className="flex items-center gap-2" title="How hard the model thinks before it answers. default leaves it to the agent.">
+                <span className="flex flex-col leading-tight"><span className="caps text-[11px] text-muted-foreground">Effort</span><span className="text-[11px] text-muted-foreground max-sm:hidden">How hard the model thinks</span></span>
+                <select value={effort} onChange={(e) => setEffort(e.target.value)} aria-label="Effort" className="h-10 border bg-background px-3 font-mono text-[13px]">
+                  {["", ...efforts].map((e) => <option key={e || "default"} value={e}>{e || "default"}</option>)}
+                </select>
+              </label>
+            )}
+            <Button variant="solid" onClick={() => void start()} disabled={!built.ok || sending || !!blocked || attachments.busy} title={blocked ?? (attachments.busy ? "Waiting for the files to be sent" : undefined)}><Play aria-hidden /> {sending ? "Starting" : "Run"}</Button>
+          </div>
         </div>
+        <div className="mt-3 max-sm:mt-0"><FilePicker attachments={attachments} limits={limits} disabled={!!blocked} compact /></div>
       </div>
-      <div className="mt-3"><FilePicker attachments={attachments} limits={limits} disabled={!!blocked} /></div>
       {example && <p className="mt-2 font-mono text-[11px] text-muted-foreground">{example.from === "example" ? "The workflow's example input. Edit it, then run." : "The workflow's input, its fields empty. Fill them in, then run."}</p>}
       {!built.ok && text.trim() && <p className="mt-2 font-mono text-[12px] text-destructive-text" role="alert">{built.message}</p>}
       {problem && (

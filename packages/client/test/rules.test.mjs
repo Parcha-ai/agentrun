@@ -369,3 +369,16 @@ test("a refusal whose code echoes a secret body's value keeps no code, in the er
   assert.equal(auth.code, undefined);
   assert.ok(!printed(auth).includes(secret), printed(auth));
 });
+
+test("a runs.wait whose deadline passes while a refusal's body is still coming ends in AgentRunTimeout, never a refusal", async (t) => {
+  const server = await listener(t, (req, res) => {
+    if (req.url === "/v2/runs/r1") return json(200, { run_id: "r1", status: "working" });
+    const body = Buffer.from(JSON.stringify({ error: { code: "not_found", message: "no" } }));
+    res.writeHead(404, { ...JSON_HEADERS, "content-length": String(body.length) });
+    res.write(body.subarray(0, 8));
+  });
+  const client = new AgentRun({ baseUrl: server.base, apiKey: KEY, maxRetries: 0 });
+  const late = await thrown(client.runs.wait("r1", { timeoutMs: 300 }));
+  assert.ok(late instanceof AgentRunTimeout, `${late?.name}: ${late?.message}`);
+  assert.deepEqual([late.runId, late.run], ["r1", { run_id: "r1", status: "working" }]);
+});

@@ -37,6 +37,30 @@ export {
 	type ModalSdk,
 	type ModalTimeouts,
 } from "./modal.js";
+export {
+	BROWSER_IMAGE,
+	type BrowserStream,
+	BrowserVendorError,
+	CREATE_LABEL,
+	causeOf,
+	memoryUrls,
+	RECOVER_MS,
+	type ReleaseConfirm,
+	type RestReply,
+	type UrlStore,
+} from "./browser.js";
+export {
+	BROWSERBASE_API_URL,
+	BROWSERBASE_MAX_LIFETIME_MS,
+	type BrowserbaseApi,
+	type BrowserbaseDebug,
+	BrowserbaseProvider,
+	type BrowserbaseProviderOptions,
+	type BrowserbaseSession,
+	type BrowserbaseSessionSettings,
+	browserbaseRest,
+} from "./browserbase.js";
+export { KERNEL_API_URL, KERNEL_MAX_LIFETIME_MS, type KernelBrowserSettings, KernelProvider, type KernelProviderOptions, type KernelRequest, kernelRest } from "./kernel.js";
 export { drift, helloDrift, hostOf, inspectDrift, mountOf, networkOf, type DockerHost, type DockerInfo, type DockerInspect, type DriftExpected, type HelloExpected } from "./drift.js";
 export { type ReleasedOlder, releaseOlder, sweep, type SweepOptions, type Swept } from "./janitor.js";
 export { EPOCH_LABEL, epochOf, epochProblem, RUN_LABEL, runLabels, runProblem } from "./labels.js";
@@ -53,6 +77,8 @@ export {
 	type ProviderOptions,
 	providers,
 } from "./providers.js";
+// Types only: the phone ledger serve backs with its store. The provider itself loads through the registry.
+export type { PhoneLedger, PhoneLedgerEntry } from "./phone-harness.js";
 export {
 	type ComputerSettingKind,
 	type KindCapabilities,

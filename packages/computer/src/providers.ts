@@ -6,6 +6,7 @@
 // (README, Settings). The caller owns its settings' names: serve passes its own (DAYTONA_API_KEY, MODAL_TOKEN_ID, ...),
 // and the conformance CLI's modules read their COMPUTER_<ID>_* names and pass them in.
 import type { RunFolder } from "./conformance/types.js";
+import type { KindCapabilities } from "./kinds.js";
 import type { MountKind } from "./mount.js";
 import type { ComputerProvider } from "./provider.js";
 
@@ -39,6 +40,11 @@ export interface ProviderModule {
 	 */
 	readonly MOUNT: readonly MountKind[];
 	/**
+	 * The machine kind and groups of each configuration it offers, as its built providers' capabilities() declare them:
+	 * the kind registry's entry for it (PROVIDERS in kinds.ts) holds the same, and derives its setting kinds from them.
+	 */
+	readonly CAPABILITIES: readonly KindCapabilities[];
+	/**
 	 * The provider, built from its options alone, its key included; it reads no environment, and throws in words when an
 	 * option is missing or wrong, never echoing a key. Each provider file types its own options.
 	 */
@@ -56,6 +62,10 @@ export const providers = {
 	modal: () => import("./modal.js"),
 	daytona: () => import("./daytona.js"),
 	e2b: () => import("./e2b.js"),
+	browserbase: () => import("./browserbase.js"),
+	kernel: () => import("./kernel.js"),
+	"phone-harness": () => import("./phone-harness.js"),
+	orgo: () => import("./orgo.js"),
 } satisfies Record<string, () => Promise<ProviderModule>>;
 
 export type ProviderId = keyof typeof providers;

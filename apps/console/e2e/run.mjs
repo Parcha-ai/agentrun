@@ -35,7 +35,9 @@ const browser = await launchBrowser();
 const results = [];
 for (const flow of chosen) {
   if (flow.pending) { results.push({ name: flow.name, state: "PENDING", note: flow.pending }); continue; }
-  if (values.url && !flow.shares) { results.push({ name: flow.name, state: "SKIP", note: "needs a server of its own (a --checkout target)" }); continue; }
+  // `shares` may depend on what the run was given (a flow that needs the server's setup code only runs with it).
+  const shares = typeof flow.shares === "function" ? flow.shares({ setupCodeFile: values["setup-code-file"] }) : flow.shares;
+  if (values.url && !shares) { results.push({ name: flow.name, state: "SKIP", note: typeof flow.shares === "function" ? "needs a server not set up yet (--setup-code-file)" : "needs a server of its own (a --checkout target)" }); continue; }
   const started = Date.now();
   let server, context;
   try {
