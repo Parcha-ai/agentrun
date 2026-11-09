@@ -724,7 +724,7 @@ class SqliteStore implements Store {
         const updated = updatedAt ?? at;
         const listed = listedAt ?? at;
         // The credential's own time: now for a put that writes one, unless the caller says it kept the sealed one (its
-        // time given back); null with none. A token refresh (refreshToken) never moves it.
+        // time given back); null with none. A token refresh (keepRefreshed) never moves it.
         const credentialAt = sealed === null ? null : credentialChangedAt === undefined ? at : credentialChangedAt;
         const [result] = await db.write([{
           sql: `INSERT INTO mcp_servers (name, url, auth, protocol, tools, prices, server_info, instructions, sealed, created_at, updated_at, listed_at, credential_changed_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
