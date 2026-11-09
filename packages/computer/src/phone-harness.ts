@@ -819,7 +819,8 @@ export class PhoneHarnessProvider implements ComputerProvider {
 			const probe = await adb(["shell", "echo ph-ok"]);
 			if (!probe.ok) return letGo(probe);
 			if (!probe.value.stdout.toString("utf8").includes("ph-ok")) {
-				const words = unlocked.value.trim().split("\n")[0].replace(code, "[code]");
+				// Every occurrence: a reply may echo the code more than once.
+				const words = unlocked.value.trim().split("\n")[0].replaceAll(code, "[code]");
 				return letGo(fail("phone", /\bunlocked\b/.test(unlocked.value) ? `the phone of ${ref.id} stayed locked after its unlock code` : `the phone of ${ref.id} refused its unlock code: ${words}`));
 			}
 		}
