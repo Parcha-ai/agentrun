@@ -377,7 +377,8 @@ test("create() uploads the daemon as root, installs it, checks its sha256, and s
 	assert.equal(sb.init.max, createOpts(fake).metadata[MAX_LABEL]);
 	assert.equal(sb.init.deadline, createOpts(fake).metadata[DEADLINE]);
 	assert.equal(sb.init.user, "2510:2510");
-	assert.match(sb.init.command, /--own-network/);
+	// The loopback block: init is started as the daemon user with --own-network, by default.
+	assert.match(sb.init.command, / init --deadline "\$t" --user "\$w" --own-network /);
 	assert.ok(sb.init.handle.disconnected, "create leaves init running, disconnected");
 	const xvfb = sb.processes.find((p) => p.argv[0] === "Xvfb");
 	assert.deepEqual(xvfb.argv, ["Xvfb", ":0", "-screen", "0", "1280x800x24", "-nolisten", "tcp"], "the X server is started through the daemon");
@@ -420,7 +421,8 @@ test("an install that fails, init that never listens, or an X server that dies e
 		[{ display: "dies" }, /X server .* ended with exit code 1 .*Cannot establish any listening sockets/],
 		[{ display: "never" }, /was not up within/],
 	]) {
-		const { provider, fake } = setup({ desktop: { timeoutMs: 200 } }, options);
+		// The provider's own bounds, short: init that never listens is given up at helloMs, the display at its timeoutMs.
+		const { provider, fake } = setup({ desktop: { timeoutMs: 50 }, timeouts: { ...TIMEOUTS, helloMs: 300 } }, options);
 		const made = await provider.create(SPEC);
 		assert.equal(made.ok, false, JSON.stringify(options));
 		assert.match(made.error.message, pattern);
@@ -1096,6 +1098,10 @@ test("the stream URL and its password are never logged and never in an error", {
 	assert.ok(!text.includes(password) && !text.includes(url), "nothing logged the URL or its password");
 	for (const failure of result.failures) assert.ok(!JSON.stringify(failure).includes(password), JSON.stringify(failure));
 	assert.ok(!JSON.stringify(fake.calls).includes(password), "the password went to the computer as a file only");
+});
+
+// Out of the skipped stream test above, where it could never fail: the whole provider's guard, not the stream's.
+test("the E2B provider writes nowhere but its results: no console and no stdout or stderr, so no key or URL is ever logged", () => {
 	const source = readFileSync(new URL("../dist/e2b.js", import.meta.url), "utf8");
 	assert.doesNotMatch(source, /\bconsole\.|process\.(stdout|stderr)/, "the provider writes nowhere but its results");
 });
@@ -1170,15 +1176,6 @@ test("the loopback block: publicStream is refused in words, from the options and
 	assert.throws(() => setup({ publicStream: true }), /publicStream is refused: .*network of their own/);
 	const settings = settingsFromEnv({ [ENV.key]: KEY, [ENV.daemon]: DAEMON_PATH, [ENV.publicStream]: "1" });
 	await assert.rejects(async () => create({ ...settings, Sandbox: fakeE2B().Sandbox }), /publicStream is refused/);
-});
-
-test("the loopback block: init starts with --own-network as 2510:2510 by default", async () => {
-	const { provider, fake } = setup();
-	const made = await provider.create(SPEC);
-	assert.equal(made.ok, true, JSON.stringify(made));
-	const sb = only(fake);
-	assert.equal(sb.init.user, "2510:2510");
-	assert.match(sb.init.command, / init --deadline "\$t" --user "\$w" --own-network /);
 });
 
 test("the loopback block: a kernel's fallback tunnels, down and addressless, are no drift; one the computer's user could raise is", async () => {

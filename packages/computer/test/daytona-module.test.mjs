@@ -17,6 +17,8 @@ const { createProvider, DAYTONA_ENV } = daytonaModule;
 const here = fileURLToPath(new URL(".", import.meta.url));
 const dir = mkdtempSync(join(tmpdir(), "computer-daytona-module-"));
 const DAEMON = join(dir, "computerd");
+/** The provider's own timeouts option, as daytona-provider.test.mjs passes it: the fake answers at once, so no poll waits a second. */
+const FAST = { requestMs: 2000, createMs: 2000, startMs: 300, deleteMs: 2000, stopMs: 500, goneMs: 500, uploadMs: 2000, execMs: 2000, helloMs: 1000, pollMs: 1, retryMs: 1, listedMs: 2000, listedStableMs: 0 };
 writeFileSync(DAEMON, "a stand-in for computerd\n");
 after(() => rmSync(dir, { recursive: true, force: true }));
 
@@ -103,7 +105,7 @@ test('the run\'s image is COMPUTER_DAYTONA_SNAPSHOT, or "default" (Daytona\'s de
 test("createProvider() bounds every sandbox's life besides the TTL: autoStopMinutes 30 and autoDeleteMinutes 0, whatever the environment", async () => {
 	const fake = fakeDaytona();
 	const env = { [DAYTONA_ENV.key]: KEY, [DAYTONA_ENV.url]: API, [DAYTONA_ENV.daemon]: DAEMON, COMPUTER_DAYTONA_AUTO_STOP: "0", COMPUTER_DAYTONA_AUTO_DELETE: "-1" };
-	const provider = createProvider({ env, fetch: fake.fetch, webSocket: fake.webSocket });
+	const provider = createProvider({ env, fetch: fake.fetch, webSocket: fake.webSocket, timeouts: FAST });
 	const made = await provider.create({ image: daytonaModule.conformanceImage({ env }), lifetimeMs: 600_000, network: "none" });
 	assert.equal(made.ok, true, JSON.stringify(made));
 	const post = fake.requests.find((r) => r.method === "POST" && r.path === "/api/sandbox");
@@ -184,7 +186,7 @@ test("the provider's create() reads no environment: the key, the API URL and the
 			});
 		}
 		assert.deepEqual(fake.requests, []);
-		const provider = daytona.create({ apiKey: KEY, apiUrl: API, target: "eu", daemonPath: DAEMON, fetch: fake.fetch, webSocket: fake.webSocket });
+		const provider = daytona.create({ apiKey: KEY, apiUrl: API, target: "eu", daemonPath: DAEMON, fetch: fake.fetch, webSocket: fake.webSocket, timeouts: FAST });
 		const made = await provider.create({ image: "default", lifetimeMs: 600_000, network: "none" });
 		assert.equal(made.ok, true, JSON.stringify(made));
 		const post = fake.requests.find((r) => r.method === "POST" && r.path === "/api/sandbox");
@@ -214,7 +216,7 @@ test("the conformance module reads COMPUTER_DAYTONA_API_URL and COMPUTER_DAYTONA
 	await withProcessEnv({ DAYTONA_API_URL: PROD_API, DAYTONA_TARGET: "prod-target" }, async () => {
 		const env = { [DAYTONA_ENV.key]: KEY, [DAYTONA_ENV.url]: API, [DAYTONA_ENV.target]: "eu", [DAYTONA_ENV.daemon]: DAEMON, DAYTONA_API_URL: PROD_API, DAYTONA_TARGET: "prod-target" };
 		assert.deepEqual(daytonaModule.settingsFromEnv(env), { apiKey: KEY, apiUrl: API, target: "eu", daemonPath: DAEMON });
-		const provider = createProvider({ env, fetch: fake.fetch, webSocket: fake.webSocket });
+		const provider = createProvider({ env, fetch: fake.fetch, webSocket: fake.webSocket, timeouts: FAST });
 		const made = await provider.create({ image: "default", lifetimeMs: 600_000, network: "none" });
 		assert.equal(made.ok, true, JSON.stringify(made));
 	});
@@ -232,6 +234,7 @@ function live(env) {
 }
 
 test("the live suite on real Daytona skips unless both AGENTRUN_COMPUTER_LIVE_DAYTONA=1 and COMPUTER_DAYTONA_API_KEY are set, whatever DAYTONA_API_KEY holds", async () => {
+	const envs = [];
 	for (const env of [
 		{},
 		{ AGENTRUN_COMPUTER_LIVE_DAYTONA: "1" },
@@ -240,8 +243,11 @@ test("the live suite on real Daytona skips unless both AGENTRUN_COMPUTER_LIVE_DA
 		{ AGENTRUN_COMPUTER_LIVE_DAYTONA: "1", DAYTONA_API_KEY: PROD_KEY },
 		{ AGENTRUN_COMPUTER_LIVE_DAYTONA: "1", DAYTONA_API_KEY: PROD_KEY, DAYTONA_API_URL: PROD_API },
 	]) {
-		const tap = await live(env);
-		assert.match(tap, /# SKIP set AGENTRUN_COMPUTER_LIVE_DAYTONA=1 and COMPUTER_DAYTONA_API_KEY/, JSON.stringify(env));
+		envs.push(env);
+	}
+	// Each environment is its own child, run at once: they share nothing, and each pays a Node start.
+	for (const [i, tap] of (await Promise.all(envs.map((env) => live(env)))).entries()) {
+		assert.match(tap, /# SKIP set AGENTRUN_COMPUTER_LIVE_DAYTONA=1 and COMPUTER_DAYTONA_API_KEY/, JSON.stringify(envs[i]));
 		assert.match(tap, /# pass 0/);
 		assert.match(tap, /# fail 0/);
 	}

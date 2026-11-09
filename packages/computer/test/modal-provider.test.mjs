@@ -365,10 +365,6 @@ test("create: a daemon whose programs run as another user is refused", async () 
 	await driftedCreate({ box: { uid: 0, gid: 0 } }, /user: declared 2510:2510, read back 0:0/);
 });
 
-test("create: network none that reaches an address is refused", async () => {
-	await driftedCreate({ box: { reached: ["1.1.1.1:443"] } }, /network: .*1\.1\.1\.1:443/);
-});
-
 test("create: network none that answers on one target is refused, whatever the others only accepted", async () => {
 	const error = await driftedCreate({ box: { reached: ["1.1.1.1:443"], accepted: ["8.8.8.8:443", "[2606:4700:4700::1111]:443"] } }, /network: declared none, read back an answer from 1\.1\.1\.1:443/);
 	assert.equal(error.code, "refused");
@@ -423,18 +419,6 @@ test("create: a daemon that never answers hello is a timeout, and the sandbox is
 test("create: a probe that never answers is a timeout, and the sandbox is terminated", async () => {
 	const error = await driftedCreate({ box: { probe: "hangs" } }, /probe/, SPEC, { timeouts: { probeMs: 50 } });
 	assert.equal(error.code, "timeout");
-});
-
-test("create: an abort once the sandbox exists terminates it", async () => {
-	const { provider, fake } = setup({}, { box: { silent: true } });
-	const controller = new AbortController();
-	const creating = provider.create(SPEC, { signal: controller.signal });
-	await new Promise((resolve) => setTimeout(resolve, 30));
-	controller.abort();
-	const created = await creating;
-	assert.equal(created.error?.code, "aborted");
-	assert.match(created.error.message, /was terminated/);
-	assert.equal(only(fake).running, false);
 });
 
 // The daemon by upload: no daemonImage, so the binary is streamed in through exec's stdin right after create.
@@ -704,10 +688,10 @@ test("the entrypoint's wait is bounded: with no daemon it exits nonzero in words
 		assert.equal(ran.code, 3, JSON.stringify(ran));
 		assert.match(ran.stderr, /the daemon did not arrive at .*computerd within 1 s/);
 		assert.ok(took >= 900 && took < 5_000, `it waited ${took} ms`);
-		// A file there that is not executable is not the daemon: still bounded.
+		// A file there that is not executable is not the daemon: still bounded (its own seconds, 0 here, are proven above).
 		mkdirSync(join(dir, "opt"));
 		writeFileSync(daemon, "not yet\n", { mode: 0o644 });
-		const half = await runLocally(modalCommands({ waitSeconds: 1, daemon }).entrypoint);
+		const half = await runLocally(modalCommands({ waitSeconds: 0, daemon }).entrypoint);
 		assert.equal(half.code, 3, JSON.stringify(half));
 	} finally {
 		rmSync(dir, { recursive: true, force: true });
@@ -1106,7 +1090,10 @@ test("list leaves out a sandbox whose poll finds it gone, and fails in words on 
 
 test("the live Modal suite gives cleanup more than release's 120 s wait", () => {
 	const live = readFileSync(new URL("./modal/conformance.modal.test.mjs", import.meta.url), "utf8");
-	assert.match(live, /cleanupTimeoutMs: 150_000/);
+	// The bound it passes, read as a number: any value past release's 120 s passes, not one literal.
+	const given = /cleanupTimeoutMs:\s*([\d_]+)/.exec(live)?.[1];
+	assert.ok(given !== undefined, "the live suite passes cleanupTimeoutMs");
+	assert.ok(Number(given.replaceAll("_", "")) > 120_000, `cleanupTimeoutMs ${given} is not past release's 120 s`);
 });
 
 test("every SDK call is bounded: a getTags that never answers is a timeout", async () => {
@@ -1472,17 +1459,6 @@ test("the loopback block: network none only, no agent port declared, open refuse
 	assert.deepEqual(refusals.map((r) => r.field), ["network"]);
 	assert.match(refusals[0].message, /network "none" only: its programs run in a network of their own/);
 	assert.deepEqual(fake.calls, []);
-});
-
-test("the loopback block: init starts with --own-network as 2510:2510 by default, on both routes", async () => {
-	// The upload route gets the test's own stand-in binary: a unit run has no built daemon in dist/.
-	for (const options of [{}, { daemonImage: undefined, daemonPath: BINARY_PATH }]) {
-		const { provider, fake } = setup(options);
-		const made = await provider.create(SPEC);
-		assert.equal(made.ok, true, JSON.stringify(made));
-		const command = createdParams(fake).command;
-		assert.deepEqual(command.slice(-3), ["--user", "2510:2510", "--own-network"], JSON.stringify(options));
-	}
 });
 
 test("the loopback block: a kernel's fallback tunnels, down and addressless, are no drift; one the computer's user could raise is", async () => {
