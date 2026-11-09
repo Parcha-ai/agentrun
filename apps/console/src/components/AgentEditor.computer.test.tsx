@@ -72,15 +72,15 @@ describe("AgentEditor, the Computer step", () => {
   const KINDS = [
     { kind: "none", offered: true, groups: [], tools: ["read", "write", "edit", "bash"], providers: [] },
     { kind: "sandbox", offered: true, groups: ["exec", "files", "processes"], tools: ["read", "write", "edit", "bash", "bash_background"], providers: [
-      { id: "docker", name: "Docker", keys: [], ready: true, metered: false },
-      { id: "daytona", name: "Daytona", keys: [{ name: "DAYTONA_API_KEY", required: true, saved: true }], ready: false, why: "fixture: Daytona can't mount this server's run folders" },
+      { id: "docker", name: "Docker", secrets: [], required: [], ready: true, metered: false },
+      { id: "daytona", name: "Daytona", secrets: [{ name: "computer:daytona:DAYTONA_API_KEY", set: true, source: "console", changed_at: null }], required: ["computer:daytona:DAYTONA_API_KEY"], ready: false, why: "fixture: Daytona can't mount this server's run folders" },
     ] },
     { kind: "desktop", offered: true, groups: ["screen", "input.pointer", "input.keys"], tools: ["read", "write", "edit", "bash", "screen.shot", "input.actions"], providers: [
-      { id: "orgo", name: "Orgo", keys: [{ name: "ORGO_API_KEY", required: true, saved: true }], ready: true, metered: true },
-      { id: "e2b", name: "E2B", keys: [{ name: "E2B_API_KEY", required: true, saved: false }], ready: false, why: "fixture: E2B needs E2B_API_KEY saved" },
+      { id: "orgo", name: "Orgo", secrets: [{ name: "computer:orgo:ORGO_API_KEY", set: true, source: "console", changed_at: null }], required: ["computer:orgo:ORGO_API_KEY"], ready: true, metered: true },
+      { id: "e2b", name: "E2B", secrets: [{ name: "computer:e2b:E2B_API_KEY", set: false, source: null, changed_at: null }], required: ["computer:e2b:E2B_API_KEY"], ready: false, why: "fixture: E2B needs E2B_API_KEY saved" },
     ] },
     { kind: "phone", offered: true, groups: ["screen", "input.touch", "apps"], tools: ["read", "screen.shot", "input.actions"], providers: [
-      { id: "phone-harness", name: "Phone harness", keys: [{ name: "PHONE_HARNESS_API_KEY", required: true, saved: false }], ready: false, why: "fixture: Phone harness needs PHONE_HARNESS_API_KEY saved" },
+      { id: "phone-harness", name: "Phone harness", secrets: [{ name: "computer:phone-harness:PHONE_HARNESS_API_KEY", set: false, source: null, changed_at: null }], required: ["computer:phone-harness:PHONE_HARNESS_API_KEY"], ready: false, why: "fixture: Phone harness needs PHONE_HARNESS_API_KEY saved" },
     ] },
     { kind: "browser", offered: false, why: "fixture: no provider of a browser computer can run here", groups: ["cdp"], tools: [], providers: [] },
   ];
@@ -143,7 +143,7 @@ describe("AgentEditor, the Computer step", () => {
 
   it("never says it under a metered browser provider: a browser's time is counted in a run's cap", () => {
     const LINE = "This provider bills by the minute through your own vendor account, and those minutes aren't counted in a run's spending cap.";
-    const browsing = KINDS.map((k) => (k.kind === "browser" ? { kind: "browser", offered: true, groups: ["cdp"], tools: ["browser"], providers: [{ id: "browserbase", name: "Browserbase", keys: [], ready: true, metered: true }] } : k));
+    const browsing = KINDS.map((k) => (k.kind === "browser" ? { kind: "browser", offered: true, groups: ["cdp"], tools: ["browser"], providers: [{ id: "browserbase", name: "Browserbase", secrets: [], required: [], ready: true, metered: true }] } : k));
     const { host, click } = mount({ agent: agent(), caps: { ...caps, computers: browsing }, step: "computer" });
     click(kindRadio(host, "browser"));
     const browserbase = providerRadio(host, "browserbase")!.closest("label")!;

@@ -16,7 +16,7 @@ afterEach(() => { act(() => root?.unmount()); document.body.innerHTML = ""; });
 const json = (status: number, body: unknown) => new Response(JSON.stringify(body), { status, headers: { "content-type": "application/json" } });
 const KINDS = [
   { kind: "none", offered: true, groups: [], tools: ["read", "write", "edit", "bash"], providers: [] },
-  { kind: "sandbox", offered: true, groups: ["exec", "files", "processes"], tools: ["read", "write", "edit", "bash", "bash_background"], providers: [{ id: "faux-sandbox", name: "Faux sandbox", keys: [], ready: true }] },
+  { kind: "sandbox", offered: true, groups: ["exec", "files", "processes"], tools: ["read", "write", "edit", "bash", "bash_background"], providers: [{ id: "faux-sandbox", name: "Faux sandbox", secrets: [], required: [], ready: true }] },
 ];
 const CAPS = {
   harnesses: [{ id: "pi", available: true }], tools: toolOffers([{ name: "read", available: true }]), thinking: [],
