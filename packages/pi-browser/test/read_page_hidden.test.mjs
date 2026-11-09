@@ -4,6 +4,7 @@
 // record page's help pop-ups (hidden until a click) are not its record. What only a screen reader hears (sr-only,
 // wb-inv) and what only a screen reader skips (aria-hidden) are both read: each is shown to someone.
 import assert from "node:assert/strict";
+import { spawn } from "node:child_process";
 import test from "node:test";
 import { readPage } from "../dist/index.js";
 
@@ -96,4 +97,80 @@ test("the plain-text read (the markdown conversion out of time) leaves out what 
   assert.equal(read.converted, "text");
   assert.ok(read.text.includes("Seen plain."), read.text);
   assert.ok(!read.text.includes("Gone plain."), read.text);
+});
+
+test("only a live style element counts: one in a comment, a script, a template or a noscript hides nothing, nor one whose media is not the screen", async () => {
+  const text = await textOf(page(`
+    <p class="c1">Seen commented.</p><p class="c2">Seen scripted.</p><p class="c3">Seen templated.</p><p class="c4">Seen noscript.</p>
+    <p class="m1">Seen print.</p><p class="m2">Seen query.</p>
+    <p class="m3">Gone screen.</p><p class="m4">Gone all.</p><p class="m5">Gone list.</p><p class="m6">Gone no media.</p>`, `
+    <!-- <style>.c1 { display: none }</style> -->
+    <script>const css = "<style>.c2 { display: none }</style>";</script>
+    <template><style>.c3 { display: none }</style></template>
+    <noscript><style>.c4 { display: none }</style></noscript>
+    <style media="print">.m1 { display: none }</style>
+    <style media="(max-width: 600px)">.m2 { display: none }</style>
+    <style media="screen">.m3 { display: none }</style>
+    <style media="ALL">.m4 { display: none }</style>
+    <style media="print, screen">.m5 { display: none }</style>
+    <style>.m6 { display: none }</style>`));
+  for (const seen of ["Seen commented.", "Seen scripted.", "Seen templated.", "Seen noscript.", "Seen print.", "Seen query."]) assert.ok(text.includes(seen), `${seen} in: ${text}`);
+  for (const gone of ["Gone screen.", "Gone all.", "Gone list.", "Gone no media."]) assert.ok(!text.includes(gone), `${gone} in: ${text}`);
+});
+
+test("a later declaration or rule that shows the element wins, an inline one over a class, an author display over the hidden attribute; where the outcome is in doubt the text is kept", async () => {
+  const text = await textOf(page(`
+    <p style="display:none;display:block">Seen inline last.</p>
+    <p class="o1">Seen later rule.</p>
+    <p class="o2" style="display: block">Seen inline over class.</p>
+    <p class="hidden" style="display:flex">Seen inline over utility.</p>
+    <div hidden style="display:block">Seen over hidden attribute.</div>
+    <p class="o3">Seen important mix.</p>
+    <p class="o4 o5">Seen classes in conflict.</p>
+    <p class="o6">Seen shown by a compound rule.</p>
+    <p style="display:block;display:none">Gone inline last.</p>
+    <p class="o7">Gone later rule.</p>
+    <p class="o8" style="display:block">Gone by visibility.</p>
+    <p class="o9" style="color: red">Gone class, inline silent.</p>`, `
+    <style>
+      .o1 { display: none } .o1 { display: block }
+      .o2 { display: none }
+      .o3 { display: none !important } .o3 { display: block }
+      .o4 { display: none } .o5 { display: block }
+      .o6 { display: none } .open .o6 { display: block }
+      .o7 { display: block } .o7 { display: none }
+      .o8 { visibility: hidden }
+      .o9 { display: none }
+    </style>`));
+  for (const seen of ["Seen inline last.", "Seen later rule.", "Seen inline over class.", "Seen inline over utility.", "Seen over hidden attribute.", "Seen important mix.", "Seen classes in conflict.", "Seen shown by a compound rule."]) assert.ok(text.includes(seen), `${seen} in: ${text}`);
+  for (const gone of ["Gone inline last.", "Gone later rule.", "Gone by visibility.", "Gone class, inline silent."]) assert.ok(!text.includes(gone), `${gone} in: ${text}`);
+});
+
+test("a class or style value written with character references is read decoded", async () => {
+  const text = await textOf(page(`
+    <section class="mfp&#45;hide">Gone encoded class.</section>
+    <p style="display&#58;none">Gone encoded style.</p>
+    <p class="d&#x2D;none">Gone hex class.</p>
+    <p>Seen after.</p>`));
+  assert.ok(text.includes("Seen after."), text);
+  for (const gone of ["Gone encoded class.", "Gone encoded style.", "Gone hex class."]) assert.ok(!text.includes(gone), `${gone} in: ${text}`);
+});
+
+test("a stylesheet of 400,000 spaces and 200,000 semicolons is read in one linear pass: the page reads in well under a second, in a child so a stalled loop cannot stall this runner", async () => {
+  const child = spawn(process.execPath, ["--input-type=module", "-e", `
+    const { readPage } = await import(${JSON.stringify(new URL("../dist/index.js", import.meta.url).href)});
+    const css = " ".repeat(400000) + ";".repeat(200000);
+    const html = "<html><head><style>" + css + "</style></head><body><p>Seen.</p></body></html>";
+    const started = performance.now();
+    const read = await readPage(html, "https://records.example/");
+    process.stdout.write(JSON.stringify({ ms: performance.now() - started, seen: read.text.includes("Seen.") }));`], { stdio: ["ignore", "pipe", "inherit"] });
+  let out = "";
+  child.stdout.on("data", (chunk) => (out += chunk));
+  const guard = setTimeout(() => child.kill("SIGKILL"), 20_000);
+  const code = await new Promise((resolve) => child.once("exit", (exitCode, signal) => resolve(exitCode ?? signal)));
+  clearTimeout(guard);
+  assert.equal(code, 0, `the read did not end within 20 s (it was killed): ${out}`);
+  const { ms, seen } = JSON.parse(out);
+  assert.ok(seen, "the page's text is read");
+  assert.ok(ms < 1_000, `read in ${Math.round(ms)} ms`);
 });
