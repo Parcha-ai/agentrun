@@ -9,6 +9,9 @@ import { BACKGROUND_CONTEXT } from "@earendil-works/chord/context";
 import { currentLearning, holdsForOk, type Learning, LEARNING_REASONS, type NoteUsed, type Shown } from "../learning.js";
 import { runLearningBody } from "../learning-routes.js";
 import { learningStartOf, readLaunchBody, type RunLaunch } from "../run-launch.js";
+import { notesRead, type Reflect } from "../learning-run.js";
+import type { TimelineEvent } from "@parcha/pi-durable-agent/timeline";
+import { runReflect, runTimeline } from "./journal.js";
 import { FINAL_STATES } from "../store/store.js";
 import type { AnalyticsFilter } from "./analytics.js";
 import { journalEntries } from "../runner/journal-reader.js";
@@ -107,6 +110,28 @@ export async function agentLearningCountsOverStore(store: Store, agentId: string
   return counts;
 }
 
+/** A run's learning end with the notes its start gave it (`given`, when it started from a seed) and those its job read
+ *  (`read`, only when it read one): what a run view and GET /runs/{id}/learning show beside the end. */
+export type RunLearning = RunLearningEnd & { readonly given?: NoteUsed[]; readonly read?: NoteUsed[] };
+
+/** The notes a run's job read (learning-run.ts noteRead's rule, over the runner's journal rows): its own successful
+ *  `read` calls on a file of its copy of the folder, the end-of-run turn's (`reflect`) left out, keyed on the notes it was
+ *  `given` and named as given. A file it was not given (MEMORY.md, one it wrote, one not in its seed) is not one of them. */
+export function notesReadOf(given: readonly NoteUsed[] | undefined, reflect: Pick<Reflect, "after" | "until"> | undefined, rows: readonly TimelineEvent[]): NoteUsed[] {
+  if (!given?.length) return [];
+  const names = new Map(given.map((note) => [note.file, note.name]));
+  return notesRead(reflect as Reflect | undefined, rows).flatMap((file) => (names.has(file) ? [{ file, name: names.get(file)! }] : []));
+}
+
+/** `end` with its run's given notes (from its launch's learning start) and the notes its job read. */
+export function withNotes(end: RunLearningEnd, started: RunLaunch["learning"], read: readonly NoteUsed[]): RunLearning {
+  return {
+    ...end,
+    ...(started ? { given: started.given.map((note): NoteUsed => ({ file: note.file, name: note.name })) } : {}),
+    ...(read.length ? { read: [...read] } : {}),
+  };
+}
+
 /** Run `runId`'s learning start as its launch records it (run-launch.ts learningStartOf, the one reader): its given notes,
  *  its seed sha and its # Learned section; undefined when the run does not learn or has no launch. */
 async function learningStartOfRun(store: Store, runId: string): Promise<RunLaunch["learning"]> {
@@ -123,8 +148,10 @@ export async function runLearningOverStore(store: Store, runId: string, shown: S
   const end = await runLearningEnd(store, runId);
   if (!end) return null;
   const started = await learningStartOfRun(store, runId);
-  const learning = { ...end, ...(started ? { given: started.given.map((note): NoteUsed => ({ file: note.file, name: note.name })) } : {}) } as Learning;
-  const current = holdsForOk(learning) ? currentLearning(learning, undefined) : learning;
   const row = await store.runs.get(runId);
-  return runLearningBody({ id: runId, learning: current, seed: started?.seed ?? null, settled: row !== undefined && FINAL_STATES.includes(row.state) }, shown, secrets);
+  const settled = row !== undefined && FINAL_STATES.includes(row.state);
+  const read = started?.given.length ? notesReadOf(started.given, await runReflect(store, runId, BACKGROUND_CONTEXT), await runTimeline(store, runId, BACKGROUND_CONTEXT, { settled })) : [];
+  const learning = withNotes(end, started, read) as Learning;
+  const current = holdsForOk(learning) ? currentLearning(learning, undefined) : learning;
+  return runLearningBody({ id: runId, learning: current, seed: started?.seed ?? null, settled }, shown, secrets);
 }

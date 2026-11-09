@@ -9,7 +9,7 @@ import { runLink } from "./console-links.js";
 import { redacted, redactedAnswer, withoutLoopback } from "./key-refusal.js";
 import { currentLearning, holdsForOk, type Learning, learningView, LEARNING_LABEL, secretsShown, shortOf, type Shown } from "./learning.js";
 import { MIN_SECRET } from "./learn/secrets.js";
-import { type RunLaunch, readLaunchBody } from "./run-launch.js";
+import { learningStartOf, type RunLaunch, readLaunchBody } from "./run-launch.js";
 import {
   type Handed,
   handedPointers,
@@ -32,7 +32,7 @@ import {
 } from "./run-view.js";
 import { reflects, type Reflect } from "./learning-run.js";
 import { journalRecords, recordOf } from "./runner/journal-reader.js";
-import { runLearningEnd } from "./store-reads/learning.js";
+import { notesReadOf, runLearningEnd, type RunLearning, withNotes } from "./store-reads/learning.js";
 import { runReflect, runTimeline } from "./store-reads/journal.js";
 import { type RunReadState, readRun } from "./store-reads/runs.js";
 import { keptVendor, type Plane } from "./tool-plane.js";
@@ -86,7 +86,7 @@ interface StoreRun {
   readonly rows: TimelineEvent[];
   readonly version: number;
   readonly harness: string;
-  readonly learningEnd: Awaited<ReturnType<typeof runLearningEnd>>;
+  readonly learningEnd: RunLearning | null;
   readonly view: RunView;
   /** The run's error text is withheld while this server can't read the sign-in it was handed. */
   readonly unshown: boolean;
@@ -137,7 +137,7 @@ async function storeRunOf(store: Store, runId: string, deps: ViewDeps): Promise<
   const rows = withAsks(await runTimeline(store, runId, context, { settled: terminal }));
   const revisions = await store.agents.revisions(row.agent);
   const version = revisions.findIndex((r) => r.id === row.revision) + 1;
-  const learningEnd = await runLearningEnd(store, runId);
+  const ended = await runLearningEnd(store, runId);
 
   // Whether a runner holds the run now, and the time of its latest change: the live tick while it runs (store.live, the
   // runner's own tick), its end once ended, its start before either.
@@ -151,6 +151,9 @@ async function storeRunOf(store: Store, runId: string, deps: ViewDeps): Promise<
   const records = await journalRecords(store.readJournal(runId), context);
   const reflectRange = (await runReflect(store, runId, context)) as Reflect | undefined;
   const skip = reflectRange ? (id: number) => reflects(reflectRange, id) : undefined;
+  // The run's learning end with the notes its start gave it and those its job read (its own reads, keyed on the given).
+  const started = launch ? learningStartOf(launch) : undefined;
+  const learningEnd = ended && withNotes(ended, started, notesReadOf(started?.given, reflectRange, rows));
   const turns = new Turns();
   turns.note(recordOf(records.entries), records.submissions ?? [], skip, liveRow?.updatedAt ?? deps.now?.() ?? Date.now());
   const working = live && turns.open > 0;
@@ -189,7 +192,7 @@ async function storeRunOf(store: Store, runId: string, deps: ViewDeps): Promise<
 /** A run's learning as the view shows it: its end from the store, in a person's words cut of the host's secrets now, and,
  *  for an ended run, the notes it read. A learning still held for the owner's OK reads as it stands; an ended one (merged,
  *  dropped) reads as it was written. */
-function learningViewOf(learningEnd: Awaited<ReturnType<typeof runLearningEnd>>, shown: Shown, settled: boolean): unknown {
+function learningViewOf(learningEnd: RunLearning | null, shown: Shown, settled: boolean): unknown {
   if (!learningEnd) return null;
   const learning = holdsForOk(learningEnd as Learning) ? currentLearning(learningEnd as Learning, undefined) : (learningEnd as Learning);
   return learningView(learning, shown, settled);
