@@ -13,7 +13,7 @@ after(closeOpenSessions);
 const CAP = 0.0004295;
 
 test("pi through the adapter: the cap's refusal with retry digits in its words is final: one ask, nothing sent, never asked again, no backoff", async (t) => {
-  const { row, asked, sent, ms } = await capRun(t, { script: [{ say: "never sent" }], beforeRequest: beforeRequestOf({ capUsd: () => CAP, modelOf: () => SONNET }) });
+  const { row, asked, sent, ms } = await capRun(t, { script: [{ say: "never sent" }], runCap: ({ capUsd: () => CAP, modelOf: () => SONNET }) });
   assert.match(asked[0]?.answer?.refuse ?? "", /^spend_cap_reached \(out of budget\): .*\$0\.0004295/, JSON.stringify(asked[0]?.answer));
   assert.equal(sent.length, 0, "nothing reached the provider");
   assert.equal(asked.length, 1, `asked once, never again: ${asked.length}`);
@@ -22,7 +22,7 @@ test("pi through the adapter: the cap's refusal with retry digits in its words i
 });
 
 test("pi through the adapter: a refusal no raise can fix (the run's spend unknown) fails the run in the cap's own words, never as a run that gave no answer", async (t) => {
-  const { row, asked, sent } = await capRun(t, { script: [{ say: "never sent" }], beforeRequest: beforeRequestOf({ capUsd: () => 1, modelOf: () => SONNET, spentUsd: () => null }) });
+  const { row, asked, sent } = await capRun(t, { script: [{ say: "never sent" }], runCap: ({ capUsd: () => 1, modelOf: () => SONNET, spentUsd: () => null }) });
   const words = "spend_cap_reached: Not sent: what the run has spent is unknown, so its cap of $1 cannot be kept: the run is out of budget.";
   assert.equal(asked[0]?.answer?.refuse, words);
   assert.equal(sent.length, 0, "nothing reached the provider");
@@ -44,7 +44,7 @@ test("one ledger: a pi run's requests are judged by beforeRequestOf through the 
     ledger.Ledger.prototype.hold = hold;
     ledger.Ledger.prototype.settle = settle;
   });
-  const { row, asked } = await capRun(t, { script: [{ say: "done" }], beforeRequest: beforeRequestOf({ capUsd: () => 1, modelOf: () => SONNET }) });
+  const { row, asked } = await capRun(t, { script: [{ say: "done" }], runCap: ({ capUsd: () => 1, modelOf: () => SONNET }) });
   assert.equal(row.state, "ended", JSON.stringify(row));
   assert.ok(asked.length >= 1, "the host was asked");
   assert.equal(judged.count, asked.length, "one judgement per ask, by the one rule");

@@ -58,8 +58,9 @@ export type BeforeRequest = (request: {
   outputTokensLeast?: number;
   /** What it charges beside its tokens (ModelRequest.feeUsd), held with them. */
   feeUsd?: number;
-  /** A paid tool call, no model request (ModelRequest.paid): held at its fee alone, named so in a refusal. */
-  paid?: { name: string; basis: string };
+  /** A paid tool call, no model request (ModelRequest.paid): held at its fee alone, named so in a refusal. `call`: the
+   *  tool call it was booked under, written on its runner.request so the run view puts its charge under that call. */
+  paid?: { name: string; basis: string; call?: string };
   /** A side call (ModelRequest.side): on another model than the session's (a client's), or the host's own (`host`). */
   side?: true;
   /** It carries the host's note (ModelRequest.noted), and its input measured without it (`inputTokensMaxWithoutNote`):
@@ -188,7 +189,7 @@ export async function modelPortFor(writer: SessionWriter, options: ModelPortOpti
  *  session's spend (null: unknown). A turn is a paid request that left: counted from the records written before each one
  *  left, so a request a crash cut off (or one still in flight, read from another process or session) counts at the
  *  figure its host held for it, and leaves the spend unknown when there is none. */
-export function sessionSpendOf(records: readonly SessionRecord[]): { turns: number[]; held: Map<number, number>; hosts: Map<number, string>; answered: Set<number>; spentUsd: number | null; cost: SessionCost } {
+export function sessionSpendOf(records: readonly SessionRecord[]): { turns: number[]; held: Map<number, number>; bounds: Map<number, number>; hosts: Map<number, string>; answered: Set<number>; spentUsd: number | null; cost: SessionCost } {
   const requests = records.filter((r) => r.kind === RUNNER_RECORDS.request).map((r) => (r.data ?? {}) as { turn?: number; heldUsd?: unknown; boundUsd?: unknown; host?: unknown });
   const turns = requests.map((data, i) => data.turn ?? i + 1);
   const hosts = new Map<number, string>();
@@ -217,15 +218,17 @@ export function sessionSpendOf(records: readonly SessionRecord[]): { turns: numb
   let unpriced = 0;
   for (const r of records) {
     if (r.kind !== RUNNER_RECORDS.turn) continue;
-    const data = r.data as { turn?: number; usd?: number | null; heldUsd?: unknown; bookedUsd?: unknown; cut?: unknown };
+    const data = r.data as { turn?: number; usd?: number | null; heldUsd?: unknown; bookedUsd?: unknown; cut?: unknown; rule?: unknown };
     const turn = data.turn ?? turns.find((t) => !answered.has(t)) ?? 0;
     answered.add(turn);
     // The figure it was booked at (bookRequest), as written. A record from before that has none: a request cut off with
     // no answer at its worst case; a cost that never came in at the figure its answer was booked at (a stopped request's),
-    // else what was held for it.
+    // else what was held for it. One booked lost (at its hold) may have been billed at a cache miss like one with no
+    // answer: for the cap, its worst case.
     const booked = data.bookedUsd === null ? null : heldFigure(data.bookedUsd);
     const cut = data.cut === true && booked === undefined;
-    spentUsd = spent(spentUsd, booked !== undefined ? (booked ?? undefined) : cut ? worst(turn) : data.usd === null ? (heldFigure(data.heldUsd) ?? held.get(turn)) : (data.usd ?? 0));
+    const capped = booked !== undefined && bookedLost(data.rule) ? (worst(turn) ?? booked) : booked;
+    spentUsd = spent(spentUsd, capped !== undefined ? (capped ?? undefined) : cut ? worst(turn) : data.usd === null ? (heldFigure(data.heldUsd) ?? held.get(turn)) : (data.usd ?? 0));
     const own = booked !== undefined ? booked : cut || data.usd === null ? null : data.usd === undefined ? 0 : (heldFigure(data.usd) ?? null);
     if (own === null) unpriced++;
     else soFarUsd += own;
@@ -235,8 +238,11 @@ export function sessionSpendOf(records: readonly SessionRecord[]): { turns: numb
     spentUsd = spent(spentUsd, worst(turn));
     unpriced++;
   }
-  return { turns, held, hosts, answered, spentUsd, cost: { usd: unpriced > 0 ? null : soFarUsd, soFarUsd, unpriced } };
+  return { turns, held, bounds, hosts, answered, spentUsd, cost: { usd: unpriced > 0 ? null : soFarUsd, soFarUsd, unpriced } };
 }
+
+/** Whether a request was booked lost (bookRequest's rule `lost`, or `lost:<label>`): billed or not, no cost came in. */
+const bookedLost = (rule: unknown): boolean => typeof rule === "string" && (rule === "lost" || rule.startsWith("lost:"));
 
 /** A session's cost as a person is shown it: `usd` when every paid request has its own figure, else null with the known
  *  part so far (`soFarUsd`) and how many have none (`unpriced`). */
@@ -253,6 +259,8 @@ function bookingFor(writer: SessionWriter, options: ModelPortOptions & { records
   const hosts = read.hosts;
   let turns = inherited.length;
   const held = read.held;
+  /** What a cache miss adds to each request's hold (Admission.boundUsd): a request booked lost counts at both. */
+  const bounds = read.bounds;
   /** What the host counts each request of this process at if its client stops it part way (Admission.stoppedUsd). */
   const stoppedAt = new Map<number, (streamedTokens: number) => number>();
   /** The host's record of a note each request of this process carries (Admission.note), for its runner.turn. */
@@ -318,10 +326,11 @@ function bookingFor(writer: SessionWriter, options: ModelPortOptions & { records
     // Durable before the request leaves: admitted, then sent. It counts as a turn once its record is written (admissions
     // run one at a time), so a write that fails refuses the request and costs no turn.
     const turn = turns + 1;
-    await write([{ kind: RUNNER_RECORDS.request, data: { turn, model, ...(hold === undefined ? {} : { heldUsd: hold }), ...(bound ? { boundUsd: bound } : {}), ...(side ? { side } : {}), ...(host === undefined ? {} : { host }) } }]);
+    await write([{ kind: RUNNER_RECORDS.request, data: { turn, model, ...(hold === undefined ? {} : { heldUsd: hold }), ...(bound ? { boundUsd: bound } : {}), ...(side ? { side } : {}), ...(host === undefined ? {} : { host }), ...(paid?.call === undefined ? {} : { call: paid.call }) } }]);
     turns = turn;
     if (host !== undefined) hosts.set(turn, host);
     if (hold !== undefined) held.set(turn, hold);
+    if (bound) bounds.set(turn, bound);
     const stoppedUsd = verdict && "stoppedUsd" in verdict && typeof verdict.stoppedUsd === "function" ? verdict.stoppedUsd : undefined;
     if (stoppedUsd) stoppedAt.set(turn, stoppedUsd);
     const note = verdict && "note" in verdict && verdict.note && typeof verdict.note === "object" && !withoutNote ? verdict.note : undefined;
@@ -397,7 +406,10 @@ function bookingFor(writer: SessionWriter, options: ModelPortOptions & { records
       // before, its own cost, else what streamed of a stop, else the hold.
       const booking = ended ? bookRequest(ended, { ...(hold === undefined ? {} : { hold }), ...(stoppedUsd ? { stoppedPrice: stoppedUsd } : {}) }) : undefined;
       const figure = booking ? booking.usd : usage.usd !== null ? usage.usd : stopped === undefined ? hold : Math.min(hold!, stopped);
-      spentUsd = spent(spentUsd, figure ?? undefined);
+      // Booked lost (at its hold), it may have been billed at a cache miss: for the cap, its hold plus its bound, as
+      // sessionSpendOf reads it on the next claim.
+      const capped = booking && bookedLost(booking.rule) && hold !== undefined ? hold + (bounds.get(turn) ?? 0) : figure;
+      spentUsd = spent(spentUsd, capped ?? undefined);
       try {
         // A runner.turn with the ids holds what a carried response record of this turn would: that one is dropped. A
         // stopped one keeps the figure it counts at (`heldUsd`), so a later process counts it the same.
