@@ -35,6 +35,9 @@ export const referenceSubject = {
   name: "reference",
   process: { module: import.meta.url, export: "referenceSubject" },
   createLoop: (setup) => (deps) => referenceLoop(setup, deps),
+  unsupported: {
+    "end-of-run-answer": "the reference loop has no end-of-run step (LoopDeps.endOfRun): it writes its end after the job's turn",
+  },
 };
 
 function referenceLoop({ script, tools, hooks }, deps) {

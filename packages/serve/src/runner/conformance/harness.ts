@@ -19,7 +19,7 @@ import { openSqliteStore, RunFinal, type RunRow, type Store } from "../../store/
 import { sendCommand } from "../commands.js";
 import { callsOf, journalRecords, messagesOf, type CallRecord, type MessageRecord } from "../journal-reader.js";
 import { type AnswerData, KINDS } from "../journal-kinds.js";
-import type { LoopFactory } from "../loop-contract.js";
+import type { EndOfRunAnswer, EndOfRunTurn, LoopDeps, LoopFactory } from "../loop-contract.js";
 import { startRunner, type Runner } from "../runner.js";
 import type { ConformanceCase, ConformanceSetup, ConformanceSubject, KernelHooks, ScriptStep, SuiteTool, ToolName } from "./subject.js";
 
@@ -135,7 +135,7 @@ async function world(subject: ConformanceSubject, t: { after(fn: () => unknown):
   await server.runs.create({ id: RUN, agentId: "agent-1", revisionId: "rev-1" });
   /** The command rows a runner has handed to a loop's command(): with the loop, whether or not taken yet. */
   const handed = new Set<number>();
-  const start = async (name: string, setup: ConformanceSetup, holder?: { runner?: Runner }) => {
+  const start = async (name: string, setup: ConformanceSetup, holder?: { runner?: Runner }, more: Pick<LoopDeps, "endOfRun"> = {}) => {
     const store = await openSqliteStore({ dataDir: dir, role: "runner" });
     stores.push(store);
     // Each journal commit's outcome, by the claim's epoch (as child.ts records its process's): what a loop wrote, and
@@ -144,6 +144,7 @@ async function world(subject: ConformanceSubject, t: { after(fn: () => unknown):
     const observedLoop: LoopFactory = (deps) => {
       const loop = factory({
         ...deps,
+        ...more,
         journal: (claim) =>
           new Proxy(deps.journal(claim), {
             get(target, property) {
@@ -671,6 +672,34 @@ const CASES: readonly Case[] = [
     },
   },
   {
+    // The end-of-run step's turn (loop-contract.ts EndOfRunTurn) through the run's own session: its answer is read from
+    // the submission its request id names, whoever keeps the record (pi's adapter, or the loop for a CLI), so the step
+    // gets it, never "unanswered"; and the loop's record never writes that turn as a message (its prompt as the person's,
+    // its answer as the model's). Taking the CLI record's submission away turns this red for a CLI subject.
+    id: "end-of-run-answer",
+    title: "the end-of-run turn's answer is read, never unanswered, and the loop's record never shows that turn as a message",
+    async body(subject, t) {
+      const w = await world(subject, t);
+      const { tools } = suiteTools();
+      const prompt = "What did you learn?";
+      const answers: EndOfRunAnswer[] = [];
+      const endOfRun: EndOfRunTurn = async (input) => {
+        answers.push(await input.ask(prompt, { origin: "reflect", deadlineMs: 10_000 }));
+        return undefined;
+      };
+      await w.start("runner-a", { script: [{ say: "the job's answer" }, { say: "a note" }], tools, hooks: quiet, agentId: "agent-1" }, undefined, { endOfRun });
+      await w.ended("ended");
+      assert.equal(answers.length, 1, "asked once");
+      const answer = answers[0]!;
+      assert.ok("ended" in answer && answer.answer !== "", `the step read the turn's answer: ${JSON.stringify(answers)}`);
+      const row = await w.run();
+      const { entries } = await journalRecords(w.server.journal({ runId: RUN, runner: "conformance-reader", epoch: row.epoch, until: 0, from: row.state }), BACKGROUND_CONTEXT);
+      const shown = entries.filter((entry) => entry.kind === KINDS.message).map((entry) => (entry.data as { text?: string }).text);
+      assert.ok(!shown.includes(prompt), `the step's prompt is not a message: ${JSON.stringify(shown)}`);
+      assert.ok(!shown.includes(answer.answer), `the turn's answer is not a message: ${JSON.stringify(shown)}`);
+    },
+  },
+  {
     // An answer the model's output limit cut (stopReason "length") is unfinished: a run that ends on it never reads ended.
     id: "length-ends-failed",
     title: "a final answer the model cut at its output limit ends the run failed, saying so",
@@ -700,6 +729,24 @@ const CASES: readonly Case[] = [
   },
 ];
 
+/** The output-limit cases a CLI subject cannot model yet, with why (stated once, for each CLI subject's unsupported list):
+ *  the loop reads a cut answer from its entry's stop reason (loop.ts cutLast), and a CLI's record carries none yet. */
+export const CLI_NO_STOP_REASON = "the CLI adapters don't report a turn cut at the model's output limit (stopReason length) yet, and the CLI record carries no stop reason for the loop to read";
+export const CLI_OUTPUT_LIMIT_UNSUPPORTED: Partial<Record<ConformanceCase, string>> = Object.freeze({ "length-ends-failed": CLI_NO_STOP_REASON, "length-mid-run": CLI_NO_STOP_REASON });
+
+const CLI_NEVER_RERUNS = "a CLI never reruns a call that started; only the model calls again (its adapter's facts: rerunsStarted false)";
+
+/** The cases a harness's declared facts rule out, each with why: what it does by design, not what it cannot model yet. */
+export function factsRuleOut(facts: ConformanceSubject["facts"]): Partial<Record<ConformanceCase, string>> {
+  if (!facts) return {};
+  const noSteer = `${facts.id} takes no message mid-turn (its adapter's facts: steer false), so the loop refuses a steer for it in words`;
+  return {
+    // steer-origin steers the turn in flight too: its message is taken mid-turn, or never.
+    ...(facts.steer ? {} : { "steer-mid-turn": noSteer, "steer-origin": noSteer }),
+    ...(facts.rerunsStarted === false ? { "replay-safe-rerun": CLI_NEVER_RERUNS, "fault-restarts-bounded": CLI_NEVER_RERUNS } : {}),
+  };
+}
+
 /** What a run whose answer was cut at the model's output limit says (loop-contract.ts cutAtLimit). */
 const CUT_AT_LIMIT = /^the model stopped at its output limit( \(\d+ tokens\))? before finishing its answer$/;
 
@@ -711,15 +758,16 @@ async function settledRun(w: { run(): Promise<RunRow> }): Promise<RunRow> {
   }, "the run ends and is released");
 }
 
-/** Registers the six cases for `subject` with `test` (node:test). A case the subject cannot model is skipped with its
- *  reason, never passed. */
+/** Registers the cases for `subject` with `test` (node:test). A case its facts rule out, or one it cannot model yet, is
+ *  skipped with its reason, never passed. */
 export function registerHarnessConformance(subject: ConformanceSubject, { test }: { test: TestFunction }): void {
+  const ruledOut = factsRuleOut(subject.facts);
   for (const entry of CASES) {
     const processCase = entry.id.endsWith("-process");
-    const skip = subject.unsupported?.[entry.id] ?? (processCase && !subject.process ? "it names no module a runner process can load (subject.process)" : undefined);
-    test(`${subject.name}: ${entry.title}`, { timeout: CASE_TIMEOUT_MS, ...(skip ? { skip: `${subject.name} cannot model this yet: ${skip}` } : {}) }, (t) =>
-      entry.body(subject, t),
-    );
+    const byFacts = ruledOut[entry.id];
+    const notYet = subject.unsupported?.[entry.id] ?? (processCase && !subject.process ? "it names no module a runner process can load (subject.process)" : undefined);
+    const skip = byFacts ? `${subject.name} does not do this by design: ${byFacts}` : notYet ? `${subject.name} cannot model this yet: ${notYet}` : undefined;
+    test(`${subject.name}: ${entry.title}`, { timeout: CASE_TIMEOUT_MS, ...(skip ? { skip } : {}) }, (t) => entry.body(subject, t));
   }
 }
 

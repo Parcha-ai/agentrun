@@ -21,7 +21,7 @@ import { connect } from "node:net";
 import { join } from "node:path";
 import type { Duplex } from "node:stream";
 import { sealColumn, sealedAt, unsealColumn } from "./store/seal.js";
-import type { Claim } from "./store/store.js";
+import type { Claim, LiveViewerRow, Store } from "./store/store.js";
 
 /** The hand-over directory in the run's directory (never in work/): one file per open session. */
 export const BROWSER_LIVE_DIR = "browser-live";
@@ -117,29 +117,10 @@ export const readHandover = async (runDir: string): Promise<LiveHandover | undef
 /** The hand-over of the viewer whose path id is `id`, or undefined. */
 export const handoverById = async (runDir: string, id: string): Promise<LiveHandover | undefined> => (await readHandovers(runDir)).find((handover) => handover.id === id);
 
-/** One open session's viewer as the store keeps it: one row per (run, session tag), its token sealed (sealedAt.liveViewer),
- *  `at` the store's clock when it was put, `runner` the claim's holder. */
-export type LiveViewerRow = { tag: string; port: number; id: string; sealed: Uint8Array; at: number; runner: string };
-
-/**
- * The slice of the one store that carries the hand-over across processes, once serve and the runner share only the store.
- * The store's real `liveViewers` (store/, tl-jobs) replaces the fake tests use (test/live-viewers-support.mjs); this is the
- * part of it this module calls. The token is never plaintext in the store: the runner seals it under the seal key it holds,
- * and the server opens it for the owner's answer alone. Its rows go with the run's end, a take or reclaim of the run, and
- * the run's delete, in the store.
- */
-export interface LiveViewers {
-  /** The runner's put under its claim, upsert on (run_id, tag), `at` stamped by the store: false when the claim is stale
-   *  (its epoch moved on, or its lease ran out), and nothing written. */
-  put(claim: Claim, viewer: { tag: string; port: number; id: string; sealed: Uint8Array }): Promise<boolean>;
-  /** The runner's drop, fenced by its claim's epoch: session `tag`'s row, or with no tag every row of the run. */
-  drop(claim: Claim, tag?: string): Promise<void>;
-  /** The server's read: the run's rows, newest first, only those of its epoch, under a live claim, by its runner (a runner
-   *  that died, or a claim lost, names no viewer). */
-  of(runId: string): Promise<LiveViewerRow[]>;
-}
-/** A store that carries live viewers (the real one's Pick<Store, "liveViewers">). */
-export type LiveViewerStore = { readonly liveViewers: LiveViewers };
+/** The store's live viewers (store.liveViewers: put and drop under the runner's claim, of() for the server) carry the
+ *  hand-over across processes, once serve and the runner share only the store. The token is never plaintext there: the
+ *  runner seals it under the seal key it holds, and the server opens it for the owner's answer alone. */
+export type LiveViewerStore = Pick<Store, "liveViewers">;
 
 /** The runner hands session `handover.tag`'s viewer over, under `claim`, its token sealed under `sealKey`: false when the
  *  claim is stale and nothing was written. The time is the store's. */
