@@ -1844,7 +1844,7 @@ the API's control URL) is a later change: `platform: "ios"` is refused in words.
   - `input.actions`: checked whole first (`checkActions`). Then tap, long press, swipe (`input swipe`, or
     `input motionevent` for a path of three points or more, its `ms` shared between the moves by each segment's length
     as `sleep`s, so it lasts `ms` at least), the back, home and app switch buttons, `type`
-    (`input text`, ASCII and line breaks) and one key at a time (`input keyevent`), and `wait`. A cancelled batch
+    (`input text`, ASCII and line breaks; a literal `%s` is split across two calls, so it is not read as a space) and one key at a time (`input keyevent`), and `wait`. A cancelled batch
     stops at the action it is on, a `wait` included, and answers failed, kind `aborted`, there;
   - `apps.list` (`pm list packages`, and the app in front from `dumpsys activity activities`), `apps.launch` (its
     launcher activity, `am start -W --activity-clear-task`, so the app named is in front and not what its task last

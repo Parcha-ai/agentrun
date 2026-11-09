@@ -977,7 +977,13 @@ class AdbClient implements ComputerClient {
 				const commands: string[] = [];
 				for (const [i, line] of action.text.split("\n").entries()) {
 					if (i > 0) commands.push("input keyevent KEYCODE_ENTER");
-					if (line !== "") commands.push(`input text ${quote(line.replaceAll(" ", "%s"))}`);
+					// input text reads a % followed by s as a space, and nothing else. A space is sent as %s; a literal %s
+					// is split across two calls, so its % ends one and its s starts the next and the two never meet.
+					const pieces = line.split("%s");
+					for (const [j, piece] of pieces.entries()) {
+						const part = `${j > 0 ? "s" : ""}${piece}${j < pieces.length - 1 ? "%" : ""}`;
+						if (part !== "") commands.push(`input text ${quote(part.replaceAll(" ", "%s"))}`);
+					}
 				}
 				return { commands };
 			}
