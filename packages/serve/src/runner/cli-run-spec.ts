@@ -285,7 +285,7 @@ export async function cliRunSpecFromLaunch(launch: RunLaunch, run: AdapterRun, d
     label: runRow.agentId,
     system: [environmentLine(), instructions, guidance].filter((line): line is string => Boolean(line)),
     // The learned workflow's call nodes run on the claim's keys: its answers pass the runner's one redactor, as pi's do.
-    tools: [...tools.hostTools(granted, undefined, results), ...(learnedTool ? [answersCut(learnedTool, run.redact ? heldRedactor(run.redact) : cut)] : [])],
+    tools: [...tools.hostTools(granted, results), ...(learnedTool ? [answersCut(learnedTool, run.redact ? heldRedactor(run.redact) : cut)] : [])],
     context: "fresh",
     ...(launch.effort ? { thinking: thinkingFor(facts, launch.effort) } : {}),
   };

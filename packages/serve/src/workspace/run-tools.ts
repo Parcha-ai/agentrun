@@ -28,7 +28,6 @@ import type { Context } from "@earendil-works/chord";
 import type { HostTool } from "@parcha/agentrun-kernel";
 import { type CapabilityKind, type CdpSession, createRegistry, endBackground, type Executor, type Registry } from "@parcha/agentrun-kernel/kernel";
 import type { ComputerClient, Group } from "@parcha/agentrun-computer";
-import type { Park, RunGate } from "../tool-gate.js";
 import type { AttachableComputer, MountCheck } from "./attach.js";
 import { inputOf, phoneOf, screenOf } from "./computer-ports.js";
 import { answerText, type PiAnswer, piExecutor, type PiExecutor } from "./executors.js";
@@ -205,8 +204,8 @@ export type RunTools = {
   readonly registry: Registry;
   readonly hands: Hands;
   /** The registry's tools `names` names, as the kernel's HostTool an adapter's session takes, each answer kept in
-   *  `results` (bindTools). The second slot is unused (the gate is the adapter loop's); it goes once its callers drop it. */
-  hostTools(names: readonly string[], unused?: { readonly gate: RunGate; readonly park: Park }, results?: ToolResults): HostTool[];
+   *  `results` (bindTools). The gate is the adapter loop's, asked before a call reaches them. */
+  hostTools(names: readonly string[], results?: ToolResults): HostTool[];
   /** The run's end, before the computer is let go: its background processes ended (TERM, then KILL 3 s later; none with
    *  no computer), then bash's full outputs and TMPDIR swept. */
   end(): Promise<void>;
@@ -244,7 +243,7 @@ export async function runTools(workspace: Workspace, computer: RunComputer | und
     workspace: run.workspace,
     registry,
     hands: run.hands,
-    hostTools: (names, _unused, results) => bindTools(run, registry, names, results ? { results } : {}),
+    hostTools: (names, results) => bindTools(run, registry, names, results ? { results } : {}),
     async end() {
       await endBackground(run.hands);
       await run.sweep();
