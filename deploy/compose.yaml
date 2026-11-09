@@ -1,0 +1,113 @@
+# AgentRun as a server and two runners on one store, all from one image (packages/serve/docker/Dockerfile): the server
+# serves the API and sets the store up; each runner claims runs from the store and runs them. deploy/README.md says how
+# to run it, and how to run more runners. In this directory, once:
+#   printf 'AGENTRUN_SEAL_KEY=%s\n' "$(openssl rand -base64 32)" > .env && chmod 600 .env
+#   docker compose up -d --build
+# Today the store is SQLite in the shared /data volume. With AGENTRUN_STORE_URL set to a postgres:// URL the store is
+# Postgres instead (the "pg" profile below runs one); a server and runners that do not read that setting yet keep SQLite.
+# The server's port is published on this machine's loopback only: put a reverse proxy with TLS in front of it before you
+# publish it anywhere else.
+
+# What the server and every runner are given. AGENTRUN_STORE_URL and AGENTRUN_STORE_SCHEMA with no value are passed only
+# when set here (in .env or the shell), and left unset otherwise. The model keys are the runners' (a runner makes a run's
+# model requests) and the server's (it checks a model can run before a run starts); each is empty when not set.
+x-agentrun-env: &agentrun-env
+  AGENTRUN_SEAL_KEY: ${AGENTRUN_SEAL_KEY:?make deploy/.env with AGENTRUN_SEAL_KEY (openssl rand -base64 32); the server and every runner need the same one}
+  AGENTRUN_STORE_URL:
+  AGENTRUN_STORE_SCHEMA:
+  AGENT_MODEL: ${AGENT_MODEL:-}
+  AGENT_MODEL_FAST: ${AGENT_MODEL_FAST:-}
+  AGENT_MODEL_STRONG: ${AGENT_MODEL_STRONG:-}
+  AGENT_MODEL_BASE_URL: ${AGENT_MODEL_BASE_URL:-}
+  AGENT_MODEL_API_KEY: ${AGENT_MODEL_API_KEY:-}
+  ANTHROPIC_API_KEY: ${ANTHROPIC_API_KEY:-}
+  OPENAI_API_KEY: ${OPENAI_API_KEY:-}
+  OPENROUTER_API_KEY: ${OPENROUTER_API_KEY:-}
+
+# A runner: the same image with `runner --data /data` as its command. It never sets the store up, so it starts once the
+# server is healthy, and a runner that still finds a store it does not know (exit 3) is started again. On SIGTERM it hands
+# its runs back at once and gives up a stuck loop at 25 s, inside the 35 s it is given.
+x-runner: &runner
+  image: ${AGENTRUN_IMAGE:-ghcr.io/parcha-ai/agentrun-server:beta}
+  volumes:
+    - agentrun-data:/data
+  depends_on:
+    server:
+      condition: service_healthy
+  restart: on-failure
+  stop_grace_period: 35s
+
+# A runner's health: its heartbeat (runner-<name>.alive in /data) is younger than 20 s. `runner --check` reads no store
+# and needs no secret, so it runs with an empty environment: the seal key the container was given stays out of it.
+x-runner-check: &runner-check
+  interval: 10s
+  timeout: 5s
+  retries: 3
+  start_period: 15s
+
+services:
+  server:
+    image: ${AGENTRUN_IMAGE:-ghcr.io/parcha-ai/agentrun-server:beta}
+    build:
+      context: ..
+      dockerfile: packages/serve/docker/Dockerfile
+    ports:
+      - "127.0.0.1:${AGENTRUN_PORT:-7340}:7340" # key-gate: loopback-rule this machines loopback, where the port is published
+    volumes:
+      - agentrun-data:/data
+    environment:
+      <<: *agentrun-env
+      AGENTRUN_TOKEN: ${AGENTRUN_TOKEN:-}
+      AGENTRUN_PUBLIC_URL: "${AGENTRUN_PUBLIC_URL:-http://127.0.0.1:7340/}" # key-gate: loopback-rule the published loopback port, the printed link
+    healthcheck:
+      test: ["CMD", "env", "-i", "/usr/local/bin/node", "-e", "fetch('http://127.0.0.1:7340/v2/health').then(({ ok, status }) => { if (!ok) throw new Error(String(status)) })"] # key-gate: loopback-rule the servers own loopback, its health check
+      interval: 10s
+      timeout: 5s
+      retries: 3
+      start_period: 15s
+    restart: unless-stopped
+    stop_grace_period: 15s
+
+  runner-1:
+    <<: *runner
+    command: ["runner", "--data", "/data"]
+    environment:
+      <<: *agentrun-env
+      AGENTRUN_RUNNER_NAME: runner-1
+    healthcheck:
+      <<: *runner-check
+      test: ["CMD", "env", "-i", "/usr/local/bin/node", "/opt/agentrun/packages/serve/dist/cli.js", "runner", "--check", "--data", "/data", "--name", "runner-1"]
+
+  runner-2:
+    <<: *runner
+    command: ["runner", "--data", "/data"]
+    environment:
+      <<: *agentrun-env
+      AGENTRUN_RUNNER_NAME: runner-2
+    healthcheck:
+      <<: *runner-check
+      test: ["CMD", "env", "-i", "/usr/local/bin/node", "/opt/agentrun/packages/serve/dist/cli.js", "runner", "--check", "--data", "/data", "--name", "runner-2"]
+
+  # Postgres for the store, only with `--profile pg`, for when the store takes AGENTRUN_STORE_URL:
+  #   AGENTRUN_PG_PASSWORD=<a password>   and
+  #   AGENTRUN_STORE_URL=postgres://agentrun:<the same password>@postgres:5432/agentrun   in .env.
+  # Nothing waits on it: a server that cannot reach its store yet exits and is started again.
+  postgres:
+    profiles: ["pg"]
+    image: postgres:17.11-trixie@sha256:ff87138949ad9a46f32ff23bd6852b52ce024a13dffe9b4087be98292cdd3b4f
+    environment:
+      POSTGRES_USER: agentrun
+      POSTGRES_DB: agentrun
+      POSTGRES_PASSWORD: ${AGENTRUN_PG_PASSWORD:-}
+    volumes:
+      - agentrun-pg:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD", "pg_isready", "-U", "agentrun", "-d", "agentrun"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+    restart: unless-stopped
+
+volumes:
+  agentrun-data:
+  agentrun-pg:

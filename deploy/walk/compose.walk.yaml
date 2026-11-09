@@ -1,0 +1,21 @@
+# The walks' overlay on deploy/compose.yaml (smoke.sh, reclaim.sh): the same server and runners on the faux model of
+# faux-steps.mjs, no key and no network. The server listens on its container's loopback alone (the walks reach it with
+# `docker compose exec`), so it takes --faux with the image's other arguments; each runner takes the same module from
+# AGENTRUN_SERVE_FAUX. This directory is mounted read-only at /walk (as ./walk: a path here is read from deploy/, the
+# first file's directory).
+services:
+  server:
+    command: ["--data", "/data", "--port", "7340", "--drain-timeout", "6s", "--faux", "/walk/faux-steps.mjs"]
+    ports: !reset []
+    volumes:
+      - ./walk:/walk:ro
+  runner-1:
+    environment:
+      AGENTRUN_SERVE_FAUX: /walk/faux-steps.mjs
+    volumes:
+      - ./walk:/walk:ro
+  runner-2:
+    environment:
+      AGENTRUN_SERVE_FAUX: /walk/faux-steps.mjs
+    volumes:
+      - ./walk:/walk:ro

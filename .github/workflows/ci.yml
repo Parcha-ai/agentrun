@@ -318,6 +318,21 @@ jobs:
         env:
           AGENTRUN_COMPUTER_LIVE_DOCKER: '1'
 
+  deploy-compose:
+    # The deploy image and stack (deploy/compose.yaml): the image built from this checkout, a server and two runners
+    # from it on one store, and a run of an agent in the runner's place completed on a faux model (no key, no network).
+    # Outside the verify matrix: it needs a Docker daemon, not both Node versions. deploy/walk/reclaim.sh, the takeover
+    # walk, is run by hand: it takes about three minutes, half of them waiting out a lease.
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '24.21.0'
+      - name: The image built, and the stack's smoke
+        run: sh deploy/walk/smoke.sh
+
   real-chrome:
     # @parcha/pi-browser's suites that drive a real local Chrome (the coding agent's default provider, the cdp provider, Stagehand's
     # driver and its trace-export seal). They are not part of the verify matrix: they need one pinned browser, not both Node versions.
