@@ -51,11 +51,19 @@ export type ToolGate = { name: string; permission: Permission; default_permissio
  *  allow or ask and over Never ask). */
 export const SERVER_DENY = "Refused on this server for every agent, whatever the agent's own setting or Never ask.";
 
-/** Whether this server denies `name` for every agent: its agent read says so (permission deny, from the server), or the
- *  server's table does (capabilities' permission in force). */
-export const serverDenies = (name: string, gates: readonly ToolGate[], read?: readonly AgentTool[]): boolean => {
+/** An MCP tool as its server's read lists it (GET /v2/mcp/servers/{name}): this server's permission in force for it. */
+type McpListed = { name: string; tools: readonly { name: string; permission?: Permission }[] };
+
+/** Whether this server denies `name` for every agent, from the newest word there is on it: the agent's read when it lists
+ *  the tool (permission deny, from the server: read after capabilities, so a deny lifted since holds nothing); else, for an
+ *  MCP tool, its server's read; else the server's table (capabilities' permission in force). */
+export const serverDenies = (name: string, gates: readonly ToolGate[], read?: readonly AgentTool[], mcpServers?: readonly McpListed[]): boolean => {
   const own = read?.find((t) => t.name === name);
-  return (own?.permission === "deny" && own.permission_from === "server") || gates.some((g) => g.name === name && g.permission === "deny");
+  if (own) return own.permission === "deny" && own.permission_from === "server";
+  const grant = /^mcp:([^/]+)\/(.+)$/.exec(name);
+  const listed = grant ? mcpServers?.find((s) => s.name === grant[1])?.tools.find((t) => t.name === grant[2]) : undefined;
+  if (listed) return listed.permission === "deny";
+  return gates.some((g) => g.name === name && g.permission === "deny");
 };
 
 const PERMISSIONS: readonly string[] = ["allow", "ask", "deny"];
