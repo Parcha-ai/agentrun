@@ -1288,7 +1288,7 @@ export function decodeScreencap(raw: Buffer): Result<{ width: number; height: nu
 	return ok({ width, height, rgba });
 }
 
-/** How often a waiting screen.watch reads a phone's screen: about once a second (Miguel's decision, 2026-11-09). */
+/** How often a waiting screen.watch reads a phone's screen: about once a second (the user-approved decision, 2026-11-09). */
 const WATCH_POLL_MS = 1_000;
 
 /** A width x height RGBA frame scaled to toWidth x toHeight by the nearest pixel. */

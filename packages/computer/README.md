@@ -2099,7 +2099,7 @@ Core and Full follow the Kubernetes agent-sandbox conformance levels (KEP-539.2)
 - **`screen.watch` is Core in the screen group**: through the provider's `watch()`, the first frame is an image (JPEG
   or PNG) of the size it says, of the screen `screen.shot` reads; on a computer with `input.pointer`, a pointer move
   through `input()` is a new frame with the cursor where it went. It replaced `screen.stream`, which
-  checked a vendor's URL: the live view is proxy only (Miguel's decision, 2026-11-09).
+  checked a vendor's URL: the live view is proxy only (the user-approved decision, 2026-11-09).
 - **The mount group is Full**, optional for every kind until the cutover decides. "Mounts the run's folder",
   `mount.run-folder-bind` and `mount.run-folder-archil` (`mount:bind`, `mount:archil`, from `capabilities().mount`):
   on a computer of its own made with the run folder `mountFor(kind)` gives, `check` takes the spec, `attach` and `list`
