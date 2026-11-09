@@ -1010,13 +1010,15 @@ export class StoreOwned extends Error {
 
 
 /** A data directory an earlier version wrote (its store, agent homes, run databases or settings files): this version
- *  neither reads nor moves it. `found`: what was found, relative to the directory. */
+ *  neither reads nor moves it, and its words give the two ways on: keep the directory with the earlier version, or start
+ *  this one on a new directory and add the agents again. `found`: what was found, relative to the directory. */
 export class StoreFromEarlierVersion extends Error {
   readonly found: readonly string[];
   constructor(dataDir: string, found: readonly string[]) {
     super(
-      `${dataDir} holds an earlier version's data (${found.join(", ")}), which this version does not read or move: ` +
-        "start with a new, empty directory, and add your MCP servers, keys and sign-ins there again.",
+      `${dataDir} holds an earlier version's data (${found.join(", ")}), which this version does not read or move. ` +
+        "Keep this directory with the earlier version, or start this version on a new, empty directory and add your " +
+        "agents, MCP servers, keys and sign-ins there again.",
     );
     this.name = "StoreFromEarlierVersion";
     this.found = found;
