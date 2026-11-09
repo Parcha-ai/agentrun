@@ -7,8 +7,8 @@ import { secret } from "./secrets.js";
 import "./quiet-sqlite-warning.js";
 import { parseArgs } from "node:util";
 import { spawn } from "node:child_process";
-import { chmodSync, writeFileSync } from "node:fs";
-import { join, resolve } from "node:path";
+import { accessSync, chmodSync, constants as fsConstants, statSync, writeFileSync } from "node:fs";
+import { dirname, join, resolve } from "node:path";
 import { defaultData, removeOwnRecord, SERVER_FILE, writeDurableSync } from "./server-fs.js";
 import { startedWith } from "./adapters.js";
 import { REPEAT_MS, stopOnSignals } from "./stop-signals.js";
@@ -18,8 +18,7 @@ import type { ImageState } from "./box-image.js";
 import { banner, boxImageLine } from "./print.js";
 import type { LearningMode } from "./learning.js";
 import { DEFAULT_PORT, type Serve, startServe } from "./server.js";
-import { SEAL_KEY_ENV, sealKeyOf } from "./tool-keys.js";
-import { withoutFaux } from "./model.js";
+import { SEAL_KEY_ENV } from "./tool-keys.js";
 
 /** A runner beside the server on the same data directory (the CLI start's server-and-runner, and the `runner` subcommand):
  *  its own store handle (role runner), and the runner's dispatch (dispatch.ts) for each claimed run — pi on the kernel's
@@ -28,7 +27,8 @@ async function runnerBeside(dataDir: string, loops?: number): Promise<{ runner: 
   const { startRunner } = await import("./runner/runner.js");
   const { dispatchRunner } = await import("./runner/harness-loops.js");
   const { routeOf } = await import("./runner/model-route.js");
-  const { RunnerRefused } = await import("./runner/main.js");
+  const { RunnerRefused, runEnv } = await import("./runner/main.js");
+  const { computerDepsFrom } = await import("./workspace/index.js");
   const { openSqliteStore, SchemaVersionUnknown } = await import("./store/index.js");
   let store: Awaited<ReturnType<typeof openSqliteStore>>;
   try {
@@ -44,12 +44,22 @@ async function runnerBeside(dataDir: string, loops?: number): Promise<{ runner: 
     }
     throw error;
   }
-  // A server with no seal key never serves a live view, so a stand-in satisfies the spec's live-viewer seam; a server with
-  // one seals its live-viewer tokens with it.
-  const sealKey = sealKeyOf(process.env[SEAL_KEY_ENV]) ?? Buffer.alloc(32);
-  // Whether anyone can answer an ask: the server's own rule (accounts on unless AGENTRUN_ACCOUNTS=0), read from the same
-  // environment the server and this runner share; off, the gate refuses each ask at once in words.
-  const createLoop = dispatchRunner({ env: withoutFaux(process.env), data: dataDir, journal: (claim) => store.journal(claim), store, sealKey, routeOf, approvers: process.env.AGENTRUN_ACCOUNTS !== "0" });
+  // The server's seal key (seal-key.ts): the one handed over (read through secrets.js, which moves it out of the
+  // environment as it loads), else the one the server keeps under the config home. A runner never starts without it: it
+  // seals the live-viewer tokens, and there is no stand-in key.
+  const { ensureSealKey, sealKeyHome } = await import("./seal-key.js");
+  const sealKey = ensureSealKey(secret(SEAL_KEY_ENV), { configHome: sealKeyHome(process.env) }).key;
+  // The beside-runner sees the server's environment as a separate runner would (runEnv, not withoutFaux): so an API run on
+  // a --faux server reaches the faux gateway and its computers. The run's claim-time computer is composed once, the one way
+  // (workspace/computer-deps.ts computerDepsFrom), from that same environment.
+  const runs = runEnv(process.env);
+  const computers = computerDepsFrom({ env: runs, store, sealKey });
+  // Whether anyone can answer an ask: the server's own rule (accounts on unless AGENTRUN_ACCOUNTS=0), said to the gate the
+  // one way it reads it (tool-gate.ts NO_APPROVER_ENV); off, the gate refuses each ask at once in words.
+  const { NO_APPROVER_ENV } = await import("./tool-gate.js");
+  if (process.env.AGENTRUN_ACCOUNTS === "0") process.env[NO_APPROVER_ENV] = "1";
+  else delete process.env[NO_APPROVER_ENV];
+  const createLoop = dispatchRunner({ env: runs, data: dataDir, journal: (claim) => store.journal(claim), store, sealKey, routeOf, computerForClaim: computers.computerForClaim, computerDeps: computers.computerDeps });
   const runner = startRunner({ store, createLoop, ...(loops !== undefined ? { loops } : {}) });
   return { runner, close: async () => { await runner.close(); await store.close(); } };
 }
@@ -59,7 +69,8 @@ const USAGE = `usage: agentrun-serve [--data DIR] [--listen ADDR] [--port N] [--
        agentrun-serve validate-template DIR
        agentrun-serve eval-template DIR [--case NAME ...] [--runs N] [--server URL] [--grader-model PROVIDER/MODEL] [--report FILE] [--faux MODULE]
        agentrun-serve import [--data DIR] [--from claude-code,codex,pi] [--dry-run] [--include-deleted] [--all] [--verbose] [--port N]
-       agentrun-serve runner --data DIR [--loops N]
+       agentrun-serve runner --data DIR [--loops N] [--name NAME]
+       agentrun-serve runner --check --data DIR [--name NAME]
 
   --data DIR        the agent store and its runs (default ~/.local/share/agentrun/agents); the token is DIR/.token, mode 0600
   --listen ADDR     the address to listen on (default 127.0.0.1); on any other, every Host name is served and the token
@@ -159,14 +170,15 @@ if (process.argv[2] === "validate-template") {
 // A template package's evals run and graded (template-eval.ts): on a server in this process over a temp data directory,
 // or with --server on one already running, its token from AGENTRUN_API_KEY (the launcher hands it over its pipe, never
 // in the environment or the arguments). Progress on stderr, the summary on stdout, the whole report as JSON to --report.
-// 0: every case passed; 1: one failed; 2: the flags, the package or a case is wrong, and nothing ran.
+// 0: every case passed; 1: one failed; 2: the flags, the package or a case is wrong, and nothing ran. --data is taken and
+// ignored, as validate-template's is: the npx launcher hands every server command one, and an eval's store is a temp one.
 if (process.argv[2] === "eval-template") {
   const { CaseError, evalTemplate, markdownReport } = await import("./template-eval.js");
   const { PackageError } = await import("./templates.js");
   const usage = (message: string): never => (console.error(`agentrun-serve eval-template: ${message}\n\n${USAGE}`), process.exit(2));
   const read = () => {
     try {
-      return parseArgs({ args: process.argv.slice(3), allowPositionals: true, options: { case: { type: "string", multiple: true, default: [] }, runs: { type: "string" }, server: { type: "string" }, "grader-model": { type: "string" }, report: { type: "string" }, faux: { type: "string" } } });
+      return parseArgs({ args: process.argv.slice(3), allowPositionals: true, options: { case: { type: "string", multiple: true, default: [] }, runs: { type: "string" }, server: { type: "string" }, "grader-model": { type: "string" }, report: { type: "string" }, faux: { type: "string" }, data: { type: "string" } } });
     } catch (error) {
       return usage((error as Error).message);
     }
@@ -178,6 +190,22 @@ if (process.argv[2] === "eval-template") {
   if (given.server !== undefined && given.faux !== undefined) usage("--faux is the model of the server it starts itself, and --server names another server.");
   const token = given.server === undefined ? undefined : secret("AGENTRUN_API_KEY") || secret("AGENTRUN_TOKEN");
   if (given.server !== undefined && !token) usage("--server needs that server's token in AGENTRUN_API_KEY.");
+  // The report is written after every case ran, so where it goes is checked now, before anything runs or is paid for.
+  if (given.report !== undefined) {
+    const folder = dirname(resolve(given.report));
+    const writable = (() => {
+      try {
+        accessSync(folder, fsConstants.W_OK);
+        const existing = statSync(resolve(given.report), { throwIfNoEntry: false });
+        // A report already there is written over: it must be a file this command can write.
+        if (existing) accessSync(resolve(given.report), fsConstants.W_OK);
+        return statSync(folder).isDirectory() && !(existing?.isDirectory() ?? false);
+      } catch {
+        return false;
+      }
+    })();
+    if (!writable) usage(`--report's folder ${folder} is not a folder this command can write in, or the report's path is a folder or a file it can't write.`);
+  }
   // The first Ctrl-C (or a stop) cancels the run in progress and cleans up what the eval made, as its end does: a run
   // left going would go on spending. A second one leaves at once; one within a second of the first is the same Ctrl-C,
   // reaching this process twice (stop-signals.ts REPEAT_MS).
@@ -216,33 +244,17 @@ if (process.argv[2] === "eval-template") {
   }
 }
 
+// The runner process (runner/main.ts): beside the server, its own store connection in --data, claiming runs until SIGTERM
+// or SIGINT. Its exit: 2 bad arguments, 3 a store schema it does not know, 1 anything else, 0 closed. `--check` reads its
+// heartbeat (0 fresh, 1 not).
+if (process.argv[2] === "runner") {
+  const { runnerMain } = await import("./runner/main.js");
+  process.exit(await runnerMain(process.argv.slice(3)));
+}
+
 if (process.argv[2] === "import") {
   const { importCommand } = await import("./import.js");
   process.exit(await importCommand(process.argv.slice(3), USAGE));
-}
-
-// A runner process of its own: `agentrun-serve runner --data D [--loops N]`. It opens the store in the data directory as a
-// runner (sharing it with the server, setting nothing up) and claims and runs every run until SIGTERM/SIGINT. The loop it
-// runs for each run comes from the runner's dispatch (per harness).
-if (process.argv[2] === "runner") {
-  const { runnerArgs, runUntilSignalled, RunnerRefused } = await import("./runner/main.js");
-  let args: { dataDir: string; loops?: number };
-  try {
-    args = runnerArgs(process.argv.slice(3));
-  } catch (error) {
-    console.error(`${(error as Error).message}\n\n${USAGE}`);
-    process.exit(2);
-  }
-  let runner;
-  try {
-    runner = await runnerBeside(args.dataDir, args.loops);
-  } catch (error) {
-    console.error(`agentrun-serve runner: ${error instanceof RunnerRefused ? error.message : (error as Error).message}`);
-    process.exit(1);
-  }
-  console.log(`runner on ${args.dataDir}${args.loops !== undefined ? ` (up to ${args.loops} runs at once)` : ""}`);
-  await runUntilSignalled(runner);
-  process.exit(0);
 }
 
 let values;

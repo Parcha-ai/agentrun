@@ -209,6 +209,27 @@ test("agents_create and agents_revise pass any other definition field through to
   for (const name of ["agents_create", "agents_revise"]) assert.equal(tools.find((tool) => tool.name === name).inputSchema.properties.definition.type, "object", name);
 });
 
+test("agents_revise naming only place replaces the computer the old place said, naming only computer replaces the place, and only one revise naming both that disagree is refused", async (t) => {
+  const server = await serve(t);
+  const mcp = mcpClient(server);
+  await mcp.tool("agents_create", { id: "moved", name: "Moved", instructions: "Answer.", definition: { place: { mode: "runner" } } });
+  assert.deepEqual((await v2(server, "GET", "/agents/moved")).body.definition.computer, { kind: "none" }, "the read shows the place's computer beside it");
+  // Only place: the computer the old place said is replaced by the new place's, never carried beside it.
+  const boxed = (await mcp.tool("agents_revise", { agent_id: "moved", definition: { place: { mode: "sandbox", box: "docker" } } })).structuredContent;
+  assert.deepEqual([boxed.definition.place, boxed.definition.computer], [{ mode: "sandbox", box: "docker" }, { kind: "sandbox", provider: "docker" }]);
+  // Only computer: the place is its view, replaced the same way.
+  const desk = (await mcp.tool("agents_revise", { agent_id: "moved", definition: { computer: { kind: "desktop", provider: "e2b" } } })).structuredContent;
+  assert.deepEqual([desk.definition.computer, desk.definition.place], [{ kind: "desktop", provider: "e2b" }, { mode: "runner" }]);
+  // Both, agreeing: one setting.
+  const agreed = (await mcp.tool("agents_revise", { agent_id: "moved", definition: { computer: { kind: "sandbox", provider: "daytona" }, place: { mode: "sandbox", box: "daytona" } } })).structuredContent;
+  assert.deepEqual([agreed.definition.computer, agreed.definition.place], [{ kind: "sandbox", provider: "daytona" }, { mode: "sandbox", box: "daytona" }]);
+  // Both, disagreeing, in the one revise: the route's 422, in its words; nothing changes.
+  const two = await mcp.tool("agents_revise", { agent_id: "moved", definition: { computer: { kind: "phone", provider: "phone-harness" }, place: { mode: "sandbox", box: "docker" } } }, { ok: false });
+  assert.equal(two.structuredContent.error.code, "input_invalid");
+  assert.deepEqual(two.structuredContent.error.fields.map((f) => [f.field, f.message]), [["definition.place", "computer and place say two settings: give one (place is computer's v2 view)"]]);
+  assert.deepEqual((await v2(server, "GET", "/agents/moved")).body.definition.computer, { kind: "sandbox", provider: "daytona" }, "a refused revise changes nothing");
+});
+
 test("runs_get names the question a waiting run asked, runs_respond answers it, and runs_cancel ends another", async (t) => {
   const server = await serve(t);
   const mcp = mcpClient(server);
@@ -315,9 +336,10 @@ test("the MCP SDK's own client connects, lists the ten tools and calls one", asy
   assert.deepEqual((await client.callTool({ name: "agents_list", arguments: {} })).structuredContent, { agents: [], next_cursor: null });
 });
 
-test("the timeline's limit, read while an answered run's end is carried back: its pages are the whole timeline, and the same rows once the run is final", async (t) => {
-  // The run's process cannot exit while the gate's file is missing: the reads below land between the answer and the
-  // carry back, the window "GET /v2/runs/{id}/timeline takes a limit" can land in on a loaded machine.
+test("the timeline is final once an answered run's end is in the store, even while its process is still exiting: its pages are the whole timeline, and the same rows after", async (t) => {
+  // On the switch a run is settled once its end is in the store (store-view.ts:301, settled = terminal): a process lingering
+  // on a held SIGTERM is cleanup the store does not see, so the timeline is final as soon as the end is written, not only
+  // once the process exits. The gate keeps that process alive across the first read, then lets it exit before the server stops.
   const gate = join(await scratch(t), "gate");
   withEnv(t, { EXIT_GATE: gate });
   const server = await serve(t, { faux: new URL("./fixtures/faux-answer-slow-exit.mjs", import.meta.url).pathname });
@@ -333,13 +355,13 @@ test("the timeline's limit, read while an answered run's end is carried back: it
     assert.deepEqual([...first.rows, ...rest.rows].map((r) => r.id).sort(), whole.rows.map((r) => r.id).sort());
     return { ids: whole.rows.map((r) => r.id), final: whole.final };
   };
+  // Read while the run's process still lingers (its end is in the store; the gate is still missing): final already.
   const answered = await read();
-  assert.equal(answered.final, false, "read before the run's end is carried back");
+  assert.equal(answered.final, true, "final once the end is in the store (store-view.ts:301); the lingering process is cleanup the store does not see");
   await writeFile(gate, "");
-  for (const end = Date.now() + 30_000; !(await v2(server, "GET", `/runs/${run_id}/timeline?wait_ms=1000`)).body.final; ) assert.ok(Date.now() < end, "the run's end is carried back");
   const ended = await read();
   assert.equal(ended.final, true);
-  assert.deepEqual(ended.ids, answered.ids, "no row a reader saw goes when the run's end is carried back");
+  assert.deepEqual(ended.ids, answered.ids, "no row a reader saw goes");
 });
 
 test("a run paused at its spend cap: the instructions, runs_get and runs_respond say it waits for its cap to be raised and is not answered; runs_get gives pending kind budget, and runs_respond is refused 409 budget_reached", async (t) => {

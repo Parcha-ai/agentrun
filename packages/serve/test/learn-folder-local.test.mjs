@@ -53,7 +53,7 @@ test("local: a symbolic link where the script would write is refused before main
   const root = folder();
   symlinkSync(join(outside, "kept"), join(root, "MEMORY.md"));
   const ws = localWorkspace(root);
-  await assert.rejects(learningInit(ws), /MEMORY\.md is a symbolic link/);
+  await assert.rejects(learningInit(ws), /a link in the learning folder at MEMORY\.md can't be followed/);
   assert.equal(readFileSync(join(outside, "kept"), "utf8"), "kept\n", "nothing written through the link");
   assert.equal(spawnSync("git", ["-C", root, "rev-parse", "-q", "--verify", "refs/heads/main"], { encoding: "utf8" }).stdout, "", "no main");
   assert.equal(await readSnapshot(ws), undefined, "no snapshot");
@@ -63,7 +63,7 @@ test("local: a symbolic link where the script would write is refused before main
   const before = await readSnapshot(ws);
   mkdirSync(join(root, "skills"));
   symlinkSync(outside, join(root, "skills", "weekly-report"));
-  await assert.rejects(commitChange(ws, before, { by: { run: "run-l", reason: "A skill." }, writes: [{ path: "skills/weekly-report/SKILL.md", text: "---\nname: weekly-report\ndescription: d\n---\n" }] }), /skills\/weekly-report is a symbolic link/);
+  await assert.rejects(commitChange(ws, before, { by: { run: "run-l", reason: "A skill." }, writes: [{ path: "skills/weekly-report/SKILL.md", text: "---\nname: weekly-report\ndescription: d\n---\n" }] }), /a link in the learning folder at skills\/weekly-report can't be followed/);
   assert.deepEqual(await readSnapshot(ws), before);
   assert.equal(git(root, ["rev-parse", "main"]), before.main);
   assert.deepEqual(readdirSync(outside), ["kept"]);

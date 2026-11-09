@@ -1,5 +1,5 @@
 // The MCP registry and OAuth sign-ins in flight, in the one store (store.mcp, store.mcpOauth), sealed with the store's one
-// rule (store/seal.ts, the tl-mcp note §7): the registry row's credential under AAD mcp_servers|<name>|sealed with the url
+// rule (store/seal.ts): the registry row's credential under AAD mcp_servers|<name>|sealed with the url
 // origin inside the plaintext, and a pending sign-in's secret parts (the PKCE verifier and the OAuth client, with its
 // secret) under AAD mcp_oauth_pending|<state>|sealed. The
 // store-backed replacement for mcp-servers.ts's file store and mcp-oauth.ts's in-memory pending map; the cut wires these
@@ -9,6 +9,7 @@ import {
   type Mcp, type McpCredential, type McpOauth, type McpServerRow, openMcpCredential, type OpenedMcpCredential,
   sealColumn, sealedAt, sealMcpCredential, unsealColumn,
 } from "./store/index.js";
+import { GITHUB_MCP_ONLY, GITHUB_MCP_ORIGIN, githubMcpUrl } from "./github.js";
 
 /** The most server-supplied text (server_info JSON, instructions) a row holds: both come from the remote server
  *  (untrusted), so they are bounded at save, never stored unbounded. */
@@ -36,13 +37,18 @@ function boundedServerInfo(info: unknown): unknown {
 export async function saveMcpServer(
   store: { mcp: Pick<Mcp, "put"> },
   sealKey: Buffer,
-  server: { name: string; url: string; auth: string; protocol?: string | null; tools: unknown; prices?: unknown; serverInfo?: unknown; instructions?: string | null; credential?: McpCredential; listedAt?: number; updatedAt?: number },
+  server: { name: string; url: string; auth: string; protocol?: string | null; tools: unknown; prices?: unknown; serverInfo?: unknown; instructions?: string | null; credential?: McpCredential; listedAt?: number; updatedAt?: number; credentialChangedAt?: number | null },
+  /** `githubMcpOrigin`: the one origin a github_app server may have (GITHUB_MCP_ORIGIN; a test's fake). */
+  { githubMcpOrigin = GITHUB_MCP_ORIGIN }: { githubMcpOrigin?: string } = {},
 ): Promise<McpServerRow> {
+  // A github_app row at any other address is never written: the App's tokens go to GitHub's hosted MCP alone.
+  if (server.auth === "github_app" && !githubMcpUrl(server.url, githubMcpOrigin)) throw new Error(`The MCP server ${server.name} is not kept: ${GITHUB_MCP_ONLY}.`);
   const sealed = server.credential ? sealMcpCredential(sealKey, server.name, server.credential, server.url) : null;
   return store.mcp.put({
     name: server.name, url: server.url, auth: server.auth, protocol: server.protocol ?? null, tools: server.tools, prices: server.prices ?? null,
     serverInfo: boundedServerInfo(server.serverInfo), instructions: boundedInstructions(server.instructions), sealed,
     ...(server.listedAt !== undefined ? { listedAt: server.listedAt } : {}), ...(server.updatedAt !== undefined ? { updatedAt: server.updatedAt } : {}),
+    ...(server.credentialChangedAt !== undefined ? { credentialChangedAt: server.credentialChangedAt } : {}),
   });
 }
 

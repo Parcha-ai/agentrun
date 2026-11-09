@@ -20,11 +20,10 @@ import { REQUESTS_ENV, requestsOf, rolesOf } from "./fixtures/faux-requests.mjs"
 import { noApproverText } from "../dist/tool-gate.js";
 import { schemaProblems } from "./schema-support.mjs";
 import { copyStandIn } from "../../run-adapters-codex/test/stand-in.mjs";
-import { agent, call, cookieOf, follow, runDir, runRecordOf, scratch, serve as serveOf, withEnv } from "./support.mjs";
+import { agent, call, clientOwnerSession, follow, runDir, runRecordOf, scratch, serve as serveOf, withEnv } from "./support.mjs";
 
 const FAUX_MCP = new URL("./fixtures/faux-mcp.mjs", import.meta.url).pathname;
 const TOKEN = `not-a-secret-${"mcp-gate-bearer-0123"}`;
-const SIGN_IN_PHRASE = "the owner signs in with this phrase";
 const json = { "content-type": "application/json" };
 /** A server that seals saved credentials and has an owner who signs in with a password. */
 const serve = (t, options = {}) => (withEnv(t, { AGENTRUN_SEAL_KEY: randomBytes(32).toString("base64") }), serveOf(t, { faux: FAUX_MCP, accounts: true, openSetup: true, ...options }));
@@ -52,10 +51,8 @@ async function started(api, id, tools, content, { extra = {}, run = {} } = {}) {
 
 /** The owner's password session: an answer to approval `approvalId` of run `runId`, as the console sends it. */
 async function owner(server) {
-  const origin = `http://127.0.0.1:${server.port}`;
-  const setup = await call(server.port, { method: "POST", path: "/v2/setup", headers: { ...json, origin }, body: { password: SIGN_IN_PHRASE } });
-  assert.equal(setup.status, 201, setup.text);
-  const cookie = cookieOf(setup);
+  // The owner's session the test client holds (its one owner on this server), as the console sends an answer.
+  const { cookie, origin } = await clientOwnerSession(server);
   return async (runId, approvalId, body) => (await call(server.port, { method: "POST", path: `/v2/runs/${runId}/approvals/${approvalId}`, headers: { ...json, cookie, origin }, body })).status;
 }
 
@@ -96,7 +93,9 @@ test("prices: a PUT keeps each tool's price in USD a call, a read shows them, an
     assert.ok(JSON.stringify(refused.body).includes(field), JSON.stringify(refused.body));
   }
   // JSON's 1e400 reads as Infinity: not a price.
-  const infinite = await call(server.port, { method: "PUT", path: "/v2/settings/mcp-servers/fake", headers: { ...json, authorization: `Bearer ${server.token}` }, body: `{"url":${JSON.stringify(fake.url)},"auth":{"type":"bearer","token":"${TOKEN}"},"prices":{"paid":1e400}}` });
+  // Sent as the console sends a secret write (the body carries the bearer): from the owner's session.
+  const { cookie, origin } = await clientOwnerSession(server);
+  const infinite = await call(server.port, { method: "PUT", path: "/v2/settings/mcp-servers/fake", headers: { ...json, cookie, origin }, body: `{"url":${JSON.stringify(fake.url)},"auth":{"type":"bearer","token":"${TOKEN}"},"prices":{"paid":1e400}}` });
   assert.equal(infinite.status, 422, infinite.text);
   assert.deepEqual((await api("GET", "/settings/mcp-servers/fake")).body.prices, { paid: 0.05, add: 0 }, "nothing refused was saved");
   const doc = (await api("GET", "/openapi.json")).body;

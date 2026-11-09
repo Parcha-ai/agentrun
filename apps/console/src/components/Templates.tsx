@@ -8,7 +8,7 @@ import { type Client, ClientError, type FieldIssue } from "@/lib/client";
 import { keeper } from "@/lib/idempotency";
 import { type Problem, problem } from "@/lib/problem";
 import { grantsOf, issuesAt, needsOf, parametersOf, type ParameterText, startValues, templateHash, titleOf } from "@/lib/templatePackages";
-import type { TemplateApplied, TemplateView } from "@/lib/v2";
+import { type Approvals, NEVER_ASK_LINE, type TemplateApplied, type TemplateView } from "@/lib/v2";
 
 type Props = { v2: Client; go: (hash: string) => void };
 
@@ -75,6 +75,9 @@ function ApplyTemplate({ v2, template: t, go }: Props & { template: TemplateView
   // starts empty, its default as its hint, and is left out untouched for the server to apply that default.
   const [values, setValues] = useState<ParameterText>(() => startValues(t));
   const [ticked, setTicked] = useState<Set<string>>(new Set());
+  // The agent's approvals, sent as overrides.approvals: the template's own (approvals_default: never for one that runs
+  // on its triggers with no one there), which the owner can switch.
+  const [approvals, setApprovals] = useState<Approvals>(t.approvals_default ?? "ask");
   const [servers, setServers] = useState<Set<string> | null>(null);
   const [applying, setApplying] = useState(false);
   const [issues, setIssues] = useState<FieldIssue[]>([]);
@@ -94,10 +97,11 @@ function ApplyTemplate({ v2, template: t, go }: Props & { template: TemplateView
   const apply = async () => {
     setApplying(true); setIssues([]); setSaid(null);
     const sending = values;
-    const body = { parameters: parametersOf(t, sending), ...(grants.length ? { grants } : {}) };
+    const body = { parameters: parametersOf(t, sending), ...(grants.length ? { grants } : {}), overrides: { approvals } };
     try {
       const done = await v2.applyTemplate(t.name, body, keys.keyFor(t.name, body));
       keys.done();
+      // Opens the agent at once only when there is nothing to show first: a warning (a webhook trigger's among them).
       if (!done.warnings.length) { go(`#/agents/${encodeURIComponent(done.agent_id)}`); return; }
       setSentValues(sending);
       setMade(done);
@@ -113,10 +117,24 @@ function ApplyTemplate({ v2, template: t, go }: Props & { template: TemplateView
     return (
       <section aria-label="Applied" className="max-w-3xl">
         <h1 className="mb-4 flex items-center gap-2 font-mono text-2xl font-semibold"><Check className="size-5 text-success-text" aria-hidden /> {titleOf(t, sentValues)} applied</h1>
-        <p className="mb-3 text-[14px]">The agent is made. The server says:</p>
-        <ul className="mb-5 space-y-2 border bg-card px-4 py-3 text-[13px]" role="status" aria-label="Warnings">
-          {made.warnings.map((w, i) => <li key={`${w.field}:${i}`}><span className="font-mono text-[12px] text-muted-foreground">{w.field}</span> {w.message}{w.fix ? <span className="block text-muted-foreground">{w.fix}</span> : null}</li>)}
-        </ul>
+        {made.warnings.length > 0 && <>
+          <p className="mb-3 text-[14px]">The agent is made. The server says:</p>
+          <ul className="mb-5 space-y-2 border bg-card px-4 py-3 text-[13px]" role="status" aria-label="Warnings">
+            {made.warnings.map((w, i) => {
+              // A webhook trigger's (triggers.<i>.secret): its signing secret is never in an apply answer, so the trigger the
+              // apply made (trigger_ids, in the template's order) opens from here, where its secret is shown with Rotate.
+              const hook = /^triggers\.(\d+)\.secret$/.exec(w.field);
+              const id = hook ? made.trigger_ids[Number(hook[1])] : undefined;
+              const named = hook ? t.triggers[Number(hook[1])]?.name : undefined;
+              return (
+                <li key={`${w.field}:${i}`}><span className="font-mono text-[12px] text-muted-foreground">{w.field}</span> {w.message}{w.fix ? <span className="block text-muted-foreground">{w.fix}</span> : null}
+                  {id && <a href={`#/triggers/${encodeURIComponent(id)}`} className="mt-1 block font-mono text-[12px] text-primary underline-offset-2 hover:underline">Open {typeof named === "string" && named ? named : id} to get its signing secret (Rotate)</a>}
+                </li>
+              );
+            })}
+          </ul>
+        </>}
+        <div className="mt-5" />
         <a href={`#/agents/${encodeURIComponent(made.agent_id)}`} className="inline-flex border px-3 py-2 font-mono text-[13px] font-semibold hover:bg-accent">Open the agent</a>
       </section>
     );
@@ -187,6 +205,19 @@ function ApplyTemplate({ v2, template: t, go }: Props & { template: TemplateView
           ))}
         </Section>
       )}
+
+      <fieldset aria-label="Approvals" className="mt-6">
+        <legend className="caps text-[12px] font-semibold">Approvals</legend>
+        <div className="mt-2 divide-y border">
+          {([["ask", "Ask me", "A call whose permission is ask waits for your answer."], ["never", "Never ask (run unattended)", "For an agent that runs on its triggers, with no one there to answer."]] as const).map(([value, label, note]) => (
+            <label key={value} className="flex items-start gap-3 px-4 py-3">
+              <input type="radio" name="approvals" value={value} className="mt-1" checked={approvals === value} onChange={() => setApprovals(value)} />
+              <span><span className="font-mono text-[13px]">{label}</span><span className="block text-[12px] text-muted-foreground">{note}</span></span>
+            </label>
+          ))}
+        </div>
+        {approvals === "never" && <p className="mt-2 text-[12px] text-warning-text">{NEVER_ASK_LINE}</p>}
+      </fieldset>
 
       <Section title="What it makes">
         <dl className="space-y-1 px-4 py-3 font-mono text-[12px]">

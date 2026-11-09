@@ -42,20 +42,21 @@ import { existsSync, readFileSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import type { Context } from "@earendil-works/chord";
 import { type Cursor, defineExtension, type Extension, type Harness, ROOT_CONVERSATION_ID, type ToolRegistration, type Tx, wrapTool } from "@earendil-works/pi-durable";
-import { type Drive, EffectFailure, INTERRUPTED_TEXT, openDrive } from "@parcha/agentrun-kernel/kernel";
+import { DESKTOP_TOOL_DEFS, type Drive, EffectFailure, INTERRUPTED_TEXT, openDrive, PHONE_TOOL_DEFS } from "@parcha/agentrun-kernel/kernel";
 import { boundResult } from "@parcha/agentrun-kernel/process";
 import { BARRIER, type DurableRun, MESSAGE_ORIGIN_KIND, syncNow, type SyncTarget } from "@parcha/pi-durable-disk";
 import { dataOfRun, readJson, RUN_META } from "./files.js";
 import { LEARNED_DIR } from "./learning.js";
 import type { TurnOrigin } from "./learning-run.js";
 import { COMPUTER_ROOT, portPath } from "./workspace/paths.js";
+import type { Workspace } from "./workspace/workspace.js";
 import { forModel } from "./result.js";
 import { builtinHarness } from "./harness-table.js";
 import { DEFAULT_HARNESS } from "./harness.js";
 import { durableSessions } from "./sessions.js";
 import { SHELL_TOOLS } from "./background.js";
 import { readToolSettings, SERVE_OWN_TOOLS, TABLE_TOOLS } from "./tool-plane.js";
-import { NOT_RUN, RAN_UNKNOWN, refusedText } from "./refusal-words.js";
+import { deniedText, NOT_RUN, RAN_UNKNOWN, refusedText, type SettingFrom } from "./refusal-words.js";
 import { type Approvals, approvalsOf } from "./approvals.js";
 
 /** What the gate does with a tool's calls. */
@@ -98,6 +99,14 @@ export function permissionKeys(name: string): string[] {
 /** The browser's registrations on pi (pi-browser's BROWSER_TOOL_NAMES, which a test holds this list to): each is a call
  *  of the table's `browser`. */
 const BROWSER_REGISTRATIONS: readonly string[] = ["snapshot", "run", "screenshot", "browser_read", "browser_release", "browser_relaunch", "browser_request_handoff", "browser_downloads", "browser_upload"];
+/** A computer kind's tools, by name, to the one settings key their kind is held to (`desktop`, `phone`): the kernel
+ *  registry's own definitions say it (their settingsKey), so a tool a kind gains is held to its key with no line here. */
+const KIND_TOOLS: ReadonlyMap<string, readonly string[]> = (() => {
+  const keys = new Map<string, string[]>();
+  for (const def of [...DESKTOP_TOOL_DEFS, ...PHONE_TOOL_DEFS]) keys.set(def.name, [...new Set([...(keys.get(def.name) ?? []), def.settingsKey])]);
+  return keys;
+})();
+const STRICTNESS: Readonly<Record<Permission, number>> = { allow: 0, ask: 1, deny: 2 };
 /** The MCP server through which claude-agent calls the kernel's host tools (`mcp__hands__<wire name>`). */
 const HOST_TOOLS_SERVER = "hands";
 
@@ -113,6 +122,10 @@ export function settingsKeyOf(harness: string, name: string, mcpServers: readonl
   // A tool that runs a command in the box (bash_background and the rest) is held to bash's key: before the table's own names.
   if (Object.hasOwn(SHELL_FAMILY, name)) return SHELL_FAMILY[name];
   if (TABLE_TOOLS.includes(name) || SERVE_OWN_TOOLS.includes(name) || isCatalogTool(name)) return name;
+  // A desktop's or a phone's tool is its kind's key, as the browser's registrations are `browser`; one both kinds have
+  // (the hand-over) is named by the first, its permission the stricter of both (RunGate's setting).
+  const kind = KIND_TOOLS.get(name);
+  if (kind !== undefined) return kind[0];
   // A CLI's own tool, the table's tool it is (its facts' nativeTools), by an own name only.
   const nativeTools = builtinHarness(harness)?.facts?.nativeTools;
   const native = nativeTools && Object.hasOwn(nativeTools, name) ? nativeTools[name] : undefined;
@@ -214,6 +227,10 @@ export function permissionFrom(name: string, server: PermissionSettings, agent: 
  *  tool then takes its defaults, and the deny the file may hold can't be seen, so nothing lifts an ask over it. A symbol:
  *  carried by a spread, never by JSON (it is never served) nor by Object.entries (no reader takes it for a tool). */
 export const SETTINGS_UNREAD: unique symbol = Symbol("agentrun.tool-settings.unread");
+
+/** `settings` marked unread (SETTINGS_UNREAD), a copy: what a gate holds to while its settings' read fails, its last good
+ *  read's denies and pins still refusing and no ask lifted. */
+const unreadOf = (settings: PermissionSettings): PermissionSettings => Object.assign({ ...settings }, { [SETTINGS_UNREAD]: true as const });
 
 /** Whether something stands behind `name`'s ask that approvals "never" must not lift: the server's settings unread
  *  (SETTINGS_UNREAD: a deny may be in the file), or in either layer, under any key the tool is read by (its own, its MCP
@@ -328,23 +345,9 @@ export interface Gate {
   spill(callId: string, text: string): string;
 }
 
-/** Where a permission was set (permissionFrom's `from`): the agent's own tool settings, the server's, or the default; or
- *  "unattended": an ask the agent's approvals "never" allowed. */
-export type SettingFrom = "agent" | "server" | "default" | "unattended";
-/** Where a deny can come from: a setting in a layer, or the default. Never "unattended", which only ever allows. */
-export type DenyFrom = Exclude<SettingFrom, "unattended">;
-// The refusal words (NOT_RUN, RAN_UNKNOWN, refusedText) live in refusal-words.ts, shared with the runner's loops.
-export { NOT_RUN, RAN_UNKNOWN, refusedText } from "./refusal-words.js";
-/** Where a deny was set, in words: the place a person changes it. */
-export const denyPlace = (from: SettingFrom = "server"): string => (from === "agent" ? "for this agent" : from === "default" ? "by default" : "on this server");
-/** The refusal of a call whose tool is set to deny; of one held to another tool's setting (`heldTo`, a shell tool's
- *  bash), naming the setting to change and where it was set (`from`: this agent's settings or this server's). */
-export const deniedText = (tool: string, heldTo?: string, from: SettingFrom = "server", ran: "no" | "unknown" = "no"): string => {
-  // `ran`: "unknown" for a call an earlier attempt of which may have been sent (an approved call cut mid-flight, or a
-  // replay-safe call run again after a crash): the words never claim it wasn't.
-  const what = ran === "no" ? NOT_RUN : RAN_UNKNOWN;
-  return heldTo && heldTo !== tool ? `Permission denied: ${tool} follows ${heldTo}'s setting, which is deny ${denyPlace(from)}. ${what} Don't retry it.` : `Permission denied: ${tool} is set to deny ${denyPlace(from)}. ${what} Don't retry it.`;
-};
+// The refusal words (SettingFrom, DenyFrom, NOT_RUN, RAN_UNKNOWN, denyPlace, deniedText, refusedText) live in
+// refusal-words.ts, shared with the runner's loops.
+export { type DenyFrom, deniedText, denyPlace, NOT_RUN, RAN_UNKNOWN, refusedText, type SettingFrom } from "./refusal-words.js";
 /** The refusal of an ask where no one can approve it: a server with accounts off, whose answer route takes no token. */
 export const noApproverText = (tool: string, ran: "no" | "unknown" = "no"): string => `Permission denied: ${tool} needs the owner's approval, and this server has accounts off (AGENTRUN_ACCOUNTS=0), so no one can give it: set the tool to allow or deny in the agent's Tools. ${ran === "no" ? NOT_RUN : RAN_UNKNOWN}`;
 /** Set by the server in a run's environment when no one can approve here (accounts off): the gate refuses each ask. */
@@ -448,12 +451,14 @@ export function resumeText(request: Pick<ApprovalRequest, "tool" | "call_id">, s
 /** The gate of the run `runId` at `where` (its directory, under the data directory's runs/), on its pinned revision:
  *  an agentic run's parks an asked call; a workflow's model node cannot. `serverSettings`: where the server's tool
  *  settings are read from, read at each call as the gate reads them; absent, the file beside the run's data directory (the
- *  old per-run process). The runner gives the one store's (tool-plane.ts loadToolSettings), read once at the claim.
- *  `approvers`: whether anyone can answer an ask here (accounts on). The runner says so itself, as one process serves many
- *  claims; absent, the old per-run process's environment says (NO_APPROVER_ENV, set by the server when accounts are off). */
-export function runGate(where: { root: string; work: string }, runId: string, revision: { kind: string; body: { toolSettings?: unknown; harness?: string; approvals?: Approvals } }, serverSettings?: () => ReturnType<typeof readToolSettings>, approvers: boolean = process.env[NO_APPROVER_ENV] !== "1"): RunGate {
-  return new RunGate({ root: where.root, work: where.work, data: dataOfRun(where.root), runId, harness: revision.body.harness ?? DEFAULT_HARNESS }, (revision.body.toolSettings ?? {}) as PermissionSettings, revision.kind === "agentic", approvers, approvalsOf(revision.body.approvals), serverSettings);
+ *  old per-run process). The runner gives the one store's (tool-plane.ts loadToolSettings), read once at the claim. */
+export function runGate(where: { root: string; work: string }, runId: string, revision: { kind: string; body: { toolSettings?: unknown; harness?: string; approvals?: Approvals } }, serverSettings?: () => ReturnType<typeof readToolSettings>, files?: RunFiles): RunGate {
+  return new RunGate({ root: where.root, work: where.work, data: dataOfRun(where.root), runId, harness: revision.body.harness ?? DEFAULT_HARNESS }, (revision.body.toolSettings ?? {}) as PermissionSettings, revision.kind === "agentic", process.env[NO_APPROVER_ENV] !== "1", approvalsOf(revision.body.approvals), serverSettings, files);
 }
+
+/** Where a gate reads the run's own files (the turn's origin): the run's Workspace (Mode 2: its folder on the run's disk,
+ *  read by path in the folder, never a folder of this machine), or the local folder's path. */
+export type RunFiles = Pick<Workspace, "read"> | string;
 
 /** The gate in a run's process, park mode: its policy, the turn's origin, the calls that wait, and the answers acted on. */
 export class RunGate {
@@ -479,21 +484,25 @@ export class RunGate {
   /** `where.data`: the server's data directory, its tool settings beside the store; `overrides`: the pinned revision's
    *  own; `parks`: whether an asked call parks the run (an agentic run's), which a workflow's model node cannot;
    *  `approvers`: whether anyone can answer an ask here (the owner's password session: accounts on); `approvals`: the
-   *  pinned revision's (definition.approvals): "never" runs the agent unattended, an ask allowed (permissionFrom). */
-  constructor(private readonly where: { root: string; work: string; data: string; runId: string; harness?: string; mcpServers?: readonly string[] }, private readonly overrides: PermissionSettings = {}, private readonly parks = true, private readonly approvers = true, private readonly approvals: Approvals = "ask", private readonly readServerSettings?: () => ReturnType<typeof readToolSettings>) {}
+   *  pinned revision's (definition.approvals): "never" runs the agent unattended, an ask allowed (permissionFrom);
+   *  `files`: where the run's own files are read (RunFiles), the run's folder `where.root` when absent. */
+  constructor(private readonly where: { root: string; work: string; data: string; runId: string; harness?: string; mcpServers?: readonly string[] }, private readonly overrides: PermissionSettings = {}, private readonly parks = true, private readonly approvers = true, private readonly approvals: Approvals = "ask", private readonly readServerSettings?: () => ReturnType<typeof readToolSettings>, private readonly files: RunFiles = where.root) {}
 
   /** A tool's permission now (permissionOf): the revision's own over the server's setting, read at each call, so a change
    *  reaches a live run at its next call; under approvals "never", an ask is an allow. */
   readonly policy = (tool: string): Permission => this.setting(tool).permission;
 
   /** The gate's answer for one call before its intent, for a loop that parks and answers asks itself (the runner's adapter
-   *  loop): run it, ask a person, or refuse it with the words the model reads. The same order as `enter`, past the end-of-run
-   *  turn's write check (the loop's own): the deny (with where it was set, and that nothing was sent or charged), then a
-   *  pin, then the allow, then the ask, so an allow that approvals "never" made is decided only after every refusal. Where
-   *  no one can approve (accounts off), the ask is refused at once in words, never parked, as `enter` refuses it. */
-  decide(name: string, args: unknown): "allow" | "ask" | { deny: string } {
+   *  loops, pi's and the CLI harnesses'): run it, ask a person, or refuse it with the words the model reads. `enter`'s
+   *  order: the end-of-run turn's write under .learning/ (learningRefusal), the deny (with where it was set, and that
+   *  nothing was sent or charged), a pin, then the allow, then the ask, so an allow that approvals "never" made is decided
+   *  only after every refusal. Where no one can approve (accounts off: NO_APPROVER_ENV), the ask is refused at once in
+   *  words, never parked, as `enter` refuses it. */
+  async decide(name: string, args: unknown): Promise<"allow" | "ask" | { deny: string }> {
     const key = settingsKeyOf(this.where.harness ?? DEFAULT_HARNESS, name, this.where.mcpServers) ?? name;
-    const tool = shellToolOf(name) ?? key;
+    const tool = this.askedAs(name);
+    const learning = await this.learningRefusal(key, args);
+    if (learning) return { deny: learning };
     const verdict = this.policy(name);
     if (verdict === "deny") return { deny: deniedText(tool, key, this.denyFrom(name), "no") };
     const pinned = this.pinned(key, args, "no");
@@ -501,11 +510,27 @@ export class RunGate {
     if (verdict === "allow") return "allow";
     return this.approvers ? "ask" : { deny: noApproverText(tool, "no") };
   }
+
+  /** The name a call is asked about by, as main's request names it (enter's `tool`): its settings key, a shell tool its
+   *  own name; a name nothing maps, as it came. */
+  askedAs(name: string): string {
+    return shellToolOf(name) ?? settingsKeyOf(this.where.harness ?? DEFAULT_HARNESS, name, this.where.mcpServers) ?? name;
+  }
   /** Where the permission `policy` gives `tool` was set: the agent's own tool settings, the server's, or the default; or
    *  "unattended", an ask the agent's approvals allowed. */
   readonly denyFrom = (tool: string): SettingFrom => this.setting(tool).from;
   private setting(tool: string): { permission: Permission; from: SettingFrom } {
-    const key = settingsKeyOf(this.where.harness ?? DEFAULT_HARNESS, tool, this.where.mcpServers);
+    // A tool the desktop and the phone both have (the hand-over): the gate knows not the run's kind, so it is held to the
+    // stricter of both keys' settings, never more permissive than the run's own kind's.
+    const shared = KIND_TOOLS.get(tool.replace(/^mcp__hands__/, ""));
+    if (shared && shared.length > 1) {
+      return shared.map((key) => this.settingOf(tool, key)).reduce((strictest, one) => (STRICTNESS[one.permission] > STRICTNESS[strictest.permission] ? one : strictest));
+    }
+    return this.settingOf(tool, settingsKeyOf(this.where.harness ?? DEFAULT_HARNESS, tool, this.where.mcpServers));
+  }
+
+  /** `tool`'s permission under its settings key `key`, and where it was set. */
+  private settingOf(tool: string, key: string | undefined): { permission: Permission; from: SettingFrom } {
     // A name nothing maps fails closed: it asks (refused where no one can approve), never allows, under approvals "never"
     // too: no setting of it was read, so none says it may run.
     if (key === undefined) return { permission: "ask", from: "default" };
@@ -530,8 +555,10 @@ export class RunGate {
 
   private lastGood?: PermissionSettings;
   private readonly told = new Set<string>();
-  /** The server's settings now: read at each call, so a change reaches a live run; a file that does not read keeps the
-   *  last good (undefined: none read yet). Each problem is said once, by file and field, never a value. */
+  /** The server's settings now: read at each call, so a change reaches a live run; settings that do not read keep the
+   *  last good, marked unread (SETTINGS_UNREAD): its denies and pins still refuse, and approvals "never" lifts no ask
+   *  while the read fails, as a deny may be in what did not read (undefined: none read yet, every tool asks). Each problem
+   *  is said once, by file and field, never a value. */
   private serverSettings(): PermissionSettings | undefined {
     const read = this.readServerSettings ? this.readServerSettings() : readToolSettings(this.where.data);
     for (const line of read.problems) {
@@ -539,18 +566,32 @@ export class RunGate {
       this.told.add(line);
       process.stderr.write(`agentrun-serve: the tool gate: ${line}\n`);
     }
-    if (read.unreadable) return this.lastGood;
+    if (read.unreadable) return this.lastGood === undefined ? undefined : unreadOf(this.lastGood);
     this.lastGood = read.settings as PermissionSettings;
     return this.lastGood;
   }
 
-  /** The origin of the turn running now: what the server's internal path wrote for it; none for a person's turn. */
-  turnOrigin(): TurnOrigin | undefined {
+  /** The origin of the turn running now: what the server's internal path wrote for it (TURN_ORIGIN_FILE in the run's
+   *  folder, read through `files`: the run's Workspace or the local folder's path); none for a person's turn, or a file
+   *  that is not there or does not read. */
+  async turnOrigin(): Promise<TurnOrigin | undefined> {
     try {
-      return (JSON.parse(readFileSync(join(this.where.root, TURN_ORIGIN_FILE), "utf8")) as { origin?: unknown })?.origin === "reflect" ? "reflect" : undefined;
+      const text = typeof this.files === "string" ? readFileSync(join(this.files, TURN_ORIGIN_FILE), "utf8") : new TextDecoder().decode(await this.files.read(TURN_ORIGIN_FILE));
+      return (JSON.parse(text) as { origin?: unknown })?.origin === "reflect" ? "reflect" : undefined;
     } catch {
       return undefined;
     }
+  }
+
+  /** The end-of-run turn's refusal of a write or edit under work/.learning/ (NOTE_ONLY_TEXT, the adapter loop's one text
+   *  too), whatever the tool's permission: its notes are kept only from its answer. Undefined for any other call or turn,
+   *  whose write there follows its permission, as anywhere. The first check of `enter` and `decide`. */
+  private async learningRefusal(key: string, args: unknown): Promise<string | undefined> {
+    if (key !== "write" && key !== "edit") return undefined;
+    // The folder's path a file tool resolves against: the local folder's, or a computer's name for it (the Workspace's paths
+    // are in the run's folder, so a path there is relative or under COMPUTER_ROOT).
+    const work = typeof this.files === "string" ? this.where.work : COMPUTER_ROOT;
+    return underLearning(work, args) && (await this.turnOrigin()) === "reflect" ? NOTE_ONLY_TEXT : undefined;
   }
 
   /** One model-initiated call at the gate: undefined when it may run; else its answer, refused at once (deny) or parked
@@ -560,9 +601,9 @@ export class RunGate {
     // held to bash's (SHELL_FAMILY) keeps its own name, so an approved bash_background runs bash_background, never bash.
     const key = settingsKeyOf(this.where.harness ?? DEFAULT_HARNESS, name, this.where.mcpServers) ?? name;
     const tool = shellToolOf(name) ?? key;
-    // The end-of-run turn writes no file under work/.learning/, whatever the tool's permission: its notes are kept only
-    // from its answer (NOTE_ONLY_TEXT). Any other turn's write there follows its permission, as anywhere.
-    if ((key === "write" || key === "edit") && this.turnOrigin() === "reflect" && underLearning(this.where.work, args)) return { text: NOTE_ONLY_TEXT, isError: true };
+    // The end-of-run turn writes no file under work/.learning/, whatever the tool's permission (learningRefusal).
+    const learning = await this.learningRefusal(key, args);
+    if (learning) return { text: learning, isError: true };
     // Every refusal that does not come from the permission (the reflect turn's above, the deny and a pin's below) stays
     // ABOVE the allow's return further down. An allow here may be an ask the agent's approvals "never" turned into one
     // (permissionFrom's last step), and an allowed call runs at once: nothing after that return refuses it.
@@ -828,7 +869,7 @@ export class RunGate {
     const heldTo = settingsKeyOf(this.where.harness ?? DEFAULT_HARNESS, held.tool, this.where.mcpServers);
     const ran = held.replayed || drive.state().effects.has(key) ? "unknown" : "no";
     if (this.policy(held.tool) !== "deny") {
-      const pinned = this.pinned(held.tool, held.args, ran);
+      const pinned = this.pinned(heldTo ?? held.tool, held.args, ran);
       if (pinned) return { text: pinned.text, isError: true };
     }
     return { text: deniedText(held.tool, heldTo, this.denyFrom(held.tool), ran), isError: true };

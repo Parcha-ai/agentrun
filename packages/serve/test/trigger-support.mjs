@@ -27,15 +27,12 @@ export function fakeClock(start) {
   return clock;
 }
 
-/** A case whose firing starts a run: the store's firing row names that run, which E2's start inserts into the store (run_id's
- *  foreign key). Until then such a case is todo under these words, never skipped: it still runs. Its restart state, where it
- *  writes the old triggers file, moves to the store's rows with E2. With TRIGGER_E2_PROBE set these cases run (skip false),
- *  to see which pass now that the switch fires against the server's own store; the firing-scheduling ones do, the run-exec
- *  ones (a run that must dispatch, be messaged, or admit at its door) wait on E2r3. */
-export const E2 = process.env.TRIGGER_E2_PROBE ? false : "E2's start inserts the store run (trigger_firings.run_id FK)";
-/** A case whose message_run target names a run a caller started: the trigger reads that run from the store (its agent, and
- *  whether it is still there), which holds a run once E2's start inserts it. */
-export const E2_RUN = process.env.TRIGGER_E2_PROBE ? false : "E2's start inserts the store run (a message_run target's run is read from the store)";
+/** A case whose firing must run on a runner that dispatches it and delivers its commands: the fired run executes, reaches a
+ *  state (working, parked on a person, waiting on a tool-call approval or at its door), and the firing reads or messages it.
+ *  The switch starts the run (fires against its own store), but running it is the runner's; these turn on when it does. */
+export const RUN_EXEC = "waits on running a fired run on the runner (dispatch and command delivery)";
+/** A case whose trigger target is a message_run: the message is delivered to an existing run over the store. */
+export const MESSAGE_RUN = "waits on delivering a message_run target over the store";
 /** A case that starts the server as its CLI does (a child process): until the server opens its own store at the cutover, a
  *  server started so has none, and its triggers routes answer unavailable. */
 export const CLI_STORE = "the server opens its own store at the cutover (a CLI-started server has none until then)";
@@ -47,19 +44,18 @@ export async function made(api, id, extra) {
   assert.equal((await api("POST", "/agents", agent(id, extra))).status, 201);
 }
 
-/** The store's refusal of a firing's run (the run row is not there: E2's start inserts it), on a firing still due or one
- *  that failed of it. */
+/** The store's refusal of a firing's run (its run row is not there), on a firing still due or one that failed of it. */
 const runRowMissing = (f) => /FOREIGN KEY constraint failed/.test(`${f.reason ?? ""} ${f.error?.message ?? ""}`);
 
-/** The trigger's firings, newest first, once it holds at least `n` and none is still due. A firing the store refused its
- *  run row (E2) ends the wait at once, under E2's words: the case is todo for that, and waiting out the bound would only
- *  cost its time. Any other firing that does not settle waits the whole bound and fails as it would. */
+/** The trigger's firings, newest first, once it holds at least `n` and none is still due. A firing whose run row the store
+ *  refused ends the wait at once, under RUN_EXEC's words: the case waits on running a fired run, and waiting out the bound
+ *  would only cost its time. Any other firing that does not settle waits the whole bound and fails as it would. */
 export async function firings(api, id, n) {
   for (const end = Date.now() + 30_000; ; await sleep(50)) {
     const { status, body } = await api("GET", `/triggers/${id}/firings`);
     assert.equal(status, 200, JSON.stringify(body));
     const refused = body.firings.find(runRowMissing);
-    if (refused) throw new Error(`${E2}: the store refused firing ${refused.key}'s run row (${refused.status})`);
+    if (refused) throw new Error(`${RUN_EXEC}: the store refused firing ${refused.key}'s run row (${refused.status})`);
     if (body.firings.length >= n && body.firings.every((f) => f.status !== "due")) return body.firings;
     assert.ok(Date.now() < end, `no ${n} settled firings: ${JSON.stringify(body.firings)}`);
   }

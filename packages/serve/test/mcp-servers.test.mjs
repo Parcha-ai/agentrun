@@ -92,7 +92,7 @@ test("preview agrees the protocol with a 2026-07-28 server and with a 2025 one, 
   assert.ok(!existsSync(join(data, "mcp-servers.json")), "a preview stores nothing");
   assert.deepEqual((await api("GET", "/settings/mcp-servers")).body, { servers: [] });
   const caps = (await api("GET", "/capabilities")).body;
-  assert.deepEqual(caps.features.mcp_client, { transports: ["streamable-http"], auth: ["none", "bearer", "headers", "oauth"], at_rest: "sealed", harnesses: ["pi", "claude-agent", "codex"] });
+  assert.deepEqual(caps.features.mcp_client, { transports: ["streamable-http"], auth: ["none", "bearer", "headers", "oauth", "github_app"], at_rest: "sealed", harnesses: ["pi", "claude-agent", "codex"] });
 });
 
 test("preview tells a server that wants a credential (bearer or OAuth), one that is not MCP, one that is down, and one that redirects apart", async (t) => {
@@ -225,7 +225,7 @@ test("PUT seals the credential: reads say `sealed` and never hold it, nor does t
   assert.equal((await api("POST", "/settings/mcp-servers/fake/refresh")).status, 404);
 });
 
-test("what is refused before any connection: no seal key for a credential (409), a bad name, OAuth (not yet), plain http off loopback; and a read without the seal key says so", async (t) => {
+test("what is refused before any connection: a bad name, OAuth (not yet), plain http off loopback; and a server handed no seal key keeps a credential under the one it made, reading one sealed under the other as unreadable", async (t) => {
   const data = join(await scratch(t), "agents");
   const token = made();
   const server = await fake(t, { token });
@@ -252,18 +252,15 @@ test("what is refused before any connection: no seal key for a credential (409),
   assert.equal(typeless.status, 422, "a new server's bearer comes with its token");
   await first.close();
 
+  // Handed no seal key, the server makes its own (seal-key.ts): a credential sealed under the first does not open under
+  // it, and a new one is sealed under it.
   delete process.env.AGENTRUN_SEAL_KEY;
   const { api } = await serve(t, { data });
-  const before = server.log.length;
-  const refused = await api("PUT", "/settings/mcp-servers/again", { url: server.url, auth: { type: "bearer", token } });
-  assert.equal(refused.status, 409, JSON.stringify(refused.body));
-  assert.equal(refused.body.error.code, "no_sealing_key");
-  assert.match(refused.body.error.message, /launcher, agentrun-serve, which keeps one in agentrun\/seal\.key under \$XDG_CONFIG_HOME .*0600 in a 0700 directory; or hand it AGENTRUN_SEAL_KEY/, "it says how to get a seal key");
-  assert.deepEqual(server.log.slice(before), [], "refused before the server is contacted");
-  assert.equal((await api("PUT", "/settings/mcp-servers/open", { url: open.url })).status, 200, "a server with no credential needs no seal key");
+  assert.equal((await api("PUT", "/settings/mcp-servers/again", { url: server.url, auth: { type: "bearer", token } })).status, 200, "kept under the key the server made");
+  assert.equal((await api("PUT", "/settings/mcp-servers/open", { url: open.url })).status, 200);
   const listed = (await api("GET", "/settings/mcp-servers")).body.servers;
-  assert.deepEqual(listed.map((s) => [s.name, s.credential]), [["guarded", "seal_key_missing"], ["open", null]]);
-  assert.equal((await api("GET", "/capabilities")).body.features.mcp_client.at_rest, "unavailable");
+  assert.deepEqual(listed.map((s) => [s.name, s.credential]), [["again", "sealed"], ["guarded", "unreadable"], ["open", null]]);
+  assert.equal((await api("GET", "/capabilities")).body.features.mcp_client.at_rest, "sealed");
 });
 
 test("a saved credential sealed under another key reads as unreadable, and a PUT must send it again", async (t) => {

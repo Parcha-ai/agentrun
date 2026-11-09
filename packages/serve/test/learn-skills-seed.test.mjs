@@ -197,7 +197,7 @@ for (const harness of ["pi", "codex"]) {
 }
 
 for (const [where, links] of [["a SKILL.md", { "skills/evil/SKILL.md": "OUTSIDE" }], ["a skill's folder", { "skills/evil": "OUTSIDE_DIR" }], ["the skills folder", { skills: "OUTSIDE_DIR" }]]) {
-  test(`a symbolic link at ${where} in the learning folder's skills/: the run starts with nothing learned (seed_failed), no pin, and nothing laid or read through it`, { timeout: 120_000 }, async (t) => {
+  test(`a symbolic link at ${where} in the learning folder's skills/ is never followed: the skill it is in is not laid, the others are, and nothing is read through it`, { timeout: 120_000 }, async (t) => {
     const { api, data } = await serve(t, { faux: SYSTEM });
     const outside = await scratch(t);
     writeFileSync(join(outside, "SKILL.md"), skillMd("evil", CANARY));
@@ -205,11 +205,12 @@ for (const [where, links] of [["a SKILL.md", { "skills/evil/SKILL.md": "OUTSIDE"
     const id = `linked-${Object.keys(links)[0].split("/").length}`;
     await folderWith(data, id, where === "the skills folder" ? {} : asLearned({ "check-units": { "SKILL.md": UNITS } }), Object.fromEntries(Object.entries(links).map(([path, target]) => [path, targets[target]])));
     const { runId, prompt, view } = await ranWithCite(api, id, "pi");
-    assert.deepEqual([view.learning?.state, view.learning?.reason], ["dropped", "seed_failed"], JSON.stringify(view.learning));
-    assert.equal(existsSync(join(runDir(data, runId), "learning.json")), false, "no pin");
-    assert.ok(!prompt.includes(CANARY) && !prompt.includes("# Learned"), prompt);
-    assert.deepEqual(inlined(prompt), ["cite"], "the revision's skill alone");
-    assert.deepEqual(readdirSync(skillsDir(workOf(data, runId))), ["cite"]);
+    assert.notEqual(view.learning?.reason, "seed_failed", JSON.stringify(view.learning));
+    assert.equal(existsSync(join(runDir(data, runId), "learning.json")), true, "seeded: the run has its pin");
+    assert.ok(!prompt.includes(CANARY), prompt);
+    const laid = where === "the skills folder" ? ["cite"] : ["check-units", "cite"];
+    assert.deepEqual(inlined(prompt).sort(), laid, "the revision's skill, and the learned one with no link in it");
+    assert.deepEqual(readdirSync(skillsDir(workOf(data, runId))).sort(), laid);
   });
 }
 

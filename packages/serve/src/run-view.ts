@@ -317,7 +317,12 @@ export interface RunFacts {
   paused(): boolean;
   /** The ask its agent made for the person in its browser the run waits on (askShown(run.dir, run.rows)). */
   browserAsk(): PendingAsk | undefined;
+  /** The ask its agent made for the person on its desktop or phone the run waits on (computer-commands.ts computerAsk). */
+  computerAsk?(): ComputerAsk | undefined;
 }
+
+/** The agent's open ask on its desktop or phone, as the run read shows it. */
+export type ComputerAsk = { readonly computer?: "desktop" | "phone"; readonly instruction: string; readonly completion_condition: string; readonly asked_at: string; readonly expires_at: string };
 
 /** Read only on a run's `rows`, which hold no QUIET row (take). */
 const shows = (r: TimelineEvent) => r.kind !== "usage" && r.kind !== "phase";
@@ -402,7 +407,7 @@ export const raisedToGo = (run: RunView): boolean => raisedSince(run) && continu
 /** What a run waits on, as `pending` says it (one field for every kind; a tool call waiting on approval is another):
  *  the question a waiting run asked, read from its last meaningful row (withAsks' waiting row), the same row its
  *  status reads, never from a scan of its timeline. */
-export type Pending = { kind: "question"; question: string; asked_at: string } | PendingApproval | { kind: "budget"; cap_usd: number; spent_usd?: number; needs_usd?: number; least_cap_usd?: number; suggested_cap_usd?: number; overshoot_bound_usd?: number; said: string; at: string; node?: string | null } | { kind: "browser"; instruction: string; completion_condition: string; asked_at: string; expires_at: string } | null;
+export type Pending = { kind: "question"; question: string; asked_at: string } | PendingApproval | { kind: "budget"; cap_usd: number; spent_usd?: number; needs_usd?: number; least_cap_usd?: number; suggested_cap_usd?: number; overshoot_bound_usd?: number; said: string; at: string; node?: string | null } | { kind: "browser"; instruction: string; completion_condition: string; asked_at: string; expires_at: string } | { kind: "computer"; computer: "desktop" | "phone"; instruction: string; completion_condition: string; asked_at: string; expires_at: string } | null;
 export const pendingOf = (rows: readonly TimelineEvent[]): Pending => {
   const last = meaningful(rows);
   return last?.kind === "waiting" ? { kind: "question", question: last.text ?? last.summary ?? "", asked_at: last.timestamp } : null;
@@ -435,6 +440,10 @@ export const budgetPending = (run: RunView, spentNow?: number): Pending | undefi
  *  redacted with the run's redactor (`redact`), as a tool call's arguments are: a held value it echoes never shows. */
 export const browserPending = (ask: PendingAsk | undefined, redact: (text: string) => string): Pending | undefined =>
   ask && { kind: "browser", instruction: redact(ask.instruction), completion_condition: redact(ask.completion_condition), asked_at: ask.asked_at, expires_at: ask.expires_at };
+/** A run whose agent asked for the person on its desktop or phone waits on their hand-back, the same way: the two texts
+ *  are the model's, so redacted. */
+export const computerPending = (ask: ComputerAsk | undefined, redact: (text: string) => string): Pending | undefined =>
+  ask && { kind: "computer", computer: ask.computer ?? "desktop", instruction: redact(ask.instruction), completion_condition: redact(ask.completion_condition), asked_at: ask.asked_at, expires_at: ask.expires_at };
 
 /** A run's status and state, by the contract's table. `facts` carries the run's file-backed reads (a workflow's pause,
  *  the browser ask); every other read is over the run's rows, its turns and its store entries. */
@@ -473,6 +482,8 @@ export function statusOf(run: RunView, facts: RunFacts): { status: Status; state
   // Its agent asked for the person in its browser (browser-person.ts): its turn is still open, the tool call waiting for
   // the hand-back, and the run waits on the person until they answer or the ask expires.
   if (facts.browserAsk()) return { status: "input_required", state: "waiting" };
+  // So does one whose agent asked for them on its desktop or phone (computer_request_handoff).
+  if (facts.computerAsk?.()) return { status: "input_required", state: "waiting" };
   if (run.working) return { status: "working", state: "working" };
   if (meaningful(run.rows)?.kind === "waiting") return { status: "input_required", state: "waiting" };
   return { status: "working", state: "idle" };
@@ -551,7 +562,7 @@ export function momentOf(run: RunView, facts: RunFacts, live: boolean): RunMomen
     ...(terminal ? { terminalKind: status as "completed" | "failed" | "cancelled" } : {}),
     // The message "working" predicate (runs.ts message): queued, working-working, or its agent waits on the person in its
     // browser (mid-turn, the tool call waiting inside the turn).
-    working: status === "queued" || (status === "working" && state === "working") || facts.browserAsk() !== undefined,
+    working: status === "queued" || (status === "working" && state === "working") || facts.browserAsk() !== undefined || facts.computerAsk?.() !== undefined,
     awaitingAnswer: status === "input_required" && state === "waiting",
     // Whether its harness takes a message mid-turn (runs.ts steers): every workflow run, and an agentic run whose harness
     // steers (pi).
@@ -582,6 +593,14 @@ export const WITHHELD_SIGN_IN = "This server can't read the run's browser sign-i
  *  hidden or withheld, never served uncut, and forget waits for it while it goes. */
 export const MALFORMED = "malformed";
 export type Handed = string[] | typeof MALFORMED;
+
+/** A run's `sign_in_handed` as read from its serve.json: undefined when absent (never handed one); the hashes it names;
+ *  MALFORMED for any other value. */
+export function handedMark(value: unknown): Handed | undefined {
+  if (value === undefined) return undefined;
+  if (Array.isArray(value) && value.length && value.every((hash) => typeof hash === "string" && /^[0-9a-f]{64}$/.test(hash))) return [...new Set(value as string[])];
+  return MALFORMED;
+}
 
 /** Every secret value a run's errors never show, as learning's checker holds them: every one this server never shows
  *  (serverSecrets, read now, so one rotated is cut at once) and what each launch handed the run. */

@@ -4,20 +4,22 @@
 // is said as such.
 import assert from "node:assert/strict";
 import { randomBytes } from "node:crypto";
-import { mkdir } from "node:fs/promises";
+import { mkdir, writeFile } from "node:fs/promises";
 import { createRequire } from "node:module";
 import { connect } from "node:net";
 import { join } from "node:path";
 import { test } from "node:test";
 import { startServe } from "../dist/index.js";
-import { SealedSettings } from "../dist/sealed-settings.js";
+import { ApiError } from "../dist/errors.js";
+import { sealedSettingsOverStore } from "../dist/sealed-settings-store.js";
 import { headersRefusal, MIN_KEY_BYTES, verify } from "../dist/standard-webhooks.js";
 import { openapiDocument } from "../dist/openapi.js";
 import { TRIGGER_ADAPTERS } from "../dist/trigger-adapters.js";
 import { schemaProblems } from "./schema-support.mjs";
+import { keyOf } from "./trigger-support.mjs";
 import { openSqliteStore } from "../dist/store/sqlite/store.js";
-import { agent, client, FAUX, scratch, withEnv } from "./support.mjs";
-import { firings } from "./trigger-support.mjs";
+import { agent, client, FAUX, follow, scratch, withEnv } from "./support.mjs";
+import { firings, RUN_EXEC } from "./trigger-support.mjs";
 
 const { Webhook } = createRequire(import.meta.url)("standardwebhooks");
 const sealKey = randomBytes(32);
@@ -74,7 +76,7 @@ async function post(baseUrl, path, body, { secret, headers } = {}) {
 
 /** A server whose triggers live in a store of their own (createServer's store), with an api whose POST /agents also puts
  *  the agent in that store, where a trigger's row names it. Until the server opens its own store, a firing that starts a
- *  run needs the run port's insert into it (E2): those cases wait on that. */
+ *  run needs the run port's insert into it: those cases wait on running the fired run on a runner. */
 async function storedServe(t, options) {
   const store = await openSqliteStore({ file: join(await scratch(t), "store.sqlite"), role: "server" });
   const server = await startServe({ port: 0, faux: FAUX, drainTimeout: "5s", ...options, store });
@@ -94,20 +96,33 @@ async function storedServe(t, options) {
   return { server, api, store };
 }
 
-async function pingServer(t) {
+/** The ping source's server-wide signing secret, sealed in the trigger_settings rows of the store the server opens in
+ *  `data` (its own, where it reads every source's settings at its start), before the server starts. */
+async function signedBy(data, secret) {
+  const own = await openSqliteStore({ dataDir: data, role: "server" });
+  try {
+    const settings = sealedSettingsOverStore(own, "ping", ping.settings, sealKey, () => {});
+    await settings.load();
+    await settings.set("server", "signing", secret);
+  } finally {
+    await own.close();
+  }
+}
+
+async function pingServer(t, extra = {}) {
   withEnv(t, SEAL);
   const data = join(await scratch(t), "agents");
   await mkdir(data, { recursive: true });
   const secret = `whsec_${randomBytes(32).toString("base64")}`;
-  new SealedSettings(data, "ping", ping.settings, sealKey, () => {}).set("server", "signing", secret);
+  await signedBy(data, secret);
   const lines = [];
-  const { server, api, store } = await storedServe(t, { data, triggerAdapters: [...TRIGGER_ADAPTERS, ping], log: (line) => lines.push(line) });
+  const { server, api, store } = await storedServe(t, { data, triggerAdapters: [...TRIGGER_ADAPTERS, ping], log: (line) => lines.push(line), ...extra });
   return { server, api, store, secret, lines };
 }
 
-// Its event starts a run: the store's firing row names that run, which E2's start inserts into the store (run_id's foreign
+// Its event starts a run: the store's firing row names that run, which the server's start inserts into the store (run_id's foreign
 // key). Until then this case is todo, never skipped: it still runs.
-test("a pushed source is one adapter: served at /v2/hooks/<its id> with no token and no edit of the server, verified with its own settings, and its event fires its trigger once", { timeout: 120_000, skip: "E2's start inserts the store run (trigger_firings.run_id FK)" }, async (t) => {
+test("a pushed source is one adapter: served at /v2/hooks/<its id> with no token and no edit of the server, verified with its own settings, and its event fires its trigger once", { timeout: 120_000, skip: RUN_EXEC }, async (t) => {
   const { server, api, secret } = await pingServer(t);
   assert.equal((await api("POST", "/agents", agent("pinged"))).status, 201);
   const made = await api("POST", "/triggers", { name: "pings", source: { kind: "ping", channel: "c1" }, target: { kind: "start_run", agent_id: "pinged", input: { content: "A ping." }, max_cost_usd: 0.5 } });
@@ -148,9 +163,9 @@ test("an unknown trigger, or one that is off, on a trigger's own hook path is th
   const made = await api("POST", "/triggers", { name: "on push", source: { kind: "webhook" }, target: { kind: "start_run", agent_id: "hooked", input: { content: "Hi." }, max_cost_usd: 0.5 } });
   assert.equal(made.status, 201, JSON.stringify(made.body));
   const bad = await post(server.baseUrl, `/hooks/${made.body.id}`, "{}", { secret: `whsec_${randomBytes(32).toString("base64")}` });
-  const unknown = await post(server.baseUrl, "/hooks/trg_000000000000000000000000", "{}", { secret: made.body.secret });
+  const unknown = await post(server.baseUrl, "/hooks/trg_000000000000000000000000", "{}", { secret: made.body.signing_secret });
   assert.equal((await api("PATCH", `/triggers/${made.body.id}`, { enabled: false })).status, 200);
-  const off = await post(server.baseUrl, `/hooks/${made.body.id}`, "{}", { secret: made.body.secret });
+  const off = await post(server.baseUrl, `/hooks/${made.body.id}`, "{}", { secret: made.body.signing_secret });
   // All of the answer but what differs by request: its time and its request id.
   const strip = (answer) => ({ status: answer.status, headers: { ...answer.headers, date: undefined, "x-request-id": undefined }, error: { ...answer.body.error, request_id: undefined } });
   assert.deepEqual([strip(unknown), strip(off)], [strip(bad), strip(bad)], "the same 401, body and all");
@@ -235,7 +250,7 @@ test("a signature is checked against the clock when the body has arrived, not wh
   const { port, hostname: host } = new URL(server.baseUrl);
   const body = "{}";
   const at = Math.floor(Date.now() / 1000) - 299;
-  const signature = new Webhook(made.body.secret).sign("msg_slow", new Date(at * 1000), body);
+  const signature = new Webhook(made.body.signing_secret).sign("msg_slow", new Date(at * 1000), body);
   const answer = await new Promise((resolve, reject) => {
     const socket = connect(Number(port), host);
     let text = "";
@@ -250,8 +265,8 @@ test("a signature is checked against the clock when the body has arrived, not wh
   assert.match(answer, /^HTTP\/1\.1 401 /, answer);
 });
 
-// Its events start runs: todo until E2's start inserts the store run (run_id's foreign key), as the case above.
-test("a trigger's own hook path takes every event its source parses from one request: each is its own firing, and the answer lists them", { timeout: 120_000, skip: "E2's start inserts the store run (trigger_firings.run_id FK)" }, async (t) => {
+// Its events start runs on a runner (dispatch and command delivery): the case waits on that, as the one above.
+test("a trigger's own hook path takes every event its source parses from one request: each is its own firing, and the answer lists them", { timeout: 120_000, skip: RUN_EXEC }, async (t) => {
   // A source whose settings are a trigger's and whose request holds a list of events, each with its id.
   const pair = {
     id: "pair", label: "pair trigger", delivery: "push", owner: false, describe: '{kind: "pair"}', fires: "a pair", schemas: [],
@@ -275,7 +290,7 @@ test("a trigger's own hook path takes every event its source parses from one req
   assert.equal((await api("POST", "/agents", agent("paired"))).status, 201);
   const made = await api("POST", "/triggers", { name: "pairs", source: { kind: "pair" }, target: { kind: "start_run", agent_id: "paired", input: { content: "A pair." }, max_cost_usd: 0.5 } });
   assert.equal(made.status, 201, JSON.stringify(made.body));
-  const res = await post(server.baseUrl, `/hooks/${made.body.id}`, JSON.stringify({ events: [{ id: "e-1", text: "one" }, { id: "e-2", text: "two" }] }), { secret: made.body.secret });
+  const res = await post(server.baseUrl, `/hooks/${made.body.id}`, JSON.stringify({ events: [{ id: "e-1", text: "one" }, { id: "e-2", text: "two" }] }), { secret: made.body.signing_secret });
   assert.equal(res.status, 202, JSON.stringify(res.body));
   assert.deepEqual(res.body.firings?.map((f) => f.by), ["pair", "pair"], JSON.stringify(res.body));
   assert.equal((await firings(api, made.body.id, 2)).length, 2, "each event its own firing");
@@ -303,7 +318,7 @@ test("with no log, what the push handler says goes to stderr, as the triggers' o
   const data = join(await scratch(t), "agents");
   await mkdir(data, { recursive: true });
   const secret = `whsec_${randomBytes(32).toString("base64")}`;
-  new SealedSettings(data, "ping", ping.settings, sealKey, () => {}).set("server", "signing", secret);
+  await signedBy(data, secret);
   const { server } = await storedServe(t, { data, triggerAdapters: [...TRIGGER_ADAPTERS, ping] });
   const written = [];
   const write = process.stderr.write;
@@ -345,4 +360,109 @@ test("a server-wide hook's documented answers are its own: its firings' by names
   assert.ok(firings && firingBy(firings).includes("ping"), JSON.stringify(body("200")));
   for (const answer of [{ firings: [] }, { challenge: "c-123" }, { ok: "ignored" }, { firings: [{ ok: "duplicate" }] }, { ok: true }, { ok: "ignored", challenge: "c-9" }]) assert.deepEqual(schemaProblems(doc, body("200"), answer), [], JSON.stringify(answer));
   assert.deepEqual(schemaProblems(doc, body("200"), { ok: "maybe" }), [], "an ok answer of the source's own is a handshake");
+});
+
+/** A server-wide source whose triggers each choose their own events (takes), with no scope: one event fires every
+ *  trigger that takes it. */
+const fan = {
+  id: "fan", label: "fan trigger", delivery: "push", owner: false,
+  describe: '{kind: "fan", topic}', fires: "a fan event", schemas: [],
+  settings: { scope: "server", fields: { signing: { minBytes: MIN_KEY_BYTES } } },
+  push: {
+    maxBodyBytes: 4096,
+    key: "signing",
+    headers: headersRefusal,
+    verify,
+    parse(_headers, body) {
+      const doc = JSON.parse(body.toString("utf8"));
+      return [{ key: doc.id, text: doc.text, event: doc.topic, body: doc }];
+    },
+  },
+  // "all" is an event every trigger takes; each event is its own run's, never skipped behind another.
+  takes: (source, event) => (source.topic === event.event || event.event === "all" ? undefined : "another topic"),
+  concurrent: () => true,
+  parse: (value, _now, bad) => (typeof value.topic === "string" ? { kind: "fan", topic: value.topic } : bad("topic", "missing", "topic is a string")),
+  wellFormed: (source) => typeof source.topic === "string",
+};
+
+/** receivePush alone, behind a bare HTTP server, with deps the test holds: what the handler does with a request, apart
+ *  from the server's wiring. */
+async function hookOnly(t, deps) {
+  const { createServer } = await import("node:http");
+  const { receivePush } = await import("../dist/push-handler.js");
+  const server = createServer(async (req, res) => {
+    try {
+      const answer = await receivePush(deps, req, req.url.split("/").pop());
+      res.writeHead(answer.status, { "content-type": "application/json", ...(answer.headers ?? {}) }).end(JSON.stringify(answer.body));
+    } catch (error) {
+      res.writeHead(error.status ?? 500, { "content-type": "application/json", ...(error.headers ?? {}) }).end(JSON.stringify({ code: error.code, message: error.message }));
+    }
+  });
+  await new Promise((resolve) => server.listen(0, "127.0.0.1", resolve));
+  t.after(() => new Promise((resolve) => server.close(resolve)));
+  return `http://127.0.0.1:${server.address().port}`;
+}
+
+/** Deps for the fan source: its server-scoped key, the triggers that listen (id → topic), and what was recorded. */
+function fanDeps(secret, listening, { full = new Set() } = {}) {
+  const received = [];
+  const ignored = [];
+  return {
+    received, ignored,
+    deps: {
+      adapters: [...TRIGGER_ADAPTERS, fan],
+      hooked: async () => undefined,
+      scoped: async () => [],
+      setting: (adapterId, scope, field) => (adapterId === "fan" && scope === "server" && field === "signing" ? secret : undefined),
+      listening: async (kind) => (kind === "fan" ? Object.entries(listening).map(([id, topic]) => ({ id, source: { kind: "fan", topic } })) : []),
+      ignored: async (id, key) => void ignored.push([id, key]),
+      receive: async (id, key) => {
+        if (full.has(id)) throw new ApiError("rate_limited", "20 firings are still due for this trigger.", { retry_after_ms: 30_000 }, { "retry-after": "30" });
+        received.push([id, key]);
+        return { created: true, firing: { key, trigger: id } };
+      },
+      refused: () => {},
+      say: () => {},
+    },
+  };
+}
+
+test("a server-wide source whose triggers each choose their events fires every trigger that takes one event, each its own firing; one that does not take it keeps the event's key; an event none takes is ignored", async (t) => {
+  const secret = `whsec_${randomBytes(32).toString("base64")}`;
+  const { deps, received, ignored } = fanDeps(secret, { a1: "a", a2: "a", b: "b" });
+  const base = await hookOnly(t, deps);
+  const res = await post(base, "/hooks/fan", JSON.stringify({ id: "evt-1", topic: "a", text: "hi" }), { secret });
+  assert.equal(res.status, 202, JSON.stringify(res.body));
+  assert.deepEqual(received, [["a1", "evt-1"], ["a2", "evt-1"]], "each trigger that takes it, its own firing");
+  assert.deepEqual(ignored, [["b", "evt-1"]], "the other keeps the key for its day: the same request relabeled is a duplicate there");
+  const none = await post(base, "/hooks/fan", JSON.stringify({ id: "evt-2", topic: "c", text: "hi" }), { secret });
+  assert.deepEqual([none.status, none.body], [200, { ok: "ignored" }]);
+});
+
+test("an event two triggers take, one of them full, is refused 429 with Retry-After, though the other recorded it", async (t) => {
+  const secret = `whsec_${randomBytes(32).toString("base64")}`;
+  const { deps, received } = fanDeps(secret, { open: "all", full: "all" }, { full: new Set(["full"]) });
+  const base = await hookOnly(t, deps);
+  const res = await post(base, "/hooks/fan", JSON.stringify({ id: "evt-all", topic: "all", text: "hi" }), { secret });
+  assert.equal(res.status, 429, JSON.stringify(res.body));
+  assert.equal(res.headers["retry-after"], "30");
+  assert.deepEqual(received, [["open", "evt-all"]], "the other recorded it: the sender's retry is its duplicate");
+});
+
+test("a hook body that does not arrive whole within the hook's time is 408 at once, its socket closed, never waited on further", { timeout: 60_000 }, async (t) => {
+  const { server } = await pingServer(t, { hookBodyMs: 300 });
+  const { port, hostname: host } = new URL(server.baseUrl);
+  const answer = await new Promise((resolve, reject) => {
+    const socket = connect(Number(port), host);
+    let text = "";
+    socket.on("data", (chunk) => (text += chunk));
+    socket.on("close", () => resolve(text));
+    socket.on("error", reject);
+    // A body of 100 bytes declared, ten sent, the rest never.
+    socket.write(`POST /v2/hooks/ping HTTP/1.1\r\nHost: ${host}\r\nwebhook-id: msg_slow\r\nwebhook-timestamp: ${Math.floor(Date.now() / 1000)}\r\nwebhook-signature: v1,AAAA\r\ncontent-type: application/json\r\ncontent-length: 100\r\n\r\n`);
+    socket.write("x".repeat(10));
+    setTimeout(() => reject(new Error(`no answer and close within 5 s: ${text}`)), 5_000).unref();
+  });
+  assert.match(answer, /^HTTP\/1\.1 408 /, answer);
+  assert.match(answer, /request_timeout/);
 });

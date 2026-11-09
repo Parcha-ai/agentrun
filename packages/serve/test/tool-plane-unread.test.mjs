@@ -8,7 +8,7 @@ import { writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { test } from "node:test";
 import { permissionFrom } from "../dist/tool-gate.js";
-import { NATIVE_ASKS, planeFor, relaunchPlane, TOOL_SETTINGS_KEY, ToolSettings } from "../dist/tool-plane.js";
+import { NATIVE_ASKS, planeFor, readToolSettings, relaunchPlane, TOOL_SETTINGS_KEY, ToolSettings } from "../dist/tool-plane.js";
 import { openSqliteStore, STORE_FILE } from "../dist/store/sqlite/store.js";
 import { fauxTable } from "./fixtures/faux-table.mjs";
 import { agent, scratch, serve } from "./support.mjs";
@@ -72,4 +72,19 @@ test("a server started on a stored tool-settings row that does not read: a never
   assert.equal((await api("PUT", "/settings/tools", {})).status, 200);
   const after = (await api("GET", "/agents/unread-codex")).body.tools.find((tool) => tool.name === "web_search");
   assert.deepEqual([after?.permission, after?.permission_from], ["allow", "unattended"], `after a PUT the settings read: ${JSON.stringify(after)}`);
+});
+
+test("a direct read of unread settings (readToolSettings, as learning's draft check and the learned-draft tools read them) carries the mark too: never lifts no ask over it", async (t) => {
+  for (const [label, body] of [["not JSON", "{ not json"], ["not an object", "[1, 2]"]]) {
+    const dir = await scratch(t);
+    writeFileSync(join(dir, ToolSettings.FILE), body);
+    const read = readToolSettings(dir);
+    assert.equal(read.unreadable, true, `${label}: the read says unreadable`);
+    // An MCP tool asks by default (web_search and web_fetch default to allow, so they could not show it).
+    assert.deepEqual(permissionFrom("mcp:srv/echo", read.settings, {}, "never"), { permission: "ask", from: "default" }, `${label}: the default ask is kept under never`);
+    assert.equal(permissionFrom("web_fetch", read.settings, { web_fetch: { permission: "ask" } }, "never").permission, "ask", `${label}: the agent's own ask is kept under never`);
+  }
+  // A missing file is every default, not unreadable: never still lifts a clean ask there.
+  const fresh = await scratch(t);
+  assert.deepEqual(permissionFrom("mcp:srv/echo", readToolSettings(fresh).settings, {}, "never"), { permission: "allow", from: "unattended" }, "a missing file: never lifts the default ask");
 });

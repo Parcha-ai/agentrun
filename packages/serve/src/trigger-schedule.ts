@@ -89,8 +89,10 @@ export const schedule: TriggerAdapter = {
     const cron = "cron" in s ? cronOf(s) : undefined;
     return { next: (after) => nextOf(s, after, cron), latest: (first, now) => latestBy(s, first, now, cron), ...("every_s" in s ? { step: s.every_s * 1000 } : {}) };
   },
-  /** Its zone or its cron line, which this croner or this ICU refuses. */
+  /** Its zone or its cron line, which this croner or this ICU refuses; or an every_s out of range, which no request sets (a
+   *  hand edit of its row), so it never fires on a step of 0 or of years. */
   problem(source) {
+    if (typeof source.every_s === "number" && (source.every_s < MIN_EVERY_S || source.every_s > MAX_EVERY_S)) return `every_s ${source.every_s} is not ${MIN_EVERY_S} to ${MAX_EVERY_S} seconds`;
     if (typeof source.cron !== "string" || typeof source.timezone !== "string") return undefined;
     if (!validZone(source.timezone)) return `the zone ${source.timezone} is not one this server knows`;
     try {

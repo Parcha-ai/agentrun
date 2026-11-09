@@ -19,7 +19,7 @@ test("providerFromRoute maps a resolved route to the workflow provider: the prox
     outputCeiling: 128_000,
     fetch: async () => new Response(""),
   };
-  const provider = providerFromRoute(route);
+  const provider = await providerFromRoute(route);
   assert.equal(provider.modelId, "openai/gpt-6-sol");
   assert.equal(provider.api, "anthropic-messages");
   assert.equal(provider.origin, "https://example.test");
@@ -31,8 +31,8 @@ test("providerFromRoute maps a resolved route to the workflow provider: the prox
   assert.deepEqual(provider.capModel, { id: "openai/gpt-6-sol", api: "anthropic-messages", price: cost, outputCeiling: 128_000 }, "the cap's model is the catalog cost (tiers) and the output ceiling");
 });
 
-test("a route with no catalog cost or ceiling: the cap's model is unpriced with no ceiling", () => {
-  const provider = providerFromRoute({ provider: { api: "anthropic-messages", origin: "https://x.test", credential: () => "" }, model: "m" });
+test("a route with no catalog cost or ceiling: the cap's model is unpriced with no ceiling", async () => {
+  const provider = await providerFromRoute({ provider: { api: "anthropic-messages", origin: "https://x.test", credential: () => "" }, model: "m" });
   assert.deepEqual(provider.capModel, { id: "m", api: "anthropic-messages", price: null, outputCeiling: null });
   assert.equal(provider.price("m", { input: 1, output: 1 }), null, "no route price: unknown");
   assert.equal(provider.fetch, undefined);

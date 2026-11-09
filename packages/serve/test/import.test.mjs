@@ -496,7 +496,7 @@ test("this server's own secrets, pasted into sessions, are cut out of what the i
   await server.close();
   open = false;
   const own = {
-    webhook: set.body.secret,
+    webhook: set.body.signing_secret,
     token: server.token,
     door: readFileSync(join(data, ".door-token"), "utf8").trim(),
     session: readFileSync(join(data, ".session-secret"), "utf8").trim(),
@@ -548,7 +548,7 @@ test("a webhook trigger's key or the outbound webhook's, pasted into sessions as
   await server.close();
   open = false;
   const forms = {};
-  for (const [what, secret] of [["trigger", trigger.body.secret], ["outbound", outbound.body.secret]]) {
+  for (const [what, secret] of [["trigger", trigger.body.signing_secret], ["outbound", outbound.body.signing_secret]]) {
     const key = Buffer.from(secret.slice("whsec_".length), "base64");
     Object.assign(forms, { [`${what} base64`]: secret.slice("whsec_".length), [`${what} base64url`]: key.toString("base64url"), [`${what} hex`]: key.toString("hex") });
   }

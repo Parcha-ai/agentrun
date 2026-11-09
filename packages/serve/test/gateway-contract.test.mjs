@@ -70,8 +70,9 @@ function sent(gw) {
 }
 
 /** One run of `harness` on serve's gateway at `base`, with the gateway's key: what the gateway saw and what was booked.
- *  `price`: AGENT_MODEL_PRICE, or null for none (the catalog prices the model). */
-async function onGateway(t, harness, base, { model = "openai/gpt-5.4", price = GATEWAY_PRICE } = {}) {
+ *  `price`: AGENT_MODEL_PRICE, or null for none (the catalog prices the model). `deadlineMs`: how long the run may take
+ *  (follow's deadline), kept under the test's own timeout so a slow run fails in follow's words. */
+async function onGateway(t, harness, base, { model = "openai/gpt-5.4", price = GATEWAY_PRICE, deadlineMs = 80_000 } = {}) {
   const gw = await gateway(t);
   withEnv(t, { AGENT_MODEL_BASE_URL: base(gw.url), AGENT_MODEL_API_KEY: KEY("gateway"), AGENT_MODEL: model, ...(price ? { AGENT_MODEL_PRICE: price } : {}), ...(harness === "codex" ? CODEX_STAND_IN : {}) }, NAMES);
   const { api } = await serve(t, { faux: undefined });
@@ -79,7 +80,7 @@ async function onGateway(t, harness, base, { model = "openai/gpt-5.4", price = G
   const { max_concurrent_runs, ...offer } = (await api("GET", "/capabilities")).body.harnesses.find((h) => h.id === harness);
   assert.deepEqual(offer, { id: harness, available: true, steer: harness === "pi", default_model: `agent-model/${model}`, run_memory_mib: { pi: 128, codex: 192, "claude-agent": 288 }[harness] });
   assert.equal((await api("POST", "/agents", agent(`${harness}-gw`, harness === "pi" ? {} : { harness }))).status, 201);
-  const { run, usage } = await runOf(api, `${harness}-gw`, 80_000);
+  const { run, usage } = await runOf(api, `${harness}-gw`, deadlineMs);
   return { gw, run, usage, ...sent(gw) };
 }
 
@@ -186,8 +187,9 @@ test("custody, guard on main: with the OpenRouter key and an explicit Anthropic 
 // --- Red on main. ------------------------------------------------------------------------------------------------------
 
 for (const [form, base, path] of [["<gw>", (url) => url, "/v1/responses"], ["<gw>/api", (url) => `${url}/api`, "/api/v1/responses"]]) {
-  test(`pi through serve's gateway at ${form}: POST ${path}, as codex does (red on main: pi sends <base>/responses)`, { timeout: 60_000 }, async (t) => {
-    const { run, usage, count, shapes, gw } = await onGateway(t, "pi", base, { model: CODEX_OR_MODEL, price: null });
+  // A real pi run under a loaded host: the same bound as the codex and claude-agent cases, the run's own deadline under it.
+  test(`pi through serve's gateway at ${form}: POST ${path}, as codex does (red on main: pi sends <base>/responses)`, { timeout: 180_000 }, async (t) => {
+    const { run, usage, count, shapes, gw } = await onGateway(t, "pi", base, { model: CODEX_OR_MODEL, price: null, deadlineMs: 170_000 });
     assert.deepEqual(shapes, [[path, `Bearer ${KEY("gateway")}`, null, CODEX_OR_MODEL]], `pi's requests: ${JSON.stringify(gw.requests)}`);
     assert.equal(run.status, "completed", JSON.stringify(run.error));
     assert.deepEqual(usage, booked(count, AT_OR_PRICE));
@@ -206,10 +208,10 @@ for (const [harness, model] of [["claude-agent", CLAUDE_OR_MODEL], ["codex", COD
   });
 }
 
-/** pi's default on OpenRouter alone (capabilities' `provider/model-id`), from tl-tools: undefined until it is set. */
+/** pi's default on OpenRouter alone (capabilities' `provider/model-id`): undefined until it is set. */
 const PI_OR_DEFAULT = "openrouter/openai/gpt-6-sol";
 
-test("pi on OPENROUTER_API_KEY alone: its default model, on pi-ai's own openrouter provider, keyed by OPENROUTER_API_KEY and priced (red on main: pi has no default)", { timeout: 60_000, skip: !PI_OR_DEFAULT && "pi's default id on OpenRouter alone is not set yet (tl-tools)" }, async (t) => {
+test("pi on OPENROUTER_API_KEY alone: its default model, on pi-ai's own openrouter provider, keyed by OPENROUTER_API_KEY and priced (red on main: pi has no default)", { timeout: 60_000, skip: !PI_OR_DEFAULT && "pi's default id on OpenRouter alone is not set yet" }, async (t) => {
   withEnv(t, { OPENROUTER_API_KEY: OR_KEY }, NAMES);
   const { api } = await serve(t, { faux: undefined });
   const { max_concurrent_runs, ...pi } = (await api("GET", "/capabilities")).body.harnesses.find((h) => h.id === "pi");

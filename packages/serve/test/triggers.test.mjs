@@ -10,14 +10,14 @@ import { setTimeout as sleep } from "node:timers/promises";
 import { openStore } from "@parcha/pi-durable-agent";
 import { schemaProblems } from "./schema-support.mjs";
 import { flowAgent, follow, runDir, scratch, serve } from "./support.mjs";
-import { E2, fakeClock, firings, keyOf, made, schedule } from "./trigger-support.mjs";
+import { RUN_EXEC, fakeClock, firings, keyOf, made, schedule } from "./trigger-support.mjs";
 
 async function documented(t, baseUrl) {
   const doc = await (await fetch(`${baseUrl}/openapi.json`)).json();
   return (path, method, code, value) => assert.deepEqual(schemaProblems(doc, doc.paths[path][method].responses[code].content["application/json"].schema, value), [], `${method} ${path} ${code}: ${JSON.stringify(value)}`);
 }
 
-test("a cron line in America/Los_Angeles fires at its UTC instants across the fall-back: 1:30 once, at its first pass, then at 1:30 PST; each firing starts one capped run that names its trigger and firing", { timeout: 120_000, skip: E2 }, async (t) => {
+test("a cron line in America/Los_Angeles fires at its UTC instants across the fall-back: 1:30 once, at its first pass, then at 1:30 PST; each firing starts one capped run that names its trigger and firing", { timeout: 120_000, skip: RUN_EXEC }, async (t) => {
   const clock = fakeClock("2026-10-31T12:00:00Z");
   const { api, baseUrl, data } = await serve(t, { triggerClock: clock });
   const meets = await documented(t, baseUrl);
@@ -55,7 +55,7 @@ test("a cron line in America/Los_Angeles fires at its UTC instants across the fa
   meets("/triggers", "get", "200", listed.body);
 });
 
-test("across the spring-forward, a 2:30 that does not exist fires at 3:00 PDT, the first time after the gap, and the next day at 2:30 PDT", { timeout: 120_000, skip: E2 }, async (t) => {
+test("across the spring-forward, a 2:30 that does not exist fires at 3:00 PDT, the first time after the gap, and the next day at 2:30 PDT", { timeout: 120_000 }, async (t) => {
   const clock = fakeClock("2026-03-07T12:00:00Z");
   const { api } = await serve(t, { triggerClock: clock });
   await made(api, "early");
@@ -68,7 +68,7 @@ test("across the spring-forward, a 2:30 that does not exist fires at 3:00 PDT, t
   assert.equal((await api("GET", `/triggers/${body.id}`)).body.next_at, "2026-03-09T09:30:00.000Z");
 });
 
-test("every_s stays on its start_at grid: a timer that wakes late fires for the nominal time, and the next one is a step after that, not after the wake", { timeout: 120_000, skip: E2 }, async (t) => {
+test("every_s stays on its start_at grid: a timer that wakes late fires for the nominal time, and the next one is a step after that, not after the wake", { timeout: 120_000 }, async (t) => {
   const clock = fakeClock("2026-06-01T05:20:00Z");
   const { api } = await serve(t, { triggerClock: clock });
   await made(api, "hourly");
@@ -85,7 +85,7 @@ test("every_s stays on its start_at grid: a timer that wakes late fires for the 
   await follow(api, second.run_id, ["completed"]);
 });
 
-test("a one-time schedule fires once and turns itself off", { timeout: 120_000, skip: E2 }, async (t) => {
+test("a one-time schedule fires once and turns itself off", { timeout: 120_000 }, async (t) => {
   const clock = fakeClock("2026-06-01T00:00:00Z");
   const { api } = await serve(t, { triggerClock: clock });
   await made(api, "once");
@@ -103,7 +103,7 @@ test("a one-time schedule fires once and turns itself off", { timeout: 120_000, 
   assert.equal((await firings(api, body.id, 1)).length, 1);
 });
 
-test("a firing while the last run is still working is skipped, with why, and starts nothing", { timeout: 120_000, skip: E2 }, async (t) => {
+test("a firing while the last run is still working is skipped, with why, and starts nothing", { timeout: 120_000 }, async (t) => {
   const clock = fakeClock("2026-06-01T00:00:00Z");
   const { api } = await serve(t, { triggerClock: clock });
   await made(api, "slow");
@@ -119,7 +119,7 @@ test("a firing while the last run is still working is skipped, with why, and sta
   assert.equal((await api("POST", `/runs/${first.run_id}/cancel`)).status, 202);
 });
 
-test("paused, a trigger fires nothing; enabled again it goes on from now, the paused range skipped and not caught up", { timeout: 120_000, skip: E2 }, async (t) => {
+test("paused, a trigger fires nothing; enabled again it goes on from now, the paused range skipped and not caught up", { timeout: 120_000 }, async (t) => {
   const clock = fakeClock("2026-06-01T00:00:00Z");
   const { api } = await serve(t, { triggerClock: clock });
   await made(api, "paused");
@@ -141,7 +141,7 @@ test("paused, a trigger fires nothing; enabled again it goes on from now, the pa
   await follow(api, next.run_id, ["completed"]);
 });
 
-test("run now with the same Idempotency-Key twice starts one run; without a key it is 400", { timeout: 120_000, skip: E2 }, async (t) => {
+test("run now with the same Idempotency-Key twice starts one run; without a key it is 400", { timeout: 120_000 }, async (t) => {
   const clock = fakeClock("2026-06-01T00:00:00Z");
   const { api, baseUrl } = await serve(t, { triggerClock: clock });
   const meets = await documented(t, baseUrl);
@@ -189,7 +189,9 @@ test("a trigger that would start an uncapped run, a workflow's included, or fire
   await refused(schedule("missing", { every_s: 600 }), "target.agent_id", "not_found");
   assert.deepEqual((await api("GET", "/triggers")).body.triggers, [], "nothing kept");
   assert.equal((await api("DELETE", "/triggers/trg_none")).status, 404);
-  assert.deepEqual((await api("GET", "/capabilities")).body.features.triggers, { routes: true, sources: ["schedule", "webhook"], targets: ["start_run", "message_run"], min_every_s: 60, history_kept: 200, catchup_window_s: 3600, failures_to_pause: 5, webhook: { signing: "standard-webhooks/v1", signatures: ["standard", "github"], tolerance_s: 300, max_body_bytes: 262144, payload_kept_bytes: 16384, at_rest: "unavailable" } });
+  assert.deepEqual((await api("GET", "/capabilities")).body.features.triggers, { routes: true, sources: ["schedule", "webhook", "github"], targets: ["start_run", "message_run"], min_every_s: 60, history_kept: 200, catchup_window_s: 3600, failures_to_pause: 5, webhook: { signing: "standard-webhooks/v1", signatures: ["standard", "github"], tolerance_s: 300, max_body_bytes: 262144, payload_kept_bytes: 16384, at_rest: "sealed" } });
+  // A server started with no seal key handed over has one all the same (ensureSealKey): what it keeps is always sealed.
+  assert.equal((await api("GET", "/capabilities")).body.features.webhooks.at_rest, "sealed");
 });
 
 test("a capped trigger on a workflow agent is taken, as one on an agentic agent is: a workflow run's spend is capped", { timeout: 120_000 }, async (t) => {
@@ -202,7 +204,7 @@ test("a capped trigger on a workflow agent is taken, as one on an agentic agent 
   assert.deepEqual((await api("GET", "/triggers")).body.triggers.map((trigger) => [trigger.target.agent_id, trigger.target.max_cost_usd]), [["flow", 0.5]]);
 });
 
-test("a firing left due by a server that went down mid-start is driven again at the next start and finds its run: one run, not two", { timeout: 180_000, skip: E2 }, async (t) => {
+test("a firing left due by a server that went down mid-start is driven again at the next start and finds its run: one run, not two", { timeout: 180_000, skip: RUN_EXEC }, async (t) => {
   const dir = await scratch(t);
   const data = join(dir, "agents");
   const clock = fakeClock("2026-06-01T00:00:00Z");
@@ -228,7 +230,7 @@ test("a firing left due by a server that went down mid-start is driven again at 
   assert.deepEqual(run.body.trigger, { id: body.id, firing_key: fired.key }, "its provenance read back from serve.json");
 });
 
-test("a firing left due by a server that went down, found started at the next start, does not hold back that start's own firing: it starts its run", { timeout: 180_000, skip: E2 }, async (t) => {
+test("a firing left due by a server that went down, found started at the next start, does not hold back that start's own firing: it starts its run", { timeout: 180_000, skip: RUN_EXEC }, async (t) => {
   const dir = await scratch(t);
   const data = join(dir, "agents");
   const clock = fakeClock("2026-06-01T00:00:00Z");
@@ -257,7 +259,7 @@ test("a firing left due by a server that went down, found started at the next st
 
 // A run its server never set up: no serve.json, or one that holds no input (runs.ts load's notSetUp).
 for (const [left, meta] of [["no serve.json", undefined], ["a serve.json with no input", { title: "", created_at: "2026-06-01T00:10:00.000Z" }]])
-test(`a firing whose run the server lost while setting it up (${left}) is failed with why, keeps that run, never fires again, and the next firing starts a new run`, { timeout: 180_000, skip: E2 }, async (t) => {
+test(`a firing whose run the server lost while setting it up (${left}) is failed with why, keeps that run, never fires again, and the next firing starts a new run`, { timeout: 180_000, skip: RUN_EXEC }, async (t) => {
   const dir = await scratch(t);
   const data = join(dir, "agents");
   const clock = fakeClock("2026-06-01T00:00:00Z");
@@ -309,7 +311,7 @@ test("with no catch-up window, times missed while the server was down are one mi
   assert.deepEqual((await second.api("GET", "/agents/down/runs")).body.runs, [], "nothing started for them");
 });
 
-test("a firing a full server refuses (429) stays due and starts its run once a place is free", { timeout: 120_000, skip: E2 }, async (t) => {
+test("a firing a full server refuses (429) stays due and starts its run once a place is free", { timeout: 120_000, skip: RUN_EXEC }, async (t) => {
   const clock = fakeClock("2026-06-01T00:00:00Z");
   const { api } = await serve(t, { triggerClock: clock, maxRuns: 1 });
   await made(api, "busy");
@@ -338,7 +340,7 @@ test("a firing a full server refuses (429) stays due and starts its run once a p
   await follow(api, fired.run_id, ["completed"]);
 });
 
-test("a run parked on a person keeps every later firing skipped, after its firing has left the history", { timeout: 300_000, skip: E2 }, async (t) => {
+test("a run parked on a person keeps every later firing skipped, after its firing has left the history", { timeout: 300_000, skip: RUN_EXEC }, async (t) => {
   const { api } = await serve(t, { triggerClock: fakeClock("2026-06-01T00:00:00Z") });
   await made(api, "parked", { tools: ["ask_person"] });
   const { body } = await api("POST", "/triggers", { ...schedule("parked", { cron: "0 9 * * *" }), target: { kind: "start_run", agent_id: "parked", input: { content: "Pick a region." }, max_cost_usd: 0.5 } });
@@ -360,7 +362,7 @@ test("a run parked on a person keeps every later firing skipped, after its firin
   assert.equal((await api("POST", `/runs/${first.body.run_id}/cancel`)).status, 202);
 });
 
-test("a run now's key retried after its firing left the history answers that firing for the key's day and moves no last run back; past the day it is a new firing, and still never starts its run twice", { timeout: 300_000, skip: E2 }, async (t) => {
+test("a run now's key retried after its firing left the history answers that firing for the key's day and moves no last run back; past the day it is a new firing, and still never starts its run twice", { timeout: 300_000, skip: RUN_EXEC }, async (t) => {
   const clock = fakeClock("2026-06-01T00:00:00Z");
   const { api } = await serve(t, { triggerClock: clock });
   await made(api, "keys", { tools: ["ask_person"] });
@@ -405,7 +407,7 @@ test("a run now's key retried after its firing left the history answers that fir
   assert.equal((await api("POST", `/runs/${c.body.run_id}/cancel`)).status, 202);
 });
 
-test("the runs lists name the trigger that started a run, while it works, once it ended, and after a restart reads it from its row; a run a caller started names none", { timeout: 180_000, skip: E2 }, async (t) => {
+test("the runs lists name the trigger that started a run, while it works, once it ended, and after a restart reads it from its row; a run a caller started names none", { timeout: 180_000, skip: RUN_EXEC }, async (t) => {
   const data = join(await scratch(t), "agents");
   const clock = fakeClock("2026-06-01T00:00:00Z");
   const first = await serve(t, { data, triggerClock: clock });
@@ -450,6 +452,25 @@ test("a date that is no date, and an interval past a year, are 422 on their fiel
   const year = await api("POST", "/triggers", schedule("dates", { every_s: 366 * 86_400, start_at: "2026-01-01T00:00:00Z" }));
   assert.equal(year.status, 201, JSON.stringify(year.body));
   assert.equal(year.body.next_at, "2027-01-02T00:00:00.000Z");
+});
+
+test("archiving an agent answers the triggers it turned off; while it is archived turning one on is 409 agent_archived; unarchiving answers those still off, which stay off until each is turned on", { timeout: 60_000 }, async (t) => {
+  const { api } = await serve(t);
+  await made(api, "weekly");
+  const trigger = (await api("POST", "/triggers", schedule("weekly", { every_s: 604_800 }))).body;
+  const archived = await api("POST", "/agents/weekly/archive");
+  assert.equal(archived.status, 200, JSON.stringify(archived.body));
+  assert.deepEqual([archived.body.agent_id, archived.body.triggers_off], ["weekly", [{ id: trigger.id, name: trigger.name }]]);
+  const off = (await api("GET", `/triggers/${trigger.id}`)).body;
+  assert.deepEqual([off.enabled, off.disabled?.reason], [false, "agent_archived"]);
+  const refused = await api("PATCH", `/triggers/${trigger.id}`, { enabled: true });
+  assert.deepEqual([refused.status, refused.body.error?.code], [409, "agent_archived"], JSON.stringify(refused.body));
+  const back = await api("POST", "/agents/weekly/unarchive");
+  assert.equal(back.status, 200, JSON.stringify(back.body));
+  assert.deepEqual(back.body.triggers_off, [{ id: trigger.id, name: trigger.name }], "still off: unarchiving turns none on");
+  assert.equal((await api("PATCH", `/triggers/${trigger.id}`, { enabled: true })).body.enabled, true);
+  assert.deepEqual((await api("POST", "/agents/weekly/archive")).body.triggers_off.length, 1, "on again, the next archive turns it off again");
+  assert.deepEqual((await api("POST", "/agents/weekly/unarchive")).body.triggers_off.length, 1);
 });
 
 // Superseded: "a triggers file holding a malformed trigger leaves the server up". The triggers keep no file: their rows

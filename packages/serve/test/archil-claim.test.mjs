@@ -1,26 +1,41 @@
-// The Archil claim step (workspace/archil-claim.ts): a claim's Archil keys come from the store's sealed_keys rows, opened
-// with the runner's seal key into the claim's memory only, never from the environment, and dropped at release.
+// The Archil claim step (workspace/archil-claim.ts): a claim's Archil key is the one archilApiKey resolves
+// (workspace/archil-key.ts, its only reader): the environment's ARCHIL_API_KEY first, as the claim is given it, else the
+// store's sealed_keys row, opened with the runner's seal key. It is held in the claim's memory only and dropped at
+// release; the cases here give no environment, so the key is the sealed row's. The disk
+// token a mount takes is no saved row: it is minted per run at Archil's control API (a loopback fake here) when a mount
+// first asks, and revoked by its identifier.
 import assert from "node:assert/strict";
 import { randomBytes } from "node:crypto";
 import { test } from "node:test";
 import { sealColumn, sealedAt } from "../dist/store/seal.js";
-import { ARCHIL_API_KEY_ROW as SETTINGS_API_ROW, ARCHIL_DISK_TOKEN_ROW as SETTINGS_TOKEN_ROW, loadArchilSettings, saveArchilSettings } from "../dist/archil-settings.js";
-import { ARCHIL_API_KEY_ROW, ARCHIL_DISK_TOKEN_ROW, ArchilClaimRefused, archilClaim } from "../dist/workspace/index.js";
+import * as archilSettings from "../dist/archil-settings.js";
+import { ARCHIL_API_KEY_ROW, ArchilClaimRefused, archilClaim } from "../dist/workspace/index.js";
+
+const { ARCHIL_API_KEY_ROW: SETTINGS_API_ROW, loadArchilSettings, saveArchilSettings } = archilSettings;
+import { archilControlFake } from "./archil-control-fake.mjs";
 import { storeOn } from "./store-helpers.mjs";
 
 const KEY = randomBytes(32);
 const API = "fake-test-key-api-0001";
-const TOKEN = "fake-test-key-disk-token-0001";
+/** The token the fake control API mints first. */
+const TOKEN = "fake-minted-token-1";
+
+/** A loopback fake of Archil's control API, closed with the test: the claim's mount option points at it. */
+async function controlOn(t, options) {
+  const fake = await archilControlFake(options);
+  t.after(() => fake.close());
+  return { fake, mount: { runId: "run-1", epoch: 3, ttlMs: 86_400_000, baseUrl: fake.baseUrl } };
+}
 /** The Archil settings as the store keeps them (archil-settings.ts). */
 const SETTINGS = { diskId: "dsk-0000000000000001", region: "aws-us-east-1", s3Url: "https://s3.green.us-east-1.aws.prod.archil.com" };
 const PINNED = `docker.io/library/debian@sha256:${"9e".repeat(32)}`;
 
 /** The sealed_keys rows as the store holds them: each sealed under `key` for its own row. */
-const rowsOf = (key = KEY, values = { [ARCHIL_API_KEY_ROW]: API, [ARCHIL_DISK_TOKEN_ROW]: TOKEN }) =>
+const rowsOf = (key = KEY, values = { [ARCHIL_API_KEY_ROW]: API }) =>
   new Map(Object.entries(values).map(([name, value]) => [name, sealColumn(key, sealedAt.sealedKey(name), value)]));
 
 /** A claim over `rows`, with the disk it makes captured instead of made (no call leaves the process). */
-async function claimOf({ rows = rowsOf(), settings = SETTINGS, sealKey = KEY, signal = new AbortController().signal } = {}) {
+async function claimOf({ rows = rowsOf(), settings = SETTINGS, sealKey = KEY, signal = new AbortController().signal, mount, env } = {}) {
   const asked = [];
   const made = [];
   const claim = await archilClaim({
@@ -29,6 +44,8 @@ async function claimOf({ rows = rowsOf(), settings = SETTINGS, sealKey = KEY, si
     sealKey,
     signal,
     makeDisk: (options) => { made.push(options); return { id: options.disk, made: true }; },
+    ...(mount ? { mount } : {}),
+    ...(env ? { env } : {}),
   });
   return { claim, asked, made };
 }
@@ -41,12 +58,13 @@ test("archil claim: the disk is made from the settings, and its key is the seale
   assert.equal(await made[0].key(), API);
   assert.equal(claim.disk.id, SETTINGS.diskId);
   assert.deepEqual([claim.region, claim.image], [SETTINGS.region, undefined], "no image: Archil's default");
-  assert.deepEqual(asked, [ARCHIL_API_KEY_ROW], "the disk token is not opened until a mount asks for it");
+  assert.deepEqual(asked, [ARCHIL_API_KEY_ROW], "only the account key: no disk token row is read");
 });
 
 test("archil claim: the key rows are the store's one set of names, and a saved image is pinned by digest or refused", async () => {
-  assert.deepEqual([ARCHIL_API_KEY_ROW, ARCHIL_DISK_TOKEN_ROW], [SETTINGS_API_ROW, SETTINGS_TOKEN_ROW]);
-  assert.deepEqual([ARCHIL_API_KEY_ROW, ARCHIL_DISK_TOKEN_ROW], ["archil.api_key", "archil.disk_token"]);
+  assert.equal(ARCHIL_API_KEY_ROW, SETTINGS_API_ROW);
+  assert.equal(ARCHIL_API_KEY_ROW, "archil.api_key");
+  assert.equal(archilSettings.ARCHIL_DISK_TOKEN_ROW, undefined, "no disk token row: the mount credential is minted per run");
   const { claim } = await claimOf({ settings: { ...SETTINGS, image: PINNED } });
   assert.deepEqual(claim.image, { baseImage: PINNED });
   for (const image of ["debian:trixie", "debian@sha256:short", ""]) {
@@ -61,12 +79,40 @@ test("archil claim: over the settings row the server saved (archil-settings.ts)"
   assert.deepEqual([made[0].disk, made[0].region, made[0].s3BaseUrl, claim.image], [SETTINGS.diskId, SETTINGS.region, SETTINGS.s3Url, { baseImage: PINNED }]);
 });
 
-test("archil claim: the disk token is opened when a mount first asks, once, and both values are in the redaction set", async () => {
-  const { claim, asked } = await claimOf();
+test("archil claim: the mount credential is minted when a mount first asks, once, held in the redaction set, and revoked by its identifier", async (t) => {
+  const { fake, mount } = await controlOn(t);
+  const { claim, asked } = await claimOf({ mount });
+  assert.equal(fake.requests.length, 0, "nothing minted before a mount asks");
   assert.equal(await claim.token(), TOKEN);
   assert.equal(await claim.token(), TOKEN);
-  assert.deepEqual(asked, [ARCHIL_API_KEY_ROW, ARCHIL_DISK_TOKEN_ROW], "each row is read once");
+  assert.deepEqual(fake.requests.map((one) => [one.method, one.body?.nickname, one.body?.ttl]), [["GET", undefined, undefined], ["POST", "agentrun:run-1:3", "86400s"]], "the disk's users read, then minted once, named for the run and its epoch, with its lifetime bound");
+  assert.deepEqual(asked, [ARCHIL_API_KEY_ROW], "no disk token row is read");
   assert.deepEqual([...claim.secrets].sort(), [API, TOKEN].sort());
+  await claim.revoke();
+  await claim.revoke();
+  assert.deepEqual(fake.requests.slice(2).map((one) => [one.method, one.query.identifier]), [["DELETE", "tok-1"]], "removed once by its identifier; a second revoke has nothing to remove");
+  assert.equal(fake.users.size, 0);
+  assert.ok(!claim.secrets.has(TOKEN), "the token is no longer held");
+});
+
+test("archil claim: an ARCHIL_API_KEY in the server's environment is the account key, for the disk and the mint alike; no row is read", async (t) => {
+  const { fake, mount } = await controlOn(t);
+  const ENV_KEY = "fake-test-key-archil-from-env-0001";
+  const { claim, asked, made } = await claimOf({ mount, rows: new Map(), env: { ARCHIL_API_KEY: ENV_KEY } });
+  assert.equal(await made[0].key(), ENV_KEY, "the disk's key");
+  await claim.token();
+  assert.deepEqual(fake.requests.map((one) => one.authorization), [`Bearer ${ENV_KEY}`, `Bearer ${ENV_KEY}`], "the same key lists and mints");
+  assert.deepEqual(asked, [], "no saved row is read");
+  // An empty variable is no key: the saved one is read.
+  const saved = await claimOf({ mount, env: { ARCHIL_API_KEY: "  " } });
+  assert.equal(await saved.made[0].key(), API);
+});
+
+test("archil claim: a revoke with nothing minted removes nothing", async (t) => {
+  const { fake, mount } = await controlOn(t);
+  const { claim } = await claimOf({ mount });
+  await claim.revoke();
+  assert.deepEqual(fake.requests, []);
 });
 
 test("archil claim: a claim that cannot open its key is refused in words, before any disk is made", async () => {
@@ -83,7 +129,7 @@ test("archil claim: a claim that cannot open its key is refused in words, before
   await refused({ rows: new Map() }, new RegExp(`no ${ARCHIL_API_KEY_ROW.replace(".", "\\.")} key is saved`));
   await refused({ rows: rowsOf(randomBytes(32)) }, /does not open/);
   // A value sealed for another row does not open as this one.
-  const moved = new Map([[ARCHIL_API_KEY_ROW, sealColumn(KEY, sealedAt.sealedKey(ARCHIL_DISK_TOKEN_ROW), API)]]);
+  const moved = new Map([[ARCHIL_API_KEY_ROW, sealColumn(KEY, sealedAt.sealedKey("archil.other"), API)]]);
   await refused({ rows: moved }, /does not open/);
   // The real disk checks its S3 endpoint when it is made (no call is sent): a bad one refuses the claim.
   await assert.rejects(
@@ -98,7 +144,7 @@ test("archil claim: over the store's own sealed_keys rows, as the server saved t
   const made = [];
   const claim = await archilClaim({ settings: SETTINGS, keys: store.sealedKeys, sealKey: KEY, signal: new AbortController().signal, makeDisk: (options) => { made.push(options); return { id: options.disk }; } });
   assert.equal(await made[0].key(), API);
-  assert.equal(await claim.token(), TOKEN);
+  assert.equal(claim.disk.id, SETTINGS.diskId);
   await store.sealedKeys.remove(ARCHIL_API_KEY_ROW);
   await assert.rejects(
     archilClaim({ settings: SETTINGS, keys: store.sealedKeys, sealKey: KEY, signal: new AbortController().signal, makeDisk: () => assert.fail("no disk") }),
@@ -106,15 +152,57 @@ test("archil claim: over the store's own sealed_keys rows, as the server saved t
   );
 });
 
-test("archil claim: a missing disk token refuses the mount that asks for it, not the claim", async () => {
-  const { claim } = await claimOf({ rows: rowsOf(KEY, { [ARCHIL_API_KEY_ROW]: API }) });
-  await assert.rejects(claim.token(), (error) => error instanceof ArchilClaimRefused && /no archil\.disk_token key is saved/.test(error.message));
+test("archil claim: a failed mint refuses the mount that asks for it in words, not the claim, and holds nothing", async (t) => {
+  const { fake, mount } = await controlOn(t, { answer: ({ method }) => (method === "POST" ? { status: 403, body: { error: "the account may not add users to this disk", code: "forbidden" } } : undefined) });
+  const { claim } = await claimOf({ mount });
+  await assert.rejects(claim.token(), (error) => error instanceof ArchilClaimRefused && /This run's folder can't be mounted in its computer: Archil refused to mint the run's mount credential \(403\): the account may not add users to this disk/.test(error.message) && !error.message.includes(API));
+  assert.deepEqual(fake.requests.map((one) => one.method), ["GET", "POST"]);
+  assert.deepEqual([...claim.secrets], [API], "no token held");
 });
 
-test("archil claim: release(), or the claim's signal aborting, drops both values: the disk's key and the token are refused after", async () => {
+test("archil claim: a reclaim removes the run's token users of an earlier epoch before it mints; another run's and others are left", async (t) => {
+  const existing = [
+    { identifier: "tok-old", nickname: "agentrun:run-1:2" },
+    { identifier: "tok-older", nickname: "agentrun:run-1:1" },
+    { identifier: "tok-other-run", nickname: "agentrun:run-2:1" },
+    { identifier: "tok-person", nickname: "a person's own mount" },
+  ];
+  const { fake, mount } = await controlOn(t, { existing });
+  const { claim } = await claimOf({ mount });
+  assert.equal(await claim.token(), TOKEN);
+  assert.deepEqual(fake.requests.map((one) => [one.method, one.query.identifier ?? one.body?.nickname]), [
+    ["GET", undefined],
+    ["DELETE", "tok-old"],
+    ["DELETE", "tok-older"],
+    ["POST", "agentrun:run-1:3"],
+  ], "the earlier claims' removed first, then this claim's minted");
+  assert.deepEqual([...fake.users.keys()].sort(), ["tok-1", "tok-other-run", "tok-person"]);
+});
+
+test("archil claim: a lost claim removes the run's mount credential at once, not at its ttl", async (t) => {
+  const { fake, mount } = await controlOn(t);
+  const controller = new AbortController();
+  const { claim } = await claimOf({ signal: controller.signal, mount });
+  await claim.token();
+  assert.equal(fake.users.size, 1);
+  controller.abort(new Error("the claim was fenced"));
+  // The remove is a request on its way: wait for it to land (bounded), not for a time.
+  for (let tries = 0; fake.users.size > 0 && tries < 2000; tries += 1) await new Promise((resolve) => setTimeout(resolve, 5));
+  assert.equal(fake.users.size, 0, "removed when the claim was lost");
+  assert.deepEqual(fake.requests.at(-1).method, "DELETE");
+  assert.equal(claim.secrets.size, 0);
+});
+
+test("archil claim: a claim made with no mount credential to mint refuses a mount in words", async () => {
+  const { claim } = await claimOf();
+  await assert.rejects(claim.token(), (error) => error instanceof ArchilClaimRefused && /without a mount credential to mint/.test(error.message));
+});
+
+test("archil claim: release(), or the claim's signal aborting, drops both values: the disk's key and the token are refused after", async (t) => {
   for (const end of ["release", "abort"]) {
     const controller = new AbortController();
-    const { claim, made } = await claimOf({ signal: controller.signal });
+    const { mount } = await controlOn(t);
+    const { claim, made } = await claimOf({ signal: controller.signal, mount });
     await claim.token();
     if (end === "release") claim.release();
     else controller.abort();
@@ -124,12 +212,13 @@ test("archil claim: release(), or the claim's signal aborting, drops both values
   }
 });
 
-test("archil claim: no Archil or agentrun setting is read from the environment", async () => {
+test("archil claim: no Archil or agentrun setting is read from the environment", async (t) => {
+  const { mount } = await controlOn(t);
   const realEnv = process.env;
   const readNames = [];
   process.env = new Proxy(realEnv, { get: (target, name) => { if (typeof name === "string") readNames.push(name); return Reflect.get(target, name); } });
   try {
-    const { claim, made } = await claimOf();
+    const { claim, made } = await claimOf({ mount });
     await made[0].key();
     await claim.token();
     claim.release();
