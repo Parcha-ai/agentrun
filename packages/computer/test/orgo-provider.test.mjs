@@ -153,6 +153,7 @@ test("Orgo create: the computer in the workspace, computerd uploaded and install
 	assert.equal(init.user, "2510:2510");
 	assert.ok(Date.parse(init.max) > Date.now() + 719 * HOUR, "the most an extend may move it to: the cap");
 	assert.equal(channel.calls.find((call) => call.op === "start").how, "bash");
+	assert.match(channel.calls.find((call) => call.op === "start").argv.join(" "), / --own-network /, "init in a network of its own, cut off from Orgo's agent beside it");
 	const file = JSON.parse(channel.boxes.get(record.id).labels);
 	assert.equal(channel.calls.find((call) => call.kind === "orgo-labels").argv.at(-2), LABELS_PATH);
 	assert.deepEqual(file.labels, SPEC.labels);
