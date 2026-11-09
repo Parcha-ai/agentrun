@@ -10,6 +10,7 @@ import { KEY_TABLE, type KeyTable, type OptionsAnswer, type ProviderFactories, t
 import { COMPUTER_KINDS, type ComputerKind, type ComputerSetting } from "./computer-setting.js";
 import { inArchilMode } from "./archil-settings.js";
 import { ApiError, invalid } from "./errors.js";
+import { type KeyEnv, type KeyMeta, keyMetaOf, envValue } from "./key-meta.js";
 import { getSealedKey, putSealedKey, removeSealedKey, sealedKeyNames } from "./server-keys.js";
 import type { Store } from "./store/index.js";
 
@@ -62,10 +63,12 @@ export interface ComputerRoutesOptions {
   /** This server's folder mode, or how to read it at each call (folderModeOf: the Archil settings row), so turning
    *  Archil on or off takes effect without building the routes again. */
   readonly mode: FolderMode | (() => FolderMode | Promise<FolderMode>);
+  /** The server's environment: a variable named as a provider's key overrides the saved one (source "env"). */
+  readonly env?: KeyEnv;
 }
 
-/** A provider's key, as Settings shows it. */
-export type KeyView = { name: string; required: boolean; saved: boolean };
+/** A provider's key, as Settings shows it: the shared secret shape (key-meta.ts), and whether the provider needs it. */
+export type KeyView = KeyMeta & { required: boolean };
 /** A provider as Settings shows it: `metered` straight from the kind registry (its computers are billed by the vendor). */
 export type ProviderView = { id: string; name: string; metered: boolean; keys: KeyView[]; ready: boolean; why?: string };
 export type KindView = { kind: ComputerKind; offered: boolean; why?: string; groups: string[]; tools: string[]; providers: ProviderView[] };
@@ -106,7 +109,7 @@ const keysWhy = (provider: ProviderEntry, missing: readonly string[]): string =>
 /** The routes' work over the server's store: GET /v2/computers (view), PUT /v2/computers/{provider}/keys (saveKeys), POST
  *  /v2/computers/{provider}/test (test), and the claim's refusal (claimRefusal). */
 export function createComputerRoutes(options: ComputerRoutesOptions) {
-  const { store, sealKey, kinds, factories, settings = {}, keyTable = KEY_TABLE, tools } = options;
+  const { store, sealKey, kinds, factories, settings = {}, keyTable = KEY_TABLE, tools, env = {} } = options;
   const providerOf = (id: string) => kinds.PROVIDERS.find((one) => one.id === id);
   const modeNow = async (): Promise<FolderMode> => (typeof options.mode === "function" ? options.mode() : options.mode);
 
@@ -114,7 +117,9 @@ export function createComputerRoutes(options: ComputerRoutesOptions) {
    *  that serves it, with its keys (saved or not, never a value) and whether a run could have it now. */
   async function view(): Promise<{ kinds: KindView[] }> {
     const mode = await modeNow();
-    const saved = new Set(await sealedKeyNames(store));
+    const names = [...new Set(kinds.PROVIDERS.flatMap((provider) => provider.keys.map((key) => key.name)))];
+    const metas = new Map((await keyMetaOf(store, names.map((name) => ({ name, row: name })), env)).map((meta) => [meta.name, meta]));
+    const saved = new Set([...metas.values()].filter((meta) => meta.set).map((meta) => meta.name));
     return {
       kinds: COMPUTER_KINDS.map((kind): KindView => {
         const spec = kinds.SETTING_KINDS[kind];
@@ -122,7 +127,7 @@ export function createComputerRoutes(options: ComputerRoutesOptions) {
         const providers = serving.map((provider): ProviderView => {
           const missing = missingKeys(provider, saved);
           const why = modeRefusal(kind, provider, mode) ?? (missing.length ? keysWhy(provider, missing) : undefined);
-          return { id: provider.id, name: provider.label, metered: provider.metered, keys: provider.keys.map((key) => ({ name: key.name, required: key.required, saved: saved.has(key.name) })), ready: why === undefined, ...(why ? { why } : {}) };
+          return { id: provider.id, name: provider.label, metered: provider.metered, keys: provider.keys.map((key) => ({ ...metas.get(key.name)!, required: key.required })), ready: why === undefined, ...(why ? { why } : {}) };
         });
         const offered = kind === "none" || serving.some((provider) => modeRefusal(kind, provider, mode) === undefined);
         const why = offered ? undefined : serving.length ? `no provider of a ${kind} computer can reach this server's run folders` : `no provider serves a ${kind} computer`;
@@ -142,6 +147,8 @@ export function createComputerRoutes(options: ComputerRoutesOptions) {
       !declared.has(name) ? [{ field: name, reason: "not_allowed", message: `${provider.label} takes ${[...declared].join(", ") || "no keys"}, not ${name}` }]
         : value !== null && (typeof value !== "string" || value === "") ? [{ field: name, reason: "wrong_type", message: `${name} is a non-empty string, or null to remove it` }] : []);
     if (refused.length) throw new KeysRefused(refused);
+    // Kept until the server refuses to start without a seal key (the secrets plan's rule 2); then this branch can't be
+    // reached, and it goes.
     if (!sealKey && Object.values(body).some((value) => value !== null)) throw new KeysRefused([{ field: Object.keys(body)[0]!, reason: "unavailable", message: "this server was given no seal key, so it keeps no key: start it with AGENTRUN_SEAL_KEY" }]);
     for (const [name, value] of Object.entries(body)) {
       if (value === null) await removeSealedKey(store, name);
@@ -154,7 +161,8 @@ export function createComputerRoutes(options: ComputerRoutesOptions) {
   async function keysOf(provider: ProviderEntry): Promise<Record<string, string>> {
     const keys: Record<string, string> = {};
     for (const key of provider.keys) {
-      const value = sealKey ? await getSealedKey(store, sealKey, key.name) : undefined;
+      // The environment's value wins over a saved one (source "env").
+      const value = envValue(env, key.name) ?? (sealKey ? await getSealedKey(store, sealKey, key.name) : undefined);
       if (value !== undefined) keys[key.name] = value;
     }
     return keys;
@@ -185,7 +193,7 @@ export function createComputerRoutes(options: ComputerRoutesOptions) {
     }
     const refused = modeRefusal(computer.kind, provider, await modeNow());
     if (refused) return refused;
-    const missing = missingKeys(provider, new Set(await sealedKeyNames(store)));
+    const missing = missingKeys(provider, new Set([...(await sealedKeyNames(store)), ...provider.keys.filter((key) => envValue(env, key.name) !== undefined).map((key) => key.name)]));
     return missing.length ? keysWhy(provider, missing) : undefined;
   }
 
