@@ -397,7 +397,8 @@ test("a public MCP server's authorization server may not steer this server to a 
     [{ registration_endpoint: inside.url }, /the authorization server's registration endpoint is a private address; refused/],
     [
       { token_endpoint: "https://[fd00::1]/token" }, // key-gate: denylist a private-range token endpoint the sign-in must refuse
-      /the authorization server's token endpoint is a private address; refused/,
+      // A private network the owner has not allowed: the words name the host and where to allow it (mcp-private-hosts.ts).
+      /the authorization server's token endpoint is on a private network, refused: an owner can allow \[fd00::1\] in Settings → MCP servers/,
     ],
     [{ authorization_endpoint: "http://as.example.test/authorize" }, /the authorization server's authorization endpoint is not https; refused/],
   ]) {

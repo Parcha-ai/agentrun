@@ -26,9 +26,10 @@
 // used at once and refreshed behind it, never holding the claim. After any awaited refresh the claim's epoch is
 // confirmed again: a claim lost meanwhile is Fenced, and the loop never starts.
 import { randomUUID } from "node:crypto";
-import { REFRESH_REQUEST_MS, refreshed, refused, systemNetwork, type OAuthNetwork, type TokenSet } from "../mcp-oauth.js";
+import { EndpointRefused, REFRESH_REQUEST_MS, refreshed, refused, systemNetwork, type OAuthNetwork, type TokenSet } from "../mcp-oauth.js";
 import { type McpCredentials, type McpPin, mcpPinOf } from "../mcp-gateway.js";
 import { META_REASON, metaToolOf } from "../mcp-meta.js";
+import { privateOAuthHosts } from "../mcp-private-hosts.js";
 import { type GithubAppAccess, type GithubTimer, githubTokens } from "./mcp-github.js";
 import { REFRESH_MARGIN_MS, UNKNOWN_EXPIRY_MS, UNUSABLE } from "../mcp-servers.js";
 import { openMcpCredential, sealMcpCredential, type McpCredential } from "../store/seal.js";
@@ -40,7 +41,8 @@ export class McpClaimRefused extends Error {
 }
 
 export interface McpClaimOptions {
-  store: Pick<Store, "mcp" | "runs">;
+  /** `settings`: the private-network OAuth hosts the owner allows (privateOAuthHosts), read at each refresh. */
+  store: Pick<Store, "mcp" | "runs" | "settings">;
   claim: Pick<Claim, "runId" | "epoch">;
   /** The run's granted tools, by catalog name (`mcp:<server>/<tool>` among them). */
   grants: readonly string[];
@@ -112,16 +114,20 @@ export async function mcpClaim(options: McpClaimOptions): Promise<McpClaimStep> 
   /** The OAuth token set refreshed at its authorization server, bounded: the new set, or why not. `stop` keeps a request
    *  from being sent, never cuts one short: once sent, the authorization server may already have spent the refresh token
    *  (a provider that rotates them), so its answer is awaited, within its own deadline, for the caller to keep. */
-  const refresh = async (row: McpServerRow, set: TokenSet, stop: AbortSignal): Promise<{ set: TokenSet } | { refused: true } | { silent: true } | { unsent: true }> => {
+  const refresh = async (row: McpServerRow, set: TokenSet, stop: AbortSignal): Promise<{ set: TokenSet } | { refused: true } | { silent: true } | { unsent: true } | { blocked: string }> => {
     if (!set.tokens.refresh_token) return { refused: true };
     const call = AbortSignal.timeout(callMs);
+    const reach = { allowed: await privateOAuthHosts(store) };
     for (let tried = 0; tried < tries && !call.aborted; tried++) {
       if (stop.aborted) return tried === 0 ? { unsent: true } : { silent: true };
       const one = AbortSignal.any([call, AbortSignal.timeout(requestMs)]);
       try {
-        return { set: await bounded(refreshed(set, row.url, one, network), one) };
+        return { set: await bounded(refreshed(set, row.url, one, network, reach), one) };
       } catch (error) {
         if (await refused(error)) return { refused: true };
+        // Its authorization server's address is refused here (mcp-oauth.ts checked): nothing was sent, and a second try
+        // meets the same refusal.
+        if (error instanceof EndpointRefused) return { blocked: error.message };
       }
     }
     return { silent: true };
@@ -199,6 +205,13 @@ export async function mcpClaim(options: McpClaimOptions): Promise<McpClaimStep> 
         const got = await refresh(lease.row, set, stop);
         // Stopped before anything was sent: the lease is let go, the refresh token unspent.
         if ("unsent" in got) return void (await store.mcp.releaseRefresh(name, holder).catch(() => undefined));
+        // Refused unsent by the address check: the lease is let go, the refresh token unspent, and an access token past
+        // its expiry is refused in the check's words (a private host the owner may allow names where).
+        if ("blocked" in got) {
+          await store.mcp.releaseRefresh(name, holder).catch(() => undefined);
+          if (due <= now()) entry({ unopened: `${UNUSABLE.blocked}: ${got.blocked}` });
+          return;
+        }
         if ("set" in got) {
           // Kept whatever stopped this step meanwhile (a shutdown, a lost claim, the run's end): the authorization server
           // spent the old refresh token, so the new set is the only one any claim can use. The write is the server's row,

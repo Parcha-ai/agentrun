@@ -9,7 +9,8 @@ const SOURCES: Record<string, string> = {
   ...import.meta.glob("../../../../packages/serve/src/**/*.{ts,mts,mjs}", { query: "?raw", import: "default", eager: true }),
   ...import.meta.glob("../**/*.{ts,tsx,mjs}", { query: "?raw", import: "default", eager: true }),
 };
-const PLACES = [...SETTINGS_PAGES.map((p) => p.label), ...KEY_GROUPS.map((g) => g.name)];
+// Each as a person sees it: a tab's label, a keys page group's heading.
+const PLACES = [...SETTINGS_PAGES.map((p) => p.label), ...KEY_GROUPS.map((g) => g.label)];
 
 describe("Settings → X", () => {
   it("names a Settings tab or a keys page group, wherever the server or the console says it", () => {

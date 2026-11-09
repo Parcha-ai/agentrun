@@ -4,7 +4,10 @@
 // are resume log only, so the loop keeps its record (record: "loop"). A CLI package is loaded when its harness is first
 // asked for, as serve loads it today (it may install on first use).
 import type { AgentAdapter, Wire } from "@parcha/agentrun-kernel";
+import { facts as claudeFacts } from "@parcha/agentrun-harness-claude/facts";
+import { facts as codexFacts } from "@parcha/agentrun-harness-codex/facts";
 import type { AdapterRun } from "../adapter-loop.js";
+import { facts as openCodeFacts } from "../../harness-opencode/facts.js";
 import { piAdapter } from "./pi.js";
 
 /** What every adapter is given for one claim, from the run's launch. */
@@ -51,7 +54,7 @@ export const RUNNER_HARNESSES: Readonly<Record<string, RunnerHarness>> = {
         ...(launch.fetch ? { fetch: launch.fetch } : {}),
       }),
   },
-  "claude-agent": {
+  [claudeFacts.id]: {
     record: "loop",
     adapter: async (launch, extra = {}) => {
       const claude = (await import(CLAUDE_PACKAGE)) as ClaudePackage;
@@ -65,7 +68,7 @@ export const RUNNER_HARNESSES: Readonly<Record<string, RunnerHarness>> = {
       });
     },
   },
-  codex: {
+  [codexFacts.id]: {
     record: "loop",
     adapter: async (launch, extra = {}) => {
       const codex = (await import(CODEX_PACKAGE)) as CodexPackage;
@@ -80,7 +83,7 @@ export const RUNNER_HARNESSES: Readonly<Record<string, RunnerHarness>> = {
       });
     },
   },
-  opencode: {
+  [openCodeFacts.id]: {
     record: "loop",
     adapter: async (launch, extra = {}) => {
       // OpenCode's adapter is serve's own (its pinned binary is checked when the adapter is made); loaded when first asked.

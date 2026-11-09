@@ -9,6 +9,10 @@ export type McpAuthType = "none" | "bearer" | "headers" | "oauth";
 /** A saved MCP server as GET /v2/settings/mcp-servers shows it: never a credential, only its state (`credential`: null
  *  for one that takes none). `prices`, per tool in USD, only when the server meters them. */
 export type McpServer = {
+  /** The tools it lists that no price meters (the read's `not_metered`): absent when every tool has a price. */
+  not_metered?: string[];
+  /** Its credential as every secret is read: set or not, how it came, when it last changed. Never a value. */
+  secret?: { name: string; set: boolean; source: "env" | "console" | "sign-in" | null; changed_at: string | null };
   name: string; url: string; auth: { type: McpAuthType; headers?: string[] }; tools: McpTool[]; protocol?: string; listed_at?: string; updated_at?: string;
   credential: "sealed" | "seal_key_missing" | "unreadable" | "expired" | null;
   oauth?: { expires_at?: string; scopes: string[]; client: string; client_id?: string };
@@ -78,6 +82,37 @@ export function mcpProblem(e: unknown): { text: string; detail?: string; signIn?
   return { text: `${e.code}: ${e.message}` };
 }
 export const NO_SEAL_KEY = SEAL;
+
+/** Why a sign-in failed, by the code its way back names (`error=`): an OAuth error its authorization server sent back
+ *  (RFC 6749 4.1.2.1, the token request's 5.2, OpenID Connect's), or this server's own (mcp-oauth.ts reasonOf: an API
+ *  error's code, `changed_meanwhile`, `sign_in_failed`). The one table: a code it doesn't know reads SIGN_IN_UNKNOWN,
+ *  and no code is ever shown. Each reads after "Signing in to <server> failed: ". */
+const SIGN_IN_FAILED: Record<string, string> = {
+  access_denied: "the sign-in was declined on its approval page",
+  invalid_scope: "its authorization server doesn't offer the scopes asked for: change them and sign in again",
+  invalid_grant: "its authorization server didn't take the sign-in's code (it expired, or was used already): sign in again",
+  invalid_client: "its authorization server didn't take this client: check the client ID and secret, or leave them empty",
+  unauthorized_client: "its authorization server doesn't let this client sign in this way: check the client ID, or leave it empty",
+  invalid_request: "its authorization server refused the sign-in's request",
+  unsupported_response_type: "its authorization server doesn't support this way of signing in",
+  unsupported_grant_type: "its authorization server doesn't support this way of signing in",
+  invalid_target: "its authorization server won't give a token for this MCP server",
+  server_error: "its authorization server failed: try again",
+  temporarily_unavailable: "its authorization server is busy: try again in a moment",
+  login_required: "its authorization server wants you to sign in on its page: sign in again",
+  interaction_required: "its authorization server wants you to sign in on its page: sign in again",
+  consent_required: "its authorization server wants your consent on its page: sign in again",
+  auth_required: "the MCP server didn't take the token the sign-in gave",
+  not_mcp: "the address doesn't speak MCP",
+  input_invalid: "the MCP server's tools could not be kept (too many of them, or the address redirects)",
+  upstream_failed: "the MCP server or its authorization server failed: try again",
+  unavailable: "this server was stopping: sign in again",
+  no_sealing_key: "this server has no seal key, so it keeps no sign-in",
+  changed_meanwhile: "the server was changed or removed while you signed in, so nothing was saved",
+};
+const SIGN_IN_UNKNOWN = "the sign-in didn't finish: try again";
+/** A failed sign-in's code in words (SIGN_IN_FAILED), never the code. */
+export const signInFailure = (code: string | undefined): string => (code && Object.hasOwn(SIGN_IN_FAILED, code) ? SIGN_IN_FAILED[code]! : SIGN_IN_UNKNOWN);
 
 /** The sign-in's way back, `?server=<name>&sign_in=ok|failed&error=<code>` after `#/settings/mcp`. */
 export function signInOf(query: string | undefined): { server: string; ok: boolean; error?: string } | undefined {

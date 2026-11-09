@@ -23,13 +23,13 @@ export const sessionBaseUrl = (api: SessionPort["api"], url: string): string => 
 /** The one model of a session's route as pi-ai lists it, for the port's requests and for pi's own (runner adapters/pi.ts):
  *  `model` in `api` at the proxy `url` (sessionBaseUrl), under `provider`, with `headers` (the session key as the proxy
  *  reads one, a bearer token), its reasoning, limits and price from `like` (the catalog's entry), `reasoning` when it
- *  says none. OpenAI's Responses through a gateway takes no developer role (pi-ai sends its system prompt as a system
- *  message). */
+ *  says none. It takes images on either wire: a host tool's images (a screenshot) reach the model in its tool result.
+ *  OpenAI's Responses through a gateway takes no developer role (pi-ai sends its system prompt as a system message). */
 export function sessionModel(api: SessionPort["api"], url: string, model: string, options: { provider: string; headers?: Readonly<Record<string, string | null>>; like?: Partial<Pick<Model<Api>, "reasoning" | "cost" | "contextWindow" | "maxTokens">>; reasoning: boolean }): Model<Api> {
   const { like } = options;
   return {
     id: model, name: model, api, provider: options.provider, baseUrl: sessionBaseUrl(api, url), ...(options.headers ? { headers: options.headers } : {}),
-    reasoning: like?.reasoning ?? options.reasoning, input: ["text"],
+    reasoning: like?.reasoning ?? options.reasoning, input: ["text", "image"],
     cost: like?.cost ?? { input: 0, output: 0, cacheRead: 0, cacheWrite: 0 },
     contextWindow: like?.contextWindow ?? 200_000, maxTokens: like?.maxTokens ?? 32_000,
     ...(api === "openai-responses" ? { compat: { supportsDeveloperRole: false } } : {}),
