@@ -22,7 +22,7 @@ test("served under --faux: the three faux providers, a key that makes faux-sandb
   assert.deepEqual(listed.body.kinds.flatMap((kind) => kind.providers.map((one) => `${kind.kind}:${one.id}`)), ["sandbox:faux-sandbox", "sandbox:faux-broken", "desktop:faux-desktop"]);
   const saved = await api("PUT", "/computers/faux-sandbox/keys", { FAUX_SANDBOX_KEY: "any-value-1" });
   assert.equal(saved.status, 200);
-  assert.deepEqual([saved.body.ready, saved.body.keys[0].set, saved.body.keys[0].source], [true, true, "console"]);
+  assert.deepEqual([saved.body.ready, saved.body.secrets[0].name, saved.body.secrets[0].set, saved.body.secrets[0].source], [true, "computer:faux-sandbox:FAUX_SANDBOX_KEY", true, "console"]);
   assert.ok(!JSON.stringify(saved.body).includes("any-value-1"), "never echoed");
   assert.deepEqual((await api("POST", "/computers/faux-sandbox/test")).body, { ok: true, detail: "Faux sandbox: the faux account answered (no computer was made)" });
   const broken = await api("POST", "/computers/faux-broken/test");
@@ -39,10 +39,10 @@ test("served: capabilities.features.computers names the kinds offered now", asyn
 
 test("served: the Archil routes turn Mode 2 on and off, never echoing the key", async (t) => {
   const { api } = await serve(t, { runner: false });
-  assert.deepEqual((await api("GET", "/workspace/archil")).body, { on: false, keys: [{ name: "ARCHIL_API_KEY", set: false, source: null, changed_at: null }] });
+  assert.deepEqual((await api("GET", "/workspace/archil")).body, { on: false, secret: { name: "workspace:archil", set: false, source: null, changed_at: null } });
   const on = await api("PUT", "/workspace/archil", { diskId: "dsk-00000000000fake0", region: "aws-us-east-1", s3Url: "https://s3.archil.example", keys: { ARCHIL_API_KEY: "archil-served-key-0001" } });
   assert.equal(on.status, 200);
-  assert.deepEqual([on.body.on, on.body.keys[0].set], [true, true]);
+  assert.deepEqual([on.body.on, on.body.secret.set], [true, true]);
   assert.ok(!JSON.stringify(on.body).includes("archil-served-key-0001"));
   assert.equal((await api("PUT", "/workspace/archil", { diskId: "d", region: "r", s3Url: "https://s3.archil.example", keys: { ARCHIL_DISK_TOKEN: "x" } })).status, 422);
   assert.equal((await api("DELETE", "/workspace/archil")).body.on, false);
