@@ -38,6 +38,9 @@ export interface RunLaunch {
   readonly documents?: string;
   /** What a run's box may reach, as the server resolved it: the list, or "none". */
   readonly boxAllow?: readonly string[] | "none";
+  /** The uploaded file ids the run was started with, in order (the create body's file_ids, already checked ready): the
+   *  runner copies them into the run's work/inputs/ at its claim, as the old start copied them before the process ran. */
+  readonly files?: readonly string[];
   /** The trigger and firing that started the run, or none for a person's run. */
   readonly trigger?: RunTrigger;
   /** Who the first message is from, when not the person: kept only through the fail-safe below. */
@@ -94,6 +97,7 @@ export function launchBody(launch: RunLaunch): Json {
     ...(launch.approvers !== undefined ? { approvers: launch.approvers } : {}),
     ...(launch.documents !== undefined ? { documents: launch.documents } : {}),
     ...(launch.boxAllow !== undefined ? { box_allow: launch.boxAllow } : {}),
+    ...(launch.files?.length ? { files: launch.files } : {}),
     ...(launch.trigger ? { trigger: launch.trigger } : {}),
     ...(launch.inputOrigin ? { input_origin: launch.inputOrigin } : {}),
     ...(launch.followUp ? { follow_up: true } : {}),
@@ -123,6 +127,7 @@ export function readLaunchBody(stored: unknown): RunLaunch | undefined {
     ...(typeof stored.approvers === "boolean" ? { approvers: stored.approvers } : {}),
     ...(typeof stored.documents === "string" ? { documents: stored.documents } : {}),
     ...(boxAllow !== undefined ? { boxAllow } : {}),
+    ...(Array.isArray(stored.files) && stored.files.every((id) => typeof id === "string") ? { files: stored.files as string[] } : {}),
     ...(trigger ? { trigger } : {}),
     ...(inputOrigin ? { inputOrigin } : {}),
     ...(stored.follow_up === true ? { followUp: true } : {}),

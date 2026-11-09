@@ -297,7 +297,12 @@ export function createLiveView(options: LiveViewOptions): LiveViewHost {
         try { (answer.cancel ?? (() => answer.end("released")))(); } catch { /* as above */ }
       };
       if (entry.released || entry.viewer !== viewer) return cancel();
-      if (!(options.gates ?? drivingGates)(entry.tag).take?.(ended, started)) {
+      const holder = (options.gates ?? drivingGates)(entry.tag);
+      // A registry from before holds has no take: it can never hand the browser over, which "held already" would not say.
+      if (typeof holder.take !== "function") {
+        cancel();
+        send(viewer.conn, { type: "take_refused", message: "This browser can't be handed over from the live view." });
+      } else if (!holder.take(ended, started)) {
         cancel();
         send(viewer.conn, { type: "take_refused", message: "The browser could not be handed to you: it is held already. Try again in a moment." });
       }

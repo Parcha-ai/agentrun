@@ -33,7 +33,7 @@ import { builtinHarness, harnessOf } from "./harness-table.js";
 import { viaOpenRouter, WIRES } from "./provider.js";
 import { savedIn } from "./secrets.js";
 import { hostModel } from "./model.js";
-import { canonicalPin, defaultPermission, isCatalogTool, isMcpTool, MAX_PIN_ARGS, MAX_PIN_CHOICES, type Permission, PERMISSIONS, permissionFrom, permissionOf, type Pin, SHELL_FAMILY } from "./tool-gate.js";
+import { canonicalPin, defaultPermission, isCatalogTool, isMcpTool, MAX_PIN_ARGS, MAX_PIN_CHOICES, type Permission, PERMISSIONS, permissionFrom, permissionOf, type Pin, SETTINGS_UNREAD, SHELL_FAMILY } from "./tool-gate.js";
 
 /**
  * The capabilities a pack or a revision may grant, by name: the tools the kernel gives a run, bound from serve's closed
@@ -284,17 +284,21 @@ export function explainsView(env: NodeJS.ProcessEnv, settings: ToolSettingsMap, 
   })) as Record<Pickable, { resolves: Record<HarnessId, Resolution>; why: Record<HarnessId, string> }>;
 }
 
-const picked = (name: Pickable, settings: ToolSettingsMap, overrides: ToolSettingsMap = {}) => ({
+// The permission a provider resolves under is the one the gate holds the tool to: under approvals "never", an ask with no
+// deny or unread setting behind it is an allow (permissionOf), so a harness's own search is not held to an ask it never
+// meets.
+const picked = (name: Pickable, settings: ToolSettingsMap, overrides: ToolSettingsMap = {}, approvals: "ask" | "never" = "ask") => ({
   ...(overrides[name]?.provider ? { override: overrides[name]!.provider } : {}),
   ...(settings[name]?.provider ? { pick: settings[name]!.provider } : {}),
-  permission: permissionOf(name, settings, overrides),
+  permission: permissionOf(name, settings, overrides, approvals),
 });
 
 /** What a run is told: each pickable capability its revision names, resolved; with web_search native on pi, the model
  *  its search asks (the one the resolution read). */
 export type Plane = Partial<Record<Pickable, Resolution>> & { model?: string };
 /** The facts of a pinned revision its run's tools resolve from. */
-export type Tooling = { harness?: string; tools: readonly string[]; model?: string; overrides?: ToolSettingsMap; workflow?: true };
+/** `approvals`: the revision's, kept only when "never" (the agent runs unattended: an ask is an allow, never over a deny). */
+export type Tooling = { harness?: string; tools: readonly string[]; model?: string; overrides?: ToolSettingsMap; workflow?: true; approvals?: "never" };
 
 /** The run's process's description of its tools' providers: JSON of its Plane. */
 export const TOOL_PLANE_ENV = "AGENTRUN_SERVE_TOOL_PLANE";
@@ -313,7 +317,7 @@ export function planeFor(env: NodeJS.ProcessEnv, tooling: Tooling, settings: Too
   const granted = tooling.tools;
   for (const name of PICKABLE) {
     if (!granted.includes(name)) continue;
-    const chosen = picked(name, settings, tooling.overrides);
+    const chosen = picked(name, settings, tooling.overrides, tooling.approvals ?? "ask");
     plane[name] = resolveCapability(name, { ...served(env), harness, capped, openRouter: ownSearchViaOpenRouter(env, harness, model), ...(model ? { model } : {}), ...chosen, ...(run && chosen.permission === "deny" ? { permission: "ask" as const } : {}) });
   }
   // The model a search through its provider's hosted search asks (hosted-search.ts): pi's own web_search, and on
@@ -362,7 +366,7 @@ export const browserKeyRow = (picked: string | undefined, resolution: string | u
  *  under ask, so a deny lifted while that process lives is lifted at the next call. */
 export function relaunchPlane(kept: Plane | undefined, env: NodeJS.ProcessEnv, tooling: Tooling | undefined, settings: ToolSettingsMap, { capped = false, first = false }: { capped?: boolean; first?: boolean } = {}): Plane {
   const fresh = tooling ? planeFor(env, tooling, settings, { capped, run: first }) : {};
-  if (kept) return recheckPlane(kept, env, { fresh, permission: (name) => permissionOf(name, settings, tooling?.overrides ?? {}) });
+  if (kept) return recheckPlane(kept, env, { fresh, permission: (name) => permissionOf(name, settings, tooling?.overrides ?? {}, tooling?.approvals ?? "ask") });
   return tooling ? recheckPlane(keptFromBefore(fresh), env) : {};
 }
 
@@ -498,22 +502,43 @@ export const TOOL_SETTINGS_KEY = "tool-settings";
 export async function loadToolSettings(store: { settings: Pick<Settings, "get"> }): Promise<{ settings: ToolSettingsMap; problems: string[]; unreadable?: true }> {
   const read = await store.settings.get(TOOL_SETTINGS_KEY);
   if (read === undefined) return { settings: {}, problems: [] };
-  return checkToolSettings(read, "the stored tool settings");
+  const checked = checkToolSettings(read, "the stored tool settings");
+  // A stored row that does not read carries SETTINGS_UNREAD (tool-gate.ts), as ToolSettings.get does for the file: wherever
+  // these settings go (the plane's providers, an agent's tools, a save's blockers) approvals "never" lifts no ask over a
+  // deny the row may hold. A save over it (saveToolSettings) writes a row that reads.
+  if (checked.unreadable) (checked.settings as { [SETTINGS_UNREAD]?: true })[SETTINGS_UNREAD] = true;
+  return checked;
 }
 
-/** Replaces the server's tool settings in the one store, as ToolSettings.put does to the file: a tool `map` leaves out
- *  takes its defaults, and a fail-closed stand-in sent back unchanged (a permission equal to the one it stood in for) stays
- *  a stand-in, the row keeping the value as written. Answers the settings as served (the stand-in marks within). The
- *  store-backed replacement for ToolSettings.put; the cut wires it. */
-export async function saveToolSettings(store: { settings: Pick<Settings, "get" | "put"> }, map: ToolSettingsMap): Promise<ToolSettingsMap> {
-  const { settings: current } = await loadToolSettings(store);
+/** A save of the server's tool settings: `map` (a tool it leaves out takes its defaults) over the settings read before it
+ *  (`current`), as kept (the marks within) and as written (the raw values, which a read turns back into those marks).
+ *  The one rule both writers keep (ToolSettings.put to the file, saveToolSettings to the store), so they cannot drift:
+ *  - a pin is kept as given, as a pin is a gate fence (tool-gate.ts pinRefusal);
+ *  - a broken pin (one that did not read) is kept by every save that keeps the tool's key and sets no pin of its own (a
+ *    console's whole map sends the key back, marked pin_broken): only a valid pin, or the key left out, clears it, so an
+ *    unrelated save never leaves an allowed tool with no argument limits;
+ *  - a stand-in sent back as served (a client saves the whole map) is no choice: it stays a stand-in, and the written
+ *    form keeps the value as written, so neither this save nor a restart turns it into a permission set (tool-gate.ts
+ *    SHELL_WATCHERS). A different permission is a choice, written as given. */
+export function keptSettings(map: ToolSettingsMap, current: ToolSettingsMap): { kept: ToolSettingsMap; written: Record<string, Record<string, unknown>> } {
   const kept: ToolSettingsMap = Object.fromEntries(Object.entries(map).flatMap(([name, setting]) => {
-    const set: ToolSetting = { ...(setting?.provider ? { provider: setting.provider } : {}), ...(setting?.permission ? { permission: setting.permission } : {}) };
+    const set: ToolSetting = { ...(setting?.provider ? { provider: setting.provider } : {}), ...(setting?.permission ? { permission: setting.permission } : {}), ...(setting?.pin ? { pin: setting.pin } : {}) };
     const before = current[name];
     if (before?.fallback && set.permission === before.permission) Object.assign(set, { fallback: true, raw: before.raw });
+    if (before?.brokenPin && !set.pin) Object.assign(set, { brokenPin: true, rawPin: before.rawPin });
     return Object.keys(set).length ? [[name, set]] : [];
   }));
-  const written = Object.fromEntries(Object.entries(kept).map(([name, setting]) => [name, { ...(setting!.provider ? { provider: setting!.provider } : {}), ...(setting!.fallback ? { permission: setting!.raw } : setting!.permission ? { permission: setting!.permission } : {}) }]));
+  const written = Object.fromEntries(Object.entries(kept).map(([name, setting]) => [name, { ...(setting!.provider ? { provider: setting!.provider } : {}), ...(setting!.fallback ? { permission: setting!.raw } : setting!.permission ? { permission: setting!.permission } : {}), ...(setting!.pin ? { pin: setting!.pin } : setting!.brokenPin ? { pin: setting!.rawPin } : {}) }]));
+  return { kept, written };
+}
+
+/** Replaces the server's tool settings in the one store, as ToolSettings.put does to the file, by the same rule
+ *  (keptSettings): a tool `map` leaves out takes its defaults, a pin is kept, a broken pin is kept until a valid one or the
+ *  key left out clears it, and a stand-in sent back unchanged stays a stand-in. Answers the settings as served (the marks
+ *  within). The store-backed replacement for ToolSettings.put; the cut wires it. */
+export async function saveToolSettings(store: { settings: Pick<Settings, "get" | "put"> }, map: ToolSettingsMap): Promise<ToolSettingsMap> {
+  const { settings: current } = await loadToolSettings(store);
+  const { kept, written } = keptSettings(map, current);
   await store.settings.put(TOOL_SETTINGS_KEY, written);
   return structuredClone(kept);
 }
@@ -521,34 +546,32 @@ export async function saveToolSettings(store: { settings: Pick<Settings, "get" |
 export class ToolSettings {
   static readonly FILE = "tool-settings.json";
   private current: ToolSettingsMap;
+  /** The file was present but did not read at the start: every tool takes its defaults until a PUT replaces it. */
+  private unread: boolean;
   constructor(private readonly dir: string, warn: (line: string) => void = (line) => void process.stderr.write(`${line}\n`)) {
     const { settings, problems, unreadable } = readToolSettings(dir);
     for (const line of problems) warn(`agentrun-serve: ${line}; ${unreadable ? "every tool takes its defaults" : "that entry is dropped (a permission that is not offered reads ask)"} until a PUT /v2/settings/tools`);
     this.current = settings;
+    this.unread = unreadable === true;
   }
 
+  /** The settings now. While the file does not read, the map carries SETTINGS_UNREAD (tool-gate.ts), so wherever it goes
+   *  (the gate's permission, the plane's providers, an agent's tools, a save's blockers) approvals "never" lifts no ask
+   *  over a deny the file may hold, as the gate itself fails closed. */
   get(): ToolSettingsMap {
-    return structuredClone(this.current);
+    const map = structuredClone(this.current);
+    if (this.unread) (map as { [SETTINGS_UNREAD]?: true })[SETTINGS_UNREAD] = true;
+    return map;
   }
 
-  /** Replaces the settings: a tool `map` leaves out takes its defaults. Durable before it returns. */
+  /** Replaces the settings: a tool `map` leaves out takes its defaults; pins, broken pins and stand-ins by the one rule
+   *  the store's save keeps too (keptSettings). Durable before it returns. */
   put(map: ToolSettingsMap): ToolSettingsMap {
-    const kept: ToolSettingsMap = Object.fromEntries(Object.entries(map).flatMap(([name, setting]) => {
-      const set: ToolSetting = { ...(setting?.provider ? { provider: setting.provider } : {}), ...(setting?.permission ? { permission: setting.permission } : {}), ...(setting?.pin ? { pin: setting.pin } : {}) };
-      // A broken pin (readToolSettings) is kept by every save that keeps the tool's key and sets no pin of its own (a
-      // console's whole map sends the key back, marked pin_broken): only a valid pin, or the key left out, clears it, so
-      // an unrelated save never leaves an allowed tool with no argument limits.
-      // A stand-in sent back as served (a client saves the whole map) is no choice: it stays a stand-in, and the file keeps
-      // the value as written, so neither this save nor a restart turns it into a permission set (tool-gate.ts
-      // SHELL_WATCHERS). A different permission is a choice, written as given.
-      const before = this.current[name];
-      if (before?.fallback && set.permission === before.permission) Object.assign(set, { fallback: true, raw: before.raw });
-      if (before?.brokenPin && !set.pin) Object.assign(set, { brokenPin: true, rawPin: before.rawPin });
-      return Object.keys(set).length ? [[name, set]] : [];
-    }));
-    const written = Object.fromEntries(Object.entries(kept).map(([name, setting]) => [name, { ...(setting!.provider ? { provider: setting!.provider } : {}), ...(setting!.fallback ? { permission: setting!.raw } : setting!.permission ? { permission: setting!.permission } : {}), ...(setting!.pin ? { pin: setting!.pin } : setting!.brokenPin ? { pin: setting!.rawPin } : {}) }]));
+    const { kept, written } = keptSettings(map, this.current);
     writeDurableSync(join(this.dir, ToolSettings.FILE), `${JSON.stringify(written)}\n`);
     this.current = kept;
+    // The file is the one just written: it reads.
+    this.unread = false;
     return this.get();
   }
 }
@@ -562,7 +585,7 @@ export function agentTools(env: NodeJS.ProcessEnv, settings: ToolSettingsMap, ag
   const plane = planeFor(env, agent, settings);
   const rank = (name: string) => order.indexOf(name);
   return [...new Set(agent.tools)].sort((a, b) => rank(a) - rank(b)).map((name) => {
-    const { permission, from } = permissionFrom(name, settings as never, (agent.overrides ?? {}) as never);
+    const { permission, from } = permissionFrom(name, settings as never, (agent.overrides ?? {}) as never, agent.approvals ?? "ask");
     const gate = { permission, permission_from: from, default_permission: permissionOf(name, settings as never), permissions: [...permissionsOf(name)] };
     // One short line for people (tool-blurbs.ts), as capabilities serves it.
     const blurb = blurbOf(name);

@@ -10,21 +10,44 @@
 // How a run ends is the workflow's outcome, read back from the journal by workflowCarry (the engine's own, over a pi
 // Storage): a complete run ends `ended`, an escalated one `ended` with outcome `escalated`, a refused or failed one
 // `failed`, a cancelled one `stopped`. The end commit writes that state, its summary, and the end's cost and metrics
-// (WorkflowRunSpec.endPatch, the pi loop's shape) on the run's row, with the stop row it takes. A lost claim or a
-// shutdown writes nothing more and the next claim resumes the workflow from its journal.
+// (WorkflowRunSpec.endPatch, the pi loop's shape) on the run's row, with the stop row it takes.
+//
+// A step the spend cap holds for a raise parks the run the same way the pi adapter does (the kernel cap's parkOf, handed
+// in via the spec — the loop never imports the cap): the run's row goes parked in the cap's words with an `agentrun.budget`
+// entry, which the existing readers show as the run's pending; a raise command, checked by the cap's rule, takes with an
+// `agentrun.raise` entry and the next claim resumes the workflow from its journal with the raised cap. A lost claim or a
+// shutdown writes nothing more and the next claim resumes.
 import { BACKGROUND_CONTEXT, withAbortSignal } from "@earendil-works/chord/context";
 import type { Context } from "@earendil-works/chord";
-import { createRegistry, type Extension, Harness, ROOT_CONVERSATION_ID, type StorageWrite } from "@earendil-works/pi-durable";
+import { createRegistry, type EntryRecord, type Extension, Harness, ROOT_CONVERSATION_ID, type StorageWrite } from "@earendil-works/pi-durable";
 import type { Models } from "@earendil-works/pi-ai";
 import type { Workflow } from "@parcha/agentrun-dsl";
 import { createWorkflowExtension, type WorkflowTaskHost } from "@parcha/agentrun-pi/durable";
 import { startWorkflowRevision, workflowCarry } from "@parcha/pi-durable-agent/workflow";
-import { type EndData, KINDS } from "./journal-kinds.js";
-import type { Claim, Command, CommandOutcome, Journal, Loop, LoopDeps, LoopEnd, LoopFactory, StopReason } from "./loop-contract.js";
+import { type BudgetData, type EndData, KINDS, type RaiseData } from "./journal-kinds.js";
+import { type Claim, type Command, type CommandOutcome, endedBy, type Journal, type Loop, type LoopDeps, type LoopEnd, type LoopFactory, type StopReason } from "./loop-contract.js";
 import type { RunOutcome, RunPatch } from "../store/store.js";
 
 /** The most the end's patch (cost and metrics) may take before the end is written without it (the pi loop's CUT_STEP_MS). */
 const CUT_STEP_MS = 2_000;
+
+/** A cap refusal, as the kernel cap hands one to parkOf/checkRaise (the loop never imports the cap; its rule is handed in
+ *  via the spec, so flat or tiered pricing is the cap's, not this loop's). */
+export type CapRefusal = { readonly message: string; readonly forGood: boolean; readonly figures?: unknown };
+/** A raise's state as the cap's checkRaise reads it (the kernel cap's RaiseState). */
+export type RaiseState = { capUsd?: number; final?: boolean; pause?: string; lastRaise?: { to: number; pause?: string } };
+/** What the cap's checkRaise says (the kernel cap's RaiseCheck). */
+export type RaiseCheck = { raised: true; resumes: boolean; pause?: string; refused?: undefined } | { retry: true; resumed: boolean; refused?: undefined } | { refused: string };
+/** The cap's rule for a run, handed in via the spec (the kernel cap's parkOf/checkRaise/followUpOf): the loop uses it to
+ *  park the run and take raises, never importing the cap itself. */
+export interface WorkflowCapRule {
+  /** The kernel cap's parkOf: a refusal a raise can fix parks the run with a pending budget; else it fails in its words. */
+  park(refusal: CapRefusal): { outcome: "parked"; pending: BudgetData["pending"]; words: string } | { outcome: "failed"; error: string };
+  /** The kernel cap's checkRaise. Absent: a raise is refused (the run has no cap). */
+  checkRaise?(state: RaiseState, raiseUsd: number): RaiseCheck;
+  /** The kernel cap's followUpOf (parity with the pi adapter; a workflow needs no follow-up message). */
+  followUpOf?(capUsd: number): { readonly text: string };
+}
 
 /** What one run's workflow loop runs: the revision's workflow and its input, the run's models, and the interpreter's host.
  *  The caller (the runner's dispatch) reads the launch and the revision and builds this at the claim, as it builds a pi
@@ -42,24 +65,36 @@ export interface WorkflowRunSpec {
   readonly revisionId: string;
   /** Builds the interpreter's host and the extensions to install before the Harness opens, exactly as the per-run process
    *  did: model nodes on the run's models, call nodes on the tool table, decisions, the cap. `hooks.park` parks the run
-   *  for a raise: a step the cap holds calls it and then lets its node's signal (which the loop aborts) end its wait, and
-   *  the loop parks the run for a later claim. Called once per start, so a resume builds a fresh host over the resumed
-   *  journal. */
+   *  for a raise: a step the cap holds calls it with the refusal and then lets its node's signal (which the loop aborts)
+   *  end its wait, and the loop parks the run for a later claim. Called once per start, so a resume builds a fresh host
+   *  over the resumed journal with the raised cap. */
   readonly build: (hooks: WorkflowHostHooks) => { readonly extensions: readonly Extension[]; readonly host: WorkflowTaskHost };
+  /** The cap's rule (the kernel cap's parkOf/checkRaise/followUpOf), handed in: the loop parks and takes raises with it,
+   *  never importing the cap. Absent: the run has no cap, so nothing parks and a raise is refused. */
+  readonly cap?: WorkflowCapRule;
   /** The end's cost and metrics beside its state, read when the end is written (the pi loop's endPatch, bounded the same).
    *  The outcome (completed or escalated) is the workflow's own, read from the journal, not this. */
   readonly endPatch?: (end: EndData) => Promise<Pick<EndData, "costUsd" | "metrics">>;
   /** pi-durable's restart limit for the run's Harness. Absent: pi's own default. */
   readonly restartLimit?: number;
+  /** Called once the run's Harness is open, before the workflow runs: the spec wires anything that needs the Harness here
+   *  (the run's model booking over the journal's sessions, which the model proxy's requests go through — the booking's
+   *  writer is the Harness's, not available at build()). Absent: nothing to wire. A resume calls it afresh on the reopened
+   *  Harness. */
+  readonly harnessReady?: (harness: Harness, context: Context) => void | Promise<void>;
+  /** Lets the spec's per-claim resources go once the loop is done with the claim (the model proxies it started): called
+   *  once, however the run ended (ended, stopped, failed, parked or interrupted), so a parked or resumed run starts fresh
+   *  proxies on its next claim. Never throws out. Absent: nothing to let go. */
+  readonly release?: () => Promise<void>;
 }
 
 /** What the interpreter's host may ask of the loop while it runs. */
 export interface WorkflowHostHooks {
-  /** A step the cap holds for a raise lets go here: the run parks and a later claim resumes the workflow from its journal
-   *  (the held step was never admitted, so nothing is half done). `wakeAt` (epoch ms) makes it claimable again with no
-   *  command; a raise command wakes it sooner. `detail` is the refusal a reader shows as the run's pending (its words and
-   *  figures). The caller must let the node's signal, which the loop aborts, end the step's wait. */
-  park(info: { readonly wakeAt?: number; readonly detail?: unknown }): void;
+  /** A step the cap holds for a raise lets go here, with the cap's refusal: the loop parks the run (parkOf's pending
+   *  budget, in the cap's words) and a later claim resumes the workflow from its journal (the held step was never admitted,
+   *  so nothing is half done), with the raised cap. The caller must let the node's signal, which the loop aborts, end the
+   *  step's wait. */
+  park(refusal: CapRefusal): void;
 }
 
 /** Whether a revision runs on the workflow loop (the runner's dispatch picks it by the revision's kind): a workflow
@@ -76,10 +111,20 @@ function workflowLoop(specOf: (claim: Claim) => WorkflowRunSpec | Promise<Workfl
   let workflows: ReturnType<typeof createWorkflowExtension> | undefined;
   let runId: string | undefined;
   let stopReason: StopReason | undefined;
-  /** The claimed run's spec, once read: writeEnd reads the end's patch from it. */
+  /** The claimed run's spec, once read: writeEnd reads the end's patch and the cap's rule from it. */
   let spec: WorkflowRunSpec | undefined;
   let harnessClosed = false;
   let finished: Promise<LoopEnd> | undefined;
+  /** The raises this claim has: the rows to take in the raise entry's commit, whether any resumes the paused run, and the
+   *  state the ones before it left (the kernel cap's reading, checked in arrival order). Recorded by command() as the
+   *  runner delivers each row (returning at once, never blocking the delivery), then committed before the workflow runs. */
+  const raising: { state?: RaiseState; takes: number[]; resumes: boolean; capUsd?: number } = { takes: [], resumes: false };
+  let takingDone = false;
+  /** This claim, once run() has it: a raise command reads the run's raise state from its journal. */
+  let claimNow: Claim | undefined;
+  /** Resolves once this claim's spec is read, so a raise delivered before the workflow starts checks against its cap rule. */
+  let specReady: () => void = () => {};
+  const ready = new Promise<void>((resolve) => (specReady = resolve));
 
   const closeHarness = async (): Promise<void> => {
     if (!harness || harnessClosed) return;
@@ -100,16 +145,56 @@ function workflowLoop(specOf: (claim: Claim) => WorkflowRunSpec | Promise<Workfl
     }
   };
 
-  /** One entry on the run's root, committed; `run` stages the run row's patch with it (keyed to this entry, its effect),
-   *  and `take` the stop row it applies. The workflow task made the root; a resume finds it. */
-  const append = async (journal: Journal, context: Context, kind: string, data: unknown, run?: RunPatch, take?: number): Promise<void> => {
+  /** The run's root conversation entries, oldest first (the budget and raise entries this reads). */
+  const rootEntries = async (journal: Journal, context: Context): Promise<EntryRecord[]> => {
+    const out: EntryRecord[] = [];
+    for (let cursor: unknown = undefined; ; ) {
+      const page = await journal.scanEntries({ conversationId: ROOT_CONVERSATION_ID, order: "ascending" } as never, 500, cursor as never, context);
+      out.push(...page.items);
+      if (page.next === undefined) return out;
+      cursor = page.next;
+    }
+  };
+
+  /** One entry on the run's root, committed; `staged.run` stages the run row's patch with it (keyed to this entry, its
+   *  effect), and `staged.take` the command rows it applies. The workflow task made the root; a resume finds it. */
+  const append = async (journal: Journal, context: Context, kind: string, data: unknown, staged?: { run?: RunPatch; take?: readonly number[] }): Promise<void> => {
     const writes: StorageWrite[] = [];
     if (!(await journal.conversation(ROOT_CONVERSATION_ID, context))) writes.push({ type: "conversation", value: { id: ROOT_CONVERSATION_ID } } as StorageWrite);
     const id = await journal.mintId();
     writes.push({ type: "entry", value: { id, conversationId: ROOT_CONVERSATION_ID, kind, data } } as StorageWrite);
-    if (run) journal.stage({ run, effect: id, ...(take !== undefined ? { take: [{ command: take, effect: id }] } : {}) });
+    if (staged?.run || staged?.take?.length) {
+      journal.stage({ ...(staged.run ? { run: staged.run, effect: id } : {}), ...(staged.take?.length ? { take: staged.take.map((command) => ({ command, effect: id })) } : {}) });
+    }
     const result = await journal.commit([writes], () => {}, context);
     if (result.stored === 0) throw result.refused;
+  };
+
+  /** The run's raise state, read from its root (the kernel cap's reading): the newest budget entry with no raise after it
+   *  is the pause a raise is checked against; the newest raise entry is its last raise. */
+  const raiseStateOf = async (journal: Journal, context: Context): Promise<RaiseState> => {
+    let budget: { id: string; data: BudgetData } | undefined;
+    let last: { data: RaiseData; pause?: string } | undefined;
+    for (const entry of await rootEntries(journal, context)) {
+      if (entry.kind === KINDS.budget) budget = { id: String(entry.id), data: entry.data as unknown as BudgetData };
+      if (entry.kind === KINDS.raise) {
+        const data = entry.data as unknown as RaiseData & { pause?: string };
+        last = { data, ...(data.pause ? { pause: data.pause } : {}) };
+        if (budget && data.pause === budget.id) budget = undefined;
+      }
+    }
+    const capUsd = budget ? budget.data.pending.cap_usd : last?.data.capUsd;
+    return { ...(capUsd !== undefined ? { capUsd } : {}), ...(budget ? { pause: budget.id } : {}), ...(last ? { lastRaise: { to: last.data.capUsd, ...(last.pause ? { pause: last.pause } : {}) } } : {}) };
+  };
+
+  /** Commits the raises this claim recorded (command() checked each against the cap's rule): one `agentrun.raise` entry
+   *  taking their rows, which clears the run's paused words when a raise resumes the pause. Run before the workflow does, so
+   *  the resumed run reads the raised cap. */
+  const takeRaises = async (journal: Journal, context: Context): Promise<void> => {
+    takingDone = true;
+    if (raising.takes.length === 0) return;
+    const data: RaiseData & { pause?: string } = { capUsd: raising.capUsd ?? raising.state?.capUsd ?? 0, takes: raising.takes, ...(raising.state?.pause ? { pause: raising.state.pause } : {}) };
+    await append(journal, context, KINDS.raise, data, { ...(raising.resumes ? { run: { summary: null } } : {}), take: raising.takes });
   };
 
   /** The end's cost and metrics from the spec, bounded like the pi loop: late or failing, none. */
@@ -134,16 +219,24 @@ function workflowLoop(specOf: (claim: Claim) => WorkflowRunSpec | Promise<Workfl
 
   async function run(claim: Claim): Promise<LoopEnd> {
     runId = claim.runId;
-    // A step the cap holds parks the run: `park` aborts this controller, which ends the held step's wait (its node's
-    // signal) and the workflow's invocation, leaving the task pending for a later claim; the loop then writes the run
-    // parked instead of interrupted. The claim's own signal (a lost claim, a shutdown) aborts it too.
+    try {
+    // A step the cap holds parks the run: `park` keeps the refusal and aborts this controller, which ends the held step's
+    // wait (its node's signal) and the workflow's invocation, leaving the task pending for a later claim; the loop then
+    // writes the run parked instead of interrupted. The claim's own signal (a lost claim, a shutdown) aborts it too.
     const parkController = new AbortController();
-    let parkRequested: { readonly wakeAt?: number; readonly detail?: unknown } | undefined;
+    let heldRefusal: CapRefusal | undefined;
     const context = withAbortSignal(AbortSignal.any([deps.signal, parkController.signal]), BACKGROUND_CONTEXT);
     spec = await specOf(claim);
+    claimNow = claim;
+    specReady();
     const revision = { id: spec.revisionId, kind: "workflow" as const, body: { workflow: spec.workflow, tools: [...spec.tools] } };
 
-    const hooks: WorkflowHostHooks = { park: (info) => { parkRequested ??= info; parkController.abort(); } };
+    // The claim's first delivery hands over any raises that woke a parked run: take them before the workflow runs, so the
+    // resumed run reads the raised cap and the run's row no longer shows the budget pause.
+    await (deps.delivered ?? Promise.resolve());
+    await takeRaises(deps.journal(claim), BACKGROUND_CONTEXT);
+
+    const hooks: WorkflowHostHooks = { park: (refusal) => { heldRefusal ??= refusal; parkController.abort(); } };
     const { extensions, host } = spec.build(hooks);
     workflows = createWorkflowExtension(host);
     const registry = createRegistry();
@@ -151,6 +244,9 @@ function workflowLoop(specOf: (claim: Claim) => WorkflowRunSpec | Promise<Workfl
     registry.install(workflows.extension);
     harness = await Harness.open(deps.journal(claim), { models: spec.models, registry, onReport: () => {}, ...(spec.restartLimit !== undefined ? { settings: { restartLimit: spec.restartLimit } } : {}) }, context);
     harnessClosed = false;
+    // The run's model booking lives on the Harness (the journal's sessions), so it is wired now, before the workflow's
+    // first model request goes through the proxy. A resume rebuilds it on the reopened Harness.
+    await spec.harnessReady?.(harness, context);
 
     // A cancel the runner handed over before the Harness opened: take it now the workflow is about to run.
     if (stopReason?.kind === "command") void requestCancel();
@@ -164,13 +260,7 @@ function workflowLoop(specOf: (claim: Claim) => WorkflowRunSpec | Promise<Workfl
       });
     } catch (error) {
       await closeHarness();
-      if (parkRequested) {
-        // A step's spend cap held it and let go: the run parks, and a later claim resumes the workflow from its journal
-        // (the held step was never admitted, so nothing is half done), reading the raised cap.
-        const parkJournal = deps.journal(claim);
-        await append(parkJournal, BACKGROUND_CONTEXT, KINDS.workflowParked, { detail: parkRequested.detail ?? null }, { state: "parked" });
-        return { state: "parked", ...(parkRequested.wakeAt !== undefined ? { wakeAt: parkRequested.wakeAt } : {}) };
-      }
+      if (heldRefusal) return await parkAtCap(claim, heldRefusal);
       // The Session failed at a storage error, or the claim's context aborted (a lost claim, a shutdown): nothing more is
       // written, and the next claim resumes the workflow from its journal.
       void error;
@@ -181,8 +271,29 @@ function workflowLoop(specOf: (claim: Claim) => WorkflowRunSpec | Promise<Workfl
     // fresh journal of the same claim (the Harness closed its own).
     await closeHarness();
     const endJournal = deps.journal(claim);
+    // A person stopped or cancelled: the run ends stopped whatever the workflow's own outcome (its last node may have
+    // completed as the stop landed, since the engine cancels by aborting the task), in the words that say which (endedBy),
+    // with the stop row taken in the end commit.
+    if (stopReason?.kind === "command") return await writeEnd(endJournal, context, { state: "stopped", summary: endedBy(stopReason.cancel) });
     const carry = await workflowCarry({ runId: claim.runId, storage: endJournal, revision }, outcome, { context });
     return await writeEnd(endJournal, context, carry);
+    } finally {
+      // The claim is done however it ended (ended, stopped, failed, parked, interrupted): let the spec's per-claim
+      // resources go, the model proxies it started. A parked or resumed run starts fresh ones on its next claim.
+      await spec?.release?.().catch(() => undefined);
+    }
+  }
+
+  /** A step's spend cap held it: the run parks with the cap's pending budget (an `agentrun.budget` entry, the run's row in
+   *  the cap's words), or fails when no raise could fix it (parkOf). A later claim's raise resumes the workflow. */
+  async function parkAtCap(claim: Claim, refusal: CapRefusal): Promise<LoopEnd> {
+    const journal = deps.journal(claim);
+    const parked = spec?.cap?.park(refusal);
+    if (!parked) return { state: "interrupted" };
+    if (parked.outcome === "failed") return await writeEnd(journal, BACKGROUND_CONTEXT, { state: "failed", summary: parked.error });
+    const budget: BudgetData = { pending: parked.pending, words: parked.words };
+    await append(journal, BACKGROUND_CONTEXT, KINDS.budget, budget, { run: { state: "parked", summary: parked.words } });
+    return { state: "parked" };
   }
 
   async function writeEnd(journal: Journal, context: Context, carry: { state: "completed" | "failed" | "stopped" | "escalated"; summary: string }): Promise<LoopEnd> {
@@ -197,8 +308,8 @@ function workflowLoop(specOf: (claim: Claim) => WorkflowRunSpec | Promise<Workfl
       ...(data.costUsd !== undefined ? { costUsd: data.costUsd } : {}),
       ...(data.metrics !== undefined ? { metrics: data.metrics } : {}),
     };
-    const take = stopReason?.kind === "command" ? stopReason.commandId : undefined;
-    await append(journal, context, KINDS.end, data, runPatch, take);
+    const take = stopReason?.kind === "command" ? [stopReason.commandId] : undefined;
+    await append(journal, context, KINDS.end, data, { run: runPatch, ...(take ? { take } : {}) });
     return state === "failed" ? { state: "failed", error: { code: "workflow-failed", message: carry.summary } } : { state };
   }
 
@@ -208,8 +319,25 @@ function workflowLoop(specOf: (claim: Claim) => WorkflowRunSpec | Promise<Workfl
       return finished;
     },
     async command(command: Command): Promise<CommandOutcome> {
-      void command;
-      return { refused: "a workflow run takes no messages or answers" };
+      if (command.kind !== "raise") return { refused: "a workflow run takes no messages or answers" };
+      // A raise is checked and recorded here, at once (never blocking the runner's delivery), and committed before the
+      // workflow runs (takeRaises); one that comes after that waits for the run's next claim. Checked by the cap's rule
+      // against the state the raises before it left, so raises taken together resume the run once, at the latest cap.
+      await ready;
+      if (takingDone) return { later: "the raise waits for the run's next claim" };
+      const check = spec?.cap?.checkRaise;
+      if (!check) return { refused: "This run has no cap to raise: a cap is named when a run starts." };
+      raising.state ??= await raiseStateOf(deps.journal(claimNow!), BACKGROUND_CONTEXT);
+      const usd = (command.body as { capUsd?: unknown } | null)?.capUsd;
+      const answer = check(raising.state, typeof usd === "number" ? usd : Number.NaN);
+      if (answer.refused !== undefined) return { refused: answer.refused };
+      raising.takes.push(command.id);
+      if ("raised" in answer && answer.raised) {
+        raising.resumes ||= answer.resumes;
+        raising.capUsd = usd as number;
+        raising.state = { ...raising.state, capUsd: usd as number, lastRaise: { to: usd as number, ...(raising.state.pause ? { pause: raising.state.pause } : {}) } };
+      }
+      return { taken: true };
     },
     async stop(reason: StopReason): Promise<void> {
       stopReason ??= reason;

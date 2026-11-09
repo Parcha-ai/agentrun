@@ -211,7 +211,7 @@ test("capabilities and an agent's tools show each tool's permission, its default
   const made = await api("POST", "/agents", agent("set", { tools: ["read", "web_fetch"], tool_settings: { read: { permission: "allow" }, web_fetch: { permission: "deny" }, "mcp:srv/*": { permission: "ask" } } }));
   assert.equal(made.status, 201, JSON.stringify(made.body));
   const own = byName((await api("GET", "/agents/set")).body.tools);
-  assert.deepEqual([own.read.permission, own.read.permission_from, own.read.default_permission], ["allow", "agent", "deny"], "the agent's own over the server's, which is its default");
+  assert.deepEqual([own.read.permission, own.read.permission_from, own.read.default_permission], ["deny", "server", "deny"], "a server deny is absolute: the agent's own allow does not reach past it");
   assert.deepEqual([own.web_fetch.permission, own.web_fetch.permission_from, own.web_fetch.default_permission], ["deny", "agent", "ask"]);
   assert.deepEqual(schemaProblems(doc, doc.components.schemas.Capabilities, (await api("GET", "/capabilities")).body), [], "capabilities as documented");
 

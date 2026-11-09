@@ -24,7 +24,7 @@ import { randomUUID } from "node:crypto";
 import { defineTool, ROOT_CONVERSATION_ID, type ToolRegistration } from "@earendil-works/pi-durable";
 import type { McpCallResult, McpTool, SessionMcp } from "@parcha/agentrun-kernel";
 import { TOOL_COST, TOOL_UNMETERED } from "@parcha/pi-durable-agent/timeline";
-import { holdRefusal, writeHold } from "./paid-calls.js";
+import { holdRefusal, paidLedger, paidStep, writeHold } from "./paid-calls.js";
 import { paidCall } from "./cap.js";
 import { wireName } from "./catalog.js";
 import { metaToolOf } from "./mcp-meta.js";
@@ -183,10 +183,11 @@ function unreachable(error: unknown): string {
 
 const said = (text: string, isError = false): McpCallResult => ({ content: [{ type: "text", text }], ...(isError ? { isError: true } : {}) });
 
-/** `text` with every credential value in it replaced, with or without its `Bearer `: an upstream answer or error that
- *  echoes a header never shows it to the model, the harness or the run's files. */
-const scrub = (text: string, headers: Record<string, string>) =>
-  Object.values(headers).flatMap((value) => [value, value.replace(/^Bearer\s+/i, "")]).sort((a, b) => b.length - a.length).reduce((out, value) => (value.length >= 8 ? out.split(value).join("[redacted]") : out), text);
+/** `text` with every credential value in `values` replaced, whole and as its bare token (with any one-word scheme, such
+ *  as `Bearer ` or `Basic `, taken off): an upstream answer or error that echoes a header, or only its token, never shows
+ *  it to the model, the harness or the run's files. */
+const scrub = (text: string, values: Iterable<string>) =>
+  [...values].flatMap((value) => [value, value.replace(/^[A-Za-z][A-Za-z0-9_-]*\s+(?=\S+$)/, "")]).sort((a, b) => b.length - a.length).reduce((out, value) => (value.length >= 8 ? out.split(value).join("[redacted]") : out), text);
 
 /** `work` until `signal` aborts: a connection shared by calls is never held by one that stopped. */
 const until = <T>(work: Promise<T>, signal: AbortSignal): Promise<T> =>
@@ -224,7 +225,11 @@ export interface McpGatewayOptions {
 
 /** The gateway: a session's servers, and a call that takes the gate's `park` of the harness it came from (its journal's
  *  commit, and how it ends a parked call's turn); none, the run's root commit. */
-export type McpGateway = Omit<SessionMcp, "call"> & { call(server: string, tool: string, args: Record<string, unknown>, context: { signal: AbortSignal; callId?: string; park?: Park }): Promise<McpCallResult> };
+export type McpGateway = Omit<SessionMcp, "call"> & {
+  call(server: string, tool: string, args: Record<string, unknown>, context: { signal: AbortSignal; callId?: string; park?: Park }): Promise<McpCallResult>;
+  /** How many credential values the calls in flight hold for their scrub: each call's go when it ends (0 when idle). */
+  heldCredentials(): number;
+};
 
 /** The gateways that hold their run's gate: each of their calls enters it, in `call`. */
 const gating = new WeakSet<McpGateway>();
@@ -240,12 +245,39 @@ export function mcpGateway(options: McpGatewayOptions): McpGateway {
   /** Each server's last HTTP status, which tells a refused credential from another failure. */
   const statuses = new Map<string, { last?: number }>();
   const send = options.fetch ?? fetch;
+  /** The credential values each call in flight took or its server's requests sent while it was out, one set per call, by
+   *  server: with liveCredentials a refresh can swap a token between a call taking its headers and a request leaving, so
+   *  what its answer or error is scrubbed of is every one of them, never only the headers it took. A call's set goes when
+   *  the call ends, so nothing held outlives the calls that sent it. */
+  const inFlight = new Map<string, Set<Set<string>>>();
+  const hold = (server: string, headers: Record<string, string>): Record<string, string> => {
+    for (const values of inFlight.get(server) ?? []) for (const value of Object.values(headers)) values.add(value);
+    return headers;
+  };
+  /** A call's own set, held while it is out (released by the call's end). */
+  const callSet = (server: string): { values: Set<string>; release(): void } => {
+    const values = new Set<string>();
+    let calls = inFlight.get(server);
+    if (!calls) inFlight.set(server, (calls = new Set()));
+    calls.add(values);
+    return {
+      values,
+      release: () => {
+        calls.delete(values);
+        if (calls.size === 0 && inFlight.get(server) === calls) inFlight.delete(server);
+      },
+    };
+  };
+  /** A call's scrub: the headers it took, every value its server's requests took or sent while it was out, and its
+   *  credential now. */
+  const scrubberOf = (server: string, headers: Record<string, string>, values: Set<string>) => (text: string) =>
+    scrub(text, [...Object.values(headers), ...values, ...Object.values(credentials.get(server)?.headers ?? {})]);
 
   /** The fetch one server's client sends with: its credential added, no redirect followed, at most MAX_RESPONSE read. */
-  const guarded = (headers: Record<string, string> | (() => Record<string, string>), status: { last?: number }) => async (input: string | URL | Request, init: RequestInit = {}) => {
+  const guarded = (server: string, headers: Record<string, string> | (() => Record<string, string>), status: { last?: number }) => async (input: string | URL | Request, init: RequestInit = {}) => {
     const sent = new Headers(init.headers);
-    // Live credentials: the server's headers as they are at this request.
-    for (const [name, value] of Object.entries(typeof headers === "function" ? headers() : headers)) sent.set(name, value);
+    // Live credentials: the server's headers as they are at this request, held for the scrub before they leave.
+    for (const [name, value] of Object.entries(hold(server, typeof headers === "function" ? headers() : headers))) sent.set(name, value);
     const response = await send(input, { ...init, headers: sent, redirect: "manual" });
     status.last = response.status;
     if (response.status >= 300 && response.status < 400) throw new Error(`it answered a redirect (HTTP ${response.status}), which is never followed`);
@@ -270,7 +302,7 @@ export function mcpGateway(options: McpGatewayOptions): McpGateway {
         const { Client, StreamableHTTPClientTransport } = await import("@modelcontextprotocol/client");
         // The 2026-07-28 revision first, a 2025-era server through its initialize, as a preview connects.
         const client = new Client({ name: "agentrun", version: "1.0.0" }, { capabilities: {}, versionNegotiation: { mode: "auto" } });
-        await client.connect(new StreamableHTTPClientTransport(new URL(url), { fetch: guarded(live ? () => credentials.get(server)?.headers ?? {} : headers, status) as never }), { timeout: options.bounds?.connectMs ?? CONNECT_MS });
+        await client.connect(new StreamableHTTPClientTransport(new URL(url), { fetch: guarded(server, live ? () => credentials.get(server)?.headers ?? {} : headers, status) as never }), { timeout: options.bounds?.connectMs ?? CONNECT_MS });
         return client as unknown as Upstream;
       })();
       clients.set(server, upstream);
@@ -282,18 +314,18 @@ export function mcpGateway(options: McpGatewayOptions): McpGateway {
 
   /** The model's text of `result`: its text blocks joined, its structured content when it has no text; past MCP_CLIP, or
    *  with blocks that are not text, the whole result is filed in the run's evidence/mcp/<server>/, through its Workspace
-   *  (never through a link), and the text says where. */
-  const textOf = async (server: string, tool: string, result: Record<string, unknown>, headers: Record<string, string>): Promise<string> => {
+   *  (never through a link), and the text says where. `clean` scrubs every credential the call's server took or sent. */
+  const textOf = async (server: string, tool: string, result: Record<string, unknown>, clean: (text: string) => string): Promise<string> => {
     const blocks = Array.isArray(result.content) ? (result.content as { type?: unknown; text?: unknown }[]) : [];
     const texts = blocks.filter((block) => block?.type === "text" && typeof block.text === "string").map((block) => block.text as string);
-    let text = scrub(texts.join("\n\n"), headers);
-    if (!text && result.structuredContent !== undefined) text = scrub(JSON.stringify(result.structuredContent), headers);
+    let text = clean(texts.join("\n\n"));
+    if (!text && result.structuredContent !== undefined) text = clean(JSON.stringify(result.structuredContent));
     const other = blocks.length - texts.length;
     if (text.length <= MCP_CLIP && other === 0) return text;
     const name = `${tool}-${new Date().toISOString().replace(/[:.]/g, "-")}-${randomUUID().slice(0, 8)}.json`;
     const head = text.length > MCP_CLIP ? `${text.slice(0, MCP_CLIP)}\n[cut at ${MCP_CLIP} of ${text.length} characters; ` : `${text}\n[${other} block${other > 1 ? "s" : ""} that ${other > 1 ? "are" : "is"} not text; `;
     try {
-      await workspaceAt(options.work()).write(`evidence/mcp/${server}/${name}`, scrub(JSON.stringify(result), headers));
+      await workspaceAt(options.work()).write(`evidence/mcp/${server}/${name}`, clean(JSON.stringify(result)));
     } catch (error) {
       // The Workspace's code and the port's line for it, never the error's message, which names paths.
       return `${head}the whole answer could not be saved (${workspaceErrorWords(error) ?? (error as { code?: string })?.code ?? "write failed"})]`;
@@ -307,6 +339,9 @@ export function mcpGateway(options: McpGatewayOptions): McpGateway {
    *  keeps the call from leaving. A call that never got that far (a failed connect, a stop) never ran it. */
   const forward = async (server: string, url: string, headers: Record<string, string>, tool: McpTool, args: Record<string, unknown>, signal: AbortSignal, sending?: () => Promise<string | undefined>): Promise<McpCallResult> => {
     let connected = false;
+    // Read at each use: a token refreshed while the call is out, and sent, is scrubbed with the one it took.
+    const held = callSet(server);
+    const clean = scrubberOf(server, hold(server, headers), held.values);
     try {
       const upstream = await until(connect(server, url, headers), signal);
       connected = true;
@@ -317,7 +352,7 @@ export function mcpGateway(options: McpGatewayOptions): McpGateway {
       // The pinned definition, so the SDK mirrors its x-mcp-header parameters into Mcp-Param-* headers on a 2026-07-28
       // server, as its own listing would have it do.
       const result = (await upstream.callTool({ name: tool.name, arguments: args }, { signal, timeout: options.bounds?.callMs ?? CALL_MS, toolDefinition: { name: tool.name, inputSchema: tool.inputSchema } })) as Record<string, unknown>;
-      return said(await textOf(server, tool.name, result, headers), result.isError === true);
+      return said(await textOf(server, tool.name, result, clean), result.isError === true);
     } catch (error) {
       if (signal.aborted) return said(`The call to the MCP server ${server} was stopped.`, true);
       // The next call connects again (a server that dropped its session, say); this one is never sent again.
@@ -326,9 +361,11 @@ export function mcpGateway(options: McpGatewayOptions): McpGateway {
       // An OAuth token that expired mid-run is not refreshed here (no channel to serve for it): the next launch does.
       if (status === 401 || status === 403) return said(`The MCP server ${server} refused its credential (its sign-in expired or was revoked, or its key changed): ${SIGN_IN_AGAIN}, or update its credential there.`, true);
       // It never answered at all: its connection failed before any HTTP status, so nothing reached it.
-      if (!connected && status === undefined) return said(`The MCP server ${server} could not be reached at ${URL.parse(url)?.origin ?? "its address"} (${scrub(unreachable(error), headers)}); nothing was sent.`, true);
-      const why = scrub(String((error as Error)?.message ?? error), headers).slice(0, 300);
+      if (!connected && status === undefined) return said(`The MCP server ${server} could not be reached at ${URL.parse(url)?.origin ?? "its address"} (${clean(unreachable(error))}); nothing was sent.`, true);
+      const why = clean(String((error as Error)?.message ?? error)).slice(0, 300);
       return said(`The MCP server ${server} failed${status && status >= 400 ? ` (HTTP ${status})` : ""}: ${why}`, true);
+    } finally {
+      held.release();
     }
   };
 
@@ -372,6 +409,13 @@ export function mcpGateway(options: McpGatewayOptions): McpGateway {
       if (commit && went) await record(commit, TOOL_UNMETERED, label).catch(() => undefined);
       return result;
     }
+    // On the runner's one ledger (paid-calls.ts Ledger.paid): held there at its price before it leaves and settled at its
+    // price once it left (nothing when it never left), in place of this process's spend and the root's marks.
+    const onLedger = paidLedger();
+    if (onLedger) {
+      const stepped = await paidStep(onLedger, callId ?? name, { name, holdUsd: price, basis: `the price its owner set for ${name}` }, () => call(), () => (went ? price : 0));
+      return "refused" in stepped ? said(stepped.refused, true) : stepped.result;
+    }
     if (!commit) return said(`${name} was not sent: this call has no run to book its price under.`, true);
     const paid = await paidCall(name, async () => {
       // Held at its price meanwhile; marked right before it leaves, and settled at its price once it left, whatever it
@@ -402,6 +446,7 @@ export function mcpGateway(options: McpGatewayOptions): McpGateway {
 
   const gateway: McpGateway = {
     servers: [...pins].map(([name, pinned]) => ({ name, tools: pinned.tools })),
+    heldCredentials: () => [...inFlight.values()].reduce((sum, calls) => sum + [...calls].reduce((n, values) => n + values.size, 0), 0),
     async call(server, tool, args, { signal, callId, park: given }) {
       const why = unsendable(server, tool);
       if (why) return said(why, true);

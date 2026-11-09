@@ -36,6 +36,18 @@ test("the run's end writes its kept proposal and a queued learning run of the sa
   assert.deepEqual([launch.body.harness, launch.body.input], ["learning", { runId: "run-1" }]);
 });
 
+test("the kept proposal names the learning run queued with it, whichever order the end lists them in; a drop names none", async (t) => {
+  const { store } = await storeOn(t);
+  await store.runs.update(await claimedRun(store, "run-a"), { state: "ended" }, { also: [kept(), learningRun("run-a-learning")] });
+  await store.runs.update(await claimedRun(store, "run-b"), { state: "ended" }, { also: [learningRun("run-b-learning"), kept()] });
+  await store.runs.update(await claimedRun(store, "run-c"), { state: "ended" }, { also: [kept(TURN, { state: "dropped", reason: "empty" })] });
+  assert.deepEqual(
+    await Promise.all(["run-a", "run-b", "run-c"].map(async (id) => (await store.learning.proposal(id))?.learningRunId)),
+    ["run-a-learning", "run-b-learning", undefined],
+  );
+  assert.deepEqual((await store.learning.proposals("agent-1")).map((one) => [one.runId, one.learningRunId]).sort(), [["run-a", "run-a-learning"], ["run-b", "run-b-learning"], ["run-c", undefined]]);
+});
+
 test("a fenced end writes neither the proposal nor the learning run", async (t) => {
   const { store } = await storeOn(t);
   const stale = await claimedRun(store);
@@ -53,12 +65,13 @@ test("a run that kept no proposal starts no learning run", async (t) => {
   assert.deepEqual(await store.runs.claimable({ limit: 10 }), [], "nothing queued");
 });
 
-test("a learning run is started once: the same end written again by a resumed claim adds no second one", async (t) => {
+test("a learning run is started once: the same end written again under its claim is refused, and adds no second one", async (t) => {
   const { store } = await storeOn(t);
   const claim = await claimedRun(store);
   await store.runs.update(claim, { state: "ended" }, { also: [kept(), learningRun("run-1-learning")] });
-  // The same rows staged again (a crash after the commit, the end replayed): nothing new, no error.
-  await store.runs.update(claim, {}, { also: [kept(), learningRun("run-1-learning")] });
+  // The end is the run's release (its epoch moved on in that commit): the same rows staged again under the claim (a crash
+  // after the commit, the end replayed) are Fenced, and nothing new is written.
+  await assert.rejects(store.runs.update(claim, {}, { also: [kept(), learningRun("run-1-learning")] }), /Fenced|epoch/);
   const rows = (await store.runs.claimable({ limit: 10 })).filter((id) => id.startsWith("run-1-learning"));
   assert.equal(rows.length, 1, "one learning run");
   assert.equal((await store.runs.launch("run-1-learning")).body.harness, "learning", "and one launch row, kept");

@@ -43,13 +43,14 @@ test("a claim and a renew that wait for the writer lock run their lease from whe
   const { store, clock, file } = await storeOn(t);
   await queued(store);
   holdWriter(file, clock, 5_000);
-  const claim = await store.claim("run-1", "runner-a", { leaseMs: 1_000 });
-  assert.equal(claim?.until, clock.now + 1_000, "the lease starts once the claim holds the lock");
-  assert.equal((await store.runs.get("run-1")).claimedUntil, clock.now + 1_000);
+  // A lease that outlives the wait: a renew whose lease ran out while it waited is refused (store-claim-lease).
+  const claim = await store.claim("run-1", "runner-a", { leaseMs: 10_000 });
+  assert.equal(claim?.until, clock.now + 10_000, "the lease starts once the claim holds the lock");
+  assert.equal((await store.runs.get("run-1")).claimedUntil, clock.now + 10_000);
   holdWriter(file, clock, 5_000);
-  const renewed = await store.renew(claim, { leaseMs: 1_000 });
-  assert.equal(renewed.until, clock.now + 1_000, "and so does a renew's");
-  assert.equal((await store.runs.get("run-1")).claimedUntil, clock.now + 1_000);
+  const renewed = await store.renew(claim, { leaseMs: 10_000 });
+  assert.equal(renewed.until, clock.now + 10_000, "and so does a renew's");
+  assert.equal((await store.runs.get("run-1")).claimedUntil, clock.now + 10_000);
 });
 
 test("a claim moves the run's epoch up by one and holds it running until claimed_until", async (t) => {
@@ -77,7 +78,8 @@ test("a run update under a stale epoch is refused (Fenced) and writes nothing", 
   await assert.rejects(store.release(first), Fenced, "nor a stale release");
   assert.deepEqual(await store.runs.get("run-1"), before);
   await store.runs.update(second, { state: "ended", costUsd: 0.25, summary: "done" });
-  assert.deepEqual(await store.runs.get("run-1").then((run) => [run.state, run.costUsd, run.summary, run.epoch, run.endedAt]), ["ended", 0.25, "done", 2, clock.now]);
+  // The update that made the run final released it: the epoch moved on to the claim's + 1.
+  assert.deepEqual(await store.runs.get("run-1").then((run) => [run.state, run.costUsd, run.summary, run.epoch, run.endedAt]), ["ended", 0.25, "done", 3, clock.now]);
 });
 
 test("an expired claim is reclaimed by the next claimer, and the holder's renew before it runs out keeps it", async (t) => {
@@ -116,7 +118,7 @@ test("a release at a park gives the run back with its state and wake_at; an ende
   clock.now += 60_000;
   const again = await store.claim("run-1", "runner-b", { leaseMs: 30_000 });
   assert.deepEqual([again?.epoch, (await store.runs.get("run-1")).state], [3, "running"], "its wake_at passed: claimed, running");
-  await store.release(again, { state: "ended" });
-  assert.deepEqual(await store.runs.get("run-1").then((r) => [r.state, r.wakeAt, r.endedAt]), ["ended", null, clock.now], "a release with no wakeAt clears it");
-  assert.equal(await store.claim("run-1", "runner-c", { leaseMs: 30_000 }), null, "an ended run is final");
+  // A release never makes a run final (the end commit does): given back running, with no wakeAt, it clears it.
+  await store.release(again, {});
+  assert.deepEqual(await store.runs.get("run-1").then((r) => [r.state, r.wakeAt, r.endedAt]), ["running", null, null], "a release with no wakeAt clears it");
 });

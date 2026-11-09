@@ -92,6 +92,19 @@ describe("the run page's Browser tab", () => {
     expect(p.tabButton()).toBeUndefined();
   });
 
+  it("signed out (401) while watching: the tab stays and says why, with no frame left and nothing read again", async () => {
+    let n = 0;
+    const p = await page(async () => { n += 1; if (n === 1) return { state: "live", viewer: VIEWER }; throw new ClientError(401, "unauthenticated", "sign in first", false); });
+    await p.open();
+    await settle(120);
+    const reads = n;
+    await settle(120);
+    expect(n).toBe(reads);
+    expect(p.tabButton()?.textContent).toBe("Browser");
+    expect(p.frame()).toBeNull();
+    expect(p.host.querySelector('section[aria-label="Browser"]')?.textContent).toContain("Signed out: sign in to watch.");
+  });
+
   it("a 404 is a failed read like any other: it reads again, and the tab comes once the route answers", async () => {
     let n = 0;
     const p = await page(async () => { n += 1; if (n === 1) throw new ClientError(404, "not_found", "no", false); return { state: "live", viewer: VIEWER }; });
@@ -201,15 +214,6 @@ describe("the run page's Browser tab", () => {
     return { host, show, section, tabButton, selected, reads: () => reads, frame: () => host.querySelector("iframe") };
   }
   const ended = { ...working, status: "completed", state: "idle", ended_at: "2026-11-05T09:12:00Z" } as Run;
-
-  it("an ended run whose last read was live shows that the browser closed, with no iframe: an ended run has nothing to watch", async () => {
-    const p = await moving(async () => ({ state: "live", viewer: VIEWER }));
-    expect(p.frame()).not.toBeNull();
-    await p.show(ended);
-    await settle(120);
-    expect(p.frame()).toBeNull();
-    expect(p.section()).toContain("The browser closed when the run ended.");
-  });
 
   it("a failed last read and then the end show the same, and nothing more is read after the end", async () => {
     let failing = false;

@@ -46,8 +46,9 @@ test("a run's end lands in the same commit as its last journal batch: state, cos
   assert.equal((await storage.entry(endId, context))?.entry.end, true, "the end's journal row");
   assert.deepEqual({ ...(await db.get("SELECT state, cost_usd, metrics, summary, ended_at FROM runs WHERE id = ?", "run-end")) }, { state: "ended", cost_usd: 0.42, metrics: JSON.stringify({ requests: 3 }), summary: "Answered.", ended_at: ENDED_AT }, "and the run row's end, in that commit");
   assert.deepEqual((await db.all("SELECT run_id, moment, body FROM channel_posts")).map((row) => ({ ...row })), [{ run_id: "run-end", moment: "done", body: JSON.stringify({ costUsd: 0.42 }) }], "and its outbox row");
-  // Committed, the staged rows are cleared: the next commit carries none of them.
-  await commitWrites(storage, [{ type: "entry", value: { id: await storage.mintId(), conversationId: ROOT, kind: "message" } }], context);
+  // The end released the run (a write that makes it final is its release): its claim writes nothing more, so no commit can
+  // carry its rows twice.
+  await assert.rejects(commitWrites(storage, [{ type: "entry", value: { id: await storage.mintId(), conversationId: ROOT, kind: "message" } }], context), { name: "Fenced" }, "the claim is spent");
   assert.equal(Number((await db.get("SELECT COUNT(*) AS n FROM channel_posts")).n), 1, "the outbox row once");
 });
 

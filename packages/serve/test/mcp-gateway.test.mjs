@@ -467,3 +467,85 @@ test("today's construction copies the credentials: a header changed after connec
   delete live.credentials.fake;
   assert.equal(await add(live.gateway), "The MCP server fake is no longer saved on this server; nothing was sent.", "an entry removed is refused unsent");
 });
+
+test("a token refreshed while a call is out is scrubbed too: its request carries the new one, and a server that echoes it never shows it in the answer, the error or the run's files", async (t) => {
+  const OLD = `not-a-secret-${"refresh-old-0123456"}`;
+  const NEW = `not-a-secret-${"refresh-new-6543210"}`;
+  let seen = "";
+  const fake = await startFakeMcp({ token: (authorization) => ((seen = authorization ?? ""), authorization === `Bearer ${OLD}` || authorization === `Bearer ${NEW}`) });
+  t.after(() => fake.close());
+  fake.tools.echo_auth = { description: "Echoes the credential it was sent.", input: { type: "object", properties: {} }, run: () => ({ content: [{ type: "text", text: `sent ${seen}` }, { type: "image", data: Buffer.from("x").toString("base64"), mimeType: "image/png" }], structuredContent: { seen } }) };
+  const work = await mkdtemp(join(tmpdir(), "mcp-gateway-refresh-"));
+  t.after(() => rm(work, { recursive: true, force: true }));
+  const echoing = ["echo_auth", "fail_auth"].map((name) => ({ name, inputSchema: schema }));
+  /** A gateway whose credential is refreshed to NEW after its first call took its headers (OLD) and before that call's
+   *  own request leaves: the refresh lands as the connect's first request goes. fail_auth's request is answered 500 with
+   *  the credential it carried. */
+  const refreshed = () => {
+    const credentials = { fake: { url: fake.url, headers: { authorization: `Bearer ${OLD}` } } };
+    const carried = [];
+    const spy = async (input, init) => {
+      const authorization = new Headers(init?.headers).get("authorization");
+      carried.push(authorization);
+      credentials.fake = { url: fake.url, headers: { authorization: `Bearer ${NEW}` } };
+      if (typeof init?.body === "string" && init.body.includes('"fail_auth"')) return new Response(`refused for ${authorization}`, { status: 500 });
+      return fetch(input, init);
+    };
+    return { carried, gateway: mcpGateway({ pin: { fake: { url: fake.url, tools: echoing } }, credentials, work: () => work, fetch: spy, liveCredentials: true }) };
+  };
+  const one = refreshed();
+  const answer = textOf(await one.gateway.call("fake", "echo_auth", {}, { signal: signal() }));
+  assert.deepEqual([one.carried[0], one.carried.at(-1), seen], [`Bearer ${OLD}`, `Bearer ${NEW}`, `Bearer ${NEW}`], "the connect left with the old token, the call's request with the refreshed one");
+  assert.ok(!answer.includes(NEW) && answer.startsWith("sent [redacted]\n"), `the answer: ${answer.slice(0, 120)}`);
+  const filed = /evidence\/mcp\/fake\/(\S+\.json)\]$/.exec(answer)?.[1];
+  assert.ok(filed, "a block that is not text is filed");
+  const evidence = await readFile(join(work, "evidence", "mcp", "fake", filed), "utf8");
+  assert.ok(!evidence.includes(NEW) && !evidence.includes(OLD) && evidence.includes("[redacted]"), "the run's files hold neither token");
+  const two = refreshed();
+  const failed = await two.gateway.call("fake", "fail_auth", {}, { signal: signal() });
+  assert.equal(failed.isError, true);
+  assert.ok(!textOf(failed).includes(NEW) && textOf(failed).includes("refused for [redacted]"), `the error: ${textOf(failed).slice(0, 200)}`);
+});
+
+test("the credentials a call holds for its scrub go when the call ends: held while it is out, none once the gateway is idle, however many calls and refreshes came", async (t) => {
+  const tokens = Array.from({ length: 4 }, (_, i) => `not-a-secret-${`held-token-${i}-0123456`}`);
+  let release = () => {};
+  const fake = await startFakeMcp({ token: (authorization) => tokens.some((token) => authorization === `Bearer ${token}`) });
+  t.after(() => fake.close());
+  const work = await mkdtemp(join(tmpdir(), "mcp-gateway-held-"));
+  t.after(() => rm(work, { recursive: true, force: true }));
+  const credentials = { fake: { url: fake.url, headers: { authorization: `Bearer ${tokens[0]}` } } };
+  let held;
+  fake.tools.wait = { description: "Waits for the test.", input: { type: "object", properties: {} }, run: async () => {
+    held = gateway.heldCredentials();
+    await new Promise((resolve) => (release = resolve));
+    return { content: [{ type: "text", text: "waited" }] };
+  } };
+  const gateway = mcpGateway({ pin: { fake: { url: fake.url, tools: [...tools, { name: "wait", inputSchema: schema }] } }, credentials, work: () => work, liveCredentials: true });
+  // Three calls, a refresh before each: none of them leaves a value held once it ended.
+  for (const token of tokens.slice(1)) {
+    credentials.fake = { url: fake.url, headers: { authorization: `Bearer ${token}` } };
+    assert.equal(textOf(await gateway.call("fake", "add", { a: 1, b: 1 }, { signal: signal() })), "2");
+  }
+  assert.equal(gateway.heldCredentials(), 0, "idle, the gateway holds no credential for a scrub");
+  // One out: what it took is held while it is out, and goes with it.
+  const out = gateway.call("fake", "wait", {}, { signal: signal() });
+  while (held === undefined) await new Promise((resolve) => setImmediate(resolve));
+  assert.ok(held >= 1, `a call out holds what it took: ${held}`);
+  release();
+  assert.equal(textOf(await out), "waited");
+  assert.equal(gateway.heldCredentials(), 0, "and none once it ended");
+});
+
+test("a server that echoes a Basic credential's bare token never shows it: the token is scrubbed with or without its scheme", async (t) => {
+  const basic = Buffer.from(`conformance-user:${"not-a-secret-basic-pass-0123"}`).toString("base64");
+  let seen = "";
+  const fake = await startFakeMcp({ token: (authorization) => ((seen = authorization ?? ""), authorization === `Basic ${basic}`) });
+  t.after(() => fake.close());
+  fake.tools.echo_auth = { description: "Echoes the credential's token.", input: { type: "object", properties: {} }, run: () => ({ content: [{ type: "text", text: `token ${seen.replace(/^Basic\s+/, "")} and header ${seen}` }] }) };
+  const work = await mkdtemp(join(tmpdir(), "mcp-gateway-basic-"));
+  t.after(() => rm(work, { recursive: true, force: true }));
+  const gateway = mcpGateway({ pin: { fake: { url: fake.url, tools: [{ name: "echo_auth", inputSchema: schema }] } }, credentials: { fake: { url: fake.url, headers: { authorization: `Basic ${basic}` } } }, work: () => work });
+  const answer = textOf(await gateway.call("fake", "echo_auth", {}, { signal: signal() }));
+  assert.equal(answer, "token [redacted] and header [redacted]", "neither the bare token nor the header shows");
+});

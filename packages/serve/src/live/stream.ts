@@ -140,7 +140,9 @@ export async function watchRun(store: LiveStore, runId: string, options: WatchRu
       const [held] = await store.live.read([runId]);
       const events = heldEvents(held?.state as HeldState | undefined);
       if (events.length > 0) await to(events, { held: true });
-    } else if (!state.run) {
+    } else {
+      // Final, and its commits drained: nothing more can land (the end released the claim, and a released claim's commits
+      // are refused). Ended whether or not pi settled its input: a run failed because its stop did not settle never does.
       endIt({ reason: "ended" });
     }
   };

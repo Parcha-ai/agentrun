@@ -1,5 +1,5 @@
 import { ChevronRight, KeyRound } from "lucide-react";
-import { useState } from "react";
+import { useEffect, useState } from "react";
 import type { AuthMode } from "@/lib/auth";
 import type { ImportOffer } from "@/lib/client";
 import { cn } from "@/lib/utils";
@@ -8,6 +8,8 @@ export type SignInProps = {
   mode: Exclude<AuthMode, "signed_in">;
   /** The setup code from the link the server printed (`#code=`), when setup needs one. */
   code?: string | null;
+  /** Whether setup takes the server's printed code (its session read's `setup_code`): the field shows with no link too. */
+  codeNeeded?: boolean;
   /** Signs in, or sets the first password (`importSessions`: setup's box, ticked); resolves with the refusal to show, or
    *  null. */
   onSubmit?: (password: string, code?: string, importSessions?: boolean) => Promise<string | null>;
@@ -31,22 +33,27 @@ const COPY = {
 
 /** The hosted console's sign-in card, over AgentRun Server's own: the owner's password (or its first setting), with the
  *  server's HttpOnly session cookie as the result. Nothing is kept in the page. */
-export function SignIn({ mode, code = null, onSubmit, problem: initialProblem = null, offer = null }: SignInProps) {
+export function SignIn({ mode, code = null, codeNeeded = false, onSubmit, problem: initialProblem = null, offer = null }: SignInProps) {
   const [password, setPassword] = useState("");
   // Never ticked for the owner: their own click asks for the import.
   const [importSessions, setImportSessions] = useState(false);
   const [again, setAgain] = useState("");
   const [setupCode, setSetupCode] = useState(code ?? "");
+  // A setup link opened in this same tab after the page loaded: its code fills the field, the passwords typed stay.
+  useEffect(() => { if (code !== null) setSetupCode(code); }, [code]);
   const [problem, setProblem] = useState<string | null>(initialProblem);
   const [busy, setBusy] = useState(false);
   const setup = mode === "setup";
   // A count of none has nothing to offer; counting, or a count unknown, still does.
   const offered = setup && offer !== null && !("sessions" in offer && offer.sessions === 0);
-  const ready = mode !== "token_link" && password.length > 0 && (!setup || (password === again && password.length >= 12));
+  // The server takes a code at setup (its session read says so, or the link carried one): never sent without it.
+  const asksCode = setup && (codeNeeded || code !== null);
+  const ready = mode !== "token_link" && password.length > 0 && (!setup || (password === again && password.length >= 12)) && (!asksCode || setupCode.trim() !== "");
   const submit = async () => {
     if (!ready || !onSubmit) return;
     setBusy(true);
-    const p = await onSubmit(password, setup && setupCode ? setupCode : undefined, setup && offered && importSessions);
+    // The code as the log printed it: base64url, so whitespace around a paste is none of it.
+    const p = await onSubmit(password, asksCode && setupCode.trim() ? setupCode.trim() : undefined, setup && offered && importSessions);
     setBusy(false); setProblem(p);
   };
   return (
@@ -57,8 +64,8 @@ export function SignIn({ mode, code = null, onSubmit, problem: initialProblem = 
         <p className="mb-6 text-[15px] leading-relaxed text-[#aaa]">{COPY[mode].body}</p>
         {mode !== "token_link" && (
           <form className="space-y-5" onSubmit={(e) => { e.preventDefault(); void submit(); }}>
-            {setup && code !== null && (
-              <Field label="Setup code" note="From the link or the server's log.">
+            {asksCode && (
+              <Field label="Setup code" note="Find the setup code in the server's log (on Render, the Logs tab), or open the link the log prints. The server's API token (AGENTRUN_TOKEN) works here too.">
                 <input value={setupCode} onChange={(e) => setSetupCode(e.target.value)} autoComplete="off" spellCheck={false} className={input} />
               </Field>
             )}
@@ -90,8 +97,12 @@ export function SignIn({ mode, code = null, onSubmit, problem: initialProblem = 
             {problem && <p className="font-mono text-[13px] text-destructive-text" role="alert">{problem}</p>}
             {!setup && (
               <p className="text-[12px] leading-relaxed text-[#888]">
-                Forgot it? Where the server runs, <code className="font-mono text-[#ccc]">agentrun-serve reset-password --data DIR</code> clears it
-                (in the image: <code className="font-mono text-[#ccc]">reset-password --data /data</code>); the next visit here sets a new one.
+                {/* The npx wrapper's command first (it takes reset-password, on its own store, ~/.agentrun), then the server's own. The
+                    page is public: the data directory stays a placeholder. */}
+                Forgot it? Where the server runs: <code className="font-mono text-[#ccc]">npx @parcha/agentrun reset-password</code> (add{" "}
+                <code className="font-mono text-[#ccc]">--data DIR</code> if you started it with one). For a server you started yourself:{" "}
+                <code className="font-mono text-[#ccc]">agentrun-serve reset-password --data DIR</code> (in the image:{" "}
+                <code className="font-mono text-[#ccc]">--data /data</code>). The next visit here sets a new one.
               </p>
             )}
           </form>

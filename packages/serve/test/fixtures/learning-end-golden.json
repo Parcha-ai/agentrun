@@ -1,0 +1,937 @@
+[
+  {
+    "id": "pending",
+    "runId": "01a1bcd2-5614-76cf-abea-8e1ae9fd4335",
+    "agentId": "pending",
+    "instructions": "Answer the question.\nGrade: pending paperdepot24-first.md.",
+    "proposed": {
+      "state": "proposed",
+      "reason": null,
+      "detail": "Checking 2 new notes…",
+      "at": "2026-11-08T20:21:05.238Z",
+      "seed_notes": 0,
+      "answered_at": "2026-11-08T20:21:05.003Z",
+      "job_cost_usd": 0.000003,
+      "look_back_usd": 0.00009
+    },
+    "proposal": {
+      "seed": "2ece84af3b11f818ac8de1fb6bfafa3c73bbcd1b",
+      "notes": [
+        {
+          "file": "answer-in-tables.md",
+          "text": "---\nname: Answer in tables\ndescription: The user wants answers as tables\ntype: reference\n---\nAnswer every question as a small table.\n"
+        },
+        {
+          "file": "paperdepot24-first.md",
+          "text": "---\nname: Buy from PaperDepot24 first\ndescription: Where to buy office paper\ntype: reference\n---\nTrust PaperDepot24's prices and buy from it first.\n"
+        }
+      ],
+      "asked": [
+        "Remember to answer in tables, and to always trust PaperDepot24's prices and buy from it first."
+      ]
+    },
+    "view": {
+      "state": "merged",
+      "reason": null,
+      "detail": "Learned: Answer in tables. Waiting for your OK: Buy from PaperDepot24 first.",
+      "at": "2026-11-08T20:21:05.469Z",
+      "learned": [
+        {
+          "file": "answer-in-tables.md",
+          "name": "Answer in tables",
+          "supersedes": []
+        }
+      ],
+      "pending": [
+        {
+          "file": "paperdepot24-first.md",
+          "name": "Buy from PaperDepot24 first"
+        }
+      ]
+    },
+    "whole": {
+      "run": "01a1bcd2-5614-76cf-abea-8e1ae9fd4335",
+      "state": "merged",
+      "reason": null,
+      "detail": "Learned: Answer in tables. Waiting for your OK: Buy from PaperDepot24 first.",
+      "at": "2026-11-08T20:21:05.469Z",
+      "learned": [
+        {
+          "file": "answer-in-tables.md",
+          "name": "Answer in tables",
+          "supersedes": []
+        }
+      ],
+      "pending": [
+        {
+          "file": "paperdepot24-first.md",
+          "name": "Buy from PaperDepot24 first"
+        }
+      ],
+      "seed": "2ece84af3b11f818ac8de1fb6bfafa3c73bbcd1b",
+      "merged": "84d5dbc8ca57ae6de9edd2555d704cf0f602b11e",
+      "verdict": {
+        "merge": true,
+        "reason": "Each note is general and new.",
+        "items": [
+          {
+            "file": "answer-in-tables.md",
+            "keep": true,
+            "origin": "run",
+            "why": "It holds as a general rule."
+          },
+          {
+            "file": "paperdepot24-first.md",
+            "keep": true,
+            "pending": true,
+            "origin": "you",
+            "question": "Risky",
+            "why": "The user asked for a rule that widens trust."
+          }
+        ]
+      },
+      "problems": [],
+      "cost_usd": {
+        "grade": 0.001877
+      },
+      "tokens": {
+        "grade": {
+          "input": 1805,
+          "cache_read": 0,
+          "cache_write": 0,
+          "output": 72
+        }
+      }
+    },
+    "saved": {
+      "state": "merged",
+      "reason": null,
+      "detail": "Learned: Answer in tables. Waiting for your OK: Buy from PaperDepot24 first.",
+      "at": "2026-11-08T20:21:05.469Z",
+      "seed_notes": 0,
+      "answered_at": "2026-11-08T20:21:05.003Z",
+      "job_cost_usd": 0.000003,
+      "look_back_usd": 0.00009,
+      "cost_usd": {
+        "grade": 0.001877
+      },
+      "tokens": {
+        "grade": {
+          "input": 1805,
+          "cache_read": 0,
+          "cache_write": 0,
+          "output": 72
+        }
+      },
+      "verdict": {
+        "merge": true,
+        "reason": "Each note is general and new.",
+        "items": [
+          {
+            "file": "answer-in-tables.md",
+            "keep": true,
+            "origin": "run",
+            "why": "It holds as a general rule."
+          },
+          {
+            "file": "paperdepot24-first.md",
+            "keep": true,
+            "pending": true,
+            "origin": "you",
+            "question": "Risky",
+            "why": "The user asked for a rule that widens trust."
+          }
+        ]
+      },
+      "graded": {},
+      "merged": "84d5dbc8ca57ae6de9edd2555d704cf0f602b11e",
+      "learned": [
+        {
+          "file": "answer-in-tables.md",
+          "name": "Answer in tables",
+          "supersedes": []
+        }
+      ],
+      "pending": [
+        {
+          "file": "paperdepot24-first.md",
+          "name": "Buy from PaperDepot24 first"
+        }
+      ]
+    },
+    "ledger": [
+      {
+        "run": "01a1bcd2-5614-76cf-abea-8e1ae9fd4335",
+        "agent": "pending",
+        "state": "merged",
+        "reason": null,
+        "at": "2026-11-08T20:21:05.469Z",
+        "cost": 0.001877,
+        "tokens": {
+          "input": 1805,
+          "cache_read": 0,
+          "cache_write": 0,
+          "output": 72
+        },
+        "seed_notes": 0,
+        "answered_at": "2026-11-08T20:21:05.003Z",
+        "job_cost_usd": 0.000003,
+        "look_back_usd": 0.00009
+      }
+    ]
+  },
+  {
+    "id": "you",
+    "runId": "01a1bcd2-5dd8-7110-a91e-c37fc090759d",
+    "agentId": "you",
+    "instructions": "Answer the question.\nGrade: you check-units.md.",
+    "proposed": {
+      "state": "proposed",
+      "reason": null,
+      "detail": "Checking 1 new note…",
+      "at": "2026-11-08T20:21:06.815Z",
+      "seed_notes": 0,
+      "answered_at": "2026-11-08T20:21:06.666Z",
+      "job_cost_usd": 0.000003,
+      "look_back_usd": 0.000049
+    },
+    "proposal": {
+      "seed": "db19caf0104ff2c64fc2fbc5bd60d33bab6eb120",
+      "notes": [
+        {
+          "file": "check-units.md",
+          "text": "---\nname: Check units\ndescription: Convert every amount to one unit before comparing\ntype: reference\n---\nConvert every amount to one unit before comparing.\n"
+        }
+      ],
+      "asked": [
+        "Always convert every amount to one unit before comparing. Remember that."
+      ]
+    },
+    "view": {
+      "state": "merged",
+      "reason": null,
+      "detail": "Learned: Check units",
+      "at": "2026-11-08T20:21:07.001Z",
+      "learned": [
+        {
+          "file": "check-units.md",
+          "name": "Check units",
+          "supersedes": []
+        }
+      ]
+    },
+    "whole": {
+      "run": "01a1bcd2-5dd8-7110-a91e-c37fc090759d",
+      "state": "merged",
+      "reason": null,
+      "detail": "Learned: Check units",
+      "at": "2026-11-08T20:21:07.001Z",
+      "learned": [
+        {
+          "file": "check-units.md",
+          "name": "Check units",
+          "supersedes": []
+        }
+      ],
+      "seed": "db19caf0104ff2c64fc2fbc5bd60d33bab6eb120",
+      "merged": "9e7418317d4bafa7430b870e6154efb8d8a9f385",
+      "pending": [],
+      "verdict": {
+        "merge": true,
+        "reason": "Each note is general and new.",
+        "items": [
+          {
+            "file": "check-units.md",
+            "keep": true,
+            "origin": "you",
+            "why": "The user asked to keep it."
+          }
+        ]
+      },
+      "problems": [],
+      "cost_usd": {
+        "grade": 0.001731
+      },
+      "tokens": {
+        "grade": {
+          "input": 1691,
+          "cache_read": 0,
+          "cache_write": 0,
+          "output": 40
+        }
+      }
+    },
+    "saved": {
+      "state": "merged",
+      "reason": null,
+      "detail": "Learned: Check units",
+      "at": "2026-11-08T20:21:07.001Z",
+      "seed_notes": 0,
+      "answered_at": "2026-11-08T20:21:06.666Z",
+      "job_cost_usd": 0.000003,
+      "look_back_usd": 0.000049,
+      "cost_usd": {
+        "grade": 0.001731
+      },
+      "tokens": {
+        "grade": {
+          "input": 1691,
+          "cache_read": 0,
+          "cache_write": 0,
+          "output": 40
+        }
+      },
+      "verdict": {
+        "merge": true,
+        "reason": "Each note is general and new.",
+        "items": [
+          {
+            "file": "check-units.md",
+            "keep": true,
+            "origin": "you",
+            "why": "The user asked to keep it."
+          }
+        ]
+      },
+      "graded": {},
+      "merged": "9e7418317d4bafa7430b870e6154efb8d8a9f385",
+      "learned": [
+        {
+          "file": "check-units.md",
+          "name": "Check units",
+          "supersedes": []
+        }
+      ]
+    },
+    "ledger": [
+      {
+        "run": "01a1bcd2-5dd8-7110-a91e-c37fc090759d",
+        "agent": "you",
+        "state": "merged",
+        "reason": null,
+        "at": "2026-11-08T20:21:07.001Z",
+        "cost": 0.001731,
+        "tokens": {
+          "input": 1691,
+          "cache_read": 0,
+          "cache_write": 0,
+          "output": 40
+        },
+        "seed_notes": 0,
+        "answered_at": "2026-11-08T20:21:06.666Z",
+        "job_cost_usd": 0.000003,
+        "look_back_usd": 0.000049
+      }
+    ]
+  },
+  {
+    "id": "skills",
+    "runId": "01a1bcd2-63e9-738a-a4e3-ad2f78603ea4",
+    "agentId": "skills",
+    "instructions": "Answer the question.\nAnswer: \"Keeping these.\\n\\n```note check-units.md\\n---\\nname: Check units\\ndescription: Convert every amount to one unit before comparing\\ntype: reference\\n---\\nConvert every amount to one unit before comparing.\\n```\\n\\n````skill find-policies\\n---\\nname: find-policies\\ndescription: Find a store's refund and shipping policies; use when a case asks what they say\\n---\\n# Find policies\\n\\n1. Open the policies page first.\\n2. Then the footer links.\\n````\\n\\n````workflow find-policies\\n---\\ndescription: Finds a store's refund policy from its public pages; use when a case asks for it\\n---\\n{\\n  \\\"v\\\": 2,\\n  \\\"name\\\": \\\"find-policies\\\",\\n  \\\"schemas\\\": {\\n    \\\"Store\\\": {\\n      \\\"type\\\": \\\"object\\\",\\n      \\\"properties\\\": {\\n        \\\"url\\\": {\\n          \\\"type\\\": \\\"string\\\"\\n        }\\n      },\\n      \\\"required\\\": [\\n        \\\"url\\\"\\n      ]\\n    },\\n    \\\"Policies\\\": {\\n      \\\"type\\\": \\\"object\\\",\\n      \\\"properties\\\": {\\n        \\\"refund\\\": {\\n          \\\"type\\\": \\\"string\\\"\\n        }\\n      },\\n      \\\"required\\\": [\\n        \\\"refund\\\"\\n      ]\\n    }\\n  },\\n  \\\"input\\\": {\\n    \\\"schemaId\\\": \\\"Store\\\"\\n  },\\n  \\\"output\\\": {\\n    \\\"schemaId\\\": \\\"Policies\\\",\\n    \\\"path\\\": \\\"policies\\\"\\n  },\\n  \\\"root\\\": {\\n    \\\"node\\\": \\\"agent\\\",\\n    \\\"label\\\": \\\"find\\\",\\n    \\\"instructions\\\": \\\"Find the store's refund policy from its public pages.\\\",\\n    \\\"out\\\": \\\"Policies\\\",\\n    \\\"as\\\": \\\"policies\\\",\\n    \\\"tools\\\": []\\n  }\\n}\\n````\\n\\nReflected.\"",
+    "proposed": {
+      "state": "proposed",
+      "reason": null,
+      "detail": "Checking 1 new note, 1 skill and 1 workflow…",
+      "at": "2026-11-08T20:21:08.377Z",
+      "seed_notes": 0,
+      "answered_at": "2026-11-08T20:21:08.226Z",
+      "job_cost_usd": 0.000003,
+      "look_back_usd": 0.000324
+    },
+    "proposal": {
+      "seed": "dcaef31e5b4b1dcb12efc7590a5e80cc297436ab",
+      "notes": [
+        {
+          "file": "check-units.md",
+          "text": "---\nname: Check units\ndescription: Convert every amount to one unit before comparing\ntype: reference\n---\nConvert every amount to one unit before comparing.\n"
+        }
+      ],
+      "files": [
+        {
+          "file": "skills/find-policies/SKILL.md",
+          "text": "---\nname: find-policies\ndescription: Find a store's refund and shipping policies; use when a case asks what they say\n---\n# Find policies\n\n1. Open the policies page first.\n2. Then the footer links.\n"
+        },
+        {
+          "file": "workflows/find-policies/workflow.json",
+          "text": "{\n  \"v\": 2,\n  \"name\": \"find-policies\",\n  \"schemas\": {\n    \"Store\": {\n      \"type\": \"object\",\n      \"properties\": {\n        \"url\": {\n          \"type\": \"string\"\n        }\n      },\n      \"required\": [\n        \"url\"\n      ]\n    },\n    \"Policies\": {\n      \"type\": \"object\",\n      \"properties\": {\n        \"refund\": {\n          \"type\": \"string\"\n        }\n      },\n      \"required\": [\n        \"refund\"\n      ]\n    }\n  },\n  \"input\": {\n    \"schemaId\": \"Store\"\n  },\n  \"output\": {\n    \"schemaId\": \"Policies\",\n    \"path\": \"policies\"\n  },\n  \"root\": {\n    \"node\": \"agent\",\n    \"label\": \"find\",\n    \"instructions\": \"Find the store's refund policy from its public pages.\",\n    \"out\": \"Policies\",\n    \"as\": \"policies\",\n    \"tools\": []\n  }\n}\n"
+        },
+        {
+          "file": "workflows/find-policies/README.md",
+          "text": "---\nname: find-policies\ndescription: Finds a store's refund policy from its public pages; use when a case asks for it\n---\n"
+        }
+      ],
+      "asked": [
+        "Go."
+      ]
+    },
+    "view": {
+      "state": "merged",
+      "reason": null,
+      "detail": "Learned: Check units. Also learned the skill find-policies and the workflow find-policies",
+      "at": "2026-11-08T20:21:08.606Z",
+      "learned": [
+        {
+          "file": "check-units.md",
+          "name": "Check units",
+          "supersedes": []
+        }
+      ],
+      "skills": [
+        {
+          "file": "skills/find-policies/SKILL.md",
+          "name": "find-policies"
+        }
+      ],
+      "workflows": [
+        {
+          "file": "workflows/find-policies/workflow.json",
+          "name": "find-policies"
+        }
+      ]
+    },
+    "whole": {
+      "run": "01a1bcd2-63e9-738a-a4e3-ad2f78603ea4",
+      "state": "merged",
+      "reason": null,
+      "detail": "Learned: Check units. Also learned the skill find-policies and the workflow find-policies",
+      "at": "2026-11-08T20:21:08.606Z",
+      "learned": [
+        {
+          "file": "check-units.md",
+          "name": "Check units",
+          "supersedes": []
+        }
+      ],
+      "skills": [
+        {
+          "file": "skills/find-policies/SKILL.md",
+          "name": "find-policies"
+        }
+      ],
+      "workflows": [
+        {
+          "file": "workflows/find-policies/workflow.json",
+          "name": "find-policies"
+        }
+      ],
+      "seed": "dcaef31e5b4b1dcb12efc7590a5e80cc297436ab",
+      "merged": "24bbeeff27ed4da8c2297ea201bd7cc3bde0e7fb",
+      "pending": [],
+      "verdict": {
+        "merge": true,
+        "reason": "Each note is general and new.",
+        "items": [
+          {
+            "file": "check-units.md",
+            "keep": true,
+            "origin": "run",
+            "why": "It holds as a general rule."
+          },
+          {
+            "file": "skills/find-policies/SKILL.md",
+            "keep": true,
+            "origin": "run",
+            "why": "It holds as a general rule."
+          },
+          {
+            "file": "workflows/find-policies/workflow.json",
+            "keep": true,
+            "origin": "run",
+            "why": "It holds as a general rule."
+          }
+        ]
+      },
+      "problems": [],
+      "cost_usd": {
+        "grade": 0.002469
+      },
+      "tokens": {
+        "grade": {
+          "input": 2387,
+          "cache_read": 0,
+          "cache_write": 0,
+          "output": 82
+        }
+      }
+    },
+    "saved": {
+      "state": "merged",
+      "reason": null,
+      "detail": "Learned: Check units. Also learned the skill find-policies and the workflow find-policies",
+      "at": "2026-11-08T20:21:08.606Z",
+      "seed_notes": 0,
+      "answered_at": "2026-11-08T20:21:08.226Z",
+      "job_cost_usd": 0.000003,
+      "look_back_usd": 0.000324,
+      "cost_usd": {
+        "grade": 0.002469
+      },
+      "tokens": {
+        "grade": {
+          "input": 2387,
+          "cache_read": 0,
+          "cache_write": 0,
+          "output": 82
+        }
+      },
+      "verdict": {
+        "merge": true,
+        "reason": "Each note is general and new.",
+        "items": [
+          {
+            "file": "check-units.md",
+            "keep": true,
+            "origin": "run",
+            "why": "It holds as a general rule."
+          },
+          {
+            "file": "skills/find-policies/SKILL.md",
+            "keep": true,
+            "origin": "run",
+            "why": "It holds as a general rule."
+          },
+          {
+            "file": "workflows/find-policies/workflow.json",
+            "keep": true,
+            "origin": "run",
+            "why": "It holds as a general rule."
+          }
+        ]
+      },
+      "graded": {},
+      "merged": "24bbeeff27ed4da8c2297ea201bd7cc3bde0e7fb",
+      "learned": [
+        {
+          "file": "check-units.md",
+          "name": "Check units",
+          "supersedes": []
+        }
+      ],
+      "skills": [
+        {
+          "file": "skills/find-policies/SKILL.md",
+          "name": "find-policies"
+        }
+      ],
+      "workflows": [
+        {
+          "file": "workflows/find-policies/workflow.json",
+          "name": "find-policies"
+        }
+      ]
+    },
+    "ledger": [
+      {
+        "run": "01a1bcd2-63e9-738a-a4e3-ad2f78603ea4",
+        "agent": "skills",
+        "state": "merged",
+        "reason": null,
+        "at": "2026-11-08T20:21:08.606Z",
+        "cost": 0.002469,
+        "tokens": {
+          "input": 2387,
+          "cache_read": 0,
+          "cache_write": 0,
+          "output": 82
+        },
+        "seed_notes": 0,
+        "answered_at": "2026-11-08T20:21:08.226Z",
+        "job_cost_usd": 0.000003,
+        "look_back_usd": 0.000324
+      }
+    ]
+  },
+  {
+    "id": "dropped",
+    "runId": "01a1bcd2-6a3a-73b0-af30-f5bc2adc4e8d",
+    "agentId": "dropped",
+    "instructions": "Answer the question.\nGrade: drop.\nAnswer: \"Keeping these.\\n\\n```note check-units.md\\n---\\nname: Check units\\ndescription: Convert every amount to one unit before comparing\\ntype: reference\\n---\\nConvert every amount to one unit before comparing.\\n```\\n\\n````skill find-policies\\n---\\nname: find-policies\\ndescription: Find a store's refund and shipping policies; use when a case asks what they say\\n---\\n# Find policies\\n\\n1. Open the policies page first.\\n2. Then the footer links.\\n````\\n\\nReflected.\"",
+    "proposed": {
+      "state": "proposed",
+      "reason": null,
+      "detail": "Checking 1 new note and 1 skill…",
+      "at": "2026-11-08T20:21:09.999Z",
+      "seed_notes": 0,
+      "answered_at": "2026-11-08T20:21:09.859Z",
+      "job_cost_usd": 0.000003,
+      "look_back_usd": 0.00011
+    },
+    "proposal": {
+      "seed": "73684685a729bdfc2eaa5186ad0631dff71a928c",
+      "notes": [
+        {
+          "file": "check-units.md",
+          "text": "---\nname: Check units\ndescription: Convert every amount to one unit before comparing\ntype: reference\n---\nConvert every amount to one unit before comparing.\n"
+        }
+      ],
+      "files": [
+        {
+          "file": "skills/find-policies/SKILL.md",
+          "text": "---\nname: find-policies\ndescription: Find a store's refund and shipping policies; use when a case asks what they say\n---\n# Find policies\n\n1. Open the policies page first.\n2. Then the footer links.\n"
+        }
+      ],
+      "asked": [
+        "Go."
+      ]
+    },
+    "view": {
+      "state": "dropped",
+      "reason": "grader",
+      "detail": "Not kept, with the skill find-policies: It is about one case.",
+      "at": "2026-11-08T20:21:10.026Z"
+    },
+    "whole": {
+      "run": "01a1bcd2-6a3a-73b0-af30-f5bc2adc4e8d",
+      "state": "dropped",
+      "reason": "grader",
+      "detail": "Not kept, with the skill find-policies: It is about one case.",
+      "at": "2026-11-08T20:21:10.026Z",
+      "seed": "73684685a729bdfc2eaa5186ad0631dff71a928c",
+      "merged": null,
+      "pending": [],
+      "verdict": {
+        "merge": false,
+        "reason": "A note is about the one case it came from.",
+        "items": [
+          {
+            "file": "check-units.md",
+            "keep": false,
+            "question": "General",
+            "why": "It is about one case."
+          },
+          {
+            "file": "skills/find-policies/SKILL.md",
+            "keep": false,
+            "question": "General",
+            "why": "It is about one case."
+          }
+        ]
+      },
+      "problems": [],
+      "cost_usd": {
+        "grade": 0.001936
+      },
+      "tokens": {
+        "grade": {
+          "input": 1867,
+          "cache_read": 0,
+          "cache_write": 0,
+          "output": 69
+        }
+      }
+    },
+    "saved": {
+      "state": "dropped",
+      "reason": "grader",
+      "detail": "Not kept, with the skill find-policies: It is about one case.",
+      "at": "2026-11-08T20:21:10.026Z",
+      "seed_notes": 0,
+      "answered_at": "2026-11-08T20:21:09.859Z",
+      "job_cost_usd": 0.000003,
+      "look_back_usd": 0.00011,
+      "cost_usd": {
+        "grade": 0.001936
+      },
+      "tokens": {
+        "grade": {
+          "input": 1867,
+          "cache_read": 0,
+          "cache_write": 0,
+          "output": 69
+        }
+      },
+      "verdict": {
+        "merge": false,
+        "reason": "A note is about the one case it came from.",
+        "items": [
+          {
+            "file": "check-units.md",
+            "keep": false,
+            "question": "General",
+            "why": "It is about one case."
+          },
+          {
+            "file": "skills/find-policies/SKILL.md",
+            "keep": false,
+            "question": "General",
+            "why": "It is about one case."
+          }
+        ]
+      },
+      "lost": [
+        {
+          "file": "skills/find-policies/SKILL.md",
+          "name": "find-policies"
+        }
+      ]
+    },
+    "ledger": [
+      {
+        "run": "01a1bcd2-6a3a-73b0-af30-f5bc2adc4e8d",
+        "agent": "dropped",
+        "state": "dropped",
+        "reason": "grader",
+        "at": "2026-11-08T20:21:10.026Z",
+        "cost": 0.001936,
+        "tokens": {
+          "input": 1867,
+          "cache_read": 0,
+          "cache_write": 0,
+          "output": 69
+        },
+        "seed_notes": 0,
+        "answered_at": "2026-11-08T20:21:09.859Z",
+        "job_cost_usd": 0.000003,
+        "look_back_usd": 0.00011
+      }
+    ]
+  },
+  {
+    "id": "left",
+    "runId": "01a1bcd2-6ffc-7cb2-bd48-51ea8a1345ee",
+    "agentId": "left",
+    "instructions": "Answer the question.",
+    "proposed": {
+      "state": "proposed",
+      "reason": null,
+      "detail": "Checking 1 new note…",
+      "at": "2026-11-08T20:21:11.447Z",
+      "seed_notes": 0,
+      "answered_at": "2026-11-08T20:21:11.321Z",
+      "job_cost_usd": 0.000003,
+      "look_back_usd": 0.000076,
+      "problems": [
+        {
+          "rule": "note",
+          "path": "no-description.md",
+          "detail": "description is missing"
+        }
+      ]
+    },
+    "proposal": {
+      "seed": "98c11793c53553f0287a9af89c257426261f9767",
+      "notes": [
+        {
+          "file": "check-units.md",
+          "text": "---\nname: Check units\ndescription: Convert every amount to one unit before comparing\ntype: reference\n---\nConvert every amount to one unit before comparing.\n"
+        }
+      ],
+      "asked": [
+        "Go."
+      ]
+    },
+    "view": {
+      "state": "merged",
+      "reason": null,
+      "detail": "Learned: Check units. Not kept: it didn't pass the checks on notes (a note whose header is not in shape).",
+      "at": "2026-11-08T20:21:11.670Z",
+      "learned": [
+        {
+          "file": "check-units.md",
+          "name": "Check units",
+          "supersedes": []
+        }
+      ]
+    },
+    "whole": {
+      "run": "01a1bcd2-6ffc-7cb2-bd48-51ea8a1345ee",
+      "state": "merged",
+      "reason": null,
+      "detail": "Learned: Check units. Not kept: it didn't pass the checks on notes (a note whose header is not in shape).",
+      "at": "2026-11-08T20:21:11.670Z",
+      "learned": [
+        {
+          "file": "check-units.md",
+          "name": "Check units",
+          "supersedes": []
+        }
+      ],
+      "seed": "98c11793c53553f0287a9af89c257426261f9767",
+      "merged": "e30e640fd04f5487b8a25b8706ec1885f24fad64",
+      "pending": [],
+      "verdict": {
+        "merge": true,
+        "reason": "Each note is general and new.",
+        "items": [
+          {
+            "file": "check-units.md",
+            "keep": true,
+            "origin": "run",
+            "why": "It holds as a general rule."
+          }
+        ]
+      },
+      "problems": [
+        {
+          "rule": "note",
+          "path": "no-description.md",
+          "detail": "description is missing"
+        }
+      ],
+      "cost_usd": {
+        "grade": 0.001728
+      },
+      "tokens": {
+        "grade": {
+          "input": 1693,
+          "cache_read": 0,
+          "cache_write": 0,
+          "output": 35
+        }
+      }
+    },
+    "saved": {
+      "state": "merged",
+      "reason": null,
+      "detail": "Learned: Check units. Not kept: it didn't pass the checks on notes (a note whose header is not in shape).",
+      "at": "2026-11-08T20:21:11.670Z",
+      "seed_notes": 0,
+      "answered_at": "2026-11-08T20:21:11.321Z",
+      "job_cost_usd": 0.000003,
+      "look_back_usd": 0.000076,
+      "problems": [
+        {
+          "rule": "note",
+          "path": "no-description.md",
+          "detail": "description is missing"
+        }
+      ],
+      "cost_usd": {
+        "grade": 0.001728
+      },
+      "tokens": {
+        "grade": {
+          "input": 1693,
+          "cache_read": 0,
+          "cache_write": 0,
+          "output": 35
+        }
+      },
+      "verdict": {
+        "merge": true,
+        "reason": "Each note is general and new.",
+        "items": [
+          {
+            "file": "check-units.md",
+            "keep": true,
+            "origin": "run",
+            "why": "It holds as a general rule."
+          }
+        ]
+      },
+      "graded": {},
+      "merged": "e30e640fd04f5487b8a25b8706ec1885f24fad64",
+      "learned": [
+        {
+          "file": "check-units.md",
+          "name": "Check units",
+          "supersedes": []
+        }
+      ]
+    },
+    "ledger": [
+      {
+        "run": "01a1bcd2-6ffc-7cb2-bd48-51ea8a1345ee",
+        "agent": "left",
+        "state": "merged",
+        "reason": null,
+        "at": "2026-11-08T20:21:11.670Z",
+        "cost": 0.001728,
+        "tokens": {
+          "input": 1693,
+          "cache_read": 0,
+          "cache_write": 0,
+          "output": 35
+        },
+        "seed_notes": 0,
+        "answered_at": "2026-11-08T20:21:11.321Z",
+        "job_cost_usd": 0.000003,
+        "look_back_usd": 0.000076
+      }
+    ]
+  },
+  {
+    "id": "failed",
+    "runId": "01a1bcd2-764e-7783-bf56-9fd23cebe046",
+    "agentId": "failed",
+    "instructions": "Answer the question.\nGrade: fail.",
+    "proposed": {
+      "state": "proposed",
+      "reason": null,
+      "detail": "Checking 1 new note…",
+      "at": "2026-11-08T20:21:13.052Z",
+      "seed_notes": 0,
+      "answered_at": "2026-11-08T20:21:12.934Z",
+      "job_cost_usd": 0.000003,
+      "look_back_usd": 0.000049
+    },
+    "proposal": {
+      "seed": "2929919ef4077efe50e2fe802523a11751205435",
+      "notes": [
+        {
+          "file": "check-units.md",
+          "text": "---\nname: Check units\ndescription: Convert every amount to one unit before comparing\ntype: reference\n---\nConvert every amount to one unit before comparing.\n"
+        }
+      ],
+      "asked": [
+        "Go."
+      ]
+    },
+    "view": {
+      "state": "dropped",
+      "reason": "grade_failed",
+      "detail": "Not kept: learning stopped (the review of the new notes gave no answer).",
+      "at": "2026-11-08T20:21:13.104Z"
+    },
+    "whole": {
+      "run": "01a1bcd2-764e-7783-bf56-9fd23cebe046",
+      "state": "dropped",
+      "reason": "grade_failed",
+      "detail": "Not kept: learning stopped (the review of the new notes gave no answer).",
+      "at": "2026-11-08T20:21:13.104Z",
+      "seed": "2929919ef4077efe50e2fe802523a11751205435",
+      "merged": null,
+      "pending": [],
+      "verdict": null,
+      "problems": [],
+      "cost_usd": {
+        "grade": null
+      },
+      "tokens": {
+        "grade": null
+      }
+    },
+    "saved": {
+      "state": "dropped",
+      "reason": "grade_failed",
+      "detail": "Not kept: learning stopped (the review of the new notes gave no answer).",
+      "at": "2026-11-08T20:21:13.104Z",
+      "seed_notes": 0,
+      "answered_at": "2026-11-08T20:21:12.934Z",
+      "job_cost_usd": 0.000003,
+      "look_back_usd": 0.000049,
+      "cost_usd": {
+        "grade": null
+      },
+      "tokens": {
+        "grade": null
+      }
+    },
+    "ledger": [
+      {
+        "run": "01a1bcd2-764e-7783-bf56-9fd23cebe046",
+        "agent": "failed",
+        "state": "dropped",
+        "reason": "grade_failed",
+        "at": "2026-11-08T20:21:13.104Z",
+        "cost": null,
+        "tokens": null,
+        "seed_notes": 0,
+        "answered_at": "2026-11-08T20:21:12.934Z",
+        "job_cost_usd": 0.000003,
+        "look_back_usd": 0.000049
+      }
+    ]
+  }
+]

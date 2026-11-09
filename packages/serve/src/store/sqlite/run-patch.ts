@@ -3,13 +3,16 @@
 // runs.update and for the journal's commit (store/journal), which stages the patch and calls this inside its own
 // transaction: the run's end and its outbox rows commit with the journal's last entry, or none of them do. The fence is
 // the first statement: `WHERE id = ? AND epoch = ?` changing no row throws Fenced, and the caller's transaction rolls back.
-import { FINAL_STATES, Fenced, type AlsoRow, type Claim, type ImportedFrom, type RunOutcome, type RunPatch, type RunRow, type RunState } from "../store.js";
+import { endedReason, FINAL_STATES, Fenced, type AlsoRow, type Claim, type ImportedFrom, type RunOutcome, type RunPatch, type RunRow, type RunState } from "../store.js";
 import type { SqliteExecutor, SqliteValue } from "./connection.js";
+import { claimFence } from "../fence.js";
 import { writeLaunch } from "./run-launch.js";
 
 /** A learning run's launch body: the learning harness, the run that learned as its input, and where it runs (on the
  *  runner, no box: its only writes are the learning folder's one script). */
-export const learningLaunchOf = (runId: string) => ({ harness: "learning", input: { runId }, title: `Learning from ${runId}`, place: { mode: "runner" } });
+/** A learning run's launch: harness "learning", its input the run that learned, and `model`, the grade model when one is
+ *  named (gradeModelOf; none: the agent's own grades it, as main's). No cap: main caps no grade. */
+export const learningLaunchOf = (runId: string, model?: string) => ({ harness: "learning", input: { runId }, title: `Learning from ${runId}`, place: { mode: "runner" }, ...(model ? { model } : {}) });
 
 export type RunRecord = {
   id: string; agent_id: string; revision_id: string; state: RunState; epoch: number; runner: string | null; claimed_until: number | null;
@@ -27,8 +30,9 @@ export const runOf = (r: RunRecord): RunRow => ({
 });
 
 /** Applies `patch` to the claim's run, then writes `also`, through `tx` (an open transaction's handle). Fenced, with nothing
- *  of it written once the caller rolls back, when the run's epoch is not the claim's. A final state with no `endedAt` is
- *  stamped `now`. */
+ *  of it written once the caller rolls back, when the run's epoch is not the claim's or the claim's lease ran out before
+ *  `now` (the store's clock, read in the transaction). A final state with no `endedAt` is stamped `now`, and releases the
+ *  run in the same statement. */
 export async function applyRunPatch(tx: Pick<SqliteExecutor, "run" | "get">, claim: Pick<Claim, "runId" | "epoch">, patch: RunPatch, also: readonly AlsoRow[], now: number): Promise<RunRow> {
   const sets: string[] = [];
   const params: SqliteValue[] = [];
@@ -45,10 +49,21 @@ export async function applyRunPatch(tx: Pick<SqliteExecutor, "run" | "get">, cla
   // When the run leaves 'running' (parks or ends), stamp when: a Browserbase sign-in it held keeps its save lease for the
   // settle window after this (runs.update's save decision reads left_running_at). Queued is never set through a patch.
   if (patch.state !== undefined && patch.state !== "running" && patch.state !== "queued") set("left_running_at", now);
-  // Nothing to change still proves the claim: the row comes back only under it.
+  // A write that makes the run final is its release, in the same statement: no runner, no lease, the epoch moved on by one
+  // as release() moves it. From this commit the run reads ended and released at once, and a later release is a no-op.
+  const ending = patch.state !== undefined && FINAL_STATES.includes(patch.state);
+  if (ending) sets.push("runner = NULL", "claimed_until = NULL", "epoch = epoch + 1");
+  // Nothing to change still proves the claim: the row comes back only under it, its epoch the claim's and its lease not
+  // run out (claimed_until on this store's clock, the one that set it).
   const assignments = sets.length ? sets.join(", ") : "epoch = epoch";
-  const row = await tx.get<RunRecord>(`UPDATE runs SET ${assignments} WHERE id = ? AND epoch = ? RETURNING ${RUN_COLUMNS}`, ...params, claim.runId, claim.epoch);
+  const fence = claimFence(claim, now);
+  const row = await tx.get<RunRecord>(`UPDATE runs SET ${assignments} WHERE ${fence.where} RETURNING ${RUN_COLUMNS}`, ...params, ...fence.params);
   if (!row) throw new Fenced(claim.runId, claim.epoch);
+  // Released, the run holds nothing a runner showed: its run_live row goes in the same transaction, so a run read ended
+  // never shows a running tool or a partial answer beside it.
+  if (ending) await tx.run("DELETE FROM run_live WHERE run_id = ?", claim.runId);
+  // And its computer sessions' viewer hand-overs, every kind: a run read ended never names a viewer.
+  if (ending) await tx.run("DELETE FROM computer_viewers WHERE run_id = ?", claim.runId);
   for (const each of also) {
     switch (each.table) {
       case "channel_posts": {
@@ -62,13 +77,16 @@ export async function applyRunPatch(tx: Pick<SqliteExecutor, "run" | "get">, cla
       case "channel_told":
         await tx.run("INSERT INTO channel_told (channel, run_id, marker, at) VALUES (?, ?, ?, ?) ON CONFLICT DO NOTHING", each.row.channel, claim.runId, each.row.marker, now);
         break;
-      // The run's kept learning, of the run's own agent; kept once (an end replayed after a crash keeps the first).
-      case "learning_proposals":
+      // The run's kept learning, of the run's own agent, naming the learning run the same end queues (wherever the end
+      // lists it); kept once (an end replayed after a crash keeps the first).
+      case "learning_proposals": {
+        const queued = also.find((one): one is Extract<AlsoRow, { table: "learning_run" }> => one.table === "learning_run");
         await tx.run(
-          "INSERT INTO learning_proposals (run_id, agent_id, turn, proposal, created_at) SELECT id, agent_id, ?, ?, ? FROM runs WHERE id = ? ON CONFLICT (run_id) DO NOTHING",
-          JSON.stringify(each.row.turn ?? null), JSON.stringify(each.row.proposal ?? null), now, claim.runId,
+          "INSERT INTO learning_proposals (run_id, agent_id, turn, proposal, learning_run_id, created_at) SELECT id, agent_id, ?, ?, ?, ? FROM runs WHERE id = ? ON CONFLICT (run_id) DO NOTHING",
+          JSON.stringify(each.row.turn ?? null), JSON.stringify(each.row.proposal ?? null), queued?.row.id ?? null, now, claim.runId,
         );
         break;
+      }
       // The learning run: queued, of the run's agent and revision, started once (the same id again adds nothing).
       case "learning_run":
         await tx.run(
@@ -78,10 +96,18 @@ export async function applyRunPatch(tx: Pick<SqliteExecutor, "run" | "get">, cla
         // Its launch row, with it: harness "learning" (the runner's loop factory picks the learning loop by it), its input
         // the run that learned. Written once, as the run is.
         if (!(await tx.get("SELECT 1 AS found FROM run_launch WHERE run_id = ?", each.row.id))) {
-          await writeLaunch(tx as SqliteExecutor, each.row.id, { body: learningLaunchOf(claim.runId) }, now);
+          await writeLaunch(tx as SqliteExecutor, each.row.id, { body: learningLaunchOf(claim.runId, each.row.model) }, now);
         }
         break;
     }
   }
   return runOf(row);
+}
+
+/** After a write that made the run final has taken its own rows: every command row of the run still untaken is refused
+ *  with the end's reason, in that same transaction. The store takes no new row on a final run (RunFinal), so a row the
+ *  end left untaken would stay so for good, as it would if the runner died right after the end. */
+export async function refuseLeftovers(tx: Pick<SqliteExecutor, "run">, runId: string, state: RunState | undefined, now: number): Promise<void> {
+  if (state !== "ended" && state !== "stopped" && state !== "failed") return;
+  await tx.run("UPDATE commands SET taken_at = ?, refused = ? WHERE run_id = ? AND taken_at IS NULL", now, endedReason(state), runId);
 }

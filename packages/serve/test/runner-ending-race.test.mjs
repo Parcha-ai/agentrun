@@ -1,7 +1,9 @@
 // A run that ends while the runner is still talking to its loop or the store about it: nothing of the claim is written
 // after the release, and nothing in flight at the end reads as a lost claim.
-// (a) a command whose loop.command() is still pending when start() resolves: finish waits for it, so its refusal is
-//     written (with the loop's own reason) before the release, never after, and no claim-lost is emitted;
+// (a) a command whose loop.command() is still pending when start() resolves: finish waits for it, so no take of it is
+//     written after the release, and no claim-lost is emitted. The row itself is settled by the end's commit, in the
+//     end's words: no final run keeps an untaken row (the store refuses the leftovers in the write that makes it final),
+//     and holding every loop's end for its in-flight commands would move endWaitMs into every loop;
 // (b) a renew in flight when the run ends and answered after the release: no claim-lost is emitted;
 // (c) a command() that answers only after finish's wait ran out and the release: no store call and no event follow it.
 import assert from "node:assert/strict";
@@ -9,7 +11,7 @@ import { test } from "node:test";
 import { BACKGROUND_CONTEXT } from "@earendil-works/chord/context";
 import { commitWrites } from "@earendil-works/pi-durable/testing";
 import { startRunner } from "../dist/runner/runner.js";
-import { sendCommand } from "../dist/runner/commands.js";
+import { endedReason, sendCommand } from "../dist/runner/commands.js";
 import { commandRow, nextOrder, observed, queue, recorder, sleep, stores, until } from "./runner-support.mjs";
 
 const TIMING = { leaseMs: 2_000, renewEveryMs: 500, stopMarginMs: 500, pollMs: 20, commandPollMs: 20 };
@@ -62,7 +64,7 @@ async function running(t, timing = {}) {
 /** When the run's release was asked of the store, in the order things happened. */
 const releasedAt = (record) => record.calls.find((call) => call.op === "release")?.order;
 
-test("(a) a command still with the loop when the run ends: its refusal is written before the release, never after, and no claim is lost", async (t) => {
+test("(a) a command still with the loop when the run ends: settled by the end in the end's words, nothing taken after the release, and no claim is lost", async (t) => {
   const { server, record, events, control } = await running(t);
   const steer = await sendCommand(server, "run-1", { kind: "steer", body: { text: "one more thing" } });
   await until(() => control.commands.length === 1, "the steer reaches the loop");
@@ -77,7 +79,8 @@ test("(a) a command still with the loop when the run ends: its refusal is writte
   const takes = record.calls.filter((call) => call.op === "take");
   assert.ok(takes.length > 0, "the refusal is written");
   assert.deepEqual(takes.filter((call) => call.order > release), [], `no take after the release: ${JSON.stringify(record.calls)}`);
-  assert.equal((await commandRow(server, "run-1", steer.id)).refused, "the loop's own reason", "the loop's own refusal, not the end's sweep's");
+  // The end's commit settled it (it was never taken): the loop's later answer writes nothing over it.
+  assert.equal((await commandRow(server, "run-1", steer.id)).refused, endedReason("ended"), "settled by the end, in the end's words");
   assert.deepEqual(events.filter((event) => event.type === "claim-lost"), []);
 });
 

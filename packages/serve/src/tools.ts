@@ -28,12 +28,15 @@ import { forModel } from "./result.js";
 import { fetchFor, runPages, WEB_FETCH_TOOL, webFetchTool } from "./web-fetch.js";
 import { searchFor, WEB_SEARCH_TOOL, webSearchTool } from "./web-search.js";
 import { browserNeeds, explainsView, isUnavailable, NO_PARALLEL_KEY, type Pickable, PICKABLE, planeOf, type Plane, PROVIDERS, serverGate, type Tooling, type ToolSettingsMap, whyUnavailable, withDefaults } from "./tool-plane.js";
-import type { SettingFrom } from "./tool-gate.js";
+import type { DenyFrom, SettingFrom } from "./tool-gate.js";
 import { PARALLEL_KEY_ENV } from "./decisions.js";
 import { keyNeeded } from "./key-words.js";
 import { handedSignIn, hostSecrets } from "./secrets.js";
 import { redactedAnswer } from "./key-refusal.js";
 import { SIGN_IN_KEY, SIGN_IN_SAVED } from "./sign-ins.js";
+import { answerIn } from "./runner/hand-back.js";
+import type { LiveHandover, LiveViewerStore } from "./browser-live.js";
+import type { Claim } from "./store/store.js";
 
 export const ASK_TOOL = "ask_person";
 /** Under `--faux` only: a module whose default export gives the browser's `{ provider, driver }` for the run's
@@ -75,6 +78,23 @@ export type ToolHost = {
   beforeResume(settle: (harness: Harness) => void | Promise<void>): void;
   /** Runs when the run's process lets the run go (its work done, or a SIGTERM), while the Harness is still open. */
   beforeRelease(stop: (harness: Harness) => void | Promise<void>): void;
+  /** The run is on the runner: its browser hand-over's answers are entries of its journal (a browser_hand_back row the
+   *  runner applies, the live view's hand-back, the ask's expiry), read and written there, never as answer files
+   *  (browser-person.ts personHands `answered`). */
+  handoverInJournal?: boolean;
+  /** The run is on the runner: its live viewers are handed over through the store, not through files in its directory
+   *  (browser-live.ts putLiveViewer/dropLiveViewer). The browser tool's live-viewer writers hang off this: `put` hands a
+   *  session's viewer over (its token sealed under the run's `sealKey`), `drop` takes one (or all of the run's) back. The
+   *  three fields below are what builds these (the one store, the claim the row is written under, the seal key); a tool's
+   *  binding reads `liveViewers`, never them directly. Absent on the server path, where the viewer lives in the run's
+   *  directory (browser-live.ts sessionHandovers: writeHandover/dropHandover). */
+  liveViewers?: { put(handover: LiveHandover): Promise<boolean>; drop(tag?: string): Promise<void> };
+  /** The one store, for the live-viewer seam above (and the sign-in verify the runner saves). */
+  store?: LiveViewerStore;
+  /** The claim this run is held under: the live-viewer rows are written under it (its epoch fences them). */
+  claim?: Claim;
+  /** The key the live-viewer tokens are sealed under before they go to the store (store/seal.ts). */
+  sealKey?: Buffer;
 };
 
 /** What a name stands for in the run: the pi tools it offers, and the extensions a conversation selects for them. */
@@ -292,6 +312,18 @@ const browserTool: ToolEntry = {
           cursor = page.next;
         }
       }, context)) ?? 0,
+      // On the runner: an ask's answer is the root's first answered hand-over entry for it (runner/hand-back.ts).
+      ...(host.handoverInJournal ? {
+        answered: async (id: string) => (await opened?.commit(async (tx) => {
+          for (let cursor: Parameters<Tx["scanEntries"]>[2] | undefined; ; ) {
+            const page = await tx.scanEntries({ conversationId: ROOT_CONVERSATION_ID, order: "ascending" }, 200, cursor);
+            const found = answerIn(page.items, id);
+            if (found) return { outcome: found.state, at: found.at, ...(found.reason !== undefined ? { reason: found.reason } : {}) };
+            if (page.next === undefined) return undefined;
+            cursor = page.next;
+          }
+        }, context)) ?? undefined,
+      } : {}),
       // Tests only (--faux): the process dies once between an ask's record and its row.
       afterRecord: host.env[FAUX_ENV] && host.env[person.FAUX_ASK_DIES_ENV] ? () => {
         const mark = host.env[person.FAUX_ASK_DIES_ENV]!;
@@ -306,12 +338,10 @@ const browserTool: ToolEntry = {
       if (refused) throw refused;
       return watched as never;
     };
-    // Each session's viewer reaches the server in the run's directory, never work/: written as it launches, gone as it ends.
-    const onSession = async (row: { session: { tag: string }; liveView: { fullscreen: string } | null }, change: string) => {
-      if (change === "released") return live.dropHandover(host.where.root, row.session.tag);
-      const handover = row.liveView ? live.handoverOf(row.liveView.fullscreen, row.session.tag) : undefined;
-      if (handover) await live.writeHandover(host.where.root, handover);
-    };
+    // Each session's viewer reaches the server as it launches, and goes as it ends: on the runner through the store, under
+    // the run's claim (host.liveViewers); on the old per-run process, in the run's directory, never work/.
+    const viewers = live.sessionHandovers(host.where.root, host.liveViewers);
+    const onSession = (row: { session: { tag: string }; liveView: { fullscreen: string } | null }, change: string) => viewers.changed(row, change);
     // Its session time is the run's spend, at its provider's price, and held under the run's cap (browser-cost.ts).
     const providerName = (parts.provider as { name?: string } | undefined)?.name ?? vendor;
     const price = browserPrice(providerName, host.env);
@@ -358,8 +388,7 @@ const browserTool: ToolEntry = {
       for (const row of kept.filter((r) => (r.state === "live" || r.state === "held") && r.resourceId !== null)) {
         try {
           const opened = await watched?.liveView?.({ id: row.resourceId!, tag: row.tag });
-          const handover = opened?.fullscreen ? live.handoverOf(opened.fullscreen, row.tag) : undefined;
-          if (handover) await live.writeHandover(host.where.root, handover);
+          await viewers.reopened(row.tag, opened?.fullscreen);
         } catch {
           // A browser that cannot be reached has no view to give: the owner reads none, as for any session without one.
         }
@@ -379,7 +408,7 @@ const browserTool: ToolEntry = {
         // holds go, and the asks with them.
         await view.close();
         hands.close();
-        await live.dropHandover(host.where.root);
+        await viewers.released();
         person.dropAsks(host.where.root);
       }
     });
@@ -447,15 +476,16 @@ export const learnedWorkflowTools = (granted: readonly string[], plane?: Plane):
 /** The tools a learned draft may name (learnedWorkflowTools) that the gate allows: `permission` is what the gate holds a
  *  tool to now (tool-gate.ts permissionOf, or the run's gate's policy), by its settings key. One set to ask or deny is left out of `tools`, so the end-of-run prompt never offers it, and named
  *  in `gated` with its setting, which the checker and a learned workflow's check before it runs refuse a draft for. */
-export const learnedDraftTools = (granted: readonly string[], permission: (name: string) => string, plane?: Plane, from?: (name: string) => SettingFrom): { tools: string[]; gated: Record<string, string>; deniedBy: Record<string, SettingFrom> } => {
+export const learnedDraftTools = (granted: readonly string[], permission: (name: string) => string, plane?: Plane, from?: (name: string) => SettingFrom): { tools: string[]; gated: Record<string, string>; deniedBy: Record<string, DenyFrom> } => {
   const gated: Record<string, string> = {};
   // Where each deny was set (this agent's settings or this server's), so the refusal names it.
-  const deniedBy: Record<string, SettingFrom> = {};
+  const deniedBy: Record<string, DenyFrom> = {};
   const tools = learnedWorkflowTools(granted, plane).filter((name) => {
     const setting = permission(name);
     if (setting === "allow") return true;
     gated[name] = setting;
-    if (setting === "deny" && from) deniedBy[name] = from(name);
+    // A deny comes from a layer or the default, never from approvals, which only ever allows.
+    if (setting === "deny" && from) deniedBy[name] = from(name) as DenyFrom;
     return false;
   });
   return { tools, gated, deniedBy };
@@ -488,7 +518,7 @@ export const toolOf = (name: string): ToolEntry | undefined => (Object.hasOwn(TO
 /** What a stored revision's tools resolve from (tool-plane.ts): the tools it grants, its harness, model and settings. */
 export async function toolingOf(revision: Revision): Promise<Tooling> {
   const tools = await grantedTools(revision.kind === "agentic" ? { kind: "agentic", tools: revision.body.tools } : { kind: "workflow", tools: revision.body.tools, workflow: revision.body.workflow });
-  return { tools, ...(revision.kind === "workflow" ? { workflow: true as const } : {}), ...(revision.body.harness ? { harness: revision.body.harness } : {}), ...(revision.kind === "agentic" && revision.body.model ? { model: revision.body.model } : {}), ...(revision.body.toolSettings ? { overrides: revision.body.toolSettings as ToolSettingsMap } : {}) };
+  return { tools, ...(revision.kind === "workflow" ? { workflow: true as const } : {}), ...(revision.body.harness ? { harness: revision.body.harness } : {}), ...(revision.kind === "agentic" && revision.body.model ? { model: revision.body.model } : {}), ...(revision.body.toolSettings ? { overrides: revision.body.toolSettings as ToolSettingsMap } : {}), ...(revision.body.approvals === "never" ? { approvals: "never" as const } : {}) };
 }
 
 /** The variables `entry` needs that `env` does not set, by name. */

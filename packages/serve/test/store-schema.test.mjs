@@ -3,15 +3,19 @@
 // keys enforced. A run update can carry rows in the same commit (a journal commit's staged patch: the outbox), and a
 // fenced one writes none of them.
 import assert from "node:assert/strict";
+import { mkdtempSync, rmSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
 import { DatabaseSync } from "node:sqlite";
 import { test } from "node:test";
 import { Fenced, StoreConstraint } from "../dist/store/store.js";
-import { queued, storeOn } from "./store-helpers.mjs";
+import { openSqliteStore } from "../dist/store/sqlite/store.js";
+import { queued, storeOn, T0 } from "./store-helpers.mjs";
 
 const TABLES = [
-  "agents", "channel_posts", "channel_told", "commands", "idempotency", "learning", "learning_proposals", "mcp_oauth_pending", "mcp_pins",
-  "mcp_servers", "review_ledger", "revisions", "run_launch", "run_live", "run_origins", "runs", "sealed_keys", "settings",
-  "sign_in_tombstones", "sign_ins", "store_meta", "trigger_conversations", "trigger_firings", "trigger_scopes", "trigger_settings", "triggers",
+  "agents", "channel_posts", "channel_told", "commands", "computer_viewers", "idempotency", "learning", "learning_proposals", "mcp_oauth_pending", "mcp_pins",
+  "mcp_servers", "review_ledger", "revisions", "run_launch", "run_live", "run_origins", "runs", "sealed_keys", "settings", "sign_in_tombstones", "sign_ins", "store_meta",
+  "trigger_conversations", "trigger_firings", "trigger_scopes", "trigger_settings", "triggers",
 ];
 
 test("schema v1 has every table, and every time column is an INTEGER", async (t) => {
@@ -40,6 +44,34 @@ test("schema v1 has every table, and every time column is an INTEGER", async (t)
 test("foreign keys are enforced: a run of an unknown agent is refused", async (t) => {
   const { store } = await storeOn(t);
   await assert.rejects(store.runs.create({ id: "run-x", agentId: "agent-none", revisionId: "rev-none" }), StoreConstraint);
+});
+
+test("a server open drops a stale browser_viewers table a prior build left, and keeps computer_viewers", async (t) => {
+  const dir = mkdtempSync(join(tmpdir(), "store-"));
+  t.after(() => rmSync(dir, { recursive: true, force: true }));
+  const file = join(dir, "store.sqlite");
+  const first = await openSqliteStore({ file, role: "server", now: () => T0 });
+  await first.close();
+  // The per-run viewer table was renamed browser_viewers → computer_viewers; its rows are ephemeral, so none migrate. A
+  // store file an earlier build wrote still holds the old table: a server open must drop it, leaving no stale table behind.
+  const raw = new DatabaseSync(file);
+  try {
+    raw.exec("CREATE TABLE browser_viewers (run_id TEXT)");
+  } finally {
+    raw.close();
+  }
+  const second = await openSqliteStore({ file, role: "server", now: () => T0 });
+  try {
+    const check = new DatabaseSync(file, { readOnly: true });
+    try {
+      const names = check.prepare("SELECT name FROM sqlite_schema WHERE type = 'table' AND name IN ('browser_viewers', 'computer_viewers') ORDER BY name").all().map((row) => row.name);
+      assert.deepEqual(names, ["computer_viewers"], "the stale browser_viewers is dropped at open; computer_viewers stays");
+    } finally {
+      check.close();
+    }
+  } finally {
+    await second.close();
+  }
 });
 
 test("a run update carries rows in the same commit (an outbox post, a told marker); a fenced one writes none", async (t) => {

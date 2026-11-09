@@ -107,7 +107,7 @@ test("forget is refused while a running run was handed the sign-in's pointer; it
   assert.ok(err instanceof SignInHandedTo && err.runId === runId, "refused while handed");
   assert.ok(await store.signIns.get("alpha", "browserbase"), "nothing written: the live row stays");
   // The run ends (its runner releases the claim it holds); the hold is gone, and forget succeeds.
-  await store.release(claim, { state: "ended" });
+  await store.runs.update(claim, { state: "ended" });
   assert.equal(await handedTo(store, hash), undefined);
   const out = await forgetSignIn(store, KEY, fakeVendors(), "alpha", "browserbase");
   assert.equal(out.at_vendor, "deleted");
@@ -123,7 +123,7 @@ test("an unreadable sign-in is refused forget while any running run was handed a
   const err = await forgetSignIn(store, other, fakeVendors(), "alpha", "browserbase").then(() => null, (e) => e);
   assert.ok(err instanceof SignInHandedTo && err.runId === runId, "an unreadable pointer is refused while any run was handed one");
   // With no running handed run, forget of the unreadable sign-in goes; its sealed bytes are kept in the tombstone.
-  await store.release(claim, { state: "ended" });
+  await store.runs.update(claim, { state: "ended" });
   const out = await forgetSignIn(store, other, fakeVendors(), "alpha", "browserbase");
   assert.equal(out.at_vendor, "not_deleted", "its object could not be deleted (the pointer never opened)");
   const gone = await forgottenPointers(store, KEY, "alpha", "browserbase");
@@ -167,7 +167,7 @@ test("signInsOverStore.view: the old SignInView shape; ready, then held/held_by 
   clock.now += 1000;
   const verifiedAt = clock.now;
   await store.signIns.verify("alpha", "browserbase", verifiedAt);
-  await store.release(claim, { state: "ended" });
+  await store.runs.update(claim, { state: "ended" });
   // Browserbase keeps its save lease the settle window past the run's end (the context is still being written back): the
   // view matches, staying held and named by that run until the window passes, then ready.
   assert.deepEqual(await bridge.view("alpha"), [{ key: "default", provider: "browserbase", state: "held", held_by: runId, verified_at: new Date(verifiedAt).toISOString() }]);
@@ -201,7 +201,7 @@ test("signInsOverStore.forget: the old {key, removed} shape; 404 for an unknown 
   assert.ok(refused instanceof ApiError && refused.code === "sign_in_held" && refused.extra.details.handed_to === held.runId, "409 sign_in_held with handed_to (ApiError.extra.details, which the v2 body spreads)");
   assert.deepEqual(vendors.removed, [], "nothing removed while held");
   // The run ends; forget returns the old shape and the vendor object is deleted.
-  await store.release(held.claim, { state: "ended" });
+  await store.runs.update(held.claim, { state: "ended" });
   assert.deepEqual(await bridge.forget("alpha", "default"), { key: "default", removed: [{ provider: "browserbase", at_vendor: "deleted" }] });
   assert.deepEqual(vendors.removed, [["browserbase", "ctx-1"]]);
   assert.deepEqual(await bridge.forgotten("alpha", "browserbase"), { refs: ["ctx-1"], unreadable: false });
@@ -291,7 +291,9 @@ async function bindAfterHolderLeft(t, { offset, park = false, settleMs = SETTLE_
   await store.runs.create({ id: "holder", agentId: "alpha", revisionId: "alpha-rev" });
   const held = await store.claim("holder", "runner-h");
   assert.equal((await store.runs.update(held, { signInHanded: [hash] }, { signInSettleMs: settleMs })).save, true, "the first holder saves");
-  await store.release(held, park ? { state: "parked" } : { state: "ended" });
+  // The holder leaves 'running': a park through release, an end through the end commit (a release never makes a run final).
+  if (park) await store.release(held, { state: "parked" });
+  else await store.runs.update(held, { state: "ended" });
   clock.now += offset;
   await store.runs.create({ id: "next", agentId: "alpha", revisionId: "alpha-rev" });
   const next = await store.claim("next", "runner-n");
