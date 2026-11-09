@@ -9,7 +9,7 @@ import { createRequire } from "node:module";
 import { join } from "node:path";
 import { test } from "node:test";
 import { startFakeMcp } from "./fixtures/fake-mcp-server.mjs";
-import { connect, connectable, deliver, firstInput, INSTALLED, PUBLIC } from "./github-support.mjs";
+import { connect, connectable, deliver, firstInput, INSTALLED, PUBLIC, storeOf } from "./github-support.mjs";
 import { agent, follow, runDir, serve } from "./support.mjs";
 import { firings } from "./trigger-support.mjs";
 
@@ -175,4 +175,29 @@ test("githubMcpUrl: GitHub's hosted MCP at its origin, any path, the default por
   const { githubMcpUrl } = await import("../dist/github.js");
   for (const url of ["https://api.githubcopilot.com/mcp/", "https://api.githubcopilot.com:443/mcp/", "https://API.githubcopilot.com/x/readonly", "https://api.githubcopilot.com"]) assert.equal(githubMcpUrl(url), true, url);
   for (const url of ["https://x@api.githubcopilot.com/mcp/", "https://x:y@api.githubcopilot.com/mcp/", "https://api.githubcopilot.com:8443/mcp/", "http://api.githubcopilot.com/mcp/", "https://api.githubcopilot.com./mcp/", "https://api.githubcopilot.com.example.com/mcp/", "https://mcp.example.com/mcp", "not a url"]) assert.equal(githubMcpUrl(url), false, url);
+});
+
+test("a github_app run's MCP call carries an installation token the runner minted from the store's App for the run's repository, through the run spec's githubAppAccess", { timeout: 120_000 }, async (t) => {
+  const server = await connectable(t, { faux: FAUX_MCP, harnesses: true });
+  await connect(server);
+  const minted = () => server.github.tokens.filter((entry) => entry.repositories).map((entry) => `Bearer ${entry.token}`);
+  const seen = [];
+  const fake = await startFakeMcp({ token: (authorization) => minted().includes(authorization), inspect: (headers) => seen.push(headers.authorization) });
+  t.after(() => fake.close());
+  // The registry row as a save keeps it (no credential: the token is minted per claim), written while the server is
+  // down (the store registry takes no github_app save yet), so the server reads it at its next start.
+  await server.close();
+  const reader = await storeOf(t, server);
+  const add = { name: "add", title: "Add", description: "Add two numbers.", input_schema: { type: "object", properties: { a: { type: "number" }, b: { type: "number" } }, required: ["a", "b"] }, annotations: { readOnlyHint: true } };
+  await reader.mcp.put({ name: "gh", url: fake.url, auth: "github_app", tools: [add], sealed: null });
+  const again = await serve(t, { data: server.data, publicUrl: PUBLIC, githubApi: server.github.url, faux: FAUX_MCP, harnesses: true });
+  assert.equal((await again.api("POST", "/agents", agent("review", { tools: ["mcp:gh/add"], tool_settings: { "mcp:gh/*": { permission: "allow" } } }))).status, 201);
+  const run = await again.api("POST", "/agents/review/runs", { input: { content: 'Call mcp__gh__add with {"a":2,"b":3}\n\nThe repository is https://github.com/acme/widgets.' }, max_cost_usd: 1 });
+  assert.ok([201, 202].includes(run.status), JSON.stringify(run.body));
+  const { last } = await follow(again.api, run.body.run_id, ["completed", "failed"], { deadlineMs: 60_000 });
+  const answer = (await again.api("GET", `/runs/${run.body.run_id}`)).body.result?.final_answer;
+  assert.deepEqual([last.status, answer], ["completed", "The tool said: 5"]);
+  const tokens = server.github.tokens.filter((entry) => entry.repositories);
+  assert.deepEqual(tokens.map((entry) => [entry.installation, entry.repositories]), [[777, ["widgets"]]], "minted once, for the run's repository");
+  assert.ok(seen.includes(`Bearer ${tokens[0].token}`), "the MCP server got it");
 });
