@@ -68,7 +68,7 @@ export async function capRun(t, options) {
     await sleep(20);
   }
   await acting;
-  return { row, asked, sent, ms: Date.now() - from, server, store };
+  return { row, asked, sent, ms: Date.now() - from, server, store, dir };
 }
 
 /** The run's cap as a loop spec carries it (what E2 fills from the run's launch): its figure and the kernel's park. */

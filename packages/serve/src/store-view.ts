@@ -9,10 +9,9 @@ import { runLink } from "./console-links.js";
 import { redacted, redactedAnswer, withoutLoopback } from "./key-refusal.js";
 import { currentLearning, holdsForOk, type Learning, learningView, LEARNING_LABEL, secretsShown, shortOf, type Shown } from "./learning.js";
 import { MIN_SECRET } from "./learn/secrets.js";
-import { type RunLaunch, readLaunchBody } from "./run-launch.js";
+import { handedValuesOf, launchOf } from "./handed-values.js";
+import type { RunLaunch } from "./run-launch.js";
 import {
-  type Handed,
-  handedPointers,
   momentOf,
   type Pending,
   pendingOf,
@@ -35,7 +34,6 @@ import { journalRecords, recordOf } from "./runner/journal-reader.js";
 import { runLearningEnd } from "./store-reads/learning.js";
 import { runReflect, runTimeline } from "./store-reads/journal.js";
 import { type RunReadState, readRun } from "./store-reads/runs.js";
-import { keptVendor, type Plane } from "./tool-plane.js";
 import { Turns } from "./turns.js";
 import { harnessOfBody } from "./harness.js";
 import type { SignIns } from "./sign-ins.js";
@@ -108,19 +106,6 @@ function liveOf(runRow: RunRow, now: number): boolean {
   return !FINAL_STATES.includes(runRow.state) && runRow.runner !== null && runRow.claimedUntil !== null && runRow.claimedUntil >= now;
 }
 
-/** The run's launch body read back, or undefined when it has none (an old run, or one not started with one). */
-async function launchOf(store: Store, runId: string): Promise<RunLaunch | undefined> {
-  try {
-    const row = await store.runs.launch(runId);
-    return readLaunchBody(row.body);
-  } catch {
-    return undefined;
-  }
-}
-
-/** The pointers a run was handed, as its row kept them (never the pointers, their SHA-256). */
-const handedOf = (runRow: RunRow): Handed | undefined => (runRow.signInHanded && runRow.signInHanded.length > 0 ? [...runRow.signInHanded] : undefined);
-
 /** Reads the run from the store and builds the RunView the view functions read. */
 async function storeRunOf(store: Store, runId: string, deps: ViewDeps): Promise<StoreRun | undefined> {
   const context = BACKGROUND_CONTEXT;
@@ -160,8 +145,7 @@ async function storeRunOf(store: Store, runId: string, deps: ViewDeps): Promise<
   // The sign-in cut: the pointers the run was handed read back, so a run whose words could repeat one is cut of it, or
   // withheld when this server cannot read back what it was handed (rowShown's choke point). A run with no mark is cut of
   // the server's secrets alone.
-  const browser = launch?.plane ? keptVendor(launch.plane as Plane).browser : undefined;
-  const pointers = await handedPointers(deps.signIns, row.agent, browser, handedOf(runRow));
+  const pointers = await handedValuesOf(deps, store, runId, { runRow, launch });
   const unshown = pointers === "unreadable";
   const values = unshown ? [] : [...deps.serverSecrets(), ...pointers.refs.filter((ref) => ref.length >= MIN_SECRET)];
 

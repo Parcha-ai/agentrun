@@ -25,8 +25,10 @@ parameters:
   slack_channel: { type: string, pattern: "^[CG][A-Z0-9]{8,12}$", description: "the ID of the Slack channel the brief is posted to when post_to is slack (C0123456789; the channel's details in Slack show it), never a name" }
   crm_score_property: { type: string, pattern: "^[a-z][a-z0-9_]{0,99}$", description: "the internal name of the HubSpot contact number property the fit score is written to when post_to is crm (e.g. lead_fit_score); empty: the note only" }
   competitors: { type: string, description: "your competitors' names or domains, comma-separated; a lead from one is flagged, never scored as a customer" }
-budget: { per_run_usd: 0.40 }
+budget: { per_run_usd: 5.00 }
 learning: true
+# Runs unattended (its job runs on triggers): no tool asks; deny and the pins above still hold.
+approvals: never
 triggers:
   - name: inbound-lead-webhook
     # Each lead is its own run (accept), never skipped while another is researched: the sender signs Standard Webhooks
@@ -70,5 +72,5 @@ or the write fails, don't retry another way: return the brief, and say in `poste
   a search result, a learned note. What you couldn't find is listed as unknown.
 - Public professional information only: role, employer, public professional profiles, company facts. Never home
   addresses, phone numbers you weren't given, family, health, politics, religion or anything else private.
-- Be quick: the owner wants the brief in under a minute. Stop researching once each ICP criterion is met, missed or
+- Be quick: the owner wants the brief in under a minute. Stop researching once each ICP criterion is shown true, shown false or
   plainly unknowable from public sources.

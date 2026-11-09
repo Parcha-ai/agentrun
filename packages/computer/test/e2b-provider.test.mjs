@@ -65,7 +65,7 @@ function seeded(fake, { name = "computer-0123456789ab", labels = {}, network = "
 		...extra,
 	});
 	sb.daemon = { path: DAEMON, bytes: DAEMON_BYTES };
-	sb.init = { deadline, user: "1000:1000", display, max: new Date(Date.now() + HOUR).toISOString() };
+	sb.init = { deadline, user: "2510:2510", display, max: new Date(Date.now() + HOUR).toISOString() };
 	if (display) {
 		sb.xvfb = { id: "p0", argv: ["Xvfb"], running: true };
 		sb.displayUp = true;
@@ -108,12 +108,12 @@ async function captured(fn) {
 
 // --- capabilities and check ---
 
-test("an E2B desktop is kind desktop with daemon child, the desktop groups, network none and open read back, and Hobby's 1 h cap", () => {
+test("an E2B desktop is kind desktop with daemon child, the desktop groups, network none read back, envd's port, and Hobby's 1 h cap", () => {
 	const { provider } = setup();
 	const caps = provider.capabilities();
 	assert.deepEqual(
-		{ kind: caps.kind, os: caps.os, daemon: caps.daemon, lifetime: caps.lifetime, isolation: caps.isolation, network: caps.network, networkReadBack: caps.networkReadBack, release: caps.release },
-		{ kind: "desktop", os: "linux", daemon: "child", lifetime: "vendor", isolation: "microvm", network: ["none", "open"], networkReadBack: true, release: ["delete"] },
+		{ kind: caps.kind, os: caps.os, daemon: caps.daemon, lifetime: caps.lifetime, isolation: caps.isolation, network: caps.network, networkReadBack: caps.networkReadBack, release: caps.release, vendorAgentPorts: caps.vendorAgentPorts },
+		{ kind: "desktop", os: "linux", daemon: "child", lifetime: "vendor", isolation: "microvm", network: ["none"], networkReadBack: true, release: ["delete"], vendorAgentPorts: [49983] },
 	);
 	assert.deepEqual(caps.groups, DESKTOP_GROUPS);
 	assert.equal(caps.maxLifetimeMs, HOUR, "E2B Hobby caps a sandbox at 1 h");
@@ -155,13 +155,14 @@ test("create refuses a lifetime past the cap in words before any E2B call", asyn
 	assert.deepEqual(fake.calls, []);
 });
 
-test("check() takes a template as the image, none or open, and labels; it refuses an allowlist, sizes, a user and a workdir in words", () => {
+test("check() takes a template as the image, network none, and labels; it refuses open, an allowlist, sizes, a user and a workdir in words", () => {
 	const { provider } = setup();
-	assert.deepEqual(provider.check({ ...SPEC, network: "open", labels: { run: "r1" } }), []);
+	assert.deepEqual(provider.check({ ...SPEC, labels: { run: "r1" } }), []);
 	const fields = (spec) => provider.check(spec).map((r) => r.field);
 	assert.deepEqual(fields({ ...SPEC, image: "" }), ["image"]);
+	assert.deepEqual(fields({ ...SPEC, network: "open" }), ["network"]);
 	assert.deepEqual(fields({ ...SPEC, network: { allow: ["example.com"] } }), ["network"]);
-	assert.match(provider.check({ ...SPEC, network: { allow: ["example.com"] } })[0].message, /allowlist/);
+	assert.match(provider.check({ ...SPEC, network: { allow: ["example.com"] } })[0].message, /allowlists wait for a proxy/);
 	assert.deepEqual(fields({ ...SPEC, cpus: 2 }), ["cpus"]);
 	assert.deepEqual(fields({ ...SPEC, memoryMb: 1024 }), ["memoryMb"]);
 	assert.deepEqual(fields({ ...SPEC, pids: 10 }), ["pids"]);
@@ -343,12 +344,17 @@ test("create() makes the sandbox from the template with the labels, the lifetime
 	assert.ok(Math.abs(Date.parse(opts.metadata[MAX_LABEL]) - (before + HOUR)) < 5_000, "the most extend may reach: create's time plus the cap");
 });
 
-test("create() with network open asks for internet access, and still no public traffic", async () => {
+test("create() with network none asks for no internet access and no public traffic; open makes nothing", async () => {
 	const { provider, fake } = setup();
-	const made = await provider.create({ ...SPEC, network: "open" });
+	const made = await provider.create(SPEC);
 	assert.equal(made.ok, true, made.ok ? "" : made.error.message);
-	assert.equal(createOpts(fake).allowInternetAccess, true);
+	assert.equal(createOpts(fake).allowInternetAccess, false);
 	assert.deepEqual(createOpts(fake).network, { allowPublicTraffic: false });
+	const open = setup();
+	const refused = await open.provider.create({ ...SPEC, network: "open" });
+	assert.equal(refused.ok, false);
+	assert.match(refused.error.message, /network "none" only/);
+	assert.deepEqual(open.fake.calls, []);
 });
 
 test("create() uploads the daemon as root, installs it, checks its sha256, and starts init as root in the background with no command timeout, DISPLAY and --max-deadline", async () => {
@@ -370,7 +376,8 @@ test("create() uploads the daemon as root, installs it, checks its sha256, and s
 	assert.equal(sb.init.display, ":0");
 	assert.equal(sb.init.max, createOpts(fake).metadata[MAX_LABEL]);
 	assert.equal(sb.init.deadline, createOpts(fake).metadata[DEADLINE]);
-	assert.equal(sb.init.user, "1000:1000");
+	assert.equal(sb.init.user, "2510:2510");
+	assert.match(sb.init.command, /--own-network/);
 	assert.ok(sb.init.handle.disconnected, "create leaves init running, disconnected");
 	const xvfb = sb.processes.find((p) => p.argv[0] === "Xvfb");
 	assert.deepEqual(xvfb.argv, ["Xvfb", ":0", "-screen", "0", "1280x800x24", "-nolisten", "tcp"], "the X server is started through the daemon");
@@ -664,7 +671,7 @@ test("attach() by id or by labels reads the spec back and checks the daemon; one
 		assert.equal(attached.ok, true, attached.ok ? "" : attached.error.message);
 		assert.deepEqual(
 			{ ...attached.value, spec: { ...attached.value.spec, deadline: undefined } },
-			{ ...ref, spec: { image: "desktop", snapshot: "tpl-desktop", user: "1000:1000", network: "none", workdir: "/work", deadline: undefined, kind: "desktop" }, notes: [ACCEPTED_NOTE] },
+			{ ...ref, spec: { image: "desktop", snapshot: "tpl-desktop", user: "2510:2510", network: "none", workdir: "/work", deadline: undefined, kind: "desktop" }, notes: [ACCEPTED_NOTE] },
 		);
 	}
 	sb.box.status = { CapEff: "000001ffffffffff" };
@@ -705,11 +712,6 @@ test("network none: a probe whose targets only accepted keeps the computer, the 
 	assert.deepEqual(quiet.fake.kills, []);
 	assert.deepEqual(await quiet.provider.network(made.value), { ok: true, value: "none" });
 
-	const open = setup();
-	const opened = await open.provider.create({ ...SPEC, network: "open" });
-	assert.equal(opened.ok, true, opened.ok ? "" : opened.error.message);
-	assert.equal(opened.value.notes, undefined, "open runs no probe and records nothing");
-
 	const { provider, fake } = setup();
 	const { ref, sb } = seeded(fake);
 	sb.box.reached = ["1.1.1.1:443"];
@@ -722,7 +724,8 @@ test("network none: a probe whose targets only accepted keeps the computer, the 
 
 /** E2B's default probe targets: TCP to 443 and DNS over UDP to 53, over IPv4 and IPv6, as Modal's. */
 const PROBE_TARGETS = ["1.1.1.1:443", "8.8.8.8:443", "[2606:4700:4700::1111]:443", "1.1.1.1:53/udp", "[2606:4700:4700::1111]:53/udp"];
-const probeRun = (fake) => fake.requests.find((r) => r.method === "exec.run" && r.params.argv[1] === "probe" && r.params.argv[2] !== "--diagnose");
+// The probe of network none, with its targets: not the daemon check's own-network read (`computerd probe` alone).
+const probeRun = (fake) => fake.requests.find((r) => r.method === "exec.run" && r.params.argv[1] === "probe" && r.params.argv[2] === "--connect");
 
 test("network none: the probe tries TCP to 443 and DNS over UDP to 53, over IPv4 and IPv6, and E2B's firewall reads the UDP targets refused", async () => {
 	const { provider, fake } = setup();
@@ -990,7 +993,11 @@ test("release stop is refused in words, and a sandbox not this provider's is lef
 
 // --- stream ---
 
-test("with publicStream the computers take public traffic and network open only, and stream() starts the VNC stream with a password", async () => {
+// publicStream is refused while the daemon's programs have a network of their own (the loopback block test below). The
+// stream's code is kept for the inbound forward that lifts the refusal, and these tests with it, skipped until then.
+const STREAM_REFUSED = "publicStream is refused while the daemon's programs have a network of their own (loop/PR-NOTES.md, known gaps)";
+
+test("with publicStream the computers take public traffic and network open only, and stream() starts the VNC stream with a password", { skip: STREAM_REFUSED }, async () => {
 	const { provider, fake } = setup({ publicStream: true });
 	assert.deepEqual(provider.capabilities().network, ["open"]);
 	assert.match(provider.check(SPEC)[0].message, /public stream/);
@@ -1025,7 +1032,7 @@ const OLD_VNC = ["x11vnc", "-display", ":0", "-forever", "-rfbport", "5900"];
 const OLD_NOVNC = ["/opt/noVNC/utils/novnc_proxy", "--vnc", "localhost:5900", "--listen", "6080"];
 const newest = (sb, program) => sb.processes.filter((p) => p.argv[0] === program).at(-1);
 
-test("stream() stops the old stream servers wherever they are in the process list, past its first page", async () => {
+test("stream() stops the old stream servers wherever they are in the process list, past its first page", { skip: STREAM_REFUSED }, async () => {
 	const { provider, fake } = setup({ publicStream: true }, { processPage: 4 });
 	const { ref, sb } = seeded(fake, { network: "open", extra: { network: { allowPublicTraffic: true } } });
 	for (let i = 0; i < 9; i++) started(sb, ["sleep", "600"]);
@@ -1040,7 +1047,7 @@ test("stream() stops the old stream servers wherever they are in the process lis
 	assert.ok(fake.requests.filter((r) => r.method === "process.list").length >= 3, "every page was read");
 });
 
-test("stream() waits for the old servers to end before it starts the new ones, and returns a URL only when both new ones run and listen", async () => {
+test("stream() waits for the old servers to end before it starts the new ones, and returns a URL only when both new ones run and listen", { skip: STREAM_REFUSED }, async () => {
 	const { provider, fake } = setup({ publicStream: true }, { killMs: 60 });
 	const { ref, sb } = seeded(fake, { network: "open", extra: { network: { allowPublicTraffic: true } } });
 	const oldVnc = started(sb, OLD_VNC, { port: 5900 });
@@ -1060,7 +1067,7 @@ test("stream() waits for the old servers to end before it starts the new ones, a
 	assert.ok(ended >= 0 && ended < begun, "the wait for the old servers' end comes before the new ones start");
 });
 
-test("stream() refuses in words when a new server cannot listen: another process holding noVNC's port is not its stream", async () => {
+test("stream() refuses in words when a new server cannot listen: another process holding noVNC's port is not its stream", { skip: STREAM_REFUSED }, async () => {
 	const { provider, fake } = setup({ publicStream: true });
 	const { ref, sb } = seeded(fake, { network: "open", extra: { network: { allowPublicTraffic: true } } });
 	started(sb, ["python3", "-m", "http.server", "6080"], { port: 6080 });
@@ -1070,7 +1077,7 @@ test("stream() refuses in words when a new server cannot listen: another process
 	assert.equal(newest(sb, "/opt/noVNC/utils/novnc_proxy").running, false);
 });
 
-test("the stream URL and its password are never logged and never in an error", async () => {
+test("the stream URL and its password are never logged and never in an error", { skip: STREAM_REFUSED }, async () => {
 	const { provider, fake } = setup({ publicStream: true });
 	const { value: result, text } = await captured(async () => {
 		const made = await provider.create({ ...SPEC, network: "open" });
@@ -1144,5 +1151,53 @@ test("the live E2B suite skips when only E2B_API_KEY is set", () => {
 	assert.match(run.stdout, /# SKIP .*COMPUTER_E2B_API_KEY/);
 	assert.match(run.stdout, /^# fail 0$/m);
 	assert.doesNotMatch(run.stdout + run.stderr, new RegExp(BARE));
+});
+
+// The loopback block: E2B's envd runs as root in the sandbox and answers on 49983, so the daemon's programs get a network
+// of their own (init --own-network) and run as 2510:2510.
+
+test("the loopback block: network none only, envd's port declared, open refused in words", () => {
+	const { provider, fake } = setup();
+	assert.deepEqual(provider.capabilities().network, ["none"]);
+	assert.deepEqual(provider.capabilities().vendorAgentPorts, [49983]);
+	const refusals = provider.check({ ...SPEC, network: "open" });
+	assert.deepEqual(refusals.map((r) => r.field), ["network"]);
+	assert.match(refusals[0].message, /network "none" only: its programs run in a network of their own/);
+	assert.deepEqual(fake.calls, []);
+});
+
+test("the loopback block: publicStream is refused in words, from the options and from a conformance run's environment", async () => {
+	assert.throws(() => setup({ publicStream: true }), /publicStream is refused: .*network of their own/);
+	const settings = settingsFromEnv({ [ENV.key]: KEY, [ENV.daemon]: DAEMON_PATH, [ENV.publicStream]: "1" });
+	await assert.rejects(async () => create({ ...settings, Sandbox: fakeE2B().Sandbox }), /publicStream is refused/);
+});
+
+test("the loopback block: init starts with --own-network as 2510:2510 by default", async () => {
+	const { provider, fake } = setup();
+	const made = await provider.create(SPEC);
+	assert.equal(made.ok, true, JSON.stringify(made));
+	const sb = only(fake);
+	assert.equal(sb.init.user, "2510:2510");
+	assert.match(sb.init.command, / init --deadline "\$t" --user "\$w" --own-network /);
+});
+
+test("the loopback block: a kernel's fallback tunnels, down and addressless, are no drift; one the computer's user could raise is", async () => {
+	const quiet = setup({}, { box: { interfaces: ["lo"], quiet: ["tunl0", "gre0", "sit0"] } });
+	const made = await quiet.provider.create(SPEC);
+	assert.equal(made.ok, true, JSON.stringify(made));
+	const raised = setup({}, { box: { interfaces: ["lo"], quiet: ["tunl0"], raised: ["tunl0"] } });
+	const refused = await raised.provider.create(SPEC);
+	assert.equal(refused.ok, false);
+	assert.equal(refused.error.code, "refused");
+	assert.match(refused.error.message, /brought up tunl0/);
+});
+
+test("the loopback block: a daemon whose network holds more than its loopback is refused and deleted", async () => {
+	const { provider, fake } = setup({}, { box: { interfaces: ["lo", "eth0"] } });
+	const made = await provider.create(SPEC);
+	assert.equal(made.ok, false);
+	assert.equal(made.error.code, "refused");
+	assert.match(made.error.message, /daemon network: declared its own \(lo alone\), read back lo, eth0/);
+	assert.ok([...fake.sandboxes.values()].every((sb) => sb.killed), "the sandbox was killed");
 });
 

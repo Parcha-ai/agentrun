@@ -88,7 +88,7 @@ export const webhook: TriggerAdapter = {
       // takes is the same delivery, not a new one.
       if (ignored) return { ignored, ...(event !== undefined ? { event: event.slice(0, ATTR_CHARS) } : {}), key: asked.scheme.firingKeyOf(headers, body) };
       const delivery = asked.scheme.deliveryIdOf?.(headers);
-      const attrs = { scheme: asked.name, ...(event !== undefined ? { event: event.slice(0, ATTR_CHARS) } : {}), ...(action !== undefined ? { action: action.slice(0, ATTR_CHARS) } : {}), ...(delivery !== undefined ? { delivery: delivery.slice(0, ATTR_CHARS) } : {}) };
+      const attrs = { scheme: asked.name, ...(event !== undefined ? { event: event.slice(0, ATTR_CHARS) } : {}), ...(action !== undefined ? { action: action.slice(0, ATTR_CHARS) } : {}), ...(delivery !== undefined ? { delivery: delivery.slice(0, ATTR_CHARS) } : {}), ...asked.scheme.attrsOf?.(doc) };
       return [{ key: asked.scheme.firingKeyOf(headers, body), text, attrs }];
     },
   },

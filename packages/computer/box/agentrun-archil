@@ -1,0 +1,168 @@
+#!/bin/sh
+# agentrun-archil: the root helper of a remote computer, which keeps one run's work folder on the owner's Archil disk
+# at /workspace. It does four things and nothing else, each with fixed arguments to the archil client, to find and chown,
+# or to computerd:
+#
+#   mount  <disk> <region> agents/<agent>/runs/<run>/work   the disk token as one line on fd 0
+#   revoke <disk> <region> agents/<agent>/runs/<run>/work   the disk token as one line on fd 0
+#   serve
+#   checkin
+#
+# mount   archil mount <disk>:/<path> /workspace --region <region>: exclusive, so no other client writes the folder;
+#         then every path of the mounted tree that is not agentrun-tool's is given to it (the links themselves, never
+#         followed, and never past the mount): the disk's object API makes files root's, 644, and while a computer holds
+#         the folder no outside write lands (Archil refuses it), so what the object API made is all there at the mount.
+# revoke  the same with --force: takes the folder back from a computer that is gone and left its delegation behind.
+# serve   becomes `computerd sync-serve`, resident, holding no token: on its socket it takes one fixed byte and answers
+#         the exit code of `archil sync /workspace` (every write so far durable), coalesced; it exits when the mount
+#         goes or its socket is taken away.
+# checkin takes serve's socket away, then archil checkin /workspace: lets go of the folder.
+#
+# The archil client and serve run as root in the computer's own network namespace, which reaches Archil; init and every
+# tool run in a namespace of their own with loopback alone (computerd init --own-network), so the tools have no network
+# and reach no daemon of the provider's. This helper sets no firewall.
+#
+# Install it root:root 0755 at /usr/local/sbin/agentrun-archil. The provider runs it as root through its own exec (the
+# image's user is root), never through sudo: the image has none. The run's tools run as agentrun-tool, through
+# computerd, with no way to root at all.
+#
+# The token is read from fd 0 and handed to archil only in the environment of its exec (archil reads it nowhere else),
+# never as an argument and never in a file. Every argument is checked here, whoever calls: a caller that is not root, a
+# wrong verb or count, a newline, a disk, region or folder of any other shape (an absolute path, `.` or `..`, an empty
+# or extra segment), a mountpoint that is a link or not empty, or a token of any other shape exits 2 and runs nothing.
+# A serve or checkin with nothing mounted exits 3 and runs nothing. A mount or revoke in a computer whose /proc lets a
+# user see another's processes (no hidepid=2 or invisible) exits 4 and runs nothing; each first remounts /proc with
+# hidepid=2, which a computer whose root may not remount leaves as it was. A mount the client refuses answers the
+# client's exit code; a mount whose tree cannot then be given to agentrun-tool exits 4. A serve whose computerd is not
+# root's alone exits 4.
+set -eu
+umask 077
+PATH=/usr/sbin:/usr/bin:/sbin:/bin
+export PATH
+# Space, tab and newline, as a shell starts: written so no line ends in white space.
+IFS=$(printf ' \t\nx')
+IFS=${IFS%x}
+unset ENV CDPATH
+
+ARCHIL=/usr/bin/archil
+MP=/workspace
+MOUNTS=/proc/self/mounts
+MOUNT=/usr/bin/mount
+CHOWN=/usr/bin/chown
+FIND=/usr/bin/find
+TOOL=agentrun-tool
+TOOL_UID=2510
+COMPUTERD=/opt/agentrun/computerd
+SOCK=/run/agentrun-archil/archil.sock
+ROOT_UID=0
+HELD_TOP=/
+
+refuse() {
+  printf 'agentrun-archil: %s\n' "$1" >&2
+  exit 2
+}
+
+[ "$(id -u)" = "$ROOT_UID" ] || refuse "run it as root, through the provider's own exec"
+
+# A newline in any argument is refused before anything reads one: the checks below are line by line.
+nl='
+'
+for arg in "$@"; do
+  case "$arg" in *"$nl"*) refuse "an argument holds a newline" ;; esac
+done
+
+matches() { printf '%s\n' "$1" | grep -Eqx -- "$2"; }
+
+# Whether $MP is in the mount table, as an archil mount (fuse.archil) or as anything (any).
+listed() { awk -v m="$MP" -v t="$1" '$2 == m && (t == "any" || $3 == t) { f = 1 } END { exit !f }' "$MOUNTS"; }
+
+take() {
+  [ "$#" -eq 3 ] || refuse "$verb takes <disk> <region> agents/<agent>/runs/<run>/work"
+  disk=$1 region=$2 folder=$3
+  matches "$disk" 'dsk-[0-9a-f]{16}|[A-Za-z0-9][A-Za-z0-9._@+-]{0,127}/[A-Za-z0-9][A-Za-z0-9._-]{0,127}' || refuse "the disk is a disk id (dsk-...) or owner/name"
+  matches "$region" '[a-z0-9]+-[a-z0-9][a-z0-9-]{0,62}' || refuse "the region is a provider, a dash and its region, lowercase letters, digits and dashes"
+  matches "$folder" 'agents/[A-Za-z0-9][A-Za-z0-9_-]{0,127}/runs/[A-Za-z0-9][A-Za-z0-9_-]{0,127}/work' || refuse "the folder is agents/<agent>/runs/<run>/work, nothing else"
+  # The computer's /proc (its last mount there) must hide each user's processes from the others, hidepid=2 or invisible
+  # as newer kernels name it: else the run's tools could see this root archil client's. No image sets it, so it is
+  # remounted so first, as root may where it holds CAP_SYS_ADMIN; a computer where that fails is refused by the check.
+  "$MOUNT" -o remount,hidepid=2 /proc >/dev/null 2>&1 || :
+  if ! awk '$2 == "/proc" && $3 == "proc" { o = $4 } END { exit !(o ~ /(^|,)hidepid=(2|invisible)(,|$)/) }' "$MOUNTS"; then
+    printf 'agentrun-archil: /proc is not mounted with hidepid=2 (or invisible): the run'"'"'s tools could see the root archil client'"'"'s processes\n' >&2
+    exit 4
+  fi
+  if listed fuse.archil; then
+    # This folder, mounted here already (a computer found again): nothing to do. Any other is refused.
+    awk -v m="$MP" -v a="$disk:/$folder" -v b="$disk:/$folder[$region]" '$2 == m && $3 == "fuse.archil" && ($1 == a || $1 == b) { f = 1 } END { exit !f }' "$MOUNTS" || refuse "$MP holds another archil mount"
+    printf 'agentrun-archil: %s is mounted already\n' "$MP" >&2
+    exit 0
+  fi
+  listed any && refuse "$MP is another mount"
+  [ ! -L "$MP" ] && [ -d "$MP" ] || refuse "$MP is not a real directory"
+  [ "$(realpath -e "$MP")" = "$MP" ] || refuse "$MP is not its own real path"
+  [ -z "$(ls -A "$MP")" ] || refuse "$MP is not empty"
+  token=
+  IFS= read -r token || [ -n "$token" ] || refuse "no token on fd 0"
+  [ "${#token}" -ge 16 ] && [ "${#token}" -le 4096 ] || refuse "the token is not a disk token"
+  case "$token" in *[!A-Za-z0-9._~+/=-]*) refuse "the token is not a disk token" ;; esac
+  # In the environment of archil's command alone (an assignment before the command, never exported to this shell's own,
+  # which was fixed at its start), and archil runs as root, so no other user reads it there.
+  rc=0
+  ARCHIL_MOUNT_TOKEN=$token "$ARCHIL" mount $force "$disk:/$folder" "$MP" --region "$region" || rc=$?
+  token=
+  [ "$rc" -eq 0 ] || exit "$rc"
+  # The whole tree is the tool user's: the tools write the run's folder, and the disk's object API made what is in it
+  # root's (644, 755). Only what is not the tool user's already; links themselves (-h), never followed; never past the
+  # mount (-xdev). Nothing outside lands while this computer holds the folder, so this once is enough.
+  "$FIND" "$MP" -xdev ! -uid "$TOOL_UID" -exec "$CHOWN" -h "$TOOL:$TOOL" {} + || {
+    printf 'agentrun-archil: %s is mounted, but this computer cannot give its tree to %s, so the tools could not write it\n' "$MP" "$TOOL" >&2
+    exit 4
+  }
+}
+
+# serve and checkin act on the archil mount at $MP; with none there (a computer whose mount went), nothing is held, and
+# they say so with exit 3.
+held() {
+  [ "$#" -eq 0 ] || refuse "$verb takes no argument"
+  if ! listed fuse.archil; then
+    printf 'agentrun-archil: nothing is mounted at %s\n' "$MP" >&2
+    exit 3
+  fi
+}
+
+# Whether $COMPUTERD is root's alone: a regular file, it and every folder above it (to $HELD_TOP) owned by root and
+# writable by no group or other user, so no link and no ACL. Else a user who could rename an entry on the path could
+# put another program there, which serve would run as root. `ls -ldn` is in BusyBox and coreutils alike; a trailing `.`
+# (an SELinux label) is allowed, a `+` (an ACL) is not.
+rootsalone() {
+  [ -f "$COMPUTERD" ] && [ ! -L "$COMPUTERD" ] || return 1
+  x=$COMPUTERD
+  while :; do
+    set -- $(ls -ldn "$x" 2>/dev/null)
+    case "${1-}" in ?????[!w]??[!w]? | ?????[!w]??[!w]?.) ;; *) return 1 ;; esac
+    [ "${3-}" = "$ROOT_UID" ] || return 1
+    [ "$x" = "$HELD_TOP" ] || [ "$x" = / ] && return 0
+    x=${x%/*}
+    x=${x:-/}
+  done
+}
+
+# serve: computerd's resident sync server, as root, with fixed arguments alone: the socket, the mountpoint, the mount
+# table, the archil client and the tool user's group, which may connect. No token: its stdin is not passed on.
+serve() {
+  held "$@"
+  rootsalone || { printf 'agentrun-archil: computerd at %s is not root'"'"'s alone, so serve runs nothing\n' "$COMPUTERD" >&2; exit 4; }
+  gid=$(id -g "$TOOL" 2>/dev/null) || { printf 'agentrun-archil: there is no user %s\n' "$TOOL" >&2; exit 4; }
+  exec "$COMPUTERD" sync-serve --socket "$SOCK" --mountpoint "$MP" --mounts "$MOUNTS" --archil "$ARCHIL" --gid "$gid" </dev/null
+}
+
+[ "$#" -ge 1 ] || refuse "say mount, revoke, serve or checkin"
+verb=$1
+shift
+case "$verb" in
+  mount) force= && take "$@" ;;
+  revoke) force=--force && take "$@" ;;
+  serve) serve "$@" ;;
+  # serve's socket goes first, so serve exits and no sync is asked of a folder let go.
+  checkin) held "$@" && rm -f -- "$SOCK" && exec "$ARCHIL" checkin "$MP" ;;
+  *) refuse "say mount, revoke, serve or checkin" ;;
+esac

@@ -1,4 +1,4 @@
-// The proposal check for the runner's reflect hook (COMMIT-API.md, tl-jobs' createReflectHook `check` dep): a run's
+// The proposal check for the runner's reflect hook (COMMIT-API.md, the runner's createReflectHook `check` dep): a run's
 // proposed changes checked (check.ts checkProposal) against the seed it started from, read from the learning folder
 // through its Workspace: the snapshot when its main is the run's seed (no exec), else one read-only exec of the
 // learning script at that commit.

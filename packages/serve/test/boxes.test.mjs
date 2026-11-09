@@ -162,19 +162,25 @@ test("daytona listed: a key Daytona refuses leaves it unavailable, and the reaso
   assert.equal(daytona.seen.length, 1, "a refused key is not tried again");
 });
 
-test("the VM provider listed: without its token it needs it, and without its SDK it says to install it", async (t) => {
-  let installed = true;
-  try {
-    import.meta.resolve(VM);
-  } catch {
-    installed = false;
-  }
-  if (installed) return t.skip(`the ${VM} SDK is installed here`);
-  const tokenless = await boxRegistry({ AGENTRUN_BOXES: VM, [VM_PROVIDER.keys[0]]: "x" });
+/**
+ * The VM provider's SDK as a host without it has it, whatever this workspace installs (the root lock pins it for the
+ * computer package's live runs): an import that fails as Node's does for a package that is not there.
+ */
+const vmSdkAbsent = () => Promise.reject(Object.assign(new Error(`Cannot find package '${VM}' imported from ${import.meta.url}`), { code: "ERR_MODULE_NOT_FOUND" }));
+
+/** The same, as a module file startServe's `fauxVm` loads: it throws as the missing package's import does. */
+async function vmSdkAbsentModule(t) {
+  const path = join(await scratch(t), "vm-sdk-absent.mjs");
+  await writeFile(path, `throw Object.assign(new Error(${JSON.stringify(`Cannot find package '${VM}' imported from the test`)}), { code: "ERR_MODULE_NOT_FOUND" });\n`);
+  return path;
+}
+
+test("the VM provider listed: without its token it needs it, and without its SDK it says to install it", async () => {
+  const tokenless = await boxRegistry({ AGENTRUN_BOXES: VM, [VM_PROVIDER.keys[0]]: "x" }, { vmSdk: vmSdkAbsent });
   assert.deepEqual(offerOf(tokenless, VM), { id: VM, available: false, reason: `needs ${VM_PROVIDER.keys[1]}` });
-  const none = await boxRegistry({ AGENTRUN_BOXES: VM });
+  const none = await boxRegistry({ AGENTRUN_BOXES: VM }, { vmSdk: vmSdkAbsent });
   assert.deepEqual(offerOf(none, VM), { id: VM, available: false, reason: `needs ${VM_PROVIDER.keys.join(" and ")}` });
-  const registry = await boxRegistry({ AGENTRUN_BOXES: VM, ...keys() });
+  const registry = await boxRegistry({ AGENTRUN_BOXES: VM, ...keys() }, { vmSdk: vmSdkAbsent });
   assert.deepEqual(offerOf(registry, VM), { id: VM, available: false, reason: `install ${VM} to use this box` });
   assert.equal(registry.provider(VM), undefined);
 });
@@ -211,9 +217,11 @@ test("no key's value is in an offer, a reason or the start's log line, which say
   withEnv(t, { PATH: docker.PATH, AGENTRUN_BOXES: `docker,daytona,${VM}`, DAYTONA_API_URL: daytona.url, ...values });
   const lines = [];
   const data = join(await scratch(t), "agents");
-  const server = await startServe({ data, port: 0, faux: FAUX, log: (line) => lines.push(line) });
+  // The VM provider's SDK absent, as on a host without it, whatever this workspace installs: every box listed is
+  // unavailable, each with its reason, so the line says them all.
+  const server = await startServe({ data, port: 0, faux: FAUX, fauxVm: await vmSdkAbsentModule(t), log: (line) => lines.push(line) });
   t.after(() => server.close());
-  const registry = await boxRegistry({ ...process.env });
+  const registry = await boxRegistry({ ...process.env }, { vmSdk: vmSdkAbsent });
   const boxes = lines.filter((line) => / event=boxes /.test(line));
   assert.equal(boxes.length, 1, lines.join("\n"));
   assert.match(boxes[0], new RegExp(` available=none unavailable=${BOX_IDS.join(",")} docker="Docker isn't running on this machine, or this user may not use it \\(docker version failed: exit 1\\): [^"]+" ${VM}="(needs|install) [^"]+" daytona="Daytona refused DAYTONA_API_KEY"$`));

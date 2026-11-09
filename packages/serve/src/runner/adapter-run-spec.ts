@@ -40,6 +40,7 @@ import { openRunWorkspace } from "../workspace/run-workspace.js";
 import { COMPUTER_ROOT, runFolder } from "../workspace/paths.js";
 import { runTools, type ToolResults } from "../workspace/run-tools.js";
 import { INPUTS_DIR, UPLOADS_DIR, Uploads } from "../uploads.js";
+import { signInReads } from "../sign-ins-store.js";
 import { claimSecrets } from "./claim-secrets.js";
 import { join } from "node:path";
 import { type AdapterRun, type AdapterRunSpec, hostLifecycle, type RunCapConfig } from "./adapter-loop.js";
@@ -102,7 +103,7 @@ export interface AdapterSpecDeps {
   readonly sealKey: Buffer;
   /** The run's model route (model-route.ts routeOf), the one route the pi adapter and the cap read, on a wire of `wires`
    *  (the caller's; pi speaks both of main's, PI_WIRES). */
-  readonly routeOf: (model: string | undefined, env: NodeJS.ProcessEnv, tier?: Tier, wires?: readonly Wire[]) => Promise<ModelRoute>;
+  readonly routeOf: (model: string | undefined, env: NodeJS.ProcessEnv, tier?: Tier, wires?: readonly Wire[], upstream?: typeof fetch, redact?: (text: string) => string) => Promise<ModelRoute>;
   /** The run's log line (what its Workspace and computer have to say that is not a run failure). */
   readonly log?: (message: string) => void;
   /** The one shared claim-time computer (computer-for-claim.ts), for both the pi and the CLI spec: none for a runner place.
@@ -191,8 +192,10 @@ async function storeSettings(store: Pick<Store, "settings">): Promise<Awaited<Re
 
 export async function adapterRunSpecFromLaunch(launch: RunLaunch, run: AdapterRun, deps: AdapterSpecDeps, claim: Claim): Promise<AdapterRunSpec> {
   const context = BACKGROUND_CONTEXT;
-  // The spec's log lines carry error text (a release, a workspace's end): cut of every secret the runner's env holds.
-  const cut = secretRedactor(runnerSecrets(deps.env));
+  // The runner's one redactor (the loop's, LoopDeps.redact), for every text a secret could reach: the spec's log lines
+  // (a release, a workspace's end), the model route's translation and the session's model proxy. A spec built with no
+  // runner around it cuts every secret the runner's env holds.
+  const cut = run.redact ?? secretRedactor(runnerSecrets(deps.env));
   const log = (line: string) => (deps.log ?? (() => {}))(cut(line));
   const runRow = await deps.store.runs.get(claim.runId);
   if (!runRow) throw new Error(`run ${claim.runId}: its row is gone from the store`);
@@ -251,11 +254,14 @@ export async function adapterRunSpecFromLaunch(launch: RunLaunch, run: AdapterRu
   // The run's model route: its model through routeOf (NEVER re-resolved — the launch's model, pinned at start), the catalog
   // price with tiers for the cap, and the proxy's price (pi-ai calculateCost, tiered).
   // pi speaks both of main's wires: an OpenAI-family model's route is OpenAI's Responses itself.
-  const route = await deps.routeOf(launch.model ? `${launch.model.provider}/${launch.model.modelId}` : undefined, deps.env, "default", PI_WIRES);
+  // The runner's one redactor (run.redact) goes to the route's translation and to the session's model proxy: a provider's
+  // error that echoes a secret reaches pi's record with none in it, on any route.
+  const route = await deps.routeOf(launch.model ? `${launch.model.provider}/${launch.model.modelId}` : undefined, deps.env, "default", PI_WIRES, undefined, cut);
   const adapter = piAdapter({
     run,
     model: route.model,
     provider: route.provider,
+    redact: cut,
     ...(route.like ? { like: route.like } : {}),
     ...(route.price ? { price: route.price as never } : {}),
     ...(route.fetch ? { fetch: route.fetch } : {}),
@@ -309,7 +315,7 @@ export async function adapterRunSpecFromLaunch(launch: RunLaunch, run: AdapterRu
 
   // The ToolHost the non-hand tools (browser, web, MCP, decisions, monid) bind through, carrying the runner's live-viewer
   // seam: the browser tool's live-viewer writers hand a session's viewer over through the store, not through files. This
-  // is the seam tl-browser's live-viewer writers hang off (`liveViewers`).
+  // is the seam the browser's live-viewer writers hang off (`liveViewers`).
   const host: ToolHost = {
     // The run's directory and its per-claim environment (claim-secrets.ts: the run's keys from the store). `coding` is the
     // runner's: the hands come from runTools (below), not from a coding source, so the non-hand tools that read it get the
@@ -371,6 +377,10 @@ export async function adapterRunSpecFromLaunch(launch: RunLaunch, run: AdapterRu
     store: deps.store,
     data: deps.data,
     ...(deps.env ? { env: deps.env } : {}),
+    // What the run must never learn beside the runner's secrets: the keys its claim handed it, and its sign-in's pointers,
+    // read back from the store's sign-ins under the seal key (learning-run.ts refused, on the runner).
+    signIns: signInReads(deps.store, deps.sealKey),
+    handed: runnerSecrets(toolEnv),
     learningFolder: archil === undefined
       ? (agentId: string) => learningFolderOf(deps.data, agentId)
       : (agentId: string) => learningWorkspace({ mode: "archil", agentId, archil }),
@@ -457,7 +467,7 @@ export async function learnedWorkflowHostTool(opts: {
 /** The run's non-hand tools as HostTool[], bound through the ToolHost seam and wrapped as the hands are (host-tools.ts
  *  hostToolOf): web_fetch, web_search and monid, each by its catalog name under the adapter loop's one gate (`spec.gate`;
  *  `gated` is undefined here, as for the hands). Their paid requests are booked by the adapter loop on the run's one ledger
- *  (bookedIn), as main books them, so they run. The browser (tl-browser, through host.liveViewers), MCP (tl-mcp's
+ *  (bookedIn), as main books them, so they run. The browser (through host.liveViewers), MCP (the MCP claim step's
  *  mcpForClaim(claim, store, sealKey, pin) -> { sessionMcp, redactions, release }), the learned workflow and decisions are
  *  each a named todo, added as their seams land. */
 async function bindNonHandTools(host: ToolHost, granted: readonly string[], run: AdapterRun, context: Context, results: ToolResults, root: string, plane: RunLaunch["plane"]): Promise<AdapterRunSpec["session"]["tools"]> {

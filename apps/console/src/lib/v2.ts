@@ -34,6 +34,12 @@ export type McpPrivateHosts = Answer<"getMcpPrivateHosts">;
 /** GET /v2/agents/{id}'s `tools`: each tool the agent grants, with its permission and provider in force. */
 export type AgentTool = NonNullable<components["Agent"]["tools"]>[number];
 
+/** An agent's approvals (definition.approvals): "ask", the default, parks a call its tool gate says ask for the owner's
+ *  answer; "never" runs it unattended (every tool it has granted; deny and pins still apply). */
+export type Approvals = NonNullable<components["DefinitionInput"]["approvals"]>;
+/** What Never ask grants, in the words every place that offers it says. */
+export const NEVER_ASK_LINE = "Never ask: every tool this agent has runs without waiting for you. A tool set to deny, and a template's pins, still hold.";
+
 /** One issue in a refusal or a warning, at its field (`parameters.repo`, `secrets.KEY`), with the server's `fix` when it
  *  names one. */
 export type InputIssue = components["InputIssue"];
@@ -106,6 +112,13 @@ export type WebhookSaved = Answer<"saveWebhook"> & { secret?: string };
 export type WebhookAttempt = Answer<"listWebhookDeliveries">["attempts"][number];
 /** `capabilities.features.webhooks`. */
 export type WebhooksFeature = NonNullable<components["Features"]["webhooks"]>;
+
+/** This server's GitHub App (GET /v2/integrations/github; 404 when none is connected): never a secret. */
+export type GitHubConnection = Answer<"getGitHubConnection">;
+/** POST /v2/integrations/github/connect's answer: where the browser posts the App's manifest (`action` carries ?state=). */
+export type GitHubConnectStart = Answer<"connectGitHub">;
+/** DELETE /v2/integrations/github's answer: how many GitHub triggers went off, and what to delete on GitHub. */
+export type GitHubDisconnected = Answer<"disconnectGitHub">;
 
 /** PATCH /v2/runs/{id} {max_cost_usd}'s answer: the cap now. */
 export type RaiseAnswer = Answer<"raiseRunCap">;

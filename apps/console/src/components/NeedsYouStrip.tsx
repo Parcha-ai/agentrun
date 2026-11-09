@@ -1,7 +1,7 @@
 import { useEffect, useState } from "react";
 import { ApprovalCard } from "@/components/ApprovalCard";
 import { Button } from "@/components/ui/button";
-import { cost, soFar } from "@/lib/format";
+import { cost, soFar, runTitle } from "@/lib/format";
 import { ago, choicesOf, failureGroups } from "@/lib/needs";
 import { elapsed } from "@/lib/runGraph";
 import { NO_MESSAGES, runState } from "@/lib/runState";
@@ -49,7 +49,8 @@ export function NeedsYouStrip({ asking, failed, live, agentName, onAnswer, onApp
   const [refused, setRefused] = useState<{ runId: string; approvalId: string; title: string; text: string }[]>([]);
   const approve = onApprove && (async (runId: string, approvalId: string, decision: "allow" | "deny", note?: string) => {
     const said = await onApprove(runId, approvalId, decision, note);
-    const title = asking.find((r) => r.run_id === runId)?.title ?? runId;
+    const asked = asking.find((r) => r.run_id === runId);
+    const title = asked ? runTitle(asked) : runId;
     setRefused((held) => [...held.filter((x) => x.runId !== runId), ...(said ? [{ runId, approvalId, title, text: said }] : [])]);
     return said;
   });
@@ -117,7 +118,7 @@ function Paused({ run, pending, agentName }: { run: Run; pending: BudgetPending;
       <p className="flex min-w-0 items-center gap-2 text-[13px]">
         <span className="size-2 shrink-0 rounded-full bg-warning" aria-hidden />
         <span className="shrink-0 font-mono text-[12px]">{agentName}</span>
-        <a href={runHref(run.run_id)} className="min-w-0 truncate text-muted-foreground hover:text-foreground">{run.title}</a>
+        <a href={runHref(run.run_id)} className="min-w-0 truncate text-muted-foreground hover:text-foreground">{runTitle(run)}</a>
       </p>
       <p className="caps mt-2 text-[11px] text-warning-text">{pausedWords(pending)}</p>
       {typeof pending.said === "string" && <p className="mt-1 text-[15px] leading-snug">{pending.said}</p>}
@@ -132,7 +133,7 @@ function Head({ run, agentName, since }: { run: Run; agentName: string; since?: 
     <p className="flex min-w-0 items-center gap-2 text-[13px]">
       <span className="size-2 shrink-0 rounded-full bg-warning" aria-hidden />
       <span className="shrink-0 font-mono text-[12px]">{agentName}</span>
-      <a href={runHref(run.run_id)} className="min-w-0 truncate text-muted-foreground hover:text-foreground">{run.title}</a>
+      <a href={runHref(run.run_id)} className="min-w-0 truncate text-muted-foreground hover:text-foreground">{runTitle(run)}</a>
       {since && <span className="ml-auto shrink-0 font-mono text-[12px] text-muted-foreground">{since}</span>}
     </p>
   );
@@ -204,13 +205,13 @@ function Failure({ message, runs: all, agentName, at, onRunAgain }: { message: s
       <span className="size-2 shrink-0 rounded-full bg-destructive" aria-hidden />
       <div className="min-w-0 flex-1">
         {one
-          ? <p className="flex min-w-0 gap-3 text-[14px]"><span className="shrink-0 font-mono text-[12px] leading-5">{agentName(first.agent_id)}</span><a href={runHref(first.run_id)} className="min-w-0 truncate hover:underline">{first.title}</a></p>
+          ? <p className="flex min-w-0 gap-3 text-[14px]"><span className="shrink-0 font-mono text-[12px] leading-5">{agentName(first.agent_id)}</span><a href={runHref(first.run_id)} className="min-w-0 truncate hover:underline">{runTitle(first)}</a></p>
           : <p className="text-[14px]">{runs.length} runs failed <span className="text-muted-foreground">· {[...new Set(runs.map((r) => agentName(r.agent_id)))].join(", ")}</span></p>}
         <p className="mt-0.5 truncate font-mono text-[12px] text-destructive-text">{message}</p>
         {!one && (
           <details className="mt-1 text-[13px]">
             <summary className="cursor-pointer font-mono text-[12px] text-muted-foreground">The runs</summary>
-            <ul className="mt-1 space-y-1">{runs.map((r) => <li key={r.run_id}><a href={runHref(r.run_id)} className="hover:underline">{r.title}</a> <span className="font-mono text-[12px] text-muted-foreground">· {agentName(r.agent_id)}</span></li>)}</ul>
+            <ul className="mt-1 space-y-1">{runs.map((r) => <li key={r.run_id}><a href={runHref(r.run_id)} className="hover:underline">{runTitle(r)}</a> <span className="font-mono text-[12px] text-muted-foreground">· {agentName(r.agent_id)}</span></li>)}</ul>
           </details>
         )}
         {problem && <p className="mt-1 font-mono text-[12px] text-destructive-text" role="alert">{problem}</p>}
@@ -232,7 +233,7 @@ function Live({ run, agentName, at, onStop }: { run: Run; agentName: string; at:
     <li className="flex flex-wrap items-center gap-x-4 gap-y-1 border-b px-4 py-3 last:border-b-0">
       <span className="size-2 shrink-0 rounded-full bg-[hsl(var(--run-active))] shadow-[0_0_0_4px_hsl(var(--run-active)/0.18)]" aria-hidden />
       <span className="shrink-0 font-mono text-[12px]">{agentName}</span>
-      <a href={runHref(run.run_id)} className="min-w-0 flex-1 truncate text-[14px] hover:underline">{run.title}</a>
+      <a href={runHref(run.run_id)} className="min-w-0 flex-1 truncate text-[14px] hover:underline">{runTitle(run)}</a>
       <span className="font-mono text-[13px] text-[hsl(var(--run-active))]">working · {elapsed(at - Date.parse(run.created_at))}</span>
       <span className="font-mono text-[12px] text-muted-foreground">{spent}</span>
       <a href={runHref(run.run_id)} className="caps inline-flex h-8 items-center border px-3 text-[12px] hover:bg-accent">Steer</a>

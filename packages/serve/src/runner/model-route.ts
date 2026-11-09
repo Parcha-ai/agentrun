@@ -61,9 +61,10 @@ type PiMessage = { usage?: RouteUsage; stopReason?: string; errorMessage?: strin
 
 /** The route of `model` ("provider/model-id"; undefined for the host's model of `tier`), resolved from `env` as main
  *  resolves a run's model, on a wire of `wires` (the caller's; default Messages alone). `upstream`: what the route's own
- *  translation sends with (a test's stand-in for the provider); absent, the network. Refuses, in main's words, a model
- *  this host cannot run. */
-export async function routeOf(model: string | undefined, env: NodeJS.ProcessEnv = process.env, tier: Tier = "default", wires: readonly Wire[] = MESSAGES_ONLY, upstream?: typeof fetch): Promise<ModelRoute> {
+ *  translation sends with (a test's stand-in for the provider); absent, the network. `redact`: the runner's one redactor,
+ *  which the translation's error text passes through (absent, one over every secret `env` holds). Refuses, in main's
+ *  words, a model this host cannot run. */
+export async function routeOf(model: string | undefined, env: NodeJS.ProcessEnv = process.env, tier: Tier = "default", wires: readonly Wire[] = MESSAGES_ONLY, upstream?: typeof fetch, redact?: Redact): Promise<ModelRoute> {
   const chosen = await chooseModel(env, model, tier);
   if ("why" in chosen) throw new Error(chosen.why);
   const { models } = await runModels(env, tier === "default" ? model : undefined, [tier]);
@@ -87,7 +88,7 @@ export async function routeOf(model: string | undefined, env: NodeJS.ProcessEnv 
       like: { ...(target.reasoning !== undefined ? { reasoning: target.reasoning } : {}), ...(target.contextWindow ? { contextWindow: target.contextWindow } : {}), ...(target.maxTokens ? { maxTokens: target.maxTokens } : {}) },
     };
   }
-  return { ...route, provider: { api: "anthropic-messages", origin: ROUTE_ORIGIN, credential: () => "model-route" }, fetch: messagesFetch(models as unknown as PiModels, target, secretRedactor(runnerSecrets(env)), upstream) };
+  return { ...route, provider: { api: "anthropic-messages", origin: ROUTE_ORIGIN, credential: () => "model-route" }, fetch: messagesFetch(models as unknown as PiModels, target, redact ?? secretRedactor(runnerSecrets(env)), upstream) };
 }
 
 /** A fetch that answers Anthropic Messages requests on `target`, through pi-ai's `models`. A provider's error text, which

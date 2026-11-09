@@ -149,6 +149,10 @@ export type AdapterRun = PiRun & {
    *  paid calls (a charge outside any call, a browser release's, books here too) and its proxied models by label (a
    *  learned workflow's model nodes). Read from the spec's runCap once the spec is known. */
   readonly ledger: RunLedger;
+  /** The runner's one redactor (LoopDeps.redact; runner.ts), the same instance: the spec gives it to every place a secret
+   *  could reach text (the session's model proxy, the model route's translation, its log lines). Absent where no runner
+   *  gave one (a spec built alone). */
+  readonly redact?: (text: string) => string;
 };
 
 /** What the adapter loop hands a run's tool host: the run's decisions, paid calls and proxied models, on its one cap. */
@@ -548,7 +552,7 @@ function adapterLoop(specOf: (claim: Claim, run: AdapterRun) => AdapterRunSpec |
             await pauseFor?.(refusal);
           },
         };
-        const runOf: AdapterRun = { harness, registry, setModels: (given) => (models = given), ledger };
+        const runOf: AdapterRun = { harness, registry, setModels: (given) => (models = given), ledger, ...(deps.redact ? { redact: deps.redact } : {}) };
         const spec = await specOf(claim, runOf);
         specNow = spec;
         releaseNow = spec.release;

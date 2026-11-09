@@ -47,6 +47,10 @@ test("no route but POST /v2/hooks/{id} (and capabilities, the document and healt
     // The OAuth callback takes no token, only the cookie its own start set in the browser that started it (mcp-oauth.ts):
     // without that cookie it is 403, and it is served to nothing else.
     else if (route.name === "mcpOAuthCallback") assert.equal(answer.status, 403, `${route.method} ${path} (${route.name}): ${answer.text.slice(0, 200)}`);
+    // Connect GitHub's two steps back from GitHub take no token either: the callback's state and its browser's cookie
+    // (github-connection.ts), and an installation GitHub confirms to the App's JWT; with neither, the browser is sent to the
+    // console's GitHub settings with why, and nothing is done.
+    else if (route.name === "gitHubCallback" || route.name === "gitHubInstalled") assert.equal(answer.status, 302, `${route.method} ${path} (${route.name}): ${answer.text.slice(0, 200)}`);
     else assert.equal(answer.status, 401, `${route.method} ${path} (${route.name}) needs the token: ${answer.text.slice(0, 200)}`);
   }
   const body = "{}";

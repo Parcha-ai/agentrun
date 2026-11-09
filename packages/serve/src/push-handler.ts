@@ -55,8 +55,8 @@ const REFUSED = "this route needs a request signed by the webhook trigger's secr
 
 export type PushDeps = {
   adapters: readonly TriggerAdapter[];
-  /** The source of trigger `id`, when it is a trigger of the pushed source `kind` that is on. */
-  hooked(id: string, kind: string): Promise<Source | undefined>;
+  /** The source of trigger `id`, when it is a trigger of a pushed source that is on. */
+  hooked(id: string): Promise<Source | undefined>;
   /** How long a hook's body has to arrive, whole (default HOOK_BODY_MS): a test's seam. */
   bodyMs?: number;
   /** A request trigger `id` ignored, under the key its event would have (triggers.ts ignored): kept for its day. */
@@ -88,16 +88,20 @@ export async function receivePush(deps: PushDeps, req: IncomingMessage, segment:
   } catch {
     throw refuse("malformed_path");
   }
-  // A source's own path (its settings are the server's), else a trigger's (the source whose settings are a trigger's).
+  // A source's own path (its settings are the server's), else a trigger's, checked by that trigger's own source (its
+  // settings are a trigger's). A path that names no such trigger is checked as the first such source's, against the
+  // decoy: the same work and the same 401, so no id is learned by asking.
   const own = deps.adapters.find((a) => a.id === name && a.push && a.settings?.scope === "server");
-  const adapter = own ?? deps.adapters.find((a) => a.push && a.settings?.scope === "trigger");
+  const named = own || !ID.test(name) ? undefined : await deps.hooked(name);
+  const trigger = named && deps.adapters.find((a) => a.id === named.kind && a.push && a.settings?.scope === "trigger");
+  const adapter = own ?? trigger ?? deps.adapters.find((a) => a.push && a.settings?.scope === "trigger");
   const push = adapter?.push;
   if (!adapter || !push) throw refuse("no_hook");
   const now = Date.now();
   const early = push.headers?.(req.headers as Headers, now);
   if (early) throw refuse(early);
   const body = await readCapped(req, push.maxBodyBytes, deps.bodyMs);
-  const source = own || !ID.test(name) ? undefined : await deps.hooked(name, adapter.id);
+  const source = trigger ? named : undefined;
   const pathTrigger = source ? name : undefined;
   const key = own ? deps.setting(adapter.id, "server", push.key) : pathTrigger && deps.setting(adapter.id, pathTrigger, push.key);
   // Checked against the clock now the body has arrived: a timestamp at the tolerance's edge never passes by a slow body.
