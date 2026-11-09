@@ -18,6 +18,11 @@ const { startRunner } = await import("../dist/runner/runner.js");
 const { createWorkflowLoop } = await import("../dist/runner/workflow-loop.js");
 const { workflowSpecOf } = await import("../dist/runner/workflow-spec.js");
 const { deniedText } = await import("../dist/refusal-words.js");
+const { sendCommand } = await import("../dist/runner/commands.js");
+const { parallelSearchFee } = await import("../dist/paid-calls.js");
+const { FAUX_PARALLEL_ENV } = await import("../dist/decisions.js");
+const { FAUX_ENV } = await import("../dist/model.js");
+const FAUX_PARALLEL = new URL("./fixtures/faux-parallel-search.mjs", import.meta.url).pathname;
 
 const TIMING = { leaseMs: 1_000, renewEveryMs: 250, stopMarginMs: 300, pollMs: 20, commandPollMs: 30 };
 const sleep = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
@@ -49,20 +54,20 @@ const said = (model, text, output = 10) => sse([
 ]);
 
 /** The `llm` calls' origin: each request counted under the word its prompt names. */
-function wordsOrigin(words) {
+function wordsOrigin(words, output = 10) {
   const counts = Object.fromEntries(words.map((word) => [word, 0]));
   const fetch = async (_url, init = {}) => {
     const text = String(init.body ?? "{}");
     const word = words.find((one) => text.includes(one)) ?? "unknown";
     counts[word] = (counts[word] ?? 0) + 1;
-    return said(JSON.parse(text).model, "ok");
+    return said(JSON.parse(text).model, "ok", output);
   };
   return { fetch, counts };
 }
 
 /** run-1, a workflow run of `workflow` (its revision granting `tools`, with `toolSettings`), on a runner whose models go
  *  to `fetch`; its row once it leaves running. */
-async function runOn(t, { workflow, tools = ["llm"], toolSettings, fetch, capUsd = 100 }) {
+async function runOn(t, { workflow, tools = ["llm"], toolSettings, fetch, capUsd = 100, plane, env, during }) {
   const dir = mkdtempSync(join(process.env.TMPDIR ?? tmpdir(), "agentrun-call-nodes-"));
   const server = await openSqliteStore({ dataDir: dir, role: "server" });
   const store = await openSqliteStore({ dataDir: dir, role: "runner" });
@@ -74,19 +79,27 @@ async function runOn(t, { workflow, tools = ["llm"], toolSettings, fetch, capUsd
     rmSync(dir, { recursive: true, force: true });
   });
   await server.agents.create({ id: "agent-1", name: "Calls" }, { id: "rev-1", kind: "workflow", body: { workflow, tools, ...(toolSettings ? { toolSettings } : {}) } });
-  await server.runs.create({ id: "run-1", agentId: "agent-1", revisionId: "rev-1" }, { body: { input: {}, title: "t", place: { mode: "runner" }, max_cost_usd: capUsd } });
+  await server.runs.create({ id: "run-1", agentId: "agent-1", revisionId: "rev-1" }, { body: { input: {}, title: "t", place: { mode: "runner" }, max_cost_usd: capUsd, ...(plane ? { plane } : {}) } });
   const providerOf = () => ({
     modelId: "faux-priced", api: "anthropic-messages", origin: "https://faux.invalid", credential: () => `not-a-secret-${"n"}`,
     policy: anthropicPolicy({ model: "faux-priced", tools: [] }), price: (_model, usage) => (usage.output ?? 0) * 100 / 1e6, capModel: PRICED, fetch,
   });
-  runner = startRunner({ store, createLoop: createWorkflowLoop(workflowSpecOf({ store, providerOf })), name: "runner-a", ...TIMING });
+  runner = startRunner({ store, createLoop: createWorkflowLoop(workflowSpecOf({ store, providerOf, ...(env ? { env } : {}) })), name: "runner-a", ...TIMING });
   const from = Date.now();
+  let acted = false;
   for (;;) {
     const row = await server.runs.get("run-1");
+    // `during(server, row)`: what a test does once the run first parks (a raise), then the wait goes on to its end.
+    if (during && !acted && row.state === "parked" && row.runner === null) {
+      acted = true;
+      await during(server, row);
+      continue;
+    }
     // The row, with the store's files' text: the engine's effect records (a call node's outcome) are there, which the
     // timeline's reader passes over.
     const journalText = async () => ["store.sqlite", "store.sqlite-wal"].map((name) => join(dir, name)).filter(existsSync).map((file) => readFileSync(file).toString("utf8")).join("\n");
-    if (["ended", "failed", "stopped", "parked"].includes(row.state) && row.runner === null) return Object.assign(row, { journalText });
+    const resting = during ? ["ended", "failed", "stopped"] : ["ended", "failed", "stopped", "parked"];
+    if (resting.includes(row.state) && row.runner === null) return Object.assign(row, { journalText });
     if (Date.now() - from > 30_000) assert.fail(`the run never left running: ${JSON.stringify({ state: row.state, summary: row.summary })}`);
     await sleep(20);
   }
@@ -125,4 +138,64 @@ test("a call node whose tool the agent's settings deny is refused at the call in
   const words = deniedText("llm", undefined, "agent");
   assert.ok((await row.journalText()).includes(words), `the node's failure is in main's words: ${words}`);
   assert.deepEqual(origin.counts, { "CALL-ONE": 0 }, "nothing sent");
+});
+
+/** One `llm` call node asking for at most `maxTokens` output: its hold is that output at $100 a million (input free). */
+const boundedCall = (word, maxTokens) => ({
+  v: 2, name: "bounded",
+  schemas: { In: { type: "object", additionalProperties: true }, Llm: LLM },
+  input: { schemaId: "In" },
+  output: { schemaId: "Llm", path: "c0" },
+  root: { node: "call", label: "call-0", via: "tool", tool: "llm", args: { prompt: `${word}: say ok.`, maxTokens }, out: "Llm", as: "c0", deadline_s: 120 },
+});
+
+test("a paid web_search call node on Parallel: its search sent once, and booked once on the run's ledger at Parallel's fee", async (t) => {
+  globalThis.fauxParallelSearches = 0;
+  const workflow = {
+    v: 2, name: "search",
+    schemas: { In: { type: "object", additionalProperties: true }, Any: {} },
+    input: { schemaId: "In" },
+    output: { schemaId: "Any", path: "found" },
+    root: { node: "call", label: "search-0", via: "tool", tool: "web_search", args: { query: "agentrun", n: 3 }, out: "Any", as: "found", deadline_s: 120 },
+  };
+  const row = await runOn(t, {
+    workflow, tools: ["web_search"], fetch: wordsOrigin([]).fetch, plane: { web_search: "parallel" },
+    env: { [FAUX_ENV]: "1", [FAUX_PARALLEL_ENV]: FAUX_PARALLEL, PARALLEL_API_KEY: `not-a-secret-${"p"}` },
+  });
+  assert.equal(row.state, "ended", JSON.stringify({ state: row.state, summary: row.summary }));
+  assert.equal(globalThis.fauxParallelSearches, 1, "one search sent");
+  assert.equal(eight(row.costUsd), eight(parallelSearchFee(3).usd), `booked once at Parallel's fee: ${row.costUsd}`);
+});
+
+test("past the cap, an llm call node's hold is refused before its effect is admitted: the run parks with nothing sent, and a raise sends it once", async (t) => {
+  // Its hold: 32,000 output tokens (none named) at $100 a million, $3.20, over a $1 cap.
+  const origin = wordsOrigin(["CALL-ONE"]);
+  let atPark;
+  const row = await runOn(t, {
+    workflow: llmCalls("CALL-ONE"), fetch: origin.fetch, capUsd: 1,
+    during: async (server, parked) => {
+      atPark = { counts: { ...origin.counts }, summary: parked.summary };
+      await sendCommand(server, "run-1", { kind: "raise", body: { capUsd: 10 } });
+    },
+  });
+  assert.deepEqual(atPark?.counts, { "CALL-ONE": 0 }, `parked before anything was sent: ${JSON.stringify(atPark)}`);
+  assert.equal(row.state, "ended", JSON.stringify({ state: row.state, summary: row.summary }));
+  assert.deepEqual(origin.counts, { "CALL-ONE": 1 }, "the raise sent it once");
+  assert.equal(eight(row.costUsd), eight(PER_ANSWER), `booked once: ${row.costUsd}`);
+});
+
+test("a call charged exactly its hold is never failed by the net: an llm answer of its whole asked output ends the run", async (t) => {
+  // maxTokens 10: its hold is 10 output tokens at $100 a million; the answer reports exactly 10.
+  const origin = wordsOrigin(["CALL-ONE"], 10);
+  const row = await runOn(t, { workflow: boundedCall("CALL-ONE", 10), fetch: origin.fetch });
+  assert.equal(row.state, "ended", JSON.stringify({ state: row.state, summary: row.summary }));
+  assert.equal(eight(row.costUsd), eight(PER_ANSWER));
+});
+
+test("the net: an llm call whose answer costs more than its hold fails in the cap's words", async (t) => {
+  // maxTokens 10 held; the provider bills 20 output tokens, above its own bound.
+  const origin = wordsOrigin(["CALL-ONE"], 20);
+  const row = await runOn(t, { workflow: boundedCall("CALL-ONE", 10), fetch: origin.fetch });
+  assert.equal(row.state, "failed", JSON.stringify({ state: row.state, summary: row.summary }));
+  assert.match(await row.journalText(), /its answer cost \$[\d.]+, above the \$[\d.]+ it held before it ran/, "the call's failure in the cap's words");
 });
