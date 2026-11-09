@@ -338,7 +338,8 @@ test("R13: a claim lost while a call is out drops the gateway's credentials at o
   for (const from = Date.now(); !fakeRef.log.some((entry) => entry.closed === "slow_write") && Date.now() - from < 10_000; ) await sleep(10);
   assert.ok(fakeRef.log.some((entry) => entry.closed === "slow_write"), "the call was cut upstream");
   assert.deepEqual(opened[0].redactions(), [], "nothing held once the claim is lost");
-  const after = await opened[0].sessionMcp.call("fake", "slow_write", { line: "y", seconds: 0 }, { signal: new AbortController().signal, callId: "late" });
+  // The pinned tool as pi holds it (its host tool): a dropped claim's gateway sends nothing.
+  const after = await opened[0].tools.find((tool) => tool.name === "mcp__fake__slow_write").call({ line: "y", seconds: 0 }, { signal: new AbortController().signal, callId: "late" });
   assert.equal(after.isError, true, "a dropped claim's gateway sends nothing");
   assert.equal(toolCalls(fakeRef, "slow_write").length, 1, "nothing more reached the server");
   block.renew = false;

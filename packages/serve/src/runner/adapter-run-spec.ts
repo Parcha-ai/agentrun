@@ -304,7 +304,7 @@ function settlePaidCall(name: string): { refused: string } | undefined {
 /** The run's non-hand tools as HostTool[], bound through the ToolHost seam and wrapped as the hands are (host-tools.ts
  *  hostToolOf): web_fetch, web_search and monid, each by its catalog name under the adapter loop's one gate (`spec.gate`;
  *  `gated` is undefined here, as for the hands), its paid call's money through settlePaidCall. The browser (tl-browser,
- *  through host.liveViewers), MCP (tl-mcp's mcpForClaim(claim, store, sealKey, pin) -> { sessionMcp, redactions, release }),
+ *  through host.liveViewers), MCP (opened at the top of adapterRunSpecFromLaunch by mcp-run.ts mcpForClaim and handed to the loop as spec.mcp),
  *  the learned workflow and decisions are each a named todo, added as their seams land. */
 async function bindNonHandTools(host: ToolHost, granted: readonly string[], run: AdapterRun, context: Context, results: ToolResults, root: string, plane: RunLaunch["plane"]): Promise<AdapterRunSpec["session"]["tools"]> {
   const names = granted.filter((name) => name === WEB_FETCH_TOOL || name === WEB_SEARCH_TOOL || name.startsWith("monid."));

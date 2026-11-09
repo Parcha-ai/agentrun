@@ -70,9 +70,8 @@ export type McpGateAnswer = undefined | { readonly refused: string } | { readonl
 
 /** A claim's MCP (AdapterRunSpec.mcp): what the loop reaches the gateway by, and the claim step's own hooks. */
 export interface ClaimMcp {
-  /** The gateway as the session's MCP: the pinned servers and their tools, each call sent with no gate of its own. */
-  readonly sessionMcp: SessionMcp;
-  /** One host tool per pinned tool, under its wire name: pi's tools, and what `session`'s calls run. */
+  /** One host tool per pinned tool, under its wire name: pi's tools, and what `session`'s calls run. Each reaches the
+   *  gateway only as the loop wraps it, behind the run's one gate (the gate before the intent); nothing else does. */
   readonly tools: readonly HostTool[];
   /** A pinned tool's catalog name (`mcp:<server>/<tool>`) by its wire name; undefined for any other tool. */
   catalogOf(tool: string): string | undefined;
@@ -155,7 +154,6 @@ export async function mcpForClaim(options: McpForClaimOptions): Promise<ClaimMcp
     }
   }
   return {
-    sessionMcp: { servers: gateway.servers, call: (server, tool, args, context) => gateway.call(server, tool, args, context) },
     tools,
     catalogOf: (tool) => catalog.get(tool),
     priceOf(name) {
