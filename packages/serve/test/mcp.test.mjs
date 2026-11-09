@@ -209,6 +209,27 @@ test("agents_create and agents_revise pass any other definition field through to
   for (const name of ["agents_create", "agents_revise"]) assert.equal(tools.find((tool) => tool.name === name).inputSchema.properties.definition.type, "object", name);
 });
 
+test("agents_revise naming only place replaces the computer the old place said, naming only computer replaces the place, and only one revise naming both that disagree is refused", async (t) => {
+  const server = await serve(t);
+  const mcp = mcpClient(server);
+  await mcp.tool("agents_create", { id: "moved", name: "Moved", instructions: "Answer.", definition: { place: { mode: "runner" } } });
+  assert.deepEqual((await v2(server, "GET", "/agents/moved")).body.definition.computer, { kind: "none" }, "the read shows the place's computer beside it");
+  // Only place: the computer the old place said is replaced by the new place's, never carried beside it.
+  const boxed = (await mcp.tool("agents_revise", { agent_id: "moved", definition: { place: { mode: "sandbox", box: "docker" } } })).structuredContent;
+  assert.deepEqual([boxed.definition.place, boxed.definition.computer], [{ mode: "sandbox", box: "docker" }, { kind: "sandbox", provider: "docker" }]);
+  // Only computer: the place is its view, replaced the same way.
+  const desk = (await mcp.tool("agents_revise", { agent_id: "moved", definition: { computer: { kind: "desktop", provider: "e2b" } } })).structuredContent;
+  assert.deepEqual([desk.definition.computer, desk.definition.place], [{ kind: "desktop", provider: "e2b" }, { mode: "runner" }]);
+  // Both, agreeing: one setting.
+  const agreed = (await mcp.tool("agents_revise", { agent_id: "moved", definition: { computer: { kind: "sandbox", provider: "daytona" }, place: { mode: "sandbox", box: "daytona" } } })).structuredContent;
+  assert.deepEqual([agreed.definition.computer, agreed.definition.place], [{ kind: "sandbox", provider: "daytona" }, { mode: "sandbox", box: "daytona" }]);
+  // Both, disagreeing, in the one revise: the route's 422, in its words; nothing changes.
+  const two = await mcp.tool("agents_revise", { agent_id: "moved", definition: { computer: { kind: "phone", provider: "phone-harness" }, place: { mode: "sandbox", box: "docker" } } }, { ok: false });
+  assert.equal(two.structuredContent.error.code, "input_invalid");
+  assert.deepEqual(two.structuredContent.error.fields.map((f) => [f.field, f.message]), [["definition.place", "computer and place say two settings: give one (place is computer's v2 view)"]]);
+  assert.deepEqual((await v2(server, "GET", "/agents/moved")).body.definition.computer, { kind: "sandbox", provider: "daytona" }, "a refused revise changes nothing");
+});
+
 test("runs_get names the question a waiting run asked, runs_respond answers it, and runs_cancel ends another", async (t) => {
   const server = await serve(t);
   const mcp = mcpClient(server);

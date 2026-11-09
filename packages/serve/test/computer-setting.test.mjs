@@ -47,3 +47,27 @@ test("through the API: a computer saved shows with its place, a place saved show
   assert.equal(moved.status, 200, JSON.stringify(moved.body));
   assert.deepEqual([moved.body.definition.computer, moved.body.definition.place], [{ kind: "none" }, { mode: "runner" }]);
 });
+
+test("a revise naming only place replaces the computer the old one said; only computer replaces the place; both must agree only when one revise names both", async (t) => {
+  const { api } = await serve(t);
+  const made = await api("POST", "/agents", agent("swap", { place: { mode: "runner" } }));
+  assert.equal(made.status, 201, JSON.stringify(made.body));
+  assert.deepEqual(made.body.definition.computer, { kind: "none" });
+  // (a) Only place: the new computer is the new place's, never the stored one carried beside it.
+  const placed = await api("PUT", "/agents/swap/definition", agent("swap", { version: 2, place: { mode: "sandbox", box: "bwrap" } }));
+  assert.equal(placed.status, 200, JSON.stringify(placed.body));
+  assert.deepEqual([placed.body.definition.computer, placed.body.definition.place], [computerOfPlace({ mode: "sandbox", box: "bwrap" }), { mode: "sandbox", box: "bwrap" }]);
+  // (b) Only computer: the place is its view.
+  const computed = await api("PUT", "/agents/swap/definition", agent("swap", { version: 3, computer: { kind: "phone", provider: "phone-harness" } }));
+  assert.equal(computed.status, 200, JSON.stringify(computed.body));
+  assert.deepEqual([computed.body.definition.computer, computed.body.definition.place], [{ kind: "phone", provider: "phone-harness" }, placeOfComputer({ kind: "phone", provider: "phone-harness" })]);
+  // (c) Both, agreeing: one setting.
+  const agreed = await api("PUT", "/agents/swap/definition", agent("swap", { version: 4, computer: { kind: "sandbox", provider: "docker" }, place: { mode: "sandbox", box: "docker" } }));
+  assert.equal(agreed.status, 200, JSON.stringify(agreed.body));
+  assert.deepEqual([agreed.body.definition.computer, agreed.body.definition.place], [{ kind: "sandbox", provider: "docker" }, { mode: "sandbox", box: "docker" }]);
+  // (d) Both, disagreeing, in one revise: 422 on definition.place, in these words; nothing changes.
+  const two = await api("PUT", "/agents/swap/definition", agent("swap", { version: 5, computer: { kind: "desktop", provider: "e2b" }, place: { mode: "sandbox", box: "docker" } }));
+  assert.equal(two.status, 422, JSON.stringify(two.body));
+  assert.deepEqual(two.body.error.fields.map((f) => [f.field, f.message]), [["definition.place", "computer and place say two settings: give one (place is computer's v2 view)"]]);
+  assert.deepEqual((await api("GET", "/agents/swap")).body.definition.computer, { kind: "sandbox", provider: "docker" });
+});
