@@ -391,6 +391,15 @@ export const ROUTES: readonly Route[] = [
   { method: "GET", pattern: /^\/runs\/([^/]+)\/computer$/, name: "getRunComputer" },
   { method: "POST", pattern: /^\/runs\/([^/]+)\/computer\/take-over$/, name: "takeOverRunComputer" },
   { method: "POST", pattern: /^\/runs\/([^/]+)\/computer\/hand-back$/, name: "handBackRunComputer" },
+  // Settings → Computers (computers.ts settingsComputerRoute) and the owner's Archil settings (archil-routes.ts
+  // archilRoute): the server switch dispatches them, once the server opens its store.
+  { method: "GET", pattern: /^\/computers$/, name: "listComputers" },
+  { method: "PUT", pattern: /^\/computers\/([^/]+)\/keys$/, name: "saveComputerKeys" },
+  { method: "POST", pattern: /^\/computers\/([^/]+)\/test$/, name: "testComputer" },
+  { method: "GET", pattern: /^\/workspace\/archil$/, name: "getWorkspaceArchil" },
+  { method: "PUT", pattern: /^\/workspace\/archil$/, name: "putWorkspaceArchil" },
+  { method: "DELETE", pattern: /^\/workspace\/archil$/, name: "deleteWorkspaceArchil" },
+  { method: "POST", pattern: /^\/workspace\/archil\/test$/, name: "testWorkspaceArchil" },
   { method: "GET", pattern: /^\/runs\/([^/]+)\/files\/(.+)$/, name: "readRunFile" },
   { method: "POST", pattern: /^\/files$/, name: "createFile", raw: true },
   { method: "GET", pattern: /^\/files$/, name: "listFiles" },

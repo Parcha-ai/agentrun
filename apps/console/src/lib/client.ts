@@ -4,7 +4,7 @@ import type { AgentLearning, LearningChange, LearningDiff, LearningNote, NotePro
 import type { McpAuth, McpClientFeature, McpPreview, McpRefresh, McpServer } from "./mcp";
 import type { RunGraph } from "./runGraph";
 import { applyPage } from "./timeline";
-import type { ApiError, Computers, ComputerKeysBody, ComputerProvider, ComputerTest, Firing, RaiseAnswer, Run, RunBrowser, RunFiles, RunStatus, TimelinePage, TimelineRow, ToolKeys, ToolKeysFeature, ToolSettings, Trigger, TriggerCreate, TriggerInput, TriggerMade, TriggerSecret, Webhook, WebhookAttempt, WebhookSaved, WebhooksFeature } from "./v2";
+import type { ApiError, Archil, ArchilBody, ArchilTest, Computers, ComputerKeysBody, ComputerProvider, ComputerTest, Firing, RaiseAnswer, Run, RunBrowser, RunFiles, RunStatus, TimelinePage, TimelineRow, ToolKeys, ToolKeysFeature, ToolSettings, Trigger, TriggerCreate, TriggerInput, TriggerMade, TriggerSecret, Webhook, WebhookAttempt, WebhookSaved, WebhooksFeature } from "./v2";
 
 /** A request AgentRun Server refused: its HTTP status and its typed error (`code`, `message`, `retryable`). */
 export type FieldIssue = { field: string; reason: string; message: string };
@@ -230,6 +230,14 @@ export function createClient({ fetch: f = globalThis.fetch.bind(globalThis), bas
     saveComputerKeys: (provider: string, keys: ComputerKeysBody) => call<ComputerProvider>("PUT", `/computers/${encodeURIComponent(provider)}/keys`, { body: keys }),
     /** One account-level read of a provider with its saved keys; it never makes a computer. */
     testComputer: (provider: string) => call<ComputerTest>("POST", `/computers/${encodeURIComponent(provider)}/test`),
+    /** Archil (Mode 2): on or off, its disk settings and its keys by name, never a value. */
+    archil: () => call<Archil>("GET", "/workspace/archil"),
+    /** Turns Archil on, or changes it: the settings replaced, the keys given sealed (null removes one). The answer is the view. */
+    saveArchil: (body: ArchilBody) => call<Archil>("PUT", "/workspace/archil", { body }),
+    /** Turns Archil off (back to Mode 1); its keys are kept. The answer is the view. */
+    archilOff: () => call<Archil>("DELETE", "/workspace/archil"),
+    /** One listing of the disk's root with the saved keys. */
+    testArchil: () => call<ArchilTest>("POST", "/workspace/archil/test"),
     /** The webhook, never its secret (a serve extension). */
     webhook: () => call<Webhook>("GET", "/settings/webhook"),
     /** Sets the webhook's URL; the first PUT makes its secret and answers it, once (`secret`). */

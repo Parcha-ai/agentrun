@@ -309,6 +309,7 @@ export function localMachine(options: LocalMachineOptions): AcquireMachine {
       announcedExec: () => announced,
       onRolloutLine: (listener) => void rolloutListeners.push(listener),
       onCut: (listener) => void cutListeners.push(listener),
+      openTurn: () => proxy.openTurn(),
       onCalls: (given) => void (calls = given),
       ...(search || options.mcp || catalog ? {
         configure: (config: Record<string, TomlValue>) => {
