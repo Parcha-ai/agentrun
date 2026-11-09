@@ -59,7 +59,19 @@ export class PaidRefused extends Error {
 
 /** Where a paid request is booked: the call it is booked under, and one record written to the run's root, where its
  *  spend is read on every harness (cap.ts, harness-app.ts). */
-export type Ledger = { call: string; record(kind: string, data: Record<string, string | number | null>): Promise<void> };
+export type Ledger = {
+  call: string;
+  record(kind: string, data: Record<string, string | number | null>): Promise<void>;
+  /** The run's one ledger on the runner (the kernel cap's paidCalls, the adapter loop's): a paid request is admitted and
+   *  settled there, in the run's runner records, in place of this process's run spend (cap.ts paidCall) and the root's
+   *  TOOL_STARTED/TOOL_COST marks. */
+  paid?: PaidBooking;
+};
+/** The kernel cap's booking of a run's paid calls (RunTools), as a paid request uses it. */
+export type PaidBooking = {
+  admit(request: { id: string; name: string; holdUsd: number; basis: string }): Promise<unknown>;
+  settle(id: string, usd: number | null): Promise<unknown>;
+};
 const ledgers = new AsyncLocalStorage<Ledger>();
 
 /** The run process's own commit to its run's root, outside any one call's turn (app.ts sets it once the run's harness is
@@ -140,6 +152,7 @@ export async function paidRequest(fee: Fee, send: () => Promise<Response>): Prom
   if (!ledger) throw new PaidRefused(`${fee.name} was not sent: this request has no call to book it under`);
   const label = { tool: fee.tool, charged_by: fee.by, call: ledger.call };
   const chargeOf = (sent: Sent) => ("unmarked" in sent ? undefined : "thrown" in sent || billed(sent.response.status) ? fee.usd : 0);
+  if (ledger.paid) return paidOn(ledger.paid, `${ledger.call}#${(paidSeq += 1)}`, fee, send, chargeOf);
   const sent = async (): Promise<Sent> => {
     try {
       await writeHold(ledger.record, { ...label, heldUsd: fee.usd });
@@ -162,4 +175,28 @@ export async function paidRequest(fee: Fee, send: () => Promise<Response>): Prom
   if ("unmarked" in outcome) throw new PaidRefused(outcome.unmarked);
   if ("thrown" in outcome) throw outcome.thrown;
   return outcome.response;
+}
+
+/** Each paid request of this process on the run's one ledger, numbered within its call (one call may make several). */
+let paidSeq = 0;
+
+/** `send` on the run's one ledger (Ledger.paid): admitted at the fee's price (refused unsent in the cap's words), then
+ *  sent, then settled at what it may have charged (chargeOf: its price on a 2xx, a 408 or a 5xx or when it threw after
+ *  it was sent; $0 on another 4xx). A settle that cannot be written leaves the request at its hold, never less. */
+async function paidOn(paid: PaidBooking, id: string, fee: Fee, send: () => Promise<Response>, chargeOf: (sent: Sent) => number | undefined): Promise<Response> {
+  try {
+    await paid.admit({ id, name: fee.name, holdUsd: fee.usd, basis: fee.basis });
+  } catch (error) {
+    const said = String((error as Error)?.message ?? error);
+    throw new PaidRefused((error as { code?: unknown })?.code === "spend_cap_reached" ? said : holdRefusal(fee.name, error));
+  }
+  let outcome: Sent;
+  try {
+    outcome = { response: await send() };
+  } catch (thrown) {
+    outcome = { thrown };
+  }
+  await paid.settle(id, chargeOf(outcome) ?? null).catch(() => undefined);
+  if ("thrown" in outcome) throw outcome.thrown;
+  return (outcome as { response: Response }).response;
 }
