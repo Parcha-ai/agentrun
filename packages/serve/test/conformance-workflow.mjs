@@ -14,10 +14,12 @@ const { createWorkflowLoop } = await import("../dist/runner/workflow-loop.js");
 const { createWorkflowExtension } = await import("@parcha/agentrun-pi/durable");
 
 /** The suite's script as a workflow: one call node per `{ call }` step (a chain when there is more than one), the suite's
- *  tool as the call's effect. `{ say }` steps are the model's, which a workflow has none of, so they are left out. */
+ *  tool as the call's effect. `{ say }` steps are the model's, which a workflow has none of, so they are left out. A call
+ *  node's `deadline_s` is required by the DSL (author.ts: a finite number above 0), so every call carries one; it is long
+ *  enough that a person's stop or cancel always ends the suite's blocking tool first, never the deadline. */
 function workflowOfScript(script) {
   const calls = script.filter((step) => "call" in step);
-  const steps = calls.map((step, index) => ({ node: "call", label: `${step.call}-${index}`, via: "tool", tool: step.call, args: {}, out: "Any", as: `out${index}` }));
+  const steps = calls.map((step, index) => ({ node: "call", label: `${step.call}-${index}`, via: "tool", tool: step.call, args: {}, out: "Any", as: `out${index}`, deadline_s: 120 }));
   return {
     v: 2, name: "conformance",
     schemas: { In: { type: "object", additionalProperties: true }, Any: {} },
