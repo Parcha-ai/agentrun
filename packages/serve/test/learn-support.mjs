@@ -87,16 +87,43 @@ export async function gradeOnFaux(reply, input) {
   return { verdict };
 }
 
-/** Run `runId`'s kept learning (its learning_proposals row: the turn and the proposal), from the server's store: the
- *  test's own handle on it (server.store), else one opened on the server's data for the read. */
-export async function keptProposal(server, runId) {
-  if (server.store) return server.store.learning.proposal(runId);
+/** `read` over the server's store: the test's own handle on it (server.store), else one opened on the server's data
+ *  for the read. */
+async function overStore(server, read) {
+  if (server.store) return read(server.store);
   const store = await openSqliteStore({ dataDir: server.data, role: "runner" });
   try {
-    return await store.learning.proposal(runId);
+    return await read(store);
   } finally {
     await store.close();
   }
+}
+
+/** Run `runId`'s journal entries of `kinds`, from the one store (store-reads/journal.ts runEntries), each its kind and its
+ *  data, in order: what a run's own run.sqlite held on main. */
+export async function entriesOf(server, runId, kinds) {
+  const { runEntries } = await import("../dist/store-reads/journal.js");
+  const { BACKGROUND_CONTEXT } = await import("@earendil-works/chord/context");
+  const all = await overStore(server, (store) => runEntries(store, runId, BACKGROUND_CONTEXT));
+  return all.filter((entry) => kinds.includes(entry.kind)).map((entry) => ({ kind: entry.kind, ...entry.data }));
+}
+
+/** Why a case waits on the runner's seed lay (tl-places, places/learning-seed-lay; the learned workflows on it in
+ *  untangle/cutover-learning-workflows): it reads what the claim lays in the run's work (`.learning/`, the learned skills,
+ *  the learned_workflow tool). Each such case is ported onto that lay and turns on when it merges; LEARN_SEED_LAY_PROBE
+ *  runs them now. */
+export const SEED_LAY_TODO = process.env.LEARN_SEED_LAY_PROBE ? false : "places/learning-seed-lay (tl-places) and untangle/cutover-learning-workflows (the lead): the runner's seed lay and its learned workflows";
+
+/** Run `runId`'s kept learning (its learning_proposals row: the turn and the proposal), from the server's store. */
+export const keptProposal = (server, runId) => overStore(server, (store) => store.learning.proposal(runId));
+
+/** What run `runId` was pinned to learn from, as its launch records it on the switch (run-launch.ts learningStartOf: the
+ *  seed's commit, the notes given whole and the # Learned section), in the shape the server's pin (`learning.json`) had:
+ *  `seed`, with `section` when it has one and `given` when it was given notes. Undefined for a run that does not learn. */
+export async function pinOf(server, runId) {
+  const learning = await overStore(server, async (store) => (await store.runs.launch(runId).catch(() => undefined))?.body?.learning);
+  if (!learning) return undefined;
+  return { seed: learning.seed, ...(learning.section ? { section: learning.section } : {}), ...(learning.given?.length ? { given: learning.given } : {}) };
 }
 
 /** Run `runId`'s learning, graded and merged by the runner's learning run (runner/learning-loop.ts, which the test
