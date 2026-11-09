@@ -174,3 +174,17 @@ test("a stylesheet of 400,000 spaces and 200,000 semicolons is read in one linea
   assert.ok(seen, "the page's text is read");
   assert.ok(ms < 1_000, `read in ${Math.round(ms)} ms`);
 });
+
+test("visibility is inherited and a descendant can show itself again: an element hidden by visibility alone is kept whole when anything inside it is set visible; display:none is not undone by a descendant", async () => {
+  const text = await textOf(page(`
+    <div style="visibility:collapse"><span style="visibility:visible">Seen collapse child.</span></div>
+    <div style="visibility:hidden"><span style="visibility: visible">Seen hidden child.</span></div>
+    <div class="invisible"><span style="visibility:visible">Seen utility child.</span></div>
+    <div class="invisible"><p class="vis">Seen class child.</p></div>
+    <section style="visibility:hidden"><div><p><b style="visibility:visible">Seen grandchild.</b></p></div></section>
+    <div style="visibility:hidden"><p>Gone no visible descendant.</p></div>
+    <div style="display:none"><span style="visibility:visible">Gone display child.</span></div>
+    <p>Seen after.</p>`, `<style>.vis { visibility: visible }</style>`));
+  for (const seen of ["Seen collapse child.", "Seen hidden child.", "Seen utility child.", "Seen class child.", "Seen grandchild.", "Seen after."]) assert.ok(text.includes(seen), `${seen} in: ${text}`);
+  for (const gone of ["Gone no visible descendant.", "Gone display child."]) assert.ok(!text.includes(gone), `${gone} in: ${text}`);
+});
