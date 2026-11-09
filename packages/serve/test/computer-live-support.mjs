@@ -5,8 +5,13 @@
 /** A provider's watch on one computer (provider.watch(ref, handlers, options), bound to its ref). `push(frame)` hands a
  *  frame to the viewer and resolves once the viewer's side acked it; `end(code, message)` ends the watch as a computer
  *  that went; `inputs` is every input() call's actions; `refuse` makes the next input fail in those words. */
-export function fakeWatch({ start } = {}) {
+export function fakeWatch({ start, hang = false } = {}) {
   const state = { handlers: null, options: null, closed: 0, inputs: [], acks: 0, refuse: null, opened: 0 };
+  /** While set, each input() waits for the test's release(): a computer slow to take input. */
+  let gate = null;
+  /** A watch that has not answered yet (`hang`): opened() resolves when asked, the watch once the test lets it. */
+  let letStart;
+  const started = hang ? new Promise((resolve) => (letStart = resolve)) : null;
   let acked = null;
   let opened;
   const openedNow = new Promise((resolve) => (opened = resolve));
@@ -17,12 +22,14 @@ export function fakeWatch({ start } = {}) {
     state.options = options;
     state.opened += 1;
     opened();
+    if (started) await started;
     return {
       ok: true,
       value: {
         async input(actions) {
           state.inputs.push(actions);
           for (const w of inputWaiters.splice(0)) w(actions);
+          if (gate) await gate.promise;
           if (state.refuse) {
             const message = state.refuse;
             state.refuse = null;
@@ -55,6 +62,17 @@ export function fakeWatch({ start } = {}) {
     },
     /** The next input() call's actions. */
     nextInput: () => new Promise((resolve) => inputWaiters.push(resolve)),
+    /** Holds each input() until the returned release() is called. */
+    blockInputs() {
+      let release;
+      gate = { promise: new Promise((resolve) => (release = resolve)) };
+      return () => {
+        gate = null;
+        release();
+      };
+    },
+    /** A `hang` watch answers now. */
+    start: () => letStart?.(),
   };
 }
 
