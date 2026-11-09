@@ -164,7 +164,7 @@ test("a full read from after=0 resets with every row", async () => {
   assert.equal(page.has_more, false);
   assert.equal(page.final, false);
   assert.equal(page.status, "working");
-  assert.equal(page.cost, 0.5);
+  assert.deepEqual(page.cost, { usd: 0.5 }, "the page carries the run's whole Cost object, not a bare number");
 });
 
 test("a read from the cursor with no change is unchanged, no rows, no drops", async () => {

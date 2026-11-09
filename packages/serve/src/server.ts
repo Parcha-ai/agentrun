@@ -47,7 +47,7 @@ import { browserHandBack, handBackTarget } from "./browser-commands.js";
 import { type ComputerOf, computerView } from "./computer-view.js";
 import { durationMs, logLine } from "./print.js";
 import { knownToolCostOf, redactorOf, type RunMoment, type State, type Status, toolCostOf } from "./run-view.js";
-import { approve, archiveRun, cancel, message, raiseCap, type StartDeps, type StartOptions, startRun, stop as stopRunOverStore, WAITS_ON_A_PERSON } from "./runs-over-store.js";
+import { approve, archiveRun, cancel, message, pause as pauseRunOverStore, raiseCap, resume as resumeRunOverStore, type StartDeps, type StartOptions, startRun, stop as stopRunOverStore, WAITS_ON_A_PERSON } from "./runs-over-store.js";
 import { momentOverStore, summaryOverStore, timelineOverStore, type ViewDeps, viewOverStore, withheldOverStore } from "./store-view.js";
 import { servedTimelineRows } from "./run-timeline-served.js";
 import { servedRunLearning } from "./run-learning-served.js";
@@ -2604,13 +2604,13 @@ async function startHolding(options: ServeOptions, data: string, checked: { maxR
         return send(res, 200, await runGraphView(store, id, runReadsDeps));
       case "pauseRun":
       case "resumeRun": {
+        // A workflow run's pause or resume is a command its runner reads and applies (runs-over-store.pauseOrResume): an
+        // agentic run has none (501, its turn is stopped instead), an ended or cancelling one takes none (409). The route
+        // adds the run's status from its view.
         const run = await needRun(id);
-        // RULED (A1): an agentic run is not paused or resumed by hand — the cap's raise brings a run paused at its cap back;
-        // there is no manual pause. 501, as the document says.
-        if (run.kind === "agentic") throw unsupported("runs.pause_resume", "A run is not paused or resumed by hand: raise its cap to bring a run paused at its cap back; there is no manual pause.");
-        // A workflow run's pause and resume are real, and come with the runner's pause/resume command kinds and E2c's
-        // journal writers: until those land this is a named TODO, refused as unsupported here (not as a permanent no).
-        throw unsupported("runs.pause_resume", "TODO(pause): a workflow run's pause and resume are being wired (the runner's pause/resume and the store's writers); not available on this build yet.");
+        const { paused } = await (found.name === "pauseRun" ? pauseRunOverStore : resumeRunOverStore)(store, run);
+        const { status } = await runStatusState(run.id);
+        return send(res, 200, { run_id: run.id, paused, status });
       }
       case "readRunFile": {
         await needRun(id);

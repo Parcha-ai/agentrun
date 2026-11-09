@@ -34,6 +34,7 @@ import {
   servedReviewWith,
   statusOf,
   WITHHELD_SIGN_IN,
+  WITHHELD_TITLE,
   costView,
   soFarOf,
   withAsks,
@@ -317,7 +318,9 @@ export async function viewOverStore(store: Store, runId: string, deps: ViewDeps)
     sha: null,
     status,
     state,
-    title: unshown ? WITHHELD_SIGN_IN : shownWords(launch?.title ?? ""),
+    // A withheld run's title is a short fixed line (WITHHELD_TITLE), never its stored title: the title can repeat the
+    // sign-in this server can't read back to cut, so it is not served. The full withheld sentence is in error and review.
+    title: unshown ? WITHHELD_TITLE : shownWords(launch?.title ?? ""),
     place: launch?.place ?? { mode: "runner" },
     // The runner holding the run now, when one does (a running run with a live claim): its id, the claim's count (up one each
     // claim, carried on every write the runner makes), and when the claim runs out. Null when no runner holds the run, so a
