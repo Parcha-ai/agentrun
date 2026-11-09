@@ -20,7 +20,22 @@ const quiet = { beforeIntent: async () => {}, beforeResult: async () => {} };
 // these tests do not read. The runs end themselves, so nothing here waits on the lease.
 const TIMING = { leaseMs: 60_000, renewEveryMs: 1_000, stopMarginMs: 5_000, pollMs: 20, commandPollMs: 30 };
 
-async function runOnce(t, script, endState) {
+/** `journal` whose commit of the run's end returns `ms` after it landed: a loaded machine, where the loop's teardown
+ *  runs late after the end commit, which is the run's release (the row reads released before the loop has settled). */
+const endReturnsLate = (journal, ms) =>
+  new Proxy(journal, {
+    get(target, key) {
+      const value = Reflect.get(target, key, target);
+      if (key !== "commit") return typeof value === "function" ? value.bind(target) : value;
+      return async (batches, ...rest) => {
+        const result = await value.call(target, batches, ...rest);
+        if (batches.flat().some((write) => write.type === "entry" && write.value?.kind === "agentrun.end")) await new Promise((resolve) => setTimeout(resolve, ms));
+        return result;
+      };
+    },
+  });
+
+async function runOnce(t, script, endState, { endLateMs } = {}) {
   const dir = mkdtempSync(join(process.env.TMPDIR ?? tmpdir(), "agentrun-loop-listeners-"));
   const server = await openSqliteStore({ dataDir: dir, role: "server" });
   const store = await openSqliteStore({ dataDir: dir, role: "runner" });
@@ -36,7 +51,8 @@ async function runOnce(t, script, endState) {
   const signals = [];
   const { tools } = suiteTools();
   const inner = piAdapterSubject.createLoop({ script, tools, hooks: quiet });
-  runner = startRunner({ store, createLoop: (deps) => (signals.push(deps.signal), inner(deps)), name: "runner-a", ...TIMING });
+  const journalOf = (deps) => (endLateMs ? { ...deps, journal: (claim) => endReturnsLate(deps.journal(claim), endLateMs) } : deps);
+  runner = startRunner({ store, createLoop: (deps) => (signals.push(deps.signal), inner(journalOf(deps))), name: "runner-a", ...TIMING });
   const deadline = Date.now() + 15_000;
   for (;;) {
     const row = await server.runs.get("run-1");
@@ -50,6 +66,11 @@ async function runOnce(t, script, endState) {
 
 test("a pi loop that ended leaves no abort listener on its claim's signal", async (t) => {
   const signal = await runOnce(t, [{ call: "read" }, { say: "done" }], "ended");
+  assert.equal(getEventListeners(signal, "abort").length, 0);
+});
+
+test("a pi loop that ended leaves no abort listener on its claim's signal, its teardown late (a loaded machine)", async (t) => {
+  const signal = await runOnce(t, [{ call: "read" }, { say: "done" }], "ended", { endLateMs: 1_500 });
   assert.equal(getEventListeners(signal, "abort").length, 0);
 });
 
