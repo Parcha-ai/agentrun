@@ -1631,15 +1631,10 @@ async function startHolding(options: ServeOptions, data: string, checked: { maxR
     for (const one of [made.agent, ...made.triggers]) if (Buffer.byteLength(JSON.stringify(one)) > MAX_BODY) throw new ApiError("payload_too_large", `the ${pkg.name} template, its parameters filled in, makes a body over ${MAX_BODY} bytes`, { details: { limit: "max_body_bytes" } });
     const { entry, warnings } = await createAgentOf(made.agent);
     const ids: string[] = [];
-    // Each webhook trigger's signing secret, minted as it is made: handed back in the apply's first answer alone, as POST
-    // /triggers hands back its own, so the owner can give it to the sender.
-    const secrets: { trigger_id: string; secret: string }[] = [];
     try {
       for (const [i, trigger] of made.triggers.entries()) {
         try {
-          const { id: madeId, secret } = await triggers.create({ ...trigger, target: { ...(trigger.target as Json), agent_id: entry.agent.id } });
-          ids.push(madeId);
-          if (secret) secrets.push({ trigger_id: madeId, secret });
+          ids.push((await triggers.create({ ...trigger, target: { ...(trigger.target as Json), agent_id: entry.agent.id } })).id);
         } catch (error) {
           if (error instanceof ApiError && error.code === "input_invalid" && error.extra.fields) throw told(new ApiError("input_invalid", error.message, { ...error.extra, fields: error.extra.fields.map((f) => ({ ...f, field: `triggers.${i}.${f.field}` })) }));
           throw error;
