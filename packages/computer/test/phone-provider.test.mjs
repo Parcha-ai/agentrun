@@ -918,6 +918,36 @@ test("a file ledger takes a dead writer's lock at once, however fresh", async ()
 	assert.throws(() => readFileSync(`${path}.lock`), /ENOENT/, "and lets it go after its write");
 });
 
+test("two waiters that find the same dead breaker's .break both go on: the one whose unlink finds it gone does not throw", async () => {
+	// The race, made certain in a child process: its first unlink of .break removes the file once more before its own
+	// (as the other waiter's unlink would, between this waiter's check and its unlink), so its own finds it gone.
+	const path = join(dir, "racing-breakers-ledger.json");
+	writeFileSync(`${path}.lock`, `${await deadPid()} a-dead-writer\n`);
+	writeFileSync(`${path}.lock.break`, `${await deadPid()} a-dead-breaker\n`);
+	const module = new URL("../dist/conformance/phone-harness.js", import.meta.url).href;
+	const script = `
+		import fs from "node:fs";
+		import { syncBuiltinESMExports } from "node:module";
+		const unlink = fs.unlinkSync;
+		let raced = 0;
+		fs.unlinkSync = (path) => {
+			if (String(path).endsWith(".lock.break") && raced++ === 0) unlink(path);
+			return unlink(path);
+		};
+		syncBuiltinESMExports();
+		const { fileLedger } = await import(process.argv[1]);
+		let error = "";
+		try { await fileLedger(process.argv[2], { waitMs: 5000 }).put({ id: "p1", labels: {}, image: "android", deadline: "2026-11-08T12:00:00.000Z" }); } catch (e) { error = e.message; }
+		console.log(JSON.stringify({ error, raced }));`;
+	const ran = await new Promise((resolve) => execFile(process.execPath, ["--input-type=module", "-e", script, module, path], { timeout: 30_000, killSignal: "SIGKILL" }, (error, stdout, stderr) => resolve({ error, stdout, stderr })));
+	assert.equal(ran.error, null, ran.stderr);
+	const { error, raced } = JSON.parse(ran.stdout);
+	assert.ok(raced >= 1, "the race was run: the dead .break was found gone at its unlink");
+	assert.equal(error, "", "the waiter went on, and its write landed");
+	assert.deepEqual((await conformance.fileLedger(path).list()).map((entry) => entry.id), ["p1"]);
+	assert.throws(() => readFileSync(`${path}.lock.break`), /ENOENT/, "and no .break is left");
+});
+
 test("a writer that finds a dead lock while a live breaker holds .break waits, gives up at waitMs in words, and never blocks the process", async () => {
 	// The writer runs in a child process: a writer that spins without awaiting blocks every timer of its process, the
 	// test's own included, and only the parent can stop it (the kill below is a bound on a failure, not a timing).
