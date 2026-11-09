@@ -33,7 +33,7 @@ test("pi through the adapter: a parked run brought back with [a trigger's row, t
     return row.state === "parked" && row.runner === null;
   }, "the run parked on its ask");
   const ask = (await read()).entries.find((entry) => entry.kind === "agentrun.ask");
-  await sendCommand(opened.server, "run-1", { kind: "steer", body: { text: TRIGGER, answers: false, origin: { kind: "trigger", trigger: "trigger-1" } } });
+  await sendCommand(opened.server, "run-1", { kind: "steer", body: { text: TRIGGER, answers: false, origin: { kind: "trigger", trigger_id: "trigger-1", source: "webhook", owner: false } } });
   await sendCommand(opened.server, "run-1", { kind: "approve", body: { approval: ask.data.callId } });
   const { row, entries } = await until(async () => {
     const now = await read();

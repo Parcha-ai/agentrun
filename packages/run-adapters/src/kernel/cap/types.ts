@@ -5,12 +5,22 @@ import type { Ended } from "../../booking.js";
 import type { InputShape } from "../../host/overhead.js";
 import type { CapMarks } from "./marks.js";
 
-/** A model's list price, in USD per million tokens, as the catalog gives it. No cache prices: the input price. */
-export interface ModelPrice {
+/** A model's rates, in USD per million tokens. No cache rates: the input rate. */
+export interface PriceRates {
   readonly input: number;
   readonly output: number;
   readonly cacheRead?: number;
   readonly cacheWrite?: number;
+}
+/** A tier of a model's price, as the catalog gives it (pi-ai's cost tiers): its rates for a request whose whole input
+ *  (fresh, cached and written to the cache) is above `inputTokensAbove` tokens. */
+export interface PriceTier extends PriceRates {
+  readonly inputTokensAbove: number;
+}
+/** A model's list price, in USD per million tokens, as the catalog gives it: its base rates, and its tiers when the
+ *  catalog has any (the catalog's own table, passed as given). */
+export interface ModelPrice extends PriceRates {
+  readonly tiers?: readonly PriceTier[];
 }
 
 /** A model as the cap prices it: its API (what its provider adds server-side, and whether its thinking takes a budget),

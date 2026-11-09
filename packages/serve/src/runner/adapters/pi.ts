@@ -7,7 +7,7 @@
 // the one ledger; pi's own createCap is not used. The host's tools run through HostTool.call, where the kernel's rule
 // before a side effect sits (runner/adapter-loop.ts); the gate is asked before pi stores a call's intent (pi's beforeTool
 // hook), through io.gate.
-import type { Context } from "@earendil-works/chord";
+import type { Context, JsonValue } from "@earendil-works/chord";
 import { BACKGROUND_CONTEXT, withAbortSignal } from "@earendil-works/chord/context";
 import type { Models } from "@earendil-works/pi-ai";
 import { createModels, createProvider } from "@earendil-works/pi-ai/models";
@@ -17,6 +17,8 @@ import { anthropicPolicy } from "@parcha/agentrun-harness-claude";
 import type { AdapterSession, AgentAdapter, HostTool, SessionIO, SessionSpec, TurnStatus } from "@parcha/agentrun-kernel";
 import { type ModelProxy, startModelProxy } from "@parcha/agentrun-kernel/host";
 import { randomBytes } from "node:crypto";
+import { DEFAULT_HARNESS } from "../../harness.js";
+import { KINDS } from "../journal-kinds.js";
 
 /** What the adapter loop lends pi for one claim: the run's Harness, its registry, and where pi's models go. */
 export interface PiRun {
@@ -57,7 +59,7 @@ const INPUT_REQUEST = "agentrun:input";
 /** pi as an AgentAdapter for one claim's run. */
 export function piAdapter(options: PiAdapterOptions): AgentAdapter {
   return {
-    id: "pi",
+    id: DEFAULT_HARNESS,
     capabilities: () => ({}),
     check: () => [],
     open: (spec, io) => openPi(options, spec, io as PiSessionIO),
@@ -184,9 +186,11 @@ async function sessionOn(proxy: ModelProxy, options: PiAdapterOptions, spec: Ses
       await proxy.close().catch(() => undefined);
     },
     // A steer: pi places it in the turn in flight, at its next boundary. `id`: its request id (the command's), so the
-    // commit that places it is the one that takes its row.
-    async steer(text: string, id?: string, mode: "steer" | "followUp" = "steer") {
-      await root.submit({ type: "input", content: text, whenBusy: mode, ...(id ? { requestId: id } : {}) }, context);
+    // commit that places it is the one that takes its row. `origin` (a trigger's message): its input is the host's user
+    // entry (KINDS.input) with that origin, in the same submission, so the attribution lands with the message or not at all.
+    async steer(text: string, id?: string, mode: "steer" | "followUp" = "steer", options?: { readonly origin?: { readonly [key: string]: unknown } }) {
+      const entry = options?.origin ? { entry: { kind: KINDS.input, data: { origin: options.origin } as JsonValue } } : {};
+      await root.submit({ type: "input", content: text, whenBusy: mode, ...(id ? { requestId: id } : {}), ...entry } as never, context);
     },
   } satisfies AdapterSession;
 }

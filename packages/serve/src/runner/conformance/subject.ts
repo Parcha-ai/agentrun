@@ -8,7 +8,9 @@ import type { LoopFactory } from "../loop-contract.js";
 export type ScriptStep =
   | { readonly call: ToolName; readonly args?: Record<string, unknown> }
   | { readonly say: string }
-  | { readonly sayLastSteer: true };
+  | { readonly sayLastSteer: true }
+  /** Says the newest tool result the model was given (a denied call's refusal among them), whole. */
+  | { readonly sayLastResult: true };
 
 /** The suite's tools. effect changes something outside the run; read does not; slow runs until the suite lets it go
  *  (or its signal is aborted); asked is one the gate asks a person about. */
@@ -54,6 +56,10 @@ export type ConformanceCase =
   | "stalled-past-lease-process"
   | "replay-safe-rerun"
   | "steer-mid-turn"
+  | "cancel-ends-for-good"
+  | "cancel-parked"
+  | "deny-note"
+  | "steer-origin"
   | "stop-ends-turn"
   | "park-on-ask"
   | "approval-names-its-call"

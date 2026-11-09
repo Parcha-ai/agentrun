@@ -289,7 +289,13 @@ const PIN_SCALAR = [{ type: "string", maxLength: MAX_PIN_TEXT }, { type: "number
 const PIN = {
   type: "object", minProperties: 1, maxProperties: MAX_PIN_ARGS, propertyNames: { pattern: "^[A-Za-z_][A-Za-z0-9_.-]{0,127}$" },
   additionalProperties: { anyOf: [...PIN_SCALAR, { type: "array", minItems: 1, maxItems: MAX_PIN_CHOICES, items: { anyOf: PIN_SCALAR } }] },
-  description: `On an MCP tool's own key (mcp:<server>/<tool>) only, never a server's wildcard: 1 to ${MAX_PIN_ARGS} of the tool's top-level arguments, each to the one JSON scalar its calls must carry (null: the argument left out, or null), or a list of 1 to ${MAX_PIN_CHOICES} of them, the argument one of the list (strict equality; the list's order is the author's, kept). The tool gate refuses a call whose arguments are not as pinned before it runs or asks anyone, whatever the tool's permission, and the model reads the values it may use. A pin adds to a setting and is never a permission: the agent's pin and the server's both hold, an argument both pin takes what holds both, and one where nothing does refuses every call. Until the agent store's cutover an agent's own pin (definition.tool_settings) is 422 not_set_up_here: set it on the server.`,
+  description: `On an MCP tool's own key (mcp:<server>/<tool>) only, never a server's wildcard: 1 to ${MAX_PIN_ARGS} of the tool's top-level arguments, each to the one JSON scalar its calls must carry (null: the argument left out, or null), or a list of 1 to ${MAX_PIN_CHOICES} of them, the argument one of the list (strict equality; kept and said in one form: each value once, null first, then by its JSON text). The tool gate refuses a call whose arguments are not as pinned before it runs or asks anyone, whatever the tool's permission, and the model reads the values it may use. A pin adds to a setting and is never a permission: the agent's pin and the server's both hold, an argument both pin takes what holds both, and one where nothing does refuses every call. Until the agent store's cutover an agent's own pin (definition.tool_settings) is 422 not_set_up_here: set it on the server.`,
+  "x-agentrun-serve": "pins/1",
+};
+/** pins/1: the server's mark of a pin in its tool settings file that does not read. */
+const PIN_BROKEN = {
+  const: true,
+  description: "The server's own settings only (GET /settings/tools): this MCP tool's pin in tool-settings.json does not read, so the tool gate refuses every call of it. A PUT that keeps the key and sets no valid pin (this mark sent back, as served, or the pin left out) keeps it broken; a valid pin repairs it, and leaving the key out removes the setting. Refused in an agent's definition.tool_settings.",
   "x-agentrun-serve": "pins/1",
 };
 /** The tool settings map (tool-plane.ts): the server's (/settings/tools) and an agent's own (definition.tool_settings),
@@ -305,7 +311,7 @@ const TOOL_SETTINGS = {
       permission: { ...PERMISSION, enum: [...permissionsOf(name)] },
     },
   }])),
-  additionalProperties: { type: "object", additionalProperties: false, properties: { permission: PERMISSION, pin: PIN } },
+  additionalProperties: { type: "object", additionalProperties: false, properties: { permission: PERMISSION, pin: PIN, pin_broken: PIN_BROKEN } },
 };
 /** What a capability resolves to on each harness: `native`, `kernel`, `exa-keyless`, `parallel`, `browserbase`, or `unavailable: <reason>`. */
 const RESOLUTION = { type: "string", pattern: "^(native|kernel|exa-keyless|parallel|browserbase|unavailable: .+)$" };
@@ -323,7 +329,7 @@ const WHY = {
 const TOOL_SETTINGS_ANSWER = {
   type: "object", required: [...PICKABLE], propertyNames: TOOL_SETTINGS.propertyNames,
   properties: Object.fromEntries(PICKABLE.map((name) => [name, { type: "object", additionalProperties: false, required: ["provider"], properties: { provider: { enum: [...PROVIDERS[name]] }, permission: PERMISSION } }])),
-  additionalProperties: { type: "object", additionalProperties: false, properties: { permission: PERMISSION, pin: PIN } },
+  additionalProperties: { type: "object", additionalProperties: false, properties: { permission: PERMISSION, pin: PIN, pin_broken: PIN_BROKEN } },
 };
 /** GET /agents/{agent_id}'s `tools`: each tool the agent's current revision grants, in capabilities.tools' order; one
  *  with a provider choice with the provider in force, where it came from, the server's (its default), and what it

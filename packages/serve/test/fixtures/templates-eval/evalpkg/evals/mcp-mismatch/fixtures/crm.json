@@ -1,0 +1,21 @@
+{
+  "server": "crm",
+  "description": "Two contacts: 7 is Ada, 8 is Grace.",
+  "tools": {
+    "get_contact": {
+      "description": "Read a contact by id.",
+      "input": { "type": "object", "properties": { "id": { "type": "string" } }, "required": ["id"] },
+      "answers": [
+        { "when": { "id": "7" }, "result": { "content": [{ "type": "text", "text": "Ada Lovelace, ada@example.com" }] } },
+        { "when": { "id": "8" }, "result": { "content": [{ "type": "text", "text": "Grace Hopper, grace@example.com" }] } }
+      ],
+      "default": { "content": [{ "type": "text", "text": "no such contact" }], "isError": true }
+    },
+    "update_contact": {
+      "description": "Set a contact's fields.",
+      "input": { "type": "object", "properties": { "id": { "type": "string" }, "fields": { "type": "object" } }, "required": ["id", "fields"] },
+      "answers": [{ "when": { "id": "7" }, "result": { "content": [{ "type": "text", "text": "updated 7" }] } }],
+      "default": { "content": [{ "type": "text", "text": "no such contact" }], "isError": true }
+    }
+  }
+}

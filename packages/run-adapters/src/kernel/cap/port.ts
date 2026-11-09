@@ -71,7 +71,7 @@ export function beforeRequestOf(options: BeforeRequestOptions): BeforeRequest {
     const judge = (input: number | undefined) => {
       try {
         const judged = capRule.judge({ ...asked, inputTokens: input }, { capUsd, spentUsd, heldUsd, mode, now: now() });
-        return { holdUsd: judged.heldUsd, ...(judged.outputTokensMax === undefined ? {} : { outputTokensMax: judged.outputTokensMax }), stoppedUsd: judged.stoppedUsd };
+        return { holdUsd: judged.heldUsd, boundUsd: judged.boundUsd, ...(judged.outputTokensMax === undefined ? {} : { outputTokensMax: judged.outputTokensMax }), stoppedUsd: judged.stoppedUsd };
       } catch (error) {
         // Its words, and what the run's end is decided from (parkOf): for good, or for room with its figures.
         if (error instanceof CapRefused) return { refuse: error.message, forGood: error.forGood, ...(error.figures ? { figures: error.figures } : {}) };

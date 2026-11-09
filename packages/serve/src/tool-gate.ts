@@ -55,6 +55,7 @@ import { DEFAULT_HARNESS } from "./harness.js";
 import { durableSessions } from "./sessions.js";
 import { SHELL_TOOLS } from "./background.js";
 import { readToolSettings, SERVE_OWN_TOOLS, TABLE_TOOLS } from "./tool-plane.js";
+import { NOT_RUN, RAN_UNKNOWN, refusedText } from "./refusal-words.js";
 
 /** What the gate does with a tool's calls. */
 export const PERMISSIONS = ["allow", "ask", "deny"] as const;
@@ -127,8 +128,8 @@ export function settingsKeyOf(harness: string, name: string, mcpServers: readonl
 
 /** A pinned argument's scalar: `null` holds for a call that leaves the argument out (or gives null). */
 export type PinScalar = string | number | boolean | null;
-/** A pinned argument's value: one scalar the call must carry, or a list of 1 to MAX_PIN_CHOICES ("one of"), whose order
- *  is the author's and shows in the refusal. */
+/** A pinned argument's value: one scalar the call must carry, or a list of 1 to MAX_PIN_CHOICES ("one of"), kept and
+ *  said in its one form (canonicalChoices). */
 export type PinValue = PinScalar | readonly PinScalar[];
 /** A setting's `pin`: an MCP tool's top-level arguments, by name, each fixed to one value or one of a list. */
 export type Pin = Readonly<Record<string, PinValue>>;
@@ -140,6 +141,16 @@ export const MAX_PIN_CHOICES = 16;
  *  gate reads it: a permission by settings key, and an MCP tool's pin. */
 export type PermissionSettings = Readonly<Record<string, { permission?: Permission; /** Not as written: a value not offered, read as its fail-closed stand-in (tool-plane.ts readToolSettings). Never shown. */ fallback?: true; pin?: Pin; /** A pin in the server's file that does not read (tool-plane.ts readToolSettings): every call of the tool is refused. Never shown. */ brokenPin?: true } | undefined>>;
 
+/** A one-of list in its one form: each value once, null first, then by its JSON text; any other value as it is. The
+ *  same meaning is the same text (a revision's id) and the same words (a refusal). */
+export const canonicalChoices = (value: PinValue): PinValue => {
+  if (!Array.isArray(value)) return value;
+  const texts = [...new Set(value.filter((one) => one !== null).map((one) => JSON.stringify(one)))].sort();
+  return [...(value.includes(null) ? [null] : []), ...texts.map((text) => JSON.parse(text) as PinScalar)];
+};
+/** `pin` in its one form: its arguments sorted, each one-of list in its form (canonicalChoices). */
+export const canonicalPin = (pin: Pin): Pin => Object.fromEntries(Object.keys(pin).sort().map((arg) => [arg, canonicalChoices(pin[arg]!)]));
+
 /** Whether a call's argument `given` is the pinned scalar `one`: the same JSON scalar (strict equality), or, for null,
  *  left out or null. */
 const isOne = (given: unknown, one: PinScalar): boolean => (one === null ? given === undefined || given === null : given === one);
@@ -147,9 +158,9 @@ const isOne = (given: unknown, one: PinScalar): boolean => (one === null ? given
 const holds = (given: unknown, value: PinValue): boolean => (Array.isArray(value) ? value.some((one) => isOne(given, one)) : isOne(given, value as PinScalar));
 /** A scalar in a refusal's words: text as it is, null as `absent`, any other as JSON. */
 const scalarWords = (one: PinScalar): string => (one === null ? "absent" : typeof one === "string" ? one : JSON.stringify(one));
-/** A pin in words, as the refusal says it: `channel_id = C0123`, `cc absent` for a null, `event in (absent | COMMENT)`
- *  for a list, in its order. */
-export const pinWords = (pin: Pin): string => Object.entries(pin).map(([arg, value]) => (Array.isArray(value) ? `${arg} in (${value.map(scalarWords).join(" | ")})` : value === null ? `${arg} absent` : `${arg} = ${scalarWords(value as PinScalar)}`)).join(", ");
+/** A pin in words, as the refusal says it, in its one form (canonicalPin): `channel_id = C0123`, `cc absent` for a null,
+ *  `event in (absent | COMMENT)` for a list. */
+export const pinWords = (pin: Pin): string => Object.entries(canonicalPin(pin)).map(([arg, value]) => (Array.isArray(value) ? `${arg} in (${value.map(scalarWords).join(" | ")})` : value === null ? `${arg} absent` : `${arg} = ${scalarWords(value as PinScalar)}`)).join(", ");
 /** What holds both of two layers' pins of one argument (`own`, the agent's, and `theirs`, the server's): a scalar where
  *  either is one and the other holds it, else the agent's list kept to the server's, in the agent's order; undefined when
  *  nothing holds both. */
@@ -280,11 +291,8 @@ export interface Gate {
 
 /** Where a permission was set (permissionFrom's `from`): the agent's own tool settings, the server's, or the default. */
 export type SettingFrom = "agent" | "server" | "default";
-/** What every deny tells the model, plainly: the call never left, so nothing was charged for it. */
-export const NOT_RUN = "It was not run: nothing was sent and nothing was charged.";
-/** What a refusal says instead when an earlier attempt of the call may have been sent: an approved call cut mid-flight,
- *  or a replay-safe call the kernel runs again after a crash. Never a claim that nothing was charged. */
-export const RAN_UNKNOWN = "It had started before the deny, and whether it took effect is not known.";
+// The refusal words (NOT_RUN, RAN_UNKNOWN, refusedText) live in refusal-words.ts, shared with the runner's loops.
+export { NOT_RUN, RAN_UNKNOWN, refusedText } from "./refusal-words.js";
 /** Where a deny was set, in words: the place a person changes it. */
 export const denyPlace = (from: SettingFrom = "server"): string => (from === "agent" ? "for this agent" : from === "default" ? "by default" : "on this server");
 /** The refusal of a call whose tool is set to deny; of one held to another tool's setting (`heldTo`, a shell tool's
@@ -301,8 +309,6 @@ export const noApproverText = (tool: string, ran: "no" | "unknown" = "no"): stri
 export const NO_APPROVER_ENV = "AGENTRUN_SERVE_NO_APPROVER";
 /** A parked call's answer: the run pauses here. */
 export const waitingText = (tool: string): string => `This ${tool} call waits for a person's approval; the run pauses here and continues with the result when they answer.`;
-/** A call a person denied, with their reason when they gave one. */
-export const refusedText = (tool: string, note?: string, ran: "no" | "unknown" = "no"): string => `The user denied this ${tool} call. ${ran === "no" ? NOT_RUN : RAN_UNKNOWN}${note ? ` Reason: ${note}` : ""}`;
 
 /** The Timeline row of a call that waits for an approval. */
 export const APPROVAL_ROW = "tool_approval_requested" as const;
