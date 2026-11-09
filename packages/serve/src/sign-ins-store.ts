@@ -129,6 +129,14 @@ export async function runSignIn(store: Pick<Store, "runs" | "signIns">, sealKey:
  *  and where a create that fails is said (the run's log). Absent, none is made. */
 export type RunSignInOptions = { vendors?: { create(vendor: Vendor): Promise<string>; remove(vendor: Vendor, ref: string): Promise<void> }; log?: (line: string) => void };
 
+/** A vendor call's failure in words that name no pointer and no URL: vendorsOver's own ("<vendor> answered <status>",
+ *  "<vendor> unreachable (<error name>)", "this server has no <vendor> to call"), else the vendor and the error's name. */
+function vendorWords(vendor: Vendor, error: unknown): string {
+  const message = (error as Error)?.message ?? "";
+  const known = new RegExp(`^(${vendor} answered \\d{3}|${vendor} unreachable \\([A-Za-z]+\\)|this server has no ${vendor} to call)$`);
+  return known.test(message) ? message : `${vendor} failed (${(error as Error)?.name ?? "Error"})`;
+}
+
 /** The agent's first sign-in for `vendor`, made at the vendor now (a Browserbase context, a Kernel profile) and saved at
  *  once, sealed, as main's forRun makes it: the saved pointer, opened. One another run saved meanwhile is the agent's: the
  *  object this made goes at the vendor, never left holding nothing, and the saved one is answered. A create or a save
@@ -139,10 +147,12 @@ async function firstSignIn(store: Pick<Store, "signIns">, sealKey: Buffer, agent
     made = await vendors.create(vendor);
   } catch (error) {
     // vendorsOver's words name the vendor and its answer, never a pointer.
-    log?.(`its browser starts signed out: ${(error as Error)?.message ?? String(error)}`);
+    log?.(`its browser starts signed out: ${vendorWords(vendor, error)}`);
     return undefined;
   }
-  const gone = () => vendors.remove(vendor, made).catch(() => undefined);
+  // As far as it answers: the run goes on either way, and a delete that fails is said in the run's log, in the vendor's
+  // name and its answer alone (vendorsOver's words; any other's, the error's name), never a pointer or a URL.
+  const gone = () => vendors.remove(vendor, made).catch((error: unknown) => log?.(`its browser's extra sign-in could not be removed: ${vendorWords(vendor, error)}`));
   try {
     if ((await store.signIns.get(agentId, vendor)) !== undefined) {
       await gone();
