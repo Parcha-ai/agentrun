@@ -183,6 +183,44 @@ jobs:
           include-hidden-files: true
           if-no-files-found: ignore
 
+  serve-postgres:
+    # @parcha/agentrun-serve's store on Postgres (`npm run test:pg`), against a Postgres service container. Advisory: not
+    # in verify's needs nor a required check, until it has run green.
+    name: serve store on Postgres
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    # The service container's own throwaway login, made for this job and gone with it; the test's URL is built from
+    # these in its step, so no connection string with a password is written anywhere.
+    env:
+      PGUSER: agentrun
+      PGPASSWORD: agentrun
+      PGDATABASE: agentrun
+    services:
+      postgres:
+        image: postgres:17-alpine
+        env:
+          POSTGRES_USER: agentrun
+          POSTGRES_PASSWORD: agentrun
+          POSTGRES_DB: agentrun
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd "pg_isready -U agentrun -d agentrun"
+          --health-interval 2s
+          --health-timeout 3s
+          --health-retries 30
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '24.21.0'
+          cache: npm
+      - run: npm install --global npm@11.21.0 --ignore-scripts
+      - run: node scripts/npm-ci-retry.mjs --ignore-scripts
+      - run: npm run build
+      - name: The store's suite on Postgres
+        run: AGENTRUN_TEST_PG_URL="postgres://${PGUSER}:${PGPASSWORD}@127.0.0.1:5432/${PGDATABASE}" npm run test:pg -w packages/serve
+
   console:
     # apps/console, the server's console: a private app with its own lockfile (React, Vite, Storybook), outside the
     # workspaces. Its typecheck, tests, build and Storybook build run here; verify needs it like the test shards.
