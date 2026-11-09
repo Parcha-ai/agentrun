@@ -195,9 +195,12 @@ test("GET /v2/stats answers null for the total when every cost is unknown, never
   assert.deepEqual(schemaProblems(doc, schema, body), []);
 });
 
-test("a running run this server does not hold is status_unknown: never counted as active or as not waiting", async (t) => {
+test("a running row the server does not hold still reads its status over the store: a bare running run counts active, not unknown", async (t) => {
   // Another writer's run, its row running: seeded before this server starts, and (no runner here) never claimed or adopted
-  // by it. The newest, so GET /stats reads it and finds no status for it.
+  // by it. On the switch the server reads every run's status over the store (getStats → viewOverStore), so this row reads
+  // queued and counts active — it is no longer unknown for want of a held process. status_unknown is only a running row the
+  // view yields no status for: viewOverStore (store-view.ts storeRunOf) returns undefined only for a run with no row, pinned
+  // by statsView's unit test below (a statusOf undefined for its id).
   const data = join(await scratch(t), "agents");
   await seedRuns(data, [["alpha", "Alpha"]], [
     { agent: "alpha", state: "completed", costUsd: 0.5, startedMs: Date.parse(at(0)), endedMs: Date.parse(at(1)) },
@@ -205,7 +208,7 @@ test("a running run this server does not hold is status_unknown: never counted a
   ]);
   const { api, baseUrl } = await serve(t, { data, runner: false });
   const { body } = await api("GET", "/stats");
-  assert.deepEqual(body.runs, { total: 2, active: 0, needs_input: 0, failed: 0, needs_review: 0, status_unknown: 1 });
+  assert.deepEqual(body.runs, { total: 2, active: 1, needs_input: 0, failed: 0, needs_review: 0, status_unknown: 0 });
   assert.deepEqual(body.cost, { usd: 0.5, basis: "estimate", unknown_runs: 1 });
   await assertRunningPartitioned(data, body);
   const { doc, schema } = await statsSchema(baseUrl);
