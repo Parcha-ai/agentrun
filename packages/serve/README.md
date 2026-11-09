@@ -1730,7 +1730,9 @@ github triggers off, and its list as it comes (the one removed included, when Gi
 list. An installation event follows the same rule: GitHub's answer to its check is taken only when no write came meanwhile
 (else it is asked once more), so an older suspend never undoes a newer unsuspend. A server that closes stops its repair
 and its events' checks, which write nothing after (an event cut so answers `503`, to be sent again).
-`GET /v2/integrations/github` shows `{app_id, slug, installations}`, never a secret.
+`GET /v2/integrations/github` always answers 200: `{connected: false}` with no App, else `{connected: true, app_id, slug,
+installations}`, never a secret. Not connected is an answer, not a 404 a browser logs as an error. `DELETE` with nothing
+connected is still 404.
 
 A trigger with `source: {kind: "github", accept: [...]}` takes the App's events its `accept` names (the same rules as a
 webhook trigger's, above; required) and keeps no secret of its own. `POST /v2/hooks/github` takes no token: each delivery

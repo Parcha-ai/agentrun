@@ -17,11 +17,11 @@ function Note({ note }: { note: string }) {
   return <>{note.slice(0, at + 2)}<a href={href} target="_blank" rel="noopener noreferrer" className="break-all underline underline-offset-2">{tail}</a></>;
 }
 
-/** Settings → GitHub: this server's one GitHub App (GET /v2/integrations/github; 404 when none). Connect starts one: the
- *  server answers where the browser posts the App's manifest (`action`, on github.com, carrying ?state=), and the page
- *  posts it there, once. Connected, it shows the App and the accounts it is installed on, and Disconnect deletes it here
- *  (every GitHub trigger turns off) and says what to delete on GitHub. `returned`: what the way back from GitHub said
- *  (#/settings/github?github=…), said once in words and taken off the address. */
+/** Settings → GitHub: this server's one GitHub App (GET /v2/integrations/github: `{connected: false}` when none).
+ *  Connect starts one: the server answers where the browser posts the App's manifest (`action`, on github.com, carrying
+ *  ?state=), and the page posts it there, once. Connected, it shows the App and the accounts it is installed on, and
+ *  Disconnect deletes it here (every GitHub trigger turns off) and says what to delete on GitHub. `returned`: what the
+ *  way back from GitHub said (#/settings/github?github=…), said once in words and taken off the address. */
 export function GitHubPage({ v2, returned }: { v2: Client; returned?: GitHubReturn }) {
   // undefined until read; null: not connected.
   const [connection, setConnection] = useState<GitHubConnection | null | undefined>(undefined);
@@ -40,11 +40,9 @@ export function GitHubPage({ v2, returned }: { v2: Client; returned?: GitHubRetu
   const form = useRef<HTMLFormElement>(null);
 
   const read = useCallback(async () => {
-    try { setConnection(await v2.githubConnection()); setLoadError(null); }
-    catch (e) {
-      if (e instanceof ClientError && e.status === 404) { setConnection(null); setLoadError(null); }
-      else setLoadError(e instanceof Error ? e.message : String(e));
-    }
+    // Always a 200: `connected` says whether there is an App, never a 404.
+    try { const status = await v2.githubConnection(); setConnection(status.connected ? status : null); setLoadError(null); }
+    catch (e) { setLoadError(e instanceof Error ? e.message : String(e)); }
   }, [v2]);
   useEffect(() => { void read(); }, [read]);
   // The way back from GitHub is said here once; the address keeps no query.

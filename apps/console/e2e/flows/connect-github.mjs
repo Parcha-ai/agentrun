@@ -6,7 +6,6 @@ import { randomBytes } from "node:crypto";
 import { check, freePort, LOOPBACK, LOOPBACK_NAME, newContext, newPage, owner, signIn } from "../harness.mjs";
 
 let publicOrigin = "";
-const notFound = (error) => /status of 404\b/.test(error);
 
 /** GitHub's pages, stubbed in `context`: each request is recorded, and answered with a page of our own. */
 async function stubGitHub(context) {
@@ -43,9 +42,8 @@ export default {
     check(new URLSearchParams(request.postData() ?? "").has("manifest"), "the form to GitHub carried no manifest");
     await page.waitForURL(/^https:\/\/github\.com\/settings\/apps\/new\?state=/);
     check(toGitHub.length === 1, `GitHub was asked ${toGitHub.length} times`);
-    // Not connected is GET /v2/integrations/github answering 404, which the browser logs as an error: the one this page has.
-    check(errors.every(notFound), `the page reported errors: ${errors.join(" | ")}`);
-    errors.length = 0;
+    // Not connected is GET /v2/integrations/github answering 200 {connected: false}: the page reports no error at all.
+    check(errors.length === 0, `the page reported errors: ${errors.join(" | ")}`);
 
     // At another origin (the same server by its loopback name, not the public address): refused in the server's words,
     // nothing posted.
@@ -72,8 +70,8 @@ export default {
       check(href?.startsWith(origin), `the refusal links ${href}, not the public URL ${origin}`);
       check(fromElsewhere.length === 0, "a refused start still posted to GitHub");
       check(blocked.length === 0, `requests left loopback: ${blocked.join(", ")}`);
-      // Its errors: the not-connected 404, and the refusal's 409.
-      check(thereErrors.every((e) => notFound(e) || /status of 409\b/.test(e)), `the page at another origin reported errors: ${thereErrors.join(" | ")}`);
+      // Its one error: the refusal's 409 (not connected is a 200).
+      check(thereErrors.every((e) => /status of 409\b/.test(e)), `the page at another origin reported errors: ${thereErrors.join(" | ")}`);
     } finally {
       await elsewhere.close();
     }
