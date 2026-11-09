@@ -95,12 +95,13 @@ export const runJournal = (): SyncTarget | undefined => holdStore;
  *  (paidRequest), monid.run (monid.ts) and a priced MCP call (mcp-gateway.ts), so a new paid tool gets the sync with it.
  *  Whatever throws, the caller sends nothing (holdRefusal says why): with no store to sync it writes no hold
  *  (HoldNotDurable); a write that fails throws its own error; a sync that fails after the write settles the hold at $0
- *  under its call (best effort), so no cap counts a call that never left, and throws HoldNotDurable. */
-export async function writeHold(write: (kind: string, data: Record<string, string | number | null>) => Promise<void>, data: Record<string, string | number | null>): Promise<void> {
-  if (noStoreToSync(holdStore)) throw new HoldNotDurable("the run's store is not open, so its hold cannot be made durable");
+ *  under its call (best effort), so no cap counts a call that never left, and throws HoldNotDurable. `sync`: the run's own
+ *  barrier, for a run with no per-process journal (a runner's loop: its store's flush); none, this process's (settleIn). */
+export async function writeHold(write: (kind: string, data: Record<string, string | number | null>) => Promise<void>, data: Record<string, string | number | null>, sync?: () => Promise<void>): Promise<void> {
+  if (!sync && noStoreToSync(holdStore)) throw new HoldNotDurable("the run's store is not open, so its hold cannot be made durable");
   await write(TOOL_STARTED, data);
   try {
-    await syncNow(holdStore, BARRIER.paidToolHold);
+    await (sync ? sync() : syncNow(holdStore, BARRIER.paidToolHold));
   } catch (error) {
     const { heldUsd: _held, ...label } = data;
     await write(TOOL_COST, { ...label, usd: 0 }).catch(() => undefined);

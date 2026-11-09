@@ -27,6 +27,10 @@ import type { PiRun, PiSessionIO, PreIntentAnswer, PreIntentCall } from "./adapt
 import { HAND_BACK, handBackOf } from "./hand-back.js";
 import { journalSessions } from "./sessions.js";
 import { sideEffect } from "./side-effects.js";
+import { cannotWait } from "../mcp-gateway.js";
+import { McpClaimRefused } from "./mcp-claim.js";
+import { Fenced } from "../store/index.js";
+import { openRunMcp, type RunMcp, type RunMcpOpen } from "./mcp-run.js";
 
 /** What a raise meets, as the kernel cap's checkRaise reads it (run-adapters/src/kernel/cap/park.ts): the run's cap, the
  *  pause it waits at (none while it works) and its last raise, with the pause that one answered. */
@@ -85,6 +89,9 @@ export interface AdapterRunSpec {
    *  Harness are closed, when its pass ends (a restart's included) and at the run's end. Never throws out: a failure is
    *  logged, and the end stands. */
   readonly release?: () => Promise<void>;
+  /** The run's remote MCP servers (runner/mcp-run.ts): opened once per claim, after the Harness and before the session,
+   *  its tools reached through the loop's gate. Absent: the run grants no MCP tool. */
+  readonly mcp?: RunMcp;
 }
 
 /** What the loop lends the spec for one Session: the run's Harness (pi adds its turns to it). */
@@ -250,6 +257,10 @@ function adapterLoop(specOf: (claim: Claim, run: AdapterRun) => AdapterRunSpec |
   /** The raises this claim has: the state the ones before left (the kernel cap's takeRaises, in arrival order), the rows
    *  to take in the raise entry's commit, whether any resumes a paused run, and the budget it answered. */
   const raising: { state?: RaiseState; takes: number[]; resumes: boolean; capUsd?: number; budget?: BudgetData; resuming: boolean } = { takes: [], resumes: false, resuming: false };
+  /** The claim's MCP (spec.mcp), open from its claim step until the loop ends; and whether a command row came since its
+   *  credentials were last made fresh (a parked token may have expired meanwhile). */
+  let mcp: RunMcpOpen | undefined;
+  let mcpStale = false;
 
   /** The run's raise state, read from its root: the newest budget entry with no raise entry after it is the pause it
    *  waits at (its pending cap is the cap a raise is checked against); the newest raise entry is its last raise. */
@@ -390,6 +401,28 @@ function adapterLoop(specOf: (claim: Claim, run: AdapterRun) => AdapterRunSpec |
         // A mark of the run's commits through its own Harness, under its fence.
         const opened_ = harness;
         spec.harnessReady?.((change, ctx) => opened_.commit(change, ctx));
+        // The run's MCP, once per claim, before its session: the claim step (its pin made or checked, its credentials
+        // opened into this loop's memory) and one gateway for this loop. A refusal fails the run in its words, nothing sent.
+        if (spec.mcp && restarts === 0) {
+          try {
+            mcp = await openRunMcp(spec.mcp, {
+              claim,
+              signal: deps.signal,
+              work: () => {
+                if (spec.workRoot === undefined) throw new Error("the run names no work folder");
+                return spec.workRoot;
+              },
+              commit: () => harness && (<T>(change: (tx: unknown) => Promise<T>) => harness!.commit(change as never, context) as Promise<T>),
+              flush: () => deps.flush(),
+              capped: spec.cap !== undefined,
+            });
+          } catch (error) {
+            // The claim moved on while a refresh was awaited: nothing more is written, and the next claim resumes it.
+            if (error instanceof Fenced) return await interrupted("its claim was lost while its MCP credentials were made fresh");
+            if (!(error instanceof McpClaimRefused)) throw error;
+            return await writeEnd(harness, await harness.root(context), gate, { state: "failed", summary: error.message }, []);
+          }
+        }
         const hooks = spec.hooks ?? quiet;
         const sessions = journalSessions(harness, context, { flush: () => deps.flush() });
         const writer = await sessions.open(spec.session.key);
@@ -397,8 +430,10 @@ function adapterLoop(specOf: (claim: Claim, run: AdapterRun) => AdapterRunSpec |
         // this session's alone: a cap is the run's. Its last refusal is kept: a turn it ended ends the run in its words.
         const hostCheck = spec.beforeRequest ? runBooking(sessions, spec.beforeRequest) : undefined;
         let refused: Refusal | undefined;
-        const beforeRequest: BeforeRequest | undefined = hostCheck && (async (request) => {
-          const answer = await hostCheck(request);
+        const beforeRequest: BeforeRequest | undefined = (hostCheck || mcp) && (async (request) => {
+          // A priced MCP call refused for room since the last request: this one is refused with it, so the turn ends on the
+          // refusal and the run parks on a raise, its model never given a turn to route around it.
+          const answer = mcp?.takeRefusal() ?? (hostCheck ? await hostCheck(request) : undefined);
           if (answer && "refuse" in answer) refused = answer;
           return answer;
         });
@@ -417,7 +452,7 @@ function adapterLoop(specOf: (claim: Claim, run: AdapterRun) => AdapterRunSpec |
         // A CLI's run: the loop keeps its visible record (record: "loop"), every call a crash or a fault left open ended.
         const record = spec.record === "loop" ? await openCliRecord(harness, gate.journal, context) : undefined;
         cliRecord = record;
-        const tools: HostTool[] = spec.session.tools.map((tool) => ({
+        const tools: HostTool[] = [...spec.session.tools, ...(mcp?.tools ?? [])].map((tool) => ({
           ...tool,
           // The rule before a side effect, on the host-tool path every adapter's calls take: after the call's intent, a
           // flush unless the tool is replay-safe, the call, then the beforeResult point. A throw there is the kernel's own
@@ -458,6 +493,11 @@ function adapterLoop(specOf: (claim: Claim, run: AdapterRun) => AdapterRunSpec |
         unbooked = 0;
         const counted: typeof port = {
           beforeRequest: async (request) => {
+            // A command row since the MCP credentials were made fresh: made fresh again before this request.
+            if (mcpStale && mcp) {
+              mcpStale = false;
+              await mcp.step.fresh();
+            }
             const ticket = await port.beforeRequest(request);
             unbooked += 1;
             return ticket;
@@ -474,7 +514,17 @@ function adapterLoop(specOf: (claim: Claim, run: AdapterRun) => AdapterRunSpec |
           ...(port.note ? { note: port.note.bind(port) } : {}),
         };
         const io: PiSessionIO = { writer, models: counted, signal: deps.signal, onEvent: record ? (event) => record.onEvent(event) : () => {}, gate: gateOf };
-        session = await spec.adapter.open({ ...spec.session, tools }, io);
+        // The MCP tools: pi's own (host tools, through the gate above); for a harness with its own MCP client, the session's
+        // MCP its adapter mounts on its proxy, each call asking the gate first (no park: it cannot hold a call yet).
+        const mcpNames = new Set(mcp?.tools.map((tool) => tool.name));
+        const ownClient = mcp !== undefined && spec.adapter.capabilities().mcpClient !== undefined;
+        const sessionMcp = ownClient
+          ? mcp!.session(new Map(tools.filter((tool) => mcpNames.has(tool.name)).map((tool) => [tool.name, tool])), async (call) => {
+              const answer = await gateOf(call, context, false);
+              return answer === "allow" ? undefined : "deny" in answer ? answer.deny : cannotWait(call.tool);
+            })
+          : undefined;
+        session = await spec.adapter.open({ ...spec.session, tools: ownClient ? tools.filter((tool) => !mcpNames.has(tool.name)) : tools, ...(sessionMcp ? { mcp: sessionMcp } : {}) }, io);
         root = await harness.root(context);
         // A run brought back from a park: the raises its claim has are taken together, once its delivery is done. So is a
         // run whose journal still holds an unanswered budget pause, whatever its row said at the claim: a resumed claim lost
@@ -601,22 +651,29 @@ function adapterLoop(specOf: (claim: Claim, run: AdapterRun) => AdapterRunSpec |
       held?.detach();
       deps.live?.(() => undefined);
       await closeSession();
+      // The claim's credentials go with it.
+      mcp?.release();
+      mcp = undefined;
     }
   }
 
   /** The gate before a call's intent: the kernel's beforeIntent point, then allow, deny, or ask (answered, or park). */
   function preIntentGate(spec: AdapterRunSpec, hooks: KernelHooks) {
-    return async (call: PreIntentCall, _hookContext: Context): Promise<PreIntentAnswer> => {
-      const kernelCall: ToolCall = { callId: call.callId, tool: call.tool as never, args: call.args };
+    return async (call: PreIntentCall, _hookContext: Context, canPark = true): Promise<PreIntentAnswer> => {
+      // An MCP tool is asked about by its catalog name (`mcp:<server>/<tool>`), as its settings and its card name it.
+      const tool = mcp?.catalogOf(call.tool) ?? call.tool;
+      const kernelCall: ToolCall = { callId: call.callId, tool: tool as never, args: call.args };
       // The end-of-run turn's notes are kept only from its answer: a write there is refused before its intent.
       if (reflecting && WRITES.has(call.tool) && underLearning(spec.workRoot, call.args)) return { deny: REFLECT_NOTE_ONLY };
       await hooks.beforeIntent(kernelCall);
       const decision = spec.gate?.(kernelCall) ?? "allow";
-      if (decision === "deny") return { deny: `Permission denied: ${call.tool} is set to deny.` };
+      if (decision === "deny") return { deny: `Permission denied: ${tool} is set to deny.` };
       if (decision === "allow") return "allow";
-      const answer = await answerOf(call, spec.approvalPrice?.(kernelCall) ?? null);
+      // A call its harness cannot hold for a person's answer (an MCP call through a CLI's own client): answered so, unsent.
+      if (!canPark) return { deny: cannotWait(tool) };
+      const answer = await answerOf({ ...call, tool }, mcp?.priceOf(tool) ?? spec.approvalPrice?.(kernelCall) ?? null);
       if (answer === "park") return { park: true };
-      return answer.approved ? "allow" : { deny: deniedText(call.tool, answer.note) };
+      return answer.approved ? "allow" : { deny: deniedText(tool, answer.note) };
     };
   }
 
@@ -904,6 +961,9 @@ function adapterLoop(specOf: (claim: Claim, run: AdapterRun) => AdapterRunSpec |
       return finished;
     },
     async command(command) {
+      // A command row resumes a loop that may have sat past a token's life: its MCP credentials are made fresh again
+      // before its next model request.
+      if (command.kind === "steer" || command.kind === "approve" || command.kind === "deny" || command.kind === "raise") mcpStale = true;
       if (command.kind === "steer") return steer(command);
       if (command.kind === "approve" || command.kind === "deny") {
         // An answer names its approval: the asked call's id. One that names no call waiting for its answer (an old
