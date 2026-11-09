@@ -85,7 +85,8 @@ const json = (status, body, headers = {}) => new Response(JSON.stringify(body), 
  * signal ends it; `onList`, given GET /sessions' snapshot once it is taken and before it is answered, answers the
  * list to send (a test makes a phone in between, or leaves a live one out, as a lagging listing would); `postAnswer`,
  * what POST /sessions answers in place of its 202: "503" (the phone is made, and a gateway answers 503), "empty" (the
- * phone is made, and the 202 holds no session), "503-unmade" (a 503, and nothing is made);
+ * phone is made, and the 202 holds no session), "503-unmade" (a 503, and nothing is made), "409-made" (the phone is
+ * made, and a gateway's retry of the POST answers 409 profile_running, named by that very session);
  * `code`, the unlock code the phone takes (default the one the API gives); `abi`, what getprop reports; `launchHidden`,
  * a launched app is reported in front (dumpsys) while the screen and the tree still show the launcher; `launchNothing`,
  * `am start` starts nothing at all; `twoPane`, Settings shows two panes, as Android does on a window 600 dp wide or
@@ -176,6 +177,7 @@ export function fakePhoneHarness({ readyAfter = 1, start = "ok", loseAnswer = fa
 			// The phone is made, and the answer says otherwise: a 5xx from a gateway, or a 2xx with no session in it.
 			if (postAnswer === "503") return json(503, { error: "the gateway timed out" });
 			if (postAnswer === "empty") return json(202, {});
+			if (postAnswer === "409-made") return json(409, { error: "that phone is running in another session", code: "profile_running", session: id });
 			return json(202, view(session));
 		}
 		if (method === "GET" && path === "/sessions") {
@@ -569,6 +571,15 @@ export function fakePhoneHarness({ readyAfter = 1, start = "ok", loseAnswer = fa
 		/** The cloud iPhone the account's iPhones share (test/fake-iphone.mjs). */
 		iphone: ios,
 		sessions,
+		/** An iPhone session's control grant expires and the session holds a fresh one: the old grant answers 404. */
+		rotateGrant(id) {
+			const s = sessions.get(id);
+			ios.grants.delete(s.control.grant);
+			const grant = randomBytes(12).toString("hex");
+			const token = `ctl_${randomBytes(16).toString("hex")}`;
+			ios.grants.set(grant, token);
+			s.control = { ...s.control, grant, token };
+		},
 		/** Every API request, as { method, path, headers, body }. */
 		requests: () => requests,
 		/** Every spawned adb's argv. */

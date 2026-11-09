@@ -375,6 +375,65 @@ test("a tap at the frame's middle lands at the screen's middle in points, on a 2
 	}
 });
 
+test("a 409 profile_running is no proof nothing was made: create asks by its Idempotency-Key once, and adopts its own phone a gateway's retry was refused for", async () => {
+	const { fake, provider, ledger } = await setup({ postAnswer: "409-made" });
+	const made = await provider.create({ ...SPEC, labels: { run: "r" } });
+	assert.equal(made.ok, true, JSON.stringify(made));
+	const key = fake.requests().find((r) => r.method === "POST" && r.path === "/sessions").headers["idempotency-key"];
+	assert.equal(fake.requests().filter((r) => r.method === "POST" && r.path === "/sessions").length, 1, "never posted again");
+	assert.ok(fake.requests().some((r) => r.method === "GET" && r.path === `/sessions/requests/${key}`), "asked by its key");
+	assert.deepEqual((await ledger.list()).map((e) => [e.id, e.platform]), [[made.value.id, "ios"]], "its pending key swapped for the phone");
+	assert.equal((await provider.release(made.value, "delete")).ok, true);
+	// Another session truly holds it: the ask finds nothing, the key is forgotten, and create answers limit in words.
+	const held = await setup();
+	const first = (await held.provider.create(SPEC)).value;
+	const second = await held.provider.create(SPEC);
+	assert.equal(second.error.code, "limit");
+	assert.match(second.error.message, /that phone is running in another session \(profile_running\)/);
+	const posts = held.fake.requests().filter((r) => r.method === "POST" && r.path === "/sessions");
+	assert.ok(held.fake.requests().some((r) => r.path === `/sessions/requests/${posts[1].headers["idempotency-key"]}`), "the refused create asked by its key too");
+	assert.deepEqual((await held.ledger.list()).map((e) => e.id), [first.id], "and kept no pending key");
+	await held.provider.release(first, "delete");
+});
+
+test("create waits for this provider's released iPhone to end before it posts: one session at a time holds the device, and ours is still closing", async () => {
+	const { fake, provider } = await setup({ endLag: 3 });
+	const first = (await provider.create(SPEC)).value;
+	assert.equal((await provider.release(first, "delete")).ok, true);
+	assert.equal(fake.sessions.get(first.id).state, "closing", "the vendor still ends it");
+	const before = fake.requests().length;
+	const second = await provider.create(SPEC);
+	assert.equal(second.ok, true, JSON.stringify(second));
+	const after = fake.requests().slice(before);
+	const post = after.findIndex((r) => r.method === "POST" && r.path === "/sessions");
+	assert.ok(after.slice(0, post).some((r) => r.method === "GET" && r.path === `/sessions/${first.id}`), "it read the released phone until it was gone, then posted");
+	assert.equal(fake.sessions.has(first.id), false);
+	await provider.release(second.value, "delete");
+	// Bounded by readyMs: a released phone the vendor never ends leaves create to post, and the vendor's 409 is a limit in words.
+	const stuck = await setup({ endLag: 1_000_000 }, { readyMs: 10_000 });
+	const one = (await stuck.provider.create(SPEC)).value;
+	await stuck.provider.release(one, "delete");
+	const blocked = await stuck.provider.create(SPEC);
+	assert.equal(blocked.error.code, "limit", JSON.stringify(blocked));
+});
+
+test("a control grant that expires before its session is renewed once from the session: the op runs on the fresh grant; a session with no fresh one is gone", async () => {
+	const { provider, ref, client, fake } = await connected();
+	const old = fake.sessions.get(ref.id).control.token;
+	fake.rotateGrant(ref.id);
+	const shot = await client.call("screen.shot", {});
+	assert.equal(shot.ok, true, JSON.stringify(shot));
+	const calls = fake.iphone.calls();
+	assert.equal(calls.at(-1).authorization, `Bearer ${fake.sessions.get(ref.id).control.token}`, "the op ran on the fresh grant");
+	assert.notEqual(calls.at(-1).authorization, `Bearer ${old}`);
+	// The grant ends with no fresh one on the session: gone, after one read of the session.
+	fake.iphone.grants.clear();
+	const gone = await client.call("screen.shot", {});
+	assert.equal(gone.error.code, "gone");
+	assert.ok(!JSON.stringify(gone).includes(fake.sessions.get(ref.id).control.token));
+	await provider.release(ref, "delete");
+});
+
 test("an iPhone list adopts a pending entry only for a session of its own platform", async () => {
 	let relabel = false;
 	const fake = fakePhoneHarness({ iphones: [IPHONE_ID], loseAnswer: true, loseRecovery: true, onList: (snapshot) => (relabel ? snapshot.map((s) => ({ ...s, platform: "android" })) : snapshot) });

@@ -16,15 +16,22 @@ const reasonOf = (report, id) => report.results.find((r) => r.id === id)?.reason
 const NAVIGATION = new Set(["screen.capture", "apps.list", "apps.current", "apps.launch", "input.drag", "nav.home"]);
 
 /**
- * The fake account holds one iPhone, which one session at a time holds (409 profile_running), as the docs say. The
- * provider declares maxComputers 1, so the runner ends the run's shared computer before a case that makes its own, and a
- * case that holds two at once skips in words, owed to maxComputers.
+ * The fake account holds one iPhone, which one session at a time holds (409 profile_running), as the docs say, and a
+ * DELETE ends a session asynchronously (it stays closing for a few reads, as Android's live run 7 showed). The provider
+ * declares maxComputers 1, so the runner ends the run's shared computer before a case that makes its own, and a case
+ * that holds two at once skips in words; create waits for its own released iPhone to end before it posts.
  */
 async function iphoneProvider(fakeOptions = {}) {
-	const fake = fakePhoneHarness({ iphones: [IPHONE_ID], ...fakeOptions });
-	const options = { apiKey: KEY, platform: "ios", fetch: fake.fetch, ledger: memoryLedger(), now: fake.clock.now, sleep: fake.clock.sleep, maxLifetimeMs: 10 * 60_000 };
+	// The run's clock, read by provider.list against what the vendor reports: a wait here takes no time and moves no
+	// clock (the end counts reads, not seconds), so the fake's deadlines stay on the run's clock with no real sleep.
+	const clock = { now: () => Date.now(), sleep: async () => {} };
+	const fake = fakePhoneHarness({ iphones: [IPHONE_ID], endLag: 3, clock, ...fakeOptions });
+	const options = { apiKey: KEY, platform: "ios", fetch: fake.fetch, ledger: memoryLedger(), now: clock.now, sleep: clock.sleep, maxLifetimeMs: 10 * 60_000 };
 	return { fake, provider: await create(options), drifted: await create({ ...options, daemonVersion: "0.0.0-drift" }) };
 }
+
+/** Every session the run started is ended, or ending (closing, as the vendor's asynchronous end leaves it). */
+const ended = (fake) => assert.ok([...fake.sessions.values()].every((s) => s.state === "closing"), JSON.stringify([...fake.sessions.values()].map((s) => [s.id, s.state])));
 
 test("a cloud iPhone, one session at a time, passes Core through Settings and the screen; two-at-once cases and what it does not declare skip in words", { timeout: 120_000 }, async () => {
 	const { fake, provider, drifted } = await iphoneProvider();
@@ -56,7 +63,7 @@ test("a cloud iPhone, one session at a time, passes Core through Settings and th
 	assert.match(reasonOf(report, "apps.launch-terminate"), /does not declare apps\.terminate/);
 	for (const group of ["input.keys", "apps.terminate", "apps.ui_tree"]) assert.ok(report.undeclared.includes(group), group);
 	assert.deepEqual(report.cleanup.left, []);
-	assert.equal(fake.sessions.size, 0, "every session the run started is ended");
+	ended(fake);
 	const sent = new Set(fake.iphone.ops().map(([op]) => op));
 	assert.deepEqual([...sent].filter((op) => !NAVIGATION.has(op)), [], "the run only looks, launches, scrolls and goes home: no tap, no typing, no setting changed");
 });
@@ -66,7 +73,7 @@ test("--kind phone passes the iPhone: every case of the required groups that run
 	const report = await runConformance(provider, { image: "ios", kind: "phone", drifted: () => drifted, patience: 5000 });
 	assert.deepEqual(report.kindVerdict, { kind: "phone", verdict: "pass", reasons: [] }, formatReport(report));
 	assert.equal(statuses(report)["apps.launch"], "pass");
-	assert.equal(fake.sessions.size, 0);
+	ended(fake);
 });
 
 test("the first live run's shape, --only health,screen,touch,apps, passes on the one-session iPhone fake", { timeout: 120_000 }, async () => {
@@ -74,7 +81,7 @@ test("the first live run's shape, --only health,screen,touch,apps, passes on the
 	const report = await runConformance(provider, { image: "ios", only: ["health", "screen", "touch", "apps"], drifted: () => drifted, patience: 5000 });
 	assert.equal(report.results.filter((r) => r.status === "fail").length, 0, formatReport(report));
 	assert.notEqual(report.core, "fail", formatReport(report));
-	assert.equal(fake.sessions.size, 0);
+	ended(fake);
 });
 
 test("apps.launch fails an iPhone whose launch shows nothing new on the screen", { timeout: 60_000 }, async () => {
@@ -82,5 +89,5 @@ test("apps.launch fails an iPhone whose launch shows nothing new on the screen",
 	const report = await runConformance(provider, { image: "ios", patience: 1000, cases: conformanceCases.filter((c) => c.id === "apps.launch") });
 	assert.equal(statuses(report)["apps.launch"], "fail");
 	assert.match(reasonOf(report, "apps.launch"), /^com\.apple\.Preferences in front after apps\.launch: still not so/);
-	assert.equal(fake.sessions.size, 0);
+	ended(fake);
 });
