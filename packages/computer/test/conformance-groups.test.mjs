@@ -44,6 +44,11 @@ const byId = (...ids) => {
 	return found;
 };
 const run = (provider, ids, extra = {}) => runConformance(provider, { image: IMAGE, cases: byId(...ids), fixture: FIXTURE, fetch: fakeFetch, clock: testClock, patience: 1000, ...extra });
+/**
+ * The patience of a run against a broken fake, whose case waits it out to fail: a few of t.until's 200 ms polls, not a
+ * second. Each such run's words pin the failure it must find, so a run cut short another way turns it red, never green.
+ */
+const BROKEN_PATIENCE = 300;
 
 const NEW_CASES = [
 	"health.kind-consistent",
@@ -355,9 +360,7 @@ test("apps.launch-terminate needs apps alone: a phone with no UI tree and no fil
 	const groups = ["screen", "input.touch", "apps"];
 	const seen = await run(fakeDevices({ kind: "android", groups }).provider, ["apps.launch-terminate"]);
 	assert.deepEqual(statuses(seen), { "apps.launch-terminate": "pass" }, reasons(seen)["apps.launch-terminate"]);
-	const hidden = await run(fakeDevices({ kind: "android", groups, broken: "launch-hidden" }).provider, ["apps.launch-terminate"]);
-	assert.deepEqual(statuses(hidden), { "apps.launch-terminate": "fail" });
-	assert.match(reasons(hidden)["apps.launch-terminate"], /^com\.android\.settings shown after apps\.launch: a screenshot other than the one before it/);
+	// Its broken twin, launch-hidden on the same groups, is a BROKEN row below.
 });
 
 /** The lifetimes provider.deadline asked for, in order: the run's shared computer is not the case's. */
@@ -436,23 +439,27 @@ const BROKEN = [
 	["screen.watch", { broken: "watch-no-cursor" }, /a pointer move to \d+,\d+ gave no frame with the cursor there/],
 	["screen.watch", { broken: "watch-corrupt-png" }, /^the first frame's PNG does not decode: the screenshot's PNG does not inflate/],
 	["screen.watch", { broken: "watch-corrupt-jpeg" }, /^the first frame's JPEG does not decode: .*no scan/],
+	["apps.launch-terminate", { kind: "android", groups: ["screen", "input.touch", "apps"], broken: "launch-hidden" }, /^com\.android\.settings shown after apps\.launch: a screenshot other than the one before it/],
 ];
 
 for (const [id, options, words] of BROKEN) {
 	test(`${id} fails a fake that is broken (${JSON.stringify(options)})`, async () => {
 		const { provider } = fakeDevices(options);
-		const report = await run(provider, [id]);
+		const report = await run(provider, [id], { patience: BROKEN_PATIENCE });
 		assert.equal(statuses(report)[id], "fail", `${id}: ${reasons(report)[id] ?? "passed"}`);
 		assert.match(reasons(report)[id], words);
 	});
 }
 
-test("every new case is failed by some broken fake", () => {
+test("every case of the device groups is failed by some broken fake: one added without one turns this red", () => {
+	// Read from the cases the suite runs, not a list kept by hand: the hand list could not miss a case it never named.
+	const guarded = conformanceCases.filter((c) => ["screen", "input", "touch", "apps", "lifetime"].includes(c.group) || c.id === "health.kind-consistent").map((c) => c.id);
+	assert.ok(guarded.length >= NEW_CASES.length, "the device groups hold every case named above");
 	const failed = new Set(BROKEN.map(([id]) => id));
 	assert.deepEqual(
-		NEW_CASES.filter((id) => !failed.has(id)),
+		guarded.filter((id) => !failed.has(id)),
 		[],
-		"a new case no broken fake fails",
+		"a case no broken fake fails",
 	);
 });
 
@@ -498,7 +505,7 @@ test("a fixture that starts but never logs ready is stopped when its case fails,
 		{ id: "input.with-fixture", level: "core", group: "input", needs: [], run: async (t) => void (await t.fixture()) },
 		{ id: "input.after-it", level: "core", group: "input", needs: [], run: async (t) => void (afterwards = readPng(Buffer.from((await t.call("screen.shot", {})).data, "base64")).rgb(50, 50)) },
 	];
-	const desktopReport = await runConformance(desktop.provider, { image: IMAGE, cases: desktopCases, fixture: FIXTURE, patience: 1000 });
+	const desktopReport = await runConformance(desktop.provider, { image: IMAGE, cases: desktopCases, fixture: FIXTURE, patience: BROKEN_PATIENCE });
 	assert.deepEqual(statuses(desktopReport), { "input.with-fixture": "fail", "input.after-it": "pass" }, JSON.stringify(reasons(desktopReport)));
 	assert.match(reasons(desktopReport)["input.with-fixture"], /^the desktop fixture logged ready: still not so/);
 	assert.deepEqual(afterwards, [40, 40, 40], "the bare screen after the case whose fixture never logged ready: the fixture was stopped");
@@ -509,7 +516,7 @@ test("a fixture that starts but never logs ready is stopped when its case fails,
 		{ id: "apps.with-fixture", level: "core", group: "apps", needs: [], run: async (t) => void (await t.fixture()) },
 		{ id: "apps.after-it", level: "core", group: "apps", needs: [], run: async (t) => void ({ foreground } = await t.call("apps.list", {})) },
 	];
-	const phoneReport = await runConformance(phone.provider, { image: IMAGE, cases: phoneCases, fixture: FIXTURE, patience: 1000 });
+	const phoneReport = await runConformance(phone.provider, { image: IMAGE, cases: phoneCases, fixture: FIXTURE, patience: BROKEN_PATIENCE });
 	assert.deepEqual(statuses(phoneReport), { "apps.with-fixture": "fail", "apps.after-it": "pass" }, JSON.stringify(reasons(phoneReport)));
 	assert.match(reasons(phoneReport)["apps.with-fixture"], /^the fixture app logged ready: still not so/);
 	assert.equal(foreground, null, "the app in front after the case whose fixture app never logged ready: it was terminated");

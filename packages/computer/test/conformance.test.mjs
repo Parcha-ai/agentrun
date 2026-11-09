@@ -422,15 +422,15 @@ test("a provider whose release never answers gives a failed report naming it, an
 });
 
 test("a computer whose create answers after its case ended is deleted, and the report names it", async () => {
-	const fake = fakeComputers({ createDelays: [0, 600] });
+	const fake = fakeComputers({ createDelays: [0, 150] });
 	const report = await runConformance(fake.provider, {
 		image: IMAGE,
-		caseTimeoutMs: 300,
+		caseTimeoutMs: 50,
 		cleanupTimeoutMs: 5000,
 		cases: [pass("provider.slow", { run: async (t) => void (await t.create()) })],
 	});
-	assert.match(reasons(report)["provider.slow"], /did not finish within 0\.3 s/);
-	await sleep(800);
+	assert.match(reasons(report)["provider.slow"], /did not finish within 0\.05 s/);
+	// Deleted before runConformance returned: the run waits for its late creates within cleanupTimeoutMs.
 	assert.deepEqual(fake.alive(), [], "the late computer was deleted");
 	assert.deepEqual(report.cleanup.late, ["fake-2"]);
 });
@@ -461,15 +461,6 @@ test("drift.version deletes the drifted computer even when connect throws", asyn
 	assert.equal(statuses(report)["drift.version"], "fail");
 	assert.match(reasons(report)["drift.version"], /the socket closed/);
 	assert.deepEqual(other.alive(), [], "the drifted computer was deleted");
-});
-
-test("exec.user-uid fails a computer whose requested user has capabilities", async () => {
-	const granting = fakeComputers({ user: ["uid"], capsForUser: true });
-	const report = await runConformance(granting.provider, { image: IMAGE, cases: byId("exec.user-uid") });
-	assert.equal(statuses(report)["exec.user-uid"], "fail");
-	assert.match(reasons(report)["exec.user-uid"], /CapEff in \/proc\/self\/status: no capabilities/);
-	const clean = fakeComputers({ user: ["uid"] });
-	assert.equal(statuses(await runConformance(clean.provider, { image: IMAGE, cases: byId("exec.user-uid") }))["exec.user-uid"], "pass");
 });
 
 /** One thing a computer may leave its programs that the exec cases refuse: a set that is not empty, no_new_privs unset, or a set not reported. */
@@ -654,18 +645,18 @@ process.exitCode = await main(["--provider", "docker"], { providerOptions: { tim
 });
 
 test("a create that answers after its case ended, from provider.check-refuses or drift.version, is released and named in cleanup.late", async () => {
-	const fake = fakeComputers({ createIgnoresCheck: true, lifetime: "vendor", createDelays: [600] });
-	const report = await runConformance(fake.provider, { image: IMAGE, caseTimeoutMs: 300, cleanupTimeoutMs: 10_000, cases: byId("provider.check-refuses") });
-	assert.match(reasons(report)["provider.check-refuses"], /did not finish within 0\.3 s/);
+	const fake = fakeComputers({ createIgnoresCheck: true, lifetime: "vendor", createDelays: [150] });
+	const report = await runConformance(fake.provider, { image: IMAGE, caseTimeoutMs: 50, cleanupTimeoutMs: 10_000, cases: byId("provider.check-refuses") });
+	assert.match(reasons(report)["provider.check-refuses"], /did not finish within 0\.05 s/);
 	assert.deepEqual(report.cleanup.late, ["fake-1"], "the late computer is in the report the run returned");
 	assert.deepEqual(fake.alive(), [], "and deleted before the run returned");
 	assert.ok(fake.calls.some(([kind, name, how]) => kind === "release" && name === "fake-1" && how === "delete"));
 
 	const own = fakeComputers({ lifetime: "vendor" });
-	const other = fakeComputers({ version: "0.9.0", lifetime: "vendor", createDelays: [600] });
-	const drift = { ...byId("drift.version")[0], timeoutMs: 300 };
+	const other = fakeComputers({ version: "0.9.0", lifetime: "vendor", createDelays: [150] });
+	const drift = { ...byId("drift.version")[0], timeoutMs: 50 };
 	const drifted = await runConformance(own.provider, { image: IMAGE, cleanupTimeoutMs: 10_000, cases: [drift], drifted: () => other.provider });
-	assert.match(reasons(drifted)["drift.version"], /did not finish within 0\.3 s/);
+	assert.match(reasons(drifted)["drift.version"], /did not finish within 0\.05 s/);
 	assert.deepEqual(drifted.cleanup.late, ["fake-1"]);
 	assert.deepEqual(other.alive(), [], "the drifted provider's late computer was deleted through it");
 });
@@ -717,17 +708,24 @@ test("provider.attach checks the spec attach reads back: the network and image c
 });
 
 test("provider.stop holds a provider to the release it declares: stop kept, stop that deletes, or no stop at all", async () => {
+	// provider.stop is Core: the run's Core verdict follows it, every row.
 	const run = async (options) => {
-		const report = await runConformance(fakeComputers(options).provider, { image: IMAGE, cases: byId("provider.stop") });
-		return { status: statuses(report)["provider.stop"], reason: reasons(report)["provider.stop"] ?? "" };
+		const fake = fakeComputers(options);
+		const report = await runConformance(fake.provider, { image: IMAGE, cases: byId("provider.stop") });
+		assert.equal(report.core, statuses(report)["provider.stop"], `Core follows provider.stop: ${JSON.stringify(options)}`);
+		return { status: statuses(report)["provider.stop"], reason: reasons(report)["provider.stop"] ?? "", fake };
 	};
 	for (const [what, options] of [
 		["a kept stop, declared", {}],
 		["a stop that deletes, declared with stopDeletes", { declaresStopDeletes: true, stopDeletes: true }],
 		["no stop, declared by a release of delete alone, and refused in words", { release: ["delete"] }],
 	]) {
-		const { status, reason } = await run(options);
+		const { status, reason, fake } = await run(options);
 		assert.equal(status, "pass", `${what}: ${reason}`);
+		if (options.release === undefined) continue;
+		// A provider with no stop is still asked for one, and refuses it; the computer it kept is deleted after.
+		assert.ok(fake.calls.some(([call, , how]) => call === "release" && how === "stop"), `${what}: the case asked for stop`);
+		assert.deepEqual(fake.alive(), [], `${what}: the computer was deleted after`);
 	}
 	for (const [what, options, words] of [
 		["stopDeletes declared, and the stop leaves the computer running", { declaresStopDeletes: true, stopIgnored: true }, /stopDeletes\): listed after it: expected \[\], got \["fake-1"\]/],
@@ -751,6 +749,7 @@ test("provider.janitor needs release:stop and a provider that keeps a stopped co
 		const report = await runConformance(fakeComputers(options).provider, { image: IMAGE, cases: byId("provider.janitor") });
 		assert.equal(statuses(report)["provider.janitor"], "skip", JSON.stringify(options));
 		assert.equal(reasons(report)["provider.janitor"], reason, JSON.stringify(options));
+		if (options.release) assert.deepEqual(report.undeclared, ["release:stop"], "the report names what it does not declare");
 	}
 	const kept = await runConformance(fakeComputers().provider, { image: IMAGE, cases: byId("provider.janitor") });
 	assert.equal(statuses(kept)["provider.janitor"], "pass", reasons(kept)["provider.janitor"]);
@@ -793,45 +792,6 @@ test("a create still pending when the cleanup bound runs out is named in cleanup
 	assert.ok(report.cleanup.errors.some((error) => /create \(provider\.leaves\) did not settle within 0\.3 s/.test(error)), JSON.stringify(report.cleanup.errors));
 	assert.equal(report.core, "fail", "a run whose cleanup is incomplete is not a Core pass");
 	assert.match(formatReport(report), /cleanup ✗ could not show nothing was left/);
-});
-
-test("provider.stop (Core) passes a provider that does not declare stop and refuses it in words, the computer still running and listed", async () => {
-	const fake = fakeComputers({ release: ["delete"] });
-	const report = await runConformance(fake.provider, { image: IMAGE, cases: byId("provider.stop") });
-	assert.deepEqual(statuses(report), { "provider.stop": "pass" }, JSON.stringify(report.results));
-	assert.equal(report.core, "pass");
-	assert.ok(fake.calls.some(([call, , how]) => call === "release" && how === "stop"), "the case asked for stop");
-	assert.deepEqual(fake.alive(), [], "the computer was deleted after");
-});
-
-test("provider.stop (Core) fails a provider that does not declare stop yet stops the computer", async () => {
-	const fake = fakeComputers({ release: ["delete"], stopAnyway: true });
-	const report = await runConformance(fake.provider, { image: IMAGE, cases: byId("provider.stop") });
-	assert.equal(statuses(report)["provider.stop"], "fail");
-	assert.match(reasons(report)["provider.stop"], /stop/);
-	assert.equal(report.core, "fail");
-});
-
-test("provider.stop (Core) fails a provider that declares stop but deletes the computer", async () => {
-	const fake = fakeComputers({ stopDeletes: true });
-	const report = await runConformance(fake.provider, { image: IMAGE, cases: byId("provider.stop") });
-	assert.equal(statuses(report)["provider.stop"], "fail");
-	assert.match(reasons(report)["provider.stop"], /stopped/);
-	assert.equal(report.core, "fail");
-});
-
-test("provider.stop (Core) passes a provider that declares stop and lists the computer stopped", async () => {
-	const fake = fakeComputers();
-	const report = await runConformance(fake.provider, { image: IMAGE, cases: byId("provider.stop") });
-	assert.deepEqual(statuses(report), { "provider.stop": "pass" }, JSON.stringify(report.results));
-});
-
-test("provider.janitor (Full) needs release:stop: a janitor provider that does not declare stop skips it in words", async () => {
-	const fake = fakeComputers({ release: ["delete"] });
-	const report = await runConformance(fake.provider, { image: IMAGE, cases: byId("provider.janitor") });
-	assert.deepEqual(statuses(report), { "provider.janitor": "skip" });
-	assert.equal(reasons(report)["provider.janitor"], "the provider does not declare release:stop");
-	assert.deepEqual(report.undeclared, ["release:stop"]);
 });
 
 test("files.list passes a daemon whose pages hold one entry each", async () => {

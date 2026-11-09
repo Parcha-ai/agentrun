@@ -15,7 +15,6 @@ const fail = (code, message) => ({ ok: false, error: { code, message } });
 const ok = (value) => ({ ok: true, value });
 const b64 = (text) => Buffer.from(text).toString("base64");
 
-const ALL_CAPABILITIES = "000001ffffffffff";
 const NO_CAPABILITIES = "0000000000000000";
 const WORKSPACE = "/workspace";
 
@@ -179,7 +178,6 @@ function fakeDaemon(hello, computer) {
  * `calls` (list and release calls), `open()` (connections not yet closed).
  * - `createHangs`, `releaseHangs`: those calls never answer. `createDelays`: ms before each create answers, by call.
  * - `connectThrows`: connect throws that message. `uid`: the default user's uid; `users`: names to uids.
- * - `capsForUser`: a computer whose spec asked for a user has every capability.
  * - `status`: /proc/self/status fields over the unprivileged ones, in every computer (a value of undefined drops the
  *   line); `statusForUser`: the same, in a computer whose spec asked for a user.
  * - `createRejects`: create rejects with that message. `createIgnoresCheck`: create makes a computer check refuses.
@@ -226,7 +224,6 @@ export function fakeComputers({
 	connectThrows,
 	uid = 1000,
 	users = {},
-	capsForUser = false,
 	status = {},
 	statusForUser = {},
 	createRejects,
@@ -315,7 +312,6 @@ export function fakeComputers({
 					status: {
 						...UNPRIVILEGED,
 						...status,
-						...(spec.user !== undefined && capsForUser ? { CapEff: ALL_CAPABILITIES, CapPrm: ALL_CAPABILITIES } : {}),
 						...(spec.user !== undefined ? statusForUser : {}),
 					},
 					users,
