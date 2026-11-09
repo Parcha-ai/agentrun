@@ -919,6 +919,46 @@ test("a file ledger takes a dead writer's lock at once, however fresh", async ()
 	assert.throws(() => readFileSync(`${path}.lock`), /ENOENT/, "and lets it go after its write");
 });
 
+test("a ledger writer waits while the lock keeps passing between live writers: waitMs bounds one holder that never lets go, not their progress", async () => {
+	// CI saw a writer of six give up at 10 s while every writer was making progress: under load, the others' queued
+	// writes held the lock in turn for longer than the bound, each hold short. In a child process every take that finds
+	// the lock held hands it to another live writer (new words), 12 times, then the lock is freed. Each hand-over is
+	// progress, so the writer must wait it out (with waitMs 30 ms, far less than the 12 hand-overs take) and land its
+	// write. No timing decides it: the hand-overs follow the writer's own looks.
+	const path = join(dir, "handed-over-ledger.json");
+	const module = new URL("../dist/conformance/phone-harness.js", import.meta.url).href;
+	const script = `
+		import fs from "node:fs";
+		import { syncBuiltinESMExports } from "node:module";
+		const lockPath = process.argv[2] + ".lock";
+		fs.writeFileSync(lockPath, process.pid + " writer-0\\n");
+		const link = fs.linkSync;
+		let handed = 0;
+		fs.linkSync = (from, to) => {
+			if (String(to) !== lockPath) return link(from, to);
+			try {
+				return link(from, to);
+			} catch (error) {
+				if (error.code === "EEXIST") {
+					if (++handed <= 12) fs.writeFileSync(lockPath, process.pid + " writer-" + handed + "\\n");
+					else fs.unlinkSync(lockPath);
+				}
+				throw error;
+			}
+		};
+		syncBuiltinESMExports();
+		const { fileLedger } = await import(process.argv[1]);
+		let error = "";
+		try { await fileLedger(process.argv[2], { waitMs: 30 }).put({ id: "p1", labels: {}, image: "android", deadline: "2026-11-08T12:00:00.000Z" }); } catch (e) { error = e.message; }
+		console.log(JSON.stringify({ error, handed }));`;
+	const ran = await new Promise((resolve) => execFile(process.execPath, ["--input-type=module", "-e", script, module, path], { timeout: 30_000, killSignal: "SIGKILL" }, (error, stdout, stderr) => resolve({ error, stdout, stderr })));
+	assert.equal(ran.error, null, ran.stderr);
+	const { error, handed } = JSON.parse(ran.stdout);
+	assert.equal(error, "", "the writer waited out the hand-overs");
+	assert.equal(handed, 13, "12 hand-overs, then the lock was freed");
+	assert.deepEqual((await conformance.fileLedger(path).list()).map((entry) => entry.id), ["p1"]);
+});
+
 test("two waiters that find the same dead breaker's .break both go on: the one whose unlink finds it gone does not throw", async () => {
 	// The race, made certain in a child process: its first unlink of .break removes the file once more before its own
 	// (as the other waiter's unlink would, between this waiter's check and its unlink), so its own finds it gone.
