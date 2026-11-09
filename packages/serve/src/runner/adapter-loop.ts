@@ -322,6 +322,8 @@ function adapterLoop(specOf: (claim: Claim, run: AdapterRun) => AdapterRunSpec |
     const data: RaiseData & { pause?: string } = { capUsd: raising.state?.capUsd ?? raising.capUsd ?? 0, takes, ...(raising.state?.lastRaise?.pause ? { pause: raising.state.lastRaise.pause } : {}) };
     // A raise that resumes the pause answers it: the run's row no longer says the cap's words, in the same commit.
     const landed = gate!.expect(writesEntry(KINDS.raise), { take: takes, ...(raising.resumes ? { run: { summary: null } } : {}) });
+    // A seal while the commit is in flight (the claim lost) fails it before it is awaited: handled here, read below.
+    landed.catch(() => undefined);
     try {
       await harness!.commit((tx) => tx.appendEntry(root!.id, { kind: KINDS.raise, data: data as unknown as JsonValue }), context);
     } catch (error) {
@@ -474,8 +476,10 @@ function adapterLoop(specOf: (claim: Claim, run: AdapterRun) => AdapterRunSpec |
         const io: PiSessionIO = { writer, models: counted, signal: deps.signal, onEvent: record ? (event) => record.onEvent(event) : () => {}, gate: gateOf };
         session = await spec.adapter.open({ ...spec.session, tools }, io);
         root = await harness.root(context);
-        // A run brought back from a park: the raises its claim has are taken together, once its delivery is done.
-        if (restarts === 0 && claim.from === "parked") {
+        // A run brought back from a park: the raises its claim has are taken together, once its delivery is done. So is a
+        // run whose journal still holds an unanswered budget pause, whatever its row said at the claim: a resumed claim lost
+        // before its raise entry landed leaves the run running, its pause unanswered and its raises untaken.
+        if (restarts === 0 && (claim.from === "parked" || (spec.cap?.checkRaise !== undefined && (await raiseStateOf()).pause !== undefined))) {
           raising.resuming = true;
           raising.state ??= await raiseStateOf();
         }
@@ -836,6 +840,8 @@ function adapterLoop(specOf: (claim: Claim, run: AdapterRun) => AdapterRunSpec |
    *  cap's words (as the ask park's entry and state), and the loop ends parked: a raise row wakes it. */
   async function parkAtCap(on: Harness, conversation: Conversation, theGate: Gate, data: BudgetData): Promise<LoopEnd> {
     const parkedAt = theGate.expect(writesEntry(KINDS.budget), { run: { state: "parked", summary: data.words } });
+    // A seal while the commit is in flight fails it before it is awaited: handled here, read below.
+    parkedAt.catch(() => undefined);
     try {
       await on.commit((tx) => tx.appendEntry(conversation.id, { kind: KINDS.budget, data: data as unknown as JsonValue }), context);
     } catch (error) {

@@ -29,6 +29,13 @@ export interface NodeToolBinding {
  *  and the cap ledger — the run infrastructure the runner holds, not this module. */
 export type RunEffect = (params: { readonly node: { readonly label: string; readonly via: string; readonly tool?: string }; readonly input: Record<string, unknown>; readonly signal: AbortSignal; readonly executionPath?: string; readonly item?: { readonly index: number } }) => Promise<unknown>;
 
+/** What a decision's wrapper reads from the DSL driver to tell a replayed request (a route the driver decided, or one an
+ *  earlier process admitted that did not fail) from a fresh one: a replayed request holds nothing (main's askedBefore). */
+export interface DecisionDriver {
+  routeDecision(executionPath: never): unknown;
+  decisionRequests(): Record<string, { status: string }>;
+}
+
 /** The run's spend cap over the workflow's adapters (app.ts's budget: stepped/failing/capStopped and the decision cap),
  *  injected so this module holds no money of its own. Each wrapper is applied to its adapter where app.ts applied it; a run
  *  with no cap (a test, or before the cap is wired) passes none and the adapters run unwrapped. `held` is a call node's
@@ -38,8 +45,9 @@ export interface WorkflowCap {
   node<F>(fn: F): F;
   /** stepped(failing(·)): a call node, which waits for a raise on a held effect and goes again. */
   effect<F>(fn: F): F;
-  /** stepped(gate(capped.before(·))): a decision, held before the driver admits it. */
-  judge<F>(fn: F): F;
+  /** stepped(gate(capped.before(·))): a decision, held before the driver admits it (admitting and settling it through the
+   *  kernel cap). The driver tells a replayed request, which holds nothing (main's `capped.before(runJudge, askedBefore)`). */
+  judge<F>(fn: F, driver?: DecisionDriver): F;
   /** A call node's wait on a raise (deps.held), left out of its deadline. */
   held?(path: string): number;
 }
@@ -57,8 +65,9 @@ export interface WorkflowHostDeps {
   readonly nodeTool: (name: string) => NodeToolBinding | undefined;
   /** A call node's effect (the node-tool table's, with the run's ctx and the cap ledger). */
   readonly runEffect: RunEffect;
-  /** The decision providers (runJudge) and how a decision's images load; absent: the workflow runs no decision node. */
-  readonly decisionProviders?: Record<string, unknown>;
+  /** The decision providers (runJudge) by id and the one a node that names none gets, and how a decision's images load;
+   *  absent: the workflow runs no decision node. */
+  readonly decisionProviders?: { readonly providers: Readonly<Record<string, unknown>>; readonly default: string };
   readonly loadImage?: unknown;
   /** The run's work folder (the DSL's file reads are rooted here: workspaceFiles). */
   readonly workRoot: string;
@@ -126,7 +135,7 @@ export function workflowHost(deps: WorkflowHostDeps): { readonly extensions: rea
         ...recovered,
         runNode: cap.node(recovered.runNode),
         runEffect: cap.effect(recovered.runEffect),
-        ...(recovered.runJudge ? { runJudge: cap.judge(recovered.runJudge) } : {}),
+        ...(recovered.runJudge ? { runJudge: cap.judge(recovered.runJudge, driver as DecisionDriver) } : {}),
         onEvent,
         ...(cap.held ? { held: (path: string) => cap.held!(path) } : {}),
         recovery: { ...recovery, decision: decisions.decision },
