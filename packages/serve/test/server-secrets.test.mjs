@@ -7,7 +7,10 @@ import { readFile, writeFile } from "node:fs/promises";
 import { join } from "node:path";
 import { test } from "node:test";
 import { startServe } from "../dist/index.js";
-import { agent, client, FAUX, follow, runDir, scratch, serve, triggerStore, withEnv } from "./support.mjs";
+import { agent, client, FAUX, follow, runDir, scratch, secretWritePath, serve, triggerStore, withEnv } from "./support.mjs";
+
+// Removing the outbound webhook takes its secret with it: the client sends it from the owner's session, as the console does.
+secretWritePath(["DELETE"], /^\/settings\/webhook$/);
 
 const sealKey = () => randomBytes(32).toString("base64");
 /** Whether `text` holds any 8 characters of `secret` in a row. */
@@ -25,7 +28,7 @@ test("a run that quotes a webhook trigger's signing secret, or the outbound webh
   const outbound = await api("PUT", "/settings/webhook", { url: "https://hooks.example/in" });
   assert.equal(outbound.status, 201, JSON.stringify(outbound.body));
   const quoted = (what, secret) => [[what, secret], [`${what} key`, secret.slice("whsec_".length)]];
-  for (const [what, secret] of [...quoted("the trigger's", trigger.body.secret), ...quoted("the outbound webhook's", outbound.body.secret)]) {
+  for (const [what, secret] of [...quoted("the trigger's", trigger.body.signing_secret), ...quoted("the outbound webhook's", outbound.body.signing_secret)]) {
     const file = join(await scratch(t), "key.txt");
     await writeFile(file, secret);
     const started = await api("POST", "/agents/quotes/runs", { input: { content: `Quote the key in ${file}` } });
@@ -69,12 +72,12 @@ test("a run whose message holds a webhook trigger's key or the outbound webhook'
   const trigger = await api("POST", "/triggers", { name: "on push", source: { kind: "webhook" }, target: { kind: "start_run", agent_id: "target", input: { content: "Hi." }, max_cost_usd: 0.5 } });
   assert.equal(trigger.status, 201, JSON.stringify(trigger.body));
   // A key whose base64 holds a /, as about half do: its unpadded and its escaped spellings differ from every other.
-  let hooked = trigger.body.secret;
-  for (let i = 0; i < 40 && !hooked.includes("/"); i++) hooked = (await api("POST", `/triggers/${trigger.body.id}/secret`)).body.secret;
+  let hooked = trigger.body.signing_secret;
+  for (let i = 0; i < 40 && !hooked.includes("/"); i++) hooked = (await api("POST", `/triggers/${trigger.body.id}/secret`)).body.signing_secret;
   assert.ok(hooked.includes("/"), "a secret with a / within 40 rotations");
   const outbound = await api("PUT", "/settings/webhook", { url: "https://hooks.example/in" });
   assert.equal(outbound.status, 201, JSON.stringify(outbound.body));
-  for (const [what, secret] of [["trigger", hooked], ["outbound", outbound.body.secret]]) {
+  for (const [what, secret] of [["trigger", hooked], ["outbound", outbound.body.signing_secret]]) {
     const forms = keyForms(secret);
     const shown = await pasted(api, `pastes-${what}`, forms);
     for (const [form, value] of Object.entries(forms)) assert.ok(!holdsRun(shown, value), `the ${what} secret's key as ${form} shows nowhere: ${shown.slice(0, 600)}`);
@@ -89,8 +92,8 @@ test("after a webhook trigger's secret is rotated, or the outbound webhook is de
   assert.equal(trigger.status, 201, JSON.stringify(trigger.body));
   const rotated = await api("POST", `/triggers/${trigger.body.id}/secret`);
   assert.equal(rotated.status, 200, JSON.stringify(rotated.body));
-  assert.notEqual(rotated.body.secret, trigger.body.secret);
-  const forms = { whole: trigger.body.secret, ...keyForms(trigger.body.secret) };
+  assert.notEqual(rotated.body.signing_secret, trigger.body.signing_secret);
+  const forms = { whole: trigger.body.signing_secret, ...keyForms(trigger.body.signing_secret) };
   const shown = await pasted(api, "pastes-old", forms);
   for (const [form, value] of Object.entries(forms)) assert.ok(!holdsRun(shown, value), `the old secret as ${form} shows nowhere: ${shown.slice(0, 600)}`);
   const outbound = await api("PUT", "/settings/webhook", { url: "https://hooks.example/in" });
@@ -98,33 +101,68 @@ test("after a webhook trigger's secret is rotated, or the outbound webhook is de
   assert.equal((await api("DELETE", "/settings/webhook")).status, 204);
   const again = await api("PUT", "/settings/webhook", { url: "https://hooks.example/in" });
   assert.equal(again.status, 201, JSON.stringify(again.body));
-  assert.notEqual(again.body.secret, outbound.body.secret);
-  const outboundForms = { whole: outbound.body.secret, ...keyForms(outbound.body.secret) };
+  assert.notEqual(again.body.signing_secret, outbound.body.signing_secret);
+  const outboundForms = { whole: outbound.body.signing_secret, ...keyForms(outbound.body.signing_secret) };
   const outboundShown = await pasted(api, "pastes-old-outbound", outboundForms);
   for (const [form, value] of Object.entries(outboundForms)) assert.ok(!holdsRun(outboundShown, value), `the old outbound secret as ${form} shows nowhere: ${outboundShown.slice(0, 600)}`);
 });
 
-test("an ended run the next server holds no Run for, listed from its row and serve.json alone, shows no webhook trigger's key in its error", { timeout: 120_000 }, async (t) => {
+/** Every spelling of a `whsec_` secret this server cuts (standard-webhooks.ts secretForms): whole, its key's base64 as
+ *  written and unpadded, base64url, and its bytes as hex, lower and upper case. */
+const spellings = (secret) => {
+  const { bare, unpadded, base64url, hex } = keyForms(secret);
+  return { whole: secret, bare, unpadded, base64url, hex, HEX: hex.toUpperCase() };
+};
+
+test("a run its provider fails with an error quoting a webhook trigger's secret, now and before its rotation, in every spelling: its served error, its Timeline and the lists show none of them, on this server and the next", { timeout: 180_000 }, async (t) => {
   withEnv(t, { AGENTRUN_SEAL_KEY: sealKey() });
   const first = await serve(t);
   assert.equal((await first.api("POST", "/agents", agent("target"))).status, 201);
   const trigger = await first.api("POST", "/triggers", { name: "on push", source: { kind: "webhook" }, target: { kind: "start_run", agent_id: "target", input: { content: "Hi." }, max_cost_usd: 0.5 } });
   assert.equal(trigger.status, 201, JSON.stringify(trigger.body));
-  const runId = (await first.api("POST", "/agents/target/runs", { input: { content: "Fail with a refused key." } })).body.run_id;
-  await follow(first.api, runId, ["failed"], { deadlineMs: 60_000 });
+  const old = trigger.body.signing_secret;
+  const rotated = await first.api("POST", `/triggers/${trigger.body.id}/secret`);
+  assert.equal(rotated.status, 200, JSON.stringify(rotated.body));
+  const forms = Object.entries({ ...spellings(rotated.body.signing_secret) }).concat(Object.entries(spellings(old)).map(([form, value]) => [`old ${form}`, value]));
+  // The error is the provider's, made on the runner: it quotes every spelling, the message that asks for it too.
+  const runId = (await first.api("POST", "/agents/target/runs", { input: { content: `Fail quoting: ${forms.map(([, value]) => value).join(" ")}` } })).body.run_id;
+  await follow(first.api, runId, ["failed"], { deadlineMs: 90_000 });
+  /** Everything a server shows of the run: its view, its Timeline, and the two lists that carry its row. */
+  const shown = async (api) => {
+    const view = (await api("GET", `/runs/${runId}`)).body;
+    assert.ok(view.error?.message, JSON.stringify(view));
+    const timeline = (await api("GET", `/runs/${runId}/timeline`)).body;
+    const lists = [(await api("GET", "/runs")).body, (await api("GET", "/agents/target/runs")).body];
+    for (const body of lists) assert.ok(body.runs.some((r) => r.run_id === runId), JSON.stringify(body));
+    return { view, timeline, lists };
+  };
+  const check = (where, seen) => {
+    for (const [part, body] of Object.entries(seen)) {
+      for (const [form, value] of forms) assert.ok(!holdsRun(JSON.stringify(body), value), `${where}: the secret as ${form} is not in its ${part}: ${JSON.stringify(part === "view" ? body.error : part === "timeline" ? body.rows?.filter((r) => /error|user/.test(r.kind)) : body).slice(0, 2000)}`);
+    }
+  };
+  check("this server", await shown(first.api));
   await first.close();
-  // Its error as a server that did not cut it kept it: the trigger's key in the clear, as written and as hex.
-  const forms = keyForms(trigger.body.secret);
-  const metaFile = join(runDir(first.data, runId), "serve.json");
-  const meta = JSON.parse(await readFile(metaFile, "utf8"));
-  await writeFile(metaFile, `${JSON.stringify({ ...meta, error: { code: "run_failed", message: `The hook signed with ${forms.bare}, or ${forms.hex}.` } })}\n`);
+  // The next server, which holds no Run for it: its row and its journal alone.
   const { api } = await serve(t, { data: first.data });
-  const listed = [(await api("GET", "/runs")).body, (await api("GET", "/agents/target/runs")).body];
-  for (const body of listed) {
-    const row = body.runs.find((r) => r.run_id === runId);
-    assert.ok(row?.error, JSON.stringify(body));
-    for (const [form, value] of Object.entries(forms)) assert.ok(!holdsRun(JSON.stringify(row), value), `the key as ${form} is not in the row: ${JSON.stringify(row.error)}`);
-  }
+  check("the next server", await shown(api));
+});
+
+test("a deleted webhook trigger's secret, quoted by a run its provider failed before the delete, stays cut on the next server: its error, its Timeline and the lists", { timeout: 180_000 }, async (t) => {
+  withEnv(t, { AGENTRUN_SEAL_KEY: sealKey() });
+  const first = await serve(t);
+  assert.equal((await first.api("POST", "/agents", agent("target"))).status, 201);
+  const trigger = await first.api("POST", "/triggers", { name: "on push", source: { kind: "webhook" }, target: { kind: "start_run", agent_id: "target", input: { content: "Hi." }, max_cost_usd: 0.5 } });
+  assert.equal(trigger.status, 201, JSON.stringify(trigger.body));
+  const forms = Object.entries(spellings(trigger.body.signing_secret));
+  const runId = (await first.api("POST", "/agents/target/runs", { input: { content: `Fail quoting: ${forms.map(([, value]) => value).join(" ")}` } })).body.run_id;
+  await follow(first.api, runId, ["failed"], { deadlineMs: 90_000 });
+  assert.equal((await first.api("DELETE", `/triggers/${trigger.body.id}`)).status, 204);
+  await first.close();
+  const { api } = await serve(t, { data: first.data });
+  const seen = { view: (await api("GET", `/runs/${runId}`)).body, timeline: (await api("GET", `/runs/${runId}/timeline`)).body, runs: (await api("GET", "/runs")).body, agent: (await api("GET", "/agents/target/runs")).body };
+  assert.ok(seen.view.error?.message, JSON.stringify(seen.view));
+  for (const [part, body] of Object.entries(seen)) for (const [form, value] of forms) assert.ok(!holdsRun(JSON.stringify(body), value), `the deleted trigger's secret as ${form} is not in the ${part}`);
 });
 
 test("a webhook trigger's secret that does not open under the server's seal key is said at the start, naming its trigger, and the trigger stays refused", { timeout: 120_000 }, async (t) => {

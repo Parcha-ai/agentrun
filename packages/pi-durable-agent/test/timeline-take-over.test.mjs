@@ -77,3 +77,30 @@ test("a call that waited for the person and then failed never reads as having ac
   assert.match(back, /^Waited for you 11 s: Opened www\.bundesarchiv\.de\S* failed: /, "and its failure");
   assert.ok(of("s1").every((summary) => !summary.startsWith("Waited")), "a stopped wait claims no wait");
 });
+
+// A take-over that changed the page (QA, run 01a1c256): the agent's held act ran on the snapshot the person's hand made
+// stale, and its row read as a red failure ("Acted on the page failed: No hydrated snapshot exists …"), though the agent
+// takes a new look at once. pi-browser answers that act as no error, marked page_changed_while_held, and the row says so
+// in plain words, neutral. A stale snapshot with no take reads as it always did.
+const PAGE_CHANGED = "The page changed while you had the browser; the agent takes a new look";
+const STALE = "No hydrated snapshot exists for the active page; call snapshot first.";
+
+test("an act the person's take made stale reads neutral, in plain words, its call row and its result row alike, with no error row; a stale snapshot with no take reads as before", () => {
+  const changed = JSON.stringify({ notice: "This call waited while the person had the browser.", done: false, page_changed: true, next: "snapshot", message: "The person changed the page while they had the browser, so this action was not done. Take a snapshot first, then act on the page as it is now." });
+  const rows = timelineOf([
+    assistant([call("a1", "run", { code: "await page.click('[1-1]')" })], 1),
+    custom(HOST_PHASE, { summary: "You took over the browser", at: T0 + 2_000 }),
+    custom(HOST_PHASE, { summary: "You handed the browser back", at: T0 + 9_000 }),
+    result("a1", "run", changed, 9.5, { details: { waited_for_person_ms: 7_000, page_changed_while_held: true } }),
+    assistant([call("a2", "run", { code: "await page.click('[1-2]')" })], 10),
+    result("a2", "run", JSON.stringify({ ok: false, code: "stale_snapshot", retryable: true, effect: "none", message: STALE }), 10.5, { isError: true }),
+  ], { settled: true });
+  const of = (id) => rows.filter((row) => row.tool_use_id === id);
+  const [use, done] = [of("a1").find((row) => row.kind === "tool_use"), of("a1").find((row) => row.kind === "tool_result")];
+  assert.equal(use.summary, PAGE_CHANGED, "the call's row");
+  assert.deepEqual([done.summary, done.tool_status], [PAGE_CHANGED, "success"], "its result's row: neutral, never failed");
+  assert.equal(rows.filter((row) => row.kind === "error").length, 0, "no error row");
+  // No take: today's row, unchanged.
+  const stale = of("a2").find((row) => row.kind === "tool_result");
+  assert.deepEqual([stale.summary, stale.tool_status], [`Acted on the page failed: ${STALE}`, "failed"]);
+});

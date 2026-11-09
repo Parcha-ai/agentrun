@@ -1,12 +1,23 @@
-// A phone computer's tools, on the run's hands' phone port (hands.phone): a screenshot, a tap, a swipe, typing into the
-// field in focus, the installed apps, and opening one. The coordinates are the screenshot's pixels. Main has no
-// model-visible phone tool, so these words are new.
+// A phone computer's tools, on the run's hands' phone port (hands.phone): a screenshot, the screen's structure (the nodes
+// a model can tap or type into), a tap, a swipe, typing into the field in focus, its back, home and enter keys, the
+// installed apps, and opening one. The coordinates are the screenshot's pixels. Main has no model-visible phone tool, so
+// these words are new.
 import type { ToolDef } from "./defs.js";
-import { answerOf, type Executor, type Hands, type PhonePoint, needsKindWords, shotAnswer } from "./hands.js";
+import { answerOf, type Executor, type Hands, type PhoneKey, type PhoneNode, type PhonePoint, needsKindWords, shotAnswer } from "./hands.js";
+import { HANDOFF_TOOL, handoffDef, handoffExecutor } from "./handoff.js";
 
 /** How long a swipe takes when a call names no duration, and the longest one may. */
 export const PHONE_SWIPE_MS = 300;
 export const PHONE_SWIPE_MAX_MS = 10_000;
+/** The most nodes phone_tree lists, and the most characters its answer takes: past either, one line counts the rest. A
+ *  screen's structure can hold thousands of nodes; the answer stays a screenful, never a flood in the model's context or
+ *  the run's journal. */
+export const PHONE_TREE_MAX_NODES = 150;
+export const PHONE_TREE_MAX_CHARS = 12_000;
+/** The most characters of a node's text or label phone_tree shows. */
+const PHONE_TREE_TEXT_CHARS = 80;
+/** The keys phone_key presses. */
+export const PHONE_KEYS: readonly PhoneKey[] = Object.freeze(["back", "home", "enter"]);
 
 const def = (name: string, description: string, parameters: object, replaySafe: boolean): ToolDef => ({
   name, source: "host", gateName: `host:phone/${name}`, settingsKey: "phone", description, parameters, replaySafe,
@@ -17,6 +28,12 @@ const POINT = { ...object({ x: COORDINATE, y: COORDINATE }, ["x", "y"]), descrip
 
 export const PHONE_TOOL_DEFS: readonly ToolDef[] = Object.freeze([
   def("phone_screen", "Take a screenshot of the phone's screen, as an image. Its pixels are the coordinates phone_tap and phone_swipe take, origin top left.", object({}, []), true),
+  def(
+    "phone_tree",
+    `List what on the phone's screen can be tapped or typed into, from the screen's structure: each node's class, its text or label, its id, and its center and bounds in a phone_screen screenshot's pixels (tap the center). At most ${PHONE_TREE_MAX_NODES} nodes; a last line counts any more.`,
+    object({}, []),
+    true,
+  ),
   def("phone_tap", "Tap the phone's screen once at x, y, in the pixels of a phone_screen screenshot.", object({ x: COORDINATE, y: COORDINATE }, ["x", "y"]), false),
   def(
     "phone_swipe",
@@ -25,8 +42,16 @@ export const PHONE_TOOL_DEFS: readonly ToolDef[] = Object.freeze([
     false,
   ),
   def("phone_type", "Type text into the field that has focus on the phone, as given. Tap the field first.", object({ text: { type: "string", minLength: 1 } }, ["text"]), false),
+  def(
+    "phone_key",
+    "Press one of the phone's keys: back (the system back: leaves a page, closes a dialog or the keyboard), home (the home screen) or enter (submits the field in focus).",
+    object({ key: { type: "string", enum: [...PHONE_KEYS] } }, ["key"]),
+    false,
+  ),
   def("phone_apps", "List the phone's installed apps, each by its id (and its name where the phone gives one), and which app is in front.", object({}, []), true),
   def("phone_open", "Open an app on the phone by its id (phone_apps lists them), bringing it to the front.", object({ id: { type: "string", minLength: 1 } }, ["id"]), false),
+  // The agent's hand-over of the phone to the person (handoff.ts), under the phone's settings key.
+  handoffDef("phone"),
 ]);
 
 const POINT_WORDS = "x and y are whole numbers from 0, in the screenshot's pixels";
@@ -43,11 +68,56 @@ const phoneOf = (hands: Hands, tool: string): NonNullable<Hands["phone"]> => {
 const run = (tool: string, body: (phone: NonNullable<Hands["phone"]>, args: Record<string, unknown>) => Promise<{ text: string } | ReturnType<typeof shotAnswer>>): Executor =>
   (args, call) => answerOf(call, async () => body(phoneOf(call.hands, tool), (typeof args === "object" && args !== null ? args : {}) as Record<string, unknown>));
 
+/** A node's class as a model reads it: the platform's, its package or iOS prefix dropped ("Button", "EditText"). */
+const classOf = (role: string) => role.replace(/^XCUIElementType/, "").split(".").pop() || role;
+const clip = (text: string) => (text.length > PHONE_TREE_TEXT_CHARS ? `${text.slice(0, PHONE_TREE_TEXT_CHARS - 1)}…` : text);
+/** One node, on one line: its class, its text or label (else its first inner text, marked so), its id, whether it is a
+ *  field (and in focus), its center to tap and its bounds. */
+function nodeLine(node: PhoneNode): string {
+  const own = node.text || node.label;
+  const name = own ? JSON.stringify(clip(own)) : node.inner ? `${JSON.stringify(clip(node.inner))} (inner text)` : "";
+  const { x, y, w, h } = node.bounds;
+  const state = node.editable ? `a field${node.focused ? ", focused" : ""}; ` : node.focused ? "focused; " : "";
+  const center = `(${Math.round(x + w / 2)}, ${Math.round(y + h / 2)})`;
+  return `- ${clip(classOf(node.role))}${name ? ` ${name}` : ""}${node.id ? ` [${clip(node.id)}]` : ""}: ${state}center ${center}, bounds ${x},${y} ${w}x${h}`;
+}
+/** phone_tree's answer: a head line, then a line a node, at most PHONE_TREE_MAX_NODES of them and PHONE_TREE_MAX_CHARS
+ *  characters in all; one last line counts the nodes not shown. */
+function treeAnswer(tree: Awaited<ReturnType<NonNullable<NonNullable<Hands["phone"]>["tree"]>>>): string {
+  const nodes = tree.nodes.filter((node) => node.clickable || node.editable);
+  const head = `${nodes.length} node${nodes.length === 1 ? "" : "s"} you can tap or type into, of ${tree.total} on the screen. Coordinates are a phone_screen screenshot's pixels.${tree.truncated ? " The phone gave only part of the screen's structure: take a phone_screen screenshot for the rest." : ""}`;
+  const lines = [head];
+  // Room kept for the last line, whatever it counts.
+  let room = PHONE_TREE_MAX_CHARS - head.length - `\n${nodes.length} more nodes not shown.`.length;
+  let shown = 0;
+  for (const node of nodes) {
+    if (shown >= PHONE_TREE_MAX_NODES) break;
+    const line = nodeLine(node);
+    if (line.length + 1 > room) break;
+    lines.push(line);
+    room -= line.length + 1;
+    shown += 1;
+  }
+  if (shown < nodes.length) lines.push(`${nodes.length - shown} more node${nodes.length - shown === 1 ? "" : "s"} not shown.`);
+  return lines.join("\n");
+}
+
 /** The phone's tools' runs, on the hands' phone. */
 export const PHONE_EXECUTORS: Readonly<Record<string, Executor>> = Object.freeze({
   phone_screen: run("phone_screen", async (phone) => {
     const shot = await phone.shot();
     return shotAnswer(`A screenshot of the phone's screen, ${shot.width}x${shot.height} pixels.`, shot);
+  }),
+  phone_tree: run("phone_tree", async (phone) => {
+    if (!phone.tree) throw new Error("this phone does not offer its UI tree");
+    return { text: treeAnswer(await phone.tree()) };
+  }),
+  phone_key: run("phone_key", async (phone, args) => {
+    if (!phone.key) throw new Error("this phone does not offer its keys");
+    const key = args.key;
+    if (typeof key !== "string" || !(PHONE_KEYS as readonly string[]).includes(key)) throw new Error(`key is ${PHONE_KEYS.slice(0, -1).join(", ")} or ${PHONE_KEYS.at(-1)}`);
+    await phone.key(key as PhoneKey);
+    return { text: `Pressed ${key}.` };
   }),
   phone_tap: run("phone_tap", async (phone, args) => {
     const at = pointOf(args);
@@ -77,4 +147,5 @@ export const PHONE_EXECUTORS: Readonly<Record<string, Executor>> = Object.freeze
     await phone.apps.open(args.id);
     return { text: `Opened ${args.id}.` };
   }),
+  [HANDOFF_TOOL]: handoffExecutor("phone"),
 });

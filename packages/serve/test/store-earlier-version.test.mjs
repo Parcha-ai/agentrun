@@ -53,10 +53,6 @@ const SHAPES = [
   ["triggers.json", (dir) => file(join(dir, "triggers.json")), "triggers.json"],
   ["tool-keys.json", (dir) => file(join(dir, "tool-keys.json")), "tool-keys.json"],
   ["trigger-secrets.json", (dir) => file(join(dir, "trigger-secrets.json")), "trigger-secrets.json"],
-  ["webhook.json", (dir) => file(join(dir, "webhook.json")), "webhook.json"],
-  ["webhook-outbox.json", (dir) => file(join(dir, "webhook-outbox.json")), "webhook-outbox.json"],
-  [".idempotency.json", (dir) => file(join(dir, ".idempotency.json")), ".idempotency.json"],
-  ["learning-usage.jsonl", (dir) => file(join(dir, "learning-usage.jsonl"), ""), "learning-usage.jsonl"],
   ["a home's sign-ins.json", (dir) => file(join(dir, "homes", "home-1", "sign-ins", "sign-ins.json")), join("homes", "home-1", "sign-ins", "sign-ins.json")],
   // The per-run door's token: only an earlier version's runs had a door.
   [".door-token", (dir) => file(join(dir, ".door-token"), "token"), ".door-token"],
@@ -67,11 +63,13 @@ const SHAPES = [
   ["a linked home's sign-ins.json", (dir) => linked(join(dir, "homes", "home-1"), (to) => file(join(to, "sign-ins", "sign-ins.json"))), join("homes", "home-1", "sign-ins", "sign-ins.json")],
 ];
 
-test("this version's own files beside its store open: .token, .server.json, and a leftover box-image.json the cutover stopped writing", async (t) => {
+test("this version's own files beside its store open: .token, .server.json, a leftover box-image.json, and the webhook config, its outbox, the kept idempotency answers and the learning usage ledger this version still keeps beside the store", async (t) => {
   const dir = dataDir(t);
   const store = await openSqliteStore({ dataDir: dir, role: "server" });
   await store.close();
-  for (const name of [".token", ".server.json", "box-image.json"]) file(join(dir, name), "{}");
+  // This version writes these beside its store, in the same format an earlier version did, so a directory holding them is
+  // this version's own, not an earlier version's: it opens.
+  for (const name of [".token", ".server.json", "box-image.json", "webhook.json", "webhook-outbox.json", ".idempotency.json", "learning-usage.jsonl"]) file(join(dir, name), "{}");
   const again = await openSqliteStore({ dataDir: dir, role: "server" });
   await again.close();
 });

@@ -8,7 +8,8 @@ import { withLocalModels } from "./local-models.js";
 import { pathToFileURL } from "node:url";
 import type { ModelCost, ModelThinkingLevel, Provider, ProviderStreams } from "@earendil-works/pi-ai";
 import { DEFAULT_HARNESS } from "./harness.js";
-import { HARNESS_TABLE_ENV, harnessOf } from "./harness-table.js";
+import { HARNESS_TABLE_ENV, type HarnessEntry, harnessOf } from "./harness-table.js";
+import type { Revision } from "@parcha/pi-durable-agent";
 import { gatewayBase } from "./provider.js";
 // Leaves, which the key rows below read as this module loads, in any import order (wires.ts, adapter-facts.ts).
 import { ADAPTER_FACTS } from "./adapter-facts.js";
@@ -418,6 +419,31 @@ async function gatewayPrices(env: NodeJS.ProcessEnv, byTier: ReadonlyMap<Tier, M
     out.set(id, { input, output, cacheRead, cacheWrite });
   }
   return out;
+}
+
+/** The run's model and pi-ai's catalog that prices it, where its harness's model is chosen on its wire's own settings (its
+ *  entry's onWire: claude-agent's, never the gateway's; an OpenAI model reached through OpenRouter alone, which needs no
+ *  OpenAI key: provider.ts modelOn). Anywhere else, the run's usual models (runModels). Shared by the per-run process
+ *  (app.ts) and the store's launch resolution (runModelRef), so there is one copy. */
+export async function wireModels(entry: HarnessEntry, env: NodeJS.ProcessEnv, ref: string | undefined) {
+  const choice = await entry.model(env, ref, true);
+  if (!choice) throw new Error(`${entry.id} does not run here.`);
+  if ("why" in choice) throw new Error(choice.why);
+  return { models: await providerModels(env), model: choice.model as ModelRef | undefined, byTier: new Map([["default", choice.model]]), unpriced: new Set<string>() };
+}
+
+/** The run's model ref (provider + model id), resolved exactly as the per-run process resolved it (app.ts): a workflow's
+ *  from its nodes' tiers; an agentic harness that chooses on its own wire by wireModels, else the run's usual models. The
+ *  runner reads launch.model alone, so the server resolves it once, at the run's start (runs-over-store StartDeps.modelOf).
+ *  Undefined when it names none. */
+export async function runModelRef(env: NodeJS.ProcessEnv, revision: Revision): Promise<ModelRef | undefined> {
+  if (revision.kind !== "agentic") {
+    const nodes = workflowNodes(revision.body.workflow, (await import("@parcha/agentrun-dsl")).inspectWorkflow(revision.body.workflow));
+    return (await runModels(env, undefined, llmTiers(nodes, nodeTiers(nodes)))).model;
+  }
+  const entry = harnessOf(env, revision.body.harness);
+  const chosen = entry?.onWire(env) ? await wireModels(entry, env, revision.body.model) : await runModels(env, revision.body.model, ["default"], revision.body.harness);
+  return chosen.model;
 }
 
 /** The models a run of `ref` (an agentic revision's own, else the host's) on `harness` would take, of `tiers`, that serve
