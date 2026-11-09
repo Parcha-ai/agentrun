@@ -57,28 +57,38 @@ const until = async (done, what, ms = 60_000) => {
   }
 };
 
-/** A route whose first request stays open until it is aborted (`inFlight` resolves once it is sent), and whose every later
- *  request answers "Second answer.". `requests`: the bodies asked. */
-function stallingFirst() {
+/** A route whose requests numbered in `stallAt` (1 for the first) stay open until aborted, and whose every other request
+ *  answers with the next of `answers`. `sent(n)` resolves once request n is sent (`inFlight`: the first one held);
+ *  `requests`: the bodies asked. */
+function stalling(stallAt = [1], answers = ["Second answer.", "Third answer.", "Fourth answer."]) {
   const requests = [];
-  const answered = scriptedOrigin([{ say: "Second answer." }, { say: "Second answer." }, { say: "Second answer." }]);
-  let sent = () => {};
-  const inFlight = new Promise((resolve) => (sent = resolve));
+  const said = [];
+  const waiting = new Map();
+  const sent = (n) => {
+    if (requests.length >= n) return Promise.resolve();
+    if (!waiting.has(n)) waiting.set(n, Promise.withResolvers());
+    return waiting.get(n).promise;
+  };
   const fetch = async (url, init = {}) => {
     requests.push(JSON.parse(String(init.body ?? "{}")));
-    if (requests.length > 1) return answered(url, init);
+    const n = requests.length;
+    waiting.get(n)?.resolve();
+    if (!stallAt.includes(n)) {
+      const text = answers[said.length] ?? answers.at(-1);
+      said.push(text);
+      return scriptedOrigin([{ say: text }])(url, { ...init, body: JSON.stringify({ ...JSON.parse(String(init.body ?? "{}")), messages: [] }) });
+    }
     return await new Promise((_, reject) => {
       const abort = () => reject(Object.assign(new Error("aborted"), { name: "AbortError" }));
       if (init.signal?.aborted) abort();
       else init.signal?.addEventListener("abort", abort, { once: true });
-      sent();
     });
   };
-  return { fetch, requests, inFlight };
+  return { fetch, requests, said, sent, inFlight: sent(stallAt[0] ?? 1) };
 }
 
-/** A pi run through a runner, its first request held open; the server's store, the runner and the route. */
-async function runner(t) {
+/** A pi run through a runner, its requests in `stallAt` held open; the server's store, the runner and the route. */
+async function runner(t, stallAt = [1], answers) {
   const dir = mkdtempSync(join(process.env.TMPDIR ?? tmpdir(), "runner-reopen-stopped-"));
   const server = await openSqliteStore({ dataDir: dir, role: "server" });
   const stores = [];
@@ -91,7 +101,7 @@ async function runner(t) {
   const launch = { input: { content: "First question." }, title: "t", place: { mode: "runner" }, harness: "pi", model: { provider: "anthropic", modelId: "claude-sonnet-5.5" }, max_cost_usd: 5 };
   await server.runs.create({ id: RUN, agentId: "agent-1", revisionId: "rev-1" }, { body: launch });
   await server.flush?.();
-  const origin = stallingFirst();
+  const origin = stalling(stallAt, answers);
   const route = { model: "faux-1", provider: { api: "anthropic-messages", origin: "https://route.invalid", credential: () => `routecredential${"r".repeat(12)}` }, fetch: origin.fetch, price: () => 0.1, cost: COST, outputCeiling: 1_000 };
   const start = async (name) => {
     const store = await openSqliteStore({ dataDir: dir, role: "runner" });
@@ -182,4 +192,65 @@ test("a drain is no person's stop: the run is let go running, with no end; it is
   const ended = await settled(server, "ended");
   assert.equal(ended.outcome, null);
   assert.ok(origin.requests.length >= 2, `its next claim asked the model again: ${origin.requests.length} requests`);
+});
+
+/** The run once it has ended again after `previous` (a later ended_at), released. */
+const endedAfter = (server, previous) => until(async () => {
+  const row = await server.runs.get(RUN);
+  return row.state === "ended" && row.runner === null && row.endedAt !== null && (previous === undefined || row.endedAt > previous.endedAt) && row;
+}, "the run ends again");
+
+/** The text of the newest person message a request carried. */
+const lastAsked = (request) => JSON.stringify(request.messages.filter((m) => m.role === "user").at(-1) ?? null);
+
+test("a run a person stopped takes every later message as a turn of its own: the second message after the first one's turn ended runs too", { timeout: 120_000 }, async (t) => {
+  const { server, origin } = await runner(t);
+  await origin.inFlight;
+  await sendCommand(server, RUN, { kind: "stop", body: {} });
+  await settled(server, "stopped");
+  await message(server, await momentOverStore(server, RUN), "Second question.");
+  const second = await endedAfter(server);
+  assert.equal(origin.requests.length, 2);
+  await message(server, await momentOverStore(server, RUN), "Third question.");
+  const third = await endedAfter(server, second);
+  assert.deepEqual([third.state, third.outcome], ["ended", null], `it ended as a completed run, never failed: ${JSON.stringify(third)}`);
+  assert.equal(origin.requests.length, 3, `the third question was asked as a turn of its own: ${origin.requests.length} requests`);
+  assert.match(lastAsked(origin.requests[2]), /Third question\./);
+  const commands = await server.commands(RUN, 0);
+  assert.ok(commands.every((row) => row.takenAt !== null && row.refused === null), `every message was taken, none refused: ${JSON.stringify(commands)}`);
+});
+
+test("a drain while a reopened stopped run's message is in its turn: the next claim goes on with that turn and answers it", { timeout: 120_000 }, async (t) => {
+  const { server, origin, first, start } = await runner(t, [1, 2], ["Second answer."]);
+  await origin.inFlight;
+  await sendCommand(server, RUN, { kind: "stop", body: {} });
+  await settled(server, "stopped");
+  await message(server, await momentOverStore(server, RUN), "Second question.");
+  await origin.sent(2);
+  await first.close();
+  const let_ = await server.runs.get(RUN);
+  assert.deepEqual([let_.state, let_.runner], ["running", null], `let go with the message's turn open: ${JSON.stringify(let_)}`);
+  await start("runner-b");
+  const ended = await endedAfter(server);
+  assert.deepEqual([ended.state, ended.outcome], ["ended", null], `it ended with the message's answer, never cut: ${JSON.stringify(ended)}`);
+  assert.ok(origin.requests.length >= 3, `the next claim asked the model the message again: ${origin.requests.length} requests`);
+  assert.match(lastAsked(origin.requests.at(-1)), /Second question\./);
+  assert.deepEqual(origin.said, ["Second answer."], "the message's turn was answered once");
+  const said = (await runTimeline(server, RUN, context, { settled: true })).map((row) => row.text ?? row.summary ?? "").join("\n");
+  assert.ok(said.includes("Second answer."), `the answer is on the timeline:\n${said}`);
+});
+
+test("a drain while a reopened completed run's message is in its turn: the next claim goes on with that turn and answers it", { timeout: 120_000 }, async (t) => {
+  const { server, origin, first, start } = await runner(t, [2], ["First answer.", "Second answer."]);
+  const done = await endedAfter(server);
+  assert.equal(origin.requests.length, 1);
+  await message(server, await momentOverStore(server, RUN), "Second question.");
+  await origin.sent(2);
+  await first.close();
+  await start("runner-b");
+  const ended = await endedAfter(server, done);
+  assert.deepEqual([ended.state, ended.outcome], ["ended", null], `it ended with the message's answer, never cut: ${JSON.stringify(ended)}`);
+  assert.ok(origin.requests.length >= 3, `the next claim asked the model the message again: ${origin.requests.length} requests`);
+  assert.match(lastAsked(origin.requests.at(-1)), /Second question\./);
+  assert.deepEqual(origin.said, ["First answer.", "Second answer."], "the message's turn was answered once, on the next claim");
 });
