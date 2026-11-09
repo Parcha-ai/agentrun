@@ -16,7 +16,7 @@ import { BACKGROUND_CONTEXT, withAbortSignal } from "@earendil-works/chord/conte
 import type { Models } from "@earendil-works/pi-ai";
 import { createModels } from "@earendil-works/pi-ai/models";
 import { type Conversation, type ConversationId, createRegistry, Harness, LiveDoc, ROOT_CONVERSATION_ID, type Tx } from "@earendil-works/pi-durable";
-import { type AdapterSession, type AgentAdapter, type BeforeRequest, type HostTool, modelPortFor, type Refusal, runBooking, type SessionSpec } from "@parcha/agentrun-kernel";
+import { type AdapterSession, type AgentAdapter, type BeforeRequest, type HostTool, modelPortFor, type Refusal, type SessionSpec, sessionSpendOf } from "@parcha/agentrun-kernel";
 import type { KernelHooks, ToolCall } from "./conformance/subject.js";
 import { type AnswerData, type ApprovalPrice, type AskData, type BudgetData, type CallEndData, type CallStartData, type CallStatus, type EndData, KINDS, type MessageData, type RaiseData, withdrawnAnswers } from "./journal-kinds.js";
 import { originOf } from "@parcha/pi-durable-agent/timeline";
@@ -26,7 +26,11 @@ import { approvalOf, CLOSE_MS, CUT_STEP_MS, STOP_SETTLE_MS, commandRequest, cutL
 import type { PiRun, PiSessionIO, PreIntentAnswer, PreIntentCall } from "./adapters/pi.js";
 import { HAND_BACK, handBackOf } from "./hand-back.js";
 import { journalSessions } from "./sessions.js";
-import { paidCalls, TOOL_SESSION } from "@parcha/agentrun-kernel/kernel/cap";
+import { DECISION_SESSION, runCap, type RunCap, type RunCapOptions, type RunDecisions, type RunTools, TOOL_SESSION } from "@parcha/agentrun-kernel/kernel/cap";
+import { portModels, type PortModels } from "../port-models.js";
+
+/** The run's cap as its spec gives it: the kernel runCap's options but its sessions, which the loop's are. */
+export type RunCapConfig = Omit<RunCapOptions, "sessions">;
 import { bookedIn } from "../paid-calls.js";
 import { sideEffect } from "./side-effects.js";
 
@@ -56,8 +60,10 @@ export interface AdapterRunSpec {
   /** What an asked call costs, for its approval card (main's tool gate options.price): dollars, or "not metered";
    *  undefined when it has none (the ask says null). */
   readonly approvalPrice?: (call: ToolCall) => ApprovalPrice | undefined;
-  /** The host's check before each paid request (the spend cap). */
-  readonly beforeRequest?: BeforeRequest;
+  /** The run's one cap (the kernel's runCap, built by the loop from the run's own sessions): every paid request of the
+   *  run, its model requests, its paid tool calls and its decisions, is admitted and booked through it. An uncapped run
+   *  gives capUsd: () => undefined. */
+  readonly runCap: RunCapConfig;
   /** The run's cap, when it has one (filled from the run's launch): its figure, and what a refusal does to the run (the
    *  kernel cap's parkOf: parked with a pending budget for a refusal a raise could fix, else failed in its words). */
   readonly cap?: {
@@ -126,7 +132,21 @@ export function agentConversation(record: { readonly id: number | ConversationId
 }
 
 /** What the loop lends the spec for one Session: the run's Harness (pi adds its turns to it). */
-export type AdapterRun = PiRun;
+export type AdapterRun = PiRun & {
+  /** The run's one cap's handles, made before the spec is (so a tool host binds them at its bind): its decisions, its
+   *  paid calls (a charge outside any call, a browser release's, books here too) and its proxied models by label (a
+   *  learned workflow's model nodes). Read from the spec's runCap once the spec is known. */
+  readonly ledger: RunLedger;
+};
+
+/** What the adapter loop hands a run's tool host: the run's decisions, paid calls and proxied models, on its one cap. */
+export interface RunLedger {
+  readonly decisions: RunDecisions;
+  readonly paid: RunTools;
+  /** The session's proxied models for a request the host sends beside the harness's own, under `label` (portModels on
+   *  the session's port); undefined before the session opens. */
+  models(label: string): Promise<PortModels> | undefined;
+}
 
 export interface AdapterLoopOptions {
   /** How many times pi restarts a call's task cut off without progress before it ends it (restart_limit); finite.
@@ -434,7 +454,41 @@ function adapterLoop(specOf: (claim: Claim, run: AdapterRun) => AdapterRunSpec |
             for (const write of specNow?.lifecycle?.onConversation ?? []) await write(tx, Number(record.id));
           },
         }, context);
-        const runOf: AdapterRun = { harness, registry, setModels: (given) => (models = given) };
+        // The run's one cap, on its own sessions, built once its spec gives the cap's config (spec.runCap); its handles are
+        // made here, before the spec, so the spec's tool host binds them at its bind (a browser release's charge comes
+        // outside any call). Each session is opened at its first step: a run that makes none writes nothing for it. A
+        // handle not opened on this claim reads what the run's records held when the claim began.
+        const sessions = journalSessions(harness, context, { flush: () => deps.flush() });
+        let capBuilt: RunCap | undefined;
+        const theCap = (): RunCap => {
+          if (!specNow?.runCap) throw new Error("the run's spec gives no cap (AdapterRunSpec.runCap)");
+          return (capBuilt ??= runCap({ sessions, ...specNow.runCap }));
+        };
+        const flushed = { flush: () => deps.flush() };
+        const earlierDecisions = sessionSpendOf(await sessions.read(DECISION_SESSION)).spentUsd;
+        const earlierPaid = sessionSpendOf(await sessions.read(TOOL_SESSION)).spentUsd;
+        let decisionsReady: RunDecisions | undefined;
+        let decisionsOpen: Promise<RunDecisions> | undefined;
+        const decisionsOf = () => (decisionsOpen ??= sessions.open(DECISION_SESSION).then((w) => theCap().decisions(w, flushed)).then((d) => (decisionsReady = d)));
+        let paidReady: RunTools | undefined;
+        let paidOpen: Promise<RunTools> | undefined;
+        const paidOf = () => (paidOpen ??= sessions.open(TOOL_SESSION).then((w) => theCap().tools(w, flushed)).then((p) => (paidReady = p)));
+        const ledger: RunLedger = {
+          decisions: {
+            admit: async (request) => (await decisionsOf()).admit(request),
+            settle: async (id, settled) => (await decisionsOf()).settle(id, settled),
+            spentUsd: () => (decisionsReady ? decisionsReady.spentUsd() : earlierDecisions),
+            heldUsd: () => decisionsReady?.heldUsd() ?? 0,
+          },
+          paid: {
+            admit: async (request) => (await paidOf()).admit(request),
+            settle: async (id, usd) => (await paidOf()).settle(id, usd),
+            spentUsd: () => (paidReady ? paidReady.spentUsd() : earlierPaid),
+            heldUsd: () => paidReady?.heldUsd() ?? 0,
+          },
+          models: (label) => (session?.port?.(label) ? portModels(() => session?.port?.(label)) : undefined),
+        };
+        const runOf: AdapterRun = { harness, registry, setModels: (given) => (models = given), ledger };
         const spec = await specOf(claim, runOf);
         specNow = spec;
         releaseNow = spec.release;
@@ -445,31 +499,25 @@ function adapterLoop(specOf: (claim: Claim, run: AdapterRun) => AdapterRunSpec |
         // submit, a wait or the session's open asks for progress, all below).
         for (const settle of spec.lifecycle?.beforeResume ?? []) await settle(harness);
         const hooks = spec.hooks ?? quiet;
-        const sessions = journalSessions(harness, context, { flush: () => deps.flush() });
         const writer = await sessions.open(spec.session.key);
-        // The host's check is asked with the run's totals, every session of the run summed (the run's one booking), never
-        // this session's alone: a cap is the run's. Its last refusal is kept: a turn it ended ends the run in its words.
-        const hostCheck = spec.beforeRequest ? runBooking(sessions, spec.beforeRequest) : undefined;
-        // The run's paid tool calls (a web tool's request to Parallel, a monid call) on the same one ledger and rule, as
-        // main books them (paid-calls.ts): held at its price before it is sent, its hold flushed first, and settled at what
-        // it charged, under the call that made it. A later claim reads them from the run's records with the rest.
-        // Opened at the claim's first paid call: a run that makes none writes nothing for them.
-        let paidOpen: ReturnType<typeof paidCalls> | undefined;
-        const paidBooking = () => (paidOpen ??= sessions.open(TOOL_SESSION).then((tools) => paidCalls(tools, hostCheck ?? (async () => undefined), { flush: () => deps.flush() })));
-        const paid = { admit: async (request: Parameters<Awaited<ReturnType<typeof paidCalls>>["admit"]>[0]) => (await paidBooking()).admit(request), settle: async (id: string, usd: number | null) => (await paidBooking()).settle(id, usd) };
+        // Every paid request of the run is asked of its one cap (theCap: one rule, one admission queue, the run's totals
+        // over every session of it): its model requests here, its paid tool calls (ledger.paid, under each call below and
+        // outside any) and its decisions (ledger.decisions). Its last refusal is kept: a turn it ended ends the run in its
+        // words.
+        const paid = ledger.paid;
         let refused: Refusal | undefined;
-        const beforeRequest: BeforeRequest | undefined = hostCheck && (async (request) => {
-          const answer = await hostCheck(request);
+        const beforeRequest: BeforeRequest = async (request) => {
+          const answer = await theCap().before(request);
           if (answer && "refuse" in answer) refused = answer;
           return answer;
-        });
+        };
         // The rule before a side effect for every paid model request, on the path every adapter's requests take: the
         // booking writes the request's record, then awaits request_start before the request leaves, so the flush here
         // makes that record and everything before it durable first (each send, a retry's included).
         const booking = await modelPortFor(writer, {
           key: spec.session.key,
           label: spec.session.label,
-          ...(beforeRequest ? { beforeRequest } : {}),
+          beforeRequest,
           onEvent: async (event) => {
             if (event.type === "request_start") await deps.flush();
           },

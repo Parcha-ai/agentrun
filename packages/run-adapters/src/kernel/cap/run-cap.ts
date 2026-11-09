@@ -32,6 +32,9 @@ export interface RunCapOptions {
   /** The run's priced tools' charges and holds beside its requests (beforeRequestOf's), when it has any. */
   spentUsd?(): number | null;
   heldUsd?(): number | null;
+  /** Told each request the rule judged, with the run's totals it was asked with, and its answer (an observer: a live
+   *  view of the cap, a test's record). */
+  judged?(request: Parameters<BeforeRequest>[0], answer: Awaited<ReturnType<BeforeRequest>>): void;
 }
 
 /** A run's decisions on its one cap: each admitted before it is sent and settled once it answered. */
@@ -85,7 +88,11 @@ export function runCap(options: RunCapOptions): RunCap {
     ...(options.spentUsd ? { spentUsd: options.spentUsd } : {}),
     ...(options.heldUsd ? { heldUsd: options.heldUsd } : {}),
   });
-  const before = runBooking(options.sessions, rule);
+  const before = runBooking(options.sessions, options.judged ? async (request) => {
+    const answer = await rule(request);
+    options.judged!(request, answer);
+    return answer;
+  } : rule);
 
   const forget = (key: string) => void deciding.delete(key);
   return {
