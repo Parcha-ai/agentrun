@@ -204,6 +204,18 @@ test("a credential too short to be told from text by chance leaves a healthy str
   assert.ok(relay.push(failed).includes('bad [redacted]ey [redacted]'));
 });
 
+test("a short value the proxy sent (a 6-character header the host added) is cut from an error answer and an error event, and a healthy event carrying it passes as it came", async (t) => {
+  const SHORT = 'tg-6q2';
+  assert.equal(SHORT.length, 6);
+  const failed = await answered(t, 401, JSON.stringify({ error: { message: `unknown tag ${SHORT}` } }), undefined, { headers: { 'x-host-tag': SHORT } });
+  assert.ok(!failed.text.includes(SHORT) && failed.text.includes('unknown tag [redacted]'), failed.text);
+  const healthy = `event: message_start\ndata: {"type":"message_start","message":{"id":"m1","note":"${SHORT}"}}\n\n`;
+  const errorEvent = `event: error\ndata: {"type":"error","error":{"message":"unknown tag ${SHORT}"}}\n\n`;
+  const streamed = await answered(t, 200, healthy + errorEvent, undefined, { contentType: 'text/event-stream', headers: { 'x-host-tag': SHORT } });
+  assert.ok(streamed.text.startsWith(healthy), `the healthy event passes as it came: ${JSON.stringify(streamed.text)}`);
+  assert.equal(streamed.text.slice(healthy.length), errorEvent.replace(SHORT, '[redacted]'));
+});
+
 test("an error answer the cut holds part of reaches the client character for character: the hold never splits a character in two", async (t) => {
   // The window the host's redactor reads would end between the emoji's two halves.
   const body = `a\u{1F600}${'x'.repeat(4095)}`;
