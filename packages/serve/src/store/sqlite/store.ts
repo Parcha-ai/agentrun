@@ -11,7 +11,7 @@ import { claimFence } from "../fence.js";
 import { RunStorage } from "../journal/storage.js";
 import { DDL, SCHEMA_VERSION } from "../schema.js";
 import {
-  AgentArchived, CommandTaken, Fenced, RefreshLeaseLost, SchemaVersionUnknown, StoreConstraint, StoreFromEarlierVersion, TriggerFull, type AgentRow, type Agents,
+  AgentArchived, CommandTaken, Fenced, SchemaVersionUnknown, STORE_WRITE_DEADLINE_MS, StoreConstraint, StoreFromEarlierVersion, TriggerFull, type AgentRow, type Agents,
   type AlsoRow, type Claim, type Command, type FiringChange, type FiringRow, type FiringStatus, type ImportRunInput, type Journal, type NewRevision, type RevisionRow, type RunPatch, type RunRow, type Runs,
   type JournalReads,
   type ReleasedState, type RunState, type Store, type StoreRole, type TemplatePackage, type Templates, type TriggerDef, type TriggerPatch, type TriggerRow, type Triggers, type TriggerScope,
@@ -768,16 +768,21 @@ class SqliteStore implements Store {
           return { leased: granted === 1, row };
         });
       },
-      refreshToken: (name, { holder, sealed }) =>
+      // One statement compares the credential and writes: no read between, so no other write lands in a gap. The lease is
+      // cleared only by its own holder (a waiter that took a lapsed lease keeps it, and reads ours at its re-read).
+      keepRefreshed: (name, { seen, sealed, holder }) =>
         db.transaction(async (tx) => {
           const at = now();
           const written = await tx.runCounted(
-            `UPDATE mcp_servers SET sealed = ?, refresh_holder = NULL, refresh_until = NULL, updated_at = ${d.greatest}(?, updated_at + 1) WHERE name = ? AND refresh_holder = ?`,
-            sealed, at, name, holder,
+            `UPDATE mcp_servers SET sealed = ?,
+              refresh_until = CASE WHEN refresh_holder = ? THEN NULL ELSE refresh_until END,
+              refresh_holder = CASE WHEN refresh_holder = ? THEN NULL ELSE refresh_holder END,
+              updated_at = ${d.greatest}(?, updated_at + 1)
+             WHERE name = ? AND ${d.nullSafeEquals("sealed")}`,
+            sealed, holder, holder, at, name, seen,
           );
-          if (written === 0) throw new RefreshLeaseLost(name, holder);
-          return (await server(tx, name))!;
-        }),
+          return { kept: written === 1, row: await server(tx, name) };
+        }, { deadlineMs: STORE_WRITE_DEADLINE_MS, fromCall: true }),
       releaseRefresh: async (name, holder) => {
         await db.write([{ sql: "UPDATE mcp_servers SET refresh_holder = NULL, refresh_until = NULL WHERE name = ? AND refresh_holder = ?", params: [name, holder] }]);
       },
