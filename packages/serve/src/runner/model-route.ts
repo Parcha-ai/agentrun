@@ -1,7 +1,7 @@
 // The runner's model route: where a model's requests go, on which id, at what price. A model is resolved as main
 // resolves a run's (model.ts chooseModel and runModels: the faux module under --faux, the gateway, or each provider on
-// its own key), and a route speaks a wire its caller speaks (`wires`: the pi adapter speaks both of main's, provider.ts;
-// the learning grader and a workflow's model nodes speak Anthropic's Messages alone):
+// its own key), and a route speaks a wire its caller speaks (`wires`: the pi adapter speaks both of main's, provider.ts,
+// and so do the learning grader and a workflow's model nodes, which take the route's wire as pi does):
 // - an Anthropic model goes to Anthropic itself (its catalog origin, ANTHROPIC_BASE_URL's when set), its key read by
 //   name when a request goes, never held by the route;
 // - a model pi-ai speaks OpenAI's Responses to (OpenAI's own on its key, serve's gateway), for a caller that speaks
@@ -47,13 +47,6 @@ export interface ModelRoute {
   readonly cost?: RouteCost;
   /** The model's most output tokens (its catalog ceiling): the cap's output bound, null when the catalog names none. */
   readonly outputCeiling?: number | null;
-}
-
-/** `route` as a Messages-only caller takes it (the learning grader, a workflow's model nodes), asked on that wire alone:
- *  any other is a wrong ask, refused in words. */
-export function messagesRoute(route: ModelRoute): ModelRoute & { readonly provider: ModelRoute["provider"] & { readonly api: "anthropic-messages" } } {
-  if (route.provider.api !== "anthropic-messages") throw new Error(`a Messages-only caller was given a ${route.provider.api} route for ${route.model}`);
-  return route as ModelRoute & { readonly provider: ModelRoute["provider"] & { readonly api: "anthropic-messages" } };
 }
 
 /** The origin a route with its own fetch names: nothing is ever sent there, its fetch answers every request. */
