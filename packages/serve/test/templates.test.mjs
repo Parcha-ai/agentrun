@@ -337,7 +337,15 @@ test("every package this server ships applies on a server with nothing saved: no
     assert.deepEqual(keyed, [], `${name} grants a tool that needs a key, so its runs would be refused here`);
     const agent = (await api("GET", `/agents/${applied.body.agent_id}`)).body;
     assert.equal(agent.definition.tool_settings, undefined, `${name}: no grant was given, so no tool is allowed`);
+    // KYB's OpenSanctions source is off unless the owner turns it on, its licence said where they choose.
+    if (name === "kyb") assert.match(agent.definition.instructions, /OpenSanctions index: false\./);
   }
+  const kyb = listed.find((x) => x.name === "kyb");
+  assert.equal(kyb.parameters.opensanctions.default, false);
+  assert.match(kyb.parameters.opensanctions.description, /CC BY-NC 4\.0.*commercial use needs a paid licence/);
+  const on = await api("POST", "/templates/kyb/apply", { parameters: { risk_appetite: "medium", opensanctions: true } });
+  assert.equal(on.status, 201, JSON.stringify(on.body));
+  assert.match((await api("GET", `/agents/${on.body.agent_id}`)).body.definition.instructions, /OpenSanctions index: true\./);
 });
 
 test("the keyed-tool check above sees a tool that needs a key: a package granting monid.run is warned, the warning the check reads", async (t) => {
