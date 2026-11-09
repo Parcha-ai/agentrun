@@ -174,7 +174,7 @@ function ApplyTemplate({ v2, template: t, go }: Props & { template: TemplateView
                 <span className="mb-1.5 block text-[12px] text-muted-foreground">{p.description}</span>
                 {choicesOf(p)
                   ? <select className={input} value={values[key] ?? ""} required={p.required} onChange={(e) => setValues((v) => ({ ...v, [key]: e.target.value }))}>
-                      <option value="">{p.required ? "Choose one" : "None chosen"}</option>
+                      <option value="">{p.required ? "Choose one" : p.default !== undefined ? `${String(p.default)} (default)` : "None chosen"}</option>
                       {choicesOf(p)!.map((c) => <option key={c} value={c}>{c}</option>)}
                     </select>
                   : p.type === "boolean"

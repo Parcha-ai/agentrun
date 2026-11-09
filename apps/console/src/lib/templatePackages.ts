@@ -31,7 +31,8 @@ export function needsOf(t: TemplateView, { secrets = true, mcp = true } = {}): [
 /** The values a parameter takes, when its pattern is a plain anchored alternation of words (`^(crm|slack|none)$`): the
  *  form offers those as a choice. Any other pattern is the server's to check, and is never shown. */
 export function choicesOf(p: TemplateView["parameters"][string]): string[] | null {
-  const m = p.pattern ? /^\^\(([A-Za-z0-9_.-]+(?:\|[A-Za-z0-9_.-]+)+)\)\$$/.exec(p.pattern) : null;
+  // Letters, digits, _ and - only: a "." (any character to the server) or anything else is no fixed list.
+  const m = p.pattern ? /^\^\(([A-Za-z0-9_-]+(?:\|[A-Za-z0-9_-]+)+)\)\$$/.exec(p.pattern) : null;
   return m ? m[1].split("|") : null;
 }
 
