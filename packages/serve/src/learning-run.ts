@@ -20,7 +20,7 @@ import { type AnalyticsFilter, type Revision, runDirIn, type RunRow, type Starte
 import type { TimelineEvent } from "@parcha/pi-durable-agent/timeline";
 import { CAP_REFUSAL_PREFIX, SPEND_CAP_REACHED } from "./cap.js";
 import { readJson, RUN_META, runDoorToken } from "./files.js";
-import { activeOf, currentLearning, detailShown, dropSeed, holdsForOk, keepTurn, KEPT_LEARNING, layLearned, layPinnedSkills, LEARNED_DIR, type Learning, LEARNING_BUDGET, type NoteRuns, LEARNING_LABEL, LEARNING_REASONS, learningBlocker, type LearningReason, type LearningState, learningTestHooks, learningView, pinSeed, readPin, readTurn, secretsShown, type Seed, seedAt, seedOf, shortLearning, type Shown, skillsAt, type Turn } from "./learning.js";
+import { activeOf, currentLearning, detailShown, dropSeed, holdsForOk, keepTurn, KEPT_LEARNING, layLearned, layPinnedSkills, LEARNED_DIR, type Learning, LEARNING_BUDGET, type NoteRuns, LEARNING_LABEL, LEARNING_REASONS, type LearningReason, type LearningState, learningTestHooks, learningView, pinSeed, readPin, readTurn, secretsShown, type Seed, seedAt, seedOf, shortLearning, type Shown, skillsAt, type Turn } from "./learning.js";
 import { statusesOf } from "./learning-routes.js";
 import { cutStrings, redacted } from "./key-refusal.js";
 import { servedOnly } from "./served-only.js";
@@ -266,8 +266,6 @@ export type LearningKernel = {
 
 /** The learning of every run the kernel holds, from the end-of-run turn to the merge. */
 export class LearningRuns {
-  /** Why this host keeps no learning folder, said once. */
-  private learningOff?: string;
   /** The secrets each launch of a run that learns handed its process (runs.ts launch()), by run id, so a key a person
    *  replaced or deleted while the run lived is still refused in what its end-of-run turn wrote. In memory only, never on
    *  disk: a server that restarts loses them, and the run's next launch hands it the keys as they are then, which the
@@ -313,6 +311,7 @@ export class LearningRuns {
           const pin = await pinSeed(started.dir, localWorkspace(started.workspace), seeded.seed, { budget: this.options.learningBudget ?? LEARNING_BUDGET, read, shown: this.shown(), own });
           given = pin.given ?? [];
           for (const path of seeded.seed.skipped) warn(started.runId, `its learning folder's ${path} was not read`);
+          for (const line of seeded.warned) warn(started.runId, line);
           for (const name of pin.skills_left_out ?? []) warn(started.runId, `starts without the skill ${name} its agent learned: it is over what is left of the learned skills' budget, or holds a secret`);
           for (const name of pin.workflows_left_out ?? []) warn(started.runId, `starts without the workflow ${name} its agent learned: its line is over what is left of the learned_workflow tool's description budget, or it holds a secret`);
         } catch (error) {
@@ -571,21 +570,18 @@ export class LearningRuns {
 
   // ---- the run's learning ---------------------------------------------------------------------------------------------
 
-  /** What a run of `agentId` starts from: its learning folder's main (learning.ts), the folder made first when it is
-   *  absent; else why it starts with nothing learned. A learning fault never refuses a run: a host without the git
-   *  learning needs is said once, and a folder that cannot be made or read once per run. */
-  private async seedFor(agentId: string): Promise<{ seed: Seed } | { failed: string }> {
-    const blocked = await learningBlocker(process.env);
-    if (blocked) {
-      if (this.learningOff !== blocked) process.stderr.write(`agentrun-serve: runs start with nothing learned: ${blocked}\n`);
-      this.learningOff = blocked;
-      return { failed: said.stopped(STOPPED.noGit) };
-    }
-    return seedOf(this.options.agents.dir, agentId).then((seed) => ({ seed }), (error: Error) => {
+  /** What a run of `agentId` starts from: its learning folder's main (learning.ts seedOf, through the folder's script
+   *  and file API), the folder made first when it is absent, with the lines its read said (a skill it left out); else
+   *  why it starts with nothing learned. A learning fault never refuses a run: a folder that cannot be made or read is
+   *  said once per run. */
+  private async seedFor(agentId: string): Promise<{ seed: Seed; warned: string[] } | { failed: string }> {
+    const warned: string[] = [];
+    return seedOf(this.options.agents.dir, agentId, (line) => warned.push(line)).then((seed) => ({ seed, warned }), (error: Error) => {
       process.stderr.write(`agentrun-serve: the agent ${agentId}'s learning folder could not be read, so its run starts with nothing learned: ${error.message}\n`);
       return { failed: said.stopped(STOPPED.unreadable) };
     });
   }
+
 
   /** Moves the run's learning on, and shows its row. What it keeps whatever it does after (learning.ts KEPT_LEARNING:
    *  the notes the run read, how many it started from, its answer's time and costs) stays with it. Saved by the caller,
