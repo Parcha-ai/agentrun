@@ -127,14 +127,24 @@ async function handed(data, runId, agentId, pointer, sealKey) {
   } finally {
     await store.close();
   }
-  // Its server and runner may hold the store at this moment (a parked run's runner): wait for the write lock.
+  // Its server and runner may be writing the store at this moment (a parked run's runner). The mark is one IMMEDIATE
+  // transaction, as the store's own writer takes every write (store/sqlite/worker.ts): the write lock comes before any
+  // read snapshot, so the busy timeout covers an in-flight writer, where a deferred write upgrading a stale snapshot gets
+  // SQLITE_BUSY_SNAPSHOT at once. The run's mark and its launch's browser change together, as the runner's bind does.
   const db = new DatabaseSync(join(data, "store.sqlite"), { timeout: 15_000 });
   try {
-    db.prepare("UPDATE runs SET sign_in_handed = ? WHERE id = ?").run(JSON.stringify([createHash("sha256").update(pointer).digest("hex")]), runId);
-    const launch = db.prepare("SELECT body FROM run_launch WHERE run_id = ?").get(runId);
-    assert.ok(launch, `run ${runId} has a launch row`);
-    const body = JSON.parse(launch.body);
-    db.prepare("UPDATE run_launch SET body = ? WHERE run_id = ?").run(JSON.stringify({ ...body, plane: { ...(body.plane ?? {}), browser: "browserbase" } }), runId);
+    db.exec("BEGIN IMMEDIATE");
+    try {
+      db.prepare("UPDATE runs SET sign_in_handed = ? WHERE id = ?").run(JSON.stringify([createHash("sha256").update(pointer).digest("hex")]), runId);
+      const launch = db.prepare("SELECT body FROM run_launch WHERE run_id = ?").get(runId);
+      assert.ok(launch, `run ${runId} has a launch row`);
+      const body = JSON.parse(launch.body);
+      db.prepare("UPDATE run_launch SET body = ? WHERE run_id = ?").run(JSON.stringify({ ...body, plane: { ...(body.plane ?? {}), browser: "browserbase" } }), runId);
+      db.exec("COMMIT");
+    } catch (error) {
+      db.exec("ROLLBACK");
+      throw error;
+    }
   } finally {
     db.close();
   }
