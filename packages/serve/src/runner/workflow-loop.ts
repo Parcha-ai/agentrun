@@ -115,10 +115,16 @@ function workflowLoop(specOf: (claim: Claim) => WorkflowRunSpec | Promise<Workfl
   let spec: WorkflowRunSpec | undefined;
   let harnessClosed = false;
   let finished: Promise<LoopEnd> | undefined;
-  /** Raise commands this claim was handed, buffered until the run's raises are taken (before the workflow runs); after
-   *  that a raise waits for the next claim. */
-  const raises: { readonly command: Command; readonly settle: (outcome: CommandOutcome) => void }[] = [];
+  /** The raises this claim has: the rows to take in the raise entry's commit, whether any resumes the paused run, and the
+   *  state the ones before it left (the kernel cap's reading, checked in arrival order). Recorded by command() as the
+   *  runner delivers each row (returning at once, never blocking the delivery), then committed before the workflow runs. */
+  const raising: { state?: RaiseState; takes: number[]; resumes: boolean; capUsd?: number } = { takes: [], resumes: false };
   let takingDone = false;
+  /** This claim, once run() has it: a raise command reads the run's raise state from its journal. */
+  let claimNow: Claim | undefined;
+  /** Resolves once this claim's spec is read, so a raise delivered before the workflow starts checks against its cap rule. */
+  let specReady: () => void = () => {};
+  const ready = new Promise<void>((resolve) => (specReady = resolve));
 
   const closeHarness = async (): Promise<void> => {
     if (!harness || harnessClosed) return;
@@ -181,43 +187,14 @@ function workflowLoop(specOf: (claim: Claim) => WorkflowRunSpec | Promise<Workfl
     return { ...(capUsd !== undefined ? { capUsd } : {}), ...(budget ? { pause: budget.id } : {}), ...(last ? { lastRaise: { to: last.data.capUsd, ...(last.pause ? { pause: last.pause } : {}) } } : {}) };
   };
 
-  /** Takes the raise commands this claim was handed, in arrival order, each checked by the cap's rule against the state the
-   *  ones before it left: refused ones say why; the rest are taken in one `agentrun.raise` entry, which clears the run's
-   *  paused words when a raise resumes the pause. Run before the workflow does, so the resumed run reads the raised cap. */
+  /** Commits the raises this claim recorded (command() checked each against the cap's rule): one `agentrun.raise` entry
+   *  taking their rows, which clears the run's paused words when a raise resumes the pause. Run before the workflow does, so
+   *  the resumed run reads the raised cap. */
   const takeRaises = async (journal: Journal, context: Context): Promise<void> => {
-    const pending = raises.splice(0);
     takingDone = true;
-    if (pending.length === 0) return;
-    const check = spec?.cap?.checkRaise;
-    if (!check) {
-      for (const { settle } of pending) settle({ refused: "This run has no cap to raise: a cap is named when a run starts." });
-      return;
-    }
-    let state = await raiseStateOf(journal, context);
-    const takes: number[] = [];
-    const settles: Array<() => void> = [];
-    let capUsd = state.capUsd;
-    let resumes = false;
-    for (const { command, settle } of pending) {
-      const usd = (command.body as { capUsd?: unknown } | null)?.capUsd;
-      const answer = check(state, typeof usd === "number" ? usd : Number.NaN);
-      if (answer.refused !== undefined) {
-        settle({ refused: answer.refused });
-        continue;
-      }
-      takes.push(command.id);
-      if ("raised" in answer && answer.raised) {
-        resumes ||= answer.resumes;
-        capUsd = usd as number;
-        state = { ...state, capUsd: usd as number, lastRaise: { to: usd as number, ...(state.pause ? { pause: state.pause } : {}) } };
-      }
-      settles.push(() => settle({ taken: true }));
-    }
-    if (takes.length) {
-      const data: RaiseData & { pause?: string } = { capUsd: capUsd ?? 0, takes, ...(state.pause ? { pause: state.pause } : {}) };
-      await append(journal, context, KINDS.raise, data, { ...(resumes ? { run: { summary: null } } : {}), take: takes });
-    }
-    for (const settle of settles) settle();
+    if (raising.takes.length === 0) return;
+    const data: RaiseData & { pause?: string } = { capUsd: raising.capUsd ?? raising.state?.capUsd ?? 0, takes: raising.takes, ...(raising.state?.pause ? { pause: raising.state.pause } : {}) };
+    await append(journal, context, KINDS.raise, data, { ...(raising.resumes ? { run: { summary: null } } : {}), take: raising.takes });
   };
 
   /** The end's cost and metrics from the spec, bounded like the pi loop: late or failing, none. */
@@ -250,6 +227,8 @@ function workflowLoop(specOf: (claim: Claim) => WorkflowRunSpec | Promise<Workfl
     let heldRefusal: CapRefusal | undefined;
     const context = withAbortSignal(AbortSignal.any([deps.signal, parkController.signal]), BACKGROUND_CONTEXT);
     spec = await specOf(claim);
+    claimNow = claim;
+    specReady();
     const revision = { id: spec.revisionId, kind: "workflow" as const, body: { workflow: spec.workflow, tools: [...spec.tools] } };
 
     // The claim's first delivery hands over any raises that woke a parked run: take them before the workflow runs, so the
@@ -340,12 +319,25 @@ function workflowLoop(specOf: (claim: Claim) => WorkflowRunSpec | Promise<Workfl
       return finished;
     },
     async command(command: Command): Promise<CommandOutcome> {
-      // A raise is taken before the workflow runs (takeRaises); one that comes after waits for the run's next claim.
-      if (command.kind === "raise") {
-        if (takingDone) return { later: "the raise waits for the run's next claim" };
-        return new Promise<CommandOutcome>((settle) => raises.push({ command, settle }));
+      if (command.kind !== "raise") return { refused: "a workflow run takes no messages or answers" };
+      // A raise is checked and recorded here, at once (never blocking the runner's delivery), and committed before the
+      // workflow runs (takeRaises); one that comes after that waits for the run's next claim. Checked by the cap's rule
+      // against the state the raises before it left, so raises taken together resume the run once, at the latest cap.
+      await ready;
+      if (takingDone) return { later: "the raise waits for the run's next claim" };
+      const check = spec?.cap?.checkRaise;
+      if (!check) return { refused: "This run has no cap to raise: a cap is named when a run starts." };
+      raising.state ??= await raiseStateOf(deps.journal(claimNow!), BACKGROUND_CONTEXT);
+      const usd = (command.body as { capUsd?: unknown } | null)?.capUsd;
+      const answer = check(raising.state, typeof usd === "number" ? usd : Number.NaN);
+      if (answer.refused !== undefined) return { refused: answer.refused };
+      raising.takes.push(command.id);
+      if ("raised" in answer && answer.raised) {
+        raising.resumes ||= answer.resumes;
+        raising.capUsd = usd as number;
+        raising.state = { ...raising.state, capUsd: usd as number, lastRaise: { to: usd as number, ...(raising.state.pause ? { pause: raising.state.pause } : {}) } };
       }
-      return { refused: "a workflow run takes no messages or answers" };
+      return { taken: true };
     },
     async stop(reason: StopReason): Promise<void> {
       stopReason ??= reason;

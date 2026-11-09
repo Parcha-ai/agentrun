@@ -240,14 +240,15 @@ test("a step the cap holds parks the run on an agentrun.budget entry; a raise ta
   await store.release(claim, {});
   const raise = await store.command("run-1", { kind: "raise", body: { capUsd: 10 } });
   const claim2 = await store.claim("run-1", "runner-a", { leaseMs: 60_000 });
-  // The runner hands the raise row to the loop and signals its first delivery done, as the real runner does.
+  // The runner hands the raise row to the loop and, once command() has returned, signals its first delivery done, as the
+  // real runner does (it awaits each command() before marking the delivery): so the resume's takeRaises sees the raise.
   let deliver;
   const delivered = new Promise((resolve) => (deliver = resolve));
   const loop2 = cappedLoopOn(store, workflow, { question: "What is six times seven?" }, state, undefined, delivered);
   const started = loop2.start(claim2);
-  const raiseOutcome = loop2.command(raise);
+  const raiseOutcome = await loop2.command(raise);
   deliver();
-  assert.deepEqual(await raiseOutcome, { taken: true }, "the raise is taken");
+  assert.deepEqual(raiseOutcome, { taken: true }, "the raise is taken");
   assert.deepEqual(await started, { state: "ended" }, "the resume runs the once-held step and ends the run");
   const run = await store.runs.get("run-1");
   assert.equal(run.state, "ended");
