@@ -22,7 +22,7 @@ export default {
     await archil.locator('input[name="region"]').fill("aws-us-east-1");
     // A reserved name (RFC 2606 .invalid): no disk answers there.
     await archil.locator('input[name="s3Url"]').fill("https://s3.archil.invalid");
-    await archil.locator('li[data-secret="ARCHIL_API_KEY"]').getByRole("button", { name: "Paste", exact: true }).click();
+    await archil.locator('li[data-secret="workspace:archil"]').getByRole("button", { name: "Paste", exact: true }).click();
     await archil.locator('input[name="ARCHIL_API_KEY"]').fill(fake);
     const saved = page.waitForResponse((r) => r.request().method() === "PUT" && new URL(r.url()).pathname === "/v2/workspace/archil");
     await archil.getByRole("button", { name: "Turn on", exact: true }).click();
@@ -44,7 +44,7 @@ export default {
     await archil.getByRole("button", { name: "Turn off", exact: true }).click();
     await archil.locator("[data-confirm]").getByRole("button", { name: "Turn off", exact: true }).click();
     await archil.locator("[data-state]").getByText("Off", { exact: true }).waitFor();
-    check((await archil.locator('li[data-secret="ARCHIL_API_KEY"]').innerText()).includes("Set"), "the key is not kept after Turn off");
+    check((await archil.locator('li[data-secret="workspace:archil"]').innerText()).includes("Set"), "the key is not kept after Turn off");
     check(!(await page.locator("main").innerText()).includes("workspace:archil"), "the page shows the secret's full server name");
   },
 };

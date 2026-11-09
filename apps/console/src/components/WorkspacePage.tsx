@@ -22,7 +22,7 @@ const FIELDS: { name: "diskId" | "region" | "s3Url" | "image"; label: string; pl
 type Fields = Record<(typeof FIELDS)[number]["name"], string>;
 const fieldsOf = (v: Archil): Fields => ({ diskId: v.diskId ?? "", region: v.region ?? "", s3Url: v.s3Url ?? "", image: v.image ?? "" });
 
-/** Archil's one key, by the name the read gives and the PUT takes. */
+/** Archil's secret, served as "workspace:archil": the page says it, and the PUT takes it, as ARCHIL_API_KEY. */
 const KEY = "ARCHIL_API_KEY";
 
 const apiError = (e: unknown): ApiError => (e instanceof ClientError ? e.toApiError() : { code: "network", message: e instanceof Error ? e.message : String(e), retryable: false });
@@ -144,10 +144,8 @@ export function WorkspacePage({ v2, writable }: {
             ))}
             {/* The key sits with the settings it saves with; SecretRow's buttons never submit this form. */}
             <ul>
-              {view.keys.filter((key) => key.name === KEY).map((key) => (
-                <SecretRow key={key.name} field={key} label={KEY} writable={writable && !pasting && !removingKey}
-                  onPaste={() => setPasting(true)} onRemove={() => setRemovingKey(true)} />
-              ))}
+              <SecretRow field={view.secret} label={KEY} writable={writable && !pasting && !removingKey}
+                onPaste={() => setPasting(true)} onRemove={() => setRemovingKey(true)} />
             </ul>
             {writable && removingKey && (
               <div data-confirm-key className="flex flex-wrap items-center gap-3 border bg-card p-3">

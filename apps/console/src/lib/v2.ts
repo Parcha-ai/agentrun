@@ -126,26 +126,26 @@ export type RaiseAnswer = Answer<"raiseRunCap">;
 /** A recorded response (src/fixtures): what the server answered, exactly. The console's own, not a wire type. */
 export type Recorded<T> = { request: { method: string; path: string }; status: number; headers?: Record<string, string>; body: T };
 
-// Computers (Settings → Computers) and Archil (Settings → Workspace), as this base serves them.
+// Computers (Settings → Computers) and Archil (Settings → Workspace).
 /** GET /v2/computers: each kind, whether this server offers it, and its providers. */
 export type Computers = Answer<"listComputers">;
 export type ComputerKindView = Computers["kinds"][number];
 /** A kind of computer an agent can be given. */
 export type ComputerKind = ComputerKindView["kind"];
-/** A provider of computers: its keys (the KEY, required or not, set or not, where from and when, never a value), whether
- *  it is metered, and whether a run could have it now. */
+/** A provider of computers: its secrets ("computer:<provider>:<KEY>", set or not, where from and when, never a value),
+ *  the full names of those it requires, whether it is metered, and whether a run could have it now. */
 export type ComputerProvider = Answer<"saveComputerKeys">;
-export type ComputerKey = ComputerProvider["keys"][number];
+export type ComputerSecret = ComputerProvider["secrets"][number];
 /** PUT /v2/computers/{provider}/keys's body: declared names only; null removes one. */
 export type ComputerKeysBody = Body<"saveComputerKeys">;
 /** POST /v2/computers/{provider}/test's answer. */
 export type ComputerTest = Answer<"testComputer">;
-/** GET /v2/workspace/archil: Archil (Mode 2) on or off, its disk settings, and its key, never a value. */
+/** GET /v2/workspace/archil: Archil (Mode 2) on or off, its disk settings, and its secret ("workspace:archil"), never a
+ *  value. */
 export type Archil = Answer<"getWorkspaceArchil">;
 /** PUT /v2/workspace/archil's body. */
 export type ArchilBody = Body<"putWorkspaceArchil">;
 /** POST /v2/workspace/archil/test's answer. */
 export type ArchilTest = Answer<"testWorkspaceArchil">;
-/** One secret's fields, as every secret read gives them: a computer key's, without its `required`. The secrets slice's
- *  generated SecretMeta takes this name's place. */
-export type SecretMeta = Omit<ComputerKey, "required">;
+/** One secret's fields, as every secret read gives them: name ("<plane>:<id>"), set, source and changed_at. */
+export type SecretMeta = components["SecretMeta"];

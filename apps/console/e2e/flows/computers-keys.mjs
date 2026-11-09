@@ -22,7 +22,7 @@ export default {
     // Faux sandbox: its key by its KEY, Missing, and not ready yet.
     const faux = row("Faux sandbox");
     await faux.getByText("FAUX_SANDBOX_KEY").waitFor();
-    const key = faux.locator('li[data-secret="FAUX_SANDBOX_KEY"]');
+    const key = faux.locator('li[data-secret="computer:faux-sandbox:FAUX_SANDBOX_KEY"]');
     check((await key.innerText()).includes("Missing"), "Faux sandbox's key does not read Missing before it is saved");
     check(!(await page.locator("main").innerText()).includes("computer:"), "the page shows a secret's full server name");
     check(!(await faux.innerText()).includes("Ready"), "Faux sandbox reads Ready with no key saved");
@@ -36,7 +36,7 @@ export default {
     check(response.status() === 200, `saving the key answered ${response.status()}`);
     check(!(await response.text()).includes(fake), "the save's answer holds the key's value");
     await faux.getByText("Ready", { exact: true }).waitFor();
-    check((await faux.locator('li[data-secret="FAUX_SANDBOX_KEY"]').innerText()).includes("Pasted here"), "the saved key does not say it was pasted here");
+    check((await faux.locator('li[data-secret="computer:faux-sandbox:FAUX_SANDBOX_KEY"]').innerText()).includes("Pasted here"), "the saved key does not say it was pasted here");
     check(!(await page.content()).includes(fake), "the key's value is in the page after the save");
 
     // Test connection: Passed with the server's detail.
