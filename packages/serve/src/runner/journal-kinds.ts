@@ -215,6 +215,9 @@ export interface EndData {
   readonly costUsd?: number;
   /** The run's metrics (the old StoredMetrics JSON). */
   readonly metrics?: unknown;
+  /** A completed workflow run's output: the value at its workflow's output path (readWorkflowRun's `output`, null when it
+   *  has none), kept at its end as main's server kept it on the run (runs.ts workflowEnd), and served as result.output. */
+  readonly output?: unknown;
 }
 
 export interface SessionKeyData {
