@@ -306,6 +306,57 @@ test("a run whose cap was raised is no longer parked: the budget card clears and
   assert.equal(view.pending, null);
 });
 
+test("a run whose agent asked for a person in its browser reads input_required with the browser card", async (t) => {
+  const { store } = await storeOn(t);
+  await agent(store);
+  await store.runs.create({ id: "run-1", agentId: "agent-1", revisionId: "rev-1" }, { body: { input: { message: "Log in for me." }, title: "Browser run", place: { mode: "runner" } } });
+  const claim = await store.claim("run-1", "runner-a", { leaseMs: 60_000 });
+  const journal = store.journal(claim);
+  const u = { id: await journal.mintId(), conversationId: ROOT, kind: "pi.user", model: [{ role: "user", content: "Log in for me.", timestamp: T0 }] };
+  // The agent asked for the person in its browser: the runner's agent.handover entry, carrying the whole waiting record.
+  const handover = { id: await journal.mintId(), conversationId: ROOT, kind: "agent.handover", data: { state: "waiting", id: "h1", session: "browser-1", instruction: "Finish the login.", completion_condition: "You are signed in.", asked_at: iso(T0 + 1_000), expires_at: iso(T0 + 1_000 + 3_600_000) } };
+  await commitWrites(journal, [{ type: "conversation", value: { id: ROOT } }, { type: "entry", value: u }, { type: "entry", value: handover }], context);
+  await store.release(claim);
+
+  // The server reads the ask against its own clock (deps.now), before the ask's expiry.
+  const seeing = { ...deps, now: () => T0 + 2_000 };
+  const view = await viewOverStore(store, "run-1", seeing);
+  assert.equal(view.status, "input_required");
+  assert.equal(view.state, "waiting");
+  assert.deepEqual(view.pending, { kind: "browser", instruction: "Finish the login.", completion_condition: "You are signed in.", asked_at: iso(T0 + 1_000), expires_at: iso(T0 + 1_000 + 3_600_000) });
+  assert.equal(view.result, null);
+  assert.equal(view.error, null);
+  const moment = await momentOverStore(store, "run-1", seeing);
+  assert.equal(moment.awaitingAnswer, true);
+  assert.equal(moment.working, true);
+});
+
+test("a browser ask answered by a hand-back command clears the browser card and the run works again", async (t) => {
+  const { store, clock } = await storeOn(t);
+  await agent(store);
+  await store.runs.create({ id: "run-1", agentId: "agent-1", revisionId: "rev-1" }, { body: { input: { message: "Log in for me." }, title: "Handed back", place: { mode: "runner" } } });
+  const claim = await store.claim("run-1", "runner-a", { leaseMs: 60_000 });
+  const journal = store.journal(claim);
+  const userId = await journal.mintId();
+  const handover = { id: await journal.mintId(), conversationId: ROOT, kind: "agent.handover", data: { state: "waiting", id: "h1", session: "browser-1", instruction: "Finish the login.", completion_condition: "You are signed in.", asked_at: iso(T0 + 1_000), expires_at: iso(T0 + 1_000 + 3_600_000) } };
+  await commitWrites(journal, [
+    { type: "conversation", value: { id: ROOT } },
+    { type: "entry", value: { id: userId, conversationId: ROOT, kind: "pi.user", model: [{ role: "user", content: "Log in for me.", timestamp: T0 }] } },
+    { type: "entry", value: handover },
+    { type: "submission", value: { type: "input", id: await journal.mintId(), conversationId: ROOT, status: "placed", entry: userId } },
+  ], context);
+  // The person handed control back (the browser_hand_back command the runner reads), and the run resumed.
+  await store.command("run-1", { kind: "browser_hand_back", body: { ask: "h1", outcome: "done", at: T0 + 2_000 } });
+  clock.now = T0 + 10_000;
+  await store.live.put([{ claim, state: {} }]);
+  const seeing = { ...deps, now: () => clock.now };
+
+  const view = await viewOverStore(store, "run-1", seeing);
+  assert.equal(view.status, "working");
+  assert.equal(view.state, "working");
+  assert.equal(view.pending, null);
+});
+
 test("a failed run's view serves its error from the row, with an unknown cost", async (t) => {
   const { store } = await storeOn(t);
   await agent(store);

@@ -26,6 +26,7 @@ import {
   asksOf,
   answersOf,
   budgetOf,
+  browserPending,
   redactorOf,
   servedRunErrorWith,
   servedReviewWith,
@@ -43,6 +44,8 @@ import { type RunReadState, readRun } from "./store-reads/runs.js";
 import { keptVendor, type Plane } from "./tool-plane.js";
 import { Turns } from "./turns.js";
 import { harnessOfBody } from "./harness.js";
+import { browserAsk as browserAskOf, BROWSER_HANDOVER_KIND } from "./browser-commands.js";
+import type { PendingAsk } from "./browser-person.js";
 import type { SignIns } from "./sign-ins.js";
 import { FINAL_STATES, type RunRow, type Store } from "./store/store.js";
 
@@ -81,7 +84,7 @@ const reviewAt = (review: SavedReview | null, endedAt: string): (SavedReview & {
 /** A run's facts as statusOf and momentOf read them, built from the run's journal: whether it stands parked at its cap
  *  (an active agentrun.budget park), and the browser ask it waits on (wired next). A terminal run reaches none of them
  *  (its outcome answers first). */
-const factsOf = (run: StoreRun): RunFacts => ({ budgetWaiting: () => run.budget !== undefined, paused: () => false, browserAsk: () => undefined });
+const factsOf = (run: StoreRun): RunFacts => ({ budgetWaiting: () => run.budget !== undefined, paused: () => false, browserAsk: () => run.browserAsk });
 
 /** The run read from the store: the row, its launch, its timeline, its agent's revision count for the version, its
  *  learning end, and the sign-in cut it serves through. Undefined for an unknown run. */
@@ -108,6 +111,9 @@ interface StoreRun {
   /** The budget card the run shows while it stands parked at its cap (pending, kind budget), or undefined when it is not
    *  parked there. Also the source of the `budgetWaiting` fact. */
   readonly budget: Pending | undefined;
+  /** The browser hand-over the run's agent waits on (the newest ask still waiting), or undefined. Also the `browserAsk`
+   *  fact. */
+  readonly browserAsk: PendingAsk | undefined;
 }
 
 /** A runner holds the run's claim now: it is not in a final state, a runner is named on its row, and its lease has not run
@@ -184,6 +190,12 @@ async function storeRunOf(store: Store, runId: string, deps: ViewDeps): Promise<
   // The budget card the run shows while it stands parked at its cap, from its journal's agentrun.budget park (none once a
   // raise clears it). Read over the same meta cap and rows the card's figures and time come from.
   const budget = budgetOf(records.entries, { meta, rows, updatedAt: iso(updatedAtMs) });
+  // The browser hand-over the agent waits on (E2c's reader over the run's hand-over entries and hand-back commands), read
+  // against the server's clock. Only a run with a hand-over entry fetches its commands, so a run with none reads none and
+  // makes no extra store read.
+  const browserAsk = records.entries.some((e) => e.kind === BROWSER_HANDOVER_KIND)
+    ? browserAskOf(records.entries as unknown as Parameters<typeof browserAskOf>[0], await store.commands(runId, 0), deps.now?.() ?? Date.now())
+    : undefined;
   const outcome = terminal ? STATUS_OF[row.state as Exclude<RunReadState, "running">] : undefined;
   const view: RunView = {
     id: row.id,
@@ -202,7 +214,7 @@ async function storeRunOf(store: Store, runId: string, deps: ViewDeps): Promise<
     ...(approvals.size ? { approvals } : {}),
     meta,
   };
-  return { row, runRow, launch, rows, version, harness, learningEnd, view, unshown, values, live, updatedAtMs, lastProgressAt, budget };
+  return { row, runRow, launch, rows, version, harness, learningEnd, view, unshown, values, live, updatedAtMs, lastProgressAt, budget, browserAsk };
 }
 
 /** A run's learning as the view shows it: its end from the store, in a person's words cut of the host's secrets now, and,
@@ -249,9 +261,9 @@ export async function viewOverStore(store: Store, runId: string, deps: ViewDeps)
   const review = endedAtMs === null ? null : servedReviewWith(shownWords, unshown, reviewAt(reviewOfRow(row.state, row.summary ?? null), iso(endedAtMs)));
   // The card the run shows while it waits, in the order the file-backed view (runs.ts) picks them: a tool call parked for a
   // person's approval (approvalOf, its arguments shown through the run's redactor), else a run parked at its cap (the budget
-  // card), else the question its turn ended on (pendingOf). The browser card joins this chain next.
+  // card), else its agent waiting on a person in its browser (browserPending), else the question its turn ended on (pendingOf).
   const redactor = redactorOf(values);
-  const pending: Pending = status === "input_required" && state === "waiting" ? (approvalOf(view, redactor) ?? run.budget ?? pendingOf(run.rows)) : null;
+  const pending: Pending = status === "input_required" && state === "waiting" ? (approvalOf(view, redactor) ?? run.budget ?? browserPending(run.browserAsk, redactor) ?? pendingOf(run.rows)) : null;
   const settled = terminal;
 
   return {
