@@ -20,7 +20,7 @@ import { LEARNED_WORKFLOW_TOOL, learnedWorkflowDescription, learnedWorkflowTool 
 import { MODEL_KEYS } from "../dist/model.js";
 import { localWorkspace } from "../dist/workspace/index.js";
 import { startFauxGateway } from "./fixtures/faux-gateway.mjs";
-import { entriesOf, git, resnap, SEED_LAY_TODO } from "./learn-support.mjs";
+import { entriesOf, git, resnap, WORKFLOWS_TODO } from "./learn-support.mjs";
 import { agent, answerFlow, follow, runDir, scratch, serve, withEnv } from "./support.mjs";
 import { fauxTable } from "./fixtures/faux-table.mjs";
 
@@ -79,7 +79,7 @@ const labelled = async (data, runId) => (await entriesOf({ data }, runId, ["runn
 /** The second meter's marks: side requests labelled learned_workflow on the root (capModels, markRequests). */
 const sideMarks = async (data, runId) => (await entriesOf({ data }, runId, ["agentrun.request_started", "agentrun.request_cost"])).filter((entry) => entry.request === LEARNED_WORKFLOW_TOOL);
 
-test("R1 (guard) on pi a learned node's request is one of the run's own: marked and costed through the run's models, in its cost", { timeout: 120_000, skip: SEED_LAY_TODO }, async (t) => {
+test("R1 (guard) on pi a learned node's request is one of the run's own: marked and costed through the run's models, in its cost", { timeout: 120_000, skip: WORKFLOWS_TODO }, async (t) => {
   const { api, data } = await serve(t, { learning: "on" });
   const { runId, rows, view } = await ran(api, data, "pi-route", "pi");
   assert.equal(view.status, "completed", JSON.stringify(view));
@@ -89,7 +89,7 @@ test("R1 (guard) on pi a learned node's request is one of the run's own: marked 
   assert.equal(typeof view.cost?.usd, "number", JSON.stringify(view.cost));
 });
 
-test("R2 a claude-agent run's learned node request reaches the session's proxy with the side key, is booked in the session's runner records and counts in the one cap, with no learned_workflow REQUEST_COST: behind the operator's gateway (ANTHROPIC_BASE_URL) it reaches that gateway with the run's key, and nothing reaches api.anthropic.com", { timeout: 120_000, skip: SEED_LAY_TODO }, async (t) => {
+test("R2 a claude-agent run's learned node request reaches the session's proxy with the side key, is booked in the session's runner records and counts in the one cap, with no learned_workflow REQUEST_COST: behind the operator's gateway (ANTHROPIC_BASE_URL) it reaches that gateway with the run's key, and nothing reaches api.anthropic.com", { timeout: 120_000, skip: WORKFLOWS_TODO }, async (t) => {
   const gw = await startFauxGateway({ call: submitsAnswer });
   t.after(() => gw.close());
   const guard = await guarded(t);
@@ -125,7 +125,7 @@ test("R2 a claude-agent run's learned node request reaches the session's proxy w
 });
 
 for (const harness of ["codex", "opencode"]) {
-  test(`R3 a ${harness} run behind the gateway (AGENT_MODEL_BASE_URL) sends its learned node's request through the run's proxy, with the gateway's key, booked and priced on the session's one meter`, { timeout: 120_000, skip: SEED_LAY_TODO }, async (t) => {
+  test(`R3 a ${harness} run behind the gateway (AGENT_MODEL_BASE_URL) sends its learned node's request through the run's proxy, with the gateway's key, booked and priced on the session's one meter`, { timeout: 120_000, skip: WORKFLOWS_TODO }, async (t) => {
     const gw = await startFauxGateway({ call: submitsAnswer });
     t.after(() => gw.close());
     const guard = await guarded(t);
@@ -150,7 +150,7 @@ for (const harness of ["codex", "opencode"]) {
 // The gateway priced on output alone, $100 a million tokens: a request's least (1,024 tokens) is $0.1024. The faux
 // harness books each of its own requests at $0.001.
 const OUTPUT_PRICED = "0,100,0,0";
-test("R4 (guard) a capped codex run's learned node is admitted by the session's own guard: refused when the harness's spend leaves less than its least, and the run pauses at the cap on the one total", { timeout: 120_000, skip: SEED_LAY_TODO }, async (t) => {
+test("R4 (guard) a capped codex run's learned node is admitted by the session's own guard: refused when the harness's spend leaves less than its least, and the run pauses at the cap on the one total", { timeout: 120_000, skip: WORKFLOWS_TODO }, async (t) => {
   const gw = await startFauxGateway({ call: submitsAnswer });
   t.after(() => gw.close());
   withEnv(t, { AGENT_MODEL_BASE_URL: gw.url, AGENT_MODEL: "gpt-test", AGENT_MODEL_API_KEY: fake("gateway"), AGENT_MODEL_PRICE: OUTPUT_PRICED }, MODEL_VARS);
@@ -163,7 +163,7 @@ test("R4 (guard) a capped codex run's learned node is admitted by the session's 
   assert.deepEqual((await sideMarks(data, runId)), [], "no second meter");
 });
 
-test("R4 a capped codex run's harness counts its learned node on the one total: its next request is held to what is left after it", { timeout: 120_000, skip: SEED_LAY_TODO }, async (t) => {
+test("R4 a capped codex run's harness counts its learned node on the one total: its next request is held to what is left after it", { timeout: 120_000, skip: WORKFLOWS_TODO }, async (t) => {
   const gw = await startFauxGateway({ call: submitsAnswer });
   t.after(() => gw.close());
   withEnv(t, { AGENT_MODEL_BASE_URL: gw.url, AGENT_MODEL: "gpt-test", AGENT_MODEL_API_KEY: fake("gateway"), AGENT_MODEL_PRICE: OUTPUT_PRICED }, MODEL_VARS);
@@ -186,7 +186,7 @@ test("R4 a capped codex run's harness counts its learned node on the one total: 
   assert.ok(own[1].heldUsd <= left + 1e-9 && own[1].heldUsd > left - 0.0001 - 1e-9, `the harness's next request held at ${own[1].heldUsd}; what is left after the node's $${nodeUsd} is ${left}`);
 });
 
-test("R5 a claude-agent run on OPENROUTER_API_KEY alone sends its learned node's request through the run's proxy to OpenRouter's Messages endpoint, with OpenRouter's key as a bearer token", { timeout: 120_000, skip: SEED_LAY_TODO }, async (t) => {
+test("R5 a claude-agent run on OPENROUTER_API_KEY alone sends its learned node's request through the run's proxy to OpenRouter's Messages endpoint, with OpenRouter's key as a bearer token", { timeout: 120_000, skip: WORKFLOWS_TODO }, async (t) => {
   const gw = await startFauxGateway({ call: submitsAnswer });
   t.after(() => gw.close());
   const dir = await scratch(t);
@@ -215,7 +215,7 @@ globalThis.fetch = (input, init) => {
   assert.equal(learnedResult(rows)?.tool_status, "success", JSON.stringify(learnedResult(rows)));
 });
 
-test("R7 (guard) a call the harness's answer asks for beside learned_workflow stays on that answer: the node's request writes nothing into the turn", { timeout: 120_000, skip: SEED_LAY_TODO }, async (t) => {
+test("R7 (guard) a call the harness's answer asks for beside learned_workflow stays on that answer: the node's request writes nothing into the turn", { timeout: 120_000, skip: WORKFLOWS_TODO }, async (t) => {
   const gw = await startFauxGateway({ call: submitsAnswer });
   t.after(() => gw.close());
   withEnv(t, { AGENT_MODEL_BASE_URL: gw.url, AGENT_MODEL: "gpt-test", AGENT_MODEL_API_KEY: fake("gateway"), AGENT_MODEL_PRICE: "1,2,0.5" }, MODEL_VARS);
@@ -235,7 +235,7 @@ test("R7 (guard) a call the harness's answer asks for beside learned_workflow st
   assert.equal(requestOf("write"), requestOf(LEARNED_WORKFLOW_TOOL), "both calls on the harness's one answer");
 });
 
-test("R8 (guard) learned_workflow's description and input schema are as #1727 left them, on pi and as the harness is given it on claude-agent and codex; a pathless output is refused in #1727's words", { timeout: 120_000, skip: SEED_LAY_TODO }, async (t) => {
+test("R8 (guard) learned_workflow's description and input schema are as #1727 left them, on pi and as the harness is given it on claude-agent and codex; a pathless output is refused in #1727's words", { timeout: 120_000, skip: WORKFLOWS_TODO }, async (t) => {
   const flows = [{ name: "answer", description: DESCRIPTION, workflow: JSON.stringify(answerFlow()) }];
   assert.equal(learnedWorkflowDescription(flows), SAID);
   const tool = learnedWorkflowTool({ workflows: flows, granted: [], env: {}, work: "/tmp", models: {}, modelOf: () => undefined });
@@ -284,7 +284,7 @@ test("R10 (guard) a node request's bound is its own: it opens as <key>:<n> on it
   assert.equal(bounds.inFlight(), 0, "the harness's late cost closes the harness's");
 });
 
-test("R10 (guard) the harness's next request after a node request on the same model is priced against the harness's own previous request, never the node's", { timeout: 180_000, skip: SEED_LAY_TODO }, async (t) => {
+test("R10 (guard) the harness's next request after a node request on the same model is priced against the harness's own previous request, never the node's", { timeout: 180_000, skip: WORKFLOWS_TODO }, async (t) => {
   const gw = await startFauxGateway({ call: submitsAnswer });
   t.after(() => gw.close());
   // Sonnet's prices, as grown() bills its requests: the gateway's model is the session's, the node's and the harness's.
@@ -299,7 +299,7 @@ test("R10 (guard) the harness's next request after a node request on the same mo
   assert.ok(Math.abs(a[2] - b[2]) < 1e-9, `the third request held as it is with no node before it: ${b[2]} against ${a[2]}`);
 });
 
-test("R12 a learned node's request is a side call of the session (#1831): its runner.request says side, so the wrap-up's typical cost never counts it, and it never takes nor carries the wrap-up's note, which the harness's own next request takes", { timeout: 120_000, skip: SEED_LAY_TODO }, async (t) => {
+test("R12 a learned node's request is a side call of the session (#1831): its runner.request says side, so the wrap-up's typical cost never counts it, and it never takes nor carries the wrap-up's note, which the harness's own next request takes", { timeout: 120_000, skip: WORKFLOWS_TODO }, async (t) => {
   const gw = await startFauxGateway({ call: submitsAnswer });
   t.after(() => gw.close());
   withEnv(t, { AGENT_MODEL_BASE_URL: gw.url, AGENT_MODEL: "gpt-test", AGENT_MODEL_API_KEY: fake("gateway"), AGENT_MODEL_PRICE: "0,100,0,0" }, MODEL_VARS);

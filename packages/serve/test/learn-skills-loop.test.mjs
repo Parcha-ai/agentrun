@@ -8,7 +8,7 @@ import { join } from "node:path";
 import { test } from "node:test";
 import { note } from "./fixtures/faux-learn.mjs";
 import { CAPS } from "../dist/learn/check.js";
-import { ended, git, learnedOnMain, learner, LEARN, made, mergesOf, proposedOf, reflectRows, repoOf, resnap, SEED_LAY_TODO, SWITCH_TODO, savedOf, sleep, started } from "./learn-support.mjs";
+import { ended, git, learnedOnMain, learner, LEARN, made, mergesOf, proposedOf, reflectRows, repoOf, resnap, SWITCH_TODO, savedOf, sleep, started } from "./learn-support.mjs";
 import { runDir, scratch, serve, withEnv } from "./support.mjs";
 
 /** A SKILL.md whose steps hold a fenced code block: a ``` line inside its four-backtick block closes nothing. */
@@ -205,7 +205,7 @@ test("a retire is a person's call and sticks: the next run that gives the same s
   assert.match(show(repoOf(data, "sticky"), "skills/find-policies/SKILL.md"), /^status: retired$/m);
 });
 
-test("a skill is laid into a run with its name and description alone in its front matter, whatever main holds (a directive Claude Code reads never reaches a harness)", { timeout: 180_000, skip: SEED_LAY_TODO }, async (t) => {
+test("a skill is laid into a run with its name and description alone in its front matter, whatever main holds (a directive Claude Code reads never reaches a harness)", { timeout: 180_000 }, async (t) => {
   const { api, data } = await server(t);
   const only = (skill) => ["Keeping a skill.", `\`\`\`\`skill find-policies\n${skill}\`\`\`\``, "Reflected."].join("\n\n");
   await made(api, answering("laid", only(SKILL)));

@@ -15,7 +15,7 @@ import { agentFolderOf } from "../dist/files.js";
 import * as learning from "../dist/learning.js";
 import { LEARNED_WORKFLOW_TOOL } from "../dist/learned-workflow.js";
 import { startFauxGateway } from "./fixtures/faux-gateway.mjs";
-import { entriesOf, git, resnap, SEED_LAY_TODO } from "./learn-support.mjs";
+import { entriesOf, git, resnap, WORKFLOWS_TODO } from "./learn-support.mjs";
 import { agent, answerFlow, call, cookieOf, follow, runDir, runRecordOf, scratch, serve, withEnv } from "./support.mjs";
 import { copyStandIn } from "../../run-adapters-codex/test/stand-in.mjs";
 
@@ -96,7 +96,7 @@ async function routeFor(t, harness) {
 
 for (const harness of ["claude-agent", "codex"]) {
   for (const restart of [false, true]) {
-    test(`on ${harness}'s real adapter, a learned call set to ask and allowed${restart ? " after a restart while it waits" : ""} runs its node through the session's route, though the turn that asked for it closed its drive's proxy${restart ? " and no drive is open" : ""}`, { timeout: 240_000, skip: (!SETPRIV && "no setpriv here") || SEED_LAY_TODO }, async (t) => {
+    test(`on ${harness}'s real adapter, a learned call set to ask and allowed${restart ? " after a restart while it waits" : ""} runs its node through the session's route, though the turn that asked for it closed its drive's proxy${restart ? " and no drive is open" : ""}`, { timeout: 240_000, skip: (!SETPRIV && "no setpriv here") || WORKFLOWS_TODO }, async (t) => {
       const route = await routeFor(t, harness);
       const first = await serve(t, { learning: "on", faux: undefined, accounts: true, openSetup: true });
       const allowOn = await owner(first, true);
@@ -148,7 +148,7 @@ for (const harness of ["claude-agent", "codex"]) {
 // A process that dies while the approved call's node is in flight (its request at the provider, unanswered): the next
 // process never runs the node again (learned_workflow is replay "never": its call is answered interrupted from its
 // journal), the node's request is booked once, and the run ends on that answer rather than waiting on it.
-test("on claude-agent's real adapter, a learned call allowed and then cut off with its process while its node's request is in flight is never run again: the provider saw the node once, its request is booked once, and the run ends", { timeout: 300_000, skip: SEED_LAY_TODO }, async (t) => {
+test("on claude-agent's real adapter, a learned call allowed and then cut off with its process while its node's request is in flight is never run again: the provider saw the node once, its request is booked once, and the run ends", { timeout: 300_000, skip: WORKFLOWS_TODO }, async (t) => {
   let nodeSeen = 0;
   const fake = await fakeAnthropic({
     reply: (r) => {

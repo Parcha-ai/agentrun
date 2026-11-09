@@ -108,11 +108,16 @@ export async function entriesOf(server, runId, kinds) {
   return all.filter((entry) => kinds.includes(entry.kind)).map((entry) => ({ kind: entry.kind, ...entry.data }));
 }
 
-/** Why a case waits on the runner's seed lay (tl-places, places/learning-seed-lay; the learned workflows on it in
- *  untangle/cutover-learning-workflows): it reads what the claim lays in the run's work (`.learning/`, the learned skills,
- *  the learned_workflow tool). Each such case is ported onto that lay and turns on when it merges; LEARN_SEED_LAY_PROBE
- *  runs them now. */
-export const SEED_LAY_TODO = process.env.LEARN_SEED_LAY_PROBE ? false : "places/learning-seed-lay (tl-places) and untangle/cutover-learning-workflows (the lead): the runner's seed lay and its learned workflows";
+/** Why a case waits on the runner's learned workflows (the lead's untangle/cutover-learning-workflows): the runner
+ *  offers learned_workflow whenever the seed names workflows, as main's app.ts did (no grant needed), on pi and the CLI
+ *  harnesses. Each such case is ported onto that behaviour and turns on when it merges; LEARN_WORKFLOWS_PROBE runs them. */
+export const WORKFLOWS_TODO = process.env.LEARN_WORKFLOWS_PROBE ? false : "untangle/cutover-learning-workflows (the lead): the runner offers learned_workflow whenever the seed names workflows";
+/** Why a case waits on read_skill_file's gate on the runner (tl-places' places/learning-seed-lay, 7434c0e830: the run's
+ *  gate holds read_skill_file to read's key): a run that reads its learned skill is not parked on it. */
+export const SKILL_GATE_TODO = process.env.LEARN_WORKFLOWS_PROBE ? false : "places/learning-seed-lay (tl-places): the run's gate holds read_skill_file to read's key";
+/** Why a case waits on the runner's seed lay copying the index as main's pinSeed did (tl-places): the copy's MEMORY.md
+ *  names the active notes alone. */
+export const LAY_INDEX_TODO = process.env.LEARN_WORKFLOWS_PROBE ? false : "the runner's seed lay (tl-places): the copy's MEMORY.md names the active notes alone, as main's pinSeed did";
 
 /** Run `runId`'s kept learning (its learning_proposals row: the turn and the proposal), from the server's store. */
 export const keptProposal = (server, runId) => overStore(server, (store) => store.learning.proposal(runId));

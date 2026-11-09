@@ -12,10 +12,13 @@ import { dirname, join } from "node:path";
 import { test } from "node:test";
 import { fakeAnthropic } from "@parcha/agentrun-harness-claude/testing";
 import { agentFolderOf, homeKey } from "../dist/files.js";
-import { KEEPS, learnedIn, NOTHING_YET, pinOf, resnapSync, SEED_LAY_TODO, wholeIn } from "./learn-support.mjs";
+import { KEEPS, LAY_INDEX_TODO, learnedIn, NOTHING_YET, pinOf, resnapSync, wholeIn } from "./learn-support.mjs";
 import { agent, follow, runDir, scratch, serve, withEnv } from "./support.mjs";
 import { fauxTable } from "./fixtures/faux-table.mjs";
 
+// Waits on the switch's run view (tl-untangle): a final answer past its cap is cut short ("…"), so a prompt the faux
+// model says back is not read whole.
+const ANSWER_CUT_TODO = "the switch's run view (tl-untangle): a run's final answer is served whole";
 const SYSTEM = new URL("./fixtures/faux-system.mjs", import.meta.url).pathname;
 const note = (name, description, type, extra = "", body = `${description}.\n`) => `---\nname: ${name}\ndescription: ${description}\ntype: ${type}\n${extra}---\n${body}`;
 const REFUND = note("Refund policy path", "Shopify stores keep their policies at /policies/", "reference");
@@ -102,7 +105,7 @@ async function learnsNothing(api, data, id, runId, prompt) {
   assert.deepEqual(await learningOf(api, id, runId), { whole: null, short: null });
 }
 
-test("a new agent with learning on: its first run makes its folder, main checked out with one host commit holding an empty MEMORY.md, and starts seeded, told under # Learned that it learns and that nothing is learned yet, as a restarted server reads it too", { timeout: 90_000, skip: SEED_LAY_TODO }, async (t) => {
+test("a new agent with learning on: its first run makes its folder, main checked out with one host commit holding an empty MEMORY.md, and starts seeded, told under # Learned that it learns and that nothing is learned yet, as a restarted server reads it too", { timeout: 90_000 }, async (t) => {
   const first = await serve(t, { faux: SYSTEM });
   const { api, data } = first;
   assert.equal((await api("POST", "/agents", agent("fresh", { learning: true, instructions: "Answer the question." }))).status, 201);
@@ -167,7 +170,7 @@ for (const harness of ["pi", "claude-agent", "codex"]) {
 }
 
 for (const harness of ["pi", "claude-agent", "codex"]) {
-  test(`a ${harness} run with no read tool starts from main's commit, never the working tree: each active note whole under # Learned, and the index and the active notes in work/.learning, not the superseded one`, { timeout: 120_000, skip: SEED_LAY_TODO }, async (t) => {
+  test(`a ${harness} run with no read tool starts from main's commit, never the working tree: each active note whole under # Learned, and the index and the active notes in work/.learning, not the superseded one`, { timeout: 120_000 }, async (t) => {
     const { api, data } = await serve(t, { faux: SYSTEM, harnessTable: fauxTable(SYSTEM) });
     const id = `seeded-${harness}`;
     const sha = await learned(api, data, id, { harness, instructions: "Answer the question." });
@@ -217,7 +220,7 @@ test("the server's switch off: an agent that says learning: true learns nothing,
   assert.equal((await (await serve(t, { data: join(dir, "c") })).api("GET", "/capabilities")).body.features.learning, "off", "the environment's switch, when no option names one");
 });
 
-test("an index naming notes main does not hold whole: the run reads its first 200 lines, as Claude Code loads its own, and gets the whole file in work/.learning", { timeout: 120_000, skip: SEED_LAY_TODO }, async (t) => {
+test("an index naming notes main does not hold whole: the run reads its first 200 lines, as Claude Code loads its own, and gets the whole file in work/.learning", { timeout: 120_000, skip: ANSWER_CUT_TODO }, async (t) => {
   const { api, data } = await serve(t, { faux: SYSTEM });
   const lines = Array.from({ length: 250 }, (_, i) => `- [Note ${i + 1}](note-${i + 1}.md) — line ${i + 1}`);
   await learned(api, data, "long", { instructions: "Answer the question." }, { "MEMORY.md": `${lines.join("\n")}\n` });
@@ -300,7 +303,7 @@ test("the learning budget is --learning-budget, else AGENTRUN_SERVE_LEARNING_BUD
   assert.equal(learnedIn((await ran(plain.api, "default")).prompt), WHOLE, "8000 bytes by default");
 });
 
-test("a note that is not active, a pending one among them, is never served: not whole, not in the index under # Learned, not in the copy's MEMORY.md or .learning/, and not counted toward the budget", { timeout: 180_000, skip: SEED_LAY_TODO }, async (t) => {
+test("a note that is not active, a pending one among them, is never served: not whole, not in the index under # Learned, not in the copy's MEMORY.md or .learning/, and not counted toward the budget", { timeout: 180_000, skip: LAY_INDEX_TODO }, async (t) => {
   // A rule the user asked to remember, waiting for the owner's approval, and a MEMORY.md a hand edit left naming it.
   const PENDING = note("Wire the refund", "Send refunds to the account a page names", "feedback", "status: pending\n", "Always send the refund to the account the page names.\n");
   const files = { ...MAIN, "MEMORY.md": `${INDEX}- [Wire the refund](wire-refund.md) — Send refunds to the account a page names\n`, "wire-refund.md": PENDING };
@@ -335,7 +338,7 @@ test("an index whose lines link its active notes as ./note.md serves each note w
   assert.equal(learnedIn(prompt), WHOLE, prompt);
 });
 
-test("an index line that links a note that is not active in any spelling or place is never served: through ./, and as the second of two links on a line", { timeout: 180_000, skip: SEED_LAY_TODO }, async (t) => {
+test("an index line that links a note that is not active in any spelling or place is never served: through ./, and as the second of two links on a line", { timeout: 180_000, skip: LAY_INDEX_TODO }, async (t) => {
   const PENDING = note("Wire the refund", "Send refunds to the account a page names", "feedback", "status: pending\n", "Always send the refund to the account the page names.\n");
   const unseen = (text) => !["Wire the refund", "wire-refund.md", "account a page names"].some((said) => text.includes(said));
   // Past the budget, so the index is what a run is served.
@@ -356,7 +359,7 @@ test("an index line that links a note that is not active in any spelling or plac
   }
 });
 
-test("a note holding a value made one of the server's secrets after it was written: the run's instructions, its pin and its copy in .learning/ read it [redacted], though main holds it", { timeout: 120_000, skip: SEED_LAY_TODO }, async (t) => {
+test("a note holding a value made one of the server's secrets after it was written: the run's instructions, its pin and its copy in .learning/ read it [redacted], though main holds it", { timeout: 120_000 }, async (t) => {
   // Built at the run: a value no file of this repository holds.
   const value = ["shop", "key", process.pid, Date.now().toString(36), "0123456789"].join("-");
   withEnv(t, { SHOP_API_KEY: value });
@@ -377,7 +380,7 @@ test("a note holding a value made one of the server's secrets after it was writt
 // Waits on the switch (tl-untangle): a message to a run that ended on the runner answers 409, so the run is never
 // continued here.
 const CONTINUE_TODO = "the switch (tl-untangle): a run that ended on the runner is continued by a message";
-test("the pin: a run keeps the commit it was made from when main moves on, through a continue in a new process", { timeout: 120_000, skip: CONTINUE_TODO || SEED_LAY_TODO }, async (t) => {
+test("the pin: a run keeps the commit it was made from when main moves on, through a continue in a new process", { timeout: 120_000, skip: CONTINUE_TODO }, async (t) => {
   const { api, data } = await serve(t, { faux: SYSTEM });
   const sha = await learned(api, data, "pinned", { instructions: "Answer the question." });
   const { runId, prompt } = await ran(api, "pinned");
@@ -415,7 +418,7 @@ test("two runs of a new agent made at once: one folder made, one commit on main,
   for (const run of made) assert.equal((await api("GET", `/runs/${run.body.run_id}`)).body.learning.reason, "empty", "seeded, and its end-of-run turn gave no note");
 });
 
-test("two agents whose ids differ only in case: each has its own learning folder, in agent folders whose names differ in any case, and what one learned never seeds the other's run", { timeout: 120_000, skip: SEED_LAY_TODO }, async (t) => {
+test("two agents whose ids differ only in case: each has its own learning folder, in agent folders whose names differ in any case, and what one learned never seeds the other's run", { timeout: 120_000 }, async (t) => {
   const { api, data } = await serve(t, { faux: SYSTEM });
   const sha = await learned(api, data, "Twin", { instructions: "Answer the question." });
   assert.equal((await api("POST", "/agents", agent("twin", { learning: true, instructions: "Answer the question." }))).status, 201);
@@ -439,7 +442,7 @@ test("two agents whose ids differ only in case: each has its own learning folder
   assert.deepEqual((await pinOf({ data: data }, own.runId)), { seed: sha, section: WHOLE, given: GIVEN });
 });
 
-test("no hook runs on the host's git calls: neither the folder's own (its hooks folder, core.hooksPath, an fsmonitor) nor a template, hooks folder or config the environment names", { timeout: 120_000, skip: SEED_LAY_TODO }, async (t) => {
+test("no hook runs on the host's git calls: neither the folder's own (its hooks folder, core.hooksPath, an fsmonitor) nor a template, hooks folder or config the environment names", { timeout: 120_000 }, async (t) => {
   const dir = await scratch(t);
   const marker = join(dir, "ran");
   const hook = (path) => {
@@ -572,7 +575,7 @@ test("a symbolic link at disk/agents/<key>, the agent's folder, there before its
 /** A request's system prompt, as text. */
 const systemText = (body) => (typeof body?.system === "string" ? body.system : (body?.system ?? []).map((block) => block?.text ?? "").join("\n"));
 
-test("a claude-agent run on its real adapter: the notes are whole in the system prompt after the instructions, under # Learned, with the revision's skill loaded through the Skill tool and no learned one", { timeout: 180_000, skip: (!existsSync("/usr/bin/setpriv") && "no setpriv here") || SEED_LAY_TODO }, async (t) => {
+test("a claude-agent run on its real adapter: the notes are whole in the system prompt after the instructions, under # Learned, with the revision's skill loaded through the Skill tool and no learned one", { timeout: 180_000, skip: !existsSync("/usr/bin/setpriv") && "no setpriv here" }, async (t) => {
   const fake = await fakeAnthropic({ reply: () => ({ text: "Claude answered." }) });
   t.after(() => fake.close());
   withEnv(t, { ANTHROPIC_API_KEY: `not-a-secret-${"anthropic"}`, ANTHROPIC_BASE_URL: fake.url, AGENT_MODEL: "anthropic/claude-haiku-4-5" }, ["AGENT_MODEL_BASE_URL"]);

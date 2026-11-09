@@ -16,7 +16,7 @@ import { agentFolderOf } from "../dist/files.js";
 import * as learning from "../dist/learning.js";
 import { systemOf } from "../dist/skills.js";
 import { localWorkspace } from "../dist/workspace/index.js";
-import { ended, git, pinOf, resnap, SEED_LAY_TODO } from "./learn-support.mjs";
+import { ended, git, pinOf, resnap } from "./learn-support.mjs";
 import { agent, follow, runDir, scratch, serve, withEnv } from "./support.mjs";
 import { fauxTable } from "./fixtures/faux-table.mjs";
 
@@ -117,7 +117,7 @@ test("with claude-agent's own check: 900 KiB of the revision's skills and a 200 
   assert.deepEqual([unbudgeted.native, inlined(unbudgeted.system)], [[], ["big-notes", "check-units", "cite"]]);
 });
 
-test("on claude-agent's real adapter: with 900 KiB of the revision's skills, the learned one that fits is loaded through the Skill tool beside them, the 200 KiB one is left out, and no skill is inlined", { timeout: 180_000, skip: (!existsSync("/usr/bin/setpriv") && "no setpriv here") || SEED_LAY_TODO }, async (t) => {
+test("on claude-agent's real adapter: with 900 KiB of the revision's skills, the learned one that fits is loaded through the Skill tool beside them, the 200 KiB one is left out, and no skill is inlined", { timeout: 180_000, skip: !existsSync("/usr/bin/setpriv") && "no setpriv here" }, async (t) => {
   const fake = await fakeAnthropic({ reply: () => ({ text: "Claude answered." }) });
   t.after(() => fake.close());
   withEnv(t, { ANTHROPIC_API_KEY: `not-a-secret-${"anthropic"}`, ANTHROPIC_BASE_URL: fake.url, AGENT_MODEL: "anthropic/claude-haiku-4-5" }, ["AGENT_MODEL_BASE_URL"]);
@@ -148,7 +148,7 @@ test("the learned skills' budget is 256 KiB, whatever room the revision's leave:
   assert.deepEqual([pin.skills, pin.skills_left_out], [["second-big/SKILL.md", "small-one/SKILL.md"], ["first-big"]], "changed last first, each while it fits");
 });
 
-test("a learned skill named like one of the revision's is the revision's: its SKILL.md and files stay, in the prompt and the work, and the pin names only the others", { timeout: 120_000, skip: SEED_LAY_TODO }, async (t) => {
+test("a learned skill named like one of the revision's is the revision's: its SKILL.md and files stay, in the prompt and the work, and the pin names only the others", { timeout: 120_000 }, async (t) => {
   const { api, data } = await serve(t, { faux: SYSTEM, harnessTable: fauxTable(SYSTEM) });
   const sha = await folderWith(data, "same", asLearned({ cite: { "SKILL.md": skillMd("cite", CANARY), "extra.md": CANARY }, "check-units": { "SKILL.md": UNITS } }));
   const { runId, prompt } = await ranWithCite(api, "same", "pi");
@@ -161,7 +161,7 @@ test("a learned skill named like one of the revision's is the revision's: its SK
 });
 
 for (const harness of ["pi", "codex"]) {
-  test(`a ${harness} run gets the skills its agent learned beside its revision's: each SKILL.md in its prompt, every file in work/.agents/skills/, named in its pin; one held for its owner's OK is not served`, { timeout: 120_000, skip: SEED_LAY_TODO }, async (t) => {
+  test(`a ${harness} run gets the skills its agent learned beside its revision's: each SKILL.md in its prompt, every file in work/.agents/skills/, named in its pin; one held for its owner's OK is not served`, { timeout: 120_000 }, async (t) => {
     const { api, data } = await serve(t, { faux: SYSTEM, harnessTable: fauxTable(SYSTEM) });
     const id = `skilled-${harness}`;
     const waiting = `---\nname: waiting-skill\ndescription: ${CANARY}\nstatus: pending\n---\nNot approved yet.\n`;
@@ -181,7 +181,7 @@ for (const harness of ["pi", "codex"]) {
 }
 
 for (const harness of ["pi", "codex"]) {
-  test(`a ${harness} run that reads its files gets its skills on demand: each one's name, what it is for and its SKILL.md's path, the revision's and the learned ones alike, no skill's text; the file is there to read`, { timeout: 120_000, skip: SEED_LAY_TODO }, async (t) => {
+  test(`a ${harness} run that reads its files gets its skills on demand: each one's name, what it is for and its SKILL.md's path, the revision's and the learned ones alike, no skill's text; the file is there to read`, { timeout: 120_000 }, async (t) => {
     const { api, data } = await serve(t, { faux: SYSTEM, harnessTable: fauxTable(SYSTEM) });
     const id = `ondemand-${harness}`;
     await folderWith(data, id, asLearned({ "check-units": { "SKILL.md": UNITS, "reference/units.md": UNITS_TABLE } }));
@@ -196,7 +196,7 @@ for (const harness of ["pi", "codex"]) {
 }
 
 for (const [where, links] of [["a SKILL.md", { "skills/evil/SKILL.md": "OUTSIDE" }], ["a skill's folder", { "skills/evil": "OUTSIDE_DIR" }], ["the skills folder", { skills: "OUTSIDE_DIR" }]]) {
-  test(`a symbolic link at ${where} in the learning folder's skills/ is never followed: the skill it is in is not laid, the others are, and nothing is read through it`, { timeout: 120_000, skip: SEED_LAY_TODO }, async (t) => {
+  test(`a symbolic link at ${where} in the learning folder's skills/ is never followed: the skill it is in is not laid, the others are, and nothing is read through it`, { timeout: 120_000 }, async (t) => {
     const { api, data } = await serve(t, { faux: SYSTEM });
     const outside = await scratch(t);
     writeFileSync(join(outside, "SKILL.md"), skillMd("evil", CANARY));
