@@ -44,6 +44,42 @@ test("on the run's one cap a decision is held as main holds it: 256 output token
   assert.equal(admitted.heldUsd, 0, "with no cap nothing is priced, an unreadable price refuses nothing");
 });
 
+/** The run's sessions on a machine: an append is committed but survives a lost box only once flushed; `lose()` is the
+ *  box lost, every record appended since the last flush gone. */
+function machine() {
+  const durable = new Map();
+  const pending = new Map();
+  const add = (into, key, records) => into.set(key, [...(into.get(key) ?? []), ...records]);
+  const store = {
+    keys: () => [...new Set([...durable.keys(), ...pending.keys()])],
+    read: async (key) => structuredClone([...(durable.get(key) ?? []), ...(pending.get(key) ?? [])]),
+    open: async (key) => ({
+      key,
+      read: () => store.read(key),
+      append: async (records) => void add(pending, key, records),
+      flush: async () => store.flush(),
+    }),
+    flush: async () => {
+      for (const [key, records] of pending) add(durable, key, records);
+      pending.clear();
+    },
+    lose: () => pending.clear(),
+  };
+  return store;
+}
+
+test("a decision sent and its box lost before any later write still counts after the next claim: its hold is flushed before it leaves", async () => {
+  const box = machine();
+  const first = await cap.runCap({ sessions: box, capUsd: () => 1, mode: "expected", now: () => T0, modelOf: () => undefined }).decisions(await box.open(cap.DECISION_SESSION), { flush: () => box.flush() });
+  const admitted = await first.admit(decision("decide-1", 0.25));
+  // Its call is sent, and the box is lost before anything else is written.
+  box.lose();
+  const next = await cap.runCap({ sessions: box, capUsd: () => 1, mode: "expected", now: () => T0, modelOf: () => undefined }).decisions(await box.open(cap.DECISION_SESSION), { flush: () => box.flush() });
+  // A decision's input-only price reads no cache, so its bound is 0: it counts at its hold plus that bound.
+  near(next.spentUsd(), admitted.heldUsd + admitted.boundUsd, "the lost decision, at its hold and bound");
+  near(admitted.heldUsd, 0.25, "its hold");
+});
+
 const near = (actual, expected, what) => assert.ok(typeof actual === "number" && Math.abs(actual - expected) < 1e-9, `${what}: ${actual}, not ${expected}`);
 
 test("a decision under a tight cap is judged on the run's model spend beside its own: refused, its figures the run's, as main's", async () => {
