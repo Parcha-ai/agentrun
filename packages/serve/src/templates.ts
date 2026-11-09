@@ -439,18 +439,19 @@ export async function packageModel(env: NodeJS.ProcessEnv, model: Package["model
   // Through a gateway, only the gateway knows what it serves: a preferred model it never named is not picked, and the
   // owner is told (overrides.model picks one it serves).
   const gateway = Boolean(env.AGENT_MODEL_BASE_URL);
-  let warning: string | undefined;
-  if (model.prefer && gateway) warning = `model.prefer ${model.prefer} is not used: this server reaches its models through a gateway, which has not said it serves that model. The agent runs on this server's model for the ${model.tier} tier; overrides.model picks another the gateway serves.`;
-  else if (model.prefer && harnessRuns(env, model.prefer, harness) && !("why" in (await chooseModel(env, model.prefer, "default", harness)))) return { model: model.prefer };
+  const skipped = model.prefer && gateway ? `model.prefer ${model.prefer} is not used: this server reaches its models through a gateway, which has not said it serves that model.` : undefined;
+  if (!skipped && model.prefer && harnessRuns(env, model.prefer, harness) && !("why" in (await chooseModel(env, model.prefer, "default", harness)))) return { model: model.prefer };
   const tier = MODEL_TIERS[model.tier]!;
   const id = hostModel(env, tier, harness);
   // A gateway's own id (no provider) is no "provider/model-id" a definition can name: the agent is left to the server's
-  // default, which is the gateway's model, and a tier model other than the default is said.
-  if (id && !MODEL_REF.test(id)) {
-    const fallback = id !== env.AGENT_MODEL ? `the ${model.tier} tier's model ${id} is this gateway's own id, which an agent's definition can't name, so the agent runs on this server's default model` : undefined;
-    return { ...(warning || fallback ? { warning: [warning, fallback].filter(Boolean).join(" ") } : {}) };
-  }
-  return { ...(id ? { model: id } : {}), ...(warning ? { warning } : {}) };
+  // default, which is the gateway's model, and a tier model other than the default is said. The warning says the one
+  // model the agent runs on, never the tier's when it is left out.
+  const bare = Boolean(id && !MODEL_REF.test(id));
+  const runsOn = bare && id !== env.AGENT_MODEL ? `The ${model.tier} tier's model ${id} is this gateway's own id, which an agent's definition can't name, so the agent runs on this server's default model.`
+    : skipped ? (bare || !id ? "The agent runs on this server's default model." : `The agent runs on this server's model for the ${model.tier} tier.`)
+    : undefined;
+  const warning = [skipped, runsOn, skipped ? "overrides.model picks another the gateway serves." : undefined].filter(Boolean).join(" ");
+  return { ...(id && !bare ? { model: id } : {}), ...(warning ? { warning } : {}) };
 }
 
 /** The bodies an apply makes: POST /v2/agents' (its definition and skill files) and each trigger's, with no agent_id,

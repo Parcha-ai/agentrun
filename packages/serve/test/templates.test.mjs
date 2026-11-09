@@ -155,6 +155,12 @@ test("on a gateway server, a package's model is never one the gateway has not sa
   const preferred = await packageModel({ ...gateway, OPENROUTER_API_KEY: "fake-test-key" }, { tier: "fast", prefer: "openrouter/particle-ai/particle-1" }, "pi");
   assert.notEqual(preferred.model, "openrouter/particle-ai/particle-1");
   assert.match(preferred.warning ?? "", /openrouter\/particle-ai\/particle-1 is not used: this server reaches its models through a gateway.*overrides\.model/);
+  // Both at once (a preferred model and a tier model that is a bare gateway id): one claim of where the agent runs, the
+  // default, never the tier's model it can't name.
+  const both = await packageModel({ ...gateway, AGENT_MODEL_FAST: "gpt-6-mini" }, { tier: "fast", prefer: "openrouter/particle-ai/particle-1" }, "pi");
+  assert.equal(both.model, undefined);
+  assert.match(both.warning ?? "", /is not used: .* The fast tier's model gpt-6-mini is this gateway's own id, .* runs on this server's default model\. overrides\.model/);
+  assert.doesNotMatch(both.warning ?? "", /model for the fast tier/);
 });
 
 test("code-review through the API: listed, applied with a repo it makes the agent with the review skill, and its model, and a run's answer meets its findings schema", { timeout: 120_000 }, async (t) => {
