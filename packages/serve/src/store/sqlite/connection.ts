@@ -3,8 +3,10 @@
 // so the journal (store/journal) runs on it as written. Every call is a message to the worker, answered in order, on one
 // queue: a call starts when the one before it has answered, and a transaction holds every other call until it commits or
 // rolls back. Errors come back typed: Fenced, RunFinal, StoreBusy, StoreConstraint, StoreClosed, StoreOwned.
+import { realpathSync } from "node:fs";
 import { Worker } from "node:worker_threads";
 import { cleanText, type Dialect, SQLITE } from "../dialect.js";
+import { inMemory } from "./memory.js";
 import { type ConstraintRule, Fenced, RunFinal, StoreBusy, StoreClosed, StoreConstraint, StoreDeadline, StoreOwned, StoreWorkerLost } from "../store.js";
 import type { Mode, Params, Reply, Request, Statement, StatementResult, WorkerError } from "./worker.js";
 
@@ -49,6 +51,11 @@ export interface TransactionOptions {
  *  parameters; a statement's `expect` (a fence, a final run) rolls its transaction back when it changes no row. */
 export interface StoreConnection {
   readonly dialect: Dialect;
+  /** Where this connection's data is (Store.where): an identity two connections to the same data share and two to
+   *  different data never do. SQLite: "sqlite:" and the database file's real path, or "sqlite:memory:<n>" for each
+   *  in-memory database. A database server's: its kind, host, database and schema, never a user, a password or any
+   *  credential. An in-process key only: never printed in a log line, an error or an answer. */
+  readonly where: string;
   get<T extends object>(sql: string, ...params: SqliteValue[]): Promise<T | undefined>;
   all<T extends object>(sql: string, ...params: SqliteValue[]): Promise<T[]>;
   /** One write transaction of fixed statements, in order; `full`: a durable commit. */
@@ -93,8 +100,22 @@ function typed(error: WorkerError): Error {
   }
 }
 
+/** In-memory databases opened in this process: each is its own data, so each gets its own `where`. */
+let memoryDatabases = 0;
+
+/** A SQLite database's identity (StoreConnection.where): its file's real path, so two connections to one file (two roles,
+ *  a path given two ways) share it; an in-memory database is its own data, never another's. */
+function whereOf(file: string): string {
+  if (inMemory(file)) return `sqlite:memory:${++memoryDatabases}`;
+  return `sqlite:${realpathSync(file)}`;
+}
+
 export class Connection implements SqliteDatabase, StoreConnection {
   readonly dialect: Dialect = SQLITE;
+  #where = "";
+  get where(): string {
+    return this.#where;
+  }
   readonly #worker: Worker;
   #next = 1;
   readonly #waiting = new Map<number, { resolve: (value: unknown) => void; reject: (error: Error) => void }>();
@@ -142,6 +163,8 @@ export class Connection implements SqliteDatabase, StoreConnection {
     const connection = new Connection(worker);
     try {
       await connection.#send({ op: "open", file, busyTimeoutMs, owner });
+      // Opened, the file exists: its real path names it.
+      connection.#where = whereOf(file);
     } catch (error) {
       await worker.terminate();
       throw error;

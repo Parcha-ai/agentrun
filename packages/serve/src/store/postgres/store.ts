@@ -13,12 +13,7 @@ export const DEFAULT_SCHEMA = "agentrun";
  *  size changes nothing; one far past it would make a runner's claims run out early or late. */
 export const CLOCK_WARN_MS = 2_000;
 
-/** Which store this is, as two opens of the same data agree on it: "postgres:" and the URL's host (and port), database and
- *  the schema, read from the parsed URL, never its user, password or query. */
-export function postgresWhere(url: string, schema: string): string {
-  const parsed = new URL(url);
-  return `postgres:${parsed.host}/${decodeURIComponent(parsed.pathname.replace(/^\//, ""))}/${schema}`;
-}
+export { postgresWhere } from "./connection.js";
 
 export interface PostgresStoreOptions {
   /** postgres:// or postgresql:// URL. Never printed: it may carry a password. */
@@ -66,5 +61,5 @@ export async function openPostgresStore(options: PostgresStoreOptions): Promise<
     await connection.close().catch(() => undefined);
     throw error;
   }
-  return storeOver(connection, now, postgresWhere(options.url, schema));
+  return storeOver(connection, now);
 }

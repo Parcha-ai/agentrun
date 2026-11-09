@@ -11,6 +11,13 @@ import { DEFAULT_TRANSACTION_DEADLINE_MS, type SqliteValue, type Statement, type
 import type { Dialect } from "../dialect.js";
 import { postgresDialect } from "./dialect.js";
 
+/** Which store this is, as two opens of the same data agree on it (StoreConnection.where): "postgres:" and the URL's host
+ *  (and port), database and the schema, read from the parsed URL, never its user, password or query. */
+export function postgresWhere(url: string, schema: string): string {
+  const parsed = new URL(url);
+  return `postgres:${parsed.host}/${decodeURIComponent(parsed.pathname.replace(/^\//, ""))}/${schema}`;
+}
+
 /** A schema name the store takes: a plain lower-case identifier, so it is never quoted, and never input in SQL. */
 export const SCHEMA_NAME = /^[a-z_][a-z0-9_]{0,62}$/;
 
@@ -113,6 +120,8 @@ async function step(client: Queryable, statement: Statement, columnsOf: (index: 
 export class PgConnection implements StoreConnection {
   readonly dialect: Dialect;
   readonly schema: string;
+  /** Where this connection's data is (StoreConnection.where): postgresWhere, the URL's host, database and the schema. */
+  readonly where: string;
   readonly #pool: pg.Pool;
   readonly #owner: pg.Client | undefined;
   readonly #busyTimeoutMs: number;
@@ -136,10 +145,11 @@ export class PgConnection implements StoreConnection {
     return columns;
   };
 
-  private constructor(pool: pg.Pool, owner: pg.Client | undefined, schema: string, busyTimeoutMs: number) {
+  private constructor(pool: pg.Pool, owner: pg.Client | undefined, schema: string, busyTimeoutMs: number, where: string) {
     this.#pool = pool;
     this.#owner = owner;
     this.schema = schema;
+    this.where = where;
     this.#busyTimeoutMs = busyTimeoutMs;
     this.dialect = postgresDialect(schema);
   }
@@ -166,7 +176,7 @@ export class PgConnection implements StoreConnection {
     const pool = new pg.Pool(config);
     // An idle client's error (the server went away) surfaces at its next use, never as an unhandled event.
     pool.on("error", () => undefined);
-    return new PgConnection(pool, lock, schema, busyTimeoutMs);
+    return new PgConnection(pool, lock, schema, busyTimeoutMs, postgresWhere(url, schema));
   }
 
   /** `work`, counted in flight, refused after close. */

@@ -250,7 +250,8 @@ CREATE TABLE mcp_servers (
   refresh_until BIGINT,
   created_at BIGINT NOT NULL,
   updated_at BIGINT NOT NULL,
-  listed_at BIGINT
+  listed_at BIGINT,
+  credential_changed_at BIGINT
 );
 
 CREATE TABLE mcp_oauth_pending (

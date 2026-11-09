@@ -4,14 +4,14 @@
 // with more than one statement is one transaction (connection.transaction, BEGIN IMMEDIATE): all of it or none of it.
 // The domain code below (the SqliteStore class, storeOver) is written once for SQLite and Postgres (a Postgres store opens
 // it on its own connection): what differs, and the locks Postgres's many writers take, is the connection's Dialect (store/dialect.ts).
-import { existsSync, mkdirSync, readdirSync, realpathSync, statSync } from "node:fs";
+import { existsSync, mkdirSync, readdirSync, statSync } from "node:fs";
 import { join } from "node:path";
 import { DatabaseSync } from "node:sqlite";
 import { claimFence } from "../fence.js";
 import { RunStorage } from "../journal/storage.js";
 import { DDL, SCHEMA_VERSION } from "../schema.js";
 import {
-  CommandTaken, Fenced, RefreshLeaseLost, SchemaVersionUnknown, StoreConstraint, StoreFromEarlierVersion, TriggerFull, type AgentRow, type Agents,
+  AgentArchived, CommandTaken, Fenced, RefreshLeaseLost, SchemaVersionUnknown, StoreConstraint, StoreFromEarlierVersion, TriggerFull, type AgentRow, type Agents,
   type AlsoRow, type Claim, type Command, type FiringChange, type FiringRow, type FiringStatus, type ImportRunInput, type Journal, type NewRevision, type RevisionRow, type RunPatch, type RunRow, type Runs,
   type JournalReads,
   type ReleasedState, type RunState, type Store, type StoreRole, type TemplatePackage, type Templates, type TriggerDef, type TriggerPatch, type TriggerRow, type Triggers, type TriggerScope,
@@ -21,7 +21,6 @@ import {
 } from "../store.js";
 import type { Dialect } from "../dialect.js";
 import { Connection, type SqliteExecutor, type SqliteValue, type Statement, type StoreConnection, type Tx } from "./connection.js";
-import { inMemory } from "./memory.js";
 import { applyRunPatch, refuseLeftovers, RUN_COLUMNS, runOf, SIGN_IN_HANDED_LOCK, type RunRecord } from "./run-patch.js";
 import { readLaunch, writeLaunch } from "./run-launch.js";
 
@@ -119,14 +118,14 @@ const json = (value: unknown): string => JSON.stringify(value ?? null);
 
 type McpServerRecord = {
   name: string; url: string; auth: string; protocol: string | null; tools: string; prices: string; server_info: string | null; instructions: string | null; sealed: Uint8Array | null;
-  refresh_holder: string | null; refresh_until: number | null; created_at: number; updated_at: number; listed_at: number | null;
+  refresh_holder: string | null; refresh_until: number | null; created_at: number; updated_at: number; listed_at: number | null; credential_changed_at: number | null;
 };
 type McpPinRecord = { run_id: string; body: string; pinned_at: number };
-const MCP_SERVER_COLUMNS = "name, url, auth, protocol, tools, prices, server_info, instructions, sealed, refresh_holder, refresh_until, created_at, updated_at, listed_at";
+const MCP_SERVER_COLUMNS = "name, url, auth, protocol, tools, prices, server_info, instructions, sealed, refresh_holder, refresh_until, created_at, updated_at, listed_at, credential_changed_at";
 const mcpServerOf = (r: McpServerRecord): McpServerRow => ({
   name: r.name, url: r.url, auth: r.auth, protocol: r.protocol, tools: JSON.parse(r.tools), prices: JSON.parse(r.prices),
   serverInfo: r.server_info === null ? null : JSON.parse(r.server_info), instructions: r.instructions,
-  sealed: r.sealed === null ? null : Uint8Array.from(r.sealed), refreshHolder: r.refresh_holder, refreshUntil: r.refresh_until, createdAt: r.created_at, updatedAt: r.updated_at, listedAt: r.listed_at,
+  sealed: r.sealed === null ? null : Uint8Array.from(r.sealed), refreshHolder: r.refresh_holder, refreshUntil: r.refresh_until, createdAt: r.created_at, updatedAt: r.updated_at, listedAt: r.listed_at, credentialChangedAt: r.credential_changed_at,
 });
 const mcpPinOf = (r: McpPinRecord): McpPinRow => ({ runId: r.run_id, body: JSON.parse(r.body), pinnedAt: r.pinned_at });
 
@@ -201,16 +200,6 @@ function isThisVersionsStore(file: string): boolean {
   }
 }
 
-/** In-memory stores opened in this process: each is its own data, so each gets its own `where`. */
-let memoryStores = 0;
-
-/** A SQLite store's identity (Store.where): its database file's real path, so two instances over one file (two roles, a
- *  path given two ways) share it; an in-memory database is its own data, never another's. */
-function whereOf(file: string): string {
-  if (inMemory(file)) return `sqlite:memory:${++memoryStores}`;
-  return `sqlite:${realpathSync(file)}`;
-}
-
 /** Opens the store in `dataDir` (its file is STORE_FILE there), or at `file` (the store's own tests). As the server (the
  *  default): makes the data directory, takes the owner lock (StoreOwned when another server holds it) and, on a store with
  *  no schema yet, sets schema SCHEMA_VERSION up in one durable commit. As a runner: makes and sets up nothing. Either
@@ -252,7 +241,7 @@ export async function openSqliteStore(options: SqliteStoreOptions): Promise<Stor
     await connection.close().catch(() => undefined);
     throw error;
   }
-  return storeOver(connection, options.now ?? Date.now, whereOf(file));
+  return storeOver(connection, options.now ?? Date.now);
 }
 
 /** How many released claims a store remembers, to refuse their journals. */
@@ -268,8 +257,8 @@ function fenced(claim: Claim, sql: string, params: readonly SqliteValue[]): Stat
 
 /** The Store over `connection`, on whichever database it is (SQLite here, Postgres in postgres/store.ts), on the store's
  *  clock `now` (ms), its identity `where` (Store.where). The opener sets the schema up and checks its version first. */
-export function storeOver(connection: StoreConnection, now: () => number, where: string): Store {
-  return new SqliteStore(connection, now, where);
+export function storeOver(connection: StoreConnection, now: () => number): Store {
+  return new SqliteStore(connection, now);
 }
 
 /** The store's domain code, written once for both databases: its SQL takes `?` parameters, and what a database says
@@ -290,9 +279,10 @@ class SqliteStore implements Store {
   readonly signIns: SignIns;
   readonly #db: StoreConnection;
   readonly #now: () => number;
+  /** Where this store's data is: its connection's (StoreConnection.where). */
+  readonly where: string;
   /** The runs a runner may claim (claimableIn), as this store's database says it. */
   readonly #claimable: string;
-  readonly where: string;
   /** Each claim's one journal, until it is closed. */
   readonly #journals = new Map<string, RunStorage>();
   /** Each run's claim this store released last (its epoch): journal() refuses that claim, or an older one, rather than
@@ -302,10 +292,10 @@ class SqliteStore implements Store {
    *  epoch check in its own transaction. The map refuses early; the epoch is what guarantees it. */
   readonly #released = new Map<string, number>();
 
-  constructor(db: StoreConnection, now: () => number, where: string) {
+  constructor(db: StoreConnection, now: () => number) {
     this.#db = db;
     this.#now = now;
-    this.where = where;
+    this.where = db.where;
     const d = db.dialect;
     this.#claimable = claimableIn(d);
 
@@ -327,6 +317,11 @@ class SqliteStore implements Store {
     const writeScopes = async (tx: SqliteExecutor, triggerId: string, scopes: readonly TriggerScope[]) => {
       await tx.run("DELETE FROM trigger_scopes WHERE trigger_id = ?", triggerId);
       for (const { kind, scope } of scopes) await tx.run("INSERT INTO trigger_scopes (kind, scope, trigger_id) VALUES (?, ?, ?)", kind, scope, triggerId);
+    };
+    /** Refused (AgentArchived) when agent `agentId` is archived: read in the writing transaction, so an archive that
+     *  commits first is seen, and one that commits after finds what this wrote. */
+    const refuseArchived = async (tx: SqliteExecutor, agentId: string) => {
+      if ((await tx.get<{ archived_at: number | null }>("SELECT archived_at FROM agents WHERE id = ?", agentId))?.archived_at != null) throw new AgentArchived(agentId);
     };
     /** Inserts the trigger, or (on its name for the agent) changes it in place, keeping its id; then its scope rows, only
      *  while it is enabled. `insertOnly` (an apply's new agent): no ON CONFLICT, and the package check keeps the names
@@ -360,9 +355,19 @@ class SqliteStore implements Store {
       },
       list: async ({ archived = false } = {}) =>
         (await db.all<AgentRecord>(`SELECT ${AGENT_COLUMNS} FROM agents WHERE archived_at IS ${archived ? "NOT NULL" : "NULL"} ORDER BY created_at, id`)).map(agentOf),
-      archive: async (id, archived) => {
-        await db.write([{ sql: "UPDATE agents SET archived_at = ? WHERE id = ?", params: [archived ? now() : null, id] }]);
-      },
+      archive: async (id, archived, why) =>
+        db.transaction(async (tx) => {
+          const at = now();
+          await tx.run("UPDATE agents SET archived_at = ? WHERE id = ?", archived ? at : null, id);
+          if (!archived) return [];
+          // Its triggers that are on, off in this same commit: a firing's fire reads the archive in its own transaction.
+          const off = await tx.all<{ id: string; name: string }>(
+            "UPDATE triggers SET enabled = 0, next_at = NULL, disabled = ?, updated_at = ? WHERE agent_id = ? AND enabled = 1 RETURNING id, name",
+            why === undefined ? null : json(why), at, id,
+          );
+          for (const t of off) await writeScopes(tx, t.id, []);
+          return off.map(({ id: triggerId, name }) => ({ id: triggerId, name })).sort((a, b) => a.name.localeCompare(b.name));
+        }),
       addRevision: async ({ agentId, ...revision }) => {
         await db.transaction((tx) => insertRevision(tx, agentId, revision, now()));
       },
@@ -423,6 +428,7 @@ class SqliteStore implements Store {
         const row = await db.transaction(async (tx) => {
           // A trigger belongs to an agent the store holds: refused in words, never a bare foreign-key failure.
           if (!(await tx.get<{ id: string }>("SELECT id FROM agents WHERE id = ?", t.agentId))) throw new StoreConstraint(`no agent ${t.agentId}: a trigger belongs to an agent the store holds`);
+          if (t.enabled) await refuseArchived(tx, t.agentId);
           const made = await tx.get<TriggerRecord>(
             `INSERT INTO triggers (id, agent_id, name, enabled, source, target, next_at, catchup_window_s, max_active_runs, created_at, updated_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?) RETURNING ${TRIGGER_COLUMNS}`,
             t.id, t.agentId, t.name, t.enabled ? 1 : 0, json(t.source), json(t.target), t.nextAt, t.catchupWindowS, t.maxActiveRuns ?? null, at, at,
@@ -438,6 +444,8 @@ class SqliteStore implements Store {
           // Moved to another agent (its target re-aimed): one the store holds, refused in words otherwise.
           if (patch.agentId !== undefined && !(await tx.get<{ id: string }>("SELECT id FROM agents WHERE id = ?", patch.agentId))) throw new StoreConstraint(`no agent ${patch.agentId}: a trigger belongs to an agent the store holds`);
           const changed = await tx.get<TriggerRecord>(`UPDATE triggers SET ${set} WHERE id = ? RETURNING ${TRIGGER_COLUMNS}`, ...params, id);
+          // Never left on for an archived agent (turned on, or moved there on): the whole update is undone.
+          if (changed?.enabled === 1) await refuseArchived(tx, changed.agent_id);
           // Scope rows only while it is on: turned off, it holds none; given scopes, they are its rows now.
           if (changed && (changed.enabled === 0 || scopes !== undefined)) await writeScopes(tx, id, changed.enabled === 1 ? (scopes ?? []) : []);
           return changed;
@@ -597,7 +605,9 @@ class SqliteStore implements Store {
         }),
       enable: async (triggerId, scopes) => {
         await db.transaction(async (tx) => {
-          if ((await tx.runCounted("UPDATE triggers SET enabled = 1, disabled = NULL, updated_at = ? WHERE id = ?", now(), triggerId)) === 0) throw new StoreConstraint(`no trigger ${triggerId}`);
+          const on = await tx.get<{ agent_id: string }>("UPDATE triggers SET enabled = 1, disabled = NULL, updated_at = ? WHERE id = ? RETURNING agent_id", now(), triggerId);
+          if (!on) throw new StoreConstraint(`no trigger ${triggerId}`);
+          await refuseArchived(tx, on.agent_id);
           await writeScopes(tx, triggerId, scopes);
         });
       },
@@ -613,6 +623,8 @@ class SqliteStore implements Store {
         db.transaction(async (tx) => {
           const at = now();
           await d.lockRow(tx, "triggers", "id", firing.triggerId);
+          // Never a run of an archived agent: the archive's commit is read here, in the transaction that would start it.
+          await refuseArchived(tx, run.agentId);
           const row = await tx.get<RunRecord>(`INSERT INTO runs (id, agent_id, revision_id, state, epoch, started_at) VALUES (?, ?, ?, 'queued', 0, ?) RETURNING ${RUN_COLUMNS}`, run.id, run.agentId, run.revisionId, at);
           // The run's launch row lands with it, through the store's one writer, or neither does.
           if (launch) await writeLaunch(tx, run.id, launch, at);
@@ -702,18 +714,21 @@ class SqliteStore implements Store {
       return row && mcpServerOf(row);
     };
     this.mcp = {
-      put: async ({ name, url, auth, protocol = null, tools, prices = null, serverInfo = null, instructions = null, sealed = null, listedAt, updatedAt }) => {
+      put: async ({ name, url, auth, protocol = null, tools, prices = null, serverInfo = null, instructions = null, sealed = null, listedAt, updatedAt, credentialChangedAt }) => {
         const at = now();
         // updated_at defaults to now (a save or a sign-in); a refresh passes the kept one so it is not read as an edit.
         // listed_at is the tools' listing time, now unless given.
         const updated = updatedAt ?? at;
         const listed = listedAt ?? at;
+        // The credential's own time: now for a put that writes one, unless the caller says it kept the sealed one (its
+        // time given back); null with none. A token refresh (refreshToken) never moves it.
+        const credentialAt = sealed === null ? null : credentialChangedAt === undefined ? at : credentialChangedAt;
         const [result] = await db.write([{
-          sql: `INSERT INTO mcp_servers (name, url, auth, protocol, tools, prices, server_info, instructions, sealed, created_at, updated_at, listed_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+          sql: `INSERT INTO mcp_servers (name, url, auth, protocol, tools, prices, server_info, instructions, sealed, created_at, updated_at, listed_at, credential_changed_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
             ON CONFLICT (name) DO UPDATE SET url = excluded.url, auth = excluded.auth, protocol = excluded.protocol, tools = excluded.tools,
-              prices = excluded.prices, server_info = excluded.server_info, instructions = excluded.instructions, sealed = excluded.sealed, refresh_holder = NULL, refresh_until = NULL, updated_at = excluded.updated_at, listed_at = excluded.listed_at
+              prices = excluded.prices, server_info = excluded.server_info, instructions = excluded.instructions, sealed = excluded.sealed, refresh_holder = NULL, refresh_until = NULL, updated_at = excluded.updated_at, listed_at = excluded.listed_at, credential_changed_at = excluded.credential_changed_at
             RETURNING ${MCP_SERVER_COLUMNS}`,
-          params: [name, url, auth, protocol, json(tools), json(prices), serverInfo === null ? null : json(serverInfo), instructions, sealed, at, updated, listed],
+          params: [name, url, auth, protocol, json(tools), json(prices), serverInfo === null ? null : json(serverInfo), instructions, sealed, at, updated, listed, credentialAt],
         }]);
         return mcpServerOf(result!.rows[0] as McpServerRecord);
       },

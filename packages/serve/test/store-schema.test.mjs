@@ -43,6 +43,7 @@ test("schema v1 has every table, and every time column is an INTEGER", async (t)
     assert.ok(times.some(([table, name]) => table === "runs" && name === "wake_at"), "runs.wake_at");
     assert.ok((await columnsOf("revisions")).some((column) => column.name === "package"), "revisions.package");
     assert.ok((await columnsOf("commands")).some((column) => column.name === "refused"), "commands.refused");
+    assert.ok(times.some(([table, name]) => table === "mcp_servers" && name === "credential_changed_at"), "mcp_servers.credential_changed_at");
   } finally {
     await db.close();
   }

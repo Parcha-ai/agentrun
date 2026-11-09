@@ -29,9 +29,9 @@ function fieldState(f: ToolKeyField): string {
   return f.stored_unreadable ? "saved here, can't be opened" : "not set";
 }
 
-/** The keys page's groups, in order: the model providers' keys, then the tools'. `name` is how words elsewhere name the
- *  group ("Settings → Model keys"), `label` its heading here. */
-export const KEY_GROUPS = [{ kind: "model", label: "Models", name: "Model keys" }, { kind: "tool", label: "Tools", name: "Tool keys" }] as const;
+/** The keys page's groups, in order: the model providers' keys, then the tools'. `label` is the heading here, and how
+ *  words elsewhere name the group ("Settings → Model keys"). */
+export const KEY_GROUPS = [{ kind: "model", label: "Model keys" }, { kind: "tool", label: "Tool keys" }] as const;
 
 /** Settings → Tool keys: each model provider's key (`kind: "model"`) and each key a tool needs, where each of its fields is
  *  set, and a form to add, change or remove the one saved here. A value goes to the server and nowhere else: the
@@ -115,7 +115,7 @@ export function KeysPage({ v2, atRest, onChange }: { v2: Client; atRest?: "seale
           </p>
         )}
         {groups.map((g) => (
-          <section key={g.label} aria-label={g.name}>
+          <section key={g.label} aria-label={g.label}>
             {groups.length > 1 && <h2 className="caps mb-2 text-[12px] font-semibold text-muted-foreground">{g.label}</h2>}
             <ul className="border">{g.keys.map(row)}</ul>
           </section>
