@@ -50,6 +50,7 @@ import { knownToolCostOf, redactorOf, type RunMoment, type State, type Status, t
 import { approve, archiveRun, cancel, message, raiseCap, type StartDeps, type StartOptions, startRun, stop as stopRunOverStore, WAITS_ON_A_PERSON } from "./runs-over-store.js";
 import { momentOverStore, summaryOverStore, type ViewDeps, viewOverStore, withheldOverStore } from "./store-view.js";
 import { servedTimelineRows } from "./run-timeline-served.js";
+import { servedRunLearning } from "./run-learning-served.js";
 import { runCutValues } from "./run-cut.js";
 import { readLaunchBody } from "./run-launch.js";
 import { listRunFiles as listRunFilesOverStore, readRunFile as readRunFileOverStore, runBrowserState, runGraphView, type RunReadsDeps, runTimelines } from "./run-reads-over-store.js";
@@ -86,7 +87,7 @@ import { isSecretWriteOperation, SECRET_WRITE_REFUSAL, secretsWritableFields, se
 import { ensureSealKey, SealKeyRefused, sealKeyHome, sealKeyLine } from "./seal-key.js";
 import { redactedOutput } from "./key-refusal.js";
 import { analyticsFilter, analyticsView, statsView } from "./stats.js";
-import { agentLearningOverStore, learningCountsOverStore, runLearningOverStore } from "./store-reads/learning.js";
+import { agentLearningOverStore, learningCountsOverStore } from "./store-reads/learning.js";
 import { outcomes } from "./usage.js";
 import { keyOf, SEAL_KEY_ENV, sealKeyOf, TOOL_FIELDS } from "./tool-keys.js";
 import { toolKeysOverStore } from "./tool-keys-store.js";
@@ -2729,7 +2730,8 @@ async function startHolding(options: ServeOptions, data: string, checked: { maxR
         const run = await needRun(id);
         // The run's learning view over the store (learning-1's runLearningOverStore): its end, the notes it was given and its seed
         // from its launch, what it holds for the owner's OK as the store's run view reads it (no folder), byte-identical to main.
-        return send(res, 200, await runLearningOverStore(store, run.id, secretsShown(serverSecrets()), serverSecrets()));
+        // Cut by the run's one cut, and refused for a withheld run (run-learning-served.ts).
+        return send(res, 200, await servedRunLearning({ serverSecrets, signIns }, store, run.id));
       }
       case "getRunLearningDiff":
         await needRun(id);
