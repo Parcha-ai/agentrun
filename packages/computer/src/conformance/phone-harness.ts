@@ -140,7 +140,8 @@ function removeIfThere(path: string): void {
  * processes by a lock file beside the ledger (<path>.lock), so a write never drops another's entry.
  *
  * The lock names its holder (`<pid> <token>`), and is judged by that holder, not by its age. A live writer's lock is
- * never taken, however old: a write waits for it, up to waitMs (10 s by default), then fails in words. A lock whose
+ * never taken, however old: a write waits for it, up to waitMs (10 s by default) for one holder that never lets go,
+ * then fails in words. A lock that keeps passing between live writers is progress, and is waited for. A lock whose
  * holder is gone (it crashed mid-write) is broken at once, by one waiter.
  */
 export function fileLedger(path: string, { waitMs = LOCK_WAIT_MS }: { waitMs?: number } = {}): PhoneLedger {
@@ -151,13 +152,21 @@ export function fileLedger(path: string, { waitMs = LOCK_WAIT_MS }: { waitMs?: n
 		const turn = queue.then(async () => {
 			mkdirSync(dirname(path), { recursive: true, mode: 0o700 });
 			const words = `${process.pid} ${randomBytes(8).toString("hex")}\n`;
-			const until = Date.now() + waitMs;
+			// waitMs bounds one holder that never lets go, not other writers' progress. A lock that passes from writer to
+			// writer (its words change) is progress: the wait starts again. Under load, writers that each hold it briefly can
+			// together keep it longer than waitMs, and that is no stuck writer (CI, run 42672928685).
+			let seen: string | undefined;
+			let until = Date.now() + waitMs;
 			for (let wait = 2; !take(lockPath, words); wait = Math.min(wait * 2, 50)) {
 				const held = lockWords(lockPath);
 				if (held === undefined) continue;
+				if (held !== seen) {
+					seen = held;
+					until = Date.now() + waitMs;
+				}
 				// A dead holder's lock is broken at once; a live breaker at work on it is waited for, like a live holder.
 				if (leftByTheDead(held) && breakDead(lockPath, held, words)) continue;
-				if (Date.now() >= until) throw new Error(`the phone ledger ${path} stayed locked by another writer for ${waitMs / 1000} s (${lockPath})`);
+				if (Date.now() >= until) throw new Error(`the phone ledger ${path} stayed locked by another writer for ${waitMs / 1000} s, which held it all that time (${lockPath})`);
 				await new Promise((resolve) => setTimeout(resolve, wait));
 			}
 			try {
