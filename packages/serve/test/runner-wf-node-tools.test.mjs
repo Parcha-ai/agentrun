@@ -25,9 +25,12 @@ const { deniedText, modelNodeAskText } = await import("../dist/refusal-words.js"
 const { parallelSearchFee } = await import("../dist/paid-calls.js");
 const { FAUX_PARALLEL_ENV } = await import("../dist/decisions.js");
 const { FAUX_ENV } = await import("../dist/model.js");
+const { paidRequestsOf } = await import("./fixtures/paid-requests.mjs");
 
 const FAUX_PARALLEL = new URL("./fixtures/faux-parallel-search.mjs", import.meta.url).pathname;
-const TIMING = { leaseMs: 1_000, renewEveryMs: 250, stopMarginMs: 300, pollMs: 20, commandPollMs: 30 };
+// A steady lease: these cases are about the node's tools, never a claim lapsing mid-request (a lapsed request books at its
+// hold, which would read as a wrong cost here); the lapse has its own pinned case (runner-call-claim-lapse).
+const TIMING = { leaseMs: 60_000, renewEveryMs: 1_000, stopMarginMs: 5_000, pollMs: 20, commandPollMs: 30 };
 const PRICED = Object.freeze({ id: "faux-priced", api: "anthropic-messages", price: { input: 0, output: 100, cacheRead: 0, cacheWrite: 0 }, outputCeiling: 16_384 });
 /** The scripted origin reports 10 output tokens each request: $0.001 a request at $100 a million. */
 const PER_REQUEST = (10 * 100) / 1e6;
@@ -72,7 +75,7 @@ async function runOn(t, { workflow, toolSettings, specDeps }) {
     const row = await server.runs.get("run-1");
     if (["ended", "failed", "stopped"].includes(row.state) && row.runner === null) {
       const text = ["store.sqlite", "store.sqlite-wal"].map((name) => join(dir, name)).filter(existsSync).map((file) => readFileSync(file).toString("utf8")).join("\n");
-      return { row, requests, text };
+      return { row, requests, text, paidRequests: () => paidRequestsOf(store) };
     }
     if (Date.now() - from > 30_000) assert.fail(`the run never ended: ${JSON.stringify({ state: row.state, summary: row.summary })}`);
     await new Promise((resolve) => setTimeout(resolve, 20));
@@ -83,7 +86,7 @@ const offered = (request) => (request?.tools ?? []).map((tool) => tool.name).sor
 const listening = () => process.getActiveResourcesInfo().filter((kind) => kind === "TCPServerWrap").length;
 
 test("a model node's web_search, allowed: offered with submit, called once, booked once on the run's ledger at Parallel's fee", async (t) => {
-  const { row, requests } = await runOn(t, { workflow: searchingFlow(["web_search"]) });
+  const { row, requests, paidRequests } = await runOn(t, { workflow: searchingFlow(["web_search"]) });
   assert.deepEqual(offered(requests[0]), ["submit", "web_search"], "the node's request offers its tool and submit");
   // Offered exactly once in every request (its binding's extension and its booked, gated wrapper are one tool, never two).
   for (const [index, request] of requests.entries()) {
@@ -92,6 +95,10 @@ test("a model node's web_search, allowed: offered with submit, called once, book
   assert.equal(row.state, "ended", JSON.stringify({ state: row.state, summary: row.summary }));
   assert.equal(globalThis.fauxParallelSearches, 1, "one search sent");
   assert.equal(eight(row.costUsd), eight(2 * PER_REQUEST + parallelSearchFee(3).usd), `two model requests and the search, once each: ${row.costUsd}`);
+  // Its request's record names who charges for it (main's charge row: charged_by parallel), beside the call it booked under.
+  const paid = await paidRequests();
+  assert.ok(paid.length > 0, "the search's paid request is in the run's records");
+  for (const request of paid) assert.equal(request.charged_by, "parallel", `charged by Parallel: ${JSON.stringify(request)}`);
 });
 
 test("a model node's web_search set to deny: refused in deniedText's words, never run, nothing of it booked", async (t) => {

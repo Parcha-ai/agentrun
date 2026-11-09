@@ -22,6 +22,7 @@ const { sendCommand } = await import("../dist/runner/commands.js");
 const { parallelSearchFee } = await import("../dist/paid-calls.js");
 const { FAUX_PARALLEL_ENV } = await import("../dist/decisions.js");
 const { FAUX_ENV } = await import("../dist/model.js");
+const { paidRequestsOf } = await import("./fixtures/paid-requests.mjs");
 const FAUX_PARALLEL = new URL("./fixtures/faux-parallel-search.mjs", import.meta.url).pathname;
 
 /** A steady lease (this file tests call nodes, not leases): a lease the suite's load can outlast would cut a call node's
@@ -104,7 +105,7 @@ async function runOn(t, { workflow, tools = ["llm"], toolSettings, fetch, capUsd
     // timeline's reader passes over.
     const journalText = async () => ["store.sqlite", "store.sqlite-wal"].map((name) => join(dir, name)).filter(existsSync).map((file) => readFileSync(file).toString("utf8")).join("\n");
     const resting = during ? ["ended", "failed", "stopped"] : ["ended", "failed", "stopped", "parked"];
-    if (resting.includes(row.state) && row.runner === null) return Object.assign(row, { journalText });
+    if (resting.includes(row.state) && row.runner === null) return Object.assign(row, { journalText, paidRequests: () => paidRequestsOf(store) });
     if (Date.now() - from > 30_000) assert.fail(`the run never left running: ${JSON.stringify({ state: row.state, summary: row.summary })}`);
     await sleep(20);
   }
@@ -170,6 +171,10 @@ test("a paid web_search call node on Parallel: its search sent once, and booked 
   assert.equal(row.state, "ended", JSON.stringify({ state: row.state, summary: row.summary, why: whyIn(await row.journalText()) }));
   assert.equal(globalThis.fauxParallelSearches, 1, "one search sent");
   assert.equal(eight(row.costUsd), eight(parallelSearchFee(3).usd), `booked once at Parallel's fee: ${row.costUsd}`);
+  // Its request's record names who charges for it, as an agentic run's does (main's charge row: charged_by parallel).
+  const paid = await row.paidRequests();
+  assert.ok(paid.length > 0, "the search's paid request is in the run's records");
+  for (const request of paid) assert.equal(request.charged_by, "parallel", `charged by Parallel: ${JSON.stringify(request)}`);
 });
 
 test("past the cap, an llm call node's hold is refused before its effect is admitted: the run parks with nothing sent, and a raise sends it once", async (t) => {
