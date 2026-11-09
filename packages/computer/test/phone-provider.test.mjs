@@ -156,6 +156,38 @@ test("a session the service ended is gone to attach and list, and the ledger for
 	assert.deepEqual(await ledger.list(), [], "and list the other");
 });
 
+test("list loses no phone a create records while list runs, and forgets one only once its own GET says it is gone", async () => {
+	// A create finishes between list's GET /sessions and its read of the ledger.
+	let provider;
+	let made;
+	let lists = 0;
+	const onList = async (snapshot) => {
+		if (++lists === 1) made = await provider.create({ ...SPEC, labels: { run: "r1" } });
+		return snapshot;
+	};
+	const raced = await setup({ onList });
+	provider = raced.provider;
+	const listed = await provider.list({ run: "r1" });
+	assert.equal(listed.ok, true, JSON.stringify(listed));
+	assert.equal(made.ok, true, JSON.stringify(made));
+	assert.ok(await raced.ledger.get(made.value.id), "the ledger still names the phone made during the list");
+	assert.deepEqual((await provider.list({ run: "r1" })).value.map((info) => info.ref.id), [made.value.id], "and the next list shows it");
+
+	// A listing that leaves out a live phone: list asks for it by its id, and keeps it.
+	let hide;
+	const lagging = await setup({ onList: (snapshot) => snapshot.filter((one) => one.id !== hide) });
+	const kept = await lagging.provider.create({ ...SPEC, labels: { run: "r2" } });
+	hide = kept.value.id;
+	const seen = await lagging.provider.list({ run: "r2" });
+	assert.deepEqual(seen.value.map((info) => [info.ref.id, info.state]), [[hide, "running"]], "listed by its own GET");
+	assert.ok(await lagging.ledger.get(hide), "and kept");
+	assert.ok(lagging.fake.requests().some((r) => r.method === "GET" && r.path === `/sessions/${hide}`), "its own GET was asked");
+	// Once its own GET is a 404, the ledger forgets it.
+	lagging.fake.sessions.delete(hide);
+	assert.deepEqual((await lagging.provider.list({ run: "r2" })).value, []);
+	assert.equal(await lagging.ledger.get(hide), undefined);
+});
+
 test("the service's refusals are words with a code, and never the key", async () => {
 	for (const [start, code, words] of [
 		["busy", "limit", /every phone is busy; try again in 30 s/],

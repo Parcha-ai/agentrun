@@ -77,7 +77,8 @@ const json = (status, body, headers = {}) => new Response(JSON.stringify(body), 
  * `loseRecovery`, the GET that recovers a create by its key is lost too; `cancelPost`, called once a POST /sessions is
  * admitted (a test aborts the create's signal in it), after which that fetch rejects as an aborted one does; `stall`,
  * called with each request's { method, path }: when it answers true, the request is never answered, and only its
- * signal ends it;
+ * signal ends it; `onList`, given GET /sessions' snapshot once it is taken and before it is answered, answers the
+ * list to send (a test makes a phone in between, or leaves a live one out, as a lagging listing would);
  * `code`, the unlock code the phone takes (default the one the API gives); `abi`, what getprop reports; `launchHidden`,
  * a launched app is reported in front (dumpsys) while the screen and the tree still show the launcher; `launchNothing`,
  * `am start` starts nothing at all.
@@ -86,7 +87,7 @@ const json = (status, body, headers = {}) => new Response(JSON.stringify(body), 
  * (com.android.settings.intelligence) on top of Settings' own task. A force-stop of Settings leaves it there, a plain
  * `am start` of Settings resumes that task, search in front, and only `--activity-clear-task` starts Settings afresh.
  */
-export function fakePhoneHarness({ readyAfter = 1, start = "ok", loseAnswer = false, loseRecovery = false, cancelPost, stall, others = [], code, abi = "x86_64", launchHidden = false, launchNothing = false, clock = fakeClock() } = {}) {
+export function fakePhoneHarness({ readyAfter = 1, start = "ok", loseAnswer = false, loseRecovery = false, cancelPost, stall, onList, others = [], code, abi = "x86_64", launchHidden = false, launchNothing = false, clock = fakeClock() } = {}) {
 	const requests = [];
 	const adbCalls = [];
 	const sessions = new Map(others.map((s) => [s.id, { ...s }]));
@@ -136,7 +137,10 @@ export function fakePhoneHarness({ readyAfter = 1, start = "ok", loseAnswer = fa
 			}
 			return json(202, view(session));
 		}
-		if (method === "GET" && path === "/sessions") return json(200, [...sessions.values()].map(view));
+		if (method === "GET" && path === "/sessions") {
+			const snapshot = [...sessions.values()].map(view);
+			return json(200, onList ? await onList(snapshot) : snapshot);
+		}
 		const byKey = /^\/sessions\/requests\/([^/]+)$/.exec(path);
 		if (method === "GET" && byKey) {
 			if (loseRecovery) throw new TypeError("fetch failed: the connection was reset");
