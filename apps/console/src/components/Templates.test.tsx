@@ -24,14 +24,14 @@ const REVIEWER: TemplateView = {
     repo: { type: "string", required: true, description: "The repository, as owner/name", pattern: "^[^/]+/[^/]+$" },
     max_files: { type: "integer", required: false, description: "How many files it reads at most" },
   },
-  secrets: ["PARALLEL_API_KEY"], budget: { per_run_usd: 0.5 }, learning: false, triggers: [{ kind: "github", events: ["pull_request"] }], skills: [], evals: [],
+  secrets: ["PARALLEL_API_KEY"], budget: { per_run_usd: 0.5 }, learning: false, approvals_default: "ask", triggers: [{ kind: "github", events: ["pull_request"] }], skills: [], evals: [],
 };
 const NOTES: TemplateView = { ...REVIEWER, name: "meeting-notes", display_name: null, version: "0.2.0", description: "Turns a transcript into notes.", mcp: [], parameters: {}, secrets: [], budget: null, triggers: [] };
 
 type Fake = { apply?: (name: string, body: unknown, key: string) => Promise<unknown>; servers?: string[]; templates?: TemplateView[] };
 async function open(name?: string, fake: Fake = {}) {
   const went: string[] = [];
-  const sent: { name: string; body: { parameters?: Record<string, unknown>; grants?: string[] }; key: string }[] = [];
+  const sent: { name: string; body: { parameters?: Record<string, unknown>; grants?: string[]; overrides?: Record<string, unknown> }; key: string }[] = [];
   const v2 = {
     listTemplates: async () => ({ templates: fake.templates ?? [REVIEWER, NOTES] }),
     listMcpServers: async () => ({ servers: (fake.servers ?? ["github"]).map((n) => ({ name: n, url: `https://${n}.example/mcp`, auth: { type: "none" }, tools: [], credential: null })) }),
@@ -132,7 +132,7 @@ describe("applying a template", () => {
     await t.click(t.button(/^Apply/));
     expect(t.sent).toHaveLength(2);
     expect(t.sent[0].name).toBe("pr-reviewer");
-    expect(t.sent[0].body).toEqual({ parameters: { repo: "acme/web", max_files: 3 }, grants: ["mcp:github/create_review"] });
+    expect(t.sent[0].body).toEqual({ parameters: { repo: "acme/web", max_files: 3 }, grants: ["mcp:github/create_review"], overrides: { approvals: "ask" } });
     expect(t.sent[0].key).toBeTruthy();
     expect(t.sent[1].key).toBe(t.sent[0].key);
   });
@@ -188,6 +188,17 @@ describe("applying a template", () => {
     expect(row).toContain("PARALLEL_API_KEY is not saved on this server.");
     expect(row).toContain("Save PARALLEL_API_KEY on the Keys page, then apply again.");
     expect(t.went).toEqual([]);
+  });
+
+  it("asks by default; Never ask says what it grants and is sent as the agent's approvals", async () => {
+    const t = await open("pr-reviewer");
+    const radio = (label: RegExp) => [...t.host.querySelectorAll<HTMLInputElement>('fieldset[aria-label="Approvals"] input[type="radio"]')].find((r) => label.test(r.closest("label")?.textContent ?? ""));
+    expect(radio(/^Ask me/)!.checked).toBe(true);
+    await t.click(radio(/^Never ask/));
+    expect(t.host.querySelector('fieldset[aria-label="Approvals"]')!.textContent).toContain("Never ask: every tool this agent has runs without waiting for you. A tool set to deny, and a template's pins, still hold.");
+    await t.type(t.host.querySelector('[data-field="parameters.repo"] input'), "acme/web");
+    await t.click(t.button(/^Apply/));
+    expect(t.sent[0].body.overrides).toEqual({ approvals: "never" });
   });
 
   it("titles what was applied with the values sent, not edits made while the apply was under way", async () => {

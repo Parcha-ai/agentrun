@@ -18,6 +18,7 @@ mcp:
   - server: slack
     tools: [slack_send_message]
     required: false
+    pin: { slack_send_message: { channel_id: "${parameters.slack_channel}" } }
 parameters:
   icp: { type: string, required: true, description: "your ideal customer in your own words: industry, company size, region, buying signals, and what disqualifies a lead (e.g. 'B2B fintech, 50-2000 people, US or EU, has a compliance team; never gambling operators')" }
   post_to: { type: string, required: true, pattern: "^(crm|slack|none)$", description: "where each brief goes: crm (a note and the score field on the HubSpot contact), slack (a message in one channel) or none (the run's answer only)" }
@@ -26,6 +27,8 @@ parameters:
   competitors: { type: string, description: "your competitors' names or domains, comma-separated; a lead from one is flagged, never scored as a customer" }
 budget: { per_run_usd: 5.00 }
 learning: true
+# Runs unattended (its job runs on triggers): no tool asks; deny and the pins above still hold.
+approvals: never
 triggers:
   - name: inbound-lead-webhook
     # Each lead is its own run (accept), never skipped while another is researched: the sender signs Standard Webhooks

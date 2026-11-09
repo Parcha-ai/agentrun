@@ -31,8 +31,10 @@ export const ASK_OFF = "Ask is off on this server: approving a call takes the ow
  *  Ask, where it can't be answered here (`ask_needs`), is offered disabled, with why. `refused`: whether a row's tool is
  *  refused by the server's deny, which holds for every agent (SERVER_DENY, said under it); `locked`, whether that also
  *  holds its permission at deny here (an agent's table: its own setting holds nothing over it). */
-export function ToolTable({ label, rows, settings, fallbackOf, permissionFallbackOf = (g) => g.default_permission, resolvesOf, issues, busy = false, refused = () => false, locked = false, onEdit }: {
+export function ToolTable({ label, rows, settings, fallbackOf, permissionFallbackOf = (g) => g.default_permission, resolvesOf, issues, busy = false, refused = () => false, locked = false, unattended = false, onEdit }: {
   label: string;
+  /** The agent never asks (its approvals): a tool whose permission is ask runs without asking, and says so. */
+  unattended?: boolean;
   rows: ToolRow[];
   settings: ToolSettings;
   fallbackOf: (row: ToolChoice) => string;
@@ -82,11 +84,12 @@ export function ToolTable({ label, rows, settings, fallbackOf, permissionFallbac
                       {gate ? <>
                         <select aria-label={`${name} permission`} value={permission} disabled={busy || held} onChange={(e) => { const chosen = e.target.value as Permission; onEdit((current) => withPermission(current, name, chosen, gateFallback)); }}
                           className={cn("border bg-background px-2 py-1.5 font-mono text-[12px] outline-none focus:border-border-strong disabled:opacity-60", permissionSet && "border-primary text-primary")}>
-                          {gate.permissions.map((p) => <option key={p} value={p} disabled={p === "ask" && gate.ask_needs === "password"}>{p}{p === gateFallback ? " (default)" : ""}</option>)}
+                          {gate.permissions.map((p) => <option key={p} value={p} disabled={p === "ask" && gate.ask_needs === "password" && !unattended}>{p}{p === gateFallback ? " (default)" : ""}</option>)}
                         </select>
                         {permissionSet && !held && <span className="mt-1 block font-mono text-[11px] text-muted-foreground">default: {gateFallback}</span>}
                         {denied && <span className="mt-1 block max-w-[260px] text-[11px] text-warning-text">{SERVER_DENY}</span>}
-                        {permission === "ask" && gate.ask_needs === "password" && <span className="mt-1 block max-w-[220px] text-[11px] text-warning-text">Each call is refused: no one can approve it here.</span>}
+                        {permission === "ask" && unattended && !denied && <span className="mt-1 block max-w-[220px] text-[11px] text-warning-text">Runs without asking: Never ask is on.</span>}
+                        {permission === "ask" && gate.ask_needs === "password" && !unattended && <span className="mt-1 block max-w-[220px] text-[11px] text-warning-text">Each call is refused: no one can approve it here.</span>}
                       </> : none}
                     </td>}
                     {providers && <td className="px-3 py-2">
@@ -129,8 +132,10 @@ export const PerHarness = ({ choice }: { choice: ToolChoice }) => <>{HARNESS_ORD
 /** The agent editor's tool settings: per capability with a provider choice that this agent grants, or that the server's
  *  pick leaves unavailable (the agent's own pick may be what makes it run, before it is granted), its provider, the
  *  server's pick its default, and what it resolves to on the agent's harness and model. Nothing at all when none has one. */
-export function AgentToolSettings({ agent, harness, model, tools, choices, gates = [], mcpServers, focus, callTools, value, issues, onChange }: {
+export function AgentToolSettings({ agent, harness, model, tools, choices, gates = [], mcpServers, focus, callTools, value, issues, unattended = false, onChange }: {
   agent: Agent | null;
+  /** The agent never asks, as the form has it: its tools set to ask run without asking. */
+  unattended?: boolean;
   /** The harness, model and tools in the form, saved or not (no model: the server's default). */
   harness: string;
   model?: string;
@@ -189,14 +194,16 @@ export function AgentToolSettings({ agent, harness, model, tools, choices, gates
   }, []); // eslint-disable-line react-hooks/exhaustive-deps
   if (!rows.length) return null;
   const saved = (agent?.definition.tool_settings ?? {}) as ToolSettings;
+  // The agent's approvals in the form against the saved one: a change of it changes what a tool resolves to, once saved.
+  const approvalsChanged = unattended !== ((agent?.definition.approvals ?? "ask") === "never");
   const { byTool, rest } = issuesFor(issues, "definition.tool_settings", rows.map((t) => t.name));
   return (
     <section aria-label="Tool settings" ref={section}>
       <div className="mb-2"><span className="caps text-[12px] font-semibold">Tool settings</span></div>
       {/* What ask means here: an agentic run waits for the owner's approval at each call; a workflow's call node can't
           wait, so the server refuses the start (its asks blocker, runnable.ts), in the same words. */}
-      <p className="-mt-1 mb-2 text-[12px] text-muted-foreground">Each of these tools takes this server's setting (its default here) unless it is changed here. {callTools ? "A call node can't wait for an approval: a tool set to ask stops the run from starting. Set it to allow." : "A tool on ask makes the run wait for your approval at each call."}</p>
-      <ToolTable label="This agent's tool settings" rows={rows} settings={value} fallbackOf={(t) => t.provider} issues={byTool} onEdit={(edit) => onChange(edit(value))}
+      <p className="-mt-1 mb-2 text-[12px] text-muted-foreground">Each of these tools takes this server's setting (its default here) unless it is changed here. {callTools ? "A call node can't wait for an approval: a tool set to ask stops the run from starting. Set it to allow." : unattended ? "Never ask is on: a tool on ask runs without waiting for you. A tool set to deny still holds." : "A tool on ask makes the run wait for your approval at each call."}</p>
+      <ToolTable label="This agent's tool settings" unattended={unattended} rows={rows} settings={value} fallbackOf={(t) => t.provider} issues={byTool} onEdit={(edit) => onChange(edit(value))}
         // The server's deny holds over this agent's own setting (rule A): the row stays at deny and says why.
         refused={(name) => serverDenies(name, gates, agent?.tools, mcpServers)} locked
         // The agent's own setting for every tool of its MCP server when the form has one; else the server's permission for
@@ -207,7 +214,8 @@ export function AgentToolSettings({ agent, harness, model, tools, choices, gates
           // capabilities', for the server's provider on each harness with the server's default model. A change of any of
           // them resolves once saved.
           // A permission changes it too (deny: unavailable; ask: no search that can't wait for an approval).
-          const own = (value[t.name]?.provider ?? null) !== (saved[t.name]?.provider ?? null) || (value[t.name]?.permission ?? null) !== (saved[t.name]?.permission ?? null);
+          // So does the agent's approvals (Never ask lets a search that can't wait for an approval run): read under the saved one.
+          const own = (value[t.name]?.provider ?? null) !== (saved[t.name]?.provider ?? null) || (value[t.name]?.permission ?? null) !== (saved[t.name]?.permission ?? null) || approvalsChanged;
           // The agent's word holds only for the provider it was read for, the one the select shows: a server pick changed
           // since capabilities were read (another tab) leaves capabilities' word, which goes with the select.
           const read = agent?.tools?.find((x) => x.name === t.name);

@@ -35,7 +35,7 @@ const DOC = {
           { name: 'limit', in: 'query', schema: { type: 'integer' } }, { name: 'status', in: 'query', schema: { type: 'string', enum: ['a', 'b'] } },
           { name: 'from', in: 'query', schema: { type: 'string' } }, { name: 'Idempotency-Key', in: 'header', schema: { type: 'string' } },
         ],
-        responses: { 200: json({ type: 'object', required: ['things'], properties: { things: { type: 'array', items: ref('Thing') }, next: { oneOf: [{ type: 'object', properties: { cursor: { type: 'string' } } }, { type: 'null' }] } } }) },
+        responses: { 200: json({ type: 'object', required: ['things'], properties: { things: { type: 'array', items: ref('Thing') }, next: { oneOf: [{ type: 'object', properties: { cursor: { type: 'string' } } }, { type: 'null' }] }, choice: { anyOf: [{ type: ['string', 'number', 'boolean', 'null'] }, { type: 'array', items: { type: ['string', 'number', 'boolean', 'null'] } }] } } }) },
       },
     },
     '/things/{thing_id}': {
@@ -84,6 +84,8 @@ test('the Python module is made of the projection: snake_case methods by resourc
   assert.ok(text.includes('    def list(self, *, limit: int | None = None, status: Literal["a", "b"] | None = None, from_: str | None = None, idempotency_key: str | None = None, timeout: float | None = None) -> ListThingsResponse:'));
   assert.ok(text.includes('        return self._call("listThings", (), None, {"limit": limit, "status": status, "from": from_, "Idempotency-Key": idempotency_key}, timeout=timeout)'));
   assert.ok(text.includes('    def get(self, thing_id: str, *, timeout: float | None = None) -> Tagged[GetThingResponse]:'), 'an answer with an ETag is Tagged');
+  // A union holding a list of a union keeps the list's members whole (a pin's value: a scalar, or a list of them).
+  assert.ok(text.includes('choice: str | float | bool | None | list[str | float | bool | None]'), text.match(/choice: .*/)?.[0]);
   assert.ok(text.includes('GetThingResponse: TypeAlias = "Page"'));
   assert.ok(text.includes('    def save(self, thing_id: str, body: SaveThingBody, *, timeout: float | None = None) -> None:\n        """Save a thing (PUT /things/{thing_id}). Its body\'s string values are secrets'));
   assert.ok(text.includes('    def read_file(self, thing_id: str, path: str, *, stream: Literal[True], timeout: float | None = None) -> StreamedResponse: ...'));

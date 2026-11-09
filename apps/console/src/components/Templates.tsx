@@ -8,7 +8,7 @@ import { type Client, ClientError, type FieldIssue } from "@/lib/client";
 import { keeper } from "@/lib/idempotency";
 import { type Problem, problem } from "@/lib/problem";
 import { grantsOf, issuesAt, needsOf, parametersOf, type ParameterText, startValues, templateHash, titleOf } from "@/lib/templatePackages";
-import type { TemplateApplied, TemplateView } from "@/lib/v2";
+import { type Approvals, NEVER_ASK_LINE, type TemplateApplied, type TemplateView } from "@/lib/v2";
 
 type Props = { v2: Client; go: (hash: string) => void };
 
@@ -75,6 +75,8 @@ function ApplyTemplate({ v2, template: t, go }: Props & { template: TemplateView
   // starts empty, its default as its hint, and is left out untouched for the server to apply that default.
   const [values, setValues] = useState<ParameterText>(() => startValues(t));
   const [ticked, setTicked] = useState<Set<string>>(new Set());
+  // The agent's approvals, sent as overrides.approvals: Ask me unless the owner picks Never ask.
+  const [approvals, setApprovals] = useState<Approvals>("ask");
   const [servers, setServers] = useState<Set<string> | null>(null);
   const [applying, setApplying] = useState(false);
   const [issues, setIssues] = useState<FieldIssue[]>([]);
@@ -94,7 +96,7 @@ function ApplyTemplate({ v2, template: t, go }: Props & { template: TemplateView
   const apply = async () => {
     setApplying(true); setIssues([]); setSaid(null);
     const sending = values;
-    const body = { parameters: parametersOf(t, sending), ...(grants.length ? { grants } : {}) };
+    const body = { parameters: parametersOf(t, sending), ...(grants.length ? { grants } : {}), overrides: { approvals } };
     try {
       const done = await v2.applyTemplate(t.name, body, keys.keyFor(t.name, body));
       keys.done();
@@ -187,6 +189,19 @@ function ApplyTemplate({ v2, template: t, go }: Props & { template: TemplateView
           ))}
         </Section>
       )}
+
+      <fieldset aria-label="Approvals" className="mt-6">
+        <legend className="caps text-[12px] font-semibold">Approvals</legend>
+        <div className="mt-2 divide-y border">
+          {([["ask", "Ask me", "A call whose permission is ask waits for your answer."], ["never", "Never ask (run unattended)", "For an agent that runs on its triggers, with no one there to answer."]] as const).map(([value, label, note]) => (
+            <label key={value} className="flex items-start gap-3 px-4 py-3">
+              <input type="radio" name="approvals" value={value} className="mt-1" checked={approvals === value} onChange={() => setApprovals(value)} />
+              <span><span className="font-mono text-[13px]">{label}</span><span className="block text-[12px] text-muted-foreground">{note}</span></span>
+            </label>
+          ))}
+        </div>
+        {approvals === "never" && <p className="mt-2 text-[12px] text-warning-text">{NEVER_ASK_LINE}</p>}
+      </fieldset>
 
       <Section title="What it makes">
         <dl className="space-y-1 px-4 py-3 font-mono text-[12px]">

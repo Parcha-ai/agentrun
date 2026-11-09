@@ -80,7 +80,7 @@ import type { TriggerAdapter } from "./trigger-adapter.js";
 import { TRIGGER_ADAPTERS } from "./trigger-adapters.js";
 import { webhook } from "./trigger-webhook.js";
 import { SCHEME_NAMES } from "./trigger-signatures.js";
-import { permissionFrom } from "./tool-gate.js";
+import { permissionFrom, pinWords } from "./tool-gate.js";
 import { CATCHUP_WINDOW_S, FAILURES_TO_PAUSE, HISTORY_KEPT, MIN_EVERY_S, PAYLOAD_KEPT_BYTES, type RunTrigger, SOURCE_KINDS, TARGET_KINDS, type TriggerClock, Triggers } from "./triggers.js";
 import { applyBodyOf, compiled, madeTriggerIssues, type Package, packageModel, packageView, readPackages, type TemplatesDeps } from "./templates.js";
 import { checkDefinitionBody, DEFAULT_INPUT_SCHEMA, definitionBodyIssues, ID, IDEMPOTENCY_TTL_S, inputIssues, isObject, type Json, stable, unknownFields } from "./validate.js";
@@ -1480,7 +1480,13 @@ async function startHolding(options: ServeOptions, data: string, lock: ServerLoc
     const server = settings.get() as Parameters<typeof permissionFrom>[1];
     const denied = grants.filter((tool) => { const set = permissionFrom(tool, server); return set.from === "server" && set.permission === "deny"; });
     const kept: InputIssue[] = denied.map((tool) => ({ field: `grants.${tool}`, reason: "not_allowed", message: `${tool} is denied on this server (Settings → Tools), so the agent was not allowed it: its runs are refused it until the owner changes that setting.` }));
-    const made = compiled(pkg, parameters, { ...(harness ? { harness } : {}), ...(model ? { model } : {}), mcp: saved, defaultTools, grants: grants.filter((tool) => !denied.includes(tool)), ...(approvals ? { approvals } : {}) }, templateDeps);
+    // The tools this server's own settings pin (or hold refused for a pin that does not read): a package's pin the agent
+    // store can't keep yet is covered there, so its grant stands; any other such tool is made deny (compiled).
+    // The agent's approvals: the apply's override, else the package's own (a template whose job runs on triggers says
+    // never), else ask. Deny and pins hold either way.
+    const chosenApprovals = approvals ?? pkg.approvals;
+    const serverPinned = new Set(Object.entries(settings.get()).filter(([, one]) => one?.pin || one?.brokenPin).map(([name]) => name));
+    const made = compiled(pkg, parameters, { ...(harness ? { harness } : {}), ...(model ? { model } : {}), mcp: saved, defaultTools, grants: grants.filter((tool) => !denied.includes(tool)), serverPinned, ...(chosenApprovals ? { approvals: chosenApprovals } : {}) }, templateDeps);
     // Every trigger is checked as POST /triggers checks it, its parameters filled, before anything is made: a schedule
     // from a parameter that does not read, or a date that has passed, refuses the apply (422 under triggers.<i>).
     const refusedTriggers = madeTriggerIssues(made.triggers, Date.now());
@@ -1489,10 +1495,15 @@ async function startHolding(options: ServeOptions, data: string, lock: ServerLoc
     for (const one of [made.agent, ...made.triggers]) if (Buffer.byteLength(JSON.stringify(one)) > MAX_BODY) throw new ApiError("payload_too_large", `the ${pkg.name} template, its parameters filled in, makes a body over ${MAX_BODY} bytes`, { details: { limit: "max_body_bytes" } });
     const { entry, warnings } = await createAgentOf(made.agent);
     const ids: string[] = [];
+    // Each webhook trigger's signing secret, minted as it is made: handed back in the apply's first answer alone, as POST
+    // /triggers hands back its own, so the owner can give it to the sender.
+    const secrets: { trigger_id: string; secret: string }[] = [];
     try {
       for (const [i, trigger] of made.triggers.entries()) {
         try {
-          ids.push((await triggers.create({ ...trigger, target: { ...(trigger.target as Json), agent_id: entry.agent.id } })).id);
+          const { id: madeId, secret } = await triggers.create({ ...trigger, target: { ...(trigger.target as Json), agent_id: entry.agent.id } });
+          ids.push(madeId);
+          if (secret) secrets.push({ trigger_id: madeId, secret });
         } catch (error) {
           if (error instanceof ApiError && error.code === "input_invalid" && error.extra.fields) throw told(new ApiError("input_invalid", error.message, { ...error.extra, fields: error.extra.fields.map((f) => ({ ...f, field: `triggers.${i}.${f.field}` })) }));
           throw error;
@@ -1509,7 +1520,12 @@ async function startHolding(options: ServeOptions, data: string, lock: ServerLoc
       await agents.setArchived("agent", entry.agent.id, true).catch((undo: Error) => log?.(logLine("template_undo_failed", { template: pkg.name, agent: entry.agent.id, message: undo.message })));
       throw error;
     }
-    return { template: pkg.name, version: pkg.version, agent_id: entry.agent.id, trigger_ids: ids, warnings: [...skipped, ...kept, ...modelWarnings, ...warnings] };
+    // A pinned send whose destination parameter was not given is denied, never let go anywhere: said, by its gate name.
+    const unpinned: InputIssue[] = made.unpinned.map(({ tool, parameters: named }) => ({ field: `pins.${tool}`, reason: NOT_SET_UP, message: `${tool}'s arguments are fixed by ${named.map((one) => `the ${one} parameter`).join(" and ")}, which was not given, so the agent was made with ${tool} set to deny: it can't call it at all. Apply again with ${named.join(" and ")} set to let it.` }));
+    // A pin this server's agent store does not keep yet (tool-plane.ts AGENT_LAYER_PINS): said, with the setting that holds
+    // the send to its destination meanwhile, the server's.
+    const unkept: InputIssue[] = made.unkept.map(({ tool, pin }) => ({ field: `pins.${tool}`, reason: NOT_SET_UP, message: serverPinned.has(tool) ? `${tool} is not pinned to ${pinWords(pin)} for this agent yet (this server's agent store keeps an agent's own pin from the store cutover on); this server's own pin of ${tool} holds its calls meanwhile.` : `${tool} is not pinned to ${pinWords(pin)} for this agent yet: this server's agent store keeps an agent's own pin from the store cutover on. Until then the agent was made with ${tool} set to deny, so nothing it reads can send it elsewhere. Pin it on this server, which holds every agent's calls of ${tool}, and apply again to let it.`, ...(serverPinned.has(tool) ? {} : { fix: `Add ${JSON.stringify({ [tool]: { pin } })} to this server's tool settings (Settings → Tools; PUT /v2/settings/tools replaces the whole map, so send it with the rest).` }) }));
+    return { applied: { template: pkg.name, version: pkg.version, agent_id: entry.agent.id, trigger_ids: ids, warnings: [...skipped, ...kept, ...modelWarnings, ...unpinned, ...unkept, ...warnings] }, secrets };
   }
 
   /** A run create's issues told from the input this server checks (explain.ts): an agentic run's `{content: string}`,
@@ -2601,11 +2617,19 @@ async function startHolding(options: ServeOptions, data: string, lock: ServerLoc
         const pkg = templates.find((t) => t.name === id);
         if (!pkg) throw new ApiError("not_found", `no template ${id}: GET /v2/templates lists them`);
         const body = await bodyOf(req);
+        // Its webhook triggers' secrets are in its first answer alone, as POST /triggers' is: the Idempotency-Key's record
+        // keeps the agent, the triggers and a note, so a retry under the key gets the same ones and never a secret.
+        let secrets: { trigger_id: string; secret: string }[] = [];
         const answer = await idempotent(req, `/templates/${pkg.name}/apply`, body, async () => {
-          const applied = await applyTemplate(pkg, body);
-          return { status: 201, body: applied, headers: { location: `/v2/agents/${applied.agent_id}` } };
+          const made = await applyTemplate(pkg, body);
+          secrets = made.secrets;
+          const note = secrets.length ? { note: `Its webhook triggers' secrets were shown once, in the first answer; POST /v2/triggers/{trigger_id}/secret makes a new one.` } : {};
+          return { status: 201, body: { ...made.applied, ...note }, headers: { location: `/v2/agents/${made.applied.agent_id}` } };
         });
-        return send(res, answer.status, answer.body, answer.headers);
+        const replayed = answer.headers?.["idempotent-replayed"] === "true";
+        if (!secrets.length || replayed) return send(res, answer.status, answer.body, answer.headers);
+        const { note: _, ...first } = answer.body as Json;
+        return send(res, answer.status, { ...first, webhook_secrets: secrets }, answer.headers);
       }
       case "rotateTriggerSecret":
         return send(res, 200, triggers.rotate(id));

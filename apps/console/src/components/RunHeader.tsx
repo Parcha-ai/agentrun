@@ -58,6 +58,7 @@ export function RunHeader({ run, agentName, actions = {}, costText }: { run: Run
           <div className="mt-2 flex flex-wrap items-center gap-x-4 gap-y-2 text-[12px] text-muted-foreground max-sm:contents">
             <StatusBadge run={run} />
             {archived && <Chip tone="muted">Archived</Chip>}
+            {run.approvals === "never" && <Chip tone="warning" title="This run's agent never asks: no call of it waits for you.">Unattended</Chip>}
             <span className="font-mono">{run.kind} · rev {run.agent_version}{ranIn && ` · ${ranIn}`}</span>
             <span className="font-mono">{when(run.created_at)}</span>
             {/* A workflow run's cost is its graph's totals (`costText`), the same the totals bar shows. */}

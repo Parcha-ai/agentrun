@@ -27,6 +27,12 @@ export type ToolSettings = Record<string, ToolSetting>;
 /** GET /v2/agents/{id}'s `tools`: each tool the agent grants, with its permission and provider in force. */
 export type AgentTool = NonNullable<components["Agent"]["tools"]>[number];
 
+/** An agent's approvals (definition.approvals): "ask", the default, parks a call its tool gate says ask for the owner's
+ *  answer; "never" runs it unattended (every tool it has granted; deny and pins still apply). */
+export type Approvals = NonNullable<components["DefinitionInput"]["approvals"]>;
+/** What Never ask grants, in the words every place that offers it says. */
+export const NEVER_ASK_LINE = "Never ask: every tool this agent has runs without waiting for you. A tool set to deny, and a template's pins, still hold.";
+
 /** One issue in a refusal or a warning, at its field (`parameters.repo`, `secrets.KEY`), with the server's `fix` when it
  *  names one. */
 export type InputIssue = components["InputIssue"];

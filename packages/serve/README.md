@@ -912,7 +912,8 @@ default). An agent's `definition.tool_settings` has the same shape and is over t
 for its capability (`auto`, `native`, `exa-keyless` or `parallel` for `web_search`; `kernel` or `parallel` for `web_fetch`;
 `auto`, `browserbase`, `kernel` or `chrome` for `browser`, [below](#tools)); an
 unknown capability or provider is `422`. Any tool's settings also take a `permission`, `allow`, `ask` or `deny`, which the
-tool gate holds every call to (an ask parks the run for the owner's approval); a workflow's call node, which cannot wait
+tool gate holds every call to (an ask parks the run for the owner's approval), and an MCP tool's a `pin`, the arguments
+its calls must carry ([MCP servers](#mcp-servers), `422` for one that is not one); a workflow's call node, which cannot wait
 for an approval, refuses its run when its tool is set to ask or deny (`409`, `details.asks` or `details.denied`). The
 settings are kept in the data directory
 (`tool-settings.json`, 0600, written whole and durably), not a secret, and read by every run launched from then on.
@@ -1451,6 +1452,24 @@ asked by default.
   until the owner answers `POST /v2/runs/{id}/approvals/{approval_id}` from their password session. Allowed, the run
   sends the call once and resumes with its result; denied, it resumes with the refusal. A restart while a call is
   parked loses nothing.
+- **Pins.** An MCP tool's own key (`mcp:<server>/<tool>`, never the wildcard) may also carry `pin`, 1 to 8 of the
+  tool's top-level arguments, each to the one JSON scalar its calls must carry (`null`: the argument left out), or a
+  list of 1 to 16 of them, the argument one of the list, compared strictly:
+  `{"mcp:slack/slack_send_message": {"permission": "allow", "pin": {"channel_id": "C0123"}}}`,
+  `{"mcp:github/pull_request_review_write": {"pin": {"method": ["create", "submit_pending"], "event": [null, "COMMENT"]}}}`. The gate checks a pinned
+  tool's call before it runs or asks anyone, whatever the permission (an allow, an ask, a grant): a call whose arguments
+  are not as pinned is refused, never sent and never asked about, and the model reads "mcp:slack/slack_send_message may
+  only be called with channel_id = C0123: its destination is fixed by the agent's settings". The run's process logs a
+  line naming the tool, the call and the arguments that did not hold, and its Timeline row is a failed call, as any
+  refusal's. A call approved under ask is checked again before it is sent. A pin adds to a setting and is never a
+  permission: the agent's pin and the server's both hold (an argument both pin takes what holds both), and where
+  nothing holds both every call is refused, saying so. A template pins its sends' destinations to its parameters ([Templates](#templates)). A pin in
+  `tool-settings.json` that does not read refuses every call of its tool, and `GET /settings/tools` serves it as
+  `pin_broken: true`. A `PUT` that keeps the tool's key and sets no valid pin (the mark sent back as served, or the pin
+  left out) keeps it broken, so saving another tool's setting never lifts it; a valid pin repairs it, and leaving the
+  key out removes the setting. Until the agent
+  store's cutover an agent's own pin (`definition.tool_settings.<tool>.pin`) is refused, `422 not_set_up_here`: the
+  store this server writes today keeps no pin, so set it on the server meanwhile.
 - **Prices.** `PUT /v2/settings/mcp-servers/{name}` takes `prices`, each tool's price in USD a call
   (`{"prices": {"search": 0.01}}`; a finite number, 0 or more, for a tool the server lists; else `422`). A priced call
   is held at its price under the run's `max_cost_usd`, refused unsent when the cap cannot take it, and booked as the
@@ -1753,6 +1772,22 @@ overrides?: {model}}` makes one, or nothing when a check fails (a trigger refuse
 package's `version` is SemVer and never `definition.version`, the agent's revision number. The first package is `code-review`, a code review agent for one GitHub repository. The format and the
 rules of an apply are in [templates/README.md](https://github.com/Parcha-ai/agentrun/blob/main/packages/serve/templates/README.md);
 `agentrun template validate DIR` checks a folder as the server does.
+
+`agentrun template eval DIR` (`agentrun-serve eval-template DIR`) runs a package's eval cases as real runs of its agent
+and grades each run with the case's graders: by default on a server of its own over a temp data directory, so it never
+touches yours, with each case's fake MCP servers on loopback and its learned notes seeded through the learning API. Real
+models cost money: each run is capped at its case's `max_cost_usd`. It exits 0 when every case passed, 1 when one
+failed, 2 when nothing ran. The runner, the graders and the report are in
+[templates/README.md](https://github.com/Parcha-ai/agentrun/blob/main/packages/serve/templates/README.md#running-the-evals).
+
+| `eval-template` flag | What |
+| --- | --- |
+| `--case NAME` | A case to run; repeat it. Without one, every case. |
+| `--runs N` | Runs of each case, in place of each case's `runs`. |
+| `--server URL` | Run on that server, its token in `AGENTRUN_API_KEY` (the launcher hands it over its pipe; never printed). The agents the eval makes are archived at the end. |
+| `--grader-model PROVIDER/MODEL` | The `llm` graders' model; default the server's. |
+| `--report FILE` | The whole report as JSON (per case, run and grader: pass, reason, cost); a summary goes to stdout, progress to stderr. |
+| `--faux MODULE` | Answer every model request from the module, as the server's `--faux` does. Not with `--server`. |
 
 ## What it serves
 
