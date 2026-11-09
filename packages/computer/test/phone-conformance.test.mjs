@@ -56,6 +56,28 @@ test("--kind phone passes the phone harness: a pinch it refuses in words is a Fu
 	assert.equal(fake.sessions.size, 0);
 });
 
+test("touch.tap's failure says what it saw: the screen in px and dp, what is in front, the tap and the row, and whether the title shows outside the list", { timeout: 60_000 }, async () => {
+	// Two faults that leave run 6's live words alike: a page that opens beside a list that stays, and a tap that misses.
+	const words = {};
+	for (const fault of ["twoPane", "rowTapsMiss"]) {
+		const fake = fakePhoneHarness({ [fault]: true });
+		const provider = await create({ apiKey: KEY, fetch: fake.fetch, adb: fake.adb, ledger: memoryLedger(), now: fake.clock.now, sleep: fake.clock.sleep, maxLifetimeMs: 10 * 60_000 });
+		const report = await runConformance(provider, { image: "android", patience: 1000, cases: conformanceCases.filter((c) => c.id === "touch.tap") });
+		assert.equal(statuses(report)["touch.tap"], "fail", fault);
+		words[fault] = reasonOf(report, "touch.tap");
+		assert.match(words[fault], /^the page of "Network & internet" after a tap on its row: its title, and not the row "Connected devices": still not so after/, fault);
+		assert.equal(fake.sessions.size, 0);
+	}
+	assert.match(
+		words.twoPane,
+		/ \(screen 360x640 px, 360x640 dp; in front: com\.android\.settings; the tap at 90,128 on the row's bounds \[0,96,180,64\]; its title outside the list: yes, at \[196,24,148,40\]; the row "Connected devices": still shown\)$/,
+	);
+	assert.match(
+		words.rowTapsMiss,
+		/ \(screen 360x640 px, 360x640 dp; in front: com\.android\.settings; the tap at 180,128 on the row's bounds \[0,96,360,64\]; its title outside the list: no; the row "Connected devices": still shown\)$/,
+	);
+});
+
 test("apps.launch-terminate fails a phone that launches nothing: the case is no pass by default", { timeout: 60_000 }, async () => {
 	const fake = fakePhoneHarness({ launchNothing: true });
 	const provider = await create({ apiKey: KEY, fetch: fake.fetch, adb: fake.adb, ledger: memoryLedger(), now: fake.clock.now, sleep: fake.clock.sleep, maxLifetimeMs: 10 * 60_000 });

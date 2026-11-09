@@ -2,11 +2,11 @@
 // asked, and a pinch moves two fingers apart. A phone that takes no fixture file is checked through Settings and its
 // UI tree instead (settings.ts): a tap on a row opens that row's page, the back button comes back, and a swipe up
 // moves the list up.
-import type { Point } from "../../protocol.js";
+import type { Point, UiTreeResult } from "../../protocol.js";
 import type { FixtureEvent, StartedFixture } from "../fixture.js";
 import type { Case, CaseContext } from "../types.js";
 import { act, allRan, logged, pointIn } from "./input.js";
-import { listOf, middle, openSettings, rowsOf, settingsRows, textsOf, throughSettings } from "./settings.js";
+import { listOf, middle, openSettings, rowsOf, settingsRows, tapScene, textsOf, throughSettings } from "./settings.js";
 
 /** How far a logged touch may be from where it was aimed: a phone's input path may round. */
 const SLACK = 2;
@@ -34,10 +34,18 @@ async function tapThroughSettings(t: CaseContext) {
 	const [row, next] = [rows[0], t.present(rows.find((one) => one.text !== rows[0].text), "a second row with another title")];
 	const at = middle(row.bounds);
 	allRan(t, await act(t, [{ type: "tap", at }]), 1, `a tap on Settings' row ${JSON.stringify(row.text)} at ${at}`);
-	await t.until(async () => {
-		const texts = textsOf(await t.call("apps.ui_tree", {}));
-		return texts.includes(row.text) && !texts.includes(next.text);
-	}, `the page of ${JSON.stringify(row.text)} after a tap on its row: its title, and not the row ${JSON.stringify(next.text)}`);
+	let seen: UiTreeResult | undefined;
+	try {
+		await t.until(async () => {
+			seen = await t.call("apps.ui_tree", {});
+			const texts = textsOf(seen);
+			return texts.includes(row.text) && !texts.includes(next.text);
+		}, `the page of ${JSON.stringify(row.text)} after a tap on its row: its title, and not the row ${JSON.stringify(next.text)}`);
+	} catch (error) {
+		// A live run showed only the wait: the words say what the case saw, so a page beside the list tells apart from a
+		// tap that missed.
+		throw new Error(`${error instanceof Error ? error.message : String(error)} (${await tapScene(t, { at, row, next, tree: seen })})`);
+	}
 	allRan(t, await act(t, [{ type: "button", name: "back" }]), 1, "the back button");
 	await t.until(async () => textsOf(await t.call("apps.ui_tree", {})).includes(next.text), `Settings' list again after back: the row ${JSON.stringify(next.text)}`);
 }
