@@ -30,7 +30,7 @@ import { WEB_FETCH_TOOL } from "../web-fetch.js";
 import { WEB_SEARCH_TOOL } from "../web-search.js";
 import { environmentLine } from "../environment.js";
 import { effortGuidance } from "../effort-guidance.js";
-import { laidLearned, learningFolderOf, pinnedWorkflows, readPin, secretsShown } from "../learning.js";
+import { laidLearned, type LearnedWorkflow, learningFolderOf, secretsShown } from "../learning.js";
 import { layLearningSeed } from "./learning-seed.js";
 import { savedKeyValues } from "../server-keys.js";
 import { learningWorkspace } from "../learn/folder.js";
@@ -327,6 +327,27 @@ export async function adapterRunSpecFromLaunch(launch: RunLaunch, run: AdapterRu
   delete toolEnv[TOOL_PLANE_ENV];
   if (launch.plane && Object.keys(launch.plane).length) toolEnv[TOOL_PLANE_ENV] = JSON.stringify(launch.plane);
 
+  // The launch's learning start (none: the run does not learn), decided once at launch.
+  const start = learningStartOf(launch);
+  // The revision's own skills are laid in the run's .agents/skills/ before they are read (main's server start laid them;
+  // on the one store the claim does), from the revision row's texts (the body keeps only each file's SHA-256): each
+  // folder not there yet, never over a learned skill or an earlier claim's.
+  await layOwnSkills(ws.workspace, (revisionRow.skills ?? {}) as Record<string, string>);
+  // A learning run's seed, read once from its learning folder where the run's place keeps it: its notes in .learning/
+  // and its learned skills beside the revision's own (runner/learning-seed.ts), cut of the server's secrets, the learned
+  // skills then in the skill list the prompt names, its learned workflows the ones its learned_workflow tool runs. Laid
+  // before the run's tools are bound. A learning fault lays nothing and the run goes on.
+  const seedLaid = start
+    ? await layLearningSeed({
+      work: ws.workspace,
+      seed: start.seed,
+      folder: () => (archil === undefined ? learningFolderOf(deps.data, runRow.agentId) : learningWorkspace({ mode: "archil", agentId: runRow.agentId, archil })),
+      own: Object.keys(revisionRow.skills ?? {}),
+      shown: async () => secretsShown(runnerSecrets(deps.env, await savedKeyValues(deps.store, deps.sealKey))),
+      log,
+    })
+    : undefined;
+
   // The tool host's install lifecycle: what a binding registers to run in each conversation's creating commit, once the
   // Harness is open before the session, and at the run's end (the browser tool's reconcile and release hang off these). The
   // adapter loop runs them from the spec's `lifecycle` (adapter-loop.ts hostLifecycle).
@@ -366,33 +387,15 @@ export async function adapterRunSpecFromLaunch(launch: RunLaunch, run: AdapterRu
   const handTools = tools.hostTools(granted, undefined, results);
   // The non-hand tools run on the claim's keys (host.env), so a vendor's error may echo one: each answer, and a throw's
   // words, pass the run's one redactor before the harness, the model or the record has them.
-  const nonHandTools = (await bindNonHandTools(host, granted, run, context, results, root, launch.plane)).map((tool) => answersCut(tool, cut));
+  const nonHandTools = (await bindNonHandTools(host, granted, run, context, results, root, launch.plane, seedLaid?.workflows ?? [])).map((tool) => answersCut(tool, cut));
   const sessionTools = [...handTools, ...nonHandTools];
 
   // The run's system prompt, as main's per-run process builds it (app.ts): the environment line first (environment.ts, as
   // pi installs it before every other section), then the revision's instructions with what the agent learned laid in
   // (learning.ts laidLearned, from the launch's learning start — the # Learned section decided once at launch, so the runner
-  // reads no learning folder), its own skills through skills.ts promptOf, then the effort guidance (the launch's effort,
-  // never this process's environment). The one path for every harness.
-  const start = learningStartOf(launch);
+  // reads no learning folder for it), its own skills through skills.ts promptOf, then the effort guidance (the launch's
+  // effort, never this process's environment). The one path for every harness.
   const laid = start ? laidLearned(body.instructions ?? "", start.section) : (body.instructions ?? "");
-  // The revision's own skills are laid in the run's .agents/skills/ before they are read (main's server start laid them;
-  // on the one store the claim does), from the revision row's texts (the body keeps only each file's SHA-256): each
-  // folder not there yet, never over a learned skill or an earlier claim's.
-  await layOwnSkills(ws.workspace, (revisionRow.skills ?? {}) as Record<string, string>);
-  // A learning run's seed, read once from its learning folder where the run's place keeps it: its notes in .learning/
-  // and its learned skills beside the revision's own (runner/learning-seed.ts), cut of the server's secrets, the learned
-  // skills then in the skill list the prompt names. A learning fault lays nothing and the run goes on.
-  const seedLaid = start
-    ? await layLearningSeed({
-      work: ws.workspace,
-      seed: start.seed,
-      folder: () => (archil === undefined ? learningFolderOf(deps.data, runRow.agentId) : learningWorkspace({ mode: "archil", agentId: runRow.agentId, archil })),
-      own: Object.keys(revisionRow.skills ?? {}),
-      shown: async () => secretsShown(runnerSecrets(deps.env, await savedKeyValues(deps.store, deps.sealKey))),
-      log,
-    })
-    : undefined;
   const instructions = await promptOf(laid, [...Object.keys(body.skills ?? {}), ...(seedLaid?.skills ?? [])], ws.workspace, { onDemand: readsFiles(granted) });
   const guidance = effortGuidance(launch.effort);
   const system = [environmentLine(), instructions, guidance].filter((line): line is string => Boolean(line));
@@ -488,22 +491,23 @@ export function hostToolCtxOf(run: AdapterRun, context: Context, results: ToolRe
   };
 }
 
-/** The run's learned_workflow tool as a HostTool, listed when its pin names learned workflows (as main lists it, so the
- *  tool set the model sees matches main). Every run's session — pi's and every CLI harness's — has a model port, so its
- *  model nodes run on the session's proxied models (run.ledger.models, port-models.ts: read at each request, labelled
- *  learned_workflow), each a request on the run's one route, booked on the run's one ledger and priced by the session's
- *  policy. A pin whose learned-workflows file is not on the runner is skipped (its own seam), never failing the run. Its
- *  call nodes run the agent's tools' effects on `env`, the run's scoped keys. */
+/** The run's learned_workflow tool as a HostTool, listed when the revision grants it and the claim's seed lay chose
+ *  learned workflows (`workflows`: runner/learning-seed.ts, by learning.ts chooseWorkflows, as main's start chooses
+ *  them, so the tool set the model sees matches main). Every run's session — pi's and every CLI harness's — has a model
+ *  port, so its model nodes run on the session's proxied models (run.ledger.models, port-models.ts: read at each
+ *  request, labelled learned_workflow), each a request on the run's one route, booked on the run's one ledger and priced
+ *  by the session's policy. Its call nodes run the agent's tools' effects on `env`, the run's scoped keys. */
 export async function learnedWorkflowHostTool(opts: {
   readonly run: AdapterRun;
   readonly granted: readonly string[];
   readonly plane: RunLaunch["plane"];
   readonly env: NodeJS.ProcessEnv;
   readonly work: string;
+  readonly workflows: readonly LearnedWorkflow[];
   readonly ctx: HostToolCtx;
 }): Promise<HostTool | undefined> {
   if (!opts.granted.includes(LEARNED_WORKFLOW_TOOL)) return undefined;
-  const flows = await pinnedWorkflows(opts.work, await readPin(opts.work)).catch(() => []);
+  const flows = opts.workflows;
   if (!flows.length) return undefined;
   const models = await opts.run.ledger.models(LEARNED_WORKFLOW_TOOL);
   const tool = learnedWorkflowTool({ workflows: flows, granted: opts.granted, ...(opts.plane ? { plane: opts.plane } : {}), env: opts.env, work: opts.work, models: models as never, modelOf: () => ({ provider: PORT_PROVIDER, modelId: "session" }) });
@@ -536,7 +540,7 @@ export function answersCut(tool: HostTool, cut: (text: string) => string): HostT
   };
 }
 
-async function bindNonHandTools(host: ToolHost, granted: readonly string[], run: AdapterRun, context: Context, results: ToolResults, root: string, plane: RunLaunch["plane"]): Promise<AdapterRunSpec["session"]["tools"]> {
+async function bindNonHandTools(host: ToolHost, granted: readonly string[], run: AdapterRun, context: Context, results: ToolResults, root: string, plane: RunLaunch["plane"], workflows: readonly LearnedWorkflow[]): Promise<AdapterRunSpec["session"]["tools"]> {
   const names = granted.filter((name) => name === WEB_FETCH_TOOL || name === WEB_SEARCH_TOOL || name.startsWith("monid."));
   // Fail closed (browserListed): the browser binds only on the native route (BROWSER_ON_RUNNER) and with the claim's
   // one-ledger booking on its ToolHost (host.ledger.paid); otherwise none of its tools is listed. No early return on an
@@ -557,10 +561,10 @@ async function bindNonHandTools(host: ToolHost, granted: readonly string[], run:
     }
   }
 
-  // learned_workflow, listed when the run's pin names learned workflows (as main lists it): its model nodes run on the
-  // session's proxied models (run.ledger.models), each a request on the run's one route labelled learned_workflow. The
-  // agent's scoped keys (host.env) are its call nodes'.
-  const learned = await learnedWorkflowHostTool({ run, granted, plane, env: host.env, work: root, ctx });
+  // learned_workflow, listed when the claim's seed lay chose learned workflows (as main lists it): its model nodes run on
+  // the session's proxied models (run.ledger.models), each a request on the run's one route labelled learned_workflow.
+  // The agent's scoped keys (host.env) are its call nodes'.
+  const learned = await learnedWorkflowHostTool({ run, granted, plane, env: host.env, work: root, workflows, ctx });
   if (learned) tools.push(learned);
 
   // The browser (tl-browser): tools.ts's own binding on this run's ToolHost (its store, claim and seal key, its live viewers
