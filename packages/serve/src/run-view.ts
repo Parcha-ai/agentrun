@@ -181,7 +181,7 @@ export const withdrawn = (answer: ApprovalAnswer | undefined) => answer?.decisio
 type AskEntry = { callId: string; tool: string; args: unknown; requestedAt: string; price?: number | "not metered" | null };
 /** An `agentrun.answer` entry's data: the person's answer the runner wrote, or a withdrawal when the run was stopped or
  *  cancelled while the call waited. */
-type AnswerEntry = { callId: string; approved?: boolean; decision?: "allow" | "deny" | "withdrawn"; answeredAt?: string; note?: string };
+type AnswerEntry = { callId: string; approved?: boolean; decision?: "allow" | "deny" | "withdrawn"; answeredAt?: string; note?: string; superseded?: { decision: string; answeredAt?: string } };
 /** The least a journal entry a reader here reads is: its kind and its data. */
 type JournalEntry = { kind?: string; data?: unknown };
 const dataOf = <T>(entry: JournalEntry): T => entry.data as T;
@@ -213,17 +213,30 @@ export function asksOf(entries: readonly JournalEntry[]): Map<string, Approval> 
 
 /** The answers a run got to its asks, from its journal's `agentrun.answer` entries, by the call's id (the key the moment
  *  and the pending views read as run.meta.approvals): a person's allow or deny with any note, or a withdrawal taken when
- *  the run was stopped or cancelled while the call waited. The first answer for a call stands. */
-export function answersOf(entries: readonly JournalEntry[]): Record<string, ApprovalAnswer> {
+ *  the run was stopped or cancelled while the call waited. The first answer for a call stands, but for a stop's
+ *  withdrawal over an allow the call had not finished on (its `superseded`, as main's stop superseded it): that is the
+ *  call's answer, keeping the one it overrode. On a `final` run, a call it asked about with no answer reads withdrawn: a
+ *  run that ends never waits on a person (its end wrote no withdrawal only when its journal would not take it). */
+export function answersOf(entries: readonly JournalEntry[], { final = false }: { final?: boolean } = {}): Record<string, ApprovalAnswer> {
   const out: Record<string, ApprovalAnswer> = {};
   for (const entry of entries) {
     if (entry.kind !== KINDS.answer) continue;
     const d = dataOf<AnswerEntry>(entry);
-    if (typeof d?.callId !== "string" || d.callId in out) continue;
+    if (typeof d?.callId !== "string") continue;
     // The runner writes { callId, approved, note? } (journal-kinds.ts AnswerData): its decision is read from `approved`.
     const decision = d.decision ?? (d.approved === true ? "allow" : d.approved === false ? "deny" : undefined);
     if (decision === undefined) continue;
-    out[d.callId] = { decision, ...(d.note !== undefined ? { note: d.note } : {}), answered_at: d.answeredAt ?? "" };
+    const given = out[d.callId];
+    if (given && !(decision === "withdrawn" && d.superseded)) continue;
+    const superseded = given ? { superseded: { decision: given.decision, answered_at: given.answered_at, ...(given.note !== undefined ? { note: given.note } : {}), ...(given.by ? { by: given.by } : {}) } } : {};
+    out[d.callId] = { decision, ...(d.note !== undefined ? { note: d.note } : {}), answered_at: d.answeredAt ?? "", ...superseded };
+  }
+  if (final) {
+    for (const entry of entries) {
+      if (entry.kind !== KINDS.ask) continue;
+      const { callId } = dataOf<AskEntry>(entry);
+      if (typeof callId === "string" && !(callId in out)) out[callId] = { decision: "withdrawn", answered_at: "" };
+    }
   }
   return out;
 }
