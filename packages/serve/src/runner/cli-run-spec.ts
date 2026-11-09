@@ -30,7 +30,7 @@ import { learningWorkspace } from "../learn/folder.js";
 import { learningEndOfRun } from "./learning-end.js";
 import { type ModelRef, providerModels, runModels } from "../model.js";
 import { firstMessage } from "../run-manifest.js";
-import { learningStartOf, type RunLaunch } from "../run-launch.js";
+import { learningStartOf, seedFailed, type RunLaunch } from "../run-launch.js";
 import { readsFiles, systemOf } from "../skills.js";
 import { DATA_ENV } from "../server-fs.js";
 import { INPUTS_DIR, UPLOADS_DIR, Uploads } from "../uploads.js";
@@ -192,7 +192,8 @@ export async function cliRunSpecFromLaunch(launch: RunLaunch, run: AdapterRun, d
   // own skills through systemOf with the harness's own check (a harness that loads skills itself keeps in the prompt only
   // those it would refuse, and is handed the rest), then the effort guidance.
   const start = learningStartOf(launch);
-  const laid = start ? laidLearned(body.instructions ?? "", start.section) : (body.instructions ?? "");
+  // A start whose seed failed tells the run nothing: it is never asked what to keep (learning-end.ts drops it).
+  const laid = start && !seedFailed(start) ? laidLearned(body.instructions ?? "", start.section) : (body.instructions ?? "");
   const check = await entry.skillCheck?.();
   // The revision's own skills laid before they are read, as the pi spec lays them (adapter-run-spec.ts).
   await layOwnSkills(ws.workspace, (revisionRow.skills ?? {}) as Record<string, string>, { computer: (launch as { computer?: ComputerSetting }).computer?.kind });

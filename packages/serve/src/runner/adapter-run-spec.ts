@@ -19,7 +19,7 @@ import type { LiveHandover, LiveViewerStore } from "../browser-live.js";
 import { dropLiveViewer, putLiveViewer } from "../browser-live.js";
 import type { Tier } from "../model.js";
 import { firstMessage } from "../run-manifest.js";
-import { learningStartOf, type RunLaunch } from "../run-launch.js";
+import { learningStartOf, seedFailed, type RunLaunch } from "../run-launch.js";
 import type { Store } from "../store/store.js";
 import { isObject } from "../validate.js";
 import { type RunFiles, runGate } from "../tool-gate.js";
@@ -388,7 +388,8 @@ export async function adapterRunSpecFromLaunch(launch: RunLaunch, run: AdapterRu
   // reads no learning folder), its own skills through skills.ts promptOf, then the effort guidance (the launch's effort,
   // never this process's environment). The one path for every harness.
   const start = learningStartOf(launch);
-  const laid = start ? laidLearned(body.instructions ?? "", start.section) : (body.instructions ?? "");
+  // A start whose seed failed tells the run nothing: it is never asked what to keep (learning-end.ts drops it).
+  const laid = start && !seedFailed(start) ? laidLearned(body.instructions ?? "", start.section) : (body.instructions ?? "");
   // The revision's own skills are laid in the run's .agents/skills/ before they are read (main's server start laid them;
   // on the one store the claim does), from the revision row's texts (the body keeps only each file's SHA-256): each
   // folder not there yet, never over a learned skill or an earlier claim's.

@@ -156,3 +156,8 @@ export function readLaunchBody(stored: unknown): RunLaunch | undefined {
 /** The run's learning start (its given notes, its seed sha and its # Learned section), read from one place by learning's
  *  routes and the runner; undefined when the run does not learn. */
 export const learningStartOf = (launch: RunLaunch): RunLaunch["learning"] => launch.learning;
+
+/** A learning start whose seed could not be read (seed null and no seedNotes, runs-over-store.ts learningStartFor): the
+ *  run learns nothing, is never asked what to keep, and so is never told it learns (main's start pinned nothing for it,
+ *  and its instructions got no # Learned). */
+export const seedFailed = (start: NonNullable<RunLaunch["learning"]>): boolean => start.seed === null && start.seedNotes === undefined;
