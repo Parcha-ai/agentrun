@@ -218,14 +218,14 @@ interface Case {
 }
 
 /** One event of the runner process (child.ts): a claim, a lost claim, a commit's outcome by epoch, and when. */
-type Seen = { type?: string; at?: number; epoch?: number; name?: string; why?: string; claim?: { epoch: number } };
+export type Seen = { type?: string; at?: number; epoch?: number; name?: string; why?: string; claim?: { epoch: number } };
 
 /**
  * The claim's fence, as the stalled process's own events show it: once it went on (`continuedAt`, its lease run out and no
  * one holding the run yet), its old loop's writes under its first epoch are each refused by the fence, by name (ClaimLost
  * or Fenced), and at least one was tried. A landed one names how long after its claim was lost it landed.
  */
-function fenceHeld(events: readonly Seen[], continuedAt: number): void {
+export function fenceHeld(events: readonly Seen[], continuedAt: number): void {
   const history = JSON.stringify(events);
   const first = events.find((event) => event.type === "claimed")?.claim?.epoch;
   const old = events.filter((event) => (event.at ?? 0) >= continuedAt && event.epoch === first && (event.type === "commit-landed" || event.type === "commit-refused"));
