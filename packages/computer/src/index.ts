@@ -10,13 +10,16 @@ export {
 	daemonWatch,
 	redactWords,
 	type ScreenFrame,
+	type ScreenFrames,
 	type ScreenWatch,
+	ScreenWatchError,
 	type ScreenWatchHandlers,
 	toAction,
 	type ViewerEvent,
 	type WatchEndCode,
 	watchEndCode,
 	type WatchOptions,
+	watchScreen,
 } from "./screen-watch.js";
 export { type DockerDesktopOptions, type DockerEgressOptions, DockerProvider, type DockerProviderOptions } from "./docker.js";
 export {
