@@ -19,6 +19,13 @@ const FAUX_JEV = new URL("./fixtures/faux-jev.mjs", import.meta.url).pathname;
 const FAUX_HARNESS = new URL("./fixtures/faux-harness.mjs", import.meta.url).pathname;
 const FAUX_MONID = new URL("./fixtures/faux-monid.mjs", import.meta.url).pathname;
 const PLAN = [["check-units.md", note("Check units", "Convert every amount to one unit before comparing")]];
+/** A key the host holds (a key-named value in the environment the runner starts with, which its learning end refuses:
+ *  runner/redact.ts runnerSecrets), for a user's message to quote. */
+const hostKey = (t) => {
+  const token = `not-a-secret-${"probe"}-${randomBytes(12).toString("hex")}`;
+  withEnv(t, { LEARN_PROBE_API_KEY: token });
+  return token;
+};
 const callsIn = (file) => (existsSync(file) ? readFileSync(file, "utf8").trim().split("\n").filter(Boolean).map((line) => JSON.parse(line)) : []);
 
 test("the grader's verdict decides: a drop, a merge that keeps no note and an answer that is no verdict are dropped as grader, with the verdict kept; a model that fails is grade_failed", { timeout: 150_000, skip: SWITCH_TODO }, async (t) => {

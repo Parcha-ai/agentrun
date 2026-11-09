@@ -5,7 +5,6 @@
 // with a wake, the grade never asked again. The grader's prompt is the server's (learn/grade.ts gradePrompt), asked once
 // more on an answer it cannot read, as grade.ts did.
 import assert from "node:assert/strict";
-import { readFileSync } from "node:fs";
 import { test } from "node:test";
 import { BACKGROUND_CONTEXT } from "@earendil-works/chord/context";
 import { agentWithRevision, storeOn } from "./store-helpers.mjs";
@@ -77,10 +76,8 @@ test("the grader's prompt and bounds are the server's: gradePrompt over the same
   const expected = gradePrompt({ run: "run-1", instructions: "Be brief.", active: [], superseded: [], proposed: [NOTE], asked: PROPOSAL.asked });
   assert.equal(calls.ask[0].request.prompt, expected);
   assert.equal(calls.ask[0].request.maxTokens, GRADE_MAX_TOKENS);
-  // The same figures the server's grade.ts used, while it is still in the tree.
-  const server = readFileSync(new URL("../src/grade.ts", import.meta.url), "utf8");
-  assert.match(server, new RegExp(`GRADE_TIMEOUT_MS = ${GRADE_TIMEOUT_MS.toLocaleString("en-US").replace(/,/g, "_")};`));
-  assert.match(server, new RegExp(`GRADE_MAX_TOKENS = ${GRADE_MAX_TOKENS.toLocaleString("en-US").replace(/,/g, "_")};`));
+  // The figures main's server grade used (its grade.ts, gone with E6): 180 s and 16,000 tokens.
+  assert.deepEqual([GRADE_TIMEOUT_MS, GRADE_MAX_TOKENS], [180_000, 16_000]);
 });
 
 test("an answer the grader's reader can't read is asked once more; two such answers drop it unread", async (t) => {

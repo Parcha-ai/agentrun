@@ -1,5 +1,5 @@
 // What the learning tests share: an agent that learns, a run followed until the server's part of its learning is done,
-// the runner's learning run's grade and merge on its proposal (learnedOnMain), and git in the test's own hands to read
+// the runner's learning run's grade and merge on its proposal, waited for (learnedOnMain), and git in the test's own hands to read
 // the agent's folder.
 import assert from "node:assert/strict";
 import { spawnSync } from "node:child_process";
@@ -8,11 +8,8 @@ import { join } from "node:path";
 import { mergedNote } from "../dist/learn/notes.js";
 import { agentFolderOf } from "../dist/files.js";
 import { learningRepair } from "../dist/learn/folder.js";
-import { learningCommit, readMain } from "../dist/learn/commit.js";
 import { gradedItems, gradePrompt, parseVerdict, UNREADABLE_REASON } from "../dist/learn/index.js";
 import { learningFolderOf } from "../dist/learning.js";
-import fauxLearn from "./fixtures/faux-learn.mjs";
-import { keptOf, mergeChangeOf } from "../dist/runner/learning-loop.js";
 import { localWorkspace } from "../dist/workspace/index.js";
 import { openSqliteStore } from "../dist/store/index.js";
 import { agent, follow, runDir } from "./support.mjs";
@@ -102,34 +99,22 @@ export async function keptProposal(server, runId) {
   }
 }
 
-/** Run `runId`'s kept proposal (the runner's learning_proposals row) graded and merged as the runner's learning run
- *  does it (runner/learning-loop.ts), on the agent's folder in the server's data: main read for the grade (readMain),
- *  the faux grader asked by the agent's instructions (gradePrompt, parseVerdict, asked once more when its answer can't be
- *  read), then what the verdict keeps merged by the learning run's own rule (keptOf, mergeChangeOf) through the folder's
- *  one write (learningCommit). What it came to: `problems` (main refused it before the grade), `failed` (no verdict),
- *  `verdict` with `result` (learningCommit's) when the verdict merges, or `verdict` alone when it keeps nothing. */
+/** Run `runId`'s learning, graded and merged by the runner's learning run (runner/learning-loop.ts, which the test
+ *  server's in-process runner runs on the faux grader), once it has ended, as GET /runs/{id}/learning reads it: `verdict`
+ *  with `result` (the merge: its commit on main) when it merged, `verdict` alone when the grader kept nothing,
+ *  `problems` when the checks or main refused it, `failed` when the grade failed. */
 export async function learnedOnMain(server, agentId, runId) {
-  assert.ok(server.data && server.api, "the server's data and api");
-  const kept = await keptProposal(server, runId);
-  const proposal = kept?.proposal?.proposal;
-  assert.ok(proposal, `run ${runId} kept a proposal: ${JSON.stringify(kept?.proposal)}`);
-  // The instructions of the revision the run ran, whose faux grading rules ("Grade: ...") the grader reads.
-  const { agent_version: version } = (await server.api("GET", `/runs/${runId}`)).body;
-  const revisions = (await server.api("GET", `/agents/${agentId}/revisions?limit=100`)).body.revisions;
-  const instructions = revisions.find((revision) => revision.version === version)?.definition?.instructions;
-  assert.equal(typeof instructions, "string", `run ${runId}'s revision (version ${version}) has instructions`);
-  const { workspace, end } = learningFolderOf(server.data, agentId);
-  try {
-    const main = await readMain(workspace, proposal);
-    if ("problems" in main) return { problems: main.problems };
-    const graded = await gradeOnFaux(fauxLearn, { runId, instructions, active: main.active, superseded: main.superseded, proposed: proposal.notes, files: proposal.files, asked: proposal.asked, triggered: proposal.triggered });
-    if (graded.failed) return { failed: graded.failed };
-    const { verdict } = graded;
-    if (!verdict.merge) return { verdict };
-    const merging = keptOf(proposal, verdict);
-    return { verdict, result: await learningCommit(workspace, mergeChangeOf(runId, merging, verdict, main.graded)) };
-  } finally {
-    await end();
+  assert.ok(server.api, "the server's api");
+  for (let i = 0; ; i++) {
+    const learning = (await server.api("GET", `/runs/${runId}/learning`)).body;
+    if (learning?.state === "merged") return { verdict: learning.verdict, result: { ok: true, main: learning.merged, commit: learning.merged } };
+    if (learning?.state === "dropped") {
+      if (learning.reason === "grade_failed") return { failed: new Error(learning.detail ?? "the grade failed") };
+      if (learning.verdict) return { verdict: learning.verdict };
+      return { problems: learning.problems ?? [] };
+    }
+    assert.ok(i < 1200, `run ${runId} of ${agentId}: its learning run ends: ${JSON.stringify(learning)}`);
+    await sleep(50);
   }
 }
 
