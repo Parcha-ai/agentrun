@@ -24,11 +24,24 @@ const CLI = new URL("../dist/cli.js", import.meta.url).pathname;
 const sealKey = () => randomBytes(32).toString("base64");
 const SEAL = ["AGENTRUN_SEAL_KEY"];
 
+/** How long an awaited event may be missing before its test fails, naming it: a fence against a test that would hang to
+ *  the runner's timeout when what it waits on never comes, never a timing (every pass waits for the event itself). */
+const BOUND_MS = 30_000;
+/** `promise`, or a failure naming `what` (a string, or one made at the failure) once BOUND_MS pass without it. */
+function bounded(promise, what) {
+  let timer;
+  const fence = new Promise((_, reject) => {
+    timer = setTimeout(() => reject(new Error(`${typeof what === "function" ? what() : what}: it did not come within ${BOUND_MS / 1000} s`)), BOUND_MS);
+    timer.unref();
+  });
+  return Promise.race([promise, fence]).finally(() => clearTimeout(timer));
+}
+
 /** A receiver on 127.0.0.1 at a port of its own: each request to its own path, with its headers and body, answered
  *  `answer(n)` (n from 1; a promise holds the answer until it settles). A request to another path (another process's,
  *  at a port it once had) is not counted. `down`: every connection is reset, as a receiver that is not there.
  *  `when(n)`: once it holds `n` requests (or `when(check)`, once `check(got)`), the requests, as each one comes: no
- *  poll, no deadline but the test's own. */
+ *  poll; `what` names it in the failure when it does not come (bounded). */
 async function receiver(t, answer = () => 200, down = false) {
   const got = [];
   const waiting = [];
@@ -48,9 +61,9 @@ async function receiver(t, answer = () => 200, down = false) {
   });
   await new Promise((resolve) => server.listen(0, "127.0.0.1", resolve));
   t.after(() => new Promise((resolve) => (server.close(resolve), server.closeAllConnections())));
-  const when = (want) => {
+  const when = (want, what = typeof want === "number" ? `request ${want} at the receiver` : "the request awaited at the receiver") => {
     const check = typeof want === "number" ? (all) => all.length >= want : want;
-    return check(got) ? Promise.resolve(got) : new Promise((resolve) => waiting.push({ check, resolve }));
+    return check(got) ? Promise.resolve(got) : bounded(new Promise((resolve) => waiting.push({ check, resolve })), () => `${what} (it holds ${got.length}: ${got.map((r) => JSON.parse(r.body).type).join(", ") || "none"})`);
   };
   return { url: `http://127.0.0.1:${server.address().port}${path}`, got, server, when };
 }
@@ -67,14 +80,14 @@ function logged() {
   };
   const when = (...parts) => {
     const found = lines.find((line) => parts.every((part) => line.includes(part)));
-    return found ? Promise.resolve(found) : new Promise((resolve) => waiting.push({ parts, resolve }));
+    return found ? Promise.resolve(found) : bounded(new Promise((resolve) => waiting.push({ parts, resolve })), `the log line with ${parts.join(" and ")}`);
   };
   return { lines, push, when };
 }
 
 /** `check()`'s value once truthy, read again at each change in `dir` (a file written or renamed there): what the server
  *  writes, awaited as it is written, never polled. A read that meets a file mid-write is read again at the next change. */
-function onDisk(dir, check) {
+function onDisk(dir, check, what = `the state awaited in ${dir}`) {
   const read = () => {
     try {
       return check();
@@ -84,8 +97,9 @@ function onDisk(dir, check) {
   };
   const now = read();
   if (now) return Promise.resolve(now);
-  return new Promise((resolve) => {
-    const watcher = watch(dir, (_, file) => {
+  let watcher;
+  const written = new Promise((resolve) => {
+    watcher = watch(dir, (_, file) => {
       // A reader's own shared-memory or journal file is no write of the server's.
       if (file && /-(shm|journal)$/.test(file)) return;
       const value = read();
@@ -95,6 +109,7 @@ function onDisk(dir, check) {
     const value = read();
     if (value) (watcher.close(), resolve(value));
   });
+  return bounded(written, what).finally(() => watcher.close());
 }
 
 /** The outbox on disk: its messages, none still to try. A message is tried only while pending (webhooks.ts schedule), so
@@ -165,7 +180,7 @@ test("demo: a run that ends and a run that asks its person each POST a Standard 
   // A run that answers: one run.ended, when it is carried back.
   const done = await startRun(api, "answers", "hi");
   await follow(api, done.run_id, ["completed"]);
-  const [ended] = ofType(await hook.when((got) => ofType(got, "run.ended").length), "run.ended");
+  const [ended] = ofType(await hook.when((got) => ofType(got, "run.ended").length, `the run.ended of run ${done.run_id} (the outbound notice of its end)`), "run.ended");
   assert.deepEqual(library.verify(ended.body, ended.headers), JSON.parse(ended.body), "the spec's own library verifies it");
   assert.ok(verifies(secret, ended), "and so does the spec's algorithm, written out");
   const message = JSON.parse(ended.body);
@@ -186,12 +201,12 @@ test("demo: a run that ends and a run that asks its person each POST a Standard 
   // A run that asks: run.needs_input while it waits for its person (a question), then run.ended once answered.
   const asks = await startRun(api, "asks", "Pick a region.", { tools: ["ask_person"] });
   await follow(api, asks.run_id, ["input_required"]);
-  const [waiting] = ofType(await hook.when((got) => ofType(got, "run.needs_input").length), "run.needs_input");
+  const [waiting] = ofType(await hook.when((got) => ofType(got, "run.needs_input").length, `the run.needs_input of run ${asks.run_id} (the outbound notice of its wait)`), "run.needs_input");
   assert.deepEqual(library.verify(waiting.body, waiting.headers).data, { run_id: asks.run_id, agent_id: "asks", status: "input_required", title: "Pick a region.", url: `${url}/#/runs/${asks.run_id}`, pending: { kind: "question" } });
   assert.ok(!waiting.body.includes("Which region"), "no question text: the API reads it");
   assert.equal((await api("POST", `/runs/${asks.run_id}/messages`, { content: "eu" })).status, 202);
   await follow(api, asks.run_id, ["completed"]);
-  await hook.when((got) => ofType(got, "run.ended").length === 2);
+  await hook.when((got) => ofType(got, "run.ended").length === 2, `the run.ended of run ${asks.run_id} (the outbound notice of its end)`);
   // Received is not answered: the outbox is written once each answer is read.
   await settled(data);
   assert.deepEqual(hook.got.map((r) => [JSON.parse(r.body).type, JSON.parse(r.body).data.run_id]), [["run.ended", done.run_id], ["run.needs_input", asks.run_id], ["run.ended", asks.run_id]], "one each, no more");
@@ -223,6 +238,7 @@ test("a receiver that is down gets each try, then the message is logged as faile
   assert.equal((await api("PUT", "/settings/webhook", { url: gone.url })).status, 201);
   const down = await startRun(api, "down", "hi");
   await follow(api, down.run_id, ["completed"]);
+  // Every try of the run's run.ended to a receiver that is down, then the failure said: none comes without the notice.
   const failed = await log.when("event=webhook", "condition=delivery_failed");
   assert.ok(failed.includes("attempts=3"), failed);
   const tries = (await api("GET", "/settings/webhook/deliveries")).body.attempts;
@@ -235,7 +251,7 @@ test("a receiver that is down gets each try, then the message is logged as faile
   assert.equal((await api("PUT", "/settings/webhook", { url: flaky.url })).status, 200);
   const again = await startRun(api, "again", "hi");
   await follow(api, again.run_id, ["completed"]);
-  await flaky.when(2);
+  await flaky.when(2, `the run.ended of run ${again.run_id}, tried again after a 503`);
   assert.equal(flaky.got[0].headers["webhook-id"], flaky.got[1].headers["webhook-id"], "the receiver's idempotency key, the same");
   assert.equal(flaky.got[0].body, flaky.got[1].body);
 
