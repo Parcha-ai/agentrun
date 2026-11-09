@@ -118,6 +118,107 @@ test("a schedule's runs take their input as the trigger's, owner true: fired on 
   }
 });
 
+test("a schedule's run's first Timeline row names the schedule by its name, on a live page and in the final rows; once the trigger is deleted, by its id", { timeout: 120_000 }, async (t) => {
+  const { api } = await serve(t);
+  await made(api, "clock");
+  const gate = join(await scratch(t), "go");
+  const created = await api("POST", "/triggers", { name: "utc-check", source: { kind: "schedule", every_s: 3600 }, target: { kind: "start_run", agent_id: "clock", input: { content: `Tell me the time in UTC. Hold the answer until ${gate}.` }, max_cost_usd: 0.5 } });
+  assert.equal(created.status, 201, JSON.stringify(created.body));
+  const { id } = created.body;
+  const fired = await api("POST", `/triggers/${id}/fire`, undefined, { "idempotency-key": "by-hand-1" });
+  assert.ok(fired.status < 300, JSON.stringify(fired.body));
+  const [firing] = await firings(api, id, 1);
+  const named = (rows) => rows.filter((r) => r.origin === "trigger").map((r) => r.summary);
+  const live = await follow(api, firing.run_id, ["working"], { deadlineMs: 60_000 });
+  assert.equal(live.last.status, "working", "the page was read while the run still worked");
+  assert.deepEqual(named(live.rows), [`Schedule utc-check: Tell me the time in UTC. Hold the answer until ${gate}.`], "a live page names the schedule");
+  await writeFile(gate, "");
+  const { rows } = await follow(api, firing.run_id, ["completed"]);
+  assert.deepEqual(named(rows), [`Schedule utc-check: Tell me the time in UTC. Hold the answer until ${gate}.`], "the final rows name it");
+  assert.deepEqual(rows.find((r) => r.origin === "trigger").trigger, { id, source: "schedule", owner: true, name: "utc-check" }, "the row carries the name it shows");
+  assert.equal((await api("GET", `/runs/${firing.run_id}`)).body.title, "Schedule utc-check");
+  assert.equal((await api("DELETE", `/triggers/${id}`)).status, 204);
+  const after = (await api("GET", `/runs/${firing.run_id}/timeline`)).body.rows;
+  assert.deepEqual(named(after), [`Schedule ${id}: Tell me the time in UTC. Hold the answer until ${gate}.`], "a deleted trigger's row names it by its id");
+  assert.deepEqual(after.find((r) => r.origin === "trigger").trigger, { id, source: "schedule", owner: true }, "and carries no name");
+});
+
+test("a schedule renamed while a run of it is held: the held run's Timeline row shows the new name at once (read by the trigger's id at each read)", { timeout: 120_000 }, async (t) => {
+  const { api } = await serve(t);
+  await made(api, "clock");
+  const gate = join(await scratch(t), "go");
+  const created = await api("POST", "/triggers", { name: "utc-check", source: { kind: "schedule", every_s: 3600 }, target: { kind: "start_run", agent_id: "clock", input: { content: `Tell me the time. Hold the answer until ${gate}.` }, max_cost_usd: 0.5 } });
+  assert.equal(created.status, 201, JSON.stringify(created.body));
+  const { id } = created.body;
+  assert.ok((await api("POST", `/triggers/${id}/fire`, undefined, { "idempotency-key": "by-hand-1" })).status < 300);
+  const [firing] = await firings(api, id, 1);
+  const named = (rows) => rows.filter((r) => r.origin === "trigger").map((r) => r.summary);
+  const live = await follow(api, firing.run_id, ["working"], { deadlineMs: 60_000 });
+  assert.deepEqual(named(live.rows), [`Schedule utc-check: Tell me the time. Hold the answer until ${gate}.`], "named before the rename");
+  assert.equal((await api("PATCH", `/triggers/${id}`, { name: "clock-check" })).status, 200);
+  const after = (await api("GET", `/runs/${firing.run_id}/timeline`)).body.rows;
+  assert.deepEqual(named(after), [`Schedule clock-check: Tell me the time. Hold the answer until ${gate}.`], "the new name shows at once on the held run");
+  assert.equal(after.find((r) => r.origin === "trigger").trigger.name, "clock-check");
+  await writeFile(gate, "");
+  await follow(api, firing.run_id, ["completed"]);
+});
+
+test("a schedule's run read by a server restarted on the same data still names its trigger: the name is read by the trigger's id from the store, never left blank", { timeout: 120_000 }, async (t) => {
+  const { api, data } = await serve(t);
+  await made(api, "clock");
+  const gate = join(await scratch(t), "go");
+  const created = await api("POST", "/triggers", { name: "utc-check", source: { kind: "schedule", every_s: 3600 }, target: { kind: "start_run", agent_id: "clock", input: { content: `Tell me the time. Hold the answer until ${gate}.` }, max_cost_usd: 0.5 } });
+  assert.equal(created.status, 201, JSON.stringify(created.body));
+  const { id } = created.body;
+  assert.ok((await api("POST", `/triggers/${id}/fire`, undefined, { "idempotency-key": "by-hand-1" })).status < 300);
+  const [firing] = await firings(api, id, 1);
+  await follow(api, firing.run_id, ["working"], { deadlineMs: 60_000 });
+  // A fresh server on the same data (the first's runner still runs the run): it reads the trigger's name from the store.
+  const next = await serve(t, { data, runner: false });
+  const api2 = next.api;
+  const named = (rows) => rows.filter((r) => r.origin === "trigger").map((r) => r.summary);
+  const after = (await api2("GET", `/runs/${firing.run_id}/timeline`)).body.rows;
+  assert.deepEqual(named(after), [`Schedule utc-check: Tell me the time. Hold the answer until ${gate}.`], "a restored run still names its trigger");
+  assert.equal(after.find((r) => r.origin === "trigger").trigger.name, "utc-check");
+  await writeFile(gate, "");
+  await follow(api2, firing.run_id, ["completed"]);
+});
+
+/** Whether `text` holds any 8 characters in a row of `secret`. */
+const holdsPiece = (text, secret) => [...Array(Math.max(0, secret.length - 7)).keys()].some((i) => text.includes(secret.slice(i, i + 8)));
+/** Every event the run's Timeline stream sends, to its end, as text. */
+async function streamed(baseUrl, token, runId) {
+  const res = await fetch(`${baseUrl}/runs/${runId}/timeline`, { headers: { authorization: `Bearer ${token}`, accept: "text/event-stream" }, signal: AbortSignal.timeout(30_000) });
+  assert.equal(res.status, 200);
+  let text = "";
+  for await (const chunk of res.body) {
+    text += Buffer.from(chunk).toString("utf8");
+    if (text.includes("event: end")) break;
+  }
+  return text;
+}
+
+test("a trigger named with a saved key's value: its runs' Timeline row shows the redaction mark in the key's place, never the key, on a page and in the stream, and its trigger carries the name so redacted", { timeout: 120_000 }, async (t) => {
+  withEnv(t, SEAL);
+  const { api, baseUrl, token } = await serve(t);
+  const key = ["not-a-secret", "trigger-name-key", randomBytes(6).toString("hex")].join("-");
+  assert.equal((await api("PUT", "/settings/tool-keys/browserbase", { values: { BROWSERBASE_API_KEY: key, BROWSERBASE_PROJECT_ID: "fake-project" } })).status, 204);
+  await made(api, "clock");
+  const created = await api("POST", "/triggers", { name: `nightly ${key}`, source: { kind: "schedule", every_s: 3600 }, target: { kind: "start_run", agent_id: "clock", input: { content: "Say the time." }, max_cost_usd: 0.5 } });
+  assert.equal(created.status, 201, JSON.stringify(created.body));
+  const { id } = created.body;
+  assert.ok((await api("POST", `/triggers/${id}/fire`, undefined, { "idempotency-key": "by-hand-1" })).status < 300);
+  const [firing] = await firings(api, id, 1);
+  const { rows, pages } = await follow(api, firing.run_id, ["completed"]);
+  const row = rows.find((r) => r.origin === "trigger");
+  assert.equal(row.summary, "Schedule nightly [redacted]: Say the time.");
+  assert.deepEqual(row.trigger, { id, source: "schedule", owner: true, name: "nightly [redacted]" });
+  const page = JSON.stringify((await api("GET", `/runs/${firing.run_id}/timeline`)).body);
+  const stream = await streamed(baseUrl, token, firing.run_id);
+  assert.ok(stream.includes("Schedule nightly [redacted]: Say the time."), stream.slice(0, 600));
+  for (const [where, text] of [["the live pages", JSON.stringify(pages)], ["a page", page], ["the stream", stream]]) assert.equal(holdsPiece(text, key), false, `${where} shows no piece of the key: ${text.slice(0, 600)}`);
+});
+
 test("a webhook's message to a working run is refused busy and sent again on the engine's retry: its entry reads the trigger's origin, and every refused try's marker is withdrawn, none left open", { timeout: 120_000, skip: RUN_EXEC }, async (t) => {
   withEnv(t, SEAL);
   const { api, baseUrl, data } = await serve(t, { harnessTable: fauxTable(FAUX_HARNESS) });
