@@ -100,6 +100,7 @@ import { SIGN_INS_DIR, vendorsOver } from "./sign-ins.js";
 import { signInsOverStore } from "./sign-ins-store.js";
 import { MCP_AUTH_TYPES, type McpTool } from "./mcp-probe.js";
 import { mcpServersOverStore } from "./mcp-servers-store.js";
+import { privateHostsRoute } from "./mcp-private-hosts.js";
 import { metaToolOf } from "./mcp-meta.js";
 import { MCP_SETTINGS_PAGE, signInCookie, startedHere } from "./mcp-oauth.js";
 import { type RunNotice, WEBHOOK_EVENTS, Webhooks } from "./webhooks.js";
@@ -482,8 +483,8 @@ export const ROUTES: readonly Route[] = [
   { method: "POST", pattern: /^\/settings\/mcp-servers\/([^/]+)\/oauth\/start$/, name: "startMcpOAuth" },
   { method: "GET", pattern: /^\/settings\/mcp-servers\/oauth\/callback$/, name: "mcpOAuthCallback" },
   { method: "GET", pattern: /^\/settings\/mcp-servers\/oauth\/client\.json$/, name: "mcpOAuthClient" },
-  // Served over the store-backed registry (mcp-private-hosts.ts privateHostsRoute) once the server runs on the one store:
-  // until then they answer 404, as an unmatched route does.
+  // Over the store-backed registry (mcp-private-hosts.ts privateHostsRoute); the PUT is a secret write as a whole, so the
+  // one secret-write check takes it from the owner's session alone.
   { method: "GET", pattern: /^\/settings\/mcp-servers\/oauth\/private-hosts$/, name: "getMcpPrivateHosts" },
   { method: "PUT", pattern: /^\/settings\/mcp-servers\/oauth\/private-hosts$/, name: "putMcpPrivateHosts" },
   { method: "GET", pattern: /^\/settings\/tools$/, name: "getToolSettings" },
@@ -2731,6 +2732,10 @@ async function startHolding(options: ServeOptions, data: string, checked: { maxR
         log?.(logLine("github", { condition: "github_disconnected", app_id: view.app_id, triggers_off: off }));
         return send(res, 200, { disconnected: true, triggers_off: off, note: `Delete the App itself on GitHub: ${settingsUrl}` });
       }
+      case "getMcpPrivateHosts":
+        return send(res, 200, await privateHostsRoute(mcpServers, { method: "GET" }), { "cache-control": "no-store" });
+      case "putMcpPrivateHosts":
+        return send(res, 200, await privateHostsRoute(mcpServers, { method: "PUT", body: () => bodyOf(req) }), { "cache-control": "no-store" });
       case "deleteMcpServer":
         await mcpServers.remove(id);
         await refreshMcpMeta();

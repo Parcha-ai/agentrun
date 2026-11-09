@@ -258,3 +258,28 @@ test("the route: GET reads the list (none by default); a PUT is a secret write a
   assert.deepEqual(await privateHostsRoute(registry, { method: "GET" }), { hosts: [AS, "[fd12:3456::7]"] });
   assert.deepEqual(await privateHostsRoute(registry, { method: "PUT", body: body({ hosts: [] }) }), { hosts: [] });
 });
+
+test("the server's routes: a token's PUT is 403 in the one secret-write refusal and saves nothing; the owner's session saves the list, a GET reads it back, and bad input is 422 in words", async (t) => {
+  const { asOwner, call, serve } = await import("./support.mjs");
+  const { SECRET_WRITE_REFUSAL } = await import("../dist/secret-writes.js");
+  const server = await serve(t, { runner: false });
+  const path = "/v2/settings/mcp-servers/oauth/private-hosts";
+  const byToken = { "content-type": "application/json", authorization: `Bearer ${server.token}` };
+  assert.deepEqual((await call(server.port, { path, headers: byToken })).json, { hosts: [] }, "none by default, and the token reads it");
+
+  const refused = await call(server.port, { method: "PUT", path, headers: byToken, body: { hosts: [AS] } });
+  assert.equal(refused.status, 403, refused.text);
+  assert.equal(refused.json?.error?.message, SECRET_WRITE_REFUSAL);
+  assert.deepEqual((await call(server.port, { path, headers: byToken })).json, { hosts: [] }, "nothing saved");
+
+  const owner = asOwner(server);
+  const bad = await owner("PUT", "/settings/mcp-servers/oauth/private-hosts", { hosts: ["*.corp.test", "as.corp.test:8443"] });
+  assert.equal(bad.status, 422, JSON.stringify(bad.body));
+  assert.deepEqual(bad.body.error.fields.map((field) => field.field), ["hosts[0]", "hosts[1]"]);
+  assert.match(bad.body.error.fields[0].message, /wildcard/);
+
+  const saved = await owner("PUT", "/settings/mcp-servers/oauth/private-hosts", { hosts: ["AS.Corp.test.", "fd12:3456::7"] });
+  assert.equal(saved.status, 200, JSON.stringify(saved.body));
+  assert.deepEqual(saved.body, { hosts: [AS, "[fd12:3456::7]"] });
+  assert.deepEqual((await call(server.port, { path, headers: byToken })).json, { hosts: [AS, "[fd12:3456::7]"] }, "read back");
+});
