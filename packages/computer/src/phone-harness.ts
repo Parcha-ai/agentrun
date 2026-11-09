@@ -179,16 +179,21 @@ type AdbRun = (args: string[], options?: { timeoutMs?: number; signal?: AbortSig
 /** The adb server's port when none is given: adb's own default. */
 export const ADB_SERVER_PORT = 5037;
 
+/** The environment variables adb reads to find its server or its device: every one is cleared on a spawned adb. */
+const ADB_ENV = /^(ADB_|ANDROID_ADB_|ANDROID_SERIAL$)/;
+
 /**
  * The adb CLI (Android platform-tools) at path, by execFile, never a shell, and the adb server it starts, on the
  * loopback at port (adb's own default), spoken to by its socket protocol.
  */
 export function adbCli(path = "adb", { port = ADB_SERVER_PORT }: { port?: number } = {}): AdbTransport {
 	// Every spawned adb names the server the socket requests go to: without -P it would take its own default, 5037 or
-	// ANDROID_ADB_SERVER_PORT, and start or ask another server.
+	// ANDROID_ADB_SERVER_PORT, and start or ask another server. Its environment holds no adb variable, so nothing in it
+	// (ADB_SERVER_SOCKET, ANDROID_ADB_SERVER_SOCKET, ANDROID_ADB_SERVER_ADDRESS, ANDROID_SERIAL, ...) points it elsewhere.
 	const run: AdbTransport["run"] = (args, { timeoutMs, signal, input }) =>
 		new Promise((resolve) => {
-			const child = execFile(path, ["-P", String(port), ...args], { encoding: "buffer", timeout: timeoutMs, killSignal: "SIGKILL", maxBuffer: 64 * 1024 * 1024, ...(signal ? { signal } : {}) }, (error, stdout, stderr) => {
+			const env = Object.fromEntries(Object.entries(process.env).filter(([name]) => !ADB_ENV.test(name)));
+			const child = execFile(path, ["-P", String(port), ...args], { encoding: "buffer", env, timeout: timeoutMs, killSignal: "SIGKILL", maxBuffer: 64 * 1024 * 1024, ...(signal ? { signal } : {}) }, (error, stdout, stderr) => {
 				const code = (error as NodeJS.ErrnoException | null)?.code;
 				if (code === "ENOENT") {
 					return resolve(fail("not_found", `the phone provider needs adb (Android platform-tools) on this machine: ${path} is not there; install platform-tools or give the provider's adb option`));
