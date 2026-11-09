@@ -30,7 +30,9 @@ import { WEB_FETCH_TOOL } from "../web-fetch.js";
 import { WEB_SEARCH_TOOL } from "../web-search.js";
 import { environmentLine } from "../environment.js";
 import { effortGuidance } from "../effort-guidance.js";
-import { laidLearned, learningFolderOf, pinnedWorkflows, readPin } from "../learning.js";
+import { laidLearned, learningFolderOf, pinnedWorkflows, readPin, secretsShown } from "../learning.js";
+import { layLearningSeed } from "./learning-seed.js";
+import { savedKeyValues } from "../server-keys.js";
 import { learningWorkspace } from "../learn/folder.js";
 import { learningEndOfRun } from "./learning-end.js";
 import { LEARNED_WORKFLOW_TOOL, learnedWorkflowTool } from "../learned-workflow.js";
@@ -384,7 +386,20 @@ export async function adapterRunSpecFromLaunch(launch: RunLaunch, run: AdapterRu
   // on the one store the claim does), from the revision row's texts (the body keeps only each file's SHA-256): each
   // folder not there yet, never over a learned skill or an earlier claim's.
   await layOwnSkills(ws.workspace, (revisionRow.skills ?? {}) as Record<string, string>);
-  const instructions = await promptOf(laid, Object.keys(body.skills ?? {}), ws.workspace, { onDemand: readsFiles(granted) });
+  // A learning run's seed, read once from its learning folder where the run's place keeps it: its notes in .learning/
+  // and its learned skills beside the revision's own (runner/learning-seed.ts), cut of the server's secrets, the learned
+  // skills then in the skill list the prompt names. A learning fault lays nothing and the run goes on.
+  const seedLaid = start
+    ? await layLearningSeed({
+      work: ws.workspace,
+      seed: start.seed,
+      folder: () => (archil === undefined ? learningFolderOf(deps.data, runRow.agentId) : learningWorkspace({ mode: "archil", agentId: runRow.agentId, archil })),
+      own: Object.keys(revisionRow.skills ?? {}),
+      shown: async () => secretsShown(runnerSecrets(deps.env, await savedKeyValues(deps.store, deps.sealKey))),
+      log,
+    })
+    : undefined;
+  const instructions = await promptOf(laid, [...Object.keys(body.skills ?? {}), ...(seedLaid?.skills ?? [])], ws.workspace, { onDemand: readsFiles(granted) });
   const guidance = effortGuidance(launch.effort);
   const system = [environmentLine(), instructions, guidance].filter((line): line is string => Boolean(line));
 
