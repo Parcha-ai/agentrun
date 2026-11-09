@@ -493,7 +493,7 @@ export const servedReviewWith = <R extends { reason: string }>(shown: (text: str
  *  seal key or none, one forgotten and dropped past MAX_FORGOTTEN, the sign-ins file gone). Fails closed: a marked run is
  *  cut of every pointer it was handed, or withheld, never served uncut. Read anew at each call: nothing caches this
  *  verdict, so a run withheld while its key was missing is shown once it opens. */
-export async function handedPointers(signIns: SignIns | undefined, agentId: string, browser: string | undefined, handed: Handed | undefined): Promise<{ refs: string[] } | "unreadable"> {
+export async function handedPointers(signIns: Pick<SignIns, "peek" | "forgotten"> | undefined, agentId: string, browser: string | undefined, handed: Handed | undefined): Promise<{ refs: string[] } | "unreadable"> {
   if (handed === undefined) return { refs: [] };
   if (handed === MALFORMED || !signIns || !browser) return "unreadable";
   const live = await signIns.peek(agentId, browser).catch(() => "unreadable" as const);

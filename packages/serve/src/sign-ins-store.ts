@@ -227,13 +227,21 @@ export async function forgetSignInView(
   return { key, removed };
 }
 
+/** The reads that find what a run was handed (handed-values.ts handedValuesOf): an agent's live pointer and its
+ *  forgotten ones, opened under `sealKey`. Read-only: what the runner's learning end holds to refuse a run's pointer. */
+export function signInReads(store: SignInsStore, sealKey: Buffer | undefined) {
+  return {
+    peek: (agentId: string, resolution: string) => peekSignIn(store, sealKey, agentId, resolution),
+    forgotten: (agentId: string, resolution: string) => forgottenSignIns(store, sealKey, agentId, resolution),
+  };
+}
+
 /** The old SignIns interface's read and forget surface over the store (view, peek, forgotten, forget), so the switch can
  *  wire it where `new SignIns(...)` was, with the v2 answers unchanged. */
 export function signInsOverStore(store: SignInsStore, sealKey: Buffer | undefined, vendors: SignInVendors) {
   return {
     view: (agentId: string) => signInViews(store, sealKey, agentId),
-    peek: (agentId: string, resolution: string) => peekSignIn(store, sealKey, agentId, resolution),
-    forgotten: (agentId: string, resolution: string) => forgottenSignIns(store, sealKey, agentId, resolution),
+    ...signInReads(store, sealKey),
     forget: (agentId: string, key: string) => forgetSignInView(store, sealKey, vendors, agentId, key),
   };
 }
