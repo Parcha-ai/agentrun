@@ -31,7 +31,9 @@ import { WEB_FETCH_TOOL } from "../web-fetch.js";
 import { WEB_SEARCH_TOOL } from "../web-search.js";
 import { environmentLine } from "../environment.js";
 import { effortGuidance } from "../effort-guidance.js";
-import { withLearned } from "../learning.js";
+import { pinnedWorkflows, readPin, withLearned } from "../learning.js";
+import { LEARNED_WORKFLOW_TOOL, learnedWorkflowTool } from "../learned-workflow.js";
+import { createModels } from "@earendil-works/pi-ai/models";
 import { promptOf, readsFiles } from "../skills.js";
 import { openRunWorkspace } from "../workspace/run-workspace.js";
 import { runFolder } from "../workspace/paths.js";
@@ -224,7 +226,7 @@ export async function adapterRunSpecFromLaunch(launch: RunLaunch, run: AdapterRu
   // Workspace and computer (runTools.hostTools); the gate is the adapter loop's own (spec.gate), so they run as asked.
   const results: ToolResults = new Map();
   const handTools = tools.hostTools(granted, undefined, results);
-  const nonHandTools = await bindNonHandTools(host, granted, run, context, results, root);
+  const nonHandTools = await bindNonHandTools(host, granted, run, context, results, root, launch.plane);
   const sessionTools = [...handTools, ...nonHandTools];
 
   // The run's system prompt, as main's per-run process builds it (app.ts): the environment line first (environment.ts, as
@@ -279,8 +281,8 @@ export async function adapterRunSpecFromLaunch(launch: RunLaunch, run: AdapterRu
 }
 
 /** The tools whose call spends, routed through the one money seam below. web_fetch/web_search book Parallel's extract and
- *  search; monid's three call monid's paid API. */
-const PAID_TOOLS: ReadonlySet<string> = new Set([WEB_FETCH_TOOL, WEB_SEARCH_TOOL, "monid.discover", "monid.inspect", "monid.run"]);
+ *  search; monid's three call monid's paid API; a learned workflow's nodes spend on the run's models and decisions. */
+const PAID_TOOLS: ReadonlySet<string> = new Set([WEB_FETCH_TOOL, WEB_SEARCH_TOOL, "monid.discover", "monid.inspect", "monid.run", LEARNED_WORKFLOW_TOOL]);
 
 /** A paid tool call's money on the runner, through one named seam. Today it refuses the call in words, so a paid tool is
  *  never run unbooked; its name is still listed, so a pi run through the dispatch offers main's tools. A tool that spends
@@ -295,9 +297,8 @@ function settlePaidCall(name: string): { refused: string } | undefined {
  *  `gated` is undefined here, as for the hands), its paid call's money through settlePaidCall. The browser (tl-browser,
  *  through host.liveViewers), MCP (tl-mcp's mcpForClaim(claim, store, sealKey, pin) -> { sessionMcp, redactions, release }),
  *  the learned workflow and decisions are each a named todo, added as their seams land. */
-async function bindNonHandTools(host: ToolHost, granted: readonly string[], run: AdapterRun, context: Context, results: ToolResults, root: string): Promise<AdapterRunSpec["session"]["tools"]> {
+async function bindNonHandTools(host: ToolHost, granted: readonly string[], run: AdapterRun, context: Context, results: ToolResults, root: string, plane: RunLaunch["plane"]): Promise<AdapterRunSpec["session"]["tools"]> {
   const names = granted.filter((name) => name === WEB_FETCH_TOOL || name === WEB_SEARCH_TOOL || name.startsWith("monid."));
-  if (names.length === 0) return [];
   const ctx: HostToolCtx = {
     context,
     results,
@@ -323,5 +324,34 @@ async function bindNonHandTools(host: ToolHost, granted: readonly string[], run:
       if (tool) tools.push(tool);
     }
   }
+
+  // learned_workflow, by main's wire name, listed when the run's pin names learned workflows (as main lists it), behind
+  // settlePaidCall like the other paid tools so the tool set the model sees matches main. Its nodes run on the run's models,
+  // which the adapter loop's open seam gives (TODO, the same {decisions, models} seam as decisions below); the refusal means
+  // they are never reached here, so it is listed, not run. A pin whose learned-workflows file is not on the runner yet is
+  // skipped (that copy is its own seam), never failing the run.
+  if (granted.includes(LEARNED_WORKFLOW_TOOL)) {
+    const flows = await pinnedWorkflows(root, await readPin(root)).catch(() => []);
+    if (flows.length) {
+      const learnedTool = learnedWorkflowTool({
+        workflows: flows,
+        granted,
+        ...(plane ? { plane } : {}),
+        env: host.env,
+        work: root,
+        // TODO(loop seam): the run's models and modelOf come from the adapter loop's {decisions, models} at open; unreached
+        // behind settlePaidCall until the paid-call settle lands.
+        models: createModels() as never,
+        modelOf: () => undefined,
+      });
+      const tool = hostToolOf(LEARNED_WORKFLOW_TOOL, learnedTool as never, ctx);
+      if (tool) tools.push(tool);
+    }
+  }
+
+  // TODO (decisions, option (a)): a pi run's decision tools book on the run's ONE cap (runCap's run.decisions), which the
+  // adapter loop makes from its own sessions and hands the spec at open — the loop passes { decisions, models } the same way
+  // it passes spec.lifecycle. The decision providers come from the claim's secrets (claim-secrets.ts). Wired against that
+  // seam when it lands; never a second journalSessions + runCap over the one journal (the double-book we closed).
   return tools;
 }
