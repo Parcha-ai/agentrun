@@ -35,7 +35,8 @@ describe("the E2B provider's commands in a root desktop container", { skip: LIVE
 		const recipe = readFileSync(DOCKERFILE);
 		const image = `agentrun-computer-desktop:${createHash("sha256").update(recipe).digest("hex").slice(0, 12)}`;
 		execFileSync("docker", ["build", "--quiet", "--tag", image, "-"], { input: recipe, stdio: ["pipe", "ignore", "inherit"] });
-		docker("run", "--detach", "--name", name, image, "sleep", "600");
+		// Root with the two capabilities init --own-network needs, as root in E2B's microVM holds.
+		docker("run", "--detach", "--name", name, "--cap-add", "SYS_ADMIN", "--cap-add", "NET_ADMIN", image, "sleep", "600");
 		docker("cp", daemon, `${name}:${STAGING}`);
 		const sha = createHash("sha256").update(readFileSync(daemon)).digest("hex");
 		const deadline = new Date(Date.now() + 300_000);

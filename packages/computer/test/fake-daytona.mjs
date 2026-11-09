@@ -5,6 +5,7 @@
 // ping, files.read of /proc/self/status, files.stat of /proc/self/cwd and /proc/self/exe, and exec.run (an echo).
 import { createHash } from "node:crypto";
 import { readFileSync } from "node:fs";
+import { netDevText } from "./net-dev.mjs";
 
 export const API = "https://api.daytona.test/api";
 export const PROXY = "https://proxy.daytona.test/toolbox";
@@ -18,7 +19,7 @@ const OUT = Buffer.from([1, 1, 1]);
 const ERR = Buffer.from([2, 2, 2]);
 
 /** /proc/self/status of a daemon run as uid:gid with no capabilities and no_new_privs, as the start script makes it. */
-export function statusText({ uid = 1000, gid = uid, capEff = "0000000000000000", capBnd = "0000000000000000", noNewPrivs = 1, groups = "" } = {}) {
+export function statusText({ uid = 2510, gid = uid, capEff = "0000000000000000", capBnd = "0000000000000000", noNewPrivs = 1, groups = "", seccomp = 2 } = {}) {
 	return [
 		"Name:\tcomputerd",
 		"State:\tS (sleeping)",
@@ -31,6 +32,7 @@ export function statusText({ uid = 1000, gid = uid, capEff = "0000000000000000",
 		`CapEff:\t${capEff}`,
 		`CapBnd:\t${capBnd}`,
 		"CapAmb:\t0000000000000000",
+		`Seccomp:\t${seccomp}`,
 		"",
 	].join("\n");
 }
@@ -59,6 +61,22 @@ export function wordsOf(command) {
 	return words;
 }
 
+/** Where the Archil image has its root helper. */
+export const ARCHIL_HELPER = "/usr/local/sbin/agentrun-archil";
+/** What the Archil image's preflight prints: root, this package's helper, archil 0.10.1, agentrun-tool, no sudo. */
+export const ARCHIL_PREFLIGHT = [
+	"uid 0",
+	`helper ${createHash("sha256").update(readFileSync(new URL("../box/agentrun-archil", import.meta.url))).digest("hex")} -rwxr-xr-x 0 0`,
+	"archil Archil Client: v0.10.1-1793222256, 1001, proto=Version2",
+	"tool 2510:2510",
+	"sudo none",
+].join("\n");
+/** The verb of a root command's argv: the helper's, or the shared script's by its marker (preflight). */
+export function rootVerb(argv) {
+	if (argv[0] === ARCHIL_HELPER) return argv[1];
+	return /^# agentrun-computer: archil (\w+)/.exec(argv[2] ?? "")?.[1] ?? "other";
+}
+
 /** Which of the provider's scripts a command runs, by the marker on its first line, and its arguments. */
 export function scriptOf(command) {
 	const words = wordsOf(command);
@@ -79,7 +97,8 @@ const abortError = (signal) => signal?.reason ?? new DOMException("This operatio
  * - `readBack(sandbox)`: fields merged over each single read; `listBack(item)`: over each listed item.
  * - `uploadStatus`: the daemon upload's answer. `install`: { exitCode, result } of the install script, or `installSha`.
  * - `initFails`: init writes that to stderr and exits 1. `bridgeStderr`: a line the bridge writes to stderr at start.
- * - `hello`, `status`, `cwd`, `exe`: what the daemon reports. `echoInput`: input is echoed to stdout, as with
+ * - `hello`, `status`, `cwd`, `exe`, `interfaces` (its own /proc/self/net/dev, default the loopback alone): what the
+ *   daemon reports. `echoInput`: input is echoed to stdout, as with
  *   suppressInputEcho unset. `pageSize`: items a listing page holds. `sandboxClass` ("container").
  * - `networkStatus`: the answer to a network-settings change; `networkIgnored`: it answers 200 and changes nothing.
  * - `stopStopped` (400): the answer to a stop of a stopped sandbox. `stoppingReads`: after a stop the sandbox reads back,
@@ -205,6 +224,49 @@ export function fakeDaytona(initial = {}) {
 		for (const socket of command.sockets) socket.deliver(bytes);
 	}
 
+	/**
+	 * A root command of the Archil image (the provider's root runner, `# agentrun-computer: root`): the helper's verbs
+	 * and the shared scripts, as the image answers them, or as `knobs.archil[verb]` ({ exitCode, output }) says. mount
+	 * and revoke wait for their line on stdin, the token, and only then answer. Each is recorded in box.archil.calls,
+	 * with what came on its stdin.
+	 */
+	function rootCommand(box, command) {
+		box.archil ??= { calls: [], mounted: undefined, served: false };
+		const verb = rootVerb(command.args);
+		const call = { verb, argv: command.args, stdin: [] };
+		box.archil.calls.push(call);
+		command.call = call;
+		if (verb === "mount" || verb === "revoke") return;
+		finishRoot(box, command, verb);
+	}
+
+	function rootInput(box, command, data) {
+		command.call.stdin.push(data);
+		if (command.exitCode === null && (command.call.verb === "mount" || command.call.verb === "revoke")) finishRoot(box, command, command.call.verb);
+	}
+
+	function finishRoot(box, command, verb) {
+		const archil = box.archil;
+		const given = knobs.archil?.[verb];
+		const answer = typeof given === "function" ? given(command.args, archil) : given;
+		let exitCode = answer?.exitCode ?? 0;
+		let output = answer?.output ?? "";
+		if (answer === undefined) {
+			if (verb === "preflight") output = ARCHIL_PREFLIGHT;
+			else if (verb === "checkin") {
+				exitCode = archil.mounted ? 0 : 3;
+				archil.mounted = undefined;
+				archil.served = false;
+			}
+		}
+		if (exitCode === 0) {
+			if (verb === "mount" || verb === "revoke") archil.mounted = `${command.args[2]}:/${command.args[4]}[${command.args[3]}]`;
+			if (verb === "serve") archil.served = true;
+		}
+		if (output) append(command, OUT, output.endsWith("\n") ? output : `${output}\n`);
+		end(command, exitCode);
+	}
+
 	/** The fake daemon's answer to one request line, or undefined for a notification. */
 	function answer(box, line) {
 		let request;
@@ -218,13 +280,33 @@ export function fakeDaytona(initial = {}) {
 		const { method, params = {} } = request;
 		if (method === "hello") return reply({ result: { version: VERSION, os: "linux", kind: "linux", arch: "amd64", groups: ["exec", "files", "processes"], ...(knobs.hello ?? {}) } });
 		if (method === "ping") return reply({ result: {} });
+		if (method === "files.read" && params.path === "/proc/self/mounts") {
+			const archil = box.archil;
+			const line = archil?.mounted ? `${archil.mounted} /workspace fuse.archil rw,nosuid,nodev,relatime 0 0\n` : "";
+			const text = knobs.mounts ?? `proc /proc proc rw,hidepid=invisible 0 0\n${line}`;
+			return reply({ result: { data: Buffer.from(text).toString("base64"), eof: true, size: 0 } });
+		}
+		if (method === "mount.sync") {
+			box.syncs = (box.syncs ?? 0) + 1;
+			if (!box.archil?.served || !box.archil?.mounted) return reply({ error: { code: -32000, message: "no Archil sync server answers at /run/agentrun-archil/archil.sock", data: { kind: "not_found" } } });
+			return reply({ result: { exitCode: knobs.syncExit ?? 0 } });
+		}
 		if (method === "files.read" && params.path === "/proc/self/status") {
 			const text = knobs.status ?? statusText();
+			return reply({ result: { data: Buffer.from(text).toString("base64"), eof: true, size: 0 } });
+		}
+		if (method === "files.read" && params.path === "/proc/self/net/dev") {
+			const text = netDevText(knobs.interfaces);
 			return reply({ result: { data: Buffer.from(text).toString("base64"), eof: true, size: 0 } });
 		}
 		if (method === "files.stat" && (params.path === "/proc/self/cwd" || params.path === "/proc/self/exe")) {
 			const target = params.path.endsWith("cwd") ? (knobs.cwd ?? "/work") : (knobs.exe ?? "/opt/agentrun/computerd");
 			return reply({ result: { type: "symlink", size: 0, mode: 0o777, mtimeMs: 0, uid: 1000, gid: 1000, target } });
+		}
+		if (method === "exec.run" && params.argv[0] === "/opt/agentrun/computerd" && params.argv[1] === "probe" && params.argv.length === 2) {
+			// computerd probe with no target: its own network as the computer's user sees it (live, quiet, raised).
+			const report = { uid: 2510, gid: 2510, kernel: "6.8.0", interfaces: knobs.interfaces ?? ["lo"], quiet: knobs.quiet ?? [], raised: knobs.raised ?? [], reached: [], accepted: [], results: [] };
+			return reply({ result: { exitCode: 0, stdout: Buffer.from(`${JSON.stringify(report)}\n`).toString("base64"), stderr: "", timedOut: false, truncated: false } });
 		}
 		if (method === "exec.run") {
 			const stdout = Buffer.from(`${params.argv.slice(1).join(" ")}\n`).toString("base64");
@@ -281,7 +363,9 @@ export function fakeDaytona(initial = {}) {
 			const { kind, args } = scriptOf(body.command);
 			const command = { id: `cmd-${++box.commandCount}`, command: body.command, kind, args, body, log: Buffer.alloc(0), exitCode: null, sockets: [], inputs: [] };
 			session.commands.set(command.id, command);
-			if (kind === "init") {
+			(box.order ??= []).push(kind === "root" ? rootVerb(args) : kind);
+			if (kind === "root") rootCommand(box, command);
+			else if (kind === "init") {
 				if (knobs.initFails) {
 					append(command, ERR, `computerd: ${knobs.initFails}\n`);
 					command.exitCode = 1;
@@ -304,6 +388,10 @@ export function fakeDaytona(initial = {}) {
 			const data = body.data.endsWith("\n") ? body.data : `${body.data}\n`;
 			command.inputs.push(data);
 			if (knobs.echoInput || command.body.suppressInputEcho !== true) append(command, OUT, data);
+			if (command.kind === "root") {
+				rootInput(box, command, data);
+				return new Response(null, { status: 204 });
+			}
 			for (const line of data.split("\n").filter(Boolean)) {
 				const reply = answer(box, line);
 				if (reply !== undefined) append(command, OUT, reply);

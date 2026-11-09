@@ -1,6 +1,8 @@
 // The mount group of the conformance suite against the fake provider (test/fake-computer.mjs): "mounts the run's folder"
 // for each mount kind a provider declares, and the refusal of each kind it does not. No Docker, no daemon binary.
 import assert from "node:assert/strict";
+import { existsSync, mkdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
 import { after } from "node:test";
 import test from "node:test";
@@ -22,16 +24,83 @@ async function run(options = {}, { mountFor = folders.mountFor, ids = MOUNT_CASE
 	return runConformance(provider, { image: IMAGE, cases: conformanceCases.filter((c) => ids.includes(c.id)), ...(mountFor ? { mountFor } : {}) });
 }
 
-test("the mount group: one case per mount kind and one for the kinds a provider does not declare, every one Full", () => {
+test("the mount group: one case per mount kind, the Archil contract's four, and one for the kinds a provider does not declare, every one Full", () => {
 	const mount = conformanceCases.filter((c) => c.group === "mount");
 	assert.deepEqual(
 		mount.map((c) => [c.id, c.level, c.needs]),
 		[
 			["mount.run-folder-bind", "full", ["mount:bind", "exec", "files"]],
 			["mount.run-folder-archil", "full", ["mount:archil", "exec", "files"]],
+			["mount.archil-durable", "full", ["mount:archil", "exec", "files"]],
+			["mount.archil-takeover", "full", ["mount:archil", "exec", "files"]],
+			["mount.archil-token", "full", ["mount:archil", "exec"]],
+			["mount.archil-isolated-durable", "full", ["mount:archil", "exec", "files"]],
+			["mount.archil-loop-tool-edit", "full", ["mount:archil", "exec", "files"]],
 			["mount.undeclared-kind", "full", []],
 		],
 	);
+});
+
+test("the run-folder Archil case records both directions while the computer holds the folder, and asserts neither", async () => {
+	const report = await run({ mount: ["archil"] }, { ids: ["mount.run-folder-archil"] });
+	const [result] = report.results;
+	assert.equal(result.status, "pass", result.reason);
+	assert.equal(result.observed.length, 4, JSON.stringify(result.observed));
+	// What the file API gives a file and a folder it makes, as the computer sees them: the owner a tool writes against.
+	assert.match(result.observed[0], /^a file the file API made, seen at \/workspace: /);
+	assert.match(result.observed[1], /^a folder the file API made, seen at \/workspace: /);
+	assert.match(result.observed[2], /^outside in, while held: a file the file API wrote is read at \/workspace as written$/);
+	assert.match(result.observed[3], /^inside out, while held: a file files\.write made \(synced before it answered\) is read through the file API as written$/);
+});
+
+test("the run-folder Archil case records Archil's exclusive hold refusing an outside write while the computer holds the folder, and does not fail on it", async () => {
+	// The Daytona live run: the file API's write while held answered 409 OperationAborted (another client holds a write
+	// delegation), which is the exclusive mount doing its job.
+	const HOLD = "S3 PutObject failed: 409 OperationAborted — The path /work cannot be written because another client holds a write delegation. Release the delegation before retrying.";
+	const mountFor = async (kind) => {
+		const folder = await folders.mountFor(kind);
+		if (folder === undefined) return undefined;
+		return {
+			...folder,
+			write: async (path, data) => {
+				if (path.startsWith("outside-")) throw new Error(HOLD);
+				return folder.write(path, data);
+			},
+		};
+	};
+	const report = await run({ mount: ["archil"] }, { ids: ["mount.run-folder-archil"], mountFor });
+	const [result] = report.results;
+	assert.equal(result.status, "pass", result.reason);
+	assert.ok(
+		result.observed.some((line) => line.startsWith("outside in, while held: the file API's write was refused: ") && line.includes("409 OperationAborted")),
+		JSON.stringify(result.observed),
+	);
+});
+
+test("the run-folder Archil case labels its computer for the folder's own run, as the helper's rule asks, even when the run folder does not say its run", async () => {
+	const run = "r42";
+	const folder = `agents/conformance/runs/${run}/work`;
+	const dir = join(folders.disks["fake-disk"], folder);
+	mkdirSync(dir, { recursive: true });
+	// A run folder like one from before RunFolder had its run: the mount alone says it.
+	const mountFor = (kind) =>
+		kind !== "archil"
+			? undefined
+			: {
+					mount: { kind: "archil", disk: "fake-disk", region: "fake-region-1", folder, token: "tok-run-folder-label-0123456789" },
+					read: async (path) => (existsSync(join(dir, path)) ? readFileSync(join(dir, path)) : undefined),
+					write: async (path, data) => {
+						mkdirSync(dirname(join(dir, path)), { recursive: true });
+						if (!path.endsWith("/")) writeFileSync(join(dir, path), data);
+					},
+					close: async () => rmSync(dir, { recursive: true, force: true }),
+				};
+	const { provider } = fakeComputers({ disks: folders.disks, mount: ["archil"] });
+	const check = provider.check.bind(provider);
+	// The helper's rule, as every remote provider's check applies it: the folder is the labelled run's.
+	provider.check = (spec) => [...check(spec), ...(spec.mount?.kind === "archil" && spec.labels?.["agentrun.run"] !== run ? [{ field: "mount", message: `mount.folder is run ${run}'s folder, not the labelled run's` }] : [])];
+	const report = await runConformance(provider, { image: IMAGE, cases: conformanceCases.filter((c) => c.id === "mount.run-folder-archil"), mountFor });
+	assert.equal(report.results[0].status, "pass", report.results[0].reason);
 });
 
 test("mount.run-folder-bind passes a fake that binds the run's folder at /workspace; the Archil case skips in words", async () => {
@@ -42,6 +111,27 @@ test("mount.run-folder-bind passes a fake that binds the run's folder at /worksp
 	assert.deepEqual(report.cleanup.left, []);
 	const text = formatReport(report);
 	assert.match(text, /^full mount +run-folder-bind run-folder-archil +✓ 2 - 1$/m, text);
+});
+
+test("mount.archil-loop-tool-edit: a file the loop wrote through the file API before the mount, a tool edits, and the edit reads back through the file API; a tool that cannot write fails it in words", async () => {
+	// The lead's ruling on the Daytona live run: object-API files read uid 0, 644, so the tools could not edit them.
+	const report = await run({ mount: ["archil"] }, { ids: ["mount.archil-loop-tool-edit"] });
+	const [result] = report.results;
+	assert.equal(result.status, "pass", result.reason);
+	assert.ok(result.observed.some((line) => line.startsWith("the file the loop wrote, seen at /workspace before the tool's edit: ")), JSON.stringify(result.observed));
+	assert.ok(result.observed.some((line) => line.startsWith("the loop's read while the computer holds the folder: ")), JSON.stringify(result.observed));
+
+	const refused = await run({ mount: ["archil"], toolCannotWrite: true }, { ids: ["mount.archil-loop-tool-edit"] });
+	assert.equal(refused.results[0].status, "fail");
+	assert.match(refused.results[0].reason, /a tool .* could not edit .* the file API made/);
+	assert.match(refused.results[0].reason, /Permission denied/);
+});
+
+test("mount.archil-token asks exec.run for no more output than a reply line holds, and passes a fake daemon that refuses more, as computerd does", async () => {
+	// Review (#1994, P2) and the Daytona live run: it asked for 4 MiB, over MAX_OUTPUT_BYTES, and failed before checking.
+	const report = await run({ mount: ["archil"] }, { ids: ["mount.archil-token"] });
+	const [result] = report.results;
+	assert.equal(result.status, "pass", result.reason);
 });
 
 test("mount.run-folder-archil passes a fake that mounts the Archil folder, and the bind case skips", async () => {
@@ -87,7 +177,7 @@ const BROKEN = [
 	["mount.run-folder-archil", { mount: ["archil"], brokenMount: "unbound" }, /^files\.read: not_found: /],
 	["mount.run-folder-bind", { mount: ["bind"], brokenMount: "no-read-back" }, /^attach by id: the mount it reads back: expected \{"kind":"bind","path":".*"\}, got undefined$/],
 	["mount.run-folder-archil", { mount: ["archil"], brokenMount: "token-in-read-back" }, /^attach by id: the mount it reads back holds the Archil token$/],
-	["mount.run-folder-archil", { mount: ["archil"], brokenMount: "no-region" }, /^attach by id: the mount it reads back: expected \{"kind":"archil","disk":"fake-disk","region":"fake-region-1","folder":"runs\/[0-9a-f]+"\}, got \{"kind":"archil","disk":"fake-disk","folder":/],
+	["mount.run-folder-archil", { mount: ["archil"], brokenMount: "no-region" }, /^attach by id: the mount it reads back: expected \{"kind":"archil","disk":"fake-disk","region":"fake-region-1","folder":"runs\/[0-9a-f]+","exclusive":true,"epoch":1\}, got \{"kind":"archil","disk":"fake-disk","folder":/],
 	["mount.run-folder-archil", { mount: ["archil"], brokenMount: "token-in-label" }, /^list: what it reads back of the computer holds the Archil token$/],
 	// A provider that declares a kind its host cannot give (a Docker host that remaps ids, for a bind) fails, in its words.
 	["mount.run-folder-bind", { mount: ["bind"], brokenMount: "host-refuses" }, /^check refuses a spec that mounts the run's folder of kind bind, which the provider declares: mount: this host cannot bind the run folder$/],
@@ -128,6 +218,10 @@ test("the CLI passes a provider module's mountFor to the run: --only mount runs 
 	const stdout = { write: (chunk, done) => ((text += chunk), done?.(), true) };
 	const code = await main(["--provider", "./fixtures/mount-provider.mjs", "--only", "mount", "--json"], { stdout, cwd: HERE });
 	const report = JSON.parse(text);
-	assert.deepEqual(statuses(report), { "mount.run-folder-bind": "pass", "mount.run-folder-archil": "skip", "mount.undeclared-kind": "pass" }, JSON.stringify(reasons(report)));
+	assert.deepEqual(
+		statuses(report),
+		{ "mount.run-folder-bind": "pass", "mount.run-folder-archil": "skip", "mount.archil-durable": "skip", "mount.archil-takeover": "skip", "mount.archil-token": "skip", "mount.archil-isolated-durable": "skip", "mount.archil-loop-tool-edit": "skip", "mount.undeclared-kind": "pass" },
+		JSON.stringify(reasons(report)),
+	);
 	assert.equal(code, 3, "a run of the mount group alone leaves Core out: partial");
 });

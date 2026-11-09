@@ -7,12 +7,30 @@ import { readFileSync } from "node:fs";
 import { resolve } from "node:path";
 import { PassThrough, Writable } from "node:stream";
 import { fileURLToPath } from "node:url";
-import { childCommands, type DaemonExpected, daemonDrift } from "./child.js";
+import { childCommands, type DaemonExpected, daemonDrift, shellCommand } from "./child.js";
+import { OWN_NETWORK_ONLY, readOwnNetwork, TOOL_USER } from "./isolation.js";
 import { DaemonClient } from "./client.js";
 import { COMPUTER_LABEL, DEADLINE_LABEL, helloDrift, WORK } from "./drift.js";
+import { releaseOlder } from "./janitor.js";
 import type { KindCapabilities } from "./kinds.js";
-import type { MountKind } from "./mount.js";
-import { MAX_LINE_BYTES } from "./protocol.js";
+import { EPOCH_LABEL, epochOf, RUN_LABEL } from "./labels.js";
+import { checkMount, type MountKind, type MountReadBack, readBackOf } from "./mount.js";
+import {
+	ARCHIL_MOUNT_LABEL,
+	ARCHIL_TOOL_UID,
+	type ArchilMount,
+	type ArchilRoot,
+	archilLabels,
+	archilMount,
+	archilRefusals,
+	archilRelease,
+	mountDrift,
+	type ProviderNote,
+	readArchilMount,
+	recordedMount,
+	syncingClient,
+} from "./mount-archil.js";
+import { type ComputerClient, MAX_LINE_BYTES } from "./protocol.js";
 import {
 	type AttachedComputer,
 	type CallContext,
@@ -71,6 +89,8 @@ export type WebSocketFactory = (url: string, init: { headers: Record<string, str
 export interface DaytonaProviderOptions {
 	/** The Daytona API key. The caller passes it; this provider never reads the environment and never puts it in a computer. */
 	apiKey: string;
+	/** Told what is no failure of the call it came from: a release that did not let an Archil folder go cleanly. */
+	onNote?: ProviderNote;
 	/** Default https://app.daytona.io/api. */
 	apiUrl?: string;
 	/** The daemon binary on this machine, for the sandboxes' architecture (dist/computerd-linux-<arch>). */
@@ -81,7 +101,10 @@ export interface DaytonaProviderOptions {
 	sandboxClass?: "container" | "linux-vm";
 	/** The Daytona target (region); default the organization's. */
 	target?: string;
-	/** Who the daemon runs as, uid:gid in numbers, never root. Default 1000:1000. */
+	/**
+	 * Who the daemon runs as, uid:gid in numbers, never root. Default 2510:2510 (TOOL_USER), a uid no process of Daytona's
+	 * holds: init refuses to start while another process does.
+	 */
 	daemonUser?: string;
 	/**
 	 * Daytona's autoStopInterval: minutes without outside activity after which Daytona stops the sandbox, whatever runs in
@@ -144,8 +167,11 @@ interface CallInit {
 	anyStatus?: boolean;
 }
 
-/** The mount kinds a Daytona computer takes: none yet (capabilities() declares no mount); the Archil mount comes with D6. */
-export const MOUNT: readonly MountKind[] = [];
+/**
+ * The mount kinds a Daytona computer takes: an Archil mount of the run's folder (mount-archil.ts), made as root through
+ * the toolbox, from a snapshot of box/Dockerfile, with the daemon user agentrun-tool (daemonUser "2510:2510").
+ */
+export const MOUNT: readonly MountKind[] = ["archil"];
 
 /** The machine kind and groups of its one configuration: a linux computer. */
 export const CAPABILITIES: readonly KindCapabilities[] = [{ kind: "linux", groups: ["exec", "files", "processes"] }];
@@ -208,10 +234,30 @@ const MAX_LIFETIME_MS = 30 * 24 * 60 * 60 * 1000;
 const LIFETIME_SLACK_MS = 60_000 + 120_000;
 const MAX_DOMAINS = 100;
 const MAX_CIDRS = 10;
-const DOMAIN_PORTS = [80, 443];
+/** The toolbox's port, on every interface of the sandbox (daytonaio/daytona@b5a5d9e7 apps/daemon/pkg/toolbox/config/config.go:6). */
+const TOOLBOX_PORT = 2280;
 const INIT_SESSION = "agentrun-computerd";
 const STAGING = "/tmp/agentrun-computerd-";
-const SPEC_FIELDS = new Set(["image", "lifetimeMs", "network", "labels"]);
+const SPEC_FIELDS = new Set(["image", "lifetimeMs", "network", "labels", "mount"]);
+/** The provider's root channel: argv run as root in a session of its own; the image's user is root, never sudo. */
+const ROOT_RUN = [
+	"# agentrun-computer: root",
+	'[ "$(id -u)" = 0 ] || { echo "the toolbox runs commands as $(id -un), not root: a Daytona computer with an Archil mount needs a snapshot of box/Dockerfile, whose user is root"; exit 126; }',
+	'exec "$@"',
+].join("\n");
+
+/** An Archil spec's mount, or undefined. */
+const archilOf = (spec: ComputerSpec): ArchilMount | undefined => (spec.mount?.kind === "archil" ? spec.mount : undefined);
+
+/** A session command's log as text: Daytona's JSON of stdout and stderr, or its lines marked 01 01 01 and 02 02 02. */
+function logText(bytes: Uint8Array): string {
+	const buffer = Buffer.from(bytes);
+	const parsed = parseJson(buffer) as { stdout?: unknown; stderr?: unknown } | null;
+	if (parsed !== null && typeof parsed === "object" && (typeof parsed.stdout === "string" || typeof parsed.stderr === "string")) {
+		return [parsed.stdout, parsed.stderr].filter((part) => typeof part === "string").join("\n");
+	}
+	return buffer.toString("utf8").replace(/(^|\n)(?:\x01\x01\x01|\x02\x02\x02)/g, "$1");
+}
 const SIZE_FIELDS = new Set(["cpus", "memoryMb", "pids"]);
 const NUL = "a NUL byte cannot be sent to Daytona";
 const QUOTA = /quota|capacity|limit exceeded|too many/i;
@@ -230,7 +276,7 @@ const ECHO = /^\{"jsonrpc":"2\.0",("id":\d+,)?"method":/;
  * (each a session command), the child daemon's commands (childCommands). Exported so a test can run them where Daytona
  * would, in a root container.
  */
-export function daytonaCommands({ staging = "", deadline = "", user = "1000:1000" }: { staging?: string; deadline?: string; user?: string } = {}) {
+export function daytonaCommands({ staging = "", deadline = "", user = TOOL_USER }: { staging?: string; deadline?: string; user?: string } = {}) {
 	return childCommands({ staging, deadline, user });
 }
 
@@ -327,6 +373,8 @@ function labelProblem(key: string, value: unknown): string | undefined {
 	if (key.includes("\0") || value.includes("\0")) return `the label ${JSON.stringify(key)}: ${NUL}`;
 	if (key === "") return "a label name must be non-empty";
 	if (key === COMPUTER_LABEL || key.startsWith(`${COMPUTER_LABEL}.`)) return `the label ${key} is in the provider's own namespace (${COMPUTER_LABEL})`;
+	// connect and list read an Archil mount from this label: only create writes it, from the spec's mount.
+	if (key === ARCHIL_MOUNT_LABEL) return `the label ${key} is the provider's own: it records an Archil computer's mount`;
 	return undefined;
 }
 
@@ -585,21 +633,24 @@ export class DaytonaProvider implements ComputerProvider {
 	readonly #timeouts: DaytonaTimeouts;
 	readonly #autoStop: number;
 	readonly #autoDelete: number;
+	readonly #onNote: ProviderNote | undefined;
 
 	constructor({
 		apiKey,
+		onNote,
 		apiUrl = DEFAULT_API_URL,
 		daemonPath,
 		arch = "amd64",
 		sandboxClass = "container",
 		target,
-		daemonUser = "1000:1000",
+		daemonUser = TOOL_USER,
 		autoStopMinutes = 0,
 		autoDeleteMinutes,
 		fetch: fetcher,
 		webSocket,
 		timeouts,
 	}: DaytonaProviderOptions) {
+		this.#onNote = onNote;
 		if (typeof apiKey !== "string" || apiKey === "") throw new Error("a Daytona API key is required");
 		const base = new URL(apiUrl);
 		if (base.protocol !== "https:") throw new Error(`the Daytona API URL must be https, so the key never crosses in the clear: ${base.protocol}`);
@@ -628,14 +679,15 @@ export class DaytonaProvider implements ComputerProvider {
 	/**
 	 * daemon child: Daytona's toolbox daemon is the sandbox's first process, and init is a command it runs in a session
 	 * (#prepare), so deleting that session ends init and leaves the sandbox. maxLifetimeMs is the 30 days check() has
-	 * always given; Daytona's TTL is in whole minutes and documents no cap of its own.
+	 * always given; Daytona's TTL is in whole minutes and documents no cap of its own. The toolbox listens on 2280 on
+	 * every interface and runs commands for whoever reaches it, so init starts with --own-network, and network none is
+	 * all a computer takes until a proxy carries open and allowlists out of the daemon's own network.
 	 */
 	capabilities(): ComputerCapabilities {
 		return {
 			kind: "linux",
 			lifetime: "vendor",
-			network: ["none", "open", "allow"],
-			allow: { domains: { max: MAX_DOMAINS, ports: DOMAIN_PORTS }, cidrs: { max: MAX_CIDRS, ports: "any" }, mixed: false },
+			network: ["none"],
 			isolation: this.#class === "linux-vm" ? "vm" : "container",
 			os: "linux",
 			daemon: "child",
@@ -644,6 +696,8 @@ export class DaytonaProvider implements ComputerProvider {
 			release: ["stop", "delete"],
 			// autoDeleteInterval 0: Daytona deletes a sandbox as soon as it stops, so a stop keeps no computer.
 			stopDeletes: this.#autoDelete === 0,
+			mount: [...MOUNT],
+			vendorAgentPorts: [TOOLBOX_PORT],
 		};
 	}
 
@@ -655,14 +709,21 @@ export class DaytonaProvider implements ComputerProvider {
 		if (typeof image !== "string" || image.trim() === "") refuse("image", `an image is required: the id or name of a Daytona snapshot, or "${DAYTONA_DEFAULT_SNAPSHOT}" for Daytona's default snapshot`);
 		else if (/[\0-\x1f]/.test(image)) refuse("image", "a snapshot name has no control characters");
 		refusals.push(...checkLifetime(lifetimeMs, this.capabilities()));
-		if (typeof network === "object" && network !== null && "allow" in network) {
-			const lists = allowOf((network as { allow: unknown }).allow);
-			if (typeof lists === "string") refuse("network", lists);
-		} else if (network !== "none" && network !== "open") refuse("network", 'network is required: "none", "open" or { allow: [domains or IPv4 CIDRs] }');
+		if (network === "open" || (typeof network === "object" && network !== null && "allow" in network)) refuse("network", OWN_NETWORK_ONLY);
+		else if (network !== "none") refuse("network", 'network is required: "none"');
 		if (labels !== undefined) {
 			const entries = typeof labels === "object" && labels !== null && !Array.isArray(labels) ? Object.entries(labels) : undefined;
 			const bad = entries === undefined ? "labels must map names to strings" : entries.map(([key, value]) => labelProblem(key, value)).find(Boolean);
 			if (bad) refuse("labels", bad);
+		}
+		const mounted = checkMount(given.mount, MOUNT);
+		refusals.push(...mounted);
+		if (mounted.length === 0 && (given.mount as { kind?: unknown } | undefined)?.kind === "archil") {
+			refusals.push(...archilRefusals(spec));
+			const tool = String(ARCHIL_TOOL_UID);
+			if (this.#uid !== tool || this.#gid !== tool) {
+				refuse("mount", `an Archil mount's tools run as agentrun-tool, ${tool}:${tool}, and this provider's daemon user is ${this.#uid}:${this.#gid}: give it daemonUser "${tool}:${tool}"`);
+			}
 		}
 		for (const [field, value] of Object.entries(given)) {
 			if (SPEC_FIELDS.has(field) || value === undefined) continue;
@@ -687,18 +748,22 @@ export class DaytonaProvider implements ComputerProvider {
 		if (signal?.aborted) return fail("aborted", "create was aborted before Daytona was called");
 		const name = `computer-${randomBytes(6).toString("hex")}`;
 		const deadline = new Date(Date.now() + spec.lifetimeMs).toISOString();
+		const archil = archilOf(spec);
 		const body = {
 			name,
 			// "default" sends no snapshot, and Daytona makes the sandbox from its default snapshot.
 			...(spec.image === DAYTONA_DEFAULT_SNAPSHOT ? {} : { snapshot: spec.image }),
-			labels: { ...spec.labels, [COMPUTER_LABEL]: "1", [DEADLINE_LABEL]: deadline, [IMAGE_LABEL]: spec.image },
+			// An Archil computer carries its mount as a label: kind and source, never the token.
+			labels: { ...spec.labels, ...(archil ? archilLabels(archil) : {}), [COMPUTER_LABEL]: "1", [DEADLINE_LABEL]: deadline, [IMAGE_LABEL]: spec.image },
 			env: {},
 			public: false,
 			...(this.#target === undefined ? {} : { target: this.#target }),
 			ttlMinutes: Math.max(1, Math.ceil(spec.lifetimeMs / 60_000)),
 			autoStopInterval: this.#autoStop,
 			autoDeleteInterval: this.#autoDelete,
-			...(networkBody(spec.network) ?? { networkBlockAll: true }),
+			// An Archil computer's root reaches Archil: Daytona's network is open, and init's own namespace (loopback alone)
+			// holds the tools to none.
+			...(networkBody(archil ? "open" : spec.network) ?? { networkBlockAll: true }),
 		};
 		const posted = await this.#rest.json("POST", this.#rest.sandbox(), { json: body, timeoutMs: this.#timeouts.createMs }, signal);
 		const made = posted.ok ? (posted.value as Sandbox | null) : undefined;
@@ -737,7 +802,9 @@ export class DaytonaProvider implements ComputerProvider {
 		const started = await this.#waitStarted(made, signal);
 		if (!started.ok) return started;
 		const sb = started.value;
-		const vendor = sandboxDrift(spec, sb, this.#sandboxExpected(deadline));
+		const archil = archilOf(spec);
+		// An Archil computer's network at Daytona is open for root; init's own namespace holds the tools to the spec's none.
+		const vendor = sandboxDrift(archil ? { ...spec, network: "open" } : spec, sb, this.#sandboxExpected(deadline));
 		if (vendor.length > 0) return fail("refused", `it did not match its spec: ${vendor.join("; ")}`);
 		const toolbox = await this.#toolbox(sb, signal);
 		if (!toolbox.ok) return toolbox;
@@ -746,12 +813,32 @@ export class DaytonaProvider implements ComputerProvider {
 		form.append("file", new Blob([new Uint8Array(daemon)]), "computerd");
 		const uploaded = await this.#rest.call("POST", `${toolbox.value}/files/upload-v2?${new URLSearchParams({ path: staging })}`, { form, retry: true, timeoutMs: this.#timeouts.uploadMs }, signal);
 		if (!uploaded.ok) return fail(uploaded.error.code, `the daemon's upload was refused: ${uploaded.error.message}`);
+		// Init's flags are built here (childCommands): every remote computer, an Archil one included, starts init with
+		// --own-network, init and every tool in a network namespace of their own, loopback alone; the archil client and
+		// serve, run as root through the toolbox, stay in the computer's namespace, which reaches Archil.
 		const commands = daytonaCommands({ staging, deadline, user: `${this.#uid}:${this.#gid}` });
 		const install = await this.#execute(toolbox.value, commands.install, signal);
 		if (!install.ok) return install;
 		if (install.value.exitCode !== 0) return fail("refused", `installing the daemon failed (exit ${install.value.exitCode}): ${install.value.result.trim().slice(0, 500)}`);
 		const read = /^sha256 ([0-9a-f]{64})$/m.exec(install.value.result)?.[1];
 		if (read !== sha256) return fail("refused", `it did not match its spec: daemon: uploaded sha256 ${sha256}, the installed binary reads back ${show(read)}`);
+		// The run's folder, mounted before init starts, so no tool program runs before it is there.
+		let epoch: number | undefined;
+		if (archil) {
+			const labels = spec.labels ?? {};
+			const claim = epochOf(labels);
+			epoch = claim.ok ? claim.value : undefined;
+			const run = labels[RUN_LABEL] as string;
+			const mounted = await archilMount({
+				root: this.#root(toolbox.value),
+				mount: archil,
+				self: ref,
+				releaseOlder: () => releaseOlder(this, run, epoch as number, signal ? { signal } : {}),
+				timeoutMs: this.#timeouts.execMs,
+				...(signal ? { signal } : {}),
+			});
+			if (!mounted.ok) return mounted;
+		}
 		const session = await this.#rest.call("POST", `${toolbox.value}/process/session`, { json: { sessionId: INIT_SESSION } }, signal);
 		if (!session.ok) return fail(session.error.code, `starting the daemon: ${session.error.message}`);
 		const init = await this.#rest.json(
@@ -769,10 +856,69 @@ export class DaytonaProvider implements ComputerProvider {
 			return fail(opened.error.code, `the daemon did not answer: ${opened.error.message}${why ? `; init wrote: ${why}` : ""}`);
 		}
 		const daemonFound = await daemonDrift(opened.value, this.#daemonExpected(), this.#timeouts.helloMs, signal);
+		const mountRead = archil ? await this.#mountReadBack(opened.value.client, epoch, archil, signal) : undefined;
 		await opened.value.close();
 		if (!daemonFound.ok) return daemonFound;
 		if (daemonFound.value.length > 0) return fail("refused", `it did not match its spec: ${daemonFound.value.join("; ")}`);
+		if (archil && mountRead !== undefined) {
+			if (!mountRead.ok) return mountRead;
+			const want = readBackOf(archil, epoch);
+			if (JSON.stringify(mountRead.value) !== JSON.stringify(want)) {
+				return fail("refused", `it did not match its spec: mount: declared ${show(want)}, read back ${show(mountRead.value ?? "nothing")}`);
+			}
+		}
 		return this.#waitListed(ref.id, signal);
+	}
+
+	/**
+	 * What an Archil computer mounts at /workspace, read back through its computerd: the mount table, and whether the
+	 * resident serve answers (exclusive), under `epoch`, the computer's label.
+	 */
+	#mountReadBack(client: ComputerClient, epoch: number | undefined, recorded: Omit<ArchilMount, "token"> | undefined, signal?: AbortSignal): Promise<Result<MountReadBack | undefined>> {
+		return readArchilMount(client, { ...(recorded ? { mount: recorded } : {}), ...(epoch === undefined ? {} : { epoch }) }, { name: "the computer", timeoutMs: this.#timeouts.helloMs, ...(signal ? { signal } : {}) });
+	}
+
+	/**
+	 * The toolbox as the Archil mount's root channel: argv run as root (the snapshot's user is root, never sudo), in a
+	 * session of its own, its stdin, when given, sent as the session command's input with no echo; its exit code polled
+	 * until it ends or timeoutMs passes; its log read back; the session removed.
+	 */
+	#root(toolbox: string): ArchilRoot {
+		return {
+			run: async (argv, { stdin, timeoutMs, signal }) => {
+				const sessionId = `agentrun-archil-${randomBytes(8).toString("hex")}`;
+				const session = `${toolbox}/process/session/${sessionId}`;
+				const made = await this.#rest.call("POST", `${toolbox}/process/session`, { json: { sessionId } }, signal);
+				if (!made.ok) return made;
+				try {
+					const ran = await this.#rest.json("POST", `${session}/exec`, { json: { command: shellCommand(ROOT_RUN, argv), runAsync: true, suppressInputEcho: true } }, signal);
+					if (!ran.ok) return ran;
+					const commandId = (ran.value as { cmdId?: unknown } | null)?.cmdId;
+					if (typeof commandId !== "string") return fail("daytona", "POST exec: no command id in the answer");
+					const command = `${session}/command/${encodeURIComponent(commandId)}`;
+					if (stdin !== undefined) {
+						// Its words never carry stdin: it is the disk's token.
+						const sent = await this.#rest.call("POST", `${command}/input`, { json: { data: stdin } }, signal);
+						if (!sent.ok) return fail(sent.error.code, `the command's stdin could not be sent (${sent.error.code})`);
+					}
+					const end = Date.now() + timeoutMs;
+					let exitCode: number | undefined;
+					while (exitCode === undefined) {
+						const read = await this.#rest.json("GET", session, { retry: true }, signal);
+						if (!read.ok) return read;
+						const found = ((read.value as { commands?: Array<{ id?: unknown; exitCode?: unknown }> } | null)?.commands ?? []).find((one) => one.id === commandId);
+						if (typeof found?.exitCode === "number") exitCode = found.exitCode;
+						else if (Date.now() >= end) return fail("timeout", `the root command did not end within ${Math.round(timeoutMs / 1000)} s`);
+						else await sleep(this.#timeouts.pollMs, signal);
+						if (signal?.aborted) return fail("aborted", "the root command's wait was aborted");
+					}
+					const logs = await this.#rest.call("GET", `${command}/logs`, {}, signal);
+					return ok({ exitCode, output: logs.ok ? logText(logs.value.bytes).trim().slice(-2000) : "" });
+				} finally {
+					await this.#rest.call("DELETE", session, {});
+				}
+			},
+		};
 	}
 
 	#sandboxExpected(deadline: string): SandboxExpected {
@@ -950,7 +1096,8 @@ export class DaytonaProvider implements ComputerProvider {
 		if (!opened.ok) return opened;
 		const { kind, groups } = this.capabilities();
 		const drifted = helloDrift(opened.value.hello, { version: VERSION, kind, groups, arch: this.#arch });
-		if (drifted.length === 0) return opened;
+		// An Archil computer's client syncs the run's folder after every call that may change it, before it answers.
+		if (drifted.length === 0) return recordedMount(found.value.labels) ? ok({ ...opened.value, client: syncingClient(opened.value.client) }) : opened;
 		await opened.value.close();
 		return fail("refused", `the daemon in ${ref.name} does not match this provider: ${drifted.join("; ")}`);
 	}
@@ -994,10 +1141,15 @@ export class DaytonaProvider implements ComputerProvider {
 		else if (deadline.getTime() > Date.now() + MAX_LIFETIME_MS + 60_000) found.push(`deadline: ${deadline.toISOString()} is past the 30 days create allows`);
 		const network = networkOf(sb);
 		if (typeof network === "object" && "other" in network) found.push(`network: ${network.other}, which this provider never makes`);
-		const labels = Object.fromEntries(Object.entries(sb.labels ?? {}).filter(([key]) => key !== COMPUTER_LABEL && !key.startsWith(`${COMPUTER_LABEL}.`)));
+		// An Archil computer's Daytona network is open, for root to reach Archil; its spec's network is the tools', none.
+		const archilComputer = recordedMount(sb.labels) !== undefined;
+		if (archilComputer && network !== "open") found.push(`network: an Archil computer's Daytona network is open, for root to reach Archil; read back ${policyWords(network)}`);
+		// The caller's labels: none of the provider's own, which are read back above (the mount's label by recordedMount).
+		const labels = Object.fromEntries(Object.entries(sb.labels ?? {}).filter(([key]) => key !== COMPUTER_LABEL && !key.startsWith(`${COMPUTER_LABEL}.`) && key !== ARCHIL_MOUNT_LABEL));
 		// The image create was asked for, from its label; a computer made before the label was written reports its snapshot.
 		const asked = sb.labels?.[IMAGE_LABEL];
-		const spec = { image: asked ?? sb.snapshot, lifetimeMs: 1, network: typeof network === "object" && "other" in network ? "none" : network, labels } as ComputerSpec;
+		const specNetwork = archilComputer || (typeof network === "object" && "other" in network) ? "none" : network;
+		const spec = { image: asked ?? sb.snapshot, lifetimeMs: 1, network: specNetwork, labels } as ComputerSpec;
 		found.push(...this.check(spec).map(({ field, message }) => `${field}: ${message}, read back from the computer`));
 		const vendor = sandboxDrift(spec, sb, this.#sandboxExpected(sb.labels?.[DEADLINE_LABEL] ?? ""));
 		found.push(
@@ -1012,17 +1164,30 @@ export class DaytonaProvider implements ComputerProvider {
 		let user = `${this.#uid}:${this.#gid}`;
 		let workdir: string | undefined;
 		let kind: AttachedComputer["spec"]["kind"];
+		// An Archil computer: its mount read back from inside it. Daytona's network is open for root, so the tools' is
+		// init's own namespace, which the daemon's drift check reads back (lo alone, or attach refuses): "none".
+		const recorded = recordedMount(sb.labels);
+		let mount: MountReadBack | undefined;
+		const toolsNetwork: NetworkPolicy = recorded ? "none" : spec.network;
 		if (sb.state === "started") {
 			const toolbox = await this.#toolbox(sb, signal);
 			if (!toolbox.ok) return toolbox;
 			const opened = await this.#open(sb, toolbox.value, signal);
 			if (!opened.ok) return opened;
 			const daemonFound = await daemonDrift(opened.value, this.#daemonExpected(), this.#timeouts.helloMs, signal);
+			const claim = epochOf(sb.labels);
+			const mountRead = recorded ? await this.#mountReadBack(opened.value.client, claim.ok ? claim.value : undefined, recorded, signal) : undefined;
 			await opened.value.close();
 			if (!daemonFound.ok) return daemonFound;
 			found.push(...daemonFound.value);
 			workdir = WORK;
 			kind = opened.value.hello.kind;
+			if (mountRead !== undefined) {
+				if (!mountRead.ok) return mountRead;
+				mount = mountRead.value;
+				// Held to the whole read-back the label and the epoch make (exclusive included), as Modal and E2B hold it.
+				if (recorded !== undefined) found.push(...mountDrift(readBackOf({ ...recorded, token: "" }, claim.ok ? claim.value : undefined), mount));
+			}
 		}
 		if (found.length > 0) return fail("refused", `the computer ${ref.name} does not match this provider, so attach refuses it and it is left as it is: ${found.join("; ")}`);
 		return ok({
@@ -1031,7 +1196,8 @@ export class DaytonaProvider implements ComputerProvider {
 				image: spec.image,
 				...(typeof sb.snapshot === "string" ? { snapshot: sb.snapshot } : {}),
 				user,
-				network: spec.network,
+				network: toolsNetwork,
+				...(mount === undefined ? {} : { mount }),
 				...(isWhole(sb.cpu) ? { cpus: sb.cpu } : {}),
 				...(isWhole(sb.memory) ? { memoryMb: sb.memory * 1024 } : {}),
 				...(workdir === undefined ? {} : { workdir }),
@@ -1116,7 +1282,14 @@ export class DaytonaProvider implements ComputerProvider {
 				if (read.value === undefined) continue;
 				sb = read.value;
 			}
-			infos.push({ ref: { id: sb.id, name: sb.name as string }, labels: { ...(sb.labels ?? {}) }, deadline: deadlineOf(sb), state: stateOf(sb), network: networkOf(sb) });
+			// An Archil computer: its mount as labelled, under its epoch label, and its tools' network, init's own namespace
+			// (create held its daemon to lo alone; attach and network() read it back from inside). Daytona's own report is
+			// open, for root to reach Archil.
+			const recorded = recordedMount(sb.labels);
+			const claim = epochOf(sb.labels);
+			const mount = recorded ? readBackOf({ ...recorded, token: "" }, claim.ok ? claim.value : undefined) : undefined;
+			const network: NetworkPolicy = recorded ? "none" : networkOf(sb);
+			infos.push({ ref: { id: sb.id, name: sb.name as string }, labels: { ...(sb.labels ?? {}) }, deadline: deadlineOf(sb), state: stateOf(sb), network, ...(mount ? { mount } : {}) });
 		}
 		return ok(infos);
 	}
@@ -1129,6 +1302,12 @@ export class DaytonaProvider implements ComputerProvider {
 		}
 		const found = await this.#own(ref, signal);
 		if (!found.ok) return found;
+		// An Archil computer: Daytona's network is open for root, so the tools' network is read back from the daemon, init's
+		// own namespace: "none" while it holds lo alone. It takes no other policy.
+		if (recordedMount(found.value.labels)) {
+			if (policy !== undefined && policy !== "none") return fail("refused", `${ref.name} has an Archil mount: its tools' network is none, init's own namespace, and it takes no other`);
+			return this.#toolsNetwork(found.value, signal);
+		}
 		const current = networkOf(found.value);
 		if (policy === undefined || samePolicy(current, policy)) return ok(current);
 		const changed = await this.#setNetwork(ref, policy, signal);
@@ -1154,6 +1333,23 @@ export class DaytonaProvider implements ComputerProvider {
 			}
 		}
 		return this.#makeSafe(ref, "refused", `Daytona did not apply network ${policyWords(policy)} (it read back ${policyWords(read)})`);
+	}
+
+	/** The network of a computer's programs, read back as their user sees it (computerd probe): "none" while lo alone. */
+	async #toolsNetwork(sb: Sandbox, signal?: AbortSignal): Promise<Result<NetworkPolicy>> {
+		if (sb.state !== "started") return fail("refused", `${sb.name ?? sb.id} is ${sb.state ?? "in no state Daytona reports"}, so its daemon cannot read its network back`);
+		const toolbox = await this.#toolbox(sb, signal);
+		if (!toolbox.ok) return toolbox;
+		const opened = await this.#open(sb, toolbox.value, signal);
+		if (!opened.ok) return opened;
+		try {
+			const bounded = signal ? AbortSignal.any([signal, AbortSignal.timeout(this.#timeouts.helloMs)]) : AbortSignal.timeout(this.#timeouts.helloMs);
+			const drift = await readOwnNetwork(opened.value.client, this.#timeouts.helloMs, bounded);
+			if (!drift.ok) return drift;
+			return ok(drift.value.length === 0 ? "none" : { other: drift.value.join("; ") });
+		} finally {
+			await opened.value.close();
+		}
 	}
 
 	/**
@@ -1201,9 +1397,26 @@ export class DaytonaProvider implements ComputerProvider {
 		// destroys, so the name is not held to the ref's here.
 		if (going(sb)) return this.#settle(ref, "gone", how, signal);
 		if (!ours(sb) || sb.name !== ref.name) return fail("not_found", `no Daytona computer is ${ref.name} (${ref.id}): the sandbox is not this provider's, so it is left as it is`);
-		if (how === "stop") return this.#stop(ref, sb, signal);
-		const deleted = await this.#delete(ref.id);
-		return deleted.ok ? this.#settle(ref, "gone", how, signal) : deleted;
+		const letGo = recordedMount(sb.labels) && sb.state === "started" ? await this.#letGo(sb, signal) : ok(undefined);
+		const released = how === "stop" ? await this.#stop(ref, sb, signal) : await this.#delete(ref.id).then((deleted) => (deleted.ok ? this.#settle(ref, "gone", how, signal) : deleted));
+		if (!letGo.ok && released.ok) this.#onNote?.({ computer: ref.name, note: `${ref.name} was ${how === "stop" ? "stopped" : "deleted"}, and ${letGo.error.message}` });
+		return released;
+	}
+
+	/**
+	 * An Archil computer lets its folder go before it is stopped or deleted: a final sync through its computerd (when it
+	 * answers), then checkin as root. Neither stops the release: every call that changed the folder synced before it
+	 * answered, and a hold left behind is revoked by the run's next claim. What did not go cleanly is said through onNote.
+	 */
+	async #letGo(sb: Sandbox, signal?: AbortSignal): Promise<Result<void>> {
+		const toolbox = await this.#toolbox(sb, signal);
+		if (!toolbox.ok) return fail(toolbox.error.code, `the run's folder was not let go: the toolbox could not be reached (${toolbox.error.message})`);
+		const opened = await this.#open(sb, toolbox.value, signal);
+		try {
+			return await archilRelease({ root: this.#root(toolbox.value), client: opened.ok ? opened.value.client : undefined, timeoutMs: this.#timeouts.execMs, ...(signal ? { signal } : {}) });
+		} finally {
+			if (opened.ok) await opened.value.close();
+		}
 	}
 
 	async #stop(ref: ComputerRef, sb: Sandbox, signal?: AbortSignal): Promise<Result<void>> {

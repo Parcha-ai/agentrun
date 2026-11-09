@@ -125,8 +125,8 @@ export function markOf(argv) {
  * started) and what its daemon reports. Options:
  *  - install: the install script's exit code (default 0); sha: "ok" or "lie";
  *  - x11: false, and no computer has the X server's path socket;
- *  - box: what each daemon reports over the defaults (hello patch, uid/gid patch, reached, kernel, display: false for
- *    a daemon that does not reach the display);
+ *  - box: what each daemon reports over the defaults (hello patch, status patch, reached, kernel, interfaces and
+ *    raised of its own network, display: false for a daemon that does not reach the display);
  *  - notListening: how many stdio bridges find no daemon listening before one does;
  *  - startFails: words the start of init fails with;
  *  - bridge: "ok" (default), or "timeout": every stdio fails as the terminal channel does when its marker never comes;
@@ -232,7 +232,7 @@ function answer(box, { method, params }, patch) {
 	if (method === "hello") return result({ version: VERSION, os: "linux", arch: "amd64", kind: reaches ? "desktop" : "linux", groups: reaches ? [...DESKTOP_GROUPS] : DESKTOP_GROUPS.slice(0, 3), ...patch.hello });
 	if (method === "ping") return result({});
 	if (method === "files.read" && params.path === "/proc/self/status") {
-		const fields = { Uid: `${uid}\t${uid}\t${uid}\t${uid}`, Gid: `${gid}\t${gid}\t${gid}\t${gid}`, Groups: "", NoNewPrivs: "1", CapInh: NO_CAPS, CapPrm: NO_CAPS, CapEff: NO_CAPS, CapBnd: NO_CAPS, CapAmb: NO_CAPS, ...patch.status };
+		const fields = { Uid: `${uid}\t${uid}\t${uid}\t${uid}`, Gid: `${gid}\t${gid}\t${gid}\t${gid}`, Groups: "", NoNewPrivs: "1", CapInh: NO_CAPS, CapPrm: NO_CAPS, CapEff: NO_CAPS, CapBnd: NO_CAPS, CapAmb: NO_CAPS, Seccomp: "2", ...patch.status };
 		const text = Object.entries(fields).map(([k, v]) => `${k}:\t${v}\n`).join("");
 		return result({ data: Buffer.from(text).toString("base64"), size: text.length, eof: true });
 	}
@@ -242,7 +242,8 @@ function answer(box, { method, params }, patch) {
 		return error("not_found", `${params.path}: no such file`);
 	}
 	if (method === "exec.run" && params.argv[0] === DAEMON && params.argv[1] === "probe") {
-		const report = { uid, gid, kernel: patch.kernel ?? "6.8.0", reached: patch.reached ?? [], accepted: [] };
+		// Init's own network, as computerd probe reports it: the live interfaces, the quiet ones, the raised ones.
+		const report = { uid, gid, kernel: patch.kernel ?? "6.8.0", interfaces: patch.interfaces ?? ["lo"], quiet: [], raised: patch.raised ?? [], reached: patch.reached ?? [], accepted: [] };
 		return result({ exitCode: 0, stdout: Buffer.from(`${JSON.stringify(report)}\n`).toString("base64"), stderr: "", timedOut: false, truncated: false });
 	}
 	if (method === "exec.run") return result({ exitCode: 0, stdout: Buffer.from(`${params.argv.join(" ")}\n`).toString("base64"), stderr: "", timedOut: false, truncated: false });

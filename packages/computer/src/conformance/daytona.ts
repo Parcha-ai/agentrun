@@ -5,7 +5,27 @@
 // after 30 minutes with no outside activity and deletes it as soon as it stops, so a stop deletes, and the provider
 // declares it (stopDeletes; see conformanceNotes).
 import { create, DAYTONA_DEFAULT_SNAPSHOT, type DaytonaCreateOptions, type DaytonaProvider, type DaytonaProviderOptions } from "../daytona.js";
+import type { MountKind } from "../mount.js";
+import { type ArchilRunFolderOptions, archilRunFolder, archilSettings } from "./archil.js";
 import { buildDriftDaemon, DRIFT_VERSION } from "./drift-daemon.js";
+import type { RunFolder } from "./types.js";
+
+/** The Archil disk's settings for the mount cases, by name (COMPUTER_ARCHIL_*: all five, or none). */
+export { ARCHIL_ENV } from "./archil.js";
+
+/**
+ * A fresh run folder for the mount cases: an Archil one on the disk the COMPUTER_ARCHIL_* settings name (the shared
+ * archilRunFolder; the run's snapshot is then one of box/Dockerfile, and COMPUTER_DAYTONA_USER is 2510:2510); none when
+ * they name none, and none for a bind, which a remote computer cannot take.
+ */
+export async function mountFor(
+	kind: MountKind,
+	{ env = process.env, archil = {} }: { env?: Record<string, string | undefined>; archil?: Pick<ArchilRunFolderOptions, "objects" | "Archil" | "baseUrl"> } = {},
+): Promise<RunFolder | undefined> {
+	if (kind !== "archil") return undefined;
+	const settings = archilSettings(env);
+	return settings === undefined ? undefined : archilRunFolder({ ...settings, ...archil });
+}
 
 /** The environment this module reads, by name, each for the option its comment names. */
 export const DAYTONA_ENV = {
@@ -21,7 +41,7 @@ export const DAYTONA_ENV = {
 	target: "COMPUTER_DAYTONA_TARGET",
 	/** sandboxClass: container (default) or linux-vm, the class the snapshot makes. */
 	sandboxClass: "COMPUTER_DAYTONA_CLASS",
-	/** daemonUser: uid:gid the daemon runs as; default 1000:1000. */
+	/** daemonUser: uid:gid the daemon runs as; default 2510:2510. */
 	user: "COMPUTER_DAYTONA_USER",
 	/** The snapshot every computer of the run starts from; default "default", Daytona's default snapshot. */
 	snapshot: "COMPUTER_DAYTONA_SNAPSHOT",
@@ -76,10 +96,12 @@ export interface DaytonaModuleOptions {
 	webSocket?: DaytonaProviderOptions["webSocket"];
 	/** The provider's bounds; the sweep sets how long a release waits. */
 	timeouts?: DaytonaProviderOptions["timeouts"];
+	/** What the provider says that is no failure: the CLI gives it and puts it in the report. */
+	onNote?: DaytonaProviderOptions["onNote"];
 }
 
 /** The provider's options: what this module reads from the environment (settingsFromEnv), with the run's bounds. */
-function optionsOf({ env = process.env, fetch, webSocket, timeouts }: DaytonaModuleOptions): DaytonaCreateOptions {
+function optionsOf({ env = process.env, fetch, webSocket, timeouts, onNote }: DaytonaModuleOptions): DaytonaCreateOptions {
 	return {
 		...settingsFromEnv(env),
 		autoStopMinutes: CONFORMANCE_AUTO_STOP_MINUTES,
@@ -87,6 +109,7 @@ function optionsOf({ env = process.env, fetch, webSocket, timeouts }: DaytonaMod
 		...(fetch ? { fetch } : {}),
 		...(webSocket ? { webSocket } : {}),
 		...(timeouts ? { timeouts } : {}),
+		...(onNote ? { onNote } : {}),
 	};
 }
 

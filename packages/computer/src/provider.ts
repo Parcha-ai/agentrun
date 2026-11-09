@@ -81,6 +81,14 @@ export interface ComputerCapabilities {
 	release: Array<"stop" | "delete">;
 	/** The kinds of spec.mount this provider takes: bind (a host folder), archil (a folder of an Archil disk). Absent: none. */
 	mount?: MountKind[];
+	/**
+	 * The TCP ports the vendor's own agent listens on inside the computer (Daytona's toolbox 2280, E2B's envd 49983), each
+	 * the provider's own fact: an agent that runs commands as root or with sudo for whoever reaches it. The computer's
+	 * programs must reach none of them on any address (computerd init --own-network), which isolation.vendor-agent checks
+	 * on both loopbacks. An empty list: a vendor with no known listener inside (Modal), checked on the interfaces alone.
+	 * Absent: no vendor's agent runs beside the programs (Docker). A child daemon must declare it.
+	 */
+	vendorAgentPorts?: number[];
 }
 
 /** The os and daemon modes each kind may have; no other pair is valid. */
