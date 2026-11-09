@@ -1,6 +1,9 @@
 // A run's computer, composed once per process: the runner (runner/main.ts) and the server both take computerForClaim and
 // its process-wide deps from computerDepsFrom, so nothing composes them a second time. A spec builder adds only the
-// claim's own (its mode, its Workspace, the seal key, the Archil mount's revoke).
+// claim's own (its mode, its Workspace, the seal key, the Archil mount's revoke). The computerForClaim it gives
+// (claimComputer) reads what the run's launch lets the computer reach (box_allow) from the launch row: none for a runner
+// place, Docker for a Mode 1 sandbox place, a vendor's computer by the agent's setting, faux's under --faux. Both runner
+// entrypoints (the CLI's runner and the test server's) take it in place of harness-loops.ts's stopgap.
 //
 // What it composes: the computer package's kind registry; every provider built through the one provider builder
 // (computer-providers.ts computerProviderMakers, the package's providerFor); the computer's spec by provider and kind
@@ -17,11 +20,12 @@ import type { ProviderFactories } from "../computer-keys.js";
 import type { FauxComputers } from "../faux-computers.js";
 import { envValue, type KeyEnv, keyReader } from "../key-meta.js";
 import { COMPUTER_LIFETIME_MS } from "../runner/computer.js";
+import { readLaunchBody } from "../run-launch.js";
 import type { Store } from "../store/index.js";
-import { computerForClaim, type ComputerForClaimDeps, type OpenComputerView } from "./computer-for-claim.js";
+import { type ClaimComputer, type ClaimLaunch, computerForClaim, type ComputerForClaimDeps, type OpenComputerView } from "./computer-for-claim.js";
 import { storeLedger } from "./computer-ledger.js";
 import { computerProviderFactories, computerProviderMakers, type ProviderLoad } from "./computer-providers.js";
-import type { ComputerSettingKind, KindRegistry, ProviderEntry } from "./resolve-computer.js";
+import type { ComputerSettingKind, KindRegistry } from "./resolve-computer.js";
 
 /** What a Modal sandbox starts from: a registry image (Modal builds it on its side). */
 const MODAL_IMAGE = "debian:bookworm-slim";
@@ -52,8 +56,9 @@ export interface ComputerDepsOptions {
 
 /** The spec a computer of `kind` on `entry` is made with, besides its labels and its mount: its provider's image for the
  *  kind (Docker's: the owner's AGENTRUN_DOCKER_IMAGE, else the package's own), the leak bound for its lifetime (its clean
- *  end is the run's release), and no network. No key and no environment. */
-export function computerSpecOf(env: KeyEnv): (entry: ProviderEntry, kind: Exclude<ComputerSettingKind, "none">) => Omit<ComputerSpec, "labels" | "mount"> {
+ *  end is the run's release), and what the run's launch lets it reach (box_allow: a list is an allow-list; "none" or
+ *  none given, no network). No key and no environment. */
+export function computerSpecOf(env: KeyEnv): ComputerForClaimDeps["spec"] {
   const docker = envValue(env, DOCKER_IMAGE_ENV) ?? DEFAULT_DOCKER_IMAGE;
   const imageOf = (id: string, kind: Exclude<ComputerSettingKind, "none">): string => {
     switch (id) {
@@ -67,11 +72,27 @@ export function computerSpecOf(env: KeyEnv): (entry: ProviderEntry, kind: Exclud
       default: return docker;
     }
   };
-  return (entry, kind) => ({ image: imageOf(entry.id, kind), lifetimeMs: COMPUTER_LIFETIME_MS, network: "none" });
+  return (entry, kind, run) => ({
+    image: imageOf(entry.id, kind),
+    lifetimeMs: COMPUTER_LIFETIME_MS,
+    network: run.boxAllow === undefined || run.boxAllow === "none" ? "none" : { allow: [...run.boxAllow] },
+  });
 }
 
+/** The claim's computer as the runner's specs call it: what the run's launch lets the computer reach (its box_allow),
+ *  read from the launch row when the store has one and the claim does not say, then computerForClaim. */
+export const claimComputer = async (
+  launch: ClaimLaunch,
+  store: Parameters<typeof computerForClaim>[1] & { readonly runs?: Pick<Store["runs"], "launch"> },
+  deps: ComputerForClaimDeps,
+): Promise<ClaimComputer> => {
+  if (launch.boxAllow !== undefined || !store.runs) return computerForClaim(launch, store, deps);
+  const boxAllow = readLaunchBody((await store.runs.launch(launch.runId)).body)?.boxAllow;
+  return computerForClaim(boxAllow === undefined ? launch : { ...launch, boxAllow }, store, deps);
+};
+
 /** computerForClaim and its process-wide deps, composed once; and Settings → Computers' factories from the same makers. */
-export function computerDepsFrom(options: ComputerDepsOptions): { computerForClaim: typeof computerForClaim; computerDeps: ComputerDeps; factories: ProviderFactories } {
+export function computerDepsFrom(options: ComputerDepsOptions): { computerForClaim: typeof claimComputer; computerDeps: ComputerDeps; factories: ProviderFactories } {
   const { env, store, sealKey, faux } = options;
   // The faux registry is Settings' shape (computers.ts); the claim reads the same data as resolve-computer.ts's.
   const kinds = (faux?.kinds as unknown as KindRegistry | undefined) ?? options.kinds ?? ({ SETTING_KINDS, PROVIDERS, servingRefusals } as unknown as KindRegistry);
@@ -88,5 +109,5 @@ export function computerDepsFrom(options: ComputerDepsOptions): { computerForCla
     ...(options.openComputerView ? { openComputerView: options.openComputerView } : {}),
   };
   const factories = faux?.factories ?? computerProviderFactories(providers, (id) => storeLedger(store.computerLedger, id));
-  return { computerForClaim, computerDeps, factories };
+  return { computerForClaim: claimComputer, computerDeps, factories };
 }

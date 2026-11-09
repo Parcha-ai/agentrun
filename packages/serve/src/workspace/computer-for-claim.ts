@@ -33,6 +33,14 @@ export interface ClaimLaunch {
   readonly revisionId?: string;
   readonly computer?: ComputerSetting;
   readonly place?: PlaceView;
+  /** What the run's computer may reach, as its launch resolved it (run-launch.ts boxAllow): "none" or absent is no
+   *  network, a list an allow-list. The computer's spec takes it. */
+  readonly boxAllow?: readonly string[] | "none";
+}
+
+/** What of the run a computer's spec is made from, besides its kind and provider: what it may reach. */
+export interface ComputerRun {
+  readonly boxAllow?: readonly string[] | "none";
 }
 
 /** A provider module's create(), by provider id: its options from the saved keys, and the store's ledger for a provider
@@ -65,8 +73,8 @@ export interface ComputerForClaimDeps {
   /** The server's seal key: absent, no key is opened, so a provider that needs one is refused in words. */
   readonly sealKey: Buffer | undefined;
   readonly providers: ProviderMakers;
-  /** What a computer of `kind` is made with, besides its labels and its mount: image, lifetime, network. */
-  readonly spec: (entry: ProviderEntry, kind: Exclude<ComputerSettingKind, "none">) => Omit<ComputerSpec, "labels" | "mount">;
+  /** What a computer of `kind` is made with, besides its labels and its mount: image, lifetime, network (from `run`). */
+  readonly spec: (entry: ProviderEntry, kind: Exclude<ComputerSettingKind, "none">, run: ComputerRun) => Omit<ComputerSpec, "labels" | "mount">;
   /** A provider key's value by its name, as the server reads it (key-meta.ts keyReader: the environment's, else the
    *  saved one). Absent: the saved one alone, opened with `sealKey`. */
   readonly keyOf?: (name: string) => Promise<string | undefined>;
@@ -212,7 +220,8 @@ export async function computerForClaim(launch: ClaimLaunch, store: Pick<Store, "
       const options = providerOptions(entry.id, keys, deps.settings ?? {}, table);
       if (!options.ok) throw new Error(options.error.message);
       const provider = await make(options.options, { ledger: storeLedger(store.computerLedger, entry.id) });
-      const spec: ComputerSpec = { ...deps.spec(entry, kind as Exclude<ComputerSettingKind, "none">), labels: runLabels(launch.runId, launch.epoch), ...(mount ? { mount } : {}) };
+      const run: ComputerRun = launch.boxAllow === undefined ? {} : { boxAllow: launch.boxAllow };
+      const spec: ComputerSpec = { ...deps.spec(entry, kind as Exclude<ComputerSettingKind, "none">, run), labels: runLabels(launch.runId, launch.epoch), ...(mount ? { mount } : {}) };
       const launched = await providerLaunch(provider, launch, spec, signal);
       made = { id: launched.id, machine: launched.machine, ...(launched.watch ? { watch: launched.watch } : {}) };
       madeBy = entry;
