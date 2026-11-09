@@ -257,28 +257,39 @@ const MUTATING = new Set<DaemonMethod>(["files.write", "files.move", "files.remo
  * (or its own error), while the shared sync goes on for every other caller.
  */
 export function syncingClient(client: ComputerClient): ComputerClient {
+	// At most one sync in flight, and at most one follower shared by every call that comes during it. The hand-over from a
+	// run to its follower happens in one step, inside the run's own settling, so no call can land between them.
 	let running: Promise<Result<void>> | undefined;
-	let queued: Promise<Result<void>> | undefined;
+	let follower: { promise: Promise<Result<void>>; resolve: (run: Promise<Result<void>>) => void } | undefined;
 	const once = async (): Promise<Result<void>> => {
 		const synced = await client.call("mount.sync", {});
 		if (!synced.ok) return fail(synced.error.code, synced.error.message);
 		if (synced.value.exitCode !== 0) return fail("refused", `archil sync exited ${synced.value.exitCode}`);
 		return ok(undefined);
 	};
-	const start = () => {
-		const now = once().finally(() => {
-			if (running === now) running = undefined;
-		});
+	const start = (): Promise<Result<void>> => {
+		const now = once()
+			.catch((error: unknown) => fail("refused", `archil sync could not be asked: ${error instanceof Error ? error.message : String(error)}`))
+			.then((result) => {
+				const next = follower;
+				follower = undefined;
+				running = next === undefined ? undefined : start();
+				if (next !== undefined && running !== undefined) next.resolve(running);
+				return result;
+			});
 		running = now;
 		return now;
 	};
 	const sync = (): Promise<Result<void>> => {
 		if (running === undefined) return start();
-		queued ??= running.then(() => {
-			queued = undefined;
-			return start();
-		});
-		return queued;
+		if (follower === undefined) {
+			let resolve: (run: Promise<Result<void>>) => void = () => {};
+			const promise = new Promise<Result<void>>((settle) => {
+				resolve = settle;
+			});
+			follower = { promise, resolve };
+		}
+		return follower.promise;
 	};
 	return {
 		async call<M extends DaemonMethod>(method: M, params: DaemonMethods[M]["params"], options?: { signal?: AbortSignal }) {
