@@ -534,7 +534,7 @@ describe("a one-time schedule that has run", () => {
     }
   });
 
-  it("a one time whose time passed with no run (its firing due or failed) never reads ran, and has nothing to resume", async () => {
+  it("a one time whose time passed by the page's clock with no run known (its firing due or failed) never reads ran, and keeps Resume: only the server's started firing hides it", async () => {
     const passed: Trigger[] = [
       { ...ONCE, id: "trg_due", last_firing: firing({ nominal_at: "2026-11-09T20:43:00Z", status: "due" }) },
       { ...ONCE, id: "trg_failed", last_firing: firing({ nominal_at: "2026-11-09T20:43:00Z", status: "failed", error: { code: "run_failed", message: "no model" } }) },
@@ -549,12 +549,13 @@ describe("a one-time schedule that has run", () => {
     for (const t of passed) {
       const page = await open(server({ triggers: [t] }).v2, { trigger: t.id });
       expect(page.text()).not.toContain("Done · ran");
-      expect(page.button(/^(Resume|Pause)$/), t.id).toBeUndefined();
+      // The browser's clock may run ahead of the server's: Resume stays where only it says the time passed.
+      expect(page.button(/^Resume$/), t.id).toBeDefined();
       act(() => root?.unmount()); document.body.innerHTML = "";
     }
   });
 
-  it("run by hand after it was done: its page still reads Done from its firings; the list says its time passed, never Resume", async () => {
+  it("run by hand after it was done: its page still reads Done from its firings (no Resume); the list says its time passed", async () => {
     const scheduled = firing({ key: "fir_s", nominal_at: "2026-11-09T20:43:00Z", at: "2026-11-09T20:43:01Z" });
     const manual = firing({ key: "fir_m", by: "manual", nominal_at: "2026-11-09T22:00:00Z", at: "2026-11-09T22:00:01Z" });
     const after: Trigger = { ...ONCE, last_firing: manual };
