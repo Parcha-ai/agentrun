@@ -970,11 +970,11 @@ function adapterLoop(specOf: (claim: Claim, run: AdapterRun) => AdapterRunSpec |
       const decision = (await spec.gate?.(kernelCall)) ?? "allow";
       if (typeof decision === "object") return { deny: decision.deny };
       // Main's words for a tool set to deny (tool-gate's deniedText, from its one copy in refusal-words.ts).
-      if (decision === "deny") return { deny: setToDenyText(call.tool) };
+      if (decision === "deny") return { deny: setToDenyText(tool) };
       if (decision === "allow") return "allow";
-      // Asked about by the name the gate gives (its settings key, as main's pending approval is named), else the call's; the
-      // call and its price keep the MCP catalog name (tool).
-      const asked = spec.gate?.askedAs?.(call.tool) ?? call.tool;
+      // Asked about by the name the gate gives (its settings key, as main's pending approval is named), else the call's own;
+      // an MCP call by its catalog name (tool) either way, never pi's wire name, and so are its call and its price.
+      const asked = spec.gate?.askedAs?.(tool) ?? tool;
       const answer = await answerOf({ ...call, tool }, mcp?.priceOf(tool) ?? spec.approvalPrice?.(kernelCall) ?? null, asked);
       if (answer === "park") return { park: true };
       return answer.approved ? "allow" : { deny: deniedText(asked, answer.note) };
