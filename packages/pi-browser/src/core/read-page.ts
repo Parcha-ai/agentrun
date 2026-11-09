@@ -1,7 +1,8 @@
 // A fetched HTML page read as its title, its text and its links, without ever holding the event loop. The host's tools
 // run in the run's own process, so a read that holds the loop holds the run's heartbeat with it, and a run whose
 // heartbeat lapses is fenced: go.dev/dl, 3.15 MB of tables, held it past 240 s in one markdown conversion. So one linear
-// pass drops the blocks that hold no readable text (page-scan.ts); what is left is cut at READ_MAX_CHARS (the page is
+// pass drops the blocks that hold no readable text, and another the elements the page hides from everyone (page-scan.ts:
+// a help pop-up until its link is clicked is not the page's text); what is left is cut at READ_MAX_CHARS (the page is
 // then `truncated`, and `html_chars` is its whole length); and a worker thread converts that to markdown, in pieces
 // small enough that the converter stays linear (page-markdown.ts), within a deadline. A worker that has not answered by
 // then, or that fails, is stopped, and the text is the page's plain text, read on the loop in steps that yield it
@@ -10,7 +11,7 @@
 import { setImmediate as yieldToLoop } from "node:timers/promises";
 import { Worker } from "node:worker_threads";
 import { decodeEntities } from "./entities.js";
-import { cutHtml, InertDrop, PageScan } from "./page-scan.js";
+import { cutHtml, HiddenDrop, hidingClassesOf, InertDrop, PageScan } from "./page-scan.js";
 import type { Job } from "./read-page-worker.js";
 
 /** The most of a page's HTML that is read, counted once its script, style, svg, noscript and template blocks and its
@@ -42,7 +43,10 @@ type Answer = { text: string; title?: string; links?: string[]; truncated?: true
  */
 export async function readPage(html: string, url: string, { deadlineMs = READ_DEADLINE_MS, signal }: ReadPageOptions = {}): Promise<PageRead> {
   signal?.throwIfAborted();
-  const kept = await dropOnLoop(html, signal);
+  // What the page hides from everyone who reads it (a help pop-up until its link is clicked, a closed dialog) is not
+  // its text: the classes its own style hides are read before its style elements go.
+  const hiding = hidingClassesOf(html);
+  const kept = await dropHiddenOnLoop(await dropOnLoop(html, signal), hiding, signal);
   const read = cutHtml(kept, READ_MAX_CHARS);
   const cut = read.length < kept.length ? { truncated: true as const, html_chars: html.length } : {};
   await yieldToLoop();
@@ -88,6 +92,17 @@ function inWorker(job: Job, deadlineMs: number, signal: AbortSignal | undefined)
 /** `html` without its inert blocks (InertDrop), STEP_CHARS at a time with the loop yielded between steps. */
 export async function dropOnLoop(html: string, signal?: AbortSignal): Promise<string> {
   const drop = new InertDrop(html);
+  while (!drop.step(STEP_CHARS)) {
+    await yieldToLoop();
+    signal?.throwIfAborted();
+  }
+  return drop.result();
+}
+
+/** `html` without the elements it hides from everyone (HiddenDrop), with `classes` the ones its own style hid,
+ *  STEP_CHARS at a time with the loop yielded between steps. */
+async function dropHiddenOnLoop(html: string, classes: ReadonlySet<string>, signal?: AbortSignal): Promise<string> {
+  const drop = new HiddenDrop(html, classes);
   while (!drop.step(STEP_CHARS)) {
     await yieldToLoop();
     signal?.throwIfAborted();

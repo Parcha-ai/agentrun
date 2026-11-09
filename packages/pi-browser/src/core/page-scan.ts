@@ -160,6 +160,177 @@ export function dropInert(html: string): string {
   return drop.result();
 }
 
+/**
+ * The classes common frameworks hide an element from everyone with, whatever the page's own style says (it is often an
+ * external stylesheet a page read never fetches): mfp-hide (Magnific Popup: a pop-up's content until it opens, as on
+ * Canada.ca's record pages), modal (Bootstrap: a modal until it opens), d-none (Bootstrap 4+), hidden (Tailwind, Bootstrap
+ * 3), hide (Bootstrap 2), invisible (Tailwind, Bootstrap), is-hidden (Bulma), u-hidden (SUIT utilities). The classes
+ * that hide text from the screen only (sr-only, visually-hidden, wb-inv, screen-reader-text) are not here: a screen
+ * reader reads them, and they are often a record's field labels and table captions, the words its values hang on.
+ * aria-hidden is read for the same reason the other way: it hides from a screen reader only, and is usually shown.
+ */
+export const HIDING_CLASSES: ReadonlySet<string> = new Set(["mfp-hide", "modal", "d-none", "hidden", "hide", "invisible", "is-hidden", "u-hidden"]);
+/** The most of a page's style text read for the classes it hides (hidingClassesOf). */
+const STYLE_READ_CHARS = 1_000_000;
+const STYLE_START = /<style(?=[\s/>])[^>]*>/gi;
+/** A declaration list that hides its element: display:none or visibility:hidden, a custom property's name aside. */
+const HIDES = /(?:^|[;\s])(?:display\s*:\s*none|visibility\s*:\s*hidden)\s*(?:!\s*important\s*)?(?:;|$)/i;
+const ONE_CLASS = /^\s*\.(-?[_a-zA-Z][_a-zA-Z0-9-]*)\s*$/;
+/** Elements that never hold content: hidden, only the tag itself goes. */
+const VOID = new Set(["area", "base", "br", "col", "embed", "hr", "img", "input", "link", "meta", "param", "source", "track", "wbr"]);
+
+/**
+ * The classes `html`'s own style elements hide: those a rule at the top level of a style sets display:none or
+ * visibility:hidden on with a selector of that one class (`.x` in `.x, .y { display: none }`). A rule inside an at-rule
+ * (`@media print`) and a selector that is not one class alone (`.a .b`, `div.x`) hide nothing here. One pass over at
+ * most STYLE_READ_CHARS of style text, run on the page before its style elements are dropped.
+ */
+export function hidingClassesOf(html: string): Set<string> {
+  const classes = new Set<string>();
+  let read = 0;
+  const closer = CLOSER.style!;
+  STYLE_START.lastIndex = 0;
+  for (let start = STYLE_START.exec(html); start && read < STYLE_READ_CHARS; start = STYLE_START.exec(html)) {
+    closer.lastIndex = STYLE_START.lastIndex;
+    const close = closer.exec(html);
+    const css = html.slice(STYLE_START.lastIndex, close ? close.index : html.length).slice(0, STYLE_READ_CHARS - read);
+    read += css.length;
+    rulesOf(css, (selectors, declarations) => {
+      if (!HIDES.test(declarations)) return;
+      for (const selector of selectors.split(",")) {
+        const one = ONE_CLASS.exec(selector);
+        if (one) classes.add(one[1]!);
+      }
+    });
+    if (!close) break;
+    STYLE_START.lastIndex = close.index + close[0].length;
+  }
+  return classes;
+}
+
+/** Each rule at the top level of `css` (comments dropped): its selector text and its declarations; an at-rule's block
+ *  is passed whole. One pass, counting braces. */
+function rulesOf(css: string, rule: (selectors: string, declarations: string) => void): void {
+  const text = css.includes("/*") ? css.replace(/\/\*[\s\S]*?(?:\*\/|$)/g, " ") : css;
+  let from = 0;
+  /** Whether the text from `from` starts (past its spaces) with "@": a statement at-rule ("@import …;") or an at-rule's
+   *  block. Reads only the spaces it passes. */
+  const atRule = () => {
+    let at = from;
+    while (at < text.length && isSpace(text.charCodeAt(at))) at += 1;
+    return text.charCodeAt(at) === 64;
+  };
+  for (let at = 0; at < text.length; at += 1) {
+    const code = text.charCodeAt(at);
+    if (code === 59 && atRule()) { from = at + 1; continue; }
+    if (code !== 123) continue; // "{"
+    const isAt = atRule();
+    const head = isAt ? "" : text.slice(from, at);
+    let depth = 1;
+    let end = at + 1;
+    for (; end < text.length && depth > 0; end += 1) {
+      const c = text.charCodeAt(end);
+      if (c === 123) depth += 1;
+      else if (c === 125) depth -= 1;
+    }
+    if (!isAt) rule(head, text.slice(at + 1, depth === 0 ? end - 1 : end));
+    from = at = end;
+    at -= 1;
+  }
+}
+
+/** Whether a start tag named `name`, holding `inside` (insideOf), hides its element from everyone: the hidden attribute,
+ *  an inline display:none or visibility:hidden, a dialog not open, or a class in HIDING_CLASSES or `classes`. */
+function hides(name: string, inside: string, classes: ReadonlySet<string>): boolean {
+  let hidden = false;
+  let open = false;
+  eachAttribute(inside, (named, value) => {
+    const attribute = named.toLowerCase();
+    if (attribute === "hidden") hidden = true;
+    else if (attribute === "open") open = true;
+    else if (attribute === "style") hidden = HIDES.test(value);
+    else if (attribute === "class") hidden = value.split(/\s+/).some((one) => HIDING_CLASSES.has(one) || classes.has(one));
+    return hidden;
+  });
+  return hidden || (name === "dialog" && !open);
+}
+
+/**
+ * A page without the elements it hides from everyone (hides), in steps so a caller on the event loop can yield between
+ * them (dropHidden, all at once). Run on a page its inert blocks are dropped from (InertDrop), with the classes its own
+ * style hid (hidingClassesOf). A hidden element goes from its start tag to the end tag that closes it, a same-name
+ * element inside it counted; one that no end tag closes hides nothing, since where it ends is not known without a full
+ * tree. A hidden element that holds no content (VOID) goes alone. Linear: one pass pairs each start tag with its end tag
+ * (an open-tag stack per name), then the hidden ranges are cut, the outermost of each nest.
+ */
+export class HiddenDrop {
+  readonly #next: (at: number) => Tag | null;
+  readonly #open = new Map<string, { lt: number; hidden: boolean }[]>();
+  readonly #ranges: [number, number][] = [];
+  #at = 0;
+  #done = false;
+
+  constructor(readonly html: string, readonly classes: ReadonlySet<string>) {
+    this.#next = tagsOf(html);
+  }
+
+  /** Pairs the tags found in the next `chars` characters or so; true once the whole page is read. */
+  step(chars: number): boolean {
+    const { html } = this;
+    const until = this.#at + chars;
+    while (!this.#done && this.#at < until) {
+      const tag = this.#next(this.#at);
+      if (!tag || tag.gt < 0) { this.#done = true; break; }
+      this.#at = tag.gt + 1;
+      const { name } = tag;
+      if (!name) continue;
+      if (tag.end) {
+        const open = this.#open.get(name)?.pop();
+        if (open?.hidden) this.#ranges.push([open.lt, tag.gt + 1]);
+        continue;
+      }
+      const hidden = hides(name, insideOf(html, name, tag.lt, tag.gt), this.classes);
+      if (VOID.has(name)) { if (hidden) this.#ranges.push([tag.lt, tag.gt + 1]); continue; }
+      // Text, not markup, to its end tag (an iframe's fallback, an xmp): its "<" are not tags.
+      if (TEXT_ONLY.has(name)) {
+        const closer = CLOSER[name]!;
+        closer.lastIndex = tag.gt + 1;
+        const close = closer.exec(html);
+        if (hidden && close) this.#ranges.push([tag.lt, close.index + close[0].length]);
+        if (!close) { this.#done = true; break; }
+        this.#at = close.index + close[0].length;
+        continue;
+      }
+      let open = this.#open.get(name);
+      if (!open) this.#open.set(name, (open = []));
+      open.push({ lt: tag.lt, hidden });
+    }
+    return this.#done;
+  }
+
+  /** The page without its hidden ranges (once step has answered true; the page as it is before that). */
+  result(): string {
+    if (!this.#done || this.#ranges.length === 0) return this.html;
+    const ranges = this.#ranges.sort((a, b) => a[0] - b[0]);
+    const kept: string[] = [];
+    let from = 0;
+    for (const [start, end] of ranges) {
+      if (end <= from) continue;
+      if (start > from) kept.push(this.html.slice(from, start));
+      from = Math.max(from, end);
+    }
+    kept.push(this.html.slice(from));
+    return kept.join("");
+  }
+}
+
+/** `html` without the elements it hides from everyone, all at once (see HiddenDrop). */
+export function dropHidden(html: string, classes: ReadonlySet<string>): string {
+  const drop = new HiddenDrop(html, classes);
+  drop.step(Number.POSITIVE_INFINITY);
+  return drop.result();
+}
+
 /** `html` cut to at most `max` characters, after the last tag that ends before the cut, so no tag is left half; at
  *  `max` itself when that tag ends more than 64 KiB before it (a page of one long text), or one before it when `max`
  *  falls between the two halves of a character written as a surrogate pair, so no half of one is left. */
@@ -257,16 +428,28 @@ const TITLE_END = /<\/title(?=[\s/>])/gi;
  * tagsOf ends a tag by: a quote right after the "=" and its spaces; one that no quote closes runs to the tag's end.
  */
 function attrOf(inside: string, name: "href" | "src", decode: Decode): string | null {
+  let found: string | null = null;
+  eachAttribute(inside, (named, value) => {
+    if (named.length !== name.length || named.toLowerCase() !== name) return false;
+    found = value.includes("&") ? decode(value) : value;
+    return true;
+  });
+  return found;
+}
+
+/** Each attribute of a tag's `inside` (insideOf), in order, read as attrOf says: `visit` gets its name as written and its
+ *  raw value ("" for one with no value), and stops the walk by answering true. */
+function eachAttribute(inside: string, visit: (name: string, value: string) => boolean): void {
   const { length } = inside;
   for (let at = 0; at < length;) {
     const code = inside.charCodeAt(at);
     if (isSpace(code) || code === SLASH) { at += 1; continue; }
     const from = at;
     do at += 1; while (at < length && !endsName(inside.charCodeAt(at)));
-    const named = at - from === name.length && inside.slice(from, at).toLowerCase() === name;
+    const name = inside.slice(from, at);
     while (isSpace(inside.charCodeAt(at))) at += 1;
     if (inside.charCodeAt(at) !== EQUALS) {
-      if (named) return "";
+      if (visit(name, "")) return;
       continue;
     }
     at += 1;
@@ -283,12 +466,8 @@ function attrOf(inside: string, name: "href" | "src", decode: Decode): string | 
       while (at < length && !isSpace(inside.charCodeAt(at))) at += 1;
       end = at;
     }
-    if (named) {
-      const value = inside.slice(start, end);
-      return value.includes("&") ? decode(value) : value;
-    }
+    if (visit(name, inside.slice(start, end))) return;
   }
-  return null;
 }
 /** What a tag at `lt` named `name` holds between its name and its ">" at `gt`. */
 const insideOf = (html: string, name: string, lt: number, gt: number) => html.slice(lt + 1 + name.length, gt);
