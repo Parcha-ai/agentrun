@@ -16,7 +16,7 @@ import { BACKGROUND_CONTEXT, withAbortSignal } from "@earendil-works/chord/conte
 import type { Models } from "@earendil-works/pi-ai";
 import { createModels } from "@earendil-works/pi-ai/models";
 import { type Conversation, type ConversationId, createRegistry, Harness, LiveDoc } from "@earendil-works/pi-durable";
-import { type AdapterSession, type AgentAdapter, type BeforeRequest, type HostTool, modelPortFor, type Refusal, runBooking, type SessionSpec } from "@parcha/agentrun-kernel";
+import { type AdapterSession, type AgentAdapter, type BeforeRequest, type HostTool, modelPortFor, type Refusal, runBooking, RUNNER_RECORDS, type SessionRecord, type SessionSpec } from "@parcha/agentrun-kernel";
 import type { KernelHooks, ToolCall } from "./conformance/subject.js";
 import { type AnswerData, type AskData, type BudgetData, type EndData, KINDS, type RaiseData } from "./journal-kinds.js";
 import { originOf, RUN_RESUMED } from "@parcha/pi-durable-agent/timeline";
@@ -314,7 +314,18 @@ function adapterLoop(specOf: (claim: Claim, run: AdapterRun) => AdapterRunSpec |
           ...(port.responded ? { responded: port.responded.bind(port) } : {}),
           ...(port.note ? { note: port.note.bind(port) } : {}),
         };
-        const io: PiSessionIO = { writer, models: counted, signal: deps.signal, onEvent: () => {}, gate: gateOf };
+        // What the request that just answered cost: its booking (the request's runner.turn record, the latest one once
+        // the session's requests are booked), its figure or null when unknown. A refused request's record is its $0.
+        const bookedCost = async (): Promise<number | null | undefined> => {
+          await bookingsSettled();
+          const records = await writer.read().catch(() => [] as SessionRecord[]);
+          const last = [...records].reverse().find((record) => record.kind === RUNNER_RECORDS.turn);
+          if (!last) return undefined;
+          const turn = last.data as { usd?: unknown; bookedUsd?: unknown };
+          const figure = turn.bookedUsd !== undefined ? turn.bookedUsd : turn.usd;
+          return typeof figure === "number" && Number.isFinite(figure) ? figure : null;
+        };
+        const io: PiSessionIO = { writer, models: counted, signal: deps.signal, onEvent: () => {}, gate: gateOf, bookedCost };
         session = await spec.adapter.open({ ...spec.session, tools }, io);
         root = await harness.root(context);
         // A run brought back from a park: the raises its claim has are taken together, once its delivery is done. So is a
