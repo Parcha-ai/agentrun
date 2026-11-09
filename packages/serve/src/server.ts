@@ -34,7 +34,7 @@ import { IMPORT_ASKED } from "./import.js";
 import type { ImportAnswer, ImportTask } from "./import-worker.js";
 import type { MessageOrigin } from "@parcha/pi-durable-agent/timeline";
 import { gradeModelOf, learningBudgetOf, type LearningMode, learningOf } from "./learning.js";
-import { agentLearning, learningLog, learningNotes, noteBody, pendingCount, readNote, runDiff, runLearning, secretsShown, sendNote, writeNote } from "./learning-routes.js";
+import { agentLearning, learningLog, learningNotes, noteBody, pendingCount, readNote, secretsShown, sendNote, writeNote } from "./learning-routes.js";
 import { answerLlms, MCP_PATH, mcpEndpoint } from "./mcp.js";
 import { openapiDocument, servedOpenapi, UNSUPPORTED } from "./openapi.js";
 import { boxesLine, defaultPlaceOf, NEW_AGENT_TOOLS, newAgentPlace, noBoxReason, type Place, placesOf, resolvePlace } from "./place.js";
@@ -79,8 +79,8 @@ import { CAP_MODES, type CapMode, meterFiguresIn } from "./cap.js";
 import { type Blocker, blockersOf, CODE_NODES_ENV, issueOf, MCP_HARNESSES, NOT_SET_UP, type RevisionShape } from "./runnable.js";
 import { hostSecrets, SECRET_NAMES, secret, type StoredKeys, withSecrets } from "./secrets.js";
 import { redactedOutput } from "./key-refusal.js";
-import { analyticsFilter, analyticsView, learningStats, statsView } from "./stats.js";
-import { runLearningEnd } from "./store-reads/learning.js";
+import { analyticsFilter, analyticsView, statsView } from "./stats.js";
+import { agentLearningCountsOverStore, learningCountsOverStore, runLearningOverStore } from "./store-reads/learning.js";
 import { outcomes } from "./usage.js";
 import { keyOf, SEAL_KEY_ENV, sealKeyOf, TOOL_FIELDS } from "./tool-keys.js";
 import { toolKeysOverStore } from "./tool-keys-store.js";
@@ -2323,15 +2323,14 @@ async function startHolding(options: ServeOptions, data: string, checked: { maxR
         // The store's counts and cost sums (store-reads/stats), the runs' metrics summed (store-reads/analytics), and the
         // runs over the store for the learning counts. No in-process pending set and no held Runs: the runner writes a
         // run's end to the store before it lets it go.
-        const [s, a, rows] = await Promise.all([statsOverStore(store), analyticsOverStore(store, { ...filter }), listRunsOverStore(store, {}, ctx)]);
+        const [s, a] = await Promise.all([statsOverStore(store), analyticsOverStore(store, { ...filter })]);
         // Each running row's status over the store (viewOverStore), for the active/needs_input/unknown buckets.
         const vd = viewDepsFor(ownOriginOf());
         const runningStatus = new Map<string, Status>();
         await Promise.all(s.running.map(async (id) => { const v = await viewOverStore(store, id, vd); if (v?.status) runningStatus.set(id, v.status as Status); }));
-        // How the runs that tried to learn fared: each run's learning end over the store (store-reads/learning runLearningEnd),
-        // the same figures the ledger gave; no held run's learning from memory.
-        const ends = new Map(await Promise.all(rows.map(async (row) => [row.id, await runLearningEnd(store, row.id)] as const)));
-        const learning = learningStats(rows, filter, (row) => { const end = ends.get(row.id); return end ? { state: end.state, reason: (end.reason ?? null) as string | null } : null; });
+        // How the runs that tried to learn fared, over the store (learning-1's learningCountsOverStore): the same figures the
+        // ledger gave, run for run; no held run's learning from memory.
+        const learning = await learningCountsOverStore(store, filter);
         return send(res, 200, { ...statsView(s, (id) => runningStatus.get(id)), analytics: analyticsView(a, filter), learning });
       }
       case "listToolKeys":
@@ -2401,16 +2400,18 @@ async function startHolding(options: ServeOptions, data: string, checked: { maxR
       // they are now; a write as the definition's: an archived agent's too.
       case "getAgentLearning": {
         await needAgent(id);
-        // TODO(learning-1): the agent's learning view over the store — learning-1's agent-learning read on untangle/cutover-switch-learn
-        // (beside learningCountsOverStore), its counts/impact/notes from the store's ledger, byte-identical to main. Wire when its head lands.
-        return runReadsTodo();
+        // The agent's learning view: its notes, skills, workflows and log from its learning folder; its run-fared counts over the
+        // store (learning-1's agentLearningCountsOverStore). Each note's runs and the impact are named gaps until learning-1 records
+        // a run's given/read notes and its answer times in the store.
+        const counts = await agentLearningCountsOverStore(store, id);
+        return send(res, 200, await agentLearning(data, id, secretsShown(serverSecrets()), counts, null));
       }
       case "listLearningNotes":
       case "listLearningLog":
         await needAgent(id);
         if (found.name === "listLearningNotes") {
-          // TODO(learning-1): each note's runs over the store's ledger — learning-1's notes read on untangle/cutover-switch-learn. Wire when its head lands.
-          return runReadsTodo();
+          // The notes from the agent's learning folder; each note's runs are a named gap until learning-1 records them in the store.
+          return send(res, 200, await learningNotes(data, id, url.searchParams, secretsShown(serverSecrets())));
         }
         return send(res, 200, await learningLog(data, id, url.searchParams, secretsShown(serverSecrets())));
       case "readLearningFile":
@@ -2429,12 +2430,12 @@ async function startHolding(options: ServeOptions, data: string, checked: { maxR
         const located = written.status === 201 && shown.name(written.file) === written.file;
         return sendNote(res, written.status, { ...written, text: shown.text(written.text) }, located ? { location: `/v2/agents/${encodeURIComponent(id)}/learning/files/${written.file}` } : {});
       }
-      case "getRunLearning":
-        await needRun(id);
-        // TODO(learning-1): runLearningOverStore(store, runId) from untangle/cutover-switch-learn — the run's v2 learning view byte-identical
-        // to main (seed, merged, verdict/pending/problems redaction, grade cost), its statuses from the store journal (viewOverStore's statusOf
-        // line), no folder reads. Wire when its head lands.
-        return runReadsTodo();
+      case "getRunLearning": {
+        const run = await needRun(id);
+        // The run's learning view over the store (learning-1's runLearningOverStore): its end, the notes it was given and its seed
+        // from its launch, what it holds for the owner's OK as the store's run view reads it (no folder), byte-identical to main.
+        return send(res, 200, await runLearningOverStore(store, run.id, secretsShown(serverSecrets()), serverSecrets()));
+      }
       case "getRunLearningDiff":
         await needRun(id);
         // TODO(learning-1): the run's learning diff over the store — learning-1's diff read on untangle/cutover-switch-learn, not the run's
