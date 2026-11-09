@@ -412,3 +412,50 @@ func TestStrangersReadsThisMachinesProcAndFindsNoOtherProcessOfAnUnusedUid(t *te
 		t.Fatalf("Strangers of this test's own uid: %v, %v; want its child %d among them", found, err, child.Process.Pid)
 	}
 }
+
+// The E2B live run: a program of the computer's user connected to rpcbind, sshd's unix-local socket, systemd's varlink
+// sockets (some PID 1's own) and the journal's stdout socket, all world-writable under /run. Init, still root, takes
+// others' access off every such socket: connecting takes write, and a network namespace does not cut a path socket.
+func TestCloseSystemSocketsTakesOthersAccessOffEveryWorldWritableSocketUnderTheRoot(t *testing.T) {
+	root, err := filepath.EvalSymlinks(t.TempDir())
+	if err != nil {
+		t.Fatal(err)
+	}
+	listen := func(path string, mode os.FileMode) string {
+		if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {
+			t.Fatal(err)
+		}
+		l, err := net.Listen("unix", path)
+		if err != nil {
+			t.Fatal(err)
+		}
+		t.Cleanup(func() { l.Close() })
+		if err := os.Chmod(path, mode); err != nil {
+			t.Fatal(err)
+		}
+		return path
+	}
+	world := listen(filepath.Join(root, "systemd", "userdb", "io.systemd.DynamicUser"), 0o666)
+	rpcbind := listen(filepath.Join(root, "rpcbind.sock"), 0o777)
+	grouped := listen(filepath.Join(root, "agentrun-archil", "archil.sock"), 0o660)
+	elsewhere, err := filepath.EvalSymlinks(t.TempDir())
+	if err != nil {
+		t.Fatal(err)
+	}
+	display := listen(filepath.Join(elsewhere, "X0"), 0o777)
+	if err := os.Symlink(display, filepath.Join(root, "link.sock")); err != nil {
+		t.Fatal(err)
+	}
+	if err := CloseSystemSockets(root); err != nil {
+		t.Fatal(err)
+	}
+	for path, want := range map[string]os.FileMode{world: 0o660, rpcbind: 0o770, grouped: 0o660, display: 0o777} {
+		info, err := os.Stat(path)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if got := info.Mode().Perm(); got != want {
+			t.Errorf("%s: mode %o; want %o", path, got, want)
+		}
+	}
+}
