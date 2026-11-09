@@ -292,7 +292,7 @@ function Console({ v2, onSignedOut }: { v2: ReturnType<typeof createClient>; onS
   // The capabilities, read at the start and again after a settings save: only the newest read lands, so an answer to an
   // earlier read (two saves in a row) never puts back what an earlier save left.
   const capsAsked = useRef(0);
-  // Whether the poll below has a capabilities read still answering: it starts no other until that one ends.
+  // Whether the poll's timer below has a capabilities read still answering: it starts no other until that one ends.
   const capsPolling = useRef(false);
   // It answers whether the read landed, for a page that says so (Settings → Tools).
   const readCaps = () => { const n = ++capsAsked.current; return v2.capabilities().then((x) => { if (n === capsAsked.current) setCaps(x); return true; }, () => false); };
@@ -484,14 +484,16 @@ function Console({ v2, onSignedOut }: { v2: ReturnType<typeof createClient>; onS
   const preparing = !!boxComing;
   useEffect(() => {
     if (modelsReady !== false && !preparing) return;
-    // Through the one guarded reader, so an older answer never undoes a newer one, and never while the poll's last read is
-    // still answering: a read slower than MODEL_CHECK_MS would otherwise be overtaken by the next, and its answer dropped.
-    const again = () => {
+    // Through the one guarded reader, so an older answer never undoes a newer one. The timer starts no read while its last
+    // one is still answering: a read slower than MODEL_CHECK_MS would otherwise be overtaken by the next tick's, and its
+    // answer dropped. Coming back into view always reads now, and that newer answer is the one that lands.
+    const tick = () => {
       if (capsPolling.current) return;
       capsPolling.current = true;
       void readCaps().finally(() => { capsPolling.current = false; });
     };
-    const timer = setInterval(again, MODEL_CHECK_MS);
+    const again = () => readCaps();
+    const timer = setInterval(tick, MODEL_CHECK_MS);
     window.addEventListener("focus", again);
     return () => { clearInterval(timer); window.removeEventListener("focus", again); };
   }, [v2, modelsReady, preparing]);
