@@ -120,8 +120,8 @@ func main() {
 		result := probe.Run(targets, probe.ConnectBounds)
 		if sockets {
 			netUnix, _ := os.ReadFile("/proc/net/unix")
-			listed := probe.ConnectableSockets(probe.SocketRoots, string(netUnix), 2*time.Second)
-			result.Sockets = &listed
+			search := probe.ConnectableSockets(probe.SocketRoots, string(netUnix), probe.DefaultSocketBounds, 2*time.Second)
+			result.Sockets = &search
 		}
 		if err := json.NewEncoder(os.Stdout).Encode(result); err != nil {
 			logger.Printf("probe: %v", err)

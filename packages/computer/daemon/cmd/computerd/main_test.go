@@ -327,10 +327,22 @@ func TestProbeSocketsListsAPathSocketItCanConnectTo(t *testing.T) {
 		t.Fatalf("probe --sockets: exit %d, stderr %q", code, stderr)
 	}
 	var report struct {
-		Sockets *[]string `json:"sockets"`
+		Sockets *struct {
+			Sockets []struct {
+				Path string `json:"path"`
+				Type string `json:"type"`
+			} `json:"sockets"`
+			Incomplete []string `json:"incomplete"`
+		} `json:"sockets"`
 	}
-	if err := json.Unmarshal([]byte(stdout), &report); err != nil || report.Sockets == nil || !strings.Contains(","+strings.Join(*report.Sockets, ",")+",", ","+path+",") {
-		t.Fatalf("probe --sockets wrote %q (%v); want %s among its sockets", stdout, err, path)
+	found := false
+	if err := json.Unmarshal([]byte(stdout), &report); err == nil && report.Sockets != nil {
+		for _, socket := range report.Sockets.Sockets {
+			found = found || (socket.Path == path && socket.Type == "stream")
+		}
+	}
+	if !found {
+		t.Fatalf("probe --sockets wrote %q; want %s among its sockets, a stream one", stdout, path)
 	}
 	code, stdout, _ = computerdOut(t, 30*time.Second, "probe")
 	if code != 0 || strings.Contains(stdout, `"sockets"`) {
