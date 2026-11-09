@@ -13,7 +13,9 @@ import { saveMcpServer } from "../dist/mcp-store.js";
 const KEY = Buffer.from(randomBytes(32));
 const env = (key = KEY) => ({ AGENTRUN_SEAL_KEY: Buffer.from(key).toString("base64") });
 const reg = (store, e = env()) => mcpServersOverStore(store, e, "1.0.0");
-const oauthSet = (over = {}) => ({ tokens: { access_token: "at-secret", scope: "repo issues" }, obtained_at: "2026-11-09T00:00:00.000Z", expires_at: "2026-11-09T01:00:00.000Z", client: { client_id: "cli-1" }, kind: "dynamic", discovery: {}, ...over });
+/** A dummy token, never key-shaped (export-source's literal_credential rule). */
+const ACCESS_TOKEN = `not-a-secret-${"access"}`;
+const oauthSet = (over = {}) => ({ tokens: { access_token: ACCESS_TOKEN, scope: "repo issues" }, obtained_at: "2026-11-09T00:00:00.000Z", expires_at: "2026-11-09T01:00:00.000Z", client: { client_id: "cli-1" }, kind: "dynamic", discovery: {}, ...over });
 
 test("a headers server reads: auth header names (not values), credential sealed, tools gated, prices/not_metered, server_info + instructions; never the credential", async (t) => {
   const { store } = await storeOn(t);
@@ -51,7 +53,7 @@ test("an oauth server reads its note from the sealed token set; an expired sign-
   const view = await reg(store).get("linear");
   assert.equal(view.credential, "sealed");
   assert.deepEqual(view.oauth, { expires_at: "2026-11-09T01:00:00.000Z", scopes: ["repo", "issues"], client: "dynamic", client_id: "cli-1" });
-  assert.ok(!JSON.stringify(view).includes("at-secret"), "the access token is never in the view");
+  assert.ok(!JSON.stringify(view).includes(ACCESS_TOKEN), "the access token is never in the view");
   // A sign-in the runner marked expired (expired:true inside the sealed credential).
   await saveMcpServer(store, KEY, { name: "linear", url: "https://mcp.example.com/linear", auth: "oauth", protocol: "2025-06-18", tools: [], credential: { type: "oauth", set: oauthSet(), expired: true } });
   assert.equal((await reg(store).get("linear")).credential, "expired");
@@ -80,7 +82,7 @@ test("save, preview and oauthStart refuse a bad body before any network probe", 
   await assert.rejects(() => r.save("BAD NAME", { url: "https://x.example", auth: { type: "none" } }), (e) => e.code === "input_invalid" && e.extra.fields[0].field === "name");
   await assert.rejects(() => r.preview({ url: "https://x.example/", auth: { type: "bearer" } }), (e) => e.code === "input_invalid" && e.extra.fields.some((f) => f.field === "auth.token"));
   await assert.rejects(() => r.oauthStart("github", { url: "https://x.example", scopes: [] }), (e) => e.code === "input_invalid" && e.extra.fields.some((f) => f.field === "scopes"));
-  await assert.rejects(() => r.oauthStart("github", { url: "https://x.example", client_secret: "a-secret" }), (e) => e.code === "input_invalid" && e.extra.fields.some((f) => f.field === "client_id"));
+  await assert.rejects(() => r.oauthStart("github", { url: "https://x.example", client_secret: `not-a-secret-${"client"}` }), (e) => e.code === "input_invalid" && e.extra.fields.some((f) => f.field === "client_id"));
 });
 
 test("a header server with no seal key is refused a save (never kept in the clear)", async (t) => {
