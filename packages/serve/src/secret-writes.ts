@@ -140,6 +140,22 @@ export const unguardedOperations = (doc: Json, registered: readonly string[]): s
   markedOperations(doc).filter((operationId) => !registered.includes(operationId));
 
 // ---- one metadata shape for every secret's view ----------------------------------------------------------------------
+//
+// The field and the name (settled 2026-11-09). An object that holds ONE secret carries it as `secret: SecretMeta`; one
+// that holds SEVERAL carries `secrets: SecretMeta[]`; no other field name carries a SecretMeta. Its `name` is
+// "<plane>:<id>", the plane lowercase and the id as the plane keys it, always built by secretName(plane, ...id):
+// "tool:<KEY_NAME>", "model:<KEY_NAME>", "mcp:<server>" (several credentials of one server: "mcp:<server>:<field>"),
+// "computer:<provider>:<KEY>", "workspace:archil", "trigger:<id>", "webhook:outbound", "github:app",
+// "source:<adapter>:<field>".
+//
+// Shown once. A value the server mints for a person to copy is shown ONCE, as a field of its own named `<kind>_secret`
+// beside `secret: SecretMeta`, and only in the owner session's minting answer (the create, a rotate, the first save):
+// so far `signing_secret` alone (a webhook trigger's, POST /triggers and POST /triggers/{id}/secret; the outbound
+// webhook's, its first PUT /settings/webhook). A token caller's create answer says `secret_set: true` beside secret.set,
+// and no value. MCP mints nothing a person copies: a `client_secret` in any answer is a leak. The planted-secret harness
+// (test/fixtures/planted-secrets.mjs) allows a value only in an answer its plant declares as minting (`mints`), to the
+// owner's session, and flags it anywhere else: any GET, a token caller's answer, a later answer, the journal, the
+// store's rows, the log, an export.
 
 /** Where a secret came from: the environment the server starts with (which always wins, by the same name), pasted in the
  *  console, or obtained by a sign-in (OAuth, Connect); null when it is not set. */
@@ -148,6 +164,12 @@ export type SecretSource = "env" | "console" | "sign-in";
 /** What a view says of a secret: never its value, a prefix, a length or a hash. `changed_at` is the credential's own
  *  time (when it was pasted, signed in or rotated), not its row's; null when not set or not known. */
 export type SecretMeta = { name: string; set: boolean; source: SecretSource | null; changed_at: string | null };
+
+/** A secret's name, "<plane>:<id>": the plane and each part of its id joined with ":" (secretName("computer", provider,
+ *  KEY) is "computer:<provider>:<KEY>", secretName("workspace", "archil") "workspace:archil"). */
+export function secretName(plane: string, ...id: string[]): string {
+  return [plane, ...id].join(":");
+}
 
 /** The one shape a secret's view answers. Unset, it has no source and no time. */
 export function secretMeta(name: string, { set, source, changedAt }: { set: boolean; source?: SecretSource; changedAt?: string | Date | null }): SecretMeta {
@@ -163,7 +185,7 @@ export const SECRET_META_SCHEMA = {
   required: ["name", "set", "source", "changed_at"],
   description: "What a secret's view says of it: its name, whether it is set, where it came from, and when it last changed. Never a value, a prefix, a length or a hash.",
   properties: {
-    name: { type: "string", description: "The secret's name, as the environment would name it (a key's field, a header's name)." },
+    name: { type: "string", pattern: "^[a-z][a-z0-9-]*(:[^:]+)+$", description: "The secret's name, \"<plane>:<id>\": a lowercase plane and the id as the plane keys it, joined with \":\": tool:<KEY_NAME>, model:<KEY_NAME>, mcp:<server> (several of one server: mcp:<server>:<field>), computer:<provider>:<KEY>, workspace:archil, trigger:<id>, webhook:outbound, github:app, source:<adapter>:<field>. An object holding one secret carries it as `secret`, one holding several as `secrets`." },
     set: { type: "boolean", description: "Whether a value is set." },
     source: { enum: ["env", "console", "sign-in", null], description: "Where it came from: env, the environment the server starts with (which always wins, by the same name, and greys the console's field); console, pasted in the console by the owner's session; sign-in, obtained by an OAuth sign-in or Connect. null when not set." },
     changed_at: { type: ["string", "null"], format: "date-time", description: "When the credential itself last changed (pasted, signed in, rotated); null when not set or not known." },

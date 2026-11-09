@@ -44,7 +44,31 @@ test("the one secret metadata shape is a component: name, set, source (env, cons
   assert.deepEqual(shape.properties.source.enum, ["env", "console", "sign-in", null]);
   const mod = await secretWrites();
   assert.ok(mod, "secret-writes.js exists");
-  const meta = mod.secretMeta("MONID_API_KEY", { set: true, source: "console", changedAt: "2026-11-09T00:00:00.000Z" });
-  assert.deepEqual(meta, { name: "MONID_API_KEY", set: true, source: "console", changed_at: "2026-11-09T00:00:00.000Z" });
-  assert.deepEqual(mod.secretMeta("X_KEY", { set: false }), { name: "X_KEY", set: false, source: null, changed_at: null }, "unset: no source, no time");
+  const meta = mod.secretMeta("tool:MONID_API_KEY", { set: true, source: "console", changedAt: "2026-11-09T00:00:00.000Z" });
+  assert.deepEqual(meta, { name: "tool:MONID_API_KEY", set: true, source: "console", changed_at: "2026-11-09T00:00:00.000Z" });
+  assert.deepEqual(mod.secretMeta("tool:X_KEY", { set: false }), { name: "tool:X_KEY", set: false, source: null, changed_at: null }, "unset: no source, no time");
+});
+
+test("secretName(plane, ...id) builds a secret's name, <plane>:<id>, and every settled form meets SecretMeta's name pattern", async () => {
+  const mod = await secretWrites();
+  assert.ok(mod, "secret-writes.js exists");
+  assert.equal(mod.secretName("computer", "e2b", "E2B_API_KEY"), "computer:e2b:E2B_API_KEY");
+  assert.equal(mod.secretName("workspace", "archil"), "workspace:archil");
+  assert.equal(mod.secretName("tool", "PARALLEL_API_KEY"), "tool:PARALLEL_API_KEY");
+  assert.equal(mod.secretName("mcp", "linear", "authorization"), "mcp:linear:authorization");
+  const pattern = new RegExp(doc.components.schemas.SecretMeta.properties.name.pattern);
+  const names = [
+    mod.secretName("tool", "MONID_API_KEY"), mod.secretName("model", "OPENROUTER_API_KEY"), mod.secretName("mcp", "linear"), mod.secretName("mcp", "linear", "client_secret"),
+    mod.secretName("computer", "e2b", "E2B_API_KEY"), mod.secretName("workspace", "archil"), mod.secretName("trigger", "trg_1"), mod.secretName("webhook", "outbound"),
+    mod.secretName("github", "app"), mod.secretName("source", "slack", "signing_secret"),
+  ];
+  for (const name of names) assert.match(name, pattern, `${name} meets the pattern`);
+  for (const bad of ["MONID_API_KEY", "Tool:X", "tool:", ":x"]) assert.doesNotMatch(bad, pattern, `${bad} does not`);
+});
+
+test("GET /settings/tool-keys's rows carry secrets: SecretMeta[] by the component", () => {
+  const row = doc.paths["/settings/tool-keys"].get.responses["200"].content["application/json"].schema.properties.keys.items;
+  assert.ok(row, "the tool-key row schema");
+  assert.deepEqual(row.properties.secrets, { ...row.properties.secrets, type: "array", items: { $ref: "#/components/schemas/SecretMeta" } });
+  assert.ok(row.required.includes("secrets"));
 });
