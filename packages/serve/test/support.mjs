@@ -24,7 +24,6 @@ import { computerDepsFrom } from "../dist/workspace/index.js";
 import { routeOf } from "../dist/runner/model-route.js";
 import { FAUX_ENV, withoutFaux } from "../dist/model.js";
 import { SEAL_KEY_ENV } from "../dist/tool-keys.js";
-import { NO_APPROVER_ENV } from "../dist/tool-gate.js";
 import { ensureSealKey, sealKeyHome } from "../dist/seal-key.js";
 import { secret } from "../dist/secrets.js";
 
@@ -297,7 +296,7 @@ export async function triggerStore(of) {
  *  dispatch (dispatch.ts): each claim's launch picks its harness loop — pi on the kernel's adapter loop with the run's pi
  *  spec, a learning run on the learning loop, its model route the faux model under `faux`. Returns a close() that stops the
  *  runner and closes its store handle. */
-export async function startInProcessRunner(data, { faux, githubApi, githubMcpOrigin, accounts, ...switches } = {}) {
+export async function startInProcessRunner(data, { faux, githubApi, githubMcpOrigin, ...switches } = {}) {
   const store = await openSqliteStore({ dataDir: data, role: "runner" });
   // The runner's env mirrors the server's faux (model.ts FAUX_ENV): its model route reads the faux model from it, so a run
   // never reaches the network. The seal key is the server's (seal-key.ts), read as the CLI's runner reads it: the one
@@ -309,14 +308,6 @@ export async function startInProcessRunner(data, { faux, githubApi, githubMcpOri
   // The run's claim-time computer, composed once the one way (workspace/computer-deps.ts computerDepsFrom): none for the
   // runner's place, the real kinds otherwise, keys read from this env then the store's sealed rows.
   const computers = computerDepsFrom({ env, store, sealKey });
-  // Whether anyone can answer an ask: the server's own rule (server.ts approvers: accounts on only when the test says so),
-  // said to the gate the one way it reads it (tool-gate.ts NO_APPROVER_ENV), as the CLI's runner says it from
-  // AGENTRUN_ACCOUNTS. This process's tests run one at a time, so the runner started last says it; the value it found
-  // comes back when it closes.
-  const before = process.env[NO_APPROVER_ENV];
-  if (accounts === true) delete process.env[NO_APPROVER_ENV];
-  else process.env[NO_APPROVER_ENV] = "1";
-  const restore = () => (before === undefined ? delete process.env[NO_APPROVER_ENV] : (process.env[NO_APPROVER_ENV] = before));
   let runner;
   try {
     runner = startRunner({
@@ -326,14 +317,12 @@ export async function startInProcessRunner(data, { faux, githubApi, githubMcpOri
       createLoop: dispatchRunner({ env, data, journal: (claim) => store.journal(claim), store, sealKey, routeOf, computerForClaim: computers.computerForClaim, computerDeps: computers.computerDeps, ...(githubApi ? { githubApi } : {}), ...(githubMcpOrigin ? { githubMcpOrigin } : {}) }),
     });
   } catch (error) {
-    restore();
     await store.close();
     throw error;
   }
   return async () => {
     await runner.close().catch(() => {});
     await store.close().catch(() => {});
-    restore();
   };
 }
 
