@@ -62,6 +62,11 @@ export const capWords = (usd: number) => `${dollars(usd)} a run`;
 export const capOf = (own: number | undefined, agentDefault: number | undefined) =>
   typeof own === "number" ? capWords(own) : typeof agentDefault === "number" && agentDefault > 0 ? `Agent's default (${dollars(agentDefault)})` : "Agent's default";
 
+/** A one-time schedule that has run: its source is a one time (`at`), it has a last firing, and the server gives it no
+ *  next time. Its last firing, else null. Never read from `enabled` alone: a paused recurring schedule is off too. */
+export const ranOnce = (t: Trigger): Firing | null =>
+  t.source.kind === "schedule" && "at" in t.source && t.next_at === null && t.last_firing ? t.last_firing : null;
+
 /** Whether a trigger is one this console shows: a schedule that starts runs. GET /triggers also lists webhooks and
  *  schedules that send a message to a run. */
 export const isScheduleTrigger = (t: Trigger): t is Schedule => t.source.kind === "schedule" && t.target.kind === "start_run";
