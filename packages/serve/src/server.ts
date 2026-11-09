@@ -82,19 +82,21 @@ import { redactedOutput } from "./key-refusal.js";
 import { analyticsFilter, analyticsView, learningStats, statsView } from "./stats.js";
 import { runLearningEnd } from "./store-reads/learning.js";
 import { outcomes } from "./usage.js";
-import { keyOf, SEAL_KEY_ENV, sealKeyOf, TOOL_FIELDS, ToolKeys } from "./tool-keys.js";
+import { keyOf, SEAL_KEY_ENV, sealKeyOf, TOOL_FIELDS } from "./tool-keys.js";
+import { toolKeysOverStore } from "./tool-keys-store.js";
 import { SIGN_INS_DIR, vendorsOver } from "./sign-ins.js";
 // E1b builds the store-backed sign-ins bridge (the old SignIns interface — peek/forgotten/view/forget — over store.signIns,
 // byte-identical v2 shapes; "held"/held_by from a live run whose sign_in_handed holds the pointer, verified_at from the
 // last holder's lease end). TODO(E1b): wire its sha; named import until then.
 import { signInsOverStore } from "./sign-ins-store.js";
-import { MCP_AUTH_TYPES, McpServers } from "./mcp-servers.js";
+import { MCP_AUTH_TYPES, type McpTool } from "./mcp-probe.js";
+import { mcpServersOverStore } from "./mcp-servers-store.js";
 import { metaToolOf } from "./mcp-meta.js";
 import { MCP_SETTINGS_PAGE, signInCookie, startedHere } from "./mcp-oauth.js";
-import type { McpServerSource } from "./mcp-gateway.js";
 import { WEBHOOK_EVENTS, Webhooks } from "./webhooks.js";
-import { type SealedSettings } from "./sealed-settings.js";
-import { openServerSecrets, type ServerSecrets } from "./server-secrets.js";
+import { type SealedSettingsOverStore } from "./sealed-settings-store.js";
+import { type ServerSecrets } from "./server-secrets.js";
+import { openServerSecretsOverStore } from "./server-secrets-store.js";
 import { HOOK_TOLERANCE_S } from "./standard-webhooks.js";
 import { HookCut, receivePush } from "./push-handler.js";
 import type { TriggerAdapter } from "./trigger-adapter.js";
@@ -105,7 +107,8 @@ import { permissionFrom, pinWords } from "./tool-gate.js";
 import { CATCHUP_WINDOW_S, FAILURES_TO_PAUSE, HISTORY_KEPT, MIN_EVERY_S, PAYLOAD_KEPT_BYTES, type RunTrigger, SOURCE_KINDS, TARGET_KINDS, type TriggerClock, Triggers } from "./triggers.js";
 import { applyBodyOf, compiled, madeTriggerIssues, type Package, packageModel, packageView, readPackages } from "./templates.js";
 import { checkDefinitionBody, DEFAULT_INPUT_SCHEMA, type DefinitionBody, definitionBodyIssues, ID, IDEMPOTENCY_TTL_S, inputIssues, isObject, type Json, stable, unknownFields } from "./validate.js";
-import { agentTools, browserKeyRow, isUnavailable, recheckPlane, settingsIssues, ToolSettings, type ToolSettingsMap, whyUnavailable, withDefaults } from "./tool-plane.js";
+import { agentTools, browserKeyRow, isUnavailable, recheckPlane, settingsIssues, type ToolSettingsMap, whyUnavailable, withDefaults } from "./tool-plane.js";
+import { toolSettingsOverStore } from "./tool-settings-store.js";
 import { MAX_FILES_PER_RUN, MAX_UPLOAD_BYTES, Uploads, UPLOADS_DIR } from "./uploads.js";
 import { entryAt, listFiles, sendFile as sendWorkspaceFile, viewOf } from "./run-files.js";
 import { writesHeld } from "./workspace.js";
@@ -738,11 +741,18 @@ async function startHolding(options: ServeOptions, data: string, checked: { maxR
   // The server's own secrets, and each trigger source's sealed settings, opened below once the environment is read;
   // shown nowhere.
   let secretStores: ServerSecrets | undefined;
-  let triggerSettings: Map<string, SealedSettings> = new Map();
+  let triggerSettings: Map<string, SealedSettingsOverStore> = new Map();
   const base = { ...withoutFaux(process.env), [DATA_ENV]: data, ...(options.allowCodeNodes ? { [CODE_NODES_ENV]: "1" } : {}), ...(options.faux ? { [FAUX_ENV]: resolve(options.faux) } : {}), ...(options.harnessTable ? { [HARNESS_TABLE_ENV]: resolve(options.harnessTable) } : {}) };
+  // The one store (module A), opened here as this data root's single owner, before the settings layers that read it: its
+  // EXCLUSIVE lock is the one-server lock (no server-lock.ts), and it refuses a data directory an earlier version wrote, in
+  // words, to start fresh (no oldHomes/oldLayout checks, no migration). Every agent, run, setting and sign-in is a row; the
+  // server writes and reads rows, and a runner (its own process, sharing only this store) runs every run.
+  const store = await openSqliteStore({ dataDir: data, role: "server" });
+  stops.push(() => store.close());
   // Which fields are the server's is read from what it is started with alone: handed the saved keys too, ToolKeys would
-  // call each the server's, and none could be deleted.
-  const toolKeys = new ToolKeys(data, withSecrets(base, "own"), (fields) => (log ? log(logLine("tool_keys", fields)) : void process.stderr.write(`agentrun-serve: ${logLine("tool_keys", fields)}\n`)));
+  // call each the server's, and none could be deleted. The keys are sealed rows in the store; load() reads them once here.
+  const toolKeys = toolKeysOverStore(store, withSecrets(base, "own"), (fields) => (log ? log(logLine("tool_keys", fields)) : void process.stderr.write(`agentrun-serve: ${logLine("tool_keys", fields)}\n`)));
+  await toolKeys.load();
   // A key's check as it is saved (key-check.ts) goes to its provider; under faux only to the tests' fake for that provider,
   // the one its runs are given (monid, Parallel, TypeSafe's Jev), never to the network: one with no fake is not checked.
   const fakes: Record<string, string | undefined> = { monid: options.fauxMonid, parallel: options.fauxParallel, typesafe: options.fauxJev, browserbase: options.fauxBrowserbase, kernel: options.fauxKernel };
@@ -757,30 +767,30 @@ async function startHolding(options: ServeOptions, data: string, checked: { maxR
   const storedKeys: StoredKeys = (name) => toolKeys.value(name);
   // A stored key that does not open is said once at the start, never a refusal to start.
   toolKeys.view();
-  const mcpServers = new McpServers(data, withSecrets(base, "own"), VERSION);
-  // What a run's grants are checked against, its pin made from and its credentials read from (runs.ts, runnable.ts).
-  const mcpSource: McpServerSource = {
-    server: (name) => {
-      try {
-        const saved = mcpServers.get(name);
-        return { url: saved.url, tools: saved.tools.map(({ name: tool, title, description, input_schema, annotations }) => ({ name: tool, ...(title ? { title } : {}), ...(description ? { description } : {}), inputSchema: input_schema as Record<string, unknown>, ...(annotations ? { annotations: annotations as Record<string, unknown> } : {}) })), ...(saved.prices ? { prices: saved.prices } : {}) };
-      } catch {
-        return undefined;
-      }
-    },
-    headers: (name) => mcpServers.headers(name),
-    refresh: (name) => mcpServers.headersForRun(name).then(() => undefined, () => undefined),
+  const mcpServers = mcpServersOverStore(store, withSecrets(base, "own"), VERSION);
+  // The saved MCP servers' metadata (their addresses and the tools they list), a snapshot the run-grant checks read in
+  // step (blockersOf's `mcp`, and the template apply): the server is the one writer of these rows (a save, refresh, sign-in
+  // or delete), so the snapshot is refreshed after each of those and reads what is saved now. The runner reads the registry,
+  // pins and credentials from the store at a run's claim (runner/mcp-claim.ts); this server hands a run no MCP source.
+  let mcpMeta = new Map<string, { url: string; tools: readonly McpTool[] }>();
+  const refreshMcpMeta = async (): Promise<void> => {
+    mcpMeta = new Map((await store.mcp.servers()).map((row) => [row.name, { url: row.url, tools: (row.tools as McpTool[]) ?? [] }]));
   };
-  // Each with whether it can be granted: a known meta tool can't (mcp-meta.ts).
+  await refreshMcpMeta();
+  // Each saved server's tools in the harnesses' shape (the registry keeps input_schema; a bound tool takes inputSchema),
+  // with whether each can be granted: a known meta tool can't (mcp-meta.ts).
   const mcpTools = (server: string) => {
-    const saved = mcpSource.server(server);
+    const saved = mcpMeta.get(server);
     return saved?.tools.map((tool) => {
       const meta = metaToolOf(saved.url, tool.name);
-      return meta ? { ...tool, grantable: false as const, reason: meta.reason } : tool;
+      const bound = { name: tool.name, ...(tool.title ? { title: tool.title } : {}), ...(tool.description ? { description: tool.description } : {}), inputSchema: (tool.input_schema ?? {}) as Record<string, unknown>, ...(tool.annotations ? { annotations: tool.annotations as Record<string, unknown> } : {}) };
+      return meta ? { ...bound, grantable: false as const, reason: meta.reason } : bound;
     });
   };
-  // The server's tool settings, beside the agent store: capabilities say what they resolve to, again after a PUT.
-  const settings = new ToolSettings(data);
+  // The server's tool settings, in the store: capabilities say what they resolve to, again after a PUT. load() reads them
+  // once here.
+  const settings = toolSettingsOverStore(store);
+  await settings.load();
   mcpServers.toolSettings = () => settings.get();
   // The server's reading, in parts: `env`, its environment with its secrets, saved keys among them (storedKeys);
   // `offers`, what each harness offers, probed from env without the tool keys (offersEnvOf), the one slow part (each
@@ -937,12 +947,6 @@ async function startHolding(options: ServeOptions, data: string, checked: { maxR
   if (image) imageLog(image.state());
   const adapters = options.triggerAdapters ?? TRIGGER_ADAPTERS;
   const openapi = openapiDocument((operationId) => ROUTES.find((r) => r.name === operationId)?.capability, adapters);
-  // The one store (module A), opened here as this data root's single owner: its EXCLUSIVE lock is the one-server lock (no
-  // server-lock.ts), and it refuses a data directory an earlier version wrote, in words, to start fresh (no oldHomes/
-  // oldLayout checks, no migration). Every agent, run, setting and sign-in is a row; the server writes and reads rows, and
-  // a runner (its own process, sharing only this store) runs every run.
-  const store = await openSqliteStore({ dataDir: data, role: "server" });
-  stops.push(() => store.close());
   const sealKey = sealKeyOf(withSecrets(base, "own")[SEAL_KEY_ENV]);
   // The agents accessor the routes call, over the one store (module A): the agents-store functions, with the run-row reads
   // the server makes (store-reads) under `.store`. `.request` is a thin pass-through — the store runs its own transactions,
@@ -968,7 +972,7 @@ async function startHolding(options: ServeOptions, data: string, checked: { maxR
     },
     close: () => store.close(),
   };
-  ({ secrets: secretStores, settings: triggerSettings } = openServerSecrets(data, env, adapters, (fields) => (log ? log(logLine("trigger", fields)) : void process.stderr.write(`agentrun-serve: ${logLine("trigger", fields)}\n`))));
+  ({ secrets: secretStores, settings: triggerSettings } = await openServerSecretsOverStore(store, data, env, adapters, (fields) => (log ? log(logLine("trigger", fields)) : void process.stderr.write(`agentrun-serve: ${logLine("trigger", fields)}\n`))));
   secretStores.add("server", () => [token]);
   // Each agent's saved sign-ins, over the one store (module A, sign-ins-store): the vendor's calls on the server's keys
   // (under faux, the vendor's fake alone), under this server's seal key. The store holds whether a sign-in is still held
@@ -1256,8 +1260,8 @@ async function startHolding(options: ServeOptions, data: string, checked: { maxR
   async function learnedDraftToolsOf(id: string): Promise<{ tools: string[]; gated: Record<string, string> }> {
     const revision = (await needAgent(id)).revision;
     if (revision?.kind !== "agentic") return { tools: [], gated: {} };
-    const [{ learnedDraftTools }, { permissionOf }, { readToolSettings }] = await Promise.all([import("./tools.js"), import("./tool-gate.js"), import("./tool-plane.js")]);
-    const server = readToolSettings(agents.dir).settings;
+    const [{ learnedDraftTools }, { permissionOf }] = await Promise.all([import("./tools.js"), import("./tool-gate.js")]);
+    const server = settings.get();
     // The revision row's body is the agentic body JSON (store-backed RevisionRow types it as unknown).
     const body = revision.body as { tools?: string[]; toolSettings?: unknown; approvals?: string };
     return learnedDraftTools(body.tools ?? [], (name) => permissionOf(name, server as never, (body.toolSettings ?? {}) as never, body.approvals === "never" ? "never" : "ask"));
@@ -1419,7 +1423,7 @@ async function startHolding(options: ServeOptions, data: string, checked: { maxR
   async function applyTemplate(pkg: Package, body: Json) {
     const { parameters, grants, model: override, approvals } = applyBodyOf(pkg, body);
     const missing = pkg.secrets.filter((name) => !secret(name, storedKeys));
-    const saved = pkg.mcp.filter((need) => mcpSource.server(need.server));
+    const saved = pkg.mcp.filter((need) => mcpMeta.has(need.server));
     const unsaved = pkg.mcp.filter((need) => !saved.includes(need));
     const needed = unsaved.filter((need) => need.required);
     // A webhook trigger's secret is kept sealed, never in the clear: with no seal key, its create would be refused after
@@ -1461,7 +1465,7 @@ async function startHolding(options: ServeOptions, data: string, checked: { maxR
     } catch (error) {
       for (const id of ids.reverse()) {
         try {
-          triggers.remove(id);
+          await triggers.remove(id);
         } catch (undo) {
           log?.(logLine("template_undo_failed", { template: pkg.name, trigger: id, message: (undo as Error).message }));
         }
@@ -1965,6 +1969,8 @@ async function startHolding(options: ServeOptions, data: string, checked: { maxR
       const state = url.searchParams.get("state");
       if (!startedHere(req.headers.cookie, req.socket.localPort, state)) throw new ApiError("forbidden", "This sign-in was started in another browser, or its 10 minutes are over: start it again in Settings → MCP servers, in this browser.");
       const location = await mcpServers.oauthCallback(url.searchParams, stopping.signal);
+      // A sign-in that finished kept the server's tools again: the grant-check snapshot reads them.
+      await refreshMcpMeta();
       // Its sign-in is over: its cookie goes.
       return void res.writeHead(302, { location, "cache-control": "no-store", "set-cookie": signInCookie(req.socket.localPort, state!, overHttps(req), 0) }).end();
     }
@@ -2329,25 +2335,31 @@ async function startHolding(options: ServeOptions, data: string, checked: { maxR
         // A server that began to close stores nothing: it may have released its lock, and another server may hold this
         // directory and its keys by now.
         if (stopping.signal.aborted) throw new ApiError("unavailable", "The server is shutting down: the key was not saved.");
-        toolKeys.save(id, body, check);
+        await toolKeys.save(id, body, check);
         await keysChanged();
         return void res.writeHead(204, { "cache-control": "no-store" }).end();
       }
       case "deleteToolKey":
-        toolKeys.remove(id);
+        await toolKeys.remove(id);
         await keysChanged();
         return void res.writeHead(204, { "cache-control": "no-store" }).end();
       // Never through `idempotent`: its record keeps the body, and a body may hold a credential.
       case "listMcpServers":
-        return send(res, 200, mcpServers.list());
+        return send(res, 200, await mcpServers.list());
       case "getMcpServer":
-        return send(res, 200, mcpServers.get(id));
+        return send(res, 200, await mcpServers.get(id));
       case "previewMcpServer":
         return send(res, 200, await mcpServers.preview(await bodyOf(req), stopping.signal));
-      case "saveMcpServer":
-        return send(res, 200, await mcpServers.save(id, await bodyOf(req), stopping.signal));
-      case "refreshMcpServer":
-        return send(res, 200, await mcpServers.refresh(id, stopping.signal));
+      case "saveMcpServer": {
+        const saved = await mcpServers.save(id, await bodyOf(req), stopping.signal);
+        await refreshMcpMeta();
+        return send(res, 200, saved);
+      }
+      case "refreshMcpServer": {
+        const refreshed = await mcpServers.refresh(id, stopping.signal);
+        await refreshMcpMeta();
+        return send(res, 200, refreshed);
+      }
       case "startMcpOAuth": {
         // The cookie is set on the address the request came to, and the authorization server sends the browser back
         // to the callback's: they must be the one origin, or the callback never sees the cookie. The redirect URI
@@ -2359,7 +2371,8 @@ async function startHolding(options: ServeOptions, data: string, checked: { maxR
         return send(res, 200, started, { "set-cookie": signInCookie(req.socket.localPort, state, overHttps(req)) });
       }
       case "deleteMcpServer":
-        mcpServers.remove(id);
+        await mcpServers.remove(id);
+        await refreshMcpMeta();
         return void res.writeHead(204, { "cache-control": "no-store" }).end();
       case "getToolSettings":
         return send(res, 200, withDefaults(settings.get()));
@@ -2369,7 +2382,7 @@ async function startHolding(options: ServeOptions, data: string, checked: { maxR
         const body = await bodyOf(req);
         const issues = settingsIssues(body);
         if (issues.length) throw invalid(issues);
-        settings.put(body as ToolSettingsMap);
+        await settings.put(body as ToolSettingsMap);
         // A setting changes what the web tools resolve to, never env or what a harness offers: capabilities again.
         recompose();
         return send(res, 200, withDefaults(settings.get()));
@@ -2459,13 +2472,13 @@ async function startHolding(options: ServeOptions, data: string, checked: { maxR
         return send(res, answer.status, answer.body, answer.headers);
       }
       case "rotateTriggerSecret":
-        return send(res, 200, triggers.rotate(id));
+        return send(res, 200, await triggers.rotate(id));
       case "getTrigger":
         return send(res, 200, triggers.get(id));
       case "updateTrigger":
         return send(res, 200, await triggers.update(id, await bodyOf(req)));
       case "deleteTrigger":
-        triggers.remove(id);
+        await triggers.remove(id);
         return void res.writeHead(204, { "cache-control": "no-store" }).end();
       case "fireTrigger": {
         const key = req.headers["idempotency-key"];
