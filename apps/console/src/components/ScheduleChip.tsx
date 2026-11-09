@@ -9,7 +9,7 @@ export type TriggerKnown = { name: string; kind: TriggerSource["kind"] };
 export const ScheduleNames = createContext<ReadonlyMap<string, TriggerKnown>>(new Map());
 
 /** A trigger kind's word on its runs' chip. */
-const KIND_WORD: Record<TriggerSource["kind"], string> = { schedule: "Schedule", webhook: "Webhook" };
+const KIND_WORD: Record<TriggerSource["kind"], string> = { schedule: "Schedule", webhook: "Webhook", github: "GitHub" };
 
 /** On a run a trigger started (its `trigger`): "<Kind>: <name>", by the trigger's kind in the triggers list ("Schedule:
  *  nightly", "Webhook: inbound-lead"), linking to the trigger. A trigger the list doesn't hold (deleted since, or not read
