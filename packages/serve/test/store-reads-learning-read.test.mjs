@@ -63,6 +63,19 @@ test("a run's learning from the store holds the notes its job read, keyed on wha
   assert.deepEqual(body.read, [{ file: "a.md", name: "Alpha" }], "only a.md: MEMORY.md, a file it was not given, a failed read and the end-of-run turn's reads are not the job's reads of its notes");
 });
 
+test("a run's learning end from the store keeps when its job answered, what the job cost and what looking back cost, as its kept row says", async (t) => {
+  const { store } = await storeOn(t);
+  await store.agents.create({ id: "agent-1", name: "Agent" }, { id: "rev-1", kind: "agentic", body: { instructions: "Answer.", learning: true } });
+  const answered = { answered_at: "2026-11-09T06:00:00.000Z", job_cost_usd: 0.3, look_back_usd: 0.12 };
+  for (const [id, proposal] of [["run-1", { state: "dropped", reason: "empty", detail: "Nothing to keep.", ...answered }], ["run-2", { state: "proposed", notes: 1, skills: 0, workflows: 0, proposal: { seed: "abc", notes: [] }, detail: "Proposed.", ...answered }]]) {
+    await store.runs.create({ id, agentId: "agent-1", revisionId: "rev-1" }, { body: { input: { content: "Go." }, title: "t", place: { mode: "runner" } } });
+    const claim = await store.claim(id, "runner-a", { leaseMs: 60_000 });
+    await store.runs.update(claim, { state: "ended" }, { also: [{ table: "learning_proposals", row: { turn: {}, proposal } }] });
+    const end = await reads.runLearningEnd(store, id);
+    assert.deepEqual({ answered_at: end?.answered_at, job_cost_usd: end?.job_cost_usd, look_back_usd: end?.look_back_usd }, answered, `${proposal.state}: ${JSON.stringify(end)}`);
+  }
+});
+
 test("the run view's learning shows the same notes given and read", async (t) => {
   const store = await learnedRun(t);
   const view = await viewOverStore(store, "run-1", { origin: "https://run.test", serverSecrets: () => [] });

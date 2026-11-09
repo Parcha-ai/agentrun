@@ -204,6 +204,43 @@ test("the re-ask is inside the turn's deadline: it gets what the first answer le
   assert.deepEqual([rows.also[0].row.proposal.state, rows.also[0].row.proposal.reason], ["dropped", "unparsed"]);
 });
 
+/** A hook whose run's spend reads `spent` in turn (the job's when it answered, then the run's once its turn closed), its
+ *  clock at `at`; the turn's ask resolves with `answer`. */
+function timedHook({ spent, at, answer = { ended: true, answer: "```note\n...\n```" }, facts = {} }) {
+  const reads = [...spent];
+  const hook = createReflectHook({
+    facts: async () => ({ learns: true, ...facts, costUsd: reads.length > 1 ? reads.shift() : reads[0] }),
+    promptFacts: async () => ({ active: 1, tools: [] }),
+    asked: async () => ({ asked: ["Find the bug."] }),
+    check: async () => ({ state: "proposed", notes: 1, skills: 0, workflows: 0, proposal: { seed: "abc", notes: [], asked: [] } }),
+    newRunId: () => "run-learn-1",
+    now: () => at,
+  });
+  const input = { runId: "run-1", agentId: "agent-1", claim, outcome: "completed", signal: new AbortController().signal, ask: async () => answer };
+  return { hook, input };
+}
+
+test("a run that looked back keeps when its job answered, what the job cost and what looking back cost (learning-run.ts closeLearning), on its proposal and on a drop after the turn", async () => {
+  const at = Date.UTC(2026, 10, 9, 6, 0, 0);
+  const first = timedHook({ spent: [0.3, 0.42], at });
+  const kept = (await first.hook(first.input)).also[0].row.proposal;
+  assert.equal(kept.answered_at, new Date(at).toISOString(), "when the job answered: as the turn starts");
+  assert.equal(kept.job_cost_usd, 0.3, "the run's spend as its job answered");
+  assert.equal(kept.look_back_usd, 0.12, "the run's spend once its turn closed, less the job's");
+  const { hook, input } = timedHook({ spent: [0.3, 0.5], at, answer: { timedOut: true } });
+  const late = (await hook(input)).also[0].row.proposal;
+  assert.deepEqual([late.reason, late.answered_at, late.job_cost_usd, late.look_back_usd], ["reflect_timeout", new Date(at).toISOString(), 0.3, 0.2], "a turn past its deadline keeps them too");
+  const unknown = timedHook({ spent: [0.3, null], at });
+  assert.equal((await unknown.hook(unknown.input)).also[0].row.proposal.look_back_usd, null, "a spend not known once the turn closed: looking back's cost is unknown");
+});
+
+test("a run that never looked back keeps no answer time and no look-back cost", async () => {
+  const { hook, input } = timedHook({ spent: [1], at: 0, facts: { capReached: true } });
+  const kept = (await hook(input)).also[0].row.proposal;
+  assert.equal(kept.reason, "no_budget");
+  assert.ok(!("answered_at" in kept) && !("job_cost_usd" in kept) && !("look_back_usd" in kept), JSON.stringify(kept));
+});
+
 test("checks that fail on their own drop the learning, saying so, and queue no run", async () => {
   const { hook, input } = hookWith({ check: () => { throw new Error("no seed"); } });
   assert.deepEqual(await hook(input()), { also: [{ table: "learning_proposals", row: { turn: { answer: "```note\n...\n```", asked: ["Find the bug."] }, proposal: { state: "dropped", reason: "propose_failed", detail: said.stopped(STOPPED.notChecked) } } }] });
