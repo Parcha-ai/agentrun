@@ -58,8 +58,24 @@ function storeError(error: unknown): never {
 /** Refuses a write to an externally owned agent: one that mirrors an agent in another system (its `externalRef` set) is
  *  read-only here — its source is the truth, which writes a new version by running it. Edits, set-current and archive are
  *  refused (403 forbidden); reads work as for any agent. */
-function refuseExternal(agent: AgentRow): void {
+export function refuseExternal(agent: AgentRow): void {
   if (agent.externalRef !== null) throw new ApiError("forbidden", `The agent ${agent.id} is managed by its source and is read-only here; change it there and run it again.`);
+}
+
+/** An externally owned agent's reference in its source, as POST /runs names it: its source system, the kind of thing it
+ *  is there, and its id there (with the version, the revision's own). */
+export type ExternalRef = { source: string; kind: string; id: string };
+
+/** The store's one key of an external reference, "<source>:<kind>:<id>": source and kind hold no colon (POST /runs checks
+ *  them), so the id, which may, is all that follows the second. */
+export const externalKey = ({ source, kind, id }: ExternalRef): string => `${source}:${kind}:${id}`;
+
+/** The agent's reference in its source and the version its current revision maps there, or null for an agent of this
+ *  server's own. */
+export function externalOf(agent: AgentRow, revision: RevisionRow | null): (ExternalRef & { version: string | null }) | null {
+  if (agent.externalRef === null) return null;
+  const [source = "", kind = "", ...id] = agent.externalRef.split(":");
+  return { source, kind, id: id.join(":"), version: revision?.externalVersion ?? null };
 }
 
 /** A definition's tool settings as a revision body keeps them, through the one copy: checked by tool-plane's settingsIssues
@@ -191,8 +207,9 @@ export async function createAgent(
 }
 
 /** NewRevision from a definition and its skill files, with its note kept (note is not part of the body or its dedup). A
- *  body the validator refuses is mapped to an input refusal here (never thrown raw). */
-function makeRevision(definition: Json, files: Record<string, string>, note: string | undefined): NewRevision & { note?: string } {
+ *  body the validator refuses is mapped to an input refusal here (never thrown raw). Nothing is written: POST /runs makes
+ *  an inline agent's revision with it, as POST /agents makes one. */
+export function makeRevision(definition: Json, files: Record<string, string>, note: string | undefined): NewRevision & { note?: string } {
   let revision: NewRevision;
   try {
     revision = newRevisionOf(definition, files);
@@ -324,8 +341,11 @@ export function agentView(
 ) {
   const { agent, revision } = entry;
   const body = (revision?.body ?? {}) as Body;
+  const external = externalOf(agent, revision);
   return {
     agent_id: agent.id,
+    // Only on an agent another system owns (POST /runs): read-only here.
+    ...(external ? { external } : {}),
     definition: revision ? definitionOf(agent, revision, entry.version) : null,
     kind: revision?.kind ?? null,
     revision: revision?.id ?? null,

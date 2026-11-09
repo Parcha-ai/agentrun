@@ -131,8 +131,8 @@ test("an inline definition is refused in POST /agents' own words, and the extern
   assert.deepEqual(await mapped(api), [], "nothing made");
 });
 
-/** `value` with what differs between any two runs of one agent (their ids, their times, their console pages) put to one
- *  placeholder each, so two runs that read alike compare equal. */
+/** `value` with what differs between any two runs of one agent (their ids, their times and timeline cursors, their console
+ *  pages) put to one placeholder each, so two runs that read alike compare equal. */
 function shapeOf(value, ids) {
   const text = JSON.stringify(value, (_key, v) => {
     if (typeof v !== "string") return v;
@@ -140,7 +140,7 @@ function shapeOf(value, ids) {
     for (const [id, name] of ids) s = s.split(id).join(name);
     return /^\d{4}-\d\d-\d\dT\d\d:\d\d:\d\d(\.\d+)?Z$/.test(s) ? "<time>" : s;
   });
-  return JSON.parse(text, (key, v) => (typeof v === "number" && /(_ms|_at|^at|^ts)$/.test(key) ? "<number>" : v));
+  return JSON.parse(text, (key, v) => (typeof v === "number" && /(_ms|_at|^at|^ts|^next_after)$/.test(key) ? "<number>" : v));
 }
 
 test("a run started inline reads exactly as a run of an agent made with POST /agents: GET /runs/{id}, its timeline and the run lists", { timeout: 180_000 }, async (t) => {
