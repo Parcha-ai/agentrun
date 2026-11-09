@@ -77,19 +77,19 @@ export async function putPendingSignIn(
   });
 }
 
-/** Takes a pending sign-in at its callback: read (gone when past its expiry, with `now`), then removed, so it is used once
- *  as today's in-memory take is. Its verifier opened and its plain working state returned; undefined when there is none, it
- *  has expired, or the verifier does not open. The read and the remove are two calls (as today's get+delete), not one atomic
- *  take. */
+/** Takes a pending sign-in at its callback, once: the store deletes and returns it in one atomic statement
+ *  (store.mcpOauth.take), gone when past its expiry (with `now`), so a replay or an expired state reads as undefined and no
+ *  second callback can take the same one. Its verifier is opened here (at its own AAD), the store never opens it, and its
+ *  plain working state is returned; undefined when there is none, it has expired, or the verifier does not open. The old
+ *  get()+remove() split is gone: nothing takes a sign-in any other way. */
 export async function takePendingSignIn(
-  store: { mcpOauth: Pick<McpOauth, "get" | "remove"> },
+  store: { mcpOauth: Pick<McpOauth, "take"> },
   sealKey: Buffer,
   state: string,
   now?: number,
 ): Promise<{ server: string; verifier: string; cookieBinding: string; working: unknown; expiresAt: number } | undefined> {
-  const row = await store.mcpOauth.get(state, now);
+  const row = await store.mcpOauth.take(state, now);
   if (!row) return undefined;
-  await store.mcpOauth.remove(state);
   try {
     return { server: row.server, verifier: unsealColumn(sealKey, sealedAt.oauthVerifier(state), row.verifierSealed).toString("utf8"), cookieBinding: row.cookieBinding, working: row.working, expiresAt: row.expiresAt };
   } catch {

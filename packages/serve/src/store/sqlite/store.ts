@@ -608,6 +608,15 @@ class SqliteStore implements Store {
       remove: async (state) => {
         await db.write([{ sql: "DELETE FROM mcp_oauth_pending WHERE state = ?", params: [state] }]);
       },
+      take: async (state, at) => {
+        // One statement: delete the row and return it. On the store's single writer this is atomic, so two concurrent
+        // takes of one state can never both get it (the second deletes nothing). The row is gone whether or not it had
+        // expired; an expired one is refused by reading undefined after the delete, so a stale state can't be retried.
+        const [result] = await db.write([{ sql: "DELETE FROM mcp_oauth_pending WHERE state = ? RETURNING state, server, verifier_sealed, cookie_binding, working, expires_at", params: [state] }]);
+        const row = result!.rows[0] as McpOauthRecord | undefined;
+        if (row === undefined) return undefined;
+        return row.expires_at <= (at ?? now()) ? undefined : mcpOauthOf(row);
+      },
       sweepExpired: async (at) => (await db.write([{ sql: "DELETE FROM mcp_oauth_pending WHERE expires_at <= ?", params: [at] }]))[0]!.changes,
     };
   }

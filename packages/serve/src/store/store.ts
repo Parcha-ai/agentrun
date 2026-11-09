@@ -492,6 +492,12 @@ export interface McpOauth {
   get(state: string, now?: number): Promise<McpOauthPendingRow | undefined>;
   /** The pending sign-in `state` goes. */
   remove(state: string): Promise<void>;
+  /** Deletes the pending sign-in `state` and returns it, in one statement (atomic, single-use): the row if it was there and
+   *  is not past its expiry (`now`, else the store's clock), else undefined. The row is deleted whether or not it had
+   *  expired, so a replay and an expired state both read as gone and cannot be retried. The one take path for the OAuth
+   *  callback: two concurrent takes of one state can never both get the row, which a get()+remove() split could not
+   *  promise. The verifier comes back sealed; the caller opens it at its own AAD, so the store opens nothing. */
+  take(state: string, now?: number): Promise<McpOauthPendingRow | undefined>;
   /** Removes every pending sign-in whose expiry is at or before `now`; answers how many went. */
   sweepExpired(now: number): Promise<number>;
 }
