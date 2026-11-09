@@ -1,9 +1,9 @@
 # AgentRun's one image, the server and its runners, built from a checkout of this repository (from its root):
 #   docker build -f packages/serve/docker/Dockerfile -t agentrun-server .
-# One image for both, so a runner always knows the schema of the store its server set up. The server is the default
-# command; a runner is the same image given `runner --data /data [--loops N]` as its command (deploy/README.md, and
-# deploy/compose.yaml for a server and two runners on one store). Everything they keep is under /data: mount one volume
-# there, the same one in each.
+# One image for both, so a runner always knows the schema of the store its server set up. The default command is the
+# server with one runner beside it; with runners of their own, the server takes --no-runner and each runner is the same
+# image given `runner --data /data --name <name> [--loops N]` (deploy/README.md, and deploy/compose.yaml for a server and
+# two runners on one store). Everything they keep is under /data: mount one volume there, the same one in each.
 # The base is pinned by digest (a multi-arch index); the dependencies by the workspace's package-lock.json, dev ones
 # included: the pi packages the server loads are the workspace's development dependencies, peers of its packages.
 FROM node:24.21.0-trixie-slim@sha256:173f125896c3b47ddf056734c7ea789d04595a6a08769a8f78e0df642781fb66 AS build

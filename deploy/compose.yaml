@@ -24,9 +24,9 @@ x-agentrun-env: &agentrun-env
   OPENAI_API_KEY: ${OPENAI_API_KEY:-}
   OPENROUTER_API_KEY: ${OPENROUTER_API_KEY:-}
 
-# A runner: the same image with `runner --data /data` as its command. It never sets the store up, so it starts once the
-# server is healthy, and a runner that still finds a store it does not know (exit 3) is started again. On SIGTERM it hands
-# its runs back at once and gives up a stuck loop at 25 s, inside the 35 s it is given.
+# A runner: the same image with `runner --data /data --name <name>` as its command. It never sets the store up, so it
+# starts once the server is healthy, and a runner that still finds a store it does not know (exit 3) is started again.
+# On SIGTERM it hands its runs back at once and gives up a stuck loop at 25 s, inside the 35 s it is given.
 x-runner: &runner
   image: ${AGENTRUN_IMAGE:-ghcr.io/parcha-ai/agentrun-server:beta}
   volumes:
@@ -46,11 +46,15 @@ x-runner-check: &runner-check
   start_period: 15s
 
 services:
+  # The server alone (--no-runner): the runners below run every run. It listens on its own container's address (its
+  # hostname, `server`), where Docker publishes the port and the runners never call.
   server:
     image: ${AGENTRUN_IMAGE:-ghcr.io/parcha-ai/agentrun-server:beta}
     build:
       context: ..
       dockerfile: packages/serve/docker/Dockerfile
+    hostname: server
+    command: ["--data", "/data", "--listen", "server", "--port", "7340", "--drain-timeout", "6s", "--no-runner"]
     ports:
       - "127.0.0.1:${AGENTRUN_PORT:-7340}:7340" # key-gate: loopback-rule this machines loopback, where the port is published
     volumes:
@@ -60,7 +64,7 @@ services:
       AGENTRUN_TOKEN: ${AGENTRUN_TOKEN:-}
       AGENTRUN_PUBLIC_URL: "${AGENTRUN_PUBLIC_URL:-http://127.0.0.1:7340/}" # key-gate: loopback-rule the published loopback port, the printed link
     healthcheck:
-      test: ["CMD", "env", "-i", "/usr/local/bin/node", "-e", "fetch('http://127.0.0.1:7340/v2/health').then(({ ok, status }) => { if (!ok) throw new Error(String(status)) })"] # key-gate: loopback-rule the servers own loopback, its health check
+      test: ["CMD", "env", "-i", "/usr/local/bin/node", "-e", "fetch('http://server:7340/v2/health').then(({ ok, status }) => { if (!ok) throw new Error(String(status)) })"]
       interval: 10s
       timeout: 5s
       retries: 3
@@ -70,20 +74,16 @@ services:
 
   runner-1:
     <<: *runner
-    command: ["runner", "--data", "/data"]
-    environment:
-      <<: *agentrun-env
-      AGENTRUN_RUNNER_NAME: runner-1
+    command: ["runner", "--data", "/data", "--name", "runner-1"]
+    environment: *agentrun-env
     healthcheck:
       <<: *runner-check
       test: ["CMD", "env", "-i", "/usr/local/bin/node", "/opt/agentrun/packages/serve/dist/cli.js", "runner", "--check", "--data", "/data", "--name", "runner-1"]
 
   runner-2:
     <<: *runner
-    command: ["runner", "--data", "/data"]
-    environment:
-      <<: *agentrun-env
-      AGENTRUN_RUNNER_NAME: runner-2
+    command: ["runner", "--data", "/data", "--name", "runner-2"]
+    environment: *agentrun-env
     healthcheck:
       <<: *runner-check
       test: ["CMD", "env", "-i", "/usr/local/bin/node", "/opt/agentrun/packages/serve/dist/cli.js", "runner", "--check", "--data", "/data", "--name", "runner-2"]

@@ -13,7 +13,8 @@ export default function reply(context, faux) {
   const done = context.messages.filter((m) => m.role === "toolResult").length;
   if (done >= steps) return faux.message(`Walk done: ${steps} steps.`);
   const step = done + 1;
-  console.error(`walk-model: ${process.env.AGENTRUN_RUNNER_NAME ?? "server"} asks step ${step} of ${steps}`);
+  const named = process.argv.indexOf("--name");
+  console.error(`walk-model: ${named > 0 ? process.argv[named + 1] : "a runner"} asks step ${step} of ${steps}`);
   const call = faux.message(faux.toolCall("write", { path: `step-${step}.txt`, content: `step ${step}\n` }), { stopReason: "toolUse" });
   if (ms <= 0) return call;
   return new Promise((resolve) => {

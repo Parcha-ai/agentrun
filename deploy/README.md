@@ -3,7 +3,8 @@
 AgentRun runs as two kinds of process on one store:
 
 - **The server** serves the API and the console, sets the store up (it is the only one that migrates it), and records
-  each run it starts. It runs no run itself.
+  each run it starts. Started with `--no-runner`, it runs no run itself; without it, it runs one runner beside itself
+  (a single container, as on Render).
 - **A runner** claims runs from the store and runs them, many at once (`--loops`, default 300). Run as many runners as
   you need; each one holds a run under a claim it renews every 10 s. A runner that stops hands its runs back at once, and
   the runs of one that dies are claimed by another runner once their 30 s lease lapses.
@@ -14,12 +15,15 @@ store its server set up. Run the server and the runners from the same image tag.
 ## The image's two commands
 
 ```sh
-# The server (the image's default command): the API on port 7340, everything under /data.
-docker run -v agentrun-data:/data -e AGENTRUN_SEAL_KEY ... agentrun-server
+# The server alone, with its runners in their own containers: the API on port 7340, everything under /data.
+docker run --hostname server -v agentrun-data:/data -e AGENTRUN_SEAL_KEY ... agentrun-server \
+  --data /data --listen server --port 7340 --drain-timeout 6s --no-runner
 
-# A runner: the same image, `runner` as its command, the same /data.
-docker run -v agentrun-data:/data -e AGENTRUN_SEAL_KEY -e AGENTRUN_RUNNER_NAME=runner-1 ... agentrun-server runner --data /data [--loops N]
+# A runner: the same image, `runner` as its command, the same /data, a name of its own.
+docker run -v agentrun-data:/data -e AGENTRUN_SEAL_KEY ... agentrun-server runner --data /data --name runner-1 [--loops N]
 ```
+
+The image's default command is the server with a runner beside it, for one container on its own.
 
 What each takes, from its environment alone:
 
@@ -28,12 +32,12 @@ What each takes, from its environment alone:
 | `AGENTRUN_SEAL_KEY` | required | required | The key saved model keys, tool keys and MCP credentials are sealed under. The server and every runner must have the same one. Make it once with `openssl rand -base64 32` and keep it: losing it loses what it sealed. |
 | `AGENTRUN_STORE_URL` | optional | optional | A `postgres://` URL for a Postgres store. Unset, the store is SQLite in `/data`, and every process must share that one volume. |
 | `AGENTRUN_STORE_SCHEMA` | optional | optional | The Postgres schema the store is in (default `agentrun`). |
-| `AGENTRUN_RUNNER_NAME` | | optional | The runner's name, in the runs it claims, its log lines and its heartbeat. Give each runner its own. |
+| `AGENTRUN_RUNNER_NAME` | | optional | The runner's name when `--name` gives none: in the runs it claims, its log lines and its heartbeat. Give each runner its own. |
 | `AGENTRUN_TOKEN` | optional | | The API token. Unset, the server makes one in `/data/.token` and prints it once. |
 | Model keys (`ANTHROPIC_API_KEY`, `OPENAI_API_KEY`, `AGENT_MODEL`, ...) | yes | yes | The runner makes a run's model requests; the server checks a run's model can run before it starts it. |
 
-The server listens where its arguments say: the image's default command listens on port 7340 on every interface of the
-container, for Docker to publish. A runner listens on nothing.
+The server listens where `--listen` says: above, its container's own address (its hostname), where Docker publishes the
+port. A runner listens on nothing.
 
 A runner says it is ready in one line once it can claim runs:
 
@@ -76,8 +80,8 @@ The server's port is published on this machine's loopback (`127.0.0.1:7340`); pu
 it before you publish it anywhere else. Each runner starts once the server is healthy (only the server sets the store
 up), is started again if it exits with an error, and is given 35 s to stop.
 
-**More runners.** Copy the `runner-2` service as `runner-3` and so on, with its own `AGENTRUN_RUNNER_NAME` and the same
-name in its health check. Every runner on SQLite must mount the same `agentrun-data` volume, so all of them run on this
+**More runners.** Copy the `runner-2` service as `runner-3` and so on, with its own `--name` and the same name in its
+health check. Every runner on SQLite must mount the same `agentrun-data` volume, so all of them run on this
 one Docker host. To spread runners over machines, use a Postgres store.
 
 **Postgres.** The `pg` profile runs a Postgres for the store. In `.env`:
@@ -90,9 +94,9 @@ AGENTRUN_STORE_URL=postgres://agentrun:<the same password>@postgres:5432/agentru
 then `docker compose --profile pg up -d`. The server and runners do not wait for it: one that cannot reach its store yet
 exits and is started again.
 
-**Render.** `render.yaml` at the repository's root runs the server alone, on a disk only that one service can mount, so
-no runner can share its SQLite store there. Runners on Render need the Postgres store, each runner a background worker
-from the same image with `runner --data /data` as its command.
+**Render.** `render.yaml` at the repository's root runs the image's default command: the server with one runner beside
+it, on a disk only that one service can mount. More runners on Render need the Postgres store: the server with
+`--no-runner`, and each runner a background worker from the same image with `runner --data /data --name <name>`.
 
 ## Upgrading from an earlier server
 

@@ -1,6 +1,6 @@
 // The walks' API client, run inside the server's container (`docker compose exec -T server node /walk/api.mjs ...`),
-// where the server listens on its loopback, with the token the server keeps in /data/.token. One command per call; each
-// prints one JSON line. A wait polls every 250 ms until what it waits for holds, and fails after its bound.
+// where the server listens on its own address (`server`), with the token the server keeps in /data/.token. One command
+// per call; each prints one JSON line. A wait polls every 250 ms until what it waits for holds, and fails after its bound.
 //   agent                          make the walk's agent (pi, the runner's place, the write tool) -> {agent}
 //   start <agent> <steps> <ms>     start a run of it                                          -> {run}
 //   run <run>                      the run's status, state and claim                          -> {status, state, claim}
@@ -9,7 +9,7 @@
 //   end <run>                      wait until the run ends; its steps and files               -> {status, steps, files}
 import { readFileSync } from "node:fs";
 
-const BASE = "http://127.0.0.1:7340/v2"; // key-gate: loopback-rule the servers own loopback, inside its container
+const BASE = "http://server:7340/v2";
 const token = readFileSync("/data/.token", "utf8").trim();
 const [command, ...args] = process.argv.slice(2);
 const fail = (why) => {
