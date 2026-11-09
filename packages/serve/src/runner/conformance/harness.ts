@@ -174,11 +174,13 @@ async function world(subject: ConformanceSubject, t: { after(fn: () => unknown):
   const run = async (): Promise<RunRow> => (await server.runs.get(RUN))!;
   const read = async (): Promise<{ calls: CallRecord[]; messages: MessageRecord[]; answers: AnswerData[] }> => {
     const row = await run();
-    // pi's tool tasks and the CLI record alike: the kernel's one reader.
-    const entries = await journalRecords(server.journal({ runId: RUN, runner: "conformance-reader", epoch: row.epoch, until: 0, from: row.state }), BACKGROUND_CONTEXT);
+    // pi's tool tasks and the CLI record alike: the kernel's one reader. A subject whose calls are not the kernel's (a
+    // workflow's are the DSL engine's effect records) reads them its own way (subject.readCalls).
+    const journal = server.journal({ runId: RUN, runner: "conformance-reader", epoch: row.epoch, until: 0, from: row.state });
+    const entries = await journalRecords(journal, BACKGROUND_CONTEXT);
     // The answers to the run's asks: one place for every harness, the resume row's source.
     const answers = entries.entries.filter((entry) => entry.kind === KINDS.answer).map((entry) => entry.data as unknown as AnswerData);
-    return { calls: callsOf(entries), messages: messagesOf(entries), answers };
+    return { calls: subject.readCalls ? await subject.readCalls(journal, BACKGROUND_CONTEXT) : callsOf(entries), messages: messagesOf(entries), answers };
   };
   const ended = (state: RunRow["state"], ms = 15_000) =>
     until(async () => {
