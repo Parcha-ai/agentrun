@@ -925,11 +925,12 @@ test("a run that comes to wait for its person while no server is up gives exactl
   const waits = ofType(hook.got, "run.needs_input");
   const ids = [...new Set(waits.map((r) => r.headers["webhook-id"]))];
   assert.equal(waits.length, 1, `one wait, one message: ${ids}`);
-  // Its marker is its question's row: the newest that is neither usage nor a phase.
+  // Its marker is its question's waiting row, as main's was (the run view's row after the ask's result, its id the
+  // result's with ":waiting"): the timeline the API serves here shows the result, not that row.
   const { rows } = (await api("GET", "/runs/asks-late/timeline")).body;
-  const question = rows.findLast((row) => row.kind !== "usage" && row.kind !== "phase");
-  assert.equal(ids[0], noticeId("asks-late", "run.needs_input", question.id), "the id the wait's own marker makes");
-  assert.deepEqual(waitNotice(data, "asks-late"), { marker: question.id });
+  const result = rows.findLast((row) => row.kind === "tool_result");
+  assert.deepEqual(waitNotice(data, "asks-late"), { marker: `${result.id}:waiting` });
+  assert.equal(ids[0], noticeId("asks-late", "run.needs_input", `${result.id}:waiting`), "the id the wait's own marker makes");
   const body = JSON.parse(waits[0].body);
   assert.deepEqual([body.data.run_id, body.data.status, body.data.pending], ["asks-late", "input_required", { kind: "question" }]);
 });
