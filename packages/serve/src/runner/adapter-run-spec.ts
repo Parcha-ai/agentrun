@@ -14,7 +14,7 @@ import { BACKGROUND_CONTEXT } from "@earendil-works/chord/context";
 import { ROOT_CONVERSATION_ID, type ToolExecutionApi } from "@earendil-works/pi-durable";
 import type { ComputerProvider } from "@parcha/agentrun-computer";
 import { beforeRequestOf, type CapModel, type CapRefused, checkRaise, followUpOf, parkOf } from "@parcha/agentrun-kernel/kernel/cap";
-import type { BeforeRequest, HostTool, SessionSpec } from "@parcha/agentrun-kernel";
+import type { BeforeRequest, HostTool, SessionSpec, Wire } from "@parcha/agentrun-kernel";
 import type { Approvals } from "../approvals.js";
 import type { LiveHandover, LiveViewerStore } from "../browser-live.js";
 import { dropLiveViewer, putLiveViewer } from "../browser-live.js";
@@ -78,6 +78,9 @@ export interface ClaimComputer {
 /** The one shared claim-time computer every spec takes (computer-for-claim.ts), passed in by the runner. */
 export type ComputerForClaim = (launch: ClaimLaunch, store: AdapterSpecDeps["store"], deps: ClaimDeps & Readonly<Record<string, unknown>>) => Promise<ClaimComputer>;
 
+/** The wires pi speaks on the runner: main's pi's (provider.ts), Anthropic's Messages and OpenAI's Responses. */
+export const PI_WIRES: readonly Wire[] = Object.freeze(["anthropic-messages", "openai-responses"]);
+
 /** What the runner hands the spec builder, beside the claim and the loop's own Harness (the AdapterRun): the store (its
  *  agent and run reads, and the live-viewer seam the browser tool writes through), the data directory a Mode 1 run folder
  *  sits in, the model route, and the key the live-viewer tokens are sealed under. One per runner, not per claim. */
@@ -92,8 +95,9 @@ export interface AdapterSpecDeps {
   readonly store: Store & LiveViewerStore;
   /** The key the store's live-viewer tokens are sealed under (store/seal.ts). */
   readonly sealKey: Buffer;
-  /** The run's model route (model-route.ts routeOf), the one route the pi adapter and the cap read. */
-  readonly routeOf: (model: string | undefined, env: NodeJS.ProcessEnv, tier?: Tier) => Promise<ModelRoute>;
+  /** The run's model route (model-route.ts routeOf), the one route the pi adapter and the cap read, on a wire of `wires`
+   *  (the caller's; pi speaks both of main's, PI_WIRES). */
+  readonly routeOf: (model: string | undefined, env: NodeJS.ProcessEnv, tier?: Tier, wires?: readonly Wire[]) => Promise<ModelRoute>;
   /** The run's log line (what its Workspace and computer have to say that is not a run failure). */
   readonly log?: (message: string) => void;
   /** D's docker provider for a sandbox run's computer; a test gives its own (computer.ts dockerComputer default). */
@@ -121,7 +125,8 @@ export function capModelOf(route: ModelRoute): CapModel {
         ...(cost.tiers ? { tiers: cost.tiers.map((tier) => ({ inputTokensAbove: tier.inputTokensAbove, input: tier.input, output: tier.output, cacheRead: tier.cacheRead, cacheWrite: tier.cacheWrite })) } : {}),
       }
     : null;
-  return { id: route.model, api: "anthropic-messages", price, outputCeiling: route.outputCeiling ?? null };
+  // The cap reads a request's provider overhead by the route's own wire (providerInputOverhead).
+  return { id: route.model, api: route.provider.api, price, outputCeiling: route.outputCeiling ?? null };
 }
 
 /** The revision's body, as the fields the spec reads of it (agentic runs only reach here; a workflow run is dispatched to
@@ -224,11 +229,13 @@ export async function adapterRunSpecFromLaunch(launch: RunLaunch, run: AdapterRu
 
   // The run's model route: its model through routeOf (NEVER re-resolved — the launch's model, pinned at start), the catalog
   // price with tiers for the cap, and the proxy's price (pi-ai calculateCost, tiered).
-  const route = await deps.routeOf(launch.model ? `${launch.model.provider}/${launch.model.modelId}` : undefined, deps.env);
+  // pi speaks both of main's wires: an OpenAI-family model's route is OpenAI's Responses itself.
+  const route = await deps.routeOf(launch.model ? `${launch.model.provider}/${launch.model.modelId}` : undefined, deps.env, "default", PI_WIRES);
   const adapter = piAdapter({
     run,
     model: route.model,
     provider: route.provider,
+    ...(route.like ? { like: route.like } : {}),
     ...(route.price ? { price: route.price as never } : {}),
     ...(route.fetch ? { fetch: route.fetch } : {}),
   });
