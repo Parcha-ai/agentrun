@@ -349,12 +349,16 @@ async function crashThenResume(subject: ConformanceSubject, t: { after(fn: () =>
   return { ...(await w.read()), ran };
 }
 
+/** How processStopped reads a process's state: /proc/<pid>/stat's text (throws where there is no /proc). For the suite's
+ *  own test, which takes /proc away. */
+export type ProcessReaders = { readonly stat?: (pid: number) => string };
+
 /** Whether process `pid` is stopped (SIGSTOP), by the kernel's own word: the state field of /proc/<pid>/stat is "T". */
-function processStopped(pid: number): boolean {
+export function processStopped(pid: number, { stat = (at) => readFileSync(`/proc/${at}/stat`, "utf8") }: ProcessReaders = {}): boolean {
   try {
-    const stat = readFileSync(`/proc/${pid}/stat`, "utf8");
+    const text = stat(pid);
     // The state follows the command name, which is in parentheses and may itself hold spaces or parentheses.
-    return stat.slice(stat.lastIndexOf(")") + 1).trim().split(" ")[0] === "T";
+    return text.slice(text.lastIndexOf(")") + 1).trim().split(" ")[0] === "T";
   } catch {
     return false;
   }
