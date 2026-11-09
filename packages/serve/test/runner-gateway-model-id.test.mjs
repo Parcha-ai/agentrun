@@ -6,12 +6,13 @@
 // AGENT_MODEL): a pi run and a CLI run through the runner land on the loopback gateway naming main's id, priced as main
 // prices it; a workflow's route, which the runner resolves from the host's tiers as main does, is checked beside them.
 import assert from "node:assert/strict";
-import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
+import { mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { test } from "node:test";
 import { startFauxGateway } from "./fixtures/faux-gateway.mjs";
 import { fauxTable } from "./fixtures/faux-table.mjs";
+import { landWorkflows, startAt } from "./learned-workflow-seed-support.mjs";
 
 const { openSqliteStore } = await import("../dist/store/sqlite/store.js");
 const { startRunner } = await import("../dist/runner/runner.js");
@@ -24,8 +25,6 @@ const { routeOf } = await import("../dist/runner/model-route.js");
 const { CONFORMANCE_TIMING } = await import("../dist/runner/conformance/harness.js");
 const { chooseModel, runModels, MODEL_PROVIDER } = await import("../dist/model.js");
 const { LEARNED_WORKFLOW_TOOL } = await import("../dist/learned-workflow.js");
-const { LEARNING_PIN, LEARNED_WORKFLOWS_FILE } = await import("../dist/learning.js");
-const { runFolder } = await import("../dist/workspace/paths.js");
 
 const FAUX_HARNESS = new URL("./fixtures/faux-harness.mjs", import.meta.url).pathname;
 const SEAL_KEY = Buffer.alloc(32, 7);
@@ -91,8 +90,9 @@ async function mainOf(env, row, harness) {
   return pin;
 }
 
-/** A store with agent-1's revision (its own model when `model`) and run-1 launched on `pin`, cleaned up after `t`. */
-async function storeWith(t, revision, launch) {
+/** A store with agent-1's revision and run-1 launched as `launch`, cleaned up after `t`. With `flows`, the agent learns:
+ *  they are active in its learning folder, at the commit the launch's learning start pins (runner/learning-seed.ts). */
+async function storeWith(t, revision, launch, flows) {
   const dir = mkdtempSync(join(process.env.TMPDIR ?? tmpdir(), "runner-gateway-model-id-"));
   const server = await openSqliteStore({ dataDir: dir, role: "server" });
   const store = await openSqliteStore({ dataDir: dir, role: "runner" });
@@ -101,8 +101,9 @@ async function storeWith(t, revision, launch) {
     await server.close().catch(() => {});
     rmSync(dir, { recursive: true, force: true });
   });
-  await server.agents.create({ id: "agent-1", name: "Gateway" }, { id: "rev-1", kind: "agentic", body: revision });
-  await server.runs.create({ id: RUN, agentId: "agent-1", revisionId: "rev-1" }, { body: launch });
+  await server.agents.create({ id: "agent-1", name: "Gateway" }, { id: "rev-1", kind: "agentic", body: { ...revision, ...(flows ? { learning: true } : {}) } });
+  const seed = flows ? await landWorkflows(dir, "agent-1", flows) : undefined;
+  await server.runs.create({ id: RUN, agentId: "agent-1", revisionId: "rev-1" }, { body: { ...launch, ...(flows ? { learning: startAt(seed) } : {}) } });
   await server.flush?.();
   return { dir, server, store };
 }
@@ -158,11 +159,7 @@ for (const row of ROWS) {
     const pin = await mainOf(env, row, harness);
     const launch = { input: { content: "Do the task." }, title: "t", place: { mode: "runner" }, harness, model: pin };
     const revision = { instructions: "Use the learned workflow answer on What is six times seven.", harness, tools: ["read", LEARNED_WORKFLOW_TOOL], ...(row.model ? { model: row.model } : {}) };
-    const { dir, server, store } = await storeWith(t, revision, launch);
-    const root = runFolder(dir, "agent-1", RUN);
-    mkdirSync(root, { recursive: true });
-    writeFileSync(join(root, LEARNING_PIN), JSON.stringify({ seed: null, section: "", workflows: ["answer"] }));
-    writeFileSync(join(root, LEARNED_WORKFLOWS_FILE), JSON.stringify([{ name: "answer", description: "Answers a question as a number", workflow: JSON.stringify(answerFlow) }]));
+    const { dir, server, store } = await storeWith(t, revision, launch, [{ name: "answer", description: "Answers a question as a number", workflow: answerFlow }]);
     const deps = { env, data: dir, journal: (claim) => store.journal(claim), store, sealKey: SEAL_KEY, routeOf: async () => assert.fail("a CLI run takes no pi route"), computerForClaim: async () => ({ release: async () => {} }) };
     const runner = startRunner({
       store, name: "runner-a", ...CONFORMANCE_TIMING, leaseMs: 60_000, stopMarginMs: 5_000,
