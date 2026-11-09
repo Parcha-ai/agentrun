@@ -293,7 +293,7 @@ export function client(baseUrl, token) {
   async function api(method, path, body, headers = {}, { raiseCheck = true } = {}) {
     // A secret write goes from the owner's session, as the console's does (secret-writes.ts): the token is refused one.
     const session = secretWrite(method, path) && !headers.authorization ? await ownerSessionOf(baseUrl) : undefined;
-    const sent = session ? { ...session, ...(body === undefined ? { body: {} } : { body }) } : { body };
+    const sent = { body };
     const res = await fetch(`${baseUrl}${path}`, {
       method,
       headers: session

@@ -94,7 +94,7 @@ test("accounts on: the owner's password session saves and removes a tool key and
     const removeByToken = await call(server.port, { method: "DELETE", path: `/v2/settings/tool-keys/${id}`, headers: bearer });
     assert.equal(removeByToken.status, 403, `${id}: the token can't remove it either: ${removeByToken.text}`);
     assert.equal(removeByToken.json?.error?.message, mod.SECRET_WRITE_REFUSAL, `${id}: in the one refusal text`);
-    const removeBySession = await call(server.port, { method: "DELETE", path: `/v2/settings/tool-keys/${id}`, headers: { ...json, cookie, origin }, body: {} });
+    const removeBySession = await call(server.port, { method: "DELETE", path: `/v2/settings/tool-keys/${id}`, headers: { ...json, cookie, origin } });
     assert.equal(removeBySession.status, 204, `${id}: the owner's session removes it: ${removeBySession.text}`);
   }
 });

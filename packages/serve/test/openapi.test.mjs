@@ -623,7 +623,8 @@ test("an agent's home is its own addition, home/1: its routes and capabilities.h
 test("a tool key's save documents every status it answers, 503 unavailable among them: a save still checking its key when the server closes keeps nothing", async (t) => {
   const { doc } = await served(t);
   const save = doc.paths["/settings/tool-keys/{key_id}"].put;
-  assert.deepEqual(Object.keys(save.responses).sort(), ["204", "400", "401", "409", "415", "422", "429", "500", "503"]);
+  // 403: the token, never the owner's session (secret-writes.ts), is refused a secret write.
+  assert.deepEqual(Object.keys(save.responses).sort(), ["204", "400", "401", "403", "409", "415", "422", "429", "500", "503"]);
   assert.equal(save.responses["503"]?.$ref, "#/components/responses/Unavailable");
 });
 
