@@ -54,6 +54,7 @@ import { listRunFiles as listRunFilesOverStore, readRunFile as readRunFileOverSt
 import { triggerTargets, type TriggerTargetDeps } from "./trigger-targets.js";
 import { listRuns as listRunsOverStore, readRun as readRunOverStore, runOfOrigin as runOfOriginOverStore } from "./store-reads/runs.js";
 import { runEntries, runTimeline } from "./store-reads/journal.js";
+import { metersOverStore } from "./store-reads/cap.js";
 import { watchRun } from "./live/stream.js";
 import { stats as statsOverStore } from "./store-reads/stats.js";
 import { analytics as analyticsOverStore } from "./store-reads/analytics.js";
@@ -77,7 +78,7 @@ import { startBoxRelay } from "./box-relay.js";
 import { vmRelay, type VmSdk } from "./box-relay-vm.js";
 import { memoryMbOf } from "./run-box.js";
 import { DOCUMENTS_ENV } from "./pdf-pages.js";
-import { CAP_MODES, type CapMode, meterFiguresIn } from "./cap.js";
+import { CAP_MODES, type CapMode } from "./cap.js";
 import { type Blocker, blockersOf, CODE_NODES_ENV, issueOf, MCP_HARNESSES, NOT_SET_UP, type RevisionShape } from "./runnable.js";
 import { handedSecret, holdMadeSecret, hostSecrets, SECRET_NAMES, secret, type StoredKeys, withSecrets } from "./secrets.js";
 import { isSecretWriteOperation, SECRET_WRITE_REFUSAL, secretsWritableFields, secretWriterFacts, writesSecret, writesSecretsAllowed } from "./secret-writes.js";
@@ -1852,9 +1853,10 @@ async function startHolding(options: ServeOptions, data: string, checked: { maxR
 
   // ---- usage ----------------------------------------------------------------------------------------------------------
 
-  // Each ended run's meters, from its store (meterFiguresIn): kept, as its store no longer changes, keyed by its end, so a run
-  // opened again and ended again is read again. A store that cannot be read leaves it all tokens.
-  const endedMeters = new Map<string, ReturnType<typeof meterFiguresIn>>();
+  // Each ended run's meters, over the one store (store-reads/cap metersOverStore, cap.ts meterFiguresFrom over A's journal):
+  // kept, as a settled run's journal no longer changes, keyed by its end, so a run opened again and ended again is read
+  // again. A run whose journal cannot be read leaves it all tokens.
+  const endedMeters = new Map<string, Awaited<ReturnType<typeof metersOverStore>>>();
   // Each ended run's spend so far as it saved it at its end (serve.json's cost_so_far: every conversation's charges and
   // its decisions' receipts, which its root store alone does not hold), kept as its meters are; undefined when it saved
   // none (a run whose cost is known, or one ended before the figure was kept).
@@ -1872,13 +1874,14 @@ async function startHolding(options: ServeOptions, data: string, checked: { maxR
     }
     return endedSoFar.get(key);
   };
-  const metersOf = (row: { id: string; endedAt?: string | null }) => {
+  const metersOf = async (row: { id: string; endedAt?: string | null }) => {
     const key = `${row.id} ${row.endedAt}`;
     let meters = endedMeters.get(key);
     if (!meters) {
-      // TODO(E3/store-reads): an ended run's meter figures come from store-reads (store-reads/stats over its journal), not
-      // a per-run store file (runStorePath is gone). Empty until the usage route is wired over the store.
-      meters = { tools: 0, tokens: null, browser: { usd: 0, seconds: 0 }, others: 0, known: { tokens: 0, browser: 0, others: 0 } };
+      // An ended run's meter figures over the one store: cap.ts meterFiguresFrom over A's journal, its paid tools' charges
+      // folded back from the paid-tools session (store-reads/journal withPaidCosts), as meterFiguresIn read a file-backed
+      // run's own database — the same figures (the money-parity rule).
+      meters = await metersOverStore(store, row.id, ctx);
       endedMeters.set(key, meters);
     }
     return meters;
@@ -1921,8 +1924,10 @@ async function startHolding(options: ServeOptions, data: string, checked: { maxR
       // `tokens`, all from the same records: a live run's rows (a call still marked is no charge), else its store as it
       // ended (a call a crash cut makes `tools` unknown, never `tokens`). An unknown meter counts the run as unpriced on it.
       // An ended run's are its store's figures (metersOf keeps them, never its timeline), read for its lines by meter and,
-      // by any group, for what a run of unknown cost is known to have spent.
-      const read = (group === "meter" && usd !== 0) || usd === null ? metersOf(row) : undefined;
+      // by any group, for what a run of unknown cost is known to have spent. Read once per run (the store read is async): by
+      // meter (its lines and its not-metered calls), and for any group of a run of unknown cost (its known so-far).
+      const all = group === "meter" || usd === null ? await metersOf(row) : undefined;
+      const read = (group === "meter" && usd !== 0) || usd === null ? all : undefined;
       // A run whose cost is unknown still spent what is known of it (so_far: each meter's known dollars): that is in the
       // total and its lines, and the run is counted unpriced, so a total is never below a line of its own and reads as
       // the lower bound unpriced_runs says it is.
@@ -1932,7 +1937,7 @@ async function startHolding(options: ServeOptions, data: string, checked: { maxR
       // Its parts of the lines (usage-lines.ts): an unknown one counts the run unpriced there and adds what is known of it.
       // An unpriced MCP call is in none of them: counted apart as not metered on the tools line, which a $0 run shows only
       // when it made one.
-      const unmetered = group !== "meter" ? 0 : (metersOf(row).notMetered ?? 0);
+      const unmetered = group !== "meter" ? 0 : (all?.notMetered ?? 0);
       notMetered += unmetered;
       if (unmetered && !lines.has("tools")) lines.set("tools", { usd: 0, unpriced: 0 });
       for (const part of runLines({ usd, soFar, key, meters })) {

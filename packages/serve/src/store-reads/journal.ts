@@ -64,7 +64,7 @@ function piShaped(entries: readonly EntryLike[]): EntryLike[] {
  *  it ran under (`call`, written by the cap so the view puts the charge under that call); its runner.turn carries the cost (a
  *  priced one a charge, an unpriced one not metered). Each charge is placed right after its call's result, joined by `call`,
  *  as the ledger wrote it there. A run with no paid-tools session reads unchanged. */
-function withPaidCosts(entries: readonly EntryLike[]): EntryLike[] {
+export function withPaidCosts(entries: readonly EntryLike[]): EntryLike[] {
   const session = entries.find((e) => e.kind === KINDS.sessionKey && (e.data as { key?: unknown } | undefined)?.key === TOOL_SESSION);
   const conv = session ? (session.data as { conversation?: unknown }).conversation : undefined;
   if (typeof conv !== "number") return [...entries];
