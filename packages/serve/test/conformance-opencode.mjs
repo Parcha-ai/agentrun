@@ -12,7 +12,7 @@ import { fileURLToPath } from "node:url";
 const { createAdapterLoop } = await import("../dist/runner/adapter-loop.js");
 const { resolveHarness } = await import("../dist/runner/adapters/index.js");
 const { facts } = await import("../dist/harness-opencode/facts.js");
-const { CLI_OUTPUT_LIMIT_UNSUPPORTED, MAX_RESTARTS } = await import("../dist/runner/conformance/harness.js");
+const { MAX_RESTARTS } = await import("../dist/runner/conformance/harness.js");
 
 process.env.AGENTRUN_OPENCODE_STANDIN = "1";
 const STAND_IN = fileURLToPath(new URL("./fixtures/fake-opencode-serve.mjs", import.meta.url));
@@ -46,7 +46,9 @@ export function scriptedResponses(script, requests = [], { callId = (step) => `c
     const lastPerson = [...input].reverse().find((item) => item.role === "user");
     const lastResult = [...input].reverse().find((item) => item.type === "function_call_output");
     const text = next === undefined ? "" : "say" in next ? next.say : "sayLastResult" in next ? String(lastResult?.output ?? "") : textOf(lastPerson);
-    return sse([{ type: "response.output_text.delta", item_id: `m_${step}`, output_index: 0, content_index: 0, delta: text }, done]);
+    // A text cut at the model's output limit: the stream ends incomplete, its reason max_output_tokens, as OpenAI's does.
+    const end = next?.cut ? { type: "response.incomplete", response: { ...done.response, status: "incomplete", incomplete_details: { reason: "max_output_tokens" } } } : done;
+    return sse([{ type: "response.output_text.delta", item_id: `m_${step}`, output_index: 0, content_index: 0, delta: text }, end]);
   };
 }
 
@@ -113,10 +115,10 @@ export function openCodeSpec({ script, tools, hooks, agentId }, options = {}) {
 export const openCodeSubject = {
   name: "opencode through the runner",
   createLoop: (setup) => createAdapterLoop(openCodeSpec(setup), { restartLimit: MAX_RESTARTS }),
-  // What its adapter declares (steer false, rerunsStarted false): the suite derives the cases those rule out.
+  // What its adapter declares (steer false, rerunsStarted false, recoversCutAnswers 0): the suite derives the cases those
+  // rule out.
   facts,
   unsupported: {
-    ...CLI_OUTPUT_LIMIT_UNSUPPORTED,
     "crash-before-intent-process": "the OpenCode stand-in runs only under a test runner, and the conformance runner process is none (the in-process crash case covers the point)",
     "crash-after-intent-process": "the OpenCode stand-in runs only under a test runner, and the conformance runner process is none (the in-process crash case covers the point)",
     "stalled-past-lease-process": "the OpenCode stand-in runs only under a test runner, and the conformance runner process is none",

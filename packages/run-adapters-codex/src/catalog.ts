@@ -7,6 +7,7 @@
 // sets that one field null on every model, keeps it in CODEX_HOME beside the seed and names it in Codex's config
 // (`model_catalog_json`, a key an app may not set: config.ts). With the built-ins on, apply_patch runs through the shell and
 // stays.
+import { basename } from 'node:path';
 import type { MachineSpawn, SessionProcess } from './host/process.js';
 
 /** The catalog's file in `CODEX_HOME`. */
@@ -61,7 +62,11 @@ export async function patchlessCatalog(spawn: (options: MachineSpawn) => Session
   const known = read.get(key);
   if (known) return { bytes: known };
   const failed = (cause: string, fields: Record<string, unknown>) => {
-    const why = stillListed(cause);
+    // The run's words (the machine's notes) name the binary by its file name and none of the session's directories: no host
+    // path, no CODEX_HOME. The host's log keeps them whole (`fields`).
+    const named = [[codex.command, basename(codex.command)], [dirs.own, "its own directory"], [dirs.home, "its home"], [dirs.tmp, "its tmp"]] as const;
+    const said = named.filter(([path]) => path.length > 1).sort((a, b) => b[0].length - a[0].length).reduce((text, [path, as]) => text.replaceAll(path, as), cause);
+    const why = stillListed(said);
     codex.log?.(`codex: ${why}`, fields);
     return { why };
   };

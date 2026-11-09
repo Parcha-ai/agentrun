@@ -64,6 +64,9 @@ export interface ProviderPolicy {
    *  reads it, never by matching its words, and from `lineStarts`, the start of each of its last whole lines (16 KiB of
    *  each, for a line longer than the text kept). Absent: the policy cannot tell, and no answer is read as stopped. */
   filtered?(text: string, lineStarts: readonly string[]): boolean;
+  /** Whether the provider cut an answer at its output limit (stopReason "length"), read as `filtered` reads its stop, with
+   *  the output tokens the answer reports when it says them. Absent: the policy cannot tell, and no answer is read as cut. */
+  cut?(text: string, lineStarts: readonly string[]): { outputTokens?: number } | undefined;
   /** Whether a request is the turn's answer request (the client's own turn, which offers the model the session's tools),
    *  and not a side call its client makes beside the turn (a title, a summary): only an answer request's content-filter
    *  stop ends the turn; a side call's is logged and left to the client. Absent: every request is the turn's. */
@@ -243,6 +246,10 @@ export interface ModelProxyOptions {
   /** Told, with CONTENT_FILTERED, once an answer the provider stopped on its content filter has been passed and booked
    *  (`ProviderPolicy.filtered`): the harness halts the turn with it, before its client asks for the answer again. */
   onFiltered?: (message: string) => void;
+  /** Told, once an answer request's answer, once its stop says the provider cut it at its output limit
+   *  (`ProviderPolicy.cut`), before its client has the piece that carries the stop: a harness whose client would ask for
+   *  the answer again (Codex retries an incomplete stream) ends the turn there, the answer cut ("length"). */
+  onCut?: (stop: { outputTokens?: number }) => void;
 }
 
 /** A header a host may not set on forwarded requests: the credential's, the transport's, and the provider's protocol. */
@@ -784,6 +791,32 @@ export async function startModelProxy(options: ModelProxyOptions, key: string): 
         say(`model proxy (${policy.id}): onFiltered threw`, { error: String((error as Error)?.message ?? error).slice(0, 200) });
       }
     };
+    /** Whether the provider's cut at its output limit was read (once an answer). */
+    let cutTold = false;
+    /** Tells the harness the provider cut this answer at its output limit, when `text` says so: once, an answer request's
+     *  only, and never failing the answer (it is passed and booked as any answer). */
+    const tellCut = (text: string): void => {
+      if (cutTold || !answering || !policy.cut || !options.onCut) return;
+      let stop: { outputTokens?: number } | undefined;
+      try {
+        stop = policy.cut(text, starts);
+      } catch (error) {
+        say(`model proxy (${policy.id}): whether the provider cut the answer at its output limit could not be read`, { error: String((error as Error)?.message ?? error).slice(0, 200) });
+      }
+      if (!stop) return;
+      cutTold = true;
+      say(`model proxy (${policy.id}): the provider cut the answer at its output limit`);
+      try {
+        options.onCut(stop);
+      } catch (error) {
+        say(`model proxy (${policy.id}): onCut threw`, { error: String((error as Error)?.message ?? error).slice(0, 200) });
+      }
+    };
+    /** The answer's stops, read from what has come of it so far: its content-filter stop, and its cut. */
+    const tellStops = (text: string): void => {
+      tellFiltered(text);
+      tellCut(text);
+    };
     try {
       // From here a paid request may be paid, so every way out below books it exactly once.
       const upstream = await forward(`${origin}${route.path}${query ? `?${query}` : ""}`, { method: route.method, headers, body: sent, signal: controller.signal });
@@ -829,8 +862,9 @@ export async function startModelProxy(options: ModelProxyOptions, key: string): 
               watcher = undefined;
             }
           }
-          // The provider's content-filter stop, read before the client has the piece that carries it: the harness ends the
-          // turn before its client acts on the stop (asks for the refused answer again, or ends the turn its own way).
+          // The provider's content-filter stop, and its cut at the output limit, read before the client has the piece that
+          // carries it: the harness ends the turn before its client acts on the stop (asks for the answer again, or ends
+          // the turn its own way).
           // A line longer than the window is read as it ends, from its start, while the lines just before it (an event's
           // name) are still the last starts kept: a piece may carry the lines after it too.
           const window = (tail + text).slice(-USAGE_WINDOW);
@@ -841,12 +875,12 @@ export async function startModelProxy(options: ModelProxyOptions, key: string): 
             if (at < lines.length - 1) {
               starts.push(lineStart);
               if (starts.length > LINE_STARTS) starts.shift();
-              if (upstream.ok && lineLength > USAGE_WINDOW) tellFiltered(window);
+              if (upstream.ok && lineLength > USAGE_WINDOW) tellStops(window);
               lineStart = "";
               lineLength = 0;
             }
           }
-          if (upstream.ok && lines.length > 1) tellFiltered(window);
+          if (upstream.ok && lines.length > 1) tellStops(window);
           // A client that reads slowly holds the provider back: nothing more is read until what was written drains. A
           // client gone after the stop was told is written nothing more: the answer is read on for its usage alone.
           if (!res.destroyed && !res.write(chunk)) {
@@ -956,7 +990,7 @@ export async function startModelProxy(options: ModelProxyOptions, key: string): 
       say(`model proxy (${policy.id}): afterRequest threw; the request was answered and not booked`, { error: String((error as Error)?.message ?? error).slice(0, 200) });
     }
     // An answer whose stop no piece showed before it ended (a whole JSON body): read whole once it is booked.
-    if (seen?.ok) tellFiltered(length <= USAGE_WINDOW ? tail : `${head}\n${tail}`);
+    if (seen?.ok) tellStops(length <= USAGE_WINDOW ? tail : `${head}\n${tail}`);
     settled();
   };
 

@@ -14,7 +14,7 @@ import { fakeSdk } from "@parcha/agentrun-harness-claude/testing";
 
 const { createAdapterLoop } = await import("../dist/runner/adapter-loop.js");
 const { resolveHarness } = await import("../dist/runner/adapters/index.js");
-const { CLI_OUTPUT_LIMIT_UNSUPPORTED, MAX_RESTARTS } = await import("../dist/runner/conformance/harness.js");
+const { MAX_RESTARTS } = await import("../dist/runner/conformance/harness.js");
 
 // The package's stand-in CLI is for tests only: it asks for this under the test runner.
 process.env.AGENTRUN_CLAUDE_AGENT_STANDIN = "1";
@@ -59,12 +59,18 @@ function tracked(adapter) {
   };
 }
 
-/** The stand-in CLI's script for the suite's: the input makes the first step's call; after it, the next step's words. */
+/** The stand-in CLI's script for the suite's: the input makes the first step's call; after it, the next step's words. A
+ *  script of answers some of which the output limit cuts is the stand-in's `cut` turn: its answers in order, the CLI
+ *  resuming each cut one itself in the same turn, as Claude Code does. */
 function standInScript(script) {
   const [first, next] = script;
+  const cutTurn = script.some((step) => step.cut) && script.every((step) => "say" in step)
+    ? `cut ${JSON.stringify(script.map((step) => ({ text: step.say, ...(step.cut ? { cut: true } : {}) })))}`
+    : undefined;
+  const isInput = (text) => text === INPUT || text.endsWith(`\n\n${INPUT}`);
   return {
     // The input, alone or after a note the harness put before it (as the CLI is handed it).
-    script: (text) => ((text === INPUT || text.endsWith(`\n\n${INPUT}`)) && first && "call" in first ? `call ${first.call} ${JSON.stringify(first.args ?? {})}` : undefined),
+    script: (text) => (!isInput(text) ? undefined : cutTurn ?? (first && "call" in first ? `call ${first.call} ${JSON.stringify(first.args ?? {})}` : undefined)),
     reply: ({ result, steers }) =>
       next && "sayLastSteer" in next ? (steers.at(-1) ?? "") : next && "sayLastResult" in next ? result : next && "say" in next ? next.say : "",
   };
@@ -92,10 +98,10 @@ export const claudeAgentSubject = {
   name: "claude-agent through the runner",
   process: { module: import.meta.url, export: "claudeAgentSubject" },
   createLoop: (setup) => createAdapterLoop(claudeAgentSpec(setup), { restartLimit: MAX_RESTARTS }),
-  // What its adapter declares (steer false, rerunsStarted false): the suite derives the cases those rule out.
+  // What its adapter declares (steer false, rerunsStarted false, recoversCutAnswers 3): the suite derives the cases those
+  // rule out.
   facts,
   unsupported: {
-    ...CLI_OUTPUT_LIMIT_UNSUPPORTED,
     // The suite's crash child runs outside the test runner (it drops NODE_TEST_CONTEXT), where the package's stand-in CLI
     // is refused by its own guard; the in-process crash cases cover the same points.
     "crash-before-intent-process": "the stand-in Claude Agent CLI runs only under the test runner (its guard), and the suite's crash child runs outside it",
