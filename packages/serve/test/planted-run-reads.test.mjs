@@ -5,6 +5,7 @@
 import assert from "node:assert/strict";
 import { createHash, randomBytes } from "node:crypto";
 import { request } from "node:http";
+import { createRequire } from "node:module";
 import { join } from "node:path";
 import { DatabaseSync } from "node:sqlite";
 import { test } from "node:test";
@@ -13,6 +14,9 @@ import { saveSignIn } from "../dist/sign-ins-store.js";
 import { openSqliteStore } from "../dist/store/sqlite/store.js";
 import { findPlanted, plantedValue } from "./fixtures/planted-secrets.mjs";
 import { agent, follow, serve, withEnv } from "./support.mjs";
+import { firings } from "./trigger-support.mjs";
+
+const { Webhook } = createRequire(import.meta.url)("standardwebhooks");
 
 const FAUX_READ = new URL("./fixtures/faux-read-notes.mjs", import.meta.url).pathname;
 
@@ -37,28 +41,26 @@ const RUN_READS = {
   getRunLearningDiff: (run) => [`/runs/${run.id}/learning/diff`],
 };
 
-/** A case that can't pass on this line yet, by "<operationId> (<run>)": what it waits on. */
+/** What a case that can't pass on this line yet waits on, by operation, and by "<operation> (<run>)" where it is that run's
+ *  alone. */
+const TIMELINE = "waits on the run timeline cutting the view's own secrets (the run timeline's redactor), and withholding a withheld run";
+const TITLE = "waits on the run title being cut with the view's full cut set (handed pointers, server and trigger secrets, stored keys) and withheld in the view's words for a withheld run, on getRun, listRuns and listAllRuns (the run timeline's redactor fix)";
 const WAITS = {
-  "getTimeline (handed)":
-    "waits on the run timeline cutting the view's own secrets (the run timeline's redactor), and withholding a withheld run",
-  "getTimeline (withheld)":
-    "waits on the run timeline cutting the view's own secrets (the run timeline's redactor), and withholding a withheld run",
-  "getRun (handed)":
-    "waits on a run's title being cut of the sign-in it was handed, and withheld with a withheld run (store-view's title, the run lists' summary)",
-  "getRun (withheld)":
-    "waits on a run's title being cut of the sign-in it was handed, and withheld with a withheld run (store-view's title, the run lists' summary)",
-  "listRuns (handed)":
-    "waits on a run's title being cut of the sign-in it was handed, and withheld with a withheld run (store-view's title, the run lists' summary)",
-  "listRuns (withheld)":
-    "waits on a run's title being cut of the sign-in it was handed, and withheld with a withheld run (store-view's title, the run lists' summary)",
-  "listAllRuns (handed)":
-    "waits on a run's title being cut of the sign-in it was handed, and withheld with a withheld run (store-view's title, the run lists' summary)",
-  "listAllRuns (withheld)":
-    "waits on a run's title being cut of the sign-in it was handed, and withheld with a withheld run (store-view's title, the run lists' summary)",
-  "readRunFile (withheld)":
-    "waits on the run file routes refusing a withheld run, as the view does",
-  "readRunFile (handed)":
-    "waits on a ruling for a run's file bytes that hold what it was handed (the file route serves bytes uncut)",
+  getTimeline: TIMELINE,
+  "getRun (handed)": TITLE,
+  "getRun (withheld)": TITLE,
+  "listRuns (handed)": TITLE,
+  "listRuns (withheld)": TITLE,
+  "listAllRuns (handed)": TITLE,
+  "listAllRuns (withheld)": TITLE,
+  "readRunFile (withheld)": "waits on the run file routes refusing a withheld run (403), the merge job's files check",
+};
+const waitOf = (operation, kind) => WAITS[`${operation} (${kind})`] ?? WAITS[operation] ?? false;
+
+/** The one run read the zero-hits rule exempts, and why: a run's file is served as it was written, uncut. Its case asserts
+ *  the bytes are the ones written instead (the gate still requires the case). */
+export const EXEMPT = {
+  readRunFile: "served as uploaded, uncut: a page it saved signed in is what it saw, and no file is cut",
 };
 
 test("every run read operation the API document lists has a case in the harness: a new one fails until it does", () => {
@@ -73,7 +75,7 @@ function get(port, token, path) {
     const req = request({ host: "127.0.0.1", port, method: "GET", path: `/v2${path}`, agent: false, headers: { authorization: `Bearer ${token}` } }, (res) => {
       const parts = [];
       res.on("data", (chunk) => parts.push(chunk));
-      res.on("end", () => resolve({ status: res.statusCode, text: `${JSON.stringify(res.headers)}\n${Buffer.concat(parts).toString("utf8")}` }));
+      res.on("end", () => resolve({ status: res.statusCode, body: Buffer.concat(parts), text: `${JSON.stringify(res.headers)}\n${Buffer.concat(parts).toString("utf8")}` }));
     });
     req.once("error", reject).end();
   });
@@ -96,13 +98,14 @@ async function uploaded(server, path, text) {
 
 /** A completed run of agent `agentId` whose input and its notes file (read through its read tool, then answered) hold
  *  `words`: its id. */
-async function ranWith(server, agentId, words) {
+async function ranWith(server, agentId, words, { content = `Read the notes. ${words}`, ends = "completed" } = {}) {
   assert.equal((await server.api("POST", "/agents", agent(agentId, { tools: ["read"] }))).status, 201);
-  const file = await uploaded(server, "notes.txt", `The notes: ${words}\n`);
-  const run = await server.api("POST", `/agents/${agentId}/runs`, { input: { content: `Read the notes. ${words}` }, file_ids: [file] });
+  const fileText = `The notes: ${words}\n`;
+  const file = await uploaded(server, "notes.txt", fileText);
+  const run = await server.api("POST", `/agents/${agentId}/runs`, { input: { content }, file_ids: [file] });
   assert.equal(run.status, 202, JSON.stringify(run.body));
-  await follow(server.api, run.body.run_id, ["completed"], { deadlineMs: 60_000 });
-  return run.body.run_id;
+  await follow(server.api, run.body.run_id, [ends], { deadlineMs: 60_000 });
+  return { id: run.body.run_id, file: "inputs/notes.txt", fileText };
 }
 
 /** Marks run `runId` handed `pointer` as its runner does at a claim (runs.sign_in_handed, its launch plane's browser), with
@@ -132,27 +135,39 @@ test("no planted secret in a run's words shows on any run read route: a run hand
   withEnv(t, { AGENTRUN_SEAL_KEY: seal.toString("base64") }, ["AGENTRUN_SEAL_KEY"]);
   const logs = [];
   const server = await serve(t, { faux: FAUX_READ, log: (line) => logs.push(line) });
-  // A stored tool key and a trigger's signing secret, each written the way the owner writes one, then in the run's words.
+  // A stored tool key and a trigger's signing secret, each written the way the owner writes one.
   const monid = plantedValue("monid");
   assert.equal((await server.api("PUT", "/settings/tool-keys/monid", { values: { MONID_API_KEY: monid } })).status, 204);
-  assert.equal((await server.api("POST", "/agents", agent("hooked"))).status, 201);
-  const trigger = await server.api("POST", "/triggers", { name: "on push", source: { kind: "webhook" }, target: { kind: "start_run", agent_id: "hooked", input: { content: "Triage." }, max_cost_usd: 0.5 } });
+  assert.equal((await server.api("POST", "/agents", agent("fired", { tools: ["read"] }))).status, 201);
+  const trigger = await server.api("POST", "/triggers", { name: "on push", source: { kind: "webhook" }, target: { kind: "start_run", agent_id: "fired", input: { content: "Triage this event." }, max_cost_usd: 0.5 } });
   assert.equal(trigger.status, 201, JSON.stringify(trigger.body));
   const whsec = trigger.body.signing_secret ?? trigger.body.secret;
   assert.match(String(whsec), /^whsec_/, "the trigger's signing secret, shown once to its maker");
-  // A run handed a sign-in this server opens: cut of the pointer; and one handed a sign-in it can't open: withheld.
-  const pointer = `bb-ctx-${randomBytes(12).toString("hex")}`;
-  const lost = `bb-ctx-${randomBytes(12).toString("hex")}`;
+  const pointerOf = () => `bb-ctx-${randomBytes(12).toString("hex")}`;
   const runs = {
-    handed: { agentId: "handed", values: [pointer, monid, whsec] },
-    withheld: { agentId: "withheld", values: [lost, monid, whsec] },
+    // Handed a sign-in this server opens: cut of the pointer. Its input and notes hold all three.
+    handed: { agentId: "handed", values: [pointerOf(), monid, whsec] },
+    // Handed a sign-in this server can't open (sealed under another key): withheld.
+    withheld: { agentId: "withheld", values: [pointerOf(), monid, whsec], seal: randomBytes(32) },
+    // Failed: its error quotes its notes (the pointer and the key), its input none of them.
+    failed: { agentId: "failing", values: [pointerOf(), monid], content: "Read the notes, then fail.", ends: "failed" },
+    // Started by its trigger's webhook firing: a signed POST whose payload holds the pointer and the key.
+    fired: { agentId: "fired", values: [pointerOf(), monid, whsec] },
   };
-  for (const run of Object.values(runs)) {
-    run.id = await ranWith(server, run.agentId, run.values.join(" "));
-    run.file = "inputs/notes.txt";
+  for (const [kind, run] of Object.entries(runs)) {
+    if (kind === "fired") continue;
+    Object.assign(run, await ranWith(server, run.agentId, run.values.join(" "), { ...(run.content ? { content: run.content } : {}), ...(run.ends ? { ends: run.ends } : {}) }));
   }
-  await handed(server.data, runs.handed.id, "handed", pointer, seal);
-  await handed(server.data, runs.withheld.id, "withheld", lost, randomBytes(32));
+  const payload = JSON.stringify({ event: "push", note: runs.fired.values.slice(0, 2).join(" ") });
+  const webhookId = `msg_${randomBytes(8).toString("hex")}`;
+  const at = Math.floor(Date.now() / 1000);
+  const fired = await fetch(`${server.baseUrl}/hooks/${trigger.body.id}`, { method: "POST", body: payload, headers: { "content-type": "application/json", "webhook-id": webhookId, "webhook-timestamp": String(at), "webhook-signature": new Webhook(whsec).sign(webhookId, new Date(at * 1000), payload) } });
+  assert.equal(fired.status, 202, await fired.text());
+  const [firing] = await firings(server.api, trigger.body.id, 1);
+  assert.equal(firing.status, "started", JSON.stringify(firing));
+  runs.fired.id = firing.run_id;
+  await follow(server.api, runs.fired.id, ["completed", "failed"], { deadlineMs: 60_000 });
+  for (const run of Object.values(runs)) await handed(server.data, run.id, run.agentId, run.values[0], run.seal ?? seal);
 
   // The view's own verdict first: the handed run is shown, cut; the withheld one says why nothing is shown.
   const shown = (await server.api("GET", `/runs/${runs.handed.id}`)).body;
@@ -160,15 +175,26 @@ test("no planted secret in a run's words shows on any run read route: a run hand
   assert.match(String(shown.result?.final_answer ?? ""), /^Read: /, "the handed run is shown, cut of what it was handed");
   const withheld = await server.api("GET", `/runs/${runs.withheld.id}`);
   assert.deepEqual([withheld.body.result?.output ?? null, withheld.body.result?.final_answer ?? null], [null, null], "the withheld run's view shows none of its words");
+  // The failed run failed on its provider's refusal, which quoted its notes; its view serves an error.
+  const failed = (await server.api("GET", `/runs/${runs.failed.id}`)).body;
+  assert.equal(failed.status, "failed", JSON.stringify(failed));
+  assert.ok(failed.error?.message, `the failed run's error is served: ${JSON.stringify(failed.error)}`);
+  t.diagnostic(`the failed run's served error: ${JSON.stringify(failed.error)}`);
 
   for (const { path, operation } of runReadOperations((await server.api("GET", "/openapi.json")).body)) {
     for (const [kind, run] of Object.entries(runs)) {
       const name = `${operation} (${kind})`;
-      await t.test(`${name}: GET ${path} holds no planted value`, { skip: WAITS[name] ?? false }, async () => {
+      await t.test(`${name}: GET ${path} holds no planted value`, { skip: waitOf(operation, kind) }, async () => {
         const reads = RUN_READS[operation](run);
         const sources = [];
         for (const one of reads) {
           const res = await get(server.port, server.token, one);
+          if (EXEMPT[operation] && run.fileText !== undefined) {
+            // Exempt (EXEMPT): served as it was written, byte for byte, never a planted value it didn't hold.
+            assert.equal(res.status, 200, one);
+            assert.ok(res.body.equals(Buffer.from(run.fileText)), `${one}: the bytes written`);
+            continue;
+          }
           sources.push({ where: `GET ${one} (${res.status})`, text: res.text });
           // A withheld run's graph is refused (403), or it has none (404, an agentic run's): never served.
           if (kind === "withheld" && operation === "getRunGraph") assert.ok([403, 404].includes(res.status), `${one}: a withheld run's graph is never served: ${res.status}`);
@@ -178,6 +204,6 @@ test("no planted secret in a run's words shows on any run read route: a run hand
     }
   }
   await t.test("the server's log holds no planted value", () => {
-    assert.deepEqual(findPlanted([{ where: "the server's log", text: logs.join("\n") }], [...runs.handed.values, ...runs.withheld.values]), []);
+    assert.deepEqual(findPlanted([{ where: "the server's log", text: logs.join("\n") }], Object.values(runs).flatMap((run) => run.values)), []);
   });
 });
