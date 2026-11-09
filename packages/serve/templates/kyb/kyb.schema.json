@@ -30,7 +30,7 @@
         "resolution": { "type": "string", "minLength": 1, "maxLength": 1200, "description": "how the subject was told apart from the other candidates, and each candidate rejected with why; or why it could not be resolved" },
         "rejected_candidates": {
           "type": "array",
-          "maxItems": 6,
+          "maxItems": 10,
           "items": {
             "type": "object",
             "additionalProperties": false,

@@ -1421,7 +1421,9 @@ async function startHolding(options: ServeOptions, data: string, lock: ServerLoc
     const harness = pkg.harness && (pkg.harness.find((id) => offers.some((offer) => offer.id === id && offer.available)) ?? pkg.harness[0]);
     const picked = override ? { model: override } : await packageModel(env, pkg.model, harness ?? DEFAULT_HARNESS);
     const model = picked.model;
-    const modelWarnings: InputIssue[] = "warning" in picked && picked.warning ? [{ field: "model", reason: NOT_SET_UP, message: picked.warning }] : [];
+    // Which model the agent got, where it is not the package's: a note, never a lack. The agent runs; only the package's
+    // choice was not an option here (not_set_up_here would read as a run refused until the host has something).
+    const modelWarnings: InputIssue[] = "warning" in picked && picked.warning ? [{ field: "model", reason: "not_an_option", message: picked.warning }] : [];
     const defaultTools = "place" in newAgentPlace(boxOffers) ? NEW_AGENT_TOOLS : [];
     // A grant never lifts a deny the owner set on this server: that tool keeps it, and the answer says so.
     const server = settings.get() as Parameters<typeof permissionFrom>[1];
