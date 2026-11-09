@@ -35,7 +35,7 @@ class SealedSettingsOverStore {
     private readonly store: SealedSettingsStore,
     private readonly adapterId: string,
     private readonly spec: SettingsSpec,
-    private readonly key: Buffer | undefined,
+    private readonly key: Buffer,
     private readonly say: (fields: Record<string, string>) => void,
   ) {}
 
@@ -43,9 +43,7 @@ class SealedSettingsOverStore {
    *  said once and reads as unset (no row ever stops the start). Awaited once at start. */
   async load(): Promise<void> {
     const rows = await this.store.triggerSettings.get(this.adapterId);
-    if (!this.key && rows.length) this.say({ condition: "trigger_settings_no_seal_key", adapter: this.adapterId, effect: `this server was handed no ${SEAL_KEY_ENV}: none of its sealed settings is read` });
     for (const row of rows) {
-      if (!this.key) continue;
       try {
         (this.opened[row.scope] ??= {})[row.field] = unseal(this.key, Buffer.from(row.sealed, "base64"), aad(this.adapterId, row.scope, row.field)).toString("utf8");
       } catch {
@@ -77,7 +75,6 @@ class SealedSettingsOverStore {
   }
 
   private async put(scope: string, field: string, value: string): Promise<void> {
-    this.writable();
     await this.store.triggerSettings.put({ adapter: this.adapterId, scope, field, sealed: seal(this.key!, Buffer.from(value, "utf8"), aad(this.adapterId, scope, field)).toString("base64") });
     await this.store.flush();
     const was = this.opened[scope]?.[field];
@@ -125,25 +122,12 @@ class SealedSettingsOverStore {
     else for (const secret of this.secretsOf(field, value)) this.retired.add(secret);
   }
 
-  /** Why nothing can be written here (no seal key), as the refusal a write would throw; undefined when one can be. */
-  unwritable(): ApiError | undefined {
-    try {
-      this.writable();
-      return undefined;
-    } catch (error) {
-      return error as ApiError;
-    }
-  }
-
-  private writable(): void {
-    if (!this.key) throw new ApiError("no_sealing_key", `This server was handed no seal key (${SEAL_KEY_ENV}), so it keeps no ${this.adapterId} trigger's secret: it never keeps one in the clear.`);
-  }
 }
 
 export type { SealedSettingsOverStore };
 
 /** The SealedSettings surface over the one store: the switch swaps `new SealedSettings(data, id, spec, key, say)` for this,
  *  then awaits load() once at start before the first get()/values(). */
-export function sealedSettingsOverStore(store: SealedSettingsStore, adapterId: string, spec: SettingsSpec, key: Buffer | undefined, say: (fields: Record<string, string>) => void): SealedSettingsOverStore {
+export function sealedSettingsOverStore(store: SealedSettingsStore, adapterId: string, spec: SettingsSpec, key: Buffer, say: (fields: Record<string, string>) => void): SealedSettingsOverStore {
   return new SealedSettingsOverStore(store, adapterId, spec, key, say);
 }

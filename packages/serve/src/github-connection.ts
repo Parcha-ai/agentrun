@@ -111,11 +111,10 @@ export class GitHubConnection {
     return appId && pem ? { appId, pem } : undefined;
   }
 
-  /** Why nothing can be kept (no seal key, an unreadable file), as its refusal. */
+  /** Why nothing can be kept: this server keeps no github source's settings (no such source here). Its seal key is always
+   *  there (seal-key.ts ensureSealKey). */
   unwritable(): ApiError | undefined {
-    const refusal = this.settings ? this.settings.unwritable() : new ApiError("no_sealing_key", "");
-    if (refusal?.code === "no_sealing_key") return new ApiError("github_no_seal_key", "This server keeps a GitHub App's secrets only sealed, and it has no seal key: set AGENTRUN_SEAL_KEY, restart it, then connect again.");
-    return refusal;
+    return this.settings ? undefined : new ApiError("unavailable", "This server has no GitHub source to keep an App in.");
   }
 
   /** The App's settings page on GitHub, where the person deletes it: its owner's (an organization's, or the user's). */

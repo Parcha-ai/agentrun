@@ -71,19 +71,6 @@ test("mint writes a new secret sealed and returns it once; remove drops a scope'
   assert.ok(settings.values().includes(minted), "but the rotated value is still redacted this process's life");
 });
 
-test("with no seal key the sealed settings are not read, said once; a set is refused no_sealing_key", async (t) => {
-  const { store } = await storeOn(t);
-  const kept = sealedSettingsOverStore(store, "slackish", spec, KEY, () => {});
-  await kept.load();
-  await kept.set("server", "token", "a-long-enough-token");
-  const said = [];
-  const noKey = sealedSettingsOverStore(store, "slackish", spec, undefined, (f) => said.push(f));
-  await noKey.load();
-  assert.deepEqual(said.map((s) => [s.condition, s.adapter]), [["trigger_settings_no_seal_key", "slackish"]], "one line, not a value");
-  assert.equal(noKey.get("server", "token"), undefined, "not read");
-  await assert.rejects(() => noKey.set("server", "token", "another-token"), (e) => e.code === "no_sealing_key");
-});
-
 test("openServerSecretsOverStore wires each adapter's store settings into the redaction list", async (t) => {
   const { store } = await storeOn(t);
   const data = await mkdtemp(join(process.env.TMPDIR ?? tmpdir(), "server-secrets-store-"));
@@ -112,7 +99,6 @@ test("a public field is kept sealed of any length and whitespace, and never list
   assert.deepEqual(settings.values(), ["a-webhook-secret-of-the-app"], "public fields and the PEM key are not in the floored list");
   const lines = PEM_KEY.split("\n").map((l) => l.trim()).filter((l) => l && !l.startsWith("-----"));
   assert.deepEqual(settings.pemValues(), [PEM_KEY, ...lines], "the key whole and each base64 line, the short last one too");
-  assert.equal(settings.unwritable(), undefined);
   const next = sealedSettingsOverStore(store, "github", appSpec, KEY, () => {});
   await next.load();
   assert.equal(next.get("server", "private_key"), PEM_KEY, "read back in the next store");
