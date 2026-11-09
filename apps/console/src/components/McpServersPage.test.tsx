@@ -31,6 +31,7 @@ const saved = (extra: Partial<McpServer> = {}): McpServer => ({ name: "fake", ur
 const json = (status: number, body: unknown) => new Response(JSON.stringify(body), { status, headers: { "content-type": "application/json" } });
 const refusal = (status: number, code: string, message: string, extra: Record<string, unknown> = {}) => json(status, { error: { code, message, retryable: false, ...extra } });
 
+const PRIVATE_HOSTS = "/v2/settings/mcp-servers/oauth/private-hosts";
 /** A server: GET the list answers `lists` in turn (the last again after); every other request is `answer`'s. */
 function server(lists: McpServer[][], answer: (call: Sent) => Response | Promise<Response> | undefined = () => undefined) {
   const calls: Sent[] = [];
@@ -41,6 +42,7 @@ function server(lists: McpServer[][], answer: (call: Sent) => Response | Promise
     const own = answer(call);
     if (own) return own;
     if (call.method === "GET" && call.path === "/v2/settings/mcp-servers") return json(200, { servers: lists[Math.min(read++, lists.length - 1)] });
+    if (call.method === "GET" && call.path === PRIVATE_HOSTS) return json(200, { hosts: [] });
     return json(404, { error: { code: "not_found", message: call.path, retryable: false } });
   }) as typeof globalThis.fetch;
   return { v2: createClient({ fetch }), calls, writes: () => calls.filter((c) => c.method !== "GET") };
@@ -200,7 +202,8 @@ describe("Settings → MCP servers, the saved ones", () => {
     expect(p.row("crm").textContent).toContain("client owner-app");
     await p.click(/^Sign in again$/, p.row("crm"));
     expect(s.writes()).toEqual([{ method: "POST", path: "/v2/settings/mcp-servers/crm/oauth/start", body: { url: VARS.url, scopes: ["read", "write"] } }]);
-    expect(p.host.querySelector("form")).toBeNull();
+    // No server form opened (the private network hosts' own form is always there).
+    expect(p.host.querySelector('form[aria-label="Change crm"], form[aria-label="Add an MCP server"]')).toBeNull();
     expect(p.opened).toEqual(["http://127.0.0.1:4300/authorize?state=z"]);
   });
 
@@ -266,7 +269,7 @@ describe("Settings → MCP servers, the saved ones", () => {
     expect(p.row("fake").textContent).toContain("Added paid");
     expect(p.row("fake").textContent).toContain("Removed slow_write");
     expect(p.row("fake").textContent).toContain("Changed add");
-    expect(s.calls.filter((c) => c.method === "GET")).toHaveLength(2);
+    expect(s.calls.filter((c) => c.method === "GET" && c.path === "/v2/settings/mcp-servers")).toHaveLength(2);
   });
 
   it("a refresh refused for an expired sign-in reloads the list: the row shows the sign-in expired and offers Sign in again, with the refusal kept", async () => {
@@ -278,7 +281,7 @@ describe("Settings → MCP servers, the saved ones", () => {
     const p = await open(s.v2);
     expect(p.button(/^Sign in again$/, p.row("docs"))).toBeUndefined();
     await p.click(/^Refresh$/, p.row("docs"));
-    expect(s.calls.filter((c) => c.method === "GET")).toHaveLength(2);
+    expect(s.calls.filter((c) => c.method === "GET" && c.path === "/v2/settings/mcp-servers")).toHaveLength(2);
     expect(p.row("docs").textContent).toContain("sign-in expired");
     expect(p.row("docs").textContent).not.toContain("token until");
     expect(p.button(/^Sign in again$/, p.row("docs"))).toBeDefined();
@@ -314,5 +317,59 @@ describe("Settings → MCP servers, back from a sign-in", () => {
     p = await open(server([[]]).v2, { signIn: failed.signIn });
     expect(p.text()).toContain("Signing in to docs failed");
     expect(p.text()).toContain("access_denied");
+  });
+});
+
+describe("Settings → MCP servers, private network hosts", () => {
+  const section = () => document.querySelector('section[aria-labelledby="mcp-private-hosts"]')!;
+  it("says it is off by default and what it allows, and lists none", async () => {
+    const p = await open(server([[]]).v2);
+    expect(section().querySelector("h2")?.textContent).toBe("Private network hosts");
+    expect(section().textContent).toContain("Off by default.");
+    expect(section().textContent).toContain("over https only; never this machine, loopback or a link-local address such as cloud metadata");
+    expect(section().textContent).toContain("No host is allowed");
+    expect(p.button(/^Allow$/, section())?.disabled).toBe(true);
+  });
+
+  it("adds and removes a host, each by sending the whole list, and shows the list the server kept", async () => {
+    let kept: string[] = ["10.20.30.40"];
+    const s = server([[]], (c) => {
+      if (c.path !== PRIVATE_HOSTS) return undefined;
+      if (c.method === "PUT") kept = ((c.body as { hosts: string[] }).hosts).map((h) => h.toLowerCase().replace(/\.+$/, ""));
+      return json(200, { hosts: kept });
+    });
+    const p = await open(s.v2);
+    expect(section().querySelector('[data-host="10.20.30.40"]')).not.toBeNull();
+    await p.type("mcp-private-host", " Auth.Corp.example. ");
+    await p.click(/^Allow$/, section());
+    expect(s.writes()).toEqual([{ method: "PUT", path: PRIVATE_HOSTS, body: { hosts: ["10.20.30.40", "Auth.Corp.example."] } }]);
+    expect([...section().querySelectorAll("li")].map((li) => li.querySelector("span")?.textContent)).toEqual(["10.20.30.40", "auth.corp.example"]);
+    expect(p.input("mcp-private-host").value).toBe("");
+    await p.click(/^Remove$/, section().querySelector('[data-host="10.20.30.40"]')!);
+    expect(s.writes()[1]).toEqual({ method: "PUT", path: PRIVATE_HOSTS, body: { hosts: ["auth.corp.example"] } });
+    expect([...section().querySelectorAll("li")].map((li) => li.querySelector("span")?.textContent)).toEqual(["auth.corp.example"]);
+  });
+
+  it("says the server's refusal in its words, and keeps what was typed and the list as it was", async () => {
+    const s = server([[]], (c) => {
+      if (c.path !== PRIVATE_HOSTS) return undefined;
+      if (c.method === "PUT") return refusal(422, "input_invalid", "*.corp.example holds a wildcard: name each host on its own.", { fields: [{ field: "hosts[0]", reason: "invalid", message: "*.corp.example holds a wildcard: name each host on its own." }] });
+      return json(200, { hosts: [] });
+    });
+    const p = await open(s.v2);
+    await p.type("mcp-private-host", "*.corp.example");
+    await p.click(/^Allow$/, section());
+    expect(section().querySelector('[role="alert"]')?.textContent).toContain("holds a wildcard: name each host on its own.");
+    expect(p.input("mcp-private-host").value).toBe("*.corp.example");
+    expect(section().textContent).toContain("No host is allowed");
+  });
+
+  it("a write refused for want of the owner's password session says so", async () => {
+    const said = "Allowing private-network hosts takes the owner's password sign-in in the console, never a token.";
+    const s = server([[]], (c) => (c.path !== PRIVATE_HOSTS ? undefined : c.method === "PUT" ? refusal(403, "forbidden", said) : json(200, { hosts: [] })));
+    const p = await open(s.v2);
+    await p.type("mcp-private-host", "auth.corp.example");
+    await p.click(/^Allow$/, section());
+    expect(section().querySelector('[role="alert"]')?.textContent).toContain(said);
   });
 });

@@ -24,6 +24,9 @@ export type ToolSetting = { provider?: NonNullable<Body<"putToolSettings">["web_
 /** Tool settings by settings key: the server's (PUT /v2/settings/tools, which replaces the whole map) and an agent's own
  *  (`definition.tool_settings`), over the server's. */
 export type ToolSettings = Record<string, ToolSetting>;
+/** The private-network hosts an MCP server's authorization server may be on (none by default): GET and PUT
+ *  /v2/settings/mcp-servers/oauth/private-hosts. Only the owner's password session writes it. */
+export type McpPrivateHosts = Answer<"getMcpPrivateHosts">;
 /** GET /v2/agents/{id}'s `tools`: each tool the agent grants, with its permission and provider in force. */
 export type AgentTool = NonNullable<components["Agent"]["tools"]>[number];
 

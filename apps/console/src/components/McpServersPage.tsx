@@ -64,6 +64,7 @@ export function McpServersPage({ v2, atRest, signIn, open = (url) => location.as
         {servers && (servers.length
           ? <ul className="border">{servers.map((s) => <ServerRow key={s.name} v2={v2} server={s} signIn={startSignIn} onChange={() => setForm({ saved: s })} onChanged={load} />)}</ul>
           : <p className="border px-3 py-4 font-mono text-[13px] text-muted-foreground">No MCP server is saved here yet.</p>)}
+        <PrivateHosts v2={v2} />
       </div>
     </div>
   );
@@ -118,6 +119,54 @@ function ServerRow({ v2, server: s, signIn, onChange, onChanged }: { v2: Client;
       )}
       {problem && <div className="mt-3"><Said problem={problem} /></div>}
     </li>
+  );
+}
+
+/** Settings → MCP servers → Private network hosts: the hosts an MCP server's sign-in may reach on a private network,
+ *  none by default. Each add or remove sends the whole list, and the list shown is the one the server answers it kept.
+ *  Only the owner's password session changes it: the server refuses a token, and the console says its words. */
+function PrivateHosts({ v2 }: { v2: Client }) {
+  const [hosts, setHosts] = useState<string[] | null>(null);
+  const [loadError, setLoadError] = useState<Problem | null>(null);
+  const [problem, setProblem] = useState<Problem | null>(null);
+  const [busy, setBusy] = useState(false);
+  const [draft, setDraft] = useState("");
+  const load = () => void v2.mcpPrivateHosts().then((r) => { setHosts(r.hosts); setLoadError(null); }, (e) => setLoadError(mcpProblem(e)));
+  useEffect(load, [v2]); // eslint-disable-line react-hooks/exhaustive-deps
+  const save = async (next: string[]): Promise<boolean> => {
+    setBusy(true); setProblem(null);
+    try { setHosts((await v2.saveMcpPrivateHosts(next)).hosts); return true; } catch (e) { setProblem(mcpProblem(e)); return false; } finally { setBusy(false); }
+  };
+  const allow = async (e: FormEvent) => {
+    e.preventDefault();
+    if (hosts && draft.trim() && (await save([...hosts, draft.trim()]))) setDraft("");
+  };
+  return (
+    <section aria-labelledby="mcp-private-hosts" className="space-y-3 border bg-card p-4">
+      <h2 id="mcp-private-hosts" className="caps text-[12px] font-semibold">Private network hosts</h2>
+      <p className="text-[13px] text-muted-foreground">Off by default. A host listed here may run an MCP server's sign-in on your private network (10.x, 172.16–31.x, 192.168.x, 100.64–127.x, fc00::/7), over https only; never this machine, loopback or a link-local address such as cloud metadata.</p>
+      {loadError && (
+        <div role="alert">
+          <p className="font-mono text-[13px] text-destructive-text">The private network hosts could not be read. {loadError.text}</p>
+          <button type="button" onClick={load} className="caps mt-3 border px-3 py-2 text-[12px] hover:bg-accent">Try again</button>
+        </div>
+      )}
+      {hosts && (hosts.length
+        ? <ul aria-label="Allowed private network hosts" className="border bg-background">{hosts.map((host) => (
+            <li key={host} data-host={host} className="flex items-center justify-between gap-3 border-b px-3 py-2 last:border-b-0">
+              <span className="break-all font-mono text-[13px]">{host}</span>
+              <Button size="sm" disabled={busy} onClick={() => void save(hosts.filter((h) => h !== host))}>Remove</Button>
+            </li>
+          ))}</ul>
+        : <p className="border bg-background px-3 py-3 font-mono text-[13px] text-muted-foreground">No host is allowed: a sign-in on a private network is refused.</p>)}
+      {hosts && (
+        <form onSubmit={(e) => void allow(e)} aria-label="Allow a private network host" className="flex gap-2">
+          <input name="mcp-private-host" aria-label="Host name or IP address" value={draft} onChange={(e) => setDraft(e.target.value)} placeholder="auth.corp.example" spellCheck={false} autoCapitalize="off" autoCorrect="off" className={input} />
+          <Button type="submit" size="sm" variant="solid" disabled={busy || !draft.trim()}>Allow</Button>
+        </form>
+      )}
+      {problem && <Said problem={problem} />}
+    </section>
   );
 }
 
