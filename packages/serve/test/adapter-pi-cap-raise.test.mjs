@@ -50,8 +50,9 @@ async function cappedRun(t, script, first = {}) {
   // A lease no stall of a loaded machine outlasts: the run moves between runners here by its park's release, never by a
   // lease that ran out, and a claim lost and retaken would hand the resume to a loop these tests do not count.
   // `storeOf`, `journalOf`, `timing`: a runner's own store and journal hooks, and its lease.
-  const startOne = ({ storeOf = (s) => s, journalOf, timing = STEADY } = {}) => {
-    const createLoop = journalOf ? (deps) => loop({ ...deps, journal: (claim) => journalOf(deps.journal(claim)) }) : loop;
+  // `loopOf`: the loop as the runner sees it (a test's view of its commands).
+  const startOne = ({ storeOf = (s) => s, journalOf, timing = STEADY, loopOf = (l) => l } = {}) => {
+    const createLoop = (deps) => loopOf(loop(journalOf ? { ...deps, journal: (claim) => journalOf(deps.journal(claim)) } : deps));
     runners.push(startRunner({ store: storeOf(store), createLoop, name: `runner-${runners.length}`, ...timing }));
     return `runner-${runners.length - 1}`;
   };
@@ -247,6 +248,54 @@ test("a run refused at its cap whose claim is lost before its park lands is park
   w.startOne();
   await w.settled("ended");
   assert.equal(followUpsSent(w.sent, 5), 1, "one follow-up, at the raised cap");
+});
+
+test("a raise that reaches the loop once its pause is journaled, before the run is parked, resumes the run: one follow-up at the raised cap, never left parked", async (t) => {
+  // Ordered by events, no timing: the pause's commit lands, then returns only once the raise sent after it has had its
+  // outcome from the loop, so the raise is decided while this claim still runs, before pi hears of the refusal. (The
+  // bound fails a raise the loop never decides; it never orders anything.)
+  let pauseLanded = () => {};
+  const paused = new Promise((resolve) => (pauseLanded = resolve));
+  let raiseDecided = () => {};
+  const decided = new Promise((resolve) => (raiseDecided = resolve));
+  const outcomes = [];
+  const journalOf = (journal) =>
+    new Proxy(journal, {
+      get(target, key) {
+        const value = Reflect.get(target, key, target);
+        if (key !== "commit") return typeof value === "function" ? value.bind(target) : value;
+        return async (batches, ...rest) => {
+          const result = await value.call(target, batches, ...rest);
+          if (batches.flat().some((write) => write.type === "entry" && write.value?.kind === "agentrun.budget")) {
+            pauseLanded();
+            let timer;
+            await Promise.race([decided, new Promise((resolve) => (timer = setTimeout(resolve, 15_000)))]);
+            clearTimeout(timer);
+          }
+          return result;
+        };
+      },
+    });
+  const loopOf = (loop) => {
+    const command = loop.command.bind(loop);
+    loop.command = async (row) => {
+      const outcome = await command(row);
+      if (row.kind === "raise") {
+        outcomes.push(outcome);
+        raiseDecided();
+      }
+      return outcome;
+    };
+    return loop;
+  };
+  const w = await cappedRun(t, [{ say: "done" }], { journalOf, loopOf });
+  await paused;
+  await w.raise(5);
+  const row = await w.settled("ended", 30_000).catch(async (error) => {
+    throw new Error(`${error.message}; the raise's outcome in that claim: ${JSON.stringify(outcomes)}`);
+  });
+  assert.equal(row.state, "ended");
+  assert.equal(followUpsSent(w.sent, 5), 1, `one follow-up, at the raised cap: ${JSON.stringify(w.sent.map((body) => body.messages))}`);
 });
 
 test("a raise not above the run's cap is refused in the rule's words, and the run stays parked", async (t) => {
