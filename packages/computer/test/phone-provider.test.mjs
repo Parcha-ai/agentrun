@@ -132,6 +132,18 @@ test("create rents a cloud Android for the lifetime, waits until it is ready, an
 	assert.deepEqual((await provider.list({ run: "r1" })).value, []);
 });
 
+test("release ends only a phone the ledger names: another session on the account is refused not_found with no DELETE, and one already gone is ok", async () => {
+	const { provider, fake } = await setup();
+	fake.sessions.set("sess_other", { id: "sess_other", state: "ready", platform: "android", kind: "emulator", expires_at: fake.clock.now() / 1000 + 600 });
+	const foreign = await provider.release({ id: "sess_other", name: "sess_other" }, "delete");
+	assert.equal(foreign.ok, false, JSON.stringify(foreign));
+	assert.equal(foreign.error.code, "not_found");
+	assert.match(foreign.error.message, /^sess_other is not a phone this provider made: it is not ended$/);
+	assert.equal(fake.sessions.has("sess_other"), true, "the other session still runs");
+	assert.deepEqual(await provider.release({ id: "sess_gone", name: "sess_gone" }, "delete"), { ok: true, value: undefined }, "a phone no one holds any more is ok to release");
+	assert.deepEqual(fake.requests().filter((r) => r.method === "DELETE"), [], "no DELETE for an id the ledger does not name");
+});
+
 test("a session the service ended is gone to attach and list, and the ledger forgets it", async () => {
 	const { provider, fake, ledger } = await setup();
 	const created = await provider.create({ ...SPEC, labels: { run: "r1" } });
