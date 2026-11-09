@@ -18,7 +18,6 @@
 // unopened refusal, the URL check per call, the scrub of each call's credentials held only while that call is out, prices
 // on the run's one ledger and the not-metered booking on the run's root.
 import type { HostTool, McpCallResult, SessionMcp } from "@parcha/agentrun-kernel";
-import { INTERRUPTED_TEXT } from "@parcha/agentrun-kernel/kernel";
 import { BACKGROUND_CONTEXT } from "@earendil-works/chord/context";
 import type { Harness } from "@earendil-works/pi-durable";
 import { wireName } from "../catalog.js";
@@ -27,7 +26,7 @@ import type { OAuthNetwork } from "../mcp-oauth.js";
 import type { Store, TriggerSettings } from "../store/index.js";
 import { type ApprovalPrice, argsPreview, mcpToolName, resumeText, RESUME_PREFIX, waitingText } from "../tool-gate.js";
 import { deniedText } from "./loop-contract.js";
-import { type AnswerData, type AskData, type CallEndData, KINDS } from "./journal-kinds.js";
+import { type AnswerData, type AskData, type CallEndData, endedAnswer, KINDS } from "./journal-kinds.js";
 import type { Claim } from "./loop-contract.js";
 import { mcpClaim, type McpClaimStep } from "./mcp-claim.js";
 import type { GithubAppAccess, GithubTimer } from "./mcp-github.js";
@@ -229,9 +228,8 @@ export async function parkedFollowUp(mcp: ClaimMcp, options: ParkedFollowUpOptio
     else {
       const done = ended.get(call.callId);
       const denied = await options.deniedNow(call);
-      // A call a crash cut (its end interrupted, no output) may or may not have taken effect: the kernel's words say so.
-      const endedText = (end: CallEndData) => (typeof end.output === "string" ? end.output : end.status === "interrupted" ? INTERRUPTED_TEXT : `The ${call.tool} call ended ${end.status}.`);
-      result = done ? { text: endedText(done), isError: done.status !== "done" } : denied !== undefined ? { text: denied, isError: true } : await options.run(call);
+      // A call that already ended is answered from its end (endedAnswer: a crash-cut one in the kernel's words).
+      result = done ? endedAnswer(call.tool, done) : denied !== undefined ? { text: denied, isError: true } : await options.run(call);
     }
     texts.push(resumeText({ tool: call.tool, call_id: call.callId }, argsPreview(call.args), answer.approved ? "allow" : "deny", { text: result.text, isError: result.isError === true }));
     callIds.push(call.callId);
