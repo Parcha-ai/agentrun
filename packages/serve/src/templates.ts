@@ -9,6 +9,7 @@ import { basename, join } from "node:path";
 import { fileURLToPath } from "node:url";
 import { parseDocument } from "yaml";
 import { type InputIssue, invalid } from "./errors.js";
+import type { GitHubConnectionView } from "./github-connection.js";
 import { HARNESSES } from "./harness.js";
 import { TOOL_KEY_ROWS } from "./key-words.js";
 import { MCP_SERVER_NAME } from "./mcp-servers.js";
@@ -22,6 +23,10 @@ import { DEFAULT_INPUT_SCHEMA, definitionBodyIssues, inputIssues, isObject, type
 import { APPROVALS, type Approvals } from "./approvals.js";
 
 /** The packages this server ships. */
+/** What applying a template reads of the server beyond its package (server.ts wires it): the GitHub connection, the
+ *  App's id, slug and installations (github-connection.ts), never a secret; undefined when GitHub is not connected. */
+export type TemplatesDeps = { githubConnection: () => GitHubConnectionView | undefined };
+
 export const TEMPLATES_DIR = fileURLToPath(new URL("../templates/", import.meta.url));
 export const MANIFEST = "agent.md";
 
@@ -514,7 +519,7 @@ export async function packageModel(env: NodeJS.ProcessEnv, model: Package["model
  *  default) a filled pin is not written: it is named in `unkept`, with its values, for the server's settings, and the tool is
  *  set to deny unless the server's settings already pin it (`serverPinned`, by gate name): a write a template grants
  *  never runs without its pin, whatever the agent's approvals. */
-export function compiled(p: Package, parameters: Json, chosen: { harness?: string; model?: string; mcp: McpNeed[]; defaultTools: readonly string[]; grants: readonly string[]; pins?: boolean; serverPinned?: ReadonlySet<string>; approvals?: Approvals }): { agent: Json; triggers: Json[]; unpinned: { tool: string; parameters: string[] }[]; unkept: { tool: string; pin: Record<string, PinValue> }[] } {
+export function compiled(p: Package, parameters: Json, chosen: { harness?: string; model?: string; mcp: McpNeed[]; defaultTools: readonly string[]; grants: readonly string[]; pins?: boolean; serverPinned?: ReadonlySet<string>; approvals?: Approvals }, _deps?: TemplatesDeps): { agent: Json; triggers: Json[]; unpinned: { tool: string; parameters: string[] }[]; unkept: { tool: string; pin: Record<string, PinValue> }[] } {
   const skills = Object.keys(p.skills).filter((path) => /^[^/]+\/SKILL\.md$/.test(path)).map((path) => path.slice(0, -"/SKILL.md".length));
   const granted = chosen.mcp.flatMap(({ server, tools }) => tools.map((tool) => mcpToolName(server, tool)));
   const allowed = chosen.grants.filter((tool) => granted.includes(tool));

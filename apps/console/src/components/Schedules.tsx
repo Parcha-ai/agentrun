@@ -10,7 +10,7 @@ import { runLabel, when } from "@/lib/format";
 import { keeper, uuid } from "@/lib/idempotency";
 import { type Problem, problem } from "@/lib/problem";
 import type { Tone } from "@/lib/runState";
-import { atLeast, bodyOf, capOf, dollars, acceptWords, FIRED_BY, HOOK_URL_HINT, hookUrlOf, hookWhen, isScheduleTrigger, isWebhookTrigger, SIGNATURE_WORDS, utcWhen, type Draft, draftOf, type Schedule, type WebhookTrigger, emptyDraft, FIRING_LABEL, firingWords, instantKept, issuesOf, patchOf, whenWords, emptyWebhook, type WebhookDraft, webhookBodyOf } from "@/lib/schedules";
+import { atLeast, bodyOf, capOf, dollars, acceptWords, FIRED_BY, githubWhen, type GitHubTrigger, isGitHubTrigger, HOOK_URL_HINT, hookUrlOf, hookWhen, isScheduleTrigger, isWebhookTrigger, SIGNATURE_WORDS, utcWhen, type Draft, draftOf, type Schedule, type WebhookTrigger, emptyDraft, FIRING_LABEL, firingWords, instantKept, issuesOf, patchOf, whenWords, emptyWebhook, type WebhookDraft, webhookBodyOf } from "@/lib/schedules";
 import type { Firing, Trigger, TriggerCreate, TriggerMade } from "@/lib/v2";
 
 /** Which triggers page: the list (no `trigger`), a new one (`trigger` null, of `kind`), one trigger, or a schedule's editor
@@ -106,7 +106,7 @@ function ScheduleList({ v2, go, agentName, every }: PageProps & { every: number 
 /** A trigger's when and what, in one line: a schedule's times or a webhook's signed requests, then the agent it starts or
  *  the run it messages. */
 function whatWords(t: Trigger, agentName: (id: string) => string): string {
-  const when = t.source.kind === "schedule" ? whenWords(t.source) : hookWhen(t.source);
+  const when = t.source.kind === "schedule" ? whenWords(t.source) : t.source.kind === "github" ? githubWhen(t.source) : hookWhen(t.source);
   return `${when} · ${t.target.kind === "start_run" ? agentName(t.target.agent_id) || t.target.agent_id : `messages run ${runLabel(t.target.run_id)}`}`;
 }
 
@@ -165,8 +165,10 @@ function ScheduleDetail({ v2, go, agentName, id, every }: PageProps & { id: stri
   }, [v2, capAgent]);
   if (!trigger) return error ? <ProblemCard problem={error} onRetry={() => setTries((n) => n + 1)} link={{ href: "#/triggers", label: "All triggers" }} /> : <ListSkeleton label="Loading the trigger" rows={4} />;
   const hook = isWebhookTrigger(trigger) ? trigger : null;
-  if (!hook && !isScheduleTrigger(trigger)) return <NotASchedule />;
-  const runs = trigger as Schedule | WebhookTrigger;
+  // A GitHub trigger: its events, its firings, Pause/Resume (a Disconnect turns it off) and Delete; no URL or secret.
+  const gh = isGitHubTrigger(trigger) ? trigger : null;
+  if (!hook && !gh && !isScheduleTrigger(trigger)) return <NotASchedule />;
+  const runs = trigger as Schedule | WebhookTrigger | GitHubTrigger;
 
   const act = async (what: "pause" | "delete", work: () => Promise<unknown>, failed: string) => {
     setBusy(what); setSaid(null);
@@ -206,12 +208,12 @@ function ScheduleDetail({ v2, go, agentName, id, every }: PageProps & { id: stri
       <div className="mt-3 flex flex-col items-start gap-x-6 gap-y-3 sm:flex-row">
         <div className="min-w-0 flex-1 self-stretch">
           <h1 className="flex flex-wrap items-center gap-2 break-words text-2xl font-semibold leading-tight">{trigger.name}{!trigger.enabled && <Chip tone="muted">Paused</Chip>}</h1>
-          <p className="mt-2 break-words font-mono text-[12px] text-muted-foreground">{hook ? `Webhook · ${hookWhen(hook.source)}` : `${whenWords(runs.source as Schedule["source"])} · ${trigger.next_at ? `next ${at(trigger.next_at)}` : "no next time"}`}</p>
+          <p className="mt-2 break-words font-mono text-[12px] text-muted-foreground">{hook ? `Webhook · ${hookWhen(hook.source)}` : gh ? `GitHub · ${githubWhen(gh.source)}` : `${whenWords(runs.source as Schedule["source"])} · ${trigger.next_at ? `next ${at(trigger.next_at)}` : "no next time"}`}</p>
         </div>
         <div className="flex flex-wrap items-center gap-2">
           <Button size="sm" variant="solid" onClick={() => void runNow()} disabled={busy === "fire"}><Zap aria-hidden /> {busy === "fire" ? "Starting" : "Run now"}</Button>
           <Button size="sm" onClick={() => void toggle()} disabled={busy !== null}>{trigger.enabled ? <><Pause aria-hidden /> Pause</> : <><Play aria-hidden /> Resume</>}</Button>
-          {!hook && <Button size="sm" onClick={() => go(`${hashOf(id)}/edit`)}><Pencil aria-hidden /> Edit</Button>}
+          {!hook && !gh && <Button size="sm" onClick={() => go(`${hashOf(id)}/edit`)}><Pencil aria-hidden /> Edit</Button>}
           {hook && (!rotating ? <Button size="sm" onClick={() => setRotating(true)} disabled={busy !== null || renewing}><KeyRound aria-hidden /> Rotate secret</Button> : (
             <span className="flex items-center gap-2 border border-warning/50 px-2 py-1 text-[12px]" role="alertdialog" aria-label="Make a new secret?">
               <span>The old secret stops signing at once.</span>
@@ -239,6 +241,9 @@ function ScheduleDetail({ v2, go, agentName, id, every }: PageProps & { id: stri
           <dt className="caps text-[11px] text-muted-foreground">Signature</dt><dd>{SIGNATURE_WORDS[hook.source.signature ?? "standard"]}</dd>
           <dt className="caps text-[11px] text-muted-foreground">Accepts</dt>
           <dd className="min-w-0 break-words">{hook.source.accept?.length ? <ul className="space-y-1 font-mono text-[12px]">{hook.source.accept.map((a, i) => <li key={i}>{acceptWords(a)}</li>)}</ul> : "Every signed request"}</dd>
+        </> : gh ? <>
+          <dt className="caps text-[11px] text-muted-foreground">Accepts</dt>
+          <dd className="min-w-0 break-words"><ul className="space-y-1 font-mono text-[12px]">{gh.source.accept.map((a, i) => <li key={i}>{acceptWords(a)}</li>)}</ul><p className="mt-1 text-[12px] text-muted-foreground">From this server's GitHub App (Settings → GitHub).</p></dd>
         </> : <>
           <dt className="caps text-[11px] text-muted-foreground">While a run is going</dt><dd>The next time is skipped.</dd>
         </>}
