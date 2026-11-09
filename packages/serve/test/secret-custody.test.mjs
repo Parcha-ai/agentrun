@@ -35,7 +35,7 @@ const FAUX_PARALLEL = new URL("./fixtures/faux-parallel.mjs", import.meta.url).p
 const CONFINED = existsSync("/usr/bin/setpriv");
 /** The server's own: its token, the seal key its tool keys are kept under, and the boxes' keys, which only its box
  *  providers read (boxes.ts). */
-const SERVER_ONLY = ["AGENTRUN_TOKEN", "AGENTRUN_API_KEY", "AGENTRUN_SEAL_KEY", ...BOX_KEYS];
+const SERVER_ONLY = ["AGENTRUN_TOKEN", "AGENTRUN_API_KEY", "AGENTRUN_SEAL_KEY", "AGENTRUN_STORE_URL", ...BOX_KEYS];
 /** Every secret serve and a run's process read: each must be on the launcher's list. */
 /** The decision keys: held by the server like the rest, and handed to a workflow run's process only on its decision
  *  descriptor, for its decision provider (decisions.ts), never with the run's secrets. */
