@@ -17,7 +17,9 @@ export function mcpWritesSecret(operation: string, body: unknown): boolean {
   return token !== undefined || (isObject(headers) && Object.keys(headers).length > 0);
 }
 
-/** MCP's operations the one gate reads: the predicate above decides each request. A preview is registered too, though no
- *  body of it is a secret write (it keeps nothing), since its body's fields are marked secret in the document. */
-export const MCP_SECRET_OPERATIONS = ["saveMcpServer", "startMcpOAuth", "previewMcpServer", "putMcpPrivateHosts"] as const;
+/** MCP's operations the one gate reads: the predicate above decides each request. */
+export const MCP_SECRET_OPERATIONS = ["saveMcpServer", "startMcpOAuth", "putMcpPrivateHosts"] as const;
 for (const operation of MCP_SECRET_OPERATIONS) registerSecretWrite(operation, (body) => mcpWritesSecret(operation, body));
+// A preview keeps nothing, so it is never a secret write; its body's fields are marked secret in the document, so it is
+// registered all the same.
+registerSecretWrite("previewMcpServer", () => false);

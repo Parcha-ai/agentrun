@@ -47,3 +47,19 @@ export function useSecrets(v2: { session: () => Promise<{ status: number; body: 
   }, [v2]);
   return state;
 }
+
+/** Whether this session may paste, replace or remove a secret. BASE DEFAULT: a session may unless its read says
+ *  secrets_writable: false (a read that fails too); the secrets line replaces this with the server's word alone, in a
+ *  named commit. */
+export function useSecretsWritable(v2: { session: () => Promise<{ status: number; body: unknown }> }): boolean {
+  const [writable, setWritable] = useState(true);
+  useEffect(() => {
+    let live = true;
+    v2.session().then((r) => {
+      const body = r.body;
+      if (live) setWritable(!(r.status === 200 && typeof body === "object" && body !== null && "secrets_writable" in body && body.secrets_writable === false));
+    }, () => {});
+    return () => { live = false; };
+  }, [v2]);
+  return writable;
+}

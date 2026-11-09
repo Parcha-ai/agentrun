@@ -94,7 +94,7 @@ async function stoppedRun(t, { capUsd, spentUsd = 0, text, journalOf, abortAfter
     cap: specCap(capUsd),
     ...(journalOf ? { journalOf } : {}),
     // `spentUsd` spent before: the host's priced tools (the cap's spentUsd hook), outside the model's records.
-    beforeRequest: beforeRequestOf({ capUsd: () => capUsd, modelOf: () => PRICED, ...(spentUsd ? { spentUsd: () => spentUsd } : {}) }),
+    runCap: ({ capUsd: () => capUsd, modelOf: () => PRICED, ...(spentUsd ? { spentUsd: () => spentUsd } : {}) }),
     during: async (server) => {
       await origin.streamed;
       await sendCommand(server, "run-1", { kind: "stop", body: {} });

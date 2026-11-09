@@ -34,6 +34,12 @@ export type McpPrivateHosts = Answer<"getMcpPrivateHosts">;
 /** GET /v2/agents/{id}'s `tools`: each tool the agent grants, with its permission and provider in force. */
 export type AgentTool = NonNullable<components["Agent"]["tools"]>[number];
 
+/** An agent's approvals (definition.approvals): "ask", the default, parks a call its tool gate says ask for the owner's
+ *  answer; "never" runs it unattended (every tool it has granted; deny and pins still apply). */
+export type Approvals = NonNullable<components["DefinitionInput"]["approvals"]>;
+/** What Never ask grants, in the words every place that offers it says. */
+export const NEVER_ASK_LINE = "Never ask: every tool this agent has runs without waiting for you. A tool set to deny, and a template's pins, still hold.";
+
 /** One issue in a refusal or a warning, at its field (`parameters.repo`, `secrets.KEY`), with the server's `fix` when it
  *  names one. */
 export type InputIssue = components["InputIssue"];
@@ -109,14 +115,43 @@ export type ToolKeysFeature = NonNullable<components["Features"]["tool_keys"]>;
 /** The webhook (GET /v2/settings/webhook, a serve extension). Never the secret. */
 export type Webhook = Answer<"getWebhook">;
 /** A PUT's answer: the webhook, and its secret the first time (201), shown this once. */
-export type WebhookSaved = Answer<"saveWebhook"> & { secret?: string };
+export type WebhookSaved = Answer<"saveWebhook"> & { signing_secret?: string };
 /** One try of a message (GET .../deliveries, newest first). */
 export type WebhookAttempt = Answer<"listWebhookDeliveries">["attempts"][number];
 /** `capabilities.features.webhooks`. */
 export type WebhooksFeature = NonNullable<components["Features"]["webhooks"]>;
+
+/** This server's GitHub App (GET /v2/integrations/github; 404 when none is connected): never a secret. */
+export type GitHubConnection = Answer<"getGitHubConnection">;
+/** POST /v2/integrations/github/connect's answer: where the browser posts the App's manifest (`action` carries ?state=). */
+export type GitHubConnectStart = Answer<"connectGitHub">;
+/** DELETE /v2/integrations/github's answer: how many GitHub triggers went off, and what to delete on GitHub. */
+export type GitHubDisconnected = Answer<"disconnectGitHub">;
 
 /** PATCH /v2/runs/{id} {max_cost_usd}'s answer: the cap now. */
 export type RaiseAnswer = Answer<"raiseRunCap">;
 
 /** A recorded response (src/fixtures): what the server answered, exactly. The console's own, not a wire type. */
 export type Recorded<T> = { request: { method: string; path: string }; status: number; headers?: Record<string, string>; body: T };
+
+// Computers (Settings → Computers) and Archil (Settings → Workspace).
+/** GET /v2/computers: each kind, whether this server offers it, and its providers. */
+export type Computers = Answer<"listComputers">;
+export type ComputerKindView = Computers["kinds"][number];
+/** A kind of computer an agent can be given. */
+export type ComputerKind = ComputerKindView["kind"];
+/** A provider of computers: its secrets ("computer:<provider>:<KEY>", set or not, where from and when, never a value),
+ *  the full names of those it requires, whether it is metered, and whether a run could have it now. */
+export type ComputerProvider = Answer<"saveComputerKeys">;
+export type ComputerSecret = ComputerProvider["secrets"][number];
+/** PUT /v2/computers/{provider}/keys's body: declared names only; null removes one. */
+export type ComputerKeysBody = Body<"saveComputerKeys">;
+/** POST /v2/computers/{provider}/test's answer. */
+export type ComputerTest = Answer<"testComputer">;
+/** GET /v2/workspace/archil: Archil (Mode 2) on or off, its disk settings, and its secret ("workspace:archil"), never a
+ *  value. */
+export type Archil = Answer<"getWorkspaceArchil">;
+/** PUT /v2/workspace/archil's body. */
+export type ArchilBody = Body<"putWorkspaceArchil">;
+/** POST /v2/workspace/archil/test's answer. */
+export type ArchilTest = Answer<"testWorkspaceArchil">;

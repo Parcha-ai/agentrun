@@ -16,6 +16,10 @@
 //   also declare `mints` on itself, for every write it makes;
 // - `cleanup(ctx, ids)`: run once the harness has read everything, with every plant's ids.
 import { randomBytes } from "node:crypto";
+import { createRequire } from "node:module";
+import { openSqliteStore } from "../../dist/store/sqlite/store.js";
+import { sealKeyOf } from "../../dist/tool-keys.js";
+import { plantedSignIn, SIGN_IN_WRITE_ROUTES } from "../sign-ins-planted.mjs";
 
 /** @typedef {{ status: number, text: string, json?: unknown, headers?: Record<string, string | string[]> }} Answer */
 /** @typedef {{ owner: (method: string, path: string, body?: unknown) => Promise<Answer>, token: (method: string, path: string, body?: unknown) => Promise<Answer>, api: Function, server: { port: number, data: string, token: string } }} PlantContext */
@@ -129,5 +133,116 @@ registerPlant({
     const res = await owner("PUT", "/v2/settings/tool-keys/openrouter", { values: { OPENROUTER_API_KEY: value } });
     if (res.status !== 204) throw new Error(`the openrouter key was not saved: ${res.status} ${res.text}`);
     return [value];
+  },
+});
+
+// ---- the computer keys' and the Archil account key's plants (computers.ts, archil-routes.ts): saved by the owner ----
+
+/** The Archil settings the Archil plant saves beside its key: a disk, its region and S3 URL, none of them a secret. */
+export const PLANTED_ARCHIL_SETTINGS = { diskId: "dsk-00000000000plant", region: "aws-us-east-1", s3Url: "https://s3.green.us-east-1.aws.prod.archil.com" };
+
+registerPlant({
+  // The harness's server runs --faux: its computer providers are --faux's, and faux-sandbox's one key is FAUX_SANDBOX_KEY.
+  name: "computer key (faux-sandbox)",
+  write: async ({ owner }) => {
+    const value = plantedValue("faux-sandbox");
+    const res = await owner("PUT", "/v2/computers/faux-sandbox/keys", { FAUX_SANDBOX_KEY: value });
+    if (res.status !== 200) throw new Error(`the faux-sandbox key was not saved: ${res.status} ${res.text}`);
+    return {
+      values: [value],
+      ids: { provider: ["faux-sandbox"] },
+      cleanup: async (ctx) => {
+        const removed = await ctx.owner("PUT", "/v2/computers/faux-sandbox/keys", { FAUX_SANDBOX_KEY: null });
+        if (removed.status !== 200) throw new Error(`the faux-sandbox key was not removed: ${removed.status} ${removed.text}`);
+      },
+    };
+  },
+});
+
+// ---- the triggers' plants (trigger-secrets-shown.ts): a webhook trigger's minted secret, rotated, with a signed delivery
+// fired under it, so its firing's rows are read too; and the outbound webhook's minted secret, its URL then changed with
+// the token. Each value shows once, in its minting answer to the owner's session alone ----
+
+/** A body signed by `secret` by the Standard Webhooks spec, POSTed with no token to trigger `id`'s hook: its status. */
+async function deliver(server, id, secret) {
+  const { Webhook } = createRequire(import.meta.url)("standardwebhooks");
+  const msg = `msg_${randomBytes(8).toString("hex")}`;
+  const at = new Date();
+  const body = JSON.stringify({ type: "lead.created", data: { company: "Planted Co" } });
+  const res = await fetch(`http://127.0.0.1:${server.port}/v2/hooks/${id}`, { method: "POST", headers: { "content-type": "application/json", "webhook-id": msg, "webhook-timestamp": String(Math.floor(at.getTime() / 1000)), "webhook-signature": new Webhook(secret).sign(msg, at, body) }, body });
+  await res.text();
+  return res.status;
+}
+
+registerPlant({
+  name: "webhook trigger secret",
+  mints: ["createTrigger", "rotateTriggerSecret"],
+  write: async ({ owner, api, server }) => {
+    const agentId = "planted-hook-agent";
+    const agent = await api("POST", "/agents", { definition: { id: agentId, version: 1, name: agentId, instructions: "Answer.", skills: [], tools: [] } });
+    if (agent.status !== 201) throw new Error(`the trigger's agent was not made: ${agent.status} ${JSON.stringify(agent.body)}`);
+    const made = await owner("POST", "/v2/triggers", { name: "planted hook", source: { kind: "webhook" }, target: { kind: "start_run", agent_id: agentId, input: { content: "Triage this event." }, max_cost_usd: 0.5 } });
+    if (made.status !== 201) throw new Error(`the webhook trigger was not made: ${made.status} ${made.text}`);
+    const { id, signing_secret: first } = made.json;
+    const rotated = await owner("POST", `/v2/triggers/${id}/secret`);
+    if (rotated.status !== 200) throw new Error(`the trigger's secret was not rotated: ${rotated.status} ${rotated.text}`);
+    const second = rotated.json.signing_secret;
+    const fired = await deliver(server, id, second);
+    if (fired !== 202) throw new Error(`a delivery signed by the rotated secret was answered ${fired}`);
+    return { values: [first, second], ids: { trigger_id: id } };
+  },
+});
+
+registerPlant({
+  name: "Archil account key",
+  write: async ({ owner }) => {
+    const value = plantedValue("archil-key");
+    const res = await owner("PUT", "/v2/workspace/archil", { ...PLANTED_ARCHIL_SETTINGS, keys: { ARCHIL_API_KEY: value } });
+    if (res.status !== 200) throw new Error(`the Archil account key was not saved: ${res.status} ${res.text}`);
+    return {
+      values: [value],
+      // DELETE /workspace/archil clears the settings alone and keeps the key's row, so the key goes as a null.
+      cleanup: async (ctx) => {
+        const removed = await ctx.owner("PUT", "/v2/workspace/archil", { ...PLANTED_ARCHIL_SETTINGS, keys: { ARCHIL_API_KEY: null } });
+        if (removed.status !== 200) throw new Error(`the Archil account key was not removed: ${removed.status} ${removed.text}`);
+      },
+    };
+  },
+});
+
+// ---- the browser sign-in's plant (sign-ins-secrets.ts): one saved sign-in, planted through the store --------------------
+// A sign-in is saved inside a run (the vendor's profile with save:true), never through an API write: the browser plane has
+// no secret write route (SIGN_IN_WRITE_ROUTES, empty), so its pointer is planted the way a run's save keeps it, sealed
+// under the server's seal key, into the store beside the running server (a runner's handle), for an agent of its own.
+
+registerPlant({
+  name: "browser sign-in (store)",
+  write: async ({ api, server }) => {
+    if (SIGN_IN_WRITE_ROUTES.length) throw new Error(`the browser plane has write routes now (${SIGN_IN_WRITE_ROUTES.join(", ")}): plant through them`);
+    const sealKey = sealKeyOf(process.env.AGENTRUN_SEAL_KEY);
+    if (!sealKey) throw new Error("the sign-in plant seals under AGENTRUN_SEAL_KEY, which the harness sets");
+    const agentId = "planted-sign-in";
+    const made = await api("POST", "/agents", { definition: { id: agentId, version: 1, name: agentId, instructions: "Answer.", skills: [], tools: [] } });
+    if (made.status !== 201) throw new Error(`the sign-in plant's agent was not made: ${made.status}`);
+    const store = await openSqliteStore({ dataDir: server.data, role: "runner" });
+    try {
+      const { pointer } = await plantedSignIn(store, sealKey, { agentId });
+      return { values: [pointer], ids: { agent_id: agentId } };
+    } finally {
+      await store.close();
+    }
+  },
+});
+
+registerPlant({
+  name: "outbound webhook secret",
+  mints: ["saveWebhook"],
+  write: async ({ owner, token }) => {
+    const saved = await owner("PUT", "/v2/settings/webhook", { url: "https://hooks.example.com/planted" });
+    if (saved.status !== 201) throw new Error(`the outbound webhook was not set: ${saved.status} ${saved.text}`);
+    // A later save is no secret write: the token changes the URL, and its answer is read like any other.
+    const moved = await token("PUT", "/v2/settings/webhook", { url: "https://hooks.example.com/planted-2" });
+    if (moved.status !== 200) throw new Error(`the token could not change the webhook's URL: ${moved.status} ${moved.text}`);
+    return [saved.json.signing_secret];
   },
 });

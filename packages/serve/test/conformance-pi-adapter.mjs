@@ -4,6 +4,8 @@
 // CLI harnesses', so the runner's booking is the one ledger; here the proxy's upstream is a scripted Anthropic origin (its
 // `fetch`), whose answer to a request is the script step the conversation has reached: the number of answers the model
 // has given so far, read from the request's own messages, so a resumed run (a new process) picks up at its step.
+import { strictOptions } from "./strict-options.mjs";
+
 const { createAdapterLoop } = await import("../dist/runner/adapter-loop.js");
 const { piAdapter } = await import("../dist/runner/adapters/pi.js");
 const { MAX_RESTARTS } = await import("../dist/runner/conformance/harness.js");
@@ -96,12 +98,17 @@ function tracked(adapter) {
 }
 
 /** The adapter loop for the suite's setup: pi through the adapter, its model through the session proxy to the script. */
-export function piAdapterSpec({ script, tools, hooks, agentId }, options = {}) {
+export function piAdapterSpec(setup, options = {}) {
+  strictOptions("piAdapterSpec's setup", setup, ["script", "tools", "hooks", "agentId"]);
+  strictOptions("piAdapterSpec", options, ["fetch", "requests", "price", "system"]);
+  const { script, tools, hooks, agentId } = setup;
   return (_claim, run) => ({
     ...(agentId ? { agentId } : {}),
     adapter: tracked(piAdapter({ run, model: MODEL, provider: { api: "anthropic-messages", origin: "https://faux.invalid", credential: () => `not-a-secret-${"x"}` }, fetch: options.fetch ?? scriptedOrigin(script, options.requests), price: options.price ?? (() => 0) })),
     session: { key: "root", label: "root", system: options.system ?? ["Follow the script."], tools: hostTools(tools), context: "fresh" },
     input: "Follow the script.",
+    // The run's one cap, uncapped: every paid request still books through it (the adapter loop's only booking path).
+    runCap: { capUsd: () => undefined, modelOf: () => undefined },
     hooks,
     gate: (call) => (tools[call.tool]?.ask ? "ask" : "allow"),
   });

@@ -48,3 +48,19 @@ registerPlant({
     return { values: [clientSecret, ...tokens], ids: { name: "plant-oauth" }, cleanup: () => Promise.all([mcp.close(), as.close()]) };
   },
 });
+
+registerPlant({
+  name: "MCP bearer token through a token caller's preview",
+  write: async ({ owner, token }) => {
+    const value = plantedValue("mcp-preview");
+    const mcp = await startFakeMcp({ token: value });
+    // A preview keeps nothing and is never a secret write: the token may make one, inline with the bearer, and by name
+    // for a server the owner saved with it. Neither answer, nor the log, nor the journal, may show it.
+    saved(await owner("PUT", "/v2/settings/mcp-servers/plant-preview", { url: mcp.url, auth: { type: "bearer", token: value } }), "the previewed server");
+    for (const [what, body] of [["inline", { url: mcp.url, auth: { type: "bearer", token: value } }], ["by name", { name: "plant-preview" }]]) {
+      const res = await token("POST", "/v2/settings/mcp-servers/preview", body);
+      if (res.status !== 200) throw new Error(`the token's preview ${what} did not list: ${res.status} ${res.text}`);
+    }
+    return { values: [value], ids: { name: "plant-preview" }, cleanup: () => mcp.close() };
+  },
+});

@@ -11,13 +11,14 @@ import { claimFence } from "../fence.js";
 import { RunStorage } from "../journal/storage.js";
 import { DDL, SCHEMA_VERSION } from "../schema.js";
 import {
-  AgentArchived, CommandTaken, Fenced, RefreshLeaseLost, SchemaVersionUnknown, StoreConstraint, StoreFromEarlierVersion, TriggerFull, type AgentRow, type Agents,
+  AgentArchived, CommandTaken, Fenced, SchemaVersionUnknown, STORE_WRITE_DEADLINE_MS, StoreConstraint, StoreFromEarlierVersion, TriggerFull, type AgentRow, type Agents,
   type AlsoRow, type Claim, type Command, type FiringChange, type FiringRow, type FiringStatus, type ImportRunInput, type Journal, type NewRevision, type RevisionRow, type RunPatch, type RunRow, type Runs,
-  type JournalReads,
+  type JournalReads, type UpdatedRun,
   type ReleasedState, type RunState, type Store, type StoreRole, type TemplatePackage, type Templates, type TriggerDef, type TriggerPatch, type TriggerRow, type Triggers, type TriggerScope,
   FINAL_STATES, MCP_REFRESH_CALL_MS, MCP_REFRESH_LEASE_MS, type Learning, type LearningProposal, type Live, type LiveRow, type LiveViewerRow, type LiveViewers, type Mcp, type McpPinRow, type McpServerRow,
   type McpOauth, type McpOauthPendingRow, type SealedKeyRow, type SealedKeys, type Settings, type SettingRow, type TriggerSettingRow, type TriggerSettings,
   SignInHandedTo, SignInMissing, SIGN_IN_TOMBSTONES_KEPT, type SignIns, type SignInRow, type SignInTombstoneRow, type ViewerKind,
+  type ComputerLedger, type ComputerLedgerRow,
 } from "../store.js";
 import type { Dialect } from "../dialect.js";
 import { Connection, type SqliteExecutor, type SqliteValue, type Statement, type StoreConnection } from "./connection.js";
@@ -133,6 +134,8 @@ type SettingRecord = { key: string; value: string; updated_at: number };
 const settingOf = (r: SettingRecord): SettingRow => ({ key: r.key, value: JSON.parse(r.value), updatedAt: r.updated_at });
 type SealedKeyRecord = { name: string; sealed: Uint8Array; updated_at: number };
 const sealedKeyOf = (r: SealedKeyRecord): SealedKeyRow => ({ name: r.name, sealed: Uint8Array.from(r.sealed), updatedAt: r.updated_at });
+type ComputerLedgerRecord = { provider: string; session_id: string; labels: string; detail: string; updated_at: number };
+const ledgerRowOf = (r: ComputerLedgerRecord): ComputerLedgerRow => ({ provider: r.provider, sessionId: r.session_id, labels: JSON.parse(r.labels), detail: JSON.parse(r.detail), updatedAt: r.updated_at });
 type TriggerSettingRecord = { adapter: string; scope: string; field: string; sealed: string; updated_at: number };
 const triggerSettingOf = (r: TriggerSettingRecord): TriggerSettingRow => ({ adapter: r.adapter, scope: r.scope, field: r.field, sealed: r.sealed, updatedAt: r.updated_at });
 type McpOauthRecord = { state: string; server: string; sealed: Uint8Array; working: string | null; expires_at: number };
@@ -150,11 +153,13 @@ async function versionOf(db: Connection): Promise<number | null> {
   return (await db.get<{ schema_version: number }>("SELECT schema_version FROM store_meta WHERE singleton = 1"))?.schema_version ?? null;
 }
 
-/** The files only an earlier version kept at a data directory's top: its MCP servers, triggers, tool keys, trigger
- *  secrets, webhook and its outbox, kept idempotency answers, learning's usage ledger, and the per-run door's token.
- *  This version's own (.token, .server.json beside the store and its lock) and a leftover box-image.json are not among
- *  them: a directory holding those opens. */
-const EARLIER_ROOT_FILES = ["mcp-servers.json", "triggers.json", "tool-keys.json", "trigger-secrets.json", "webhook.json", "webhook-outbox.json", ".idempotency.json", "learning-usage.jsonl", ".door-token"];
+/** The files an earlier version kept at a data directory's top that this version no longer writes: its MCP servers,
+ *  triggers, tool keys and trigger secrets (all in the store now), and the per-run door's token (the per-run door is
+ *  gone). This version's own top-level files are not among them, so a directory holding them opens: .token and
+ *  .server.json beside the store and its lock, a leftover box-image.json, and the files this version still keeps beside
+ *  the store in the same format an earlier version did (the webhook config and its outbox, the kept idempotency answers,
+ *  and the learning usage ledger), which an earlier version's copy of reads the same. */
+const EARLIER_ROOT_FILES = ["mcp-servers.json", "triggers.json", "tool-keys.json", "trigger-secrets.json", ".door-token"];
 
 /** The files an earlier version kept in a data directory, relative to it: its store (a STORE_FILE with tables and no
  *  store_meta row), agent homes (<agent>/agent.sqlite, agents/<agent>/agent.sqlite), run databases (runs/<run>/run.sqlite,
@@ -274,11 +279,14 @@ class SqliteStore implements Store {
   readonly learning: Learning;
   readonly settings: Settings;
   readonly sealedKeys: SealedKeys;
+  readonly computerLedger: ComputerLedger;
   readonly triggerSettings: TriggerSettings;
   readonly mcpOauth: McpOauth;
   readonly signIns: SignIns;
   readonly #db: StoreConnection;
   readonly #now: () => number;
+  /** Where this store's data is: its connection's (StoreConnection.where). */
+  readonly where: string;
   /** The runs a runner may claim (claimableIn), as this store's database says it. */
   readonly #claimable: string;
   /** Each claim's one journal, until it is closed. */
@@ -293,6 +301,7 @@ class SqliteStore implements Store {
   constructor(db: StoreConnection, now: () => number) {
     this.#db = db;
     this.#now = now;
+    this.where = db.where;
     const d = db.dialect;
     this.#claimable = claimableIn(d);
 
@@ -334,6 +343,30 @@ class SqliteStore implements Store {
       );
       await writeScopes(tx, row!.id, enabled ? (trigger.scopes ?? []) : []);
     };
+
+    // A running run whose sign_in_handed holds `hash` (handedHolderIn), or any running run handed a sign-in at all
+    // (handedAnyIn): the reads forget, the view, the runner's bind and its output check make, over `runs` alone. By default
+    // only a running run holds it; `settleMs` (a vendor's settle window, measured from the store clock `at`) also counts a
+    // run that left running (ended or parked) less than that ago, so a new run does not save over a context write-back in
+    // flight. `not` drops one run id (a bind's own, so a run is never its own blocker).
+    const handedHolderIn = (
+      tx: Pick<SqliteExecutor, "get">,
+      hash: string,
+      { not, settleMs = 0, at = 0 }: { not?: string; settleMs?: number; at?: number } = {},
+    ): Promise<{ id: string } | undefined> => {
+      const settle = settleMs > 0 ? " OR (left_running_at IS NOT NULL AND left_running_at > ?)" : "";
+      // d.jsonArrayHas carries the hash's own `?`, so the hash comes last in the params.
+      return tx.get<{ id: string }>(
+        `SELECT id FROM runs WHERE sign_in_handed IS NOT NULL${not === undefined ? "" : " AND id != ?"}
+           AND (state = 'running'${settle})
+           AND ${d.jsonArrayHas("sign_in_handed")} LIMIT 1`,
+        ...(not === undefined ? [] : [not]),
+        ...(settleMs > 0 ? [at - settleMs] : []),
+        hash,
+      );
+    };
+    const handedAnyIn = (tx: Pick<SqliteExecutor, "get">) =>
+      tx.get<{ id: string }>(`SELECT id FROM runs WHERE state = 'running' AND sign_in_handed IS NOT NULL AND ${d.jsonArrayLength("sign_in_handed")} > 0 LIMIT 1`);
 
     this.agents = {
       put: async ({ id, name, description = null }) => {
@@ -688,9 +721,9 @@ class SqliteStore implements Store {
       },
       claimMany: (runner, k, { leaseMs = DEFAULT_LEASE_MS } = {}) => this.#claimRuns(runner, leaseMs, { k }),
       update: async (claim, patch, rows = {}) => {
-        if (Array.isArray(rows) || typeof rows !== "object" || rows === null) throw new TypeError("runs.update's third argument is { also?, take? }");
-        const { also = [], take = [] } = rows;
-        return db.transaction(async (tx) => {
+        if (Array.isArray(rows) || typeof rows !== "object" || rows === null) throw new TypeError("runs.update's third argument is { also?, take?, signInSettleMs? }");
+        const { also = [], take = [], signInSettleMs = 0 } = rows;
+        return db.transaction(async (tx): Promise<UpdatedRun> => {
           const at = now();
           const row = await applyRunPatch(tx, claim, patch, also, at, d);
           for (const commandId of take) {
@@ -700,6 +733,19 @@ class SqliteStore implements Store {
           }
           // An update that made the run final: its other untaken rows are refused in this transaction, after its own takes.
           await refuseLeftovers(tx, claim.runId, patch.state, at);
+          // The bind's save lease, in this same transaction as the sign_in_handed write just made (applyRunPatch, under
+          // SIGN_IN_HANDED_LOCK): this run saves unless another run already holds one of the handed pointers (a running run,
+          // or — within signInSettleMs of leaving running, a vendor's settle window — one that left running less than that
+          // ago). Excludes this run (it just wrote them), so a run is never its own blocker. Two binds of one sign-in in one
+          // tick thus never both save.
+          if (patch.signInHanded !== undefined && patch.signInHanded !== null && patch.signInHanded.length > 0) {
+            let holder: { id: string } | undefined;
+            for (const hash of patch.signInHanded) {
+              holder = await handedHolderIn(tx, hash, { not: claim.runId, settleMs: signInSettleMs, at });
+              if (holder) break;
+            }
+            return { ...row, save: holder === undefined };
+          }
           return row;
         });
       },
@@ -717,7 +763,7 @@ class SqliteStore implements Store {
         const updated = updatedAt ?? at;
         const listed = listedAt ?? at;
         // The credential's own time: now for a put that writes one, unless the caller says it kept the sealed one (its
-        // time given back); null with none. A token refresh (refreshToken) never moves it.
+        // time given back); null with none. A token refresh (keepRefreshed) never moves it.
         const credentialAt = sealed === null ? null : credentialChangedAt === undefined ? at : credentialChangedAt;
         const [result] = await db.write([{
           sql: `INSERT INTO mcp_servers (name, url, auth, protocol, tools, prices, server_info, instructions, sealed, created_at, updated_at, listed_at, credential_changed_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
@@ -761,16 +807,21 @@ class SqliteStore implements Store {
           return { leased: granted === 1, row };
         });
       },
-      refreshToken: (name, { holder, sealed }) =>
+      // One statement compares the credential and writes: no read between, so no other write lands in a gap. The lease is
+      // cleared only by its own holder (a waiter that took a lapsed lease keeps it, and reads ours at its re-read).
+      keepRefreshed: (name, { seen, sealed, holder }) =>
         db.transaction(async (tx) => {
           const at = now();
           const written = await tx.runCounted(
-            `UPDATE mcp_servers SET sealed = ?, refresh_holder = NULL, refresh_until = NULL, updated_at = ${d.greatest}(?, updated_at + 1) WHERE name = ? AND refresh_holder = ?`,
-            sealed, at, name, holder,
+            `UPDATE mcp_servers SET sealed = ?,
+              refresh_until = CASE WHEN refresh_holder = ? THEN NULL ELSE refresh_until END,
+              refresh_holder = CASE WHEN refresh_holder = ? THEN NULL ELSE refresh_holder END,
+              updated_at = ${d.greatest}(?, updated_at + 1)
+             WHERE name = ? AND ${d.nullSafeEquals("sealed")}`,
+            sealed, holder, holder, at, name, seen,
           );
-          if (written === 0) throw new RefreshLeaseLost(name, holder);
-          return (await server(tx, name))!;
-        }),
+          return { kept: written === 1, row: await server(tx, name) };
+        }, { deadlineMs: STORE_WRITE_DEADLINE_MS, fromCall: true }),
       releaseRefresh: async (name, holder) => {
         await db.write([{ sql: "UPDATE mcp_servers SET refresh_holder = NULL, refresh_until = NULL WHERE name = ? AND refresh_holder = ?", params: [name, holder] }]);
       },
@@ -892,6 +943,20 @@ class SqliteStore implements Store {
       all: async () => (await db.all<SealedKeyRecord>("SELECT name, sealed, updated_at FROM sealed_keys ORDER BY name")).map(sealedKeyOf),
     };
 
+    this.computerLedger = {
+      put: async (provider, sessionId, labels, detail) => {
+        await db.write([{ sql: "INSERT INTO computer_ledger (provider, session_id, labels, detail, updated_at) VALUES (?, ?, ?, ?, ?) ON CONFLICT (provider, session_id) DO UPDATE SET labels = excluded.labels, detail = excluded.detail, updated_at = excluded.updated_at", params: [provider, sessionId, JSON.stringify(labels), JSON.stringify(detail), now()] }]);
+      },
+      get: async (provider, sessionId) => {
+        const row = await db.get<ComputerLedgerRecord>("SELECT provider, session_id, labels, detail, updated_at FROM computer_ledger WHERE provider = ? AND session_id = ?", provider, sessionId);
+        return row === undefined ? undefined : ledgerRowOf(row);
+      },
+      list: async (provider) => (await db.all<ComputerLedgerRecord>("SELECT provider, session_id, labels, detail, updated_at FROM computer_ledger WHERE provider = ? ORDER BY session_id", provider)).map(ledgerRowOf),
+      remove: async (provider, sessionId) => {
+        await db.write([{ sql: "DELETE FROM computer_ledger WHERE provider = ? AND session_id = ?", params: [provider, sessionId] }]);
+      },
+    };
+
     this.triggerSettings = {
       get: async (adapter) => (await db.all<TriggerSettingRecord>("SELECT adapter, scope, field, sealed, updated_at FROM trigger_settings WHERE adapter = ? ORDER BY scope, field", adapter)).map(triggerSettingOf),
       put: async ({ adapter, scope, field, sealed }) => {
@@ -923,12 +988,6 @@ class SqliteStore implements Store {
       count: async (at) => (await db.get<{ n: number }>("SELECT count(*) AS n FROM mcp_oauth_pending WHERE expires_at > ?", at))!.n,
     };
 
-    // A running run whose sign_in_handed array holds `hash` (handedHolder), or any running run handed a sign-in at all
-    // (handedAny): the one read forget and the runner make, over `runs` alone.
-    const handedHolderIn = (tx: Pick<SqliteExecutor, "get">, hash: string) =>
-      tx.get<{ id: string }>(`SELECT id FROM runs WHERE state = 'running' AND sign_in_handed IS NOT NULL AND ${d.jsonArrayHas("sign_in_handed")} LIMIT 1`, hash);
-    const handedAnyIn = (tx: Pick<SqliteExecutor, "get">) =>
-      tx.get<{ id: string }>(`SELECT id FROM runs WHERE state = 'running' AND sign_in_handed IS NOT NULL AND ${d.jsonArrayLength("sign_in_handed")} > 0 LIMIT 1`);
     this.signIns = {
       save: async ({ agentId, provider, name, pointerSealed }) => {
         const at = now();
@@ -947,8 +1006,14 @@ class SqliteStore implements Store {
         const row = await db.get<SignInRecord>(`SELECT ${SIGN_IN_COLUMNS} FROM sign_ins WHERE agent_id = ? AND provider = ?`, agentId, provider);
         return row && signInOf(row);
       },
-      verify: async (agentId, provider, at) => {
-        await db.write([{ sql: "UPDATE sign_ins SET verified_at = ? WHERE agent_id = ? AND provider = ?", params: [at, agentId, provider] }]);
+      verify: async (agentId, provider, at, { ifSavedAt } = {}) => {
+        // With ifSavedAt, stamp only while saved_at is still that one (WHERE saved_at = ?): a save that landed since the
+        // caller checked (allowed while held; it clears verified_at) moved saved_at on, so verify never stamps it stale.
+        const [result] = await db.write([{
+          sql: `UPDATE sign_ins SET verified_at = ? WHERE agent_id = ? AND provider = ?${ifSavedAt === undefined ? "" : " AND saved_at = ?"}`,
+          params: ifSavedAt === undefined ? [at, agentId, provider] : [at, agentId, provider, ifSavedAt],
+        }]);
+        return result!.changes > 0;
       },
       tombstones: async (agentId, provider) =>
         (await db.all<SignInTombstoneRecord>("SELECT agent_id, provider, pointer_sealed, forgotten_at FROM sign_in_tombstones WHERE agent_id = ? AND provider = ? ORDER BY id DESC", agentId, provider)).map(signInTombstoneOf),
@@ -972,7 +1037,7 @@ class SqliteStore implements Store {
           await tx.run("DELETE FROM sign_in_tombstones WHERE agent_id = ? AND id NOT IN (SELECT id FROM sign_in_tombstones WHERE agent_id = ? ORDER BY id DESC LIMIT ?)", agentId, agentId, SIGN_IN_TOMBSTONES_KEPT);
           return signInTombstoneOf(tomb!);
         }),
-      handedHolder: async (hash) => (await handedHolderIn(db, hash))?.id,
+      handedHolder: async (hash, options) => (await handedHolderIn(db, hash, { settleMs: options?.settleMs ?? 0, at: options?.at ?? now() }))?.id,
       handedAny: async () => (await handedAnyIn(db))?.id,
     };
   }
@@ -1046,6 +1111,9 @@ class SqliteStore implements Store {
     // The end commit is the one write that makes a run final (applyRunPatch: the leftover rows refused and the run_live
     // row deleted with it). A release never does: asked to, it is refused before anything is written.
     if (state !== undefined && FINAL_STATES.includes(state as RunState)) throw new TypeError(`a release never makes a run final (asked for ${state}): only the run's end commit does, refusing its leftover rows with it`);
+    // A release that gives the run back with no state (or 'running') keeps it running (its runner shut down): it still holds
+    // its sign-in. One that parks it leaves 'running', so stamp when — the Browserbase settle window reads left_running_at.
+    const leaving = state !== undefined && state !== "running";
     await this.#db.transaction(async (tx) => {
       // A run its end already made final was released by that end (applyRunPatch): this release is a no-op, no second
       // move of its epoch and no error, whatever its claim's lease says now.
@@ -1057,8 +1125,8 @@ class SqliteStore implements Store {
         // The epoch moves on at a release: the released claim is dead everywhere (its journal, its run updates, its takes),
         // never live until the next claim. A claim whose lease ran out releases nothing: the run, running with its lease run
         // out, is claimable at once, never stuck.
-        `UPDATE runs SET epoch = epoch + 1, runner = NULL, claimed_until = NULL, wake_at = ?, backoff_until = ?, state = coalesce(?, state) WHERE ${claimFence(claim, now).where} AND runner = ?`,
-        [wakeAt, backoffUntil, state ?? null, ...claimFence(claim, now).params, claim.runner],
+        `UPDATE runs SET epoch = epoch + 1, runner = NULL, claimed_until = NULL, wake_at = ?, backoff_until = ?, state = coalesce(?, state)${leaving ? ", left_running_at = ?" : ""} WHERE ${claimFence(claim, now).where} AND runner = ?`,
+        [wakeAt, backoffUntil, state ?? null, ...(leaving ? [now] : []), ...claimFence(claim, now).params, claim.runner],
       ));
     }, { full: true });
     // The released claim's journal is dead (its epoch moved on): the store keeps it no longer, and refuses it from now.

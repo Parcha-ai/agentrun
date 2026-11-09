@@ -38,6 +38,32 @@ export {
 	type ModalTimeouts,
 } from "./modal.js";
 export {
+	ARCHIL_HELPER,
+	ARCHIL_MOUNT_LABEL,
+	ARCHIL_SYNC_SOCKET,
+	ARCHIL_TOOL_UID,
+	ARCHIL_TOOL_USER,
+	ARCHIL_VERSION,
+	type ArchilMount,
+	type ArchilMountOptions,
+	type ArchilRoot,
+	type ProviderNote,
+	archilLabels,
+	archilMount,
+	archilReadBack,
+	archilRefusals,
+	archilRelease,
+	claimEpoch,
+	helperSha256,
+	mountDrift,
+	mountWords,
+	type RecordedArchil,
+	readArchilMount,
+	recordedArchil,
+	recordedMount,
+	syncingClient,
+} from "./mount-archil.js";
+export {
 	BROWSER_IMAGE,
 	type BrowserStream,
 	BrowserVendorError,
@@ -61,7 +87,7 @@ export {
 	browserbaseRest,
 } from "./browserbase.js";
 export { KERNEL_API_URL, KERNEL_MAX_LIFETIME_MS, type KernelBrowserSettings, KernelProvider, type KernelProviderOptions, type KernelRequest, kernelRest } from "./kernel.js";
-export { drift, helloDrift, hostOf, inspectDrift, mountOf, networkOf, type DockerHost, type DockerInfo, type DockerInspect, type DriftExpected, type HelloExpected } from "./drift.js";
+export { DAEMON_IN_COMPUTER, drift, helloDrift, hostOf, inspectDrift, mountOf, networkOf, type DockerHost, type DockerInfo, type DockerInspect, type DriftExpected, type HelloExpected } from "./drift.js";
 export { type ReleasedOlder, releaseOlder, sweep, type SweepOptions, type Swept } from "./janitor.js";
 export { EPOCH_LABEL, epochOf, epochProblem, RUN_LABEL, runLabels, runProblem } from "./labels.js";
 export { waitUntil, type WaitOptions } from "./wait.js";

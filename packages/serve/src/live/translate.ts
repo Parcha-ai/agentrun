@@ -72,11 +72,7 @@ export function emptyState(): LiveState {
   };
 }
 
-// The kinds the live view reads as the kernel's own record, never run content a reader sees: the KINDS it writes, and a
-// takeover's note (RUN_RESUMED, a timeline kind), which the kernel lands on the root when a runner loses its claim so the
-// run goes on. The note has no model; left out of this set it streamed as an extra entry_appended the door never sends,
-// so a run taken over mid-turn (a runner starved under load) showed one event a run that was not never did.
-const KERNEL = new Set<string>([...Object.values(KINDS), RUN_RESUMED]);
+const KERNEL = new Set<string>(Object.values(KINDS));
 const PI_TOOL = "pi.tool";
 const PI_GENERATION = "pi.generation";
 const ROLE: Record<string, string> = { person: "user", steer: "user", model: "assistant" };

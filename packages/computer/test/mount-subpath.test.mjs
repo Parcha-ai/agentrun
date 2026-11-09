@@ -1,7 +1,8 @@
 // The "./mount" subpath: a host that checks a run folder's mount (serve, at a computer's start) imports
 // @parcha/agentrun-computer/mount and loads src/mount.ts alone, with node's built-ins: no provider, no vendor SDK and no
 // conformance code. A host reads a provider's MOUNT through providerModule(id), which loads that one provider's file.
-// The package is published, and its tarball holds dist, the README, LICENSE and NOTICE, and nothing else.
+// The package is published, and its tarball holds dist, box (the recipes the Archil computers' images are built from, with
+// the root helper they install), the README, LICENSE and NOTICE, and nothing else.
 import assert from "node:assert/strict";
 import { execFile } from "node:child_process";
 import { existsSync, readFileSync } from "node:fs";
@@ -15,7 +16,7 @@ import * as index from "../dist/index.js";
 const exec = promisify(execFile);
 const PACKAGE = fileURLToPath(new URL("..", import.meta.url));
 const manifest = JSON.parse(readFileSync(join(PACKAGE, "package.json"), "utf8"));
-const MOUNT_NAMES = ["MOUNT_KINDS", "WORKSPACE", "checkMount", "readBackOf"];
+const MOUNT_NAMES = ["MOUNT_KINDS", "WORKSPACE", "checkMount", "epochProblem", "readBackOf"];
 /** The files the egress proxy container runs, from dist/docker (src/docker/egress.ts, CODE_FILES). */
 const EGRESS_CODE = ["egress-main.js", "egress-proxy.js", "egress-table.js"];
 
@@ -23,7 +24,7 @@ test("the package is published, and its manifest exports ./mount beside the root
 	assert.equal(manifest.private, undefined, "no private flag: a release publishes it");
 	assert.deepEqual(manifest.exports["."], { types: "./dist/index.d.ts", default: "./dist/index.js" });
 	assert.deepEqual(manifest.exports["./mount"], { types: "./dist/mount.d.ts", default: "./dist/mount.js" });
-	assert.deepEqual(manifest.files, ["dist", "README.md", "LICENSE", "NOTICE"]);
+	assert.deepEqual(manifest.files, ["dist", "box", "README.md", "LICENSE", "NOTICE"]);
 	assert.deepEqual(manifest.dependencies ?? {}, {}, "no dependency: a vendor SDK is the host's, imported only when its provider is built");
 });
 
@@ -63,13 +64,13 @@ test("a TypeScript host reads MountSpec, MountReadBack and MountKind from the su
 	assert.equal(result.code ?? 0, 0, `tsc: ${result.stdout ?? ""}${result.stderr ?? ""}`);
 });
 
-test("a pack holds dist, the README, LICENSE and NOTICE, the egress proxy's code, and the daemon binaries the build made, executable", async () => {
+test("a pack holds dist, box, the README, LICENSE and NOTICE, the egress proxy's code, and the daemon binaries the build made, executable", async () => {
 	const { stdout } = await exec("npm", ["pack", "--dry-run", "--json", "--ignore-scripts"], { cwd: PACKAGE, maxBuffer: 16 * 1024 * 1024 });
 	const [{ files }] = JSON.parse(stdout);
 	const paths = files.map((file) => file.path);
-	for (const path of paths) assert.match(path, /^(?:package\.json|README\.md|LICENSE|NOTICE|dist\/.+)$/, `${path} is outside dist, the README, LICENSE and NOTICE`);
+	for (const path of paths) assert.match(path, /^(?:package\.json|README\.md|LICENSE|NOTICE|dist\/.+|box\/.+)$/, `${path} is outside dist, box, the README, LICENSE and NOTICE`);
 	for (const path of paths) assert.doesNotMatch(path, /\.(?:map|tsbuildinfo)$/, path);
-	for (const path of ["README.md", "LICENSE", "NOTICE", "dist/index.js", "dist/index.d.ts", "dist/mount.js", "dist/mount.d.ts"]) assert.ok(paths.includes(path), `the pack holds ${path}`);
+	for (const path of ["README.md", "LICENSE", "NOTICE", "dist/index.js", "dist/index.d.ts", "dist/mount.js", "dist/mount.d.ts", "box/agentrun-archil", "box/Dockerfile"]) assert.ok(paths.includes(path), `the pack holds ${path}`);
 	// The Docker provider binds dist/docker and package.json into each egress proxy container, which runs these with Node
 	// alone: no other module of the package is there.
 	for (const file of EGRESS_CODE) assert.ok(paths.includes(`dist/docker/${file}`), `the pack holds the egress proxy's dist/docker/${file}`);

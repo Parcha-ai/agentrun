@@ -15,7 +15,7 @@ import { Chip } from "@/components/ui/chip";
 import { GraphLegend, WorkflowGraph } from "@/components/WorkflowGraph";
 import { type Agent, runsWhere } from "@/lib/agentForm";
 import { type Client, ClientError } from "@/lib/client";
-import { cost, runEnded, soFar, when } from "@/lib/format";
+import { cost, runEnded, soFar, when, runTitle } from "@/lib/format";
 import { appendRuns } from "@/lib/idempotency";
 import { harnessDefault, type HarnessInfo, modelLabel, NO_MODEL_YET } from "@/lib/models";
 import { placeLabel, type Places } from "@/lib/place";
@@ -117,6 +117,7 @@ export function AgentPage({ v2, agentId, defaultModel, modelSource, routePrefix,
             <h1 className="min-w-0 truncate font-mono text-xl font-semibold max-sm:text-lg">{d.name}</h1>
             <Chip>{agent.kind}</Chip>
             {agent.archived_at && <Chip tone="muted">Archived</Chip>}
+            {d.approvals === "never" && <Chip tone="warning" title="Never ask: a call of this agent never waits for you. A tool set to deny, and a template's pins, still hold.">Unattended</Chip>}
             <span className="flex-1" />
             <Button size="sm" onClick={() => go(agentHash(agent.agent_id, "edit"))} title="Edit" className="max-sm:w-8 max-sm:shrink-0 max-sm:px-0"><Pencil aria-hidden /> <span className="max-sm:sr-only">Edit</span></Button>
           </div>
@@ -189,7 +190,7 @@ function RunsTab({ agent, v2 }: TabProps) {
           <li key={r.run_id} className="border-b last:border-b-0">
             <a href={`#/runs/${encodeURIComponent(r.run_id)}`} className="flex flex-wrap items-center gap-x-4 gap-y-1 px-4 py-3 hover:bg-accent">
               <StatusBadge run={r} />
-              <span className="min-w-0 flex-1 truncate text-[14px]" title={r.title}>{r.title}</span>
+              <span className="min-w-0 flex-1 truncate text-[14px]" title={runTitle(r)}>{runTitle(r)}</span>
               <LearningChips run={r} />
               {r.effort && <Chip>effort {r.effort}</Chip>}
               <span className="font-mono text-[12px] text-muted-foreground">{when(r.created_at)}</span>

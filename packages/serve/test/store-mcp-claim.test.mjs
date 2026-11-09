@@ -17,6 +17,8 @@ import { startFakeMcp } from "./fixtures/fake-mcp-server.mjs";
 import { startFakeOAuth } from "./fixtures/fake-oauth-server.mjs";
 import { queued, storeOn, T0 } from "./store-helpers.mjs";
 
+/** A tool as the registry keeps it: as its server listed it (input_schema). */
+const listed = ({ inputSchema, ...tool }) => ({ ...tool, input_schema: inputSchema });
 const { mcpClaim, McpClaimRefused } = await import("../dist/runner/mcp-claim.js");
 const { sealMcpCredential } = await import("../dist/store/index.js");
 const { Fenced } = await import("../dist/store/store.js");
@@ -42,7 +44,7 @@ async function setUp(t, { tools = [ADD], seal = headersCredential, mcp } = {}) {
   const opened = await storeOn(t);
   const fake = mcp ?? (await startFakeMcp({ token: TOKEN }));
   if (!mcp) t.after(() => fake.close());
-  await opened.store.mcp.put({ name: "fake", url: fake.url, auth: "bearer", tools, sealed: seal(fake.url) });
+  await opened.store.mcp.put({ name: "fake", url: fake.url, auth: "bearer", tools: tools.map(listed), sealed: seal(fake.url) });
   await queued(opened.store, "run-1");
   const claim = await opened.store.claim("run-1", "runner-a", { leaseMs: LEASE });
   return { ...opened, fake, claim };
@@ -59,7 +61,7 @@ test("M1: the pin is written once, at the first claim, as mcpPinOf makes it, and
   assert.deepEqual((await store.mcp.pin("run-1"))?.body, JSON.parse(JSON.stringify(expected)), "written to the run's pin row");
   first.release();
   // The registry changes (the tool is gone, another listed); the run's next claim reads its pin as written.
-  await store.mcp.put({ name: "fake", url: fake.url, auth: "bearer", tools: [DELETE], sealed: headersCredential(fake.url) });
+  await store.mcp.put({ name: "fake", url: fake.url, auth: "bearer", tools: [listed(DELETE)], sealed: headersCredential(fake.url) });
   clock.now = T0 + LEASE + 1;
   const next = await store.claim("run-1", "runner-b", { leaseMs: LEASE });
   const second = await claimOf(store, next, ["mcp:fake/add"]);
@@ -174,7 +176,7 @@ test("M7: an expired token is refreshed once before the loop, its new token used
   assert.equal(Buffer.from((await store.mcp.server("fake")).sealed).equals(kept), false, "and the new token set kept, sealed, in the server's row");
   step.release();
   // Silent: no answer within the bound (2 tries of 200 ms): the loop starts, and that server's calls are refused unsent.
-  await store.mcp.put({ name: "fake", url: fake.url, auth: "oauth", tools: [ADD], sealed: sealed("fake", fake.url, { type: "oauth", set: { ...set, expires_at: new Date(T0 - 1_000).toISOString() } }) });
+  await store.mcp.put({ name: "fake", url: fake.url, auth: "oauth", tools: [listed(ADD)], sealed: sealed("fake", fake.url, { type: "oauth", set: { ...set, expires_at: new Date(T0 - 1_000).toISOString() } }) });
   oauth.hang();
   const started = Date.now();
   const silent = await claimOf(store, claim, ["mcp:fake/add"], { now: () => T0 });
@@ -256,12 +258,7 @@ test("M13: two claims refreshing the same expired token at once make one network
   b.release();
 });
 
-test("M11: with no seal key, a server's calls are refused in noSealKey's words, and no refresh is sent", async (t) => {
-  const { store, oauth, claim } = await oauthSetUp(t, { expiresAt: T0 - 1_000 });
-  const step = await claimOf(store, claim, ["mcp:fake/add"], { sealKey: undefined, now: () => T0 });
-  assert.equal(step.credentials.fake?.unopened, UNUSABLE.noSealKey);
-  assert.equal(refreshes(oauth), 0, "no refresh was sent");
-});
+// moved: M11 (a claim with no seal key): a runner never starts without one, seal-key.test.mjs "no seal key and nowhere to keep one: refused in words, never a start without one".
 
 test("M12: a server whose url origin no longer matches its sealed one is damaged: its calls are refused unsent in those words", async (t) => {
   const { store, fake, claim } = await setUp(t);
@@ -271,7 +268,7 @@ test("M12: a server whose url origin no longer matches its sealed one is damaged
   const row = await store.mcp.server("fake");
   const moved = new URL(fake.url);
   moved.port = String(Number(moved.port) + 1);
-  await store.mcp.put({ name: "fake", url: moved.href, auth: "bearer", tools: [ADD], sealed: row.sealed });
+  await store.mcp.put({ name: "fake", url: moved.href, auth: "bearer", tools: [listed(ADD)], sealed: row.sealed });
   const again = await claimOf(store, claim, ["mcp:fake/add"]);
   assert.equal(again.credentials.fake?.unopened, UNUSABLE.damaged);
   assert.equal(again.credentials.fake?.headers, undefined, "no header handed over");
@@ -327,7 +324,8 @@ async function rotatedAcross(t, { expiresAt, stop }) {
   const { store, oauth, claim } = await oauthSetUp(t, { expiresAt });
   const hold = oauth.holdNext();
   const signal = new AbortController();
-  const bounds = { requestMs: 3_000, tries: 1 };
+  // The fake answers when the test says so (hold.answer()), so this bound only catches a hang; a tight one fails under load.
+  const bounds = { requestMs: 60_000, tries: 1 };
   const first = claimOf(store, claim, ["mcp:fake/add"], { now: () => T0, signal: signal.signal, bounds });
   // Behind a token still valid, the step returns before the refresh is answered; an expired one is awaited.
   const step = expiresAt > T0 ? await first : undefined;
@@ -364,21 +362,30 @@ test("M17: claims waiting on another claim's refresh read the server's row O(1) 
       return typeof value === "function" ? value.bind(target) : value;
     },
   });
-  const counted = { mcp, runs: store.runs, settings: store.settings };
+  const counted = { where: store.where, mcp, runs: store.runs, settings: store.settings };
+  // The steps' waits on the lease (and their re-reads of the row) are armed on this timer, which the test never fires:
+  // a waiter that wakes did so at the holder's let-go, never at a timer's.
+  const armed = [];
+  const timer = (fire, ms) => {
+    const one = { fire, ms, cleared: false };
+    armed.push(one);
+    return { clear: () => void (one.cleared = true) };
+  };
+  const waiting = () => armed.filter((one) => !one.cleared).length;
   const hold = oauth.holdNext();
   const CLAIMS = 300;
-  const steps = Array.from({ length: CLAIMS }, () => claimOf(counted, claim, ["mcp:fake/add"], { now: () => T0, bounds: { requestMs: 5_000, tries: 1 } }));
+  const steps = Array.from({ length: CLAIMS }, () => claimOf(counted, claim, ["mcp:fake/add"], { now: () => T0, bounds: { requestMs: 5_000, tries: 1 }, timer }));
   await hold.granted;
-  // The holder's answer takes a while; every other claim waits on its lease meanwhile.
-  await new Promise((resolve) => setTimeout(resolve, 600));
-  const answered = Date.now();
+  // Every other claim waits on the holder's lease: its wait armed, before the holder answers.
+  for (let i = 0; i < 20_000 && waiting() < CLAIMS - 1; i++) await new Promise((resolve) => setImmediate(resolve));
+  assert.equal(waiting(), CLAIMS - 1, "every other claim waits on the lease");
   hold.answer();
-  const opened = await Promise.all(steps);
-  const took = Date.now() - answered;
+  // Bounded only for a failing run: a waiter no let-go wakes would sleep on a timer that never fires.
+  const opened = await Promise.race([Promise.all(steps), new Promise((resolve) => setTimeout(() => resolve("asleep"), 20_000).unref())]);
+  assert.notEqual(opened, "asleep", "every waiting claim woke at the holder's let-go, not at its lease's end");
   t.after(() => opened.forEach((step) => step.release()));
   assert.equal(refreshes(oauth), 1, "one refresh");
   assert.equal(new Set(opened.map(bearer)).size, 1, "every claim holds the one refreshed token");
   assert.ok(oauth.accepts(bearer(opened[0])), "a token the server takes");
   assert.ok(reads <= 4 * CLAIMS, `the server's row read at most 4 times a claim: ${reads} reads for ${CLAIMS} claims`);
-  assert.ok(took < 3_000, `every waiting claim woke when the holder let the lease go, not at the lease's end: ${took} ms`);
 });

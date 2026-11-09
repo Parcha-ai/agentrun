@@ -4,6 +4,7 @@
 // could not be renewed answers its calls in words once it expires, as does an App that is not installed or a run with no
 // repository: nothing is sent, nothing crashes.
 import assert from "node:assert/strict";
+import { randomBytes } from "node:crypto";
 import { mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
@@ -11,10 +12,14 @@ import { test } from "node:test";
 import { startFakeMcp } from "./fixtures/fake-mcp-server.mjs";
 import { queued, storeOn, T0 } from "./store-helpers.mjs";
 
+/** A tool as the registry keeps it: as its server listed it (input_schema). */
+const listed = ({ inputSchema, ...tool }) => ({ ...tool, input_schema: inputSchema });
 const { mcpClaim } = await import("../dist/runner/mcp-claim.js");
 const { mcpGateway } = await import("../dist/mcp-gateway.js");
 
 const HOUR = 3_600_000;
+/** The runner's seal key: a github_app server keeps nothing sealed, and a runner always has one. */
+const KEY = randomBytes(32);
 const ADD = { name: "add", title: "Add", description: "Add two numbers.", inputSchema: { type: "object", properties: { a: { type: "number" }, b: { type: "number" } }, required: ["a", "b"] }, annotations: { readOnlyHint: true } };
 const token = (n) => `not-a-secret-${"ghs-installation-token"}-${n}`;
 
@@ -27,7 +32,7 @@ async function setUp(t, { answers = [] } = {}) {
   t.after(() => fake.close());
   const opened = await storeOn(t);
   const { store, clock } = opened;
-  await store.mcp.put({ name: "gh", url: fake.url, auth: "github_app", tools: [ADD], sealed: null });
+  await store.mcp.put({ name: "gh", url: fake.url, auth: "github_app", tools: [listed(ADD)], sealed: null });
   await queued(store, "run-1");
   const claim = await store.claim("run-1", "runner-a", { leaseMs: 60_000 });
   const mints = [];
@@ -57,7 +62,8 @@ async function setUp(t, { answers = [] } = {}) {
   const work = mkdtempSync(join(tmpdir(), "mcp-github-"));
   t.after(() => rmSync(work, { recursive: true, force: true }));
   const claimOf = (access = { mint, target: { installation: 7, repo: "acme/widgets" } }) =>
-    mcpClaim({ store, claim, grants: ["mcp:gh/add"], sealKey: undefined, signal: new AbortController().signal, now: () => clock.now, githubApp: access, githubTimer });
+    // The fake MCP server stands in for GitHub's hosted one (githubMcpOrigin, the claim's test-only seam).
+    mcpClaim({ store, claim, grants: ["mcp:gh/add"], sealKey: KEY, signal: new AbortController().signal, now: () => clock.now, githubApp: access, githubTimer, githubMcpOrigin: new URL(fake.url).origin });
   const call = (step) => mcpGateway({ pin: step.pin, credentials: step.credentials, work: () => work, liveCredentials: true }).call("gh", "add", { a: 1, b: 1 }, { signal: new AbortController().signal });
   return { store, clock, fake, valid, mints, timers, to, claimOf, call, mint };
 }

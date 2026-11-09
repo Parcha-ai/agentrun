@@ -21,7 +21,9 @@ export const baseTools = () => ({
   paid: { description: "A call the server bills.", input: object({ query: text }), run: ({ query }) => answer(`paid for ${query}`) },
 });
 
-export async function startFakeMcp({ era = "modern", token, oauth = false, port = 0, name = "fake-mcp" } = {}) {
+/** `inspect`: called with each request's headers, for a test that reads one of them (the credential a run sent, a static
+ *  header beside it); the log itself never holds a header's value. */
+export async function startFakeMcp({ era = "modern", token, oauth = false, port = 0, name = "fake-mcp", inspect } = {}) {
   const tools = baseTools();
   const log = [];
   const factory = () => {
@@ -49,6 +51,7 @@ export async function startFakeMcp({ era = "modern", token, oauth = false, port 
       return void res.end(JSON.stringify({ resource: `${base}/mcp`, authorization_servers: [typeof oauth === "string" ? oauth : `${base}/auth`] }));
     }
     if (req.url !== "/mcp") return void res.writeHead(404).end();
+    inspect?.(req.headers);
     if (token !== undefined && !(typeof token === "function" ? token(req.headers.authorization) : req.headers.authorization === `Bearer ${token}`)) {
       res.writeHead(401, { "content-type": "application/json", "www-authenticate": oauth ? `Bearer resource_metadata="${base}/.well-known/oauth-protected-resource/mcp"` : 'Bearer realm="fake"' });
       return void res.end('{"error":"unauthorized"}');

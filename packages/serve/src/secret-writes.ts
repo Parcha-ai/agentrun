@@ -20,7 +20,7 @@ export const SECRET_WRITE_REFUSAL = "Saving, replacing or removing a secret take
 /**
  * Whether the console a launcher opened on a loopback-bound server with no accounts (npx agentrun, no password: the
  * browser that followed the launch link, its cookie minted from the token by that link, held to this server's own origin
- * and a JSON body as every page write is) counts as the owner for a secret write. Decided 2026-11-09: yes. The
+ * and a JSON body as every page write is) counts as the owner for a secret write. The owner's ruling (2026-11-09): yes. The
  * API token still never writes a secret, loopback included; a server bound off loopback needs accounts on to take a
  * secret at all. This one line is the decision; mayWriteSecrets (the dispatch check, and GET /v2/auth/session's
  * secrets_writable) follows it.
@@ -121,14 +121,15 @@ function marksSecret(doc: Json, schema: unknown, seen = new Set<unknown>()): boo
   return Object.values(schema).some((value) => marksSecret(doc, value, seen));
 }
 
-/** The operations of `doc` whose request body marks a field `x-agentrun-secret`. */
+/** The operations of `doc` that write a secret: their request body marks a field `x-agentrun-secret`, or the operation is
+ *  marked whole (a removal, which has no body). The generated CLI leaves every one of them out. */
 export function markedOperations(doc: Json): string[] {
   const out: string[] = [];
   for (const item of Object.values((doc.paths ?? {}) as Record<string, Record<string, unknown>>)) {
     for (const op of Object.values(item)) {
       if (!isObject(op) || typeof op.operationId !== "string") continue;
       const body = isObject(op.requestBody) ? op.requestBody : undefined;
-      if (body && marksSecret(doc, body)) out.push(op.operationId);
+      if (op["x-agentrun-secret"] === true || (body && marksSecret(doc, body))) out.push(op.operationId);
     }
   }
   return out;

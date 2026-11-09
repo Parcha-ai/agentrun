@@ -23,6 +23,6 @@ test("a viewer open is live whatever the computer resolves to now, and the compu
   assert.equal(read, 0);
 });
 
-test("with no hold seam the agent drives (tl-places' computer-hold is not wired yet)", async () => {
+test("with no hold seam the agent drives (the store-backed computer hold is not wired yet)", async () => {
   assert.deepEqual(await computerView({ viewer: async () => undefined, computer: () => ({ kind: "browser" }) }), { state: "none", kind: "browser", hold: "agent" });
 });

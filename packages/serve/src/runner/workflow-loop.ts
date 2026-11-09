@@ -95,7 +95,17 @@ export interface WorkflowHostHooks {
    *  so nothing is half done), with the raised cap. The caller must let the node's signal, which the loop aborts, end the
    *  step's wait. */
   park(refusal: CapRefusal): void;
+  /** Whether a person's pause is in force (POST /runs/{id}/pause: a `pause` command taken with no `resume` after it). The
+   *  host asks where the cap is asked, before each model request and each decision; a pause in force parks there
+   *  (pause()) and the request is never sent, as a cap refusal's is. */
+  paused(): boolean;
+  /** Parks the run for its pause where it stands, as park does for a refusal: the loop writes the pause entry and lets the
+   *  claim go, and the resume's claim goes on from the journal. The caller must let the node's signal end the step's wait. */
+  pause(): void;
 }
+
+/** A paused run's words, its row's summary while it waits for a resume. */
+export const PAUSED_WORDS = "Paused.";
 
 /** Whether a revision runs on the workflow loop (the runner's dispatch picks it by the revision's kind): a workflow
  *  revision does, an agentic one does not. */
@@ -120,6 +130,15 @@ function workflowLoop(specOf: (claim: Claim) => WorkflowRunSpec | Promise<Workfl
    *  runner delivers each row (returning at once, never blocking the delivery), then committed before the workflow runs. */
   const raising: { state?: RaiseState; takes: number[]; resumes: boolean; capUsd?: number } = { takes: [], resumes: false };
   let takingDone = false;
+  /** The pause and resume rows this claim has, in the order the runner handed them over: the newest says whether a pause
+   *  is in force (with none, the journal says: `journalPaused`); each is taken in the commit that applies it (the pause
+   *  entry, the resume entry, or the run's end). */
+  const pausing: { kind: "pause" | "resume"; id: number }[] = [];
+  /** The run was paused when this claim read its journal: its newest pause entry has no resume entry after it. */
+  let journalPaused = false;
+  /** A pause in force parked the run (hooks.pause): it parks in a pause entry, not the cap's budget. */
+  let heldPause = false;
+  const pauseInForce = (): boolean => (pausing.length > 0 ? pausing[pausing.length - 1]!.kind === "pause" : journalPaused);
   /** This claim, once run() has it: a raise command reads the run's raise state from its journal. */
   let claimNow: Claim | undefined;
   /** Resolves once this claim's spec is read, so a raise delivered before the workflow starts checks against its cap rule. */
@@ -197,6 +216,49 @@ function workflowLoop(specOf: (claim: Claim) => WorkflowRunSpec | Promise<Workfl
     await append(journal, context, KINDS.raise, data, { ...(raising.resumes ? { run: { summary: null } } : {}), take: raising.takes });
   };
 
+  /** Whether the run is paused by its journal: its newest pause entry has no resume entry after it. */
+  const pausedByJournal = async (journal: Journal, context: Context): Promise<boolean> => {
+    // A run that never ran has no root yet (the workflow task makes it): nothing paused it.
+    if (!(await journal.conversation(ROOT_CONVERSATION_ID, context))) return false;
+    let paused = false;
+    for (const entry of await rootEntries(journal, context)) {
+      if (entry.kind === KINDS.pause) paused = true;
+      if (entry.kind === KINDS.resume) paused = false;
+    }
+    return paused;
+  };
+
+  /** The pause and resume rows this claim found waiting, applied before the workflow runs, as raises are: the newest
+   *  decides. A pause in force (one taken now, or the journal's with no resume) parks the run again without running a
+   *  step, whatever woke it (a raise, any other row); a resume is taken in a resume entry, which clears the paused words,
+   *  and the workflow goes on from its journal. True when the run parks. */
+  const takePauses = async (claim: Claim, journal: Journal, context: Context): Promise<boolean> => {
+    const rows = pausing.splice(0);
+    // Only a run coming back from parked can be paused by its journal: a fresh run with no pause or resume row is not read.
+    if (rows.length === 0 && claim.from !== "parked") return false;
+    journalPaused = await pausedByJournal(journal, context);
+    const take = rows.map((row) => row.id);
+    const inForce = rows.length > 0 ? rows[rows.length - 1]!.kind === "pause" : journalPaused;
+    if (inForce) {
+      // Written each time, so the run's row goes back to parked in the pause's words whatever woke it (the claim made it
+      // running, and the runner's release keeps the state the loop committed).
+      await append(journal, context, KINDS.pause, { takes: take }, { run: { state: "parked", summary: PAUSED_WORDS }, ...(take.length > 0 ? { take } : {}) });
+      journalPaused = true;
+      return true;
+    }
+    if (take.length > 0) await append(journal, context, KINDS.resume, { takes: take }, { ...(journalPaused ? { run: { summary: null } } : {}), take });
+    journalPaused = false;
+    return false;
+  };
+
+  /** A pause in force held a step (hooks.pause): the run parks in a pause entry taking the rows that asked for it, in the
+   *  pause's words, and the claim is let go. A resume's claim goes on from the journal: the held step was never sent. */
+  async function parkPaused(claim: Claim): Promise<LoopEnd> {
+    const take = pausing.splice(0).map((row) => row.id);
+    await append(deps.journal(claim), BACKGROUND_CONTEXT, KINDS.pause, { takes: take }, { run: { state: "parked", summary: PAUSED_WORDS }, take });
+    return { state: "parked" };
+  }
+
   /** The end's cost and metrics from the spec, bounded like the pi loop: late or failing, none. */
   const endPatchOf = async (spec: WorkflowRunSpec, data: EndData): Promise<Pick<EndData, "costUsd" | "metrics">> => {
     if (!spec.endPatch) return {};
@@ -210,7 +272,9 @@ function workflowLoop(specOf: (claim: Claim) => WorkflowRunSpec | Promise<Workfl
       }
       return patch ?? {};
     } catch (error) {
-      console.warn(`[runner] ${runId}: its end's patch failed: ${(error as Error).message}`);
+      // Cut of every secret the runner holds (LoopDeps.redact): an error's text may echo one.
+      const text = (error as Error)?.message ?? String(error);
+      console.warn(`[runner] ${runId}: its end's patch failed: ${deps.redact ? deps.redact(text) : text}`);
       return {};
     } finally {
       clearTimeout(timer);
@@ -235,8 +299,14 @@ function workflowLoop(specOf: (claim: Claim) => WorkflowRunSpec | Promise<Workfl
     // resumed run reads the raised cap and the run's row no longer shows the budget pause.
     await (deps.delivered ?? Promise.resolve());
     await takeRaises(deps.journal(claim), BACKGROUND_CONTEXT);
+    // A paused run (or one a pause row woke) parks again here, before any step runs; a resume goes on.
+    if (await takePauses(claim, deps.journal(claim), BACKGROUND_CONTEXT)) return { state: "parked" };
 
-    const hooks: WorkflowHostHooks = { park: (refusal) => { heldRefusal ??= refusal; parkController.abort(); } };
+    const hooks: WorkflowHostHooks = {
+      park: (refusal) => { heldRefusal ??= refusal; parkController.abort(); },
+      paused: pauseInForce,
+      pause: () => { heldPause = true; parkController.abort(); },
+    };
     const { extensions, host } = spec.build(hooks);
     workflows = createWorkflowExtension(host);
     const registry = createRegistry();
@@ -260,6 +330,8 @@ function workflowLoop(specOf: (claim: Claim) => WorkflowRunSpec | Promise<Workfl
       });
     } catch (error) {
       await closeHarness();
+      // A pause held the step: it parks paused (a refusal the same step met waits for the resume's claim to meet again).
+      if (heldPause) return await parkPaused(claim);
       if (heldRefusal) return await parkAtCap(claim, heldRefusal);
       // The Session failed at a storage error, or the claim's context aborted (a lost claim, a shutdown): nothing more is
       // written, and the next claim resumes the workflow from its journal.
@@ -308,8 +380,9 @@ function workflowLoop(specOf: (claim: Claim) => WorkflowRunSpec | Promise<Workfl
       ...(data.costUsd !== undefined ? { costUsd: data.costUsd } : {}),
       ...(data.metrics !== undefined ? { metrics: data.metrics } : {}),
     };
-    const take = stopReason?.kind === "command" ? [stopReason.commandId] : undefined;
-    await append(journal, context, KINDS.end, data, { run: runPatch, ...(take ? { take } : {}) });
+    // The stop row, and any pause or resume rows the run ended before applying (a pause after its last step): taken here.
+    const take = [...(stopReason?.kind === "command" ? [stopReason.commandId] : []), ...pausing.splice(0).map((row) => row.id)];
+    await append(journal, context, KINDS.end, data, { run: runPatch, ...(take.length > 0 ? { take } : {}) });
     return state === "failed" ? { state: "failed", error: { code: "workflow-failed", message: carry.summary } } : { state };
   }
 
@@ -319,6 +392,13 @@ function workflowLoop(specOf: (claim: Claim) => WorkflowRunSpec | Promise<Workfl
       return finished;
     },
     async command(command: Command): Promise<CommandOutcome> {
+      // A pause or resume is recorded at once (never blocking the delivery): one before the workflow runs is applied
+      // there (takePauses), one after it by the host's next model request or decision (hooks.paused), and taken in the
+      // commit that applies it.
+      if (command.kind === "pause" || command.kind === "resume") {
+        pausing.push({ kind: command.kind, id: command.id });
+        return { taken: true };
+      }
       if (command.kind !== "raise") return { refused: "a workflow run takes no messages or answers" };
       // A raise is checked and recorded here, at once (never blocking the runner's delivery), and committed before the
       // workflow runs (takeRaises); one that comes after that waits for the run's next claim. Checked by the cap's rule

@@ -7,11 +7,9 @@
 //   - pi runs on the kernel's adapter loop with the run's pi spec (adapterRunSpecFromLaunch);
 //   - a CLI harness (claude-agent, codex, opencode) runs on the adapter loop with its own adapter;
 //   - anything else fails the run in words (the dispatch's UnknownHarness).
-import type { ComputerProvider } from "@parcha/agentrun-computer";
-import { readLaunchBody, type RunLaunch } from "../run-launch.js";
+import type { RunLaunch } from "../run-launch.js";
 import { resolveHarness } from "./adapters/index.js";
-import { adapterRunSpecFromLaunch, type AdapterSpecDeps, type ComputerForClaim } from "./adapter-run-spec.js";
-import { dockerComputer } from "./computer.js";
+import { adapterRunSpecFromLaunch, type AdapterSpecDeps, PI_WIRES } from "./adapter-run-spec.js";
 import { createAdapterLoop } from "./adapter-loop.js";
 import { createDispatchLoop } from "./dispatch.js";
 import { cliRunSpecFromLaunch } from "./cli-run-spec.js";
@@ -39,7 +37,9 @@ export function resolveRunnerLoop(deps: AdapterSpecDeps): (harness: string, laun
       return learningLoopOf({
         store: deps.store,
         data: deps.data,
-        routeOf: (grade) => deps.routeOf(grade.model, deps.env),
+        // The grader speaks the route's wire, as pi does (learning-ask.ts: pi.ts policyFor and port-models.ts
+        // sessionProvider), so its route is asked on pi's wires; a model on neither keeps the route's Messages translation.
+        routeOf: (grade) => deps.routeOf(grade.model, deps.env, "default", PI_WIRES),
         ...(deps.log ? { log: deps.log } : {}),
       });
     }
@@ -48,6 +48,10 @@ export function resolveRunnerLoop(deps: AdapterSpecDeps): (harness: string, laun
     // runs the pi spec (adapterRunSpecFromLaunch). A harness with no entry is unknown here: the dispatch fails it in words.
     const runner = resolveHarness(harness);
     if (runner) {
+      // A run that learns supplies its own end-of-run step (reflect + proposal over its store) from its spec builder now,
+      // where the run's Archil claim is: a Mode 2 run's learning folder is on its claim's disk, not this machine's local
+      // path (adapter-run-spec.ts / cli-run-spec.ts endOfRun). The loop prefers the spec's step over its deps' (stepOf); a
+      // run that does not learn supplies none. The same for the pi and the CLI spec.
       return createAdapterLoop((claim, adapterRun) =>
         runner.record === "loop"
           ? cliRunSpecFromLaunch(launch, adapterRun, deps, claim)
@@ -65,22 +69,4 @@ export function dispatchRunner(deps: AdapterSpecDeps): LoopFactory {
     launchOf: (runId) => deps.store.runs.launch(runId),
     resolve: resolveRunnerLoop(deps),
   });
-}
-
-/** The claim's computer the runner gives every spec (adapter-run-spec.ts computerForClaim) until its own lands with the
- *  computers work: none for a runner place; for a sandbox, the Mode 1 Docker container (computer.ts dockerComputer) with
- *  the run's folder at /workspace, under the claim's epoch (the one fence), reaching what the run's launch allows. */
-export function sandboxComputerForClaim(env: NodeJS.ProcessEnv, makeProvider?: () => Promise<ComputerProvider>): ComputerForClaim {
-  return async (launch, store, deps) => {
-    if ((launch.place as { mode?: unknown } | undefined)?.mode !== "sandbox") return { release: async () => undefined };
-    const boxAllow = readLaunchBody((await store.runs.launch(launch.runId)).body)?.boxAllow;
-    const handle = await dockerComputer(deps.workspace, {
-      runId: launch.runId,
-      epoch: launch.epoch,
-      ...(boxAllow !== undefined ? { boxAllow } : {}),
-      ...(env.AGENTRUN_DOCKER_IMAGE ? { image: env.AGENTRUN_DOCKER_IMAGE } : {}),
-      ...(deps.signal ? { signal: deps.signal } : {}),
-    }, makeProvider);
-    return { computer: handle.run, release: () => handle.release() };
-  };
 }

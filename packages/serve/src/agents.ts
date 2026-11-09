@@ -4,12 +4,18 @@
 import { createHash } from "node:crypto";
 import { join } from "node:path";
 import { DatabaseSync } from "node:sqlite";
-import { type Agent, AgentHomeError, type AgentStore, type NewRevision, openStore, type Revision, type RevisionPlace, type RevisionRow, type RunRow, STORE_FILE } from "@parcha/pi-durable-agent";
+import { type Agent, AgentHomeError, type AgentStore, type NewRevision, openStore, type Revision, type RevisionComputer, type RevisionPlace, type RevisionRow, type RunRow, STORE_FILE } from "@parcha/pi-durable-agent";
 import { agentLink } from "./console-links.js";
 import { ApiError, invalid } from "./errors.js";
 import { harnessOfBody } from "./harness.js";
 import { storedHarness } from "./harness-table.js";
 import { type DefinitionBody, isObject, type Json, skillIssues, skillNames, stable } from "./validate.js";
+import { computerOfPlace, type PlaceView, settingOfDefinition } from "./computer-setting.js";
+
+/** A revision's computer as the API shows it: its own, else the one its place says (a revision saved before the setting
+ *  keeps its place alone); none when it names neither (the host's default applies). */
+const computerView = (body: { computer?: RevisionComputer; place?: RevisionPlace }): { computer?: RevisionComputer } =>
+  body.computer ? { computer: body.computer } : body.place ? { computer: computerOfPlace(body.place as PlaceView) as RevisionComputer } : {};
 import type { SignInView } from "./sign-ins.js";
 import { approvalsOf } from "./approvals.js";
 
@@ -103,8 +109,10 @@ export class Agents {
     // The default harness is never stored: naming pi and naming none are one revision.
     const stored = typeof definition.harness === "string" ? storedHarness(definition.harness) : undefined;
     const harness = stored ? { harness: stored } : {};
-    // Unlike the harness, a place is kept when it is runner: the default is the host's, so naming runner says something.
-    const place = isObject(definition.place) ? { place: definition.place as RevisionPlace } : {};
+    // Unlike the harness, a place is kept when it is runner: the default is the host's, so naming runner says something. The
+    // computer and its place are one setting: naming either keeps both (computer-setting.ts).
+    const setting = settingOfDefinition(definition);
+    const place = setting ? { place: setting.place as RevisionPlace, computer: setting.computer as RevisionComputer } : {};
     // A capability with nothing set is none: `{web_search: {}}` and no settings are one revision.
     const kept = Object.entries(isObject(definition.tool_settings) ? definition.tool_settings : {}).filter(([, setting]) => isObject(setting) && Object.keys(setting).length);
     const set = kept.length ? { toolSettings: Object.fromEntries(kept) as Record<string, Record<string, string>> } : {};
@@ -141,7 +149,7 @@ export class Agents {
     const given = typeof definition.id === "string" ? definition.id : undefined;
     if (given !== undefined && (await this.request(() => this.store.readAgent(given)))) throw new ApiError("agent_exists", `an agent ${given} exists here`);
     // Stamped on the revision now, never resolved at run time: an agent saved with no place keeps running on the runner.
-    const stamped = fresh && definition.place === undefined && !isObject(definition.workflow) ? { place: fresh.place, ...(definition.tools === undefined ? { tools: [...fresh.tools] } : {}) } : {};
+    const stamped = fresh && definition.place === undefined && definition.computer === undefined && !isObject(definition.workflow) ? { place: fresh.place, ...(definition.tools === undefined ? { tools: [...fresh.tools] } : {}) } : {};
     const revision = this.revisionOf({ ...definition, ...stamped }, skills, note);
     this.checkVersion(definition, 1);
     await this.checked(revision);
@@ -193,13 +201,14 @@ export class Agents {
       // An edit that names no harness, place, learning switch or default cap keeps the agent's, as it keeps its skill
       // files: absent here is unchanged, not the default.
       const harness = entry.revision?.body.harness;
-      const place = entry.revision?.body.place;
+      // The computer setting with it (a revision from before it keeps its place alone, which says its computer).
+      const kept = definition.place === undefined && definition.computer === undefined ? (entry.revision?.body.computer ? { computer: entry.revision.body.computer } : entry.revision?.body.place ? { place: entry.revision.body.place } : {}) : {};
       const learning = entry.revision?.kind === "agentic" && !isObject(definition.workflow) ? entry.revision.body.learning : undefined;
       // And its default cap, whichever kind it was or becomes: leaving it out never removes a spend limit; only 0 clears it.
       const cap = entry.revision?.body.maxCostUsd;
       // And how that cap prices a request, as the cap itself is kept.
       const capMode = entry.revision?.body.capMode;
-      const revision = this.revisionOf({ ...definition, ...(definition.harness === undefined && harness ? { harness } : {}), ...(definition.place === undefined && place ? { place } : {}), ...(definition.learning === undefined && learning !== undefined ? { learning } : {}), ...(definition.max_cost_usd === undefined && cap !== undefined ? { max_cost_usd: cap } : {}), ...(definition.cap_mode === undefined && capMode !== undefined ? { cap_mode: capMode } : {}) }, files, note);
+      const revision = this.revisionOf({ ...definition, ...(definition.harness === undefined && harness ? { harness } : {}), ...kept, ...(definition.learning === undefined && learning !== undefined ? { learning } : {}), ...(definition.max_cost_usd === undefined && cap !== undefined ? { max_cost_usd: cap } : {}), ...(definition.cap_mode === undefined && capMode !== undefined ? { cap_mode: capMode } : {}) }, files, note);
       await this.checked(revision);
       await check?.(revision);
       const base = entry.revision?.id ?? null;
@@ -293,7 +302,7 @@ export function definitionOf(agent: Agent, revision: Revision, version: number):
   const body = revision.kind === "agentic"
     ? { instructions: revision.body.instructions, ...(revision.body.model ? { model: revision.body.model } : {}), ...(revision.body.thinking ? { thinking: revision.body.thinking } : {}), ...(revision.body.learning !== undefined ? { learning: revision.body.learning } : {}), ...(revision.body.maxCostUsd !== undefined ? { max_cost_usd: revision.body.maxCostUsd } : {}), ...(revision.body.capMode !== undefined ? { cap_mode: revision.body.capMode } : {}) }
     : { workflow: revision.body.workflow, ...(revision.body.maxCostUsd !== undefined ? { max_cost_usd: revision.body.maxCostUsd } : {}), ...(revision.body.capMode !== undefined ? { cap_mode: revision.body.capMode } : {}) };
-  return { id: agent.id, version, name: agent.name, ...(agent.description !== undefined ? { description: agent.description } : {}), ...body, harness: harnessOfBody(revision.body), ...(revision.body.place ? { place: revision.body.place } : {}), skills: skillNames(Object.keys(revision.body.skills)), tools: revision.body.tools, ...(revision.body.toolSettings ? { tool_settings: revision.body.toolSettings } : {}), approvals: approvalsOf(revision.body.approvals) };
+  return { id: agent.id, version, name: agent.name, ...(agent.description !== undefined ? { description: agent.description } : {}), ...body, harness: harnessOfBody(revision.body), ...(revision.body.place ? { place: revision.body.place } : {}), ...computerView(revision.body), skills: skillNames(Object.keys(revision.body.skills)), tools: revision.body.tools, ...(revision.body.toolSettings ? { tool_settings: revision.body.toolSettings } : {}), approvals: approvalsOf(revision.body.approvals) };
 }
 
 /** `Agent` as the contract shows it, with its current revision and its saved sign-ins (sign-ins.ts view: never a ref).

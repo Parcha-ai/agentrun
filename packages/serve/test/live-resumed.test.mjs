@@ -1,15 +1,16 @@
 // A runner that loses its claim writes a takeover note on the run's root conversation (RUN_RESUMED, `after: runner_lost`,
-// app.ts / adapter-loop.ts) so the run's timeline says it went on. That note is a kernel record, not run content: the
-// door's GET /events (a bare harness that is never taken over) never has it, and a client watching the live view must see
-// the same envelopes whether or not a takeover happened. The bug: translate reads RUN_RESUMED as a kernel record to open
-// the stream (its root and `started`), but the KERNEL skip set is `Object.values(KINDS)` only, and RUN_RESUMED lives in
-// the timeline, not KINDS, so the resume entry — which carries no model — fell through to `entry_appended`, one extra event
-// the door never sends. Under machine load the runner's lease ran out, the run was resumed, and the note landed right after
-// the system message, so the parity tests saw an intermittent entry_appended there.
+// app.ts / adapter-loop.ts) so the run's timeline says it went on. That note joins the run's record — the live view's
+// snapshot carries it and the timeline renders its "Resumed after its runner was lost" phase row — but it is NOT a live
+// stream event: a takeover ends the door's watch, so a reader meets the note only in a reconnect's snapshot, never as a
+// commit on the open stream. The live view polls across a takeover, so without the fix it streamed the note's
+// entry_appended — one event the door never delivers and the parity door (a bare harness, never taken over) never has.
+// Under machine load the runner's lease ran out, the run was resumed, and the note landed right after the system message,
+// so the parity tests saw an intermittent entry_appended there.
 //
-// Driven over a store whose reads are stepped by hand (no clock, no sleep): the same journal with and without the resume
-// commit must stream the same events, however the polls fall. Red before the fix (the resume adds entry_appended), green
-// after.
+// The fix (live/stream.ts): watchRun drops the resume note from the events it delivers, while translate still appends it
+// to the state the snapshot reads. Driven over a store whose reads are stepped by hand (no clock, no sleep): the same
+// journal with and without the resume commit streams the same events, however the polls fall, and the snapshot still keeps
+// the note. Red before the fix (the resume adds entry_appended), green after.
 import assert from "node:assert/strict";
 import { test } from "node:test";
 import { collect, shape } from "./live-support.mjs";
@@ -43,18 +44,16 @@ function journal({ resumed }) {
 
 /** A LiveStore whose journal reveals its commits as the live view asks for them, `perPoll` at a time: a poll that reads
  *  `commitsAfter` sees only what has been revealed, so the resume commit can land on its own poll (the worst interleaving).
- *  `open()` starts revealing — the stream's opening snapshot (before start) must fold no commit, so nothing is revealed
- *  until then. The row reads final once every commit is revealed, so the stream ends on its own. */
-function steppedStore(commits, perPoll) {
-  let revealed = 0;
-  let opened = false;
+ *  `open()` starts revealing — the stream's opening snapshot (before start) folds only what is already revealed, so by
+ *  default nothing is until then. `prevealed`: every commit is revealed from the start, so the opening snapshot folds the
+ *  whole run (a reader that connects after a takeover). The row reads final once every commit is revealed. */
+function steppedStore(commits, perPoll, prevealed = false) {
+  let revealed = prevealed ? commits.length : 0;
+  let opened = prevealed;
   const final = () => opened && revealed >= commits.length;
-  const live = {
-    read: async () => [undefined],
-  };
   const jrnl = {
     async commitsAfter(after) {
-      if (opened) revealed = Math.min(commits.length, revealed + perPoll);
+      if (opened && !prevealed) revealed = Math.min(commits.length, revealed + perPoll);
       const items = commits.slice(0, revealed).filter((commit) => commit.seq > after);
       return { commits: items };
     },
@@ -63,7 +62,7 @@ function steppedStore(commits, perPoll) {
   const store = {
     runs: { get: async () => ({ id: RUN, epoch: 1, state: final() ? "ended" : "running", runner: "runner-a" }) },
     journal: () => jrnl,
-    live,
+    live: { read: async () => [undefined] },
   };
   return { store, open: () => void (opened = true) };
 }
@@ -77,6 +76,14 @@ async function streamOf(t, commits, perPoll) {
   open();
   await stream.closed;
   return got.events();
+}
+
+/** The opening snapshot of a reader that connects after the whole run (the resume included) is already stored. */
+async function snapshotOf(t, commits) {
+  const { store } = steppedStore(commits, 99, true);
+  const stream = await watchRun(store, RUN, { pollMs: 1 });
+  t.after(() => stream.stop());
+  return stream.snapshot;
 }
 
 test("a runner-lost resume note is not an event: the live stream is the same with and without it", async (t) => {
@@ -93,4 +100,25 @@ test("the resume note streams the same however the polls fall", async (t) => {
   const stepped = shape(await streamOf(t, journal({ resumed: true }), 1));
   assert.deepEqual(stepped, atOnce, "poll timing does not change the stream");
   assert.equal(atOnce.includes("entry_appended"), false, "and never an entry_appended for the resume");
+});
+
+test("a whole run with a resume note inside one poll: run_start then run_end, each once, no resume event", async (t) => {
+  // The one-poll interleaving (live-run-within-a-tick): the run starts, is taken over, and ends, all between two reads of
+  // the store (perPoll 99, so the first poll after it opens drains every commit at once). The resume note must not add an
+  // event, and run_start/run_end stay one each — the same stream a run never taken over gives.
+  const events = await streamOf(t, journal({ resumed: true }), 99);
+  const types = events.map((event) => event.type);
+  assert.equal(types.filter((type) => type === "run_start").length, 1, `one run_start: ${JSON.stringify(types)}`);
+  assert.equal(types.filter((type) => type === "run_end").length, 1, `one run_end: ${JSON.stringify(types)}`);
+  assert.ok(types.indexOf("run_start") < types.indexOf("run_end"), "run_start first");
+  assert.equal(types.includes("entry_appended"), false, "no entry_appended for the resume");
+  assert.deepEqual(shape(events), shape(await streamOf(t, journal({ resumed: false }), 99)), "the stream of a run never taken over");
+});
+
+test("the resume note stays in the snapshot: a reader that connects after the takeover still sees it", async (t) => {
+  // Dropped from the live stream, the note is still the run's record: translate keeps it in the state the snapshot reads,
+  // so a reader connecting after the takeover (and the timeline built from that snapshot) shows the resume phase.
+  const snapshot = await snapshotOf(t, journal({ resumed: true }));
+  const kinds = (snapshot.entries ?? []).map((entry) => entry.kind);
+  assert.ok(kinds.includes(RUN_RESUMED), `the snapshot keeps the resume note: ${JSON.stringify(kinds)}`);
 });
