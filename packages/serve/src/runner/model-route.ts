@@ -15,6 +15,7 @@ import { calculateCost } from "@earendil-works/pi-ai";
 import type { Wire } from "@parcha/agentrun-kernel";
 import { chooseModel, runModels, type Tier } from "../model.js";
 import { providerFor } from "../provider.js";
+import { keepText, type Redact, runnerSecrets, secretRedactor } from "./redact.js";
 
 /** What a request on a model costs, USD per million tokens, as pi-ai's catalog lists it (tiers included). */
 export type RouteCost = {
@@ -93,11 +94,13 @@ export async function routeOf(model: string | undefined, env: NodeJS.ProcessEnv 
       like: { ...(target.reasoning !== undefined ? { reasoning: target.reasoning } : {}), ...(target.contextWindow ? { contextWindow: target.contextWindow } : {}), ...(target.maxTokens ? { maxTokens: target.maxTokens } : {}) },
     };
   }
-  return { ...route, provider: { api: "anthropic-messages", origin: ROUTE_ORIGIN, credential: () => "model-route" }, fetch: messagesFetch(models as unknown as PiModels, target, upstream) };
+  return { ...route, provider: { api: "anthropic-messages", origin: ROUTE_ORIGIN, credential: () => "model-route" }, fetch: messagesFetch(models as unknown as PiModels, target, secretRedactor(runnerSecrets(env)), upstream) };
 }
 
-/** A fetch that answers Anthropic Messages requests on `target`, through pi-ai's `models`. */
-export function messagesFetch(models: PiModels, target: PiModel, upstream?: typeof fetch): typeof fetch {
+/** A fetch that answers Anthropic Messages requests on `target`, through pi-ai's `models`. A provider's error text, which
+ *  pi records, goes through `redact` (the runner's one redactor): a provider that echoes its key leaves none there.
+ *  `upstream`: the route's own fetch, for a model that does not speak Messages (absent: the network). */
+export function messagesFetch(models: PiModels, target: PiModel, redact: Redact = keepText, upstream?: typeof fetch): typeof fetch {
   // A tool call's id as Messages carries it (letters, digits, _ and -), and back to the provider's own on its result.
   const providerIds = new Map<string, string>();
   const messagesId = (id: string): string => {
@@ -150,7 +153,7 @@ export function messagesFetch(models: PiModels, target: PiModel, upstream?: type
             else if (event.type === "done" || event.type === "error") {
               const message = (event.type === "done" ? event.message : event.error) ?? {};
               if (event.type === "error") {
-                send({ type: "error", error: { type: event.reason === "aborted" ? "request_aborted" : "api_error", message: message.errorMessage ?? event.reason ?? "the model's request failed" } });
+                send({ type: "error", error: { type: event.reason === "aborted" ? "request_aborted" : "api_error", message: redact(message.errorMessage ?? event.reason ?? "the model's request failed") } });
                 break;
               }
               const used = message.usage ?? { input: 0, output: 0, cacheRead: 0, cacheWrite: 0 };
@@ -159,7 +162,7 @@ export function messagesFetch(models: PiModels, target: PiModel, upstream?: type
             }
           }
         } catch (error) {
-          send({ type: "error", error: { type: "api_error", message: (error as Error)?.message ?? String(error) } });
+          send({ type: "error", error: { type: "api_error", message: redact((error as Error)?.message ?? String(error)) } });
         }
         controller.close();
       },

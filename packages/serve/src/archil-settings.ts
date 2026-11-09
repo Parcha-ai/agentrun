@@ -1,7 +1,8 @@
 // The Archil disk the owner configured for Mode 2 (a remote disk the agent's files live on): its id, region, S3 URL and an
-// optional pinned image, kept as one row in store.settings. The disk's two credentials are sealed keys (server-keys.ts)
-// under the names below: the account key (the file API and exec) and the disk's token user (the mount). Mode 2 = these
-// settings present; absent, the server is in Mode 1 (a local folder). The cut and tl-places (E4c) wire these.
+// optional pinned image, kept as one row in store.settings. The disk's one kept credential is the account key (the file
+// API and exec), a sealed key (server-keys.ts) under the name below. No disk token is kept: a computer's mount credential
+// is minted per run from the account key. Mode 2 = these settings present; absent, the server is in Mode 1 (a local
+// folder). The owner sets them through the Archil routes (archil-routes.ts).
 import type { Settings } from "./store/index.js";
 
 /** The settings key the Archil disk's configuration lives under in store.settings. */
@@ -9,8 +10,6 @@ export const ARCHIL_SETTINGS_KEY = "archil";
 /** The sealed-key row of the Archil account key (the file API and exec), saved through server-keys.ts. Named *_ROW: a
  *  constant named like a key holding a string reads as a literal credential to the source export. */
 export const ARCHIL_API_KEY_ROW = "archil.api_key";
-/** The sealed-key row of the Archil disk's token user (the mount), saved through server-keys.ts. */
-export const ARCHIL_DISK_TOKEN_ROW = "archil.disk_token";
 
 export interface ArchilSettings {
   readonly diskId: string;

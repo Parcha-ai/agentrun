@@ -14,8 +14,9 @@
 import { answerOf, type Executor, type Hands, type ProcessInfo, type Processes, type ToolAnswer } from "./hands.js";
 import { BACKGROUND_DIR, BACKGROUND_INPUT_BYTES, BACKGROUND_LIST_MAX, BACKGROUND_LOG_BYTES, BACKGROUND_MAX, BACKGROUND_PAGE_BYTES, BACKGROUND_SIGNALS } from "./limits.js";
 
-/** Every background tool's refusal with no computer (Mode 1 or Mode 2), as ruled. */
-export const NEEDS_A_COMPUTER = "Background programs need a computer: run this agent with place sandbox (Docker in Mode 1, or a remote computer in Mode 2).";
+/** Every background tool's refusal with no computer (Mode 1 or Mode 2), naming the agent's computer setting and its v2
+ *  view, place. */
+export const NEEDS_A_COMPUTER = "Background programs need a computer: run this agent with a sandbox computer (Settings → Computers; place sandbox in the v2 API).";
 /** The terminal a `tty: true` process runs on. */
 const TTY_SIZE = Object.freeze({ cols: 80, rows: 24 });
 /** How long `bash_signal` waits for the process to end before it answers. */

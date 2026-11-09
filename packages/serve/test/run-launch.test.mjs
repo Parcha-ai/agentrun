@@ -138,8 +138,8 @@ test("a launch body with no files reads none, never an empty list", () => {
   assert.equal(read.files, undefined);
 });
 
-test("a launch body round-trips the run's learning start (given {file,name}, seed sha, # Learned section)", () => {
-  const learning = { given: [{ file: "a.md", name: "A" }, { file: "b.md", name: "B" }], seed: "seed-abc", section: "# Learned\n\nA note" };
+test("a launch body round-trips the run's learning start (given {file,name}, seed sha, # Learned section, seedNotes)", () => {
+  const learning = { given: [{ file: "a.md", name: "A" }, { file: "b.md", name: "B" }], seed: "seed-abc", section: "# Learned\n\nA note", seedNotes: 5 };
   const read = readLaunchBody(launchBody({ input: { content: "hi" }, title: "t", place: { mode: "runner" }, learning }));
   assert.deepEqual(read.learning, learning);
   assert.deepEqual(learningStartOf(read), learning);

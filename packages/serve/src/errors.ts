@@ -51,6 +51,7 @@ export const ERROR_STATUS = {
   wrong_origin: 409,
   sign_in_held: 409,
   handoff_answered: 409,
+  computer_not_live: 409,
   scope_taken: 409,
 } as const;
 
