@@ -52,7 +52,7 @@ const until = async (done, what, ms = 60_000) => {
 const offered = (body) => (body?.tools ?? []).map((tool) => tool.name);
 
 /** A store on a new data directory with the browser's keys saved, an agent of `body`, and run-1 launched with `launch`. */
-async function storeWith(t, body, launch, settings, before) {
+async function storeWith(t, body, launch, settings, before, keys = BROWSERBASE) {
   const dir = mkdtempSync(join(process.env.TMPDIR ?? tmpdir(), "runner-browser-native-"));
   const server = await openSqliteStore({ dataDir: dir, role: "server" });
   const store = await openSqliteStore({ dataDir: dir, role: "runner" });
@@ -61,7 +61,7 @@ async function storeWith(t, body, launch, settings, before) {
     await server.close().catch(() => {});
     rmSync(dir, { recursive: true, force: true });
   });
-  for (const [name, value] of Object.entries(BROWSERBASE)) await putSealedKey(server, SEAL_KEY, name, value);
+  for (const [name, value] of Object.entries(keys)) await putSealedKey(server, SEAL_KEY, name, value);
   await server.agents.create({ id: "agent-1", name: "Agent" }, { id: "rev-1", kind: "agentic", body: { instructions: "Browse.", ...body } });
   await server.runs.create({ id: RUN, agentId: "agent-1", revisionId: "rev-1" }, { body: launch });
   if (settings) await server.settings.put("tool-settings", settings);
@@ -72,8 +72,8 @@ async function storeWith(t, body, launch, settings, before) {
 
 /** run-1 run by a runner whose pi loop is the spec builder's (with `run` reshaped by `runAs`) on a scripted origin; until
  *  it is released `ended` (its end) or `parked`. Its row, the requests the model was sent, and its journal's records. */
-async function piRun(t, { body, script, settings, before, during, until: want = ["ended", "failed", "stopped"], runAs = (run) => run }) {
-  const opened = await storeWith(t, body, PI_LAUNCH, settings, before);
+async function piRun(t, { body, script, settings, before, during, keys, launch = PI_LAUNCH, until: want = ["ended", "failed", "stopped"], runAs = (run) => run }) {
+  const opened = await storeWith(t, body, launch, settings, before, keys);
   const requests = [];
   const route = { model: "faux-1", provider: { api: "anthropic-messages", origin: "https://route.invalid", credential: () => "not-a-secret" }, fetch: scriptedOrigin(script, requests) };
   const deps = { env: { [FAUX_ENV]: "faux", [FAUX_BROWSER_ENV]: FAUX_BROWSER }, data: opened.dir, journal: (claim) => opened.store.journal(claim), store: opened.store, sealKey: SEAL_KEY, routeOf: async () => route, computerForClaim: async () => ({ release: async () => {} }) };
@@ -172,4 +172,44 @@ test("end to end on the runner: a run handed its agent's saved sign-in opens its
   const paid = r.records.entries.filter((entry) => entry.kind === "runner.request").map((entry) => entry.data?.model);
   assert.ok(paid.includes("paid:this browser call"), `the browser call booked on the run's ledger: ${JSON.stringify(paid)}`);
   assert.ok(paid.includes("paid:this browser session's time"), `its release booked there too: ${JSON.stringify(paid)}`);
+});
+
+/** Every 8-character piece of `secret` that `text` holds. */
+const piecesIn = (text, secret) => { const found = new Set(); for (let i = 0; i + 8 <= secret.length; i += 1) if (text.includes(secret.slice(i, i + 8))) found.add(secret.slice(i, i + 8)); return [...found]; };
+/** The run's store files, every byte read as text: its journal rows, its tasks' memos and results among them. */
+const storeBytes = (dir) => ["store.sqlite", "store.sqlite-wal"].map((name) => join(dir, name)).map((file) => { try { return readFileSync(file).toString("latin1"); } catch { return ""; } }).join("\n");
+/** A test key, no real one, of `length` letters and digits with no shape (no prefix any shape rule knows). */
+const shapeless = (length = 40) => Array.from({ length }, (_, i) => "abcdefghijkmnpqrstuvwxyz23456789"[(i * 7 + Date.now()) % 32]).join("") .slice(0, length);
+/** Sets process env vars for the test (the faux browser's switches). */
+const switches = (t, vars) => { const before = Object.fromEntries(Object.keys(vars).map((name) => [name, process.env[name]])); Object.assign(process.env, vars); t.after(() => { for (const [name, value] of Object.entries(before)) value === undefined ? delete process.env[name] : (process.env[name] = value); }); };
+/** That none of `secret` (no 8-character piece) reached the model's requests, the run's journal records, or its store's
+ *  bytes at rest (its journal rows, its tool tasks' memos and results). */
+function noPieceOf(r, secret, what) {
+  assert.deepEqual(piecesIn(JSON.stringify(r.requests), secret), [], `${what}: nothing of it in what the model was sent`);
+  assert.deepEqual(piecesIn(JSON.stringify(r.records), secret), [], `${what}: nothing of it in the run's journal records (entries, tasks)`);
+  assert.deepEqual(piecesIn(storeBytes(r.opened.dir), secret), [], `${what}: nothing of it in the store's bytes at rest (memos, results)`);
+}
+
+test("the run's cut on the browser's answers (a): a vendor's 401 that echoes the claim's Browserbase key reaches neither the model, the journal, nor the store at rest", { timeout: 120_000 }, async (t) => {
+  const key = `bb_live_${shapeless(32)}`;
+  switches(t, { FAUX_BROWSER_CREATE_401_ECHO: "BROWSERBASE_API_KEY" });
+  const r = await piRun(t, { body: { tools: ["browser"] }, keys: { BROWSERBASE_API_KEY: key, BROWSERBASE_PROJECT_ID: "fake-project" }, script: [{ call: "snapshot" }, { sayLastResult: true }] });
+  assert.ok(r.requests.some((body) => JSON.stringify(body).includes("401")), "the vendor's refusal reached the model, cut");
+  noPieceOf(r, key, "the Browserbase key");
+});
+
+test("the run's cut on the browser's answers (b): a SHAPELESS Kernel key a vendor's 401 echoes is cut whole, nothing of it anywhere", { timeout: 120_000 }, async (t) => {
+  const key = shapeless(40);
+  switches(t, { FAUX_BROWSER_CREATE_401_ECHO: "KERNEL_API_KEY" });
+  const r = await piRun(t, { body: { tools: ["browser"] }, keys: { KERNEL_API_KEY: key }, launch: { ...PI_LAUNCH, plane: { browser: "kernel" } }, script: [{ call: "snapshot" }, { sayLastResult: true }] });
+  assert.ok(r.requests.some((body) => JSON.stringify(body).includes("401")), "the vendor's refusal reached the model, cut");
+  noPieceOf(r, key, "the Kernel key");
+});
+
+test("the run's cut on the browser's answers (c): another tool's key the claim holds (Parallel's), echoed by a page the browser reads, is cut too", { timeout: 120_000 }, async (t) => {
+  const key = shapeless(40);
+  switches(t, { FAUX_BROWSER_PAGE_ECHO: "PARALLEL_API_KEY" });
+  const r = await piRun(t, { body: { tools: ["browser", "web_search"] }, keys: { ...BROWSERBASE, PARALLEL_API_KEY: key }, launch: { ...PI_LAUNCH, plane: { browser: "browserbase", web_search: "parallel" } }, script: [{ call: "snapshot" }, { sayLastResult: true }] });
+  assert.ok(r.requests.some((body) => JSON.stringify(body).includes("The page shows")), "the page's text reached the model");
+  noPieceOf(r, key, "Parallel's key");
 });
