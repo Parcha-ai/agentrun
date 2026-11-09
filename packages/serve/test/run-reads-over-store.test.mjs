@@ -10,7 +10,8 @@ import { after, test } from "node:test";
 const { openSqliteStore } = await import("../dist/store/index.js");
 const { localWorkspace } = await import("../dist/workspace/index.js");
 const { launchBody } = await import("../dist/run-launch.js");
-const { listRunFiles, readRunFile, runBrowserState } = await import("../dist/run-reads-over-store.js");
+const { BACKGROUND_CONTEXT } = await import("@earendil-works/chord/context");
+const { listRunFiles, readRunFile, runBrowserState, runGraphView, runTimelines } = await import("../dist/run-reads-over-store.js");
 
 const dirs = [];
 after(() => {
@@ -30,7 +31,7 @@ async function freshStore(revisionBody = { instructions: "Answer.", tools: [] })
   return store;
 }
 
-const deps = (over = {}) => ({ env: {}, runWorkspace: async () => null, ...over });
+const deps = (over = {}) => ({ env: {}, runWorkspace: async () => null, runView: async () => undefined, withheld: async () => false, context: BACKGROUND_CONTEXT, ...over });
 
 // ---- listRunFiles ---------------------------------------------------------------------------------------------------
 
@@ -95,4 +96,93 @@ test("runBrowserState is off when a kept browser plane is unavailable here now",
   const answer = await runBrowserState(store, "run-1", deps({ env: {} }));
   assert.equal(answer.state, "off");
   assert.equal(typeof answer.reason, "string");
+});
+
+// ---- runGraphView ---------------------------------------------------------------------------------------------------
+
+test("runGraphView is 404 for an agentic run (only a workflow run has a graph)", async () => {
+  const store = await freshStore();
+  await assert.rejects(
+    () => runGraphView(store, "run-1", deps({ runView: async () => ({ kind: "agentic", status: "working", agent_id: "a1", revision: "r1", created_at: "2026-01-01T00:00:00.000Z", ended_at: null }) })),
+    (e) => e.code === "not_found" && /only a workflow run has a graph/.test(e.message),
+  );
+});
+
+test("runGraphView refuses a run whose output is withheld (403)", async () => {
+  const store = await freshStore();
+  await assert.rejects(
+    () => runGraphView(store, "run-1", deps({ runView: async () => ({ kind: "workflow", status: "completed", agent_id: "a1", revision: "r1", created_at: "2026-01-01T00:00:00.000Z", ended_at: "2026-01-01T00:01:00.000Z" }), withheld: async () => true })),
+    (e) => e.code === "forbidden" && /nothing the run said is shown/.test(e.message),
+  );
+});
+
+test("runGraphView is 404 for an unknown run", async () => {
+  const store = await freshStore();
+  await assert.rejects(
+    () => runGraphView(store, "run-x", deps({ runView: async () => undefined })),
+    (e) => e.code === "not_found",
+  );
+});
+
+// ---- runTimelines (paging) ------------------------------------------------------------------------------------------
+
+const row = (id, text) => ({ id, kind: "message", agent_label: null, summary: text, text });
+const working = { status: "working", state: "working", cost: { usd: 0.5 }, poll_after_ms: 1000 };
+/** A timeline reader whose rows and view are mutable fns, polling fast. `store` is unused (both are faked). */
+const timeline = (state) => runTimelines({ context: BACKGROUND_CONTEXT, pollMs: 5, timelineRows: async () => state.rows, runView: async () => state.view });
+
+test("a full read from after=0 resets with every row", async () => {
+  const tl = timeline({ rows: [row("e1", "a"), row("e2", "b")], view: working });
+  const page = await tl.page({}, "run-1", 0, 0, 100);
+  assert.equal(page.reset, true);
+  assert.deepEqual(page.rows.map((r) => r.id), ["e1", "e2"]);
+  assert.equal(page.unchanged, false);
+  assert.equal(page.has_more, false);
+  assert.equal(page.final, false);
+  assert.equal(page.status, "working");
+  assert.equal(page.cost, 0.5);
+});
+
+test("a read from the cursor with no change is unchanged, no rows, no drops", async () => {
+  const tl = timeline({ rows: [row("e1", "a"), row("e2", "b")], view: working });
+  const first = await tl.page({}, "run-1", 0, 0, 100);
+  const next = await tl.page({}, "run-1", first.next_after, 0, 100);
+  assert.equal(next.unchanged, true);
+  assert.deepEqual(next.rows, []);
+  assert.deepEqual(next.drop, []);
+  assert.equal(next.reset, false);
+});
+
+test("a new row after the cursor comes as a change, not a reset", async () => {
+  const state = { rows: [row("e1", "a")], view: working };
+  const tl = timeline(state);
+  const first = await tl.page({}, "run-1", 0, 0, 100);
+  state.rows = [row("e1", "a"), row("e2", "b")];
+  const next = await tl.page({}, "run-1", first.next_after, 0, 100);
+  assert.equal(next.reset, false);
+  assert.equal(next.unchanged, false);
+  assert.deepEqual(next.rows.map((r) => r.id), ["e2"]);
+});
+
+test("more changed rows than the limit sets has_more and returns the limit", async () => {
+  const tl = timeline({ rows: [row("e1", "a"), row("e2", "b"), row("e3", "c")], view: working });
+  const page = await tl.page({}, "run-1", 0, 0, 2);
+  assert.equal(page.has_more, true);
+  assert.equal(page.rows.length, 2);
+});
+
+test("a row no longer present comes as a drop from the cursor", async () => {
+  const state = { rows: [row("e1", "a"), row("e2", "b")], view: working };
+  const tl = timeline(state);
+  const first = await tl.page({}, "run-1", 0, 0, 100);
+  state.rows = [row("e1", "a")];
+  const next = await tl.page({}, "run-1", first.next_after, 0, 100);
+  assert.deepEqual(next.drop, ["e2"]);
+});
+
+test("the page is final when the run is terminal and settled", async () => {
+  const tl = timeline({ rows: [row("e1", "a")], view: { status: "completed", state: "idle", cost: { usd: 1 }, poll_after_ms: 0 } });
+  const page = await tl.page({}, "run-1", 0, 0, 100);
+  assert.equal(page.final, true);
+  assert.equal(page.status, "completed");
 });

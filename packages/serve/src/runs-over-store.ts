@@ -101,6 +101,24 @@ export async function cancel(store: RunsStore, moment: RunMoment): Promise<boole
   }
 }
 
+/** Pauses a workflow run, or resumes it (pauseRun/resumeRun): a pause or resume command the run's runner reads and applies.
+ *  Verbatim from runs.ts pause: an agentic run has no pause here (501, a turn is stopped instead), an ended or cancelling one
+ *  takes none (409). Returns the run id and whether it is paused; the route adds the run's status from its view.
+ *  (The runner's "pause"/"resume" command kinds are tl-jobs'; written through the store directly until they are in
+ *  runner/commands.ts's COMMAND_KINDS, then this routes through sendCommand like the others — a named TODO.) */
+async function pauseOrResume(store: RunsStore, moment: RunMoment, paused: boolean): Promise<{ run_id: string; paused: boolean }> {
+  if (moment.kind !== "workflow") throw unsupported("runs.pause", "Only a workflow run pauses here: an agentic run's turn is stopped with POST /runs/{id}/stop.");
+  if (moment.terminal || moment.cancelled) throw finished(moment);
+  await store.command(moment.id, { kind: paused ? "pause" : "resume", body: {} });
+  return { run_id: moment.id, paused };
+}
+
+/** Pauses a workflow run (pauseRun). */
+export const pause = (store: RunsStore, moment: RunMoment): Promise<{ run_id: string; paused: boolean }> => pauseOrResume(store, moment, true);
+
+/** Resumes a paused workflow run (resumeRun). */
+export const resume = (store: RunsStore, moment: RunMoment): Promise<{ run_id: string; paused: boolean }> => pauseOrResume(store, moment, false);
+
 /** The mode a message takes, as the old contract's table named it: a steer into the turn in flight, an answer to a question
  *  the run asked, or a follow-up turn of its own. The runner delivers a steer command as the right one from the run's state;
  *  this is the label the v2 answer reports. */

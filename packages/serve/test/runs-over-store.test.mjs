@@ -9,7 +9,7 @@ import { join } from "node:path";
 import { after, test } from "node:test";
 
 const { openSqliteStore } = await import("../dist/store/index.js");
-const { archiveRun, approve, cancel, message, raiseCap, startRun, stop, WAITS_ON_A_PERSON } = await import("../dist/runs-over-store.js");
+const { archiveRun, approve, cancel, message, pause, raiseCap, resume, startRun, stop, WAITS_ON_A_PERSON } = await import("../dist/runs-over-store.js");
 const { sendCommand } = await import("../dist/runner/commands.js");
 const { readLaunchBody } = await import("../dist/run-launch.js");
 
@@ -428,6 +428,37 @@ test("cancel returns false and writes nothing for a run already ended or ending"
   const id = await queuedRun(store);
   assert.equal(await cancel(store, moment({ terminal: true, terminalKind: "completed" })), false);
   assert.equal(await cancel(store, moment({ cancelled: true })), false);
+  assert.equal((await commandsOf(store, id)).length, 0);
+});
+
+// ---- pause / resume -------------------------------------------------------------------------------------------------
+
+test("pause writes a pause command for a workflow run; resume writes a resume command", async () => {
+  const store = await freshStore();
+  const id = await queuedRun(store);
+  assert.deepEqual(await pause(store, moment({ kind: "workflow" })), { run_id: id, paused: true });
+  assert.deepEqual(await resume(store, moment({ kind: "workflow" })), { run_id: id, paused: false });
+  const rows = await commandsOf(store, id);
+  assert.deepEqual(rows.map((r) => r.kind), ["pause", "resume"]);
+});
+
+test("pause of an agentic run is 501 unsupported here, nothing written", async () => {
+  const store = await freshStore();
+  const id = await queuedRun(store);
+  await assert.rejects(
+    () => pause(store, moment({ kind: "agentic" })),
+    (e) => e.code === "unsupported_here" && /Only a workflow run pauses here: an agentic run's turn is stopped with POST \/runs\/\{id\}\/stop\./.test(e.message),
+  );
+  assert.equal((await commandsOf(store, id)).length, 0);
+});
+
+test("pause of an ended run is 409 not_continuable, nothing written", async () => {
+  const store = await freshStore();
+  const id = await queuedRun(store);
+  await assert.rejects(
+    () => pause(store, moment({ kind: "workflow", terminal: true, terminalKind: "completed" })),
+    (e) => e.code === "not_continuable",
+  );
   assert.equal((await commandsOf(store, id)).length, 0);
 });
 

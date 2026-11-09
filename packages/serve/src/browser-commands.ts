@@ -25,8 +25,8 @@ export const BROWSER_HAND_BACK = "browser_hand_back";
  *  data as the contract above says). */
 export const BROWSER_HANDOVER_KIND = "agent.handover";
 
-/** The slice of the store this module writes through. */
-export type BrowserCommandStore = Pick<Store, "command">;
+/** The slice of the store this module writes through and reads its commands back from. */
+export type BrowserCommandStore = Pick<Store, "command" | "commands">;
 
 /** A journal entry as this reader needs it: its kind and its JSON data. The view (store-view.ts) reads the run's journal and
  *  passes the entries in this shape. */
@@ -72,8 +72,9 @@ function answersOf(entries: readonly JournalEntry[], commands: readonly Command[
     const done = answeredEntry(entry.data);
     if (done && !answered.has(done.id)) answered.set(done.id, { outcome: done.outcome, ...(done.at !== undefined ? { at: done.at } : {}) });
   }
-  // A person's command answers an ask the runner has not committed an answer for yet: the first command for an ask wins.
-  for (const command of commands) {
+  // A person's command answers an ask the runner has not committed an answer for yet: the lowest-id command for an ask wins
+  // (the one the runner applies), so read them in id order.
+  for (const command of [...commands].sort((a, b) => a.id - b.id)) {
     if (command.kind !== BROWSER_HAND_BACK) continue;
     const body = command.body as { ask?: unknown; outcome?: unknown; at?: unknown } | null;
     const ask = body?.ask;
@@ -120,23 +121,62 @@ export function handBackTarget(entries: readonly JournalEntry[], commands: reado
   return { id: target.id };
 }
 
+/** A hand-over answer already given: 409, in the route's words (an expiry, or the answer it was already given). */
+const answeredRefusal = (outcome: AskOutcome): ApiError =>
+  new ApiError("handoff_answered", outcome === "expired" ? "The agent's hand-over expired before this answer: the agent was told it expired." : `The agent's hand-over was already answered ${outcome}.`, { details: { outcome } });
+
+/** The run's committed journal answer for ask `ask` (a live view's give, or its expiry), if any: the journal entries alone,
+ *  not the pending commands. A give the runner committed has answered the ask over any command. */
+function journalGiven(entries: readonly JournalEntry[], ask: string): AskOutcome | undefined {
+  return answersOf(entries, []).get(ask)?.outcome;
+}
+
+/** The hand-over answer that wins for ask `ask`: the lowest-id done/cancelled command, which the runner applies. */
+function handBackWinner(commands: readonly Command[], ask: string): { id: number; outcome: AskOutcome } | undefined {
+  const rows = commands
+    .filter((command) => command.kind === BROWSER_HAND_BACK)
+    .map((command) => ({ id: command.id, body: command.body as { ask?: unknown; outcome?: unknown } | null }))
+    .filter((command) => command.body?.ask === ask && (command.body.outcome === "done" || command.body.outcome === "cancelled"))
+    .sort((a, b) => a.id - b.id);
+  const won = rows[0];
+  return won ? { id: won.id, outcome: won.body!.outcome as AskOutcome } : undefined;
+}
+
 /** The owner's answer to the run's browser ask (POST /v2/runs/{id}/browser/hand-back): a hand-over command the runner reads
- *  and applies. The first answer wins — the same one again is that answer, another is 409, an ask past its expiry has
- *  `expired` — and a run its agent never asked in is 404, in the old route's words. `target` is the ask to answer and how it
- *  stands (handBackTarget over the run's journal and commands); when it is open, the command is written. `at` is the person's
- *  own answer time (ms), carried on the row so the runner's phase row shows when they answered, not when it read the row. */
-export async function browserHandBack(store: BrowserCommandStore, runId: string, outcome: "done" | "cancelled", target: { id: string; answer?: AskOutcome } | undefined, at: number = Date.now()): Promise<{ outcome: AskOutcome; first: boolean }> {
+ *  and applies. The first answer wins, decided at the write and never from the read before it: two answers that both read the
+ *  ask open both write, then the lowest-id command is the winner the runner applies, so each caller is told the truth — the
+ *  winner's caller `first`, another with the winner's outcome not-`first`, another with a different outcome 409. A run its
+ *  agent never asked in is 404, and an ask already answered or expired is 409, in the old route's words. `target` is the ask
+ *  and how it stands (handBackTarget); `at` is the person's own answer time (ms), carried on the row so the runner's phase row
+ *  shows when they answered, not when it read the row. `freshEntries` re-reads the run's journal after the write: a live view's
+ *  own give that committed an answer between the read and the write has answered the ask already, over any command. */
+export async function browserHandBack(store: BrowserCommandStore, runId: string, outcome: "done" | "cancelled", target: { id: string; answer?: AskOutcome } | undefined, at: number = Date.now(), freshEntries?: () => Promise<readonly JournalEntry[]>): Promise<{ outcome: AskOutcome; first: boolean }> {
   if (!target) throw new ApiError("not_found", "this run's agent has not asked for you in its browser");
+  // Already answered when this read it (the runner's committed answer, or a command this read already saw): no new write.
   if (target.answer !== undefined) {
     if (target.answer === outcome) return { outcome: target.answer, first: false };
-    throw new ApiError("handoff_answered", target.answer === "expired" ? "The agent's hand-over expired before this answer: the agent was told it expired." : `The agent's hand-over was already answered ${target.answer}.`, { details: { outcome: target.answer } });
+    throw answeredRefusal(target.answer);
   }
+  // The ask read open; write this answer, then let the lowest-id command win (the one the runner applies), so two concurrent
+  // answers agree on the one outcome whatever order they wrote in.
+  let mine: Command;
   try {
-    await store.command(runId, { kind: BROWSER_HAND_BACK, body: { ask: target.id, outcome, at } });
+    mine = await store.command(runId, { kind: BROWSER_HAND_BACK, body: { ask: target.id, outcome, at } });
   } catch (error) {
     // The run ended between the read and the write: no ask of a run that is gone is still waiting.
     if (error instanceof RunFinal) throw new ApiError("not_found", "this run's agent has not asked for you in its browser");
     throw error;
   }
-  return { outcome, first: true };
+  // A live view's give that committed its answer between the read and the write has answered the ask over any command.
+  if (freshEntries) {
+    const given = journalGiven(await freshEntries(), target.id);
+    if (given !== undefined) {
+      if (given === outcome) return { outcome: given, first: false };
+      throw answeredRefusal(given);
+    }
+  }
+  const winner = handBackWinner(await store.commands(runId, 0), target.id);
+  if (!winner || winner.id === mine.id) return { outcome, first: true };
+  if (winner.outcome === outcome) return { outcome: winner.outcome, first: false };
+  throw answeredRefusal(winner.outcome);
 }
