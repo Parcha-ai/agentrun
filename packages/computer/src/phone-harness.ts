@@ -166,7 +166,7 @@ export interface AdbTransport {
 }
 
 /** One adb call on a connected phone: the args after its -t <transport id>, a bound, and stdin. */
-type AdbRun = (args: string[], timeoutMs?: number, input?: string) => Promise<Result<AdbResult>>;
+type AdbRun = (args: string[], options?: { timeoutMs?: number; signal?: AbortSignal }) => Promise<Result<AdbResult>>;
 
 /** The adb server's port when none is given: adb's own default. */
 export const ADB_SERVER_PORT = 5037;
@@ -688,7 +688,7 @@ export class PhoneHarnessProvider implements ComputerProvider {
 		const transport = await this.#transportOf(endpoint);
 		if (!transport.ok) return letGo(transport);
 		const id = transport.value;
-		const adb: AdbRun = (args, timeoutMs = ADB_TIMEOUT_MS, input) => this.#adb.run(["-t", id, ...args], { timeoutMs, ...(input === undefined ? {} : { input }) });
+		const adb: AdbRun = (args, { timeoutMs = ADB_TIMEOUT_MS, signal } = {}) => this.#adb.run(["-t", id, ...args], { timeoutMs, ...(signal ? { signal } : {}) });
 		// Ask first: the vendor's lock is per TCP connection, so a transport another connection unlocked answers at once,
 		// and an `unlock` on it would reach the phone's own sh ("unlock: inaccessible or not found", live run 4).
 		const asked = await onPhone("shell:echo ph-ok", id);
@@ -816,8 +816,8 @@ class AdbClient implements ComputerClient {
 	}
 
 	/** One shell command on the phone: its stdout, or the failure in words. */
-	async #shell(command: string): Promise<Result<string>> {
-		const ran = await this.adb(["shell", command]);
+	async #shell(command: string, signal?: AbortSignal): Promise<Result<string>> {
+		const ran = await this.adb(["shell", command], signal ? { signal } : {});
 		if (!ran.ok) return ran;
 		if (ran.value.exitCode !== 0) {
 			const why = (ran.value.stderr.trim() || ran.value.stdout.toString("utf8").trim()).split("\n")[0] || `exit code ${ran.value.exitCode}`;
@@ -827,7 +827,7 @@ class AdbClient implements ComputerClient {
 	}
 
 	async #execOut(command: string): Promise<Result<Buffer>> {
-		const ran = await this.adb(["exec-out", command], 60_000);
+		const ran = await this.adb(["exec-out", command], { timeoutMs: 60_000 });
 		if (!ran.ok) return ran;
 		if (ran.value.exitCode !== 0) return fail("phone", `${command.split(" ")[0]} on the phone failed: ${ran.value.stderr.trim().split("\n")[0] || `exit code ${ran.value.exitCode}`}`);
 		return ok(ran.value.stdout);
@@ -836,10 +836,10 @@ class AdbClient implements ComputerClient {
 	async call<M extends DaemonMethod>(method: M, params: DaemonMethods[M]["params"], options: { signal?: AbortSignal } = {}): Promise<Result<DaemonMethods[M]["result"]>> {
 		if (this.#closed) return fail("gone", "the connection to the phone is closed");
 		if (options.signal?.aborted) return fail("aborted", `${method} was aborted`);
-		return (await this.#answer(method as string, (params ?? {}) as Record<string, unknown>)) as Result<DaemonMethods[M]["result"]>;
+		return (await this.#answer(method as string, (params ?? {}) as Record<string, unknown>, options.signal)) as Result<DaemonMethods[M]["result"]>;
 	}
 
-	async #answer(method: string, params: Record<string, unknown>): Promise<Call> {
+	async #answer(method: string, params: Record<string, unknown>, signal?: AbortSignal): Promise<Call> {
 		switch (method) {
 			case "hello":
 				return ok(this.#hello);
@@ -850,7 +850,7 @@ class AdbClient implements ComputerClient {
 			case "screen.read":
 				return this.#read(params.id, params.offset);
 			case "input.actions":
-				return this.#actions(params.actions);
+				return this.#actions(params.actions, signal);
 			case "apps.list":
 				return this.#appsList();
 			case "apps.launch":
@@ -945,7 +945,24 @@ class AdbClient implements ComputerClient {
 		}
 	}
 
-	async #actions(actions: unknown): Promise<Call> {
+	/** A wait of ms, which ends early when signal fires. */
+	async #pause(ms: number, signal?: AbortSignal): Promise<void> {
+		if (signal === undefined) return this.sleep(ms);
+		if (signal.aborted) return;
+		let stop = () => {};
+		// The listener is on before the sleep starts, so a cancel during it is never missed.
+		const stopped = new Promise<void>((resolve) => {
+			stop = resolve;
+			signal.addEventListener("abort", stop, { once: true });
+		});
+		try {
+			await Promise.race([this.sleep(ms), stopped]);
+		} finally {
+			signal.removeEventListener("abort", stop);
+		}
+	}
+
+	async #actions(actions: unknown, signal?: AbortSignal): Promise<Call> {
 		const refused = checkActions(actions, PHONE_GROUPS);
 		if (refused !== undefined) return ok({ done: 0, failed: refused } satisfies InputActionsResult);
 		const list = actions as InputAction[];
@@ -960,10 +977,18 @@ class AdbClient implements ComputerClient {
 			}
 			plans.push(plan);
 		}
+		// A cancel stops the batch at the action it is on: before its wait, after it, and before each command.
+		const cancelled = (index: number): Call => ok({ done: index, failed: { index, kind: "aborted", message: `action ${index}: the batch was aborted; actions ${index} on did not run` } } satisfies InputActionsResult);
 		for (const [index, plan] of plans.entries()) {
-			if (plan.waitMs !== undefined) await this.sleep(plan.waitMs);
+			if (signal?.aborted) return cancelled(index);
+			if (plan.waitMs !== undefined) {
+				await this.#pause(plan.waitMs, signal);
+				// A wait the cancel cut short is not done.
+				if (signal?.aborted) return cancelled(index);
+			}
 			for (const command of plan.commands) {
-				const ran = await this.#shell(command);
+				if (signal?.aborted) return cancelled(index);
+				const ran = await this.#shell(command, signal);
 				if (!ran.ok) {
 					const kind: DaemonErrorKind = ran.error.code === "timeout" || ran.error.code === "aborted" || ran.error.code === "not_found" ? ran.error.code : "invalid";
 					return ok({ done: index, failed: { index, kind, message: `action ${index}: ${ran.error.message}` } } satisfies InputActionsResult);
