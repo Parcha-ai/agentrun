@@ -131,7 +131,9 @@ async function world(subject: ConformanceSubject, t: { after(fn: () => unknown):
   const target = storeTarget(dir);
   const storeEnv: Record<string, string> = target.kind === "postgres" ? { AGENTRUN_STORE_URL: target.url, AGENTRUN_STORE_SCHEMA: `${target.schema}_c${randomBytes(6).toString("hex")}` } : {};
   const env = { ...process.env, ...storeEnv };
-  const server = await openStore({ dataDir: dir, role: "server", env });
+  // The URL goes to the opener by hand (a secret is read by name, never from an environment: store/open.ts).
+  const url = target.kind === "postgres" ? target.url : "";
+  const server = await openStore({ dataDir: dir, role: "server", url, env });
   const stores: Store[] = [server];
   const runners: Runner[] = [];
   /** What the runners said (claims, releases, errors): shown with a case's failure. */
@@ -147,7 +149,7 @@ async function world(subject: ConformanceSubject, t: { after(fn: () => unknown):
   /** The command rows a runner has handed to a loop's command(): with the loop, whether or not taken yet. */
   const handed = new Set<number>();
   const start = async (name: string, setup: ConformanceSetup, holder?: { runner?: Runner }, more: Pick<LoopDeps, "endOfRun"> = {}) => {
-    const store = await openStore({ dataDir: dir, role: "runner", env });
+    const store = await openStore({ dataDir: dir, role: "runner", url, env });
     stores.push(store);
     // Each journal commit's outcome, by the claim's epoch (as child.ts records its process's): what a loop wrote, and
     // whether a loop that lost its claim wrote anything after; and each command row handed to the loop.

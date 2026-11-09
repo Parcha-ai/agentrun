@@ -179,11 +179,14 @@ test("a runner whose clock is more than 2 s from the database's says so at its o
 test("the one opener picks Postgres for a postgres:// AGENTRUN_STORE_URL, in AGENTRUN_STORE_SCHEMA, else SQLite in the data directory", ONLY, async (t) => {
   const dir = mkdtempSync(join(tmpdir(), "store-open-"));
   t.after(() => rmSync(dir, { recursive: true, force: true }));
-  assert.deepEqual(storeTarget(dir, {}), { kind: "sqlite", dataDir: dir });
-  assert.deepEqual(storeTarget(dir, { AGENTRUN_STORE_URL: "postgresql://h/db" }), { kind: "postgres", url: "postgresql://h/db", schema: "agentrun" });
-  assert.throws(() => storeTarget(dir, { AGENTRUN_STORE_URL: "mysql://h/db" }), TypeError);
+  assert.deepEqual(storeTarget(dir, {}, ""), { kind: "sqlite", dataDir: dir });
+  assert.deepEqual(storeTarget(dir, {}, "postgresql://h/db"), { kind: "postgres", url: "postgresql://h/db", schema: "agentrun" });
+  assert.deepEqual(storeTarget(dir, { AGENTRUN_STORE_SCHEMA: "other" }, "postgresql://h/db"), { kind: "postgres", url: "postgresql://h/db", schema: "other" });
+  // The URL is a secret, read by name (secrets.ts secret), never from an environment handed in.
+  assert.deepEqual(storeTarget(dir, { AGENTRUN_STORE_URL: "postgresql://h/db" }, ""), { kind: "sqlite", dataDir: dir });
+  assert.throws(() => storeTarget(dir, {}, "mysql://h/db"), TypeError);
   const schema = await schemaFor(t);
-  const store = await openStore({ dataDir: dir, env: { AGENTRUN_STORE_URL: PG_URL, AGENTRUN_STORE_SCHEMA: schema } });
+  const store = await openStore({ dataDir: dir, url: PG_URL, env: { AGENTRUN_STORE_SCHEMA: schema } });
   await queued(store);
   await store.close();
   assert.equal((await sql(schema, "SELECT id FROM runs")).length, 1, "the run is in the Postgres schema");
@@ -193,8 +196,8 @@ test("a runner process on a schema not set up is refused in the SQLite words, na
   const dir = mkdtempSync(join(tmpdir(), "store-runner-"));
   t.after(() => rmSync(dir, { recursive: true, force: true }));
   const schema = await schemaFor(t);
-  const env = { AGENTRUN_STORE_URL: PG_URL, AGENTRUN_STORE_SCHEMA: schema };
-  const error = await startRunnerProcess({ dataDir: dir, env, createLoop: () => assert.fail("no run is claimed") }).then(() => null, (e) => e);
+  const env = { AGENTRUN_STORE_SCHEMA: schema };
+  const error = await startRunnerProcess({ dataDir: dir, env, storeUrl: PG_URL, createLoop: () => assert.fail("no run is claimed") }).then(() => null, (e) => e);
   assert.ok(error instanceof RunnerRefused, String(error));
   assert.equal(error.message, `The store in the Postgres schema ${schema} is not set up yet: start the server on the Postgres schema ${schema} first, then the runner.`);
   assert.ok(!error.message.includes(PG_URL), "the URL is not in the words");

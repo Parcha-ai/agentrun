@@ -36,7 +36,7 @@ const at = async (point: keyof KernelHooks) => {
 };
 const hooks: KernelHooks = { beforeIntent: () => at("beforeIntent"), beforeResult: () => at("beforeResult") };
 // The store the harness's world opened (its data directory, or its own Postgres schema).
-const store = await openStore({ dataDir: config.dataDir, role: "runner", env: { ...process.env, ...config.storeEnv } });
+const store = await openStore({ dataDir: config.dataDir, role: "runner", url: config.storeEnv?.AGENTRUN_STORE_URL ?? "", env: { ...process.env, ...config.storeEnv } });
 // Each journal commit's outcome, by the claim's epoch: one that lands, or one refused and by what (the runner's ClaimLost,
 // or the store's Fenced), so the case can say what a loop that lost its claim tried to write.
 const createLoop = subject.createLoop({ script: [{ call: config.tool }, { say: "done" }], tools, hooks });

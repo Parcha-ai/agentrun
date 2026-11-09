@@ -32,7 +32,7 @@ import { fileURLToPath } from "node:url";
 import { fakeDocker } from "../../computer/test/fake-docker.mjs";
 import { openPostgresStore, openSqliteStore } from "../dist/store/index.js";
 import { until } from "./runner-support.mjs";
-import { dropSchema, freshSchema, onPostgres, PG_URL } from "./store-target.mjs";
+import { dropSchema, freshSchema, onPostgres, PG_URL, postgresOnly } from "./store-target.mjs";
 
 const { fakeAnthropic } = await import("@parcha/agentrun-harness-claude/testing");
 const main = await import("../dist/runner/main.js");
@@ -137,19 +137,6 @@ function runnerChild(t, args, extra = {}, { cwd } = {}) {
   });
   return { child, out, err, exited, line };
 }
-
-test("started by its launcher with a store URL that holds a database password, the runner's own environment holds neither the URL nor its name, and its store opens", async (t) => {
-  const dir = await serverData(t);
-  const child = runnerChild(t, ["--data", dir], { AGENTRUN_STORE_URL: PLANT.AGENTRUN_STORE_URL, AGENTRUN_RUNNER_NAME: "runner-custody" });
-  await child.line(READY);
-  // The launcher execs the runner in its own process: its pid is the runner's.
-  const environ = readFileSync(`/proc/${child.child.pid}/environ`, "utf8");
-  assert.ok(environ.includes("AGENTRUN_RUNNER_NAME=runner-custody"), "the runner's own environment is read");
-  assert.ok(!environ.includes("plantedstorepass"), "no database password in the runner's environment");
-  assert.ok(!environ.split("\0").some((entry) => entry.startsWith("AGENTRUN_STORE_URL=")), "no store URL in the runner's environment");
-  child.child.kill("SIGTERM");
-  assert.deepEqual(await child.exited, { code: 0, signal: null });
-});
 
 test("bad arguments: the runner exits 2 in runnerArgs' words, and claims nothing", async (t) => {
   const none = runnerChild(t, []);
@@ -326,6 +313,50 @@ test("a box-placed run gets its Docker computer through the runner process (the 
   // epoch (the one fence). A release at the run's end is the composer's (workspace-computer-deps: docker rm).
   child.child.kill("SIGTERM");
   assert.deepEqual(await child.exited, { code: 0, signal: null });
+});
+
+test("under the launcher, a runner given AGENTRUN_STORE_URL opens that Postgres store, and its process environment holds neither the URL nor its name", postgresOnly("a store URL is a Postgres store's"), async (t) => {
+  // The launcher takes the URL (its password in it) out of the environment into its pipe (agentrun-serve's list); the
+  // runner reads it back by name (secrets.ts secret), so it opens the store the URL names, never the data directory's.
+  const { dir, plant } = await storePlant(t);
+  const child = runnerChild(t, ["--data", dir], { ...PLANT, ...plant, AGENTRUN_RUNNER_NAME: "runner-url" });
+  await child.line(READY_ON("postgres"));
+  // The launcher execs the runner in its own process (exec env node ...): its environment as it started, from /proc.
+  const environ = readFileSync(`/proc/${child.child.pid}/environ`, "latin1").split("\0");
+  assert.ok(environ.includes("AGENTRUN_RUNNER_NAME=runner-url"), "the runner's own environment, read whole");
+  assert.deepEqual(environ.filter((entry) => entry.startsWith("AGENTRUN_STORE_URL=") || entry.includes(plant.AGENTRUN_STORE_URL)), [], "no store URL, by name or value");
+  child.child.kill("SIGTERM");
+  assert.deepEqual(await child.exited, { code: 0, signal: null });
+});
+
+test("started without its launcher (node dist/cli.js runner), a runner reads AGENTRUN_STORE_URL from its own environment, as the capabilities say, and opens that Postgres store", postgresOnly("a store URL is a Postgres store's"), async (t) => {
+  // No launcher, no pipe: secrets.ts secret falls back to this process's own environment, where a process of its user can
+  // read it (the capabilities' words for a server started another way).
+  const { dir, plant } = await storePlant(t);
+  const config = scratch(t, "agentrun-runner-config-");
+  const env = { PATH: `${dirname(process.execPath)}:/usr/bin:/bin`, HOME: config, XDG_CONFIG_HOME: config, TMPDIR: process.env.TMPDIR ?? tmpdir(), AGENTRUN_SEAL_KEY: SEAL, AGENTRUN_RUNNER_NAME: "runner-bare", ...plant };
+  const cli = fileURLToPath(new URL("../dist/cli.js", import.meta.url));
+  const child = spawn(process.execPath, [cli, "runner", "--data", dir], { env, stdio: ["ignore", "pipe", "pipe"] });
+  const exited = new Promise((resolve) => child.on("exit", (code, signal) => resolve({ code, signal })));
+  t.after(async () => {
+    if (child.exitCode === null && child.signalCode === null) child.kill("SIGKILL");
+    await exited;
+  });
+  const err = [];
+  createInterface({ input: child.stderr }).on("line", (line) => err.push(line));
+  const ready = await new Promise((resolve, reject) => {
+    const timer = setTimeout(() => reject(new Error(`no ready line within 30000 ms: ${err.join("\n")}`)), 30_000);
+    createInterface({ input: child.stdout }).on("line", (line) => {
+      if (READY_ON("postgres").test(line)) {
+        clearTimeout(timer);
+        resolve(line);
+      }
+    });
+    exited.then(() => reject(new Error(`exited before ready: ${err.join("\n")}`)));
+  });
+  assert.match(ready, /^Runner runner-bare ready: store postgres /);
+  child.kill("SIGTERM");
+  assert.deepEqual(await exited, { code: 0, signal: null });
 });
 
 test("a run's agent's bash under the started runner runs on pi's bash tool's fixed environment: its `env` shows no store URL, seal key, token, API key or model key", async (t) => {

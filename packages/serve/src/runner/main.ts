@@ -34,8 +34,11 @@ export interface RunnerProcessOptions {
   onEvent?: (event: RunnerEvent) => void;
   /** For tests: the clock the heartbeat is written by. Default Date.now. */
   now?: () => number;
-  /** Where AGENTRUN_STORE_URL and AGENTRUN_STORE_SCHEMA are read (process.env). */
+  /** Where AGENTRUN_STORE_SCHEMA is read (process.env). The store's URL is a secret, read by name (secrets.ts secret),
+   *  never from an environment. */
   env?: NodeJS.ProcessEnv;
+  /** For tests: the store's URL, held by the caller. By default this process's AGENTRUN_STORE_URL secret. */
+  storeUrl?: string;
   /** What a person should see at the start (a clock far from the store's Postgres): stderr by default. */
   warn?: (message: string) => void;
 }
@@ -56,14 +59,15 @@ export class RunnerRefused extends Error {
 /** The store, opened as a runner, its kind and its schema version: refused when its schema is one this build does not
  *  know, or not set up yet. The one place the runner opens its store (store/open.ts: Postgres when AGENTRUN_STORE_URL
  *  names one, else SQLite in the data directory). */
-async function openRunnerStore(dataDir: string, env: NodeJS.ProcessEnv, warn: (message: string) => void): Promise<{ store: Store; kind: string; schema: number }> {
-  // The store module owns where the store is (design: only the store adapter knows a file or a schema).
-  const target = storeTarget(dataDir, env);
+async function openRunnerStore(dataDir: string, env: NodeJS.ProcessEnv, warn: (message: string) => void, url: string | undefined): Promise<{ store: Store; kind: string; schema: number }> {
+  // The store module owns where the store is (design: only the store adapter knows a file or a schema). The URL is this
+  // process's secret (as the launcher handed it over), unless a test hands one.
+  const target = url === undefined ? storeTarget(dataDir, env) : storeTarget(dataDir, env, url);
   // The same words on either store: the data directory's, or the Postgres schema's (never its URL).
   const where = target.kind === "sqlite" ? dataDir : storePlace(target);
   const on = target.kind === "sqlite" ? "this data directory" : storePlace(target);
   try {
-    const store = await openStore({ dataDir, role: "runner", env, warn });
+    const store = await openStore({ dataDir, role: "runner", env, warn, ...(url === undefined ? {} : { url }) });
     return { store, kind: target.kind, schema: target.kind === "sqlite" ? SCHEMA_VERSION : migrationsIn().at(-1)!.version };
   } catch (error) {
     if (!(error instanceof SchemaVersionUnknown)) throw error;
@@ -154,7 +158,7 @@ export function checkRunner(options: { dataDir: string; name: string; now?: () =
 /** Opens the store as a runner and starts claiming runs. */
 export async function startRunnerProcess(options: RunnerProcessOptions): Promise<RunnerProcess> {
   const warn = options.warn ?? ((message: string) => void process.stderr.write(`agentrun-serve runner: ${message}\n`));
-  const { store, kind, schema } = await openRunnerStore(options.dataDir, options.env ?? process.env, warn);
+  const { store, kind, schema } = await openRunnerStore(options.dataDir, options.env ?? process.env, warn, options.storeUrl);
   let runner: Runner;
   try {
     const name = options.name ?? runnerName();
