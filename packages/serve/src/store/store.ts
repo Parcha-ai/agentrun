@@ -634,6 +634,25 @@ export interface SealedKeyRow {
   readonly updatedAt: number;
 }
 
+/** The tables the store keeps a sealed value in: each a plane of the server's secrets. */
+export type SealedPlane = "sealed_keys" | "mcp_servers" | "mcp_oauth_pending" | "trigger_settings" | "sign_ins" | "sign_in_tombstones" | "computer_viewers" | "run_launch";
+
+/** One sealed value the store keeps: its plane, where in it (its row's key, by column), the AAD it was sealed under (the
+ *  store's documented one for that table: store/seal.ts aadOf, or trigger_settings|<adapter>|<scope>|<field>), and its
+ *  sealed bytes. The store never opens it. */
+export interface SealedSecretRow {
+  readonly plane: SealedPlane;
+  readonly where: Readonly<Record<string, string>>;
+  readonly aad: string;
+  readonly sealed: Uint8Array;
+}
+
+/** Every sealed value the store keeps, across all its planes, in one read: what a runner's redaction set holds at each
+ *  claim (runner/store-secrets.ts), so a run's text that quotes any secret the server keeps is cut when it is written. */
+export interface SealedSecrets {
+  all(): Promise<SealedSecretRow[]>;
+}
+
 export interface SealedKeys {
   /** The sealed bytes saved under `name`, or undefined when none is. */
   get(name: string): Promise<Uint8Array | undefined>;
@@ -846,6 +865,8 @@ export interface Store {
   /** Each agent's saved browser sign-ins (design 2.1): one live row per agent and provider, its pointer sealed, with the
    *  forgotten pointers kept as tombstones. */
   readonly signIns: SignIns;
+  /** Every sealed value the store keeps, across all its planes, in one read (a runner's redaction set at each claim). */
+  readonly sealedSecrets: SealedSecrets;
   /** Claims the run for `runner` until now + `leaseMs`: the run's epoch + 1 when it is claimable (runs.claimable); null when
    *  another claim holds it, or it is final, or parked with nothing to wake it. A queued or parked run becomes running. */
   claim(runId: string, runner: string, options?: { leaseMs?: number }): Promise<Claim | null>;
