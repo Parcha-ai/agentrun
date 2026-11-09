@@ -162,8 +162,9 @@ export function echoForms(secrets: readonly string[]): string[] {
  *     begin a form (an error body the provider never finishes reaches the client as it comes); the body's end, cut, and
  *     any start of a form it ends on cut too.
  *   - `events` (a successful streamed answer): each event is read from its first line: an error event (`event: error` or
- *     `event: response.failed`, or a first data line whose JSON type is `error` or `response.failed`) is held to its end
- *     and cut whole; every other event passes as it comes, the start of each held only until its first line is whole.
+ *     `event: response.failed`, or a first data line whose JSON type is `error` or `response.failed`, or a gateway's
+ *     `data: {"error": ...}`) is held to its end and cut whole; every other event passes as it comes, the start of each
+ *     held only while it could still be an error event's (a stream with no line ends is never held).
  *   - `as-is`: every piece as it came.
  * A `redact` that throws leaves the cut, and is said.
  */
@@ -202,8 +203,19 @@ export function errorCut(mode: "error" | "events" | "as-is", forms: readonly str
       },
     };
   }
-  const ERROR_EVENT = /^(?:event:\s*(?:error|response\.failed)\s*$|data:\s*\{\s*"type"\s*:\s*"(?:error|response\.failed)")/;
-  /** The event's state: `start` until its first line is whole (that line held), then `raw` or `error` (held whole). */
+  /** How an error event's first line starts, its whitespace taken out: Messages' and Responses' named events, a data line
+   *  whose JSON type is one, and a gateway's Chat Completions error (`data: {"error": ...}`). */
+  const ERROR_STARTS = ["event:error\n", "event:response.failed\n", 'data:{"type":"error"', 'data:{"type":"response.failed"', 'data:{"error"'];
+  const squeezed = (text: string) => text.replace(/[ \t\r\f\v]+/g, "");
+  /** Whether a whole first line is an error event's. */
+  const isError = (whole: string): boolean => ERROR_STARTS.some((start) => squeezed(whole).startsWith(start));
+  /** Whether a first line not yet whole could still be an error event's: it is the start of one of them, or holds one. */
+  const mayBeError = (part: string): boolean => {
+    const now = squeezed(part);
+    return ERROR_STARTS.some((start) => start.startsWith(now) || now.startsWith(start));
+  };
+  /** The event's state: `start` until its first line shows what the event is (held while it could still be an error
+   *  event's), then `raw` (passed as it comes) or `error` (held whole). */
   let state: "start" | "raw" | "error" = "start";
   let line = "";
   let event = "";
@@ -220,7 +232,7 @@ export function errorCut(mode: "error" | "events" | "as-is", forms: readonly str
         const blank = line === "\n" || line === "\r\n";
         if (state === "start") {
           if (blank) out += line;
-          else if (ERROR_EVENT.test(line.replace(/\r?\n$/, ""))) {
+          else if (isError(line)) {
             state = "error";
             event = line;
           } else {
@@ -235,7 +247,13 @@ export function errorCut(mode: "error" | "events" | "as-is", forms: readonly str
         }
         line = "";
       }
-      // An event's first line not yet whole is held; a raw event's partial line went out as it came.
+      // An event's first line not yet whole is held only while it could still be an error event's; once it cannot, the
+      // event is raw and what came of it goes out now (a stream with no line ends is never held). A raw event's partial
+      // line went out as it came.
+      if (state === "start" && line && !mayBeError(line)) {
+        state = "raw";
+        out += line;
+      }
       return out;
     },
     end() {

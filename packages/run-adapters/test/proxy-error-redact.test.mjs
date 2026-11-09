@@ -50,6 +50,27 @@ test("a provider's error answer reaches the harness with the provider's credenti
   assert.equal(ok.text, '{"usage":{},"note":"tok-ORG-123"}');
 });
 
+test("a gateway's error event inside a streamed answer (data: {\"error\": ...}) reaches the client with the credential cut out; the events before it pass as sent", async (t) => {
+  const hooks = { beforeRequest: async () => undefined, afterRequest: async () => {} };
+  const healthy = 'data: {"id":"c1","choices":[{"delta":{"content":"Hi"}}]}\n\n';
+  const failed = `data: {"error":{"message":"Incorrect API key provided: ${CREDENTIAL}","code":401}}\n\n`;
+  const fetch = async () => new Response(healthy + failed, { status: 200, headers: { 'content-type': 'text/event-stream' } });
+  const p = await startModelProxy({ policy, model: 'm', origin: 'https://provider.invalid', credential: () => CREDENTIAL, hooks, price: () => 0, log: () => {}, fetch }, KEY);
+  t.after(() => p.close());
+  const { hostname, port } = new URL(p.url);
+  const got = await new Promise((resolve, reject) => {
+    const req = request({ host: hostname, port, method: 'POST', path: '/v1/test', headers: { 'content-type': 'application/json', authorization: `Bearer ${KEY}` } }, (res) => {
+      let text = '';
+      res.setEncoding('utf8');
+      res.on('data', (piece) => (text += piece));
+      res.on('end', () => resolve(text));
+    });
+    req.on('error', reject);
+    req.end(JSON.stringify({ model: 'm' }));
+  });
+  assert.equal(got, healthy + failed.replace(CREDENTIAL, '[redacted]'));
+});
+
 test("an error body the provider never finishes reaches the client as it comes: the cut holds back only what could still begin the key", async (t) => {
   const hooks = { beforeRequest: async () => undefined, afterRequest: async () => {} };
   const fetch = async (_url, init) => new Response(new ReadableStream({
