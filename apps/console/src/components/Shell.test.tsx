@@ -60,8 +60,8 @@ describe("Shell's navigation", () => {
     return [...host.querySelectorAll('nav[aria-label="Navigation"] button')].map((b) => b.textContent?.trim());
   };
   it("offers Triggers where the server has them, after Runs, and not where it does not", () => {
-    expect(items(true)).toEqual(["Mission Control", "Playground", "Agents", "Runs", "Triggers"]);
+    expect(items(true)).toEqual(["Mission Control", "Playground", "Agents", "Templates", "Runs", "Triggers"]);
     act(() => root?.unmount());
-    expect(items(false)).toEqual(["Mission Control", "Playground", "Agents", "Runs"]);
+    expect(items(false)).toEqual(["Mission Control", "Playground", "Agents", "Templates", "Runs"]);
   });
 });
