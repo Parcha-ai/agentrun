@@ -50,10 +50,24 @@ async function runOnce(t, script, endState, { endLateMs } = {}) {
   await server.agents.create({ id: "agent-1", name: "Listeners" }, { id: "rev-1", kind: "agentic", body: {} });
   await server.runs.create({ id: "run-1", agentId: "agent-1", revisionId: "rev-1" });
   const signals = [];
+  // Each loop's start(), settled: the loop's own end, after its teardown (the property is about start() settling; the
+  // row reads released at the end commit, before that).
+  const settled = [];
   const { tools } = suiteTools();
   const inner = piAdapterSubject.createLoop({ script, tools, hooks: quiet });
   const journalOf = (deps) => (endLateMs ? { ...deps, journal: (claim) => endReturnsLate(deps.journal(claim), endLateMs) } : deps);
-  runner = startRunner({ store, createLoop: (deps) => (signals.push(deps.signal), inner(journalOf(deps))), name: "runner-a", ...TIMING });
+  const createLoop = (deps) => {
+    signals.push(deps.signal);
+    const loop = inner(journalOf(deps));
+    const start = loop.start.bind(loop);
+    loop.start = (claim) => {
+      const end = start(claim);
+      settled.push(Promise.resolve(end).then(() => undefined, () => undefined));
+      return end;
+    };
+    return loop;
+  };
+  runner = startRunner({ store, createLoop, name: "runner-a", ...TIMING });
   const deadline = Date.now() + 15_000;
   for (;;) {
     const row = await server.runs.get("run-1");
@@ -62,6 +76,10 @@ async function runOnce(t, script, endState, { endLateMs } = {}) {
     await new Promise((resolve) => setTimeout(resolve, 20));
   }
   assert.equal(signals.length, 1, "one loop");
+  // Read once the loop's start() has settled; the bound only fails a loop that never settles.
+  let timer;
+  await Promise.race([Promise.all(settled), new Promise((_, reject) => (timer = setTimeout(() => reject(new Error("the loop's start() never settled")), 15_000)))]);
+  clearTimeout(timer);
   return signals[0];
 }
 
