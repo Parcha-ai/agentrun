@@ -207,6 +207,27 @@ interface Case {
   body(subject: ConformanceSubject, t: { after(fn: () => unknown): void }): Promise<void>;
 }
 
+/** One event of the runner process (child.ts): a claim, a lost claim, a commit's outcome by epoch, and when. */
+type Seen = { type?: string; at?: number; epoch?: number; name?: string; why?: string; claim?: { epoch: number } };
+
+/**
+ * The claim's fence, as the stalled process's own events show it: once it went on (`continuedAt`, its lease run out and no
+ * one holding the run yet), its old loop's writes under its first epoch are each refused by the fence, by name (ClaimLost
+ * or Fenced), and at least one was tried. A landed one names how long after its claim was lost it landed.
+ */
+function fenceHeld(events: readonly Seen[], continuedAt: number): void {
+  const history = JSON.stringify(events);
+  const first = events.find((event) => event.type === "claimed")?.claim?.epoch;
+  const old = events.filter((event) => (event.at ?? 0) >= continuedAt && event.epoch === first && (event.type === "commit-landed" || event.type === "commit-refused"));
+  const lost = events.find((event) => event.type === "claim-lost" && event.epoch === first);
+  for (const landed of old.filter((event) => event.type === "commit-landed")) {
+    const when = lost?.at !== undefined ? `${landed.at! - lost.at} ms after its claim was lost` : `${landed.at! - continuedAt} ms after it went on, its lease run out`;
+    assert.fail(`an epoch-${first} commit landed ${when}: ${history}`);
+  }
+  assert.ok(old.length > 0, `the old loop tried to write after it went on: ${history}`);
+  assert.ok(old.every((event) => event.name === "ClaimLost" || event.name === "Fenced"), `each was refused by the claim's fence, by name: ${history}`);
+}
+
 /**
  * The resume after a crash, as runner-b's own events tell it: runner-b claimed the run once and released it once, with the
  * run ended, and nothing touched the row after its end (its end commit is its release, moving the epoch to runner-b's
@@ -302,6 +323,11 @@ async function processCrashThenResume(subject: ConformanceSubject, t: { after(fn
     await sleep(TIMING.leaseMs + TIMING.stopMarginMs + 100);
     continuedAt = Date.now();
     child.kill("SIGCONT");
+    // The fence first, before anything waits on the process's death: its old loop's first write once it went on (landed or
+    // refused), or the process's end, bounded. The old loop's epoch is the process's first claim's.
+    const outcome = (event: Seen) => (event.at ?? 0) >= continuedAt && (event.type === "commit-landed" || event.type === "commit-refused");
+    await until(() => child.exitCode !== null || child.signalCode !== null || childEvents(eventsFile).some((event) => outcome(event as Seen)), "the old loop writes once it goes on, or the process ends", 15_000);
+    fenceHeld(childEvents(eventsFile) as Seen[], continuedAt);
   }
   const exit = (await Promise.race([once(child, "exit"), sleep(EVENT_WAIT_MS).then(() => ["timeout", null])])) as [number | string | null, string | null];
   // What the process did, when it did not die where it should: its claims, lost claims, commits (landed or refused, by
@@ -360,13 +386,10 @@ const CASES: readonly Case[] = [
     async body(subject, t) {
       const { calls, ran, events, continuedAt } = await processCrashThenResume(subject, t, "effect", "beforeIntent", { stall: true });
       const history = JSON.stringify(events);
+      // The fence was checked first, as soon as the old loop wrote (processCrashThenResume): here, the whole run's again.
+      fenceHeld(events, continuedAt);
       const claims = events.filter((event) => event.type === "claimed").map((event) => event.claim!.epoch);
       assert.ok(claims.length >= 2 && claims[1]! > claims[0]!, `the process lost its claim and took the run back at a new epoch, with a fresh loop: ${history}`);
-      // What its old loop wrote once it went on, its lease run out and no one holding the run yet: tried, and refused.
-      const old = events.filter((event) => (event.at ?? 0) >= continuedAt && event.epoch === claims[0] && (event.type === "commit-landed" || event.type === "commit-refused"));
-      assert.ok(old.length > 0, `the old loop tried to write after it went on: ${history}`);
-      assert.deepEqual(old.filter((event) => event.type === "commit-landed"), [], `none of the old loop's writes landed: ${history}`);
-      assert.ok(old.every((event) => event.name === "ClaimLost" || event.name === "Fenced"), `each was refused by the claim's fence, by name: ${history}`);
       assert.equal(ran.effect, 1, "the effect ran once");
       assert.deepEqual(calls.map((call) => [call.tool, call.status]), [["effect", "done"]]);
     },

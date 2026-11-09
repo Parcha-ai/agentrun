@@ -13,7 +13,9 @@ import { closeOpenSessions, piAdapterSubject } from "./conformance-pi-adapter.mj
 
 after(closeOpenSessions);
 const quiet = { beforeIntent: async () => {}, beforeResult: async () => {} };
-const TIMING = { leaseMs: 600, renewEveryMs: 150, stopMarginMs: 200, pollMs: 20, commandPollMs: 30 };
+// A lease no stall of a loaded machine outlasts: a claim lost mid-call is retaken and the call's flush runs again, which
+// these tests do not read. The runs end themselves, so nothing here waits on the lease.
+const TIMING = { leaseMs: 60_000, renewEveryMs: 1_000, stopMarginMs: 5_000, pollMs: 20, commandPollMs: 30 };
 
 async function order(t, tool) {
   const dir = mkdtempSync(join(process.env.TMPDIR ?? tmpdir(), "agentrun-loop-flush-"));

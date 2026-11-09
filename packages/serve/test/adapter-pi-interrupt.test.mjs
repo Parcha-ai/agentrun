@@ -14,7 +14,9 @@ import { closeOpenSessions, piAdapterSpec } from "./conformance-pi-adapter.mjs";
 const { openSqliteStore } = await import("../dist/store/index.js");
 const { startRunner } = await import("../dist/runner/runner.js");
 const { callsOf, journalRecords } = await import("../dist/runner/journal-reader.js");
-const { CONFORMANCE_TIMING } = await import("../dist/runner/conformance/harness.js");
+// A lease no stall of a loaded machine outlasts: runner-a hands the run over by closing (its release), never by a lease
+// that ran out, and a claim lost mid-call would give the run a third claim this test does not read.
+const STEADY = { leaseMs: 60_000, renewEveryMs: 1_000, stopMarginMs: 5_000, pollMs: 20, commandPollMs: 30, interruptBackoffMs: 20 };
 const { createAdapterLoop } = await import("../dist/runner/adapter-loop.js");
 
 const RUN = "run-1";
@@ -84,7 +86,7 @@ test("pi through the adapter: a tool that is not replay-safe, interrupted after 
         return flush();
       };
     }
-    const runner = startRunner({ store, createLoop: createAdapterLoop(piAdapterSpec({ script, tools, hooks: quiet })), name, ...CONFORMANCE_TIMING });
+    const runner = startRunner({ store, createLoop: createAdapterLoop(piAdapterSpec({ script, tools, hooks: quiet })), name, ...STEADY });
     runners.push(runner);
     return runner;
   };
