@@ -23,6 +23,7 @@ import { DEFAULT_PORT } from "./server.js";
 import { REDACTED, secretCut, secretsIn } from "./secret-cut.js";
 import { SECRET_NAMES, withSecrets } from "./secrets.js";
 import { SEAL_KEY_ENV } from "./tool-keys.js";
+import { bootSealKey } from "./seal-key.js";
 import { toolKeysOverStore } from "./tool-keys-store.js";
 import { openServerSecretsOverStore } from "./server-secrets-store.js";
 import { WEBHOOK_FILE, webhookSecretIn } from "./webhooks.js";
@@ -1040,9 +1041,7 @@ export async function importCommand(
     home = homedir(),
     // The folder whose projects are left out as temporary (the OS's temp directory).
     temp = tmpdir(),
-    // The server's own keys, which its start moved out of process.env (secrets.ts), read back in: the import cuts them
-    // out of what it keeps, as it cuts every other key in the environment.
-    env = withSecrets(process.env),
+    env,
     out = console.log,
   }: {
     home?: string;
@@ -1051,6 +1050,15 @@ export async function importCommand(
     temp?: string;
   } = {},
 ): Promise<number> {
+  // The server's own secrets, which the switch keeps sealed in the store, open only under the server's seal key: boot it the
+  // one way the server and runner do (seal-key.ts bootSealKey), before the environment is read, so the environment carries
+  // it; without it the store's server-secret reads refuse to open. The key handed over wins, else the one under the config
+  // home, as the server reads it. A caller's own environment (a test's) is given the key too, so it reads the same store.
+  const seal = bootSealKey();
+  // The server's own keys, which its start moved out of process.env (secrets.ts), read back in: the import cuts them out of
+  // what it keeps, as it cuts every other key in the environment.
+  env ??= withSecrets(process.env);
+  if (env[SEAL_KEY_ENV] === undefined) Object.defineProperty(env, SEAL_KEY_ENV, { value: seal.text, enumerable: false, configurable: true });
   // What it prints goes through the cut what it keeps does, with the keys secretlint finds in the lines themselves: a
   // file or project named after a key is printed cut. The lines are held until the end, then scanned and printed.
   const printed = secretCut(env, SECRET_NAMES);
