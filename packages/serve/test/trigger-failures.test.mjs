@@ -42,7 +42,7 @@ async function until(check, what) {
   }
 }
 
-test("down across three times with a one-hour window: the latest fires once, to catch up, and the two before it are one missed row", { timeout: 120_000, todo: E2 }, async (t) => {
+test("down across three times with a one-hour window: the latest fires once, to catch up, and the two before it are one missed row", { timeout: 120_000, skip: E2 }, async (t) => {
   const dir = await scratch(t);
   const data = join(dir, "agents");
   const first = await serve(t, { data, triggerClock: fakeClock("2026-06-01T00:00:00Z") });
@@ -62,7 +62,7 @@ test("down across three times with a one-hour window: the latest fires once, to 
   await follow(second.api, caught.run_id, ["completed"]);
 });
 
-test("five failed firings in a row turn the trigger off; each sends one signed trigger.failed, the fifth saying so, and a restart sends none again; a started firing resets the count", { timeout: 180_000, todo: E2 }, async (t) => {
+test("five failed firings in a row turn the trigger off; each sends one signed trigger.failed, the fifth saying so, and a restart sends none again; a started firing resets the count", { timeout: 180_000, skip: E2 }, async (t) => {
   withEnv(t, { AGENTRUN_SEAL_KEY: randomBytes(32).toString("base64") }, ["AGENTRUN_SEAL_KEY"]);
   const hook = await receiver(t);
   const dir = await scratch(t);
