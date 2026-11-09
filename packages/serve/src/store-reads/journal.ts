@@ -4,7 +4,9 @@
 // The renderer and the hearing keep their words; only where the entries come from changes.
 import type { Context } from "@earendil-works/chord";
 import type { EntryLike, TimelineEvent, TimelineOptions } from "@parcha/pi-durable-agent/timeline";
-import { timelineOf } from "@parcha/pi-durable-agent/timeline";
+import { timelineOf, TOOL_COST, TOOL_UNMETERED } from "@parcha/pi-durable-agent/timeline";
+import { RUNNER_RECORDS } from "@parcha/agentrun-kernel";
+import { TOOL_SESSION } from "@parcha/agentrun-kernel/kernel/cap";
 import { Hearing } from "../heard.js";
 import { labelled, type Reflect } from "../learning-run.js";
 import { reflectFrom } from "../runner/end-of-run.js";
@@ -56,15 +58,53 @@ function piShaped(entries: readonly EntryLike[]): EntryLike[] {
   });
 }
 
+/** The paid tool charges a run booked, read back from its paid-tools session (the kernel cap's TOOL_SESSION) as the
+ *  TOOL_COST / TOOL_UNMETERED entries the timeline renders, which the file-backed path had on the run's root (the MCP
+ *  gateway, the paid-call ledger). Each paid request's runner.request names its tool (its model "paid:<name>") and the call
+ *  it ran under (`call`, written by the cap so the view puts the charge under that call); its runner.turn carries the cost (a
+ *  priced one a charge, an unpriced one not metered). Each charge is placed right after its call's result, joined by `call`,
+ *  as the ledger wrote it there. A run with no paid-tools session reads unchanged. */
+function withPaidCosts(entries: readonly EntryLike[]): EntryLike[] {
+  const session = entries.find((e) => e.kind === KINDS.sessionKey && (e.data as { key?: unknown } | undefined)?.key === TOOL_SESSION);
+  const conv = session ? (session.data as { conversation?: unknown }).conversation : undefined;
+  if (typeof conv !== "number") return [...entries];
+  // Each paid request's tool and the call it ran under, by its turn; then each turn's cost, paired by turn.
+  const named = new Map<number, { tool: string; call?: string }>();
+  for (const e of entries) {
+    if (e.conversationId !== conv || e.kind !== RUNNER_RECORDS.request) continue;
+    const d = (e.data ?? {}) as { turn?: number; model?: string; call?: string };
+    if (typeof d.turn === "number" && typeof d.model === "string" && d.model.startsWith("paid:")) named.set(d.turn, { tool: d.model.slice("paid:".length), ...(typeof d.call === "string" ? { call: d.call } : {}) });
+  }
+  const charges: { tool: string; call?: string; usd: number | null }[] = [];
+  for (const e of entries) {
+    if (e.conversationId !== conv || e.kind !== RUNNER_RECORDS.turn) continue;
+    const d = (e.data ?? {}) as { turn?: number; usd?: number | null };
+    const req = typeof d.turn === "number" ? named.get(d.turn) : undefined;
+    if (req) charges.push({ ...req, usd: typeof d.usd === "number" && Number.isFinite(d.usd) && d.usd > 0 ? d.usd : null });
+  }
+  if (!charges.length) return [...entries];
+  const out = [...entries];
+  for (const charge of charges) {
+    // mcp:<server>/<tool> names the server that charged; another paid provider leaves charged_by to the row's default.
+    const server = charge.tool.startsWith("mcp:") && charge.tool.includes("/") ? charge.tool.slice("mcp:".length, charge.tool.indexOf("/")) : undefined;
+    const at = charge.call === undefined ? -1 : out.findIndex((e) => e.kind === "pi.tool-result" && String((e.model?.[0] as { toolCallId?: unknown } | undefined)?.toolCallId ?? "") === charge.call);
+    const data = { tool: charge.tool, ...(server ? { charged_by: server } : {}), ...(charge.call ? { call: charge.call } : {}), ...(charge.usd !== null ? { usd: charge.usd } : {}) };
+    const entry = { conversationId: at >= 0 ? out[at]!.conversationId : conv, kind: charge.usd !== null ? TOOL_COST : TOOL_UNMETERED, data, id: `paid:${charge.call ?? charge.tool}` } as unknown as EntryLike;
+    out.splice(at >= 0 ? at + 1 : out.length, 0, entry);
+  }
+  return out;
+}
+
 /** A run's timeline rows, the renderer (timelineOf) unchanged, over the one store's entries, with a CLI harness's record
- *  rendered as its pi-shaped entries (piShaped). The usage row the renderer folds from the model turns is dropped for a CLI
- *  run: its record carries no per-request cost, so the run's cost reads from its stored total (costView over no usage row),
- *  as it did before this rendering existed, never a $0/unknown usage row. The end-of-run turn's rows are labelled as the
- *  server labels them (learning-run.ts labelled). */
+ *  rendered as its pi-shaped entries (piShaped) and its paid tool charges read back from the paid-tools session
+ *  (withPaidCosts). The usage row the renderer folds from the model turns is dropped for a CLI run: its record carries no
+ *  per-request cost, so the run's cost reads from its stored total (costView over no usage row), as it did before this
+ *  rendering existed, never a $0/unknown usage row. The end-of-run turn's rows are labelled as the server labels them
+ *  (learning-run.ts labelled). */
 export async function runTimeline(store: Store, runId: string, context: Context, options: TimelineOptions = {}): Promise<TimelineEvent[]> {
   const entries = await runEntries(store, runId, context);
   const cli = entries.some((entry) => entry.kind === KINDS.message || entry.kind === KINDS.callStart || entry.kind === KINDS.callEnd);
-  const rows = timelineOf(cli ? piShaped(entries) : entries, options).filter((row) => !cli || row.kind !== "usage");
+  const rows = timelineOf(withPaidCosts(cli ? piShaped(entries) : entries), options).filter((row) => !cli || row.kind !== "usage");
   return labelled((await runReflect(store, runId, context)) as Reflect | undefined, rows);
 }
 

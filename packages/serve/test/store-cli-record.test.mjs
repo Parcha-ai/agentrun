@@ -114,3 +114,59 @@ test("a pi run is untouched: it still folds its usage row, which a CLI run has n
   assert.equal(rows.at(-1).kind, "usage");
   assert.equal(rows.find((r) => r.kind === "final_answer")?.summary, "Hello.");
 });
+
+// A paid MCP tool charge the runner books in the kernel cap's paid-tools session (TOOL_SESSION), read back as the Tool cost
+// row the file path had on the run's root. The session's runner.request names the tool (model "paid:<name>") and the call
+// it ran under; its runner.turn carries the cost; the charge is placed under that call, joined by `call`.
+const paidSession = (convId, skId, reqId, turnId, { name = "mcp:fake/paid", call = "c1", usd = 0.05 } = {}) => [
+  { type: "conversation", value: { id: convId } },
+  { type: "entry", value: { id: skId, conversationId: ROOT, kind: "agentrun.session.key", data: { key: "paid-tools", conversation: convId } } },
+  { type: "entry", value: { id: reqId, conversationId: convId, kind: "runner.request", data: { turn: 1, model: `paid:${name}`, call, heldUsd: usd } } },
+  { type: "entry", value: { id: turnId, conversationId: convId, kind: "runner.turn", data: { turn: 1, usd } } },
+];
+
+test("a pi run's paid MCP charge renders a Tool cost row under its call, from the paid-tools session", async (t) => {
+  const { store } = await storeOn(t);
+  const claim = await claimed(store, { harness: "pi", runId: "run-1" });
+  const j = store.journal(claim);
+  await commitWrites(j, [
+    { type: "conversation", value: { id: ROOT } },
+    { type: "entry", value: { id: await j.mintId(), conversationId: ROOT, kind: "pi.user", model: [{ role: "user", content: "fetch", timestamp: T0 }] } },
+    { type: "entry", value: { id: await j.mintId(), conversationId: ROOT, kind: "pi.assistant", model: [{ role: "assistant", stopReason: "tool_use", content: [{ type: "toolCall", id: "c1", name: "mcp:fake/paid", arguments: {} }], usage: { cost: { total: 0.01 } }, timestamp: T0 + 1 }] } },
+    ...paidSession(await j.mintId(), await j.mintId(), await j.mintId(), await j.mintId()),
+    { type: "entry", value: { id: await j.mintId(), conversationId: ROOT, kind: "pi.tool-result", model: [{ role: "tool", toolCallId: "c1", content: "ok", timestamp: T0 + 2 }] } },
+    { type: "entry", value: { id: await j.mintId(), conversationId: ROOT, kind: "pi.assistant", model: [{ role: "assistant", stopReason: "stop", content: [{ type: "text", text: "Done." }], timestamp: T0 + 3 }] } },
+  ], context);
+  await store.runs.update(claim, { state: "ended", outcome: "completed", summary: "Done.", costUsd: 0.06, endedAt: T0 + 9 });
+
+  const rows = await runTimeline(store, "run-1", context, { settled: true });
+  const result = rows.findIndex((x) => x.kind === "tool_result" && x.tool_use_id === "c1");
+  const cost = rows.findIndex((x) => x.kind === "phase" && /^Tool cost:/.test(x.summary ?? ""));
+  const final = rows.findIndex((x) => x.kind === "final_answer");
+  assert.ok(result >= 0 && result < cost && cost < final, `the Tool cost row follows its call's result, before the answer: ${JSON.stringify(shown(rows))}`);
+  assert.equal(rows[cost].summary, "Tool cost: fake charged $0.0500 for mcp:fake/paid");
+  assert.equal(rows[cost].tool_use_id, "c1");
+});
+
+test("a claude-agent run's paid MCP charge renders a Tool cost row under its call, from the paid-tools session", async (t) => {
+  const { store } = await storeOn(t);
+  const claim = await claimed(store, { harness: "claude-agent", runId: "run-1" });
+  const j = store.journal(claim);
+  await commitWrites(j, [
+    { type: "conversation", value: { id: ROOT } },
+    entry(await j.mintId(), "agentrun.message", { role: "person", text: "Fetch it." }),
+    entry(await j.mintId(), "agentrun.call.start", { callId: "c1", tool: "mcp:fake/paid", input: {}, replaySafe: false }),
+    ...paidSession(await j.mintId(), await j.mintId(), await j.mintId(), await j.mintId()),
+    entry(await j.mintId(), "agentrun.call.end", { callId: "c1", status: "done", output: "ok" }),
+    entry(await j.mintId(), "agentrun.message", { role: "model", text: "Fetched." }),
+  ], context);
+  await store.runs.update(claim, { state: "ended", outcome: "completed", summary: "Fetched.", costUsd: 0.06, endedAt: T0 + 9 });
+
+  const rows = await runTimeline(store, "run-1", context, { settled: true });
+  const result = rows.findIndex((x) => x.kind === "tool_result" && x.tool_use_id === "c1");
+  const cost = rows.findIndex((x) => x.kind === "phase" && /^Tool cost:/.test(x.summary ?? ""));
+  assert.ok(result >= 0 && cost === result + 1, `the Tool cost row follows its call's result: ${JSON.stringify(shown(rows))}`);
+  assert.equal(rows[cost].summary, "Tool cost: fake charged $0.0500 for mcp:fake/paid");
+  // A CLI run drops the usage row, so the charge shows only on its Tool cost line.
+  assert.equal(rows.filter((x) => x.kind === "usage").length, 0);
+});
