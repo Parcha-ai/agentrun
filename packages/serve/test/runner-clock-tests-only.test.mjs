@@ -48,17 +48,39 @@ function callsIn(text) {
   return calls;
 }
 
-test("no production caller of startRunner passes a clock, or forwards a bag of options that could carry one", () => {
+/** Why `call` (a startRunner call's argument text) could carry a clock, or undefined when it cannot: its one argument must
+ *  be an object literal whose every key is named, no `clock` among them, and whose only spreads are of a parenthesized
+ *  choice between object literals (`...(a ? { name: a } : {})`), never of anything else. */
+function whyNotLiteral(call) {
+  const text = call.trim();
+  if (!text.startsWith("{") || !text.endsWith("}")) return "its argument is no object literal (an identifier, a spread or another expression could carry a clock)";
+  if (/\bclock\b/.test(text)) return "its object literal names a clock";
+  for (let at = text.indexOf("..."); at >= 0; at = text.indexOf("...", at + 3)) {
+    const rest = text.slice(at + 3).trimStart();
+    if (!rest.startsWith("(")) return `it spreads something other than a parenthesized choice of object literals: ${rest.slice(0, 40)}`;
+    let depth = 0;
+    let end = 0;
+    for (; end < rest.length; end += 1) {
+      if (rest[end] === "(") depth += 1;
+      else if (rest[end] === ")" && --depth === 0) break;
+    }
+    const inner = rest.slice(1, end);
+    // `cond ? { …named fields… } : {}`: each branch an object literal.
+    const branches = inner.split(/\?|:(?![^{]*})/).slice(1).map((branch) => branch.trim());
+    if (!/\?/.test(inner) || branches.length < 2 || branches.some((branch) => !branch.startsWith("{") || !branch.endsWith("}"))) return `it spreads something other than a choice of object literals: (${inner.slice(0, 60)})`;
+  }
+  return undefined;
+}
+
+test("every production startRunner call passes an object literal of named fields, no clock among them: never an identifier, a spread or another expression", () => {
   const production = sources().filter((file) => file !== RUNNER && !file.startsWith(SUITE));
   const callers = production.filter((file) => readFileSync(file, "utf8").includes("startRunner("));
   assert.ok(callers.length > 0, "the runner process's own startRunner call is read");
   for (const file of callers) {
     const where = relative(ROOT, file);
     for (const call of callsIn(readFileSync(file, "utf8"))) {
-      assert.doesNotMatch(call, /\bclock\b/, `${where} passes startRunner a clock: ${call}`);
-      // A spread of a whole object (`...options`) could forward one; a field set by name, or a spread of an object
-      // literal built from named fields, cannot.
-      assert.doesNotMatch(call, /\.\.\.\s*[A-Za-z_$][\w$.]*\s*[,}\n]/, `${where} forwards a bag of options to startRunner: ${call}`);
+      const why = whyNotLiteral(call);
+      assert.equal(why, undefined, `${where}'s startRunner call could carry a clock: ${why}: startRunner(${call.trim().slice(0, 200)})`);
     }
   }
 });
