@@ -472,6 +472,14 @@ export const WITHHELD_SIGN_IN = "This server can't read the run's browser sign-i
 export const MALFORMED = "malformed";
 export type Handed = string[] | typeof MALFORMED;
 
+/** A run's `sign_in_handed` as read from its serve.json: undefined when absent (never handed one); the hashes it names;
+ *  MALFORMED for any other value. */
+export function handedMark(value: unknown): Handed | undefined {
+  if (value === undefined) return undefined;
+  if (Array.isArray(value) && value.length && value.every((hash) => typeof hash === "string" && /^[0-9a-f]{64}$/.test(hash))) return [...new Set(value as string[])];
+  return MALFORMED;
+}
+
 /** Every secret value a run's errors never show, as learning's checker holds them: every one this server never shows
  *  (serverSecrets, read now, so one rotated is cut at once) and what each launch handed the run. */
 export const refusedValuesOf = (serverSecrets: () => string[], handed: ReadonlySet<string> | undefined): string[] => [...serverSecrets(), ...(handed ?? [])];

@@ -3,7 +3,7 @@
 // sign-ins (live and forgotten) opened to find each pointer the mark names (run-view.ts handedPointers). One read for
 // every place that must cut a run of what it was handed: the store-backed run view (store-view.ts) and the runner's
 // learning end (runner/learning-end.ts), which refuses to learn it.
-import { type Handed, handedPointers } from "./run-view.js";
+import { type Handed, handedMark, handedPointers } from "./run-view.js";
 import { type RunLaunch, readLaunchBody } from "./run-launch.js";
 import type { SignIns } from "./sign-ins.js";
 import type { RunRow, Store } from "./store/store.js";
@@ -23,8 +23,11 @@ export async function launchOf(store: Pick<Store, "runs">, runId: string): Promi
   }
 }
 
-/** The pointers a run was handed, as its row kept them (never the pointers, their SHA-256). */
-export const handedOf = (runRow: RunRow): Handed | undefined => (runRow.signInHanded && runRow.signInHanded.length > 0 ? [...runRow.signInHanded] : undefined);
+/** The pointers a run was handed, as its row kept them (never the pointers, their SHA-256), read by the one rule a
+ *  serve.json's mark is read by (run-view.ts handedMark): a column that is absent or null is no mark; a non-empty array
+ *  of SHA-256 hashes is the mark; anything else (`true`, an object, a string, an empty array, which no writer writes, or
+ *  an array holding anything but a hash) is MALFORMED, which handedPointers reads as unreadable: fails closed. */
+export const handedOf = (runRow: RunRow): Handed | undefined => (runRow.signInHanded === null || runRow.signInHanded === undefined ? undefined : handedMark(runRow.signInHanded));
 
 /** The pointers run `runId` was handed, read back (handedPointers): none for a run with no mark, else each one, or
  *  `unreadable` when what it was handed can't be known here (a mark with no vendor browser kept beside it, no sign-ins to
