@@ -96,6 +96,9 @@ try {
   await hands.waitFor({ timeout: 20_000 });
   check("the viewer's button reads Take over", (await hands.innerText()) === "Take over");
   check("a desktop shows no phone buttons", await viewer.locator("#phone").isHidden());
+  // The token leaves the viewer's address at once: its fragment is gone after load.
+  const viewerFrame = page.frames().find((f) => new URL(f.url()).pathname.includes("/computer/live/v/"));
+  check("the viewer's location.hash is empty after load", (await viewerFrame.evaluate(() => location.hash)) === "", await viewerFrame.evaluate(() => location.hash));
 
   // A frame: drawn, and acked by the page once drawn.
   await watch.opened();
@@ -117,6 +120,22 @@ try {
   await viewer.locator("#hands", { hasText: "Take over" }).waitFor({ timeout: 20_000 });
   check("Hand back reached the hold", hold.calls.includes("give"));
   check("the viewer says the computer went back", (await viewer.locator("#notice").innerText()).includes("You handed the computer back"));
+
+  // Words from the computer and from the hold are text, never markup.
+  const PROBE = '<img src=x onerror="document.title=\'owned\'">';
+  const notice = viewer.locator("#notice");
+  const images = () => viewerFrame.evaluate(() => document.querySelectorAll("img").length);
+  await hands.click();
+  await viewer.locator("#hands", { hasText: "Hand back" }).waitFor({ timeout: 20_000 });
+  watch.state.refuse = PROBE;
+  await viewer.locator("#screen").click({ position: { x: 6, y: 6 } });
+  await until(async () => (await notice.textContent()) === PROBE, "the computer's refusal is shown").catch(() => {});
+  check("a vendor error renders as inert text", (await notice.textContent()) === PROBE && (await images()) === 0, `${await notice.textContent()} / ${await images()} img`);
+  hold.emit({ state: "agent", ended: "idle", message: PROBE });
+  const idle = `The computer went back to the agent: no input came from you for 15 minutes. ${PROBE}`;
+  await until(async () => (await notice.textContent()) === idle, "the hold's words are shown").catch(() => {});
+  check("a hold message renders as inert text", (await notice.textContent()) === idle && (await images()) === 0, `${await notice.textContent()} / ${await images()} img`);
+  check("no probe ran", (await viewerFrame.evaluate(() => document.title)) !== "owned");
   check("the page reached nothing but its own origin", blocked.length === 0, blocked.join(", "));
   check("the page logged no error", errors.length === 0, errors.join(" | "));
   await context.close();

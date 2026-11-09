@@ -8,7 +8,7 @@ import { randomBytes } from "node:crypto";
 import { connect as tcp } from "node:net";
 import { test } from "node:test";
 import { computerViewerAssets } from "../dist/computer-viewer.js";
-import { NOT_TAKEN, openComputerView, parseViewerMessage, viewerHoldOf } from "../dist/computer-live.js";
+import { NOT_TAKEN, openComputerView, parseViewerMessage, VIEWER_LIMITS, viewerHoldOf } from "../dist/computer-live.js";
 import { readLiveViewers } from "../dist/browser-live.js";
 import { fakeHold, fakeWatch } from "./computer-live-support.mjs";
 import { connect } from "./fixtures/ws-client.mjs";
@@ -20,9 +20,9 @@ const KEY = randomBytes(32);
 const JPEG = Buffer.from([0xff, 0xd8, 0xff, 0xe0, 1, 2, 3, 4]);
 
 /** A desktop's view opened on the fake store, and its row as the server reads it. */
-async function opened(t, { kind = "desktop", input = "desktop", tag = "cmp-desktop-1", hold = fakeHold(), watch = fakeWatch(), store = fakeLiveViewersStore(), claim } = {}) {
+async function opened(t, { kind = "desktop", input = "desktop", tag = "cmp-desktop-1", hold = fakeHold(), watch = fakeWatch(), store = fakeLiveViewersStore(), claim, ...seams } = {}) {
   const held = claim ?? store.claim(RUN);
-  const result = await openComputerView({ store, sealKey: KEY, claim: held, kind, input, tag, watch: watch.watch, hold: hold.hold });
+  const result = await openComputerView({ store, sealKey: KEY, claim: held, kind, input, tag, watch: watch.watch, hold: hold.hold, ...seams });
   assert.equal(result.ok, true, JSON.stringify(result));
   t.after(() => result.view.close("ended"));
   const [row] = await readLiveViewers(store, KEY, RUN);
@@ -242,4 +242,118 @@ test("the viewer's messages are checked field by field; viewerHoldOf drives tl-p
   off();
   assert.deepEqual(asked, [["state", "the-store", RUN], ["take", "the-store", RUN], ["handBack", "the-store", RUN, { outcome: "done" }], ["handBack", "the-store", RUN, {}], ["unsubscribed", RUN]]);
   assert.equal(listeners[0][0], RUN);
+});
+
+/** Timers a test fires itself: each set() is kept, none runs on its own. */
+function manualTimers() {
+  const set = [];
+  const cleared = new Set();
+  return { set, cleared, timers: { set: (run) => (set.push(run), run), clear: (handle) => cleared.add(handle) }, fire: (i) => set[i]() };
+}
+const key = (text) => ({ type: "key", action: "char", key: text, code: `Key${text.toUpperCase()}`, text, modifiers: 0 });
+
+test("a viewer that does not read is never buffered on: past the slow bound a frame waits (the watch unacked) until the socket drains, and past the hard bound the viewer is cut off slow_viewer", async (t) => {
+  let buffered = 0;
+  const { row, watch } = await opened(t, { limits: { slowViewerBytes: 100, maxBufferedBytes: 1_000 }, bufferedOf: () => buffered });
+  const ws = await viewerOf(row);
+  await watch.opened();
+  buffered = 101;
+  const acked = watch.push({ bytes: JPEG });
+  ws.sendJson({ type: "tap", x: 1, y: 1 });
+  const { seen } = await ws.until((m) => m.type === "text" && JSON.parse(m.data).type === "held", 5_000);
+  assert.ok(!seen.some((m) => m.type === "binary"), "no frame while the viewer is slow");
+  assert.equal(watch.state.acks, 0, "and the watch is not acked");
+  // Drained: the frame held back goes, and only the viewer's ack acks the watch.
+  buffered = 0;
+  ws.sendJson({ type: "tap", x: 1, y: 1 });
+  const frame = await ws.until((m) => m.type === "binary", 5_000);
+  assert.deepEqual(frame.item.data.subarray(4), JPEG);
+  assert.equal(watch.state.acks, 0);
+  ws.sendJson({ type: "ack" });
+  await acked;
+  // Past the hard bound: cut off, never buffered on.
+  buffered = 1_001;
+  ws.sendJson({ type: "tap", x: 1, y: 1 });
+  assert.deepEqual(await next(ws, "refused"), { type: "refused", reason: "slow_viewer" });
+  const { item } = await ws.until((m) => m.type === "close", 5_000);
+  assert.equal(item.code, 4429);
+});
+
+test("input waits behind the one being sent up to its bound (past it, held busy), and an event queued under one hold is never sent after a give and a new take", async (t) => {
+  const { row, watch, hold } = await opened(t, { hold: fakeHold({ grant: true }), limits: { maxQueuedInput: 2 } });
+  const ws = await viewerOf(row);
+  await watch.opened();
+  ws.sendJson({ type: "take" });
+  assert.deepEqual(await next(ws, "hold"), { type: "hold", held: true });
+  const release = watch.blockInputs();
+  const first = watch.nextInput();
+  ws.sendJson(key("a"));
+  assert.deepEqual(await first, [{ type: "type", text: "a" }], "the first is being sent, and waits");
+  ws.sendJson(key("b"));
+  ws.sendJson(key("c"));
+  assert.deepEqual(await next(ws, "held"), { type: "held", reason: "busy", message: "Too much input at once: that input was dropped." });
+  // b waits under the first hold; the hold is given back and taken again before it is sent.
+  ws.sendJson({ type: "give" });
+  assert.equal((await next(ws, "hold")).held, false);
+  ws.sendJson({ type: "take" });
+  assert.deepEqual(await next(ws, "hold"), { type: "hold", held: true });
+  release();
+  const later = watch.nextInput();
+  ws.sendJson(key("d"));
+  assert.deepEqual(await later, [{ type: "type", text: "d" }]);
+  assert.deepEqual(watch.state.inputs.map((actions) => actions[0].text), ["a", "d"], "b, from the earlier hold, was never sent");
+  void hold;
+});
+
+test("two opens of one computer at once run one after the other: one endpoint left listening, one row; a close only drops its own row, never a newer one under the same kind and tag", async (t) => {
+  const store = fakeLiveViewersStore();
+  const claim = store.claim(RUN);
+  const open = () => openComputerView({ store, sealKey: KEY, claim, kind: "desktop", input: "desktop", tag: "cmp-race", watch: fakeWatch().watch, hold: fakeHold().hold });
+  const [a, b] = await Promise.all([open(), open()]);
+  assert.equal(a.ok && b.ok, true);
+  t.after(() => b.view.close("ended"));
+  const rows = await readLiveViewers(store, KEY, RUN);
+  assert.equal(rows.length, 1);
+  const ports = store.received.map(({ v }) => v.port);
+  assert.equal(ports.length, 2);
+  await assert.rejects(new Promise((resolve, reject) => tcp(ports[0], "127.0.0.1").once("connect", resolve).once("error", reject)), "the first open's endpoint is closed, not orphaned");
+  assert.equal(rows[0].port, ports[1]);
+  await a.view.close("ended");
+  assert.deepEqual((await readLiveViewers(store, KEY, RUN)).map((v) => v.id), [rows[0].id], "the stale view's close leaves the live row");
+  // Another process's relaunch put a newer row under the same kind and tag: this view's close leaves it.
+  const newer = { port: 40_000, id: randomBytes(16).toString("base64url"), token: randomBytes(32).toString("base64url") };
+  const { sealColumn, sealedAt } = await import("../dist/store/seal.js");
+  assert.equal(await store.liveViewers.put(claim, { kind: "desktop", tag: "cmp-race", port: newer.port, id: newer.id, sealed: sealColumn(KEY, sealedAt.liveViewer(RUN, "desktop", "cmp-race"), newer.token) }), true);
+  await b.view.close("ended");
+  assert.deepEqual((await readLiveViewers(store, KEY, RUN)).map((v) => v.id), [newer.id]);
+});
+
+test("a socket that never says hello is refused when its wait runs out; past maxPending waiting, an upgrade is 503", async (t) => {
+  const clock = manualTimers();
+  const { row } = await opened(t, { timers: clock.timers });
+  const silent = await viewerOf(row, { hello: false });
+  assert.equal(clock.set.length, 1, "its wait began");
+  clock.fire(0);
+  assert.deepEqual(await next(silent, "refused"), { type: "refused", reason: "unauthorized" });
+  assert.equal((await silent.until((m) => m.type === "close", 5_000)).item.code, 4401);
+  const waiting = [];
+  for (let i = 0; i < VIEWER_LIMITS.maxPending; i++) waiting.push(await viewerOf(row, { hello: false }));
+  assert.equal((await connect(`ws://127.0.0.1:${row.port}/v/${row.id}/ws`, { origin: `http://127.0.0.1:${row.port}` })).status, 503);
+  for (const ws of waiting) ws.destroy();
+});
+
+test("a binary message from the viewer is bad_message; input before the computer's screen is open is held failed, in words", async (t) => {
+  const watch = fakeWatch({ hang: true });
+  const { row } = await opened(t, { watch, hold: fakeHold({ grant: true }) });
+  const ws = await viewerOf(row);
+  await watch.opened();
+  ws.sendBinary(Buffer.from([1, 2, 3]));
+  assert.deepEqual(await next(ws, "held"), { type: "held", reason: "bad_message", message: "That input was not understood." });
+  ws.sendJson({ type: "take" });
+  await next(ws, "hold");
+  ws.sendJson(key("z"));
+  assert.deepEqual(await next(ws, "held"), { type: "held", reason: "failed", message: "The computer's screen is not open yet: try again in a moment." });
+  assert.deepEqual(watch.state.inputs, []);
+  watch.start();
+  ws.destroy();
 });
