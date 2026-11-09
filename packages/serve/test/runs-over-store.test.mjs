@@ -259,6 +259,30 @@ test("a message to an archived completed agentic run stays closed: 409 unarchive
   assert.equal((await commandsOf(store, id)).length, 0, "nothing written");
 });
 
+test("a message to a completed agentic run whose agent is archived stays closed: 409 unarchive it, never reopened, nothing written", async () => {
+  const store = await freshStore();
+  const id = await endedRun(store, "run-agent-archived");
+  await store.agents.archive("a1", true);
+  const before = await store.runs.get(id);
+  await assert.rejects(
+    () => message(store, endedMoment(id, "completed"), "again"),
+    (e) => e.code === "not_continuable" && e.message === "This run is archived: unarchive it to continue it.",
+  );
+  assert.deepEqual(await store.runs.get(id), before, "the row is as it was");
+  assert.equal((await commandsOf(store, id)).length, 0, "nothing written");
+});
+
+test("a message to a run that ended after its moment was read answers in the words of its real end, read again", async () => {
+  const store = await freshStore();
+  // Read while working; it has failed by the time the message is written.
+  const id = await endedRun(store, "run-raced", "failed");
+  await assert.rejects(
+    () => message(store, moment({ id, working: false }), "again", { momentNow: async () => endedMoment(id, "failed") }),
+    (e) => e.code === "not_continuable" && e.message === "This run failed. Start a new run of the agent.",
+  );
+  assert.equal((await commandsOf(store, id)).length, 0, "nothing written");
+});
+
 // ---- raiseCap -------------------------------------------------------------------------------------------------------
 
 test("raiseCap above the run's cap writes one raise command with the new cap", async () => {
