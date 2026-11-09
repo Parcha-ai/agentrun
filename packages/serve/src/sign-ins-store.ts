@@ -11,6 +11,7 @@
 // writes sign_in_handed.
 import { createHash } from "node:crypto";
 import { ApiError } from "./errors.js";
+import { type SecretMeta, signInSecretMeta } from "./sign-ins-secrets.js";
 import { sealColumn, sealedAt, SignInHandedTo, SignInMissing, type Store, unsealColumn } from "./store/index.js";
 
 /** The one saved sign-in an agent keeps per provider is named this; the owner's label, never the model's. */
@@ -141,8 +142,9 @@ export { SignInHandedTo, SignInMissing };
 /** A browser the server keeps a sign-in for; a local Chrome keeps none. Ported from sign-ins.ts, kept here so this module
  *  does not depend on the file store the switch deletes. */
 export type Vendor = "browserbase" | "kernel";
-/** A saved sign-in as GET /agents/{id} shows it (the v2 SignIn), never its pointer. Identical to the old SignInView. */
-export type SignInView = { key: string; provider: Vendor; state: "ready" | "held" | "unreadable"; held_by: string | null; verified_at: string | null };
+/** A saved sign-in as GET /agents/{id} shows it (the v2 SignIn), never its pointer: the old SignInView's fields, then the
+ *  shared secret metadata shape (sign-ins-secrets.ts signInSecretMeta: name, set, source, changed_at). */
+export type SignInView = { key: string; provider: Vendor; state: "ready" | "held" | "unreadable"; held_by: string | null; verified_at: string | null } & SecretMeta;
 
 /** The vendor a run's browser resolves to keeps a sign-in for: Browserbase's and Kernel's; a local Chrome is refused by
  *  name; an unavailable browser has none. Ported from sign-ins.ts. */
@@ -156,15 +158,17 @@ const isoOf = (ms: number | null): string | null => (ms === null ? null : new Da
 
 /** The agent's sign-ins as the v2 API shows them (the old SignIns.view), never a pointer. Per sign-in: `held`/`held_by`
  *  when a live run holds its pointer's hash (store.signIns.handedHolder); `unreadable` when its pointer does not open under
- *  this server's seal key (then held_by is null — no hash to match a run by); `verified_at` from the store. */
+ *  this server's seal key (then held_by is null — no hash to match a run by); `verified_at` from the store; and the secret
+ *  metadata shape, changed_at being its saved_at. */
 export async function signInViews(store: SignInsStore, sealKey: Buffer | undefined, agentId: string): Promise<SignInView[]> {
   const rows = await store.signIns.list(agentId);
   return Promise.all(rows.map(async (row): Promise<SignInView> => {
     const pointer = open(sealKey, agentId, row.provider, row.pointerSealed);
     const heldBy = pointer === undefined ? null : (await store.signIns.handedHolder(pointerHash(pointer))) ?? null;
     const base = { key: row.name, provider: row.provider as Vendor, held_by: heldBy, verified_at: isoOf(row.verifiedAt) };
-    if (pointer === undefined) return { ...base, state: "unreadable" };
-    return { ...base, state: heldBy ? "held" : "ready" };
+    const meta = signInSecretMeta(row);
+    if (pointer === undefined) return { ...base, state: "unreadable", ...meta };
+    return { ...base, state: heldBy ? "held" : "ready", ...meta };
   }));
 }
 

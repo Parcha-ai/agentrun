@@ -1415,6 +1415,9 @@ const LEARNING_SHORT = {
 const CONSOLE_URL = (what: string): Json => ({ type: "string", format: "uri", description: `The ${what}'s page in this server's console, at the address people open it (the server's public URL when it has one, else the address this request reached it at): the link to give a person.`, "x-agentrun-serve": "consoleurl/1" });
 /** The RUN_FIELDS every run's view and summary hold (runs.ts): required, beside the contract's. */
 export const RUN_FIELDS_SENT = ["revision", "kind", "archived_at"];
+/** The secret metadata fields every saved sign-in is sent with (secrets/1, sign-ins-secrets.ts), required beside the
+ *  contract's. */
+export const SIGN_IN_FIELDS_SENT = ["name", "set", "source", "changed_at"];
 /** DefinitionInput's contract fields this server does not require (validate.ts): a workflow revision has no
  *  instructions, and the server mints or keeps version, skills and tools when a write leaves them out. */
 export const DEFINITION_INPUT_OPTIONAL = ["instructions", "version", "skills", "tools"];
@@ -2080,6 +2083,22 @@ export function openapiDocument(capabilityOf: (operationId: string) => string | 
       signIn.else = { if: { properties: { state: { const: "unreadable" } } }, then: { properties: { held_by: { oneOf: [ref("schemas/Id"), { type: "null" }] } } }, else: signIn.else, "x-agentrun-serve": "signins/1" };
       fields.push("SignIn.else");
     }
+  }
+  // secrets/1: each saved sign-in also reads the one secret metadata shape every plane gives (sign-ins-secrets.ts),
+  // always sent: named by its provider, set, from a sign-in, changed when its pointer was saved. Never the pointer.
+  const signInSchema = schemas.SignIn as Json & { properties: Record<string, Json>; required: string[] };
+  if (signInSchema.properties.changed_at === undefined) {
+    const meta: Record<string, Json> = {
+      name: { type: "string", description: "The sign-in's provider (`browserbase`, `kernel`): the name the secret metadata gives it." },
+      set: { type: "boolean", description: "Whether a pointer is saved: always true for a listed sign-in, whether or not it opens here (`state: unreadable`)." },
+      source: { enum: ["env", "console", "sign-in", null], description: "Where the credential came from: `sign-in` for a saved browser sign-in, a person having signed in during a run." },
+      changed_at: { oneOf: [ref("schemas/Timestamp"), { type: "null" }], description: "When its pointer was saved: the sign-in's own time, not a run's verify (`verified_at`)." },
+    };
+    for (const [field, schema] of Object.entries(meta)) {
+      signInSchema.properties[field] = { ...schema, "x-agentrun-serve": "secrets/1" };
+      fields.push(`SignIn.${field}`);
+    }
+    signInSchema.required = [...signInSchema.required, ...SIGN_IN_FIELDS_SENT];
   }
   // A workflow run pauses here (POST /runs/{run_id}/pause): its status reads `paused` until it is resumed.
   const runStatus = schemas.RunStatus as Json & { enum?: string[] };
