@@ -13,12 +13,16 @@ import { test } from "node:test";
 const { searchFor } = await import("../dist/web-search.js");
 const { webFetchTool } = await import("../dist/web-fetch.js");
 const { TOOL_PLANE_ENV } = await import("../dist/tool-plane.js");
+const { bookedIn } = await import("../dist/paid-calls.js");
 
 const KEYED_PARALLEL = new URL("./fixtures/faux-parallel-keys.mjs", import.meta.url).pathname;
 const KEYS_ENV = "AGENTRUN_TEST_FAUX_PARALLEL_KEYS";
 const newKey = () => `par-test-${randomBytes(8).toString("hex")}`;
 /** A claim's tool environment as the runner hands it: its own Parallel key and a plane resolving the web tools to Parallel. */
 const claimEnv = (key) => ({ AGENTRUN_SERVE_FAUX: "1", AGENTRUN_SERVE_FAUX_PARALLEL: KEYED_PARALLEL, PARALLEL_API_KEY: key, [TOOL_PLANE_ENV]: JSON.stringify({ web_search: "parallel", web_fetch: "parallel" }) });
+
+/** A call to book each request to Parallel under (paid-calls.ts), as a run's call gives one: a request with none is never sent. */
+const inCall = (fn) => (t) => bookedIn({ call: "test-call", record: async () => undefined }, () => fn(t));
 
 /** The requests the fake Parallel was sent in this test, each with the key it carried. */
 function keyLog(t) {
@@ -34,16 +38,16 @@ function keyLog(t) {
   return () => readFileSync(file, "utf8").split("\n").filter(Boolean).map((line) => JSON.parse(line));
 }
 
-test("a claim whose environment holds the Parallel key searches through Parallel on that key (no pipe in the runner)", async (t) => {
+test("a claim whose environment holds the Parallel key searches through Parallel on that key (no pipe in the runner)", inCall(async (t) => {
   const sent = keyLog(t);
   const key = newKey();
   const found = await searchFor(claimEnv(key), { query: "widgets", n: 3 });
   assert.equal(found.error, undefined, `the search ran: ${JSON.stringify(found)}`);
   assert.equal(found.provider, "parallel");
   assert.deepEqual(sent().map((r) => [r.path, r.key]), [["/v1/search", key]], "one search, on the claim's own key");
-});
+}));
 
-test("two claims in one process each call Parallel on their own key, in either order", async (t) => {
+test("two claims in one process each call Parallel on their own key, in either order", inCall(async (t) => {
   const sent = keyLog(t);
   const [a, b] = [newKey(), newKey()];
   const [envA, envB] = [claimEnv(a), claimEnv(b)];
@@ -53,9 +57,9 @@ test("two claims in one process each call Parallel on their own key, in either o
   }
   assert.deepEqual(sent().map((r) => r.key), [a, b, a, b], "each request carried its own claim's key");
   assert.ok(!sent().some((r) => r.key !== a && r.key !== b), "no other key was sent");
-});
+}));
 
-test("the pages a run fetched serve that run alone: another claim's fetch of the same page is its own request, on its own key", async (t) => {
+test("the pages a run fetched serve that run alone: another claim's fetch of the same page is its own request, on its own key", inCall(async (t) => {
   const sent = keyLog(t);
   const [a, b] = [newKey(), newKey()];
   const [toolA, toolB] = [webFetchTool(claimEnv(a)), webFetchTool(claimEnv(b))];
@@ -69,4 +73,4 @@ test("the pages a run fetched serve that run alone: another claim's fetch of the
   assert.equal(again.ok, true, "run A reads it again from its own pages");
   const extracts = sent().filter((r) => r.path === "/v1/extract");
   assert.deepEqual(extracts.map((r) => r.key), [a, b], "one extract per run, each on that run's key; A's second read came from A's own pages");
-});
+}));
