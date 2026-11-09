@@ -27,6 +27,8 @@ function optionalForDocker() {
 		if (need.startsWith("user:")) return (caps.user ?? []).includes(need.slice("user:".length));
 		if (need === "release:stop") return caps.release.includes("stop");
 		if (need === "vendor-agent") return Array.isArray(caps.vendorAgentPorts);
+		// N computers at once: met unless the provider holds fewer (maxComputers); Docker declares no such limit.
+		if (need.startsWith("computers:")) return caps.maxComputers === undefined || caps.maxComputers >= Number(need.slice("computers:".length));
 		throw new Error(`a need this count does not read: ${need}`);
 	};
 	return conformanceCases.filter((c) => c.level === "core" && !c.needs.every(declared)).length;
