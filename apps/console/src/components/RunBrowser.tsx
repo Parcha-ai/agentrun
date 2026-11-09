@@ -11,7 +11,9 @@ export type BrowserView = RunBrowser | { state: "signed_out" };
  *  over (completed, failed, cancelled), so a paused or waiting run is read on too. Null until the first answer, and while
  *  it is `off`. `off` is read from the server's keys now, but a going run's process holds the key it launched with and may
  *  still open a browser, so it is read on; a caller the route refuses (401, 403) is read no more: signed out (401) reads
- *  as `signed_out`, so the tab says why it closed; a 403 (a token, never a session) has no tab. An ended run has
+ *  as `signed_out`, so the tab says why it closed (in the console the same 401 also turns the page to its sign-in, once
+ *  the session read again says it ended; the tab's words are what shows meanwhile, and where no such check runs); a 403
+ *  (a token, never a session) has no tab. An ended run has
  *  nothing to watch: it is not read again, and a browser it showed reads as closed (none), whatever the last read said.
  *  A page opened on an ended run reads once, to know whether it had one. Any other failed read keeps the last answer, so
  *  a page being watched isn't torn down by one bad poll. Nothing about the answer is logged. */

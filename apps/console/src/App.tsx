@@ -117,11 +117,16 @@ function importLine(s: ImportState): string {
 export function App() {
   const [connection] = useState(createConnection);
   const [auth, setAuth] = useState<AuthMode | null>(null);
-  // Signed out elsewhere (another tab's Sign out, an expiry): the first read refused (401) turns a signed-in console to
-  // its sign-in page, saying why; the address stays, so signing in again opens the same page.
+  // Signed out elsewhere (another tab's Sign out, an expiry): a read refused (401) is checked against the session, read
+  // again. A session that ended turns the console to the page a fresh load shows (a password's sign-in, saying why, or a
+  // server's link where it has no accounts); the address stays, so signing in again opens the same page. A refusal of a
+  // read made under an older session, the session good again since, changes nothing. One check at a time.
   const [signedOutElsewhere, setSignedOutElsewhere] = useState(false);
-  const signedOut = () => setAuth((now) => { if (now !== "signed_in") return now; setSignedOutElsewhere(true); return "sign_in"; });
-  const v2 = useMemo(() => createClient({ fetch: connection.fetch, onSignedOut: signedOut }), [connection]); // eslint-disable-line react-hooks/exhaustive-deps
+  const authNow = useRef<AuthMode | null>(null);
+  authNow.current = auth;
+  const checking = useRef(false);
+  const recheck = useRef<() => Promise<void>>(async () => {});
+  const v2 = useMemo(() => createClient({ fetch: connection.fetch, onSignedOut: () => void recheck.current() }), [connection]);
   // The setup code, taken from the address once and removed from it (and from the history entry).
   const [setupCode, setSetupCode] = useState(setupCodeOnce);
   // A setup link opened in this same tab once the page is up changes only the address's fragment: its code is taken
@@ -141,12 +146,23 @@ export function App() {
   }, [auth]);
   // Whether setup takes the server's printed code (its session read says so), so the form asks for it with no link.
   const [codeNeeded, setCodeNeeded] = useState(false);
-  const readSession = async () => {
+  /** The mode the server's session asks for now. */
+  const sessionMode = async () => {
     const r = await v2.session();
     setCodeNeeded(setupTakesCode(r));
     // A server without accounts: a protected read tells whether this browser is in already (a token it sends).
     const probe = r.status === 404 ? await v2.listAgents().then(() => 200, (e) => (e instanceof ClientError ? e.status : 0)) : undefined;
-    setAuth(authMode(r, probe));
+    return authMode(r, probe);
+  };
+  const readSession = async () => setAuth(await sessionMode());
+  recheck.current = async () => {
+    if (authNow.current !== "signed_in" || checking.current) return;
+    checking.current = true;
+    try {
+      const mode = await sessionMode();
+      if (mode !== "signed_in" && authNow.current === "signed_in") { setSignedOutElsewhere(true); setAuth(mode); }
+    } catch { /* the session could not be read: the console stays as it is, and the next refusal checks again */ }
+    finally { checking.current = false; }
   };
   useEffect(() => { readSession().catch(() => setAuth("sign_in")); }, [v2]); // eslint-disable-line react-hooks/exhaustive-deps
   // Setup's box, offered at once where the server can import this machine's sessions (on loopback, before an owner), its
