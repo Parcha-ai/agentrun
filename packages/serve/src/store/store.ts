@@ -514,6 +514,9 @@ export interface SignInRow {
   readonly name: string;
   readonly pointerSealed: Uint8Array;
   readonly savedAt: number;
+  /** When a run last verified this sign-in (saved a live session back to the vendor), ms; null when none has since it was
+   *  saved. The v2 view's verified_at. */
+  readonly verifiedAt: number | null;
 }
 
 /** A forgotten sign-in's pointer, kept sealed byte for byte as its live row held it (so it still opens under the same
@@ -536,6 +539,9 @@ export interface SignIns {
   list(agentId: string): Promise<SignInRow[]>;
   /** The agent's live sign-in for the provider, or undefined. */
   get(agentId: string, provider: string): Promise<SignInRow | undefined>;
+  /** Marks the agent's sign-in for the provider verified at `at` (a run saved a live session back): sets verified_at, for
+   *  the v2 view. The run path (E2) calls it at a run's save; a missing sign-in is left as it is. */
+  verify(agentId: string, provider: string, at: number): Promise<void>;
   /** The agent's forgotten pointers for the provider, newest first (kept sealed, never opened here). */
   tombstones(agentId: string, provider: string): Promise<SignInTombstoneRow[]>;
   /** Forgets the agent's live sign-in for the provider, in the one transaction a launch shares as its lock: when a running

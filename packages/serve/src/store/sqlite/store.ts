@@ -97,8 +97,9 @@ type TriggerSettingRecord = { adapter: string; scope: string; field: string; sea
 const triggerSettingOf = (r: TriggerSettingRecord): TriggerSettingRow => ({ adapter: r.adapter, scope: r.scope, field: r.field, sealed: r.sealed, updatedAt: r.updated_at });
 type McpOauthRecord = { state: string; server: string; verifier_sealed: Uint8Array; cookie_binding: string; working: string | null; expires_at: number };
 const mcpOauthOf = (r: McpOauthRecord): McpOauthPendingRow => ({ state: r.state, server: r.server, verifierSealed: Uint8Array.from(r.verifier_sealed), cookieBinding: r.cookie_binding, working: r.working === null ? null : JSON.parse(r.working), expiresAt: r.expires_at });
-type SignInRecord = { agent_id: string; provider: string; name: string; pointer_sealed: Uint8Array; saved_at: number };
-const signInOf = (r: SignInRecord): SignInRow => ({ agentId: r.agent_id, provider: r.provider, name: r.name, pointerSealed: Uint8Array.from(r.pointer_sealed), savedAt: r.saved_at });
+type SignInRecord = { agent_id: string; provider: string; name: string; pointer_sealed: Uint8Array; saved_at: number; verified_at: number | null };
+const SIGN_IN_COLUMNS = "agent_id, provider, name, pointer_sealed, saved_at, verified_at";
+const signInOf = (r: SignInRecord): SignInRow => ({ agentId: r.agent_id, provider: r.provider, name: r.name, pointerSealed: Uint8Array.from(r.pointer_sealed), savedAt: r.saved_at, verifiedAt: r.verified_at });
 type SignInTombstoneRecord = { agent_id: string; provider: string; pointer_sealed: Uint8Array; forgotten_at: number };
 const signInTombstoneOf = (r: SignInTombstoneRecord): SignInTombstoneRow => ({ agentId: r.agent_id, provider: r.provider, pointerSealed: Uint8Array.from(r.pointer_sealed), forgottenAt: r.forgotten_at });
 
@@ -600,19 +601,23 @@ class SqliteStore implements Store {
     this.signIns = {
       save: async ({ agentId, provider, name, pointerSealed }) => {
         const at = now();
+        // A fresh save clears verified_at: the pointer is new, and no run has verified it yet.
         const [result] = await db.write([{
-          sql: `INSERT INTO sign_ins (agent_id, provider, name, pointer_sealed, saved_at) VALUES (?, ?, ?, ?, ?)
-            ON CONFLICT (agent_id, provider) DO UPDATE SET name = excluded.name, pointer_sealed = excluded.pointer_sealed, saved_at = excluded.saved_at
-            RETURNING agent_id, provider, name, pointer_sealed, saved_at`,
+          sql: `INSERT INTO sign_ins (agent_id, provider, name, pointer_sealed, saved_at, verified_at) VALUES (?, ?, ?, ?, ?, NULL)
+            ON CONFLICT (agent_id, provider) DO UPDATE SET name = excluded.name, pointer_sealed = excluded.pointer_sealed, saved_at = excluded.saved_at, verified_at = NULL
+            RETURNING ${SIGN_IN_COLUMNS}`,
           params: [agentId, provider, name, pointerSealed, at],
         }]);
         return signInOf(result!.rows[0] as SignInRecord);
       },
       list: async (agentId) =>
-        (await db.all<SignInRecord>("SELECT agent_id, provider, name, pointer_sealed, saved_at FROM sign_ins WHERE agent_id = ? ORDER BY provider", agentId)).map(signInOf),
+        (await db.all<SignInRecord>(`SELECT ${SIGN_IN_COLUMNS} FROM sign_ins WHERE agent_id = ? ORDER BY provider`, agentId)).map(signInOf),
       get: async (agentId, provider) => {
-        const row = await db.get<SignInRecord>("SELECT agent_id, provider, name, pointer_sealed, saved_at FROM sign_ins WHERE agent_id = ? AND provider = ?", agentId, provider);
+        const row = await db.get<SignInRecord>(`SELECT ${SIGN_IN_COLUMNS} FROM sign_ins WHERE agent_id = ? AND provider = ?`, agentId, provider);
         return row && signInOf(row);
+      },
+      verify: async (agentId, provider, at) => {
+        await db.write([{ sql: "UPDATE sign_ins SET verified_at = ? WHERE agent_id = ? AND provider = ?", params: [at, agentId, provider] }]);
       },
       tombstones: async (agentId, provider) =>
         (await db.all<SignInTombstoneRecord>("SELECT agent_id, provider, pointer_sealed, forgotten_at FROM sign_in_tombstones WHERE agent_id = ? AND provider = ? ORDER BY id DESC", agentId, provider)).map(signInTombstoneOf),
@@ -622,7 +627,7 @@ class SqliteStore implements Store {
           // writer lock serializes them, so forget never passes a hold a launch took, nor a launch a forget cleared.
           const holder = held.hash !== undefined ? await handedHolderIn(tx, held.hash) : held.heldUnreadable ? await handedAnyIn(tx) : undefined;
           if (holder) throw new SignInHandedTo(holder.id);
-          const live = await tx.get<SignInRecord>("SELECT agent_id, provider, name, pointer_sealed, saved_at FROM sign_ins WHERE agent_id = ? AND provider = ?", agentId, provider);
+          const live = await tx.get<SignInRecord>(`SELECT ${SIGN_IN_COLUMNS} FROM sign_ins WHERE agent_id = ? AND provider = ?`, agentId, provider);
           if (!live) throw new SignInMissing(agentId, provider);
           const at = now();
           const tomb = await tx.get<SignInTombstoneRecord>(
