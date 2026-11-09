@@ -74,7 +74,8 @@ export interface FakeSdkOptions {
   /**
    * What the "model" says after a `call` returns, in place of `<tool> returned: <result>`: given the tool, its result and
    * the steers folded into the turn. Said as text events too (as with `remoteModel`), so a host's record of what the
-   * model said carries it.
+   * model said carries it. Also the first reply of a resumed session whose transcript ends on a result the host wrote
+   * there (a call that ran on the resume): the model reads that result on its next turn, as the CLI's does.
    */
   reply?: (call: { name: string; result: string; steers: readonly string[] }) => string;
   /** Each `PreToolUse` decision a built-in got (with the input the hook rewrote, if it did). */
@@ -210,6 +211,8 @@ export function fakeSdk(fake: FakeSdkOptions = {}): FakeSdk {
       const signal: AbortSignal | undefined = options.abortController?.signal;
       let calls = 0;
       let parent: string | undefined;
+      /** A host-written result the resumed transcript ends on (with `reply`): what the next turn's reply reads. */
+      let readBack: { name: string; result: string } | undefined;
       const uuid = () => randomUUID();
       const entry = (type: string, body: Record<string, unknown>): { type: string; uuid: string; message: any; [k: string]: unknown } => {
         const e = { type, uuid: uuid(), parentUuid: parent ?? null, sessionId, message: undefined, ...body };
@@ -349,10 +352,15 @@ export function fakeSdk(fake: FakeSdkOptions = {}): FakeSdk {
           // The CLI's own repair of a dangling call.
           const last = loaded.findLast((e) => e.type === 'assistant');
           const dangling = last?.message?.content?.find((c: any) => c.type === 'tool_use');
-          if (dangling && !loaded.some((e) => e.type === 'user' && e.message?.content?.[0]?.tool_use_id === dangling.id)) {
+          const answered = dangling && loaded.findLast((e) => e.type === 'user' && e.message?.content?.[0]?.tool_use_id === dangling.id);
+          if (dangling && !answered) {
             await mirror([
               entry('user', { message: { role: 'user', content: [{ type: 'tool_result', tool_use_id: dangling.id, is_error: true, content: '[Tool call interrupted]' }] } }),
             ]);
+          } else if (answered && fake.reply && answered === loaded.findLast((e) => e.type === 'user' || e.type === 'assistant')) {
+            // A call whose result the host wrote into the transcript before this resume: the model reads it on its next turn.
+            const content = answered.message.content[0].content;
+            readBack = { name: String(dangling.name ?? '').replace(/^mcp__hands__/, ''), result: Array.isArray(content) ? content.map((c: any) => c?.text ?? '').join('') : String(content ?? '') };
           }
         }
         for (;;) {
@@ -444,7 +452,9 @@ export function fakeSdk(fake: FakeSdkOptions = {}): FakeSdk {
             await mirror([b]);
             yield { type: 'assistant', parent_tool_use_id: null, uuid: b.uuid, session_id: sessionId, message: b.message };
           } else {
-            const reply = text.startsWith('[Recovery]') ? 'Recovered from the log.' : `echo: ${text}`;
+            const read = readBack;
+            readBack = undefined;
+            const reply = read && fake.reply ? fake.reply({ ...read, steers: [] }) : text.startsWith('[Recovery]') ? 'Recovered from the log.' : `echo: ${text}`;
             yield* speak(reply);
             const b = entry('assistant', { message: { role: 'assistant', content: [{ type: 'text', text: reply }] } });
             await mirror([b]);
