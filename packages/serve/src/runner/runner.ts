@@ -611,9 +611,10 @@ export function startRunner(options: RunnerOptions): Runner {
       // taking a dead runner's runs over, is one transaction, not 300.
       const sentAt = Date.now();
       const claims = await store.runs.claimMany(name, free, { leaseMs });
-      // A run released running whose stop row has tries is one whose stopped end was refused (endRefused): its claim only
-      // ends it. One read of those claims' rows, made only when the batch has a run released running.
-      const released = claims.filter((claim) => claim.from === "running");
+      // A run whose untaken stop row has tries failed to apply that stop before: its claim only ends it (endRetried). Either
+      // source of tries counts: a refused stopped end (endRefused, released running) or a failed resume (resumeFailed's
+      // store.retry, released parked). One read of those claims' rows, made only when the batch has a released run.
+      const released = claims.filter((claim) => claim.from === "running" || claim.from === "parked");
       const rows = released.length ? await store.commandsOf(released.map((claim) => ({ runId: claim.runId, after: 0 }))) : new Map<string, Command[]>();
       for (const claim of claims) {
         const stop = endingRow((rows.get(claim.runId) ?? []).filter((row) => row.takenAt === null));
