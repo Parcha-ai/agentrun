@@ -10,6 +10,7 @@
 // transaction, which is the per-agent lock a launch shares: the store's one writer serializes it with the launch that
 // writes sign_in_handed.
 import { createHash } from "node:crypto";
+import { ApiError } from "./errors.js";
 import { sealColumn, sealedAt, SignInHandedTo, SignInMissing, type Store, unsealColumn } from "./store/index.js";
 
 /** The one saved sign-in an agent keeps per provider is named this; the owner's label, never the model's. */
@@ -130,3 +131,100 @@ export async function handedTo(store: SignInsStore, hash: string): Promise<strin
 }
 
 export { SignInHandedTo, SignInMissing };
+
+// ---------------------------------------------------------------------------------------------------------------------
+// View bridge: the old SignIns interface's shapes (sign-ins.ts), byte for byte, so the v2 API answers unchanged when the
+// switch wires the store version in. The lease and Browserbase-settle machinery is gone; a sign-in is "held" when a live
+// run (running, not final) was handed its pointer's hash (store.signIns.handedHolder), and verified_at is the time a run
+// last verified it (store column, written by E2's run path through store.signIns.verify).
+
+/** A browser the server keeps a sign-in for; a local Chrome keeps none. Ported from sign-ins.ts, kept here so this module
+ *  does not depend on the file store the switch deletes. */
+export type Vendor = "browserbase" | "kernel";
+/** A saved sign-in as GET /agents/{id} shows it (the v2 SignIn), never its pointer. Identical to the old SignInView. */
+export type SignInView = { key: string; provider: Vendor; state: "ready" | "held" | "unreadable"; held_by: string | null; verified_at: string | null };
+
+/** The vendor a run's browser resolves to keeps a sign-in for: Browserbase's and Kernel's; a local Chrome is refused by
+ *  name; an unavailable browser has none. Ported from sign-ins.ts. */
+export function vendorOf(resolution: string): Vendor | undefined {
+  if (resolution === "browserbase" || resolution === "kernel") return resolution;
+  if (resolution === "chrome" || resolution === "cdp") throw new Error("a local Chrome keeps no saved sign-in: its cookies would sit on this server's disk");
+  return undefined;
+}
+
+const isoOf = (ms: number | null): string | null => (ms === null ? null : new Date(ms).toISOString());
+
+/** The agent's sign-ins as the v2 API shows them (the old SignIns.view), never a pointer. Per sign-in: `held`/`held_by`
+ *  when a live run holds its pointer's hash (store.signIns.handedHolder); `unreadable` when its pointer does not open under
+ *  this server's seal key (then held_by is null — no hash to match a run by); `verified_at` from the store. */
+export async function signInViews(store: SignInsStore, sealKey: Buffer | undefined, agentId: string): Promise<SignInView[]> {
+  const rows = await store.signIns.list(agentId);
+  return Promise.all(rows.map(async (row): Promise<SignInView> => {
+    const pointer = open(sealKey, agentId, row.provider, row.pointerSealed);
+    const heldBy = pointer === undefined ? null : (await store.signIns.handedHolder(pointerHash(pointer))) ?? null;
+    const base = { key: row.name, provider: row.provider as Vendor, held_by: heldBy, verified_at: isoOf(row.verifiedAt) };
+    if (pointer === undefined) return { ...base, state: "unreadable" };
+    return { ...base, state: heldBy ? "held" : "ready" };
+  }));
+}
+
+/** The pointer of the agent's sign-in for `resolution`'s vendor (the old SignIns.peek): `{ ref }`, `unreadable` when it
+ *  does not open, or undefined when there is none or the browser keeps none. */
+export async function peekSignIn(store: SignInsStore, sealKey: Buffer | undefined, agentId: string, resolution: string): Promise<{ ref: string } | "unreadable" | undefined> {
+  const vendor = (() => { try { return vendorOf(resolution); } catch { return undefined; } })();
+  if (!vendor) return undefined;
+  const opened = await openSavedPointer(store, sealKey, agentId, vendor);
+  return opened === undefined ? undefined : opened === "unreadable" ? "unreadable" : { ref: opened.pointer };
+}
+
+/** The agent's forgotten pointers for `resolution`'s vendor that open here, and whether any does not (the old
+ *  SignIns.forgotten): `{ refs, unreadable }`, or `{ refs: [], unreadable: false }` for a browser that keeps none. */
+export async function forgottenSignIns(store: SignInsStore, sealKey: Buffer | undefined, agentId: string, resolution: string): Promise<{ refs: string[]; unreadable: boolean }> {
+  const vendor = (() => { try { return vendorOf(resolution); } catch { return undefined; } })();
+  if (!vendor) return { refs: [], unreadable: false };
+  const { pointers, unreadable } = await forgottenPointers(store, sealKey, agentId, vendor);
+  return { refs: pointers, unreadable };
+}
+
+/** Forgets the agent's sign-in named `key`, across every provider that keeps it (the old SignIns.forget): each held check
+ *  runs first, so one held refuses the whole forget (409 sign_in_held) and removes none; then each is moved to a tombstone
+ *  and deleted at its vendor best effort. 404 when the agent has no sign-in named `key`. */
+export async function forgetSignInView(
+  store: SignInsStore,
+  sealKey: Buffer | undefined,
+  vendors: SignInVendors,
+  agentId: string,
+  key: string,
+): Promise<{ key: string; removed: Array<{ provider: Vendor; at_vendor: "deleted" | "not_deleted"; message?: string }> }> {
+  const named = (await store.signIns.list(agentId)).filter((row) => row.name === key);
+  if (!named.length) throw new ApiError("not_found", `The agent ${agentId} has no sign-in ${key}.`);
+  // Check every provider's hold before removing any: a sign-in handed to a running run refuses the whole forget.
+  for (const row of named) {
+    const pointer = open(sealKey, agentId, row.provider, row.pointerSealed);
+    const runId = pointer === undefined ? await store.signIns.handedAny() : await store.signIns.handedHolder(pointerHash(pointer));
+    if (runId) throw new ApiError("sign_in_held", `The sign-in ${key} was handed to the run ${runId}, which is still going: forget it once that run ends.`, { details: { handed_to: runId } });
+  }
+  const removed: Array<{ provider: Vendor; at_vendor: "deleted" | "not_deleted"; message?: string }> = [];
+  for (const row of named) {
+    try {
+      removed.push({ ...(await forgetSignIn(store, sealKey, vendors, agentId, row.provider)), provider: row.provider as Vendor });
+    } catch (error) {
+      // A run grabbed it between the pre-check and the move (server and runner are separate processes): the store's forget
+      // refused it atomically; map it to the same 409 the pre-check raises.
+      if (error instanceof SignInHandedTo) throw new ApiError("sign_in_held", `The sign-in ${key} was handed to the run ${error.runId}, which is still going: forget it once that run ends.`, { details: { handed_to: error.runId } });
+      throw error;
+    }
+  }
+  return { key, removed };
+}
+
+/** The old SignIns interface's read and forget surface over the store (view, peek, forgotten, forget), so the switch can
+ *  wire it where `new SignIns(...)` was, with the v2 answers unchanged. */
+export function signInsOverStore(store: SignInsStore, sealKey: Buffer | undefined, vendors: SignInVendors) {
+  return {
+    view: (agentId: string) => signInViews(store, sealKey, agentId),
+    peek: (agentId: string, resolution: string) => peekSignIn(store, sealKey, agentId, resolution),
+    forgotten: (agentId: string, resolution: string) => forgottenSignIns(store, sealKey, agentId, resolution),
+    forget: (agentId: string, key: string) => forgetSignInView(store, sealKey, vendors, agentId, key),
+  };
+}

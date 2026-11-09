@@ -255,6 +255,10 @@ export const STORE_DDL: readonly string[] = [
     name TEXT NOT NULL,
     pointer_sealed BLOB NOT NULL,
     saved_at INTEGER NOT NULL,
+    -- When a run that held this sign-in last verified it (saved a live session back to the vendor): the v2 view's
+    -- verified_at. Null when the owner just saved it and no run has verified it since (a fresh save clears it). Written by
+    -- the run path (store.signIns.verify) at a run's save, read by the view bridge (sign-ins-store.ts).
+    verified_at INTEGER,
     PRIMARY KEY (agent_id, provider)
   ) STRICT`,
   `CREATE TABLE IF NOT EXISTS sign_in_tombstones (

@@ -9,8 +9,8 @@ export type {
 } from "./store.js";
 export { aadOf, type McpCredential, type OpenedMcpCredential, openMcpCredential, sealColumn, type SealedAt, sealedAt, sealMcpCredential, unsealColumn } from "./seal.js";
 export {
-  AgentBodyInvalid, type AgenticBody, bodyOf, canonical, isObject, isSkillPath, isToolSettingsKey, type PromptVariant,
-  type RevisionBodyInput, type RevisionPlace, sha256, type ToolSetting, type WorkflowBody,
+  AgentBodyInvalid, type AgenticBody, bodyOf, canonical, isObject, isSkillPath, type PromptVariant,
+  type RevisionBodyInput, type RevisionPlace, sha256, type ToolSettings, type WorkflowBody,
 } from "./agent-body.js";
 export { checkPrompts, OTHER_OPTION, PromptsInvalid } from "./prompts.js";
 export { DDL, PI_DDL, PI_TABLE, PI_TABLES, SCHEMA_VERSION, STORE_DDL } from "./schema.js";
