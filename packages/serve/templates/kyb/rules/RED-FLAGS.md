@@ -8,8 +8,10 @@ behind it does not apply. Where a row says "per item" or "per person", raise one
 the record's own status or filing fields say so for this company: its status line, its filing table (a year overdue,
 a date missed), or a dated notice naming it. Text every record of that registry carries (help pop-ups, legends,
 glossaries, "what this means" boxes, text the page hides) is the page's, never a finding. Before such a flag moves the
-verdict, read the record's status and filing table again and quote the field in the flag's `why_it_matters`; when the
-fields say active and filed, the flag does not apply.
+verdict, read the record's status and filing table again and quote the field in the flag's `why_it_matters`. Only the
+page's generic text is excluded: a dated notice, petition or court or registry record that names this company (a
+winding-up petition, RF08; a strike-off notice in the Gazette) applies even while its status reads active and its
+filings are filed.
 
 The risk appetite is applied once, here. `low` is for regulated onboarding (customers of a financial institution,
 investments), `high` for low-exposure vendors.
