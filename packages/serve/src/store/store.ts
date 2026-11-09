@@ -17,6 +17,8 @@ import type { JournalPage } from "./journal/storage.js";
  *  failed are final. A running run whose runner died is claimable once its claim runs out. */
 export type RunState = "queued" | "running" | "parked" | "ended" | "stopped" | "failed";
 export const FINAL_STATES: readonly RunState[] = ["ended", "stopped", "failed"];
+/** A state a release may leave a run in: never a final one (Store.release). */
+export type ReleasedState = Exclude<RunState, "ended" | "stopped" | "failed">;
 
 /** Why a command row still untaken when its run went final is refused: the write that makes a run final refuses each
  *  such row with these words, in that same transaction (a final run takes no new row, so none is left for good). */
@@ -34,6 +36,9 @@ export interface Claim {
   readonly epoch: number;
   readonly until: number;
   readonly from: RunState;
+  /** The runner that held the run when this claim took it over: its lease ran out with the run still running (that
+   *  runner was lost, or lost its claim). Its loop says so on the run's timeline. Absent for any other claim. */
+  readonly lost?: { readonly runner: string };
 }
 
 /** A command the server wrote for a run (stop, cancel, steer, approve, deny, raise): one row, read by the run's runner in id order
@@ -371,6 +376,14 @@ export class TriggerFull extends Error {
   }
 }
 
+/** A run of an archived agent, or a trigger of it made on or turned on: refused, nothing written (Agents.archive). */
+export class AgentArchived extends Error {
+  override name = "AgentArchived";
+  constructor(readonly agentId: string) {
+    super(`the agent ${agentId} is archived`);
+  }
+}
+
 export interface Agents {
   /** Creates the agent, or renames it (name, description) when it exists. */
   put(agent: { id: string; name: string; description?: string | null }): Promise<void>;
@@ -378,7 +391,11 @@ export interface Agents {
   create(agent: { id: string; name: string; description?: string | null }, firstRevision: NewRevision): Promise<void>;
   get(id: string): Promise<AgentRow | undefined>;
   list(options?: { archived?: boolean }): Promise<AgentRow[]>;
-  archive(id: string, archived: boolean): Promise<void>;
+  /** Archives the agent, or unarchives it. Archived, every trigger of it that is on is turned off in the same transaction
+   *  (`disabled` set to `why`, JSON; its scope rows dropped), and those are the answer: from its commit no firing starts a
+   *  run of the agent (triggers.fire refuses it, AgentArchived), and none of its triggers is made on or turned on.
+   *  Unarchived, none turns on again: the answer is empty. */
+  archive(id: string, archived: boolean, why?: unknown): Promise<{ id: string; name: string }[]>;
   /** Adds a revision and makes it the agent's current one, in one commit. */
   addRevision(revision: NewRevision & { agentId: string }): Promise<void>;
   revision(id: string): Promise<RevisionRow | undefined>;
@@ -401,20 +418,23 @@ export interface Triggers {
   /** Every trigger, oldest first. */
   all(): Promise<TriggerRow[]>;
   /** The trigger and, while it is enabled, its scope rows (`scopes`), in one transaction: a scope another enabled trigger
-   *  holds is refused (StoreConstraint on trigger_scopes), nothing written. */
+   *  holds is refused (StoreConstraint on trigger_scopes), nothing written; one made on for an archived agent too
+   *  (AgentArchived). */
   create(trigger: NewTrigger, scopes?: readonly TriggerScope[]): Promise<TriggerRow>;
   /** The fields given changed, `updatedAt` set: undefined when there is no such trigger. With `scopes`, its scope rows
-   *  rewritten in the same transaction (none while it is off); a patch that turns it off drops them. */
+   *  rewritten in the same transaction (none while it is off); a patch that turns it off drops them. One that leaves it
+   *  on for an archived agent, turned on or moved there, is refused (AgentArchived), nothing written. */
   update(id: string, patch: TriggerPatch, scopes?: readonly TriggerScope[]): Promise<TriggerRow | undefined>;
   /** The trigger, its scope rows and its firings gone. */
   remove(id: string): Promise<void>;
-  /** Enables the trigger and writes its scope rows, in one transaction. */
+  /** Enables the trigger and writes its scope rows, in one transaction; refused for an archived agent's (AgentArchived). */
   enable(triggerId: string, scopes: readonly TriggerScope[]): Promise<void>;
   /** Disables the trigger (with why, JSON) and deletes its scope rows, in one transaction. */
   disable(triggerId: string, why?: unknown): Promise<void>;
   /** The firing starts a run: the queued run, the `started` firing that names it (the due firing's row, or a new one) and
    *  the trigger's last_run_id, with its failure streak reset, in one transaction; with `launch`, the run's launch row in
-   *  that same transaction (the store's one writeLaunch). */
+   *  that same transaction (the store's one writeLaunch). A run of an archived agent is refused in it (AgentArchived),
+   *  nothing written: a firing claimed before the archive committed starts no run after it. */
   fire(firing: Firing, run: { id: string; agentId: string; revisionId: string }, options?: { launch?: RunLaunchInput }): Promise<RunRow>;
   /** The enabled triggers listening on (`kind`, `scope`): its scope rows. */
   scoped(kind: string, scope: string): Promise<string[]>;
@@ -598,15 +618,14 @@ export interface TriggerSettings {
   removeScope(adapter: string, scope: string): Promise<void>;
 }
 
-/** An MCP OAuth sign-in in flight (store schema `mcp_oauth_pending`): its state the key, the server it is for, the PKCE
- *  verifier sealed (store/seal.ts, AAD mcp_oauth_pending|<state>|verifier) as bytes the store never opens, the cookie it is
- *  bound to, the non-secret working state the callback needs (`working`: the client, discovery, kind, scope, resource and
- *  url, plain JSON — not sealed), and when it expires (ms). */
+/** An MCP OAuth sign-in in flight (store schema `mcp_oauth_pending`): its state the key, the server it is for, its secret
+ *  parts (the PKCE verifier and the OAuth client, with its secret) sealed together (store/seal.ts, AAD
+ *  mcp_oauth_pending|<state>|sealed) as bytes the store never opens, the non-secret working state the callback needs
+ *  (`working`: discovery, kind, scope, resource and url, plain JSON — no secret), and when it expires (ms). */
 export interface McpOauthPendingRow {
   readonly state: string;
   readonly server: string;
-  readonly verifierSealed: Uint8Array;
-  readonly cookieBinding: string;
+  readonly sealed: Uint8Array;
   readonly working: unknown;
   readonly expiresAt: number;
 }
@@ -614,18 +633,16 @@ export interface McpOauthPendingRow {
 export interface McpOauth {
   /** Saves a pending sign-in, inserted or replaced by its state. */
   put(pending: McpOauthPendingRow): Promise<void>;
-  /** The pending sign-in `state`, or undefined; with `now`, one whose expiry has passed (expiresAt <= now) reads as gone. */
-  get(state: string, now?: number): Promise<McpOauthPendingRow | undefined>;
-  /** The pending sign-in `state` goes. */
-  remove(state: string): Promise<void>;
   /** Deletes the pending sign-in `state` and returns it, in one statement (atomic, single-use): the row if it was there and
    *  is not past its expiry (`now`, else the store's clock), else undefined. The row is deleted whether or not it had
-   *  expired, so a replay and an expired state both read as gone and cannot be retried. The one take path for the OAuth
-   *  callback: two concurrent takes of one state can never both get the row, which a get()+remove() split could not
-   *  promise. The verifier comes back sealed; the caller opens it at its own AAD, so the store opens nothing. */
+   *  expired, so a replay and an expired state both read as gone and cannot be retried. The one way to read a pending
+   *  sign-in: two concurrent takes of one state can never both get the row, which a get()+remove() split could not
+   *  promise. The secret parts come back sealed; the caller opens them at their own AAD, so the store opens nothing. */
   take(state: string, now?: number): Promise<McpOauthPendingRow | undefined>;
   /** Removes every pending sign-in whose expiry is at or before `now`; answers how many went. */
   sweepExpired(now: number): Promise<number>;
+  /** How many pending sign-ins are still live (expiry after `now`): the server caps the rows in flight by it. */
+  count(now: number): Promise<number>;
 }
 
 /** A running run's live view as the store keeps it: `state` is JSON (the tool it runs now, its partial text). */
@@ -694,8 +711,9 @@ export interface Store {
    *  renewed claim, or Fenced for one whose epoch moved on (nothing written to it; the others renew). */
   renewMany(claims: readonly Claim[], options?: { leaseMs?: number }): Promise<(Claim | Fenced)[]>;
   /** Gives the run back (no runner, no claimed_until; `state` when given; `wakeAt` and `backoffUntil` or none), in a
-   *  durable commit (as flush). Fenced when the epoch moved on. */
-  release(claim: Claim, options?: { state?: RunState; wakeAt?: number | null; backoffUntil?: number | null }): Promise<void>;
+   *  durable commit (as flush). Fenced when the epoch moved on. Never a final state: the run's end commit is the one write
+   *  that makes it final (a release asked for one is refused with a TypeError). */
+  release(claim: Claim, options?: { state?: ReleasedState; wakeAt?: number | null; backoffUntil?: number | null }): Promise<void>;
   /** The run's journal: pi-durable's Storage for this one run, every commit fenced by the claim (store/journal). Its commit
    *  holds the store's one connection while it runs, so it awaits nothing but its own statements, under a deadline. */
   journal(claim: Claim): Journal;

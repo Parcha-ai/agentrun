@@ -15,17 +15,19 @@ import type { Context, JsonValue } from "@earendil-works/chord";
 import { BACKGROUND_CONTEXT, withAbortSignal } from "@earendil-works/chord/context";
 import type { Models } from "@earendil-works/pi-ai";
 import { createModels } from "@earendil-works/pi-ai/models";
-import { type Conversation, type ConversationId, createRegistry, Harness, LiveDoc } from "@earendil-works/pi-durable";
+import { type Conversation, type ConversationId, createRegistry, Harness, LiveDoc, ROOT_CONVERSATION_ID, type Tx } from "@earendil-works/pi-durable";
 import { type AdapterSession, type AgentAdapter, type BeforeRequest, type HostTool, modelPortFor, type Refusal, runBooking, type SessionSpec } from "@parcha/agentrun-kernel";
 import type { KernelHooks, ToolCall } from "./conformance/subject.js";
 import { type AnswerData, type ApprovalPrice, type AskData, type BudgetData, type CallEndData, type CallStartData, type CallStatus, type EndData, KINDS, type MessageData, type RaiseData, withdrawnAnswers } from "./journal-kinds.js";
-import { originOf } from "@parcha/pi-durable-agent/timeline";
+import { originOf, RUN_RESUMED } from "@parcha/pi-durable-agent/timeline";
 import { type AlsoRow, type Claim, type Command, type CommandOutcome, deniedText, endedBy, type EndOfRunAnswer, type Loop, type LoopDeps, type LoopEnd, type LoopFactory, noteOf, type StopReason } from "./loop-contract.js";
 import { answerText, REFLECT_NOTE_ONLY, reflectRequestId, underLearning, WRITES } from "./end-of-run.js";
 import { approvalOf, CLOSE_MS, CUT_STEP_MS, STOP_SETTLE_MS, commandRequest, cutLast, DEFAULT_RESTART_LIMIT, entriesOf, findData, Gate, heldReporter, Interrupted, KernelFault, Parked, quiet, restartLimited, writesEntry, writesSubmission } from "./loop.js";
 import type { PiRun, PiSessionIO, PreIntentAnswer, PreIntentCall } from "./adapters/pi.js";
 import { HAND_BACK, handBackOf } from "./hand-back.js";
 import { journalSessions } from "./sessions.js";
+import { paidCalls, TOOL_SESSION } from "@parcha/agentrun-kernel/kernel/cap";
+import { bookedIn } from "../paid-calls.js";
 import { sideEffect } from "./side-effects.js";
 
 /** What a raise meets, as the kernel cap's checkRaise reads it (run-adapters/src/kernel/cap/park.ts): the run's cap, the
@@ -85,6 +87,42 @@ export interface AdapterRunSpec {
    *  Harness are closed, when its pass ends (a restart's included) and at the run's end. Never throws out: a failure is
    *  logged, and the end stands. */
   readonly release?: () => Promise<void>;
+  /** What the spec's tool host bindings registered (tools.ts ToolHost's onConversation, beforeResume, beforeRelease),
+   *  run where main's per-run process runs them (app.ts): each agent conversation's creating commit, once the claim's
+   *  Harness is open and before anything in it resumes, and when the claim lets the run go (its end, a park, a
+   *  shutdown) with the Harness still open. hostLifecycle() collects them as a ToolHost registers them. */
+  readonly lifecycle?: HostLifecycle;
+}
+
+/** A tool host's lifecycle, as its bindings registered it: run by the adapter loop (AdapterRunSpec.lifecycle). */
+export interface HostLifecycle {
+  readonly onConversation: readonly ((tx: Tx, conversationId: number) => void | Promise<void>)[];
+  readonly beforeResume: readonly ((harness: Harness) => void | Promise<void>)[];
+  readonly beforeRelease: readonly ((harness: Harness) => void | Promise<void>)[];
+}
+
+/** A HostLifecycle and the three ToolHost members that fill it: what a spec's ToolHost takes, and hands the loop. */
+export function hostLifecycle(): HostLifecycle & {
+  register: { onConversation(write: HostLifecycle["onConversation"][number]): void; beforeResume(settle: HostLifecycle["beforeResume"][number]): void; beforeRelease(stop: HostLifecycle["beforeRelease"][number]): void };
+} {
+  const onConversation: HostLifecycle["onConversation"][number][] = [];
+  const beforeResume: HostLifecycle["beforeResume"][number][] = [];
+  const beforeRelease: HostLifecycle["beforeRelease"][number][] = [];
+  return {
+    onConversation, beforeResume, beforeRelease,
+    register: {
+      onConversation: (write) => void onConversation.push(write),
+      beforeResume: (settle) => void beforeResume.push(settle),
+      beforeRelease: (stop) => void beforeRelease.push(stop),
+    },
+  };
+}
+
+/** The conversations a tool host sees (onConversation), as main's harness gives them: the agent's, the root and any
+ *  subagent's pi opens (its record names its owner: the task, and the conversation it ran in), never the loop's own
+ *  session records (no owner, and not the root). */
+export function agentConversation(record: { readonly id: number | ConversationId; readonly owner?: { readonly taskId: unknown } }): boolean {
+  return Number(record.id) === Number(ROOT_CONVERSATION_ID) || record.owner !== undefined;
 }
 
 /** What the loop lends the spec for one Session: the run's Harness (pi adds its turns to it). */
@@ -146,19 +184,24 @@ async function openCliRecord(harness: Harness, journal: Gate["journal"], context
   // One write at a time, in the order they were asked for, a failed one never stopping the next.
   let chain: Promise<void> = Promise.resolve();
   const inTurn = (work: () => Promise<void>): Promise<void> => (chain = chain.then(work, work));
-  const flushText = () =>
-    inTurn(async () => {
-      if (text === "") return;
-      const said = text;
-      text = "";
-      await append(KINDS.message, { role: "model", text: said });
+  /** What was said since the last boundary as a model message; at a turn's end, with the cut its adapter reported. */
+  const flushText = (cut?: { stopReason?: "length"; outputTokens?: number }) => {
+    // Taken at the boundary, not when its write's turn comes: text said after it is the next message's.
+    const said = text;
+    text = "";
+    return inTurn(async () => {
+      if (said === "") return;
+      const length = cut?.stopReason === "length" ? { stopReason: "length" as const, ...(cut.outputTokens === undefined ? {} : { outputTokens: cut.outputTokens }) } : {};
+      await append(KINDS.message, { role: "model", text: said, ...length });
     });
+  };
   return {
     onEvent(event) {
       if (event.type === "text") {
         if (answer === undefined) text += event.delta;
         else answer += event.delta;
-      } else if (event.type === "tool_start" || event.type === "turn_end") void flushText().catch(() => undefined);
+      } else if (event.type === "tool_start" || event.type === "text_end") void flushText().catch(() => undefined);
+      else if (event.type === "turn_end") void flushText(event).catch(() => undefined);
     },
     flushText,
     person: (input) =>
@@ -382,7 +425,15 @@ function adapterLoop(specOf: (claim: Claim, run: AdapterRun) => AdapterRunSpec |
         if (deps.signal.aborted) gate.seal(new Interrupted("its claim's signal aborted"));
         const registry = createRegistry();
         let models: Models = createModels();
-        harness = await Harness.open(gate.journal, { models: () => models, registry, settings: { restartLimit }, onReport: () => {} }, context);
+        harness = await Harness.open(gate.journal, {
+          models: () => models, registry, settings: { restartLimit }, onReport: () => {},
+          // A tool host's onConversation, in each agent conversation's creating commit (the spec's, once it is known: the
+          // root is created when the session opens, after the spec).
+          conversationCreated: async (tx, record) => {
+            if (!agentConversation(record)) return;
+            for (const write of specNow?.lifecycle?.onConversation ?? []) await write(tx, Number(record.id));
+          },
+        }, context);
         const runOf: AdapterRun = { harness, registry, setModels: (given) => (models = given) };
         const spec = await specOf(claim, runOf);
         specNow = spec;
@@ -390,12 +441,22 @@ function adapterLoop(specOf: (claim: Claim, run: AdapterRun) => AdapterRunSpec |
         // A mark of the run's commits through its own Harness, under its fence.
         const opened_ = harness;
         spec.harnessReady?.((change, ctx) => opened_.commit(change, ctx));
+        // A tool host's beforeResume: the Harness is open and nothing in it has resumed (pi schedules a task only once a
+        // submit, a wait or the session's open asks for progress, all below).
+        for (const settle of spec.lifecycle?.beforeResume ?? []) await settle(harness);
         const hooks = spec.hooks ?? quiet;
         const sessions = journalSessions(harness, context, { flush: () => deps.flush() });
         const writer = await sessions.open(spec.session.key);
         // The host's check is asked with the run's totals, every session of the run summed (the run's one booking), never
         // this session's alone: a cap is the run's. Its last refusal is kept: a turn it ended ends the run in its words.
         const hostCheck = spec.beforeRequest ? runBooking(sessions, spec.beforeRequest) : undefined;
+        // The run's paid tool calls (a web tool's request to Parallel, a monid call) on the same one ledger and rule, as
+        // main books them (paid-calls.ts): held at its price before it is sent, its hold flushed first, and settled at what
+        // it charged, under the call that made it. A later claim reads them from the run's records with the rest.
+        // Opened at the claim's first paid call: a run that makes none writes nothing for them.
+        let paidOpen: ReturnType<typeof paidCalls> | undefined;
+        const paidBooking = () => (paidOpen ??= sessions.open(TOOL_SESSION).then((tools) => paidCalls(tools, hostCheck ?? (async () => undefined), { flush: () => deps.flush() })));
+        const paid = { admit: async (request: Parameters<Awaited<ReturnType<typeof paidCalls>>["admit"]>[0]) => (await paidBooking()).admit(request), settle: async (id: string, usd: number | null) => (await paidBooking()).settle(id, usd) };
         let refused: Refusal | undefined;
         const beforeRequest: BeforeRequest | undefined = hostCheck && (async (request) => {
           const answer = await hostCheck(request);
@@ -430,7 +491,8 @@ function adapterLoop(specOf: (claim: Claim, run: AdapterRun) => AdapterRunSpec |
               const answer = await sideEffect({
                 replaySafe: tool.replay === "safe",
                 flush: () => deps.flush(),
-                route: () => tool.call(args, toolContext),
+                // Its paid requests booked under this call, on the run's one ledger (paid-calls.ts bookedIn, Ledger.paid).
+                route: () => bookedIn({ call: toolContext.callId, record: async () => {}, paid }, () => tool.call(args, toolContext)),
                 beforeResult: async (answer) => {
                   const call: ToolCall = { callId: toolContext.callId, tool: tool.name as never, args: (args ?? {}) as Record<string, unknown> };
                   try {
@@ -483,6 +545,8 @@ function adapterLoop(specOf: (claim: Claim, run: AdapterRun) => AdapterRunSpec |
           raising.resuming = true;
           raising.state ??= await raiseStateOf();
         }
+        // Taken over from a runner whose lease ran out mid-run: said on the run's timeline once, at this claim's first pass.
+        if (restarts === 0 && claim.lost) await noteTakenOver(harness, root, claim.lost.runner);
         opened();
         await reportHeld(harness, root.id);
         if (restarts > restartLimit + 1) {
@@ -600,6 +664,14 @@ function adapterLoop(specOf: (claim: Claim, run: AdapterRun) => AdapterRunSpec |
       deps.signal.removeEventListener("abort", signalAbort);
       held?.detach();
       deps.live?.(() => undefined);
+      // A tool host's beforeRelease: the claim lets the run go (its end, a park, a shutdown), the Harness still open. A
+      // restart within the claim is no release. A hook that throws is logged; the run's end stands.
+      const releasing = harness;
+      if (releasing) {
+        for (const stop of specNow?.lifecycle?.beforeRelease ?? []) {
+          await Promise.resolve().then(() => stop(releasing)).catch((error: unknown) => console.warn(`[runner] a tool host's beforeRelease failed: ${(error as Error)?.message ?? String(error)}`));
+        }
+      }
       await closeSession();
     }
   }
@@ -861,6 +933,17 @@ function adapterLoop(specOf: (claim: Claim, run: AdapterRun) => AdapterRunSpec |
     let timer: NodeJS.Timeout | undefined;
     await Promise.race([new Promise<void>((resolve) => bookedAll.push(resolve)), new Promise<void>((resolve) => (timer = setTimeout(resolve, CLOSE_MS)))]);
     clearTimeout(timer);
+  }
+
+  /** The run's timeline says it went on after its runner was lost (RUN_RESUMED, `after: runner_lost`): one root entry,
+   *  no run patch. A journal sealed meanwhile (the claim lost again, a shutdown) refuses it, and the loop goes on as it
+   *  would: the next claim says it. */
+  async function noteTakenOver(on: Harness, conversation: Conversation, runner: string): Promise<void> {
+    try {
+      await on.commit((tx) => tx.appendEntry(conversation.id, { kind: RUN_RESUMED, data: { after: "runner_lost", runner, at: Date.now() } }), context);
+    } catch (error) {
+      if (!gate?.sealed) throw error;
+    }
   }
 
   /** The end commit: an `agentrun.end` entry carrying the run row's final patch (the spec's end patch in it), the rows

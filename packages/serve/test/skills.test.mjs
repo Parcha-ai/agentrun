@@ -32,7 +32,8 @@ async function workWith(t, files) {
   return { root, dir, work: localWorkspace(dir) };
 }
 
-/** `workspace` with its reads counted: the most in flight at once (`peak`), each held a few milliseconds. */
+/** `workspace` with its reads counted: the most in flight at once (`peak`). A batch's reads all start before any ends
+ *  (each is asked at once, and none answers before the next is asked), so the peak is the batch's size, with no wait. */
 function counted(workspace) {
   const reads = { open: 0, peak: 0 };
   const wrapped = new Proxy(workspace, {
@@ -42,7 +43,6 @@ function counted(workspace) {
       return async (...args) => {
         reads.peak = Math.max(reads.peak, ++reads.open);
         try {
-          await new Promise((resolve) => setTimeout(resolve, 5));
           return await value.apply(target, args);
         } finally {
           reads.open -= 1;

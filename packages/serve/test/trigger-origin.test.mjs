@@ -53,7 +53,7 @@ function userEntries(data, runId) {
 const inputOf = async (data, runId) => JSON.parse(await readFile(join(runDir(data, runId), "serve.json"), "utf8")).input.content;
 
 for (const harness of ["pi", "claude-agent"]) {
-  test(`${harness}: a webhook trigger's run takes its first input as the trigger's, owner false whatever the body says: its entry's origin, its Timeline row, and the very text the model reads`, { timeout: 120_000, todo: E2 }, async (t) => {
+  test(`${harness}: a webhook trigger's run takes its first input as the trigger's, owner false whatever the body says: its entry's origin, its Timeline row, and the very text the model reads`, { timeout: 120_000, skip: E2 }, async (t) => {
     withEnv(t, SEAL);
     const { api, baseUrl, data } = await serve(t, { harnessTable: fauxTable(FAUX_HARNESS) });
     const agentId = `hooked-${harness}`;
@@ -73,7 +73,7 @@ for (const harness of ["pi", "claude-agent"]) {
   });
 }
 
-test("a webhook trigger's message to a run is the trigger's, owner false: the run's first message stays the person's", { timeout: 120_000, todo: E2_RUN }, async (t) => {
+test("a webhook trigger's message to a run is the trigger's, owner false: the run's first message stays the person's", { timeout: 120_000, skip: E2_RUN }, async (t) => {
   withEnv(t, SEAL);
   const { api, baseUrl, data } = await serve(t);
   await made(api, "chat");
@@ -95,7 +95,7 @@ test("a webhook trigger's message to a run is the trigger's, owner false: the ru
   assert.deepEqual(rows.filter((r) => r.origin === "trigger").map((r) => r.summary), [`Trigger ${id}: A new event came in.`]);
 });
 
-test("a schedule's runs take their input as the trigger's, owner true: fired on time and fired by hand", { timeout: 120_000, todo: E2 }, async (t) => {
+test("a schedule's runs take their input as the trigger's, owner true: fired on time and fired by hand", { timeout: 120_000, skip: E2 }, async (t) => {
   const clock = fakeClock("2026-10-31T12:00:00Z");
   const { api, data } = await serve(t, { triggerClock: clock });
   await made(api, "nightly");
@@ -117,7 +117,7 @@ test("a schedule's runs take their input as the trigger's, owner true: fired on 
   }
 });
 
-test("a webhook's message to a working run is refused busy and sent again on the engine's retry: its entry reads the trigger's origin, and every refused try's marker is withdrawn, none left open", { timeout: 120_000, todo: E2_RUN }, async (t) => {
+test("a webhook's message to a working run is refused busy and sent again on the engine's retry: its entry reads the trigger's origin, and every refused try's marker is withdrawn, none left open", { timeout: 120_000, skip: E2_RUN }, async (t) => {
   withEnv(t, SEAL);
   const { api, baseUrl, data } = await serve(t, { harnessTable: fauxTable(FAUX_HARNESS) });
   const go = join(await scratch(t), "go");
@@ -174,7 +174,7 @@ async function killedBeforeFirstMessage(t) {
   return { data, dir, runId: basename(dir), id };
 }
 
-test("a trigger's run whose server went down before its first message was taken: the next server sends that message as the trigger's, its origin read back from the run's serve.json", { timeout: 120_000, todo: CLI_STORE }, async (t) => {
+test("a trigger's run whose server went down before its first message was taken: the next server sends that message as the trigger's, its origin read back from the run's serve.json", { timeout: 120_000, skip: CLI_STORE }, async (t) => {
   withEnv(t, SEAL);
   const { data, dir, runId, id } = await killedBeforeFirstMessage(t);
   assert.deepEqual(JSON.parse(await readFile(join(dir, "serve.json"), "utf8")).input_origin, { kind: "trigger", trigger_id: id, source: "webhook", owner: false }, "kept with its input");
@@ -184,7 +184,7 @@ test("a trigger's run whose server went down before its first message was taken:
   assert.deepEqual(userEntries(data, runId), [{ text: await inputOf(data, runId), origin: { kind: "trigger", trigger_id: id, source: "webhook", owner: false } }], "the first message, sent by the next server, is the trigger's");
 });
 
-test("an origin read back from a run's serve.json that does not hold up for the run's own trigger (forged, another trigger's, or missing) is rebuilt as that trigger's with owner false: never its owner's, never another trigger's", { timeout: 240_000, todo: CLI_STORE }, async (t) => {
+test("an origin read back from a run's serve.json that does not hold up for the run's own trigger (forged, another trigger's, or missing) is rebuilt as that trigger's with owner false: never its owner's, never another trigger's", { timeout: 240_000, skip: CLI_STORE }, async (t) => {
   withEnv(t, SEAL);
   const forgeries = [["owner true", (o) => ({ ...o, owner: true })], ["another trigger", (o) => ({ ...o, trigger_id: "trg_someone_else" })], ["a schedule's source", (o) => ({ ...o, source: "schedule" })], ["missing", () => undefined]];
   for (const [what, forge] of forgeries) {

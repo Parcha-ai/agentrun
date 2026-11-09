@@ -10,6 +10,7 @@ import { fileURLToPath } from "node:url";
 import { childCommands, type DaemonExpected, daemonDrift } from "./child.js";
 import { DaemonClient } from "./client.js";
 import { COMPUTER_LABEL, DEADLINE_LABEL, helloDrift, WORK } from "./drift.js";
+import type { KindCapabilities } from "./kinds.js";
 import type { MountKind } from "./mount.js";
 import { MAX_LINE_BYTES } from "./protocol.js";
 import {
@@ -27,6 +28,7 @@ import {
 	type Refusal,
 } from "./provider.js";
 import { type ComputerError, type ComputerErrorCode, fail, ok, type Result } from "./result.js";
+import { countTested } from "./test-connection.js";
 import { waitUntil } from "./wait.js";
 
 /** The longest each kind of call may take, and the pauses between polls and retries. */
@@ -144,6 +146,9 @@ interface CallInit {
 
 /** The mount kinds a Daytona computer takes: none yet (capabilities() declares no mount); the Archil mount comes with D6. */
 export const MOUNT: readonly MountKind[] = [];
+
+/** The machine kind and groups of its one configuration: a linux computer. */
+export const CAPABILITIES: readonly KindCapabilities[] = [{ kind: "linux", groups: ["exec", "files", "processes"] }];
 
 /** What create() takes: the provider's options, the daemon optional (default this package's build for the arch). */
 export type DaytonaCreateOptions = Omit<DaytonaProviderOptions, "daemonPath"> & { daemonPath?: string };
@@ -1076,6 +1081,22 @@ export class DaytonaProvider implements ComputerProvider {
 		if (!answer.ok) return answer;
 		const state = (parseJson(answer.value.bytes) as { state?: unknown } | null)?.state;
 		return ok({ status: answer.value.status, ...(typeof state === "string" ? { state } : {}) });
+	}
+
+	/**
+	 * Settings' test: one page of the account's sandboxes by the provider's own label, which makes nothing. The count is
+	 * read from the listing, with no read of each sandbox: a busy account answers as fast, and one sandbox's read never
+	 * fails a working key. A further page is "or more".
+	 */
+	async testConnection({ signal }: CallContext = {}): Promise<Result<{ detail: string }>> {
+		const query = new URLSearchParams({ labels: JSON.stringify({ [COMPUTER_LABEL]: "1" }), limit: "100" });
+		const answer = await this.#rest.json("GET", `${this.#rest.sandbox()}?${query}`, { retry: true }, signal);
+		if (!answer.ok) return countTested("Daytona", answer);
+		const value = answer.value as { items?: unknown; nextCursor?: unknown } | Sandbox[] | null;
+		const items = Array.isArray(value) ? value : Array.isArray(value?.items) ? (value.items as Sandbox[]) : undefined;
+		if (items === undefined) return countTested("Daytona", fail("daytona", "GET /sandbox: the listing is not a page of sandboxes"));
+		const next = Array.isArray(value) ? undefined : value?.nextCursor;
+		return countTested("Daytona", ok({ count: items.filter((item) => ours(item) && !going(item)).length, more: typeof next === "string" && next !== "" }));
 	}
 
 	async list(labels: Record<string, string>, { signal }: CallContext = {}): Promise<Result<ComputerInfo[]>> {

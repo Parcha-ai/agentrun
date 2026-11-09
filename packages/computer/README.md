@@ -1,6 +1,28 @@
 # @parcha/agentrun-computer
 
-Private for now: not published, and nothing else in the repository uses it yet.
+Published from the next release; nothing else in the repository uses it yet.
+
+```sh
+npm install @parcha/agentrun-computer@latest
+```
+
+```ts
+import { DockerProvider, providerModule } from "@parcha/agentrun-computer";
+// The mount rule alone: loads no provider, no vendor SDK and no conformance code.
+import { checkMount, readBackOf, WORKSPACE, type MountSpec } from "@parcha/agentrun-computer/mount";
+```
+
+The package carries the daemon for Linux amd64 and arm64 in `dist/`, so a provider runs it with no Go on the host. A
+vendor's SDK is the host's: Modal's `modal` package is imported only when the Modal provider is built, and the package
+depends on nothing. A provider's mount kinds are its file's `MOUNT`, read with `(await providerModule(id)).MOUNT`,
+which loads that one provider's file and the protocol modules it uses, and no other provider.
+
+Every install carries all of `dist/`, whatever the host's architecture and whichever provider it uses: both daemons
+(a Docker host on either architecture and every remote provider use one of them, and the archive does not know which),
+every provider's module, and the conformance CLI and suite with the Daytona sweep. At 0.1.0-beta.31 (`npm pack
+--dry-run --json`) that is 122 files, 3,688,167 bytes packed and 9,234,731 unpacked; the two daemons are 8,216,900 of
+the unpacked bytes (4,219,042 amd64, 3,997,858 arm64) and the conformance code 238,421. The trade: no Go, no download
+and no install script on the host, for one daemon more than the host runs: about 4 MB unpacked and 1.6 MB compressed.
 
 The open platform's computer protocol. A computer is anything an agent can run commands on: a container, a microVM, a
 full VM, a machine. The protocol has two layers:
@@ -313,6 +335,56 @@ read to its end, the push calls its `return()` however it ends, so a pull piped 
 `src/protocol.ts` and `daemon/internal/methods` are the two definitions of these methods, TypeScript and Go (the Go
 params and results of `files.*` and `tar.*` sit beside their code in `daemon/internal/files`).
 
+## Kinds: the computer an agent is given
+
+Two axes. The machine kind is the protocol's, `capabilities().kind` (`linux`, `desktop`, `android`, `ios`, `browser`;
+below). The setting kind is what an agent is given in Settings, `computer: { kind, provider? }`: one of five, each a
+set of machine kinds and capability groups (`src/kinds.ts`, `SETTING_KINDS`). The model's tools are not here: they live
+in the kernel's tool registry, keyed by these groups.
+
+| setting kind | machine kinds | required groups | optional groups |
+| --- | --- | --- | --- |
+| `none` | | | (the run's folder only: no computer) |
+| `sandbox` | `linux` | `exec`, `files`, `processes` | |
+| `desktop` | `desktop` | `screen`, `input.pointer`, `input.keys` | `exec`, `files`, `processes`, `apps`, `stream` |
+| `phone` | `android`, `ios` | `screen`, `input.touch`, `apps` | `input.keys`, `apps.install`, `apps.ui_tree`, `stream` |
+| `browser` | `browser` | `cdp` | `stream`, `downloads` |
+
+- `serves(capabilities, kind)` is true when `capabilities().kind` is one of the kind's machine kinds and every required
+  group is declared, so a provider that drops a group stops serving the kind; `servingRefusals` says why not in words,
+  and `kindOf` names the setting kind capabilities serve (machine kinds are apart, so at most one).
+- `PROVIDERS` is what Settings offers: each entry's `id`, `label`, `keys` (the serve-side names Settings accepts, each
+  required or not; never a value), `mounts` (the mount kinds its computers take; `[]` cannot mount the run's folder),
+  `metered` (the vendor bills by time), and `capabilities`, the machine kind and groups of each configuration it
+  offers. Its `kinds` are derived from those by `serves`, never written by hand.
+
+  | id | label | kinds | keys (required unless marked) | mounts | metered |
+  | --- | --- | --- | --- | --- | --- |
+  | docker | Docker | sandbox, desktop | none | bind | no |
+  | daytona | Daytona | sandbox | `DAYTONA_API_KEY`; `DAYTONA_API_URL`, `DAYTONA_TARGET` (optional) | none until D6's archil | yes |
+  | modal | Modal | sandbox | `MODAL_TOKEN_ID`, `MODAL_TOKEN_SECRET` | none until D6's archil | yes |
+  | e2b | E2B | sandbox, desktop | `E2B_API_KEY` | none until D6's archil | yes |
+  | orgo | Orgo | desktop | `ORGO_API_KEY` | none | yes |
+  | phone-harness | Phone harness | phone | `PHONE_HARNESS_API_KEY` | none | yes |
+  | browserbase | Browserbase | browser | `BROWSERBASE_API_KEY`, `BROWSERBASE_PROJECT_ID` | none | yes |
+  | kernel | Kernel | browser | `KERNEL_API_KEY` | none | yes |
+
+- Each provider module exports `CAPABILITIES` beside `MOUNT` (the registry's contract, `ProviderModule`). A unit test
+  holds every registry provider's `CAPABILITIES` and `MOUNT` to its entry, and each provider built from the test fakes,
+  in each configuration, to its entry's capabilities. browserbase and kernel are data until their provider file joins
+  the registry; that test then holds each to its file.
+- `testConnection()` (optional on `ComputerProvider`) is Settings' test of a provider's keys: ONE account-level read
+  that never creates a computer, so it never spends. Docker (one `docker ps`), Daytona and E2B (one listing page) count
+  the provider's own computers by its label from that one answer, never reading each back, so a busy account answers as
+  fast and one computer's read never fails a working key; a further page reads "or more". Orgo reads its workspace's
+  computers; Modal reads its app without making it (an app not made yet is still a connection). It answers `{ detail }` in words, or an
+  error: `unauthorized` for a key the vendor refused, `unreachable` for a vendor not reached in time, else the read's
+  own code; no message carries a key. A full live check (create, then the kind's conformance) is the QA board's.
+  `TestConnection` is the serve side's signature, `(providerId, { keys, signal })`, keys by their serve-side names.
+- A browser computer's connection carries `cdp: { url }`, its CDP target: a secret, never logged and never in a
+  result, a report or an error.
+- A provider passes a setting kind's conformance with `--kind` (see [Conformance](#conformance)).
+
 ## The protocol extension: kind, daemon modes, screen, input, apps, lifetime
 
 The types and the conformance cases for computers past a Linux shell: desktops, Android and iOS phones. This package
@@ -320,7 +392,7 @@ has the types, the cases, the daemon's screen and input on X11 ([The X11 shim](#
 a Docker desktop; a phone provider comes in a later change. Docker declares `linux` with computerd as PID 1 unless it is
 made a desktop, so on a plain Docker computer every new case skips in words.
 
-**Kind.** `capabilities().kind` is `"linux" | "desktop" | "android" | "ios"`, and hello repeats it. `os` stays: it names
+**Kind.** `capabilities().kind` is `"linux" | "desktop" | "android" | "ios" | "browser"`, and hello repeats it. `os` stays: it names
 the platform the key table and exec need; kind names the shape the tools need. Only these pairs are valid
 (`kindRefusals(capabilities)` names any other in words, and the case `health.kind-consistent` fails it):
 
@@ -330,6 +402,10 @@ the platform the key table and exec need; kind names the shape the tools need. O
 | `desktop` | linux (windows, macos later) | `pid1`, `child` or `none` | linux's, when daemon is not `none`; and `screen`, `input.pointer`, `input.keys` |
 | `android` | android | `none` | `screen`, `input.touch`; exec and files only when declared |
 | `ios` | ios | `none` | `screen`, `input.touch` |
+| `browser` | linux | `none` | `cdp`: its connection's CDP target (see [Browsers](#browsers-browserbase-and-kernel)) |
+
+The groups `cdp`, `stream` and `downloads` are the provider's (`PROVIDER_GROUPS`): a browser's CDP target, a live view of
+the screen (`provider.stream()`), the files a browser saved. A computerd hello never lists them.
 
 **Daemon mode.** `capabilities().daemon` says who answers the methods. `pid1`: computerd init is the computer's main
 process, so its exit ends the computer (Docker). `child`: the vendor's own agent is the main process and starts init at
@@ -339,8 +415,8 @@ itself, from our server (adb, a vendor API). Either way a connection's `client` 
 params, { signal })` and `close()`): `DaemonClient` over a stream, or a provider's in-process client.
 
 **Groups.** `capabilities().groups` is one flat list, repeated in hello's `groups`: `exec`, `files`, `processes`,
-`screen`, `input.pointer`, `input.keys`, `input.touch`, `apps`, `apps.install`, `apps.ui_tree`. Each is optional unless
-kind makes it Core. The drift check and Docker's `connect` refuse a hello whose kind or groups differ from what the
+`screen`, `input.pointer`, `input.keys`, `input.touch`, `apps`, `apps.install`, `apps.ui_tree`, and the provider's
+`cdp`, `stream`, `downloads`. Each is optional unless kind makes it Core. The drift check and Docker's `connect` refuse a hello whose kind or groups differ from what the
 provider declares, either way.
 
 | group | methods |
@@ -445,6 +521,8 @@ live under:
   | `AGENTRUN_BOX_APP` | Modal's `app` (serve's default, `agentrun`, when unset) |
   | `AGENTRUN_DOCKER_IMAGE` | Docker's `image` option, `{ image: <name> }` (unset: the provider's own recipe); `docker.image()` makes it ready and gives the tag a computer's spec names |
   | `E2B_API_KEY` | E2B's `apiKey`: serve's new name for the E2B box |
+  | `BROWSERBASE_API_KEY`, `BROWSERBASE_PROJECT_ID` | Browserbase's `apiKey`, `projectId`: the names pi-browser reads today |
+  | `KERNEL_API_KEY` | Kernel's `apiKey`: the name pi-browser reads today |
 
 - **the conformance CLI and the live harness** (`src/conformance/`: the CLI, each provider's conformance module and the
   sweeps) read their own `COMPUTER_<ID>_*` names, the ones the live scripts set, through each module's
@@ -1714,11 +1792,174 @@ A live run must show:
 `packages/envd/internal/services/process/start.go`, `.../process/handler/handler.go:395-420`), and E2B's docs
 (network/restrict-public-access and network/internet-access, read 2026-11-07). Each is cited where it is used above and in `src/e2b.ts`.
 
+## Browsers: Browserbase and Kernel
+
+A browser is a computer of kind `browser`: a vendor's browser session that answers CDP. No computerd runs (daemon
+`none`): the provider answers hello and ping itself, from the vendor's API, and refuses any other method in words, since
+a browser is driven over CDP. `connect(ref)` reads the browser first (one that has ended, or that the vendor no longer
+knows though its URL is held, is `gone`), then gives a connection whose `cdp.url` is the vendor's signed CDP URL, which a
+driver dials; `stream(ref)` gives the vendor's live view. Both URLs are secrets: they are held in memory (a `UrlStore`)
+and are never in a ref, a list, an error's words or a report. `client` stays a `ComputerClient`, so every caller of
+`connect` reads a browser's connection as it reads any other.
+
+| | Browserbase (`browserbase.ts`) | Kernel (`kernel.ts`) |
+| --- | --- | --- |
+| a computer is | a session (`POST /v1/sessions`, `keepAlive: true`) | a browser (`POST /browsers`) |
+| labels ride | the session's `userMetadata`, each key's dots written as `_` (Browserbase refuses a dot in a metadata key), so a label key is letters, digits and dots | the browser's `tags` |
+| lifetime | the session's `timeout`, 60 s to 6 h, wall clock | `timeout_seconds`, 10 s to 72 h, an idle timeout: no wall clock, so list reads no deadline |
+| groups (`CAPABILITIES`) | `cdp`, `stream` | `cdp`, `stream` |
+| test connection | one `GET /v1/sessions?status=RUNNING` | one `GET /browsers?status=active` page |
+| release | `REQUEST_RELEASE`, then read back until it is no longer `RUNNING` or `PENDING` | `DELETE`, then read back until 404 or `deleted_at` |
+| options | `apiKey` (or `api`, a host's own calls), `projectId`, `apiUrl` | `apiKey` (or `request`, a host's own), `apiUrl` |
+| conformance reads | `COMPUTER_BROWSERBASE_API_KEY`, `COMPUTER_BROWSERBASE_PROJECT_ID`, `COMPUTER_BROWSERBASE_API_URL` | `COMPUTER_KERNEL_API_KEY`, `COMPUTER_KERNEL_API_URL` |
+
+Both declare `lifetime: "vendor"`, `network: ["open"]`, `isolation: "vm"`, `release: ["delete"]`, and no `extend`
+(neither vendor moves a running session's timeout). Neither declares `downloads` yet: Browserbase keeps a session's
+downloads, but the protocol has no method that reads them, so the group waits for one. Both call the vendor endpoints
+pi-browser's Browserbase and Kernel providers call today. `check()` refuses an image other than `chromium`, a lifetime past
+the cap, a network other than open, and any size, user, workdir or mount, before a vendor call. `list` and attach by
+labels take at least one label (a vendor account holds sessions no provider made), ask the vendor by status and by the
+first label a query carries as it is, and match every label themselves. They show every browser that has not ended:
+Browserbase's `RUNNING` and `PENDING`, Kernel's `status=all` with the deleted dropped (Kernel's filter takes one value,
+and `active` may leave out a browser still starting). A release is idempotent: one already ended or
+unknown to the vendor is released.
+
+A vendor call is one request, never retried where a retry could open a second paid browser, and a failure names the
+call and the HTTP status alone, never the vendor's words. A host that already talks to the vendor (pi-browser's SDK
+client) passes its own transport: `BrowserbaseApi` or `KernelRequest`. Its thrown error rides the failure as a hidden
+cause (`causeOf(result)`), not enumerable, so it is in no JSON.
+
+Each create writes one more label beside the spec's, `agentrun.create` (`CREATE_LABEL`), with a value of its own. A
+create whose outcome is unknown (its reply lost, cut short, answered 5xx or with no browser, or the caller's signal
+aborted it) never sends a second create: it finds the browsers carrying that label as list does, in every state not
+ended, under a signal of its own bounded at `RECOVER_MS`, releases each, and its failure says so. A 4xx refusal made
+nothing, so nothing is looked for. The label is the provider's own: `check()` refuses it in a spec, and no list or attach shows it.
+
+The conformance CLI runs the browser case set for a provider of kind browser: the health cases, then `browser.*`
+(check past the cap, attach by id and by labels, list, CDP `Browser.getVersion` and `Runtime.evaluate` on a `data:`
+page, the live view, and release last). Every case but the first shares the run's one browser, so a live run costs one
+session.
+
+```sh
+AGENTRUN_COMPUTER_LIVE_BROWSERBASE=1 COMPUTER_BROWSERBASE_API_KEY=... COMPUTER_BROWSERBASE_PROJECT_ID=... \
+  npm run conformance -w @parcha/agentrun-computer -- --provider browserbase
+AGENTRUN_COMPUTER_LIVE_KERNEL=1 COMPUTER_KERNEL_API_KEY=... \
+  npm run conformance -w @parcha/agentrun-computer -- --provider kernel
+```
+
+## Phone harness (the phone kind)
+
+```ts
+import { providerFor } from "@parcha/agentrun-computer";
+
+const phones = await providerFor("phone-harness", { apiKey }); // serve passes PHONE_HARNESS_API_KEY
+const made = await phones.create({ image: "android", lifetimeMs: 10 * 60_000, network: "open", labels: { run } });
+```
+
+`src/phone-harness.ts`, provider id `phone-harness`, rents a temporary cloud Android emulator from the phone harness
+(phone-harness.com). The phone harness bills it at 5 cents a minute from the account's credit. A cloud iPhone (driven by
+the API's control URL) is a later change: `platform: "ios"` is refused in words.
+
+- **No daemon.** Nothing runs on the phone. `connect()` asks the phone harness for the session's adb link, runs
+  connects to it, unlocks the phone with the session's code (never in a result or an error) and probes it.
+  - Neither the endpoint nor the code is ever in a spawned adb's argv, which `/proc` shows to every user of the host.
+    The endpoint goes to the local adb server over its socket protocol (`host:connect`, `host:devices-l`,
+    `host:disconnect`). The unlock is the vendor's shell command `unlock <code>`, once per connection; every shell
+    answers `locked` before it. It is sent as that shell service's own string, `shell:unlock <code>`, on a socket the
+    adb server bound to the phone (`host:transport-id:<id>`), as `adb shell unlock <code>` would send it. Every
+    spawned adb names the phone by the adb server's transport id (`-t <id>`). A shell's stdin cannot carry the unlock:
+    a shell with no command string is answered `locked` (live run 3); the socket path unlocked a phone live (probe 1).
+
+  Then it gives
+  a client in this process that answers each protocol method with adb commands:
+  - `screen.shot`/`screen.read`: a raw `screencap`, cropped to the region and encoded as an RGBA PNG; `scale` is the
+    density over 160;
+  - `input.actions`: checked whole first (`checkActions`). Then:
+    - tap and long press;
+    - swipe: `input swipe`, or `input motionevent` for a path of three points or more. Its `ms` is shared between the
+      moves as `sleep`s, by each segment's length, so it lasts `ms` at least;
+    - the back, home and app switch buttons;
+    - `type`, by `input text`: ASCII and line breaks. A literal `%s` is split across two calls, so it is not read as
+      a space;
+    - one key at a time (`input keyevent`), and `wait`.
+
+    A cancelled batch stops at the action it is on, a `wait` included, and answers failed, kind `aborted`, there;
+  - `apps.list` (`pm list packages`, and the app in front from `dumpsys activity activities`), `apps.launch` (its
+    launcher activity, `am start -W --activity-clear-task`, so the app named is in front and not what its task last
+    held: on Android 15 Settings' task keeps search, another package, on top) and `apps.terminate` (`am force-stop`);
+  - `apps.ui_tree`: `uiautomator dump`.
+
+  exec, files, processes and tar are refused in words: a phone has no shell in the computer protocol. So are pinch
+  (adb's `input` has one finger), hold, a combo of keys, `apps.install` and `deadline.extend`.
+- **Capabilities.** Kind and os `android`, daemon `none`, lifetime `vendor`, network `open`, release `delete` only.
+  Groups `screen`, `input.touch`, `input.keys`, `apps` and `apps.ui_tree`. `maxLifetimeMs` is 30 min by default. No
+  mount, no extend.
+- **create** asks for `timeout_seconds` = the lifetime, and the phone harness ends the session then, whatever happens.
+  The lifetime includes the boot, so a phone ready past its deadline fails `timeout`.
+  - Each POST carries an Idempotency-Key, and a create whose answer is uncertain is found by it, never sent twice.
+    Only a refusal (a 4xx, or `phones_busy`) says nothing was made. No answer, a 5xx, or a 2xx with no session is
+    uncertain: create asks `GET /sessions/requests/<key>` before it forgets the key, and records the phone it finds.
+  - A create cancelled during its POST is recovered by its key all the same, and the phone the service made is ended.
+  - A phone that fails, or is not ready within `readyMs` (240 s), is ended.
+  - Each request has a bound of its own, `requestMs` (30 s), beside the caller's signal, and a readiness read takes no
+    longer than `readyMs` has left. A request cut off by its bound is treated as a lost answer. A readiness read cut
+    off by `requestMs` while `readyMs` has time left is asked again; only `readyMs` itself ends a phone that is slow to
+    start. The `timeout` option is the timer (default `AbortSignal.timeout`).
+  - Once the phone's id is known, a ledger write that fails ends the phone, and create answers in words.
+  - The service's refusals keep their words (`limit` for `phones_busy` and `session_limit`, `denied` for the key or
+    credit) and never hold the key.
+- **The ledger.** The phone harness keeps no labels on a session, so the provider keeps each phone's labels, image and
+  deadline in its `ledger` option: `{ put, get, list, remove }`. It is in memory by default; serve passes a store-backed
+  one, and the conformance module a JSON file. `list`, `attach`, `network`, `connect`, `release` and the janitor see
+  only the phones it names, never another session on the account, and forget a phone the service ended. release of an
+  id the ledger does not name sends no DELETE: it answers `not_found` while that session runs, and ok once it is gone.
+  The service ends a session asynchronously, so a released phone's entry stays, marked `released`, until its own
+  `GET /sessions/<id>` is a 404. Meanwhile a second release is ok, list leaves it out, and attach, connect and network
+  answer `not_found`, as for a deleted computer.
+  - create puts an entry under `pending-<Idempotency-Key>` before its POST, and replaces it by the session's id once
+    known; a refused POST forgets it.
+  - If the POST's answer and its recovery (`GET /sessions/requests/<key>`) are both lost, the entry stays. `list()`
+    takes as its phone the one account session whose `request_key` equals that key exactly, and nothing else, so the
+    janitor's sweep and release find and end a phone made under a lost create.
+  - A pending entry with no such session is kept while a create may still be under way, and forgotten after its
+    deadline.
+  - `list()` reads the ledger before `GET /sessions`, so it never forgets a phone a create records while it runs. It
+    forgets a phone the listing leaves out only once that phone's own `GET /sessions/<id>` is a 404.
+- **adb** is an option too: a transport, `{ run(args, { input }), server(service) }` (tests give a fake), or the path of
+  the `adb` CLI (Android platform-tools; default `adb` on PATH), whose server it starts and speaks to on the loopback
+  (port 5037, adb's own, or `adbCli(path, { port })`). Every spawned adb names that port with `-P`, so the CLI and the
+  socket requests reach one server. Without adb, connect says so in words.
+- **testConnection** is list(): one `GET /sessions` joined to the ledger, and a GET of any phone the listing leaves out.
+  It rents nothing and reaches no phone: ok with the
+  count of this provider's phones, `unauthorized` for a refused key, `unreachable` when the phone harness is not
+  reached.
+
+Conformance (`src/conformance/phone-harness.ts`) reads `COMPUTER_PHONE_HARNESS_API_KEY`,
+`COMPUTER_PHONE_HARNESS_PLATFORM`, `COMPUTER_PHONE_HARNESS_ADB`, `COMPUTER_PHONE_HARNESS_LEDGER` and
+`AGENTRUN_COMPUTER_LIVE_PHONE_HARNESS`, never the bare
+`PHONE_HARNESS_API_KEY`. A run's phones live at most 10 min, and the run's computers ask for at most the provider's
+`maxLifetimeMs`.
+
+With no fixture app (it takes no files), the touch, keys and apps cases drive the stock Settings app and read back
+through `apps.ui_tree` (`src/conformance/cases/settings.ts`):
+- `touch.tap`: a tap on a row opens its page: the row's title shows, as a text or a label (Android 15's page has it
+  only as its toolbar's content-desc), and the next row is gone. Back comes back. When the page does not
+  come, its words say what it saw: the screen in px and dp, what is in front, the tap point and the row's bounds,
+  whether the title shows outside the list, and whether the next row is still shown;
+- `touch.swipe`: a swipe up moves the list up;
+- `input.type-text` and `input.key-table-refuses-unknown`: the text read back from the search field;
+- `apps.launch-terminate`, which needs the apps group alone: Settings is listed; once launched it is in front, and
+  shown, in `apps.ui_tree` when the phone has one, else in a screenshot other than the one before; once terminated it
+  is not in front;
+- `apps.ui-tree-shape`: the tree's shape, on Settings.
+
+`touch.pinch` skips in the provider's own refusal.
+
 ## Conformance
 
 A provider for another vendor passes the same suite as Docker's, with one command. The suite is data: each case in
 `src/conformance/cases/` names its level, its group (`health`, `exec`, `files`, `process`, `provider`, `drift`,
-`mount`, `screen`, `input`, `touch`, `apps`, `lifetime`) and the capabilities it needs, and uses only `ComputerProvider`,
+`mount`, `screen`, `input`, `touch`, `apps`, `lifetime`, `browser`) and the capabilities it needs, and uses only `ComputerProvider`,
 `ComputerClient` and the suite's assertion helpers, so the same cases run against a provider with daemon `none`.
 
 ```sh
@@ -1755,6 +1996,20 @@ skipped Core case is not a pass) and nothing was left behind, else `"fail"`; `co
 not run, the text report lists them on a `core not run` line, and the verdict reads `core PARTIAL 11/11 · 52 Core cases
 not run` (on Docker, `--only health,provider`), never PASS. A partial run exits 3, so a script that checks for 0 never takes a subset for a Core pass. An
 `--only` that names every Core case is a whole run, and can pass.
+
+`--kind <kind>` (`kind` in `runConformance`'s options, never with `--only`) runs a kind's cases, `kindCases(kind)`:
+every case whose protocol groups the kind requires or allows (see [Kinds](#kinds-the-computer-an-agent-is-given)),
+those that need no group (health, provider, drift) among them. The report carries `kindVerdict` (`{ kind, verdict,
+reasons }`), the text report ends on `kind <kind> PASS` or `kind <kind> FAIL: <why>`, and the CLI exits on it: 0 when
+the provider passes the kind, 1 when it does not. A provider passes a kind only when it serves it (by its
+capabilities), no case of the run failed (a declared optional group that fails would hand a loop a broken tool),
+every required group has at least one passing case and no Core case skipped but for an optional group the computer does
+not declare, and the run left nothing behind. A Full case that skips is owed by no group: a provider may refuse in
+words what its kind does not require, as the phone harness refuses `touch.pinch`, and the report still shows the skip.
+`none` is no computer, and `--kind` refuses it in words. Given no cases, a run takes `casesFor(machineKind)`: a
+browser's own cases (`browserCases`), every other kind the suite's (`conformanceCases`), in the library as in the CLI;
+`kindCases` draws from the same by kind. `kindCases`, `kindVerdict` and `casesFor` are exported, so the serve side reads
+the same table.
 
 What a module given by path implements: either a provider file's `create(options)` (see
 [Adding a computer](#adding-a-computer)), given the CLI's provider options but the env and run with no drifted

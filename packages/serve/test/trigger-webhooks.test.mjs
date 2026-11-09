@@ -32,7 +32,7 @@ async function post(baseUrl, triggerId, body, { secret, id = `msg_${randomBytes(
   return { status: res.status, headers: res.headers, body: json ?? text, id };
 }
 
-test("demo: a body the spec's library signs fires once, with no token; the same webhook-id again is the same firing and no second run; the payload reaches the agent marked untrusted; the secret is shown once and kept only sealed", { timeout: 120_000, todo: E2 }, async (t) => {
+test("demo: a body the spec's library signs fires once, with no token; the same webhook-id again is the same firing and no second run; the payload reaches the agent marked untrusted; the secret is shown once and kept only sealed", { timeout: 120_000, skip: E2 }, async (t) => {
   withEnv(t, SEAL);
   const { api, baseUrl, data } = await serve(t);
   await made(api, "triage");
@@ -67,7 +67,7 @@ test("demo: a body the spec's library signs fires once, with no token; the same 
   await follow(api, fired.run_id, ["completed"]);
 });
 
-test("a wrong signature, a stale or future timestamp, missing headers, an unknown trigger, one that is off and one that is not a webhook's are one and the same 401; a body past 256 KiB is 413", { timeout: 120_000, todo: E2 }, async (t) => {
+test("a wrong signature, a stale or future timestamp, missing headers, an unknown trigger, one that is off and one that is not a webhook's are one and the same 401; a body past 256 KiB is 413", { timeout: 120_000, skip: E2 }, async (t) => {
   withEnv(t, SEAL);
   const lines = [];
   const { api, baseUrl } = await serve(t, { log: (line) => lines.push(line) });
@@ -104,7 +104,7 @@ test("a wrong signature, a stale or future timestamp, missing headers, an unknow
   await follow(api, fired.run_id, ["completed"]);
 });
 
-test("a rotated secret signs from then on, and the old one is refused; with no seal key no webhook trigger is made", { timeout: 120_000, todo: E2 }, async (t) => {
+test("a rotated secret signs from then on, and the old one is refused; with no seal key no webhook trigger is made", { timeout: 120_000, skip: E2 }, async (t) => {
   withEnv(t, SEAL);
   const { api, baseUrl } = await serve(t);
   await made(api, "triage");
@@ -126,7 +126,7 @@ test("a rotated secret signs from then on, and the old one is refused; with no s
   assert.deepEqual((await bare.api("GET", "/triggers")).body.triggers, []);
 });
 
-test("a message_run trigger sends each firing to its run, which takes it once: a completed run opens again and answers", { timeout: 120_000, todo: E2_RUN }, async (t) => {
+test("a message_run trigger sends each firing to its run, which takes it once: a completed run opens again and answers", { timeout: 120_000, skip: E2_RUN }, async (t) => {
   withEnv(t, SEAL);
   const { api, baseUrl } = await serve(t);
   await made(api, "chat");
@@ -149,7 +149,7 @@ test("a message_run trigger sends each firing to its run, which takes it once: a
   assert.deepEqual([missing.status, missing.body.error.fields.map((f) => f.field)], [422, ["target.run_id"]]);
 });
 
-test("a payload past 16 KiB is cut at a character's start and says so; its closing tag cannot end the untrusted block early", { timeout: 120_000, todo: E2 }, async (t) => {
+test("a payload past 16 KiB is cut at a character's start and says so; its closing tag cannot end the untrusted block early", { timeout: 120_000, skip: E2 }, async (t) => {
   withEnv(t, SEAL);
   const { api, baseUrl, data } = await serve(t);
   await made(api, "triage");
@@ -167,7 +167,7 @@ test("a payload past 16 KiB is cut at a character's start and says so; its closi
   await follow(api, fired.run_id, ["completed"]);
 });
 
-test("a message_run firing to a run that is working waits for its turn to end, never queued behind it, then reaches it as a follow-up", { timeout: 120_000, todo: E2_RUN }, async (t) => {
+test("a message_run firing to a run that is working waits for its turn to end, never queued behind it, then reaches it as a follow-up", { timeout: 120_000, skip: E2_RUN }, async (t) => {
   withEnv(t, SEAL);
   const { api, baseUrl } = await serve(t);
   await made(api, "busy");
@@ -191,7 +191,7 @@ test("a message_run firing to a run that is working waits for its turn to end, n
   assert.equal(rows.filter(isMessageRow).length, 2, "its message, once, after the turn it waited for");
 });
 
-test("a webhook trigger holds at most 20 events due to a busy run: the 21st is refused 429 with Retry-After, written nowhere and logged, and a sender's retry once one is sent goes in", { timeout: 180_000, todo: E2_RUN }, async (t) => {
+test("a webhook trigger holds at most 20 events due to a busy run: the 21st is refused 429 with Retry-After, written nowhere and logged, and a sender's retry once one is sent goes in", { timeout: 180_000, skip: E2_RUN }, async (t) => {
   withEnv(t, SEAL);
   const lines = [];
   const { api, baseUrl, data } = await serve(t, { log: (line) => lines.push(line) });
@@ -213,7 +213,7 @@ test("a webhook trigger holds at most 20 events due to a busy run: the 21st is r
   await follow(api, run.run_id, ["completed"]);
 });
 
-test("an event's webhook-id, after 200 later events moved its firing out of the history, still answers that firing for a day: it never fires again", { timeout: 300_000, todo: E2 }, async (t) => {
+test("an event's webhook-id, after 200 later events moved its firing out of the history, still answers that firing for a day: it never fires again", { timeout: 300_000, skip: E2 }, async (t) => {
   withEnv(t, SEAL);
   const { api, baseUrl } = await serve(t);
   await made(api, "parked", { tools: ["ask_person"] });
@@ -249,4 +249,23 @@ test("a trigger secrets file that does not read is never written over: a webhook
   assert.equal((await api("POST", "/triggers", { ...hooked("triage"), source: { kind: "schedule", every_s: 600 } })).status, 201, "a schedule needs no secret");
   assert.deepEqual((await api("GET", "/triggers")).body.triggers.map((x) => x.source.kind), ["schedule"]);
   assert.equal(await readFile(join(data, "trigger-settings-webhook.json"), "utf8"), garbage, "byte for byte");
+});
+
+test("a webhook trigger's view carries hook_url, where its sender posts: at the public URL when the server has one, else the path; a schedule's has none", { timeout: 60_000 }, async (t) => {
+  withEnv(t, SEAL);
+  for (const publicUrl of ["https://agents.example.test/", undefined]) {
+    const { api } = await serve(t, publicUrl ? { publicUrl } : {});
+    await made(api, "hooked");
+    const created = await api("POST", "/triggers", hooked("hooked"));
+    assert.equal(created.status, 201, JSON.stringify(created.body));
+    const { id } = created.body;
+    const want = `${publicUrl ? "https://agents.example.test" : ""}/v2/hooks/${id}`;
+    assert.equal(created.body.hook_url, want, "create");
+    assert.equal((await api("GET", `/triggers/${id}`)).body.hook_url, want, "get");
+    assert.equal((await api("PATCH", `/triggers/${id}`, { name: "on push 2" })).body.hook_url, want, "patch");
+    assert.equal((await api("GET", "/triggers")).body.triggers.find((x) => x.id === id).hook_url, want, "list");
+    const scheduled = await api("POST", "/triggers", { ...hooked("hooked"), name: "nightly", source: { kind: "schedule", every_s: 600 } });
+    assert.equal(scheduled.status, 201, JSON.stringify(scheduled.body));
+    assert.equal(Object.hasOwn(scheduled.body, "hook_url"), false, "a schedule has no hook");
+  }
 });

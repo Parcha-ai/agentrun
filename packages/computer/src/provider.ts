@@ -89,6 +89,8 @@ export const KIND_SHAPES: Readonly<Record<ComputerKind, { os: readonly ComputerO
 	desktop: { os: ["linux", "windows", "macos"], daemon: ["pid1", "child", "none"] },
 	android: { os: ["android"], daemon: ["none"] },
 	ios: { os: ["ios"], daemon: ["none"] },
+	// A browser: the provider answers it, its CDP target the connection's cdp.
+	browser: { os: ["linux"], daemon: ["none"] },
 };
 
 /** Why kind, os and daemon are not a valid pair, in words; none when they are. */
@@ -195,6 +197,11 @@ export interface ComputerConnection {
 	client: ComputerClient;
 	hello: HelloResult;
 	close(): Promise<void>;
+	/**
+	 * A browser computer's CDP target (group cdp). The URL is a secret, a bearer of the session: never logged, never in a
+	 * result, a report or an error.
+	 */
+	cdp?: { url: string };
 }
 
 export interface ComputerProvider {
@@ -233,4 +240,11 @@ export interface ComputerProvider {
 	 * by name. Optional; the janitor's sweep calls it after the computers, which release their own parts.
 	 */
 	sweepLeftovers?(context: { labels: Record<string, string>; now: Date; signal?: AbortSignal }): Promise<Result<string[]>>;
+	/**
+	 * One account-level read with the provider's keys (a list by label, the vendor's whoami) that never creates a
+	 * computer, so it never spends: Settings' "test connection". ok with words on what it read, or the error: unauthorized
+	 * for a key the vendor refused, unreachable for a vendor not reached, or another code, its message never carrying a
+	 * key. Optional.
+	 */
+	testConnection?(context?: CallContext): Promise<Result<{ detail: string }>>;
 }
