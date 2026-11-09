@@ -139,6 +139,10 @@ export async function message(
   if (moment.importedSource !== undefined) throw importedRefusal(moment);
   // A cancelled run takes no message, whether or not its end is written yet.
   if (moment.cancelled) throw finished(moment);
+  // Re-read the run at the write, past any wait for a place: a run archived while a follow-up waited takes no message (the
+  // moment was read before the wait). Main's words.
+  const row = await store.runs.get(moment.id);
+  if (row?.archivedAt) throw new ApiError("not_continuable", "This run is archived: unarchive it to continue it.");
   // A message that may not answer a person (a trigger's) is refused while the run waits on one, before anything else, as the
   // old door refused it (WAITING): it never declines a parked approval, nor answers a question or a cap's pause.
   if (!answers && moment.waitsOnPerson) throw waitingRefusal();
@@ -319,7 +323,11 @@ async function learningStartFor(deps: StartDeps, entry: AgentEntry, revision: Re
  *  launch body in one transaction (store.runs.create), which a runner reads at its claim. No process, no door, no setup
  *  file: where the run runs is the runner's. Under `origin`, a key that already started a run gets that run (the store's
  *  one-run-per-key), so a retry never starts a second. */
-export async function startRun(store: Pick<Store, "runs" | "runOfOrigin">, deps: StartDeps, entry: AgentEntry, body: Json, { trigger, origin, capped = false, from }: StartOptions = {}): Promise<RunRow> {
+export async function startRun(store: Pick<Store, "runs" | "runOfOrigin" | "agents">, deps: StartDeps, entry: AgentEntry, body: Json, { trigger, origin, capped = false, from }: StartOptions = {}): Promise<RunRow> {
+  // Re-read the agent at the write, past any wait for a place: an agent archived while the start waited does not open a run
+  // (the pre-wait archived check read the entry fetched before the wait). Main's words.
+  const current = await store.agents.get(entry.agent.id);
+  if (current?.archivedAt) throw new ApiError("agent_not_runnable", `The agent ${entry.agent.id} is archived: unarchive it to run it.`, { details: { archived_at: current.archivedAt } });
   const issues = deps.runBodyIssues(body);
   if (issues.length) {
     // Told from the revision the run would start on (a pinned one, else the current), once it reads as one: a pin that is
