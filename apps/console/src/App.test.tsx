@@ -125,12 +125,13 @@ describe("App, Settings", () => {
     { name: "web_search", summary: "Search the web", nodes: true, calls: true, available: true, harnesses: ["pi"], providers: ["auto", "native", "exa-keyless", "parallel"], provider: "auto", default_provider: "auto", resolves: { pi: "exa-keyless", "claude-agent": "native", codex: "native" } },
     { name: "web_fetch", summary: "Fetch a page", nodes: true, calls: true, available: true, harnesses: ["pi"], providers: ["kernel", "parallel"], provider: "kernel", default_provider: "kernel", resolves: { pi: "kernel", "claude-agent": "native", codex: "native" } },
   ];
-  async function open(features: Record<string, unknown>, hash: string, tools: unknown[] = []) {
+  // `session`: GET /v2/auth/session's answer (the owner's password session unless a test says otherwise).
+  async function open(features: Record<string, unknown>, hash: string, tools: unknown[] = [], session: Record<string, unknown> = { password_set: true, signed_in: true, secrets_writable: true }) {
     const asked: string[] = [];
     vi.stubGlobal("fetch", async (url: string, init?: RequestInit) => {
       const path = new URL(url, "http://serve.test").pathname;
       asked.push(`${init?.method ?? "GET"} ${path}`);
-      if (path === "/v2/auth/session") return json(200, { password_set: true, signed_in: true, secrets_writable: true });
+      if (path === "/v2/auth/session") return json(200, session);
       if (path.startsWith("/v2/settings/tool-keys/")) return new Response(null, { status: 204 });
       if (path === "/v2/capabilities") return json(200, { harnesses: [], tools, features: { messages: { steer: false, answer: true, follow_up: true, steer_workflow_runs: false }, ...features } });
       if (path === "/v2/settings/tools") return json(200, { web_search: { provider: "auto" }, web_fetch: { provider: "kernel" } });
@@ -210,6 +211,27 @@ describe("App, Settings", () => {
     expect(location.hash).toBe("#/settings/tools");
     expect(page.host.querySelector("h1")?.textContent).toBe("Tools");
     expect([...page.host.querySelectorAll('nav[aria-label="Settings"] a')].map((a) => a.textContent?.trim())).toEqual(["Tools", "MCP servers"]);
+  });
+
+  // Secrets (Miguel, 11-09): an accounts-off loopback server's console session counts as the owner's, so the server says
+  // secrets_writable there too; the console reads it on every server, and words a "no" by the server's reason.
+  it("accounts off, the server saying the session may write secrets: Paste shows, with no sign-in or setup", async () => {
+    const page = await open({ tool_keys: { routes: true, at_rest: "sealed" } }, "#/settings/keys", [], { accounts: false, secrets_writable: true });
+    expect(page.host.querySelector("h1")?.textContent).toBe("Keys");
+    expect([...page.host.querySelectorAll("button")].some((b) => b.textContent?.trim() === "Paste")).toBe(true);
+  });
+
+  it("accounts off at a non-loopback address: no Paste, and the no-accounts words", async () => {
+    const page = await open({ tool_keys: { routes: true, at_rest: "sealed" } }, "#/settings/keys", [], { accounts: false, secrets_writable: false, secrets_reason: "no_accounts" });
+    expect(page.host.textContent).toContain("This server has no accounts: set secrets in its environment, or turn accounts on to change them here.");
+    expect(page.host.textContent).not.toContain("Sign in with your password to change secrets.");
+    expect([...page.host.querySelectorAll("button")].some((b) => b.textContent?.trim() === "Paste")).toBe(false);
+  });
+
+  it("accounts on, not the password session: no Paste, and the sign-in words", async () => {
+    const page = await open({ tool_keys: { routes: true, at_rest: "sealed" } }, "#/settings/keys", [], { password_set: true, signed_in: true, secrets_writable: false, secrets_reason: "sign_in" });
+    expect(page.host.textContent).toContain("Sign in with your password to change secrets.");
+    expect([...page.host.querySelectorAll("button")].some((b) => b.textContent?.trim() === "Paste")).toBe(false);
   });
 
   it("shows Settings when the server has the routes, and #/settings/keys opens Tool keys", async () => {

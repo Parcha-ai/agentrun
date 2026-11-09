@@ -6,7 +6,7 @@ import { McpServersPage } from "./McpServersPage";
 import { ModelKeyCard } from "./ModelKeyCard";
 import { createClient } from "@/lib/client";
 import type { McpServer } from "@/lib/mcp";
-import { secretsWritableOf, SIGN_IN_TO_CHANGE } from "@/lib/secrets";
+import { NO_ACCOUNTS, secretsWhyNot, secretsWritableOf, SIGN_IN_TO_CHANGE } from "@/lib/secrets";
 import type { ToolKeys } from "@/lib/v2";
 
 // Secrets are write-only, and only the owner's password session writes them (GET /v2/auth/session's secrets_writable).
@@ -42,11 +42,29 @@ const MCP: McpServer = {
 };
 
 describe("the session that may write secrets", () => {
-  it("is the one whose read says secrets_writable: true, and no other", () => {
+  it("is the one whose read says secrets_writable: true, accounts on or off, and no other", () => {
     expect(secretsWritableOf({ status: 200, body: { password_set: true, signed_in: true, secrets_writable: true } })).toBe(true);
+    expect(secretsWritableOf({ status: 200, body: { accounts: false, secrets_writable: true } })).toBe(true);
     expect(secretsWritableOf({ status: 200, body: { password_set: true, signed_in: true, secrets_writable: false } })).toBe(false);
     expect(secretsWritableOf({ status: 200, body: { password_set: true, signed_in: true } })).toBe(false);
+    // A token-only browser (a server with no session read for it) never writes.
     expect(secretsWritableOf({ status: 404, body: null })).toBe(false);
+  });
+
+  it("a no says why, by the server's reason, else by whether the server has accounts", () => {
+    expect(secretsWhyNot({ status: 200, body: { secrets_writable: false, secrets_reason: "sign_in" } })).toBe("sign_in");
+    expect(secretsWhyNot({ status: 200, body: { accounts: false, secrets_writable: false, secrets_reason: "no_accounts" } })).toBe("no_accounts");
+    expect(secretsWhyNot({ status: 200, body: { accounts: false, secrets_writable: false } })).toBe("no_accounts");
+    expect(secretsWhyNot({ status: 404, body: null })).toBe("no_accounts");
+    expect(secretsWhyNot({ status: 200, body: { password_set: true, signed_in: true } })).toBe("sign_in");
+  });
+});
+
+describe("Keys on a server with no accounts, not on loopback", () => {
+  it("says to set secrets in the environment or turn accounts on, never to sign in", async () => {
+    const host = await mount(createElement(KeysPage, { v2: client(() => KEYS), atRest: "sealed", writable: false, whyNot: "no_accounts" }));
+    expect(host.textContent).toContain(NO_ACCOUNTS);
+    expect(host.textContent).not.toContain(SIGN_IN_TO_CHANGE);
   });
 });
 

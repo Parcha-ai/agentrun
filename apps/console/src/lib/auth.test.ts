@@ -47,3 +47,10 @@ describe("takeSetupCode", () => {
     expect(takeSetupCode("")).toEqual({ code: null, rest: "" });
   });
 });
+
+describe("authMode on a server with no accounts that answers its session read", () => {
+  it("reads accounts: false as a 404 does: in when a protected read succeeds, else the token link", () => {
+    expect(authMode({ status: 200, body: { accounts: false, secrets_writable: true } }, 200)).toBe("signed_in");
+    expect(authMode({ status: 200, body: { accounts: false, secrets_writable: false } }, 401)).toBe("token_link");
+  });
+});
