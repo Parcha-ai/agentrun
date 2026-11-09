@@ -35,7 +35,7 @@ async function open(computers: () => Response) {
   root = createRoot(host);
   act(() => root!.render(createElement(AgentEditPage, { v2: createClient({ fetch }), caps: CAPS, agentId: null, go: () => {} })));
   for (let i = 0; i < 10; i++) await act(async () => { await new Promise((r) => setTimeout(r, 0)); });
-  await act(async () => { [...host.querySelectorAll("ol button")].find((b) => /Computer/.test(b.textContent ?? ""))!.click(); });
+  await act(async () => { ([...host.querySelectorAll("ol button")].find((b) => /Computer/.test(b.textContent ?? "")) as HTMLButtonElement).click(); });
   return { host, asked };
 }
 

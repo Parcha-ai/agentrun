@@ -1,12 +1,6 @@
 import type { Place } from "./place";
 import type { Computer, ComputerKindView } from "./v2";
 
-/** Capabilities' computers list (`computers.kinds`), or null on a server that lists none. */
-export function computersOf(caps: unknown): ComputerKindView[] | null {
-  const computers = (caps as { computers?: { kinds?: unknown } } | null | undefined)?.computers;
-  return Array.isArray(computers?.kinds) ? (computers.kinds as ComputerKindView[]) : null;
-}
-
 /** Whether a kind can be picked here: offered, and (but none, which needs no provider) a provider of it is ready. */
 export const pickable = (kind: ComputerKindView): boolean => kind.offered && (kind.kind === "none" || kind.providers.some((p) => p.ready));
 

@@ -17,6 +17,7 @@ import runToEnd from "./run-to-end.mjs";
 import takeOver from "./take-over.mjs";
 import templateApply from "./template-apply.mjs";
 import watchLive from "./watch-live.mjs";
+import computerStep from "./computer-step.mjs";
 
 export const flows = [
   setupOpen,
@@ -27,4 +28,5 @@ export const flows = [
   runToEnd,
   watchLive,
   takeOver,
+  computerStep,
 ];

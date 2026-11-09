@@ -4,7 +4,7 @@ import type { AgentLearning, LearningChange, LearningDiff, LearningNote, NotePro
 import type { McpAuth, McpClientFeature, McpPreview, McpRefresh, McpServer } from "./mcp";
 import type { RunGraph } from "./runGraph";
 import { applyPage } from "./timeline";
-import type { ApiError, Firing, RaiseAnswer, Run, RunBrowser, RunFiles, RunStatus, TimelinePage, TimelineRow, ToolKeys, ToolKeysFeature, ToolSettings, Trigger, TriggerCreate, TriggerInput, TriggerMade, TriggerSecret, Webhook, WebhookAttempt, WebhookSaved, WebhooksFeature } from "./v2";
+import type { ApiError, Computers, Firing, RaiseAnswer, Run, RunBrowser, RunFiles, RunStatus, TimelinePage, TimelineRow, ToolKeys, ToolKeysFeature, ToolSettings, Trigger, TriggerCreate, TriggerInput, TriggerMade, TriggerSecret, Webhook, WebhookAttempt, WebhookSaved, WebhooksFeature } from "./v2";
 
 /** A request AgentRun Server refused: its HTTP status and its typed error (`code`, `message`, `retryable`). */
 export type FieldIssue = { field: string; reason: string; message: string };
@@ -101,6 +101,9 @@ export function createClient({ fetch: f = globalThis.fetch.bind(globalThis), bas
   const noteAccept = { accept: "text/markdown, application/json" };
   return {
     capabilities: () => call<Capabilities>("GET", "/capabilities"),
+    /** GET /v2/computers: each kind of computer this server knows (offered or not, why not), its providers and the tools it
+     *  brings. capabilities.computers names only the kinds offered. */
+    computers: () => call<Computers>("GET", "/computers"),
     /** The owner's session; its status too, since a server without accounts answers 404. */
     session: () => callTagged<{ password_set: boolean; signed_in: boolean }>("GET", "/auth/session").then((r) => ({ status: r.status, body: r.body as unknown }), (e) => {
       if (e instanceof ClientError && e.status === 404) return { status: 404, body: null as unknown };
