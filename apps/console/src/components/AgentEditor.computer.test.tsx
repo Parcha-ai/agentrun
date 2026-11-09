@@ -72,11 +72,11 @@ describe("AgentEditor, the Computer step", () => {
   const KINDS = [
     { kind: "none", offered: true, groups: [], tools: ["read", "write", "edit", "bash"], providers: [] },
     { kind: "sandbox", offered: true, groups: ["exec", "files", "processes"], tools: ["read", "write", "edit", "bash", "bash_background"], providers: [
-      { id: "docker", name: "Docker", keys: [], ready: true },
+      { id: "docker", name: "Docker", keys: [], ready: true, metered: false },
       { id: "daytona", name: "Daytona", keys: [{ name: "DAYTONA_API_KEY", required: true, saved: true }], ready: false, why: "fixture: Daytona can't mount this server's run folders" },
     ] },
     { kind: "desktop", offered: true, groups: ["screen", "input.pointer", "input.keys"], tools: ["read", "write", "edit", "bash", "screen.shot", "input.actions"], providers: [
-      { id: "orgo", name: "Orgo", keys: [{ name: "ORGO_API_KEY", required: true, saved: true }], ready: true },
+      { id: "orgo", name: "Orgo", keys: [{ name: "ORGO_API_KEY", required: true, saved: true }], ready: true, metered: true },
       { id: "e2b", name: "E2B", keys: [{ name: "E2B_API_KEY", required: true, saved: false }], ready: false, why: "fixture: E2B needs E2B_API_KEY saved" },
     ] },
     { kind: "phone", offered: true, groups: ["screen", "input.touch", "apps"], tools: ["read", "screen.shot", "input.actions"], providers: [
@@ -119,6 +119,16 @@ describe("AgentEditor, the Computer step", () => {
     expect(providerRadio(host, "orgo")!.checked).toBe(true);
     await save();
     expect(saved()).toMatchObject({ computer: { kind: "desktop", provider: "orgo" } });
+  });
+
+  it("a metered provider says Metered, the word only; one that isn't says nothing of it", () => {
+    const { host, click } = mount({ agent: agent(), caps: listed, step: "computer" });
+    click(kindRadio(host, "desktop"));
+    const orgo = providerRadio(host, "orgo")!.closest("label")!;
+    expect(orgo.textContent).toContain("Metered");
+    expect(orgo.querySelector("a")).toBeNull();
+    click(kindRadio(host, "sandbox"));
+    expect(providerRadio(host, "docker")!.closest("label")!.textContent).not.toContain("Metered");
   });
 
   it("none is saved with no provider, and shows no provider list", async () => {
