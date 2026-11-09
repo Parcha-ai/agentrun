@@ -184,10 +184,13 @@ function settingsOf(body: Json, issues: InputIssue[]): { catchup_window_s?: numb
 }
 const WRITABLE = ["name", "enabled", "source", "target", "catchup_window_s", "max_active_runs"];
 
-/** Why `source` takes no max_active_runs, if it does not: only a source whose firings each start a run does. */
-function capIssues(adapters: readonly TriggerAdapter[], source: Source): InputIssue[] {
-  if (adapterIn(adapters, source.kind)?.concurrent?.(source)) return [];
-  return [{ field: "max_active_runs", reason: "not_allowed", message: "Only a trigger whose firings each start a run (a webhook with accept) takes max_active_runs; set it to null to clear it." }];
+/** Why a trigger of `source` and `target` takes no max_active_runs, if it does not: any start_run trigger of a pushed
+ *  source does, with or without accept (set, each event starts its own run up to the cap); a schedule keeps the overlap
+ *  skip, and a message_run target starts no run to bound. */
+function capIssues(adapters: readonly TriggerAdapter[], source: Source, target: Target | undefined): InputIssue[] {
+  if (adapterIn(adapters, source.kind)?.delivery !== "push") return [{ field: "max_active_runs", reason: "not_allowed", message: "Only a trigger of a pushed source (a webhook) takes max_active_runs: a schedule keeps the overlap skip. Set it to null to clear it." }];
+  if (target?.kind === "message_run") return [{ field: "max_active_runs", reason: "not_allowed", message: "max_active_runs bounds the runs a trigger starts, and a message_run target starts none. Set it to null to clear it." }];
+  return [];
 }
 
 /** A POST /triggers body's own fields, read as create reads them with the sources of `adapters`: its source, target,
@@ -198,7 +201,7 @@ function readBody(adapters: readonly TriggerAdapter[], body: Json, now: number) 
   const source = sourceOf(adapters, body.source, now, issues);
   const target = targetOf(body.target, issues);
   const settings = settingsOf(body, issues);
-  if (source && typeof settings.max_active_runs === "number") issues.push(...capIssues(adapters, source));
+  if (source && typeof settings.max_active_runs === "number") issues.push(...capIssues(adapters, source, target));
   if (body.name !== undefined && !(typeof body.name === "string" && body.name.trim() && body.name.length <= MAX_NAME)) issues.push({ field: "name", reason: "invalid", message: `name is a string of 1 to ${MAX_NAME} characters` });
   if (body.enabled !== undefined && typeof body.enabled !== "boolean") issues.push({ field: "enabled", reason: "wrong_type", message: "enabled is true or false" });
   return { issues, source, target, settings };
@@ -387,10 +390,10 @@ export class Triggers {
     const source = body.source === undefined ? undefined : sourceOf(this.adapters, body.source, this.clock.now(), issues);
     const target = body.target === undefined ? undefined : targetOf(body.target, issues);
     const settings = settingsOf(body, issues);
-    // A cap kept, or set, needs a source whose firings each start a run: a PATCH that takes accept away is refused unless it
-    // also sends max_active_runs: null.
+    // A cap kept, or set, needs a pushed source and a target that starts runs: a PATCH that aims a capped trigger at a run
+    // is refused unless it also sends max_active_runs: null. Taking accept away keeps it.
     const cap = settings.max_active_runs === undefined ? was.maxActiveRuns : settings.max_active_runs;
-    if (typeof cap === "number" && (source || typeof settings.max_active_runs === "number")) issues.push(...capIssues(this.adapters, source ?? was.source));
+    if (typeof cap === "number" && (source || target || typeof settings.max_active_runs === "number")) issues.push(...capIssues(this.adapters, source ?? was.source, target ?? was.target));
     if (body.name !== undefined && !(typeof body.name === "string" && body.name.trim() && body.name.length <= MAX_NAME)) issues.push({ field: "name", reason: "invalid", message: `name is a string of 1 to ${MAX_NAME} characters` });
     if (body.enabled !== undefined && typeof body.enabled !== "boolean") issues.push({ field: "enabled", reason: "wrong_type", message: "enabled is true or false" });
     if (target) issues.push(...(await this.deps.targetIssues(this.given(typeof body.name === "string" ? body.name.trim() : was.name, source ?? was.source, target, this.clock.now()))));
@@ -624,9 +627,10 @@ export class Triggers {
   }
 
   /** Why `firing` does not start now, if it does not: skipped (overlap: an earlier firing still due, or the last run still
-   *  active), or, with max_active_runs, waiting on the last run while that many of the trigger's runs have not ended. A
-   *  trigger whose source starts a run per firing (its adapter's concurrent) is never skipped: with no cap it starts, the
-   *  server's run limit still holding through retry. */
+   *  active), or, with max_active_runs (a pushed trigger's, with or without accept), waiting on the last run while that
+   *  many of the trigger's runs have not ended: a capped trigger starts a run per firing and never skips. A trigger whose
+   *  source starts a run per firing (its adapter's concurrent) is never skipped either: with no cap it starts, the server's
+   *  run limit still holding through retry. */
   private async busy(trigger: Trigger, firing: FiringRow): Promise<{ skipped: string } | { waitsOn: string; reason: string } | undefined> {
     if (trigger.maxActiveRuns !== null) {
       const active = await this.store.triggers.activeRuns(trigger.id);

@@ -1567,8 +1567,8 @@ A firing starts its run once. Its key comes from the trigger and its nominal tim
 a restart drives again finds its run. A firing's key stays bound to that run: when the server stopped while setting the
 run up, the firing reads `failed` ("The server stopped while setting up the run.") with that run's id, it never fires
 again, the next firing goes ahead, and `POST /v2/triggers/{id}/fire` is how a person tries it again. While the trigger's last run is active (working, or waiting on a person), a firing
-is `skipped`, with why (a webhook trigger with `accept` is the exception: [each event it takes](#webhook-triggers)
-starts its own run); a full server (`429`) keeps it due and tries again. Times missed while the server was down are
+is `skipped`, with why (a webhook trigger with `accept` or `max_active_runs` is the exception: [each event it
+takes](#webhook-triggers) starts its own run); a full server (`429`) keeps it due and tries again. Times missed while the server was down are
 one `missed` firing with their count, and the schedule goes on from now; the latest of them still fires, once, when it is
 no older than the trigger's `catchup_window_s` (default an hour; 0, never), marked `catch_up`. A
 firing while the last run is active (working, or parked waiting on a person) is skipped with why, never queued,
@@ -1670,8 +1670,12 @@ Such a trigger can take every run this server has room for, starving other trigg
 `max_active_runs` (1 to 100; `null` clears it): past that many of its runs active, a firing waits due and is tried
 again, as at a full server, and is never skipped. It counts the runs this trigger started while they work, kept apart
 from its history (so a long run counts however many firings follow it) and read again at each check; a run a person
-opens again after it ended is that person's follow-up, not counted. Only a trigger whose firings each start a run
-takes it (`422` otherwise). On a public repository, a rule for `issue_comment` or `issues` events needs a condition on
+opens again after it ended is that person's follow-up, not counted. Any `start_run` trigger of a pushed source (a
+webhook) takes it, with or without `accept`: set, each event starts its own run, never skipped behind the last, up to the
+cap; past it a firing waits due, and past 20 due an event answers `429 rate_limited` with `Retry-After`. Without
+`max_active_runs`, a trigger with no `accept` keeps the overlap skip: an event while its last run is active is
+`skipped`. A schedule keeps the overlap skip and takes no cap, and nor does a `message_run` target, which starts no run
+(`422` for either). On a public repository, a rule for `issue_comment` or `issues` events needs a condition on
 `/comment/author_association` or `/issue/author_association` (`in: ["OWNER", "MEMBER", "COLLABORATOR"]`): without one,
 anyone who can comment starts runs.
 
