@@ -62,6 +62,7 @@ test("a completed run's view reads the whole answer, cost and shape from the sto
     state: "idle",
     title: "Book a room",
     place: { mode: "runner" },
+    claim: null,
     created_at: iso(T0),
     updated_at: iso(T0 + 5_000),
     ended_at: iso(T0 + 5_000),
@@ -105,7 +106,7 @@ test("a queued run (created, not yet claimed) reads queued and working, its cost
   const view = await viewOverStore(store, "run-1", deps);
   assert.deepEqual(view, {
     run_id: "run-1", agent_id: "agent-1", agent_version: 1, console_url: `${ORIGIN}/#/runs/run-1`, revision: "rev-1", kind: "agentic", sha: null,
-    status: "queued", state: "working", title: "Queued run", place: { mode: "runner" },
+    status: "queued", state: "working", title: "Queued run", place: { mode: "runner" }, claim: null,
     created_at: iso(T0), updated_at: iso(T0), ended_at: null,
     result: null, error: null, review: null, pending: null,
     cost: { usd: 0, basis: "estimate", charge_state: null, cap_usd: null },
@@ -137,7 +138,7 @@ test("a working run reads working/working and live, its updated_at and last_prog
   const view = await viewOverStore(store, "run-1", liveDeps);
   assert.deepEqual(view, {
     run_id: "run-1", agent_id: "agent-1", agent_version: 1, console_url: `${ORIGIN}/#/runs/run-1`, revision: "rev-1", kind: "agentic", sha: null,
-    status: "working", state: "working", title: "Working run", place: { mode: "runner" },
+    status: "working", state: "working", title: "Working run", place: { mode: "runner" }, claim: { runner: "runner-a", epoch: 1, until: iso(T0 + 60_000) },
     created_at: iso(T0), updated_at: iso(T0 + 10_000), ended_at: null,
     result: null, error: null, review: null, pending: null,
     cost: { usd: 0, basis: "estimate", charge_state: null, cap_usd: null },
@@ -422,7 +423,7 @@ test("a failed run's view serves its error from the row, with an unknown cost", 
   const view = await viewOverStore(store, "run-1", deps);
   assert.deepEqual(view, {
     run_id: "run-1", agent_id: "agent-1", agent_version: 1, console_url: `${ORIGIN}/#/runs/run-1`, revision: "rev-1", kind: "agentic", sha: null,
-    status: "failed", state: "idle", title: "Try it", place: { mode: "runner" },
+    status: "failed", state: "idle", title: "Try it", place: { mode: "runner" }, claim: null,
     created_at: iso(T0), updated_at: iso(T0 + 3_000), ended_at: iso(T0 + 3_000),
     result: null, error: { code: "run_failed", message: "The model refused.", retryable: false }, review: null, pending: null,
     cost: { usd: null, basis: "estimate", charge_state: null, cap_usd: null },
