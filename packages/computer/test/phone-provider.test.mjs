@@ -879,3 +879,58 @@ test("the conformance module reads its own COMPUTER_PHONE_HARNESS_* names, never
 	await drifted.release(twin, "delete");
 	assert.equal(await conformance.conformanceImage(), "android");
 });
+
+test("the phone answers screen.watch: PNG frames of the whole screen, read about once a second, the next only after the ack", async () => {
+	const { provider, fake } = await setup();
+	const { value: ref } = await provider.create(SPEC);
+	const { value: connection } = await provider.connect(ref);
+	const { client } = connection;
+	const screencaps = () => fake.adbCalls().filter((args) => args.includes("screencap")).length;
+	const first = await client.call("screen.watch", { after: 0 });
+	assert.equal(first.ok, true, JSON.stringify(first));
+	assert.deepEqual({ seq: first.value.seq, changed: first.value.changed, format: first.value.format, width: first.value.width, height: first.value.height, frameWidth: first.value.frameWidth, frameHeight: first.value.frameHeight }, { seq: 1, changed: true, format: "png", width: SCREEN.width, height: SCREEN.height, frameWidth: SCREEN.width, frameHeight: SCREEN.height });
+	// An unchanged screen: no frame once waitMs is over, read once a second meanwhile (the fake clock moves at once).
+	const before = screencaps();
+	const idle = await client.call("screen.watch", { after: 1, waitMs: 3000 });
+	assert.deepEqual(idle, { ok: true, value: { seq: 1, changed: false, width: SCREEN.width, height: SCREEN.height } });
+	assert.ok(screencaps() - before >= 3 && screencaps() - before <= 4, `read about once a second over 3 s: ${screencaps() - before} reads`);
+	// Settings in front changes the screen: the next frame.
+	assert.equal((await client.call("apps.launch", { id: SETTINGS })).ok, true);
+	const changed = await client.call("screen.watch", { after: 1, waitMs: 3000 });
+	assert.equal(changed.value.seq, 2);
+	assert.equal(changed.value.changed, true);
+	// An old ack gets the newest frame at once, with no read of the screen.
+	const reads = screencaps();
+	const again = await client.call("screen.watch", { after: 1 });
+	assert.equal(again.value.seq, 2);
+	assert.equal(screencaps(), reads);
+	// maxWidth scales the frame; the size stays the screen's.
+	const scaled = await client.call("screen.watch", { after: 0, maxWidth: 180 });
+	assert.deepEqual([scaled.value.frameWidth, scaled.value.frameHeight, scaled.value.width, scaled.value.height], [180, 320, SCREEN.width, SCREEN.height]);
+	for (const params of [{}, { after: -1 }, { after: 99 }, { after: 0, waitMs: 10_001 }, { after: 0, maxWidth: 0 }, { after: 0, quality: 101 }]) {
+		const refused = await client.call("screen.watch", params);
+		assert.equal(refused.ok, false, JSON.stringify(params));
+		assert.equal(refused.error.code, "invalid", JSON.stringify(params));
+	}
+	await connection.close();
+	await provider.release(ref, "delete");
+});
+
+test("watchScreen on a phone gives its PNG frames whole, and its act() taps the phone", async () => {
+	const { watchScreen } = await import("../dist/index.js");
+	const { provider, fake } = await setup();
+	const { value: ref } = await provider.create(SPEC);
+	const { value: connection } = await provider.connect(ref);
+	const watch = watchScreen(connection);
+	const frames = watch.frames[Symbol.asyncIterator]();
+	const { value: frame } = await frames.next();
+	assert.equal(frame.format, "png");
+	assert.deepEqual(png(Buffer.from(frame.bytes)), { width: SCREEN.width, height: SCREEN.height });
+	const tapped = await watch.act([{ type: "tap", at: [10, 20] }]);
+	assert.deepEqual(tapped, { ok: true, value: { done: 1 } });
+	assert.ok(fake.shells().some((command) => /^input tap 10 20$/.test(command)), fake.shells().join("\n"));
+	await watch.close();
+	assert.deepEqual(await frames.next(), { done: true, value: undefined });
+	await connection.close();
+	await provider.release(ref, "delete");
+});
