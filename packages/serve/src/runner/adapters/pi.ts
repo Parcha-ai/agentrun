@@ -12,7 +12,7 @@ import type { Context, JsonValue } from "@earendil-works/chord";
 import { BACKGROUND_CONTEXT, withAbortSignal } from "@earendil-works/chord/context";
 import type { Models } from "@earendil-works/pi-ai";
 import { createModels } from "@earendil-works/pi-ai/models";
-import { type Conversation, defineExtension, defineTool, GenerationTask, type Harness, hook, type Registry, type Submission, ToolTask } from "@earendil-works/pi-durable";
+import { type Conversation, defineExtension, defineTool, type Extension, GenerationTask, type Harness, hook, type Registry, type Submission, ToolTask } from "@earendil-works/pi-durable";
 import { anthropicPolicy } from "@parcha/agentrun-harness-claude";
 import type { AdapterSession, AgentAdapter, HostTool, SessionIO, SessionSpec, TurnStatus, Wire } from "@parcha/agentrun-kernel";
 import { type ModelProxy, type ProviderPolicy, startModelProxy } from "@parcha/agentrun-kernel/host";
@@ -66,6 +66,12 @@ export interface PiAdapterOptions {
   /** The runner's one redactor, which a provider's error passes through in the session's proxy before pi has it
    *  (ModelProxyOptions.redact; the proxy's own cut of the credential comes first). */
   readonly redact?: (text: string) => string;
+  /** pi-native extensions the run's root agent carries beside the session's own (the browser's durable extension, as a
+   *  pi DurableRun on main installs it): installed in the claim's registry, so their tools run as pi's own tool tasks (a
+   *  taskId, a memo, conversations they own) and their own task kinds (a browser.release) under pi's recovery, all in the
+   *  claim's Harness. Their tools pass the session's gate (its beforeTool hook), and every conversation they open takes
+   *  its model from the root's agent, through this session's proxy and its booking. */
+  readonly extensions?: readonly Extension[];
 }
 
 const PROVIDER = "agentrun-session";
@@ -190,11 +196,15 @@ async function sessionOn(proxy: ModelProxy, options: PiAdapterOptions, spec: Ses
     ],
   });
   run.registry.install(extension);
+  // The run's pi-native extensions (options.extensions), in the claim's registry beside the session's.
+  const native = options.extensions ?? [];
+  for (const each of native) run.registry.install(each);
   // The root conversation may exist already (the loop's session records live beside it, under it): its agent is set here,
-  // the session's model, the run's system text (pi's instructions, its parts as the CLI adapters join them) and this
-  // session's tools, on every open.
+  // the session's model, the run's system text (pi's instructions, its parts as the CLI adapters join them), this
+  // session's tools and the run's native extensions, on every open. A conversation a native tool opens takes this agent's
+  // model (pi copies its owner's), so its requests go through this session's proxy.
   const instructions = spec.system.join("\n\n");
-  const agent = { model: { provider: PROVIDER, modelId: model }, extensions: [extension], ...(instructions ? { instructions } : {}) };
+  const agent = { model: { provider: PROVIDER, modelId: model }, extensions: [extension, ...native], ...(instructions ? { instructions } : {}) };
   const root: Conversation = await run.harness.root(context, { agent } as never);
   await root.configure(agent as never, context);
 
