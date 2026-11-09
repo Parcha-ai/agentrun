@@ -267,9 +267,13 @@ export function codexAdapter(options: CodexAdapterOptions): AgentAdapter {
         state = "idle";
         running = (async () => {
           let outcome: { status: TurnStatus; error?: string };
+          // A turn whose answer the model cut at its output limit says so on its turn_end: stopReason "length", with the cut
+          // answer's output tokens when the provider said them.
+          let stop: { stopReason?: "length"; outputTokens?: number } = {};
           try {
             await harness.drive(current);
-            const ended = turnsIn(current).slice(before).at(-1)?.data as { status?: TurnStatus; error?: string } | undefined;
+            const ended = turnsIn(current).slice(before).at(-1)?.data as { status?: TurnStatus; error?: string; stopReason?: string; outputTokens?: unknown } | undefined;
+            if (ended?.stopReason === "length") stop = { stopReason: "length", ...(typeof ended.outputTokens === "number" ? { outputTokens: ended.outputTokens } : {}) };
             outcome = ended?.status ? { status: ended.status, ...(ended.error ? { error: ended.error } : {}) } : { status: "failed", error: "the turn ended with no outcome in the session's records" };
           } catch (error) {
             // Stopped by the session or its host: interrupted. Halted by anything else: failed, naming why.
@@ -280,7 +284,7 @@ export function codexAdapter(options: CodexAdapterOptions): AgentAdapter {
             // and reads the session as it was: the turn is open now, its prompt pending, so it reads open_turn.
             if (current.signal.aborted) state = holdsTurn(current.state()) ? "open_turn" : "idle";
           }
-          io.onEvent({ type: "turn_end", status: outcome.status });
+          io.onEvent({ type: "turn_end", status: outcome.status, ...stop });
           return outcome;
         })();
         return running;

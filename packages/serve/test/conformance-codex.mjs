@@ -46,7 +46,9 @@ export function scriptedResponses(script, requests = []) {
     const lastResult = [...input].reverse().find((item) => item.type === "function_call_output");
     const resultText = (output) => (typeof output === "string" ? output : (output ?? []).map((part) => part.text ?? "").join(""));
     const text = next === undefined ? "" : "say" in next ? next.say : "sayLastResult" in next ? resultText(lastResult?.output) : textOf(lastPerson);
-    return sse([{ type: "response.output_text.delta", item_id: `m_${step}`, output_index: 0, content_index: 0, delta: text }, done]);
+    // A cut step: the model stops at its output limit as it says it (OpenAI's incomplete answer, max_output_tokens).
+    const end = next?.cut ? { type: "response.incomplete", response: { id: `resp_${step}`, object: "response", status: "incomplete", incomplete_details: { reason: "max_output_tokens" }, usage } } : done;
+    return sse([{ type: "response.output_text.delta", item_id: `m_${step}`, output_index: 0, content_index: 0, delta: text }, end]);
   };
 }
 

@@ -252,7 +252,9 @@ export type AdapterEvent =
   | { type: "text"; delta: string }
   | { type: "tool_start"; callId: string; name: string; args: unknown; parent?: string }
   | { type: "tool_end"; callId: string; name: string; isError: boolean; result?: string; truncated?: true }
-  | { type: "turn_end"; status: TurnStatus };
+  /** `stopReason` "length": the model stopped at its output limit, its answer unfinished, with the cut answer's output
+   *  tokens when the provider said them. Absent: the answer ended whole. */
+  | { type: "turn_end"; status: TurnStatus; stopReason?: "length"; outputTokens?: number };
 
 /** An event as a host receives it: the adapter's, the runner's own, and the node each belongs to. */
 export type HarnessEvent = (AdapterEvent
