@@ -339,7 +339,7 @@ async function askedOn(t, harnesses, { resumes = true } = {}) {
 
 test("web_fetch set to ask on pi: the run parks with its pending approval and is answered more than a minute later by the owner's session; a token is 403; a second, conflicting answer is 409", { timeout: 240_000 }, (t) => askedOn(t, ["pi"], { resumes: false }));
 
-test("web_fetch set to ask on pi, answered: allow runs the call once and resumes with one message naming it, deny with a note resumes with the refusal", { timeout: 240_000, skip: "waits on the runner settling a priced host tool's charge: an allowed call is refused as not settled on the runner yet" }, (t) => askedOn(t, ["pi"]));
+test("web_fetch set to ask on pi, answered: allow runs the call once and resumes with one message naming it, deny with a note resumes with the refusal", { timeout: 240_000 }, (t) => askedOn(t, ["pi"]));
 
 test("two conflicting answers to one parked call at once, by the owner's session: exactly one is taken (204), the other is 409 already_answered with its decision, the store holds one answer, and the call runs at most once", { timeout: 240_000 }, async (t) => {
   const dialled = await network(t);
@@ -368,7 +368,7 @@ test("two conflicting answers to one parked call at once, by the owner's session
   assert.ok(ran.length <= (won === "allow" ? 1 : 0) && ran.every((url) => url === PAGE), `the call ran at most once, and only if allowed: ${JSON.stringify(ran)}`);
 });
 
-test("web_fetch set to ask on claude-agent and codex at once: each run parks and is answered as on pi", { timeout: 240_000, skip: "waits on the runner building a CLI run's adapter on the server's data directory and the run's harness table (edbdea047c)" }, (t) => askedOn(t, ["claude-agent", "codex"]));
+test("web_fetch set to ask on claude-agent and codex at once: each run parks and is answered as on pi", { timeout: 240_000 }, (t) => askedOn(t, ["claude-agent", "codex"]));
 
 test("an ask answered after the server restarted while the run was parked still runs the call once, on pi and on codex; a cancel marks a call that waits canceled", { timeout: 180_000 }, async (t) => {
   const dialled = await network(t);
