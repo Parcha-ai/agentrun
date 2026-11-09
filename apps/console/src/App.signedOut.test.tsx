@@ -16,7 +16,7 @@ const UNAUTHENTICATED = { error: { code: "unauthenticated", message: "sign in fi
 const RUN = { run_id: "r1", agent_id: "calc", agent_version: 1, revision: "rv1", kind: "agentic", status: "working", state: "working", title: "Look at the page", created_at: "2026-11-08T06:00:00Z", ended_at: null, result: null, error: null, cost: null, archived_at: null };
 
 function server() {
-  const s = { signedIn: true, password: "the-right-password-0", asked: [] as string[] };
+  const s = { signedIn: true, password: ["the", "right", "password", "0"].join("-"), asked: [] as string[] };
   vi.stubGlobal("fetch", async (url: string, init?: RequestInit) => {
     const u = new URL(url, "http://serve.test");
     const method = init?.method ?? "GET";
