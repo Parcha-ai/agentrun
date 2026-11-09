@@ -13,7 +13,7 @@ import type { Context } from "@earendil-works/chord";
 import { BACKGROUND_CONTEXT } from "@earendil-works/chord/context";
 import type { Models } from "@earendil-works/pi-ai";
 import { createModels } from "@earendil-works/pi-ai/models";
-import { type Extension, type Harness, ROOT_CONVERSATION_ID } from "@earendil-works/pi-durable";
+import { defineExtension, type Extension, type Harness, ROOT_CONVERSATION_ID, type ToolRegistration, wrapTool } from "@earendil-works/pi-durable";
 import type { Revision } from "@parcha/pi-durable-agent";
 import { chargedCost, type DecisionProvider, DecisionProviderError, EffectFailure, inspectWorkflow, type LoadImage, type Workflow, type WorkflowDeps } from "@parcha/agentrun-dsl";
 import type { DecisionModelPrice } from "@parcha/agentrun-decisions";
@@ -28,14 +28,16 @@ import { decisionProvidersIn } from "../decisions.js";
 import { imageLoader } from "../pdf-pages.js";
 import type { RunLaunch } from "../run-launch.js";
 import { llmTiers, nodeTiers, type Tier, workflowNodes } from "../model.js";
-import { CALL_TOOLS, type EffectRun, toolOf, workflowTools } from "../tools.js";
+import { CALL_TOOLS, type EffectRun, type ToolBinding, type ToolHost, toolOf, workflowTools } from "../tools.js";
+import { forModel } from "../result.js";
+import { WEB_FETCH_TOOL } from "../web-fetch.js";
 import { runGate } from "../tool-gate.js";
-import { callNodeAskText, deniedText } from "../refusal-words.js";
+import { callNodeAskText, deniedText, modelNodeAskText } from "../refusal-words.js";
 import { loadToolSettings, planeOf, TOOL_PLANE_ENV } from "../tool-plane.js";
 import { AsyncLocalStorage } from "node:async_hooks";
 import { SUBMIT_TOOL } from "@parcha/agentrun-pi";
-import { type PaidBooking, parallelExtractFee, parallelSearchFee } from "../paid-calls.js";
-import { searchArgs } from "../web-search.js";
+import { bookedIn, type PaidBooking, parallelExtractFee, parallelSearchFee } from "../paid-calls.js";
+import { searchArgs, WEB_SEARCH_TOOL } from "../web-search.js";
 import { money, pricingOf, requestPrice, type RunTools, TOOL_SESSION } from "@parcha/agentrun-kernel/kernel/cap";
 import { claimSecrets } from "./claim-secrets.js";
 import { type ModelRoute, routeOf } from "./model-route.js";
@@ -46,7 +48,7 @@ import { journalSessions } from "./sessions.js";
 import { type BudgetData, type EndData, KINDS, type RaiseData } from "./journal-kinds.js";
 import { type CapRefusal, PAUSED_WORDS, type WorkflowCapRule, type WorkflowHostHooks, type WorkflowRunSpec, type WorkflowSpecRun } from "./workflow-loop.js";
 import { heldRedactor, holdClaimed } from "./redact.js";
-import { type DecisionDriver, type WorkflowCap, workflowHost, type WorkflowHostDeps } from "./workflow-host.js";
+import { type DecisionDriver, type NodeToolBinding, type WorkflowCap, workflowHost, type WorkflowHostDeps } from "./workflow-host.js";
 import type { Store } from "../store/store.js";
 
 /** The one session key the workflow's model requests book under (the run's one booking sums it, runBooking). */
@@ -186,7 +188,18 @@ export function workflowSpecOf(deps: WorkflowSpecDeps): (claim: { runId: string 
   const now = deps.now ?? Date.now;
   // The run's models resolve the one way the runner resolves any (routeProviderOf over routeOf), unless a test gives its own.
   const providerOf = deps.providerOf ?? routeProviderOf(deps.env ?? process.env);
+  // The proxies a claim started: closed by the spec's release once the claim is done, or here when the claim fails before
+  // its spec is returned (the loop then has no spec to release), so a failed claim leaves no proxy listening.
   return async (claim, run) => {
+    const proxies: ModelProxy[] = [];
+    try {
+      return await claimSpec(claim, run, proxies);
+    } catch (error) {
+      for (const proxy of proxies) await proxy.close().catch(() => undefined);
+      throw error;
+    }
+  };
+  async function claimSpec(claim: { runId: string }, run: WorkflowSpecRun | undefined, proxies: ModelProxy[]): Promise<WorkflowRunSpec> {
     /** The keys a claim opens, held by the runner's one redactor (run.redact) before a decision can echo one. */
     const holding = async (opening: Promise<NodeJS.ProcessEnv>): Promise<NodeJS.ProcessEnv> => {
       const opened = await opening;
@@ -194,6 +207,12 @@ export function workflowSpecOf(deps: WorkflowSpecDeps): (claim: { runId: string 
       return opened;
     };
     const claimed = await readClaim(deps, claim.runId);
+    // The model nodes' tools (main's app.ts:301-306): the ones the runner binds for a node, each through the run's ToolHost
+    // and the run's gate; a node naming one it does not bind yet refuses the run here, before anything starts, in words
+    // naming it.
+    const nodeNames = workflowTools(workflowNodes(claimed.workflow, inspectWorkflow(claimed.workflow))).nodes;
+    const unbound = nodeNames.find((name) => !RUNNER_NODE_TOOLS.includes(name));
+    if (unbound !== undefined) throw new Error(nodeToolUnboundText(unbound));
     const tiers = tiersOf(claimed.workflow);
 
     // Each tier's provider and cap model, resolved once; the proxies start here (before the Harness opens, since the models
@@ -201,7 +220,6 @@ export function workflowSpecOf(deps: WorkflowSpecDeps): (claim: { runId: string 
     const providers = new Map<Tier, WorkflowProvider>();
     for (const tier of tiers) providers.set(tier, await providerOf(tier));
 
-    const proxies: ModelProxy[] = [];
     const models = createModels();
     const hooks = deferredHooks();
     // The call nodes' effects in flight: a model request inside one is not where a pause lands (pauseAtEffects).
@@ -240,22 +258,47 @@ export function workflowSpecOf(deps: WorkflowSpecDeps): (claim: { runId: string 
     // The cap read against every request: the run's cap, raised in place once harnessReady reads this claim's raise.
     let effectiveCapUsd = claimed.capUsd;
 
+    // The run's own keys, as the server's runnable check reads them: each by its name from the runner's environment first,
+    // then the store's sealed value (claim-secrets.ts; the environment wins, rule 4), scoped to what the run needs. Its
+    // decisions, its call nodes' effects and its model nodes' tools all run on these, never on another run's keys or on this
+    // process's whole environment.
+    // Held by the runner's one redactor before anything can echo one (holding: run.redact), as the decision keys were.
+    const claimedEnv = await holding(claimSecrets({ store: deps.store, sealKey: deps.sealKey, ...(deps.env ? { env: deps.env } : {}) }, claimed.revision, { plane: claimed.plane }));
     // The run's decision providers, when its workflow has a decision node: the scripted resolver a test gives, else built
-    // from the claim's own sealed keys (claim-secrets.ts reads the run's provider keys from the store into a scoped
-    // environment; decisionProvidersIn builds the providers on them), so a decision runs on the run's stored key and never
-    // another run's or this process's. The decisions book on the run's ONE cap (runCap), created with the model booking once
-    // the Harness is open (harnessReady); a decision node runs after that, so it reaches the cap through a deferred reference.
+    // on the run's own keys (decisionProvidersIn). The decisions book on the run's ONE cap (runCap), created with the model
+    // booking once the Harness is open (harnessReady); a decision node runs after that, so it reaches the cap through a
+    // deferred reference.
     const decisions = deps.decisionProvidersOf
       ? (await deps.decisionProvidersOf()) ?? undefined
-      : deps.sealKey
-        ? (await decisionProvidersIn(await holding(claimSecrets({ store: deps.store, sealKey: deps.sealKey, ...(deps.env ? { env: deps.env } : {}) }, claimed.revision, { plane: claimed.plane })))) ?? undefined
-        : undefined;
+      : (await decisionProvidersIn(claimedEnv)) ?? undefined;
     // A decision's images load from the run's work folder, unless a test gives its own loader.
     const loadImage: LoadImage | undefined = deps.loadImage ?? (decisions ? imageLoader(claimed.workRoot) : undefined);
     let decisionCap: RunDecisions | undefined;
     // The run's paid tool calls on its one cap (TOOL_SESSION), wired at harnessReady: a call node's hold and its request.
     let paidTools: RunTools | undefined;
-    const callEnv = callEnvOf(deps.env ?? process.env, claimed);
+    // The run's own keys with its plane, as an agentic run's tool host gets them: the call nodes' effects and the model
+    // nodes' tools run on these.
+    const callEnv = callEnvOf(claimedEnv, claimed);
+    const installed: Extension[] = [];
+    const nodeHost: ToolHost = {
+      where: { root: claimed.workRoot, work: claimed.workRoot, ref: { id: claim.runId } } as unknown as ToolHost["where"],
+      env: callEnv,
+      coding: { tools: [], extension: { name: "coding", tools: [] } } as unknown as ToolHost["coding"],
+      install: (extension) => void installed.push(extension),
+      onConversation: () => {},
+      beforeResume: () => {},
+      beforeRelease: () => {},
+      handoverInJournal: true,
+    };
+    const nodeBindings = await bindNodeTools(nodeNames, nodeHost);
+    // Each node tool as the node gets it and the registry holds it: booked on the run's one ledger (bookedNodeTools), in an
+    // extension of its own; the binding's raw extension (installed through `installed`) is never put in the registry.
+    const nodeTools = new Map<string, NodeToolBinding>();
+    for (const [name, binding] of nodeBindings) {
+      const booked = bookedNodeTools(binding, () => paidTools, (refusal) => hooks.park(refusal));
+      nodeTools.set(name, { tools: booked.tools, extensions: [defineExtension({ name: `node-tool-${name}`, tools: booked.tools as unknown as ToolRegistration[] })] });
+    }
+    const nodePolicy = callPolicyOf(deps.store, claim.runId, claimed);
     const tierModel = (tier: string | undefined): CapModel | undefined => (providers.get((tier as Tier | undefined) ?? "default") ?? providers.get("default"))?.capModel;
 
     // The run's completer for a call node's `llm` tool: one completion on the run's models, its tier's model (the proxy
@@ -268,7 +311,9 @@ export function workflowSpecOf(deps: WorkflowSpecDeps): (claim: { runId: string 
       models,
       workflow: claimed.workflow,
       input: claimed.input,
-      tools: toolsOf(claimed.workflow),
+      // What the host registers, as main's per-run process does (app.ts:490, the workflow's own): its call tools and its
+      // model nodes' tools.
+      tools: [...new Set([...toolsOf(claimed.workflow), ...nodeNames])],
       agentId: claimed.agentId,
       revisionId: claimed.revisionId,
       ...(claimed.capUsd !== undefined ? { cap: capRuleOf(claimed.capUsd) } : {}),
@@ -277,8 +322,10 @@ export function workflowSpecOf(deps: WorkflowSpecDeps): (claim: { runId: string 
         hooks.setPark(loopHooks);
         const hostDeps: WorkflowHostDeps = {
           modelOf,
-          sharedExtensions: [],
-          nodeTool: () => undefined,
+          // The nodes' tools as the registry holds them (their booked registrations, never their bindings' own raw ones, which
+          // would book beside the run's ledger), and the run's gate over them by name (main's registry.install).
+          sharedExtensions: [nodeToolGate(nodeNames, nodePolicy), ...[...nodeTools.values()].flatMap((binding) => binding.extensions)],
+          nodeTool: (name) => nodeTools.get(name),
           runEffect: runEffectOf(claimed, complete, callEnv, callPolicyOf(deps.store, claim.runId, claimed), () => paidTools),
           workRoot: claimed.workRoot,
           flush: () => deps.store.flush(),
@@ -330,7 +377,7 @@ export function workflowSpecOf(deps: WorkflowSpecDeps): (claim: { runId: string 
       },
     };
     return spec;
-  };
+  }
 }
 
 /** The run's rule with a park on a refusal: `before` (runCap's one rule for the model session) is asked, and on a refusal
@@ -720,6 +767,61 @@ function tiersOf(workflow: Workflow): Tier[] {
 }
 
 /** The tools the workflow may call, for the host to register. */
+/** The tools a workflow's model node takes on the runner: main's NODE_TOOLS (tools.ts) that bind through a ToolHost alone.
+ *  Its file tools (read, write, edit) need the run's Workspace and its browser a computer, which the workflow loop does not
+ *  claim yet: a node naming one is refused at the claim (nodeToolUnboundText). */
+export const RUNNER_NODE_TOOLS: readonly string[] = Object.freeze([WEB_FETCH_TOOL, WEB_SEARCH_TOOL]);
+/** A node naming a tool the runner does not bind for a model node yet: the run is refused at its claim in these words,
+ *  the tool never offered and never silently dropped. */
+export const nodeToolUnboundText = (tool: string): string => `A workflow's model node names ${tool}, which the runner does not bind for a model node yet (it needs the run's workspace or computer); this run cannot start here.`;
+
+/** The model nodes' tools bound for this claim (main's app.ts:243-249, 301-302): each through `host`, the run's
+ *  ToolHost on the runner (its own keys and plane, as an agentic run's non-hand tools bind). */
+async function bindNodeTools(names: readonly string[], host: ToolHost): Promise<Map<string, ToolBinding>> {
+  const bound = new Map<string, ToolBinding>();
+  for (const name of names) {
+    const entry = toolOf(name);
+    if (!entry?.nodes) throw new Error(nodeToolUnboundText(name));
+    bound.set(name, await entry.bind(host));
+  }
+  return bound;
+}
+
+/** The run's gate over its model nodes' tools, as main's RunGate extension wraps them (app.ts:306), with the gate's own
+ *  rule: a tool set to deny is refused in deniedText's words, one set to ask in the model-node words (a workflow's node
+ *  cannot wait for a person: the gate parks no workflow call), neither run. Read through the gate's policy here rather
+ *  than RunGate.extension, whose barrier is main's per-run store's: on the runner the journal's commit is the barrier. */
+function nodeToolGate(names: readonly string[], policy: CallPolicy): Extension {
+  return defineExtension({
+    name: "tool-gate",
+    wraps: [...names].map((name) => wrapTool({ name } as ToolRegistration, (inner: ToolRegistration) => ({
+      ...inner,
+      async execute(args: never, api: never, context: never) {
+        const { permission, denyFrom } = await policy(inner.name);
+        if (permission === "deny") return forModel(deniedText(inner.name, undefined, denyFrom), { isError: true });
+        if (permission === "ask") return forModel(modelNodeAskText(inner.name), { isError: true });
+        return inner.execute(args, api, context);
+      },
+    } as ToolRegistration))),
+  });
+}
+
+/** `binding`'s tools with each call's paid requests booked on the run's one ledger (Ledger.paid, the paid tool calls on
+ *  the run's cap, as an agentic run's are), a refusal for room parking the run (Ledger.pause, as main's paidCall pauses):
+ *  a node's tool call is the node's own turn, so the run parks and resumes it from its journal. */
+function bookedNodeTools(binding: ToolBinding, paid: () => RunTools | undefined, park: (refusal: CapRefusal) => void): NodeToolBinding {
+  return {
+    extensions: binding.extensions,
+    tools: binding.tools.map((tool) => ({
+      ...tool,
+      execute: (args: never, api: { callId: string }, context: never) => {
+        const ledger = paid();
+        return bookedIn(ledger ? { call: api.callId, record: async () => {}, paid: ledger, pause: async (refusal) => park({ message: refusal.refuse, forGood: false, ...(refusal.figures ? { figures: refusal.figures } : {}) }) } : undefined, () => (tool.execute as (a: never, b: never, c: never) => Promise<unknown>)(args, api as never, context));
+      },
+    })) as unknown as NodeToolBinding["tools"],
+  };
+}
+
 /** The tool names a workflow's model node offers its model: the node's `submit` (pi's SUBMIT_TOOL) and every tool the
  *  workflow's model nodes name. */
 export function nodeOffer(workflow: Workflow): string[] {
