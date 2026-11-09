@@ -51,7 +51,7 @@ test("changed_at moves with a new credential only: a save that keeps the sealed 
   const row = await store.mcp.server("fake");
   const lease = await store.mcp.leaseRefresh("fake", { seen: row.sealed, holder: "run-1@1" });
   assert.equal(lease.leased, true);
-  await store.mcp.refreshToken("fake", { holder: "run-1@1", sealed: sealMcpCredential(KEY, "fake", { type: "headers", headers: { authorization: `Bearer ${TOKEN}` } }, fake.url) });
+  await store.mcp.keepRefreshed("fake", { seen: row.sealed, holder: "run-1@1", sealed: sealMcpCredential(KEY, "fake", { type: "headers", headers: { authorization: `Bearer ${TOKEN}` } }, fake.url) });
   assert.equal((await r.get("fake")).secret.changed_at, iso(T0), "a token refresh is the server keeping it");
   clock.now += 60_000;
   await r.save("fake", { url: fake.url, auth: { type: "bearer", token: NEXT } });
