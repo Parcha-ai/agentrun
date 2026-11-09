@@ -413,7 +413,7 @@ function ScheduleForm({ v2, go, trigger, minEvery }: FormProps & { trigger?: Sch
         <Field label="Each run is asked" field="target.input" issue={issues["target.input"]}><textarea name="content" rows={4} className="w-full border bg-background p-3 text-[13px]" value={draft.content} onChange={(e) => set("content")(e.target.value)} /></Field>
         <Field label="Cost cap, US dollars a run" field="target.max_cost_usd" issue={issues["target.max_cost_usd"]}
           hint={agentCap !== undefined ? `Uses the agent's default (${dollars(agentCap)}) if empty.` : capOptional ? "Uses the agent's default if empty." : "Required: each run this schedule starts stops at this spend."}>
-          <input name="maxCost" inputMode="decimal" className={`${INPUT} max-w-40`} value={draft.maxCost} onChange={(e) => set("maxCost")(e.target.value)} placeholder={capPlaceholder(agentCap)} />
+          <input name="maxCost" inputMode="decimal" className={`${INPUT} max-w-64`} value={draft.maxCost} onChange={(e) => set("maxCost")(e.target.value)} placeholder={capPlaceholder(agentCap)} />
         </Field>
         {!trigger && (
           <div>
@@ -551,7 +551,7 @@ function WebhookForm({ v2, go }: { v2: Client; go: (hash: string) => void }) {
         <Field label="Each run is asked" field="target.input" issue={issues["target.input"]}><textarea name="content" rows={4} className="w-full border bg-background p-3 text-[13px]" value={draft.content} onChange={(e) => set("content")(e.target.value)} /></Field>
         <Field label="Cost cap, US dollars a run" field="target.max_cost_usd" issue={issues["target.max_cost_usd"]}
           hint={agentCap !== undefined ? `Uses the agent's default (${dollars(agentCap)}) if empty.` : "Required: each run this webhook starts stops at this spend."}>
-          <input name="maxCost" inputMode="decimal" className={`${INPUT} max-w-40`} value={draft.maxCost} onChange={(e) => set("maxCost")(e.target.value)} placeholder={capPlaceholder(agentCap)} />
+          <input name="maxCost" inputMode="decimal" className={`${INPUT} max-w-64`} value={draft.maxCost} onChange={(e) => set("maxCost")(e.target.value)} placeholder={capPlaceholder(agentCap)} />
         </Field>
       </div>
       <div className="mt-6 flex flex-wrap gap-2">
@@ -659,7 +659,7 @@ function GitHubForm({ v2, go }: { v2: Client; go: (hash: string) => void }) {
         <Field label="Each run is asked" field="target.input" issue={issues["target.input"]} hint="The event's payload comes with it."><textarea name="content" rows={4} className="w-full border bg-background p-3 text-[13px]" value={draft.content} onChange={(e) => set("content")(e.target.value)} /></Field>
         <Field label="Cost cap, US dollars a run" field="target.max_cost_usd" issue={issues["target.max_cost_usd"]}
           hint={agentCap !== undefined ? `Uses the agent's default (${dollars(agentCap)}) if empty.` : "Required: each run this trigger starts stops at this spend."}>
-          <input name="maxCost" inputMode="decimal" className={`${INPUT} max-w-40`} value={draft.maxCost} onChange={(e) => set("maxCost")(e.target.value)} placeholder={capPlaceholder(agentCap)} />
+          <input name="maxCost" inputMode="decimal" className={`${INPUT} max-w-64`} value={draft.maxCost} onChange={(e) => set("maxCost")(e.target.value)} placeholder={capPlaceholder(agentCap)} />
         </Field>
       </div>
       <div className="mt-6 flex flex-wrap gap-2">
