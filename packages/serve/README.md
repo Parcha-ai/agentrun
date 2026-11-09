@@ -61,11 +61,12 @@ An edit is a new revision: `PUT $AGENTRUN_BASE_URL/agents/calc/definition` with
 
 | Flag | Default | What |
 | --- | --- | --- |
-| `--data DIR` | `~/.local/share/agentrun/agents` | The agent store (`DIR/store.sqlite`) and its runs (`DIR/disk/agents/<agent>/runs/<id>/`). The token is `DIR/.token`, mode 0600, made once and kept, unless `AGENTRUN_TOKEN` gives it. |
+| `--data DIR` | `~/.local/share/agentrun/agents` | The agent store (`DIR/store.sqlite`) and its runs (`DIR/disk/agents/<agent>/runs/<id>/`). The token is `DIR/.token`, mode 0600, made once and kept, unless `AGENTRUN_TOKEN` gives it: then a `DIR/.token` from an earlier start is removed. |
 | `--listen ADDR` | `127.0.0.1` | The address to listen on. On any other, every `Host` name is served and the token is the only lock: put TLS in front of it. |
 | `--port N` | the first free port from `7340` | The port. `0` is any free port. |
 | `--open` | off | Open the console in this machine's browser once the server listens; not in CI, nor on Linux with no display. |
 | `--faux MODULE` | none | Answer every model request from the module's default export (below). |
+| `--faux-browser MODULE` | none | With `--faux` only: the `browser` tool's provider and driver from the module's default export, a fake browser with no vendor and no key ([below](#the-faux-model)). The console's real-browser tests run on it. |
 | `--allow-host NAME` | none | Another `Host` name to accept on a loopback address, on any port. Repeat it. |
 | `--max-runs N` | `AGENTRUN_MAX_RUNS`, else as many pi runs as fit | The most runs at once, beside the memory each run's harness reserves ([capacity](#capacity-and-health)). Over either, a new run is `429 rate_limited`. |
 | `--documents DIR` | `AGENTRUN_SERVE_DOCUMENTS` | A read-only directory of documents a workflow's `pdf_pages` calls read by file name, confined to it. |
@@ -1085,7 +1086,8 @@ dropped, and the model is told in plain words that the person had the browser an
 was under way at the take acts no more: each change of hands moves the session's epoch, and an act from before it is
 refused, each action of a run checked on its own; the act already in the browser (a run's code is one batch there) ends
 first, and only then does the owner's input reach the browser. The run stays `working`; its timeline says "You took over the browser" and how it came back ("You handed the
-browser back", or that it went back to the agent after the idle or away window). The owner's time counts: Take over holds
+browser back", or that it went back to the agent after the idle or away window), each row at the time it happened, and a
+browser call that waited for the hand-back reads "Waited for you 11 s, then opened …". The owner's time counts: Take over holds
 the next 15 minutes of session time at the provider's price under the run's cap first, and with no room it is refused in
 the cap's words, shown in the viewer. A take-over that input keeps alive is held again every 15 minutes, and with no room
 the browser goes back to the agent at the cap ("The browser went back to the agent at the run's spend cap", in the viewer
@@ -1467,7 +1469,10 @@ asked by default.
   refusal's. A call approved under ask is checked again before it is sent. A pin adds to a setting and is never a
   permission: the agent's pin and the server's both hold (an argument both pin takes what holds both), and where
   nothing holds both every call is refused, saying so. A template pins its sends' destinations to its parameters ([Templates](#templates)). A pin in
-  `tool-settings.json` that does not read refuses every call of its tool until a `PUT` sets it again. Until the agent
+  `tool-settings.json` that does not read refuses every call of its tool, and `GET /settings/tools` serves it as
+  `pin_broken: true`. A `PUT` that keeps the tool's key and sets no valid pin (the mark sent back as served, or the pin
+  left out) keeps it broken, so saving another tool's setting never lifts it; a valid pin repairs it, and leaving the
+  key out removes the setting. Until the agent
   store's cutover an agent's own pin (`definition.tool_settings.<tool>.pin`) is refused, `422 not_set_up_here`: the
   store this server writes today keeps no pin, so set it on the server meanwhile.
 - **Prices.** `PUT /v2/settings/mcp-servers/{name}` takes `prices`, each tool's price in USD a call
@@ -1694,6 +1699,22 @@ overrides?: {model}}` makes one, or nothing when a check fails (a trigger refuse
 package's `version` is SemVer and never `definition.version`, the agent's revision number. The first package is `code-review`, a code review agent for one GitHub repository. The format and the
 rules of an apply are in [templates/README.md](https://github.com/Parcha-ai/agentrun/blob/main/packages/serve/templates/README.md);
 `agentrun template validate DIR` checks a folder as the server does.
+
+`agentrun template eval DIR` (`agentrun-serve eval-template DIR`) runs a package's eval cases as real runs of its agent
+and grades each run with the case's graders: by default on a server of its own over a temp data directory, so it never
+touches yours, with each case's fake MCP servers on loopback and its learned notes seeded through the learning API. Real
+models cost money: each run is capped at its case's `max_cost_usd`. It exits 0 when every case passed, 1 when one
+failed, 2 when nothing ran. The runner, the graders and the report are in
+[templates/README.md](https://github.com/Parcha-ai/agentrun/blob/main/packages/serve/templates/README.md#running-the-evals).
+
+| `eval-template` flag | What |
+| --- | --- |
+| `--case NAME` | A case to run; repeat it. Without one, every case. |
+| `--runs N` | Runs of each case, in place of each case's `runs`. |
+| `--server URL` | Run on that server, its token in `AGENTRUN_API_KEY` (the launcher hands it over its pipe; never printed). The agents the eval makes are archived at the end. |
+| `--grader-model PROVIDER/MODEL` | The `llm` graders' model; default the server's. |
+| `--report FILE` | The whole report as JSON (per case, run and grader: pass, reason, cost); a summary goes to stdout, progress to stderr. |
+| `--faux MODULE` | Answer every model request from the module, as the server's `--faux` does. Not with `--server`. |
 
 ## What it serves
 
@@ -2657,8 +2678,8 @@ export default function reply(context, faux) {
 }
 ```
 
-`startServe({ faux, fauxBrowser, fauxWeb })` (the tests', not the CLI's) also names modules whose default exports give
-the `browser` tool's `{ provider, driver }` in place of Browserbase's or Kernel's (pi-browser's fake backend, told the
+`startServe({ faux, fauxBrowser, fauxWeb })` also names modules whose default exports give
+the `browser` tool's `{ provider, driver }` (`fauxBrowser`, which the CLI takes as `--faux-browser MODULE`; the others are the tests' alone) in place of Browserbase's or Kernel's (pi-browser's fake backend, told the
 vendor the run's plane names and the saved sign-in the run was handed: `test/fixtures/faux-browser.mjs`), `web_fetch`'s direct fetch's `{ lookup, fetchImpl }` in place of the system's resolver and
 undici (a table of names and pages, `test/fixtures/faux-web.mjs`), and, as `fauxMonid`, the fetch the monid tools send
 through in place of monid's API (`test/fixtures/faux-monid.mjs`). Each is honored only with `faux`.

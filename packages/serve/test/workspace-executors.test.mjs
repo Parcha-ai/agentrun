@@ -54,14 +54,14 @@ test("an executor keeps a failure's output and says its words apart; streamed ou
   const root = scratch();
   const env = piEnv(localWorkspace(root), { cwd: "/workspace", env: shellEnv(), defaultTimeoutS: 120 });
   const bash = piExecutor(bashTool(), env, ctx);
-  const timed = await bash({ command: "echo before; sleep 30", timeout: 1 }, {});
+  const timed = await bash({ command: "echo before; sleep 300", timeout: 1 }, {});
   assert.deepEqual([timed.text, timed.error, timed.isError], ["before\n", "Command timed out after 1 seconds", true]);
   const streamed = [];
-  await bash({ command: "echo first; sleep 0.5; echo second" }, { output: (chunk) => streamed.push(chunk) });
+  await bash({ command: "echo first; echo second" }, { output: (chunk) => streamed.push(chunk) });
   assert.deepEqual(streamed.join(""), "first\nsecond\n");
+  // Aborted when the command says it started, not after a clock.
   const controller = new AbortController();
-  setTimeout(() => controller.abort(), 200);
-  await assert.rejects(bash({ command: "sleep 30" }, { signal: controller.signal }));
+  await assert.rejects(bash({ command: "echo started; sleep 300", timeout: 600 }, { signal: controller.signal, output: () => controller.abort() }));
 });
 
 test("an executor gives pi's tool the call's model (the registry's ToolCall.model), whose image limits read uses; none, pi's defaults", async () => {

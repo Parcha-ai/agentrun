@@ -53,7 +53,8 @@ async function problemsOf(t, change) {
 test("the code-review package reads whole: its review skill with the rules beside it, its findings schema and its eval case", () => {
   const [review] = readPackages();
   assert.deepEqual([review.name, review.version, review.model, review.effort, review.budget, review.learning], ["code-review", "0.1.0", { tier: "fast", prefer: "openrouter/particle-ai/particle-1" }, "low", { per_run_usd: 0.5 }, false]);
-  assert.deepEqual(Object.keys(review.skills).sort(), ["review/REVIEW.md", "review/SKILL.md"]);
+  assert.deepEqual(Object.keys(review.skills).sort(), ["review/REVIEW.md", "review/SKILL.md", "review/findings.schema.json"]);
+  assert.equal(review.skills["review/findings.schema.json"], file("findings.schema.json"), "the answer's schema ships beside the SKILL.md that names it");
   assert.equal(review.skills["review/REVIEW.md"], file("rules/REVIEW.md"), "the rule ships beside the SKILL.md that reads it");
   assert.match(review.skills["review/SKILL.md"], /## With GitHub MCP tools/);
   assert.deepEqual([review.output, review.evals, review.triggers, review.secrets], [{ schema: "findings.schema.json" }, ["clean-refactor", "injection", "null-name", "off-by-one", "re-review", "repo-rule"], [], []]);
@@ -180,7 +181,7 @@ test("code-review through the API: listed, applied with a repo it makes the agen
   assert.match(definition.instructions, /clone https:\/\/github\.com\/Parcha-ai\/agentrun\s/);
   assert.match(definition.instructions, /With the GitHub tools \(`mcp:github\/\.\.\.`\) and no shell, read everything through them/);
   const files = Object.fromEntries(agent.skills.map((s) => [s.path, s.sha256]));
-  assert.deepEqual(files, { "review/REVIEW.md": sha256(file("rules/REVIEW.md")), "review/SKILL.md": sha256(file("skills/review/SKILL.md")) });
+  assert.deepEqual(files, { "review/REVIEW.md": sha256(file("rules/REVIEW.md")), "review/SKILL.md": sha256(file("skills/review/SKILL.md")), "review/findings.schema.json": sha256(file("findings.schema.json")) }, "the skill, its rule and its answer schema reach the agent");
 
   const other = await api("POST", "/templates/code-review/apply", { parameters: { repo: "Parcha-ai/agentrun" }, overrides: { model: "openrouter/other-lab/other-model" } });
   assert.equal(other.status, 201, JSON.stringify(other.body));
@@ -275,12 +276,12 @@ test("code-review's GitHub tools: granted, never allowed by the package itself; 
   assert.equal(plain.body.warnings.find((w) => w.field === "mcp.github"), undefined, "nothing skipped");
   const agent = (await api("GET", `/agents/${plain.body.agent_id}`)).body;
   assert.deepEqual(agent.definition.tools, ["read", ...granted], "its read, for the skill's rules, and the GitHub tools; no box here, so no shell");
-  assert.equal(agent.definition.tool_settings, AGENT_LAYER_PINS ? { "mcp:github/pull_request_review_write": { pin: REVIEW_PIN } } : undefined, "the package sets no permission");
+  assert.deepEqual(agent.definition.tool_settings, AGENT_LAYER_PINS ? { "mcp:github/pull_request_review_write": { pin: { event: [null, "COMMENT"], method: ["create", "delete_pending", "submit_pending"] } } } : undefined, "the package sets no permission");
   // Its review write is bounded to COMMENT reviews even once granted; until the store cutover the apply says how.
   if (!AGENT_LAYER_PINS) {
     const pinned = plain.body.warnings.filter((w) => w.field.startsWith("pins."));
     assert.deepEqual(pinned.map((w) => [w.field, w.reason]), [["pins.mcp:github/pull_request_review_write", "not_set_up_here"]]);
-    assert.match(pinned[0].message, /^mcp:github\/pull_request_review_write is not pinned to method in \(create \| submit_pending \| delete_pending\), event in \(absent \| COMMENT\) for this agent yet/);
+    assert.match(pinned[0].message, /^mcp:github\/pull_request_review_write is not pinned to event in \(absent \| COMMENT\), method in \(create \| delete_pending \| submit_pending\) for this agent yet/);
   }
   assert.deepEqual(await permissions(plain.body.agent_id), Object.fromEntries(GITHUB_TOOLS.map((name) => [name, "ask"])));
 
@@ -424,6 +425,17 @@ test("market-monitor's schedule comes from its parameters: Monday 08:00 UTC by d
   assert.deepEqual((await api("GET", "/agents?archived=true")).body.agents, [], "and archives none");
 });
 
+test("every shipped package's agent gets its answer schema beside its skill, and its skill names that file", () => {
+  for (const p of readPackages()) {
+    if (!p.output) continue;
+    const skills = Object.keys(p.skills).filter((path) => path.endsWith("/SKILL.md")).map((path) => path.slice(0, -"/SKILL.md".length));
+    for (const skill of skills) {
+      assert.ok(Object.hasOwn(p.skills, `${skill}/${p.output.schema}`), `${p.name}: ${skill}/${p.output.schema} ships with the agent`);
+      assert.match(p.skills[`${skill}/SKILL.md`], new RegExp(p.output.schema.replace(/\./g, "\\.")), `${p.name}: the ${skill} skill names its schema`);
+    }
+  }
+});
+
 test("a parameter is read from the caller's own fields: a required one named constructor is missing from {parameters: {}}", async (t) => {
   const dir = join(await scratch(t), "inherits");
   mkdirSync(dir);
@@ -466,7 +478,7 @@ test("an mcp entry's pin is checked: each tool one of the entry's, 1 to 8 argume
   }
   // A one-of list is filled item by item, in its order; an item whose parameter is missing denies as a scalar's does.
   const { p: listed } = await pinProblems(t, '    pin: { slack_send_message: { channel_id: [C0GENERAL1, "${parameters.channel}"], limit: [null, "${parameters.count}"] } }');
-  assert.deepEqual(compiled(listed, { channel: "C0123", count: 3 }, { mcp: listed.mcp, defaultTools: [], grants: [], pins: true }).agent.definition.tool_settings, { [SEND]: { pin: { channel_id: ["C0GENERAL1", "C0123"], limit: [null, 3] } } });
+  assert.deepEqual(compiled(listed, { channel: "C0123", count: 3 }, { mcp: listed.mcp, defaultTools: [], grants: [], pins: true }).agent.definition.tool_settings, { [SEND]: { pin: { channel_id: ["C0123", "C0GENERAL1"], limit: [null, 3] } } }, "in its one form");
   assert.deepEqual(compiled(listed, { count: 3 }, { mcp: listed.mcp, defaultTools: [], grants: [], pins: true }).unpinned, [{ tool: SEND, parameters: ["channel"] }]);
   const refused = async (entry, pattern) => {
     const { problems } = await pinProblems(t, entry);

@@ -350,6 +350,16 @@ test("lifetime.extend passes a provider whose extend moves the deadline: the com
 	assert.deepEqual(statuses(report), { "lifetime.extend": "pass" }, reasons(report)["lifetime.extend"]);
 });
 
+/** The lifetimes provider.deadline asked for, in order: the run's shared computer is not the case's. */
+const deadlineLifetimes = (made) => made.filter(({ spec }) => spec.labels?.["agentrun.conformance.case"] === "deadline").map(({ spec }) => spec.lifetimeMs);
+
+test("provider.deadline sees the end of a 45 s lifetime on the run's clock, with no wait in a test", { timeout: 10_000 }, async () => {
+	const { provider, made } = fakeDevices();
+	const report = await run(provider, ["provider.deadline"]);
+	assert.deepEqual(statuses(report), { "provider.deadline": "pass" }, reasons(report)["provider.deadline"]);
+	assert.deepEqual(deadlineLifetimes(made), [45_000]);
+});
+
 /** For each case: a fake broken the way the case checks for, and what the failure says. */
 const BROKEN = [
 	["health.kind-consistent", { hello: { kind: "linux" } }, /hello's kind is the one the provider declares: expected "desktop", got "linux"/],

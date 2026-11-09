@@ -5,12 +5,22 @@ import type { Ended } from "../../booking.js";
 import type { InputShape } from "../../host/overhead.js";
 import type { CapMarks } from "./marks.js";
 
-/** A model's list price, in USD per million tokens, as the catalog gives it. No cache prices: the input price. */
-export interface ModelPrice {
+/** A model's rates, in USD per million tokens. No cache rates: the input rate. */
+export interface PriceRates {
   readonly input: number;
   readonly output: number;
   readonly cacheRead?: number;
   readonly cacheWrite?: number;
+}
+/** A tier of a model's price, as the catalog gives it (pi-ai's cost tiers): its rates for a request whose whole input
+ *  (fresh, cached and written to the cache) is above `inputTokensAbove` tokens. */
+export interface PriceTier extends PriceRates {
+  readonly inputTokensAbove: number;
+}
+/** A model's list price, in USD per million tokens, as the catalog gives it: its base rates, and its tiers when the
+ *  catalog has any (the catalog's own table, passed as given). */
+export interface ModelPrice extends PriceRates {
+  readonly tiers?: readonly PriceTier[];
 }
 
 /** A model as the cap prices it: its API (what its provider adds server-side, and whether its thinking takes a budget),
@@ -61,14 +71,24 @@ export interface ModelCapRequest {
   readonly noted?: boolean;
 }
 
-/** A verify decision about to be judged: held at its model's price for its input and output. "unreadable": its catalog
- *  could not be read for a price. */
+/** A workflow decision about to be judged, held as main holds it (serve decision-cap.ts holdOf): its model at its
+ *  catalog's price (`outputCeiling`: the catalog's most completion tokens), "unreadable" when the catalog could not be
+ *  read for one. Its output is DECISION_OUTPUT_TOKENS a question (expected), or its model's most (strict); its input its
+ *  state and questions' bytes plus DECISION_IMAGE_TOKENS an image; its fees the catalog's per request and per image. With
+ *  no cap it is not priced at all. */
 export interface DecisionCapRequest {
   readonly kind: "decision";
   readonly id: string;
   readonly model: CapModel | "unreadable";
+  /** The UTF-8 bytes of its state and questions as JSON, one token a byte. */
   readonly inputTokens: number;
-  readonly outputTokens: number;
+  /** How many questions it asks. */
+  readonly questions: number;
+  /** How many images it sends. */
+  readonly images?: number;
+  /** The catalog's price per request and per image, in USD. */
+  readonly requestUsd?: number;
+  readonly imageUsd?: number;
 }
 
 /** A priced tool call about to be made: held at its quote, or its allowance, until it is charged. */

@@ -11,6 +11,8 @@ export const facts: AdapterFacts = Object.freeze<AdapterFacts>({
   wire: "openai-responses",
   // A message that comes mid-turn waits for the turn's end.
   steer: false,
+  // A call that started is never run again (the harness answers it from the log); only the model calls again.
+  rerunsStarted: false,
   // One run's memory, measured with the server's (serve's host.ts): Codex's app-server beside the run's process.
   runMib: 192,
   // OpenAI's reasoning efforts stop at xhigh.

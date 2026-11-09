@@ -9,11 +9,14 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import test from "node:test";
 import { checkLifetime, kindRefusals } from "../dist/index.js";
-import { providerFromEnv } from "../dist/providers.js";
+import * as registry from "../dist/providers.js";
 import { DAEMON, DESKTOP_GROUPS, fakeE2B, KEY, LINUX_GROUPS, TimeoutError, VERSION } from "./fake-e2b.mjs";
 
 const e2b = await import("../dist/e2b.js");
-const { E2BProvider, ENV, fromEnv } = e2b;
+const { E2BProvider, create } = e2b;
+const { providerFor } = registry;
+/** The conformance module's names: the only place E2B settings are read from an environment. */
+const { E2B_ENV: ENV, settingsFromEnv } = await import("../dist/conformance/e2b.js");
 
 const COMPUTER = "agentrun.computer";
 const NAME = "agentrun.computer.name";
@@ -169,11 +172,14 @@ test("check() takes a template as the image, none or open, and labels; it refuse
 	assert.deepEqual(fields({ ...SPEC, labels: { a: 1 } }), ["labels"]);
 });
 
-test("the daemon user is held to root's numbers, not its text: 00:00 is root as much as 0:0, from options or COMPUTER_E2B_USER", async () => {
+test("the daemon user is held to root's numbers, not its text: 00:00 is root as much as 0:0, from options or the conformance module's COMPUTER_E2B_USER", async () => {
 	for (const daemonUser of ["00:00", "000:1000", "1000:00", "0:1000"]) assert.throws(() => setup({ daemonUser }), /root or in root's group/, daemonUser);
 	assert.doesNotThrow(() => setup({ daemonUser: "01000:01000" }), "leading zeros on a user that is not root are its number");
 	const fake = fakeE2B();
-	await assert.rejects(fromEnv({ [ENV.key]: KEY, [ENV.user]: "00:00", [ENV.daemon]: DAEMON_PATH }, { Sandbox: fake.Sandbox }), /root or in root's group/);
+	await assert.rejects(create({ apiKey: KEY, daemonUser: "00:00", daemonPath: DAEMON_PATH, Sandbox: fake.Sandbox }), /root or in root's group/);
+	const conformance = await e2b.conformance();
+	const env = { [ENV.live]: "1", [ENV.key]: KEY, [ENV.user]: "00:00", [ENV.daemon]: DAEMON_PATH };
+	await assert.rejects(conformance.createProvider({ env, Sandbox: fake.Sandbox }), /root or in root's group/);
 	assert.deepEqual(fake.calls, []);
 });
 
@@ -194,11 +200,27 @@ test("a timeout that is not a whole number of ms, or one past Node's longest tim
 
 // --- the key ---
 
-test("fromEnv() reads the key from COMPUTER_E2B_API_KEY alone: a bare E2B_API_KEY is refused in words, and nothing is called", async () => {
+test("create() takes the key as options.apiKey alone and reads no environment: E2B_API_KEY or COMPUTER_E2B_API_KEY in process.env is never a fallback", async () => {
 	const fake = fakeE2B();
+	await withProcessEnv({ E2B_API_KEY: BARE, COMPUTER_E2B_API_KEY: BARE }, async () => {
+		for (const options of [{}, { apiKey: "" }]) {
+			await assert.rejects(create({ ...options, Sandbox: fake.Sandbox, daemonPath: DAEMON_PATH }), (error) => {
+				assert.match(error.message, /options\.apiKey/);
+				assert.doesNotMatch(error.message, /COMPUTER_E2B_API_KEY|E2B_API_KEY/, "the library names its option, never an environment variable");
+				assert.doesNotMatch(error.message, new RegExp(BARE));
+				return true;
+			});
+		}
+	});
+	assert.deepEqual(fake.calls, []);
+});
+
+test("the conformance module reads the key from COMPUTER_E2B_API_KEY alone: a bare E2B_API_KEY is refused in words, and nothing is called", async () => {
+	const fake = fakeE2B();
+	const conformance = await e2b.conformance();
 	await withProcessEnv({ E2B_API_KEY: BARE }, async () => {
 		for (const env of [{ E2B_API_KEY: BARE }, {}, { [ENV.key]: "" }]) {
-			await assert.rejects(fromEnv(env, { Sandbox: fake.Sandbox, daemonPath: DAEMON_PATH }), (error) => {
+			await assert.rejects(conformance.createProvider({ env: { ...env, [ENV.live]: "1" }, Sandbox: fake.Sandbox, daemonPath: DAEMON_PATH }), (error) => {
 				assert.match(error.message, /set COMPUTER_E2B_API_KEY to an E2B API key/);
 				assert.match(error.message, /never from E2B_API_KEY/);
 				assert.doesNotMatch(error.message, new RegExp(BARE));
@@ -209,10 +231,28 @@ test("fromEnv() reads the key from COMPUTER_E2B_API_KEY alone: a bare E2B_API_KE
 	assert.deepEqual(fake.calls, []);
 });
 
-test("every SDK call is given the COMPUTER_E2B_ key, the domain, the API URL and debug false explicitly, so an ambient E2B_* cannot win", async () => {
+test("the conformance module reads every COMPUTER_E2B_ name the live script and the sweeps set, and passes each as its option", () => {
+	assert.deepEqual(settingsFromEnv({ [ENV.key]: KEY }), { apiKey: KEY });
+	const env = {
+		[ENV.key]: KEY,
+		[ENV.domain]: "e2b.example.com",
+		[ENV.daemon]: DAEMON_PATH,
+		[ENV.kind]: "linux",
+		[ENV.maxLifetimeMs]: "86400000",
+		[ENV.user]: "2000:2000",
+		[ENV.publicStream]: "1",
+		E2B_API_KEY: BARE,
+	};
+	assert.deepEqual(settingsFromEnv(env), { apiKey: KEY, domain: "e2b.example.com", daemonPath: DAEMON_PATH, kind: "linux", maxLifetimeMs: 86_400_000, daemonUser: "2000:2000", publicStream: true });
+	assert.throws(() => settingsFromEnv({ [ENV.key]: KEY, [ENV.maxLifetimeMs]: "1h" }), /COMPUTER_E2B_MAX_LIFETIME_MS is a whole number of milliseconds/);
+	assert.throws(() => settingsFromEnv({ [ENV.key]: KEY, [ENV.publicStream]: "yes" }), /COMPUTER_E2B_PUBLIC_STREAM is 1 or unset/);
+	assert.throws(() => settingsFromEnv({ [ENV.key]: KEY, E2B_SANDBOX_URL: "https://prod.example.invalid" }), /E2B_SANDBOX_URL is set/);
+});
+
+test("every SDK call is given the key passed in, the domain, the API URL and debug false explicitly, so an ambient E2B_* cannot win", async () => {
 	const fake = fakeE2B();
-	await withProcessEnv({ E2B_API_KEY: BARE, E2B_DOMAIN: "prod.example.invalid", E2B_API_URL: "https://prod.example.invalid", E2B_DEBUG: "true" }, async () => {
-		const provider = await fromEnv({ [ENV.key]: KEY, E2B_API_KEY: BARE, [ENV.daemon]: DAEMON_PATH }, { Sandbox: fake.Sandbox, timeouts: TIMEOUTS });
+	await withProcessEnv({ E2B_API_KEY: BARE, COMPUTER_E2B_API_KEY: BARE, E2B_DOMAIN: "prod.example.invalid", COMPUTER_E2B_DOMAIN: "prod.example.invalid", E2B_API_URL: "https://prod.example.invalid", E2B_DEBUG: "true" }, async () => {
+		const provider = await create({ apiKey: KEY, daemonPath: DAEMON_PATH, Sandbox: fake.Sandbox, timeouts: TIMEOUTS });
 		const made = await provider.create(SPEC);
 		assert.equal(made.ok, true, made.ok ? "" : made.error.message);
 		assert.equal((await provider.list({})).ok, true);
@@ -223,7 +263,7 @@ test("every SDK call is given the COMPUTER_E2B_ key, the domain, the API URL and
 	for (const call of apiCalls) {
 		const opts = call.findLast((arg) => typeof arg === "object" && arg !== null && "apiKey" in arg);
 		assert.ok(opts, `${call[0]} was given its connection options`);
-		assert.equal(opts.apiKey, KEY, `${call[0]}: the COMPUTER_E2B_ key`);
+		assert.equal(opts.apiKey, KEY, `${call[0]}: the key passed in`);
 		assert.equal(opts.domain, "e2b.app");
 		assert.equal(opts.apiUrl, "https://api.e2b.app");
 		assert.equal(opts.debug, false, `${call[0]}: debug false, else the SDK skips kill and fakes create (index.mjs:5402, 6022)`);
@@ -231,22 +271,24 @@ test("every SDK call is given the COMPUTER_E2B_ key, the domain, the API URL and
 	assert.doesNotMatch(JSON.stringify(fake.calls), new RegExp(BARE));
 });
 
-test("COMPUTER_E2B_DOMAIN names the domain the key goes to; anything but a host name is refused", async () => {
+test("options.domain names the domain the key goes to, as COMPUTER_E2B_DOMAIN does through the conformance module; anything but a host name is refused", async () => {
 	const fake = fakeE2B();
-	const provider = await fromEnv({ [ENV.key]: KEY, [ENV.domain]: "e2b.example.com", [ENV.daemon]: DAEMON_PATH }, { Sandbox: fake.Sandbox, timeouts: TIMEOUTS });
+	const provider = await create({ apiKey: KEY, domain: "e2b.example.com", daemonPath: DAEMON_PATH, Sandbox: fake.Sandbox, timeouts: TIMEOUTS });
 	await provider.list({});
 	const opts = fake.calls.find(([name]) => name === "Sandbox.list")[1];
 	assert.equal(opts.domain, "e2b.example.com");
 	assert.equal(opts.apiUrl, "https://api.e2b.example.com");
+	const conformance = await e2b.conformance();
 	for (const domain of ["https://e2b.app", "e2b.app/x", "localhost:3000", "E2B.app"]) {
-		await assert.rejects(fromEnv({ [ENV.key]: KEY, [ENV.domain]: domain }, { Sandbox: fake.Sandbox }), /COMPUTER_E2B_DOMAIN/);
+		await assert.rejects(create({ apiKey: KEY, domain, Sandbox: fake.Sandbox }), /E2B domain must be a host name/);
+		await assert.rejects(conformance.createProvider({ env: { [ENV.live]: "1", [ENV.key]: KEY, [ENV.domain]: domain }, Sandbox: fake.Sandbox }), /E2B domain must be a host name/);
 	}
 });
 
-test("the provider refuses to start while E2B_SANDBOX_URL is set: the SDK would send every sandbox call there", async () => {
+test("the provider refuses to start while E2B_SANDBOX_URL is set in process.env: the SDK would send every sandbox call there", async () => {
 	const fake = fakeE2B();
 	await withProcessEnv({ E2B_SANDBOX_URL: "https://prod.example.invalid" }, async () => {
-		await assert.rejects(fromEnv({ [ENV.key]: KEY, [ENV.daemon]: DAEMON_PATH }, { Sandbox: fake.Sandbox }), /E2B_SANDBOX_URL is set/);
+		await assert.rejects(create({ apiKey: KEY, daemonPath: DAEMON_PATH, Sandbox: fake.Sandbox }), /E2B_SANDBOX_URL is set/);
 		assert.throws(() => new E2BProvider({ apiKey: KEY, Sandbox: fake.Sandbox, daemonPath: DAEMON_PATH }), /E2B_SANDBOX_URL is set/);
 	});
 	assert.deepEqual(fake.calls, []);
@@ -265,11 +307,16 @@ test("the real SDK, given the provider's connection options, takes none of an am
 	});
 });
 
-test("the module never reads E2B_API_KEY, never imports the SDK at load, and names its env COMPUTER_E2B_*", () => {
+test("the module never reads E2B_API_KEY, never imports the SDK at load, and names no environment variable: the conformance module's names are COMPUTER_E2B_*", () => {
 	const source = readFileSync(new URL("../dist/e2b.js", import.meta.url), "utf8");
 	assert.doesNotMatch(source, /process\.env\.E2B_API_KEY|\["E2B_API_KEY"\]/);
+	assert.doesNotMatch(source, /COMPUTER_E2B_/, "the provider names no COMPUTER_E2B_ variable: the conformance module reads those");
 	assert.doesNotMatch(source, /^\s*import\s[^(]*from\s+["']e2b["']/m, "no static import of the SDK");
-	for (const name of Object.values(ENV)) assert.match(name, /^COMPUTER_E2B_[A-Z0-9_]+$/);
+	assert.equal(e2b.ENV, undefined, "no ENV of names");
+	assert.equal(e2b.fromEnv, undefined, "no fromEnv");
+	const { live, ...names } = ENV;
+	assert.equal(live, "AGENTRUN_COMPUTER_LIVE_E2B");
+	for (const name of Object.values(names)) assert.match(name, /^COMPUTER_E2B_[A-Z0-9_]+$/);
 });
 
 // --- create ---
@@ -1048,14 +1095,18 @@ test("the stream URL and its password are never logged and never in an error", a
 
 // --- the registry and the conformance module ---
 
-test("the registry builds E2B from COMPUTER_E2B_* alone, and the conformance module needs its live switch first", async () => {
-	await assert.rejects(providerFromEnv("e2b", { E2B_API_KEY: BARE }), (error) => {
-		assert.match(error.message, /COMPUTER_E2B_API_KEY/);
-		assert.doesNotMatch(error.message, new RegExp(BARE));
-		return true;
-	});
-	const conformance = await e2b.conformance();
+test("the registry builds E2B from its options alone, and the conformance module needs its live switch first", async () => {
 	const fake = fakeE2B();
+	await withProcessEnv({ E2B_API_KEY: BARE, COMPUTER_E2B_API_KEY: BARE }, async () => {
+		await assert.rejects(providerFor("e2b", { Sandbox: fake.Sandbox }), (error) => {
+			assert.match(error.message, /options\.apiKey/);
+			assert.doesNotMatch(error.message, new RegExp(BARE));
+			return true;
+		});
+	});
+	const fromRegistry = await providerFor("e2b", { apiKey: KEY, daemonPath: DAEMON_PATH, Sandbox: fake.Sandbox });
+	assert.equal(fromRegistry.id, "e2b");
+	const conformance = await e2b.conformance();
 	await assert.rejects(conformance.createProvider({ env: { [ENV.key]: KEY }, Sandbox: fake.Sandbox }), /set AGENTRUN_COMPUTER_LIVE_E2B=1/);
 	await assert.rejects(conformance.createDriftedProvider({ env: { [ENV.key]: KEY }, Sandbox: fake.Sandbox }), /set AGENTRUN_COMPUTER_LIVE_E2B=1/);
 	const provider = await conformance.createProvider({ env: { [ENV.key]: KEY, AGENTRUN_COMPUTER_LIVE_E2B: "1", [ENV.daemon]: DAEMON_PATH }, Sandbox: fake.Sandbox });
