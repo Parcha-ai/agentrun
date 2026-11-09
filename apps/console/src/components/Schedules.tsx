@@ -570,6 +570,10 @@ function GitHubForm({ v2, go }: { v2: Client; go: (hash: string) => void }) {
   const [saving, setSaving] = useState(false);
   // A create sent again unchanged reuses its Idempotency-Key; an edited one gets a new key.
   const keys = useRef(keeper()).current;
+  // Whether the form is still open: a create that answers after the person left it (Cancel, the back link, the sidebar)
+  // opens nothing.
+  const open = useRef(true);
+  useEffect(() => () => { open.current = false; }, []);
   useEffect(() => {
     let live = true;
     setReadError(null);
@@ -595,7 +599,7 @@ function GitHubForm({ v2, go }: { v2: Client; go: (hash: string) => void }) {
     setIssues({}); setSaving(true);
     try {
       const made = await v2.createTrigger(body, keys.keyFor("createTrigger", body));
-      go(hashOf(made.id));
+      if (open.current) go(hashOf(made.id));
     } catch (err) {
       const found = issuesOf(err);
       setIssues(Object.fromEntries(Object.entries(found.fields).filter(([k]) => shown.has(k))));
