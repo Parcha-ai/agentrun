@@ -140,10 +140,17 @@ export function permissionFrom(name: string, server: PermissionSettings, agent: 
   return { permission: "allow", from: "unattended" };
 }
 
-/** Whether something stands behind `name`'s ask that approvals "never" must not lift: in either layer, under any key the
- *  tool is read by (its own, its MCP server's wildcard; a shell tool's, bash's), a deny, a value that is no permission,
- *  or a setting marked as not read as written (`fallback`). The ask a layer above gives does not hide a deny below it. */
+/** Marks the server's settings map when its file is present but does not read (tool-plane.ts ToolSettings.get): every
+ *  tool then takes its defaults, and the deny the file may hold can't be seen, so nothing lifts an ask over it. A symbol:
+ *  carried by a spread, never by JSON (it is never served) nor by Object.entries (no reader takes it for a tool). */
+export const SETTINGS_UNREAD: unique symbol = Symbol("agentrun.tool-settings.unread");
+
+/** Whether something stands behind `name`'s ask that approvals "never" must not lift: the server's settings unread
+ *  (SETTINGS_UNREAD: a deny may be in the file), or in either layer, under any key the tool is read by (its own, its MCP
+ *  server's wildcard; a shell tool's, bash's), a deny, a value that is no permission, or a setting marked as not read as
+ *  written (`fallback`). The ask a layer above gives does not hide a deny below it. */
 function standsBehind(name: string, server: PermissionSettings, agent: PermissionSettings): boolean {
+  if ((server as { readonly [SETTINGS_UNREAD]?: true })[SETTINGS_UNREAD] === true) return true;
   const held = Object.hasOwn(SHELL_FAMILY, name) ? SHELL_FAMILY[name]! : name;
   return [agent, server].some((layer) => permissionKeys(held).some((key) => {
     const setting = layer[key];

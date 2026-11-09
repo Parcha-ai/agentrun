@@ -34,4 +34,5 @@ export const flows = [
   takeOver,
   signedOutElsewhere,
   serverDeny,
+  { name: "box-image-banner", pending: "waits on a server whose Docker box image is still being built or pulled (capabilities.places.boxes state preparing): the e2e servers have no Docker daemon to build one" },
 ];

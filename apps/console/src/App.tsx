@@ -10,6 +10,7 @@ import { GitHubPage } from "@/components/GitHubPage";
 import { McpServersPage } from "@/components/McpServersPage";
 import { ModelKeyCard } from "@/components/ModelKeyCard";
 import { NoModelBanner } from "@/components/NoModelBanner";
+import { BoxImageBanner } from "@/components/BoxImageBanner";
 import { WebhookPage } from "@/components/WebhookPage";
 import { ScheduleNames, type TriggerKnown } from "@/components/ScheduleChip";
 import { SchedulesPage } from "@/components/Schedules";
@@ -31,7 +32,7 @@ import { allPages, type Capabilities, ClientError, createClient, type ImportOffe
 import { createConnection } from "@/lib/connection";
 import { appendRuns, keeper, keepersByRun, sendOnce, uuid } from "@/lib/idempotency";
 import { asksPerson, hasOwnRun, mergeNeeds, type Needs, pollSettled, rerunBody } from "@/lib/needs";
-import { placesOf } from "@/lib/place";
+import { placesOf, preparingBox } from "@/lib/place";
 import { type Problem, problem } from "@/lib/problem";
 import { type Template, templateHarness, tryTemplate } from "@/lib/templates";
 import { githubReturnOf } from "@/lib/github";
@@ -296,6 +297,8 @@ function Console({ v2, onSignedOut }: { v2: ReturnType<typeof createClient>; onS
   // The capabilities, read at the start and again after a settings save: only the newest read lands, so an answer to an
   // earlier read (two saves in a row) never puts back what an earlier save left.
   const capsAsked = useRef(0);
+  // Whether the poll's timer below has a capabilities read still answering: it starts no other until that one ends.
+  const capsPolling = useRef(false);
   // It answers whether the read landed, for a page that says so (Settings → Tools).
   const readCaps = () => { const n = ++capsAsked.current; return v2.capabilities().then((x) => { if (n === capsAsked.current) setCaps(x); return true; }, () => false); };
   useEffect(() => { readCaps(); }, [v2]); // eslint-disable-line react-hooks/exhaustive-deps
@@ -478,17 +481,27 @@ function Console({ v2, onSignedOut }: { v2: ReturnType<typeof createClient>; onS
   // The server's learning switch: undefined until its capabilities are read, null on a server without learning.
   const learningCap = caps ? ((caps as unknown as { features?: { learning?: "on" | "off" } }).features?.learning ?? null) : undefined;
   editorCaps.learning = learningCap ?? undefined;
-  // While no model is ready, the capabilities are read again every MODEL_CHECK_MS and whenever the page comes back into
-  // view, so the bar (and the first screen's card) goes by itself once a key is set where the server starts, or saved.
+  // While no model is ready, or a box's image is still coming, the capabilities are read again every MODEL_CHECK_MS and
+  // whenever the page comes back into view, so the bar (and the first screen's card, and its box line) goes by itself
+  // once a key is set where the server starts, or saved, or once the box is ready.
   const modelsReady = caps?.models?.ready;
+  const boxComing = preparingBox(placesOf(caps));
+  const preparing = !!boxComing;
   useEffect(() => {
-    if (modelsReady !== false) return;
-    // Through the one guarded reader, so an older answer never undoes a newer one.
+    if (modelsReady !== false && !preparing) return;
+    // Through the one guarded reader, so an older answer never undoes a newer one. The timer starts no read while its last
+    // one is still answering: a read slower than MODEL_CHECK_MS would otherwise be overtaken by the next tick's, and its
+    // answer dropped. Coming back into view always reads now, and that newer answer is the one that lands.
+    const tick = () => {
+      if (capsPolling.current) return;
+      capsPolling.current = true;
+      void readCaps().finally(() => { capsPolling.current = false; });
+    };
     const again = () => readCaps();
-    const timer = setInterval(again, MODEL_CHECK_MS);
+    const timer = setInterval(tick, MODEL_CHECK_MS);
     window.addEventListener("focus", again);
     return () => { clearInterval(timer); window.removeEventListener("focus", again); };
-  }, [v2, modelsReady]);
+  }, [v2, modelsReady, preparing]);
   return (
     <ScheduleNames.Provider value={scheduleNames}>
     <Shell active={where.section} settings={settingsOffered.length > 0} triggers={scheduling} onNavigate={nav} onSignOut={() => {
@@ -518,6 +531,7 @@ function Console({ v2, onSignedOut }: { v2: ReturnType<typeof createClient>; onS
         // The first screen asks for a model key while the server says no agent that names no model runs here yet.
         ? <div className="flex h-full flex-col">
             {caps?.models?.ready === false && <ModelKeyCard v2={v2} needs={caps.models.needs} model={caps.models.default} atRest={caps.features.tool_keys?.at_rest} onSaved={readCaps} />}
+            {boxComing && <BoxImageBanner box={boxComing} />}
             <div className="min-h-0 flex-1">
               <MissionControl view={mission} error={missionError} onRetry={() => setMissionTry((n) => n + 1)}
                 scope={{ range: statsRange, onRange: setStatsRange, agent: statsAgent, onAgent: setStatsAgent, refreshing: missionReading && mission !== null }}
