@@ -425,12 +425,9 @@ export function resumeHead(request: Pick<ApprovalRequest, "tool" | "call_id">, s
   const args = shown.length > 300 ? `${shown.slice(0, 299)}…` : shown;
   return `${RESUME_PREFIX}This answers your ${request.tool} call ${request.call_id} (arguments ${args}), which waited for a person's approval; it is not a new message from them.`;
 }
-/** The gate's resume message: its head, then the call's result or the refusal. A note the person sent with an allow
- *  (`note`) closes it, so the model reads what they said with the call they let run; a deny's note is in its refusal. */
-export function resumeText(request: Pick<ApprovalRequest, "tool" | "call_id">, shown: string, decision: "allow" | "deny", result: ToolAnswer, note?: string): string {
+export function resumeText(request: Pick<ApprovalRequest, "tool" | "call_id">, shown: string, decision: "allow" | "deny", result: ToolAnswer): string {
   const head = resumeHead(request, shown);
-  if (decision !== "allow") return `${head}\n${result.text}`;
-  return `${head} They allowed it, and it ran${result.isError ? " and failed" : ""}. Its result:\n${result.text}${note?.trim() ? `\n\nTheir note with it: ${note.trim()}` : ""}`;
+  return decision === "allow" ? `${head} They allowed it, and it ran${result.isError ? " and failed" : ""}. Its result:\n${result.text}` : `${head}\n${result.text}`;
 }
 
 /** The gate of the run `runId` at `where` (its directory, under the data directory's runs/), on its pinned revision:
@@ -744,7 +741,7 @@ export class RunGate {
         // MCP call's) comes uncut, and its journal keeps it whole.
         // The server's message, never the person's: a declining message's words are theirs, beside it.
         const origin: ResumeOrigin = decision === "deny" && answer.by === "message" && answer.note?.trim() ? { kind: "server", reason: "approval_declined", said: answer.note } : { kind: "server", reason: "approval" };
-        await this.resume!(held.id, resumeText(held, answer.args_shown ?? "(not shown)", decision, { ...result, text: boundResult(result.text).text }, decision === "allow" ? answer.note : undefined), (tx) => tx.appendEntry(ROOT_CONVERSATION_ID, { kind: APPROVAL_ENTRY, data: { phase: "resolved", id: held.id, decision } }), origin);
+        await this.resume!(held.id, resumeText(held, answer.args_shown ?? "(not shown)", decision, { ...result, text: boundResult(result.text).text }), (tx) => tx.appendEntry(ROOT_CONVERSATION_ID, { kind: APPROVAL_ENTRY, data: { phase: "resolved", id: held.id, decision } }), origin);
         held.resolved = true;
       }
     } catch (error) {

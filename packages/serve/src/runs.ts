@@ -642,8 +642,8 @@ function parkedCallSays(approval: Approval, run: Pick<Run, "meta">, waiting: App
 /** The call a resume (resumeText, its text as the row has it) answers: its head names the call's tool and id. */
 const resumedBy = (text: string, byCall: ReadonlyMap<string, Approval>): Approval | undefined =>
   [...byCall.values()].find((approval) => text.startsWith(`${RESUME_PREFIX}This answers your ${approval.tool} call ${approval.call_id} `));
-/** A resume's row as the approval's outcome (run-view.ts outcomeSays, the store path's words too): what ran, with the
- *  person's note on an allow, or "You declined <tool>[: <note>]". */
+/** A resume's row as the approval's outcome (run-view.ts outcomeSays, the store path's words too): what ran, or "You
+ *  declined <tool>[: <note>]". */
 function resumeSays(approval: Approval, given: { decision: string; by?: string; note?: string } | undefined, text: string, redact: (text: string) => string): string {
   return outcomeSays(approval.tool, given ?? { decision: "allow" }, text.includes(" They allowed it, and it ran and failed."), redact);
 }
@@ -651,7 +651,7 @@ function resumeSays(approval: Approval, given: { decision: string; by?: string; 
  *  model's message (already redacted whole, as the row's text is), with its head left out. The head is rebuilt exactly as
  *  the gate wrote it (tool-gate.ts resumeHead, from the stored answer's arguments), never searched for, so arguments that
  *  quote the gate's words can't move it; a row whose text doesn't start with it shows the outcome alone. The model's own
- *  message is unchanged; the person's note it carries (tool-gate.ts resumeText) is on the row's summary, not here. */
+ *  message is unchanged. */
 function resumeShows(approval: Approval, given: { decision: string; by?: string; args_shown?: string } | undefined, text: string, redact: (text: string) => string): string {
   const answer = given ?? { decision: "allow" };
   const failed = text.includes(" They allowed it, and it ran and failed.");
@@ -660,7 +660,7 @@ function resumeShows(approval: Approval, given: { decision: string; by?: string;
   const written = resumeHead(approval, given?.args_shown ?? "(not shown)");
   const head = [scrubUrls(redact(written)), redact(written), scrubUrls(written), written].find((h) => text.startsWith(h));
   if (head === undefined) return answer.decision === "deny" ? outcomeShows(approval.tool, answer, "", false) : `${approval.tool} ran once you allowed it${failed ? ", and failed" : ""}.`;
-  const rest = text.slice(head.length).replace(/^ They allowed it, and it ran(?: and failed)?\. Its result:\n?/, "").replace(/\n\nTheir note with it: [\s\S]*$/, "");
+  const rest = text.slice(head.length).replace(/^ They allowed it, and it ran(?: and failed)?\. Its result:\n?/, "");
   return outcomeShows(approval.tool, answer, rest, failed);
 }
 // micro and microUp move to run-view.ts (the run's served view), imported above.

@@ -642,15 +642,14 @@ export function noteShown(note: string | undefined, redact: (text: string) => st
 }
 /** What came of an approval, as its outcome row's summary says it. A deny: "You declined <tool>: <note>" (one colon), or
  *  "You declined <tool>." with none; a declining message adds nothing (it shows as the person's own row). An allow: that it
- *  ran and where its result went, or that it failed, then the person's note if they gave one. */
+ *  ran and where its result went, or that it failed; a note sent with an allow is shown nowhere, as on main. */
 export function outcomeSays(tool: string, answer: { decision: string; by?: string; note?: string }, failed: boolean, redact: (text: string) => string): string {
   if (answer.decision === "deny") {
     if (answer.by === "message") return `AgentRun: Your message declined ${tool}.`;
     const note = noteShown(answer.note, redact);
     return note ? `AgentRun: You declined ${tool}: ${note}` : `AgentRun: You declined ${tool}.`;
   }
-  const note = noteShown(answer.note, redact);
-  return `AgentRun: ${tool} ran once you allowed it${failed ? ", and failed" : "; its result went to the agent"}${note ? `. Your note: ${note}` : ""}`;
+  return `AgentRun: ${tool} ran once you allowed it${failed ? ", and failed" : "; its result went to the agent"}`;
 }
 /** What a person reads when they open the outcome row: the outcome, then the call's result (`rest`), or the refusal's words.
  *  An empty result says so: "Its result: (no output)", never "Its result:" and nothing. */
