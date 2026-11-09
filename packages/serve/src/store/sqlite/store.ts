@@ -1151,7 +1151,7 @@ class SqliteStore implements Store {
       const fence = claimFence(claim, now);
       await tx.step(fenced(claim, `UPDATE runs SET claimed_until = ${now.sql} + ? WHERE ${fence.where} AND runner = ?`, [...now.params, leaseMs, ...fence.params, claim.runner]));
       return Number((await tx.get<{ claimed_until: number }>("SELECT claimed_until FROM runs WHERE id = ?", claim.runId))!.claimed_until);
-    });
+    }, { lease: true });
     return { ...claim, until };
   }
 
@@ -1171,7 +1171,8 @@ class SqliteStore implements Store {
         out.push(renewed.length > 0 ? { ...claim, until: Number(renewed[0]!.claimed_until) } : new Fenced(claim.runId, claim.epoch));
       }
       return out;
-    });
+      // On the lease connection (TransactionOptions.lease): a runner whose loops hold every pool client still renews.
+    }, { lease: true });
   }
 
   async release(claim: Claim, { state, wakeAt = null, backoffUntil = null }: { state?: ReleasedState; wakeAt?: number | null; backoffUntil?: number | null } = {}): Promise<void> {

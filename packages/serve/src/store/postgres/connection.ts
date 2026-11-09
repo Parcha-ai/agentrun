@@ -39,8 +39,12 @@ export interface PgConnectionOptions {
   readonly connectTimeoutMs?: number;
 }
 
-/** The default bound on getting a connection to the store's Postgres (PgConnectionOptions.connectTimeoutMs), in ms. */
-export const STORE_CONNECT_TIMEOUT_MS = 10_000;
+/** The default bound on getting a connection to the store's Postgres (PgConnectionOptions.connectTimeoutMs), in ms. Below
+ *  the runner's stop margin (runner.ts: lease 30 s, renew every 10 s, stop margin 5 s; a claim is let go when no renew has
+ *  landed within lease - margin = 25 s of the last one's send, so two renew ticks, at +10 s and +20 s, fall inside it): a
+ *  renew that cannot get a connection gives up within 4 s, inside the 5 s margin, and the next tick tries again. A renew
+ *  never waits for a client behind other work: it has the lease connection (TransactionOptions.lease). */
+export const STORE_CONNECT_TIMEOUT_MS = 4_000;
 
 /** pg's and pg-pool's words for a connection not had in time: a connect or startup that never finished, or no pool client
  *  free. */
@@ -149,6 +153,8 @@ export class PgConnection implements StoreConnection {
   /** Where this connection's data is (StoreConnection.where): postgresWhere, the URL's host, database and the schema. */
   readonly where: string;
   readonly #pool: pg.Pool;
+  /** One connection kept for renewing claims (TransactionOptions.lease). */
+  readonly #leasePool: pg.Pool;
   readonly #owner: pg.Client | undefined;
   readonly #busyTimeoutMs: number;
   /** The bound on getting a connection (PgConnectionOptions.connectTimeoutMs). */
@@ -177,9 +183,10 @@ export class PgConnection implements StoreConnection {
     return columns;
   };
 
-  private constructor(pool: pg.Pool, owner: pg.Client | undefined, schema: string, busyTimeoutMs: number, where: string, testClock: boolean, connectMs: number) {
+  private constructor(pool: pg.Pool, owner: pg.Client | undefined, schema: string, busyTimeoutMs: number, where: string, testClock: boolean, connectMs: number, leasePool: pg.Pool) {
     this.#connectMs = connectMs;
     this.#pool = pool;
+    this.#leasePool = leasePool;
     this.#owner = owner;
     this.schema = schema;
     this.where = where;
@@ -223,9 +230,13 @@ export class PgConnection implements StoreConnection {
       }
     }
     const pool = new pg.Pool(config);
+    // The lease connection: one more, for renewing claims only (TransactionOptions.lease), so a renew never waits for a
+    // client behind the pool's other work, whatever the runner's loops hold.
+    const leasePool = new pg.Pool({ ...config, max: 1, application_name: "agentrun-store-lease" });
     // An idle client's error (the server went away) surfaces at its next use, never as an unhandled event.
     pool.on("error", () => undefined);
-    return new PgConnection(pool, lock, schema, busyTimeoutMs, where, testClock, connectMs);
+    leasePool.on("error", () => undefined);
+    return new PgConnection(pool, lock, schema, busyTimeoutMs, where, testClock, connectMs, leasePool);
   }
 
   /** `work`, counted in flight, refused after close. A connection it never got in time is StoreDeadline, naming the
@@ -267,13 +278,37 @@ export class PgConnection implements StoreConnection {
    *  READ READ ONLY for a read, one snapshot. Its statements are bounded by its deadline (statement_timeout), and a callback
    *  still running at the deadline is answered StoreDeadline while the rollback follows its statement in flight. Every
    *  commit is durable (synchronous_commit on), so `full` asks nothing more. */
-  transaction<T>(callback: (transaction: Tx) => Promise<T>, { read = false, deadlineMs = DEFAULT_TRANSACTION_DEADLINE_MS }: TransactionOptions = {}): Promise<T> {
+  transaction<T>(callback: (transaction: Tx) => Promise<T>, { read = false, deadlineMs = DEFAULT_TRANSACTION_DEADLINE_MS, fromCall = false, lease = false }: TransactionOptions = {}): Promise<T> {
+    // fromCall: the deadline runs from the call, so the wait for a client counts against it (the client got past it is
+    // let go unused, nothing begun); else from the begin. A lease's renew runs on the store's own lease connection, never
+    // behind the pool's other work (TransactionOptions.lease).
+    const calledAt = Date.now();
     return this.#call(async () => {
+      const pool = lease ? this.#leasePool : this.#pool;
       let client: pg.PoolClient;
       try {
-        client = await this.#pool.connect();
+        const connecting = pool.connect();
+        if (!fromCall) client = await connecting;
+        else {
+          let timer: NodeJS.Timeout | undefined;
+          const late = new Promise<"late">((resolve) => {
+            timer = setTimeout(() => resolve("late"), Math.max(0, deadlineMs - (Date.now() - calledAt)));
+          });
+          const got = await Promise.race([connecting, late]);
+          clearTimeout(timer);
+          if (got === "late") {
+            connecting.then((unused) => unused.release(), () => undefined);
+            throw new StoreDeadline(deadlineMs);
+          }
+          client = got;
+        }
       } catch (error) {
-        throw typed(error);
+        throw error instanceof StoreDeadline ? error : typed(error);
+      }
+      const leftMs = fromCall ? deadlineMs - (Date.now() - calledAt) : deadlineMs;
+      if (leftMs <= 0) {
+        client.release();
+        throw new StoreDeadline(deadlineMs);
       }
       let live = true;
       let broken: Error | undefined;
@@ -311,7 +346,7 @@ export class PgConnection implements StoreConnection {
         get: async <R extends object>(sql: string, ...params: SqliteValue[]) => (await run({ sql, params })).rows[0] as R | undefined,
         all: async <R extends object>(sql: string, ...params: SqliteValue[]) => (await run({ sql, params })).rows as R[],
       };
-      const ms = Math.max(1, Math.floor(deadlineMs));
+      const ms = Math.max(1, Math.floor(leftMs));
       let timer: NodeJS.Timeout | undefined;
       try {
         await client.query(`${read ? "BEGIN ISOLATION LEVEL REPEATABLE READ READ ONLY" : "BEGIN"}; SET LOCAL statement_timeout = ${ms}`);
@@ -376,6 +411,7 @@ export class PgConnection implements StoreConnection {
     this.#closed = true;
     await Promise.allSettled([...this.#inFlight]);
     await this.#pool.end().catch(() => undefined);
+    await this.#leasePool.end().catch(() => undefined);
     await this.#owner?.end().catch(() => undefined);
   }
 }
