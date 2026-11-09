@@ -44,7 +44,7 @@ test("accounts off: no one can approve, so an ask is refused at once in words an
   const { last } = await follow(api, refused, ["completed", "failed"], { deadlineMs: 60_000 });
   assert.equal(last.status, "completed", JSON.stringify(last));
   const answer = (await api("GET", `/runs/${refused}`)).body;
-  assert.equal(answer.pending, undefined, "nothing waits for an approval");
+  assert.ok(answer.pending == null, `nothing waits for an approval: ${JSON.stringify(answer.pending)}`);
   assert.ok(String(answer.result?.final_answer ?? "").includes(noApproverText("web_fetch")), `the model read the refusal: ${answer.result?.final_answer}`);
   const unattended = await fetching(api, "unattended", { approvals: "never" });
   const ran = await follow(api, unattended, ["completed", "failed"], { deadlineMs: 60_000 });
