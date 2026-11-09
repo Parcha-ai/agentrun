@@ -29,11 +29,13 @@ export function fakeClock(start) {
 
 /** A case whose firing starts a run: the store's firing row names that run, which E2's start inserts into the store (run_id's
  *  foreign key). Until then such a case is todo under these words, never skipped: it still runs. Its restart state, where it
- *  writes the old triggers file, moves to the store's rows with E2. */
-export const E2 = "E2's start inserts the store run (trigger_firings.run_id FK)";
+ *  writes the old triggers file, moves to the store's rows with E2. With TRIGGER_E2_PROBE set these cases run (skip false),
+ *  to see which pass now that the switch fires against the server's own store; the firing-scheduling ones do, the run-exec
+ *  ones (a run that must dispatch, be messaged, or admit at its door) wait on E2r3. */
+export const E2 = process.env.TRIGGER_E2_PROBE ? false : "E2's start inserts the store run (trigger_firings.run_id FK)";
 /** A case whose message_run target names a run a caller started: the trigger reads that run from the store (its agent, and
  *  whether it is still there), which holds a run once E2's start inserts it. */
-export const E2_RUN = "E2's start inserts the store run (a message_run target's run is read from the store)";
+export const E2_RUN = process.env.TRIGGER_E2_PROBE ? false : "E2's start inserts the store run (a message_run target's run is read from the store)";
 /** A case that starts the server as its CLI does (a child process): until the server opens its own store at the cutover, a
  *  server started so has none, and its triggers routes answer unavailable. */
 export const CLI_STORE = "the server opens its own store at the cutover (a CLI-started server has none until then)";
