@@ -60,6 +60,8 @@ export const CAPABILITIES: readonly KindCapabilities[] = [{ kind: "android", gro
 export const DEFAULT_MAX_LIFETIME_MS = 30 * 60_000;
 /** How long create waits for a phone to be ready by default: the service's own CLI waits 240 s. */
 export const DEFAULT_READY_MS = 240_000;
+/** How long one API request may take by default: a stalled request is cut off, and create's own calls stay bounded. */
+const DEFAULT_REQUEST_MS = 30_000;
 /** How long one adb call may take. */
 const ADB_TIMEOUT_MS = 30_000;
 /** The user every shell command on an Android runs as: shell, 2000. */
@@ -274,9 +276,13 @@ export interface PhoneProviderOptions {
 	readyMs?: number;
 	/** How often create asks whether the phone is ready; default 2 s. */
 	pollMs?: number;
+	/** The longest one API request may take; default 30 s. A readiness read takes no longer than readyMs has left. */
+	requestMs?: number;
 	/** The clock: ms since the epoch, and a wait. Tests give a fake that moves at once. */
 	now?: () => number;
 	sleep?: (ms: number) => Promise<void>;
+	/** A signal that fires after ms, which bounds a request; default AbortSignal.timeout. Tests give one they fire. */
+	timeout?: (ms: number) => AbortSignal;
 	/** The version the phone's hello reports; default the provider's. Only the conformance drift case sets another. */
 	daemonVersion?: string;
 }
@@ -322,6 +328,8 @@ export class PhoneHarnessProvider implements ComputerProvider {
 	readonly #pollMs: number;
 	readonly #now: () => number;
 	readonly #sleep: (ms: number) => Promise<void>;
+	readonly #requestMs: number;
+	readonly #timeout: (ms: number) => AbortSignal;
 	readonly #daemonVersion: string;
 	/** How many open connections hold each endpoint's adb transport: the last to let go disconnects it. */
 	readonly #holders = new Map<string, number>();
@@ -346,6 +354,9 @@ export class PhoneHarnessProvider implements ComputerProvider {
 		this.#pollMs = options.pollMs ?? 2000;
 		this.#now = options.now ?? (() => Date.now());
 		this.#sleep = options.sleep ?? ((ms) => new Promise((resolve) => setTimeout(resolve, ms)));
+		this.#requestMs = options.requestMs ?? DEFAULT_REQUEST_MS;
+		if (!(Number.isSafeInteger(this.#requestMs) && this.#requestMs > 0)) throw new Error(`requestMs ${show(options.requestMs)} is not a whole number of milliseconds above 0`);
+		this.#timeout = options.timeout ?? ((ms) => AbortSignal.timeout(ms));
 		this.#daemonVersion = options.daemonVersion ?? VERSION;
 	}
 
@@ -382,20 +393,41 @@ export class PhoneHarnessProvider implements ComputerProvider {
 		return text.replaceAll(this.#apiKey, "[the key]");
 	}
 
-	async #api(method: string, path: string, body?: unknown, headers: Record<string, string> = {}, signal?: AbortSignal): Promise<Result<{ status: number; json: unknown }> & { thrown?: boolean }> {
+	/**
+	 * One request, bounded by ms (default requestMs) and by the caller's signal. A request cut off by its bound is
+	 * `thrown`, like a lost answer: the service may have acted on it.
+	 */
+	async #api(
+		method: string,
+		path: string,
+		{ body, headers = {}, signal, ms = this.#requestMs }: { body?: unknown; headers?: Record<string, string>; signal?: AbortSignal; ms?: number } = {},
+	): Promise<Result<{ status: number; json: unknown }> & { thrown?: boolean }> {
+		const bound = this.#timeout(Math.max(1, Math.ceil(ms)));
+		const either = signal ? AbortSignal.any([signal, bound]) : bound;
+		const cut = (error: unknown): Result<never> & { thrown?: boolean } => {
+			if (signal?.aborted) return fail("aborted", `${method} ${path} was aborted`);
+			if (bound.aborted) return { ...fail("timeout", `${method} ${path}: the phone harness did not answer within ${Math.round(ms / 100) / 10} s`), thrown: true };
+			return { ...fail("unreachable", `${method} ${path}: the phone harness could not be reached: ${this.#clean((error as Error)?.message ?? String(error))}`), thrown: true };
+		};
 		let response: Response;
 		try {
 			response = await this.#fetch(`${this.#baseUrl}${path}`, {
 				method,
 				headers: { Authorization: `Bearer ${this.#apiKey}`, Accept: "application/json", ...(body === undefined ? {} : { "Content-Type": "application/json" }), ...headers },
 				...(body === undefined ? {} : { body: JSON.stringify(body) }),
-				...(signal ? { signal } : {}),
+				signal: either,
 			});
 		} catch (error) {
-			if (signal?.aborted) return fail("aborted", `${method} ${path} was aborted`);
-			return { ...fail("unreachable", `${method} ${path}: the phone harness could not be reached: ${this.#clean((error as Error).message)}`), thrown: true };
+			return cut(error);
 		}
-		const text = await response.text().catch(() => "");
+		let text: string;
+		try {
+			text = await response.text();
+		} catch (error) {
+			// The answer's body stalled or broke: as a lost answer when it was cut off, else no words.
+			if (signal?.aborted || bound.aborted) return cut(error);
+			text = "";
+		}
 		let json: unknown;
 		try {
 			json = text === "" ? undefined : JSON.parse(text);
@@ -417,8 +449,8 @@ export class PhoneHarnessProvider implements ComputerProvider {
 		return fail("phone", `${where}: ${said} (${response.status}${answer.code ? `, ${answer.code}` : ""})`);
 	}
 
-	async #session(id: string, signal?: AbortSignal): Promise<Result<Session>> {
-		const got = await this.#api("GET", `/sessions/${encodeURIComponent(id)}`, undefined, {}, signal);
+	async #session(id: string, signal?: AbortSignal, ms?: number): Promise<Result<Session>> {
+		const got = await this.#api("GET", `/sessions/${encodeURIComponent(id)}`, { ...(signal ? { signal } : {}), ...(ms === undefined ? {} : { ms }) });
 		if (!got.ok) return got.error.code === "not_found" ? fail("gone", `${id} has ended`) : got;
 		return sessionOf(got.value.json, `GET /sessions/${id}`);
 	}
@@ -470,7 +502,7 @@ export class PhoneHarnessProvider implements ComputerProvider {
 		// The key goes into the ledger before the POST: whatever answers are lost, list() can find the phone by it.
 		const pending = pendingId(requestKey);
 		await this.#ledger.put({ id: pending, labels: { ...(spec.labels ?? {}) }, image: spec.image, deadline: new Date(from + spec.lifetimeMs).toISOString(), request: requestKey });
-		let posted = await this.#api("POST", "/sessions", body, { "Idempotency-Key": requestKey }, signal);
+		let posted = await this.#api("POST", "/sessions", { body, headers: { "Idempotency-Key": requestKey }, ...(signal ? { signal } : {}) });
 		const cancelled = !posted.ok && posted.error.code === "aborted";
 		if (!posted.ok && (posted.thrown || cancelled)) {
 			// The request may have been admitted though its answer was lost or cancelled: ask by its key, never POST again.
@@ -514,7 +546,10 @@ export class PhoneHarnessProvider implements ComputerProvider {
 		let session = first.value;
 		for (;;) {
 			if (signal?.aborted) return ended("aborted", `create was aborted while the phone ${id} started`);
-			const read = await this.#session(id, signal);
+			// A read takes no longer than readyMs has left, so a stalled one cannot hold create past it.
+			const left = this.#readyMs - (this.#now() - from);
+			const read = await this.#session(id, signal, Math.max(1, Math.min(this.#requestMs, left)));
+			if (!read.ok && read.error.code === "timeout") return ended("timeout", `the phone ${id} was not ready within ${this.#readyMs / 1000} s: ${read.error.message}`);
 			if (!read.ok) return ended(read.error.code === "gone" ? "phone" : read.error.code, `the phone ${id} did not start: ${read.error.message}`);
 			session = read.value;
 			if (session.state === "ready") break;
@@ -561,7 +596,7 @@ export class PhoneHarnessProvider implements ComputerProvider {
 	}
 
 	async #list(labels: Record<string, string>, { signal }: CallContext = {}): Promise<Result<ComputerInfo[]>> {
-		const got = await this.#api("GET", "/sessions", undefined, {}, signal);
+		const got = await this.#api("GET", "/sessions", signal ? { signal } : {});
 		if (!got.ok) return got;
 		if (!Array.isArray(got.value.json)) return fail("phone", `GET /sessions answered ${show(got.value.json).slice(0, 200)}, not a list`);
 		const live = new Map<string, Session>();
