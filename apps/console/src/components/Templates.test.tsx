@@ -248,6 +248,39 @@ describe("applying a template", () => {
     expect(made.textContent).not.toContain("You won't see this secret again.");
   });
 
+  const LEAD_T: TemplateView = { ...REVIEWER, name: "inbound-lead", triggers: [{ name: "lead-webhook", source: { kind: "webhook" } }, { name: "weekly", source: { kind: "schedule" } }] };
+  const META = { name: "trigger:trg_hook", set: true, source: "console" as const, changed_at: "2026-11-10T08:00:00Z" };
+  const HOOK_WARNING = { field: "triggers.0.secret", reason: "not_allowed" as const, message: "This webhook trigger's signing secret is shown once." };
+
+  it("shows a webhook trigger's signing secret once, beside its hook URL, when the first answer carries it", async () => {
+    const SECRET = "CANARY-VALUE-7c2e91d0aa";
+    const t = await open("inbound-lead", { templates: [LEAD_T], apply: async () => ({ template: "inbound-lead", version: "1.0.0", agent_id: "lead-1", trigger_ids: ["trg_hook", "trg_cron"],
+      warnings: [HOOK_WARNING], webhook_secrets: [{ trigger_id: "trg_hook", secret: META, signing_secret: SECRET }] }) });
+    await t.type(t.host.querySelector('[data-field="parameters.repo"] input'), "acme/web");
+    await t.click(t.button(/^Apply/));
+    const made = t.host.querySelector('section[aria-label="Applied"]')!;
+    const once = made.querySelector('section[aria-label^="The webhook\'s URL and secret"]')!;
+    expect(once).toBeTruthy();
+    expect(once.textContent).toContain(`${location.origin}/v2/hooks/trg_hook`);
+    expect(once.textContent).toContain(SECRET);
+    expect(once.textContent).toContain("You won't see this secret again.");
+    expect([...once.querySelectorAll("button")].some((b) => /Copy secret/.test(b.textContent ?? ""))).toBe(true);
+    // With the secret here, no link sends the person to rotate it.
+    expect(made.querySelector('a[href="#/triggers/trg_hook"]')).toBeNull();
+  });
+
+  it("without the value (a replay, a token): the item's note in the server's words, and the link to rotate it", async () => {
+    const NOTE = "shown once, in this apply's first answer; rotate it in the console to get a new one.";
+    const t = await open("inbound-lead", { templates: [LEAD_T], apply: async () => ({ template: "inbound-lead", version: "1.0.0", agent_id: "lead-1", trigger_ids: ["trg_hook", "trg_cron"],
+      warnings: [HOOK_WARNING], webhook_secrets: [{ trigger_id: "trg_hook", secret: META, secret_set: true, note: NOTE }] }) });
+    await t.type(t.host.querySelector('[data-field="parameters.repo"] input'), "acme/web");
+    await t.click(t.button(/^Apply/));
+    const made = t.host.querySelector('section[aria-label="Applied"]')!;
+    expect(made.textContent).toContain(NOTE);
+    expect(made.textContent).not.toContain("You won't see this secret again.");
+    expect([...made.querySelectorAll('a[href="#/triggers/trg_hook"]')].map((a) => a.textContent)).toContain("Open lead-webhook to get its signing secret (Rotate)");
+  });
+
   it("opens the made agent at once when there are no warnings", async () => {
     const t = await open("pr-reviewer");
     await t.type(t.host.querySelector('[data-field="parameters.repo"] input'), "acme/web");

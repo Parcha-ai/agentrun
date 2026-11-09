@@ -1,11 +1,13 @@
 import { ArrowLeft, Check, LayoutTemplate } from "lucide-react";
 import { type ReactNode, useEffect, useRef, useState } from "react";
 import { ProblemCard } from "@/components/Problem";
+import { SecretOnce } from "@/components/Schedules";
 import { ListSkeleton } from "@/components/Skeleton";
 import { Button } from "@/components/ui/button";
 import { Chip } from "@/components/ui/chip";
 import { type Client, ClientError, type FieldIssue } from "@/lib/client";
 import { keeper } from "@/lib/idempotency";
+import { hookUrlOf } from "@/lib/schedules";
 import { type Problem, problem } from "@/lib/problem";
 import { grantsOf, issuesAt, needsOf, parametersOf, type ParameterText, startValues, templateHash, titleOf } from "@/lib/templatePackages";
 import { type Approvals, NEVER_ASK_LINE, type TemplateApplied, type TemplateView } from "@/lib/v2";
@@ -102,7 +104,7 @@ function ApplyTemplate({ v2, template: t, go }: Props & { template: TemplateView
       const done = await v2.applyTemplate(t.name, body, keys.keyFor(t.name, body));
       keys.done();
       // Opens the agent at once only when there is nothing to show first: a warning (a webhook trigger's among them).
-      if (!done.warnings.length) { go(`#/agents/${encodeURIComponent(done.agent_id)}`); return; }
+      if (!done.warnings.length && !done.webhook_secrets?.length) { go(`#/agents/${encodeURIComponent(done.agent_id)}`); return; }
       setSentValues(sending);
       setMade(done);
     } catch (e) {
@@ -121,11 +123,12 @@ function ApplyTemplate({ v2, template: t, go }: Props & { template: TemplateView
           <p className="mb-3 text-[14px]">The agent is made. The server says:</p>
           <ul className="mb-5 space-y-2 border bg-card px-4 py-3 text-[13px]" role="status" aria-label="Warnings">
             {made.warnings.map((w, i) => {
-              // A webhook trigger's (triggers.<i>.secret): its signing secret is never in an apply answer, so the trigger the
-              // apply made (trigger_ids, in the template's order) opens from here, where its secret is shown with Rotate.
+              // A webhook trigger's (triggers.<i>.secret): the trigger the apply made (trigger_ids, in the template's order)
+              // opens from here, where its secret is shown with Rotate. One webhook_secrets speaks for gets its link there.
               const hook = /^triggers\.(\d+)\.secret$/.exec(w.field);
               const id = hook ? made.trigger_ids[Number(hook[1])] : undefined;
               const named = hook ? t.triggers[Number(hook[1])]?.name : undefined;
+              if (id && made.webhook_secrets?.some((x) => x.trigger_id === id)) return <li key={`${w.field}:${i}`}><span className="font-mono text-[12px] text-muted-foreground">{w.field}</span> {w.message}</li>;
               return (
                 <li key={`${w.field}:${i}`}><span className="font-mono text-[12px] text-muted-foreground">{w.field}</span> {w.message}{w.fix ? <span className="block text-muted-foreground">{w.fix}</span> : null}
                   {id && <a href={`#/triggers/${encodeURIComponent(id)}`} className="mt-1 block font-mono text-[12px] text-primary underline-offset-2 hover:underline">Open {typeof named === "string" && named ? named : id} to get its signing secret (Rotate)</a>}
@@ -134,6 +137,22 @@ function ApplyTemplate({ v2, template: t, go }: Props & { template: TemplateView
             })}
           </ul>
         </>}
+        {/* Each webhook trigger the apply made: its signing secret this once, in the first answer to this session (held in
+            this screen's state alone, never stored or logged), beside its URL; else the server's note and the trigger to
+            rotate it from. */}
+        {made.webhook_secrets?.map((x) => {
+          const index = made.trigger_ids.indexOf(x.trigger_id);
+          const named = index >= 0 ? t.triggers[index]?.name : undefined;
+          const name = typeof named === "string" && named ? named : x.trigger_id;
+          return x.signing_secret
+            ? <SecretOnce key={x.trigger_id} label={`The webhook's URL and secret (${name})`} url={hookUrlOf({ id: x.trigger_id })} secret={x.signing_secret} />
+            : (
+              <div key={x.trigger_id} className="mt-4 border px-4 py-3 text-[13px]">
+                {x.note && <p className="text-muted-foreground" role="note">{x.note}</p>}
+                <a href={`#/triggers/${encodeURIComponent(x.trigger_id)}`} className="mt-1 block font-mono text-[12px] text-primary underline-offset-2 hover:underline">Open {name} to get its signing secret (Rotate)</a>
+              </div>
+            );
+        })}
         <div className="mt-5" />
         <a href={`#/agents/${encodeURIComponent(made.agent_id)}`} className="inline-flex border px-3 py-2 font-mono text-[13px] font-semibold hover:bg-accent">Open the agent</a>
       </section>

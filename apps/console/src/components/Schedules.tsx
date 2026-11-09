@@ -443,7 +443,7 @@ function CopyButton({ text, label }: { text: string; label: string }) {
 }
 
 /** A signing secret, shown this once (the server keeps it sealed and never sends it again), with Copy. */
-function SecretOnce({ label, secret, url }: { label: string; secret: string; url?: string }) {
+export function SecretOnce({ label, secret, url }: { label: string; secret: string; url?: string }) {
   return (
     <section aria-label={label} className="mt-4 space-y-3 border border-primary/50 p-4 text-[13px]">
       {url && <Copyable title="URL" text={url} label="Copy URL" hint={HOOK_URL_HINT} />}
