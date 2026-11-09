@@ -35,7 +35,7 @@ const FAUX_PARALLEL = new URL("./fixtures/faux-parallel.mjs", import.meta.url).p
 const CONFINED = existsSync("/usr/bin/setpriv");
 /** The server's own: its token, the seal key its tool keys are kept under, and the boxes' keys, which only its box
  *  providers read (boxes.ts). */
-const SERVER_ONLY = ["AGENTRUN_TOKEN", "AGENTRUN_API_KEY", "AGENTRUN_SEAL_KEY", ...BOX_KEYS];
+const SERVER_ONLY = ["AGENTRUN_TOKEN", "AGENTRUN_API_KEY", "AGENTRUN_SEAL_KEY", "AGENTRUN_STORE_URL", ...BOX_KEYS];
 /** Every secret serve and a run's process read: each must be on the launcher's list. */
 /** The decision keys: held by the server like the rest, and handed to a workflow run's process only on its decision
  *  descriptor, for its decision provider (decisions.ts), never with the run's secrets. */
@@ -264,6 +264,15 @@ test("started by its launcher, no process of its user holds a secret in its envi
   const runArgv = seen.find((cmdline) => cmdline.includes(" --app "))?.split(" ") ?? [];
   const preload = runArgv.indexOf("--import");
   assert.ok(preload > 0 && runArgv[preload + 1]?.endsWith("/dist/secrets.js") && runArgv.findIndex((arg) => arg.includes("pi-durable-disk")) > preload + 1, `the run's process preloads secrets.js before its CLI: ${runArgv.join(" ").slice(0, 200)}`);
+});
+
+test("started by its launcher with a store URL that holds a database password, no process of its user holds the URL in its environment or command line, and its store opens", { timeout: 120_000 }, async (t) => {
+  const password = `nak-store-${process.pid}-${Date.now().toString(36)}`;
+  const token = `nak-token-${process.pid}-${"t".repeat(32)}`;
+  const { root, api } = await launched(t, { AGENTRUN_TOKEN: token, AGENTRUN_STORE_URL: `postgres://agentrun:${password}@db.invalid:5432/agentrun` });
+  assert.equal((await api("POST", "/agents", { definition: { id: "store-url", version: 1, name: "store-url", instructions: "Answer.", skills: [], tools: [], model: "openai/gpt-4o" } })).status, 201, "its store opens");
+  assert.ok(!read(`/proc/${root}/environ`).toString().split("\0").some((entry) => entry.startsWith("AGENTRUN_STORE_URL=")), "no store URL in the server's environment");
+  noSecretAnywhere(root, password);
 });
 
 /** The launcher's arguments for a server whose data directory holds `saved` (by key id, its fields) as tool keys already,

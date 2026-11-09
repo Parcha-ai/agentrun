@@ -14,14 +14,15 @@ import { codexTarget } from "../../run-adapters-codex/dist/binary.js";
 import { processAlive } from "@parcha/agentrun-kernel/host";
 import { openStoreReader } from "@parcha/pi-durable-agent";
 import { startServe } from "../dist/index.js";
+import { fauxEnvOf } from "../dist/server.js";
 import { readRunDbSync } from "../dist/run-db.js";
 import { resolve } from "node:path";
 import { openSqliteStore } from "../dist/store/index.js";
 import { startRunner } from "../dist/runner/runner.js";
-import { dispatchRunner, runnerPlaceComputer } from "../dist/runner/harness-loops.js";
+import { dispatchRunner } from "../dist/runner/harness-loops.js";
+import { computerDepsFrom } from "../dist/workspace/index.js";
 import { routeOf } from "../dist/runner/model-route.js";
 import { FAUX_ENV, withoutFaux } from "../dist/model.js";
-import { FAUX_MONID_ENV } from "../dist/monid.js";
 import { SEAL_KEY_ENV } from "../dist/tool-keys.js";
 import { ensureSealKey, sealKeyHome } from "../dist/seal-key.js";
 import { secret } from "../dist/secrets.js";
@@ -289,19 +290,23 @@ export async function triggerStore(of) {
  *  dispatch (dispatch.ts): each claim's launch picks its harness loop — pi on the kernel's adapter loop with the run's pi
  *  spec, a learning run on the learning loop, its model route the faux model under `faux`. Returns a close() that stops the
  *  runner and closes its store handle. */
-export async function startInProcessRunner(data, { faux, fauxMonid } = {}) {
+export async function startInProcessRunner(data, { faux, ...switches } = {}) {
   const store = await openSqliteStore({ dataDir: data, role: "runner" });
   // The runner's env mirrors the server's faux (model.ts FAUX_ENV): its model route reads the faux model from it, so a run
   // never reaches the network. The seal key is the server's (seal-key.ts), read as the CLI's runner reads it: the one
   // handed over, else the one kept under this process's config home. It seals the live-viewer tokens the browser writes.
-  // Its tools' fakes too, as the server hands a run's process its own (server.ts fauxEnvOf): monid's, when the test gave one.
-  const env = { ...withoutFaux(process.env), ...(faux ? { [FAUX_ENV]: resolve(faux) } : {}), ...(faux && fauxMonid ? { [FAUX_MONID_ENV]: resolve(fauxMonid) } : {}) };
+  // Its tools' fakes and its harness table too, as the server hands a run's process its own (server.ts fauxEnvOf): each
+  // the test gave its server (fauxMonid, fauxParallel, fauxJev, harnessTable…).
+  const env = { ...withoutFaux(process.env), ...(faux ? fauxEnvOf({ ...switches, faux }) : {}) };
   const sealKey = ensureSealKey(secret(SEAL_KEY_ENV), { configHome: sealKeyHome(process.env) }).key;
+  // The run's claim-time computer, composed once the one way (workspace/computer-deps.ts computerDepsFrom): none for the
+  // runner's place, the real kinds otherwise, keys read from this env then the store's sealed rows.
+  const computers = computerDepsFrom({ env, store, sealKey });
   let runner;
   try {
     runner = startRunner({
       store,
-      createLoop: dispatchRunner({ env, data, journal: (claim) => store.journal(claim), store, sealKey, routeOf, computerForClaim: runnerPlaceComputer, computerDeps: {} }),
+      createLoop: dispatchRunner({ env, data, journal: (claim) => store.journal(claim), store, sealKey, routeOf, computerForClaim: computers.computerForClaim, computerDeps: computers.computerDeps }),
     });
   } catch (error) {
     await store.close();
@@ -322,7 +327,7 @@ export async function serve(t, { harnesses: asked, runner: wantRunner = true, ..
   // A runner beside the server on the same data (the CLI start's server-and-runner): it claims and runs what the server
   // starts, so a test reads a run that runs, not one that queues forever. `runner: false` leaves it off for a test that
   // wants the server alone. Its loop is the switch's dispatch (learning wired; pi/workflow the server's own, E2r).
-  const closeRunner = wantRunner === false ? undefined : await startInProcessRunner(data, { faux: Object.hasOwn(options, "faux") ? options.faux : FAUX, fauxMonid: options.fauxMonid });
+  const closeRunner = wantRunner === false ? undefined : await startInProcessRunner(data, { ...options, faux: Object.hasOwn(options, "faux") ? options.faux : FAUX });
   // A server on another's data (a restart's): its owner's hook closes it before the directory goes.
   if (dir) sharing.set(data, new Set());
   else sharing.get(data)?.add(server);

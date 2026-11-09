@@ -1,23 +1,33 @@
-// Learning's git floor is what its own calls need: 2.32 (GIT_CONFIG_GLOBAL). A host with an older git keeps no learning
-// folder and says so, with the floor and its own version.
+// Learning's git floor is what the learning script's own calls need: 2.32 (GIT_CONFIG_GLOBAL). The script checks it in
+// the folder's own exec (a stock serverless exec image has 2.34) and, below it, refuses with the floor and the version
+// it found. The server runs no git of its own.
 import assert from "node:assert/strict";
-import { chmodSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
+import { chmodSync, mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { test } from "node:test";
-import { learningBlocker } from "../dist/learning.js";
+import { LEARNING_SH, SCRIPT_FILE } from "../dist/learn/folder.js";
+import { localWorkspace } from "../dist/workspace/index.js";
 
-/** A PATH holding only a `git` that prints `version` for `git --version`. */
-function fakeGit(t, version) {
-  const dir = mkdtempSync(join(tmpdir(), "git-floor-"));
+/** A folder holding the learning script, and a PATH whose `git` prints `version` for `git --version` and fails else. */
+function folderWith(t, version) {
+  const dir = mkdtempSync(join(process.env.TMPDIR ?? tmpdir(), "git-floor-"));
   t.after(() => rmSync(dir, { recursive: true, force: true }));
-  writeFileSync(join(dir, "git"), `#!/bin/sh\necho "git version ${version}"\n`);
-  chmodSync(join(dir, "git"), 0o755);
-  return { PATH: dir };
+  mkdirSync(join(dir, "bin"));
+  writeFileSync(join(dir, "bin", "git"), `#!/bin/sh\n[ "$1" = --version ] && { echo "git version ${version}"; exit 0; }\nexit 1\n`);
+  chmodSync(join(dir, "bin", "git"), 0o755);
+  mkdirSync(join(dir, "learning"));
+  return { ws: localWorkspace(join(dir, "learning")), PATH: `${join(dir, "bin")}:/usr/bin:/bin` };
 }
 
-test("learning runs on git 2.32 and later (what its own calls need), and a host below it keeps no learning folder and says why", async (t) => {
-  assert.equal(await learningBlocker(fakeGit(t, "2.34.1")), undefined, "2.34, as a stock serverless image has");
-  assert.equal(await learningBlocker(fakeGit(t, "2.32.0")), undefined, "the floor itself");
-  assert.equal(await learningBlocker(fakeGit(t, "2.31.8")), "learning needs git 2.32 or later, and this host has git version 2.31.8");
+test("the learning script runs on git 2.32 and later (what its own calls need), and refuses an older one saying why", async (t) => {
+  for (const [version, refused] of [["2.34.1", false], ["2.32.0", false], ["2.31.8", true]]) {
+    const { ws, PATH } = folderWith(t, version);
+    await ws.write(SCRIPT_FILE, LEARNING_SH);
+    const result = await ws.exec(["sh", SCRIPT_FILE, "read"], { env: { PATH, LC_ALL: "C" }, timeoutMs: 30_000 });
+    if (refused) {
+      assert.equal(result.code, 2, result.stderr);
+      assert.match(result.stderr, /learning needs git 2\.32 or later, and this folder's exec has git version 2\.31\.8/);
+    } else assert.doesNotMatch(result.stderr, /learning needs git/, `${version}: ${result.stderr}`);
+  }
 });

@@ -46,29 +46,18 @@ const RUN_READS = {
 
 /** What a case that can't pass on this line yet waits on, by operation, and by "<operation> (<run>)" where it is that run's
  *  alone. */
-const TIMELINE = "waits on the run timeline cutting the view's own secrets (the run timeline's redactor), and withholding a withheld run";
-const TITLE = "waits on the run title being cut with the view's full cut set (handed pointers, server and trigger secrets, stored keys) and withheld in the view's words for a withheld run, on getRun, listRuns and listAllRuns (the run timeline's redactor fix)";
-const WAITS = {
-  getTimeline: TIMELINE,
-  "getRun (handed)": TITLE,
-  "getRun (withheld)": TITLE,
-  "listRuns (handed)": TITLE,
-  "listRuns (withheld)": TITLE,
-  "listAllRuns (handed)": TITLE,
-  "listAllRuns (withheld)": TITLE,
-};
-const GRAPH = "waits on the graph's served parts cut through the run's cut set (runCutOf)";
-const PENDING = "waits on the run's pending cut with the run's redactor, and null for a withheld run";
 const ASK_PARKS = "waits on ask_person parking the run on the runner";
-Object.assign(WAITS, {
-  "getRunGraph (workflow)": GRAPH,
-  "getRun (parked)": PENDING,
-  "getRun (parkedWithheld)": PENDING,
-  "listRuns (parked)": PENDING,
-  "listRuns (parkedWithheld)": PENDING,
-  "listAllRuns (parked)": PENDING,
-  "listAllRuns (parkedWithheld)": PENDING,
-});
+// The title/timeline cuts land through the run's one cut set (run-cut.ts, servedTimelineRows), so their cases run here.
+const GRAPH_WF = "waits on the workflow run's graph cutting the sign-in pointer it was handed: run-reads-over-store runGraphView cuts by the run's set, yet a node's served words still carry the pointer";
+const PENDING_PARKED = "waits on the parked run's own server (the ask-gate server) holding the stored tool key and the webhook secret its approval's arguments quote, so the run's cut knows them: today they are saved only on the read server";
+const WAITS = {
+  "getRunGraph (workflow)": GRAPH_WF,
+  "getRun (parked)": PENDING_PARKED,
+  "getTimeline (parked)": PENDING_PARKED,
+  "listRuns (parked)": PENDING_PARKED,
+  "listAllRuns (parked)": PENDING_PARKED,
+  "listAllRuns (parkedWithheld)": PENDING_PARKED,
+};
 const waitOf = (operation, kind) => WAITS[`${operation} (${kind})`] ?? WAITS[operation] ?? false;
 
 /** The one run read the zero-hits rule exempts, and why: a run's file is served as it was written, uncut. Its case asserts

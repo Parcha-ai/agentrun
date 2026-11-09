@@ -69,7 +69,7 @@ import { removeEgressDir, RUN_BOX_ALLOW_ENV } from "./box-egress.js";
 import { BehindReadError, checkpointRunDb, MonotonicReads, readRunDb } from "./run-db.js";
 import { holderLives, holderOfClaim, holderOfProcess, holderState, killHolder, LAUNCH_HOLDER, RUN_EPOCH_ENV, RUN_LAUNCH_ENV, type RunHolder, signal } from "./run-holder.js";
 import { firstDoorLine, untilOpened, verifyDoor } from "./door-line.js";
-import { BUDGET_PAUSED, type Approval, type ApprovalAnswer, actingOn, approvalOf, browserPending, budgetPending, cents, centsUp, continuationOf, costOf, costView, type Handed, handedPointers as handedPointersOf, knownToolCostOf, MALFORMED, meaningful, micro, microUp, overByMiss, pauseOf, pausedAt, type Pending, pendingOf, raisedToGo, redactorOf, refusedValuesOf, rowShown as rowShownOf, servedReviewWith, servedRunErrorWith, shownOf, HELD, outcomeSays, outcomeShows, type SoFar, soFarOf, type State, type Status, statusOf as statusOfView, stopped, stoppedAt, SUGGESTED_RAISE_FACTOR, suggestedCap, shownArgs, toolCostOf, usersOf, waitingApproval, WITHHELD_SIGN_IN, withAsks, withdrawn, withOverCap, withPaused } from "./run-view.js";
+import { BUDGET_PAUSED, type Approval, type ApprovalAnswer, actingOn, approvalOf, browserPending, budgetPending, cents, centsUp, continuationOf, costOf, costView, type Handed, handedMark, handedPointers as handedPointersOf, knownToolCostOf, MALFORMED, meaningful, micro, microUp, overByMiss, pauseOf, pausedAt, type Pending, pendingOf, raisedToGo, redactorOf, refusedValuesOf, rowShown as rowShownOf, servedReviewWith, servedRunErrorWith, shownOf, HELD, outcomeSays, outcomeShows, type SoFar, soFarOf, type State, type Status, statusOf as statusOfView, stopped, stoppedAt, SUGGESTED_RAISE_FACTOR, suggestedCap, shownArgs, toolCostOf, usersOf, waitingApproval, WITHHELD_SIGN_IN, withAsks, withdrawn, withOverCap, withPaused } from "./run-view.js";
 // The cost reads, the served row transforms, the status and pending views and the redaction choke point kept their import
 // path here for the server routes and tests that read them from this module.
 export { costOf, costView, knownToolCostOf, soFarOf, type SoFar, toolCostOf, withOverCap, withPaused, stoppedAt, suggestedCap, SUGGESTED_RAISE_FACTOR, type State, type Status, WITHHELD_SIGN_IN };
@@ -108,14 +108,7 @@ const QUIET = /:run:(start|end)$/;
 const RETRY_CODES = ["OPENING", "PARKING", "RELEASED"];
 /** How often one server opens a run again whose process went before the run ended, before it fails the run. */
 const MAX_RELAUNCHES = 3;
-// MALFORMED and the Handed type move to run-view.ts (the run's served view), imported above.
-/** A run's `sign_in_handed` as read from its serve.json: undefined when absent (never handed one); the hashes it names;
- *  MALFORMED for any other value. */
-function handedMark(value: unknown): Handed | undefined {
-  if (value === undefined) return undefined;
-  if (Array.isArray(value) && value.length && value.every((hash) => typeof hash === "string" && /^[0-9a-f]{64}$/.test(hash))) return [...new Set(value as string[])];
-  return MALFORMED;
-}
+// MALFORMED, the Handed type and handedMark move to run-view.ts (the run's served view), imported above.
 
 /** A run's serve.json at `path`, the one read every reader of it shares (load, forget's handedTo, a list row): `stored`,
  *  what it holds when it is whole JSON of an object, else null; `damaged`, whether it is there but can't be read or
@@ -842,8 +835,9 @@ export type RunNotify = (event: (typeof RUN_EVENTS)[number], run: RunNotice & { 
 export const WAITS_ON_A_PERSON = "The run is waiting on a person.";
 
 /** The server's own secrets, which a run's process never gets: the API token, by name or by value, the seal key
- *  the tool keys are kept under (tool-keys.ts), and the boxes' keys (boxes.ts), which only the server's box providers use. */
-const SERVER_ONLY = new Set(["AGENTRUN_TOKEN", "AGENTRUN_API_KEY", "AGENTRUN_SEAL_KEY", ...BOX_KEYS]);
+ *  the tool keys are kept under (tool-keys.ts), the store's URL (it may hold the database's password), and the boxes'
+ *  keys (boxes.ts), which only the server's box providers use. */
+const SERVER_ONLY = new Set(["AGENTRUN_TOKEN", "AGENTRUN_API_KEY", "AGENTRUN_SEAL_KEY", "AGENTRUN_STORE_URL", ...BOX_KEYS]);
 /** The secrets a run's process is handed over its pipe (secrets.ts): every one but the server's own and the decision
  *  keys, which go on their own descriptor. */
 export const RUN_SECRETS = SECRET_NAMES.filter((name) => !SERVER_ONLY.has(name) && !DECISION_KEYS.includes(name));

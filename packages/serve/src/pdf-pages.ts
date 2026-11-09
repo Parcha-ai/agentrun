@@ -24,7 +24,6 @@ const MAX_PAGES = 50;
 /** The longest side a drawn page may have, in pixels: Jev's image limit (1568 per side; 1569 is refused). */
 export const MAX_PAGE_PX = 1568;
 // Each helper starts with helperEnv(): PATH, the locale and TMPDIR, never the server's secrets (helper-env.ts).
-// Each helper starts with helperEnv(): PATH, the locale and TMPDIR, never the server's secrets (helper-env.ts).
 const run = promisify(execFile);
 
 /** `dpi`: the dpi the pages were drawn at (at most the asked one); null for an image that passed through. */

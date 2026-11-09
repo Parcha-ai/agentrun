@@ -14,9 +14,9 @@ import { fakeComputers } from "./fake-computer.mjs";
 const IMAGE = "debian:bookworm-slim";
 const HERE = fileURLToPath(new URL(".", import.meta.url));
 const CLI = fileURLToPath(new URL("../dist/conformance/cli.js", import.meta.url));
-const GROUPS = ["health", "exec", "files", "process", "provider", "drift", "mount", "screen", "input", "touch", "apps", "lifetime"];
+const GROUPS = ["health", "exec", "files", "process", "provider", "drift", "isolation", "mount", "screen", "input", "touch", "apps", "lifetime"];
 const PROTOCOL_GROUPS = ["exec", "files", "processes", "screen", "input.pointer", "input.keys", "input.touch", "apps", "apps.install", "apps.ui_tree"];
-const CAPABILITIES = [...PROTOCOL_GROUPS, "network:none", "network:open", "network:allow", "lifetime:janitor", "user:root", "user:uid", "release:stop", "extend", "stream", "mount:bind", "mount:archil"];
+const CAPABILITIES = [...PROTOCOL_GROUPS, "network:none", "network:open", "network:allow", "lifetime:janitor", "user:root", "user:uid", "release:stop", "extend", "stream", "mount:bind", "mount:archil", "vendor-agent"];
 /** Groups with no Core case: lifetime's extend and the mount of the run's folder are optional for every kind. */
 const OPTIONAL_GROUPS = ["lifetime", "mount"];
 
@@ -297,6 +297,22 @@ test("a module's conformanceImage() is the run's image unless --image names one,
 	assert.equal(Object.hasOwn(JSON.parse(plain.text()), "notes"), false, "no notes, no field");
 });
 
+test("what a provider says through its onNote option, the CLI gives it, and puts in the report's providerNotes", async () => {
+	const out = sink();
+	assert.equal(await main(["--provider", "./fixtures/release-note-provider.mjs", "--json"], { stdout: out, cwd: HERE, cases: [pass("health.ping")] }), 0);
+	const report = JSON.parse(out.text());
+	assert.ok(report.providerNotes.length >= 1, JSON.stringify(report.providerNotes));
+	assert.match(report.providerNotes[0].computer, /./);
+	assert.match(report.providerNotes[0].note, /not let go cleanly/);
+	const plain = sink();
+	assert.equal(await main(["--provider", "./fixtures/fake-provider.mjs", "--json"], { stdout: plain, cwd: HERE, cases: [pass("health.ping")] }), 0);
+	assert.equal(Object.hasOwn(JSON.parse(plain.text()), "providerNotes"), false, "no note, no field");
+	// Review (#1994, P2): the text report prints them too, beside the computers' notes; an unclean release is said there.
+	const text = sink();
+	await main(["--provider", "./fixtures/release-note-provider.mjs"], { stdout: text, cwd: HERE, cases: [pass("health.ping")] });
+	assert.match(text.text(), new RegExp(`^provider note ${report.providerNotes[0].computer}: .*not let go cleanly`, "m"));
+});
+
 test("the CLI's --json prints the report object; a Core failure exits 1", async () => {
 	const out = sink();
 	const cases = [pass("health.ping"), pass("exec.argv", { run: async (t) => t.equal(1, 2, "one and two") })];
@@ -355,8 +371,9 @@ test("each case of the suite is data: a unique id in its group, a level, and nee
 		ids.add(c.id);
 		assert.ok(c.level === "core" || c.level === "full", `${c.id}: level ${c.level}`);
 		for (const need of c.needs) assert.ok(CAPABILITIES.includes(need), `${c.id} needs ${need}`);
-		// A Core case needs only what some kind may require: groups and network none, never an optional provider method.
-		if (c.level === "core") assert.ok(c.needs.every((need) => [...PROTOCOL_GROUPS, "network:none"].includes(need)), `${c.id}: a Core case needs only groups and network:none`);
+		// A Core case needs only what some kind or daemon mode may require: groups, network none and a child daemon's
+		// vendor-agent, never an optional provider method.
+		if (c.level === "core") assert.ok(c.needs.every((need) => [...PROTOCOL_GROUPS, "network:none", "vendor-agent"].includes(need)), `${c.id}: a Core case needs only groups, network:none and vendor-agent`);
 		assert.equal(typeof c.run, "function");
 	}
 	// lifetime's one case is Full: extend is optional for every kind. So is every mount case, until the cutover decides.

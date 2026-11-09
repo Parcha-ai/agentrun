@@ -8,7 +8,8 @@ Read the answer's last fenced `json` block, its `report_markdown` included. Pass
 
 1. **Every claim has a source.** Each non-null identity fact, each officer and owner, each sanctions result, each
    adverse media item and each red flag lists at least one source id, every id cited exists in `sources`, and each
-   source has a URL and a `read_on` date. The report's factual sentences carry inline citations (`[S1]`). Spot-check at
+   source has a URL and a `read_on` date. The factual sentences of `report_markdown`, a short narrative, carry inline
+   citations (`[S1]`). Spot-check at
    least ten claims; one factual claim with no citation fails this.
 2. **The sources are primary where it matters.** The identity rests on SEC EDGAR (`data.sec.gov`, `efts.sec.gov` or
    `sec.gov`) or another registry, not only on Apple's own site or a news article; the domain age rests on RDAP or WHOIS.

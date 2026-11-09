@@ -14,6 +14,7 @@ import (
 	"regexp"
 	"strconv"
 	"strings"
+	"sync"
 	"syscall"
 	"testing"
 	"time"
@@ -75,8 +76,26 @@ const egressEnv = "COMPUTERD_TEST_EGRESS"
 type initProcess struct {
 	cmd    *exec.Cmd
 	socket string
-	log    *bytes.Buffer
+	log    *lockedBuffer
 	ended  chan error
+}
+
+// lockedBuffer is init's stderr: os/exec's copier writes it while a test reads it, so both go through one lock.
+type lockedBuffer struct {
+	mu  sync.Mutex
+	buf bytes.Buffer
+}
+
+func (b *lockedBuffer) Write(p []byte) (int, error) {
+	b.mu.Lock()
+	defer b.mu.Unlock()
+	return b.buf.Write(p)
+}
+
+func (b *lockedBuffer) String() string {
+	b.mu.Lock()
+	defer b.mu.Unlock()
+	return b.buf.String()
 }
 
 // socketIn makes a fresh directory of mode, as a provider would, and returns a socket path in it.
@@ -120,7 +139,7 @@ func startInitWith(t *testing.T, deadline, most time.Time) *initProcess {
 func startInitEnv(t *testing.T, deadline, most time.Time, env ...string) *initProcess {
 	t.Helper()
 	socket := socketIn(t, 0o700)
-	in := &initProcess{socket: socket, log: &bytes.Buffer{}, ended: make(chan error, 1)}
+	in := &initProcess{socket: socket, log: &lockedBuffer{}, ended: make(chan error, 1)}
 	args := []string{"init", deadline.UTC().Format(time.RFC3339Nano)}
 	if !most.IsZero() {
 		args = append(args, most.UTC().Format(time.RFC3339Nano))

@@ -1,6 +1,6 @@
 // A run's computer as the run read shows it (run-computer.ts): the run's `computer` field from the run's own state, with
-// a computer that could not be had as failed and why, and taken_over from the one register of held computers, read
-// through the ComputerStateOf port (a stand-in for the computer view's computerStateOf here).
+// a computer that could not be had as failed and why, and taken_over read through the ComputerStateOf port (a stand-in
+// for the store-backed take-over's state here).
 import assert from "node:assert/strict";
 import { test } from "node:test";
 import { runComputerField } from "../dist/run-computer.js";

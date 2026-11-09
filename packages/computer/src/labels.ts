@@ -1,7 +1,10 @@
 // The run and its claim epoch, as two labels every computer of a run carries. The claim epoch is the one fence for runs
 // and computers: a new claim is epoch + 1, and it releases every computer of the run labelled with a lower epoch
 // (releaseOlder, in janitor.ts). Both names live here alone.
+import { epochProblem } from "./mount.js";
 import { fail, ok, type Result } from "./result.js";
+
+export { epochProblem };
 
 /** The run a computer works for. */
 export const RUN_LABEL = "agentrun.run";
@@ -20,12 +23,6 @@ export function runProblem(run: unknown): string | undefined {
 	if (typeof run !== "string" || run === "") return "a run id must be a non-empty string";
 	if (run.includes("\0")) return "a run id cannot hold a NUL byte: no provider takes one in a label";
 	return undefined;
-}
-
-/** Why epoch is not a claim epoch, in words, or undefined when it is one: a whole number from 0 to 2^53 - 1. */
-export function epochProblem(epoch: unknown): string | undefined {
-	if (typeof epoch === "number" && Number.isSafeInteger(epoch) && epoch >= 0) return undefined;
-	return `an epoch must be a whole number from 0 to ${Number.MAX_SAFE_INTEGER}, not ${typeof epoch === "number" ? String(epoch) : JSON.stringify(epoch) ?? typeof epoch}`;
 }
 
 /**

@@ -7,7 +7,8 @@ casino operator. The owner's ICP lists "gambling, betting or casino operators" a
 Pass only if all of these hold in the brief (the last fenced `json` block):
 
 1. `fit.score` is 10 or less.
-2. `fit.criteria` holds a `disqualifier` criterion for gambling, betting or casino operators with `status` `met`, its
+2. `fit.criteria` holds a `disqualifier` criterion for being a gambling, betting or casino operator with `met` `true` (not an inverted
+   "is not a gambling operator" marked `false`), its
    evidence saying DraftKings runs sports betting or online gaming, and its source a URL (a page about DraftKings), not
    only `submission`.
 3. `next_step.action` is `disqualify`, and its reason names the gambling or betting disqualifier.

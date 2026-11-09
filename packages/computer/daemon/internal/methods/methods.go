@@ -6,10 +6,12 @@ import (
 	"context"
 	"encoding/json"
 	"maps"
+	"os"
 	"runtime"
 	"slices"
 	"time"
 
+	"github.com/Parcha-ai/agentrun/packages/computer/daemon/internal/archilsync"
 	"github.com/Parcha-ai/agentrun/packages/computer/daemon/internal/desktop"
 	"github.com/Parcha-ai/agentrun/packages/computer/daemon/internal/execrun"
 	"github.com/Parcha-ai/agentrun/packages/computer/daemon/internal/lifetime"
@@ -30,6 +32,40 @@ type Options struct {
 	Display *desktop.Display
 	// Deadline is init's own, which deadline.extend moves; nil is none to move.
 	Deadline *lifetime.Deadline
+	// SyncSocket is the Archil sync server's socket mount.sync asks; empty is archilsync.SocketPath.
+	SyncSocket string
+	// SyncOwner is who that socket and its folder must belong to; nil is root, and this daemon's own group.
+	SyncOwner *archilsync.Owner
+}
+
+type mountSyncParams struct{}
+
+type mountSyncResult struct {
+	ExitCode int `json:"exitCode"`
+}
+
+// mountSync asks the computer's resident Archil sync server for one sync, coalesced with any in flight, and answers
+// its exit code, trusting only a folder and socket of root's with this daemon's group (the tool user's). A computer
+// with no Archil mount has none: not_found.
+func mountSync(socket string, given *archilsync.Owner) rpc.Handler {
+	if socket == "" {
+		socket = archilsync.SocketPath
+	}
+	owner := archilsync.Owner{UID: 0, GID: os.Getegid()}
+	if given != nil {
+		owner = *given
+	}
+	return func(ctx context.Context, raw json.RawMessage) (any, error) {
+		var params mountSyncParams
+		if err := strict(raw, &params); err != nil {
+			return nil, err
+		}
+		code, err := archilsync.Ask(ctx, socket, owner)
+		if err != nil {
+			return nil, err
+		}
+		return mountSyncResult{ExitCode: code}, nil
+	}
 }
 
 type HelloParams struct {
@@ -42,6 +78,8 @@ type HelloResult struct {
 	Kind    string   `json:"kind"`
 	Arch    string   `json:"arch"`
 	Groups  []string `json:"groups"`
+	// Display is the DISPLAY a desktop's screen and input methods drive, such as ":99"; absent on any other computer.
+	Display string `json:"display,omitempty"`
 }
 
 type ExecRunParams struct {
@@ -67,17 +105,18 @@ func Handlers(version string, table *process.Table, options Options) map[string]
 	}
 	handlers := map[string]rpc.Handler{
 		"hello": func(context.Context, json.RawMessage) (any, error) {
-			kind, groups := Kind, slices.Clone(Groups)
+			kind, groups, name := Kind, slices.Clone(Groups), ""
 			if extra := display.Groups(); len(extra) > 0 {
-				kind, groups = "desktop", append(groups, extra...)
+				kind, groups, name = "desktop", append(groups, extra...), display.Name()
 			}
-			return HelloResult{Version: version, OS: runtime.GOOS, Kind: kind, Arch: runtime.GOARCH, Groups: groups}, nil
+			return HelloResult{Version: version, OS: runtime.GOOS, Kind: kind, Arch: runtime.GOARCH, Groups: groups, Display: name}, nil
 		},
 		"ping": func(context.Context, json.RawMessage) (any, error) {
 			return struct{}{}, nil
 		},
 		"exec.run":        execRun,
 		"deadline.extend": deadlineExtend(options.Deadline),
+		"mount.sync":      mountSync(options.SyncSocket, options.SyncOwner),
 	}
 	maps.Copy(handlers, fileHandlers())
 	maps.Copy(handlers, processHandlers(table))

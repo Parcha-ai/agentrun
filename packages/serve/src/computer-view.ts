@@ -22,7 +22,7 @@ export async function computerView(deps: {
   viewer(): Promise<{ kind: ComputerKind; viewer: string } | undefined>;
   /** The run's computer, read only when no viewer is open. */
   computer(): ComputerOf;
-  /** Who drives now. TODO(tl-places): hold from computerHoldOf(store, runId) (places/computers-cut); until then the agent
+  /** Who drives now. TODO: hold from computerHoldOf(store, runId), the store-backed take-over; until then the agent
    *  drives, as no seam answers. */
   hold?(): ComputerHold;
 }): Promise<ComputerAnswer> {

@@ -3,6 +3,7 @@ package daemon
 import (
 	"errors"
 	"fmt"
+	"net"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -83,10 +84,23 @@ func TestPrepareDirRefusesAFile(t *testing.T) {
 
 func TestBecomeRefusesARelativeHome(t *testing.T) {
 	for _, home := range []string{"", "work", "./work"} {
-		err := Become(1000, 1000, home, filepath.Join(t.TempDir(), "computerd.sock"))
+		err := Become(1000, 1000, home, filepath.Join(t.TempDir(), "computerd.sock"), Isolation{})
 		if err == nil || !strings.Contains(err.Error(), "HOME") {
 			t.Errorf("Become with HOME %q: %v; want a refusal that names HOME", home, err)
 		}
+	}
+}
+
+// Root's programs share uid 0 with every root process of the vendor's, its agent among them: an isolated Become refuses
+// uid 0 before anything else, whoever runs it, not only when another root process happens to be listed at start.
+func TestBecomeWithOwnNetworkRefusesUidZeroBeforeAnything(t *testing.T) {
+	home := filepath.Join(t.TempDir(), "work")
+	err := Become(0, 1000, home, filepath.Join(t.TempDir(), "run", "computerd.sock"), Isolation{OwnNetwork: true})
+	if err == nil || !strings.Contains(err.Error(), "uid 0") || !strings.Contains(err.Error(), "--own-network") {
+		t.Fatalf("an isolated Become(0:1000): %v; want a refusal that names uid 0 and --own-network", err)
+	}
+	if _, statErr := os.Stat(home); statErr == nil {
+		t.Fatalf("Become made %s before it refused", home)
 	}
 }
 
@@ -95,7 +109,7 @@ func TestBecomeNeedsInitToStartAsRoot(t *testing.T) {
 		t.Skip("runs as root: the drop itself is a live case, never run in a test process")
 	}
 	home := filepath.Join(t.TempDir(), "work")
-	err := Become(1000, 1000, home, filepath.Join(t.TempDir(), "run", "computerd.sock"))
+	err := Become(1000, 1000, home, filepath.Join(t.TempDir(), "run", "computerd.sock"), Isolation{OwnNetwork: true})
 	if err == nil || !strings.Contains(err.Error(), "root") {
 		t.Fatalf("Become as uid %d: %v; want a refusal that says init must start as root", os.Geteuid(), err)
 	}
@@ -229,17 +243,24 @@ func becomeChild(args []string) int {
 	for range held {
 		<-ready
 	}
-	if err := prepareCapabilities(args[3]); err != nil {
+	how, isolation := args[3], Isolation{}
+	if how == "own-network" {
+		how, isolation = "plain", Isolation{OwnNetwork: true}
+	}
+	if err := prepareCapabilities(how); err != nil {
 		fmt.Fprintln(os.Stderr, err)
 		return 1
 	}
-	drop := func() error { return Become(uid, gid, args[1], args[2]) }
+	drop := func() error { return Become(uid, gid, args[1], args[2], isolation) }
 	if args[0] == "none" {
 		drop = Unprivileged
 	}
 	if err := drop(); err != nil {
 		fmt.Println("refused", err)
 		return 3
+	}
+	if isolation.OwnNetwork {
+		fmt.Println(isolatedLine())
 	}
 	tasks, err := os.ReadDir("/proc/self/task")
 	if err != nil {
@@ -263,6 +284,27 @@ func becomeChild(args []string) int {
 	}
 	fmt.Print("program ", string(out))
 	return 0
+}
+
+// isolatedLine is "isolated interfaces=<names> seccomp=<each thread's mode>": what an isolated Become left.
+func isolatedLine() string {
+	names := []string{}
+	if ifaces, err := net.Interfaces(); err == nil {
+		for _, iface := range ifaces {
+			names = append(names, iface.Name)
+		}
+	}
+	modes := []string{}
+	tasks, _ := os.ReadDir("/proc/self/task")
+	for _, task := range tasks {
+		status, _ := os.ReadFile(filepath.Join("/proc/self/task", task.Name(), "status"))
+		for line := range strings.Lines(string(status)) {
+			if value, found := strings.CutPrefix(line, "Seccomp:"); found {
+				modes = append(modes, strings.TrimSpace(value))
+			}
+		}
+	}
+	return fmt.Sprintf("isolated interfaces=%s seccomp=%s", strings.Join(names, ","), strings.Join(modes, ","))
 }
 
 // capabilitiesOfThisProcess reads this test process's CapEff and CapBnd.
@@ -359,6 +401,64 @@ func TestBecomeLeavesNoCapabilityOnAnyThreadRootIncluded(t *testing.T) {
 			uid, gid, _ := strings.Cut(user, ":")
 			checkNothingLeft(t, fmt.Sprintf("Become(%s), %s", user, how), uid, gid, out)
 		}
+	}
+}
+
+// needsNamespaces skips unless this process may make a network namespace and bring its loopback up: root with
+// CAP_SYS_ADMIN and CAP_NET_ADMIN, as a remote vendor's root has and a container given both does.
+func needsNamespaces(t *testing.T) {
+	t.Helper()
+	needsRootWithCapabilities(t)
+	if effective, _ := capabilitiesOfThisProcess(t); effective&(1<<21) == 0 || effective&(1<<12) == 0 {
+		t.Skipf("CapEff %016x: an isolated Become needs CAP_SYS_ADMIN and CAP_NET_ADMIN; run this test binary as root in a container given both", effective)
+	}
+}
+
+func TestBecomeWithOwnNetworkLeavesEveryThreadItsLoopbackAloneAndTheFilter(t *testing.T) {
+	needsNamespaces(t)
+	out, code := runBecomeChild(t, "2510:2510", "own-network")
+	if code != 0 {
+		t.Fatalf("Become(2510:2510) with its own network: refused: %s", out)
+	}
+	first, rest, _ := strings.Cut(out, "\n")
+	words := strings.Fields(first)
+	if len(words) != 3 || words[0] != "isolated" || words[1] != "interfaces=lo" || strings.Trim(strings.TrimPrefix(words[2], "seccomp="), "2,") != "" {
+		t.Fatalf("after an isolated Become: %q; want the loopback alone and seccomp mode 2 on every thread", first)
+	}
+	checkNothingLeft(t, "Become(2510:2510) with its own network", "2510", "2510", rest)
+}
+
+// A root without CAP_SYS_ADMIN (Docker's default, a vendor runner that is not privileged) cannot make the namespace:
+// init refuses to start, in words, and the computer fails closed.
+func TestBecomeWithOwnNetworkRefusesWithoutCapSysAdmin(t *testing.T) {
+	needsRootWithCapabilities(t)
+	if effective, _ := capabilitiesOfThisProcess(t); effective&(1<<21) != 0 {
+		t.Skipf("CapEff %016x holds CAP_SYS_ADMIN; run this test binary as root in a container with Docker's default capabilities", effective)
+	}
+	out, code := runBecomeChild(t, "2510:2510", "own-network")
+	if code != 3 || !strings.Contains(out, "network namespace") || !strings.Contains(out, "CAP_SYS_ADMIN") {
+		t.Fatalf("an isolated Become without CAP_SYS_ADMIN: exit %d, %q; want a refusal that names the network namespace and CAP_SYS_ADMIN", code, out)
+	}
+}
+
+func TestBecomeWithOwnNetworkRefusesWhileAnotherProcessHoldsTheUid(t *testing.T) {
+	needsNamespaces(t)
+	sleep, err := exec.LookPath("sleep")
+	if err != nil {
+		t.Skip("no sleep here to stand for another process of the uid")
+	}
+	other := exec.Command(sleep, "60")
+	other.SysProcAttr = &syscall.SysProcAttr{Credential: &syscall.Credential{Uid: 2510, Gid: 2510}}
+	if err := other.Start(); err != nil {
+		t.Fatal(err)
+	}
+	defer func() { _ = other.Process.Kill(); _ = other.Wait() }()
+	out, code := runBecomeChild(t, "2510:2510", "own-network")
+	if code != 3 || !strings.Contains(out, fmt.Sprintf("%d (sleep)", other.Process.Pid)) || !strings.Contains(out, "uid 2510") {
+		t.Fatalf("Become(2510:2510) with its own network while process %d holds uid 2510: exit %d, %q; want a refusal that names it", other.Process.Pid, code, out)
+	}
+	if out, code := runBecomeChild(t, "2511:2511", "own-network"); code != 0 {
+		t.Fatalf("Become(2511:2511), a uid no other process holds: refused: %s", out)
 	}
 }
 

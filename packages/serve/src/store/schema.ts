@@ -81,6 +81,11 @@ export const STORE_DDL: readonly string[] = [
     -- pointer hashes to one of these is in use by it, so forgetting it is refused (sign-ins-store.ts), and its served
     -- output is redacted by every handed pointer. Null when the run was handed none.
     ${json("sign_in_handed", true)},
+    -- When the run last left 'running' (parked or ended): a Browserbase sign-in it held keeps its save lease for the
+    -- settle window after this (the context is still being written back), so a run that binds within it does not save over
+    -- the write-back (sign-ins-store.ts / runs.update's save decision). Null until it first leaves running. Other vendors
+    -- free the lease the instant it leaves running (no settle window), so this is read only with one.
+    left_running_at INTEGER,
     started_at INTEGER NOT NULL,
     ended_at INTEGER
   ) STRICT`,
@@ -263,7 +268,7 @@ export const STORE_DDL: readonly string[] = [
     PRIMARY KEY (agent_id, key)
   ) STRICT`,
 
-  // An agent's saved browser sign-ins (design 2.1, tl-browser's rules): one live row per agent and browser provider, its
+  // An agent's saved browser sign-ins (design 2.1, the browser sign-in rules): one live row per agent and browser provider, its
   // pointer (the vendor's context or profile id) sealed with the store's one rule (store/seal.ts, AAD
   // sign_ins|<agent>:<provider>|pointer), which the store never opens. The owner sees its name ("default") and saved_at,
   // never the pointer, and no run's tools ever do. Forgetting a sign-in moves its sealed pointer, byte for byte so it

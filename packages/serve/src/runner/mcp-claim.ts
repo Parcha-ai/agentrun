@@ -1,11 +1,11 @@
-// The runner's MCP claim step: once per claim, before the run's loop starts (tl-mcp's note, sections 1, 4 and 5).
+// The runner's MCP claim step: once per claim, before the run's loop starts.
 //
 // The pin. A run's pin (the granted MCP tools as their servers listed them, each server's URL then, its prices) is made
 // at its first claim by mcpPinOf over the registry's rows and written by store.mcp.pinOnce: in its own store transaction,
 // behind the claim's epoch fence, inserted only when the run has none. So it exists before anything is sent, is written
 // once and never rewritten, and a crash between it and the loop's first commit leaves it for the next claim to read as
-// written (the first claim's snapshot, by design). tl-mcp acked this over the note's first "same commit as the first
-// journal entries" (11-08); the note's section 1 says so now. A pin that cannot be made refuses the claim in its words.
+// written (the first claim's snapshot, by design), rather than in the same commit as the first journal entries. A pin
+// that cannot be made refuses the claim in its words.
 // At every claim the pin is checked again: a pinned tool that is a meta tool now refuses the claim in words, nothing sent.
 //
 // The credentials. The pinned servers' credentials are unsealed (store/seal.ts openMcpCredential) into this step's
@@ -17,7 +17,8 @@
 //
 // fresh(). After the pin check and before the loop, and again on a command-row resume: an OAuth access token past its
 // expiry is refreshed, bounded (4 s a request, two tries), under the server's refresh lease (leaseRefresh, then the
-// network outside any transaction, then refreshToken writing the new set and clearing the lease): one refresh at a time,
+// network outside any transaction, then keepRefreshed writing the new set iff the credential is still the one it started
+// from, and clearing the lease if still ours; a newer credential drops ours, logged by name): one refresh at a time,
 // so a provider that rotates refresh tokens never sees one spent twice; a claim without the lease takes the set its
 // holder keeps, woken when a holder in this process lets the lease go (read once more at the lease's end for one
 // elsewhere), never polling. A refresh once sent is never cut short: a shutdown, a lost claim or the run's end stops
@@ -34,7 +35,10 @@ import { privateOAuthHosts } from "../mcp-private-hosts.js";
 import { type GithubAppAccess, type GithubTimer, githubTokens } from "./mcp-github.js";
 import { REFRESH_MARGIN_MS, UNKNOWN_EXPIRY_MS, UNUSABLE } from "../mcp-servers.js";
 import { openMcpCredential, sealMcpCredential, type McpCredential } from "../store/seal.js";
-import { type Claim, Fenced, MCP_REFRESH_CALL_MS, type McpServerRow, RefreshLeaseLost, type Store } from "../store/index.js";
+import { type Claim, Fenced, MCP_REFRESH_CALL_MS, type McpServerRow, type Store } from "../store/index.js";
+
+/** Whether two sealed credentials are the same bytes (none equals none). */
+const sameSealed = (a: Uint8Array | null, b: Uint8Array | null): boolean => (a === null || b === null ? a === b : Buffer.from(a).equals(Buffer.from(b)));
 
 /** A claim the MCP step refused, in the words a person reads: nothing was sent. */
 export class McpClaimRefused extends Error {
@@ -42,7 +46,8 @@ export class McpClaimRefused extends Error {
 }
 
 export interface McpClaimOptions {
-  /** `settings`: the private-network OAuth hosts the owner allows (privateOAuthHosts), read at each refresh. */
+  /** `settings`: the private-network OAuth hosts the owner allows (privateOAuthHosts), read at each refresh. `where`:
+   *  the store's identity, which a wait on another claim's refresh lease is keyed by. */
   store: Pick<Store, "mcp" | "runs" | "settings" | "where">;
   claim: Pick<Claim, "runId" | "epoch">;
   /** The run's granted tools, by catalog name (`mcp:<server>/<tool>` among them). */
@@ -64,6 +69,8 @@ export interface McpClaimOptions {
   githubTimer?: GithubTimer;
   /** For tests: the timer a wait on another claim's refresh lease, and its next read of the row, are armed on. */
   timer?: SettleTimer;
+  /** Where a refreshed set dropped for a newer credential is said, by its server's name only (console.warn by default). */
+  log?: (line: string) => void;
 }
 
 export interface McpClaimStep {
@@ -89,6 +96,7 @@ export async function mcpClaim(options: McpClaimOptions): Promise<McpClaimStep> 
   const now = options.now ?? Date.now;
   const timer = options.timer ?? systemTimer;
   const network = options.network ?? systemNetwork;
+  const log = options.log ?? ((line: string) => console.warn(line));
   const requestMs = options.bounds?.requestMs ?? REFRESH_REQUEST_MS;
   const tries = options.bounds?.tries ?? 2;
   // The whole refresh call (every try) is given up at the store's one deadline, MCP_REFRESH_CALL_MS (two tries of 4 s),
@@ -152,17 +160,15 @@ export async function mcpClaim(options: McpClaimOptions): Promise<McpClaimStep> 
     }
   };
 
-  /** Writes `credential` as the server's sealed credential under this step's lease, clearing it: false when the lease
-   *  was lost meanwhile (nothing written). */
+  /** Writes `credential` as the server's sealed credential iff the row's is still the one this refresh started from
+   *  (`row.sealed`, its lease's), whoever holds the lease now: its token is spent at the provider, so a lease that lapsed
+   *  never loses it. False when the credential changed meanwhile (a newer set, an owner's save): ours is dropped, nothing
+   *  written, never retried, and said by the server's name only. */
   const keep = async (row: McpServerRow, credential: OAuthCredential): Promise<boolean> => {
     const { origin: _origin, ...plain } = credential as OAuthCredential & { origin?: string };
-    try {
-      await store.mcp.refreshToken(row.name, { holder, sealed: sealMcpCredential(sealKey!, row.name, plain as McpCredential, row.url) });
-      return true;
-    } catch (error) {
-      if (error instanceof RefreshLeaseLost) return false;
-      throw error;
-    }
+    const { kept } = await store.mcp.keepRefreshed(row.name, { seen: row.sealed, sealed: sealMcpCredential(sealKey!, row.name, plain as McpCredential, row.url), holder });
+    if (!kept) log(`mcp ${row.name}: its credential changed while this claim refreshed it; the refreshed set was dropped and the server's current one is used`);
+    return kept;
   };
 
   /** One pinned server's credential, opened, refreshed when due (awaited for an expired token; behind it for one near
@@ -199,6 +205,12 @@ export async function mcpClaim(options: McpClaimOptions): Promise<McpClaimStep> 
     if (due - now() > REFRESH_MARGIN_MS) return entry({ headers: bearer(set) }), { awaited: false };
     // Another claim's refresh left this row and it is still due: never refreshed from here once more.
     if (again) return entry(due > now() ? { headers: bearer(set) } : { unopened: UNUSABLE.silent }), { awaited: false };
+    /** The row another claim's refresh (or an owner's save) left, opened as it is, never refreshed from here once more;
+     *  a server forgotten meanwhile loses its entry. */
+    const takeLeft = async (left: McpServerRow | undefined): Promise<void> => {
+      if (left) await open(name, pinnedUrl, left);
+      else delete credentials[name];
+    };
     const settle = async (stop: AbortSignal): Promise<void> => {
       // One refresh at a time per server, across claims and runners: a provider that rotates its refresh tokens spends
       // the one used, so a second refresh with it would sign the server out. Without the lease, take the row the
@@ -210,6 +222,15 @@ export async function mcpClaim(options: McpClaimOptions): Promise<McpClaimStep> 
         return;
       }
       try {
+        // Read once more under the lease before anything is sent: a claim whose lease lapsed may have kept its set just
+        // as this one was granted (keepRefreshed lands for whoever holds the lease), and its refresh token is the one the
+        // provider has now. Ours is spent: never sent, the lease let go, the row opened as that claim left it.
+        const current = await store.mcp.server(name);
+        if (!current || !sameSealed(current.sealed, lease.row.sealed)) {
+          await store.mcp.releaseRefresh(name, holder).catch(() => undefined);
+          if (!stop.aborted && !released) await takeLeft(current);
+          return;
+        }
         const got = await refresh(lease.row, set, stop);
         // Stopped before anything was sent: the lease is let go, the refresh token unspent.
         if ("unsent" in got) return void (await store.mcp.releaseRefresh(name, holder).catch(() => undefined));
@@ -226,14 +247,16 @@ export async function mcpClaim(options: McpClaimOptions): Promise<McpClaimStep> 
           // not the run's; entry() hands it to this step only while it is held.
           if (await keep(lease.row, { type: "oauth", set: got.set })) return entry({ headers: bearer(got.set) });
           if (stop.aborted || released) return;
-          // The lease lapsed while it waited, and another claim kept a set: use the row as it is now.
+          // The credential changed while it refreshed (a newer set, an owner's save): use the row as it is now.
           const left = await store.mcp.server(name);
-          return void (left && (await open(name, pinnedUrl, left)));
+          return void (await takeLeft(left));
         }
         if ("refused" in got) {
-          // The sign-in is over: kept as expired, so no later claim tries the refresh token again.
-          await keep(lease.row, { ...oauth, expired: true });
-          return entry({ unopened: UNUSABLE.signedOut });
+          // The sign-in is over: kept as expired, so no later claim tries the refresh token again. A credential changed
+          // meanwhile is the one to use.
+          if (await keep(lease.row, { ...oauth, expired: true })) return entry({ unopened: UNUSABLE.signedOut });
+          if (stop.aborted || released) return;
+          return void (await takeLeft(await store.mcp.server(name)));
         }
         // No answer within its deadline: the lease is let go and the refresh token kept for the next try; an access token
         // past its expiry is never handed over.

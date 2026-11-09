@@ -133,7 +133,7 @@ test("a waiter whose releaser is in another process sees the settled row at its 
   const wait = await timer.waiting();
   assert.ok(wait.ms < MCP_REFRESH_LEASE_MS / 4, `the waiter reads the row again within ${wait.ms} ms, not at the lease's end (${MCP_REFRESH_LEASE_MS} ms)`);
   // The holder elsewhere keeps its fresh set and lets go: only the row says so.
-  await store.mcp.refreshToken("fake", { holder: "runner-elsewhere", sealed: sealedSet(freshSet()) });
+  await store.mcp.keepRefreshed("fake", { seen: row.sealed, holder: "runner-elsewhere", sealed: sealedSet(freshSet()) });
   wait.fire();
   const step = await waiting;
   t.after(() => step.release());

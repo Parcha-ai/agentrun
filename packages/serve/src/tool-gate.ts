@@ -56,7 +56,7 @@ import { DEFAULT_HARNESS } from "./harness.js";
 import { durableSessions } from "./sessions.js";
 import { SHELL_TOOLS } from "./background.js";
 import { readToolSettings, SERVE_OWN_TOOLS, TABLE_TOOLS } from "./tool-plane.js";
-import { NOT_RUN, RAN_UNKNOWN, refusedText } from "./refusal-words.js";
+import { deniedText, NOT_RUN, RAN_UNKNOWN, refusedText, type SettingFrom } from "./refusal-words.js";
 import { type Approvals, approvalsOf } from "./approvals.js";
 
 /** What the gate does with a tool's calls. */
@@ -345,23 +345,9 @@ export interface Gate {
   spill(callId: string, text: string): string;
 }
 
-/** Where a permission was set (permissionFrom's `from`): the agent's own tool settings, the server's, or the default; or
- *  "unattended": an ask the agent's approvals "never" allowed. */
-export type SettingFrom = "agent" | "server" | "default" | "unattended";
-/** Where a deny can come from: a setting in a layer, or the default. Never "unattended", which only ever allows. */
-export type DenyFrom = Exclude<SettingFrom, "unattended">;
-// The refusal words (NOT_RUN, RAN_UNKNOWN, refusedText) live in refusal-words.ts, shared with the runner's loops.
-export { NOT_RUN, RAN_UNKNOWN, refusedText } from "./refusal-words.js";
-/** Where a deny was set, in words: the place a person changes it. */
-export const denyPlace = (from: SettingFrom = "server"): string => (from === "agent" ? "for this agent" : from === "default" ? "by default" : "on this server");
-/** The refusal of a call whose tool is set to deny; of one held to another tool's setting (`heldTo`, a shell tool's
- *  bash), naming the setting to change and where it was set (`from`: this agent's settings or this server's). */
-export const deniedText = (tool: string, heldTo?: string, from: SettingFrom = "server", ran: "no" | "unknown" = "no"): string => {
-  // `ran`: "unknown" for a call an earlier attempt of which may have been sent (an approved call cut mid-flight, or a
-  // replay-safe call run again after a crash): the words never claim it wasn't.
-  const what = ran === "no" ? NOT_RUN : RAN_UNKNOWN;
-  return heldTo && heldTo !== tool ? `Permission denied: ${tool} follows ${heldTo}'s setting, which is deny ${denyPlace(from)}. ${what} Don't retry it.` : `Permission denied: ${tool} is set to deny ${denyPlace(from)}. ${what} Don't retry it.`;
-};
+// The refusal words (SettingFrom, DenyFrom, NOT_RUN, RAN_UNKNOWN, denyPlace, deniedText, refusedText) live in
+// refusal-words.ts, shared with the runner's loops.
+export { type DenyFrom, deniedText, denyPlace, NOT_RUN, RAN_UNKNOWN, refusedText, type SettingFrom } from "./refusal-words.js";
 /** The refusal of an ask where no one can approve it: a server with accounts off, whose answer route takes no token. */
 export const noApproverText = (tool: string, ran: "no" | "unknown" = "no"): string => `Permission denied: ${tool} needs the owner's approval, and this server has accounts off (AGENTRUN_ACCOUNTS=0), so no one can give it: set the tool to allow or deny in the agent's Tools. ${ran === "no" ? NOT_RUN : RAN_UNKNOWN}`;
 /** Set by the server in a run's environment when no one can approve here (accounts off): the gate refuses each ask. */
@@ -513,7 +499,7 @@ export class RunGate {
    *  only after every refusal. */
   async decide(name: string, args: unknown): Promise<"allow" | "ask" | { deny: string }> {
     const key = settingsKeyOf(this.where.harness ?? DEFAULT_HARNESS, name, this.where.mcpServers) ?? name;
-    const tool = shellToolOf(name) ?? key;
+    const tool = this.askedAs(name);
     const learning = await this.learningRefusal(key, args);
     if (learning) return { deny: learning };
     const verdict = this.policy(name);
@@ -521,6 +507,12 @@ export class RunGate {
     const pinned = this.pinned(key, args, "no");
     if (pinned) return { deny: pinned.text };
     return verdict === "allow" ? "allow" : "ask";
+  }
+
+  /** The name a call is asked about by, as main's request names it (enter's `tool`): its settings key, a shell tool its
+   *  own name; a name nothing maps, as it came. */
+  askedAs(name: string): string {
+    return shellToolOf(name) ?? settingsKeyOf(this.where.harness ?? DEFAULT_HARNESS, name, this.where.mcpServers) ?? name;
   }
   /** Where the permission `policy` gives `tool` was set: the agent's own tool settings, the server's, or the default; or
    *  "unattended", an ask the agent's approvals allowed. */
@@ -875,7 +867,7 @@ export class RunGate {
     const heldTo = settingsKeyOf(this.where.harness ?? DEFAULT_HARNESS, held.tool, this.where.mcpServers);
     const ran = held.replayed || drive.state().effects.has(key) ? "unknown" : "no";
     if (this.policy(held.tool) !== "deny") {
-      const pinned = this.pinned(held.tool, held.args, ran);
+      const pinned = this.pinned(heldTo ?? held.tool, held.args, ran);
       if (pinned) return { text: pinned.text, isError: true };
     }
     return { text: deniedText(held.tool, heldTo, this.denyFrom(held.tool), ran), isError: true };
