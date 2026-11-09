@@ -121,14 +121,15 @@ if (process.argv[2] === "validate-template") {
 // A template package's evals run and graded (template-eval.ts): on a server in this process over a temp data directory,
 // or with --server on one already running, its token from AGENTRUN_API_KEY (the launcher hands it over its pipe, never
 // in the environment or the arguments). Progress on stderr, the summary on stdout, the whole report as JSON to --report.
-// 0: every case passed; 1: one failed; 2: the flags, the package or a case is wrong, and nothing ran.
+// 0: every case passed; 1: one failed; 2: the flags, the package or a case is wrong, and nothing ran. --data is taken and
+// ignored, as validate-template's is: the npx launcher hands every server command one, and an eval's store is a temp one.
 if (process.argv[2] === "eval-template") {
   const { CaseError, evalTemplate, markdownReport } = await import("./template-eval.js");
   const { PackageError } = await import("./templates.js");
   const usage = (message: string): never => (console.error(`agentrun-serve eval-template: ${message}\n\n${USAGE}`), process.exit(2));
   const read = () => {
     try {
-      return parseArgs({ args: process.argv.slice(3), allowPositionals: true, options: { case: { type: "string", multiple: true, default: [] }, runs: { type: "string" }, server: { type: "string" }, "grader-model": { type: "string" }, report: { type: "string" }, faux: { type: "string" } } });
+      return parseArgs({ args: process.argv.slice(3), allowPositionals: true, options: { case: { type: "string", multiple: true, default: [] }, runs: { type: "string" }, server: { type: "string" }, "grader-model": { type: "string" }, report: { type: "string" }, faux: { type: "string" }, data: { type: "string" } } });
     } catch (error) {
       return usage((error as Error).message);
     }
