@@ -189,6 +189,8 @@ export function workflowSpecOf(deps: WorkflowSpecDeps): (claim: { runId: string 
     const proxies: ModelProxy[] = [];
     const models = createModels();
     const hooks = deferredHooks();
+    // The call nodes' effects in flight: a model request inside one is not where a pause lands (pauseAtEffects).
+    const flight: EffectsInFlight = { count: 0 };
     for (const [tier, provider] of providers) {
       const proxy = await startModelProxy({
         policy: provider.policy,
@@ -261,7 +263,8 @@ export function workflowSpecOf(deps: WorkflowSpecDeps): (claim: { runId: string 
           // parks the run through the loop's hook, the same as a model node's. The cap is wired at harnessReady, so the
           // wrapper reaches it through the deferred reference. With no decision provider the workflow runs none.
           ...(decisions ? { decisionProviders: decisions, ...(loadImage ? { loadImage } : {}) } : {}),
-          cap: decisions ? decisionWorkflowCap(() => decisionCap, decisions, hooks) : identityWorkflowCap(),
+          // A person's pause holds a call node before its effect starts (before the engine admits it), as main's gate did.
+          cap: pauseAtEffects(decisions ? decisionWorkflowCap(() => decisionCap, decisions, hooks) : identityWorkflowCap(), hooks, flight),
         };
         return workflowHost(hostDeps) as { extensions: readonly Extension[]; host: never };
       },
@@ -279,7 +282,7 @@ export function workflowSpecOf(deps: WorkflowSpecDeps): (claim: { runId: string 
           key: SESSION,
           label: SESSION,
           // The model booking is the run's rule itself (no second booking); a refusal parks the run through the loop's hook.
-          beforeRequest: parkOnRefusal(run.before, hooks),
+          beforeRequest: parkOnRefusal(run.before, hooks, flight),
           onEvent: async (event) => { if (event.type === "request_start") await deps.store.flush(); },
         });
         // The run's decisions book on the same cap, under their own session (DECISION_SESSION); created now the Harness is
@@ -299,12 +302,15 @@ export function workflowSpecOf(deps: WorkflowSpecDeps): (claim: { runId: string 
 /** The run's rule with a park on a refusal: `before` (runCap's one rule for the model session) is asked, and on a refusal
  *  the run parks through the loop's hook (parkOf decides room vs for good from the refusal), the same as the pi adapter's
  *  parkAtCap. It still returns the refusal, so the proxy refuses the request and the node's turn ends. */
-function parkOnRefusal(before: BeforeRequest, hooks: Pick<WorkflowHostHooks, "park" | "paused" | "pause">): BeforeRequest {
+export function parkOnRefusal(before: BeforeRequest, hooks: Pick<WorkflowHostHooks, "park" | "paused" | "pause">, flight: EffectsInFlight = { count: 0 }): BeforeRequest {
   const park = hooks.park;
   return async (request) => {
     // A person's pause in force parks the run here, before the request is sent, as a refusal does: the request is
-    // refused unsent, and the resume's claim goes on from the journal (main's pause gate before each model call).
-    if (hooks.paused()) {
+    // refused unsent, and the resume's claim goes on from the journal (main's pause gate before each model call). Not
+    // inside a call node's effect in flight (an `llm` call's request): the engine has admitted that effect, and one
+    // parked unfinished is left unknown, which it will not resume (FROZEN_EFFECT_UNKNOWN); it finishes, and the pause
+    // lands at the next effect's start or model node's request.
+    if (hooks.paused() && flight.count === 0) {
       hooks.pause();
       return { refuse: PAUSED_WORDS, forGood: false } as Refusal;
     }
@@ -314,6 +320,37 @@ function parkOnRefusal(before: BeforeRequest, hooks: Pick<WorkflowHostHooks, "pa
       park({ message: refusal.refuse, forGood: refusal.forGood ?? true, ...(refusal.figures ? { figures: refusal.figures } : {}) });
     }
     return verdict;
+  };
+}
+
+/** How many call nodes' effects are in flight (pauseAtEffects counts them; parkOnRefusal reads it). */
+export interface EffectsInFlight { count: number }
+
+/** `cap` with a person's pause before each call node's effect starts: applied outside the cap's own effect wrapper, which
+ *  is outside the engine's recovery wrapper (the one that admits the effect, dsl recovery/driver.ts wrapEffect), so a
+ *  paused call node is never admitted. A pause in force parks the run there (hooks.pause, which aborts the node's
+ *  signal) and the effect waits on that signal, never called; the resume's claim runs it once. An effect that starts is
+ *  counted in `flight` until it ends, so a model request it makes is not where a pause lands. */
+export function pauseAtEffects(cap: WorkflowCap, hooks: Pick<WorkflowHostHooks, "paused" | "pause">, flight: EffectsInFlight): WorkflowCap {
+  return {
+    ...cap,
+    effect: <F>(fn: F): F => {
+      const inner = cap.effect(fn) as unknown as (params: { signal?: AbortSignal }) => Promise<unknown>;
+      return (async (params: { signal?: AbortSignal }) => {
+        if (hooks.paused()) {
+          hooks.pause();
+          const signal = params?.signal;
+          if (signal && !signal.aborted) await new Promise<void>((resolve) => signal.addEventListener("abort", () => resolve(), { once: true }));
+          throw signal?.reason ?? new Error(PAUSED_WORDS);
+        }
+        flight.count += 1;
+        try {
+          return await inner(params);
+        } finally {
+          flight.count -= 1;
+        }
+      }) as unknown as F;
+    },
   };
 }
 
